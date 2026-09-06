@@ -96,7 +96,20 @@ export default function App() {
     <div className="app">
       {sidebarOpen && vaultPath && <Sidebar />}
       <main className="main">
-        <div className="titlebar" data-tauri-drag-region>
+        <div
+          className="titlebar"
+          data-tauri-drag-region
+          // When the sidebar is hidden the macOS traffic lights overlay the
+          // titlebar's left edge — keep the toggle button clear of them.
+          style={{ paddingLeft: sidebarOpen ? 12 : 78 }}
+        >
+          <button
+            className="icon-btn titlebar-icon"
+            title={sidebarOpen ? "收起侧边栏 (⌘\\)" : "展开侧边栏 (⌘\\)"}
+            onClick={() => useAppStore.getState().toggleSidebar()}
+          >
+            ◧
+          </button>
           <div className="breadcrumb">{breadcrumb}</div>
         </div>
         <EditorPane />

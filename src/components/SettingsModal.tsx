@@ -137,6 +137,12 @@ function EditorTab() {
         onChange={(v) => patch({ autoSave: v })}
       />
       <Toggle
+        label="标题自动编号"
+        desc="用 ⌘1–⌘6 设置标题时自动按层级编号（1 / 1.1 / 1.1.2），并重排全文已有编号"
+        checked={settings.autoNumberHeadings}
+        onChange={(v) => patch({ autoNumberHeadings: v })}
+      />
+      <Toggle
         label="打字机模式"
         desc="光标所在行始终保持屏幕垂直居中"
         checked={settings.typewriter}

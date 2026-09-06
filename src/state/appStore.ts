@@ -19,6 +19,8 @@ export interface Settings {
   mathPreview: boolean;
   snippets: boolean;
   autoSave: boolean;
+  /** 标题自动编号：设置标题时按层级重排 1 / 1.1 / 1.1.2 这样的编号 */
+  autoNumberHeadings: boolean;
   fontSize: number;
   ime: ImeSettings;
 }
@@ -30,6 +32,7 @@ export const DEFAULT_SETTINGS: Settings = {
   mathPreview: true,
   snippets: true,
   autoSave: true,
+  autoNumberHeadings: false,
   fontSize: 16,
   ime: {
     enabled: true,
@@ -58,6 +61,8 @@ interface AppState {
   settings: Settings;
   modal: ModalKind;
   sidebarOpen: boolean;
+  /** Incremented by focusSidebar(); the Sidebar reacts by taking keyboard focus. */
+  sidebarFocusTick: number;
   toast: string | null;
 
   setVault: (info: VaultInfo) => void;
@@ -71,6 +76,7 @@ interface AppState {
   replaceSettings: (s: Settings) => void;
   setModal: (m: ModalKind) => void;
   toggleSidebar: () => void;
+  focusSidebar: () => void;
   showToast: (msg: string) => void;
   clearToast: () => void;
 }
@@ -95,6 +101,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: { ...DEFAULT_SETTINGS },
   modal: null,
   sidebarOpen: true,
+  sidebarFocusTick: 0,
   toast: null,
 
   setVault: (info) =>
@@ -131,6 +138,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setModal: (modal) => set({ modal }),
   toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
+  focusSidebar: () =>
+    set({ sidebarOpen: true, sidebarFocusTick: get().sidebarFocusTick + 1 }),
   showToast: (msg) => set({ toast: msg }),
   clearToast: () => set({ toast: null }),
 }));

@@ -7,6 +7,7 @@ import { mathRegions, getContextAt } from "@/editor/context";
 import { blockDecorationsField } from "@/editor/livePreview";
 import { findSnippet } from "@/editor/snippets/engine";
 import { getSession } from "@/editor/snippets/extension";
+import { useAppStore } from "@/state/appStore";
 
 // No StrictMode: double-mounting would rebuild the single CodeMirror
 // instance and re-run async bootstrap during development.
@@ -20,6 +21,7 @@ declare global {
 }
 window.__bnote = {
   view: () => editorApi.view,
+  store: useAppStore,
   math: () => (editorApi.view ? mathRegions(editorApi.view.state) : null),
   context: (pos?: number) => {
     const v = editorApi.view;

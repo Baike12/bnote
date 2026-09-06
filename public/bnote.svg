@@ -1,4 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#1e1e1e"/>
-  <path d="M20 14h6v14.5c2.4-2.6 5.6-4 9.4-4 7.6 0 12.6 5.4 12.6 13.2C48 45.6 42.8 51 35.2 51c-3.9 0-7.1-1.5-9.2-4.1V50h-6V14zm14.6 16.4c-4.4 0-7.4 3-7.4 7.4 0 4.5 3 7.4 7.4 7.4s7.2-2.9 7.2-7.4c0-4.4-2.8-7.4-7.2-7.4z" fill="#a48be3"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#18181b"/>
+      <stop offset="1" stop-color="#040405"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <text x="15" y="47" font-family="Georgia, 'Times New Roman', serif" font-size="42" fill="#f3f2f0">b</text>
+  <rect x="39" y="24.5" width="15" height="2.8" rx="1.4" fill="#a48be3"/>
+  <rect x="39" y="31.6" width="11.5" height="2.8" rx="1.4" fill="#5e5f64"/>
+  <rect x="39" y="38.7" width="13" height="2.8" rx="1.4" fill="#5e5f64"/>
 </svg>

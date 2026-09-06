@@ -13,6 +13,7 @@ import {
 } from "@/editor/ops";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import { configureLivePreview } from "@/editor/livePreview";
+import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { useAppStore } from "@/state/appStore";
 
@@ -90,6 +91,12 @@ const defs: CommandDef[] = [
     category: "导航",
     run: () => useAppStore.getState().toggleSidebar(),
   },
+  {
+    id: "nav.focus-sidebar",
+    title: "聚焦侧边栏",
+    category: "导航",
+    run: () => useAppStore.getState().focusSidebar(),
+  },
 
   // ---- editing ----
   { id: "edit.insert-math-block", title: "插入公式块", category: "编辑", run: withView(insertMathBlock) },
@@ -115,7 +122,21 @@ const defs: CommandDef[] = [
     id: `edit.heading-${level}`,
     title: `设为 ${level} 级标题`,
     category: "编辑",
-    run: withView((v) => toggleHeading(v, level)),
+    run: withView((v) => {
+      const line = v.state.doc.lineAt(v.state.selection.main.head);
+      const togglingOff = new RegExp(`^${"#".repeat(level)}(?:\\s|$)`).test(line.text);
+      toggleHeading(v, level);
+      if (!useAppStore.getState().settings.autoNumberHeadings) return;
+      if (togglingOff) {
+        // The heading mark is gone; don't leave its auto number behind.
+        const after = v.state.doc.lineAt(
+          Math.min(line.from, v.state.doc.length),
+        );
+        const m = /^(\d+(?:\.\d+)*[ \t]+)/.exec(after.text);
+        if (m) v.dispatch({ changes: { from: after.from, to: after.from + m[1].length, insert: "" } });
+      }
+      renumberHeadings(v);
+    }),
   })),
 
   // ---- editor toggles ----

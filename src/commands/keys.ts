@@ -20,6 +20,7 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "nav.quick-switcher": "Mod-o",
   "nav.command-palette": "Mod-p",
   "nav.toggle-sidebar": "Mod-\\",
+  "nav.focus-sidebar": "Mod-i",
 
   "edit.insert-math-block": "Mod-m",
   "edit.insert-inline-math": "Mod-Shift-m",
@@ -28,7 +29,7 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "edit.insert-wikilink": "Mod-k",
   "edit.insert-horizontal-rule": "Mod-Shift-h",
   "edit.toggle-bold": "Mod-b",
-  "edit.toggle-italic": "Mod-i",
+  "edit.toggle-italic": "Mod-Shift-i",
   "edit.toggle-strikethrough": "Mod-Shift-d",
   "edit.heading-1": "Mod-1",
   "edit.heading-2": "Mod-2",

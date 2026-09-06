@@ -47,17 +47,20 @@ export class MathWidget extends WidgetType {
   constructor(
     readonly src: string,
     readonly display: boolean,
+    /** Doc position of the region start; lets click handlers find the region. */
+    readonly from?: number,
   ) {
     super();
   }
 
   eq(other: MathWidget) {
-    return other.src === this.src && other.display === this.display;
+    return other.src === this.src && other.display === this.display && other.from === this.from;
   }
 
   toDOM() {
     const wrap = document.createElement(this.display ? "div" : "span");
     wrap.className = this.display ? "cw-math cw-math-block" : "cw-math cw-math-inline";
+    if (this.from !== undefined) wrap.dataset.mathFrom = String(this.from);
     wrap.innerHTML = renderMathHtml(this.src, this.display);
     return wrap;
   }
@@ -114,6 +117,19 @@ export class HrWidget extends WidgetType {
     el.className = "cw-hr";
     const hr = document.createElement("hr");
     el.appendChild(hr);
+    return el;
+  }
+}
+
+/** Bullet glyph replacing `-`/`*`/`+` list markers in live preview. */
+export class ListBulletWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "md-bullet";
+    el.textContent = "•";
     return el;
   }
 }

@@ -1,5 +1,5 @@
 import { syntaxTree } from "@codemirror/language";
-import { StateEffect, StateField } from "@codemirror/state";
+import { StateEffect, StateField, Transaction } from "@codemirror/state";
 import type { EditorState, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
@@ -9,6 +9,7 @@ import {
   EscapeCharWidget,
   HiddenLineWidget,
   HrWidget,
+  ListBulletWidget,
   MathPreviewWidget,
   MathWidget,
   TaskCheckboxWidget,
@@ -153,6 +154,10 @@ function buildDecorations(
       }
       if (name.startsWith("ATXHeading")) {
         const level = Number(name.slice("ATXHeading".length)) || 1;
+        // Line spacing applies whether or not the line is being edited, so
+        // the text doesn't jump when the cursor enters/leaves a heading.
+        const lineFrom = doc.lineAt(nodeRef.from).from;
+        out.inline.push(Decoration.line({ class: `md-hline md-hline-${level}` }).range(lineFrom));
         if (!activeLine(nodeRef.from, nodeRef.to)) {
           decorateHeading(doc, nodeRef.node, level, out, claim);
         }
@@ -201,9 +206,9 @@ function buildDecorations(
         }
         return false;
       }
-      if (name === "ListItemMark") {
+      if (name === "ListMark") {
         if (!activeLine(nodeRef.from, nodeRef.to)) {
-          out.inline.push(Decoration.mark({ class: "md-listmark" }).range(nodeRef.from, nodeRef.to));
+          decorateListMark(doc, nodeRef.node, out, claim);
         }
         return false;
       }
@@ -275,7 +280,10 @@ function buildDecorations(
             out,
             from,
             to,
-            Decoration.replace({ widget: new MathWidget(region.content, true), block: true }),
+            Decoration.replace({
+              widget: new MathWidget(region.content, true, region.from),
+              block: true,
+            }),
             `math:${region.content}`,
           );
         }
@@ -338,6 +346,44 @@ function highlightMathSource(
   }
 }
 
+
+/**
+ * Renders the list marker (`-`, `*`, `+`, `1.`) per item kind:
+ * task items hide the marker entirely (the checkbox from `- [ ]` becomes the
+ * line's lead, matching Obsidian), bullets become a `•` glyph, ordered
+ * markers stay visible but dimmed. Standard GFM: only `- [ ]` is a task — a
+ * bare `[ ]` line keeps its literal brackets.
+ */
+function decorateListMark(
+  doc: { sliceString(from: number, to?: number): string },
+  mark: SyntaxNode,
+  out: DecorationSink,
+  claim: (from: number, to: number) => boolean,
+) {
+  const item = mark.parent;
+  const isTask = !!item && item.getChild("Task") !== null;
+  const markText = doc.sliceString(mark.from, mark.to);
+  const isOrdered = /^\d/.test(markText);
+
+  if (isTask) {
+    // Hide the marker plus the single space before the `[ ]` checkbox.
+    let to = mark.to;
+    if (doc.sliceString(to, to + 1) === " ") to++;
+    if (claim(mark.from, to)) {
+      out.inline.push(Decoration.replace({}).range(mark.from, to));
+    }
+    return;
+  }
+  if (isOrdered) {
+    out.inline.push(Decoration.mark({ class: "md-listmark" }).range(mark.from, mark.to));
+    return;
+  }
+  if (claim(mark.from, mark.to)) {
+    out.inline.push(
+      Decoration.replace({ widget: new ListBulletWidget() }).range(mark.from, mark.to),
+    );
+  }
+}
 
 function decorateHeading(
   doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { from: number; to: number; number: number } },
@@ -582,10 +628,77 @@ const blockDecoSync = EditorView.updateListener.of((u) => {
   u.view.dispatch({ effects: setBlockDecorations.of(pending) });
 });
 
+/**
+ * Keyboard cursor motion (arrows, vim j/k) from the line adjacent to a
+ * rendered display-math block lands past it — the block widget maps to its
+ * far edge — so the formula could never be reached. When the caret moves off
+ * the neighboring line and lands beyond the block's far side, reopen the raw
+ * source with the caret on the block's first (or last) line, keeping the
+ * one-line-per-keystroke rhythm. Moving AWAY from the block (down from below,
+ * up from above) is not a crossing; mouse clicks ("select.pointer") and
+ * long jumps (search hits, programmatic moves) are left alone — clicks on
+ * the widget itself are handled in linkHandlers below.
+ */
+const mathCrossOpen = EditorView.updateListener.of((u) => {
+  if (!u.selectionSet || u.docChanged) return;
+  if (u.transactions.some((tr) => tr.annotation(Transaction.userEvent)?.startsWith("select.pointer")))
+    return;
+  const oldHead = u.startState.selection.main.head;
+  const newHead = u.state.selection.main.head;
+  if (oldHead === newHead) return;
+  const oldLineNo = u.startState.doc.lineAt(oldHead).number;
+  const newLineNo = u.state.doc.lineAt(newHead).number;
+  const oldLine = u.startState.doc.lineAt(oldHead);
+  const wantCol = oldHead - oldLine.from;
+  for (const r of mathRegions(u.state)) {
+    if (!r.display) continue;
+    const openLine = u.state.doc.lineAt(r.from);
+    const closeLine = u.state.doc.lineAt(r.to);
+    if (openLine.number === closeLine.number) continue; // single-line: reachable inline
+    const crossed =
+      (oldLineNo === openLine.number - 1 && newLineNo > closeLine.number) ||
+      (oldLineNo === closeLine.number + 1 && newLineNo < openLine.number);
+    if (!crossed) continue;
+    const target = crossedFromAbove(oldLineNo, openLine.number)
+      ? openLine.from + Math.min(wantCol, openLine.to - openLine.from)
+      : closeLine.from + Math.min(wantCol, closeLine.to - closeLine.from);
+    u.view.dispatch({ selection: { anchor: target } });
+    return;
+  }
+});
+
+function crossedFromAbove(oldLineNo: number, openLineNo: number) {
+  return oldLineNo === openLineNo - 1;
+}
+
 const linkHandlers = EditorView.domEventHandlers({
   mousedown(event, view) {
     const target = event.target as HTMLElement | null;
     if (!target) return false;
+
+    // Rendered display-math block: reopen the raw source at the clicked line.
+    const mathBlock = target.closest?.(".cw-math-block") as HTMLElement | null;
+    if (mathBlock?.dataset?.mathFrom) {
+      const region = mathRegions(view.state).find(
+        (r) => r.from === Number(mathBlock.dataset.mathFrom),
+      );
+      if (region) {
+        const doc = view.state.doc;
+        const openNo = doc.lineAt(region.from).number;
+        const closeNo = doc.lineAt(region.to).number;
+        const rect = mathBlock.getBoundingClientRect();
+        const total = closeNo - openNo + 1;
+        const frac = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
+        const line = doc.line(
+          openNo + Math.min(total - 1, Math.max(0, Math.floor(frac * total))),
+        );
+        const mapped = view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
+        const anchor = Math.min(line.to, Math.max(line.from, mapped ?? line.from));
+        event.preventDefault();
+        view.dispatch({ selection: { anchor } });
+        return true;
+      }
+    }
 
     // Task checkbox: flip [ ] <-> [x] in the source line.
     const task = target.closest?.(".md-task");
@@ -652,5 +765,5 @@ const linkHandlers = EditorView.domEventHandlers({
 });
 
 export function livePreviewExtension(): Extension {
-  return [blockDecorationsField, livePreviewPlugin, blockDecoSync, linkHandlers];
+  return [blockDecorationsField, livePreviewPlugin, blockDecoSync, mathCrossOpen, linkHandlers];
 }
