@@ -1,8 +1,7 @@
 import { syntaxTree } from "@codemirror/language";
-import { StateEffect, StateField, Transaction } from "@codemirror/state";
-import type { EditorState, Range } from "@codemirror/state";
+import { StateField, Transaction } from "@codemirror/state";
+import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
 import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import { mathRegions } from "./context";
 import {
@@ -21,11 +20,17 @@ import {
  * is on — and whole math/code blocks while the cursor is inside them, which
  * stay as raw source for editing.
  *
- * CodeMirror only allows block replace decorations from STATIC facet values
- * (state fields) — neither plugins nor dynamic facet functions may provide
- * them. So the plugin computes both sets, and block ones are handed to the
- * field below via an effect dispatched from an update listener (guarded by a
- * signature to avoid dispatch loops).
+ * Performance design (cursor moves must never cascade):
+ * - Block replace decorations can only come from a state field, so the field
+ *   computes them ITSELF from each transaction (doc + selection) — no
+ *   plugin→effect→dispatch round trip, which used to cost two extra full
+ *   update cycles whenever a math block expanded or collapsed.
+ * - When a keyboard motion is about to jump across a display-math block and
+ *   get redirected back inside (mathCrossOpen below), the field computes the
+ *   decorations for the redirected position right away ("lookahead"), so the
+ *   rendered block widget is never inserted just to be removed a frame later.
+ * - The inline plugin skips its rebuild when a selection-only change cannot
+ *   alter any decoration (same covered lines, no toggle-able syntax there).
  */
 
 interface Interval {
@@ -57,45 +62,260 @@ function overlaps(a: Interval, b: Interval) {
   return a.from < b.to && a.to > b.from;
 }
 
-interface DecorationSink {
-  inline: Range<Decoration>[];
-  block: Range<Decoration>[];
-  /** `${from}:${to}:${kind}` per block range, for change detection. */
-  blockSig: string[];
+/**
+ * Rendering of these tokens toggles with exact cursor position INSIDE a line
+ * (emphasis/inline-code marks collapse to raw source, inline math swaps to a
+ * widget, links/escapes change). A cursor move that stays on lines without
+ * any of them cannot change a single decoration.
+ */
+const INLINE_TRIGGER_RE = /[*_~`$[\]\\:<>]/;
+
+/** False when a selection-only change provably leaves every decoration as it
+ *  was — letting plain-text cursor moves (vim h/j/k/l, arrows) skip rebuilds. */
+function selectionAffectsDecos(oldState: EditorState, newState: EditorState): boolean {
+  const oldRanges = oldState.selection.ranges;
+  const newRanges = newState.selection.ranges;
+  if (oldRanges.length !== newRanges.length) return true;
+  const doc = newState.doc;
+  for (let i = 0; i < newRanges.length; i++) {
+    const o = oldRanges[i];
+    const n = newRanges[i];
+    if (
+      doc.lineAt(o.from).number !== doc.lineAt(n.from).number ||
+      doc.lineAt(o.to).number !== doc.lineAt(n.to).number
+    ) {
+      return true;
+    }
+  }
+  for (const r of newRanges) {
+    const fromLine = doc.lineAt(r.from).number;
+    const toLine = doc.lineAt(r.to).number;
+    for (let n = fromLine; n <= toLine; n++) {
+      if (INLINE_TRIGGER_RE.test(doc.line(n).text)) return true;
+    }
+  }
+  return false;
 }
 
-function addBlock(out: DecorationSink, from: number, to: number, deco: Decoration, kind: string) {
-  out.block.push(deco.range(from, to));
-  out.blockSig.push(`${from}:${to}:${kind}`);
+// --------------------------------------------------------------------------
+// Block decorations — computed inside the state field (no dispatch round trip)
+// --------------------------------------------------------------------------
+
+interface BlockStatics {
+  /** Fence lines (open/close) of fenced code blocks, hidden unless editing. */
+  fences: Interval[];
+  codeRanges: Interval[];
+  inlineCodeRanges: Interval[];
+  hrs: Interval[];
 }
 
-const setBlockDecorations = StateEffect.define<DecorationSet>();
+function collectBlockStatics(state: EditorState): BlockStatics {
+  const fences: Interval[] = [];
+  const codeRanges: Interval[] = [];
+  const inlineCodeRanges: Interval[] = [];
+  const hrs: Interval[] = [];
+  const doc = state.doc;
+  syntaxTree(state).iterate({
+    from: 0,
+    to: doc.length,
+    enter: (nodeRef: SyntaxNodeRef) => {
+      switch (nodeRef.name) {
+        case "FencedCode": {
+          codeRanges.push({ from: nodeRef.from, to: nodeRef.to });
+          for (let child = nodeRef.node.firstChild; child; child = child.nextSibling) {
+            if (child.name === "CodeMark") {
+              const line = doc.lineAt(child.from);
+              fences.push({ from: line.from, to: line.to });
+            }
+          }
+          return false;
+        }
+        case "IndentedCode":
+        case "CodeBlock":
+          codeRanges.push({ from: nodeRef.from, to: nodeRef.to });
+          return false;
+        case "InlineCode":
+          inlineCodeRanges.push({ from: nodeRef.from, to: nodeRef.to });
+          return false;
+        case "HorizontalRule":
+          hrs.push({ from: nodeRef.from, to: nodeRef.to });
+          return false;
+        default:
+          return true;
+      }
+    },
+  });
+  return { fences, codeRanges, inlineCodeRanges, hrs };
+}
+
+function buildBlockDecos(
+  state: EditorState,
+  statics: BlockStatics,
+  ranges: readonly { from: number; to: number }[],
+): { decos: DecorationSet; sig: string } {
+  const doc = state.doc;
+  const maths = mathRegions(state);
+  const out: Range<Decoration>[] = [];
+  const sig: string[] = [];
+  const active = (from: number, to: number) =>
+    ranges.some((r) => r.from <= to && r.to >= from);
+
+  const exclude = [...statics.codeRanges, ...statics.inlineCodeRanges];
+  const excluded = (from: number, to: number) =>
+    exclude.some((r) => from < r.to && to > r.from);
+
+  for (const f of statics.fences) {
+    if (!active(f.from, f.to)) {
+      out.push(
+        Decoration.replace({ widget: new HiddenLineWidget(), block: true }).range(f.from, f.to),
+      );
+      sig.push(`f${f.from}`);
+    }
+  }
+  for (const hr of statics.hrs) {
+    if (!active(hr.from, hr.to)) {
+      out.push(Decoration.replace({ widget: new HrWidget(), block: true }).range(hr.from, hr.to));
+      sig.push(`h${hr.from}`);
+    }
+  }
+  for (const region of maths) {
+    if (!region.display) continue;
+    if (excluded(region.from, region.to)) continue;
+
+    if (active(region.from, region.to)) {
+      // Editing this formula: live-rendered preview right below the source.
+      if (hooks.mathPreview !== false) {
+        const anchorLine = doc.lineAt(Math.max(region.from, region.to - 1));
+        out.push(
+          Decoration.widget({
+            widget: new MathPreviewWidget(region.content, true),
+            block: true,
+          }).range(anchorLine.to),
+        );
+        sig.push(`p${region.from}:${region.content}`);
+      }
+      continue;
+    }
+
+    const openLine = doc.lineAt(region.from);
+    const closeLine = doc.lineAt(Math.max(region.from, region.to - 1));
+    if (openLine.number === closeLine.number) continue; // single-line: inline path
+    out.push(
+      Decoration.replace({
+        widget: new MathWidget(region.content, true, region.from),
+        block: true,
+      }).range(openLine.from, closeLine.to),
+    );
+    sig.push(`m${region.from}:${region.content}`);
+  }
+  return { decos: Decoration.set(out, true), sig: sig.join("|") };
+}
+
+interface BlockFieldValue {
+  statics: BlockStatics;
+  decos: DecorationSet;
+  /** Signature of `decos`; equal signature ⇒ identical decoration set. */
+  sig: string;
+}
+
+function makeBlockValue(
+  state: EditorState,
+  prev: BlockFieldValue | null,
+  tr: Transaction | null,
+): BlockFieldValue {
+  const statics =
+    !tr || tr.docChanged || !prev ? collectBlockStatics(state) : prev.statics;
+
+  // Crossing lookahead: the motion is about to be redirected back inside the
+  // block — build for the redirected position so no intermediate state exists.
+  let ranges: readonly { from: number; to: number }[] = state.selection.ranges;
+  if (tr && !tr.docChanged && !isPointerSelect(tr)) {
+    const target = findCrossingTarget(tr.startState, state);
+    if (target !== null) ranges = [{ from: target, to: target }];
+  }
+
+  const { decos, sig } = buildBlockDecos(state, statics, ranges);
+  if (prev && (!tr || !tr.docChanged) && sig === prev.sig) return prev;
+  return { statics, decos, sig };
+}
 
 /** Holds the block replace decorations (hidden fences, display math, rules);
  *  CM6 only accepts block decorations from a state field. */
-export const blockDecorationsField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
+export const blockDecorationsField = StateField.define<BlockFieldValue>({
+  create: (state) => makeBlockValue(state, null, null),
   update(value, tr) {
-    let next = value.map(tr.changes);
-    for (const e of tr.effects) {
-      if (e.is(setBlockDecorations)) next = e.value;
-    }
-    return next;
+    if (!tr.docChanged && !tr.selection) return value;
+    if (!tr.docChanged && !selectionAffectsDecos(tr.startState, tr.state)) return value;
+    return makeBlockValue(tr.state, value, tr);
   },
-  provide: (field) => EditorView.decorations.from(field),
+  provide: (field) => EditorView.decorations.from(field, (v) => v.decos),
 });
 
-function buildDecorations(
-  view: EditorView,
-): { inline: DecorationSet; block: DecorationSet; blockSig: string[]; wikiLinks: WikiLinkEntry[] } {
+// --------------------------------------------------------------------------
+// Crossing detection (shared by the field lookahead and the cursor redirect)
+// --------------------------------------------------------------------------
+
+function isPointerSelect(tr: Transaction): boolean {
+  return tr.annotation(Transaction.userEvent)?.startsWith("select.pointer") ?? false;
+}
+
+/**
+ * Keyboard cursor motion (arrows, vim j/k) from the line adjacent to a
+ * rendered display-math block lands past it — the block widget maps to its
+ * far edge — so the formula could never be reached. Detects that jump and
+ * returns the position the caret should be redirected to: the block's first
+ * (or last) line, keeping the one-line-per-keystroke rhythm. Moving AWAY from
+ * the block is not a crossing; mouse clicks ("select.pointer") and long jumps
+ * (search hits, programmatic moves) return null — clicks on the widget itself
+ * are handled in linkHandlers below.
+ */
+function findCrossingTarget(oldState: EditorState, newState: EditorState): number | null {
+  const oldHead = oldState.selection.main.head;
+  const newHead = newState.selection.main.head;
+  if (oldHead === newHead) return null;
+  const oldLineNo = oldState.doc.lineAt(oldHead).number;
+  const newLineNo = newState.doc.lineAt(newHead).number;
+  const oldLine = oldState.doc.lineAt(oldHead);
+  const wantCol = oldHead - oldLine.from;
+  for (const r of mathRegions(newState)) {
+    if (!r.display) continue;
+    const openLine = newState.doc.lineAt(r.from);
+    const closeLine = newState.doc.lineAt(r.to);
+    if (openLine.number === closeLine.number) continue; // single-line: reachable inline
+    const crossed =
+      (oldLineNo === openLine.number - 1 && newLineNo > closeLine.number) ||
+      (oldLineNo === closeLine.number + 1 && newLineNo < openLine.number);
+    if (!crossed) continue;
+    return oldLineNo === openLine.number - 1
+      ? openLine.from + Math.min(wantCol, openLine.to - openLine.from)
+      : closeLine.from + Math.min(wantCol, closeLine.to - closeLine.from);
+  }
+  return null;
+}
+
+const mathCrossOpen = EditorView.updateListener.of((u) => {
+  if (!u.selectionSet || u.docChanged) return;
+  if (u.transactions.some(isPointerSelect)) return;
+  const target = findCrossingTarget(u.startState, u.state);
+  if (target !== null) u.view.dispatch({ selection: { anchor: target } });
+});
+
+// --------------------------------------------------------------------------
+// Inline decorations (viewport-scoped plugin)
+// --------------------------------------------------------------------------
+
+interface DecorationSink {
+  inline: Range<Decoration>[];
+}
+
+function buildInlineDecorations(view: EditorView): DecorationSet {
   const state = view.state;
   const doc = state.doc;
   const visible = view.visibleRanges;
   const selections = state.selection.ranges;
 
-  const out: DecorationSink = { inline: [], block: [], blockSig: [] };
+  const out: DecorationSink = { inline: [] };
   const claimed: Interval[] = []; // replace-decorations must not overlap
-  const wikiLinks: WikiLinkEntry[] = [];
 
   const active = (from: number, to: number) =>
     selections.some((r) => r.from <= to && r.to >= from);
@@ -134,10 +354,9 @@ function buildDecorations(
       if (inAnyMath(nodeRef.from, nodeRef.to)) return false;
 
       if (name === "FencedCode") {
-        const node = nodeRef.node;
-        codeRanges.push({ from: node.from, to: node.to });
-        if (!active(node.from, node.to)) {
-          decorateFencedCode(doc, node, out, claim);
+        codeRanges.push({ from: nodeRef.from, to: nodeRef.to });
+        if (!active(nodeRef.from, nodeRef.to)) {
+          decorateFencedCodeLines(doc, nodeRef.node, out);
         }
         return false;
       }
@@ -180,10 +399,7 @@ function buildDecorations(
         return true; // descend for nested quotes and inline content
       }
       if (name === "HorizontalRule") {
-        if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, nodeRef.to)) {
-          addBlock(out, nodeRef.from, nodeRef.to, Decoration.replace({ widget: new HrWidget(), block: true }), "hr");
-        }
-        return false;
+        return false; // rendered by the block-decorations field
       }
       if (name === "Escape") {
         if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, nodeRef.to)) {
@@ -207,8 +423,21 @@ function buildDecorations(
         return false;
       }
       if (name === "ListMark") {
+        const mark = nodeRef.node;
+        const markLine = doc.lineAt(mark.from);
+        const spaces = mark.from - markLine.from;
+        // Obsidian-style indent: hide the literal spaces and let the line
+        // decoration pad + hang instead. Applied on active lines too, so the
+        // layout doesn't shift when the cursor enters/leaves the line.
+        const depth = Math.min(16, Math.floor(spaces / 2)) * 2;
+        out.inline.push(
+          Decoration.line({ class: `md-list-line li-i${depth}` }).range(markLine.from),
+        );
+        if (spaces > 0 && claim(markLine.from, mark.from)) {
+          out.inline.push(Decoration.replace({}).range(markLine.from, mark.from));
+        }
         if (!activeLine(nodeRef.from, nodeRef.to)) {
-          decorateListMark(doc, nodeRef.node, out, claim);
+          decorateListMark(doc, mark, out, claim);
         }
         return false;
       }
@@ -236,71 +465,36 @@ function buildDecorations(
   });
 
   // ---- Math ----
+  // Whole display blocks (rendered widget / preview) live in the state field;
+  // here only single-line display and inline formulas, plus source highlights
+  // for the formula being edited.
   const exclude: Interval[] = [...codeRanges, ...inlineCodeRanges];
   for (const region of maths) {
     if (region.to < visibleFrom || region.from > visibleTo) continue;
     if (inRangeList(exclude, region.from, region.to)) continue;
 
     if (active(region.from, region.to)) {
-      // Editing this formula: keep the raw source (highlighted) and show a
-      // live-rendered preview right below it, latex-suite style.
-      if (hooks.mathPreview !== false) {
-        const anchorLine = doc.lineAt(
-          region.display ? Math.max(region.from, region.to - 1) : region.to,
-        );
-        out.block.push(
-          Decoration.widget({
-            widget: new MathPreviewWidget(region.content, region.display),
-            block: true,
-          }).range(anchorLine.to),
-        );
-        out.blockSig.push(`mathpreview:${region.display ? "D" : "I"}:${region.content}`);
-      }
       highlightMathSource(doc, region, out);
       continue;
     }
 
-    if (region.display) {
-      const openLine = doc.lineAt(region.from);
-      const closeLine = doc.lineAt(Math.max(region.from, region.to - 1));
-      if (openLine.number === closeLine.number) {
-        if (claim(region.from, region.to)) {
-          out.inline.push(
-            Decoration.replace({ widget: new MathWidget(region.content, false) }).range(
-              region.from,
-              region.to,
-            ),
-          );
-        }
-      } else {
-        const from = openLine.from;
-        const to = closeLine.to;
-        if (claim(from, to)) {
-          addBlock(
-            out,
-            from,
-            to,
-            Decoration.replace({
-              widget: new MathWidget(region.content, true, region.from),
-              block: true,
-            }),
-            `math:${region.content}`,
-          );
-        }
-      }
-    } else {
-      if (claim(region.from, region.to)) {
-        out.inline.push(
-          Decoration.replace({ widget: new MathWidget(region.content, false) }).range(
-            region.from,
-            region.to,
-          ),
-        );
-      }
+    const singleLine =
+      !region.display ||
+      doc.lineAt(region.from).number === doc.lineAt(Math.max(region.from, region.to - 1)).number;
+    if (!singleLine) continue; // rendered by the block-decorations field
+
+    if (claim(region.from, region.to)) {
+      out.inline.push(
+        Decoration.replace({ widget: new MathWidget(region.content, false) }).range(
+          region.from,
+          region.to,
+        ),
+      );
     }
   }
 
   // ---- Wikilinks ([[target|alias]]) ----
+  const wikiLinks: WikiLinkEntry[] = [];
   decorateWikiLinks(
     state,
     visibleFrom,
@@ -313,12 +507,7 @@ function buildDecorations(
   );
 
   wikiLinksPerView.set(view, wikiLinks);
-  return {
-    inline: Decoration.set(out.inline, true),
-    block: Decoration.set(out.block, true),
-    blockSig: out.blockSig,
-    wikiLinks,
-  };
+  return Decoration.set(out.inline, true);
 }
 
 // --------------------------------------------------------------------------
@@ -461,11 +650,12 @@ function decorateInlineCode(
   }
 }
 
-function decorateFencedCode(
+/** Content-line styling for fenced code; hiding the fence lines themselves is
+ *  the block-decorations field's job. */
+function decorateFencedCodeLines(
   doc: { lineAt(pos: number): { from: number; to: number; number: number }; line(n: number): { from: number; to: number } },
   node: SyntaxNode,
   out: DecorationSink,
-  claim: (from: number, to: number) => boolean,
 ) {
   let openLineNo = -1;
   let closeLineNo = -1;
@@ -474,15 +664,6 @@ function decorateFencedCode(
       const line = doc.lineAt(child.from);
       if (openLineNo === -1) openLineNo = line.number;
       else closeLineNo = line.number;
-      if (claim(line.from, line.to)) {
-        addBlock(
-          out,
-          line.from,
-          line.to,
-          Decoration.replace({ widget: new HiddenLineWidget(), block: true }),
-          `fence:${line.number}`,
-        );
-      }
     }
   }
   if (openLineNo === -1) return;
@@ -587,89 +768,27 @@ function decorateWikiLinks(
 const livePreviewPlugin = ViewPlugin.fromClass(
   class {
     inline: DecorationSet = Decoration.none;
-    /** Set when the block decoration set changed and must be pushed to the
-     *  state field by the sync listener (dispatch is illegal mid-update). */
-    pendingBlock: DecorationSet | null = null;
-    private lastSig: string[] = [];
 
     constructor(view: EditorView) {
-      this.rebuild(view);
+      this.inline = buildInlineDecorations(view);
     }
 
     update(u: ViewUpdate) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged) {
-        this.rebuild(u.view);
+      if (!u.docChanged && !u.viewportChanged && !u.selectionSet) return;
+      if (
+        !u.docChanged &&
+        !u.viewportChanged &&
+        !selectionAffectsDecos(u.startState, u.view.state)
+      ) {
+        return; // cursor moved within plain text — nothing can change
       }
-    }
-
-    private rebuild(view: EditorView) {
-      const built = buildDecorations(view);
-      this.inline = built.inline;
-      if (!arrayEquals(this.lastSig, built.blockSig)) {
-        this.lastSig = built.blockSig;
-        this.pendingBlock = built.block;
-      }
+      this.inline = buildInlineDecorations(u.view);
     }
   },
   {
     decorations: (v) => v.inline,
   },
 );
-
-function arrayEquals(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
-}
-
-const blockDecoSync = EditorView.updateListener.of((u) => {
-  const plugin = u.view.plugin(livePreviewPlugin);
-  if (!plugin?.pendingBlock) return;
-  const pending = plugin.pendingBlock;
-  plugin.pendingBlock = null;
-  u.view.dispatch({ effects: setBlockDecorations.of(pending) });
-});
-
-/**
- * Keyboard cursor motion (arrows, vim j/k) from the line adjacent to a
- * rendered display-math block lands past it — the block widget maps to its
- * far edge — so the formula could never be reached. When the caret moves off
- * the neighboring line and lands beyond the block's far side, reopen the raw
- * source with the caret on the block's first (or last) line, keeping the
- * one-line-per-keystroke rhythm. Moving AWAY from the block (down from below,
- * up from above) is not a crossing; mouse clicks ("select.pointer") and
- * long jumps (search hits, programmatic moves) are left alone — clicks on
- * the widget itself are handled in linkHandlers below.
- */
-const mathCrossOpen = EditorView.updateListener.of((u) => {
-  if (!u.selectionSet || u.docChanged) return;
-  if (u.transactions.some((tr) => tr.annotation(Transaction.userEvent)?.startsWith("select.pointer")))
-    return;
-  const oldHead = u.startState.selection.main.head;
-  const newHead = u.state.selection.main.head;
-  if (oldHead === newHead) return;
-  const oldLineNo = u.startState.doc.lineAt(oldHead).number;
-  const newLineNo = u.state.doc.lineAt(newHead).number;
-  const oldLine = u.startState.doc.lineAt(oldHead);
-  const wantCol = oldHead - oldLine.from;
-  for (const r of mathRegions(u.state)) {
-    if (!r.display) continue;
-    const openLine = u.state.doc.lineAt(r.from);
-    const closeLine = u.state.doc.lineAt(r.to);
-    if (openLine.number === closeLine.number) continue; // single-line: reachable inline
-    const crossed =
-      (oldLineNo === openLine.number - 1 && newLineNo > closeLine.number) ||
-      (oldLineNo === closeLine.number + 1 && newLineNo < openLine.number);
-    if (!crossed) continue;
-    const target = crossedFromAbove(oldLineNo, openLine.number)
-      ? openLine.from + Math.min(wantCol, openLine.to - openLine.from)
-      : closeLine.from + Math.min(wantCol, closeLine.to - closeLine.from);
-    u.view.dispatch({ selection: { anchor: target } });
-    return;
-  }
-});
-
-function crossedFromAbove(oldLineNo: number, openLineNo: number) {
-  return oldLineNo === openLineNo - 1;
-}
 
 const linkHandlers = EditorView.domEventHandlers({
   mousedown(event, view) {
@@ -765,5 +884,5 @@ const linkHandlers = EditorView.domEventHandlers({
 });
 
 export function livePreviewExtension(): Extension {
-  return [blockDecorationsField, livePreviewPlugin, blockDecoSync, mathCrossOpen, linkHandlers];
+  return [blockDecorationsField, livePreviewPlugin, mathCrossOpen, linkHandlers];
 }

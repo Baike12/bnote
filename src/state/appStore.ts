@@ -126,7 +126,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ currentFile: null, dirty: false });
     persistConfig({ ...getConfigSnapshot(), lastFile: undefined });
   },
-  markDirty: (dirty) => set({ dirty }),
+  // No-op when unchanged: the dirty flag flips on every keystroke, and a
+  // redundant set() would re-render every subscribed component per keypress.
+  markDirty: (dirty) => {
+    if (get().dirty !== dirty) set({ dirty });
+  },
   patchSettings: (patch) => {
     const settings = { ...get().settings, ...patch };
     set({ settings });

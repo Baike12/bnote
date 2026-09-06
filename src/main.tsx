@@ -22,6 +22,7 @@ declare global {
 window.__bnote = {
   view: () => editorApi.view,
   store: useAppStore,
+  blockField: blockDecorationsField,
   math: () => (editorApi.view ? mathRegions(editorApi.view.state) : null),
   context: (pos?: number) => {
     const v = editorApi.view;
@@ -47,9 +48,11 @@ window.__bnote = {
     const v = editorApi.view;
     if (!v) return null;
     const iter: number[][] = [];
-    v.state.field(blockDecorationsField).between(0, 1e9, (from, to) => {
-      iter.push([from, to]);
-    });
+    v.state
+      .field(blockDecorationsField)
+      .decos.between(0, 1e9, (from: number, to: number) => {
+        iter.push([from, to]);
+      });
     return iter;
   },
 };

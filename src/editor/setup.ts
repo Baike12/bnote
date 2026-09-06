@@ -62,7 +62,7 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
       ".cm-scroller": {
         overflow: "auto",
         fontFamily:
-          "'Iosevka', 'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace",
+          "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
       },
       "&.cm-focused": { outline: "none" },
       ".cm-content": { caretColor: "var(--accent, #a48be3)" },
