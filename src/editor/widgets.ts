@@ -67,6 +67,32 @@ export class MathWidget extends WidgetType {
   }
 }
 
+/** Live preview shown below a math region while the cursor edits it
+ *  (Obsidian latex-suite style): source stays visible on top. */
+export class MathPreviewWidget extends WidgetType {
+  constructor(
+    readonly src: string,
+    readonly display: boolean,
+  ) {
+    super();
+  }
+
+  eq(other: MathPreviewWidget) {
+    return other.src === this.src && other.display === this.display;
+  }
+
+  toDOM() {
+    const wrap = document.createElement("div");
+    wrap.className = "cw-math cw-math-preview";
+    wrap.innerHTML = renderMathHtml(this.src, this.display);
+    return wrap;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
 /** Zero-height block widget used to hide fence lines entirely. */
 export class HiddenLineWidget extends WidgetType {
   eq() {

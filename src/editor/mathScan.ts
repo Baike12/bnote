@@ -35,6 +35,15 @@ export function scanMath(doc: Text): MathRegion[] {
     if (content.includes("$$")) continue;
     out.push({ from, to, display: true, content });
   }
+  // An unpaired trailing $$ opens a block that runs to the end of the
+  // document (Obsidian renders it live while typing, before the closing $$).
+  // Capped so a stray $$ can't hand KaTeX the rest of a huge file.
+  if (marks.length % 2 === 1) {
+    const from = marks[marks.length - 1];
+    if (text.length - from <= 10_000) {
+      out.push({ from, to: text.length, display: true, content: text.slice(from + 2) });
+    }
+  }
 
   // --- Inline math, per line, outside block regions. ---
   const inlineRe = /(?<![\\$])\$(?!\s)((?:[^$\n\\]|\\.)*?)(?<!\s)\$(?!\d)/g;

@@ -16,6 +16,7 @@ export interface Settings {
   vim: boolean;
   typewriter: boolean;
   livePreview: boolean;
+  mathPreview: boolean;
   snippets: boolean;
   autoSave: boolean;
   fontSize: number;
@@ -26,6 +27,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vim: false,
   typewriter: false,
   livePreview: true,
+  mathPreview: true,
   snippets: true,
   autoSave: true,
   fontSize: 16,

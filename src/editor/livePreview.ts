@@ -5,7 +5,14 @@ import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@
 import type { Extension } from "@codemirror/state";
 import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import { mathRegions } from "./context";
-import { EscapeCharWidget, HiddenLineWidget, HrWidget, MathWidget, TaskCheckboxWidget } from "./widgets";
+import {
+  EscapeCharWidget,
+  HiddenLineWidget,
+  HrWidget,
+  MathPreviewWidget,
+  MathWidget,
+  TaskCheckboxWidget,
+} from "./widgets";
 
 /**
  * Obsidian-style live preview: everything in the viewport is rendered
@@ -35,6 +42,8 @@ const wikiLinksPerView = new WeakMap<EditorView, WikiLinkEntry[]>();
 export interface LivePreviewHooks {
   openWikiLink?: (target: string) => void;
   openExternalUrl?: (url: string) => void;
+  /** Live-rendered preview below a math region while the cursor edits it. */
+  mathPreview?: boolean;
 }
 
 const hooks: LivePreviewHooks = {};
@@ -225,8 +234,26 @@ function buildDecorations(
   const exclude: Interval[] = [...codeRanges, ...inlineCodeRanges];
   for (const region of maths) {
     if (region.to < visibleFrom || region.from > visibleTo) continue;
-    if (active(region.from, region.to)) continue;
     if (inRangeList(exclude, region.from, region.to)) continue;
+
+    if (active(region.from, region.to)) {
+      // Editing this formula: keep the raw source (highlighted) and show a
+      // live-rendered preview right below it, latex-suite style.
+      if (hooks.mathPreview !== false) {
+        const anchorLine = doc.lineAt(
+          region.display ? Math.max(region.from, region.to - 1) : region.to,
+        );
+        out.block.push(
+          Decoration.widget({
+            widget: new MathPreviewWidget(region.content, region.display),
+            block: true,
+          }).range(anchorLine.to),
+        );
+        out.blockSig.push(`mathpreview:${region.display ? "D" : "I"}:${region.content}`);
+      }
+      highlightMathSource(doc, region, out);
+      continue;
+    }
 
     if (region.display) {
       const openLine = doc.lineAt(region.from);
@@ -289,6 +316,28 @@ function buildDecorations(
 // --------------------------------------------------------------------------
 // Per-node decoration helpers
 // --------------------------------------------------------------------------
+
+const mathTokenRe = /(\$\$)|(\\[a-zA-Z]+|\\.)|([{}[\]^_&~])/g;
+
+/** Obsidian-style syntax coloring of the raw math source shown while the
+ *  cursor edits a formula: delimiters purple, commands red, braces/structure
+ *  chars orange. Spans are disjoint (single regex pass). */
+function highlightMathSource(
+  doc: { sliceString(from: number, to?: number): string },
+  region: { from: number; to: number },
+  out: DecorationSink,
+) {
+  const text = doc.sliceString(region.from, region.to);
+  if (text.length > 20_000) return;
+  mathTokenRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = mathTokenRe.exec(text))) {
+    const cls = m[1] ? "md-math-delim" : m[2] ? "md-math-cmd" : "md-math-brace";
+    const from = region.from + m.index;
+    out.inline.push(Decoration.mark({ class: cls }).range(from, from + m[0].length));
+  }
+}
+
 
 function decorateHeading(
   doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { from: number; to: number; number: number } },

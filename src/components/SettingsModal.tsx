@@ -125,6 +125,12 @@ function EditorTab() {
         onChange={(v) => patch({ livePreview: v })}
       />
       <Toggle
+        label="公式实时预览"
+        desc="光标在公式内编辑时，保留源码并在下方实时显示渲染结果"
+        checked={settings.mathPreview}
+        onChange={(v) => patch({ mathPreview: v })}
+      />
+      <Toggle
         label="自动保存"
         desc="停止输入约 0.8 秒后自动保存（Cmd+S 始终可用）"
         checked={settings.autoSave}

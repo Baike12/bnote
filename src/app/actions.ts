@@ -5,6 +5,7 @@ import { loadDocument } from "@/editor/setup";
 import { getView } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
 import { reconfigureLivePreview, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
+import { configureLivePreview } from "@/editor/livePreview";
 import { loadVimrc } from "@/editor/vim/loader";
 import { reloadSnippets } from "@/editor/snippets/engine";
 import type { RawSnippet } from "@/editor/snippets/default-snippets";
@@ -221,6 +222,7 @@ export async function applySettingsToEditor(): Promise<void> {
   document.documentElement.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
   if (!view) return;
   reloadSnippets(null, settings.snippets);
+  configureLivePreview({ mathPreview: settings.mathPreview });
   reconfigureLivePreview(view, settings.livePreview);
   reconfigureTypewriter(view, settings.typewriter);
   const mappings = settings.vim ? await loadVimrc().catch(() => []) : [];

@@ -411,6 +411,26 @@ button {
   font-size: 1.06em;
 }
 
+/* Live preview below a math region while the cursor edits it. */
+.cw-math-preview {
+  text-align: center;
+  margin: 2px 0 10px;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Obsidian-style coloring of raw math source while editing. */
+.md-math-delim {
+  color: var(--keyword);
+}
+.md-math-cmd {
+  color: var(--danger);
+}
+.md-math-brace {
+  color: #d19a66;
+}
+
 .cw-hidden-line {
   height: 0;
   font-size: 0;
