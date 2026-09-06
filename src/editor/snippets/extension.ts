@@ -178,8 +178,15 @@ function tryAutoExpand(view: EditorView, key: string, visualText: string | null)
   return startSession(view, match);
 }
 
+/** Auto-expansion right after typing a character. Suppressed while a snippet
+ *  session is active: nested auto-triggers corrupt the outer session's
+ *  mirrored tabstops (e.g. typing "align" inside beg's placeholder). */
+function canAutoExpand(view: EditorView): boolean {
+  return snippetStore.enabled && !view.composing && !view.state.field(snippetField, false);
+}
+
 const autoExpandHandler = EditorView.inputHandler.of((view, from, to, text) => {
-  if (!snippetStore.enabled || view.composing) return false;
+  if (!canAutoExpand(view)) return false;
   if (text.length !== 1 || text === "\n") return false;
   const visualText = to > from ? view.state.sliceDoc(from, to) : null;
   // Perform the default insertion ourselves, then look for a trigger.
@@ -191,6 +198,38 @@ const autoExpandHandler = EditorView.inputHandler.of((view, from, to, text) => {
   });
   tryAutoExpand(view, text, visualText);
   return true;
+});
+
+/** Vim-mode typing never reaches the input handler: @replit/codemirror-vim
+ *  inserts characters via its own transactions (userEvent "input.type.compose").
+ *  Without this listener every automatic snippet is dead while vim is on. */
+const autoExpandVimListener = EditorView.updateListener.of((u) => {
+  if (!u.docChanged || !canAutoExpand(u.view)) return;
+  if (u.transactions.length !== 1) return;
+  const tr = u.transactions[0];
+  if (!tr.isUserEvent("input.type.compose")) return;
+  if (u.state.selection.ranges.length > 1) return;
+
+  let inserted: string | null = null;
+  let insertTo = -1;
+  let replaceFrom = -1;
+  let replaceTo = -1;
+  tr.changes.iterChanges((fromA, toA, _fromB, toB, text) => {
+    const s = text.toString();
+    if (inserted !== null || s.length !== 1 || s === "\n") {
+      inserted = null;
+      return;
+    }
+    inserted = s;
+    insertTo = toB;
+    replaceFrom = fromA;
+    replaceTo = toA;
+  });
+  if (inserted === null) return;
+  const sel = u.state.selection.main;
+  if (!sel.empty || sel.to !== insertTo) return;
+  const visualText = replaceTo > replaceFrom ? u.startState.sliceDoc(replaceFrom, replaceTo) : null;
+  tryAutoExpand(u.view, inserted, visualText);
 });
 
 /** Keeps mirrored tabstops in sync after edits. */
@@ -224,9 +263,12 @@ const mirrorSyncListener = EditorView.updateListener.of((u) => {
   });
 });
 
-/** Ends the session when the cursor leaves the snippet region. */
+/** Ends the session when the cursor leaves the snippet region. Runs on
+ *  selection changes including doc-edit ones — a document replacement that
+ *  leaves the cursor outside the (mapped) region must clear the session,
+ *  or it would suppress auto-expansion until the next cursor move. */
 const exitListener = EditorView.updateListener.of((u) => {
-  if (!u.selectionSet || u.docChanged) return;
+  if (!u.selectionSet) return;
   const before = u.startState.field(snippetField, false);
   if (!before) return;
   const session = u.state.field(snippetField, false);
@@ -252,6 +294,7 @@ export function snippetsExtension(): Extension {
   return [
     snippetField,
     autoExpandHandler,
+    autoExpandVimListener,
     mirrorSyncListener,
     exitListener,
     snippetKeymap,

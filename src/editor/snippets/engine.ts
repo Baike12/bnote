@@ -39,6 +39,15 @@ export function parseSnippet(raw: RawSnippet): ParsedSnippet | null {
 
   if (typeof trigger === "string") {
     trigger = substituteVariables(trigger);
+    // latex-suite file format: regex triggers are strings carrying the "r"
+    // option — compile them, or they'd only match as literal text.
+    if (options.includes("r")) {
+      try {
+        trigger = new RegExp(trigger);
+      } catch {
+        return null;
+      }
+    }
   } else {
     // Regex triggers: substitute variables in the source, keep flags.
     const source = substituteVariables(trigger.source);
@@ -190,7 +199,10 @@ export interface ParsedReplacement {
   stops: { index: number; from: number; to: number }[];
 }
 
-const ESCAPABLE = new Set(["$", "[", "]", "{", "}", "\\"]);
+/** latex-suite replacement escaping: only `\$` and `\\` are escapes; any
+ *  other `\x` keeps the backslash (so `\[[1]]` = literal "\" + group ref,
+ *  and `\{` in \left\{ survives). */
+const ESCAPABLE = new Set(["$", "\\"]);
 
 /** Expands latex-suite replacement syntax into plain text + tabstops:
  *  `$0`… tabstops, `${0:default}` with placeholder text, `[[n]]` regex group

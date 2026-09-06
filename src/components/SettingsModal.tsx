@@ -95,7 +95,7 @@ function GeneralTab() {
         onChange={(v) => useAppStore.getState().patchSettings({ snippets: v })}
       />
       <p className="setting-hint">
-        试试在公式里输入 <code>dm</code> + Tab、<code>mk</code>、<code>//</code>、<code>sr</code>、<code>@a</code>。
+        试试在公式里输入 <code>aa</code>、<code>sr</code>、<code>{"//"}</code>（自动展开），或 <code>dm</code>、<code>beg</code>、<code>al</code> + Tab。
       </p>
       <div className="setting-row">
         <div>
