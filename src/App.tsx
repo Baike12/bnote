@@ -45,6 +45,9 @@ export default function App() {
       await loadOverrides().catch(() => {});
       const cfg = (await api.loadAppConfig().catch(() => null)) as PersistedConfig | null;
       setConfigSnapshot(cfg ?? {});
+      if (cfg?.recentFiles?.length) {
+        useAppStore.setState({ recentFiles: cfg.recentFiles });
+      }
       const saved = cfg?.settings ?? {};
       useAppStore.getState().replaceSettings({
         ...DEFAULT_SETTINGS,

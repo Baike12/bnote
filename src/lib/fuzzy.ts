@@ -48,12 +48,14 @@ export function fuzzySort<T>(
   getText: (item: T) => string,
   query: string,
   limit = 50,
+  /** Optional tiebreak for equal fuzzy scores (e.g. recent-open order). */
+  tiebreak?: (a: T, b: T) => number,
 ): { item: T; positions: number[] }[] {
   const out: { item: T; res: FuzzyResult }[] = [];
   for (const item of items) {
     const res = fuzzyMatch(query, getText(item));
     if (res) out.push({ item, res });
   }
-  out.sort((a, b) => b.res.score - a.res.score);
+  out.sort((a, b) => b.res.score - a.res.score || (tiebreak ? tiebreak(a.item, b.item) : 0));
   return out.slice(0, limit).map(({ item, res }) => ({ item, positions: res.positions }));
 }

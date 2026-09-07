@@ -1,6 +1,6 @@
 import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView, keymap, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { markdownExtensions, codeHighlighting } from "./markdown";
@@ -113,7 +113,9 @@ export function reloadDocument(view: EditorView, doc: string) {
 export function reconfigureVim(view: EditorView, enabled: boolean, mappings: VimMapping[]) {
   view.dispatch({
     effects: [
-      vimCompartment.reconfigure(enabled ? vimModeExtension() : []),
+      // highlightActiveLine rides along with vim: CSS shows the shade only
+      // while the vim plugin tags the scroller `.cm-vimMode` (normal/visual).
+      vimCompartment.reconfigure(enabled ? [vimModeExtension(), highlightActiveLine()] : []),
       vimCommandMapCompartment.reconfigure(enabled ? commandMappingKeymap(mappings) : []),
     ],
   });

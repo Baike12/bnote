@@ -277,6 +277,16 @@ button {
   background: rgba(255, 255, 255, 0.22) !important;
 }
 
+/* Vim current-line shade (Obsidian-style): highlightActiveLine runs while vim
+   is on, and the vim plugin tags the scroller `.cm-vimMode` exactly in
+   normal/visual mode (dropped in insert), gating the shade to vim use. */
+.cm-line.cm-activeLine {
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+.cm-scroller:not(.cm-vimMode) .cm-line.cm-activeLine {
+  background: transparent !important;
+}
+
 .cm-line {
   padding: 0 2px;
 }

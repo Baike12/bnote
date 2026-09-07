@@ -47,6 +47,8 @@ export type ModalKind = "switcher" | "palette" | "settings" | null;
 export interface PersistedConfig {
   lastVault?: string;
   lastFile?: string;
+  /** Recently-opened absolute note paths, most recent first (quick switcher). */
+  recentFiles?: string[];
   settings?: Partial<Settings>;
 }
 
@@ -56,6 +58,8 @@ interface AppState {
   tree: FileNode[];
   /** Flat note paths across the vault (quick switcher / wikilinks). */
   flatFiles: string[];
+  /** Absolute paths of opened notes, most recent first. */
+  recentFiles: string[];
   currentFile: string | null;
   dirty: boolean;
   settings: Settings;
@@ -96,6 +100,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   vaultName: "",
   tree: [],
   flatFiles: [],
+  recentFiles: [],
   currentFile: null,
   dirty: false,
   settings: { ...DEFAULT_SETTINGS },
@@ -119,8 +124,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setFlatFiles: (flatFiles) => set({ flatFiles }),
   openFile: (path) => {
     if (get().currentFile === path) return;
-    set({ currentFile: path, dirty: false });
-    persistConfig({ ...getConfigSnapshot(), lastFile: path });
+    // Most-recent-first list (quick switcher ordering); persisted in config.
+    const recentFiles = [path, ...get().recentFiles.filter((p) => p !== path)].slice(0, 100);
+    set({ currentFile: path, dirty: false, recentFiles });
+    persistConfig({ ...getConfigSnapshot(), lastFile: path, recentFiles });
   },
   closeFile: () => {
     set({ currentFile: null, dirty: false });

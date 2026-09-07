@@ -10,14 +10,26 @@ export function QuickSwitcher() {
   const setModal = useAppStore((s) => s.setModal);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const flatFiles = useAppStore((s) => s.flatFiles);
+  const recentFiles = useAppStore((s) => s.recentFiles);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const results = useMemo(
-    () => fuzzySort(flatFiles, (f) => f, query.trim()),
-    [flatFiles, query],
-  );
+  const results = useMemo(() => {
+    // Recency rank: absolute stored paths → per-vault relative rank. Files
+    // never opened rank after everything that was.
+    const rank = new Map(recentFiles.map((p, i) => [p, i] as const));
+    const rankOf = (rel: string) =>
+      (vaultPath ? rank.get(joinPath(vaultPath, rel)) : undefined) ?? Number.POSITIVE_INFINITY;
+    const q = query.trim();
+    if (!q) {
+      // Empty query = jump list: most recently opened first (Obsidian-style).
+      return [...flatFiles]
+        .sort((a, b) => rankOf(a) - rankOf(b))
+        .map((item) => ({ item, positions: [] as number[] }));
+    }
+    return fuzzySort(flatFiles, (f) => f, q, 50, (a, b) => rankOf(a) - rankOf(b));
+  }, [flatFiles, recentFiles, vaultPath, query]);
 
   const close = () => {
     setModal(null);
