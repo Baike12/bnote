@@ -463,7 +463,7 @@ function ImeTab() {
     <div className="settings-section">
       <Toggle
         label="输入法跟随 Vim 模式"
-        desc="进入 insert 切到中文输入法，回到 normal/visual 切到英文（仅 macOS；需开启 Vim 模式）"
+        desc="进入 insert 切到中文输入法，回到 normal/visual 切到英文；打开快速切换器时也切到英文，关闭后还原（仅 macOS；需开启 Vim 模式）"
         checked={ime.enabled}
         onChange={(v) => patchIme({ enabled: v })}
       />

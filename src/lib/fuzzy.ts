@@ -43,6 +43,25 @@ export function fuzzyMatch(query: string, text: string): FuzzyResult | null {
   return { score, positions };
 }
 
+/**
+ * Obsidian-style AND match: every whitespace-separated term must fuzzy-match
+ * somewhere in `text` (order-free), so "文件夹 文件名" finds a note by its
+ * folder and name together. Score is the sum of the per-term scores.
+ */
+export function fuzzyMatchTerms(query: string, text: string): FuzzyResult | null {
+  const terms = query.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return { score: 0, positions: [] };
+  let score = 0;
+  const positions: number[] = [];
+  for (const term of terms) {
+    const res = fuzzyMatch(term, text);
+    if (!res) return null;
+    score += res.score;
+    positions.push(...res.positions);
+  }
+  return { score, positions };
+}
+
 export function fuzzySort<T>(
   items: T[],
   getText: (item: T) => string,
@@ -53,7 +72,7 @@ export function fuzzySort<T>(
 ): { item: T; positions: number[] }[] {
   const out: { item: T; res: FuzzyResult }[] = [];
   for (const item of items) {
-    const res = fuzzyMatch(query, getText(item));
+    const res = fuzzyMatchTerms(query, getText(item));
     if (res) out.push({ item, res });
   }
   out.sort((a, b) => b.res.score - a.res.score || (tiebreak ? tiebreak(a.item, b.item) : 0));

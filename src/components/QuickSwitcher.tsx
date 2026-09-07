@@ -1,9 +1,10 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { fuzzySort } from "@/lib/fuzzy";
 import { useAppStore } from "@/state/appStore";
 import { openNote } from "@/app/actions";
 import { joinPath } from "@/lib/path";
+import { api } from "@/lib/tauri";
 
 export function QuickSwitcher() {
   const open = useAppStore((s) => s.modal === "switcher");
@@ -14,6 +15,28 @@ export function QuickSwitcher() {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // IME follow: file search is ASCII typing — switch to the English source
+  // while the switcher is open, restore whatever was active before it.
+  useEffect(() => {
+    if (!open) return;
+    const { settings } = useAppStore.getState();
+    if (!settings.ime.enabled) return;
+    let prevSource: string | null = null;
+    let closed = false;
+    void api
+      .getCurrentInputSource()
+      .then((id) => {
+        if (closed) return api.setInputSource(id).catch(() => {});
+        prevSource = id;
+        return api.setInputSource(settings.ime.normalSource);
+      })
+      .catch(() => {});
+    return () => {
+      closed = true;
+      if (prevSource) void api.setInputSource(prevSource).catch(() => {});
+    };
+  }, [open]);
 
   const results = useMemo(() => {
     // Recency rank: absolute stored paths → per-vault relative rank. Files
@@ -28,7 +51,15 @@ export function QuickSwitcher() {
         .sort((a, b) => rankOf(a) - rankOf(b))
         .map((item) => ({ item, positions: [] as number[] }));
     }
-    return fuzzySort(flatFiles, (f) => f, q, 50, (a, b) => rankOf(a) - rankOf(b));
+    // Haystack is the extension-stripped vault path, so folder names are
+    // searchable too (Obsidian-style); space-separated terms AND together.
+    return fuzzySort(
+      flatFiles,
+      (f) => f.replace(/\.(md|markdown|txt)$/i, ""),
+      q,
+      50,
+      (a, b) => rankOf(a) - rankOf(b),
+    );
   }, [flatFiles, recentFiles, vaultPath, query]);
 
   const close = () => {
@@ -51,7 +82,7 @@ export function QuickSwitcher() {
           ref={inputRef}
           autoFocus
           className="switcher-input"
-          placeholder="输入文件名跳转…"
+          placeholder="搜索文件或文件夹…"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
