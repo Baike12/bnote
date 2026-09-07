@@ -9,6 +9,7 @@ import { livePreviewExtension } from "./livePreview";
 import { typewriterExtension } from "./typewriter";
 import { imeSwitchExtension } from "./imeSwitch";
 import { snippetsExtension } from "./snippets/extension";
+import { installMathMotionClamp } from "./motionClamp";
 import { vimModeExtension, commandMappingKeymap } from "./vim/vim";
 import type { VimMapping } from "./vim/vimrc";
 
@@ -82,6 +83,7 @@ export function createEditor(parent: HTMLElement, doc: string, callbacks: Editor
     state: EditorState.create({ doc, extensions: savedExtensions }),
     parent,
   });
+  installMathMotionClamp(view);
   return view;
 }
 

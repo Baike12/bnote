@@ -25,10 +25,10 @@ import {
  *   computes them ITSELF from each transaction (doc + selection) — no
  *   plugin→effect→dispatch round trip, which used to cost two extra full
  *   update cycles whenever a math block expanded or collapsed.
- * - When a keyboard motion is about to jump across a display-math block and
- *   get redirected back inside (mathCrossOpen below), the field computes the
- *   decorations for the redirected position right away ("lookahead"), so the
- *   rendered block widget is never inserted just to be removed a frame later.
+ * - Keyboard motions can never land past a display-math block: the per-view
+ *   motion clamp (motionClamp.ts, installed in setup.ts) stops the caret at
+ *   the block's near edge inside the motion transaction itself, so the field
+ *   sees the final selection and expands the block in the same frame.
  * - The inline plugin skips its rebuild when a selection-only change cannot
  *   alter any decoration (same covered lines, no toggle-able syntax there).
  */
@@ -226,15 +226,7 @@ function makeBlockValue(
   const statics =
     !tr || tr.docChanged || !prev ? collectBlockStatics(state) : prev.statics;
 
-  // Crossing lookahead: the motion is about to be redirected back inside the
-  // block — build for the redirected position so no intermediate state exists.
-  let ranges: readonly { from: number; to: number }[] = state.selection.ranges;
-  if (tr && !tr.docChanged && !isPointerSelect(tr)) {
-    const target = findCrossingTarget(tr.startState, state);
-    if (target !== null) ranges = [{ from: target, to: target }];
-  }
-
-  const { decos, sig } = buildBlockDecos(state, statics, ranges);
+  const { decos, sig } = buildBlockDecos(state, statics, state.selection.ranges);
   if (prev && (!tr || !tr.docChanged) && sig === prev.sig) return prev;
   return { statics, decos, sig };
 }
@@ -249,55 +241,6 @@ export const blockDecorationsField = StateField.define<BlockFieldValue>({
     return makeBlockValue(tr.state, value, tr);
   },
   provide: (field) => EditorView.decorations.from(field, (v) => v.decos),
-});
-
-// --------------------------------------------------------------------------
-// Crossing detection (shared by the field lookahead and the cursor redirect)
-// --------------------------------------------------------------------------
-
-function isPointerSelect(tr: Transaction): boolean {
-  return tr.annotation(Transaction.userEvent)?.startsWith("select.pointer") ?? false;
-}
-
-/**
- * Keyboard cursor motion (arrows, vim j/k) from the line adjacent to a
- * rendered display-math block lands past it — the block widget maps to its
- * far edge — so the formula could never be reached. Detects that jump and
- * returns the position the caret should be redirected to: the block's first
- * (or last) line, keeping the one-line-per-keystroke rhythm. Moving AWAY from
- * the block is not a crossing; mouse clicks ("select.pointer") and long jumps
- * (search hits, programmatic moves) return null — clicks on the widget itself
- * are handled in linkHandlers below.
- */
-function findCrossingTarget(oldState: EditorState, newState: EditorState): number | null {
-  const oldHead = oldState.selection.main.head;
-  const newHead = newState.selection.main.head;
-  if (oldHead === newHead) return null;
-  const oldLineNo = oldState.doc.lineAt(oldHead).number;
-  const newLineNo = newState.doc.lineAt(newHead).number;
-  const oldLine = oldState.doc.lineAt(oldHead);
-  const wantCol = oldHead - oldLine.from;
-  for (const r of mathRegions(newState)) {
-    if (!r.display) continue;
-    const openLine = newState.doc.lineAt(r.from);
-    const closeLine = newState.doc.lineAt(r.to);
-    if (openLine.number === closeLine.number) continue; // single-line: reachable inline
-    const crossed =
-      (oldLineNo === openLine.number - 1 && newLineNo > closeLine.number) ||
-      (oldLineNo === closeLine.number + 1 && newLineNo < openLine.number);
-    if (!crossed) continue;
-    return oldLineNo === openLine.number - 1
-      ? openLine.from + Math.min(wantCol, openLine.to - openLine.from)
-      : closeLine.from + Math.min(wantCol, closeLine.to - closeLine.from);
-  }
-  return null;
-}
-
-const mathCrossOpen = EditorView.updateListener.of((u) => {
-  if (!u.selectionSet || u.docChanged) return;
-  if (u.transactions.some(isPointerSelect)) return;
-  const target = findCrossingTarget(u.startState, u.state);
-  if (target !== null) u.view.dispatch({ selection: { anchor: target } });
 });
 
 // --------------------------------------------------------------------------
@@ -884,5 +827,5 @@ const linkHandlers = EditorView.domEventHandlers({
 });
 
 export function livePreviewExtension(): Extension {
-  return [blockDecorationsField, livePreviewPlugin, mathCrossOpen, linkHandlers];
+  return [blockDecorationsField, livePreviewPlugin, linkHandlers];
 }

@@ -470,8 +470,13 @@ button {
 .cw-math-block {
   text-align: center;
   margin: 6px 0;
+  /* Wide formulas stay reachable by wheel/drag, but no visible scrollbar. */
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: none;
+}
+.cw-math-block::-webkit-scrollbar {
+  display: none;
 }
 
 .cw-math .katex {
@@ -485,6 +490,10 @@ button {
   padding: 4px 0;
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: none;
+}
+.cw-math-preview::-webkit-scrollbar {
+  display: none;
 }
 
 /* Obsidian-style coloring of raw math source while editing. */

@@ -6,12 +6,25 @@ import katex from "katex";
 const cache = new Map<string, string>();
 const MAX_CACHE = 800;
 
+/** KaTeX ≥0.18 auto-numbers rows of `align`/`gather`/`equation`/`alignat`,
+ *  painting "(1)" tags the notes never asked for (each block restarts at 1).
+ *  Switching to the starred variants keeps identical layout minus the tag;
+ *  an explicit `\tag{…}` still renders in starred environments. */
+const AUTO_NUMBERED_ENV_RE =
+  /\\(begin|end)\{(align|alignat|gather|equation|flalign|eqnarray)(\*?)\}/g;
+
+function withoutAutoNumbers(src: string): string {
+  return src.replace(AUTO_NUMBERED_ENV_RE, (_m, kind, env, star) =>
+    star ? _m : `\\${kind}{${env}*}`,
+  );
+}
+
 export function renderMathHtml(src: string, display: boolean): string {
   const key = (display ? "D\u0000" : "I\u0000") + src;
   let html = cache.get(key);
   if (html === undefined) {
     try {
-      html = katex.renderToString(src, {
+      html = katex.renderToString(withoutAutoNumbers(src), {
         displayMode: display,
         throwOnError: false,
         errorColor: "#ff6b6b",
