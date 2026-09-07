@@ -320,9 +320,9 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
         // the text doesn't jump when the cursor enters/leaves a heading.
         const lineFrom = doc.lineAt(nodeRef.from).from;
         out.inline.push(Decoration.line({ class: `md-hline md-hline-${level}` }).range(lineFrom));
-        if (!activeLine(nodeRef.from, nodeRef.to)) {
-          decorateHeading(doc, nodeRef.node, level, out, claim);
-        }
+        // Heading colors apply on the active line too; only the hash hiding
+        // is lifted there so the raw `#` markers stay editable.
+        decorateHeading(doc, nodeRef.node, level, out, claim, activeLine(nodeRef.from, nodeRef.to));
         return false;
       }
       if (name === "Emphasis" || name === "StrongEmphasis") {
@@ -523,6 +523,7 @@ function decorateHeading(
   level: number,
   out: DecorationSink,
   claim: (from: number, to: number) => boolean,
+  isActive: boolean,
 ) {
   let mark: SyntaxNode | null = null;
   for (let child = node.firstChild; child; child = child.nextSibling) {
@@ -533,12 +534,16 @@ function decorateHeading(
   }
   if (!mark) return;
   // Hide the hashes plus following spaces so the text starts at the left edge.
+  // On the active line they stay visible for editing.
   let contentFrom = mark.to;
   while (contentFrom < node.to && doc.sliceString(contentFrom, contentFrom + 1) === " ") {
     contentFrom++;
   }
-  if (contentFrom > mark.from && claim(mark.from, contentFrom)) {
+  if (!isActive && contentFrom > mark.from && claim(mark.from, contentFrom)) {
     out.inline.push(Decoration.replace({}).range(mark.from, contentFrom));
+  } else if (isActive) {
+    // Raw `#` markers on the active line, dimmed like Obsidian's formatting.
+    out.inline.push(Decoration.mark({ class: "md-hmark" }).range(mark.from, contentFrom));
   }
   out.inline.push(
     Decoration.mark({ class: `md-heading md-h${level}` }).range(contentFrom, node.to),

@@ -16,13 +16,14 @@ export function markdownExtensions(): Extension {
 }
 
 /** One-dark-ish palette for code content; markdown styling is applied by the
- *  live-preview decorations (classes) so only code tags are colored here. */
+ *  live-preview decorations (classes) so only code tags are colored here.
+ *  Markdown text tags mirror global.css (Things theme colors) so lines stay
+ *  consistently colored while the cursor edits them. */
 export const bnoteHighlightStyle = HighlightStyle.define([
-  { tag: t.heading, color: "#d19a66" },
-  { tag: t.strong, fontWeight: "700", color: "#e6e6e6" },
-  { tag: t.emphasis, fontStyle: "italic" },
+  { tag: t.strong, fontWeight: "700", color: "#ff82b2" },
+  { tag: t.emphasis, fontStyle: "italic", color: "#ff82b2" },
   { tag: t.strikethrough, textDecoration: "line-through" },
-  { tag: t.link, color: "#8ab4f8" },
+  { tag: t.link, color: "#79a9ec" },
   { tag: t.url, color: "#7f848e" },
   { tag: t.monospace, color: "#d19a66" },
 

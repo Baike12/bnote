@@ -1,14 +1,16 @@
 /* ===== bnote — Obsidian-like dark theme ===== */
 
 :root {
-  --bg0: #1e1e1e; /* editor */
-  --bg1: #262626; /* sidebar */
-  --bg2: #2f2f2f; /* elevated */
-  --bg3: #3a3a3a; /* hover */
-  --border: #383838;
+  /* Neutral surface tones follow the Things dark palette (hue 212, sat 15%),
+     matching the user's Obsidian setup. */
+  --bg0: #1c2026; /* editor */
+  --bg1: #222831; /* sidebar */
+  --bg2: #2a313b; /* elevated */
+  --bg3: #343c47; /* hover */
+  --border: #333b45;
   --text: #dadada;
-  --text-dim: #9a9a9a;
-  --text-faint: #6e6e6e;
+  --text-dim: #98a2ad;
+  --text-faint: #5d6b7e;
   --accent: #a48be3;
   --accent-dim: #7e68c0;
   --danger: #e06c75;
@@ -18,7 +20,15 @@
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-text: var(--font-ui);
   --font-mono: "Iosevka", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-  --heading: #dd9c63;
+  /* Things theme heading + inline-formatting colors (dark mode). */
+  --link: #79a9ec;
+  --h1-color: #e87d3e;
+  --h2-color: #3eb4bf;
+  --h3-color: #2e80f2;
+  --h4-color: #e5b567;
+  --h5-color: #e83e3e;
+  --h6-color: #98a2ad;
+  --strong-color: #ff82b2;
   --editor-font-size: 16px;
 }
 
@@ -39,7 +49,6 @@ body {
   font-family: var(--font-ui);
   font-size: 14px;
   overflow: hidden;
-  -webkit-font-smoothing: antialiased;
 }
 
 button {
@@ -55,7 +64,7 @@ button {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #454545;
+  background: #39414c;
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
@@ -254,7 +263,7 @@ button {
   margin: 0;
   padding: 24px 48px 45vh 48px !important;
   font-size: var(--editor-font-size) !important;
-  line-height: 1.6;
+  line-height: 1.5;
   color: var(--text);
   font-family: var(--font-text) !important;
 }
@@ -265,7 +274,7 @@ button {
 
 .cm-selectionBackground,
 .cm-editor ::selection {
-  background: #4b4270aa !important;
+  background: rgba(255, 255, 255, 0.22) !important;
 }
 
 .cm-line {
@@ -317,36 +326,48 @@ button {
   padding-top: 10px;
 }
 
-.md-heading {
+/* Things-theme headings: per-level color, sizes 1.7/1.5/1.2/1.1/1/0.9em.
+   .cm-content prefix outranks the CodeMirror highlight-style rules (t.heading
+   / t.strong), which would otherwise repaint these on cursor-active lines. */
+.cm-content .md-heading {
   font-weight: 700;
-  color: var(--heading);
 }
-.md-h1 {
-  font-size: 1.6em;
+/* Raw `#` markers while the cursor edits the heading line. */
+.md-hmark {
+  color: var(--text-faint);
 }
-.md-h2 {
-  font-size: 1.35em;
+.cm-content .md-h1 {
+  font-size: 1.7em;
+  color: var(--h1-color);
 }
-.md-h3 {
-  font-size: 1.18em;
+.cm-content .md-h2 {
+  font-size: 1.5em;
+  color: var(--h2-color);
 }
-.md-h4 {
-  font-size: 1.05em;
+.cm-content .md-h3 {
+  font-size: 1.2em;
+  color: var(--h3-color);
 }
-.md-h5 {
+.cm-content .md-h4 {
+  font-size: 1.1em;
+  color: var(--h4-color);
+}
+.cm-content .md-h5 {
   font-size: 1em;
+  color: var(--h5-color);
 }
-.md-h6 {
-  font-size: 0.95em;
-  color: color-mix(in srgb, var(--heading) 75%, var(--text-dim));
+.cm-content .md-h6 {
+  font-size: 0.9em;
+  color: var(--h6-color);
 }
 
-.md-strong {
+.cm-content .md-strong {
   font-weight: 700;
-  color: #f0f0f0;
+  color: var(--strong-color);
 }
-.md-em {
+.cm-content .md-em {
   font-style: italic;
+  color: var(--strong-color);
 }
 .md-strike {
   text-decoration: line-through;
@@ -368,15 +389,15 @@ button {
 }
 
 .md-quote {
-  border-left: 3px solid var(--accent-dim);
-  background: #26262e;
-  color: var(--text-dim);
+  border-left: 3px solid color-mix(in srgb, var(--h2-color) 40%, transparent);
+  color: var(--h2-color);
+  font-style: italic;
 }
 
 .md-link {
-  color: #8ab4f8;
+  color: var(--link);
   text-decoration: underline;
-  text-decoration-color: #8ab4f855;
+  text-decoration-color: #79a9ec55;
   cursor: pointer;
 }
 .md-url {
@@ -385,7 +406,7 @@ button {
 }
 
 .md-wikilink {
-  color: var(--accent);
+  color: var(--link);
   cursor: pointer;
 }
 .md-wikilink:hover {
@@ -399,32 +420,34 @@ button {
 /* Bullet glyph replacing `-` markers; checkbox replaces `- [ ]` entirely. */
 .md-bullet {
   color: var(--text-faint);
+  margin-right: 17px;
 }
 
 /* Obsidian-style list indent: literal source spaces are hidden and replaced
    with padding + hanging indent, so wrapped lines align under the item text.
-   --li-px comes from the per-depth classes below. */
+   Bullet sits at --li-px; item text at --li-px + 26px, one level every 28px
+   (measured off the user's Obsidian). */
 .cm-line.md-list-line {
-  padding-left: calc(var(--li-px, 0px) + 0.75em);
-  text-indent: -0.75em;
+  padding-left: calc(var(--li-px, 0px) + 26px);
+  text-indent: -26px;
 }
-.li-i0  { --li-px: 0px; }
-.li-i2  { --li-px: 8px; }
-.li-i4  { --li-px: 16px; }
-.li-i6  { --li-px: 24px; }
-.li-i8  { --li-px: 32px; }
-.li-i10 { --li-px: 40px; }
-.li-i12 { --li-px: 48px; }
-.li-i14 { --li-px: 56px; }
-.li-i16 { --li-px: 64px; }
-.li-i18 { --li-px: 72px; }
-.li-i20 { --li-px: 80px; }
-.li-i22 { --li-px: 88px; }
-.li-i24 { --li-px: 96px; }
-.li-i26 { --li-px: 104px; }
-.li-i28 { --li-px: 112px; }
-.li-i30 { --li-px: 120px; }
-.li-i32 { --li-px: 128px; }
+.li-i0  { --li-px: 13px; }
+.li-i2  { --li-px: 41px; }
+.li-i4  { --li-px: 69px; }
+.li-i6  { --li-px: 97px; }
+.li-i8  { --li-px: 125px; }
+.li-i10 { --li-px: 153px; }
+.li-i12 { --li-px: 181px; }
+.li-i14 { --li-px: 209px; }
+.li-i16 { --li-px: 237px; }
+.li-i18 { --li-px: 265px; }
+.li-i20 { --li-px: 293px; }
+.li-i22 { --li-px: 321px; }
+.li-i24 { --li-px: 349px; }
+.li-i26 { --li-px: 377px; }
+.li-i28 { --li-px: 405px; }
+.li-i30 { --li-px: 433px; }
+.li-i32 { --li-px: 461px; }
 
 /* Task-list checkbox rendered over `- [ ]` / `- [x]` markers. */
 .md-task {
