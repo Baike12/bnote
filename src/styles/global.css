@@ -283,6 +283,12 @@ button {
 .cm-line.cm-activeLine {
   background: rgba(255, 255, 255, 0.22) !important;
 }
+/* Heading lines carry extra top padding (vertical rhythm) — clip the shade to
+   the content box so the band hugs the heading text symmetrically instead of
+   stretching across the padding. */
+.cm-line.md-hline.cm-activeLine {
+  background-clip: content-box !important;
+}
 .cm-scroller:not(.cm-vimMode) .cm-line.cm-activeLine {
   background: transparent !important;
 }
