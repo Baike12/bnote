@@ -4,6 +4,7 @@ import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
 import { mathRegions } from "./context";
+import { DONE_STAMP_RE, todayStamp } from "./ops";
 import {
   EscapeCharWidget,
   HiddenLineWidget,
@@ -393,13 +394,6 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
               nodeRef.to,
             ),
           );
-          if (checked) {
-            // Dim the rest of the completed item's line (Obsidian-style).
-            const lineEnd = doc.lineAt(nodeRef.to).to;
-            if (lineEnd > nodeRef.to) {
-              out.inline.push(Decoration.mark({ class: "md-task-done" }).range(nodeRef.to, lineEnd));
-            }
-          }
         }
         return false;
       }
@@ -767,7 +761,8 @@ const linkHandlers = EditorView.domEventHandlers({
       }
     }
 
-    // Task checkbox: flip [ ] <-> [x] in the source line.
+    // Task checkbox: toggle [ ] <-> [x], keeping the ✅ date stamp in step
+    // with the toggleTodo cycle (done = checked + stamp).
     const task = target.closest?.(".md-task");
     if (task) {
       let pos: number;
@@ -777,13 +772,21 @@ const linkHandlers = EditorView.domEventHandlers({
         return false;
       }
       const line = view.state.doc.lineAt(pos);
-      const m = /^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]/.exec(line.text);
+      const m = /^(\s*(?:[-*+]|\d+[.)])[ \t]+)\[([ xX])\](.*)$/.exec(line.text);
       if (m) {
         const markFrom = line.from + m[1].length;
+        const stamp = DONE_STAMP_RE.exec(m[3]);
+        const textEnd = markFrom + 3 + (stamp ? stamp.index : m[3].length);
         event.preventDefault();
-        view.dispatch({
-          changes: { from: markFrom + 1, to: markFrom + 2, insert: m[2] === " " ? "x" : " " },
-        });
+        const changes: { from: number; to?: number; insert: string }[] = [
+          { from: markFrom + 1, to: markFrom + 2, insert: m[2] === " " ? "x" : " " },
+        ];
+        if (m[2] === " ") {
+          changes.push({ from: textEnd, to: line.to, insert: ` ✅ ${todayStamp()}` });
+        } else if (stamp) {
+          changes.push({ from: textEnd, to: line.to, insert: "" });
+        }
+        view.dispatch({ changes });
         return true;
       }
       return false;

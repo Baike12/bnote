@@ -30,6 +30,74 @@ export function toggleHeading(view: EditorView, level: number) {
   });
 }
 
+/** Today as YYYY-MM-DD, the ✅ stamp appended when a todo is completed. */
+export function todayStamp(): string {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+/** Trailing " ✅ YYYY-MM-DD" completion stamp, with surrounding whitespace. */
+export const DONE_STAMP_RE = /(\s*✅\s*\d{4}-\d{2}-\d{2})\s*$/;
+
+/**
+ * Cycles each cursor line: plain → `- [ ]` → `- [x] ✅ date` → plain.
+ * Completing stamps today's date; the last step strips marker and stamp so
+ * the line returns to exactly its pre-todo text.
+ */
+export function toggleTodo(view: EditorView) {
+  const state = view.state;
+  const changes: { from: number; to?: number; insert: string }[] = [];
+  const seenLines = new Set<number>();
+
+  for (const range of state.selection.ranges) {
+    const line = state.doc.lineAt(range.head);
+    if (seenLines.has(line.number)) continue;
+    seenLines.add(line.number);
+
+    const task = /^(\s*)((?:[-*+]|\d+[.)])[ \t]+)\[([ xX])\](.*)$/.exec(line.text);
+    if (task) {
+      const markFrom = line.from + task[1].length + task[2].length;
+      const tail = task[4];
+      const stamp = DONE_STAMP_RE.exec(tail);
+      const textEnd = markFrom + 3 + (stamp ? stamp.index : tail.length);
+      if (task[3] === " ") {
+        // Todo → done: flip the box, (re)stamp today's date at line end.
+        changes.push({ from: markFrom + 1, to: markFrom + 2, insert: "x" });
+        changes.push({ from: textEnd, to: line.to, insert: ` ✅ ${todayStamp()}` });
+      } else {
+        // Done → plain: strip marker + checkbox and the stamp entirely.
+        const lead = tail.startsWith(" ") || tail.startsWith("\t") ? 1 : 0;
+        const textStart = Math.min(markFrom + 3 + lead, textEnd);
+        changes.push({ from: line.from + task[1].length, to: textStart, insert: "" });
+        if (stamp) changes.push({ from: textEnd, to: line.to, insert: "" });
+      }
+      continue;
+    }
+
+    // Bullet / ordered item without a checkbox: swap the marker for the task.
+    const list = /^(\s*)(?:[-*+]|\d+[.)])(\s+)/.exec(line.text);
+    if (list) {
+      changes.push({
+        from: line.from + list[1].length,
+        to: line.from + list[0].length,
+        insert: "- [ ] ",
+      });
+      continue;
+    }
+
+    const indent = line.text.match(/^\s*/)?.[0] ?? "";
+    changes.push({ from: line.from + indent.length, insert: "- [ ] " });
+  }
+  if (changes.length === 0) return;
+
+  view.dispatch({
+    changes,
+    userEvent: "input.bnote-todo",
+  });
+}
+
 export function toggleWrap(view: EditorView, marker: string) {
   const state = view.state;
   const changes: { from: number; to?: number; insert: string }[] = [];

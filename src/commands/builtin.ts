@@ -9,6 +9,7 @@ import {
   insertMathBlock,
   insertWikilink,
   toggleHeading,
+  toggleTodo,
   toggleWrap,
 } from "@/editor/ops";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
@@ -118,6 +119,7 @@ const defs: CommandDef[] = [
     category: "编辑",
     run: withView((v) => toggleWrap(v, "~~")),
   },
+  { id: "edit.toggle-todo", title: "切换当前行待办状态", category: "编辑", run: withView(toggleTodo) },
   ...([1, 2, 3, 4, 5, 6] as const).map((level): CommandDef => ({
     id: `edit.heading-${level}`,
     title: `设为 ${level} 级标题`,

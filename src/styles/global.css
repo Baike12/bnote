@@ -1,18 +1,17 @@
 /* ===== bnote — Obsidian-like dark theme ===== */
 
 :root {
-  /* Neutral surface tones follow the Things dark palette (hue 212, sat 15%),
-     matching the user's Obsidian setup. */
-  --bg0: #1c2026; /* editor */
-  --bg1: #222831; /* sidebar */
-  --bg2: #2a313b; /* elevated */
-  --bg3: #343c47; /* hover */
-  --border: #333b45;
-  --text: #dadada;
-  --text-dim: #98a2ad;
-  --text-faint: #5d6b7e;
-  --accent: #a48be3;
-  --accent-dim: #7e68c0;
+  /* Deep-black neutral surfaces with a warm amber accent. */
+  --bg0: #0b0b0d; /* editor */
+  --bg1: #101013; /* sidebar */
+  --bg2: #17171a; /* elevated */
+  --bg3: #212125; /* hover */
+  --border: #27272c;
+  --text: #d8d8da;
+  --text-dim: #9a9aa0;
+  --text-faint: #67676d;
+  --accent: #f5a83c;
+  --accent-dim: #c07d24;
   --danger: #e06c75;
   --string: #98c379;
   --keyword: #c678dd;
@@ -20,7 +19,6 @@
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-text: var(--font-ui);
   --font-mono: "Iosevka", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-  /* Things theme heading + inline-formatting colors (dark mode). */
   --link: #79a9ec;
   --h1-color: #e87d3e;
   --h2-color: #3eb4bf;
@@ -64,7 +62,7 @@ button {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #39414c;
+  background: #34343a;
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
@@ -192,7 +190,7 @@ button {
   background: var(--bg3);
 }
 .tree-row.current {
-  background: #37304d;
+  background: #3a2c16;
 }
 .tree-row.current .tree-name {
   color: var(--accent);
@@ -395,13 +393,13 @@ button {
   font-family: var(--font-mono);
 }
 .md-inline-code {
-  background: #33333c;
+  background: #26262c;
   color: #d19a66;
   border-radius: 4px;
   padding: 1px 4px;
 }
 .md-code-line {
-  background: #262630;
+  background: #1a1a1f;
 }
 
 .md-quote {
@@ -494,10 +492,6 @@ button {
   border: solid #fff;
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(40deg);
-}
-.md-task-done {
-  text-decoration: line-through;
-  color: var(--text-faint);
 }
 
 .cw-math-error {
@@ -937,7 +931,7 @@ button {
   background: var(--bg2);
 }
 .hotkey-row.capturing {
-  background: #37304d;
+  background: #3a2c16;
 }
 
 .hotkey-title {

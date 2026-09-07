@@ -2,6 +2,7 @@ import { EditorView } from "@codemirror/view";
 import "katex/dist/katex.min.css";
 import "@/styles/global.css";
 import { createEditor, reconfigureVim } from "@/editor/setup";
+import { toggleTodo } from "@/editor/ops";
 
 const DOC = `# 公式与光标
 
@@ -35,6 +36,7 @@ declare global {
     __cursor: () => { line: number; col: number; pos: number };
     __setCursor: (line: number, col: number) => void;
     __loadDoc: (text: string) => number;
+    __toggleTodo: () => void;
   }
 }
 
@@ -60,3 +62,4 @@ window.__loadDoc = (text: string) => {
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
   return view.state.doc.lines;
 };
+window.__toggleTodo = () => toggleTodo(view);

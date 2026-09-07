@@ -66,7 +66,7 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
           "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
       },
       "&.cm-focused": { outline: "none" },
-      ".cm-content": { caretColor: "var(--accent, #a48be3)" },
+      ".cm-content": { caretColor: "var(--accent, #f5a83c)" },
     }),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) callbacks.onDocChanged();
