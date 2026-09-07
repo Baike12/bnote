@@ -13,6 +13,7 @@ import { getCommand } from "./registry";
 
 export const DEFAULT_BINDINGS: Record<string, string> = {
   "workspace.new-note": "Mod-n",
+  "workspace.quick-add": "Mod-Shift-a",
   "workspace.open-vault": "Mod-Shift-o",
   "workspace.save-note": "Mod-s",
   "workspace.open-settings": "Mod-,",
@@ -32,6 +33,7 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "edit.toggle-italic": "Mod-Shift-i",
   "edit.toggle-strikethrough": "Mod-Shift-d",
   "edit.toggle-todo": "Mod-l",
+  "edit.toggle-heading": "Mod-j",
   "edit.heading-1": "Mod-1",
   "edit.heading-2": "Mod-2",
   "edit.heading-3": "Mod-3",

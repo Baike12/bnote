@@ -256,10 +256,12 @@ button {
 }
 
 .cm-content {
-  /* Fluid width: fill the editor pane (minus padding) at any window size. */
+  /* Fluid width: fill the editor pane (minus padding) at any window size.
+     --typewriter-top is set inline by the typewriter plugin (half viewport)
+     so the first line can reach vertical center; defaults to normal padding. */
   max-width: none;
   margin: 0;
-  padding: 24px 48px 45vh 48px !important;
+  padding: var(--typewriter-top, 24px) 48px 45vh 48px !important;
   font-size: var(--editor-font-size) !important;
   line-height: 1.5;
   color: var(--text);
@@ -479,8 +481,8 @@ button {
   border-color: var(--accent);
 }
 .md-task.checked {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
 }
 .md-task.checked::after {
   content: "";
@@ -1013,6 +1015,56 @@ button {
 }
 .settings-select:focus {
   border-color: var(--accent-dim);
+}
+
+.settings-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  outline: none;
+}
+.settings-input:focus {
+  border-color: var(--accent-dim);
+}
+.settings-input.mono {
+  font-family: var(--font-mono);
+}
+
+/* ===== 快速添加 ===== */
+
+.qa-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.qa-row .settings-input.mono {
+  flex: 0.8;
+}
+.qa-remove {
+  flex: none;
+}
+.qa-empty {
+  color: var(--text-faint);
+  font-size: 13px;
+  padding: 8px 0;
+}
+.qa-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 12px 12px;
+}
+.switcher-hint {
+  padding: 6px 12px;
+  color: var(--text-faint);
+  font-size: 12px;
+  border-top: 1px solid var(--border);
 }
 
 input[type="range"] {

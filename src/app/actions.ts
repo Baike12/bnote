@@ -155,6 +155,27 @@ export async function newNote(): Promise<void> {
   }
 }
 
+/**
+ * Quick-add: create a note in a quick-add command's folder. The folder is
+ * vault-relative and created at the root when missing (mkdir -p); the note
+ * name dedups like newNote ("name 2.md").
+ */
+export async function quickAddNote(folder: string, name: string): Promise<void> {
+  const { vaultPath } = useAppStore.getState();
+  if (!vaultPath) return;
+  const base = name.replace(/\.(md|markdown|txt)$/i, "").trim();
+  if (!base) return;
+  const rel = folder.trim().replace(/^\/+|\/+$/g, "");
+  try {
+    if (rel) await api.ensureDir(rel);
+    const created = await api.createFile(rel, `${base}.md`);
+    await refreshTree();
+    await openNote(created.path);
+  } catch (e) {
+    useAppStore.getState().showToast(`快速添加失败: ${String(e)}`);
+  }
+}
+
 export async function newFolder(parent?: string): Promise<void> {
   const { vaultPath } = useAppStore.getState();
   if (!vaultPath) return;

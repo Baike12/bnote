@@ -37,6 +37,7 @@ pub fn run() {
             commands::files::write_file,
             commands::files::create_file,
             commands::files::create_dir,
+            commands::files::ensure_dir,
             commands::files::rename_path,
             commands::files::trash_path,
             commands::files::read_vault_file,

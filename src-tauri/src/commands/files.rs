@@ -107,6 +107,27 @@ pub async fn create_dir(
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
+/// mkdir -p for a vault-relative folder path. Unlike `create_dir` there is no
+/// "name 2" dedup: quick-add target folders are created only when missing.
+#[tauri::command]
+pub async fn ensure_dir(state: State<'_, AppState>, rel_path: String) -> CmdResult<()> {
+    let root = require_vault(&state)?;
+    let rel = rel_path.trim().trim_matches('/').to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        if !rel.is_empty() {
+            for part in rel.split('/') {
+                validate_name(part)?;
+            }
+            let full = root.join(&rel);
+            ensure_within(&root, &full)?;
+            std::fs::create_dir_all(&full).map_err(|e| format!("CREATE_FAILED: {}", e))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
 #[tauri::command]
 pub async fn rename_path(
     state: State<'_, AppState>,

@@ -1,5 +1,7 @@
 import type { EditorView } from "@codemirror/view";
 import { EditorSelection } from "@codemirror/state";
+import { renumberHeadings } from "./numbering";
+import { useAppStore } from "@/state/appStore";
 
 /** Text-editing operations shared by commands and keybindings. */
 
@@ -28,6 +30,71 @@ export function toggleHeading(view: EditorView, level: number) {
     changes,
     userEvent: "input.bnote-heading",
   });
+}
+
+/**
+ * Unified heading toggle: plain line → level-1 heading, heading line → plain.
+ * Returns true when at least one cursor line had its heading removed (so the
+ * caller can drop a leftover auto number before renumbering).
+ */
+export function toggleHeadingAny(view: EditorView): boolean {
+  const state = view.state;
+  const changes: { from: number; to?: number; insert: string }[] = [];
+  const seenLines = new Set<number>();
+  let toggledOff = false;
+
+  for (const range of state.selection.ranges) {
+    const line = state.doc.lineAt(range.head);
+    if (seenLines.has(line.number)) continue;
+    seenLines.add(line.number);
+
+    const existing = line.text.match(/^(#{1,6})(\s+|$)/);
+    if (existing) {
+      toggledOff = true;
+      changes.push({ from: line.from, to: line.from + existing[0].length, insert: "" });
+    } else {
+      changes.push({ from: line.from, insert: "# " });
+    }
+  }
+  if (changes.length === 0) return false;
+
+  view.dispatch({
+    changes,
+    userEvent: "input.bnote-heading",
+  });
+  return toggledOff;
+}
+
+/**
+ * Tab / Shift-Tab on heading lines: level up (max 5) / down (min 1). The
+ * unified heading command starts at level 1, so level 6 stays reachable only
+ * through the 设为 N 级标题 commands. Returns false when any cursor sits on a
+ * non-heading line, leaving Tab to its default behavior (indent); renumbers
+ * when auto heading numbering is on.
+ */
+export function adjustHeadingLevel(view: EditorView, delta: 1 | -1): boolean {
+  const state = view.state;
+  const changes: { from: number; to: number; insert: string }[] = [];
+  const seenLines = new Set<number>();
+
+  for (const range of state.selection.ranges) {
+    const line = state.doc.lineAt(range.head);
+    if (seenLines.has(line.number)) continue;
+    seenLines.add(line.number);
+
+    const existing = line.text.match(/^(#{1,6})(\s+|$)/);
+    if (!existing) return false;
+    const level = existing[1].length;
+    const target = Math.min(5, Math.max(1, level + delta));
+    if (target !== level) {
+      changes.push({ from: line.from, to: line.from + level, insert: "#".repeat(target) });
+    }
+  }
+  if (changes.length > 0) {
+    view.dispatch({ changes, userEvent: "input.bnote-heading-tab" });
+    if (useAppStore.getState().settings.autoNumberHeadings) renumberHeadings(view);
+  }
+  return true;
 }
 
 /** Today as YYYY-MM-DD, the ✅ stamp appended when a todo is completed. */

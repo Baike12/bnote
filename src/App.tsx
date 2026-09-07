@@ -25,6 +25,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { EditorPane } from "@/components/EditorPane";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { CommandPalette } from "@/components/CommandPalette";
+import { QuickAddModal } from "@/components/QuickAddModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
 import { fileName } from "@/lib/path";
@@ -120,6 +121,7 @@ export default function App() {
       {!vaultPath && <Welcome />}
       <QuickSwitcher />
       <CommandPalette />
+      <QuickAddModal />
       <SettingsModal />
       <Toast />
     </div>

@@ -12,6 +12,14 @@ export interface ImeSettings {
   mathKeepsEnglish: boolean;
 }
 
+/** 快速添加命令：一键在指定文件夹创建新笔记（参考 Obsidian QuickAdd）。 */
+export interface QuickAddCommand {
+  /** 命令名，如 "add bnote file" */
+  name: string;
+  /** 仓库根目录下的目标文件夹，支持 "a/b" 子路径；不存在时自动创建 */
+  folder: string;
+}
+
 export interface Settings {
   vim: boolean;
   typewriter: boolean;
@@ -23,6 +31,7 @@ export interface Settings {
   autoNumberHeadings: boolean;
   fontSize: number;
   ime: ImeSettings;
+  quickAdd: QuickAddCommand[];
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -40,9 +49,10 @@ export const DEFAULT_SETTINGS: Settings = {
     normalSource: "com.apple.keylayout.ABC",
     mathKeepsEnglish: true,
   },
+  quickAdd: [],
 };
 
-export type ModalKind = "switcher" | "palette" | "settings" | null;
+export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | null;
 
 export interface PersistedConfig {
   lastVault?: string;

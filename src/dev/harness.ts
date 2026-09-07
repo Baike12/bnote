@@ -1,8 +1,9 @@
 import { EditorView } from "@codemirror/view";
 import "katex/dist/katex.min.css";
 import "@/styles/global.css";
-import { createEditor, reconfigureVim } from "@/editor/setup";
-import { toggleTodo } from "@/editor/ops";
+import { createEditor, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
+import { adjustHeadingLevel, toggleHeadingAny, toggleTodo } from "@/editor/ops";
+import { useAppStore } from "@/state/appStore";
 
 const DOC = `# 公式与光标
 
@@ -37,6 +38,9 @@ declare global {
     __setCursor: (line: number, col: number) => void;
     __loadDoc: (text: string) => number;
     __toggleTodo: () => void;
+    __toggleHeading: () => void;
+    __headingTab: (delta: 1 | -1) => boolean;
+    __setTypewriter: (on: boolean) => void;
   }
 }
 
@@ -63,3 +67,9 @@ window.__loadDoc = (text: string) => {
   return view.state.doc.lines;
 };
 window.__toggleTodo = () => toggleTodo(view);
+window.__toggleHeading = () => toggleHeadingAny(view);
+window.__headingTab = (delta) => adjustHeadingLevel(view, delta);
+window.__setTypewriter = (on) => {
+  useAppStore.getState().patchSettings({ typewriter: on });
+  reconfigureTypewriter(view, on);
+};

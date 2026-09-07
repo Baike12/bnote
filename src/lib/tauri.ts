@@ -46,6 +46,8 @@ export const api = {
     invoke<CreatedEntry>("create_file", { parent, name }),
   createDir: (parent: string, name: string) =>
     invoke<CreatedEntry>("create_dir", { parent, name }),
+  /** mkdir -p for a vault-relative path; missing directories only, no dedup. */
+  ensureDir: (relPath: string) => invoke<void>("ensure_dir", { relPath }),
   renamePath: (path: string, newName: string) =>
     invoke<string>("rename_path", { path, newName }),
   trashPath: (path: string) => invoke<void>("trash_path", { path }),

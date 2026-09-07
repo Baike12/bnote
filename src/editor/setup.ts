@@ -11,6 +11,7 @@ import { imeSwitchExtension } from "./imeSwitch";
 import { snippetsExtension } from "./snippets/extension";
 import { installMathMotionClamp } from "./motionClamp";
 import { vimModeExtension, commandMappingKeymap } from "./vim/vim";
+import { adjustHeadingLevel } from "./ops";
 import type { VimMapping } from "./vim/vimrc";
 
 export interface EditorCallbacks {
@@ -29,6 +30,12 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
   return [
     // Snippet Tab handling takes precedence over everything else.
     snippetsExtension(),
+
+    // Heading lines own Tab / Shift-Tab (level up / down, see ops.ts); any
+    // non-heading cursor falls through to the usual indent bindings below.
+    keymap.of([
+      { key: "Tab", run: (v) => adjustHeadingLevel(v, 1), shift: (v) => adjustHeadingLevel(v, -1) },
+    ]),
 
     markdownExtensions(),
     codeHighlighting(),

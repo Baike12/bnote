@@ -4,11 +4,11 @@ import { allCommands } from "@/commands/registry";
 import { bindingsForCommand, eventToKey, formatBinding } from "@/commands/keys";
 import { clearOverride, resetAllOverrides, setOverride } from "@/commands/keybindingOverrides";
 import { setHotkeyRecording } from "@/commands/globalKeys";
-import { useAppStore, type ImeSettings } from "@/state/appStore";
+import { useAppStore, type ImeSettings, type QuickAddCommand } from "@/state/appStore";
 import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
 import { applySettingsToEditor, openVault, pickVaultDialog, reloadSnippetsFromVault } from "@/app/actions";
 
-type Tab = "general" | "editor" | "hotkeys" | "vim" | "snippets" | "ime";
+type Tab = "general" | "editor" | "hotkeys" | "vim" | "snippets" | "ime" | "quickadd";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "通用" },
@@ -17,6 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "vim", label: "Vim" },
   { id: "snippets", label: "公式片段" },
   { id: "ime", label: "输入法" },
+  { id: "quickadd", label: "快速添加" },
 ];
 
 const VIMRC_TEMPLATE = `\" bnote vimrc（加载顺序：全局 → 仓库 .bnote/vimrc）
@@ -65,6 +66,7 @@ export function SettingsModal() {
           {tab === "vim" && <VimTab />}
           {tab === "snippets" && <SnippetsTab />}
           {tab === "ime" && <ImeTab />}
+          {tab === "quickadd" && <QuickAddTab />}
         </div>
       </div>
     </Modal>
@@ -479,6 +481,54 @@ function ImeTab() {
         checked={ime.mathKeepsEnglish}
         onChange={(v) => patchIme({ mathKeepsEnglish: v })}
       />
+    </div>
+  );
+}
+
+function QuickAddTab() {
+  const quickAdd = useAppStore((s) => s.settings.quickAdd);
+  const patch = useAppStore((s) => s.patchSettings);
+
+  const update = (i: number, p: Partial<QuickAddCommand>) =>
+    patch({ quickAdd: quickAdd.map((c, j) => (j === i ? { ...c, ...p } : c)) });
+  const remove = (i: number) => patch({ quickAdd: quickAdd.filter((_, j) => j !== i) });
+  const add = () => patch({ quickAdd: [...quickAdd, { name: "", folder: "" }] });
+
+  return (
+    <div className="settings-section">
+      <h3>快速添加命令</h3>
+      <p className="setting-hint">
+        触发「快速添加文件」（默认 ⌘⇧A，可在快捷键页修改）后搜索命令，选中并输入文件名即可在目标文件夹创建笔记；
+        文件夹不存在时会在仓库根目录自动创建，支持 <code>a/b</code> 子路径。改动即时保存。
+      </p>
+      {quickAdd.map((c, i) => (
+        <div className="qa-row" key={i}>
+          <input
+            className="settings-input"
+            placeholder="命令名，如 add bnote file"
+            value={c.name}
+            onChange={(e) => update(i, { name: e.target.value })}
+          />
+          <input
+            className="settings-input mono"
+            placeholder="目标文件夹，如 bnote 或 notes/收集箱"
+            value={c.folder}
+            onChange={(e) => update(i, { folder: e.target.value })}
+          />
+          <button className="btn btn-ghost qa-remove" title="删除命令" onClick={() => remove(i)}>
+            ✕
+          </button>
+        </div>
+      ))}
+      {quickAdd.length === 0 && (
+        <div className="qa-empty">还没有命令，点击下方按钮添加一个（如 add bnote file → bnote）。</div>
+      )}
+      <div className="setting-row">
+        <span />
+        <button className="btn" onClick={add}>
+          添加命令
+        </button>
+      </div>
     </div>
   );
 }

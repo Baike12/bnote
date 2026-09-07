@@ -9,6 +9,7 @@ import {
   insertMathBlock,
   insertWikilink,
   toggleHeading,
+  toggleHeadingAny,
   toggleTodo,
   toggleWrap,
 } from "@/editor/ops";
@@ -42,6 +43,12 @@ const defs: CommandDef[] = [
     },
   },
   { id: "workspace.new-note", title: "新建笔记", category: "工作区", run: () => void actions.newNote() },
+  {
+    id: "workspace.quick-add",
+    title: "快速添加文件",
+    category: "工作区",
+    run: () => useAppStore.getState().setModal("quickadd"),
+  },
   {
     id: "workspace.new-folder",
     title: "新建文件夹",
@@ -120,6 +127,24 @@ const defs: CommandDef[] = [
     run: withView((v) => toggleWrap(v, "~~")),
   },
   { id: "edit.toggle-todo", title: "切换当前行待办状态", category: "编辑", run: withView(toggleTodo) },
+  {
+    id: "edit.toggle-heading",
+    title: "设为 / 取消标题（Tab 升级，Shift+Tab 降级）",
+    category: "编辑",
+    run: withView((v) => {
+      const line = v.state.doc.lineAt(v.state.selection.main.head);
+      const togglingOff = /^(#{1,6})(\s+|$)/.test(line.text);
+      toggleHeadingAny(v);
+      if (!useAppStore.getState().settings.autoNumberHeadings) return;
+      if (togglingOff) {
+        // The heading mark is gone; don't leave its auto number behind.
+        const after = v.state.doc.lineAt(Math.min(line.from, v.state.doc.length));
+        const m = /^(\d+(?:\.\d+)*[ \t]+)/.exec(after.text);
+        if (m) v.dispatch({ changes: { from: after.from, to: after.from + m[1].length, insert: "" } });
+      }
+      renumberHeadings(v);
+    }),
+  },
   ...([1, 2, 3, 4, 5, 6] as const).map((level): CommandDef => ({
     id: `edit.heading-${level}`,
     title: `设为 ${level} 级标题`,
