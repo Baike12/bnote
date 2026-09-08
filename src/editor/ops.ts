@@ -1,9 +1,75 @@
 import type { EditorView } from "@codemirror/view";
 import { EditorSelection } from "@codemirror/state";
+import { markdownLanguage } from "@codemirror/lang-markdown";
+import { syntaxTree } from "@codemirror/language";
+import type { SyntaxNode } from "@lezer/common";
 import { renumberHeadings } from "./numbering";
 import { useAppStore } from "@/state/appStore";
 
 /** Text-editing operations shared by commands and keybindings. */
+
+const BULLET_ITEM_RE = /^([ \t]*)([-*+])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/;
+
+/**
+ * Enter on a bullet / todo line, bnote-style: continue the item with the
+ * EXACT leading whitespace of the current line and repeat the marker, with a
+ * fresh unchecked box. lang-markdown's insertNewlineContinueMarkup would
+ * expand tab indentation to spaces (countColumn), which livePreview then
+ * renders as a much deeper indent than the tab-indented siblings. An empty
+ * item exits the list instead of starting a new one (Obsidian behavior).
+ * Ordered lists, cursors inside the marker and non-markdown contexts fall
+ * through to insertNewlineContinueMarkup.
+ */
+export function enterContinueListItem(view: EditorView): boolean {
+  const state = view.state;
+  let handledAll = true;
+  const changes = state.changeByRange((range) => {
+    const unhandled = () => {
+      handledAll = false;
+      return { range };
+    };
+    if (!range.empty) return unhandled();
+    const pos = range.from;
+    // Inside a fenced code block the markup is literal text — never continue.
+    let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1);
+    for (; node; node = node.parent) {
+      if (node.name === "FencedCode") return unhandled();
+    }
+    if (
+      !markdownLanguage.isActiveAt(state, pos, -1) &&
+      !markdownLanguage.isActiveAt(state, pos, 1)
+    ) {
+      return unhandled();
+    }
+    const line = state.doc.lineAt(pos);
+    const m = BULLET_ITEM_RE.exec(line.text);
+    if (!m) return unhandled();
+    const [, indent, bullet, gap, box] = m;
+    const markerLen = indent.length + bullet.length + gap.length + (box?.length ?? 0);
+    if (pos < line.from + markerLen) return unhandled(); // cursor sits on the marker
+
+    if (m[5].trim() === "") {
+      // Empty item: exit the list — strip marker and anything after it.
+      return {
+        changes: { from: line.from + indent.length, to: line.to, insert: "" },
+        range: EditorSelection.cursor(line.from + indent.length),
+      };
+    }
+    // Continue / split: absorb surrounding whitespace like lang-markdown does.
+    let from = pos;
+    let to = pos;
+    while (from > line.from && /\s/.test(line.text[from - line.from - 1])) from--;
+    while (to < line.to && /\s/.test(line.text[to - line.from])) to++;
+    const newMarker = box ? `${bullet} [ ] ` : `${bullet} `;
+    return {
+      changes: { from, to, insert: state.lineBreak + indent + newMarker },
+      range: EditorSelection.cursor(from + 1 + indent.length + newMarker.length),
+    };
+  });
+  if (!handledAll) return false;
+  view.dispatch(state.update(changes, { scrollIntoView: true, userEvent: "input" }));
+  return true;
+}
 
 export function toggleHeading(view: EditorView, level: number) {
   const state = view.state;

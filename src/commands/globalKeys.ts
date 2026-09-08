@@ -1,5 +1,6 @@
 import { allCommands, runCommand } from "./registry";
 import { bindingsForCommand, eventToKey } from "./keys";
+import { recordCommandChord } from "./lastChord";
 
 /**
  * Command keybindings are dispatched at the window level (capture phase) so
@@ -23,6 +24,7 @@ export function installGlobalKeybindings() {
         if (bindingsForCommand(cmd.id).includes(key)) {
           e.preventDefault();
           e.stopPropagation();
+          recordCommandChord(e);
           runCommand(cmd.id);
           return;
         }

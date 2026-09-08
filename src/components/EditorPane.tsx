@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { createEditor, loadDocument } from "@/editor/setup";
 import { editorApi } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
+import { cancelCursorSave, scheduleCursorSave } from "@/editor/cursorMemory";
 import { applySettingsToEditor, newNote, openNote, saveNote } from "@/app/actions";
 import { useAppStore } from "@/state/appStore";
 import { currentVimMode } from "@/editor/vim/vim";
@@ -24,12 +25,18 @@ export function EditorPane() {
         store.markDirty(true);
         if (store.settings.autoSave) scheduleAutosave();
       },
-      onCursorMoved: () => updateStatus(),
+      onCursorMoved: () => {
+        updateStatus();
+        // Remember where the user is per file (debounced; flushed on switch).
+        const path = useAppStore.getState().currentFile;
+        if (path) scheduleCursorSave(path, view);
+      },
     });
     editorApi.view = view;
     void applySettingsToEditor();
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      cancelCursorSave();
       view.destroy();
       editorApi.view = null;
     };

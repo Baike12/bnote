@@ -292,6 +292,14 @@ button {
 .cm-scroller:not(.cm-vimMode) .cm-line.cm-activeLine {
   background: transparent !important;
 }
+/* Visual mode: band every selected line (same tone as the current-line shade),
+   so the selection extent reads as full-width bands instead of text-only blocks. */
+.cm-line.cm-vimVisualLine {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+.cm-line.md-hline.cm-vimVisualLine {
+  background-clip: content-box !important;
+}
 
 .cm-line {
   padding: 0 2px;
@@ -1059,6 +1067,62 @@ button {
   display: flex;
   justify-content: flex-end;
   padding: 8px 12px 12px;
+}
+
+/* ===== 文件夹选择 ===== */
+
+.folder-suggest {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.qa-row .folder-suggest {
+  flex: 0.8;
+}
+.folder-suggest-pop {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #00000066;
+  padding: 4px;
+}
+.folder-suggest-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.folder-suggest-item.active {
+  background: var(--accent-dim);
+  color: #fff;
+}
+.folder-suggest-name {
+  color: var(--text);
+}
+.folder-suggest-item.active .folder-suggest-name {
+  color: #fff;
+}
+.folder-suggest-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-suggest-item.active .folder-suggest-path {
+  color: #ffffffaa;
 }
 .switcher-hint {
   padding: 6px 12px;

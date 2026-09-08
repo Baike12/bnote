@@ -60,6 +60,31 @@ export interface PersistedConfig {
   /** Recently-opened absolute note paths, most recent first (quick switcher). */
   recentFiles?: string[];
   settings?: Partial<Settings>;
+  /** Last cursor position per absolute note path (remember-cursor-position). */
+  cursorPositions?: Record<string, { pos: number; scroll: number }>;
+}
+
+/** Hard cap on remembered files — dropping the oldest entry beyond it. */
+const CURSOR_POSITIONS_CAP = 100;
+
+/**
+ * Records where the user left off in a note (cursor offset + scroll top) so
+ * reopening it lands in the same spot. No-op (and no re-persist) when nothing
+ * changed since the last record.
+ */
+export function rememberCursorPosition(path: string, pos: number, scroll: number) {
+  const snap = getConfigSnapshot();
+  const saved = snap.cursorPositions?.[path];
+  if (saved && saved.pos === pos && saved.scroll === scroll) return;
+  const map: NonNullable<PersistedConfig["cursorPositions"]> = {
+    ...(snap.cursorPositions ?? {}),
+    [path]: { pos, scroll },
+  };
+  const keys = Object.keys(map);
+  if (keys.length > CURSOR_POSITIONS_CAP) {
+    for (const key of keys.slice(0, keys.length - CURSOR_POSITIONS_CAP)) delete map[key];
+  }
+  persistConfig({ ...snap, cursorPositions: map });
 }
 
 interface AppState {
@@ -97,12 +122,32 @@ interface AppState {
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Debounced persistence of app config (vault, last file, settings). */
+/**
+ * Debounced persistence of app config (vault, last file, settings). The
+ * in-memory snapshot is kept identical to the latest write intent, so a later
+ * partial save (e.g. a cursor-position update) never rolls back fields that
+ * an earlier save had changed.
+ */
 export function persistConfig(config: PersistedConfig) {
+  configSnapshot = config;
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
-    void api.saveAppConfig(config).catch((e) => console.warn("persist failed", e));
+    persistTimer = null;
+    void api.saveAppConfig(configSnapshot).catch((e) => console.warn("persist failed", e));
   }, 300);
+}
+
+/** True while a debounced write is still pending (flush before quitting). */
+export function hasPendingPersist() {
+  return persistTimer !== null;
+}
+
+/** Writes the pending config to disk immediately (app close / blur). */
+export function flushPersistConfig() {
+  if (!persistTimer) return;
+  clearTimeout(persistTimer);
+  persistTimer = null;
+  void api.saveAppConfig(configSnapshot).catch((e) => console.warn("persist failed", e));
 }
 
 export const useAppStore = create<AppState>((set, get) => ({

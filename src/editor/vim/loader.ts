@@ -1,7 +1,7 @@
 import { api } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { parseVimrc } from "./vimrc";
-import { applyNativeMappings } from "./vim";
+import { applyNativeMappings, setVimClipboardUnnamed } from "./vim";
 import type { VimMapping } from "./vimrc";
 
 /** Loads the global vimrc plus the vault-level `.bnote/vimrc` (vault wins),
@@ -14,15 +14,18 @@ export async function loadVimrc(): Promise<VimMapping[]> {
 
   const merged: VimMapping[] = [];
   const errors: string[] = [];
+  let clipboardUnnamed = false;
   for (const source of [global, vault]) {
     if (!source) continue;
     const res = parseVimrc(source);
     merged.push(...res.mappings);
     errors.push(...res.errors);
+    clipboardUnnamed = clipboardUnnamed || res.clipboardUnnamed;
   }
   if (errors.length) {
     console.warn("[bnote] vimrc warnings:", errors);
   }
+  setVimClipboardUnnamed(clipboardUnnamed);
   applyNativeMappings(merged);
   return merged;
 }

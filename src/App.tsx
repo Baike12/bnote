@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "@/lib/tauri";
 import "./commands/builtin";
 import { runCommand } from "@/commands/registry";
@@ -9,6 +10,9 @@ import { registerVimExCommands } from "@/editor/vim/vim";
 import { reloadDocument } from "@/editor/setup";
 import { editorApi } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
+import { flushCursorSave, hasPendingCursorSave } from "@/editor/cursorMemory";
+import { flushPersistConfig, hasPendingPersist } from "@/state/appStore";
+import { imeOnWindowBlur, imeOnWindowFocus } from "@/editor/imeSwitch";
 import {
   applySettingsToEditor,
   openVault,
@@ -78,8 +82,80 @@ export default function App() {
   useEffect(() => {
     const unsub = useAppStore.subscribe((s, prev) => {
       if (s.settings !== prev.settings) void applySettingsToEditor();
+      // A modal (settings / switcher / palette / quick add) handing control
+      // back: put the caret focus on the note again. Deferred past the modal
+      // unmount, and skipped when something else already took focus (e.g.
+      // openNote focusing the freshly loaded note).
+      if (s.modal === null && prev.modal !== null) {
+        setTimeout(restoreEditorFocus, 0);
+      }
     });
     return unsub;
+  }, []);
+
+  // Quit-safety: the cursor save (300ms) and config write (300ms) are both
+  // debounced — flush them when the app is hidden/closed, or the last cursor
+  // move before a Cmd-Q would be lost and "remember position" breaks.
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState !== "hidden") return;
+      flushCursorSave();
+      flushPersistConfig();
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    let unlisten: (() => void) | undefined;
+    try {
+      void getCurrentWindow()
+        .onCloseRequested(async (event) => {
+          if (!hasPendingCursorSave() && !hasPendingPersist()) return;
+          event.preventDefault();
+          flushCursorSave();
+          flushPersistConfig();
+          await getCurrentWindow().destroy();
+        })
+        .then((off) => {
+          unlisten = off;
+        });
+    } catch {
+      // not running under Tauri
+    }
+    return () => {
+      document.removeEventListener("visibilitychange", onHidden);
+      unlisten?.();
+    };
+  }, []);
+
+  // Window activation: focus belongs on the current line again, and the IME
+  // scope (forced source restored on blur, re-applied on focus) kicks in.
+  // DOM focus/blur plus Tauri's window events — handlers are idempotent, so
+  // double delivery from either channel is harmless.
+  useEffect(() => {
+    const onBlur = () => {
+      flushCursorSave();
+      imeOnWindowBlur();
+    };
+    const onFocus = () => {
+      imeOnWindowFocus();
+      restoreEditorFocus();
+    };
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    let unlisten: (() => void) | undefined;
+    try {
+      // getCurrentWindow() 在非 Tauri 环境（浏览器 harness）会同步抛错，
+      // 此时只有 DOM focus/blur 生效，窗口事件订阅直接跳过。
+      void getCurrentWindow()
+        .onFocusChanged(({ payload }) => (payload ? onFocus() : onBlur()))
+        .then((off) => {
+          unlisten = off;
+        });
+    } catch {
+      // not running under Tauri
+    }
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      unlisten?.();
+    };
   }, []);
 
   const breadcrumb = (() => {
@@ -126,6 +202,19 @@ export default function App() {
       <Toast />
     </div>
   );
+}
+
+/**
+ * Returns keyboard focus to the note's current line when nothing in the
+ * window holds it (activeElement fell back to <body>) — e.g. after
+ * alt-tabbing back to bnote or closing a modal. Never yanks focus from the
+ * sidebar tree or a focused input.
+ */
+function restoreEditorFocus() {
+  if (useAppStore.getState().modal) return;
+  const ae = document.activeElement;
+  if (ae && ae !== document.body && ae !== document.documentElement) return;
+  editorApi.view?.focus();
 }
 
 async function handleVaultChanged(paths: string[]) {

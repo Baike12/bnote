@@ -4,6 +4,7 @@ import { useAppStore, setConfigSnapshot, getConfigSnapshot } from "@/state/appSt
 import { loadDocument } from "@/editor/setup";
 import { getView } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
+import { flushCursorSave, restoreSavedCursor } from "@/editor/cursorMemory";
 import { reconfigureLivePreview, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
 import { configureLivePreview } from "@/editor/livePreview";
 import { loadVimrc } from "@/editor/vim/loader";
@@ -120,12 +121,16 @@ export async function openNote(path: string): Promise<void> {
     useAppStore.getState().showToast("编辑器尚未就绪，无法打开文件");
     return;
   }
+  // The pending save still refers to the previously open doc — write it out
+  // before the swap, then replay this note's remembered position.
+  flushCursorSave();
   const content = await api.readFile(path);
   loadDocument(view, content);
   loadedFile.current = path;
   useAppStore.getState().openFile(path);
   // setState() reset compartment values — re-apply current settings.
   await applySettingsToEditor();
+  restoreSavedCursor(view, path);
   view.focus();
 }
 

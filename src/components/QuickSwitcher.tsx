@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
-import { fuzzySort } from "@/lib/fuzzy";
+import { buildSwitcherResults } from "@/lib/switcher";
 import { inputGuards } from "@/lib/inputGuards";
 import { useAppStore } from "@/state/appStore";
 import { openNote } from "@/app/actions";
 import { joinPath } from "@/lib/path";
-import { api } from "@/lib/tauri";
+import { recentCommandChord } from "@/commands/lastChord";
+import { imeApply, imeSyncToEditor } from "@/editor/imeSwitch";
+
+/** Active while the switcher is open — the chord-repeat path calls into it. */
+let cycleHandler: ((dir: 1 | -1) => boolean) | null = null;
+
+/** Chord repeat (⌘S ⌘S … while the switcher is open) moves the selection. */
+export function cycleQuickSwitcher(dir: 1 | -1): boolean {
+  return cycleHandler ? cycleHandler(dir) : false;
+}
 
 export function QuickSwitcher() {
   const open = useAppStore((s) => s.modal === "switcher");
@@ -13,55 +22,34 @@ export function QuickSwitcher() {
   const vaultPath = useAppStore((s) => s.vaultPath);
   const flatFiles = useAppStore((s) => s.flatFiles);
   const recentFiles = useAppStore((s) => s.recentFiles);
+  const currentFile = useAppStore((s) => s.currentFile);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Mirrors for the keyup/keydown listeners registered once per open.
+  const resultsRef = useRef<{ item: string; positions: number[] }[]>([]);
+  const indexRef = useRef(index);
+  const cycledRef = useRef(false);
+  const chordKeyRef = useRef<string | null>(null);
+
   // IME follow: file search is ASCII typing — switch to the English source
-  // while the switcher is open, restore whatever was active before it.
+  // while the switcher is open, hand it back on close. Routed through the
+  // shared IME scope so leaving bnote mid-search restores the user's source.
   useEffect(() => {
     if (!open) return;
     const { settings } = useAppStore.getState();
     if (!settings.ime.enabled) return;
-    let prevSource: string | null = null;
-    let closed = false;
-    void api
-      .getCurrentInputSource()
-      .then((id) => {
-        if (closed) return api.setInputSource(id).catch(() => {});
-        prevSource = id;
-        return api.setInputSource(settings.ime.normalSource);
-      })
-      .catch(() => {});
-    return () => {
-      closed = true;
-      if (prevSource) void api.setInputSource(prevSource).catch(() => {});
-    };
+    imeApply(settings.ime.normalSource);
+    return () => imeSyncToEditor();
   }, [open]);
 
-  const results = useMemo(() => {
-    // Recency rank: absolute stored paths → per-vault relative rank. Files
-    // never opened rank after everything that was.
-    const rank = new Map(recentFiles.map((p, i) => [p, i] as const));
-    const rankOf = (rel: string) =>
-      (vaultPath ? rank.get(joinPath(vaultPath, rel)) : undefined) ?? Number.POSITIVE_INFINITY;
-    const q = query.trim();
-    if (!q) {
-      // Empty query = jump list: most recently opened first (Obsidian-style).
-      return [...flatFiles]
-        .sort((a, b) => rankOf(a) - rankOf(b))
-        .map((item) => ({ item, positions: [] as number[] }));
-    }
-    // Haystack is the extension-stripped vault path, so folder names are
-    // searchable too (Obsidian-style); space-separated terms AND together.
-    return fuzzySort(
-      flatFiles,
-      (f) => f.replace(/\.(md|markdown|txt)$/i, ""),
-      q,
-      50,
-      (a, b) => rankOf(a) - rankOf(b),
-    );
-  }, [flatFiles, recentFiles, vaultPath, query]);
+  const results = useMemo(
+    () => buildSwitcherResults(flatFiles, recentFiles, vaultPath, query, currentFile),
+    [flatFiles, recentFiles, vaultPath, query, currentFile],
+  );
+  resultsRef.current = results;
+  indexRef.current = index;
 
   const close = () => {
     setModal(null);
@@ -70,11 +58,57 @@ export function QuickSwitcher() {
   };
 
   const choose = (i: number) => {
-    const rel = results[i]?.item;
+    const rel = resultsRef.current[i]?.item;
     if (!rel || !vaultPath) return;
     close();
     void openNote(joinPath(vaultPath, rel));
   };
+
+  // Hold-the-modifier cycling: the opening chord (e.g. ⌘S) repeats move the
+  // selection — repeats of a bound chord re-run the command, which calls
+  // cycleQuickSwitcher(+1). Shift+chord is not bound to anything, so it lands
+  // here and moves the selection back up. Releasing the modifier jumps to the
+  // selection, but only after at least one repeat — otherwise the plain open
+  // flow (type a query first) would be impossible, since typing needs the
+  // modifier gone.
+  useEffect(() => {
+    if (!open) return;
+    chordKeyRef.current = recentCommandChord()?.key ?? null;
+
+    cycleHandler = (dir) => {
+      const n = resultsRef.current.length;
+      if (n === 0) return false;
+      cycledRef.current = true;
+      setIndex((i) => (i + dir + n) % n);
+      return true;
+    };
+
+    const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+    const modKey = isMac ? "Meta" : "Control";
+    const onKeyDown = (e: KeyboardEvent) => {
+      const chord = chordKeyRef.current;
+      if (!chord || !e.shiftKey || !(e.metaKey || e.ctrlKey)) return;
+      if (e.key.toLowerCase() !== chord) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cycleHandler?.(-1);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key !== modKey && e.key !== "OS") return;
+      if (!cycledRef.current) return;
+      cycledRef.current = false;
+      choose(indexRef.current);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      cycleHandler = null;
+      cycledRef.current = false;
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   return (
     <Modal open={open} onClose={close} width={620}>

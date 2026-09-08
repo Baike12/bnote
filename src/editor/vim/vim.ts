@@ -1,7 +1,12 @@
 import { vim, Vim, getCM } from "@replit/codemirror-vim";
+
+// Re-exported for harness/debug access to the underlying engine singleton.
+export { Vim, getCM };
 import type { EditorView, KeyBinding } from "@codemirror/view";
+import { keymap, ViewPlugin, Decoration } from "@codemirror/view";
+import type { DecorationSet, ViewUpdate } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import { RangeSetBuilder } from "@codemirror/state";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import type { VimMapping, VimMode } from "./vimrc";
 
@@ -34,6 +39,150 @@ export function registerVimExCommands(run: RunCommand) {
 
 export function vimModeExtension(): Extension {
   return vim();
+}
+
+/* ---- clipboard=unnamed: sync the vim unnamed register with the system clipboard.
+   The underlying vim engine already maps register "+" to navigator.clipboard;
+   here we patch the unnamed register '"' to follow it: every yank/delete/change
+   writes to the clipboard, and p/P reads it back. ---- */
+
+let clipboardUnnamed = false;
+let clipboardPatched = false;
+
+export function setVimClipboardUnnamed(on: boolean) {
+  clipboardUnnamed = on;
+  if (!on || clipboardPatched) return;
+  clipboardPatched = true;
+  try {
+    const VimAny = Vim as unknown as Record<string, any>;
+    const controller = VimAny.getRegisterController();
+    // Prototype-level patch survives the engine resetting its global state.
+    const proto = Object.getPrototypeOf(controller);
+    const origPush = proto.pushText;
+    proto.pushText = function (
+      registerName: string,
+      operator: string,
+      text: string,
+      linewise: boolean,
+      blockwise: boolean,
+    ) {
+      origPush.call(this, registerName, operator, text, linewise, blockwise);
+      if (clipboardUnnamed && registerName !== "_" && registerName !== "+") {
+        const out = linewise && !text.endsWith("\n") ? `${text}\n` : text;
+        void navigator.clipboard.writeText(out).catch(() => {});
+      }
+    };
+    // Redefine the paste action: when clipboard=unnamed and no explicit
+    // register was given, read the system clipboard first. `this` inside a
+    // vim action is the engine's actions object (continuePaste lives there).
+    VimAny.defineAction("paste", function (
+      this: Record<string, any>,
+      cm: unknown,
+      actionArgs: { registerName?: string },
+      vimState: unknown,
+    ) {
+      const controller = VimAny.getRegisterController();
+      const name = actionArgs.registerName || "";
+      if (clipboardUnnamed && name === "") {
+        const register = controller.getRegister("");
+        navigator.clipboard
+          .readText()
+          .then((value) => {
+            if (value) register.setText(value, value.endsWith("\n"), false);
+            this.continuePaste(cm, actionArgs, vimState, register.toString(), register);
+          })
+          .catch(() => this.continuePaste(cm, actionArgs, vimState, register.toString(), register));
+        return;
+      }
+      // Default engine behavior: "+" reads the clipboard, others read the register.
+      const register = controller.getRegister(name);
+      if (name === "+") {
+        navigator.clipboard
+          .readText()
+          .then((value) => this.continuePaste(cm, actionArgs, vimState, value, register))
+          .catch(() => {});
+      } else {
+        this.continuePaste(cm, actionArgs, vimState, register.toString(), register);
+      }
+    });
+  } catch (e) {
+    console.warn("[bnote] clipboard=unnamed patch failed", e);
+  }
+}
+
+/* ---- visual-mode line shade: band every line touched by a (non-empty)
+   selection while vim visual mode is on, mirroring the current-line shade. ---- */
+
+const visualLineDeco = Decoration.line({ class: "cm-vimVisualLine" });
+
+interface Pos {
+  line: number;
+  ch: number;
+}
+
+export function vimVisualHighlight(): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      private lastVisual: boolean;
+
+      constructor(view: EditorView) {
+        this.lastVisual = !!vimStateOf(view)?.visualMode;
+        this.decorations = this.build(view);
+      }
+
+      update(u: ViewUpdate) {
+        const visual = !!vimStateOf(u.view)?.visualMode;
+        if (u.docChanged || u.selectionSet || u.viewportChanged || visual !== this.lastVisual) {
+          this.lastVisual = visual;
+          this.decorations = this.build(u.view);
+        }
+      }
+
+      build(view: EditorView): DecorationSet {
+        const vimState = vimStateOf(view) as
+          | { visualMode?: boolean; visualLine?: boolean; sel?: { anchor?: Pos; head?: Pos } }
+          | null;
+        if (!vimState?.visualMode) return Decoration.set([]);
+        const doc = view.state.doc;
+        const lines = new Set<number>();
+        // The engine tracks the visual range in vim.sel (CodeMirror 5-style
+        // 0-based line/ch); linewise visual often keeps the CM selection empty.
+        const sel = vimState.sel;
+        if (sel?.anchor != null && sel?.head != null) {
+          const aLine = Math.min(sel.anchor.line, sel.head.line) + 1;
+          const bLine = Math.max(sel.anchor.line, sel.head.line) + 1;
+          const endLine = doc.lines;
+          const from = Math.max(1, Math.min(aLine, endLine));
+          const to = Math.max(1, Math.min(bLine, endLine));
+          const hasExtent =
+            sel.anchor.line !== sel.head.line || sel.anchor.ch !== sel.head.ch;
+          if (!hasExtent && !vimState.visualLine) {
+            // Charwise visual with a collapsed range: nothing visible yet.
+            return Decoration.set([]);
+          }
+          for (let n = from; n <= to; n++) lines.add(n);
+        } else {
+          for (const range of view.state.selection.ranges) {
+            if (range.empty) continue;
+            // A selection ending at a line start really ends on the previous line.
+            let to = range.to;
+            if (to > range.from && to === doc.lineAt(to).from) to -= 1;
+            for (let n = doc.lineAt(range.from).number; n <= doc.lineAt(to).number; n++) {
+              lines.add(n);
+            }
+          }
+        }
+        const builder = new RangeSetBuilder<Decoration>();
+        for (const n of [...lines].sort((a, b) => a - b)) {
+          const line = doc.line(n);
+          builder.add(line.from, line.from, visualLineDeco);
+        }
+        return builder.finish();
+      }
+    },
+    { decorations: (v) => v.decorations },
+  );
 }
 
 function vimStateOf(view: EditorView): { insertMode?: boolean; visualMode?: boolean } | null {

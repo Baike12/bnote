@@ -10,8 +10,8 @@ import { typewriterExtension } from "./typewriter";
 import { imeSwitchExtension } from "./imeSwitch";
 import { snippetsExtension } from "./snippets/extension";
 import { installMathMotionClamp } from "./motionClamp";
-import { vimModeExtension, commandMappingKeymap } from "./vim/vim";
-import { adjustHeadingLevel } from "./ops";
+import { vimModeExtension, commandMappingKeymap, vimVisualHighlight } from "./vim/vim";
+import { adjustHeadingLevel, enterContinueListItem } from "./ops";
 import type { VimMapping } from "./vim/vimrc";
 
 export interface EditorCallbacks {
@@ -54,6 +54,9 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     highlightSelectionMatches(),
 
     keymap.of([
+      // Bullet/todo Enter first: keeps tab indentation intact and exits empty
+      // items (see ops.ts) — lang-markdown's continuation expands tabs.
+      { key: "Enter", run: enterContinueListItem },
       // Markdown-aware Enter/Backspace: continue lists, but do NOT carry
       // indentation into code fences (a plain newline keeps fences closable).
       { key: "Enter", run: insertNewlineContinueMarkup },
@@ -130,7 +133,9 @@ export function reconfigureVim(view: EditorView, enabled: boolean, mappings: Vim
     effects: [
       // highlightActiveLine rides along with vim: CSS shows the shade only
       // while the vim plugin tags the scroller `.cm-vimMode` (normal/visual).
-      vimCompartment.reconfigure(enabled ? [vimModeExtension(), highlightActiveLine()] : []),
+      vimCompartment.reconfigure(
+        enabled ? [vimModeExtension(), highlightActiveLine(), vimVisualHighlight()] : [],
+      ),
       vimCommandMapCompartment.reconfigure(enabled ? commandMappingKeymap(mappings) : []),
     ],
   });

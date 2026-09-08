@@ -14,6 +14,8 @@ export interface VimMapping {
 export interface VimrcResult {
   mappings: VimMapping[];
   errors: string[];
+  /** `set clipboard=unnamed` (or cb=…) — sync the vim unnamed register with the system clipboard. */
+  clipboardUnnamed: boolean;
 }
 
 const EX_ALIASES: Record<string, string> = {
@@ -58,6 +60,7 @@ function stripComment(line: string): string {
 export function parseVimrc(source: string): VimrcResult {
   const mappings: VimMapping[] = [];
   const errors: string[] = [];
+  let clipboardUnnamed = false;
 
   for (const rawLine of source.split("\n")) {
     const line = stripComment(rawLine).trim();
@@ -66,7 +69,11 @@ export function parseVimrc(source: string): VimrcResult {
     const cmd = parts[0];
 
     if (cmd === "set") {
-      // Options like `number` are not applicable to bnote; accepted silently.
+      // `set clipboard=unnamed` wires vim yank/put to the system clipboard;
+      // other options (number, scrolloff…) are accepted silently.
+      const opt = parts[1] ?? "";
+      const m = /^clipboard(?:=|\^=)(.+)$/.exec(opt);
+      if (m && /(^|,)unnamed(,|$)/.test(m[1])) clipboardUnnamed = true;
       continue;
     }
 
@@ -119,5 +126,5 @@ export function parseVimrc(source: string): VimrcResult {
     errors.push(`unsupported vimrc command: ${cmd}`);
   }
 
-  return { mappings, errors };
+  return { mappings, errors, clipboardUnnamed };
 }

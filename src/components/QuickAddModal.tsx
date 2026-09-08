@@ -4,7 +4,7 @@ import { fuzzySort } from "@/lib/fuzzy";
 import { inputGuards } from "@/lib/inputGuards";
 import { useAppStore } from "@/state/appStore";
 import { quickAddNote } from "@/app/actions";
-import { api } from "@/lib/tauri";
+import { imeApply, imeSyncToEditor } from "@/editor/imeSwitch";
 
 /**
  * Quick add (Obsidian QuickAdd-style, simplified): pick one of the configured
@@ -32,25 +32,14 @@ export function QuickAddModal() {
 
   // The pick stage is ASCII search (command names) — switch to the English
   // input source like the quick switcher; naming a note may be Chinese, so
-  // the source is restored as soon as a command is picked.
+  // the source is restored as soon as a command is picked. Both go through
+  // the shared IME scope (blur hands the original source back to the system).
   useEffect(() => {
     if (!open || picked) return;
     const { settings } = useAppStore.getState();
     if (!settings.ime.enabled) return;
-    let prevSource: string | null = null;
-    let closed = false;
-    void api
-      .getCurrentInputSource()
-      .then((id) => {
-        if (closed) return api.setInputSource(id).catch(() => {});
-        prevSource = id;
-        return api.setInputSource(settings.ime.normalSource);
-      })
-      .catch(() => {});
-    return () => {
-      closed = true;
-      if (prevSource) void api.setInputSource(prevSource).catch(() => {});
-    };
+    imeApply(settings.ime.normalSource);
+    return () => imeSyncToEditor();
   }, [open, picked]);
 
   const results = useMemo(

@@ -1,5 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { registerCommands, runCommand, type CommandDef } from "./registry";
+import { cycleQuickSwitcher } from "@/components/QuickSwitcher";
 import { getView } from "@/editor/api";
 import {
   insertCodeBlock,
@@ -85,7 +86,12 @@ const defs: CommandDef[] = [
     id: "nav.quick-switcher",
     title: "快速跳转到文件",
     category: "导航",
-    run: () => useAppStore.getState().setModal("switcher"),
+    run: () => {
+      const { modal } = useAppStore.getState();
+      // Chord repeat while the switcher is open cycles the list (hold ⌘S…).
+      if (modal === "switcher") cycleQuickSwitcher(1);
+      else useAppStore.getState().setModal("switcher");
+    },
   },
   {
     id: "nav.command-palette",
