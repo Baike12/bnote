@@ -6,6 +6,7 @@ import { clearOverride, resetAllOverrides, setOverride } from "@/commands/keybin
 import { setHotkeyRecording } from "@/commands/globalKeys";
 import { useAppStore, type ImeSettings, type QuickAddCommand } from "@/state/appStore";
 import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
+import { inputGuards } from "@/lib/inputGuards";
 import { applySettingsToEditor, openVault, pickVaultDialog, reloadSnippetsFromVault } from "@/app/actions";
 
 type Tab = "general" | "editor" | "hotkeys" | "vim" | "snippets" | "ime" | "quickadd";
@@ -229,6 +230,7 @@ function HotkeysTab() {
         placeholder="搜索命令…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
+        {...inputGuards}
       />
       <div className="chip-row">
         {(
@@ -508,12 +510,14 @@ function QuickAddTab() {
             placeholder="命令名，如 add bnote file"
             value={c.name}
             onChange={(e) => update(i, { name: e.target.value })}
+            {...inputGuards}
           />
           <input
             className="settings-input mono"
             placeholder="目标文件夹，如 bnote 或 notes/收集箱"
             value={c.folder}
             onChange={(e) => update(i, { folder: e.target.value })}
+            {...inputGuards}
           />
           <button className="btn btn-ghost qa-remove" title="删除命令" onClick={() => remove(i)}>
             ✕

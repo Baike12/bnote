@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { fuzzySort } from "@/lib/fuzzy";
+import { inputGuards } from "@/lib/inputGuards";
 import { useAppStore } from "@/state/appStore";
 import { openNote } from "@/app/actions";
 import { joinPath } from "@/lib/path";
@@ -100,6 +101,7 @@ export function QuickSwitcher() {
               choose(index);
             }
           }}
+          {...inputGuards}
         />
         <div className="switcher-results">
           {results.map(({ item: rel }, i) => (

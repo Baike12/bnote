@@ -75,6 +75,14 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
       "&.cm-focused": { outline: "none" },
       ".cm-content": { caretColor: "var(--accent, #f5a83c)" },
     }),
+    // Suppress the macOS inline predictive-text / autocorrect popup while
+    // typing English in the note body.
+    EditorView.contentAttributes.of({
+      autocorrect: "off",
+      autocapitalize: "off",
+      autocomplete: "off",
+      spellcheck: "false",
+    }),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) callbacks.onDocChanged();
       if (u.selectionSet || u.docChanged) callbacks.onCursorMoved();

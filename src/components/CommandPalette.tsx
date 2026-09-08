@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Modal } from "./Modal";
 import { fuzzySort } from "@/lib/fuzzy";
+import { inputGuards } from "@/lib/inputGuards";
 import { allCommands } from "@/commands/registry";
 import { bindingsForCommand, formatBinding } from "@/commands/keys";
 import { useAppStore } from "@/state/appStore";
@@ -53,6 +54,7 @@ export function CommandPalette() {
               run(index);
             }
           }}
+          {...inputGuards}
         />
         <div className="switcher-results">
           {results.map(({ item }, i) => (

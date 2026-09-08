@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "./Modal";
 import { fuzzySort } from "@/lib/fuzzy";
+import { inputGuards } from "@/lib/inputGuards";
 import { useAppStore } from "@/state/appStore";
 import { quickAddNote } from "@/app/actions";
 import { api } from "@/lib/tauri";
@@ -114,6 +115,7 @@ export function QuickAddModal() {
                   setPicked(null);
                 }
               }}
+              {...inputGuards}
             />
             <div className="switcher-results">
               <div
@@ -152,6 +154,7 @@ export function QuickAddModal() {
                   pick(index);
                 }
               }}
+              {...inputGuards}
             />
             <div className="switcher-results">
               {results.map(({ item: cmd }, i) => (
