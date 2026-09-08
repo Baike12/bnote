@@ -17,8 +17,10 @@ const BULLET_ITEM_RE = /^([ \t]*)([-*+])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/;
  * expand tab indentation to spaces (countColumn), which livePreview then
  * renders as a much deeper indent than the tab-indented siblings. An empty
  * item exits the list instead of starting a new one (Obsidian behavior).
- * Ordered lists, cursors inside the marker and non-markdown contexts fall
- * through to insertNewlineContinueMarkup.
+ * Ordered lists and non-markdown contexts fall
+ * through to insertNewlineContinueMarkup. A cursor sitting on the marker
+ * (e.g. right after toggling the checkbox) continues the item from its end,
+ * and a cursor before the bullet opens a blank line above.
  */
 export function enterContinueListItem(view: EditorView): boolean {
   const state = view.state;
@@ -29,7 +31,7 @@ export function enterContinueListItem(view: EditorView): boolean {
       return { range };
     };
     if (!range.empty) return unhandled();
-    const pos = range.from;
+    let pos = range.from;
     // Inside a fenced code block the markup is literal text — never continue.
     let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1);
     for (; node; node = node.parent) {
@@ -46,7 +48,22 @@ export function enterContinueListItem(view: EditorView): boolean {
     if (!m) return unhandled();
     const [, indent, bullet, gap, box] = m;
     const markerLen = indent.length + bullet.length + gap.length + (box?.length ?? 0);
-    if (pos < line.from + markerLen) return unhandled(); // cursor sits on the marker
+    if (pos < line.from + markerLen) {
+      // Cursor on the leading whitespace or the marker itself (e.g. right
+      // where toggling the checkbox drops it). Falling through to
+      // lang-markdown here expands tab indent to spaces — the deep-indent
+      // bug — so handle these positions directly.
+      if (pos <= line.from + indent.length) {
+        // Before the bullet: plain blank line above (no indent copy — the
+        // item line already carries its own).
+        return {
+          changes: { from: line.from, insert: state.lineBreak },
+          range: EditorSelection.cursor(line.from + state.lineBreak.length),
+        };
+      }
+      // On the bullet/gap/box: continue with a fresh item from the line end.
+      pos = line.to;
+    }
 
     if (m[5].trim() === "") {
       // Empty item: exit the list — strip marker and anything after it.

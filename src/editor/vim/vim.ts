@@ -1,4 +1,4 @@
-import { vim, Vim, getCM } from "@replit/codemirror-vim";
+import { vim, Vim, getCM, CodeMirror } from "@replit/codemirror-vim";
 
 // Re-exported for harness/debug access to the underlying engine singleton.
 export { Vim, getCM };
@@ -6,7 +6,7 @@ import type { EditorView, KeyBinding } from "@codemirror/view";
 import { keymap, ViewPlugin, Decoration } from "@codemirror/view";
 import type { DecorationSet, ViewUpdate } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
-import { RangeSetBuilder } from "@codemirror/state";
+import { EditorSelection, RangeSetBuilder } from "@codemirror/state";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import type { VimMapping, VimMode } from "./vimrc";
 
@@ -38,7 +38,77 @@ export function registerVimExCommands(run: RunCommand) {
 }
 
 export function vimModeExtension(): Extension {
+  patchVimNewlineIndent();
   return vim();
+}
+
+/* ---- vim o/O indent compat: the engine implements `o`/`O` via CM6's
+   insertNewlineAndIndent, which expands a tab indent to spaces (tabStop
+   columns). Vim copies the leading whitespace verbatim — patch the shim
+   command and the open-line action so o/O keep tabs and exact spaces
+   (O takes the CURRENT line's indent, not the line above's). ---- */
+
+let newlineIndentPatched = false;
+
+function patchVimNewlineIndent() {
+  if (newlineIndentPatched) return;
+  newlineIndentPatched = true;
+  try {
+    const VimAny = Vim as unknown as Record<string, any>;
+    const commands = (CodeMirror as unknown as {
+      commands: Record<string, ((cm: { cm6: EditorView }) => void) | undefined>;
+    }).commands;
+    // Safety net for other engine paths that newline-and-indent.
+    commands.newlineAndIndent = (cm) => {
+      const view = cm.cm6;
+      const state = view.state;
+      view.dispatch(
+        state.update(
+          state.changeByRange((range) => {
+            const line = state.doc.lineAt(range.head);
+            const indent = /^[ \t]*/.exec(line.text)?.[0] ?? "";
+            return {
+              changes: { from: range.head, insert: state.lineBreak + indent },
+              range: EditorSelection.cursor(range.head + state.lineBreak.length + indent.length),
+            };
+          }),
+          { scrollIntoView: true, userEvent: "input" },
+        ),
+      );
+    };
+    // Faithful port of the engine's newLineAndEnterInsertMode with verbatim
+    // indent (O uses the current line's indent, vim-style).
+    VimAny.defineAction("newLineAndEnterInsertMode", function (
+      this: Record<string, any>,
+      cm: { cm6: EditorView },
+      actionArgs: { after?: boolean; repeat?: number },
+      vimState: Record<string, unknown>,
+    ) {
+      vimState.insertMode = true;
+      const view = cm.cm6;
+      const state = view.state;
+      const line = state.doc.lineAt(state.selection.main.head);
+      const indent = /^[ \t]*/.exec(line.text)?.[0] ?? "";
+      const openAfter = actionArgs.after !== false;
+      if (!openAfter && line.number === 1) {
+        view.dispatch({
+          changes: { from: 0, insert: indent + state.lineBreak },
+          selection: { anchor: indent.length },
+          scrollIntoView: true,
+        });
+      } else {
+        const at = openAfter ? line.to : state.doc.line(line.number - 1).to;
+        view.dispatch({
+          changes: { from: at, insert: state.lineBreak + indent },
+          selection: { anchor: at + state.lineBreak.length + indent.length },
+          scrollIntoView: true,
+        });
+      }
+      this.enterInsertMode(cm, { repeat: actionArgs.repeat }, vimState);
+    });
+  } catch (e) {
+    console.warn("[bnote] vim o/O indent patch failed", e);
+  }
 }
 
 /* ---- clipboard=unnamed: sync the vim unnamed register with the system clipboard.
