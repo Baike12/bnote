@@ -1,7 +1,8 @@
 import type { EditorView } from "@codemirror/view";
 import { EditorSelection } from "@codemirror/state";
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { syntaxTree } from "@codemirror/language";
+import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
+import { insideFencedCodeByScan } from "./context";
 import type { SyntaxNode } from "@lezer/common";
 import { renumberHeadings } from "./numbering";
 import { useAppStore } from "@/state/appStore";
@@ -9,6 +10,7 @@ import { useAppStore } from "@/state/appStore";
 /** Text-editing operations shared by commands and keybindings. */
 
 const BULLET_ITEM_RE = /^([ \t]*)([-*+])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/;
+const ORDERED_ITEM_RE = /^([ \t]*)(\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/;
 
 /**
  * Enter on a bullet / todo line, bnote-style: continue the item with the
@@ -33,11 +35,25 @@ export function enterContinueListItem(view: EditorView): boolean {
     if (!range.empty) return unhandled();
     let pos = range.from;
     // Inside a fenced code block the markup is literal text — never continue.
-    let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1);
-    for (; node; node = node.parent) {
-      if (node.name === "FencedCode") return unhandled();
+    // The tree is still empty right after a file switch (background parse
+    // hasn't landed), where resolveInner finds no FencedCode — fall back to a
+    // line scan so the guard stays correct in that window.
+    if (syntaxTreeAvailable(state, pos + 1)) {
+      let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1);
+      for (; node; node = node.parent) {
+        if (node.name === "FencedCode") return unhandled();
+      }
+    } else if (insideFencedCodeByScan(state.doc, state.doc.lineAt(pos).number)) {
+      return unhandled();
     }
+    // markdown-only editor: this gate only matters against nested-language
+    // regions, and only the parsed tree knows about them. With an empty tree
+    // isActiveAt is false for EVERY position (Tree.empty's top node carries no
+    // language data) — bnote and lang-markdown would both bail and Enter would
+    // fall through to a plain newline: no `- [ ] ` continuation, cursor at the
+    // line start. Exactly the "occasional after file switch" bug.
     if (
+      syntaxTreeAvailable(state, state.doc.length) &&
       !markdownLanguage.isActiveAt(state, pos, -1) &&
       !markdownLanguage.isActiveAt(state, pos, 1)
     ) {
@@ -245,6 +261,170 @@ export function toggleTodo(view: EditorView) {
   view.dispatch({
     changes,
     userEvent: "input.bnote-todo",
+  });
+}
+
+export type ListKind = "bullet" | "numbered";
+
+/**
+ * Per-line list toggle behind the Cmd+; (bullet) / Cmd+Shift+; (numbered)
+ * commands. Converting a line to the target kind replaces a foreign marker
+ * (an ordered item keeps its checkbox when demoted to a bullet and vice
+ * versa); a line that already is the target kind drops back to plain text,
+ * stripping marker and checkbox together. Lines inside fenced code are left
+ * alone — their markup is literal text. The selection spans every covered
+ * line; a cursor sitting on the affected prefix moves behind the new marker
+ * so typing continues at the line content.
+ */
+export function toggleList(view: EditorView, kind: ListKind) {
+  const state = view.state;
+  const changes: { from: number; to?: number; insert: string }[] = [];
+  const sels: { anchor: number; head: number }[] = [];
+  const seenLines = new Set<number>();
+  const doc = state.doc;
+  let delta = 0;
+  // Marker head (bullet/ordered sign + gap) and optional task checkbox.
+  const headLen = (m: RegExpExecArray) => m[2].length + m[3].length;
+  const boxLen = (m: RegExpExecArray) => m[4]?.length ?? 0;
+
+  for (const range of state.selection.ranges) {
+    // range.to may sit on the first column of an untouched line.
+    const firstLine = doc.lineAt(range.from).number;
+    const lastLine = doc.lineAt(Math.max(range.from, range.to - 1)).number;
+    for (let n = firstLine; n <= lastLine; n++) {
+      if (seenLines.has(n)) continue;
+      seenLines.add(n);
+      const line = doc.line(n);
+
+      // 树已覆盖该行时走树查询（能识别深层缩进的围栏）；刚载入的空树查不到
+      // FencedCode，行扫描兜底，否则切换文件后立刻转换会把围栏内标记也换掉。
+      const probePos = Math.min(line.from + 1, doc.length);
+      let inFence = false;
+      if (syntaxTreeAvailable(state, probePos + 1)) {
+        let node: SyntaxNode | null = syntaxTree(state).resolveInner(probePos, -1);
+        for (; node; node = node.parent) {
+          if (node.name === "FencedCode") {
+            inFence = true;
+            break;
+          }
+        }
+      } else {
+        inFence = insideFencedCodeByScan(doc, n);
+      }
+      if (inFence) continue;
+
+      const bullet = BULLET_ITEM_RE.exec(line.text);
+      const ordered = ORDERED_ITEM_RE.exec(line.text);
+      const indent = (
+        bullet ? bullet[1] : ordered ? ordered[1] : /^\s*/.exec(line.text)?.[0]
+      )?.length ?? 0;
+      const indentEnd = line.from + indent;
+      let remLen = 0;
+      let insLen = 0;
+
+      if (kind === "bullet") {
+        if (bullet) {
+          // Already a bullet: cancel the list, checkbox included.
+          remLen = headLen(bullet) + boxLen(bullet);
+          changes.push({ from: indentEnd, to: indentEnd + remLen, insert: "" });
+        } else if (ordered) {
+          remLen = headLen(ordered);
+          insLen = "- ".length;
+          changes.push({ from: indentEnd, to: indentEnd + remLen, insert: "- " });
+        } else {
+          insLen = "- ".length;
+          changes.push({ from: indentEnd, insert: "- " });
+        }
+      } else if (ordered) {
+        // Already numbered: cancel the list, checkbox included.
+        remLen = headLen(ordered) + boxLen(ordered);
+        changes.push({ from: indentEnd, to: indentEnd + remLen, insert: "" });
+      } else if (bullet) {
+        remLen = headLen(bullet);
+        insLen = "1. ".length;
+        changes.push({ from: indentEnd, to: indentEnd + remLen, insert: "1. " });
+      } else {
+        insLen = "1. ".length;
+        changes.push({ from: indentEnd, insert: "1. " });
+      }
+
+      if (range.empty && range.head >= line.from && range.head - line.from <= indent + remLen) {
+        const target = line.from + delta + indent + insLen;
+        sels.push({ anchor: target, head: target });
+      }
+      delta += insLen - remLen;
+    }
+  }
+  if (changes.length === 0) return;
+
+  view.dispatch({
+    changes,
+    selection: sels.length
+      ? EditorSelection.create(sels.map((s) => EditorSelection.range(s.anchor, s.head)))
+      : undefined,
+    userEvent: "input.bnote-list",
+  });
+}
+
+/**
+ * 往返跳转：正文 → 文档头部最后一个待办项的行尾 → 回到跳转前的位置。
+ * 头部待办块 = 文档开头（允许空行）连续的待办行（`- [ ]` / `- [x]` /
+ * 有序待办，中间可夹空行），首个非空且非待办的行结束块。头部没有待办时
+ * 静默无效；在块内但找不到来处（没有跳转过）同样静默。
+ */
+const HEADER_TODO_RE = /^(\s*)(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\]/;
+const BLANK_LINE_RE = /^\s*$/;
+/**
+ * 往返跳转的"来处"记忆：文件路径 → 跳转前的光标与滚动位置。这是本功能唯一
+ * 的常驻状态；按访问顺序淘汰、上限 64 条（覆盖任何真实的多文件往返工作流），
+ * 内存占用有界。仅在按下快捷键时读写，不挂任何编辑周期。
+ */
+const headerTodoReturn = new Map<string, { pos: number; scroll: number }>();
+const HEADER_TODO_RETURN_MAX = 64;
+
+export function jumpHeaderTodos(view: EditorView): void {
+  const state = view.state;
+  const doc = state.doc;
+  let first: number | null = null;
+  let last: number | null = null;
+  // 只扫到首个非空非待办行为止：头部块通常几行，成本与文档总长无关。
+  for (let n = 1; n <= doc.lines; n++) {
+    const text = doc.line(n).text;
+    if (HEADER_TODO_RE.test(text)) {
+      if (first === null) first = n;
+      last = n;
+      continue;
+    }
+    if (BLANK_LINE_RE.test(text)) continue;
+    break; // 首个非空非待办行：头部待办块结束
+  }
+  if (first === null || last === null) return;
+
+  const path = useAppStore.getState().currentFile ?? "";
+  const head = state.selection.main.head;
+  const headLine = doc.lineAt(head).number;
+  if (headLine >= first && headLine <= last) {
+    // 已在头部待办块里：回到之前记笔记的位置。
+    const saved = headerTodoReturn.get(path);
+    if (!saved) return;
+    headerTodoReturn.delete(path);
+    headerTodoReturn.set(path, saved); // 重新插入，刷新淘汰顺序
+    view.dispatch({
+      selection: { anchor: Math.min(saved.pos, doc.length) },
+      scrollIntoView: true,
+    });
+    view.scrollDOM.scrollTop = Math.max(0, Math.min(saved.scroll, view.scrollDOM.scrollHeight));
+    return;
+  }
+  // 在正文：记下当前位置，跳到头部最后一个待办项的行尾。
+  headerTodoReturn.set(path, { pos: head, scroll: Math.round(view.scrollDOM.scrollTop) });
+  if (headerTodoReturn.size > HEADER_TODO_RETURN_MAX) {
+    const oldest = headerTodoReturn.keys().next().value;
+    if (oldest !== undefined) headerTodoReturn.delete(oldest);
+  }
+  view.dispatch({
+    selection: { anchor: doc.line(last).to },
+    scrollIntoView: true,
   });
 }
 

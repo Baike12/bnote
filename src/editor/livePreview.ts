@@ -1,8 +1,8 @@
-import { syntaxTree } from "@codemirror/language";
+import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 import { StateField, Transaction } from "@codemirror/state";
 import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
-import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
+import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { mathRegions } from "./context";
 import { DONE_STAMP_RE, todayStamp } from "./ops";
 import {
@@ -217,29 +217,45 @@ interface BlockFieldValue {
   decos: DecorationSet;
   /** Signature of `decos`; equal signature ⇒ identical decoration set. */
   sig: string;
+  /** syntaxTree 引用：装饰依赖语法树，而树是后台逐步解析出来的
+   *  （文件切换后首帧是空树）——树推进后必须据此重建。 */
+  tree: Tree;
 }
 
 function makeBlockValue(
   state: EditorState,
   prev: BlockFieldValue | null,
   tr: Transaction | null,
+  tree: Tree,
 ): BlockFieldValue {
+  const docChanged = !!tr && tr.docChanged;
   const statics =
-    !tr || tr.docChanged || !prev ? collectBlockStatics(state) : prev.statics;
+    !prev || docChanged || tree !== prev.tree ? collectBlockStatics(state) : prev.statics;
 
   const { decos, sig } = buildBlockDecos(state, statics, state.selection.ranges);
-  if (prev && (!tr || !tr.docChanged) && sig === prev.sig) return prev;
-  return { statics, decos, sig };
+  if (prev && !docChanged && sig === prev.sig) {
+    // 装饰没变：保留原 DecorationSet，但记下新树，避免后续每次树推进都重算。
+    return tree === prev.tree ? prev : { ...prev, tree };
+  }
+  return { statics, decos, sig, tree };
 }
 
 /** Holds the block replace decorations (hidden fences, display math, rules);
  *  CM6 only accepts block decorations from a state field. */
 export const blockDecorationsField = StateField.define<BlockFieldValue>({
-  create: (state) => makeBlockValue(state, null, null),
+  create: (state) => makeBlockValue(state, null, null, syntaxTree(state)),
   update(value, tr) {
-    if (!tr.docChanged && !tr.selection) return value;
+    const tree = syntaxTree(tr.state);
+    const treeChanged = tree !== value.tree;
+    if (!tr.docChanged && !tr.selection && !treeChanged) return value;
+    if (treeChanged && !tr.docChanged && !tr.selection) {
+      // 后台解析按片推进，中间片也会派发更新：只认完成的那一次，
+      // 避免大文档解析期间每片都全文重算。
+      if (!syntaxTreeAvailable(tr.state, tr.state.doc.length)) return value;
+      return makeBlockValue(tr.state, value, tr, tree);
+    }
     if (!tr.docChanged && !selectionAffectsDecos(tr.startState, tr.state)) return value;
-    return makeBlockValue(tr.state, value, tr);
+    return makeBlockValue(tr.state, value, tr, tree);
   },
   provide: (field) => EditorView.decorations.from(field, (v) => v.decos),
 });
@@ -710,21 +726,26 @@ function decorateWikiLinks(
 const livePreviewPlugin = ViewPlugin.fromClass(
   class {
     inline: DecorationSet = Decoration.none;
+    /** 上次构建装饰所用的语法树；后台解析推进（Language.setState 派发）
+     *  后据此重建——否则刚载入的文件要等光标移动才会渲染。 */
+    tree: Tree;
 
     constructor(view: EditorView) {
+      this.tree = syntaxTree(view.state);
       this.inline = buildInlineDecorations(view);
     }
 
     update(u: ViewUpdate) {
-      if (!u.docChanged && !u.viewportChanged && !u.selectionSet) return;
-      if (
-        !u.docChanged &&
-        !u.viewportChanged &&
-        !selectionAffectsDecos(u.startState, u.view.state)
-      ) {
-        return; // cursor moved within plain text — nothing can change
+      const tree = syntaxTree(u.view.state);
+      const treeChanged = tree !== this.tree;
+      if (!u.docChanged && !u.viewportChanged && !u.selectionSet && !treeChanged) return;
+      if (!u.docChanged && !u.viewportChanged && !treeChanged) {
+        if (!selectionAffectsDecos(u.startState, u.view.state)) {
+          return; // cursor moved within plain text — nothing can change
+        }
       }
       this.inline = buildInlineDecorations(u.view);
+      this.tree = tree;
     }
   },
   {

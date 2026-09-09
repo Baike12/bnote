@@ -8,6 +8,7 @@ import { installGlobalKeybindings } from "@/commands/globalKeys";
 import { loadOverrides } from "@/commands/keybindingOverrides";
 import { registerVimExCommands } from "@/editor/vim/vim";
 import { reloadDocument } from "@/editor/setup";
+import { renumberHeadings } from "@/editor/numbering";
 import { editorApi } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, hasPendingCursorSave } from "@/editor/cursorMemory";
@@ -82,6 +83,10 @@ export default function App() {
   useEffect(() => {
     const unsub = useAppStore.subscribe((s, prev) => {
       if (s.settings !== prev.settings) void applySettingsToEditor();
+      // 标题自动编号刚开启：当前文件立即重排一次，给即时反馈。
+      if (s.settings.autoNumberHeadings && !prev.settings.autoNumberHeadings) {
+        if (editorApi.view) renumberHeadings(editorApi.view);
+      }
       // A modal (settings / switcher / palette / quick add) handing control
       // back: put the caret focus on the note again. Deferred past the modal
       // unmount, and skipped when something else already took focus (e.g.

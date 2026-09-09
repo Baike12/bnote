@@ -9,8 +9,10 @@ import {
   insertInlineMath,
   insertMathBlock,
   insertWikilink,
+  jumpHeaderTodos,
   toggleHeading,
   toggleHeadingAny,
+  toggleList,
   toggleTodo,
   toggleWrap,
 } from "@/editor/ops";
@@ -111,6 +113,12 @@ const defs: CommandDef[] = [
     category: "导航",
     run: () => useAppStore.getState().focusSidebar(),
   },
+  {
+    id: "nav.header-todos",
+    title: "跳到头部疑问待办 / 返回原位置",
+    category: "导航",
+    run: withView((v) => jumpHeaderTodos(v)),
+  },
 
   // ---- editing ----
   { id: "edit.insert-math-block", title: "插入公式块", category: "编辑", run: withView(insertMathBlock) },
@@ -133,6 +141,13 @@ const defs: CommandDef[] = [
     run: withView((v) => toggleWrap(v, "~~")),
   },
   { id: "edit.toggle-todo", title: "切换当前行待办状态", category: "编辑", run: withView(toggleTodo) },
+  { id: "edit.toggle-bullet-list", title: "无序列表:切换当前行项目符号", category: "编辑", run: withView((v) => toggleList(v, "bullet")) },
+  {
+    id: "edit.toggle-numbered-list",
+    title: "有序列表:切换当前行编号",
+    category: "编辑",
+    run: withView((v) => toggleList(v, "numbered")),
+  },
   {
     id: "edit.toggle-heading",
     title: "设为 / 取消标题（Tab 升级，Shift+Tab 降级）",

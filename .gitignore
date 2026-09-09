@@ -25,3 +25,6 @@ dist-ssr
 
 # Tooling caches
 .playwright-cli/
+
+# Local secrets
+.pat.md

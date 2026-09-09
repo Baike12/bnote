@@ -3,14 +3,17 @@ import type { Extension } from "@codemirror/state";
 import { EditorView, keymap, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { ensureSyntaxTree } from "@codemirror/language";
 import { markdownExtensions, codeHighlighting } from "./markdown";
 import { insertNewlineContinueMarkup, deleteMarkupBackward } from "@codemirror/lang-markdown";
-import { livePreviewExtension } from "./livePreview";
+import { livePreviewExtension, configureLivePreview } from "./livePreview";
 import { typewriterExtension } from "./typewriter";
 import { imeSwitchExtension } from "./imeSwitch";
 import { snippetsExtension } from "./snippets/extension";
 import { installMathMotionClamp } from "./motionClamp";
+import { renumberHeadings } from "./numbering";
 import { vimModeExtension, commandMappingKeymap, vimVisualHighlight } from "./vim/vim";
+import { useAppStore } from "@/state/appStore";
 import { adjustHeadingLevel, enterContinueListItem } from "./ops";
 import type { VimMapping } from "./vim/vimrc";
 
@@ -89,6 +92,31 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     EditorView.updateListener.of((u) => {
       if (u.docChanged) callbacks.onDocChanged();
       if (u.selectionSet || u.docChanged) callbacks.onCursorMoved();
+      // 标题自动编号：文档变更后补一次重编号（input.bnote-renumber 事务
+      // 不再触发，防循环）。updateListener 里禁止直接 dispatch，放微任务——
+      // 仍在本次绘制前完成，撤销时与原编辑同组。
+      // 撤销/重做绝不触发：否则编号被撤掉后立刻又被补回，撤销永远撤不净。
+      if (
+        u.docChanged &&
+        !u.transactions.some(
+          (t) =>
+            t.isUserEvent("input.bnote-renumber") ||
+            t.isUserEvent("undo") ||
+            t.isUserEvent("redo"),
+        ) &&
+        useAppStore.getState().settings.autoNumberHeadings
+      ) {
+        const view = u.view;
+        queueMicrotask(() => {
+          // isConnected：微任务执行前视图可能已被销毁（文件切换/关窗）。
+          if (
+            useAppStore.getState().settings.autoNumberHeadings &&
+            view.dom.isConnected
+          ) {
+            renumberHeadings(view);
+          }
+        });
+      }
     }),
   ];
 }
@@ -105,10 +133,37 @@ export function createEditor(parent: HTMLElement, doc: string, callbacks: Editor
   return view;
 }
 
+/**
+ * setState 之后语法树是空壳（后台解析尚未开始），装饰会按空树绘制——切换
+ * 文件后"不动光标就不渲染"的根因。预算内同步把解析推到位，再用一个空事务
+ * 触发装饰 field/plugin 按新树重建，保证首帧即为渲染态。大文档没推完的
+ * 部分由后台解析完成后按树推进继续重建。
+ */
+function primeSyntaxTree(view: EditorView) {
+  ensureSyntaxTree(view.state, view.state.doc.length, 50);
+  view.dispatch({});
+}
+
+/**
+ * setState 会把全部 compartment 清零（vim/typewriter/livePreview 一并失效），
+ * 而恢复它们的 applySettingsToEditor 是异步的（vimrc 走 IPC）——这个窗口期里
+ * vim 不存在，normal 模式下的 gg/G 会被当作普通输入打进文档。这里用缓存的
+ * mappings 同步恢复，窗口期归零；异步路径随后仍会用最新 vimrc 再对齐一次。
+ */
+function restoreCompartments(view: EditorView) {
+  const { settings } = useAppStore.getState();
+  configureLivePreview({ mathPreview: settings.mathPreview });
+  reconfigureVim(view, settings.vim, lastVimMappings);
+  reconfigureTypewriter(view, settings.typewriter);
+  reconfigureLivePreview(view, settings.livePreview);
+}
+
 /** Replaces the document (file switch) while keeping extension config. */
 export function loadDocument(view: EditorView, doc: string) {
   if (!savedExtensions) return;
   view.setState(EditorState.create({ doc, extensions: savedExtensions }));
+  restoreCompartments(view);
+  primeSyntaxTree(view);
 }
 
 /** Reloads fresh disk content (external edit) while keeping the cursor and
@@ -119,6 +174,8 @@ export function reloadDocument(view: EditorView, doc: string) {
   const ranges = view.state.selection.ranges;
   const scrollTop = view.scrollDOM.scrollTop;
   view.setState(EditorState.create({ doc, extensions: savedExtensions }));
+  restoreCompartments(view);
+  primeSyntaxTree(view);
   const max = view.state.doc.length;
   view.dispatch({
     selection: EditorSelection.create(
@@ -128,7 +185,10 @@ export function reloadDocument(view: EditorView, doc: string) {
   view.scrollDOM.scrollTop = Math.min(scrollTop, view.scrollDOM.scrollHeight);
 }
 
+let lastVimMappings: VimMapping[] = [];
+
 export function reconfigureVim(view: EditorView, enabled: boolean, mappings: VimMapping[]) {
+  lastVimMappings = mappings;
   view.dispatch({
     effects: [
       // highlightActiveLine rides along with vim: CSS shows the shade only

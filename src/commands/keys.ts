@@ -22,6 +22,7 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "nav.command-palette": "Mod-p",
   "nav.toggle-sidebar": "Mod-\\",
   "nav.focus-sidebar": "Mod-i",
+  "nav.header-todos": "Mod-t",
 
   "edit.insert-math-block": "Mod-m",
   "edit.insert-inline-math": "Mod-Shift-m",
@@ -33,6 +34,8 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "edit.toggle-italic": "Mod-Shift-i",
   "edit.toggle-strikethrough": "Mod-Shift-d",
   "edit.toggle-todo": "Mod-l",
+  "edit.toggle-bullet-list": "Mod-;",
+  "edit.toggle-numbered-list": "Mod-Shift-;",
   "edit.toggle-heading": "Mod-j",
   "edit.heading-1": "Mod-1",
   "edit.heading-2": "Mod-2",
@@ -88,6 +91,24 @@ export function buildCommandKeymap(): Extension {
   return bindings.length ? keymap.of(bindings) : [];
 }
 
+/** Maps a shifted symbol key back to its base key via the physical key
+ *  (US/macOS: Shift+; reports ":", Shift+- reports "_", …). Bindings are
+ *  written for the physical key — "Mod-Shift-;" — like the letters, whose
+ *  Shift state already survives via toLowerCase above. */
+const SHIFT_SYMBOL_BASE: Record<string, string> = {
+  Semicolon: ";",
+  Quote: "'",
+  Comma: ",",
+  Period: ".",
+  Slash: "/",
+  Backslash: "\\",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Minus: "-",
+  Equal: "=",
+  Backquote: "`",
+};
+
 /** Normalizes a KeyboardEvent into a CM6 key string for the settings UI. */
 export function eventToKey(e: KeyboardEvent): string | null {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -97,6 +118,9 @@ export function eventToKey(e: KeyboardEvent): string | null {
   let key = e.key;
   if (key === " ") key = "Space";
   else if (key.length === 1) key = key.toLowerCase();
+  if (e.shiftKey && key.length === 1 && !/[a-z0-9]/.test(key)) {
+    key = SHIFT_SYMBOL_BASE[e.code] ?? key;
+  }
 
   // A lone modifier press is not a binding.
   if (["Shift", "Control", "Alt", "Meta"].includes(key)) return null;
