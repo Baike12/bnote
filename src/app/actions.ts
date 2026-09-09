@@ -10,7 +10,7 @@ import { configureLivePreview } from "@/editor/livePreview";
 import { loadVimrc } from "@/editor/vim/loader";
 import { reloadSnippets } from "@/editor/snippets/engine";
 import type { RawSnippet } from "@/editor/snippets/default-snippets";
-import { dirname, joinPath } from "@/lib/path";
+import { dirname, fileName, joinPath } from "@/lib/path";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -192,13 +192,23 @@ export async function newFolder(parent?: string): Promise<void> {
   }
 }
 
-export async function renameEntry(path: string, newName: string): Promise<void> {
+export async function renameEntry(path: string, newName: string, isFile = false): Promise<void> {
   const { currentFile } = useAppStore.getState();
   try {
-    const newPath = await api.renamePath(path, newName);
+    let name = newName.trim();
+    // 文件重命名没写扩展名时沿用原扩展名（否则 list_files 过滤后文件会从树里消失）。
+    if (isFile && !name.includes(".")) {
+      const oldName = fileName(path);
+      const dot = oldName.lastIndexOf(".");
+      if (dot > 0) name += oldName.slice(dot);
+    }
+    const newPath = await api.renamePath(path, name);
     await refreshTree();
     if (currentFile === path) {
       await openNote(newPath);
+    } else if (currentFile && currentFile.startsWith(`${path}/`)) {
+      // 重命名的是当前文件所在（父）目录：按新前缀重新打开。
+      await openNote(`${newPath}/${currentFile.slice(path.length + 1)}`);
     }
   } catch (e) {
     useAppStore.getState().showToast(`重命名失败: ${String(e)}`);
@@ -209,7 +219,8 @@ export async function trashEntry(path: string): Promise<void> {
   const { currentFile } = useAppStore.getState();
   try {
     await api.trashPath(path);
-    if (currentFile === path) {
+    if (currentFile && (currentFile === path || currentFile.startsWith(`${path}/`))) {
+      // 删除的可能是当前文件的父目录——一并按前缀判断。
       useAppStore.getState().closeFile();
       const view = getView();
       if (view) loadDocument(view, "");

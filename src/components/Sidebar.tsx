@@ -149,13 +149,6 @@ export function Sidebar() {
         </div>
         <button
           className="icon-btn"
-          title="收起侧边栏 (⌘\)"
-          onClick={() => useAppStore.getState().toggleSidebar()}
-        >
-          ◧
-        </button>
-        <button
-          className="icon-btn"
           title="设置"
           onClick={() => useAppStore.getState().setModal("settings")}
         >
@@ -253,7 +246,7 @@ function TreeItem(props: TreeItemProps) {
             initial={node.name}
             onCommit={(name) => {
               setRenaming(null);
-              if (name && name !== node.name) void renameEntry(absPath, name);
+              if (name && name !== node.name) void renameEntry(absPath, name, node.kind === "file");
             }}
           />
         ) : (

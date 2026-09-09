@@ -259,7 +259,11 @@ async function handleVaultChanged(paths: string[]) {
           await applySettingsToEditor();
         }
       } catch {
-        store.closeFile();
+        // 重命名刚打开的新路径与旧路径的 watcher 事件交错时，可能读到已被
+        // 改名的旧文件——只在它仍是当前文件时才关闭，避免误清新打开的笔记。
+        if (useAppStore.getState().currentFile === store.currentFile) {
+          store.closeFile();
+        }
       }
     }
   }

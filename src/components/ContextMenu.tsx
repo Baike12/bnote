@@ -28,7 +28,12 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   }, [x, y]);
 
   useEffect(() => {
-    const close = () => onClose();
+    // 点击菜单内部（例如选择"重命名"）不触发外点关闭：若在 mousedown 阶段卸载
+    // 菜单，item 的处理器不会执行，且游离的 mouseup/click 会落到菜单下方的元素。
+    const close = (e: MouseEvent) => {
+      if (ref.current?.contains(e.target as Node)) return;
+      onClose();
+    };
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -46,9 +51,11 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
         <button
           key={item.label}
           className={`context-menu-item${item.danger ? " danger" : ""}`}
-          onMouseDown={(e) => {
+          // preventDefault 保持既有焦点（不抢树/编辑器的焦点），动作在完整
+          // click 上执行，保证菜单卸载前动作已跑完。
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => {
             e.stopPropagation();
-            e.preventDefault();
             item.action();
             onClose();
           }}
