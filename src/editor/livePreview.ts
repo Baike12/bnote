@@ -390,24 +390,29 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
         // decoration pad + hang instead. Applied on active lines too, so the
         // layout doesn't shift when the cursor enters/leaves the line.
         const depth = Math.min(16, Math.floor(spaces / 2)) * 2;
+        const kind = listKind(doc, mark);
         out.inline.push(
-          Decoration.line({ class: `md-list-line li-i${depth}` }).range(markLine.from),
+          Decoration.line({ class: `md-list-line li-i${depth} ${kind}` }).range(markLine.from),
         );
         if (spaces > 0 && claim(markLine.from, mark.from)) {
           out.inline.push(Decoration.replace({}).range(markLine.from, mark.from));
         }
         if (!activeLine(nodeRef.from, nodeRef.to)) {
-          decorateListMark(doc, mark, out, claim);
+          decorateListMark(doc, mark, kind, out, claim);
         }
         return false;
       }
       if (name === "TaskMarker") {
         const checked = /^\[[xX]\]/.test(doc.sliceString(nodeRef.from, nodeRef.to));
-        if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, nodeRef.to)) {
+        // The checkbox owns `[ ]` plus the whitespace after it, so its box
+        // (0.9em) + margin-right (--li-gap) are the whole marker slot and the
+        // item text lands on the wrapped-line indent (see global.css).
+        const to = whitespaceEnd(doc, nodeRef.to);
+        if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, to)) {
           out.inline.push(
             Decoration.replace({ widget: new TaskCheckboxWidget(checked) }).range(
               nodeRef.from,
-              nodeRef.to,
+              to,
             ),
           );
         }
@@ -489,41 +494,62 @@ function highlightMathSource(
 }
 
 
+/** Marker kind of a list item, which picks the line's marker slot width
+ *  (`.li-b` / `.li-t` / `.li-o` in global.css). Standard GFM: only `- [ ]` is
+ *  a task — a bare `[ ]` line keeps its literal brackets. */
+type ListMarkerKind = "li-b" | "li-t" | "li-o";
+
+function listKind(
+  doc: { sliceString(from: number, to?: number): string },
+  mark: SyntaxNode,
+): ListMarkerKind {
+  const item = mark.parent;
+  if (item && item.getChild("Task") !== null) return "li-t";
+  return /^\d/.test(doc.sliceString(mark.from, mark.to)) ? "li-o" : "li-b";
+}
+
+/** End of the space/tab run at `pos`, capped at the end of its line. */
+function whitespaceEnd(
+  doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { to: number } },
+  pos: number,
+): number {
+  const end = doc.lineAt(pos).to;
+  let to = pos;
+  while (to < end && /[ \t]/.test(doc.sliceString(to, to + 1))) to++;
+  return to;
+}
+
 /**
  * Renders the list marker (`-`, `*`, `+`, `1.`) per item kind:
  * task items hide the marker entirely (the checkbox from `- [ ]` becomes the
  * line's lead, matching Obsidian), bullets become a `•` glyph, ordered
- * markers stay visible but dimmed. Standard GFM: only `- [ ]` is a task — a
- * bare `[ ]` line keeps its literal brackets.
+ * markers stay visible but dimmed. Bullets and checkboxes also swallow the
+ * whitespace after the marker: the widget then covers the item's whole marker
+ * slot, so the item text starts exactly at the line's `--li-hang` (where
+ * wrapped lines align) instead of a literal space further right.
  */
 function decorateListMark(
-  doc: { sliceString(from: number, to?: number): string },
+  doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { to: number } },
   mark: SyntaxNode,
+  kind: ListMarkerKind,
   out: DecorationSink,
   claim: (from: number, to: number) => boolean,
 ) {
-  const item = mark.parent;
-  const isTask = !!item && item.getChild("Task") !== null;
-  const markText = doc.sliceString(mark.from, mark.to);
-  const isOrdered = /^\d/.test(markText);
-
-  if (isTask) {
-    // Hide the marker plus the single space before the `[ ]` checkbox.
-    let to = mark.to;
-    if (doc.sliceString(to, to + 1) === " ") to++;
+  if (kind === "li-t") {
+    // Hide the marker plus the gap before the `[ ]` checkbox.
+    const to = whitespaceEnd(doc, mark.to);
     if (claim(mark.from, to)) {
       out.inline.push(Decoration.replace({}).range(mark.from, to));
     }
     return;
   }
-  if (isOrdered) {
+  if (kind === "li-o") {
     out.inline.push(Decoration.mark({ class: "md-listmark" }).range(mark.from, mark.to));
     return;
   }
-  if (claim(mark.from, mark.to)) {
-    out.inline.push(
-      Decoration.replace({ widget: new ListBulletWidget() }).range(mark.from, mark.to),
-    );
+  const to = whitespaceEnd(doc, mark.to);
+  if (claim(mark.from, to)) {
+    out.inline.push(Decoration.replace({ widget: new ListBulletWidget() }).range(mark.from, to));
   }
 }
 

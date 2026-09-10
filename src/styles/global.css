@@ -441,39 +441,61 @@ button {
   color: var(--text-faint);
 }
 
-/* Bullet glyph replacing `-` markers; checkbox replaces `- [ ]` entirely. */
+/* 列表几何的唯一来源（全部 em，随 --editor-font-size 缩放）：
+   --li-px   当前层级标记左沿
+   --li-hang 标记左沿 → 正文起点（= 标记槽宽）
+   两者必须成对使用：padding-left 决定折行文本的起点，text-indent 把首行拉回
+   --li-px，所以 --li-hang 只要和"标记 + 间隙"的真实宽度一致，折行文本就与首行
+   正文严格对齐。标记槽宽按种类定（见 .li-b / .li-t / .li-o）。 */
+:root {
+  --li-base: 0.8125em; /* 13px @16px，实测自用户的 Obsidian */
+  --li-step: 1.75em;   /* 28px @16px，每层缩进 */
+  --li-gap: 0.5em;     /* 标记右沿 → 正文的视觉间隙 */
+}
+
+/* Bullet glyph replacing `- ` markers. The widget owns the whole slot: the
+   glyph is left-aligned in a box exactly --li-hang wide, so the item text
+   starts where wrapped lines align no matter how wide the glyph is. */
 .md-bullet {
   color: var(--text-faint);
-  margin-right: 17px;
+  display: inline-block;
+  width: var(--li-hang, 1em);
 }
 
 /* Obsidian-style list indent: literal source spaces are hidden and replaced
-   with padding + hanging indent, so wrapped lines align under the item text.
-   Bullet sits at --li-px; item text at --li-px + 26px, one level every 28px
-   (measured off the user's Obsidian). */
+   with padding + hanging indent, so wrapped lines align under the item text. */
 .cm-line.md-list-line {
-  padding-left: calc(var(--li-px, 0px) + 26px);
-  text-indent: -26px;
+  padding-left: calc(var(--li-px, 0px) + var(--li-hang, 1.65em));
+  text-indent: calc(-1 * var(--li-hang, 1.65em));
 }
-.li-i0  { --li-px: 13px; }
-.li-i2  { --li-px: 41px; }
-.li-i4  { --li-px: 69px; }
-.li-i6  { --li-px: 97px; }
-.li-i8  { --li-px: 125px; }
-.li-i10 { --li-px: 153px; }
-.li-i12 { --li-px: 181px; }
-.li-i14 { --li-px: 209px; }
-.li-i16 { --li-px: 237px; }
-.li-i18 { --li-px: 265px; }
-.li-i20 { --li-px: 293px; }
-.li-i22 { --li-px: 321px; }
-.li-i24 { --li-px: 349px; }
-.li-i26 { --li-px: 377px; }
-.li-i28 { --li-px: 405px; }
-.li-i30 { --li-px: 433px; }
-.li-i32 { --li-px: 461px; }
+.li-i0  { --li-px: var(--li-base); }
+.li-i2  { --li-px: calc(var(--li-base) + 1 * var(--li-step)); }
+.li-i4  { --li-px: calc(var(--li-base) + 2 * var(--li-step)); }
+.li-i6  { --li-px: calc(var(--li-base) + 3 * var(--li-step)); }
+.li-i8  { --li-px: calc(var(--li-base) + 4 * var(--li-step)); }
+.li-i10 { --li-px: calc(var(--li-base) + 5 * var(--li-step)); }
+.li-i12 { --li-px: calc(var(--li-base) + 6 * var(--li-step)); }
+.li-i14 { --li-px: calc(var(--li-base) + 7 * var(--li-step)); }
+.li-i16 { --li-px: calc(var(--li-base) + 8 * var(--li-step)); }
+.li-i18 { --li-px: calc(var(--li-base) + 9 * var(--li-step)); }
+.li-i20 { --li-px: calc(var(--li-base) + 10 * var(--li-step)); }
+.li-i22 { --li-px: calc(var(--li-base) + 11 * var(--li-step)); }
+.li-i24 { --li-px: calc(var(--li-base) + 12 * var(--li-step)); }
+.li-i26 { --li-px: calc(var(--li-base) + 13 * var(--li-step)); }
+.li-i28 { --li-px: calc(var(--li-base) + 14 * var(--li-step)); }
+.li-i30 { --li-px: calc(var(--li-base) + 15 * var(--li-step)); }
+.li-i32 { --li-px: calc(var(--li-base) + 16 * var(--li-step)); }
 
-/* Task-list checkbox rendered over `- [ ]` / `- [x]` markers. */
+/* 标记槽宽：• 的字宽约 0.45em、复选框盒宽 0.9em，各加一个 --li-gap。有序列表
+   的数字宽度随位数变化（CSS 预知不了），槽宽只能取实测的固定值：数字保持原位
+   左对齐，1–2 位数都能贴合，位数更多时正文会略微右移。 */
+.li-b { --li-hang: calc(0.45em + var(--li-gap)); }
+.li-t { --li-hang: calc(0.9em + var(--li-gap)); }
+.li-o { --li-hang: 26px; }
+
+/* Task-list checkbox rendered over `- [ ]` / `- [x]` markers. Box (0.9em) plus
+   margin-right must add up to the line's --li-hang (.li-t), so the item text
+   lands exactly on the wrapped-line indent. */
 .md-task {
   display: inline-block;
   position: relative;
@@ -482,7 +504,7 @@ button {
   border: 1.5px solid var(--text-faint);
   border-radius: 3px;
   vertical-align: -0.08em;
-  margin-right: 0.4em;
+  margin-right: var(--li-gap, 0.5em);
   cursor: pointer;
 }
 .md-task:hover {
