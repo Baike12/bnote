@@ -118,6 +118,17 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
         });
       }
     }),
+    // vim 的块光标不是原生光标：插件自己画在 .cm-vimCursorLayer 里，位置经
+    // view.requestMeasure 推迟到下一帧才写入（@replit/codemirror-vim 的
+    // BlockCursorPlugin.update → requestMeasure → rAF），而行与装饰的 DOM 更新
+    // 是同步的。列表缩进让整行右移 28px，缩进后的那一帧里光标还停在旧 x——正好
+    // 压在新项目符号上，下一帧才跳到符号后面。updateListener 在所有 view plugin
+    // 与 DOM 同步之后运行，这里读一次光标坐标，把挂起的 measure 就地冲刷掉，
+    // 让光标与文本同帧落位。
+    EditorView.updateListener.of((u) => {
+      if (!u.docChanged || !useAppStore.getState().settings.vim) return;
+      u.view.coordsAtPos(u.state.selection.main.head);
+    }),
   ];
 }
 
