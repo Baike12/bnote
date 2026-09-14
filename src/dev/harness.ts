@@ -6,7 +6,7 @@ import "katex/dist/katex.min.css";
 import "@/styles/global.css";
 import { createEditor, loadDocument, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
 import { editorApi } from "@/editor/api";
-import { adjustHeadingLevel, enterContinueListItem, jumpHeaderTodos, toggleHeadingAny, toggleList, toggleTodo } from "@/editor/ops";
+import { adjustHeadingLevel, enterContinueListItem, insertCodeBlock, insertMathBlock, jumpHeaderTodos, toggleHeadingAny, toggleList, toggleTodo } from "@/editor/ops";
 import { renumberHeadings } from "@/editor/numbering";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { currentVimMode } from "@/editor/vim/vim";
@@ -76,6 +76,12 @@ declare global {
     __redo: () => boolean;
     /** 头部疑问待办往返跳转。 */
     __jumpHeaderTodos: () => void;
+    /** 插入代码块（语言取设置 codeBlockLang；有选区时包裹所选行）。 */
+    __insertCodeBlock: () => void;
+    /** 插入公式块（与代码块共用独占整行块的插入几何）。 */
+    __insertMathBlock: () => void;
+    /** 修改代码块语言设置（走真实 patchSettings 路径）。 */
+    __setCodeBlockLang: (lang: string) => void;
     /** 当前 vim 模式；vim 未安装（compartment 清空）时为 null。 */
     __vimMode: () => string | null;
     /** 按设置开启/关闭 vim（与真实设置路径一致）。 */
@@ -157,6 +163,11 @@ window.__renumber = () => renumberHeadings(view);
 window.__undo = () => undo(view);
 window.__redo = () => redo(view);
 window.__jumpHeaderTodos = () => jumpHeaderTodos(view);
+window.__insertCodeBlock = () => insertCodeBlock(view);
+window.__insertMathBlock = () => insertMathBlock(view);
+window.__setCodeBlockLang = (lang) => {
+  useAppStore.getState().patchSettings({ codeBlockLang: lang });
+};
 window.__vimMode = () => currentVimMode(view);
 window.__setVim = (on) => {
   useAppStore.getState().patchSettings({ vim: on });

@@ -158,6 +158,21 @@ function EditorTab() {
         checked={settings.vim}
         onChange={(v) => patch({ vim: v })}
       />
+      <div className="setting-row">
+        <div>
+          <div className="setting-label">代码块语言</div>
+          <div className="setting-desc">
+            「插入代码块」（默认 ⌘⇧C）在开栏预填的语言标识，如 ts、python；留空则插入不带语言的代码块
+          </div>
+        </div>
+        <input
+          className="settings-input"
+          value={settings.codeBlockLang}
+          onChange={(e) => patch({ codeBlockLang: e.target.value })}
+          placeholder="ts"
+          {...inputGuards}
+        />
+      </div>
       <h3>外观</h3>
       <div className="setting-row">
         <div>

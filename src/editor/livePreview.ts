@@ -103,15 +103,17 @@ function selectionAffectsDecos(oldState: EditorState, newState: EditorState): bo
 // --------------------------------------------------------------------------
 
 interface BlockStatics {
-  /** Fence lines (open/close) of fenced code blocks, hidden unless editing. */
-  fences: Interval[];
+  /** Fence lines (open/close) with their parent block's range: a fence line is
+   *  hidden only while the cursor is outside the whole block — inside, the
+   *  block shows as editable source (same rule as math blocks). */
+  fences: { line: Interval; block: Interval }[];
   codeRanges: Interval[];
   inlineCodeRanges: Interval[];
   hrs: Interval[];
 }
 
 function collectBlockStatics(state: EditorState): BlockStatics {
-  const fences: Interval[] = [];
+  const fences: { line: Interval; block: Interval }[] = [];
   const codeRanges: Interval[] = [];
   const inlineCodeRanges: Interval[] = [];
   const hrs: Interval[] = [];
@@ -123,10 +125,11 @@ function collectBlockStatics(state: EditorState): BlockStatics {
       switch (nodeRef.name) {
         case "FencedCode": {
           codeRanges.push({ from: nodeRef.from, to: nodeRef.to });
+          const block = { from: nodeRef.from, to: nodeRef.to };
           for (let child = nodeRef.node.firstChild; child; child = child.nextSibling) {
             if (child.name === "CodeMark") {
               const line = doc.lineAt(child.from);
-              fences.push({ from: line.from, to: line.to });
+              fences.push({ line: { from: line.from, to: line.to }, block });
             }
           }
           return false;
@@ -166,11 +169,16 @@ function buildBlockDecos(
     exclude.some((r) => from < r.to && to > r.from);
 
   for (const f of statics.fences) {
-    if (!active(f.from, f.to)) {
+    // 块级判定（与公式块同一条规则）：光标在块内任何一行，两行围栏都保持
+    // 源码可编辑；光标离开整块才隐藏围栏进入渲染态。
+    if (!active(f.block.from, f.block.to)) {
       out.push(
-        Decoration.replace({ widget: new HiddenLineWidget(), block: true }).range(f.from, f.to),
+        Decoration.replace({ widget: new HiddenLineWidget(), block: true }).range(
+          f.line.from,
+          f.line.to,
+        ),
       );
-      sig.push(`f${f.from}`);
+      sig.push(`f${f.line.from}`);
     }
   }
   for (const hr of statics.hrs) {

@@ -29,6 +29,8 @@ export interface Settings {
   autoSave: boolean;
   /** 标题自动编号：设置标题时按层级重排 1 / 1.1 / 1.1.2 这样的编号 */
   autoNumberHeadings: boolean;
+  /** 「插入代码块」在开栏预填的语言标识；空串 = 不带语言 */
+  codeBlockLang: string;
   fontSize: number;
   ime: ImeSettings;
   quickAdd: QuickAddCommand[];
@@ -42,6 +44,7 @@ export const DEFAULT_SETTINGS: Settings = {
   snippets: true,
   autoSave: true,
   autoNumberHeadings: false,
+  codeBlockLang: "ts",
   fontSize: 16,
   ime: {
     enabled: true,

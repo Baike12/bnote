@@ -474,22 +474,33 @@ export function toggleWrap(view: EditorView, marker: string) {
   });
 }
 
-/** Inserts a $$ … $$ block on its own lines and places the cursor inside. */
-export function insertMathBlock(view: EditorView) {
+/**
+ * 独占整行的开/闭定界块（```…``` / $$…$$）插入。定界符必须自己占一行——
+ * 粘在正文后面既不是合法围栏也不是块公式：当前行为空行时原位替换（顺带清掉
+ * 纯空白），否则插到本行行尾之后。内部空行与闭栏继承本行缩进（块留在列表
+ * 项内）。光标位置从构造出的插入串推导，落在内部空行行首——开栏内容
+ * （语言等）变化时无需再调偏移量。
+ */
+function insertOwnLineBlock(view: EditorView, open: string, close: string, userEvent: string) {
   const pos = view.state.selection.main.head;
   const line = view.state.doc.lineAt(pos);
-  const indent = line.text.match(/^\s*/)?.[0] ?? "";
-  const atLineEnd = pos === line.to;
-  const insert = (atLineEnd ? "" : "\n") + "$$\n" + indent + "\n" + indent + "$$";
-  const from = atLineEnd ? pos : line.to;
-  const cursor = from + 3 + indent.length;
+  const blank = line.text.trim() === "";
+  const indent = blank ? "" : (line.text.match(/^\s*/)?.[0] ?? "");
+  const insert = (blank ? "" : "\n") + open + "\n" + indent + "\n" + indent + close;
+  const from = blank ? line.from : line.to;
+  const cursor = from + (blank ? 0 : 1) + open.length + 1 + indent.length;
 
   view.dispatch({
-    changes: { from, insert },
+    changes: blank ? { from: line.from, to: line.to, insert } : { from, insert },
     selection: { anchor: cursor },
-    userEvent: "input.bnote-math-block",
+    userEvent,
   });
   view.focus();
+}
+
+/** Inserts a $$ … $$ block on its own lines and places the cursor inside. */
+export function insertMathBlock(view: EditorView) {
+  insertOwnLineBlock(view, "$$", "$$", "input.bnote-math-block");
 }
 
 export function insertInlineMath(view: EditorView) {
@@ -504,21 +515,42 @@ export function insertWikilink(view: EditorView) {
   wrapOrPlace(view, "[[", "]]");
 }
 
-export function insertCodeBlock(view: EditorView) {
-  const pos = view.state.selection.main.head;
-  const line = view.state.doc.lineAt(pos);
-  const indent = line.text.match(/^\s*/)?.[0] ?? "";
-  const atLineEnd = pos === line.to;
-  const insert = (atLineEnd ? "" : "\n") + "```ts\n" + indent + "\n" + indent + "```";
-  const from = atLineEnd ? pos : line.to;
-  const cursor = from + 4;
+/**
+ * 围栏信息串：剥掉反引号/换行（会提前终止围栏）并裁空白；空 = 裸 ```。
+ */
+function fenceInfoString(): string {
+  return useAppStore.getState().settings.codeBlockLang.replace(/[`\r\n]/g, "").trim();
+}
 
-  view.dispatch({
-    changes: { from, insert },
-    selection: { anchor: cursor },
-    userEvent: "input.bnote-code-block",
-  });
-  view.focus();
+/**
+ * 插入代码块：无选区时在光标处开一个带设置语言的开栏，光标落在内部空行；
+ * 有选区时把覆盖的行包进围栏（围栏独占整行，行中选区扩展到整行），选区
+ * 两端平移进块内。
+ */
+export function insertCodeBlock(view: EditorView) {
+  const state = view.state;
+  const range = state.selection.main;
+  const open = "```" + fenceInfoString();
+  if (!range.empty) {
+    const firstLine = state.doc.lineAt(range.from);
+    // range.to may sit on the first column of an untouched line.
+    const lastLine = state.doc.lineAt(Math.max(range.from, range.to - 1));
+    const covered = state.sliceDoc(firstLine.from, lastLine.to);
+    const openLen = open.length + 1;
+    const mapPos = (p: number) => {
+      if (p <= firstLine.from) return p;
+      if (p <= lastLine.to) return firstLine.from + openLen + (p - firstLine.from);
+      return firstLine.from + openLen + covered.length + 4 + (p - lastLine.to - 1);
+    };
+    view.dispatch({
+      changes: { from: firstLine.from, to: lastLine.to, insert: `${open}\n${covered}\n\`\`\`` },
+      selection: { anchor: mapPos(range.anchor), head: mapPos(range.head) },
+      userEvent: "input.bnote-code-block",
+    });
+    view.focus();
+    return;
+  }
+  insertOwnLineBlock(view, open, "```", "input.bnote-code-block");
 }
 
 export function insertHorizontalRule(view: EditorView) {
