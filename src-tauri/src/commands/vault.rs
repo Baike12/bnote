@@ -24,6 +24,15 @@ pub struct VaultInfo {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct VaultIndex {
+    /// Flat note-file paths (quick switcher / wikilinks).
+    pub files: Vec<String>,
+    /// Flat directory paths, including directories that contain no notes.
+    pub dirs: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FileNode {
     pub name: String,
     /// Path relative to the vault root, using `/` separators.
@@ -104,14 +113,17 @@ pub async fn read_dir(state: State<'_, AppState>, rel_path: String) -> CmdResult
     .await
 }
 
-/// Flat list of all note file paths (quick switcher / wikilinks). A single
-/// walk without tree building; fast even on big vaults (off the main thread).
+/// Flat list of note files and directories. A single walk without tree
+/// building; fast even on big vaults (off the main thread). Directories are
+/// indexed even when empty, so quick-add can suggest a newly created folder
+/// before its first note exists.
 #[tauri::command]
-pub async fn list_files(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+pub async fn list_files(state: State<'_, AppState>) -> CmdResult<VaultIndex> {
     let root = require_vault(&state)?;
     run_blocking(move || {
         eprintln!("[bnote] list_files");
-        let mut out = Vec::new();
+        let mut files = Vec::new();
+        let mut dirs = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
             let Ok(rd) = std::fs::read_dir(&dir) else {
@@ -123,17 +135,21 @@ pub async fn list_files(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
                 let p = entry.path();
                 if ft.is_dir() {
                     if !IGNORED_DIRS.contains(&name.as_str()) {
+                        if let Ok(rel) = p.strip_prefix(&root) {
+                            dirs.push(rel.to_string_lossy().replace('\\', "/"));
+                        }
                         stack.push(p);
                     }
                 } else if ft.is_file() && is_note_file(&name) {
                     if let Ok(rel) = p.strip_prefix(&root) {
-                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                        files.push(rel.to_string_lossy().replace('\\', "/"));
                     }
                 }
             }
         }
-        out.sort();
-        Ok(out)
+        files.sort();
+        dirs.sort();
+        Ok(VaultIndex { files, dirs })
     })
     .await
 }

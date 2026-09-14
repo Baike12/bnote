@@ -18,6 +18,11 @@ export interface CreatedEntry {
   relPath: string;
 }
 
+export interface VaultIndex {
+  files: string[];
+  dirs: string[];
+}
+
 /** Whitelisted per-vault config files inside `<vault>/.bnote/`. */
 export type VaultConfigFile = "vimrc" | "snippets.js" | "keybindings.json";
 
@@ -37,7 +42,7 @@ export const api = {
   getVault: () => invoke<VaultInfo | null>("get_vault"),
   readTree: () => invoke<FileNode[]>("read_tree"),
   readDir: (relPath: string) => invoke<FileNode[]>("read_dir", { relPath }),
-  listFiles: () => invoke<string[]>("list_files"),
+  listFiles: () => invoke<VaultIndex>("list_files"),
 
   readFile: (path: string) => invoke<string>("read_file", { path }),
   writeFile: (path: string, contents: string) =>

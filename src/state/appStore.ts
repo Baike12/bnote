@@ -93,6 +93,8 @@ interface AppState {
   tree: FileNode[];
   /** Flat note paths across the vault (quick switcher / wikilinks). */
   flatFiles: string[];
+  /** Flat directory paths across the vault (folder picker suggestions). */
+  folders: string[];
   /** Absolute paths of opened notes, most recent first. */
   recentFiles: string[];
   currentFile: string | null;
@@ -108,6 +110,7 @@ interface AppState {
   closeVault: () => void;
   setTree: (tree: FileNode[]) => void;
   setFlatFiles: (files: string[]) => void;
+  setFolders: (folders: string[]) => void;
   openFile: (path: string) => void;
   closeFile: () => void;
   markDirty: (dirty: boolean) => void;
@@ -155,6 +158,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   vaultName: "",
   tree: [],
   flatFiles: [],
+  folders: [],
   recentFiles: [],
   currentFile: null,
   dirty: false,
@@ -170,13 +174,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       vaultName: info.name,
       tree: [],
       flatFiles: [],
+      folders: [],
       currentFile: null,
       dirty: false,
     }),
   closeVault: () =>
-    set({ vaultPath: null, vaultName: "", tree: [], flatFiles: [], currentFile: null, dirty: false }),
+    set({ vaultPath: null, vaultName: "", tree: [], flatFiles: [], folders: [], currentFile: null, dirty: false }),
   setTree: (tree) => set({ tree }),
   setFlatFiles: (flatFiles) => set({ flatFiles }),
+  setFolders: (folders) => set({ folders }),
   openFile: (path) => {
     if (get().currentFile === path) return;
     // Most-recent-first list (quick switcher ordering); persisted in config.

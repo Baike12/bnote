@@ -15,24 +15,19 @@ interface FolderSuggestProps {
  * list; unknown paths stay allowed — quick-add creates missing folders.
  */
 export function FolderSuggest({ value, onChange, className, placeholder }: FolderSuggestProps) {
-  const flatFiles = useAppStore((s) => s.flatFiles);
+  const folders = useAppStore((s) => s.folders);
   const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  const folders = useMemo(() => {
-    // Every ancestor directory of an existing note; "" = vault root.
-    const set = new Set<string>([""]);
-    for (const f of flatFiles) {
-      const segs = f.split("/");
-      for (let i = 1; i < segs.length; i++) set.add(segs.slice(0, i).join("/"));
-    }
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [flatFiles]);
+  const options = useMemo(
+    () => ["", ...folders].sort((a, b) => a.localeCompare(b)),
+    [folders],
+  );
 
   const q = value.trim().toLowerCase();
   const matches = open
-    ? folders.filter((f) => !q || f.toLowerCase().includes(q)).slice(0, 30)
+    ? options.filter((f) => !q || f.toLowerCase().includes(q)).slice(0, 30)
     : [];
 
   useEffect(() => {

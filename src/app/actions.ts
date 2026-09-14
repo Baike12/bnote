@@ -47,11 +47,12 @@ export async function openVault(path: string): Promise<boolean> {
 }
 
 export async function refreshTree(): Promise<void> {
-  const { vaultPath, setTree, setFlatFiles, tree } = useAppStore.getState();
+  const { vaultPath, setTree, setFlatFiles, setFolders, tree } = useAppStore.getState();
   if (!vaultPath) return;
   try {
-    const [root, files] = await Promise.all([api.readTree(), api.listFiles()]);
-    setFlatFiles(files);
+    const [root, index] = await Promise.all([api.readTree(), api.listFiles()]);
+    setFlatFiles(index.files);
+    setFolders(index.dirs);
     // Re-fetch previously expanded directories so the visible tree stays
     // complete after external changes.
     const loaded = collectLoadedDirs(tree);
