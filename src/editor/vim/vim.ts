@@ -9,6 +9,7 @@ import type { Extension } from "@codemirror/state";
 import { EditorSelection, RangeSetBuilder } from "@codemirror/state";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import type { VimMapping, VimMode } from "./vimrc";
+import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 
 export type RunCommand = (commandId: string) => void;
 
@@ -183,12 +184,14 @@ export function setVimClipboardUnnamed(on: boolean) {
       origPush.call(this, registerName, operator, text, linewise, blockwise);
       if (clipboardUnnamed && registerName !== "_" && registerName !== "+") {
         const out = linewise && !text.endsWith("\n") ? `${text}\n` : text;
-        void navigator.clipboard.writeText(out).catch(() => {});
+        void writeClipboardText(out);
       }
     };
     // Redefine the paste action: when clipboard=unnamed and no explicit
     // register was given, read the system clipboard first. `this` inside a
     // vim action is the engine's actions object (continuePaste lives there).
+    // 读走 lib/clipboard（WKWebView 里 navigator.clipboard.readText 不可用，
+    // 这条路径此前一直静默失败）；失败时回退寄存器内容。
     VimAny.defineAction("paste", function (
       this: Record<string, any>,
       cm: unknown,
@@ -199,22 +202,18 @@ export function setVimClipboardUnnamed(on: boolean) {
       const name = actionArgs.registerName || "";
       if (clipboardUnnamed && name === "") {
         const register = controller.getRegister("");
-        navigator.clipboard
-          .readText()
-          .then((value) => {
-            if (value) register.setText(value, value.endsWith("\n"), false);
-            this.continuePaste(cm, actionArgs, vimState, register.toString(), register);
-          })
-          .catch(() => this.continuePaste(cm, actionArgs, vimState, register.toString(), register));
+        readClipboardText().then((value) => {
+          if (value) register.setText(value, value.endsWith("\n"), false);
+          this.continuePaste(cm, actionArgs, vimState, register.toString(), register);
+        });
         return;
       }
       // Default engine behavior: "+" reads the clipboard, others read the register.
       const register = controller.getRegister(name);
       if (name === "+") {
-        navigator.clipboard
-          .readText()
-          .then((value) => this.continuePaste(cm, actionArgs, vimState, value, register))
-          .catch(() => {});
+        void readClipboardText().then((value) => {
+          if (value !== null) this.continuePaste(cm, actionArgs, vimState, value, register);
+        });
       } else {
         this.continuePaste(cm, actionArgs, vimState, register.toString(), register);
       }

@@ -13,6 +13,7 @@ import { snippetsExtension } from "./snippets/extension";
 import { installMathMotionClamp } from "./motionClamp";
 import { renumberHeadings } from "./numbering";
 import { vimModeExtension, commandMappingKeymap, vimVisualHighlight } from "./vim/vim";
+import { cutSelection, copySelection, pasteClipboard } from "./ops";
 import { useAppStore } from "@/state/appStore";
 import { adjustHeadingLevel, enterContinueListItem } from "./ops";
 import type { VimMapping } from "./vim/vimrc";
@@ -66,6 +67,13 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     highlightSelectionMatches(),
 
     keymap.of([
+      // ⌘C/⌘X/⌘V 必须在这里显式实现：wry 的 WKWebView 在视图层认领 ⌘ 和弦、
+      // 作为普通 keydown 送进页面，AppKit Edit 菜单角色收不到事件，WebKit 也
+      // 不会对 keydown 代行剪贴板动作（⌘A 之所以能用，是因为 defaultKeymap
+      // 里有 Mod-a → selectAll 的 JS 绑定）。剪贴板本体走 lib/clipboard。
+      { key: "Mod-c", run: copySelection },
+      { key: "Mod-x", run: cutSelection },
+      { key: "Mod-v", run: pasteClipboard },
       // Markdown-aware Enter/Backspace fallback: continue lists, but do NOT
       // carry indentation into code fences (a plain newline keeps fences
       // closable). List lines never get here — the Prec.highest binding above

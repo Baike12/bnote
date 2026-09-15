@@ -20,6 +20,8 @@ import { Sidebar } from "@/components/Sidebar";
 import { LinkSuggest } from "@/components/LinkSuggest";
 import "@/commands/builtin";
 import { installGlobalKeybindings } from "@/commands/globalKeys";
+import { installEditingChords } from "@/lib/editingChords";
+import { setClipboardOverrides } from "@/lib/clipboard";
 
 const DOC = `# 公式与光标
 
@@ -122,6 +124,10 @@ declare global {
     __newFolder: (parent?: string, timeoutMs?: number) => Promise<TreeRow[]>;
     /** 在重命名输入框里敲入 name 并回车。 */
     __renameCommit: (name: string) => boolean;
+    /** 内存剪贴板：注入内容（编辑器/表单的 ⌘C/⌘X/⌘V 断言用）。 */
+    __setClipboard: (text: string) => void;
+    /** 读回内存剪贴板（⌘C/⌘X 后断言写入内容）。 */
+    __readClipboard: () => string;
     /** 应用 store（读取/驱动侧栏相关状态）。 */
     __store: typeof useAppStore;
     /** 应用层动作（openNote / openWikiLink / goBackLink…）。 */
@@ -463,3 +469,18 @@ window.__renameCommit = (name: string) => {
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   return true;
 };
+
+// 内存剪贴板（无 Tauri IPC，navigator.clipboard 在受控环境不可靠）+ 全局 ⌘ 和弦兜底
+let clipboardStub = "";
+setClipboardOverrides({
+  read: async () => clipboardStub,
+  write: async (text) => {
+    clipboardStub = text;
+    return true;
+  },
+});
+window.__setClipboard = (text) => {
+  clipboardStub = text;
+};
+window.__readClipboard = () => clipboardStub;
+installEditingChords();

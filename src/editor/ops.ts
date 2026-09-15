@@ -1,11 +1,12 @@
 import type { EditorView } from "@codemirror/view";
 import { EditorSelection } from "@codemirror/state";
-import type { Text } from "@codemirror/state";
+import type { EditorState, Text } from "@codemirror/state";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit, syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 import { getContextAt, insideFencedCodeByScan } from "./context";
 import type { SyntaxNode } from "@lezer/common";
 import { renumberHeadings } from "./numbering";
+import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 import { useAppStore } from "@/state/appStore";
 
 /** Text-editing operations shared by commands and keybindings. */
@@ -718,6 +719,58 @@ export function insertHorizontalRule(view: EditorView) {
     userEvent: "input.bnote-insert",
   });
   view.focus();
+}
+
+/** 全部非空选区文本（按文档位置排序，多光标以换行相连）。 */
+function selectedText(state: EditorState): string {
+  const ranges = [...state.selection.ranges].sort((a, b) => a.from - b.from);
+  return ranges
+    .filter((r) => !r.empty)
+    .map((r) => state.sliceDoc(r.from, r.to))
+    .join(state.lineBreak);
+}
+
+/**
+ * ⌘C：把选中内容写入系统剪贴板。wry 的 WKWebView 把 ⌘ 和弦当普通 keydown
+ * 送进页面、AppKit 菜单角色收不到，复制粘贴只能在这里显式实现；无选区时
+ * 放行（拦下来也无事可做）。
+ */
+export function copySelection(view: EditorView): boolean {
+  const text = selectedText(view.state);
+  if (!text) return false;
+  void writeClipboardText(text);
+  return true;
+}
+
+/** ⌘X：写入剪贴板并删除选中内容。 */
+export function cutSelection(view: EditorView): boolean {
+  const text = selectedText(view.state);
+  if (!text) return false;
+  void writeClipboardText(text);
+  view.dispatch({
+    changes: view.state.selection.ranges.map((r) => ({ from: r.from, to: r.to })),
+    userEvent: "delete.cut",
+  });
+  return true;
+}
+
+/**
+ * ⌘V：读系统剪贴板，替换每个选区（多光标同文粘贴），光标落在插入文本后。
+ * IPC 是异步的：完成时按"当时"的最新选区执行（changeByRange 读的是解析后
+ * 的 state），不绑定按键瞬间的旧光标，避免过期写入。
+ */
+export function pasteClipboard(view: EditorView): boolean {
+  void readClipboardText().then((text) => {
+    if (text === null) return;
+    view.dispatch(
+      view.state.changeByRange((range) => ({
+        changes: { from: range.from, to: range.to, insert: text },
+        range: EditorSelection.cursor(range.from + text.length),
+      })),
+      { userEvent: "input.paste", scrollIntoView: true },
+    );
+  });
+  return true;
 }
 
 function wrapOrPlace(view: EditorView, open: string, close: string = open) {

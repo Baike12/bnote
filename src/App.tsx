@@ -6,6 +6,7 @@ import "./commands/builtin";
 import { runCommand } from "@/commands/registry";
 import { installGlobalKeybindings } from "@/commands/globalKeys";
 import { loadOverrides } from "@/commands/keybindingOverrides";
+import { installEditingChords } from "@/lib/editingChords";
 import { registerVimExCommands } from "@/editor/vim/vim";
 import { reloadDocument } from "@/editor/setup";
 import { renumberHeadings } from "@/editor/numbering";
@@ -45,6 +46,7 @@ export default function App() {
 
   useEffect(() => {
     installGlobalKeybindings();
+    installEditingChords();
     registerVimExCommands((id) => runCommand(id));
     let unlisten: (() => void) | undefined;
     let imeUnlisten: (() => void) | undefined;
