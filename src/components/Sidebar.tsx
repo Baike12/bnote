@@ -9,10 +9,12 @@ import {
   trashEntry,
 } from "@/app/actions";
 import { editorApi } from "@/editor/api";
+import { ancestorDirs } from "@/lib/path";
 import { api } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import type { FileNode } from "@/lib/tauri";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { IconNewFolder, IconNewNote } from "./icons";
 
 /** Visible rows in display order (expanded folders traversed depth-first). */
 function flattenVisible(tree: FileNode[], expanded: Set<string>): FileNode[] {
@@ -27,17 +29,31 @@ function flattenVisible(tree: FileNode[], expanded: Set<string>): FileNode[] {
   return out;
 }
 
+function findNode(tree: FileNode[], relPath: string): FileNode | null {
+  for (const n of tree) {
+    if (n.relPath === relPath) return n;
+    if (n.kind === "dir" && n.children) {
+      const hit = findNode(n.children, relPath);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 export function Sidebar() {
   const tree = useAppStore((s) => s.tree);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const vaultName = useAppStore((s) => s.vaultName);
   const currentFile = useAppStore((s) => s.currentFile);
   const focusTick = useAppStore((s) => s.sidebarFocusTick);
+  const renameRequest = useAppStore((s) => s.renameRequest);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   /** Row highlighted for keyboard navigation (distinct from mouse selection). */
   const [cursor, setCursor] = useState<string | null>(null);
+  /** 待露出的行：祖先目录展开、懒加载完成（ready）后再落光标；rename 请求还要挂输入框。 */
+  const [reveal, setReveal] = useState<{ relPath: string; ready: boolean; rename: boolean } | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
 
   /** Expands a folder; lazily reads its children on first open. */
@@ -72,14 +88,37 @@ export function Sidebar() {
     el?.scrollIntoView({ block: "nearest" });
   };
 
-  // ⌘I (nav.focus-sidebar): reveal, place the keyboard cursor on the current
-  // note (or its closest visible ancestor) and focus the tree.
+  /**
+   * 把仓库里的一行"露出来"：展开它的祖先目录，按层懒加载（父层先并入树，
+   * mergeChildren 才找得到子层的挂载点），行渲染出来后再落光标。
+   * 加载期间来了新的请求就以新的为准——本次的异步结果自证后丢弃。
+   */
+  const revealPath = (relPath: string, opts: { rename: boolean }) => {
+    setReveal({ relPath, ready: false, rename: opts.rename });
+    const chain = ancestorDirs(relPath);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      for (const dir of chain) next.add(dir);
+      return next;
+    });
+    void (async () => {
+      for (const dir of chain) {
+        const node = findNode(useAppStore.getState().tree, dir);
+        if (node?.kind === "dir" && node.children === null) await loadDirChildren(dir);
+      }
+      setReveal((cur) => (cur?.relPath === relPath ? { ...cur, ready: true } : cur));
+    })();
+  };
+
+  // ⌘I (nav.focus-sidebar): 落到当前打开的笔记那一行——文件在折叠的目录里就先
+  // 把祖先展开、懒加载补上，行渲染出来 reveal 收敛再把光标从祖先挪到文件本身。
   useEffect(() => {
     if (focusTick === 0) return;
     const rows = flattenVisible(tree, expanded);
     let target = rows[0]?.relPath ?? null;
+    let rel: string | null = null;
     if (currentFile && vaultPath && currentFile.startsWith(`${vaultPath}/`)) {
-      const rel = currentFile.slice(vaultPath.length + 1);
+      rel = currentFile.slice(vaultPath.length + 1);
       for (const n of rows) {
         if (rel === n.relPath || rel.startsWith(`${n.relPath}/`)) target = n.relPath;
       }
@@ -87,8 +126,33 @@ export function Sidebar() {
     setCursor(target);
     treeRef.current?.focus();
     requestAnimationFrame(() => scrollRowIntoView(target));
+    if (rel && target !== rel) revealPath(rel, { rename: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTick]);
+
+  // 新建文件夹后直接改名：同样先露出来，行就位后再挂内联输入框。
+  // 请求取走即清空，所以不会在侧栏重新挂载时复活。
+  useEffect(() => {
+    if (!renameRequest) return;
+    const relPath = renameRequest;
+    useAppStore.getState().clearRenameRequest();
+    revealPath(relPath, { rename: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renameRequest]);
+
+  // reveal 收敛：行渲染出来就落光标（改名请求再挂输入框），然后清掉请求。
+  useEffect(() => {
+    if (!reveal) return;
+    if (flattenVisible(tree, expanded).some((n) => n.relPath === reveal.relPath)) {
+      setCursor(reveal.relPath);
+      if (reveal.rename) setRenaming(reveal.relPath);
+      scrollRowIntoView(reveal.relPath);
+      setReveal(null);
+    } else if (reveal.ready) {
+      // 祖先层都加载完了还没有这一行：条目已被外部改名/删除，不再等待。
+      setReveal(null);
+    }
+  }, [reveal, tree, expanded]);
 
   const onTreeKeyDown = (e: React.KeyboardEvent) => {
     const rows = flattenVisible(tree, expanded);
@@ -139,10 +203,10 @@ export function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-header">
         <button className="icon-btn" title="新建笔记" onClick={() => void newNote()}>
-          ✚
+          <IconNewNote />
         </button>
         <button className="icon-btn" title="新建文件夹" onClick={() => void newFolder()}>
-          ▤
+          <IconNewFolder />
         </button>
         <div className="sidebar-title" data-tauri-drag-region>
           {vaultName || "bnote"}

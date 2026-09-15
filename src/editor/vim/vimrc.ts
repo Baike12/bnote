@@ -43,10 +43,17 @@ const MAP_COMMANDS = new Set([
   "xnoremap",
 ]);
 
-function modeOf(cmd: string): VimMode {
-  if (cmd.startsWith("i")) return "insert";
-  if (cmd.startsWith("v") || cmd.startsWith("x")) return "visual";
-  return "normal";
+/**
+ * Modes a mapping command covers, vim-style: the bare `map`/`noremap` forms
+ * apply to normal AND visual (vim also covers select and operator-pending,
+ * which the engine has no equivalent of), the prefixed forms narrow it.
+ * `:map!` (insert + cmdline) is not supported — use `imap`.
+ */
+function modesOf(cmd: string): VimMode[] {
+  if (cmd === "map" || cmd === "noremap") return ["normal", "visual"];
+  if (cmd.startsWith("i")) return ["insert"];
+  if (cmd.startsWith("v") || cmd.startsWith("x")) return ["visual"];
+  return ["normal"];
 }
 
 function stripComment(line: string): string {
@@ -62,7 +69,8 @@ export function parseVimrc(source: string): VimrcResult {
   const errors: string[] = [];
   let clipboardUnnamed = false;
 
-  for (const rawLine of source.split("\n")) {
+  for (const [index, rawLine] of source.split("\n").entries()) {
+    const lineNo = index + 1;
     const line = stripComment(rawLine).trim();
     if (!line) continue;
     const parts = line.split(/\s+/);
@@ -77,12 +85,27 @@ export function parseVimrc(source: string): VimrcResult {
       continue;
     }
 
-    if (cmd === "unmap" || cmd === "nunmap" || cmd === "iunmap" || cmd === "vunmap") {
+    if (cmd === "unmap" || cmd === "nunmap" || cmd === "iunmap" || cmd === "vunmap" || cmd === "xunmap") {
       const lhs = parts.slice(1).join(" ");
-      const mode: VimMode = cmd === "iunmap" ? "insert" : cmd === "vunmap" ? "visual" : "normal";
-      const i = mappings.findIndex((m) => m.lhs === lhs && m.mode === mode);
-      if (i !== -1) mappings.splice(i, 1);
-      else errors.push(`unmap: no mapping for ${lhs}`);
+      const modes: VimMode[] =
+        cmd === "iunmap"
+          ? ["insert"]
+          : cmd === "vunmap" || cmd === "xunmap"
+            ? ["visual"]
+            : cmd === "nunmap"
+              ? ["normal"]
+              : ["normal", "visual"];
+      let removed = false;
+      for (const mode of modes) {
+        const i = mappings.findIndex((m) => m.lhs === lhs && m.mode === mode);
+        if (i !== -1) {
+          mappings.splice(i, 1);
+          removed = true;
+        }
+      }
+      // Bare `map`/`noremap` register one entry per mode, so `unmap` must undo
+      // all of them before it counts as an unknown mapping.
+      if (!removed) errors.push(`line ${lineNo}: unmap: no mapping for ${lhs}`);
       continue;
     }
 
@@ -92,38 +115,44 @@ export function parseVimrc(source: string): VimrcResult {
       // are separated by whitespace, keys like <C-s> contain none.
       const m = /^(\S+)\s+(.+)$/.exec(rest);
       if (!m) {
-        errors.push(`cannot parse: ${line}`);
+        errors.push(`line ${lineNo}: cannot parse: ${line}`);
         continue;
       }
       const lhs = m[1];
       let rhs = m[2].trim();
       if (lhs.includes("<leader>")) {
-        errors.push(`unsupported <leader> mapping: ${lhs}`);
+        errors.push(`line ${lineNo}: unsupported <leader> mapping: ${lhs}`);
         continue;
       }
       let commandId: string | undefined;
       if (rhs.startsWith(":")) {
         let name = rhs.slice(1).replace(/<CR>$/i, "").replace(/\r$/, "").trim();
         if (name.endsWith("!") && !EX_ALIASES[name]) name = name.slice(0, -1);
+        // `:Bnote <id>` is the documented form (the `:` command line runs the
+        // same way); unwrap it so the runner gets a real command id. A bare id
+        // is accepted directly.
+        const viaBnote = /^Bnote\s+(.+)$/.exec(name);
+        if (viaBnote) name = viaBnote[1];
         const mapped = EX_ALIASES[name];
         if (mapped) {
           commandId = mapped;
         } else {
-          // Allow mapping directly to a bnote command id.
           commandId = name;
         }
       }
-      mappings.push({
-        lhs,
-        rhs,
-        mode: modeOf(cmd),
-        noremap: cmd.includes("nore"),
-        commandId,
-      });
+      for (const mode of modesOf(cmd)) {
+        mappings.push({
+          lhs,
+          rhs,
+          mode,
+          noremap: cmd.includes("nore"),
+          commandId,
+        });
+      }
       continue;
     }
 
-    errors.push(`unsupported vimrc command: ${cmd}`);
+    errors.push(`line ${lineNo}: unsupported vimrc command: ${cmd}`);
   }
 
   return { mappings, errors, clipboardUnnamed };

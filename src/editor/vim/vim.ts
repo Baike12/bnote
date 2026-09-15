@@ -39,7 +39,51 @@ export function registerVimExCommands(run: RunCommand) {
 
 export function vimModeExtension(): Extension {
   patchVimNewlineIndent();
+  patchVimNotice();
   return vim();
+}
+
+/* ---- 底部消息：屏蔽 yank 提示，其余消息改成"按任意键收掉"。
+   引擎的消息都走 showConfirm → openNotification（适配器独有的出口）：
+   - yank 每次都会弹一条 1.5s 的红色 "N lines yanked"。vim 里这条归 report 选项管，
+     引擎没实现该开关，也没有任何 option 能关掉它，所以在这一层按内容丢掉；
+   - 其余消息（报错、:set 回显等）引擎只挂了个 15s 定时器：关不掉、只能干等。
+     vim 的手感是"下一条命令/按键就清掉"，所以这里把 close 挂到
+     state.closeVimNotification 上——引擎自己的按键路径（multiSelectHandleKey）
+     下一次按键就会调用它。长消息（需要回车确认的 :reg）引擎自己会挂，行为不变。 ---- */
+
+let noticePatched = false;
+
+/** showConfirm 拼出的 yank 消息：`N lines yanked`，带寄存器时尾部是 `into "a`
+    （引擎少拼了一个右引号，别按正常引号对写）。两个调用点都是这个形状。 */
+const YANK_NOTICE = /^\d+ lines yanked(?: into ".+)?$/;
+
+/** 非阻塞消息的停留时长；引擎默认 15s，按 vim 的手感调短（按键仍可立刻收掉）。 */
+const NOTICE_MS = 4000;
+
+function patchVimNotice() {
+  if (noticePatched) return;
+  noticePatched = true;
+  try {
+    const proto = CodeMirror.prototype as unknown as {
+      openNotification: (
+        this: { state: { closeVimNotification?: (() => void) | null } },
+        template: HTMLElement,
+        options?: { duration?: number },
+      ) => (() => void) | undefined;
+    };
+    const open = proto.openNotification;
+    proto.openNotification = function (template, options) {
+      if (YANK_NOTICE.test(template.textContent?.trim() ?? "")) return undefined;
+      // duration 0 = 需要回车确认的长消息，保持原样。
+      const duration = Math.min(options?.duration ?? NOTICE_MS, NOTICE_MS);
+      const close = open.call(this, template, { ...options, duration });
+      if (typeof close === "function") this.state.closeVimNotification = close;
+      return close;
+    };
+  } catch (e) {
+    console.warn("[bnote] vim notice patch failed", e);
+  }
 }
 
 /* ---- vim o/O indent compat: the engine implements `o`/`O` via CM6's
@@ -312,13 +356,16 @@ export function normalizeVimKey(lhs: string): string | null {
 
 /** Builds the CM6 keymap that runs bnote commands for `:command` mappings. */
 export function commandMappingKeymap(mappings: VimMapping[]): Extension {
-  const bindings: KeyBinding[] = [];
+  // A key can be mapped more than once per mode (`noremap` plus `vnoremap`, or
+  // a stray duplicate); vim lets the LAST definition win, while a keymap picks
+  // the first binding it finds — so collapse duplicates back-to-front.
+  const byKey = new Map<string, KeyBinding>();
   for (const m of mappings) {
     if (!m.commandId) continue;
     const key = normalizeVimKey(m.lhs);
     if (!key) continue;
     const mode = m.mode;
-    bindings.push({
+    byKey.set(`${mode}\u0000${key}`, {
       key,
       run: (view) => {
         const current = currentVimMode(view);
@@ -331,6 +378,7 @@ export function commandMappingKeymap(mappings: VimMapping[]): Extension {
       },
     });
   }
+  const bindings = [...byKey.values()];
   return bindings.length > 0 ? keymap.of(bindings) : [];
 }
 

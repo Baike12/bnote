@@ -8,7 +8,6 @@ import {
   insertInlineCode,
   insertInlineMath,
   insertMathBlock,
-  insertWikilink,
   jumpHeaderTodos,
   toggleHeading,
   toggleHeadingAny,
@@ -96,6 +95,12 @@ const defs: CommandDef[] = [
     },
   },
   {
+    id: "nav.back-link",
+    title: "回退到链接跳转前的文件",
+    category: "导航",
+    run: () => actions.goBackLink(),
+  },
+  {
     id: "nav.command-palette",
     title: "命令面板",
     category: "导航",
@@ -125,7 +130,20 @@ const defs: CommandDef[] = [
   { id: "edit.insert-inline-math", title: "插入行内公式", category: "编辑", run: withView(insertInlineMath) },
   { id: "edit.insert-code-block", title: "插入代码块", category: "编辑", run: withView(insertCodeBlock) },
   { id: "edit.insert-inline-code", title: "插入行内代码", category: "编辑", run: withView(insertInlineCode) },
-  { id: "edit.insert-wikilink", title: "插入内部链接", category: "编辑", run: withView(insertWikilink) },
+  {
+    id: "edit.insert-wikilink",
+    title: "插入内部链接 / 跳到本行链接",
+    category: "编辑",
+    // 不走 withView：光标行有链接就跳转，没有就在光标处开补全面板——面板自己管焦点。
+    run: () => {
+      const view = getView();
+      if (!view) {
+        useAppStore.getState().showToast("没有活动的编辑器");
+        return;
+      }
+      actions.linkShortcut(view);
+    },
+  },
   {
     id: "edit.insert-horizontal-rule",
     title: "插入分割线",

@@ -57,6 +57,19 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | null;
 
+/** 链接补全面板的锚点：光标所在行的视口坐标（面板 position: fixed 直接用它）。 */
+export interface LinkAnchor {
+  left: number;
+  top: number;
+  bottom: number;
+}
+
+/** 一次链接跳转：从 from 跳到 to。 */
+export interface LinkHop {
+  from: string;
+  to: string;
+}
+
 export interface PersistedConfig {
   lastVault?: string;
   lastFile?: string;
@@ -107,6 +120,22 @@ interface AppState {
   sidebarOpen: boolean;
   /** Incremented by focusSidebar(); the Sidebar reacts by taking keyboard focus. */
   sidebarFocusTick: number;
+  /**
+   * 树里某一行请求进入内联重命名（新建文件夹后直接改名）。Sidebar 取走后置空，
+   * 所以请求只被消费一次，不会在侧栏重新挂载时复活。
+   */
+  renameRequest: string | null;
+  /**
+   * 链接补全面板的锚点（插入链接的光标行）。同样是取走即清空的一次性请求，
+   * 面板只在它非空时挂载——关闭即卸载，查询/选中都回到初始态。
+   */
+  linkSuggest: LinkAnchor | null;
+  /**
+   * 链接跳转链（每条记录一跳 from → to），供「回退到链接跳转前的文件」逐层往回走。
+   * 只在链接跳转时压栈；中间用别的方式打开过文件，回退时按 to 与当前文件比对
+   * 就知道链断了（见 popLinkBack）。
+   */
+  linkBack: LinkHop[];
   toast: string | null;
 
   setVault: (info: VaultInfo) => void;
@@ -122,6 +151,13 @@ interface AppState {
   setModal: (m: ModalKind) => void;
   toggleSidebar: () => void;
   focusSidebar: () => void;
+  requestRename: (relPath: string) => void;
+  clearRenameRequest: () => void;
+  openLinkSuggest: (anchor: LinkAnchor) => void;
+  closeLinkSuggest: () => void;
+  pushLinkBack: (from: string, to: string) => void;
+  /** 回退一层：返回要打开的路径；链已断或本来就是起点时返回 null。 */
+  popLinkBack: () => string | null;
   showToast: (msg: string) => void;
   clearToast: () => void;
 }
@@ -169,6 +205,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   modal: null,
   sidebarOpen: true,
   sidebarFocusTick: 0,
+  renameRequest: null,
+  linkSuggest: null,
+  linkBack: [],
   toast: null,
 
   setVault: (info) =>
@@ -180,9 +219,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       folders: [],
       currentFile: null,
       dirty: false,
+      linkBack: [],
     }),
   closeVault: () =>
-    set({ vaultPath: null, vaultName: "", tree: [], flatFiles: [], folders: [], currentFile: null, dirty: false }),
+    set({
+      vaultPath: null,
+      vaultName: "",
+      tree: [],
+      flatFiles: [],
+      folders: [],
+      currentFile: null,
+      dirty: false,
+      linkBack: [],
+    }),
   setTree: (tree) => set({ tree }),
   setFlatFiles: (flatFiles) => set({ flatFiles }),
   setFolders: (folders) => set({ folders }),
@@ -215,6 +264,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
   focusSidebar: () =>
     set({ sidebarOpen: true, sidebarFocusTick: get().sidebarFocusTick + 1 }),
+  // 侧栏收起时 Sidebar 未挂载，请求会一直悬着——一并展开侧栏，保证有人消费。
+  requestRename: (relPath) => set({ sidebarOpen: true, renameRequest: relPath }),
+  clearRenameRequest: () => {
+    if (get().renameRequest !== null) set({ renameRequest: null });
+  },
+  openLinkSuggest: (anchor) => set({ linkSuggest: anchor }),
+  closeLinkSuggest: () => {
+    if (get().linkSuggest !== null) set({ linkSuggest: null });
+  },
+  pushLinkBack: (from, to) => set({ linkBack: [...get().linkBack, { from, to }] }),
+  // 最后一跳的落点就是当前文件，链才还有效；否则说明中间用别的方式打开过
+  // （侧栏、快速跳转、新建…），链已断——顺手清掉，免得留着过时的路径。
+  popLinkBack: () => {
+    const { linkBack, currentFile } = get();
+    const top = linkBack[linkBack.length - 1];
+    if (!top || top.to !== currentFile) {
+      if (linkBack.length > 0) set({ linkBack: [] });
+      return null;
+    }
+    set({ linkBack: linkBack.slice(0, -1) });
+    return top.from;
+  },
   showToast: (msg) => set({ toast: msg }),
   clearToast: () => set({ toast: null }),
 }));

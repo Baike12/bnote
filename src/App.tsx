@@ -19,6 +19,7 @@ import {
   openVault,
   refreshTree,
   reloadSnippetsFromVault,
+  restoreEditorFocus,
 } from "@/app/actions";
 import {
   DEFAULT_SETTINGS,
@@ -29,6 +30,7 @@ import {
 import { Sidebar } from "@/components/Sidebar";
 import { EditorPane } from "@/components/EditorPane";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
+import { LinkSuggest } from "@/components/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
 import { QuickAddModal } from "@/components/QuickAddModal";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -200,6 +202,7 @@ export default function App() {
         <EditorPane />
       </main>
       {!vaultPath && <Welcome />}
+      <LinkSuggest />
       <QuickSwitcher />
       <CommandPalette />
       <QuickAddModal />
@@ -207,19 +210,6 @@ export default function App() {
       <Toast />
     </div>
   );
-}
-
-/**
- * Returns keyboard focus to the note's current line when nothing in the
- * window holds it (activeElement fell back to <body>) — e.g. after
- * alt-tabbing back to bnote or closing a modal. Never yanks focus from the
- * sidebar tree or a focused input.
- */
-function restoreEditorFocus() {
-  if (useAppStore.getState().modal) return;
-  const ae = document.activeElement;
-  if (ae && ae !== document.body && ae !== document.documentElement) return;
-  editorApi.view?.focus();
 }
 
 async function handleVaultChanged(paths: string[]) {

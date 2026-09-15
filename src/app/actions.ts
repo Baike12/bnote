@@ -1,8 +1,11 @@
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import type { EditorState } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
 import { api, type FileNode } from "@/lib/tauri";
 import { useAppStore, setConfigSnapshot, getConfigSnapshot } from "@/state/appStore";
 import { loadDocument } from "@/editor/setup";
 import { getView } from "@/editor/api";
+import { insertWikilinkText, wikilinkTargetOnLine } from "@/editor/ops";
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, restoreSavedCursor } from "@/editor/cursorMemory";
 import { reconfigureLivePreview, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
@@ -10,7 +13,7 @@ import { configureLivePreview } from "@/editor/livePreview";
 import { loadVimrc } from "@/editor/vim/loader";
 import { reloadSnippets } from "@/editor/snippets/engine";
 import type { RawSnippet } from "@/editor/snippets/default-snippets";
-import { dirname, fileName, joinPath } from "@/lib/path";
+import { dirname, fileName, joinPath, wikilinkText } from "@/lib/path";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -186,8 +189,10 @@ export async function newFolder(parent?: string): Promise<void> {
   const { vaultPath } = useAppStore.getState();
   if (!vaultPath) return;
   try {
-    await api.createDir(parent ?? "", "New Folder");
+    // 后端可能改名去重（"New Folder 2"），重命名要盯住真正建出来的那个目录。
+    const created = await api.createDir(parent ?? "", "New Folder");
     await refreshTree();
+    useAppStore.getState().requestRename(created.relPath);
   } catch (e) {
     useAppStore.getState().showToast(`新建文件夹失败: ${String(e)}`);
   }
@@ -244,13 +249,97 @@ export function wikiLinkTargetPath(target: string): string | null {
   return hit ? joinPath(vaultPath, hit) : null;
 }
 
-export function openWikiLink(target: string) {
+/**
+ * 跟随一条内部链接（预览里点击 / ⌘K 跳到本行链接）：压一层回退链再打开目标。
+ * 返回是否真的跳了——没找到目标时 toast，自链接时静默（交给调用方决定焦点）。
+ */
+export function openWikiLink(target: string, from = useAppStore.getState().currentFile): boolean {
   const path = wikiLinkTargetPath(target);
-  if (path) {
-    void openNote(path);
-  } else {
+  if (!path) {
     useAppStore.getState().showToast(`未找到笔记: ${target}`);
+    return false;
   }
+  // 自链接不回读磁盘：openNote 会重载文档，未保存的改动会丢。
+  if (path === from) return false;
+  if (from) useAppStore.getState().pushLinkBack(from, path);
+  void openNote(path);
+  return true;
+}
+
+/** 「回退到链接跳转前的文件」：沿链接跳转链往回走一层，链外打开过就失效。 */
+export function goBackLink(): void {
+  const { currentFile, popLinkBack, showToast } = useAppStore.getState();
+  const path = currentFile ? popLinkBack() : null;
+  if (!path) {
+    showToast("没有可回退的链接跳转");
+    return;
+  }
+  void openNote(path).catch((e) => {
+    useAppStore.getState().showToast(`无法打开 ${fileName(path)}: ${String(e)}`);
+  });
+}
+
+/** 打开链接补全面板时的文档状态；写回前比对，文档换过（切文件、外部重载）就放弃。 */
+let linkPickState: EditorState | null = null;
+
+/**
+ * 「插入 / 跳转内部链接」快捷键：光标行已经有链接就跳到那篇笔记（一行一个链接，
+ * 所以本行再插就是重复），否则在光标处开补全面板——空输入列出最近打开的笔记，
+ * 输入即按快速跳转同一套排序过滤。
+ */
+export function linkShortcut(view: EditorView): void {
+  const { currentFile, linkSuggest, modal, showToast } = useAppStore.getState();
+  if (modal) return; // 命令面板 / 快速跳转 / 设置开着：不抢前台，什么也不做
+  if (linkSuggest) {
+    useAppStore.getState().closeLinkSuggest(); // 再按一次 = 收起
+    return;
+  }
+  if (!currentFile) {
+    showToast("先打开一篇笔记，再插入链接");
+    return;
+  }
+  const target = wikilinkTargetOnLine(view);
+  if (target) {
+    if (!openWikiLink(target)) view.focus(); // 没跳成（没找到 / 自链接）：焦点还给编辑器
+    return;
+  }
+  const coords = view.coordsAtPos(view.state.selection.main.head);
+  if (!coords) return;
+  linkPickState = view.state;
+  useAppStore.getState().openLinkSuggest({
+    left: coords.left,
+    top: coords.top,
+    bottom: coords.bottom,
+  });
+}
+
+/** 补全面板选中一篇笔记：把 `[[链接]]` 写进光标处（会自证文档没被换过）。 */
+export function insertPickedLink(rel: string): void {
+  const state = linkPickState;
+  const view = getView();
+  linkPickState = null;
+  useAppStore.getState().closeLinkSuggest();
+  if (!view || state === null || view.state !== state) return;
+  const text = wikilinkText(rel, useAppStore.getState().flatFiles);
+  if (text === null) {
+    useAppStore.getState().showToast("这个文件名带链接语法字符，没法写成 [[链接]]");
+    view.focus();
+    return;
+  }
+  insertWikilinkText(view, text);
+}
+
+/**
+ * Returns keyboard focus to the note's current line when nothing in the
+ * window holds it (activeElement fell back to <body>) — e.g. after
+ * alt-tabbing back to bnote, closing a modal, or dismissing the link panel.
+ * Never yanks focus from the sidebar tree or a focused input.
+ */
+export function restoreEditorFocus() {
+  if (useAppStore.getState().modal) return;
+  const ae = document.activeElement;
+  if (ae && ae !== document.body && ae !== document.documentElement) return;
+  getView()?.focus();
 }
 
 /** Applies store settings (vim, typewriter, live preview, snippets) to the editor. */

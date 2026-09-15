@@ -9,6 +9,7 @@ import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
 import { inputGuards } from "@/lib/inputGuards";
 import { FolderSuggest } from "@/components/FolderSuggest";
 import { applySettingsToEditor, openVault, pickVaultDialog, reloadSnippetsFromVault } from "@/app/actions";
+import { parseVimrc } from "@/editor/vim/vimrc";
 
 type Tab = "general" | "editor" | "hotkeys" | "vim" | "snippets" | "ime" | "quickadd";
 
@@ -339,6 +340,10 @@ function VimTab() {
     });
   }, []);
 
+  // 实时校验，未识别的行立刻标出来——否则拼错命令只会静默失效（vim 里
+  // 会有 E492，这里只在 console 里 warn，用户在应用里看不到）。
+  const vimrcErrors = useMemo(() => parseVimrc(vimrc).errors, [vimrc]);
+
   return (
     <div className="settings-section">
       <Toggle
@@ -350,6 +355,7 @@ function VimTab() {
       <h3>全局 vimrc</h3>
       <p className="setting-hint">
         另可在仓库内放置 <code>.bnote/vimrc</code>，其映射会叠加在全局配置之上。
+        裸 <code>map</code> / <code>noremap</code> 与 vim 一致，同时作用于 normal 和 visual 模式。
       </p>
       <textarea
         className="settings-textarea"
@@ -358,6 +364,16 @@ function VimTab() {
         onChange={(e) => setVimrc(e.target.value)}
         rows={14}
       />
+      {vimrcErrors.length > 0 && (
+        <div className="setting-errors">
+          <p>{vimrcErrors.length} 行未被识别（已跳过，其余配置正常生效）：</p>
+          <ul>
+            {vimrcErrors.map((err) => (
+              <li key={err}>{err}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="setting-row">
         <span />
         <button
@@ -367,7 +383,13 @@ function VimTab() {
             void api
               .saveVimrc(vimrc)
               .then(() => applySettingsToEditor())
-              .then(() => showToast("vimrc 已保存并生效"));
+              .then(() =>
+                showToast(
+                  vimrcErrors.length > 0
+                    ? `vimrc 已保存，${vimrcErrors.length} 行未被识别`
+                    : "vimrc 已保存并生效",
+                ),
+              );
           }}
         >
           保存并应用

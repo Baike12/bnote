@@ -19,6 +19,7 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "workspace.open-settings": "Mod-,",
 
   "nav.quick-switcher": "Mod-o",
+  "nav.back-link": "Mod-[",
   "nav.command-palette": "Mod-p",
   "nav.toggle-sidebar": "Mod-\\",
   "nav.focus-sidebar": "Mod-i",

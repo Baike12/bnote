@@ -1,8 +1,9 @@
 import type { EditorView } from "@codemirror/view";
 import { EditorSelection } from "@codemirror/state";
+import type { Text } from "@codemirror/state";
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
-import { insideFencedCodeByScan } from "./context";
+import { indentUnit, syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
+import { getContextAt, insideFencedCodeByScan } from "./context";
 import type { SyntaxNode } from "@lezer/common";
 import { renumberHeadings } from "./numbering";
 import { useAppStore } from "@/state/appStore";
@@ -12,20 +13,92 @@ import { useAppStore } from "@/state/appStore";
 const BULLET_ITEM_RE = /^([ \t]*)([-*+])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/;
 const ORDERED_ITEM_RE = /^([ \t]*)(\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/;
 
+const LEADING_WS_RE = /^[ \t]*/;
+
+type Edit = { from: number; to: number; insert: string };
+
+/** One indent level, written the way the line already is: a single tab for
+ *  tab-indented lines, otherwise one indent unit (the same step Shift-Tab
+ *  removes). */
+function dedentOneLevel(indent: string, unit: string): string {
+  if (indent.startsWith("\t")) return indent.slice(1);
+  return indent.slice(Math.min(unit.length, indent.length));
+}
+
+/** Number for an ordered item that just moved up to `indent`: one past the
+ *  nearest preceding sibling at that level, or 1 when there is none. A blank
+ *  line, a shallower line or a non-list line ends the walk — the list is over. */
+function orderedNumberAtLevel(doc: Text, lineNo: number, indent: string): number {
+  for (let n = lineNo - 1; n >= 1; n--) {
+    const text = doc.line(n).text;
+    if (text.trim() === "") break;
+    const lead = LEADING_WS_RE.exec(text)![0];
+    if (lead.length < indent.length) break;
+    if (lead.length > indent.length) continue; // deeper: a child of the previous item
+    if (lead !== indent) break;
+    const m = ORDERED_ITEM_RE.exec(text);
+    if (!m) break;
+    return parseInt(m[2], 10) + 1;
+  }
+  return 1;
+}
+
+/** Renumbers the ordered siblings after `lineNo` so the list stays sequential
+ *  once a new item took number `number`. Only items already sitting in exactly
+ *  that slot are rewritten — hand-written `1. 1. 1.` or deliberately
+ *  out-of-order lists are left alone, the same rule lang-markdown's
+ *  renumberList uses. */
+function bumpFollowingOrdered(
+  doc: Text,
+  lineNo: number,
+  indent: string,
+  number: number,
+  delim: string,
+  out: Edit[],
+): void {
+  let want = number;
+  for (let n = lineNo + 1; n <= doc.lines; n++) {
+    const text = doc.line(n).text;
+    if (text.trim() === "") break;
+    const lead = LEADING_WS_RE.exec(text)![0];
+    if (lead.length < indent.length) break;
+    if (lead.length > indent.length) continue;
+    if (lead !== indent) break;
+    const m = ORDERED_ITEM_RE.exec(text);
+    if (!m || m[2].slice(-1) !== delim) break;
+    if (parseInt(m[2], 10) !== want) break;
+    const at = doc.line(n).from + lead.length;
+    out.push({ from: at, to: at + m[2].length, insert: String(want + 1) + delim });
+    want++;
+  }
+}
+
 /**
- * Enter on a bullet / todo line, bnote-style: continue the item with the
- * EXACT leading whitespace of the current line and repeat the marker, with a
- * fresh unchecked box. lang-markdown's insertNewlineContinueMarkup would
- * expand tab indentation to spaces (countColumn), which livePreview then
- * renders as a much deeper indent than the tab-indented siblings. An empty
- * item exits the list instead of starting a new one (Obsidian behavior).
- * Ordered lists and non-markdown contexts fall
- * through to insertNewlineContinueMarkup. A cursor sitting on the marker
- * (e.g. right after toggling the checkbox) continues the item from its end,
- * and a cursor before the bullet opens a blank line above.
+ * Enter on a list line, bnote-style: keep the item's EXACT leading whitespace
+ * and repeat the marker (fresh unchecked box for todos, next number for ordered
+ * lists) so nested items stay aligned. lang-markdown's
+ * insertNewlineContinueMarkup would expand tab indentation to spaces
+ * (countColumn), which livePreview then renders as a much deeper indent than
+ * the tab-indented siblings — and its empty-item handling leaves stray blank
+ * lines behind. Everything is handled here instead, identically for bullets,
+ * todos and ordered lists:
+ *
+ *   Enter on a non-empty item        → new sibling at the same level
+ *   Enter on an empty nested item    → drop one level (marker kept)
+ *   Enter on an empty top-level item → leave the list (marker stripped)
+ *
+ * A cursor sitting on the marker (e.g. right after toggling the checkbox)
+ * continues the item from its end, and a cursor before the marker opens a blank
+ * line above. Non-list lines, blockquotes and non-markdown contexts fall
+ * through to insertNewlineContinueMarkup.
  */
 export function enterContinueListItem(view: EditorView): boolean {
   const state = view.state;
+  const indentUnitText = state.facet(indentUnit);
+  // 多光标时不做序号顺延：changeByRange 把各 range 的改动都当起始文档坐标合成，
+  // 顺延改动可能落进另一个光标的编辑范围，合成结果会错乱（主编辑本身仍在各自
+  // 行内，互不重叠）。
+  const renumber = state.selection.ranges.length === 1;
   let handledAll = true;
   const changes = state.changeByRange((range) => {
     const unhandled = () => {
@@ -60,10 +133,12 @@ export function enterContinueListItem(view: EditorView): boolean {
       return unhandled();
     }
     const line = state.doc.lineAt(pos);
-    const m = BULLET_ITEM_RE.exec(line.text);
+    const bulletMatch = BULLET_ITEM_RE.exec(line.text);
+    const orderedMatch = bulletMatch ? null : ORDERED_ITEM_RE.exec(line.text);
+    const m = bulletMatch ?? orderedMatch;
     if (!m) return unhandled();
-    const [, indent, bullet, gap, box] = m;
-    const markerLen = indent.length + bullet.length + gap.length + (box?.length ?? 0);
+    const [, indent, marker, gap, box, content] = m;
+    const markerLen = indent.length + marker.length + gap.length + (box?.length ?? 0);
     if (pos < line.from + markerLen) {
       // Cursor on the leading whitespace or the marker itself (e.g. right
       // where toggling the checkbox drops it). Falling through to
@@ -77,26 +152,54 @@ export function enterContinueListItem(view: EditorView): boolean {
           range: EditorSelection.cursor(line.from + state.lineBreak.length),
         };
       }
-      // On the bullet/gap/box: continue with a fresh item from the line end.
+      // On the marker/gap/box: continue with a fresh item from the line end.
       pos = line.to;
     }
 
-    if (m[5].trim() === "") {
-      // Empty item: exit the list — strip marker and anything after it.
+    if (content.trim() === "") {
+      // Empty item. Nested: lose one level of indent but keep the item, so
+      // repeated Enter walks back out one level at a time. Top level: leave the
+      // list — strip the marker and anything after it.
+      if (indent.length === 0) {
+        return {
+          changes: { from: line.from, to: line.to, insert: "" },
+          range: EditorSelection.cursor(line.from),
+        };
+      }
+      const edits: Edit[] = [];
+      const newIndent = dedentOneLevel(indent, indentUnitText);
+      const delim = orderedMatch ? marker.slice(-1) : "";
+      let head = marker;
+      if (orderedMatch) {
+        const number = orderedNumberAtLevel(state.doc, line.number, newIndent);
+        head = `${number}${delim}`;
+        if (renumber) bumpFollowingOrdered(state.doc, line.number, newIndent, number, delim, edits);
+      }
+      const text = newIndent + head + gap + (box ?? "");
+      edits.push({ from: line.from, to: line.to, insert: text });
       return {
-        changes: { from: line.from + indent.length, to: line.to, insert: "" },
-        range: EditorSelection.cursor(line.from + indent.length),
+        changes: edits,
+        range: EditorSelection.cursor(line.from + text.length),
       };
     }
+
     // Continue / split: absorb surrounding whitespace like lang-markdown does.
     let from = pos;
     let to = pos;
     while (from > line.from && /\s/.test(line.text[from - line.from - 1])) from--;
     while (to < line.to && /\s/.test(line.text[to - line.from])) to++;
-    const newMarker = box ? `${bullet} [ ] ` : `${bullet} `;
+    const edits: Edit[] = [];
+    const delim = orderedMatch ? marker.slice(-1) : "";
+    const head = orderedMatch ? `${parseInt(marker, 10) + 1}${delim}` : marker;
+    if (orderedMatch && renumber) {
+      // The new item owns the number after this one; the items below it shift.
+      bumpFollowingOrdered(state.doc, line.number, indent, parseInt(marker, 10) + 1, delim, edits);
+    }
+    const insert = `${head}${gap}${box ? "[ ] " : ""}`;
+    edits.push({ from, to, insert: state.lineBreak + indent + insert });
     return {
-      changes: { from, to, insert: state.lineBreak + indent + newMarker },
-      range: EditorSelection.cursor(from + 1 + indent.length + newMarker.length),
+      changes: edits,
+      range: EditorSelection.cursor(from + state.lineBreak.length + indent.length + insert.length),
     };
   });
   if (!handledAll) return false;
@@ -513,6 +616,58 @@ export function insertInlineCode(view: EditorView) {
 
 export function insertWikilink(view: EditorView) {
   wrapOrPlace(view, "[[", "]]");
+}
+
+/** `[[目标]]` / `[[目标|别名]]` 的形状，与 livePreview 的渲染正则同源。 */
+const WIKILINK_RE = /\[\[([^\[\]\n]+?)\]\]/g;
+
+/**
+ * 光标所在行上的第一个链接目标（`[[目标|别名]]` / `[[目标#标题]]` 都取目标），
+ * 行内代码与围栏代码里的 `[[…]]` 不算——那是示例文本，不是链接。
+ * 一行只允许一个链接，所以取第一个就是那一行的链接。
+ */
+export function wikilinkTargetOnLine(view: EditorView): string | null {
+  const state = view.state;
+  const line = state.doc.lineAt(state.selection.main.head);
+  if (!line.text.includes("[[")) return null;
+  // 语法树解析到这一行时，getContextAt 就能判出围栏/行内代码；整行扫描只是刚载入、
+  // 树还没跟上时的兜底（与回车续行同一套约定）。无条件扫会变成 O(光标之前的行数)——
+  // 一万行文档里光标贴着底部时约 4.5ms，每按一次都要付。
+  if (!syntaxTreeAvailable(state, line.to) && insideFencedCodeByScan(state.doc, line.number)) {
+    return null;
+  }
+  WIKILINK_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = WIKILINK_RE.exec(line.text))) {
+    if (getContextAt(state, line.from + m.index + 2).code) continue;
+    const raw = m[1];
+    const pipe = raw.indexOf("|");
+    const target = (pipe === -1 ? raw : raw.slice(0, pipe)).split("#")[0].trim();
+    if (target) return target;
+  }
+  return null;
+}
+
+/**
+ * 写一条链接进文档：有选区时选区文字当别名（`[[目标|别名]]` 顶掉选区），否则插在
+ * 光标处、光标落在链接之后。别名里的链接语法字符会截断链接，一律换成空格。
+ */
+export function insertWikilinkText(view: EditorView, target: string) {
+  const state = view.state;
+  const range = state.selection.main;
+  const alias = range.empty
+    ? ""
+    : state
+        .sliceDoc(range.from, range.to)
+        .replace(/[\[\]|\r\n]/g, " ")
+        .trim();
+  const insert = alias ? `[[${target}|${alias}]]` : `[[${target}]]`;
+  view.dispatch({
+    changes: { from: range.from, to: range.to, insert },
+    selection: { anchor: range.from + insert.length },
+    userEvent: "input.bnote-link",
+  });
+  view.focus();
 }
 
 /**

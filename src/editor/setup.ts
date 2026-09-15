@@ -1,4 +1,4 @@
-import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, Prec } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { EditorView, keymap, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
@@ -40,6 +40,15 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
       { key: "Tab", run: (v) => adjustHeadingLevel(v, 1), shift: (v) => adjustHeadingLevel(v, -1) },
     ]),
 
+    // lang-markdown ships its own Enter/Backspace in a Prec.high keymap
+    // (insertNewlineContinueMarkup / deleteMarkupBackward). Without a higher
+    // precedence its Enter wins outright, and the list-specific behavior in
+    // ops.ts never runs — tab indentation gets expanded to spaces and an empty
+    // nested item grows a blank line instead of moving up a level. Prec.highest
+    // keeps the list Enter in charge; every non-list line still falls through
+    // to lang-markdown below.
+    Prec.highest(keymap.of([{ key: "Enter", run: enterContinueListItem }])),
+
     markdownExtensions(),
     codeHighlighting(),
 
@@ -57,11 +66,10 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     highlightSelectionMatches(),
 
     keymap.of([
-      // Bullet/todo Enter first: keeps tab indentation intact and exits empty
-      // items (see ops.ts) — lang-markdown's continuation expands tabs.
-      { key: "Enter", run: enterContinueListItem },
-      // Markdown-aware Enter/Backspace: continue lists, but do NOT carry
-      // indentation into code fences (a plain newline keeps fences closable).
+      // Markdown-aware Enter/Backspace fallback: continue lists, but do NOT
+      // carry indentation into code fences (a plain newline keeps fences
+      // closable). List lines never get here — the Prec.highest binding above
+      // takes them.
       { key: "Enter", run: insertNewlineContinueMarkup },
       { key: "Backspace", run: deleteMarkupBackward },
       ...searchKeymap,
