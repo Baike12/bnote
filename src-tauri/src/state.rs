@@ -1,8 +1,12 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
 use notify::RecommendedWatcher;
+
+use crate::agent::mcp::McpManager;
+use crate::agent::session::Session;
 
 /// Handle keeping a vault watcher alive; dropping it unregisters the watch
 /// and signals the debounce thread to exit.
@@ -19,6 +23,12 @@ pub struct AppState {
     pub watcher: Mutex<Option<WatcherHandle>>,
     /// Persistent config directory (Tauri app_data_dir).
     pub data_dir: PathBuf,
+    /// Live agent sessions (study mode).
+    pub sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// MCP connections, (re)connected lazily per config.
+    pub mcp_manager: Mutex<Option<Arc<McpManager>>>,
+    /// Currently open note path (set by the frontend for agent context).
+    pub current_note: Mutex<Option<String>>,
 }
 
 impl AppState {

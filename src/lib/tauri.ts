@@ -37,6 +37,66 @@ export interface SetImeOutcome {
   fallbackUsed: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Study mode / agent
+// ---------------------------------------------------------------------------
+
+export type StudyContent =
+  | { kind: "markdown"; path: string; title: string }
+  | { kind: "url"; url: string; title: string };
+
+export interface AgentConfig {
+  provider: string;
+  model: string;
+  base_url: string;
+  api_key: string;
+  max_tokens: number;
+  mcp_servers: Record<string, unknown>;
+  skill_dirs: string[];
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  path: string;
+}
+
+export interface SessionInfo {
+  sessionId: string;
+  skills: SkillInfo[];
+  mcpTools: string[];
+  mcpErrors: string[];
+}
+
+export type AgentEvent =
+  | { type: "text_delta"; text: string }
+  | { type: "tool_start"; id: string; name: string; input: unknown }
+  | { type: "tool_end"; id: string; ok: boolean; output: string }
+  | { type: "turn_end"; reason: string }
+  | { type: "error"; message: string };
+
+export interface ConvertResult {
+  mdPath: string;
+  title: string;
+  pages: number;
+  elapsedMs: number;
+}
+
+export const agentApi = {
+  getConfig: () => invoke<AgentConfig>("agent_get_config"),
+  saveConfig: (config: AgentConfig) => invoke<void>("agent_save_config", { config }),
+  startSession: (study: StudyContent | null) =>
+    invoke<SessionInfo>("agent_start_session", { study }),
+  send: (sessionId: string, text: string) =>
+    invoke<void>("agent_send", { sessionId, text }),
+  abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
+  history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
+  setCurrentNote: (path: string | null) =>
+    invoke<void>("agent_set_current_note", { path }),
+  convertPdf: (pdfPath: string, folderRel: string) =>
+    invoke<ConvertResult>("convert_pdf_to_markdown", { pdfPath, folderRel }),
+};
+
 export const api = {
   setVault: (path: string) => invoke<VaultInfo>("set_vault", { path }),
   getVault: () => invoke<VaultInfo | null>("get_vault"),

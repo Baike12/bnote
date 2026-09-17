@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api } from "@/lib/tauri";
+import { agentApi, api } from "@/lib/tauri";
 import "./commands/builtin";
 import { runCommand } from "@/commands/registry";
 import { installGlobalKeybindings } from "@/commands/globalKeys";
@@ -30,6 +30,8 @@ import {
 } from "@/state/appStore";
 import { Sidebar } from "@/components/Sidebar";
 import { EditorPane } from "@/components/EditorPane";
+import { AgentPanel } from "@/components/AgentPanel";
+import { ContentPane } from "@/components/ContentPane";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { LinkSuggest } from "@/components/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -43,6 +45,11 @@ export default function App() {
   const vaultName = useAppStore((s) => s.vaultName);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const currentFile = useAppStore((s) => s.currentFile);
+  const studyMode = useAppStore((s) => s.studyMode);
+  // Agent context: the backend reads the current note path for its system prompt.
+  useEffect(() => {
+    void agentApi.setCurrentNote(currentFile).catch(() => {});
+  }, [currentFile]);
 
   useEffect(() => {
     installGlobalKeybindings();
@@ -181,28 +188,44 @@ export default function App() {
     return parts.join("  /  ");
   })();
 
+  const main = (
+    <main className="main">
+      {studyMode ? (
+        <div className="study-layout">
+          <AgentPanel />
+          <ContentPane />
+          <div className="study-notes">
+            <EditorPane />
+          </div>
+        </div>
+      ) : (
+        <>
+          <div
+            className="titlebar"
+            data-tauri-drag-region
+            // When the sidebar is hidden the macOS traffic lights overlay the
+            // titlebar's left edge — keep the toggle button clear of them.
+            style={{ paddingLeft: sidebarOpen ? 12 : 78 }}
+          >
+            <button
+              className="icon-btn titlebar-icon"
+              title={sidebarOpen ? "收起侧边栏 (⌘\\)" : "展开侧边栏 (⌘\\)"}
+              onClick={() => useAppStore.getState().toggleSidebar()}
+            >
+              ◧
+            </button>
+            <div className="breadcrumb">{breadcrumb}</div>
+          </div>
+          <EditorPane />
+        </>
+      )}
+    </main>
+  );
+
   return (
     <div className="app">
       {sidebarOpen && vaultPath && <Sidebar />}
-      <main className="main">
-        <div
-          className="titlebar"
-          data-tauri-drag-region
-          // When the sidebar is hidden the macOS traffic lights overlay the
-          // titlebar's left edge — keep the toggle button clear of them.
-          style={{ paddingLeft: sidebarOpen ? 12 : 78 }}
-        >
-          <button
-            className="icon-btn titlebar-icon"
-            title={sidebarOpen ? "收起侧边栏 (⌘\\)" : "展开侧边栏 (⌘\\)"}
-            onClick={() => useAppStore.getState().toggleSidebar()}
-          >
-            ◧
-          </button>
-          <div className="breadcrumb">{breadcrumb}</div>
-        </div>
-        <EditorPane />
-      </main>
+      {main}
       {!vaultPath && <Welcome />}
       <LinkSuggest />
       <QuickSwitcher />

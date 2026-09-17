@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type FileNode, type VaultInfo } from "@/lib/tauri";
+import { api, type FileNode, type StudyContent, type VaultInfo } from "@/lib/tauri";
 
 export interface ImeSettings {
   /** 跟随 vim 模式切换输入法（仅 macOS 生效） */
@@ -137,6 +137,10 @@ interface AppState {
    */
   linkBack: LinkHop[];
   toast: string | null;
+  /** 学习模式:激活时主区变为 agent | 内容 | 笔记 三栏 */
+  studyMode: boolean;
+  /** 学习模式中间栏的当前内容(null = 空态,等待拖入 PDF 或输入 URL) */
+  studyContent: StudyContent | null;
 
   setVault: (info: VaultInfo) => void;
   closeVault: () => void;
@@ -160,6 +164,8 @@ interface AppState {
   popLinkBack: () => string | null;
   showToast: (msg: string) => void;
   clearToast: () => void;
+  setStudyMode: (active: boolean) => void;
+  setStudyContent: (content: StudyContent | null) => void;
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -209,6 +215,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   linkSuggest: null,
   linkBack: [],
   toast: null,
+  studyMode: false,
+  studyContent: null,
 
   setVault: (info) =>
     set({
@@ -288,7 +296,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   showToast: (msg) => set({ toast: msg }),
   clearToast: () => set({ toast: null }),
+  setStudyMode: (active) => set({ studyMode: active }),
+  setStudyContent: (content) => set({ studyContent: content }),
 }));
+
+export function toggleStudyMode() {
+  const store = useAppStore.getState();
+  store.setStudyMode(!store.studyMode);
+}
 
 let configSnapshot: PersistedConfig = {};
 export function setConfigSnapshot(c: PersistedConfig) {

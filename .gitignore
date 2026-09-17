@@ -29,3 +29,10 @@ vendor/
 
 # Local secrets
 .pat.md
+
+# 转换器测试用论文(可重新下载,不入库)
+testdata/
+
+# Rust 构建产物
+src-tauri/target/
+src-tauri/crates/pdf2md/target/

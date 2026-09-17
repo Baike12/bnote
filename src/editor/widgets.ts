@@ -185,3 +185,37 @@ export class EscapeCharWidget extends WidgetType {
     return el;
   }
 }
+
+/** Rendered `![alt](url)` image: replaces the node when the cursor is not on
+ *  its line (study mode: converted-PDF figures stay visible in place). */
+export class ImageWidget extends WidgetType {
+  constructor(
+    readonly src: string,
+    readonly alt: string,
+  ) {
+    super();
+  }
+
+  eq(other: ImageWidget) {
+    return other.src === this.src && other.alt === this.alt;
+  }
+
+  toDOM() {
+    const wrap = document.createElement("span");
+    wrap.className = "cw-image";
+    const img = document.createElement("img");
+    img.src = this.src;
+    img.alt = this.alt;
+    img.loading = "lazy";
+    img.addEventListener("error", () => {
+      img.style.display = "none";
+      wrap.classList.add("cw-image-broken");
+    });
+    wrap.appendChild(img);
+    return wrap;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}

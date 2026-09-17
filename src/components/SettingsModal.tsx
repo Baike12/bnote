@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { agentApi, type AgentConfig } from "@/lib/tauri";
 import { Modal } from "./Modal";
 import { allCommands } from "@/commands/registry";
 import { bindingsForCommand, eventToKey, formatBinding } from "@/commands/keys";
@@ -11,7 +12,7 @@ import { FolderSuggest } from "@/components/FolderSuggest";
 import { applySettingsToEditor, openVault, pickVaultDialog, reloadSnippetsFromVault } from "@/app/actions";
 import { parseVimrc } from "@/editor/vim/vimrc";
 
-type Tab = "general" | "editor" | "hotkeys" | "vim" | "snippets" | "ime" | "quickadd";
+type Tab = "general" | "editor" | "hotkeys" | "vim" | "snippets" | "ime" | "quickadd" | "agent";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "通用" },
@@ -21,6 +22,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "snippets", label: "公式片段" },
   { id: "ime", label: "输入法" },
   { id: "quickadd", label: "快速添加" },
+  { id: "agent", label: "Agent(学习模式)" },
 ];
 
 const VIMRC_TEMPLATE = `\" bnote vimrc（加载顺序：全局 → 仓库 .bnote/vimrc）
@@ -70,6 +72,7 @@ export function SettingsModal() {
           {tab === "snippets" && <SnippetsTab />}
           {tab === "ime" && <ImeTab />}
           {tab === "quickadd" && <QuickAddTab />}
+          {tab === "agent" && <AgentTab />}
         </div>
       </div>
     </Modal>
@@ -599,6 +602,122 @@ function Toggle({
       >
         <span className="toggle-knob" />
       </button>
+    </div>
+  );
+}
+
+
+function AgentTab() {
+  const showToast = useAppStore((s) => s.showToast);
+  const [cfg, setCfg] = useState<AgentConfig | null>(null);
+  const [mcpJson, setMcpJson] = useState("{}");
+  const [mcpDirty, setMcpDirty] = useState(false);
+
+  useEffect(() => {
+    void agentApi.getConfig().then((c) => {
+      setCfg(c);
+      setMcpJson(JSON.stringify(c.mcp_servers ?? {}, null, 2));
+    });
+  }, []);
+
+  if (!cfg) return <div className="settings-section">加载中…</div>;
+
+  function update(patch: Partial<AgentConfig>) {
+    setCfg({ ...cfg!, ...patch });
+  }
+
+  async function save() {
+    try {
+      let mcp_servers: Record<string, unknown> = {};
+      if (mcpDirty) {
+        mcp_servers = JSON.parse(mcpJson || "{}");
+      } else {
+        mcp_servers = cfg!.mcp_servers ?? {};
+      }
+      await agentApi.saveConfig({ ...cfg!, mcp_servers });
+      showToast("Agent 配置已保存,重新进入学习模式后生效");
+    } catch (e) {
+      showToast(`保存失败: ${String(e)}`);
+    }
+  }
+
+  return (
+    <div className="settings-section">
+      <h3>模型</h3>
+      <div className="settings-row">
+        <label>
+          协议
+          <select
+            className="settings-select"
+            value={cfg.provider}
+            onChange={(e) => update({ provider: e.target.value })}
+          >
+            <option value="anthropic">Anthropic(含兼容代理)</option>
+            <option value="openai">OpenAI 兼容(OpenAI/DeepSeek/Grok/Ollama…)</option>
+          </select>
+        </label>
+        <label>
+          模型
+          <input
+            className="settings-input"
+            value={cfg.model}
+            placeholder="claude-sonnet-4-5 / deepseek-chat / gpt-4o…"
+            onChange={(e) => update({ model: e.target.value })}
+          />
+        </label>
+      </div>
+      <div className="settings-row">
+        <label>
+          Base URL(留空用官方地址)
+          <input
+            className="settings-input"
+            value={cfg.base_url}
+            placeholder="https://api.deepseek.com/v1"
+            onChange={(e) => update({ base_url: e.target.value })}
+          />
+        </label>
+        <label>
+          API Key
+          <input
+            className="settings-input"
+            type="password"
+            value={cfg.api_key}
+            onChange={(e) => update({ api_key: e.target.value })}
+          />
+        </label>
+      </div>
+
+      <h3>MCP 服务器</h3>
+      <p className="settings-hint">
+        每个会话启动时连接;stdio 形如 <code>{"{"} "server": {"{"} "type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"] {"}"} {"}"}</code>,
+        HTTP 形如 <code>{"{"} "type": "http", "url": "https://…" {"}"}</code>。工具以 mcp__服务器__工具 命名。
+      </p>
+      <textarea
+        className="settings-textarea mono"
+        rows={8}
+        value={mcpJson}
+        onChange={(e) => {
+          setMcpJson(e.target.value);
+          setMcpDirty(true);
+        }}
+      />
+
+      <h3>额外 Skill 目录</h3>
+      <p className="settings-hint">
+        每行一个目录;内置会扫描 应用数据/skills、仓库 .bnote/skills 与 ~/.agents/skills。
+      </p>
+      <textarea
+        className="settings-textarea mono"
+        rows={3}
+        value={cfg.skill_dirs.join("\n")}
+        onChange={(e) => update({ skill_dirs: e.target.value.split("\n").filter((x) => x.trim()) })}
+      />
+
+      <div className="settings-actions">
+        <button className="btn" onClick={() => void save()}>
+          保存 Agent 配置
+        </button>
+      </div>
     </div>
   );
 }

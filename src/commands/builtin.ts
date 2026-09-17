@@ -19,7 +19,7 @@ import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import { configureLivePreview } from "@/editor/livePreview";
 import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
-import { useAppStore } from "@/state/appStore";
+import { useAppStore, toggleStudyMode } from "@/state/appStore";
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
   return () => {
@@ -73,6 +73,14 @@ const defs: CommandDef[] = [
     category: "工作区",
     run: () => {
       import("@tauri-apps/api/window").then((m) => m.getCurrentWindow().close());
+    },
+  },
+  {
+    id: "view.toggle-study-mode",
+    title: "进入 / 退出学习模式(左问 agent、中看内容、右记笔记)",
+    category: "视图",
+    run: () => {
+      toggleStudyMode();
     },
   },
   {

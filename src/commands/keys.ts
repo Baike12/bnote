@@ -50,6 +50,7 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "editor.toggle-typewriter": "Mod-Shift-t",
   "editor.toggle-snippets": "Mod-Shift-l",
 
+  "view.toggle-study-mode": "Mod-Shift-s",
   "view.zoom-in": "Mod-=",
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",

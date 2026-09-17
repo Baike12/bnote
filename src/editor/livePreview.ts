@@ -4,6 +4,8 @@ import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { mathRegions } from "./context";
+import { useAppStore } from "@/state/appStore";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { DONE_STAMP_RE, todayStamp } from "./ops";
 import {
   EscapeCharWidget,
@@ -14,6 +16,7 @@ import {
   MathWidget,
   TaskCheckboxWidget,
 } from "./widgets";
+import { ImageWidget } from "./widgets";
 
 /**
  * Obsidian-style live preview: everything in the viewport is rendered
@@ -384,6 +387,12 @@ function buildInlineDecorations(view: EditorView): DecorationSet {
         }
         return false;
       }
+      if (name === "Image") {
+        if (!active(nodeRef.from, nodeRef.to)) {
+          decorateImage(nodeRef.node, state, out, claim);
+        }
+        return false;
+      }
       if (name === "URL" || name === "Autolink") {
         if (!active(nodeRef.from, nodeRef.to)) {
           out.inline.push(Decoration.mark({ class: "md-link" }).range(nodeRef.from, nodeRef.to));
@@ -682,6 +691,45 @@ function decorateBlockquote(
       out.inline.push(Decoration.line({ class: "md-quote" }).range(line.from));
     }
   }
+}
+
+/** Resolves an image URL: absolute asset paths go through the Tauri asset
+ *  protocol; vault-relative paths anchor at the current note's directory. */
+function resolveImageUrl(raw: string): string | null {
+  if (!raw) return null;
+  if (/^(https?:|data:|asset:|file:)/i.test(raw)) return raw;
+  try {
+    if (raw.startsWith("/")) return convertFileSrc(raw);
+    const currentFile = useAppStore.getState().currentFile;
+    if (currentFile) {
+      const dir = currentFile.slice(0, currentFile.lastIndexOf("/"));
+      return convertFileSrc(`${dir}/${raw}`);
+    }
+  } catch {
+    // 非 Tauri 环境(harness):回退原始路径,让 widget 本身可验证。
+    return raw;
+  }
+  return null;
+}
+
+function decorateImage(
+  node: SyntaxNode,
+  state: EditorState,
+  out: DecorationSink,
+  claim: (from: number, to: number) => boolean,
+) {
+  let urlNode: SyntaxNode | null = null;
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.name === "URL") urlNode = child;
+  }
+  if (!urlNode) return;
+  const raw = state.sliceDoc(urlNode.from, urlNode.to).replace(/\s+"[^"]*"$/, "");
+  const src = resolveImageUrl(raw);
+  if (!src) return;
+  if (!claim(node.from, node.to)) return;
+  out.inline.push(
+    Decoration.replace({ widget: new ImageWidget(src, "") }).range(node.from, node.to),
+  );
 }
 
 function decorateLink(node: SyntaxNode, out: DecorationSink) {

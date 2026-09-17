@@ -22,6 +22,8 @@ import "@/commands/builtin";
 import { installGlobalKeybindings } from "@/commands/globalKeys";
 import { installEditingChords } from "@/lib/editingChords";
 import { setClipboardOverrides } from "@/lib/clipboard";
+import { AgentPanel, renderAgentMarkdown } from "@/components/AgentPanel";
+import { ContentPane } from "@/components/ContentPane";
 
 const DOC = `# 公式与光标
 
@@ -134,6 +136,12 @@ declare global {
     __actions: typeof actions;
     /** IPC 层（假仓库替换的对象）。 */
     __api: typeof api;
+    /** 挂载真实学习模式组件（AgentPanel + ContentPane），返回卸载函数。 */
+    __mountStudyLayout: () => () => void;
+    /** 学习模式 Agent 回复的迷你 markdown 渲染器（返回 HTML）。 */
+    __renderAgentMd: (text: string) => string;
+    /** 当前文档语法树节点名（调试用）。 */
+    __treeNames: () => string[];
   }
 }
 
@@ -484,3 +492,40 @@ window.__setClipboard = (text) => {
 };
 window.__readClipboard = () => clipboardStub;
 installEditingChords();
+
+// 学习模式调试钩子：挂载真实组件（浏览器里 invoke 不可用，组件需自愈）。
+window.__mountStudyLayout = () => {
+  const host = document.createElement("div");
+  host.className = "study-layout";
+  host.style.position = "fixed";
+  host.style.inset = "0";
+  host.style.zIndex = "9999";
+  host.style.background = "var(--panel, #faf8f3)";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  root.render(
+    createElement("div", { style: { display: "contents" } },
+      createElement(AgentPanel),
+      createElement(ContentPane),
+    ),
+  );
+  return () => {
+    root.unmount();
+    host.remove();
+  };
+};
+
+window.__renderAgentMd = renderAgentMarkdown;
+
+window.__treeNames = () => {
+  const names: string[] = [];
+  const walk = (node: { name: string; from: number; to: number; firstChild: unknown; nextSibling: unknown }, depth: number) => {
+    names.push("  ".repeat(depth) + node.name);
+    for (let child = node.firstChild as typeof node; child; child = child.nextSibling as typeof node) {
+      walk(child, depth + 1);
+    }
+  };
+  const tree = syntaxTree(editorApi.view!.state);
+  walk(tree.topNode, 0);
+  return names;
+};

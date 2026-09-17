@@ -1,3 +1,4 @@
+pub mod agent;
 mod commands;
 mod state;
 
@@ -25,6 +26,9 @@ pub fn run() {
                 vault: RwLock::new(None),
                 watcher: std::sync::Mutex::new(None),
                 data_dir,
+                sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
+                mcp_manager: std::sync::Mutex::new(None),
+                current_note: std::sync::Mutex::new(None),
             });
             Ok(())
         })
@@ -52,6 +56,14 @@ pub fn run() {
             commands::ime::list_input_sources,
             commands::ime::get_current_input_source,
             commands::ime::set_input_source,
+            commands::agent::agent_get_config,
+            commands::agent::agent_save_config,
+            commands::agent::agent_start_session,
+            commands::agent::agent_send,
+            commands::agent::agent_abort,
+            commands::agent::agent_get_history,
+            commands::agent::agent_set_current_note,
+            commands::agent::convert_pdf_to_markdown,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

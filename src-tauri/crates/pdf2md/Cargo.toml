@@ -1,0 +1,18 @@
+[package]
+name = "pdf2md"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust PDF to Markdown converter: no OCR, no ML. Glyph-level extraction + geometric layout reconstruction (headings, math -> LaTeX, tables, figures -> SVG)."
+
+[dependencies]
+lopdf = "0.36"
+flate2 = "1"
+
+[dev-dependencies]
+
+[[bin]]
+name = "pdf2md"
+path = "src/bin/pdf2md.rs"
+
+[profile.release]
+opt-level = 3
