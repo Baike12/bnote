@@ -174,6 +174,21 @@ pub fn agent_get_history(
 }
 
 /// Converts a dropped PDF into a markdown note + assets under the vault.
+///
+/// The original file is copied into the same folder as the note: a converted
+/// paper is only useful if the PDF it came from stays reachable (figures are
+/// re-converted from it, the Agent is asked about pages we did not turn into
+/// text). Everything for one paper lands together:
+///
+/// ```text
+/// <vault>/pdfs/<stem>.pdf          原文(拷贝进来的)
+/// <vault>/pdfs/<stem>.md           转换结果
+/// <vault>/pdfs/assets/<stem>/*.svg 图表
+/// ```
+///
+/// The asset prefix in the markdown is relative to the note (`assets/<stem>`),
+/// which is what both the editor's image renderer and any other markdown tool
+/// reading this vault resolve against.
 #[tauri::command]
 pub async fn convert_pdf_to_markdown(
     state: State<'_, AppState>,
@@ -203,11 +218,17 @@ pub async fn convert_pdf_to_markdown(
     }
     let out_dir = vault.join(&folder_rel);
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("MKDIR_FAILED: {}", e))?;
+
+    // Copy the original in first: a failed copy must not leave a note behind
+    // pointing at a PDF that is still sitting in ~/Downloads.
+    let pdf_copy = out_dir.join(format!("{}.pdf", safe_stem));
+    let source = std::fs::canonicalize(&pdf).ok();
+    if source.as_deref() != std::fs::canonicalize(&pdf_copy).ok().as_deref() {
+        std::fs::copy(&pdf, &pdf_copy).map_err(|e| format!("COPY_FAILED: {}", e))?;
+    }
+
     let asset_dir = out_dir.join("assets").join(&safe_stem);
-    let opts = pdf2md::ConvertOptions::new(
-        asset_dir,
-        format!("{}/assets/{}/{}", folder_rel, safe_stem, safe_stem),
-    );
+    let opts = pdf2md::ConvertOptions::new(asset_dir, format!("assets/{}", safe_stem));
     let started = std::time::Instant::now();
     let result = tauri::async_runtime::spawn_blocking(move || {
         pdf2md::convert_file(&pdf_path, &opts)
@@ -219,6 +240,7 @@ pub async fn convert_pdf_to_markdown(
     std::fs::write(&md_path, &output.markdown).map_err(|e| format!("WRITE_FAILED: {}", e))?;
     Ok(serde_json::json!({
         "mdPath": md_path.to_string_lossy(),
+        "pdfPath": pdf_copy.to_string_lossy(),
         "title": stem,
         "pages": output.page_count,
         "elapsedMs": started.elapsed().as_millis() as u64,

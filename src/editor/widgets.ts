@@ -1,5 +1,6 @@
 import { WidgetType } from "@codemirror/view";
 import katex from "katex";
+import { fileName } from "@/lib/path";
 
 /** Rendered-math HTML cache: decorations rebuild on every cursor move, but
  *  KaTeX output for identical sources is reused so scrolling stays cheap. */
@@ -186,31 +187,55 @@ export class EscapeCharWidget extends WidgetType {
   }
 }
 
-/** Rendered `![alt](url)` image: replaces the node when the cursor is not on
- *  its line (study mode: converted-PDF figures stay visible in place). */
+/**
+ * Rendered image (`![alt](url)` or `![[name.png]]`), replacing the source when
+ * the cursor is not on its line (study mode: converted-PDF figures stay
+ * visible in place).
+ *
+ * `srcs` is a candidate list, not one URL: a reference like `assets/x/p1.svg`
+ * resolves differently depending on whether it is read as relative to the note
+ * or to the vault root, and `![[Pasted image.png]]` has to be found by file
+ * name anywhere in the vault. None of those can be checked up front — every
+ * filesystem call is async IPC, and decorations are built synchronously — so
+ * the widget walks the list on `error` instead. `hint` is the reference as the
+ * note spells it, shown when nothing loads.
+ */
 export class ImageWidget extends WidgetType {
   constructor(
-    readonly src: string,
+    readonly srcs: string[],
     readonly alt: string,
+    readonly hint: string,
   ) {
     super();
   }
 
   eq(other: ImageWidget) {
-    return other.src === this.src && other.alt === this.alt;
+    return (
+      other.alt === this.alt &&
+      other.hint === this.hint &&
+      other.srcs.length === this.srcs.length &&
+      other.srcs.every((s, i) => s === this.srcs[i])
+    );
   }
 
   toDOM() {
     const wrap = document.createElement("span");
     wrap.className = "cw-image";
     const img = document.createElement("img");
-    img.src = this.src;
     img.alt = this.alt;
     img.loading = "lazy";
+    let i = 0;
     img.addEventListener("error", () => {
+      if (++i < this.srcs.length) {
+        img.src = this.srcs[i];
+        return;
+      }
       img.style.display = "none";
       wrap.classList.add("cw-image-broken");
+      wrap.title = this.srcs.join("\n");
+      wrap.dataset.hint = fileName(this.hint);
     });
+    img.src = this.srcs[0];
     wrap.appendChild(img);
     return wrap;
   }

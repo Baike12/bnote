@@ -21,6 +21,8 @@ export interface CreatedEntry {
 export interface VaultIndex {
   files: string[];
   dirs: string[];
+  /** 图片/PDF 等媒体文件(vault 相对路径),供 `![[x.png]]` 这类按文件名引用解析。 */
+  assets: string[];
 }
 
 /** Whitelisted per-vault config files inside `<vault>/.bnote/`. */
@@ -77,6 +79,8 @@ export type AgentEvent =
 
 export interface ConvertResult {
   mdPath: string;
+  /** 原文在 vault 里的副本(`<vault>/pdfs/<stem>.pdf`)。 */
+  pdfPath: string;
   title: string;
   pages: number;
   elapsedMs: number;

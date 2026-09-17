@@ -1,5 +1,6 @@
 import { Compartment, EditorSelection, EditorState, Prec } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
+import { setDocPath, docPathField } from "./docPath";
 import { EditorView, keymap, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
@@ -53,6 +54,7 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     markdownExtensions(),
     codeHighlighting(),
 
+    docPathField,
     livePreviewCompartment.of(livePreviewExtension()),
     typewriterCompartment.of([]),
     vimCompartment.of([]),
@@ -198,19 +200,24 @@ function restoreCompartments(view: EditorView) {
   reconfigureLivePreview(view, settings.livePreview);
 }
 
-/** Replaces the document (file switch) while keeping extension config. */
-export function loadDocument(view: EditorView, doc: string) {
+/**
+ * Replaces the document (file switch) while keeping extension config.
+ * `docPath` is the file the doc came from — image references resolve against
+ * its directory (see livePreview.ts).
+ */
+export function loadDocument(view: EditorView, doc: string, docPath: string | null = null) {
   const extensions = ownExtensions(view);
   if (!extensions) return;
   view.setState(EditorState.create({ doc, extensions }));
   restoreCompartments(view);
   primeSyntaxTree(view);
+  view.dispatch({ effects: setDocPath.of(docPath) });
 }
 
 /** Reloads fresh disk content (external edit) while keeping the cursor and
  *  scroll position as far as the new document allows. Callers must re-apply
  *  settings afterwards — setState() resets the extension compartments. */
-export function reloadDocument(view: EditorView, doc: string) {
+export function reloadDocument(view: EditorView, doc: string, docPath: string | null = null) {
   const extensions = ownExtensions(view);
   if (!extensions) return;
   const ranges = view.state.selection.ranges;
@@ -218,6 +225,7 @@ export function reloadDocument(view: EditorView, doc: string) {
   view.setState(EditorState.create({ doc, extensions }));
   restoreCompartments(view);
   primeSyntaxTree(view);
+  view.dispatch({ effects: setDocPath.of(docPath) });
   const max = view.state.doc.length;
   view.dispatch({
     selection: EditorSelection.create(

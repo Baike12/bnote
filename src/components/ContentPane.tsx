@@ -16,6 +16,10 @@ import { fileName } from "@/lib/path";
  * `.content-web-view` placeholder — see `agent.rs::show_study_preview` for why
  * it is not an iframe.
  */
+/** 转换产物落在这个 vault 目录下:原文 `<stem>.pdf`、结果 `<stem>.md`、
+ *  图表 `assets/<stem>/…`(见后端 convert_pdf_to_markdown)。 */
+const PDF_FOLDER = "pdfs";
+
 export function ContentPane() {
   const content = useAppStore((s) => s.studyContent);
   const setStudyContent = useAppStore((s) => s.setStudyContent);
@@ -64,7 +68,9 @@ export function ContentPane() {
       try {
         const text = await invokeReadFile(content.path);
         if (!cancelled && viewRef.current) {
-          loadDocument(viewRef.current, text);
+          // 带上路径:图表的相对引用(`assets/<stem>/…`)以这份文档为基准,
+          // 而不是右栏那篇笔记的目录。
+          loadDocument(viewRef.current, text, content.path);
           loadedRef.current = content.path;
         }
       } catch (e) {
@@ -170,14 +176,16 @@ export function ContentPane() {
   async function convertAndOpen(pdfPath: string) {
     setConverting(true);
     try {
-      const result = await agentApi.convertPdf(pdfPath, "Study");
+      // 转换结果和原文都落到当前 vault 的 pdfs/ 下(见后端 convert_pdf_to_markdown):
+      // 原文留在下载目录的话,过几天就找不回这篇笔记是从哪份 PDF 来的了。
+      const result = await agentApi.convertPdf(pdfPath, PDF_FOLDER);
       setStudyContent({
         kind: "markdown",
         path: result.mdPath,
         title: result.title,
       });
       showToast(
-        `转换完成:${result.pages} 页,${(result.elapsedMs / 1000).toFixed(1)}s`,
+        `转换完成:${result.pages} 页,${(result.elapsedMs / 1000).toFixed(1)}s → ${PDF_FOLDER}/${fileName(result.mdPath)}`,
       );
     } catch (e) {
       showToast(`PDF 转换失败: ${String(e)}`);

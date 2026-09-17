@@ -1718,6 +1718,11 @@ input[type="range"] {
 .cw-image { display: inline-block; max-width: 100%; }
 .cw-image img {
   max-width: 100%;
+  /* PDF 里抠出来的图表按页面点数存尺寸(p11-fig2.svg 只有 85×76),照原样显示
+     在 700px 宽的一栏里小到看不清。给个下限,让图表至少占住一栏的大部分宽度;
+     PDF 图表是矢量、截图本来就宽,放大不失真。 */
+  min-width: min(100%, 420px);
+  height: auto;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: #fff;
@@ -1734,3 +1739,13 @@ input[type="range"] {
   border-radius: 6px;
 }
 .cw-image-broken img { display: none; }
+/* 加载不出来时把文件名写进框里:可疑的引用(路径拼错、附件不在 vault 里)
+   一眼能看出是哪一个,不用把光标挪上去看源码。 */
+.cw-image-broken::after {
+  content: attr(data-hint);
+  font-size: 12px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

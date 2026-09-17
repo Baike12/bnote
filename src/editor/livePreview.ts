@@ -4,6 +4,7 @@ import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { mathRegions } from "./context";
+import { documentPath, setDocPath } from "./docPath";
 import { useAppStore } from "@/state/appStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { DONE_STAMP_RE, todayStamp } from "./ops";
@@ -693,23 +694,101 @@ function decorateBlockquote(
   }
 }
 
-/** Resolves an image URL: absolute asset paths go through the Tauri asset
- *  protocol; vault-relative paths anchor at the current note's directory. */
-function resolveImageUrl(raw: string): string | null {
-  if (!raw) return null;
-  if (/^(https?:|data:|asset:|file:)/i.test(raw)) return raw;
+/** 图片类扩展名:决定 `![[…]]` 是图片嵌入还是普通 wikilink。 */
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico|tiff?|heic)$/i;
+
+/** 目录部分(去掉最后一段);没有目录时返回 null。 */
+function dirOf(path: string | null): string | null {
+  if (!path) return null;
+  const i = path.lastIndexOf("/");
+  return i > 0 ? path.slice(0, i) : null;
+}
+
+/** `%20` 之类的转义还原(笔记里手写的引用可能是转义过的)。 */
+function decodeRef(raw: string): string {
+  if (!raw.includes("%")) return raw;
   try {
-    if (raw.startsWith("/")) return convertFileSrc(raw);
-    const currentFile = useAppStore.getState().currentFile;
-    if (currentFile) {
-      const dir = currentFile.slice(0, currentFile.lastIndexOf("/"));
-      return convertFileSrc(`${dir}/${raw}`);
-    }
+    return decodeURIComponent(raw);
   } catch {
-    // 非 Tauri 环境(harness):回退原始路径,让 widget 本身可验证。
     return raw;
   }
-  return null;
+}
+
+/** 绝对路径 → Tauri asset 协议的 URL;非 Tauri 环境(harness)原样返回,
+ *  这样装饰本身在浏览器里也能建出来(只是图片必然加载失败)。 */
+function assetSrc(absPath: string): string {
+  const normalized = absPath.replace(/\/{2,}/g, "/");
+  try {
+    return convertFileSrc(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
+/** vault 里按文件名找媒体文件(Obsidian 的附件引用就是只写文件名)。
+ *  同名多个时取路径最短的那个,与 Obsidian 的「shortest path」一致。 */
+function findAssetByName(name: string): string | null {
+  let best: string | null = null;
+  for (const rel of useAppStore.getState().flatAssets) {
+    if (rel !== name && !rel.endsWith(`/${name}`)) continue;
+    if (best === null || rel.length < best.length) best = rel;
+  }
+  return best;
+}
+
+/**
+ * 一条图片引用的候选 URL,按尝试顺序排列。
+ *
+ * 同一个 vault 里同时存在几种互不相同的解析约定,而且**都没法事先判断**
+ * (查文件是否存在是异步 IPC,装饰是同步构建的),所以把候选排成一列交给
+ * widget:加载失败就试下一个。
+ *
+ * 1. 相对笔记所在目录 —— 标准 markdown 写法,也是 PDF 转换器写出来的形式
+ *    (`<stem>.md` 旁边的 `assets/<stem>/p1-fig1.svg`);
+ * 2. 相对 vault 根 —— Obsidian 对 `![](…)` 的约定;
+ * 3. 按文件名在整个 vault 里找 —— `![[Pasted image 1.png]]`,以及 Obsidian
+ *    的「shortest path」引用。
+ */
+function imageCandidates(raw: string, state: EditorState): string[] {
+  const ref = raw.trim();
+  if (!ref) return [];
+  if (/^(https?:|data:|blob:)/i.test(ref)) return [ref];
+  if (/^asset:/i.test(ref)) return [ref];
+
+  const out: string[] = [];
+  const add = (abs: string | null) => {
+    if (!abs) return;
+    const url = assetSrc(abs);
+    if (url && !out.includes(url)) out.push(url);
+  };
+  const { vaultPath } = useAppStore.getState();
+  const decoded = decodeRef(ref);
+  if (decoded.startsWith("/")) {
+    // 既可能是绝对路径,也可能是 Obsidian 的 vault 根写法,两个都试。
+    add(decoded);
+    if (vaultPath) add(`${vaultPath}${decoded}`);
+    return out;
+  }
+  const docDir = dirOf(documentPath(state));
+  if (docDir) add(`${docDir}/${decoded}`);
+  if (vaultPath) add(`${vaultPath}/${decoded}`);
+  // 只对纯文件名做全库查找:带路径的引用不该被"随便一个同名文件"顶掉。
+  if (vaultPath && !decoded.includes("/")) {
+    const hit = findAssetByName(decoded);
+    if (hit) add(`${vaultPath}/${hit}`);
+  }
+  return out;
+}
+
+/** `![alt](url)` 的 alt 文本(第一个和第二个 LinkMark 之间)。 */
+function imageAlt(node: SyntaxNode, state: EditorState): string {
+  const marks: SyntaxNode[] = [];
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.name === "LinkMark") marks.push(child);
+    if (marks.length === 2) break;
+  }
+  if (marks.length < 2 || marks[1].from <= marks[0].to) return "";
+  return state.sliceDoc(marks[0].to, marks[1].from);
 }
 
 function decorateImage(
@@ -724,11 +803,14 @@ function decorateImage(
   }
   if (!urlNode) return;
   const raw = state.sliceDoc(urlNode.from, urlNode.to).replace(/\s+"[^"]*"$/, "");
-  const src = resolveImageUrl(raw);
-  if (!src) return;
+  const srcs = imageCandidates(raw, state);
+  if (srcs.length === 0) return;
   if (!claim(node.from, node.to)) return;
   out.inline.push(
-    Decoration.replace({ widget: new ImageWidget(src, "") }).range(node.from, node.to),
+    Decoration.replace({ widget: new ImageWidget(srcs, imageAlt(node, state), raw) }).range(
+      node.from,
+      node.to,
+    ),
   );
 }
 
@@ -774,13 +856,28 @@ function decorateWikiLinks(
         const from = line.from + m.index;
         const to = from + m[0].length;
         if (exclude.some((r) => from < r.to && to > r.from)) continue;
-        if (!claim(from, from + 2) || !claim(to - 2, to)) continue;
 
         const raw = m[1];
         const pipe = raw.indexOf("|");
         const target = (pipe === -1 ? raw : raw.slice(0, pipe)).split("#")[0].trim();
         const alias = pipe === -1 ? null : raw.slice(pipe + 1);
         if (!target) continue;
+
+        // `![[x.png]]` 是嵌入,不是链接:整段(含开头的 `!`)渲染成图片。
+        const embedFrom = m.index > 0 && lineText[m.index - 1] === "!" ? from - 1 : -1;
+        if (embedFrom >= 0 && IMAGE_EXT_RE.test(target)) {
+          const srcs = imageCandidates(target, state);
+          if (srcs.length > 0 && claim(embedFrom, to)) {
+            out.inline.push(
+              Decoration.replace({
+                widget: new ImageWidget(srcs, target, target),
+              }).range(embedFrom, to),
+            );
+            continue;
+          }
+        }
+
+        if (!claim(from, from + 2) || !claim(to - 2, to)) continue;
 
         if (alias !== null) {
           const aliasStart = from + 2 + pipe + 1;
@@ -820,8 +917,14 @@ const livePreviewPlugin = ViewPlugin.fromClass(
     update(u: ViewUpdate) {
       const tree = syntaxTree(u.view.state);
       const treeChanged = tree !== this.tree;
-      if (!u.docChanged && !u.viewportChanged && !u.selectionSet && !treeChanged) return;
-      if (!u.docChanged && !u.viewportChanged && !treeChanged) {
+      // 换了文件(图片的相对路径基准跟着变)必须重建:docPath 是 effect
+      // 事务,本身不改文档也不动光标,不特判就一条装饰都不会更新。
+      const pathChanged = u.transactions.some((t) =>
+        t.effects.some((e) => e.is(setDocPath)),
+      );
+      if (!u.docChanged && !u.viewportChanged && !u.selectionSet && !treeChanged && !pathChanged)
+        return;
+      if (!u.docChanged && !u.viewportChanged && !treeChanged && !pathChanged) {
         if (!selectionAffectsDecos(u.startState, u.view.state)) {
           return; // cursor moved within plain text — nothing can change
         }

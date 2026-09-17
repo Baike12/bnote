@@ -29,6 +29,22 @@ pub struct VaultIndex {
     pub files: Vec<String>,
     /// Flat directory paths, including directories that contain no notes.
     pub dirs: Vec<String>,
+    /// Flat media paths (images, PDFs). `![…](…)`/`![[…]]` embeds resolve
+    /// against this list: Obsidian stores attachments where it likes and
+    /// refers to them by bare file name, so the renderer needs the whole
+    /// inventory to find one — see `resolveImageCandidates` in the frontend.
+    pub assets: Vec<String>,
+}
+
+/// Extensions treated as renderable/pasteable media rather than notes.
+fn is_asset_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    [
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif", ".ico", ".tif", ".tiff",
+        ".heic", ".pdf",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
 }
 
 #[derive(Serialize, Clone)]
@@ -124,6 +140,7 @@ pub async fn list_files(state: State<'_, AppState>) -> CmdResult<VaultIndex> {
         eprintln!("[bnote] list_files");
         let mut files = Vec::new();
         let mut dirs = Vec::new();
+        let mut assets = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
             let Ok(rd) = std::fs::read_dir(&dir) else {
@@ -140,16 +157,22 @@ pub async fn list_files(state: State<'_, AppState>) -> CmdResult<VaultIndex> {
                         }
                         stack.push(p);
                     }
-                } else if ft.is_file() && is_note_file(&name) {
+                } else if ft.is_file() {
                     if let Ok(rel) = p.strip_prefix(&root) {
-                        files.push(rel.to_string_lossy().replace('\\', "/"));
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        if is_note_file(&name) {
+                            files.push(rel);
+                        } else if is_asset_file(&name) {
+                            assets.push(rel);
+                        }
                     }
                 }
             }
         }
         files.sort();
         dirs.sort();
-        Ok(VaultIndex { files, dirs })
+        assets.sort();
+        Ok(VaultIndex { files, dirs, assets })
     })
     .await
 }

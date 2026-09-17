@@ -115,6 +115,8 @@ interface AppState {
   tree: FileNode[];
   /** Flat note paths across the vault (quick switcher / wikilinks). */
   flatFiles: string[];
+  /** Flat media paths(图片/PDF),图片渲染按文件名解析时要用。 */
+  flatAssets: string[];
   /** Flat directory paths across the vault (folder picker suggestions). */
   folders: string[];
   /** Absolute paths of opened notes, most recent first. */
@@ -157,6 +159,7 @@ interface AppState {
   closeVault: () => void;
   setTree: (tree: FileNode[]) => void;
   setFlatFiles: (files: string[]) => void;
+  setFlatAssets: (assets: string[]) => void;
   setFolders: (folders: string[]) => void;
   openFile: (path: string) => void;
   closeFile: () => void;
@@ -216,6 +219,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   vaultName: "",
   tree: [],
   flatFiles: [],
+  flatAssets: [],
   folders: [],
   recentFiles: [],
   currentFile: null,
@@ -238,6 +242,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       vaultName: info.name,
       tree: [],
       flatFiles: [],
+      flatAssets: [],
       folders: [],
       currentFile: null,
       dirty: false,
@@ -249,6 +254,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       vaultName: "",
       tree: [],
       flatFiles: [],
+      flatAssets: [],
       folders: [],
       currentFile: null,
       dirty: false,
@@ -256,6 +262,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   setTree: (tree) => set({ tree }),
   setFlatFiles: (flatFiles) => set({ flatFiles }),
+  setFlatAssets: (flatAssets) => set({ flatAssets }),
   setFolders: (folders) => set({ folders }),
   openFile: (path) => {
     if (get().currentFile === path) return;

@@ -262,7 +262,7 @@ async function handleVaultChanged(paths: string[]) {
         if (content !== view.state.doc.toString()) {
           // Genuine external edit: reload keeping the cursor in place, then
           // re-apply settings — setState() resets the extension compartments.
-          reloadDocument(view, content);
+          reloadDocument(view, content, store.currentFile);
           loadedFile.current = store.currentFile;
           await applySettingsToEditor();
         }

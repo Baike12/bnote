@@ -50,11 +50,13 @@ export async function openVault(path: string): Promise<boolean> {
 }
 
 export async function refreshTree(): Promise<void> {
-  const { vaultPath, setTree, setFlatFiles, setFolders, tree } = useAppStore.getState();
+  const { vaultPath, setTree, setFlatFiles, setFlatAssets, setFolders, tree } =
+    useAppStore.getState();
   if (!vaultPath) return;
   try {
     const [root, index] = await Promise.all([api.readTree(), api.listFiles()]);
     setFlatFiles(index.files);
+    setFlatAssets(index.assets);
     setFolders(index.dirs);
     // Re-fetch previously expanded directories so the visible tree stays
     // complete after external changes.
@@ -140,7 +142,7 @@ export async function openNote(path: string): Promise<void> {
   // 内容塞进已销毁的 view，也不能把「已加载」标记写给新实例——新实例会因此
   // 跳过读盘，从空文档起步。让它自己的 effect 去打开这篇笔记。
   if (getView() !== view) return;
-  loadDocument(view, content);
+  loadDocument(view, content, path);
   loadedFile.current = path;
   useAppStore.getState().openFile(path);
   // setState() reset compartment values — re-apply current settings.
