@@ -1,5 +1,8 @@
 pub mod agent;
 mod commands;
+/// Browser-preview bridge; debug builds only (see the module docs).
+#[cfg(debug_assertions)]
+mod devbridge;
 mod state;
 
 use std::path::PathBuf;
@@ -30,6 +33,11 @@ pub fn run() {
                 mcp_manager: std::sync::Mutex::new(None),
                 current_note: std::sync::Mutex::new(None),
             });
+
+            // Debug builds also answer on a loopback port so the same UI can be
+            // driven from a browser tab (see `devbridge`).
+            #[cfg(debug_assertions)]
+            devbridge::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

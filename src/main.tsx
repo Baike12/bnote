@@ -2,12 +2,17 @@ import App from "./App";
 import "katex/dist/katex.min.css";
 import "./styles/global.css";
 import { createRoot } from "react-dom/client";
+import { installBrowserMode } from "@/dev/browserMode";
 import { editorApi } from "@/editor/api";
 import { mathRegions, getContextAt } from "@/editor/context";
 import { blockDecorationsField } from "@/editor/livePreview";
 import { findSnippet } from "@/editor/snippets/engine";
 import { getSession } from "@/editor/snippets/extension";
 import { useAppStore } from "@/state/appStore";
+
+// Browser tab instead of the Tauri window? Route IPC to the debug bridge
+// before anything mounts (no-op inside the app and in production builds).
+installBrowserMode();
 
 // No StrictMode: double-mounting would rebuild the single CodeMirror
 // instance and re-run async bootstrap during development.

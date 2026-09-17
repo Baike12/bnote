@@ -13,6 +13,8 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
+    /* `import.meta.env` in src/dev/browserMode.ts. */
+    "types": ["vite/client"],
     "paths": {
       "@/*": ["./src/*"]
     },
