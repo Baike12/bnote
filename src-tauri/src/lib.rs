@@ -64,6 +64,11 @@ pub fn run() {
             commands::agent::agent_get_history,
             commands::agent::agent_set_current_note,
             commands::agent::convert_pdf_to_markdown,
+            commands::agent::show_study_preview,
+            commands::agent::set_study_preview_bounds,
+            commands::agent::set_study_preview_visible,
+            commands::agent::close_study_preview,
+            commands::agent::open_study_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1321,16 +1321,71 @@ input[type="range"] {
   min-height: 0;
   background: var(--bg0);
   color: var(--text);
+  /* 三栏宽度由 StudyLayout 写入(拖动时是 px,平时是百分比)。
+     右侧笔记吃剩余宽度,所以只有前两栏有变量。 */
+  --agent-w: 320px;
+  --content-w: 44%;
+  /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。侧栏在时它压在侧栏
+     自己的 36px 预留带上,侧栏不在时压在三栏布局左栏的头部——那里要让开。
+     与 .titlebar 的 paddingLeft 是同一套判断,只是这里由 DOM 推出来。 */
+  --study-lead: 78px;
+  /* 三栏头部同高:它们的下边框在窗口顶部连成一条线,差 1px 就是一个台阶。
+     43 = 8px 上下内边距 ×2 + 26px 图标按钮 + 1px 下边框(左栏头部的自然高度)。 */
+  --study-head-h: 43px;
+}
+
+.app:has(> .sidebar) .study-layout {
+  --study-lead: 12px;
 }
 
 .agent-panel {
-  width: 320px;
-  min-width: 260px;
-  flex-shrink: 0;
+  width: var(--agent-w);
+  min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
   background: var(--bg1);
+}
+
+/* 拖动条:视觉上一条 1px 分栏线,命中区 8px(col-resize 手感)。线画在条自身
+   的左缘:拖动时列的边界就是指针的位置(见 StudyLayout.startDrag),线与边界
+   才是同一条——线画在条中央会与面板的 border-right 差出 4px,看起来是两条。 */
+.study-resizer {
+  flex: 0 0 8px;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.study-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+  transition: width 0.12s ease, background 0.12s ease;
+}
+.study-resizer:hover::before,
+.study-resizer.dragging::before {
+  width: 2px;
+  background: var(--accent);
+}
+
+/* 分栏线归拖动条画。面板自带的 border-right 会与它并排成两条线(拖起来亮
+   的是拖动条那条,静息时看到的是边框那条)。 */
+.study-layout .agent-panel,
+.study-layout .content-pane {
+  border-right: none;
+}
+/* 拖动时锁住选中与指针,鼠标滑出面板也不会选中文字。 */
+.study-resizer.dragging {
+  user-select: none;
+}
+.study-layout:has(.study-resizer.dragging) {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .agent-header {
@@ -1338,6 +1393,10 @@ input[type="range"] {
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
+  /* 侧栏收起时左栏顶在最左边,标题会落到窗口红绿灯底下(「学习助手」和放大
+     缩小按钮重合),这里按 --study-lead 让开。 */
+  padding-left: var(--study-lead, 12px);
+  min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
@@ -1349,6 +1408,34 @@ input[type="range"] {
   background: rgba(245, 168, 60, 0.08);
   border-bottom: 1px solid var(--border);
   cursor: default;
+}
+
+/* 会话状态条:连接中 / 启动失败(带重试)——失败必须常驻可见,
+   否则发送按钮看起来可用但点了没反应。 */
+.agent-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-dim, var(--text));
+  border-bottom: 1px solid var(--border);
+}
+.agent-status.fail {
+  color: var(--danger);
+  background: rgba(224, 108, 117, 0.1);
+}
+.agent-status-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-status-retry {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 12px;
 }
 
 .agent-scroll {
@@ -1467,7 +1554,8 @@ input[type="range"] {
 
 /* 中栏:内容 */
 .content-pane {
-  flex: 1.4;
+  width: var(--content-w);
+  flex: 0 0 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1482,6 +1570,8 @@ input[type="range"] {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
+  /* 与左/右栏头部同高(见 --study-head-h)。 */
+  min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
 }
 
@@ -1542,12 +1632,82 @@ input[type="range"] {
 
 .content-pick { cursor: pointer; }
 
-/* 右栏:笔记 */
-.study-notes {
+/* 中栏的网页态:地址条 + 一块占位区。真正的网页是主窗口的子 webview,
+   原生视图盖在占位区上(见 commands/agent.rs),这里只负责给它让出位置。 */
+.content-web {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg0);
+}
+.content-web-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.content-web-url {
   flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.8;
+  margin: 0;
+}
+.content-web-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.content-web-fail {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 20px;
+}
+.content-web-fail-msg {
+  font-size: 12.5px;
+  opacity: 0.65;
+  max-width: 90%;
+  word-break: break-all;
+  margin: 0;
+}
+
+/* 右栏:笔记(吃剩余宽度) */
+.study-notes {
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* 笔记栏头部:学习模式没有 .titlebar,整窗顶部只剩三栏各自的头部——它们就是
+   唯一能拖窗口的地方(见 StudyLayout 的 data-tauri-drag-region)。 */
+.study-notes-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  min-height: var(--study-head-h);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.study-notes-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .study-layout .editor-pane {

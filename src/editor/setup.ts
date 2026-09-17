@@ -148,14 +148,27 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
   ];
 }
 
-let savedExtensions: Extension[] | null = null;
+/**
+ * 每个编辑器实例自己的基础扩展。刻意按 view 记，而不是一份全局变量：学习模式
+ * 的中栏内容编辑器与右栏笔记编辑器各建一个实例，而 loadDocument 是整份替换
+ * state 的 extensions —— 全局变量会让后建的实例把自己的扩展（含它的
+ * updateListener 回调）塞进先建的那个的 state，于是在中栏敲字会触发笔记编辑器
+ * 的自动保存，把笔记文件覆盖成笔记栏当时的内容。
+ */
+const extensionsByView = new WeakMap<EditorView, Extension[]>();
+
+/** 实例自己的扩展；不是 createEditor 建的实例返回 null，loadDocument 不动它。 */
+function ownExtensions(view: EditorView): Extension[] | null {
+  return extensionsByView.get(view) ?? null;
+}
 
 export function createEditor(parent: HTMLElement, doc: string, callbacks: EditorCallbacks): EditorView {
-  savedExtensions = baseExtensions(callbacks);
+  const extensions = baseExtensions(callbacks);
   const view = new EditorView({
-    state: EditorState.create({ doc, extensions: savedExtensions }),
+    state: EditorState.create({ doc, extensions }),
     parent,
   });
+  extensionsByView.set(view, extensions);
   installMathMotionClamp(view);
   return view;
 }
@@ -187,8 +200,9 @@ function restoreCompartments(view: EditorView) {
 
 /** Replaces the document (file switch) while keeping extension config. */
 export function loadDocument(view: EditorView, doc: string) {
-  if (!savedExtensions) return;
-  view.setState(EditorState.create({ doc, extensions: savedExtensions }));
+  const extensions = ownExtensions(view);
+  if (!extensions) return;
+  view.setState(EditorState.create({ doc, extensions }));
   restoreCompartments(view);
   primeSyntaxTree(view);
 }
@@ -197,10 +211,11 @@ export function loadDocument(view: EditorView, doc: string) {
  *  scroll position as far as the new document allows. Callers must re-apply
  *  settings afterwards — setState() resets the extension compartments. */
 export function reloadDocument(view: EditorView, doc: string) {
-  if (!savedExtensions) return;
+  const extensions = ownExtensions(view);
+  if (!extensions) return;
   const ranges = view.state.selection.ranges;
   const scrollTop = view.scrollDOM.scrollTop;
-  view.setState(EditorState.create({ doc, extensions: savedExtensions }));
+  view.setState(EditorState.create({ doc, extensions }));
   restoreCompartments(view);
   primeSyntaxTree(view);
   const max = view.state.doc.length;

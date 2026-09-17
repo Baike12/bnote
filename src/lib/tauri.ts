@@ -82,6 +82,14 @@ export interface ConvertResult {
   elapsedMs: number;
 }
 
+/** 中栏内嵌网页预览的占位矩形(逻辑像素,相对窗口内容区左上角)。 */
+export interface PreviewBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export const agentApi = {
   getConfig: () => invoke<AgentConfig>("agent_get_config"),
   saveConfig: (config: AgentConfig) => invoke<void>("agent_save_config", { config }),
@@ -95,6 +103,23 @@ export const agentApi = {
     invoke<void>("agent_set_current_note", { path }),
   convertPdf: (pdfPath: string, folderRel: string) =>
     invoke<ConvertResult>("convert_pdf_to_markdown", { pdfPath, folderRel }),
+  /**
+   * 中栏内嵌网页预览(主窗口的子 webview,原生视图盖在占位元素上)。
+   * 首次调用创建、之后调用只更新矩形并重新导航。
+   */
+  showStudyPreview: (url: string, bounds: PreviewBounds) =>
+    invoke<void>("show_study_preview", { url, bounds }),
+  /** 只更新内嵌预览的位置/尺寸(窗口缩放、拖动分隔线时)。 */
+  setStudyPreviewBounds: (bounds: PreviewBounds) =>
+    invoke<void>("set_study_preview_bounds", { bounds }),
+  /** 原生视图永远盖在 DOM 之上,HTML 浮层打开时要把它藏起来。 */
+  setStudyPreviewVisible: (visible: boolean) =>
+    invoke<void>("set_study_preview_visible", { visible }),
+  /** 关掉内嵌预览(离开学习模式 / 换内容)。 */
+  closeStudyPreview: () => invoke<void>("close_study_preview"),
+  /** Opens/reuses the standalone study-mode preview window (backend-created so
+   *  that failures come back as errors instead of a swallowed `tauri://error`). */
+  openStudyUrl: (url: string) => invoke<void>("open_study_url", { url }),
 };
 
 export const api = {

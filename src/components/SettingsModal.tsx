@@ -635,7 +635,11 @@ function AgentTab() {
         mcp_servers = cfg!.mcp_servers ?? {};
       }
       await agentApi.saveConfig({ ...cfg!, mcp_servers });
-      showToast("Agent 配置已保存,重新进入学习模式后生效");
+      // The session fixes its provider at creation time, so nudge the study
+      // panel to rebuild it — otherwise a freshly entered API key/model would
+      // only take effect after leaving and re-entering study mode.
+      useAppStore.getState().bumpAgentConfigVersion();
+      showToast("Agent 配置已保存并生效");
     } catch (e) {
       showToast(`保存失败: ${String(e)}`);
     }

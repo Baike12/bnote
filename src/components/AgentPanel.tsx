@@ -36,10 +36,13 @@ interface ChatEntry {
  */
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
+  const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
   const showToast = useAppStore((s) => s.showToast);
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState("");
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<SessionInfo | null>(null);
@@ -48,6 +51,8 @@ export function AgentPanel() {
 
   const startSession = useCallback(
     async (content: StudyContent | null) => {
+      setStarting(true);
+      setSessionError(null);
       try {
         const info = await agentApi.startSession(content);
         sessionRef.current = info;
@@ -55,16 +60,24 @@ export function AgentPanel() {
         setEntries([]);
         turnRef.current = null;
       } catch (e) {
+        // Keep the failure on screen: without it the send button looks alive
+        // but does nothing (no session ⇒ send() used to return silently).
+        sessionRef.current = null;
+        setSession(null);
+        setSessionError(String(e).replace(/^[A-Z_]+:\s*/, ""));
         showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      } finally {
+        setStarting(false);
       }
     },
     [showToast],
   );
 
-  // (Re)open the session when the study content changes.
+  // (Re)open the session when the study content changes, or after the agent
+  // config is saved (a session pins the provider it was created with).
   useEffect(() => {
     void startSession(studyContent);
-  }, [studyContent, startSession]);
+  }, [studyContent, agentConfigVersion, startSession]);
 
   // Stream events; append into the live turn.
   useEffect(() => {
@@ -87,19 +100,23 @@ export function AgentPanel() {
     return turnRef.current;
   }
 
-  function commitTurn(reason: "end" | "error") {
+  /** Finalizes the streaming turn: the draft entry is replaced in place (it
+   *  used to be appended a second time, so every reply showed up twice). */
+  function commitTurn() {
     const turn = turnRef.current;
     if (!turn) return;
-    const text = turn.text;
-    const tools = turn.tools;
     turnRef.current = null;
-    setEntries((prev) => [
-      ...prev,
-      { role: "assistant", text, turn: { ...turn, tools } },
-    ]);
-    if (reason === "error") {
-      // error message already surfaced as its own entry
-    }
+    setEntries((prev) => {
+      const next = prev.slice();
+      const last = next[next.length - 1];
+      const done: ChatEntry = { role: "assistant", text: turn.text, turn };
+      if (last && last.role === "assistant" && last.turn === turn) {
+        next[next.length - 1] = done;
+      } else {
+        next.push(done);
+      }
+      return next;
+    });
   }
 
   function handleAgentEvent(event: AgentEvent) {
@@ -160,24 +177,26 @@ export function AgentPanel() {
         break;
       }
       case "turn_end": {
-        commitTurn("end");
+        commitTurn();
         busyRef.current = false;
         setBusy(false);
         break;
       }
       case "error": {
         const turn = turnRef.current;
-        turnRef.current = null;
-        setEntries((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            text: "",
-            turn: turn
-              ? { ...turn, error: event.message }
-              : { text: "", tools: [], error: event.message },
-          },
-        ]);
+        if (turn) {
+          turn.error = event.message;
+          commitTurn();
+        } else {
+          setEntries((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              text: "",
+              turn: { text: "", tools: [], error: event.message },
+            },
+          ]);
+        }
         busyRef.current = false;
         setBusy(false);
         break;
@@ -190,8 +209,17 @@ export function AgentPanel() {
 
   async function send() {
     const text = input.trim();
+    if (!text || busyRef.current) return;
     const info = sessionRef.current;
-    if (!text || !info || busyRef.current) return;
+    if (!info) {
+      // Never drop the message silently: tell the user why nothing happened.
+      showToast(
+        sessionError
+          ? `会话未就绪:${sessionError}`
+          : "会话未就绪,请稍候重试或重新开始会话",
+      );
+      return;
+    }
     setInput("");
     busyRef.current = true;
     setBusy(true);
@@ -217,7 +245,9 @@ export function AgentPanel() {
 
   return (
     <aside className="agent-panel">
-      <div className="agent-header">
+      {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让标题文字也能拖,
+          头部里的按钮由 Tauri 的 drag.js 自行放行。 */}
+      <div className="agent-header" data-tauri-drag-region="deep">
         <span className="agent-title">学习助手</span>
         <span className="spacer" />
         <button
@@ -231,6 +261,20 @@ export function AgentPanel() {
       {session && session.mcpErrors.length > 0 && (
         <div className="agent-mcp-warn" title={session.mcpErrors.join("\n")}>
           MCP 部分服务器连接失败
+        </div>
+      )}
+      {starting && <div className="agent-status">正在连接模型…</div>}
+      {!starting && sessionError && (
+        <div className="agent-status fail">
+          <span className="agent-status-text" title={sessionError}>
+            会话未就绪:{sessionError}
+          </span>
+          <button
+            className="btn btn-ghost agent-status-retry"
+            onClick={() => void startSession(studyContent)}
+          >
+            重试
+          </button>
         </div>
       )}
       <div className="agent-scroll" ref={scrollRef}>
@@ -291,7 +335,12 @@ export function AgentPanel() {
             停止
           </button>
         ) : (
-          <button className="btn agent-send" onClick={() => void send()}>
+          <button
+            className="btn agent-send"
+            onClick={() => void send()}
+            disabled={!session}
+            title={session ? "发送(Enter)" : sessionError ?? "正在连接模型…"}
+          >
             发送
           </button>
         )}

@@ -31,6 +31,11 @@ export interface Settings {
   autoNumberHeadings: boolean;
   /** 「插入代码块」在开栏预填的语言标识；空串 = 不带语言 */
   codeBlockLang: string;
+  /**
+   * 学习模式三栏宽度（占可用宽度的比例）：[左侧 Agent, 中间内容]。
+   * 右侧笔记吃剩余宽度，所以只存前两栏。比例而非像素，窗口缩放时按比例跟随。
+   */
+  studySplit: [number, number];
   fontSize: number;
   ime: ImeSettings;
   quickAdd: QuickAddCommand[];
@@ -45,6 +50,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoSave: true,
   autoNumberHeadings: false,
   codeBlockLang: "ts",
+  studySplit: [0.24, 0.44],
   fontSize: 16,
   ime: {
     enabled: true,
@@ -141,6 +147,11 @@ interface AppState {
   studyMode: boolean;
   /** 学习模式中间栏的当前内容(null = 空态,等待拖入 PDF 或输入 URL) */
   studyContent: StudyContent | null;
+  /**
+   * Agent 配置(模型/Key/MCP)的保存次数。会话在创建时就把 provider 固化了,
+   * 保存配置后必须重建会话才会生效——AgentPanel 监听这个计数重开会话。
+   */
+  agentConfigVersion: number;
 
   setVault: (info: VaultInfo) => void;
   closeVault: () => void;
@@ -166,6 +177,8 @@ interface AppState {
   clearToast: () => void;
   setStudyMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
+  /** Agent 配置已保存:让学习模式重建会话(见 agentConfigVersion)。 */
+  bumpAgentConfigVersion: () => void;
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -217,6 +230,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   toast: null,
   studyMode: false,
   studyContent: null,
+  agentConfigVersion: 0,
 
   setVault: (info) =>
     set({
@@ -298,6 +312,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearToast: () => set({ toast: null }),
   setStudyMode: (active) => set({ studyMode: active }),
   setStudyContent: (content) => set({ studyContent: content }),
+  bumpAgentConfigVersion: () =>
+    set({ agentConfigVersion: get().agentConfigVersion + 1 }),
 }));
 
 export function toggleStudyMode() {

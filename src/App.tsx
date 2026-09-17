@@ -30,8 +30,7 @@ import {
 } from "@/state/appStore";
 import { Sidebar } from "@/components/Sidebar";
 import { EditorPane } from "@/components/EditorPane";
-import { AgentPanel } from "@/components/AgentPanel";
-import { ContentPane } from "@/components/ContentPane";
+import { StudyLayout } from "@/components/StudyLayout";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { LinkSuggest } from "@/components/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -191,13 +190,7 @@ export default function App() {
   const main = (
     <main className="main">
       {studyMode ? (
-        <div className="study-layout">
-          <AgentPanel />
-          <ContentPane />
-          <div className="study-notes">
-            <EditorPane />
-          </div>
-        </div>
+        <StudyLayout />
       ) : (
         <>
           <div

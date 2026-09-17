@@ -128,7 +128,18 @@ export async function openNote(path: string): Promise<void> {
   // The pending save still refers to the previously open doc — write it out
   // before the swap, then replay this note's remembered position.
   flushCursorSave();
+  // 离开这篇笔记前把它未保存的内容落盘：自动保存有 800ms 防抖，紧跟一次切换
+  // 会把它连人带定时器一起作废——而那时 currentFile 已经换了，补写也补不回这篇。
+  // 与读盘并行发出，所以只有真有改动时才多这一次 IPC，且总延迟取两者的大者。
+  // 只在「被离开的文件路径仍然有效」的前提下成立：写盘会 create_dir_all + create，
+  // 往已消失的路径写会把文件重新建出来——重命名场景见 renameEntry。
+  const pendingSave = useAppStore.getState().dirty ? saveNote() : Promise.resolve();
   const content = await api.readFile(path);
+  await pendingSave;
+  // 读盘期间编辑器可能已经被换掉（切学习模式会重挂 EditorPane）。这时既不能把
+  // 内容塞进已销毁的 view，也不能把「已加载」标记写给新实例——新实例会因此
+  // 跳过读盘，从空文档起步。让它自己的 effect 去打开这篇笔记。
+  if (getView() !== view) return;
   loadDocument(view, content);
   loadedFile.current = path;
   useAppStore.getState().openFile(path);
@@ -207,6 +218,16 @@ export async function renameEntry(path: string, newName: string, isFile = false)
       const oldName = fileName(path);
       const dot = oldName.lastIndexOf(".");
       if (dot > 0) name += oldName.slice(dot);
+    }
+    // 改名会让当前文件的路径失效。openNote 的「离开前落盘」用的是 currentFile
+    // （此时还是旧路径），而写盘会把不存在的文件重新建出来——所以趁路径还有效，
+    // 先把这篇笔记未保存的内容存了。
+    if (
+      currentFile &&
+      (currentFile === path || currentFile.startsWith(`${path}/`)) &&
+      useAppStore.getState().dirty
+    ) {
+      await saveNote();
     }
     const newPath = await api.renamePath(path, name);
     await refreshTree();

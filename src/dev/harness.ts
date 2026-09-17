@@ -22,8 +22,8 @@ import "@/commands/builtin";
 import { installGlobalKeybindings } from "@/commands/globalKeys";
 import { installEditingChords } from "@/lib/editingChords";
 import { setClipboardOverrides } from "@/lib/clipboard";
-import { AgentPanel, renderAgentMarkdown } from "@/components/AgentPanel";
-import { ContentPane } from "@/components/ContentPane";
+import { renderAgentMarkdown } from "@/components/AgentPanel";
+import { StudyLayout } from "@/components/StudyLayout";
 
 const DOC = `# 公式与光标
 
@@ -493,22 +493,18 @@ window.__setClipboard = (text) => {
 window.__readClipboard = () => clipboardStub;
 installEditingChords();
 
-// 学习模式调试钩子：挂载真实组件（浏览器里 invoke 不可用，组件需自愈）。
+// 学习模式调试钩子：挂载真实三栏布局（浏览器里 invoke 不可用，组件需自愈）。
 window.__mountStudyLayout = () => {
   const host = document.createElement("div");
-  host.className = "study-layout";
+  host.id = "study-layout-host";
   host.style.position = "fixed";
   host.style.inset = "0";
   host.style.zIndex = "9999";
+  host.style.display = "flex";
   host.style.background = "var(--panel, #faf8f3)";
   document.body.appendChild(host);
   const root = createRoot(host);
-  root.render(
-    createElement("div", { style: { display: "contents" } },
-      createElement(AgentPanel),
-      createElement(ContentPane),
-    ),
-  );
+  root.render(createElement(StudyLayout));
   return () => {
     root.unmount();
     host.remove();

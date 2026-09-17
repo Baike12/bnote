@@ -33,18 +33,9 @@ export function scheduleCursorSave(path: string, view: EditorView) {
   timer = setTimeout(saveNow, SAVE_DELAY);
 }
 
-/** Save immediately (file switch, window blur, teardown). */
+/** Save immediately (file switch, window blur, editor teardown). */
 export function flushCursorSave() {
   saveNow();
-}
-
-/** Drops a pending save without writing (e.g. the file was closed). */
-export function cancelCursorSave() {
-  if (timer) {
-    clearTimeout(timer);
-    timer = null;
-  }
-  pending = null;
 }
 
 /** True while a debounced save has not been written yet (flush before quit). */

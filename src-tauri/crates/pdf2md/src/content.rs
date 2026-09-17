@@ -1200,6 +1200,12 @@ fn obj_to_rect(o: &Object) -> Option<Rect> {
 }
 
 /// Concatenates all /Contents streams of a page, decoded.
+///
+/// Per the spec /Contents is "a stream or an array of streams", and either form
+/// may be indirect — `28 0 R` where object 28 is itself `[29 0 R]` is common in
+/// PDFs written by office/printer drivers. So every value is dereferenced before
+/// it is classified: an array reached through a reference used to be mistaken
+/// for a stream and aborted the whole conversion with "content: not a stream".
 pub fn page_content_bytes(doc: &Document, page_id: lopdf::ObjectId) -> Result<Vec<u8>, String> {
     let obj = doc.get_object(page_id).map_err(|e| e.to_string())?;
     let dict = match obj {
@@ -1209,26 +1215,62 @@ pub fn page_content_bytes(doc: &Document, page_id: lopdf::ObjectId) -> Result<Ve
     };
     let contents = dict.get(b"Contents").cloned().unwrap_or(Object::Null);
     let mut out = Vec::new();
-    match contents {
-        Object::Reference(rid) => out.extend_from_slice(&decode_stream(doc, rid)?),
-        Object::Array(arr) => {
-            for o in &arr {
-                if let Object::Reference(rid) = o {
-                    out.extend_from_slice(&decode_stream(doc, *rid)?);
-                    out.push(b' ');
-                }
-            }
-        }
-        Object::Stream(s) => {
-            out.extend_from_slice(&s.decompressed_content().map_err(|e| e.to_string())?);
-        }
-        _ => {}
-    }
+    collect_content(doc, &contents, &mut out, 0)?;
     Ok(out)
 }
 
-fn decode_stream(doc: &Document, id: lopdf::ObjectId) -> Result<Vec<u8>, String> {
-    match doc.get_object(id).map_err(|e| e.to_string())? {
+/// Appends every stream reachable from a /Contents value (stream, array of
+/// streams, or an indirect reference to either). Non-stream entries inside an
+/// array are skipped rather than failing the page: one odd object must not cost
+/// the user the whole document. Nesting is capped so a self-referencing array
+/// terminates instead of recursing forever.
+fn collect_content(
+    doc: &Document,
+    value: &Object,
+    out: &mut Vec<u8>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_CONTENT_DEPTH {
+        return Ok(());
+    }
+    match deref(doc, value) {
+        Object::Null => Ok(()),
+        Object::Stream(_) => {
+            let bytes = decode_stream(doc, value)?;
+            out.extend_from_slice(&bytes);
+            out.push(b' ');
+            Ok(())
+        }
+        Object::Array(arr) => {
+            for item in &arr {
+                collect_content(doc, item, out, depth + 1)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// /Contents arrays are one level deep in practice; anything deeper is malformed.
+const MAX_CONTENT_DEPTH: usize = 8;
+
+/// Follows indirect references (bounded, so a malformed cycle can't hang).
+fn deref(doc: &Document, value: &Object) -> Object {
+    let mut cur = value.clone();
+    for _ in 0..16 {
+        match cur {
+            Object::Reference(id) => match doc.get_object(id) {
+                Ok(o) => cur = o.clone(),
+                Err(_) => return Object::Null,
+            },
+            other => return other,
+        }
+    }
+    Object::Null
+}
+
+fn decode_stream(doc: &Document, value: &Object) -> Result<Vec<u8>, String> {
+    match deref(doc, value) {
         Object::Stream(s) => s
             .decompressed_content()
             .map_err(|e| format!("stream decode: {}", e)),
@@ -1269,6 +1311,96 @@ pub fn decoded_stream(doc: &Document, id: lopdf::ObjectId) -> Option<(Vec<u8>, V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::{dictionary, Stream};
+    use std::io::Write;
+
+    /// Builds a one-page document whose /Contents is whatever `build` returns;
+    /// the builder gets the document so references it creates stay valid.
+    fn doc_with_page(build: impl FnOnce(&mut Document) -> Object) -> (Document, lopdf::ObjectId) {
+        let mut doc = Document::with_version("1.5");
+        let contents = build(&mut doc);
+        let contents_id = doc.add_object(contents);
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Contents" => contents_id,
+        });
+        (doc, page_id)
+    }
+
+    /// zlib-compressed content stream, like a real PDF writes it.
+    fn content_stream(text: &[u8]) -> Object {
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(text).unwrap();
+        let packed = enc.finish().unwrap();
+        Object::Stream(Stream::new(dictionary! { "Filter" => "FlateDecode" }, packed))
+    }
+
+    fn text_of(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).trim().to_string()
+    }
+
+    #[test]
+    fn contents_stream_reference() {
+        let (doc, page_id) = doc_with_page(|_| content_stream(b"BT (one) Tj ET"));
+        let bytes = page_content_bytes(&doc, page_id).expect("direct stream reference");
+        assert_eq!(text_of(&bytes), "BT (one) Tj ET");
+    }
+
+    #[test]
+    fn contents_indirect_array_of_streams() {
+        // `/Contents 28 0 R` where object 28 is `[29 0 R]` — the shape that used
+        // to abort the whole conversion with "content: not a stream".
+        let (doc, page_id) = doc_with_page(|doc| {
+            let a = doc.add_object(content_stream(b"BT (first) Tj ET"));
+            let b = doc.add_object(content_stream(b"BT (second) Tj ET"));
+            Object::Array(vec![Object::Reference(a), Object::Reference(b)])
+        });
+        let bytes = page_content_bytes(&doc, page_id).expect("indirect array contents");
+        let text = text_of(&bytes);
+        assert!(text.contains("(first)"), "missing first stream: {text}");
+        assert!(text.contains("(second)"), "missing second stream: {text}");
+    }
+
+    #[test]
+    fn contents_array_skips_non_streams() {
+        // Junk entries (null, a number, a dangling reference) must not abort the
+        // page — the stream next to them still converts.
+        let (doc, page_id) = doc_with_page(|doc| {
+            let a = doc.add_object(content_stream(b"BT (kept) Tj ET"));
+            Object::Array(vec![
+                Object::Null,
+                Object::Reference(a),
+                Object::Integer(7),
+                Object::Reference((9999, 0)),
+            ])
+        });
+        let bytes = page_content_bytes(&doc, page_id).expect("array with junk entries");
+        assert_eq!(text_of(&bytes), "BT (kept) Tj ET");
+    }
+
+    #[test]
+    fn contents_self_referencing_array_terminates() {
+        // Pathological: an array that contains itself. Must not recurse forever.
+        let mut doc = Document::with_version("1.5");
+        let array_id = doc.add_object(Object::Array(vec![Object::Null]));
+        if let Ok(Object::Array(arr)) = doc.get_object_mut(array_id) {
+            arr.push(Object::Reference(array_id));
+        }
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Contents" => array_id,
+        });
+        let bytes = page_content_bytes(&doc, page_id).expect("cyclic array");
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn contents_missing_is_empty() {
+        let mut doc = Document::with_version("1.5");
+        let page_id = doc.add_object(dictionary! { "Type" => "Page" });
+        let bytes = page_content_bytes(&doc, page_id).expect("no /Contents");
+        assert!(bytes.is_empty());
+    }
 
     #[test]
     fn test_td_positioning() {
