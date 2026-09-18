@@ -12,9 +12,70 @@ use tauri::Manager;
 
 use state::AppState;
 
+/// macOS menu: Tauri's default menu minus `File → Close Window`.
+///
+/// Why that one item has to go: it carries ⌘W, and AppKit resolves menu key
+/// equivalents *before* the webview ever sees the key — the press is consumed
+/// natively and never becomes a DOM `keydown`, so a command bound to ⌘W (here
+/// `edit.toggle-todo`) silently never fires. Confirmed empirically: rebuild
+/// with the default menu disabled and ⌘W starts working at once.
+///
+/// The trade-off is deliberate. macOS HIG reserves ⌘W for closing the window,
+/// so inside bnote ⌘W is a text-editing command and no longer closes anything
+/// — an exception to the platform convention, not an oversight. Closing still
+/// works via the traffic light, ⌘Q, and the Window menu. Moving the binding off
+/// ⌘W and keeping the stock menu was the alternative; it was rejected because
+/// ⌘W has been this command's binding for a long time.
+#[cfg(target_os = "macos")]
+fn install_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{AboutMetadata, MenuBuilder, SubmenuBuilder};
+
+    let pkg = app.package_info();
+    let about = AboutMetadata {
+        name: Some(pkg.name.clone()),
+        version: Some(pkg.version.to_string()),
+        ..Default::default()
+    };
+
+    let app_menu = SubmenuBuilder::new(app, pkg.name.clone())
+        .about(Some(about))
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+    let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .build()?;
+    let help_menu = SubmenuBuilder::new(app, "Help").build()?;
+
+    let menu = MenuBuilder::new(app)
+        .items(&[&app_menu, &edit_menu, &view_menu, &window_menu, &help_menu])
+        .build()?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .enable_macos_default_menu(false)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -33,6 +94,9 @@ pub fn run() {
                 mcp_manager: std::sync::Mutex::new(None),
                 current_note: std::sync::Mutex::new(None),
             });
+
+            #[cfg(target_os = "macos")]
+            install_menu(app.handle())?;
 
             // Debug builds also answer on a loopback port so the same UI can be
             // driven from a browser tab (see `devbridge`).
