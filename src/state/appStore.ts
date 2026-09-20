@@ -63,6 +63,20 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | null;
 
+/**
+ * 一次画布会话:画布是全屏浮层,期间命令快捷键停用(见 globalKeys 的挂起)。
+ * `notePath`/`embedRange` 只在「新建并嵌入」流程有值,空图关闭时用来撤掉
+ * 刚插入的嵌入;编辑已有画图时为 null,关闭不影响笔记。
+ */
+export interface DrawingSession {
+  /** 画图文件的绝对路径(磁盘上的唯一事实,画布每次保存都写它)。 */
+  path: string;
+  /** 本次会话新建的文件:关闭时若什么都没画,撤掉嵌入并删除文件。 */
+  isNew: boolean;
+  notePath: string | null;
+  embedRange: { from: number; to: number } | null;
+}
+
 /** 链接补全面板的锚点：光标所在行的视口坐标（面板 position: fixed 直接用它）。 */
 export interface LinkAnchor {
   left: number;
@@ -149,6 +163,8 @@ interface AppState {
   studyMode: boolean;
   /** 学习模式中间栏的当前内容(null = 空态,等待拖入 PDF 或输入 URL) */
   studyContent: StudyContent | null;
+  /** 画布会话(null = 没开)。全屏浮层 + 命令快捷键挂起。 */
+  drawingSession: DrawingSession | null;
   /**
    * Agent 配置(模型/Key/MCP)的保存次数。会话在创建时就把 provider 固化了,
    * 保存配置后必须重建会话才会生效——AgentPanel 监听这个计数重开会话。
@@ -180,6 +196,8 @@ interface AppState {
   clearToast: () => void;
   setStudyMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
+  openDrawingSession: (session: DrawingSession) => void;
+  closeDrawingSession: () => void;
   /** Agent 配置已保存:让学习模式重建会话(见 agentConfigVersion)。 */
   bumpAgentConfigVersion: () => void;
 }
@@ -234,6 +252,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   toast: null,
   studyMode: false,
   studyContent: null,
+  drawingSession: null,
   agentConfigVersion: 0,
 
   setVault: (info) =>
@@ -319,6 +338,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearToast: () => set({ toast: null }),
   setStudyMode: (active) => set({ studyMode: active }),
   setStudyContent: (content) => set({ studyContent: content }),
+  openDrawingSession: (session) => set({ drawingSession: session }),
+  closeDrawingSession: () => {
+    if (get().drawingSession !== null) set({ drawingSession: null });
+  },
   bumpAgentConfigVersion: () =>
     set({ agentConfigVersion: get().agentConfigVersion + 1 }),
 }));

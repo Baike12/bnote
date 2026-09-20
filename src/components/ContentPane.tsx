@@ -124,11 +124,12 @@ export function ContentPane() {
   }, [content]);
 
   // 原生视图永远画在 DOM 之上,所以设置/命令面板这类 HTML 浮层打开时要把它
-  // 藏起来,关掉再放出来。
+  // 藏起来,关掉再放出来。画布也一样:全屏浮层,开着时不能被原生视图盖住。
+  const canvasOpen = useAppStore((s) => s.drawingSession !== null);
   useEffect(() => {
     if (!previewUrl) return;
-    void agentApi.setStudyPreviewVisible(modal === null).catch(() => {});
-  }, [previewUrl, modal]);
+    void agentApi.setStudyPreviewVisible(modal === null && !canvasOpen).catch(() => {});
+  }, [previewUrl, modal, canvasOpen]);
 
   // Drag & drop: PDFs convert to markdown; markdown opens directly.
   useEffect(() => {

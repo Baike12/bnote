@@ -112,6 +112,7 @@ pub fn run() {
             commands::vault::list_files,
             commands::files::read_file,
             commands::files::write_file,
+            commands::files::write_file_base64,
             commands::files::create_file,
             commands::files::create_dir,
             commands::files::ensure_dir,

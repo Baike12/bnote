@@ -37,11 +37,13 @@ pub struct VaultIndex {
 }
 
 /// Extensions treated as renderable/pasteable media rather than notes.
+/// `.excalidraw` 场景文件也在资产里:画图嵌入(`![[x.excalidraw]]`)按文件名
+/// 解析时要在这份清单里找到它,预览 PNG 同目录同名。
 fn is_asset_file(name: &str) -> bool {
     let lower = name.to_lowercase();
     [
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif", ".ico", ".tif", ".tiff",
-        ".heic", ".pdf",
+        ".heic", ".pdf", ".excalidraw", ".excalidraw.md",
     ]
     .iter()
     .any(|ext| lower.ends_with(ext))
@@ -242,8 +244,13 @@ fn build_level(dir: &Path, rel_prefix: &str) -> Vec<FileNode> {
     dirs
 }
 
+/// Excalidraw 插件的 markdown 包裹格式是画图不是笔记:进了笔记清单就会被
+/// 快速跳转当笔记打开(满屏 JSON)。它们走 is_asset_file 的资产清单。
 fn is_note_file(name: &str) -> bool {
     let lower = name.to_lowercase();
+    if lower.ends_with(".excalidraw.md") {
+        return false;
+    }
     [".md", ".markdown", ".txt"]
         .iter()
         .any(|ext| lower.ends_with(ext))

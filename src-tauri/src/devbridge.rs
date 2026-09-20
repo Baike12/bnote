@@ -190,6 +190,14 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "write_file" => json_ok!(
             files::write_file(app.state(), arg_str(args, "path")?, arg_str(args, "contents")?).await
         ),
+        "write_file_base64" => json_ok!(
+            files::write_file_base64(
+                app.state(),
+                arg_str(args, "path")?,
+                arg_str(args, "contentsBase64")?
+            )
+            .await
+        ),
         "create_file" => json_ok!(
             files::create_file(
                 app.state(),

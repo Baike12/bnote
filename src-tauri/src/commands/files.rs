@@ -43,6 +43,31 @@ pub async fn write_file(state: State<'_, AppState>, path: String, contents: Stri
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
+/// Binary writes via base64 (the drawing canvas exports its PNG preview through
+/// this — a text round-trip would corrupt the bytes).
+#[tauri::command]
+pub async fn write_file_base64(
+    state: State<'_, AppState>,
+    path: String,
+    contents_base64: String,
+) -> CmdResult<()> {
+    use base64::Engine as _;
+    let root = require_vault(&state)?;
+    let full = std::path::PathBuf::from(&path);
+    ensure_within(&root, &full)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&contents_base64)
+            .map_err(|e| format!("DECODE_FAILED: {}", e))?;
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
+        }
+        std::fs::write(&full, bytes).map_err(|e| format!("WRITE_FAILED: {}", e))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
 /// Creates `parent/name.md`, deduplicating as "name 2.md", "name 3.md", …
 /// Returns the actual created path.
 #[tauri::command]

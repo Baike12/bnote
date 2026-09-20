@@ -205,6 +205,8 @@ export class ImageWidget extends WidgetType {
     readonly srcs: string[],
     readonly alt: string,
     readonly hint: string,
+    /** 画图嵌入(.excalidraw)的绝对路径:点击预览图打开画布再编辑。 */
+    readonly excalidrawPath?: string,
   ) {
     super();
   }
@@ -213,6 +215,7 @@ export class ImageWidget extends WidgetType {
     return (
       other.alt === this.alt &&
       other.hint === this.hint &&
+      other.excalidrawPath === this.excalidrawPath &&
       other.srcs.length === this.srcs.length &&
       other.srcs.every((s, i) => s === this.srcs[i])
     );
@@ -221,6 +224,7 @@ export class ImageWidget extends WidgetType {
   toDOM() {
     const wrap = document.createElement("span");
     wrap.className = "cw-image";
+    if (this.excalidrawPath) wrap.dataset.excalidrawPath = this.excalidrawPath;
     const img = document.createElement("img");
     img.alt = this.alt;
     img.loading = "lazy";

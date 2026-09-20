@@ -16,6 +16,7 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "workspace.quick-add": "Mod-Shift-a",
   "workspace.open-vault": "Mod-Shift-o",
   "workspace.save-note": "Mod-s",
+  "workspace.open-drawing": "Mod-d",
   "workspace.open-settings": "Mod-,",
 
   "nav.quick-switcher": "Mod-o",

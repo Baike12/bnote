@@ -18,6 +18,7 @@ import {
   TaskCheckboxWidget,
 } from "./widgets";
 import { ImageWidget } from "./widgets";
+import { drawingStem, isDrawingFileName } from "@/lib/excalidrawFile";
 
 /**
  * Obsidian-style live preview: everything in the viewport is rendered
@@ -53,6 +54,8 @@ const wikiLinksPerView = new WeakMap<EditorView, WikiLinkEntry[]>();
 export interface LivePreviewHooks {
   openWikiLink?: (target: string) => void;
   openExternalUrl?: (url: string) => void;
+  /** 点击画图嵌入的预览图:用画布打开那个 .excalidraw 文件。 */
+  openDrawing?: (path: string) => void;
   /** Live-rendered preview below a math region while the cursor edits it. */
   mathPreview?: boolean;
 }
@@ -814,6 +817,31 @@ function decorateImage(
   );
 }
 
+/**
+ * 画图嵌入的预览图候选:画图文件按文件名在资产清单里定位,预览 PNG 就是
+ * 同目录同名 `.png`(画布每次保存自动导出)。清单里没有画图文件、或 PNG
+ * 还没导出过时,依次落到「全库找同名 png」——widget 对空候选直接不渲染,
+ * 源码保持可见,不吞内容。
+ */
+function drawingEmbedCandidates(target: string): { srcs: string[]; path: string | null } {
+  const { vaultPath } = useAppStore.getState();
+  if (!vaultPath) return { srcs: [], path: null };
+  const srcs: string[] = [];
+  const add = (abs: string) => {
+    const url = assetSrc(abs);
+    if (url && !srcs.includes(url)) srcs.push(url);
+  };
+  const rel = findAssetByName(target);
+  const stem = drawingStem(target);
+  if (rel) {
+    const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : null;
+    add(`${vaultPath}/${dir ? `${dir}/` : ""}${stem}.png`);
+  }
+  const pngRel = findAssetByName(`${stem}.png`);
+  if (pngRel) add(`${vaultPath}/${pngRel}`);
+  return { srcs, path: rel ? `${vaultPath}/${rel}` : null };
+}
+
 function decorateLink(node: SyntaxNode, out: DecorationSink) {
   const marks: SyntaxNode[] = [];
   let url: SyntaxNode | null = null;
@@ -871,6 +899,20 @@ function decorateWikiLinks(
             out.inline.push(
               Decoration.replace({
                 widget: new ImageWidget(srcs, target, target),
+              }).range(embedFrom, to),
+            );
+            continue;
+          }
+        }
+
+        // `![[x.excalidraw]]` 画图嵌入:渲染旁边那张自动导出的预览 PNG,
+        // 点开可回画布编辑。老库里的 `.excalidraw.md` 同样认。
+        if (embedFrom >= 0 && isDrawingFileName(target)) {
+          const { srcs, path } = drawingEmbedCandidates(target);
+          if (srcs.length > 0 && claim(embedFrom, to)) {
+            out.inline.push(
+              Decoration.replace({
+                widget: new ImageWidget(srcs, target, target, path ?? undefined),
               }).range(embedFrom, to),
             );
             continue;
@@ -1000,6 +1042,15 @@ const linkHandlers = EditorView.domEventHandlers({
 
     const isWiki = target.closest?.(".md-wikilink");
     const isLink = target.closest?.(".md-link, .md-url");
+
+    // 画图嵌入的预览图:打开画布编辑那个文件(先于普通图片路径判断)。
+    const image = target.closest?.(".cw-image") as HTMLElement | null;
+    if (image?.dataset?.excalidrawPath && hooks.openDrawing) {
+      event.preventDefault();
+      hooks.openDrawing(image.dataset.excalidrawPath);
+      return true;
+    }
+
     if (!isWiki && !isLink) return false;
 
     let pos: number;

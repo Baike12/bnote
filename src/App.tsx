@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, lazy, Suspense } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { agentApi, api } from "@/lib/tauri";
@@ -39,12 +39,16 @@ import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
 import { fileName } from "@/lib/path";
 
+/** 画布是独立 chunk(含 excalidraw 及其字体加载逻辑),只在打开时下载。 */
+const DrawingCanvas = lazy(() => import("@/components/DrawingCanvas"));
+
 export default function App() {
   const vaultPath = useAppStore((s) => s.vaultPath);
   const vaultName = useAppStore((s) => s.vaultName);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const currentFile = useAppStore((s) => s.currentFile);
   const studyMode = useAppStore((s) => s.studyMode);
+  const drawingSession = useAppStore((s) => s.drawingSession);
   // Agent context: the backend reads the current note path for its system prompt.
   useEffect(() => {
     void agentApi.setCurrentNote(currentFile).catch(() => {});
@@ -225,6 +229,11 @@ export default function App() {
       <CommandPalette />
       <QuickAddModal />
       <SettingsModal />
+      {drawingSession && (
+        <Suspense fallback={null}>
+          <DrawingCanvas />
+        </Suspense>
+      )}
       <Toast />
     </div>
   );

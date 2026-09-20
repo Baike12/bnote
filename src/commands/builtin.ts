@@ -19,6 +19,7 @@ import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import { configureLivePreview } from "@/editor/livePreview";
 import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
+import { openNewDrawing, openDrawingFile } from "@/app/drawing";
 import { useAppStore, toggleStudyMode } from "@/state/appStore";
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
@@ -58,6 +59,12 @@ const defs: CommandDef[] = [
     run: () => void actions.newFolder(),
   },
   { id: "workspace.save-note", title: "保存当前笔记", category: "工作区", run: () => void actions.saveNote() },
+  {
+    id: "workspace.open-drawing",
+    title: "画图:新建画布,画完嵌入当前笔记(⌘↩ 完成)",
+    category: "工作区",
+    run: () => void openNewDrawing(),
+  },
   {
     id: "workspace.save-note-and-close",
     title: "保存并关闭窗口",
@@ -297,4 +304,6 @@ configureLivePreview({
   openExternalUrl: (url) => {
     void openUrl(url).catch((e) => console.warn("open url failed", e));
   },
+  // 点击画图嵌入的预览图:打开画布继续编辑。
+  openDrawing: (path) => openDrawingFile(path),
 });

@@ -136,6 +136,9 @@ export const api = {
   readFile: (path: string) => invoke<string>("read_file", { path }),
   writeFile: (path: string, contents: string) =>
     invoke<void>("write_file", { path, contents }),
+  /** 二进制写盘(画布导出的 PNG 预览);base64 编码走 JSON,UTF-8 文本请用 writeFile。 */
+  writeFileBase64: (path: string, contentsBase64: string) =>
+    invoke<void>("write_file_base64", { path, contentsBase64 }),
   createFile: (parent: string, name: string) =>
     invoke<CreatedEntry>("create_file", { parent, name }),
   createDir: (parent: string, name: string) =>

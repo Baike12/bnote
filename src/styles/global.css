@@ -1749,3 +1749,102 @@ input[type="range"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ===== 画布(Excalidraw 画图)===== */
+
+/* 全屏浮层:盖过模态(100)和右键菜单(200),低于 toast(300)——
+   保存失败的提示要能看见。 */
+.drawing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg0);
+}
+
+.drawing-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+}
+
+.drawing-title {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-save {
+  margin-left: 10px;
+  font-size: 11px;
+  color: var(--text-dim, #888);
+}
+.drawing-save.busy {
+  color: var(--accent);
+}
+
+.drawing-snap.on {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.drawing-done {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: #fff;
+}
+.drawing-done:hover {
+  background: var(--accent);
+}
+
+.drawing-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+/* excalidraw 根元素铺满;它自己管理内部布局和滚动。 */
+.drawing-body .excalidraw {
+  --ui-font: var(--font-ui);
+  width: 100%;
+  height: 100%;
+}
+
+.drawing-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim, #888);
+  font-size: 14px;
+}
+
+.drawing-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text);
+  font-size: 14px;
+}
+.drawing-error pre {
+  max-width: 70vw;
+  max-height: 40vh;
+  overflow: auto;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
