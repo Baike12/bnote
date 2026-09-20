@@ -49,7 +49,7 @@ interface WikiLinkEntry extends Interval {
 }
 
 /** Clickable rendered wikilinks of the last build, per view. */
-const wikiLinksPerView = new WeakMap<EditorView, WikiLinkEntry[]>();
+const wikiLinksPerView = new WeakMap<object, WikiLinkEntry[]>();
 
 export interface LivePreviewHooks {
   openWikiLink?: (target: string) => void;
@@ -283,7 +283,16 @@ interface DecorationSink {
   inline: Range<Decoration>[];
 }
 
-function buildInlineDecorations(view: EditorView): DecorationSet {
+/** 包内唯一需要的视图面：装饰构建只读 state 与视口范围。测试用它构造
+ *  无 DOM 的假视图，锁住「标记 token 活动规则」等几何模型。 */
+export interface DecorationBuildView {
+  state: EditorState;
+  visibleRanges: readonly { from: number; to: number }[];
+}
+
+/** Viewport-scoped inline decorations（斜体、列表标记、行内公式、wikilink…）。
+ *  导出是为了测试能在无 DOM 的假视图上锁住 token 活动规则。 */
+export function buildInlineDecorations(view: DecorationBuildView): DecorationSet {
   const state = view.state;
   const doc = state.doc;
   const visible = view.visibleRanges;

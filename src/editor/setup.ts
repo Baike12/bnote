@@ -142,9 +142,10 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     // 是同步的。列表缩进让整行右移 28px，缩进后的那一帧里光标还停在旧 x——正好
     // 压在新项目符号上，下一帧才跳到符号后面。updateListener 在所有 view plugin
     // 与 DOM 同步之后运行，这里读一次光标坐标，把挂起的 measure 就地冲刷掉，
-    // 让光标与文本同帧落位。
+    // 让光标与文本同帧落位。纯光标移动（vim 的 j/k、h/l）同样慢一帧，一并冲刷。
     EditorView.updateListener.of((u) => {
-      if (!u.docChanged || !useAppStore.getState().settings.vim) return;
+      if (!useAppStore.getState().settings.vim) return;
+      if (!u.docChanged && !u.selectionSet) return;
       u.view.coordsAtPos(u.state.selection.main.head);
     }),
   ];

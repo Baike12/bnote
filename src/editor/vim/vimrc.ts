@@ -119,7 +119,7 @@ export function parseVimrc(source: string): VimrcResult {
         continue;
       }
       const lhs = m[1];
-      let rhs = m[2].trim();
+      const rhs = m[2].trim();
       if (lhs.includes("<leader>")) {
         errors.push(`line ${lineNo}: unsupported <leader> mapping: ${lhs}`);
         continue;

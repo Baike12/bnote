@@ -10,6 +10,7 @@ import { EditorSelection, RangeSetBuilder } from "@codemirror/state";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import type { VimMapping, VimMode } from "./vimrc";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
+import { moveByLinesVisual } from "./verticalMotion";
 
 export type RunCommand = (commandId: string) => void;
 
@@ -41,6 +42,7 @@ export function registerVimExCommands(run: RunCommand) {
 export function vimModeExtension(): Extension {
   patchVimNewlineIndent();
   patchVimNotice();
+  patchVimVerticalMotion();
   return vim();
 }
 
@@ -154,6 +156,20 @@ function patchVimNewlineIndent() {
   } catch (e) {
     console.warn("[bnote] vim o/O indent patch failed", e);
   }
+}
+
+/* ---- 视觉锚定的垂直移动：把引擎的 moveByLines 换成像素锚定实现。
+   设计与证据见 ./verticalMotion.ts 顶部的注释块。 ---- */
+
+let verticalMotionPatched = false;
+
+function patchVimVerticalMotion() {
+  if (verticalMotionPatched) return;
+  verticalMotionPatched = true;
+  const VimAny = Vim as unknown as {
+    defineMotion: (name: string, fn: unknown) => void;
+  };
+  VimAny.defineMotion("moveByLines", moveByLinesVisual);
 }
 
 /* ---- clipboard=unnamed: sync the vim unnamed register with the system clipboard.

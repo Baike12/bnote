@@ -84,7 +84,7 @@ export function EditorPane() {
       view.destroy();
       editorApi.view = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // React to settings changes that affect autosave scheduling.

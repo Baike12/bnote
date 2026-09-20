@@ -137,7 +137,7 @@ export function Sidebar() {
     const relPath = renameRequest;
     useAppStore.getState().clearRenameRequest();
     revealPath(relPath, { rename: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [renameRequest]);
 
   // reveal 收敛：行渲染出来就落光标（改名请求再挂输入框），然后清掉请求。

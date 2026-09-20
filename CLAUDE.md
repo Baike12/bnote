@@ -39,3 +39,12 @@ bnote 的核心是**手感**:编辑、滚动、光标移动、渲染都不许有
 - CodeMirror 只渲染视口,长文档里 `querySelectorAll(".cw-image")` 会是 0;且 live preview 只在光标**不在**该行时才把图片源码换成 widget——先把光标移到目标行下方再量。
 - 图片的 `naturalWidth` 是懒加载 + 异步解码,量之前等 1s 左右,否则读到 0。
 - 图标资产必须用浏览器 canvas 栅格化(`toDataURL` 存文件);`qlmanage -t -s N` 会铺**白色不透明背景**,只能目检构图。图标数值用 python PIL 量像素,别目测。
+
+## 测试门禁(每次改动必须通过)
+
+收尾前必须跑 **`pnpm gate`** 并通过(= `pnpm lint` + `pnpm typecheck` + `pnpm test`,秒级)。这是"改动完成"的定义之一,与"修 bug 要给出证据"同级。
+
+- **测试写根因,不写症状**:修 bug/改模型时,把根因固化成回归测试放在被测模块旁(`*.test.ts`,vitest node 环境)。范例:`src/editor/motionClamp.test.ts`(隐藏行步进模型)、`src/editor/vim/verticalMotion.test.ts`(vim 运动控制流+记账,用确定性假几何)、`src/editor/livePreview.activity.test.ts`(标记 token 活动规则)。
+- **几何/手感改动,门禁之外仍须浏览器测量**:无 DOM 测试只能锁控制流和不变量;真实像素行为(隐藏前缀零宽、widget 命中偏向、视觉锚稳定性)只有浏览器能证明——按上面"调试与验证方式"走 harness 测量,修复前后用同一协议对比。
+- **lint error 拦门禁,warning 不拦但会积累**:新增 warning 要有理由(如引擎适配层的 any 断言、dev 桥的 console.log)。
+- **Rust 侧改动**在 `src-tauri` 下跑 `cargo check`,不进 pnpm gate(前端迭代不该付 Rust 编译成本)。
