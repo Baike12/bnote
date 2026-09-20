@@ -71,19 +71,24 @@ function relineVerticalStep(
   );
 }
 
-function pixelGoalOf(view: EditorView, pos: number): number {
+/** Visual x of `pos` relative to the content box — the coordinate vim's
+ *  vertical motions anchor on. `contentLeft` may be passed in when the caller
+ *  already measured it (several helpers run in one keystroke). */
+export function pixelGoalOf(view: EditorView, pos: number, contentLeft?: number): number {
   const rect = view.coordsAtPos(pos);
   if (!rect) return 0;
-  return rect.left - view.contentDOM.getBoundingClientRect().left;
+  return rect.left - (contentLeft ?? view.contentDOM.getBoundingClientRect().left);
 }
 
-/** Column under a pixel goal on `line`: precise when the line is drawn,
- *  estimated from average character width when it is off-screen (the motion
- *  is about to scroll it into view anyway). */
-function columnOnLine(view: EditorView, line: Line, goal: number): number {
+/** Column under a pixel goal on `line`: precise when the line is drawn
+ *  (resolved through the same pixel model the renderer uses, so the landing
+ *  never rests inside hidden content), estimated from average character width
+ *  when the line is off-screen (the motion is about to scroll it into view
+ *  anyway). */
+export function columnOnLine(view: EditorView, line: Line, goal: number, contentLeft?: number): number {
   const rect = view.coordsAtPos(line.from);
   if (rect) {
-    const x = view.contentDOM.getBoundingClientRect().left + goal;
+    const x = (contentLeft ?? view.contentDOM.getBoundingClientRect().left) + goal;
     const pos = view.posAtCoords({ x, y: rect.top + 1 }, false);
     if (pos !== null) {
       const l = view.state.doc.lineAt(pos);
@@ -135,4 +140,39 @@ function analyze(state: EditorState, startLineNo: number, down: boolean): {
     edges.add(down ? o : c);
   }
   return { isHiddenStep, isMathEdge: (n) => edges.has(n) };
+}
+
+/** The doc line one visible step from `fromLineNo`: lines hidden under block
+ *  replace decorations (collapsed fences, display math, rules) are not steps;
+ *  the near edge of a still-collapsed display-math region is a landing (the
+ *  cursor resting there expands the block to source). Predicates are derived
+ *  for the CURRENT line each call, so a landing on a math edge turns the
+ *  region's source lines into plain steps for the following step — matching
+ *  how relineVerticalStep sees the world one moveVertically at a time. */
+function visibleLineStep(state: EditorState, fromLineNo: number, down: boolean): number {
+  const doc = state.doc;
+  const { isHiddenStep, isMathEdge } = analyze(state, fromLineNo, down);
+  let n = fromLineNo + (down ? 1 : -1);
+  while (n >= 1 && n <= doc.lines && !isMathEdge(n) && isHiddenStep(doc.line(n))) {
+    n += down ? 1 : -1;
+  }
+  return n >= 1 && n <= doc.lines ? n : fromLineNo;
+}
+
+/** Doc line reached from `startLineNo` after `count` visible steps. This is
+ *  the vertical dimension of vim's j/k/+/-/_ motions, which count document
+ *  lines while the user counts visible ones. */
+export function visibleVerticalTarget(
+  state: EditorState,
+  startLineNo: number,
+  down: boolean,
+  count: number,
+): number {
+  let cur = startLineNo;
+  for (let i = 0; i < count; i++) {
+    const next = visibleLineStep(state, cur, down);
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur;
 }

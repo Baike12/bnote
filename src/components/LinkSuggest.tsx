@@ -87,7 +87,7 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
       window.removeEventListener("resize", close);
       scroller?.removeEventListener("scroll", close);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // 点到面板外面 = 放弃插入（编辑器那一下点击照常生效）。捕获阶段：让面板先关，
@@ -98,13 +98,13 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
     };
     window.addEventListener("mousedown", onDown, true);
     return () => window.removeEventListener("mousedown", onDown, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // 别的覆盖层（命令面板 / 设置 / 快速跳转）打开就给它让位。
   useEffect(() => {
     if (modal) close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [modal]);
 
   // 关闭（选中 / Esc / 点外面）后把焦点还给编辑器；用户在别处操作时 restoreEditorFocus

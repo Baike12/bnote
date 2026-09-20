@@ -48,7 +48,7 @@ export function ContentPane() {
       viewRef.current = null;
       loadedRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   useEffect(() => {
