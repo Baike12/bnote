@@ -64,17 +64,19 @@ export const DEFAULT_SETTINGS: Settings = {
 export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | null;
 
 /**
- * 一次画布会话:画布是全屏浮层,期间命令快捷键停用(见 globalKeys 的挂起)。
- * `notePath`/`embedRange` 只在「新建并嵌入」流程有值,空图关闭时用来撤掉
- * 刚插入的嵌入;编辑已有画图时为 null,关闭不影响笔记。
+ * 一次画布会话:画布是全屏浮层,期间命令快捷键只放行快速跳转/命令面板
+ * (见 globalKeys 的画布模式)。isNew 会话在「回到来源笔记」时把画好的图
+ * 作为普通图片嵌入插回 originPos——插入动作发生在收尾,不是打开画布时。
  */
 export interface DrawingSession {
   /** 画图文件的绝对路径(磁盘上的唯一事实,画布每次保存都写它)。 */
   path: string;
-  /** 本次会话新建的文件:关闭时若什么都没画,撤掉嵌入并删除文件。 */
+  /** 本次会话新建的文件:收尾时若什么都没画,直接删文件。 */
   isNew: boolean;
-  notePath: string | null;
-  embedRange: { from: number; to: number } | null;
+  /** 来源笔记(⌘D 时的当前笔记);回填嵌入的目标。 */
+  originNote: string | null;
+  /** ⌘D 时的光标位置;回填插入点。编辑已有画图时为 null。 */
+  originPos: number | null;
 }
 
 /** 链接补全面板的锚点：光标所在行的视口坐标（面板 position: fixed 直接用它）。 */

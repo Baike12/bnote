@@ -16,7 +16,8 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "workspace.quick-add": "Mod-Shift-a",
   "workspace.open-vault": "Mod-Shift-o",
   "workspace.save-note": "Mod-s",
-  "workspace.open-drawing": "Mod-d",
+  // ⌘D 在不少个人配置里已被占用(如插入代码块),画图用 ⌘O(open canvas)。
+  "workspace.open-drawing": "Mod-o",
   "workspace.open-settings": "Mod-,",
 
   "nav.quick-switcher": "Mod-o",

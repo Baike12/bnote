@@ -94,11 +94,11 @@ button {
 }
 
 .titlebar {
-  height: 40px;
-  min-height: 40px;
+  height: 34px;
+  min-height: 34px;
   display: flex;
   align-items: center;
-  padding: 0 16px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg0);
   /* 绝对定位的路径文字以整条标题栏为参照居中（Obsidian 的页签标题那样）。 */
@@ -117,7 +117,7 @@ button {
 
 .breadcrumb {
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -132,14 +132,14 @@ button {
 /* ===== sidebar ===== */
 
 .sidebar {
-  width: 240px;
-  min-width: 240px;
+  width: 220px;
+  min-width: 220px;
   background: var(--bg1);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   /* room for macOS traffic lights (Overlay title bar) */
-  padding-top: 36px;
+  padding-top: 30px;
 }
 
 .sidebar-header {
@@ -194,7 +194,7 @@ button {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 26px;
+  height: 23px;
   border-radius: 6px;
   cursor: pointer;
   padding-right: 8px;
@@ -227,7 +227,7 @@ button {
 }
 
 .tree-name {
-  font-size: 13px;
+  font-size: 12.5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1752,28 +1752,35 @@ input[type="range"] {
 
 /* ===== 画布(Excalidraw 画图)===== */
 
-/* 全屏浮层:盖过模态(100)和右键菜单(200),低于 toast(300)——
-   保存失败的提示要能看见。 */
+/* 全屏浮层:盖过主界面,但在快速跳转/命令面板(100)之下——画布模式里
+   ⌘O 切换文件是核心路径;toast(300) 仍在最上。 */
 .drawing-overlay {
   position: fixed;
   inset: 0;
-  z-index: 250;
+  z-index: 90;
   display: flex;
   flex-direction: column;
   background: var(--bg0);
 }
 
 .drawing-topbar {
+  height: 30px;
+  min-height: 30px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg1);
+  position: relative;
 }
 
+/* 文件名绝对居中:左侧给 macOS 红绿灯留位,右侧给提示文字留位。 */
 .drawing-title {
-  font-size: 13px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 46vw;
+  font-size: 12px;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1781,26 +1788,19 @@ input[type="range"] {
 }
 
 .drawing-save {
-  margin-left: 10px;
-  font-size: 11px;
-  color: var(--text-dim, #888);
+  margin-left: 8px;
+  font-size: 10.5px;
+  color: var(--text-faint);
 }
 .drawing-save.busy {
   color: var(--accent);
 }
 
-.drawing-snap.on {
-  color: var(--accent);
-  border-color: var(--accent-dim);
-}
-
-.drawing-done {
-  background: var(--accent-dim);
-  border-color: var(--accent-dim);
-  color: #fff;
-}
-.drawing-done:hover {
-  background: var(--accent);
+.drawing-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  user-select: none;
 }
 
 .drawing-body {
@@ -1809,7 +1809,6 @@ input[type="range"] {
   min-height: 0;
 }
 
-/* excalidraw 根元素铺满;它自己管理内部布局和滚动。 */
 .drawing-body .excalidraw {
   --ui-font: var(--font-ui);
   width: 100%;

@@ -122,6 +122,13 @@ export async function loadDirChildren(relPath: string): Promise<void> {
 }
 
 export async function openNote(path: string): Promise<void> {
+  // 画布开着时的文件切换(快速跳转/命令面板)先收尾画布:画过的图回填到
+  // 来源笔记的光标位置(Obsidian 式「画图也是文件」语义),再执行本次切换。
+  if (useAppStore.getState().drawingSession) {
+    const { finalizeDrawingSession } = await import("@/app/drawing");
+    await finalizeDrawingSession();
+    if (useAppStore.getState().drawingSession) return; // 收尾被并发占用:放弃本次切换
+  }
   const view = getView();
   if (!view) {
     useAppStore.getState().showToast("编辑器尚未就绪，无法打开文件");

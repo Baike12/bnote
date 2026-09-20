@@ -14,25 +14,31 @@ export function setHotkeyRecording(v: boolean) {
 }
 
 /**
- * 画布打开时挂起全部命令快捷键:画布内部有一整套自己的键位(1-9 工具、
- * Alt+S 吸附、⌘Z 撤销…),窗口级命令分发必须让路,否则 ⌘D/⌘S 这类重叠键
- * 会在画布上误触发笔记命令。挂起/恢复由 DrawingCanvas 挂载/卸载驱动。
+ * 画布打开时进入「画布模式」:画布内部有一整套自己的键位(1-9 工具、
+ * Alt+S 吸附、⌘D 复制、⌘Z 撤销…),窗口级命令分发必须让路——但画图本身
+ * 也是「一个文件」,Obsidian 式的文件切换要照常可用,所以只放行快速跳转
+ * 和命令面板(切走时会先收尾画布,见 actions.openNote / finalizeDrawingSession)。
  */
-let suspended = false;
+export type CommandKeyContext = "drawing" | null;
 
-export function setCommandKeysSuspended(v: boolean) {
-  suspended = v;
+let keyContext: CommandKeyContext = null;
+
+const DRAWING_ALLOWED = new Set(["nav.quick-switcher", "nav.command-palette"]);
+
+export function setCommandKeyContext(ctx: CommandKeyContext) {
+  keyContext = ctx;
 }
 
 export function installGlobalKeybindings() {
   window.addEventListener(
     "keydown",
     (e) => {
-      if (recordingHotkey || suspended || e.defaultPrevented) return;
+      if (recordingHotkey || e.defaultPrevented) return;
       const key = eventToKey(e);
       if (!key) return;
       for (const cmd of allCommands()) {
         if (bindingsForCommand(cmd.id).includes(key)) {
+          if (keyContext === "drawing" && !DRAWING_ALLOWED.has(cmd.id)) return;
           e.preventDefault();
           e.stopPropagation();
           recordCommandChord(e);

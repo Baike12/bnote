@@ -19,7 +19,7 @@ import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import { configureLivePreview } from "@/editor/livePreview";
 import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
-import { openNewDrawing, openDrawingFile } from "@/app/drawing";
+import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
 import { useAppStore, toggleStudyMode } from "@/state/appStore";
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
@@ -61,9 +61,17 @@ const defs: CommandDef[] = [
   { id: "workspace.save-note", title: "保存当前笔记", category: "工作区", run: () => void actions.saveNote() },
   {
     id: "workspace.open-drawing",
-    title: "画图:新建画布,画完嵌入当前笔记(⌘↩ 完成)",
+    title: "画图:打开画布,回到笔记时插入光标处(⌘D)",
     category: "工作区",
     run: () => void openNewDrawing(),
+  },
+  {
+    id: "workspace.finish-drawing",
+    title: "完成画图:回到笔记并插入刚画的图(⌘↩)",
+    category: "工作区",
+    run: () => {
+      if (useAppStore.getState().drawingSession) void finalizeDrawingSession();
+    },
   },
   {
     id: "workspace.save-note-and-close",
