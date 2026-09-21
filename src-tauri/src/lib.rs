@@ -12,23 +12,53 @@ use tauri::Manager;
 
 use state::AppState;
 
-/// macOS menu: Tauri's default menu minus `File → Close Window`.
+/// Menu ids for the items whose key equivalents are deliberately left unset.
+#[cfg(target_os = "macos")]
+const MENU_QUIT: &str = "menu.quit";
+#[cfg(target_os = "macos")]
+const MENU_HIDE: &str = "menu.hide";
+#[cfg(target_os = "macos")]
+const MENU_MINIMIZE: &str = "menu.minimize";
+#[cfg(target_os = "macos")]
+const MENU_FULLSCREEN: &str = "menu.fullscreen";
+
+/// macOS menu, built by hand so that every key equivalent the app publishes is
+/// one we chose.
 ///
-/// Why that one item has to go: it carries ⌘W, and AppKit resolves menu key
-/// equivalents *before* the webview ever sees the key — the press is consumed
-/// natively and never becomes a DOM `keydown`, so a command bound to ⌘W (here
-/// `edit.toggle-todo`) silently never fires. Confirmed empirically: rebuild
-/// with the default menu disabled and ⌘W starts working at once.
+/// AppKit resolves menu key equivalents *before* the webview sees the key: the
+/// press is consumed natively and never becomes a DOM `keydown`, so any command
+/// bound to that chord (dispatched from `src/commands/globalKeys.ts`) silently
+/// never fires. Confirmed empirically on ⌘W in f6b6b44 — with the stock menu
+/// disabled the binding started working at once.
 ///
-/// The trade-off is deliberate. macOS HIG reserves ⌘W for closing the window,
-/// so inside bnote ⌘W is a text-editing command and no longer closes anything
-/// — an exception to the platform convention, not an oversight. Closing still
-/// works via the traffic light, ⌘Q, and the Window menu. Moving the binding off
-/// ⌘W and keeping the stock menu was the alternative; it was rejected because
-/// ⌘W has been this command's binding for a long time.
+/// So the rule here is: a chord belongs to bnote's own keybinding layer unless
+/// macOS gives us no choice. That costs the app every stock shortcut below,
+/// which now reach the DOM and can be bound (or left unbound) in settings:
+///
+///   ⌘Q  quit              → menu item kept, no key equivalent
+///   ⌘H  hide              → menu item kept, no key equivalent
+///   ⌘M  minimize          → menu item kept, no key equivalent
+///   ⌃⌘F toggle fullscreen → menu item kept, no key equivalent
+///   ⌘W  close window      → item dropped entirely (f6b6b44)
+///
+/// `PredefinedMenuItem` cannot help with this: muda hard-codes its accelerator
+/// per item type (`muda-0.19.3/src/items/predefined.rs:317`, `Minimize =>
+/// CMD_OR_CTRL + KeyM`) and exposes `set_accelerator` only on plain `MenuItem`
+/// (`normal.rs:104`). Hence the four items below are built by hand — the menu
+/// stays mouse-reachable, only the chords are given back.
+///
+/// Two items are dropped rather than rebuilt:
+/// - `Hide Others` (⌥⌘H) — no Tauri API for `hideOtherApplications:`, and
+///   bnote is a single-window app where it buys nothing.
+/// - `Show All`, which only exists to undo `Hide Others`.
+///
+/// Edit keeps ⌘Z ⌘X ⌘C ⌘V ⌘A on purpose: WKWebView routes the clipboard through
+/// those menu items to the `undo:`/`cut:`/`copy:`/`paste:`/`selectAll:`
+/// selectors, so removing them would break the clipboard rather than free the
+/// chords.
 #[cfg(target_os = "macos")]
 fn install_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
-    use tauri::menu::{AboutMetadata, MenuBuilder, SubmenuBuilder};
+    use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
     let pkg = app.package_info();
     let about = AboutMetadata {
@@ -37,16 +67,20 @@ fn install_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         ..Default::default()
     };
 
+    let quit = MenuItemBuilder::with_id(MENU_QUIT, format!("Quit {}", pkg.name)).build(app)?;
+    let hide = MenuItemBuilder::with_id(MENU_HIDE, format!("Hide {}", pkg.name)).build(app)?;
+    let minimize = MenuItemBuilder::with_id(MENU_MINIMIZE, "Minimize").build(app)?;
+    let fullscreen =
+        MenuItemBuilder::with_id(MENU_FULLSCREEN, "Toggle Full Screen").build(app)?;
+
     let app_menu = SubmenuBuilder::new(app, pkg.name.clone())
         .about(Some(about))
         .separator()
         .services()
         .separator()
-        .hide()
-        .hide_others()
-        .show_all()
+        .item(&hide)
         .separator()
-        .quit()
+        .item(&quit)
         .build()?;
     let edit_menu = SubmenuBuilder::new(app, "Edit")
         .undo()
@@ -57,9 +91,9 @@ fn install_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         .paste()
         .select_all()
         .build()?;
-    let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+    let view_menu = SubmenuBuilder::new(app, "View").item(&fullscreen).build()?;
     let window_menu = SubmenuBuilder::new(app, "Window")
-        .minimize()
+        .item(&minimize)
         .maximize()
         .separator()
         .build()?;
@@ -72,10 +106,47 @@ fn install_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Actions for the key-equivalent-free items `install_menu` builds.
+///
+/// Quit is the interesting one: it cannot call `AppHandle::exit` directly,
+/// because bnote debounces the cursor save and the config write by 300ms
+/// (`src/App.tsx`, quit-safety effect) and those flushes live in JS. Exiting
+/// from Rust would silently drop whatever the last 300ms held, so the menu
+/// hands the request to the frontend, which flushes and then destroys the
+/// window — the same path the traffic light's close already takes.
+fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Emitter;
+        match event.id().as_ref() {
+            MENU_QUIT => {
+                let _ = app.emit("bnote:menu-quit", ());
+            }
+            MENU_HIDE => {
+                let _ = app.hide();
+            }
+            MENU_MINIMIZE => {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.minimize();
+                }
+            }
+            MENU_FULLSCREEN => {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_fullscreen(!win.is_fullscreen().unwrap_or(false));
+                }
+            }
+            _ => {}
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, event);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .enable_macos_default_menu(false)
+        .on_menu_event(handle_menu_event)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
