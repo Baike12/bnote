@@ -23,16 +23,22 @@ description: 构建 bnote（Tauri 应用）并替换正在运行/已安装的 /A
 脚本做什么：
 
 1. `pnpm exec tsc --noEmit`（除非 `--skip-typecheck`）
-2. `pnpm tauri build`（完整日志在 /tmp/bnote-build.log，失败时输出尾部）
+2. `pnpm tauri build --bundles app`（部署只打 .app；完整日志在 /tmp/bnote-build.log，
+   失败时输出尾部）
 3. **关闭所有**运行中的 bnote 实例，并确认进程真的消失：AppleScript 优雅退出
    （让自动保存落盘）→ 等不到就 SIGTERM → 再不行 SIGKILL；仍杀不掉则中止，
    不进入替换
 4. `rm -rf /Applications/bnote.app && ditto <新包> /Applications/bnote.app`
    （必须先删再 ditto；ditto 保留元数据与签名，不要用 cp -R），替换后确认可执行
    文件就位
-5. `open` 启动，等新包自己的进程出现后报告 pid 与 DMG 路径
+5. `open` 启动，等新包自己的进程出现后报告 pid
 
 构建在前、关闭实例在后是有意的：构建失败时不动正在运行的实例。
+
+耗时构成（为什么部署比想象久）：cargo release 重编译是大头（tauri 把前端资产
+嵌进二进制，前端改动也触发，增量约 1-1.5 分钟）；DMG 打包已从部署路径跳过
+（create-dmg 走 Finder AppleScript，约半分钟还偶发失败）——部署用不到它，
+要 DMG 就用 `--build-only`（打全量 app + dmg）。
 
 **"所有实例"包括本地跑的那些**：`/Applications/bnote.app`、本地构建的
 `bundle/macos/bnote.app`、`pnpm tauri dev` 的 `target/debug/bnote`、直接跑的

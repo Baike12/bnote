@@ -47,7 +47,7 @@ cd "$ROOT"
 if [ "$DRY_RUN" = 1 ]; then
   echo "== dry run =="
   echo "1. [typecheck]   pnpm exec tsc --noEmit"
-  echo "2. [build]       pnpm tauri build"
+  echo "2. [build]       pnpm tauri build [--bundles app；--build-only 时打全量含 DMG]"
   echo "3. [stop]        关闭所有实例（/Applications 包 + 本地 dev/release 二进制）:"
   echo "                 osascript quit → SIGTERM → SIGKILL，并验证进程真的消失"
   echo "4. [replace]     rm -rf $APP_DST && ditto $BUNDLE_SRC $APP_DST"
@@ -66,13 +66,21 @@ else
 fi
 
 echo "==> 2/5 构建 (tauri build)"
-# .app 才是部署产物；DMG 那步由 create-dmg 走 Finder AppleScript 排版，会偶发失败
-# （还会留下挂载卷），不值得因此拦住部署——只要 .app 是这一轮重新产出的就继续。
+# 部署只需要 .app:DMG 由 create-dmg 走 Finder AppleScript 排版,单次约半分钟,
+# 还会偶发失败(留下挂载卷)——替换运行实例用不到它,只有 --build-only 才打。
+# cargo 的 release 重编译(资产嵌入,前端改动也触发)是真正的大头,省不掉。
+if [ "$BUILD_ONLY" = 1 ]; then
+  BUILD_ARGS=()
+else
+  BUILD_ARGS=(--bundles app)
+fi
+# .app 才是部署产物;若构建未正常结束但 .app 已比 marker 新(上一轮 DMG 故障的
+# 兜底,--bundles app 下几乎不会再走到),只要它是这一轮重新产出的就继续。
 marker="$(mktemp -t bnote-build)"
-if pnpm tauri build >/tmp/bnote-build.log 2>&1; then
+if pnpm tauri build "${BUILD_ARGS[@]}" >/tmp/bnote-build.log 2>&1; then
   tail -4 /tmp/bnote-build.log
 elif [ -d "$BUNDLE_SRC" ] && [ -n "$(find "$BUNDLE_SRC" -newer "$marker" -print -quit)" ]; then
-  echo "    ⚠ 构建未正常结束，但 .app 已重新产出（多半是 DMG 打包那步挂了），继续部署"
+  echo "    ⚠ 构建未正常结束，但 .app 已重新产出，继续部署"
   tail -15 /tmp/bnote-build.log | sed 's/^/    | /'
 else
   echo "错误: 构建失败且 .app 未重新产出，中止"
