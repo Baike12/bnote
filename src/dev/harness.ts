@@ -10,6 +10,10 @@ import { adjustHeadingLevel, enterContinueListItem, insertCodeBlock, insertMathB
 import { renumberHeadings } from "@/editor/numbering";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { currentVimMode, getCM, Vim } from "@/editor/vim/vim";
+import { getContextAt, mathRegions } from "@/editor/context";
+import { autoFraction } from "@/editor/snippets/autofraction";
+import { tryAutoExpand } from "@/editor/snippets/extension";
+import { snippetStore } from "@/editor/snippets/engine";
 import { useAppStore } from "@/state/appStore";
 import { api, type FileNode } from "@/lib/tauri";
 import { relDirname } from "@/lib/path";
@@ -117,6 +121,11 @@ declare global {
       enterContinueListItem: typeof enterContinueListItem;
       insertNewlineContinueMarkup: typeof insertNewlineContinueMarkup;
       insertNewlineAndIndent: typeof insertNewlineAndIndent;
+      mathRegions: typeof mathRegions;
+      getContextAt: typeof getContextAt;
+      autoFraction: typeof autoFraction;
+      tryAutoExpand: typeof tryAutoExpand;
+      snippetStore: { enabled: boolean };
     };
     /** 假仓库（内存目录树）+ 挂载真实 Sidebar（等索引就绪）。 */
     __mountSidebar: (entries: string[]) => Promise<string[]>;
@@ -310,6 +319,11 @@ window.__perfHooks = () => ({
   enterContinueListItem,
   insertNewlineContinueMarkup,
   insertNewlineAndIndent,
+  mathRegions,
+  getContextAt,
+  autoFraction,
+  tryAutoExpand,
+  snippetStore,
 });
 /** 直接读/改应用状态（侧栏流程调试用）。 */
 window.__store = useAppStore;
