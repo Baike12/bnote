@@ -201,13 +201,19 @@ function buildBlockDecos(
 
     if (active(region.from, region.to)) {
       // Editing this formula: live-rendered preview right below the source.
-      if (hooks.mathPreview !== false) {
+      // 空内容没有可预览的东西，不占位——插入公式块后下方立刻多出一段空白。
+      if (hooks.mathPreview !== false && region.content.trim()) {
         const anchorLine = doc.lineAt(Math.max(region.from, region.to - 1));
+        // 块级 widget 必须锚在行首：锚在 anchorLine.to（换行符之前）会把该行
+        // 劈成两行，DOM 里多出一个不属于任何文档行的幽灵空行（预览与下文
+        // 之间的大间隙，j/k 的像素落点也随之多一步）。
+        const anchor =
+          anchorLine.to < doc.length ? doc.line(anchorLine.number + 1).from : doc.length;
         out.push(
           Decoration.widget({
             widget: new MathPreviewWidget(region.content, true),
             block: true,
-          }).range(anchorLine.to),
+          }).range(anchor),
         );
         sig.push(`p${region.from}:${region.content}`);
       }

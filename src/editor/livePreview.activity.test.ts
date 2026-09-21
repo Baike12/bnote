@@ -3,8 +3,8 @@ import { EditorState, EditorSelection } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { GFM } from "@lezer/markdown";
-import { buildInlineDecorations } from "./livePreview";
-import { ListBulletWidget, TaskCheckboxWidget } from "./widgets";
+import { buildInlineDecorations, blockDecorationsField } from "./livePreview";
+import { ListBulletWidget, MathWidget, MathPreviewWidget, TaskCheckboxWidget } from "./widgets";
 
 const DOC = [
   "- [ ] task item",
@@ -239,5 +239,57 @@ describe("段落后空 bullet 行的 setext 歧义（decorateSetextDash）", () 
     };
     expect(bulletFrom(typed)).toBe(dashFrom);
     expect(bulletFrom(typed)).toBe(bulletFrom(rendered));
+  });
+});
+
+/**
+ * 公式块「编辑态实时预览」的块级装饰规则。块级 widget 的规范锚点是行首：
+ * 锚在行尾（换行符之前）CM6 会把该行劈成两行，DOM 里多出一个不属于任何
+ * 文档行的幽灵空行（预览与下文之间的大间隙）。blockDecorationsField 是
+ * 纯 RangeSet，node 环境即可断言锚点位置。
+ */
+describe("数学预览的块级锚点（blockDecorationsField）", () => {
+  /** "a\n$$\nx = 1\n$$\nb\n":region 2..13(行 2-4),下一行行首 14。 */
+  function blockState(doc: string, pos: number) {
+    const created = EditorState.create({ doc, extensions: [blockDecorationsField] });
+    return created.update({ selection: EditorSelection.cursor(pos) }).state;
+  }
+
+  function blockPoints(state: EditorState) {
+    const { decos } = state.field(blockDecorationsField);
+    const out: { from: number; to: number; widget: unknown }[] = [];
+    decos.between(0, state.doc.length, (from, to, deco) => {
+      const w = (deco as { spec?: { widget?: unknown } }).spec?.widget;
+      if (w) out.push({ from, to, widget: w });
+    });
+    return out;
+  }
+
+  it("预览 widget 锚在下一行行首，不是区域末行行尾", () => {
+    const state = blockState("a\n$$\nx = 1\n$$\nb\n", 6);
+    const previews = blockPoints(state).filter((p) => p.widget instanceof MathPreviewWidget);
+    expect(previews).toEqual([{ from: 14, to: 14, widget: expect.any(MathPreviewWidget) }]);
+    // 编辑态：整块不折叠成渲染 widget。
+    expect(blockPoints(state).some((p) => p.widget instanceof MathWidget)).toBe(false);
+  });
+
+  it("空内容不出预览：插入公式块后下方不凭空多出空白", () => {
+    const state = blockState("a\n$$\n\n$$\nb\n", 5);
+    expect(blockPoints(state).some((p) => p.widget instanceof MathPreviewWidget)).toBe(false);
+  });
+
+  it("区域到文档末尾：锚在 doc.length（合法的块级 widget 位置）", () => {
+    const state = blockState("a\n$$\nx = 1\n$$", 6);
+    const previews = blockPoints(state).filter((p) => p.widget instanceof MathPreviewWidget);
+    expect(previews).toEqual([{ from: 13, to: 13, widget: expect.any(MathPreviewWidget) }]);
+  });
+
+  it("光标离开区域：整块折叠为 MathWidget，无预览", () => {
+    const state = blockState("a\n$$\nx = 1\n$$\nb\n", 0);
+    const points = blockPoints(state);
+    expect(points.some((p) => p.widget instanceof MathPreviewWidget)).toBe(false);
+    expect(points.some((p) => p.widget instanceof MathWidget && p.from === 2 && p.to === 13)).toBe(
+      true,
+    );
   });
 });
