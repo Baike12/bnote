@@ -36,6 +36,21 @@ describe("scanMath 块公式的错位配对防护", () => {
     expect(inside("结尾")).toBe(false);
   });
 
+  it("空块 $$\\n\\n$$ 仍是公式(IME 跟随与空块渲染依赖它)", () => {
+    const rs = display("$$\n\n$$\n后面");
+    expect(rs).toEqual([{ from: 0, to: 6, display: true, content: "\n\n" }]);
+  });
+
+  it("正文后补空行的块仍是公式:$$\\nx=1\\n\\n$$", () => {
+    const rs = display("$$\nx=1\n\n$$\n后面");
+    expect(rs).toEqual([{ from: 0, to: 10, display: true, content: "\nx=1\n\n" }]);
+  });
+
+  it("正文被空行夹在中间的配对按错位处理(防护的代价,写明)", () => {
+    // 偶数个 $$ 全部配对,配对本身含空行夹正文 → 拒绝,无区域
+    expect(display("$$\na\n\nb\n$$\n后面")).toHaveLength(0);
+  });
+
   it("落单 $$ 只渲染到段落末尾,不吞后续段落", () => {
     const doc = "$$\nx=1\n\n后面文字";
     const rs = display(doc);
