@@ -18,11 +18,16 @@ export function scanMath(doc: Text): MathRegion[] {
   const text = doc.toString();
   if (text.length > 2_000_000) return out;
 
-  // 空行（只含空白的行）。LaTeX 数学不容许空行——跨空行的 $$ "配对" 只能是
-  // 某个 $$ 被删掉/写错后的错位配对。若按公式渲染，删一个 $$ 配对就整体移位、
-  // 下一段正文被吞进公式，用户怎么删都"删不掉"。按普通文本渲染，每个 $$
-  // 始终可见可删。
+  // 空行（只含空白的行）。LaTeX 数学容不下空行，但空行也出现在正常编辑里：
+  // 空块 $$\n\n$$ 的内容是 "\n\n"，正文写完再补空行也合法。只有"空行后面
+  // 还有正文"才是删错 $$ 后的错位配对（正文段落被两个落单 $$ 夹住）——
+  // 若按公式渲染，删一个 $$ 配对整体移位、正文怎么删都"删不掉"；这种按
+  // 普通文本渲染，让每个 $$ 始终可见可删。
   const BLANK_LINE = /\n[ \t]*\n/;
+  const isPairingArtifact = (content: string): boolean => {
+    const first = BLANK_LINE.exec(content);
+    return first !== null && /\S/.test(content.slice(first.index + first[0].length));
+  };
 
   // --- Block math: pair up unescaped $$ occurrences. ---
   const marks: number[] = [];
@@ -38,7 +43,7 @@ export function scanMath(doc: Text): MathRegion[] {
     const to = marks[i + 1] + 2;
     const content = text.slice(from + 2, to - 2);
     // Ignore blocks that contain another $$ — pairing artifact.
-    if (content.includes("$$") || BLANK_LINE.test(content)) continue;
+    if (content.includes("$$") || isPairingArtifact(content)) continue;
     out.push({ from, to, display: true, content });
   }
   // An unpaired trailing $$ opens a block that renders live while typing,
