@@ -167,3 +167,77 @@ describe("空列表项的文本锚点（keepMarkerTrailingSpace）", () => {
     expect(covered(entries, 1)).toBe(false);
   });
 });
+
+/**
+ * 空 bullet 行的 setext 歧义：段落后的裸 `- ` 行被解析器归为 SetextHeading2
+ * （CommonMark 里两种读法都成立时 setext 赢，树里没有 ListMark），渲染层必须
+ * 按空列表项处理——否则 Cmd+; 在段落后切出的空项永远不渲染，输入第一个字符
+ * 时解析翻转、整行重排，读作“切换不生效 + 输入卡顿”。
+ */
+describe("段落后空 bullet 行的 setext 歧义（decorateSetextDash）", () => {
+  const PARAG = "段落行在此。";
+  const doc = `${PARAG}\n- \n`;
+  const dashFrom = PARAG.length + 1; // `- ` 行起点
+
+  const makeDocState = (text: string, pos: number) => {
+    const created = EditorState.create({
+      doc: text,
+      extensions: [markdown({ base: markdownLanguage, extensions: [GFM] })],
+    });
+    ensureSyntaxTree(created, created.doc.length);
+    return created.update({ selection: EditorSelection.cursor(pos) }).state;
+  };
+  const covered = (entries: { from: number; to: number }[], pos: number) =>
+    entries.some((e) => e.from !== e.to && e.from <= pos && e.to > pos);
+  const listLineDeco = (entries: { deco: unknown }[]) =>
+    entries.some(
+      (e) =>
+        (e.deco as { spec?: { class?: string } }).spec?.class?.includes("li-b") === true,
+    );
+
+  it("树里是 SetextHeading2 时仍渲染 bullet + li-b 行装饰（立即可见）", () => {
+    // 光标在行尾（toggleList 落点），树是 SetextHeading2 而不是 List。
+    const state = makeDocState(doc, dashFrom + 2);
+    const entries = decosAt(state, dashFrom, dashFrom + 3);
+    expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(true);
+    expect(listLineDeco(entries)).toBe(true);
+  });
+
+  it("光标压在 `-` 上：翻回源码（与 ListMark 同一活动规则），行装饰保持", () => {
+    const state = makeDocState(doc, dashFrom);
+    const entries = decosAt(state, dashFrom, dashFrom + 3);
+    expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(false);
+    expect(listLineDeco(entries)).toBe(true);
+  });
+
+  it("空项光标在行尾：尾随空格保留作文本锚点（keepTrailingSpace 同规则）", () => {
+    const state = makeDocState(doc, dashFrom + 2);
+    const entries = decosAt(state, dashFrom, dashFrom + 3);
+    expect(covered(entries, dashFrom)).toBe(true); // `-` 被 bullet 吞掉
+    expect(covered(entries, dashFrom + 1)).toBe(false); // 空格保留可见
+  });
+
+  it("真 setext（下划线多于一个 `-`）不受影响", () => {
+    const state = makeDocState("标题行\n---\n", 4);
+    const entries = decosAt(state, 4, 8);
+    expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(false);
+  });
+
+  it("键入正文后解析翻转成真 ListMark：bullet 同起点覆盖标记（无缝接管）", () => {
+    // 光标都在行尾（toggle 与打字的自然姿态）。行尾空格的归属由共享的
+    // keepMarkerTrailingSpace 锚点规则决定（空项保留、有正文吞掉，≤1 空格
+    // 宽的既定缝隙），这里锁的是两种树态下 bullet 都从 dash 起点接管。
+    const rendered = decosAt(makeDocState(doc, dashFrom + 2), dashFrom, dashFrom + 3);
+    const typed = decosAt(
+      makeDocState(`${PARAG}\n- 字\n`, dashFrom + 3),
+      dashFrom,
+      dashFrom + 4,
+    );
+    const bulletFrom = (entries: ReturnType<typeof decosAt>) => {
+      const hit = entries.find((e) => widgetOf(e) instanceof ListBulletWidget);
+      return hit ? hit.from : null;
+    };
+    expect(bulletFrom(typed)).toBe(dashFrom);
+    expect(bulletFrom(typed)).toBe(bulletFrom(rendered));
+  });
+});

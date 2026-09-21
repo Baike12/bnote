@@ -142,6 +142,10 @@ declare global {
     __renderAgentMd: (text: string) => string;
     /** 当前文档语法树节点名（调试用）。 */
     __treeNames: () => string[];
+    /** 指定行（1 基）的语法树节点名@range（调试渲染链路用）。 */
+    __treeAt: (line: number) => string[];
+    /** 当前视图全部装饰（widget 类名/line class + 范围），按来源分组（调试渲染链路用）。 */
+    __decos: () => Record<string, string[]>;
   }
 }
 
@@ -525,4 +529,40 @@ window.__treeNames = () => {
   const tree = syntaxTree(editorApi.view!.state);
   walk(tree.topNode, 0);
   return names;
+};
+
+window.__treeAt = (line) => {
+  const view = editorApi.view!;
+  const doc = view.state.doc;
+  const l = doc.line(Math.min(Math.max(1, line), doc.lines));
+  const names: string[] = [];
+  syntaxTree(view.state).iterate({
+    from: l.from,
+    to: l.to,
+    enter: (node) => {
+      names.push(`${node.name}@${node.from}-${node.to}`);
+      return true;
+    },
+  });
+  return names;
+};
+
+window.__decos = () => {
+  const view = editorApi.view!;
+  const doc = view.state.doc;
+  const grouped: Record<string, string[]> = {};
+  for (const set of view.state.facet(EditorView.decorations)) {
+    if (typeof set !== "object" || set === null || typeof (set as { between?: unknown }).between !== "function")
+      continue;
+    const label = (set as { debugSource?: string }).debugSource ?? `set@${(set as object).constructor.name}`;
+    const out = grouped[label] ?? (grouped[label] = []);
+    set.between(0, doc.length, (from, to, deco) => {
+      const kind =
+        (deco as { widget?: { constructor: { name: string } } }).widget?.constructor.name ??
+        (deco as { class?: string }).class ??
+        "line";
+      out.push(`${kind} ${from}..${to}`);
+    });
+  }
+  return grouped;
 };

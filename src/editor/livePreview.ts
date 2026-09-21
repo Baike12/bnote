@@ -79,8 +79,9 @@ function overlaps(a: Interval, b: Interval) {
 const INLINE_TRIGGER_RE = /[*_~`$[\]\\:<>]/;
 
 /** False when a selection-only change provably leaves every decoration as it
- *  was — letting plain-text cursor moves (vim h/j/k/l, arrows) skip rebuilds. */
-function selectionAffectsDecos(oldState: EditorState, newState: EditorState): boolean {
+ *  was — letting plain-text cursor moves (vim h/j/k/l, arrows) skip rebuilds.
+ *  导出供性能门禁锁快路径:普通文本内的纯移动必须返回 false。 */
+export function selectionAffectsDecos(oldState: EditorState, newState: EditorState): boolean {
   const oldRanges = oldState.selection.ranges;
   const newRanges = newState.selection.ranges;
   if (oldRanges.length !== newRanges.length) return true;
@@ -372,6 +373,10 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         }
         return false;
       }
+      if (name === "SetextHeading2") {
+        decorateSetextDash(doc, nodeRef.node, selections, out, claim);
+        return false;
+      }
       if (name === "Strikethrough") {
         if (!active(nodeRef.from, nodeRef.to)) {
           decorateEmphasis(nodeRef.node, "md-strike", out, claim);
@@ -580,6 +585,49 @@ function keepMarkerTrailingSpace(
     wsTo === lineTo &&
     selections.some((r) => r.from <= lineTo && r.to >= lineFrom && r.from >= wsTo)
   );
+}
+
+/**
+ * 空列表项的解析歧义:段落后的裸 `-` 行(可带尾随空白)在 CommonMark 里与
+ * setext 二级标题的下划线歧义,且解析器取 setext——树里没有 ListMark,
+ * bullet widget 永远建不出来。Cmd+; 在段落后切出的空项因此看起来“没生效”,
+ * 输入第一个字符时解析才翻转成列表、整行重排,读作卡顿。
+ *
+ * 渲染层把这种形态按空列表项处理:零缩进、单个 `-`、行内余下全是空白。
+ * 装饰与真 ListMark 完全同形(li-i0 li-b 行装饰 + ListBulletWidget),正文
+ * 键入后解析翻转成 ListMark 时视觉无缝。真 setext 用法(下划线多于一个
+ * `-`、或行内还有正文)不命中,维持原样。
+ */
+function decorateSetextDash(
+  doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { from: number; to: number } },
+  node: SyntaxNode,
+  selections: readonly { from: number; to: number }[],
+  out: DecorationSink,
+  claim: (from: number, to: number) => boolean,
+) {
+  const markLine = doc.lineAt(Math.max(node.from, node.to - 1));
+  let found: SyntaxNode | null = null;
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.name === "HeaderMark") {
+      found = child;
+      break;
+    }
+  }
+  if (!found || found.from !== markLine.from) return;
+  const mark: SyntaxNode = found;
+  if (doc.sliceString(mark.from, mark.to) !== "-") return;
+  const wsTo = whitespaceEnd(doc, mark.to);
+  if (wsTo !== markLine.to) return;
+  // 行装饰与 ListMark 分支同规矩:活动行也推,布局不随光标进出位移。
+  out.inline.push(Decoration.line({ class: "md-list-line li-i0 li-b" }).range(markLine.from));
+  // 光标压进标记字符时翻回源码可编辑(与 ListMark 同一条活动规则)。
+  if (selections.some((r) => r.from <= mark.to && r.to >= mark.from)) return;
+  const to = keepMarkerTrailingSpace(selections, markLine.from, markLine.to, wsTo)
+    ? mark.to
+    : wsTo;
+  if (claim(mark.from, to)) {
+    out.inline.push(Decoration.replace({ widget: new ListBulletWidget() }).range(mark.from, to));
+  }
 }
 
 /**
