@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
-use crate::commands::{agent, config, files, vault};
+use crate::commands::{agent, config, files, python, vault};
 use crate::state::AppState;
 
 /// Fixed port; `vite.config.ts` proxies `/__dev` here.
@@ -67,7 +67,15 @@ pub fn spawn(app: AppHandle) {
 
 /// Forwards backend events to every connected browser tab.
 fn subscribe_events(app: &AppHandle) {
-    for name in ["vault-changed", "agent-event", "ime-fallback"] {
+    for name in [
+        "vault-changed",
+        "agent-event",
+        "ime-fallback",
+        "python-run-output",
+        "python-run-exit",
+        "python-lsp-diagnostics",
+        "python-lsp-status",
+    ] {
         let label = name.to_string();
         app.listen(name, move |event| {
             let frame = format!("event: {}\ndata: {}\n\n", label, event.payload());
@@ -288,6 +296,50 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             )
             .await
         ),
+
+        // ---- python:嵌入代码块运行 / LSP / uv ----
+        "python_run" => json_ok!(
+            python::python_run(
+                app.clone(),
+                app.state(),
+                arg_str(args, "mdPath")?,
+                arg_str(args, "code")?
+            )
+            .await
+        ),
+        "python_run_cancel" => {
+            json_ok!(python::python_run_cancel(app.state(), arg_str(args, "mdPath")?).await)
+        }
+        "python_get_info" => {
+            json_ok!(python::python_get_info(app.state(), arg_str(args, "mdPath")?).await)
+        }
+        "python_set_project_config" => json_ok!(
+            python::python_set_project_config(
+                app.clone(),
+                app.state(),
+                arg_str(args, "mdPath")?,
+                arg_opt_str(args, "lsp"),
+                arg_opt_str(args, "python"),
+                arg_opt_str(args, "tyPath"),
+            )
+            .await
+        ),
+        "python_lsp_sync" => json_ok!(
+            python::python_lsp_sync(
+                app.clone(),
+                app.state(),
+                arg_str(args, "mdPath")?,
+                arg_str(args, "text")?
+            )
+            .await
+        ),
+        "python_lsp_close" => {
+            json_ok!(python::python_lsp_close(app.state(), arg_str(args, "mdPath")?).await)
+        }
+        "python_lsp_stop_all" => json_ok!(python::python_lsp_stop_all(app.state()).await),
+        "python_uv_create" => {
+            json_ok!(python::python_uv_create(app.state(), arg_str(args, "mdPath")?).await)
+        }
 
         // ---- native views: no browser equivalent ----
         "show_study_preview" | "set_study_preview_bounds" | "set_study_preview_visible"

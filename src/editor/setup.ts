@@ -10,6 +10,7 @@ import { insertNewlineContinueMarkup, deleteMarkupBackward } from "@codemirror/l
 import { livePreviewExtension, configureLivePreview } from "./livePreview";
 import { typewriterExtension } from "./typewriter";
 import { imeSwitchExtension } from "./imeSwitch";
+import { pythonLspExtension } from "@/python/lsp";
 import { snippetsExtension } from "./snippets/extension";
 import { installMathMotionClamp } from "./motionClamp";
 import { renumberHeadings } from "./numbering";
@@ -61,6 +62,10 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     vimCommandMapCompartment.of([]),
     // IME follow (self-gates on settings.vim + settings.ime.enabled).
     imeSwitchExtension(),
+
+    // ty LSP:文档变更防抖同步行对齐虚拟 python 文件,诊断贴回文档。
+    // 自带门槛(无 docPath 的编辑器、无 python 围栏、项目 LSP 关闭都直通)。
+    pythonLspExtension(),
 
     history(),
     search({

@@ -1858,3 +1858,95 @@ input[type="range"] {
   border-radius: 6px;
   padding: 10px 14px;
 }
+
+/* ===== python 运行面板 ===== */
+
+.python-run-panel {
+  display: flex;
+  flex-direction: column;
+  height: 200px;
+  border-top: 1px solid var(--border);
+  background: var(--bg1);
+  min-height: 0;
+}
+
+.python-run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.python-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  min-width: 64px;
+}
+.python-run-status.running {
+  color: var(--accent);
+}
+.python-run-status.ok {
+  color: #7ec97e;
+}
+.python-run-status.bad {
+  color: #e06c75;
+}
+
+.python-run-spin {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--accent-dim);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: py-spin 0.9s linear infinite;
+}
+@keyframes py-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.python-run-dur {
+  color: var(--text-faint);
+}
+
+.python-run-cmd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.python-run-head .btn {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.python-run-body {
+  flex: 1;
+  margin: 0;
+  overflow: auto;
+  padding: 8px 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+.python-run-body .py-stdout {
+  color: var(--text);
+}
+.python-run-body .py-stderr {
+  color: #e06c75;
+}
+.python-run-body .py-system {
+  color: var(--text-faint);
+}

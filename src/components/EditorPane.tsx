@@ -7,6 +7,7 @@ import { applySettingsToEditor, newNote, openNote, saveNote } from "@/app/action
 import { useAppStore } from "@/state/appStore";
 import { currentVimMode } from "@/editor/vim/vim";
 import { fileName } from "@/lib/path";
+import { PythonRunPanel } from "@/components/PythonRunPanel";
 
 const AUTOSAVE_DELAY = 800;
 
@@ -155,6 +156,7 @@ export function EditorPane() {
   return (
     <div className="editor-pane">
       <div className="editor-host" ref={hostRef} />
+      <PythonRunPanel />
       {!currentFile && vaultPath && (
         <div className="editor-empty">
           <p>打开左侧笔记，或</p>

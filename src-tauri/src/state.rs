@@ -7,6 +7,8 @@ use notify::RecommendedWatcher;
 
 use crate::agent::mcp::McpManager;
 use crate::agent::session::Session;
+use crate::python::lsp::LspServer;
+use crate::python::runner::RunRegistry;
 
 /// Handle keeping a vault watcher alive; dropping it unregisters the watch
 /// and signals the debounce thread to exit.
@@ -29,6 +31,10 @@ pub struct AppState {
     pub mcp_manager: Mutex<Option<Arc<McpManager>>>,
     /// Currently open note path (set by the frontend for agent context).
     pub current_note: Mutex<Option<String>>,
+    /// Python 运行注册表(key = md_path);Arc 化,收尾任务要摘除自己。
+    pub python_runs: Arc<RunRegistry>,
+    /// 活跃的 python LSP 服务器(key = 项目根绝对路径)。
+    pub python_lsp: Mutex<HashMap<String, Arc<LspServer>>>,
 }
 
 impl AppState {

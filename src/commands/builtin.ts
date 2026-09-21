@@ -21,6 +21,9 @@ import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
 import { useAppStore, toggleStudyMode } from "@/state/appStore";
+import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/run";
+import { resetLspStateForPath, syncNow } from "@/python/lsp";
+import { api } from "@/lib/tauri";
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
   return () => {
@@ -275,10 +278,65 @@ const defs: CommandDef[] = [
     },
   },
 
+  // ---- python:markdown 内嵌代码块 ----
+  {
+    id: "python.run-note",
+    title: "Python: 把当前笔记当一个 py 文件运行(⌘↩)",
+    category: "Python",
+    run: () => void runCurrentNote(),
+  },
+  {
+    id: "python.run-stop",
+    title: "Python: 停止当前运行",
+    category: "Python",
+    run: () => void stopRun(),
+  },
+  {
+    id: "python.toggle-lsp",
+    title: "Python: 开/关当前项目的 ty 类型检查(LSP)",
+    category: "Python",
+    run: async () => {
+      const mdPath = useAppStore.getState().currentFile;
+      const view = getView();
+      if (!mdPath || !view) {
+        useAppStore.getState().showToast("没有打开的笔记");
+        return;
+      }
+      try {
+        const info = await api.pythonGetInfo(mdPath);
+        const next = info.lsp === "ty" ? "off" : "ty";
+        await api.pythonSetProjectConfig(mdPath, { lsp: next });
+        resetLspStateForPath(mdPath);
+        if (next === "ty") syncNow(view);
+        const proj = info.projectName || "(vault 根)";
+        useAppStore
+          .getState()
+          .showToast(
+            next === "ty"
+              ? `项目「${proj}」ty 类型检查已开启`
+              : `项目「${proj}」ty 类型检查已关闭`,
+          );
+      } catch (e) {
+        useAppStore.getState().showToast(`切换失败: ${String(e)}`);
+      }
+    },
+  },
+  {
+    id: "python.create-uv-env",
+    title: "Python: 为当前项目创建 uv 环境",
+    category: "Python",
+    run: () => void createUvEnvForCurrentProject(),
+  },
+  {
+    id: "edit.insert-python-block",
+    title: "插入 Python 代码块",
+    category: "编辑",
+    run: withView((v) => insertCodeBlock(v, "python")),
+  },
+
   // ---- view ----
   {
-    id: "view.zoom-in",
-    title: "放大编辑区字号",
+    id: "view.zoom-in",    title: "放大编辑区字号",
     category: "视图",
     run: () => {
       const { settings, patchSettings } = useAppStore.getState();
