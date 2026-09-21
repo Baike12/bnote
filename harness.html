@@ -7,6 +7,16 @@
       html, body { margin: 0; height: 100%; background: #0b0b0d; }
       #editor-host { height: 100vh; }
     </style>
+    <script>
+      // 启动期错误捕获:harness 模块图执行失败时页面只会白屏,错误只能从这里接住。
+      window.__bootErrors = [];
+      window.addEventListener("error", (e) =>
+        window.__bootErrors.push(String((e.error && e.error.stack) || e.message)),
+      );
+      window.addEventListener("unhandledrejection", (e) =>
+        window.__bootErrors.push(String((e.reason && e.reason.stack) || e.reason)),
+      );
+    </script>
   </head>
   <body>
     <div id="editor-host"></div>

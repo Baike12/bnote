@@ -1,7 +1,7 @@
 import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { findSnippet, snippetStore } from "./engine";
+import { findSnippet, parseReplacement, snippetStore } from "./engine";
 import type { MatchResult, ParsedReplacement } from "./engine";
 import { autoFraction } from "./autofraction";
 
@@ -185,11 +185,16 @@ export function tryAutoExpand(view: EditorView, key: string, visualText: string 
   const cursor = state.selection.main.to;
   // latex-suite auto-fraction:数学态内键入 `/` 把光标前的表达式扩成分数。
   // "/" 已由调用方插入(光标停在其后),展开时连同它一起被替换。
+  // 除号在 snippet 会话期间也必须生效(latex-suite 里它是击键级特性,不受
+  // 会话压制):`f(` 的括号片段会话横跨整行,若被会话挡住,`(x)=1/` 这种
+  // 最常见的输入形态就永远扩不出来。新会话整体替换旧会话。
   // 导出 tryAutoExpand 供回归测试在假视图上锁两条输入路径的汇合点。
   if (key === "/" && snippetStore.enabled) {
     const frac = autoFraction(state, cursor, visualText);
     if (frac) return startSessionAt(view, frac.start, frac.end, frac.replacement);
   }
+  // 会话期间其余自动触发保持压制:嵌套自动展开会破坏镜像 tabstop。
+  if (!canAutoExpand(view)) return false;
   const match = findSnippet(state, cursor, key, { auto: true, visualText });
   if (!match) return false;
   return startSession(view, match);
@@ -203,8 +208,11 @@ function canAutoExpand(view: EditorView): boolean {
 }
 
 const autoExpandHandler = EditorView.inputHandler.of((view, from, to, text) => {
-  if (!canAutoExpand(view)) return false;
-  if (text.length !== 1 || text === "\n") return false;
+  // composition 输入交还默认路径(展开会和 IME 的 DOM 改写打架)。
+  if (view.composing) return false;
+  const key = triggerKeyOf(text);
+  // 会话期间只放行除号(见 tryAutoExpand);其余保持压制。
+  if (!key || (key !== "/" && !canAutoExpand(view))) return false;
   const visualText = to > from ? view.state.sliceDoc(from, to) : null;
   // Perform the default insertion ourselves, then look for a trigger.
   view.dispatch({
@@ -213,15 +221,69 @@ const autoExpandHandler = EditorView.inputHandler.of((view, from, to, text) => {
     userEvent: "input.type",
     scrollIntoView: true,
   });
-  tryAutoExpand(view, text, visualText);
+  tryAutoExpand(view, key, visualText);
   return true;
 });
 
+/** 单字符自动触发键;多字符提交(IME 整串上屏)只认以 / 结尾的形态。 */
+function triggerKeyOf(text: string): string | null {
+  if (text === "\n" || text.length === 0) return null;
+  if (text.length === 1) return text;
+  return text.endsWith("/") ? "/" : null;
+}
+
+/** IME composition 提交路径:composition 活跃期间的更新不能当场展开(展开
+ *  事务会和 IME 的 DOM 改写打架),记住除号位置,composition 结束后补展开。
+ *  补展开时把 / 与当前光标之间(同行)已输入的内容吞进分母——整串上屏的
+ *  `f(x)=1/xsk` 里 xsk 就是用户要打的分母。 */
+let pendingFraction: { slash: number } | null = null;
+let pendingFractionTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleDeferredFraction(view: EditorView) {
+  if (pendingFractionTimer) return;
+  const tick = () => {
+    pendingFractionTimer = null;
+    if (!pendingFraction) return;
+    if (view.composing) {
+      pendingFractionTimer = setTimeout(tick, 30);
+      return;
+    }
+    const pf = pendingFraction;
+    pendingFraction = null;
+    deferredExpand(view, pf.slash);
+  };
+  pendingFractionTimer = setTimeout(tick, 30);
+}
+
+function deferredExpand(view: EditorView, slash: number) {
+  const { state } = view;
+  if (state.doc.sliceString(slash - 1, slash) !== "/") return; // 除号已不在
+  const frac = autoFraction(state, slash, null);
+  if (!frac) return;
+  const head = state.selection.main.head;
+  const sameLine =
+    head > slash && state.doc.lineAt(head - 1).number === state.doc.lineAt(slash).number;
+  const den = sameLine ? state.doc.sliceString(slash, head) : "";
+  const numerator = state.doc.sliceString(frac.start, slash - 1);
+  if (sameLine && /^[\w^_{}\\+\-.]*$/.test(den)) {
+    // 分母是已上屏的公式字符:整体扩成 \frac{分子}{分母}。
+    startSessionAt(
+      view,
+      frac.start,
+      head,
+      parseReplacement(`\\frac{${numerator}}{${den}}$1`, [], null),
+    );
+    return;
+  }
+  startSessionAt(view, frac.start, frac.end, frac.replacement);
+}
+
 /** Vim-mode typing never reaches the input handler: @replit/codemirror-vim
  *  inserts characters via its own transactions (userEvent "input.type.compose").
- *  Without this listener every automatic snippet is dead while vim is on. */
+ *  Without this listener every automatic snippet is dead while vim is on.
+ *  IME composition 提交也走 compose 事务(整串、composing 标志仍为 true)。 */
 const autoExpandVimListener = EditorView.updateListener.of((u) => {
-  if (!u.docChanged || !canAutoExpand(u.view)) return;
+  if (!u.docChanged || !snippetStore.enabled) return;
   if (u.transactions.length !== 1) return;
   const tr = u.transactions[0];
   if (!tr.isUserEvent("input.type.compose")) return;
@@ -233,7 +295,7 @@ const autoExpandVimListener = EditorView.updateListener.of((u) => {
   let replaceTo = -1;
   tr.changes.iterChanges((fromA, toA, _fromB, toB, text) => {
     const s = text.toString();
-    if (inserted !== null || s.length !== 1 || s === "\n") {
+    if (inserted !== null || s.length === 0 || s === "\n") {
       inserted = null;
       return;
     }
@@ -243,10 +305,20 @@ const autoExpandVimListener = EditorView.updateListener.of((u) => {
     replaceTo = toA;
   });
   if (inserted === null) return;
+  const key = triggerKeyOf(inserted);
+  if (!key) return;
   const sel = u.state.selection.main;
   if (!sel.empty || sel.to !== insertTo) return;
   const visualText = replaceTo > replaceFrom ? u.startState.sliceDoc(replaceFrom, replaceTo) : null;
-  tryAutoExpand(u.view, inserted, visualText);
+  // composition 活跃期间不当场展开,除号记下来等 composition 结束(见上)。
+  if (u.view.composing) {
+    if (key === "/") {
+      pendingFraction = { slash: insertTo };
+      scheduleDeferredFraction(u.view);
+    }
+    return;
+  }
+  tryAutoExpand(u.view, key, visualText);
 });
 
 /** Keeps mirrored tabstops in sync after edits. */
