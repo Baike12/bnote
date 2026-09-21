@@ -138,9 +138,26 @@ export default function App() {
     } catch {
       // not running under Tauri
     }
+    // Menu → Quit carries no key equivalent (⌘Q belongs to bnote's keybinding
+    // layer), so the native terminate path is gone. The menu hands the request
+    // here instead, where the same flush-then-destroy as the close button
+    // applies — quitting never costs the debounced cursor/config write.
+    let unlistenMenuQuit: (() => void) | undefined;
+    void listen("bnote:menu-quit", () => {
+      flushCursorSave();
+      flushPersistConfig();
+      void getCurrentWindow().destroy();
+    })
+      .then((off) => {
+        unlistenMenuQuit = off;
+      })
+      .catch(() => {
+        // not running under Tauri
+      });
     return () => {
       document.removeEventListener("visibilitychange", onHidden);
       unlisten?.();
+      unlistenMenuQuit?.();
     };
   }, []);
 
