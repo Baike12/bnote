@@ -311,15 +311,28 @@ export function todayStamp(): string {
 /** Trailing " ✅ YYYY-MM-DD" completion stamp, with surrounding whitespace. */
 export const DONE_STAMP_RE = /(\s*✅\s*\d{4}-\d{2}-\d{2})\s*$/;
 
+/** The todo prefix toggleTodo inserts; cursors in the prefix zone land behind it. */
+const TODO_PREFIX = "- [ ] ";
+
 /**
  * Cycles each cursor line: plain → `- [ ]` → `- [x] ✅ date` → plain.
  * Completing stamps today's date; the last step strips marker and stamp so
  * the line returns to exactly its pre-todo text.
+ *
+ * Cursor model (same as toggleList): a collapsed cursor inside the line's
+ * prefix zone — line start through the end of the (old or new) marker — lands
+ * right behind the new `- [ ] ` so typing continues at the item text (an empty
+ * line toggled to a todo puts the caret after the checkbox, not before the
+ * hidden marker). Cursors deeper in the text keep their anchored text via
+ * change mapping. `delta` carries earlier lines' net length change so later
+ * selections land correctly in multi-cursor dispatches.
  */
 export function toggleTodo(view: EditorView) {
   const state = view.state;
   const changes: { from: number; to?: number; insert: string }[] = [];
+  const sels: { anchor: number; head: number }[] = [];
   const seenLines = new Set<number>();
+  let delta = 0;
 
   for (const range of state.selection.ranges) {
     const line = state.doc.lineAt(range.head);
@@ -336,12 +349,14 @@ export function toggleTodo(view: EditorView) {
         // Todo → done: flip the box, (re)stamp today's date at line end.
         changes.push({ from: markFrom + 1, to: markFrom + 2, insert: "x" });
         changes.push({ from: textEnd, to: line.to, insert: ` ✅ ${todayStamp()}` });
+        delta += ` ✅ ${todayStamp()}`.length - (line.to - textEnd);
       } else {
         // Done → plain: strip marker + checkbox and the stamp entirely.
         const lead = tail.startsWith(" ") || tail.startsWith("\t") ? 1 : 0;
         const textStart = Math.min(markFrom + 3 + lead, textEnd);
         changes.push({ from: line.from + task[1].length, to: textStart, insert: "" });
         if (stamp) changes.push({ from: textEnd, to: line.to, insert: "" });
+        delta -= textStart - (line.from + task[1].length) + (line.to - textEnd);
       }
       continue;
     }
@@ -349,21 +364,36 @@ export function toggleTodo(view: EditorView) {
     // Bullet / ordered item without a checkbox: swap the marker for the task.
     const list = /^(\s*)(?:[-*+]|\d+[.)])(\s+)/.exec(line.text);
     if (list) {
+      const markerLen = list[0].length - list[1].length;
+      const indentLen = list[1].length;
       changes.push({
-        from: line.from + list[1].length,
+        from: line.from + indentLen,
         to: line.from + list[0].length,
         insert: "- [ ] ",
       });
+      if (range.empty && range.head - line.from <= indentLen + markerLen) {
+        const target = line.from + delta + indentLen + TODO_PREFIX.length;
+        sels.push({ anchor: target, head: target });
+      }
+      delta += TODO_PREFIX.length - markerLen;
       continue;
     }
 
     const indent = line.text.match(/^\s*/)?.[0] ?? "";
     changes.push({ from: line.from + indent.length, insert: "- [ ] " });
+    if (range.empty && range.head - line.from <= indent.length) {
+      const target = line.from + delta + indent.length + TODO_PREFIX.length;
+      sels.push({ anchor: target, head: target });
+    }
+    delta += TODO_PREFIX.length;
   }
   if (changes.length === 0) return;
 
   view.dispatch({
     changes,
+    selection: sels.length
+      ? EditorSelection.create(sels.map((s) => EditorSelection.range(s.anchor, s.head)))
+      : undefined,
     userEvent: "input.bnote-todo",
   });
 }
