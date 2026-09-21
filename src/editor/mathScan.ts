@@ -18,6 +18,12 @@ export function scanMath(doc: Text): MathRegion[] {
   const text = doc.toString();
   if (text.length > 2_000_000) return out;
 
+  // 空行（只含空白的行）。LaTeX 数学不容许空行——跨空行的 $$ "配对" 只能是
+  // 某个 $$ 被删掉/写错后的错位配对。若按公式渲染，删一个 $$ 配对就整体移位、
+  // 下一段正文被吞进公式，用户怎么删都"删不掉"。按普通文本渲染，每个 $$
+  // 始终可见可删。
+  const BLANK_LINE = /\n[ \t]*\n/;
+
   // --- Block math: pair up unescaped $$ occurrences. ---
   const marks: number[] = [];
   for (let i = 0; i < text.length - 1; i++) {
@@ -32,16 +38,27 @@ export function scanMath(doc: Text): MathRegion[] {
     const to = marks[i + 1] + 2;
     const content = text.slice(from + 2, to - 2);
     // Ignore blocks that contain another $$ — pairing artifact.
-    if (content.includes("$$")) continue;
+    if (content.includes("$$") || BLANK_LINE.test(content)) continue;
     out.push({ from, to, display: true, content });
   }
-  // An unpaired trailing $$ opens a block that runs to the end of the
-  // document (Obsidian renders it live while typing, before the closing $$).
-  // Capped so a stray $$ can't hand KaTeX the rest of a huge file.
+  // An unpaired trailing $$ opens a block that renders live while typing,
+  // before the closing $$ exists. Capped at the end of the current PARAGRAPH:
+  // Obsidian-style live editing happens within one paragraph, and without the
+  // cap a stray $$ swallows every paragraph below it into one giant formula.
   if (marks.length % 2 === 1) {
     const from = marks[marks.length - 1];
     if (text.length - from <= 10_000) {
-      out.push({ from, to: text.length, display: true, content: text.slice(from + 2) });
+      const rest = text.slice(from + 2);
+      const blank = BLANK_LINE.exec(rest);
+      // 区域止于段落最后一个字符(不含末尾换行)——区域跨行与否由换行决定,
+      // 把换行算进来会让单行区域越过了行尾,行内替换装饰会跨行抛错。
+      const paraEnd = blank ? blank.index : rest.length;
+      out.push({
+        from,
+        to: from + 2 + paraEnd,
+        display: true,
+        content: rest.slice(0, paraEnd),
+      });
     }
   }
 

@@ -496,10 +496,13 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
     if (!singleLine) continue; // rendered by the block-decorations field
 
     if (claim(region.from, region.to)) {
+      // 单行区域的 to 必须不越过行尾:replace 一旦跨过换行符,CM6 直接抛
+      // "Decorations that replace line breaks may not be specified via plugins"。
+      const to = Math.min(region.to, doc.lineAt(region.from).to);
       out.inline.push(
         Decoration.replace({ widget: new MathWidget(region.content, false) }).range(
           region.from,
-          region.to,
+          to,
         ),
       );
     }
