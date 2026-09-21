@@ -2,7 +2,8 @@ import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { findSnippet, snippetStore } from "./engine";
-import type { MatchResult } from "./engine";
+import type { MatchResult, ParsedReplacement } from "./engine";
+import { autoFraction } from "./autofraction";
 
 /**
  * Snippet session: tracks tabstop positions of the snippet expanded at the
@@ -56,11 +57,11 @@ const snippetField = StateField.define<SnippetSession | null>({
   },
 });
 
-function buildSession(m: MatchResult): SnippetSession | null {
-  const { stops } = m.replacement;
+function buildSession(start: number, replacement: ParsedReplacement): SnippetSession | null {
+  const { stops } = replacement;
   if (stops.length === 0) return null;
-  const base = m.start;
-  const end = m.start + m.replacement.text.length;
+  const base = start;
+  const end = start + replacement.text.length;
 
   const order: number[] = [];
   const seen = new Set<number>();
@@ -96,20 +97,29 @@ function buildSession(m: MatchResult): SnippetSession | null {
   };
 }
 
-function startSession(view: EditorView, m: MatchResult): boolean {
-  const session = buildSession(m);
+function startSessionAt(
+  view: EditorView,
+  start: number,
+  end: number,
+  replacement: ParsedReplacement,
+): boolean {
+  const session = buildSession(start, replacement);
   const firstStop = session ? session.stops.get(session.order[0])![0] : null;
   view.dispatch({
-    changes: { from: m.start, to: m.end, insert: m.replacement.text },
+    changes: { from: start, to: end, insert: replacement.text },
     selection: firstStop
       ? { anchor: firstStop.from, head: firstStop.to }
-      : { anchor: m.start + m.replacement.text.length },
+      : { anchor: start + replacement.text.length },
     effects: session ? setSession.of(session) : setSession.of(null),
     scrollIntoView: true,
     userEvent: "input.snippet",
   });
   view.focus();
   return true;
+}
+
+function startSession(view: EditorView, m: MatchResult): boolean {
+  return startSessionAt(view, m.start, m.end, m.replacement);
 }
 
 function selectStop(view: EditorView, session: SnippetSession, active: number) {
@@ -169,10 +179,17 @@ function expandOnTab(view: EditorView): boolean {
 }
 
 /** Auto-expansion right after typing a character. */
-function tryAutoExpand(view: EditorView, key: string, visualText: string | null): boolean {
+export function tryAutoExpand(view: EditorView, key: string, visualText: string | null): boolean {
   const { state } = view;
   if (state.selection.ranges.length > 1) return false;
   const cursor = state.selection.main.to;
+  // latex-suite auto-fraction:数学态内键入 `/` 把光标前的表达式扩成分数。
+  // "/" 已由调用方插入(光标停在其后),展开时连同它一起被替换。
+  // 导出 tryAutoExpand 供回归测试在假视图上锁两条输入路径的汇合点。
+  if (key === "/" && snippetStore.enabled) {
+    const frac = autoFraction(state, cursor, visualText);
+    if (frac) return startSessionAt(view, frac.start, frac.end, frac.replacement);
+  }
   const match = findSnippet(state, cursor, key, { auto: true, visualText });
   if (!match) return false;
   return startSession(view, match);
