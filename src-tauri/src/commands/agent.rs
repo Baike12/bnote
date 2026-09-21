@@ -16,16 +16,23 @@ fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
 }
 
 #[tauri::command]
-pub fn agent_get_config(state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
-    Ok(crate::agent::AgentConfig::load(&state.data_dir()))
+pub async fn agent_get_config(state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
+    // 与 config.rs 同理：同步命令跑在主线程，IO 一律丢进 worker 池。
+    let dir = state.data_dir();
+    tauri::async_runtime::spawn_blocking(move || Ok(crate::agent::AgentConfig::load(&dir)))
+        .await
+        .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
 #[tauri::command]
-pub fn agent_save_config(
+pub async fn agent_save_config(
     state: State<'_, AppState>,
     config: crate::agent::AgentConfig,
 ) -> CmdResult<()> {
-    config.save(&state.data_dir())
+    let dir = state.data_dir();
+    tauri::async_runtime::spawn_blocking(move || config.save(&dir))
+        .await
+        .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
 /// Ensures an MCP manager for the current config (reconnects when missing).

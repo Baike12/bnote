@@ -36,16 +36,16 @@ let suspended = false;
 /** Focus-session counter — invalidates in-flight baseline captures. */
 let focusSeq = 0;
 
-/**
- * Force a target input source, remembering what to restore on window blur.
- * No-op when `target` is already what bnote wants (unless suspended by blur).
- */
-export function imeApply(target: string): void {
-  const { settings } = useAppStore.getState();
-  if (!settings.ime.enabled) return;
-  if (desired === target && !suspended) return;
-  desired = target;
-  suspended = false;
+/** At most one setInputSource in flight; a burst of flips collapses into the
+ *  one trailing call that matches the final intent. Each switch costs the
+ *  backend 1-3 main-thread TIS round trips (and a macism fallback on the
+ *  macOS 26 race), so overlapping switches stall the whole UI — exactly what
+ *  rapid cursor moves across math boundaries felt like. */
+let switching = false;
+let queued: string | null = null;
+
+function launchSwitch(target: string): void {
+  switching = true;
   const seq = focusSeq;
   if (baseline === null) {
     void api
@@ -57,10 +57,36 @@ export function imeApply(target: string): void {
   }
   // Fire-and-forget: the backend dedups against the live input source,
   // verifies CJK switches and falls back to macism when needed.
-  void api.setInputSource(target).catch((e) => {
-    console.warn("[bnote] set input source failed", e);
-    desired = null; // allow retry on the next transition
-  });
+  void api
+    .setInputSource(target)
+    .catch((e) => {
+      console.warn("[bnote] set input source failed", e);
+      lastEditorTarget = null; // allow retry on the next transition
+    })
+    .finally(() => {
+      switching = false;
+      const next = queued;
+      queued = null;
+      // 挂起（失焦/交还）后不再补发：用户的原始输入源刚被还回去。
+      if (next !== null && next !== target && !suspended) launchSwitch(next);
+    });
+}
+
+/**
+ * Force a target input source, remembering what to restore on window blur.
+ * No-op when `target` is already what bnote wants (unless suspended by blur).
+ */
+export function imeApply(target: string): void {
+  const { settings } = useAppStore.getState();
+  if (!settings.ime.enabled) return;
+  if (desired === target && !suspended) return;
+  desired = target;
+  suspended = false;
+  if (switching) {
+    queued = target;
+    return;
+  }
+  launchSwitch(target);
 }
 
 /** Drop bnote's forced source and restore what the user had before it. */
@@ -68,6 +94,7 @@ export function imeYield(): void {
   const restore = baseline;
   desired = null;
   suspended = false;
+  queued = null;
   if (restore) void api.setInputSource(restore).catch(() => {});
 }
 
@@ -107,6 +134,7 @@ function imeDesiredSource(settings: Settings, modal: ModalKind): string | null {
 /** Window deactivated: hand the user's original source back to the system. */
 export function imeOnWindowBlur(): void {
   focusSeq++;
+  queued = null;
   if (desired !== null && baseline !== null) {
     void api.setInputSource(baseline).catch(() => {});
   }
