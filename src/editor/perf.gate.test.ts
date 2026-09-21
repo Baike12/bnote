@@ -3,7 +3,8 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { ensureSyntaxTree } from "@codemirror/language";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { insertNewlineAndIndent, history, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
 import { blockDecorationsField, buildInlineDecorations, selectionAffectsDecos } from "./livePreview";
 import { mathRegions } from "./context";
@@ -359,5 +360,159 @@ describe("性能门禁：代码块插入与输入", () => {
     expect(view.state.doc.toString().includes("const x = 1;")).toBe(true);
     console.warn(`[perf] 代码块输入 总计 ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(200);
+  });
+});
+
+// ---- 段落回车:insert 模式 Enter 的真实回退链 ----
+// 普通段落行上 Enter 走 enterContinueListItem(否)→ insertNewlineContinueMarkup(否)
+// → insertNewlineAndIndent,加上每次文档变化后的装饰重建——即真实每击主线程
+// 的全部状态管线。纯文本输入已有"每击输入"门禁,这里补的是回车这个高频键。
+
+const firstParagraphLine = (state: EditorState) => {
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const line = state.doc.line(n);
+    if (line.text.startsWith("这是段落文字")) return line;
+  }
+  throw new Error("paragraph line not found");
+};
+
+describe("性能门禁：段落回车(900行,Enter 真实回退链)", () => {
+  it("20 次(Enter+补字符)总计 < 340ms", () => {
+    const probe = makeState(DOC, 0);
+    const view = makeTogglingView(makeState(DOC, firstParagraphLine(probe).from + 8));
+    const samples: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t0 = performance.now();
+      if (!enterContinueListItem(view)) {
+        if (!insertNewlineContinueMarkup(view)) insertNewlineAndIndent(view);
+      }
+      const head = view.state.selection.main.head;
+      view.dispatch({ changes: { from: head, insert: "字" } });
+      buildInlineDecorations({ state: view.state, visibleRanges: [{ from: 0, to: view.state.doc.length }] });
+      samples.push(performance.now() - t0);
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    // Enter 确实生效(行数增长),防止回退链全没接住测了个空循环。
+    expect(view.state.doc.lines).toBeGreaterThan(900);
+    console.warn(`[perf] 段落回车 总计 ${total.toFixed(0)}ms`);
+    expect(total).toBeLessThan(340); // 静默中位 56ms,6× 标定带
+  });
+});
+
+// ---- 进出公式块:active 翻转引发行内+块装饰整体重建 ----
+// 光标每跨越一次公式区边界,livePreview 的"活动区"语义都会把公式从渲染态
+// 翻回源码态(行内 replace 集合 + 块 widget 字段双双重算)。0/$ 行首尾移动
+// 反复跨过边界时这就是每次按键的真实成本。
+
+describe("性能门禁：进出公式块(active 翻转重建)", () => {
+  it("40 次跨边界光标移动(update 含块装饰重算)总计 < 250ms", () => {
+    const base = makeState(DOC, 0);
+    // 找到第一个公式块:围栏上一行 ↔ 内容行来回。
+    let fence = -1;
+    for (let n = 1; n <= base.doc.lines; n++) {
+      if (base.doc.line(n).text === "$$") {
+        fence = n;
+        break;
+      }
+    }
+    expect(fence).toBeGreaterThan(0);
+    const outside = base.doc.line(fence - 1).from + 2;
+    const inside = base.doc.line(fence + 1).from + 2;
+    // 功能断言:两个位置的块装饰值确实不同(active 翻转真的发生)。
+    const outState = makeState(DOC, outside);
+    const inState = outState.update({ selection: EditorSelection.cursor(inside) }).state;
+    expect(base.field(blockDecorationsField)).not.toBe(outState.field(blockDecorationsField));
+    expect(inState.field(blockDecorationsField)).not.toBe(outState.field(blockDecorationsField));
+    let cur = outState;
+    const samples: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      const target = i % 2 === 0 ? inside : outside;
+      const t0 = performance.now();
+      cur = cur.update({ selection: EditorSelection.cursor(target) }).state;
+      buildInlineDecorations({ state: cur, visibleRanges: [{ from: 0, to: cur.doc.length }] });
+      samples.push(performance.now() - t0);
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    console.warn(`[perf] 跨公式边界移动 总计 ${total.toFixed(0)}ms`);
+    expect(total).toBeLessThan(250);
+  });
+});
+
+// ---- undo:大文档上的历史回退 ----
+// history 增量结构随文档规模增长,undo 在 900 行文档上不许退化成全文重算。
+
+describe("性能门禁：undo(900行)", () => {
+  it("20 次连续 undo 总计 < 20ms", () => {
+    const withHistory = EditorState.create({
+      doc: DOC,
+      extensions: [
+        markdown({ base: markdownLanguage, extensions: [GFM] }),
+        blockDecorationsField,
+        history(),
+        EditorState.allowMultipleSelections.of(true),
+      ],
+    });
+    ensureSyntaxTree(withHistory, withHistory.doc.length);
+    const view = makeTogglingView(withHistory);
+    const line = firstParagraphLine(view.state);
+    for (let i = 0; i < 20; i++) {
+      const at = line.from + 4 + i;
+      view.dispatch({ changes: { from: at, insert: "字" }, userEvent: "input.type" });
+    }
+    const samples: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t0 = performance.now();
+      undo(view);
+      samples.push(performance.now() - t0);
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    expect(view.state.doc.length).toBe(withHistory.doc.length); // 20 次都真的回退了
+    console.warn(`[perf] undo 总计 ${total.toFixed(0)}ms`);
+    // 静默 ~1ms;绝对量在 GC 抖动量级,预算取 20× 防负载误报——
+    // "退化成全文重算"级回归(60ms+)从这里必被拦下。
+    expect(total).toBeLessThan(20);
+  });
+});
+
+// ---- 整篇替换:openNote 装载大笔记的真实形态 ----
+// 全文替换 + 全量装饰构建 + 完整语法树,即切换笔记那一刻的主线程成本。
+
+describe("性能门禁：整篇文档装载(900行)", () => {
+  it("全文替换+装饰构建+完整解析 中位数 < 30ms", () => {
+    const base = makeState("空\n", 0);
+    const samples: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const t0 = performance.now();
+      const next = base.update({ changes: { from: 0, to: base.doc.length, insert: DOC } }).state;
+      ensureSyntaxTree(next, next.doc.length);
+      buildInlineDecorations({ state: next, visibleRanges: [{ from: 0, to: next.doc.length }] });
+      samples.push(performance.now() - t0);
+    }
+    const median = samples.sort((a, b) => a - b)[2];
+    console.warn(`[perf] 整篇装载 中位数 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(30);
+  });
+});
+
+// ---- mathRegions 缓存纪律 ----
+// 未变文档必须命中缓存(同一实例);文档变化后的重扫是每次击键的固定税,
+// 锁住量级防止有人删掉缓存让每击都全文扫描。
+
+describe("性能门禁：mathRegions 缓存", () => {
+  it("未变文档缓存命中(同实例),单击后重扫中位数 < 2ms", () => {
+    const base = makeState(DOC, 0);
+    const a = mathRegions(base);
+    const b = mathRegions(base);
+    expect(a).toBe(b); // 同一 doc 上必须命中缓存,不能重扫
+    const at = firstListLine(base).from + 4;
+    let cur = base;
+    const median = medianOf(() => {
+      cur = cur.update({ changes: { from: at, insert: "字" } }).state;
+      const t0 = performance.now();
+      mathRegions(cur);
+      return performance.now() - t0;
+    }, 15);
+    console.warn(`[perf] mathRegions 重扫 中位数 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(2);
   });
 });

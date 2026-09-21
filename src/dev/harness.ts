@@ -110,6 +110,14 @@ declare global {
     __vimKeys: (keys: string[]) => { mode: string | null; doc: string; panel: string | null };
     /** 直接走引擎的 openNotification，返回底部面板内容（没有面板则 null）。 */
     __vimNotify: (text: string, durationMs?: number) => string | null;
+    /** 性能剖析口：页面自身已加载的模块实例（注入脚本动态 import 拿到的是分裂实例）。 */
+    __perfHooks: () => {
+      getCM: typeof getCM;
+      Vim: typeof Vim;
+      enterContinueListItem: typeof enterContinueListItem;
+      insertNewlineContinueMarkup: typeof insertNewlineContinueMarkup;
+      insertNewlineAndIndent: typeof insertNewlineAndIndent;
+    };
     /** 假仓库（内存目录树）+ 挂载真实 Sidebar（等索引就绪）。 */
     __mountSidebar: (entries: string[]) => Promise<string[]>;
     /** 假仓库（内存目录树），不挂侧栏——编辑器侧的链路只需要它。 */
@@ -293,6 +301,16 @@ window.__vimNotify = (text: string, durationMs = 1500) => {
   cm.openNotification(pre, { bottom: true, duration: durationMs });
   return document.querySelector(".cm-vim-panel")?.textContent ?? null;
 };
+
+/** 性能剖析口：返回页面自身已加载的模块实例。注入脚本走动态 import 会拿到
+ *  vite 分裂出的另一份实例（getCM 的 WeakMap 是空的），必须从这里取。 */
+window.__perfHooks = () => ({
+  getCM,
+  Vim,
+  enterContinueListItem,
+  insertNewlineContinueMarkup,
+  insertNewlineAndIndent,
+});
 /** 直接读/改应用状态（侧栏流程调试用）。 */
 window.__store = useAppStore;
 /** 应用层动作（openNote / openWikiLink / goBackLink…）——按真实链路驱动。 */
