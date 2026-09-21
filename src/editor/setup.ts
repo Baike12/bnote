@@ -1,7 +1,7 @@
 import { Compartment, EditorSelection, EditorState, Prec } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { setDocPath, docPathField } from "./docPath";
-import { EditorView, keymap, highlightActiveLine } from "@codemirror/view";
+import { EditorView, keymap, highlightActiveLine, drawSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { ensureSyntaxTree } from "@codemirror/language";
@@ -89,6 +89,15 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     ]),
 
     EditorView.lineWrapping,
+    // 光标几何的唯一写入者：原生 caret 的绘制时序由 WebKit 内部决定——列表
+    // 标记槽/缩进导致的 DOM 重构期间，它会按旧的内联偏移画出一帧（用户看到的
+    // “光标闪到行首”），JS 侧选区状态再正确也约束不了它。drawSelection 把
+    // caret 换成 CM6 测量绘制的 .cm-cursor，位置来自当帧 measure（下面的
+    // updateListener 会在 vim 开启时把它冲刷到同帧），DOM 重构不再有可见窗口。
+    // 普通/可视模式不受影响：shim 的 .cm-vimMode 规则照常隐藏 CM6 光标层、
+    // 只显示引擎的块状光标。
+    // 系统 caret 的闪烁节奏（引擎块光标的 blink 也读同一配置）。
+    drawSelection({ cursorBlinkRate: 530 }),
     EditorView.theme({
       "&": { height: "100%" },
       ".cm-scroller": {
@@ -98,6 +107,7 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
       },
       "&.cm-focused": { outline: "none" },
       ".cm-content": { caretColor: "var(--accent, #f5a83c)" },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent, #f5a83c)" },
     }),
     // Suppress the macOS inline predictive-text / autocorrect popup while
     // typing English in the note body.
