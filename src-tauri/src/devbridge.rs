@@ -235,14 +235,16 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         ),
 
         // ---- config ----
-        "load_app_config" => json_ok!(config::load_app_config(app.state())),
-        "save_app_config" => json_ok!(config::save_app_config(app.state(), arg_value(args, "config")?)),
-        "load_keybindings" => json_ok!(config::load_keybindings(app.state())),
-        "save_keybindings" => {
-            json_ok!(config::save_keybindings(app.state(), arg_value(args, "keybindings")?))
+        "load_app_config" => json_ok!(config::load_app_config(app.state()).await),
+        "save_app_config" => {
+            json_ok!(config::save_app_config(app.state(), arg_value(args, "config")?).await)
         }
-        "read_vimrc" => json_ok!(config::read_vimrc(app.state())),
-        "save_vimrc" => json_ok!(config::save_vimrc(app.state(), arg_str(args, "contents")?)),
+        "load_keybindings" => json_ok!(config::load_keybindings(app.state()).await),
+        "save_keybindings" => {
+            json_ok!(config::save_keybindings(app.state(), arg_value(args, "keybindings")?).await)
+        }
+        "read_vimrc" => json_ok!(config::read_vimrc(app.state()).await),
+        "save_vimrc" => json_ok!(config::save_vimrc(app.state(), arg_str(args, "contents")?).await),
 
         // ---- input sources: refuse to touch the machine's keyboard ----
         "list_input_sources" => json!([]),
@@ -250,12 +252,13 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "set_input_source" => json!({ "switched": false, "fallbackUsed": false }),
 
         // ---- agent ----
-        "agent_get_config" => json_ok!(agent::agent_get_config(app.state())),
+        "agent_get_config" => json_ok!(agent::agent_get_config(app.state()).await),
         "agent_save_config" => json_ok!(agent::agent_save_config(
             app.state(),
             serde_json::from_value(arg_value(args, "config")?)
                 .map_err(|e| format!("BAD_ARGS: config: {}", e))?
-        )),
+        )
+        .await),
         "agent_start_session" => {
             let study: Option<StudyContent> = serde_json::from_value(arg_value(args, "study")?)
                 .map_err(|e| format!("BAD_ARGS: study: {}", e))?;

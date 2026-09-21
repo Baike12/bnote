@@ -297,7 +297,8 @@ fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
         }
     }
     let id_owned = id.to_string();
-    let cjk = on_main(app, move || tis::is_cjk_source(&id_owned))??;
+    // is_cjk_source 返回裸 bool,on_main 只有一层 Result。
+    let cjk = on_main(app, move || tis::is_cjk_source(&id_owned))?;
     if let Ok(mut map) = cache.lock() {
         map.insert(id.to_string(), cjk);
     }
@@ -309,7 +310,8 @@ fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
 /// temporary-window workaround forces the switch. TIS reads here also go
 /// through the main thread (see `on_main`).
 #[cfg(target_os = "macos")]
-fn verify_or_fallback(app: AppHandle, target: String) {    std::thread::spawn(move || {
+fn verify_or_fallback(app: AppHandle, target: String) {
+    std::thread::spawn(move || {
         let current = || -> Option<String> {
             let handle = app.clone();
             on_main(&handle, tis::current_source_id).ok().flatten()
