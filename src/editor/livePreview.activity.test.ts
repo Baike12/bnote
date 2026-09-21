@@ -124,3 +124,46 @@ describe("livePreview 列表标记的 token 活动规则", () => {
     expect(rendered.some((e) => e.from === orderedFrom && e.to === orderedFrom + 2)).toBe(true);
   });
 });
+
+/**
+ * 空列表项的「文本锚点」规则：marker 的替换装饰若吞掉行尾空白，整行就没有
+ * 任何文本节点，WebKit 给落在项首的光标算不出矩形（绘制退化到行内容边缘，
+ * 即 Enter 续行后光标闪到行首）。光标停在项首时必须保留行尾空格。
+ */
+describe("空列表项的文本锚点（keepMarkerTrailingSpace）", () => {
+  const makeDocState = (doc: string, pos: number) => {
+    const created = EditorState.create({
+      doc,
+      extensions: [markdown({ base: markdownLanguage, extensions: [GFM] })],
+    });
+    ensureSyntaxTree(created, created.doc.length);
+    return created.update({ selection: EditorSelection.cursor(pos) }).state;
+  };
+  const covered = (entries: { from: number; to: number }[], pos: number) =>
+    entries.some((e) => e.from !== e.to && e.from <= pos && e.to > pos);
+
+  it("空待办项 `- [ ] ` 光标在项首：checkbox 不吞行尾空格", () => {
+    const entries = decosAt(makeDocState("- [ ] ", 6), 0, 8);
+    // checkbox 仍在（[2,5)），但行尾空格 [5,6) 保持可见。
+    expect(entries.map(widgetOf).some((w) => w instanceof TaskCheckboxWidget)).toBe(true);
+    expect(covered(entries, 4)).toBe(true);
+    expect(covered(entries, 5)).toBe(false);
+  });
+
+  it("空待办项光标在行首：checkbox 照常吞空格（行首有 raw `-` 作锚点）", () => {
+    const entries = decosAt(makeDocState("- [ ] ", 0), 0, 8);
+    expect(covered(entries, 5)).toBe(true);
+  });
+
+  it("非空待办项 `- [ ] foo` 光标在项首：空格照常吞掉（正文文本节点即锚点）", () => {
+    const entries = decosAt(makeDocState("- [ ] foo", 6), 0, 10);
+    expect(entries.map(widgetOf).some((w) => w instanceof TaskCheckboxWidget)).toBe(true);
+    expect(covered(entries, 5)).toBe(true);
+  });
+
+  it("空无序项 `- ` 光标在项首：bullet 不吞行尾空格", () => {
+    const entries = decosAt(makeDocState("- ", 2), 0, 3);
+    expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(true);
+    expect(covered(entries, 1)).toBe(false);
+  });
+});

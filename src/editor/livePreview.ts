@@ -428,7 +428,14 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
           out.inline.push(Decoration.replace({}).range(markLine.from, mark.from));
         }
         if (!activeLine(nodeRef.from, nodeRef.to)) {
-          decorateListMark(doc, mark, kind, out, claim);
+          decorateListMark(
+            doc,
+            mark,
+            kind,
+            out,
+            claim,
+            keepMarkerTrailingSpace(selections, markLine.from, markLine.to, whitespaceEnd(doc, mark.to)),
+          );
         }
         return false;
       }
@@ -436,8 +443,14 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         const checked = /^\[[xX]\]/.test(doc.sliceString(nodeRef.from, nodeRef.to));
         // The checkbox owns `[ ]` plus the whitespace after it, so its box
         // (0.9em) + margin-right (--li-gap) are the whole marker slot and the
-        // item text lands on the wrapped-line indent (see global.css).
-        const to = whitespaceEnd(doc, nodeRef.to);
+        // item text lands on the wrapped-line indent (see global.css) — unless
+        // the whitespace is line-final and the caret rests at the slot end
+        // (empty item): then it stays visible as the caret's text anchor.
+        const markLine = doc.lineAt(nodeRef.from);
+        let to = whitespaceEnd(doc, nodeRef.to);
+        if (keepMarkerTrailingSpace(selections, markLine.from, markLine.to, to)) {
+          to = nodeRef.to;
+        }
         if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, to)) {
           out.inline.push(
             Decoration.replace({ widget: new TaskCheckboxWidget(checked) }).range(
@@ -550,6 +563,26 @@ function whitespaceEnd(
 }
 
 /**
+ * 空列表项（标记后的空白直达行尾）且光标停在项首时，marker 的替换装饰不能
+ * 把行尾空白一起吞掉：那会让整行没有任何文本节点，光标落在 widget 边界的
+ * 元素位置上，WebKit 算不出光标矩形（getClientRects 为空），绘制退化到行
+ * 内容边缘——Enter 续行后光标“闪到行首”，下一次布局变化才落回正确位置。
+ * 保留这个空格作文本锚点；光标的文档位置（项文本起点）本身是对的，缺的
+ * 只是可见锚点。
+ */
+function keepMarkerTrailingSpace(
+  selections: readonly { from: number; to: number }[],
+  lineFrom: number,
+  lineTo: number,
+  wsTo: number,
+): boolean {
+  return (
+    wsTo === lineTo &&
+    selections.some((r) => r.from <= lineTo && r.to >= lineFrom && r.from >= wsTo)
+  );
+}
+
+/**
  * Renders the list marker (`-`, `*`, `+`, `1.`) per item kind:
  * task items hide the marker entirely (the checkbox from `- [ ]` becomes the
  * line's lead, matching Obsidian), bullets become a `•` glyph, ordered
@@ -564,6 +597,7 @@ function decorateListMark(
   kind: ListMarkerKind,
   out: DecorationSink,
   claim: (from: number, to: number) => boolean,
+  keepTrailingSpace: boolean,
 ) {
   if (kind === "li-t") {
     // Hide the marker plus the gap before the `[ ]` checkbox.
@@ -577,7 +611,8 @@ function decorateListMark(
     out.inline.push(Decoration.mark({ class: "md-listmark" }).range(mark.from, mark.to));
     return;
   }
-  const to = whitespaceEnd(doc, mark.to);
+  let to = whitespaceEnd(doc, mark.to);
+  if (keepTrailingSpace) to = mark.to;
   if (claim(mark.from, to)) {
     out.inline.push(Decoration.replace({ widget: new ListBulletWidget() }).range(mark.from, to));
   }
