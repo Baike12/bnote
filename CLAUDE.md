@@ -46,5 +46,6 @@ bnote 的核心是**手感**:编辑、滚动、光标移动、渲染都不许有
 
 - **测试写根因,不写症状**:修 bug/改模型时,把根因固化成回归测试放在被测模块旁(`*.test.ts`,vitest node 环境)。范例:`src/editor/motionClamp.test.ts`(隐藏行步进模型)、`src/editor/vim/verticalMotion.test.ts`(vim 运动控制流+记账,用确定性假几何)、`src/editor/livePreview.activity.test.ts`(标记 token 活动规则)。
 - **几何/手感改动,门禁之外仍须浏览器测量**:无 DOM 测试只能锁控制流和不变量;真实像素行为(隐藏前缀零宽、widget 命中偏向、视觉锚稳定性)只有浏览器能证明——按上面"调试与验证方式"走 harness 测量,修复前后用同一协议对比。
+- **性能门禁,量级回归必拦**:性能是 bnote 的生命线。`src/editor/perf.gate.test.ts` 锁编辑管线每击成本的量级(装饰构建/输入/移动/toggleList,~900 行混合文档);预算按本机实测中位数放大 ~6-10 倍标定——10 倍级回归(意外全文扫描、装饰失稳、解析歧义翻转)必被拦下,机器抖动不误报。动性能敏感路径后先在浏览器实测修复前后对比(同一协议、同一文档),再用门禁锁量级;预算要随实测更新,不许拍脑袋放宽。
 - **lint error 拦门禁,warning 不拦但会积累**:新增 warning 要有理由(如引擎适配层的 any 断言、dev 桥的 console.log)。
 - **Rust 侧改动**在 `src-tauri` 下跑 `cargo check`,不进 pnpm gate(前端迭代不该付 Rust 编译成本)。
