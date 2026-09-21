@@ -245,8 +245,7 @@ async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
         if already {
             return Ok(SetImeOutcome { switched: false, fallback_used: false });
         }
-        let id_for_cjk = id.clone();
-        let cjk = on_main(&app, move || tis::is_cjk_source(&id_for_cjk))?;
+        let cjk = cached_is_cjk(&app, &id)?;
         if cjk {
             verify_or_fallback(app, id);
         }
@@ -282,13 +281,35 @@ pub async fn set_input_source(app: AppHandle, id: String) -> CmdResult<SetImeOut
     set_impl(app, id).await
 }
 
+/// CJK-ness of an input source, cached per source id. The uncached check
+/// enumerates every live input source on the MAIN thread (see `on_main`), and
+/// it runs on every switch — a source's languages never change within a
+/// session, so the one main-thread enumeration per id is all we ever pay.
+#[cfg(target_os = "macos")]
+fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(id) {
+            return Ok(*hit);
+        }
+    }
+    let id_owned = id.to_string();
+    let cjk = on_main(app, move || tis::is_cjk_source(&id_owned))??;
+    if let Ok(mut map) = cache.lock() {
+        map.insert(id.to_string(), cjk);
+    }
+    Ok(cjk)
+}
+
 /// macOS 26: a freshly selected CJK source can silently fail to engage.
 /// Re-check after a beat, retry once, then hand over to the macism CLI whose
 /// temporary-window workaround forces the switch. TIS reads here also go
 /// through the main thread (see `on_main`).
 #[cfg(target_os = "macos")]
-fn verify_or_fallback(app: AppHandle, target: String) {
-    std::thread::spawn(move || {
+fn verify_or_fallback(app: AppHandle, target: String) {    std::thread::spawn(move || {
         let current = || -> Option<String> {
             let handle = app.clone();
             on_main(&handle, tis::current_source_id).ok().flatten()
