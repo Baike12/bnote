@@ -470,13 +470,24 @@ button {
   --li-gap: 0.5em;     /* 标记右沿 → 正文的视觉间隙 */
 }
 
-/* Bullet glyph replacing `- ` markers. The widget owns the whole slot: the
-   glyph is left-aligned in a box exactly --li-hang wide, so the item text
-   starts where wrapped lines align no matter how wide the glyph is. */
+/* Bullet dot replacing `- ` markers (Obsidian 同款)：CSS 画的实心圆，右对齐
+   在标记槽内（紧贴正文，留一个小间隙），直径随字号缩放。槽宽不变——折行
+   对齐几何（--li-hang）与文字起点不受圆点样式影响。 */
 .md-bullet {
   color: var(--text-faint);
   display: inline-block;
   width: var(--li-hang, 1em);
+  text-align: right;
+}
+.md-bullet::before {
+  content: "";
+  display: inline-block;
+  width: 0.34em;
+  height: 0.34em;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 0.2em;
+  vertical-align: middle;
 }
 
 /* Obsidian-style list indent: literal source spaces are hidden and replaced

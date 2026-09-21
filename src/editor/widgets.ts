@@ -135,7 +135,9 @@ export class HrWidget extends WidgetType {
   }
 }
 
-/** Bullet glyph replacing `-`/`*`/`+` list markers in live preview. */
+/** Bullet glyph replacing `-`/`*`/`+` list markers in live preview. The dot
+ *  itself is drawn by CSS (`.md-bullet::before`) so its size and distance to
+ *  the item text are tunable independent of any glyph's font metrics. */
 export class ListBulletWidget extends WidgetType {
   eq() {
     return true;
@@ -143,7 +145,6 @@ export class ListBulletWidget extends WidgetType {
   toDOM() {
     const el = document.createElement("span");
     el.className = "md-bullet";
-    el.textContent = "•";
     return el;
   }
 }
