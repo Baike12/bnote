@@ -2,6 +2,7 @@ pub mod agent;
 pub mod config;
 pub mod files;
 pub mod ime;
+pub mod python;
 pub mod vault;
 
 use std::path::{Path, PathBuf};

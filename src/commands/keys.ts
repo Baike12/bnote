@@ -47,6 +47,9 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "edit.heading-5": "Mod-5",
   "edit.heading-6": "Mod-6",
 
+  // Jupyter/Colab 同款手感:⌘↩ 运行当前笔记的全部 python 块。
+  "python.run-note": "Mod-Enter",
+
   "editor.toggle-live-preview": "Mod-e",
   "editor.toggle-vim": "Mod-Shift-v",
   "editor.toggle-typewriter": "Mod-Shift-t",

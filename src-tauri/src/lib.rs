@@ -12,6 +12,8 @@ use tauri::Manager;
 
 use state::AppState;
 
+mod python;
+
 /// Menu ids for the items whose key equivalents are deliberately left unset.
 #[cfg(target_os = "macos")]
 const MENU_QUIT: &str = "menu.quit";
@@ -164,6 +166,8 @@ pub fn run() {
                 sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
                 mcp_manager: std::sync::Mutex::new(None),
                 current_note: std::sync::Mutex::new(None),
+                python_runs: std::sync::Arc::new(python::runner::RunRegistry::new()),
+                python_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
             });
 
             #[cfg(target_os = "macos")]
@@ -213,6 +217,14 @@ pub fn run() {
             commands::agent::set_study_preview_visible,
             commands::agent::close_study_preview,
             commands::agent::open_study_url,
+            commands::python::python_run,
+            commands::python::python_run_cancel,
+            commands::python::python_get_info,
+            commands::python::python_set_project_config,
+            commands::python::python_lsp_sync,
+            commands::python::python_lsp_close,
+            commands::python::python_lsp_stop_all,
+            commands::python::python_uv_create,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

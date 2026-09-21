@@ -86,6 +86,81 @@ export interface ConvertResult {
   elapsedMs: number;
 }
 
+// ---------------------------------------------------------------------------
+// Python:markdown 内嵌代码块运行 / ty LSP / uv 环境
+// ---------------------------------------------------------------------------
+
+export type PythonEnvKind = "config" | "venv" | "uv" | "system";
+
+export interface PythonResolvedEnv {
+  kind: PythonEnvKind;
+  program: string;
+  python: string | null;
+  venvDir: string | null;
+  detail: string;
+}
+
+export interface PythonRunStarted {
+  runId: number;
+  command: string;
+  envKind: PythonEnvKind;
+  program: string;
+  cwd: string;
+}
+
+export interface PythonInfo {
+  projectRoot: string | null;
+  projectName: string;
+  /** "off" | "ty" */
+  lsp: string;
+  pythonOverride: string | null;
+  tyPath: string | null;
+  venvExists: boolean;
+  hasPyproject: boolean;
+  env: PythonResolvedEnv | null;
+  uvAvailable: boolean;
+  tyAvailable: boolean;
+}
+
+export interface PythonProjectConfig {
+  lsp?: string;
+  python?: string;
+  tyPath?: string;
+}
+
+export interface PythonLspSyncResult {
+  enabled: boolean;
+}
+
+export interface PythonUvOutcome {
+  log: string;
+  ranInit: boolean;
+}
+
+/** 后端推流事件(python-run-output)。 */
+export interface PythonRunOutputEvent {
+  runId: number;
+  mdPath: string;
+  stream: "stdout" | "stderr";
+  text: string;
+}
+
+/** 后端收尾事件(python-run-exit)。 */
+export interface PythonRunExitEvent {
+  runId: number;
+  mdPath: string;
+  exitCode: number | null;
+  durationMs: number;
+  cancelled: boolean;
+  timedOut: boolean;
+}
+
+/** ty 转发的原始 LSP 诊断(python-lsp-diagnostics),行列是 UTF-16 单位。 */
+export interface PythonLspDiagnosticEvent {
+  mdPath: string;
+  diagnostics: unknown[];
+}
+
 /** 中栏内嵌网页预览的占位矩形(逻辑像素,相对窗口内容区左上角)。 */
 export interface PreviewBounds {
   x: number;
@@ -164,4 +239,24 @@ export const api = {
   listInputSources: () => invoke<InputSourceInfo[]>("list_input_sources"),
   getCurrentInputSource: () => invoke<string>("get_current_input_source"),
   setInputSource: (id: string) => invoke<SetImeOutcome>("set_input_source", { id }),
+
+  // ---- python ----
+  /** 运行一篇笔记的虚拟 python 文本(行对齐 + main 守卫由前端合成)。 */
+  pythonRun: (mdPath: string, code: string) =>
+    invoke<PythonRunStarted>("python_run", { mdPath, code }),
+  pythonRunCancel: (mdPath: string) => invoke<boolean>("python_run_cancel", { mdPath }),
+  pythonGetInfo: (mdPath: string) => invoke<PythonInfo>("python_get_info", { mdPath }),
+  /** 合并单项目配置;传 null 的字段不动,空串清除。 */
+  pythonSetProjectConfig: (mdPath: string, patch: PythonProjectConfig) =>
+    invoke<PythonProjectConfig>("python_set_project_config", {
+      mdPath,
+      lsp: patch.lsp ?? null,
+      python: patch.python ?? null,
+      tyPath: patch.tyPath ?? null,
+    }),
+  pythonLspSync: (mdPath: string, text: string) =>
+    invoke<PythonLspSyncResult>("python_lsp_sync", { mdPath, text }),
+  pythonLspClose: (mdPath: string) => invoke<void>("python_lsp_close", { mdPath }),
+  pythonLspStopAll: () => invoke<void>("python_lsp_stop_all"),
+  pythonUvCreate: (mdPath: string) => invoke<PythonUvOutcome>("python_uv_create", { mdPath }),
 };

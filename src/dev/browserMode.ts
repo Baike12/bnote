@@ -30,7 +30,15 @@ import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks"
 const BASE = "http://127.0.0.1:1439/__dev";
 
 /** Backend events to relay; keep in sync with `devbridge.rs::subscribe_events`. */
-const EVENTS = ["vault-changed", "agent-event", "ime-fallback"] as const;
+const EVENTS = [
+  "vault-changed",
+  "agent-event",
+  "ime-fallback",
+  "python-run-output",
+  "python-run-exit",
+  "python-lsp-diagnostics",
+  "python-lsp-status",
+] as const;
 
 type Internals = {
   convertFileSrc: (path: string, protocol?: string) => string;

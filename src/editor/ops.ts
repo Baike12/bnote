@@ -704,8 +704,9 @@ export function insertWikilinkText(view: EditorView, target: string) {
 /**
  * 围栏信息串：剥掉反引号/换行（会提前终止围栏）并裁空白；空 = 裸 ```。
  */
-function fenceInfoString(): string {
-  return useAppStore.getState().settings.codeBlockLang.replace(/[`\r\n]/g, "").trim();
+function fenceInfoString(langOverride?: string): string {
+  const raw = langOverride ?? useAppStore.getState().settings.codeBlockLang;
+  return raw.replace(/[`\r\n]/g, "").trim();
 }
 
 /**
@@ -713,10 +714,10 @@ function fenceInfoString(): string {
  * 有选区时把覆盖的行包进围栏（围栏独占整行，行中选区扩展到整行），选区
  * 两端平移进块内。
  */
-export function insertCodeBlock(view: EditorView) {
+export function insertCodeBlock(view: EditorView, langOverride?: string) {
   const state = view.state;
   const range = state.selection.main;
-  const open = "```" + fenceInfoString();
+  const open = "```" + fenceInfoString(langOverride);
   if (!range.empty) {
     const firstLine = state.doc.lineAt(range.from);
     // range.to may sit on the first column of an untouched line.
