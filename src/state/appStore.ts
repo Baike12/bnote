@@ -10,6 +10,8 @@ export interface ImeSettings {
   normalSource: string;
   /** 光标位于公式内进入 insert 时保持英文输入法（公式内容是 ASCII） */
   mathKeepsEnglish: boolean;
+  /** 光标位于围栏代码块内进入 insert 时保持英文输入法（代码是 ASCII） */
+  codeKeepsEnglish: boolean;
 }
 
 /** 快速添加命令：一键在指定文件夹创建新笔记（参考 Obsidian QuickAdd）。 */
@@ -57,6 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
     insertSource: "com.sogou.inputmethod.sogou.pinyin",
     normalSource: "com.apple.keylayout.ABC",
     mathKeepsEnglish: true,
+    codeKeepsEnglish: true,
   },
   quickAdd: [],
 };

@@ -40,6 +40,7 @@ beforeEach(() => {
       insertSource: "com.apple.inputmethod.SCIM",
       normalSource: "com.apple.keylayout.ABC",
       mathKeepsEnglish: true,
+      codeKeepsEnglish: true,
     },
   });
 });
@@ -100,6 +101,7 @@ describe("imeApply 在途合并", () => {
         insertSource: "ZH",
         normalSource: "EN",
         mathKeepsEnglish: true,
+        codeKeepsEnglish: true,
       },
     });
     imeApply("A");

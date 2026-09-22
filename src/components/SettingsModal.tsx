@@ -524,6 +524,12 @@ function ImeTab() {
         checked={ime.mathKeepsEnglish}
         onChange={(v) => patchIme({ mathKeepsEnglish: v })}
       />
+      <Toggle
+        label="代码块内进入 insert 保持英文"
+        desc="光标位于 ``` 围栏代码块内时不切中文，代码内容是 ASCII，避免输入法干扰"
+        checked={ime.codeKeepsEnglish}
+        onChange={(v) => patchIme({ codeKeepsEnglish: v })}
+      />
     </div>
   );
 }
