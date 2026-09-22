@@ -13,6 +13,7 @@ import { buildSession, setSession } from "./snippets/extension";
 import { parseReplacement, findSnippet } from "./snippets/engine";
 import { renderMathHtml } from "./widgets";
 import { enterContinueListItem, insertCodeBlock, insertMathBlock, toggleList } from "./ops";
+import { renumberHeadings } from "./numbering";
 import { moveByLinesVisual, type VimCoreState } from "./vim/verticalMotion";
 
 /**
@@ -585,5 +586,184 @@ describe("性能门禁：片段会话内输入", () => {
     expect(view.state.doc.sliceString(end, end + 22)).toContain("xxxxxxxxxxxxxxxxxxxx");
     console.warn(`[perf] 会话内 20 击 总计 ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(90);
+  });
+});
+
+// ---- 换行 · 段落墙重解析锚定 ----
+// Enter 的真实成本里有一段不在上面任何状态管线测试里:markdown 按顶层
+// 开放块做增量解析,段落墙(无空行的连续段落)是「一个块节点」,块内
+// 任何编辑(换行、打字)都会让解析从块起点重新推进,成本线性于块大小。
+// 浏览器实测(2026-09-22):4000 行段落墙 Enter ~25ms(掉 2 帧,用户
+// 感知为换行卡顿),同规模每 50 行一空行的文档 1.6ms。ensureSyntaxTree
+// 把「解析推进到视口」这笔账锁进无 DOM 门禁:
+//  - chunked 锚定块边界感知:边界判定一旦退化(空行不再切块/全文重解析),
+//    它先涨到段落墙量级;
+//  - wall 两点锚定线性上界:解析器若出现按行数超线性退化(如每次全量
+//    重解析 N 块)会被 10× 拦下。
+
+function wallDoc(lines: number): string {
+  const parts: string[] = [];
+  for (let i = 0; i < lines; i++) parts.push(`段落行 ${i}:连续文字,中间没有任何空行,整篇是一个大段落块。`);
+  return parts.join("\n");
+}
+
+function chunkedDoc(lines: number, every: number): string {
+  const parts: string[] = [];
+  for (let i = 0; i < lines; i++) {
+    parts.push(`段落行 ${i}:连续文字若干,长度中等。`);
+    if (i % every === every - 1) parts.push("");
+  }
+  return parts.join("\n");
+}
+
+/** 段落墙探针:光标固定在第 1000 行行尾,Enter 分裂 + 解析推进(计时),
+ *  再把插入的换行删掉(不计入)回到同一起点。 */
+function wallEnterMedian(doc: string, times: number): number {
+  const state = makeState(doc);
+  ensureSyntaxTree(state, state.doc.length);
+  const samples: number[] = [];
+  let cur = state;
+  for (let i = 0; i < times; i++) {
+    const line = cur.doc.line(1000);
+    const t0 = performance.now();
+    cur = cur
+      .update({
+        changes: { from: line.to, insert: "\n" },
+        selection: { anchor: line.to + 1 },
+        userEvent: "input.type",
+      })
+      .state;
+    ensureSyntaxTree(cur, cur.doc.length);
+    samples.push(performance.now() - t0);
+    cur = cur
+      .update({
+        changes: { from: line.to + 1, to: Math.min(line.to + 2, cur.doc.length), insert: "" },
+      })
+      .state;
+    ensureSyntaxTree(cur, cur.doc.length);
+  }
+  samples.sort((a, b) => a - b);
+  return samples[Math.floor(times / 2)];
+}
+
+describe("性能门禁:换行 · 段落墙重解析(块粒度)", () => {
+  it("每50行一空行的 4000 行文档:Enter+解析推进 中位 < 10ms", () => {
+    const median = wallEnterMedian(chunkedDoc(4000, 50), 11);
+    console.warn(`[perf] chunked-4000 换行重解析 中位 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(15); // 静默 ~1.3-1.7ms,5-6× 带
+  });
+
+  it("1000 行段落墙:Enter+解析推进 中位 < 60ms(静默 ~8.5ms,6× 带)", () => {
+    const median = wallEnterMedian(wallDoc(1000), 11);
+    console.warn(`[perf] wall-1000 换行重解析 中位 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(60);
+  });
+
+  it("2000 行段落墙:Enter+解析推进 中位 < 100ms(两点线性锚定,静默 ~16ms,6× 带)", () => {
+    const median = wallEnterMedian(wallDoc(2000), 11);
+    console.warn(`[perf] wall-2000 换行重解析 中位 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(100);
+  });
+});
+
+// ---- 换行 · 大文档列表续行 ----
+// 列表续行门禁原来只在 1 行的小文档上量,真实场景是「大文档里的列表」:
+// enterContinueListItem 的树查询 + O(文档) 装饰重建都在这里才显形。
+// 走真实回退链(enterContinueListItem 自己接住)+ 每次装饰重建,与
+// 「段落回车」门禁同协议。
+
+describe("性能门禁:换行 · 900行大文档列表续行(bullet/ordered/todo)", () => {
+  const cases: { name: string; seed: RegExp }[] = [
+    { name: "bullet", seed: /^- 无序列表项一/ },
+    { name: "ordered", seed: /^1\. 有序项/ },
+    { name: "todo", seed: /^- \[ \] 待办项/ },
+  ];
+  for (const { name, seed } of cases) {
+    it(`${name}: 20 次(Enter 建项+补字符+装饰重建)总计 < 350ms`, () => {
+      const view = makeTogglingView(makeState(DOC, 0));
+      const findSeed = () => {
+        for (let n = 1; n <= view.state.doc.lines; n++) {
+          const l = view.state.doc.line(n);
+          if (seed.test(l.text)) return l;
+        }
+        throw new Error(`${name} 种子行没找到`);
+      };
+      const samples: number[] = [];
+      for (let i = 0; i < 20; i++) {
+        const line = findSeed();
+        view.dispatch({ selection: EditorSelection.cursor(line.to) });
+        const t0 = performance.now();
+        if (!enterContinueListItem(view)) throw new Error(`${name} 续行没接住`);
+        const head = view.state.selection.main.head;
+        view.dispatch({ changes: { from: head, insert: "字" } });
+        ensureSyntaxTree(view.state, view.state.doc.length);
+        buildInlineDecorations({ state: view.state, visibleRanges: [{ from: 0, to: view.state.doc.length }] });
+        samples.push(performance.now() - t0);
+      }
+      const total = samples.reduce((a, b) => a + b, 0);
+      // Enter 确实持续建项:种子行从初始 1 行长到 20+ 行。
+      const seedCount = view.state.doc
+        .toString()
+        .split("\n")
+        .filter((l) => seed.test(l)).length;
+      expect(seedCount).toBeGreaterThan(15);
+      console.warn(`[perf] 900行 ${name} 续行 总计 ${total.toFixed(0)}ms`);
+      expect(total).toBeLessThan(350);
+    });
+  }
+});
+
+// ---- 换行 · 有序列表长顺延 ----
+// Enter 建项时 bumpFollowingOrdered 会把后续所有连号项改号(一次事务里
+// N 处编辑 + 全文档 changeSet 映射)。列表越长这条越贵,锁住量级防止
+// 顺延退化成逐项 dispatch 或全文重映射。
+
+describe("性能门禁:换行 · 有序列表 30 项长顺延", () => {
+  it("20 次(第 1 项行尾 Enter,29 项顺延)总计 < 100ms", () => {
+    const lines: string[] = [];
+    for (let i = 1; i <= 30; i++) lines.push(`${i}. 有序列表第 ${i} 项,内容若干`);
+    const view = makeTogglingView(makeState(lines.join("\n"), 0));
+    const samples: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const line = view.state.doc.lineAt(view.state.selection.main.head);
+      view.dispatch({ selection: EditorSelection.cursor(line.to) });
+      const t0 = performance.now();
+      if (!enterContinueListItem(view)) throw new Error("有序列表续行没接住");
+      samples.push(performance.now() - t0);
+      // 光标回到第 1 项行尾(新建的第 2 项),下一轮继续从最前面顺延
+      view.dispatch({ selection: EditorSelection.cursor(view.state.doc.line(1).to) });
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    // 顺延确实发生:最后一项编号被推到 50(30 项 + 20 轮插入)。
+    expect(view.state.doc.toString()).toContain("50. 有序列表第 30 项");
+    console.warn(`[perf] 有序 30 项顺延 总计 ${total.toFixed(0)}ms`);
+    expect(total).toBeLessThan(100);
+  });
+});
+
+// ---- 换行 · 标题自动编号扫描(用户开启项的每击保险) ----
+// autoNumberHeadings 开启时每次文档变化后 renumberHeadings 全文档行扫
+// (fence 扫描 + 每行正则)。这是「每击 O(文档)」的固定支出,量级由
+// 这里看住;同时功能断言防扫描漏标题。
+
+describe("性能门禁:标题自动编号全文档扫描(900行)", () => {
+  it("20 次扫描(编号已对齐,纯扫描)总计 < 80ms", () => {
+    const view = makeTogglingView(makeState(DOC, 0));
+    const samples: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t0 = performance.now();
+      renumberHeadings(view);
+      samples.push(performance.now() - t0);
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    console.warn(`[perf] 编号扫描(无变化) 总计 ${total.toFixed(0)}ms`);
+    expect(total).toBeLessThan(80);
+  });
+
+  it("编号缺失时正好补上(功能锚定)", () => {
+    const stale = DOC.replace("## 3 章节", "## 章节");
+    const view = makeTogglingView(makeState(stale, 0));
+    renumberHeadings(view);
+    expect(view.state.doc.toString()).toContain("## 3 章节");
   });
 });
