@@ -3,8 +3,10 @@ import { getContextAt, type EditContext } from "../context";
 import { DEFAULT_SNIPPETS, type RawSnippet } from "./default-snippets";
 import { DEFAULT_SNIPPET_VARIABLES } from "./default-variables";
 
-/** Character set treated as word delimiters for `w` (word-boundary) snippets. */
-export const WORD_DELIMITERS = "., +-\\n\t:;!?\\/{}[]()=~$'\"|`<>*^%#@&";
+/** Character set treated as word delimiters for `w` (word-boundary) snippets.
+ *  换行必须是边界:带 w 的片段(dm 等)在行首输入是常态,`\n` 写成 `\\n`
+ *  曾让换行落在集合外,行首的 dm 永远不展开。 */
+export const WORD_DELIMITERS = "., +-\n\t:;!?\\/{}[]()=~$'\"|`<>*^%#@&";
 
 export interface SnippetMode {
   text: boolean;
