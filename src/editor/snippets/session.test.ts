@@ -3,6 +3,7 @@ import { EditorState } from "@codemirror/state";
 import {
   buildSession,
   exitChain,
+  exitCursorPosition,
   planTab,
   setSession,
   snippetField,
@@ -20,19 +21,18 @@ const dm = () => buildSession(0, parseReplacement("$$\n$0\n$$", [], null))!;
 const paren = () => buildSession(0, parseReplacement("($0)$1", [], null))!;
 
 describe("planTab:Tab 在 tabstop 间的推进与弹出", () => {
-  it("单 $0 片段(dm):Tab 结束会话且不再移动光标——留在公式块内", () => {
+  it("单 $0 片段(dm):Tab 结束会话;落点由 exitCursorPosition 夹紧", () => {
     const s = dm();
     expect(s.order).toEqual([0]);
-    const plan = planTab(s);
-    expect(plan).toEqual({ kind: "end" });
+    expect(planTab(s)).toEqual({ kind: "end", session: s });
   });
 
   it("($0)$1:Tab 依次走 $0 → $1,再 Tab 结束", () => {
     const s = paren();
     const p1 = planTab(s);
     expect(p1).toEqual({ kind: "select", session: s, index: 1 });
-    const p2 = planTab({ ...s, active: 1 });
-    expect(p2).toEqual({ kind: "end" });
+    const s2 = { ...s, active: 1 };
+    expect(planTab(s2)).toEqual({ kind: "end", session: s2 });
   });
 
   it("会话期内嵌套:先走完内层,再弹回外层继续;外层也走完即结束", () => {
@@ -42,7 +42,7 @@ describe("planTab:Tab 在 tabstop 间的推进与弹出", () => {
     // 内层 $0 → 内层 $1(brace 后) → 弹回外层推进 → 外层只有 $0,走完结束
     expect(planTab(inner)).toEqual({ kind: "select", session: inner, index: 1 });
     const afterInner = { ...inner, active: 1 };
-    expect(planTab(afterInner)).toEqual({ kind: "end" });
+    expect(planTab(afterInner)).toEqual({ kind: "end", session: outer });
   });
 
   it("父层也走完时逐层弹干净", () => {
@@ -52,7 +52,48 @@ describe("planTab:Tab 在 tabstop 间的推进与弹出", () => {
     // leaf 只有一个 stop:Tab → mid 的 $1 → mid 走完 → root 的 $1 → 结束
     expect(planTab(leaf)).toEqual({ kind: "select", session: mid, index: 1 });
     expect(planTab({ ...mid, active: 1 })).toEqual({ kind: "select", session: root, index: 1 });
-    expect(planTab({ ...root, active: 1 })).toEqual({ kind: "end" });
+    const done = { ...root, active: 1 };
+    expect(planTab(done)).toEqual({ kind: "end", session: done });
+  });
+});
+
+describe("exitCursorPosition:会话结束落点(公式区域夹紧)", () => {
+  it("括号片段在公式块内:Tab 落到右括号之后(finalPos 严格在区域内)", () => {
+    // 真实形状:dm 块内展开 bf,文档 = 展开后的文本
+    const doc = "$$\n\\mathbf{}\n$$"; // 3 + 9 + 3
+    const s = buildSession(3, parseReplacement("\\mathbf{$0}", [], null))!; // finalPos = 12(} 之后)
+    const state = withSession(doc, s);
+    const st = state.update({ selection: { anchor: 11 } }).state; // 光标在 {} 内
+    expect(s.finalPos).toBe(12);
+    expect(doc.length).toBe(15); // 闭合 $$ 在 finalPos 之后
+    expect(exitCursorPosition(st, st.field(snippetField)!)).toBe(12);
+  });
+
+  it("整块创建片段(dm):finalPos 恰越过闭合 $$,原地结束不扔出公式块", () => {
+    const s = dm(); // 替换文本 "$$\n\n$$",finalPos = 6
+    const doc = "$$\n\n$$"; // 与替换文本一致:区域含定界符,to = 6 = finalPos
+    const state = withSession(doc, s);
+    const st = state.update({ selection: { anchor: 3 } }).state; // 光标在空行(块内)
+    expect(s.finalPos).toBe(6);
+    expect(exitCursorPosition(st, st.field(snippetField)!)).toBeNull();
+  });
+
+  it("行内创建(ma 形状 $$0$):块内打字后 finalPos 映射到闭合 $ 之后,原地", () => {
+    const s = buildSession(0, parseReplacement("$$0$", [], null))!; // text "$$",stop 在 1,finalPos = 2
+    const st0 = withSession("$$", s);
+    // 在 stop 处键入 x:doc 变 "$x$",finalPos 随事务映射到 3 == region.to
+    const st = st0.update({ changes: { from: 1, insert: "x" }, selection: { anchor: 1 } }).state;
+    const field = st.field(snippetField)!;
+    expect(st.doc.toString()).toBe("$x$");
+    expect(field.finalPos).toBe(3);
+    expect(exitCursorPosition(st, field)).toBeNull();
+  });
+
+  it("非公式上下文:始终落到替换文本末尾(旧的 finalPos 语义)", () => {
+    const s = buildSession(0, parseReplacement("($0)", [], null))!;
+    const state = withSession("()", s);
+    const st = state.update({ selection: { anchor: 1 } }).state;
+    expect(exitCursorPosition(st, st.field(snippetField)!)).toBe(s.finalPos);
   });
 });
 
