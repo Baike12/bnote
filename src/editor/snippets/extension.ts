@@ -1,9 +1,10 @@
 import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
-import type { Transaction } from "@codemirror/state";
+import type { EditorState, Transaction } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { findSnippet, parseReplacement, snippetStore } from "./engine";
 import type { MatchResult, ParsedReplacement } from "./engine";
+import { mathRegions } from "../context";
 import { autoFraction } from "./autofraction";
 
 /**
@@ -24,6 +25,8 @@ interface SnippetSession {
   stops: Map<number, { from: number; to: number }[]>;
   /** Index into `order`. */
   active: number;
+  /** 替换文本末尾(绝对坐标):最后一个制表位上按 Tab 的默认落点。 */
+  finalPos: number;
   parent: SnippetSession | null;
 }
 
@@ -86,6 +89,7 @@ function mapSession(s: SnippetSession, tr: Transaction): SnippetSession {
     order: s.order,
     stops,
     active: s.active,
+    finalPos: tr.changes.mapPos(s.finalPos, 1),
     parent: s.parent ? mapSession(s.parent, tr) : null,
   };
 }
@@ -122,7 +126,7 @@ function buildSession(
     ranges.set(s.index, list);
   }
 
-  return { base, end, order, stops: ranges, active: 0, parent };
+  return { base, end, finalPos: end, order, stops: ranges, active: 0, parent };
 }
 
 function startSessionAt(
@@ -160,17 +164,32 @@ function selectStop(view: EditorView, session: SnippetSession, active: number) {
   });
 }
 
-/** Tab 的纯决策:本层走完弹到父层继续推进,根走完即结束(光标原地——单 $0
- *  片段如 dm 的 Tab 必须留在公式块内,跳到闭合 $$ 之后是旧模型的 bug)。 */
+/** Tab 的纯决策:本层走完弹到父层继续推进,根走完即结束。结束的落点由
+ *  exitCursorPosition 决定(默认替换文本末尾,公式块内夹紧)。 */
 export type TabPlan =
   | { kind: "select"; session: SnippetSession; index: number }
-  | { kind: "end" };
+  | { kind: "end"; session: SnippetSession };
 
 export function planTab(session: SnippetSession): TabPlan {
   const next = session.active + 1;
   if (next < session.order.length) return { kind: "select", session, index: next };
   if (session.parent) return planTab(session.parent);
-  return { kind: "end" };
+  return { kind: "end", session };
+}
+
+/**
+ * 会话结束时光标的落点:替换文本末尾(finalPos)——这是括号类片段
+ * (\mathbf{$0}、_{$0})「Tab 跳出右括号」的来源。唯一例外:光标在公式
+ * 区域内且 finalPos 已不在区域 strictly 内部(=finalPos 恰越过闭合
+ * $$/$,如 dm/mk/ma 这类整块创建片段),此时光标原地结束,不把用户扔出
+ * 公式块(dc00d55 的语义,这里以区域夹紧的方式保留)。
+ * 纯函数(node 可测);返回 null = 原地结束。
+ */
+export function exitCursorPosition(state: EditorState, session: SnippetSession): number | null {
+  const head = state.selection.main.head;
+  const region = mathRegions(state).find((r) => head >= r.from && head <= r.to);
+  if (region && session.finalPos >= region.to) return null;
+  return session.finalPos;
 }
 
 function nextStop(view: EditorView): boolean {
@@ -178,7 +197,12 @@ function nextStop(view: EditorView): boolean {
   if (!session) return false;
   const plan = planTab(session);
   if (plan.kind === "end") {
-    view.dispatch({ effects: setSession.of(null) });
+    const target = exitCursorPosition(view.state, plan.session);
+    view.dispatch({
+      ...(target === null ? {} : { selection: EditorSelection.cursor(target) }),
+      effects: setSession.of(null),
+      scrollIntoView: target !== null,
+    });
     return true;
   }
   selectStop(view, plan.session, plan.index);
