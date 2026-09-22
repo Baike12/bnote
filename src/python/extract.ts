@@ -16,6 +16,8 @@ export interface PythonBlock {
   endLine: number;
   /** 剥掉围栏公共缩进后的代码文本。 */
   text: string;
+  /** 开栏行的缩进数;虚拟文件每行剥掉 min(indent, 行首空格) 列。 */
+  indent: number;
 }
 
 export interface PythonExtract {
@@ -64,7 +66,7 @@ export function extractPython(doc: string): PythonExtract {
         .slice(startLine, j)
         .map((l) => stripIndent(l, open.indent))
         .join("\n");
-      blocks.push({ startLine, endLine, text: body });
+      blocks.push({ startLine, endLine, text: body, indent: open.indent });
       for (let k = startLine; k <= endLine; k += 1) {
         virtual[k] = lines[k].slice(Math.min(open.indent, leadingSpaces(lines[k])));
       }
@@ -201,3 +203,134 @@ function severityOf(n: number | undefined): UiSeverity {
   if (n === 4) return "hint";
   return "error";
 }
+
+// ---------------------------------------------------------------------------
+// 补全 / hover:LSP 应答 → 前端结构(纯映射,无 DOM,node 环境可测)
+// ---------------------------------------------------------------------------
+
+export interface UiCompletion {
+  label: string;
+  /** 插入文本;undefined = 用 label(snippet 格式不解析占位符,退回 label)。 */
+  apply?: string;
+  detail?: string;
+  /** CM 的 completion type(class/function/variable/…),决定列表图标。 */
+  type?: string;
+  /** documentation 字段的纯文本。 */
+  info?: string;
+}
+
+/** LSP CompletionItemKind(1-25)→ CM completion type 的常用子集。 */
+const COMPLETION_KINDS: Record<number, string> = {
+  2: "method",
+  3: "function",
+  4: "function",
+  5: "property",
+  6: "variable",
+  7: "class",
+  8: "type",
+  9: "namespace",
+  10: "property",
+  12: "constant",
+  13: "enum",
+  14: "keyword",
+  21: "constant",
+  22: "class",
+  25: "type",
+};
+
+/** MarkupContent / plain string → 纯文本;markdown 内容剥掉 ``` 围栏行。 */
+function markupText(v: unknown): string | undefined {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object") {
+    const m = v as { value?: unknown; kind?: unknown };
+    if (typeof m.value === "string") {
+      if (m.kind === "markdown") {
+        return m.value
+          .split("\n")
+          .filter((l) => !/^\s*```/.test(l))
+          .join("\n");
+      }
+      return m.value;
+    }
+  }
+  return undefined;
+}
+
+/** LSP CompletionList / CompletionItem[] → 前端补全项;畸形条目丢弃。 */
+export function mapLspCompletions(raw: unknown): UiCompletion[] {
+  let items: readonly unknown[] | null = null;
+  if (Array.isArray(raw)) {
+    items = raw;
+  } else if (
+    raw &&
+    typeof raw === "object" &&
+    Array.isArray((raw as { items?: unknown }).items)
+  ) {
+    items = (raw as { items: readonly unknown[] }).items;
+  }
+  if (!items) return [];
+  const out: UiCompletion[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const it = item as {
+      label?: unknown;
+      insertText?: unknown;
+      insertTextFormat?: unknown;
+      detail?: unknown;
+      documentation?: unknown;
+      kind?: unknown;
+    };
+    if (typeof it.label !== "string" || !it.label) continue;
+    out.push({
+      label: it.label,
+      apply:
+        typeof it.insertText === "string" && it.insertText && it.insertTextFormat !== 2
+          ? it.insertText
+          : undefined,
+      detail: typeof it.detail === "string" && it.detail ? it.detail : undefined,
+      type: typeof it.kind === "number" ? COMPLETION_KINDS[it.kind] : undefined,
+      info: markupText(it.documentation),
+    });
+  }
+  return out;
+}
+
+/** LSP hover 应答 → 纯文本(contents 可为 string / MarkupContent / 数组)。 */
+export function lspHoverText(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const contents = (raw as { contents?: unknown }).contents;
+  const parts: string[] = [];
+  const push = (v: unknown) => {
+    const t = markupText(v);
+    if (t && t.trim()) parts.push(t);
+  };
+  if (Array.isArray(contents)) {
+    for (const part of contents) push(part);
+  } else {
+    push(contents);
+  }
+  const text = parts.join("\n\n").trim();
+  return text || null;
+}
+
+/**
+ * markdown 光标偏移 → 虚拟文件 LSP position。行号天生对齐;列要剥掉围栏
+ * 公共缩进(虚拟行 = markdown 行 slice 掉前缀),光标落在被剥的前缀里时
+ * 贴到列 0。不在 python 围栏内容行时返回 null(补全/hover 的门)。
+ */
+export function mdPosToLspPosition(
+  doc: Text,
+  pos: number,
+  eff: PythonExtract,
+): { line: number; character: number } | null {
+  const p = Math.min(Math.max(pos, 0), doc.length);
+  const lineObj = doc.lineAt(p);
+  const line0 = lineObj.number - 1;
+  const block = eff.blocks.find((b) => line0 >= b.startLine && line0 <= b.endLine);
+  if (!block) return null;
+  let spaces = 0;
+  while (spaces < lineObj.text.length && lineObj.text[spaces] === " ") spaces += 1;
+  const strip = Math.min(block.indent, spaces);
+  return { line: line0, character: Math.max(p - lineObj.from - strip, 0) };
+}
+

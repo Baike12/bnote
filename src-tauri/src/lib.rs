@@ -222,6 +222,7 @@ pub fn run() {
             commands::python::python_get_info,
             commands::python::python_set_project_config,
             commands::python::python_lsp_sync,
+            commands::python::python_lsp_request,
             commands::python::python_lsp_close,
             commands::python::python_lsp_stop_all,
             commands::python::python_uv_create,

@@ -210,9 +210,41 @@ pub async fn python_lsp_sync(
     Ok(LspSyncResult { enabled: true })
 }
 
+/// 交互内 LSP 请求(补全 / hover)的转发口。约束:
+/// - 只放行只读方法,杜绝别的请求从这条路溜进 ty;
+/// - server 不在这里 spawn —— 前端补全/hover 源都先走 python_lsp_sync 把
+///   文档同步上去,这里只在 server 已活着时转发,拿不到就回 null;
+/// - textDocument.uri 由 interaction_request 按 md 路径注入,前端给不了假文档。
 #[tauri::command]
-pub async fn python_lsp_close(state: State<'_, AppState>, md_path: String) -> CmdResult<()> {
+pub async fn python_lsp_request(
+    state: State<'_, AppState>,
+    md_path: String,
+    method: String,
+    params: serde_json::Value,
+) -> CmdResult<serde_json::Value> {
+    const ALLOWED: &[&str] = &["textDocument/completion", "textDocument/hover"];
+    if !ALLOWED.contains(&method.as_str()) {
+        return Err(format!("FORBIDDEN_METHOD: {}", method));
+    }
     let (_vault, project, config) = with_project(&state, &md_path)?;
+    if config.lsp.as_deref() != Some("ty") {
+        return Ok(serde_json::Value::Null);
+    }
+    let key = project.root.to_string_lossy().to_string();
+    let server = state
+        .python_lsp
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).cloned())
+        .filter(|s| s.alive.load(std::sync::atomic::Ordering::Relaxed));
+    match server {
+        Some(s) => s.interaction_request(&method, &md_path, params).await,
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+#[tauri::command]
+pub async fn python_lsp_close(state: State<'_, AppState>, md_path: String) -> CmdResult<()> {    let (_vault, project, config) = with_project(&state, &md_path)?;
     if config.lsp.as_deref() != Some("ty") {
         return Ok(());
     }

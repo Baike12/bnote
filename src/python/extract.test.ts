@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   extractPython,
   hasPythonFenceHint,
+  lspHoverText,
   lspPointToOffset,
+  mapLspCompletions,
   mapLspDiagnostics,
+  mdPosToLspPosition,
   type RawLspDiagnostic,
 } from "./extract";
 
@@ -203,5 +206,105 @@ describe("性能护栏", () => {
     const ms = performance.now() - t0;
     expect(eff.blocks.length).toBe(1250);
     expect(ms).toBeLessThan(50);
+  });
+});
+
+describe("mapLspCompletions", () => {
+  it("CompletionList(items 包一层)与裸数组都能读", () => {
+    const list = { isIncomplete: false, items: [{ label: "print" }] };
+    expect(mapLspCompletions(list).map((c) => c.label)).toEqual(["print"]);
+    expect(mapLspCompletions([{ label: "input" }]).map((c) => c.label)).toEqual(["input"]);
+  });
+
+  it("kind 数字映射成 CM 类型;insertText 优先于 label", () => {
+    const items = [
+      { label: "hello", kind: 3, insertText: "hello($1)", detail: "def hello()" },
+      { label: "HttpError", kind: 7 },
+      { label: "PI", kind: 21 },
+      { label: "unknown kind", kind: 99 },
+    ];
+    const out = mapLspCompletions(items);
+    expect(out[0].type).toBe("function");
+    expect(out[0].apply).toBe("hello($1)");
+    expect(out[0].detail).toBe("def hello()");
+    expect(out[1].type).toBe("class");
+    expect(out[2].type).toBe("constant");
+    expect(out[3].type).toBeUndefined();
+  });
+
+  it("snippet 格式不解析占位符,退回 label", () => {
+    const out = mapLspCompletions([{ label: "with_open", insertText: "with open($1) as $2:", insertTextFormat: 2 }]);
+    expect(out[0].apply).toBeUndefined();
+  });
+
+  it("documentation 支持 MarkupContent 并剥掉 markdown 围栏行", () => {
+    const out = mapLspCompletions([
+      {
+        label: "print",
+        documentation: { kind: "markdown", value: "```python\nprint(*values)\n```\n输出到 stdout。" },
+      },
+    ]);
+    expect(out[0].info).toBe("print(*values)\n输出到 stdout。");
+  });
+
+  it("畸形条目丢弃,非列表输入返回空", () => {
+    expect(mapLspCompletions([{ label: "" }, null, { noLabel: true }, { label: "ok" }]).map((c) => c.label)).toEqual(["ok"]);
+    expect(mapLspCompletions(null)).toEqual([]);
+    expect(mapLspCompletions("nope")).toEqual([]);
+    expect(mapLspCompletions({ items: "not-array" })).toEqual([]);
+  });
+});
+
+describe("lspHoverText", () => {
+  it("MarkupContent 剥围栏;纯字符串原样;数组按序拼接", () => {
+    expect(
+      lspHoverText({ contents: { kind: "markdown", value: "```python\ndef f(x: int)\n```" } }),
+    ).toBe("def f(x: int)");
+    expect(lspHoverText({ contents: "int" })).toBe("int");
+    expect(lspHoverText({ contents: ["def f(x: int)", "说明文字"] })).toBe("def f(x: int)\n\n说明文字");
+  });
+
+  it("没有内容 / 畸形输入返回 null", () => {
+    expect(lspHoverText(null)).toBeNull();
+    expect(lspHoverText({ contents: null })).toBeNull();
+    expect(lspHoverText({ contents: { kind: "markdown", value: "```python\n```" } })).toBeNull();
+    expect(lspHoverText("string")).toBeNull();
+  });
+});
+
+describe("mdPosToLspPosition(光标 → 虚拟文件 position)", () => {
+  it("顶格围栏:行列直读", () => {
+    const doc = docOf("```python\nx = 1\nprint(x)\n```");
+    const eff = extractPython(doc.toString());
+    // 光标在 "x = 1" 末尾(偏移 10 + 5 = 行内 5)。
+    expect(mdPosToLspPosition(doc, 10 + 5, eff)).toEqual({ line: 1, character: 5 });
+    expect(mdPosToLspPosition(doc, 10 + 2, eff)).toEqual({ line: 1, character: 2 });
+  });
+
+  it("列表内缩进围栏:剥掉公共缩进,光标在被剥前缀里贴列 0", () => {
+    const doc = docOf("- item\n\n  ```python\n  for i in r\n  ```\n");
+    const eff = extractPython(doc.toString());
+    // 围栏开栏缩进 2,内容行 "  for i in r" → 虚拟行 "for i in r"。
+    const line = doc.line(4); // "  for i in r"
+    expect(line.text).toBe("  for i in r");
+    const cursorAfterIn = line.from + 9; // "for i in" 之后,虚拟列 = 9 - 2
+    expect(mdPosToLspPosition(doc, cursorAfterIn, eff)).toEqual({ line: 3, character: 7 });
+    // 光标落在被剥掉的 2 列缩进里 → 贴列 0。
+    expect(mdPosToLspPosition(doc, line.from + 1, eff)).toEqual({ line: 3, character: 0 });
+  });
+
+  it("围栏标记行 / 散文行返回 null(补全与 hover 的门)", () => {
+    const doc = docOf("# 标题\n\n```python\nx = 1\n```\n\n正文\n");
+    const eff = extractPython(doc.toString());
+    expect(mdPosToLspPosition(doc, 0, eff)).toBeNull(); // 标题行
+    expect(mdPosToLspPosition(doc, doc.line(3).to, eff)).toBeNull(); // ``` 开栏行
+    expect(mdPosToLspPosition(doc, doc.line(5).to, eff)).toBeNull(); // ``` 闭栏行
+    expect(mdPosToLspPosition(doc, doc.line(6).to, eff)).toBeNull(); // 闭栏后的空行
+  });
+
+  it("偏移越界夹到文档长度内(未闭合围栏到文档末尾都是代码行)", () => {
+    const doc = docOf("```python\nx = 1");
+    const eff = extractPython(doc.toString());
+    expect(mdPosToLspPosition(doc, doc.length + 999, eff)).toEqual({ line: 1, character: 5 });
   });
 });

@@ -19,6 +19,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use super::{ProjectRef, ProjectConfig};
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
+/// completion / hover 这类交互内请求的等待上限;超时直接放弃,不让 UI 干等。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct LspServer {
     pub project_root: PathBuf,
@@ -225,48 +227,73 @@ impl LspServer {
             .map_err(|e| format!("LSP_WRITE: {}", e))
     }
 
-    async fn request(&self, method: &str, params: Value) -> Result<u64, String> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+    fn alloc_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    async fn send_request(&self, id: u64, method: &str, params: Value) -> Result<(), String> {
         self.send(json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
             "params": params,
         }))
-        .await?;
-        Ok(id)
+        .await
+    }
+
+    /// 发请求并等应答。时序契约:先在 pending 占位再发送 —— 读循环是独立
+    /// 任务,应答可能先于本任务恢复执行到达,发送后再注册会漏收。
+    async fn request_await(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        let id = self.alloc_id();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending
+            .lock()
+            .map_err(|_| "lock poisoned")?
+            .insert(id, tx);
+        if let Err(e) = self.send_request(id, method, params).await {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&id);
+            }
+            return Err(e);
+        }
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err("LSP_DIED: 服务器在请求期间退出".to_string()),
+            Err(_) => {
+                // 超时把占位摘掉,否则每超时一次泄漏一条。
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&id);
+                }
+                Err(format!("LSP_TIMEOUT: {} 超时", method))
+            }
+        }
     }
 
     /// initialize 握手 + initialized 通知 + 初始配置(指向项目 venv,若有)。
     /// 返回服务器的 capabilities(留作特性探测)。
     pub async fn initialize(&self) -> Result<Value, String> {
-        let id = self.request(
-            "initialize",
-            json!({
-                "processId": null,
-                "rootUri": path_to_uri(&self.project_root),
-                "workspaceFolders": [{
-                    "uri": path_to_uri(&self.project_root),
-                    "name": self.project_name,
-                }],
-                "capabilities": {},
-                "initializationOptions": {},
-                "clientInfo": { "name": "bnote", "version": "0.1.0" },
-            }),
-        )
-        .await?;
-        let rx = {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            self.pending
-                .lock()
-                .map_err(|_| "lock poisoned")?
-                .insert(id, tx);
-            rx
-        };
-        let result = tokio::time::timeout(INITIALIZE_TIMEOUT, rx)
-            .await
-            .map_err(|_| "LSP_TIMEOUT: initialize 超时(15s)")?
-            .map_err(|_| "LSP_DIED: 服务器在握手期间退出".to_string())?;
+        let result = self
+            .request_await(
+                "initialize",
+                json!({
+                    "processId": null,
+                    "rootUri": path_to_uri(&self.project_root),
+                    "workspaceFolders": [{
+                        "uri": path_to_uri(&self.project_root),
+                        "name": self.project_name,
+                    }],
+                    "capabilities": {},
+                    "initializationOptions": {},
+                    "clientInfo": { "name": "bnote", "version": "0.1.0" },
+                }),
+                INITIALIZE_TIMEOUT,
+            )
+            .await?;
         self.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} })).await?;
         let settings = ty_configuration_value(&self.project_root);
         self.send(json!({
@@ -309,14 +336,36 @@ impl LspServer {
             },
         }))
         .await?;
-        // pull diagnostics,不等结果(读循环里应答)。
-        let id = self
-            .request("textDocument/diagnostic", json!({ "textDocument": { "uri": uri } }))
-            .await?;
+        // pull diagnostics,不等结果(读循环里应答);同样先注册后发送。
+        let id = self.alloc_id();
         if let Ok(mut pulls) = self.pending_pulls.lock() {
             pulls.insert(id, md_path.to_string());
         }
+        if let Err(e) = self
+            .send_request(id, "textDocument/diagnostic", json!({ "textDocument": { "uri": uri } }))
+            .await
+        {
+            if let Ok(mut pulls) = self.pending_pulls.lock() {
+                pulls.remove(&id);
+            }
+            return Err(e);
+        }
         Ok(())
+    }
+
+    /// 交互内请求(completion / hover):转发给 ty 并等应答。白名单在命令层;
+    /// textDocument.uri 由这里按 md 路径统一注入,前端只给 position。
+    pub async fn interaction_request(
+        &self,
+        method: &str,
+        md_path: &str,
+        mut params: Value,
+    ) -> Result<Value, String> {
+        if !params.is_object() {
+            params = json!({});
+        }
+        params["textDocument"] = json!({ "uri": doc_uri(md_path) });
+        self.request_await(method, params, REQUEST_TIMEOUT).await
     }
 
     pub async fn close_doc(&self, md_path: &str) -> Result<(), String> {
