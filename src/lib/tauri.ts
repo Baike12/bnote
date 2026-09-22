@@ -256,6 +256,9 @@ export const api = {
     }),
   pythonLspSync: (mdPath: string, text: string) =>
     invoke<PythonLspSyncResult>("python_lsp_sync", { mdPath, text }),
+  /** 转发补全/hover 等只读交互请求;uri 由后端注入。项目 LSP 关着或没起时回 null。 */
+  pythonLspRequest: (mdPath: string, method: string, params: unknown) =>
+    invoke<unknown>("python_lsp_request", { mdPath, method, params }),
   pythonLspClose: (mdPath: string) => invoke<void>("python_lsp_close", { mdPath }),
   pythonLspStopAll: () => invoke<void>("python_lsp_stop_all"),
   pythonUvCreate: (mdPath: string) => invoke<PythonUvOutcome>("python_uv_create", { mdPath }),

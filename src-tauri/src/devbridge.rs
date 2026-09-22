@@ -336,6 +336,15 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "python_lsp_close" => {
             json_ok!(python::python_lsp_close(app.state(), arg_str(args, "mdPath")?).await)
         }
+        "python_lsp_request" => json_ok!(
+            python::python_lsp_request(
+                app.state(),
+                arg_str(args, "mdPath")?,
+                arg_str(args, "method")?,
+                arg_value(args, "params").unwrap_or_else(|_| serde_json::Value::Null),
+            )
+            .await
+        ),
         "python_lsp_stop_all" => json_ok!(python::python_lsp_stop_all(app.state()).await),
         "python_uv_create" => {
             json_ok!(python::python_uv_create(app.state(), arg_str(args, "mdPath")?).await)
