@@ -8,6 +8,9 @@ import { insertNewlineAndIndent, history, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
 import { blockDecorationsField, buildInlineDecorations, selectionAffectsDecos } from "./livePreview";
 import { mathRegions } from "./context";
+import { scanMath } from "./mathScan";
+import { buildSession, setSession } from "./snippets/extension";
+import { parseReplacement, findSnippet } from "./snippets/engine";
 import { renderMathHtml } from "./widgets";
 import { enterContinueListItem, insertCodeBlock, insertMathBlock, toggleList } from "./ops";
 import { moveByLinesVisual, type VimCoreState } from "./vim/verticalMotion";
@@ -514,5 +517,73 @@ describe("性能门禁：mathRegions 缓存", () => {
     }, 15);
     console.warn(`[perf] mathRegions 重扫 中位数 ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(2);
+  });
+});
+
+// ---- 公式扫描:栈式配对 + 空行容错 ----
+// 配对从"两两顺序配对"改为栈式后,被拒的配对会让闭候选继续向后找。用
+// "完好公式 + 错位落单 $$ 交错"的文档锁住全文重扫量级,防止有人把配对
+// 写成对每个标记的全文查找。
+
+describe("性能门禁：公式扫描(栈式配对)", () => {
+  // 20 个完好公式与 20 个落单 $$ 交错,再加一个文档尾部错位产物
+  const mixedDoc = (() => {
+    const parts: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      parts.push("$$");
+      parts.push(`E_{${i}} = mc^2`);
+      parts.push("$$");
+      parts.push("");
+      parts.push("$$");
+      parts.push("");
+      parts.push("正文段落,若干文字。");
+      parts.push("");
+    }
+    parts.push("$$");
+    parts.push("stray = 1");
+    return parts.join("\n");
+  })();
+
+  it("mathRegions 全文重扫(80+ $$ 标记,含错位与空行容错)中位数 < 1ms", () => {
+    const state = makeState(mixedDoc, 0);
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      scanMath(state.doc);
+      return performance.now() - t0;
+    }, 15);
+    console.warn(`[perf] 公式扫描(80+标记) 中位数 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(1);
+  });
+});
+
+// ---- 片段会话内的每击输入 ----
+// 会话期间自动补全不再被压制(嵌套会话栈):每击额外跑一次 findSnippet
+// (221 条编译片段的触发器匹配)+ 会话链字段映射。锁住这条新热路径的量级。
+
+describe("性能门禁：片段会话内输入", () => {
+  it("会话内 20 击(dispatch+链映射+findSnippet)总计 < 90ms", () => {
+    const view = makeTogglingView(makeState(DOC, 0));
+    const end = view.state.doc.length;
+    // 起一个括号会话(insertMathBlock 的 $$…$$ 已在文档里,直接建会话)
+    view.dispatch({ changes: { from: end, insert: "()" }, selection: { anchor: end + 1 } });
+    const session = buildSession(end, parseReplacement("($0)$1", [], null));
+    view.dispatch({ effects: setSession.of(session) });
+
+    const samples: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const at = view.state.selection.main.head;
+      const t0 = performance.now();
+      // 真实每击管线:插入事务(会话链映射)+ 触发器匹配
+      view.dispatch({ changes: { from: at, insert: "x" }, userEvent: "input.type" });
+      findSnippet(view.state, view.state.selection.main.head, "x", {
+        auto: true,
+        visualText: null,
+      });
+      samples.push(performance.now() - t0);
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    expect(view.state.doc.sliceString(end, end + 22)).toContain("xxxxxxxxxxxxxxxxxxxx");
+    console.warn(`[perf] 会话内 20 击 总计 ${total.toFixed(0)}ms`);
+    expect(total).toBeLessThan(90);
   });
 });

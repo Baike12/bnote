@@ -1,4 +1,5 @@
 import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
+import type { Transaction } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { findSnippet, parseReplacement, snippetStore } from "./engine";
@@ -9,6 +10,10 @@ import { autoFraction } from "./autofraction";
  * Snippet session: tracks tabstop positions of the snippet expanded at the
  * cursor. Mirrored tabstops (same index appearing several times) are kept in
  * sync after each edit, like latex-suite.
+ *
+ * 会话是**栈**(parent 链):会话期内再展开的片段(括号里打 sq、bf,括号里
+ * 打 / 扩分数)压入子会话,Tab 从最内层逐层走出——latex-suite 的嵌套语义。
+ * 字段每次事务映射**整条链**上每个会话的 stops,弹出时父会话的位置已是最新。
  */
 interface SnippetSession {
   base: number;
@@ -19,45 +24,77 @@ interface SnippetSession {
   stops: Map<number, { from: number; to: number }[]>;
   /** Index into `order`. */
   active: number;
-  finalPos: number;
+  parent: SnippetSession | null;
 }
+
+/** 会话栈的实现细节,导出供无 DOM 回归测试驱动(snippetSession.test.ts)。 */
+export type { SnippetSession };
+export { setSession, snippetField, buildSession };
 
 const setSession = StateEffect.define<SnippetSession | null>();
 
+/** 展开时的旧会话压为 parent;映射整条链;全文档替换(切换文件/装载)清空。 */
 const snippetField = StateField.define<SnippetSession | null>({
   create: () => null,
   update(value, tr) {
     for (const e of tr.effects) {
-      if (e.is(setSession)) return e.value;
+      if (!e.is(setSession)) continue;
+      // 新会话自身的位置按事务**后**的文档构造,不再映射;但挂上来的
+      // parent 链还是事务前的对象——不映射父链,父层 stops/base 就停在
+      // 旧文档坐标上(展开发生在父层 active stop 内,映射正好让它生长)。
+      const v = e.value;
+      return v && v.parent ? { ...v, parent: mapSession(v.parent, tr) } : v;
     }
     if (!value) return null;
+    if (fullReplace(tr)) return null;
     if (!tr.docChanged) return value;
-    // The active stop grows around insertions at its position (-1/+1 mapping)
-    // so its range always contains what the user typed — mirror sync reads it.
-    const activeIdx = value.order[value.active];
-    const stops = new Map<number, { from: number; to: number }[]>();
-    for (const [idx, ranges] of value.stops) {
-      stops.set(
-        idx,
-        ranges.map((r) =>
-          idx === activeIdx
-            ? { from: tr.changes.mapPos(r.from, -1), to: tr.changes.mapPos(r.to, 1) }
-            : { from: tr.changes.mapPos(r.from, 1), to: tr.changes.mapPos(r.to, 1) },
-        ),
-      );
-    }
-    return {
-      base: tr.changes.mapPos(value.base, 1),
-      end: tr.changes.mapPos(value.end, 1),
-      order: value.order,
-      stops,
-      active: value.active,
-      finalPos: tr.changes.mapPos(value.finalPos, 1),
-    };
+    return mapSession(value, tr);
   },
 });
 
-function buildSession(start: number, replacement: ParsedReplacement): SnippetSession | null {
+/** 单个 change 覆盖整个旧文档 = 换文件/整篇装载,会话锚定的文档已不存在。 */
+function fullReplace(tr: Transaction): boolean {
+  if (!tr.docChanged) return false;
+  const oldLen = tr.startState.doc.length;
+  let full = false;
+  tr.changes.iterChanges((fromA, toA) => {
+    if (fromA === 0 && toA === oldLen) full = true;
+  });
+  return full;
+}
+
+function mapSession(s: SnippetSession, tr: Transaction): SnippetSession {
+  // The active stop grows around insertions at its position (-1/+1 mapping)
+  // so its range always contains what the user typed — mirror sync reads it.
+  // 链上每个会话的 active stop 都如此生长(子会话的活动区就长在父会话的
+  // active stop 里)。
+  const activeIdx = s.order[s.active];
+  const stops = new Map<number, { from: number; to: number }[]>();
+  for (const [idx, ranges] of s.stops) {
+    stops.set(
+      idx,
+      ranges.map((r) =>
+        idx === activeIdx
+          ? { from: tr.changes.mapPos(r.from, -1), to: tr.changes.mapPos(r.to, 1) }
+          : { from: tr.changes.mapPos(r.from, 1), to: tr.changes.mapPos(r.to, 1) },
+      ),
+    );
+  }
+  return {
+    base: tr.changes.mapPos(s.base, 1),
+    end: tr.changes.mapPos(s.end, 1),
+    order: s.order,
+    stops,
+    active: s.active,
+    parent: s.parent ? mapSession(s.parent, tr) : null,
+  };
+}
+
+function buildSession(
+  start: number,
+  replacement: ParsedReplacement,
+  parent: SnippetSession | null = null,
+): SnippetSession | null {
   const { stops } = replacement;
   if (stops.length === 0) return null;
   const base = start;
@@ -65,12 +102,10 @@ function buildSession(start: number, replacement: ParsedReplacement): SnippetSes
 
   const order: number[] = [];
   const seen = new Set<number>();
-  const firstAppearance = new Map<number, number>();
   for (const s of stops) {
     if (!seen.has(s.index)) {
       seen.add(s.index);
       order.push(s.index);
-      firstAppearance.set(s.index, s.from);
     }
   }
   // $0 is the primary typing position; navigate to it first.
@@ -87,14 +122,7 @@ function buildSession(start: number, replacement: ParsedReplacement): SnippetSes
     ranges.set(s.index, list);
   }
 
-  return {
-    base,
-    end,
-    order,
-    stops: ranges,
-    active: 0,
-    finalPos: end,
-  };
+  return { base, end, order, stops: ranges, active: 0, parent };
 }
 
 function startSessionAt(
@@ -103,7 +131,7 @@ function startSessionAt(
   end: number,
   replacement: ParsedReplacement,
 ): boolean {
-  const session = buildSession(start, replacement);
+  const session = buildSession(start, replacement, view.state.field(snippetField, false));
   const firstStop = session ? session.stops.get(session.order[0])![0] : null;
   view.dispatch({
     changes: { from: start, to: end, insert: replacement.text },
@@ -132,31 +160,40 @@ function selectStop(view: EditorView, session: SnippetSession, active: number) {
   });
 }
 
+/** Tab 的纯决策:本层走完弹到父层继续推进,根走完即结束(光标原地——单 $0
+ *  片段如 dm 的 Tab 必须留在公式块内,跳到闭合 $$ 之后是旧模型的 bug)。 */
+export type TabPlan =
+  | { kind: "select"; session: SnippetSession; index: number }
+  | { kind: "end" };
+
+export function planTab(session: SnippetSession): TabPlan {
+  const next = session.active + 1;
+  if (next < session.order.length) return { kind: "select", session, index: next };
+  if (session.parent) return planTab(session.parent);
+  return { kind: "end" };
+}
+
 function nextStop(view: EditorView): boolean {
   const session = view.state.field(snippetField, false);
   if (!session) return false;
-  const next = session.active + 1;
-  if (next >= session.order.length) {
-    view.dispatch({
-      selection: { anchor: session.finalPos },
-      effects: setSession.of(null),
-      scrollIntoView: true,
-    });
+  const plan = planTab(session);
+  if (plan.kind === "end") {
+    view.dispatch({ effects: setSession.of(null) });
     return true;
   }
-  selectStop(view, session, next);
+  selectStop(view, plan.session, plan.index);
   return true;
 }
 
 function previousStop(view: EditorView): boolean {
   const session = view.state.field(snippetField, false);
   if (!session) return false;
-  const prev = Math.max(0, session.active - 1);
-  if (prev === session.active) {
-    view.dispatch({ effects: setSession.of(null) });
+  if (session.active > 0) {
+    selectStop(view, session, session.active - 1);
     return true;
   }
-  selectStop(view, session, prev);
+  // 已在本层第一个 stop:有外层弹回外层,否则结束会话
+  view.dispatch({ effects: setSession.of(session.parent ?? null) });
   return true;
 }
 
@@ -185,34 +222,31 @@ export function tryAutoExpand(view: EditorView, key: string, visualText: string 
   const cursor = state.selection.main.to;
   // latex-suite auto-fraction:数学态内键入 `/` 把光标前的表达式扩成分数。
   // "/" 已由调用方插入(光标停在其后),展开时连同它一起被替换。
-  // 除号在 snippet 会话期间也必须生效(latex-suite 里它是击键级特性,不受
-  // 会话压制):`f(` 的括号片段会话横跨整行,若被会话挡住,`(x)=1/` 这种
-  // 最常见的输入形态就永远扩不出来。新会话整体替换旧会话。
-  // 导出 tryAutoExpand 供回归测试在假视图上锁两条输入路径的汇合点。
+  // 除号在 snippet 会话期间同样生效(latex-suite 里它是击键级特性):会话
+  // 中的 `/` 压入子会话,Tab 先走完分数再回到外层(`f(` 的括号会话横跨整行,
+  // `(x)=1/` 这种最常见形态必须能扩)。导出供回归测试在假视图上锁汇合点。
   if (key === "/" && snippetStore.enabled) {
     const frac = autoFraction(state, cursor, visualText);
     if (frac) return startSessionAt(view, frac.start, frac.end, frac.replacement);
   }
-  // 会话期间其余自动触发保持压制:嵌套自动展开会破坏镜像 tabstop。
   if (!canAutoExpand(view)) return false;
   const match = findSnippet(state, cursor, key, { auto: true, visualText });
   if (!match) return false;
   return startSession(view, match);
 }
 
-/** Auto-expansion right after typing a character. Suppressed while a snippet
- *  session is active: nested auto-triggers corrupt the outer session's
- *  mirrored tabstops (e.g. typing "align" inside beg's placeholder). */
+/** Auto-expansion right after typing a character. 会话期间不再压制:嵌套
+ *  展开压入子会话(见 SnippetSession.parent),旧的"整体替换旧会话"才是
+ *  镜像 tabstop 损坏的根源。 */
 function canAutoExpand(view: EditorView): boolean {
-  return snippetStore.enabled && !view.composing && !view.state.field(snippetField, false);
+  return snippetStore.enabled && !view.composing;
 }
 
 const autoExpandHandler = EditorView.inputHandler.of((view, from, to, text) => {
   // composition 输入交还默认路径(展开会和 IME 的 DOM 改写打架)。
   if (view.composing) return false;
   const key = triggerKeyOf(text);
-  // 会话期间只放行除号(见 tryAutoExpand);其余保持压制。
-  if (!key || (key !== "/" && !canAutoExpand(view))) return false;
+  if (!key || !canAutoExpand(view)) return false;
   const visualText = to > from ? view.state.sliceDoc(from, to) : null;
   // Perform the default insertion ourselves, then look for a trigger.
   view.dispatch({
@@ -321,29 +355,30 @@ const autoExpandVimListener = EditorView.updateListener.of((u) => {
   tryAutoExpand(u.view, key, visualText);
 });
 
-/** Keeps mirrored tabstops in sync after edits. */
+/** Keeps mirrored tabstops in sync after edits. 链上每个会话的 active stop
+ *  都参与同步:子会话长在父会话的 active stop 里,父层的镜像(如 beg 的
+ *  \begin/\end 环境名)在子会话打字时也要跟上。 */
 const mirrorSyncListener = EditorView.updateListener.of((u) => {
   if (!u.docChanged || !u.selectionSet) return; // sync only after user edits
   const session = u.state.field(snippetField, false);
   if (!session) return;
-  const index = session.order[session.active];
-  const ranges = session.stops.get(index);
-  if (!ranges || ranges.length < 2) return;
 
   const doc = u.state.doc;
-  const valid = ranges.filter((r) => r.from <= r.to && r.from >= 0 && r.to <= doc.length);
-  if (valid.length < 2) return;
-
   const head = u.state.selection.main.head;
-  const source =
-    valid.find((r) => head >= r.from && head <= r.to) ?? valid[0];
-  const content = doc.sliceString(source.from, source.to);
-  if (valid.every((r) => doc.sliceString(r.from, r.to) === content)) return;
-
   const changes: { from: number; to: number; insert: string }[] = [];
-  for (const r of valid) {
-    if (r === source) continue;
-    changes.push({ from: r.from, to: r.to, insert: content });
+  for (let node: SnippetSession | null = session; node; node = node.parent) {
+    const ranges = node.stops.get(node.order[node.active]);
+    if (!ranges || ranges.length < 2) continue;
+    const valid = ranges.filter((r) => r.from <= r.to && r.from >= 0 && r.to <= doc.length);
+    if (valid.length < 2) continue;
+
+    const source =
+      valid.find((r) => head >= r.from && head <= r.to) ?? valid[0];
+    const content = doc.sliceString(source.from, source.to);
+    if (valid.every((r) => doc.sliceString(r.from, r.to) === content)) continue;
+    for (const r of valid) {
+      if (r !== source) changes.push({ from: r.from, to: r.to, insert: content });
+    }
   }
   if (changes.length === 0) return;
   u.view.dispatch({
@@ -352,21 +387,25 @@ const mirrorSyncListener = EditorView.updateListener.of((u) => {
   });
 });
 
-/** Ends the session when the cursor leaves the snippet region. Runs on
- *  selection changes including doc-edit ones — a document replacement that
- *  leaves the cursor outside the (mapped) region must clear the session,
- *  or it would suppress auto-expansion until the next cursor move. */
+/** Ends (pops) sessions the cursor has left. Runs on selection changes
+ *  including doc-edit ones. 光标离开哪层就弹到哪层:离开子会话回到父会话,
+ *  离开整条链才真正结束。 */
 const exitListener = EditorView.updateListener.of((u) => {
   if (!u.selectionSet) return;
-  const before = u.startState.field(snippetField, false);
-  if (!before) return;
   const session = u.state.field(snippetField, false);
   if (!session) return;
-  const head = u.state.selection.main.head;
-  if (head < session.base || head > session.end) {
-    u.view.dispatch({ effects: setSession.of(null) });
+  const keep = exitChain(session, u.state.selection.main.head);
+  if (keep !== session) {
+    u.view.dispatch({ effects: setSession.of(keep) });
   }
 });
+
+/** 光标仍被哪层会话包含就保留到哪层(纯函数,导出供回归测试)。 */
+export function exitChain(session: SnippetSession, head: number): SnippetSession | null {
+  let cur: SnippetSession | null = session;
+  while (cur && (head < cur.base || head > cur.end)) cur = cur.parent;
+  return cur;
+}
 
 const snippetKeymap = keymap.of([
   { key: "Tab", run: nextStopThenExpand },
