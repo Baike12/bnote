@@ -1,7 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import { currentVimMode } from "./vim/vim";
-import { mathRegions } from "./context";
+import { insideFencedCode, mathRegions } from "./context";
 import { getView } from "./api";
 import { api } from "@/lib/tauri";
 import { useAppStore, type ModalKind, type Settings } from "@/state/appStore";
@@ -120,15 +120,26 @@ function imeDesiredSource(settings: Settings, modal: ModalKind): string | null {
   const mode = currentVimMode(view);
   if (!mode) return null;
   if (mode === "insert") {
-    if (settings.ime.mathKeepsEnglish) {
-      const head = view.state.selection.main.head;
-      if (mathRegions(view.state).some((r) => head >= r.from && head <= r.to)) {
-        return settings.ime.normalSource;
-      }
-    }
+    if (insertRegionWantsEnglish(settings, view)) return settings.ime.normalSource;
     return settings.ime.insertSource;
   }
   return settings.ime.normalSource;
+}
+
+/**
+ * insert 模式下光标是否落在「该保持英文」的区域:公式(公式是 ASCII)或
+ * 围栏代码块(代码是 ASCII)。imeDesiredSource 与 updateListener 两条路径
+ * 共用这一个判定,不许各写一份——区域清单变化时只改这里。
+ */
+function insertRegionWantsEnglish(settings: Settings, view: EditorView): boolean {
+  const head = view.state.selection.main.head;
+  if (settings.ime.mathKeepsEnglish && mathRegions(view.state).some((r) => head >= r.from && head <= r.to)) {
+    return true;
+  }
+  if (settings.ime.codeKeepsEnglish && insideFencedCode(view.state, head)) {
+    return true;
+  }
+  return false;
 }
 
 /** Window deactivated: hand the user's original source back to the system. */
@@ -166,10 +177,8 @@ export function imeSwitchExtension(): Extension {
     }
 
     let target = mode === "insert" ? ime.insertSource : ime.normalSource;
-    if (mode === "insert" && ime.mathKeepsEnglish) {
-      const head = view.state.selection.main.head;
-      const inMath = mathRegions(view.state).some((r) => head >= r.from && head <= r.to);
-      if (inMath) target = ime.normalSource;
+    if (mode === "insert" && insertRegionWantsEnglish(settings, view)) {
+      target = ime.normalSource;
     }
 
     if (target === lastEditorTarget) return;

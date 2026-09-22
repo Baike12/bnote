@@ -1,5 +1,5 @@
 import type { EditorState, Text } from "@codemirror/state";
-import { syntaxTree } from "@codemirror/language";
+import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import { scanMath, type MathRegion } from "./mathScan";
 
@@ -45,6 +45,23 @@ export function insideFencedCodeByScan(doc: Text, lineNo: number): boolean {
     }
   }
   return open !== null;
+}
+
+/**
+ * 光标位置是否在围栏代码块内：树可用走树查询（FencedCode 节点，含围栏
+ * 标记行自身），树还没就绪（文件刚载入，后台解析未完成）退回行扫描。
+ * 所有「光标在不在代码块里」的判定都走这里，不许各处自建——围栏行自身
+ * 两条路有已知差异（树算在内、扫描不算），只在 IME 这种低风险判定上可容忍。
+ */
+export function insideFencedCode(state: EditorState, pos: number): boolean {
+  if (syntaxTreeAvailable(state, pos + 1)) {
+    let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1);
+    for (; node; node = node.parent) {
+      if (node.name === "FencedCode") return true;
+    }
+    return false;
+  }
+  return insideFencedCodeByScan(state.doc, state.doc.lineAt(pos).number);
 }
 
 export interface EditContext {

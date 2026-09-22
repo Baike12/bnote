@@ -2,9 +2,8 @@ import type { EditorView } from "@codemirror/view";
 import { EditorSelection } from "@codemirror/state";
 import type { EditorState, Text } from "@codemirror/state";
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { indentUnit, syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
-import { getContextAt, insideFencedCodeByScan } from "./context";
-import type { SyntaxNode } from "@lezer/common";
+import { indentUnit, syntaxTreeAvailable } from "@codemirror/language";
+import { getContextAt, insideFencedCode, insideFencedCodeByScan } from "./context";
 import { renumberHeadings } from "./numbering";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 import { useAppStore } from "@/state/appStore";
@@ -109,17 +108,8 @@ export function enterContinueListItem(view: EditorView): boolean {
     if (!range.empty) return unhandled();
     let pos = range.from;
     // Inside a fenced code block the markup is literal text — never continue.
-    // The tree is still empty right after a file switch (background parse
-    // hasn't landed), where resolveInner finds no FencedCode — fall back to a
-    // line scan so the guard stays correct in that window.
-    if (syntaxTreeAvailable(state, pos + 1)) {
-      let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1);
-      for (; node; node = node.parent) {
-        if (node.name === "FencedCode") return unhandled();
-      }
-    } else if (insideFencedCodeByScan(state.doc, state.doc.lineAt(pos).number)) {
-      return unhandled();
-    }
+    // 树还没就绪（文件刚载入）时由共享判定内部退回行扫描，守卫始终成立。
+    if (insideFencedCode(state, pos)) return unhandled();
     // markdown-only editor: this gate only matters against nested-language
     // regions, and only the parsed tree knows about them. With an empty tree
     // isActiveAt is false for EVERY position (Tree.empty's top node carries no
@@ -431,21 +421,10 @@ export function toggleList(view: EditorView, kind: ListKind) {
       const line = doc.line(n);
 
       // 树已覆盖该行时走树查询（能识别深层缩进的围栏）；刚载入的空树查不到
-      // FencedCode，行扫描兜底，否则切换文件后立刻转换会把围栏内标记也换掉。
+      // 围栏行不参与列表/标题转换:树就绪走树查询,树没跟上行扫描兜底,
+      // 否则切换文件后立刻转换会把围栏内标记也换掉。
       const probePos = Math.min(line.from + 1, doc.length);
-      let inFence = false;
-      if (syntaxTreeAvailable(state, probePos + 1)) {
-        let node: SyntaxNode | null = syntaxTree(state).resolveInner(probePos, -1);
-        for (; node; node = node.parent) {
-          if (node.name === "FencedCode") {
-            inFence = true;
-            break;
-          }
-        }
-      } else {
-        inFence = insideFencedCodeByScan(doc, n);
-      }
-      if (inFence) continue;
+      if (insideFencedCode(state, probePos)) continue;
 
       const bullet = BULLET_ITEM_RE.exec(line.text);
       const ordered = ORDERED_ITEM_RE.exec(line.text);
