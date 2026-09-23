@@ -454,9 +454,19 @@ function SnippetsTab() {
             void api
               .writeVaultFile("snippets.js", content)
               .then(() => reloadSnippetsFromVault())
-              .then(() => {
+              .then((outcome) => {
                 setDirtyLocal(false);
-                showToast("片段已保存并生效");
+                // 装载结果如实反馈：此前即使动态导入失败回退了内置，
+                // 这里也永远提示"已保存并生效"。
+                if (!outcome) {
+                  showToast("片段已保存，但没有打开仓库，无法加载");
+                } else if (outcome.status === "error") {
+                  showToast(`片段保存失败: ${outcome.error}`);
+                } else if (outcome.status === "builtin") {
+                  showToast("片段已保存，当前使用内置片段");
+                } else {
+                  showToast(`片段已保存并生效，共 ${outcome.count} 条`);
+                }
               })
           }
         >

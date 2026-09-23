@@ -11,8 +11,11 @@ import { flushCursorSave, restoreSavedCursor } from "@/editor/cursorMemory";
 import { reconfigureLivePreview, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
 import { configureLivePreview } from "@/editor/livePreview";
 import { loadVimrc } from "@/editor/vim/loader";
-import { reloadSnippets } from "@/editor/snippets/engine";
-import type { RawSnippet } from "@/editor/snippets/default-snippets";
+import {
+  applySnippetsEnabled,
+  snippetLoader,
+  type SnippetLoadOutcome,
+} from "@/editor/snippets/load";
 import { dirname, fileName, joinPath, wikilinkText } from "@/lib/path";
 import { ensureLinks } from "@/daily/links";
 
@@ -382,7 +385,9 @@ export async function applySettingsToEditor(): Promise<void> {
   const { settings } = useAppStore.getState();
   document.documentElement.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
   if (!view) return;
-  reloadSnippets(null, settings.snippets);
+  // 只翻开关、不动来源：若把来源重置为 null，每次打开文件/改设置都会把
+  // 仓库片段打回内置（真实回归，load.test.ts 有接线门禁）。
+  applySnippetsEnabled(settings.snippets);
   configureLivePreview({ mathPreview: settings.mathPreview });
   reconfigureLivePreview(view, settings.livePreview);
   reconfigureTypewriter(view, settings.typewriter);
@@ -390,32 +395,19 @@ export async function applySettingsToEditor(): Promise<void> {
   reconfigureVim(view, settings.vim, mappings);
 }
 
-/** Loads `<vault>/.bnote/snippets.js` when present, falling back to defaults. */
-export async function reloadSnippetsFromVault(): Promise<void> {
+/**
+ * Loads `<vault>/.bnote/snippets.js` when present, falling back to builtin.
+ * Returns the outcome so callers can report honestly (settings save toast,
+ * watcher toast) instead of lying "已生效" while the load actually failed.
+ */
+export async function reloadSnippetsFromVault(): Promise<SnippetLoadOutcome | null> {
   const { vaultPath, settings } = useAppStore.getState();
-  if (!vaultPath) return;
+  if (!vaultPath) return null;
   try {
     const src = await api.readVaultFile("snippets.js");
-    if (!src) {
-      reloadSnippets(null, settings.snippets);
-      return;
-    }
-    const raws = await importSnippetModule(src);
-    reloadSnippets(raws, settings.snippets);
+    return await snippetLoader.load(src, settings.snippets);
   } catch (e) {
     console.warn("[bnote] failed to load vault snippets.js", e);
-    reloadSnippets(null, settings.snippets);
-  }
-}
-
-async function importSnippetModule(src: string): Promise<RawSnippet[]> {
-  const blob = new Blob([src], { type: "text/javascript" });
-  const url = URL.createObjectURL(blob);
-  try {
-    const mod = await import(/* @vite-ignore */ url);
-    const data = (mod as { default?: unknown }).default ?? mod;
-    return Array.isArray(data) ? (data as RawSnippet[]) : [];
-  } finally {
-    URL.revokeObjectURL(url);
+    return await snippetLoader.load(null, settings.snippets);
   }
 }
