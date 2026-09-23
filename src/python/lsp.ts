@@ -3,7 +3,7 @@
  * CM lint 诊断贴回当前文档;补全与 hover 走同一条路 —— 光标位置换算成虚拟
  * 文件的 LSP position,转发 ty,结果映射回 markdown 偏移。
  *
- * 纪律(见 CLAUDE.md「不许竞争」):
+ * 纪律(见 AGENTS.md「不许竞争」):
  * - 每个 500ms tick 拿到的是 tick 当刻的 view 状态,异步回来后先自证
  *   (mdPath 没变)才贴诊断,过期结果直接丢弃 —— ty 随后一次 didChange 会
  *   重新发布,不需要旧结果的续命。
