@@ -21,7 +21,7 @@ bnote 的核心是**手感**:编辑、滚动、光标移动、渲染都不许有
 
 ## 调试与验证方式(默认必须遵守)
 
-改前端逻辑后**不构建、不部署**(由用户决定,历史上明确过"只调试不构建")。验证在浏览器里做,不抢焦点、不动用户的鼠标键盘;严禁 computer-use / 整屏截图(会占用用户桌面)。驱动一律用 **browseros-neo**(禁止 playwright-cli):`tabs action="new"` 开自己的标签页,`evaluate` 读 DOM/量几何,`screenshot` 出页面级截图;用完关掉自己开的标签页,dev server 若是本会话起的就停掉。
+改前端逻辑后**不构建、不部署**(由用户决定,历史上明确过"只调试不构建")。验证在浏览器里做,不抢焦点、不动用户的鼠标键盘;严禁 computer-use / 整屏截图(会占用用户桌面)。驱动一律用**会话内的浏览器**(ZCode 应用内浏览器,走 control-browser 技能那套):自己开标签页(`tabs.new()`)、用 `playwright.evaluate` 读 DOM/量几何;截图偶发拼接伪影,只当参考,**以 DOM 断言和磁盘字节为准**。不许另起 playwright-cli 或别的浏览器工具;用完关掉自己开的标签页,dev server 若是本会话起的就停掉。
 
 **两条回路**
 
@@ -32,7 +32,7 @@ bnote 的核心是**手感**:编辑、滚动、光标移动、渲染都不许有
    - **浏览器里没有**:原生子 webview(四个 `*_study_preview*`、`open_study_url`)、IME 三个命令、以及 dialog / opener / clipboard 这些 `plugin:*` 命令(`dispatch` 里没有 → `UNKNOWN_COMMAND`)。这几类只能逻辑层验证,**平台行为留待用户部署后实测,并在总结里说明**。
    - 浏览器里编辑会写进真 vault,跟用户的窗口共用同一份文件——**同一时刻只允许一方在写**。
 
-2. **harness(纯前端、假数据)**:`http://localhost:1430/harness.html`,不需要 Tauri,挂载带全部真实扩展的编辑器 + 内存假仓库,适合确定性断言。钩子:`__view`、`__loadDoc(text)`、`__loadFileDoc(text, path?)`、`__setCursor(line, col)`/`__cursor()`、`__store`/`__api`/`__actions`、`__mountSidebar(entries)`/`__mountStudyLayout()`;新钩子加在 `src/dev/harness.ts`,模式照抄。起 dev server 前先探测 1430(`harness.html` 返回 200 就直接用,别重复起服务——`strictPort: true`,端口被占会让 `pnpm dev` 退出);HMR 自动生效,改完无需重启。
+2. **harness(纯前端、假数据)**:`http://localhost:1430/harness.html`,不需要 Tauri,挂载带全部真实扩展的编辑器 + 内存假仓库,适合确定性断言。钩子:`__view`、`__loadDoc(text)`、`__loadFileDoc(text, path?)`、`__setCursor(line, col)`/`__cursor()`、`__store`/`__api`/`__actions`、`__mountSidebar(entries)`/`__unmountSidebar()`(真卸载,重挂载类场景必用)/`__mountStudyLayout()`;新钩子加在 `src/dev/harness.ts`,模式照抄。起 dev server 前先探测 1430(`harness.html` 返回 200 就直接用,别重复起服务——`strictPort: true`,端口被占会让 `pnpm dev` 退出);HMR 自动生效,改完无需重启。
 
 **四个必踩的坑**
 
