@@ -11,6 +11,7 @@ import { livePreviewExtension, configureLivePreview } from "./livePreview";
 import { typewriterExtension } from "./typewriter";
 import { imeSwitchExtension } from "./imeSwitch";
 import { pythonLspExtension } from "@/python/lsp";
+import { dailySyncExtension } from "@/daily/extension";
 import { snippetsExtension } from "./snippets/extension";
 import { installMathMotionClamp } from "./motionClamp";
 import { renumberHeadings } from "./numbering";
@@ -60,6 +61,9 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     // ty LSP:文档变更防抖同步行对齐虚拟 python 文件,诊断贴回文档。
     // 自带门槛(无 docPath 的编辑器、无 python 围栏、项目 LSP 关闭都直通)。
     pythonLspExtension(),
+
+    // 跨文件待办同步:勾选/子待办/改名镜像到日记(自带链接库未加载直通门槛)。
+    dailySyncExtension(),
 
     history(),
     search({

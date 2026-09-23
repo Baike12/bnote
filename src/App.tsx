@@ -13,6 +13,7 @@ import { renumberHeadings } from "@/editor/numbering";
 import { editorApi } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, hasPendingCursorSave } from "@/editor/cursorMemory";
+import { flushLinksPersist, hasPendingLinksPersist } from "@/daily/links";
 import { flushPersistConfig, hasPendingPersist } from "@/state/appStore";
 import { imeOnWindowBlur, imeOnWindowFocus } from "@/editor/imeSwitch";
 import {
@@ -120,16 +121,18 @@ export default function App() {
       if (document.visibilityState !== "hidden") return;
       flushCursorSave();
       flushPersistConfig();
+      flushLinksPersist();
     };
     document.addEventListener("visibilitychange", onHidden);
     let unlisten: (() => void) | undefined;
     try {
       void getCurrentWindow()
         .onCloseRequested(async (event) => {
-          if (!hasPendingCursorSave() && !hasPendingPersist()) return;
+          if (!hasPendingCursorSave() && !hasPendingPersist() && !hasPendingLinksPersist()) return;
           event.preventDefault();
           flushCursorSave();
           flushPersistConfig();
+          flushLinksPersist();
           await getCurrentWindow().destroy();
         })
         .then((off) => {
@@ -146,6 +149,7 @@ export default function App() {
     void listen("bnote:menu-quit", () => {
       flushCursorSave();
       flushPersistConfig();
+      flushLinksPersist();
       void getCurrentWindow().destroy();
     })
       .then((off) => {
