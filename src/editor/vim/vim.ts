@@ -249,6 +249,51 @@ interface Pos {
   ch: number;
 }
 
+/** Visual 模式高亮行集合的纯函数体：vim 引擎的 sel（CodeMirror 5 风格
+ *  0 基 line/ch）优先——linewise visual 常常保持 CM 选区为空；引擎没维护
+ *  sel 时退回 CM 选区。导出供门禁锁几何（前向/反向/linewise/空选区）。 */
+export function visualLineNumbers(
+  doc: {
+    lines: number;
+    line(n: number): { from: number; to: number };
+    lineAt(pos: number): { from: number; to: number; number: number };
+  },
+  vimState: {
+    visualMode?: boolean;
+    visualLine?: boolean;
+    sel?: { anchor?: Pos; head?: Pos };
+  } | null,
+  ranges: readonly { from: number; to: number; empty?: boolean }[],
+): number[] {
+  if (!vimState?.visualMode) return [];
+  const lines = new Set<number>();
+  const sel = vimState.sel;
+  if (sel?.anchor != null && sel?.head != null) {
+    const aLine = Math.min(sel.anchor.line, sel.head.line) + 1;
+    const bLine = Math.max(sel.anchor.line, sel.head.line) + 1;
+    const endLine = doc.lines;
+    const from = Math.max(1, Math.min(aLine, endLine));
+    const to = Math.max(1, Math.min(bLine, endLine));
+    const hasExtent = sel.anchor.line !== sel.head.line || sel.anchor.ch !== sel.head.ch;
+    if (!hasExtent && !vimState.visualLine) {
+      // Charwise visual with a collapsed range: nothing visible yet.
+      return [];
+    }
+    for (let n = from; n <= to; n++) lines.add(n);
+  } else {
+    for (const range of ranges) {
+      if (range.empty) continue;
+      // A selection ending at a line start really ends on the previous line.
+      let to = range.to;
+      if (to > range.from && to === doc.lineAt(to).from) to -= 1;
+      for (let n = doc.lineAt(range.from).number; n <= doc.lineAt(to).number; n++) {
+        lines.add(n);
+      }
+    }
+  }
+  return [...lines].sort((a, b) => a - b);
+}
+
 export function vimVisualHighlight(): Extension {
   return ViewPlugin.fromClass(
     class {
@@ -274,36 +319,8 @@ export function vimVisualHighlight(): Extension {
           | null;
         if (!vimState?.visualMode) return Decoration.set([]);
         const doc = view.state.doc;
-        const lines = new Set<number>();
-        // The engine tracks the visual range in vim.sel (CodeMirror 5-style
-        // 0-based line/ch); linewise visual often keeps the CM selection empty.
-        const sel = vimState.sel;
-        if (sel?.anchor != null && sel?.head != null) {
-          const aLine = Math.min(sel.anchor.line, sel.head.line) + 1;
-          const bLine = Math.max(sel.anchor.line, sel.head.line) + 1;
-          const endLine = doc.lines;
-          const from = Math.max(1, Math.min(aLine, endLine));
-          const to = Math.max(1, Math.min(bLine, endLine));
-          const hasExtent =
-            sel.anchor.line !== sel.head.line || sel.anchor.ch !== sel.head.ch;
-          if (!hasExtent && !vimState.visualLine) {
-            // Charwise visual with a collapsed range: nothing visible yet.
-            return Decoration.set([]);
-          }
-          for (let n = from; n <= to; n++) lines.add(n);
-        } else {
-          for (const range of view.state.selection.ranges) {
-            if (range.empty) continue;
-            // A selection ending at a line start really ends on the previous line.
-            let to = range.to;
-            if (to > range.from && to === doc.lineAt(to).from) to -= 1;
-            for (let n = doc.lineAt(range.from).number; n <= doc.lineAt(to).number; n++) {
-              lines.add(n);
-            }
-          }
-        }
         const builder = new RangeSetBuilder<Decoration>();
-        for (const n of [...lines].sort((a, b) => a - b)) {
+        for (const n of visualLineNumbers(doc, vimState, view.state.selection.ranges)) {
           const line = doc.line(n);
           builder.add(line.from, line.from, visualLineDeco);
         }

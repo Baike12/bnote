@@ -11,6 +11,7 @@
 //! temporary-window workaround) when it is installed.
 
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -35,6 +36,10 @@ pub struct SetImeOutcome {
     /// true when the in-process select did not stick and the macism CLI took over.
     pub fallback_used: bool,
 }
+
+/// 代数戳（见 set_impl）:verify_or_fallback 的后台链属于哪次切换。
+#[cfg(target_os = "macos")]
+static SWITCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "macos")]
 mod tis {
@@ -238,6 +243,11 @@ async fn current_impl(app: AppHandle) -> CmdResult<String> {
 #[cfg(target_os = "macos")]
 async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
     spawn_blocking(move || {
+        // 代数戳:每次真实切换请求推进一格。verify_or_fallback 的后台链
+        // (120ms 后复查 → 重选 → macism)拿到自己的代数,一旦有更新的切换
+        // 开始就全部作废——否则慢链会把用户已经切走的目标又重选回来,输入
+        // 源在 normal/insert 快速翻转时来回弹,读作"切模式卡顿"。
+        let seq = SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
         let id_for_select = id.clone();
         let already = on_main(&app, move || tis::select(&id_for_select));
         eprintln!("[bnote] set_input_source({id}) -> {already:?}");
@@ -247,7 +257,7 @@ async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
         }
         let cjk = cached_is_cjk(&app, &id)?;
         if cjk {
-            verify_or_fallback(app, id);
+            verify_or_fallback(app, id, seq);
         }
         Ok(SetImeOutcome { switched: true, fallback_used: false })
     })
@@ -309,8 +319,12 @@ fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
 /// Re-check after a beat, retry once, then hand over to the macism CLI whose
 /// temporary-window workaround forces the switch. TIS reads here also go
 /// through the main thread (see `on_main`).
+///
+/// `seq` 是发起本次切换时的代数:任何一步动作(重选/macism)之前都要确认没有
+/// 更新的切换开始——快速 normal↔insert 翻转时,慢链把旧目标重选回来会让输入
+/// 源来回弹,前端毫无感知(它以为切好了)。
 #[cfg(target_os = "macos")]
-fn verify_or_fallback(app: AppHandle, target: String) {
+fn verify_or_fallback(app: AppHandle, target: String, seq: u64) {
     std::thread::spawn(move || {
         let current = || -> Option<String> {
             let handle = app.clone();
@@ -318,6 +332,9 @@ fn verify_or_fallback(app: AppHandle, target: String) {
         };
         for attempt in 0..2 {
             std::thread::sleep(Duration::from_millis(120));
+            if SWITCH_SEQ.load(Ordering::SeqCst) != seq {
+                return; // 已有更新的切换:本次验证链整体作废
+            }
             if current().as_deref() == Some(target.as_str()) {
                 return;
             }
@@ -326,6 +343,9 @@ fn verify_or_fallback(app: AppHandle, target: String) {
                 let t = target.clone();
                 let _ = on_main(&handle, move || tis::select(&t));
             }
+        }
+        if SWITCH_SEQ.load(Ordering::SeqCst) != seq {
+            return;
         }
         let used_fallback = match macism_path() {
             Some(path) => Command::new(path)
