@@ -78,9 +78,37 @@ function overlaps(a: Interval, b: Interval) {
  */
 const INLINE_TRIGGER_RE = /[*_~`$[\]\\:<>]/;
 
+/** 行首「标记槽」的宽度：缩进 + 列表标记 + 后随空白 + 可选任务括号及其空白。
+ *  非标记形态（含 `*emphasis*` 这种行内强调开头——标记后必须跟空白或行尾）
+ *  返回 null。光标跨过这个槽会翻转标记的活动规则（源码 ⇄ widget），槽边界
+ *  与各渲染分支的 active() 判定对齐（触点算活动，因此判定用 <=）。 */
+function markerSlotEnd(text: string): number | null {
+  let i = 0;
+  while (i < text.length && (text[i] === " " || text[i] === "\t")) i++;
+  const rest = text.slice(i);
+  let markerLen: number;
+  if (rest[0] === "-" || rest[0] === "*" || rest[0] === "+") {
+    markerLen = 1;
+  } else {
+    const ordered = /^\d{1,9}[.)]/.exec(rest);
+    if (!ordered) return null;
+    markerLen = ordered[0].length;
+  }
+  let j = i + markerLen;
+  if (j >= text.length) return j; // 行以标记结尾（裸 "-"）
+  if (text[j] !== " " && text[j] !== "\t") return null;
+  while (j < text.length && (text[j] === " " || text[j] === "\t")) j++;
+  const task = /^\[[ xX]\]/.exec(text.slice(j));
+  if (task) {
+    j += task[0].length;
+    while (j < text.length && (text[j] === " " || text[j] === "\t")) j++;
+  }
+  return j;
+}
+
 /** False when a selection-only change provably leaves every decoration as it
  *  was — letting plain-text cursor moves (vim h/j/k/l, arrows) skip rebuilds.
- *  导出供性能门禁锁快路径:普通文本内的纯移动必须返回 false。 */
+ *  导出供性能门禁锁快路径:标记槽之外的同行纯移动必须返回 false。 */
 export function selectionAffectsDecos(oldState: EditorState, newState: EditorState): boolean {
   const oldRanges = oldState.selection.ranges;
   const newRanges = newState.selection.ranges;
@@ -102,6 +130,20 @@ export function selectionAffectsDecos(oldState: EditorState, newState: EditorSta
     for (let n = fromLine; n <= toLine; n++) {
       if (INLINE_TRIGGER_RE.test(doc.line(n).text)) return true;
     }
+  }
+  // 同行内跨「标记槽」移动：ListMark/TaskMarker 的活动规则、空项的尾随
+  // 空白保留（keepMarkerTrailingSpace）都依赖同行内的光标位置——vim 的
+  // 0/$/A 这类同行移动曾把裸 `-`/裸 `[ ]` 永久留在屏上（渲染回归）。
+  for (let i = 0; i < newRanges.length; i++) {
+    const o = oldRanges[i];
+    const n = newRanges[i];
+    if (o.from === n.from && o.to === n.to) continue;
+    const line = doc.lineAt(n.from);
+    const slotEnd = markerSlotEnd(line.text);
+    if (slotEnd === null) continue;
+    if (slotEnd >= line.to - line.from) return true; // 空列表项:任何同行移动都可能翻转空白保留
+    const base = line.from;
+    if ((o.from - base <= slotEnd) !== (n.from - base <= slotEnd)) return true;
   }
   return false;
 }

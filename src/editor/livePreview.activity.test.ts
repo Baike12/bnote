@@ -3,7 +3,7 @@ import { EditorState, EditorSelection } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { GFM } from "@lezer/markdown";
-import { buildInlineDecorations, blockDecorationsField } from "./livePreview";
+import { buildInlineDecorations, blockDecorationsField, selectionAffectsDecos } from "./livePreview";
 import { ListBulletWidget, MathWidget, MathPreviewWidget, TaskCheckboxWidget } from "./widgets";
 
 const DOC = [
@@ -239,6 +239,79 @@ describe("段落后空 bullet 行的 setext 歧义（decorateSetextDash）", () 
     };
     expect(bulletFrom(typed)).toBe(dashFrom);
     expect(bulletFrom(typed)).toBe(bulletFrom(rendered));
+  });
+});
+
+/**
+ * 选区触发器（selectionAffectsDecos）：标记槽（列表标记/任务括号）的活动规则
+ * 依赖同行内的光标位置，同行内跨槽移动必须触发重建——否则 vim 的 0/A/$、
+ * Esc 后的光标落点会把裸 `-`/裸 `[ ]` 永久留在屏上（或反过来 widget 盖住
+ * 正在编辑的标记）。快路径不变：槽外的同行纯移动仍然必须返回 false。
+ */
+describe("选区触发器:同行内跨标记槽移动必须重建", () => {
+  const DOC2 = [
+    "- 随机变量第一行的内容",
+    "  - [ ] 嵌套任务行",
+    "普通段落文本行,没有标记。",
+    "- ",
+    "1. 有序项内容",
+  ].join("\n");
+
+  const stateAt = (line: number, col: number) => {
+    const created = EditorState.create({
+      doc: DOC2,
+      extensions: [markdown({ base: markdownLanguage, extensions: [GFM] })],
+    });
+    ensureSyntaxTree(created, created.doc.length);
+    const l = created.doc.line(line);
+    return created.update({ selection: EditorSelection.cursor(l.from + col) }).state;
+  };
+  const moves = (from: { line: number; col: number }, to: { line: number; col: number }) =>
+    selectionAffectsDecos(stateAt(from.line, from.col), stateAt(to.line, to.col));
+
+  it("回归主形态:normal 压在 `-` 上(源码态)→ A 跳行尾,同行必须触发重建", () => {
+    // 修复前这条返回 false:插件跳过重建,裸 `-` 留在屏上直到跨行/编辑
+    expect(moves({ line: 1, col: 0 }, { line: 1, col: 10 })).toBe(true);
+  });
+
+  it("反向同样触发:行尾 → 0 回到标记上", () => {
+    expect(moves({ line: 1, col: 10 }, { line: 1, col: 0 })).toBe(true);
+  });
+
+  it("任务行:光标压 `[ ]` ⇄ 行尾,双向都触发", () => {
+    expect(moves({ line: 2, col: 6 }, { line: 2, col: 12 })).toBe(true);
+    expect(moves({ line: 2, col: 12 }, { line: 2, col: 6 })).toBe(true);
+  });
+
+  it("空列表项 `- `:任何同行移动都触发(尾随空白的保留随光标翻转)", () => {
+    expect(moves({ line: 4, col: 0 }, { line: 4, col: 2 })).toBe(true);
+    expect(moves({ line: 4, col: 2 }, { line: 4, col: 0 })).toBe(true);
+  });
+
+  it("快路径不变:槽外的同行纯移动(普通行/列表行正文内)恒 false", () => {
+    expect(moves({ line: 3, col: 2 }, { line: 3, col: 6 })).toBe(false);
+    expect(moves({ line: 1, col: 4 }, { line: 1, col: 10 })).toBe(false);
+    expect(moves({ line: 5, col: 5 }, { line: 5, col: 8 })).toBe(false);
+  });
+
+  it("触发器与真实装饰一致:触发的那对状态,新建装饰确实不同", () => {
+    // 锁住 bug 的类别:trigger true ⟺ 两态各自全新构建的装饰在标记区不同。
+    // 若有人改了活动规则让两态装饰相同,这条会先红,提示触发器可以放宽。
+    const onDash = stateAt(1, 0);
+    const atEnd = stateAt(1, 10);
+    const bulletOf = (state: EditorState) => {
+      const set = buildInlineDecorations({ state, visibleRanges: [{ from: 0, to: state.doc.length }] });
+      let has = false;
+      set.between(0, 2, (_f, _t, deco) => {
+        if ((deco as { spec?: { widget?: unknown } }).spec?.widget instanceof ListBulletWidget) {
+          has = true;
+        }
+      });
+      return has;
+    };
+    expect(bulletOf(onDash)).toBe(false); // 压在标记上:源码态
+    expect(bulletOf(atEnd)).toBe(true); // 行尾:渲染态
+    expect(selectionAffectsDecos(onDash, atEnd)).toBe(true);
   });
 });
 

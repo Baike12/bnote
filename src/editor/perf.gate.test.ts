@@ -114,10 +114,10 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
     expect(median).toBeLessThan(10);
   });
 
-  it("光标移动判定:同行纯移动恒 false(快路径),跨行 true(装饰可随行变)", () => {
+  it("光标移动判定:槽外同行纯移动恒 false(快路径),跨行/跨标记槽 true", () => {
     const line = firstListLine(state);
     const base = makeState(DOC, line.from + 4);
-    // 同行移动:普通列表行无触发字符 → 不可能改装饰,必须跳过重建。
+    // 同行移动:标记槽(行首 "- ")之外,列表行同样走快路径。
     const sameLine = base.update({ selection: EditorSelection.cursor(line.from + 10) }).state;
     expect(selectionAffectsDecos(base, sameLine)).toBe(false);
     // 跨行移动:活动行规则让装饰可以随行变,返回 true 走重建——
@@ -126,6 +126,29 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
       .update({ selection: EditorSelection.cursor(state.doc.line(line.number + 1).from + 4) })
       .state;
     expect(selectionAffectsDecos(base, crossLine)).toBe(true);
+  });
+
+  it("vim 模式切换(同行跨标记槽 0⇄A,每击重建)60 次总计 < 300ms", () => {
+    // 0/$/A/Esc 落点这类同行移动会跨过标记槽(活动规则随光标翻转),每次
+    // 都走重建路径——这是 normal⇄insert 往返的确定性成本下界。
+    const line = firstListLine(state); // "- 无序列表项一,内容若干",槽宽 2
+    let cur = state;
+    const samples: number[] = [];
+    for (let i = 0; i < 60; i++) {
+      const target = i % 2 === 0 ? line.from + 1 : line.from + 10;
+      const t0 = performance.now();
+      const next = cur.update({ selection: EditorSelection.cursor(target) }).state;
+      if (selectionAffectsDecos(cur, next)) {
+        buildInlineDecorations({ state: next, visibleRanges: [{ from: 0, to: next.doc.length }] });
+      }
+      samples.push(performance.now() - t0);
+      cur = next;
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    samples.sort((a, b) => a - b);
+    const median = samples[Math.floor(samples.length / 2)];
+    console.warn(`[perf] vim 切换(跨槽) 总计 ${total.toFixed(0)}ms, 中位 ${median.toFixed(2)}ms`);
+    expect(total).toBeLessThan(300);
   });
 
   it("60 次光标移动(同行快路径+跨行重建混合)总计 < 250ms", () => {
