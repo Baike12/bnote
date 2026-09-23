@@ -7,6 +7,7 @@ import { keymap, ViewPlugin, Decoration } from "@codemirror/view";
 import type { DecorationSet, ViewUpdate } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import { EditorSelection, RangeSetBuilder } from "@codemirror/state";
+import type { Range } from "@codemirror/state";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import type { VimMapping, VimMode } from "./vimrc";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
@@ -239,30 +240,53 @@ export function setVimClipboardUnnamed(on: boolean) {
   }
 }
 
-/* ---- visual-mode line shade: band every line touched by a (non-empty)
-   selection while vim visual mode is on, mirroring the current-line shade. ---- */
+/* ---- visual-mode selection paint: the decoration layer is the ONLY painter
+   while vim visual mode is on.
+   CM 自己的选区（.cm-selectionBackground 矩形 + 浏览器原生 ::selection）几何是
+   坐标推导出来的，有两处必然对不上：横向边界按 .cm-line 的 padding 算（本应用
+   的留白在 .cm-content 上，于是矩形比行盒宽、左边压到引用条），纵向末端要向
+   coordsAtPos(to, -2) 取值（位置紧邻块级 widget——公式块、公式预览——时坐标落
+   进 widget 内部，长出跨行/高几百像素的窄灰带）。装饰的几何来自 DOM 行盒与文档
+   坐标，两条路都不会走样，所以 visual 选区只由这一层画：
+   - cm-vimVisualLine / cm-vimVisualLineHint：行带（linewise 行带即选区；charwise/
+     blockwise 的行带只是"这些行被卷入"的提示色）；
+   - cm-vimVisualRange：精确范围（charwise 的字符区间、blockwise 的逐行块）。
+   CM 的矩形在 cm-vimSelPaint 下被置透明（见 global.css）。 ---- */
 
 const visualLineDeco = Decoration.line({ class: "cm-vimVisualLine" });
+/* charwise/blockwise 的行带只是"这些行被卷入"的提示色：精确范围那层已经用了选区
+   本色，两处同色会让选中范围糊成一片。 */
+const visualLineHintDeco = Decoration.line({ class: "cm-vimVisualLineHint" });
+const visualRangeDeco = Decoration.mark({ class: "cm-vimVisualRange" });
+
+/** 绘制层接管选区时挂在 .cm-editor 上的类（CSS 据此关掉 CM 的选区矩形）。 */
+const OWN_PAINT_CLASS = "cm-vimSelPaint";
 
 interface Pos {
   line: number;
   ch: number;
 }
 
+interface VisualDoc {
+  length: number;
+  lines: number;
+  line(n: number): { from: number; to: number };
+  lineAt(pos: number): { from: number; to: number; number: number };
+}
+
+interface VisualVimState {
+  visualMode?: boolean;
+  visualLine?: boolean;
+  visualBlock?: boolean;
+  sel?: { anchor?: Pos; head?: Pos };
+}
+
 /** Visual 模式高亮行集合的纯函数体：vim 引擎的 sel（CodeMirror 5 风格
  *  0 基 line/ch）优先——linewise visual 常常保持 CM 选区为空；引擎没维护
  *  sel 时退回 CM 选区。导出供门禁锁几何（前向/反向/linewise/空选区）。 */
 export function visualLineNumbers(
-  doc: {
-    lines: number;
-    line(n: number): { from: number; to: number };
-    lineAt(pos: number): { from: number; to: number; number: number };
-  },
-  vimState: {
-    visualMode?: boolean;
-    visualLine?: boolean;
-    sel?: { anchor?: Pos; head?: Pos };
-  } | null,
+  doc: VisualDoc,
+  vimState: VisualVimState | null,
   ranges: readonly { from: number; to: number; empty?: boolean }[],
 ): number[] {
   if (!vimState?.visualMode) return [];
@@ -294,15 +318,85 @@ export function visualLineNumbers(
   return [...lines].sort((a, b) => a - b);
 }
 
+/** Visual 模式「精确范围」的纯函数体（文档偏移），与行带互补：
+ *  - linewise：整行由行带表达，这里返回空（再叠一层字符底色只是同色加深）；
+ *  - blockwise：引擎只把光标所在那一段同步进 CM 选区，块形状必须按 anchor/head
+ *    的列区间逐行切出来（列越界的行钳到行尾——vim 的块选就是这样）；
+ *  - charwise：直接用引擎同步到 CM 的选区（含头字符由引擎保证）。
+ *  只给绘制用：几何来自文档坐标，不经过 coordsAtPos，所以块级 widget 边界不会
+ *  让它变形。导出供门禁锁几何。 */
+export function visualRangeSpans(
+  doc: VisualDoc,
+  vimState: VisualVimState | null,
+  ranges: readonly { from: number; to: number; empty?: boolean }[],
+): { from: number; to: number }[] {
+  if (!vimState?.visualMode) return [];
+  const sel = vimState.sel;
+  if (vimState.visualLine) return [];
+  const out: { from: number; to: number }[] = [];
+  if (vimState.visualBlock && sel?.anchor != null && sel?.head != null) {
+    const a = sel.anchor;
+    const h = sel.head;
+    const first = Math.max(1, Math.min(a.line, h.line) + 1);
+    const last = Math.min(doc.lines, Math.max(a.line, h.line) + 1);
+    const startCh = Math.min(a.ch, h.ch);
+    const endCh = Math.max(a.ch, h.ch) + 1; // vim 的选区含头字符
+    for (let n = first; n <= last; n++) {
+      const line = doc.line(n);
+      const width = line.to - line.from;
+      const from = line.from + Math.min(startCh, width);
+      const to = line.from + Math.min(endCh, width);
+      if (to > from) out.push({ from, to });
+    }
+    return out;
+  }
+  for (const range of ranges) {
+    if (!range.empty && range.to > range.from) out.push({ from: range.from, to: range.to });
+  }
+  return out;
+}
+
+/** Visual 选区要画的全部装饰：行带 + 精确范围。空集 = 当前没有绘制者（刚按 v
+ *  还没动的折叠选区），此时独占绘制也一并放开。导出供门禁锁几何与绘制所有权。 */
+export function visualSelectionDecos(
+  doc: VisualDoc,
+  vimState: VisualVimState | null,
+  ranges: readonly { from: number; to: number; empty?: boolean }[],
+): DecorationSet {
+  if (!vimState?.visualMode) return Decoration.set([]);
+  const lines = visualLineNumbers(doc, vimState, ranges);
+  const spans = visualRangeSpans(doc, vimState, ranges);
+  // linewise 的行带就是选区本身（选区本色）；charwise/blockwise 上面还压着精确
+  // 范围那层，行带退成提示色。
+  const lineDeco = vimState.visualLine ? visualLineDeco : visualLineHintDeco;
+  if (spans.length === 0) {
+    // 行带本身有序：走 O(n) 的 builder（大范围 linewise 选区的每击重建）。
+    const builder = new RangeSetBuilder<Decoration>();
+    for (const n of lines) {
+      const line = doc.line(n);
+      builder.add(line.from, line.from, lineDeco);
+    }
+    return builder.finish();
+  }
+  const decos: Range<Decoration>[] = [];
+  for (const n of lines) decos.push(lineDeco.range(doc.line(n).from));
+  for (const span of spans) decos.push(visualRangeDeco.range(span.from, span.to));
+  return Decoration.set(decos, true);
+}
+
 export function vimVisualHighlight(): Extension {
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
       private lastVisual: boolean;
+      private ownsPaint = false;
+      private view: EditorView;
 
       constructor(view: EditorView) {
+        this.view = view;
         this.lastVisual = !!vimStateOf(view)?.visualMode;
         this.decorations = this.build(view);
+        this.syncOwnership();
       }
 
       update(u: ViewUpdate) {
@@ -310,21 +404,29 @@ export function vimVisualHighlight(): Extension {
         if (u.docChanged || u.selectionSet || u.viewportChanged || visual !== this.lastVisual) {
           this.lastVisual = visual;
           this.decorations = this.build(u.view);
+          this.syncOwnership();
         }
       }
 
+      destroy() {
+        this.view.dom.classList.remove(OWN_PAINT_CLASS);
+      }
+
+      /** 装饰层一旦画了选区，CM 的选区矩形必须让位——同一个状态两个绘制者正是
+       *  错位的来源（见文件上方注释）。没有绘制者时也别拦着 CM 画自己的矩形。 */
+      private syncOwnership() {
+        const owns = this.decorations.size > 0;
+        if (owns === this.ownsPaint) return;
+        this.ownsPaint = owns;
+        this.view.dom.classList.toggle(OWN_PAINT_CLASS, owns);
+      }
+
       build(view: EditorView): DecorationSet {
-        const vimState = vimStateOf(view) as
-          | { visualMode?: boolean; visualLine?: boolean; sel?: { anchor?: Pos; head?: Pos } }
-          | null;
-        if (!vimState?.visualMode) return Decoration.set([]);
-        const doc = view.state.doc;
-        const builder = new RangeSetBuilder<Decoration>();
-        for (const n of visualLineNumbers(doc, vimState, view.state.selection.ranges)) {
-          const line = doc.line(n);
-          builder.add(line.from, line.from, visualLineDeco);
-        }
-        return builder.finish();
+        return visualSelectionDecos(
+          view.state.doc,
+          vimStateOf(view) as VisualVimState | null,
+          view.state.selection.ranges,
+        );
       }
     },
     { decorations: (v) => v.decorations },

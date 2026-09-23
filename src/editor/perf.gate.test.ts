@@ -15,6 +15,7 @@ import { renderMathHtml } from "./widgets";
 import { enterContinueListItem, insertCodeBlock, insertMathBlock, toggleList } from "./ops";
 import { renumberHeadings } from "./numbering";
 import { moveByLinesVisual, type VimCoreState } from "./vim/verticalMotion";
+import { visualSelectionDecos } from "./vim/vim";
 import { intentsForRange } from "@/daily/engine";
 import type { DailyLink } from "@/daily/links";
 
@@ -269,6 +270,57 @@ describe("性能门禁：vim j/k 移动(900行,跨公式块隐藏行步进)", ()
     const total = samples.reduce((a, b) => a + b, 0);
     console.warn(`[perf] vim j/k 总计 ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(500);
+  });
+});
+
+// ---- visual 选区绘制:visualSelectionDecos 的每击重建 ----
+// visual 模式下每次 j/k/l 都是 selection 变更 → vimVisualHighlight 重建装饰集。
+// linewise 全选(900 行行带,走有序 builder)与 blockwise 块(逐行切块 + 排序)是
+// 两条成本上界;预算按本机实测中位数放大标定。
+
+describe("性能门禁：visual 选区绘制重建(900 行)", () => {
+  it("linewise 全选(900 行行带)60 次重建总计 < 150ms", () => {
+    const doc = makeState(DOC).doc;
+    const vimState = {
+      visualMode: true,
+      visualLine: true,
+      sel: { anchor: { line: 0, ch: 0 }, head: { line: doc.lines - 1, ch: 0 } },
+    };
+    const samples: number[] = [];
+    for (let i = 0; i < 60; i++) {
+      const t0 = performance.now();
+      const set = visualSelectionDecos(doc, vimState, []);
+      if (set.size !== doc.lines) throw new Error(`expected ${doc.lines} bands, got ${set.size}`);
+      samples.push(performance.now() - t0);
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    samples.sort((a, b) => a - b);
+    console.warn(
+      `[perf] visual linewise 全选 总计 ${total.toFixed(0)}ms, 中位 ${samples[30].toFixed(2)}ms`,
+    );
+    expect(total).toBeLessThan(150);
+  });
+
+  it("blockwise(60 行 × 20 列,逐行切块+排序)60 次重建总计 < 60ms", () => {
+    const doc = makeState(DOC).doc;
+    const vimState = {
+      visualMode: true,
+      visualBlock: true,
+      sel: { anchor: { line: 200, ch: 4 }, head: { line: 259, ch: 24 } },
+    };
+    const samples: number[] = [];
+    for (let i = 0; i < 60; i++) {
+      const t0 = performance.now();
+      const set = visualSelectionDecos(doc, vimState, []);
+      if (set.size < 60) throw new Error(`expected >= 60 decos, got ${set.size}`);
+      samples.push(performance.now() - t0);
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    samples.sort((a, b) => a - b);
+    console.warn(
+      `[perf] visual blockwise 60 行 总计 ${total.toFixed(0)}ms, 中位 ${samples[30].toFixed(2)}ms`,
+    );
+    expect(total).toBeLessThan(60);
   });
 });
 
