@@ -283,7 +283,7 @@ async function handleVaultChanged(paths: string[]) {
   }
 
   await refreshTree();
-  await reloadSnippetsFromVault();
+  const snippetOutcome = await reloadSnippetsFromVault();
 
   if (store.currentFile && paths.includes(store.currentFile)) {
     if (!store.dirty && view) {
@@ -308,5 +308,15 @@ async function handleVaultChanged(paths: string[]) {
 
   if (store.settings.vim && paths.some((p) => p.includes(".bnote/vimrc"))) {
     await applySettingsToEditor();
+  }
+
+  // 仓库片段文件自身变化：装载结果要反馈出来——成功报条数确认，失败报原因
+  //（blob 导入被 CSP 拦、用户 JS 语法错误，这些曾经全被静默吞掉，改了没反应）。
+  if (snippetOutcome && paths.some((p) => p.includes(".bnote/snippets"))) {
+    if (snippetOutcome.status === "user") {
+      store.showToast(`公式片段已更新，共 ${snippetOutcome.count} 条`);
+    } else if (snippetOutcome.status === "error") {
+      store.showToast(`公式片段加载失败: ${snippetOutcome.error}`);
+    }
   }
 }
