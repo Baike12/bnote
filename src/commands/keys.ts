@@ -37,6 +37,7 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "edit.toggle-italic": "Mod-Shift-i",
   "edit.toggle-strikethrough": "Mod-Shift-d",
   "edit.toggle-todo": "Mod-l",
+  "edit.todo-to-daily": "Mod-Shift-j",
   "edit.toggle-bullet-list": "Mod-;",
   "edit.toggle-numbered-list": "Mod-Shift-;",
   "edit.toggle-heading": "Mod-j",

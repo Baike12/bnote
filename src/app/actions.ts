@@ -14,6 +14,7 @@ import { loadVimrc } from "@/editor/vim/loader";
 import { reloadSnippets } from "@/editor/snippets/engine";
 import type { RawSnippet } from "@/editor/snippets/default-snippets";
 import { dirname, fileName, joinPath, wikilinkText } from "@/lib/path";
+import { ensureLinks } from "@/daily/links";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -31,6 +32,9 @@ export async function openVault(path: string): Promise<boolean> {
     const info = await api.setVault(path);
     const store = useAppStore.getState();
     store.setVault(info);
+    // 跨文件待办同步的链接库:开仓即加载。updateListener 里的同步路径靠
+    // peekLinks 同步读取,这里提前把 IPC 打出去,用户编辑前通常已就绪。
+    void ensureLinks(info.path).catch((e) => console.warn("load daily links failed", e));
     setConfigSnapshot({ ...getConfigSnapshot(), lastVault: info.path });
     await refreshTree();
     await reloadSnippetsFromVault();

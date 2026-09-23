@@ -15,6 +15,8 @@ import { renderMathHtml } from "./widgets";
 import { enterContinueListItem, insertCodeBlock, insertMathBlock, toggleList } from "./ops";
 import { renumberHeadings } from "./numbering";
 import { moveByLinesVisual, type VimCoreState } from "./vim/verticalMotion";
+import { intentsForRange } from "@/daily/engine";
+import type { DailyLink } from "@/daily/links";
 
 /**
  * 性能门禁（bnote 的生命线）：编辑管线的每击成本必须保持量级。预算按本机
@@ -765,5 +767,74 @@ describe("性能门禁:标题自动编号全文档扫描(900行)", () => {
     const view = makeTogglingView(makeState(stale, 0));
     renumberHeadings(view);
     expect(view.state.doc.toString()).toContain("## 3 章节");
+  });
+});
+
+// ---- 跨文件待办同步 · 每键意图提取(dailySyncExtension 的固定支出) ----
+// updateListener 里的行级 diff:无意图时只付「变更行解析 + 身份文本比对」,
+// 链接命中时加一次块根上溯(步数有界)。这里测 intentsForRange 本身——监听器
+// 相对既有管线的增量成本;功能锚定防「测了个空转」。
+
+describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
+  const linksFor = (texts: string[]): DailyLink[] =>
+    texts.map((text, i) => ({
+      id: `l${i}`,
+      kind: "copied" as const,
+      day: "2026-09-21",
+      srcPath: "/vault/note.md",
+      dailyPath: "/vault/Daily/2026-09-21.md",
+      text,
+      srcLine: 1,
+      dailyLine: 1,
+    }));
+
+  /** 模拟一次敲键:返回「提取」这一步的耗时(update 成本不在测量内)。 */
+  function keystrokeExtract(state: EditorState, links: DailyLink[], allowRecord: boolean): number {
+    const tr = state.update({ changes: { from: state.selection.main.head, insert: "字" } });
+    const ranges: [number, number, number, number][] = [];
+    tr.changes.iterChangedRanges((a, b, c, d) => ranges.push([a, b, c, d]));
+    const t0 = performance.now();
+    for (const [a, b, c, d] of ranges) {
+      intentsForRange(tr.startState.doc, tr.state.doc, a, b, c, d, links, allowRecord);
+    }
+    return performance.now() - t0;
+  }
+
+  const todoPos = DOC.indexOf("待办项 60") + 7; // 待办行内容中间
+  const nestedPos = DOC.indexOf("嵌套项 60") + 4; // 缩进子行(触发块根上溯)
+
+  it("无链接时每键提取(正文/待办行/缩进子行)中位 < 2.5ms(静默 ~0.5ms,含 GC 压力,6× 带)", () => {
+    for (const pos of [todoPos, nestedPos]) {
+      const state = makeState(DOC, pos);
+      const median = medianOf(() => keystrokeExtract(state, [], true), 200);
+      console.warn(`[perf] daily 提取(无链接) 中位 ${median.toFixed(4)}ms`);
+      expect(median).toBeLessThan(2.5); // 静默 ~0.45ms(含每轮新事务的 GC 压力),~6× 标定带
+    }
+  });
+
+  it("3 条链接时每键提取中位 < 2.5ms(块根上溯+文本比对,与无链接同量级)", () => {
+    const links = linksFor(["待办项 5", "已完成项 250", "待办项 499"]);
+    for (const pos of [todoPos, nestedPos]) {
+      const state = makeState(DOC, pos);
+      const median = medianOf(() => keystrokeExtract(state, links, true), 200);
+      console.warn(`[perf] daily 提取(3链接) 中位 ${median.toFixed(4)}ms`);
+      expect(median).toBeLessThan(2.5); // 与无链接同量级:文本比对是主成本
+    }
+  });
+
+  it("功能锚定:900 行文档里的勾选翻转确实被捕获", () => {
+    const before = DOC.indexOf("- [ ] 待办项 60");
+    const lineEnd = before + "- [ ] 待办项 60".length;
+    const old = makeState(DOC, before);
+    const tr = old.update({
+      changes: { from: before + 3, to: before + 4, insert: "x" },
+      userEvent: "input.bnote-todo",
+    });
+    const intents: unknown[] = [];
+    tr.changes.iterChangedRanges((a, b, c, d) =>
+      intents.push(...intentsForRange(tr.startState.doc, tr.state.doc, a, b, c, d, linksFor(["待办项 60"]), true)),
+    );
+    expect(intents).toContainEqual({ type: "mirror", linkId: "l0", rootHint: tr.startState.doc.lineAt(before).number, renamedTo: "待办项 60" });
+    expect(lineEnd).toBeGreaterThan(0);
   });
 });

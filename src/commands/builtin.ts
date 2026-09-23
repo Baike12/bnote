@@ -21,6 +21,9 @@ import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
 import { useAppStore, toggleStudyMode } from "@/state/appStore";
+import { ensureLinks } from "@/daily/links";
+import { sendTodoToDaily } from "@/daily/engine";
+import { runtimeDeps } from "@/daily/runtime";
 import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/run";
 import { resetLspStateForPath, syncNow } from "@/python/lsp";
 import { api } from "@/lib/tauri";
@@ -200,6 +203,22 @@ const defs: CommandDef[] = [
     run: withView((v) => toggleWrap(v, "~~")),
   },
   { id: "edit.toggle-todo", title: "切换当前行待办状态", category: "编辑", run: withView(toggleTodo) },
+  {
+    id: "edit.todo-to-daily",
+    title: "待办发送到今日日记(此后两侧自动保持同步,⌘⇧J)",
+    category: "编辑",
+    run: withView((v) => {
+      void (async () => {
+        const vaultRoot = useAppStore.getState().vaultPath;
+        if (!vaultRoot) {
+          useAppStore.getState().showToast("没有打开仓库");
+          return;
+        }
+        const store = await ensureLinks(vaultRoot);
+        await sendTodoToDaily(v, runtimeDeps(), store);
+      })().catch((e) => useAppStore.getState().showToast(`发送失败: ${String(e)}`));
+    }),
+  },
   { id: "edit.toggle-bullet-list", title: "无序列表:切换当前行项目符号", category: "编辑", run: withView((v) => toggleList(v, "bullet")) },
   {
     id: "edit.toggle-numbered-list",
