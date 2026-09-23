@@ -289,9 +289,25 @@ button {
   border-left: 2px solid var(--accent) !important;
 }
 
-.cm-selectionBackground,
-.cm-editor ::selection {
+/* Selection paint. Only two painters are allowed, and never at once:
+   - CM's own rects (`.cm-selectionBackground`) — the default outside vim;
+   - the vim visual decorations (`.cm-vimVisualLine` bands + `.cm-vimVisualRange`
+     exact spans) while `cm-vimSelPaint` is set.
+   The browser's native `::selection` is a third painter CM deliberately turns off
+   (its hideNativeSelection theme) — but that rule only reaches `.cm-line`
+   descendants, so block-level widgets (rendered math, images) stay exposed and the
+   browser paints the whole widget box while a selection spans it. Content-wide
+   transparent here; panels/inputs outside `.cm-content` keep the default. */
+.cm-selectionBackground {
   background: rgba(255, 255, 255, 0.22) !important;
+}
+.cm-content ::selection,
+.cm-content::selection {
+  background: transparent !important;
+}
+/* Vim visual mode: the decoration layer owns the paint (see vimVisualHighlight). */
+.cm-editor.cm-vimSelPaint .cm-selectionBackground {
+  background: transparent !important;
 }
 
 /* Vim current-line shade (Obsidian-style): highlightActiveLine runs while vim
@@ -309,13 +325,26 @@ button {
 .cm-scroller:not(.cm-vimMode) .cm-line.cm-activeLine {
   background: transparent !important;
 }
-/* Visual mode: band every selected line (same tone as the current-line shade),
-   so the selection extent reads as full-width bands instead of text-only blocks. */
+/* Visual mode: band every selected line, so the selection extent reads as
+   full-width bands instead of text-only blocks. A linewise selection (V) IS its
+   bands — selection tone, same as the current-line shade. When an exact range
+   carries the selection (charwise/blockwise) the bands drop to a hint tone so the
+   selected span keeps standing out inside them. */
 .cm-line.cm-vimVisualLine {
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+.cm-line.cm-vimVisualLineHint {
   background: rgba(255, 255, 255, 0.1) !important;
 }
-.cm-line.md-hline.cm-vimVisualLine {
+.cm-line.md-hline.cm-vimVisualLine,
+.cm-line.md-hline.cm-vimVisualLineHint {
   background-clip: content-box !important;
+}
+/* The exact span (charwise range, blockwise per-line block) rides on top of the
+   bands at the selection tone — same look as the native rect it replaces, but
+   anchored to document coordinates instead of coordsAtPos. */
+.cm-vimVisualRange {
+  background: rgba(255, 255, 255, 0.22) !important;
 }
 
 .cm-line {
