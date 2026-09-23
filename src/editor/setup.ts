@@ -17,7 +17,7 @@ import { renumberHeadings } from "./numbering";
 import { vimModeExtension, commandMappingKeymap, vimVisualHighlight } from "./vim/vim";
 import { cutSelection, copySelection, pasteClipboard } from "./ops";
 import { useAppStore } from "@/state/appStore";
-import { adjustHeadingLevel, enterContinueListItem } from "./ops";
+import { enterContinueListItem } from "./ops";
 import type { VimMapping } from "./vim/vimrc";
 
 export interface EditorCallbacks {
@@ -36,12 +36,6 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
   return [
     // Snippet Tab handling takes precedence over everything else.
     snippetsExtension(),
-
-    // Heading lines own Tab / Shift-Tab (level up / down, see ops.ts); any
-    // non-heading cursor falls through to the usual indent bindings below.
-    keymap.of([
-      { key: "Tab", run: (v) => adjustHeadingLevel(v, 1), shift: (v) => adjustHeadingLevel(v, -1) },
-    ]),
 
     // lang-markdown ships its own Enter/Backspace in a Prec.high keymap
     // (insertNewlineContinueMarkup / deleteMarkupBackward). Without a higher

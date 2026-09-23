@@ -23,7 +23,7 @@
 - **Vim 模式 + vimrc**：normal / insert / visual；`设置 → Vim` 编辑全局 vimrc（`map/nnoremap/imap/…` 与键序列如 `jj`）；`:w :wq :x :q :noh`，`:Bnote <命令id>` 把任意命令映射成 vim 键（如 `nmap <C-b> :Bnote nav.toggle-sidebar<CR>`）；`o`/`O` 新行保留缩进
 - **输入法自动跟随（macOS）**：vim insert 切中文、normal/visual 切英文（各自可配置）；打开快速跳转（`Cmd+O`）自动切英文便于输入文件名，窗口失焦时还原你的原输入法。应用内直调 Carbon TIS，不启动进程、不抢焦点，单次切换 1–5ms
 - **打字机模式**：光标行垂直居中，专注书写
-- **标题操作**：`Cmd+J` 设为 / 取消标题；标题行 `Tab` 升一级、`Shift+Tab` 降一级（1–5 级）；开启"标题自动编号"后按层级重排 `1 / 1.1 / 1.2`
+- **标题操作**：`Cmd+J` 循环切换标题层级——正文 → H1 → H2 → H3 → H4 → 正文，重复按即逐级深入；开启"标题自动编号"后按层级重排 `1 / 1.1 / 1.2`
 - **LaTeX 快捷片段**（移植自 obsidian-latex-suite）：130+ 内置片段，`Tab` 展开（`//` → `\frac{}{}`）、输入即展开（`sr` → `^{2}`、`@a` → `\alpha`）、占位符镜像同步、正则捕获、Visual 模式选中后按键包裹（选中按 `S` → `\sqrt{…}`）、公式/代码/正文模式感知；仓库下放 `.bnote/snippets.js` 即可自定义
 
 ### 工作流
