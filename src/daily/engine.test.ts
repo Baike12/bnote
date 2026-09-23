@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { Transaction, TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
@@ -13,8 +13,27 @@ import {
   type DailyIO,
   type Intent,
 } from "./engine";
-import { LinkStore, type DailyLink } from "./links";
+import {
+  ensureLinks,
+  flushLinksPersist,
+  hasPendingLinksPersist,
+  LinkStore,
+  type DailyLink,
+} from "./links";
 import { isDailyPath } from "./model";
+
+/** 元数据落盘的目标:真 API 在测试环境没有 IPC,只截获写出的字节。 */
+const tauriWrites = vi.hoisted(() => [] as [string, string][]);
+vi.mock("@/lib/tauri", () => ({
+  api: {
+    readFile: async () => {
+      throw new Error("测试环境无 IPC"); // ensureLinks 当空库
+    },
+    writeFile: async (path: string, content: string) => {
+      tauriWrites.push([path, content]);
+    },
+  },
+}));
 
 /**
  * 引擎级集成测试:真 EditorState + 真 toggleTodo 产生事务,经与
@@ -187,6 +206,59 @@ describe("发送命令", () => {
     await sendTodoToDaily(view, deps(io), store);
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 手写的\n\n正文\n");
     expect(store.all()[0]).toMatchObject({ text: "手写的", dailyLine: 3 });
+  });
+
+  it("今日日记文件被删除后再次发送:重建文件", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    const toasts: string[] = [];
+    const { view } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(view, deps(io, toasts), store);
+    files.delete(DAILY);
+    await sendTodoToDaily(view, deps(io, toasts), store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n");
+    expect(store.all()).toHaveLength(1);
+    expect(toasts[1]).toBe("已发送到今日日记");
+  });
+
+  it("今日日记里的条目被手工删掉后再次发送:重新追加", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    const toasts: string[] = [];
+    const { view } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(view, deps(io, toasts), store);
+    files.set(DAILY, "# 2026-09-23\n");
+    await sendTodoToDaily(view, deps(io, toasts), store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n");
+    expect(toasts[1]).toBe("已发送到今日日记");
+  });
+
+  it("祖先映射的日记条目也没了:在子待办上按下重新发送", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    const toasts: string[] = [];
+    const { view } = makeDocView("- [ ] 父\n  - [ ] 子\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(view, deps(io, toasts), store);
+    files.set(DAILY, "# 2026-09-23\n");
+    const { view: v2 } = makeDocView("- [ ] 父\n  - [ ] 子\n", "/vault/p.md", [8]);
+    await sendTodoToDaily(v2, deps(io, toasts), store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 子\n");
+    expect(toasts[1]).toBe("已发送到今日日记");
+  });
+
+  it("昨天的映射不阻止今天发送(按日归属)", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    const toasts: string[] = [];
+    const yesterday = "/vault/Daily/2026-09-22.md";
+    store.upsert(makeLink({ id: "y1", day: "2026-09-22", dailyPath: yesterday }));
+    files.set(yesterday, "# 2026-09-22\n\n- [ ] 任务甲\n");
+    const { view } = makeDocView("- [ ] 任务甲\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(view, deps(io, toasts), store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 任务甲\n");
+    expect(files.get(yesterday)).toBe("# 2026-09-22\n\n- [ ] 任务甲\n"); // 昨天的映射保留
+    expect(store.all()).toHaveLength(2);
+    expect(toasts[0]).toBe("已发送到今日日记");
   });
 
   it("非待办行 / 日记文件自身 提示且不写盘", async () => {
@@ -372,6 +444,26 @@ describe("双向镜像", () => {
     view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" } });
     await sync(view, DAILY, transactions, io, store);
     expect(store.all()).toHaveLength(0);
+  });
+});
+
+describe("链接映射持久化", () => {
+  it("发送建立的映射落盘;已同步的重复发送不再写元数据", async () => {
+    const { io } = memIO();
+    const store = await ensureLinks(VAULT);
+    const { view } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(view, deps(io), store);
+    expect(hasPendingLinksPersist()).toBe(true);
+    flushLinksPersist();
+    expect(tauriWrites.map(([p]) => p)).toEqual(["/vault/.bnote/daily-links.json"]);
+    expect(LinkStore.fromJSON(tauriWrites[0]?.[1] ?? "").all()).toMatchObject([
+      { kind: "copied", text: "甲", srcPath: "/vault/p.md" },
+    ]);
+
+    tauriWrites.length = 0;
+    await sendTodoToDaily(view, deps(io), store); // 已在今日日记里,无事发生
+    expect(hasPendingLinksPersist()).toBe(false);
+    expect(tauriWrites).toHaveLength(0);
   });
 });
 

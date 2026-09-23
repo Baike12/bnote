@@ -391,28 +391,55 @@ async function applyRecord(
 
 // ---------------------------------------------------------------- 发送命令
 
-/** 该行是否处于某个已链接祖先块内(祖先待办的文本命中链接)。 */
-function ancestorLinked(doc: Text, lineNo: number, srcPath: string, store: LinkStore): boolean {
+/**
+ * 身份文本 `text` 在 `srcPath` 里指向 `dailyPath` 这一份日记的映射。映射按日
+ * 归属:昨天建立的映射指向昨天的文件,不参与「今天是否已同步」的判断。
+ */
+function linkForDaily(store: LinkStore, srcPath: string, dailyPath: string, text: string): DailyLink | null {
+  for (const l of store.all()) {
+    if (l.srcPath === srcPath && l.dailyPath === dailyPath && l.text === text) return l;
+  }
+  return null;
+}
+
+/** 该行任一**祖先**待办在 `dailyPath` 上的映射(自身由调用方单独判定)。 */
+function ancestorLinkForDaily(
+  doc: Text,
+  lineNo: number,
+  srcPath: string,
+  dailyPath: string,
+  store: LinkStore,
+): DailyLink | null {
   const start = parseListLine(doc.line(lineNo).text);
-  if (!start) return false;
+  if (!start) return null;
   let depth = start.indent.length;
   for (let n = lineNo - 1; n >= 1; n--) {
     const p = parseListLine(doc.line(n).text);
     if (!p) break;
     if (p.indent.length < depth) {
-      if (isTodo(p) && store.findByText(srcPath, todoText(p), n)) return true;
+      if (isTodo(p)) {
+        const l = linkForDaily(store, srcPath, dailyPath, todoText(p));
+        if (l) return l;
+      }
       depth = p.indent.length;
       if (depth === 0) break;
     }
   }
-  return false;
+  return null;
 }
 
 /**
  * 「待办发送到今日日记」:光标(多光标逐行)所在待办行复制为今日日记的
  * 一级条目,按下行为准——在子待办上按下,子待办就是日记里的一级条目,
- * 它自己的子树保持层级;建立持久化映射后由镜像保持两侧同步。已同步的
- * (自身或随祖先)不重复发送;记录型链接在显式发送时升级为正式映射。
+ * 它自己的子树保持层级;建立持久化映射后由镜像保持两侧同步。
+ *
+ * 「已同步」的判定不看映射记录本身,而看今天这份日记里是否真有那条目:映射
+ * 只是缓存的锚,日记文件被删/条目被手工删掉后它就过期了。过期映射就地解除
+ * 并重新发送——「要再同步就重新按快捷键」这句承诺靠这里兑现。项目里的待办
+ * 长期存在、日记按天新建,所以只认指向今天这份文件的映射,昨天的不算数,也
+ * 不会因为今天发送而被解除(昨天的列表该什么样还是什么样)。
+ *
+ * 记录型链接在显式发送时升级为正式映射。
  */
 export async function sendTodoToDaily(view: EditorView, deps: DailyDeps, store: LinkStore): Promise<void> {
   const vaultRoot = deps.vaultRoot();
@@ -434,9 +461,16 @@ export async function sendTodoToDaily(view: EditorView, deps: DailyDeps, store: 
   await withFileLock(dailyPath, async () => {
     let dailyText: string | null = await deps.io.readFile(dailyPath).catch(() => null);
     let mutated = false;
+    let linksDirty = false;
     let sent = 0;
     let already = 0;
     let notTodo = 0;
+    /** 今天这份日记(含本轮已追加的部分)里是否已有这条条目。 */
+    const dailyHas = (text: string): boolean => {
+      if (dailyText === null) return false;
+      const d = parseDoc(dailyText);
+      return findEntryByText(d, parseDailyRegion(d), text, 0) !== null;
+    };
     const seenLines = new Set<number>();
     for (const range of view.state.selection.ranges) {
       const lineNo = view.state.doc.lineAt(range.head).number;
@@ -450,19 +484,30 @@ export async function sendTodoToDaily(view: EditorView, deps: DailyDeps, store: 
         continue;
       }
       const text = todoText(l);
-      const own = store.findByText(srcPath, text, lineNo);
-      if (own) {
+      const own = linkForDaily(store, srcPath, dailyPath, text);
+      if (own && dailyHas(text)) {
         // 已映射;显式发送把「完成记录」升级为正式映射
         if (own.kind === "recorded") {
           own.kind = "copied";
-          mutated = true;
+          linksDirty = true;
         }
         already++;
         continue;
       }
-      if (ancestorLinked(doc, lineNo, srcPath, store)) {
-        already++; // 随父待办镜像,已在日记里
-        continue;
+      if (own) {
+        // 映射过期(今日日记被删/条目被手工删掉):解链后按新条目重发
+        store.remove(own.id);
+        linksDirty = true;
+      } else {
+        const anc = ancestorLinkForDaily(doc, lineNo, srcPath, dailyPath, store);
+        if (anc) {
+          if (dailyHas(anc.text)) {
+            already++; // 随父待办镜像,已在日记里
+            continue;
+          }
+          store.remove(anc.id); // 父的条目也没了:父的映射同样过期
+          linksDirty = true;
+        }
       }
       const block = blockLines(doc, lineNo);
       const reindented = reindentBlock(block, l.indent.length, "");
@@ -492,9 +537,11 @@ export async function sendTodoToDaily(view: EditorView, deps: DailyDeps, store: 
         dailyLine,
       });
       mutated = true;
+      linksDirty = true;
       sent++;
     }
     if (mutated && dailyText !== null) await deps.io.writeFile(dailyPath, dailyText);
+    if (linksDirty) scheduleLinksPersist();
     if (sent > 0) deps.toast(sent === 1 ? "已发送到今日日记" : `已发送 ${sent} 条到今日日记`);
     else if (already > 0) deps.toast("已在今日日记中,自动保持同步");
     else if (notTodo > 0) deps.toast("光标行不是待办");
