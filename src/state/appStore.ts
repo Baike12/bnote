@@ -145,8 +145,12 @@ interface AppState {
   settings: Settings;
   modal: ModalKind;
   sidebarOpen: boolean;
-  /** Incremented by focusSidebar(); the Sidebar reacts by taking keyboard focus. */
-  sidebarFocusTick: number;
+  /**
+   * 待处理的「聚焦侧边栏」请求（null = 没有）。Sidebar 取走即置空——它是一次性
+   * 票据，不是「历史上按过几次」的计数器：计数器会被新挂载的侧栏重新读成
+   * 「刚收到的请求」，于是 ⌘\ 展开侧栏也会去抢焦点、把正在打字的编辑器甩掉。
+   */
+  sidebarFocusRequest: number | null;
   /**
    * 树里某一行请求进入内联重命名（新建文件夹后直接改名）。Sidebar 取走后置空，
    * 所以请求只被消费一次，不会在侧栏重新挂载时复活。
@@ -190,6 +194,7 @@ interface AppState {
   setModal: (m: ModalKind) => void;
   toggleSidebar: () => void;
   focusSidebar: () => void;
+  clearSidebarFocus: () => void;
   requestRename: (relPath: string) => void;
   clearRenameRequest: () => void;
   openLinkSuggest: (anchor: LinkAnchor) => void;
@@ -250,7 +255,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: { ...DEFAULT_SETTINGS },
   modal: null,
   sidebarOpen: true,
-  sidebarFocusTick: 0,
+  sidebarFocusRequest: null,
   renameRequest: null,
   linkSuggest: null,
   linkBack: [],
@@ -316,7 +321,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setModal: (modal) => set({ modal }),
   toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
   focusSidebar: () =>
-    set({ sidebarOpen: true, sidebarFocusTick: get().sidebarFocusTick + 1 }),
+    set({ sidebarOpen: true, sidebarFocusRequest: (get().sidebarFocusRequest ?? 0) + 1 }),
+  clearSidebarFocus: () => {
+    if (get().sidebarFocusRequest !== null) set({ sidebarFocusRequest: null });
+  },
   // 侧栏收起时 Sidebar 未挂载，请求会一直悬着——一并展开侧栏，保证有人消费。
   requestRename: (relPath) => set({ sidebarOpen: true, renameRequest: relPath }),
   clearRenameRequest: () => {
