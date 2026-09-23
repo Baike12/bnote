@@ -38,6 +38,14 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     // Snippet Tab handling takes precedence over everything else.
     snippetsExtension(),
 
+    // 多段选区：vim 的 blockwise（Ctrl-V）在引擎里就是"每行一段"——y/d/c/p 逐段
+    // 执行（Vim.forEachSelection → cm.listSelections()），块选逐行增删也靠它。
+    // CM6 默认关闭该 facet，任何多段选区在事务落库时都被
+    // tr.newSelection.asSingle() 压成主段，于是块选只剩光标那一行生效：选中三行
+    // 按 y 只复制一行（而绘制是完整的块，两边各说各话）。打开后引擎的逐行段原样
+    // 进入 state，绘制与复制/删除看到同一份几何。
+    EditorState.allowMultipleSelections.of(true),
+
     // lang-markdown ships its own Enter/Backspace in a Prec.high keymap
     // (insertNewlineContinueMarkup / deleteMarkupBackward). Without a higher
     // precedence its Enter wins outright, and the list-specific behavior in
