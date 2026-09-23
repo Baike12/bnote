@@ -26,6 +26,7 @@ bnote 的核心是**手感**:编辑、滚动、光标移动、渲染都不许有
 **两条回路**
 
 1. **直连真后端(首选)**:`pnpm tauri dev` 跑着时,浏览器打开 `http://localhost:1430/` 就是真应用——和 Tauri 窗口加载的是同一份构建(`devUrl`),缺的 `window.__TAURI_INTERNALS__` 由 `src/dev/browserMode.ts` 用官方 `@tauri-apps/api/mocks` 补上,IPC 指向 `src-tauri/src/devbridge.rs` 在 `127.0.0.1:1439` 上的 debug 口。真 vault、真文件树、真图片(`/__dev/asset` 顶替 `asset://`)、真 watcher(后端事件经 SSE 推给标签页)。
+   - **真 vault 在 `/Users/baike3/Documents/baike`**:用户的真实笔记库(日记在 `Daily/YYYY-MM-DD.md`,同步映射在 `.bnote/daily-links.json`)。排查"某某功能把文件写坏了"这类问题就直读这里的文件——磁盘字节比屏幕现象可靠,`diff` 一下就能分清"这次操作写的"和"本来就有的"。
    - **只有一份后端实现**:`devbridge.rs::dispatch` 把 `{cmd,args}` 转给同一个 `#[tauri::command]`;加命令就在那张 match 表里加分支,不要在 JS 侧另写实现。
    - **别把 `/__dev` 放进 Vite 的 `server.proxy`**:代理会缓冲无法预知长度的响应,SSE 一个字节都不转发(实测经 1430 为 0 字节)。
    - **浏览器里没有**:原生子 webview(四个 `*_study_preview*`、`open_study_url`)、IME 三个命令、以及 dialog / opener / clipboard 这些 `plugin:*` 命令(`dispatch` 里没有 → `UNKNOWN_COMMAND`)。这几类只能逻辑层验证,**平台行为留待用户部署后实测,并在总结里说明**。
