@@ -128,6 +128,8 @@ declare global {
     };
     /** 假仓库（内存目录树）+ 挂载真实 Sidebar（等索引就绪）。 */
     __mountSidebar: (entries: string[]) => Promise<string[]>;
+    /** 真卸载侧栏（⌘\ 收起就是这个形状：组件连同它的 store 订阅一起消失）。 */
+    __unmountSidebar: () => void;
     /** 假仓库（内存目录树），不挂侧栏——编辑器侧的链路只需要它。 */
     __fakeVault: (entries: string[]) => Promise<string[]>;
     /** 挂载真实 <LinkSuggest/>，返回卸载函数（A/B 测量用）。 */
@@ -415,6 +417,8 @@ function installFakeVault(entries: string[]) {
  * 假仓库 + 挂载真实 Sidebar；等索引就绪后返回初始目录列表。
  * setVault 会清空 tree，不 refresh 的话树里一行都没有（要 refreshTree 才有根层级）。
  */
+let sidebarRoot: ReturnType<typeof createRoot> | null = null;
+
 window.__mountSidebar = async (entries: string[]) => {
   const dirs = installFakeVault(entries);
   const host = document.createElement("div");
@@ -422,9 +426,17 @@ window.__mountSidebar = async (entries: string[]) => {
   // display:flex 是照真实 .app 抄的：侧栏被拉伸成固定高度，.sidebar-tree 才会滚。
   host.style.cssText = "position:fixed;left:0;top:0;width:280px;height:100vh;z-index:99;display:flex";
   document.body.appendChild(host);
-  createRoot(host).render(createElement(Sidebar));
+  sidebarRoot = createRoot(host);
+  sidebarRoot.render(createElement(Sidebar));
   await actions.refreshTree();
   return dirs;
+};
+
+/** 真卸载：只摘 DOM 不卸载的话，旧实例仍订阅 store（⌘\ 收起再展开就测不出来）。 */
+window.__unmountSidebar = () => {
+  sidebarRoot?.unmount();
+  sidebarRoot = null;
+  document.querySelectorAll("#sidebar-host").forEach((el) => el.remove());
 };
 
 /** 假仓库（不挂侧栏）+ 索引就绪：链接补全面板吃的是 flatFiles/recentFiles。 */
