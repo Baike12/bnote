@@ -6,7 +6,7 @@ import "katex/dist/katex.min.css";
 import "@/styles/global.css";
 import { createEditor, loadDocument, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
 import { editorApi } from "@/editor/api";
-import { adjustHeadingLevel, enterContinueListItem, insertCodeBlock, insertMathBlock, jumpHeaderTodos, toggleHeadingAny, toggleList, toggleTodo } from "@/editor/ops";
+import { cycleHeading, enterContinueListItem, insertCodeBlock, insertMathBlock, jumpHeaderTodos, toggleList, toggleTodo } from "@/editor/ops";
 import { renumberHeadings } from "@/editor/numbering";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { currentVimMode, getCM, Vim } from "@/editor/vim/vim";
@@ -62,9 +62,8 @@ declare global {
     __setCursor: (line: number, col: number) => void;
     __loadDoc: (text: string) => number;
     __toggleTodo: () => void;
-    __toggleHeading: () => void;
+    __cycleHeading: () => void;
     __toggleList: (kind: "bullet" | "numbered") => void;
-    __headingTab: (delta: 1 | -1) => boolean;
     __setTypewriter: (on: boolean) => void;
     __enterAt: (
       text: string,
@@ -209,9 +208,8 @@ window.__loadDoc = (text: string) => {
   return view.state.doc.lines;
 };
 window.__toggleTodo = () => toggleTodo(view);
-window.__toggleHeading = () => toggleHeadingAny(view);
+window.__cycleHeading = () => cycleHeading(view);
 window.__toggleList = (kind) => toggleList(view, kind);
-window.__headingTab = (delta) => adjustHeadingLevel(view, delta);
 window.__setTypewriter = (on) => {
   useAppStore.getState().patchSettings({ typewriter: on });
   reconfigureTypewriter(view, on);

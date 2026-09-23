@@ -4,7 +4,6 @@ import type { EditorState, Text } from "@codemirror/state";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit, syntaxTreeAvailable } from "@codemirror/language";
 import { getContextAt, insideFencedCode, insideFencedCodeByScan } from "./context";
-import { renumberHeadings } from "./numbering";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 import { useAppStore } from "@/state/appStore";
 
@@ -226,15 +225,14 @@ export function toggleHeading(view: EditorView, level: number) {
 }
 
 /**
- * Unified heading toggle: plain line → level-1 heading, heading line → plain.
- * Returns true when at least one cursor line had its heading removed (so the
- * caller can drop a leftover auto number before renumbering).
+ * 标题层级循环（同一快捷键重复按）：正文 → H1 → H2 → H3 → H4 → 正文。
+ * H5/H6 只能经「设为 N 级标题」到达，从它们出发的下一档也是取消。
+ * 多光标/多行选区里每行各前进一步；残留的自动编号由命令层收尾。
  */
-export function toggleHeadingAny(view: EditorView): boolean {
+export function cycleHeading(view: EditorView) {
   const state = view.state;
   const changes: { from: number; to?: number; insert: string }[] = [];
   const seenLines = new Set<number>();
-  let toggledOff = false;
 
   for (const range of state.selection.ranges) {
     const line = state.doc.lineAt(range.head);
@@ -242,52 +240,21 @@ export function toggleHeadingAny(view: EditorView): boolean {
     seenLines.add(line.number);
 
     const existing = line.text.match(/^(#{1,6})(\s+|$)/);
-    if (existing) {
-      toggledOff = true;
-      changes.push({ from: line.from, to: line.from + existing[0].length, insert: "" });
-    } else {
+    if (!existing) {
       changes.push({ from: line.from, insert: "# " });
+    } else if (existing[1].length < 4) {
+      const level = existing[1].length;
+      changes.push({ from: line.from, to: line.from + level, insert: "#".repeat(level + 1) });
+    } else {
+      changes.push({ from: line.from, to: line.from + existing[0].length, insert: "" });
     }
   }
-  if (changes.length === 0) return false;
+  if (changes.length === 0) return;
 
   view.dispatch({
     changes,
     userEvent: "input.bnote-heading",
   });
-  return toggledOff;
-}
-
-/**
- * Tab / Shift-Tab on heading lines: level up (max 5) / down (min 1). The
- * unified heading command starts at level 1, so level 6 stays reachable only
- * through the 设为 N 级标题 commands. Returns false when any cursor sits on a
- * non-heading line, leaving Tab to its default behavior (indent); renumbers
- * when auto heading numbering is on.
- */
-export function adjustHeadingLevel(view: EditorView, delta: 1 | -1): boolean {
-  const state = view.state;
-  const changes: { from: number; to: number; insert: string }[] = [];
-  const seenLines = new Set<number>();
-
-  for (const range of state.selection.ranges) {
-    const line = state.doc.lineAt(range.head);
-    if (seenLines.has(line.number)) continue;
-    seenLines.add(line.number);
-
-    const existing = line.text.match(/^(#{1,6})(\s+|$)/);
-    if (!existing) return false;
-    const level = existing[1].length;
-    const target = Math.min(5, Math.max(1, level + delta));
-    if (target !== level) {
-      changes.push({ from: line.from, to: line.from + level, insert: "#".repeat(target) });
-    }
-  }
-  if (changes.length > 0) {
-    view.dispatch({ changes, userEvent: "input.bnote-heading-tab" });
-    if (useAppStore.getState().settings.autoNumberHeadings) renumberHeadings(view);
-  }
-  return true;
 }
 
 /** Today as YYYY-MM-DD, the ✅ stamp appended when a todo is completed. */

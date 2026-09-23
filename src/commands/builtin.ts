@@ -3,6 +3,7 @@ import { registerCommands, runCommand, type CommandDef } from "./registry";
 import { cycleQuickSwitcher } from "@/components/QuickSwitcher";
 import { getView } from "@/editor/api";
 import {
+  cycleHeading,
   insertCodeBlock,
   insertHorizontalRule,
   insertInlineCode,
@@ -10,7 +11,6 @@ import {
   insertMathBlock,
   jumpHeaderTodos,
   toggleHeading,
-  toggleHeadingAny,
   toggleList,
   toggleTodo,
   toggleWrap,
@@ -35,6 +35,21 @@ function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
     fn(view);
     view.focus();
   };
+}
+
+/** 标题改动后的自动编号收尾：主光标行的标题被摘掉时清掉残留编号，再全文重排。 */
+function settleHeadingNumbering(
+  view: NonNullable<ReturnType<typeof getView>>,
+  lineFrom: number,
+  headingRemoved: boolean,
+) {
+  if (!useAppStore.getState().settings.autoNumberHeadings) return;
+  if (headingRemoved) {
+    const after = view.state.doc.lineAt(Math.min(lineFrom, view.state.doc.length));
+    const m = /^(\d+(?:\.\d+)*[ \t]+)/.exec(after.text);
+    if (m) view.dispatch({ changes: { from: after.from, to: after.from + m[1].length, insert: "" } });
+  }
+  renumberHeadings(view);
 }
 
 const defs: CommandDef[] = [
@@ -194,20 +209,15 @@ const defs: CommandDef[] = [
   },
   {
     id: "edit.toggle-heading",
-    title: "设为 / 取消标题（Tab 升级，Shift+Tab 降级）",
+    title: "标题层级循环：正文 → H1 → H2 → H3 → H4 → 正文",
     category: "编辑",
     run: withView((v) => {
       const line = v.state.doc.lineAt(v.state.selection.main.head);
-      const togglingOff = /^(#{1,6})(\s+|$)/.test(line.text);
-      toggleHeadingAny(v);
-      if (!useAppStore.getState().settings.autoNumberHeadings) return;
-      if (togglingOff) {
-        // The heading mark is gone; don't leave its auto number behind.
-        const after = v.state.doc.lineAt(Math.min(line.from, v.state.doc.length));
-        const m = /^(\d+(?:\.\d+)*[ \t]+)/.exec(after.text);
-        if (m) v.dispatch({ changes: { from: after.from, to: after.from + m[1].length, insert: "" } });
-      }
-      renumberHeadings(v);
+      const existing = line.text.match(/^(#{1,6})(\s+|$)/);
+      // 下一档落在正文（H4 及更深的既有标题）时才需要清残留编号。
+      const headingRemoved = !!existing && existing[1].length >= 4;
+      cycleHeading(v);
+      settleHeadingNumbering(v, line.from, headingRemoved);
     }),
   },
   ...([1, 2, 3, 4, 5, 6] as const).map((level): CommandDef => ({
@@ -216,18 +226,9 @@ const defs: CommandDef[] = [
     category: "编辑",
     run: withView((v) => {
       const line = v.state.doc.lineAt(v.state.selection.main.head);
-      const togglingOff = new RegExp(`^${"#".repeat(level)}(?:\\s|$)`).test(line.text);
+      const headingRemoved = new RegExp(`^${"#".repeat(level)}(?:\\s|$)`).test(line.text);
       toggleHeading(v, level);
-      if (!useAppStore.getState().settings.autoNumberHeadings) return;
-      if (togglingOff) {
-        // The heading mark is gone; don't leave its auto number behind.
-        const after = v.state.doc.lineAt(
-          Math.min(line.from, v.state.doc.length),
-        );
-        const m = /^(\d+(?:\.\d+)*[ \t]+)/.exec(after.text);
-        if (m) v.dispatch({ changes: { from: after.from, to: after.from + m[1].length, insert: "" } });
-      }
-      renumberHeadings(v);
+      settleHeadingNumbering(v, line.from, headingRemoved);
     }),
   })),
 

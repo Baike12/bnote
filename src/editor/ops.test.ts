@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { toggleTodo, todayStamp } from "./ops";
+import { cycleHeading, toggleTodo, todayStamp } from "./ops";
 
 /**
  * toggleTodo 只依赖 view 的 {state, dispatch} 面，用假视图即可在 node 里
@@ -79,5 +79,48 @@ describe("toggleTodo 的光标落点（前缀区 → 新标记之后）", () => 
     const [first, second] = view.state.selection.ranges;
     expect(first.head).toBe(6); // 第一行（原空行）标记后
     expect(second.head).toBe(13); // 第二行标记后（7 + 6）
+  });
+});
+
+describe("cycleHeading：重复按键在 正文→H1→H2→H3→H4→正文 间循环", () => {
+  it("正文行第一次按：加一级标题前缀", () => {
+    const view = makeView("标题文字", [2]);
+    cycleHeading(view);
+    expect(text(view)).toBe("# 标题文字");
+  });
+
+  it("逐级深入到 H4 后摘掉前缀，循环回正文再从 H1 重新开始", () => {
+    const view = makeView("# 一", [0]);
+    cycleHeading(view);
+    expect(text(view)).toBe("## 一");
+    cycleHeading(view);
+    expect(text(view)).toBe("### 一");
+    cycleHeading(view);
+    expect(text(view)).toBe("#### 一");
+    cycleHeading(view);
+    expect(text(view)).toBe("一");
+    cycleHeading(view);
+    expect(text(view)).toBe("# 一");
+  });
+
+  it("H5/H6 不在循环里：下一档直接取消标题", () => {
+    const view = makeView("##### 五", [3]);
+    cycleHeading(view);
+    expect(text(view)).toBe("五");
+    const view6 = makeView("###### 六", [0]);
+    cycleHeading(view6);
+    expect(text(view6)).toBe("六");
+  });
+
+  it("多光标跨行：每行各前进一步，正文行从 H1 起", () => {
+    const view = makeView("# a\nb\n## c", [0, 4, 9]);
+    cycleHeading(view);
+    expect(text(view)).toBe("## a\n# b\n### c");
+  });
+
+  it("空行也参与循环：加一级标题前缀", () => {
+    const view = makeView("", [0]);
+    cycleHeading(view);
+    expect(text(view)).toBe("# ");
   });
 });
