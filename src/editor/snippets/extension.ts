@@ -4,8 +4,13 @@ import type { Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { findSnippet, parseReplacement, snippetStore } from "./engine";
 import type { MatchResult, ParsedReplacement } from "./engine";
-import { mathRegions } from "../context";
+import { getContextAt, mathRegions } from "../context";
 import { autoFraction } from "./autofraction";
+import { autoEnlargeBrackets } from "./enlarge";
+import { matrixSeparator } from "./matrix";
+import { tabout } from "./tabout";
+import { bracketPlugins } from "./brackets";
+import { latexConfig } from "./config";
 
 /**
  * Snippet session: tracks tabstop positions of the snippet expanded at the
@@ -147,6 +152,10 @@ function startSessionAt(
     userEvent: "input.snippet",
   });
   view.focus();
+  // latex-suite 的 autoEnlargeBrackets 就挂在这里:展开/自动分数之后看插入文本
+  // 里有没有"大个子"(sum/int/frac…),有就把外层括号升成 \left…\right。
+  // 它另发一个事务——会话位置由 snippetField 的映射跟着走,不用手工平移。
+  autoEnlargeBrackets(view, replacement.text);
   return true;
 }
 
@@ -227,6 +236,22 @@ function clearSession(view: EditorView): boolean {
   return true;
 }
 
+/** 展开查找的统一入口:把 LaTeX Suite 的展开期设置(wordDelimiters、
+ *  removeSnippetWhitespace)一并交给引擎,引擎本身不读设置(保持纯逻辑可测)。 */
+function findSnippetHere(
+  state: EditorState,
+  cursor: number,
+  typedKey: string | null,
+  opts: { auto: boolean; visualText: string | null },
+): MatchResult | null {
+  const cfg = latexConfig();
+  return findSnippet(state, cursor, typedKey, {
+    ...opts,
+    removeSnippetWhitespace: cfg.removeSnippetWhitespace,
+    wordDelimiters: cfg.wordDelimiters,
+  });
+}
+
 /** Manual expansion on Tab when no session is active. */
 function expandOnTab(view: EditorView): boolean {
   if (!snippetStore.enabled) return false;
@@ -234,7 +259,7 @@ function expandOnTab(view: EditorView): boolean {
   const range = state.selection.main;
   if (state.selection.ranges.length > 1) return false;
   const visualText = range.empty ? null : state.sliceDoc(range.from, range.to);
-  const match = findSnippet(state, range.to, null, { auto: false, visualText });
+  const match = findSnippetHere(state, range.to, null, { auto: false, visualText });
   if (!match) return false;
   return startSession(view, match);
 }
@@ -254,7 +279,7 @@ export function tryAutoExpand(view: EditorView, key: string, visualText: string 
     if (frac) return startSessionAt(view, frac.start, frac.end, frac.replacement);
   }
   if (!canAutoExpand(view)) return false;
-  const match = findSnippet(state, cursor, key, { auto: true, visualText });
+  const match = findSnippetHere(state, cursor, key, { auto: true, visualText });
   if (!match) return false;
   return startSession(view, match);
 }
@@ -289,6 +314,74 @@ function triggerKeyOf(text: string): string | null {
   if (text.length === 1) return text;
   return text.endsWith("/") ? "/" : null;
 }
+
+const CLOSE_BRACKETS = ")]}";
+
+/** latex-suite 的 `shouldTaboutByCloseBracket` 判定:光标**正对着**一个右括号
+ *  时敲下同一个右括号,不该再插一个(凭空多出来的 `()` 就是这么来的),而应
+ *  当作一次 Tab——会话里即"跳出这一层"。用**事务前**的文档判定(from/to 是
+ *  默认插入要替换的区间:空区间=光标处敲键),有选区或非右括号一律不算。 */
+export function faceCloseBracket(
+  state: EditorState,
+  from: number,
+  to: number,
+  text: string,
+): boolean {
+  if (from !== to || text.length !== 1 || !CLOSE_BRACKETS.includes(text)) return false;
+  return state.doc.sliceString(from, from + 1) === text;
+}
+
+/**
+ * 闭括号跳越的落地:传参是刚发生的"插入事务"的形状。之所以落在**事后**的文档
+ * 事务上,是因为 vim 引擎自己插字符、不走 inputHandler,而 vim 是用户的主路径
+ * ——两边的唯一交汇点就是这里。做法是撤掉刚插入的那一个字符(原位那个是片段/
+ * 用户原有的,留着),再按 Tab 的次序往前一步。仅当会话里确实还有下一个制表位
+ * 时接管;末位按插件原样放行(字符照插——consumeAndGotoNextTabstop 在最后一组
+ * 就是返回 false)。
+ */
+export function closeBracketSkip(
+  view: EditorView,
+  before: EditorState,
+  change: { from: number; to: number; insert: string },
+  head: number,
+): boolean {
+  if (!faceCloseBracket(before, change.from, change.to, change.insert)) return false;
+  if (head !== change.from + change.insert.length) return false;
+  const session = view.state.field(snippetField, false);
+  if (!session) return false;
+  const plan = planTab(session);
+  if (plan.kind !== "select") return false;
+  view.dispatch({
+    changes: { from: change.from, to: change.from + change.insert.length, insert: "" },
+    userEvent: "delete.close-bracket-skip",
+  });
+  // 会话在事务里被整条重映射过:制表位要重新取,不能拿事务前的对象接着用。
+  const mapped = view.state.field(snippetField, false);
+  if (mapped) selectStop(view, mapped, plan.index);
+  return true;
+}
+
+const closeBracketSkipListener = EditorView.updateListener.of((u) => {
+  if (!u.docChanged || u.view.composing) return;
+  if (u.transactions.length !== 1) return;
+  const tr = u.transactions[0];
+  if (!tr.isUserEvent("input.type") && !tr.isUserEvent("input.type.compose")) return;
+  const sel = u.state.selection.main;
+  if (!sel.empty || u.state.selection.ranges.length > 1) return;
+
+  let from = -1;
+  let to = -1;
+  let insert = "";
+  let count = 0;
+  tr.changes.iterChanges((fromA, toA, _fromB, _toB, ins) => {
+    count++;
+    from = fromA;
+    to = toA;
+    insert = ins.toString();
+  });
+  if (count !== 1) return;
+  closeBracketSkip(u.view, tr.startState, { from, to, insert }, sel.head);
+});
 
 /** IME composition 提交路径:composition 活跃期间的更新不能当场展开(展开
  *  事务会和 IME 的 DOM 改写打架),记住除号位置,composition 结束后补展开。
@@ -432,14 +525,90 @@ export function exitChain(session: SnippetSession, head: number): SnippetSession
 }
 
 const snippetKeymap = keymap.of([
-  { key: "Tab", run: nextStopThenExpand },
-  { key: "Shift-Tab", run: previousStop },
+  { key: "Tab", run: runTab },
+  // Shift+Tab:先回上一个制表位(bnote 自己的便利),再矩阵列分隔,最后同 Tab
+  // 一样可以跳出——插件那边 shift 也算 "Tab"(matrix_shortcuts 与 tabout 都吃)。
+  { key: "Shift-Tab", run: runShiftTab },
   { key: "Escape", run: clearSession },
 ]);
 
-function nextStopThenExpand(view: EditorView): boolean {
+/**
+ * Tab 的三层决策,顺序照插件的 handleKeydown(片段/tabstop → 矩阵 → tabout):
+ * 会话里先走制表位;没会话就试着展开片段;两者都不成立才跳出括号。
+ * 导出供门禁直接锁这条**次序**——"Tab 跳不出去"的根因就是最后一层缺位,
+ * 单测每个部件都测不出这个回归。
+ */
+export function runTab(view: EditorView): boolean {
   if (view.state.field(snippetField, false)) return nextStop(view);
-  return expandOnTab(view);
+  if (expandOnTab(view)) return true;
+  return tabout(view);
+}
+
+/** Shift+Tab:上一个制表位 → 矩阵 ` & ` → 跳出。插件里矩阵分隔符只挂在
+ *  Shift 上(`&` 与 tabout 的分工见 matrix.ts),所以这里不能少这一层。 */
+export function runShiftTab(view: EditorView): boolean {
+  if (previousStop(view)) return true;
+  if (matrixSeparator(view)) return true;
+  return tabout(view);
+}
+
+/**
+ * latex-suite 的 `autoDelete$`:光标正好夹在两个 `$` 之间(`$|$`/`$$|$$`,
+ * 空公式的常态)按 Backspace 时一次删掉两个。否则要按两下,中间那一瞬文档里
+ * 留着落单的 `$`——实时预览会闪一下,空块还会被当成"打字中的公式"。
+ *
+ * 只管"删什么",不管"该不该在这里删":vim 非 insert 模式的闸门在绑定点
+ * (setup.ts),那里能读到 vim 模式且不把 vim 引擎拖进本模块。
+ */
+export function deleteDollarPair(view: EditorView): boolean {
+  if (!latexConfig().autoDeleteDollar) return false;
+  const range = view.state.selection.main;
+  if (!range.empty) return false;
+  const pos = range.head;
+  const doc = view.state.doc;
+  if (doc.sliceString(pos, pos + 1) !== "$") return false;
+  if (pos <= 0 || doc.sliceString(pos - 1, pos) !== "$") return false;
+  const ctx = getContextAt(view.state, pos);
+  if (!ctx.inlineMath && !ctx.blockMath) return false;
+  view.dispatch({
+    changes: { from: pos - 1, to: pos + 1, insert: "" },
+    userEvent: "delete.dollar-pair",
+    scrollIntoView: true,
+  });
+  return true;
+}
+
+/**
+ * 上下标空花括号的整对删除:光标夹在 `_{}` / `^{}` 的花括号之间(sj/sk
+ * 展开后的常态)按 Backspace,连同 `_`(或 `^`)一起删干净,而不是先啃掉
+ * `{`、留下 `_}` 再按两下。
+ *
+ * 三字符的字面判断放在 getContextAt 之前:后者内部的 mathRegions 要扫全篇
+ * 文档,而 Backspace 是高频键,绝大多数按键都会被这一次三字符切片短路掉。
+ * 正文里的 `_{}` 不碰——那里 `_` 是 markdown 的强调标记,语义完全不同。
+ *
+ * 会话不动,交给现有机制:被删区间正是当前会话的活动区,mapSession 会把这一
+ * 层收成 base=end 的一个点;子会话单 stop 无镜像(mirrorSync 跳过),光标一
+ * 动 exitListener 就把它弹掉,外层会话(如 \frac 的分母)原地保留。
+ * 与 deleteDollarPair 同为"只管删什么、不管该不该在这里删"——vim 非 insert
+ * 模式的闸门在绑定点(setup.ts)。
+ */
+export function deleteScriptBraces(view: EditorView): boolean {
+  const range = view.state.selection.main;
+  if (!range.empty) return false;
+  const pos = range.head;
+  if (pos < 2) return false;
+  const doc = view.state.doc;
+  const lead = doc.sliceString(pos - 2, pos + 1);
+  if (lead !== "_{}" && lead !== "^{}") return false;
+  const ctx = getContextAt(view.state, pos);
+  if (!ctx.inlineMath && !ctx.blockMath) return false;
+  view.dispatch({
+    changes: { from: pos - 2, to: pos + 1, insert: "" },
+    userEvent: "delete.script-braces",
+    scrollIntoView: true,
+  });
+  return true;
 }
 
 export function snippetsExtension(): Extension {
@@ -447,9 +616,12 @@ export function snippetsExtension(): Extension {
     snippetField,
     autoExpandHandler,
     autoExpandVimListener,
+    closeBracketSkipListener,
     mirrorSyncListener,
     exitListener,
     snippetKeymap,
+    // 括号彩色配对 + 光标括号高亮(同为 LaTeX Suite 特性,各自带开关)。
+    ...bracketPlugins(),
   ];
 }
 

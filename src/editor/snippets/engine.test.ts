@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { compileSnippets, findSnippet, parseReplacement, reloadSnippets } from "./engine";
+import { LATEX_SUITE_WORD_DELIMITERS } from "./config";
+import { DEFAULT_SNIPPETS } from "./default-snippets";
 import type { RawSnippet } from "./default-snippets";
 
 /** 测试用最小片段集,避免依赖内置全集的具体内容。 */
@@ -120,5 +122,124 @@ describe("compileSnippets:排序契约", () => {
       { trigger: "abx", replacement: "4", options: "tA", priority: 1 },
     ]);
     expect(list.map((s) => s.displayTrigger)).toEqual(["abx", "abc", "a", "ab"]);
+  });
+});
+
+describe("函数型 replacement(latex-suite 语义)", () => {
+  const load = (s: RawSnippet[]) => reloadSnippets(s, true);
+
+  it("正则触发:入参是 exec 结果数组,match[1] 就是第 1 个捕获组", () => {
+    load([{ trigger: /iden(\d)/, replacement: (m) => `n=${(m as RegExpExecArray)[1]}`, options: "mA" }]);
+    const m = findSnippet(state("$iden3$", 6), 6, "3", { auto: true, visualText: null });
+    expect(m?.replacement.text).toBe("n=3");
+  });
+
+  it("字符串触发:入参是 trigger 本身", () => {
+    load([{ trigger: "zz", replacement: (m) => `[${String(m)}]`, options: "mA" }]);
+    const m = findSnippet(state("$zz$", 3), 3, "z", { auto: true, visualText: null });
+    expect(m?.replacement.text).toBe("[zz]");
+  });
+
+  it("可视片段:入参是选中的文本", () => {
+    load([{ trigger: "(", replacement: (m) => `(${String(m)})`, options: "mAv" }]);
+    const m = findSnippet(state("$($"), 2, "(", { auto: false, visualText: "a+b" });
+    expect(m?.replacement.text).toBe("(a+b)");
+  });
+
+  it("返回值里的制表位照常解析($0 有落点)", () => {
+    load([{ trigger: "hh", replacement: () => "\\hat{$0}$1", options: "mA" }]);
+    const m = findSnippet(state("$hh$", 3), 3, "h", { auto: true, visualText: null });
+    expect(m?.replacement.text).toBe("\\hat{}");
+    expect(m?.replacement.stops).toEqual([
+      { index: 0, from: 5, to: 5 },
+      { index: 1, from: 6, to: 6 },
+    ]);
+  });
+
+  it("返回非字符串=该片段不匹配(交回下一个候选)", () => {
+    load([
+      { trigger: "kk", replacement: (() => undefined) as unknown as RawSnippet["replacement"], options: "mA" },
+      { trigger: "kk", replacement: "fallback", options: "mA" },
+    ]);
+    const m = findSnippet(state("$kk$", 3), 3, "k", { auto: true, visualText: null });
+    expect(m?.replacement.text).toBe("fallback");
+  });
+
+  it("内置 iden3 生成 3×3 单位阵(插件里唯一那条函数型片段)", () => {
+    load(DEFAULT_SNIPPETS);
+    const m = findSnippet(state("$iden3$", 6), 6, "3", { auto: true, visualText: null });
+    expect(m?.replacement.text).toBe(
+      "\\begin{pmatrix}\n1 & 0 & 0 \\\\\n0 & 1 & 0 \\\\\n0 & 0 & 1\n\\end{pmatrix}",
+    );
+  });
+});
+
+describe("removeSnippetWhitespace(仅行内公式)", () => {
+  it("行内公式里去掉尾部空格", () => {
+    reloadSnippets([{ trigger: "sp", replacement: "a ", options: "mA" }], true);
+    const m = findSnippet(state("$sp$", 3), 3, "p", { auto: true, visualText: null });
+    expect(m?.replacement.text).toBe("a");
+  });
+
+  it("行内公式里 `${n}` 制表位前的空格去掉、制表位保留", () => {
+    reloadSnippets([{ trigger: "tu", replacement: "a x $2", options: "mA" }], true);
+    const m = findSnippet(state("$tu$", 3), 3, "u", { auto: true, visualText: null });
+    expect(m?.replacement.text).toBe("a x");
+  });
+
+  it("块级公式里不动(换行前的空格是排版的一部分)", () => {
+    reloadSnippets([{ trigger: "sp", replacement: "a ", options: "MA" }], true);
+    const m = findSnippet(state("$$\nsp\n$$"), 5, "p", { auto: true, visualText: null });
+    expect(m?.replacement.text).toBe("a ");
+  });
+
+  it("可关闭(设置关掉后原样展开)", () => {
+    reloadSnippets([{ trigger: "sp", replacement: "a ", options: "mA" }], true);
+    const m = findSnippet(state("$sp$", 3), 3, "p", {
+      auto: true,
+      visualText: null,
+      removeSnippetWhitespace: false,
+    });
+    expect(m?.replacement.text).toBe("a ");
+  });
+});
+
+describe("wordDelimiters 可配", () => {
+  const load = () => reloadSnippets([{ trigger: "dm", replacement: "x", options: "tAw" }], true);
+
+  it("默认用插件的分隔符集:* 不在其中 → *dm 不展开", () => {
+    load();
+    const m = findSnippet(state("*dm"), 3, "m", { auto: true, visualText: null });
+    expect(m).toBeNull();
+  });
+
+  it("把分隔符集放宽:* 也算边界 → 同一位置展开", () => {
+    load();
+    const m = findSnippet(state("*dm"), 3, "m", {
+      auto: true,
+      visualText: null,
+      wordDelimiters: "*",
+    });
+    expect(m?.snippet.trigger).toBe("dm");
+  });
+
+  it("设置串里的字面 \\n 还原成真换行(行首 dm 仍是边界)", () => {
+    load();
+    const m = findSnippet(state("正文\ndm"), 5, "m", {
+      auto: true,
+      visualText: null,
+      wordDelimiters: LATEX_SUITE_WORD_DELIMITERS,
+    });
+    expect(m?.snippet.trigger).toBe("dm");
+  });
+
+  it("CJK 邻接始终是边界(与分隔符集无关,中文笔记必需)", () => {
+    load();
+    const m = findSnippet(state("测试dm"), 4, "m", {
+      auto: true,
+      visualText: null,
+      wordDelimiters: "",
+    });
+    expect(m?.snippet.trigger).toBe("dm");
   });
 });

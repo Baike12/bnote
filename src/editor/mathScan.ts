@@ -18,6 +18,10 @@ export interface MathRegion {
  *   (`$$` 后连按两次回车再写公式,或写完补空行再闭合),这类块必须照常渲染;
  *   只有**两侧同时**留空(正文段落被两个落单 $$ 夹住,即删错 $$ 后的错位产物)
  *   才拒绝配对。
+ * - **例外:空行落在配对完整的 `\begin{…}…\end{…}` 内部时不是段落边界**。
+ *   多行环境里的空行是排版留白(`#@` 片段展开成 `$$\n\begin{align}\n$0\n\end{align}\n$$`
+ *   后,在 `$0` 处回车就直接产生它),整块照常渲染;而"未闭合的 `\begin` 之后的
+ *   空行"不给豁免,否则"打了个 \begin 还没 \end 就空行"会重新打开吞正文的口子。
  * - 配对栈式前进:一对被拒绝时,两个标记都不发区域(可见可删),闭候选继续
  *   向后找——删掉一个 $$ 后,下方完好的公式仍按原样配对渲染,不会整体移位
  *   ("公式怪追着跑")。
@@ -49,9 +53,34 @@ export function scanMath(doc: Text): MathRegion[] {
     return true;
   };
 
+  // `\begin{name}` / `\end{name}`:环境名不跨行(`\begin{` 后换行不算环境)。
+  const ENV_TOKEN = /\\(begin|end)\s*\{([^}\n]*)\}/g;
+
+  /** [from,to) 之间还有该环境的 `\end` 吗——没有就说明环境没闭合。 */
+  const hasClosingEnd = (from: number, to: number, envName: string): boolean => {
+    ENV_TOKEN.lastIndex = from;
+    let m: RegExpExecArray | null;
+    while ((m = ENV_TOKEN.exec(text)) !== null && m.index < to) {
+      if (m[1] === "end" && m[2] === envName) return true;
+    }
+    return false;
+  };
+
+  /** 把行 [from,to) 里的 `\begin`/`\end` 反映到环境栈上(只弹最近的同名环境)。 */
+  const scanEnvTokens = (from: number, to: number, stack: string[]): void => {
+    if (text.indexOf("\\", from) < 0 || text.indexOf("\\", from) >= to) return;
+    ENV_TOKEN.lastIndex = from;
+    let m: RegExpExecArray | null;
+    while ((m = ENV_TOKEN.exec(text)) !== null && m.index < to) {
+      if (m[1] === "begin") stack.push(m[2]);
+      else if (stack[stack.length - 1] === m[2]) stack.pop();
+    }
+  };
+
   /** 开闭标记之间的内容能否构成一个公式块。单行配对(`$$x$$`)天然合法;
    *  多行时数内部行:开头连续空行(lead)与结尾连续空行(trail)剥掉之后,
-   *  中间不容空行,且两侧不得同时留空(那是正文被夹的错位产物)。 */
+   *  中间不容空行,且两侧不得同时留空(那是正文被夹的错位产物);
+   *  落在配对完整环境内部的空行不算空行(见文件头)。 */
   const pairValid = (open: number, close: number): boolean => {
     const openNl = text.indexOf("\n", open);
     if (openNl === -1 || openNl + 1 > close) return true; // 同行配对
@@ -60,11 +89,16 @@ export function scanMath(doc: Text): MathRegion[] {
     let pendingTrail = 0;
     let sawContent = false;
     let interiorBlank = false;
+    const envStack: string[] = [];
     let pos = openNl + 1;
     while (pos < close) {
       let nl = text.indexOf("\n", pos);
       if (nl === -1 || nl >= close) nl = close; // 闭标记所在行的行首片段
-      if (lineIsBlank(pos, nl)) {
+      const blank = lineIsBlank(pos, nl);
+      // 空行是不是"环境内部的留白":栈顶环境在本块之内还有配对的 \end。
+      const envTop = envStack[envStack.length - 1];
+      const envBlank = blank && envTop !== undefined && hasClosingEnd(nl, close, envTop);
+      if (blank && !envBlank) {
         if (!sawContent) lead++;
         else pendingTrail++;
       } else {
@@ -73,6 +107,7 @@ export function scanMath(doc: Text): MathRegion[] {
         trail = pendingTrail;
         pendingTrail = 0;
       }
+      if (!blank) scanEnvTokens(pos, nl, envStack);
       pos = nl + 1;
     }
     trail += pendingTrail;

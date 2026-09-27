@@ -14,7 +14,9 @@ import { getCommand } from "./registry";
 export const DEFAULT_BINDINGS: Record<string, string> = {
   "workspace.new-note": "Mod-n",
   "workspace.quick-add": "Mod-Shift-a",
-  "workspace.open-vault": "Mod-Shift-o",
+  // ⌘⇧O 归「打开今日日记」。原占位者 workspace.open-vault 让出该键位——它仍可
+  // 从命令面板(⌘P)与欢迎页调用;要键位就在 keybindings.json 里自行指派。
+  "workspace.open-daily": "Mod-Shift-o",
   "workspace.save-note": "Mod-s",
   // ⌘D 在不少个人配置里已被占用(如插入代码块),画图用 ⌘O(open canvas)。
   "workspace.open-drawing": "Mod-o",

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { Transaction, TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
@@ -34,6 +34,18 @@ vi.mock("@/lib/tauri", () => ({
     },
   },
 }));
+
+/**
+ * 夹具全部锚在 2026-09-23(日记路径、deps.today()、以及断言里那些 ✅ 戳)。
+ * 戳由 todayStamp() 按**真实时钟**生成,所以这里把系统时钟也钉在夹具那一天——
+ * 否则这套断言只在真实日期恰好是 09-23 的那天成立(2026-09-24 起一直红)。
+ */
+beforeEach(() => {
+  vi.useFakeTimers({ now: new Date(2026, 8, 23, 10, 0, 0) });
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * 引擎级集成测试:真 EditorState + 真 toggleTodo 产生事务,经与

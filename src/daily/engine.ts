@@ -10,6 +10,7 @@ import {
   blockLines,
   blockRootLine,
   dailyPathFor,
+  dailyScaffold,
   findEntryByText,
   isDailyPath,
   isTodo,
@@ -358,7 +359,7 @@ async function applyRecord(
     if (store.findByText(path, text, rootNo)) return; // 已有链接(竞态):镜像会带上
     const block = blockLines(doc, rootNo);
     const reindented = reindentBlock(block, root.indent.length, "");
-    const base = dailyText ?? `# ${deps.today()}\n`;
+    const base = dailyText ?? dailyScaffold(deps.today());
     const bdoc = parseDoc(base);
     const region = parseDailyRegion(bdoc);
     const existing = findEntryByText(bdoc, region, text, 0);
