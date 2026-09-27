@@ -1,7 +1,7 @@
 import { Compartment, EditorSelection, EditorState, Prec } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { setDocPath, docPathField } from "./docPath";
-import { EditorView, keymap, highlightActiveLine, drawSelection } from "@codemirror/view";
+import { EditorView, keymap, drawSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { ensureSyntaxTree } from "@codemirror/language";
@@ -18,7 +18,7 @@ import { matrixEnter } from "./snippets/matrix";
 import { configureLatexSuite } from "./snippets/config";
 import { installMathMotionClamp } from "./motionClamp";
 import { renumberHeadings } from "./numbering";
-import { vimModeExtension, commandMappingKeymap, vimVisualHighlight, currentVimMode, vimDrawsBlockCursor } from "./vim/vim";
+import { vimModeExtension, commandMappingKeymap, vimVisualHighlight, currentVimMode, vimDrawsBlockCursor, vimActiveLine } from "./vim/vim";
 import { cutSelection, copySelection, pasteClipboard } from "./ops";
 import { useAppStore } from "@/state/appStore";
 import { enterContinueListItem } from "./ops";
@@ -200,14 +200,22 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     // view.requestMeasure 推迟到下一帧才写入（@replit/codemirror-vim 的
     // BlockCursorPlugin.update → requestMeasure → rAF），而行与装饰的 DOM 更新
     // 是同步的。列表缩进让整行右移 28px，缩进后的那一帧里光标还停在旧 x——正好
-    // 压在新项目符号上，下一帧才跳到符号后面。updateListener 在所有 view plugin
-    // 与 DOM 同步之后运行，这里读一次光标坐标，把挂起的 measure 就地冲刷掉，
-    // 让光标与文本同帧落位。纯光标移动（vim 的 j/k、h/l）同样慢一帧，一并冲刷。
+    // 压在新项目符号上，下一帧才跳到符号后面。这里读一次光标坐标，把挂起的
+    // measure 冲刷掉，让光标与文本同帧落位。纯光标移动（vim 的 j/k、h/l）同样
+    // 慢一帧，一并冲刷。
+    //
+    // 冲刷的时序契约：排进**微任务**，而不是 updateListener 里同步执行。引擎的
+    // 模式类翻转（vim-mode-change → updateClass 翻 scrollDOM 上的 .cm-vimMode）
+    // 发生在 dispatch 返回之后、同一按键任务内——同步读坐标会按「翻转前」的
+    // 样式算一轮布局，随后的类翻转把成果作废，rAF 的 measure 再算一轮：一次
+    // Esc 两轮布局。微任务仍在本次按键任务内、渲染（rAF/绘制）之前，块光标
+    // 照旧同帧落位；但它排在任务内全部同步变更（含类翻转）之后，一轮 measure
+    // 看到的就是最终样式，双轮归一。后续同任务的微任务事务（如标题重编号）
+    // 也被这一冲刷顺带覆盖，不再各付一轮。
     //
     // 代价与闸门：coordsAtPos 会**同步**跑完整轮 measure（块光标 + 选区层 +
     // 打字机居中）并强制一次样式重算 + 布局，实测每次 doc/selection 事务
-    // 2.0ms、公式块里 4.3ms（模式类切换让 KaTeX 子树整片失效，一次按键抓到
-    // 5 次 coordsAtPos 全出自这里）。而它换来的只有「光标层同帧落位」，所以
+    // 2.0ms、公式块里 4.3ms（真实 app）。而它换来的只有「光标层同帧落位」，所以
     // 只在**真有层会动**时付：
     //   - 文档变了：行/装饰的 DOM 可能重构，插入态的锚点会按旧偏移画一帧；
     //   - 否则要引擎在画块光标（normal/visual/replace）——measureCursor 的
@@ -222,9 +230,28 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
       if (!vimCursorNeedsFlush(u.startState, u.state, vimDrawsBlockCursor(u.view), u.docChanged)) {
         return;
       }
-      u.view.coordsAtPos(u.state.selection.main.head);
+      scheduleVimCursorFlush(u.view);
     }),
   ];
+}
+
+/** 冲刷的最小视图面：导出纯结构是为了在无 DOM 门禁里锁「微任务内执行、视图
+ *  已销毁则放弃」的时序契约。 */
+export interface FlushableView {
+  dom: { isConnected: boolean };
+  state: { selection: { main: { head: number } } };
+  coordsAtPos(pos: number): unknown;
+}
+
+/**
+ * 把光标冲刷排进微任务（理由见 updateListener 上方的时序契约）。视图在微任务
+ * 执行前被销毁（文件切换/关窗）则放弃——异步回调自证时效，不许盲写。
+ */
+export function scheduleVimCursorFlush(view: FlushableView): void {
+  queueMicrotask(() => {
+    if (!view.dom.isConnected) return;
+    view.coordsAtPos(view.state.selection.main.head);
+  });
 }
 
 /**
@@ -339,10 +366,11 @@ export function reconfigureVim(view: EditorView, enabled: boolean, mappings: Vim
   lastVimMappings = mappings;
   view.dispatch({
     effects: [
-      // highlightActiveLine rides along with vim: CSS shows the shade only
-      // while the vim plugin tags the scroller `.cm-vimMode` (normal/visual).
+      // 当前行底 shade 跟 vim 一起挂：vimActiveLine 以装饰模型画
+      // cm-activeLine,可见性判据与引擎的 cm-vimMode 类(块光标判据)逐字
+      // 一致——不依赖祖先类选择器,样式失效圈不随 Esc/i 罩住整个视口。
       vimCompartment.reconfigure(
-        enabled ? [vimModeExtension(), highlightActiveLine(), vimVisualHighlight()] : [],
+        enabled ? [vimModeExtension(), vimActiveLine(), vimVisualHighlight()] : [],
       ),
       vimCommandMapCompartment.reconfigure(enabled ? commandMappingKeymap(mappings) : []),
     ],
