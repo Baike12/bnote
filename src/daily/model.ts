@@ -268,6 +268,12 @@ export function dailyPathFor(vaultRoot: string, day: string): string {
   return `${vaultRoot.replace(/\/+$/, "")}/Daily/${day}.md`;
 }
 
+/** 新建日记的初始内容。发送/记录路径与「打开今日日记」共用同一份形状
+ *  (H1 + 其后的待办区),两个入口建出来的文件因此逐字节一致。 */
+export function dailyScaffold(day: string): string {
+  return `# ${day}\n`;
+}
+
 /** 链接元数据文件路径(vault 内,随仓库走)。 */
 export function linksFilePath(vaultRoot: string): string {
   return `${vaultRoot.replace(/\/+$/, "")}/.bnote/daily-links.json`;

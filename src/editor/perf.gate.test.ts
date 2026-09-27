@@ -8,6 +8,7 @@ import { insertNewlineAndIndent, history, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
 import { blockDecorationsField, buildInlineDecorations, selectionAffectsDecos } from "./livePreview";
 import { mathRegions } from "./context";
+import { planTabout } from "./snippets/tabout";
 import { scanMath } from "./mathScan";
 import { buildSession, setSession } from "./snippets/extension";
 import { parseReplacement, findSnippet } from "./snippets/engine";
@@ -18,6 +19,7 @@ import { moveByLinesVisual, type VimCoreState } from "./vim/verticalMotion";
 import { visualSelectionDecos } from "./vim/vim";
 import { intentsForRange } from "@/daily/engine";
 import type { DailyLink } from "@/daily/links";
+import { buildDailyMarks } from "@/daily/marks";
 
 /**
  * 性能门禁（bnote 的生命线）：编辑管线的每击成本必须保持量级。预算按本机
@@ -634,6 +636,53 @@ describe("性能门禁：公式扫描(栈式配对)", () => {
   });
 });
 
+// ---- Tab 跳出括号(tabout) ----
+// Tab 走完片段与制表位后的最后一层:向后扫到光标与公式内容末尾之间的第一个
+// 闭合符。锁住这条路径的量级——扫描必须只看那一段切片,不许把整篇文档拉成
+// 字符串(900 行文档上那样做是每次 Tab 一次 O(n) 分配)。
+
+describe("性能门禁：Tab 跳出括号(tabout)", () => {
+  const mathLine = (state: EditorState) => {
+    for (let n = 1; n <= state.doc.lines; n++) {
+      if (state.doc.line(n).text.startsWith("L_{1}")) return state.doc.line(n);
+    }
+    throw new Error("block math line not found");
+  };
+
+  it("900 行文档里每击 Tab(含 mathRegions 重扫)中位数 < 2ms", () => {
+    const base = makeState(DOC, 0);
+    const cursor = mathLine(base).to - 2;
+    let cur = base;
+    const median = medianOf(() => {
+      // 每击前都有一次文档变更(真实打字流):mathRegions 缓存必然落空
+      cur = cur.update({ changes: { from: cur.doc.length, insert: "字" } }).state;
+      const at = Math.min(cursor, cur.doc.length);
+      const t0 = performance.now();
+      planTabout(cur, at);
+      return performance.now() - t0;
+    }, 15);
+    console.warn(`[perf] tabout(900行) 中位数 ${median.toFixed(3)}ms`);
+    expect(median).toBeLessThan(2);
+  });
+
+  it("长公式内容里的扫描只看切片:2000 字符后方才撞上闭合符,中位数 < 1ms", () => {
+    // 真扫一段长内容(而不是两三字符就命中):扫描长度按内容长度有界,
+    // 若有人改成"整篇文档 toString + 全文查找",这条会掉出预算。
+    const doc = `$$\n${"x".repeat(2000)} \\right)\n$$\n下一段`;
+    const state = makeState(doc, 0);
+    const cursor = 3; // 内容开头,闭合符在 2000+ 字符之后
+    const plan = planTabout(state, cursor);
+    expect(plan?.pos).toBe(doc.indexOf("\\right)") + "\\right)".length);
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      planTabout(state, cursor);
+      return performance.now() - t0;
+    }, 15);
+    console.warn(`[perf] tabout(长内容切片) 中位数 ${median.toFixed(3)}ms`);
+    expect(median).toBeLessThan(1);
+  });
+});
+
 // ---- 片段会话内的每击输入 ----
 // 会话期间自动补全不再被压制(嵌套会话栈):每击额外跑一次 findSnippet
 // (221 条编译片段的触发器匹配)+ 会话链字段映射。锁住这条新热路径的量级。
@@ -911,5 +960,47 @@ describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
     );
     expect(intents).toContainEqual({ type: "mirror", linkId: "l0", rootHint: tr.startState.doc.lineAt(before).number, renamedTo: "待办项 60" });
     expect(lineEnd).toBeGreaterThan(0);
+  });
+});
+
+// ---- 跨文件待办同步 · 已链接待办的可视标识(dailyMarksExtension 的固定支出) ----
+// 装饰只在两个信号下重建(文档/视口变化、链接库变更),每次扫一遍视口并逐行解析。
+// 门禁按上界标定:视口=全文档(~900 行),链接数 120(真实 vault 是 6 条)。
+
+describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () => {
+  const DAILY = "/vault/Daily/2026-09-21.md";
+  const links: DailyLink[] = Array.from({ length: 120 }, (_, i) => ({
+    id: `m${i}`,
+    kind: "copied" as const,
+    day: "2026-09-21",
+    srcPath: "/vault/note.md",
+    dailyPath: DAILY,
+    text: i < 60 ? `待办项 ${i + 1}` : `不存在的待办 ${i}`,
+    srcLine: 1,
+    dailyLine: 1,
+  }));
+  const state = makeState(DOC, 0);
+  const view = { state, visibleRanges: [{ from: 0, to: state.doc.length }] };
+  const ctx = { path: "/vault/note.md", links, todayDailyPath: DAILY };
+
+  it("全文档视口重建中位数 < 1.5ms", () => {
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      buildDailyMarks(view, ctx);
+      return performance.now() - t0;
+    }, 30);
+    console.warn(`[perf] daily 标记构建 中位 ${median.toFixed(3)}ms`);
+    // 静默 ~0.15ms,预算按 ~10× 标定。逐行文本比对是全部成本——若哪天退化成
+    // 「每条链接全文找根」(resolveRootLine 那种 O(行数) 扫描),量级必被拦下。
+    expect(median).toBeLessThan(1.5);
+  });
+
+  it("功能锚定:文档里 60 条命中待办行全部被标记", () => {
+    const set = buildDailyMarks(view, ctx);
+    let marked = 0;
+    set.between(0, state.doc.length, () => {
+      marked++;
+    });
+    expect(marked).toBe(60);
   });
 });

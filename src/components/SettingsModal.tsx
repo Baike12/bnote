@@ -6,6 +6,7 @@ import { bindingsForCommand, eventToKey, formatBinding } from "@/commands/keys";
 import { clearOverride, resetAllOverrides, setOverride } from "@/commands/keybindingOverrides";
 import { setHotkeyRecording } from "@/commands/globalKeys";
 import { useAppStore, type ImeSettings, type QuickAddCommand } from "@/state/appStore";
+import type { LatexConfig } from "@/editor/snippets/config";
 import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
 import { inputGuards } from "@/lib/inputGuards";
 import { FolderSuggest } from "@/components/FolderSuggest";
@@ -404,8 +405,12 @@ function VimTab() {
 
 function SnippetsTab() {
   const showToast = useAppStore((s) => s.showToast);
+  const settings = useAppStore((s) => s.settings);
+  const patch = useAppStore((s) => s.patchSettings);
   const [content, setContent] = useState<string>(SNIPPETS_TEMPLATE);
   const [dirtyLocal, setDirtyLocal] = useState(false);
+  const patchLatex = (p: Partial<LatexConfig>) =>
+    patch({ latex: { ...settings.latex, ...p } });
 
   useEffect(() => {
     void api.readVaultFile("snippets.js" as VaultConfigFile).then((v) => {
@@ -472,6 +477,67 @@ function SnippetsTab() {
         >
           保存并应用
         </button>
+      </div>
+
+      <h3>LaTeX Suite 行为</h3>
+      <p className="setting-hint">
+        以下能力逐项对齐 <code>obsidian-latex-suite</code>，开关名与其设置项同名。
+      </p>
+      <Toggle
+        label="自动放大括号"
+        desc="括号里出现 \\sum、\\frac 等大符号时，自动改成 \\left(…\\right)（片段展开或自动分数之后判断）"
+        checked={settings.latex.autoEnlargeBrackets}
+        onChange={(v) => patchLatex({ autoEnlargeBrackets: v })}
+      />
+      <Toggle
+        label="矩阵快捷"
+        desc="矩阵环境里 Shift+Tab 插入 &（对齐下一列）、Enter 插入换行符继续下一行；普通 Tab 留给下面的「Tab 跳出括号」"
+        checked={settings.latex.matrixShortcuts}
+        onChange={(v) => patchLatex({ matrixShortcuts: v })}
+      />
+      <Toggle
+        label="Tab 跳出括号"
+        desc="片段与制表位走完后，Tab 把光标从括号里带出来：一次跨一层右括号 / \rangle，已经在公式末尾则跳到行内 $ 之后或块级 $$ 的下一行"
+        checked={settings.latex.tabout}
+        onChange={(v) => patchLatex({ tabout: v })}
+      />
+      <Toggle
+        label="括号彩色配对"
+        desc="公式里的括号按嵌套深度轮转三种颜色（最外层固定第一色）"
+        checked={settings.latex.bracketColors}
+        onChange={(v) => patchLatex({ bracketColors: v })}
+      />
+      <Toggle
+        label="光标括号高亮"
+        desc="光标贴着的括号与它配对的那个一起高亮；光标不在括号上时高亮最内层包围括号"
+        checked={settings.latex.highlightCursorBrackets}
+        onChange={(v) => patchLatex({ highlightCursorBrackets: v })}
+      />
+      <Toggle
+        label="一次删掉一对 $"
+        desc="光标正好夹在两个 $ 之间时按退格，两个 $ 一起删（空公式的常态）"
+        checked={settings.latex.autoDeleteDollar}
+        onChange={(v) => patchLatex({ autoDeleteDollar: v })}
+      />
+      <Toggle
+        label="行内公式去多余空格"
+        desc="在 $…$ 里展开片段后去掉尾部空格，避免 KaTeX 吃掉空格但源码难看"
+        checked={settings.latex.removeSnippetWhitespace}
+        onChange={(v) => patchLatex({ removeSnippetWhitespace: v })}
+      />
+      <div className="setting-row">
+        <div>
+          <div className="setting-label">词边界字符</div>
+          <div className="setting-desc">
+            带 <code>w</code> 选项的片段要求触发串前后都是这里的字符；换行写 <code>\n</code>
+          </div>
+        </div>
+        <input
+          className="settings-input mono"
+          value={settings.latex.wordDelimiters}
+          spellCheck={false}
+          onChange={(e) => patchLatex({ wordDelimiters: e.target.value })}
+        />
       </div>
     </div>
   );

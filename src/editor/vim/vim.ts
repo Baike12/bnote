@@ -438,6 +438,19 @@ function vimStateOf(view: EditorView): { insertMode?: boolean; visualMode?: bool
   return cm?.state?.vim ?? null;
 }
 
+/** 引擎此刻是否在画块光标。判据照抄 @replit/codemirror-vim 的 measureCursor
+ *  （`vim && (!vim.insertMode || overwrite)`）：insert 态（非 replace）下块光标
+ *  层按空渲染，为它做的 measure 冲刷没有对象。overwrite 是引擎挂在自己的 CM5
+ *  兼容 state 上的标志（getCM 里那个普通对象，不是 CM6 的 field），只能这么读。 */
+export function vimDrawsBlockCursor(view: EditorView): boolean {
+  const cm = getCM(view) as unknown as {
+    state?: { vim?: { insertMode?: boolean }; overwrite?: boolean };
+  } | null;
+  const st = cm?.state;
+  if (!st?.vim) return false;
+  return !st.vim.insertMode || !!st.overwrite;
+}
+
 export function currentVimMode(view: EditorView): VimMode | null {
   const v = vimStateOf(view);
   if (!v) return null;

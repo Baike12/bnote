@@ -7,15 +7,18 @@ import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/sea
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdownExtensions, codeHighlighting } from "./markdown";
 import { insertNewlineContinueMarkup, deleteMarkupBackward } from "@codemirror/lang-markdown";
-import { livePreviewExtension, configureLivePreview } from "./livePreview";
+import { livePreviewExtension, configureLivePreview, selectionAffectsDecos } from "./livePreview";
 import { typewriterExtension } from "./typewriter";
 import { imeSwitchExtension } from "./imeSwitch";
 import { pythonLspExtension } from "@/python/lsp";
 import { dailySyncExtension } from "@/daily/extension";
-import { snippetsExtension } from "./snippets/extension";
+import { dailyMarksExtension } from "@/daily/marks";
+import { snippetsExtension, deleteDollarPair, deleteScriptBraces } from "./snippets/extension";
+import { matrixEnter } from "./snippets/matrix";
+import { configureLatexSuite } from "./snippets/config";
 import { installMathMotionClamp } from "./motionClamp";
 import { renumberHeadings } from "./numbering";
-import { vimModeExtension, commandMappingKeymap, vimVisualHighlight } from "./vim/vim";
+import { vimModeExtension, commandMappingKeymap, vimVisualHighlight, currentVimMode, vimDrawsBlockCursor } from "./vim/vim";
 import { cutSelection, copySelection, pasteClipboard } from "./ops";
 import { useAppStore } from "@/state/appStore";
 import { enterContinueListItem } from "./ops";
@@ -26,6 +29,29 @@ export interface EditorCallbacks {
   onDocChanged: () => void;
   /** Fired on cursor/selection moves (status bar). */
   onCursorMoved: () => void;
+}
+
+/**
+ * vim 的 normal/visual 模式里 Backspace/Enter 是"移动"而不是"编辑",这些
+ * LaTeX Suite 的按键增强必须原样放行。闸门放在绑定点(setup)而不是特性模块
+ * 里,是为了不让 snippets 反向依赖 vim 引擎。
+ */
+function vimAllowsEdit(view: EditorView): boolean {
+  return !useAppStore.getState().settings.vim || currentVimMode(view) === "insert";
+}
+
+/** Backspace:LaTeX Suite 的 autoDelete$ 先手(公式里光标夹在两个 `$` 之间时
+ *  一次删掉两个),bnote 追加的上下标空花括号同理(`_{|}`/`^{|}` 连 `_`/`^`
+ *  一起删);其余情况交回下面的 markdown 删除逻辑。 */
+function backspace(view: EditorView): boolean {
+  if (!vimAllowsEdit(view)) return false;
+  return deleteDollarPair(view) || deleteScriptBraces(view);
+}
+
+/** 矩阵环境里的 Enter 补 ` \\` 换行(Shift+Enter 只移动光标)。 */
+function enterInMatrix(view: EditorView, shift: boolean): boolean {
+  if (!vimAllowsEdit(view)) return false;
+  return matrixEnter(view, shift);
 }
 
 const vimCompartment = new Compartment();
@@ -53,7 +79,15 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     // nested item grows a blank line instead of moving up a level. Prec.highest
     // keeps the list Enter in charge; every non-list line still falls through
     // to lang-markdown below.
-    Prec.highest(keymap.of([{ key: "Enter", run: enterContinueListItem }])),
+    // 矩阵环境里的 Enter 排在列表续行之前:在 \begin{pmatrix}…\end{pmatrix}
+    // 里回车补 ` \\` 换行才是想要的(Tab 补 ` & ` 同理,snippet 键位表里)。
+    Prec.highest(
+      keymap.of([
+        { key: "Enter", run: (view) => enterInMatrix(view, false) },
+        { key: "Shift-Enter", run: (view) => enterInMatrix(view, true) },
+        { key: "Enter", run: enterContinueListItem },
+      ]),
+    ),
 
     markdownExtensions(),
     codeHighlighting(),
@@ -72,6 +106,8 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
 
     // 跨文件待办同步:勾选/子待办/改名镜像到日记(自带链接库未加载直通门槛)。
     dailySyncExtension(),
+    // 已链接待办的可视标识(视口内行装饰,只占标记槽的绝对定位伪元素)。
+    dailyMarksExtension(),
 
     history(),
     search({
@@ -92,6 +128,9 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
       // closable). List lines never get here — the Prec.highest binding above
       // takes them.
       { key: "Enter", run: insertNewlineContinueMarkup },
+      // LaTeX Suite 的 autoDelete$ 排在 markdown 的删除逻辑之前;vim 的
+      // normal/visual 模式里 Backspace 是"左移",必须原样交回引擎。
+      { key: "Backspace", run: backspace },
       { key: "Backspace", run: deleteMarkupBackward },
       ...searchKeymap,
       ...defaultKeymap,
@@ -164,12 +203,48 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     // 压在新项目符号上，下一帧才跳到符号后面。updateListener 在所有 view plugin
     // 与 DOM 同步之后运行，这里读一次光标坐标，把挂起的 measure 就地冲刷掉，
     // 让光标与文本同帧落位。纯光标移动（vim 的 j/k、h/l）同样慢一帧，一并冲刷。
+    //
+    // 代价与闸门：coordsAtPos 会**同步**跑完整轮 measure（块光标 + 选区层 +
+    // 打字机居中）并强制一次样式重算 + 布局，实测每次 doc/selection 事务
+    // 2.0ms、公式块里 4.3ms（模式类切换让 KaTeX 子树整片失效，一次按键抓到
+    // 5 次 coordsAtPos 全出自这里）。而它换来的只有「光标层同帧落位」，所以
+    // 只在**真有层会动**时付：
+    //   - 文档变了：行/装饰的 DOM 可能重构，插入态的锚点会按旧偏移画一帧；
+    //   - 否则要引擎在画块光标（normal/visual/replace）——measureCursor 的
+    //     判据下 insert 态块光标层是空的，冲刷没有对象；
+    //   - 或者这次选择变化能改到装饰（跨标记槽、命中行内触发符），行盒可能
+    //     移位（selectionAffectsDecos 就是这条上界）。
+    // 三者都不成立时（normal→insert 这类空转、正文里的插入态光标移动）冲刷
+    // 换不到任何同帧收益，只剩整轮强制布局。
     EditorView.updateListener.of((u) => {
       if (!useAppStore.getState().settings.vim) return;
       if (!u.docChanged && !u.selectionSet) return;
+      if (!vimCursorNeedsFlush(u.startState, u.state, vimDrawsBlockCursor(u.view), u.docChanged)) {
+        return;
+      }
       u.view.coordsAtPos(u.state.selection.main.head);
     }),
   ];
+}
+
+/**
+ * 光标冲刷的判据（理由见上面那段注释）。三条「真有层会动」的来源：
+ *   - 文档变了：行/装饰的 DOM 可能重构，插入态的原生锚点会按旧偏移画一帧；
+ *   - 引擎在画块光标（normal/visual/replace）：块光标层的几何只有 measure 后才有；
+ *   - 这次选择变化能改到装饰（跨标记槽、命中行内触发符）：行盒可能移位。
+ * 都不成立（normal→insert 这类空转、正文里的插入态光标移动）时冲刷换不到任何
+ * 同帧收益，只剩整轮强制布局——导出供门禁锁这条模型，它是模式切换卡顿的根因。
+ */
+export function vimCursorNeedsFlush(
+  start: EditorState,
+  state: EditorState,
+  drawsBlockCursor: boolean,
+  docChanged: boolean,
+): boolean {
+  if (docChanged) return true;
+  if (drawsBlockCursor) return true;
+  if (start.selection.eq(state.selection)) return false;
+  return selectionAffectsDecos(start, state);
 }
 
 /**
@@ -217,6 +292,7 @@ function primeSyntaxTree(view: EditorView) {
 function restoreCompartments(view: EditorView) {
   const { settings } = useAppStore.getState();
   configureLivePreview({ mathPreview: settings.mathPreview });
+  configureLatexSuite(settings.latex);
   reconfigureVim(view, settings.vim, lastVimMappings);
   reconfigureTypewriter(view, settings.typewriter);
   reconfigureLivePreview(view, settings.livePreview);

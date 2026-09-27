@@ -33,6 +33,9 @@ let lastEditorTarget: string | null = null;
 let baseline: string | null = null;
 /** True while bnote is unfocused and baseline has been handed back. */
 let suspended = false;
+/** 本次聚焦会话里 bnote 是否真的强制切过输入源——blur 时据此决定要不要归还
+ *  （推迟中、还没发出去的意图不算「切过」）。 */
+let forcedThisSession = false;
 /** Focus-session counter — invalidates in-flight baseline captures. */
 let focusSeq = 0;
 
@@ -43,9 +46,30 @@ let focusSeq = 0;
  *  rapid cursor moves across math boundaries felt like. */
 let switching = false;
 let queued: string | null = null;
+let launchScheduled = false;
+
+/** 把切换推迟到当前任务之后。模式切换那一帧里已经有一轮 DOM 同步 + measure
+ *  （见 setup.ts 的光标冲刷），而 TIS 必须占用苹果主线程（ime.rs 的 on_main）
+ *  ——先让模式与光标落到位，再去动输入法，不要叠在同一帧里。同一批里的连续
+ *  翻转合并成一次：`desired` 是唯一意图来源，定时器只负责把它送出去。 */
+function scheduleLaunch(): void {
+  if (launchScheduled) return;
+  launchScheduled = true;
+  setTimeout(() => {
+    launchScheduled = false;
+    const target = desired;
+    if (target === null || suspended) return; // 已交还用户输入法（失焦/挂起）
+    if (switching) {
+      queued = target;
+      return;
+    }
+    launchSwitch(target);
+  }, 0);
+}
 
 function launchSwitch(target: string): void {
   switching = true;
+  forcedThisSession = true;
   const seq = focusSeq;
   if (baseline === null) {
     void api
@@ -82,11 +106,17 @@ export function imeApply(target: string): void {
   if (desired === target && !suspended) return;
   desired = target;
   suspended = false;
-  if (switching) {
-    queued = target;
-    return;
-  }
-  launchSwitch(target);
+  scheduleLaunch();
+}
+
+/** 预热 TIS：启动后后台枚举一次输入源。TIS 的首次调用要去联系输入法服务
+ *  （本机实测 ~90ms）而且必须走苹果主线程（见 ime.rs 的 on_main）——等到用户
+ *  第一次切模式才付，就正好落在按键那一帧上。这次枚举同时把 Rust 侧的输入源
+ *  引用缓存填好，之后每次切换只剩「读当前源 + select」。 */
+export function imeWarmUp(): void {
+  const { settings } = useAppStore.getState();
+  if (!settings.ime.enabled) return;
+  void api.listInputSources().catch(() => {});
 }
 
 /** Drop bnote's forced source and restore what the user had before it. */
@@ -95,6 +125,7 @@ export function imeYield(): void {
   desired = null;
   suspended = false;
   queued = null;
+  forcedThisSession = false;
   if (restore) void api.setInputSource(restore).catch(() => {});
 }
 
@@ -146,9 +177,12 @@ function insertRegionWantsEnglish(settings: Settings, view: EditorView): boolean
 export function imeOnWindowBlur(): void {
   focusSeq++;
   queued = null;
-  if (desired !== null && baseline !== null) {
+  // 只有真的强制切过才需要归还。推迟中（意图还没发出去）时不许这里白发一次
+  // 主线程 TIS 调用去「切」一个本来就活跃的源——那次调用同样会占住主线程。
+  if (forcedThisSession && desired !== null && baseline !== null) {
     void api.setInputSource(baseline).catch(() => {});
   }
+  forcedThisSession = false;
   baseline = null;
   suspended = true;
 }

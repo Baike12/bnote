@@ -87,6 +87,36 @@ describe("scanMath 块公式配对", () => {
   });
 });
 
+describe("scanMath 多行环境内的空行", () => {
+  it("\\begin{align} 内部的空行照常渲染(用户报告:$$\n\\begin{align}\n…\n\n\\end{align}\n$$ 整块变纯文本)", () => {
+    const doc = "$$\n\\begin{align}\nE[q_{i}^{2}]=Var(q_{i})\n\n\\end{align}\n$$";
+    const rs = display(doc);
+    expect(rs).toHaveLength(1);
+    expect(rs[0].content).toBe("\n\\begin{align}\nE[q_{i}^{2}]=Var(q_{i})\n\n\\end{align}\n");
+  });
+
+  it("环境里的空行在两侧(开栏后 / 闭栏前)同样放行", () => {
+    expect(display("$$\n\\begin{align}\n\nx\n\\end{align}\n$$")).toHaveLength(1);
+    expect(display("$$\n\\begin{align}\nx\n\\end{align}\n\n$$")).toHaveLength(1);
+  });
+
+  it("嵌套环境里的空行也放行", () => {
+    const doc = "$$\n\\begin{align}\n\\begin{cases}\n1\n\n2\n\\end{cases}\n\\end{align}\n$$";
+    expect(display(doc)).toHaveLength(1);
+  });
+
+  it("环境已闭合之后到闭栏之间的空行仍是段落边界(不错位配对吞正文)", () => {
+    const doc = "$$\n\\begin{align}\nx\n\\end{align}\n\n后面段落A\n\n$$";
+    expect(display(doc)).toHaveLength(0);
+    expect(insideAny(doc, "后面段落A")).toBe(false);
+  });
+
+  it("打了 \\begin 还没 \\end 就空行:不给豁免,正文仍不被吞(1914fc8 的性质不回退)", () => {
+    const doc = "$$\n\\begin{align}\nx\n\n后面段落A\n$$";
+    expect(insideAny(doc, "后面段落A")).toBe(false);
+  });
+});
+
 describe("scanMath 既有行为不回归", () => {
   it("转义的 \\$\\$ 不是定界符", () => {
     expect(regions("\\$\\$ 不是公式")).toHaveLength(0);

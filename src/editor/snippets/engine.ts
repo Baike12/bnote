@@ -1,12 +1,8 @@
 import type { EditorState } from "@codemirror/state";
 import { getContextAt, type EditContext } from "../context";
-import { DEFAULT_SNIPPETS, type RawSnippet } from "./default-snippets";
+import { DEFAULT_SNIPPETS, type RawSnippet, type SnippetReplacement } from "./default-snippets";
 import { DEFAULT_SNIPPET_VARIABLES } from "./default-variables";
-
-/** Character set treated as word delimiters for `w` (word-boundary) snippets.
- *  换行必须是边界:带 w 的片段(dm 等)在行首输入是常态,`\n` 写成 `\\n`
- *  曾让换行落在集合外,行首的 dm 永远不展开。 */
-export const WORD_DELIMITERS = "., +-\n\t:;!?\\/{}[]()=~$'\"|`<>*^%#@&";
+import { LATEX_SUITE_WORD_DELIMITERS } from "./config";
 
 export interface SnippetMode {
   text: boolean;
@@ -24,7 +20,7 @@ export interface ParsedSnippet {
   displayTrigger: string;
   /** For regex triggers: precompiled, anchored-at-cursor variant. */
   anchored: RegExp | null;
-  replacement: string;
+  replacement: string | SnippetReplacement;
   auto: boolean;
   regex: boolean;
   word: boolean;
@@ -155,12 +151,19 @@ export function matchesContext(s: ParsedSnippet, ctx: EditContext): boolean {
   return false;
 }
 
-function isWordBoundary(state: EditorState, triggerPos: number, cursor: number): boolean {
+/** latex-suite 的 `w` 判定:trigger 前后**都**必须是分隔符;非 ASCII(CJK)
+ *  也算边界——否则中文笔记里的「测试dm」永远不展开。`\n` 在设置串里写的是
+ *  字面两字符,还原成真换行。 */
+export function isWordBoundary(
+  state: EditorState,
+  triggerPos: number,
+  cursor: number,
+  delimiters: string,
+): boolean {
   const prev = triggerPos <= 0 ? "" : state.sliceDoc(triggerPos - 1, triggerPos);
   const next = cursor >= state.doc.length ? "" : state.sliceDoc(cursor, cursor + 1);
-  // CJK and other non-ASCII characters count as boundaries — without this,
-  // "测试dm" would never expand for Chinese notes.
-  const boundary = (ch: string) => ch === "" || /[^\x00-\x7F]/.test(ch) || WORD_DELIMITERS.includes(ch);
+  const set = delimiters.replace(/\\n/g, "\n");
+  const boundary = (ch: string) => ch === "" || /[^\x00-\x7F]/.test(ch) || set.includes(ch);
   return boundary(prev) && boundary(next);
 }
 
@@ -209,11 +212,17 @@ const ESCAPABLE = new Set(["$", "\\"]);
 /** Expands latex-suite replacement syntax into plain text + tabstops:
  *  `$0`… tabstops, `${0:default}` with placeholder text, `[[n]]` regex group
  *  references, `${VISUAL}` the visual selection, `\x` escapes for the chars
- *  in ESCAPABLE (anything else after `\` stays literal). */
+ *  in ESCAPABLE (anything else after `\` stays literal).
+ *
+ *  `raw: true` 是**函数型 replacement 的返回值**通道:latex-suite 里函数返回值
+ *  原样入档,只做制表位扫描(`process` 直接采信返回值,`[[n]]`/`\$`/`\\` 的
+ *  处理都在解析期对**字符串型** replacement 做)。少了这条通道,函数返回的
+ *  `\\`(矩阵行分隔)会被当转义吃掉一层,矩阵直接渲染错。 */
 export function parseReplacement(
   replacement: string,
   groups: string[],
   visualText: string | null,
+  raw = false,
 ): ParsedReplacement {
   let out = "";
   const stops: ParsedReplacement["stops"] = [];
@@ -223,7 +232,7 @@ export function parseReplacement(
   while (i < n) {
     const ch = replacement[i];
 
-    if (ch === "\\" && i + 1 < n) {
+    if (!raw && ch === "\\" && i + 1 < n) {
       const next = replacement[i + 1];
       if (ESCAPABLE.has(next)) {
         out += next;
@@ -236,7 +245,7 @@ export function parseReplacement(
     }
 
     if (ch === "$") {
-      if (replacement.startsWith("${VISUAL}", i)) {
+      if (!raw && replacement.startsWith("${VISUAL}", i)) {
         out += visualText ?? "";
         i += "${VISUAL}".length;
         continue;
@@ -271,7 +280,7 @@ export function parseReplacement(
       continue;
     }
 
-    if (ch === "[") {
+    if (!raw && ch === "[") {
       const group = /^\[\[(\d+)\]\]/.exec(replacement.slice(i));
       if (group) {
         const gi = Number(group[1]);
@@ -298,17 +307,56 @@ export interface MatchResult {
   replacement: ParsedReplacement;
 }
 
+/** latex-suite 的 `removeSnippetWhitespace`:行内公式里展开后不留多余空格
+ *  (`$ …$` 里结尾的空格会被 KaTeX 吃掉却让源码难看)。两种尾部形态:
+ *  以空格结尾 → 去掉所有尾随空格;末三字符是 `" $" + 数字`(即 `${n}` 制表位
+ *  前有空格) → 只去掉那个空格,制表位保留。其余形态原样。 */
+export function trimSnippetWhitespace(replacement: string): string {
+  if (replacement.endsWith(" ")) return replacement.trimEnd();
+  const tail = replacement.slice(-3);
+  if (tail.length === 3 && tail.slice(0, 2) === " $" && /^\d$/.test(tail[2])) {
+    return replacement.slice(0, -3) + replacement.slice(-2);
+  }
+  return replacement;
+}
+
+/** 展开文本:函数型 replacement 的入参随片段类型而定(正则 → exec 结果数组,
+ *  字符串 → trigger,可视 → 选中文本);返回非字符串视为该片段不匹配。
+ *  `raw` 标记"来自函数"——它的返回值不再过转义层(见 parseReplacement)。 */
+function resolveReplacement(
+  snippet: ParsedSnippet,
+  arg: string | RegExpExecArray,
+  visualText: string | null,
+): { text: string; raw: boolean } | null {
+  const r = snippet.replacement;
+  if (typeof r !== "function") return { text: r, raw: false };
+  const out = snippet.visual && visualText !== null ? r(visualText) : r(arg);
+  return typeof out === "string" ? { text: out, raw: true } : null;
+}
+
+export interface MatchOptions {
+  auto: boolean;
+  visualText: string | null;
+  /** latex-suite `removeSnippetWhitespace`(默认开,与插件默认一致)。 */
+  removeSnippetWhitespace?: boolean;
+  /** latex-suite `wordDelimiters`(缺省用插件默认集,见 config.ts)。 */
+  wordDelimiters?: string;
+}
+
 /** Finds the best snippet matching the text right before `cursor`. */
 export function findSnippet(
   state: EditorState,
   cursor: number,
   typedKey: string | null,
-  opts: { auto: boolean; visualText: string | null },
+  opts: MatchOptions,
 ): MatchResult | null {
   const { compiled } = snippetStore;
   const line = state.doc.lineAt(cursor);
   const prefix = state.sliceDoc(line.from, cursor);
   const ctx = getContextAt(state, cursor);
+  const delimiters = opts.wordDelimiters ?? LATEX_SUITE_WORD_DELIMITERS;
+  // 只在行内公式里修剪(块级公式的换行前空格是排版的一部分)。
+  const trim = (opts.removeSnippetWhitespace ?? true) && ctx.inlineMath;
 
   for (const snippet of compiled.list) {
     if (opts.auto && !snippet.auto) continue;
@@ -328,7 +376,9 @@ export function findSnippet(
       snippet.anchored.lastIndex = 0;
       const m = snippet.anchored.exec(prefix);
       if (!m) continue;
-      if (snippet.word && !isWordBoundary(state, cursor - m[0].length, cursor)) continue;
+      if (snippet.word && !isWordBoundary(state, cursor - m[0].length, cursor, delimiters)) continue;
+      const res = resolveReplacement(snippet, m, opts.visualText);
+      if (res === null) continue;
       // latex-suite semantics: [[0]] refers to the FIRST capture group,
       // so pass m.slice(1) and index [[n]] → m[n+1].
       const groups = m.slice(1);
@@ -336,7 +386,12 @@ export function findSnippet(
         snippet,
         start: cursor - m[0].length,
         end: cursor,
-        replacement: parseReplacement(snippet.replacement, groups, opts.visualText),
+        replacement: parseReplacement(
+          trim ? trimSnippetWhitespace(res.text) : res.text,
+          groups,
+          opts.visualText,
+          res.raw,
+        ),
       };
     }
 
@@ -344,15 +399,18 @@ export function findSnippet(
     if (typedKey !== null && !trigger.endsWith(typedKey)) continue;
     if (!prefix.endsWith(trigger)) continue;
     const start = cursor - trigger.length;
-    if (snippet.word && !isWordBoundary(state, start, cursor)) continue;
+    if (snippet.word && !isWordBoundary(state, start, cursor, delimiters)) continue;
+    const res = resolveReplacement(snippet, trigger, opts.visualText);
+    if (res === null) continue;
     return {
       snippet,
       start,
       end: cursor,
       replacement: parseReplacement(
-        snippet.replacement,
+        trim ? trimSnippetWhitespace(res.text) : res.text,
         [],
         opts.visualText,
+        res.raw,
       ),
     };
   }
