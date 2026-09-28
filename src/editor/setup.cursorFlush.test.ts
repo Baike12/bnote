@@ -3,7 +3,7 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { GFM } from "@lezer/markdown";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { vimCursorNeedsFlush } from "./setup";
+import { vimCursorNeedsFlush, scheduleVimCursorFlush } from "./setup";
 import { currentVimMode, vimDrawsBlockCursor } from "./vim/vim";
 
 /**
@@ -82,8 +82,7 @@ describe("vim 光标冲刷判据", () => {
  * overwrite)`）——判错的两个方向都出问题：说 true 是白付一次整轮 measure，
  * 说 false 是块光标慢一帧落位。引擎实例就是视图上的 `cm`（getCM 读它）。
  */
-describe("块光标判据与引擎一致", () => {
-  const fakeView = (vim: unknown, overwrite = false) =>
+describe("块光标判据与引擎一致", () => {  const fakeView = (vim: unknown, overwrite = false) =>
     ({ cm: { state: { vim, overwrite } } }) as unknown as Parameters<typeof vimDrawsBlockCursor>[0];
 
   it("insert（非 replace）不画块光标", () => {
@@ -100,5 +99,41 @@ describe("块光标判据与引擎一致", () => {
     const noEngine = { cm: null } as unknown as Parameters<typeof vimDrawsBlockCursor>[0];
     expect(vimDrawsBlockCursor(noEngine)).toBe(false);
     expect(currentVimMode(noEngine)).toBe(null);
+  });
+});
+
+/**
+ * 冲刷的时序契约（setup.ts updateListener 上方的注释）：冲刷排进微任务——它
+ * 仍在按键任务内、渲染之前（块光标同帧落位不变），但排在同任务全部同步变更
+ * （含引擎的 .cm-vimMode 类翻转）之后，一轮 measure 看到最终样式，Esc 的
+ * 「翻转前布局 + 翻转作废 + rAF 重算」双轮归一。回归的样子是回到 updateListener
+ * 里同步读坐标：那样每次 Esc 都按旧样式白算一轮布局。
+ */
+describe("冲刷微任务时序契约", () => {
+  const fakeView = (connected: boolean) => {
+    const calls: number[] = [];
+    const view = {
+      dom: { isConnected: connected },
+      state: { selection: { main: { head: 7 } } },
+      coordsAtPos: (pos: number) => {
+        calls.push(pos);
+      },
+    };
+    return { view, calls };
+  };
+
+  it("同步阶段不读布局，微任务里才冲刷", async () => {
+    const { view, calls } = fakeView(true);
+    scheduleVimCursorFlush(view);
+    expect(calls).toEqual([]);
+    await Promise.resolve();
+    expect(calls).toEqual([7]);
+  });
+
+  it("微任务执行前视图已销毁则放弃（异步回调自证时效）", async () => {
+    const { view, calls } = fakeView(false);
+    scheduleVimCursorFlush(view);
+    await Promise.resolve();
+    expect(calls).toEqual([]);
   });
 });
