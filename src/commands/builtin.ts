@@ -23,6 +23,7 @@ import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/d
 import { useAppStore, toggleStudyMode } from "@/state/appStore";
 import { ensureLinks } from "@/daily/links";
 import { sendTodoToDaily } from "@/daily/engine";
+import { openTodayDailyNote } from "@/daily/open";
 import { runtimeDeps } from "@/daily/runtime";
 import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/run";
 import { resetLspStateForPath, syncNow } from "@/python/lsp";
@@ -65,6 +66,12 @@ const defs: CommandDef[] = [
       const path = await actions.pickVaultDialog();
       if (path) await actions.openVault(path);
     },
+  },
+  {
+    id: "workspace.open-daily",
+    title: "打开今日日记(⌘⇧O)",
+    category: "工作区",
+    run: () => void openTodayDailyNote(),
   },
   { id: "workspace.new-note", title: "新建笔记", category: "工作区", run: () => void actions.newNote() },
   {

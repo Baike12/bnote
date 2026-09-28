@@ -16,6 +16,7 @@ import {
   snippetLoader,
   type SnippetLoadOutcome,
 } from "@/editor/snippets/load";
+import { configureLatexSuite } from "@/editor/snippets/config";
 import { dirname, fileName, joinPath, wikilinkText } from "@/lib/path";
 import { ensureLinks } from "@/daily/links";
 
@@ -388,6 +389,7 @@ export async function applySettingsToEditor(): Promise<void> {
   // 只翻开关、不动来源：若把来源重置为 null，每次打开文件/改设置都会把
   // 仓库片段打回内置（真实回归，load.test.ts 有接线门禁）。
   applySnippetsEnabled(settings.snippets);
+  configureLatexSuite(settings.latex);
   configureLivePreview({ mathPreview: settings.mathPreview });
   reconfigureLivePreview(view, settings.livePreview);
   reconfigureTypewriter(view, settings.typewriter);

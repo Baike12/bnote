@@ -34,6 +34,31 @@ interface StoredLinks {
   links: DailyLink[];
 }
 
+// ------------------------------------------------------- 变更通知(库 → 视图)
+
+let revision = 0;
+const listeners = new Set<() => void>();
+
+/** 库的版本号,每次增删改 +1。 */
+export function linksRevision(): number {
+  return revision;
+}
+
+/** 订阅库变更(编辑器装饰据此重算);返回退订。 */
+export function onLinksChanged(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
+/** 唯一的变更出口:所有写入者(添加/更新/删除/换库)都从这里过,
+ *  订阅者不会漏事件。 */
+function markLinksChanged(): void {
+  revision++;
+  for (const fn of [...listeners]) fn();
+}
+
 export class LinkStore {
   private links = new Map<string, DailyLink>();
 
@@ -98,15 +123,19 @@ export class LinkStore {
 
   upsert(link: DailyLink): void {
     this.links.set(link.id, link);
+    markLinksChanged();
   }
 
   update(id: string, patch: Partial<Omit<DailyLink, "id">>): void {
     const cur = this.links.get(id);
-    if (cur) this.links.set(id, { ...cur, ...patch });
+    if (cur) {
+      this.links.set(id, { ...cur, ...patch });
+      markLinksChanged();
+    }
   }
 
   remove(id: string): void {
-    this.links.delete(id);
+    if (this.links.delete(id)) markLinksChanged();
   }
 }
 
@@ -126,6 +155,7 @@ export async function ensureLinks(vaultRoot: string): Promise<LinkStore> {
   }
   const store = LinkStore.fromJSON(raw);
   cache = { vault: vaultRoot, store };
+  markLinksChanged(); // 库(换仓后)换了内容:已渲染的标记据此重算
   return store;
 }
 

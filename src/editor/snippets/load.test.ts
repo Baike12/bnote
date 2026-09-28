@@ -84,6 +84,50 @@ describe("SnippetLoader:装载语义", () => {
   });
 });
 
+describe("函数型 replacement 过装载链路", () => {
+  /** 与仓库 .bnote/snippets.js 里那条 iden 同形:返回值直接入档,只解析制表位。 */
+  const IDEN: RawSnippet = {
+    trigger: /iden(\d)/,
+    replacement: (match) => {
+      const n = Number((match as RegExpExecArray)[1]);
+      const rows: string[] = [];
+      for (let j = 0; j < n; j++) {
+        rows.push(Array.from({ length: n }, (_, i) => (i === j ? "1" : "0")).join(" & "));
+      }
+      return `\\begin{pmatrix}\n${rows.join(String.raw` \\` + "\n")}\n\\end{pmatrix}`;
+    },
+    options: "mA",
+  };
+
+  it("仓库文件里的函数被原样带进来,且返回值不过转义层(矩阵行分隔是两个反斜杠)", async () => {
+    const loader = new SnippetLoader(async () => [IDEN]);
+    const outcome = await loader.load("export default [/* iden */]", true);
+    expect(outcome).toEqual({ status: "user", count: 1 });
+
+    const doc = "$iden2$";
+    const out =
+      findSnippet(EditorState.create({ doc }), 6, "2", { auto: true, visualText: null })
+        ?.replacement.text ?? "";
+    // 断言刻意不写反斜杠字面量:数转义层数太容易错,直接用码点比较。
+    const BS = String.fromCharCode(92); // 一个反斜杠
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(4); // \begin / 第一行 / 第二行 / \end
+    expect(lines[1].endsWith(BS + BS)).toBe(true); // 行分隔是 LaTeX 的两个反斜杠
+    expect([...out].filter((c) => c === BS)).toHaveLength(4); // 1(\begin) + 一处行分隔(2) + 1(\end)
+
+    // 3×3(用户配置里 iden3 的规模):两处行分隔
+    const out3 =
+      findSnippet(EditorState.create({ doc: "$iden3$" }), 6, "3", { auto: true, visualText: null })
+        ?.replacement.text ?? "";
+    const lines3 = out3.split("\n");
+    expect(lines3).toHaveLength(5);
+    expect(lines3[1].endsWith(BS + BS)).toBe(true);
+    expect(lines3[2].endsWith(BS + BS)).toBe(true);
+    expect(lines3[3].endsWith(BS + BS)).toBe(false);
+    expect([...out3].filter((c) => c === BS)).toHaveLength(6);
+  });
+});
+
 describe("SnippetLoader:内容缓存", () => {
   it("同内容不重复导入(仓库事件每次都触发 reload,重编译必须被拦掉)", async () => {
     const { calls, importer } = fakeImporter();

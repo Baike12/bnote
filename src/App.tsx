@@ -15,7 +15,7 @@ import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, hasPendingCursorSave } from "@/editor/cursorMemory";
 import { flushLinksPersist, hasPendingLinksPersist } from "@/daily/links";
 import { flushPersistConfig, hasPendingPersist } from "@/state/appStore";
-import { imeOnWindowBlur, imeOnWindowFocus } from "@/editor/imeSwitch";
+import { imeOnWindowBlur, imeOnWindowFocus, imeWarmUp } from "@/editor/imeSwitch";
 import {
   applySettingsToEditor,
   openVault,
@@ -74,6 +74,7 @@ export default function App() {
         ...DEFAULT_SETTINGS,
         ...saved,
         ime: { ...DEFAULT_SETTINGS.ime, ...(saved.ime ?? {}) },
+        latex: { ...DEFAULT_SETTINGS.latex, ...(saved.latex ?? {}) },
       });
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);
@@ -83,6 +84,9 @@ export default function App() {
       }).then((off) => {
         imeUnlisten = off;
       });
+      // TIS 预热（见 imeWarmUp）：首次 TIS 调用要去联系输入法服务（本机实测
+      // ~90ms）且必须走苹果主线程，不能留到用户第一次切 vim 模式那一刻才付。
+      imeWarmUp();
       if (cfg?.lastVault) {
         await openVault(cfg.lastVault);
       }

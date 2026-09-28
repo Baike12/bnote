@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, type FileNode, type StudyContent, type VaultInfo } from "@/lib/tauri";
+import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
 
 export interface ImeSettings {
   /** 跟随 vim 模式切换输入法（仅 macOS 生效） */
@@ -40,6 +41,8 @@ export interface Settings {
   studySplit: [number, number];
   fontSize: number;
   ime: ImeSettings;
+  /** LaTeX Suite 特性开关(对齐 obsidian-latex-suite,见 editor/snippets/config) */
+  latex: LatexConfig;
   quickAdd: QuickAddCommand[];
 }
 
@@ -61,6 +64,7 @@ export const DEFAULT_SETTINGS: Settings = {
     mathKeepsEnglish: true,
     codeKeepsEnglish: true,
   },
+  latex: { ...DEFAULT_LATEX_CONFIG },
   quickAdd: [],
 };
 
