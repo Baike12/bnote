@@ -310,9 +310,12 @@ button {
   background: transparent !important;
 }
 
-/* Vim current-line shade (Obsidian-style): highlightActiveLine runs while vim
-   is on, and the vim plugin tags the scroller `.cm-vimMode` exactly in
-   normal/visual mode (dropped in insert), gating the shade to vim use. */
+/* Vim current-line shade (Obsidian-style): the shade is a line decoration
+   painted by vimActiveLine (setup reconfigureVim), whose visibility judgment is
+   literally the engine's block-cursor one — emitted only in normal/visual/
+   replace, never in insert. No CSS gate on the scroller's `.cm-vimMode` class
+   here: any ancestor-class selector would make every Esc/i style-invalidate the
+   whole viewport subtree. */
 .cm-line.cm-activeLine {
   background: rgba(255, 255, 255, 0.22) !important;
 }
@@ -321,9 +324,6 @@ button {
    stretching across the padding. */
 .cm-line.md-hline.cm-activeLine {
   background-clip: content-box !important;
-}
-.cm-scroller:not(.cm-vimMode) .cm-line.cm-activeLine {
-  background: transparent !important;
 }
 /* Visual mode: band every selected line, so the selection extent reads as
    full-width bands instead of text-only blocks. A linewise selection (V) IS its

@@ -5,7 +5,7 @@ export { Vim, getCM };
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { keymap, ViewPlugin, Decoration } from "@codemirror/view";
 import type { DecorationSet, ViewUpdate } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
+import type { EditorState, Extension } from "@codemirror/state";
 import { EditorSelection, RangeSetBuilder } from "@codemirror/state";
 import type { Range } from "@codemirror/state";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
@@ -427,6 +427,53 @@ export function vimVisualHighlight(): Extension {
           vimStateOf(view) as VisualVimState | null,
           view.state.selection.ranges,
         );
+      }
+    },
+		{ decorations: (v) => v.decorations },
+	);
+}
+
+/* ---- 当前行底 shade:自有装饰模型,替代 highlightActiveLine + 祖先类门控 CSS。
+   引擎在 Esc/i 时翻动 scrollDOM 上的 .cm-vimMode 类,任何以它为祖先条件的
+   选择器都会让样式失效圈罩住整个视口子树(每行及其 KaTeX/markdown 子树全部
+   重查规则)。底 shade 改成一个 line decoration:可见性直接跟 vimDrawsBlockCursor
+   走(normal/visual/replace 画块光标 ⇔ 引擎给 scroller 挂 cm-vimMode 的同一
+   判据,updateClass 逐字对照过),insert 态不发装饰;一次切换只动光标行一行
+   的类,失效圈收进单行,宽域失效少一个消费方。 ---- */
+
+/** activeLine 行装饰的纯构建:不画块光标(insert 态、无引擎)返回空集,否则给
+ *  每个 range 的 head 行挂 cm-activeLine(多 range 同行去重)。导出供门禁锁
+ *  可见性判据与装饰几何。 */
+export function activeLineDecos(
+  state: EditorState,
+  drawsBlockCursor: boolean,
+): DecorationSet {
+  if (!drawsBlockCursor) return Decoration.none;
+  const builder = new RangeSetBuilder<Decoration>();
+  const seen = new Set<number>();
+  for (const r of state.selection.ranges) {
+    const lineFrom = state.doc.lineAt(r.head).from;
+    if (seen.has(lineFrom)) continue;
+    seen.add(lineFrom);
+    builder.add(lineFrom, lineFrom, activeLineDeco);
+  }
+  return builder.finish();
+}
+
+const activeLineDeco = Decoration.line({ class: "cm-activeLine" });
+
+export function vimActiveLine(): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      constructor(view: EditorView) {
+        this.decorations = activeLineDecos(view.state, vimDrawsBlockCursor(view));
+      }
+
+      update(u: ViewUpdate) {
+        if (u.docChanged || u.selectionSet || u.viewportChanged) {
+          this.decorations = activeLineDecos(u.view.state, vimDrawsBlockCursor(u.view));
+        }
       }
     },
     { decorations: (v) => v.decorations },
