@@ -40,6 +40,28 @@ impl Glyph {
     }
 }
 
+/// A placed glyph whose baseline is NOT horizontal (vertical axis labels,
+/// arXiv side stamps, rotated diagram captions). Kept apart from `Glyph`
+/// because it must never enter horizontal line building, but it is real text
+/// and a figure's label just as much as a flow word is.
+#[derive(Debug, Clone)]
+pub struct RotatedGlyph {
+    /// Baseline origin (device pt, y down).
+    pub x: f64,
+    pub y: f64,
+    /// Advance along the baseline (device pt).
+    pub wx: f64,
+    /// Font size (device pt).
+    pub size: f64,
+    /// Unit vector of the baseline direction in device space (y down): the
+    /// direction the text advances.
+    pub dir: (f64, f64),
+    /// Resolved unicode text (may be empty for unmapped glyphs).
+    pub text: String,
+    /// Direct LaTeX for math fonts.
+    pub latex: Option<String>,
+}
+
 /// Thin axis-aligned rule (fraction bars, table lines, underlines).
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -94,6 +116,8 @@ pub struct InlineImage {
 #[derive(Debug, Default)]
 pub struct PageItems {
     pub glyphs: Vec<Glyph>,
+    /// Glyphs whose baseline is not horizontal — never flow, but figure text.
+    pub rotated: Vec<RotatedGlyph>,
     pub rules: Vec<Rule>,
     pub paths: Vec<Path>,
     pub images: Vec<Image>,
@@ -144,14 +168,12 @@ impl TextState {
 struct PathState {
     segs: Vec<PathSeg>,
     bbox: Rect,
-    /// Set when the whole path is exactly one axis-aligned `re`.
-    single_rect: bool,
     clip_pending: bool,
 }
 
 impl PathState {
     fn new() -> PathState {
-        PathState { segs: Vec::new(), bbox: Rect::empty(), single_rect: false, clip_pending: false }
+        PathState { segs: Vec::new(), bbox: Rect::empty(), clip_pending: false }
     }
 }
 
@@ -240,8 +262,13 @@ impl<'a> Interp<'a> {
                     e: num(ops, 4),
                     f: num(ops, 5),
                 };
+                // PDF: CTM' = cm × CTM — the new matrix maps user space first,
+                // the previous CTM maps to device. `Mat::mul(o)` applies `o`
+                // first, so the previous CTM must be `self` here. Composing the
+                // other way round mirrored every translation/scale done inside
+                // q…Q (fraction bars landed below the page and vanished).
                 if let Some(g) = ctx.stack.last_mut() {
-                    g.ctm = m.mul(&g.ctm);
+                    g.ctm = g.ctm.mul(&m);
                 }
             }
             "w" => {
@@ -359,7 +386,7 @@ impl<'a> Interp<'a> {
                             }
                             Op::Num(k) => {
                                 let tx = -*k / 1000.0 * ctx.ts.size * ctx.ts.h_scale;
-                                ctx.ts.tm = translate(tx, 0.0).mul(&ctx.ts.tm);
+                                ctx.ts.tm = advance_text(&ctx.ts.tm, &gs.ctm, tx);
                             }
                             _ => {}
                         }
@@ -371,7 +398,6 @@ impl<'a> Interp<'a> {
             "m" => {
                 ctx.path.segs.clear();
                 ctx.path.bbox = Rect::empty();
-                ctx.path.single_rect = false;
                 let (x, y) = gs.ctm.apply(num(ops, 0), num(ops, 1));
                 ctx.path.segs.push(PathSeg::Move(x, y));
                 ctx.path.bbox.add(x, y);
@@ -426,7 +452,7 @@ impl<'a> Interp<'a> {
                 ctx.path.segs.push(PathSeg::Line(rect.x0, rect.y1));
                 ctx.path.segs.push(PathSeg::Close);
                 ctx.path.bbox = rect;
-                ctx.path.single_rect = axis;
+                let _ = axis;
             }
 
             "W" | "W*" => ctx.path.clip_pending = true,
@@ -435,7 +461,6 @@ impl<'a> Interp<'a> {
                 let fill = matches!(name, "f" | "F" | "f*" | "B" | "B*" | "b" | "b*");
                 let stroke = matches!(name, "S" | "s" | "B" | "B*" | "b" | "b*");
                 let bbox = ctx.path.bbox;
-                let single = ctx.path.single_rect;
 
                 // Clip handling first (W n is the standard clip idiom).
                 if ctx.path.clip_pending {
@@ -456,7 +481,11 @@ impl<'a> Interp<'a> {
                 if (fill || stroke) && !bbox.is_empty() && ctx.path.segs.len() >= 2 {
                     let w = bbox.width();
                     let h = bbox.height();
-                    let thin = single && w.min(h) <= 3.5 && (w / h).max(h / w) >= 3.0;
+                    // A thin axis-aligned box is a rule no matter how it was
+                    // drawn: `re` rects, but also the m…l stroke lines that TeX
+                    // drivers use for fraction/radical bars (h == 0). Diagonal
+                    // strokes have a squat bbox and stay paths.
+                    let thin = w.min(h) <= 3.5 && (w / h.max(1e-6)).max(h / w.max(1e-6)) >= 3.0;
                     if thin {
                         self.items.rules.push(Rule {
                             rect: bbox,
@@ -476,7 +505,6 @@ impl<'a> Interp<'a> {
                 }
                 ctx.path.segs.clear();
                 ctx.path.bbox = Rect::empty();
-                ctx.path.single_rect = false;
             }
 
             "Do" => {
@@ -500,8 +528,25 @@ impl<'a> Interp<'a> {
                         .iter()
                         .map(|&(x, y)| gsn.ctm.apply(x, y))
                         .collect();
+                    let bbox = Rect::from_points(&corners);
+                    // A 1×1-pixel bitmap stretched into a thin wide box is a
+                    // TYPESET RULE: dvips draws \hrule as a scaled 1×1 inline
+                    // image, so every fraction bar of math0211159 arrived here
+                    // as an "image" instead of a rule — all its fractions
+                    // flattened into script stacks. Synthesize the rule.
+                    let w = bbox.width();
+                    let h = bbox.height();
+                    let thin = w.min(h) <= 3.5
+                        && (w / h.max(1e-6)).max(h / w.max(1e-6)) >= 3.0;
+                    if img.width == 1 && img.height == 1 && thin {
+                        self.items.rules.push(Rule {
+                            rect: bbox,
+                            color: gsn.fill_color,
+                        });
+                        return;
+                    }
                     self.items.images.push(Image {
-                        bbox: Rect::from_points(&corners),
+                        bbox,
                         source: ImageSource::Inline(img),
                     });
                 }
@@ -537,35 +582,91 @@ impl<'a> Interp<'a> {
             }
         }
 
-        // Direction of the text-space x axis: rotated text (side stamps,
-        // vertical captions) is skipped rather than mis-grouped into lines.
+        // Direction of the text-space x axis in device space: rotated text is
+        // not FLOW — a side stamp or a vertical caption must never enter
+        // horizontal line building (the cartier TOC lost its first entries to
+        // exactly that) — but it is still TEXT, and figures are full of it:
+        // the word grids of 1706.03762's attention figures are drawn with a
+        // 90° Tm. Those glyphs go to their own channel with their baseline
+        // direction, for the figure assembler to claim and orient.
         let (tx_dir, ty_dir) = (gs.ctm.a * ts.tm.a + gs.ctm.c * ts.tm.b, gs.ctm.b * ts.tm.a + gs.ctm.d * ts.tm.b);
         let rotated = ty_dir.abs() > tx_dir.abs() * 2.0 && ty_dir.abs() > 0.01;
+        let dir_len = (tx_dir * tx_dir + ty_dir * ty_dir).sqrt();
 
         for (code, text, latex, w0) in decoded {
+            let tx = (w0 / 1000.0 * ts.size
+                + ts.char_spacing
+                + if code == 32 { ts.word_spacing } else { 0.0 })
+                * ts.h_scale;
+            if rotated {
+                let full = gs.ctm.mul(&ts.tm);
+                let scale = ((full.a * full.d - full.b * full.c).abs().sqrt()).max(1e-6);
+                let (gx, gy) = full.apply(0.0, ts.rise);
+                let clipped = gx < gs.clip.x0 - 1.0
+                    || gx > gs.clip.x1 + 1.0
+                    || gy < gs.clip.y0 - 1.0
+                    || gy > gs.clip.y1 + 1.0;
+                // Same "invisible stamp art" rule as the horizontal path: a
+                // glyph with no text and no LaTeX has nothing to render.
+                if !clipped && (!text.is_empty() || latex.is_some()) && dir_len > 0.0 {
+                    self.items.rotated.push(RotatedGlyph {
+                        x: gx,
+                        y: gy,
+                        wx: w0 / 1000.0 * ts.size * ts.h_scale * scale,
+                        size: ts.size * scale,
+                        dir: (tx_dir / dir_len, ty_dir / dir_len),
+                        text,
+                        latex,
+                    });
+                }
+                ts.tm = advance_text(&ts.tm, &gs.ctm, tx);
+                continue;
+            }
             // Recompute the full transform PER GLYPH: Tm advances each time.
             let full = gs.ctm.mul(&ts.tm);
             let scale = ((full.a * full.d - full.b * full.c).abs().sqrt()).max(1e-6);
             let fsize = ts.size * scale;
             let (gx, gy) = full.apply(0.0, ts.rise);
+            // Text outside the current clip is invisible (e.g. the stray √
+            // glyph hidden under "pre-softmax" in 1706.03762: pdftotext does
+            // not see it either). 1pt tolerance for baseline rounding.
+            let clipped = gx < gs.clip.x0 - 1.0
+                || gx > gs.clip.x1 + 1.0
+                || gy < gs.clip.y0 - 1.0
+                || gy > gs.clip.y1 + 1.0;
+            if clipped {
+                continue;
+            }
             let glyph = Glyph {
                 x: gx,
                 y: gy,
                 wx: w0 / 1000.0 * ts.size * ts.h_scale * scale,
                 size: fsize,
                 code,
-                text: if rotated { String::new() } else { text },
-                latex: if rotated { None } else { latex },
+                text,
+                latex,
                 font: font_idx,
             };
-            if glyph.wx > 0.0 || !glyph.text.is_empty() {
+            // A glyph with no text and no LaTeX usually contributes nothing —
+            // invisible stamp art (the arXiv side stamp: 20pt glyphs whose
+            // font has no width table, so every advance is the 500/1000
+            // default = 0.5×size; they clustered into real text lines and
+            // dragged their x0 to the page edge). Skip it ONLY when the
+            // advance carries that default-width signature: real cmex
+            // delimiter pieces also have empty text/latex but carry true
+            // widths, and dropping them deleted the |Rm| absolute-value bars.
+            let default_advance =
+                (glyph.wx - glyph.size * 0.5).abs() < glyph.size * 0.02;
+            if (glyph.wx > 0.0 || !glyph.text.is_empty())
+                && !(glyph.text.is_empty() && glyph.latex.is_none() && default_advance)
+            {
                 self.items.glyphs.push(glyph);
             }
             let tx = (w0 / 1000.0 * ts.size
                 + ts.char_spacing
                 + if code == 32 { ts.word_spacing } else { 0.0 })
                 * ts.h_scale;
-            ts.tm = translate(tx, 0.0).mul(&ts.tm);
+            ts.tm = advance_text(&ts.tm, &gs.ctm, tx);
         }
     }
 
@@ -656,12 +757,14 @@ impl<'a> Interp<'a> {
                 }
                 let mut content = match self.doc.get_object(id) {
                     Ok(Object::Stream(s)) => {
-                        let mut sc = s.clone();
-                        if sc.decode_content().is_ok() {
-                            sc.content
-                        } else {
-                            s.content.clone()
-                        }
+                        // lopdf 0.36's Stream::decode_content() only PARSES the
+                        // bytes into operations — it never applies /Filter. The
+                        // old `if decode_content().is_ok() { sc.content }` therefore
+                        // fed Flate-compressed form streams to the interpreter as
+                        // binary garbage, silently dropping every drawing inside
+                        // compressed forms (attention p13-15 figures live in such
+                        // forms). Decompress the same way page content is decoded.
+                        s.decompressed_content().unwrap_or_else(|_| s.content.clone())
                     }
                     _ => return,
                 };
@@ -704,7 +807,9 @@ impl<'a> Interp<'a> {
                 // current CTM.
                 ctx.stack.push(gs.clone());
                 if let Some(g) = ctx.stack.last_mut() {
-                    g.ctm = matrix.mul(&gs.ctm);
+                    // Same composition order as `cm`: the form Matrix maps form
+                    // space first, then the current CTM maps to device.
+                    g.ctm = gs.ctm.mul(&matrix);
                 }
                 self.run(&content, ctx);
                 while ctx.stack.len() > saved_stack_len {
@@ -734,6 +839,31 @@ fn translate(tx: f64, ty: f64) -> Mat {
     Mat { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: tx, f: ty }
 }
 
+/// Moves the text matrix one glyph advance (or one TJ adjustment) along the
+/// text space's own x axis — the axis the drawing operators map to the page.
+///
+/// A Tm can ROTATE that axis (the attention figures' word grids are drawn with
+/// `0 s -s 0 x y Tm`). Pre-translating the whole matrix advances in *device*
+/// space instead: those vertical labels then drifted along the page's x axis,
+/// one letter per advance, and every word decoded into two-letter fragments.
+///
+/// The text-space form is the general rule; it is applied to rotated text here
+/// because the horizontal path's device-space advance is what layout's word and
+/// line gap thresholds are calibrated against (a Tm like `0.98 0 0 1 …` makes
+/// them differ by 2%, enough to flip word breaks on a knife-edge threshold) —
+/// widening horizontal text geometry is a layout-owned change, not this one.
+fn advance_text(tm: &Mat, ctm: &Mat, tx: f64) -> Mat {
+    let (dx, dy) = (
+        ctm.a * tm.a + ctm.c * tm.b,
+        ctm.b * tm.a + ctm.d * tm.b,
+    );
+    if dy.abs() > dx.abs() * 2.0 && dy.abs() > 0.01 {
+        tm.mul(&translate(tx, 0.0))
+    } else {
+        translate(tx, 0.0).mul(tm)
+    }
+}
+
 fn cmyk(ops: &[Op]) -> (f64, f64, f64) {
     let c = ops.first().and_then(|o| o.as_f64()).unwrap_or(0.0);
     let m = ops.get(1).and_then(|o| o.as_f64()).unwrap_or(0.0);
@@ -756,23 +886,87 @@ fn as_f64(o: &Object) -> Option<f64> {
 
 fn decode_code(font: &FontInfo, code: u32) -> (u32, String, Option<String>, f64) {
     let text = font.decode(code);
-    let latex = if font.tex != TexKind::None {
-        crate::glyphdata::cm_slot_latex(font.tex.table_id(), (code & 0xFF) as u8).map(|s| s.to_string())
-    } else if font.is_math {
-        let mut out: Option<String> = None;
-        for ch in text.chars() {
-            out = Some(
-                crate::glyphdata::uni_to_latex(ch as u32)
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| text.clone()),
-            );
-            break;
+    let latex = if font.is_math {
+        if font.tex != TexKind::None {
+            // Standard CM slot tables first; for slots they lack (or that a
+            // dvips subset re-encoded — ∼ sits at code 24 in 1406.2661), the
+            // embedded font's own glyph name is authoritative.
+            cm_slot_latex_or_name(&font, code)
+        } else {
+            let mut out: Option<String> = None;
+            for ch in text.chars() {
+                out = Some(
+                    crate::glyphdata::uni_to_latex(ch as u32)
+                        .map(|s| s.to_string())
+                        .or_else(|| crate::glyphdata::unicode_math_to_latex(ch as u32))
+                        .unwrap_or_else(|| {
+                            // raw fallback: escape LaTeX specials (♯ reaches
+                            // us as ASCII "#" via ToUnicode; a bare # inside
+                            // math is a KaTeX macro-parameter error)
+                            if "\\{}%&#$^_~".contains(ch) {
+                                format!("\\{}", ch)
+                            } else {
+                                text.clone()
+                            }
+                        }),
+                );
+                break;
+            }
+            out
         }
-        out
     } else {
         None
     };
     (code, text, latex, font.width_of(code))
+}
+
+/// LaTeX for a TeX-font code: the CM slot table, then the embedded font's
+/// glyph name (AGL unicode → LaTeX, plus TeX-specific names).
+fn cm_slot_latex_or_name(font: &FontInfo, code: u32) -> Option<String> {
+    if let Some(lx) = crate::glyphdata::cm_slot_latex(font.tex.table_id(), (code & 0xFF) as u8) {
+        return Some(latex_of_char(lx));
+    }
+    if let Some(name) = font.embedded_names.get(&(code & 0xFF)) {
+        if let Some(uni) = crate::glyphdata::agl_lookup(name) {
+            if let Some(ch) = uni.chars().next() {
+                if let Some(lx) = crate::glyphdata::uni_to_latex(ch as u32) {
+                    return Some(lx.to_string());
+                }
+            }
+        }
+        if let Some(lx) = crate::glyphdata::tex_glyph_name_to_latex(name) {
+            return Some(lx);
+        }
+        if let Some(uni) = agl_fallback_unicode(name) {
+            if let Some(lx) = crate::glyphdata::uni_to_latex(uni) {
+                return Some(lx.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// A table entry that is a single non-ASCII character (∇, ∫ …) renders as
+/// raw unicode inside math, which KaTeX refuses next to macros (`\vert∇`):
+/// prefer its LaTeX command when one exists.
+fn latex_of_char(lx: &str) -> String {
+    match lx.chars().count() {
+        1 => {
+            let ch = lx.chars().next().unwrap();
+            if (ch as u32) > 0x7F {
+                crate::glyphdata::uni_to_latex(ch as u32)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| lx.to_string())
+            } else {
+                lx.to_string()
+            }
+        }
+        _ => lx.to_string(),
+    }
+}
+
+fn agl_fallback_unicode(name: &str) -> Option<u32> {
+    crate::font::agl_fallback(name).and_then(|s| s.chars().next().map(|c| c as u32))
 }
 
 struct RunCtx {
@@ -1144,7 +1338,7 @@ fn read_literal_string(data: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
 // --------------------------------------------------------------------------
 
 /// Returns (MediaBox, Resources dict) walking up the page tree.
-fn page_attrs(doc: &Document, page_id: lopdf::ObjectId) -> (Option<Rect>, Option<lopdf::Dictionary>) {
+pub fn page_attrs(doc: &Document, page_id: lopdf::ObjectId) -> (Option<Rect>, Option<lopdf::Dictionary>) {
     let mut media: Option<Rect> = None;
     let mut resources: Option<lopdf::Dictionary> = None;
     let mut cur = Some(page_id);

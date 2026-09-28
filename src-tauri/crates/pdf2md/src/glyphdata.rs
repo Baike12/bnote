@@ -5040,11 +5040,43 @@ pub static UNI2LATEX: &[(u32, &str)] = &[
 
 /// TeX font charcode → LaTeX (charcode-order tables of the CM fonts).
 pub static CM_SLOTS: &[(u16, &str)] = &[
+    (0, "\\Gamma"),
+    (1, "\\Delta"),
+    (2, "\\Theta"),
+    (3, "\\Lambda"),
+    (4, "\\Xi"),
+    (5, "\\Pi"),
+    (6, "\\Sigma"),
+    (7, "\\Upsilon"),
+    (8, "\\Phi"),
+    (9, "\\Psi"),
+    (10, "\\Omega"),
+    (11, "\\alpha"),
+    (12, "\\beta"),
+    (13, "\\gamma"),
+    (14, "\\delta"),
+    (15, "\\epsilon"),
+    (16, "\\zeta"),
+    (17, "\\eta"),
+    (18, "\\theta"),
+    (19, "\\iota"),
+    (20, "\\kappa"),
+    (21, "\\lambda"),
+    (22, "\\mu"),
+    (23, "\\nu"),
+    (24, "\\xi"),
+    (25, "\\pi"),
+    (26, "\\rho"),
+    (27, "\\sigma"),
+    (28, "\\tau"),
+    (29, "\\upsilon"),
+    (30, "\\phi"),
+    (31, "\\chi"),
     (32, " "),
     (33, "\u{03C9}"),
-    (34, "\u{03B5}"),
+    (34, "\\varepsilon"),
     (35, "\\vartheta"),
-    (36, "\\varpi"),
+    (36, "\\varphi"),
     (37, "\\varrho"),
     (38, "\\varsigma"),
     (39, "\\varphi"),
@@ -5175,6 +5207,16 @@ pub static CM_SLOTS: &[(u16, &str)] = &[
     (231, "\u{03C6}"),
     (248, "\u{03B2}"),
     (252, "\u{03BB}"),
+    (256, "-"),
+    (257, "\\cdot"),
+    (258, "\\times"),
+    (259, "\\ast"),
+    (260, "\\div"),
+    (261, "\\pm"),
+    (270, "\\circ"),
+    (271, "\\bullet"),
+    (273, "\\sim"),
+    (274, "\\simeq"),
     (288, " "),
     (289, "\\rightarrow"),
     (290, "\\uparrow"),
@@ -5239,15 +5281,15 @@ pub static CM_SLOTS: &[(u16, &str)] = &[
     (351, "\u{2228}"),
     (352, "\\vdash"),
     (353, "\\dashv"),
-    (358, "{"),
-    (359, "}"),
+    (358, "\\{"),
+    (359, "\\}"),
     (360, "\\langle"),
     (361, "\\rangle"),
     (362, "\\vert"),
     (363, "\\Vert"),
     (364, "\\updownarrow"),
     (365, "\\Updownarrow"),
-    (366, "\\"),
+    (366, "\\backslash"),
     (367, "\\wr"),
     (368, "\\surd"),
     (370, "\u{2207}"),
@@ -5558,6 +5600,67 @@ pub static CM_SLOTS: &[(u16, &str)] = &[
     (1020, "\\breve{}"),
 ];
 
+/// Resolves a TeX glyph NAME (from an embedded Type1 font's /Encoding array)
+/// to its LaTeX body. Covers the names AGL lacks: the \not slash, big
+/// delimiter pieces, and the display-style big operators of cmex.
+pub fn tex_glyph_name_to_latex(name: &str) -> Option<String> {
+    // Display-style big operators / integrals (cmex).
+    match name {
+        "summationdisplay" => return Some("\\sum".into()),
+        "integraldisplay" => return Some("\\int".into()),
+        "iintegraldisplay" => return Some("\\iint".into()),
+        "iiintegraldisplay" => return Some("\\iiint".into()),
+        "ointegraldisplay" | "ointegerdisplay" => return Some("\\oint".into()),
+        "productdisplay" => return Some("\\prod".into()),
+        "uniondisplay" => return Some("\\bigcup".into()),
+        "intersectiondisplay" => return Some("\\bigcap".into()),
+        _ => {}
+    }
+    // Sizable delimiters: parenleftBig / bracketrightbigg / braceleftBigg…
+    // (tp/bt/ex are the stacked pieces of a tall delimiter — not atoms.)
+    let (base, size): (&str, &str) = if let Some(stripped) = name.strip_suffix("Bigg") {
+        (stripped, "\\Bigg")
+    } else if let Some(stripped) = name.strip_suffix("bigg") {
+        (stripped, "\\bigg")
+    } else if let Some(stripped) = name.strip_suffix("Big") {
+        (stripped, "\\big")
+    } else {
+        (name, "")
+    };
+    let delim: Option<&str> = match base {
+        "parenleft" | "parenlefttp" | "parenleftex" | "parenleftbt" => Some("("),
+        "parenright" | "parenrighttp" | "parenrightex" | "parenrightbt" => Some(")"),
+        "bracketleft" | "bracketlefttp" | "bracketleftex" | "bracketleftbt" => Some("["),
+        "bracketright" | "bracketrighttp" | "bracketrightex" | "bracketrightbt" => Some("]"),
+        "braceleft" | "bracelefttp" | "braceleftex" | "braceleftbt" | "braceleftmid" => Some("\\{"),
+        "braceright" | "bracerighttp" | "bracerightex" | "bracerightbt" | "bracerightmid" => Some("\\}"),
+        "bracketleftBig" => Some("["),
+        "bracketrightBig" => Some("]"),
+        _ => None,
+    };
+    if let Some(d) = delim {
+        if base.ends_with("tp") || base.ends_with("bt") || base.ends_with("ex") || base.ends_with("mid") {
+            return None; // stacked piece of a taller delimiter: not an atom
+        }
+        return Some(match (d, size) {
+            ("(", "\\big") => "\\bigl(".into(),
+            (")", "\\big") => "\\bigr)".into(),
+            ("[", "\\big") => "\\bigl[".into(),
+            ("]", "\\big") => "\\bigr]".into(),
+            ("\\{", "\\big") => "\\bigl\\{".into(),
+            ("\\}", "\\big") => "\\bigr\\}".into(),
+            (d, s) => format!("{}{}", s, d),
+        });
+    }
+    match name {
+        "negationslash" => Some("\\not".to_string()),
+        "bar" => Some("\\vert".to_string()),
+        "bardbl" => Some("\\Vert".to_string()),
+        "vextenddouble" | "vextendsingle" | "radicalex" | "parenlefttp" | "exclamslanted" => None,
+        _ => None,
+    }
+}
+
 /// Looks up a TeX-font charcode. `font`: 0=cmmi 1=cmsy 2=cmex 3=cmr.
 /// Table entries store (font<<8)|code → LaTeX.
 pub fn cm_slot_latex(font: u8, code: u8) -> Option<&'static str> {
@@ -5579,4 +5682,49 @@ pub fn uni_to_latex(cp: u32) -> Option<&'static str> {
         .binary_search_by(|(k, _)| k.cmp(&cp))
         .ok()
         .map(|i| UNI2LATEX[i].1)
+}
+
+/// Maps Unicode Mathematical Alphanumerics (U+1D400–U+1D7FF, what Word/Office
+/// and modern LaTeX exports put in ToUnicode) to their LaTeX command + letter.
+/// Returns the full replacement text, e.g. `𝒞` → `\mathcal{C}`.
+pub fn unicode_math_to_latex(cp: u32) -> Option<String> {
+    // (block start, style command); holes for reserved code points fall back
+    // to the nearest solid style.
+    let (start, cmd): (u32, &str) = match cp {
+        0x1D400..=0x1D433 => (0x1D400, "\\mathbf"),
+        0x1D434..=0x1D467 => (0x1D434, "\\mathit"),
+        0x1D468..=0x1D49B => (0x1D468, "\\mathbf"),
+        0x1D49C..=0x1D4CF => (0x1D49C, "\\mathcal"),
+        0x1D538..=0x1D56B => (0x1D538, "\\mathbb"),
+        0x1D56C..=0x1D59F => (0x1D56C, "\\mathfrak"),
+        0x1D5A0..=0x1D5D3 => (0x1D5A0, "\\mathsf"),
+        0x1D5D4..=0x1D607 => (0x1D5D4, "\\mathsf"),
+        0x1D608..=0x1D63B => (0x1D608, "\\mathit"),
+        0x1D63C..=0x1D66F => (0x1D63C, "\\mathit"),
+        0x1D670..=0x1D6A3 => (0x1D670, "\\mathtt"),
+        0x1D6A8..=0x1D6E0 => (0x1D6A8, "\\mathbf"),
+        0x1D6E1..=0x1D715 => (0x1D6E1, "\\mathit"),
+        0x1D716..=0x1D74E => (0x1D716, "\\mathbf"),
+        0x1D74F..=0x1D787 => (0x1D74F, "\\mathit"),
+        0x1D788..=0x1D7C0 => (0x1D788, "\\mathbf"),
+        0x1D7C1..=0x1D7E0 => (0x1D7C1, "\\mathit"),
+        0x1D7E1..=0x1D7EC => (0x1D7E1, "\\mathbf"),
+        0x1D7ED..=0x1D7F2 => (0x1D7ED, "\\mathit"),
+        0x1D7F3..=0x1D800 => (0x1D7F3, "\\mathbf"),
+        _ => return None,
+    };
+    let off = cp - start;
+    // Plain A–Z then a–z per block; digits for the digit blocks.
+    let letter = if off < 26 {
+        (b'A' + off as u8) as char
+    } else if off < 52 {
+        (b'a' + (off - 26) as u8) as char
+    } else if cp >= 0x1D7CE && cp <= 0x1D7FF {
+        // digit blocks: bold digits at 1D7CE, empty at 1D7D8 (excluded above),
+        // sans 1D7EC, sans-bold 1D7F3
+        (b'0' + (off % 10) as u8) as char
+    } else {
+        return None;
+    };
+    Some(format!("{}{{{}}}", cmd, letter))
 }

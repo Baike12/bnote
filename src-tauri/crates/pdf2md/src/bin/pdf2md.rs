@@ -5,7 +5,7 @@ use std::path::PathBuf;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: pdf2md <file.pdf> [outdir]");
+        eprintln!("usage: pdf2md <file.pdf> [outdir] | pdf2md <file.pdf> --stream <page>");
         std::process::exit(1);
     }
     let input = &args[1];
@@ -17,6 +17,10 @@ fn main() {
     }
     if let Some(pos) = args.iter().position(|a| a == "--dump") {
         pdf2md::debug_dump(input, args.get(pos + 1).map(|s| s.as_str()));
+        return;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--stream") {
+        pdf2md::debug_stream(input, args.get(pos + 1).map(|s| s.as_str().parse().unwrap_or(1)));
         return;
     }
 

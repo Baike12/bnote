@@ -93,6 +93,13 @@ impl Rect {
         w * h
     }
 
+    /// True when the rects touch or overlap. Unlike `intersect_area > 0` this
+    /// also holds for zero-height rules (stroke-drawn fraction bars), whose
+    /// intersection area is always 0.
+    pub fn overlaps(&self, o: &Rect) -> bool {
+        self.x0 <= o.x1 && o.x0 <= self.x1 && self.y0 <= o.y1 && o.y0 <= self.y1
+    }
+
     pub fn contains(&self, x: f64, y: f64) -> bool {
         x >= self.x0 && x <= self.x1 && y >= self.y0 && y <= self.y1
     }

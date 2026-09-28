@@ -43,6 +43,14 @@ pub struct FontInfo {
     pub base_encoding: u8,
     /// code -> glyph advance (1/1000 em).
     pub widths: HashMap<u32, f64>,
+    /// Default advance (1/1000 em) for CID fonts (/DW); falls back to 500.
+    pub default_width: f64,
+    /// code -> glyph name read from the EMBEDDED Type1 font program's own
+    /// /Encoding array. dvips-style TeX subsets keep no /Encoding in the PDF
+    /// font dict and no ToUnicode, and they re-encode slots arbitrarily
+    /// (1406.2661 carries ∼ at code 24 and the \not slash at 54) — the
+    /// embedded array is the only authoritative code → glyph table.
+    pub embedded_names: HashMap<u32, String>,
     pub is_symbolic: bool,
     // classification
     pub is_math: bool,
@@ -63,6 +71,8 @@ impl FontInfo {
             differences: HashMap::new(),
             base_encoding: 0,
             widths: HashMap::new(),
+            default_width: 500.0,
+            embedded_names: HashMap::new(),
             is_symbolic: false,
             is_math: false,
             is_bold: false,
@@ -86,6 +96,16 @@ impl FontInfo {
                 return s;
             }
         }
+        // The embedded font's own encoding: authoritative for re-encoded
+        // subsets (e.g. ∼ parked at code 24 by dvips).
+        if let Some(name) = self.embedded_names.get(&code) {
+            if let Some(s) = crate::glyphdata::agl_lookup(name) {
+                return s.to_string();
+            }
+            if let Some(s) = agl_fallback(name) {
+                return s;
+            }
+        }
         match self.base_encoding {
             1 => win_ansi(code as u8),
             2 => mac_roman(code as u8),
@@ -93,12 +113,16 @@ impl FontInfo {
             4 => symbol_char(code as u8),
             5 => zapf_char(code as u8),
             _ => {
+                if self.tex != TexKind::None {
+                    // A TeX font reached this fallthrough only when neither
+                    // ToUnicode, /Differences nor the embedded encoding names
+                    // the code. StandardEncoding ASCII would fabricate wrong
+                    // letters (cmsy 54 printed "6" for ¬, 106 printed "j" for
+                    // |) — an empty text is honest: the LaTeX side may still
+                    // know the glyph.
+                    return String::new();
+                }
                 if self.is_symbolic {
-                    // Symbolic font without ToUnicode: try the TeX tables, then
-                    // StandardEncoding names as a last resort.
-                    if self.tex != TexKind::None {
-                        return String::new();
-                    }
                     std_char(code as u8)
                 } else {
                     std_char(code as u8)
@@ -108,7 +132,10 @@ impl FontInfo {
     }
 
     pub fn width_of(&self, code: u32) -> f64 {
-        *self.widths.get(&code).unwrap_or(&500.0)
+        *self
+            .widths
+            .get(&code)
+            .unwrap_or(&if self.two_byte { self.default_width } else { 500.0 })
     }
 }
 
@@ -208,7 +235,109 @@ pub fn load_font(doc: &Document, id: lopdf::ObjectId) -> Result<FontInfo, String
         }
     }
 
+    // Embedded Type1 program: read the font's own /Encoding array (the clear
+    // part before eexec). This is the ground truth for TeX subsets that keep
+    // no PDF-level encoding at all.
+    f.embedded_names = load_embedded_type1_encoding(doc, &dict);
+
     Ok(f)
+}
+
+/// Extracts `code → glyph name` from an embedded Type1 font program's
+/// /Encoding array (`/Encoding 256 array ... dup N /Name put ... readonly`).
+fn load_embedded_type1_encoding(doc: &Document, dict: &lopdf::Dictionary) -> HashMap<u32, String> {
+    let mut out = HashMap::new();
+    let Some(desc) = dict.get(b"FontDescriptor").ok().map(|o| resolve_obj(doc, o)) else {
+        return out;
+    };
+    let desc = match desc {
+        Object::Dictionary(d) => d,
+        _ => return out,
+    };
+    let file_ref = desc
+        .get(b"FontFile")
+        .or_else(|_| desc.get(b"FontFile3"))
+        .ok()
+        .cloned();
+    let Some(file_ref) = file_ref else { return out };
+    let stream = match resolve_obj(doc, &file_ref) {
+        Object::Stream(s) => s,
+        _ => return out,
+    };
+    // CFF-flavoured fonts (FontFile3 /Type1C, /CIDFontType0C) carry the
+    // charset in CFF form, not PostScript dups — skip them here.
+    if let Ok(sub) = stream.dict.get(b"Subtype") {
+        if let Some(name) = obj_name(sub) {
+            if name == "Type1C" || name == "CIDFontType0C" || name == "OpenType" {
+                return out;
+            }
+        }
+    }
+    let Ok(data) = stream.decompressed_content() else {
+        return out;
+    };
+    // Only the clear (non-eexec) part can declare /Encoding.
+    let clear_end = data
+        .windows(6)
+        .position(|w| w == b"eexec\n")
+        .or_else(|| data.windows(7).position(|w| w == b"eexec\r\n"))
+        .unwrap_or(data.len());
+    let clear = &data[..clear_end];
+    let Some(enc_pos) = clear.windows(9).position(|w| w == b"/Encoding") else {
+        return out;
+    };
+    let rest = &clear[enc_pos + 9..];
+    if rest.starts_with(b"StandardEncoding") || rest.starts_with(b"ISOLatin1") {
+        return out;
+    }
+    // Scan `dup <code> /<Name> put` entries until readonly/def/end.
+    let is_ws = |b: u8| b == b' ' || b == b'\n' || b == b'\r' || b == b'\t';
+    let token_at = |rest: &[u8], i: usize, tok: &[u8]| -> bool {
+        rest[i..].starts_with(tok)
+            && (i == 0 || is_ws(rest[i - 1]))
+            && (i + tok.len() >= rest.len() || is_ws(rest[i + tok.len()]))
+    };
+    let mut i = 0;
+    while i + 4 < rest.len() {
+        if token_at(rest, i, b"readonly")
+            || token_at(rest, i, b"currentdict")
+            || token_at(rest, i, b"currentfile")
+            || token_at(rest, i, b"end")
+            // "def" only as a standalone token — the loop prologue contains
+            // "/.notdef put" and a bare starts_with("def") stopped the scan
+            // before the first dup (every TeX subset decoded to empty text)
+            || token_at(rest, i, b"def")
+        {
+            break;
+        }
+        if rest[i..].starts_with(b"dup") {
+            let mut j = i + 3;
+            while j < rest.len() && (rest[j] == b' ' || rest[j] == b'\n' || rest[j] == b'\r' || rest[j] == b'\t') {
+                j += 1;
+            }
+            let ds = j;
+            while j < rest.len() && rest[j].is_ascii_digit() {
+                j += 1;
+            }
+            let code: u32 = std::str::from_utf8(&rest[ds..j]).ok().and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
+            while j < rest.len() && (rest[j] == b' ' || rest[j] == b'\n' || rest[j] == b'\r' || rest[j] == b'\t') {
+                j += 1;
+            }
+            if j < rest.len() && rest[j] == b'/' && code != u32::MAX {
+                j += 1;
+                let ns = j;
+                while j < rest.len() && rest[j].is_ascii_alphanumeric() {
+                    j += 1;
+                }
+                let name = String::from_utf8_lossy(&rest[ns..j]).to_string();
+                if !name.is_empty() && name != ".notdef" {
+                    out.entry(code).or_insert(name);
+                }
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 fn descendant_font_id(dict: &lopdf::Dictionary) -> Option<lopdf::ObjectId> {
@@ -256,32 +385,53 @@ fn parse_cid_widths(doc: &Document, dict: &lopdf::Dictionary, f: &mut FontInfo) 
     let Some(Object::Array(arr)) = dict.get(b"W").ok().map(|o| resolve_obj(doc, o)) else {
         return;
     };
+    if let Some(dw) = dict.get(b"DW").ok().and_then(as_f64) {
+        f.default_width = dw;
+    }
+    // The W array holds two entry forms, told apart by the type of the SECOND
+    // element:
+    //   c [w1 w2 ...]  — codes c..c+n-1 carry widths w1..wn (second elem: Array)
+    //   c1 c2 w        — every code in c1..=c2 carries width w (second: int)
+    // The old code dispatched on `arr[i+1].as_i64()` — exactly inverted: for
+    // `c [w…]` it inserted the NEXT CODE as c's width ("A" got 42), and for
+    // `c1 c2 w` it looked for an array that is never there. Every CID font
+    // advance was garbage, words interleaved and spaces vanished (the whole
+    // 2609.27549 fixture text was scrambled this way).
     let mut i = 0;
     while i < arr.len() {
-        let c = arr.get(i).and_then(|o| o.as_i64().ok()).unwrap_or(-1);
+        let Some(c) = arr.get(i).and_then(|o| o.as_i64().ok()) else {
+            i += 1;
+            continue;
+        };
         if c < 0 {
             i += 1;
             continue;
         }
-        match arr.get(i + 1).and_then(|o| o.as_i64().ok()) {
-            Some(c2) => {
-                // c [w1 w2 ...]
-                if let Some(Object::Array(ws)) = arr.get(i + 2) {
-                    for (k, w) in ws.iter().enumerate() {
-                        if let Some(v) = as_f64(w) {
-                            f.widths.insert((c + k as i64) as u32, v);
-                        }
+        match arr.get(i + 1) {
+            Some(Object::Array(ws)) => {
+                for (k, w) in ws.iter().enumerate() {
+                    if let Some(v) = as_f64(w) {
+                        f.widths.insert((c + k as i64) as u32, v);
+                    }
+                }
+                i += 2;
+            }
+            Some(o2) => {
+                let Some(c2) = o2.as_i64().ok() else {
+                    i += 1;
+                    continue;
+                };
+                if let Some(w) = arr.get(i + 2).and_then(as_f64) {
+                    // a RANGE: every code from c to c2 gets w (the old code
+                    // filled only c, leaving the rest of the range at the
+                    // default)
+                    for cc in c..=c2 {
+                        f.widths.insert(cc as u32, w);
                     }
                 }
                 i += 3;
             }
-            None => {
-                // c1 c2 w
-                if let Some(w) = arr.get(i + 2).and_then(as_f64) {
-                    f.widths.insert(c as u32, w);
-                }
-                i += 3;
-            }
+            None => break,
         }
     }
     if let Some(space) = f.widths.get(&32) {
@@ -346,19 +496,26 @@ fn classify(f: &mut FontInfo) {
         f.is_math = true;
     }
     // Computer Modern / AMSTeX / LaTeX math fonts
-    for key in ["cmmi", "cmsy", "cmex", "msam", "msbm", "eufm", "eusb", "eufb", "msam", "math"] {
+    for key in ["cmmi", "cmsy", "cmex", "cmbsy", "msam", "msbm", "eufm", "eusb", "eufb", "msam", "math"] {
         if n.contains(key) {
             f.is_math = true;
         }
     }
     // Math italic suffixes (e.g. NimbusRomNo9L-ReguItal is not math; be strict)
-    if n.starts_with("cmmi") {
+    //
+    // The BOLD families carry the same charcode tables as their regular
+    // counterparts (cmbx10 is cmr10 at a bold weight, cmbsy10 is cmsy10): a
+    // paper that sets a formula's numbers in cmbx — Table 2 of 1706.03762 has
+    // `3.3 · 10^18` in CMBX10/CMBSY10 — left them outside the math path (the
+    // shared path gates on "is a TeX font", `tex != None`) and the superscript
+    // stayed flat (`3.3 · 1018`).
+    if n.starts_with("cmmi") || n.starts_with("cmmib") {
         f.tex = TexKind::Cmmi;
-    } else if n.starts_with("cmsy") {
+    } else if n.starts_with("cmsy") || n.starts_with("cmbsy") {
         f.tex = TexKind::Cmsy;
-    } else if n.starts_with("cmex") {
+    } else if n.starts_with("cmex") || n.starts_with("cmbex") {
         f.tex = TexKind::Cmex;
-    } else if n.starts_with("cmr") {
+    } else if n.starts_with("cmr") || n.starts_with("cmbx") || n.starts_with("cmss") {
         f.tex = TexKind::Cmr;
     }
     // STIX / XITS math fonts
@@ -719,6 +876,36 @@ pub fn agl_fallback(name: &str) -> Option<String> {
         "dotlessi" => "\u{0131}",
         "Lslash" => "\u{0141}",
         "lslash" => "\u{0142}",
+        "bar" => "|",
+        "bardbl" => "\u{2016}",
+        "negationslash" => "/",
+        "arrowboth" => "\u{2194}",
+        "arrowdblboth" => "\u{21D4}",
+        "circlemultiply" => "\u{2297}",
+        "circleplus" => "\u{2295}",
+        "intersection" => "\u{2229}",
+        "union" => "\u{222A}",
+        "logicaland" => "\u{2227}",
+        "logicalor" => "\u{2228}",
+        "reflexsubset" => "\u{2286}",
+        "reflexsuperset" => "\u{2287}",
+        "equivalence" => "\u{2261}",
+        "minute" => "\u{2032}",
+        "second" => "\u{2033}",
+        "lessequal" => "\u{2264}",
+        "greaterequal" => "\u{2265}",
+        "similar" => "\u{223C}",
+        "approxequal" => "\u{2248}",
+        "element" => "\u{2208}",
+        "notelement" => "\u{2209}",
+        "suchthat" => "\u{220B}",
+        "orthogonal" => "\u{22A5}",
+        "angle" => "\u{2220}",
+        "gradient" => "\u{2207}",
+        "floorleft" => "\u{230A}",
+        "floorright" => "\u{230B}",
+        "ceilingleft" => "\u{2308}",
+        "ceilingright" => "\u{2309}",
         _ => return None,
     };
     Some(s.to_string())
