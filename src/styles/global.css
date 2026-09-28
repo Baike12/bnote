@@ -583,10 +583,63 @@ button {
   transform: rotate(40deg);
 }
 
+/* 与今日日记链接的待办(src/daily/marks.ts 挂行装饰)。几何纪律:标记是绝对
+   定位的伪元素,不参与行内布局——列表缩进与折行位置与无标记时逐像素一致。
+   pip 落在标记槽左侧(随 --li-px 跟着层级走,正好停在该层 checkbox 左边),
+   垂直居中按行高 1.5em 折算:.75em 中线 - .15em 半径 = .6em。 */
+.cm-line.md-daily-link {
+  position: relative;
+}
+.cm-line.md-daily-link::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--li-px, 0px) - 0.62em);
+  top: 0.6em;
+  width: 0.3em;
+  height: 0.3em;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.85;
+}
+/* 日记侧:行尾挂源笔记名——「这条是同步来的、从哪来」的唯一线索。
+   列宽右缘对齐(与正文列同宽),像一列边注;text-indent 必须归零:列表行的
+   悬挂缩进会继承下来,把标签文字推出自己的盒子(实测 -22.4px)。 */
+.cm-line.md-daily-link[data-daily-src]::after {
+  content: "⇄ " attr(data-daily-src);
+  position: absolute;
+  right: 0;
+  top: 0.18em;
+  font-size: 0.72em;
+  text-indent: 0;
+  color: var(--text-faint);
+  opacity: 0.7;
+  pointer-events: none;
+  user-select: none;
+}
+
 .cw-math-error {
   color: var(--danger);
   font-family: var(--font-mono);
   font-size: 0.9em;
+}
+
+/* ── LaTeX Suite:括号彩色配对 + 光标括号高亮 ──────────────────────────────
+   颜色取自 obsidian-latex-suite 的 styles.css(浅色/深色各一套,这里折成
+   跟随主题的变量)。三色即插件的 Ncolors = 3,按嵌套深度轮转,最外层 0 号。 */
+:root {
+  --latex-bracket-0: #527aff;
+  --latex-bracket-1: #ff50b7;
+  --latex-bracket-2: #69ba00;
+}
+
+.cw-bracket-0 { color: var(--latex-bracket-0); }
+.cw-bracket-1 { color: var(--latex-bracket-1); }
+.cw-bracket-2 { color: var(--latex-bracket-2); }
+
+/* 光标处括号与它的配对括号:同色底衬,一眼看出配到哪儿去了。 */
+.cw-bracket-match {
+  background: color-mix(in srgb, var(--accent, #f5a83c) 30%, transparent);
+  border-radius: 2px;
 }
 
 .cw-math-block {

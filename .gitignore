@@ -33,6 +33,9 @@ vendor/
 # 转换器测试用论文(可重新下载,不入库)
 testdata/
 
+# 夹具转换产物(由 tests/data/pdf/ 的 PDF 重新生成,不入库;夹具 PDF 本身入库)
+tests/data/pdf/out/
+
 # Rust 构建产物
 src-tauri/target/
 src-tauri/crates/pdf2md/target/

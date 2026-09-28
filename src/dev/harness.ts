@@ -28,6 +28,7 @@ import { installEditingChords } from "@/lib/editingChords";
 import { setClipboardOverrides } from "@/lib/clipboard";
 import { renderAgentMarkdown } from "@/components/AgentPanel";
 import { StudyLayout } from "@/components/StudyLayout";
+import { SettingsModal } from "@/components/SettingsModal";
 
 const DOC = `# 公式与光标
 
@@ -111,6 +112,13 @@ declare global {
     __setVim: (on: boolean) => void;
     /** 把按键序列喂给 vim 引擎（真实 handleKey 路径）。 */
     __vimKeys: (keys: string[]) => { mode: string | null; doc: string; panel: string | null };
+    /** 真实 Tab / Shift+Tab：走 CM keymap（会话 → 矩阵 → tabout）。 */
+    __tab: (shift?: boolean, times?: number) => { heads: number[]; docs: string[] };
+    /** 真实打字（input.type 事务）；闭括号跳越走的就是它。 */
+    __typeChar: (ch: string) => { doc: string; head: number };
+    /** 挂载设置弹窗（真实组件 + 页面自身的 store 实例），返回可见文本。 */
+    __mountSettings: () => Promise<string>;
+    __unmountSettings: () => void;
     /** 直接走引擎的 openNotification，返回底部面板内容（没有面板则 null）。 */
     __vimNotify: (text: string, durationMs?: number) => string | null;
     /** 性能剖析口：页面自身已加载的模块实例（注入脚本动态 import 拿到的是分裂实例）。 */
@@ -287,6 +295,32 @@ window.__setVim = (on) => {
   useAppStore.getState().patchSettings({ vim: on });
   reconfigureVim(view, on, []);
 };
+/** 真实 Tab / Shift+Tab 键：走 CM keymap（片段会话 → 矩阵 → tabout 三层），
+    返回每次按键后的光标位置与文档，用来在浏览器里核对"跳出括号"的落点。 */
+window.__tab = (shift = false, times = 1) => {
+  const heads: number[] = [];
+  const docs: string[] = [];
+  for (let i = 0; i < times; i++) {
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Tab", shiftKey: shift, bubbles: true, cancelable: true }),
+    );
+    heads.push(view.state.selection.main.head);
+    docs.push(view.state.doc.toString());
+  }
+  return { heads, docs };
+};
+/** 真实打字（input.type 事务，vim 与非 vim 的输入入口都汇到这里）：
+    闭括号跳越的监听器走的就是它。返回文档与光标。 */
+window.__typeChar = (ch: string) => {
+  const r = view.state.selection.main;
+  view.dispatch({
+    changes: { from: r.from, to: r.to, insert: ch },
+    selection: { anchor: r.from + ch.length },
+    userEvent: "input.type",
+    scrollIntoView: true,
+  });
+  return { doc: view.state.doc.toString(), head: view.state.selection.main.head };
+};
 /** 把按键序列喂给 vim 引擎，走的就是真实 keydown 用的那条路
     （wrapper 的 handleKey → Vim.multiSelectHandleKey），返回文档/模式/底部面板内容。 */
 window.__vimKeys = (keys: string[]) => {
@@ -418,6 +452,7 @@ function installFakeVault(entries: string[]) {
  * setVault 会清空 tree，不 refresh 的话树里一行都没有（要 refreshTree 才有根层级）。
  */
 let sidebarRoot: ReturnType<typeof createRoot> | null = null;
+let settingsRoot: ReturnType<typeof createRoot> | null = null;
 
 window.__mountSidebar = async (entries: string[]) => {
   const dirs = installFakeVault(entries);
@@ -433,6 +468,25 @@ window.__mountSidebar = async (entries: string[]) => {
 };
 
 /** 真卸载：只摘 DOM 不卸载的话，旧实例仍订阅 store（⌘\ 收起再展开就测不出来）。 */
+/** 挂载设置弹窗（真实组件 + 页面自身的 store 实例），用来核对设置项接线。
+    返回渲染后容器里的可见文本，便于断言某一节是否出现。 */
+window.__mountSettings = async () => {
+  const host = document.createElement("div");
+  host.id = "settings-host";
+  host.style.cssText = "position:fixed;right:0;top:0;width:520px;height:100vh;overflow:auto;z-index:99;background:var(--bg)";
+  document.body.appendChild(host);
+  settingsRoot = createRoot(host);
+  settingsRoot.render(createElement(SettingsModal));
+  useAppStore.getState().setModal("settings");
+  await new Promise((r) => setTimeout(r, 50));
+  return host.innerText;
+};
+window.__unmountSettings = () => {
+  settingsRoot?.unmount();
+  settingsRoot = null;
+  document.getElementById("settings-host")?.remove();
+  useAppStore.getState().setModal(null);
+};
 window.__unmountSidebar = () => {
   sidebarRoot?.unmount();
   sidebarRoot = null;

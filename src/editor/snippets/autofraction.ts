@@ -1,5 +1,6 @@
 import type { EditorState } from "@codemirror/state";
 import { getContextAt, mathRegions } from "../context";
+import { findMatchingBracket, withinEnv } from "./brackets";
 import { parseReplacement, type ParsedReplacement } from "./engine";
 
 /**
@@ -23,44 +24,16 @@ import { parseReplacement, type ParsedReplacement } from "./engine";
 
 const BREAKING_CHARS = "+-=\t";
 const STOP_CHARS = " $([{\n" + BREAKING_CHARS;
-const EXCLUDED_ENV_OPENERS = ["^{", "\\pu{"];
+const EXCLUDED_ENVS: [string, string][] = [
+  ["^{", "}"],
+  ["\\pu{", "}"],
+];
 
 // 与 latex-suite 相同的希腊字母表(缺 Yi/Psi 等罕见项,以原表为准)。
 const GREEK =
   "alpha|beta|gamma|Gamma|delta|Delta|epsilon|varepsilon|zeta|eta|theta|Theta|iota|kappa|lambda|Lambda|mu|nu|omicron|xi|Xi|pi|Pi|rho|sigma|Sigma|tau|upsilon|Upsilon|varphi|phi|Phi|chi|psi|Psi|omega|Omega";
 /** 希腊字母命令后的空格临时换成 #(等长替换),扫描就不会在命令中间停下。 */
 const GREEK_SPACE = new RegExp(`(${GREEK}) ([^ ])`, "g");
-
-function findMatching(text: string, from: number, open: string, close: string, backwards: boolean) {
-  let depth = 0;
-  if (backwards) {
-    for (let i = from; i >= 0; i--) {
-      if (text[i] === close) depth++;
-      else if (text[i] === open && --depth === 0) return i;
-    }
-    return -1;
-  }
-  for (let i = from; i < text.length; i++) {
-    if (text[i] === open) depth++;
-    else if (text[i] === close && --depth === 0) return i;
-  }
-  return -1;
-}
-
-/** 光标(pos,区域内容坐标系)是否严格处于 openSymbol 开启的环境内。 */
-function withinEnv(text: string, pos: number, openSymbol: string): boolean {
-  const openBracket = openSymbol.slice(-1); // 两个排除环境都以 "{" 结尾
-  const offset = openSymbol.length - 1;
-  let left = text.lastIndexOf(openSymbol, pos - 1);
-  while (left !== -1) {
-    const right = findMatching(text, left + offset, openBracket, "}", false);
-    if (right === -1) return false;
-    if (right >= pos && pos >= left + openSymbol.length) return true;
-    if (left <= 0) return false;
-    left = text.lastIndexOf(openSymbol, left - 1);
-  }
-  return false;
-}
 
 export interface AutoFractionResult {
   /** 替换区间(含光标前的 `/`)。 */
@@ -86,8 +59,8 @@ export function autoFraction(
   // 排除环境:^{…}、\pu{…} 内的 / 保持字面(指数里扩分数会破坏语义)。
   const content = state.sliceDoc(contentStart, region.to);
   const relCursor = to - contentStart;
-  for (const open of EXCLUDED_ENV_OPENERS) {
-    if (withinEnv(content, relCursor, open)) return null;
+  for (const [open, close] of EXCLUDED_ENVS) {
+    if (withinEnv(content, relCursor, open, close)) return null;
   }
 
   // 选中文本即分子:"/" 刚替换了选区,占位在 cursor-1。
@@ -103,7 +76,7 @@ export function autoFraction(
     const ch = scanned[i];
     if (ch === ")" || ch === "]" || ch === "}") {
       const open = ch === ")" ? "(" : ch === "]" ? "[" : "{";
-      const j = findMatching(scanned, i, open, ch, true);
+      const j = findMatchingBracket(scanned, i, open, ch, true);
       if (j === -1) return null;
       i = j;
       if (i < 0) break; // 组开在区域之外:分子从区域头算
@@ -122,7 +95,7 @@ export function autoFraction(
 function build(start: number, end: number, numerator: string) {
   let inner = numerator;
   if (inner[0] === "(" && inner[inner.length - 1] === ")") {
-    const closing = findMatching(inner, 0, "(", ")", false);
+    const closing = findMatchingBracket(inner, 0, "(", ")", false);
     if (closing === inner.length - 1) inner = inner.slice(1, -1);
   }
   return {

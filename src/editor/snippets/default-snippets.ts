@@ -1,7 +1,17 @@
+/** 矩阵行分隔符(空格 + LaTeX 的 `\\` + 换行)定义在 matrix.ts——矩阵快捷
+ *  与 iden 片段共用同一份,免得两处各写一份、改一处漏一处。 */
+import { MATRIX_ROW_BREAK } from "./matrix";
+
+/** latex-suite 的函数型 replacement。入参随片段类型而定:
+ *  正则触发 → `exec` 结果数组(`match[1]` 是第 1 个捕获组);
+ *  字符串触发 → trigger 字符串本身;可视片段 → 选中的文本。
+ *  返回值必须是字符串(仍按 `$n`/`${n:x}` 语法解析制表位),返回别的视为不匹配。 */
+export type SnippetReplacement = (match: string[] | RegExpExecArray | string) => string;
+
 /** Raw snippet format, compatible with obsidian-latex-suite snippet files. */
 export interface RawSnippet {
   trigger: string | RegExp;
-  replacement: string;
+  replacement: string | SnippetReplacement;
   options: string;
   priority?: number;
   description?: string;
@@ -12,8 +22,7 @@ export interface RawSnippet {
 /** Default snippet set — the owner's real obsidian-latex-suite configuration
  *  (recovered from their modified plugin's data.json), cleaned up: regex
  *  triggers lost to the export's char-array corruption were dropped or
- *  restored, duplicates deduped, "al" added per the settings template.
- *  Function replacements are not supported by bnote's engine (yet). */
+ *  restored, duplicates deduped, "al" added per the settings template. */
 export const DEFAULT_SNIPPETS: RawSnippet[] = [
   { trigger: "#@", replacement: "$$\n\\begin{align}\n$0\n\\end{align}\n$$", options: "tA" },
   { trigger: "##@", replacement: "$$0$", options: "tA" },
@@ -198,6 +207,20 @@ export const DEFAULT_SNIPPETS: RawSnippet[] = [
   { trigger: "cases", replacement: "\\begin{cases}\n$0\n\\end{cases}", options: "mA" },
   { trigger: "ali", replacement: "\\begin{align}\n$0\n\\end{align}", options: "mA" },
   { trigger: "arr", replacement: "\\begin{array} \\ \n$0\n\\end{array}", options: "mA" },
+  // 函数型 replacement:iden3 → 3×3 单位阵(插件里就带这一条,形状逐字对齐)。
+  {
+    trigger: /iden(\d)/,
+    replacement: (match) => {
+      const n = Number((match as RegExpExecArray)[1]);
+      const rows: string[] = [];
+      for (let j = 0; j < n; j++) {
+        rows.push(Array.from({ length: n }, (_, i) => (i === j ? "1" : "0")).join(" & "));
+      }
+      return `\\begin{pmatrix}\n${rows.join(MATRIX_ROW_BREAK)}\n\\end{pmatrix}`;
+    },
+    options: "mA",
+    description: "N x N identity matrix",
+  },
   { trigger: "avg", replacement: "\\langle $0 \\rangle $1", options: "mA" },
   { trigger: "norm", replacement: "\\lvert $0 \\rvert $1", options: "mA", priority: 1 },
   { trigger: "Norm", replacement: "\\lVert $0 \\rVert $1", options: "mA", priority: 1 },
