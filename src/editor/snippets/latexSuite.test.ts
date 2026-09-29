@@ -4,7 +4,7 @@ import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { DecorationSet } from "@codemirror/view";
 import { autoEnlargeBrackets, enlargeBracketEdits } from "./enlarge";
-import { MATRIX_ROW_BREAK, matrixEnter, matrixEnvAt, matrixSeparator } from "./matrix";
+import { MATRIX_ROW_BREAK, alignEnterPlan, matrixEnter, matrixEnvAt, matrixSeparator } from "./matrix";
 import {
   buildSession,
   deleteDollarPair,
@@ -15,6 +15,9 @@ import {
 } from "./extension";
 import type { SnippetSession } from "./extension";
 import { parseReplacement } from "./engine";
+import { reloadSnippets } from "./engine";
+import { tryAutoExpand } from "./extension";
+import { DEFAULT_SNIPPETS } from "./default-snippets";
 import { buildBracketColors, buildCursorBrackets, enclosingBrackets, findMatchingBracket, withinEnv } from "./brackets";
 import { configureLatexSuite, resetLatexConfig } from "./config";
 
@@ -180,6 +183,132 @@ describe("矩阵环境判定与快捷", () => {
     const view = makeView(BLOCK, [BLOCK.indexOf("Q")]);
     expect(matrixSeparator(view)).toBe(false);
     expect(matrixEnter(view)).toBe(false);
+  });
+});
+
+describe("align 续行:Enter 补关系符 & 与行尾 \\\\", () => {
+  const ALIGN = "$$\n\\begin{align}\nLINE\n\\end{align}\n$$";
+  const inAlign = (line: string) => ALIGN.replace("LINE", line);
+  const enterAt = (line: string, ch: number) => {
+    const doc = inAlign(line);
+    // 空行/重复行不能靠 indexOf 定位:按(第一次出现的)行号取行首
+    const lines = doc.split("\n");
+    const lineNo = lines.indexOf(line) + 1;
+    const at = view0.state.doc.line(lineNo).from + ch;
+    const view = makeView(doc, [at]);
+    const handled = matrixEnter(view);
+    return { handled, view };
+  };
+  const view0 = makeView(ALIGN, [0]);
+
+  it("纯函数:等号前无空格的关系符补 &,行尾补 \\\\ 再换行", () => {
+    expect(alignEnterPlan("c=d")).toBe("c&=d \\\\\n");
+    expect(alignEnterPlan("a = b")).toBe("a &= b \\\\\n");
+    // <= / >= 的对齐点在关系符起点(&<= 而不是 <&=)
+    expect(alignEnterPlan("a <= b")).toBe("a &<= b \\\\\n");
+    expect(alignEnterPlan("x >= y")).toBe("x &>= y \\\\\n");
+    // 无关系符的行只补行尾
+    expect(alignEnterPlan("\\alpha")).toBe("\\alpha \\\\\n");
+    // 已有 &:尊重用户自己的对齐点,不再插
+    expect(alignEnterPlan("a &= b")).toBe("a &= b \\\\\n");
+    // 转义关系符(\=)不是对齐点
+    expect(alignEnterPlan("a \\=b")).toBe("a \\=b \\\\\n");
+  });
+
+  it("纯函数:空行、begin/end 行、已有 \\\\ 的行不接管(null)", () => {
+    expect(alignEnterPlan("")).toBeNull();
+    expect(alignEnterPlan("   ")).toBeNull();
+    expect(alignEnterPlan("\\begin{align}")).toBeNull();
+    expect(alignEnterPlan("\\end{align}")).toBeNull();
+    expect(alignEnterPlan("a &= b \\\\")).toBeNull();
+    expect(alignEnterPlan("a &= b\\\\ ")).toBeNull();
+  });
+
+  it("Enter 补全光标前半行,光标落新行行首,后半自然下移", () => {
+    // 光标在行尾(c=d 的 d 之后):整行补全 + 换行;行尾断点与普通 Enter 同义
+    // (\end 下移,中间留出光标新行)
+    const { handled, view } = enterAt("c=d", 3);
+    expect(handled).toBe(true);
+    // 行尾断点 = 普通换行语义:补全行、光标空新行、\end 下移
+    expect(text(view)).toBe(inAlign("c&=d \\\\\n"));
+    const newLine = view.state.doc.lineAt(head(view));
+    expect(head(view)).toBe(newLine.from);
+    expect(newLine.text).toBe(""); // 光标停在空新行上
+    // 光标在行中断开(且断点前没有关系符):前半只补行尾,后半成为新行
+    const mid = enterAt("c=d", 1);
+    expect(mid.handled).toBe(true);
+    // 第三行是 `c \`(行尾双反斜杠),第四行是 `=d`
+    const lines = text(mid.view).split("\n");
+    expect(lines[2]).toBe("c \\\\");
+    expect(lines[3]).toBe("=d");
+  });
+
+  it("不接管的行交回默认(返回 false,文档不动)", () => {
+    for (const line of ["", "a &= b \\\\", "\\end{align}"]) {
+      const { handled, view } = enterAt(line, line.length);
+      expect(handled).toBe(false);
+      expect(text(view)).toBe(inAlign(line));
+    }
+    // 光标在行首(前半为空)也不接管
+    const atStart = enterAt("c=d", 0);
+    expect(atStart.handled).toBe(false);
+  });
+
+  it("pmatrix 等矩阵环境不受影响,仍插 ` \\\\\\n`", () => {
+    const PMATRIX = "$$\n\\begin{pmatrix}\nQ & b\n\\end{pmatrix}\n$$";
+    const view = makeView(PMATRIX, [PMATRIX.indexOf("Q")]);
+    expect(matrixEnter(view)).toBe(true);
+    expect(text(view)).toBe("$$\n\\begin{pmatrix}\n \\\\\nQ & b\n\\end{pmatrix}\n$$");
+  });
+});
+
+describe("dm 片段:公式块直接产出 align 环境", () => {
+  it("内置 dm 的形状是 $$ + align($0 在环境体内)", () => {
+    const dm = DEFAULT_SNIPPETS.find((s) => s.trigger === "dm");
+    expect(dm?.replacement).toBe("$$\n\\begin{align}\n$0\n\\end{align}\n$$");
+  });
+});
+
+describe("环境名内禁止自动展开(光标漂移根因)", () => {
+  const envNameView = (doc: string, cursor: number): EditorView => {
+    let state = EditorState.create({ doc, selection: EditorSelection.cursor(cursor) });
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch: (spec: Parameters<typeof state.update>[0]) => {
+        state = state.update(spec).state;
+      },
+      focus: () => {},
+    };
+    return view as unknown as EditorView;
+  };
+
+  beforeEach(() => {
+    reloadSnippets([{ trigger: "ali", replacement: "\\begin{align}\n$0\n\\end{align}", options: "mA" }], true);
+  });
+
+  it("ali 在公式体内照常展开", () => {
+    const view = envNameView("$$ali", 5);
+    expect(tryAutoExpand(view, "i", null)).toBe(true);
+    expect(view.state.doc.toString()).toBe("$$\\begin{align}\n\n\\end{align}");
+  });
+
+  it("\\begin{ 的环境名内打字不触发(损坏的环境名 + 光标跳走的根因)", () => {
+    const view = envNameView("$$\\begin{al", 11);
+    expect(tryAutoExpand(view, "i", null)).toBe(false);
+    expect(view.state.doc.toString()).toBe("$$\\begin{al");
+  });
+
+  it("\\end{ 的环境名内同样不触发", () => {
+    const view = envNameView("$$\\begin{x}\\end{al", 18);
+    expect(tryAutoExpand(view, "i", null)).toBe(false);
+    expect(view.state.doc.toString()).toBe("$$\\begin{x}\\end{al");
+  });
+
+  it("环境名闭合之后恢复正常展开判定", () => {
+    const view = envNameView("$$\\begin{x}ali", 14);
+    expect(tryAutoExpand(view, "i", null)).toBe(true);
   });
 });
 

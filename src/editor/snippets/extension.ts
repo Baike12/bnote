@@ -279,9 +279,22 @@ export function tryAutoExpand(view: EditorView, key: string, visualText: string 
     if (frac) return startSessionAt(view, frac.start, frac.end, frac.replacement);
   }
   if (!canAutoExpand(view)) return false;
+  // 环境名内不做自动展开(见 insideEnvName);手动 Tab 展开不受限——那是
+  // 用户的显式意图。
+  if (insideEnvName(state, cursor)) return false;
   const match = findSnippetHere(state, cursor, key, { auto: true, visualText });
   if (!match) return false;
   return startSession(view, match);
+}
+
+/** 光标是否在 `\begin{` / `\end{` 的环境名里(花括号未闭合)。
+ *  环境名位置打的是环境名本身——`align` 一词里的 "ali" 命中 ali 片段时,
+ *  整个环境模板会被插进环境名,镜像同步再把损坏复制进 `\end{}`,光标随之
+ *  "乱漂移"(实测:环境名里打第 3 个字符时光标跳 12 字符并跨行)。
+ *  行内回扫 O(行长),挂在每键一次的自动展开判定上可忽略。 */
+function insideEnvName(state: EditorState, pos: number): boolean {
+  const line = state.doc.lineAt(pos);
+  return /\\(?:begin|end)\{[^}]*$/.test(line.text.slice(0, pos - line.from));
 }
 
 /** Auto-expansion right after typing a character. 会话期间不再压制:嵌套
