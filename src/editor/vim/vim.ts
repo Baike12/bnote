@@ -587,11 +587,13 @@ export function applyNativeMappings(mappings: VimMapping[]) {
     if (m.commandId) continue; // handled by the CM6 keymap
     const ctx =
       m.mode === "insert" ? "insert" : m.mode === "visual" ? "visual" : "normal";
-    const rhs = m.rhs
-      .replace(/<Esc>/gi, "Esc")
-      .replace(/<CR>/gi, "CR")
-      .replace(/<Tab>/gi, "Tab")
-      .replace(/<Space>/gi, "Space");
+    // rhs 必须原样传：引擎展开 keyToKey 映射时按尖括号 token 切分
+    // （doKeyToKey 的 vimToCmKeyMap 分支），<Esc>/<CR>/<Tab>/<Space> 是它
+    // 原生认识的形状。早期版本把 <Esc> 改写成裸 "Esc"——展开器把它按
+    // E·s·c 三个单字符逐个 replaceSelection 进文档，`imap jj <Esc>` 从此
+    // 退不出插入模式，用户"在 normal 模式按 gg/G 没反应"实际都发生在
+    // insert 态。回归测试见 ./nativeMappings.test.ts。
+    const rhs = m.rhs;
     try {
       if (m.noremap) Vim.noremap(m.lhs, rhs, ctx);
       else Vim.map(m.lhs, rhs, ctx);
