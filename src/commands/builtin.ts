@@ -69,7 +69,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "workspace.open-daily",
-    title: "打开今日日记(⌘⇧O)",
+    title: "打开今日日记(⌘⇧O,日记内再按跳回)",
     category: "工作区",
     run: () => void openTodayDailyNote(),
   },

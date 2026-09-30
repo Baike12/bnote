@@ -22,6 +22,7 @@ import type { DailyLink } from "@/daily/links";
 import { buildDailyMarks } from "@/daily/marks";
 import { diffBlocks } from "@/footprint/model";
 import { buildFootprintMarks } from "@/footprint/extension";
+import { renderBlockHtml } from "@/footprint/render";
 
 /**
  * 性能门禁（bnote 的生命线）：编辑管线的每击成本必须保持量级。预算按本机
@@ -1028,14 +1029,15 @@ describe("性能门禁:今日足迹块 diff(900行)", () => {
     expect(median).toBeLessThan(3);
   });
 
-  it("功能锚定:抽走的块确实被 diff 出来", () => {
+  it("功能锚定:抽走的块确实被 diff 出来(待办块不算)", () => {
     const baselineLines = DOC.split("\n").filter((l, i) => i % 2 === 0 || l === "");
     const added = diffBlocks(baselineLines.join("\n"), DOC);
-    expect(added.length).toBeGreaterThan(100);
+    // 每节 4 块,列表簇(含待办)被排除,单行块半数与基线同键——~90 块是本底。
+    expect(added.length).toBeGreaterThan(60);
   });
 });
 
-describe("性能门禁:今日足迹收录标识构建(900行,300块)", () => {
+describe("性能门禁:今日足迹收录标识构建(900行,~180块)", () => {
   const state = makeState(DOC, 0);
   const view = { state, visibleRanges: [{ from: 0, to: state.doc.length }] };
   const blocks = diffBlocks("", DOC); // 全文档块当"今日收录"
@@ -1057,5 +1059,27 @@ describe("性能门禁:今日足迹收录标识构建(900行,300块)", () => {
       marked++;
     });
     expect(marked).toBe(blocks.length);
+  });
+});
+
+describe("性能门禁:今日足迹块 markdown 渲染(块级 widget 重建面)", () => {
+  // 足迹区每次 revision/折叠变化整区重画(render.ts lezer 解析 + KaTeX),
+  // 频率 = watcher 防抖级(秒),不是每击;这里锁「整区全量渲染」的量级,
+  // 防渲染器退化成每行重建解析器之类的意外。
+  it("全文档块全量渲染(含 KaTeX)中位数 < 12ms", () => {
+    const blocks = diffBlocks("", DOC);
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      for (const b of blocks) renderBlockHtml(b.text);
+      return performance.now() - t0;
+    }, 15);
+    console.warn(`[perf] footprint markdown 渲染 中位 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(12);
+  });
+
+  it("功能锚定:标题与列表渲染出编辑器同款类名", () => {
+    const html = renderBlockHtml("## 章节\n\n- 列表项\n");
+    expect(html).toContain("md-h2");
+    expect(html).toContain("md-list-line");
   });
 });

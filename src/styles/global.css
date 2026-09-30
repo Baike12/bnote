@@ -520,8 +520,10 @@ button {
 }
 
 /* Obsidian-style list indent: literal source spaces are hidden and replaced
-   with padding + hanging indent, so wrapped lines align under the item text. */
-.cm-line.md-list-line {
+   with padding + hanging indent, so wrapped lines align under the item text.
+   足迹块(render.ts)复用同一套 li-i 系列/li-b・li-t・li-o 几何类,行内布局逐像素同款。 */
+.cm-line.md-list-line,
+.footprint-line.md-list-line {
   padding-left: calc(var(--li-px, 0px) + var(--li-hang, 1.65em));
   text-indent: calc(-1 * var(--li-hang, 1.65em));
 }
@@ -625,7 +627,9 @@ button {
 
 /* ── 今日足迹(src/footprint/*) ──────────────────────────────────────────
    日记末尾的块级聚合区:其他文件今日记录的块按源文件分组展示(引用式,
-   只读,点击跳源文件)。折叠是会话内状态,默认全部展开。 */
+   只读,点击跳源文件)。块体按 markdown 渲染(render.ts),复用编辑器类名
+   (md-heading、md-h 系列、md-bullet、md-quote、md-code-line)——样式在这里只补
+   足迹自己的间距与容器,不复制编辑器规则。折叠是会话内状态,默认全展开。 */
 .footprint-zone {
   margin: 6px 0 2px;
   padding: 2px 0 4px;
@@ -643,7 +647,7 @@ button {
   color: var(--text-faint);
   cursor: pointer;
   user-select: none;
-  padding: 2px 0;
+  padding: 3px 0 5px;
 }
 .footprint-group-title {
   color: var(--accent);
@@ -651,15 +655,42 @@ button {
 .footprint-group-title:hover {
   text-decoration: underline;
 }
+/* 块体 = 一次「回到原文」的点击目标:左缘竖线定界,悬停点亮提示可点。 */
 .footprint-block {
-  margin: 0 0 6px;
-  padding-left: 10px;
+  margin: 0 0 8px;
+  padding: 1px 0 1px 10px;
   border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
   font-size: 0.92em;
   cursor: pointer;
 }
+.footprint-block:hover {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
 .footprint-line {
   white-space: pre-wrap;
+  line-height: 1.55;
+}
+.footprint-gap {
+  height: 0.5em;
+}
+/* 标题字号/颜色走 .md-h{n}(cm-content 作用域自动命中),这里只补紧凑间距
+   ——编辑器的 md-hline 大留白是正文的节奏,聚合视图里按块内层级收紧。 */
+.footprint-line.fp-h {
+  margin: 0.35em 0 0.1em;
+  line-height: 1.4;
+}
+.footprint-block .footprint-line.fp-h:first-child {
+  margin-top: 0;
+}
+.fp-hr {
+  margin: 0.3em 0;
+}
+.fp-hr hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0;
 }
 /* 源文件侧:今日被收录的块首行打空心 pip(与待办同步的实心 pip 同位不同形,
    同样是绝对定位伪元素,不参与行内布局)。 */

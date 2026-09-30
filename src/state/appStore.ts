@@ -171,6 +171,12 @@ interface AppState {
    * 就知道链断了（见 popLinkBack）。
    */
   linkBack: LinkHop[];
+  /**
+   * ⌘⇧O 跳回槽:最近一次「跳到今日日记」前的文件。日记内再按 ⌘⇧O 时消费并跳回;
+   * 每次新的跳转都覆盖它(单槽,toggle 语义只有一层)。不与 linkBack 混用——
+   * 那条链是 wiki 链接的逐层回退,懒失效判定对 toggle 会给出过时的落点。
+   */
+  dailyBackFrom: string | null;
   toast: string | null;
   /** 学习模式:激活时主区变为 agent | 内容 | 笔记 三栏 */
   studyMode: boolean;
@@ -206,6 +212,8 @@ interface AppState {
   pushLinkBack: (from: string, to: string) => void;
   /** 回退一层：返回要打开的路径；链已断或本来就是起点时返回 null。 */
   popLinkBack: () => string | null;
+  /** ⌘⇧O 跳回槽的写入者(null = 清空)。 */
+  setDailyBackFrom: (path: string | null) => void;
   showToast: (msg: string) => void;
   clearToast: () => void;
   setStudyMode: (active: boolean) => void;
@@ -263,6 +271,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   renameRequest: null,
   linkSuggest: null,
   linkBack: [],
+  dailyBackFrom: null,
   toast: null,
   studyMode: false,
   studyContent: null,
@@ -280,6 +289,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentFile: null,
       dirty: false,
       linkBack: [],
+      dailyBackFrom: null,
     }),
   closeVault: () =>
     set({
@@ -292,6 +302,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentFile: null,
       dirty: false,
       linkBack: [],
+      dailyBackFrom: null,
     }),
   setTree: (tree) => set({ tree }),
   setFlatFiles: (flatFiles) => set({ flatFiles }),
@@ -351,6 +362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ linkBack: linkBack.slice(0, -1) });
     return top.from;
   },
+  setDailyBackFrom: (path) => set({ dailyBackFrom: path }),
   showToast: (msg) => set({ toast: msg }),
   clearToast: () => set({ toast: null }),
   setStudyMode: (active) => set({ studyMode: active }),
