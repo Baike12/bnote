@@ -124,3 +124,30 @@ describe("isAggregatePath", () => {
     expect(isAggregatePath("/vault/Daily/2026-09-30.md", "/vault/")).toBe(false);
   });
 });
+
+describe("diffBlocks:待办块归同步管,不进足迹", () => {
+  it("含待办行的块整块排除(checkbox 任意状态)", () => {
+    const current = "普通段落\n\n- [ ] 待办\n  - 子内容\n\n- [x] 已完成\n\n- 普通列表不是待办";
+    expect(diffBlocks(null, current)).toEqual([
+      { text: "普通段落", start: 1, end: 1 },
+      { text: "- 普通列表不是待办", start: 8, end: 8 },
+    ]);
+  });
+
+  it("有序待办同样排除(1. [ ] 形态)", () => {
+    expect(diffBlocks(null, "1. [ ] 有序待办")).toEqual([]);
+  });
+
+  it("段落和待办挤在一个块里:整块归同步管", () => {
+    expect(diffBlocks(null, "一些文字\n- [ ] 待办")).toEqual([]);
+  });
+
+  it("基线里的待办块今天改写:依旧不出现", () => {
+    const baseline = "- [ ] 旧待办";
+    expect(diffBlocks(baseline, "- [x] 旧待办 ✅ 2026-09-30")).toEqual([]);
+  });
+
+  it("块内待办行判定与同步引擎同源:parseListLine 认的都算", () => {
+    expect(diffBlocks(null, "* [ ] 星号待办\n+ [X] 加号待办")).toEqual([]);
+  });
+});

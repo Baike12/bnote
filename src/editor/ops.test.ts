@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { cycleHeading, toggleTodo, todayStamp } from "./ops";
+import { cycleHeading, planHeaderTodoJump, toggleTodo, todayStamp } from "./ops";
 
 /**
  * toggleTodo 只依赖 view 的 {state, dispatch} 面，用假视图即可在 node 里
@@ -122,5 +122,46 @@ describe("cycleHeading：重复按键在 正文→H1→H2→H3→H4→正文 间
     const view = makeView("", [0]);
     cycleHeading(view);
     expect(text(view)).toBe("# ");
+  });
+});
+
+describe("planHeaderTodoJump:⌘T 的往返决策", () => {
+  const state = (doc: string) => EditorState.create({ doc }).doc;
+
+  it("头部有待办块:正文光标跳到块尾行行尾", () => {
+    const doc = "- [ ] 甲\n- [x] 乙\n\n正文第一行\n";
+    const p = planHeaderTodoJump(state(doc), 4, false);
+    expect(p).toEqual({ action: "jump", anchor: doc.indexOf("乙") + 1 });
+  });
+
+  it("块内光标 + 有来处记忆 → 回跳;无记忆 → 静默", () => {
+    const doc = "- [ ] 甲\n\n正文\n";
+    expect(planHeaderTodoJump(state(doc), 1, true)).toEqual({ action: "back" });
+    expect(planHeaderTodoJump(state(doc), 1, false)).toEqual({ action: "stay" });
+  });
+
+  it("头部没有待办块:跳到第一行(新待办块长出来的位置)", () => {
+    const doc = "# 标题\n\n正文\n";
+    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual({ action: "jump", anchor: 0 });
+  });
+
+  it("头部是空行也算无块:目标仍是第一行", () => {
+    const doc = "\n\n正文\n";
+    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual({ action: "jump", anchor: 0 });
+  });
+
+  it("已在第一行且无块:有记忆则回跳,无记忆静默", () => {
+    const doc = "正文\n- [ ] 块外的待办不算头部\n";
+    expect(planHeaderTodoJump(state(doc), 1, true)).toEqual({ action: "back" });
+    expect(planHeaderTodoJump(state(doc), 1, false)).toEqual({ action: "stay" });
+  });
+
+  it("头部扫描在首个非空非待办行截断:正文的待办不构成头部块", () => {
+    const doc = "段落\n- [ ] 不是头部\n";
+    expect(planHeaderTodoJump(state(doc), 2, false)).toEqual({ action: "jump", anchor: 0 });
+  });
+
+  it("空文档:光标本就在第一行,静默", () => {
+    expect(planHeaderTodoJump(state(""), 1, false)).toEqual({ action: "stay" });
   });
 });

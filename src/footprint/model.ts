@@ -7,7 +7,13 @@
  * 分隔的连续行;身份是块文本(每行去尾随空白、整块 trim)——行尾空格抖动与
  * 整体缩进调整不产生假新增,内容变了就是新块(显示新版本),删掉的块不显示
  * (引用式聚合只显示现存内容)。
+ *
+ * 待办块不进足迹:待办已有自己的日记通道(跨文件同步,镜像到日记头部)。
+ * 同一份内容走两条通道会在日记里出现两份(同步一份 + 足迹一份),所以含
+ * 待办行的块整块归同步管,-footprint 判定在 diff 的出口统一过滤。
  */
+
+import { isTodo, parseListLine } from "@/daily/model";
 
 /** 一个块:空行分隔的连续行。start/end 为 1-based 行号,指向它所在的文本。 */
 export interface FootprintBlock {
@@ -18,6 +24,11 @@ export interface FootprintBlock {
 }
 
 const BLANK_RE = /^\s*$/;
+
+/** 块内是否含待办行(判定与待办同步引擎同源:parseListLine + isTodo)。 */
+export function blockHasTodo(text: string): boolean {
+  return text.split("\n").some((l) => isTodo(parseListLine(l)));
+}
 
 /** 把文档切成空行分隔的块(1-based 行区间)。首尾空行、连续空行都不成块。 */
 export function blocksOf(text: string): FootprintBlock[] {
@@ -67,9 +78,10 @@ function commonWhitespace(a: string, b: string): string {
 /**
  * 今日增量:当前文本里身份不在基线中的块(带当前文本中的行号,供跳转)。
  * `baseline` 为 null(基线缺失 = 今日新建的文件)时全部块都算今日记录。
+ * 含待办的块在出口统一排除(见模块注释)。
  */
 export function diffBlocks(baseline: string | null, current: string): FootprintBlock[] {
-  const blocks = blocksOf(current);
+  const blocks = blocksOf(current).filter((b) => !blockHasTodo(b.text));
   if (baseline === null) return blocks;
   const known = new Set<string>();
   for (const b of blocksOf(baseline)) known.add(blockKey(b.text));

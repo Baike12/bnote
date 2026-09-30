@@ -449,22 +449,25 @@ export function toggleList(view: EditorView, kind: ListKind) {
 /**
  * 往返跳转：正文 → 文档头部最后一个待办项的行尾 → 回到跳转前的位置。
  * 头部待办块 = 文档开头（允许空行）连续的待办行（`- [ ]` / `- [x]` /
- * 有序待办，中间可夹空行），首个非空且非待办的行结束块。头部没有待办时
- * 静默无效；在块内但找不到来处（没有跳转过）同样静默。
+ * 有序待办，中间可夹空行），首个非空且非待办的行结束块。头部还没有待办块时
+ * 跳到第一行——新待办块会长出来的位置；再按一次同样回到原位。已在目标处
+ * 但没有来处记忆时静默无效。
  */
 const HEADER_TODO_RE = /^(\s*)(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\]/;
 const BLANK_LINE_RE = /^\s*$/;
-/**
- * 往返跳转的"来处"记忆：文件路径 → 跳转前的光标与滚动位置。这是本功能唯一
- * 的常驻状态；按访问顺序淘汰、上限 64 条（覆盖任何真实的多文件往返工作流），
- * 内存占用有界。仅在按下快捷键时读写，不挂任何编辑周期。
- */
-const headerTodoReturn = new Map<string, { pos: number; scroll: number }>();
-const HEADER_TODO_RETURN_MAX = 64;
 
-export function jumpHeaderTodos(view: EditorView): void {
-  const state = view.state;
-  const doc = state.doc;
+/** 一次 ⌘T 的决策(纯函数,契约在 ops.test.ts):
+ *  jump = 跳到 anchor;back = 回到来处记忆;stay = 无声无效。 */
+export type HeaderTodoPlan =
+  | { action: "jump"; anchor: number }
+  | { action: "back" }
+  | { action: "stay" };
+
+export function planHeaderTodoJump(
+  doc: { lines: number; line(n: number): { text: string; from: number; to: number } },
+  headLine: number,
+  hasReturn: boolean,
+): HeaderTodoPlan {
   let first: number | null = null;
   let last: number | null = null;
   // 只扫到首个非空非待办行为止：头部块通常几行，成本与文档总长无关。
@@ -478,15 +481,43 @@ export function jumpHeaderTodos(view: EditorView): void {
     if (BLANK_LINE_RE.test(text)) continue;
     break; // 首个非空非待办行：头部待办块结束
   }
-  if (first === null || last === null) return;
+  if (first !== null && last !== null) {
+    if (headLine >= first && headLine <= last) {
+      return hasReturn ? { action: "back" } : { action: "stay" };
+    }
+    return { action: "jump", anchor: doc.line(last).to };
+  }
+  // 头部还没有待办块:第一行就是新待办块会长出来的位置。
+  if (headLine === 1) return hasReturn ? { action: "back" } : { action: "stay" };
+  return { action: "jump", anchor: doc.line(1).from };
+}
 
+/**
+ * 往返跳转的"来处"记忆：文件路径 → 跳转前的光标与滚动位置。这是本功能唯一
+ * 的常驻状态；按访问顺序淘汰、上限 64 条（覆盖任何真实的多文件往返工作流），
+ * 内存占用有界。仅在按下快捷键时读写，不挂任何编辑周期。
+ */
+const headerTodoReturn = new Map<string, { pos: number; scroll: number }>();
+const HEADER_TODO_RETURN_MAX = 64;
+
+function rememberHeaderTodoReturn(path: string, pos: number, scroll: number): void {
+  headerTodoReturn.set(path, { pos, scroll });
+  if (headerTodoReturn.size > HEADER_TODO_RETURN_MAX) {
+    const oldest = headerTodoReturn.keys().next().value;
+    if (oldest !== undefined) headerTodoReturn.delete(oldest);
+  }
+}
+
+export function jumpHeaderTodos(view: EditorView): void {
+  const state = view.state;
+  const doc = state.doc;
   const path = useAppStore.getState().currentFile ?? "";
   const head = state.selection.main.head;
-  const headLine = doc.lineAt(head).number;
-  if (headLine >= first && headLine <= last) {
-    // 已在头部待办块里：回到之前记笔记的位置。
-    const saved = headerTodoReturn.get(path);
-    if (!saved) return;
+  const plan = planHeaderTodoJump(state.doc, doc.lineAt(head).number, headerTodoReturn.has(path));
+  if (plan.action === "stay") return;
+  if (plan.action === "back") {
+    // 已在目标处：回到之前记笔记的位置。
+    const saved = headerTodoReturn.get(path)!;
     headerTodoReturn.delete(path);
     headerTodoReturn.set(path, saved); // 重新插入，刷新淘汰顺序
     view.dispatch({
@@ -496,14 +527,10 @@ export function jumpHeaderTodos(view: EditorView): void {
     view.scrollDOM.scrollTop = Math.max(0, Math.min(saved.scroll, view.scrollDOM.scrollHeight));
     return;
   }
-  // 在正文：记下当前位置，跳到头部最后一个待办项的行尾。
-  headerTodoReturn.set(path, { pos: head, scroll: Math.round(view.scrollDOM.scrollTop) });
-  if (headerTodoReturn.size > HEADER_TODO_RETURN_MAX) {
-    const oldest = headerTodoReturn.keys().next().value;
-    if (oldest !== undefined) headerTodoReturn.delete(oldest);
-  }
+  // 在正文:记下当前位置,跳到目标(头部块尾行行尾 / 第一行行首)。
+  rememberHeaderTodoReturn(path, head, Math.round(view.scrollDOM.scrollTop));
   view.dispatch({
-    selection: { anchor: doc.line(last).to },
+    selection: { anchor: plan.anchor },
     scrollIntoView: true,
   });
 }

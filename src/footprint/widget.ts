@@ -1,5 +1,5 @@
 import { WidgetType } from "@codemirror/view";
-import { renderMathHtml } from "@/editor/widgets";
+import { renderBlockHtml } from "./render";
 import { defaultFold, foldSig, toggleGroup, toggleZone, type FoldState, type FootprintView } from "./view";
 
 /**
@@ -33,67 +33,6 @@ export function flipGroupFold(path: string): void {
 
 export function resetFoldForTest(): void {
   fold = defaultFold();
-}
-
-// ---------------------------------------------------------------- 轻渲染
-
-function escapeHtml(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-const INLINE_SPAN_RE = /(\$[^$\n]+$)|(`[^`\n]+`)/g;
-
-/** 行内轻渲染:`$…$` 出公式、`` `…` `` 出行内码,其余转义原样。 */
-function inlineHtml(line: string): string {
-  let out = "";
-  let last = 0;
-  for (const m of line.matchAll(INLINE_SPAN_RE)) {
-    const at = m.index ?? 0;
-    out += escapeHtml(line.slice(last, at));
-    if (m[1] !== undefined) {
-      out += renderMathHtml(m[1].slice(1, -1), false);
-    } else {
-      out += `<code>${escapeHtml(m[2].slice(1, -1))}</code>`;
-    }
-    last = at + m[0].length;
-  }
-  out += escapeHtml(line.slice(last));
-  return out;
-}
-
-/** 块体:逐行渲染,`$$` 围栏内出块级公式。列表缩进靠 CSS pre-wrap 保真。 */
-function renderBlockHtml(text: string): string {
-  const lines = text.split("\n");
-  let html = "";
-  let inMath = false;
-  let mathBuf: string[] = [];
-  const flushMath = () => {
-    html += `<div class="footprint-math">${renderMathHtml(mathBuf.join("\n"), true)}</div>`;
-    mathBuf = [];
-  };
-  for (const line of lines) {
-    const t = line.trim();
-    if (inMath) {
-      if (t === "$$") {
-        inMath = false;
-        flushMath();
-      } else {
-        mathBuf.push(line);
-      }
-      continue;
-    }
-    if (t === "$$") {
-      inMath = true;
-      continue;
-    }
-    html += `<div class="footprint-line">${inlineHtml(line)}</div>`;
-  }
-  if (inMath && mathBuf.length > 0) flushMath(); // 未闭合围栏:照常渲染已有内容
-  return html;
 }
 
 // ---------------------------------------------------------------- widget
