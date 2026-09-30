@@ -198,3 +198,19 @@ describe("FootprintCore 全量兜底(refreshAll)", () => {
     expect(core.footprintsFor(NOTE)).toEqual([{ text: "新段", start: 3, end: 3 }]);
   });
 });
+
+describe("FootprintCore × 待办排除:端到端(用户可见行为)", () => {
+  it("纯待办文件刷新后不产生任何足迹;混合文件只留非待办块", async () => {
+    const stored: StoredFootprints = { version: 1, day: "2026-09-30", baselines: {} };
+    const files = new Map<string, string>([
+      [NOTE, "- [ ] 纯待办甲\n- [x] 纯待办乙\n\n普通段落\n\n- 普通列表项"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    await core.refreshAll(true);
+    expect(core.todayEntries()).toEqual([
+      { path: NOTE, blocks: [{ text: "普通段落", start: 4, end: 4 }, { text: "- 普通列表项", start: 6, end: 6 }] },
+    ]);
+  });
+});

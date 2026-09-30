@@ -119,3 +119,39 @@ describe("足迹块渲染:列表几何与编辑器同款", () => {
     expect(html.match(/md-list-line/g)!.length).toBe(2);
   });
 });
+
+describe("足迹块渲染:安全与健壮性(渲染器吃任意用户文本)", () => {
+  it("转义门禁:源文本里的 HTML 标签必须被转义,不得进入产物", () => {
+    const html = renderBlockHtml('<img src=x onerror=alert(1)> <script>alert(2)</script>\n');
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<script");
+    expect(html).toContain("&lt;img");
+    expect(html).toContain("&lt;script");
+  });
+
+  it("转义门禁:标题与强调内部的 HTML 同样转义", () => {
+    const html = renderBlockHtml("# 标题 <b>加粗</b>\n\n正文 **粗<i>x</i>体**\n");
+    expect(html).not.toContain("<b>");
+    expect(html).not.toContain("<i>");
+  });
+
+  it("未闭合的语法不抛异常:粗体/行内码/数学/围栏/wikilink", () => {
+    const cases = [
+      "**未闭合粗体",
+      "`未闭合行内码",
+      "$$ 未闭合块公式",
+      "$ 未闭合行内公式",
+      "``` 未闭合围栏\n代码行",
+      "[[未闭合wikilink",
+      "[未闭合链接](http://a",
+      "- [ 未闭合任务",
+    ];
+    for (const c of cases) expect(() => renderBlockHtml(c)).not.toThrow();
+  });
+
+  it("退化输入不抛异常:超长行/深层嵌套/孤立标记字符", () => {
+    expect(() => renderBlockHtml("超".repeat(20_000))).not.toThrow();
+    expect(() => renderBlockHtml("- ".repeat(200) + "深\n")).not.toThrow();
+    expect(() => renderBlockHtml("$\n\n$$\n\n[\n\n]\n")).not.toThrow();
+  });
+});
