@@ -13,6 +13,7 @@ import { imeSwitchExtension } from "./imeSwitch";
 import { pythonLspExtension } from "@/python/lsp";
 import { dailySyncExtension } from "@/daily/extension";
 import { dailyMarksExtension } from "@/daily/marks";
+import { footprintZoneExtension, footprintMarksExtension } from "@/footprint/extension";
 import { snippetsExtension, deleteDollarPair, deleteScriptBraces } from "./snippets/extension";
 import { matrixEnter } from "./snippets/matrix";
 import { configureLatexSuite } from "./snippets/config";
@@ -108,6 +109,10 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     dailySyncExtension(),
     // 已链接待办的可视标识(视口内行装饰,只占标记槽的绝对定位伪元素)。
     dailyMarksExtension(),
+    // 今日足迹:今天的日记末尾聚合其他文件今日记录的块(引用式,只读);
+    // 源文件侧收录行打 pip。自带门槛:非今日日记、索引为空都直通。
+    footprintZoneExtension(),
+    footprintMarksExtension(),
 
     history(),
     search({

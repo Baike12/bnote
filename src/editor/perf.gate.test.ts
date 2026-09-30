@@ -20,6 +20,8 @@ import { visualSelectionDecos } from "./vim/vim";
 import { intentsForRange } from "@/daily/engine";
 import type { DailyLink } from "@/daily/links";
 import { buildDailyMarks } from "@/daily/marks";
+import { diffBlocks } from "@/footprint/model";
+import { buildFootprintMarks } from "@/footprint/extension";
 
 /**
  * 性能门禁（bnote 的生命线）：编辑管线的每击成本必须保持量级。预算按本机
@@ -1002,5 +1004,58 @@ describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () 
       marked++;
     });
     expect(marked).toBe(60);
+  });
+});
+
+// ---- 今日足迹 · 块 diff 与收录标识(footprint 的固定支出) ----
+// diffBlocks 每次脏刷新对整个文件做「切块 + 身份集合比对」;buildFootprintMarks
+// 与 dailyMarks 同构(视口逐行 + 集合命中)。预算按同款 ~10× 标定。
+
+describe("性能门禁:今日足迹块 diff(900行)", () => {
+  it("全文件 diff(基线=半数块已存在的旧版)中位数 < 3ms", () => {
+    const lines = DOC.split("\n");
+    // 基线:每隔一个段落抽走(制造 ~300 个"今日新增"块的真实工作面)
+    const baselineLines = lines.filter((l, i) => i % 2 === 0 || l === "");
+    const baseline = baselineLines.join("\n");
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      diffBlocks(baseline, DOC);
+      return performance.now() - t0;
+    }, 30);
+    console.warn(`[perf] footprint diff 中位 ${median.toFixed(3)}ms`);
+    // 静默 ~0.5ms,预算 ~6× 标定。切块是 O(行数)、身份是 Map 命中——若哪天
+    // 退化成「每块对全基线线性找」,量级必被拦下。
+    expect(median).toBeLessThan(3);
+  });
+
+  it("功能锚定:抽走的块确实被 diff 出来", () => {
+    const baselineLines = DOC.split("\n").filter((l, i) => i % 2 === 0 || l === "");
+    const added = diffBlocks(baselineLines.join("\n"), DOC);
+    expect(added.length).toBeGreaterThan(100);
+  });
+});
+
+describe("性能门禁:今日足迹收录标识构建(900行,300块)", () => {
+  const state = makeState(DOC, 0);
+  const view = { state, visibleRanges: [{ from: 0, to: state.doc.length }] };
+  const blocks = diffBlocks("", DOC); // 全文档块当"今日收录"
+
+  it("全文档视口重建中位数 < 1.5ms", () => {
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      buildFootprintMarks(view, blocks);
+      return performance.now() - t0;
+    }, 30);
+    console.warn(`[perf] footprint 标记构建 中位 ${median.toFixed(3)}ms`);
+    expect(median).toBeLessThan(1.5);
+  });
+
+  it("功能锚定:块首行全部被标记", () => {
+    const set = buildFootprintMarks(view, blocks);
+    let marked = 0;
+    set.between(0, state.doc.length, () => {
+      marked++;
+    });
+    expect(marked).toBe(blocks.length);
   });
 });
