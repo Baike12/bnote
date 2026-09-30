@@ -19,6 +19,7 @@ import {
 import { configureLatexSuite } from "@/editor/snippets/config";
 import { dirname, fileName, joinPath, wikilinkText } from "@/lib/path";
 import { ensureLinks } from "@/daily/links";
+import { ensureFootprints } from "@/footprint/store";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -39,6 +40,8 @@ export async function openVault(path: string): Promise<boolean> {
     // 跨文件待办同步的链接库:开仓即加载。updateListener 里的同步路径靠
     // peekLinks 同步读取,这里提前把 IPC 打出去,用户编辑前通常已就绪。
     void ensureLinks(info.path).catch((e) => console.warn("load daily links failed", e));
+    // 今日足迹:开仓即读基线并按需轮转(后台完成,不阻塞开仓)。
+    void ensureFootprints(info.path).catch((e) => console.warn("load footprints failed", e));
     setConfigSnapshot({ ...getConfigSnapshot(), lastVault: info.path });
     await refreshTree();
     await reloadSnippetsFromVault();
@@ -129,7 +132,7 @@ export async function loadDirChildren(relPath: string): Promise<void> {
   }
 }
 
-export async function openNote(path: string): Promise<void> {
+export async function openNote(path: string, line?: number): Promise<void> {
   // 画布开着时的文件切换(快速跳转/命令面板)先收尾画布:画过的图回填到
   // 来源笔记的光标位置(Obsidian 式「画图也是文件」语义),再执行本次切换。
   if (useAppStore.getState().drawingSession) {
@@ -163,6 +166,23 @@ export async function openNote(path: string): Promise<void> {
   // setState() reset compartment values — re-apply current settings.
   await applySettingsToEditor();
   restoreSavedCursor(view, path);
+  if (line !== undefined) {
+    // 足迹/跳转带行号落点:光标记忆(restoreSavedCursor)先走,这里覆盖。
+    const doc = view.state.doc;
+    const l = doc.line(Math.min(Math.max(1, line), doc.lines));
+    view.dispatch({ selection: { anchor: l.from } });
+    // 居中滚动:scrollTop 的写入必须走 requestMeasure(typewriter.ts 同一约定,
+    // 直接写会与 CM 的测量周期竞争)。
+    view.requestMeasure({
+      read: () => view.coordsAtPos(l.from),
+      write: (coords) => {
+        if (!coords) return;
+        const scroller = view.scrollDOM;
+        const rect = scroller.getBoundingClientRect();
+        scroller.scrollTop = Math.max(0, scroller.scrollTop + (coords.top - rect.top) - scroller.clientHeight / 2);
+      },
+    });
+  }
   view.focus();
 }
 

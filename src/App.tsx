@@ -14,6 +14,11 @@ import { editorApi } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, hasPendingCursorSave } from "@/editor/cursorMemory";
 import { flushLinksPersist, hasPendingLinksPersist } from "@/daily/links";
+import {
+  flushFootprintsPersist,
+  hasPendingFootprintsPersist,
+  noteDirtyPaths,
+} from "@/footprint/store";
 import { flushPersistConfig, hasPendingPersist } from "@/state/appStore";
 import { imeOnWindowBlur, imeOnWindowFocus, imeWarmUp } from "@/editor/imeSwitch";
 import {
@@ -126,17 +131,26 @@ export default function App() {
       flushCursorSave();
       flushPersistConfig();
       flushLinksPersist();
+      flushFootprintsPersist();
     };
     document.addEventListener("visibilitychange", onHidden);
     let unlisten: (() => void) | undefined;
     try {
       void getCurrentWindow()
         .onCloseRequested(async (event) => {
-          if (!hasPendingCursorSave() && !hasPendingPersist() && !hasPendingLinksPersist()) return;
+          if (
+            !hasPendingCursorSave() &&
+            !hasPendingPersist() &&
+            !hasPendingLinksPersist() &&
+            !hasPendingFootprintsPersist()
+          ) {
+            return;
+          }
           event.preventDefault();
           flushCursorSave();
           flushPersistConfig();
           flushLinksPersist();
+          flushFootprintsPersist();
           await getCurrentWindow().destroy();
         })
         .then((off) => {
@@ -154,6 +168,7 @@ export default function App() {
       flushCursorSave();
       flushPersistConfig();
       flushLinksPersist();
+      flushFootprintsPersist();
       void getCurrentWindow().destroy();
     })
       .then((off) => {
@@ -267,6 +282,11 @@ export default function App() {
 async function handleVaultChanged(paths: string[]) {
   const store = useAppStore.getState();
   const view = editorApi.view;
+
+  // 今日足迹:任何来源的文件变更都先喂给足迹库(自带过滤与防抖)。必须在
+  // 下面的 self-write echo 早退之前——「编辑器打字 → 自动保存 → watcher」
+  // 正是足迹的主数据链路。
+  noteDirtyPaths(paths);
 
   // Self-write echo: autosave/manual save triggers the watcher. When the only
   // change is the open note and disk matches memory, do nothing — reloading
