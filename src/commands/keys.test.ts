@@ -26,4 +26,12 @@ describe("默认键位", () => {
     );
     expect(others).toEqual([]);
   });
+
+  it("Mod-Shift-r 归 workspace.switch-recent-vault,且无人与之重复", () => {
+    expect(bindingsForCommand("workspace.switch-recent-vault")).toEqual(["Mod-Shift-r"]);
+    const others = Object.entries(DEFAULT_BINDINGS).filter(
+      ([id, key]) => id !== "workspace.switch-recent-vault" && key === "Mod-Shift-r",
+    );
+    expect(others).toEqual([]);
+  });
 });
