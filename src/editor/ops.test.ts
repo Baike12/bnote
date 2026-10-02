@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { cycleHeading, planHeaderTodoJump, toggleTodo, todayStamp } from "./ops";
+import { cycleHeading, insertCallout, planHeaderTodoJump, toggleTodo, todayStamp } from "./ops";
 
 /**
  * toggleTodo 只依赖 view 的 {state, dispatch} 面，用假视图即可在 node 里
@@ -22,6 +22,7 @@ function makeView(doc: string, cursors: number[]): EditorView {
     dispatch: (spec: TransactionSpec) => {
       state = state.update(spec).state;
     },
+    focus: () => {},
   };
   return view as unknown as EditorView;
 }
@@ -163,5 +164,51 @@ describe("planHeaderTodoJump:⌘T 的往返决策", () => {
 
   it("空文档:光标本就在第一行,静默", () => {
     expect(planHeaderTodoJump(state(""), 1, false)).toEqual({ action: "stay" });
+  });
+});
+
+describe("insertCallout:插入形状与光标落点", () => {
+  it("空行插入:裸 ::: 开合,光标在开栏行尾可直接写标题", () => {
+    const view = makeView("", [0]);
+    insertCallout(view);
+    expect(text(view)).toBe(":::\n\n:::");
+    expect(pos(view)).toBe(3);
+  });
+
+  it("非空行插入:插到本行尾之后,光标同在开栏行尾", () => {
+    const view = makeView("hello", [3]);
+    insertCallout(view);
+    expect(text(view)).toBe("hello\n:::\n\n:::");
+    expect(pos(view)).toBe(9);
+  });
+
+  it("列表项内插入:内部空行与合栏继承缩进", () => {
+    const view = makeView("  - 项", [5]);
+    insertCallout(view);
+    expect(text(view)).toBe("  - 项\n:::\n  \n  :::");
+    expect(pos(view)).toBe(9);
+  });
+
+  it("选区包裹:覆盖行整段收进块内,选区两端平移进块", () => {
+    let state = EditorState.create({
+      doc: "# 一\n正文行\n尾行",
+      selection: EditorSelection.range(4, 10),
+    });
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch: (spec: TransactionSpec) => {
+        state = state.update(spec).state;
+      },
+      focus: () => {},
+    } as unknown as EditorView;
+    insertCallout(view);
+    expect(text(view)).toBe("# 一\n:::\n正文行\n尾行\n:::");
+    const sel = view.state.selection.main;
+    // 与 insertCodeBlock 同一条映射规则:选区起点恰在覆盖首行行首时保持原
+    // doc 位置(= 新开栏行首),行尾端平移进块内。
+    expect(sel.anchor).toBe(4); // 新开栏 ::: 行首
+    expect(sel.head).toBe(14); // 尾行行尾
   });
 });
