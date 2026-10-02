@@ -1,4 +1,5 @@
 import { EditorState, type Text } from "@codemirror/state";
+import { fenceStateScan } from "@/editor/context";
 import { DONE_STAMP_RE } from "@/editor/ops";
 
 /**
@@ -302,4 +303,126 @@ export function resolveRootLine(doc: Text, texts: string[], hint: number | null)
 
 function EditorStateOf(docText: string): EditorState {
   return EditorState.create({ doc: docText });
+}
+
+// ---------------------------------------------------------------- 待办跟随(rollover)
+
+const DATE_FILE_RE = /^(\d{4}-\d{2}-\d{2})\.md$/;
+
+/** 块内保留行:未完成行 + 未完成后代的祖先锚链;全无未完成返回 null。 */
+function carriedLines(doc: Text, rootNo: number, endNo: number): string[] | null {
+  const indent: number[] = [];
+  const kept: boolean[] = [];
+  for (let n = rootNo; n <= endNo; n++) {
+    const p = parseListLine(doc.line(n).text);
+    if (!p) break; // blockEnd 保证到 endNo 都是列表行
+    indent.push(p.indent.length);
+    kept.push(p.box === " ");
+  }
+  // 自底向上补锚:更深的连续子树窗口里有被保留的后代,本行就得留下,否则
+  // 层级断链。窗口在第一个 ≤ 本行缩进的行处封闭,不会越过兄弟子树。
+  for (let i = kept.length - 2; i >= 0; i--) {
+    if (kept[i]) continue;
+    for (let j = i + 1; j < kept.length && indent[j] > indent[i]; j++) {
+      if (kept[j]) {
+        kept[i] = true;
+        break;
+      }
+    }
+  }
+  if (!kept.some(Boolean)) return null;
+  const lines: string[] = [];
+  for (let i = 0; i < kept.length; i++) if (kept[i]) lines.push(doc.line(rootNo + i).text);
+  return lines;
+}
+
+/** 一级列表块(围栏代码内不算):根行号、块尾行号。根为缩进 0 的列表行
+ *  (待办或普通 bullet——过滤留给调用方按语义决定)。 */
+function topBlocks(doc: Text, fenced: boolean[]): { rootNo: number; endNo: number }[] {
+  const out: { rootNo: number; endNo: number }[] = [];
+  let n = 1;
+  while (n <= doc.lines) {
+    if (fenced[n - 1]) {
+      n++;
+      continue;
+    }
+    const p = parseListLine(doc.line(n).text);
+    if (!p || p.indent.length > 0) {
+      n++;
+      continue;
+    }
+    const end = blockEnd(doc, n);
+    out.push({ rootNo: n, endNo: end });
+    n = end + 1;
+  }
+  return out;
+}
+
+/**
+ * 待办跟随(rollover)的块提取:日记文件里所有含未完成的块(含纯 bullet
+ * 根与空文本待办——日记里的手写形状不做特判),跟随规则见 carriedLines。
+ */
+export function rolloverBlocks(prevText: string): string[][] {
+  const doc = EditorState.create({ doc: prevText }).doc;
+  const fenced = fenceStateScan(doc);
+  const out: string[][] = [];
+  for (const b of topBlocks(doc, fenced)) {
+    const carried = carriedLines(doc, b.rootNo, b.endNo);
+    if (carried) out.push(carried);
+  }
+  return out;
+}
+
+/** 源文件里要自动聚合进当日日记的一个待办块。 */
+export interface AutoSyncBlock {
+  /** 源文件里的根行号(1-based),链接的就近提示。 */
+  rootLine: number;
+  /** 根的待办身份文本(非空,链接锚)。 */
+  text: string;
+  /** 要复制的行(根 + 子树里未完成行与锚链)。 */
+  lines: string[];
+}
+
+/**
+ * 源文件的自动聚合提取:与 rolloverBlocks 同一条 carriedLines 规则,但根必须
+ * 是待办且身份文本非空——链接锚靠根文本互认,普通 bullet 根与空文本起不了锚
+ * (这类块不自动同步;日记 rollover 不受限,因为那边是快照复制)。
+ */
+export function autoSyncBlocks(fileText: string): AutoSyncBlock[] {
+  const doc = EditorState.create({ doc: fileText }).doc;
+  const fenced = fenceStateScan(doc);
+  const out: AutoSyncBlock[] = [];
+  for (const b of topBlocks(doc, fenced)) {
+    const root = parseListLine(doc.line(b.rootNo).text);
+    if (!root || root.box === null) continue;
+    const text = todoText(root);
+    if (text === "") continue;
+    const carried = carriedLines(doc, b.rootNo, b.endNo);
+    if (carried) out.push({ rootLine: b.rootNo, text, lines: carried });
+  }
+  return out;
+}
+
+/** Daily/ 目录的文件名里,早于 `today` 的最近一篇日记日期;没有返回 null。
+ *  隔了几天没写日记就跟最近那篇,不是严格意义上的「昨天」。 */
+export function previousDailyFile(names: string[], today: string): string | null {
+  let best: string | null = null;
+  for (const name of names) {
+    const m = DATE_FILE_RE.exec(name);
+    if (!m || m[1] >= today) continue;
+    if (best === null || m[1] > best) best = m[1];
+  }
+  return best;
+}
+
+/** 新一天日记的初始内容:裸 scaffold + 逐块 appendEntrySpec,与引擎写盘
+ *  同一形状(H1 + 空行 + 条目单换行相邻,文件尾单换行)。 */
+export function composeDailyScaffold(day: string, blocks: string[][]): string {
+  let text = dailyScaffold(day);
+  for (const block of blocks) {
+    const doc = EditorState.create({ doc: text }).doc;
+    const { change } = appendEntrySpec(doc, parseDailyRegion(doc), block);
+    text = textAfterChanges(text, [change]);
+  }
+  return text;
 }

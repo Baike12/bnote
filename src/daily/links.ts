@@ -13,8 +13,8 @@ import { linksFilePath } from "./model";
 
 export interface DailyLink {
   id: string;
-  /** copied = 快捷键主动发送;recorded = 勾选完成时自动记录 */
-  kind: "copied" | "recorded";
+  /** copied = 快捷键主动发送;recorded = 勾选完成时自动记录;auto = 存在即自动聚合 */
+  kind: "copied" | "recorded" | "auto";
   /** 日记归属日(YYYY-MM-DD),记录创建时间 */
   day: string;
   /** 源文件绝对路径(项目笔记) */

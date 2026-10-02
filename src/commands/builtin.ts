@@ -161,7 +161,14 @@ const defs: CommandDef[] = [
     id: "nav.toggle-sidebar",
     title: "显示/隐藏侧边栏",
     category: "导航",
-    run: () => useAppStore.getState().toggleSidebar(),
+    // ⌘\ 从收起态展开 = 打开 + 把焦点落到当前打开的文件行(走 focusSidebar 的
+    // 一次性票据,落到文件行的露出逻辑与 ⌘I 同一条路径);再按就是收起。
+    // 顶栏按钮仍用 store.toggleSidebar——鼠标瞄一眼树,不该抢走编辑器焦点。
+    run: () => {
+      const s = useAppStore.getState();
+      if (s.sidebarOpen) s.toggleSidebar();
+      else s.focusSidebar();
+    },
   },
   {
     id: "nav.focus-sidebar",

@@ -24,7 +24,7 @@ import { runtimeDeps } from "./runtime";
  * 下一次真实编辑收敛,不会写错。
  */
 
-const RECORD_SUPPRESS_EVENTS = ["input.paste", "input.drop"];
+const SEND_SUPPRESS_EVENTS = ["input.paste", "input.drop"];
 
 export function dailySyncExtension(): Extension {
   return EditorView.updateListener.of((u) => {
@@ -36,17 +36,17 @@ export function dailySyncExtension(): Extension {
     const store = peekLinks(vaultRoot);
     if (!store) return; // 尚未加载:本轮不做任何同步(openVault 会触发加载)
     const fileLinks = store.forFile(path);
-    const allowRecord = !isDailyPath(path); // 日记文件里勾选不产生「记录」
-    if (fileLinks.length === 0 && !allowRecord) return;
+    const allowSend = !isDailyPath(path); // 日记文件自身不产生「发送」(镜像照走)
+    if (fileLinks.length === 0 && !allowSend) return;
     const intents: Intent[] = [];
     for (const tr of u.transactions) {
       if (!tr.docChanged) continue;
       if (tr.isUserEvent(SYNC_USER_EVENT)) continue; // 引擎自己写回的事务
-      const allowRecordTr =
-        allowRecord && !RECORD_SUPPRESS_EVENTS.some((e) => tr.isUserEvent(e));
+      const allowSendTr =
+        allowSend && !SEND_SUPPRESS_EVENTS.some((e) => tr.isUserEvent(e));
       tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
         intents.push(
-          ...intentsForRange(tr.startState.doc, tr.state.doc, fromA, toA, fromB, toB, fileLinks, allowRecordTr),
+          ...intentsForRange(tr.startState.doc, tr.state.doc, fromA, toA, fromB, toB, fileLinks, allowSendTr),
         );
       });
     }

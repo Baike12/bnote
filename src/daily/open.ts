@@ -1,12 +1,17 @@
 import { useAppStore } from "@/state/appStore";
 import type { DailyIO } from "./engine";
-import { dailyPathFor, dailyScaffold } from "./model";
+import { dailyScaffoldWithRollover, sweepTodosToDaily } from "./engine";
+import { dailyPathFor } from "./model";
 import { runtimeDeps } from "./runtime";
+import { ensureLinks, peekLinks, type LinkStore } from "./links";
 
 /**
  * 「打开今日日记」。日记文件名沿用现有约定(`<vault>/Daily/YYYY-MM-DD.md`),
- * 不存在就按同步引擎的初始内容(`# YYYY-MM-DD`)建出来——⌘⇧O 与 ⌘⇧J 于是
- * 落到同一个文件、同一份形状上,谁先按都不会建出不一样的东西。
+ * 不存在就建出来——初始内容是裸 scaffold 加上一篇日记的未完成待办(待办
+ * 跟随,见 engine.dailyScaffoldWithRollover),⌘⇧O、⌘⇧J、勾选记录三个入口
+ * 建出的文件因此逐字节一致。文件就位后再做一次**每日待办聚合**
+ * (sweepTodosToDaily,同仓同日只扫一遍):全仓库的未完成待办自动链接进
+ * 头部,不需要按快捷键。
  *
  * Toggle 语义:当前文件已是今日日记时,不再打开自己,而是消费跳回槽
  * (`dailyBackFrom`)回到跳进日记之前的那个文件;非日记文件按 ⌘⇧O 则先记录
@@ -26,6 +31,8 @@ export interface OpenDailyDeps {
   currentFile: () => string | null;
   getDailyBack: () => string | null;
   setDailyBack: (path: string | null) => void;
+  /** 链接库(每日聚合要用);尚未加载/没有仓库时返回 null,聚合跳过。 */
+  loadLinks: () => Promise<LinkStore | null>;
 }
 
 /** 返回打开的日记路径;没有仓库时返回 null。 */
@@ -57,8 +64,17 @@ export async function openDailyNote(deps: OpenDailyDeps): Promise<string | null>
   if (current) deps.setDailyBack(current);
   // 读失败(不存在)才算缺文件:盘上已有内容一律不动,只打开。
   if ((await deps.io.readFile(path)) === null) {
-    await deps.io.writeFile(path, dailyScaffold(day));
+    await deps.io.writeFile(path, await dailyScaffoldWithRollover(deps.io, vaultRoot, day));
     await deps.refresh();
+  }
+  // 每日待办聚合:全仓库的未完成待办自动进头部(同仓同日只扫一遍,失败不挡打开)。
+  const links = await deps.loadLinks().catch(() => null);
+  if (links) {
+    try {
+      await sweepTodosToDaily(deps.io, vaultRoot, day, links);
+    } catch {
+      // 聚合是增强:失败就等下一次打开/编辑驱动收敛
+    }
   }
   await deps.open(path);
   return path;
@@ -74,6 +90,11 @@ export async function openTodayDailyNote(): Promise<void> {
       currentFile: () => useAppStore.getState().currentFile,
       getDailyBack: () => useAppStore.getState().dailyBackFrom,
       setDailyBack: (p) => useAppStore.getState().setDailyBackFrom(p),
+      loadLinks: async () => {
+        const vault = useAppStore.getState().vaultPath;
+        if (!vault) return null;
+        return peekLinks(vault) ?? (await ensureLinks(vault));
+      },
     });
   } catch (e) {
     useAppStore.getState().showToast(`打开日记失败: ${String(e)}`);
