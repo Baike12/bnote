@@ -44,6 +44,7 @@ export function vimModeExtension(): Extension {
   patchVimNewlineIndent();
   patchVimNotice();
   patchVimVerticalMotion();
+  patchVimMarkerFind();
   return vim();
 }
 
@@ -171,6 +172,76 @@ function patchVimVerticalMotion() {
     defineMotion: (name: string, fn: unknown) => void;
   };
   VimAny.defineMotion("moveByLines", moveByLinesVisual);
+}
+
+/* ---- 跨文档跳转标记：Marker.find() 对"不在此文档里的偏移"必须报告不存在，
+   不能抛。引擎（@replit/codemirror-vim 6.4 / -core 0.1.0）的 Marker 持有裸
+   文档偏移，find() = posFromIndex(offset)，偏移超出当前文档长度时
+   Text.lineAt 直接抛 RangeError；CM5 原版的 TextMarker 随文档走，文档不在了
+   find() 返回 undefined，jumpList.add/move（vim-core vim.js:578/603）都按
+   「标记不存在」优雅跳过——CM6 port 丢了这个语义。
+   触发链：jumpList 挂在引擎的模块级单例 vimGlobalState 上，跨文档、跨
+   view.setState 存活；bnote 每次切文件走 loadDocument/reloadDocument 的
+   setState 整体替换（setup.ts），不是事务，标记不会被 mapPos。于是在长文档
+   里按过 G/gg/n//…（toJumplist，marker=大偏移）再切到更短的文档，gg/G 在
+   recordJumpPosition → jumpList.add → curMark.find() 处必抛——异常发生在
+   setSelection 之前，光标永远落不下去；引擎 catch 重置 vim 态（状态条仍是
+   NORMAL），j/k 等非 jumplist 键照常——用户看到「normal 模式 gg/G 没反应」，
+   且每次按键都命中同一个死标记（add 在写槽位前就抛，pointer 不前进），本
+   会话内永久失效，直到重启或打开更长的文档把毒标记冲掉。
+   修法=恢复 CM5 语义：offset 越界（<0 或 >doc.length）find() 返回 null，
+   add() 走下一槽位续写、move() 把死标记当不存在跳过。Marker 类不导出，只能
+   从实例原型拿：包一层 setBookmark（全引擎唯一 new Marker 的构造点），首个
+   书签落地的瞬间 patch 其原型并拆掉包装。越界是唯一可靠的「跨文档残留」
+   信号——不追文档身份（同文档编辑后 Text 引用必然变化，身份判等无从建立）；
+   「偏移合法但语义错位」的残余（换到长度相近的文档）与上游一致：记一次怪
+   跳转后自愈。回归测试 ./jumpList.test.ts（真实引擎 + 真 shim Marker）。 ---- */
+
+let markerFindPatched = false;
+let markerProtoHooked = false;
+
+/** 首个书签落地时执行：从实例拿到 Marker.prototype，包一层 find()。
+ *  做完即撤掉 setBookmark 包装（钩子只用一次）。 */
+function hookMarkerPrototype(marker: object, restoreSetBookmark: () => void) {
+  if (markerProtoHooked) return;
+  const proto = Object.getPrototypeOf(marker) as
+    | ({ offset: number | null; cm: { cm6: EditorView }; find(): unknown })
+    | null;
+  if (!proto || typeof proto.find !== "function") return; // 不是认识的形状：留着包装，下个书签再试
+  markerProtoHooked = true;
+  restoreSetBookmark();
+  const origFind = proto.find;
+  proto.find = function (this: { offset: number | null; cm: { cm6: EditorView } }) {
+    const offset = this.offset;
+    if (offset != null) {
+      const doc = this.cm.cm6.state.doc;
+      // 当前文档装不下的偏移 = 别的文档留下的标记；报告不存在，别抛。
+      if (offset < 0 || offset > doc.length) return null;
+    }
+    return origFind.call(this);
+  };
+}
+
+/** 恢复 Marker.find() 的 CM5 语义（见上方注释块）；导出仅供门禁
+ *  （jumpList.test.ts 要在无 DOM 的 node 里先装上 patch）。 */
+export function patchVimMarkerFind() {
+  if (markerFindPatched) return;
+  markerFindPatched = true;
+  try {
+    const proto = CodeMirror.prototype as unknown as {
+      setBookmark: (this: CodeMirror, cursor: never, options?: { insertLeft?: boolean }) => object;
+    };
+    const origSetBookmark = proto.setBookmark;
+    proto.setBookmark = function (cursor, options) {
+      const marker = origSetBookmark.call(this, cursor, options);
+      hookMarkerPrototype(marker, () => {
+        proto.setBookmark = origSetBookmark;
+      });
+      return marker;
+    };
+  } catch (e) {
+    console.warn("[bnote] vim marker find patch failed", e);
+  }
 }
 
 /* ---- clipboard=unnamed: sync the vim unnamed register with the system clipboard.
