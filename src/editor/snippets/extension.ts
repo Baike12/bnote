@@ -11,6 +11,7 @@ import { matrixSeparator } from "./matrix";
 import { tabout } from "./tabout";
 import { bracketPlugins } from "./brackets";
 import { latexConfig } from "./config";
+import { useAppStore } from "@/state/appStore";
 
 /**
  * Snippet session: tracks tabstop positions of the snippet expanded at the
@@ -234,6 +235,16 @@ function clearSession(view: EditorView): boolean {
   if (!view.state.field(snippetField, false)) return false;
   view.dispatch({ effects: setSession.of(null) });
   return true;
+}
+
+/** Esc：vim 开启时归引擎（先退插入态），会话由 exitListener 在光标离开
+ *  片段区间时弹掉——否则活会话把第一下 Esc 吃掉，退出要按两下。vim 关闭时
+ *  维持 latex-suite 语义（Esc 结束会话）。读设置而非 vim 引擎：snippets 不
+ *  反向依赖引擎（门控统一放在绑定点，见 setup.ts 的 backspace/Enter 同款）。
+ *  导出供门禁（keyDispatch.test.ts）。 */
+export function escapeForSnippet(view: EditorView): boolean {
+  if (useAppStore.getState().settings.vim) return false;
+  return clearSession(view);
 }
 
 /** 展开查找的统一入口:把 LaTeX Suite 的展开期设置(wordDelimiters、
@@ -542,7 +553,7 @@ const snippetKeymap = keymap.of([
   // Shift+Tab:先回上一个制表位(bnote 自己的便利),再矩阵列分隔,最后同 Tab
   // 一样可以跳出——插件那边 shift 也算 "Tab"(matrix_shortcuts 与 tabout 都吃)。
   { key: "Shift-Tab", run: runShiftTab },
-  { key: "Escape", run: clearSession },
+  { key: "Escape", run: escapeForSnippet },
 ]);
 
 /**
