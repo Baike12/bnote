@@ -101,7 +101,12 @@ export interface LinkHop {
 
 export interface PersistedConfig {
   lastVault?: string;
+  /** 旧版的「上次文件」全局单值。已被 lastFileByVault 取代,只作启动迁移的种子读一次。 */
   lastFile?: string;
+  /** 每仓各自的「上次文件」:快照跟着仓库走,切仓再切回来落点还是本仓那篇(参考 zed per-project 恢复)。 */
+  lastFileByVault?: Record<string, string>;
+  /** 最近打开的仓库(MRU,队首最新)。切换目标 = 第一个非当前仓,见 vault/recent.ts。 */
+  recentVaults?: string[];
   /** Recently-opened absolute note paths, most recent first (quick switcher). */
   recentFiles?: string[];
   settings?: Partial<Settings>;
@@ -313,11 +318,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Most-recent-first list (quick switcher ordering); persisted in config.
     const recentFiles = [path, ...get().recentFiles.filter((p) => p !== path)].slice(0, 100);
     set({ currentFile: path, dirty: false, recentFiles });
-    persistConfig({ ...getConfigSnapshot(), lastFile: path, recentFiles });
+    // 「上次文件」按仓库各记各的:切仓再切回来,落点还是本仓那篇。
+    const vault = get().vaultPath;
+    const lastFileByVault = vault
+      ? { ...(getConfigSnapshot().lastFileByVault ?? {}), [vault]: path }
+      : getConfigSnapshot().lastFileByVault;
+    persistConfig({ ...getConfigSnapshot(), lastFileByVault, recentFiles });
   },
   closeFile: () => {
     set({ currentFile: null, dirty: false });
-    persistConfig({ ...getConfigSnapshot(), lastFile: undefined });
+    // 当前文件已关(删除/外部改动):本仓的恢复点一并清掉,免得下次开仓
+    // 对着不存在的路径报「打开上次文件失败」。
+    const vault = get().vaultPath;
+    if (vault && getConfigSnapshot().lastFileByVault?.[vault]) {
+      const lastFileByVault = { ...getConfigSnapshot().lastFileByVault };
+      delete lastFileByVault[vault];
+      persistConfig({ ...getConfigSnapshot(), lastFileByVault });
+    }
   },
   // No-op when unchanged: the dirty flag flips on every keystroke, and a
   // redundant set() would re-render every subscribed component per keypress.
