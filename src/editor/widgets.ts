@@ -63,18 +63,29 @@ export class MathWidget extends WidgetType {
     readonly display: boolean,
     /** Doc position of the region start; lets click handlers find the region. */
     readonly from?: number,
+    /** 嵌套在 callout 块内时的深度(≥0):跨行 block replace 会把行元素移出
+     *  DOM,块面(底色/竖线/缩进)由 widget 自带——复用 md-callout-line 系列类。 */
+    readonly calloutDepth?: number,
   ) {
     super();
   }
 
   eq(other: MathWidget) {
-    return other.src === this.src && other.display === this.display && other.from === this.from;
+    return (
+      other.src === this.src &&
+      other.display === this.display &&
+      other.from === this.from &&
+      other.calloutDepth === this.calloutDepth
+    );
   }
 
   toDOM() {
     const wrap = document.createElement(this.display ? "div" : "span");
     wrap.className = this.display ? "cw-math cw-math-block" : "cw-math cw-math-inline";
     if (this.from !== undefined) wrap.dataset.mathFrom = String(this.from);
+    if (this.display && this.calloutDepth !== undefined && this.calloutDepth >= 0) {
+      wrap.classList.add("md-callout-line", `d${Math.min(this.calloutDepth, 2)}`);
+    }
     wrap.innerHTML = renderMathHtml(this.src, this.display);
     return wrap;
   }
@@ -90,17 +101,26 @@ export class MathPreviewWidget extends WidgetType {
   constructor(
     readonly src: string,
     readonly display: boolean,
+    /** callout 块内深度(≥0):预览是插入的块 widget,块面与所在 callout 对齐。 */
+    readonly calloutDepth?: number,
   ) {
     super();
   }
 
   eq(other: MathPreviewWidget) {
-    return other.src === this.src && other.display === this.display;
+    return (
+      other.src === this.src &&
+      other.display === this.display &&
+      other.calloutDepth === this.calloutDepth
+    );
   }
 
   toDOM() {
     const wrap = document.createElement("div");
     wrap.className = "cw-math cw-math-preview";
+    if (this.calloutDepth !== undefined && this.calloutDepth >= 0) {
+      wrap.classList.add("md-callout-line", `d${Math.min(this.calloutDepth, 2)}`);
+    }
     wrap.innerHTML = renderMathHtml(this.src, this.display);
     return wrap;
   }
@@ -122,13 +142,86 @@ export class HiddenLineWidget extends WidgetType {
   }
 }
 
+/**
+ * Callout 块开标记行(`::: 标题`)的渲染态:光标不在块内时整行源码被本
+ * widget 顶替。CM6 的整行 block replace 会把行元素整个移出 DOM——块面的
+ * 顶帽(底色/竖线/上留白/圆角)必须由 widget 自带,与边界行可见时的行类
+ * (.md-callout-line.md-callout-open)同一套视觉令牌;depth 对齐内层缩进。
+ * dataset.calloutFrom 记开标记行位置:点击标题要能回到源码那一行。
+ */
+export class CalloutTitleWidget extends WidgetType {
+  constructor(
+    readonly title: string,
+    /** 开标记行行首(doc 位置),供点击回源。 */
+    readonly from: number,
+    /** 嵌套深度,定缩进类 d1/d2。 */
+    readonly depth: number,
+  ) {
+    super();
+  }
+
+  eq(other: CalloutTitleWidget) {
+    return other.title === this.title && other.from === this.from && other.depth === this.depth;
+  }
+
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = `cw-callout-title d${Math.min(this.depth, 2)}`;
+    el.textContent = this.title;
+    el.dataset.calloutFrom = String(this.from);
+    return el;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/**
+ * Callout 块无标题开标记行与合标记行(`:::`)的渲染态:零文字但保留块面
+ * 底帽/顶帽——行元素已被 block replace 移出 DOM,帽只能落在这里(同上)。
+ */
+export class CalloutEdgeWidget extends WidgetType {
+  constructor(
+    /** 开帽(true,补上留白与顶圆角)还是合帽(false)。 */
+    readonly open: boolean,
+    /** 开标记行行首,供点击回源。 */
+    readonly from: number,
+    readonly depth: number,
+  ) {
+    super();
+  }
+
+  eq(other: CalloutEdgeWidget) {
+    return other.open === this.open && other.from === this.from && other.depth === this.depth;
+  }
+
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = `cw-callout-edge${this.open ? " open" : ""} d${Math.min(this.depth, 2)}`;
+    el.dataset.calloutFrom = String(this.from);
+    return el;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
 export class HrWidget extends WidgetType {
-  eq() {
-    return true;
+  /** callout 块内深度(≥0):整行 block replace 移除行元素,块面由 widget 自带。 */
+  constructor(readonly calloutDepth: number = -1) {
+    super();
+  }
+  eq(other: HrWidget) {
+    return other.calloutDepth === this.calloutDepth;
   }
   toDOM() {
     const el = document.createElement("div");
     el.className = "cw-hr";
+    if (this.calloutDepth >= 0) {
+      el.classList.add("md-callout-line", `d${Math.min(this.calloutDepth, 2)}`);
+    }
     const hr = document.createElement("hr");
     el.appendChild(hr);
     return el;

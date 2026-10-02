@@ -83,10 +83,16 @@ const mathCache = new WeakMap<object, MathRegion[]>();
 
 /** Math regions of the document, memoized per Text generation. */
 export function mathRegions(state: EditorState): MathRegion[] {
-  let regions = mathCache.get(state.doc);
+  return mathRegionsForDoc(state.doc);
+}
+
+/** Doc 键版本:不持有 EditorState 的模块(callout 扫描)与装饰路径共享同一份
+ *  备忘录,同一份文档的全文公式扫描每代只付一次。 */
+export function mathRegionsForDoc(doc: Text): MathRegion[] {
+  let regions = mathCache.get(doc);
   if (!regions) {
-    regions = scanMath(state.doc);
-    mathCache.set(state.doc, regions);
+    regions = scanMath(doc);
+    mathCache.set(doc, regions);
   }
   return regions;
 }

@@ -18,4 +18,12 @@ describe("默认键位", () => {
   it("workspace.open-vault 不再占 Mod-Shift-o(仍可从命令面板调用)", () => {
     expect(bindingsForCommand("workspace.open-vault")).toEqual([]);
   });
+
+  it("Mod-Shift-b 归 edit.insert-callout,且无人与之重复", () => {
+    expect(bindingsForCommand("edit.insert-callout")).toEqual(["Mod-Shift-b"]);
+    const others = Object.entries(DEFAULT_BINDINGS).filter(
+      ([id, key]) => id !== "edit.insert-callout" && key === "Mod-Shift-b",
+    );
+    expect(others).toEqual([]);
+  });
 });
