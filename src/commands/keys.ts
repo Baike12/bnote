@@ -33,6 +33,8 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "edit.insert-inline-math": "Mod-Shift-m",
   "edit.insert-code-block": "Mod-Shift-c",
   "edit.insert-inline-code": "Mod-`",
+  // 与 Mod-b(加粗)同族区分:Shift 位给块级容器,callout 承接「块注」。
+  "edit.insert-callout": "Mod-Shift-b",
   "edit.insert-wikilink": "Mod-k",
   "edit.insert-horizontal-rule": "Mod-Shift-h",
   "edit.toggle-bold": "Mod-b",

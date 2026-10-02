@@ -6,7 +6,7 @@ import "katex/dist/katex.min.css";
 import "@/styles/global.css";
 import { createEditor, loadDocument, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
 import { editorApi } from "@/editor/api";
-import { cycleHeading, enterContinueListItem, insertCodeBlock, insertMathBlock, jumpHeaderTodos, toggleList, toggleTodo } from "@/editor/ops";
+import { cycleHeading, enterContinueListItem, insertCallout, insertCodeBlock, insertMathBlock, jumpHeaderTodos, toggleList, toggleTodo } from "@/editor/ops";
 import { renumberHeadings } from "@/editor/numbering";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { currentVimMode, getCM, Vim } from "@/editor/vim/vim";
@@ -109,6 +109,8 @@ declare global {
     __insertCodeBlock: () => void;
     /** 插入公式块（与代码块共用独占整行块的插入几何）。 */
     __insertMathBlock: () => void;
+    /** 插入 Callout 块（光标落在开栏行尾；有选区时包裹所选行）。 */
+    __insertCallout: () => void;
     /** 修改代码块语言设置（走真实 patchSettings 路径）。 */
     __setCodeBlockLang: (lang: string) => void;
     /** 当前 vim 模式；vim 未安装（compartment 清空）时为 null。 */
@@ -304,6 +306,7 @@ window.__undo = () => undo(view);
 window.__redo = () => redo(view);
 window.__jumpHeaderTodos = () => jumpHeaderTodos(view);
 window.__insertCodeBlock = () => insertCodeBlock(view);
+window.__insertCallout = () => insertCallout(view);
 window.__insertMathBlock = () => insertMathBlock(view);
 window.__setCodeBlockLang = (lang) => {
   useAppStore.getState().patchSettings({ codeBlockLang: lang });

@@ -4,6 +4,7 @@ import { cycleQuickSwitcher } from "@/components/QuickSwitcher";
 import { getView } from "@/editor/api";
 import {
   cycleHeading,
+  insertCallout,
   insertCodeBlock,
   insertHorizontalRule,
   insertInlineCode,
@@ -181,6 +182,7 @@ const defs: CommandDef[] = [
   { id: "edit.insert-inline-math", title: "插入行内公式", category: "编辑", run: withView(insertInlineMath) },
   { id: "edit.insert-code-block", title: "插入代码块", category: "编辑", run: withView(insertCodeBlock) },
   { id: "edit.insert-inline-code", title: "插入行内代码", category: "编辑", run: withView(insertInlineCode) },
+  { id: "edit.insert-callout", title: "插入 Callout 块", category: "编辑", run: withView(insertCallout) },
   {
     id: "edit.insert-wikilink",
     title: "插入内部链接 / 跳到本行链接",

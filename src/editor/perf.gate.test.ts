@@ -7,7 +7,8 @@ import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemi
 import { insertNewlineAndIndent, history, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
 import { blockDecorationsField, buildInlineDecorations, selectionAffectsDecos } from "./livePreview";
-import { mathRegions } from "./context";
+import { fenceStateScan, mathRegions } from "./context";
+import { computeCalloutRegions } from "./callout";
 import { planTabout } from "./snippets/tabout";
 import { scanMath } from "./mathScan";
 import { buildSession, setSession } from "./snippets/extension";
@@ -894,6 +895,68 @@ describe("性能门禁:标题自动编号全文档扫描(900行)", () => {
     const view = makeTogglingView(makeState(stale, 0));
     renumberHeadings(view);
     expect(view.state.doc.toString()).toContain("## 3 章节");
+  });
+});
+
+// ---- Callout 块 · 每击固定支出 ----
+// calloutRegions 每代文档一次 O(行数) 行扫(公式区域走共享备忘录,围栏扫描
+// 与 renumber 同款);块密集时行装饰按块 × 行线性拼装。这里锁两条:纯扫描
+// 常数,与块内打字的端到端每击管线(状态场 collectBlockStatics 首建 + inline
+// 全视口重建)。
+
+/** callout 密集文档:每个小节一个带标题块(内含标题/段落/公式块)+ 一节正文。 */
+function calloutDoc(sections: number): string {
+  const parts: string[] = [];
+  for (let i = 1; i <= sections; i++) {
+    parts.push(`::: 参考 ${i}`);
+    parts.push(`## ${i} 定理`);
+    parts.push("块内段落,讲一些泛函分析的基本概念,长度中等偏长一些。");
+    parts.push("$$");
+    parts.push(`T_{${i}}(x) = \\int_K x(y)\\,d\\mu(y)`);
+    parts.push("$$");
+    parts.push(":::");
+    parts.push("");
+    parts.push(`## ${i} 正文节`);
+    parts.push("");
+    parts.push("正文段落,与块内内容互不隶属。");
+    parts.push("");
+  }
+  return parts.join("\n");
+}
+
+describe("性能门禁:callout 扫描(60块 ~500行)", () => {
+  const CALLOUT_DOC = calloutDoc(60);
+  const state = makeState(CALLOUT_DOC, 0);
+
+  it("区域扫描(纯行扫,复用现算围栏/公式)中位数 < 0.5ms", () => {
+    const fences = fenceStateScan(state.doc);
+    const maths = mathRegions(state);
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      computeCalloutRegions(state.doc, fences, maths);
+      return performance.now() - t0;
+    }, 15);
+    console.warn(`[perf] callout 区域扫描中位数 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(0.5);
+  });
+
+  it("块内打字 20 击(状态场+inline 全重建)总计 < 100ms,单击中位数 < 4ms", () => {
+    const line = state.doc.line(3); // 第一个块的内容段落行
+    const at = line.from + 4;
+    let cur = makeState(CALLOUT_DOC, at);
+    const perKey: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t0 = performance.now();
+      cur = cur.update({ changes: { from: at, insert: "字" } }).state;
+      buildInlineDecorations({ state: cur, visibleRanges: [{ from: 0, to: cur.doc.length }] });
+      perKey.push(performance.now() - t0);
+    }
+    const total = perKey.reduce((a, b) => a + b, 0);
+    perKey.sort((a, b) => a - b);
+    const median = perKey[Math.floor(perKey.length / 2)];
+    console.warn(`[perf] callout 块内打字 总计 ${total.toFixed(0)}ms, 中位数 ${median.toFixed(2)}ms`);
+    expect(total).toBeLessThan(100);
+    expect(median).toBeLessThan(4);
   });
 });
 
