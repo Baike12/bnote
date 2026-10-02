@@ -444,6 +444,66 @@ button {
   color: var(--text-dim);
 }
 
+/* ── Callout 块(::: 容器,src/editor/callout.ts)─────────────────────────
+   块面按行拼装:每行一条 border-left(竖线)+ background(底色),相邻行连成
+   整块;顶/底留白与圆角落在开/合边界行(光标进块露出 `:::` 源码时块面不断)。
+   padding-left 故意用单类低特异性:列表行(.cm-line.md-list-line 两类)的悬挂
+   缩进规则优先,callout 内列表几何与块外逐像素一致;代码行的底色规则也排在本
+   段之后,块内代码块保有自己的更深底色,竖线仍在。 */
+.md-callout-line {
+  border-left: 3px solid color-mix(in srgb, var(--h2-color) 50%, transparent);
+  background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
+  padding-left: 11px;
+}
+.md-callout-line.d1 {
+  padding-left: 25px;
+}
+.md-callout-line.d2 {
+  padding-left: 39px;
+}
+.md-callout-line.md-callout-open {
+  padding-top: 8px;
+  border-radius: 4px 4px 0 0;
+}
+.md-callout-line.md-callout-close {
+  padding-bottom: 8px;
+  border-radius: 0 0 4px 4px;
+}
+/* 边界行被整行 block replace 隐藏后行元素移出 DOM,顶/底帽由渲染态 widget
+   自带(与上行两套 .md-callout-open/-close 同一视觉令牌)。 */
+.cw-callout-title,
+.cw-callout-edge {
+  display: block;
+  border-left: 3px solid color-mix(in srgb, var(--h2-color) 50%, transparent);
+  background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
+  padding-left: 11px;
+}
+.cw-callout-title {
+  color: var(--h2-color);
+  font-weight: 600;
+  font-size: 0.88em;
+  padding-top: 8px;
+  padding-bottom: 4px;
+  border-radius: 4px 4px 0 0;
+  cursor: text;
+}
+.cw-callout-edge {
+  height: 8px;
+  border-radius: 0 0 4px 4px;
+}
+.cw-callout-title.open,
+.cw-callout-edge.open {
+  border-radius: 4px 4px 0 0;
+}
+.cw-callout-title.d1,
+.cw-callout-edge.d1 {
+  padding-left: 25px;
+}
+.cw-callout-title.d2,
+.cw-callout-edge.d2 {
+  padding-left: 39px;
+}
+
 .md-inline-code,
 .md-code-line {
   font-family: var(--font-mono);

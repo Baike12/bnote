@@ -4,11 +4,14 @@ import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { mathRegions } from "./context";
+import { calloutRegions } from "./callout";
 import { documentPath, setDocPath } from "./docPath";
 import { useAppStore } from "@/state/appStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { DONE_STAMP_RE, todayStamp } from "./ops";
 import {
+  CalloutEdgeWidget,
+  CalloutTitleWidget,
   EscapeCharWidget,
   HiddenLineWidget,
   HrWidget,
@@ -157,6 +160,8 @@ interface BlockStatics {
    *  hidden only while the cursor is outside the whole block — inside, the
    *  block shows as editable source (same rule as math blocks). */
   fences: { line: Interval; block: Interval }[];
+  /** Callout 边界标记行(`:::`),同样的隐藏规则(光标进块才露出源码)。 */
+  calloutEdges: { line: Interval; block: Interval; kind: "open" | "close"; title: string; depth: number }[];
   codeRanges: Interval[];
   inlineCodeRanges: Interval[];
   hrs: Interval[];
@@ -164,10 +169,32 @@ interface BlockStatics {
 
 function collectBlockStatics(state: EditorState): BlockStatics {
   const fences: { line: Interval; block: Interval }[] = [];
+  const calloutEdges: BlockStatics["calloutEdges"] = [];
   const codeRanges: Interval[] = [];
   const inlineCodeRanges: Interval[] = [];
   const hrs: Interval[] = [];
   const doc = state.doc;
+  for (const c of calloutRegions(state)) {
+    const block = { from: c.from, to: c.to };
+    const openLine = doc.line(c.openLine);
+    calloutEdges.push({
+      line: { from: openLine.from, to: openLine.to },
+      block,
+      kind: "open",
+      title: c.title,
+      depth: c.depth,
+    });
+    if (c.closed) {
+      const closeLine = doc.line(c.closeLine);
+      calloutEdges.push({
+        line: { from: closeLine.from, to: closeLine.to },
+        block,
+        kind: "close",
+        title: "",
+        depth: c.depth,
+      });
+    }
+  }
   syntaxTree(state).iterate({
     from: 0,
     to: doc.length,
@@ -199,7 +226,7 @@ function collectBlockStatics(state: EditorState): BlockStatics {
       }
     },
   });
-  return { fences, codeRanges, inlineCodeRanges, hrs };
+  return { fences, calloutEdges, codeRanges, inlineCodeRanges, hrs };
 }
 
 function buildBlockDecos(
@@ -209,10 +236,17 @@ function buildBlockDecos(
 ): { decos: DecorationSet; sig: string } {
   const doc = state.doc;
   const maths = mathRegions(state);
+  const callouts = calloutRegions(state);
   const out: Range<Decoration>[] = [];
   const sig: string[] = [];
   const active = (from: number, to: number) =>
     ranges.some((r) => r.from <= to && r.to >= from);
+  // pos 所在 callout 的嵌套深度,-1 = 不在任何块内。跨行 replace 的块成员
+  // (公式块/HR)行元素会被移出 DOM,块面由 widget 自带(见 widgets.ts)。
+  const calloutDepthAt = (pos: number): number => {
+    for (const c of callouts) if (pos >= c.from && pos <= c.to) return c.depth;
+    return -1;
+  };
 
   const exclude = [...statics.codeRanges, ...statics.inlineCodeRanges];
   const excluded = (from: number, to: number) =>
@@ -231,9 +265,37 @@ function buildBlockDecos(
       sig.push(`f${f.line.from}`);
     }
   }
+  for (const e of statics.calloutEdges) {
+    // 与围栏同一条块级规则:光标在 callout 内(含边界行)时 `:::` 源码可编辑,
+    // 离开整块才隐藏。渲染态由 widget 自带块面顶/底帽(整行 block replace 会
+    // 把行元素移出 DOM,行装饰管不到)——带标题 = 标题小标签,否则零文字帽。
+    if (active(e.block.from, e.block.to)) continue;
+    if (e.kind === "open" && e.title) {
+      out.push(
+        Decoration.replace({
+          widget: new CalloutTitleWidget(e.title, e.line.from, e.depth),
+          block: true,
+        }).range(e.line.from, e.line.to),
+      );
+      sig.push(`co${e.line.from}:${e.title}`);
+    } else {
+      out.push(
+        Decoration.replace({
+          widget: new CalloutEdgeWidget(e.kind === "open", e.line.from, e.depth),
+          block: true,
+        }).range(e.line.from, e.line.to),
+      );
+      sig.push(`ce${e.line.from}`);
+    }
+  }
   for (const hr of statics.hrs) {
     if (!active(hr.from, hr.to)) {
-      out.push(Decoration.replace({ widget: new HrWidget(), block: true }).range(hr.from, hr.to));
+      out.push(
+        Decoration.replace({
+          widget: new HrWidget(calloutDepthAt(hr.from)),
+          block: true,
+        }).range(hr.from, hr.to),
+      );
       sig.push(`h${hr.from}`);
     }
   }
@@ -253,7 +315,7 @@ function buildBlockDecos(
           anchorLine.to < doc.length ? doc.line(anchorLine.number + 1).from : doc.length;
         out.push(
           Decoration.widget({
-            widget: new MathPreviewWidget(region.content, true),
+            widget: new MathPreviewWidget(region.content, true, calloutDepthAt(region.from)),
             block: true,
           }).range(anchor),
         );
@@ -267,7 +329,7 @@ function buildBlockDecos(
     if (openLine.number === closeLine.number) continue; // single-line: inline path
     out.push(
       Decoration.replace({
-        widget: new MathWidget(region.content, true, region.from),
+        widget: new MathWidget(region.content, true, region.from, calloutDepthAt(region.from)),
         block: true,
       }).range(openLine.from, closeLine.to),
     );
@@ -517,6 +579,31 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
       return true;
     },
   });
+
+  // ---- Callout 块(`:::` 容器):底色 + 左竖线按行拼装 ----
+  // 内容行与边界行都上块面类(光标进块时边界行露出源码,块面不断);顶/底
+  // 留白与圆角由开/合边界行承担。行装饰不依赖光标位置——纯光标移动经
+  // selectionAffectsDecos 快路径时整段不重建。嵌套区域各刷一层,深度类
+  // d1/d2 让内层右移(见 global.css)。
+  for (const c of calloutRegions(state)) {
+    if (c.to < visibleFrom || c.from > visibleTo) continue;
+    const firstNo = Math.max(c.openLine, doc.lineAt(visibleFrom).number);
+    const lastNo = Math.min(c.closeLine, doc.lineAt(visibleTo).number);
+    for (let n = firstNo; n <= lastNo; n++) {
+      const line = doc.line(n);
+      const edge =
+        n === c.openLine
+          ? " md-callout-open"
+          : n === c.closeLine && c.closed
+            ? " md-callout-close"
+            : "";
+      out.inline.push(
+        Decoration.line({ class: `md-callout-line d${Math.min(c.depth, 2)}${edge}` }).range(
+          line.from,
+        ),
+      );
+    }
+  }
 
   // ---- Math ----
   // Whole display blocks (rendered widget / preview) live in the state field;
@@ -1127,6 +1214,17 @@ const linkHandlers = EditorView.domEventHandlers({
   mousedown(event, view) {
     const target = event.target as HTMLElement | null;
     if (!target) return false;
+
+    // Callout 渲染态边界(标题/帽):点回它的源码行——光标落在开标记行行首,
+    // 边界随之露出源码(与点击渲染态公式块回到源码同一条交互)。
+    const calloutEdge = target.closest?.(".cw-callout-title, .cw-callout-edge") as
+      | (HTMLElement & { dataset: { calloutFrom?: string } })
+      | null;
+    if (calloutEdge?.dataset?.calloutFrom) {
+      event.preventDefault();
+      view.dispatch({ selection: { anchor: Number(calloutEdge.dataset.calloutFrom) } });
+      return true;
+    }
 
     // Rendered display-math block: reopen the raw source at the clicked line.
     const mathBlock = target.closest?.(".cw-math-block") as HTMLElement | null;
