@@ -19,7 +19,15 @@ import { matrixEnter } from "./snippets/matrix";
 import { configureLatexSuite } from "./snippets/config";
 import { installMathMotionClamp } from "./motionClamp";
 import { renumberHeadings } from "./numbering";
-import { vimModeExtension, commandMappingKeymap, vimVisualHighlight, currentVimMode, vimDrawsBlockCursor, vimActiveLine } from "./vim/vim";
+import {
+  vimModeExtension,
+  vimKeyCaptureExtension,
+  commandMappingKeymap,
+  vimVisualHighlight,
+  currentVimMode,
+  vimDrawsBlockCursor,
+  vimActiveLine,
+} from "./vim/vim";
 import { cutSelection, copySelection, pasteClipboard } from "./ops";
 import { useAppStore } from "@/state/appStore";
 import { enterContinueListItem } from "./ops";
@@ -374,8 +382,12 @@ export function reconfigureVim(view: EditorView, enabled: boolean, mappings: Vim
       // 当前行底 shade 跟 vim 一起挂：vimActiveLine 以装饰模型画
       // cm-activeLine,可见性判据与引擎的 cm-vimMode 类(块光标判据)逐字
       // 一致——不依赖祖先类选择器,样式失效圈不随 Esc/i 罩住整个视口。
+      // vimKeyCaptureExtension:normal/visual 模式下引擎先于整条 keymap 链
+      // 见键(根因与契约见 vim.ts 捕获分发注释块)。
       vimCompartment.reconfigure(
-        enabled ? [vimModeExtension(), vimActiveLine(), vimVisualHighlight()] : [],
+        enabled
+          ? [vimModeExtension(), vimKeyCaptureExtension(), vimActiveLine(), vimVisualHighlight()]
+          : [],
       ),
       vimCommandMapCompartment.reconfigure(enabled ? commandMappingKeymap(mappings) : []),
     ],

@@ -625,6 +625,7 @@ export function commandMappingKeymap(mappings: VimMapping[]): Extension {
   // a stray duplicate); vim lets the LAST definition win, while a keymap picks
   // the first binding it finds — so collapse duplicates back-to-front.
   const byKey = new Map<string, KeyBinding>();
+  vimCommandBindings.clear(); // 每次重建=全量替换，vimrc 删掉的映射不残留
   for (const m of mappings) {
     if (!m.commandId) continue;
     const key = normalizeVimKey(m.lhs);
@@ -643,8 +644,112 @@ export function commandMappingKeymap(mappings: VimMapping[]): Extension {
       },
     });
   }
+  // 命令映射同时进捕获注册表（lhs 原样 = 引擎键词表，后定义覆盖）：捕获分发
+  // 要在引擎之前查它——`nmap <C-b> :Bnote…` 与引擎原生 <C-b>（翻页）冲突，若
+  // 让引擎先拿，侧栏开关会被翻页吃掉。keymap 本体保留：insert 模式捕获让路，
+  // 仍由链上的它兜住。
+  for (const m of mappings) {
+    if (!m.commandId) continue;
+    if (!normalizeVimKey(m.lhs)) continue; // 与 keymap 同口径：单键或带修饰键
+    vimCommandBindings.set(`${m.mode}\u0000${m.lhs}`, m.commandId);
+  }
   const bindings = [...byKey.values()];
   return bindings.length > 0 ? keymap.of(bindings) : [];
+}
+
+/** nmap … :Bnote 命令映射（mode\0引擎键词 → 命令 id）；捕获分发专用。 */
+const vimCommandBindings = new Map<string, string>();
+
+/** 按当前模式和引擎键词查命令映射；无绑定返回 undefined。导出供门禁。 */
+export function lookupVimCommand(engineKey: string, mode: VimMode): string | undefined {
+  return vimCommandBindings.get(`${mode}\u0000${engineKey}`);
+}
+
+/* ---- 捕获阶段键分发：normal/visual 模式下，引擎先于整条 CM keymap 链见键 ----
+
+   CM6 把所有 keyBindings 汇进**一个**共享 keydown 处理器（keymap facet 的
+   enables），它 flatten 在第一个 keymap.of 声明的位置——baseExtensions 里
+   snippetsExtension() 最靠前，于是这条处理器排在 vim 引擎（compartment 在
+   其后声明）之前。而引擎自己的 keydown 链入口从不返回 true（以副作用方式
+   动作、从不"认领"事件），于是凡是被任何 keymap 绑过的键，引擎永远轮不到：
+   普通模式的 Enter 落到 defaultKeymap 的 insertNewlineAndIndent（凭空插行）、
+   Backspace 落到 deleteCharBackward（删字）；j/k/gg 这些没人绑的键才轮得到
+   引擎——所以手感大体正常，只有"撞了绑定的键"坏。
+   修复=在 view.dom 捕获阶段（contentDOM 目标阶段整条 CM 链之前）把键交给
+   引擎：normal/visual 引擎接管，认领即 preventDefault + stopPropagation
+   （捕获阶段在父节点上拦下，事件到不了 contentDOM，keymap 整条不再跑）；
+   insert 模式让路——snippet 的 Tab/Escape、latex 的 Backspace 这些编辑增强
+   在插入态本来就合法地先跑，引擎仍经它链尾的入口拿到 Esc/jj 等键。
+   守卫：目标不是 contentDOM（vim 面板输入框等）不碰；IME 组合中/死键不碰
+   （引擎的 keydown 入口有 useNextTextInput 状态机，别截胡）；事件已被上游
+   认领不碰。 */
+
+/** 捕获分发的决策核（导出供门禁锁契约）：true = 键交给引擎（normal/visual）；
+ *  false = 放行给 CM keymap 链（insert 模式、IME 组合中、死键、已被上游
+ *  处理、目标不在编辑内容上）。 */
+export function vimCapturesKey(input: {
+  insertMode: boolean;
+  composing: boolean;
+  deadKey: boolean;
+  targetIsContentDOM: boolean;
+  defaultPrevented: boolean;
+}): boolean {
+  if (input.defaultPrevented || !input.targetIsContentDOM) return false;
+  if (input.composing || input.deadKey) return false;
+  return !input.insertMode;
+}
+
+export function vimKeyCaptureExtension(): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      private readonly view: EditorView;
+      private readonly onKeydown = (e: KeyboardEvent) => {
+        const cm = getCM(this.view);
+        const vim = cm?.state?.vim as { insertMode?: boolean } | undefined;
+        if (!cm || !vim) return;
+        if (
+          !vimCapturesKey({
+            insertMode: !!vim.insertMode,
+            composing: e.isComposing || e.keyCode === 229,
+            deadKey: e.key === "Process" || e.key === "Dead" || e.key === "Unidentified",
+            targetIsContentDOM: e.target === this.view.contentDOM,
+            defaultPrevented: e.defaultPrevented,
+          })
+        ) {
+          return;
+        }
+        const engineKey = Vim.vimKeyFromEvent(
+          e,
+          vim as Parameters<typeof Vim.vimKeyFromEvent>[1],
+        );
+        if (!engineKey) return;
+        const mode = currentVimMode(this.view);
+        const commandId = mode ? lookupVimCommand(engineKey, mode) : undefined;
+        if (commandId) {
+          e.preventDefault();
+          e.stopPropagation();
+          runCommandRef(commandId);
+          return;
+        }
+        // 引擎认领时内部 preventDefault + stopPropagation（wrapper handleKey
+        // 的原语义），事件到不了 contentDOM，keymap 链整条不再跑；不认领时
+        // （未知键/修饰和弦）放行给 keymap 链，与无 vim 时同路。
+        const plugin = (
+          cm.state as { vimPlugin?: { handleKey(e: KeyboardEvent, view: EditorView): unknown } }
+        ).vimPlugin;
+        plugin?.handleKey(e, this.view);
+      };
+
+      constructor(view: EditorView) {
+        this.view = view;
+        view.dom.addEventListener("keydown", this.onKeydown, true);
+      }
+
+      destroy() {
+        this.view.dom.removeEventListener("keydown", this.onKeydown, true);
+      }
+    },
+  );
 }
 
 /** Applies key-sequence mappings through the vim engine itself. */
