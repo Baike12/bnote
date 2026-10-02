@@ -2,7 +2,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { api, type FileNode } from "@/lib/tauri";
-import { useAppStore, setConfigSnapshot, getConfigSnapshot } from "@/state/appStore";
+import { useAppStore, getConfigSnapshot, persistConfig, flushPersistConfig } from "@/state/appStore";
 import { loadDocument } from "@/editor/setup";
 import { getView } from "@/editor/api";
 import { insertWikilinkText, wikilinkTargetOnLine } from "@/editor/ops";
@@ -20,6 +20,7 @@ import { configureLatexSuite } from "@/editor/snippets/config";
 import { dirname, fileName, joinPath, wikilinkText } from "@/lib/path";
 import { ensureLinks } from "@/daily/links";
 import { ensureFootprints } from "@/footprint/store";
+import { recentVaultTarget, touchRecentVault } from "@/vault/recent";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -42,11 +43,19 @@ export async function openVault(path: string): Promise<boolean> {
     void ensureLinks(info.path).catch((e) => console.warn("load daily links failed", e));
     // 今日足迹:开仓即读基线并按需轮转(后台完成,不阻塞开仓)。
     void ensureFootprints(info.path).catch((e) => console.warn("load footprints failed", e));
-    setConfigSnapshot({ ...getConfigSnapshot(), lastVault: info.path });
+    // 仓库 MRU:打开即记(打开动作就是 MRU 的写入时机,zed 同款),连同
+    // lastVault 一起走防抖写盘;persistConfig 会同步更新快照,后续的 partial
+    // save 不会回滚这条。
+    persistConfig({
+      ...getConfigSnapshot(),
+      lastVault: info.path,
+      recentVaults: touchRecentVault(getConfigSnapshot().recentVaults ?? [], info.path),
+    });
     await refreshTree();
     await reloadSnippetsFromVault();
     // /tmp 等 symlink 路径 canonicalize 后前缀可能变化，直接尝试打开。
-    const lastFile = getConfigSnapshot().lastFile;
+    // 「上次文件」按仓库各记各的:切仓再切回来,落点还是本仓那篇。
+    const lastFile = getConfigSnapshot().lastFileByVault?.[info.path];
     if (lastFile) {
       await openNote(lastFile).catch((e) => {
         useAppStore.getState().showToast(`打开上次文件失败: ${String(e)}`);
@@ -58,6 +67,32 @@ export async function openVault(path: string): Promise<boolean> {
     useAppStore.getState().showToast(`打开仓库失败: ${String(e)}`);
     return false;
   }
+}
+
+/**
+ * 切换到最近打开的仓库:MRU 里第一个非当前仓(当前仓读取时过滤,两仓来回
+ * toggle 成立;未开仓时落回最近一个)。切换复用当前窗口——openVault 全链路
+ * 就是换仓编排(后端 set_vault 幂等替换 + watcher 自回收,前端缓存带仓键失效)。
+ * 离仓先收尾,对齐 zed prepare_to_close 的保存环节:脏文件落盘、防抖中的
+ * 光标/配置立即写盘,这样切换失败时旧仓的状态无损。
+ */
+export async function switchRecentVault(): Promise<void> {
+  const store = useAppStore.getState();
+  if (store.drawingSession) {
+    store.showToast("画布还没收尾,先完成或取消画图再切仓库");
+    return;
+  }
+  const target = recentVaultTarget(getConfigSnapshot().recentVaults ?? [], store.vaultPath);
+  if (!target) {
+    store.showToast("没有其他最近打开的仓库");
+    return;
+  }
+  flushCursorSave();
+  if (store.dirty && store.currentFile) await saveNote();
+  // 离仓的 lastFileByVault / recentFiles 先落盘:就算新仓打开失败,重启后
+  // 旧仓的恢复点也不丢。
+  flushPersistConfig();
+  await openVault(target);
 }
 
 export async function refreshTree(): Promise<void> {

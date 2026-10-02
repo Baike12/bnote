@@ -70,6 +70,11 @@ export default function App() {
     void (async () => {
       await loadOverrides().catch(() => {});
       const cfg = (await api.loadAppConfig().catch(() => null)) as PersistedConfig | null;
+      // 一次性迁移:旧版「上次文件」是全局单值,它必然属于上次打开的那个仓,
+      // 按 lastVault 落进 per-vault 映射。幂等:落盘失败也只会在下次启动重算。
+      if (cfg?.lastFile && cfg?.lastVault && !cfg.lastFileByVault?.[cfg.lastVault]) {
+        cfg.lastFileByVault = { ...(cfg.lastFileByVault ?? {}), [cfg.lastVault]: cfg.lastFile };
+      }
       setConfigSnapshot(cfg ?? {});
       if (cfg?.recentFiles?.length) {
         useAppStore.setState({ recentFiles: cfg.recentFiles });

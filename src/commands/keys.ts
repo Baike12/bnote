@@ -21,6 +21,9 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   // ⌘D 在不少个人配置里已被占用(如插入代码块),画图用 ⌘O(open canvas)。
   "workspace.open-drawing": "Mod-o",
   "workspace.open-settings": "Mod-,",
+  // 快速切仓,对齐 zed 的 recent projects(R = Recent)。不用 zed 的 ⌃R——
+  // 那是 vim normal 模式的 redo,窗口级 capture 分发没有 vim 守卫,会吞键。
+  "workspace.switch-recent-vault": "Mod-Shift-r",
 
   "nav.quick-switcher": "Mod-o",
   "nav.back-link": "Mod-[",

@@ -69,6 +69,12 @@ const defs: CommandDef[] = [
     },
   },
   {
+    id: "workspace.switch-recent-vault",
+    title: "切换到最近打开的仓库(⌘⇧R)",
+    category: "工作区",
+    run: () => void actions.switchRecentVault(),
+  },
+  {
     id: "workspace.open-daily",
     title: "打开今日日记(⌘⇧O,日记内再按跳回)",
     category: "工作区",
