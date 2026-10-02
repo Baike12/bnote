@@ -57,3 +57,19 @@ describe("focusSidebar 请求", () => {
     unsub();
   });
 });
+
+describe("toggleSidebar（顶栏按钮的鼠标路径）", () => {
+  it("收起→展开只是开合，不产生聚焦票据", () => {
+    useAppStore.getState().toggleSidebar();
+    expect(useAppStore.getState().sidebarOpen).toBe(true);
+    expect(request()).toBe(null);
+  });
+
+  it("展开→收起同样不碰票据；未消费的票据也不因此丢失", () => {
+    useAppStore.getState().focusSidebar();
+    const first = request();
+    useAppStore.getState().toggleSidebar();
+    expect(useAppStore.getState().sidebarOpen).toBe(false);
+    expect(request()).toBe(first);
+  });
+});

@@ -9,6 +9,7 @@ import {
   dedupeIntents,
   intentsForRange,
   sendTodoToDaily,
+  sweepTodosToDaily,
   type DailyDeps,
   type DailyIO,
   type Intent,
@@ -50,7 +51,7 @@ afterEach(() => {
 /**
  * 引擎级集成测试:真 EditorState + 真 toggleTodo 产生事务,经与
  * extension.ts 相同的「事务 → 意图 → 应用」管线驱动,内存 IO 承载日记与
- * 源文件。锁行为(勾选双向同步/子待办层级/记录与清理/时间顺序/解链规则)。
+ * 源文件。锁行为(勾选双向同步/子待办层级/自动同步与聚合/时间顺序/解链规则)。
  */
 
 const VAULT = "/vault";
@@ -90,6 +91,15 @@ function memIO() {
       },
       async writeFile(p: string, c: string) {
         files.set(p, c);
+      },
+      async readDir(relPath: string) {
+        const prefix = `${VAULT}/${relPath}/`;
+        return [...files.keys()]
+          .filter((k) => k.startsWith(prefix) && !k.slice(prefix.length).includes("/"))
+          .map((k) => k.slice(prefix.length));
+      },
+      async listFiles() {
+        return [...files.keys()].map((k) => k.slice(VAULT.length + 1));
       },
     } as DailyIO,
   };
@@ -151,6 +161,15 @@ describe("发送命令", () => {
     expect(store.all()).toHaveLength(1);
     expect(store.all()[0]).toMatchObject({ kind: "copied", text: "写章节", srcLine: 3, dailyLine: 3 });
     expect(toasts).toEqual(["已发送到今日日记"]);
+  });
+
+  it("发送时日记不存在:建出的文件先带上一篇的未完成待办,发送条目随后", async () => {
+    const { files, io } = memIO();
+    files.set("/vault/Daily/2026-09-22.md", "# 2026-09-22\n\n- [x] 昨天做完 ✅ 2026-09-22\n- [ ] 昨天没做完\n");
+    const store = new LinkStore();
+    const { view } = makeDocView("- [ ] 新任务\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(view, deps(io), store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 昨天没做完\n- [ ] 新任务\n");
   });
 
   it("第二次发送按时间顺序追加在既有条目之后", async () => {
@@ -287,18 +306,28 @@ describe("发送命令", () => {
   });
 });
 
-describe("完成记录(自动)", () => {
-  it("勾选未映射待办 → 记录到今日日记(带 ✅ 戳,勾选状态随行)", async () => {
+describe("自动同步(触碰即发)", () => {
+  it("勾选未映射待办 → 发送到今日日记(带 ✅ 戳,勾选状态随行)", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const { view, transactions } = makeDocView("- [ ] 任务甲\n- [ ] 任务乙\n", "/vault/p.md", [0]);
     toggleTodo(view);
     await sync(view, "/vault/p.md", transactions, io, store);
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [x] 任务甲 ✅ 2026-09-23\n");
-    expect(store.all()[0]).toMatchObject({ kind: "recorded", text: "任务甲", srcLine: 1 });
+    expect(store.all()[0]).toMatchObject({ kind: "auto", text: "任务甲", srcLine: 1 });
   });
 
-  it("记录追加在既有条目之后(时间顺序)", async () => {
+  it("未勾选待办被编辑也自动同步(存在即同步,不要求先勾选)", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    const { view, transactions } = makeDocView("- [ ] 新任务\n", "/vault/p.md", [6]);
+    view.dispatch({ changes: { from: 9, to: 9, insert: "!" } }); // 纯文本编辑,没勾选
+    await sync(view, "/vault/p.md", transactions, io, store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 新任务!\n");
+    expect(store.all()[0]).toMatchObject({ kind: "auto", text: "新任务!" });
+  });
+
+  it("发送追加在既有条目之后(时间顺序)", async () => {
     const { files, io } = memIO();
     files.set(DAILY, "# 2026-09-23\n\n- [ ] 早上的事\n");
     const store = new LinkStore();
@@ -306,6 +335,16 @@ describe("完成记录(自动)", () => {
     toggleTodo(view);
     await sync(view, "/vault/p.md", transactions, io, store);
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 早上的事\n- [x] 任务甲 ✅ 2026-09-23\n");
+  });
+
+  it("发送建日记时也跟随:上一篇未完成在前,发送条目在后", async () => {
+    const { files, io } = memIO();
+    files.set("/vault/Daily/2026-09-22.md", "# 2026-09-22\n\n- [ ] 昨天没做完\n");
+    const store = new LinkStore();
+    const { view, transactions } = makeDocView("- [ ] 任务甲\n", "/vault/p.md", [0]);
+    toggleTodo(view);
+    await sync(view, "/vault/p.md", transactions, io, store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 昨天没做完\n- [x] 任务甲 ✅ 2026-09-23\n");
   });
 
   it("记录型待办再取消完成:日记条目清掉、链接解除", async () => {
@@ -322,16 +361,17 @@ describe("完成记录(自动)", () => {
     expect(store.all()).toHaveLength(0);
   });
 
-  it("子待办勾选(父未链接):子待办作为一级记录,子树随行", async () => {
+  it("子待办触碰(父未链接):整块随根发送,镜像语义保持原始层级", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const { view, transactions } = makeDocView("- [ ] 父\n  - [ ] 子\n    - [ ] 孙\n", "/vault/p.md", [8]);
     toggleTodo(view);
     await sync(view, "/vault/p.md", transactions, io, store);
-    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [x] 子 ✅ 2026-09-23\n  - [ ] 孙\n");
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 父\n  - [x] 子 ✅ 2026-09-23\n    - [ ] 孙\n");
+    expect(store.all()[0]).toMatchObject({ kind: "auto", text: "父" });
   });
 
-  it("子待办勾选(父已链接):随块镜像到日记,不单独记录", async () => {
+  it("子待办触碰(父已链接):随块镜像到日记,不重复发送", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     store.upsert(makeLink({ id: "p1", text: "父", srcLine: 1, dailyLine: 3 }));
@@ -483,15 +523,32 @@ describe("意图提取与合并", () => {
   const start = (t: string) => EditorState.create({ doc: t }).doc;
   const link = makeLink({ id: "L", text: "甲" });
 
-  it("勾选翻转产生记录意图;祖先已链接则改为镜像", () => {
+  it("触碰未链接待办产生发送意图;已链接则改为镜像", () => {
     const s = start("- [ ] 甲\n");
     const e = start("- [x] 甲 ✅ 2026-09-23\n");
     expect(intentsForRange(s, e, 0, s.length, 0, e.length, [], true)).toEqual([
-      { type: "record", rootHint: 1, text: "甲" },
+      { type: "send", rootHint: 1, text: "甲" },
     ]);
     expect(intentsForRange(s, e, 0, s.length, 0, e.length, [link], true)).toEqual([
       { type: "mirror", linkId: "L", rootHint: 1, renamedTo: "甲" },
     ]);
+  });
+
+  it("触碰嵌套待办:发送锚在块根,不是子行自己", () => {
+    const s = start("- [ ] 父\n  - [ ] 子\n");
+    const e = start("- [ ] 父\n  - [x] 子\n");
+    expect(intentsForRange(s, e, 0, s.length, 0, e.length, [], true)).toEqual([
+      { type: "send", rootHint: 1, text: "父" },
+    ]);
+  });
+
+  it("空文本待办不自动发送(还在打字);普通文本行不是待办也不发", () => {
+    const s = start("");
+    const e = start("- [ ] \n");
+    expect(intentsForRange(s, e, 0, 0, 0, e.length, [], true)).toEqual([]);
+    const s2 = start("正文\n");
+    const e2 = start("正文改\n");
+    expect(intentsForRange(s2, e2, 0, s2.length, 0, e2.length, [], true)).toEqual([]);
   });
 
   it("改名携带新文本;根转纯文本时提示为空", () => {
@@ -506,22 +563,127 @@ describe("意图提取与合并", () => {
     ]);
   });
 
-  it("粘贴/拖放事务不产生记录意图(allowRecord=false)", () => {
+  it("粘贴/拖放事务不产生发送意图(allowSend=false)", () => {
     const s = start("- [ ] 甲\n");
     const e = start("- [x] 甲 ✅ 2026-09-23\n");
     expect(intentsForRange(s, e, 0, s.length, 0, e.length, [], false)).toEqual([]);
   });
 
-  it("dedupeIntents:镜像按链接合并、记录按文本合并", () => {
+  it("dedupeIntents:镜像按链接合并、发送按文本合并", () => {
     const out = dedupeIntents([
       { type: "mirror", linkId: "L", rootHint: null, renamedTo: null },
       { type: "mirror", linkId: "L", rootHint: 3, renamedTo: null },
-      { type: "record", rootHint: 5, text: "甲" },
-      { type: "record", rootHint: 9, text: "甲" },
+      { type: "send", rootHint: 5, text: "甲" },
+      { type: "send", rootHint: 9, text: "甲" },
     ]);
     expect(out).toEqual([
       { type: "mirror", linkId: "L", rootHint: 3, renamedTo: null },
-      { type: "record", rootHint: 5, text: "甲" },
+      { type: "send", rootHint: 5, text: "甲" },
     ]);
+  });
+});
+
+
+describe("每日聚合(sweepTodosToDaily)", () => {
+  /** sweptKey 以 vault::day 占位,每个用例用独立日期避免互相污染。 */
+  it("全仓聚合:各文件的未完成待办进日记,已完成叶子过滤,kind=auto", async () => {
+    const { files, io } = memIO();
+    files.set(DAILY, "# 2026-09-23\n");
+    files.set(
+      "/vault/Anc/anc todo.md",
+      "# anc\n\n- [x] 已完成 ✅ 2026-09-22\n- [ ] 待办一\n  - [x] 中间 ✅ 2026-09-22\n    - [ ] 待办二\n",
+    );
+    files.set("/vault/Job/job todo.md", "# job\n\n- [ ] 任务乙\n");
+    files.set("/vault/Daily/2026-09-22.md", "# 2026-09-22\n\n- [ ] 别聚合日记自己\n");
+    files.set("/vault/.bnote/meta.md", "- [ ] 别聚配置目录\n");
+    files.set("/vault/notes.txt", "- [ ] 别聚非 md\n");
+    const store = new LinkStore();
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-23", store)).toBe(true);
+    expect(files.get(DAILY)).toBe(
+      "# 2026-09-23\n\n- [ ] 待办一\n  - [x] 中间 ✅ 2026-09-22\n    - [ ] 待办二\n- [ ] 任务乙\n",
+    );
+    expect(store.all()).toHaveLength(2);
+    expect(store.all()[0]).toMatchObject({
+      kind: "auto",
+      day: "2026-09-23",
+      srcPath: "/vault/Anc/anc todo.md",
+      dailyPath: DAILY,
+      text: "待办一",
+      srcLine: 4,
+    });
+    expect(store.all()[1]).toMatchObject({ text: "任务乙", srcLine: 3 });
+  });
+
+  it("同日幂等:再扫一遍不重复追加、不新建链接", async () => {
+    const { files, io } = memIO();
+    const daily = "/vault/Daily/2026-09-24.md";
+    files.set(daily, "# 2026-09-24\n");
+    files.set("/vault/p.md", "- [ ] 甲\n");
+    const store = new LinkStore();
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-24", store)).toBe(true);
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-24", store)).toBe(false);
+    expect(files.get(daily)).toBe("# 2026-09-24\n\n- [ ] 甲\n");
+    expect(store.all()).toHaveLength(1);
+  });
+
+  it("认领日记里已有的同文条目(rollover 带来的),不重复追加", async () => {
+    const { files, io } = memIO();
+    const daily = "/vault/Daily/2026-09-25.md";
+    files.set(daily, "# 2026-09-25\n\n- [ ] 甲\n");
+    files.set("/vault/p.md", "- [ ] 甲\n  - [ ] 子项\n");
+    const store = new LinkStore();
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-25", store)).toBe(true);
+    expect(files.get(daily)).toBe("# 2026-09-25\n\n- [ ] 甲\n"); // 字节不动
+    expect(store.all()).toHaveLength(1);
+    expect(store.all()[0]).toMatchObject({ text: "甲", dailyLine: 3 });
+  });
+
+  it("跨文件同文:先到先得,不重复建链接", async () => {
+    const { files, io } = memIO();
+    const daily = "/vault/Daily/2026-09-26.md";
+    files.set(daily, "# 2026-09-26\n");
+    files.set("/vault/a.md", "- [ ] 同名\n");
+    files.set("/vault/b.md", "- [ ] 同名\n");
+    const store = new LinkStore();
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-26", store)).toBe(true);
+    expect(files.get(daily)).toBe("# 2026-09-26\n\n- [ ] 同名\n");
+    expect(store.all()).toHaveLength(1);
+    expect(store.all()[0].srcPath).toBe("/vault/a.md");
+  });
+
+  it("过期 auto 链接按日清理;显式发送的 copied 不动", async () => {
+    const { files, io } = memIO();
+    files.set("/vault/Daily/2026-09-27.md", "# 2026-09-27\n");
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "old", kind: "auto", day: "2026-09-22" }));
+    store.upsert(makeLink({ id: "keep", kind: "copied", day: "2026-09-22" }));
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-27", store)).toBe(true);
+    expect(store.getById("old")).toBeNull();
+    expect(store.getById("keep")).not.toBeNull();
+  });
+
+  it("今日日记不存在:放弃且不占位,建好后再扫成功", async () => {
+    const { files, io } = memIO();
+    files.set("/vault/p.md", "- [ ] 甲\n");
+    const store = new LinkStore();
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-28", store)).toBe(false);
+    files.set(DAILY, "# 2026-09-28.md placeholder");
+    files.set("/vault/Daily/2026-09-28.md", "# 2026-09-28\n");
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-28", store)).toBe(true);
+    expect(files.get("/vault/Daily/2026-09-28.md")).toBe("# 2026-09-28\n\n- [ ] 甲\n");
+  });
+
+  it("次日再聚:昨天的日记不聚合(rollover 管),今天重新链接源文件", async () => {
+    const { files, io } = memIO();
+    files.set("/vault/Daily/2026-09-29.md", "# 2026-09-29\n");
+    files.set("/vault/p.md", "- [ ] 甲\n");
+    const store = new LinkStore();
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-29", store)).toBe(true);
+    const nextDay = "/vault/Daily/2026-09-30.md";
+    files.set(nextDay, "# 2026-09-30\n");
+    expect(await sweepTodosToDaily(io, VAULT, "2026-09-30", store)).toBe(true);
+    expect(files.get(nextDay)).toBe("# 2026-09-30\n\n- [ ] 甲\n");
+    expect(store.all().filter((l) => l.day === "2026-09-30")).toHaveLength(1);
+    expect(store.all().filter((l) => l.kind === "auto" && l.day === "2026-09-29")).toHaveLength(0);
   });
 });

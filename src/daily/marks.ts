@@ -18,7 +18,8 @@ import { dailyPathFor, isDailyPath, isTodo, parseListLine, todoText } from "./mo
  * 语义分两侧,各自都是「当下最该知道的那一件事」:
  *  - 源笔记(项目里的待办):标出**指向今天这份日记**的链接——就是 ⌘⇧J 眼中
  *    「已同步」的那批。昨天发出去的条目今天不再算数,与发送命令的按日归属
- *    判定一致;否则同一行会同时挂上多天的映射标记。
+ *    判定一致;否则同一行会同时挂上多天的映射标记。auto 链接(存在即聚合)
+ *    不标源侧:自动同步下每个待办都有链接,标记铺满全库就不再是信息。
  *  - 日记文件(任意一天):标出**指向这份日记**的链接,并带上源笔记名——它是
  *    「这条是同步来的,不是手写的」的唯一线索。
  *
@@ -75,7 +76,7 @@ export function buildDailyMarks(view: DailyMarkView, ctx: DailyMarkContext): Dec
   for (const l of ctx.links) {
     const relevant = dailySide
       ? l.dailyPath === ctx.path
-      : l.srcPath === ctx.path && l.dailyPath === ctx.todayDailyPath;
+      : l.kind !== "auto" && l.srcPath === ctx.path && l.dailyPath === ctx.todayDailyPath;
     if (relevant && !byText.has(l.text)) byText.set(l.text, l);
   }
   if (byText.size === 0 || view.visibleRanges.length === 0) return Decoration.none;

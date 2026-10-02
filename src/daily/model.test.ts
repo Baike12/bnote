@@ -2,19 +2,23 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import {
   appendEntrySpec,
+  autoSyncBlocks,
   blockEnd,
   blockLines,
   blockRootLine,
+  composeDailyScaffold,
   dailyPathFor,
   findEntryByText,
   isDailyPath,
   linksFilePath,
   parseDailyRegion,
   parseListLine,
+  previousDailyFile,
   removeEntrySpec,
   replaceEntrySpec,
   resolveRootLine,
   reindentBlock,
+  rolloverBlocks,
   textAfterChanges,
   todoText,
 } from "./model";
@@ -191,5 +195,139 @@ describe("路径约定", () => {
     expect(isDailyPath("/vault/notes/Daily/2026-09-23.md")).toBe(true);
     expect(isDailyPath("/vault/notes/todo.md")).toBe(false);
     expect(linksFilePath("/vault")).toBe("/vault/.bnote/daily-links.json");
+  });
+});
+
+describe("待办跟随:rolloverBlocks", () => {
+  it("格言行/正文不截断:整篇扫描一级列表块,已完成叶子被过滤(用户真实日记形状)", () => {
+    const prev = [
+      "# 1 2026-10-02",
+      "**没有规划的不做，专注**",
+      "- [ ] cs336第一次作业",
+      "  - [ ] 注意力机制",
+      "    - [x] rope ✅ 2026-10-02",
+      "    - [ ] 带rope的多头注意力",
+      "  - [ ] transformer",
+      "- [ ] 了解一下aihot",
+    ].join("\n");
+    expect(rolloverBlocks(prev)).toEqual([
+      [
+        "- [ ] cs336第一次作业",
+        "  - [ ] 注意力机制",
+        "    - [ ] 带rope的多头注意力",
+        "  - [ ] transformer",
+      ],
+      ["- [ ] 了解一下aihot"],
+    ]);
+  });
+
+  it("已完成中间节点是未完成后代的锚:保留,层级不断链", () => {
+    const prev = ["- [ ] 父", "  - [x] 中间 ✅ 2026-09-22", "    - [ ] 剩下的"].join("\n");
+    expect(rolloverBlocks(prev)).toEqual([["- [ ] 父", "  - [x] 中间 ✅ 2026-09-22", "    - [ ] 剩下的"]]);
+  });
+
+  it("已完成兄弟子树整块跳过,不越过缩进窗口误抓", () => {
+    const prev = [
+      "- [ ] 父",
+      "  - [x] 完成的中间 ✅ 2026-09-22",
+      "  - [ ] 活着的子项",
+      "  - [x] 另一个完成 ✅ 2026-09-22",
+    ].join("\n");
+    expect(rolloverBlocks(prev)).toEqual([["- [ ] 父", "  - [ ] 活着的子项"]]);
+  });
+
+  it("顶层已完成块:有未完成后代则整链跟随,没有则整块跳过", () => {
+    const prev = [
+      "- [x] 收尾完成 ✅ 2026-09-22",
+      "- [x] 大盘还未完",
+      "  - [ ] 还没做的子项",
+      "- [x] 纯完成 ✅ 2026-09-22",
+      "  - [x] 完成的子项 ✅ 2026-09-22",
+    ].join("\n");
+    expect(rolloverBlocks(prev)).toEqual([["- [x] 大盘还未完", "  - [ ] 还没做的子项"]]);
+  });
+
+  it("纯 bullet 块:不含未完成跳过;含则作锚保留,其下普通叶子同样被过滤", () => {
+    const prev = [
+      "- 普通分组",
+      "  - 普通子项",
+      "- 有活的分组",
+      "  - 普通备注",
+      "  - [ ] 真正的待办",
+    ].join("\n");
+    expect(rolloverBlocks(prev)).toEqual([["- 有活的分组", "  - [ ] 真正的待办"]]);
+  });
+
+  it("围栏代码块里的 `- [ ]` 是代码,不跟随", () => {
+    const prev = ["```", "- [ ] 代码里的假待办", "```", "", "- [ ] 真待办"].join("\n");
+    expect(rolloverBlocks(prev)).toEqual([["- [ ] 真待办"]]);
+  });
+
+  it("全已完成 / 空文档:没有可跟随的", () => {
+    expect(rolloverBlocks("# d\n\n- [x] 甲 ✅ 2026-09-22\n")).toEqual([]);
+    expect(rolloverBlocks("")).toEqual([]);
+  });
+
+  it("空文本未完成待办也跟随(统一规则,不特判)", () => {
+    expect(rolloverBlocks("- [ ] ")).toEqual([["- [ ] "]]);
+  });
+});
+
+describe("待办跟随:previousDailyFile", () => {
+  it("取早于今天的最近一篇,忽略非日期文件与今天及未来的文件", () => {
+    const names = ["2026-09-30.md", "notes.md", "2026-10-02.md", "2026-10-03.md", "2026-10-01.md"];
+    expect(previousDailyFile(names, "2026-10-02")).toBe("2026-10-01");
+    expect(previousDailyFile(["2026-10-02.md"], "2026-10-02")).toBe(null);
+    expect(previousDailyFile([], "2026-10-02")).toBe(null);
+  });
+});
+
+describe("待办跟随:autoSyncBlocks(源文件聚合提取)", () => {
+  it("根必须是待办且文本非空;纯 bullet 根不聚(锚不起作用)", () => {
+    const text = [
+      "- 普通分组",
+      "  - [ ] 不聚:根是 bullet",
+      "- [ ] 正常待办",
+      "  - [ ] 子项",
+      "- [ ] ",
+    ].join("\n");
+    expect(autoSyncBlocks(text)).toEqual([
+      { rootLine: 3, text: "正常待办", lines: ["- [ ] 正常待办", "  - [ ] 子项"] },
+    ]);
+  });
+
+  it("与 rollover 同一条过滤规则:已完成叶子丢弃、锚链保留、全完成不聚", () => {
+    const text = [
+      "- [x] 收尾完成 ✅ 2026-09-22",
+      "- [ ] 大盘还未完",
+      "  - [x] 中间完成 ✅ 2026-09-22",
+      "    - [ ] 还没做的子项",
+      "- [x] 纯完成 ✅ 2026-09-22",
+      "  - [x] 完成的子项 ✅ 2026-09-22",
+    ].join("\n");
+    expect(autoSyncBlocks(text)).toEqual([
+      {
+        rootLine: 2,
+        text: "大盘还未完",
+        lines: ["- [ ] 大盘还未完", "  - [x] 中间完成 ✅ 2026-09-22", "    - [ ] 还没做的子项"],
+      },
+    ]);
+  });
+
+  it("围栏代码块里的待办不聚", () => {
+    const text = "```\n- [ ] 代码里的假待办\n```\n\n- [ ] 真待办\n";
+    expect(autoSyncBlocks(text)).toEqual([{ rootLine: 5, text: "真待办", lines: ["- [ ] 真待办"] }]);
+  });
+});
+
+describe("待办跟随:composeDailyScaffold", () => {
+  it("无块 = 裸 scaffold(逐字节一致)", () => {
+    expect(composeDailyScaffold("2026-10-03", [])).toBe("# 2026-10-03\n");
+  });
+
+  it("有块 = 与引擎 appendEntrySpec 同形:条目单换行相邻,文件尾单换行", () => {
+    expect(composeDailyScaffold("2026-10-03", [["- [ ] 甲", "  - [ ] 乙"], ["- [ ] 丙"]])).toBe(
+      "# 2026-10-03\n\n- [ ] 甲\n  - [ ] 乙\n- [ ] 丙\n",
+    );
   });
 });

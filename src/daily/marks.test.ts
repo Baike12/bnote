@@ -72,6 +72,16 @@ describe("待办链接的可视标识", () => {
     expect(marks(set, view.state.doc)).toEqual([]);
   });
 
+  it("源笔记:auto 链接(存在即聚合)不打标——标记铺满全库就不再是信息", () => {
+    const view = viewOf("- [ ] cs336\n");
+    const set = buildDailyMarks(view, {
+      path: SRC,
+      links: [link({ kind: "auto" })],
+      todayDailyPath: TODAY,
+    });
+    expect(marks(set, view.state.doc)).toEqual([]);
+  });
+
   it("源笔记:别的文件参与的链接不打标", () => {
     const view = viewOf("- [ ] cs336\n");
     const set = buildDailyMarks(view, {

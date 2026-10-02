@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { dailyScaffold } from "./model";
 import { openDailyNote, type OpenDailyDeps } from "./open";
+import { LinkStore } from "./links";
 
 /**
  * 「打开今日日记」的契约:
@@ -30,7 +31,15 @@ function harness(files: Record<string, string> = {}, over: Partial<OpenDailyDeps
         disk.set(p, c);
         written.push({ path: p, content: c });
       },
+      readDir: async (relPath) => {
+        const prefix = `/v/${relPath}/`;
+        return [...disk.keys()]
+          .filter((k) => k.startsWith(prefix) && !k.slice(prefix.length).includes("/"))
+          .map((k) => k.slice(prefix.length));
+      },
+      listFiles: async () => [...disk.keys()].map((k) => k.slice("/v/".length)),
     },
+    loadLinks: async () => new LinkStore(),
     open: async (p) => {
       opened.push(p);
       current = p;
@@ -91,6 +100,72 @@ describe("打开今日日记", () => {
     const h = harness();
     await openDailyNote(h.deps);
     expect(h.opened[0].endsWith("/Daily/2026-09-27.md")).toBe(true);
+  });
+});
+
+describe("新建日记的待办跟随", () => {
+  const PREV = "/v/Daily/2026-09-26.md";
+
+  it("上一篇的未完成待办(保层级)进新日记,已完成叶子不跟、锚链保留", async () => {
+    const h = harness({
+      [PREV]: [
+        "# 1 2026-09-26",
+        "- [x] 已完成的事 ✅ 2026-09-26",
+        "- [ ] 还没做完",
+        "  - [x] 中间步骤 ✅ 2026-09-26",
+        "    - [ ] 剩下的子项",
+      ].join("\n"),
+    });
+    expect(await openDailyNote(h.deps)).toBe(DAILY);
+    expect(h.written[0].content).toBe(
+      "# 2026-09-27\n\n- [ ] 还没做完\n  - [x] 中间步骤 ✅ 2026-09-26\n    - [ ] 剩下的子项\n",
+    );
+  });
+
+  it("取最近一篇而不是严格昨天:隔了几天也跟", async () => {
+    const h = harness({ "/v/Daily/2026-09-24.md": "# d\n- [ ] 前几天没做完\n" });
+    await openDailyNote(h.deps);
+    expect(h.written[0].content).toBe("# 2026-09-27\n\n- [ ] 前几天没做完\n");
+  });
+
+  it("Daily 目录列不到:裸 scaffold,跟随失败不挡创建", async () => {
+    const h = harness();
+    h.deps.io = { ...h.deps.io, readDir: async () => null };
+    await openDailyNote(h.deps);
+    expect(h.written[0].content).toBe(dailyScaffold(DAY));
+  });
+});
+
+describe("打开日记触发每日待办聚合", () => {
+  /** sweptKey 以 vault::day 占位,这里用与默认夹具不同的日期避开污染。 */
+  it("其他文件的未完成待办自动进头部(已完成叶子过滤),链接 kind=auto", async () => {
+    const day = "2026-09-25";
+    const daily = `/v/Daily/${day}.md`;
+    const h = harness(
+      {
+        "/v/Notes/proj.md": "# proj\n\n- [x] 完成的 ✅ 2026-09-26\n- [ ] 项目待办\n  - [ ] 子项\n",
+        "/v/Notes/other.md": "- [ ] 另一个文件\n",
+      },
+      { today: () => day },
+    );
+    const store = new LinkStore();
+    h.deps.loadLinks = async () => store;
+    expect(await openDailyNote(h.deps)).toBe(daily);
+    expect(h.disk.get(daily)).toBe(`# ${day}\n\n- [ ] 项目待办\n  - [ ] 子项\n- [ ] 另一个文件\n`);
+    expect(h.written.map((w) => w.path)).toEqual([daily, daily]); // 建档一次 + 聚合一次
+    expect(store.all()).toHaveLength(2);
+    expect(store.all()[0]).toMatchObject({ kind: "auto", text: "项目待办", srcPath: "/v/Notes/proj.md" });
+  });
+
+  it("聚合失败不挡打开", async () => {
+    const day = "2026-09-26";
+    const daily = `/v/Daily/${day}.md`;
+    const h = harness({ "/v/p.md": "- [ ] 甲\n" }, { today: () => day });
+    h.deps.loadLinks = async () => {
+      throw new Error("库坏了");
+    };
+    expect(await openDailyNote(h.deps)).toBe(daily);
+    expect(h.written[0].content).toBe(dailyScaffold(day));
   });
 });
 
