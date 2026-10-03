@@ -503,6 +503,15 @@ button {
 .cw-callout-edge.d2 {
   padding-left: 39px;
 }
+/* 块级 widget(公式块/公式实时预览/HR)自带的块外排版留白在 callout 内会把
+   块面切开——margin 区域露出正文底色,callout 视觉上被切成数块。归零:块内
+   垂直节奏由 md-callout-line 的行拼装(空行自带背景)负责;不带 md-callout-line
+   的块外场景留白不受影响。 */
+.cw-math-block.md-callout-line,
+.cw-math-preview.md-callout-line,
+.cw-hr.md-callout-line {
+  margin: 0;
+}
 
 .md-inline-code,
 .md-code-line {
