@@ -27,6 +27,9 @@ vendor/
 # Tooling caches
 .playwright-cli/
 
+# ZCode 会话本地产物(plan/工作流草稿与运行记录)
+.zcode/
+
 # Local secrets
 .pat.md
 
