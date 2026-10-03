@@ -168,25 +168,25 @@ describe("planHeaderTodoJump:⌘T 的往返决策", () => {
 });
 
 describe("insertCallout:插入形状与光标落点", () => {
-  it("空行插入:裸 ::: 开合,光标在开栏行尾可直接写标题", () => {
+  it("空行插入:裸 ::: 开合,光标在块内内容空行行首", () => {
     const view = makeView("", [0]);
     insertCallout(view);
     expect(text(view)).toBe(":::\n\n:::");
-    expect(pos(view)).toBe(3);
+    expect(pos(view)).toBe(4);
   });
 
-  it("非空行插入:插到本行尾之后,光标同在开栏行尾", () => {
+  it("非空行插入:插到本行尾之后,光标同在内容空行行首", () => {
     const view = makeView("hello", [3]);
     insertCallout(view);
     expect(text(view)).toBe("hello\n:::\n\n:::");
-    expect(pos(view)).toBe(9);
+    expect(pos(view)).toBe(10);
   });
 
-  it("列表项内插入:内部空行与合栏继承缩进", () => {
+  it("列表项内插入:内部空行与合栏继承缩进,光标在缩进之后", () => {
     const view = makeView("  - 项", [5]);
     insertCallout(view);
     expect(text(view)).toBe("  - 项\n:::\n  \n  :::");
-    expect(pos(view)).toBe(9);
+    expect(pos(view)).toBe(12);
   });
 
   it("选区包裹:覆盖行整段收进块内,选区两端平移进块", () => {

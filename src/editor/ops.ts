@@ -585,16 +585,14 @@ export function toggleWrap(view: EditorView, marker: string) {
  * 独占整行的开/闭定界块（```…``` / $$…$$）插入。定界符必须自己占一行——
  * 粘在正文后面既不是合法围栏也不是块公式：当前行为空行时原位替换（顺带清掉
  * 纯空白），否则插到本行行尾之后。内部空行与闭栏继承本行缩进（块留在列表
- * 项内）。光标位置从构造出的插入串推导——默认落在内部空行行首（开栏内容
- * （语言等）变化时无需再调偏移量）；`openEnd` 落在开栏行尾（callout：先写
- * 标题，不写直接下移就是无标题裸块）。
+ * 项内）。光标位置从构造出的插入串推导——恒落在内部空行的缩进之后（块内
+ * 首个内容位，直接开写正文）。
  */
 function insertOwnLineBlock(
   view: EditorView,
   open: string,
   close: string,
   userEvent: string,
-  cursorAt: "inner" | "openEnd" = "inner",
 ) {
   const pos = view.state.selection.main.head;
   const line = view.state.doc.lineAt(pos);
@@ -602,10 +600,7 @@ function insertOwnLineBlock(
   const indent = blank ? "" : (line.text.match(/^\s*/)?.[0] ?? "");
   const insert = (blank ? "" : "\n") + open + "\n" + indent + "\n" + indent + close;
   const from = blank ? line.from : line.to;
-  const cursor =
-    cursorAt === "openEnd"
-      ? from + (blank ? 0 : 1) + open.length
-      : from + (blank ? 0 : 1) + open.length + 1 + indent.length;
+  const cursor = from + (blank ? 0 : 1) + open.length + 1 + indent.length;
 
   view.dispatch({
     changes: blank ? { from: line.from, to: line.to, insert } : { from, insert },
@@ -617,9 +612,10 @@ function insertOwnLineBlock(
 
 /**
  * 插入 Callout 块(`:::` 容器)。无选区时空行原位替换/否则插到本行尾之后,
- * 光标落在开栏 `:::` 行尾——先写标题(`::: 标题`),不写直接下移就是无标题
- * 裸块(两种形态扫描同构)。有选区时把覆盖的行包进块(与 insertCodeBlock
- * 同一映射模型,行中选区扩展到整行),选区两端平移进块内。
+ * 光标落在块内内容空行(缩进之后)——直接开写正文;要标题再回开栏行补
+ * (`::: 标题`,不写就是无标题裸块,两种形态扫描同构)。有选区时把覆盖的行
+ * 包进块(与 insertCodeBlock 同一映射模型,行中选区扩展到整行),选区两端
+ * 平移进块内。
  */
 export function insertCallout(view: EditorView) {
   const state = view.state;
@@ -643,7 +639,7 @@ export function insertCallout(view: EditorView) {
     view.focus();
     return;
   }
-  insertOwnLineBlock(view, ":::", ":::", "input.bnote-callout", "openEnd");
+  insertOwnLineBlock(view, ":::", ":::", "input.bnote-callout");
 }
 
 /** Inserts a $$ … $$ block on its own lines and places the cursor inside. */
