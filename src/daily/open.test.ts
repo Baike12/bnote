@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dailyScaffold } from "./model";
 import { openDailyNote, type OpenDailyDeps } from "./open";
-import { LinkStore } from "./links";
 
 /**
  * 「打开今日日记」的契约:
@@ -37,9 +36,7 @@ function harness(files: Record<string, string> = {}, over: Partial<OpenDailyDeps
           .filter((k) => k.startsWith(prefix) && !k.slice(prefix.length).includes("/"))
           .map((k) => k.slice(prefix.length));
       },
-      listFiles: async () => [...disk.keys()].map((k) => k.slice("/v/".length)),
     },
-    loadLinks: async () => new LinkStore(),
     open: async (p) => {
       opened.push(p);
       current = p;
@@ -133,39 +130,6 @@ describe("新建日记的待办跟随", () => {
     h.deps.io = { ...h.deps.io, readDir: async () => null };
     await openDailyNote(h.deps);
     expect(h.written[0].content).toBe(dailyScaffold(DAY));
-  });
-});
-
-describe("打开日记触发每日待办聚合", () => {
-  /** sweptKey 以 vault::day 占位,这里用与默认夹具不同的日期避开污染。 */
-  it("其他文件的未完成待办自动进头部(已完成叶子过滤),链接 kind=auto", async () => {
-    const day = "2026-09-25";
-    const daily = `/v/Daily/${day}.md`;
-    const h = harness(
-      {
-        "/v/Notes/proj.md": "# proj\n\n- [x] 完成的 ✅ 2026-09-26\n- [ ] 项目待办\n  - [ ] 子项\n",
-        "/v/Notes/other.md": "- [ ] 另一个文件\n",
-      },
-      { today: () => day },
-    );
-    const store = new LinkStore();
-    h.deps.loadLinks = async () => store;
-    expect(await openDailyNote(h.deps)).toBe(daily);
-    expect(h.disk.get(daily)).toBe(`# ${day}\n\n- [ ] 项目待办\n  - [ ] 子项\n- [ ] 另一个文件\n`);
-    expect(h.written.map((w) => w.path)).toEqual([daily, daily]); // 建档一次 + 聚合一次
-    expect(store.all()).toHaveLength(2);
-    expect(store.all()[0]).toMatchObject({ kind: "auto", text: "项目待办", srcPath: "/v/Notes/proj.md" });
-  });
-
-  it("聚合失败不挡打开", async () => {
-    const day = "2026-09-26";
-    const daily = `/v/Daily/${day}.md`;
-    const h = harness({ "/v/p.md": "- [ ] 甲\n" }, { today: () => day });
-    h.deps.loadLinks = async () => {
-      throw new Error("库坏了");
-    };
-    expect(await openDailyNote(h.deps)).toBe(daily);
-    expect(h.written[0].content).toBe(dailyScaffold(day));
   });
 });
 
