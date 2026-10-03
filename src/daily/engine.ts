@@ -6,7 +6,6 @@ import type { DailyLink, LinkStore } from "./links";
 import { scheduleLinksPersist } from "./links";
 import {
   appendEntrySpec,
-  autoSyncBlocks,
   blockEnd,
   blockLines,
   blockRootLine,
@@ -41,9 +40,8 @@ import {
  *  - 变更行所在块的身份文本命中某条链接(旧或新文本,改名即迁移锚) → 镜像:
  *    把变更侧当前块整段搬到对侧(重缩进、checkbox/✅戳随文本走)。
  *  - 触碰到的未链接待办块 → 自动发送:块(根 + 其子树)复制为今日日记的
- *    一级条目并建立 auto 映射——存在即同步,不需要快捷键也不需要先勾选
- *    (另有每日聚合 sweepTodosToDaily 扫全仓,见下);记录型根再取消 →
- *    从日记清掉并解链。
+ *    一级条目并建立 auto 映射——存在即同步,不需要快捷键也不需要先勾选;
+ *    记录型根再取消 → 从日记清掉并解链。
  *  - 源侧根不再是待办 → 删日记条目并解链;日记侧根不再是待办 → 只解链
  *    (用户在整理今天的列表,不动项目里的待办)。
  *
@@ -59,8 +57,6 @@ export interface DailyIO {
   writeFile(path: string, content: string): Promise<void>;
   /** 列出 vault 相对目录 `relPath` 下的文件名(不含子目录);失败/不存在返回 null。 */
   readDir(relPath: string): Promise<string[] | null>;
-  /** 列出 vault 全部文件的相对路径;失败返回 null。 */
-  listFiles(): Promise<string[] | null>;
 }
 
 export interface DailyDeps {
@@ -437,97 +433,6 @@ export async function dailyScaffoldWithRollover(io: DailyIO, vaultRoot: string, 
   } catch {
     return base;
   }
-}
-
-// ---------------------------------------------------------------- 每日聚合(自动同步的扫仓)
-
-/** 每天第一次触发聚合的位置:同仓同日只扫一遍(幂等,失败不占位,下次再试)。 */
-let sweptKey: string | null = null;
-
-/**
- * 待办聚合:把仓库里**所有**非日记 md 文件的未完成待办(autoSyncBlocks,
- * 与 rollover 同一条「未完成 + 锚链」规则)确保链接进今日日记的头部——
- * 「其他文件只要有待办事项就同步到日记」,不需要按快捷键。已有今日链接的
- * 块只刷新行号提示;日记里已有同文条目(rollover 带来的、手工贴的)直接
- * 认领,不重复追加;同一身份文本跨文件重复时先到先得。
- *
- * 触发时机:每天第一次打开今日日记(openDailyNote)。链接按日归属:上一
- * 天的 auto 链接在本次清扫时解除(那天的条目已落盘,冻结即历史),否则
- * 每个未完成待办会按天积累链接、镜像扇出到全部历史日记。
- */
-export async function sweepTodosToDaily(io: DailyIO, vaultRoot: string, today: string, store: LinkStore): Promise<boolean> {
-  const key = `${vaultRoot}::${today}`;
-  if (sweptKey === key) return false;
-  const dailyPath = dailyPathFor(vaultRoot, today);
-  const ok = await withFileLock(dailyPath, async (): Promise<boolean> => {
-    let linksDirty = false;
-    // 1. 过期 auto 链接清理(显式发送的 copied/recorded 不动)
-    for (const l of store.all()) {
-      if (l.kind === "auto" && l.day !== today) {
-        store.remove(l.id);
-        linksDirty = true;
-      }
-    }
-    // 2. 今日日记:不存在说明创建流程还没跑到,本次放弃(下次打开再聚)
-    let dailyText = await io.readFile(dailyPath).catch(() => null);
-    if (dailyText === null) return false;
-    // 3. 遍历仓库文件,逐块确保链接 + 条目
-    const relFiles = await io.listFiles();
-    if (relFiles === null) {
-      // 列不到仓库文件:不占位,下次打开再试;已做的链接清理照常落盘
-      if (linksDirty) scheduleLinksPersist();
-      return false;
-    }
-    let mutated = false;
-    const claimed = new Set<string>(); // 跨文件同文先到先得,一个身份只链一次
-    for (const rel of relFiles) {
-      if (!rel.endsWith(".md") || rel.startsWith(".")) continue;
-      const srcPath = `${vaultRoot.replace(/\/+$/, "")}/${rel}`;
-      if (isDailyPath(srcPath)) continue;
-      const fileText = await io.readFile(srcPath);
-      if (fileText === null) continue;
-      for (const b of autoSyncBlocks(fileText)) {
-        if (claimed.has(b.text)) continue;
-        const own = linkForDaily(store, srcPath, dailyPath, b.text);
-        if (own) {
-          store.update(own.id, { srcLine: b.rootLine });
-          claimed.add(b.text);
-          continue;
-        }
-        const bdoc = parseDoc(dailyText);
-        const region = parseDailyRegion(bdoc);
-        const existing = findEntryByText(bdoc, region, b.text, 0);
-        let dailyLine: number;
-        if (existing) {
-          dailyLine = existing.start; // 认领,不重复追加
-        } else {
-          const { change } = appendEntrySpec(bdoc, region, b.lines);
-          dailyText = textAfterChanges(dailyText, [change]);
-          const ndoc = parseDoc(dailyText);
-          dailyLine =
-            findEntryByText(ndoc, parseDailyRegion(ndoc), b.text, Number.MAX_SAFE_INTEGER)?.start ?? 1;
-          mutated = true;
-        }
-        store.upsert({
-          id: uuid(),
-          kind: "auto",
-          day: today,
-          srcPath,
-          dailyPath,
-          text: b.text,
-          srcLine: b.rootLine,
-          dailyLine,
-        });
-        claimed.add(b.text);
-        linksDirty = true;
-      }
-    }
-    if (mutated && dailyText !== null) await io.writeFile(dailyPath, dailyText);
-    if (linksDirty) scheduleLinksPersist();
-    return true;
-  });
-  if (ok) sweptKey = key;
-  return ok;
 }
 
 // ---------------------------------------------------------------- 发送命令

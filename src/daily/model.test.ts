@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import {
   appendEntrySpec,
-  autoSyncBlocks,
   blockEnd,
   blockLines,
   blockRootLine,
@@ -279,44 +278,6 @@ describe("待办跟随:previousDailyFile", () => {
     expect(previousDailyFile(names, "2026-10-02")).toBe("2026-10-01");
     expect(previousDailyFile(["2026-10-02.md"], "2026-10-02")).toBe(null);
     expect(previousDailyFile([], "2026-10-02")).toBe(null);
-  });
-});
-
-describe("待办跟随:autoSyncBlocks(源文件聚合提取)", () => {
-  it("根必须是待办且文本非空;纯 bullet 根不聚(锚不起作用)", () => {
-    const text = [
-      "- 普通分组",
-      "  - [ ] 不聚:根是 bullet",
-      "- [ ] 正常待办",
-      "  - [ ] 子项",
-      "- [ ] ",
-    ].join("\n");
-    expect(autoSyncBlocks(text)).toEqual([
-      { rootLine: 3, text: "正常待办", lines: ["- [ ] 正常待办", "  - [ ] 子项"] },
-    ]);
-  });
-
-  it("与 rollover 同一条过滤规则:已完成叶子丢弃、锚链保留、全完成不聚", () => {
-    const text = [
-      "- [x] 收尾完成 ✅ 2026-09-22",
-      "- [ ] 大盘还未完",
-      "  - [x] 中间完成 ✅ 2026-09-22",
-      "    - [ ] 还没做的子项",
-      "- [x] 纯完成 ✅ 2026-09-22",
-      "  - [x] 完成的子项 ✅ 2026-09-22",
-    ].join("\n");
-    expect(autoSyncBlocks(text)).toEqual([
-      {
-        rootLine: 2,
-        text: "大盘还未完",
-        lines: ["- [ ] 大盘还未完", "  - [x] 中间完成 ✅ 2026-09-22", "    - [ ] 还没做的子项"],
-      },
-    ]);
-  });
-
-  it("围栏代码块里的待办不聚", () => {
-    const text = "```\n- [ ] 代码里的假待办\n```\n\n- [ ] 真待办\n";
-    expect(autoSyncBlocks(text)).toEqual([{ rootLine: 5, text: "真待办", lines: ["- [ ] 真待办"] }]);
   });
 });
 

@@ -23,13 +23,6 @@ export const tauriIO: DailyIO = {
       return null; // Daily 目录不存在等:没有上一篇可跟
     }
   },
-  async listFiles() {
-    try {
-      return (await api.listFiles()).files;
-    } catch {
-      return null;
-    }
-  },
 };
 
 /** 应用运行期的同步依赖:仓库根 / 今天 / toast 实时读取。 */

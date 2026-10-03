@@ -373,36 +373,6 @@ export function rolloverBlocks(prevText: string): string[][] {
   return out;
 }
 
-/** 源文件里要自动聚合进当日日记的一个待办块。 */
-export interface AutoSyncBlock {
-  /** 源文件里的根行号(1-based),链接的就近提示。 */
-  rootLine: number;
-  /** 根的待办身份文本(非空,链接锚)。 */
-  text: string;
-  /** 要复制的行(根 + 子树里未完成行与锚链)。 */
-  lines: string[];
-}
-
-/**
- * 源文件的自动聚合提取:与 rolloverBlocks 同一条 carriedLines 规则,但根必须
- * 是待办且身份文本非空——链接锚靠根文本互认,普通 bullet 根与空文本起不了锚
- * (这类块不自动同步;日记 rollover 不受限,因为那边是快照复制)。
- */
-export function autoSyncBlocks(fileText: string): AutoSyncBlock[] {
-  const doc = EditorState.create({ doc: fileText }).doc;
-  const fenced = fenceStateScan(doc);
-  const out: AutoSyncBlock[] = [];
-  for (const b of topBlocks(doc, fenced)) {
-    const root = parseListLine(doc.line(b.rootNo).text);
-    if (!root || root.box === null) continue;
-    const text = todoText(root);
-    if (text === "") continue;
-    const carried = carriedLines(doc, b.rootNo, b.endNo);
-    if (carried) out.push({ rootLine: b.rootNo, text, lines: carried });
-  }
-  return out;
-}
-
 /** Daily/ 目录的文件名里,早于 `today` 的最近一篇日记日期;没有返回 null。
  *  隔了几天没写日记就跟最近那篇,不是严格意义上的「昨天」。 */
 export function previousDailyFile(names: string[], today: string): string | null {
