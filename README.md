@@ -18,6 +18,7 @@
   <img alt="CodeMirror 6" src="https://img.shields.io/badge/CodeMirror-6-B873F6?style=flat-square" />
   <img alt="React 19" src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=111111" />
   <img alt="macOS" src="https://img.shields.io/badge/platform-macOS-111111?style=flat-square&logo=apple&logoColor=white" />
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat-square" />
   <img alt="GitHub stars" src="https://img.shields.io/github/stars/Baike12/bnote?style=flat-square&logo=github" />
   <img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/Baike12/bnote?style=flat-square" />
 </p>
@@ -248,4 +249,4 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 ## License
 
-当前仓库尚未包含 License 文件；在添加明确许可证前，默认保留全部权利。
+本项目采用 [MIT License](LICENSE)。你可以使用、复制、修改、合并、发布、分发、再许可和销售本软件，只需保留版权与许可证声明。
