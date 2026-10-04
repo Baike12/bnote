@@ -3,6 +3,7 @@ name = "bnote"
 version = "0.1.0"
 description = "A fast Obsidian-like markdown notebook built with Tauri"
 authors = ["baike3"]
+license = "MIT"
 edition = "2021"
 
 [lib]
