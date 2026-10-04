@@ -1,6 +1,13 @@
-/* ===== bnote — Obsidian-like dark theme ===== */
+/* ===== bnote — Obsidian-like theme =====
+
+   主题的唯一来源是这里的 CSS 变量：:root 是 dark（无属性即 dark），
+   [data-theme="light"] 整套覆盖。应用侧只写
+   documentElement.dataset.theme（见 applySettingsToEditor），不做别的。
+   纪律（theme.test.ts 门禁拦）：规则体内不许出现 hex/rgba 字面量，
+   颜色一律走变量——新增颜色时两套值必须同时给。 */
 
 :root {
+  color-scheme: dark;
   /* Deep-black neutral surfaces with a warm amber accent. */
   --bg0: #0b0b0d; /* editor */
   --bg1: #101013; /* sidebar */
@@ -12,7 +19,10 @@
   --text-faint: #67676d;
   --accent: #f5a83c;
   --accent-dim: #c07d24;
+  --accent-soft: #3a2c16; /* 琥珀的弱底：当前文件行、热键录制行 */
   --danger: #e06c75;
+  --danger-soft: #4a2a2e; /* 危险项 hover 底 */
+  --ok: #7ec97e; /* python 运行成功 */
   --string: #98c379;
   --keyword: #c678dd;
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
@@ -27,11 +37,93 @@
   --h5-color: #e83e3e;
   --h6-color: #98a2ad;
   --strong-color: #ff82b2;
+  /* 代码 token（HighlightStyle 在 markdown.ts 里按 var() 引用；其余 token
+     直接复用上面的 --string/--keyword/--link/--strong-color/--danger）。 */
+  --tok-comment: #7f848e;
+  --tok-number: #d19a66; /* 数字/行内代码/公式花括号共用的橙 */
+  --tok-func: #61afef;
+  --tok-type: #e5c07b;
+  --tok-var: #e06c75;
+  --tok-operator: #56b6c2;
+  --tok-punct: #abb2bf;
+  --tok-invalid: #f66;
+  /* 选区/视觉模式的白色叠加（light 下翻成黑色低透明） */
+  --sel: rgba(255, 255, 255, 0.22);
+  --sel-hint: rgba(255, 255, 255, 0.1);
+  --search-match: #5a4a2f80;
+  --search-match-active: #8a6d3b90;
+  --code-inline-bg: #26262c;
+  --code-block-bg: #1a1a1f;
+  --scrollbar-thumb: #34343a;
+  --hover-strong: #444; /* .btn:hover，比 --bg3 更强一档 */
+  --toggle-knob: #eee;
+  --on-accent: #fff; /* accent-dim 底上的前景（按钮字/勾/旋钮…） */
+  --on-accent-muted: #ffffffbb;
+  --scrim: #00000088; /* 弹层背后的遮罩 */
+  --shadow: #000000aa; /* 浮层投影 */
+  --image-bg: #fff; /* PDF 截图白底，两主题一致 */
   --editor-font-size: 16px;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
   --content-line-width: 700px;
   --content-pad-x: 48px;
+}
+
+/* Light：同名的每一项都必须在这里给出（theme.test.ts 门禁拦遗漏）。
+   面板色向 One Light/GitHub Light 靠，accent 深化为可在白底阅读的琥珀，
+   语法/标题各色整体加深到白底对比达标的同色系。 */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg0: #ffffff; /* editor */
+  --bg1: #f7f7f8; /* sidebar */
+  --bg2: #ffffff; /* elevated（靠边框+投影与 bg0 区分） */
+  --bg3: #ececee; /* hover */
+  --border: #e3e3e7;
+  --text: #23262b;
+  --text-dim: #6c7078;
+  --text-faint: #9a9ea6;
+  --accent: #a3670d;
+  --accent-dim: #8a570b;
+  --accent-soft: #f3e7cd;
+  --danger: #c93636;
+  --danger-soft: #f6e2e3;
+  --ok: #3d8f43;
+  --string: #50a14f;
+  --keyword: #a626a4;
+  --link: #3d7fd9;
+  --h1-color: #c25a1e;
+  --h2-color: #1e8a94;
+  --h3-color: #1c62cc;
+  --h4-color: #9a6b12;
+  --h5-color: #cc2f2f;
+  --h6-color: #6b7683;
+  --strong-color: #c94f8c;
+  --tok-comment: #a0a1a7;
+  --tok-number: #b76b01;
+  --tok-func: #4078f2;
+  --tok-type: #c18401;
+  --tok-var: #e45649;
+  --tok-operator: #0184bc;
+  --tok-punct: #383a42;
+  --tok-invalid: #e45649;
+  --sel: rgba(0, 0, 0, 0.16);
+  --sel-hint: rgba(0, 0, 0, 0.07);
+  --search-match: #e8c66a80;
+  --search-match-active: #d9a83f90;
+  --code-inline-bg: #ececef;
+  --code-block-bg: #f6f6f8;
+  --scrollbar-thumb: #c9c9ce;
+  --hover-strong: #dcdcdf;
+  --toggle-knob: #ffffff;
+  --on-accent: #ffffff;
+  --on-accent-muted: #ffffffcc;
+  --scrim: #00000052;
+  --shadow: #00000038;
+  --image-bg: #ffffff;
+  /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
+  --latex-bracket-0: #527aff;
+  --latex-bracket-1: #ff50b7;
+  --latex-bracket-2: #69ba00;
 }
 
 * {
@@ -66,7 +158,7 @@ button {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #34343a;
+  background: var(--scrollbar-thumb);
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
@@ -204,7 +296,7 @@ button {
   background: var(--bg3);
 }
 .tree-row.current {
-  background: #3a2c16;
+  background: var(--accent-soft);
 }
 .tree-row.current .tree-name {
   color: var(--accent);
@@ -299,7 +391,7 @@ button {
    browser paints the whole widget box while a selection spans it. Content-wide
    transparent here; panels/inputs outside `.cm-content` keep the default. */
 .cm-selectionBackground {
-  background: rgba(255, 255, 255, 0.22) !important;
+  background: var(--sel) !important;
 }
 .cm-content ::selection,
 .cm-content::selection {
@@ -317,7 +409,7 @@ button {
    here: any ancestor-class selector would make every Esc/i style-invalidate the
    whole viewport subtree. */
 .cm-line.cm-activeLine {
-  background: rgba(255, 255, 255, 0.22) !important;
+  background: var(--sel) !important;
 }
 /* Heading lines carry extra top padding (vertical rhythm) — clip the shade to
    the content box so the band hugs the heading text symmetrically instead of
@@ -331,10 +423,10 @@ button {
    carries the selection (charwise/blockwise) the bands drop to a hint tone so the
    selected span keeps standing out inside them. */
 .cm-line.cm-vimVisualLine {
-  background: rgba(255, 255, 255, 0.22) !important;
+  background: var(--sel) !important;
 }
 .cm-line.cm-vimVisualLineHint {
-  background: rgba(255, 255, 255, 0.1) !important;
+  background: var(--sel-hint) !important;
 }
 .cm-line.md-hline.cm-vimVisualLine,
 .cm-line.md-hline.cm-vimVisualLineHint {
@@ -344,7 +436,7 @@ button {
    bands at the selection tone — same look as the native rect it replaces, but
    anchored to document coordinates instead of coordsAtPos. */
 .cm-vimVisualRange {
-  background: rgba(255, 255, 255, 0.22) !important;
+  background: var(--sel) !important;
 }
 
 .cm-line {
@@ -366,10 +458,10 @@ button {
   padding: 2px 8px;
 }
 .cm-searchMatch {
-  background: #5a4a2f80;
+  background: var(--search-match);
 }
 .cm-searchMatch-selected {
-  background: #8a6d3b90 !important;
+  background: var(--search-match-active) !important;
 }
 
 /* live-preview decorations */
@@ -518,13 +610,13 @@ button {
   font-family: var(--font-mono);
 }
 .md-inline-code {
-  background: #26262c;
-  color: #d19a66;
+  background: var(--code-inline-bg);
+  color: var(--tok-number);
   border-radius: 4px;
   padding: 1px 4px;
 }
 .md-code-line {
-  background: #1a1a1f;
+  background: var(--code-block-bg);
 }
 
 .md-quote {
@@ -536,7 +628,7 @@ button {
 .md-link {
   color: var(--link);
   text-decoration: underline;
-  text-decoration-color: #79a9ec55;
+  text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent);
   cursor: pointer;
 }
 .md-url {
@@ -649,7 +741,7 @@ button {
   top: 0.04em;
   width: 0.26em;
   height: 0.5em;
-  border: solid #fff;
+  border: solid var(--on-accent);
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(40deg);
 }
@@ -834,7 +926,7 @@ button {
   color: var(--danger);
 }
 .md-math-brace {
-  color: #d19a66;
+  color: var(--tok-number);
 }
 
 .cw-hidden-line {
@@ -950,12 +1042,12 @@ button {
   font-size: 13px;
 }
 .btn:hover {
-  background: #444;
+  background: var(--hover-strong);
 }
 .btn.primary {
   background: var(--accent-dim);
   border-color: var(--accent-dim);
-  color: #fff;
+  color: var(--on-accent);
 }
 .btn.primary:hover {
   background: var(--accent);
@@ -995,7 +1087,7 @@ button {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #eee;
+  background: var(--toggle-knob);
   transition: left 0.15s;
 }
 .toggle.on .toggle-knob {
@@ -1007,7 +1099,7 @@ button {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: #00000088;
+  background: var(--scrim);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -1019,7 +1111,7 @@ button {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 18px 50px #000000aa;
+  box-shadow: 0 18px 50px var(--shadow);
   max-width: calc(100vw - 48px);
   max-height: 72vh;
   display: flex;
@@ -1060,7 +1152,7 @@ button {
 }
 .switcher-row.active {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .switcher-name {
@@ -1075,7 +1167,7 @@ button {
 }
 .switcher-row.active .switcher-path,
 .switcher-row.active .switcher-binding {
-  color: #ffffffbb;
+  color: var(--on-accent-muted);
 }
 
 .switcher-empty {
@@ -1096,7 +1188,7 @@ button {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 14px 38px #000000aa;
+  box-shadow: 0 14px 38px var(--shadow);
 }
 
 .link-suggest-input {
@@ -1125,7 +1217,7 @@ button {
 }
 .link-suggest-row.active {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .link-suggest-name {
@@ -1145,7 +1237,7 @@ button {
   text-overflow: ellipsis;
 }
 .link-suggest-row.active .link-suggest-path {
-  color: #ffffffbb;
+  color: var(--on-accent-muted);
 }
 
 .link-suggest-empty {
@@ -1193,7 +1285,7 @@ button {
 }
 .settings-nav-item.active {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .settings-content {
@@ -1297,7 +1389,7 @@ button {
 }
 .chip.active {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .hotkey-list {
@@ -1317,7 +1409,7 @@ button {
   background: var(--bg2);
 }
 .hotkey-row.capturing {
-  background: #3a2c16;
+  background: var(--accent-soft);
 }
 
 .hotkey-title {
@@ -1466,7 +1558,7 @@ button {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px #00000066;
+  box-shadow: 0 8px 24px var(--shadow);
   padding: 4px;
 }
 .folder-suggest-item {
@@ -1481,13 +1573,13 @@ button {
 }
 .folder-suggest-item.active {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--on-accent);
 }
 .folder-suggest-name {
   color: var(--text);
 }
 .folder-suggest-item.active .folder-suggest-name {
-  color: #fff;
+  color: var(--on-accent);
 }
 .folder-suggest-path {
   font-family: var(--font-mono);
@@ -1498,7 +1590,7 @@ button {
   white-space: nowrap;
 }
 .folder-suggest-item.active .folder-suggest-path {
-  color: #ffffffaa;
+  color: var(--on-accent-muted);
 }
 .switcher-hint {
   padding: 6px 12px;
@@ -1520,7 +1612,7 @@ input[type="range"] {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 30px #00000088;
+  box-shadow: 0 8px 30px var(--shadow);
   padding: 4px;
   min-width: 150px;
 }
@@ -1540,7 +1632,7 @@ input[type="range"] {
   color: var(--danger);
 }
 .context-menu-item.danger:hover {
-  background: #4a2a2e;
+  background: var(--danger-soft);
 }
 
 .toast {
@@ -1554,7 +1646,7 @@ input[type="range"] {
   border-radius: 8px;
   padding: 9px 18px;
   font-size: 13px;
-  box-shadow: 0 8px 30px #00000099;
+  box-shadow: 0 8px 30px var(--shadow);
   z-index: 300;
   max-width: 70vw;
 }
@@ -1653,7 +1745,7 @@ input[type="range"] {
   padding: 6px 12px;
   font-size: 12px;
   color: var(--accent);
-  background: rgba(245, 168, 60, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-bottom: 1px solid var(--border);
   cursor: default;
 }
@@ -1671,7 +1763,7 @@ input[type="range"] {
 }
 .agent-status.fail {
   color: var(--danger);
-  background: rgba(224, 108, 117, 0.1);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 .agent-status-text {
   flex: 1;
@@ -1718,7 +1810,7 @@ input[type="range"] {
 .agent-msg-user {
   align-self: flex-end;
   max-width: 88%;
-  background: rgba(245, 168, 60, 0.14);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .agent-msg-assistant {
@@ -1771,7 +1863,7 @@ input[type="range"] {
   color: var(--danger);
   font-size: 12.5px;
   padding: 6px 8px;
-  background: rgba(224, 108, 117, 0.1);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
   border-radius: 8px;
   margin-bottom: 6px;
   white-space: pre-wrap;
@@ -1973,7 +2065,7 @@ input[type="range"] {
   height: auto;
   border-radius: 6px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--image-bg);
 }
 .cw-image-broken {
   min-width: 120px;
@@ -2129,10 +2221,10 @@ input[type="range"] {
   color: var(--accent);
 }
 .python-run-status.ok {
-  color: #7ec97e;
+  color: var(--ok);
 }
 .python-run-status.bad {
-  color: #e06c75;
+  color: var(--danger);
 }
 
 .python-run-spin {
@@ -2182,7 +2274,7 @@ input[type="range"] {
   color: var(--text);
 }
 .python-run-body .py-stderr {
-  color: #e06c75;
+  color: var(--danger);
 }
 .python-run-body .py-system {
   color: var(--text-faint);

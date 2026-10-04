@@ -2,7 +2,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { api, type FileNode } from "@/lib/tauri";
-import { useAppStore, getConfigSnapshot, persistConfig, flushPersistConfig } from "@/state/appStore";
+import { useAppStore, getConfigSnapshot, persistConfig, flushPersistConfig, type ThemeName } from "@/state/appStore";
 import { loadDocument } from "@/editor/setup";
 import { getView } from "@/editor/api";
 import { insertWikilinkText, wikilinkTargetOnLine } from "@/editor/ops";
@@ -435,11 +435,28 @@ export function restoreEditorFocus() {
   getView()?.focus();
 }
 
+/**
+ * 主题应用的唯一写入者：documentElement 的 data-theme 属性（dark 不设属性，
+ * :root 默认即 dark）。localStorage 同步写一份给 theme-boot.js 在 React 启动
+ * 前抢先应用，light 用户启动不闪深色；持久真相仍是 config.json。
+ */
+function applyTheme(theme: ThemeName): void {
+  const root = document.documentElement;
+  if (theme === "light") root.dataset.theme = "light";
+  else delete root.dataset.theme;
+  try {
+    localStorage.setItem("bnote.theme", theme);
+  } catch {
+    // localStorage 不可用只损失下次启动的防闪，主题照常生效
+  }
+}
+
 /** Applies store settings (vim, typewriter, live preview, snippets) to the editor. */
 export async function applySettingsToEditor(): Promise<void> {
   const view = getView();
   const { settings } = useAppStore.getState();
   document.documentElement.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
+  applyTheme(settings.theme);
   if (!view) return;
   // 只翻开关、不动来源：若把来源重置为 null，每次打开文件/改设置都会把
   // 仓库片段打回内置（真实回归，load.test.ts 有接线门禁）。

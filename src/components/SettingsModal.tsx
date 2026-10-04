@@ -181,6 +181,26 @@ function EditorTab() {
       <h3>外观</h3>
       <div className="setting-row">
         <div>
+          <div className="setting-label">主题</div>
+          <div className="setting-desc">深色 / 浅色整套界面配色（含编辑器语法高亮），立即生效</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className={`chip${settings.theme === "dark" ? " active" : ""}`}
+            onClick={() => patch({ theme: "dark" })}
+          >
+            深色
+          </button>
+          <button
+            className={`chip${settings.theme === "light" ? " active" : ""}`}
+            onClick={() => patch({ theme: "light" })}
+          >
+            浅色
+          </button>
+        </div>
+      </div>
+      <div className="setting-row">
+        <div>
           <div className="setting-label">编辑区字号</div>
           <div className="setting-desc">{settings.fontSize}px</div>
         </div>
