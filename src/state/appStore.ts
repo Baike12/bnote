@@ -23,6 +23,10 @@ export interface QuickAddCommand {
   folder: string;
 }
 
+/** 界面主题：dark 是无 data-theme 属性时的默认；light 走 [data-theme="light"]
+ *  变量覆盖（global.css 是唯一颜色来源）。 */
+export type ThemeName = "dark" | "light";
+
 export interface Settings {
   vim: boolean;
   typewriter: boolean;
@@ -34,6 +38,8 @@ export interface Settings {
   autoNumberHeadings: boolean;
   /** 「插入代码块」在开栏预填的语言标识；空串 = 不带语言 */
   codeBlockLang: string;
+  /** 界面主题（编辑器 + 侧栏 + 弹层 + 语法高亮整套变量） */
+  theme: ThemeName;
   /**
    * 学习模式三栏宽度（占可用宽度的比例）：[左侧 Agent, 中间内容]。
    * 右侧笔记吃剩余宽度，所以只存前两栏。比例而非像素，窗口缩放时按比例跟随。
@@ -55,6 +61,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoSave: true,
   autoNumberHeadings: false,
   codeBlockLang: "ts",
+  theme: "dark",
   studySplit: [0.24, 0.44],
   fontSize: 16,
   ime: {

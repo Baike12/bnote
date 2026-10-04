@@ -15,44 +15,45 @@ export function markdownExtensions(): Extension {
   });
 }
 
-/** One-dark-ish palette for code content; markdown styling is applied by the
- *  live-preview decorations (classes) so only code tags are colored here.
- *  Markdown text tags mirror global.css (Things theme colors) so lines stay
- *  consistently colored while the cursor edits them. */
+/** Code palette comes from global.css variables (:root dark, [data-theme="light"]
+ *  override) so the highlight follows the theme switch without reconfiguring.
+ *  Markdown styling is applied by the live-preview decorations (classes) so only
+ *  code tags are colored here; markdown text tags mirror the same variables so
+ *  lines stay consistently colored while the cursor edits them. */
 export const bnoteHighlightStyle = HighlightStyle.define([
-  { tag: t.strong, fontWeight: "700", color: "#ff82b2" },
-  { tag: t.emphasis, fontStyle: "italic", color: "#ff82b2" },
+  { tag: t.strong, fontWeight: "700", color: "var(--strong-color, #ff82b2)" },
+  { tag: t.emphasis, fontStyle: "italic", color: "var(--strong-color, #ff82b2)" },
   { tag: t.strikethrough, textDecoration: "line-through" },
-  { tag: t.link, color: "#79a9ec" },
-  { tag: t.url, color: "#7f848e" },
-  { tag: t.monospace, color: "#d19a66" },
+  { tag: t.link, color: "var(--link, #79a9ec)" },
+  { tag: t.url, color: "var(--tok-comment, #7f848e)" },
+  { tag: t.monospace, color: "var(--tok-number, #d19a66)" },
 
   // Embedded code
-  { tag: t.keyword, color: "#c678dd" },
-  { tag: t.controlKeyword, color: "#c678dd" },
-  { tag: t.moduleKeyword, color: "#c678dd" },
-  { tag: t.operatorKeyword, color: "#c678dd" },
-  { tag: t.definitionKeyword, color: "#c678dd" },
-  { tag: t.string, color: "#98c379" },
-  { tag: t.special(t.string), color: "#98c379" },
-  { tag: t.number, color: "#d19a66" },
-  { tag: t.bool, color: "#d19a66" },
-  { tag: t.atom, color: "#d19a66" },
-  { tag: t.null, color: "#d19a66" },
-  { tag: t.comment, color: "#7f848e", fontStyle: "italic" },
-  { tag: t.function(t.variableName), color: "#61afef" },
-  { tag: t.function(t.propertyName), color: "#61afef" },
-  { tag: t.typeName, color: "#e5c07b" },
-  { tag: t.className, color: "#e5c07b" },
-  { tag: t.propertyName, color: "#e06c75" },
-  { tag: t.variableName, color: "#e06c75" },
-  { tag: t.definition(t.variableName), color: "#e06c75" },
-  { tag: t.operator, color: "#56b6c2" },
-  { tag: t.punctuation, color: "#abb2bf" },
-  { tag: t.regexp, color: "#98c379" },
-  { tag: t.escape, color: "#56b6c2" },
-  { tag: t.meta, color: "#7f848e" },
-  { tag: t.invalid, color: "#f66" },
+  { tag: t.keyword, color: "var(--keyword, #c678dd)" },
+  { tag: t.controlKeyword, color: "var(--keyword, #c678dd)" },
+  { tag: t.moduleKeyword, color: "var(--keyword, #c678dd)" },
+  { tag: t.operatorKeyword, color: "var(--keyword, #c678dd)" },
+  { tag: t.definitionKeyword, color: "var(--keyword, #c678dd)" },
+  { tag: t.string, color: "var(--string, #98c379)" },
+  { tag: t.special(t.string), color: "var(--string, #98c379)" },
+  { tag: t.number, color: "var(--tok-number, #d19a66)" },
+  { tag: t.bool, color: "var(--tok-number, #d19a66)" },
+  { tag: t.atom, color: "var(--tok-number, #d19a66)" },
+  { tag: t.null, color: "var(--tok-number, #d19a66)" },
+  { tag: t.comment, color: "var(--tok-comment, #7f848e)", fontStyle: "italic" },
+  { tag: t.function(t.variableName), color: "var(--tok-func, #61afef)" },
+  { tag: t.function(t.propertyName), color: "var(--tok-func, #61afef)" },
+  { tag: t.typeName, color: "var(--tok-type, #e5c07b)" },
+  { tag: t.className, color: "var(--tok-type, #e5c07b)" },
+  { tag: t.propertyName, color: "var(--tok-var, #e06c75)" },
+  { tag: t.variableName, color: "var(--tok-var, #e06c75)" },
+  { tag: t.definition(t.variableName), color: "var(--tok-var, #e06c75)" },
+  { tag: t.operator, color: "var(--tok-operator, #56b6c2)" },
+  { tag: t.punctuation, color: "var(--tok-punct, #abb2bf)" },
+  { tag: t.regexp, color: "var(--string, #98c379)" },
+  { tag: t.escape, color: "var(--tok-operator, #56b6c2)" },
+  { tag: t.meta, color: "var(--tok-comment, #7f848e)" },
+  { tag: t.invalid, color: "var(--tok-invalid, #f66)" },
 ]);
 
 export function codeHighlighting(): Extension {
