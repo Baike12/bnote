@@ -448,30 +448,38 @@ export function toggleList(view: EditorView, kind: ListKind) {
 
 /**
  * 往返跳转：正文 → 文档头部最后一个待办项的行尾 → 回到跳转前的位置。
- * 头部待办块 = 文档开头（允许空行）连续的待办行（`- [ ]` / `- [x]` /
- * 有序待办，中间可夹空行），首个非空且非待办的行结束块。头部还没有待办块时
- * 跳到第一行——新待办块会长出来的位置；再按一次同样回到原位。已在目标处
- * 但没有来处记忆时静默无效。
+ * 头部待办块 = 从「起点行」开始(允许空行)连续的待办行(`- [ ]` / `- [x]` /
+ * 有序待办,中间可夹空行),首个非空且非待办的行结束块。起点行 = 行 1 是
+ * H1 标题(`# `)时的行 2,否则行 1——日记的待办区就在 H1 之后
+ * (与 daily 的 parseDailyRegion 同一片区域),普通笔记的待办块在文档顶。
+ * 头部还没有待办块时创建一个空待办(插在起点位置,光标落在待办符号后,
+ * 直接输入);再按一次回到原位。已在头部位置但有来处记忆时回跳。
  */
 const HEADER_TODO_RE = /^(\s*)(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\]/;
 const BLANK_LINE_RE = /^\s*$/;
+/** H1 头判定(与 daily 的 HEADER_RE 同形状):行 1 是 `# ` 标题 → 待办区从行 2 起。 */
+const H1_RE = /^#\s/;
 
 /** 一次 ⌘T 的决策(纯函数,契约在 ops.test.ts):
- *  jump = 跳到 anchor;back = 回到来处记忆;stay = 无声无效。 */
+ *  jump = 跳到 anchor;back = 回到来处记忆;stay = 无声无效;
+ *  create = 在 at 插入 insert,光标落 cursor(待办符号后)。 */
 export type HeaderTodoPlan =
   | { action: "jump"; anchor: number }
   | { action: "back" }
-  | { action: "stay" };
+  | { action: "stay" }
+  | { action: "create"; at: number; insert: string; cursor: number };
 
 export function planHeaderTodoJump(
   doc: { lines: number; line(n: number): { text: string; from: number; to: number } },
   headLine: number,
   hasReturn: boolean,
 ): HeaderTodoPlan {
+  const headerDoc = doc.lines >= 1 && H1_RE.test(doc.line(1).text);
+  const start = headerDoc ? 2 : 1;
   let first: number | null = null;
   let last: number | null = null;
-  // 只扫到首个非空非待办行为止：头部块通常几行，成本与文档总长无关。
-  for (let n = 1; n <= doc.lines; n++) {
+  // 只扫到首个非空非待办行为止:头部块通常几行,成本与文档总长无关。
+  for (let n = start; n <= doc.lines; n++) {
     const text = doc.line(n).text;
     if (HEADER_TODO_RE.test(text)) {
       if (first === null) first = n;
@@ -479,7 +487,7 @@ export function planHeaderTodoJump(
       continue;
     }
     if (BLANK_LINE_RE.test(text)) continue;
-    break; // 首个非空非待办行：头部待办块结束
+    break; // 首个非空非待办行:头部待办块结束
   }
   if (first !== null && last !== null) {
     if (headLine >= first && headLine <= last) {
@@ -487,25 +495,40 @@ export function planHeaderTodoJump(
     }
     return { action: "jump", anchor: doc.line(last).to };
   }
-  // 头部还没有待办块:第一行就是新待办块会长出来的位置。
-  if (headLine === 1) return hasReturn ? { action: "back" } : { action: "stay" };
-  return { action: "jump", anchor: doc.line(1).from };
+  // 头部还没有待办块。光标已在「块将长出的位置」(起点行或其前的标题行):
+  // 有来处记忆则回跳(往返优先),否则就地创建;光标在起点行之后则记住来处并创建。
+  if (headLine <= start && hasReturn) return { action: "back" };
+  if (headerDoc) {
+    const at = doc.line(1).to;
+    const insert = "\n- [ ] ";
+    return { action: "create", at, insert, cursor: at + insert.length };
+  }
+  // 空文档不加尾换行;非空文档把原第一行顶下去。光标一律落在 `- [ ] ` 行尾
+  // (待办符号后),与插入串是否带尾换行无关。
+  const insert = doc.lines === 1 && doc.line(1).text === "" ? "- [ ] " : "- [ ] \n";
+  return { action: "create", at: 0, insert, cursor: "- [ ] ".length };
 }
 
 /**
- * 往返跳转的"来处"记忆：文件路径 → 跳转前的光标与滚动位置。这是本功能唯一
- * 的常驻状态；按访问顺序淘汰、上限 64 条（覆盖任何真实的多文件往返工作流），
- * 内存占用有界。仅在按下快捷键时读写，不挂任何编辑周期。
+ * 往返跳转的"来处"记忆：文件路径 → 跳转前的光标(行号+列)与滚动位置。这是
+ * 本功能唯一的常驻状态；按访问顺序淘汰、上限 64 条（覆盖任何真实的多文件
+ * 往返工作流），内存占用有界。仅在按下快捷键时读写，不挂任何编辑周期。
+ * 存行列而非绝对 pos：创建/跳转后用户在头部打字,来处行不受影响,回跳精确。
  */
-const headerTodoReturn = new Map<string, { pos: number; scroll: number }>();
+const headerTodoReturn = new Map<string, { line: number; col: number; scroll: number }>();
 const HEADER_TODO_RETURN_MAX = 64;
 
-function rememberHeaderTodoReturn(path: string, pos: number, scroll: number): void {
-  headerTodoReturn.set(path, { pos, scroll });
+function rememberHeaderTodoReturn(path: string, line: number, col: number, scroll: number): void {
+  headerTodoReturn.set(path, { line, col, scroll });
   if (headerTodoReturn.size > HEADER_TODO_RETURN_MAX) {
     const oldest = headerTodoReturn.keys().next().value;
     if (oldest !== undefined) headerTodoReturn.delete(oldest);
   }
+}
+
+/** 测试钩子:清空往返记忆(模块级 Map 会跨用例泄漏)。 */
+export function resetHeaderTodoReturnForTest(): void {
+  headerTodoReturn.clear();
 }
 
 export function jumpHeaderTodos(view: EditorView): void {
@@ -513,22 +536,40 @@ export function jumpHeaderTodos(view: EditorView): void {
   const doc = state.doc;
   const path = useAppStore.getState().currentFile ?? "";
   const head = state.selection.main.head;
-  const plan = planHeaderTodoJump(state.doc, doc.lineAt(head).number, headerTodoReturn.has(path));
+  const headLine = doc.lineAt(head).number;
+  const headCol = head - doc.lineAt(head).from;
+  const plan = planHeaderTodoJump(state.doc, headLine, headerTodoReturn.has(path));
   if (plan.action === "stay") return;
   if (plan.action === "back") {
-    // 已在目标处：回到之前记笔记的位置。
+    // 已在目标处：回到之前记笔记的位置(行列锚,行被改短则钳到行尾)。
     const saved = headerTodoReturn.get(path)!;
     headerTodoReturn.delete(path);
     headerTodoReturn.set(path, saved); // 重新插入，刷新淘汰顺序
+    const line = doc.line(Math.min(saved.line, doc.lines));
     view.dispatch({
-      selection: { anchor: Math.min(saved.pos, doc.length) },
+      selection: { anchor: Math.min(line.from + saved.col, line.to) },
       scrollIntoView: true,
     });
     view.scrollDOM.scrollTop = Math.max(0, Math.min(saved.scroll, view.scrollDOM.scrollHeight));
     return;
   }
-  // 在正文:记下当前位置,跳到目标(头部块尾行行尾 / 第一行行首)。
-  rememberHeaderTodoReturn(path, head, Math.round(view.scrollDOM.scrollTop));
+  // 在正文:记下当前位置,跳到目标或创建空待办。创建的整行插入在来处之前时,
+  // 来处行号随插入平移(行内列不变)。
+  let line = headLine;
+  if (plan.action === "create" && plan.at <= doc.line(headLine).from) {
+    line = headLine + (plan.insert.split("\n").length - 1);
+  }
+  rememberHeaderTodoReturn(path, line, headCol, Math.round(view.scrollDOM.scrollTop));
+  if (plan.action === "create") {
+    // 空待办长在头部起点,光标落在 `- [ ] ` 行尾,直接输入。
+    view.dispatch({
+      changes: [{ from: plan.at, insert: plan.insert }],
+      selection: { anchor: plan.cursor },
+      scrollIntoView: true,
+      userEvent: "input.bnote-header-todo",
+    });
+    return;
+  }
   view.dispatch({
     selection: { anchor: plan.anchor },
     scrollIntoView: true,
