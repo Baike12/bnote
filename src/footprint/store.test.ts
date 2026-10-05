@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { footprintsFilePath, type StoredFootprints } from "./model";
+import { footprintsFilePath, type StoredFootprints, type StoredFootprintsV1 } from "./model";
 import { FootprintCore, type FootprintIO } from "./store";
 
 /** 内存假 IO:files 以绝对路径为键;listFiles 与真后端一样返回 vault 相对路径。 */
@@ -46,15 +46,17 @@ describe("FootprintCore 轮转", () => {
     core.flushPersist();
     const raw = files.get(footprintsFilePath(VAULT))!;
     const stored = JSON.parse(raw) as StoredFootprints;
-    expect(stored.version).toBe(1);
+    expect(stored.version).toBe(2);
     expect(stored.day).toBe("2026-09-30");
     // 只有可聚合文件进基线:日记与资产被排除
     expect(Object.keys(stored.baselines)).toEqual([NOTE]);
     expect(stored.baselines[NOTE]).toBe("旧内容 A\n\n旧内容 B");
+    // 首次使用没有「那一天」,历史档为空
+    expect(stored.history).toEqual({});
   });
 
   it("已有当天元数据:不轮转,基线沿用存储值(refreshAll 兜底建索引)", async () => {
-    const stored: StoredFootprints = { version: 1, day: "2026-09-30", baselines: { [NOTE]: "基线文本" } };
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-30", baselines: { [NOTE]: "基线文本" } };
     const files = new Map<string, string>([
       [NOTE, "盘上已经改过的内容"],
       [footprintsFilePath(VAULT), JSON.stringify(stored)],
@@ -67,7 +69,7 @@ describe("FootprintCore 轮转", () => {
   });
 
   it("跨天 init:昨天基线作废,当天全库快照重轮转", async () => {
-    const stored: StoredFootprints = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "昨天的" } };
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "昨天的" } };
     const files = new Map<string, string>([
       [NOTE, "今天的内容"],
       [OTHER, "别的文件"],
@@ -78,6 +80,19 @@ describe("FootprintCore 轮转", () => {
     expect(core.baselineDay).toBe("2026-09-30");
     expect(core.todayEntries()).toEqual([]);
     expect(core.footprintsFor(NOTE)).toEqual([]);
+  });
+
+  it("v1 元数据(无历史档)照常载入:基线沿用,历史档为空", async () => {
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-30", baselines: { [NOTE]: "基线文本" } };
+    const files = new Map<string, string>([
+      [NOTE, "基线文本\n\n今天的段"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    await core.refreshAll(true);
+    expect(core.todayEntries()).toEqual([{ path: NOTE, blocks: [{ text: "今天的段", start: 3, end: 3 }] }]);
+    expect(core.entriesFor("2026-09-29")).toEqual([]);
   });
 
   it("损坏的元数据按从未轮转处理(全库重建基线)", async () => {
@@ -146,7 +161,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
 
   it("脏刷新用的基线在轮转后保持一致(昨日基线里的段不算新增)", async () => {
     const files = new Map<string, string>([[NOTE, "基线\n\n昨天写下的段"]]);
-    const stored: StoredFootprints = {
+    const stored: StoredFootprintsV1 = {
       version: 1,
       day: "2026-09-29",
       baselines: { [NOTE]: "基线\n\n昨天写下的段" },
@@ -169,6 +184,15 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     core.installIndexForTest(new Map([[NOTE, [{ text: "注入块", start: 1, end: 1 }]]]));
     expect(core.footprintsFor(NOTE)).toEqual([{ text: "注入块", start: 1, end: 1 }]);
     expect(footprintRevision()).toBeGreaterThan(before);
+  });
+
+  it("未轮转的 core(day 为空串:注入/init 空窗)任何日期都走实时索引", async () => {
+    const { todayStamp } = await import("@/editor/ops");
+    const core = coreOf(new Map(), "2026-09-30"); // 不调 init,day = ""
+    core.installIndexForTest(new Map([[NOTE, [{ text: "注入块", start: 1, end: 1 }]]]));
+    expect(core.entriesFor(todayStamp())).toEqual([
+      { path: NOTE, blocks: [{ text: "注入块", start: 1, end: 1 }] },
+    ]);
   });
 });
 
@@ -201,7 +225,7 @@ describe("FootprintCore 全量兜底(refreshAll)", () => {
 
 describe("FootprintCore × 待办排除:端到端(用户可见行为)", () => {
   it("纯待办文件刷新后不产生任何足迹;混合文件只留非待办块", async () => {
-    const stored: StoredFootprints = { version: 1, day: "2026-09-30", baselines: {} };
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-30", baselines: {} };
     const files = new Map<string, string>([
       [NOTE, "- [ ] 纯待办甲\n- [x] 纯待办乙\n\n普通段落\n\n- 普通列表项"],
       [footprintsFilePath(VAULT), JSON.stringify(stored)],
@@ -212,5 +236,88 @@ describe("FootprintCore × 待办排除:端到端(用户可见行为)", () => {
     expect(core.todayEntries()).toEqual([
       { path: NOTE, blocks: [{ text: "普通段落", start: 4, end: 4 }, { text: "- 普通列表项", start: 6, end: 6 }] },
     ]);
+  });
+});
+
+describe("FootprintCore 历史档:跨天轮转固化,历史日记按日聚合", () => {
+  it("跨天轮转把旧基线日的新增块固化成档案;今日仍是空实时索引", async () => {
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线段落" } };
+    const files = new Map<string, string>([
+      [NOTE, "基线段落\n\n09-29 写的段"],
+      [OTHER, "09-29 也写了"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    // 09-29 的足迹被固化;当日(09-30)从零开始
+    expect(core.entriesFor("2026-09-29")).toEqual([
+      { path: NOTE, blocks: [{ text: "09-29 写的段", start: 3, end: 3 }] },
+      { path: OTHER, blocks: [{ text: "09-29 也写了", start: 1, end: 1 }] },
+    ]);
+    expect(core.entriesFor("2026-09-30")).toEqual([]);
+    core.flushPersist();
+    const persisted = JSON.parse(files.get(footprintsFilePath(VAULT))!) as StoredFootprints;
+    expect(persisted.version).toBe(2);
+    expect(persisted.history["2026-09-29"][NOTE]).toEqual([{ text: "09-29 写的段", start: 3, end: 3 }]);
+  });
+
+  it("档案是固化快照:轮转后盘面继续变化,旧日条目不变、今日走实时", async () => {
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线段落" } };
+    const files = new Map<string, string>([[NOTE, "基线段落\n\n09-29 写的段"], [footprintsFilePath(VAULT), JSON.stringify(stored)]]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    files.set(NOTE, "基线段落\n\n09-29 写的段\n\n09-30 写的段");
+    core.noteDirty([NOTE]);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(core.entriesFor("2026-09-29")).toEqual([
+      { path: NOTE, blocks: [{ text: "09-29 写的段", start: 3, end: 3 }] },
+    ]);
+    expect(core.entriesFor("2026-09-30")).toEqual([
+      { path: NOTE, blocks: [{ text: "09-30 写的段", start: 5, end: 5 }] },
+    ]);
+  });
+
+  it("待办排除对档案同样生效;当天无新增则档案为空条目", async () => {
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线" } };
+    const files = new Map<string, string>([
+      [NOTE, "基线\n\n- [ ] 纯待办不进档案"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    expect(core.entriesFor("2026-09-29")).toEqual([]);
+    core.flushPersist();
+    const persisted = JSON.parse(files.get(footprintsFilePath(VAULT))!) as StoredFootprints;
+    expect(persisted.history["2026-09-29"]).toEqual({});
+  });
+
+  it("多天没开应用:最后活跃日拿到全部累积,中间日子档案缺失", async () => {
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-27", baselines: { [NOTE]: "基线" } };
+    const files = new Map<string, string>([
+      [NOTE, "基线\n\n几天间写的段"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    expect(core.entriesFor("2026-09-27")).toEqual([
+      { path: NOTE, blocks: [{ text: "几天间写的段", start: 3, end: 3 }] },
+    ]);
+    expect(core.entriesFor("2026-09-28")).toEqual([]);
+    expect(core.entriesFor("2026-09-29")).toEqual([]);
+  });
+
+  it("ensureDay 幂等:同一天内重复调用不重复轮转、不重写档案", async () => {
+    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线" } };
+    const files = new Map<string, string>([
+      [NOTE, "基线\n\n昨天的段"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    const first = core.entriesFor("2026-09-29");
+    await core.ensureDay();
+    await core.ensureDay();
+    expect(core.entriesFor("2026-09-29")).toEqual(first);
+    expect(core.baselineDay).toBe("2026-09-30");
   });
 });

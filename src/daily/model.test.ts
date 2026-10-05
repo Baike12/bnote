@@ -6,6 +6,7 @@ import {
   blockLines,
   blockRootLine,
   composeDailyScaffold,
+  dailyDayOf,
   dailyPathFor,
   findEntryByText,
   isDailyPath,
@@ -194,6 +195,13 @@ describe("路径约定", () => {
     expect(isDailyPath("/vault/notes/Daily/2026-09-23.md")).toBe(true);
     expect(isDailyPath("/vault/notes/todo.md")).toBe(false);
     expect(linksFilePath("/vault")).toBe("/vault/.bnote/daily-links.json");
+  });
+
+  it("dailyDayOf 从日记路径提取日期(与 isDailyPath 同一正则)", () => {
+    expect(dailyDayOf("/vault/Daily/2026-09-23.md")).toBe("2026-09-23");
+    expect(dailyDayOf("/vault/notes/Daily/2026-09-23.md")).toBe("2026-09-23");
+    expect(dailyDayOf("/vault/Daily/2026-9-3.md")).toBe(null);
+    expect(dailyDayOf("/vault/notes/todo.md")).toBe(null);
   });
 });
 

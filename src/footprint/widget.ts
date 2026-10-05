@@ -1,4 +1,5 @@
 import { WidgetType } from "@codemirror/view";
+import { todayStamp } from "@/editor/ops";
 import { renderBlockHtml } from "./render";
 import { defaultFold, foldSig, toggleGroup, toggleZone, type FoldState, type FootprintView } from "./view";
 
@@ -42,6 +43,8 @@ const ARROW_CLOSED = "▸";
 
 export class FootprintWidget extends WidgetType {
   constructor(
+    /** 足迹归属日:今日日记显示「今日足迹」,历史日记显示该日期。 */
+    readonly day: string,
     readonly viewData: FootprintView,
     readonly foldSnapshot: FoldState,
   ) {
@@ -68,7 +71,8 @@ export class FootprintWidget extends WidgetType {
     const head = document.createElement("div");
     head.className = "footprint-zone-head";
     head.dataset.footprintAction = "toggle-zone";
-    head.textContent = `${this.foldSnapshot.zoneCollapsed ? ARROW_CLOSED : ARROW_OPEN} 今日足迹 · ${this.viewData.fileCount} 个文件 · ${this.viewData.blockCount} 段`;
+    const title = this.day === todayStamp() ? "今日足迹" : `${this.day} 足迹`;
+    head.textContent = `${this.foldSnapshot.zoneCollapsed ? ARROW_CLOSED : ARROW_OPEN} ${title} · ${this.viewData.fileCount} 个文件 · ${this.viewData.blockCount} 段`;
     zone.appendChild(head);
 
     if (this.foldSnapshot.zoneCollapsed) return zone;
