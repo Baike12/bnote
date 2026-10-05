@@ -1,18 +1,20 @@
-pub mod agent;
+//! Tauri WebView shell over bnote-core.
+//!
+//! All backend logic lives in `bnote-core`; this crate owns the WebView, the
+//! macOS menu, the study-preview child webviews, and forwarding core's event
+//! bus to the webview. A second shell (crates/bnote-gpui) consumes the same
+//! core without any web layer.
+
 mod commands;
 /// Browser-preview bridge; debug builds only (see the module docs).
 #[cfg(debug_assertions)]
 mod devbridge;
-mod state;
+mod study;
 
 use std::path::PathBuf;
-use std::sync::RwLock;
 
+use bnote_core::state::AppState;
 use tauri::Manager;
-
-use state::AppState;
-
-mod python;
 
 /// Menu ids for the items whose key equivalents are deliberately left unset.
 #[cfg(target_os = "macos")]
@@ -144,6 +146,29 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let _ = (app, event);
 }
 
+/// Forwards core's event bus to the webview, preserving the (name, payload)
+/// shape the JS side already listens for.
+async fn forward_events(
+    app: tauri::AppHandle,
+    mut rx: tokio::sync::broadcast::Receiver<bnote_core::AppEvent>,
+) {
+    use tauri::Emitter;
+    loop {
+        match rx.recv().await {
+            Ok(ev) => {
+                let _ = app.emit(&ev.name, ev.payload);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                eprintln!(
+                    "[bnote] shell: dropped {} events (webview slower than backend)",
+                    n
+                );
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -159,73 +184,67 @@ pub fn run() {
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&data_dir)?;
 
-            app.manage(AppState {
-                vault: RwLock::new(None),
-                watcher: std::sync::Mutex::new(None),
-                data_dir,
-                sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
-                mcp_manager: std::sync::Mutex::new(None),
-                current_note: std::sync::Mutex::new(None),
-                python_runs: std::sync::Arc::new(python::runner::RunRegistry::new()),
-                python_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
-            });
+            let (state, rx) = AppState::new(data_dir);
+            app.manage(state);
+
+            // Backend events → webview. The devbridge gets its own receiver
+            // (resubscribe) so browser tabs see the same stream.
+            #[cfg(debug_assertions)]
+            devbridge::spawn(app.handle().clone(), rx.resubscribe());
+            tauri::async_runtime::spawn(forward_events(app.handle().clone(), rx));
 
             #[cfg(target_os = "macos")]
             install_menu(app.handle())?;
 
-            // Debug builds also answer on a loopback port so the same UI can be
-            // driven from a browser tab (see `devbridge`).
-            #[cfg(debug_assertions)]
-            devbridge::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::vault::set_vault,
-            commands::vault::get_vault,
-            commands::vault::read_tree,
-            commands::vault::read_dir,
-            commands::vault::list_files,
-            commands::files::read_file,
-            commands::files::write_file,
-            commands::files::write_file_base64,
-            commands::files::create_file,
-            commands::files::create_dir,
-            commands::files::ensure_dir,
-            commands::files::rename_path,
-            commands::files::trash_path,
-            commands::files::read_vault_file,
-            commands::files::write_vault_file,
-            commands::config::load_app_config,
-            commands::config::save_app_config,
-            commands::config::load_keybindings,
-            commands::config::save_keybindings,
-            commands::config::read_vimrc,
-            commands::config::save_vimrc,
-            commands::ime::list_input_sources,
-            commands::ime::get_current_input_source,
-            commands::ime::set_input_source,
-            commands::agent::agent_get_config,
-            commands::agent::agent_save_config,
-            commands::agent::agent_start_session,
-            commands::agent::agent_send,
-            commands::agent::agent_abort,
-            commands::agent::agent_get_history,
-            commands::agent::agent_set_current_note,
-            commands::agent::convert_pdf_to_markdown,
-            commands::agent::show_study_preview,
-            commands::agent::set_study_preview_bounds,
-            commands::agent::set_study_preview_visible,
-            commands::agent::close_study_preview,
-            commands::agent::open_study_url,
-            commands::python::python_run,
-            commands::python::python_run_cancel,
-            commands::python::python_get_info,
-            commands::python::python_set_project_config,
-            commands::python::python_lsp_sync,
-            commands::python::python_lsp_request,
-            commands::python::python_lsp_close,
-            commands::python::python_lsp_stop_all,
-            commands::python::python_uv_create,
+            commands::set_vault,
+            commands::get_vault,
+            commands::read_tree,
+            commands::read_dir,
+            commands::list_files,
+            commands::read_file,
+            commands::write_file,
+            commands::write_file_base64,
+            commands::create_file,
+            commands::create_dir,
+            commands::ensure_dir,
+            commands::rename_path,
+            commands::trash_path,
+            commands::read_vault_file,
+            commands::write_vault_file,
+            commands::load_app_config,
+            commands::save_app_config,
+            commands::load_keybindings,
+            commands::save_keybindings,
+            commands::read_vimrc,
+            commands::save_vimrc,
+            commands::list_input_sources,
+            commands::get_current_input_source,
+            commands::set_input_source,
+            commands::agent_get_config,
+            commands::agent_save_config,
+            commands::agent_start_session,
+            commands::agent_send,
+            commands::agent_abort,
+            commands::agent_get_history,
+            commands::agent_set_current_note,
+            commands::convert_pdf_to_markdown,
+            commands::show_study_preview,
+            commands::set_study_preview_bounds,
+            commands::set_study_preview_visible,
+            commands::close_study_preview,
+            commands::open_study_url,
+            commands::python_run,
+            commands::python_run_cancel,
+            commands::python_get_info,
+            commands::python_set_project_config,
+            commands::python_lsp_sync,
+            commands::python_lsp_request,
+            commands::python_lsp_close,
+            commands::python_lsp_stop_all,
+            commands::python_uv_create,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

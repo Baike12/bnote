@@ -7,8 +7,8 @@
 //! The page Vite serves at :1430 is the very same build the window loads, so a
 //! browser tab renders identically; what it lacks is `window.__TAURI_INTERNALS__`
 //! and there is no HTTP backend behind it. This module supplies one by
-//! forwarding `{cmd, args}` to the same `#[tauri::command]` functions the
-//! webview calls — one implementation, no drift.
+//! forwarding `{cmd, args}` to the same bnote-core functions the webview
+//! calls — one implementation, no drift.
 //!
 //! The frontend half is `src/dev/browserMode.ts` (installs the official
 //! `@tauri-apps/api/mocks` interceptors and points them here); Vite proxies
@@ -28,15 +28,14 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{json, Value};
-use tauri::{AppHandle, Listener, Manager};
-
-use crate::agent::tools::StudyContent;
-use crate::commands::{agent, config, files, python, vault};
-use crate::state::AppState;
+use bnote_core::agent::tools::StudyContent;
+use bnote_core::commands::{agent, config, files, python, vault};
+use bnote_core::state::AppState;
+use serde_json::{Value, json};
+use tauri::{AppHandle, Manager};
 
 /// Fixed port; `vite.config.ts` proxies `/__dev` here.
 const PORT: u16 = 1439;
@@ -46,8 +45,8 @@ static SUBSCRIBERS: Mutex<Vec<Sender<String>>> = Mutex::new(Vec::new());
 
 /// Starts the bridge. Failures are logged, never fatal: the app must come up
 /// even if the port is taken (a stale instance, another checkout).
-pub fn spawn(app: AppHandle) {
-    subscribe_events(&app);
+pub fn spawn(app: AppHandle, rx: tokio::sync::broadcast::Receiver<bnote_core::AppEvent>) {
+    subscribe_events(rx);
     std::thread::spawn(move || {
         let listener = match TcpListener::bind(("127.0.0.1", PORT)) {
             Ok(l) => l,
@@ -65,26 +64,32 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
-/// Forwards backend events to every connected browser tab.
-fn subscribe_events(app: &AppHandle) {
-    for name in [
-        "vault-changed",
-        "agent-event",
-        "ime-fallback",
-        "python-run-output",
-        "python-run-exit",
-        "python-lsp-diagnostics",
-        "python-lsp-status",
-    ] {
-        let label = name.to_string();
-        app.listen(name, move |event| {
-            let frame = format!("event: {}\ndata: {}\n\n", label, event.payload());
-            SUBSCRIBERS
-                .lock()
-                .map(|mut subs| subs.retain(|tx| tx.send(frame.clone()).is_ok()))
-                .ok();
-        });
-    }
+/// Forwards backend events (core's broadcast bus) to every connected browser
+/// tab. Polling `try_recv` on a plain thread keeps this debug bridge free of
+/// any runtime coupling; sub-100ms latency is fine for dev tooling.
+fn subscribe_events(mut rx: tokio::sync::broadcast::Receiver<bnote_core::AppEvent>) {
+    std::thread::spawn(move || loop {
+        match rx.try_recv() {
+            Ok(ev) => {
+                let frame = format!(
+                    "event: {}\ndata: {}\n\n",
+                    ev.name,
+                    ev.payload.to_string()
+                );
+                SUBSCRIBERS
+                    .lock()
+                    .map(|mut subs| subs.retain(|tx| tx.send(frame.clone()).is_ok()))
+                    .ok();
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                eprintln!("[bnote] devbridge: dropped {} events", n);
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return,
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -178,81 +183,79 @@ fn invoke(app: &AppHandle, stream: &TcpStream, body: &[u8]) {
     let cmd = parsed.get("cmd").and_then(Value::as_str).unwrap_or("");
     let args = parsed.get("args").cloned().unwrap_or(Value::Null);
 
-    match tauri::async_runtime::block_on(dispatch(app, cmd, &args)) {
+    let state = app.state::<Arc<AppState>>();
+    match dispatch(&state, cmd, &args) {
         Ok(value) => respond(stream, "200 OK", "application/json", value.to_string().as_bytes()),
         Err(e) => respond(stream, "400 Bad Request", "text/plain", e.as_bytes()),
     }
 }
 
-async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, String> {
+/// Core functions are synchronous and blocking. This runs on a per-connection
+/// plain thread (not inside any async runtime), so blocking here is fine.
+fn dispatch(state: &Arc<AppState>, cmd: &str, args: &Value) -> Result<Value, String> {
     let value = match cmd {
         // ---- vault ----
-        "set_vault" => json_ok!(vault::set_vault(app.clone(), app.state(), arg_str(args, "path")?)),
-        "get_vault" => json_ok!(vault::get_vault(app.state())),
-        "read_tree" => json_ok!(vault::read_tree(app.state()).await),
-        "read_dir" => json_ok!(vault::read_dir(app.state(), arg_str(args, "relPath")?).await),
-        "list_files" => json_ok!(vault::list_files(app.state()).await),
+        "set_vault" => json_ok!(vault::set_vault(state, arg_str(args, "path")?)),
+        "get_vault" => json_ok!(vault::get_vault(state)),
+        "read_tree" => json_ok!(vault::read_tree(state)),
+        "read_dir" => json_ok!(vault::read_dir(state, arg_str(args, "relPath")?)),
+        "list_files" => json_ok!(vault::list_files(state)),
 
         // ---- files ----
-        "read_file" => json_ok!(files::read_file(app.state(), arg_str(args, "path")?).await),
+        "read_file" => json_ok!(files::read_file(state, arg_str(args, "path")?)),
         "write_file" => json_ok!(
-            files::write_file(app.state(), arg_str(args, "path")?, arg_str(args, "contents")?).await
+            files::write_file(state, arg_str(args, "path")?, arg_str(args, "contents")?)
         ),
         "write_file_base64" => json_ok!(
             files::write_file_base64(
-                app.state(),
+                state,
                 arg_str(args, "path")?,
                 arg_str(args, "contentsBase64")?
             )
-            .await
         ),
         "create_file" => json_ok!(
             files::create_file(
-                app.state(),
+                state,
                 arg_str(args, "parent")?,
                 arg_str(args, "name")?
             )
-            .await
         ),
         "create_dir" => json_ok!(
             files::create_dir(
-                app.state(),
+                state,
                 arg_str(args, "parent")?,
                 arg_str(args, "name")?
             )
-            .await
         ),
-        "ensure_dir" => json_ok!(files::ensure_dir(app.state(), arg_str(args, "relPath")?).await),
+        "ensure_dir" => json_ok!(files::ensure_dir(state, arg_str(args, "relPath")?)),
         "rename_path" => json_ok!(
             files::rename_path(
-                app.state(),
+                state,
                 arg_str(args, "path")?,
                 arg_str(args, "newName")?
             )
-            .await
         ),
-        "trash_path" => json_ok!(files::trash_path(app.state(), arg_str(args, "path")?).await),
-        "read_vault_file" => json_ok!(files::read_vault_file(app.state(), arg_str(args, "name")?).await),
+        "trash_path" => json_ok!(files::trash_path(state, arg_str(args, "path")?)),
+        "read_vault_file" => json_ok!(files::read_vault_file(state, arg_str(args, "name")?)),
         "write_vault_file" => json_ok!(
             files::write_vault_file(
-                app.state(),
+                state,
                 arg_str(args, "name")?,
                 arg_str(args, "contents")?
             )
-            .await
         ),
 
         // ---- config ----
-        "load_app_config" => json_ok!(config::load_app_config(app.state()).await),
+        "load_app_config" => json_ok!(config::load_app_config(state)),
         "save_app_config" => {
-            json_ok!(config::save_app_config(app.state(), arg_value(args, "config")?).await)
+            json_ok!(config::save_app_config(state, arg_value(args, "config")?))
         }
-        "load_keybindings" => json_ok!(config::load_keybindings(app.state()).await),
+        "load_keybindings" => json_ok!(config::load_keybindings(state)),
         "save_keybindings" => {
-            json_ok!(config::save_keybindings(app.state(), arg_value(args, "keybindings")?).await)
+            json_ok!(config::save_keybindings(state, arg_value(args, "keybindings")?))
         }
-        "read_vimrc" => json_ok!(config::read_vimrc(app.state()).await),
-        "save_vimrc" => json_ok!(config::save_vimrc(app.state(), arg_str(args, "contents")?).await),
+        "read_vimrc" => json_ok!(config::read_vimrc(state)),
+        "save_vimrc" => json_ok!(config::save_vimrc(state, arg_str(args, "contents")?)),
 
         // ---- input sources: refuse to touch the machine's keyboard ----
         "list_input_sources" => json!([]),
@@ -260,94 +263,84 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "set_input_source" => json!({ "switched": false, "fallbackUsed": false }),
 
         // ---- agent ----
-        "agent_get_config" => json_ok!(agent::agent_get_config(app.state()).await),
+        "agent_get_config" => json_ok!(agent::agent_get_config(state)),
         "agent_save_config" => json_ok!(agent::agent_save_config(
-            app.state(),
+            state,
             serde_json::from_value(arg_value(args, "config")?)
                 .map_err(|e| format!("BAD_ARGS: config: {}", e))?
-        )
-        .await),
+        )),
         "agent_start_session" => {
             let study: Option<StudyContent> = serde_json::from_value(arg_value(args, "study")?)
                 .map_err(|e| format!("BAD_ARGS: study: {}", e))?;
-            json_ok!(agent::agent_start_session(app.clone(), app.state(), study).await)
+            json_ok!(agent::agent_start_session(state, study))
         }
         "agent_send" => json_ok!(
             agent::agent_send(
-                app.state(),
+                state,
                 arg_str(args, "sessionId")?,
                 arg_str(args, "text")?
             )
-            .await
         ),
-        "agent_abort" => json_ok!(agent::agent_abort(app.state(), arg_str(args, "sessionId")?)),
+        "agent_abort" => json_ok!(agent::agent_abort(state, arg_str(args, "sessionId")?)),
         "agent_get_history" => {
-            json_ok!(agent::agent_get_history(app.state(), arg_str(args, "sessionId")?))
+            json_ok!(agent::agent_get_history(state, arg_str(args, "sessionId")?))
         }
         "agent_set_current_note" => json_ok!(agent::agent_set_current_note(
-            app.state(),
+            state,
             arg_opt_str(args, "path")
         )),
         "convert_pdf_to_markdown" => json_ok!(
             agent::convert_pdf_to_markdown(
-                app.state(),
+                state,
                 arg_str(args, "pdfPath")?,
                 arg_str(args, "folderRel")?
             )
-            .await
         ),
 
         // ---- python:嵌入代码块运行 / LSP / uv ----
         "python_run" => json_ok!(
             python::python_run(
-                app.clone(),
-                app.state(),
+                state,
                 arg_str(args, "mdPath")?,
                 arg_str(args, "code")?
             )
-            .await
         ),
         "python_run_cancel" => {
-            json_ok!(python::python_run_cancel(app.state(), arg_str(args, "mdPath")?).await)
+            json_ok!(python::python_run_cancel(state, arg_str(args, "mdPath")?))
         }
         "python_get_info" => {
-            json_ok!(python::python_get_info(app.state(), arg_str(args, "mdPath")?).await)
+            json_ok!(python::python_get_info(state, arg_str(args, "mdPath")?))
         }
         "python_set_project_config" => json_ok!(
             python::python_set_project_config(
-                app.clone(),
-                app.state(),
+                state,
                 arg_str(args, "mdPath")?,
                 arg_opt_str(args, "lsp"),
                 arg_opt_str(args, "python"),
                 arg_opt_str(args, "tyPath"),
             )
-            .await
         ),
         "python_lsp_sync" => json_ok!(
             python::python_lsp_sync(
-                app.clone(),
-                app.state(),
+                state,
                 arg_str(args, "mdPath")?,
                 arg_str(args, "text")?
             )
-            .await
         ),
         "python_lsp_close" => {
-            json_ok!(python::python_lsp_close(app.state(), arg_str(args, "mdPath")?).await)
+            json_ok!(python::python_lsp_close(state, arg_str(args, "mdPath")?))
         }
         "python_lsp_request" => json_ok!(
             python::python_lsp_request(
-                app.state(),
+                state,
                 arg_str(args, "mdPath")?,
                 arg_str(args, "method")?,
                 arg_value(args, "params").unwrap_or_else(|_| serde_json::Value::Null),
             )
-            .await
         ),
-        "python_lsp_stop_all" => json_ok!(python::python_lsp_stop_all(app.state()).await),
+        "python_lsp_stop_all" => json_ok!(python::python_lsp_stop_all(state)),
         "python_uv_create" => {
-            json_ok!(python::python_uv_create(app.state(), arg_str(args, "mdPath")?).await)
+            json_ok!(python::python_uv_create(state, arg_str(args, "mdPath")?))
         }
 
         // ---- native views: no browser equivalent ----
@@ -393,10 +386,12 @@ fn asset(app: &AppHandle, stream: &TcpStream, query: &str) {
     };
     let path = std::path::PathBuf::from(raw);
 
-    let state = app.state::<AppState>();
-    let allowed = state.vault().map(|v| crate::commands::ensure_within(&v, &path).is_ok())
+    let state = app.state::<Arc<AppState>>();
+    let allowed = state
+        .vault()
+        .map(|v| bnote_core::commands::ensure_within(&v, &path).is_ok())
         == Some(true)
-        || crate::commands::ensure_within(&state.data_dir(), &path).is_ok();
+        || bnote_core::commands::ensure_within(&state.data_dir(), &path).is_ok();
     if !allowed {
         return respond(stream, "403 Forbidden", "text/plain", b"OUTSIDE_VAULT");
     }

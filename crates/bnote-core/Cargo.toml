@@ -1,0 +1,23 @@
+[package]
+name = "bnote-core"
+version = "0.1.0"
+edition = "2021"
+description = "bnote backend without any UI runtime: vault, files, config, IME, python, agent. Consumed by both the Tauri WebView shell and the GPUI shell."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+notify = "8"
+walkdir = "2"
+trash = "5"
+base64 = "0.22"
+core-foundation = "0.10"
+pdf2md = { path = "../pdf2md" }
+
+# study-mode agent
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+futures = "0.3"
+scraper = "0.20"
+ego-tree = "0.6"

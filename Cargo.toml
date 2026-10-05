@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bnote-core",
+    "crates/bnote-gpui",
+    "crates/pdf2md",
+    "src-tauri",
+]
+
+# The GPUI port lives in crates/bnote-gpui; src-tauri remains the WebView shell
+# on top of the same bnote-core backend until the port reaches parity.
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "net"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,25 @@
+[package]
+name = "bnote-gpui"
+version = "0.1.0"
+edition = "2021"
+description = "bnote's native GPUI shell: same bnote-core backend as the Tauri shell, no WebView."
+
+[[bin]]
+name = "bnote-gpui"
+path = "src/main.rs"
+
+[dependencies]
+bnote-core = { path = "../bnote-core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+# gpui-kit from the sibling checkout so engine fixes can be made locally;
+# switch to `gpui-kit = "0.7"` once upstream carries what we need.
+gpui-kit = { path = "../../../gpui-kit/crates/kit", features = [
+    "tree-sitter-markdown",
+    "tree-sitter-markdown-inline",
+] }
+# gpui is re-exported by gpui-kit, but this crate names it directly
+# (gpui-kit's own rename of Zed's gpui snapshot; version must match).
+gpui = { package = "gpui-pre", version = "=0.3.8" }

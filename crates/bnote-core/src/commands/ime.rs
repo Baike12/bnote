@@ -15,10 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::async_runtime::spawn_blocking;
-use tauri::{AppHandle, Emitter};
 
 use super::CmdResult;
+use crate::events::EventBus;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -272,70 +271,95 @@ fn macism_path() -> Option<&'static str> {
     None
 }
 
-/// Runs a closure on the main thread and waits for its result.
+/// Runs a closure on the app's main thread and waits for its result.
 ///
 /// macOS 26 (Tahoe) HIToolbox asserts that TIS APIs run on the main queue —
 /// calling them from any other thread traps with EXC_BREAKPOINT
 /// (dispatch_assert_queue_fail). Every TIS entry point must go through this.
+///
+/// 原来挂在 Tauri `AppHandle::run_on_main_thread` 上;core 没有 UI runtime,
+/// 直连 libdispatch 主队列(libSystem 默认链接,不加依赖):闭包经
+/// dispatch_async_f 排进主队列,调用方带 5s 超时等结果 —— 排队与超时语义与
+/// 原实现一致。主队列在 C 里就是全局静态 `_dispatch_main_q`
+/// (dispatch_get_main_queue() 宏取的就是它的地址)。
 #[cfg(target_os = "macos")]
-fn on_main<T: Send + 'static>(
-    app: &AppHandle,
-    f: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.run_on_main_thread(move || {
+fn on_main<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    use std::ffi::c_void;
+    use std::sync::mpsc;
+
+    unsafe extern "C" {
+        static _dispatch_main_q: u8;
+        fn dispatch_async_f(
+            queue: *const u8,
+            context: *mut c_void,
+            work: unsafe extern "C" fn(*mut c_void),
+        );
+    }
+
+    unsafe extern "C" fn trampoline(context: *mut c_void) {
+        let f: Box<Box<dyn FnOnce() + Send>> = Box::from_raw(context.cast());
+        f();
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let closure: Box<dyn FnOnce() + Send> = Box::new(move || {
         let _ = tx.send(f());
-    })
-    .map_err(|e| format!("main thread dispatch failed: {e}"))?;
+    });
+    let payload: Box<Box<dyn FnOnce() + Send>> = Box::new(closure);
+    unsafe {
+        dispatch_async_f(
+            std::ptr::addr_of!(_dispatch_main_q).cast(),
+            Box::into_raw(payload).cast(),
+            trampoline,
+        );
+    }
     rx.recv_timeout(Duration::from_secs(5))
         .map_err(|_| "main thread dispatch timed out".to_string())
 }
 
 #[cfg(target_os = "macos")]
-async fn list_impl(app: AppHandle) -> CmdResult<Vec<InputSourceInfo>> {
-    spawn_blocking(move || on_main(&app, tis::selectable_sources))
+async fn list_impl() -> CmdResult<Vec<InputSourceInfo>> {
+    tokio::task::spawn_blocking(move || on_main(tis::selectable_sources))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn list_impl(app: AppHandle) -> CmdResult<Vec<InputSourceInfo>> {
-    let _ = app;
+async fn list_impl() -> CmdResult<Vec<InputSourceInfo>> {
     Ok(Vec::new())
 }
 
 #[cfg(target_os = "macos")]
-async fn current_impl(app: AppHandle) -> CmdResult<String> {
-    spawn_blocking(move || on_main(&app, tis::current_source_id))
+async fn current_impl() -> CmdResult<String> {
+    tokio::task::spawn_blocking(move || on_main(tis::current_source_id))
         .await
         .map_err(|e| format!("join error: {e}"))?
         .and_then(|opt| opt.ok_or_else(|| "TISCopyCurrentKeyboardInputSource failed".to_string()))
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn current_impl(app: AppHandle) -> CmdResult<String> {
-    let _ = app;
+async fn current_impl() -> CmdResult<String> {
     Err("IME switching is only supported on macOS".into())
 }
 
 #[cfg(target_os = "macos")]
-async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
-    spawn_blocking(move || {
+async fn set_impl(events: EventBus, id: String) -> CmdResult<SetImeOutcome> {
+    tokio::task::spawn_blocking(move || {
         // 代数戳:每次真实切换请求推进一格。verify_or_fallback 的后台链
         // (120ms 后复查 → 重选 → macism)拿到自己的代数,一旦有更新的切换
         // 开始就全部作废——否则慢链会把用户已经切走的目标又重选回来,输入
         // 源在 normal/insert 快速翻转时来回弹,读作"切模式卡顿"。
         let seq = SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
         let id_for_select = id.clone();
-        let already = on_main(&app, move || tis::select(&id_for_select));
+        let already = on_main(move || tis::select(&id_for_select));
         eprintln!("[bnote] set_input_source({id}) -> {already:?}");
         let already = already??;
         if already {
             return Ok(SetImeOutcome { switched: false, fallback_used: false });
         }
-        let cjk = cached_is_cjk(&app, &id)?;
+        let cjk = cached_is_cjk(&id)?;
         if cjk {
-            verify_or_fallback(app, id, seq);
+            verify_or_fallback(events, id, seq);
         }
         Ok(SetImeOutcome { switched: true, fallback_used: false })
     })
@@ -344,29 +368,35 @@ async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn set_impl(app: AppHandle, _id: String) -> CmdResult<SetImeOutcome> {
-    let _ = app;
+async fn set_impl(_events: EventBus, _id: String) -> CmdResult<SetImeOutcome> {
     Err("IME switching is only supported on macOS".into())
 }
 
 /// Lists enabled, selectable input sources for the settings picker.
-#[tauri::command]
-pub async fn list_input_sources(app: AppHandle) -> CmdResult<Vec<InputSourceInfo>> {
-    list_impl(app).await
+///
+/// 同步入口,内部跑在 core 私有 tokio runtime 上;调用方(GPUI 壳)必须放到
+/// 后台线程,不许在 UI 线程直接调。
+pub fn list_input_sources() -> CmdResult<Vec<InputSourceInfo>> {
+    crate::runtime::block_on(list_impl())
 }
 
 /// Returns the id of the current input source.
-#[tauri::command]
-pub async fn get_current_input_source(app: AppHandle) -> CmdResult<String> {
-    current_impl(app).await
+///
+/// 同步入口,内部跑在 core 私有 tokio runtime 上;调用方(GPUI 壳)必须放到
+/// 后台线程,不许在 UI 线程直接调。
+pub fn get_current_input_source() -> CmdResult<String> {
+    crate::runtime::block_on(current_impl())
 }
 
 /// Selects an input source by id. Cheap no-op when already active. For CJK
 /// targets, verifies on a background thread that the selection stuck (macOS 26
 /// race) and falls back to the macism CLI when it did not.
-#[tauri::command]
-pub async fn set_input_source(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
-    set_impl(app, id).await
+///
+/// 同步入口,内部跑在 core 私有 tokio runtime 上;调用方(GPUI 壳)必须放到
+/// 后台线程,不许在 UI 线程直接调。
+pub fn set_input_source(state: &crate::state::AppState, id: String) -> CmdResult<SetImeOutcome> {
+    let events = state.events.clone();
+    crate::runtime::block_on(set_impl(events, id))
 }
 
 /// CJK-ness of an input source, cached per source id. The uncached check
@@ -374,7 +404,7 @@ pub async fn set_input_source(app: AppHandle, id: String) -> CmdResult<SetImeOut
 /// it runs on every switch — a source's languages never change within a
 /// session, so the one main-thread enumeration per id is all we ever pay.
 #[cfg(target_os = "macos")]
-fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
+fn cached_is_cjk(id: &str) -> Result<bool, String> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
@@ -386,7 +416,7 @@ fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
     }
     let id_owned = id.to_string();
     // is_cjk_source 返回裸 bool,on_main 只有一层 Result。
-    let cjk = on_main(app, move || tis::is_cjk_source(&id_owned))?;
+    let cjk = on_main(move || tis::is_cjk_source(&id_owned))?;
     if let Ok(mut map) = cache.lock() {
         map.insert(id.to_string(), cjk);
     }
@@ -402,12 +432,9 @@ fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
 /// 更新的切换开始——快速 normal↔insert 翻转时,慢链把旧目标重选回来会让输入
 /// 源来回弹,前端毫无感知(它以为切好了)。
 #[cfg(target_os = "macos")]
-fn verify_or_fallback(app: AppHandle, target: String, seq: u64) {
+fn verify_or_fallback(events: EventBus, target: String, seq: u64) {
     std::thread::spawn(move || {
-        let current = || -> Option<String> {
-            let handle = app.clone();
-            on_main(&handle, tis::current_source_id).ok().flatten()
-        };
+        let current = || -> Option<String> { on_main(tis::current_source_id).ok().flatten() };
         for attempt in 0..2 {
             std::thread::sleep(Duration::from_millis(120));
             if SWITCH_SEQ.load(Ordering::SeqCst) != seq {
@@ -417,9 +444,8 @@ fn verify_or_fallback(app: AppHandle, target: String, seq: u64) {
                 return;
             }
             if attempt == 0 {
-                let handle = app.clone();
                 let t = target.clone();
-                let _ = on_main(&handle, move || tis::select(&t));
+                let _ = on_main(move || tis::select(&t));
             }
         }
         if SWITCH_SEQ.load(Ordering::SeqCst) != seq {
@@ -439,7 +465,7 @@ fn verify_or_fallback(app: AppHandle, target: String, seq: u64) {
         } else {
             "输入法切换未生效：请在 系统设置 → 隐私与安全性 → 辅助功能 中允许 bnote，或安装 macism（brew install laishulu/homebrew/macism）".to_string()
         };
-        let _ = app.emit("ime-fallback", payload);
+        crate::events::emit_event(&events, "ime-fallback", payload);
     });
 }
 

@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::json;
-use tauri::Emitter;
 use tokio::io::AsyncReadExt;
 
 use super::ProjectConfig;
@@ -243,25 +242,30 @@ fn prune_old_scripts(dir: &Path) {
 
 /// 运行一篇笔记的虚拟 python 文本。前端保证 text 已经是行对齐 + main 守卫
 /// 处理后的最终文本;这里只负责进程、环境变量与事件。
+///
+/// 入参全是 owned(`events`/`runs`/`data_dir`/`vault`):整个 future 要进 core
+/// 私有 runtime 的 block_on('static),命令层从 `&AppState` 把这几样 clone 出来,
+/// 长命任务(读循环、收尾任务)只持有克隆,不借 `&AppState`。
 pub async fn run_note(
-    app: tauri::AppHandle,
-    state: &crate::state::AppState,
+    events: crate::events::EventBus,
+    runs: std::sync::Arc<RunRegistry>,
+    data_dir: PathBuf,
+    vault: PathBuf,
     md_path: String,
     code: String,
 ) -> Result<RunStarted, String> {
-    let vault = crate::commands::require_vault(state)?;
     let project = super::resolve_project(&vault, Path::new(&md_path))?;
     let config = super::load_config(&vault).project(&project.name);
     let env = resolve_env(&project.root, &config);
 
-    let run_id = state.python_runs.next_id.fetch_add(1, Ordering::Relaxed);
+    let run_id = runs.next_id.fetch_add(1, Ordering::Relaxed);
     // 新运行顶掉旧运行(先发 kill 信号,避免两份输出交错)。
-    state.python_runs.cancel(&md_path);
+    runs.cancel(&md_path);
 
-    let script = temp_script(&state.data_dir(), &md_path);
+    let script = temp_script(&data_dir, &md_path);
     {
         let script = script.clone();
-        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
             if let Some(parent) = script.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
                 prune_old_scripts(parent);
@@ -337,17 +341,17 @@ pub async fn run_note(
         kill_tx,
         cancelled: Arc::new(AtomicBool::new(false)),
     });
-    if let Ok(mut runs) = state.python_runs.runs.lock() {
-        runs.insert(md_path.clone(), handle.clone());
+    if let Ok(mut runs_map) = runs.runs.lock() {
+        runs_map.insert(md_path.clone(), handle.clone());
     }
 
-    spawn_reader(app.clone(), run_id, md_path.clone(), "stdout", stdout);
-    spawn_reader(app.clone(), run_id, md_path.clone(), "stderr", stderr);
+    spawn_reader(events.clone(), run_id, md_path.clone(), "stdout", stdout);
+    spawn_reader(events.clone(), run_id, md_path.clone(), "stderr", stderr);
 
-    let app_exit = app.clone();
+    let bus_exit = events.clone();
     let wait_handle = handle.clone();
-    let registry = state.python_runs.clone();
-    tauri::async_runtime::spawn(async move {
+    let registry = runs.clone();
+    crate::runtime::spawn(async move {
         let started_at = Instant::now();
         // child 被这个任务 move 进来独占;kill_on_drop 兜底(运行时关闭时杀掉)。
         let exit = tokio::select! {
@@ -387,7 +391,7 @@ pub async fn run_note(
                 })
             }
         };
-        let _ = app_exit.emit("python-run-exit", exit);
+        crate::events::emit_event(&bus_exit, "python-run-exit", exit);
         registry.remove_if_current(&wait_handle.md_path, &wait_handle);
     });
     Ok(started_info)
@@ -396,13 +400,13 @@ pub async fn run_note(
 /// stdout/stderr 读取:≤16KB 或 40ms 节流 flush 一次,UTF-8 断行残片留在
 /// 缓冲里等下一个 chunk,不会把多字节字符拆成乱码。
 fn spawn_reader(
-    app: tauri::AppHandle,
+    bus: crate::events::EventBus,
     run_id: u64,
     md_path: String,
     stream: &'static str,
     mut pipe: impl tokio::io::AsyncRead + Unpin + Send + 'static,
 ) {
-    tauri::async_runtime::spawn(async move {
+    crate::runtime::spawn(async move {
         let mut buf = vec![0u8; 8192];
         let mut pending: Vec<u8> = Vec::new();
         let mut last_flush = Instant::now();
@@ -410,20 +414,20 @@ fn spawn_reader(
             match tokio::time::timeout(Duration::from_millis(40), pipe.read(&mut buf)).await {
                 Err(_elapsed) => {
                     if !pending.is_empty() {
-                        flush_chunk(&app, run_id, &md_path, stream, &mut pending);
+                        flush_chunk(&bus, run_id, &md_path, stream, &mut pending);
                         last_flush = Instant::now();
                     }
                 }
                 Ok(Err(_)) | Ok(Ok(0)) => {
                     if !pending.is_empty() {
-                        flush_chunk(&app, run_id, &md_path, stream, &mut pending);
+                        flush_chunk(&bus, run_id, &md_path, stream, &mut pending);
                     }
                     break;
                 }
                 Ok(Ok(n)) => {
                     pending.extend_from_slice(&buf[..n]);
                     if pending.len() >= 16 * 1024 || last_flush.elapsed() >= Duration::from_millis(40) {
-                        flush_chunk(&app, run_id, &md_path, stream, &mut pending);
+                        flush_chunk(&bus, run_id, &md_path, stream, &mut pending);
                         last_flush = Instant::now();
                     }
                 }
@@ -433,7 +437,7 @@ fn spawn_reader(
 }
 
 fn flush_chunk(
-    app: &tauri::AppHandle,
+    bus: &crate::events::EventBus,
     run_id: u64,
     md_path: &str,
     stream: &str,
@@ -451,7 +455,8 @@ fn flush_chunk(
     if text.is_empty() {
         return;
     }
-    let _ = app.emit(
+    crate::events::emit_event(
+        bus,
         "python-run-output",
         json!({ "runId": run_id, "mdPath": md_path, "stream": stream, "text": text }),
     );

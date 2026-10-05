@@ -5,9 +5,8 @@ use std::time::Duration;
 
 use notify::{RecursiveMode, Watcher, recommended_watcher};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
 
-use super::{ensure_within, require_vault, validate_name, CmdResult};
+use super::{CmdResult, ensure_within, require_vault, validate_name};
 use crate::state::AppState;
 
 /// Directories never shown in the file tree or watched for content.
@@ -60,15 +59,10 @@ pub struct FileNode {
     pub children: Option<Vec<FileNode>>,
 }
 
-#[tauri::command]
-pub fn set_vault(app: AppHandle, state: State<'_, AppState>, path: String) -> CmdResult<VaultInfo> {
-    set_vault_blocking(&app, &state, path)
-}
-
-fn set_vault_blocking(app: &AppHandle, state: &State<'_, AppState>, path: String) -> CmdResult<VaultInfo> {
+pub fn set_vault(state: &AppState, path: String) -> CmdResult<VaultInfo> {
     eprintln!("[bnote] set_vault: {path}");
-    let root = std::fs::canonicalize(&path)
-        .map_err(|e| format!("INVALID_VAULT: {} ({})", path, e))?;
+    let root =
+        std::fs::canonicalize(&path).map_err(|e| format!("INVALID_VAULT: {} ({})", path, e))?;
     if !root.is_dir() {
         return Err(format!("INVALID_VAULT: {} is not a directory", path));
     }
@@ -78,7 +72,7 @@ fn set_vault_blocking(app: &AppHandle, state: &State<'_, AppState>, path: String
     // Remember the vault for the next launch.
     super::config::persist_last_vault(state, &root.to_string_lossy())?;
 
-    start_watcher(app, state, &root)?;
+    start_watcher(state, &root)?;
 
     let name = root
         .file_name()
@@ -90,8 +84,7 @@ fn set_vault_blocking(app: &AppHandle, state: &State<'_, AppState>, path: String
     })
 }
 
-#[tauri::command]
-pub fn get_vault(state: State<'_, AppState>) -> CmdResult<Option<VaultInfo>> {
+pub fn get_vault(state: &AppState) -> CmdResult<Option<VaultInfo>> {
     Ok(state.vault().map(|root| {
         let name = root
             .file_name()
@@ -106,87 +99,65 @@ pub fn get_vault(state: State<'_, AppState>) -> CmdResult<Option<VaultInfo>> {
 
 /// Root level of the vault; directories arrive with children = null and are
 /// read on expand (Obsidian-style lazy tree) so huge vaults open instantly.
-#[tauri::command]
-pub async fn read_tree(state: State<'_, AppState>) -> CmdResult<Vec<FileNode>> {
-    let root = require_vault(&state)?;
-    run_blocking(move || {
-        eprintln!("[bnote] read_tree");
-        Ok(build_level(&root, ""))
-    })
-    .await
+pub fn read_tree(state: &AppState) -> CmdResult<Vec<FileNode>> {
+    let root = require_vault(state)?;
+    eprintln!("[bnote] read_tree");
+    Ok(build_level(&root, ""))
 }
 
 /// One level of a directory inside the vault.
-#[tauri::command]
-pub async fn read_dir(state: State<'_, AppState>, rel_path: String) -> CmdResult<Vec<FileNode>> {
-    let root = require_vault(&state)?;
-    run_blocking(move || {
-        for part in rel_path.split('/') {
-            validate_name(part)?;
-        }
-        let full = root.join(&rel_path);
-        ensure_within(&root, &full)?;
-        Ok(build_level(&full, &rel_path))
-    })
-    .await
+pub fn read_dir(state: &AppState, rel_path: String) -> CmdResult<Vec<FileNode>> {
+    let root = require_vault(state)?;
+    for part in rel_path.split('/') {
+        validate_name(part)?;
+    }
+    let full = root.join(&rel_path);
+    ensure_within(&root, &full)?;
+    Ok(build_level(&full, &rel_path))
 }
 
 /// Flat list of note files and directories. A single walk without tree
-/// building; fast even on big vaults (off the main thread). Directories are
-/// indexed even when empty, so quick-add can suggest a newly created folder
-/// before its first note exists.
-#[tauri::command]
-pub async fn list_files(state: State<'_, AppState>) -> CmdResult<VaultIndex> {
-    let root = require_vault(&state)?;
-    run_blocking(move || {
-        eprintln!("[bnote] list_files");
-        let mut files = Vec::new();
-        let mut dirs = Vec::new();
-        let mut assets = Vec::new();
-        let mut stack = vec![root.clone()];
-        while let Some(dir) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in rd.flatten() {
-                let Ok(ft) = entry.file_type() else { continue };
-                let name = entry.file_name().to_string_lossy().to_string();
-                let p = entry.path();
-                if ft.is_dir() {
-                    if !IGNORED_DIRS.contains(&name.as_str()) {
-                        if let Ok(rel) = p.strip_prefix(&root) {
-                            dirs.push(rel.to_string_lossy().replace('\\', "/"));
-                        }
-                        stack.push(p);
-                    }
-                } else if ft.is_file() {
+/// building; fast even on big vaults (run off the shell's main thread).
+/// Directories are indexed even when empty, so quick-add can suggest a newly
+/// created folder before its first note exists.
+pub fn list_files(state: &AppState) -> CmdResult<VaultIndex> {
+    let root = require_vault(state)?;
+    eprintln!("[bnote] list_files");
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    let mut assets = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let p = entry.path();
+            if ft.is_dir() {
+                if !IGNORED_DIRS.contains(&name.as_str()) {
                     if let Ok(rel) = p.strip_prefix(&root) {
-                        let rel = rel.to_string_lossy().replace('\\', "/");
-                        if is_note_file(&name) {
-                            files.push(rel);
-                        } else if is_asset_file(&name) {
-                            assets.push(rel);
-                        }
+                        dirs.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                    stack.push(p);
+                }
+            } else if ft.is_file() {
+                if let Ok(rel) = p.strip_prefix(&root) {
+                    let rel = rel.to_string_lossy().replace('\\', "/");
+                    if is_note_file(&name) {
+                        files.push(rel);
+                    } else if is_asset_file(&name) {
+                        assets.push(rel);
                     }
                 }
             }
         }
-        files.sort();
-        dirs.sort();
-        assets.sort();
-        Ok(VaultIndex { files, dirs, assets })
-    })
-    .await
-}
-
-async fn run_blocking<T, F>(f: F) -> CmdResult<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> CmdResult<T> + Send + 'static,
-{
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|e| format!("JOIN_FAILED: {}", e))?
+    }
+    files.sort();
+    dirs.sort();
+    assets.sort();
+    Ok(VaultIndex { files, dirs, assets })
 }
 
 fn build_level(dir: &Path, rel_prefix: &str) -> Vec<FileNode> {
@@ -257,10 +228,10 @@ fn is_note_file(name: &str) -> bool {
 }
 
 /// Watches the vault with plain notify (FSEvents registration is O(1)) and a
-/// hand-rolled debouncer, then emits `vault-changed` to the UI. Unlike
+/// hand-rolled debouncer, then sends `vault-changed` on the event bus. Unlike
 /// notify-debouncer-full this avoids the initial full-tree file-id scan that
 /// froze large vaults.
-fn start_watcher(app: &AppHandle, state: &State<'_, AppState>, root: &PathBuf) -> CmdResult<()> {
+fn start_watcher(state: &AppState, root: &PathBuf) -> CmdResult<()> {
     let mut guard = state.watcher.lock().map_err(|_| "lock poisoned")?;
     // Signal the previous debounce thread to stop, then unregister its watch.
     if let Some(old) = guard.take() {
@@ -268,7 +239,7 @@ fn start_watcher(app: &AppHandle, state: &State<'_, AppState>, root: &PathBuf) -
         drop(old);
     }
 
-    let app_handle = app.clone();
+    let events = state.events.clone();
     let (tx, rx) = mpsc::channel::<std::result::Result<notify::Event, notify::Error>>();
     let mut watcher = recommended_watcher(tx).map_err(|e| format!("WATCHER_FAILED: {}", e))?;
     watcher
@@ -297,7 +268,10 @@ fn start_watcher(app: &AppHandle, state: &State<'_, AppState>, root: &PathBuf) -
                 Err(_timeout) => {
                     if !pending.is_empty() {
                         let paths: Vec<String> = pending.drain().collect();
-                        let _ = app_handle.emit("vault-changed", paths);
+                        let _ = events.send(crate::events::AppEvent::new(
+                            "vault-changed",
+                            serde_json::to_value(paths).unwrap_or_default(),
+                        ));
                     }
                 }
             }

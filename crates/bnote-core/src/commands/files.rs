@@ -1,0 +1,185 @@
+use serde::Serialize;
+
+use super::{ensure_within, require_vault, validate_name, CmdResult};
+use crate::state::AppState;
+
+/// Files inside `<vault>/.bnote/` that the app reads as configuration.
+const VAULT_CONFIG_FILES: &[&str] = &["vimrc", "snippets.js", "keybindings.json"];
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedEntry {
+    pub path: String,
+    pub rel_path: String,
+}
+
+/// All functions here are synchronous and blocking: shells decide where to run
+/// them (Tauri wraps in `spawn_blocking`, GPUI in `background_executor`).
+
+pub fn read_file(state: &AppState, path: String) -> CmdResult<String> {
+    let root = require_vault(state)?;
+    let full = std::path::PathBuf::from(&path);
+    ensure_within(&root, &full)?;
+    eprintln!("[bnote] read_file: {}", full.display());
+    std::fs::read_to_string(&full).map_err(|e| format!("READ_FAILED: {}", e))
+}
+
+pub fn write_file(state: &AppState, path: String, contents: String) -> CmdResult<()> {
+    let root = require_vault(state)?;
+    let full = std::path::PathBuf::from(&path);
+    ensure_within(&root, &full)?;
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
+    }
+    std::fs::write(&full, contents).map_err(|e| format!("WRITE_FAILED: {}", e))
+}
+
+/// Binary writes via base64 (the drawing canvas exports its PNG preview through
+/// this — a text round-trip would corrupt the bytes).
+pub fn write_file_base64(state: &AppState, path: String, contents_base64: String) -> CmdResult<()> {
+    use base64::Engine as _;
+    let root = require_vault(state)?;
+    let full = std::path::PathBuf::from(&path);
+    ensure_within(&root, &full)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&contents_base64)
+        .map_err(|e| format!("DECODE_FAILED: {}", e))?;
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
+    }
+    std::fs::write(&full, bytes).map_err(|e| format!("WRITE_FAILED: {}", e))
+}
+
+/// Creates `parent/name.md`, deduplicating as "name 2.md", "name 3.md", …
+/// Returns the actual created path.
+pub fn create_file(state: &AppState, parent: String, name: String) -> CmdResult<CreatedEntry> {
+    let root = require_vault(state)?;
+    validate_name(&name)?;
+    let parent_path = if parent.is_empty() || parent == "/" {
+        root.clone()
+    } else {
+        let p = root.join(&parent);
+        ensure_within(&root, &p)?;
+        p
+    };
+
+    let stem = strip_extension(&name);
+    let ext = extension_of(&name);
+    let mut candidate = parent_path.join(&name);
+    let mut counter = 2;
+    while candidate.exists() {
+        candidate = parent_path.join(format!("{} {}.{}", stem, counter, ext));
+        counter += 1;
+    }
+    std::fs::write(&candidate, "").map_err(|e| format!("CREATE_FAILED: {}", e))?;
+    Ok(created(&root, &candidate))
+}
+
+pub fn create_dir(state: &AppState, parent: String, name: String) -> CmdResult<CreatedEntry> {
+    let root = require_vault(state)?;
+    validate_name(&name)?;
+    let parent_path = if parent.is_empty() || parent == "/" {
+        root.clone()
+    } else {
+        let p = root.join(&parent);
+        ensure_within(&root, &p)?;
+        p
+    };
+
+    let mut candidate = parent_path.join(&name);
+    let mut counter = 2;
+    while candidate.exists() {
+        candidate = parent_path.join(format!("{} {}", name, counter));
+        counter += 1;
+    }
+    std::fs::create_dir_all(&candidate).map_err(|e| format!("CREATE_FAILED: {}", e))?;
+    Ok(created(&root, &candidate))
+}
+
+/// mkdir -p for a vault-relative folder path. Unlike `create_dir` there is no
+/// "name 2" dedup: quick-add target folders are created only when missing.
+pub fn ensure_dir(state: &AppState, rel_path: String) -> CmdResult<()> {
+    let root = require_vault(state)?;
+    let rel = rel_path.trim().trim_matches('/').to_string();
+    if !rel.is_empty() {
+        for part in rel.split('/') {
+            validate_name(part)?;
+        }
+        let full = root.join(&rel);
+        ensure_within(&root, &full)?;
+        std::fs::create_dir_all(&full).map_err(|e| format!("CREATE_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
+pub fn rename_path(state: &AppState, path: String, new_name: String) -> CmdResult<String> {
+    let root = require_vault(state)?;
+    validate_name(&new_name)?;
+    let full = std::path::PathBuf::from(&path);
+    ensure_within(&root, &full)?;
+    let target = full
+        .parent()
+        .ok_or("RENAME_FAILED: no parent")?
+        .join(&new_name);
+    if target.exists() {
+        return Err(format!("RENAME_FAILED: {} already exists", new_name));
+    }
+    std::fs::rename(&full, &target).map_err(|e| format!("RENAME_FAILED: {}", e))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+pub fn trash_path(state: &AppState, path: String) -> CmdResult<()> {
+    let root = require_vault(state)?;
+    let full = std::path::PathBuf::from(&path);
+    ensure_within(&root, &full)?;
+    trash::delete(&full).map_err(|e| format!("TRASH_FAILED: {}", e))
+}
+
+/// Reads `<vault>/.bnote/<name>` for name in the whitelist; None when absent.
+pub fn read_vault_file(state: &AppState, name: String) -> CmdResult<Option<String>> {
+    if !VAULT_CONFIG_FILES.contains(&name.as_str()) {
+        return Err(format!("INVALID_NAME: {}", name));
+    }
+    let path = super::vault::vault_join(state, &format!(".bnote/{}", name))?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("READ_FAILED: {}", e)),
+    }
+}
+
+pub fn write_vault_file(state: &AppState, name: String, contents: String) -> CmdResult<()> {
+    if !VAULT_CONFIG_FILES.contains(&name.as_str()) {
+        return Err(format!("INVALID_NAME: {}", name));
+    }
+    let path = super::vault::vault_join(state, &format!(".bnote/{}", name))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
+    }
+    std::fs::write(&path, contents).map_err(|e| format!("WRITE_FAILED: {}", e))
+}
+
+fn created(root: &std::path::Path, full: &std::path::Path) -> CreatedEntry {
+    CreatedEntry {
+        path: full.to_string_lossy().to_string(),
+        rel_path: full
+            .strip_prefix(root)
+            .unwrap_or(full)
+            .to_string_lossy()
+            .replace('\\', "/"),
+    }
+}
+
+fn strip_extension(name: &str) -> String {
+    match name.rfind('.') {
+        Some(i) if i > 0 => name[..i].to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn extension_of(name: &str) -> String {
+    match name.rfind('.') {
+        Some(i) if i > 0 => name[i + 1..].to_string(),
+        _ => "md".to_string(),
+    }
+}

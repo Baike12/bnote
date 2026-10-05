@@ -42,3 +42,4 @@ tests/data/pdf/out/
 # Rust 构建产物
 src-tauri/target/
 src-tauri/crates/pdf2md/target/
+/target

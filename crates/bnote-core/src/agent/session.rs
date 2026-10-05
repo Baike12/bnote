@@ -4,8 +4,8 @@ use super::mcp::McpManager;
 use super::provider::Provider;
 use super::tools::{ToolContext, StudyContent};
 use super::types::{AgentEvent, ChatItem, Content, ToolDef};
+use crate::events::EventBus;
 use serde_json::Value;
-use tauri::Emitter;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -19,7 +19,8 @@ pub struct Session {
     pub provider: Arc<Provider>,
     pub running: Arc<AtomicBool>,
     pub seq: Arc<AtomicU64>,
-    pub app: tauri::AppHandle,
+    /// Backend → shell event bus; agent deltas stream out as `agent-event`.
+    pub events: EventBus,
 }
 
 impl Session {
@@ -47,7 +48,7 @@ impl Session {
             "sessionId": self.id,
             "event": event,
         });
-        let _ = self.app.emit("agent-event", payload);
+        crate::events::emit_event(&self.events, "agent-event", payload);
     }
 
     async fn run_loop(&self) -> Result<(), String> {
@@ -152,7 +153,7 @@ impl Session {
     }
 }
 
-/// Session registry shared in Tauri state.
+/// Session registry shared in `AppState`.
 #[derive(Default)]
 pub struct SessionRegistry {
     pub sessions: Mutex<std::collections::HashMap<String, Arc<Session>>>,

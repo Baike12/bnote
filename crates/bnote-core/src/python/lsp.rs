@@ -12,11 +12,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::{ProjectRef, ProjectConfig};
+use crate::events::EventBus;
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
 /// completion / hover 这类交互内请求的等待上限;超时直接放弃,不让 UI 干等。
@@ -116,11 +116,12 @@ pub fn content_length_of(header_line: &str) -> Option<usize> {
 
 impl LspServer {
     /// spawn `ty server` 并启动读循环;握手由调用方在拿到实例后立即 await,
-    /// 失败时进程随 kill_on_drop 一并回收。
+    /// 失败时进程随 kill_on_drop 一并回收。`events` 是后端事件总线:读循环
+    /// 把 LSP 状态(`python-lsp-status`)与诊断(`python-lsp-diagnostics`)推给壳。
     pub async fn spawn(
         project: &ProjectRef,
         program: String,
-        app: tauri::AppHandle,
+        events: EventBus,
     ) -> Result<std::sync::Arc<Self>, String> {
         let mut cmd = tokio::process::Command::new(&program);
         cmd.arg("server")
@@ -150,7 +151,7 @@ impl LspServer {
         });
 
         // stderr 排水:不排会把 ty 阻死在写满的管道上。
-        tauri::async_runtime::spawn(async move {
+        crate::runtime::spawn(async move {
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
             loop {
@@ -164,8 +165,8 @@ impl LspServer {
 
         // 读循环:解析帧 → 分发。
         let srv = server.clone();
-        let app_reader = app.clone();
-        tauri::async_runtime::spawn(async move {
+        let bus_reader = events.clone();
+        crate::runtime::spawn(async move {
             let mut reader = BufReader::new(stdout);
             loop {
                 let mut length: Option<usize> = None;
@@ -174,7 +175,8 @@ impl LspServer {
                     match reader.read_line(&mut line).await {
                         Ok(0) | Err(_) => {
                             srv.alive.store(false, Ordering::Relaxed);
-                            let _ = app_reader.emit(
+                            crate::events::emit_event(
+                                &bus_reader,
                                 "python-lsp-status",
                                 json!({ "project": srv.project_name, "state": "stopped" }),
                             );
@@ -207,7 +209,7 @@ impl LspServer {
                         continue;
                     }
                 };
-                handle_message(&srv, &app_reader, msg).await;
+                handle_message(&srv, &bus_reader, msg).await;
             }
         });
 
@@ -385,7 +387,7 @@ impl LspServer {
             return;
         }
         let srv = self.clone();
-        tauri::async_runtime::spawn(async move {
+        crate::runtime::spawn(async move {
             let _ = srv
                 .send(json!({ "jsonrpc": "2.0", "method": "exit", "params": null }))
                 .await;
@@ -446,7 +448,7 @@ pub fn find_ty(project_root: &Path, cfg: &ProjectConfig) -> Result<String, Strin
 
 /// 读循环的分发:应答 → oneshot / pull 诊断;服务器请求 → 通用应答;
 /// publishDiagnostics → 转发事件。
-async fn handle_message(srv: &std::sync::Arc<LspServer>, app: &tauri::AppHandle, msg: Value) {
+async fn handle_message(srv: &std::sync::Arc<LspServer>, bus: &EventBus, msg: Value) {
     let id = msg.get("id").cloned();
     match (id, msg.get("method").and_then(Value::as_str)) {
         // 服务器 → 客户端的请求:一律给个空应答,避免服务器干等。
@@ -465,7 +467,7 @@ async fn handle_message(srv: &std::sync::Arc<LspServer>, app: &tauri::AppHandle,
             let id_num = id.as_u64();
             if let (Some(id_num), Ok(mut pulls)) = (id_num, srv.pending_pulls.lock()) {
                 if let Some(md) = pulls.remove(&id_num) {
-                    emit_diagnostics(app, &md, msg.get("result"));
+                    emit_diagnostics(bus, &md, msg.get("result"));
                 }
             }
             if let Ok(mut pending) = srv.pending.lock() {
@@ -485,7 +487,7 @@ async fn handle_message(srv: &std::sync::Arc<LspServer>, app: &tauri::AppHandle,
                     .unwrap_or_default();
                 if let Some(md) = decode_uri_path(uri) {
                     let diags = msg.pointer("/params/diagnostics");
-                    emit_diagnostics(app, &md, Some(&diags.cloned().unwrap_or(Value::Null)));
+                    emit_diagnostics(bus, &md, Some(&diags.cloned().unwrap_or(Value::Null)));
                 }
             }
         }
@@ -516,7 +518,7 @@ fn server_configuration(srv: &LspServer, msg: &Value) -> Value {
     )
 }
 
-fn emit_diagnostics(app: &tauri::AppHandle, md_path: &str, result: Option<&Value>) {
+fn emit_diagnostics(bus: &EventBus, md_path: &str, result: Option<&Value>) {
     let items = match result {
         Some(Value::Array(a)) => a.clone(),
         Some(v) => match v.get("items").and_then(Value::as_array) {
@@ -525,7 +527,8 @@ fn emit_diagnostics(app: &tauri::AppHandle, md_path: &str, result: Option<&Value
         },
         None => return,
     };
-    let _ = app.emit(
+    crate::events::emit_event(
+        bus,
         "python-lsp-diagnostics",
         json!({ "mdPath": md_path, "diagnostics": items }),
     );
