@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { cycleHeading, insertCallout, planHeaderTodoJump, toggleTodo, todayStamp } from "./ops";
+import { cycleHeading, insertCallout, jumpHeaderTodos, planHeaderTodoJump, resetHeaderTodoReturnForTest, toggleTodo, todayStamp } from "./ops";
 
 /**
  * toggleTodo 只依赖 view 的 {state, dispatch} 面，用假视图即可在 node 里
@@ -22,6 +22,7 @@ function makeView(doc: string, cursors: number[]): EditorView {
     dispatch: (spec: TransactionSpec) => {
       state = state.update(spec).state;
     },
+    scrollDOM: { scrollTop: 0, scrollHeight: 0 },
     focus: () => {},
   };
   return view as unknown as EditorView;
@@ -128,10 +129,24 @@ describe("cycleHeading：重复按键在 正文→H1→H2→H3→H4→正文 间
 
 describe("planHeaderTodoJump:⌘T 的往返决策", () => {
   const state = (doc: string) => EditorState.create({ doc }).doc;
+  // 日记分支的插入串无尾换行,光标 = at + insert.length;
+  // 非日记分支插入串带尾换行,光标要显式给(仍落在 `- [ ] ` 行尾)。
+  const create = (at: number, insert: string, cursor = at + insert.length) => ({
+    action: "create",
+    at,
+    insert,
+    cursor,
+  });
 
   it("头部有待办块:正文光标跳到块尾行行尾", () => {
     const doc = "- [ ] 甲\n- [x] 乙\n\n正文第一行\n";
     const p = planHeaderTodoJump(state(doc), 4, false);
+    expect(p).toEqual({ action: "jump", anchor: doc.indexOf("乙") + 1 });
+  });
+
+  it("日记形状:H1 之后的待办区就是头部块(跳到块尾行行尾)", () => {
+    const doc = "# 1 2026-10-05\n- [ ] 甲\n- [x] 乙\n\n正文\n";
+    const p = planHeaderTodoJump(state(doc), 6, false);
     expect(p).toEqual({ action: "jump", anchor: doc.indexOf("乙") + 1 });
   });
 
@@ -141,29 +156,67 @@ describe("planHeaderTodoJump:⌘T 的往返决策", () => {
     expect(planHeaderTodoJump(state(doc), 1, false)).toEqual({ action: "stay" });
   });
 
-  it("头部没有待办块:跳到第一行(新待办块长出来的位置)", () => {
-    const doc = "# 标题\n\n正文\n";
-    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual({ action: "jump", anchor: 0 });
+  it("无块 + 非日记正文光标:创建在文档顶,光标在待办符号后", () => {
+    const doc = "段落\n\n正文\n";
+    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("头部是空行也算无块:目标仍是第一行", () => {
+  it("无块 + 文档以空行开头:创建仍在文档顶", () => {
     const doc = "\n\n正文\n";
-    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual({ action: "jump", anchor: 0 });
+    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("已在第一行且无块:有记忆则回跳,无记忆静默", () => {
+  it("无块 + 日记正文光标:创建在 H1 之后(日记待办区的位置)", () => {
+    const doc = "# 1 2026-10-05\n\n正文\n";
+    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual(create(14, "\n- [ ] "));
+  });
+
+  it("无块 + 光标在标题行:有记忆回跳,无记忆就地创建", () => {
+    const doc = "# 1 2026-10-05\n";
+    expect(planHeaderTodoJump(state(doc), 1, true)).toEqual({ action: "back" });
+    expect(planHeaderTodoJump(state(doc), 1, false)).toEqual(create(14, "\n- [ ] "));
+  });
+
+  it("无块 + 光标在文档首行(非日记):有记忆回跳,无记忆创建", () => {
     const doc = "正文\n- [ ] 块外的待办不算头部\n";
     expect(planHeaderTodoJump(state(doc), 1, true)).toEqual({ action: "back" });
-    expect(planHeaderTodoJump(state(doc), 1, false)).toEqual({ action: "stay" });
+    expect(planHeaderTodoJump(state(doc), 1, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("头部扫描在首个非空非待办行截断:正文的待办不构成头部块", () => {
+  it("头部扫描在首个非空非待办行截断:正文的待办不构成头部块(光标在正文→创建)", () => {
     const doc = "段落\n- [ ] 不是头部\n";
-    expect(planHeaderTodoJump(state(doc), 2, false)).toEqual({ action: "jump", anchor: 0 });
+    expect(planHeaderTodoJump(state(doc), 2, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("空文档:光标本就在第一行,静默", () => {
-    expect(planHeaderTodoJump(state(""), 1, false)).toEqual({ action: "stay" });
+  it("空文档:创建,不加尾换行", () => {
+    expect(planHeaderTodoJump(state(""), 1, false)).toEqual(create(0, "- [ ] "));
+  });
+});
+
+describe("jumpHeaderTodos:⌘T 创建空待办端到端", () => {
+  it("日记无待办:创建空待办光标落符号后;输入后再按 ⌘T 回到正文原位", () => {
+    resetHeaderTodoReturnForTest(); // 模块级往返记忆会跨用例泄漏
+    // 正文行(行 3)列 2 处按 ⌘T
+    const view = makeView("# 1 2026-10-05\n\n正文在这里\n", [18]);
+    jumpHeaderTodos(view);
+    expect(text(view)).toBe("# 1 2026-10-05\n- [ ] \n\n正文在这里\n");
+    expect(pos(view)).toBe(21); // `- [ ] ` 行尾,待办符号后
+    // 用户直接输入待办内容(同行打字不影响来处的行列锚)
+    view.dispatch({ changes: [{ from: 21, insert: "第一件事" }] });
+    expect(text(view)).toBe("# 1 2026-10-05\n- [ ] 第一件事\n\n正文在这里\n");
+    // 新待办行已是头部块,且有来处记忆 → 精确回到创建前的正文行列
+    jumpHeaderTodos(view);
+    const cur = view.state.doc.lineAt(pos(view));
+    expect(cur.number).toBe(4); // 「正文在这里」行(创建把它顶到了行 4)
+    expect(pos(view) - cur.from).toBe(2); // 列 2,与创建前一致
+  });
+
+  it("普通笔记无待办:创建在文档顶,原内容被顶到下一行", () => {
+    resetHeaderTodoReturnForTest();
+    const view = makeView("笔记正文\n", [2]);
+    jumpHeaderTodos(view);
+    expect(text(view)).toBe("- [ ] \n笔记正文\n");
+    expect(pos(view)).toBe("- [ ] ".length);
   });
 });
 

@@ -91,6 +91,8 @@ declare global {
     ) => { which: string[]; steps: string[]; cursors: { line: number; col: number }[] };
     /** 真实文件切换路径（setState，语法树清零），复现/验证首帧渲染。 */
     __loadFileDoc: (text: string, path?: string | null) => void;
+    /** 设置 currentFile(往返记忆等按文件为 key 的命令需要显式设)。 */
+    __setCurrentFile: (path: string | null) => void;
     /** loadDocument 后立即走 Enter 键序——空树窗口期的确定性复现。 */
     __enterAfterLoad: (
       text: string,
@@ -287,6 +289,10 @@ window.__enterTimes = (text, line, col, times) => {
 window.__loadFileDoc = (text, path = null) => {
   // path 决定图片相对引用的基准目录(见 editor/docPath.ts)。
   loadDocument(view, text, path);
+};
+/** 设置 currentFile(往返记忆等按文件为 key 的命令在 harness 里需要显式设)。 */
+window.__setCurrentFile = (path: string | null) => {
+  useAppStore.setState({ currentFile: path });
 };
 window.__enterAfterLoad = (text, line, col) => {
   loadDocument(view, text);
