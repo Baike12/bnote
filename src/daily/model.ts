@@ -257,11 +257,16 @@ export function textAfterChanges(docText: string, specs: DocChange[]): string {
 
 // ---------------------------------------------------------------- 路径与定位
 
-const DAILY_FILE_RE = /\/Daily\/\d{4}-\d{2}-\d{2}\.md$/;
+const DAILY_FILE_RE = /\/Daily\/(\d{4}-\d{2}-\d{2})\.md$/;
 
 /** 是否为日记文件(`<vault>/Daily/YYYY-MM-DD.md`,任意一天)。 */
 export function isDailyPath(path: string): boolean {
-  return DAILY_FILE_RE.test(path);
+  return dailyDayOf(path) !== null;
+}
+
+/** 日记文件路径里的日期(YYYY-MM-DD);非日记路径返回 null。 */
+export function dailyDayOf(path: string): string | null {
+  return DAILY_FILE_RE.exec(path)?.[1] ?? null;
 }
 
 /** 某天的日记文件绝对路径。 */

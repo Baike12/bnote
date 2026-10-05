@@ -104,12 +104,27 @@ export function isAggregatePath(path: string, vaultRoot: string): boolean {
 
 // ---------------------------------------------------------------- 持久化形状
 
-export interface StoredFootprints {
+/** v1(旧):只有一份「今日基线」,跨天轮转即作废——历史日记无从聚合。 */
+export interface StoredFootprintsV1 {
   version: 1;
+  day: string;
+  baselines: Record<string, string>;
+}
+
+/**
+ * v2:基线之外保留历史足迹档。`history[日期][路径]` = 那一天新增块的固化
+ * 快照——轮转时由旧基线 diff 出来写死,之后只读不重算,打开历史日记据此
+ * 聚合当天的足迹。日记文件零污染的语义不变:映射关系只存在这一个元数据
+ * 文件里,不写进任何日记。
+ */
+export interface StoredFootprints {
+  version: 2;
   /** 基线归属日(YYYY-MM-DD);与今天不同 = 需要轮转。 */
   day: string;
   /** 今日基线:绝对路径 → 天切换时刻的全文。 */
   baselines: Record<string, string>;
+  /** 历史足迹档:日期 → 绝对路径 → 当日足迹块(带当时行号,供跳转)。 */
+  history: Record<string, Record<string, FootprintBlock[]>>;
 }
 
 /** 基线元数据文件路径(vault 内,随仓库走)。 */

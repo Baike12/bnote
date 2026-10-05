@@ -29,7 +29,13 @@ import { setClipboardOverrides } from "@/lib/clipboard";
 import { renderAgentMarkdown } from "@/components/AgentPanel";
 import { StudyLayout } from "@/components/StudyLayout";
 import { SettingsModal } from "@/components/SettingsModal";
-import { setFootprintIndexForTest, todayFootprintEntries, footprintRevision } from "@/footprint/store";
+import {
+  footprintDay,
+  footprintRevision,
+  setFootprintHistoryForTest,
+  setFootprintIndexForTest,
+  todayFootprintEntries,
+} from "@/footprint/store";
 import type { FootprintBlock } from "@/footprint/model";
 import { documentPath } from "@/editor/docPath";
 import { dailyPathFor, isDailyPath } from "@/daily/model";
@@ -179,14 +185,17 @@ declare global {
     __treeAt: (line: number) => string[];
     /** 当前视图全部装饰（widget 类名/line class + 范围），按来源分组（调试渲染链路用）。 */
     __decos: () => Record<string, string[]>;
-    /** 注入假足迹索引（绕过基线/轮转，直接建模块单例并广播）。 */
+    /** 注入假足迹索引(绕过基线/轮转,直接建模块单例并广播)。
+     *  带 day 时注入的是该历史日的固化档案。 */
     __setFootprints: (
       entries: { path: string; blocks: FootprintBlock[] }[],
+      day?: string,
     ) => void;
     /** 足迹调试口:app 同源实例的内部状态。 */
     __fpDebug: () => {
       vault: string | null;
       entries: { path: string; blocks: FootprintBlock[] }[];
+      day: string | null;
       revision: number;
       docPath: string | null;
       wantDaily: string | null;
@@ -684,14 +693,14 @@ window.__decos = () => {
   return grouped;
 };
 
-/** 注入假足迹索引（配合 __loadFileDoc 打开今日日记路径，验证足迹区渲染/折叠/跳转）。 */
-window.__setFootprints = (entries) => {
+/** 注入假足迹索引(配合 __loadFileDoc 打开今日日记路径,验证足迹区渲染/折叠/跳转);
+ *  带 day 时注入历史日档案(配合打开那天的日记验证历史聚合)。 */
+window.__setFootprints = (entries, day) => {
   const vault = useAppStore.getState().vaultPath;
   if (!vault) throw new Error("no vault: 先 __fakeVault([...])");
-  setFootprintIndexForTest(
-    vault,
-    new Map(entries.map((e) => [e.path, e.blocks])),
-  );
+  const index = new Map(entries.map((e) => [e.path, e.blocks]));
+  if (day) setFootprintHistoryForTest(vault, day, index);
+  else setFootprintIndexForTest(vault, index);
 };
 
 /** 足迹调试口:app 同源实例的内部状态(docPath/索引/判定输入)。 */
@@ -700,6 +709,7 @@ window.__fpDebug = () => {
   return {
     vault,
     entries: todayFootprintEntries(),
+    day: footprintDay(),
     revision: footprintRevision(),
     docPath: documentPath(editorApi.view!.state),
     wantDaily: vault ? dailyPathFor(vault, todayStamp()) : null,

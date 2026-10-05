@@ -15,9 +15,11 @@ import {
  * 跨天轮转、内存增量索引与变更广播。与 daily/links.ts 同一套约定——
  * 模块级单例、写盘 300ms 防抖、revision+listeners 广播给编辑器装饰。
  *
- * 「今天记了什么」的唯一事实来源:
+ * 「某天记了什么」的唯一事实来源:
  *  - 基线 = 天切换时刻的全库快照(轮转一次,每天至多一次全库读);
- *  - 足迹 = 当前盘上内容 diff 基线(只对 watcher 报告的脏路径做,1s 防抖);
+ *  - 今日足迹 = 当前盘上内容 diff 基线(只对 watcher 报告的脏路径做,1s 防抖);
+ *  - 历史足迹 = 轮转时把旧基线日的 diff 固化成档案(history[日期][路径]),
+ *    之后只读不重算——打开历史日记据此聚合那一天的足迹;
  *  - 打开今日日记时全量兜底重建一次(覆盖「应用没开着时改的文件」——
  *    watcher 只报运行期变更,重启后没有脏路径可喂)。
  *
@@ -110,6 +112,8 @@ export class FootprintCore {
   /** 基线归属日(YYYY-MM-DD);空串 = 尚未轮转(首次使用/元数据损坏)。 */
   private day = "";
   private baselines = new Map<string, string>();
+  /** 历史足迹档:日期 → 路径 → 当日足迹块。轮转时固化,之后只读。 */
+  private history = new Map<string, Map<string, FootprintBlock[]>>();
   private index = new Map<string, FootprintBlock[]>();
   private dirty = new Set<string>();
   private dirtyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -123,15 +127,32 @@ export class FootprintCore {
   ) {}
 
   /** 载入基线元数据并按需轮转;元数据缺失/损坏按「从未轮转」处理(当天首启
-   *  即全库快照——否则空基线会把整个旧库都算成今天的记录)。 */
+   *  即全库快照——否则空基线会把整个旧库都算成今天的记录)。v1(无历史档)
+   *  照常载入基线,历史档为空——升级前的日子没有档案,不去编造。 */
   async init(): Promise<void> {
     const raw = await this.deps.io.readFile(footprintsFilePath(this.vault));
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as Partial<StoredFootprints>;
-        if (parsed.version === 1 && typeof parsed.day === "string" && parsed.baselines) {
+        // 磁盘上 v1/v2 并存(v1 无 history 字段),形状守卫逐字段验证
+        const parsed = JSON.parse(raw) as {
+          version?: number;
+          day?: string;
+          baselines?: Record<string, string>;
+          history?: Record<string, Record<string, FootprintBlock[]>>;
+        };
+        if (
+          (parsed.version === 1 || parsed.version === 2) &&
+          typeof parsed.day === "string" &&
+          parsed.baselines
+        ) {
           this.day = parsed.day;
           this.baselines = new Map(Object.entries(parsed.baselines));
+          this.history = new Map(
+            Object.entries(parsed.history ?? {}).map(([d, files]) => [
+              d,
+              new Map(Object.entries(files)),
+            ]),
+          );
         }
       } catch {
         // 损坏的元数据当从未轮转:今天立刻重建基线,不影响笔记本体
@@ -158,13 +179,15 @@ export class FootprintCore {
     return this.rotating;
   }
 
-  /** 天切换:全库快照成为新基线,旧足迹作废。跨零点前几分钟写的内容会被
-   *  吞进基线(漏显一次)——分钟级影响,接受;后续可加 mtime 精化。 */
+  /** 天切换:全库快照成为新基线;旧基线日的足迹 diff 固化成历史档,历史
+   *  日记据此聚合。跨零点前几分钟写的内容会被算进旧基线日的档案(漏显一次)
+   *  ——分钟级影响,接受;后续可加 mtime 精化。应用多天没开时,中间的日子
+   *  没有任何快照可 diff,档案缺失——那天打开就是没有足迹区(不编造)。 */
   private async doRotate(): Promise<void> {
     const today = this.deps.today();
     const { files } = await this.deps.io.listFiles();
     if (!this.stillCurrent() || this.deps.today() !== today) return;
-    const baselines: Record<string, string> = {};
+    const snapshot: Record<string, string> = {};
     await Promise.all(
       files.map(async (rel) => {
         const abs = joinPath(this.vault, rel);
@@ -172,12 +195,23 @@ export class FootprintCore {
         const text = await this.deps.io.readFile(abs);
         // 回调自证:换仓或又跨了天(理论不可能,守卫一致)就丢弃
         if (!this.stillCurrent() || this.deps.today() !== today) return;
-        if (text !== null) baselines[abs] = text;
+        if (text !== null) snapshot[abs] = text;
       }),
     );
     if (!this.stillCurrent() || this.deps.today() !== today) return;
+    // 旧基线日的足迹 = 旧基线 diff 当前盘面;与换基线共用同一批读盘文本,
+    // 零额外 IO。首次使用(无旧基线)没有「那一天」,不产生档案。
+    const previousDay = this.day;
+    if (previousDay !== "") {
+      const archived = new Map<string, FootprintBlock[]>();
+      for (const [abs, text] of Object.entries(snapshot)) {
+        const blocks = diffBlocks(this.baselines.get(abs) ?? null, text);
+        if (blocks.length > 0) archived.set(abs, blocks);
+      }
+      this.history.set(previousDay, archived);
+    }
     this.day = today;
-    this.baselines = new Map(Object.entries(baselines));
+    this.baselines = new Map(Object.entries(snapshot));
     this.index.clear();
     markFootprintsChanged();
     this.schedulePersist();
@@ -264,10 +298,34 @@ export class FootprintCore {
 
   /** 今日全部有足迹的文件(按路径排序,widget 渲染顺序稳定)。 */
   todayEntries(): { path: string; blocks: FootprintBlock[] }[] {
-    return [...this.index.entries()]
+    return this.entriesOf(this.index);
+  }
+
+  /** 某日的足迹条目:今日 → 实时索引;历史日 → 固化档案(只读)。
+   *  无记录的日期返回空数组。core 尚未轮转(day 为空串:注入路径/init 空窗)
+   *  时唯一可用的数据面是实时索引,任何日期都走它。 */
+  entriesFor(day: string): { path: string; blocks: FootprintBlock[] }[] {
+    if (day === this.day || this.day === "") return this.todayEntries();
+    return this.entriesOf(this.history.get(day) ?? new Map());
+  }
+
+  private entriesOf(map: Map<string, FootprintBlock[]>): { path: string; blocks: FootprintBlock[] }[] {
+    return [...map.entries()]
       .filter(([, blocks]) => blocks.length > 0)
       .map(([path, blocks]) => ({ path, blocks }))
       .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  /** 跨天后首次访问:完成轮转(旧日档案固化 + 基线换日)。幂等,打开任意
+   *  日记时调用——历史日记也因此能立即看到刚固化的档案。 */
+  async ensureDay(): Promise<void> {
+    await this.rotateIfNeeded();
+  }
+
+  /** 测试/开发钩子:注入某历史日的档案(harness 的 __setFootprints 用)。 */
+  installHistoryForTest(day: string, entries: Map<string, FootprintBlock[]>): void {
+    this.history.set(day, entries);
+    markFootprintsChanged();
   }
 
   get baselineDay(): string {
@@ -286,9 +344,12 @@ export class FootprintCore {
 
   private writeNow(): void {
     const stored: StoredFootprints = {
-      version: 1,
+      version: 2,
       day: this.day,
       baselines: Object.fromEntries(this.baselines),
+      history: Object.fromEntries(
+        [...this.history].map(([d, files]) => [d, Object.fromEntries(files)]),
+      ),
     };
     void this.deps.io
       .writeFile(footprintsFilePath(this.vault), JSON.stringify(stored))
@@ -357,6 +418,16 @@ export function todayFootprintEntries(): { path: string; blocks: FootprintBlock[
   return cache?.todayEntries() ?? [];
 }
 
+/** 某日的足迹条目(今日实时、历史读档);库未加载返回空。 */
+export function footprintEntriesFor(day: string): { path: string; blocks: FootprintBlock[] }[] {
+  return cache?.entriesFor(day) ?? [];
+}
+
+/** 打开任意日记时的轮转值守:跨天后首次访问在这里完成档案固化。幂等。 */
+export async function ensureFootprintDay(): Promise<void> {
+  await cache?.ensureDay();
+}
+
 /** 当前基线归属日;库未加载返回 null。测试与调试用。 */
 export function footprintDay(): string | null {
   return cache?.baselineDay ?? null;
@@ -380,6 +451,16 @@ export function setFootprintIndexForTest(vaultRoot: string, index: Map<string, F
     cache = core;
     core.installIndexForTest(index);
   }
+}
+
+/** harness 调试钩子:注入某历史日的档案(harness 的 __setFootprints 带 day 时)。 */
+export function setFootprintHistoryForTest(
+  vaultRoot: string,
+  day: string,
+  entries: Map<string, FootprintBlock[]>,
+): void {
+  if (!cache || cache.vault !== vaultRoot) setFootprintIndexForTest(vaultRoot, new Map());
+  cache?.installHistoryForTest(day, entries);
 }
 
 export function peekFootprintCore(): FootprintCore | null {

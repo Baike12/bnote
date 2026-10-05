@@ -10,8 +10,15 @@ import { documentPath, setDocPath } from "@/editor/docPath";
 import { todayStamp } from "@/editor/ops";
 import { useAppStore } from "@/state/appStore";
 import { openNote } from "@/app/actions";
-import { dailyPathFor, isDailyPath } from "@/daily/model";
-import { onFootprintsChanged, footprintsFor, todayFootprintEntries, footprintRevision, refreshFootprints } from "./store";
+import { dailyDayOf, dailyPathFor, isDailyPath } from "@/daily/model";
+import {
+  ensureFootprintDay,
+  footprintsFor,
+  footprintEntriesFor,
+  footprintRevision,
+  onFootprintsChanged,
+  refreshFootprints,
+} from "./store";
 import {
   buildFootprintView,
   type FootprintView,
@@ -25,14 +32,15 @@ import {
 } from "./widget";
 
 /**
- * 今日足迹的两个编辑器面:
- *  - 日记侧 footprintZoneExtension:今天的日记文档末尾挂一个块级 widget
+ * 足迹的两个编辑器面:
+ *  - 日记侧 footprintZoneExtension:任意一天的日记文档末尾挂一个块级 widget
  *    (块装饰只能出自 StateField,与 livePreview.blockDecorationsField 同一
- *    约束)。索引为空时不挂——足迹区只在真有内容的那天出现。
- *  - 源文件侧 footprintMarksExtension:今天被收录的块首行打 pip 行装饰
- *    (与 daily/marks.ts 同一套「不参与行内布局」的几何纪律)。
+ *    约束)——今日读实时索引,历史日读轮转固化的档案。当天无足迹时不挂。
+ *  - 源文件侧 footprintMarksExtension:今日被收录的块首行打 pip 行装饰
+ *    (与 daily/marks.ts 同一套「不参与行内布局」的几何纪律;档案日不做 pip,
+ *    pip 的语义始终是「今日足迹已收录到今日日记」)。
  *
- * 索引在编辑器之外(noteDirty/refreshAll 在 store 里写),广播经
+ * 索引在编辑器之外(noteDirty/refreshAll/轮转在 store 里写),广播经
  * onFootprintsChanged 到这里,派发一个带 footprintChanged 的空事务唤醒重算
  * (可能嵌在别的 dispatch 之内,故延到微任务——与 dailyMarks 同款)。
  */
@@ -48,29 +56,26 @@ interface ZoneValue {
   sig: string;
 }
 
-function isTodayDaily(state: EditorState): boolean {
+/** 当前文档是哪一天的日记;非日记文件返回 null。 */
+function activeDailyDay(state: EditorState): string | null {
   const path = documentPath(state);
-  const vaultRoot = useAppStore.getState().vaultPath;
-  return (
-    path !== null &&
-    vaultRoot !== null &&
-    isDailyPath(path) &&
-    path === dailyPathFor(vaultRoot, todayStamp())
-  );
+  return path !== null ? dailyDayOf(path) : null;
 }
 
 function buildZoneValue(state: EditorState): ZoneValue {
-  if (!isTodayDaily(state)) return { decos: Decoration.none, sig: "off" };
-  const entries = todayFootprintEntries();
-  if (entries.length === 0) return { decos: Decoration.none, sig: "empty" };
+  const day = activeDailyDay(state);
+  if (day === null) return { decos: Decoration.none, sig: "off" };
+  const entries = footprintEntriesFor(day);
+  if (entries.length === 0) return { decos: Decoration.none, sig: `empty:${day}` };
   const viewData: FootprintView = buildFootprintView(entries);
-  const widget = new FootprintWidget(viewData, currentFold());
+  const widget = new FootprintWidget(day, viewData, currentFold());
   return {
     decos: Decoration.set([
       // 锚在文档末尾(公式块同款约束:块 widget 锚行首;文档末尾即 doc.length)。
       Decoration.widget({ widget, block: true }).range(state.doc.length),
     ]),
-    sig: `${footprintRevision()}|${foldSignature()}|${state.doc.length}`,
+    // 今日跟着实时索引走;历史档是固化快照,revision 抖动不触发重画。
+    sig: `${day}|${day === todayStamp() ? footprintRevision() : "h"}|${foldSignature()}|${state.doc.length}`,
   };
 }
 
@@ -130,9 +135,10 @@ function wakeView(view: EditorView): void {
   });
 }
 
-/** store 广播 → 唤醒事务;顺带值守「文档变成今日日记」:全量兜底重建索引
- *  (覆盖应用未运行期间的改动——watcher 只报运行期变更,重启后无脏路径可喂)。
- *  refreshFootprints 自带节流,快速来回切文件不重复全库读。 */
+/** store 广播 → 唤醒事务;顺带值守「文档变成日记」:跨天后首次访问在这里
+ *  完成轮转(旧日足迹固化成档案,历史日记立即能显示);今日日记额外全量
+ *  兜底重建索引(覆盖应用未运行期间的改动——watcher 只报运行期变更,重启后
+ *  无脏路径可喂)。refreshFootprints 自带节流,快速来回切文件不重复全库读。 */
 function footprintWakeExtension(): Extension {
   return ViewPlugin.fromClass(
     class {
@@ -150,10 +156,14 @@ function footprintWakeExtension(): Extension {
 
       private async maybeFullRefresh(): Promise<void> {
         const path = documentPath(this.view.state);
-        const vaultRoot = useAppStore.getState().vaultPath;
-        if (!path || !vaultRoot || path !== dailyPathFor(vaultRoot, todayStamp())) return;
-        await refreshFootprints();
+        if (!path || !isDailyPath(path)) return;
+        await ensureFootprintDay();
         wakeView(this.view);
+        const vaultRoot = useAppStore.getState().vaultPath;
+        if (vaultRoot && path === dailyPathFor(vaultRoot, todayStamp())) {
+          await refreshFootprints();
+          wakeView(this.view);
+        }
       }
 
       destroy() {
