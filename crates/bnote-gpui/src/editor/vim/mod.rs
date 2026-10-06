@@ -108,7 +108,6 @@
 pub mod adapter;
 pub mod core;
 pub mod integration;
-pub mod debug_test_tmp;
 pub mod tests;
 
 #[allow(unused_imports)] // the module's public surface (used by integration)

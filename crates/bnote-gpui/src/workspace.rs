@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use bnote_core::markdown::ops as ops;
@@ -39,6 +40,7 @@ use crate::editor::vim::integration::VimBridge;
 use crate::apply_ops::apply_outcome;
 use crate::commands::{COMMANDS, actions};
 use crate::daily_host::{DailyHost, SyncWrite};
+use crate::editor::preview::{PreviewFont, PreviewHost};
 use crate::editor::vim::core::Mode as VimMode;
 use crate::footprint_host::FootprintHost;
 
@@ -96,6 +98,14 @@ pub struct Workspace {
     vim_enabled: bool,
     /// Today as YYYY-MM-DD (local), fixed at window creation.
     today: String,
+    /// Live-preview host: scans on every text/selection change (see
+    /// `editor::preview`) and renders the widgets the snapshot asks for.
+    preview: Rc<PreviewHost>,
+    /// Set by the editor's subscriptions; the push itself happens in
+    /// `render`, the only place with a window to measure fonts in.
+    preview_dirty: bool,
+    /// The selection the last scan saw, to tell a caret move from a repaint.
+    preview_selection: Option<std::ops::Range<usize>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -137,10 +147,31 @@ impl Workspace {
         let cmd_state = cx.new(|cx| CommandState::new(window, cx));
         let files_state = cx.new(|cx| CommandState::new(window, cx));
 
-        // Drive autosave + dirty flag off editor changes.
-        let subscriptions = vec![cx.subscribe(&editor, |this, _editor, _: &InputEvent, cx| {
-            this.on_edited(cx);
-        })];
+        let theme = cx.theme();
+        let preview = Rc::new(PreviewHost::new(PreviewFont {
+            family: theme.mono_font_family.clone(),
+            size: theme.mono_font_size,
+        }));
+        editor.update(cx, |state, cx| {
+            state.set_preview_renderer(Some(preview.clone()), cx);
+        });
+
+        // Drive autosave + dirty flag off editor changes, and refresh the
+        // live preview when either the text or the caret moved.
+        let subscriptions = vec![
+            cx.subscribe(&editor, |this, _editor, _: &InputEvent, cx| {
+                this.preview_dirty = true;
+                this.on_edited(cx);
+            }),
+            cx.observe(&editor, |this, editor, cx| {
+                let selection = editor.read(cx).selected_range();
+                if this.preview_selection.as_ref() != Some(&selection) {
+                    this.preview_selection = Some(selection);
+                    this.preview_dirty = true;
+                    cx.notify();
+                }
+            }),
+        ];
 
         let mut workspace = Self {
             state,
@@ -167,6 +198,9 @@ impl Workspace {
             vim_bridge,
             vim_enabled: false,
             today: today_string(),
+            preview,
+            preview_dirty: true,
+            preview_selection: None,
             _subscriptions: subscriptions,
         };
 
@@ -1274,6 +1308,17 @@ fn line_col_to_byte(text: &str, line: usize, col_chars: usize) -> usize {
 
 impl gpui::Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        if self.preview_dirty {
+            self.preview_dirty = false;
+            let selection = self.editor.read(cx).selected_range();
+            self.preview_selection = Some(selection.clone());
+            let text = self.editor.read(cx).text().to_string();
+            let decorations = self
+                .preview
+                .decorations(&text, &[selection], window, cx);
+            self.editor
+                .update(cx, |state, cx| state.set_preview_decorations(decorations, cx));
+        }
         let theme = cx.theme().clone();
         let footprint_count = self
             .footprint
