@@ -6625,7 +6625,7 @@ mod tests {
 
         // The command mappings: `:w` saves, `:Bnote …` toggles the sidebar,
         // an unknown id lands in the status line.
-        workspace.update_in(cx, |ws, _, cx| {
+        workspace.update_in(cx, |ws, _, _| {
             ws.open_path = Some("note.md".to_string());
             ws.dirty = true;
         });

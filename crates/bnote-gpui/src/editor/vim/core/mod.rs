@@ -11,6 +11,9 @@ pub mod state;
 
 #[allow(unused_imports)] // re-exported for adapters/benches
 pub use doc::VimText;
+// `feed` is what the engine's own tests drive; the shell goes through
+// `feed_apply`, which also writes the planned mode back into the state.
+#[allow(unused_imports)]
 pub use exec::{feed, feed_apply};
 pub use ops::{HostContext, HostIntent, Outcome};
 pub use key::Key;
