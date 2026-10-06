@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use bnote_core::agent::AgentConfig;
+use bnote_core::agent::tools::StudyContent;
 use bnote_core::state::AppState;
 use ::gpui::{AppContext as _, Context, Entity, Focusable, Window, px};
 use ::gpui::prelude::FluentBuilder as _;
@@ -44,6 +45,10 @@ pub struct AgentPanel {
     busy: bool,
     model: String,
     error: Option<String>,
+    /// The study content the session is opened with (TS passes `study` to
+    /// `agent_start_session`; the system prompt and `read_study_content` use
+    /// it). A change restarts the session.
+    study: Option<StudyContent>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -73,6 +78,7 @@ impl AgentPanel {
             busy: false,
             model,
             error: None,
+            study: None,
             _subscriptions: subscriptions,
         }
     }
@@ -82,11 +88,12 @@ impl AgentPanel {
             return;
         }
         let state = self.state.clone();
+        let study = self.study.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    bnote_core::commands::agent::agent_start_session(&state, None)
+                    bnote_core::commands::agent::agent_start_session(&state, study)
                 })
                 .await;
             this.update(cx, |this, cx| match result {
@@ -120,6 +127,19 @@ impl AgentPanel {
             .ok();
         })
         .detach();
+    }
+
+    /// The study content the session is grounded in (the study layout's
+    /// middle pane). A different content restarts the session, exactly like
+    /// the TS effect keyed on `studyContent`.
+    pub fn set_study(&mut self, study: Option<StudyContent>, cx: &mut Context<Self>) {
+        self.study = study;
+        self.session_id = None;
+        self.items.clear();
+        self.pending_send = None;
+        self.error = None;
+        self.busy = false;
+        cx.notify();
     }
 
     /// UI entry: push the user bubble, then dispatch (starting a session

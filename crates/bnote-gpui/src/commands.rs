@@ -46,6 +46,7 @@ pub mod actions {
             PythonRunStop,
             PythonToggleLsp,
             PythonCreateUvEnv,
+            ToggleStudyMode,
         ]
     );
 }
@@ -99,4 +100,6 @@ pub const COMMANDS: &[CommandDef] = &[
     CommandDef { id: "python.run-stop", label: "Python: 停止运行", key: None },
     CommandDef { id: "python.toggle-lsp", label: "Python: 开/关当前项目的 ty 类型检查", key: None },
     CommandDef { id: "python.create-uv-env", label: "Python: 为当前项目创建 uv 环境", key: None },
+    // 学习模式:左问 agent、中看内容、右记笔记(TS `view.toggle-study-mode`)。
+    CommandDef { id: "view.toggle-study-mode", label: "进入 / 退出学习模式", key: Some("cmd-shift-s") },
 ];

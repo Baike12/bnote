@@ -99,6 +99,27 @@ struct TreeMenu {
     y: f32,
 }
 
+/// What the study pane shows (TS `StudyContent`).
+#[derive(Clone, Debug, PartialEq)]
+enum StudyContent {
+    /// A note in the vault: the converted PDF's markdown, or a dropped `.md`.
+    Markdown { path: String, title: String },
+    /// A web page. The shell has no web view: the pane shows the address and
+    /// hands the agent the URL (TS renders it in a native child webview).
+    Url { url: String, title: String },
+}
+
+/// TS `StudyLayout.normalizeSplit` + `DEFAULT_SETTINGS.studySplit`: the two
+/// stored fractions (agent, content), clamped so a hand-edited config cannot
+/// squeeze a pane to nothing. The notes pane takes the remainder.
+const STUDY_SPLIT_DEFAULT: [f32; 2] = [0.24, 0.44];
+
+fn normalize_split(split: [f32; 2]) -> [f32; 2] {
+    let agent = split[0].clamp(0.05, 0.90);
+    let content = split[1].clamp(0.05, 0.95 - agent);
+    [agent, content]
+}
+
 /// One output chunk of a python run (one backend flush, not one line).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PyStream {
@@ -381,6 +402,30 @@ pub struct Workspace {
     py_lsp: Entity<PyLspHost>,
     /// The sync debounce generation (only the newest quiet period syncs).
     py_lsp_seq: u64,
+    /// Study mode (⌘⇧S; TS `StudyLayout.tsx`): agent | content | notes.
+    /// Session-only, like the TS store flag.
+    study_mode: bool,
+    /// `settings.studySplit`: the agent and content panes' fractions of the
+    /// study layout's width; the notes pane takes the remainder.
+    study_split: [f32; 2],
+    /// What the middle pane shows; survives leaving and re-entering study mode
+    /// (the TS keeps it in the store too).
+    study_content: Option<StudyContent>,
+    /// The middle pane's read-only editor and its own live preview (the TS
+    /// mounts a second CM6 view with the same extensions).
+    study_editor: Entity<EditorState>,
+    study_preview: Rc<PreviewHost>,
+    study_styles: TextDecorationCollection,
+    study_dirty: bool,
+    study_rows: Option<std::ops::Range<usize>>,
+    /// The study panes' resize state (fractions are recomputed from its sizes
+    /// on every change and persisted).
+    study_resize: Entity<gpui_kit::component::resizable::ResizableState>,
+    /// Which content the agent session was opened with (`None` = no study
+    /// content when the session started).
+    study_session_for: Option<String>,
+    /// The toolbar's URL box (TS `input.content-url`).
+    study_url_state: Entity<InputState>,
     /// The settings modal (⌘,): TS `SettingsModal.tsx`'s tabs this shell
     /// consumes — general / editor / vim / snippets. Hotkeys, IME, quick-add
     /// and the agent tab arrive with their own ports.
@@ -618,6 +663,34 @@ impl Workspace {
             });
         }
 
+        // The study pane's read-only view: the same preview machinery, a
+        // second instance (TS mounts a second CM6 view with the same
+        // extensions). Read-only: nothing typed there can be saved, matching
+        // the TS (its change/cursor callbacks are no-ops). Built before the
+        // `cx.theme()` binding below, which keeps `cx` borrowed for the rest
+        // of the constructor.
+        let study_font = {
+            let theme = cx.theme();
+            PreviewFont {
+                family: theme.mono_font_family.clone(),
+                size: theme.mono_font_size,
+            }
+        };
+        let study_preview = Rc::new(PreviewHost::new(study_font));
+        let study_editor = cx.new(|cx| {
+            let mut state = EditorState::new(window, cx).language("markdown").soft_wrap(true);
+            state.set_readonly(true, cx);
+            state
+        });
+        let study_styles = study_editor.update(cx, |state, cx| {
+            state.create_decorations_collection(Vec::new(), cx)
+        });
+        study_editor.update(cx, |state, cx| {
+            state.set_preview_renderer(Some(study_preview.clone()), cx)
+        });
+        let study_resize = cx.new(|_| gpui_kit::component::resizable::ResizableState::default());
+        let study_url_state = cx.new(|cx| InputState::new(window, cx).placeholder("输入网址打开…"));
+
         let theme = cx.theme();
         let preview = Rc::new(PreviewHost::new(PreviewFont {
             family: theme.mono_font_family.clone(),
@@ -634,6 +707,18 @@ impl Workspace {
         let preview_styles = editor.update(cx, |state, cx| {
             state.create_decorations_collection(Vec::new(), cx)
         });
+        let study_split = normalize_split(
+            startup
+                .get("settings")
+                .and_then(|s| s.get("studySplit"))
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    let agent = arr.first()?.as_f64()? as f32;
+                    let content = arr.get(1)?.as_f64()? as f32;
+                    Some([agent, content])
+                })
+                .unwrap_or(STUDY_SPLIT_DEFAULT),
+        );
 
         let auto_number = setting("autoNumberHeadings").unwrap_or(false);
         let typewriter = setting("typewriter").unwrap_or(false);
@@ -688,6 +773,15 @@ impl Workspace {
                     this.ime_sync(cx);
                 }
             }),
+            // The study panes' drag release: persist the fractions (TS's
+            // pointer-up `patchSettings({ studySplit })`).
+            cx.subscribe_in(
+                &study_resize,
+                window,
+                |this, _state, _event: &gpui_kit::component::resizable::ResizablePanelEvent, _window, cx| {
+                    this.persist_study_split(cx);
+                },
+            ),
             // The modal's code-block-language field: `set_value` is silent, so
             // every Change here is the user's typing.
             cx.subscribe(&lang_state, |this, input, event: &InputEvent, cx| {
@@ -700,6 +794,16 @@ impl Workspace {
                 }
                 this.code_block_lang = lang.clone();
                 this.persist_setting("codeBlockLang", serde_json::json!(lang), cx);
+            }),
+            // The study toolbar's URL box: Enter opens the address (TS
+            // `openUrl`).
+            cx.subscribe_in(&study_url_state, window, |this, input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    let url = input.read(cx).value().trim().to_string();
+                    if !url.is_empty() {
+                        this.open_study_url(url, cx);
+                    }
+                }
             }),
             // The rename dialog's field: Enter commits.
             cx.subscribe(&rename_state, |this, _input, event: &InputEvent, cx| {
@@ -791,6 +895,17 @@ impl Workspace {
             py_scroll: ScrollHandle::default(),
             py_lsp,
             py_lsp_seq: 0,
+            study_mode: false,
+            study_split,
+            study_content: None,
+            study_editor,
+            study_preview,
+            study_styles,
+            study_dirty: false,
+            study_rows: None,
+            study_resize,
+            study_session_for: None,
+            study_url_state,
             qa_open: false,
             qa_naming: false,
             qa_picked: None,
@@ -2248,6 +2363,368 @@ impl Workspace {
             PyStream::Stderr => theme.danger,
             PyStream::System => theme.muted_foreground,
         }
+    }
+
+    /// The notes column: the editor takes the height the run panel does not
+    /// (TS `EditorPane`'s editor-host + `<PythonRunPanel />`).
+    fn render_editor_column(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme().clone();
+        let editor = Editor::new(&self.editor)
+            .bordered(false)
+            .p_0()
+            .h(relative(1.))
+            .font_family(theme.mono_font_family.clone())
+            .text_size(theme.mono_font_size)
+            .flex_1();
+        let mut column = v_flex().size_full().min_h_0().child(editor.into_any_element());
+        if let Some(panel) = self.render_python_panel(cx) {
+            column = column.child(panel);
+        }
+        column.into_any_element()
+    }
+
+    // -----------------------------------------------------------------------
+    // 学习模式(TS `StudyLayout.tsx`:agent | 内容 | 笔记)
+    // -----------------------------------------------------------------------
+
+    /// ⌘⇧S (TS `view.toggle-study-mode`): enter or leave the three-pane study
+    /// layout. Session-only, like the TS store flag; the split is persisted.
+    fn toggle_study_mode(
+        &mut self,
+        _: &actions::ToggleStudyMode,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.study_mode = !self.study_mode;
+        self.status = if self.study_mode {
+            "学习模式:左问 agent、中看内容、右记笔记".to_string()
+        } else {
+            "退出学习模式".to_string()
+        };
+        if self.study_mode {
+            // TS restarts the agent session when the content changes; entering
+            // the mode is when the current content first reaches the session.
+            self.sync_study_session(cx);
+        }
+        cx.notify();
+    }
+
+    /// "选择 PDF 文件" (TS's file dialog): pick, convert, open the markdown.
+    fn pick_study_pdf(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择 PDF 文件".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let picked = receiver
+                .await
+                .ok()
+                .and_then(|result| result.ok())
+                .flatten()
+                .and_then(|paths| paths.into_iter().next());
+            let Some(path) = picked else { return };
+            this.update_in(cx, |this, _window, cx| this.convert_study_pdf(path, cx))
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A file dropped on the window (TS `handleDrop`): a PDF converts, a
+    /// markdown file opens directly; anything else is reported and ignored.
+    fn on_study_drop(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let pick = |wanted: &[&str]| {
+            paths.iter().find(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| wanted.contains(&ext.to_ascii_lowercase().as_str()))
+                    .unwrap_or(false)
+            })
+        };
+        if let Some(pdf) = pick(&["pdf"]) {
+            let pdf = pdf.clone();
+            if !self.study_mode {
+                self.study_mode = true;
+            }
+            self.convert_study_pdf(pdf, cx);
+            return;
+        }
+        if let Some(md) = pick(&["md", "markdown", "txt"]) {
+            let md = md.clone();
+            if !self.study_mode {
+                self.study_mode = true;
+            }
+            let title = md
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+                .unwrap_or_default();
+            self.load_study_markdown(md.to_string_lossy().to_string(), title, cx);
+            let _ = window;
+            return;
+        }
+        self.status = "请拖入 PDF 或 Markdown 文件".to_string();
+        cx.notify();
+    }
+
+    /// PDF → markdown in the vault (`pdfs/<stem>.md`, figures under
+    /// `pdfs/assets/<stem>/`), then open the result in the middle pane.
+    fn convert_study_pdf(&mut self, pdf: PathBuf, cx: &mut Context<Self>) {
+        if self.vault_root.is_none() {
+            self.status = "先打开一个仓库".to_string();
+            cx.notify();
+            return;
+        }
+        self.status = "正在转换 PDF…".to_string();
+        self.study_content = None;
+        cx.notify();
+        let state = self.state.clone();
+        let pdf = pdf.to_string_lossy().to_string();
+        cx.spawn(async move |this, cx| {
+            let converted = cx
+                .background_executor()
+                .spawn(async move {
+                    bnote_core::commands::agent::convert_pdf_to_markdown(
+                        &state,
+                        pdf,
+                        "pdfs".to_string(),
+                    )
+                })
+                .await;
+            this.update_in(cx, |this, _window, cx| match converted {
+                Ok(value) => {
+                    let md = value
+                        .get("mdPath")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let title = value
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let pages = value.get("pages").and_then(|v| v.as_u64()).unwrap_or(0);
+                    this.status = format!("转换完成:{pages} 页");
+                    this.load_study_markdown(md, title, cx);
+                }
+                Err(e) => {
+                    this.status = format!("转换失败: {e}");
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Show a vault note in the study pane (a converted PDF, or any markdown).
+    fn load_study_markdown(&mut self, path: String, title: String, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        let read = path.clone();
+        cx.spawn(async move |this, cx| {
+            let text = cx
+                .background_executor()
+                .spawn(async move { bnote_core::commands::files::read_file(&state, read) })
+                .await;
+            this.update_in(cx, |this, window, cx| match text {
+                Ok(text) => {
+                    this.study_editor
+                        .update(cx, |editor, cx| editor.set_value(text, window, cx));
+                    // Figures resolve against the study note's own directory
+                    // (pdf2md writes `assets/<stem>/…`), like the TS.
+                    let dir = std::path::Path::new(&path).parent().map(|p| p.to_path_buf());
+                    this.study_preview.images().set_doc_dir(dir);
+                    this.study_dirty = true;
+                    this.study_rows = None;
+                    this.study_content = Some(StudyContent::Markdown { path, title });
+                    this.sync_study_session(cx);
+                    cx.notify();
+                }
+                Err(e) => {
+                    this.status = format!("打开失败: {e}");
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The URL box (TS opens it in a native child webview; this shell has no
+    /// web view). The pane shows the address, the browser opens it, and the
+    /// agent can still read it (`read_study_content` fetches the page).
+    fn open_study_url(&mut self, url: String, cx: &mut Context<Self>) {
+        let url = if url.contains("://") { url } else { format!("https://{url}") };
+        let title = url
+            .split("://")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or(&url)
+            .to_string();
+        cx.open_url(&url);
+        self.study_content = Some(StudyContent::Url { url, title });
+        self.sync_study_session(cx);
+        cx.notify();
+    }
+
+    /// Close the middle pane's content (TS's ✕).
+    fn close_study_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.study_content = None;
+        self.study_editor
+            .update(cx, |editor, cx| editor.set_value("", window, cx));
+        self.sync_study_session(cx);
+        cx.notify();
+    }
+
+    /// The agent session carries the study content (TS restarts the session
+    /// when it changes; `read_study_content` grounds the answers in it).
+    fn sync_study_session(&mut self, cx: &mut Context<Self>) {
+        let key = match &self.study_content {
+            Some(StudyContent::Markdown { path, .. }) => Some(format!("md:{path}")),
+            Some(StudyContent::Url { url, .. }) => Some(format!("url:{url}")),
+            None => None,
+        };
+        if self.study_session_for == key {
+            return;
+        }
+        self.study_session_for = key;
+        let study = self.study_content.clone().map(|content| match content {
+            StudyContent::Markdown { path, title } => {
+                bnote_core::agent::tools::StudyContent::Markdown { path, title }
+            }
+            StudyContent::Url { url, title } => {
+                bnote_core::agent::tools::StudyContent::Url { url, title }
+            }
+        });
+        self.agent.update(cx, |panel, cx| panel.set_study(study, cx));
+    }
+
+    /// The study panes' resize handler (TS's pointer-up persist): the two
+    /// panes' fractions of the layout width, clamped, into `settings.studySplit`.
+    fn persist_study_split(&mut self, cx: &mut Context<Self>) {
+        let width: f32 = self.study_resize.read(cx).container_size().into();
+        if width <= 0. {
+            return;
+        }
+        let sizes = self.study_resize.read(cx).sizes().clone();
+        let Some((agent, content)) = sizes.first().zip(sizes.get(1)) else {
+            return;
+        };
+        let agent: f32 = (*agent).into();
+        let content: f32 = (*content).into();
+        let split = normalize_split([agent / width, content / width]);
+        if split == self.study_split {
+            return;
+        }
+        self.study_split = split;
+        self.persist_setting(
+            "studySplit",
+            serde_json::json!([split[0], split[1]]),
+            cx,
+        );
+    }
+
+    /// The middle pane: the toolbar (title, URL box, ✕) and the content.
+    fn render_study_content(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme().clone();
+        let title = match &self.study_content {
+            Some(StudyContent::Markdown { title, .. }) => title.clone(),
+            Some(StudyContent::Url { title, .. }) => title.clone(),
+            None => "学习内容".to_string(),
+        };
+        let mut toolbar = h_flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(Label::new(title).text_sm())
+            .child(div().flex_1());
+        let url_state = self.study_url_state.clone();
+        toolbar = toolbar.child(div().w(px(240.)).child(Input::new(&url_state).h(px(26.)).bordered(false)));
+        toolbar = toolbar.child(
+            Button::new("study-url-open")
+                .ghost()
+                .label("打开网址")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let url = this.study_url_state.read(cx).value().trim().to_string();
+                    let _ = window;
+                    if !url.is_empty() {
+                        this.open_study_url(url, cx);
+                    }
+                })),
+        );
+        if self.study_content.is_some() {
+            toolbar = toolbar.child(
+                Button::new("study-close")
+                    .ghost()
+                    .label("✕")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_study_content(window, cx)
+                    })),
+            );
+        }
+
+        let body: gpui::AnyElement = match self.study_content.clone() {
+            Some(StudyContent::Markdown { .. }) => Editor::new(&self.study_editor)
+                .bordered(false)
+                .p_0()
+                .h(relative(1.))
+                .font_family(theme.mono_font_family.clone())
+                .text_size(theme.mono_font_size)
+                .into_any_element(),
+            Some(StudyContent::Url { url, .. }) => v_flex()
+                .gap_2()
+                .p_6()
+                .child(Label::new("网页已在浏览器打开(本应用没有内嵌 web 视图)"))
+                .child(
+                    Label::new(url)
+                        .text_sm()
+                        .text_color(theme.muted_foreground),
+                )
+                .into_any_element(),
+            None => v_flex()
+                .gap_3()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .child(Label::new("拖入或选择 PDF 开始学习"))
+                .child(
+                    Label::new("PDF 会转换成 Markdown(公式转为 LaTeX、图表原位保留)")
+                        .text_sm()
+                        .text_color(theme.muted_foreground),
+                )
+                .child(
+                    Button::new("study-pick-pdf")
+                        .label("选择 PDF 文件")
+                        .on_click(cx.listener(|this, _, _, cx| this.pick_study_pdf(cx))),
+                )
+                .into_any_element(),
+        };
+
+        v_flex()
+            .size_full()
+            .min_w_0()
+            .child(toolbar)
+            .child(div().flex_1().min_h_0().child(body))
+            .into_any_element()
+    }
+
+    /// The three-pane study layout. Widths come from the stored fractions on
+    /// first layout; the kit's resizable keeps them proportional afterwards.
+    fn render_study_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let width: f32 = window.bounds().size.width.into();
+        let agent_w = px((width * self.study_split[0]).round());
+        let content_w = px((width * self.study_split[1]).round());
+        let notes = self.render_editor_column(window, cx);
+        h_resizable("study-layout")
+            .with_state(&self.study_resize)
+            .child(resizable_panel().size(agent_w).size_range(px(220.)..gpui::Pixels::MAX).child(self.agent.clone()))
+            .child(resizable_panel().size(content_w).size_range(px(260.)..gpui::Pixels::MAX).child(self.render_study_content(window, cx)))
+            .child(resizable_panel().size_range(px(220.)..gpui::Pixels::MAX).child(notes))
+            .into_any_element()
     }
 
     // -----------------------------------------------------------------------
@@ -3947,6 +4424,59 @@ impl Workspace {
         }
     }
 
+    /// The study pane's scan, the notes pane's protocol for the second
+    /// host/editor pair (see the render-time block for the notes pane).
+    fn refresh_study_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.study_content.is_none() {
+            return;
+        }
+        let study_width = self.study_editor.read(cx).input_bounds().size.width;
+        let study_visible = self.study_editor.read(cx).visible_byte_range();
+        let rows = self.study_editor.read(cx).visible_row_range();
+        if !(self.study_dirty
+            || self.study_preview.needs_rescan(study_width)
+            || self.study_preview.needs_rescan_for(study_visible.as_ref())
+            || rows != self.study_rows)
+        {
+            return;
+        }
+        self.study_dirty = false;
+        self.study_rows = rows;
+        let text = self.study_editor.read(cx).text().to_string();
+        let selection = self.study_editor.read(cx).selected_range();
+        let column = self.study_preview.text_column(study_width, &text, window);
+        let decorations = self.study_preview.decorations(
+            &text,
+            &[selection],
+            column,
+            study_visible.as_ref(),
+            window,
+            cx,
+        );
+        self.study_styles.set(decorations.styles, cx);
+        self.study_editor.update(cx, |state, cx| {
+            state.set_preview_decorations(decorations.decorations, cx)
+        });
+        for request in self.study_preview.images().take_pending() {
+            cx.spawn(async move |this, cx| {
+                let outcome = cx
+                    .background_executor()
+                    .spawn(async move { editor_images::load(&request) })
+                    .await;
+                this.update_in(cx, |this, _window, cx| {
+                    // The store checks its own key and generation, so a stale
+                    // load cannot land in the current snapshot.
+                    if this.study_preview.images().finish(outcome) {
+                        this.study_dirty = true;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
     /// Drops cached images the vault watcher reports as changed (a re-exported
     /// preview, an edited attachment). The next scan loads them again; until
     /// then the source text stays visible, so nothing flickers to a stale
@@ -3956,7 +4486,9 @@ impl Workspace {
             return;
         };
         let store = self.preview.images();
+        let study = self.study_preview.images();
         let mut hit = false;
+        let mut study_hit = false;
         for path in paths {
             // The watcher reports vault-relative and absolute paths both.
             let abs = if std::path::Path::new(path).is_absolute() {
@@ -3967,6 +4499,13 @@ impl Workspace {
             if store.invalidate_path(&abs) {
                 hit = true;
             }
+            // The study pane's figures come from the same vault.
+            if study.invalidate_path(&abs) {
+                study_hit = true;
+            }
+        }
+        if study_hit {
+            self.study_dirty = true;
         }
         if hit {
             self.preview_dirty = true;
@@ -4500,6 +5039,7 @@ pub(crate) fn action_for(id: &str) -> Option<Box<dyn gpui::Action>> {
         "python.run-stop" => Box::new(a::PythonRunStop),
         "python.toggle-lsp" => Box::new(a::PythonToggleLsp),
         "python.create-uv-env" => Box::new(a::PythonCreateUvEnv),
+        "view.toggle-study-mode" => Box::new(a::ToggleStudyMode),
         _ => return None,
     })
 }
@@ -4545,6 +5085,7 @@ pub(crate) fn keybinding_for(id: &str, key: &str) -> Option<gpui::KeyBinding> {
         "python.run-stop" => gpui::KeyBinding::new(key, a::PythonRunStop, None),
         "python.toggle-lsp" => gpui::KeyBinding::new(key, a::PythonToggleLsp, None),
         "python.create-uv-env" => gpui::KeyBinding::new(key, a::PythonCreateUvEnv, None),
+        "view.toggle-study-mode" => gpui::KeyBinding::new(key, a::ToggleStudyMode, None),
         _ => return None,
     })
 }
@@ -4568,7 +5109,9 @@ fn line_col_to_byte(text: &str, line: usize, col_chars: usize) -> usize {
     byte + line_text.chars().take(col_chars).map(|c| c.len_utf8()).sum::<usize>()
 }
 
+
 impl gpui::Render for Workspace {
+
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         // Heading auto-numbering runs here, the first place with a window, and
         // before the preview scan below so that scan shapes the numbered text
@@ -4622,6 +5165,7 @@ impl gpui::Render for Workspace {
             self.snippet_marks_rows = rows;
             self.snippets.refresh_marks(&self.editor, window, cx);
         }
+        self.refresh_study_preview(window, cx);
         let theme = cx.theme().clone();
         let footprint_count = self
             .footprint
@@ -4629,40 +5173,30 @@ impl gpui::Render for Workspace {
             .map(|fp| fp.today_entries().len())
             .unwrap_or(0);
 
-        let editor = Editor::new(&self.editor)
-            .bordered(false)
-            .p_0()
-            .h(relative(1.))
-            .font_family(theme.mono_font_family.clone())
-            .text_size(theme.mono_font_size)
-            .flex_1();
-
-        // The editor column: the editor takes the height the run panel does
-        // not (TS `EditorPane`'s editor-host + `<PythonRunPanel />`).
-        let mut editor_col = v_flex().size_full().min_h_0().child(editor.into_any_element());
-        if let Some(panel) = self.render_python_panel(cx) {
-            editor_col = editor_col.child(panel);
-        }
-
         let mut main = v_flex()
             .size_full();
 
-        if self.sidebar_open && self.vault_root.is_some() {
-            main = main.child(
-                h_resizable("main")
-                    .child(
-                        resizable_panel()
-                            .size(px(240.))
-                            .child(self.render_file_tree(window, cx)),
-                    )
-                    .child(editor_col.into_any_element()),
-            );
+        if self.study_mode {
+            main = main.child(self.render_study_layout(window, cx));
         } else {
-            main = main.child(editor_col.into_any_element());
-        }
+            let editor_col = self.render_editor_column(window, cx);
+            if self.sidebar_open && self.vault_root.is_some() {
+                main = main.child(
+                    h_resizable("main")
+                        .child(
+                            resizable_panel()
+                                .size(px(240.))
+                                .child(self.render_file_tree(window, cx)),
+                        )
+                        .child(editor_col),
+                );
+            } else {
+                main = main.child(editor_col);
+            }
 
-        if self.agent_open {
-            main = main.child(div().w(px(360.)).h_full().child(self.agent.clone()));
+            if self.agent_open {
+                main = main.child(div().w(px(360.)).h_full().child(self.agent.clone()));
+            }
         }
 
         let palette = if self.palette.is_some() { self.render_palette(cx) } else { None };
@@ -4717,6 +5251,12 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::stop_python_run))
             .on_action(cx.listener(Self::toggle_python_lsp))
             .on_action(cx.listener(Self::create_py_uv_env))
+            .on_action(cx.listener(Self::toggle_study_mode))
+            // Dragging a file onto the window opens it in the study pane (TS
+            // `ContentPane`'s `onDragDropEvent`); a PDF converts first.
+            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
+                this.on_study_drop(paths.0.to_vec(), window, cx);
+            }))
             // Esc closes the settings modal from anywhere: it takes no focus
             // of its own, so the handler sits on the root — the one element
             // every key dispatch passes through (the link panel's own capture
@@ -5090,9 +5630,12 @@ mod gate_tests {
 mod tests {
     use super::{
         EditorState, InputEvent, PY_RUN_MAX_LINES, PY_RUN_TRIM_TO, PyRunState, PyStatus, PyStream,
-        TreeMenuItem, Workspace, action_for, actions, apply_edits_keeping_cursor, keybinding_for,
-        numbering, should_schedule_renumber, wikilink, COMMANDS,
+        StudyContent, TreeMenuItem, Workspace, action_for, actions, apply_edits_keeping_cursor,
+        keybinding_for, load_config_value, normalize_split, numbering, should_schedule_renumber,
+        wikilink, COMMANDS,
     };
+    use gpui::px;
+    use std::path::PathBuf;
     use crate::ime_host::{CurrentSource, ImeServices, Switcher};
     use crate::python_lsp::PyLspServices;
     use gpui_kit::base::input as bc_diag;
@@ -5686,6 +6229,181 @@ mod tests {
         });
         cx.run_until_parked();
         (workspace, cx)
+    }
+
+    /// TS `StudyLayout.normalizeSplit`: a hand-edited config cannot squeeze a
+    /// pane out of existence.
+    #[test]
+    fn the_study_split_clamps_like_the_ts() {
+        assert_eq!(normalize_split([0.24, 0.44]), [0.24, 0.44]);
+        assert_eq!(normalize_split([-1.0, 2.0]), [0.05, 0.90]);
+        let tight = normalize_split([0.90, 0.90]);
+        assert_eq!(tight[0], 0.90);
+        assert!(
+            (tight[1] - 0.05).abs() < 1e-5,
+            "the content pane keeps room beside a 90% agent pane: {tight:?}"
+        );
+        assert_eq!(normalize_split([0.0, 0.0]), [0.05, 0.05]);
+    }
+
+    /// ⌘⇧S keeps the note (the notes pane is the same editor), shows the empty
+    /// study pane, and the split persists through the panes' resize state.
+    #[gpui::test]
+    fn the_study_mode_toggles_keeps_the_note_and_persists_the_split(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        let doc = "# 笔记\n\n正文\n";
+        let abs = workspace.update_in(cx, |ws, window, cx| {
+            // A real note on disk, so ⌘⇧S has something to keep.
+            let root = ws.vault_root.clone().expect("the fixture's vault");
+            std::fs::write(root.join("note.md"), doc).expect("the note");
+            ws.open_path = Some("note.md".to_string());
+            ws.editor.update(cx, |st, cx| st.set_value(doc, window, cx));
+            ws.py_lsp_set_path(cx);
+            ws.open_note_abs().expect("the note's path")
+        });
+        let _ = abs;
+
+        assert!(COMMANDS.iter().any(|def| {
+            def.id == "view.toggle-study-mode" && def.key == Some("cmd-shift-s")
+        }));
+        assert!(action_for("view.toggle-study-mode")
+            .is_some_and(|a| a.partial_eq(&actions::ToggleStudyMode)));
+
+        cx.dispatch_action(actions::ToggleStudyMode);
+        workspace.read_with(cx, |ws, cx| {
+            assert!(ws.study_mode, "⌘⇧S enters study mode");
+            assert_eq!(
+                ws.editor.read(cx).value(),
+                doc,
+                "the notes pane is the same editor: the note survives"
+            );
+            assert!(ws.study_content.is_none(), "the middle pane starts empty");
+            assert!(ws.study_session_for.is_none(), "no study content for the session yet");
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // The panes' drag release (the kit emits Resized) persists fractions.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.study_resize.update(cx, |state, cx| {
+                state.resize_panel(0, px(400.), window, cx);
+            });
+        });
+        cx.run_until_parked();
+        let persisted = workspace.read_with(cx, |ws, _| {
+            let cfg = load_config_value(&ws.state);
+            cfg.get("settings")
+                .and_then(|s| s.get("studySplit"))
+                .cloned()
+                .expect("studySplit persisted")
+        });
+        let arr = persisted.as_array().expect("an array");
+        assert_eq!(arr.len(), 2);
+        assert!(
+            workspace.read_with(cx, |ws, _| ws.study_split[0]) > 0.05,
+            "the drag moved the first pane: {:?}",
+            arr
+        );
+
+        cx.dispatch_action(actions::ToggleStudyMode);
+        workspace.read_with(cx, |ws, cx| {
+            assert!(!ws.study_mode);
+            assert_eq!(ws.editor.read(cx).value(), doc, "and back out again");
+        });
+    }
+
+    /// The middle pane loads a study note from the vault (the shape a
+    /// converted PDF takes: a markdown file with figures beside it) and hands
+    /// it to the agent session.
+    #[gpui::test]
+    fn the_study_pane_loads_a_note_and_grounds_the_agent(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        let study_rel = "pdfs/paper.md";
+        let body = "# Paper\n\n![fig](assets/paper/f1.png)\n\n$$x^2$$\n";
+        let abs = workspace.update_in(cx, |ws, _, _| {
+            let root = ws.vault_root.clone().expect("the fixture's vault");
+            std::fs::create_dir_all(root.join("pdfs")).expect("the pdfs folder");
+            std::fs::write(root.join(study_rel), body).expect("the study note");
+            root.join(study_rel).to_string_lossy().to_string()
+        });
+
+        // Study mode on, so the middle pane is really laid out (its editor
+        // gets bounds and visible rows).
+        cx.dispatch_action(actions::ToggleStudyMode);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        workspace.update_in(cx, |ws, _, cx| ws.load_study_markdown(abs, "Paper".to_string(), cx));
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(
+                ws.study_editor.read(cx).value(),
+                body,
+                "the middle pane shows the study note"
+            );
+            match &ws.study_content {
+                Some(StudyContent::Markdown { path, title }) => {
+                    assert!(path.ends_with("pdfs/paper.md"));
+                    assert_eq!(title, "Paper");
+                }
+                other => panic!("expected markdown content, got {other:?}"),
+            }
+            assert!(
+                ws.study_session_for
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with("md:")),
+                "the agent session is grounded in the note: {:?}",
+                ws.study_session_for
+            );
+        });
+
+        // The pane renders (the editor + the toolbar) without panicking, and
+        // the frame scans it: the dirty flag is consumed and the visible rows
+        // are recorded.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        workspace.read_with(cx, |ws, _| {
+            assert!(!ws.study_dirty, "the frame's scan consumed the flag");
+            assert!(ws.study_rows.is_some(), "and it ran for the new document");
+        });
+
+        // ✕ closes the content and un-grounds the session.
+        workspace.update_in(cx, |ws, window, cx| ws.close_study_content(window, cx));
+        workspace.read_with(cx, |ws, cx| {
+            assert!(ws.study_content.is_none());
+            assert_eq!(ws.study_editor.read(cx).value(), "");
+            assert!(ws.study_session_for.is_none());
+        });
+    }
+
+    /// A dropped markdown opens in the pane (and turns study mode on); a
+    /// dropped file of neither kind is reported.
+    #[gpui::test]
+    fn a_dropped_file_opens_in_the_study_pane(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        let body = "# Dropped\n\n正文\n";
+        let md = workspace.update_in(cx, |ws, _, _| {
+            let root = ws.vault_root.clone().expect("the fixture's vault");
+            std::fs::write(root.join("dropped.md"), body).expect("the dropped note");
+            root.join("dropped.md")
+        });
+
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.on_study_drop(vec![md], window, cx)
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, cx| {
+            assert!(ws.study_mode, "a drop enters study mode");
+            assert_eq!(ws.study_editor.read(cx).value(), body);
+            match &ws.study_content {
+                Some(StudyContent::Markdown { title, .. }) => assert_eq!(title, "dropped"),
+                other => panic!("expected markdown content, got {other:?}"),
+            }
+        });
+
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.on_study_drop(vec![PathBuf::from("/tmp/photo.png")], window, cx)
+        });
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.status, "请拖入 PDF 或 Markdown 文件");
+        });
     }
 
     /// The ty diagnostics event lands on the editor's own diagnostic set (the
