@@ -1,0 +1,922 @@
+//! End-to-end rule tests: the ported oracle cases from
+//! `livePreview.activity.test.ts`, one focused test per rule, and the
+//! invariant sweep over a mixed document.
+
+use std::ops::Range;
+
+use crate::preview::{BlockKind, PreviewSnapshot, PreviewSpanKind, ScanInput, Widget};
+
+use super::scan;
+
+/// Full-document window (the tests never exercise clipping except where they
+/// say so).
+const ALL: Range<usize> = 0..usize::MAX;
+
+fn snapshot(text: &str, carets: &[usize]) -> PreviewSnapshot {
+    snapshot_visible(text, carets, ALL)
+}
+
+fn snapshot_visible(text: &str, carets: &[usize], visible: Range<usize>) -> PreviewSnapshot {
+    let selections: Vec<Range<usize>> = carets.iter().map(|p| *p..*p).collect();
+    scan(ScanInput {
+        text,
+        selections: &selections,
+        visible,
+    })
+}
+
+fn at(text: &str, needle: &str) -> usize {
+    text.find(needle).expect("fixture needle must exist")
+}
+
+fn hides(snap: &PreviewSnapshot, from: usize, to: usize) -> bool {
+    snap.spans
+        .iter()
+        .any(|s| s.range.start == from && s.range.end == to && s.kind == PreviewSpanKind::Hidden)
+}
+
+fn has_widget(snap: &PreviewSnapshot, pred: impl Fn(&Widget) -> bool) -> bool {
+    snap.spans
+        .iter()
+        .any(|s| matches!(&s.kind, PreviewSpanKind::Widget(w) if pred(w)))
+}
+
+/// A widget of `pred`'s kind overlapping `[from, to)` (document-wide checks
+/// would also match a sibling line's widget).
+fn widget_in(
+    snap: &PreviewSnapshot,
+    from: usize,
+    to: usize,
+    pred: impl Fn(&Widget) -> bool,
+) -> bool {
+    snap.spans.iter().any(|s| {
+        s.range.start < to
+            && s.range.end > from
+            && matches!(&s.kind, PreviewSpanKind::Widget(w) if pred(w))
+    })
+}
+
+fn bullet(snap: &PreviewSnapshot) -> bool {
+    has_widget(snap, |w| *w == Widget::Bullet)
+}
+
+fn checkbox(snap: &PreviewSnapshot) -> bool {
+    has_widget(snap, |w| matches!(w, Widget::Checkbox { .. }))
+}
+
+fn is_checkbox(w: &Widget) -> bool {
+    matches!(w, Widget::Checkbox { .. })
+}
+
+fn is_bullet(w: &Widget) -> bool {
+    *w == Widget::Bullet
+}
+
+/// Any span covering the byte position `pos` (the caret's landing spot).
+fn covered(snap: &PreviewSnapshot, pos: usize) -> bool {
+    snap.spans
+        .iter()
+        .any(|s| s.range.start <= pos && pos < s.range.end)
+}
+
+/// The model invariants: spans sorted and disjoint, every range on a char
+/// boundary and inside one line, blocks sorted and disjoint.
+fn assert_invariants(text: &str, snap: &PreviewSnapshot) {
+    let mut prev_end = 0usize;
+    for s in &snap.spans {
+        assert!(
+            s.range.start >= prev_end,
+            "spans overlap or are unsorted: {s:?} after end {prev_end}"
+        );
+        assert!(s.range.start < s.range.end, "empty span: {s:?}");
+        assert!(
+            text.is_char_boundary(s.range.start) && text.is_char_boundary(s.range.end),
+            "span off a char boundary: {s:?}"
+        );
+        assert!(
+            !text[s.range.clone()].contains('\n'),
+            "span crosses a line break: {s:?}"
+        );
+        prev_end = s.range.end;
+    }
+    let mut prev_last: Option<usize> = None;
+    for b in &snap.blocks {
+        assert!(b.first_line <= b.last_line, "inverted block: {b:?}");
+        if let Some(prev) = prev_last {
+            assert!(
+                b.first_line > prev,
+                "blocks overlap or are unsorted: {b:?} after {prev}"
+            );
+        }
+        prev_last = Some(b.last_line);
+    }
+}
+
+/// No block may cover the line holding `pos` (the caret line stays editable).
+fn assert_no_block_on_line(text: &str, snap: &PreviewSnapshot, pos: usize) {
+    let lines = crate::markdown::line_ranges(text);
+    let n = lines
+        .iter()
+        .position(|(from, to)| pos >= *from && pos <= *to)
+        .unwrap_or(0);
+    for b in &snap.blocks {
+        assert!(
+            n < b.first_line || n > b.last_line,
+            "block {b:?} covers caret line {n}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ported from livePreview.activity.test.ts
+// ---------------------------------------------------------------------------
+
+const DOC: &str =
+    "- [ ] task item\n- [x] done item\n- bullet item\n  - nested item\n1. ordered item";
+
+/// "光标在正文上（标记范围外）：任务行保持渲染态（checkbox + 隐藏 `- `）"
+#[test]
+fn task_line_renders_while_caret_is_in_the_text() {
+    let caret = at(DOC, "task item") + 3;
+    let snap = snapshot(DOC, &[caret]);
+    assert!(checkbox(&snap));
+    assert!(hides(&snap, 0, 2), "`- ` hidden: {:?}", snap.spans);
+}
+
+/// "光标在 `[ ]` 内：checkbox 翻回源码，`- ` 仍隐藏"
+#[test]
+fn task_checkbox_returns_to_source_under_the_caret() {
+    let task = at(DOC, "[ ]");
+    let snap = snapshot(DOC, &[task + 1]);
+    assert!(!widget_in(&snap, task, task + 3, is_checkbox));
+    assert!(hides(&snap, 0, 2));
+}
+
+/// "光标在行首：`-` 翻回源码，checkbox 保持渲染态"
+#[test]
+fn dash_returns_to_source_at_line_start_checkbox_stays() {
+    let snap = snapshot(DOC, &[0]);
+    assert!(checkbox(&snap));
+    assert!(!snap
+        .spans
+        .iter()
+        .any(|s| s.range.start < 2 && s.range.end > 0));
+}
+
+/// "无序列表：光标在标记外渲染 bullet，压在 `-` 上翻回源码"
+#[test]
+fn bullet_renders_off_marker_and_returns_to_source_on_it() {
+    let line_from = at(DOC, "- bullet item");
+    let line_to = line_from + "- bullet item".len();
+    let rendered = snapshot(DOC, &[line_from + 5]);
+    assert!(widget_in(&rendered, line_from, line_to, is_bullet));
+    let active = snapshot(DOC, &[line_from]);
+    assert!(!widget_in(&active, line_from, line_to, is_bullet));
+}
+
+/// "嵌套项：前导缩进空格在活动行也被隐藏（布局不随光标位移的另一半）"
+#[test]
+fn nested_indent_is_hidden_even_on_the_active_line() {
+    let line_from = at(DOC, "  - nested item");
+    let snap = snapshot(DOC, &[line_from + 6]);
+    assert!(hides(&snap, line_from, line_from + 2), "{:?}", snap.spans);
+}
+
+/// "有序列表：数字标记两种状态下都保留原文（无几何翻转）"
+#[test]
+fn ordered_markers_never_get_a_span() {
+    let ordered = at(DOC, "1. ordered item");
+    for caret in [ordered, ordered + 4, ordered + 6] {
+        let snap = snapshot(DOC, &[caret]);
+        assert!(
+            !snap
+                .spans
+                .iter()
+                .any(|s| s.range.start < ordered + 2 && s.range.end > ordered),
+            "ordered marker geometry must be stable: {:?}",
+            snap.spans
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ported from "空列表项的文本锚点（keepMarkerTrailingSpace）"
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_task_keeps_the_trailing_space_under_a_caret_at_the_item_start() {
+    let snap = snapshot("- [ ] ", &[6]);
+    assert!(checkbox(&snap));
+    assert!(covered(&snap, 4));
+    assert!(
+        !covered(&snap, 5),
+        "trailing space stays visible: {:?}",
+        snap.spans
+    );
+}
+
+#[test]
+fn empty_task_at_line_start_swallows_the_space() {
+    let snap = snapshot("- [ ] ", &[0]);
+    assert!(covered(&snap, 5));
+}
+
+#[test]
+fn non_empty_task_swallows_the_space_even_at_the_item_start() {
+    let snap = snapshot("- [ ] foo", &[6]);
+    assert!(checkbox(&snap));
+    assert!(covered(&snap, 5));
+}
+
+#[test]
+fn empty_bullet_keeps_the_trailing_space_under_a_caret_at_the_item_start() {
+    let snap = snapshot("- ", &[2]);
+    assert!(bullet(&snap));
+    assert!(!covered(&snap, 1), "{:?}", snap.spans);
+}
+
+// ---------------------------------------------------------------------------
+// Ported from "段落后空 bullet 行的 setext 歧义（decorateSetextDash）"
+// ---------------------------------------------------------------------------
+
+const SETEXT_DOC: &str = "段落行在此。\n- \n";
+
+fn setext_dash_from() -> usize {
+    SETEXT_DOC.find("\n- ").expect("fixture") + 1
+}
+
+/// "树里是 SetextHeading2 时仍渲染 bullet（立即可见）" + "空项光标在行尾：
+/// 尾随空格保留作文本锚点"
+#[test]
+fn setext_ambiguous_dash_renders_as_empty_bullet_with_trailing_space_kept() {
+    let dash = setext_dash_from();
+    let snap = snapshot(SETEXT_DOC, &[dash + 2]);
+    assert!(bullet(&snap));
+    assert!(covered(&snap, dash), "{:?}", snap.spans);
+    assert!(!covered(&snap, dash + 1));
+}
+
+/// "光标压在 `-` 上：翻回源码（与 ListMark 同一活动规则）"
+#[test]
+fn setext_ambiguous_dash_returns_to_source_under_the_caret() {
+    let dash = setext_dash_from();
+    let snap = snapshot(SETEXT_DOC, &[dash]);
+    assert!(!bullet(&snap));
+}
+
+/// "真 setext（下划线多于一个 `-`）不受影响"
+#[test]
+fn real_setext_underline_emits_nothing() {
+    let doc = "标题行\n---\n";
+    let snap = snapshot(doc, &[4]);
+    assert!(!bullet(&snap));
+    assert!(!has_widget(&snap, |w| *w == Widget::Rule));
+    // Typing text flips the parse to a real ListMark: the bullet takes over
+    // from the same offset (seamless handover); an empty item keeps the
+    // trailing space visible.
+    let typed = "段落行在此。\n- 字\n";
+    let dash = typed.find("\n- ").expect("fixture") + 1;
+    let snap = snapshot(typed, &[dash + 3]);
+    assert!(bullet(&snap));
+    assert!(covered(&snap, dash));
+}
+
+// ---------------------------------------------------------------------------
+// Ported from "选区触发器" (the model-level analogue: the two states differ)
+// ---------------------------------------------------------------------------
+
+const DOC2: &str =
+    "- 随机变量第一行的内容\n  - [ ] 嵌套任务行\n普通段落文本行,没有标记。\n- \n1. 有序项内容";
+
+#[test]
+fn same_line_move_across_the_marker_slot_changes_the_snapshot() {
+    let list = at(DOC2, "随机变量");
+    assert_ne!(
+        snapshot(DOC2, &[list - 2]),
+        snapshot(DOC2, &[list + 8]),
+        "pressing on `-` must flip the bullet"
+    );
+    let task = at(DOC2, "[ ]") + 1;
+    let task_end = at(DOC2, "嵌套任务行") + 3;
+    assert_ne!(snapshot(DOC2, &[task]), snapshot(DOC2, &[task_end]));
+}
+
+#[test]
+fn empty_item_move_changes_the_trailing_space_rule() {
+    let empty = at(DOC2, "- \n");
+    assert_ne!(snapshot(DOC2, &[empty]), snapshot(DOC2, &[empty + 2]));
+}
+
+#[test]
+fn plain_line_moves_leave_the_snapshot_identical() {
+    let plain = at(DOC2, "普通段落文本行");
+    assert_eq!(snapshot(DOC2, &[plain + 4]), snapshot(DOC2, &[plain + 16]));
+    let ordered = at(DOC2, "有序项内容");
+    assert_eq!(
+        snapshot(DOC2, &[ordered + 2]),
+        snapshot(DOC2, &[ordered + 6])
+    );
+    let text = at(DOC2, "随机变量") + 4;
+    assert_eq!(snapshot(DOC2, &[text]), snapshot(DOC2, &[text + 6]));
+}
+
+// ---------------------------------------------------------------------------
+// Ported from "数学预览的块级锚点（blockDecorationsField）"
+// ---------------------------------------------------------------------------
+
+#[test]
+fn display_math_block_covers_its_lines_and_anchor_is_the_region() {
+    let doc = "a\n$$\nx = 1\n$$\nb\n";
+    // Caret outside the region (line 0): the whole region is one block.
+    let snap = snapshot(doc, &[0]);
+    assert_eq!(
+        snap.blocks,
+        vec![crate::preview::PreviewBlock {
+            first_line: 1,
+            last_line: 3,
+            kind: BlockKind::Math {
+                tex: "\nx = 1\n".into(),
+                display: true
+            },
+        }]
+    );
+    assert!(!has_widget(&snap, |w| matches!(w, Widget::Math { .. })));
+    assert_no_block_on_line(doc, &snap, 0);
+    // Caret inside: the block collapses to editable source.
+    let snap = snapshot(doc, &[6]);
+    assert!(snap.blocks.is_empty(), "{:?}", snap.blocks);
+}
+
+#[test]
+fn display_math_block_at_document_end_has_no_trailing_line() {
+    let doc = "a\n$$\nx = 1\n$$";
+    let snap = snapshot(doc, &[0]);
+    assert_eq!(
+        (snap.blocks[0].first_line, snap.blocks[0].last_line),
+        (1, 3)
+    );
+}
+
+#[test]
+fn display_math_block_collapses_while_editing_but_shows_no_preview() {
+    // Caret on the block's opening line: no block, no preview widget (the TS
+    // MathPreviewWidget is not ported) — source stays editable.
+    let doc = "a\n$$\nx = 1\n$$\nb\n";
+    let snap = snapshot(doc, &[3]);
+    assert!(snap.blocks.is_empty(), "{:?}", snap.blocks);
+    assert!(!has_widget(&snap, |w| matches!(w, Widget::Math { .. })));
+    // Caret outside (line 0): the block renders.
+    let snap = snapshot(doc, &[0]);
+    assert_eq!(snap.blocks.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// One focused test per rule
+// ---------------------------------------------------------------------------
+
+/// `decorateHeading` (livePreview.ts:807-838) hides only the opening marker
+/// run (`mark.from..contentFrom`); a trailing closing `#` run stays visible
+/// (it is covered by the `md-heading` mark, not by a replace).
+#[test]
+fn rule_2_atx_heading_hides_only_the_opening_prefix() {
+    let doc = "## Title ##\n";
+    let snap = snapshot(doc, &[12]);
+    assert!(hides(&snap, 0, 3), "{:?}", snap.spans); // `## `
+    assert_eq!(snap.spans.len(), 1, "closing hashes stay: {:?}", snap.spans);
+    // Caret on the line: raw source.
+    assert!(snapshot(doc, &[0]).spans.is_empty());
+    // Spaced heading: the prefix swallows the spaces after the hashes.
+    let doc = "###  H3 ###   ";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(hides(&snap, 0, 5), "{:?}", snap.spans);
+    assert_eq!(snap.spans.len(), 1, "{:?}", snap.spans);
+    // Not a heading: `#hashtag`, 7 hashes, `#\tH`.
+    for doc in ["#hashtag\n", "####### x\n", "#\tH\n"] {
+        assert!(snapshot(doc, &[99]).spans.is_empty(), "{doc:?}");
+    }
+    // Bare `#` is an empty heading: the hash hides, no panic.
+    assert!(hides(&snapshot("#\n", &[]), 0, 1));
+}
+
+#[test]
+fn rule_3_setext_equals_underline_is_left_alone() {
+    let doc = "Title\n=====\n";
+    let snap = snapshot(doc, &[0]);
+    assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+}
+
+#[test]
+fn rule_4_list_marks_and_indent() {
+    for doc in ["- item", "* item", "+ item"] {
+        let snap = snapshot(doc, &[6]);
+        assert_eq!(
+            snap.spans
+                .iter()
+                .map(|s| (s.range.clone(), s.kind.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0..2, PreviewSpanKind::Widget(Widget::Bullet))],
+            "{doc:?}"
+        );
+    }
+    // Indentation hides on every line, active or not.
+    let doc = "  - item";
+    let snap = snapshot(doc, &[6]);
+    assert!(hides(&snap, 0, 2), "{:?}", snap.spans);
+    let active = snapshot(doc, &[5]);
+    assert!(hides(&active, 0, 2), "active line keeps the indent hide");
+    // Four columns of indentation are an indented code block, not a list.
+    let snap = snapshot("    - item", &[10]);
+    assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+    // Ordered markers stay untouched.
+    assert!(snapshot("1. item", &[7]).spans.is_empty());
+}
+
+#[test]
+fn rule_5_task_markers() {
+    let snap = snapshot("- [x] done", &[9]);
+    assert!(has_widget(&snap, |w| *w == Widget::Checkbox { checked: true }));
+    let snap = snapshot("- [ ] open", &[9]);
+    assert!(has_widget(&snap, |w| *w == Widget::Checkbox { checked: false }));
+    assert!(hides(&snap, 0, 2));
+    // No whitespace after `]`: not a task (lezer GFM).
+    let snap = snapshot("- [ ]", &[4]);
+    assert!(!checkbox(&snap) && bullet(&snap));
+}
+
+#[test]
+fn rule_6_emphasis_strong_strikethrough() {
+    let doc = "*em* _under_ **strong** ~~strike~~";
+    let (em, under, strong, strike) = (
+        at(doc, "*em*"),
+        at(doc, "_under_"),
+        at(doc, "**strong**"),
+        at(doc, "~~strike~~"),
+    );
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(hides(&snap, em, em + 1) && hides(&snap, em + 3, em + 4));
+    assert!(hides(&snap, under, under + 1) && hides(&snap, under + 6, under + 7));
+    assert!(hides(&snap, strong, strong + 2) && hides(&snap, strong + 8, strong + 10));
+    assert!(hides(&snap, strike, strike + 2) && hides(&snap, strike + 8, strike + 10));
+    // Caret inside the emphasis node: its marks stay, the untouched nodes on
+    // the same line still render (the activity rule is per construct).
+    let snap = snapshot(doc, &[em + 1]);
+    assert!(!hides(&snap, em, em + 1) && !hides(&snap, em + 3, em + 4));
+    assert!(hides(&snap, under, under + 1), "{:?}", snap.spans);
+    // Intraword `_` does not emphasize; `~` needs two tildes.
+    assert!(snapshot("a_b_c and ~x~", &[]).spans.is_empty());
+}
+
+fn dot(doc: &str) -> usize {
+    doc.len() + 1 // position past the end of the line: nothing is active
+}
+
+#[test]
+fn rule_6b_nested_emphasis_hides_every_level() {
+    let doc = "*a **b** c*";
+    let snap = snapshot(doc, &[dot(doc)]);
+    for range in [0..1, 3..5, 6..8, 10..11] {
+        assert!(
+            snap.spans
+                .iter()
+                .any(|s| s.range == range && s.kind == PreviewSpanKind::Hidden),
+            "missing {range:?} in {:?}",
+            snap.spans
+        );
+    }
+    // A caret inside the outer node but outside the inner one keeps the outer
+    // marks and hides the inner ones.
+    let snap = snapshot(doc, &[2]);
+    assert!(!hides(&snap, 0, 1));
+    assert!(hides(&snap, 3, 5) && hides(&snap, 6, 8));
+    assert!(!hides(&snap, 10, 11));
+}
+
+#[test]
+fn rule_7_inline_code_and_no_spans_inside_code() {
+    let doc = "`code *x*` plain";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(hides(&snap, 0, 1) && hides(&snap, 9, 10));
+    assert!(!snapshot(doc, &[dot(doc)])
+        .spans
+        .iter()
+        .any(|s| s.range.start == 5 || s.range.start == 7));
+    // Caret inside the code span: backticks stay.
+    let snap = snapshot(doc, &[3]);
+    assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+    // `$` inside code is not math.
+    let doc = "`$x$`";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(!has_widget(&snap, |w| matches!(w, Widget::Math { .. })));
+    // A lone backtick is not a code span.
+    assert!(snapshot("a ` b", &[]).spans.is_empty());
+}
+
+/// Deviation from the TS, deliberate: `buildInlineDecorations` stops at the
+/// first heading node, so `# *em*` keeps its emphasis marks visible; this port
+/// treats the heading text as ordinary inline content.
+#[test]
+fn heading_text_is_scanned_for_inline_constructs() {
+    let doc = "# *em* title";
+    let snap = snapshot(doc, &[dot(doc)]);
+    let em = at(doc, "*em*");
+    assert!(hides(&snap, 0, 2), "prefix");
+    assert!(hides(&snap, em, em + 1) && hides(&snap, em + 3, em + 4));
+}
+
+#[test]
+fn rule_8_fenced_code_lines() {
+    let doc = "```rust\nlet a = 1;\n```\n";
+    let lines = crate::markdown::line_ranges(doc);
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(has_widget(&snap, |w| {
+        *w == Widget::CodeLang {
+            lang: "rust".into(),
+        }
+    }));
+    assert!(hides(&snap, lines[2].0, lines[2].1), "{:?}", snap.spans);
+    // A fence line has no span while the caret is inside the block.
+    let snap = snapshot(doc, &[at(doc, "let a")]);
+    assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+    // Bare and tilde fences.
+    let doc = "~~~\n*x* inside\n~~~\n";
+    let lines = crate::markdown::line_ranges(doc);
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(hides(&snap, lines[0].0, lines[0].1) && hides(&snap, lines[2].0, lines[2].1));
+    assert!(!bullet(&snap));
+    // Unclosed fence: only the opening line is replaced.
+    let doc = "```\nbody";
+    let lines = crate::markdown::line_ranges(doc);
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert_eq!(snap.spans.len(), 1);
+    assert!(hides(&snap, lines[0].0, lines[0].1));
+}
+
+/// `decorateBlockquote` (livePreview.ts:913-928) only pushes a `md-quote`
+/// line decoration on inactive lines — bnote keeps the `>` visible (see the
+/// design note in `callout.ts`: "bnote 不隐藏 `>` 标记"), so no span is
+/// emitted for a quote prefix, caret anywhere.
+#[test]
+fn rule_9_blockquote_prefixes_stay_visible() {
+    let doc = "> one\n> two\n";
+    for caret in [0, 1, at(doc, "two"), dot(doc)] {
+        assert!(
+            snapshot(doc, &[caret]).spans.is_empty(),
+            "caret {caret}: {:?}",
+            snapshot(doc, &[caret]).spans
+        );
+    }
+    // Nested quotes are context only as well (`> > deep` emits nothing).
+    let doc = "> > deep\n";
+    assert!(snapshot(doc, &[dot(doc)]).spans.is_empty());
+    // Quote-indented content still decorates normally on inactive lines: the
+    // `- ` marker inside sits behind the prefix, which is not claimed.
+    let doc = "> - item\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert_eq!(
+        snap.spans
+            .iter()
+            .map(|s| (s.range.clone(), s.kind.clone()))
+            .collect::<Vec<_>>(),
+        vec![(2..4, PreviewSpanKind::Widget(Widget::Bullet))],
+        "{:?}",
+        snap.spans
+    );
+}
+
+/// `decorateLink` (livePreview.ts:1075-1091) emits only marks — `md-link` on
+/// the label and `md-url` on the URL — and no replace; the URL/Autolink
+/// branch (524-529) is mark-only too. Neither contributes a span, so the
+/// source stays visible; the ranges only shield their content from other
+/// rules (the TS `return false` at those nodes).
+#[test]
+fn rule_10_links_and_autolinks_emit_no_spans() {
+    let doc = "[text](https://x) tail";
+    assert!(snapshot(doc, &[dot(doc)]).spans.is_empty());
+    assert!(snapshot(doc, &[2]).spans.is_empty());
+    // The label is shielded: emphasis inside it is not decorated.
+    let doc = "[*em* `code`](u) tail";
+    assert!(snapshot(doc, &[dot(doc)]).spans.is_empty());
+    // Autolinks keep the URL visible.
+    let doc = "see <https://x> now";
+    assert!(snapshot(doc, &[dot(doc)]).spans.is_empty());
+    // A link-shaped range is still not a link: `[a]` alone marks nothing.
+    assert!(snapshot("[a] tail", &[dot("[a] tail")]).spans.is_empty());
+}
+
+#[test]
+fn rule_11_wikilinks() {
+    let doc = "[[target]] tail";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(
+        hides(&snap, 0, 2) && hides(&snap, 8, 10),
+        "{:?}",
+        snap.spans
+    );
+    let doc = "[[target|alias]] tail";
+    let alias = at(doc, "alias");
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(hides(&snap, 0, 2), "{:?}", snap.spans);
+    assert!(hides(&snap, 2, alias), "{:?}", snap.spans); // `target|`
+    assert!(hides(&snap, alias + 5, alias + 7), "{:?}", snap.spans); // `]]`
+                                                                     // Line-level activity: a caret anywhere on the line keeps the source.
+    assert!(snapshot(doc, &[0]).spans.is_empty());
+    // Empty target renders nothing.
+    assert!(snapshot("[[|x]]", &[]).spans.is_empty());
+}
+
+#[test]
+fn rule_12_images() {
+    let doc = "![alt](assets/a.png) tail";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(has_widget(&snap, |w| {
+        *w == Widget::Image {
+            src: "assets/a.png".into(),
+            alt: "alt".into(),
+        }
+    }));
+    // Title is stripped from the src.
+    let doc = "![a](x.png \"t\") tail";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(has_widget(&snap, |w| {
+        matches!(w, Widget::Image { src, .. } if src == "x.png")
+    }));
+    // Embed wikilink: whole range becomes an image.
+    let doc = "![[pic.png]] tail";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(has_widget(&snap, |w| {
+        matches!(w, Widget::Image { src, .. } if src == "pic.png")
+    }));
+    // A drawing embed is an image too; a non-image target falls back to the
+    // plain wikilink path (source keeps the `!`).
+    let doc = "![[draw.excalidraw]] tail";
+    assert!(has_widget(&snapshot(doc, &[dot(doc)]), |w| {
+        matches!(w, Widget::Image { .. })
+    }));
+    let doc = "![[notes]] tail";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(!has_widget(&snap, |w| matches!(w, Widget::Image { .. })));
+    assert!(hides(&snap, 1, 3) && hides(&snap, 8, 10));
+}
+
+#[test]
+fn rule_13_math_widgets() {
+    let doc = "before $x_1$ after";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(has_widget(&snap, |w| {
+        *w == Widget::Math {
+            tex: "x_1".into(),
+            display: false,
+        }
+    }));
+    // Caret inside the region: no widget (source shown).
+    assert!(!has_widget(&snapshot(doc, &[8]), |w| matches!(
+        w,
+        Widget::Math { .. }
+    )));
+    // Single-line display math is an inline widget; multi-line is a block.
+    let doc = "a $$x$$ b";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(has_widget(&snap, |w| matches!(
+        w,
+        Widget::Math { display: true, .. }
+    )));
+    let doc = "a\n$$\nx\n$$\nb";
+    let snap = snapshot(doc, &[0]);
+    assert_eq!(snap.blocks.len(), 1);
+    assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+}
+
+#[test]
+fn rule_14_horizontal_rule() {
+    for doc in ["---\n", "***\n", "___\n", "- - -\n"] {
+        let snap = snapshot(doc, &[dot(doc)]);
+        assert!(
+            has_widget(&snap, |w| *w == Widget::Rule),
+            "{doc:?} → {:?}",
+            snap.spans
+        );
+    }
+    // A dash run under a paragraph is a setext underline, not a rule.
+    let snap = snapshot("text\n---\n", &[0]);
+    assert!(!has_widget(&snap, |w| *w == Widget::Rule));
+    // Caret on the rule line: source stays.
+    assert!(snapshot("---\n", &[1]).spans.is_empty());
+}
+
+#[test]
+fn rule_15_callouts() {
+    let doc = "::: 提示\nthe body\n:::\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    let open = snap
+        .blocks
+        .iter()
+        .find(|b| b.first_line == 0)
+        .expect("opening block");
+    assert_eq!(open.last_line, 0);
+    assert_eq!(
+        open.kind,
+        BlockKind::Callout {
+            kind: String::new(),
+            title: "提示".into(),
+            body_first_line: 1,
+            body_last_line: 1,
+        }
+    );
+    let close = snap
+        .blocks
+        .iter()
+        .find(|b| b.first_line == 2)
+        .expect("closing block");
+    assert_eq!(
+        close.kind,
+        BlockKind::Callout {
+            kind: String::new(),
+            title: String::new(),
+            body_first_line: 1,
+            body_last_line: 1,
+        }
+    );
+    // Body lines carry no spans at all.
+    assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+    // Caret inside the block: no blocks, raw source everywhere.
+    let snap = snapshot(doc, &[at(doc, "the body")]);
+    assert!(snap.blocks.is_empty());
+    // Unclosed callout: only the opening edge is a block.
+    let doc = "::: 甲\nbody without close\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert_eq!(snap.blocks.len(), 1);
+    assert_eq!(snap.blocks[0].first_line, 0);
+}
+
+#[test]
+fn rule_16_visible_window_limits_emission_but_not_classification() {
+    let doc = "# Title\n\nbody text\n\n- item\n";
+    let body = at(doc, "body text");
+    let visible = body..body + 4;
+    let snap = snapshot_visible(doc, &[dot(doc)], visible);
+    assert!(
+        snap.spans.is_empty(),
+        "heading is outside the window: {:?}",
+        snap.spans
+    );
+    let item = at(doc, "- item");
+    let snap = snapshot_visible(doc, &[dot(doc)], item..item + 3);
+    assert!(bullet(&snap));
+    // A multi-line math block intersecting the window is reported whole.
+    let doc = "a\n$$\nx = 1\n$$\nb\n";
+    let lines = crate::markdown::line_ranges(doc);
+    let snap = snapshot_visible(doc, &[0], lines[2].0..lines[2].1);
+    assert_eq!(
+        (snap.blocks[0].first_line, snap.blocks[0].last_line),
+        (1, 3)
+    );
+    // A window that misses it entirely reports nothing.
+    let snap = snapshot_visible(doc, &[0], 0..1);
+    assert!(snap.blocks.is_empty(), "{:?}", snap.blocks);
+}
+
+#[test]
+fn inline_code_wins_over_link_and_emphasis() {
+    let doc = "`[a](b) *x*` then *y*";
+    let code_close = at(doc, "` then");
+    let y = at(doc, "*y*");
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(hides(&snap, 0, 1) && hides(&snap, code_close, code_close + 1));
+    assert!(!snap
+        .spans
+        .iter()
+        .any(|s| s.range.start > 0 && s.range.end <= code_close));
+    assert!(
+        hides(&snap, y, y + 1) && hides(&snap, y + 2, y + 3),
+        "{:?}",
+        snap.spans
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Mixed document: structural invariants + the caret line stays editable
+// ---------------------------------------------------------------------------
+
+const MIXED: &str = "\
+# Title
+
+Intro with *em*, **strong**, `code`, $x+1$ and a [link](https://example.com).
+
+- [ ] todo item
+- bullet item
+  - nested item
+1. ordered item
+
+> quoted line
+> > deeper
+
+```rust
+let a = 1;
+```
+
+$$
+E = mc^2
+$$
+
+---
+
+::: 提示
+callout body
+:::
+
+Setext title
+===
+
+![[image.png]] and [[wiki target|alias]]
+";
+
+#[test]
+fn mixed_document_is_sorted_disjoint_and_visible() {
+    let snap = snapshot(MIXED, &[0]);
+    assert_invariants(MIXED, &snap);
+    assert!(!snap.spans.is_empty());
+    assert!(!snap.blocks.is_empty());
+}
+
+#[test]
+fn mixed_document_never_hides_the_caret() {
+    // Every byte of every construct gets a turn as the caret. The two
+    // leading spaces of the nested item are excluded: hiding indentation on
+    // the active line is deliberate (`rule_4_list_marks_and_indent`), so a
+    // caret inside an indentation run is the one position that may sit inside
+    // a hidden span.
+    let nested_indent = at(MIXED, "  - nested item");
+    let mut carets: Vec<usize> = Vec::new();
+    for needle in [
+        "# Title",
+        "Intro",
+        "*em*",
+        "**strong**",
+        "`code`",
+        "$x+1$",
+        "[link]",
+        "- [ ]",
+        "- bullet",
+        "  - nested",
+        "1. ordered",
+        "> quoted",
+        "> > deeper",
+        "```rust",
+        "let a = 1;",
+        "$$",
+        "E = mc^2",
+        "---",
+        "::: 提示",
+        "callout body",
+        "===",
+        "![[image.png]]",
+        "[[wiki target|alias]]",
+    ] {
+        let start = at(MIXED, needle);
+        for offset in 0..needle.len() {
+            let pos = start + offset;
+            if (nested_indent..nested_indent + 2).contains(&pos) {
+                continue;
+            }
+            carets.push(pos);
+        }
+    }
+    for &caret in &carets {
+        let snap = snapshot(MIXED, &[caret]);
+        assert_invariants(MIXED, &snap);
+        assert!(
+            !covered(&snap, caret),
+            "caret {caret} lands inside a hidden span: {:?}",
+            snap.spans
+        );
+        assert_no_block_on_line(MIXED, &snap, caret);
+    }
+}
+
+#[test]
+fn mixed_document_renders_every_construct_when_the_caret_is_away() {
+    let snap = snapshot(MIXED, &[MIXED.len()]);
+    assert_invariants(MIXED, &snap);
+    // One representative span per rule family.
+    assert!(hides(&snap, 0, 2), "heading prefix");
+    assert!(bullet(&snap), "bullet");
+    assert!(checkbox(&snap), "checkbox");
+    assert!(
+        has_widget(&snap, |w| matches!(w, Widget::Math { .. })),
+        "math widget"
+    );
+    assert!(has_widget(&snap, |w| *w == Widget::Rule), "rule");
+    assert!(
+        has_widget(&snap, |w| *w
+            == Widget::CodeLang {
+                lang: "rust".into()
+            }),
+        "code lang"
+    );
+    assert!(
+        has_widget(&snap, |w| matches!(w, Widget::Image { .. })),
+        "image"
+    );
+    // One block for the display maths plus one per callout edge.
+    assert_eq!(snap.blocks.len(), 3, "{:?}", snap.blocks);
+}

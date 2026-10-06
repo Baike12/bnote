@@ -804,6 +804,7 @@ dependencies = [
  "futures",
  "notify",
  "pdf2md",
+ "regex",
  "reqwest 0.12.28",
  "scraper",
  "serde",
@@ -819,6 +820,7 @@ name = "bnote-gpui"
 version = "0.1.0"
 dependencies = [
  "bnote-core",
+ "bnote-mathml",
  "gpui-kit",
  "gpui-pre",
  "lsp-types",
@@ -827,6 +829,13 @@ dependencies = [
  "time",
  "tokio",
  "walkdir",
+]
+
+[[package]]
+name = "bnote-mathml"
+version = "0.1.0"
+dependencies = [
+ "latex2mathml",
 ]
 
 [[package]]
@@ -4573,6 +4582,12 @@ dependencies = [
  "polycool",
  "smallvec",
 ]
+
+[[package]]
+name = "latex2mathml"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "678cf5bdb3ba63a264e6e0c9eee36538ca1d2da0afa4dd801c1f96309e710765"
 
 [[package]]
 name = "lazy_static"
