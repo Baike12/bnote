@@ -48,7 +48,8 @@ use tokio::sync::broadcast;
 use crate::agent_panel::AgentPanel;
 use crate::editor::vim::integration::VimBridge;
 use crate::apply_ops::apply_outcome;
-use crate::commands::{COMMANDS, actions};
+use crate::commands::{COMMANDS, action_for, actions, def_of};
+use crate::keybindings;
 use crate::daily_host::{DailyHost, SyncWrite};
 use crate::editor::images as editor_images;
 use crate::editor::preview::{PreviewFont, PreviewHost};
@@ -74,8 +75,11 @@ const EVENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// Every Nth event-loop iteration pumps the footprint core (~1.2s at 300ms).
 const FOOTPRINT_TICK_EVERY: u32 = 4;
 
-/// `settings.fontSize` default (TS `DEFAULT_SETTINGS.fontSize`).
+/// `settings.fontSize` default (TS `DEFAULT_SETTINGS.fontSize`) and the range
+/// the slider and the zoom commands share (TS `view.zoom-in/out`'s clamp).
 const FONT_SIZE_DEFAULT: f32 = 16.;
+const FONT_SIZE_MIN: f32 = 12.;
+const FONT_SIZE_MAX: f32 = 28.;
 
 /// The link-suggest panel's fixed width (TS `.link-suggest`, 380px).
 const LINK_PANEL_W: f32 = 380.;
@@ -288,10 +292,19 @@ struct QaRow {
 enum SettingsTab {
     General,
     Editor,
+    Hotkeys,
     Vim,
     Snippets,
     QuickAdd,
     Ime,
+}
+
+/// The hotkeys tab's 「全部 / 已分配 / 未分配」 filter (TS `HotkeyFilter`).
+#[derive(Clone, Copy, PartialEq)]
+enum HotkeyFilter {
+    All,
+    Assigned,
+    Unassigned,
 }
 
 /// Which of the two input-source fields the settings modal's picker fills.
@@ -472,6 +485,18 @@ pub struct Workspace {
     qa_next_row_id: u64,
     /// The code-block-language field of the settings modal.
     lang_state: Entity<InputState>,
+    /// `keybindings.json` (TS `keybindingOverrides.ts`): the hotkeys tab edits
+    /// it, the keymap is rebuilt from it, and it is the only copy — the file is
+    /// the persistence, `apply` pushes it into gpui.
+    key_overrides: keybindings::Overrides,
+    /// The hotkeys tab's search field and filter chips.
+    hotkey_query: Entity<InputState>,
+    hotkey_filter: HotkeyFilter,
+    /// The command whose row is capturing a keystroke, while one is (TS
+    /// `capturing`), and the interceptor that grabs the keys. Dropping the
+    /// subscription is what stops the capture.
+    hotkey_capturing: Option<String>,
+    hotkey_capture_sub: Option<Subscription>,
     /// The font-size slider's state (`settings.fontSize`, 12–28px).
     font_slider: Entity<SliderState>,
     /// Cursor memory (TS `cursorMemory.ts`): the position to persist, bumped
@@ -635,10 +660,11 @@ impl Workspace {
         // loaded values so a first render already shows them.
         let lang_state = cx.new(|cx| InputState::new(window, cx));
         lang_state.update(cx, |st, cx| st.set_value(code_block_lang.clone(), window, cx));
+        let hotkey_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索命令…"));
         let font_slider = cx.new(|_| {
             SliderState::new()
-                .min(12.)
-                .max(28.)
+                .min(FONT_SIZE_MIN)
+                .max(FONT_SIZE_MAX)
                 .step(1.)
                 .default_value(font_size)
         });
@@ -703,6 +729,9 @@ impl Workspace {
             size: theme.mono_font_size,
         }));
         // The live-rendered copy of a display formula while editing it.
+        // `keybindings.json` (the TS shell's override file). `main` applies it
+        // to the keymap before the window opens; the modal edits the same map.
+        let key_overrides = keybindings::load(&state);
         let live_preview = setting("livePreview").unwrap_or(true);
         let auto_save = setting("autoSave").unwrap_or(true);
         let math_preview = setting("mathPreview").unwrap_or(true);
@@ -882,6 +911,11 @@ impl Workspace {
             link_query: String::new(),
             link_pick_rev: None,
             link_state,
+            key_overrides: key_overrides.clone(),
+            hotkey_query,
+            hotkey_filter: HotkeyFilter::All,
+            hotkey_capturing: None,
+            hotkey_capture_sub: None,
             settings_open: false,
             settings_tab: SettingsTab::General,
             live_preview,
@@ -932,6 +966,11 @@ impl Workspace {
             cursor_guard: Arc::new(Mutex::new(0)),
             _subscriptions: subscriptions,
         };
+
+        // The keymap: registry defaults plus `keybindings.json` (TS
+        // `keybindingOverrides.ts`). The workspace owns `key_overrides`, so it
+        // is also the one that pushes them into gpui — every edit re-applies.
+        keybindings::apply(cx, &key_overrides);
 
         // Restore the vault off the main thread, then build the tree.
         if let Some(vault) = last_vault {
@@ -1580,6 +1619,12 @@ impl Workspace {
     fn heading4(&mut self, _: &actions::Heading4, w: &mut Window, cx: &mut Context<Self>) {
         self.set_heading(4, w, cx)
     }
+    fn heading5(&mut self, _: &actions::Heading5, w: &mut Window, cx: &mut Context<Self>) {
+        self.set_heading(5, w, cx)
+    }
+    fn heading6(&mut self, _: &actions::Heading6, w: &mut Window, cx: &mut Context<Self>) {
+        self.set_heading(6, w, cx)
+    }
 
     fn toggle_bullet(
         &mut self,
@@ -1935,6 +1980,18 @@ impl Workspace {
         self.run_edit(Some(out), window, cx);
     }
 
+    /// TS `edit.insert-python-block`: the same code block, language fixed.
+    fn insert_python_block(
+        &mut self,
+        _: &actions::InsertPythonBlock,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self.editor.read(cx).value().to_string();
+        let out = ops::insert_code_block(&text, self.sel(cx), "python");
+        self.run_edit(Some(out), window, cx);
+    }
+
     fn insert_callout(
         &mut self,
         _: &actions::InsertCallout,
@@ -2113,6 +2170,18 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// TS `workspace.new-folder` (`actions.newFolder()` with no parent): a
+    /// 「新建文件夹」 in the vault root, then the tree sidebar shows it.
+    fn new_folder(&mut self, _: &actions::NewFolder, _window: &mut Window, cx: &mut Context<Self>) {
+        self.create_in_tree(String::new(), false, cx);
+    }
+
+    /// TS `workspace.open-vault`: the folder picker (the welcome screen's
+    /// button, reachable from the palette without a default key).
+    fn open_vault(&mut self, _: &actions::OpenVault, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick_vault(window, cx);
     }
 
     fn toggle_sidebar(
@@ -3069,6 +3138,54 @@ impl Workspace {
         }
     }
 
+    /// Create a note or a folder in `dir` (a vault-relative path, empty for
+    /// the root) and let the tree follow. Shared by the tree menu and the
+    /// palette's `workspace.new-note` / `workspace.new-folder`.
+    fn create_in_tree(&mut self, dir: String, is_note: bool, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        cx.spawn(async move |this, cx| {
+            let created = cx
+                .background_executor()
+                .spawn(async move {
+                    if is_note {
+                        bnote_core::commands::files::create_file(
+                            &state,
+                            dir,
+                            "未命名.md".to_string(),
+                        )
+                        .map(|e| (e.rel_path, true))
+                    } else {
+                        bnote_core::commands::files::create_dir(
+                            &state,
+                            dir,
+                            "新建文件夹".to_string(),
+                        )
+                        .map(|e| (e.rel_path, false))
+                    }
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                match created {
+                    Ok((rel_path, is_note)) => {
+                        this.status = format!(
+                            "{}{}",
+                            if is_note { "新建 " } else { "新建文件夹 " },
+                            rel_path
+                        );
+                        if is_note {
+                            this.open_note(rel_path, window, cx);
+                        }
+                        this.refresh_tree(cx);
+                    }
+                    Err(e) => this.status = format!("新建失败:{e}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// A tree-menu pick. Create and delete run on the background executor and
     /// re-resolve the absolute path from the *current* vault root when they
     /// land — the menu may have been open across a vault switch.
@@ -3096,50 +3213,7 @@ impl Workspace {
                 cx.notify();
             }
             TreeMenuItem::NewNote | TreeMenuItem::NewFolder => {
-                let is_note = item == TreeMenuItem::NewNote;
-                let state = self.state.clone();
-                let dir = rel.clone();
-                cx.spawn(async move |this, cx| {
-                    let created = cx
-                        .background_executor()
-                        .spawn(async move {
-                            if is_note {
-                                bnote_core::commands::files::create_file(
-                                    &state,
-                                    dir,
-                                    "未命名.md".to_string(),
-                                )
-                                .map(|e| (e.rel_path, true))
-                            } else {
-                                bnote_core::commands::files::create_dir(
-                                    &state,
-                                    dir,
-                                    "新建文件夹".to_string(),
-                                )
-                                .map(|e| (e.rel_path, false))
-                            }
-                        })
-                        .await;
-                    this.update_in(cx, |this, window, cx| {
-                        match created {
-                            Ok((rel_path, is_note)) => {
-                                this.status = format!(
-                                    "{}{}",
-                                    if is_note { "新建 " } else { "新建文件夹 " },
-                                    rel_path
-                                );
-                                if is_note {
-                                    this.open_note(rel_path, window, cx);
-                                }
-                                this.refresh_tree(cx);
-                            }
-                            Err(e) => this.status = format!("新建失败:{e}"),
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-                })
-                .detach();
+                self.create_in_tree(rel.clone(), item == TreeMenuItem::NewNote, cx);
             }
             TreeMenuItem::Delete => {
                 let open_path = self.open_path.clone();
@@ -3584,7 +3658,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// TS `editor.toggle-live-preview` (palette only, no default key).
+    /// TS `editor.toggle-live-preview` (⌘E).
     fn toggle_live_preview(
         &mut self,
         _: &actions::ToggleLivePreview,
@@ -3595,6 +3669,68 @@ impl Workspace {
         self.set_live_preview(next, cx);
         self.status = if next { "实时渲染:开".to_string() } else { "实时渲染:关(源码)".to_string() };
         cx.notify();
+    }
+
+    /// TS `editor.toggle-typewriter` (⌘⇧T).
+    fn toggle_typewriter(
+        &mut self,
+        _: &actions::ToggleTypewriter,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = !self.typewriter;
+        self.set_typewriter(next, cx);
+        self.status = if next { "打字机模式:开".to_string() } else { "打字机模式:关".to_string() };
+        cx.notify();
+    }
+
+    /// TS `editor.toggle-snippets` (⌘⇧L).
+    fn toggle_snippets(
+        &mut self,
+        _: &actions::ToggleSnippets,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = !self.snippets_enabled;
+        self.set_snippets_enabled(next, cx);
+        self.status = if next { "公式片段:开".to_string() } else { "公式片段:关".to_string() };
+        cx.notify();
+    }
+
+    /// The effects of a new `settings.fontSize`: the field, the theme and the
+    /// persisted value. The slider's own drag calls this too — it is the one
+    /// path that does not need the slider synced back.
+    fn apply_font_size_value(&mut self, size: f32, cx: &mut Context<Self>) {
+        self.font_size = size;
+        crate::theme::apply_font_size(size, cx);
+        self.persist_setting("fontSize", serde_json::json!(size), cx);
+    }
+
+    /// TS `view.zoom-in` / `view.zoom-out` / `view.zoom-reset`: the editor's
+    /// font size steps by one px inside the slider's range, reset is the
+    /// default. The settings slider follows, so reopening the modal agrees.
+    fn zoom(&mut self, next: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let next = next.clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+        if next == self.font_size {
+            return;
+        }
+        self.apply_font_size_value(next, cx);
+        let slider = self.font_slider.clone();
+        slider.update(cx, |slider, cx| slider.set_value(next, window, cx));
+        self.status = format!("字号 {}px", next.round());
+        cx.notify();
+    }
+
+    fn zoom_in(&mut self, _: &actions::ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom(self.font_size + 1.0, window, cx);
+    }
+
+    fn zoom_out(&mut self, _: &actions::ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom(self.font_size - 1.0, window, cx);
+    }
+
+    fn zoom_reset(&mut self, _: &actions::ZoomReset, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom(FONT_SIZE_DEFAULT, window, cx);
     }
 
     /// `settings.autoSave`: the 0.8 s autosave only runs while it is on; ⌘S
@@ -3848,6 +3984,7 @@ impl Workspace {
                 [
                     (SettingsTab::General, "通用"),
                     (SettingsTab::Editor, "编辑器"),
+                    (SettingsTab::Hotkeys, "快捷键"),
                     (SettingsTab::Vim, "Vim"),
                     (SettingsTab::Snippets, "公式片段"),
                     (SettingsTab::QuickAdd, "快速添加"),
@@ -3990,6 +4127,7 @@ impl Workspace {
                     &theme,
                 ))
                 .into_any_element(),
+            SettingsTab::Hotkeys => self.render_hotkeys_tab(&theme, cx),
             SettingsTab::Vim => v_flex()
                 .gap_3()
                 .child(self.settings_switch(
@@ -4194,6 +4332,298 @@ impl Workspace {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The hotkeys tab (TS `HotkeysTab`): every registry command with its
+    /// effective bindings, a search field and the assigned/unassigned filter.
+    /// Clicking a row starts a capture — the next keystroke becomes the
+    /// binding, Esc cancels — and the file is rewritten on every change.
+    fn render_hotkeys_tab(
+        &self,
+        theme: &gpui_kit::component::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let query = self.hotkey_query.read(cx).value().to_lowercase();
+        let effective = keybindings::effective_bindings(&self.key_overrides);
+        let rows: Vec<&'static str> = COMMANDS
+            .iter()
+            .filter(|def| {
+                if !query.is_empty()
+                    && !format!("{}{}", def.id, def.label).to_lowercase().contains(&query)
+                {
+                    return false;
+                }
+                let bound = effective[def.id].iter().any(|key| !key.is_empty());
+                match self.hotkey_filter {
+                    HotkeyFilter::All => true,
+                    HotkeyFilter::Assigned => bound,
+                    HotkeyFilter::Unassigned => !bound,
+                }
+            })
+            .map(|def| def.id)
+            .collect();
+        let capturing = self.hotkey_capturing.clone();
+        let mut list = v_flex().gap_1();
+        for id in &rows {
+            let row = self.render_hotkey_row(id, &effective[id], capturing.as_deref(), theme, cx);
+            list = list.child(row);
+        }
+        let mut chips = h_flex().gap_2();
+        for (filter, label) in [
+            (HotkeyFilter::All, "全部"),
+            (HotkeyFilter::Assigned, "已分配"),
+            (HotkeyFilter::Unassigned, "未分配"),
+        ] {
+            chips = chips.child(self.hotkey_filter_chip(label, filter, theme, cx));
+        }
+        v_flex()
+            .gap_3()
+            .child(
+                div()
+                    .w_full()
+                    .child(Input::new(&self.hotkey_query).cleanable(true)),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(chips)
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("hotkeys-reset-all")
+                            .ghost()
+                            .label("全部恢复默认")
+                            .on_click(cx.listener(|this, _, _, cx| this.reset_all_hotkeys(cx))),
+                    ),
+            )
+            .children(if rows.is_empty() {
+                vec![settings_hint("没有匹配的命令。", theme).into_any_element()]
+            } else {
+                vec![]
+            })
+            .child(list)
+            .into_any_element()
+    }
+
+    /// One hotkeys row: the label, its binding chips, the unbind and reset
+    /// buttons. The row itself starts the capture.
+    fn render_hotkey_row(
+        &self,
+        id: &'static str,
+        keys: &[String],
+        capturing: Option<&str>,
+        theme: &gpui_kit::component::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let is_capturing = capturing == Some(id);
+        let def = def_of(id);
+        let label = def.map(|d| d.label).unwrap_or(id);
+        let mut bindings = h_flex().gap_1().items_center();
+        for key in keys {
+            bindings = bindings.child(
+                div()
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(theme.border)
+                    .text_xs()
+                    .child(Label::new(keybindings::format_binding(key))),
+            );
+        }
+        let mut row = h_flex()
+            .id(id)
+            .w_full()
+            .items_center()
+            .gap_3()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .cursor_default()
+            .hover(|style| style.bg(theme.list_hover));
+        if is_capturing {
+            row = row.bg(theme.list_active);
+        }
+        row = row
+            .on_click(cx.listener(move |this, _, window, cx| this.capture_hotkey(id, window, cx)))
+            .child(Label::new(label.to_string()).text_sm().flex_1());
+        if is_capturing {
+            row = row.child(
+                Label::new("按下新快捷键…(Esc 取消)")
+                    .text_xs()
+                    .text_color(theme.accent),
+            );
+        } else {
+            row = row.child(bindings);
+        }
+        if keys.is_empty() && !is_capturing {
+            row = row.child(
+                Label::new("未设置")
+                    .text_xs()
+                    .text_color(theme.muted_foreground),
+            );
+        }
+        if !keys.is_empty() {
+            row = row.child(
+                Button::new(format!("hotkeys-unbind-{id}"))
+                    .ghost()
+                    .label("✕")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_hotkey_binding(id, Vec::new(), cx);
+                    })),
+            );
+        }
+        row = row.child(
+            Button::new(format!("hotkeys-reset-{id}"))
+                .ghost()
+                .label("↺")
+                .on_click(cx.listener(move |this, _, _, cx| this.reset_hotkey(id, cx))),
+        );
+        row.into_any_element()
+    }
+
+    /// One filter chip of the hotkeys tab (TS `.chip`).
+    fn hotkey_filter_chip(
+        &self,
+        label: &'static str,
+        filter: HotkeyFilter,
+        theme: &gpui_kit::component::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement {
+        let active = self.hotkey_filter == filter;
+        let chip = div()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(if active { theme.accent } else { theme.border })
+            .text_xs();
+        let chip = if active {
+            chip.bg(theme.list_active).text_color(theme.accent)
+        } else {
+            chip
+        };
+        chip.id(label)
+            .cursor_default()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.hotkey_filter = filter;
+                cx.notify();
+            }))
+            .child(Label::new(label))
+    }
+
+    /// Write the overrides file and rebuild the keymap from it — the two
+    /// effects of any edit here, in one place.
+    fn persist_hotkeys(&mut self, cx: &mut Context<Self>) {
+        if let Err(e) = keybindings::save(&self.state, &self.key_overrides) {
+            self.status = format!("快捷键保存失败:{e}");
+        }
+        keybindings::apply(cx, &self.key_overrides);
+    }
+
+    /// Assign one binding to a command (TS `setOverride`), sweeping any other
+    /// command that held it (TS sets the loser to `null`).
+    fn set_hotkey_binding(&mut self, id: &str, keys: Vec<String>, cx: &mut Context<Self>) {
+        let mut swept: Vec<&'static str> = Vec::new();
+        for key in &keys {
+            for other in keybindings::commands_holding_key(&self.key_overrides, key, id) {
+                self.key_overrides.insert(other.to_string(), Vec::new());
+                swept.push(other);
+            }
+        }
+        let label = def_of(id).map(|d| d.label).unwrap_or(id);
+        let shown = keys
+            .iter()
+            .map(|k| keybindings::format_binding(k))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        self.key_overrides.insert(id.to_string(), keys);
+        self.persist_hotkeys(cx);
+        self.status = if swept.is_empty() {
+            format!("{label} → {shown}")
+        } else {
+            let losers = swept
+                .iter()
+                .filter_map(|other| def_of(other).map(|d| d.label))
+                .collect::<Vec<_>>()
+                .join("、");
+            format!("{label} → {shown};与「{losers}」冲突,已解除其绑定")
+        };
+        cx.notify();
+    }
+
+    /// Drop one command's override (TS `clearOverride`): the registry default,
+    /// if it has one, comes back.
+    fn reset_hotkey(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.key_overrides.remove(id).is_none() {
+            return;
+        }
+        self.persist_hotkeys(cx);
+        self.status = format!(
+            "{} 已恢复默认",
+            def_of(id).map(|d| d.label).unwrap_or(id)
+        );
+        cx.notify();
+    }
+
+    /// TS `resetAllOverrides`.
+    fn reset_all_hotkeys(&mut self, cx: &mut Context<Self>) {
+        if self.key_overrides.is_empty() {
+            return;
+        }
+        self.key_overrides.clear();
+        self.persist_hotkeys(cx);
+        self.status = "已恢复默认快捷键".to_string();
+        cx.notify();
+    }
+
+    /// Start capturing the next keystroke for `id` (TS `capturing`): the
+    /// interceptor eats every key until one lands or Esc cancels.
+    fn capture_hotkey(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        self.hotkey_capturing = Some(id.to_string());
+        keybindings::HotkeyCaptureActive::set(cx, true);
+        let weak = cx.weak_entity();
+        self.hotkey_capture_sub = Some(cx.intercept_keystrokes(move |event, _window, cx| {
+            let ks = event.keystroke.clone();
+            weak.update(cx, |this, cx| this.on_hotkey_keystroke(&ks, cx)).ok();
+            cx.stop_propagation();
+        }));
+        cx.notify();
+    }
+
+    fn cancel_hotkey_capture(&mut self, cx: &mut Context<Self>) {
+        self.hotkey_capture_sub = None;
+        if self.hotkey_capturing.take().is_some() {
+            keybindings::HotkeyCaptureActive::set(cx, false);
+            cx.notify();
+        }
+    }
+
+    /// One captured keystroke: Esc cancels, a lone modifier is not a binding,
+    /// anything else becomes this command's only binding (TS `eventToKey` +
+    /// `setOverride`).
+    fn on_hotkey_keystroke(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let Some(id) = self.hotkey_capturing.clone() else {
+            return;
+        };
+        if ks.key.eq_ignore_ascii_case("escape") {
+            self.cancel_hotkey_capture(cx);
+            return;
+        }
+        // A lone modifier press is not a binding; keep waiting.
+        if matches!(
+            ks.key.as_str(),
+            "shift" | "control" | "alt" | "platform" | "function" | "fn"
+        ) {
+            return;
+        }
+        let Some(key) = keybindings::normalize_key(&ks.unparse()) else {
+            return;
+        };
+        self.hotkey_capture_sub = None;
+        self.hotkey_capturing = None;
+        keybindings::HotkeyCaptureActive::set(cx, false);
+        self.set_hotkey_binding(&id, vec![key], cx);
     }
 
     /// One theme chip of the appearance row (TS `.chip`).
@@ -5102,98 +5532,6 @@ fn abs_to_rel(abs: &str, root: &Option<PathBuf>) -> String {
     }
 }
 
-pub(crate) fn action_for(id: &str) -> Option<Box<dyn gpui::Action>> {
-    use crate::commands::actions as a;
-    Some(match id {
-        "save-note" => Box::new(a::Save),
-        "command-palette" => Box::new(a::CommandPalette),
-        "quick-switcher" => Box::new(a::QuickSwitcher),
-        "switch-recent-vault" => Box::new(a::SwitchRecentVault),
-        "toggle-sidebar" => Box::new(a::ToggleSidebar),
-        "focus-sidebar" => Box::new(a::FocusSidebar),
-        "new-note" => Box::new(a::NewNote),
-        "quick-add" => Box::new(a::QuickAdd),
-        "open-daily" => Box::new(a::OpenDaily),
-        "todo-to-daily" => Box::new(a::SendTodoToDaily),
-        "toggle-todo" => Box::new(a::ToggleTodo),
-        "toggle-heading" => Box::new(a::CycleHeading),
-        "edit.heading-1" => Box::new(a::Heading1),
-        "edit.heading-2" => Box::new(a::Heading2),
-        "edit.heading-3" => Box::new(a::Heading3),
-        "edit.heading-4" => Box::new(a::Heading4),
-        "toggle-bullet-list" => Box::new(a::ToggleBulletList),
-        "toggle-numbered-list" => Box::new(a::ToggleNumberedList),
-        "toggle-bold" => Box::new(a::ToggleBold),
-        "toggle-italic" => Box::new(a::ToggleItalic),
-        "toggle-strikethrough" => Box::new(a::ToggleStrikethrough),
-        "insert-inline-code" => Box::new(a::InsertInlineCode),
-        "insert-code-block" => Box::new(a::InsertCodeBlock),
-        "insert-math-block" => Box::new(a::InsertMathBlock),
-        "insert-inline-math" => Box::new(a::InsertInlineMath),
-        "insert-callout" => Box::new(a::InsertCallout),
-        "insert-wikilink" => Box::new(a::InsertWikilink),
-        "insert-horizontal-rule" => Box::new(a::InsertHorizontalRule),
-        "header-todos" => Box::new(a::HeaderTodos),
-        "toggle-agent-panel" => Box::new(a::ToggleAgentPanel),
-        "toggle-vim" => Box::new(a::ToggleVim),
-        "open-settings" => Box::new(a::OpenSettings),
-        "python.run-note" => Box::new(a::PythonRunNote),
-        "python.run-stop" => Box::new(a::PythonRunStop),
-        "python.toggle-lsp" => Box::new(a::PythonToggleLsp),
-        "python.create-uv-env" => Box::new(a::PythonCreateUvEnv),
-        "view.toggle-study-mode" => Box::new(a::ToggleStudyMode),
-        "editor.toggle-live-preview" => Box::new(a::ToggleLivePreview),
-        _ => return None,
-    })
-}
-
-/// Default keybinding for a registry command (KeyBinding needs the concrete
-/// action type, so this mirrors [`action_for`]'s table).
-pub(crate) fn keybinding_for(id: &str, key: &str) -> Option<gpui::KeyBinding> {
-    use crate::commands::actions as a;
-    Some(match id {
-        "save-note" => gpui::KeyBinding::new(key, a::Save, None),
-        "command-palette" => gpui::KeyBinding::new(key, a::CommandPalette, None),
-        "quick-switcher" => gpui::KeyBinding::new(key, a::QuickSwitcher, None),
-        "switch-recent-vault" => gpui::KeyBinding::new(key, a::SwitchRecentVault, None),
-        "toggle-sidebar" => gpui::KeyBinding::new(key, a::ToggleSidebar, None),
-        "focus-sidebar" => gpui::KeyBinding::new(key, a::FocusSidebar, None),
-        "new-note" => gpui::KeyBinding::new(key, a::NewNote, None),
-        "quick-add" => gpui::KeyBinding::new(key, a::QuickAdd, None),
-        "open-daily" => gpui::KeyBinding::new(key, a::OpenDaily, None),
-        "todo-to-daily" => gpui::KeyBinding::new(key, a::SendTodoToDaily, None),
-        "toggle-todo" => gpui::KeyBinding::new(key, a::ToggleTodo, None),
-        "toggle-heading" => gpui::KeyBinding::new(key, a::CycleHeading, None),
-        "edit.heading-1" => gpui::KeyBinding::new(key, a::Heading1, None),
-        "edit.heading-2" => gpui::KeyBinding::new(key, a::Heading2, None),
-        "edit.heading-3" => gpui::KeyBinding::new(key, a::Heading3, None),
-        "edit.heading-4" => gpui::KeyBinding::new(key, a::Heading4, None),
-        "toggle-bullet-list" => gpui::KeyBinding::new(key, a::ToggleBulletList, None),
-        "toggle-numbered-list" => gpui::KeyBinding::new(key, a::ToggleNumberedList, None),
-        "toggle-bold" => gpui::KeyBinding::new(key, a::ToggleBold, None),
-        "toggle-italic" => gpui::KeyBinding::new(key, a::ToggleItalic, None),
-        "toggle-strikethrough" => gpui::KeyBinding::new(key, a::ToggleStrikethrough, None),
-        "insert-inline-code" => gpui::KeyBinding::new(key, a::InsertInlineCode, None),
-        "insert-code-block" => gpui::KeyBinding::new(key, a::InsertCodeBlock, None),
-        "insert-math-block" => gpui::KeyBinding::new(key, a::InsertMathBlock, None),
-        "insert-inline-math" => gpui::KeyBinding::new(key, a::InsertInlineMath, None),
-        "insert-callout" => gpui::KeyBinding::new(key, a::InsertCallout, None),
-        "insert-wikilink" => gpui::KeyBinding::new(key, a::InsertWikilink, None),
-        "insert-horizontal-rule" => gpui::KeyBinding::new(key, a::InsertHorizontalRule, None),
-        "header-todos" => gpui::KeyBinding::new(key, a::HeaderTodos, None),
-        "toggle-agent-panel" => gpui::KeyBinding::new(key, a::ToggleAgentPanel, None),
-        "toggle-vim" => gpui::KeyBinding::new(key, a::ToggleVim, None),
-        "open-settings" => gpui::KeyBinding::new(key, a::OpenSettings, None),
-        "python.run-note" => gpui::KeyBinding::new(key, a::PythonRunNote, None),
-        "python.run-stop" => gpui::KeyBinding::new(key, a::PythonRunStop, None),
-        "python.toggle-lsp" => gpui::KeyBinding::new(key, a::PythonToggleLsp, None),
-        "python.create-uv-env" => gpui::KeyBinding::new(key, a::PythonCreateUvEnv, None),
-        "view.toggle-study-mode" => gpui::KeyBinding::new(key, a::ToggleStudyMode, None),
-        "editor.toggle-live-preview" => gpui::KeyBinding::new(key, a::ToggleLivePreview, None),
-        _ => return None,
-    })
-}
-
 /// 1-based (line, column-in-chars) → byte offset, clamped to the text.
 fn line_col_to_byte(text: &str, line: usize, col_chars: usize) -> usize {
     let mut cur = 1usize;
@@ -5212,7 +5550,6 @@ fn line_col_to_byte(text: &str, line: usize, col_chars: usize) -> usize {
     let line_text = &rest[..line_len];
     byte + line_text.chars().take(col_chars).map(|c| c.len_utf8()).sum::<usize>()
 }
-
 
 impl gpui::Render for Workspace {
 
@@ -5337,6 +5674,8 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::focus_sidebar))
             .on_action(cx.listener(Self::new_note))
+            .on_action(cx.listener(Self::new_folder))
+            .on_action(cx.listener(Self::open_vault))
             .on_action(cx.listener(Self::quick_add))
             .on_action(cx.listener(Self::open_daily))
             .on_action(cx.listener(Self::send_todo_to_daily))
@@ -5346,6 +5685,8 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::heading2))
             .on_action(cx.listener(Self::heading3))
             .on_action(cx.listener(Self::heading4))
+            .on_action(cx.listener(Self::heading5))
+            .on_action(cx.listener(Self::heading6))
             .on_action(cx.listener(Self::toggle_bullet))
             .on_action(cx.listener(Self::toggle_numbered))
             .on_action(cx.listener(Self::toggle_bold))
@@ -5355,6 +5696,7 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::insert_math_block))
             .on_action(cx.listener(Self::insert_inline_math))
             .on_action(cx.listener(Self::insert_code_block))
+            .on_action(cx.listener(Self::insert_python_block))
             .on_action(cx.listener(Self::insert_callout))
             .on_action(cx.listener(Self::insert_wikilink))
             .on_action(cx.listener(Self::insert_hr))
@@ -5368,6 +5710,11 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::create_py_uv_env))
             .on_action(cx.listener(Self::toggle_study_mode))
             .on_action(cx.listener(Self::toggle_live_preview))
+            .on_action(cx.listener(Self::toggle_typewriter))
+            .on_action(cx.listener(Self::toggle_snippets))
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::zoom_reset))
             // Dragging a file onto the window opens it in the study pane (TS
             // `ContentPane`'s `onDragDropEvent`); a PDF converts first.
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
@@ -5776,11 +6123,12 @@ mod gate_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUTOSAVE_DEBOUNCE, EditorState, InputEvent, PY_RUN_MAX_LINES, PY_RUN_TRIM_TO, PyRunState,
-        PyStatus, PyStream, StudyContent, TreeMenuItem, Workspace, action_for, actions,
-        apply_edits_keeping_cursor, keybinding_for, load_config_value, normalize_split, numbering,
-        should_schedule_renumber, wikilink, COMMANDS,
+        AUTOSAVE_DEBOUNCE, EditorState, HotkeyFilter, InputEvent, PY_RUN_MAX_LINES,
+        PY_RUN_TRIM_TO, PyRunState, PyStatus, PyStream, StudyContent, TreeMenuItem, Workspace,
+        action_for, actions, apply_edits_keeping_cursor, load_config_value, normalize_split,
+        numbering, should_schedule_renumber, wikilink, COMMANDS,
     };
+    use crate::commands::keybinding_for;
     use gpui::px;
     use std::path::PathBuf;
     use crate::ime_host::{CurrentSource, ImeServices, Switcher};
@@ -6026,6 +6374,154 @@ mod tests {
             assert_eq!(ws.editor.read(cx).value(), "正文[[a]]\n");
             assert!(!ws.link_suggest);
         });
+    }
+
+    /// The hotkeys tab's model: assigning a binding writes `keybindings.json`
+    /// (the TS shell's file) and rebuilds the gpui keymap; a conflict sweeps
+    /// the other command; reset and unbind go back to the defaults.
+    #[gpui::test]
+    fn the_hotkeys_tab_rewrites_the_file_and_the_keymap(cx: &mut TestAppContext) {
+        fn keys_of(cx: &mut gpui::VisualTestContext, action: &dyn gpui::Action) -> Vec<String> {
+            let keymap = cx.update(|_, cx| cx.key_bindings());
+            let keymap = keymap.borrow();
+            keymap
+                .bindings_for_action(action)
+                .map(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .map(|k| k.unparse())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect()
+        }
+        fn stored(file: &std::path::Path) -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(file).expect("the file exists"))
+                .expect("and holds JSON")
+        }
+
+        let (workspace, cx) = python_panel_fixture(cx);
+        let file = workspace.read_with(cx, |ws, _| ws.state.data_dir().join("keybindings.json"));
+
+        // The registry defaults are in the keymap while no override exists.
+        assert_eq!(keys_of(cx, &actions::ToggleBold), ["cmd-b"]);
+        assert!(!file.exists(), "nothing is written until something changes");
+
+        // ⌘B → ⌃B: the file and the keymap both move.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.set_hotkey_binding("edit.toggle-bold", vec!["ctrl-b".to_string()], cx);
+        });
+        assert_eq!(stored(&file)["edit.toggle-bold"], serde_json::json!("ctrl-b"));
+        assert_eq!(keys_of(cx, &actions::ToggleBold), ["ctrl-b"], "the keymap took it");
+        assert_eq!(keys_of(cx, &actions::ToggleItalic), ["cmd-shift-i"], "neighbours are untouched");
+
+        // A conflict sweeps the other command (TS sets it to `null`).
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.set_hotkey_binding("nav.quick-switcher", vec!["cmd-t".to_string()], cx);
+        });
+        assert_eq!(stored(&file)["nav.quick-switcher"], serde_json::json!("cmd-t"));
+        assert_eq!(stored(&file)["nav.header-todos"], serde_json::Value::Null);
+        assert!(keys_of(cx, &actions::HeaderTodos).is_empty(), "the loser is unbound");
+
+        // Unbind, then reset: the registry default comes back.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.set_hotkey_binding("edit.toggle-bold", Vec::new(), cx);
+        });
+        assert_eq!(stored(&file)["edit.toggle-bold"], serde_json::Value::Null);
+        assert!(keys_of(cx, &actions::ToggleBold).is_empty());
+        workspace.update_in(cx, |ws, _, cx| ws.reset_hotkey("edit.toggle-bold", cx));
+        assert_eq!(keys_of(cx, &actions::ToggleBold), ["cmd-b"]);
+
+        // Reset all writes the empty object the TS shell writes.
+        workspace.update_in(cx, |ws, _, cx| ws.reset_all_hotkeys(cx));
+        assert_eq!(stored(&file), serde_json::json!({}));
+        assert_eq!(keys_of(cx, &actions::QuickSwitcher), ["cmd-o"], "everything is back");
+        assert_eq!(keys_of(cx, &actions::HeaderTodos), ["cmd-t"]);
+    }
+
+    /// The capture loop: a real keystroke becomes the binding, Esc cancels, a
+    /// lone modifier keeps waiting, and the keymap follows.
+    #[gpui::test]
+    fn a_captured_keystroke_becomes_the_binding(cx: &mut TestAppContext) {
+        fn keys_of(cx: &mut gpui::VisualTestContext, action: &dyn gpui::Action) -> Vec<String> {
+            let keymap = cx.update(|_, cx| cx.key_bindings());
+            let keymap = keymap.borrow();
+            keymap
+                .bindings_for_action(action)
+                .map(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .map(|k| k.unparse())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect()
+        }
+        let stroke = |s: &str| gpui::Keystroke::parse(s).expect("a keystroke");
+
+        let (workspace, cx) = python_panel_fixture(cx);
+        // Esc cancels: nothing is written, the default stays.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.capture_hotkey("edit.toggle-italic", window, cx);
+            assert!(ws.hotkey_capturing.is_some(), "the row is capturing");
+            assert!(
+                crate::keybindings::HotkeyCaptureActive::active(cx),
+                "the vim and snippet bridges stand down while capturing"
+            );
+            ws.on_hotkey_keystroke(&stroke("escape"), cx);
+            assert!(ws.hotkey_capturing.is_none());
+            assert!(!crate::keybindings::HotkeyCaptureActive::active(cx));
+            assert!(ws.key_overrides.is_empty());
+        });
+        assert_eq!(keys_of(cx, &actions::ToggleItalic), ["cmd-shift-i"]);
+
+        // A lone modifier keeps the capture open.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.capture_hotkey("edit.toggle-italic", window, cx);
+            ws.on_hotkey_keystroke(&stroke("shift"), cx);
+            assert_eq!(ws.hotkey_capturing.as_deref(), Some("edit.toggle-italic"));
+        });
+
+        // A real chord lands — the TS `eventToKey` spelling, normalized.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.on_hotkey_keystroke(&stroke("ctrl-shift-j"), cx);
+            assert!(ws.hotkey_capturing.is_none(), "the capture ended with the binding");
+        });
+        assert_eq!(keys_of(cx, &actions::ToggleItalic), ["ctrl-shift-j"]);
+        assert_eq!(
+            workspace.read_with(cx, |ws, _| ws.key_overrides["edit.toggle-italic"].clone()),
+            ["ctrl-shift-j"]
+        );
+        let active = cx.update(|_, cx| crate::keybindings::HotkeyCaptureActive::active(cx));
+        assert!(!active, "the gate opens again when the capture lands");
+    }
+
+    /// The hotkeys tab lays out and draws — the list, the chips, the filter
+    /// row and the capturing row — through the real modal.
+    #[gpui::test]
+    fn the_hotkeys_tab_draws(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        cx.dispatch_action(actions::OpenSettings);
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.set_settings_tab(SettingsTab::Hotkeys, cx);
+            ws.hotkey_query
+                .clone()
+                .update(cx, |st, cx| st.set_value("标题", window, cx));
+            ws.hotkey_filter = HotkeyFilter::Assigned;
+            ws.capture_hotkey("edit.toggle-heading", window, cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.hotkey_capturing.as_deref(),
+                Some("edit.toggle-heading"),
+                "the frame kept the capture"
+            );
+        });
+        workspace.update_in(cx, |ws, _, cx| ws.cancel_hotkey_capture(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     /// The settings modal's wiring: ⌘, opens and closes it, each toggle applies

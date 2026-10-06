@@ -9,6 +9,7 @@
 mod agent_panel;
 mod apply_ops;
 mod commands;
+mod keybindings;
 mod daily_host;
 mod editor;
 mod footprint_host;
@@ -21,14 +22,14 @@ use std::path::PathBuf;
 
 use bnote_core::state::AppState;
 use gpui::{
-    App, AppContext as _, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, px,
+    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px,
     point, size,
 };
 use gpui_kit::assets::Assets;
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use editor::snippets_host::SnippetBridge;
 use editor::vim::integration::VimBridge;
-use workspace::{Workspace, keybinding_for};
+use workspace::Workspace;
 
 /// bnote keeps its own config under the standard app-data dir, shared with the
 /// Tauri shell (same `config.json`, so both shells agree on the last vault).
@@ -74,15 +75,8 @@ fn main() {
             Theme::change(mode, None, cx);
             theme::apply(mode, cx);
 
-            // Every registry command gets its default keybinding; overrides
-            // from keybindings.json arrive with the settings port.
-            let bindings: Vec<KeyBinding> = commands::COMMANDS
-                .iter()
-                .filter_map(|def| def.key.and_then(|key| keybinding_for(def.id, key)))
-                .collect();
-            cx.bind_keys(bindings);
-
             let (state, rx) = AppState::new(data_dir());
+
 
             // Restore the last vault (Tauri shell writes the same key).
             let last_vault = bnote_core::commands::config::load_app_config(&state)

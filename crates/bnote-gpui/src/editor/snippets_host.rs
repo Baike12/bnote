@@ -1031,6 +1031,11 @@ impl SnippetBridge {
     }
 
     fn on_keystroke(&self, ks: &Keystroke, window: &mut Window, cx: &mut App) {
+        // While the settings modal captures a keystroke the chord belongs to
+        // the hotkey, not to the note.
+        if crate::keybindings::HotkeyCaptureActive::active(cx) {
+            return;
+        }
         let Some(key) = snippet_key(ks) else {
             return; // chords, navigation and IME keys pass through
         };

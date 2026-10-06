@@ -138,6 +138,11 @@ impl VimBridge {
     }
 
     fn on_keystroke(&self, ks: &Keystroke, window: &mut Window, cx: &mut App) {
+        // While the settings modal captures a keystroke the chord belongs to
+        // the hotkey, not to the note.
+        if crate::keybindings::HotkeyCaptureActive::active(cx) {
+            return;
+        }
         let Some(key) = translate(ks) else {
             return; // chords outside vim's vocabulary pass through
         };
