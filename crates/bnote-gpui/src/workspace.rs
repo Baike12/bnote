@@ -6471,6 +6471,59 @@ mod tests {
         });
     }
 
+    /// `set clipboard=unnamed`: a yank mirrors out to the system clipboard and
+    /// a paste reads what another app put there.
+    #[gpui::test]
+    fn the_vimrc_clipboard_flag_wires_the_system_clipboard(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.set_vim_setting(true, cx);
+            ws.vim_bridge.set_vimrc(Some("set clipboard=unnamed\n"), None);
+            ws.editor.update(cx, |st, cx| {
+                st.set_value("第一行\n第二行\n", window, cx);
+                st.set_selected_range(0..0, cx);
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let window = cx.update(|window, _| window.window_handle());
+        let chord = |cx: &mut gpui::VisualTestContext, text: &str| {
+            let ks = gpui::Keystroke::parse(text).expect("a keystroke");
+            cx.dispatch_keystroke(window, ks);
+        };
+
+        // `yy` yanks the line into the unnamed register — and, with the flag
+        // set, onto the system clipboard.
+        chord(cx, "y");
+        chord(cx, "y");
+        cx.run_until_parked();
+        let clip = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(clip.as_deref(), Some("第一行\n"), "the yank reached the clipboard");
+
+        // A paste takes whatever the clipboard holds now (another app's copy).
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("外来\n".to_string()));
+        chord(cx, "p");
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, cx| {
+            let text = ws.editor.read(cx).value().to_string();
+            assert!(text.contains("外来"), "the paste read the system clipboard: {text:?}");
+        });
+
+        // With the flag off the two stay separate.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.vim_bridge.set_vimrc(Some(""), None);
+            ws.editor.update(cx, |st, cx| {
+                st.set_value("甲\n乙\n", window, cx);
+                st.set_selected_range(0..0, cx);
+            });
+        });
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("外部\n".to_string()));
+        chord(cx, "y");
+        chord(cx, "y");
+        cx.run_until_parked();
+        let clip = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(clip.as_deref(), Some("外部\n"), "the yank stayed internal");
+    }
+
     /// Typing a snippet trigger expands it through the real keystroke path:
     /// the snippet bridge is registered as an interceptor, and a dropped
     /// subscription there would leave the whole LaTeX-suite feature dead

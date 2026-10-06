@@ -538,14 +538,52 @@ impl VimBridge {
             clipboard: None,
         };
 
-        let (outcome, mode_before, mode_after) = {
+        // `set clipboard=unnamed`: the unnamed register *is* the system
+        // clipboard. Reads happen here (before the key, so a paste sees what
+        // other apps copied); writes are mirrored out below.
+        let mode_now = self.current_mode(&editor).unwrap_or(Mode::Normal);
+        let unnamed_reads = self.clipboard_unnamed.get() && !inserts_natively(mode_now);
+        let system_clipboard = if unnamed_reads {
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+        } else {
+            None
+        };
+        let (outcome, mode_before, mode_after, wrote_registers) = {
             let mut list = self.attachments.borrow_mut();
             let att = list.iter_mut().find(|a| a.editor == editor).expect("attached");
             let before = att.vim.mode;
+            if let Some(text) = &system_clipboard {
+                // A trailing newline is what makes a register linewise, and
+                // that is exactly how another app's copy of a line arrives.
+                att.vim.registers.unnamed = Some(super::core::state::RegisterContent {
+                    text: text.clone(),
+                    linewise: text.ends_with('\n'),
+                });
+            }
+            let writes_before = att.vim.registers.write_seq;
             let outcome = feed_apply(&mut att.vim, &text, key, &ctx);
             let after = att.vim.mode;
-            (outcome, before, after)
+            let wrote = att.vim.registers.write_seq != writes_before;
+            (outcome, before, after, wrote)
         };
+        // Mirror a write out (the `+` writes already carry their own copy).
+        if self.clipboard_unnamed.get() && wrote_registers {
+            let mirror = {
+                let list = self.attachments.borrow();
+                list.iter()
+                    .find(|a| a.editor == editor)
+                    .and_then(|a| a.vim.registers.unnamed.clone())
+            };
+            if let Some(mut content) = mirror {
+                // Mirror what vim puts on the clipboard: a linewise register
+                // carries its newline, so another app pastes a whole line.
+                if content.linewise && !content.text.ends_with('\n') {
+                    content.text.push('\n');
+                }
+                cx.write_to_clipboard(ClipboardItem::new_string(content.text));
+            }
+        }
         // The observer runs outside the attachment borrow: it re-enters this
         // bridge (`mode_of`) and must not see it locked.
         if mode_before != mode_after {

@@ -97,6 +97,10 @@ pub struct Registers {
     pub named: HashMap<char, RegisterContent>,
     /// Set when the last write went into `+` so the host mirrors it out.
     pub clipboard_dirty: Option<RegisterContent>,
+    /// Bumped on every write. The host compares it across one key to learn
+    /// whether the unnamed register moved without cloning the text
+    /// (`set clipboard=unnamed` mirrors it to the system clipboard).
+    pub write_seq: u64,
     /// The register prefix read before the last write/read command (`"a`).
     pub requested: Option<char>,
 }
@@ -111,6 +115,7 @@ impl Registers {
     /// - every write also lands in `"` (unnamed);
     /// - yanks additionally land in `0`; multiline deletes shift `1..9`.
     pub fn write(&mut self, name: Option<char>, content: RegisterContent, is_delete: bool, is_multiline: bool) {
+        self.write_seq = self.write_seq.wrapping_add(1);
         match name {
             Some('_') => return,
             Some('+') => {
