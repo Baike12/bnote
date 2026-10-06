@@ -552,7 +552,6 @@ mod tests {
     /// The mode-independent pieces the CSS declares once.
     #[test]
     fn shared_values_match_the_css() {
-        let css = css_block(":root");
         let dark = Palette::from_table(DARK);
         let light = Palette::from_table(LIGHT);
         // The three bracket colors live in a second `:root` block (declared

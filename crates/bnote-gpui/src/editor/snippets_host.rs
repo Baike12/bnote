@@ -985,12 +985,18 @@ impl SnippetBridge {
         let palette = {
             use gpui_kit::component::ActiveTheme as _;
             let theme = cx.theme();
+            // The Tauri shell's `--latex-bracket-0..2`, through the active
+            // palette so the light mode gets its own values (they differ from
+            // the dark ones); the dark palette is the boot fallback.
+            let brackets = cx
+                .try_global::<crate::theme::ActivePalette>()
+                .map(|active| active.0)
+                .unwrap_or_else(|| crate::theme::Palette::dark());
             BracketPalette {
-                // The Tauri shell's `--latex-bracket-0..2`.
                 colors: [
-                    gpui::rgba(0x527a_ffff).into(),
-                    gpui::rgba(0xff50_b7ff).into(),
-                    gpui::rgba(0x69ba_00ff).into(),
+                    brackets.bracket(0),
+                    brackets.bracket(1),
+                    brackets.bracket(2),
                 ],
                 cursor: theme.accent.opacity(0.3),
             }

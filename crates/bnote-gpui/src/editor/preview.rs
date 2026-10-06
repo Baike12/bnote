@@ -23,7 +23,7 @@
 //! installs [`PreviewHost`] as the renderer once.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -31,16 +31,17 @@ use bnote_core::preview::{self as core, ScanInput};
 use bnote_mathml::{MathFontMetrics, MathItem, MathLayout, Measured};
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Font, FontStyle, FontWeight, GlobalElementId,
-    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, RenderImage, SharedString, Style,
-    TextAlign, TextRun, Window, div, fill, img, point, prelude::*, px, size,
+    HighlightStyle, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, RenderImage,
+    SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, div,
+    fill, img, point, prelude::*, px, size,
 };
 use gpui_kit::component::input::{
-    PreviewBlock, PreviewBlockView, PreviewDecorations, PreviewRenderer, PreviewSpan,
-    PreviewWidget,
+    PreviewBlock, PreviewBlockView, PreviewDecorations, PreviewLineStyle, PreviewRenderer,
+    PreviewSpan, PreviewWidget, TextDecoration,
 };
 
 use super::images::ImageStore;
-use crate::theme::ActivePalette;
+use crate::theme::{ActivePalette, Palette};
 
 /// The font the preview measures against. The workspace styles the editor with
 /// exactly these values, so a widget's declared width is measured in the same
@@ -49,6 +50,14 @@ use crate::theme::ActivePalette;
 pub struct PreviewFont {
     pub family: SharedString,
     pub size: Pixels,
+}
+
+/// One scan's output, split by engine channel: the geometry snapshot
+/// ([`PreviewDecorations`]) and the text styles (the TS mark classes as
+/// [`TextDecoration`]s, which go to a decorations collection).
+pub struct PreviewUpdate {
+    pub decorations: PreviewDecorations,
+    pub styles: Vec<TextDecoration>,
 }
 
 impl PreviewFont {
@@ -255,6 +264,10 @@ impl PreviewHost {
     /// Widgets whose width cannot be established yet (an image whose file has
     /// not been decoded) are dropped: their source stays visible rather than
     /// collapsing into a box that is not there.
+    ///
+    /// The result carries both engine channels: the geometry snapshot
+    /// (`set_preview_decorations`) and the text styles (a
+    /// [`TextDecorationCollection::set`]).
     pub fn decorations(
         &self,
         text: &str,
@@ -263,7 +276,7 @@ impl PreviewHost {
         visible: Option<&Range<usize>>,
         window: &mut Window,
         cx: &mut App,
-    ) -> PreviewDecorations {
+    ) -> PreviewUpdate {
         let scan_window = match visible {
             Some(visible) => visible.start.saturating_sub(SCAN_PAD)
                 ..visible.end.saturating_add(SCAN_PAD),
@@ -339,11 +352,202 @@ impl PreviewHost {
         *self.blocks.borrow_mut() = block_kinds;
 
         self.revision.set(self.revision.get() + 1);
-        PreviewDecorations {
-            spans,
-            blocks,
-            revision: self.revision.get(),
+        PreviewUpdate {
+            styles: self.style_decorations(&snapshot, text, cx),
+            decorations: PreviewDecorations {
+                spans,
+                blocks,
+                lines: self.line_styles(&snapshot, cx),
+                revision: self.revision.get(),
+            },
         }
+    }
+
+    /// The core panels as engine line styles: the per-line container looks of
+    /// the TS `md-callout-line` / `md-code-line` / `md-quote` classes.
+    ///
+    /// The engine allows **one** style per line while the TS stacks several
+    /// line classes on one line element, so the merge follows the CSS cascade
+    /// (later rules win per property, `global.css` order: callout 545, code
+    /// 618, quote 622): a code body inside a callout keeps the callout's
+    /// indent and border but paints `--code-block-bg`; a quote inside one
+    /// keeps its own border colour. Nested callouts stack their classes and
+    /// the inner region wins the indent, which is the order the core emits
+    /// the panels in.
+    fn line_styles(&self, snapshot: &core::PreviewSnapshot, cx: &App) -> Vec<PreviewLineStyle> {
+        let palette = self.palette(cx);
+        let accent = palette.color("h2-color");
+        #[derive(Clone, Copy, Default)]
+        struct Look {
+            background: Option<Hsla>,
+            border: Option<(Pixels, Hsla)>,
+            inset: Pixels,
+        }
+        let mut per_line: BTreeMap<u64, Look> = BTreeMap::new();
+        let mut apply = |panel: &core::PreviewPanel, look: &mut dyn FnMut(&mut Look)| {
+            for line in panel.first_line..=panel.last_line {
+                look(per_line.entry(line as u64).or_default());
+            }
+        };
+
+        // 1. `md-callout-line` (background, border, indent).
+        for panel in &snapshot.panels {
+            let core::PanelKind::Callout { depth, .. } = &panel.kind else {
+                continue;
+            };
+            let inset = callout_indent(*depth as usize);
+            apply(panel, &mut |look: &mut Look| {
+                look.background = Some(accent.opacity(0.08));
+                look.border = Some((px(3.), accent.opacity(0.5)));
+                look.inset = inset;
+            });
+        }
+        // 2. `md-code-line` (its background wins over the callout's).
+        for panel in &snapshot.panels {
+            if !matches!(panel.kind, core::PanelKind::CodeBlock) {
+                continue;
+            }
+            let code_bg = palette.color("code-block-bg");
+            apply(panel, &mut |look: &mut Look| {
+                look.background = Some(code_bg);
+            });
+        }
+        // 3. `md-quote` (its border wins over the callout's).
+        for panel in &snapshot.panels {
+            if !matches!(panel.kind, core::PanelKind::Blockquote) {
+                continue;
+            }
+            let quote_border = accent.opacity(0.4);
+            apply(panel, &mut |look: &mut Look| {
+                look.border = Some((px(3.), quote_border));
+            });
+        }
+
+        per_line
+            .into_iter()
+            .map(|(line, look)| {
+                let mut style = PreviewLineStyle::new(line);
+                if let Some(background) = look.background {
+                    style = style.background(background);
+                }
+                if let Some((width, color)) = look.border {
+                    style = style.left_border(width, color);
+                }
+                style.inset(look.inset)
+            })
+            .collect()
+    }
+
+    /// The TS mark classes as engine text decorations (`md-strong`,
+    /// `md-inline-code`, `md-link`, …): the colour of each comes from the same
+    /// `global.css` variable the TS class used, read through [`ActivePalette`].
+    ///
+    /// The quote look comes first: a quoted line's body text is `--h2-color`
+    /// and italic (`.md-quote`), while a mark *inside* it overrides both —
+    /// later decorations win in the engine's composition, mirroring CSS,
+    /// where the mark's own colour beats the line element's inherited one.
+    fn style_decorations(
+        &self,
+        snapshot: &core::PreviewSnapshot,
+        text: &str,
+        cx: &App,
+    ) -> Vec<TextDecoration> {
+        let palette = self.palette(cx);
+        let mut out = Vec::with_capacity(snapshot.styles.len() + snapshot.panels.len());
+        let quoted: Vec<&core::PreviewPanel> = snapshot
+            .panels
+            .iter()
+            .filter(|panel| matches!(panel.kind, core::PanelKind::Blockquote))
+            .collect();
+        if !quoted.is_empty() {
+            let lines = line_table(text);
+            for panel in quoted {
+                let last = panel.last_line.min(lines.len().saturating_sub(1));
+                for &(from, to) in &lines[panel.first_line.min(last)..=last] {
+                    out.push(TextDecoration::new(
+                        from..to,
+                        HighlightStyle {
+                            font_style: Some(FontStyle::Italic),
+                            color: Some(palette.color("h2-color")),
+                            ..Default::default()
+                        },
+                    ));
+                }
+            }
+        }
+        out.extend(snapshot.styles.iter().map(|span| {
+            let style = match span.style {
+                core::SpanStyle::Strong => HighlightStyle {
+                    font_weight: Some(FontWeight::BOLD),
+                    color: Some(palette.color("strong-color")),
+                    ..Default::default()
+                },
+                core::SpanStyle::Emphasis => HighlightStyle {
+                    font_style: Some(FontStyle::Italic),
+                    color: Some(palette.color("strong-color")),
+                    ..Default::default()
+                },
+                core::SpanStyle::Strikethrough => HighlightStyle {
+                    strikethrough: Some(StrikethroughStyle {
+                        thickness: px(1.),
+                        color: None,
+                    }),
+                    color: Some(palette.color("text-dim")),
+                    ..Default::default()
+                },
+                core::SpanStyle::InlineCode => HighlightStyle {
+                    background_color: Some(palette.color("code-inline-bg")),
+                    color: Some(palette.token("number")),
+                    ..Default::default()
+                },
+                core::SpanStyle::Link | core::SpanStyle::WikiLink => HighlightStyle {
+                    color: Some(palette.color("link")),
+                    // `md-link { text-decoration: underline }`; the TS paints
+                    // it at 35% of the link colour.
+                    underline: (span.style == core::SpanStyle::Link).then(|| UnderlineStyle {
+                        thickness: px(1.),
+                        color: Some(palette.color("link").opacity(0.35)),
+                        wavy: false,
+                    }),
+                    ..Default::default()
+                },
+                core::SpanStyle::LinkUrl => HighlightStyle {
+                    color: Some(palette.color("text-faint")),
+                    ..Default::default()
+                },
+                core::SpanStyle::Heading { level } => HighlightStyle {
+                    font_weight: Some(FontWeight::BOLD),
+                    color: Some(palette.heading(level as usize)),
+                    ..Default::default()
+                },
+                core::SpanStyle::HeadingMark | core::SpanStyle::ListMark => HighlightStyle {
+                    color: Some(palette.color("text-faint")),
+                    ..Default::default()
+                },
+                core::SpanStyle::MathDelim => HighlightStyle {
+                    color: Some(palette.color("keyword")),
+                    ..Default::default()
+                },
+                core::SpanStyle::MathCmd => HighlightStyle {
+                    color: Some(palette.color("danger")),
+                    ..Default::default()
+                },
+                core::SpanStyle::MathBrace => HighlightStyle {
+                    color: Some(palette.token("number")),
+                    ..Default::default()
+                },
+            };
+            TextDecoration::new(span.range.clone(), style)
+        }));
+        out
+    }
+
+    /// The active bnote palette (the shell registers it at startup; the dark
+    /// one is the boot fallback for a test that forgot to).
+    fn palette(&self, cx: &App) -> &'static Palette {
+        cx.try_global::<ActivePalette>()
+            .map(|active| active.0)
+            .unwrap_or_else(|| Palette::dark())
     }
 
     /// The height a block reserves, measured with the layout its renderer will
@@ -777,6 +981,18 @@ fn callout_indent(depth: usize) -> Pixels {
     })
 }
 
+/// `(start, end)` byte offsets of every line's text (no newline), one pass —
+/// the host-side line table the panel-derived text styles are keyed by.
+fn line_table(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for chunk in text.split('\n') {
+        out.push((start, start + chunk.len()));
+        start += chunk.len() + 1;
+    }
+    out
+}
+
 /// The picture, inside the box the engine reserved (it lays the element out
 /// with the span's width × the line height and centres it vertically): the
 /// image keeps its aspect ratio at the width the span declared, and a tall
@@ -1033,7 +1249,8 @@ let a = 1;
                     family: "Helvetica".into(),
                     size: px(14.),
                 });
-                let decorations = host.decorations(DOC, &[], px(700.), None, window, cx);
+                let update = host.decorations(DOC, &[], px(700.), None, window, cx);
+                let decorations = &update.decorations;
 
                 let lines: Vec<Range<u64>> = decorations
                     .blocks
@@ -1084,6 +1301,165 @@ let a = 1;
                     !host.needs_rescan_for(Some(&(SCAN_PAD - 100..SCAN_PAD - 40))),
                     "a scroll that stays inside the pad asks for nothing"
                 );
+                cx.new(|_| Root)
+            })
+            .expect("a test window");
+        });
+    }
+
+    /// The host's style mapping: every core mark becomes a `TextDecoration`
+    /// whose colour is the same `global.css` variable the TS class used (read
+    /// through the active palette).    #[gpui::test]
+    fn the_host_translates_style_spans_into_text_decorations(cx: &mut TestAppContext) {
+        const DOC: &str = "# Head\n\n`code` and [lab](https://x.dev) and **bold**\n";
+        struct Root;
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Dark, None, cx);
+            crate::theme::apply(ThemeMode::Dark, cx);
+            cx.open_window(Default::default(), |window, cx| {
+                let host = PreviewHost::new(PreviewFont {
+                    family: "Helvetica".into(),
+                    size: px(14.),
+                });
+                // Caret away from every mark (the last line's end).
+                let update = host.decorations(DOC, &[], px(700.), None, window, cx);
+                let palette = Palette::dark();
+                let style_of = |slice: &str| {
+                    update
+                        .styles
+                        .iter()
+                        .find(|decoration| {
+                            &DOC[decoration.range.clone()] == slice
+                        })
+                        .map(|decoration| decoration.style.clone())
+                        .unwrap_or_else(|| panic!("no decoration for {slice:?}"))
+                };
+
+                let heading = style_of("Head");
+                assert_eq!(heading.font_weight, Some(FontWeight::BOLD));
+                assert_eq!(heading.color, Some(palette.heading(1)));
+                let code = style_of("code");
+                assert_eq!(code.background_color, Some(palette.color("code-inline-bg")));
+                assert_eq!(code.color, Some(palette.token("number")));
+                let label = style_of("lab");
+                assert_eq!(label.color, Some(palette.color("link")));
+                let url = style_of("https://x.dev");
+                assert_eq!(url.color, Some(palette.color("text-faint")));
+                let bold = style_of("bold");
+                assert_eq!(bold.font_weight, Some(FontWeight::BOLD));
+                assert_eq!(bold.color, Some(palette.color("strong-color")));
+                cx.new(|_| Root)
+            })
+            .expect("a test window");
+        });
+    }
+
+    /// The panel mapping: a callout's lines carry the face (background, 3px
+    /// border, indent by depth), a code body carries the code background, and
+    /// a quoted line carries the accent border as a line style plus the
+    /// italic accent text as a mark — the two channels the TS used two
+    /// different mechanisms for (`md-quote` line class + inherited italic).
+    #[gpui::test]
+    fn the_host_maps_panels_to_line_styles(cx: &mut TestAppContext) {
+        // Lines: 0 `:::` opening, 1 body, 2 `:::` closing, 4 fence, 5 code
+        // body, 6 fence, 8 quote.
+        const DOC: &str = "\
+::: 提示
+callout body
+:::
+
+```rust
+let a = 1;
+```
+
+> quoted line
+";
+        struct Root;
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Dark, None, cx);
+            crate::theme::apply(ThemeMode::Dark, cx);
+            cx.open_window(Default::default(), |window, cx| {
+                let host = PreviewHost::new(PreviewFont {
+                    family: "Helvetica".into(),
+                    size: px(14.),
+                });
+                let update = host.decorations(DOC, &[], px(700.), None, window, cx);
+                let palette = Palette::dark();
+                let lines = &update.decorations.lines;
+
+                let numbered: Vec<u64> = lines.iter().map(|style| style.line).collect();
+                assert_eq!(
+                    numbered,
+                    vec![0, 1, 2, 5, 8],
+                    "callout edges+body, the code body, the quote line"
+                );
+                let accent = palette.color("h2-color");
+                assert_eq!(lines[0].inset, px(11.), "d0 indent");
+                assert_eq!(lines[0].background, Some(accent.opacity(0.08)));
+                assert_eq!(lines[0].left_border, Some((px(3.), accent.opacity(0.5))));
+                assert_eq!(lines[2].inset, px(11.));
+                assert_eq!(
+                    lines[3].background,
+                    Some(palette.color("code-block-bg")),
+                    "the code body's backdrop"
+                );
+                assert_eq!(lines[3].inset, px(0.), "no indent on code");
+                assert_eq!(
+                    lines[4].left_border,
+                    Some((px(3.), accent.opacity(0.4))),
+                    "the quote's border"
+                );
+
+                // The quote's text style: italic in the accent colour, over
+                // the whole line's bytes.
+                let quoted = update
+                    .styles
+                    .iter()
+                    .find(|decoration| {
+                        decoration.style.font_style == Some(FontStyle::Italic)
+                            && decoration.style.color == Some(accent)
+                    })
+                    .expect("the quoted line's italic style");
+                assert_eq!(&DOC[quoted.range.clone()], "> quoted line");
+
+                // Deeper callouts inset further (the TS `d1`/`d2` classes).
+                // The nested region's lines (1..=3) take the inner indent —
+                // the TS stacks both classes and the inner one wins.
+                let nested = "::: 外\n::: 内\nbody\n:::\n:::\n";
+                let update = host.decorations(nested, &[], px(700.), None, window, cx);
+                let insets: Vec<Pixels> = update
+                    .decorations
+                    .lines
+                    .iter()
+                    .map(|style| style.inset)
+                    .collect();
+                assert_eq!(
+                    insets,
+                    vec![px(11.), px(25.), px(25.), px(25.), px(11.)],
+                    "outer edges d0, the nested region d1"
+                );
+                // One style per line, whatever the panels stacked.
+                let numbered: Vec<u64> = update
+                    .decorations
+                    .lines
+                    .iter()
+                    .map(|style| style.line)
+                    .collect();
+                assert_eq!(numbered, vec![0, 1, 2, 3, 4]);
                 cx.new(|_| Root)
             })
             .expect("a test window");

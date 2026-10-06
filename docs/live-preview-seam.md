@@ -103,16 +103,72 @@ enum PanelKind {
 }
 ```
 
-**S5 引擎需求**（逐行样式会改布局，必须引擎配合，不能靠宿主叠画）：
-1. 每行的背景矩形（全高、从文本起点到行尾或内容区）——先看
-   `RangeDecorationStyle::Fill` 的 `layout_match_range` 是否就是"行高矩形"，
-   是则可直接复用（宿主按 panel 的字节范围下发），否则加一条 per-line 样式通道；
-2. 左竖线：宽度 + 颜色，画在文本起点左侧（需要行左缩进参与布局）；
-3. 行左缩进 / 顶底内边距（callout 的 `padding-left: 11/25/39px`、边界行
-   `padding-top/bottom: 8px` + 圆角）——`LineLayout` 已有 `line_indent`
-   （目前只用于软换行续行），改成"buffer 行也能有 indent"即可；
-4. 引用行的斜体 + accent 色（可以用既有的 `TextDecoration` 染色覆盖，
-   斜体看 `HighlightStyle` 是否带 font style）。
+**S5 引擎需求：行级样式通道（`PreviewLineStyle`）**——逐行容器视觉，只改
+x 不改 y（取舍见下）：
+
+```rust
+/// 一行的容器样式：TS 行类 `md-callout-line` / `md-code-line` / `md-quote`
+/// 的引擎侧表达。
+pub struct PreviewLineStyle {
+    pub line: u64,
+    /// 整行背景：文本区左缘 → 右缘（**不是**文本末尾），画在文本之下。
+    pub background: Option<Hsla>,
+    /// 文本区左缘的竖线 `(宽, 色)`。
+    pub left_border: Option<(Pixels, Hsla)>,
+    /// 文本左缩进（TS `padding-left` 11/25/39px）；wrap 宽度随之收窄。
+    pub inset: Pixels,
+}
+```
+
+放进 `PreviewDecorations`（新增 `lines` 字段），随 `set_preview_decorations`
+一次生效。契约：
+
+- 按 `line` 升序、每行至多一条；被块替换的行不下发（无文本，样式无效果）；
+- **不动行高、不动块几何、不动 `scroll_size`**：inset 只改 x（文本起点、
+  wrap 宽度、命中/光标 x）；查表用单调游标（与 spans 同款），空表零开销；
+- 竖线画在 inset 区域内（TS 里 `border-left` 与 `padding-left` 并列，都从
+  文本区左缘起算）。
+
+已评估并**有意未做**（记录缺口，不阻塞当前视觉）：
+- 行 padding（`padding-top/bottom: 8px`）：只在 callout 边界行，而边界行是
+  块替换（宿主已把 8px 帽算进块高），body 行无 padding——不需要；
+- 标题字号（1.7/1.5/1.2/1.1em）与行高表：`HighlightStyle`/`TextRun` 无
+  per-run 字号，per-line 字号要求"行高表"替代统一 `line_height`（波及
+  滚动尺寸、可见范围反查、光标 y、vim 像素锚定）——单独立项；
+- 圆角：背景矩形的 4px 顶/底帽在 callout 里由**块**绘制，行背景不需要。
+
+**S5 通道的宿主消费清单**（TS 行类 → `PreviewLineStyle`，颜色取自同一份
+CSS 变量）：
+- `md-callout-line d{n}`：背景 `h2@8%`、竖线 3px `h2@50%`、inset 11/25/39px
+  （面板不随光标门控，core 的 `PreviewPanel::Callout` 已备齐）；
+- `md-code-line`：背景 `--code-block-bg`（无竖线、无 inset），仅光标在块外
+  （core `PanelKind::CodeBlock`）；
+- `md-quote`：竖线 3px `h2@40%`、文字 `h2` 色 + **斜体**（TextDecoration 的
+  font_style 即可），**无 inset**；仅非活动行（core `PanelKind::Blockquote`）；
+- `md-list-line li-i{depth} li-{b,t,o}`：**悬挂缩进（另立项）**——
+  `padding-left: li-px + li-hang` + `text-indent: -li-hang`：首行文本起于
+  `li-px`（`0.8125em + depth×1.75em`），续行起于 `li-px + li-hang`（槽宽
+  按种类）；引擎侧表达 = 行 inset(`li-px`) + 续行 wrap indent(`li-hang`)，
+  且 bullet widget 的声明宽度应与 `li-hang` 对齐（现在 0.62em 是近似）。
+
+**S6 文本样式通道（core ✅ / 宿主 ✅，不需引擎改动）**：core 的
+`PreviewSnapshot` 增加 `styles: Vec<PreviewStyleSpan>`（范围 + `SpanStyle`：
+Strong/Emphasis/Strike/InlineCode/Link/LinkUrl/WikiLink/Heading{level}/
+HeadingMark/ListMark/MathDelim/MathCmd/MathBrace，逐个对应 TS 的
+`Decoration.mark` 类），宿主翻译成引擎既有的 `TextDecoration`
+（`HighlightStyle` 的 color / font_weight / font_style / background_color /
+strikethrough），颜色取自同一份 `global.css` 变量（经 `ActivePalette`）。
+
+两条与 TS 逐字对齐的门控事实（core 测试锁定）：
+- inline code 的内容 mark **无条件**（光标在内时源码可见但仍有底色）；
+- emphasis/strong/strike 的整个处理由 `!active(node)` 门控，光标在其内时
+  **连 mark 都没有**；heading 的 `md-hmark` 只在光标行，`md-heading md-h{n}`
+  恒有。
+
+已评估并**有意未做**：标题字号（1.7/1.5/1.2/1.1em）与 `.md-hline-{n}` 的
+行垂直留白（h1 上 22px、h2 18px、h3 14px、h4-6 10px，h1/h2 下 2px）——两者
+都要求"行高表"取代统一 `line_height`（与 S5 的 per-line 字号同源），单独
+立项。样式先行以颜色 + 字重表达标题。
 
 ## 与 KaTeX 的对应
 

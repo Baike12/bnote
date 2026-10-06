@@ -25,7 +25,7 @@ use gpui_kit::component::{
     ActiveTheme, IconName,
     command::{Command, CommandItem, CommandState},
     h_flex, v_flex,
-    input::{Editor, EditorState, InputEvent},
+    input::{Editor, EditorState, InputEvent, TextDecorationCollection},
     label::Label,
     list::ListItem,
     resizable::{h_resizable, resizable_panel},
@@ -115,6 +115,9 @@ pub struct Workspace {
     preview_dirty: bool,
     /// The selection the last scan saw, to tell a caret move from a repaint.
     preview_selection: Option<std::ops::Range<usize>>,
+    /// The live preview's text styles (the TS mark classes), installed as a
+    /// text-decoration collection alongside the geometry snapshot.
+    preview_styles: TextDecorationCollection,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -180,6 +183,11 @@ impl Workspace {
         editor.update(cx, |state, cx| {
             state.set_preview_renderer(Some(preview.clone()), cx);
         });
+        // The live preview's text styles (the TS mark classes) ride their own
+        // decoration collection; the editor tracks the ranges through edits.
+        let preview_styles = editor.update(cx, |state, cx| {
+            state.create_decorations_collection(Vec::new(), cx)
+        });
 
         // Drive autosave + dirty flag off editor changes, and refresh the
         // live preview when either the text or the caret moved.
@@ -228,6 +236,7 @@ impl Workspace {
             preview,
             preview_dirty: true,
             preview_selection: None,
+            preview_styles,
             _subscriptions: subscriptions,
         };
 
@@ -1526,8 +1535,10 @@ impl gpui::Render for Workspace {
                 window,
                 cx,
             );
-            self.editor
-                .update(cx, |state, cx| state.set_preview_decorations(decorations, cx));
+            self.preview_styles.set(decorations.styles, cx);
+            self.editor.update(cx, |state, cx| {
+                state.set_preview_decorations(decorations.decorations, cx)
+            });
             // The scan just queued a load for every image whose size it does
             // not know yet; run them off the UI thread.
             self.spawn_image_loads(cx);
