@@ -19,6 +19,7 @@ pub mod ops;
 pub mod recent;
 pub mod switcher;
 pub mod tree;
+pub mod wikilink;
 
 /// Line ranges of `text` as `[(start, end)]` byte offsets, `end` exclusive and
 /// pointing at the `\n` (i.e. the line text is `&text[start..end]`). Mirrors

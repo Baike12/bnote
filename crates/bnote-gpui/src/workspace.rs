@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use bnote_core::markdown::numbering;
 use bnote_core::markdown::ops as ops;
+use bnote_core::markdown::wikilink;
 use bnote_core::state::AppState;
 use ::gpui::{
     AppContext as _, Context, Entity, Focusable, Subscription, WeakEntity, Window, div, px, relative,
@@ -60,6 +61,12 @@ const EVENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 
 /// Every Nth event-loop iteration pumps the footprint core (~1.2s at 300ms).
 const FOOTPRINT_TICK_EVERY: u32 = 4;
+
+/// The link-suggest panel's fixed width (TS `.link-suggest`, 380px).
+const LINK_PANEL_W: f32 = 380.;
+/// The panel's worst-case height, the bound used when it has to flip above
+/// the caret (TS measures the panel; 252px results cap plus the search field).
+const LINK_PANEL_H: f32 = 300.;
 
 #[derive(Clone, Copy, PartialEq)]
 enum PaletteKind {
@@ -133,9 +140,15 @@ pub struct Workspace {
     /// carrying this revision is the pass's own edit and must not re-trigger
     /// it (the subscriber runs after the pass, so the flag cannot).
     renumber_done_rev: Option<u64>,
-    /// `settings.typewriter`: keep the caret's line centered (see gpui-kit's
-    /// `set_center_cursor`).
-    typewriter: bool,
+    /// Link suggest (TS `LinkSuggest.tsx`): the completion panel
+    /// `edit.insert-wikilink` opens when the caret line has no link, plus its
+    /// live query.
+    link_suggest: bool,
+    link_query: String,
+    /// The document revision the panel opened over — the insert is abandoned
+    /// when it no longer matches (TS `linkPickState`).
+    link_pick_rev: Option<u64>,
+    link_state: Entity<CommandState>,
     /// Cursor memory (TS `cursorMemory.ts`): the position to persist, bumped
     /// with every save request.
     cursor_pending: Option<(String, usize, f32)>,
@@ -256,6 +269,7 @@ impl Workspace {
         let agent = cx.new(|cx| AgentPanel::new(state.clone(), window, cx));
         let cmd_state = cx.new(|cx| CommandState::new(window, cx));
         let files_state = cx.new(|cx| CommandState::new(window, cx));
+        let link_state = cx.new(|cx| CommandState::new(window, cx));
 
         // The `settings` block (`config.json`, the Tauri shell's keys), read
         // once at startup — the settings panel will re-read what it changes.
@@ -352,7 +366,10 @@ impl Workspace {
             auto_number,
             renumber_pending: false,
             renumber_done_rev: None,
-            typewriter,
+            link_suggest: false,
+            link_query: String::new(),
+            link_pick_rev: None,
+            link_state,
             cursor_pending: None,
             cursor_save_seq: 0,
             cursor_guard: Arc::new(Mutex::new(0)),
@@ -961,27 +978,265 @@ impl Workspace {
         self.toggle_wrap("`", w, cx)
     }
 
-    /// `[[…]]` needs different open/close marks; small dedicated edit.
+    /// `edit.insert-wikilink` (⌘K) — TS `linkShortcut`: the caret line already
+    /// holds a link → jump to that note (one link per line, so inserting
+    /// again would only duplicate it); otherwise open the completion panel at
+    /// the caret.
     fn insert_wikilink(
         &mut self,
         _: &actions::InsertWikilink,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (anchor, head) = {
+        // A palette owns the foreground: nothing to do (TS `if (modal) return`).
+        if self.palette.is_some() {
+            return;
+        }
+        // Pressed again while open: put it away (TS `if (linkSuggest) close()`).
+        if self.link_suggest {
+            self.close_link_suggest(window, cx);
+            return;
+        }
+        let Some(open) = self.open_path.clone() else {
+            self.status = "先打开一篇笔记，再插入链接".to_string();
+            cx.notify();
+            return;
+        };
+        let (text, cursor) = {
             let ed = self.editor.read(cx);
-            let r = ed.selected_range();
-            (r.start, r.end)
+            (ed.value().to_string(), ed.cursor())
         };
-        let (sel_start, sel_end) = (anchor.min(head), anchor.max(head));
-        let out = ops::OpsOutcome {
-            edits: vec![
-                ops::Edit { start: sel_start, end: sel_start, text: "[[".into() },
-                ops::Edit { start: sel_end, end: sel_end, text: "]]".into() },
-            ],
-            cursors: vec![(sel_start + 2, sel_end + 2)],
+        if let Some(target) = wikilink::target_on_line(&text, cursor) {
+            self.open_wikilink_target(&target, &open, window, cx);
+            return;
+        }
+        // The panel pins the document it opened over (TS `linkPickState`):
+        // the revision is the self-check the insert runs before writing.
+        self.link_pick_rev = Some(self.editor.read(cx).document_revision());
+        self.link_query.clear();
+        self.link_suggest = true;
+        let state = self.link_state.clone();
+        state.update(cx, |s, cx| {
+            s.set_query("", window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// TS `openWikiLink`: resolve the target against the flat note list and
+    /// open it. A missing note reports and stays put; a self-link is a no-op
+    /// (reopening would reload the document and drop unsaved edits).
+    fn open_wikilink_target(
+        &mut self,
+        target: &str,
+        from: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match wikilink::target_rel(target, &self.files) {
+            None => {
+                self.status = format!("未找到笔记: {target}");
+                cx.notify();
+            }
+            Some(rel) if rel == from => {}
+            Some(rel) => self.open_note(rel, window, cx),
+        }
+    }
+
+    /// TS `insertPickedLink`: write the picked note into the document at the
+    /// caret (a selection becomes the alias), then hand focus back. The
+    /// revision captured at open is the self-check — a reload since then
+    /// means the caret offsets refer to text the user never saw.
+    fn insert_wikilink_pick(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.link_suggest = false;
+        if self.link_pick_rev != Some(self.editor.read(cx).document_revision()) {
+            self.focus_editor(window, cx);
+            return;
+        }
+        let Some(text) = wikilink::link_text(rel, &self.files) else {
+            self.status = "这个文件名带链接语法字符，没法写成 [[链接]]".to_string();
+            self.focus_editor(window, cx);
+            return;
         };
+        let (doc, selection) = {
+            let ed = self.editor.read(cx);
+            (ed.value().to_string(), ed.selected_range())
+        };
+        let out = wikilink::link_insert(&doc, selection, &text);
         self.run_edit(Some(out), window, cx);
+        self.focus_editor(window, cx);
+    }
+
+    fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.editor.focus_handle(cx);
+        focus.focus(window, cx);
+    }
+
+    /// Close the panel and give the keyboard back to the editor (TS
+    /// `restoreEditorFocus` on unmount).
+    fn close_link_suggest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.link_suggest {
+            return;
+        }
+        self.link_suggest = false;
+        self.focus_editor(window, cx);
+        cx.notify();
+    }
+
+    /// The link completion panel (TS `LinkSuggest.tsx`): a search field over
+    /// the quick switcher's own ranking, anchored under the caret. Enter
+    /// writes the highlighted note as `[[链接]]`; Esc (captured before the
+    /// field) or a click outside abandons the insert.
+    fn render_link_suggest(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !self.link_suggest {
+            return None;
+        }
+        let weak = cx.entity().downgrade();
+
+        // The switcher's ranking (TS `buildSwitcherResults`): recency is keyed
+        // by absolute paths, and the open note is the excluded one.
+        let root = self.vault_root.clone();
+        let vault = root.as_ref().map(|r| r.to_string_lossy().to_string());
+        let recent: Vec<String> = self
+            .mru
+            .iter()
+            .map(|rel| match &root {
+                Some(root) => root.join(rel).to_string_lossy().to_string(),
+                None => rel.clone(),
+            })
+            .collect();
+        let exclude = match (&root, &self.open_path) {
+            (Some(root), Some(open)) => Some(root.join(open).to_string_lossy().to_string()),
+            _ => None,
+        };
+        let hits = bnote_core::markdown::switcher::build_switcher_results(
+            &self.files,
+            &recent,
+            vault.as_deref(),
+            &self.link_query,
+            exclude.as_deref(),
+            50,
+        );
+        let rels: Arc<Vec<String>> = Arc::new(hits.iter().map(|h| h.item.clone()).collect());
+        let items: Vec<CommandItem> = hits
+            .iter()
+            .map(|hit| {
+                let (name, dir) = link_row_parts(&hit.item);
+                CommandItem::new()
+                    .label(hit.item.clone())
+                    .child(move |_window, cx| {
+                        h_flex()
+                            .flex_1()
+                            .gap_2()
+                            .items_baseline()
+                            .child(Label::new(name.clone()).text_sm())
+                            .child(
+                                Label::new(dir.clone())
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .ml_auto(),
+                            )
+                            .into_any_element()
+                    })
+            })
+            .collect();
+
+        let command = Command::new(&self.link_state)
+            .items(items)
+            // The host ranks (the switcher's ordering); the field only reports.
+            .filterable(false)
+            .placeholder("搜索笔记…")
+            .on_query({
+                let weak = weak.clone();
+                move |query, _window, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.link_query = query.to_string();
+                        cx.notify();
+                    });
+                }
+            })
+            .on_confirm({
+                let rels = rels.clone();
+                let weak = weak.clone();
+                move |ix, _window, cx| {
+                    let Some(rel) = rels.get(ix.row).cloned() else {
+                        return;
+                    };
+                    let _ = weak.update_in(cx, |this, window, cx| {
+                        this.insert_wikilink_pick(&rel, window, cx);
+                    });
+                }
+            })
+            .on_cancel({
+                let weak = weak.clone();
+                move |_window, cx| {
+                    let _ = weak.update_in(cx, |this, window, cx| {
+                        this.close_link_suggest(window, cx);
+                    });
+                }
+            })
+            .into_any_element();
+
+        // Anchor under the caret, lifted when the panel would not fit below.
+        let (left, top) = match self.editor.read(cx).cursor_layout() {
+            Some((caret, _)) => {
+                let viewport = window.viewport_size();
+                let left = caret
+                    .origin
+                    .x
+                    .min(viewport.width - px(LINK_PANEL_W + 16.))
+                    .max(px(8.));
+                let top = (caret.origin.y + caret.size.height + px(4.))
+                    .min(viewport.height - px(LINK_PANEL_H + 8.))
+                    .max(px(8.));
+                (left, top)
+            }
+            // Before the first layout there is no caret rectangle to hang on.
+            None => (px(80.), px(80.)),
+        };
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    // A click outside gives up the insert (TS mousedown-outside).
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_link_suggest(window, cx);
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("link-suggest")
+                        .absolute()
+                        .left(left)
+                        .top(top)
+                        .w(px(LINK_PANEL_W))
+                        // Esc closes in one press (TS); the field's own Cancel
+                        // would clear a non-empty query first.
+                        .capture_key_down(cx.listener(
+                            |this, event: &KeyDownEvent, window, cx| {
+                                if event.keystroke.key == "escape" {
+                                    this.close_link_suggest(window, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .child(command),
+                )
+                .into_any_element(),
+        )
     }
 
     fn insert_inline_math(
@@ -1701,6 +1956,17 @@ impl Workspace {
     }
 }
 
+/// The two halves of a link-suggest row (TS splits on the last `/`): the note
+/// name without its extension, and the folder it lives in.
+fn link_row_parts(rel: &str) -> (String, String) {
+    let name = wikilink::note_stem(rel).to_string();
+    let dir = match rel.rfind('/') {
+        Some(ix) => rel[..ix].to_string(),
+        None => String::new(),
+    };
+    (name, dir)
+}
+
 fn abs_to_rel(abs: &str, root: &Option<PathBuf>) -> String {
     match root {
         Some(root) => abs
@@ -1878,7 +2144,35 @@ impl gpui::Render for Workspace {
             .flex_1();
 
         let mut main = v_flex()
+            .size_full();
+
+        if self.sidebar_open {
+            main = main.child(
+                h_resizable("main")
+                    .child(
+                        resizable_panel()
+                            .size(px(240.))
+                            .child(self.render_file_tree(window, cx)),
+                    )
+                    .child(editor.into_any_element()),
+            );
+        } else {
+            main = main.child(editor.into_any_element());
+        }
+
+        if self.agent_open {
+            main = main.child(div().w(px(360.)).h_full().child(self.agent.clone()));
+        }
+
+        let palette = if self.palette.is_some() { self.render_palette(cx) } else { None };
+        let link_suggest = self.render_link_suggest(window, cx);
+
+        v_flex()
+            .id("workspace")
+            .relative()
             .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
             .on_action(cx.listener(Self::save_now))
             .on_action(cx.listener(Self::command_palette))
             .on_action(cx.listener(Self::quick_switcher))
@@ -1909,36 +2203,10 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::header_todos))
             .on_action(cx.listener(Self::toggle_agent_panel))
             .on_action(cx.listener(Self::toggle_vim))
-            .on_action(cx.listener(Self::open_settings));
-
-        if self.sidebar_open {
-            main = main.child(
-                h_resizable("main")
-                    .child(
-                        resizable_panel()
-                            .size(px(240.))
-                            .child(self.render_file_tree(window, cx)),
-                    )
-                    .child(editor.into_any_element()),
-            );
-        } else {
-            main = main.child(editor.into_any_element());
-        }
-
-        if self.agent_open {
-            main = main.child(div().w(px(360.)).h_full().child(self.agent.clone()));
-        }
-
-        let palette = if self.palette.is_some() { self.render_palette(cx) } else { None };
-
-        v_flex()
-            .id("workspace")
-            .relative()
-            .size_full()
-            .bg(theme.background)
-            .text_color(theme.foreground)
+            .on_action(cx.listener(Self::open_settings))
             .child(main)
             .children(palette)
+            .children(link_suggest)
             .child(
                 StatusBar::new()
                     .left(Label::new(self.status.clone()))
@@ -2166,7 +2434,8 @@ async fn save_snapshot(this: WeakEntity<Workspace>, seq: u64, cx: &mut gpui::Asy
 #[cfg(test)]
 mod gate_tests {
     use super::{
-        cycle_demotes_cursor_line, level_toggle_demotes_cursor_line, should_schedule_renumber,
+        cycle_demotes_cursor_line, level_toggle_demotes_cursor_line, link_row_parts,
+        should_schedule_renumber,
     };
     use gpui_kit::component::input::InputEvent;
 
@@ -2215,6 +2484,18 @@ mod gate_tests {
         );
         assert_eq!(level_toggle_demotes_cursor_line("正文", 0, 2), (0, false));
     }
+
+    /// A link-suggest row splits on the last `/` into the note name (extension
+    /// off) and the folder — the TS row's two spans.
+    #[test]
+    fn link_rows_split_the_name_from_its_folder() {
+        assert_eq!(
+            link_row_parts("notes/sub/a.md"),
+            ("a".to_string(), "notes/sub".to_string())
+        );
+        assert_eq!(link_row_parts("a.markdown"), ("a".to_string(), String::new()));
+        assert_eq!(link_row_parts("b"), ("b".to_string(), String::new()));
+    }
 }
 
 /// Exact imports, no `use super::*`: the parent's glob re-exports the kit's
@@ -2223,9 +2504,12 @@ mod gate_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        EditorState, InputEvent, apply_edits_keeping_cursor, numbering, should_schedule_renumber,
+        EditorState, InputEvent, Workspace, actions, apply_edits_keeping_cursor, numbering,
+        should_schedule_renumber, wikilink,
     };
-    use gpui::{AppContext as _, Context, IntoElement, Render, TestAppContext, Window, div};
+    use gpui::{
+        AppContext as _, Context, Focusable as _, IntoElement, Render, TestAppContext, Window, div,
+    };
 
     /// The pass end to end on the real engine: the computed edits go through
     /// `apply_edits_keeping_cursor`, the text gains its numbers, the caret
@@ -2285,6 +2569,150 @@ mod tests {
                 ));
             })
             .unwrap();
+        });
+    }
+
+    /// The link-suggest pick path through the real engine: the target text
+    /// for a duplicated name is its path, the selection becomes the alias, the
+    /// link replaces the selection at the caret, and the caret lands after it.
+    #[gpui::test]
+    fn a_picked_link_lands_with_the_selection_as_its_alias(cx: &mut TestAppContext) {
+        struct Root;
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let mut editor = None;
+            cx.open_window(Default::default(), |window, cx| {
+                editor = Some(cx.new(|cx| EditorState::new(window, cx).language("markdown")));
+                cx.new(|_| Root)
+            })
+            .expect("a test window")
+            .update(cx, |_, window, cx| {
+                let editor = editor.clone().expect("the editor");
+                let files = vec![
+                    "notes/这个说法.md".to_string(),
+                    "archive/这个说法.md".to_string(),
+                    "别的.md".to_string(),
+                ];
+                // Two notes share the name: the link text must be the path.
+                let target = wikilink::link_text("notes/这个说法.md", &files).expect("writable");
+                assert_eq!(target, "notes/这个说法");
+                // A unique name stays bare.
+                assert_eq!(
+                    wikilink::link_text("别的.md", &files).as_deref(),
+                    Some("别的")
+                );
+
+                editor.update(cx, |state, cx| {
+                    state.set_value("看看 这个说法 和 [[旧链接]]", window, cx);
+                    state.set_selected_range(7..19, cx); // 「这个说法」 (4 chars × 3 bytes)
+                });
+                let (doc, selection) = {
+                    let state = editor.read(cx);
+                    (state.value().to_string(), state.selected_range())
+                };
+                let out = wikilink::link_insert(&doc, selection, &target);
+                crate::apply_ops::apply_outcome(&editor, &out, window, cx);
+
+                editor.read_with(cx, |state, _| {
+                    assert_eq!(state.value(), "看看 [[notes/这个说法|这个说法]] 和 [[旧链接]]");
+                    // The caret sits right after the written link.
+                    assert_eq!(state.cursor(), "看看 [[notes/这个说法|这个说法]]".len());
+                });
+            })
+            .unwrap();
+        });
+    }
+
+    /// The link-suggest wiring on a real workspace: ⌘K opens the panel over an
+    /// open note (and a second ⌘K puts it away), the pick writes the picked
+    /// note as a link at the caret, and a document revision that changed while
+    /// the panel was open makes the pick a no-op.
+    #[gpui::test]
+    fn the_link_panel_opens_closes_and_writes_the_picked_note(cx: &mut TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+        let (state, rx) = bnote_core::state::AppState::new(std::env::temp_dir());
+        let mut bridges = None;
+        cx.update(|cx| {
+            bridges = Some((
+                crate::editor::snippets_host::SnippetBridge::init(cx),
+                crate::editor::vim::integration::VimBridge::init(cx),
+            ));
+        });
+        let (snippet_bridge, vim_bridge) = bridges.expect("the bridges");
+        let (workspace, cx) = cx.add_window_view(move |window, cx| {
+            let ws = Workspace::new(
+                state.clone(),
+                rx.resubscribe(),
+                None,
+                vim_bridge,
+                snippet_bridge,
+                window,
+                cx,
+            );
+            // Actions dispatch along the focus path; the editor is the view's
+            // focus handle (the deferred focus in `new` has not run yet).
+            let focus = ws.editor.focus_handle(cx);
+            window.focus(&focus, cx);
+            ws
+        });
+
+        workspace.update_in(cx, |ws, window, cx| {
+            // A stand-in vault: the pick path never touches the disk.
+            ws.vault_root = Some(std::path::PathBuf::from("/vault"));
+            ws.open_path = Some("a.md".to_string());
+            ws.files = vec!["a.md".to_string(), "b.md".to_string()];
+            ws.editor.update(cx, |st, cx| {
+                st.set_value("正文", window, cx);
+                st.set_selected_range(6..6, cx);
+            });
+        });
+
+        cx.run_until_parked();
+        cx.dispatch_action(actions::InsertWikilink);
+        workspace.read_with(cx, |ws, _| assert!(ws.link_suggest, "⌘K opens the panel"));
+
+        cx.dispatch_action(actions::InsertWikilink);
+        workspace.read_with(cx, |ws, _| assert!(!ws.link_suggest, "⌘K again puts it away"));
+
+        cx.dispatch_action(actions::InsertWikilink);
+        workspace.update_in(cx, |ws, window, cx| {
+            assert!(ws.link_suggest);
+            ws.insert_wikilink_pick("a.md", window, cx);
+            assert!(!ws.link_suggest, "the pick closes the panel");
+            assert_eq!(ws.editor.read(cx).value(), "正文[[a]]");
+            assert_eq!(ws.editor.read(cx).cursor(), 6 + 5);
+        });
+
+        // The caret line now holds a link: ⌘K follows it instead of opening
+        // the panel — and a self-link is a silent no-op.
+        cx.dispatch_action(actions::InsertWikilink);
+        workspace.read_with(cx, |ws, _| {
+            assert!(!ws.link_suggest);
+            assert_eq!(ws.open_path.as_deref(), Some("a.md"));
+        });
+
+        // On a fresh line the panel opens again; the document revision it
+        // pinned is the self-check, so a revision that moved underneath it
+        // (an external reload) refuses the write instead of writing blind.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.editor.update(cx, |st, cx| {
+                st.set_value("正文[[a]]\n", window, cx);
+                st.set_selected_range(12..12, cx); // the fresh empty line
+            });
+        });
+        cx.dispatch_action(actions::InsertWikilink);
+        workspace.update_in(cx, |ws, window, cx| {
+            assert!(ws.link_suggest);
+            ws.link_pick_rev = Some(ws.editor.read(cx).document_revision() + 1);
+            ws.insert_wikilink_pick("b.md", window, cx);
+            assert_eq!(ws.editor.read(cx).value(), "正文[[a]]\n");
+            assert!(!ws.link_suggest);
         });
     }
 }
