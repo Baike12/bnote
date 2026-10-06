@@ -4,7 +4,9 @@ pub mod daily;
 pub mod events;
 pub mod footprint;
 pub mod markdown;
+pub mod preview;
 pub mod python;
+pub mod snippets;
 mod runtime;
 pub mod state;
 

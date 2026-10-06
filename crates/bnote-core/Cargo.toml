@@ -13,6 +13,9 @@ notify = "8"
 walkdir = "2"
 trash = "5"
 base64 = "0.22"
+# Snippet triggers are a regex-based format (latex-suite `r` option + 30+ built-in
+# regex triggers with capture groups); compiled once at load, see snippets/engine.rs.
+regex = "1"
 core-foundation = "0.10"
 pdf2md = { path = "../pdf2md" }
 
