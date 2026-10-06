@@ -47,6 +47,7 @@ pub mod config;
 pub mod default_snippets;
 pub mod engine;
 pub mod enlarge;
+pub mod js_module;
 pub mod keys;
 pub mod load;
 pub mod matrix;

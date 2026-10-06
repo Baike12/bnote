@@ -16,6 +16,11 @@ base64 = "0.22"
 # Snippet triggers are a regex-based format (latex-suite `r` option + 30+ built-in
 # regex triggers with capture groups); compiled once at load, see snippets/engine.rs.
 regex = "1"
+# Fallback for the JS-only regex syntax the plain crate rejects (lookbehind,
+# backreferences — the owner's file carries two lookbehind triggers). Only
+# patterns `regex` cannot compile ever reach it, so the common path keeps
+# `regex` speed.
+fancy-regex = "0.19"
 core-foundation = "0.10"
 pdf2md = { path = "../pdf2md" }
 

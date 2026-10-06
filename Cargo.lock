@@ -801,6 +801,7 @@ dependencies = [
  "base64 0.22.1",
  "core-foundation 0.10.1",
  "ego-tree",
+ "fancy-regex",
  "futures",
  "notify",
  "pdf2md",
@@ -823,9 +824,11 @@ dependencies = [
  "bnote-mathml",
  "gpui-kit",
  "gpui-pre",
+ "image",
  "lsp-types",
  "serde",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
  "walkdir",
@@ -2253,6 +2256,17 @@ dependencies = [
  "rayon-core",
  "smallvec",
  "zune-inflate",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.19.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]

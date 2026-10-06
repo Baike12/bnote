@@ -17,8 +17,11 @@
 //! Dialect note (JS → Rust): `\d`/`\w`/`\s` are Unicode-aware in Rust while the
 //! JS engine keeps `\d`/`\w` ASCII. For LaTeX sources this only shifts
 //! behaviour on exotic characters the trigger tables never contain. Patterns
-//! using JS-only syntax (lookaround, backreferences) fail to compile and the
-//! snippet is dropped — the same as the TS `parseSnippet` `catch → null` path.
+//! the plain crate rejects because they use JS-only syntax (lookbehind,
+//! backreferences — the owner's file has two lookbehind triggers) fall back to
+//! `fancy_regex`, which backtracks and accepts the JS dialect; see
+//! [`TriggerRegex`]. A pattern *neither* engine can compile is dropped, the
+//! same as the TS `parseSnippet` `catch → null` path.
 
 use regex::{Regex, RegexBuilder};
 
@@ -181,7 +184,7 @@ pub struct Snippet {
     /// Trigger with snippet variables substituted (display purposes).
     pub display_trigger: String,
     /// Anchored-at-cursor variant of a regex trigger (TS `anchored`).
-    anchored: Option<Regex>,
+    anchored: Option<TriggerRegex>,
     pub replacement: RawReplacementOwned,
     pub auto: bool,
     pub regex: bool,
@@ -331,6 +334,69 @@ fn build_regex(source: &str, flags: &str) -> Option<Regex> {
     builder.build().ok()
 }
 
+/// A compiled trigger regex, in the dialect that could compile it.
+///
+/// The plugin's table is written for JS, whose engine accepts lookaround and
+/// backreferences. The `regex` crate does not, so a pattern it rejects gets a
+/// second chance on `fancy_regex`, which backtracks and accepts the full
+/// dialect. Everything else — the overwhelming majority, and every trigger the
+/// per-keystroke path actually matches — stays on the plain crate: the
+/// fallback costs a match-time `Result` unwrap, never a fast-path slowdown.
+///
+/// Measured for the owner's file (232 entries): 230 compile on `regex`, 2
+/// (`/(?<!\\)log/`, `/(?<!\\)sim(?![-=])/`) go to the fallback, 0 drop.
+#[derive(Debug, Clone)]
+enum TriggerRegex {
+    Fast(Regex),
+    Fancy(fancy_regex::Regex),
+}
+
+impl TriggerRegex {
+    /// The match ending at the cursor (the anchored pattern's whole match, as
+    /// its byte span) plus its capture groups — `groups[0]` is the first group,
+    /// the TS `m.slice(1)` shape with unmatched groups as empty strings.
+    fn captures_at(&self, text: &str) -> Option<(usize, usize, Vec<String>)> {
+        match self {
+            TriggerRegex::Fast(regex) => {
+                let caps = regex.captures(text)?;
+                let whole = caps.get(0)?;
+                let groups = caps
+                    .iter()
+                    .skip(1)
+                    .map(|group| group.map(|m| m.as_str().to_string()).unwrap_or_default())
+                    .collect();
+                Some((whole.start(), whole.end(), groups))
+            }
+            TriggerRegex::Fancy(regex) => {
+                // A backtracking limit reached is "no match", like a failed
+                // match: the TS engine has no such limit but also never sees
+                // one on a single line prefix.
+                let caps = regex.captures(text).ok()??;
+                let whole = caps.get(0)?;
+                let groups = caps
+                    .iter()
+                    .skip(1)
+                    .map(|group| group.map(|m| m.as_str().to_string()).unwrap_or_default())
+                    .collect();
+                Some((whole.start(), whole.end(), groups))
+            }
+        }
+    }
+
+    /// Compiles `source`/`flags` in the cheapest dialect that accepts it.
+    fn compile(source: &str, flags: &str) -> Option<Self> {
+        if let Some(fast) = build_regex(source, flags) {
+            return Some(TriggerRegex::Fast(fast));
+        }
+        let translated = js_pattern_to_rust(source);
+        let mut builder = fancy_regex::RegexBuilder::new(&translated);
+        builder.case_insensitive(flags.contains('i'));
+        builder.multi_line(flags.contains('m'));
+        builder.dot_matches_new_line(flags.contains('s'));
+        builder.build().ok().map(TriggerRegex::Fancy)
+    }
+}
+
 /// Port of `src/editor/snippets/engine.ts::parseSnippet`. Returns `None` for a
 /// snippet whose regex trigger cannot be compiled (the TS `catch → null`).
 pub fn parse_snippet(raw: &RawSnippet<'_>) -> Option<Snippet> {
@@ -341,8 +407,8 @@ pub fn parse_snippet(raw: &RawSnippet<'_>) -> Option<Snippet> {
             // latex-suite file format: regex triggers are strings carrying the
             // `r` option — compile them, or they would only match as literals.
             if options.contains('r') {
-                build_regex(&substituted, "")?;
-                let anchored = build_regex(&format!("(?:{})$", substituted), "")?;
+                TriggerRegex::compile(&substituted, "")?;
+                let anchored = TriggerRegex::compile(&format!("(?:{})$", substituted), "")?;
                 (Trigger::Regex { source: substituted }, Some(anchored), true)
             } else {
                 (Trigger::Literal(substituted), None, false)
@@ -351,9 +417,11 @@ pub fn parse_snippet(raw: &RawSnippet<'_>) -> Option<Snippet> {
         RawTrigger::Regex { source, flags } => {
             // Regex triggers: substitute variables in the source, keep flags.
             let substituted = substitute_variables(source);
-            build_regex(&substituted, flags)?;
-            let anchored =
-                build_regex(&format!("(?:{})$", substituted), &flags.replace('g', ""))?;
+            TriggerRegex::compile(&substituted, flags)?;
+            let anchored = TriggerRegex::compile(
+                &format!("(?:{})$", substituted),
+                &flags.replace('g', ""),
+            )?;
             (Trigger::Regex { source: substituted }, Some(anchored), true)
         }
     };
@@ -513,20 +581,16 @@ impl CompiledSnippets {
 
             if snippet.regex {
                 let Some(anchored) = &snippet.anchored else { continue };
-                let Some(caps) = anchored.captures(prefix) else { continue };
-                let whole = caps.get(0).expect("group 0 always present");
-                let start = line_from + whole.start();
-                let end = line_from + whole.end();
-                if snippet.word && !is_word_boundary(doc, end - whole.as_str().len(), end, delimiters) {
+                let Some((whole_start, whole_end, groups)) = anchored.captures_at(prefix) else {
+                    continue;
+                };
+                let start = line_from + whole_start;
+                let end = line_from + whole_end;
+                if snippet.word && !is_word_boundary(doc, start, end, delimiters) {
                     continue;
                 }
                 // latex-suite semantics: [[0]] refers to the FIRST capture
                 // group, so pass groups[0] = caps[1] (the TS `m.slice(1)`).
-                let groups: Vec<String> = caps
-                    .iter()
-                    .skip(1)
-                    .map(|g| g.map(|m| m.as_str().to_string()).unwrap_or_default())
-                    .collect();
                 let Some(resolved) = resolve_replacement(snippet, ReplacementArg::Groups(&groups), opts.visual_text) else {
                     continue;
                 };
@@ -825,6 +889,106 @@ mod tests {
         let store = fixture_store();
         let m = find(&store, "dm", 2, MatchOptions::new(false, None, None));
         assert!(m.unwrap().snippet.trigger_is("dm"));
+    }
+
+    /// The owner's file carries two lookbehind triggers (`/(?<!\\)log/`,
+    /// `/(?<!\\)sim(?![-=])/`). JS accepts them, the plain crate does not, so
+    /// they run on the backtracking fallback — and they really match.
+    #[test]
+    fn a_lookbehind_trigger_runs_on_the_fallback_and_matches() {
+        let store = store_with(&[RawSnippet {
+            trigger: RawTrigger::Regex { source: r"(?<!\\)log", flags: "" },
+            replacement: RawReplacement::Text("\\log"),
+            options: "mA",
+            priority: 0,
+            description: "",
+            source: SnippetSource::User,
+        }]);
+        let snippet = &store.compiled.list[0];
+        assert!(
+            matches!(snippet.anchored, Some(TriggerRegex::Fancy(_))),
+            "the plain crate cannot compile a lookbehind"
+        );
+
+        // `$log` — nothing precedes `log`, so the negative lookbehind holds.
+        let m = find_auto(&store, "$log$", 4, "g").unwrap();
+        assert_eq!(m.replacement.text, "\\log");
+
+        // `$\log` — the backslash is right before it, so it must not match
+        // (this is the whole point of the lookbehind).
+        assert!(find_auto(&store, "$\\log$", 5, "g").is_none());
+    }
+
+    /// A backreference is JS-only syntax too (`([A-Za-z])\1`); same fallback.
+    #[test]
+    fn a_backreference_trigger_compiles_on_the_fallback() {
+        let store = store_with(&[RawSnippet {
+            trigger: RawTrigger::Regex { source: r"([A-Za-z])\1", flags: "" },
+            replacement: RawReplacement::Text("dup"),
+            options: "mA",
+            priority: 0,
+            description: "",
+            source: SnippetSource::User,
+        }]);
+        let snippet = &store.compiled.list[0];
+        assert!(matches!(snippet.anchored, Some(TriggerRegex::Fancy(_))));
+        assert!(find_auto(&store, "$aa$", 3, "a").is_some());
+        assert!(find_auto(&store, "$ab$", 3, "b").is_none());
+    }
+
+    /// Every ordinary pattern stays on the plain crate — the fallback is not a
+    /// blanket tax.
+    #[test]
+    fn a_plain_trigger_stays_on_the_fast_path() {
+        let store = store_with(&[
+            RawSnippet {
+                trigger: RawTrigger::Regex { source: r"iden(\d)", flags: "" },
+                replacement: RawReplacement::Fn(fn_replacement),
+                options: "mA",
+                priority: 0,
+                description: "",
+                source: SnippetSource::User,
+            },
+            RawSnippet {
+                trigger: RawTrigger::Literal(r"iden(\d)"),
+                replacement: RawReplacement::Text("x"),
+                options: "mAr",
+                priority: 0,
+                description: "",
+                source: SnippetSource::User,
+            },
+        ]);
+        for snippet in &store.compiled.list {
+            assert!(
+                matches!(snippet.anchored, Some(TriggerRegex::Fast(_))),
+                "{:?}",
+                snippet.display_trigger
+            );
+        }
+        // The built-in set (the plugin's whole table) is all fast path, too.
+        assert!(CompiledSnippets::builtin()
+            .list
+            .iter()
+            .all(|s| s.anchored.is_none() || matches!(s.anchored, Some(TriggerRegex::Fast(_)))));
+    }
+
+    /// A pattern neither dialect accepts still drops that snippet, not the
+    /// store (TS `parseSnippet` `catch → null`).
+    #[test]
+    fn a_pattern_neither_engine_accepts_drops_the_snippet() {
+        let store = store_with(&[
+            RawSnippet {
+                trigger: RawTrigger::Regex { source: "(unclosed", flags: "" },
+                replacement: RawReplacement::Text("x"),
+                options: "mA",
+                priority: 0,
+                description: "",
+                source: SnippetSource::User,
+            },
+            lit("ok", "y", "mA"),
+        ]);
+        assert_eq!(store.compiled.list.len(), 1);
+        assert!(store.compiled.list[0].trigger_is("ok"));
     }
 
     /// `compileSnippets:排序契约`.

@@ -33,7 +33,10 @@ use super::engine::{lit, lit_p, lit_pd, rx, rx_p, rx_pd};
 /// `iden(\d)` → N×N identity matrix (the plugin's only function-type builtin;
 /// its return value goes through the raw channel, so the `\\` row separator
 /// survives — see `parse_replacement`).
-fn iden_replacement(arg: ReplacementArg<'_>) -> Option<String> {
+///
+/// It is also the engine's binding for the user file's own `iden` function
+/// (see [`super::load::native_function`]), which is why it is `pub(super)`.
+pub(super) fn iden_replacement(arg: ReplacementArg<'_>) -> Option<String> {
     let n: usize = match arg {
         ReplacementArg::Groups(groups) => groups.first()?.parse().ok()?,
         _ => return None,
