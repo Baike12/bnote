@@ -99,6 +99,14 @@ pub struct Workspace {
     _subscriptions: Vec<Subscription>,
 }
 
+/// config.json as an object (missing file → empty object).
+fn load_config_value(state: &AppState) -> serde_json::Value {
+    bnote_core::commands::config::load_app_config(state)
+        .ok()
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
 /// Local date string (YYYY-MM-DD) via the `time` crate.
 fn today_string() -> String {
     time::OffsetDateTime::now_local()
@@ -205,6 +213,21 @@ impl Workspace {
             }
         })
         .detach();
+
+        // Restore the vim setting (same config.json key the Tauri shell uses).
+        let vim_enabled = bnote_core::commands::config::load_app_config(&workspace.state)
+            .ok()
+            .and_then(|cfg| {
+                cfg.get("settings")
+                    .and_then(|s| s.get("vim"))
+                    .and_then(|v| v.as_bool())
+            })
+            .unwrap_or(false);
+        if vim_enabled {
+            workspace.vim_enabled = true;
+            workspace.set_vim_enabled(true, cx);
+            workspace.status = "vim 模式开启(普通模式)".to_string();
+        }
 
         // Focus the editor so global actions bubble through this view.
         let focus_handle = workspace.editor.focus_handle(cx);
@@ -749,20 +772,44 @@ impl Workspace {
         cx.notify();
     }
 
-    /// ⌘⇧V: attach/detach vim on the main editor (bnote's `settings.vim`
-    /// default is off; the toggle persists with the settings port).
+    /// ⌘⇧V: attach/detach vim on the main editor. The choice persists to
+    /// `config.json` (`settings.vim`, the same key the Tauri shell writes).
     fn toggle_vim(&mut self, _: &actions::ToggleVim, _window: &mut Window, cx: &mut Context<Self>) {
         self.vim_enabled = !self.vim_enabled;
+        let enabled = self.vim_enabled;
+        self.set_vim_enabled(enabled, cx);
+        self.persist_vim_setting(enabled);
+        self.status = if enabled {
+            "vim 模式开启(普通模式)".to_string()
+        } else {
+            "vim 模式关闭".to_string()
+        };
+        cx.notify();
+    }
+
+    /// Attach/detach the editor and sync its readonly gate; no persistence.
+    fn set_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let editor = self.editor.clone();
-        if self.vim_enabled {
+        if enabled {
             self.vim_bridge.attach(editor, cx);
-            self.status = "vim 模式开启(普通模式)".to_string();
         } else {
             self.vim_bridge.detach(&editor);
             editor.update(cx, |state, cx| state.set_readonly(false, cx));
-            self.status = "vim 模式关闭".to_string();
         }
-        cx.notify();
+    }
+
+    fn persist_vim_setting(&self, enabled: bool) {
+        let state = self.state.clone();
+        let mut cfg = load_config_value(&state);
+        let obj = cfg.as_object_mut();
+        let Some(obj) = obj else { return };
+        let settings = obj
+            .entry("settings".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(settings) = settings.as_object_mut() {
+            settings.insert("vim".to_string(), serde_json::Value::Bool(enabled));
+        }
+        let _ = bnote_core::commands::config::save_app_config(&state, cfg);
     }
 
     fn open_settings(
