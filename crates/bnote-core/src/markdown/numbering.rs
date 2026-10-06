@@ -71,9 +71,16 @@ fn strip_old_number(rest: &str) -> &str {
     &rest[j..]
 }
 
+/// Length in bytes of a leading old-number prefix (`/^\d+(\.\d+)*[ \t]+/`),
+/// 0 when the line has none. Used to clean the prefix a heading leaves behind
+/// when it is demoted to a paragraph.
+pub fn leading_number_len(line: &str) -> usize {
+    line.len() - strip_old_number(line).len()
+}
+
 /// `/^(#{1,6})([ \t]+.*)?$/` — a heading owning its whole line from column 0.
 /// Returns the level (hash count).
-fn parse_heading(line: &str) -> Option<usize> {
+pub fn heading_level_of_line(line: &str) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut level = 0usize;
     while level < bytes.len() && bytes[level] == b'#' && level < 6 {
@@ -146,7 +153,7 @@ pub fn renumber_changes(text: &str) -> Vec<Edit> {
         }
         // Only headings that own their whole line from column 0 (not
         // list-embedded, matching the previous tree-based rule).
-        if let Some(level) = parse_heading(&text[*from..*to]) {
+        if let Some(level) = heading_level_of_line(&text[*from..*to]) {
             heads.push((n, level));
         }
     }
@@ -287,6 +294,27 @@ mod tests {
         assert_eq!(renumber("# 一"), "# 1 一");
         // Already correct: no changes.
         assert!(renumber_changes("# 1 一").is_empty());
+    }
+
+    #[test]
+    fn leftover_number_length_is_the_prefix_the_demotion_must_strip() {
+        // A heading demoted to a paragraph keeps its number text; this is the
+        // span the command path deletes.
+        assert_eq!(leading_number_len("1.2.3 标题"), 6);
+        assert_eq!(leading_number_len("1\t标题"), 2);
+        assert_eq!(leading_number_len("标题"), 0);
+        assert_eq!(leading_number_len("1.2标题"), 0, "no separator, not a prefix");
+        assert_eq!(leading_number_len(""), 0);
+    }
+
+    #[test]
+    fn heading_level_reads_whole_line_atx_headings() {
+        assert_eq!(heading_level_of_line("# a"), Some(1));
+        assert_eq!(heading_level_of_line("###### a"), Some(6));
+        assert_eq!(heading_level_of_line("#"), Some(1), "bare hashes are a heading");
+        assert_eq!(heading_level_of_line("#a"), None, "needs a space");
+        assert_eq!(heading_level_of_line("####### a"), None, "seven is not a heading");
+        assert_eq!(heading_level_of_line("  # a"), None, "indented, not column 0");
     }
 
     #[test]

@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use bnote_core::markdown::numbering;
 use bnote_core::markdown::ops as ops;
 use bnote_core::state::AppState;
 use ::gpui::{
@@ -118,6 +119,16 @@ pub struct Workspace {
     /// The live preview's text styles (the TS mark classes), installed as a
     /// text-decoration collection alongside the geometry snapshot.
     preview_styles: TextDecorationCollection,
+    /// `settings.autoNumberHeadings` (`config.json`, the Tauri shell's key):
+    /// renumber headings after every document change. Off by default, like TS.
+    auto_number: bool,
+    /// A document change asked for a heading renumbering pass. The pass needs
+    /// a window (it refreshes the highlighter), so it runs from `render`.
+    renumber_pending: bool,
+    /// The document revision the last renumbering pass left behind: a `Change`
+    /// carrying this revision is the pass's own edit and must not re-trigger
+    /// it (the subscriber runs after the pass, so the flag cannot).
+    renumber_done_rev: Option<u64>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -127,6 +138,73 @@ fn load_config_value(state: &AppState) -> serde_json::Value {
         .ok()
         .filter(|v| !v.is_null())
         .unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// [`Workspace::schedule_renumber`]'s decision, a free function so a unit
+/// test can pin the gates without opening a window: the change must be the
+/// user's (`history: false` — a replay must not re-apply what it removed)
+/// and must not be the pass's own edit (revision mismatch).
+fn should_schedule_renumber(
+    event: &InputEvent,
+    current_rev: u64,
+    done_rev: Option<u64>,
+) -> bool {
+    matches!(event, InputEvent::Change { history: false }) && done_rev != Some(current_rev)
+}
+
+/// Apply a batch of replacements through the engine's cursor-preserving
+/// batch API and report the document revision they left behind (`None` when
+/// nothing was applied). [`Workspace::schedule_renumber`] compares that
+/// revision against the next `Change` to recognise the edit it just made.
+fn apply_edits_keeping_cursor(
+    editor: &Entity<EditorState>,
+    edits: &[(std::ops::Range<usize>, String)],
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> Option<u64> {
+    let mut done = None;
+    editor.update(cx, |state, cx| {
+        if state.apply_edits(edits, window, cx) {
+            done = Some(state.document_revision());
+        }
+    });
+    done
+}
+
+/// The line containing `head`, starting at its first byte (`head` clamps into
+/// `text`).
+fn cursor_line_start(text: &str, head: usize) -> usize {
+    let head = head.min(text.len());
+    text[..head].rfind('\n').map(|i| i + 1).unwrap_or(0)
+}
+
+/// The line starting at `line_start`, without its trailing newline.
+fn line_at_start(text: &str, line_start: usize) -> &str {
+    let line_start = line_start.min(text.len());
+    let line_end = text[line_start..]
+        .find('\n')
+        .map(|i| line_start + i)
+        .unwrap_or(text.len());
+    &text[line_start..line_end]
+}
+
+/// Whether `cycle_heading` demotes the cursor line out of headingness (H4 and
+/// deeper cycle into a paragraph — the TS `headingRemoved` test), with the
+/// line's start offset for locating it afterwards.
+fn cycle_demotes_cursor_line(text: &str, head: usize) -> (usize, bool) {
+    let start = cursor_line_start(text, head);
+    let demoted = numbering::heading_level_of_line(line_at_start(text, start))
+        .is_some_and(|level| level >= 4);
+    (start, demoted)
+}
+
+/// Whether `set_heading(level)` demotes the cursor line (the line already
+/// carries exactly that level, so this toggle removes it — the TS
+/// `headingRemoved` test of the `edit.heading-*` commands).
+fn level_toggle_demotes_cursor_line(text: &str, head: usize, level: usize) -> (usize, bool) {
+    let start = cursor_line_start(text, head);
+    let demoted = numbering::heading_level_of_line(line_at_start(text, start)) == Some(level);
+    (start, demoted)
 }
 
 /// Local date string (YYYY-MM-DD) via the `time` crate.
@@ -189,12 +267,24 @@ impl Workspace {
             state.create_decorations_collection(Vec::new(), cx)
         });
 
+        // The `autoNumberHeadings` setting, read once at startup like
+        // `mathPreview` (the settings panel will re-read it when it lands).
+        let auto_number = bnote_core::commands::config::load_app_config(state.as_ref())
+            .ok()
+            .and_then(|cfg| {
+                cfg.get("settings")
+                    .and_then(|s| s.get("autoNumberHeadings"))
+                    .and_then(|v| v.as_bool())
+            })
+            .unwrap_or(false);
+
         // Drive autosave + dirty flag off editor changes, and refresh the
         // live preview when either the text or the caret moved.
         let subscriptions = vec![
-            cx.subscribe(&editor, |this, _editor, _: &InputEvent, cx| {
+            cx.subscribe(&editor, |this, _editor, event: &InputEvent, cx| {
                 this.preview_dirty = true;
                 this.on_edited(cx);
+                this.schedule_renumber(event, cx);
             }),
             cx.observe(&editor, |this, editor, cx| {
                 let selection = editor.read(cx).selected_range();
@@ -237,6 +327,9 @@ impl Workspace {
             preview_dirty: true,
             preview_selection: None,
             preview_styles,
+            auto_number,
+            renumber_pending: false,
+            renumber_done_rev: None,
             _subscriptions: subscriptions,
         };
 
@@ -526,6 +619,42 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Heading auto-numbering (the TS `setup.ts` updateListener plus
+    /// `numbering.ts`): after a document change, run one renumbering pass.
+    /// Three gates, each mirroring a TS condition — the setting is on, the
+    /// change is the user's (an undo/redo replay must not re-apply the
+    /// numbers it just removed, or undo never takes), and it is not the
+    /// pass's own edit (the revision check; the pass runs in `render`, so
+    /// its `Change` arrives only afterwards).
+    fn schedule_renumber(&mut self, event: &InputEvent, cx: &mut Context<Self>) {
+        if !self.auto_number {
+            return;
+        }
+        let rev = self.editor.read(cx).document_revision();
+        if !should_schedule_renumber(event, rev, self.renumber_done_rev) {
+            return;
+        }
+        self.renumber_pending = true;
+        cx.notify();
+    }
+
+    /// Runs the pending renumbering pass. It re-derives the edits from the
+    /// *current* text, so any number of changes between the schedule and the
+    /// frame cost one pass and nothing goes stale.
+    fn apply_pending_renumber(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.auto_number {
+            return;
+        }
+        let text = self.editor.read(cx).value().to_string();
+        let edits = bnote_core::markdown::numbering::renumber_changes(&text);
+        if edits.is_empty() {
+            return;
+        }
+        let ranges: Vec<(std::ops::Range<usize>, String)> =
+            edits.into_iter().map(|e| (e.from..e.to, e.insert)).collect();
+        self.renumber_done_rev = apply_edits_keeping_cursor(&self.editor, &ranges, window, cx);
+    }
+
     fn update_cursor_label(&mut self, cx: &mut Context<Self>) {
         let text = self.editor.read(cx).value().to_string();
         let byte = self.editor.read(cx).cursor();
@@ -577,15 +706,61 @@ impl Workspace {
     ) {
         let text = self.editor.read(cx).value().to_string();
         let sel = self.sel(cx);
+        // H4 and deeper cycle into a paragraph, leaving the old number behind
+        // in body text; the renumbering pass only rewrites heading prefixes.
+        let (line_start, demoted) = cycle_demotes_cursor_line(&text, sel.head);
         let out = ops::cycle_heading(&text, &[sel]);
         self.run_edit(out, window, cx);
+        if demoted {
+            self.clear_leftover_number(line_start, window, cx);
+        }
     }
 
     fn set_heading(&mut self, level: usize, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.editor.read(cx).value().to_string();
         let sel = self.sel(cx);
+        // Toggling the level off (`## x` with level 2) demotes to a paragraph.
+        let (line_start, demoted) = level_toggle_demotes_cursor_line(&text, sel.head, level);
         let out = ops::toggle_heading(&text, &[sel], level);
         self.run_edit(out, window, cx);
+        if demoted {
+            self.clear_leftover_number(line_start, window, cx);
+        }
+    }
+
+    /// Delete the old-number prefix a demoted heading leaves in body text
+    /// (the TS `builtin.ts::settleHeadingNumbering` `headingRemoved` branch).
+    /// The full renumbering pass is not run here — the edit below trips the
+    /// editor subscription, so the pass lands in the same frame anyway.
+    fn clear_leftover_number(
+        &mut self,
+        line_start: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.auto_number {
+            return;
+        }
+        let text = self.editor.read(cx).value().to_string();
+        // The edit only rewrote this line's prefix, so the line still starts
+        // where it did; clamping covers an edit that shortened the document.
+        let line_start = line_start.min(text.len());
+        let line_end = text[line_start..]
+            .find('\n')
+            .map(|i| line_start + i)
+            .unwrap_or(text.len());
+        let len = numbering::leading_number_len(&text[line_start..line_end]);
+        if len == 0 {
+            return;
+        }
+        // Deliberately not recorded as a renumbering revision: the pass that
+        // follows this edit must still run.
+        let _ = apply_edits_keeping_cursor(
+            &self.editor,
+            &[(line_start..line_start + len, String::new())],
+            window,
+            cx,
+        );
     }
 
     fn heading1(&mut self, _: &actions::Heading1, w: &mut Window, cx: &mut Context<Self>) {
@@ -1505,6 +1680,12 @@ fn line_col_to_byte(text: &str, line: usize, col_chars: usize) -> usize {
 
 impl gpui::Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // Heading auto-numbering runs here, the first place with a window, and
+        // before the preview scan below so that scan shapes the numbered text
+        // once instead of re-shaping it a frame later.
+        if std::mem::take(&mut self.renumber_pending) {
+            self.apply_pending_renumber(window, cx);
+        }
         // An image span's width is fixed when the span is emitted, so a change
         // in the editor's width (window resize, panel toggle) makes every
         // image span stale. `input_bounds` is last frame's measurement, so the
@@ -1847,4 +2028,133 @@ async fn save_snapshot(this: WeakEntity<Workspace>, seq: u64, cx: &mut gpui::Asy
         cx.notify();
     })
     .ok();
+}
+
+/// Pure-logic pins for the renumbering gate and the demotion tests. A module
+/// with *exact* imports (no `use super::*`): the parent's glob brings in the
+/// kit's `test` macro, which shadows the built-in `#[test]`.
+#[cfg(test)]
+mod gate_tests {
+    use super::{
+        cycle_demotes_cursor_line, level_toggle_demotes_cursor_line, should_schedule_renumber,
+    };
+    use gpui_kit::component::input::InputEvent;
+
+    /// The three gates of the schedule decision: the pass must not re-apply
+    /// what an undo/redo just removed and must not re-trigger on its own
+    /// edit; every other change schedules it.
+    #[test]
+    fn the_renumber_gate_skips_replays_and_its_own_edit() {
+        let user = InputEvent::Change { history: false };
+        let replay = InputEvent::Change { history: true };
+        assert!(should_schedule_renumber(&user, 7, None));
+        assert!(should_schedule_renumber(&user, 7, Some(6)), "an older revision");
+        assert!(
+            !should_schedule_renumber(&user, 7, Some(7)),
+            "the pass's own edit (revision it left behind)"
+        );
+        assert!(
+            !should_schedule_renumber(&replay, 7, None),
+            "a replay must not re-schedule, whatever the revision"
+        );
+        assert!(
+            !should_schedule_renumber(&InputEvent::Focus, 7, None),
+            "only document changes schedule"
+        );
+    }
+
+    /// The demotion tests the toggle commands mirror from TS `builtin.ts`:
+    /// `cycle` demotes from H4 on, a level toggle on the exact level.
+    #[test]
+    fn heading_demotion_mirrors_the_ts_tests() {
+        assert_eq!(cycle_demotes_cursor_line("#### 1 标题", 0), (0, true));
+        assert_eq!(cycle_demotes_cursor_line("##### 1.1 深", 0), (0, true));
+        assert_eq!(cycle_demotes_cursor_line("### 1 标题", 0), (0, false));
+        assert_eq!(cycle_demotes_cursor_line("正文", 0), (0, false));
+        // The cursor's line, not the document's first.
+        let doc = "第一行\n## 2 标题";
+        assert_eq!(cycle_demotes_cursor_line(doc, 12), (10, false));
+
+        assert_eq!(
+            level_toggle_demotes_cursor_line("## 2 标题", 3, 2),
+            (0, true)
+        );
+        assert_eq!(
+            level_toggle_demotes_cursor_line("## 2 标题", 3, 1),
+            (0, false)
+        );
+        assert_eq!(level_toggle_demotes_cursor_line("正文", 0, 2), (0, false));
+    }
+}
+
+/// Exact imports, no `use super::*`: the parent's glob re-exports the kit's
+/// `test` macro, which shadows the built-in `#[test]` the kit's own
+/// `#[gpui::test]` expands into (infinite recursion otherwise).
+#[cfg(test)]
+mod tests {
+    use super::{
+        EditorState, InputEvent, apply_edits_keeping_cursor, numbering, should_schedule_renumber,
+    };
+    use gpui::{AppContext as _, Context, IntoElement, Render, TestAppContext, Window, div};
+
+    /// The pass end to end on the real engine: the computed edits go through
+    /// `apply_edits_keeping_cursor`, the text gains its numbers, the caret
+    /// keeps its place in the body, and the revision the pass reports makes
+    /// its own `Change` recognisable to the gate.
+    #[gpui::test]
+    fn the_pass_renumbers_and_keeps_the_caret(cx: &mut TestAppContext) {
+        struct Root;
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let mut editor = None;
+            cx.open_window(Default::default(), |window, cx| {
+                editor = Some(cx.new(|cx| EditorState::new(window, cx).language("markdown")));
+                cx.new(|_| Root)
+            })
+            .expect("a test window")
+            .update(cx, |_, window, cx| {
+                let editor = editor.clone().expect("the editor");
+                editor.update(cx, |state, cx| {
+                    state.set_value("## 一\n\n正文", window, cx);
+                    state.set_selected_range(8..8, cx); // inside 「正文」
+                });
+
+                let text = editor.read(cx).value().to_string();
+                let edits = numbering::renumber_changes(&text);
+                assert_eq!(edits.len(), 1, "{edits:?}");
+                let ranges: Vec<(std::ops::Range<usize>, String)> =
+                    edits.into_iter().map(|e| (e.from..e.to, e.insert)).collect();
+                let done_rev = apply_edits_keeping_cursor(&editor, &ranges, window, cx);
+                let done_rev = done_rev.expect("the document changed");
+
+                editor.read_with(cx, |state, _| {
+                    assert_eq!(state.value(), "## 1 一\n\n正文");
+                    // The pass only rewrote the marker prefix, so the caret in
+                    // the body shifted by the +2 the prefix grew.
+                    assert_eq!(state.cursor(), 10);
+                });
+
+                // The pass's own Change carries this revision; the gate turns
+                // it away, so a renumbering pass cannot loop.
+                assert!(!should_schedule_renumber(
+                    &InputEvent::Change { history: false },
+                    done_rev,
+                    Some(done_rev)
+                ));
+                // A user edit after it schedules again.
+                assert!(should_schedule_renumber(
+                    &InputEvent::Change { history: false },
+                    done_rev + 1,
+                    Some(done_rev)
+                ));
+            })
+            .unwrap();
+        });
+    }
 }

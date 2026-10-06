@@ -1,4 +1,4 @@
-//! Scan cost gates.
+//! Scan cost gates: the preview scan and the heading-renumbering scan.
 //!
 //! The workspace scans the whole document on every change (the engine has no
 //! visible-range query yet), so the cost per change has to stay far below a
@@ -7,11 +7,17 @@
 //! per-document list) is quadratic and shows up here as a 10x document taking
 //! ~100x the time.
 //!
+//! `renumber_changes` is the other per-change whole-document walk (it is the
+//! fixed cost of the `autoNumberHeadings` setting, fence + math + callout
+//! scans included), so it is held to the same shape.
+//!
 //! The bounds are deliberately loose: this is a magnitude gate for debug
 //! builds on a shared machine, not a benchmark.
 
 use std::ops::Range;
 use std::time::Instant;
+
+use crate::markdown::numbering;
 
 use super::{scan, ScanInput};
 
@@ -100,4 +106,67 @@ fn whole_document_scan_is_linear_and_cheap() {
     // Absolute ceiling for a 70 KB note in a debug build (release is ~10x
     // faster). A frame is 16 ms; a keystroke scan must not get close.
     assert!(large_us < 30_000, "scanning a 70 KB note took {large_us} µs");
+}
+
+/// `document()`, with every heading number applied — the state the
+/// renumbering scan is in on the typical keystroke.
+fn renumbered(text: &str) -> String {
+    let mut out = text.to_string();
+    for edit in numbering::renumber_changes(text).into_iter().rev() {
+        out.replace_range(edit.from..edit.to, &edit.insert);
+    }
+    out
+}
+
+fn median_renumber_micros(text: &str) -> u128 {
+    // Warm up, then five timed runs. The fixture is aligned, so every run
+    // must report no edits — that empty result is the common case on a
+    // keystroke, and the one this gate prices.
+    assert!(
+        numbering::renumber_changes(text).is_empty(),
+        "the fixture must be aligned"
+    );
+    let mut timings: Vec<u128> = (0..5)
+        .map(|_| {
+            let start = Instant::now();
+            let edits = numbering::renumber_changes(text);
+            let elapsed = start.elapsed().as_micros();
+            assert!(edits.is_empty(), "an aligned pass reports no edits");
+            elapsed
+        })
+        .collect();
+    timings.sort_unstable();
+    timings[timings.len() / 2]
+}
+
+#[test]
+fn heading_renumber_scan_is_linear_and_cheap() {
+    let small = renumbered(&document(7_000));
+    let large = renumbered(&document(70_000));
+    let small_us = median_renumber_micros(&small);
+    let large_us = median_renumber_micros(&large);
+    println!(
+        "renumber: {} bytes {} µs, {} bytes {} µs",
+        small.len(),
+        small_us,
+        large.len(),
+        large_us
+    );
+
+    // Same shape as the preview scan above: 10x bytes ~10x time, quadratic
+    // would be ~100x.
+    let ratio = large_us as f64 / small_us.max(1) as f64;
+    assert!(
+        ratio < 25.,
+        "renumber cost must scale with the document, 10x bytes took {ratio:.1}x \
+         time ({small_us} µs → {large_us} µs)"
+    );
+
+    // Absolute ceiling for a 70 KB note in a debug build, calibrated like the
+    // scan bound above (measured ~6 ms here, release ~10x faster); this is
+    // the per-change price of the `autoNumberHeadings` setting.
+    assert!(
+        large_us < 30_000,
+        "renumbering a 70 KB note took {large_us} µs"
+    );
 }
