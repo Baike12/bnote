@@ -35,6 +35,28 @@ fn data_dir() -> PathBuf {
     PathBuf::from(home).join("Library/Application Support/bnote")
 }
 
+/// The `settings.theme` the Tauri shell writes ("dark" | "light"), dark by
+/// default and on anything unrecognized.
+fn theme_mode() -> ThemeMode {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let path = PathBuf::from(home)
+        .join("Library/Application Support/bnote")
+        .join("config.json");
+    let mode = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|cfg| {
+            cfg.get("settings")
+                .and_then(|s| s.get("theme"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+    match mode.as_deref() {
+        Some("light") => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    }
+}
+
 fn main() {
     gpui_kit::application()
         .with_assets(Assets)
@@ -44,8 +66,11 @@ fn main() {
             // bnote's own palette (`src/styles/global.css`, transcribed in
             // `theme.rs`): the built-in theme first, then the override — the
             // other way round `Theme::change` would load over the palette.
-            Theme::change(ThemeMode::Dark, None, cx);
-            theme::apply(ThemeMode::Dark, cx);
+            // The mode comes from `config.json` (`settings.theme`, the same
+            // key the Tauri shell writes; "dark" unless it says "light").
+            let mode = theme_mode();
+            Theme::change(mode, None, cx);
+            theme::apply(mode, cx);
 
             // Every registry command gets its default keybinding; overrides
             // from keybindings.json arrive with the settings port.

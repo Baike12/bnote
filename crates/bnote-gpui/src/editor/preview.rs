@@ -127,6 +127,9 @@ pub struct PreviewHost {
     /// The editor width the last scan measured against; a change re-scans,
     /// because every image span's reserved width is a function of it.
     editor_width: Cell<Pixels>,
+    /// The `mathPreview` setting: the live-rendered copy of a display formula
+    /// while the caret is inside it (TS default true).
+    math_preview: Cell<bool>,
     revision: Cell<u64>,
 }
 
@@ -138,6 +141,7 @@ impl PreviewHost {
             widgets: RefCell::new(HashMap::new()),
             images: ImageStore::new(),
             editor_width: Cell::new(Pixels::ZERO),
+            math_preview: Cell::new(true),
             revision: Cell::new(0),
         }
     }
@@ -146,6 +150,16 @@ impl PreviewHost {
     /// and runs them on the background executor (see [`ImageStore`]).
     pub fn images(&self) -> &ImageStore {
         &self.images
+    }
+
+    /// Sets the `mathPreview` setting. Returns true when it changed, so the
+    /// caller knows to mark the preview dirty (the next scan picks it up).
+    pub fn set_math_preview(&self, enabled: bool) -> bool {
+        if self.math_preview.get() == enabled {
+            return false;
+        }
+        self.math_preview.set(enabled);
+        true
     }
 
     /// True when the editor's width moved since the last scan: image spans
@@ -210,7 +224,7 @@ impl PreviewHost {
             visible: 0..usize::MAX,
             // The display-formula preview while the caret is inside it (the
             // TS `mathPreview` setting, default on).
-            math_preview: true,
+            math_preview: self.math_preview.get(),
         });
         let line_height = window.line_height();
         let mut spans = Vec::with_capacity(snapshot.spans.len());

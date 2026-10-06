@@ -165,6 +165,18 @@ impl Workspace {
             family: theme.mono_font_family.clone(),
             size: theme.mono_font_size,
         }));
+        // The `mathPreview` setting (`config.json`, the Tauri shell's key):
+        // the live-rendered copy of a display formula while editing it.
+        preview.set_math_preview(
+            bnote_core::commands::config::load_app_config(state.as_ref())
+                .ok()
+                .and_then(|cfg| {
+                    cfg.get("settings")
+                        .and_then(|s| s.get("mathPreview"))
+                        .and_then(|v| v.as_bool())
+                })
+                .unwrap_or(true),
+        );
         editor.update(cx, |state, cx| {
             state.set_preview_renderer(Some(preview.clone()), cx);
         });
