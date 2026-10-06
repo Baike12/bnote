@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | activity rule | [`geom::Activity`] | `active` 242/415, `selectionAffectsDecos` 115 |
 //! | block statics | [`blocks::Statics::collect`] | `collectBlockStatics` 170 |
-//! | fence lines / `CodeLang` | [`scan`] (fence loop) | 255-267 |
+//! | fence lines (collapse to zero height) | [`scan`] (fence loop) | 255-267 |
 //! | callout edges | [`scan`] (callout loop) | 268-290 |
 //! | horizontal rule | [`scan`] (HR loop) | 291-301 |
 //! | display math blocks | [`scan`] (math loop) | 302-337 |
@@ -45,7 +45,10 @@ pub fn scan(input: ScanInput<'_>) -> PreviewSnapshot {
     let mut sink = Sink::new(lines, win, act, 64);
 
     // Block-level replacements, in the TS order (`buildBlockDecos`): fence
-    // lines, callout edges, rules, display maths.
+    // lines, callout edges, rules, display maths. The callout *panels* are a
+    // line-range look, not a replacement, and are emitted first: they are not
+    // caret-gated and must not be lost to a block's refusal.
+    emit_callout_panels(&statics, &mut sink);
     emit_fence_lines(&statics, &act, &mut sink);
     emit_callout_edges(&statics, &act, &mut sink);
     emit_rules(&statics, &act, &mut sink);
@@ -64,26 +67,43 @@ pub fn scan(input: ScanInput<'_>) -> PreviewSnapshot {
     sink.finish()
 }
 
-/// Fence lines of fenced-code blocks: hidden (or replaced by the language
-/// chip) only while the caret is outside the whole block (TS 255-267).
+/// Fence lines of fenced-code blocks: the whole line is **removed** (not just
+/// emptied) while the caret is outside the whole block, so it takes zero
+/// height (TS 255-267: `HiddenLineWidget`, `block: true`; the TS shell's
+/// `cw-hidden-line` is `height: 0`). The code body stays source and editable.
 fn emit_fence_lines(statics: &Statics, act: &Activity, sink: &mut Sink) {
     for fence in &statics.fences {
         if act.touches(fence.from, fence.to) {
             continue;
         }
-        let (open_from, open_to) = statics.lines[fence.open_line];
-        match &fence.lang {
-            Some(lang) => {
-                sink.widget(open_from, open_to, Widget::CodeLang { lang: lang.clone() });
-            }
-            None => {
-                sink.hide(open_from, open_to);
-            }
-        }
+        sink.block(fence.open_line, fence.open_line, BlockKind::HiddenLine);
         if let Some(close) = fence.close_line {
-            let (close_from, close_to) = statics.lines[close];
-            sink.hide(close_from, close_to);
+            sink.block(close, close, BlockKind::HiddenLine);
         }
+    }
+}
+
+/// Callout panels: every region's per-line container look — background, left
+/// border, nesting depth — emitted for all lines edge-to-edge (TS 577-604).
+/// The caret does **not** gate this: the TS emits the line classes
+/// unconditionally so that pure cursor movement never rebuilds the region.
+///
+/// The panel and the edges are complementary: the panel styles the lines, the
+/// edge blocks replace the `:::` lines themselves (a block replace removes the
+/// line element, which is why the edge widget carries the panel face for its
+/// own line — see [`super::BlockKind::Callout`]).
+fn emit_callout_panels(statics: &Statics, sink: &mut Sink) {
+    let last_line = statics.lines.len().saturating_sub(1);
+    for region in &statics.callouts {
+        let open = region.open_line.saturating_sub(1);
+        let close = region.close_line.saturating_sub(1);
+        sink.panel(
+            open,
+            close.min(last_line),
+            region.depth.min(u8::MAX as usize) as u8,
+            open,
+            region.closed.then_some(close),
+        );
     }
 }
 

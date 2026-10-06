@@ -29,6 +29,8 @@
 //! - `spans` are sorted by `range.start` and pairwise disjoint;
 //! - `blocks` are sorted by `first_line` and disjoint line ranges, and never
 //!   contain the caret's line;
+//! - `panels` are sorted by `first_line`; nested callouts make them overlap,
+//!   and a panel's range is clipped to the visible window;
 //! - every range is on a `char` boundary of `text`.
 
 use std::ops::Range;
@@ -69,8 +71,6 @@ pub enum Widget {
     Checkbox { checked: bool },
     /// The `- `/`* `/`+ ` marker of an unordered list item.
     Bullet,
-    /// Fenced-code language: ```` ```rust ```` → the label `rust`.
-    CodeLang { lang: String },
     /// Title chip of a `::: kind Title` callout.
     CalloutTitle { kind: String, title: String },
     /// `---`/`***` horizontal rule line.
@@ -93,14 +93,46 @@ pub struct PreviewBlock {
 pub enum BlockKind {
     /// A `$$ … $$` multi-line display block (or `\[ … \]`).
     Math { tex: String, display: bool },
+    /// A whole line the preview removes entirely: the ```` ``` ```` fence lines
+    /// of a fenced-code block. The engine collapses the line to **zero
+    /// height** (TS `HiddenLineWidget` + `.cw-hidden-line { height: 0 }`), so
+    /// the fence lines take no vertical space and show no line number.
+    HiddenLine,
     /// A `::: kind Title` container. `body_first_line..=body_last_line` is
     /// the body (between the opening line and the closing `:::`).
+    ///
+    /// Note this replaces an **edge** line only: the body stays source. The
+    /// container look (background, left border, nesting) is the panel's job
+    /// ([`PreviewPanel`]), exactly like the TS shell's `md-callout-line`
+    /// classes — a block replace removes the line element, so the edge widget
+    /// carries the panel face for its own line.
     Callout {
         kind: String,
         title: String,
         body_first_line: usize,
         body_last_line: usize,
     },
+}
+
+/// A line range drawn as a container panel — the `:::` callout look: a
+/// per-line background and left border, nested regions shifting inward. The
+/// lines stay visible and editable (a panel is a *look*, never a
+/// replacement), and unlike a [`PreviewBlock`] it is emitted no matter where
+/// the caret is: only the edge lines' widgets are caret-gated (TS
+/// `md-callout-line d{depth}`, livePreview.ts 577-604).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewPanel {
+    /// 0-based inclusive line range, clipped to the visible window.
+    pub first_line: usize,
+    pub last_line: usize,
+    /// Nesting depth, 0 = outermost (the TS caps the class at `d2`).
+    pub depth: u8,
+    /// The opening edge line (top rounding / top padding), 0-based.
+    /// Unbounded by the window clip: the renderer compares it with the lines
+    /// it is painting.
+    pub open_line: usize,
+    /// The closing edge line, `None` when the region never closed.
+    pub close_line: Option<usize>,
 }
 
 /// Everything the renderer needs for one pass.
@@ -110,11 +142,15 @@ pub struct PreviewSnapshot {
     pub spans: Vec<PreviewSpan>,
     /// Sorted by `first_line`, disjoint line ranges.
     pub blocks: Vec<PreviewBlock>,
+    /// Sorted by `first_line`. Nested callouts mean overlapping ranges by
+    /// design: the renderer paints them in order, so the inner panel lands on
+    /// top of the outer one.
+    pub panels: Vec<PreviewPanel>,
 }
 
 impl PreviewSnapshot {
     pub fn is_empty(&self) -> bool {
-        self.spans.is_empty() && self.blocks.is_empty()
+        self.spans.is_empty() && self.blocks.is_empty() && self.panels.is_empty()
     }
 
     /// The byte ranges the display removes, sorted and disjoint — the

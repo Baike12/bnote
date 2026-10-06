@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use crate::preview::{BlockKind, PreviewSnapshot, PreviewSpanKind, ScanInput, Widget};
+use crate::preview::{BlockKind, PreviewPanel, PreviewSnapshot, PreviewSpanKind, ScanInput, Widget};
 
 use super::scan;
 
@@ -109,6 +109,17 @@ fn assert_invariants(text: &str, snap: &PreviewSnapshot) {
             );
         }
         prev_last = Some(b.last_line);
+    }
+    let mut prev_panel_first: Option<usize> = None;
+    for p in &snap.panels {
+        assert!(p.first_line <= p.last_line, "inverted panel: {p:?}");
+        if let Some(prev) = prev_panel_first {
+            assert!(
+                p.first_line >= prev,
+                "panels unsorted: {p:?} after {prev}"
+            );
+        }
+        prev_panel_first = Some(p.first_line);
     }
 }
 
@@ -526,29 +537,41 @@ fn heading_text_is_scanned_for_inline_constructs() {
 #[test]
 fn rule_8_fenced_code_lines() {
     let doc = "```rust\nlet a = 1;\n```\n";
-    let lines = crate::markdown::line_ranges(doc);
     let snap = snapshot(doc, &[dot(doc)]);
-    assert!(has_widget(&snap, |w| {
-        *w == Widget::CodeLang {
-            lang: "rust".into(),
-        }
-    }));
-    assert!(hides(&snap, lines[2].0, lines[2].1), "{:?}", snap.spans);
-    // A fence line has no span while the caret is inside the block.
+    // Both fence lines are whole-line removals (zero height, TS
+    // `HiddenLineWidget`), not inline hides and not a language chip.
+    assert_eq!(
+        snap.blocks
+            .iter()
+            .map(|b| (b.first_line, b.last_line, b.kind.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, 0, BlockKind::HiddenLine),
+            (2, 2, BlockKind::HiddenLine)
+        ]
+    );
+    // Nothing is expected of the fence lines' bytes: the line is gone.
+    assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+    // Caret inside the block: the fences stay source (still no spans drawn for
+    // them, which is the `Skip::FenceLine` rule).
     let snap = snapshot(doc, &[at(doc, "let a")]);
     assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+    assert!(snap.blocks.is_empty(), "{:?}", snap.blocks);
     // Bare and tilde fences.
     let doc = "~~~\n*x* inside\n~~~\n";
-    let lines = crate::markdown::line_ranges(doc);
     let snap = snapshot(doc, &[dot(doc)]);
-    assert!(hides(&snap, lines[0].0, lines[0].1) && hides(&snap, lines[2].0, lines[2].1));
+    assert_eq!(snap.blocks.len(), 2, "{:?}", snap.blocks);
     assert!(!bullet(&snap));
-    // Unclosed fence: only the opening line is replaced.
+    // Unclosed fence: only the opening line is collapsed.
     let doc = "```\nbody";
-    let lines = crate::markdown::line_ranges(doc);
     let snap = snapshot(doc, &[dot(doc)]);
-    assert_eq!(snap.spans.len(), 1);
-    assert!(hides(&snap, lines[0].0, lines[0].1));
+    assert_eq!(
+        snap.blocks
+            .iter()
+            .map(|b| (b.first_line, b.kind.clone()))
+            .collect::<Vec<_>>(),
+        vec![(0, BlockKind::HiddenLine)]
+    );
 }
 
 /// `decorateBlockquote` (livePreview.ts:913-928) only pushes a `md-quote`
@@ -748,6 +771,64 @@ fn rule_15_callouts() {
     assert_eq!(snap.blocks[0].first_line, 0);
 }
 
+/// Callout panels: the container look is a panel, not a block — it covers
+/// every line of the region, is emitted whether or not the caret is inside,
+/// and nests (TS `md-callout-line d{depth}`, livePreview.ts 577-604).
+#[test]
+fn rule_15b_callout_panels() {
+    let doc = "::: 提示\nthe body\n:::\n";
+    // Caret outside the region: panel + the two edge blocks.
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert_eq!(snap.panels.len(), 1);
+    assert_eq!(
+        snap.panels[0],
+        PreviewPanel {
+            first_line: 0,
+            last_line: 2,
+            depth: 0,
+            open_line: 0,
+            close_line: Some(2),
+        }
+    );
+
+    // Caret inside: the blocks are gone (source is editable) but the panel
+    // stays — it is not caret-gated in the TS either.
+    let inside = snapshot(doc, &[at(doc, "the body")]);
+    assert!(inside.blocks.is_empty());
+    assert_eq!(inside.panels, snap.panels);
+
+    // Unclosed region: the panel runs to the document's last line (including
+    // the empty one a trailing newline produces), `close_line` is None.
+    let doc = "::: 甲\nbody without close\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert_eq!(snap.panels.len(), 1);
+    assert_eq!(snap.panels[0].last_line, 2);
+    assert_eq!(snap.panels[0].close_line, None);
+
+    // Nested regions: one panel each, depths 0/1, ranges overlapping by
+    // design (the renderer paints them in order).
+    let doc = "::: outer\na\n::: inner\nb\n:::\n:::\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    let panels: Vec<(usize, usize, u8)> =
+        snap.panels.iter().map(|p| (p.first_line, p.last_line, p.depth)).collect();
+    assert_eq!(panels, vec![(0, 5, 0), (2, 4, 1)]);
+    assert_eq!(snap.panels[0].close_line, Some(5));
+    assert_eq!(snap.panels[1].close_line, Some(4));
+
+    // The window clips the panel's lines (the TS clamps its per-line classes
+    // the same way) while the edges keep the region's own line numbers.
+    let doc = "::: 提示\nline a\nline b\n:::\n";
+    let start = doc.find("line a").unwrap();
+    let snap = snapshot_visible(doc, &[dot(doc)], start..start + 3);
+    assert_eq!(snap.panels.len(), 1);
+    assert_eq!((snap.panels[0].first_line, snap.panels[0].last_line), (1, 1));
+    assert_eq!((snap.panels[0].open_line, snap.panels[0].close_line), (0, Some(3)));
+
+    // A document without callouts has no panels at all.
+    let snap = snapshot("plain text\n", &[dot("plain text\n")]);
+    assert!(snap.panels.is_empty());
+}
+
 #[test]
 fn rule_16_visible_window_limits_emission_but_not_classification() {
     let doc = "# Title\n\nbody text\n\n- item\n";
@@ -907,16 +988,19 @@ fn mixed_document_renders_every_construct_when_the_caret_is_away() {
     );
     assert!(has_widget(&snap, |w| *w == Widget::Rule), "rule");
     assert!(
-        has_widget(&snap, |w| *w
-            == Widget::CodeLang {
-                lang: "rust".into()
-            }),
-        "code lang"
-    );
-    assert!(
         has_widget(&snap, |w| matches!(w, Widget::Image { .. })),
         "image"
     );
-    // One block for the display maths plus one per callout edge.
-    assert_eq!(snap.blocks.len(), 3, "{:?}", snap.blocks);
+    // Blocks: the two fence lines (zero-height removals), the display maths,
+    // and one line per callout edge.
+    assert_eq!(snap.blocks.len(), 5, "{:?}", snap.blocks);
+    assert_eq!(
+        snap.blocks
+            .iter()
+            .filter(|b| b.kind == BlockKind::HiddenLine)
+            .count(),
+        2,
+        "both fence lines collapse: {:?}",
+        snap.blocks
+    );
 }

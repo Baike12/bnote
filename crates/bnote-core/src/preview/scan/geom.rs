@@ -5,7 +5,7 @@
 use std::ops::{Range, RangeInclusive};
 
 use crate::preview::{
-    BlockKind, PreviewBlock, PreviewSnapshot, PreviewSpan, PreviewSpanKind, Widget,
+    BlockKind, PreviewBlock, PreviewPanel, PreviewSnapshot, PreviewSpan, PreviewSpanKind, Widget,
 };
 
 /// Line table: `[(start, end)]` with `end` pointing at the `\n` (identical to
@@ -138,6 +138,7 @@ pub(super) struct Sink<'a> {
     spans: Vec<PreviewSpan>,
     claimed: Vec<Range<usize>>,
     blocks: Vec<PreviewBlock>,
+    panels: Vec<PreviewPanel>,
 }
 
 impl<'a> Sink<'a> {
@@ -154,6 +155,7 @@ impl<'a> Sink<'a> {
             spans: Vec::with_capacity(capacity),
             claimed: Vec::new(),
             blocks: Vec::new(),
+            panels: Vec::new(),
         }
     }
 
@@ -233,12 +235,42 @@ impl<'a> Sink<'a> {
         true
     }
 
+    /// Records a container panel over an inclusive line range, clipped to the
+    /// visible window (TS clips its per-line classes the same way). Refused
+    /// when the clip leaves nothing visible. `open_line`/`close_line` are the
+    /// region's own edges, kept unclipped.
+    pub(super) fn panel(
+        &mut self,
+        first_line: usize,
+        last_line: usize,
+        depth: u8,
+        open_line: usize,
+        close_line: Option<usize>,
+    ) -> bool {
+        let last_existing = self.lines.len().saturating_sub(1);
+        let first = first_line.max(self.win.first);
+        let last = last_line.min(self.win.last).min(last_existing);
+        if first > last {
+            return false;
+        }
+        self.panels.push(PreviewPanel {
+            first_line: first,
+            last_line: last,
+            depth,
+            open_line,
+            close_line,
+        });
+        true
+    }
+
     pub(super) fn finish(mut self) -> PreviewSnapshot {
         self.spans.sort_by_key(|s| s.range.start);
         self.blocks.sort_by_key(|b| b.first_line);
+        self.panels.sort_by_key(|p| p.first_line);
         PreviewSnapshot {
             spans: self.spans,
             blocks: self.blocks,
+            panels: self.panels,
         }
     }
 }
