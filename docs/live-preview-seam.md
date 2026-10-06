@@ -72,14 +72,47 @@ struct BlockWidget { first_line: u64, last_line: u64, height_hint: Option<Pixels
 
 ## 分步落地（每步独立可验证）
 
-- **S1 隐藏**：hide spans + 换算 + 命中测试（8 处调用点）。验收：harness 里把
-  `# ` 隐藏后，截图/DOM 断言文本宽度缩短、点击位置映射正确、光标行不隐藏。
-- **S2 inline widget**：公式（行内 `$…$`）与图片。验收：MathML/SVG 元素渲染在行内。
-- **S3 block widget**：公式块、callout 面板、代码块语言标签。验收：行高、滚动、
-  click-to-source。
-- **S4 bnote 侧 PreviewDecorations 状态机**：markdown 扫描（bnote-core 已有
-  `markdown::math_scan`/`callout`/`numbering`/`context`）+ 光标行豁免 + 增量重建纪律
-  （只在影响渲染的事务后重建，性能门禁：perf 基线参考 Tauri 壳的 decoration 重建量级）。
+- **S1 隐藏** ✅：hide spans + 换算 + 命中测试。验收通过（gpui-kit 64d87947）。
+- **S2 inline widget** ✅：行内公式（MathML）、图片、勾选框、子弹、callout 标题 chip、
+  水平线。验收通过（bnote-gpui c209856 + 图片 widget）。
+- **S3 block widget**（进行中）：行区间替换为声明高度的元素，**外加插入语义**
+  （`lines: L..L` = 在 L 行行首插入、不替换任何行；`L == 行数` = 文末插入）。
+  bnote-core 侧的模型已经就绪（见下），引擎侧在 gpui-kit。
+- **S4 bnote 侧扫描** ✅：`bnote-core::preview::scan`——纯数据规则，
+  `(text, selections, visible, math_preview) → PreviewSnapshot{spans, blocks, panels}`，
+  64 个测试；全文档扫描线性（perf_tests 门禁）。
+- **S5 逐行容器样式**（未开始，引擎侧）：见下节。
+
+## S3/S5 的宿主侧数据模型（bnote-core 已产出，引擎/宿主照此消费）
+
+```rust
+// 替换或插入的块元素；`last_line == None` = 插入（见上）
+struct PreviewBlock { first_line: usize, last_line: Option<usize>, kind: BlockKind }
+enum BlockKind {
+    Math { tex, display },          // 多行公式块（替换）
+    MathPreview { tex },            // 编辑中公式的渲染副本（插入，锚在块下一行行首/文末）
+    Callout { title, body_first_line, body_last_line },   // `:::` 边界行（替换，widget 自带块面）
+    HiddenLine,                     // 围栏行：零高塌陷（`.cw-hidden-line{height:0}`）
+}
+// 逐行"样式"容器：行保持可见可编辑,永不替换
+struct PreviewPanel { first_line, last_line, kind: PanelKind }
+enum PanelKind {
+    Callout { depth, open_line, close_line },  // 背景+左竖线+按深度内缩+顶/底帽；不随光标门控
+    CodeBlock,                                 // 围栏体行：code-block 底色 + 等宽；仅光标在块外
+    Blockquote,                                // 引用行：左竖线+accent 斜体；仅非活动行
+}
+```
+
+**S5 引擎需求**（逐行样式会改布局，必须引擎配合，不能靠宿主叠画）：
+1. 每行的背景矩形（全高、从文本起点到行尾或内容区）——先看
+   `RangeDecorationStyle::Fill` 的 `layout_match_range` 是否就是"行高矩形"，
+   是则可直接复用（宿主按 panel 的字节范围下发），否则加一条 per-line 样式通道；
+2. 左竖线：宽度 + 颜色，画在文本起点左侧（需要行左缩进参与布局）；
+3. 行左缩进 / 顶底内边距（callout 的 `padding-left: 11/25/39px`、边界行
+   `padding-top/bottom: 8px` + 圆角）——`LineLayout` 已有 `line_indent`
+   （目前只用于软换行续行），改成"buffer 行也能有 indent"即可；
+4. 引用行的斜体 + accent 色（可以用既有的 `TextDecoration` 染色覆盖，
+   斜体看 `HighlightStyle` 是否带 font style）。
 
 ## 与 KaTeX 的对应
 
