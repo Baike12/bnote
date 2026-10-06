@@ -12,6 +12,7 @@ mod commands;
 mod daily_host;
 mod editor;
 mod footprint_host;
+mod theme;
 mod workspace;
 
 use std::path::PathBuf;
@@ -40,9 +41,11 @@ fn main() {
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
 
-            // bnote's own look starts from the built-in themes; the exact
-            // palette from src/styles/global.css lands with the theme port.
+            // bnote's own palette (`src/styles/global.css`, transcribed in
+            // `theme.rs`): the built-in theme first, then the override — the
+            // other way round `Theme::change` would load over the palette.
             Theme::change(ThemeMode::Dark, None, cx);
+            theme::apply(ThemeMode::Dark, cx);
 
             // Every registry command gets its default keybinding; overrides
             // from keybindings.json arrive with the settings port.

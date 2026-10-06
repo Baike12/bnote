@@ -40,6 +40,7 @@ use crate::editor::vim::integration::VimBridge;
 use crate::apply_ops::apply_outcome;
 use crate::commands::{COMMANDS, actions};
 use crate::daily_host::{DailyHost, SyncWrite};
+use crate::editor::images as editor_images;
 use crate::editor::preview::{PreviewFont, PreviewHost};
 use crate::editor::snippets_host::SnippetBridge;
 use crate::editor::vim::core::Mode as VimMode;
@@ -302,6 +303,7 @@ impl Workspace {
                 if let Some(fp) = &self.footprint {
                     fp.note_dirty(&paths);
                 }
+                self.invalidate_images(&paths, cx);
                 self.reload_open_if_externally_changed(&paths, cx);
                 let tree = self.tree_state.clone();
                 cx.spawn(async move |this, cx| reload_tree(this, tree, cx).await)
@@ -406,6 +408,11 @@ impl Workspace {
     fn on_vault_ready(&mut self, root: PathBuf, name: &str, cx: &mut Context<Self>) {
         self.vault_root = Some(root.clone());
         self.status = format!("仓库:{}", name);
+        // Cached images belong to the vault that is gone; references resolve
+        // against the new root from here on.
+        self.preview.images().clear();
+        self.preview.images().set_vault_root(root.clone());
+        self.preview.images().set_doc_dir(None);
         self.load_vault_snippets(cx);
         self.daily = Some(Arc::new(DailyHost::new(self.state.clone(), &root)));
         let fp = Arc::new(FootprintHost::new(&root));
@@ -422,14 +429,12 @@ impl Workspace {
     /// definitions, replace the built-in set with it (the TS source-ownership
     /// rule: the file replaces, never stacks).
     ///
-    /// **TODO(vault-file extraction)**: the file on disk is a JS module
-    /// (`export default [ … ]`, `//` comments, regex literals). Extracting its
-    /// array is the shell's job (`bnote_core::snippets::load` module docs) and
-    /// is not written yet, so today the read path ends in the JSON-shape
-    /// parser, a JS file fails it, and the editor keeps the built-ins with the
-    /// status line saying so — the TS error path. The seam is
-    /// `SnippetHost::load_source(&str)`; only the JS→JSON extraction is
-    /// missing.
+    /// The file is a JS module; `bnote_core::snippets::js_module` reads it
+    /// statically (regex literals, comments, the one function replacement —
+    /// see `load.rs`). A file that parses but carries an entry the engine
+    /// cannot bind reports it in the status line and on stderr; a file that
+    /// does not parse keeps the built-ins with the error in the status line,
+    /// the TS error path.
     fn load_vault_snippets(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.vault_root.clone() else { return };
         let path = root.join(".bnote").join("snippets.js");
@@ -448,11 +453,19 @@ impl Workspace {
             this.update(cx, |this, cx| {
                 match read {
                     Ok(source) => match snippets.load_source(&editor, &source) {
-                        Ok(_) => {
-                            this.status = format!(
-                                "公式片段 {} 条(仓库)",
-                                snippets.snippet_count(&editor)
-                            );
+                        Ok(skipped) => {
+                            let count = snippets.snippet_count(&editor);
+                            this.status = if skipped.is_empty() {
+                                format!("公式片段 {count} 条(仓库)")
+                            } else {
+                                for reason in &skipped {
+                                    eprintln!("[snippets] {reason}");
+                                }
+                                format!(
+                                    "公式片段 {count} 条(仓库),跳过 {} 条(见控制台)",
+                                    skipped.len()
+                                )
+                            };
                         }
                         Err(e) => {
                             snippets.use_builtins(&editor);
@@ -1015,6 +1028,9 @@ impl Workspace {
         self.open_path = None;
         self.daily = None;
         self.footprint = None;
+        // Nothing cached describes the vault we are leaving.
+        self.preview.images().clear();
+        self.preview.images().set_doc_dir(None);
         self.status = format!("切换仓库:{}", path);
         self.restore_vault(PathBuf::from(path), cx);
         cx.notify();
@@ -1095,6 +1111,10 @@ impl Workspace {
         });
         self.dirty = false;
         self.open_path = Some(rel_path.clone());
+        // Image references resolve against the note's own directory first
+        // (`![](Images/a.png)` next to the note beats `Images/a.png` at the
+        // vault root), so the store follows the open note.
+        self.preview.images().set_doc_dir(self.doc_dir_of(&rel_path));
         if let Some(daily) = &self.daily {
             let abs = self
                 .vault_root
@@ -1118,6 +1138,74 @@ impl Workspace {
 
     fn has_doc(&self) -> bool {
         self.open_path.is_some() && self.vault_root.is_some()
+    }
+
+    // ---- images -----------------------------------------------------------
+
+    /// The directory of a vault-relative note path, as an absolute path.
+    fn doc_dir_of(&self, rel_path: &str) -> Option<PathBuf> {
+        let root = self.vault_root.clone()?;
+        Some(match rel_path.rfind('/') {
+            Some(i) => root.join(&rel_path[..i]),
+            None => root,
+        })
+    }
+
+    /// The editor element's width as of the last prepaint (`Bounds::default`
+    /// before the first frame, which the preview host treats as "unknown").
+    fn editor_width(&self, cx: &Context<Self>) -> gpui::Pixels {
+        self.editor.read(cx).input_bounds().size.width
+    }
+
+    /// Runs the image loads the last scan asked for, on the background
+    /// executor. The result is written back only if it still describes the
+    /// current state (the store checks its key and the generation captured at
+    /// spawn time); a landed image marks the preview dirty so the next frame
+    /// emits the widget in place of the source text.
+    fn spawn_image_loads(&mut self, cx: &mut Context<Self>) {
+        for request in self.preview.images().take_pending() {
+            cx.spawn(async move |this, cx| {
+                let outcome = cx
+                    .background_executor()
+                    .spawn(async move { editor_images::load(&request) })
+                    .await;
+                this.update_in(cx, |this, _window, cx| {
+                    if this.preview.images().finish(outcome) {
+                        this.preview_dirty = true;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// Drops cached images the vault watcher reports as changed (a re-exported
+    /// preview, an edited attachment). The next scan loads them again; until
+    /// then the source text stays visible, so nothing flickers to a stale
+    /// bitmap.
+    fn invalidate_images(&mut self, paths: &[String], cx: &mut Context<Self>) {
+        let Some(root) = self.vault_root.clone() else {
+            return;
+        };
+        let store = self.preview.images();
+        let mut hit = false;
+        for path in paths {
+            // The watcher reports vault-relative and absolute paths both.
+            let abs = if std::path::Path::new(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                root.join(path)
+            };
+            if store.invalidate_path(&abs) {
+                hit = true;
+            }
+        }
+        if hit {
+            self.preview_dirty = true;
+            cx.notify();
+        }
     }
 
     // ---- rendering --------------------------------------------------------
@@ -1396,17 +1484,28 @@ fn line_col_to_byte(text: &str, line: usize, col_chars: usize) -> usize {
 
 impl gpui::Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // An image span's width is fixed when the span is emitted, so a change
+        // in the editor's width (window resize, panel toggle) makes every
+        // image span stale. `input_bounds` is last frame's measurement, so the
+        // rescan settles one frame later.
+        if self.preview.needs_rescan(self.editor_width(cx)) {
+            self.preview_dirty = true;
+        }
         let content_changed = self.preview_dirty;
         if self.preview_dirty {
             self.preview_dirty = false;
             let selection = self.editor.read(cx).selected_range();
             self.preview_selection = Some(selection.clone());
             let text = self.editor.read(cx).text().to_string();
+            let column = self.preview.text_column(self.editor_width(cx), &text, window);
             let decorations = self
                 .preview
-                .decorations(&text, &[selection], window, cx);
+                .decorations(&text, &[selection], column, window, cx);
             self.editor
                 .update(cx, |state, cx| state.set_preview_decorations(decorations, cx));
+            // The scan just queued a load for every image whose size it does
+            // not know yet; run them off the UI thread.
+            self.spawn_image_loads(cx);
         }
         // LaTeX-suite bracket marks: rebuilt when the document or the caret
         // changed (the same subscription that drives the preview) or when the
@@ -1564,8 +1663,16 @@ async fn reload_tree(
             .filter(|f| f.ends_with(".md"))
             .cloned()
             .collect();
-        let _ = this.update(cx, |this, _cx| {
+        // The media index is what turns a bare `![[Pasted image 1.png]]` into
+        // a path; a new file may be exactly the one some note refers to, so a
+        // changed index re-scans the preview.
+        let assets = index.assets.clone();
+        let _ = this.update(cx, |this, cx| {
             this.files = files;
+            if this.preview.images().set_assets(assets) {
+                this.preview_dirty = true;
+                cx.notify();
+            }
         });
         let _ = tree.update(cx, |state, cx| {
             let items = build_items(&index);

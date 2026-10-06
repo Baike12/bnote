@@ -86,12 +86,13 @@
 //!   unaffected (it replaces the selection either way, and the caret that
 //!   insertion leaves is the end of the inserted text).
 //! * **Vault snippet file**: [`SnippetHost::load_source`] takes the file's
-//!   *text* in the JSON data shape the port defines (`load::parse_snippet_file`).
-//!   The real `.bnote/snippets.js` is a JS module (`export default [ … ]`,
-//!   regex literals, comments); extracting that array is the shell's job and is
-//!   NOT implemented yet — see the TODO in `load_vault_snippets`
-//!   (workspace.rs). A missing/unparsable file falls back to the built-ins,
-//!   the TS error path.
+//!   *text* — the real `.bnote/snippets.js` JS module (`export default [ … ]`,
+//!   regex literals, comments, one function replacement) or the bare-array /
+//!   JSON shape. `load.rs` reads the module statically (it cannot run JS); a
+//!   file it cannot fully bind reports the skipped entries, and a missing or
+//!   unparsable file falls back to the built-ins, the TS error path.
+//!   Ownership invariant: the loader path replaces the source, the settings
+//!   path must only flip `enabled`.
 //! * IME composition: multi-character commits are only considered when they
 //!   end in `/` (the TS `triggerKeyOf`); the TS deferred-fraction timer is not
 //!   ported. Character-level composition (`view.composing` suppression) has no
@@ -247,20 +248,21 @@ impl SnippetHost {
         self.last_doc = None;
     }
 
-    /// Load a snippet source **in the port's JSON data shape** (a bare array or
-    /// `{"default": [...]}`); returns the compiled snippet count.
+    /// Load a snippet source — the vault file's `.bnote/snippets.js` module (or
+    /// the bare-array/JSON shape) — through the reader; returns the entries the
+    /// engine had to skip (empty when everything took effect; the count comes
+    /// from [`SnippetHost::snippet_count`]).
     ///
-    /// This is the seam the vault file goes through. The real
-    /// `<vault>/.bnote/snippets.js` is a JS module, not JSON — extracting its
-    /// array is the shell's job (`load.rs` module docs say the same) and is not
-    /// done yet, so a vault-file load currently fails here and the caller falls
-    /// back to the built-ins, exactly like the TS error path.
-    pub fn load_source(&mut self, source: &str) -> Result<usize, String> {
-        let store =
+    /// This is the seam the vault file goes through: `load::store_from_file`
+    /// reads the module statically (regex literals, comments, the one function
+    /// replacement — see `load.rs`), so a malformed file is an error (the
+    /// caller falls back to the built-ins, the TS error path) while a
+    /// well-formed entry it cannot bind is reported, not silently dropped.
+    pub fn load_source(&mut self, source: &str) -> Result<Vec<String>, String> {
+        let loaded =
             load::store_from_file(source, self.store.enabled).map_err(|e| e.to_string())?;
-        let count = store.compiled.list.len();
-        self.set_store(store);
-        Ok(count)
+        self.set_store(loaded.store);
+        Ok(loaded.skipped)
     }
 
     /// Built-ins, enabled state preserved.
@@ -935,12 +937,12 @@ impl SnippetBridge {
     }
 
     /// Load a snippet source (the vault-file seam; see
-    /// [`SnippetHost::load_source`]). Returns the compiled snippet count.
+    /// [`SnippetHost::load_source`]). Returns the skipped entries, if any.
     pub fn load_source(
         &self,
         editor: &Entity<EditorState>,
         source: &str,
-    ) -> Result<usize, String> {
+    ) -> Result<Vec<String>, String> {
         self.with_host_mut(editor, |host| host.load_source(source))
             .unwrap_or(Err("编辑器未挂载片段层".to_string()))
     }
@@ -1789,6 +1791,43 @@ mod tests {
             per_key < std::time::Duration::from_millis(2),
             "per-key cost with a session exploded: {per_key:?}"
         );
+    }
+
+    /// 仓库片段文件的接缝:owner 真文件(`.bnote/snippets.js`,逐字节副本存在
+    /// bnote-core 的夹具里)经 `SnippetHost::load_source` 装载后 0 跳过,并且
+    /// 生效的是**用户的 232 条**而不是内置 221 条——含仅 JS 支持的 lookbehind
+    /// 触发(走 fancy-regex 回退)与函数型 replacement(绑定引擎的 `iden`).
+    #[test]
+    fn the_vault_snippets_file_loads_through_the_host() {
+        // `src/editor/` → `crates/`: three levels up. The fixture is a
+        // byte-for-byte copy of the owner's real vault file.
+        const OWNER_SNIPPETS: &str =
+            include_str!("../../../bnote-core/tests/data/snippets-owner.js");
+
+        // 逐字符喂键(host 在键落地前判定,和真实输入路径一致):`aa` 在第二个
+        // a 上展开成 \alpha.
+        // `$$` with the caret between the dollars: a closed inline math region.
+        let mut sim = Sim::new("$$", 1);
+        let skipped = sim.host.load_source(OWNER_SNIPPETS).expect("owner 文件可解析");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(sim.host.snippet_count(), 232);
+        // The first `a` is an ordinary keystroke; the second completes the
+        // `aa` trigger and is swallowed by the expansion.
+        assert!(!sim.type_char("a"));
+        assert!(sim.type_char("a"));
+        assert_eq!(sim.doc, "$\\alpha$");
+
+        // 仅 JS 支持的 lookbehind 触发(`/(?<!\\)log/`)在数学态内展开.
+        let mut sim = Sim::new("$$", 1);
+        sim.host.load_source(OWNER_SNIPPETS).unwrap();
+        sim.type_str("log");
+        assert_eq!(sim.doc, "$\\log$");
+
+        // 文本态的 `dm`(tAw,自动展开 + 词边界)展开成 align 骨架.
+        let mut sim = Sim::new("", 0);
+        sim.host.load_source(OWNER_SNIPPETS).unwrap();
+        sim.type_str("dm");
+        assert!(sim.doc.contains("\\begin{align}"), "{}", sim.doc);
     }
 
     /// 触发的形状探测:同一个字符在数学态内外、不同 store 下的不同裁决.
