@@ -47,6 +47,7 @@ pub mod actions {
             PythonToggleLsp,
             PythonCreateUvEnv,
             ToggleStudyMode,
+            ToggleLivePreview,
         ]
     );
 }
@@ -102,4 +103,6 @@ pub const COMMANDS: &[CommandDef] = &[
     CommandDef { id: "python.create-uv-env", label: "Python: 为当前项目创建 uv 环境", key: None },
     // 学习模式:左问 agent、中看内容、右记笔记(TS `view.toggle-study-mode`)。
     CommandDef { id: "view.toggle-study-mode", label: "进入 / 退出学习模式", key: Some("cmd-shift-s") },
+    // 实时渲染开关(TS `editor.toggle-live-preview`,同样没有默认键位)。
+    CommandDef { id: "editor.toggle-live-preview", label: "切换实时渲染 / 源码模式", key: None },
 ];

@@ -32,7 +32,7 @@ use gpui_kit::component::{
     button::Button,
     command::{Command, CommandItem, CommandState},
     h_flex, v_flex,
-    input::{Editor, EditorState, Input, InputEvent, InputState, TextDecorationCollection},
+    input::{Editor, EditorState, Input, InputEvent, InputState, PreviewDecorations, TextDecorationCollection},
     label::Label,
     list::ListItem,
     resizable::{h_resizable, resizable_panel},
@@ -312,6 +312,10 @@ pub struct Workspace {
     /// Bumped on every edit; a save task carries its seq and only writes when
     /// it is still the newest.
     save_seq: u64,
+    /// Bumped when the auto-save switch turns off: a debounced write that was
+    /// already scheduled carries the old generation and drops itself (TS
+    /// clears the pending timeout).
+    autosave_gen: u64,
     /// Serializes disk writes and keeps the last written seq (see module docs).
     save_guard: Arc<Mutex<u64>>,
     status: String,
@@ -434,6 +438,8 @@ pub struct Workspace {
     /// `settings.*` of `config.json` as the modal's working state; every
     /// change is applied live and written back under the same keys the Tauri
     /// shell uses.
+    live_preview: bool,
+    auto_save: bool,
     math_preview: bool,
     typewriter: bool,
     code_block_lang: String,
@@ -697,6 +703,8 @@ impl Workspace {
             size: theme.mono_font_size,
         }));
         // The live-rendered copy of a display formula while editing it.
+        let live_preview = setting("livePreview").unwrap_or(true);
+        let auto_save = setting("autoSave").unwrap_or(true);
         let math_preview = setting("mathPreview").unwrap_or(true);
         preview.set_math_preview(math_preview);
         editor.update(cx, |state, cx| {
@@ -843,6 +851,7 @@ impl Workspace {
             open_path: None,
             dirty: false,
             save_seq: 0,
+            autosave_gen: 0,
             save_guard: Arc::new(Mutex::new(0)),
             status: "未打开仓库".to_string(),
             cursor_label: String::new(),
@@ -875,6 +884,8 @@ impl Workspace {
             link_state,
             settings_open: false,
             settings_tab: SettingsTab::General,
+            live_preview,
+            auto_save,
             math_preview,
             typewriter,
             code_block_lang,
@@ -986,11 +997,16 @@ impl Workspace {
         }
 
         // The caret position of the closing window is written synchronously —
-        // the debounced write would be racing the process teardown.
+        // the debounced write would be racing the process teardown. A dirty
+        // note buffer is flushed the same way (TS `EditorPane`'s unmount),
+        // so quitting never costs the last edit, auto-save or not.
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_window, cx| {
-            weak.update(cx, |workspace, _cx| workspace.flush_cursor_save_blocking())
-                .ok();
+            weak.update(cx, |workspace, cx| {
+                workspace.flush_cursor_save_blocking();
+                workspace.flush_note_save_blocking(cx);
+            })
+            .ok();
             true
         });
 
@@ -1269,12 +1285,17 @@ impl Workspace {
         self.dirty = true;
         self.save_seq += 1;
         self.update_cursor_label(cx);
-        let seq = self.save_seq;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
-            save_snapshot(this, seq, cx).await;
-        })
-        .detach();
+        if self.auto_save {
+            // The pending timer carries the generation it was scheduled under;
+            // turning the switch off invalidates it (TS clears the timeout).
+            let seq = self.save_seq;
+            let gen = self.autosave_gen;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
+                save_snapshot(this, seq, Some(gen), cx).await;
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -1376,6 +1397,33 @@ impl Workspace {
         }
     }
 
+    /// The quit path's note flush: a dirty buffer is written before the window
+    /// goes away, whatever the auto-save switch says. The UI bookkeeping of
+    /// the async path (status, editor reload) is skipped — there is no next
+    /// frame — but the daily-sync follow-ups are not: they are part of the
+    /// save, and dropping them would leave the daily file stale.
+    fn flush_note_save_blocking(&mut self, cx: &mut gpui::App) {
+        if !self.dirty {
+            return;
+        }
+        let (Some(root), Some(rel)) = (self.vault_root.clone(), self.open_path.clone()) else {
+            return;
+        };
+        let text = self.editor.read(cx).value().to_string();
+        self.save_seq += 1;
+        let seq = self.save_seq;
+        let abs = root.join(&rel).to_string_lossy().to_string();
+        write_note_and_followups(
+            &self.state,
+            &self.save_guard,
+            self.daily.as_deref(),
+            &self.today,
+            abs,
+            text,
+            seq,
+        );
+    }
+
     /// TS `restoreSavedCursor` — put the caret back where the user left this
     /// note, scroll included. No-op for a note never visited. The scroll
     /// offset is deferred by the engine to the next layout, which is exactly
@@ -1429,7 +1477,7 @@ impl Workspace {
         }
         self.save_seq += 1;
         let seq = self.save_seq;
-        cx.spawn(async move |this, cx| save_snapshot(this, seq, cx).await).detach();
+        cx.spawn(async move |this, cx| save_snapshot(this, seq, None, cx).await).detach();
     }
 
     fn run_edit(
@@ -3525,6 +3573,42 @@ impl Workspace {
         cx.notify();
     }
 
+    /// `settings.livePreview` (TS `editor.toggle-live-preview`): off means the
+    /// editor shows pure source — no hidden marks, no widgets, no line styles.
+    fn set_live_preview(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.live_preview = on;
+        self.persist_setting("livePreview", serde_json::json!(on), cx);
+        // Both directions take one scan pass: on rebuilds the decorations, off
+        // clears them. The render gate is the single writer of that state.
+        self.preview_dirty = true;
+        cx.notify();
+    }
+
+    /// TS `editor.toggle-live-preview` (palette only, no default key).
+    fn toggle_live_preview(
+        &mut self,
+        _: &actions::ToggleLivePreview,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = !self.live_preview;
+        self.set_live_preview(next, cx);
+        self.status = if next { "实时渲染:开".to_string() } else { "实时渲染:关(源码)".to_string() };
+        cx.notify();
+    }
+
+    /// `settings.autoSave`: the 0.8 s autosave only runs while it is on; ⌘S
+    /// always writes (TS keeps the same split).
+    fn set_auto_save(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.auto_save = on;
+        if !on {
+            // A debounced write scheduled before the flip must not land.
+            self.autosave_gen += 1;
+        }
+        self.persist_setting("autoSave", serde_json::json!(on), cx);
+        cx.notify();
+    }
+
     fn set_math_preview(&mut self, on: bool, cx: &mut Context<Self>) {
         self.math_preview = on;
         self.preview.set_math_preview(on);
@@ -3818,6 +3902,24 @@ impl Workspace {
             SettingsTab::Editor => v_flex()
                 .gap_3()
                 .child(settings_heading("编辑行为", &theme))
+                .child(self.settings_switch(
+                    "settings-live-preview",
+                    "实时渲染(Live Preview)",
+                    "标题、粗体、公式、代码块等在非编辑区域直接渲染;当前行保持源码",
+                    self.live_preview,
+                    |this, on, cx| this.set_live_preview(on, cx),
+                    &theme,
+                    cx,
+                ))
+                .child(self.settings_switch(
+                    "settings-auto-save",
+                    "自动保存",
+                    "停止输入约 0.8 秒后自动保存(⌘S 始终可用)",
+                    self.auto_save,
+                    |this, on, cx| this.set_auto_save(on, cx),
+                    &theme,
+                    cx,
+                ))
                 .child(self.settings_switch(
                     "settings-auto-number",
                     "标题自动编号",
@@ -5040,6 +5142,7 @@ pub(crate) fn action_for(id: &str) -> Option<Box<dyn gpui::Action>> {
         "python.toggle-lsp" => Box::new(a::PythonToggleLsp),
         "python.create-uv-env" => Box::new(a::PythonCreateUvEnv),
         "view.toggle-study-mode" => Box::new(a::ToggleStudyMode),
+        "editor.toggle-live-preview" => Box::new(a::ToggleLivePreview),
         _ => return None,
     })
 }
@@ -5086,6 +5189,7 @@ pub(crate) fn keybinding_for(id: &str, key: &str) -> Option<gpui::KeyBinding> {
         "python.toggle-lsp" => gpui::KeyBinding::new(key, a::PythonToggleLsp, None),
         "python.create-uv-env" => gpui::KeyBinding::new(key, a::PythonCreateUvEnv, None),
         "view.toggle-study-mode" => gpui::KeyBinding::new(key, a::ToggleStudyMode, None),
+        "editor.toggle-live-preview" => gpui::KeyBinding::new(key, a::ToggleLivePreview, None),
         _ => return None,
     })
 }
@@ -5137,25 +5241,36 @@ impl gpui::Render for Workspace {
         let content_changed = self.preview_dirty;
         if self.preview_dirty {
             self.preview_dirty = false;
-            let selection = self.editor.read(cx).selected_range();
-            self.preview_selection = Some(selection.clone());
-            let text = self.editor.read(cx).text().to_string();
-            let column = self.preview.text_column(self.editor_width(cx), &text, window);
-            let decorations = self.preview.decorations(
-                &text,
-                &[selection],
-                column,
-                visible.as_ref(),
-                window,
-                cx,
-            );
-            self.preview_styles.set(decorations.styles, cx);
-            self.editor.update(cx, |state, cx| {
-                state.set_preview_decorations(decorations.decorations, cx)
-            });
-            // The scan just queued a load for every image whose size it does
-            // not know yet; run them off the UI thread.
-            self.spawn_image_loads(cx);
+            if self.live_preview {
+                let selection = self.editor.read(cx).selected_range();
+                self.preview_selection = Some(selection.clone());
+                let text = self.editor.read(cx).text().to_string();
+                let column = self.preview.text_column(self.editor_width(cx), &text, window);
+                let decorations = self.preview.decorations(
+                    &text,
+                    &[selection],
+                    column,
+                    visible.as_ref(),
+                    window,
+                    cx,
+                );
+                self.preview_styles.set(decorations.styles, cx);
+                self.editor.update(cx, |state, cx| {
+                    state.set_preview_decorations(decorations.decorations, cx)
+                });
+                // The scan just queued a load for every image whose size it does
+                // not know yet; run them off the UI thread.
+                self.spawn_image_loads(cx);
+            } else {
+                // Source mode owns the opposite invariant: no hidden marks, no
+                // widgets, no styles. Doing it here (not only on the toggle)
+                // covers every path that changes the document under it — a
+                // file switch, a reload, a programmatic edit.
+                self.preview_styles.set(Vec::new(), cx);
+                self.editor.update(cx, |state, cx| {
+                    state.set_preview_decorations(PreviewDecorations::default(), cx)
+                });
+            }
         }
         // LaTeX-suite bracket marks: rebuilt when the document or the caret
         // changed (the same subscription that drives the preview) or when the
@@ -5252,6 +5367,7 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::toggle_python_lsp))
             .on_action(cx.listener(Self::create_py_uv_env))
             .on_action(cx.listener(Self::toggle_study_mode))
+            .on_action(cx.listener(Self::toggle_live_preview))
             // Dragging a file onto the window opens it in the study pane (TS
             // `ContentPane`'s `onDragDropEvent`); a PDF converts first.
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
@@ -5431,8 +5547,19 @@ fn split_last(rel: &str) -> (String, String) {
 /// background executor guarded by the seq lock. Stale snapshots (a newer edit
 /// happened while we waited) are dropped — a newer task owns the flush.
 /// After the write lands, the daily-sync host derives mirror/send intents.
-async fn save_snapshot(this: WeakEntity<Workspace>, seq: u64, cx: &mut gpui::AsyncApp) {
+/// Writes the open note. `autosave` is the debounced path's generation: when it
+/// no longer matches, the switch was flipped off while the timer ran and the
+/// write is dropped (TS clears the pending timeout).
+async fn save_snapshot(
+    this: WeakEntity<Workspace>,
+    seq: u64,
+    autosave: Option<u64>,
+    cx: &mut gpui::AsyncApp,
+) {
     let (state, root, path, text, guard, daily, today) = match this.update(cx, |this, cx| {
+        if autosave.is_some_and(|gen| gen != this.autosave_gen) {
+            return None;
+        }
         let Some(root) = this.vault_root.clone() else {
             return None;
         };
@@ -5455,23 +5582,15 @@ async fn save_snapshot(this: WeakEntity<Workspace>, seq: u64, cx: &mut gpui::Asy
     let written = cx
         .background_executor()
         .spawn(async move {
-            let mut last = guard.lock().unwrap();
-            if seq <= *last {
-                return None;
-            }
-            // core's write_file keeps the ensure_within path guard.
-            let result =
-                bnote_core::commands::files::write_file(&state, abs.clone(), text.clone());
-            if result.is_err() {
-                return None;
-            }
-            *last = seq;
-            // Daily sync derives intents from this save; host does its own IO.
-            let followups: Vec<SyncWrite> = match &daily {
-                Some(host) => host.on_saved(&abs, &text, &today),
-                None => Vec::new(),
-            };
-            Some(followups)
+            write_note_and_followups(
+                &state,
+                &guard,
+                daily.as_deref(),
+                &today,
+                abs,
+                text,
+                seq,
+            )
         })
         .await;
 
@@ -5512,6 +5631,34 @@ async fn save_snapshot(this: WeakEntity<Workspace>, seq: u64, cx: &mut gpui::Asy
         cx.notify();
     })
     .ok();
+}
+
+/// One note write and everything it implies: the file itself, then the daily
+/// sync's follow-up writes derived from it. The seq guard drops a write an
+/// older one has already superseded.
+fn write_note_and_followups(
+    state: &bnote_core::state::AppState,
+    guard: &Mutex<u64>,
+    daily: Option<&DailyHost>,
+    today: &str,
+    abs: String,
+    text: String,
+    seq: u64,
+) -> Option<Vec<SyncWrite>> {
+    let mut last = guard.lock().unwrap();
+    if seq <= *last {
+        return None;
+    }
+    // core's write_file keeps the ensure_within path guard.
+    if bnote_core::commands::files::write_file(state, abs.clone(), text.clone()).is_err() {
+        return None;
+    }
+    *last = seq;
+    // Daily sync derives intents from this save; host does its own IO.
+    match daily {
+        Some(host) => Some(host.on_saved(&abs, &text, today)),
+        None => Some(Vec::new()),
+    }
 }
 
 /// Pure-logic pins for the renumbering gate and the demotion tests. A module
@@ -5629,10 +5776,10 @@ mod gate_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        EditorState, InputEvent, PY_RUN_MAX_LINES, PY_RUN_TRIM_TO, PyRunState, PyStatus, PyStream,
-        StudyContent, TreeMenuItem, Workspace, action_for, actions, apply_edits_keeping_cursor,
-        keybinding_for, load_config_value, normalize_split, numbering, should_schedule_renumber,
-        wikilink, COMMANDS,
+        AUTOSAVE_DEBOUNCE, EditorState, InputEvent, PY_RUN_MAX_LINES, PY_RUN_TRIM_TO, PyRunState,
+        PyStatus, PyStream, StudyContent, TreeMenuItem, Workspace, action_for, actions,
+        apply_edits_keeping_cursor, keybinding_for, load_config_value, normalize_split, numbering,
+        should_schedule_renumber, wikilink, COMMANDS,
     };
     use gpui::px;
     use std::path::PathBuf;
@@ -5996,6 +6143,166 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 
+    /// `settings.livePreview`: off means pure source — the render pass clears
+    /// the decorations instead of scanning, and turning it back on rebuilds
+    /// them. Measured against a paragraph line: while the heading's `# ` is
+    /// hidden, its text starts at the same x as the paragraph's; in source
+    /// mode the marker takes its real width and shifts the text right.
+    #[gpui::test]
+    fn the_live_preview_switch_owns_the_decorations(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        let doc = "# 标题\n\n正文\n\n尾\n";
+        // 「标题」 right after the `# ` marker, and the paragraph「正文」 on
+        // line 3 — a line no decoration ever touches, so it is the baseline.
+        let heading_text = 2..8;
+        let body_text = 10..16;
+        let show = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            workspace.read_with(cx, |ws, cx| {
+                let editor = ws.editor.read(cx);
+                let heading = editor
+                    .range_to_bounds(&heading_text)
+                    .expect("the heading is on screen");
+                let body = editor
+                    .range_to_bounds(&body_text)
+                    .expect("the paragraph is on screen");
+                (heading.origin.x, body.origin.x)
+            })
+        };
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.editor.update(cx, |st, cx| {
+                st.set_value(doc, window, cx);
+                st.set_selected_range(doc.len()..doc.len(), cx);
+            });
+            ws.preview_dirty = true;
+        });
+        let (heading_x, body_x) = show(cx);
+        assert_eq!(heading_x, body_x, "live preview on hid the `# ` marker");
+        workspace.read_with(cx, |ws, cx| {
+            assert!(
+                !ws.preview_styles.get_ranges(cx).is_empty(),
+                "the scan emitted the heading's text style"
+            );
+        });
+
+        // Off: the frame drops both halves of the snapshot (no scan runs).
+        workspace.update_in(cx, |ws, _, cx| ws.set_live_preview(false, cx));
+        let (source_heading_x, source_body_x) = show(cx);
+        assert!(
+            source_heading_x > source_body_x,
+            "source mode shows the marker: {source_heading_x} > {source_body_x}"
+        );
+        workspace.read_with(cx, |ws, cx| {
+            assert!(ws.preview_styles.get_ranges(cx).is_empty(), "styles cleared");
+        });
+        // The marker is exactly two characters (`# `), so this is one
+        // character cell of the editor's font.
+        let char_w = (source_heading_x - source_body_x) / 2.0;
+
+        // On again: one frame rebuilds the whole thing.
+        workspace.update_in(cx, |ws, _, cx| ws.set_live_preview(true, cx));
+        let (heading_x, body_x) = show(cx);
+        assert_eq!(heading_x, body_x, "the marker is hidden again");
+
+        // A document swapped in under source mode inherits nothing: the old
+        // note's hidden byte ranges must not land on the new text. The new
+        // marker is `## ` — three characters — where the old one was two, so
+        // a stale snapshot would show up as the wrong shift.
+        workspace.update_in(cx, |ws, _, cx| ws.set_live_preview(false, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let next = "## 换一篇\n\n正文\n\n尾\n";
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.editor.update(cx, |st, cx| {
+                st.set_value(next, window, cx);
+                st.set_selected_range(next.len()..next.len(), cx);
+            });
+            ws.preview_dirty = true;
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        workspace.read_with(cx, |ws, cx| {
+            let editor = ws.editor.read(cx);
+            // 「换一篇」 and the paragraph「正文」 of the new document.
+            let heading_x = editor
+                .range_to_bounds(&(3..12))
+                .expect("the new heading is on screen")
+                .origin
+                .x;
+            let body_x = editor
+                .range_to_bounds(&(14..20))
+                .expect("the new paragraph is on screen")
+                .origin
+                .x;
+            let delta = heading_x - body_x;
+            assert!(
+                (delta - 3.0 * char_w).abs() < char_w / 2.0,
+                "the new note shows its own `## ` marker, not the old hiding: \
+                 {delta} instead of {}",
+                3.0 * char_w
+            );
+        });
+    }
+
+    /// `settings.autoSave`: the 0.8 s debounced write follows the switch —
+    /// off means an edit only marks the note dirty; ⌘S writes regardless.
+    #[gpui::test]
+    fn the_autosave_switch_gates_only_the_debounced_write(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        let file = workspace.update_in(cx, |ws, window, cx| {
+            let root = ws.vault_root.clone().expect("the fixture's vault");
+            let path = root.join("note.md");
+            std::fs::write(&path, "").expect("the note");
+            ws.open_path = Some("note.md".to_string());
+            ws.editor.update(cx, |st, cx| st.set_value("原始\n", window, cx));
+            path
+        });
+        let body = || std::fs::read_to_string(&file).expect("the note bytes");
+
+        // On (the default): the debounce timer fires once the clock passes it.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.editor.update(cx, |st, cx| st.insert("第一笔", window, cx));
+        });
+        workspace.read_with(cx, |ws, _| {
+            assert!(ws.dirty, "the edit reached the change subscription");
+        });
+        cx.executor().advance_clock(AUTOSAVE_DEBOUNCE * 2);
+        cx.run_until_parked();
+        assert_eq!(body(), "第一笔原始\n", "the debounced write landed");
+        workspace.read_with(cx, |ws, _| assert!(!ws.dirty, "and cleared the flag"));
+
+        // Off: the same edit (the caret sits after the last insert) marks the
+        // note dirty and schedules nothing.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.set_auto_save(false, cx);
+            ws.editor.update(cx, |st, cx| st.insert("第二笔", window, cx));
+        });
+        cx.executor().advance_clock(AUTOSAVE_DEBOUNCE * 2);
+        cx.run_until_parked();
+        assert_eq!(body(), "第一笔原始\n", "no write while the switch is off");
+        workspace.read_with(cx, |ws, _| assert!(ws.dirty, "the edit still marks dirty"));
+
+        // A timer already scheduled when the switch flips off is dropped (TS
+        // clears the pending timeout): the write waits for ⌘S.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.set_auto_save(true, cx);
+            ws.editor.update(cx, |st, cx| st.insert("第三笔", window, cx));
+            ws.set_auto_save(false, cx);
+        });
+        cx.executor().advance_clock(AUTOSAVE_DEBOUNCE * 2);
+        cx.run_until_parked();
+        assert_eq!(body(), "第一笔原始\n", "the pending autosave was invalidated");
+
+        // Quitting writes the dirty buffer synchronously, switch or not (TS
+        // `EditorPane`'s unmount flush).
+        workspace.update(cx, |ws, cx| ws.flush_note_save_blocking(cx));
+        assert_eq!(body(), "第一笔第二笔第三笔原始\n", "the quit flush wrote it");
+
+        // ⌘S is unconditional too.
+        cx.dispatch_action(actions::Save);
+        cx.run_until_parked();
+        assert_eq!(body(), "第一笔第二笔第三笔原始\n", "⌘S rewrites the same bytes");
+        workspace.read_with(cx, |ws, _| assert!(!ws.dirty));
+    }
+
     /// The run panel's state machine, `src/python/run.ts`'s semantics: a new
     /// run opens fresh, output chunks append in arrival order, the chunk cap
     /// drops the head (TS `MAX_LINES`/`TRIM_TO`), and the header's status text
@@ -6191,11 +6498,21 @@ mod tests {
 
     /// A workspace with a vault-less state and inert seams, for the panel
     /// tests (the run itself is the core's; these cover the shell wiring).
+    ///
+    /// Each call gets its own data dir and vault: the tests run in parallel
+    /// threads, so a shared pair would let one test's wipe or write land
+    /// inside another's (the vault is reloaded from disk by construction).
     fn python_panel_fixture(
         cx: &mut TestAppContext,
     ) -> (gpui::Entity<Workspace>, &mut gpui::VisualTestContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static FIXTURE_SEQ: AtomicUsize = AtomicUsize::new(0);
         cx.update(|cx| gpui_kit::init(cx));
-        let tag = std::process::id();
+        let tag = format!(
+            "{}-{}",
+            std::process::id(),
+            FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
         let data_dir = std::env::temp_dir().join(format!("bnote-py-panel-{tag}"));
         let vault = std::env::temp_dir().join(format!("bnote-py-vault-{tag}"));
         let _ = std::fs::remove_dir_all(&data_dir);
