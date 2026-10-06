@@ -56,6 +56,9 @@ use crate::editor::snippets_host::SnippetBridge;
 use crate::editor::vim::core::Mode as VimMode;
 use crate::footprint_host::FootprintHost;
 use crate::ime_host::{ImeHost, ImeServices};
+use crate::python_lsp::{
+    PyCompletionProvider, PyHoverProvider, PyLspHost, PyLspServices, SYNC_DEBOUNCE,
+};
 
 /// How long typing pauses before the buffer flushes to disk (mirrors the
 /// Tauri shell's stop-typing autosave).
@@ -374,6 +377,10 @@ pub struct Workspace {
     py_body_highlights: Vec<(std::ops::Range<usize>, HighlightStyle)>,
     /// The body's scroll position (the autoscroll rule reads it).
     py_scroll: ScrollHandle,
+    /// The ty type-check follow (TS `src/python/lsp.ts`).
+    py_lsp: Entity<PyLspHost>,
+    /// The sync debounce generation (only the newest quiet period syncs).
+    py_lsp_seq: u64,
     /// The settings modal (⌘,): TS `SettingsModal.tsx`'s tabs this shell
     /// consumes — general / editor / vim / snippets. Hotkeys, IME, quick-add
     /// and the agent tab arrive with their own ports.
@@ -519,6 +526,7 @@ impl Workspace {
         vim_bridge: VimBridge,
         snippets: SnippetBridge,
         ime: ImeServices,
+        py_lsp: PyLspServices,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -598,6 +606,17 @@ impl Workspace {
             host.warm_up(cx);
             host
         });
+        // The ty follow: the editor's completion / hover hooks (TS
+        // `pythonLspExtension`) plus the diagnostics the sync publishes.
+        let py_lsp = cx.new(|_| PyLspHost::new(state.clone(), py_lsp));
+        {
+            let weak = py_lsp.downgrade();
+            editor.update(cx, |state, _| {
+                let lsp = state.lsp_mut();
+                lsp.completion_provider = Some(Rc::new(PyCompletionProvider { host: weak.clone() }));
+                lsp.hover_provider = Some(Rc::new(PyHoverProvider { host: weak }));
+            });
+        }
 
         let theme = cx.theme();
         let preview = Rc::new(PreviewHost::new(PreviewFont {
@@ -633,6 +652,11 @@ impl Workspace {
                 this.preview_dirty = true;
                 this.on_edited(cx);
                 this.schedule_renumber(event, cx);
+                // TS's `pythonLspExtension` updateListener: every document
+                // change restarts the 500 ms sync timer.
+                if matches!(event, InputEvent::Change { .. }) {
+                    this.schedule_py_lsp_sync(cx);
+                }
             }),
             cx.observe(&editor, |this, editor, cx| {
                 let selection = editor.read(cx).selected_range();
@@ -765,6 +789,8 @@ impl Workspace {
             py_body: String::new(),
             py_body_highlights: Vec::new(),
             py_scroll: ScrollHandle::default(),
+            py_lsp,
+            py_lsp_seq: 0,
             qa_open: false,
             qa_naming: false,
             qa_picked: None,
@@ -901,6 +927,25 @@ impl Workspace {
                     .unwrap_or("")
                     .to_string();
                 self.py_push_output(stream, text, cx);
+            }
+            "python-lsp-diagnostics" => {
+                let md_path = ev
+                    .payload
+                    .get("mdPath")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let diagnostics = ev
+                    .payload
+                    .get("diagnostics")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let tracked = self.py_lsp.read(cx).path().map(str::to_string);
+                if tracked.as_deref() == Some(md_path.as_str()) {
+                    self.py_lsp.update(cx, |host, cx| host.set_raw(&md_path, diagnostics, cx));
+                    self.apply_py_diagnostics(cx);
+                }
             }
             "python-run-exit" => {
                 let run_id = ev.payload.get("runId").and_then(|v| v.as_u64());
@@ -2205,6 +2250,127 @@ impl Workspace {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // ty 类型检查(TS `src/python/lsp.ts` 的壳侧)
+    // -----------------------------------------------------------------------
+
+    /// The note's absolute path (the key every python command takes).
+    fn open_note_abs(&self) -> Option<String> {
+        let root = self.vault_root.as_ref()?;
+        let rel = self.open_path.as_ref()?;
+        Some(root.join(rel).to_string_lossy().to_string())
+    }
+
+    /// Every edit schedules the sync after the quiet period (TS
+    /// `scheduleSync`); only the newest timer fires.
+    fn schedule_py_lsp_sync(&mut self, cx: &mut Context<Self>) {
+        if self.open_note_abs().is_none() {
+            return;
+        }
+        self.py_lsp_seq = self.py_lsp_seq.wrapping_add(1);
+        let seq = self.py_lsp_seq;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SYNC_DEBOUNCE).await;
+            this.update(cx, |this, cx| {
+                if this.py_lsp_seq != seq {
+                    return;
+                }
+                let text = this.editor.read(cx).text().to_string();
+                this.py_lsp.update(cx, |host, cx| host.sync_now(&text, cx));
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The note the follow is tracking (called on every open / close).
+    fn py_lsp_set_path(&mut self, cx: &mut Context<Self>) {
+        let path = self.open_path.as_ref().and_then(|_| self.open_note_abs());
+        self.py_lsp.update(cx, |host, cx| host.set_path(path, cx));
+    }
+
+    /// `python-lsp-diagnostics` → the editor's own diagnostic set (the kit
+    /// paints the wavy underline and the hover popover from it).
+    fn apply_py_diagnostics(&mut self, cx: &mut Context<Self>) {
+        let text = self.editor.read(cx).text().to_string();
+        let mapped = self.py_lsp.update(cx, |host, _| host.diagnostics(&text));
+        self.editor.update(cx, |state, cx| {
+            let rope = state.text().clone();
+            let Some(set) = state.diagnostics_mut() else {
+                return; // a non-code editor has no diagnostics channel
+            };
+            set.reset(&rope);
+            for diagnostic in mapped {
+                set.push(diagnostic);
+            }
+            cx.notify();
+        });
+    }
+
+    /// TS `python.toggle-lsp`: flip the project's ty mode for the open note.
+    fn toggle_python_lsp(
+        &mut self,
+        _: &actions::PythonToggleLsp,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_note_abs().is_none() {
+            self.status = "没有打开的笔记".to_string();
+            cx.notify();
+            return;
+        }
+        let text = self.editor.read(cx).text().to_string();
+        self.py_lsp.update(cx, |host, cx| host.toggle_lsp(text, cx));
+        // The mode flips asynchronously (the config write is on the disk
+        // thread); the diagnostics clear and reappear on their own.
+        self.status = "ty 类型检查:切换中…".to_string();
+        cx.notify();
+    }
+
+    /// TS `python.create-uv-env`: the uv log lands in the run panel's system
+    /// stream (`beginSystem` / `finishSystem`).
+    fn create_py_uv_env(
+        &mut self,
+        _: &actions::PythonCreateUvEnv,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.open_note_abs() else {
+            self.status = "没有打开的笔记".to_string();
+            cx.notify();
+            return;
+        };
+        self.python_run.begin(None, Some(path.clone()), "uv 环境".to_string());
+        self.py_body.clear();
+        self.py_body_highlights.clear();
+        self.status = "正在创建 uv 环境…".to_string();
+        let state = self.state.clone();
+        let uv = {
+            let services = self.py_lsp.read(cx).services().uv_create.clone();
+            (services)(&state, path, cx)
+        };
+        cx.spawn(async move |this, cx| {
+            let outcome = uv.await;
+            this.update(cx, |this, cx| {
+                match outcome {
+                    Ok(outcome) => {
+                        this.py_push_output(PyStream::System, outcome.log, cx);
+                        this.python_run.finish(Some(0), 0, false, false);
+                        this.status = "uv 环境已就绪".to_string();
+                    }
+                    Err(e) => {
+                        this.py_push_output(PyStream::Stderr, e, cx);
+                        this.python_run.finish(Some(1), 0, false, false);
+                        this.status = "uv 环境创建失败".to_string();
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The run panel (TS `PythonRunPanel`): a 200px strip at the bottom of the
     /// editor column — header with status, duration, command and the buttons,
     /// then the output body.
@@ -2488,6 +2654,7 @@ impl Workspace {
         self.flush_cursor_save_now(cx);
         self.open_path = None;
         self.dirty = false;
+        self.py_lsp_set_path(cx);
         self.editor.update(cx, |ed, cx| ed.set_value("", window, cx));
         self.snippets.reset(&self.editor);
         cx.notify();
@@ -3708,6 +3875,7 @@ impl Workspace {
         });
         self.dirty = false;
         self.open_path = Some(rel_path.clone());
+        self.py_lsp_set_path(cx);
         // Image references resolve against the note's own directory first
         // (`![](Images/a.png)` next to the note beats `Images/a.png` at the
         // vault root), so the store follows the open note.
@@ -4330,6 +4498,8 @@ pub(crate) fn action_for(id: &str) -> Option<Box<dyn gpui::Action>> {
         "open-settings" => Box::new(a::OpenSettings),
         "python.run-note" => Box::new(a::PythonRunNote),
         "python.run-stop" => Box::new(a::PythonRunStop),
+        "python.toggle-lsp" => Box::new(a::PythonToggleLsp),
+        "python.create-uv-env" => Box::new(a::PythonCreateUvEnv),
         _ => return None,
     })
 }
@@ -4373,6 +4543,8 @@ pub(crate) fn keybinding_for(id: &str, key: &str) -> Option<gpui::KeyBinding> {
         "open-settings" => gpui::KeyBinding::new(key, a::OpenSettings, None),
         "python.run-note" => gpui::KeyBinding::new(key, a::PythonRunNote, None),
         "python.run-stop" => gpui::KeyBinding::new(key, a::PythonRunStop, None),
+        "python.toggle-lsp" => gpui::KeyBinding::new(key, a::PythonToggleLsp, None),
+        "python.create-uv-env" => gpui::KeyBinding::new(key, a::PythonCreateUvEnv, None),
         _ => return None,
     })
 }
@@ -4543,6 +4715,8 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::run_python_note))
             .on_action(cx.listener(Self::stop_python_run))
+            .on_action(cx.listener(Self::toggle_python_lsp))
+            .on_action(cx.listener(Self::create_py_uv_env))
             // Esc closes the settings modal from anywhere: it takes no focus
             // of its own, so the handler sits on the root — the one element
             // every key dispatch passes through (the link panel's own capture
@@ -4920,6 +5094,8 @@ mod tests {
         numbering, should_schedule_renumber, wikilink, COMMANDS,
     };
     use crate::ime_host::{CurrentSource, ImeServices, Switcher};
+    use crate::python_lsp::PyLspServices;
+    use gpui_kit::base::input as bc_diag;
     use gpui::{
         AppContext as _, Context, Focusable as _, IntoElement, Render, Task, TestAppContext, Window,
         div,
@@ -4931,6 +5107,24 @@ mod tests {
     /// The IME follow's seams, inert: a test process has no main run loop to
     /// service the core's main-queue hop (see `ImeServices`), and these tests
     /// all target other wiring. The follow's own tests own its behaviour.
+    /// The ty follow's seams, inert: these tests never spawn `ty` (the
+    /// follow's own tests own its behaviour).
+    fn inert_lsp() -> PyLspServices {
+        PyLspServices {
+            sync: Rc::new(|_, _, _, _| Task::ready(Ok(false))),
+            request: Rc::new(|_, _, _, _, _| Task::ready(Ok(serde_json::Value::Null))),
+            close: Rc::new(|_, _, _| Task::ready(())),
+            info: Rc::new(|_, _, _| Task::ready(Ok(serde_json::json!({ "lsp": "off" })))),
+            set_lsp: Rc::new(|_, _, _, _| Task::ready(Ok(()))),
+            uv_create: Rc::new(|_, _, _| {
+                Task::ready(Ok(bnote_core::python::uvenv::UvOutcome {
+                    log: String::new(),
+                    ran_init: false,
+                }))
+            }),
+        }
+    }
+
     fn inert_ime() -> ImeServices {
         let switch: Switcher = Rc::new(|_, _, _| Task::ready(()));
         let current: CurrentSource = Rc::new(|_| Task::ready(None));
@@ -5079,6 +5273,7 @@ mod tests {
                 vim_bridge,
                 snippet_bridge,
                 inert_ime(),
+                inert_lsp(),
                 window,
                 cx,
             );
@@ -5171,6 +5366,7 @@ mod tests {
                 vim_bridge,
                 snippet_bridge,
                 inert_ime(),
+                inert_lsp(),
                 window,
                 cx,
             );
@@ -5480,6 +5676,7 @@ mod tests {
                 vim_bridge,
                 snippet_bridge,
                 inert_ime(),
+                inert_lsp(),
                 window,
                 cx,
             );
@@ -5489,6 +5686,74 @@ mod tests {
         });
         cx.run_until_parked();
         (workspace, cx)
+    }
+
+    /// The ty diagnostics event lands on the editor's own diagnostic set (the
+    /// kit paints the squiggle and the popover from it), and a different
+    /// note's event is dropped.
+    #[gpui::test]
+    fn python_lsp_diagnostics_reach_the_editor(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        let doc = "# 标题\n```python\nx: int = \"s\"\n```\n";
+        let abs = workspace.update_in(cx, |ws, window, cx| {
+            ws.open_path = Some("note.md".to_string());
+            ws.editor.update(cx, |st, cx| st.set_value(doc, window, cx));
+            ws.py_lsp_set_path(cx);
+            ws.open_note_abs().expect("the note's path")
+        });
+
+        let event = |path: &str| {
+            bnote_core::AppEvent::new(
+                "python-lsp-diagnostics",
+                serde_json::json!({
+                    "mdPath": path,
+                    "diagnostics": [{
+                        "range": {
+                            "start": { "line": 2, "character": 0 },
+                            "end": { "line": 2, "character": 6 },
+                        },
+                        "severity": 1,
+                        "message": "boom",
+                    }],
+                }),
+            )
+        };
+
+        // Another note's diagnostics never land here.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.handle_event(event("/elsewhere/other.md"), cx)
+        });
+        workspace.read_with(cx, |ws, cx| {
+            let set = ws.editor.read(cx).diagnostics().expect("a code editor");
+            assert_eq!(set.len(), 0, "another note's event is dropped");
+        });
+
+        workspace.update_in(cx, |ws, _, cx| ws.handle_event(event(&abs), cx));
+        workspace.read_with(cx, |ws, cx| {
+            let state = ws.editor.read(cx);
+            let set = state.diagnostics().expect("a code editor");
+            assert_eq!(set.len(), 1);
+            // `x: int` sits at bytes 19..25 of the document (line 2, cols 0..6).
+            let entry = set.for_offset(20).expect("the diagnostic sits on the code line");
+            assert_eq!(entry.range, 19..25, "the `x: int` span maps back to the document");
+            assert_eq!(entry.diagnostic.message.as_ref(), "boom");
+            assert_eq!(entry.diagnostic.severity, bc_diag::DiagnosticSeverity::Error);
+            assert_eq!(entry.diagnostic.source.as_deref(), Some("ty"));
+        });
+
+        // A second event replaces the set (reset + push, no accumulation).
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.handle_event(
+                bnote_core::AppEvent::new(
+                    "python-lsp-diagnostics",
+                    serde_json::json!({ "mdPath": abs, "diagnostics": [] }),
+                ),
+                cx,
+            )
+        });
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(ws.editor.read(cx).diagnostics().expect("a code editor").len(), 0);
+        });
     }
 
     /// The source list behind the IME tab is a platform call (a TIS
@@ -5534,6 +5799,7 @@ mod tests {
                 vim_bridge,
                 snippet_bridge,
                 services,
+                inert_lsp(),
                 window,
                 cx,
             )
@@ -5613,6 +5879,7 @@ mod tests {
                 vim_bridge,
                 snippet_bridge,
                 inert_ime(),
+                inert_lsp(),
                 window,
                 cx,
             );
@@ -5710,6 +5977,7 @@ mod tests {
                 vim_bridge,
                 snippet_bridge,
                 inert_ime(),
+                inert_lsp(),
                 window,
                 cx,
             );
@@ -5776,6 +6044,7 @@ mod tests {
                 vim_bridge,
                 snippet_bridge,
                 inert_ime(),
+                inert_lsp(),
                 window,
                 cx,
             );

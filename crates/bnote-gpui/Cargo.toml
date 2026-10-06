@@ -18,6 +18,8 @@ tokio.workspace = true
 # Multi-range edits go through the editor engine's LSP path (version must
 # match gpui-kit's so the types unify).
 lsp-types = { version = "0.97.0", features = ["proposed"] }
+# The kit's LSP provider hooks report through `anyhow::Result`.
+anyhow = "1"
 # Today's date for the daily note (local offset, no chrono).
 time = { version = "0.3", default-features = false, features = ["std", "local-offset"] }
 # Vault-wide markdown scan for the footprint core.

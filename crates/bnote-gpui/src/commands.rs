@@ -44,6 +44,8 @@ pub mod actions {
             OpenSettings,
             PythonRunNote,
             PythonRunStop,
+            PythonToggleLsp,
+            PythonCreateUvEnv,
         ]
     );
 }
@@ -95,4 +97,6 @@ pub const COMMANDS: &[CommandDef] = &[
     // 一样没有默认键位,只出现在命令面板。
     CommandDef { id: "python.run-note", label: "Python: 运行当前笔记", key: Some("cmd-enter") },
     CommandDef { id: "python.run-stop", label: "Python: 停止运行", key: None },
+    CommandDef { id: "python.toggle-lsp", label: "Python: 开/关当前项目的 ty 类型检查", key: None },
+    CommandDef { id: "python.create-uv-env", label: "Python: 为当前项目创建 uv 环境", key: None },
 ];

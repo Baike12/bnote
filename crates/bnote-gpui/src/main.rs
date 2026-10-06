@@ -13,6 +13,7 @@ mod daily_host;
 mod editor;
 mod footprint_host;
 mod ime_host;
+mod python_lsp;
 mod theme;
 mod workspace;
 
@@ -124,6 +125,7 @@ fn main() {
                         vim_bridge.clone(),
                         snippet_bridge.clone(),
                         ime_host::ImeServices::platform(),
+                        python_lsp::PyLspServices::platform(),
                         window,
                         cx,
                     )

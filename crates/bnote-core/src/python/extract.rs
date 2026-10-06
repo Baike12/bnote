@@ -222,6 +222,119 @@ fn is_js_ws(c: char) -> bool {
     c.is_whitespace()
 }
 
+// ---------------------------------------------------------------------------
+// LSP 行列映射
+//
+// TS 侧 CM 偏移与 LSP position 同为 UTF-16 code unit,可以直接相加;这里两边
+// 都不是:文档是 UTF-8(Rust 字节偏移),编辑器的 `Position.character` 是
+// Unicode 码点计数。所以中间要多两次换算,规则与 TS 完全一致:
+// 行号 0 基、列钳制到行内、越界行返回 None(调用方丢弃该条目)。
+// ---------------------------------------------------------------------------
+
+/// 文档的逐行字节起点(一次 O(n) 建好,之后每次换算只扫一行)。
+pub struct LineIndex {
+    /// 每行内容(不含 `\n`)的起始字节;最后一项是末行(可能为空)。
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub fn new(text: &str) -> Self {
+        let mut starts = vec![0usize];
+        for (at, byte) in text.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(at + 1);
+            }
+        }
+        Self { starts }
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.starts.len()
+    }
+
+    /// 该行的内容(`\n` 之前;TS 也按 `\n` 切,`\r` 留在内容里)。
+    pub fn line_text<'a>(&self, text: &'a str, line: usize) -> Option<&'a str> {
+        let start = *self.starts.get(line)?;
+        let end = self
+            .starts
+            .get(line + 1)
+            .map(|next| next.saturating_sub(1))
+            .unwrap_or(text.len());
+        text.get(start..end)
+    }
+
+    /// LSP 的 UTF-16 列 → 该行的码点列(钳到行尾)。
+    pub fn utf16_col_to_char_col(&self, text: &str, line: usize, utf16_col: usize) -> Option<usize> {
+        let line_text = self.line_text(text, line)?;
+        let mut units = 0usize;
+        let mut chars = 0usize;
+        for ch in line_text.chars() {
+            if units >= utf16_col {
+                break;
+            }
+            units += ch.len_utf16();
+            chars += 1;
+        }
+        Some(chars)
+    }
+
+    /// 码点列 → LSP 的 UTF-16 列(钳到行尾)。
+    pub fn char_col_to_utf16_col(&self, text: &str, line: usize, char_col: usize) -> Option<usize> {
+        let line_text = self.line_text(text, line)?;
+        Some(line_text.chars().take(char_col).map(char::len_utf16).sum())
+    }
+
+    /// (行, 码点列)→ 文档字节偏移。
+    pub fn offset_of(&self, text: &str, line: usize, char_col: usize) -> Option<usize> {
+        let start = *self.starts.get(line)?;
+        let line_text = self.line_text(text, line)?;
+        let mut offset = start;
+        for ch in line_text.chars().take(char_col) {
+            offset += ch.len_utf8();
+        }
+        Some(offset)
+    }
+}
+
+/// TS `mdPosToLspPosition`:markdown 光标字节偏移 → 虚拟文件的 LSP 位置。
+/// 行号天生对齐;列要剥掉围栏公共缩进(虚拟行 = markdown 行 slice 掉前缀),
+/// 光标落在被剥的前缀里时贴到列 0。不在 python 围栏内容行时返回 None
+/// (补全 / hover 的门)。
+pub fn md_offset_to_lsp_position(
+    text: &str,
+    index: &LineIndex,
+    eff: &PythonExtract,
+    byte_offset: usize,
+) -> Option<(u32, u32)> {
+    let mut byte_offset = byte_offset.min(text.len());
+    while byte_offset > 0 && !text.is_char_boundary(byte_offset) {
+        byte_offset -= 1;
+    }
+    let line = index
+        .starts
+        .partition_point(|start| *start <= byte_offset)
+        .saturating_sub(1);
+    let block = eff
+        .blocks
+        .iter()
+        .find(|b| line >= b.start_line && line <= b.end_line)?;
+    let line_start = index.starts[line];
+    let line_text = index.line_text(text, line)?;
+    // 字节偏移 → 该行的码点列。
+    let prefix = &text[line_start..byte_offset];
+    let char_col = prefix.chars().count();
+    let spaces = line_text.chars().take_while(|c| *c == ' ').count();
+    let strip = block.indent.min(spaces);
+    let char_col = char_col.saturating_sub(strip);
+    let utf16 = line_text
+        .chars()
+        .skip(strip)
+        .take(char_col)
+        .map(char::len_utf16)
+        .sum::<usize>();
+    Some((line as u32, utf16 as u32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +495,60 @@ mod tests {
             "10k 行提取 {:?}",
             started.elapsed()
         );
+    }
+
+    /// TS `lspPointToOffset` 的对应:行 0 基、列钳制到行内、越界行丢弃。
+    #[test]
+    fn the_line_index_maps_lsp_columns_like_the_ts() {
+        let text = "ab\n中文cd\nx\n";
+        let index = LineIndex::new(text);
+        assert_eq!(index.line_count(), 4, "末尾换行后还有一个空行");
+
+        assert_eq!(index.utf16_col_to_char_col(text, 0, 1), Some(1));
+        assert_eq!(index.offset_of(text, 0, 1), Some(1));
+        assert_eq!(index.offset_of(text, 1, 0), Some(3));
+        // 超出行长钳到行尾(「中文cd」是 4 个 BMP 字符 = 4 个 UTF-16 单元)。
+        assert_eq!(index.utf16_col_to_char_col(text, 1, 100), Some(4));
+        assert_eq!(index.offset_of(text, 1, 4), Some(3 + "中文cd".len()));
+        assert_eq!(index.utf16_col_to_char_col(text, 99, 0), None, "行越界");
+    }
+
+    /// 代理对(emoji)按 UTF-16 计数,与 LSP 一致。
+    #[test]
+    fn surrogate_pairs_count_as_two_utf16_units() {
+        let text = "a🎉b\n";
+        let index = LineIndex::new(text);
+        // 🎉 是 1 个码点 = 2 个 UTF-16 单元;a(1)+🎉(2)=3。
+        assert_eq!(index.utf16_col_to_char_col(text, 0, 3), Some(2));
+        assert_eq!(index.offset_of(text, 0, 2), Some(1 + '🎉'.len_utf8()));
+        assert_eq!(&text[1 + '🎉'.len_utf8()..][..1], "b");
+        // 反向:码点列 2 → UTF-16 列 3。
+        assert_eq!(index.char_col_to_utf16_col(text, 0, 2), Some(3));
+    }
+
+    /// TS `mdPosToLspPosition`:光标在 python 围栏内容行内才给位置,列剥掉
+    /// 围栏公共缩进;不在围栏里返回 None(补全 / hover 的门)。
+    #[test]
+    fn the_cursor_maps_into_the_virtual_file_only_inside_a_fence() {
+        let text = "- 项\n\n  ```python\n  for i in range(2):\n      print(i)\n  ```\n";
+        let eff = extract_python(text);
+        let index = LineIndex::new(text);
+
+        // 第 3 行(0 基)是 `  for i in range(2):`,围栏 indent = 2。
+        let line_start = index.offset_of(text, 3, 0).unwrap();
+        let position = md_offset_to_lsp_position(text, &index, &eff, line_start + 4);
+        assert_eq!(position, Some((3, 2)), "码点列 4 减掉围栏缩进 2");
+        // 光标落在被剥掉的前缀里:贴到列 0。
+        let position = md_offset_to_lsp_position(text, &index, &eff, line_start + 1);
+        assert_eq!(position, Some((3, 0)));
+
+        // 围栏外的行(第 0 行)没有位置。
+        assert_eq!(md_offset_to_lsp_position(text, &index, &eff, 0), None);
+        // 闭栏行也不在里面(block 的 end_line 是内容末行)。
+        let closing = index.offset_of(text, 5, 0).unwrap();
+        assert_eq!(md_offset_to_lsp_position(text, &index, &eff, closing), None);
+
+        // 文档末尾(超长偏移会被钳到末行)也不在围栏里,不 panic。
+        assert_eq!(md_offset_to_lsp_position(text, &index, &eff, 10_000), None);
     }
 }
