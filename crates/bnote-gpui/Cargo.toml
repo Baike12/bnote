@@ -32,3 +32,21 @@ gpui-kit = { path = "../../../gpui-kit/crates/kit", features = [
 # gpui is re-exported by gpui-kit, but this crate names it directly
 # (gpui-kit's own rename of Zed's gpui snapshot; version must match).
 gpui = { package = "gpui-pre", version = "=0.3.8" }
+# Live-preview images: decode bytes to a `RenderImage` on a background thread.
+# gpui's own bytes→bitmap helper is `pub(crate)`, and this is the same crate
+# (and version) gpui-pre already links; the features are exactly the formats
+# gpui-pre enables, so nothing extra gets compiled in.
+image = { version = "0.25.1", default-features = false, features = [
+    "bmp",
+    "gif",
+    "ico",
+    "jpeg",
+    "png",
+    "tiff",
+    "webp",
+] }
+
+[dev-dependencies]
+# Fixture images on disk for the loader tests (an in-memory fake would not
+# exercise the real read + decode path).
+tempfile = "3"

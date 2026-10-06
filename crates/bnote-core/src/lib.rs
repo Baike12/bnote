@@ -3,6 +3,7 @@ pub mod commands;
 pub mod daily;
 pub mod events;
 pub mod footprint;
+pub mod images;
 pub mod markdown;
 pub mod preview;
 pub mod python;
