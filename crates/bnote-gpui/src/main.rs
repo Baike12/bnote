@@ -6,6 +6,12 @@
 //! style live preview (hidden marks, embedded formula/image widgets) is the
 //! next milestone on the port roadmap.
 
+mod agent_panel;
+mod apply_ops;
+mod commands;
+mod daily_host;
+mod editor;
+mod footprint_host;
 mod workspace;
 
 use std::path::PathBuf;
@@ -17,7 +23,8 @@ use gpui::{
 };
 use gpui_kit::assets::Assets;
 use gpui_kit::component::theme::{Theme, ThemeMode};
-use workspace::{Workspace, actions};
+use editor::vim::integration::VimBridge;
+use workspace::{Workspace, keybinding_for};
 
 /// bnote keeps its own config under the standard app-data dir, shared with the
 /// Tauri shell (same `config.json`, so both shells agree on the last vault).
@@ -36,10 +43,13 @@ fn main() {
             // palette from src/styles/global.css lands with the theme port.
             Theme::change(ThemeMode::Dark, None, cx);
 
-            cx.bind_keys([
-                KeyBinding::new("cmd-s", actions::Save, None),
-                KeyBinding::new("cmd-p", actions::QuickOpen, None),
-            ]);
+            // Every registry command gets its default keybinding; overrides
+            // from keybindings.json arrive with the settings port.
+            let bindings: Vec<KeyBinding> = commands::COMMANDS
+                .iter()
+                .filter_map(|def| keybinding_for(def.id, def.key))
+                .collect();
+            cx.bind_keys(bindings);
 
             let (state, rx) = AppState::new(data_dir());
 
@@ -65,9 +75,22 @@ fn main() {
                 ..Default::default()
             };
 
+            // One app-wide vim bridge; the workspace attaches the editor on
+            // ⌘⇧V (bnote's default: off).
+            let vim_bridge = VimBridge::init(cx);
+
             let vault_for_window = last_vault.map(PathBuf::from);
             let _ = gpui_kit::open_window(options, cx, move |window, cx| {
-                cx.new(|cx| Workspace::new(state.clone(), rx.resubscribe(), vault_for_window.clone(), window, cx))
+                cx.new(|cx| {
+                    Workspace::new(
+                        state.clone(),
+                        rx.resubscribe(),
+                        vault_for_window.clone(),
+                        vim_bridge.clone(),
+                        window,
+                        cx,
+                    )
+                })
             });
 
             cx.activate(true);

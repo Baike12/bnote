@@ -14,6 +14,14 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
+# Multi-range edits go through the editor engine's LSP path (version must
+# match gpui-kit's so the types unify).
+lsp-types = { version = "0.97.0", features = ["proposed"] }
+# Today's date for the daily note (local offset, no chrono).
+time = { version = "0.3", default-features = false, features = ["std", "local-offset"] }
+# Vault-wide markdown scan for the footprint core.
+walkdir = "2"
+
 # gpui-kit from the sibling checkout so engine fixes can be made locally;
 # switch to `gpui-kit = "0.7"` once upstream carries what we need.
 gpui-kit = { path = "../../../gpui-kit/crates/kit", features = [
