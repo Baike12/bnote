@@ -54,6 +54,10 @@ pub enum Motion {
     Mark { name: char, exact: bool },
     /// `n` / `N` over `VimState::last_search`.
     SearchNext { forward: bool },
+    /// `<C-d>`/`<C-u>` (half page) and `<C-f>`/`<C-b>` (full page): scroll the
+    /// cursor a page's worth of visible lines, keeping its column. The host
+    /// reveals the cursor, which is what scrolls the view.
+    Page { forward: bool, half: bool },
 }
 
 /// Host-provided viewport for `H`/`M`/`L` (first and last visible line
@@ -127,6 +131,14 @@ pub fn move_point(
             Moved::at(pos)
         }
         Motion::Down | Motion::Up => vertical_move(doc, state, motion == Motion::Down, count, cursor)?,
+        Motion::Page { forward, half } => {
+            let span = viewport
+                .last_line
+                .saturating_sub(viewport.first_line)
+                .saturating_add(1);
+            let step = (if half { (span + 1) / 2 } else { span }).max(1);
+            vertical_move(doc, state, forward, step as u32 * count, cursor)?
+        }
         Motion::NextWordStart { big } => {
             let mut pos = cursor;
             for _ in 0..count {

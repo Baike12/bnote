@@ -58,6 +58,9 @@ pub mod actions {
             ZoomOut,
             ZoomReset,
             OpenSettings,
+            CloseWindow,
+            SaveNoteAndClose,
+            ClearSearchHighlight,
             PythonRunNote,
             PythonRunStop,
             PythonToggleLsp,
@@ -177,6 +180,16 @@ pub const COMMANDS: &[CommandDef] = &[
         actions::ToggleStudyMode
     ),
     command!("workspace.open-settings", "设置", Some("cmd-,"), actions::OpenSettings),
+    // `:q` / `:wq` 的目标(TS 同款 id);两者都没有默认键位。
+    command!("workspace.close-window", "关闭窗口", None, actions::CloseWindow),
+    command!("workspace.save-note-and-close", "保存并关闭窗口", None, actions::SaveNoteAndClose),
+    // 搜索本身未移植:命令在位(键位文件可移植),执行时如实说明。
+    command!(
+        "editor.clear-search-highlight",
+        "清除搜索高亮",
+        None,
+        actions::ClearSearchHighlight
+    ),
     // Python: ⌘↩ 跑整篇笔记的虚拟 py 文件(TS `python.run-note`);停止像 TS
     // 一样没有默认键位,只出现在命令面板。
     command!("python.run-note", "Python: 运行当前笔记", Some("cmd-enter"), actions::PythonRunNote),

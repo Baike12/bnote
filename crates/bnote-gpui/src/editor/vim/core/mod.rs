@@ -11,7 +11,7 @@ pub mod state;
 
 #[allow(unused_imports)] // re-exported for adapters/benches
 pub use doc::VimText;
-pub use exec::feed;
+pub use exec::{feed, feed_apply};
 pub use ops::{HostContext, HostIntent, Outcome};
 pub use key::Key;
 pub use motion::Viewport;

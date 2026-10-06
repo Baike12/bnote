@@ -972,6 +972,22 @@ impl Workspace {
         // is also the one that pushes them into gpui — every edit re-applies.
         keybindings::apply(cx, &key_overrides);
 
+        // A vimrc mapping that names a command the shell does not have says
+        // so in the status line instead of failing silently.
+        {
+            let weak = cx.weak_entity();
+            workspace.vim_bridge.clone().set_message_observer(move |message, cx| {
+                weak.update(cx, |this, cx| {
+                    this.status = message;
+                    cx.notify();
+                })
+                .ok();
+            });
+        }
+        // The global vimrc is per-app, not per-vault: load it even before a
+        // vault is open (the vault one joins when the vault does).
+        workspace.load_vimrc(cx);
+
         // Restore the vault off the main thread, then build the tree.
         if let Some(vault) = last_vault {
             workspace.restore_vault(vault, cx);
@@ -1070,6 +1086,9 @@ impl Workspace {
                     // The vault snippet source changed on disk: reload it (the
                     // Tauri shell hot-reloads the same file on save).
                     self.load_vault_snippets(cx);
+                }
+                if paths.iter().any(|p| p.ends_with(".bnote/vimrc")) {
+                    self.load_vimrc(cx);
                 }
                 if let Some(fp) = &self.footprint {
                     fp.note_dirty(&paths);
@@ -1242,6 +1261,7 @@ impl Workspace {
         self.preview.images().set_vault_root(root.clone());
         self.preview.images().set_doc_dir(None);
         self.load_vault_snippets(cx);
+        self.load_vimrc(cx);
         self.daily = Some(Arc::new(DailyHost::new(self.state.clone(), &root)));
         let fp = Arc::new(FootprintHost::new(&root));
         self.footprint = Some(fp.clone());
@@ -1251,6 +1271,50 @@ impl Workspace {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Load `vimrc` mappings: the global file in the app-data dir first, then
+    /// the vault's `.bnote/vimrc` (which wins for the same mode + lhs) — the
+    /// Tauri shell's `loadVimrc` order. Unparsable lines are reported in the
+    /// status line rather than dropped silently.
+    fn load_vimrc(&mut self, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        let root = self.vault_root.clone();
+        let bridge = self.vim_bridge.clone();
+        cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_executor()
+                .spawn(async move {
+                    let global = bnote_core::commands::config::read_vimrc(&state)
+                        .ok()
+                        .flatten();
+                    let vault = root
+                        .map(|root| root.join(".bnote").join("vimrc"))
+                        .and_then(|path| std::fs::read_to_string(path).ok());
+                    (global, vault)
+                })
+                .await;
+            let report = bridge.set_vimrc(read.0.as_deref(), read.1.as_deref());
+            this.update(cx, |this, cx| {
+                for error in &report.errors {
+                    eprintln!("[vimrc] {error}");
+                }
+                this.status = if report.mappings == 0 && report.errors.is_empty() {
+                    this.status.clone()
+                } else if report.errors.is_empty() {
+                    format!("vimrc:{} 条映射", report.mappings)
+                } else {
+                    format!(
+                        "vimrc:{} 条映射,{} 行未识别(见控制台)",
+                        report.mappings,
+                        report.errors.len()
+                    )
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Read `<vault>/.bnote/snippets.js` and, when it yields snippet
@@ -3733,6 +3797,34 @@ impl Workspace {
         self.zoom(FONT_SIZE_DEFAULT, window, cx);
     }
 
+    /// TS `workspace.close-window`: close the window. The close path flushes
+    /// the caret and a dirty buffer synchronously, so `:q` never loses an
+    /// edit; `:wq` is the same call (TS writes first, the flush is the write).
+    fn close_window(&mut self, _: &actions::CloseWindow, window: &mut Window, _: &mut Context<Self>) {
+        window.remove_window();
+    }
+
+    fn save_note_and_close(
+        &mut self,
+        _: &actions::SaveNoteAndClose,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        window.remove_window();
+    }
+
+    /// TS `editor.clear-search-highlight`. The search bar is not ported, so
+    /// the command says so instead of pretending.
+    fn clear_search_highlight(
+        &mut self,
+        _: &actions::ClearSearchHighlight,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.status = "搜索功能尚未移植,没有高亮可清除".to_string();
+        cx.notify();
+    }
+
     /// `settings.autoSave`: the 0.8 s autosave only runs while it is on; ⌘S
     /// always writes (TS keeps the same split).
     fn set_auto_save(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -5715,6 +5807,9 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
+            .on_action(cx.listener(Self::close_window))
+            .on_action(cx.listener(Self::save_note_and_close))
+            .on_action(cx.listener(Self::clear_search_highlight))
             // Dragging a file onto the window opens it in the study pane (TS
             // `ContentPane`'s `onDragDropEvent`); a PDF converts first.
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
@@ -6373,6 +6468,185 @@ mod tests {
             ws.insert_wikilink_pick("b.md", window, cx);
             assert_eq!(ws.editor.read(cx).value(), "正文[[a]]\n");
             assert!(!ws.link_suggest);
+        });
+    }
+
+    /// Typing a snippet trigger expands it through the real keystroke path:
+    /// the snippet bridge is registered as an interceptor, and a dropped
+    /// subscription there would leave the whole LaTeX-suite feature dead
+    /// (the same bug class the vim bridge had).
+    #[gpui::test]
+    fn typed_snippet_triggers_expand_through_the_keystroke_path(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.editor.update(cx, |st, cx| {
+                st.set_value("$$", window, cx);
+                // Between the two `$`: inside inline math, where `pa` expands.
+                st.set_selected_range(1..1, cx);
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let window = cx.update(|window, _| window.window_handle());
+        for c in "pa".chars() {
+            let key = c.to_string();
+            cx.dispatch_keystroke(
+                window,
+                gpui::Keystroke {
+                    modifiers: Default::default(),
+                    key: key.clone(),
+                    key_char: Some(key),
+                },
+            );
+        }
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(
+                ws.editor.read(cx).value(),
+                "$\\partial$",
+                "`pa` expanded to \\partial (the typed prefix was replaced)"
+            );
+        });
+    }
+
+    /// The vimrc round trip through the real keystroke path: `imap jj <Esc>`
+    /// leaves insert, `noremap r $` moves to the line end, a held prefix that
+    /// cannot complete is flushed by the timeout, command mappings run their
+    /// action, and an unknown command id is reported instead of vanishing.
+    #[gpui::test]
+    fn vimrc_mappings_run_through_the_keystroke_path(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.set_vim_setting(true, cx);
+            ws.editor.update(cx, |st, cx| {
+                st.set_value("第一行\n第二行\n第三行\n", window, cx);
+                st.set_selected_range(0..0, cx);
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let window = cx.update(|window, _| window.window_handle());
+        // Printable keys must carry `key_char` — the vim adapter reads them
+        // from there, and the platform only sets it for real typing.
+        let press = |cx: &mut gpui::VisualTestContext, text: &str| {
+            for c in text.chars() {
+                let key = c.to_string();
+                cx.dispatch_keystroke(
+                    window,
+                    gpui::Keystroke {
+                        modifiers: Default::default(),
+                        key: key.clone(),
+                        key_char: Some(key),
+                    },
+                );
+            }
+        };
+        let chord = |cx: &mut gpui::VisualTestContext, text: &str| {
+            let ks = gpui::Keystroke::parse(text).expect("a keystroke");
+            cx.dispatch_keystroke(window, ks);
+        };
+        let mode = |cx: &mut gpui::VisualTestContext| {
+            workspace.read_with(cx, |ws, _| ws.vim_bridge.mode_of(&ws.editor))
+        };
+
+        // A vimrc with the shapes the owner's own file uses.
+        workspace.read_with(cx, |ws, _| {
+            let report = ws.vim_bridge.set_vimrc(
+                Some(
+                    "imap jj <Esc>\n\
+                     noremap r $\n\
+                     noremap q 0\n\
+                     nnoremap J <C-d>\n\
+                     nmap <C-s> :w<CR>\n\
+                     nmap <C-e> :Bnote nav.toggle-sidebar<CR>\n\
+                     nmap <C-g> :Nope<CR>\n",
+                ),
+                None,
+            );
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            // `noremap` covers normal + visual, so it counts twice.
+            assert_eq!(report.mappings, 9, "one per mode the command covers");
+        });
+
+        eprintln!(
+            "[debug] attached mode = {:?}, focused = {}",
+            workspace.read_with(cx, |ws, _| ws.vim_bridge.mode_of(&ws.editor)),
+            cx.update(|window, cx| workspace.read(cx).editor.read(cx).focus_handle(cx).is_focused(window))
+        );
+        // `i` enters insert; `jj` leaves it without typing anything.
+        press(cx, "i");
+        assert_eq!(mode(cx), Some(crate::editor::vim::core::Mode::Insert));
+        press(cx, "jj");
+        assert_eq!(mode(cx), Some(crate::editor::vim::core::Mode::Normal));
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(ws.editor.read(cx).value(), "第一行\n第二行\n第三行\n");
+        });
+
+        // A lone `j` in insert mode is held, then flushed by the timeout
+        // (parking advances the clock to it): the character lands and the
+        // mode stays insert.
+        press(cx, "i");
+        press(cx, "j");
+        cx.executor().advance_clock(std::time::Duration::from_millis(1200));
+        cx.run_until_parked();
+        assert_eq!(mode(cx), Some(crate::editor::vim::core::Mode::Insert));
+        workspace.read_with(cx, |ws, cx| {
+            assert!(
+                ws.editor.read(cx).value().contains('j'),
+                "the timeout replayed the held key: {}",
+                ws.editor.read(cx).value()
+            );
+        });
+        chord(cx, "escape");
+
+        // `noremap r $`: `r` is a complete mapping, so it fires at once and
+        // the cursor lands at the line end.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.editor.update(cx, |st, cx| st.set_selected_range(0..0, cx));
+        });
+        press(cx, "r");
+        workspace.read_with(cx, |ws, cx| {
+            let cursor = ws.editor.read(cx).cursor();
+            let text = ws.editor.read(cx).value().to_string();
+            assert!(
+                text[cursor..].starts_with("行\n"),
+                "the cursor sits on the line's last char: {:?}",
+                &text[cursor..]
+            );
+        });
+
+        // A normal-mode `x` is not a prefix of anything: it deletes a char.
+        press(cx, "x");
+        workspace.read_with(cx, |ws, cx| {
+            assert!(
+                !ws.editor.read(cx).value().contains("第一行"),
+                "x reached the engine: {}",
+                ws.editor.read(cx).value()
+            );
+        });
+
+        // The command mappings: `:w` saves, `:Bnote …` toggles the sidebar,
+        // an unknown id lands in the status line.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.open_path = Some("note.md".to_string());
+            ws.dirty = true;
+        });
+        chord(cx, "ctrl-s");
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert!(!ws.dirty, "⌃S ran workspace.save-note: {}", ws.status);
+        });
+        let sidebar_before = workspace.read_with(cx, |ws, _| ws.sidebar_open);
+        chord(cx, "ctrl-e");
+        workspace.read_with(cx, |ws, _| {
+            assert_ne!(ws.sidebar_open, sidebar_before, "⌃E ran the mapped command");
+        });
+        chord(cx, "ctrl-g");
+        workspace.read_with(cx, |ws, _| assert_eq!(ws.status, "vimrc: 未知命令 Nope"));
+
+        // And the mappings can be cleared again (an empty vimrc).
+        workspace.read_with(cx, |ws, _| {
+            let report = ws.vim_bridge.set_vimrc(Some(""), None);
+            assert_eq!(report.mappings, 0);
+            assert!(!ws.vim_bridge.has_mappings());
         });
     }
 

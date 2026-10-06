@@ -17,14 +17,10 @@ pub enum Key {
     Down,
     Left,
     Right,
-    /// `<C-r>` (redo) — only meaningful without other modifiers.
-    CtrlR,
-    /// `<C-a>` / `<C-x>` numeric increment/decrement.
-    CtrlA,
-    CtrlX,
-    /// `<C-o>` (jump list back in insert mode) is not implemented in v1;
-    /// reserved so the adapter can route it explicitly.
-    CtrlO,
+    /// `<C-r>` (redo), `<C-a>`/`<C-x>` (numeric increment/decrement),
+    /// `<C-o>` (jump list back): the ones the engine acts on. Any other
+    /// ctrl chord rides in [`Key::Ctrl`] so `vimrc` mappings can bind it.
+    Ctrl(char),
 }
 
 impl Key {

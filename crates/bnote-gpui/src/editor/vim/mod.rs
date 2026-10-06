@@ -107,6 +107,7 @@
 
 pub mod adapter;
 pub mod core;
+pub mod vimrc;
 pub mod integration;
 pub mod tests;
 

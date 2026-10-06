@@ -19,6 +19,23 @@ use super::state::{
 /// Feed one key. `state` carries mode, pending sequence, registers, …;
 /// `doc` is the current text; `ctx` the host snapshot. This is the ONLY
 /// entry point the host needs.
+/// Feed one key and write the planned mode back into the state.
+///
+/// This is the whole host protocol in one call: `feed` only *plans* the mode
+/// change (`Execution.mode_after`), and a host that forgets to apply it leaves
+/// the engine in the old mode — every later key is then interpreted in the
+/// wrong mode. The engine's tests did the write-back by hand, which is exactly
+/// how the shell came to miss it.
+pub fn feed_apply(state: &mut VimState, doc: &dyn VimText, key: Key, ctx: &HostContext) -> Outcome {
+    let outcome = feed(state, doc, key, ctx);
+    if let Outcome::Executed(exec) = &outcome {
+        if let Some(mode) = exec.mode_after {
+            state.mode = mode;
+        }
+    }
+    outcome
+}
+
 pub fn feed(state: &mut VimState, doc: &dyn VimText, key: Key, ctx: &HostContext) -> Outcome {
     match state.mode {
         Mode::Insert => feed_insert(state, doc, key, ctx),
@@ -793,16 +810,16 @@ fn special_key(
         Key::Down => motion_command(state, doc, ctx, Motion::Down, count.unwrap_or(1)),
         Key::Left => motion_command(state, doc, ctx, Motion::Left, count.unwrap_or(1)),
         Key::Right => motion_command(state, doc, ctx, Motion::Right, count.unwrap_or(1)),
-        Key::CtrlR => finish(
+        Key::Ctrl('r') => finish(
             state,
             Execution::default().with_intent(HostIntent::Redo),
             false,
         ),
-        Key::CtrlA => match increment(doc, ctx.cursor, count.unwrap_or(1) as i64) {
+        Key::Ctrl('a') => match increment(doc, ctx.cursor, count.unwrap_or(1) as i64) {
             Some(execution) => finish(state, execution, true),
             None => failed(state),
         },
-        Key::CtrlX => match increment(doc, ctx.cursor, -(count.unwrap_or(1) as i64)) {
+        Key::Ctrl('x') => match increment(doc, ctx.cursor, -(count.unwrap_or(1) as i64)) {
             Some(execution) => finish(state, execution, true),
             None => failed(state),
         },
@@ -813,7 +830,7 @@ fn special_key(
                 abort(state)
             }
         }
-        Key::CtrlO => match state.jumplist.back(1, doc.len()) {
+        Key::Ctrl('o') => match state.jumplist.back(1, doc.len()) {
             Some(pos) => finish(
                 state,
                 Execution::default()
@@ -823,6 +840,18 @@ fn special_key(
             ),
             None => failed(state),
         },
+        Key::Ctrl('d') => motion_command(
+            state, doc, ctx, Motion::Page { forward: true, half: true }, count.unwrap_or(1),
+        ),
+        Key::Ctrl('u') => motion_command(
+            state, doc, ctx, Motion::Page { forward: false, half: true }, count.unwrap_or(1),
+        ),
+        Key::Ctrl('f') => motion_command(
+            state, doc, ctx, Motion::Page { forward: true, half: false }, count.unwrap_or(1),
+        ),
+        Key::Ctrl('b') => motion_command(
+            state, doc, ctx, Motion::Page { forward: false, half: false }, count.unwrap_or(1),
+        ),
         Key::Tab => Outcome::Unhandled,
         _ => Outcome::Unhandled,
     }

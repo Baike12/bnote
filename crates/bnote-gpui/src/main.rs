@@ -31,11 +31,13 @@ use editor::snippets_host::SnippetBridge;
 use editor::vim::integration::VimBridge;
 use workspace::Workspace;
 
-/// bnote keeps its own config under the standard app-data dir, shared with the
-/// Tauri shell (same `config.json`, so both shells agree on the last vault).
+/// The Tauri shell's app-data dir: macOS derives it from the bundle
+/// identifier (`src-tauri/tauri.conf.json`), which is `com.bnote.app`. Both
+/// shells therefore share one `config.json` (last vault, theme, settings),
+/// `keybindings.json`, `vimrc` and `agent.json`.
 fn data_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join("Library/Application Support/bnote")
+    PathBuf::from(home).join("Library/Application Support/com.bnote.app")
 }
 
 /// The `settings.theme` the Tauri shell writes ("dark" | "light"), dark by
@@ -43,7 +45,7 @@ fn data_dir() -> PathBuf {
 fn theme_mode() -> ThemeMode {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let path = PathBuf::from(home)
-        .join("Library/Application Support/bnote")
+        .join("Library/Application Support/com.bnote.app")
         .join("config.json");
     let mode = std::fs::read_to_string(path)
         .ok()

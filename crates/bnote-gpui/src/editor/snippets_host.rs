@@ -918,11 +918,13 @@ impl SnippetBridge {
     pub fn init(cx: &mut App) -> Self {
         let bridge = Self { attachments: Rc::new(RefCell::new(Vec::new())) };
         let this = bridge.clone();
-        // The subscription lives as long as the app; the bridge itself is held
-        // by the caller.
-        let _subscription = cx.intercept_keystrokes(move |event, window, cx| {
+        // The interceptor lives as long as the app: dropping the returned
+        // `Subscription` would unsubscribe immediately (its `Drop` runs the
+        // unsubscribe closure), and this function is where that would happen.
+        cx.intercept_keystrokes(move |event, window, cx| {
             this.on_keystroke(&event.keystroke, window, cx);
-        });
+        })
+        .detach();
         bridge
     }
 
