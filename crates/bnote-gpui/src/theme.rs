@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use gpui::{App, Global, Hsla, SharedString, rgba};
+use gpui_kit::component::highlighter::{HighlightTheme, HighlightThemeStyle};
 use gpui_kit::component::theme::{Theme, ThemeMode};
 
 pub const DARK: &[(&str, &str)] = &[
@@ -396,9 +397,69 @@ pub fn apply(mode: ThemeMode, cx: &mut App) {
         theme.mono_font_family = mono;
         theme.font_size = gpui::px(font_size);
         theme.mono_font_size = gpui::px(font_size * 0.95);
+        // Syntax highlighting: the editor resolves tree-sitter captures
+        // through this theme, so each capture gets the colour its TS class
+        // used.
+        theme.highlight_theme = std::sync::Arc::new(highlight_theme(palette, mode));
     });
 
     cx.set_global(ActivePalette(palette));
+}
+
+/// bnote's syntax highlighting, built from the same palette.
+///
+/// The TS shell coloured markdown through its own classes (`md-hmark`,
+/// `md-inline-code`, `md-link`, …); the GPUI editor highlights through
+/// tree-sitter captures, so each capture the engine's queries use gets the
+/// variable its TS class used. The captures are those of the engine's
+/// `markdown` / `markdown_inline` queries
+/// (`crates/component/src/highlighter/languages/…/highlights.scm`).
+///
+/// Names outside the engine's 41-slot table fall back to their `.` prefix
+/// (`keyword.function` → `keyword`), so this only needs the top-level names.
+pub fn highlight_theme(palette: &Palette, appearance: ThemeMode) -> HighlightTheme {
+    use gpui_kit::component::highlighter::{SyntaxColors, ThemeStyle};
+
+    let text = palette.color("text");
+    let faint = palette.color("text-faint");
+    let link = palette.color("link");
+    let strong = palette.color("strong-color");
+    let syntax = SyntaxColors {
+        // `#` runs, quote markers and setext underlines (TS `md-hmark`'s dim).
+        punctuation_special: Some(ThemeStyle::color(faint)),
+        // ``` fences and the emphasis/code-span delimiters.
+        punctuation_delimiter: Some(ThemeStyle::color(faint)),
+        // List markers and `---` (TS `md-listmark`).
+        punctuation_list_marker: Some(ThemeStyle::color(faint)),
+        // Heading text. The capture carries no level, so this is the body
+        // colour in bold; the live-preview heading marks paint the per-level
+        // colour on top.
+        title: Some(ThemeStyle::color(text).bold()),
+        // Fenced-code bodies keep the body colour (their background is a line
+        // style).
+        text_literal: Some(ThemeStyle::color(text)),
+        // `[label](url)` (TS `md-link` / `md-url`).
+        link_text: Some(ThemeStyle::color(link)),
+        link_uri: Some(ThemeStyle::color(link)),
+        // Inline code spans (TS `md-inline-code`, `--tok-number`).
+        text_code_span: Some(ThemeStyle::color(palette.token("number"))),
+        // `\x` escapes render as plain text in the TS.
+        string_escape: Some(ThemeStyle::color(text)),
+        // `*x*` / `**x**` (TS `md-em` / `md-strong`).
+        emphasis: Some(ThemeStyle::color(strong).italic()),
+        emphasis_strong: Some(ThemeStyle::color(strong).bold()),
+        ..Default::default()
+    };
+    HighlightTheme {
+        name: "bnote".to_string(),
+        appearance,
+        style: HighlightThemeStyle {
+            // The current-line shade (TS `.cm-activeLine { background: var(--sel) }`).
+            editor_active_line: Some(palette.color("sel")),
+            syntax,
+            ..Default::default()
+        },
+    }
 }
 
 /// The first of [`FONT_MONO_CANDIDATES`] the machine has installed, resolved
@@ -592,5 +653,74 @@ mod tests {
         assert!(parse_color("#ffffffbb").is_some());
         assert!(parse_color("rgba(255, 255, 255, 0.22)").is_some());
         assert!(parse_color("nope").is_none());
+    }
+
+    /// Every capture name the engine's markdown queries can produce resolves
+    /// to a style. The names come from `crates/component/src/highlighter/
+    /// languages/{markdown,markdown_inline}/highlights.scm`; a name left out
+    /// renders as plain text with no visible error.
+    #[test]
+    fn every_markdown_capture_resolves() {
+        let theme = highlight_theme(Palette::dark(), ThemeMode::Dark);
+        for capture in [
+            // markdown/highlights.scm
+            "title",
+            "punctuation.special",
+            "text.literal",
+            "punctuation.delimiter",
+            "link_uri",
+            "link_text",
+            "punctuation.list_marker",
+            "string.escape",
+            // markdown_inline/highlights.scm
+            "text.code.span",
+            "emphasis",
+            "emphasis.strong",
+        ] {
+            assert!(
+                theme.style.syntax.style(capture).is_some(),
+                "{capture} has no style"
+            );
+        }
+    }
+
+    /// The syntax colours are the same palette variables the TS classes used.
+    #[test]
+    fn the_highlight_theme_maps_the_markdown_captures() {
+        let palette = Palette::dark();
+        let theme = highlight_theme(palette, ThemeMode::Dark);
+        let style = |name: &str| theme.style.syntax.style(name).expect(name);
+        assert_eq!(style("title").color, Some(palette.color("text")));
+        assert_eq!(style("title").font_weight, Some(gpui::FontWeight::BOLD));
+        assert_eq!(
+            style("punctuation.special").color,
+            Some(palette.color("text-faint"))
+        );
+        assert_eq!(
+            style("punctuation.list_marker").color,
+            Some(palette.color("text-faint"))
+        );
+        assert_eq!(style("text.literal").color, Some(palette.color("text")));
+        assert_eq!(style("link_text").color, Some(palette.color("link")));
+        assert_eq!(style("link_uri").color, Some(palette.color("link")));
+        assert_eq!(
+            style("text.code.span").color,
+            Some(palette.token("number"))
+        );
+        assert_eq!(style("string.escape").color, Some(palette.color("text")));
+        assert_eq!(
+            style("emphasis").color,
+            Some(palette.color("strong-color"))
+        );
+        assert_eq!(style("emphasis").font_style, Some(gpui::FontStyle::Italic));
+        assert_eq!(
+            style("emphasis.strong").font_weight,
+            Some(gpui::FontWeight::BOLD)
+        );
+        // The current-line shade rides the highlight theme, not the colours.
+        assert_eq!(
+            theme.style.editor_active_line,
+            Some(palette.color("sel"))
+        );
     }
 }
