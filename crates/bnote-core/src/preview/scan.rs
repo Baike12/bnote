@@ -31,7 +31,7 @@ mod blocks;
 mod geom;
 mod inline;
 
-use crate::preview::{BlockKind, PreviewSnapshot, ScanInput, Widget};
+use crate::preview::{BlockKind, PanelKind, PreviewSnapshot, ScanInput, Widget};
 
 use blocks::{ListKind, Statics};
 use geom::{line_of, Activity, Sink, Window};
@@ -49,10 +49,11 @@ pub fn scan(input: ScanInput<'_>) -> PreviewSnapshot {
     // line-range look, not a replacement, and are emitted first: they are not
     // caret-gated and must not be lost to a block's refusal.
     emit_callout_panels(&statics, &mut sink);
+    emit_style_panels(&statics, &act, &mut sink);
     emit_fence_lines(&statics, &act, &mut sink);
     emit_callout_edges(&statics, &act, &mut sink);
     emit_rules(&statics, &act, &mut sink);
-    emit_math_blocks(&statics, &act, &mut sink);
+    emit_math_blocks(&statics, &act, &mut sink, input.math_preview);
 
     let inline = inline::Inline {
         text: input.text,
@@ -65,6 +66,51 @@ pub fn scan(input: ScanInput<'_>) -> PreviewSnapshot {
     }
 
     sink.finish()
+}
+
+/// Fenced-code body lines and blockquote lines get their container look from
+/// panels (TS `md-code-line` / `md-quote`):
+///
+/// - a code body is styled only while the caret is **outside** the whole
+///   block (TS calls `decorateFencedCodeLines` under `!active(node)`), so the
+///   panel covers `open + 1 ..= close - 1` (or to the end when unclosed);
+/// - a quote line is styled only while it is **inactive** (TS checks the line
+///   against the selections), so a region is emitted as maximal runs of
+///   consecutive styled lines at the same nesting depth.
+fn emit_style_panels(statics: &Statics, act: &Activity, sink: &mut Sink) {
+    let last_line = statics.lines.len().saturating_sub(1);
+    for fence in &statics.fences {
+        if act.touches(fence.from, fence.to) {
+            continue;
+        }
+        let first = fence.open_line + 1;
+        let last = fence
+            .close_line
+            .map(|close| close.saturating_sub(1))
+            .unwrap_or(last_line);
+        if first <= last {
+            sink.panel(first, last, PanelKind::CodeBlock);
+        }
+    }
+
+    // Quote runs: one panel per maximal run of quoted, inactive lines.
+    let mut run: Option<(usize, usize)> = None; // (first, last)
+    for n in 0..=last_line {
+        let (line_from, line_to) = statics.lines[n];
+        let styled = !statics.info[n].quotes.is_empty() && !act.line_active(line_from, line_to);
+        match (styled, run) {
+            (true, Some((first, _))) => run = Some((first, n)),
+            (true, None) => run = Some((n, n)),
+            (false, Some((first, last))) => {
+                sink.panel(first, last, PanelKind::Blockquote);
+                run = None;
+            }
+            (false, None) => {}
+        }
+    }
+    if let Some((first, last)) = run {
+        sink.panel(first, last, PanelKind::Blockquote);
+    }
 }
 
 /// Fence lines of fenced-code blocks: the whole line is **removed** (not just
@@ -100,9 +146,11 @@ fn emit_callout_panels(statics: &Statics, sink: &mut Sink) {
         sink.panel(
             open,
             close.min(last_line),
-            region.depth.min(u8::MAX as usize) as u8,
-            open,
-            region.closed.then_some(close),
+            PanelKind::Callout {
+                depth: region.depth.min(u8::MAX as usize) as u8,
+                open_line: open,
+                close_line: region.closed.then_some(close),
+            },
         );
     }
 }
@@ -159,15 +207,34 @@ fn emit_rules(statics: &Statics, act: &Activity, sink: &mut Sink) {
     }
 }
 
-/// Multi-line display maths: one `PreviewBlock` per region while the caret is
-/// outside it (TS 302-337; the caret-inside live preview widget is not
-/// ported — source stays visible).
-fn emit_math_blocks(statics: &Statics, act: &Activity, sink: &mut Sink) {
+/// Multi-line display maths (TS 302-337):
+///
+/// - caret outside → one replacement `PreviewBlock` for the whole region;
+/// - caret inside → the source stays (nothing is hidden), and when the
+///   `mathPreview` setting is on and the block has content, a **live-rendered
+///   copy is inserted right below it** (the TS `MathPreviewWidget`). The
+///   insertion is anchored at the start of the line after the region — or at
+///   the very end of the document when the region is the last one, which is
+///   the `at_line == line count` boundary case of [`Sink::insert`].
+fn emit_math_blocks(statics: &Statics, act: &Activity, sink: &mut Sink, math_preview: bool) {
     for &i in &statics.math_blocks {
         let region = &statics.math[i];
         let first = line_of(&statics.lines, region.from);
         let last = line_of(&statics.lines, region.to.saturating_sub(1));
         if act.touches(region.from, region.to) {
+            if math_preview && !region.content.trim().is_empty() {
+                let anchor = if last + 1 < statics.lines.len() {
+                    last + 1
+                } else {
+                    statics.lines.len()
+                };
+                sink.insert(
+                    anchor,
+                    BlockKind::MathPreview {
+                        tex: region.content.clone(),
+                    },
+                );
+            }
             continue;
         }
         sink.block(

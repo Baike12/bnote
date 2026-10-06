@@ -4,7 +4,9 @@
 
 use std::ops::Range;
 
-use crate::preview::{BlockKind, PreviewPanel, PreviewSnapshot, PreviewSpanKind, ScanInput, Widget};
+use crate::preview::{
+    BlockKind, PanelKind, PreviewPanel, PreviewSnapshot, PreviewSpanKind, ScanInput, Widget,
+};
 
 use super::scan;
 
@@ -22,6 +24,7 @@ fn snapshot_visible(text: &str, carets: &[usize], visible: Range<usize>) -> Prev
         text,
         selections: &selections,
         visible,
+        math_preview: true,
     })
 }
 
@@ -101,14 +104,24 @@ fn assert_invariants(text: &str, snap: &PreviewSnapshot) {
     }
     let mut prev_last: Option<usize> = None;
     for b in &snap.blocks {
-        assert!(b.first_line <= b.last_line, "inverted block: {b:?}");
-        if let Some(prev) = prev_last {
-            assert!(
-                b.first_line > prev,
-                "blocks overlap or are unsorted: {b:?} after {prev}"
-            );
+        match b.last_line {
+            Some(last) => {
+                assert!(b.first_line <= last, "inverted block: {b:?}");
+                if let Some(prev) = prev_last {
+                    assert!(
+                        b.first_line > prev,
+                        "blocks overlap or are unsorted: {b:?} after {prev}"
+                    );
+                }
+                prev_last = Some(last);
+            }
+            // An insertion sits *between* lines: it may only touch the boundary
+            // after the previous replacement.
+            None => assert!(
+                prev_last.is_none_or(|prev| b.first_line > prev),
+                "insertion overlaps the previous block: {b:?}"
+            ),
         }
-        prev_last = Some(b.last_line);
     }
     let mut prev_panel_first: Option<usize> = None;
     for p in &snap.panels {
@@ -131,10 +144,14 @@ fn assert_no_block_on_line(text: &str, snap: &PreviewSnapshot, pos: usize) {
         .position(|(from, to)| pos >= *from && pos <= *to)
         .unwrap_or(0);
     for b in &snap.blocks {
-        assert!(
-            n < b.first_line || n > b.last_line,
-            "block {b:?} covers caret line {n}"
-        );
+        match b.last_line {
+            Some(last) => assert!(
+                n < b.first_line || n > last,
+                "block {b:?} covers caret line {n}"
+            ),
+            // An insertion does not cover a line: it only adds height.
+            None => {}
+        }
     }
 }
 
@@ -344,7 +361,7 @@ fn display_math_block_covers_its_lines_and_anchor_is_the_region() {
         snap.blocks,
         vec![crate::preview::PreviewBlock {
             first_line: 1,
-            last_line: 3,
+            last_line: Some(3),
             kind: BlockKind::Math {
                 tex: "\nx = 1\n".into(),
                 display: true
@@ -353,9 +370,21 @@ fn display_math_block_covers_its_lines_and_anchor_is_the_region() {
     );
     assert!(!has_widget(&snap, |w| matches!(w, Widget::Math { .. })));
     assert_no_block_on_line(doc, &snap, 0);
-    // Caret inside: the block collapses to editable source.
+    // Caret inside: the region collapses to editable source and the live
+    // preview is inserted below it (one insertion, no replacement).
     let snap = snapshot(doc, &[6]);
-    assert!(snap.blocks.is_empty(), "{:?}", snap.blocks);
+    assert_eq!(
+        snap.blocks,
+        vec![crate::preview::PreviewBlock {
+            first_line: 4,
+            last_line: None,
+            kind: BlockKind::MathPreview {
+                tex: "\nx = 1\n".into()
+            },
+        }],
+        "{:?}",
+        snap.blocks
+    );
 }
 
 #[test]
@@ -364,21 +393,35 @@ fn display_math_block_at_document_end_has_no_trailing_line() {
     let snap = snapshot(doc, &[0]);
     assert_eq!(
         (snap.blocks[0].first_line, snap.blocks[0].last_line),
-        (1, 3)
+        (1, Some(3))
     );
 }
 
 #[test]
-fn display_math_block_collapses_while_editing_but_shows_no_preview() {
-    // Caret on the block's opening line: no block, no preview widget (the TS
-    // MathPreviewWidget is not ported) — source stays editable.
+fn display_math_block_collapses_while_editing_and_inserts_the_live_preview() {
+    // Caret on the block's opening line: the source stays editable (no
+    // replacement) and the live preview is inserted right below the region —
+    // the TS `MathPreviewWidget`, anchored at the next line's start.
     let doc = "a\n$$\nx = 1\n$$\nb\n";
     let snap = snapshot(doc, &[3]);
-    assert!(snap.blocks.is_empty(), "{:?}", snap.blocks);
+    assert_eq!(
+        snap.blocks,
+        vec![crate::preview::PreviewBlock {
+            first_line: 4,
+            last_line: None,
+            kind: BlockKind::MathPreview {
+                tex: "\nx = 1\n".into()
+            },
+        }],
+        "{:?}",
+        snap.blocks
+    );
     assert!(!has_widget(&snap, |w| matches!(w, Widget::Math { .. })));
-    // Caret outside (line 0): the block renders.
+    // Caret outside (line 0): the replacement block renders and there is no
+    // insertion.
     let snap = snapshot(doc, &[0]);
     assert_eq!(snap.blocks.len(), 1);
+    assert!(snap.blocks[0].last_line.is_some(), "{:?}", snap.blocks);
 }
 
 // ---------------------------------------------------------------------------
@@ -546,8 +589,8 @@ fn rule_8_fenced_code_lines() {
             .map(|b| (b.first_line, b.last_line, b.kind.clone()))
             .collect::<Vec<_>>(),
         vec![
-            (0, 0, BlockKind::HiddenLine),
-            (2, 2, BlockKind::HiddenLine)
+            (0, Some(0), BlockKind::HiddenLine),
+            (2, Some(2), BlockKind::HiddenLine)
         ]
     );
     // Nothing is expected of the fence lines' bytes: the line is gone.
@@ -735,7 +778,7 @@ fn rule_15_callouts() {
         .iter()
         .find(|b| b.first_line == 0)
         .expect("opening block");
-    assert_eq!(open.last_line, 0);
+    assert_eq!(open.last_line, Some(0));
     assert_eq!(
         open.kind,
         BlockKind::Callout {
@@ -771,6 +814,171 @@ fn rule_15_callouts() {
     assert_eq!(snap.blocks[0].first_line, 0);
 }
 
+/// While the caret is inside a display math block the source stays, and (with
+/// the `mathPreview` setting on) a live-rendered copy is **inserted** below
+/// the block — never replacing anything (TS `MathPreviewWidget`, 302-326).
+#[test]
+fn rule_14b_math_preview_insertion() {
+    let doc = "before\n$$\nx = 1\n$$\nafter\n";
+    let caret = at(doc, "x = 1");
+    let snap = snapshot(doc, &[caret]);
+    // The source lines are untouched: no spans, and no replacement blocks
+    // (the only block is the insertion).
+    assert!(snap.spans.is_empty(), "{:?}", snap.spans);
+    assert!(snap.blocks.iter().all(|b| b.last_line.is_none()), "{:?}", snap.blocks);
+    // ...and the preview is inserted at the start of the line after the block.
+    let previews: Vec<_> = snap
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, BlockKind::MathPreview { .. }))
+        .collect();
+    assert_eq!(previews.len(), 1, "{:?}", snap.blocks);
+    let preview = previews[0];
+    assert_eq!(preview.first_line, 4);
+    assert_eq!(preview.last_line, None);
+    assert_eq!(preview.kind, BlockKind::MathPreview { tex: "\nx = 1\n".into() });
+
+    // The setting off: no insertion at all.
+    let selections = vec![caret..caret];
+    let snap = scan(ScanInput {
+        text: doc,
+        selections: &selections,
+        visible: ALL,
+        math_preview: false,
+    });
+    assert!(snap.blocks.is_empty(), "{:?}", snap.blocks);
+
+    // Empty block: nothing to preview, and no placeholder space either.
+    let doc = "$$\n\n$$\n";
+    let snap = snapshot(doc, &[at(doc, "$$") + 1]);
+    assert!(snap.blocks.is_empty(), "{:?}", snap.blocks);
+
+    // A block at the very end of the document anchors after the last line —
+    // the insertion's `at_line == line count` boundary.
+    let doc = "a\n$$\nx = 1\n$$";
+    let snap = snapshot(doc, &[at(doc, "x = 1")]);
+    let lines = crate::markdown::line_ranges(doc);
+    assert_eq!(snap.blocks.len(), 1, "{:?}", snap.blocks);
+    assert_eq!(snap.blocks[0].first_line, lines.len());
+    assert_eq!(snap.blocks[0].last_line, None);
+
+    // Caret outside: a replacement block, no insertion.
+    let doc = "before\n$$\nx = 1\n$$\nafter\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert_eq!(
+        snap.blocks
+            .iter()
+            .map(|b| (b.first_line, b.last_line))
+            .collect::<Vec<_>>(),
+        vec![(1, Some(3))]
+    );
+}
+
+/// Markdown escapes: `\X` renders as `X` alone (TS `Escape` node →
+/// `EscapeCharWidget`); it is not a markdown escape inside code, a link or a
+/// formula, and the caret's presence on the pair keeps the source.
+#[test]
+fn rule_17_markdown_escapes() {
+    let doc = "a \\* b and \\\\ and \\x\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    let escapes: Vec<_> = snap
+        .spans
+        .iter()
+        .filter_map(|s| match &s.kind {
+            PreviewSpanKind::Widget(Widget::Escape { char }) => Some((s.range.clone(), char.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        escapes,
+        vec![
+            (at(doc, "\\*")..at(doc, "\\*") + 2, "*".to_string()),
+            // `\\` is an escaped backslash: one backslash remains.
+            (at(doc, "\\\\")..at(doc, "\\\\") + 2, "\\".to_string()),
+        ],
+        "only escapable pairs: {:?}",
+        snap.spans
+    );
+    // `\x` is not an escape: the backslash stays.
+    assert!(
+        !snap.spans.iter().any(|s| s.range.start == at(doc, "\\x")),
+        "{:?}",
+        snap.spans
+    );
+
+    // Caret on the pair: source stays.
+    let pair = at(doc, "\\*");
+    for caret in [pair, pair + 1, pair + 2] {
+        let snap = snapshot(doc, &[caret]);
+        assert!(
+            !snap.spans.iter().any(|s| s.range.start < pair + 2 && s.range.end > pair),
+            "caret {caret} must keep the escaped pair as source: {:?}",
+            snap.spans
+        );
+    }
+
+    // Not markdown escapes: inside inline code, inside a link, inside a formula.
+    for doc in ["`\\*`", "[label \\* x](url)", "$\\,$"] {
+        let snap = snapshot(doc, &[dot(doc)]);
+        assert!(
+            !snap
+                .spans
+                .iter()
+                .any(|s| matches!(s.kind, PreviewSpanKind::Widget(Widget::Escape { .. }))),
+            "{doc}: {:?}",
+            snap.spans
+        );
+    }
+    // A lone backslash at the end of the line is not an escape either.
+    let snap = snapshot("tail \\\n", &[dot("tail \\\n")]);
+    assert!(!snap.spans.iter().any(|s| matches!(s.kind, PreviewSpanKind::Widget(Widget::Escape { .. }))));
+}
+
+/// Code bodies and quotes get their container look from panels too (TS
+/// `md-code-line` / `md-quote`), each under its own activity rule.
+#[test]
+fn rule_15c_code_and_quote_panels() {
+    // Code body: styled only while the caret is outside the whole block.
+    let doc = "```rust\nlet a = 1;\nlet b = 2;\n```\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    assert!(
+        snap.panels.iter().any(|p| p.kind == PanelKind::CodeBlock
+            && (p.first_line, p.last_line) == (1, 2)),
+        "{:?}",
+        snap.panels
+    );
+    let snap = snapshot(doc, &[at(doc, "let b")]);
+    assert!(
+        !snap.panels.iter().any(|p| p.kind == PanelKind::CodeBlock),
+        "caret inside the block: {:?}",
+        snap.panels
+    );
+
+    // Quotes: one panel per run of inactive quoted lines.
+    let doc = "> one\n> two\nplain\n> three\n";
+    let snap = snapshot(doc, &[dot(doc)]);
+    let quotes: Vec<(usize, usize)> = snap
+        .panels
+        .iter()
+        .filter(|p| p.kind == PanelKind::Blockquote)
+        .map(|p| (p.first_line, p.last_line))
+        .collect();
+    assert_eq!(quotes, vec![(0, 1), (3, 3)], "{:?}", snap.panels);
+    // Caret on a quoted line: that line drops out of the run.
+    let snap = snapshot(doc, &[at(doc, "> two") + 2]);
+    let quotes: Vec<(usize, usize)> = snap
+        .panels
+        .iter()
+        .filter(|p| p.kind == PanelKind::Blockquote)
+        .map(|p| (p.first_line, p.last_line))
+        .collect();
+    assert_eq!(quotes, vec![(0, 0), (3, 3)], "{:?}", snap.panels);
+
+    // A plain document has no panels at all.
+    let snap = snapshot("plain\n", &[dot("plain\n")]);
+    assert!(snap.panels.is_empty(), "{:?}", snap.panels);
+}
+
 /// Callout panels: the container look is a panel, not a block — it covers
 /// every line of the region, is emitted whether or not the caret is inside,
 /// and nests (TS `md-callout-line d{depth}`, livePreview.ts 577-604).
@@ -785,9 +993,11 @@ fn rule_15b_callout_panels() {
         PreviewPanel {
             first_line: 0,
             last_line: 2,
-            depth: 0,
-            open_line: 0,
-            close_line: Some(2),
+            kind: PanelKind::Callout {
+                depth: 0,
+                open_line: 0,
+                close_line: Some(2),
+            },
         }
     );
 
@@ -803,17 +1013,36 @@ fn rule_15b_callout_panels() {
     let snap = snapshot(doc, &[dot(doc)]);
     assert_eq!(snap.panels.len(), 1);
     assert_eq!(snap.panels[0].last_line, 2);
-    assert_eq!(snap.panels[0].close_line, None);
+    assert!(matches!(
+        snap.panels[0].kind,
+        PanelKind::Callout {
+            close_line: None,
+            ..
+        }
+    ));
 
     // Nested regions: one panel each, depths 0/1, ranges overlapping by
     // design (the renderer paints them in order).
     let doc = "::: outer\na\n::: inner\nb\n:::\n:::\n";
     let snap = snapshot(doc, &[dot(doc)]);
-    let panels: Vec<(usize, usize, u8)> =
-        snap.panels.iter().map(|p| (p.first_line, p.last_line, p.depth)).collect();
+    let panels: Vec<(usize, usize, u8)> = snap
+        .panels
+        .iter()
+        .map(|p| match &p.kind {
+            PanelKind::Callout { depth, .. } => (p.first_line, p.last_line, *depth),
+            other => panic!("expected a callout panel, got {other:?}"),
+        })
+        .collect();
     assert_eq!(panels, vec![(0, 5, 0), (2, 4, 1)]);
-    assert_eq!(snap.panels[0].close_line, Some(5));
-    assert_eq!(snap.panels[1].close_line, Some(4));
+    for (panel, close) in snap.panels.iter().zip([5usize, 4]) {
+        assert!(matches!(
+            panel.kind,
+            PanelKind::Callout {
+                close_line: Some(c),
+                ..
+            } if c == close
+        ));
+    }
 
     // The window clips the panel's lines (the TS clamps its per-line classes
     // the same way) while the edges keep the region's own line numbers.
@@ -822,7 +1051,14 @@ fn rule_15b_callout_panels() {
     let snap = snapshot_visible(doc, &[dot(doc)], start..start + 3);
     assert_eq!(snap.panels.len(), 1);
     assert_eq!((snap.panels[0].first_line, snap.panels[0].last_line), (1, 1));
-    assert_eq!((snap.panels[0].open_line, snap.panels[0].close_line), (0, Some(3)));
+    assert!(matches!(
+        snap.panels[0].kind,
+        PanelKind::Callout {
+            open_line: 0,
+            close_line: Some(3),
+            ..
+        }
+    ));
 
     // A document without callouts has no panels at all.
     let snap = snapshot("plain text\n", &[dot("plain text\n")]);
@@ -849,7 +1085,7 @@ fn rule_16_visible_window_limits_emission_but_not_classification() {
     let snap = snapshot_visible(doc, &[0], lines[2].0..lines[2].1);
     assert_eq!(
         (snap.blocks[0].first_line, snap.blocks[0].last_line),
-        (1, 3)
+        (1, Some(3))
     );
     // A window that misses it entirely reports nothing.
     let snap = snapshot_visible(doc, &[0], 0..1);

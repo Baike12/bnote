@@ -151,12 +151,106 @@ impl Inline<'_> {
         }
 
         code_excl.extend(&shielded);
+        // Markdown escapes run before emphasis: an escaped delimiter (`\*`)
+        // must win the bytes over the emphasis scan, exactly like the TS tree
+        // walk, which never descends into an `Escape` node.
+        self.scan_escapes(from, to, act, &code_excl, sink);
         emphasis(self.text, from, to, &code_excl, act, sink);
+    }
+
+    /// Markdown escapes: `\X`, where X is an ASCII punctuator, renders as `X`
+    /// alone while the pair is inactive (TS `Escape` node → `EscapeCharWidget`,
+    /// `.cw-escape` at normal text color). Anything inside inline code, a
+    /// fenced block, a link/image (both shielded, see `excl`) or a math region
+    /// is not a markdown escape — `\,`/`\;`/`\{` inside a formula are LaTeX.
+    fn scan_escapes(
+        &self,
+        from: usize,
+        to: usize,
+        act: &Activity,
+        excl: &Excluded,
+        sink: &mut Sink,
+    ) {
+        let bytes = self.text.as_bytes();
+        let mut i = from;
+        // `to` is exclusive and an escape is two bytes: the last byte of the
+        // line can never start one (the TS `start == cx.end - 1` guard).
+        while i + 1 < to {
+            if bytes[i] != b'\\' {
+                i += 1;
+                continue;
+            }
+            let escaped = bytes[i + 1];
+            if !is_escapable(escaped) {
+                i += 1;
+                continue;
+            }
+            let end = i + 2;
+            if !excl.overlaps(i, end) && !self.in_math(i, end) && act.inactive(i, end) {
+                sink.widget(
+                    i,
+                    end,
+                    Widget::Escape {
+                        char: (escaped as char).to_string(),
+                    },
+                );
+            }
+            i = end;
+        }
+    }
+
+    /// Whether `[from, to)` sits inside a math region (TS `inAnyMath`): the
+    /// TS tree walk skips every node inside a formula.
+    fn in_math(&self, from: usize, to: usize) -> bool {
+        let first = self.math.partition_point(|region| region.to <= from);
+        self.math[first..]
+            .iter()
+            .take_while(|region| region.from < to)
+            .any(|region| from >= region.from && to <= region.to)
     }
 
     fn overlaps_code(&self, from: usize, to: usize) -> bool {
         self.code_ranges.iter().any(|(a, b)| from < *b && to > *a)
     }
+}
+
+/// The CM6 `Escapable` set (`@lezer/markdown`): a backslash escapes exactly
+/// these characters (and nothing else — `\x` stays a literal backslash).
+fn is_escapable(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'!' | b'"'
+            | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'\''
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b'-'
+            | b'.'
+            | b'/'
+            | b':'
+            | b';'
+            | b'<'
+            | b'='
+            | b'>'
+            | b'?'
+            | b'@'
+            | b'['
+            | b'\\'
+            | b']'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'{'
+            | b'|'
+            | b'}'
+            | b'~'
+    )
 }
 
 /// Wikilink pass (`[[target]]` / `[[target|alias]]` / `![[embed]]`), run over

@@ -58,6 +58,7 @@ fn median_scan_micros(text: &str) -> u128 {
         text,
         selections: std::slice::from_ref(&cursor),
         visible: 0..usize::MAX,
+        math_preview: true,
     };
     let _ = scan(input());
     let mut timings: Vec<u128> = (0..5)

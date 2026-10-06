@@ -66,6 +66,11 @@ pub enum Widget {
     Math { tex: String, display: bool },
     /// `![alt](src)` / `![[src]]` — `src` is the raw target as written.
     Image { src: String, alt: String },
+    /// A markdown escape `\X` (X an ASCII punctuator): the pair is replaced by
+    /// the character alone, drawn in normal text color (TS
+    /// `EscapeCharWidget`, `.cw-escape`). `\,`/`\{` inside a formula are
+    /// LaTeX and never reach this widget.
+    Escape { char: String },
     /// `[ ]` / `[x]` of a todo item; the `- ` before it is a separate
     /// `Bullet`/`Hidden` span per the list-mark rules.
     Checkbox { checked: bool },
@@ -77,15 +82,19 @@ pub enum Widget {
     Rule,
 }
 
-/// A whole-line-range replacement (callout panel, multi-line math block,
-/// table). The renderer hides every line in `first_line..=last_line` and
-/// paints one block element in their place.
+/// A whole-line-range block element: either a **replacement** (the renderer
+/// hides every line in `first_line..=last_line` and paints one element in
+/// their place) or an **insertion** (nothing is replaced; the element adds its
+/// height at the start of a line, the lines around it stay visible).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreviewBlock {
-    /// 0-based, inclusive, like `str::lines()` numbering.
+    /// 0-based, inclusive, like `str::lines()` numbering. For an insertion
+    /// (`last_line == None`) this is the line the element is inserted **before**.
     pub first_line: usize,
-    /// 0-based, inclusive.
-    pub last_line: usize,
+    /// 0-based inclusive last replaced line, or `None` for an insertion at
+    /// `first_line` — with `first_line == line count` meaning "after the last
+    /// line" (the TS `MathPreviewWidget` anchors at `doc.length` there).
+    pub last_line: Option<usize>,
     pub kind: BlockKind,
 }
 
@@ -93,6 +102,11 @@ pub struct PreviewBlock {
 pub enum BlockKind {
     /// A `$$ … $$` multi-line display block (or `\[ … \]`).
     Math { tex: String, display: bool },
+    /// The live preview bnote shows **while the caret is inside** a display
+    /// math block: a rendered copy of the formula, inserted *below* the source
+    /// block (never replacing it, so the source stays editable). Emitted as an
+    /// insertion ([`PreviewBlock::last_line`] is `None`).
+    MathPreview { tex: String },
     /// A whole line the preview removes entirely: the ```` ``` ```` fence lines
     /// of a fenced-code block. The engine collapses the line to **zero
     /// height** (TS `HiddenLineWidget` + `.cw-hidden-line { height: 0 }`), so
@@ -125,14 +139,36 @@ pub struct PreviewPanel {
     /// 0-based inclusive line range, clipped to the visible window.
     pub first_line: usize,
     pub last_line: usize,
-    /// Nesting depth, 0 = outermost (the TS caps the class at `d2`).
-    pub depth: u8,
-    /// The opening edge line (top rounding / top padding), 0-based.
-    /// Unbounded by the window clip: the renderer compares it with the lines
-    /// it is painting.
-    pub open_line: usize,
-    /// The closing edge line, `None` when the region never closed.
-    pub close_line: Option<usize>,
+    pub kind: PanelKind,
+}
+
+/// Which container look a [`PreviewPanel`] paints, and what activity rule
+/// gates it (each mirrors its TS line class — see `livePreview.ts`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PanelKind {
+    /// `::: kind Title` container (TS `md-callout-line d{depth}`): background
+    /// + left border + inward shift by depth, the first and last lines
+    /// carrying the top/bottom cap. Emitted **regardless of the caret**: the
+    /// TS emits these line classes unconditionally so that pure cursor
+    /// movement never rebuilds the region.
+    Callout {
+        /// Nesting depth, 0 = outermost (the TS caps the class at `d2`).
+        depth: u8,
+        /// The opening edge line (top rounding / top padding), 0-based.
+        /// Unbounded by the window clip: the renderer compares it with the
+        /// lines it is painting.
+        open_line: usize,
+        /// The closing edge line, `None` when the region never closed.
+        close_line: Option<usize>,
+    },
+    /// Fenced-code body lines (TS `md-code-line`: the code-block background
+    /// and the mono font). Emitted only while the caret is **outside** the
+    /// whole block — inside it the source is edited in plain style.
+    CodeBlock,
+    /// Blockquote lines (TS `md-quote`: left border, accent-colored italic
+    /// text). Per the TS rule the class is only on **inactive** lines, so a
+    /// quote touched by the caret yields no panel for that line.
+    Blockquote,
 }
 
 /// Everything the renderer needs for one pass.
@@ -171,6 +207,9 @@ pub struct ScanInput<'a> {
     /// margin). Spans entirely outside it are not reported; the block
     /// classification still reads the whole document.
     pub visible: Range<usize>,
+    /// The `mathPreview` setting (TS default `true`): show the live-rendered
+    /// copy of a display formula while the caret is inside it.
+    pub math_preview: bool,
 }
 
 mod scan;

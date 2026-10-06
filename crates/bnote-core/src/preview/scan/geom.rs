@@ -5,7 +5,8 @@
 use std::ops::{Range, RangeInclusive};
 
 use crate::preview::{
-    BlockKind, PreviewBlock, PreviewPanel, PreviewSnapshot, PreviewSpan, PreviewSpanKind, Widget,
+    BlockKind, PanelKind, PreviewBlock, PreviewPanel, PreviewSnapshot, PreviewSpan,
+    PreviewSpanKind, Widget,
 };
 
 /// Line table: `[(start, end)]` with `end` pointing at the `\n` (identical to
@@ -217,11 +218,14 @@ impl<'a> Sink<'a> {
         {
             return false;
         }
-        if self
-            .blocks
-            .iter()
-            .any(|b| first_line <= b.last_line && last_line >= b.first_line)
-        {
+        if self.blocks.iter().any(|b| {
+            b.last_line.is_some_and(|last| first_line <= last && last_line >= b.first_line)
+                // an insertion sits *between* lines and only conflicts when it
+                // falls inside this replacement
+                || (b.last_line.is_none()
+                    && b.first_line >= first_line
+                    && b.first_line <= last_line)
+        }) {
             return false;
         }
         if self.act.lines_active(self.lines, first_line, last_line) {
@@ -229,7 +233,31 @@ impl<'a> Sink<'a> {
         }
         self.blocks.push(PreviewBlock {
             first_line,
-            last_line,
+            last_line: Some(last_line),
+            kind,
+        });
+        true
+    }
+
+    /// Emits an **insertion**: the element is placed at the start of
+    /// `at_line` (or after the last line when `at_line == line count`) and
+    /// adds its height there, replacing nothing. Not caret-gated: the caller's
+    /// whole point is to render while the caret is inside the source.
+    pub(super) fn insert(&mut self, at_line: usize, kind: BlockKind) -> bool {
+        if at_line > self.lines.len() || at_line < self.win.first || at_line > self.win.last + 1 {
+            return false;
+        }
+        // Two insertions at the same anchor, or an insertion on a replaced
+        // line, would fight over the same y offset.
+        if self.blocks.iter().any(|b| {
+            b.first_line == at_line && b.last_line.is_none()
+                || b.last_line.is_some_and(|last| at_line >= b.first_line && at_line <= last + 1)
+        }) {
+            return false;
+        }
+        self.blocks.push(PreviewBlock {
+            first_line: at_line,
+            last_line: None,
             kind,
         });
         true
@@ -239,14 +267,7 @@ impl<'a> Sink<'a> {
     /// visible window (TS clips its per-line classes the same way). Refused
     /// when the clip leaves nothing visible. `open_line`/`close_line` are the
     /// region's own edges, kept unclipped.
-    pub(super) fn panel(
-        &mut self,
-        first_line: usize,
-        last_line: usize,
-        depth: u8,
-        open_line: usize,
-        close_line: Option<usize>,
-    ) -> bool {
+    pub(super) fn panel(&mut self, first_line: usize, last_line: usize, kind: PanelKind) -> bool {
         let last_existing = self.lines.len().saturating_sub(1);
         let first = first_line.max(self.win.first);
         let last = last_line.min(self.win.last).min(last_existing);
@@ -256,9 +277,7 @@ impl<'a> Sink<'a> {
         self.panels.push(PreviewPanel {
             first_line: first,
             last_line: last,
-            depth,
-            open_line,
-            close_line,
+            kind,
         });
         true
     }
