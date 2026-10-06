@@ -51,6 +51,10 @@ use crate::footprint_host::FootprintHost;
 /// Tauri shell's stop-typing autosave).
 const AUTOSAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(800);
 
+/// How long the caret must rest before its position is persisted (the TS
+/// `cursorMemory.ts` debounce).
+const CURSOR_SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// How often the shell polls the backend event bus for vault/agent events.
 const EVENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
 
@@ -129,6 +133,18 @@ pub struct Workspace {
     /// carrying this revision is the pass's own edit and must not re-trigger
     /// it (the subscriber runs after the pass, so the flag cannot).
     renumber_done_rev: Option<u64>,
+    /// `settings.typewriter`: keep the caret's line centered (see gpui-kit's
+    /// `set_center_cursor`).
+    typewriter: bool,
+    /// Cursor memory (TS `cursorMemory.ts`): the position to persist, bumped
+    /// with every save request.
+    cursor_pending: Option<(String, usize, f32)>,
+    /// Debounce generation; a stale timer must not write at all.
+    cursor_save_seq: u64,
+    /// Serializes config writes and holds the last seq written, so a slow
+    /// older position is dropped instead of landing after a newer one (the
+    /// same rule `save_guard` enforces for note saves).
+    cursor_guard: Arc<Mutex<u64>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -241,23 +257,25 @@ impl Workspace {
         let cmd_state = cx.new(|cx| CommandState::new(window, cx));
         let files_state = cx.new(|cx| CommandState::new(window, cx));
 
+        // The `settings` block (`config.json`, the Tauri shell's keys), read
+        // once at startup — the settings panel will re-read what it changes.
+        let startup = bnote_core::commands::config::load_app_config(state.as_ref())
+            .ok()
+            .unwrap_or(serde_json::Value::Null);
+        let setting = |key: &str| {
+            startup
+                .get("settings")
+                .and_then(|s| s.get(key))
+                .and_then(|v| v.as_bool())
+        };
+
         let theme = cx.theme();
         let preview = Rc::new(PreviewHost::new(PreviewFont {
             family: theme.mono_font_family.clone(),
             size: theme.mono_font_size,
         }));
-        // The `mathPreview` setting (`config.json`, the Tauri shell's key):
-        // the live-rendered copy of a display formula while editing it.
-        preview.set_math_preview(
-            bnote_core::commands::config::load_app_config(state.as_ref())
-                .ok()
-                .and_then(|cfg| {
-                    cfg.get("settings")
-                        .and_then(|s| s.get("mathPreview"))
-                        .and_then(|v| v.as_bool())
-                })
-                .unwrap_or(true),
-        );
+        // The live-rendered copy of a display formula while editing it.
+        preview.set_math_preview(setting("mathPreview").unwrap_or(true));
         editor.update(cx, |state, cx| {
             state.set_preview_renderer(Some(preview.clone()), cx);
         });
@@ -267,16 +285,11 @@ impl Workspace {
             state.create_decorations_collection(Vec::new(), cx)
         });
 
-        // The `autoNumberHeadings` setting, read once at startup like
-        // `mathPreview` (the settings panel will re-read it when it lands).
-        let auto_number = bnote_core::commands::config::load_app_config(state.as_ref())
-            .ok()
-            .and_then(|cfg| {
-                cfg.get("settings")
-                    .and_then(|s| s.get("autoNumberHeadings"))
-                    .and_then(|v| v.as_bool())
-            })
-            .unwrap_or(false);
+        let auto_number = setting("autoNumberHeadings").unwrap_or(false);
+        let typewriter = setting("typewriter").unwrap_or(false);
+        if typewriter {
+            editor.update(cx, |state, cx| state.set_center_cursor(true, cx));
+        }
 
         // Drive autosave + dirty flag off editor changes, and refresh the
         // live preview when either the text or the caret moved.
@@ -291,7 +304,16 @@ impl Workspace {
                 if this.preview_selection.as_ref() != Some(&selection) {
                     this.preview_selection = Some(selection);
                     this.preview_dirty = true;
+                    // Cursor memory rides the same signal: the caret moved.
+                    this.schedule_cursor_save(cx);
                     cx.notify();
+                }
+            }),
+            // Losing the window persists the caret before the user walks away
+            // with the app in the background (TS flushes on window blur too).
+            cx.observe_window_activation(window, |this, window, cx| {
+                if !window.is_window_active() {
+                    this.flush_cursor_save_now(cx);
                 }
             }),
         ];
@@ -330,6 +352,10 @@ impl Workspace {
             auto_number,
             renumber_pending: false,
             renumber_done_rev: None,
+            typewriter,
+            cursor_pending: None,
+            cursor_save_seq: 0,
+            cursor_guard: Arc::new(Mutex::new(0)),
             _subscriptions: subscriptions,
         };
 
@@ -378,19 +404,21 @@ impl Workspace {
         .detach();
 
         // Restore the vim setting (same config.json key the Tauri shell uses).
-        let vim_enabled = bnote_core::commands::config::load_app_config(&workspace.state)
-            .ok()
-            .and_then(|cfg| {
-                cfg.get("settings")
-                    .and_then(|s| s.get("vim"))
-                    .and_then(|v| v.as_bool())
-            })
-            .unwrap_or(false);
+        let vim_enabled = setting("vim").unwrap_or(false);
         if vim_enabled {
             workspace.vim_enabled = true;
             workspace.set_vim_enabled(true, cx);
             workspace.status = "vim 模式开启(普通模式)".to_string();
         }
+
+        // The caret position of the closing window is written synchronously —
+        // the debounced write would be racing the process teardown.
+        let weak = cx.weak_entity();
+        window.on_window_should_close(cx, move |_window, cx| {
+            weak.update(cx, |workspace, _cx| workspace.flush_cursor_save_blocking())
+                .ok();
+            true
+        });
 
         // Focus the editor so global actions bubble through this view.
         let focus_handle = workspace.editor.focus_handle(cx);
@@ -636,6 +664,104 @@ impl Workspace {
         }
         self.renumber_pending = true;
         cx.notify();
+    }
+
+    /// TS `cursorMemory.ts::scheduleCursorSave` — remember where the user is
+    /// in the open note, 300 ms after they stop moving. A newer request
+    /// invalidates the older timer (seq comparison in `flush_cursor_save`).
+    fn schedule_cursor_save(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.open_path.clone() else {
+            return;
+        };
+        let (pos, scroll) = {
+            let editor = self.editor.read(cx);
+            (editor.cursor(), editor.scroll_offset().y / px(1.))
+        };
+        self.cursor_pending = Some((path, pos, scroll));
+        self.cursor_save_seq += 1;
+        let seq = self.cursor_save_seq;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CURSOR_SAVE_DEBOUNCE).await;
+            this.update(cx, |this, cx| this.flush_cursor_save(seq, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// The debounced writer: only the newest request writes (a stale timer
+    /// whose seq was superseded must not even touch the disk).
+    fn flush_cursor_save(&mut self, seq: u64, cx: &mut Context<Self>) {
+        if seq != self.cursor_save_seq {
+            return;
+        }
+        self.write_cursor_pending(seq, cx);
+    }
+
+    /// Unconditional flush — file switch, window close. `seq` is the newest,
+    /// so the write always goes through.
+    fn flush_cursor_save_now(&mut self, cx: &mut Context<Self>) {
+        let seq = self.cursor_save_seq;
+        self.write_cursor_pending(seq, cx);
+    }
+
+    /// Hand the pending position to the background executor. The guard holds
+    /// the last seq written, so a slow older write is dropped instead of
+    /// landing after a newer one (the `save_guard` rule, same shape).
+    fn write_cursor_pending(&mut self, seq: u64, cx: &mut Context<Self>) {
+        let Some((path, pos, scroll)) = self.cursor_pending.take() else {
+            return;
+        };
+        let state = self.state.clone();
+        let guard = self.cursor_guard.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let mut last = guard.lock().unwrap();
+                if seq <= *last {
+                    return;
+                }
+                let mut config = bnote_core::commands::config::load_app_config(&state)
+                    .unwrap_or(serde_json::Value::Null);
+                bnote_core::commands::config::set_cursor_position(&mut config, &path, pos, scroll);
+                match bnote_core::commands::config::save_app_config(&state, config) {
+                    Ok(()) => *last = seq,
+                    Err(e) => eprintln!("cursor memory: 写入失败 {e}"),
+                }
+            })
+            .detach();
+    }
+
+    /// The quit path: one synchronous config write, because the async flush
+    /// may not get a turn before the process exits. Small and rare — the same
+    /// trade-off the Tauri shell makes in its `beforeunload` handler.
+    fn flush_cursor_save_blocking(&mut self) {
+        let Some((path, pos, scroll)) = self.cursor_pending.take() else {
+            return;
+        };
+        let mut config = bnote_core::commands::config::load_app_config(&self.state)
+            .unwrap_or(serde_json::Value::Null);
+        bnote_core::commands::config::set_cursor_position(&mut config, &path, pos, scroll);
+        if let Err(e) = bnote_core::commands::config::save_app_config(&self.state, config) {
+            eprintln!("cursor memory: 写入失败 {e}");
+        }
+    }
+
+    /// TS `restoreSavedCursor` — put the caret back where the user left this
+    /// note, scroll included. No-op for a note never visited. The scroll
+    /// offset is deferred by the engine to the next layout, which is exactly
+    /// when the freshly installed text has a scroll range.
+    fn restore_cursor_memory(&mut self, rel_path: &str, cx: &mut Context<Self>) {
+        let Ok(config) = bnote_core::commands::config::load_app_config(&self.state) else {
+            return;
+        };
+        let Some((pos, scroll)) = bnote_core::commands::config::cursor_position(&config, rel_path)
+        else {
+            return;
+        };
+        self.editor.update(cx, |editor, cx| {
+            let pos = pos.min(editor.text().len());
+            editor.set_selected_range(pos..pos, cx);
+            editor.set_scroll_offset(point(px(0.), px(scroll)), cx);
+        });
     }
 
     /// Runs the pending renumbering pass. It re-derives the edits from the
@@ -1238,6 +1364,9 @@ impl Workspace {
         let Some(root) = self.vault_root.clone() else {
             return;
         };
+        // The pending save still refers to the note being left — write it out
+        // before the swap (TS `flushCursorSave`).
+        self.flush_cursor_save_now(cx);
         let full = root.join(&rel_path);
         let state = self.state.clone();
         self.open_path = Some(rel_path.clone());
@@ -1320,7 +1449,7 @@ impl Workspace {
             daily.record_synced(&abs, &text);
         }
         self.mru.retain(|p| p != &rel_path);
-        self.mru.insert(0, rel_path);
+        self.mru.insert(0, rel_path.clone());
         self.mru.truncate(50);
         if self.vim_enabled {
             self.vim_bridge.reset(&self.editor);
@@ -1329,6 +1458,7 @@ impl Workspace {
         // cache) describe a document that no longer exists.
         self.snippets.reset(&self.editor);
         self.snippet_marks_rows = None;
+        self.restore_cursor_memory(&rel_path, cx);
         self.update_cursor_label(cx);
     }
 
