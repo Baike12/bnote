@@ -109,9 +109,114 @@ pub fn save_vimrc(state: &AppState, contents: String) -> CmdResult<()> {
     std::fs::write(&path, contents).map_err(|e| format!("WRITE_FAILED: {}", e))
 }
 
+/// One `settings.quickAdd` entry (TS `QuickAddCommand`): the search label the
+/// quick-add modal lists, and the vault-relative folder the named note lands
+/// in (created when missing, `a/b` chains allowed).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QuickAddCommand {
+    pub name: String,
+    #[serde(default)]
+    pub folder: String,
+}
+
+/// Read `settings.quickAdd`. Entries missing a name are skipped — they cannot
+/// be picked — so a hand-edited config cannot produce an unpickable row.
+pub fn quick_add_commands(config: &Value) -> Vec<QuickAddCommand> {
+    config
+        .get("settings")
+        .and_then(|s| s.get("quickAdd"))
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|entry| {
+                    let name = entry.get("name")?.as_str()?.trim().to_string();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let folder = entry
+                        .get("folder")
+                        .and_then(|f| f.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .trim_matches('/')
+                        .to_string();
+                    Some(QuickAddCommand { name, folder })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Write `settings.quickAdd` (the same shape the Tauri shell persists).
+pub fn set_quick_add_commands(config: &mut Value, list: &[QuickAddCommand]) {
+    if !config.is_object() {
+        *config = serde_json::json!({});
+    }
+    let settings = config
+        .as_object_mut()
+        .expect("just ensured an object")
+        .entry("settings".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !settings.is_object() {
+        *settings = serde_json::json!({});
+    }
+    settings
+        .as_object_mut()
+        .expect("just ensured an object")
+        .insert(
+            "quickAdd".to_string(),
+            serde_json::to_value(list).unwrap_or(serde_json::json!([])),
+        );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_add_commands_read_skipping_malformed_entries() {
+        let config = serde_json::json!({
+            "settings": { "quickAdd": [
+                { "name": "add bnote file", "folder": "bnote" },
+                { "name": "收集", "folder": "notes/收集箱" },
+                { "name": "no folder" },
+                { "folder": "nameless" },
+                "oops",
+            ] }
+        });
+        let list = quick_add_commands(&config);
+        assert_eq!(list.len(), 3, "{list:?}");
+        assert_eq!(list[0].name, "add bnote file");
+        assert_eq!(list[0].folder, "bnote");
+        assert_eq!(list[1].folder, "notes/收集箱");
+        // A missing folder is the vault root, not a reason to drop the entry.
+        assert_eq!(list[2].folder, "");
+
+        // Missing / wrong-shaped settings read as none at all.
+        assert!(quick_add_commands(&serde_json::json!({})).is_empty());
+        assert!(quick_add_commands(&serde_json::json!({ "settings": { "quickAdd": 7 } })).is_empty());
+    }
+
+    #[test]
+    fn quick_add_commands_round_trip_under_the_settings_key() {
+        let list = vec![
+            QuickAddCommand { name: "add bnote file".into(), folder: "bnote".into() },
+            QuickAddCommand { name: "日记".into(), folder: String::new() },
+        ];
+        let mut config = serde_json::json!({ "settings": { "vim": true } });
+        set_quick_add_commands(&mut config, &list);
+        assert_eq!(quick_add_commands(&config), list);
+        // Sibling settings survive the write.
+        assert_eq!(config["settings"]["vim"], serde_json::json!(true));
+
+        // A config with no settings object grows one; a broken one is replaced.
+        let mut config = serde_json::json!({});
+        set_quick_add_commands(&mut config, &list);
+        assert_eq!(quick_add_commands(&config), list);
+        let mut broken = serde_json::json!({ "settings": "oops" });
+        set_quick_add_commands(&mut broken, &list);
+        assert_eq!(quick_add_commands(&broken), list);
+    }
 
     #[test]
     fn cursor_positions_round_trip_under_their_path() {

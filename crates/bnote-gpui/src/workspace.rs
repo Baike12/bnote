@@ -23,6 +23,7 @@ use bnote_core::state::AppState;
 use ::gpui::{
     AppContext as _, Context, Entity, Focusable, Subscription, WeakEntity, Window, div, px, relative,
 };
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme, IconName,
@@ -83,6 +84,18 @@ enum PaletteKind {
     Vaults,
 }
 
+/// One 「快速添加」 row of the settings modal: the command name field and the
+/// target-folder field, each with the id its subscription looks the row up by
+/// (indices shift when a row is removed; ids do not).
+struct QaRow {
+    id: u64,
+    name: Entity<InputState>,
+    folder: Entity<InputState>,
+    /// The fields' change subscriptions. Dropping them would unsubscribe, so
+    /// the row owns them for as long as it exists.
+    _subs: Vec<Subscription>,
+}
+
 /// The settings modal's left nav (TS `SettingsModal.tsx`'s `Tab`).
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsTab {
@@ -90,6 +103,7 @@ enum SettingsTab {
     Editor,
     Vim,
     Snippets,
+    QuickAdd,
 }
 
 pub struct Workspace {
@@ -180,6 +194,25 @@ pub struct Workspace {
     theme_mode: ThemeMode,
     font_size: f32,
     snippets_enabled: bool,
+    /// Quick add (⌘⇧A; TS `QuickAddModal.tsx`): pick one of
+    /// `settings.quickAdd`'s commands, then name the note. The name lands in
+    /// the command's folder, created at the vault root when missing.
+    qa_open: bool,
+    /// Which stage of the two-stage flow is showing.
+    qa_naming: bool,
+    /// The command the pick stage confirmed (the naming stage's folder).
+    qa_picked: Option<bnote_core::commands::config::QuickAddCommand>,
+    /// The commands to offer, re-read from `config.json` on every open (the
+    /// settings tab is the writer).
+    qa_commands: Vec<bnote_core::commands::config::QuickAddCommand>,
+    qa_state: Entity<CommandState>,
+    /// The name field of the second stage.
+    qa_name_state: Entity<InputState>,
+    /// The settings modal's 「快速添加」 rows: the two text fields per
+    /// command. The inputs own the values; `settings.quickAdd` is rebuilt from
+    /// them on every change.
+    qa_rows: Vec<QaRow>,
+    qa_next_row_id: u64,
     /// The code-block-language field of the settings modal.
     lang_state: Entity<InputState>,
     /// The font-size slider's state (`settings.fontSize`, 12–28px).
@@ -352,6 +385,9 @@ impl Workspace {
         });
         font_slider.update(cx, |st, cx| st.set_value(font_size, window, cx));
 
+        let qa_state = cx.new(|cx| CommandState::new(window, cx));
+        let qa_name_state = cx.new(|cx| InputState::new(window, cx));
+
         let theme = cx.theme();
         let preview = Rc::new(PreviewHost::new(PreviewFont {
             family: theme.mono_font_family.clone(),
@@ -417,6 +453,15 @@ impl Workspace {
                 this.code_block_lang = lang.clone();
                 this.persist_setting("codeBlockLang", serde_json::json!(lang), cx);
             }),
+            // The quick-add name field: its Enter creates, its Tab returns to
+            // the command pick (TS binds both on the input).
+            cx.subscribe(&qa_name_state, |this, _input, event: &InputEvent, cx| {
+                match event {
+                    InputEvent::PressEnter { .. } => this.qa_create(cx),
+                    InputEvent::Change { .. } => cx.notify(),
+                    _ => {}
+                }
+            }),
             // The font-size slider: applies while dragging (TS's range input
             // fires per move) and writes back on release.
             cx.subscribe(&font_slider, |this, slider, event: &SliderEvent, cx| {
@@ -478,6 +523,14 @@ impl Workspace {
             theme_mode,
             font_size,
             snippets_enabled,
+            qa_open: false,
+            qa_naming: false,
+            qa_picked: None,
+            qa_commands: Vec::new(),
+            qa_state,
+            qa_name_state,
+            qa_rows: Vec::new(),
+            qa_next_row_id: 1,
             lang_state,
             font_slider,
             cursor_pending: None,
@@ -1656,10 +1709,23 @@ impl Workspace {
             self.close_settings(window, cx);
             return;
         }
-        // The panel must not keep the foreground behind a modal.
+        self.open_settings_modal(window, cx);
+    }
+
+    /// Open the settings modal. The quick-add rows are rebuilt from the saved
+    /// list, so the fields always show what the file holds.
+    fn open_settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The other overlays must not keep the foreground behind a modal.
         self.link_suggest = false;
+        self.qa_open = false;
         self.settings_open = true;
-        self.settings_tab = SettingsTab::General;
+        let cfg = load_config_value(&self.state);
+        let commands = bnote_core::commands::config::quick_add_commands(&cfg);
+        self.qa_rows.clear();
+        for cmd in commands {
+            let (name, folder) = (cmd.name.clone(), cmd.folder.clone());
+            self.qa_add_row(&name, &folder, window, cx);
+        }
         cx.notify();
     }
 
@@ -1670,6 +1736,162 @@ impl Workspace {
         self.settings_open = false;
         self.focus_editor(window, cx);
         cx.notify();
+    }
+
+    /// ⌘⇧A: open quick add. The command list is re-read from `config.json`
+    /// (the settings tab writes it), so an edit there shows up at once.
+    fn quick_add(&mut self, _: &actions::QuickAdd, window: &mut Window, cx: &mut Context<Self>) {
+        if self.qa_open {
+            self.close_quick_add(window, cx);
+            return;
+        }
+        // One modal at a time: quick add takes the foreground.
+        self.settings_open = false;
+        self.link_suggest = false;
+        self.palette = None;
+        let cfg = load_config_value(&self.state);
+        self.qa_commands = bnote_core::commands::config::quick_add_commands(&cfg);
+        self.qa_open = true;
+        self.qa_naming = false;
+        let state = self.qa_state.clone();
+        state.update(cx, |s, cx| {
+            s.set_query("", window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn close_quick_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.qa_open {
+            return;
+        }
+        self.qa_open = false;
+        self.qa_naming = false;
+        self.focus_editor(window, cx);
+        cx.notify();
+    }
+
+    /// The pick stage: remember the command, switch the field to naming.
+    fn qa_pick(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cmd) = self.qa_commands.get(ix).cloned() else { return };
+        self.qa_naming = true;
+        self.qa_picked = Some(cmd.clone());
+        let state = self.qa_name_state.clone();
+        state.update(cx, |st, cx| {
+            st.set_value("", window, cx);
+            st.focus(window, cx);
+        });
+        self.status = format!(
+            "快速添加:{}",
+            if cmd.folder.is_empty() { "仓库根目录".to_string() } else { cmd.folder }
+        );
+        cx.notify();
+    }
+
+    fn qa_back_to_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.qa_naming = false;
+        let state = self.qa_state.clone();
+        state.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Stage two's Enter: create the named note in the picked command's folder
+    /// and open it.
+    fn qa_create(&mut self, cx: &mut Context<Self>) {
+        let Some(cmd) = self.qa_picked.clone() else { return };
+        let name = strip_note_ext(self.qa_name_state.read(cx).value().trim())
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            return;
+        }
+        if self.vault_root.is_none() {
+            self.status = "先打开一个仓库".to_string();
+            cx.notify();
+            return;
+        }
+        let folder = cmd.folder.clone();
+        self.qa_open = false;
+        self.qa_naming = false;
+        let state = self.state.clone();
+        cx.spawn(async move |this, cx| {
+            let created = cx
+                .background_executor()
+                .spawn(async move {
+                    if !folder.is_empty() {
+                        bnote_core::commands::files::ensure_dir(&state, folder.clone())?;
+                    }
+                    bnote_core::commands::files::create_file(
+                        &state,
+                        folder,
+                        format!("{name}.md"),
+                    )
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                match created {
+                    Ok(entry) => {
+                        this.status = format!("快速添加 {}", entry.rel_path);
+                        this.open_note(entry.rel_path.clone(), window, cx);
+                    }
+                    Err(e) => {
+                        this.status = format!("快速添加失败:{e}");
+                        this.focus_editor(window, cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// One 「快速添加」 row: two fields, both re-syncing `settings.quickAdd` on
+    /// every edit (TS `patchSettings` persists per keystroke too).
+    fn qa_add_row(&mut self, name: &str, folder: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let name_input = cx.new(|cx| InputState::new(window, cx));
+        name_input.update(cx, |st, cx| st.set_value(name, window, cx));
+        let folder_input = cx.new(|cx| InputState::new(window, cx));
+        folder_input.update(cx, |st, cx| st.set_value(folder, window, cx));
+        let id = self.qa_next_row_id;
+        self.qa_next_row_id += 1;
+        // Both fields report through the same rebuild, so a removal between
+        // the edit and the callback cannot write into the wrong row.
+        let subs = [name_input.clone(), folder_input.clone()]
+            .into_iter()
+            .map(|input| {
+                cx.subscribe(&input, move |this, _input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change { .. }) {
+                        this.qa_persist(cx);
+                    }
+                })
+            })
+            .collect();
+        self.qa_rows.push(QaRow { id, name: name_input, folder: folder_input, _subs: subs });
+        cx.notify();
+    }
+
+    fn qa_remove_row(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.qa_rows.retain(|row| row.id != id);
+        self.qa_persist(cx);
+    }
+
+    /// Write `settings.quickAdd` from the rows' current field values.
+    fn qa_persist(&self, cx: &gpui::App) {
+        let list: Vec<bnote_core::commands::config::QuickAddCommand> = self
+            .qa_rows
+            .iter()
+            .map(|row| bnote_core::commands::config::QuickAddCommand {
+                name: row.name.read(cx).value().trim().to_string(),
+                folder: row.folder.read(cx).value().trim().trim_matches('/').to_string(),
+            })
+            .collect();
+        let mut cfg = load_config_value(&self.state);
+        bnote_core::commands::config::set_quick_add_commands(&mut cfg, &list);
+        if let Err(e) = bnote_core::commands::config::save_app_config(&self.state, cfg) {
+            eprintln!("settings: 写入 quickAdd 失败 {e}");
+        }
     }
 
     /// `settings.autoNumberHeadings`: turning it on renumbers the open note at
@@ -1734,6 +1956,176 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The quick-add modal (TS `QuickAddModal.tsx`): stage one searches the
+    /// configured commands, stage two names the note and creates it. Esc (or
+    /// ⌘⇧A again) closes; Tab in stage two goes back to the search.
+    fn render_quick_add(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.qa_open {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let weak = cx.entity().downgrade();
+
+        let body: gpui::AnyElement = if self.qa_naming {
+            let picked = self.qa_picked.clone().unwrap_or_default();
+            let folder_label = if picked.folder.is_empty() {
+                "仓库根目录".to_string()
+            } else {
+                picked.folder.clone()
+            };
+            let name = self.qa_name_state.read(cx).value().to_string();
+            v_flex()
+                .gap_0p5()
+                .p_1()
+                .child(div().px_1().child(Input::new(&self.qa_name_state).cleanable(true)))
+                .child(
+                    div()
+                        .px_2()
+                        .py_1p5()
+                        .rounded_md()
+                        .bg(theme.list_active)
+                        .id("qa-create-row")
+                        .cursor_default()
+                        .on_click(cx.listener(|this, _, _, cx| this.qa_create(cx)))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_baseline()
+                                .child(Label::new(if name.trim().is_empty() {
+                                    "输入文件名…".to_string()
+                                } else {
+                                    name.trim().to_string()
+                                }))
+                                .child(
+                                    Label::new(folder_label)
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .ml_auto(),
+                                ),
+                        ),
+                )
+                .child(settings_hint("Tab 返回命令选择 · Enter 创建文件", &theme))
+                .into_any_element()
+        } else if self.qa_commands.is_empty() {
+            v_flex()
+                .gap_2()
+                .p_3()
+                .child(Label::new("还没有快速添加命令，先到「设置 → 快速添加」中配置"))
+                .child(
+                    div()
+                        .child(
+                            Button::new("qa-open-settings")
+                                .outline()
+                                .label("打开设置")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.qa_open = false;
+                                    this.open_settings_modal(window, cx);
+                                    this.settings_tab = SettingsTab::QuickAdd;
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                )
+                .into_any_element()
+        } else {
+            let weak_confirm = weak.clone();
+            let weak_cancel = weak.clone();
+            let items: Vec<CommandItem> = self
+                .qa_commands
+                .iter()
+                .map(|cmd| {
+                    let name = cmd.name.clone();
+                    let folder = if cmd.folder.is_empty() {
+                        "仓库根目录".to_string()
+                    } else {
+                        cmd.folder.clone()
+                    };
+                    CommandItem::new().label(name.clone()).child(move |_window, cx| {
+                        h_flex()
+                            .flex_1()
+                            .gap_2()
+                            .items_baseline()
+                            .child(Label::new(name.clone()).text_sm())
+                            .child(
+                                Label::new(folder.clone())
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .ml_auto(),
+                            )
+                            .into_any_element()
+                    })
+                })
+                .collect();
+            Command::new(&self.qa_state)
+                .items(items)
+                .placeholder("搜索快速添加命令…")
+                .on_confirm(move |ix, _window, cx| {
+                    let _ = weak_confirm.update_in(cx, |this, window, cx| {
+                        this.qa_pick(ix.row, window, cx);
+                    });
+                })
+                .on_cancel(move |_window, cx| {
+                    let _ = weak_cancel.update_in(cx, |this, window, cx| {
+                        this.close_quick_add(window, cx);
+                    });
+                })
+                .into_any_element()
+        };
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(theme.background.opacity(0.45))
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_quick_add(window, cx);
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("quick-add-modal")
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .justify_center()
+                        .items_start()
+                        .pt(px(120.))
+                        .capture_key_down(cx.listener(
+                            |this, event: &KeyDownEvent, window, cx| {
+                                let key = event.keystroke.key.as_str();
+                                if key == "escape" {
+                                    this.close_quick_add(window, cx);
+                                    cx.stop_propagation();
+                                } else if key == "tab" && this.qa_naming {
+                                    this.qa_back_to_pick(window, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .child(
+                            div()
+                                .w(px(620.))
+                                .rounded_lg()
+                                .overflow_hidden()
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.popover)
+                                .occlude()
+                                .child(body),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The settings modal: a nav on the left, the active tab's rows on the
     /// right. Esc (captured before any focused input) or a click outside
     /// closes it.
@@ -1763,6 +2155,7 @@ impl Workspace {
                     (SettingsTab::Editor, "编辑器"),
                     (SettingsTab::Vim, "Vim"),
                     (SettingsTab::Snippets, "公式片段"),
+                    (SettingsTab::QuickAdd, "快速添加"),
                 ]
                 .into_iter()
                 .map(|(tab, label)| {
@@ -1915,6 +2308,50 @@ impl Workspace {
                     &theme,
                 ))
                 .into_any_element(),
+            SettingsTab::QuickAdd => {
+                let rows: Vec<gpui::AnyElement> = self
+                    .qa_rows
+                    .iter()
+                    .map(|row| {
+                        let id = row.id;
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .items_center()
+                            .child(div().flex_1().child(Input::new(&row.name)))
+                            .child(div().flex_1().child(Input::new(&row.folder)))
+                            .child(
+                                Button::new(("qa-remove", id))
+                                    .ghost()
+                                    .label("✕")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.qa_remove_row(id, cx);
+                                    })),
+                            )
+                            .into_any_element()
+                    })
+                    .collect();
+                v_flex()
+                    .gap_3()
+                    .child(settings_heading("快速添加命令", &theme))
+                    .child(settings_hint(
+                        "触发「快速添加文件」(⌘⇧A)后搜索命令,选中并输入文件名即可在目标文件夹创建笔记;文件夹不存在时自动创建,支持 a/b 子路径。改动即时保存。",
+                        &theme,
+                    ))
+                    .children(rows)
+                    .child(
+                        div()
+                            .child(
+                                Button::new("qa-add-row").outline().label("添加命令").on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.qa_add_row("", "", window, cx);
+                                    }),
+                                ),
+                            )
+                            .into_any_element(),
+                    )
+                    .into_any_element()
+            }
         };
 
         Some(
@@ -2498,6 +2935,19 @@ fn settings_hint(text: &str, theme: &gpui_kit::component::theme::Theme) -> impl 
         .text_color(theme.muted_foreground)
 }
 
+/// `/\\.(md|markdown|txt)$/i` — the note extension off a typed file name.
+/// Only the *trailing* extension goes (unlike `wikilink::note_stem`, a folder
+/// part in the name stays).
+fn strip_note_ext(name: &str) -> &str {
+    let lower = name.to_ascii_lowercase();
+    for ext in [".md", ".markdown", ".txt"] {
+        if lower.ends_with(ext) {
+            return &name[..name.len() - ext.len()];
+        }
+    }
+    name
+}
+
 /// The two halves of a link-suggest row (TS splits on the last `/`): the note
 /// name without its extension, and the folder it lives in.
 fn link_row_parts(rel: &str) -> (String, String) {
@@ -2529,6 +2979,7 @@ pub(crate) fn action_for(id: &str) -> Option<Box<dyn gpui::Action>> {
         "toggle-sidebar" => Box::new(a::ToggleSidebar),
         "focus-sidebar" => Box::new(a::FocusSidebar),
         "new-note" => Box::new(a::NewNote),
+        "quick-add" => Box::new(a::QuickAdd),
         "open-daily" => Box::new(a::OpenDaily),
         "todo-to-daily" => Box::new(a::SendTodoToDaily),
         "toggle-todo" => Box::new(a::ToggleTodo),
@@ -2569,6 +3020,7 @@ pub(crate) fn keybinding_for(id: &str, key: &str) -> Option<gpui::KeyBinding> {
         "toggle-sidebar" => gpui::KeyBinding::new(key, a::ToggleSidebar, None),
         "focus-sidebar" => gpui::KeyBinding::new(key, a::FocusSidebar, None),
         "new-note" => gpui::KeyBinding::new(key, a::NewNote, None),
+        "quick-add" => gpui::KeyBinding::new(key, a::QuickAdd, None),
         "open-daily" => gpui::KeyBinding::new(key, a::OpenDaily, None),
         "todo-to-daily" => gpui::KeyBinding::new(key, a::SendTodoToDaily, None),
         "toggle-todo" => gpui::KeyBinding::new(key, a::ToggleTodo, None),
@@ -2707,6 +3159,7 @@ impl gpui::Render for Workspace {
         }
 
         let palette = if self.palette.is_some() { self.render_palette(cx) } else { None };
+        let quick_add = self.render_quick_add(cx);
         let link_suggest = self.render_link_suggest(window, cx);
         let settings = self.render_settings(cx);
 
@@ -2723,6 +3176,7 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::focus_sidebar))
             .on_action(cx.listener(Self::new_note))
+            .on_action(cx.listener(Self::quick_add))
             .on_action(cx.listener(Self::open_daily))
             .on_action(cx.listener(Self::send_todo_to_daily))
             .on_action(cx.listener(Self::toggle_todo))
@@ -2761,6 +3215,7 @@ impl gpui::Render for Workspace {
             .children(palette)
             .children(link_suggest)
             .children(settings)
+            .children(quick_add)
             .child(
                 StatusBar::new()
                     .left(Label::new(self.status.clone()))
@@ -3380,6 +3835,111 @@ mod tests {
         // ⌘, again closes it.
         cx.dispatch_action(actions::OpenSettings);
         workspace.read_with(cx, |ws, _| assert!(!ws.settings_open));
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    /// Quick add end to end on a real vault: ⌘⇧A lists `settings.quickAdd`,
+    /// the pick hands over to naming, and Enter creates the note in the
+    /// command's folder — the folder chain included — then opens it.
+    #[gpui::test]
+    fn quick_add_creates_the_named_note_in_the_commands_folder(cx: &mut TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("bnote-quickadd-vault-{tag}"));
+        let data_dir = std::env::temp_dir().join(format!("bnote-quickadd-data-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&root).expect("the vault");
+        std::fs::create_dir_all(&data_dir).expect("the data dir");
+        // The command list comes from config.json — the settings tab's writer.
+        std::fs::write(
+            data_dir.join("config.json"),
+            serde_json::json!({
+                "settings": { "quickAdd": [{ "name": "add bnote file", "folder": "bnote/收集箱" }] }
+            })
+            .to_string(),
+        )
+        .expect("the config");
+        let canonical = std::fs::canonicalize(&root).expect("canonical vault");
+
+        let (state, rx) = bnote_core::state::AppState::new(data_dir.clone());
+        let mut bridges = None;
+        cx.update(|cx| {
+            bridges = Some((
+                crate::editor::snippets_host::SnippetBridge::init(cx),
+                crate::editor::vim::integration::VimBridge::init(cx),
+            ));
+        });
+        let (snippet_bridge, vim_bridge) = bridges.expect("the bridges");
+        let vault = root.clone();
+        let (workspace, cx) = cx.add_window_view(move |window, cx| {
+            let ws = Workspace::new(
+                state.clone(),
+                rx.resubscribe(),
+                Some(vault),
+                vim_bridge,
+                snippet_bridge,
+                window,
+                cx,
+            );
+            let focus = ws.editor.focus_handle(cx);
+            window.focus(&focus, cx);
+            ws
+        });
+        // The vault restore (and its tree load) run off the UI thread.
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.vault_root.as_deref(), Some(canonical.as_path()));
+        });
+
+        cx.dispatch_action(actions::QuickAdd);
+        workspace.read_with(cx, |ws, _| {
+            assert!(ws.qa_open && !ws.qa_naming, "⌘⇧A opens the pick stage");
+            assert_eq!(ws.qa_commands.len(), 1, "the list came from config.json");
+        });
+        cx.dispatch_action(actions::QuickAdd);
+        workspace.read_with(cx, |ws, _| assert!(!ws.qa_open, "⌘⇧A again puts it away"));
+
+        // The create flow runs through the same handlers the action calls:
+        // after the async work below, this harness stops routing dispatched
+        // actions (the app's own keystrokes do not go through that path).
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.quick_add(&actions::QuickAdd, window, cx);
+            assert!(ws.qa_open);
+            ws.qa_pick(0, window, cx);
+            assert!(ws.qa_naming, "the pick hands over to naming");
+            ws.qa_name_state
+                .clone()
+                .update(cx, |st, cx| st.set_value("想法.md", window, cx));
+            ws.qa_create(cx);
+            assert!(!ws.qa_open, "creating closes the modal");
+        });
+        cx.run_until_parked();
+
+        // The folder chain is created and the file — extension stripped, then
+        // re-added — lands inside it.
+        let created = canonical.join("bnote/收集箱/想法.md");
+        assert!(created.is_file(), "missing {created:?}");
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.open_path.as_deref(), Some("bnote/收集箱/想法.md"));
+        });
+
+        // The pick stage's rows are the settings modal's writer: removing the
+        // command writes the shortened list back.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.open_settings_modal(window, cx);
+            assert_eq!(ws.qa_rows.len(), 1, "the saved command became a row");
+            let id = ws.qa_rows[0].id;
+            ws.qa_remove_row(id, cx);
+            assert!(ws.qa_rows.is_empty());
+        });
+        let cfg = workspace.read_with(cx, |ws, _| {
+            bnote_core::commands::config::load_app_config(&ws.state)
+        })
+        .expect("the config reads");
+        assert_eq!(cfg["settings"]["quickAdd"], serde_json::json!([]));
+
+        let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 }
