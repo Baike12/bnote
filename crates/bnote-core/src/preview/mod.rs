@@ -2,10 +2,14 @@
 //! place of the hidden source (Obsidian-style live preview).
 //!
 //! This module is **pure data + rules**: it turns `(text, selections,
-//! visible window)` into a [`PreviewSnapshot`] of byte ranges. The renderer
-//! (gpui-kit's editor seam) consumes the snapshot: hidden bytes are removed
-//! from shaping, widget spans get an element painted, block spans replace a
-//! whole line range. Nothing here knows about GPUI, markdown trees or fonts.
+//! visible window)` into a [`PreviewSnapshot`] of byte ranges — and of line
+//! numbers for the container looks ([`PreviewPanel`]). The renderer
+//! (gpui-kit's editor seam) consumes the snapshot through four channels:
+//! hidden bytes are removed from shaping, widget spans get an element
+//! painted, block spans replace a whole line range, style spans restyle the
+//! glyphs in place, and panels give the engine the per-line container looks
+//! (backgrounds, left borders, indents). Nothing here knows about GPUI,
+//! markdown trees or fonts.
 //!
 //! # Offset convention
 //!
@@ -192,6 +196,59 @@ pub enum PanelKind {
     Blockquote,
 }
 
+/// A byte range the renderer draws with a **text style** — bnote's mark
+/// decorations (`md-strong`, `md-inline-code`, `md-link`, …; TS
+/// `Decoration.mark`). Unlike a [`PreviewSpan`] a style span hides nothing
+/// and reserves no width: it only restyles glyphs the display already keeps,
+/// so it may overlap hidden spans and other constructs freely and needs no
+/// claim bookkeeping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewStyleSpan {
+    /// Half-open UTF-8 byte range into the document.
+    pub range: Range<usize>,
+    pub style: SpanStyle,
+}
+
+/// The text styles the host knows how to paint, one per TS mark class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpanStyle {
+    /// `md-strong` (`**x**`, `__x__`): bold, `--strong-color`.
+    Strong,
+    /// `md-em` (`*x*`, `_x_`): italic, `--strong-color`.
+    Emphasis,
+    /// `md-strike` (`~~x~~`): strikethrough, `--text-dim`.
+    Strikethrough,
+    /// `md-inline-code` (`` `x` ``): `--code-inline-bg` behind,
+    /// `--tok-number` text. Unconditional: the marks stay styled while the
+    /// caret edits the span (TS `decorateInlineCode` marks the content even
+    /// when the backticks show).
+    InlineCode,
+    /// `md-link`: the label of `[label](url)`.
+    Link,
+    /// `md-url`: the target of `[label](url)`.
+    LinkUrl,
+    /// `md-wikilink`: the displayed text of `[[target]]` / `[[target|alias]]`.
+    WikiLink,
+    /// `md-heading md-h{n}`: an ATX heading's content (1-based level).
+    Heading {
+        /// 1..=6, as written.
+        level: u8,
+    },
+    /// `md-hmark`: the raw `#` run plus its spaces — only while the line is
+    /// the caret's line (TS `decorateHeading` marks it exactly then).
+    HeadingMark,
+    /// `md-listmark`: an ordered list's `1.` marker, dimmed. (Bullets and
+    /// checkboxes are widgets instead, so they carry no mark.)
+    ListMark,
+    /// `md-math-delim` (`$`, `$$`): raw maths source while the caret edits
+    /// the region.
+    MathDelim,
+    /// `md-math-cmd` (`\cmd`): raw maths source.
+    MathCmd,
+    /// `md-math-brace` (`{}[]^_&~`): raw maths source.
+    MathBrace,
+}
+
 /// Everything the renderer needs for one pass.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PreviewSnapshot {
@@ -203,11 +260,18 @@ pub struct PreviewSnapshot {
     /// design: the renderer paints them in order, so the inner panel lands on
     /// top of the outer one.
     pub panels: Vec<PreviewPanel>,
+    /// Sorted by `range.start`; **may overlap** each other and any span (a
+    /// mark restyles what a widget or hidden span covers). The renderer
+    /// merges them into the text styles.
+    pub styles: Vec<PreviewStyleSpan>,
 }
 
 impl PreviewSnapshot {
     pub fn is_empty(&self) -> bool {
-        self.spans.is_empty() && self.blocks.is_empty() && self.panels.is_empty()
+        self.spans.is_empty()
+            && self.blocks.is_empty()
+            && self.panels.is_empty()
+            && self.styles.is_empty()
     }
 
     /// The byte ranges the display removes, sorted and disjoint — the

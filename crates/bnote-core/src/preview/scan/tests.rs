@@ -5,7 +5,8 @@
 use std::ops::Range;
 
 use crate::preview::{
-    BlockKind, PanelKind, PreviewPanel, PreviewSnapshot, PreviewSpanKind, ScanInput, Widget,
+    BlockKind, PanelKind, PreviewPanel, PreviewSnapshot, PreviewSpanKind, ScanInput, SpanStyle,
+    Widget,
 };
 
 use super::scan;
@@ -13,6 +14,16 @@ use super::scan;
 /// Full-document window (the tests never exercise clipping except where they
 /// say so).
 const ALL: Range<usize> = 0..usize::MAX;
+
+/// The document slices carrying `style`, in order — the visible outcome of a
+/// mark.
+fn styled<'a>(snap: &'a PreviewSnapshot, text: &'a str, style: SpanStyle) -> Vec<&'a str> {
+    snap.styles
+        .iter()
+        .filter(|span| span.style == style)
+        .map(|span| &text[span.range.clone()])
+        .collect()
+}
 
 fn snapshot(text: &str, carets: &[usize]) -> PreviewSnapshot {
     snapshot_visible(text, carets, ALL)
@@ -1259,13 +1270,135 @@ fn mixed_document_renders_every_construct_when_the_caret_is_away() {
         "the rule is a block replace: {:?}",
         snap.blocks
     );
+    // Style spans ride along the same document: the emphasis, the inline
+    // code, the ordered marker, and the heading's content all carry marks.
+    assert_eq!(styled(&snap, MIXED, SpanStyle::Strong), vec!["strong"]);
+    assert_eq!(styled(&snap, MIXED, SpanStyle::Emphasis), vec!["em"]);
     assert_eq!(
-        snap.blocks
-            .iter()
-            .filter(|b| b.kind == BlockKind::HiddenLine)
-            .count(),
-        2,
-        "both fence lines collapse: {:?}",
-        snap.blocks
+        styled(&snap, MIXED, SpanStyle::InlineCode),
+        vec!["code"]
     );
+    assert_eq!(styled(&snap, MIXED, SpanStyle::ListMark), vec!["1."]);
+    assert_eq!(
+        styled(&snap, MIXED, SpanStyle::Heading { level: 1 }),
+        vec!["Title"]
+    );
+    assert_eq!(styled(&snap, MIXED, SpanStyle::Link), vec!["link"]);
+    assert_eq!(
+        styled(&snap, MIXED, SpanStyle::WikiLink),
+        vec!["alias"]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Style spans (the TS mark classes, `Decoration.mark`)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn style_spans_mark_emphasis_code_links_and_wikilinks() {
+    let doc = "a **bold** *em* ~~gone~~ `code` [label](https://x.dev) [[wiki|alias]] b\n";
+    let snap = snapshot(doc, &[doc.len()]);
+    assert_eq!(styled(&snap, doc, SpanStyle::Strong), vec!["bold"]);
+    assert_eq!(styled(&snap, doc, SpanStyle::Emphasis), vec!["em"]);
+    assert_eq!(styled(&snap, doc, SpanStyle::Strikethrough), vec!["gone"]);
+    assert_eq!(styled(&snap, doc, SpanStyle::InlineCode), vec!["code"]);
+    assert_eq!(styled(&snap, doc, SpanStyle::Link), vec!["label"]);
+    assert_eq!(styled(&snap, doc, SpanStyle::LinkUrl), vec!["https://x.dev"]);
+    assert_eq!(styled(&snap, doc, SpanStyle::WikiLink), vec!["alias"]);
+    // A wikilink without an alias marks its whole content.
+    let doc = "[[plain]]\n";
+    let snap = snapshot(doc, &[doc.len()]);
+    assert_eq!(styled(&snap, doc, SpanStyle::WikiLink), vec!["plain"]);
+}
+
+/// The activity gates differ per construct — the TS marks the inline-code
+/// content unconditionally (`decorateInlineCode`) but runs the whole emphasis
+/// helper only off the caret (`!active(node)`), so the two behave differently
+/// while the caret edits them. Each construct is gated on its own range.
+#[test]
+fn inline_code_keeps_its_mark_while_emphasis_loses_it() {
+    let doc = "a `code` b **bold** c\n";
+    // Caret inside the code span: the code mark is unconditional and the
+    // sibling emphasis (a different construct) is unaffected.
+    let caret = at(doc, "code") + 1;
+    let snap = snapshot(doc, &[caret]);
+    // The caret's code span keeps its backticks; the emphasis on the same
+    // line is inactive and hides its `**` runs.
+    assert_eq!(snap.spans.len(), 2, "{:?}", snap.spans);
+    assert!(hides(&snap, 11, 13) && hides(&snap, 17, 19), "{:?}", snap.spans);
+    assert_eq!(styled(&snap, doc, SpanStyle::InlineCode), vec!["code"]);
+    assert_eq!(styled(&snap, doc, SpanStyle::Strong), vec!["bold"]);
+    // Caret inside the emphasis: its mark is gone (the whole helper is gated
+    // on `!active(node)`), while the code span keeps its mark.
+    let caret = at(doc, "bold") + 1;
+    let snap = snapshot(doc, &[caret]);
+    assert!(
+        styled(&snap, doc, SpanStyle::Strong).is_empty(),
+        "the emphasis under the caret loses its mark"
+    );
+    assert_eq!(
+        styled(&snap, doc, SpanStyle::InlineCode),
+        vec!["code"],
+        "the code mark is unconditional"
+    );
+}
+
+#[test]
+fn style_spans_mark_headings_and_raw_math_source() {
+    let doc = "# Title ##\ntext\n$x^2 + \\frac{1}{2}$\n";
+    // Caret on the second line: the heading is inactive but its content keeps
+    // the `md-heading md-h1` mark (only the hash hiding is lifted on the
+    // caret's line), and the raw `#` run carries no mark.
+    let snap = snapshot(doc, &[at(doc, "text")]);
+    assert_eq!(
+        styled(&snap, doc, SpanStyle::Heading { level: 1 }),
+        vec!["Title ##"]
+    );
+    assert!(styled(&snap, doc, SpanStyle::HeadingMark).is_empty());
+    // Caret on the heading line: the hashes stay and get the dim mark.
+    let snap = snapshot(doc, &[at(doc, "Title") + 2]);
+    assert_eq!(styled(&snap, doc, SpanStyle::HeadingMark), vec!["# "]);
+    assert_eq!(
+        styled(&snap, doc, SpanStyle::Heading { level: 1 }),
+        vec!["Title ##"]
+    );
+
+    // Maths source colouring only while the caret edits the region; a lone
+    // `$` is not a highlighted delimiter (the TS regex matches `$$` only).
+    let caret = at(doc, "^2");
+    let snap = snapshot(doc, &[caret]);
+    assert_eq!(
+        styled(&snap, doc, SpanStyle::MathBrace),
+        vec!["^", "{", "}", "{", "}"]
+    );
+    assert_eq!(styled(&snap, doc, SpanStyle::MathCmd), vec!["\\frac"]);
+    assert!(styled(&snap, doc, SpanStyle::MathDelim).is_empty());
+    // Away from the region: the inline formula is a widget, no source marks.
+    let snap = snapshot(doc, &[at(doc, "text")]);
+    assert!(styled(&snap, doc, SpanStyle::MathBrace).is_empty());
+    assert!(styled(&snap, doc, SpanStyle::MathCmd).is_empty());
+    assert!(styled(&snap, doc, SpanStyle::MathDelim).is_empty());
+}
+
+#[test]
+fn style_spans_mark_ordered_list_markers_only() {
+    let doc = "1. one\n- two\n";
+    let snap = snapshot(doc, &[doc.len()]);
+    // The ordered marker is dimmed in place; the bullet is a widget instead,
+    // so it carries no mark (TS `decorateListMark`).
+    assert_eq!(styled(&snap, doc, SpanStyle::ListMark), vec!["1."]);
+}
+
+/// Styles are not claims: a mark may cover bytes another rule hides, and the
+/// window clip is the only gate.
+#[test]
+fn style_spans_are_not_claims_and_follow_the_window() {
+    let doc = "a **bold** b\n";
+    let snap = snapshot(doc, &[doc.len()]);
+    // The `**` pairs are hidden; the content mark sits between them.
+    assert!(hides(&snap, 2, 4));
+    assert_eq!(styled(&snap, doc, SpanStyle::Strong), vec!["bold"]);
+    // A window that clips the line reports no styles for it.
+    let snap = snapshot_visible(doc, &[doc.len()], doc.len()..doc.len() + 1);
+    assert!(snap.styles.is_empty(), "{:?}", snap.styles);
 }

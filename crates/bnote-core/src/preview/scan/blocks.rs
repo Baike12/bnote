@@ -74,6 +74,8 @@ pub(super) struct HeadingInfo {
     pub(super) prefix: (usize, usize),
     /// Start of the heading text (inline content).
     pub(super) content_from: usize,
+    /// Number of `#`s, 1..=6 (the `md-h{level}` in TS `decorateHeading`).
+    pub(super) level: u8,
 }
 
 /// A `-`-only setext underline: the empty-bullet ambiguity
@@ -421,6 +423,7 @@ fn atx_heading(text: &str, pos: usize, to: usize) -> Option<HeadingInfo> {
     Some(HeadingInfo {
         prefix: (pos, content_from),
         content_from,
+        level: level as u8,
     })
 }
 

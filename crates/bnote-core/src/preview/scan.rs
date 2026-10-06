@@ -32,7 +32,7 @@ mod geom;
 mod inline;
 
 use crate::markdown::callout::CalloutRegion;
-use crate::preview::{BlockKind, PanelKind, PreviewSnapshot, ScanInput, Widget};
+use crate::preview::{BlockKind, PanelKind, PreviewSnapshot, ScanInput, SpanStyle, Widget};
 
 use blocks::{ListKind, Statics};
 use geom::{line_of, Activity, Sink, Window};
@@ -55,6 +55,7 @@ pub fn scan(input: ScanInput<'_>) -> PreviewSnapshot {
     emit_callout_edges(&statics, &act, &mut sink);
     emit_rules(&statics, &act, &mut sink);
     emit_math_blocks(&statics, &act, &mut sink, input.math_preview);
+    emit_math_source_styles(input.text, &statics, &act, &mut sink);
 
     let inline = inline::Inline {
         text: input.text,
@@ -153,6 +154,68 @@ fn emit_callout_panels(statics: &Statics, sink: &mut Sink) {
                 close_line: region.closed.then_some(close),
             },
         );
+    }
+}
+
+/// The raw maths source keeps syntax colouring while the caret edits the
+/// region (TS `highlightMathSource`, livePreview.ts:663-681): `$$`
+/// delimiters purple, `\cmd`s red, braces and structure chars orange. The TS
+/// runs this in its inline pass for every region the caret touches — inline,
+/// single-line display, and a multi-line block being edited — before the
+/// block field takes over the inactive ones. Regions inside fenced code are
+/// skipped, like every other maths rule.
+fn emit_math_source_styles(text: &str, statics: &Statics, act: &Activity, sink: &mut Sink) {
+    for region in &statics.math {
+        if !act.touches(region.from, region.to) {
+            continue;
+        }
+        if statics
+            .code_ranges
+            .iter()
+            .any(|range| range.0 < region.to && range.1 > region.from)
+        {
+            continue;
+        }
+        let source = &text[region.from..region.to];
+        // The TS bails out of a region longer than 20 000 chars.
+        if source.len() > 20_000 {
+            continue;
+        }
+        let bytes = source.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let (style, len) = match bytes[i] {
+                // `(\$\$)` — only a doubled delimiter is highlighted; a lone
+                // `$` matches nothing in the TS regex.
+                b'$' if bytes.get(i + 1) == Some(&b'$') => (SpanStyle::MathDelim, 2),
+                // `(\\[a-zA-Z]+|\\.)` — a command name or an escaped char.
+                b'\\' => {
+                    let mut j = i + 1;
+                    if bytes.get(j).is_some_and(u8::is_ascii_alphabetic) {
+                        while bytes.get(j).is_some_and(u8::is_ascii_alphabetic) {
+                            j += 1;
+                        }
+                    } else if j < bytes.len() {
+                        j += 1;
+                    } else {
+                        // A trailing backslash matches neither alternative.
+                        i += 1;
+                        continue;
+                    }
+                    (SpanStyle::MathCmd, j - i)
+                }
+                // `([{}[\]^_&~])` — braces and structure characters.
+                b'{' | b'}' | b'[' | b']' | b'^' | b'_' | b'&' | b'~' => {
+                    (SpanStyle::MathBrace, 1)
+                }
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+            sink.style(region.from + i, region.from + i + len, style);
+            i += len;
+        }
     }
 }
 
@@ -294,7 +357,9 @@ fn scan_line(
         }
         match &list.kind {
             ListKind::Ordered => {
-                // Ordered markers stay visible (the TS adds a dimming class).
+                // Ordered markers stay visible, dimmed (TS `md-listmark`,
+                // livePreview.ts:794-796).
+                sink.style(list.mark.0, list.mark.1, SpanStyle::ListMark);
             }
             ListKind::Bullet => {
                 if act.inactive(list.mark.0, list.mark.1) {
@@ -338,7 +403,24 @@ fn scan_line(
         // covered by the `md-heading` mark, not by a replace).
         if act.inactive(from, to) {
             sink.hide(heading.prefix.0, heading.prefix.1);
+        } else {
+            // Raw `#` markers on the caret line, dimmed like Obsidian's
+            // formatting (TS `md-hmark`).
+            sink.style(heading.prefix.0, heading.prefix.1, SpanStyle::HeadingMark);
         }
+        // The heading's content carries `md-heading md-h{level}` whatever the
+        // activity — "Heading colors apply on the active line too; only the
+        // hash hiding is lifted there". The TS range is
+        // `contentFrom..node.to` (the ATXHeading node ends at the line's last
+        // non-space byte; a closing `#` run is part of it).
+        let content_to = text[..to].trim_end().len();
+        sink.style(
+            heading.content_from,
+            content_to,
+            SpanStyle::Heading {
+                level: heading.level,
+            },
+        );
     }
 
     if let Some(setext) = &info.setext_dash {

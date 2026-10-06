@@ -11,12 +11,13 @@
 //! a markdown link — those ranges are collected up front and every later
 //! scanner skips them (the TS `exclude` lists + `return false` at those
 //! nodes). Links and autolinks hide nothing at all: `decorateLink`
-//! (1075-1091) and the URL/Autolink branch (524-529) only add class marks,
-//! which the snapshot model cannot express, so those ranges merely shield
-//! their content.
+//! (1075-1091) and the URL/Autolink branch (524-529) only add class marks —
+//! which the snapshot expresses as [`SpanStyle`] spans (`md-link` on the
+//! label, `md-url` on the target) while the ranges still shield their
+//! content from every other rule.
 
 use crate::markdown::math_scan::MathRegion;
-use crate::preview::Widget;
+use crate::preview::{SpanStyle, Widget};
 
 use super::geom::{Activity, Sink};
 
@@ -115,12 +116,12 @@ impl Inline<'_> {
                 b'[' => {
                     if let Some(node) = bracketed(self.text, i, to) {
                         let end = node.node.1;
-                        // `decorateLink` (livePreview.ts:1075-1091) emits only
-                        // marks (`md-link` on the label, `md-url` on the URL)
-                        // and no replace — the source stays visible, so the
-                        // link contributes only this shield (the TS returns
-                        // false at the node, shielding the label from every
-                        // other rule).
+                        // `decorateLink` (livePreview.ts:1075-1091) emits no
+                        // replace — the source stays visible — but marks the
+                        // label (`md-link`) and the URL (`md-url`). The range
+                        // also shields the label from every other rule.
+                        sink.style(node.label.0, node.label.1, SpanStyle::Link);
+                        sink.style(node.dest.0, node.dest.1, SpanStyle::LinkUrl);
                         shielded.push((i, end));
                         i = end;
                     } else {
@@ -148,6 +149,10 @@ impl Inline<'_> {
                 sink.hide(span.open.0, span.open.1);
                 sink.hide(span.close.0, span.close.1);
             }
+            // The content keeps its mark even while the caret edits the span
+            // — TS `decorateInlineCode` marks `first.to..last.from`
+            // unconditionally, only the backtick replaces are gated.
+            sink.style(span.open.1, span.close.0, SpanStyle::InlineCode);
         }
 
         code_excl.extend(&shielded);
@@ -333,11 +338,16 @@ pub(super) fn scan_wikilinks(
             i = close + 2;
             continue;
         }
+        // `md-wikilink` on the **displayed** text: the alias when there is a
+        // `|`, the whole content otherwise (TS `decorateWikiLinks`, 1155-1162).
         if let Some(pipe) = pipe {
             let alias_start = from + 2 + pipe + 1;
             if alias_start > from + 2 {
                 sink.hide(from + 2, alias_start);
             }
+            sink.style(alias_start, to - 2, SpanStyle::WikiLink);
+        } else {
+            sink.style(from + 2, to - 2, SpanStyle::WikiLink);
         }
         sink.hide(from, from + 2);
         sink.hide(to - 2, to);
@@ -708,6 +718,18 @@ fn emphasis(
                 if act.inactive(open_chunk.0, close_chunk.1) {
                     sink.hide(open_chunk.0, open_chunk.1);
                     sink.hide(close_chunk.0, close_chunk.1);
+                    // The **content** between the delimiters carries the mark
+                    // (`md-strong` / `md-em` / `md-strike`, TS
+                    // `decorateEmphasis` `first.to..last.from`). The TS runs
+                    // the whole helper only while the node is inactive — the
+                    // caret line shows bare source — so the mark follows the
+                    // same gate as the hides here.
+                    let style = match (runs[ci].ch, use_len) {
+                        (b'~', _) => SpanStyle::Strikethrough,
+                        (_, 2) => SpanStyle::Strong,
+                        _ => SpanStyle::Emphasis,
+                    };
+                    sink.style(open_chunk.1, close_chunk.0, style);
                 }
                 if runs[oi].remaining() == 0 {
                     stack.retain(|&x| x != oi);

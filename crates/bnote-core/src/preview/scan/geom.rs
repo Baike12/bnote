@@ -6,7 +6,7 @@ use std::ops::{Range, RangeInclusive};
 
 use crate::preview::{
     BlockKind, PanelKind, PreviewBlock, PreviewPanel, PreviewSnapshot, PreviewSpan,
-    PreviewSpanKind, Widget,
+    PreviewSpanKind, PreviewStyleSpan, SpanStyle, Widget,
 };
 
 /// Line table: `[(start, end)]` with `end` pointing at the `\n` (identical to
@@ -140,6 +140,7 @@ pub(super) struct Sink<'a> {
     claimed: Vec<Range<usize>>,
     blocks: Vec<PreviewBlock>,
     panels: Vec<PreviewPanel>,
+    styles: Vec<PreviewStyleSpan>,
 }
 
 impl<'a> Sink<'a> {
@@ -157,6 +158,7 @@ impl<'a> Sink<'a> {
             claimed: Vec::new(),
             blocks: Vec::new(),
             panels: Vec::new(),
+            styles: Vec::new(),
         }
     }
 
@@ -263,6 +265,21 @@ impl<'a> Sink<'a> {
         true
     }
 
+    /// Records a text style over `[from, to)`. Unlike [`Sink::push`] this is
+    /// **not a claim**: the TS mark decorations coexist with replaces, so a
+    /// style may overlap hidden spans and other constructs; only the empty
+    /// range and the visible window gate it.
+    pub(super) fn style(&mut self, from: usize, to: usize, style: SpanStyle) -> bool {
+        if from >= to || !self.win.intersects(from, to) {
+            return false;
+        }
+        self.styles.push(PreviewStyleSpan {
+            range: from..to,
+            style,
+        });
+        true
+    }
+
     /// Records a container panel over an inclusive line range, clipped to the
     /// visible window (TS clips its per-line classes the same way). Refused
     /// when the clip leaves nothing visible. `open_line`/`close_line` are the
@@ -286,10 +303,12 @@ impl<'a> Sink<'a> {
         self.spans.sort_by_key(|s| s.range.start);
         self.blocks.sort_by_key(|b| b.first_line);
         self.panels.sort_by_key(|p| p.first_line);
+        self.styles.sort_by_key(|s| s.range.start);
         PreviewSnapshot {
             spans: self.spans,
             blocks: self.blocks,
             panels: self.panels,
+            styles: self.styles,
         }
     }
 }
