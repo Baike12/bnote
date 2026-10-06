@@ -23,6 +23,7 @@ use gpui::{
 };
 use gpui_kit::assets::Assets;
 use gpui_kit::component::theme::{Theme, ThemeMode};
+use editor::snippets_host::SnippetBridge;
 use editor::vim::integration::VimBridge;
 use workspace::{Workspace, keybinding_for};
 
@@ -75,6 +76,11 @@ fn main() {
                 ..Default::default()
             };
 
+            // The snippet bridge registers its interceptor FIRST: both
+            // interceptors run for every key in registration order, and the
+            // snippet layer must read the vim mode *before* vim processes the
+            // key (see `editor::snippets_host`'s module docs).
+            let snippet_bridge = SnippetBridge::init(cx);
             // One app-wide vim bridge; the workspace attaches the editor on
             // ⌘⇧V (bnote's default: off).
             let vim_bridge = VimBridge::init(cx);
@@ -87,6 +93,7 @@ fn main() {
                         rx.resubscribe(),
                         vault_for_window.clone(),
                         vim_bridge.clone(),
+                        snippet_bridge.clone(),
                         window,
                         cx,
                     )

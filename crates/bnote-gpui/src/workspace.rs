@@ -41,6 +41,7 @@ use crate::apply_ops::apply_outcome;
 use crate::commands::{COMMANDS, actions};
 use crate::daily_host::{DailyHost, SyncWrite};
 use crate::editor::preview::{PreviewFont, PreviewHost};
+use crate::editor::snippets_host::SnippetBridge;
 use crate::editor::vim::core::Mode as VimMode;
 use crate::footprint_host::FootprintHost;
 
@@ -96,6 +97,13 @@ pub struct Workspace {
     /// App-wide vim bridge (created in main; shared with the interceptor).
     vim_bridge: VimBridge,
     vim_enabled: bool,
+    /// App-wide LaTeX-suite snippet bridge (created in main before the vim
+    /// bridge; owns one `SnippetHost` per attached editor).
+    snippets: SnippetBridge,
+    /// The visible row range the bracket marks were last computed for, so the
+    /// render path only recomputes them when the document, the caret or the
+    /// viewport moved.
+    snippet_marks_rows: Option<std::ops::Range<usize>>,
     /// Today as YYYY-MM-DD (local), fixed at window creation.
     today: String,
     /// Live-preview host: scans on every text/selection change (see
@@ -131,6 +139,7 @@ impl Workspace {
         mut event_rx: broadcast::Receiver<bnote_core::AppEvent>,
         last_vault: Option<PathBuf>,
         vim_bridge: VimBridge,
+        snippets: SnippetBridge,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -141,6 +150,9 @@ impl Workspace {
                 .soft_wrap(true)
                 .placeholder("打开左侧文件开始笔记")
         });
+        // Snippets run with vim on or off; the bridge reads the mode from the
+        // vim bridge, which stays the single mode authority.
+        snippets.attach(editor.clone(), vim_bridge.clone(), cx);
 
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let agent = cx.new(|cx| AgentPanel::new(state.clone(), window, cx));
@@ -197,6 +209,8 @@ impl Workspace {
             header_returns: ops::HeaderTodoReturnMap::new(),
             vim_bridge,
             vim_enabled: false,
+            snippets,
+            snippet_marks_rows: None,
             today: today_string(),
             preview,
             preview_dirty: true,
@@ -277,6 +291,14 @@ impl Workspace {
             "vault-changed" => {
                 let paths: Vec<String> =
                     serde_json::from_value(ev.payload).unwrap_or_default();
+                if paths
+                    .iter()
+                    .any(|p| p.ends_with(".bnote/snippets.js"))
+                {
+                    // The vault snippet source changed on disk: reload it (the
+                    // Tauri shell hot-reloads the same file on save).
+                    self.load_vault_snippets(cx);
+                }
                 if let Some(fp) = &self.footprint {
                     fp.note_dirty(&paths);
                 }
@@ -384,6 +406,7 @@ impl Workspace {
     fn on_vault_ready(&mut self, root: PathBuf, name: &str, cx: &mut Context<Self>) {
         self.vault_root = Some(root.clone());
         self.status = format!("仓库:{}", name);
+        self.load_vault_snippets(cx);
         self.daily = Some(Arc::new(DailyHost::new(self.state.clone(), &root)));
         let fp = Arc::new(FootprintHost::new(&root));
         self.footprint = Some(fp.clone());
@@ -393,6 +416,67 @@ impl Workspace {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Read `<vault>/.bnote/snippets.js` and, when it yields snippet
+    /// definitions, replace the built-in set with it (the TS source-ownership
+    /// rule: the file replaces, never stacks).
+    ///
+    /// **TODO(vault-file extraction)**: the file on disk is a JS module
+    /// (`export default [ … ]`, `//` comments, regex literals). Extracting its
+    /// array is the shell's job (`bnote_core::snippets::load` module docs) and
+    /// is not written yet, so today the read path ends in the JSON-shape
+    /// parser, a JS file fails it, and the editor keeps the built-ins with the
+    /// status line saying so — the TS error path. The seam is
+    /// `SnippetHost::load_source(&str)`; only the JS→JSON extraction is
+    /// missing.
+    fn load_vault_snippets(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.vault_root.clone() else { return };
+        let path = root.join(".bnote").join("snippets.js");
+        if !path.is_file() {
+            self.snippets.use_builtins(&self.editor);
+            self.status = format!("仓库:{}", self.vault_name());
+            return;
+        }
+        let editor = self.editor.clone();
+        let snippets = self.snippets.clone();
+        cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_executor()
+                .spawn(async move { std::fs::read_to_string(&path) })
+                .await;
+            this.update(cx, |this, cx| {
+                match read {
+                    Ok(source) => match snippets.load_source(&editor, &source) {
+                        Ok(_) => {
+                            this.status = format!(
+                                "公式片段 {} 条(仓库)",
+                                snippets.snippet_count(&editor)
+                            );
+                        }
+                        Err(e) => {
+                            snippets.use_builtins(&editor);
+                            this.status = format!("仓库片段未生效,已回到内置集:{e}");
+                        }
+                    },
+                    Err(e) => {
+                        snippets.use_builtins(&editor);
+                        this.status = format!("读取仓库片段失败:{e}");
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn vault_name(&self) -> String {
+        self.vault_root
+            .as_ref()
+            .and_then(|r| r.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
     }
 
     fn on_edited(&mut self, cx: &mut Context<Self>) {
@@ -1025,6 +1109,10 @@ impl Workspace {
         if self.vim_enabled {
             self.vim_bridge.reset(&self.editor);
         }
+        // The buffer was replaced wholesale: the session chain (and the math
+        // cache) describe a document that no longer exists.
+        self.snippets.reset(&self.editor);
+        self.snippet_marks_rows = None;
         self.update_cursor_label(cx);
     }
 
@@ -1308,6 +1396,7 @@ fn line_col_to_byte(text: &str, line: usize, col_chars: usize) -> usize {
 
 impl gpui::Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let content_changed = self.preview_dirty;
         if self.preview_dirty {
             self.preview_dirty = false;
             let selection = self.editor.read(cx).selected_range();
@@ -1318,6 +1407,14 @@ impl gpui::Render for Workspace {
                 .decorations(&text, &[selection], window, cx);
             self.editor
                 .update(cx, |state, cx| state.set_preview_decorations(decorations, cx));
+        }
+        // LaTeX-suite bracket marks: rebuilt when the document or the caret
+        // changed (the same subscription that drives the preview) or when the
+        // viewport scrolled, so a frame that changes none of them does no work.
+        let rows = self.editor.read(cx).visible_row_range();
+        if content_changed || rows != self.snippet_marks_rows {
+            self.snippet_marks_rows = rows;
+            self.snippets.refresh_marks(&self.editor, window, cx);
         }
         let theme = cx.theme().clone();
         let footprint_count = self
