@@ -1,5 +1,7 @@
 //! Pure vim state: modes, registers, marks, jump list, pending keys, counts.
 //! No gpui imports — this file is the model the whole engine rotates around.
+// Engine surface reserved for the host adapter and future motions.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::ops::Range;

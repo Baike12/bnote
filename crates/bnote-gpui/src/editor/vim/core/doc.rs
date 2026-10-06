@@ -5,6 +5,8 @@
 //! test double. Implementations must be cheap: `len`, `char_at`, `line_*` and
 //! `slice` are called O(local range) per motion — never O(whole document)
 //! beyond what a rope already exposes in O(log n).
+// Engine surface reserved for the host adapter and future motions.
+#![allow(dead_code)]
 
 use std::ops::Range;
 

@@ -1,6 +1,8 @@
 //! Motions: `move_point` for cursor movement and `motion_range` for
 //! operator+motion composition, with vim's exclusive/inclusive/linewise kinds
 //! and the "exclusive adjustment" rules (see `:h exclusive`).
+// Engine surface reserved for the host adapter and future motions.
+#![allow(dead_code)]
 
 use super::doc::{
     big_char_class, char_class, first_non_blank, is_word_char, last_line, line_end, line_index,

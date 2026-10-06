@@ -88,6 +88,7 @@ impl DailyHost {
 
     /// Today's daily text: the file when it exists, else the rollover
     /// scaffold (not written here — the first actual sync writes it).
+    #[allow(dead_code)] // the 足迹 renderer will read it once the block seam lands
     pub fn daily_text_for(&self, today: &str) -> String {
         let daily_path = model::daily_path_for(
             &self.vault.to_string_lossy(),
@@ -109,11 +110,6 @@ impl DailyHost {
         let scaffold = self.scaffold_for(today);
         self.write_file(&abs, &scaffold)?;
         Ok((abs, scaffold))
-    }
-
-    /// Vault root as a string (model path helpers want &str).
-    pub fn vault_str(&self) -> String {
-        self.vault.to_string_lossy().to_string()
     }
 
     pub fn scaffold_for(&self, today: &str) -> String {
@@ -319,6 +315,7 @@ impl DailyHost {
 
     /// Reload from disk after another shell (or the sync itself) touched the
     /// link store.
+    #[allow(dead_code)] // wired to the watcher when multi-window lands
     pub fn reload_links(&self) {
         *self.links.lock().unwrap() = links::load_links(&self.vault);
     }

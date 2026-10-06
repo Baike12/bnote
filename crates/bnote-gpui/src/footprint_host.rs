@@ -39,6 +39,7 @@ impl FootprintHost {
         self.core.tick(today, Instant::now(), &scan_closure(self.vault.clone()));
     }
 
+    #[allow(dead_code)] // reads land with the footprint panel
     pub fn entries_for(&self, day: &str) -> Vec<FootprintEntry> {
         self.core.entries_for(day)
     }
@@ -47,6 +48,7 @@ impl FootprintHost {
         self.core.today_entries()
     }
 
+    #[allow(dead_code)] // cache-invalidation hook for the panel
     pub fn revision(&self) -> u64 {
         self.core.revision()
     }

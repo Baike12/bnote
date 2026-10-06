@@ -32,6 +32,7 @@ pub enum CursorPlan {
 
 /// Undo hints for the host's undo manager.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[allow(dead_code)] // `New` reserved: transaction-boundary hints for the host undo manager
 pub enum UndoIntent {
     #[default]
     None,
@@ -96,6 +97,7 @@ impl Execution {
 
 /// Everything a command needs from the host for one `feed` call.
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // selection: consumed by visual-mode ops as they land
 pub struct HostContext {
     /// Active cursor (the selection's active end), UTF-8 byte offset.
     pub cursor: usize,

@@ -3,6 +3,8 @@
 //! decides linewise vs charwise application (objects are always charwise
 //! except `ip`/`ap`, which report whole lines and are linewise for
 //! operators like `dip`).
+// Engine surface reserved for the host adapter and future motions.
+#![allow(dead_code)]
 
 use super::doc::{
     big_char_class, char_at, char_class, last_line, line_index, line_is_blank,
@@ -285,6 +287,7 @@ fn bracket_range(
 ) -> Option<Range<usize>> {
     // Find the close: scan forward tracking depth.
     let mut depth: i32 = 0;
+    #[allow(unused_assignments)] // the loop breaks immediately after the first assignment
     let mut close_pos = None;
     let mut pos = cursor;
     loop {
@@ -311,6 +314,7 @@ fn bracket_range(
     // Find the open: scan backward tracking depth. The close bracket we are
     // matching (at `close_pos`) is consumed, not counted.
     let mut depth: i32 = 0;
+    #[allow(unused_assignments)] // same pattern: assigned once, then break
     let mut open_pos = None;
     let mut pos = close_pos;
     loop {
