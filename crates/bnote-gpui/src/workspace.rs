@@ -595,6 +595,73 @@ fn today_string() -> String {
 }
 
 impl Workspace {
+    /// Headless-harness seams (cfg(test)): the private views the debug
+    /// harness reads through (`src/harness.rs`). No production path uses
+    /// these, and they compile out of release builds.
+    #[cfg(test)]
+    pub(crate) fn harness_editor(&self) -> &Entity<EditorState> {
+        &self.editor
+    }
+    #[cfg(test)]
+    pub(crate) fn harness_vim(&self) -> &VimBridge {
+        &self.vim_bridge
+    }
+    #[cfg(test)]
+    pub(crate) fn harness_open_path(&self) -> Option<&str> {
+        self.open_path.as_deref()
+    }
+    /// Load a vault-relative path into the editor the way the construction
+    /// fixture wants it (no install/preview dance, cursor at 0).
+    #[cfg(test)]
+    pub(crate) fn harness_load(&mut self, rel: &str, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_path = Some(rel.to_string());
+        self.editor.update(cx, |st, cx| st.set_value(text, window, cx));
+    }
+    /// Flip the vim setting without the settings UI (the fixture path).
+    #[cfg(test)]
+    pub(crate) fn harness_set_vim(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.set_vim_setting(on, cx);
+    }
+
+    // ---- debug channels (the headless harness, DEBUGGING.md) ------------
+    // Non-test: `--harness-shot` (a release binary) drives the same seams
+    // the test fixture does. They only read/write the open note's text and
+    // the vim flag — no production path calls them.
+
+    /// Put `text` into the editor as the note's content (cursor at 0).
+    pub(crate) fn debug_set_doc(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |st, cx| {
+            st.set_value(text, window, cx);
+            st.set_selected_range(0..0, cx);
+        });
+    }
+
+    /// The caret as a byte offset (scripted shots position for vim tests).
+    pub(crate) fn debug_set_cursor(&mut self, byte: usize, cx: &mut Context<Self>) {
+        self.editor.update(cx, |st, cx| st.set_selected_range(byte..byte, cx));
+    }
+
+    /// Open a vault-relative path the mechanical way (read from disk, set as
+    /// the note) — the scripted shots start from a known document.
+    pub(crate) fn debug_load_note(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.vault_root.clone() else { return };
+        let text = std::fs::read_to_string(root.join(rel)).unwrap_or_default();
+        self.load_note_text(rel, &text, window, cx);
+    }
+
+    /// The mechanical load shared by the fixtures: path + text, cursor at 0.
+    pub(crate) fn load_note_text(&mut self, rel: &str, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_path = Some(rel.to_string());
+        self.editor.update(cx, |st, cx| {
+            st.set_value(text, window, cx);
+            st.set_selected_range(0..0, cx);
+        });
+    }
+
+    pub(crate) fn debug_set_vim(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.set_vim_setting(on, cx);
+    }
+
     pub fn new(
         state: Arc<AppState>,
         mut event_rx: broadcast::Receiver<bnote_core::AppEvent>,
@@ -6224,9 +6291,11 @@ mod tests {
         numbering, should_schedule_renumber, wikilink, COMMANDS,
     };
     use crate::commands::keybinding_for;
+    use crate::harness::{inert_ime, inert_lsp};
     use gpui::px;
     use std::path::PathBuf;
     use crate::ime_host::{CurrentSource, ImeServices, Switcher};
+    #[allow(unused_imports)]
     use crate::python_lsp::PyLspServices;
     use gpui_kit::base::input as bc_diag;
     use gpui::{
@@ -6236,33 +6305,6 @@ mod tests {
     use std::rc::Rc;
 
     use super::{ImePickField, SettingsTab};
-
-    /// The IME follow's seams, inert: a test process has no main run loop to
-    /// service the core's main-queue hop (see `ImeServices`), and these tests
-    /// all target other wiring. The follow's own tests own its behaviour.
-    /// The ty follow's seams, inert: these tests never spawn `ty` (the
-    /// follow's own tests own its behaviour).
-    fn inert_lsp() -> PyLspServices {
-        PyLspServices {
-            sync: Rc::new(|_, _, _, _| Task::ready(Ok(false))),
-            request: Rc::new(|_, _, _, _, _| Task::ready(Ok(serde_json::Value::Null))),
-            close: Rc::new(|_, _, _| Task::ready(())),
-            info: Rc::new(|_, _, _| Task::ready(Ok(serde_json::json!({ "lsp": "off" })))),
-            set_lsp: Rc::new(|_, _, _, _| Task::ready(Ok(()))),
-            uv_create: Rc::new(|_, _, _| {
-                Task::ready(Ok(bnote_core::python::uvenv::UvOutcome {
-                    log: String::new(),
-                    ran_init: false,
-                }))
-            }),
-        }
-    }
-
-    fn inert_ime() -> ImeServices {
-        let switch: Switcher = Rc::new(|_, _, _| Task::ready(()));
-        let current: CurrentSource = Rc::new(|_| Task::ready(None));
-        ImeServices { switch, current, list: Rc::new(|_| Task::ready(Vec::new())) }
-    }
 
     /// The pass end to end on the real engine: the computed edits go through
     /// `apply_edits_keeping_cursor`, the text gains its numbers, the caret

@@ -11,8 +11,13 @@ mod apply_ops;
 mod commands;
 mod keybindings;
 mod daily_host;
+mod dev_services;
 mod editor;
 mod footprint_host;
+#[cfg(test)]
+mod harness;
+#[cfg(feature = "harness-shot")]
+mod harness_shot;
 mod ime_host;
 mod python_lsp;
 mod theme;
@@ -63,6 +68,24 @@ fn theme_mode() -> ThemeMode {
 }
 
 fn main() {
+    // The headless screenshot channel runs instead of the app: a scripted
+    // off-screen run that writes PNGs (DEBUGGING.md). Release builds don't
+    // even compile it.
+    #[cfg(feature = "harness-shot")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() >= 3 && args[1] == "--harness-shot" {
+            match harness_shot::run(&args[2], args.get(3).map(String::as_str)) {
+                Ok(dir) => println!("out: {}", dir.display()),
+                Err(e) => {
+                    eprintln!("harness-shot failed: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+    }
+
     gpui_kit::application()
         .with_assets(Assets)
         .run(|cx: &mut App| {

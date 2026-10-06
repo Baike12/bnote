@@ -8,6 +8,13 @@ description = "bnote's native GPUI shell: same bnote-core backend as the Tauri s
 name = "bnote-gpui"
 path = "src/main.rs"
 
+[features]
+# The headless screenshot channel (`--harness-shot`, DEBUGGING.md): gpui's
+# pixel APIs (`render_to_image`) and the Metal headless renderer live behind
+# the test-support features, so the scripted-shots binary only exists when
+# this is on. Release builds and the shipped app never enable it.
+harness-shot = ["gpui-kit/test-support", "gpui/test-support"]
+
 [dependencies]
 bnote-core = { path = "../bnote-core" }
 bnote-mathml = { path = "../bnote-mathml" }
@@ -55,3 +62,7 @@ tempfile = "3"
 # `TestAppContext` for the preview host's window-level tests (text metrics and
 # block measurement need a real text system).
 gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
+# The kit's interaction layer for the headless harness (find/click/press,
+# `debug_bounds`, `painted_quads`): same dev-only feature unification as the
+# `gpui` line above — release builds never see it.
+gpui-kit = { path = "../../../gpui-kit/crates/kit", features = ["test-support"] }
