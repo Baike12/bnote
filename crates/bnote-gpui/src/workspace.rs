@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use bnote_core::commands::ime::{self as ime_cmd, ImeWhere};
 use bnote_core::markdown::numbering;
 use bnote_core::markdown::ops as ops;
 use bnote_core::markdown::wikilink;
@@ -53,6 +54,7 @@ use crate::editor::preview::{PreviewFont, PreviewHost};
 use crate::editor::snippets_host::SnippetBridge;
 use crate::editor::vim::core::Mode as VimMode;
 use crate::footprint_host::FootprintHost;
+use crate::ime_host::{ImeHost, ImeServices};
 
 /// How long typing pauses before the buffer flushes to disk (mirrors the
 /// Tauri shell's stop-typing autosave).
@@ -162,6 +164,14 @@ enum SettingsTab {
     Vim,
     Snippets,
     QuickAdd,
+    Ime,
+}
+
+/// Which of the two input-source fields the settings modal's picker fills.
+#[derive(Clone, Copy, PartialEq)]
+enum ImePickField {
+    Insert,
+    Normal,
 }
 
 pub struct Workspace {
@@ -238,6 +248,19 @@ pub struct Workspace {
     /// when it no longer matches (TS `linkPickState`).
     link_pick_rev: Option<u64>,
     link_state: Entity<CommandState>,
+    /// The IME follow (⌘… TS `imeSwitch.ts`): the input source tracks the vim
+    /// mode and the caret's region.
+    ime: Entity<ImeHost>,
+    /// The host's platform seams, kept here too: the pickers list sources
+    /// through the same injection (and a test's inert `list` stays inert).
+    ime_services: ImeServices,
+    /// The selectable input sources for the settings modal's pickers, fetched
+    /// off the UI thread the first time the IME tab (or a picker) opens.
+    ime_sources: Vec<ime_cmd::InputSourceInfo>,
+    /// A fetch is in flight (`ime_sources` fills when it lands).
+    ime_loading: bool,
+    /// Which source field the inline source picker is filling.
+    ime_pick: Option<ImePickField>,
     /// The settings modal (⌘,): TS `SettingsModal.tsx`'s tabs this shell
     /// consumes — general / editor / vim / snippets. Hotkeys, IME, quick-add
     /// and the agent tab arrive with their own ports.
@@ -382,6 +405,7 @@ impl Workspace {
         last_vault: Option<PathBuf>,
         vim_bridge: VimBridge,
         snippets: SnippetBridge,
+        ime: ImeServices,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -451,6 +475,16 @@ impl Workspace {
         let qa_state = cx.new(|cx| CommandState::new(window, cx));
         let qa_name_state = cx.new(|cx| InputState::new(window, cx));
         let rename_state = cx.new(|cx| InputState::new(window, cx));
+        // The IME follow reads its own settings copy out of the same config
+        // block the modal writes. Its platform seams come in from `main`; the
+        // tests wire inert ones (see `ImeServices`).
+        let ime_settings = ime_cmd::ime_settings(&startup);
+        let ime_services = ime;
+        let ime = cx.new(|cx| {
+            let host = ImeHost::new(state.clone(), ime_settings, ime_services.clone());
+            host.warm_up(cx);
+            host
+        });
 
         let theme = cx.theme();
         let preview = Rc::new(PreviewHost::new(PreviewFont {
@@ -494,6 +528,9 @@ impl Workspace {
                     this.preview_dirty = true;
                     // Cursor memory rides the same signal: the caret moved.
                     this.schedule_cursor_save(cx);
+                    // So does the IME follow: entering insert inside a formula
+                    // must keep English (the caret moved into the region).
+                    this.ime_sync(cx);
                     cx.notify();
                 }
             }),
@@ -502,6 +539,16 @@ impl Workspace {
             cx.observe_window_activation(window, |this, window, cx| {
                 if !window.is_window_active() {
                     this.flush_cursor_save_now(cx);
+                    // Hand the user's own input source back (TS
+                    // `imeOnWindowBlur`).
+                    let ime = this.ime.clone();
+                    ime.update(cx, |host, cx| host.on_window_blur(cx));
+                } else {
+                    // Back in front: a fresh baseline, then whatever the
+                    // current context wants (TS `imeOnWindowFocus`).
+                    let ime = this.ime.clone();
+                    ime.update(cx, |host, _cx| host.on_window_focus());
+                    this.ime_sync(cx);
                 }
             }),
             // The modal's code-block-language field: `set_value` is silent, so
@@ -596,6 +643,11 @@ impl Workspace {
             tree_menu: None,
             rename_prompt: None,
             rename_state,
+            ime,
+            ime_services,
+            ime_sources: Vec::new(),
+            ime_loading: false,
+            ime_pick: None,
             qa_open: false,
             qa_naming: false,
             qa_picked: None,
@@ -655,6 +707,17 @@ impl Workspace {
             }
         })
         .detach();
+
+
+        // The IME follow's second editor trigger: the key that just changed
+        // vim's mode. Esc out of insert moves neither text nor caret, so the
+        // selection observer never sees it.
+        {
+            let weak = cx.weak_entity();
+            workspace.vim_bridge.set_mode_observer(move |_mode, cx| {
+                let _ = weak.update(cx, |this, cx| this.ime_sync(cx));
+            });
+        }
 
         // Restore the vim setting (same config.json key the Tauri shell uses).
         let vim_enabled = setting("vim").unwrap_or(false);
@@ -1250,6 +1313,7 @@ impl Workspace {
         self.link_pick_rev = Some(self.editor.read(cx).document_revision());
         self.link_query.clear();
         self.link_suggest = true;
+        self.ime_sync(cx);
         let state = self.link_state.clone();
         state.update(cx, |s, cx| {
             s.set_query("", window, cx);
@@ -1315,6 +1379,7 @@ impl Workspace {
         }
         self.link_suggest = false;
         self.focus_editor(window, cx);
+        self.ime_sync(cx);
         cx.notify();
     }
 
@@ -1790,6 +1855,7 @@ impl Workspace {
         self.link_suggest = false;
         self.qa_open = false;
         self.settings_open = true;
+        self.ime_sync(cx);
         let cfg = load_config_value(&self.state);
         let commands = bnote_core::commands::config::quick_add_commands(&cfg);
         self.qa_rows.clear();
@@ -1800,13 +1866,98 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The pickers' data (TS `listInputSources`): the TIS enumeration is slow
+    /// the first time and must not sit on the UI thread. Loaded when the IME
+    /// tab or a picker is first shown — never at startup, and never with the
+    /// settings modal merely open. Idempotent: one fetch per session.
+    fn ensure_ime_sources(&mut self, cx: &mut Context<Self>) {
+        if !self.ime_sources.is_empty() || self.ime_loading {
+            return;
+        }
+        self.ime_loading = true;
+        let listing = (self.ime_services.list)(cx);
+        cx.spawn(async move |this, cx| {
+            let sources = listing.await;
+            this.update(cx, |this, cx| {
+                this.ime_loading = false;
+                this.ime_sources = sources;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Switch the settings modal's tab; the IME tab pulls its source list in.
+    fn set_settings_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
+        self.settings_tab = tab;
+        if tab == SettingsTab::Ime {
+            self.ensure_ime_sources(cx);
+        }
+        cx.notify();
+    }
+
+    /// Open one of the IME tab's source pickers.
+    fn open_ime_picker(&mut self, field: ImePickField, cx: &mut Context<Self>) {
+        self.ime_pick = Some(field);
+        self.ensure_ime_sources(cx);
+        self.ime_sync(cx);
+        cx.notify();
+    }
+
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.settings_open {
             return;
         }
         self.settings_open = false;
+        self.ime_pick = None;
         self.focus_editor(window, cx);
+        self.ime_sync(cx);
         cx.notify();
+    }
+
+    /// The IME context the overlays put the keyboard in, if any (TS
+    /// `imeDesiredSource`'s modal arms): an ASCII search field wants English,
+    /// every other overlay leaves the user's own source alone.
+    fn ime_modal_context(&self) -> Option<ImeWhere> {
+        let ascii_search = self.link_suggest
+            || matches!(self.palette, Some(PaletteKind::Files))
+            || (self.qa_open && !self.qa_naming);
+        if ascii_search {
+            return Some(ImeWhere::AsciiSearch);
+        }
+        let other_overlay = self.settings_open
+            || self.palette.is_some()
+            || self.qa_open
+            || self.rename_prompt.is_some()
+            || self.ime_pick.is_some();
+        other_overlay.then_some(ImeWhere::Neutral)
+    }
+
+    /// Route the IME follow after any context change: the overlays first (a
+    /// modal owns the keyboard when it is up), otherwise the editor's own
+    /// mode and caret.
+    fn ime_sync(&mut self, cx: &mut Context<Self>) {
+        match self.ime_modal_context() {
+            Some(at) => {
+                let ime = self.ime.clone();
+                ime.update(cx, |host, cx| host.sync_modal(at, cx));
+            }
+            None => self.ime_follow_editor(cx),
+        }
+    }
+
+    /// The editor's own trigger (TS `imeSwitchExtension`): vim's mode and the
+    /// caret, with the document so math / fenced-code regions can be cached
+    /// per revision.
+    fn ime_follow_editor(&mut self, cx: &mut Context<Self>) {
+        let mode = self.vim_bridge.mode_of(&self.editor);
+        let (text, caret, revision) = {
+            let ed = self.editor.read(cx);
+            (ed.value(), ed.cursor(), ed.document_revision())
+        };
+        let ime = self.ime.clone();
+        ime.update(cx, |host, cx| host.follow_editor(mode, &text, caret, revision, cx));
     }
 
     /// Right-click on a tree row (TS `TreeItem.openMenu`).
@@ -1850,6 +2001,7 @@ impl Workspace {
             TreeMenuItem::Rename => {
                 let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
                 self.rename_prompt = Some(RenamePrompt { rel, is_folder: menu.is_folder });
+                self.ime_sync(cx);
                 let state = self.rename_state.clone();
                 state.update(cx, |st, cx| {
                     st.set_value(name, window, cx);
@@ -1950,6 +2102,7 @@ impl Workspace {
     /// path (the file itself, or a parent folder's new prefix).
     fn commit_rename(&mut self, cx: &mut Context<Self>) {
         let Some(prompt) = self.rename_prompt.take() else { return };
+        self.ime_sync(cx);
         let Some(root) = self.vault_root.clone() else { return };
         let mut name = self.rename_state.read(cx).value().trim().to_string();
         if name.is_empty() {
@@ -2020,6 +2173,137 @@ impl Workspace {
         cx.spawn(async move |this, cx| reload_tree(this, tree, cx).await).detach();
     }
 
+    /// Persist one IME setting and push it into the follow (the follow holds
+    /// its own copy; the modal is the only writer).
+    fn patch_ime_settings(
+        &mut self,
+        patch: impl FnOnce(&mut ime_cmd::ImeSettings),
+        cx: &mut Context<Self>,
+    ) {
+        let mut settings = self.ime.read(cx).settings().clone();
+        patch(&mut settings);
+        let mut cfg = load_config_value(&self.state);
+        ime_cmd::set_ime_settings(&mut cfg, &settings);
+        if let Err(e) = bnote_core::commands::config::save_app_config(&self.state, cfg) {
+            eprintln!("settings: 写入 ime 失败 {e}");
+        }
+        let ime = self.ime.clone();
+        ime.update(cx, |host, cx| host.set_settings(settings, cx));
+        // The new rules apply to the context in front right now.
+        self.ime_sync(cx);
+        self.ime_pick = None;
+        cx.notify();
+    }
+
+    fn set_ime_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.patch_ime_settings(|s| s.enabled = on, cx);
+    }
+
+    fn set_ime_math(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.patch_ime_settings(|s| s.math_keeps_english = on, cx);
+    }
+
+    fn set_ime_code(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.patch_ime_settings(|s| s.code_keeps_english = on, cx);
+    }
+
+    fn pick_ime_source(&mut self, field: ImePickField, id: String, cx: &mut Context<Self>) {
+        self.patch_ime_settings(
+            |s| match field {
+                ImePickField::Insert => s.insert_source = id,
+                ImePickField::Normal => s.normal_source = id,
+            },
+            cx,
+        );
+    }
+
+    /// The source picker (TS's `<select>` over `listInputSources`): the
+    /// selectable sources, the current one marked.
+    fn render_ime_picker(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let field = self.ime_pick?;
+        let theme = cx.theme().clone();
+        let settings = self.ime.read(cx).settings().clone();
+        let current = match field {
+            ImePickField::Insert => settings.insert_source.clone(),
+            ImePickField::Normal => settings.normal_source.clone(),
+        };
+        let rows: Vec<gpui::AnyElement> = self
+            .ime_sources
+            .iter()
+            .map(|source| {
+                let id = source.id.clone();
+                let active = id == current;
+                let label = format!("{}（{}）", source.name, id);
+                let row = div().px_3().py_1p5().rounded_sm().text_sm();
+                let row = if active { row.bg(theme.list_active).text_color(theme.accent) } else { row };
+                row.id(id.clone())
+                    .cursor_default()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.pick_ime_source(field, id.clone(), cx);
+                    }))
+                    .child(Label::new(label))
+                    .into_any_element()
+            })
+            .collect();
+        let empty = self.ime_sources.is_empty();
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.ime_pick = None;
+                                this.ime_sync(cx);
+                                cx.notify();
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("ime-picker")
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .justify_center()
+                        .items_start()
+                        .pt(px(140.))
+                        .child(
+                            v_flex()
+                                .w(px(460.))
+                                .max_h(px(420.))
+                                .p_2()
+                                .gap_0p5()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.popover)
+                                .occlude()
+                                .child(
+                                    Label::new("选择输入法源")
+                                        .text_sm()
+                                        .px_2()
+                                        .pb_1(),
+                                )
+                                .children(if empty {
+                                    vec![
+                                        settings_hint("正在读取系统输入法列表…", &theme)
+                                            .into_any_element(),
+                                    ]
+                                } else {
+                                    rows
+                                }),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// ⌘⇧A: open quick add. The command list is re-read from `config.json`
     /// (the settings tab writes it), so an edit there shows up at once.
     fn quick_add(&mut self, _: &actions::QuickAdd, window: &mut Window, cx: &mut Context<Self>) {
@@ -2035,6 +2319,7 @@ impl Workspace {
         self.qa_commands = bnote_core::commands::config::quick_add_commands(&cfg);
         self.qa_open = true;
         self.qa_naming = false;
+        self.ime_sync(cx);
         let state = self.qa_state.clone();
         state.update(cx, |s, cx| {
             s.set_query("", window, cx);
@@ -2050,6 +2335,7 @@ impl Workspace {
         self.qa_open = false;
         self.qa_naming = false;
         self.focus_editor(window, cx);
+        self.ime_sync(cx);
         cx.notify();
     }
 
@@ -2058,6 +2344,9 @@ impl Workspace {
         let Some(cmd) = self.qa_commands.get(ix).cloned() else { return };
         self.qa_naming = true;
         self.qa_picked = Some(cmd.clone());
+        // Naming a note may well be Chinese: the ASCII search scope ends here
+        // (TS restores the source as soon as a command is picked).
+        self.ime_sync(cx);
         let state = self.qa_name_state.clone();
         state.update(cx, |st, cx| {
             st.set_value("", window, cx);
@@ -2072,6 +2361,7 @@ impl Workspace {
 
     fn qa_back_to_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.qa_naming = false;
+        self.ime_sync(cx);
         let state = self.qa_state.clone();
         state.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
@@ -2438,6 +2728,7 @@ impl Workspace {
                     (SettingsTab::Vim, "Vim"),
                     (SettingsTab::Snippets, "公式片段"),
                     (SettingsTab::QuickAdd, "快速添加"),
+                    (SettingsTab::Ime, "输入法"),
                 ]
                 .into_iter()
                 .map(|(tab, label)| {
@@ -2451,8 +2742,7 @@ impl Workspace {
                     item.id(label)
                         .cursor_default()
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.settings_tab = tab;
-                            cx.notify();
+                            this.set_settings_tab(tab, cx);
                         }))
                         .child(Label::new(label))
                 }),
@@ -2635,6 +2925,84 @@ impl Workspace {
                     )
                     .into_any_element()
             }
+            SettingsTab::Ime => {
+                let ime = self.ime.read(cx).settings().clone();
+                // Both pickers show the source's display name (the id when the
+                // list has not landed yet).
+                let source_label = |id: &str, this: &Self| -> String {
+                    this.ime_sources
+                        .iter()
+                        .find(|s| s.id == id)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_else(|| id.to_string())
+                };
+                let insert_label = source_label(&ime.insert_source, self);
+                let normal_label = source_label(&ime.normal_source, self);
+                v_flex()
+                    .gap_3()
+                    .child(self.settings_switch(
+                        "settings-ime-enabled",
+                        "输入法跟随 Vim 模式",
+                        "进入 insert 切到中文输入法,回到 normal/visual 切到英文;打开快速切换器时也切到英文,关闭后还原(仅 macOS)",
+                        ime.enabled,
+                        |this, on, cx| this.set_ime_enabled(on, cx),
+                        &theme,
+                        cx,
+                    ))
+                    .child(settings_hint(
+                        "通过系统输入法框架(TIS)在应用内直接切换,无进程启动、不抢焦点;macOS 26 上偶发的切换竞态会自动重试。",
+                        &theme,
+                    ))
+                    .child(settings_row(
+                        "insert 模式输入法",
+                        "写中文笔记用的输入法",
+                        div()
+                            .child(
+                                Button::new("ime-pick-insert")
+                                    .outline()
+                                    .label(insert_label)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_ime_picker(ImePickField::Insert, cx);
+                                    })),
+                            )
+                            .into_any_element(),
+                        &theme,
+                    ))
+                    .child(settings_row(
+                        "normal / visual 模式输入法",
+                        "一般选英文键盘(ABC)",
+                        div()
+                            .child(
+                                Button::new("ime-pick-normal")
+                                    .outline()
+                                    .label(normal_label)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_ime_picker(ImePickField::Normal, cx);
+                                    })),
+                            )
+                            .into_any_element(),
+                        &theme,
+                    ))
+                    .child(self.settings_switch(
+                        "settings-ime-math",
+                        "公式内进入 insert 保持英文",
+                        "光标位于 $…$ 或 $$…$$ 内时不切中文,避免输入法干扰公式输入",
+                        ime.math_keeps_english,
+                        |this, on, cx| this.set_ime_math(on, cx),
+                        &theme,
+                        cx,
+                    ))
+                    .child(self.settings_switch(
+                        "settings-ime-code",
+                        "代码块内进入 insert 保持英文",
+                        "光标位于 ``` 围栏代码块内时不切中文,代码内容是 ASCII",
+                        ime.code_keeps_english,
+                        |this, on, cx| this.set_ime_code(on, cx),
+                        &theme,
+                        cx,
+                    ))
+                    .into_any_element()
+            }
         };
 
         Some(
@@ -2753,6 +3121,7 @@ impl Workspace {
     ) {
         self.settings_open = false;
         self.palette = Some(PaletteKind::Commands);
+        self.ime_sync(cx);
         let state = self.cmd_state.clone();
         state.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
@@ -2766,6 +3135,7 @@ impl Workspace {
     ) {
         self.settings_open = false;
         self.palette = Some(PaletteKind::Files);
+        self.ime_sync(cx);
         let state = self.files_state.clone();
         state.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
@@ -2814,6 +3184,7 @@ impl Workspace {
     fn open_vault_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings_open = false;
         self.palette = Some(PaletteKind::Vaults);
+        self.ime_sync(cx);
         let state = self.files_state.clone();
         state.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
@@ -2823,6 +3194,7 @@ impl Workspace {
         self.palette = None;
         let focus = self.editor.focus_handle(cx);
         focus.focus(window, cx);
+        self.ime_sync(cx);
         cx.notify();
     }
 
@@ -3188,6 +3560,7 @@ impl Workspace {
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
                                 this.rename_prompt = None;
+                                this.ime_sync(cx);
                                 cx.notify();
                             }),
                         ),
@@ -3720,6 +4093,7 @@ impl gpui::Render for Workspace {
         let editor_empty = self.render_editor_empty(cx);
         let tree_menu = self.render_tree_menu(cx);
         let rename_prompt = self.render_rename_prompt(cx);
+        let ime_picker = self.render_ime_picker(cx);
         let link_suggest = self.render_link_suggest(window, cx);
         let settings = self.render_settings(cx);
 
@@ -3769,9 +4143,14 @@ impl gpui::Render for Workspace {
                 if event.keystroke.key != "escape" {
                     return;
                 }
-                if this.rename_prompt.is_some() {
+                if this.ime_pick.is_some() {
+                    this.ime_pick = None;
+                    this.ime_sync(cx);
+                    cx.notify();
+                } else if this.rename_prompt.is_some() {
                     this.rename_prompt = None;
                     this.focus_editor(window, cx);
+                    this.ime_sync(cx);
                     cx.notify();
                 } else if this.tree_menu.is_some() {
                     this.close_tree_menu(cx);
@@ -3790,6 +4169,7 @@ impl gpui::Render for Workspace {
             .children(quick_add)
             .children(tree_menu)
             .children(rename_prompt)
+            .children(ime_picker)
             .children(editor_empty)
             .child(
                 StatusBar::new()
@@ -4130,9 +4510,23 @@ mod tests {
         EditorState, InputEvent, TreeMenuItem, Workspace, actions, apply_edits_keeping_cursor,
         numbering, should_schedule_renumber, wikilink,
     };
+    use crate::ime_host::{CurrentSource, ImeServices, Switcher};
     use gpui::{
-        AppContext as _, Context, Focusable as _, IntoElement, Render, TestAppContext, Window, div,
+        AppContext as _, Context, Focusable as _, IntoElement, Render, Task, TestAppContext, Window,
+        div,
     };
+    use std::rc::Rc;
+
+    use super::{ImePickField, SettingsTab};
+
+    /// The IME follow's seams, inert: a test process has no main run loop to
+    /// service the core's main-queue hop (see `ImeServices`), and these tests
+    /// all target other wiring. The follow's own tests own its behaviour.
+    fn inert_ime() -> ImeServices {
+        let switch: Switcher = Rc::new(|_, _, _| Task::ready(()));
+        let current: CurrentSource = Rc::new(|_| Task::ready(None));
+        ImeServices { switch, current, list: Rc::new(|_| Task::ready(Vec::new())) }
+    }
 
     /// The pass end to end on the real engine: the computed edits go through
     /// `apply_edits_keeping_cursor`, the text gains its numbers, the caret
@@ -4275,6 +4669,7 @@ mod tests {
                 None,
                 vim_bridge,
                 snippet_bridge,
+                inert_ime(),
                 window,
                 cx,
             );
@@ -4366,6 +4761,7 @@ mod tests {
                 None,
                 vim_bridge,
                 snippet_bridge,
+                inert_ime(),
                 window,
                 cx,
             );
@@ -4452,6 +4848,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 
+    /// The source list behind the IME tab is a platform call (a TIS
+    /// enumeration). Opening the settings modal must not fire it — only showing
+    /// the IME tab does, and only once per session (the unfiltered version of
+    /// this test cost every workspace test seconds: the core entry parks on its
+    /// main-queue hop in a test process, see `ImeServices`).
+    #[gpui::test]
+    fn the_ime_sources_load_with_the_ime_tab_not_with_the_modal(cx: &mut TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+        let data_dir = std::env::temp_dir().join(format!("bnote-ime-tab-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&data_dir).expect("the test data dir");
+        let (state, rx) = bnote_core::state::AppState::new(data_dir.clone());
+
+        let calls = Rc::new(std::cell::Cell::new(0usize));
+        let counted = calls.clone();
+        let switch: Switcher = Rc::new(|_, _, _| Task::ready(()));
+        let current: CurrentSource = Rc::new(|_| Task::ready(None));
+        let list: crate::ime_host::SourceList = Rc::new(move |_| {
+            counted.set(counted.get() + 1);
+            Task::ready(vec![bnote_core::commands::ime::InputSourceInfo {
+                id: "input.abc".to_string(),
+                name: "ABC".to_string(),
+                is_cjk: false,
+            }])
+        });
+        let services = ImeServices { switch, current, list };
+
+        let mut bridges = None;
+        cx.update(|cx| {
+            bridges = Some((
+                crate::editor::snippets_host::SnippetBridge::init(cx),
+                crate::editor::vim::integration::VimBridge::init(cx),
+            ));
+        });
+        let (snippet_bridge, vim_bridge) = bridges.expect("the bridges");
+        let (workspace, cx) = cx.add_window_view(move |window, cx| {
+            Workspace::new(
+                state.clone(),
+                rx.resubscribe(),
+                None,
+                vim_bridge,
+                snippet_bridge,
+                services,
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        // The feature is on by default, so construction prewarms once (TS
+        // `imeWarmUp`) — that call is what the *first switch* would otherwise pay.
+        let warm = calls.get();
+        assert_eq!(warm, 1, "startup prewarms the enumeration once");
+
+        cx.dispatch_action(actions::OpenSettings);
+        cx.run_until_parked();
+        assert_eq!(calls.get(), warm, "the modal alone enumerates nothing");
+
+        workspace.update_in(cx, |ws, window, cx| {
+            let _ = window;
+            ws.set_settings_tab(SettingsTab::Ime, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.get(), warm + 1, "the IME tab pulls the list in");
+        assert_eq!(
+            workspace.read_with(cx, |ws, _| ws.ime_sources.len()),
+            1,
+            "and the landed list is kept"
+        );
+
+        // Coming back to the tab and opening a picker reuse the session's list.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.set_settings_tab(SettingsTab::General, cx);
+            ws.set_settings_tab(SettingsTab::Ime, cx);
+            ws.open_ime_picker(ImePickField::Insert, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.get(), warm + 1, "one fetch per session");
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
     /// Quick add end to end on a real vault: ⌘⇧A lists `settings.quickAdd`,
     /// the pick hands over to naming, and Enter creates the note in the
     /// command's folder — the folder chain included — then opens it.
@@ -4493,6 +4969,7 @@ mod tests {
                 Some(vault),
                 vim_bridge,
                 snippet_bridge,
+                inert_ime(),
                 window,
                 cx,
             );
@@ -4589,6 +5066,7 @@ mod tests {
                 None,
                 vim_bridge,
                 snippet_bridge,
+                inert_ime(),
                 window,
                 cx,
             );
@@ -4654,6 +5132,7 @@ mod tests {
                 Some(vault_for_ws),
                 vim_bridge,
                 snippet_bridge,
+                inert_ime(),
                 window,
                 cx,
             );

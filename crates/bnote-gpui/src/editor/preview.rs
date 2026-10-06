@@ -1334,7 +1334,8 @@ let a = 1;
 
     /// The host's style mapping: every core mark becomes a `TextDecoration`
     /// whose colour is the same `global.css` variable the TS class used (read
-    /// through the active palette).    #[gpui::test]
+    /// through the active palette).
+    #[gpui::test]
     fn the_host_translates_style_spans_into_text_decorations(cx: &mut TestAppContext) {
         const DOC: &str = "# Head\n\n`code` and [lab](https://x.dev) and **bold**\n";
         struct Root;
@@ -1446,6 +1447,7 @@ let a = 1;
         });
     }
 
+    #[gpui::test]
     fn the_host_maps_panels_to_line_styles(cx: &mut TestAppContext) {
         // Lines: 0 `:::` opening, 1 body, 2 `:::` closing, 4 fence, 5 code
         // body, 6 fence, 8 quote.

@@ -56,6 +56,10 @@ struct Attachment {
     vim: VimState,
 }
 
+/// An observer told about a mode change right after the key that made it
+/// (`Mode` on the left is the mode the editor was in before).
+type ModeObserver = Rc<dyn Fn(Mode, &mut App)>;
+
 /// App-wide vim bridge. Cheap to clone (shares the attachment list); the
 /// interceptor closure holds one, the host keeps another to attach editors
 /// and to read the current mode for the status bar.
@@ -63,6 +67,10 @@ struct Attachment {
 pub struct VimBridge {
     attachments: Rc<RefCell<Vec<Attachment>>>,
     shiftwidth: usize,
+    /// Told when an attached editor's mode changes (the IME follow's trigger:
+    /// Esc back to normal moves neither text nor caret, so no editor event
+    /// fires for it).
+    mode_observer: Rc<RefCell<Option<ModeObserver>>>,
 }
 
 impl VimBridge {
@@ -71,6 +79,7 @@ impl VimBridge {
         let bridge = Self {
             attachments: Rc::new(RefCell::new(Vec::new())),
             shiftwidth: 4,
+            mode_observer: Rc::new(RefCell::new(None)),
         };
         let handled = bridge.clone();
         // The subscription lives as long as the app; the bridge itself is
@@ -96,6 +105,11 @@ impl VimBridge {
 
     pub fn detach(&self, editor: &Entity<EditorState>) {
         self.attachments.borrow_mut().retain(|a| &a.editor != editor);
+    }
+
+    /// Observe mode changes (one observer; the shell has one editor).
+    pub fn set_mode_observer(&self, observer: impl Fn(Mode, &mut App) + 'static) {
+        *self.mode_observer.borrow_mut() = Some(Rc::new(observer));
     }
 
     /// Current mode of an attached editor (status-bar indicator).
@@ -148,11 +162,22 @@ impl VimBridge {
             clipboard: None,
         };
 
-        let outcome = {
+        let (outcome, mode_before, mode_after) = {
             let mut list = self.attachments.borrow_mut();
             let att = list.iter_mut().find(|a| a.editor == editor).expect("attached");
-            feed(&mut att.vim, &text, key, &ctx)
+            let before = att.vim.mode;
+            let outcome = feed(&mut att.vim, &text, key, &ctx);
+            let after = att.vim.mode;
+            (outcome, before, after)
         };
+        // The observer runs outside the attachment borrow: it re-enters this
+        // bridge (`mode_of`) and must not see it locked.
+        if mode_before != mode_after {
+            let observer = self.mode_observer.borrow().clone();
+            if let Some(observer) = observer {
+                observer(mode_after, cx);
+            }
+        }
 
         match outcome {
             Outcome::Executed(exec) => {

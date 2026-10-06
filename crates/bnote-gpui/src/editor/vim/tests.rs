@@ -6,6 +6,9 @@
 //! `foo bar`, cursor on `b`).
 
 #![cfg(test)]
+// Test names mirror the vim keys they cover (`J_joins_with_space`, `iW_big_words`):
+// the capitalised segment is the key, not a word.
+#![allow(non_snake_case)]
 
 use crate::editor::vim::core::exec::feed;
 use crate::editor::vim::core::key::Key;

@@ -399,6 +399,108 @@ pub fn set_input_source(state: &crate::state::AppState, id: String) -> CmdResult
     crate::runtime::block_on(set_impl(events, id))
 }
 
+/// `settings.ime` — the five keys the Tauri shell persists (TS
+/// `ImeSettings`), with the same defaults.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ImeSettings {
+    /// Follow the vim mode at all (macOS only).
+    pub enabled: bool,
+    /// The source insert mode wants (the user's CJK source).
+    pub insert_source: String,
+    /// The source normal / visual (and ASCII contexts) want.
+    pub normal_source: String,
+    /// In insert mode inside a math region, keep English (formulas are ASCII).
+    pub math_keeps_english: bool,
+    /// In insert mode inside a fenced code block, keep English (code is ASCII).
+    pub code_keeps_english: bool,
+}
+
+impl Default for ImeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            insert_source: "com.sogou.inputmethod.sogou.pinyin".to_string(),
+            normal_source: "com.apple.keylayout.ABC".to_string(),
+            math_keeps_english: true,
+            code_keeps_english: true,
+        }
+    }
+}
+
+/// Read `settings.ime` (missing keys take their defaults, the TS shape).
+pub fn ime_settings(config: &serde_json::Value) -> ImeSettings {
+    config
+        .get("settings")
+        .and_then(|s| s.get("ime"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Write `settings.ime`.
+pub fn set_ime_settings(config: &mut serde_json::Value, settings: &ImeSettings) {
+    if !config.is_object() {
+        *config = serde_json::json!({});
+    }
+    let settings_obj = config
+        .as_object_mut()
+        .expect("just ensured an object")
+        .entry("settings".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !settings_obj.is_object() {
+        *settings_obj = serde_json::json!({});
+    }
+    settings_obj
+        .as_object_mut()
+        .expect("just ensured an object")
+        .insert(
+            "ime".to_string(),
+            serde_json::to_value(settings).unwrap_or(serde_json::Value::Null),
+        );
+}
+
+/// Where the keyboard's context sits, as far as the follow cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImeWhere {
+    /// An ASCII search field owns the keyboard (the quick switcher, the link
+    /// panel): English.
+    AsciiSearch,
+    /// Another modal owns it (settings, quick-add naming): the user's own
+    /// source stays — naming a note may well be Chinese.
+    Neutral,
+    /// The editor with vim off: leave the source alone.
+    VimOff,
+    /// vim normal / visual.
+    VimNormal,
+    /// vim insert, with the caret's region.
+    VimInsert { math: bool, code: bool },
+}
+
+/// TS `imeDesiredSource` + `insertRegionWantsEnglish`: the source the current
+/// context wants, or `None` for "leave whatever the user has".
+///
+/// This is the whole decision, in one function, so every trigger (mode change,
+/// caret move, modal open, focus) answers with the same rules.
+pub fn desired_source(settings: &ImeSettings, at: ImeWhere) -> Option<String> {
+    if !settings.enabled {
+        return None;
+    }
+    match at {
+        ImeWhere::AsciiSearch => Some(settings.normal_source.clone()),
+        ImeWhere::Neutral | ImeWhere::VimOff => None,
+        ImeWhere::VimNormal => Some(settings.normal_source.clone()),
+        ImeWhere::VimInsert { math, code } => {
+            let keep_english = (math && settings.math_keeps_english)
+                || (code && settings.code_keeps_english);
+            Some(if keep_english {
+                settings.normal_source.clone()
+            } else {
+                settings.insert_source.clone()
+            })
+        }
+    }
+}
+
 /// CJK-ness of an input source, cached per source id. The uncached check
 /// enumerates every live input source on the MAIN thread (see `on_main`), and
 /// it runs on every switch — a source's languages never change within a
@@ -471,6 +573,87 @@ fn verify_or_fallback(events: EventBus, target: String, seq: u64) {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use super::*;
+
+    /// The follow's whole decision table (TS `imeDesiredSource` +
+    /// `insertRegionWantsEnglish`).
+    #[test]
+    fn the_desired_source_follows_the_context() {
+        let mut settings = ImeSettings::default();
+        settings.insert_source = "cjk".into();
+        settings.normal_source = "abc".into();
+
+        assert_eq!(
+            desired_source(&settings, ImeWhere::AsciiSearch).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(desired_source(&settings, ImeWhere::Neutral), None, "naming a note stays");
+        assert_eq!(desired_source(&settings, ImeWhere::VimOff), None, "vim off owns nothing");
+        assert_eq!(
+            desired_source(&settings, ImeWhere::VimNormal).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            desired_source(&settings, ImeWhere::VimInsert { math: false, code: false }).as_deref(),
+            Some("cjk")
+        );
+        // Formulas and code are ASCII: insert there keeps English.
+        assert_eq!(
+            desired_source(&settings, ImeWhere::VimInsert { math: true, code: false }).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            desired_source(&settings, ImeWhere::VimInsert { math: false, code: true }).as_deref(),
+            Some("abc")
+        );
+
+        // Each "keeps English" rule has its own switch.
+        settings.math_keeps_english = false;
+        assert_eq!(
+            desired_source(&settings, ImeWhere::VimInsert { math: true, code: false }).as_deref(),
+            Some("cjk")
+        );
+        assert_eq!(
+            desired_source(&settings, ImeWhere::VimInsert { math: false, code: true }).as_deref(),
+            Some("abc"),
+            "the code rule is independent"
+        );
+
+        // Off means the whole follow lets go.
+        settings.enabled = false;
+        assert_eq!(desired_source(&settings, ImeWhere::VimNormal), None);
+        assert_eq!(desired_source(&settings, ImeWhere::AsciiSearch), None);
+    }
+
+    /// `settings.ime` round-trips under its key, defaults fill the gaps.
+    #[test]
+    fn ime_settings_round_trip_under_the_settings_key() {
+        let mut config = serde_json::json!({ "settings": { "vim": true } });
+        assert_eq!(ime_settings(&config), ImeSettings::default(), "absent → defaults");
+
+        let settings = ImeSettings {
+            enabled: false,
+            insert_source: "a".into(),
+            normal_source: "b".into(),
+            math_keeps_english: false,
+            code_keeps_english: true,
+        };
+        set_ime_settings(&mut config, &settings);
+        assert_eq!(ime_settings(&config), settings);
+        assert_eq!(config["settings"]["vim"], serde_json::json!(true), "siblings survive");
+
+        // A partial object keeps the defaults for what it omits.
+        let partial = serde_json::json!({ "settings": { "ime": { "enabled": false } } });
+        let read = ime_settings(&partial);
+        assert!(!read.enabled);
+        assert_eq!(read.normal_source, ImeSettings::default().normal_source);
+
+        // A broken settings block grows/replaces instead of panicking.
+        let mut broken = serde_json::json!({ "settings": "oops" });
+        set_ime_settings(&mut broken, &settings);
+        assert_eq!(ime_settings(&broken), settings);
+    }
+
     use super::tis;
     use std::time::{Duration, Instant};
 

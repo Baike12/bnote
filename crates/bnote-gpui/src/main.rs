@@ -12,6 +12,7 @@ mod commands;
 mod daily_host;
 mod editor;
 mod footprint_host;
+mod ime_host;
 mod theme;
 mod workspace;
 
@@ -122,6 +123,7 @@ fn main() {
                         vault_for_window.clone(),
                         vim_bridge.clone(),
                         snippet_bridge.clone(),
+                        ime_host::ImeServices::platform(),
                         window,
                         cx,
                     )
