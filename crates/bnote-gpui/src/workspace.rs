@@ -22,7 +22,8 @@ use bnote_core::markdown::ops as ops;
 use bnote_core::markdown::wikilink;
 use bnote_core::state::AppState;
 use ::gpui::{
-    AppContext as _, Context, Entity, Focusable, Subscription, WeakEntity, Window, div, px, relative,
+    AppContext as _, Context, Entity, Focusable, HighlightStyle, ScrollHandle, SharedString,
+    StyledText, Subscription, WeakEntity, Window, div, px, relative,
 };
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -93,6 +94,108 @@ struct TreeMenu {
     is_folder: bool,
     x: f32,
     y: f32,
+}
+
+/// One output chunk of a python run (one backend flush, not one line).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PyStream {
+    Stdout,
+    Stderr,
+    /// Shell-side notes (`beginSystem`, TS's `"system"` stream).
+    System,
+}
+
+struct PyRunLine {
+    stream: PyStream,
+    text: String,
+}
+
+/// The run panel's state (TS `src/python/run.ts`'s store).
+#[derive(Default)]
+struct PyRunState {
+    open: bool,
+    /// The current run's id; output/exit events must match it.
+    run_id: Option<u64>,
+    /// The note the run belongs to (TS `mdPath`; the cancel path's key).
+    md_path: Option<String>,
+    /// The resolved command line, shown in the header.
+    command: String,
+    lines: Vec<PyRunLine>,
+    running: bool,
+    exit_code: Option<i32>,
+    cancelled: bool,
+    timed_out: bool,
+    duration_ms: Option<u64>,
+}
+
+/// TS `MAX_LINES`/`TRIM_TO`: over the cap the oldest chunks drop.
+const PY_RUN_MAX_LINES: usize = 4000;
+const PY_RUN_TRIM_TO: usize = 2000;
+
+impl PyRunState {
+    /// TS `beginRun` / `beginSystem`: the panel opens on a fresh run.
+    fn begin(&mut self, run_id: Option<u64>, md_path: Option<String>, command: String) {
+        self.open = true;
+        self.run_id = run_id;
+        self.md_path = md_path;
+        self.command = command;
+        self.lines.clear();
+        self.running = true;
+        self.exit_code = None;
+        self.cancelled = false;
+        self.timed_out = false;
+        self.duration_ms = None;
+    }
+
+    /// TS `append` + the cap. Returns true when the cap dropped the head (the
+    /// caller's cached body text must then be rebuilt).
+    fn append(&mut self, stream: PyStream, text: String) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        self.lines.push(PyRunLine { stream, text });
+        if self.lines.len() > PY_RUN_MAX_LINES {
+            let drop = self.lines.len() - PY_RUN_TRIM_TO;
+            self.lines.drain(..drop);
+            return true;
+        }
+        false
+    }
+
+    /// TS `finish`: the exit event's payload, already id-checked.
+    fn finish(&mut self, exit_code: Option<i32>, duration_ms: u64, cancelled: bool, timed_out: bool) {
+        self.running = false;
+        self.exit_code = exit_code;
+        self.cancelled = cancelled;
+        self.timed_out = timed_out;
+        self.duration_ms = Some(duration_ms);
+    }
+
+    /// The header's status text (TS `PythonRunPanel`'s status span), with the
+    /// colour class its CSS gave it.
+    fn status(&self) -> (String, PyStatus) {
+        if self.running {
+            return ("运行中".to_string(), PyStatus::Running);
+        }
+        if self.timed_out {
+            return ("超时已终止".to_string(), PyStatus::Bad);
+        }
+        if self.cancelled {
+            return ("已取消".to_string(), PyStatus::Bad);
+        }
+        match self.exit_code {
+            Some(0) => ("成功".to_string(), PyStatus::Ok),
+            Some(code) => (format!("退出码 {code}"), PyStatus::Bad),
+            None => ("退出码 ?".to_string(), PyStatus::Bad),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PyStatus {
+    Running,
+    Ok,
+    Bad,
 }
 
 /// One entry of the tree menu. The set depends on the row kind: a folder gets
@@ -261,6 +364,16 @@ pub struct Workspace {
     ime_loading: bool,
     /// Which source field the inline source picker is filling.
     ime_pick: Option<ImePickField>,
+    /// The python run panel's state (TS `usePythonRun`).
+    python_run: PyRunState,
+    /// The panel body's assembled text and its per-chunk colours: appended to
+    /// as output lands, rebuilt only when the chunk cap drops the head (the
+    /// TS rebuilds the whole `<pre>` every render; a cached body keeps a big
+    /// run's re-render O(1) per frame instead of O(output)).
+    py_body: String,
+    py_body_highlights: Vec<(std::ops::Range<usize>, HighlightStyle)>,
+    /// The body's scroll position (the autoscroll rule reads it).
+    py_scroll: ScrollHandle,
     /// The settings modal (⌘,): TS `SettingsModal.tsx`'s tabs this shell
     /// consumes — general / editor / vim / snippets. Hotkeys, IME, quick-add
     /// and the agent tab arrive with their own ports.
@@ -648,6 +761,10 @@ impl Workspace {
             ime_sources: Vec::new(),
             ime_loading: false,
             ime_pick: None,
+            python_run: PyRunState::default(),
+            py_body: String::new(),
+            py_body_highlights: Vec::new(),
+            py_scroll: ScrollHandle::default(),
             qa_open: false,
             qa_naming: false,
             qa_picked: None,
@@ -764,6 +881,46 @@ impl Workspace {
                 self.invalidate_images(&paths, cx);
                 self.reload_open_if_externally_changed(&paths, cx);
                 self.refresh_tree(cx);
+            }
+            "python-run-output" => {
+                // The run id is the self-check: a chunk from a previous run
+                // (or another note's run) never lands in this panel.
+                let run_id = ev.payload.get("runId").and_then(|v| v.as_u64());
+                if !self.python_run.running || self.python_run.run_id != run_id {
+                    return;
+                }
+                let stream = match ev.payload.get("stream").and_then(|v| v.as_str()) {
+                    Some("stderr") => PyStream::Stderr,
+                    Some("system") => PyStream::System,
+                    _ => PyStream::Stdout,
+                };
+                let text = ev
+                    .payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                self.py_push_output(stream, text, cx);
+            }
+            "python-run-exit" => {
+                let run_id = ev.payload.get("runId").and_then(|v| v.as_u64());
+                if !self.python_run.running || self.python_run.run_id != run_id {
+                    return;
+                }
+                let exit_code = ev
+                    .payload
+                    .get("exitCode")
+                    .and_then(|v| v.as_i64())
+                    .map(|code| code as i32);
+                let duration_ms = ev
+                    .payload
+                    .get("durationMs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let cancelled = ev.payload.get("cancelled").and_then(|v| v.as_bool()).unwrap_or(false);
+                let timed_out = ev.payload.get("timedOut").and_then(|v| v.as_bool()).unwrap_or(false);
+                self.python_run.finish(exit_code, duration_ms, cancelled, timed_out);
+                cx.notify();
             }
             "agent-event" => {
                 let session = ev
@@ -1914,6 +2071,244 @@ impl Workspace {
         self.focus_editor(window, cx);
         self.ime_sync(cx);
         cx.notify();
+    }
+
+    /// ⌘↩ (TS `python.run-note`): run the whole note as one virtual `.py`
+    /// file — every python fence, line-aligned, plus the synthesized
+    /// `__main__` guard. No fence: nothing runs and the status line says so.
+    fn run_python_note(
+        &mut self,
+        _: &actions::PythonRunNote,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.vault_root.clone() else {
+            self.status = "先打开一个仓库".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(rel) = self.open_path.clone() else {
+            self.status = "没有打开的笔记".to_string();
+            cx.notify();
+            return;
+        };
+        let text = self.editor.read(cx).text().to_string();
+        let eff = bnote_core::python::extract::extract_python(&text);
+        if eff.blocks.is_empty() {
+            self.status = "这篇笔记没有 python 代码块(```python 围栏)".to_string();
+            cx.notify();
+            return;
+        }
+        let md_path = root.join(&rel).to_string_lossy().to_string();
+        let state = self.state.clone();
+        let code = eff.effective_text;
+        let this = cx.weak_entity();
+        cx.spawn(async move |_, cx| {
+            let started = cx
+                .background_executor()
+                .spawn(async move {
+                    let run_state = state.clone();
+                    bnote_core::commands::python::python_run(&run_state, md_path.clone(), code)
+                        .map(|started| (started, md_path))
+                })
+                .await;
+            this.update(cx, |this, cx| match started {
+                Ok((started, md_path)) => {
+                    // TS `beginRun(started, mdPath)`: the panel opens with the
+                    // run's id, and only output carrying that id lands in it.
+                    this.python_run.begin(
+                        Some(started.run_id),
+                        Some(md_path),
+                        started.command.clone(),
+                    );
+                    this.py_body.clear();
+                    this.py_body_highlights.clear();
+                    this.status = format!("python: {}", started.command);
+                    cx.notify();
+                }
+                Err(e) => {
+                    this.status = format!("运行失败: {e}");
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// TS `python.run-stop`: cancel the live run (the panel's 停止 button).
+    fn stop_python_run(&mut self, _: &actions::PythonRunStop, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(md_path) = self.python_run.md_path.clone() else {
+            return;
+        };
+        let state = self.state.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let _ = bnote_core::commands::python::python_run_cancel(&state, md_path);
+            })
+            .detach();
+    }
+
+    /// One output chunk: append to the cached body (or rebuild it when the
+    /// chunk cap dropped the head), then stick the view to the bottom when it
+    /// was already there (TS's < 48px rule; gpui offsets are negative-going,
+    /// so the distance to the bottom is `max_offset - offset`).
+    fn py_push_output(&mut self, stream: PyStream, text: String, cx: &mut Context<Self>) {
+        let trimmed = self.python_run.append(stream, text.clone());
+        if trimmed {
+            self.py_rebuild_body(cx);
+        } else {
+            let start = self.py_body.len();
+            self.py_body.push_str(&text);
+            let color = self.py_stream_color(stream, cx);
+            self.py_body_highlights.push((
+                start..self.py_body.len(),
+                HighlightStyle { color: Some(color), ..Default::default() },
+            ));
+        }
+        let near_bottom = {
+            let h = &self.py_scroll;
+            (h.max_offset().y - h.offset().y) < px(48.)
+        };
+        if near_bottom {
+            self.py_scroll.scroll_to_bottom();
+        }
+        cx.notify();
+    }
+
+    /// The body text rebuilt from scratch (the cap dropped chunks, so the
+    /// cached text no longer matches the lines).
+    fn py_rebuild_body(&mut self, cx: &mut Context<Self>) {
+        self.py_body.clear();
+        self.py_body_highlights.clear();
+        let lines = std::mem::take(&mut self.python_run.lines);
+        for line in &lines {
+            let start = self.py_body.len();
+            self.py_body.push_str(&line.text);
+            let color = self.py_stream_color(line.stream, cx);
+            self.py_body_highlights.push((
+                start..self.py_body.len(),
+                HighlightStyle { color: Some(color), ..Default::default() },
+            ));
+        }
+        self.python_run.lines = lines;
+    }
+
+    /// A stream's colour in the panel body (`--text` / `--danger` /
+    /// `--text-faint`).
+    fn py_stream_color(&self, stream: PyStream, cx: &mut Context<Self>) -> gpui::Hsla {
+        let theme = cx.theme();
+        match stream {
+            PyStream::Stdout => theme.foreground,
+            PyStream::Stderr => theme.danger,
+            PyStream::System => theme.muted_foreground,
+        }
+    }
+
+    /// The run panel (TS `PythonRunPanel`): a 200px strip at the bottom of the
+    /// editor column — header with status, duration, command and the buttons,
+    /// then the output body.
+    fn render_python_panel(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.python_run.open {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let (status, kind) = self.python_run.status();
+        let status_color = match kind {
+            PyStatus::Running => theme.accent,
+            PyStatus::Ok => theme.foreground,
+            PyStatus::Bad => theme.danger,
+        };
+        let duration = self.python_run.duration_ms.filter(|_| !self.python_run.running);
+        let running = self.python_run.running;
+
+        let mut head = h_flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .px_2p5()
+            .py_1()
+            .border_b_1()
+            .border_color(theme.border)
+            .text_size(px(12.))
+            .child(Label::new(status).text_color(status_color).text_sm())
+            .children(duration.map(|ms| {
+                Label::new(format!("{:.2}s", ms as f64 / 1000.0))
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.5))
+                    .font_family(theme.mono_font_family.clone())
+                    .text_color(theme.muted_foreground)
+                    .child(SharedString::from(self.python_run.command.clone())),
+            );
+        if running {
+            head = head.child(
+                Button::new("python-run-stop")
+                    .ghost()
+                    .label("停止")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.stop_python_run(&actions::PythonRunStop, window, cx);
+                    })),
+            );
+        }
+        head = head
+            .child(
+                Button::new("python-run-clear")
+                    .ghost()
+                    .label("清空")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.python_run.lines.clear();
+                        this.py_body.clear();
+                        this.py_body_highlights.clear();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("python-run-close")
+                    .ghost()
+                    .label("关闭")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        // TS `close()` only flips `open`: a live run keeps
+                        // going and its output keeps landing.
+                        this.python_run.open = false;
+                        cx.notify();
+                    })),
+            );
+
+        let body = div()
+            .id("python-run-body")
+            .flex_1()
+            .min_h_0()
+            .px_3()
+            .py_2()
+            .text_size(px(12.))
+            .font_family(theme.mono_font_family.clone())
+            .overflow_y_scroll()
+            .track_scroll(&self.py_scroll)
+            .child(
+                StyledText::new(self.py_body.clone())
+                    .with_highlights(self.py_body_highlights.clone()),
+            )
+            .vertical_scrollbar(&self.py_scroll);
+
+        Some(
+            v_flex()
+                .flex_none()
+                .h(px(200.))
+                .min_h_0()
+                .border_t_1()
+                .border_color(theme.border)
+                .bg(theme.sidebar)
+                .child(head)
+                .child(body)
+                .into_any_element(),
+        )
     }
 
     /// The IME context the overlays put the keyboard in, if any (TS
@@ -3933,6 +4328,8 @@ pub(crate) fn action_for(id: &str) -> Option<Box<dyn gpui::Action>> {
         "toggle-agent-panel" => Box::new(a::ToggleAgentPanel),
         "toggle-vim" => Box::new(a::ToggleVim),
         "open-settings" => Box::new(a::OpenSettings),
+        "python.run-note" => Box::new(a::PythonRunNote),
+        "python.run-stop" => Box::new(a::PythonRunStop),
         _ => return None,
     })
 }
@@ -3974,6 +4371,8 @@ pub(crate) fn keybinding_for(id: &str, key: &str) -> Option<gpui::KeyBinding> {
         "toggle-agent-panel" => gpui::KeyBinding::new(key, a::ToggleAgentPanel, None),
         "toggle-vim" => gpui::KeyBinding::new(key, a::ToggleVim, None),
         "open-settings" => gpui::KeyBinding::new(key, a::OpenSettings, None),
+        "python.run-note" => gpui::KeyBinding::new(key, a::PythonRunNote, None),
+        "python.run-stop" => gpui::KeyBinding::new(key, a::PythonRunStop, None),
         _ => return None,
     })
 }
@@ -4066,6 +4465,13 @@ impl gpui::Render for Workspace {
             .text_size(theme.mono_font_size)
             .flex_1();
 
+        // The editor column: the editor takes the height the run panel does
+        // not (TS `EditorPane`'s editor-host + `<PythonRunPanel />`).
+        let mut editor_col = v_flex().size_full().min_h_0().child(editor.into_any_element());
+        if let Some(panel) = self.render_python_panel(cx) {
+            editor_col = editor_col.child(panel);
+        }
+
         let mut main = v_flex()
             .size_full();
 
@@ -4077,10 +4483,10 @@ impl gpui::Render for Workspace {
                             .size(px(240.))
                             .child(self.render_file_tree(window, cx)),
                     )
-                    .child(editor.into_any_element()),
+                    .child(editor_col.into_any_element()),
             );
         } else {
-            main = main.child(editor.into_any_element());
+            main = main.child(editor_col.into_any_element());
         }
 
         if self.agent_open {
@@ -4135,6 +4541,8 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::toggle_agent_panel))
             .on_action(cx.listener(Self::toggle_vim))
             .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::run_python_note))
+            .on_action(cx.listener(Self::stop_python_run))
             // Esc closes the settings modal from anywhere: it takes no focus
             // of its own, so the handler sits on the root — the one element
             // every key dispatch passes through (the link panel's own capture
@@ -4507,8 +4915,9 @@ mod gate_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        EditorState, InputEvent, TreeMenuItem, Workspace, actions, apply_edits_keeping_cursor,
-        numbering, should_schedule_renumber, wikilink,
+        EditorState, InputEvent, PY_RUN_MAX_LINES, PY_RUN_TRIM_TO, PyRunState, PyStatus, PyStream,
+        TreeMenuItem, Workspace, action_for, actions, apply_edits_keeping_cursor, keybinding_for,
+        numbering, should_schedule_renumber, wikilink, COMMANDS,
     };
     use crate::ime_host::{CurrentSource, ImeServices, Switcher};
     use gpui::{
@@ -4846,6 +5255,240 @@ mod tests {
         cx.dispatch_action(actions::OpenSettings);
         workspace.read_with(cx, |ws, _| assert!(!ws.settings_open));
         let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    /// The run panel's state machine, `src/python/run.ts`'s semantics: a new
+    /// run opens fresh, output chunks append in arrival order, the chunk cap
+    /// drops the head (TS `MAX_LINES`/`TRIM_TO`), and the header's status text
+    /// follows the exit.
+    #[test]
+    fn the_run_panel_state_follows_the_ts_store() {
+        let mut run = PyRunState::default();
+        assert!(!run.open, "a fresh state shows no panel");
+
+        run.begin(Some(7), Some("/v/n.md".to_string()), "python3 x.py".to_string());
+        assert!(run.open && run.running);
+        assert_eq!(run.run_id, Some(7));
+
+        // A second run resets everything the first one left behind.
+        run.append(PyStream::Stdout, "old\n".to_string());
+        run.finish(Some(1), 10, false, false);
+        run.begin(Some(8), None, "python3 y.py".to_string());
+        assert!(run.lines.is_empty() && run.exit_code.is_none() && run.duration_ms.is_none());
+
+        for i in 0..PY_RUN_MAX_LINES + 1 {
+            let trimmed = run.append(PyStream::Stdout, format!("{i}\n"));
+            assert_eq!(trimmed, i == PY_RUN_MAX_LINES, "the cap trims exactly once");
+        }
+        assert_eq!(run.lines.len(), PY_RUN_TRIM_TO);
+        assert_eq!(run.lines[0].text, format!("{}\n", PY_RUN_MAX_LINES + 1 - PY_RUN_TRIM_TO));
+
+        // The status text/colour of every exit kind (TS's status span).
+        run.finish(Some(0), 1234, false, false);
+        assert_eq!(run.status(), ("成功".to_string(), PyStatus::Ok));
+        run.finish(Some(2), 5, false, false);
+        assert_eq!(run.status(), ("退出码 2".to_string(), PyStatus::Bad));
+        run.finish(None, 5, true, false);
+        assert_eq!(run.status(), ("已取消".to_string(), PyStatus::Bad));
+        run.finish(None, 5, false, true);
+        assert_eq!(run.status(), ("超时已终止".to_string(), PyStatus::Bad));
+        run.running = true;
+        assert_eq!(run.status(), ("运行中".to_string(), PyStatus::Running));
+    }
+
+    /// The event path: `python-run-output` / `python-run-exit` fill the panel
+    /// through the same handler the poll loop calls, the body text and its
+    /// highlight ranges stay aligned chunk by chunk, and a stale run's events
+    /// are dropped (the run-id self-check).
+    #[gpui::test]
+    fn python_run_events_fill_the_panel_and_stale_ids_are_dropped(cx: &mut TestAppContext) {
+        let (workspace, cx) = python_panel_fixture(cx);
+
+        let output = |run_id: u64, stream: &str, text: &str| {
+            bnote_core::AppEvent::new(
+                "python-run-output",
+                serde_json::json!({
+                    "runId": run_id,
+                    "mdPath": "/v/note.md",
+                    "stream": stream,
+                    "text": text,
+                }),
+            )
+        };
+
+        // Nothing running yet: an event is inert.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.handle_event(output(7, "stdout", "early\n"), cx)
+        });
+        workspace.read_with(cx, |ws, _| assert!(ws.python_run.lines.is_empty()));
+
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.python_run.begin(Some(7), Some("/v/note.md".to_string()), "python3 x.py".to_string());
+            ws.handle_event(output(7, "stdout", "hello\n"), cx);
+            ws.handle_event(output(7, "stderr", "boom\n"), cx);
+            // A different run's chunk never lands here.
+            ws.handle_event(output(9, "stdout", "stale\n"), cx);
+        });
+        workspace.read_with(cx, |ws, _| {
+            let lines: Vec<(&PyStream, &str)> = ws
+                .python_run
+                .lines
+                .iter()
+                .map(|l| (&l.stream, l.text.as_str()))
+                .collect();
+            assert_eq!(
+                lines,
+                [(&PyStream::Stdout, "hello\n"), (&PyStream::Stderr, "boom\n")],
+                "matching chunks append in arrival order; the stale one is dropped"
+            );
+            assert_eq!(ws.py_body, "hello\nboom\n");
+            let ranges: Vec<std::ops::Range<usize>> =
+                ws.py_body_highlights.iter().map(|(r, _)| r.clone()).collect();
+            assert_eq!(ranges, [0..6, 6..11], "one highlight range per chunk");
+            assert!(ws.python_run.running);
+        });
+
+        // The exit finishes the run; a second one for a stale id changes nothing.
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.handle_event(
+                bnote_core::AppEvent::new(
+                    "python-run-exit",
+                    serde_json::json!({
+                        "runId": 7,
+                        "mdPath": "/v/note.md",
+                        "exitCode": 0,
+                        "durationMs": 1234,
+                        "cancelled": false,
+                        "timedOut": false,
+                    }),
+                ),
+                cx,
+            );
+            ws.handle_event(
+                bnote_core::AppEvent::new(
+                    "python-run-exit",
+                    serde_json::json!({
+                        "runId": 9,
+                        "mdPath": "/v/note.md",
+                        "exitCode": 1,
+                        "durationMs": 99,
+                        "cancelled": false,
+                        "timedOut": false,
+                    }),
+                ),
+                cx,
+            );
+        });
+        workspace.read_with(cx, |ws, _| {
+            assert!(!ws.python_run.running);
+            assert_eq!(ws.python_run.exit_code, Some(0));
+            assert_eq!(ws.python_run.duration_ms, Some(1234));
+            assert_eq!(ws.python_run.status(), ("成功".to_string(), PyStatus::Ok));
+        });
+
+        // The panel renders for real (the header, the highlighted body and the
+        // scroll area): a frame here catches StyledText/scrollbar misuse.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // 清空 empties the body and the ranges together (the cached pair).
+        workspace.update_in(cx, |ws, _, cx| {
+            ws.python_run.lines.clear();
+            ws.py_body.clear();
+            ws.py_body_highlights.clear();
+            cx.notify();
+        });
+        workspace.read_with(cx, |ws, _| {
+            assert!(ws.py_body.is_empty() && ws.py_body_highlights.is_empty());
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// ⌘↩ on a note without a python fence runs nothing and says so; the ⌘↩
+    /// keybinding itself is the registry's.
+    #[gpui::test]
+    fn running_a_note_without_fences_reports_and_wires_the_key(cx: &mut TestAppContext) {
+        let action = action_for("python.run-note").expect("the registry id maps to the action");
+        assert!(
+            action.partial_eq(&actions::PythonRunNote),
+            "python.run-note is the run action"
+        );
+        assert!(
+            action_for("python.run-stop").is_some_and(|a| a.partial_eq(&actions::PythonRunStop)),
+            "python.run-stop is the stop action"
+        );
+        assert!(
+            keybinding_for("python.run-note", "cmd-enter").is_some(),
+            "⌘↩ binds to the run action"
+        );
+        assert!(
+            COMMANDS.iter().any(|def| def.id == "python.run-note" && def.key == Some("cmd-enter")),
+            "and the palette row carries the default"
+        );
+        assert!(
+            COMMANDS.iter().any(|def| def.id == "python.run-stop" && def.key.is_none()),
+            "stop is palette-only, like the TS registry"
+        );
+
+        let (workspace, cx) = python_panel_fixture(cx);
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.open_path = Some("note.md".to_string());
+            ws.editor.update(cx, |st, cx| st.set_value("没有围栏的正文\n", window, cx));
+            ws.run_python_note(&actions::PythonRunNote, window, cx);
+        });
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.status, "这篇笔记没有 python 代码块(```python 围栏)");
+            assert!(!ws.python_run.open, "no panel without a run");
+        });
+
+        // No note open either: its own message.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.open_path = None;
+            ws.run_python_note(&actions::PythonRunNote, window, cx);
+        });
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.status, "没有打开的笔记");
+        });
+    }
+
+    /// A workspace with a vault-less state and inert seams, for the panel
+    /// tests (the run itself is the core's; these cover the shell wiring).
+    fn python_panel_fixture(
+        cx: &mut TestAppContext,
+    ) -> (gpui::Entity<Workspace>, &mut gpui::VisualTestContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+        let tag = std::process::id();
+        let data_dir = std::env::temp_dir().join(format!("bnote-py-panel-{tag}"));
+        let vault = std::env::temp_dir().join(format!("bnote-py-vault-{tag}"));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&data_dir).expect("the data dir");
+        std::fs::create_dir_all(&vault).expect("the vault dir");
+        let (state, rx) = bnote_core::state::AppState::new(data_dir);
+        let mut bridges = None;
+        cx.update(|cx| {
+            bridges = Some((
+                crate::editor::snippets_host::SnippetBridge::init(cx),
+                crate::editor::vim::integration::VimBridge::init(cx),
+            ));
+        });
+        let (snippet_bridge, vim_bridge) = bridges.expect("the bridges");
+        let (workspace, cx) = cx.add_window_view(move |window, cx| {
+            let ws = Workspace::new(
+                state.clone(),
+                rx.resubscribe(),
+                Some(vault),
+                vim_bridge,
+                snippet_bridge,
+                inert_ime(),
+                window,
+                cx,
+            );
+            let focus = ws.editor.focus_handle(cx);
+            window.focus(&focus, cx);
+            ws
+        });
+        cx.run_until_parked();
+        (workspace, cx)
     }
 
     /// The source list behind the IME tab is a platform call (a TIS

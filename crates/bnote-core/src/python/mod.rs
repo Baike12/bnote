@@ -5,6 +5,7 @@
 //! 与 PATH 上的 `uv` 共同决定运行环境(见 [`runner::resolve_env`])。
 //! 每项目配置持久化在 `<vault>/.bnote/python.json`,按一级目录名索引。
 
+pub mod extract;
 pub mod lsp;
 pub mod runner;
 pub mod uvenv;

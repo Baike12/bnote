@@ -77,7 +77,7 @@ fn main() {
             // from keybindings.json arrive with the settings port.
             let bindings: Vec<KeyBinding> = commands::COMMANDS
                 .iter()
-                .filter_map(|def| keybinding_for(def.id, def.key))
+                .filter_map(|def| def.key.and_then(|key| keybinding_for(def.id, key)))
                 .collect();
             cx.bind_keys(bindings);
 
