@@ -84,6 +84,64 @@ enum PaletteKind {
     Vaults,
 }
 
+/// The file tree's right-click menu, anchored where the click landed (TS
+/// `TreeItem.openMenu` + `ContextMenu.tsx`).
+struct TreeMenu {
+    rel: String,
+    is_folder: bool,
+    x: f32,
+    y: f32,
+}
+
+/// One entry of the tree menu. The set depends on the row kind: a folder gets
+/// the two create actions, a file gets 「打开」; rename and delete are on both.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TreeMenuItem {
+    Open,
+    NewNote,
+    NewFolder,
+    Rename,
+    Delete,
+}
+
+impl TreeMenuItem {
+    /// The entries of a row kind, in display order (TS `TreeItem.openMenu`).
+    fn for_row(is_folder: bool) -> &'static [TreeMenuItem] {
+        const DIR: &[TreeMenuItem] = &[
+            TreeMenuItem::NewNote,
+            TreeMenuItem::NewFolder,
+            TreeMenuItem::Rename,
+            TreeMenuItem::Delete,
+        ];
+        const FILE: &[TreeMenuItem] =
+            &[TreeMenuItem::Open, TreeMenuItem::Rename, TreeMenuItem::Delete];
+        if is_folder { DIR } else { FILE }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            TreeMenuItem::Open => "打开",
+            TreeMenuItem::NewNote => "新建笔记",
+            TreeMenuItem::NewFolder => "新建文件夹",
+            TreeMenuItem::Rename => "重命名",
+            TreeMenuItem::Delete => "删除",
+        }
+    }
+
+    /// Delete draws in the danger color (TS `danger: true`).
+    fn is_danger(self) -> bool {
+        self == TreeMenuItem::Delete
+    }
+}
+
+/// The rename dialog a tree menu's 「重命名」 opens. The TS shell renames
+/// inline in the row; the port edits through a small dialog — one writer
+/// either way, the rename itself lands in `files::rename_path`.
+struct RenamePrompt {
+    rel: String,
+    is_folder: bool,
+}
+
 /// One 「快速添加」 row of the settings modal: the command name field and the
 /// target-folder field, each with the id its subscription looks the row up by
 /// (indices shift when a row is removed; ids do not).
@@ -194,6 +252,11 @@ pub struct Workspace {
     theme_mode: ThemeMode,
     font_size: f32,
     snippets_enabled: bool,
+    /// The file tree's right-click menu, `None` when no menu is up.
+    tree_menu: Option<TreeMenu>,
+    /// The rename dialog the tree menu opens, with its single field.
+    rename_prompt: Option<RenamePrompt>,
+    rename_state: Entity<InputState>,
     /// Quick add (⌘⇧A; TS `QuickAddModal.tsx`): pick one of
     /// `settings.quickAdd`'s commands, then name the note. The name lands in
     /// the command's folder, created at the vault root when missing.
@@ -387,6 +450,7 @@ impl Workspace {
 
         let qa_state = cx.new(|cx| CommandState::new(window, cx));
         let qa_name_state = cx.new(|cx| InputState::new(window, cx));
+        let rename_state = cx.new(|cx| InputState::new(window, cx));
 
         let theme = cx.theme();
         let preview = Rc::new(PreviewHost::new(PreviewFont {
@@ -452,6 +516,12 @@ impl Workspace {
                 }
                 this.code_block_lang = lang.clone();
                 this.persist_setting("codeBlockLang", serde_json::json!(lang), cx);
+            }),
+            // The rename dialog's field: Enter commits.
+            cx.subscribe(&rename_state, |this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.commit_rename(cx);
+                }
             }),
             // The quick-add name field: its Enter creates, its Tab returns to
             // the command pick (TS binds both on the input).
@@ -523,6 +593,9 @@ impl Workspace {
             theme_mode,
             font_size,
             snippets_enabled,
+            tree_menu: None,
+            rename_prompt: None,
+            rename_state,
             qa_open: false,
             qa_naming: false,
             qa_picked: None,
@@ -627,9 +700,7 @@ impl Workspace {
                 }
                 self.invalidate_images(&paths, cx);
                 self.reload_open_if_externally_changed(&paths, cx);
-                let tree = self.tree_state.clone();
-                cx.spawn(async move |this, cx| reload_tree(this, tree, cx).await)
-                    .detach();
+                self.refresh_tree(cx);
             }
             "agent-event" => {
                 let session = ev
@@ -1738,6 +1809,217 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Right-click on a tree row (TS `TreeItem.openMenu`).
+    fn open_tree_menu(
+        &mut self,
+        rel: String,
+        is_folder: bool,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.tree_menu = Some(TreeMenu {
+            rel,
+            is_folder,
+            x: f32::from(at.x),
+            y: f32::from(at.y),
+        });
+        cx.notify();
+    }
+
+    fn close_tree_menu(&mut self, cx: &mut Context<Self>) {
+        if self.tree_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// A tree-menu pick. Create and delete run on the background executor and
+    /// re-resolve the absolute path from the *current* vault root when they
+    /// land — the menu may have been open across a vault switch.
+    fn tree_menu_pick(
+        &mut self,
+        item: TreeMenuItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.tree_menu.take() else { return };
+        let Some(root) = self.vault_root.clone() else { return };
+        let rel = menu.rel.clone();
+        let abs = root.join(&rel).to_string_lossy().to_string();
+        match item {
+            TreeMenuItem::Open => self.open_note(rel, window, cx),
+            TreeMenuItem::Rename => {
+                let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+                self.rename_prompt = Some(RenamePrompt { rel, is_folder: menu.is_folder });
+                let state = self.rename_state.clone();
+                state.update(cx, |st, cx| {
+                    st.set_value(name, window, cx);
+                    st.focus(window, cx);
+                });
+                cx.notify();
+            }
+            TreeMenuItem::NewNote | TreeMenuItem::NewFolder => {
+                let is_note = item == TreeMenuItem::NewNote;
+                let state = self.state.clone();
+                let dir = rel.clone();
+                cx.spawn(async move |this, cx| {
+                    let created = cx
+                        .background_executor()
+                        .spawn(async move {
+                            if is_note {
+                                bnote_core::commands::files::create_file(
+                                    &state,
+                                    dir,
+                                    "未命名.md".to_string(),
+                                )
+                                .map(|e| (e.rel_path, true))
+                            } else {
+                                bnote_core::commands::files::create_dir(
+                                    &state,
+                                    dir,
+                                    "新建文件夹".to_string(),
+                                )
+                                .map(|e| (e.rel_path, false))
+                            }
+                        })
+                        .await;
+                    this.update_in(cx, |this, window, cx| {
+                        match created {
+                            Ok((rel_path, is_note)) => {
+                                this.status = format!(
+                                    "{}{}",
+                                    if is_note { "新建 " } else { "新建文件夹 " },
+                                    rel_path
+                                );
+                                if is_note {
+                                    this.open_note(rel_path, window, cx);
+                                }
+                                this.refresh_tree(cx);
+                            }
+                            Err(e) => this.status = format!("新建失败:{e}"),
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            TreeMenuItem::Delete => {
+                let open_path = self.open_path.clone();
+                let state = self.state.clone();
+                let removed_open = deletion_hits_open_note(open_path.as_deref(), &rel);
+                cx.spawn(async move |this, cx| {
+                    let done = cx
+                        .background_executor()
+                        .spawn(async move {
+                            bnote_core::commands::files::trash_path(&state, abs)
+                        })
+                        .await;
+                    this.update_in(cx, |this, window, cx| {
+                        match done {
+                            Ok(()) => {
+                                this.status = format!("已删除 {rel}");
+                                if removed_open {
+                                    // The deleted entry held the open note
+                                    // (possibly as its parent): close it.
+                                    this.close_note(window, cx);
+                                }
+                                this.refresh_tree(cx);
+                            }
+                            Err(e) => this.status = format!("删除失败:{e}"),
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Empty the editor (TS `closeFile` + `loadDocument(view, "")`).
+    fn close_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.flush_cursor_save_now(cx);
+        self.open_path = None;
+        self.dirty = false;
+        self.editor.update(cx, |ed, cx| ed.set_value("", window, cx));
+        self.snippets.reset(&self.editor);
+        cx.notify();
+    }
+
+    /// TS `renameEntry`: rename on disk, then follow the open note to its new
+    /// path (the file itself, or a parent folder's new prefix).
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(prompt) = self.rename_prompt.take() else { return };
+        let Some(root) = self.vault_root.clone() else { return };
+        let mut name = self.rename_state.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            cx.notify();
+            return;
+        }
+        // A file renamed without an extension keeps the old one — otherwise
+        // the file drops out of the note index (TS `renameEntry`).
+        if !prompt.is_folder && !name.contains('.') {
+            let old = prompt.rel.rsplit('/').next().unwrap_or(&prompt.rel);
+            if let Some(dot) = old.rfind('.') {
+                name.push_str(&old[dot..]);
+            }
+        }
+        let abs = root.join(&prompt.rel).to_string_lossy().to_string();
+        let open_path = self.open_path.clone();
+        let state = self.state.clone();
+        let dir = prompt.rel.clone();
+        // The open note may live inside the renamed folder: follow the new
+        // prefix instead of the file's own name.
+        let follow = open_path
+            .as_deref()
+            .filter(|p| *p == dir || p.starts_with(&format!("{dir}/")))
+            .map(|p| p.to_string());
+        cx.spawn(async move |this, cx| {
+            let renamed = cx
+                .background_executor()
+                .spawn(async move {
+                    bnote_core::commands::files::rename_path(&state, abs, name)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                match renamed {
+                    Ok(new_abs) => {
+                        this.status = format!("已重命名 {}", dir);
+                        this.refresh_tree(cx);
+                        if let Some(old_rel) = follow {
+                            let root = this.vault_root.clone();
+                            if let (Some(root), Some(new_abs)) =
+                                (root, Some(new_abs.clone()))
+                            {
+                                let new_abs = PathBuf::from(new_abs);
+                                let new_rel = new_abs
+                                    .strip_prefix(&root)
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_else(|_| {
+                                        new_abs.to_string_lossy().to_string()
+                                    });
+                                let target = renamed_open_note(&old_rel, &dir, &new_rel);
+                                this.open_note(target, window, cx);
+                            }
+                        }
+                    }
+                    Err(e) => this.status = format!("重命名失败:{e}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Rebuild the file tree off the UI thread (the same path the vault
+    /// watcher takes).
+    fn refresh_tree(&mut self, cx: &mut Context<Self>) {
+        let tree = self.tree_state.clone();
+        cx.spawn(async move |this, cx| reload_tree(this, tree, cx).await).detach();
+    }
+
     /// ⌘⇧A: open quick add. The command list is re-read from `config.json`
     /// (the settings tab writes it), so an edit there shows up at once.
     fn quick_add(&mut self, _: &actions::QuickAdd, window: &mut Window, cx: &mut Context<Self>) {
@@ -2191,11 +2473,12 @@ impl Workspace {
                         &vault,
                         div()
                             .child(
-                                Button::new("settings-open-vault")
+                                Button::new("settings-pick-vault")
                                     .outline()
-                                    .label("其他仓库(⌘⇧R)")
+                                    .label("打开其他仓库…")
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_vault_palette(window, cx);
+                                        this.settings_open = false;
+                                        this.pick_vault(window, cx);
                                     })),
                             )
                             .into_any_element(),
@@ -2497,6 +2780,35 @@ impl Workspace {
         self.open_vault_palette(window, cx);
     }
 
+    /// 「打开笔记文件夹」: the native folder picker, then the same vault switch
+    /// the palette's entries take (TS `pickVaultDialog` + `openVault`).
+    fn pick_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("打开笔记文件夹".into()),
+        });
+        cx.spawn_in(window, async move |this, window| {
+            let picked = rx.await;
+            this.update_in(window, |this, _window, cx| {
+                match picked {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            this.switch_vault(path.to_string_lossy().to_string(), cx);
+                        }
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(e)) => this.status = format!("打开仓库失败:{e}"),
+                    Err(e) => this.status = format!("打开仓库失败:{e}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The vault list palette — reached by ⌘⇧R and from the settings modal's
     /// "other vault" button (one path, so both stay in sync).
     fn open_vault_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2754,6 +3066,7 @@ impl Workspace {
                 let is_folder = entry.is_folder();
                 let expanded = entry.is_expanded();
                 let rel = entry.item().id.clone();
+                let rel_menu = rel.clone();
                 let label = entry.item().label.clone();
                 view.update(cx, |_, cx| {
                     let icon = if !is_folder {
@@ -2776,6 +3089,17 @@ impl Workspace {
                                 this.open_note(rel.to_string(), window, cx);
                             }
                         }))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                this.open_tree_menu(
+                                    rel_menu.to_string(),
+                                    is_folder,
+                                    event.position,
+                                    cx,
+                                );
+                            }),
+                        )
                 })
             },
         )
@@ -2785,6 +3109,221 @@ impl Workspace {
         .text_color(cx.theme().sidebar_foreground)
         .h_full()
         .into_any_element()
+    }
+
+    /// The file tree's context menu (TS `ContextMenu.tsx`): the row's entries
+    /// at the click point. A click anywhere else dismisses it.
+    fn render_tree_menu(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let menu = self.tree_menu.as_ref()?;
+        let theme = cx.theme().clone();
+        let (x, y) = (menu.x, menu.y);
+        let items: Vec<gpui::AnyElement> = TreeMenuItem::for_row(menu.is_folder)
+            .iter()
+            .map(|item| {
+                let item = *item;
+                let danger = item.is_danger();
+                let row = div().px_3().py_1().rounded_sm().text_sm();
+                let row = if danger { row.text_color(theme.danger) } else { row };
+                row.id(item.label())
+                    .cursor_default()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.tree_menu_pick(item, window, cx);
+                    }))
+                    .child(Label::new(item.label()))
+                    .into_any_element()
+            })
+            .collect();
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.close_tree_menu(cx)),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("tree-menu")
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .min_w(px(140.))
+                        .p_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.popover)
+                        .occlude()
+                        .children(items),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The rename dialog (the tree menu's 「重命名」): one field, Enter commits,
+    /// Esc cancels.
+    fn render_rename_prompt(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if self.rename_prompt.is_none() {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(theme.background.opacity(0.45))
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.rename_prompt = None;
+                                cx.notify();
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("rename-prompt")
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .justify_center()
+                        .items_start()
+                        .pt(px(160.))
+                        .child(
+                            v_flex()
+                                .w(px(420.))
+                                .gap_2()
+                                .p_3()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.popover)
+                                .occlude()
+                                .child(Label::new("重命名").text_sm())
+                                .child(Input::new(&self.rename_state).cleanable(true))
+                                .child(settings_hint("Enter 确定 · Esc 取消", &theme))
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .justify_end()
+                                        .child(
+                                            Button::new("rename-cancel")
+                                                .outline()
+                                                .label("取消")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.rename_prompt = None;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("rename-ok")
+                                                .label("重命名")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.commit_rename(cx);
+                                                })),
+                                        ),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The first-run screen (TS `Welcome.tsx`): no vault yet, so the one thing
+    /// to do is pick a folder (or a recent one from ⌘⇧R).
+    fn render_welcome(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.render_welcome_needed() {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .bg(theme.background)
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .child(
+                    Label::new("bnote")
+                        .text_size(px(34.))
+                        .text_color(theme.foreground),
+                )
+                .child(
+                    Label::new("本地优先 · 实时渲染 · Vim · LaTeX 片段")
+                        .text_sm()
+                        .text_color(theme.muted_foreground),
+                )
+                .child(
+                    Button::new("welcome-open-vault")
+                        .label("打开笔记文件夹")
+                        .on_click(cx.listener(|this, _, window, cx| this.pick_vault(window, cx))),
+                )
+                .child(
+                    Label::new("选择一个文件夹作为笔记仓库(vault),其中的 .md 文件会被自动索引;⌘⇧R 可切回最近用过的仓库。")
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The welcome screen's gate (TS `App.tsx`: `{!vaultPath && <Welcome />}`).
+    fn render_welcome_needed(&self) -> bool {
+        self.vault_root.is_none()
+    }
+
+    /// The editor empty state's gate (TS `EditorPane.tsx`: `!currentFile &&
+    /// vaultPath`).
+    fn editor_empty_needed(&self) -> bool {
+        self.vault_root.is_some() && self.open_path.is_none()
+    }
+
+    /// The editor's empty state (TS `EditorPane.tsx` `.editor-empty`): a vault
+    /// is open but no note is.
+    fn render_editor_empty(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.editor_empty_needed() {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(
+                    Label::new("打开左侧笔记,或")
+                        .text_sm()
+                        .text_color(theme.muted_foreground),
+                )
+                .child(
+                    Button::new("editor-empty-new-note")
+                        .outline()
+                        .label("新建笔记")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.new_note(&actions::NewNote, window, cx);
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     fn render_palette(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
@@ -2933,6 +3472,23 @@ fn settings_hint(text: &str, theme: &gpui_kit::component::theme::Theme) -> impl 
     Label::new(text.to_string())
         .text_xs()
         .text_color(theme.muted_foreground)
+}
+
+/// Whether deleting `rel` takes the open note with it — the note itself, or a
+/// folder above it (TS `trashEntry`'s prefix test).
+fn deletion_hits_open_note(open: Option<&str>, rel: &str) -> bool {
+    open.is_some_and(|p| p == rel || p.starts_with(&format!("{rel}/")))
+}
+
+/// Where the open note lives after `rel` was renamed to `new_rel`: the note
+/// itself moved, or the folder holding it did (`old_rel` is `rel` or inside
+/// it). TS `renameEntry`'s prefix rewrite.
+fn renamed_open_note(old_rel: &str, rel: &str, new_rel: &str) -> String {
+    if old_rel == rel {
+        new_rel.to_string()
+    } else {
+        format!("{new_rel}/{}", &old_rel[rel.len() + 1..])
+    }
 }
 
 /// `/\\.(md|markdown|txt)$/i` — the note extension off a typed file name.
@@ -3140,7 +3696,7 @@ impl gpui::Render for Workspace {
         let mut main = v_flex()
             .size_full();
 
-        if self.sidebar_open {
+        if self.sidebar_open && self.vault_root.is_some() {
             main = main.child(
                 h_resizable("main")
                     .child(
@@ -3160,6 +3716,10 @@ impl gpui::Render for Workspace {
 
         let palette = if self.palette.is_some() { self.render_palette(cx) } else { None };
         let quick_add = self.render_quick_add(cx);
+        let welcome = self.render_welcome(cx);
+        let editor_empty = self.render_editor_empty(cx);
+        let tree_menu = self.render_tree_menu(cx);
+        let rename_prompt = self.render_rename_prompt(cx);
         let link_suggest = self.render_link_suggest(window, cx);
         let settings = self.render_settings(cx);
 
@@ -3206,16 +3766,31 @@ impl gpui::Render for Workspace {
             // every key dispatch passes through (the link panel's own capture
             // is deeper and runs after this one lets it through).
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if this.settings_open && event.keystroke.key == "escape" {
-                    this.close_settings(window, cx);
-                    cx.stop_propagation();
+                if event.keystroke.key != "escape" {
+                    return;
                 }
+                if this.rename_prompt.is_some() {
+                    this.rename_prompt = None;
+                    this.focus_editor(window, cx);
+                    cx.notify();
+                } else if this.tree_menu.is_some() {
+                    this.close_tree_menu(cx);
+                } else if this.settings_open {
+                    this.close_settings(window, cx);
+                } else {
+                    return;
+                }
+                cx.stop_propagation();
             }))
             .child(main)
+            .children(welcome)
             .children(palette)
             .children(link_suggest)
             .children(settings)
             .children(quick_add)
+            .children(tree_menu)
+            .children(rename_prompt)
+            .children(editor_empty)
             .child(
                 StatusBar::new()
                     .left(Label::new(self.status.clone()))
@@ -3443,7 +4018,8 @@ async fn save_snapshot(this: WeakEntity<Workspace>, seq: u64, cx: &mut gpui::Asy
 #[cfg(test)]
 mod gate_tests {
     use super::{
-        cycle_demotes_cursor_line, level_toggle_demotes_cursor_line, link_row_parts,
+        TreeMenuItem, cycle_demotes_cursor_line, deletion_hits_open_note,
+        level_toggle_demotes_cursor_line, link_row_parts, renamed_open_note,
         should_schedule_renumber,
     };
     use gpui_kit::component::input::InputEvent;
@@ -3494,6 +4070,44 @@ mod gate_tests {
         assert_eq!(level_toggle_demotes_cursor_line("正文", 0, 2), (0, false));
     }
 
+    /// Path prefix arithmetic of the tree menu's delete and rename (the parts
+    /// a wrong answer silently corrupts: the open note's identity).
+    #[test]
+    fn delete_and_rename_follow_the_open_note_by_prefix() {
+        assert!(deletion_hits_open_note(Some("a/b.md"), "a/b.md"));
+        assert!(deletion_hits_open_note(Some("a/b/c.md"), "a/b"));
+        assert!(!deletion_hits_open_note(Some("a/b2.md"), "a/b"));
+        assert!(!deletion_hits_open_note(None, "a/b"));
+
+        // The note itself moved: the whole path is replaced.
+        assert_eq!(renamed_open_note("a/b.md", "a/b.md", "a/c.md"), "a/c.md");
+        // Its folder moved: only the prefix is replaced.
+        assert_eq!(renamed_open_note("a/b/c.md", "a/b", "x/y"), "x/y/c.md");
+    }
+
+    /// The tree menu's entries per row kind (TS `TreeItem.openMenu`): a folder
+    /// creates, a file opens; rename and delete are on both, delete last.
+    #[test]
+    fn the_tree_menu_matches_the_row_kind() {
+        let dir = TreeMenuItem::for_row(true);
+        assert_eq!(
+            dir,
+            &[
+                TreeMenuItem::NewNote,
+                TreeMenuItem::NewFolder,
+                TreeMenuItem::Rename,
+                TreeMenuItem::Delete,
+            ]
+        );
+        let file = TreeMenuItem::for_row(false);
+        assert_eq!(
+            file,
+            &[TreeMenuItem::Open, TreeMenuItem::Rename, TreeMenuItem::Delete]
+        );
+        assert!(TreeMenuItem::Delete.is_danger());
+        assert!(!TreeMenuItem::Rename.is_danger());
+    }
+
     /// A link-suggest row splits on the last `/` into the note name (extension
     /// off) and the folder — the TS row's two spans.
     #[test]
@@ -3513,8 +4127,8 @@ mod gate_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        EditorState, InputEvent, Workspace, actions, apply_edits_keeping_cursor, numbering,
-        should_schedule_renumber, wikilink,
+        EditorState, InputEvent, TreeMenuItem, Workspace, actions, apply_edits_keeping_cursor,
+        numbering, should_schedule_renumber, wikilink,
     };
     use gpui::{
         AppContext as _, Context, Focusable as _, IntoElement, Render, TestAppContext, Window, div,
@@ -3940,6 +4554,151 @@ mod tests {
         assert_eq!(cfg["settings"]["quickAdd"], serde_json::json!([]));
 
         let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    /// The welcome / empty-state gates and the native folder picker: no vault
+    /// shows the welcome screen (and no sidebar), picking a folder switches to
+    /// it, and with a vault but no note the editor's empty state shows.
+    #[gpui::test]
+    fn the_welcome_state_gates_on_the_vault_and_the_picker_switches(cx: &mut TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+        let tag = std::process::id();
+        let vault = std::env::temp_dir().join(format!("bnote-welcome-vault-{tag}"));
+        let data_dir = std::env::temp_dir().join(format!("bnote-welcome-data-{tag}"));
+        let _ = std::fs::remove_dir_all(&vault);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&vault).expect("the vault");
+        std::fs::create_dir_all(&data_dir).expect("the data dir");
+        let canonical = std::fs::canonicalize(&vault).expect("canonical vault");
+
+        let (state, rx) = bnote_core::state::AppState::new(data_dir.clone());
+        let mut bridges = None;
+        cx.update(|cx| {
+            bridges = Some((
+                crate::editor::snippets_host::SnippetBridge::init(cx),
+                crate::editor::vim::integration::VimBridge::init(cx),
+            ));
+        });
+        let (snippet_bridge, vim_bridge) = bridges.expect("the bridges");
+        let (workspace, cx) = cx.add_window_view(move |window, cx| {
+            // No `last_vault`: the first-run state.
+            let ws = Workspace::new(
+                state.clone(),
+                rx.resubscribe(),
+                None,
+                vim_bridge,
+                snippet_bridge,
+                window,
+                cx,
+            );
+            let focus = ws.editor.focus_handle(cx);
+            window.focus(&focus, cx);
+            ws
+        });
+
+        workspace.read_with(cx, |ws, _| {
+            assert!(ws.vault_root.is_none());
+            assert!(ws.render_welcome_needed(), "no vault: the welcome shows");
+            assert!(!ws.editor_empty_needed(), "no vault: not the empty state");
+        });
+
+        // The welcome button's picker hands the chosen folder to `switch_vault`
+        // (the same path ⌘⇧R's entries take). The folder dialog itself is
+        // platform behavior — the test platform's prompt answer is not
+        // reachable from a visual context — so the switch is driven directly.
+        workspace.update_in(cx, |ws, _window, cx| {
+            ws.switch_vault(vault.to_string_lossy().to_string(), cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.vault_root.as_deref(), Some(canonical.as_path()));
+            assert!(!ws.render_welcome_needed(), "a vault: no welcome");
+            assert!(ws.editor_empty_needed(), "a vault, no note: the empty state");
+        });
+
+        let _ = std::fs::remove_dir_all(&vault);
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    /// The tree menu's rename end to end on a real vault: the dialog opens with
+    /// the current name, commit renames on disk (keeping the extension a bare
+    /// name would drop) and the open note follows to its new path.
+    #[gpui::test]
+    fn the_tree_menu_renames_on_disk_and_follows_the_open_note(cx: &mut TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+        let tag = std::process::id();
+        let vault = std::env::temp_dir().join(format!("bnote-rename-vault-{tag}"));
+        let data_dir = std::env::temp_dir().join(format!("bnote-rename-data-{tag}"));
+        let _ = std::fs::remove_dir_all(&vault);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&vault).expect("the vault");
+        std::fs::create_dir_all(&data_dir).expect("the data dir");
+        std::fs::write(vault.join("想法.md"), "正文").expect("the note");
+        let canonical = std::fs::canonicalize(&vault).expect("canonical vault");
+
+        let (state, rx) = bnote_core::state::AppState::new(data_dir.clone());
+        let mut bridges = None;
+        cx.update(|cx| {
+            bridges = Some((
+                crate::editor::snippets_host::SnippetBridge::init(cx),
+                crate::editor::vim::integration::VimBridge::init(cx),
+            ));
+        });
+        let (snippet_bridge, vim_bridge) = bridges.expect("the bridges");
+        let vault_for_ws = vault.clone();
+        let (workspace, cx) = cx.add_window_view(move |window, cx| {
+            let ws = Workspace::new(
+                state.clone(),
+                rx.resubscribe(),
+                Some(vault_for_ws),
+                vim_bridge,
+                snippet_bridge,
+                window,
+                cx,
+            );
+            let focus = ws.editor.focus_handle(cx);
+            window.focus(&focus, cx);
+            ws
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.vault_root.as_deref(), Some(canonical.as_path()));
+        });
+
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.open_note("想法.md".to_string(), window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(ws.open_path.as_deref(), Some("想法.md"));
+            assert_eq!(ws.editor.read(cx).value(), "正文");
+        });
+
+        // 「重命名」 opens the dialog with the current name; committing a bare
+        // name keeps the .md extension (TS `renameEntry`).
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.open_tree_menu("想法.md".to_string(), false, gpui::Point::default(), cx);
+            assert!(ws.tree_menu.is_some());
+            ws.tree_menu_pick(TreeMenuItem::Rename, window, cx);
+            assert!(ws.rename_prompt.is_some());
+            assert_eq!(ws.rename_state.read(cx).value(), "想法.md");
+            assert_eq!(ws.rename_state.read(cx).value(), "想法.md");
+            ws.rename_state
+                .clone()
+                .update(cx, |st, cx| st.set_value("灵感", window, cx));
+            ws.commit_rename(cx);
+            assert!(ws.rename_prompt.is_none());
+        });
+        cx.run_until_parked();
+
+        assert!(!canonical.join("想法.md").exists(), "the old name is gone");
+        assert!(canonical.join("灵感.md").is_file(), "the new name is on disk");
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.open_path.as_deref(), Some("灵感.md"), "the open note followed");
+        });
+
+        let _ = std::fs::remove_dir_all(&vault);
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 }
