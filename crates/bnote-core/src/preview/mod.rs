@@ -76,10 +76,6 @@ pub enum Widget {
     Checkbox { checked: bool },
     /// The `- `/`* `/`+ ` marker of an unordered list item.
     Bullet,
-    /// Title chip of a `::: kind Title` callout.
-    CalloutTitle { kind: String, title: String },
-    /// `---`/`***` horizontal rule line.
-    Rule,
 }
 
 /// A whole-line-range block element: either a **replacement** (the renderer
@@ -100,32 +96,57 @@ pub struct PreviewBlock {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockKind {
-    /// A `$$ … $$` multi-line display block (or `\[ … \]`).
-    Math { tex: String, display: bool },
+    /// A `$$ … $$` multi-line display block (or `\[ … \]`), rendered in place
+    /// of its source lines.
+    ///
+    /// `depth` is the nesting depth of the enclosing callout block, `None`
+    /// when the region is outside every callout (TS `calloutDepthAt`, -1). A
+    /// block replace removes the line element, so the element itself carries
+    /// the callout face (background, left border, indent) for its own lines —
+    /// the TS `MathWidget` adds `md-callout-line d{depth}` for exactly this.
+    Math { tex: String, depth: Option<usize> },
     /// The live preview bnote shows **while the caret is inside** a display
     /// math block: a rendered copy of the formula, inserted *below* the source
     /// block (never replacing it, so the source stays editable). Emitted as an
-    /// insertion ([`PreviewBlock::last_line`] is `None`).
-    MathPreview { tex: String },
+    /// insertion ([`PreviewBlock::last_line`] is `None`). `depth` as in
+    /// [`BlockKind::Math`] (TS `MathPreviewWidget`).
+    MathPreview { tex: String, depth: Option<usize> },
     /// A whole line the preview removes entirely: the ```` ``` ```` fence lines
     /// of a fenced-code block. The engine collapses the line to **zero
     /// height** (TS `HiddenLineWidget` + `.cw-hidden-line { height: 0 }`), so
     /// the fence lines take no vertical space and show no line number.
+    /// The TS widget carries no callout face — a fence line inside a callout
+    /// is still zero height.
     HiddenLine,
-    /// A `::: kind Title` container. `body_first_line..=body_last_line` is
-    /// the body (between the opening line and the closing `:::`).
+    /// A `::: Title` container's edge line (`:::` marker line).
     ///
-    /// Note this replaces an **edge** line only: the body stays source. The
+    /// This replaces an **edge** line only: the body stays source. The
     /// container look (background, left border, nesting) is the panel's job
     /// ([`PreviewPanel`]), exactly like the TS shell's `md-callout-line`
     /// classes — a block replace removes the line element, so the edge widget
-    /// carries the panel face for its own line.
+    /// carries the panel face for its own line (TS `CalloutTitleWidget` /
+    /// `CalloutEdgeWidget`, both with `.md-callout-line d{depth}`).
+    ///
+    /// - `title` non-empty → the opening edge shows the title label
+    ///   (`cw-callout-title`, top cap);
+    /// - `title` empty + `open` → the opening edge of an untitled block, and
+    ///   with `open == false` the closing `:::` line (`cw-callout-edge`: an
+    ///   8px cap, top rounding when `open`).
     Callout {
-        kind: String,
+        /// The `:::` marker line's text after the colons, trimmed (empty for
+        /// an untitled opening edge and for every closing edge).
         title: String,
-        body_first_line: usize,
-        body_last_line: usize,
+        /// Nesting depth of the region, 0 = outermost (the TS caps the
+        /// `d{depth}` class at `d2`).
+        depth: usize,
+        /// True for the opening edge, false for the closing `:::`.
+        open: bool,
     },
+    /// A `---`/`***` horizontal rule: the whole line is replaced by a rule
+    /// element (TS `HrWidget`, `block: true`). `depth` as in
+    /// [`BlockKind::Math`]: the rule carries the callout face for its own
+    /// line.
+    Rule { depth: Option<usize> },
 }
 
 /// A line range drawn as a container panel — the `:::` callout look: a

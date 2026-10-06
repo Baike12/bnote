@@ -389,7 +389,7 @@ mod tests {
         let mut sink = Sink::new(&l, w, act, 0);
         let math = || BlockKind::Math {
             tex: String::new(),
-            display: true,
+            depth: None,
         };
         assert!(!sink.block(0, 1, math())); // covers the caret line
         assert!(!sink.block(1, 1, math()));

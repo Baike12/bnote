@@ -31,6 +31,7 @@ mod blocks;
 mod geom;
 mod inline;
 
+use crate::markdown::callout::CalloutRegion;
 use crate::preview::{BlockKind, PanelKind, PreviewSnapshot, ScanInput, Widget};
 
 use blocks::{ListKind, Statics};
@@ -156,27 +157,20 @@ fn emit_callout_panels(statics: &Statics, sink: &mut Sink) {
 }
 
 /// Callout edge lines: one single-line block per edge while the caret is
-/// outside the whole region (TS 268-290). The opening block carries the
-/// title and the body range; the closing block is the untitled edge.
+/// outside the whole region (TS 268-290). The opening block carries the title
+/// (empty for an untitled block); the closing block is the untitled edge.
 fn emit_callout_edges(statics: &Statics, act: &Activity, sink: &mut Sink) {
     for region in &statics.callouts {
         if act.touches(region.from, region.to) {
             continue;
         }
-        let body_first_line = region.open_line; // 0-based line after the opening edge
-        let body_last_line = if region.closed {
-            region.close_line.saturating_sub(2)
-        } else {
-            region.close_line.saturating_sub(1)
-        };
         sink.block(
             region.open_line.saturating_sub(1),
             region.open_line.saturating_sub(1),
             BlockKind::Callout {
-                kind: String::new(),
                 title: region.title.clone(),
-                body_first_line,
-                body_last_line,
+                depth: region.depth,
+                open: true,
             },
         );
         if region.closed {
@@ -184,24 +178,38 @@ fn emit_callout_edges(statics: &Statics, act: &Activity, sink: &mut Sink) {
                 region.close_line.saturating_sub(1),
                 region.close_line.saturating_sub(1),
                 BlockKind::Callout {
-                    kind: String::new(),
                     title: String::new(),
-                    body_first_line,
-                    body_last_line,
+                    depth: region.depth,
+                    open: false,
                 },
             );
         }
     }
 }
 
-/// Horizontal rules: the line's text becomes `Widget::Rule` (TS 291-301).
-/// The TS uses a block replace; the model has no `BlockKind::Rule`, so the
-/// rule is a span covering the whole node range (see the port report).
+/// The callout nesting depth for `pos`, `None` outside every region. Port of
+/// the TS `calloutDepthAt` (`livePreview.ts:246-249`, -1 outside): it scans
+/// the regions in `from` order and takes the **first** match, so a position
+/// nested in two regions reports the **outermost** depth — a single-depth
+/// block face cannot express nesting anyway; the inner face comes from the
+/// panels, which are emitted per region.
+fn callout_depth_at(callouts: &[CalloutRegion], pos: usize) -> Option<usize> {
+    callouts
+        .iter()
+        .find(|c| pos >= c.from && pos <= c.to)
+        .map(|c| c.depth)
+}
+
+/// Horizontal rules: the whole line is replaced by a rule element (TS 291-301,
+/// `HrWidget` with `block: true`). The rule carries the callout face for its
+/// own line, like the math blocks.
 fn emit_rules(statics: &Statics, act: &Activity, sink: &mut Sink) {
     for info in &statics.info {
         if let Some((from, to)) = info.hr {
             if act.inactive(from, to) {
-                sink.widget(from, to, Widget::Rule);
+                let line = line_of(&statics.lines, from);
+                let depth = callout_depth_at(&statics.callouts, from);
+                sink.block(line, line, BlockKind::Rule { depth });
             }
         }
     }
@@ -221,6 +229,7 @@ fn emit_math_blocks(statics: &Statics, act: &Activity, sink: &mut Sink, math_pre
         let region = &statics.math[i];
         let first = line_of(&statics.lines, region.from);
         let last = line_of(&statics.lines, region.to.saturating_sub(1));
+        let depth = callout_depth_at(&statics.callouts, region.from);
         if act.touches(region.from, region.to) {
             if math_preview && !region.content.trim().is_empty() {
                 let anchor = if last + 1 < statics.lines.len() {
@@ -232,6 +241,7 @@ fn emit_math_blocks(statics: &Statics, act: &Activity, sink: &mut Sink, math_pre
                     anchor,
                     BlockKind::MathPreview {
                         tex: region.content.clone(),
+                        depth,
                     },
                 );
             }
@@ -242,7 +252,7 @@ fn emit_math_blocks(statics: &Statics, act: &Activity, sink: &mut Sink, math_pre
             last,
             BlockKind::Math {
                 tex: region.content.clone(),
-                display: true,
+                depth,
             },
         );
     }

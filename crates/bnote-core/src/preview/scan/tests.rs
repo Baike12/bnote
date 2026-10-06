@@ -298,7 +298,7 @@ fn real_setext_underline_emits_nothing() {
     let doc = "标题行\n---\n";
     let snap = snapshot(doc, &[4]);
     assert!(!bullet(&snap));
-    assert!(!has_widget(&snap, |w| *w == Widget::Rule));
+    assert!(snap.blocks.is_empty(), "a real setext underline is no rule");
     // Typing text flips the parse to a real ListMark: the bullet takes over
     // from the same offset (seamless handover); an empty item keeps the
     // trailing space visible.
@@ -364,7 +364,7 @@ fn display_math_block_covers_its_lines_and_anchor_is_the_region() {
             last_line: Some(3),
             kind: BlockKind::Math {
                 tex: "\nx = 1\n".into(),
-                display: true
+                depth: None,
             },
         }]
     );
@@ -379,7 +379,8 @@ fn display_math_block_covers_its_lines_and_anchor_is_the_region() {
             first_line: 4,
             last_line: None,
             kind: BlockKind::MathPreview {
-                tex: "\nx = 1\n".into()
+                tex: "\nx = 1\n".into(),
+                depth: None,
             },
         }],
         "{:?}",
@@ -410,7 +411,8 @@ fn display_math_block_collapses_while_editing_and_inserts_the_live_preview() {
             first_line: 4,
             last_line: None,
             kind: BlockKind::MathPreview {
-                tex: "\nx = 1\n".into()
+                tex: "\nx = 1\n".into(),
+                depth: None,
             },
         }],
         "{:?}",
@@ -754,19 +756,25 @@ fn rule_13_math_widgets() {
 
 #[test]
 fn rule_14_horizontal_rule() {
+    // The whole line is replaced by a rule block (`HrWidget`, `block: true`).
     for doc in ["---\n", "***\n", "___\n", "- - -\n"] {
         let snap = snapshot(doc, &[dot(doc)]);
-        assert!(
-            has_widget(&snap, |w| *w == Widget::Rule),
-            "{doc:?} → {:?}",
-            snap.spans
+        assert_eq!(
+            snap.blocks,
+            vec![crate::preview::PreviewBlock {
+                first_line: 0,
+                last_line: Some(0),
+                kind: BlockKind::Rule { depth: None },
+            }],
+            "{doc:?}"
         );
+        assert!(snap.spans.is_empty(), "{doc:?} → {:?}", snap.spans);
     }
     // A dash run under a paragraph is a setext underline, not a rule.
-    let snap = snapshot("text\n---\n", &[0]);
-    assert!(!has_widget(&snap, |w| *w == Widget::Rule));
+    assert!(snapshot("text\n---\n", &[0]).blocks.is_empty());
     // Caret on the rule line: source stays.
     assert!(snapshot("---\n", &[1]).spans.is_empty());
+    assert!(snapshot("---\n", &[1]).blocks.is_empty());
 }
 
 #[test]
@@ -782,10 +790,9 @@ fn rule_15_callouts() {
     assert_eq!(
         open.kind,
         BlockKind::Callout {
-            kind: String::new(),
             title: "提示".into(),
-            body_first_line: 1,
-            body_last_line: 1,
+            depth: 0,
+            open: true,
         }
     );
     let close = snap
@@ -796,10 +803,9 @@ fn rule_15_callouts() {
     assert_eq!(
         close.kind,
         BlockKind::Callout {
-            kind: String::new(),
             title: String::new(),
-            body_first_line: 1,
-            body_last_line: 1,
+            depth: 0,
+            open: false,
         }
     );
     // Body lines carry no spans at all.
@@ -836,7 +842,13 @@ fn rule_14b_math_preview_insertion() {
     let preview = previews[0];
     assert_eq!(preview.first_line, 4);
     assert_eq!(preview.last_line, None);
-    assert_eq!(preview.kind, BlockKind::MathPreview { tex: "\nx = 1\n".into() });
+    assert_eq!(
+        preview.kind,
+        BlockKind::MathPreview {
+            tex: "\nx = 1\n".into(),
+            depth: None,
+        }
+    );
 
     // The setting off: no insertion at all.
     let selections = vec![caret..caret];
@@ -1222,14 +1234,31 @@ fn mixed_document_renders_every_construct_when_the_caret_is_away() {
         has_widget(&snap, |w| matches!(w, Widget::Math { .. })),
         "math widget"
     );
-    assert!(has_widget(&snap, |w| *w == Widget::Rule), "rule");
     assert!(
         has_widget(&snap, |w| matches!(w, Widget::Image { .. })),
         "image"
     );
     // Blocks: the two fence lines (zero-height removals), the display maths,
-    // and one line per callout edge.
-    assert_eq!(snap.blocks.len(), 5, "{:?}", snap.blocks);
+    // the rule, and one line per callout edge.
+    assert_eq!(snap.blocks.len(), 6, "{:?}", snap.blocks);
+    assert_eq!(
+        snap.blocks
+            .iter()
+            .filter(|b| b.kind == BlockKind::HiddenLine)
+            .count(),
+        2,
+        "both fence lines collapse: {:?}",
+        snap.blocks
+    );
+    assert_eq!(
+        snap.blocks
+            .iter()
+            .filter(|b| matches!(b.kind, BlockKind::Rule { .. }))
+            .count(),
+        1,
+        "the rule is a block replace: {:?}",
+        snap.blocks
+    );
     assert_eq!(
         snap.blocks
             .iter()

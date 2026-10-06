@@ -50,3 +50,6 @@ image = { version = "0.25.1", default-features = false, features = [
 # Fixture images on disk for the loader tests (an in-memory fake would not
 # exercise the real read + decode path).
 tempfile = "3"
+# `TestAppContext` for the preview host's window-level tests (text metrics and
+# block measurement need a real text system).
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }

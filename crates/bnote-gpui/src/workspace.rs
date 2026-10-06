@@ -1503,6 +1503,14 @@ impl gpui::Render for Workspace {
         if self.preview.needs_rescan(self.editor_width(cx)) {
             self.preview_dirty = true;
         }
+        // The scan only emits for the visible window (plus a margin), so
+        // scrolling out of the covered range must rebuild it — one frame after
+        // the scroll, like the resize above. Within the margin this fires
+        // nothing, keeping whole-document scans off the scroll path.
+        let visible = self.editor.read(cx).visible_byte_range();
+        if self.preview.needs_rescan_for(visible.as_ref()) {
+            self.preview_dirty = true;
+        }
         let content_changed = self.preview_dirty;
         if self.preview_dirty {
             self.preview_dirty = false;
@@ -1510,9 +1518,14 @@ impl gpui::Render for Workspace {
             self.preview_selection = Some(selection.clone());
             let text = self.editor.read(cx).text().to_string();
             let column = self.preview.text_column(self.editor_width(cx), &text, window);
-            let decorations = self
-                .preview
-                .decorations(&text, &[selection], column, window, cx);
+            let decorations = self.preview.decorations(
+                &text,
+                &[selection],
+                column,
+                visible.as_ref(),
+                window,
+                cx,
+            );
             self.editor
                 .update(cx, |state, cx| state.set_preview_decorations(decorations, cx));
             // The scan just queued a load for every image whose size it does
