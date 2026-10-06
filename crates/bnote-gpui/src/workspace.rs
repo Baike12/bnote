@@ -23,15 +23,20 @@ use bnote_core::state::AppState;
 use ::gpui::{
     AppContext as _, Context, Entity, Focusable, Subscription, WeakEntity, Window, div, px, relative,
 };
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme, IconName,
+    button::Button,
     command::{Command, CommandItem, CommandState},
     h_flex, v_flex,
-    input::{Editor, EditorState, InputEvent, TextDecorationCollection},
+    input::{Editor, EditorState, Input, InputEvent, InputState, TextDecorationCollection},
     label::Label,
     list::ListItem,
     resizable::{h_resizable, resizable_panel},
+    slider::{Slider, SliderEvent, SliderState},
     status_bar::StatusBar,
+    switch::Switch,
+    theme::{Theme, ThemeMode},
     tree::{TreeItem, TreeState, tree},
 };
 use gpui_kit::*;
@@ -62,6 +67,9 @@ const EVENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// Every Nth event-loop iteration pumps the footprint core (~1.2s at 300ms).
 const FOOTPRINT_TICK_EVERY: u32 = 4;
 
+/// `settings.fontSize` default (TS `DEFAULT_SETTINGS.fontSize`).
+const FONT_SIZE_DEFAULT: f32 = 16.;
+
 /// The link-suggest panel's fixed width (TS `.link-suggest`, 380px).
 const LINK_PANEL_W: f32 = 380.;
 /// The panel's worst-case height, the bound used when it has to flip above
@@ -73,6 +81,15 @@ enum PaletteKind {
     Commands,
     Files,
     Vaults,
+}
+
+/// The settings modal's left nav (TS `SettingsModal.tsx`'s `Tab`).
+#[derive(Clone, Copy, PartialEq)]
+enum SettingsTab {
+    General,
+    Editor,
+    Vim,
+    Snippets,
 }
 
 pub struct Workspace {
@@ -149,6 +166,24 @@ pub struct Workspace {
     /// when it no longer matches (TS `linkPickState`).
     link_pick_rev: Option<u64>,
     link_state: Entity<CommandState>,
+    /// The settings modal (⌘,): TS `SettingsModal.tsx`'s tabs this shell
+    /// consumes — general / editor / vim / snippets. Hotkeys, IME, quick-add
+    /// and the agent tab arrive with their own ports.
+    settings_open: bool,
+    settings_tab: SettingsTab,
+    /// `settings.*` of `config.json` as the modal's working state; every
+    /// change is applied live and written back under the same keys the Tauri
+    /// shell uses.
+    math_preview: bool,
+    typewriter: bool,
+    code_block_lang: String,
+    theme_mode: ThemeMode,
+    font_size: f32,
+    snippets_enabled: bool,
+    /// The code-block-language field of the settings modal.
+    lang_state: Entity<InputState>,
+    /// The font-size slider's state (`settings.fontSize`, 12–28px).
+    font_slider: Entity<SliderState>,
     /// Cursor memory (TS `cursorMemory.ts`): the position to persist, bumped
     /// with every save request.
     cursor_pending: Option<(String, usize, f32)>,
@@ -272,7 +307,8 @@ impl Workspace {
         let link_state = cx.new(|cx| CommandState::new(window, cx));
 
         // The `settings` block (`config.json`, the Tauri shell's keys), read
-        // once at startup — the settings panel will re-read what it changes.
+        // once at startup — the settings modal keeps its own copy and writes
+        // each change back under the same key.
         let startup = bnote_core::commands::config::load_app_config(state.as_ref())
             .ok()
             .unwrap_or(serde_json::Value::Null);
@@ -282,6 +318,39 @@ impl Workspace {
                 .and_then(|s| s.get(key))
                 .and_then(|v| v.as_bool())
         };
+        let code_block_lang = startup
+            .get("settings")
+            .and_then(|s| s.get("codeBlockLang"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| "ts".to_string());
+        let font_size = startup
+            .get("settings")
+            .and_then(|s| s.get("fontSize"))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .filter(|v| (12. ..=28.).contains(v))
+            .unwrap_or(FONT_SIZE_DEFAULT);
+        let theme_mode = match startup
+            .get("settings")
+            .and_then(|s| s.get("theme"))
+            .and_then(|v| v.as_str())
+        {
+            Some("light") => ThemeMode::Light,
+            _ => ThemeMode::Dark,
+        };
+        // The two stateful controls of the settings modal, created with the
+        // loaded values so a first render already shows them.
+        let lang_state = cx.new(|cx| InputState::new(window, cx));
+        lang_state.update(cx, |st, cx| st.set_value(code_block_lang.clone(), window, cx));
+        let font_slider = cx.new(|_| {
+            SliderState::new()
+                .min(12.)
+                .max(28.)
+                .step(1.)
+                .default_value(font_size)
+        });
+        font_slider.update(cx, |st, cx| st.set_value(font_size, window, cx));
 
         let theme = cx.theme();
         let preview = Rc::new(PreviewHost::new(PreviewFont {
@@ -289,7 +358,8 @@ impl Workspace {
             size: theme.mono_font_size,
         }));
         // The live-rendered copy of a display formula while editing it.
-        preview.set_math_preview(setting("mathPreview").unwrap_or(true));
+        let math_preview = setting("mathPreview").unwrap_or(true);
+        preview.set_math_preview(math_preview);
         editor.update(cx, |state, cx| {
             state.set_preview_renderer(Some(preview.clone()), cx);
         });
@@ -304,6 +374,10 @@ impl Workspace {
         if typewriter {
             editor.update(cx, |state, cx| state.set_center_cursor(true, cx));
         }
+        // `settings.snippets` (TS default on): the source is whatever the
+        // loader installs, the flag only gates the engine.
+        let snippets_enabled = setting("snippets").unwrap_or(true);
+        snippets.set_enabled(&editor, snippets_enabled);
 
         // Drive autosave + dirty flag off editor changes, and refresh the
         // live preview when either the text or the caret moved.
@@ -328,6 +402,32 @@ impl Workspace {
             cx.observe_window_activation(window, |this, window, cx| {
                 if !window.is_window_active() {
                     this.flush_cursor_save_now(cx);
+                }
+            }),
+            // The modal's code-block-language field: `set_value` is silent, so
+            // every Change here is the user's typing.
+            cx.subscribe(&lang_state, |this, input, event: &InputEvent, cx| {
+                if !matches!(event, InputEvent::Change { .. }) {
+                    return;
+                }
+                let lang = input.read(cx).value().to_string();
+                if this.code_block_lang == lang {
+                    return;
+                }
+                this.code_block_lang = lang.clone();
+                this.persist_setting("codeBlockLang", serde_json::json!(lang), cx);
+            }),
+            // The font-size slider: applies while dragging (TS's range input
+            // fires per move) and writes back on release.
+            cx.subscribe(&font_slider, |this, slider, event: &SliderEvent, cx| {
+                let size = slider.read(cx).value().start();
+                if this.font_size == size {
+                    return;
+                }
+                this.font_size = size;
+                crate::theme::apply_font_size(size, cx);
+                if matches!(event, SliderEvent::Release(_)) {
+                    this.persist_setting("fontSize", serde_json::json!(size), cx);
                 }
             }),
         ];
@@ -370,6 +470,16 @@ impl Workspace {
             link_query: String::new(),
             link_pick_rev: None,
             link_state,
+            settings_open: false,
+            settings_tab: SettingsTab::General,
+            math_preview,
+            typewriter,
+            code_block_lang,
+            theme_mode,
+            font_size,
+            snippets_enabled,
+            lang_state,
+            font_slider,
             cursor_pending: None,
             cursor_save_seq: 0,
             cursor_guard: Arc::new(Mutex::new(0)),
@@ -988,8 +1098,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A palette owns the foreground: nothing to do (TS `if (modal) return`).
-        if self.palette.is_some() {
+        // A palette or the settings modal owns the foreground: nothing to do
+        // (TS `if (modal) return`).
+        if self.palette.is_some() || self.settings_open {
             return;
         }
         // Pressed again while open: put it away (TS `if (linkSuggest) close()`).
@@ -1266,7 +1377,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let text = self.editor.read(cx).value().to_string();
-        let out = ops::insert_code_block(&text, self.sel(cx), "ts");
+        let out = ops::insert_code_block(&text, self.sel(cx), &self.code_block_lang);
         self.run_edit(Some(out), window, cx);
     }
 
@@ -1507,28 +1618,409 @@ impl Workspace {
     }
 
     fn persist_vim_setting(&self, enabled: bool) {
+        self.persist_setting_off_thread("vim", serde_json::Value::Bool(enabled));
+    }
+
+    /// Write one `settings.*` key of `config.json` — the same shape the Tauri
+    /// shell persists, so both shells agree. The write is synchronous like
+    /// [`Workspace::persist_vim_setting`] was: a settings toggle is a rare,
+    /// user-initiated event and the file is small.
+    fn persist_setting(&self, key: &str, value: serde_json::Value, _cx: &mut Context<Self>) {
+        self.persist_setting_off_thread(key, value);
+    }
+
+    fn persist_setting_off_thread(&self, key: &str, value: serde_json::Value) {
         let state = self.state.clone();
         let mut cfg = load_config_value(&state);
-        let obj = cfg.as_object_mut();
-        let Some(obj) = obj else { return };
+        let Some(obj) = cfg.as_object_mut() else { return };
         let settings = obj
             .entry("settings".to_string())
             .or_insert_with(|| serde_json::json!({}));
         if let Some(settings) = settings.as_object_mut() {
-            settings.insert("vim".to_string(), serde_json::Value::Bool(enabled));
+            settings.insert(key.to_string(), value);
         }
-        let _ = bnote_core::commands::config::save_app_config(&state, cfg);
+        if let Err(e) = bnote_core::commands::config::save_app_config(&state, cfg) {
+            eprintln!("settings: 写入 {key} 失败 {e}");
+        }
     }
 
+    /// ⌘,: open the settings modal. A link-suggest panel gives way (TS closes
+    /// the panel when a modal opens).
     fn open_settings(
         &mut self,
         _: &actions::OpenSettings,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.status =
-            "设置面板在移植路线图上(配置在 ~/Library/Application Support/bnote)".to_string();
+        if self.settings_open {
+            self.close_settings(window, cx);
+            return;
+        }
+        // The panel must not keep the foreground behind a modal.
+        self.link_suggest = false;
+        self.settings_open = true;
+        self.settings_tab = SettingsTab::General;
         cx.notify();
+    }
+
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.settings_open {
+            return;
+        }
+        self.settings_open = false;
+        self.focus_editor(window, cx);
+        cx.notify();
+    }
+
+    /// `settings.autoNumberHeadings`: turning it on renumbers the open note at
+    /// once for immediate feedback (TS `App.tsx`'s change subscription), then
+    /// the pending pass runs from `render` like every other renumbering.
+    fn set_auto_number(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.auto_number = on;
+        if on {
+            self.renumber_pending = true;
+        }
+        self.persist_setting_off_thread("autoNumberHeadings", serde_json::json!(on));
+        cx.notify();
+    }
+
+    fn set_typewriter(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.typewriter = on;
+        self.editor
+            .update(cx, |state, cx| state.set_center_cursor(on, cx));
+        self.persist_setting_off_thread("typewriter", serde_json::json!(on));
+        cx.notify();
+    }
+
+    fn set_math_preview(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.math_preview = on;
+        self.preview.set_math_preview(on);
+        // The next scan has to re-shape the math blocks it skipped.
+        self.preview_dirty = true;
+        self.persist_setting_off_thread("mathPreview", serde_json::json!(on));
+        cx.notify();
+    }
+
+    fn set_snippets_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.snippets_enabled = on;
+        self.snippets.set_enabled(&self.editor, on);
+        self.persist_setting_off_thread("snippets", serde_json::json!(on));
+        cx.notify();
+    }
+
+    /// `settings.vim` from the modal: the same path ⌘⇧V takes, minus the
+    /// status line the shortcut writes.
+    fn set_vim_setting(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.vim_enabled = on;
+        self.set_vim_enabled(on, cx);
+        self.persist_vim_setting(on);
+        cx.notify();
+    }
+
+    fn set_theme(&mut self, mode: ThemeMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_mode == mode {
+            return;
+        }
+        self.theme_mode = mode;
+        Theme::change(mode, Some(window), cx);
+        crate::theme::apply(mode, cx);
+        // A mode change resets the size metrics to the palette default.
+        crate::theme::apply_font_size(self.font_size, cx);
+        self.preview_styles.set(Vec::new(), cx);
+        self.persist_setting_off_thread(
+            "theme",
+            serde_json::json!(if mode == ThemeMode::Light { "light" } else { "dark" }),
+        );
+        cx.notify();
+    }
+
+    /// The settings modal: a nav on the left, the active tab's rows on the
+    /// right. Esc (captured before any focused input) or a click outside
+    /// closes it.
+    fn render_settings(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.settings_open {
+            return None;
+        }
+        let theme = cx.theme().clone();
+
+        let nav = v_flex()
+            .w(px(176.))
+            .h_full()
+            .flex_shrink_0()
+            .gap_0p5()
+            .p_2()
+            .bg(theme.sidebar)
+            .child(
+                Label::new("设置")
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .px_2()
+                    .pb_1(),
+            )
+            .children(
+                [
+                    (SettingsTab::General, "通用"),
+                    (SettingsTab::Editor, "编辑器"),
+                    (SettingsTab::Vim, "Vim"),
+                    (SettingsTab::Snippets, "公式片段"),
+                ]
+                .into_iter()
+                .map(|(tab, label)| {
+                    let active = self.settings_tab == tab;
+                    let item = div().px_2().py_1().rounded_md().text_sm();
+                    let item = if active {
+                        item.bg(theme.list_active).text_color(theme.accent)
+                    } else {
+                        item
+                    };
+                    item.id(label)
+                        .cursor_default()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.settings_tab = tab;
+                            cx.notify();
+                        }))
+                        .child(Label::new(label))
+                }),
+            );
+
+        let content: gpui::AnyElement = match self.settings_tab {
+            SettingsTab::General => {
+                let vault = self
+                    .vault_root
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "未打开".to_string());
+                v_flex()
+                    .gap_3()
+                    .child(settings_heading("仓库", &theme))
+                    .child(settings_row(
+                        "当前仓库",
+                        &vault,
+                        div()
+                            .child(
+                                Button::new("settings-open-vault")
+                                    .outline()
+                                    .label("其他仓库(⌘⇧R)")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_vault_palette(window, cx);
+                                    })),
+                            )
+                            .into_any_element(),
+                        &theme,
+                    ))
+                    .into_any_element()
+            }
+            SettingsTab::Editor => v_flex()
+                .gap_3()
+                .child(settings_heading("编辑行为", &theme))
+                .child(self.settings_switch(
+                    "settings-auto-number",
+                    "标题自动编号",
+                    "用 ⌘1–⌘4 设置标题时按层级编号(1 / 1.1 / 1.1.2),并重排全文已有编号",
+                    self.auto_number,
+                    |this, on, cx| this.set_auto_number(on, cx),
+                    &theme,
+                    cx,
+                ))
+                .child(self.settings_switch(
+                    "settings-typewriter",
+                    "打字机模式",
+                    "光标所在行始终保持屏幕垂直居中",
+                    self.typewriter,
+                    |this, on, cx| this.set_typewriter(on, cx),
+                    &theme,
+                    cx,
+                ))
+                .child(self.settings_switch(
+                    "settings-math-preview",
+                    "公式实时预览",
+                    "光标在公式内编辑时,保留源码并在下方实时显示渲染结果",
+                    self.math_preview,
+                    |this, on, cx| this.set_math_preview(on, cx),
+                    &theme,
+                    cx,
+                ))
+                .child(settings_row(
+                    "代码块语言",
+                    "「插入代码块」(⌘⇧C)在开栏预填的语言标识;留空则不带语言",
+                    div()
+                        .w(px(140.))
+                        .child(Input::new(&self.lang_state).cleanable(true))
+                        .into_any_element(),
+                    &theme,
+                ))
+                .child(settings_heading("外观", &theme))
+                .child(settings_row(
+                    "主题",
+                    "深色 / 浅色整套界面配色(含编辑器语法高亮),立即生效",
+                    h_flex()
+                        .gap_2()
+                        .children(
+                            [(ThemeMode::Dark, "深色"), (ThemeMode::Light, "浅色")]
+                                .into_iter()
+                                .map(|(mode, label)| {
+                                    self.settings_chip(
+                                        label,
+                                        self.theme_mode == mode,
+                                        mode,
+                                        &theme,
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .into_any_element(),
+                    &theme,
+                ))
+                .child(settings_row(
+                    "编辑区字号",
+                    &format!("{}px", self.font_size.round()),
+                    div()
+                        .w(px(180.))
+                        .child(
+                            Slider::new(&self.font_slider).horizontal(),
+                        )
+                        .into_any_element(),
+                    &theme,
+                ))
+                .into_any_element(),
+            SettingsTab::Vim => v_flex()
+                .gap_3()
+                .child(self.settings_switch(
+                    "settings-vim",
+                    "启用 Vim 模式",
+                    "normal / insert / visual 模式;键位与 bnote 的 vim 引擎一致",
+                    self.vim_enabled,
+                    |this, on, cx| this.set_vim_setting(on, cx),
+                    &theme,
+                    cx,
+                ))
+                .child(settings_hint(
+                    "vimrc(全局与仓库 .bnote/vimrc)随 vim 配置层一起移植,暂未接入。",
+                    &theme,
+                ))
+                .into_any_element(),
+            SettingsTab::Snippets => v_flex()
+                .gap_3()
+                .child(self.settings_switch(
+                    "settings-snippets",
+                    "启用 LaTeX 片段",
+                    "输入触发串后按 Tab 展开(如 // → \\frac{}{}),或使用 A 选项的自动片段",
+                    self.snippets_enabled,
+                    |this, on, cx| this.set_snippets_enabled(on, cx),
+                    &theme,
+                    cx,
+                ))
+                .child(settings_hint(
+                    "片段来源:<仓库>/.bnote/snippets.js(存在即取代内置集,保存后热加载);编辑该文件即可。",
+                    &theme,
+                ))
+                .into_any_element(),
+        };
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(theme.background.opacity(0.45))
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_settings(window, cx);
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("settings-modal")
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .justify_center()
+                        .items_center()
+                        .child(
+                            h_flex()
+                                .w(px(760.))
+                                .h(px(520.))
+                                .rounded_lg()
+                                .overflow_hidden()
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.popover)
+                                .occlude()
+                                .child(nav)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .h_full()
+                                        .p_4()
+                                        .overflow_y_scrollbar()
+                                        .child(content),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// One theme chip of the appearance row (TS `.chip`).
+    fn settings_chip(
+        &self,
+        label: &'static str,
+        active: bool,
+        mode: ThemeMode,
+        theme: &gpui_kit::component::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement {
+        let chip = div()
+            .px_3()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(if active { theme.accent } else { theme.border })
+            .text_sm();
+        let chip = if active {
+            chip.bg(theme.list_active).text_color(theme.accent)
+        } else {
+            chip
+        };
+        chip.id(label)
+            .cursor_default()
+            .on_click(cx.listener(move |this, _, window, cx| this.set_theme(mode, window, cx)))
+            .child(Label::new(label))
+    }
+
+    /// One switch row of the settings modal. The setter is a method pointer so
+    /// each row keeps the single-writer rule (the workspace owns the value).
+    #[allow(clippy::too_many_arguments)]
+    fn settings_switch(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        desc: &'static str,
+        checked: bool,
+        set: fn(&mut Self, bool, &mut Context<Self>),
+        theme: &gpui_kit::component::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement {
+        settings_row(
+            title,
+            desc,
+            div()
+                .child(
+                    Switch::new(id)
+                        .checked(checked)
+                        .on_change(cx.listener(move |this, on: &bool, _window, cx| {
+                            set(this, *on, cx);
+                        })),
+                )
+                .into_any_element(),
+            theme,
+        )
     }
 
     // ---- palettes ---------------------------------------------------------
@@ -1539,6 +2031,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.settings_open = false;
         self.palette = Some(PaletteKind::Commands);
         let state = self.cmd_state.clone();
         state.update(cx, |s, cx| s.focus(window, cx));
@@ -1551,6 +2044,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.settings_open = false;
         self.palette = Some(PaletteKind::Files);
         let state = self.files_state.clone();
         state.update(cx, |s, cx| s.focus(window, cx));
@@ -1563,6 +2057,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_vault_palette(window, cx);
+    }
+
+    /// The vault list palette — reached by ⌘⇧R and from the settings modal's
+    /// "other vault" button (one path, so both stay in sync).
+    fn open_vault_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_open = false;
         self.palette = Some(PaletteKind::Vaults);
         let state = self.files_state.clone();
         state.update(cx, |s, cx| s.focus(window, cx));
@@ -1956,6 +2457,47 @@ impl Workspace {
     }
 }
 
+/// A settings section heading (TS `.settings-section h3`).
+fn settings_heading(title: &str, theme: &gpui_kit::component::theme::Theme) -> impl gpui::IntoElement {
+    Label::new(title.to_string())
+        .text_xs()
+        .text_color(theme.muted_foreground)
+        .pb_1()
+}
+
+/// One settings row: title and description on the left, the control on the
+/// right (TS `.setting-row`).
+fn settings_row(
+    title: &str,
+    desc: &str,
+    control: gpui::AnyElement,
+    theme: &gpui_kit::component::theme::Theme,
+) -> impl gpui::IntoElement {
+    h_flex()
+        .w_full()
+        .items_center()
+        .gap_4()
+        .child(
+            v_flex()
+                .flex_1()
+                .gap_0p5()
+                .child(Label::new(title.to_string()).text_sm())
+                .child(
+                    Label::new(desc.to_string())
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                ),
+        )
+        .child(control)
+}
+
+/// A settings hint paragraph (TS `.setting-hint`).
+fn settings_hint(text: &str, theme: &gpui_kit::component::theme::Theme) -> impl gpui::IntoElement {
+    Label::new(text.to_string())
+        .text_xs()
+        .text_color(theme.muted_foreground)
+}
+
 /// The two halves of a link-suggest row (TS splits on the last `/`): the note
 /// name without its extension, and the folder it lives in.
 fn link_row_parts(rel: &str) -> (String, String) {
@@ -2166,6 +2708,7 @@ impl gpui::Render for Workspace {
 
         let palette = if self.palette.is_some() { self.render_palette(cx) } else { None };
         let link_suggest = self.render_link_suggest(window, cx);
+        let settings = self.render_settings(cx);
 
         v_flex()
             .id("workspace")
@@ -2204,9 +2747,20 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::toggle_agent_panel))
             .on_action(cx.listener(Self::toggle_vim))
             .on_action(cx.listener(Self::open_settings))
+            // Esc closes the settings modal from anywhere: it takes no focus
+            // of its own, so the handler sits on the root — the one element
+            // every key dispatch passes through (the link panel's own capture
+            // is deeper and runs after this one lets it through).
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.settings_open && event.keystroke.key == "escape" {
+                    this.close_settings(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .child(main)
             .children(palette)
             .children(link_suggest)
+            .children(settings)
             .child(
                 StatusBar::new()
                     .left(Label::new(self.status.clone()))
@@ -2714,5 +3268,118 @@ mod tests {
             assert_eq!(ws.editor.read(cx).value(), "正文[[a]]\n");
             assert!(!ws.link_suggest);
         });
+    }
+
+    /// The settings modal's wiring: ⌘, opens and closes it, each toggle applies
+    /// live — auto-numbering renumbers the open note at once — and every value
+    /// lands under the Tauri shell's `settings.*` keys.
+    #[gpui::test]
+    fn the_settings_modal_applies_and_persists_its_toggles(cx: &mut TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+        // A private data dir: the persistence assertions read this file back.
+        let data_dir =
+            std::env::temp_dir().join(format!("bnote-settings-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&data_dir).expect("the test data dir");
+        let (state, rx) = bnote_core::state::AppState::new(data_dir.clone());
+        let mut bridges = None;
+        cx.update(|cx| {
+            bridges = Some((
+                crate::editor::snippets_host::SnippetBridge::init(cx),
+                crate::editor::vim::integration::VimBridge::init(cx),
+            ));
+        });
+        let (snippet_bridge, vim_bridge) = bridges.expect("the bridges");
+        let (workspace, cx) = cx.add_window_view(move |window, cx| {
+            let ws = Workspace::new(
+                state.clone(),
+                rx.resubscribe(),
+                None,
+                vim_bridge,
+                snippet_bridge,
+                window,
+                cx,
+            );
+            let focus = ws.editor.focus_handle(cx);
+            window.focus(&focus, cx);
+            ws
+        });
+
+        let settings_of = |state: &std::sync::Arc<bnote_core::state::AppState>| -> serde_json::Value {
+            bnote_core::commands::config::load_app_config(state)
+                .ok()
+                .and_then(|cfg| cfg.get("settings").cloned())
+                .unwrap_or(serde_json::Value::Null)
+        };
+
+        cx.run_until_parked();
+        cx.dispatch_action(actions::OpenSettings);
+        workspace.read_with(cx, |ws, _| assert!(ws.settings_open, "⌘, opens the settings"));
+
+        // 「开启时立即重排」: the open note gains its numbers on the next frame,
+        // which the pending-pass mechanism runs from `render`.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.editor.update(cx, |st, cx| {
+                st.set_value("## 一\n\n正文\n\n### 二\n", window, cx);
+                st.set_selected_range(0..0, cx);
+            });
+            assert!(!ws.auto_number);
+            ws.set_auto_number(true, cx);
+            assert!(ws.renumber_pending, "turning it on schedules the pass");
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(
+                ws.editor.read(cx).value(),
+                "## 1 一\n\n正文\n\n### 1.1 二\n"
+            );
+        });
+
+        // Each switch reaches its engine seam and its config key.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.set_typewriter(true, cx);
+            ws.set_math_preview(false, cx);
+            ws.set_snippets_enabled(false, cx);
+            let _ = window;
+        });
+        workspace.read_with(cx, |ws, cx| {
+            assert!(ws.editor.read(cx).centering_cursor(), "the engine took typewriter");
+            assert!(!ws.math_preview);
+            assert!(!ws.snippets_enabled);
+        });
+        let settings = workspace.read_with(cx, |ws, _| settings_of(&ws.state));
+        assert_eq!(settings["autoNumberHeadings"], serde_json::json!(true));
+        assert_eq!(settings["typewriter"], serde_json::json!(true));
+        assert_eq!(settings["mathPreview"], serde_json::json!(false));
+        assert_eq!(settings["snippets"], serde_json::json!(false));
+
+        // Vim and the code-block language take the same path.
+        workspace.update_in(cx, |ws, _window, cx| {
+            ws.set_vim_setting(true, cx);
+        });
+        workspace.read_with(cx, |ws, _| assert!(ws.vim_enabled));
+        let settings = workspace.read_with(cx, |ws, _| settings_of(&ws.state));
+        assert_eq!(settings["vim"], serde_json::json!(true));
+
+        // Change the language field the way typing does.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.lang_state
+                .clone()
+                .update(cx, |st, cx| st.set_value("python", window, cx));
+            cx.notify();
+        });
+        // The subscription runs on the Change event of a user edit; the
+        // programmatic write is silent, so drive the seam the way it does.
+        workspace.update_in(cx, |ws, _window, cx| {
+            ws.code_block_lang = "python".to_string();
+            ws.persist_setting("codeBlockLang", serde_json::json!("python"), cx);
+        });
+        let settings = workspace.read_with(cx, |ws, _| settings_of(&ws.state));
+        assert_eq!(settings["codeBlockLang"], serde_json::json!("python"));
+
+        // ⌘, again closes it.
+        cx.dispatch_action(actions::OpenSettings);
+        workspace.read_with(cx, |ws, _| assert!(!ws.settings_open));
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 }

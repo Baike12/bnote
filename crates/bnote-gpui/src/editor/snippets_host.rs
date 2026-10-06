@@ -271,6 +271,14 @@ impl SnippetHost {
         self.set_store(load::builtin_store(enabled).0);
     }
 
+    /// Flip the engine on or off (the settings toggle). Only `enabled` moves:
+    /// the source stays whatever the loader installed — the TS
+    /// `applySnippetsEnabled` / `reloadSnippets` pair, and the source-ownership
+    /// invariant `load.rs` states.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.store.enabled = enabled;
+    }
+
     /// The compiled snippet count (the loader reports it in the status line).
     pub fn snippet_count(&self) -> usize {
         self.store.compiled.list.len()
@@ -955,6 +963,12 @@ impl SnippetBridge {
     /// Fall back to the built-in snippet set.
     pub fn use_builtins(&self, editor: &Entity<EditorState>) {
         self.with_host_mut(editor, |host| host.use_builtins());
+    }
+
+    /// Turn the engine on or off for an attached editor (the settings toggle;
+    /// source untouched, see [`SnippetHost::set_enabled`]).
+    pub fn set_enabled(&self, editor: &Entity<EditorState>, enabled: bool) {
+        self.with_host_mut(editor, |host| host.set_enabled(enabled));
     }
 
     /// Refresh the bracket decorations from the current document, caret and

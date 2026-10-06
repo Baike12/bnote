@@ -391,19 +391,30 @@ pub fn apply(mode: ThemeMode, cx: &mut App) {
     // Fonts: bnote's UI stack is the system UI font; the monospace stack needs
     // one installed family (see FONT_MONO_CANDIDATES).
     let mono = installed_mono_family(cx);
-    let font_size = palette.editor_font_size;
     Theme::update(cx, |theme| {
         theme.font_family = ".SystemUIFont".into();
         theme.mono_font_family = mono;
-        theme.font_size = gpui::px(font_size);
-        theme.mono_font_size = gpui::px(font_size * 0.95);
         // Syntax highlighting: the editor resolves tree-sitter captures
         // through this theme, so each capture gets the colour its TS class
         // used.
         theme.highlight_theme = std::sync::Arc::new(highlight_theme(palette, mode));
     });
+    apply_font_size(palette.editor_font_size, cx);
 
     cx.set_global(ActivePalette(palette));
+}
+
+/// Write the two size metrics from an editor font size (the TS
+/// `--editor-font-size`). The palette itself does not depend on the size, so
+/// this is also the live path behind the settings slider — call it alone to
+/// resize without touching colors.
+pub fn apply_font_size(size: f32, cx: &mut App) {
+    Theme::update(cx, |theme| {
+        theme.font_size = gpui::px(size);
+        // The editor's mono metric keeps bnote's 0.95 ratio (the engine's
+        // line-grid arithmetic was tuned against it).
+        theme.mono_font_size = gpui::px(size * 0.95);
+    });
 }
 
 /// bnote's syntax highlighting, built from the same palette.
