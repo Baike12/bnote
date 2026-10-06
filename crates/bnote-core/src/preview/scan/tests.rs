@@ -5,8 +5,8 @@
 use std::ops::Range;
 
 use crate::preview::{
-    BlockKind, PanelKind, PreviewPanel, PreviewSnapshot, PreviewSpanKind, ScanInput, SpanStyle,
-    Widget,
+    BlockKind, ListGeometry, ListMarkerKind, PanelKind, PreviewPanel, PreviewSnapshot,
+    PreviewSpanKind, ScanInput, SpanStyle, Widget,
 };
 
 use super::scan;
@@ -265,6 +265,66 @@ fn non_empty_task_swallows_the_space_even_at_the_item_start() {
     let snap = snapshot("- [ ] foo", &[6]);
     assert!(checkbox(&snap));
     assert!(covered(&snap, 5));
+}
+
+/// Every list line reports its hanging-indent geometry: the source
+/// indentation in two-space levels (capped at 16) and the marker kind that
+/// picks the slot width.
+#[test]
+fn list_lines_report_their_hanging_geometry() {
+    let doc = "- bullet\n  - nested\n1. ordered\n- [ ] task\n        - deep\n\nplain";
+    let snap = snapshot(doc, &[]);
+
+    let geometry: Vec<(usize, u8, ListMarkerKind)> = snap
+        .lists
+        .iter()
+        .map(|g| (g.line, g.level, g.marker))
+        .collect();
+    assert_eq!(
+        geometry,
+        vec![
+            (0, 0, ListMarkerKind::Bullet),
+            (1, 1, ListMarkerKind::Bullet),
+            (2, 0, ListMarkerKind::Ordered),
+            (3, 0, ListMarkerKind::Task),
+            (4, 4, ListMarkerKind::Bullet),
+        ],
+        "top level 0, each two spaces one level"
+    );
+
+    // The geometry is caret-independent (the TS line class is too): an
+    // active line keeps its entry.
+    let active = snapshot(doc, &[at(doc, "- bullet")]);
+    assert_eq!(
+        active.lists.iter().map(|g| g.line).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3, 4]
+    );
+
+    // The window clips it like every per-line emission.
+    let first_line_only = snapshot_visible(doc, &[], 0..1);
+    assert_eq!(
+        first_line_only
+            .lists
+            .iter()
+            .map(|g| g.line)
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
+}
+
+/// The em constants match `global.css` (the geometry is a CSS fact, not a
+/// choice) and the helpers compose them the way the classes do.
+#[test]
+fn list_geometry_constants_match_the_style_sheet() {
+    use crate::preview::{LI_BASE_EM, LI_GAP_EM, LI_STEP_EM, li_hang_em, li_px_em};
+    assert_eq!(LI_BASE_EM, 0.8125);
+    assert_eq!(LI_STEP_EM, 1.75);
+    assert_eq!(LI_GAP_EM, 0.5);
+    assert_eq!(li_px_em(0), 0.8125);
+    assert_eq!(li_px_em(3), 0.8125 + 3.0 * 1.75);
+    assert_eq!(li_hang_em(ListMarkerKind::Bullet), Some(0.95));
+    assert_eq!(li_hang_em(ListMarkerKind::Task), Some(1.4));
+    assert_eq!(li_hang_em(ListMarkerKind::Ordered), None);
 }
 
 #[test]

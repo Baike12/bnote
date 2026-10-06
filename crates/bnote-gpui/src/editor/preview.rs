@@ -382,6 +382,7 @@ impl PreviewHost {
             background: Option<Hsla>,
             border: Option<(Pixels, Hsla)>,
             inset: Pixels,
+            wrap_indent: Pixels,
         }
         let mut per_line: BTreeMap<u64, Look> = BTreeMap::new();
         let mut apply = |panel: &core::PreviewPanel, look: &mut dyn FnMut(&mut Look)| {
@@ -422,6 +423,21 @@ impl PreviewHost {
                 look.border = Some((px(3.), quote_border));
             });
         }
+        // 4. `md-list-line li-i{depth} {kind}` — the hanging indent, last
+        //    because its two-class selector beats the callout's single-class
+        //    padding (`global.css`: "列表行…优先,callout 内列表几何与块外逐像素
+        //    一致"). The inset is where the marker slot starts; the wrap
+        //    indent is the slot itself, which the bullet/checkbox widget
+        //    exactly fills so the item text lands on the wrapped rows.
+        let font = self.font.size;
+        for list in &snapshot.lists {
+            let look = per_line.entry(list.line as u64).or_default();
+            look.inset = font * core::li_px_em(list.level);
+            look.wrap_indent = match core::li_hang_em(list.marker) {
+                Some(em) => font * em,
+                None => px(core::LI_ORDERED_PX),
+            };
+        }
 
         per_line
             .into_iter()
@@ -433,7 +449,7 @@ impl PreviewHost {
                 if let Some((width, color)) = look.border {
                     style = style.left_border(width, color);
                 }
-                style.inset(look.inset)
+                style.inset(look.inset).wrap_indent(look.wrap_indent)
             })
             .collect()
     }
@@ -620,8 +636,12 @@ impl PreviewHost {
             // `\X` renders as `X` in body colour: the glyph's own width, plus
             // the same hair of padding the other text-like widgets take.
             core::Widget::Escape { char } => self.text_width(char, window) + base * 0.2,
-            core::Widget::Checkbox { .. } => base * 1.35,
-            core::Widget::Bullet => base * 0.62,
+            // The marker slot itself (`--li-hang`): the checkbox's `0.9em` box
+            // plus the gap, the bullet's `0.45em` glyph slot plus the gap. The
+            // widths must equal the line's wrapped indent (see `line_styles`),
+            // or the item text would not line up with its continuation rows.
+            core::Widget::Checkbox { .. } => base * (core::LI_TASK_EM + core::LI_GAP_EM),
+            core::Widget::Bullet => base * (core::LI_BULLET_EM + core::LI_GAP_EM),
             // Images are decided in `image_span` before this runs: they need
             // the decoded bitmap, not a font measurement.
             core::Widget::Image { .. } => return None,
@@ -783,16 +803,21 @@ impl PreviewRenderer for PreviewHost {
                 .into_any_element()
             }
             core::Widget::Bullet => {
-                let dot = self.font.size * 0.28;
+                // TS `.md-bullet`: the slot right-aligns a `0.34em` dot with a
+                // `0.2em` right margin, so the dot hugs the item text (and the
+                // wrapped rows' indent) the way the CSS one does.
+                let dot = self.font.size * 0.34;
                 div()
                     .w(widget.width)
                     .h(widget.line_height)
                     .flex()
                     .items_center()
+                    .justify_end()
                     .child(
                         div()
                             .w(dot)
                             .h(dot)
+                            .mr(self.font.size * 0.2)
                             .rounded_full()
                             .bg(color.opacity(0.85)),
                     )
@@ -1367,6 +1392,60 @@ let a = 1;
     /// italic accent text as a mark — the two channels the TS used two
     /// different mechanisms for (`md-quote` line class + inherited italic).
     #[gpui::test]
+    fn the_host_maps_list_lines_to_hanging_styles(cx: &mut TestAppContext) {
+        const DOC: &str = "- bullet\n  - nested\n1. ordered\n- [ ] task\nplain\n";
+        struct Root;
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Dark, None, cx);
+            crate::theme::apply(ThemeMode::Dark, cx);
+            cx.open_window(Default::default(), |window, cx| {
+                let font = px(14.);
+                let host = PreviewHost::new(PreviewFont {
+                    family: "Helvetica".into(),
+                    size: font,
+                });
+                let update = host.decorations(DOC, &[], px(700.), None, window, cx);
+                let lines = &update.decorations.lines;
+
+                // One style per list line; the plain line carries none.
+                let numbered: Vec<u64> = lines.iter().map(|style| style.line).collect();
+                assert_eq!(numbered, vec![0, 1, 2, 3]);
+
+                // The inset is `--li-px` (0.8125em + 1.75em per level) and the
+                // wrap indent `--li-hang`, which the marker widgets fill — the
+                // geometry the CSS classes and the widget widths share.
+                assert_eq!(lines[0].inset, font * 0.8125, "level 0 marker offset");
+                assert_eq!(lines[0].wrap_indent, font * 0.95, "bullet slot");
+                assert_eq!(
+                    lines[1].inset,
+                    font * (0.8125 + 1.75),
+                    "level 1 marker offset"
+                );
+                assert_eq!(lines[1].wrap_indent, font * 0.95);
+                assert_eq!(
+                    lines[2].wrap_indent,
+                    px(26.),
+                    "the ordered slot is the fixed 26px"
+                );
+                assert_eq!(
+                    lines[3].wrap_indent,
+                    font * 1.4,
+                    "the task checkbox slot (0.9em box + gap)"
+                );
+
+                cx.new(|_| Root)
+            })
+            .expect("a test window");
+        });
+    }
+
     fn the_host_maps_panels_to_line_styles(cx: &mut TestAppContext) {
         // Lines: 0 `:::` opening, 1 body, 2 `:::` closing, 4 fence, 5 code
         // body, 6 fence, 8 quote.

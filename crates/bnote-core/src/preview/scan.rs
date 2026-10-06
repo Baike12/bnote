@@ -32,7 +32,10 @@ mod geom;
 mod inline;
 
 use crate::markdown::callout::CalloutRegion;
-use crate::preview::{BlockKind, PanelKind, PreviewSnapshot, ScanInput, SpanStyle, Widget};
+use crate::preview::{
+    BlockKind, ListGeometry, ListMarkerKind, PanelKind, PreviewSnapshot, ScanInput, SpanStyle,
+    Widget,
+};
 
 use blocks::{ListKind, Statics};
 use geom::{line_of, Activity, Sink, Window};
@@ -355,6 +358,19 @@ fn scan_line(
         if spaces > 0 {
             sink.hide(info.base, list.mark.0);
         }
+        // The TS line class `md-list-line li-i{2*depth} {kind}`: the hanging
+        // indent the host turns into the line's inset + wrap indent. Depth is
+        // the source indentation in two-space steps, capped like the TS class
+        // table (livePreview.ts:535-542).
+        sink.list_geometry(ListGeometry {
+            line: n,
+            level: ((spaces / 2) as u8).min(16),
+            marker: match &list.kind {
+                ListKind::Bullet => ListMarkerKind::Bullet,
+                ListKind::Ordered => ListMarkerKind::Ordered,
+                ListKind::Task { .. } => ListMarkerKind::Task,
+            },
+        });
         match &list.kind {
             ListKind::Ordered => {
                 // Ordered markers stay visible, dimmed (TS `md-listmark`,

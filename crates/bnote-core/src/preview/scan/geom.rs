@@ -5,7 +5,7 @@
 use std::ops::{Range, RangeInclusive};
 
 use crate::preview::{
-    BlockKind, PanelKind, PreviewBlock, PreviewPanel, PreviewSnapshot, PreviewSpan,
+    BlockKind, ListGeometry, PanelKind, PreviewBlock, PreviewPanel, PreviewSnapshot, PreviewSpan,
     PreviewSpanKind, PreviewStyleSpan, SpanStyle, Widget,
 };
 
@@ -141,6 +141,7 @@ pub(super) struct Sink<'a> {
     blocks: Vec<PreviewBlock>,
     panels: Vec<PreviewPanel>,
     styles: Vec<PreviewStyleSpan>,
+    lists: Vec<ListGeometry>,
 }
 
 impl<'a> Sink<'a> {
@@ -159,6 +160,7 @@ impl<'a> Sink<'a> {
             blocks: Vec::new(),
             panels: Vec::new(),
             styles: Vec::new(),
+            lists: Vec::new(),
         }
     }
 
@@ -280,6 +282,17 @@ impl<'a> Sink<'a> {
         true
     }
 
+    /// Records a list line's hanging-indent geometry. Gated by the visible
+    /// window like every other per-line emission, and at most one entry per
+    /// line by construction (one `ListMark` per list line).
+    pub(super) fn list_geometry(&mut self, geometry: ListGeometry) -> bool {
+        if geometry.line < self.win.first || geometry.line > self.win.last {
+            return false;
+        }
+        self.lists.push(geometry);
+        true
+    }
+
     /// Records a container panel over an inclusive line range, clipped to the
     /// visible window (TS clips its per-line classes the same way). Refused
     /// when the clip leaves nothing visible. `open_line`/`close_line` are the
@@ -304,11 +317,13 @@ impl<'a> Sink<'a> {
         self.blocks.sort_by_key(|b| b.first_line);
         self.panels.sort_by_key(|p| p.first_line);
         self.styles.sort_by_key(|s| s.range.start);
+        self.lists.sort_by_key(|l| l.line);
         PreviewSnapshot {
             spans: self.spans,
             blocks: self.blocks,
             panels: self.panels,
             styles: self.styles,
+            lists: self.lists,
         }
     }
 }

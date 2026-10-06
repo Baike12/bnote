@@ -196,6 +196,64 @@ pub enum PanelKind {
     Blockquote,
 }
 
+/// One list line's hanging-indent geometry — the TS line class set
+/// `md-list-line li-i{depth} {kind}`: the marker slot starts at
+/// [`li_px_em(level)`], the item text hangs at the slot's right edge, and
+/// every wrapped row aligns there. Emitted regardless of the caret, like the
+/// TS line decoration ("the layout doesn't shift when the cursor enters or
+/// leaves the line").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListGeometry {
+    /// 0-based buffer line.
+    pub line: usize,
+    /// Nesting level: 0 is a top-level item, each level is two source spaces
+    /// (`li-i{2*level}` in TS), capped like the TS class table at 16.
+    pub level: u8,
+    /// Which marker slot width the line uses.
+    pub marker: ListMarkerKind,
+}
+
+/// The marker kind of a list item, which picks the slot width (TS `.li-b` /
+/// `.li-t` / `.li-o`). Standard GFM: only `- [ ]` is a task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListMarkerKind {
+    Bullet,
+    Task,
+    Ordered,
+}
+
+/// `--li-base`: the first level's marker offset, in em. The list geometry is
+/// the same em scale `global.css` uses, so it tracks the editor font size;
+/// ordered slots are the one fixed pixel value (digit widths are not
+/// em-stable).
+pub const LI_BASE_EM: f32 = 0.8125;
+/// `--li-step`: each further nesting level, in em.
+pub const LI_STEP_EM: f32 = 1.75;
+/// `--li-gap`: the marker's right edge to the item text, in em.
+pub const LI_GAP_EM: f32 = 0.5;
+/// The bullet slot (`0.45em` dot + gap), in em.
+pub const LI_BULLET_EM: f32 = 0.45;
+/// The task checkbox slot (`0.9em` box + gap), in em.
+pub const LI_TASK_EM: f32 = 0.9;
+/// The ordered slot: a fixed `26px`, matching TS `.li-o`.
+pub const LI_ORDERED_PX: f32 = 26.0;
+
+/// The marker slot offset (TS `--li-px`), in em.
+pub fn li_px_em(level: u8) -> f32 {
+    LI_BASE_EM + level as f32 * LI_STEP_EM
+}
+
+/// The marker slot width (TS `--li-hang`) in em, for the em-based kinds (a
+/// bullet's dot and a checkbox both scale with the font). Ordered markers
+/// return `None` — theirs is [`LI_ORDERED_PX`].
+pub fn li_hang_em(marker: ListMarkerKind) -> Option<f32> {
+    match marker {
+        ListMarkerKind::Bullet => Some(LI_BULLET_EM + LI_GAP_EM),
+        ListMarkerKind::Task => Some(LI_TASK_EM + LI_GAP_EM),
+        ListMarkerKind::Ordered => None,
+    }
+}
+
 /// A byte range the renderer draws with a **text style** — bnote's mark
 /// decorations (`md-strong`, `md-inline-code`, `md-link`, …; TS
 /// `Decoration.mark`). Unlike a [`PreviewSpan`] a style span hides nothing
@@ -264,6 +322,9 @@ pub struct PreviewSnapshot {
     /// mark restyles what a widget or hidden span covers). The renderer
     /// merges them into the text styles.
     pub styles: Vec<PreviewStyleSpan>,
+    /// Sorted by `line`, at most one entry per line: the list lines'
+    /// hanging-indent geometry.
+    pub lists: Vec<ListGeometry>,
 }
 
 impl PreviewSnapshot {
@@ -272,6 +333,7 @@ impl PreviewSnapshot {
             && self.blocks.is_empty()
             && self.panels.is_empty()
             && self.styles.is_empty()
+            && self.lists.is_empty()
     }
 
     /// The byte ranges the display removes, sorted and disjoint — the
