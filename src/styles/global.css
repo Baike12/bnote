@@ -37,6 +37,9 @@
   --h5-color: #e83e3e;
   --h6-color: #98a2ad;
   --strong-color: #ff82b2;
+  /* Callout 标题的薄荷绿：调色板里原本没有这个色相（最近的 --ok 鼠尾草绿
+     #7ec97e 差 33°、--h2-color 青差 32°），清新且与块面的青底压得住。 */
+  --callout-title-color: #3ecf8e;
   /* 代码 token（HighlightStyle 在 markdown.ts 里按 var() 引用；其余 token
      直接复用上面的 --string/--keyword/--link/--strong-color/--danger）。 */
   --tok-comment: #7f848e;
@@ -98,6 +101,7 @@
   --h5-color: #cc2f2f;
   --h6-color: #6b7683;
   --strong-color: #c94f8c;
+  --callout-title-color: #0a7f55; /* 同色相加深，白底对比 5.0:1 */
   --tok-comment: #a0a1a7;
   --tok-number: #b76b01;
   --tok-func: #4078f2;
@@ -570,10 +574,11 @@ button {
   background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
   padding-left: 11px;
 }
-/* 标题按三级标题的视觉走(1.2em / 700 / --h3-color,与 .md-h3 同源)——出块
-   之后它是块的重音,不是一行正文;改标题层级字号表时这里要一起看。 */
+/* 标题：字号/字重按三级标题(1.2em / 700,与 .md-h3 同源),颜色用专属薄荷绿
+   --callout-title-color(出块后它是块的重音,不是一行正文;改标题层级字号表时
+   这里的 em 要一起看)。 */
 .cw-callout-title {
-  color: var(--h3-color);
+  color: var(--callout-title-color);
   font-weight: 700;
   font-size: 1.2em;
   padding-top: 8px;
