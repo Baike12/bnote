@@ -9,7 +9,7 @@ use super::object::{object_for_key, object_range};
 use super::ops::{
     apply_operator, delete_chars, delete_chars_before, increment, join_lines, open_line, paste,
     replace_chars, search_word_under_cursor, toggle_case_chars, CursorPlan, Execution,
-    HostContext, HostIntent, Outcome,
+    HostContext, HostIntent, Outcome, ScrollAnchor,
 };
 use super::state::{
     InsertEntry, LastFind, Mode, OpPending, Operator, Pending, RegisterContent, RecordedOp,
@@ -27,10 +27,29 @@ use super::state::{
 /// wrong mode. The engine's tests did the write-back by hand, which is exactly
 /// how the shell came to miss it.
 pub fn feed_apply(state: &mut VimState, doc: &dyn VimText, key: Key, ctx: &HostContext) -> Outcome {
+    // `gv`'s memory: capture the visual selection as it stands before the
+    // key, so whatever ends the session (Esc, an operator, v again) leaves
+    // the last range behind. Linewise sessions extend the head to the
+    // line's end — the engine's caret never moves in `V`, but the painted
+    // selection (and vim's `gv`) covers the line.
+    let visual_before = matches!(state.mode, Mode::Visual | Mode::VisualLine);
+    let snapshot = visual_before.then(|| {
+        let head = if state.mode == Mode::VisualLine {
+            super::doc::line_end_of(doc, ctx.cursor.min(doc.len()))
+        } else {
+            ctx.cursor
+        };
+        (state.mode, state.visual_anchor, head)
+    });
     let outcome = feed(state, doc, key, ctx);
     if let Outcome::Executed(exec) = &outcome {
         if let Some(mode) = exec.mode_after {
             state.mode = mode;
+        }
+    }
+    if let Some((kind, anchor, head)) = snapshot {
+        if !matches!(state.mode, Mode::Visual | Mode::VisualLine) {
+            state.last_visual = Some((kind, anchor, head));
         }
     }
     outcome
@@ -437,7 +456,26 @@ fn dispatch_pending(
             Some(c) => g_prefix(state, doc, ctx, c, count, op),
             None => failed(state),
         },
-        Pending::ZPrefix => finish(state, Execution::nothing(), false),
+        Pending::ZPrefix => match key.char() {
+            // zz/zt/zb: scroll the cursor's row, caret unchanged (the host
+            // owns the pixels; TS gets this from the CodeMirror viewport).
+            Some('z') => finish(
+                state,
+                Execution::default().with_intent(HostIntent::Scroll(ScrollAnchor::Center)),
+                false,
+            ),
+            Some('t') => finish(
+                state,
+                Execution::default().with_intent(HostIntent::Scroll(ScrollAnchor::Top)),
+                false,
+            ),
+            Some('b') => finish(
+                state,
+                Execution::default().with_intent(HostIntent::Scroll(ScrollAnchor::Bottom)),
+                false,
+            ),
+            _ => finish(state, Execution::nothing(), false),
+        },
     }
 }
 
@@ -948,6 +986,23 @@ fn g_prefix(
         '~' => operator_pending(state, Operator::ToggleCase, count),
         'i' => match state.last_insert_exit {
             Some(pos) if pos <= doc.len() => enter_insert(state, pos, None),
+            _ => failed(state),
+        },
+        'v' => match state.last_visual {
+            // gv: re-select the last visual range, same kind, ends clamped
+            // to the document (vim semantics).
+            Some((kind, anchor, head)) => {
+                let anchor = anchor.min(doc.len());
+                let head = head.min(doc.len());
+                state.visual_anchor = anchor;
+                finish(
+                    state,
+                    Execution::default()
+                        .with_cursor(CursorPlan::Select { anchor, head })
+                        .with_mode(kind),
+                    false,
+                )
+            }
             _ => failed(state),
         },
         _ => failed(state),

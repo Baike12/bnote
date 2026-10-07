@@ -48,6 +48,7 @@ use super::core::{
     Viewport,
 };
 use super::vimrc::{MapMode, Mapping, Mappings, Resolution};
+use super::core::ops::ScrollAnchor;
 
 /// How long a held mapping prefix waits for its next key before the buffer is
 /// replayed literally (vim's `timeoutlen`).
@@ -103,6 +104,10 @@ pub struct VimBridge {
     clipboard_unnamed: Rc<Cell<bool>>,
     /// Told about a mapping the shell cannot run (unknown command id).
     message_observer: Rc<RefCell<Option<Rc<dyn Fn(String, &mut App)>>>>,
+    /// Told when the user typed `:` in a modal mode: the shell owns the ex
+    /// command-line UI (TS vim.ts opens it from the keydown layer, before
+    /// the engine sees the key).
+    ex_observer: Rc<RefCell<Option<Rc<dyn Fn(&mut App)>>>>,
     /// Told when an attached editor's mode changes (the IME follow's trigger:
     /// Esc back to normal moves neither text nor caret, so no editor event
     /// fires for it).
@@ -118,6 +123,7 @@ impl VimBridge {
             mappings: Rc::new(RefCell::new(MappingState::default())),
             clipboard_unnamed: Rc::new(Cell::new(false)),
             message_observer: Rc::new(RefCell::new(None)),
+            ex_observer: Rc::new(RefCell::new(None)),
             mode_observer: Rc::new(RefCell::new(None)),
         };
         let handled = bridge.clone();
@@ -157,6 +163,11 @@ impl VimBridge {
     /// Observe a mapping the shell cannot run (an unknown command id).
     pub fn set_message_observer(&self, observer: impl Fn(String, &mut App) + 'static) {
         *self.message_observer.borrow_mut() = Some(Rc::new(observer));
+    }
+
+    /// Observe `:` in a modal mode: the shell opens its ex command line.
+    pub fn set_ex_observer(&self, observer: impl Fn(&mut App) + 'static) {
+        *self.ex_observer.borrow_mut() = Some(Rc::new(observer));
     }
 
     /// Replace the mapping table from the two vimrc sources — the global file
@@ -459,13 +470,20 @@ impl VimBridge {
                 last_line: rows.end.saturating_sub(1),
             })
             .unwrap_or(Viewport { first_line: 0, last_line: 1_000_000 });
+        // `"+p`: the mapping layer's replayed paste reads the system
+        // clipboard through the `+` register (see feed_engine).
+        let plus_text = if !inserts_natively(mode) && matches!(key, Key::Char('p') | Key::Char('P')) {
+            cx.read_from_clipboard().and_then(|item| item.text())
+        } else {
+            None
+        };
         let text = state.text().to_string();
         let ctx = HostContext {
             cursor,
             selection,
             viewport,
             shiftwidth: self.shiftwidth,
-            clipboard: None,
+            clipboard: plus_text,
         };
         let (outcome, mode_before, mode_after) = {
             let mut list = self.attachments.borrow_mut();
@@ -502,6 +520,25 @@ impl VimBridge {
         };
         let Some(editor) = editor else { return };
 
+        // `:` opens the ex command line (TS vim.ts: it leaves normal/visual
+        // before the engine could see it). The mapping layer still runs
+        // first, so a vimrc `nmap : …` keeps precedence over this.
+        if key == Key::Char(':') {
+            let modal = self
+                .attachments
+                .borrow()
+                .iter()
+                .any(|a| a.editor == editor && matches!(a.vim.mode, Mode::Normal | Mode::Visual | Mode::VisualLine));
+            if modal {
+                let observer = self.ex_observer.borrow().clone();
+                if let Some(observer) = observer {
+                    observer(cx);
+                }
+                cx.stop_propagation();
+                return;
+            }
+        }
+
         // The mapping layer runs before the engine (and before native typing,
         // which is what lets `imap jj <Esc>` hold a lone `j`).
         if self.map_key(&editor, key, window, cx) {
@@ -530,24 +567,33 @@ impl VimBridge {
                 last_line: rows.end.saturating_sub(1),
             })
             .unwrap_or(Viewport { first_line: 0, last_line: 1_000_000 });
-        let ctx = HostContext {
-            cursor,
-            selection,
-            viewport,
-            shiftwidth: self.shiftwidth,
-            clipboard: None,
-        };
 
         // `set clipboard=unnamed`: the unnamed register *is* the system
         // clipboard. Reads happen here (before the key, so a paste sees what
         // other apps copied); writes are mirrored out below.
         let mode_now = self.current_mode(&editor).unwrap_or(Mode::Normal);
         let unnamed_reads = self.clipboard_unnamed.get() && !inserts_natively(mode_now);
+        // `"+p`/`"+P`: an explicit read of the `+` register comes straight
+        // from the system clipboard (TS vim.ts), with or without the unnamed
+        // flag; without the flag it must not overwrite the unnamed register,
+        // so it rides `HostContext.clipboard` instead.
+        let plus_reads = !inserts_natively(mode_now) && matches!(key, Key::Char('p') | Key::Char('P'));
         let system_clipboard = if unnamed_reads {
-            cx.read_from_clipboard()
-                .and_then(|item| item.text())
+            cx.read_from_clipboard().and_then(|item| item.text())
         } else {
             None
+        };
+        let plus_text = if plus_reads && !unnamed_reads {
+            cx.read_from_clipboard().and_then(|item| item.text())
+        } else {
+            None
+        };
+        let ctx = HostContext {
+            cursor,
+            selection,
+            viewport,
+            shiftwidth: self.shiftwidth,
+            clipboard: plus_text,
         };
         let (outcome, mode_before, mode_after, wrote_registers) = {
             let mut list = self.attachments.borrow_mut();
@@ -669,6 +715,31 @@ fn apply_execution_state(
                 // The search-bar port is pending; `n`/`N` still work on the
                 // last query.
                 HostIntent::OpenSearch => {}
+                // zz/zt/zb: the caret's buffer row to center/top/bottom. v1
+                // works in buffer rows × line height (the unit the viewport
+                // range reports); a folded preview block shifts real pixels,
+                // so this is an approximation, not TS's pixel-exact scroll.
+                HostIntent::Scroll(anchor) => {
+                    if let (Some(line_height), Some(rows)) =
+                        (state.line_height(), state.visible_row_range())
+                    {
+                        let lh: f32 = line_height.into();
+                        let visible = rows.end.saturating_sub(rows.start) as f32;
+                        // `cursor_position` is LSP-shaped: `line` is the
+                        // 0-based buffer row.
+                        let row = state.cursor_position().line as f32;
+                        let viewport_h = visible * lh;
+                        let offset_y = match anchor {
+                            ScrollAnchor::Center => row * lh + lh / 2.0 - viewport_h / 2.0,
+                            ScrollAnchor::Top => row * lh,
+                            ScrollAnchor::Bottom => row * lh + lh - viewport_h,
+                        };
+                        state.set_scroll_offset(
+                            gpui::point(gpui::px(0.), gpui::px(offset_y.max(0.))),
+                            cx,
+                        );
+                    }
+                }
             }
         }
     }

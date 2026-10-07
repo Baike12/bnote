@@ -45,6 +45,17 @@ pub enum HostIntent {
     Undo,
     Redo,
     OpenSearch,
+    /// `zz`/`zt`/`zb`: put the cursor's row at the viewport center/top/
+    /// bottom without moving the caret (the host owns the pixels).
+    Scroll(ScrollAnchor),
+}
+
+/// Where in the viewport a `z` scroll puts the cursor's row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScrollAnchor {
+    Center,
+    Top,
+    Bottom,
 }
 
 /// The result of one executed command.

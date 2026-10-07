@@ -475,6 +475,13 @@ pub struct Workspace {
     /// The rename dialog the tree menu opens, with its single field.
     rename_prompt: Option<RenamePrompt>,
     rename_state: Entity<InputState>,
+    /// The ex command line (`:` in a modal vim mode; TS `vim.ts`). One input,
+    /// shown bottom-center; Enter runs the command, Esc closes.
+    ex_open: bool,
+    ex_state: Entity<InputState>,
+    /// This window's own handle, for app-level callbacks (the vim bridge's
+    /// `:` observer) that must reach the view from a bare `&mut App`.
+    window_handle: gpui::AnyWindowHandle,
     /// Quick add (⌘⇧A; TS `QuickAddModal.tsx`): pick one of
     /// `settings.quickAdd`'s commands, then name the note. The name lands in
     /// the command's folder, created at the vault root when missing.
@@ -751,6 +758,8 @@ impl Workspace {
         let qa_state = cx.new(|cx| CommandState::new(window, cx));
         let qa_name_state = cx.new(|cx| InputState::new(window, cx));
         let rename_state = cx.new(|cx| InputState::new(window, cx));
+        // The ex command line's single field (`:` in a modal vim mode).
+        let ex_state = cx.new(|cx| InputState::new(window, cx));
         // The IME follow reads its own settings copy out of the same config
         // block the modal writes. Its platform seams come in from `main`; the
         // tests wire inert ones (see `ImeServices`).
@@ -926,6 +935,12 @@ impl Workspace {
                     this.commit_rename(cx);
                 }
             }),
+            // The ex command line: Enter runs what was typed.
+            cx.subscribe_in(&ex_state, window, |this, _input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.commit_ex(window, cx);
+                }
+            }),
             // The quick-add name field: its Enter creates, its Tab returns to
             // the command pick (TS binds both on the input).
             cx.subscribe(&qa_name_state, |this, _input, event: &InputEvent, cx| {
@@ -1010,6 +1025,9 @@ impl Workspace {
             tree_menu: None,
             rename_prompt: None,
             rename_state,
+            ex_open: false,
+            ex_state,
+            window_handle: window.window_handle(),
             ime,
             ime_services,
             ime_sources: Vec::new(),
@@ -1063,6 +1081,29 @@ impl Workspace {
                     cx.notify();
                 })
                 .ok();
+            });
+        }
+        // `:` in a modal vim mode opens the ex command line.
+        {
+            let weak = cx.weak_entity();
+            // The workspace holds its own window handle: the observer fires
+            // from the app-level interceptor, where a synchronous window
+            // update would re-enter the keystroke dispatch (gpui rejects
+            // that), so the open hops to the executor first.
+            let handle = workspace.window_handle;
+            let weak = cx.weak_entity();
+            workspace.vim_bridge.clone().set_ex_observer(move |cx| {
+                let weak = weak.clone();
+                cx.spawn(async move |cx| {
+                    cx.update(|cx| {
+                        handle
+                            .update(cx, |_view, window, cx| {
+                                weak.update(cx, |this, cx| this.open_ex_line(window, cx));
+                            })
+                            .ok();
+                    });
+                })
+                .detach();
             });
         }
         // The global vimrc is per-app, not per-vault: load it even before a
@@ -3579,6 +3620,53 @@ impl Workspace {
         cx.spawn(async move |this, cx| reload_tree(this, tree, cx).await).detach();
     }
 
+    // ---- ex command line (`:` in a modal vim mode) -----------------------
+
+    /// Open the one-line ex input (the vim bridge's `:` observer calls this).
+    fn open_ex_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ex_open = true;
+        self.ex_state.update(cx, |st, cx| {
+            st.set_value("", window, cx);
+            st.focus(window, cx);
+        });
+        self.ime_sync(cx);
+        cx.notify();
+    }
+
+    /// Enter in the ex line: run the command, close the line.
+    fn commit_ex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.ex_state.read(cx).value().trim().to_string();
+        self.ex_open = false;
+        self.focus_editor(window, cx);
+        self.ime_sync(cx);
+        if input.is_empty() {
+            cx.notify();
+            return;
+        }
+        // TS vim.ts's EX_ALIASES pass through the same table the vimrc's
+        // `:…<CR>` right-hand sides use — one alias source.
+        let id = crate::editor::vim::vimrc::ex_command(&input);
+        match crate::commands::action_for(&id) {
+            Some(action) => window.dispatch_action(action, cx),
+            None => {
+                self.status = format!("未知命令 :{}", input);
+                self.show_toast(format!("未知命令 :{}", input), cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Close the ex line without running anything (Esc).
+    fn close_ex_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ex_open {
+            return;
+        }
+        self.ex_open = false;
+        self.focus_editor(window, cx);
+        self.ime_sync(cx);
+        cx.notify();
+    }
+
     /// Persist one IME setting and push it into the follow (the follow holds
     /// its own copy; the modal is the only writer).
     fn patch_ime_settings(
@@ -5588,6 +5676,35 @@ impl Workspace {
         self.vault_root.is_none()
     }
 
+    /// The ex command line (`:` in a modal vim mode; TS `vim.ts`'s footer
+    /// input): one field bottom-center, prompt styled after the TS's.
+    fn render_ex_line(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.ex_open {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        Some(
+            div()
+                .id("ex-line")
+                .absolute()
+                .bottom(px(36.))
+                .left(px(120.))
+                .right(px(120.))
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .px_3()
+                .py(px(6.))
+                .child(Label::new("∶").text_sm().text_color(theme.muted_foreground))
+                .child(Input::new(&self.ex_state).into_any_element())
+                .into_any_element(),
+        )
+    }
+
     /// The editor empty state's gate (TS `EditorPane.tsx`: `!currentFile &&
     /// vaultPath`).
     fn editor_empty_needed(&self) -> bool {
@@ -6029,6 +6146,8 @@ impl gpui::Render for Workspace {
                     this.ime_pick = None;
                     this.ime_sync(cx);
                     cx.notify();
+                } else if this.ex_open {
+                    this.close_ex_line(window, cx);
                 } else if this.rename_prompt.is_some() {
                     this.rename_prompt = None;
                     this.focus_editor(window, cx);
@@ -6052,6 +6171,7 @@ impl gpui::Render for Workspace {
             .children(tree_menu)
             .children(rename_prompt)
             .children(ime_picker)
+            .children(self.render_ex_line(cx))
             .children(editor_empty)
             .children(self.render_toast(cx))
             .child(
@@ -8313,6 +8433,83 @@ mod tests {
         cx.run_until_parked();
         workspace.read_with(cx, |ws, _| {
             assert!(ws.toast.is_none(), "the toast cleared after the duration");
+        });
+    }
+
+    // ---- batch: vim parity (ex line, gv, zz) ------------------------------
+
+    /// `:` opens the ex line through the real keystroke path, `w<Enter>` runs
+    /// the save, and the alias comes from the same table the vimrc uses.
+    #[gpui::test]
+    fn the_ex_line_saves_through_the_real_keys(cx: &mut TestAppContext) {
+        let (workspace, fixture, cx) = crate::harness::note_fixture(cx, true);
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.debug_set_doc("ex 要保存的内容\n", window, cx);
+            ws.dirty = true;
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let w = crate::harness::window(cx);
+
+        crate::harness::press(cx, w, ":");
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| assert!(ws.ex_open, "`:` opens the ex line"));
+        crate::harness::press(cx, w, "w");
+        crate::harness::chord(cx, w, "enter");
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |ws, _| {
+            assert!(!ws.ex_open, "Enter closes the line");
+        });
+        assert_eq!(
+            fixture.read("note.md"),
+            "ex 要保存的内容\n",
+            ":w wrote the note through the shared alias table"
+        );
+
+        // An unknown command is reported, not swallowed.
+        crate::harness::press(cx, w, ":");
+        cx.run_until_parked();
+        crate::harness::press(cx, w, "nope");
+        crate::harness::chord(cx, w, "enter");
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.status, "未知命令 :nope");
+        });
+    }
+
+    /// `V`, `<Esc>`, `gv` re-selects the line through the real keys; `zz`
+    /// scrolls without moving the caret.
+    #[gpui::test]
+    fn gV_and_zZ_run_through_the_real_keys(cx: &mut TestAppContext) {
+        let (workspace, _fixture, cx) = crate::harness::note_fixture(cx, true);
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.debug_set_doc("aaa\nbbb\nccc\n", window, cx);
+            ws.debug_set_cursor(4, cx); // on `bbb`
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let w = crate::harness::window(cx);
+
+        crate::harness::press(cx, w, "V");
+        crate::harness::chord(cx, w, "escape");
+        crate::harness::press(cx, w, "gv");
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(
+                ws.vim_bridge.mode_of(&ws.editor),
+                Some(crate::editor::vim::core::Mode::VisualLine),
+                "gv restored linewise visual"
+            );
+            let sel = ws.editor.read(cx).selected_range();
+            assert_eq!(sel, 4..7, "the bbb line is selected again");
+        });
+
+        crate::harness::chord(cx, w, "escape");
+        crate::harness::press(cx, w, "zz");
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(
+                ws.editor.read(cx).cursor(),
+                4,
+                "zz scrolled without moving the caret"
+            );
         });
     }
 }

@@ -186,7 +186,7 @@ pub fn parse_vimrc(source: &str) -> Vimrc {
 }
 
 /// `:w<CR>` / `:Bnote nav.toggle-sidebar<CR>` → the command id to run.
-fn ex_command(text: &str) -> String {
+pub(crate) fn ex_command(text: &str) -> String {
     let name = text
         .trim_end_matches(|c: char| c == '\r')
         .strip_suffix("<CR>")

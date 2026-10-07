@@ -391,6 +391,9 @@ pub struct VimState {
     pub replaying: bool,
     /// Byte where the last insert session ended (auto-mark `^`).
     pub last_insert_exit: Option<usize>,
+    /// `gv`'s memory: the selection the last visual session ended with —
+    /// (kind, anchor, head). Kinds are only char/line (v1 has no block).
+    pub last_visual: Option<(Mode, usize, usize)>,
 }
 
 impl Default for VimState {
@@ -417,6 +420,7 @@ impl VimState {
             keylog: Vec::new(),
             replaying: false,
             last_insert_exit: None,
+            last_visual: None,
         }
     }
 

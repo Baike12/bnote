@@ -12,7 +12,7 @@
 
 use crate::editor::vim::core::exec::feed;
 use crate::editor::vim::core::key::Key;
-use crate::editor::vim::core::ops::{CursorPlan, HostContext, HostIntent, Outcome};
+use crate::editor::vim::core::ops::{CursorPlan, HostContext, HostIntent, Outcome, ScrollAnchor};
 use crate::editor::vim::core::state::Mode;
 use crate::editor::vim::core::Viewport;
 use crate::editor::vim::core::{VimState, VimText};
@@ -31,6 +31,8 @@ struct Env {
     state: VimState,
     undos: usize,
     redos: usize,
+    /// The `zz`/`zt`/`zb` scroll intents the host received, in order.
+    scrolls: Vec<ScrollAnchor>,
 }
 
 impl Env {
@@ -48,6 +50,7 @@ impl Env {
             state: VimState::new(),
             undos: 0,
             redos: 0,
+            scrolls: Vec::new(),
         }
     }
 
@@ -76,7 +79,9 @@ impl Env {
     fn step(&mut self, keys: &str) -> &mut Self {
         for key in parse_keys(keys) {
             let ctx = self.ctx();
-            let outcome = feed(&mut self.state, &self.text, key, &ctx);
+            // `feed_apply` is the host's entry (mode written back, `gv`'s
+            // last-visual captured); applying the plan again is idempotent.
+            let outcome = crate::editor::vim::core::feed_apply(&mut self.state, &self.text, key, &ctx);
             self.apply(outcome);
         }
         self
@@ -117,6 +122,7 @@ impl Env {
                 HostIntent::Undo => self.undos += 1,
                 HostIntent::Redo => self.redos += 1,
                 HostIntent::OpenSearch => {}
+                HostIntent::Scroll(anchor) => self.scrolls.push(anchor),
             }
         }
     }
@@ -1271,6 +1277,77 @@ mod debug_probe3 {
         eprintln!("dw: text={:?} unnamed={:?}", env.text, env.state.registers.unnamed.as_ref().map(|r| &r.text));
         env.step("P");
         eprintln!("P: text={:?}", env.text);
+    }
+
+    // ---- zz / zt / zb -----------------------------------------------------
+
+    #[test]
+    fn zZ_zT_zB_request_the_scroll_and_keep_the_caret() {
+        for (keys, expected) in [
+            ("zz", ScrollAnchor::Center),
+            ("zt", ScrollAnchor::Top),
+            ("zb", ScrollAnchor::Bottom),
+        ] {
+            let mut env = Env::new("line1\n|line2\nline3");
+            env.step(keys);
+            assert_eq!(env.scrolls, vec![expected], "{keys} scrolls");
+            assert_eq!(env.cursor, 6, "{keys} does not move the caret");
+        }
+        // An unknown second key stays a no-op, consumed.
+        let mut env = Env::new("line1\n|line2");
+        env.step("zA");
+        assert!(env.scrolls.is_empty(), "unknown z follow-up does nothing");
+    }
+
+    // ---- gv ---------------------------------------------------------------
+
+    #[test]
+    fn gV_reselects_the_last_visual_range() {
+        let mut env = Env::new("foo |bar baz");
+        env.step("v2e");
+        env.step("<Esc>");
+        assert!(env.selection.is_none(), "visual left");
+        assert!(env.state.last_visual.is_some(), "the session was recorded");
+
+        env.step("gv");
+        assert_eq!(env.state.mode, Mode::Visual, "gv re-enters visual");
+        let (anchor, head) = env.selection.expect("the range is restored");
+        assert_eq!(
+            (anchor, head),
+            (4, 10),
+            "the same range comes back (bar baz)"
+        );
+
+        // No session yet → the key fails without changing anything.
+        let mut fresh = Env::new("|foo");
+        fresh.step("gv");
+        assert!(fresh.selection.is_none());
+        assert_eq!(fresh.state.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn gV_remembers_whether_it_was_linewise() {
+        let mut env = Env::new("one\nt|wo\nthree");
+        env.step("V");
+        env.step("<Esc>");
+        env.step("gv");
+        assert_eq!(env.state.mode, Mode::VisualLine, "gv restores the kind");
+    }
+
+    // ---- `"+p` reads the host clipboard -----------------------------------
+
+    #[test]
+    fn plus_p_pastes_from_the_host_clipboard() {
+        let mut env = Env::new("hello |world");
+        env.clipboard = Some("XYZ".to_string());
+        env.step("\"+p");
+        assert_eq!(env.text, "hello wXYZorld", "`\"+p` pastes after the caret");
+
+        // Linewise system text (trailing newline): pastes whole lines.
+        let mut env = Env::new("a|b");
+        env.clipboard = Some("L\n".to_string());
+        env.step("\"+p");
+        assert_eq!(env.text, "ab\nL", "linewise paste lands below the caret's line");
     }
 }
 
