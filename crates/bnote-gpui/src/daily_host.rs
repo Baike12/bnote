@@ -319,6 +319,14 @@ impl DailyHost {
     pub fn reload_links(&self) {
         *self.links.lock().unwrap() = links::load_links(&self.vault);
     }
+
+    /// Every link `path` participates in, cloned for the render-side mark
+    /// predicate (`bnote_core::daily::marks`), which runs while the store
+    /// lock must not be held.
+    pub fn links_for_file(&self, path: &str) -> Vec<bnote_core::daily::links::DailyLink> {
+        let store = self.links.lock().unwrap();
+        store.for_file(path).into_iter().cloned().collect()
+    }
 }
 
 #[cfg(test)]

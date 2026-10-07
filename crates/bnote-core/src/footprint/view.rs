@@ -7,14 +7,9 @@
 use crate::footprint::model::FootprintEntry;
 
 /// Source note name (directory and `.md` stripped), used in daily-side
-/// labels and hints. Port of `daily/marks.ts::sourceLabel`.
-pub fn source_label(src_path: &str) -> &str {
-    let after_slash = match src_path.rfind('/') {
-        Some(i) => &src_path[i + 1..],
-        None => src_path,
-    };
-    after_slash.strip_suffix(".md").unwrap_or(after_slash)
-}
+/// labels and hints. The TS imports it from `daily/marks.ts`; the port keeps
+/// one implementation there.
+pub use crate::daily::marks::source_label;
 
 /// One rendered group (per source file). Port of
 /// `footprint/view.ts::FootprintGroupView`.
@@ -88,6 +83,30 @@ pub fn fold_sig(state: &FoldState) -> String {
     } else {
         format!("Z{}", state.groups.iter().cloned().collect::<Vec<_>>().join(";"))
     }
+}
+
+// ---------------------------------------------------------------- 源侧 pip
+
+/// Visible lines whose number is a today-footprint block start: the
+/// source-side hollow pip ("今日足迹已收录到今日日记"). Port of
+/// `footprint/extension.ts::buildFootprintMarks` (the pure predicate; the
+/// TS builds the line decoration, the GPUI engine takes the line numbers).
+///
+/// `lines` is the engine's visible window in **0-based buffer lines**
+/// (`None` = no layout yet, which marks nothing); `FootprintBlock.start` is
+/// a **1-based** line number (the CM convention the TS compared against).
+pub fn footprint_mark_lines(
+    blocks: &[crate::footprint::model::FootprintBlock],
+    lines: Option<std::ops::Range<usize>>,
+) -> Vec<usize> {
+    let Some(window) = lines else { return Vec::new() };
+    let starts: std::collections::BTreeSet<usize> = blocks.iter().map(|b| b.start).collect();
+    if starts.is_empty() {
+        return Vec::new();
+    }
+    (window.start..=window.end)
+        .filter(|n| starts.contains(&(n + 1)))
+        .collect()
 }
 
 // ---------------------------------------------------------------- 测试
@@ -184,5 +203,20 @@ mod tests {
         let b = toggle_group(&toggle_group(&default_fold(), "/y.md"), "/x.md");
         assert_eq!(fold_sig(&a), fold_sig(&b));
         assert_eq!(fold_sig(&a), "Z/x.md;/y.md");
+    }
+
+    // ---- 源侧 pip (footprint/extension.ts::buildFootprintMarks)
+
+    #[test]
+    fn mark_lines_sit_on_the_block_starts_inside_the_window() {
+        let blocks = vec![
+            FootprintBlock { text: "第一段".into(), start: 1, end: 2 },
+            FootprintBlock { text: "尾段".into(), start: 7, end: 7 },
+        ];
+        // 1-based start 1 → 0-based line 0; start 7 → line 6.
+        assert_eq!(footprint_mark_lines(&blocks, Some(0..9)), vec![0, 6]);
+        assert_eq!(footprint_mark_lines(&blocks, Some(5..9)), vec![6]);
+        assert_eq!(footprint_mark_lines(&blocks, None), Vec::<usize>::new());
+        assert_eq!(footprint_mark_lines(&[], Some(0..9)), Vec::<usize>::new());
     }
 }

@@ -39,18 +39,38 @@ impl FootprintHost {
         self.core.tick(today, Instant::now(), &scan_closure(self.vault.clone()));
     }
 
-    #[allow(dead_code)] // reads land with the footprint panel
+    #[allow(dead_code)] // the zone widget reads entries for a historical day
     pub fn entries_for(&self, day: &str) -> Vec<FootprintEntry> {
         self.core.entries_for(day)
+    }
+
+    /// A file's blocks in today's footprint (empty when unrecorded): the
+    /// source-side mark predicate (`bnote_core::footprint::view`).
+    pub fn blocks_for(&self, path: &str) -> Vec<bnote_core::footprint::model::FootprintBlock> {
+        self.core.footprints_for(path)
     }
 
     pub fn today_entries(&self) -> Vec<FootprintEntry> {
         self.core.today_entries()
     }
 
-    #[allow(dead_code)] // cache-invalidation hook for the panel
+    /// Bumped on every content change (rotation / dirty flush / rebuild);
+    /// the shell rescans the source-side pips when it moves.
     pub fn revision(&self) -> u64 {
         self.core.revision()
+    }
+
+    /// Test seam: install a footprint index directly (the harness
+    /// `__setFootprints` equivalent).
+    #[cfg(test)]
+    pub fn install_index_for_test(
+        &self,
+        index: std::collections::BTreeMap<
+            String,
+            Vec<bnote_core::footprint::model::FootprintBlock>,
+        >,
+    ) {
+        self.core.install_index_for_test(index);
     }
 }
 

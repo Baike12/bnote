@@ -37,8 +37,8 @@ use gpui::{
 };
 use gpui_kit::component::theme::ActiveTheme as _;
 use gpui_kit::component::input::{
-    PreviewBlock, PreviewBlockView, PreviewDecorations, PreviewLineStyle, PreviewRenderer,
-    PreviewSpan, PreviewWidget, TextDecoration,
+    PreviewBlock, PreviewBlockView, PreviewDecorations, PreviewLineLabel, PreviewLinePip,
+    PreviewLineStyle, PreviewRenderer, PreviewSpan, PreviewWidget, TextDecoration,
 };
 
 use super::images::ImageStore;
@@ -167,6 +167,27 @@ pub struct PreviewHost {
     /// while the caret is inside it (TS default true).
     math_preview: Cell<bool>,
     revision: Cell<u64>,
+    /// The shell's line marks (daily-sync and footprint pips; see
+    /// [`LineMark`]). The workspace installs them before each scan; the
+    /// snapshot merges them into the lines table, under the one writer.
+    line_marks: RefCell<Vec<LineMark>>,
+}
+
+/// One shell-level pip: a status dot at the line's left edge, paint-only.
+/// The predicate (which lines, which side) lives in
+/// `bnote_core::daily::marks` / `bnote_core::footprint::view`; this is the
+/// geometry the engine needs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineMark {
+    /// 0-based buffer line.
+    pub line: u64,
+    /// Filled dot (a synced todo: `md-daily-link`) or a ring (a footprint
+    /// block's first line: `md-footprint`) — both are `::before` dots in TS,
+    /// distinguished by shape.
+    pub filled: bool,
+    /// Daily side only: the source note's label, drawn right-aligned at the
+    /// line's end (TS `::after`, `⇄ <name>`).
+    pub trailing: Option<String>,
 }
 
 impl PreviewHost {
@@ -181,7 +202,16 @@ impl PreviewHost {
             scanned: Cell::new((0, 0)),
             math_preview: Cell::new(true),
             revision: Cell::new(0),
+            line_marks: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Install the shell's line marks for the next scan (sorted by line).
+    /// Mark state lives outside the document (the link store, the footprint
+    /// index), so the shell recomputes and hands them over; the snapshot
+    /// merges them into the lines table it already writes.
+    pub fn set_line_marks(&self, marks: Vec<LineMark>) {
+        self.line_marks.replace(marks);
     }
 
     /// The image cache and request queue; the workspace drains the requests
@@ -378,12 +408,14 @@ impl PreviewHost {
     fn line_styles(&self, snapshot: &core::PreviewSnapshot, cx: &App) -> Vec<PreviewLineStyle> {
         let palette = self.palette(cx);
         let accent = palette.color("h2-color");
-        #[derive(Clone, Copy, Default)]
+        #[derive(Clone, Default)]
         struct Look {
             background: Option<Hsla>,
             border: Option<(Pixels, Hsla)>,
             inset: Pixels,
             wrap_indent: Pixels,
+            /// The shell's pip on this line, if any.
+            mark: Option<LineMark>,
         }
         let mut per_line: BTreeMap<u64, Look> = BTreeMap::new();
         let mut apply = |panel: &core::PreviewPanel, look: &mut dyn FnMut(&mut Look)| {
@@ -439,6 +471,15 @@ impl PreviewHost {
                 None => px(core::LI_ORDERED_PX),
             };
         }
+        // 5. The shell's marks (`.cm-line.md-daily-link::before` and
+        //    `.cm-line.md-footprint::before`): the pip sits in the marker slot
+        //    (`li-px - 0.62em`, which is `-0.62em` from the line's text start,
+        //    because the list geometry above made the inset `li-px`), the
+        //    daily-side label hugs the text area's right edge. Both are paint
+        //    only — the geometry above stays exactly as it was.
+        for mark in self.line_marks.borrow().iter() {
+            per_line.entry(mark.line).or_default().mark = Some(mark.clone());
+        }
 
         per_line
             .into_iter()
@@ -449,6 +490,33 @@ impl PreviewHost {
                 }
                 if let Some((width, color)) = look.border {
                     style = style.left_border(width, color);
+                }
+                if let Some(mark) = look.mark {
+                    // TS: filled `0.3em` dot at `top: 0.6em`, opacity .85;
+                    // ring `0.34em` with a `1.5px` accent stroke at `top:
+                    // 0.55em`, opacity .8.
+                    let (size, top, stroke, opacity) = if mark.filled {
+                        (0.3, 0.6, px(0.), 0.85)
+                    } else {
+                        (0.34, 0.55, px(1.5), 0.8)
+                    };
+                    let accent = palette.color("accent").opacity(opacity);
+                    style = style.pip(PreviewLinePip {
+                        left: -0.62 * font,
+                        top: top * font,
+                        size: size * font,
+                        stroke,
+                        color: accent,
+                    });
+                    if let Some(label) = mark.trailing {
+                        style = style.trailing(PreviewLineLabel {
+                            text: format!("⇄ {label}").into(),
+                            color: palette.color("text-faint").opacity(0.7),
+                            font_size: font * 0.72,
+                            top: 0.18 * font,
+                            right: px(0.),
+                        });
+                    }
                 }
                 style.inset(look.inset).wrap_indent(look.wrap_indent)
             })

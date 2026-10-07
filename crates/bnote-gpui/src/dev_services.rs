@@ -11,6 +11,10 @@ use std::rc::Rc;
 use crate::ime_host::{CurrentSource, ImeServices, Switcher};
 use crate::python_lsp::PyLspServices;
 
+// The two builders are driven by the test harness and the `harness-shot`
+// binary; the plain `bnote-gpui` binary (no feature, no tests) sees them as
+// unused.
+#[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
 /// The IME follow's seams, inert: every switch is a no-op, `list` is empty.
 pub fn inert_ime() -> ImeServices {
     let switch: Switcher = Rc::new(|_, _, _| Task::ready(()));
@@ -18,6 +22,7 @@ pub fn inert_ime() -> ImeServices {
     ImeServices { switch, current, list: Rc::new(|_| Task::ready(Vec::new())) }
 }
 
+#[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
 /// The ty follow's seams, inert: diagnostics/completions never arrive.
 pub fn inert_lsp() -> PyLspServices {
     PyLspServices {

@@ -52,7 +52,7 @@ use crate::commands::{COMMANDS, action_for, actions, def_of};
 use crate::keybindings;
 use crate::daily_host::{DailyHost, SyncWrite};
 use crate::editor::images as editor_images;
-use crate::editor::preview::{PreviewFont, PreviewHost};
+use crate::editor::preview::{LineMark, PreviewFont, PreviewHost};
 use crate::editor::snippets_host::SnippetBridge;
 use crate::editor::vim::core::Mode as VimMode;
 use crate::footprint_host::FootprintHost;
@@ -340,6 +340,9 @@ pub struct Workspace {
     // Feature hosts (present once a vault is open).
     daily: Option<Arc<DailyHost>>,
     footprint: Option<Arc<FootprintHost>>,
+    /// The footprint revision the last frame scanned against; a bump means
+    /// the source-side pips need rebuilding.
+    footprint_revision: u64,
 
     // UI state.
     sidebar_open: bool,
@@ -655,6 +658,7 @@ impl Workspace {
         self.editor.update(cx, |st, cx| st.set_selected_range(0..0, cx));
     }
 
+    #[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
     /// The caret as a byte offset (scripted shots position for vim tests).
     pub(crate) fn debug_set_cursor(&mut self, byte: usize, cx: &mut Context<Self>) {
         self.editor.update(cx, |st, cx| st.set_selected_range(byte..byte, cx));
@@ -981,6 +985,7 @@ impl Workspace {
             cursor_label: String::new(),
             daily: None,
             footprint: None,
+            footprint_revision: 0,
             sidebar_open: true,
             agent,
             agent_open: false,
@@ -1142,6 +1147,14 @@ impl Workspace {
                     if tick {
                         if let Some(fp) = &this.footprint {
                             fp.tick(&this.today);
+                            // A bumped revision means blocks appeared/moved:
+                            // the source-side footprint pips are stale.
+                            let revision = fp.revision();
+                            if revision != this.footprint_revision {
+                                this.footprint_revision = revision;
+                                this.preview_dirty = true;
+                                cx.notify();
+                            }
                         }
                     }
                     true
@@ -2405,6 +2418,10 @@ impl Workspace {
                     } else {
                         this.status = format!("已发送到今日日记({} 项)", report.sent);
                     }
+                    // The send wrote a link: the source line's synced pip (and
+                    // a daily-side label) come from the store, so the marks
+                    // must be rebuilt.
+                    this.preview_dirty = true;
                     // If the open note IS a daily mirror target, refresh it.
                     let open_abs = this
                         .vault_root
@@ -5324,6 +5341,69 @@ impl Workspace {
         }
     }
 
+    /// Recompute the shell's line marks for the open document and hand them
+    /// to the preview host.
+    ///
+    /// Two families, each a paint-only pip at the line's left edge (the TS
+    /// line decorations `md-daily-link` / `md-footprint`):
+    /// - daily links: a filled dot on todo lines a link binds — the source
+    ///   side marks today's sends, the daily side marks synced-in entries and
+    ///   adds the source note's label at the line's end;
+    /// - footprints: a ring on the first line of every block today's
+    ///   footprint recorded from this file (source side only — a daily is the
+    ///   aggregation page itself).
+    ///
+    /// The predicates are pure (`bnote_core::daily::marks`,
+    /// `bnote_core::footprint::view`); this only gathers the inputs.
+    fn install_line_marks(&mut self, text: &str, cx: &mut Context<Self>) {
+        use bnote_core::daily::marks::{build_daily_marks, DailyMark};
+        use bnote_core::footprint::view::footprint_mark_lines;
+
+        let mut marks: Vec<LineMark> = Vec::new();
+        let visible = self.editor.read(cx).visible_row_range();
+        let Some(root) = self.vault_root.as_ref() else {
+            self.preview.set_line_marks(marks);
+            return;
+        };
+        let root = root.to_string_lossy().to_string();
+        let Some(rel) = self.open_path.clone() else {
+            self.preview.set_line_marks(marks);
+            return;
+        };
+        let path = format!("{}/{}", root.trim_end_matches('/'), rel);
+
+        // Daily links: the store is shell state; the predicate is core's.
+        let links = match self.daily.as_ref() {
+            Some(daily) => daily.links_for_file(&path),
+            None => Vec::new(),
+        };
+        if !links.is_empty() {
+            let refs: Vec<&bnote_core::daily::links::DailyLink> = links.iter().collect();
+            let today_daily = bnote_core::daily::model::daily_path_for(&root, &self.today);
+            let found: Vec<DailyMark> =
+                build_daily_marks(text, visible.clone(), &path, &refs, &today_daily);
+            marks.extend(found.into_iter().map(|m| LineMark {
+                line: m.line as u64,
+                filled: true,
+                trailing: m.source,
+            }));
+        }
+
+        // Footprints: only outside the daily (the daily is the page showing
+        // everything; a pip there would point at itself).
+        if !bnote_core::daily::model::is_daily_path(&path) {
+            if let Some(fp) = self.footprint.as_ref() {
+                let blocks = fp.blocks_for(&path);
+                marks.extend(footprint_mark_lines(&blocks, visible).into_iter().map(|line| {
+                    LineMark { line: line as u64, filled: false, trailing: None }
+                }));
+            }
+        }
+
+        marks.sort_by_key(|m| m.line);
+        self.preview.set_line_marks(marks);
+    }
+
     /// Replace the whole buffer, and declare the live preview stale.
     ///
     /// `set_value` is the silent door into the editor (`gpui-kit` emits no
@@ -5365,6 +5445,10 @@ impl Workspace {
                 let selection = self.editor.read(cx).selected_range();
                 self.preview_selection = Some(selection.clone());
                 let text = self.editor.read(cx).text().to_string();
+                // The shell's line marks (synced-daily pips, footprint pips)
+                // ride the same snapshot: their state lives outside the
+                // document, so it is pushed in before the scan.
+                self.install_line_marks(&text, cx);
                 let column = self.preview.text_column(self.editor_width(cx), &text, window);
                 let decorations =
                     self.preview
@@ -6350,6 +6434,10 @@ async fn save_snapshot(
                         daily.record_synced(&w.path, &w.text);
                     }
                 }
+                // The sync may have mutated the link store (link state lives
+                // outside the document), and the marks on the open file's
+                // todo lines read from it.
+                this.preview_dirty = true;
                 // If a follow-up touched the open file, pull it in.
                 let open_abs = this
                     .vault_root
@@ -8373,6 +8461,123 @@ mod tests {
             assert_eq!(ws.status, "没有可跳回的文件");
             assert!(ws.toast.is_some(), "the missing back slot toasts");
         });
+    }
+
+    /// The daily-link marks reach the engine's lines table through a real
+    /// snapshot: a todo whose link targets **today's** daily gets a filled pip
+    /// on the source side, and a pip plus the source label on the daily side;
+    /// an unlinked todo stays clean. The predicates are core's
+    /// (`daily::marks`); this pins the shell wiring — store read, path
+    /// conventions (absolute links vs the shell's canonical root), and the
+    /// push into the host.
+    #[gpui::test]
+    fn the_daily_link_marks_reach_the_engine_lines_table(cx: &mut TestAppContext) {
+        let today = super::today_string();
+        let (workspace, fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            // The shell canonicalizes the vault on open (`set_vault`), and
+            // links store absolute paths: write them against the same root.
+            let root = std::fs::canonicalize(&fixture.vault)
+                .expect("a canonical vault")
+                .to_string_lossy()
+                .to_string();
+            let links = serde_json::json!({
+                "version": 1,
+                "links": [{
+                    "id": "l1",
+                    "kind": "copied",
+                    "day": today,
+                    "srcPath": format!("{root}/Job/job todo.md"),
+                    "dailyPath": format!("{root}/Daily/{today}.md"),
+                    "text": "cs336",
+                    "srcLine": 1,
+                    "dailyLine": 3,
+                }],
+            });
+            fixture.write(".bnote/daily-links.json", &links.to_string());
+            fixture.write("Job/job todo.md", "- [ ] cs336\n- [ ] 没人链接的\n");
+            fixture.write(&format!("Daily/{today}.md"), &format!("# {today}\n\n- [ ] cs336\n"));
+            vec!["Job/job todo.md".to_string()]
+        });
+        cx.run_until_parked();
+
+        // Source side: the linked todo line carries the solid pip, the
+        // unlinked one stays clean, and no label is drawn.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.refresh_preview(window, cx);
+            let lines = ws.harness_editor().read(cx).preview_decorations().lines.clone();
+            let pip_line = |line: u64| {
+                lines.iter().find(|style| style.line == line).and_then(|style| style.pip)
+            };
+            let pip = pip_line(0).expect("the linked todo is marked");
+            assert!(pip.stroke <= px(0.), "the synced pip is solid");
+            assert!(pip_line(1).is_none(), "the unlinked todo stays clean");
+            assert!(
+                lines.iter().all(|style| style.trailing.is_none()),
+                "the source side carries no label"
+            );
+        });
+
+        // Daily side: the synced entry is marked and labeled with the source.
+        workspace.update_in(cx, |ws, window, cx| {
+            let text = format!("# {today}\n\n- [ ] cs336\n");
+            ws.load_note_text(&format!("Daily/{today}.md"), &text, window, cx);
+            ws.refresh_preview(window, cx);
+            let lines = ws.harness_editor().read(cx).preview_decorations().lines.clone();
+            let style = lines
+                .iter()
+                .find(|style| style.line == 2)
+                .expect("the synced entry's line is marked");
+            assert!(style.pip.is_some(), "the daily side shows the pip");
+            let label = style.trailing.as_ref().expect("and the source label");
+            assert_eq!(label.text.as_ref(), "⇄ job todo");
+        });
+
+        let _ = std::fs::remove_dir_all(&fixture.vault);
+        let _ = std::fs::remove_dir_all(&fixture.data_dir);
+    }
+
+    /// The footprint ring sits on the first line of every block today's
+    /// footprint recorded from the open file — a *ring*, so it reads as its
+    /// own family next to the solid daily-sync pip.
+    #[gpui::test]
+    fn the_footprint_ring_marks_recorded_block_starts(cx: &mut TestAppContext) {
+        let (workspace, fixture, cx) = crate::harness::note_fixture(cx, false);
+        let root = std::fs::canonicalize(&fixture.vault)
+            .expect("a canonical vault")
+            .to_string_lossy()
+            .to_string();
+        workspace.update_in(cx, |ws, window, cx| {
+            let host = ws.footprint.clone().expect("the footprint host");
+            let mut index = std::collections::BTreeMap::new();
+            index.insert(
+                format!("{root}/note.md"),
+                vec![bnote_core::footprint::model::FootprintBlock {
+                    text: "第二行".into(),
+                    start: 2,
+                    end: 2,
+                }],
+            );
+            host.install_index_for_test(index);
+            ws.load_note_text("note.md", "第一行\n第二行\n第三行\n", window, cx);
+            ws.refresh_preview(window, cx);
+            let lines = ws.harness_editor().read(cx).preview_decorations().lines.clone();
+            let style = lines
+                .iter()
+                .find(|style| style.line == 1)
+                .expect("the recorded block's first line is marked");
+            let pip = style.pip.expect("a pip");
+            assert!(pip.stroke > px(0.), "the footprint pip is a ring");
+            assert!(
+                lines
+                    .iter()
+                    .filter(|style| style.pip.is_some())
+                    .count()
+                    == 1,
+                "only the block's first line is marked"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&fixture.vault);
+        let _ = std::fs::remove_dir_all(&fixture.data_dir);
     }
 
     /// ⌘⇧R switches to the most recent other vault directly (TS
