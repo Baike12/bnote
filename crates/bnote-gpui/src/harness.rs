@@ -226,6 +226,11 @@ mod tests {
         assert_eq!(doc(ws, cx), "hello orld", "the keystroke path edits text");
         assert_eq!(cursor(ws, cx), 6, "the caret reads back at `orld`");
         assert_eq!(mode(ws, cx), Some(crate::editor::vim::core::Mode::Normal));
+        assert_eq!(
+            cx.window_title().as_deref(),
+            Some("note.md - bnote"),
+            "the window title follows the open note (TS document.title)"
+        );
         assert_eq!(open_path(ws, cx).as_deref(), Some("note.md"));
         // The vault is real: a save lands on disk.
         chord(cx, w, "cmd-s");

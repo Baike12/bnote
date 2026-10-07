@@ -50,6 +50,9 @@ impl FootprintHost {
         self.core.footprints_for(path)
     }
 
+    /// Today's entries, live index (the zone reads a specific day through
+    /// [`Self::entries_for`]; this stays for the status/summary readers).
+    #[allow(dead_code)]
     pub fn today_entries(&self) -> Vec<FootprintEntry> {
         self.core.today_entries()
     }

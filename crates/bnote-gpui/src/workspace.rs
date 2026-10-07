@@ -911,6 +911,9 @@ impl Workspace {
                 if this.preview_selection.as_ref() != Some(&selection) {
                     this.preview_selection = Some(selection);
                     this.preview_dirty = true;
+                    // The status bar's 行/列 readout follows the caret (TS
+                    // `updateStatus` rides `selectionSet`).
+                    this.update_cursor_label(cx);
                     // Cursor memory rides the same signal: the caret moved.
                     this.schedule_cursor_save(cx);
                     // So does the IME follow: entering insert inside a formula
@@ -1793,7 +1796,8 @@ impl Workspace {
         let text = self.editor.read(cx).value().to_string();
         let byte = self.editor.read(cx).cursor();
         let (line, col) = crate::apply_ops::byte_to_line_col(&text, byte);
-        self.cursor_label = format!("{}:{}", line, col);
+        // TS `updateStatus`: `行 ${line.number}，列 ${pos - line.from + 1}`.
+        self.cursor_label = format!("行 {line}，列 {}", col + 1);
     }
 
     // ---- command handlers -------------------------------------------------
@@ -5345,6 +5349,20 @@ impl Workspace {
         self.open_path.is_some() && self.vault_root.is_some()
     }
 
+    /// The window's title follows the open note (TS `document.title =
+    /// `${fileName} - bnote``). The titlebar is transparent so nothing is
+    /// drawn — the title is the window switcher's and AX's to read.
+    fn sync_window_title(&self, window: &mut Window, _cx: &mut Context<Self>) {
+        let title = match self.open_path.as_deref() {
+            Some(path) => {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                format!("{name} - bnote")
+            }
+            None => "bnote".to_string(),
+        };
+        window.set_window_title(&title);
+    }
+
     // ---- images -----------------------------------------------------------
 
     /// The directory of a vault-relative note path, as an absolute path.
@@ -5536,6 +5554,10 @@ impl Workspace {
     fn replace_buffer(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |ed, cx| ed.set_value(text, window, cx));
         self.preview_dirty = true;
+        // The caret just reset; the status bar's 行/列 follows it from here.
+        self.update_cursor_label(cx);
+        // …and so does the window's title (TS `document.title = …`).
+        self.sync_window_title(window, cx);
     }
 
     /// Bring the editor's live-preview snapshot up to date with the document
@@ -5688,20 +5710,35 @@ impl Workspace {
     // ---- rendering --------------------------------------------------------
 
     /// Status-bar vim badge ("" when vim is off).
-    fn vim_label(&self, _cx: &Context<Self>) -> String {
+    /// The status bar's mode badge, TS `updateStatus`: `NORMAL` / `INSERT` /
+    /// `VISUAL`, empty when vim is off.
+    fn vim_badge(&self, _cx: &Context<Self>) -> String {
         if !self.vim_enabled {
             return String::new();
         }
         match self.vim_bridge.mode_of(&self.editor) {
-            Some(VimMode::Normal) => "-- 普通 --".to_string(),
-            Some(VimMode::Insert) => "-- 插入 --".to_string(),
-            Some(VimMode::Replace) => "-- 替换 --".to_string(),
-            Some(VimMode::Visual) => "-- 可视 --".to_string(),
-            Some(VimMode::VisualLine) => "-- 可视行 --".to_string(),
-            Some(VimMode::VisualBlock) => "-- 可视块 --".to_string(),
-            None => String::new(),
+            Some(VimMode::Insert) | Some(VimMode::Replace) => "INSERT",
+            Some(VimMode::Visual) | Some(VimMode::VisualLine) | Some(VimMode::VisualBlock) => {
+                "VISUAL"
+            }
+            Some(VimMode::Normal) => "NORMAL",
+            None => "",
         }
         .to_string()
+    }
+
+    /// `.vim-mode { color: var(--accent) }` with `.insert { color:
+    /// var(--string) }`.
+    fn vim_badge_color(&self, cx: &Context<Self>) -> gpui::Hsla {
+        let palette = self.preview.palette(cx);
+        if matches!(
+            self.vim_bridge.mode_of(&self.editor),
+            Some(VimMode::Insert) | Some(VimMode::Replace)
+        ) {
+            palette.color("string")
+        } else {
+            palette.color("accent")
+        }
     }
 
     fn render_file_tree(&self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -6214,11 +6251,6 @@ impl gpui::Render for Workspace {
         }
         self.refresh_study_preview(window, cx);
         let theme = cx.theme().clone();
-        let footprint_count = self
-            .footprint
-            .as_ref()
-            .map(|fp| fp.today_entries().len())
-            .unwrap_or(0);
 
         let mut main = v_flex()
             .size_full();
@@ -6363,35 +6395,40 @@ impl gpui::Render for Workspace {
             .children(self.render_toast(cx))
             .child(
                 StatusBar::new()
-                    .left(Label::new(self.status.clone()))
+                    // The TS bar reads [mode badge][行 N，列 M][…][● 未保存]
+                    // [file path] (`.status-bar` in global.css): the badge is
+                    // accent-bold (`--string` while inserting), the dirty dot
+                    // accent, and the path fills the right end, ellipsised at
+                    // half the bar.
+                    .left(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                Label::new(self.vim_badge(cx))
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .min_w(px(52.))
+                                    .text_color(self.vim_badge_color(cx)),
+                            )
+                            .child(Label::new(self.status.clone()).text_xs())
+                            .child(Label::new(self.cursor_label.clone()).text_xs()),
+                    )
                     .right(
                         h_flex()
-                            .gap_2()
+                            .gap_3()
                             .child(
-                                Label::new(if footprint_count > 0 {
-                                    format!("今日足迹 {} 块", footprint_count)
-                                } else {
-                                    String::new()
-                                })
-                                .text_xs()
-                                .text_color(theme.muted_foreground),
-                            )
-                            .child(
-                                Label::new(self.vim_label(cx))
+                                Label::new(if self.dirty { "●" } else { "" })
                                     .text_xs()
-                                    .text_color(theme.muted_foreground),
+                                    .text_color(self.preview.palette(cx).color("accent")),
                             )
                             .child(
-                                Label::new(self.cursor_label.clone())
+                                Label::new(self.open_path.clone().unwrap_or_default())
                                     .text_xs()
-                                    .text_color(theme.muted_foreground),
-                            )
-                            .child(
-                                Label::new(if self.dirty {
-                                    "● 未保存".to_string()
-                                } else {
-                                    String::new()
-                                }),
+                                    .whitespace_nowrap()
+                                    .text_overflow(gpui::TextOverflow::Truncate("…".into()))
+                                    // `.file-hint { max-width: 50% }`: of the
+                                    // bar, which spans the window.
+                                    .max_w(window.viewport_size().width * 0.5),
                             ),
                     ),
             )
@@ -8587,6 +8624,7 @@ mod tests {
             assert!(ws.toast.is_some(), "the missing back slot toasts");
         });
     }
+
 
     /// The daily-link marks reach the engine's lines table through a real
     /// snapshot: a todo whose link targets **today's** daily gets a filled pip
