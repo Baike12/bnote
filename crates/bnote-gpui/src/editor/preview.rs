@@ -42,6 +42,7 @@ use gpui_kit::component::input::{
 };
 
 use super::images::ImageStore;
+use crate::footprint_zone::{self, ZoneInput};
 use crate::theme::{ActivePalette, Palette};
 
 /// The font the preview measures against. The workspace styles the editor with
@@ -171,6 +172,11 @@ pub struct PreviewHost {
     /// [`LineMark`]). The workspace installs them before each scan; the
     /// snapshot merges them into the lines table, under the one writer.
     line_marks: RefCell<Vec<LineMark>>,
+    /// The footprint zone to append (installed only while the open document
+    /// is the daily it belongs to), and the line the last scan anchored it
+    /// on — `render_block` dispatches on that anchor.
+    zone: RefCell<Option<ZoneInput>>,
+    zone_anchor: Cell<Option<u64>>,
 }
 
 /// One shell-level pip: a status dot at the line's left edge, paint-only.
@@ -191,6 +197,11 @@ pub struct LineMark {
 }
 
 impl PreviewHost {
+    /// The font the host measures and renders with.
+    pub(crate) fn font(&self) -> &PreviewFont {
+        &self.font
+    }
+
     pub fn new(font: PreviewFont) -> Self {
         Self {
             font,
@@ -203,7 +214,38 @@ impl PreviewHost {
             math_preview: Cell::new(true),
             revision: Cell::new(0),
             line_marks: RefCell::new(Vec::new()),
+            zone: RefCell::new(None),
+            zone_anchor: Cell::new(None),
         }
+    }
+
+    /// Install the footprint zone for the next scan (`None` clears it). The
+    /// shell owns the predicate (the open file is that daily, the index has
+    /// entries); the host owns the block it becomes.
+    pub fn set_zone(&self, zone: Option<ZoneInput>) {
+        self.zone.replace(zone);
+    }
+
+    /// Test seam: is a zone installed (and would the daily carry the block)?
+    #[cfg(test)]
+    pub(crate) fn zone_is_some(&self) -> bool {
+        self.zone.borrow().is_some()
+    }
+
+    /// Test seam: the height the installed zone reserves at `column` (0 with
+    /// no zone) — fold assertions read this instead of the painted frame.
+    #[cfg(test)]
+    pub(crate) fn zone_height_for_test(
+        &self,
+        column: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Pixels {
+        self.zone
+            .borrow()
+            .as_ref()
+            .map(|zone| footprint_zone::zone_height(self, zone, column, window, cx))
+            .unwrap_or(Pixels::ZERO)
     }
 
     /// Install the shell's line marks for the next scan (sorted by line).
@@ -381,6 +423,17 @@ impl PreviewHost {
             blocks.push(PreviewBlock::new(lines, height, text));
         }
         *self.blocks.borrow_mut() = block_kinds;
+
+        // The footprint zone: a trailing insert block (the TS widget anchors
+        // at `doc.length`, i.e. past the last line). Its height comes from
+        // the same layout the renderer paints.
+        self.zone_anchor.set(None);
+        if let Some(zone) = self.zone.borrow().as_ref() {
+            let line = text.split('\n').count() as u64;
+            let height = footprint_zone::zone_height(self, zone, column, window, cx);
+            blocks.push(PreviewBlock::new(line..line, height, SharedString::default()));
+            self.zone_anchor.set(Some(line));
+        }
 
         self.revision.set(self.revision.get() + 1);
         PreviewUpdate {
@@ -629,7 +682,7 @@ impl PreviewHost {
 
     /// The active bnote palette (the shell registers it at startup; the dark
     /// one is the boot fallback for a test that forgot to).
-    fn palette(&self, cx: &App) -> &'static Palette {
+    pub(crate) fn palette(&self, cx: &App) -> &'static Palette {
         cx.try_global::<ActivePalette>()
             .map(|active| active.0)
             .unwrap_or_else(|| Palette::dark())
@@ -702,7 +755,20 @@ impl PreviewHost {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Pixels> {
-        let base = self.font.size;
+        self.widget_width_at(widget, self.font.size, line_height, window, cx)
+    }
+
+    /// [`Self::widget_width`] at an explicit base font size — the footprint
+    /// zone's block bodies render at `0.92em`, and every marker slot width is
+    /// a function of the base.
+    pub(crate) fn widget_width_at(
+        &self,
+        widget: &core::Widget,
+        base: Pixels,
+        line_height: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Pixels> {
         Some(match widget {
             core::Widget::Math { tex, display } => {
                 let layout = self.math_layout(tex, *display, base, line_height, window, cx)?;
@@ -710,7 +776,7 @@ impl PreviewHost {
             }
             // `\X` renders as `X` in body colour: the glyph's own width, plus
             // the same hair of padding the other text-like widgets take.
-            core::Widget::Escape { char } => self.text_width(char, window) + base * 0.2,
+            core::Widget::Escape { char } => self.text_width_at(char, base, window) + base * 0.2,
             // The marker slot itself (`--li-hang`): the checkbox's `0.9em` box
             // plus the gap, the bullet's `0.45em` glyph slot plus the gap. The
             // widths must equal the line's wrapped indent (see `line_styles`),
@@ -724,6 +790,12 @@ impl PreviewHost {
     }
 
     fn text_width(&self, text: &str, window: &mut Window) -> Pixels {
+        self.text_width_at(text, self.font.size, window)
+    }
+
+    /// [`Self::text_width`] at an explicit size (the zone's bodies render
+    /// smaller than the editor's font).
+    pub(crate) fn text_width_at(&self, text: &str, size: Pixels, window: &mut Window) -> Pixels {
         let run = TextRun {
             len: text.len(),
             font: self.font.font(),
@@ -734,13 +806,13 @@ impl PreviewHost {
         };
         window
             .text_system()
-            .shape_line(text.to_owned().into(), self.font.size, &[run], None)
+            .shape_line(text.to_owned().into(), size, &[run], None)
             .width()
     }
 
     /// Typeset `tex` for an **inline** widget, scaled down to fit a text line
     /// when it has to.
-    fn math_layout(
+    pub(crate) fn math_layout(
         &self,
         tex: &str,
         display: bool,
@@ -924,6 +996,12 @@ impl PreviewRenderer for PreviewHost {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
+        // The footprint zone is the shell's block, not a scan kind.
+        if Some(block.lines.start) == self.zone_anchor.get() {
+            if let Some(zone) = self.zone.borrow().as_ref() {
+                return footprint_zone::zone_element(self, zone, block.width, window, cx);
+            }
+        }
         let Some(kind) = self.blocks.borrow().get(&block.lines.start).cloned() else {
             // A block the snapshot no longer describes (a frame in flight).
             return div().into_any_element();
@@ -1094,7 +1172,7 @@ fn callout_accent(cx: &App) -> Hsla {
 
 /// The TS `md-callout-line` indents, per nesting depth (the class caps at
 /// `d2`): `d0` 11px, `d1` 25px, `d2` 39px.
-fn callout_indent(depth: usize) -> Pixels {
+pub(crate) fn callout_indent(depth: usize) -> Pixels {
     px(match depth.min(2) {
         0 => 11.,
         1 => 25.,
@@ -1104,7 +1182,7 @@ fn callout_indent(depth: usize) -> Pixels {
 
 /// `(start, end)` byte offsets of every line's text (no newline), one pass —
 /// the host-side line table the panel-derived text styles are keyed by.
-fn line_table(text: &str) -> Vec<(usize, usize)> {
+pub(crate) fn line_table(text: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut start = 0;
     for chunk in text.split('\n') {
@@ -1154,9 +1232,9 @@ fn plain_source(widget: &PreviewWidget<'_>, color: Hsla) -> AnyElement {
 
 /// A typeset formula: the layout's runs and rules, painted at their own
 /// positions inside the box the engine reserved.
-struct MathView {
-    layout: Rc<MathLayout>,
-    color: Hsla,
+pub(crate) struct MathView {
+    pub(crate) layout: Rc<MathLayout>,
+    pub(crate) color: Hsla,
 }
 
 impl IntoElement for MathView {

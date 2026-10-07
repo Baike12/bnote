@@ -73,6 +73,9 @@ struct Step {
     #[serde(rename = "waitMs")]
     wait_ms: Option<u64>,
     shot: Option<String>,
+    /// Install a footprint index (keys = vault-relative paths) before the
+    /// step runs, so a daily's zone renders without a real edit cycle.
+    footprints: Option<BTreeMap<String, Vec<bnote_core::footprint::model::FootprintBlock>>>,
 }
 
 fn default_size() -> [f32; 2] {
@@ -215,6 +218,9 @@ pub fn run(script_path: &str, out_dir: Option<&str>) -> anyhow::Result<PathBuf> 
 }
 
 fn apply_step(step: &Step, workspace: &gpui::Entity<Workspace>, window: &mut gpui::Window, cx: &mut App) {
+    if let Some(index) = &step.footprints {
+        workspace.update(cx, |ws, cx| ws.debug_install_footprints(index.clone(), cx));
+    }
     if let Some(doc) = &step.doc {
         workspace.update(cx, |ws, cx| ws.debug_set_doc(doc, window, cx));
     }

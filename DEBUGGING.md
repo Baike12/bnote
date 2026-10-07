@@ -59,8 +59,9 @@ cargo run --features harness-shot -p bnote-gpui -- \
   --harness-shot script.json [out-dir]     # 默认 /tmp/bnote-harness-shots
 ```
 
-脚本（字段齐备,`steps` 每项可组合,按 doc→open→cursor→type→key/chord→
-waitMs→shot 顺序执行）:
+脚本（字段齐备,`steps` 每项可组合,按 footprints→doc→open→cursor→
+type→key/chord→waitMs→shot 顺序执行;`footprints` 直接注入今日足迹索引,
+用来把「日记末尾的足迹区」摆上画面,不必等一次真实编辑周期）:
 
 ```json
 {

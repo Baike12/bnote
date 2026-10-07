@@ -14,6 +14,7 @@ mod daily_host;
 mod dev_services;
 mod editor;
 mod footprint_host;
+mod footprint_zone;
 #[cfg(test)]
 mod harness;
 #[cfg(feature = "harness-shot")]

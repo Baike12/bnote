@@ -60,9 +60,10 @@ impl FootprintHost {
         self.core.revision()
     }
 
-    /// Test seam: install a footprint index directly (the harness
-    /// `__setFootprints` equivalent).
-    #[cfg(test)]
+    /// Test/debug seam: install a footprint index directly (the harness
+    /// `__setFootprints` equivalent). The scripted-shots binary uses it to
+    /// set up a zone without waiting for a real edit cycle.
+    #[cfg(any(test, feature = "harness-shot"))]
     pub fn install_index_for_test(
         &self,
         index: std::collections::BTreeMap<

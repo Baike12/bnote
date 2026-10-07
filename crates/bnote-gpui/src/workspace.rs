@@ -53,6 +53,9 @@ use crate::keybindings;
 use crate::daily_host::{DailyHost, SyncWrite};
 use crate::editor::images as editor_images;
 use crate::editor::preview::{LineMark, PreviewFont, PreviewHost};
+use crate::footprint_zone::{
+    OpenFootprintSource, ToggleFootprintGroup, ToggleFootprintZone, ZoneInput,
+};
 use crate::editor::snippets_host::SnippetBridge;
 use crate::editor::vim::core::Mode as VimMode;
 use crate::footprint_host::FootprintHost;
@@ -343,6 +346,12 @@ pub struct Workspace {
     /// The footprint revision the last frame scanned against; a bump means
     /// the source-side pips need rebuilding.
     footprint_revision: u64,
+    /// The footprint zone's fold state: session-local UI state, never
+    /// persisted (every open starts fully expanded — TS `defaultFold`).
+    footprint_fold: bnote_core::footprint::view::FoldState,
+    /// A 1-based line to land the caret on after the next install (the
+    /// zone's "open the source at this block").
+    pending_open_line: Option<usize>,
 
     // UI state.
     sidebar_open: bool,
@@ -686,6 +695,30 @@ impl Workspace {
         self.set_vim_setting(on, cx);
     }
 
+    /// Install a footprint index (keys = **vault-relative** paths) and rescan:
+    /// the scripted shots' way to put a zone on screen without waiting for a
+    /// real edit cycle.
+    #[cfg(any(test, feature = "harness-shot"))]
+    pub(crate) fn debug_install_footprints(
+        &mut self,
+        index: std::collections::BTreeMap<String, Vec<bnote_core::footprint::model::FootprintBlock>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(fp) = self.footprint.clone() else { return };
+        let Some(root) = self.vault_root.as_ref() else { return };
+        let root = root.to_string_lossy().to_string();
+        let absolute = index
+            .into_iter()
+            .map(|(rel, blocks)| {
+                (format!("{}/{}", root.trim_end_matches('/'), rel.trim_start_matches('/')), blocks)
+            })
+            .collect();
+        fp.install_index_for_test(absolute);
+        self.footprint_revision = fp.revision();
+        self.preview_dirty = true;
+        cx.notify();
+    }
+
     pub fn new(
         state: Arc<AppState>,
         mut event_rx: broadcast::Receiver<bnote_core::AppEvent>,
@@ -986,6 +1019,8 @@ impl Workspace {
             daily: None,
             footprint: None,
             footprint_revision: 0,
+            footprint_fold: bnote_core::footprint::view::default_fold(),
+            pending_open_line: None,
             sidebar_open: true,
             agent,
             agent_open: false,
@@ -5293,6 +5328,16 @@ impl Workspace {
         self.snippets.reset(&self.editor);
         self.snippet_marks_rows = None;
         self.restore_cursor_memory(&rel_path, cx);
+        // A zone click asked for a specific line: it wins over the remembered
+        // caret (TS `openNote(path, line)`).
+        if let Some(line) = self.pending_open_line.take() {
+            let text = self.editor.read(cx).text().to_string();
+            let byte = line_col_to_byte(&text, line, 0);
+            self.editor.update(cx, |st, cx| st.set_selected_range(byte..byte, cx));
+            self.editor.update(cx, |st, cx| {
+                st.set_scroll_offset(gpui::point(gpui::px(0.), gpui::px((line.saturating_sub(1)) as f32 * 26.)), cx)
+            });
+        }
         self.update_cursor_label(cx);
     }
 
@@ -5404,6 +5449,81 @@ impl Workspace {
         self.preview.set_line_marks(marks);
     }
 
+    /// Install the footprint zone when the open document is a daily with
+    /// footprints (today from the live index, a historical day from the
+    /// frozen archive); otherwise clear it.
+    fn install_footprint_zone(&mut self) {
+        let zone = self
+            .vault_root
+            .as_ref()
+            .zip(self.open_path.as_deref())
+            .and_then(|(root, rel)| {
+                let root = root.to_string_lossy().to_string();
+                let path = format!("{}/{}", root.trim_end_matches('/'), rel);
+                let day = bnote_core::daily::model::daily_day_of(&path)?.to_string();
+                let entries = self.footprint.as_ref()?.entries_for(&day);
+                if entries.is_empty() {
+                    return None;
+                }
+                let view = bnote_core::footprint::view::build_footprint_view(&entries);
+                Some(ZoneInput {
+                    is_today: day == self.today,
+                    day,
+                    groups: view.groups,
+                    zone_collapsed: self.footprint_fold.zone_collapsed,
+                    collapsed: self.footprint_fold.groups.clone(),
+                })
+            });
+        self.preview.set_zone(zone);
+    }
+
+    /// The zone's header click: fold/unfold the whole zone.
+    fn on_toggle_footprint_zone(
+        &mut self,
+        _: &ToggleFootprintZone,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.footprint_fold = bnote_core::footprint::view::toggle_zone(&self.footprint_fold);
+        self.preview_dirty = true;
+        cx.notify();
+    }
+
+    /// A group's arrow: fold/unfold that group.
+    fn on_toggle_footprint_group(
+        &mut self,
+        action: &ToggleFootprintGroup,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.footprint_fold =
+            bnote_core::footprint::view::toggle_group(&self.footprint_fold, &action.path);
+        self.preview_dirty = true;
+        cx.notify();
+    }
+
+    /// A group title or a block body: open the source file (at the block's
+    /// first line when the click named one).
+    fn on_open_footprint_source(
+        &mut self,
+        action: &OpenFootprintSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.vault_root.as_ref() else { return };
+        let root = root.to_string_lossy().to_string();
+        let Some(rel) = action
+            .path
+            .strip_prefix(&root)
+            .map(|rest| rest.trim_start_matches('/').to_string())
+        else {
+            return;
+        };
+        let line = (action.line > 0).then_some(action.line);
+        self.pending_open_line = line;
+        self.open_note(rel, window, cx);
+    }
+
     /// Replace the whole buffer, and declare the live preview stale.
     ///
     /// `set_value` is the silent door into the editor (`gpui-kit` emits no
@@ -5446,9 +5566,11 @@ impl Workspace {
                 self.preview_selection = Some(selection.clone());
                 let text = self.editor.read(cx).text().to_string();
                 // The shell's line marks (synced-daily pips, footprint pips)
-                // ride the same snapshot: their state lives outside the
-                // document, so it is pushed in before the scan.
+                // and the footprint zone ride the same snapshot: their state
+                // lives outside the document, so it is pushed in before the
+                // scan.
                 self.install_line_marks(&text, cx);
+                self.install_footprint_zone();
                 let column = self.preview.text_column(self.editor_width(cx), &text, window);
                 let decorations =
                     self.preview
@@ -6152,6 +6274,9 @@ impl gpui::Render for Workspace {
             .on_action(cx.listener(Self::quick_add))
             .on_action(cx.listener(Self::open_daily))
             .on_action(cx.listener(Self::send_todo_to_daily))
+            .on_action(cx.listener(Self::on_toggle_footprint_zone))
+            .on_action(cx.listener(Self::on_toggle_footprint_group))
+            .on_action(cx.listener(Self::on_open_footprint_source))
             .on_action(cx.listener(Self::toggle_todo))
             .on_action(cx.listener(Self::cycle_heading))
             .on_action(cx.listener(Self::heading1))
@@ -6608,8 +6733,8 @@ mod tests {
         AUTOSAVE_DEBOUNCE, EditorState, HotkeyFilter, InputEvent, PY_RUN_MAX_LINES,
         PY_RUN_TRIM_TO, PyRunState, PyStatus, PyStream, StudyContent, TOAST_DURATION,
         TreeMenuItem, Workspace,
-        action_for, actions, apply_edits_keeping_cursor, load_config_value, normalize_split,
-        numbering, should_schedule_renumber, wikilink, COMMANDS,
+        action_for, actions, apply_edits_keeping_cursor, load_config_value, line_col_to_byte,
+        normalize_split, numbering, should_schedule_renumber, wikilink, COMMANDS,
     };
     use crate::commands::keybinding_for;
     use crate::harness::{inert_ime, inert_lsp};
@@ -8574,6 +8699,95 @@ mod tests {
                     .count()
                     == 1,
                 "only the block's first line is marked"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&fixture.vault);
+        let _ = std::fs::remove_dir_all(&fixture.data_dir);
+    }
+
+    /// The zone only exists for a daily with footprints; its interactions
+    /// route through the real dispatch path (the actions travel from the
+    /// clicked element up to the workspace's handlers): folding the zone and
+    /// a group shrink the block, and a block click opens the source file at
+    /// the block's first line.
+    #[gpui::test]
+    fn the_footprint_zone_folds_and_opens_the_source(cx: &mut TestAppContext) {
+        use crate::footprint_zone::{
+            OpenFootprintSource, ToggleFootprintGroup, ToggleFootprintZone,
+        };
+        use bnote_core::footprint::model::FootprintBlock;
+
+        let today = super::today_string();
+        let (workspace, fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write("Job/job todo.md", "- [ ] cs336\n- [ ] bm25\n");
+            fixture.write(&format!("Daily/{today}.md"), &format!("# {today}\n"));
+            vec![format!("Daily/{today}.md")]
+        });
+        cx.run_until_parked();
+        let root = std::fs::canonicalize(&fixture.vault)
+            .expect("canonical")
+            .to_string_lossy()
+            .to_string();
+
+        let mut index = std::collections::BTreeMap::new();
+        index.insert(
+            format!("{root}/Job/job todo.md"),
+            vec![FootprintBlock { text: "- [ ] cs336\n- [ ] bm25".into(), start: 1, end: 2 }],
+        );
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.debug_install_footprints(
+                index
+                    .into_iter()
+                    .map(|(abs, blocks)| {
+                        (abs.strip_prefix(&format!("{root}/")).unwrap_or(&abs).to_string(), blocks)
+                    })
+                    .collect(),
+                cx,
+            );
+            ws.refresh_preview(window, cx);
+            assert!(ws.preview.zone_is_some(), "the daily carries the zone");
+        });
+        crate::harness::draw(cx);
+        let column = workspace.update_in(cx, |ws, _window, cx| ws.editor_width(cx)).max(px(80.));
+        let zone_height = workspace.update_in(cx, |ws, window, cx| {
+            ws.refresh_preview(window, cx);
+            ws.preview.zone_height_for_test(column, window, cx)
+        });
+        assert!(zone_height > px(0.), "the zone reserves space: {zone_height:?}");
+
+        // Collapse the zone: the block shrinks (head only).
+        cx.dispatch_action(ToggleFootprintZone);
+        cx.run_until_parked();
+        let collapsed = workspace.update_in(cx, |ws, window, cx| {
+            ws.refresh_preview(window, cx);
+            ws.preview.zone_height_for_test(column, window, cx)
+        });
+        assert!(collapsed < zone_height, "collapsing shrinks the block");
+
+        // Expand again, then collapse the only group: smaller than open,
+        // larger than fully collapsed.
+        cx.dispatch_action(ToggleFootprintZone);
+        cx.run_until_parked();
+        cx.dispatch_action(ToggleFootprintGroup { path: format!("{root}/Job/job todo.md") });
+        cx.run_until_parked();
+        let group_collapsed = workspace.update_in(cx, |ws, window, cx| {
+            ws.refresh_preview(window, cx);
+            ws.preview.zone_height_for_test(column, window, cx)
+        });
+        assert!(group_collapsed < zone_height && group_collapsed > collapsed);
+
+        // A block click opens the source at the block's line.
+        cx.dispatch_action(OpenFootprintSource {
+            path: format!("{root}/Job/job todo.md"),
+            line: 2,
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(ws.open_path.as_deref(), Some("Job/job todo.md"));
+            assert_eq!(
+                ws.editor.read(cx).selected_range().start,
+                line_col_to_byte("- [ ] cs336\n- [ ] bm25\n", 2, 0),
+                "the caret lands on the block's first line"
             );
         });
         let _ = std::fs::remove_dir_all(&fixture.vault);
