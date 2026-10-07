@@ -886,9 +886,10 @@ impl Workspace {
         );
         let _ = writeln!(
             out,
-            "vim_enabled={} mode={:?} open={:?} live_preview={}",
+            "vim_enabled={} mode={:?} ime_gate={} open={:?} live_preview={}",
             self.vim_enabled,
             self.vim_bridge.mode_of(&self.editor),
+            self.editor.read(cx).accepts_text_input(),
             self.open_path,
             self.live_preview,
         );
