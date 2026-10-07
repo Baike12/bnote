@@ -72,6 +72,10 @@ const CURSOR_SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_mill
 /// How often the shell polls the backend event bus for vault/agent events.
 const EVENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// A toast lives this long (TS `Toast`'s 2600 ms; a newer toast replaces it
+/// and restarts the clock).
+const TOAST_DURATION: std::time::Duration = std::time::Duration::from_millis(2600);
+
 /// Every Nth event-loop iteration pumps the footprint core (~1.2s at 300ms).
 const FOOTPRINT_TICK_EVERY: u32 = 4;
 
@@ -350,6 +354,13 @@ pub struct Workspace {
     mru: Vec<String>,
     /// ⌘T round-trip memory (path → return position).
     header_returns: ops::HeaderTodoReturnMap,
+    /// ⌘⇧O round-trip memory: the note the user jumped into today's daily
+    /// from (TS `dailyBackFrom`; consumed by the next ⌘⇧O inside the daily).
+    daily_back_from: Option<String>,
+    /// One transient toast (TS `showToast`), cleared by a generation-guarded
+    /// timer so an older timer cannot eat a newer message.
+    toast: Option<String>,
+    toast_gen: u64,
     /// App-wide vim bridge (created in main; shared with the interceptor).
     vim_bridge: VimBridge,
     vim_enabled: bool,
@@ -962,6 +973,9 @@ impl Workspace {
             files: Vec::new(),
             mru: Vec::new(),
             header_returns: ops::HeaderTodoReturnMap::new(),
+            daily_back_from: None,
+            toast: None,
+            toast_gen: 0,
             vim_bridge,
             vim_enabled: false,
             snippets,
@@ -1274,6 +1288,13 @@ impl Workspace {
                     return;
                 }
                 if let Ok(text) = text {
+                    // TS `App.tsx`'s self-write echo: autosave/manual save
+                    // triggered the watcher, and disk already matches memory.
+                    // Reloading would reset the caret and kill live vim and
+                    // snippet sessions for zero change.
+                    if text == this.editor.read(cx).text().to_string() {
+                        return;
+                    }
                     this.install_text(rel.clone(), text, window, cx);
                 }
             })
@@ -1572,6 +1593,56 @@ impl Workspace {
     /// the async path (status, editor reload) is skipped — there is no next
     /// frame — but the daily-sync follow-ups are not: they are part of the
     /// save, and dropping them would leave the daily file stale.
+    /// TS `showToast`: one transient message at the bottom, 2.6 s. A newer
+    /// toast replaces it and restarts the clock — the generation makes the
+    /// older timer a no-op (the `save_guard` rule: one writer, stale drops).
+    pub(crate) fn show_toast(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.toast = Some(message.into());
+        self.toast_gen += 1;
+        let gen = self.toast_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TOAST_DURATION).await;
+            this.update(cx, |this, cx| {
+                if this.toast_gen == gen {
+                    this.toast = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The toast overlay: fixed above the status bar, centered (the TS
+    /// `.toast` styles — popover background, border, 8px radius).
+    fn render_toast(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
+        let message = self.toast.as_ref()?;
+        let theme = cx.theme().clone();
+        Some(
+            div()
+                .id("toast")
+                .absolute()
+                .bottom(px(44.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.popover)
+                        .text_color(theme.popover_foreground)
+                        .px(px(18.))
+                        .py(px(9.))
+                        .text_size(px(13.))
+                        .child(Label::new(message.clone())),
+                ),
+        )
+    }
+
     fn flush_note_save_blocking(&mut self, cx: &mut gpui::App) {
         if !self.dirty {
             return;
@@ -2183,18 +2254,61 @@ impl Workspace {
         cx.notify();
     }
 
-    /// ⌘⇧O: open (or create with rollover) today's daily note.
-    fn open_daily(&mut self, _: &actions::OpenDaily, _window: &mut Window, cx: &mut Context<Self>) {
+    /// ⌘⇧O: open (or create with rollover) today's daily note. Inside the
+    /// daily it consumes the back slot instead (TS `openDailyNote`'s toggle
+    /// semantics): jump to the note the last ⌘⇧O came from, if it still
+    /// exists on disk.
+    fn open_daily(&mut self, _: &actions::OpenDaily, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_doc() {
             self.status = "先打开一个仓库".to_string();
-            cx.notify();
+            self.show_toast("没有打开仓库", cx);
             return;
         }
-        if self.open_path.as_deref().is_some_and(|p| bnote_core::daily::model::is_daily_path(p))
-        {
-            self.status = "已在今日日记".to_string();
-            cx.notify();
+        // TS compares against today's path exactly: yesterday's daily is a
+        // normal note for this purpose (jump, remembering the source).
+        let in_today = self
+            .open_path
+            .as_deref()
+            .is_some_and(|p| { bnote_core::daily::model::daily_day_of(&format!("/{p}")) == Some(self.today.as_str()) });
+        if in_today {
+            let Some(back) = self.daily_back_from.take() else {
+                self.status = "没有可跳回的文件".to_string();
+                self.show_toast("没有可跳回的文件", cx);
+                return;
+            };
+            let Some(root) = self.vault_root.clone() else { return };
+            let state = self.state.clone();
+            let back_path = back.clone();
+            cx.spawn_in(window, async move |this, window| {
+                let text = window
+                    .background_executor()
+                    .spawn(async move {
+                        bnote_core::commands::files::read_file(
+                            &state,
+                            root.join(back_path).to_string_lossy().to_string(),
+                        )
+                    })
+                    .await;
+                this.update_in(window, |this, window, cx| match text {
+                    Ok(content) => {
+                        // install_text restores the cursor memory itself.
+                        this.status = format!("跳回 {}", back);
+                        this.install_text(back, content, window, cx);
+                        cx.notify();
+                    }
+                    Err(_) => {
+                        this.status = "跳回的文件已不存在".to_string();
+                        this.show_toast("跳回的文件已不存在", cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
             return;
+        }
+        // A note (not today's daily): remember it as the jump-back target.
+        if self.open_path.is_some() {
+            self.daily_back_from = self.open_path.clone();
         }
         let Some(daily) = self.daily.clone() else { return };
         let today = self.today.clone();
@@ -4871,13 +4985,21 @@ impl Workspace {
         cx.notify();
     }
 
+    /// ⌘⇧R: switch to the most recent *other* vault, directly (TS
+    /// `switchRecentVault` — no palette; alt-tab feel). The vault palette
+    /// stays available from the settings page.
     fn switch_recent_vault(
         &mut self,
         _: &actions::SwitchRecentVault,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_vault_palette(window, cx);
+        let Some(target) = self.recent_vaults().first().cloned() else {
+            self.status = "没有其他最近打开的仓库".to_string();
+            self.show_toast("没有其他最近打开的仓库", cx);
+            return;
+        };
+        self.switch_vault(target, cx);
     }
 
     /// 「打开笔记文件夹」: the native folder picker, then the same vault switch
@@ -4929,6 +5051,15 @@ impl Workspace {
     }
 
     fn recent_vaults(&self) -> Vec<String> {
+        // Identity by filesystem truth, not by string: `config.json` stores
+        // the user-entered path (`/var/folders/…`) while the shell holds the
+        // canonicalized root (`/private/var/folders/…`) — on macOS those are
+        // the same directory through /var's symlink, and a string compare
+        // would offer the current vault as a switch target.
+        let current = self
+            .vault_root
+            .as_ref()
+            .and_then(|root| root.canonicalize().ok());
         bnote_core::commands::config::load_app_config(&self.state)
             .ok()
             .and_then(|cfg| {
@@ -4943,15 +5074,19 @@ impl Workspace {
             .unwrap_or_default()
             .into_iter()
             .filter(|p| {
-                self.vault_root
-                    .as_ref()
-                    .map(|root| PathBuf::from(p) != *root)
-                    .unwrap_or(true)
+                let candidate =
+                    std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+                current.as_ref().map(|c| &candidate != c).unwrap_or(true)
             })
             .collect()
     }
 
     fn switch_vault(&mut self, path: String, cx: &mut Context<Self>) {
+        // TS `openVault`'s leave ritual: the dirty note and the pending
+        // cursor write land in the *old* vault before anything clears, so a
+        // failed switch loses nothing.
+        self.flush_cursor_save_now(cx);
+        self.flush_note_save_blocking(cx);
         self.palette = None;
         self.vault_root = None;
         self.open_path = None;
@@ -5918,6 +6053,7 @@ impl gpui::Render for Workspace {
             .children(rename_prompt)
             .children(ime_picker)
             .children(editor_empty)
+            .children(self.render_toast(cx))
             .child(
                 StatusBar::new()
                     .left(Label::new(self.status.clone()))
@@ -6286,7 +6422,8 @@ mod gate_tests {
 mod tests {
     use super::{
         AUTOSAVE_DEBOUNCE, EditorState, HotkeyFilter, InputEvent, PY_RUN_MAX_LINES,
-        PY_RUN_TRIM_TO, PyRunState, PyStatus, PyStream, StudyContent, TreeMenuItem, Workspace,
+        PY_RUN_TRIM_TO, PyRunState, PyStatus, PyStream, StudyContent, TOAST_DURATION,
+        TreeMenuItem, Workspace,
         action_for, actions, apply_edits_keeping_cursor, load_config_value, normalize_split,
         numbering, should_schedule_renumber, wikilink, COMMANDS,
     };
@@ -7991,5 +8128,191 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&vault);
         let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    // ---- batch: shell feel (watcher echo, ⌘⇧O toggle, ⌘⇧R, toast) ------
+
+    /// TS `App.tsx`'s self-write echo: a watcher event carrying the open
+    /// note's *identical* bytes must not reinstall the text — the caret
+    /// stays put and live vim/snippet sessions survive. Changed bytes still
+    /// reload.
+    #[gpui::test]
+    fn the_watcher_echo_of_our_own_write_is_ignored(cx: &mut TestAppContext) {
+        let (workspace, fixture, cx) = crate::harness::note_fixture(cx, true);
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.debug_set_doc("# 标题\n\n正文待编辑\n", window, cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        // A live vim session through the real keystroke path.
+        let w = crate::harness::window(cx);
+        crate::harness::press(cx, w, "i");
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.vim_bridge.mode_of(&ws.editor),
+                Some(crate::editor::vim::core::Mode::Insert),
+                "the fixture starts the session"
+            );
+        });
+
+        // The same bytes on disk (what an autosave round-trip produces).
+        fixture.write("note.md", "# 标题\n\n正文待编辑\n");
+        let rel = "note.md".to_string();
+        workspace.update(cx, |ws, cx| {
+            ws.reload_open_if_externally_changed(&[rel.clone()], cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.vim_bridge.mode_of(&ws.editor),
+                Some(crate::editor::vim::core::Mode::Insert),
+                "the identical echo keeps the live session"
+            );
+        });
+
+        // Different bytes on disk: a real external edit reloads (leaving
+        // insert through the reinstall, which resets vim).
+        fixture.write("note.md", "# 标题\n\n外部改动\n");
+        workspace.update(cx, |ws, cx| {
+            ws.reload_open_if_externally_changed(&[rel], cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, cx| {
+            assert_eq!(
+                ws.editor.read(cx).value(),
+                "# 标题\n\n外部改动\n",
+                "a real external change lands"
+            );
+        });
+    }
+
+    /// TS `openDailyNote`'s toggle: ⌘⇧O from a note remembers the source,
+    /// ⌘⇧O inside the daily jumps back, one more ⌘⇧O reports nothing to
+    /// jump to.
+    #[gpui::test]
+    fn the_daily_toggle_round_trips_through_the_back_slot(cx: &mut TestAppContext) {
+        let (workspace, _fixture, cx) = crate::harness::note_fixture(cx, true);
+        // note.md is open (the fixture), so the first ⌘⇧O remembers it.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.open_daily(&actions::OpenDaily, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.daily_back_from.as_deref(),
+                Some("note.md"),
+                "the source note is remembered"
+            );
+            assert!(
+                ws.open_path
+                    .as_deref()
+                    .is_some_and(|p| p.starts_with("Daily/")),
+                "today's daily is open: {:?}",
+                ws.open_path
+            );
+        });
+
+        // Inside the daily: the jump back.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.open_daily(&actions::OpenDaily, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.open_path.as_deref(), Some("note.md"), "jumped back");
+            assert!(ws.daily_back_from.is_none(), "the slot is consumed");
+        });
+
+        // Inside a daily with an empty slot (e.g. the source was deleted):
+        // the report, not a silent no-op.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.open_daily(&actions::OpenDaily, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.daily_back_from = None;
+            ws.open_daily(&actions::OpenDaily, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert!(
+                ws.open_path
+                    .as_deref()
+                    .is_some_and(|p| p.starts_with("Daily/")),
+                "still inside the daily"
+            );
+            assert_eq!(ws.status, "没有可跳回的文件");
+            assert!(ws.toast.is_some(), "the missing back slot toasts");
+        });
+    }
+
+    /// ⌘⇧R switches to the most recent other vault directly (TS
+    /// `switchRecentVault`) and flushes the dirty note into the old vault
+    /// before leaving.
+    #[gpui::test]
+    fn switch_recent_vault_jumps_straight_to_the_mru_vault(cx: &mut TestAppContext) {
+        let (workspace, fixture, cx) = crate::harness::note_fixture(cx, true);
+        let other = tempfile::TempDir::with_prefix("bnote-h-other-").expect("another vault");
+        std::fs::write(other.path().join("other.md"), "另一仓的笔记\n").expect("the note");
+
+        // The config lists both vaults (the shell writes the same shape on
+        // every switch); `recent_vaults` filters the current one out.
+        let recent = vec![
+            fixture.vault.to_string_lossy().to_string(),
+            other.path().to_string_lossy().to_string(),
+        ];
+        let state = workspace.read_with(cx, |ws, _| ws.state.clone());
+        bnote_core::commands::config::save_app_config(
+            &state,
+            serde_json::json!({ "recentVaults": recent }),
+        )
+        .expect("the config");
+
+        // A dirty buffer that must land on disk before the switch.
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.debug_set_doc("未保存的改动\n", window, cx);
+            ws.dirty = true;
+        });
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.switch_recent_vault(&actions::SwitchRecentVault, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            // The shell holds the canonicalized root (/var's /private/var
+            // spelling); identity, not the string, is what to assert.
+            let got = ws.vault_root.clone().expect("the switched vault");
+            let want = std::fs::canonicalize(other.path()).unwrap_or_else(|_| other.path().to_path_buf());
+            assert_eq!(
+                std::fs::canonicalize(&got).unwrap_or(got),
+                want,
+                "⌘⇧R switched to the MRU other vault"
+            );
+        });
+        assert_eq!(
+            fixture.read("note.md"),
+            "未保存的改动\n",
+            "the dirty buffer was flushed into the old vault"
+        );
+        // `other` stays alive on purpose: the workspace still points at it.
+        std::mem::forget(other);
+    }
+
+    /// The toast: one message at a time, gone after 2.6 s, and a newer one
+    /// invalidates the older timer.
+    #[gpui::test]
+    fn the_toast_shows_replaces_and_times_out(cx: &mut TestAppContext) {
+        let (workspace, _fixture, cx) = crate::harness::note_fixture(cx, false);
+        workspace.update(cx, |ws, cx| {
+            ws.show_toast("第一条", cx);
+        });
+        workspace.update(cx, |ws, cx| {
+            ws.show_toast("第二条", cx);
+        });
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(ws.toast.as_deref(), Some("第二条"), "the newer toast wins");
+        });
+        cx.executor().advance_clock(TOAST_DURATION);
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert!(ws.toast.is_none(), "the toast cleared after the duration");
+        });
     }
 }
