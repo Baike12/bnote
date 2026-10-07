@@ -42,7 +42,7 @@ bnote 的核心是**手感**:编辑、滚动、光标移动、渲染都不许有
 - CodeMirror 只渲染视口,长文档里 `querySelectorAll(".cw-image")` 会是 0;且 live preview 只在光标**不在**该行时才把图片源码换成 widget——先把光标移到目标行下方再量。
 - 图片的 `naturalWidth` 是懒加载 + 异步解码,量之前等 1s 左右,否则读到 0。
 - 图标资产必须用浏览器 canvas 栅格化(`toDataURL` 存文件);`qlmanage -t -s N` 会铺**白色不透明背景**,只能目检构图。图标数值用 python PIL 量像素,别目测。
-- **harness 的 vim 只走到 `reconfigureVim(view,true,[])`**:store 里的 `settings.vim` 仍是默认 `false`,setup.ts 里那条按 `settings.vim` 自门控的光标冲刷监听器因此整条早退——量 vim 相关开销前先 `__setVim(true)`,否则量到的是少了强制回流的假数据(2026-09 第一次测量就踩了)。同理 `__vimKeys`/`__typeChar` 绕过引擎自己的 inputHandler:同一任务里连发键、或 `__typeChar` 之后紧跟 `<Esc>`,引擎记账会失步(第一个 Esc 被吞、`A` 不动光标),每个键一个 rAF 任务复测才可信。
+- **harness 的 vim 只走到 `reconfigureVim(view,true,[])`**:store 里的 `settings.vim` 仍是默认 `false`,setup.ts 里那条按 `settings.vim` 自门控的光标冲刷监听器因此整条早退——量 vim 相关开销前先 `__setVim(true)`,否则量到的是少了强制回流的假数据(2026-09 第一次测量就踩了)。同理 `__vimKeys`/`__typeChar` 绕过引擎自己的 inputHandler:同一任务里连发键、或 `__typeChar` 之后紧跟 `<Esc>`,引擎记账会失步(第一个 Esc 被吞、`A` 不动光标),每个键一个 rAF 任务复测才可信。**挂载即 normal 模式**(`__vimMode()` = `"normal"`):走真实 keydown 通道的按键先被引擎解释——Enter 是 `j`(下行,不换行),测"打字/回车"这类文本编辑流程前先 `__setVim(false)`(置后 `__vimMode()` = null),且要在**刚 reload 的页面**上调(被先前实验改过状态的页面会坏:`__setCursor` 抛 `Cannot read properties of undefined`)。
 
 ## 测试门禁(每次改动必须通过)
 
