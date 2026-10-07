@@ -268,7 +268,8 @@ function buildBlockDecos(
   for (const e of statics.calloutEdges) {
     // 与围栏同一条块级规则:光标在 callout 内(含边界行)时 `:::` 源码可编辑,
     // 离开整块才隐藏。渲染态由 widget 自带块面顶/底帽(整行 block replace 会
-    // 把行元素移出 DOM,行装饰管不到)——带标题 = 标题小标签,否则零文字帽。
+    // 把行元素移出 DOM,行装饰管不到)——带标题 = 标题按三级标题字号渲染,
+    // 否则零文字帽。
     if (active(e.block.from, e.block.to)) continue;
     if (e.kind === "open" && e.title) {
       out.push(

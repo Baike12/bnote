@@ -570,10 +570,12 @@ button {
   background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
   padding-left: 11px;
 }
+/* 标题按三级标题的视觉走(1.2em / 700 / --h3-color,与 .md-h3 同源)——出块
+   之后它是块的重音,不是一行正文;改标题层级字号表时这里要一起看。 */
 .cw-callout-title {
-  color: var(--h2-color);
-  font-weight: 600;
-  font-size: 0.88em;
+  color: var(--h3-color);
+  font-weight: 700;
+  font-size: 1.2em;
   padding-top: 8px;
   padding-bottom: 4px;
   border-radius: 4px 4px 0 0;

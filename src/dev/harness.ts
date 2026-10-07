@@ -117,7 +117,7 @@ declare global {
     __insertCodeBlock: () => void;
     /** 插入公式块（与代码块共用独占整行块的插入几何）。 */
     __insertMathBlock: () => void;
-    /** 插入 Callout 块（光标落在开栏行尾；有选区时包裹所选行）。 */
+    /** 插入 Callout 块（光标落在开栏 `::: ` 之后，紧接标题槽；有选区时包裹所选行）。 */
     __insertCallout: () => void;
     /** 修改代码块语言设置（走真实 patchSettings 路径）。 */
     __setCodeBlockLang: (lang: string) => void;
