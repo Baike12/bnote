@@ -652,11 +652,13 @@ function insertOwnLineBlock(
 }
 
 /**
- * 插入 Callout 块(`:::` 容器)。无选区时空行原位替换/否则插到本行尾之后,
- * 光标落在块内内容空行(缩进之后)——直接开写正文;要标题再回开栏行补
- * (`::: 标题`,不写就是无标题裸块,两种形态扫描同构)。有选区时把覆盖的行
- * 包进块(与 insertCodeBlock 同一映射模型,行中选区扩展到整行),选区两端
- * 平移进块内。
+ * 插入 Callout 块(`:::` 容器)。无选区时空行原位替换/否则插到本行尾之后:
+ * 插入形状是相邻的开栏/闭栏两行,开栏带一个尾随空格作标题槽,光标落在槽
+ * 之后——紧接着写标题(`::: 标题`),写完回车就是块内正文行(两栏之间不预置
+ * 空行,回车不必先删一行);不写标题直接回车则是无标题裸块(两种形态扫描
+ * 同构)。两栏一律栏 0:callout.ts 只认栏 0 的标记,缩进的闭栏永远关不上块。
+ * 有选区时把覆盖的行包进块(与 insertCodeBlock 同一映射模型,行中选区扩展
+ * 到整行),选区两端平移进块内。
  */
 export function insertCallout(view: EditorView) {
   const state = view.state;
@@ -680,7 +682,18 @@ export function insertCallout(view: EditorView) {
     view.focus();
     return;
   }
-  insertOwnLineBlock(view, ":::", ":::", "input.bnote-callout");
+  const line = state.doc.lineAt(range.head);
+  const blank = line.text.trim() === "";
+  const open = "::: ";
+  const from = blank ? line.from : line.to;
+  view.dispatch({
+    changes: blank
+      ? { from: line.from, to: line.to, insert: `${open}\n:::` }
+      : { from: line.to, insert: `\n${open}\n:::` },
+    selection: { anchor: from + (blank ? 0 : 1) + open.length },
+    userEvent: "input.bnote-callout",
+  });
+  view.focus();
 }
 
 /** Inserts a $$ … $$ block on its own lines and places the cursor inside. */

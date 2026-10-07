@@ -3,6 +3,7 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { cycleHeading, insertCallout, jumpHeaderTodos, planHeaderTodoJump, resetHeaderTodoReturnForTest, toggleTodo, todayStamp } from "./ops";
+import { calloutRegions } from "./callout";
 
 /**
  * toggleTodo 只依赖 view 的 {state, dispatch} 面，用假视图即可在 node 里
@@ -221,25 +222,54 @@ describe("jumpHeaderTodos:⌘T 创建空待办端到端", () => {
 });
 
 describe("insertCallout:插入形状与光标落点", () => {
-  it("空行插入:裸 ::: 开合,光标在块内内容空行行首", () => {
+  it("空行插入:开栏带标题槽、闭栏紧跟其后(两栏之间不预置空行)", () => {
     const view = makeView("", [0]);
     insertCallout(view);
-    expect(text(view)).toBe(":::\n\n:::");
-    expect(pos(view)).toBe(4);
+    expect(text(view)).toBe("::: \n:::");
+    expect(pos(view)).toBe(4); // 标题槽之后:直接开写标题
   });
 
-  it("非空行插入:插到本行尾之后,光标同在内容空行行首", () => {
+  it("非空行插入:插到本行尾之后,光标同在标题槽之后", () => {
     const view = makeView("hello", [3]);
     insertCallout(view);
-    expect(text(view)).toBe("hello\n:::\n\n:::");
+    expect(text(view)).toBe("hello\n::: \n:::");
     expect(pos(view)).toBe(10);
   });
 
-  it("列表项内插入:内部空行与合栏继承缩进,光标在缩进之后", () => {
+  it("列表项内插入:两栏都落栏 0(缩进的闭栏永远关不上块)", () => {
     const view = makeView("  - 项", [5]);
     insertCallout(view);
-    expect(text(view)).toBe("  - 项\n:::\n  \n  :::");
-    expect(pos(view)).toBe(12);
+    expect(text(view)).toBe("  - 项\n::: \n:::");
+    expect(pos(view)).toBe(10);
+  });
+
+  it("落点即标题槽:直接输入的文字成为 callout 标题,回车即正文行", () => {
+    const view = makeView("", [0]);
+    insertCallout(view);
+    const slot = pos(view);
+    // 打字:文本落在槽内,光标跟在文字之后(输入管线的形状——光标随输入右移)
+    view.dispatch({
+      changes: { from: slot, insert: "正则化" },
+      selection: { anchor: slot + "正则化".length },
+    });
+    expect(text(view)).toBe("::: 正则化\n:::");
+    expect(calloutRegions(view.state)[0].title).toBe("正则化");
+    // 回车:光标所在的新行成为块内正文行,标题归属不变(两栏之间无空行)
+    const at = pos(view);
+    view.dispatch({ changes: { from: at, insert: "\n" }, selection: { anchor: at + 1 } });
+    expect(text(view)).toBe("::: 正则化\n\n:::");
+    expect(view.state.doc.lineAt(pos(view)).number).toBe(2);
+    expect(calloutRegions(view.state)[0].title).toBe("正则化");
+  });
+
+  it("插入的块一定被扫描器闭合(空行/正文行/列表行三种来处)", () => {
+    for (const doc of ["", "hello", "  - 项"]) {
+      const view = makeView(doc, [doc.length]);
+      insertCallout(view);
+      const regions = calloutRegions(view.state);
+      expect(regions, `doc=${JSON.stringify(doc)}`).toHaveLength(1);
+      expect(regions[0].closed, `doc=${JSON.stringify(doc)}`).toBe(true);
+    }
   });
 
   it("选区包裹:覆盖行整段收进块内,选区两端平移进块", () => {
