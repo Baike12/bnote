@@ -119,6 +119,11 @@ impl MathFontMetrics for TextMetrics<'_> {
 const RIGHT_MARGIN: Pixels = px(10.);
 const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(6.);
 
+/// Whether the shell's editor paints line numbers. It does not (TS
+/// `.cm-content` has no gutter), and the width model follows the same switch
+/// (`line_number(false)` in the shell's editor construction).
+const LINE_NUMBERS: bool = false;
+
 /// Bytes of margin the scan adds on each side of the visible window.
 ///
 /// Decorations are computed one frame behind the scroll that moved them, so
@@ -320,9 +325,18 @@ impl PreviewHost {
 
     /// What the engine keeps out of a line's width: the line-number gutter
     /// plus its right margin.
+    ///
+    /// The shell runs the editor with line numbers off (TS `.cm-content` has
+    /// no gutter), so the digits reserve nothing — but `layout_line_numbers`
+    /// still spends [`LINE_NUMBER_RIGHT_MARGIN`] on a code editor, and the
+    /// engine's own [`RIGHT_MARGIN`] follows every line regardless.
     fn column_inset(&self, text: &str, window: &mut Window) -> Pixels {
         let lines = text.bytes().filter(|b| *b == b'\n').count() + 1;
-        let gutter = self.text_width(&"+".repeat(line_number_digits(lines)), window);
+        let gutter = if LINE_NUMBERS {
+            self.text_width(&"+".repeat(line_number_digits(lines)), window)
+        } else {
+            px(0.)
+        };
         gutter + LINE_NUMBER_RIGHT_MARGIN + RIGHT_MARGIN
     }
 
@@ -899,13 +913,18 @@ impl PreviewRenderer for PreviewHost {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let _ = cx;
         let Some(kind) = self.widgets.borrow().get(&widget.range.start).cloned() else {
             // A span the snapshot no longer describes (a frame in flight):
             // an empty box is better than a wrong one.
             return div().w(widget.width).h(widget.line_height).into_any_element();
         };
-        let color = window.text_style().color;
+        // The palette, not `window.text_style()`: the window's default text
+        // colour has nothing to do with the editor's (it is near-black), and
+        // the TS widgets take their own tokens anyway — `.md-bullet` is
+        // `--text-faint`, `.md-task` too, the escape plain `--text`.
+        let palette = self.palette(cx);
+        let faint = palette.color("text-faint");
+        let body = palette.color("text");
         match kind {
             core::Widget::Math { tex, display } => {
                 let Some(layout) = self.math_layout(
@@ -916,9 +935,9 @@ impl PreviewRenderer for PreviewHost {
                     window,
                     cx,
                 ) else {
-                    return plain_source(&widget, color);
+                    return plain_source(&widget, body);
                 };
-                MathView { layout, color }.into_any_element()
+                MathView { layout, color: body }.into_any_element()
             }
             // The escaped punctuator, drawn as plain body text (no chip, no
             // dimming): the source `\*` reads as `*`.
@@ -927,11 +946,19 @@ impl PreviewRenderer for PreviewHost {
                 .h(widget.line_height)
                 .flex()
                 .items_center()
-                .text_color(color)
+                .text_color(body)
                 .child(char)
                 .into_any_element(),
+            // TS `.md-task`: a `0.9em` box, `1.5px solid var(--text-faint)`,
+            // radius 3 (`.rounded_sm`, the kit's 2px — a hair); checked fills
+            // `--accent-dim` and the mark is `--on-accent`.
             core::Widget::Checkbox { checked } => {
-                let size = widget.line_height * 0.75;
+                let size = self.font.size * 0.9;
+                let bg = if checked {
+                    palette.color("accent-dim")
+                } else {
+                    gpui::transparent_black()
+                };
                 let mark = if checked { "✓" } else { "" };
                 div().w(widget.width).h(widget.line_height).flex().items_center().child(
                     div()
@@ -942,9 +969,10 @@ impl PreviewRenderer for PreviewHost {
                         .justify_center()
                         .rounded_sm()
                         .border_1()
-                        .border_color(color.opacity(0.6))
+                        .border_color(faint)
+                        .bg(bg)
                         .text_size(size * 0.8)
-                        .text_color(color)
+                        .text_color(palette.color("on-accent"))
                         .child(mark),
                 )
                 .into_any_element()
@@ -966,18 +994,18 @@ impl PreviewRenderer for PreviewHost {
                             .h(dot)
                             .mr(self.font.size * 0.2)
                             .rounded_full()
-                            .bg(color.opacity(0.85)),
+                            .bg(faint),
                     )
                     .into_any_element()
             }
             core::Widget::Image { src, .. } => match self.images.image_at(&src, widget.width) {
                 Some((image, height)) => {
-                    image_view(image, widget.width, height, widget.line_height, color)
+                    image_view(image, widget.width, height, widget.line_height, body)
                 }
                 // The span was emitted from the cache, so this only happens
                 // when the entry was dropped between the scan and the paint;
                 // the source text beats an empty box.
-                None => plain_source(&widget, color),
+                None => plain_source(&widget, body),
             },
         }
     }
@@ -1006,7 +1034,9 @@ impl PreviewRenderer for PreviewHost {
             // A block the snapshot no longer describes (a frame in flight).
             return div().into_any_element();
         };
-        let color = window.text_style().color;
+        // The block's text colour comes from the palette, not the window's
+        // default style (see `render`).
+        let color = self.palette(cx).color("text");
         match kind {
             core::BlockKind::Math { tex, depth } => {
                 let Some(layout) = self.block_math_layout(&tex, block.width, window, cx) else {
@@ -1770,5 +1800,62 @@ let a = 1;
             .image_span(text, range, "pic.png", px(500.))
             .expect("still ready");
         assert_eq!(narrow.width(), px(500.));
+    }
+
+    /// The marker slots the host declares for a bnote-shaped document: the
+    /// `# ` prefix hidden, a bullet widget over `- `, and — for a task line —
+    /// the marker hidden plus a checkbox widget over `[ ]`. These widths are
+    /// what the engine lays the item text out against (the slot must equal
+    /// the line's wrap indent, or continuation rows would not line up).
+    #[gpui::test]
+    fn the_host_declares_the_marker_slots_for_lists(cx: &mut TestAppContext) {
+        const DOC: &str = "# 标题\n\n正文一段。\n\n- 项目一\n- [ ] 待办\n- [x] 完成\n";
+        struct Root;
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Dark, None, cx);
+            crate::theme::apply(ThemeMode::Dark, cx);
+            cx.open_window(Default::default(), |window, cx| {
+                let font = px(16.);
+                let host = PreviewHost::new(PreviewFont {
+                    family: "Helvetica".into(),
+                    size: font,
+                });
+                let update = host.decorations(DOC, &[], px(700.), None, window, cx);
+                let spans: Vec<(std::ops::Range<usize>, bool, f32)> = update
+                    .decorations
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        (
+                            span.range.clone(),
+                            span.is_widget(),
+                            span.width().as_f32(),
+                        )
+                    })
+                    .collect();
+
+                // The heading's `# ` is cut with nothing painted in its place.
+                assert_eq!(spans[0], (0..2, false, 0.), "heading prefix");
+                // The bullet line: one widget covering `- `, a li-hang slot.
+                assert_eq!(spans[1], (27..29, true, 15.2), "bullet slot");
+                // The task lines: the marker is hidden and the checkbox
+                // widget covers `[ ]`, a li-task slot (0.9em + gap).
+                assert_eq!(spans[2], (39..41, false, 0.), "task marker hidden");
+                assert_eq!(spans[3], (41..45, true, 22.4), "unchecked slot");
+                assert_eq!(spans[4], (52..54, false, 0.), "checked marker hidden");
+                assert_eq!(spans[5], (54..58, true, 22.4), "checked slot");
+                assert_eq!(spans.len(), 6, "nothing else is hidden");
+
+                cx.new(|_| Root)
+            })
+            .expect("a test window");
+        });
     }
 }

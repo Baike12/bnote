@@ -76,6 +76,9 @@ struct Step {
     /// Install a footprint index (keys = vault-relative paths) before the
     /// step runs, so a daily's zone renders without a real edit cycle.
     footprints: Option<BTreeMap<String, Vec<bnote_core::footprint::model::FootprintBlock>>>,
+    /// Toggle a sidebar directory (vault-relative id) before the step runs —
+    /// the pixels of an open folder, without a mouse.
+    expand: Option<String>,
 }
 
 fn default_size() -> [f32; 2] {
@@ -226,6 +229,9 @@ fn apply_step(step: &Step, workspace: &gpui::Entity<Workspace>, window: &mut gpu
     }
     if let Some(rel) = &step.open {
         workspace.update(cx, |ws, cx| ws.debug_load_note(rel, window, cx));
+    }
+    if let Some(dir) = &step.expand {
+        workspace.update(cx, |ws, cx| ws.debug_toggle_dir(dir, cx));
     }
     if let Some(byte) = step.cursor {
         workspace.update(cx, |ws, cx| ws.debug_set_cursor(byte, cx));

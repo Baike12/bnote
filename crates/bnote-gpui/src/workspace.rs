@@ -363,6 +363,15 @@ pub struct Workspace {
     files: Vec<String>,
     /// Most-recently-opened notes (session-only recency for the switcher).
     mru: Vec<String>,
+    /// Expanded directories in the sidebar (vault-relative ids). The tree
+    /// rebuilds its items on every vault change, so the expanded set lives
+    /// here — the single writer — and is re-applied to the fresh items (TS
+    /// `Sidebar`'s `expanded` state surviving `refreshTree`).
+    expanded_dirs: std::collections::HashSet<String>,
+    /// The vault's directory paths, for telling a folder row from a note row
+    /// (a `TreeItem` with no children is not "a folder" to the kit, but an
+    /// empty directory must still render as one and never open as a note).
+    tree_dirs: std::collections::HashSet<String>,
     /// ⌘T round-trip memory (path → return position).
     header_returns: ops::HeaderTodoReturnMap,
     /// ⌘⇧O round-trip memory: the note the user jumped into today's daily
@@ -688,6 +697,18 @@ impl Workspace {
         self.open_path = Some(rel.to_string());
         self.replace_buffer(text, window, cx);
         self.editor.update(cx, |st, cx| st.set_selected_range(0..0, cx));
+        self.sync_tree_selection(cx);
+    }
+
+    #[cfg(any(test, feature = "harness-shot"))]
+    #[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
+    /// Expand (or collapse) a directory by id — the scripted shots' way to
+    /// put an open folder on screen (the click path is the tests').
+    pub(crate) fn debug_toggle_dir(&mut self, dir: &str, cx: &mut Context<Self>) {
+        if !self.expanded_dirs.remove(dir) {
+            self.expanded_dirs.insert(dir.to_string());
+        }
+        self.refresh_tree(cx);
     }
 
     #[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
@@ -730,12 +751,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // No placeholder: an empty editor shows the `.editor-empty` overlay
+        // (TS has no CodeMirror placeholder either). No line numbers and no
+        // fold gutter either — the TS editor is plain prose (`.cm-content`).
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("markdown")
-                .line_number(true)
+                .line_number(false)
+                .folding(false)
                 .soft_wrap(true)
-                .placeholder("打开左侧文件开始笔记")
         });
         // Snippets run with vim on or off; the bridge reads the mode from the
         // vim bridge, which stays the single mode authority.
@@ -830,8 +854,8 @@ impl Workspace {
         let study_font = {
             let theme = cx.theme();
             PreviewFont {
-                family: theme.mono_font_family.clone(),
-                size: theme.mono_font_size,
+                family: theme.font_family.clone(),
+                size: theme.font_size,
             }
         };
         let study_preview = Rc::new(PreviewHost::new(study_font));
@@ -850,9 +874,12 @@ impl Workspace {
         let study_url_state = cx.new(|cx| InputState::new(window, cx).placeholder("输入网址打开…"));
 
         let theme = cx.theme();
+        // The preview measures widget widths in the editor's own font, so it
+        // carries the same face the editor is styled with (UI font, editor
+        // size — see `render_editor_column`).
         let preview = Rc::new(PreviewHost::new(PreviewFont {
-            family: theme.mono_font_family.clone(),
-            size: theme.mono_font_size,
+            family: theme.font_family.clone(),
+            size: theme.font_size,
         }));
         // The live-rendered copy of a display formula while editing it.
         // `keybindings.json` (the TS shell's override file). `main` applies it
@@ -896,6 +923,20 @@ impl Workspace {
         // Drive autosave + dirty flag off editor changes, and refresh the
         // live preview when either the text or the caret moved.
         let subscriptions = vec![
+            // The sidebar's expand/collapse is the user's state, so it is
+            // recorded here (the only writer) and re-applied whenever the
+            // vault index rebuilds the items (TS `Sidebar`'s `expanded`).
+            cx.subscribe(&tree_state, |this, _, event: &gpui_kit::base::TreeEvent, cx| {
+                match event {
+                    gpui_kit::base::TreeEvent::Expanded(id) => {
+                        this.expanded_dirs.insert(id.to_string());
+                    }
+                    gpui_kit::base::TreeEvent::Collapsed(id) => {
+                        this.expanded_dirs.remove(id.as_ref());
+                    }
+                }
+                cx.notify();
+            }),
             cx.subscribe(&editor, |this, _editor, event: &InputEvent, cx| {
                 this.preview_dirty = true;
                 this.on_edited(cx);
@@ -1032,6 +1073,8 @@ impl Workspace {
             files_state,
             files: Vec::new(),
             mru: Vec::new(),
+            expanded_dirs: std::collections::HashSet::new(),
+            tree_dirs: std::collections::HashSet::new(),
             header_returns: ops::HeaderTodoReturnMap::new(),
             daily_back_from: None,
             toast: None,
@@ -1420,7 +1463,7 @@ impl Workspace {
                 }
                 Err(e) => {
                     this.update(cx, |this, cx| {
-                        this.status = format!("打开仓库失败:{}", e);
+                        this.report_failure(format!("打开仓库失败:{e}"), cx);
                         cx.notify();
                     })
                     .ok();
@@ -1444,6 +1487,12 @@ impl Workspace {
         self.daily = Some(Arc::new(DailyHost::new(self.state.clone(), &root)));
         let fp = Arc::new(FootprintHost::new(&root));
         self.footprint = Some(fp.clone());
+        // The hosts land *after* any scan that ran while the vault was
+        // opening, and their state (synced links, footprint blocks) is what
+        // the line marks are built from: the snapshot those scans installed
+        // is stale by construction, so the next one must be rebuilt even
+        // when nothing else changed.
+        self.preview_dirty = true;
         let today = self.today.clone();
         cx.spawn(async move |_this, cx| {
             cx.background_executor().spawn(async move { fp.init(&today) }).await;
@@ -1545,7 +1594,7 @@ impl Workspace {
                     },
                     Err(e) => {
                         snippets.use_builtins(&editor);
-                        this.status = format!("读取仓库片段失败:{e}");
+                        this.report_failure(format!("读取仓库片段失败:{e}"), cx);
                     }
                 }
                 cx.notify();
@@ -1561,6 +1610,15 @@ impl Workspace {
             .and_then(|r| r.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default()
+    }
+
+    /// The open note's absolute path — the status bar's right end shows this
+    /// (TS `.file-hint` prints `currentFile`, which is absolute).
+    fn open_note_abs_path(&self) -> String {
+        match (&self.vault_root, &self.open_path) {
+            (Some(root), Some(rel)) => root.join(rel).to_string_lossy().to_string(),
+            _ => String::new(),
+        }
     }
 
     fn on_edited(&mut self, cx: &mut Context<Self>) {
@@ -1703,6 +1761,14 @@ impl Workspace {
         })
         .detach();
         cx.notify();
+    }
+
+    /// A failure the user must see: the status bar carries no message text
+    /// in the TS shell, so failures go to the toast (TS `showToast`) — the
+    /// status string is kept for tests and diagnostics.
+    fn report_failure(&mut self, message: String, cx: &mut Context<Self>) {
+        self.status = message.clone();
+        self.show_toast(message, cx);
     }
 
     /// The toast overlay: fixed above the status bar, centered (the TS
@@ -2418,7 +2484,7 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(e) => {
-                    this.status = format!("打开日记失败:{}", e);
+                    this.report_failure(format!("打开日记失败:{e}"), cx);
                     cx.notify();
                 }
             })
@@ -2505,7 +2571,7 @@ impl Workspace {
                     this.open_note(entry.rel_path.clone(), window, cx);
                 }
                 Err(e) => {
-                    this.status = format!("新建失败:{}", e);
+                    this.report_failure(format!("新建失败:{e}"), cx);
                 }
             })
             .ok();
@@ -2745,7 +2811,7 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(e) => {
-                    this.status = format!("运行失败: {e}");
+                    this.report_failure(format!("运行失败: {e}"), cx);
                     cx.notify();
                 }
             })
@@ -2827,14 +2893,34 @@ impl Workspace {
     /// (TS `EditorPane`'s editor-host + `<PythonRunPanel />`).
     fn render_editor_column(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = cx.theme().clone();
+        let palette = self.preview.palette(cx);
+        // `.cm-content`'s prose column: capped at `--content-line-width`
+        // (700px) plus the two 48px insets and centered in the pane — GPUI's
+        // border-box sizing makes `--content-line-width + 2 * --content-pad-x`
+        // the same 796px box the CSS declares. The 45vh bottom padding is the
+        // engine's own half-viewport scroll margin, already in place.
+        let column_width = px(palette.content_line_width + 2. * palette.content_pad_x);
+        let pad_x = px(palette.content_pad_x);
         let editor = Editor::new(&self.editor)
             .bordered(false)
             .p_0()
             .h(relative(1.))
-            .font_family(theme.mono_font_family.clone())
-            .text_size(theme.mono_font_size)
+            // The editor reads and writes prose: it wears the UI font at
+            // `--editor-font-size` (`.cm-content`), not the code font.
+            .font_family(theme.font_family.clone())
+            .text_size(theme.font_size)
             .flex_1();
-        let mut column = v_flex().size_full().min_h_0().child(editor.into_any_element());
+        let mut column = v_flex().size_full().min_h_0().child(
+            div().flex_1().min_h_0().w_full().child(
+                div()
+                    .size_full()
+                    .max_w(column_width)
+                    .mx_auto()
+                    .px(pad_x)
+                    .pt(px(24.))
+                    .child(editor.into_any_element()),
+            ),
+        );
         if let Some(panel) = self.render_python_panel(cx) {
             column = column.child(panel);
         }
@@ -2966,7 +3052,7 @@ impl Workspace {
                     this.load_study_markdown(md, title, cx);
                 }
                 Err(e) => {
-                    this.status = format!("转换失败: {e}");
+                    this.report_failure(format!("转换失败: {e}"), cx);
                     cx.notify();
                 }
             })
@@ -2999,7 +3085,7 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(e) => {
-                    this.status = format!("打开失败: {e}");
+                    this.report_failure(format!("打开失败: {e}"), cx);
                     cx.notify();
                 }
             })
@@ -3518,7 +3604,7 @@ impl Workspace {
                         }
                         this.refresh_tree(cx);
                     }
-                    Err(e) => this.status = format!("新建失败:{e}"),
+                    Err(e) => this.report_failure(format!("新建失败:{e}"), cx),
                 }
                 cx.notify();
             })
@@ -3578,7 +3664,7 @@ impl Workspace {
                                 }
                                 this.refresh_tree(cx);
                             }
-                            Err(e) => this.status = format!("删除失败:{e}"),
+                            Err(e) => this.report_failure(format!("删除失败:{e}"), cx),
                         }
                         cx.notify();
                     })
@@ -3658,7 +3744,7 @@ impl Workspace {
                             }
                         }
                     }
-                    Err(e) => this.status = format!("重命名失败:{e}"),
+                    Err(e) => this.report_failure(format!("重命名失败:{e}"), cx),
                 }
                 cx.notify();
             })
@@ -3673,6 +3759,21 @@ impl Workspace {
     fn refresh_tree(&mut self, cx: &mut Context<Self>) {
         let tree = self.tree_state.clone();
         cx.spawn(async move |this, cx| reload_tree(this, tree, cx).await).detach();
+    }
+
+    /// The tree's highlighted row is the open note (TS `.tree-row.current`),
+    /// never the last-clicked row: the kit selects on any entry click, so the
+    /// clicks and every rebuild re-aim it here.
+    fn sync_tree_selection(&mut self, cx: &mut Context<Self>) {
+        let target = self
+            .open_path
+            .as_ref()
+            .and_then(|path| self.tree_state.read(cx).index_of(&path.clone().into()));
+        self.tree_state.update(cx, |state, cx| {
+            if state.selected_index() != target {
+                state.set_selected_index(target, cx);
+            }
+        });
     }
 
     // ---- ex command line (`:` in a modal vim mode) -----------------------
@@ -3956,7 +4057,7 @@ impl Workspace {
                         this.open_note(entry.rel_path.clone(), window, cx);
                     }
                     Err(e) => {
-                        this.status = format!("快速添加失败:{e}");
+                        this.report_failure(format!("快速添加失败:{e}"), cx);
                         this.focus_editor(window, cx);
                     }
                 }
@@ -4932,7 +5033,7 @@ impl Workspace {
     /// effects of any edit here, in one place.
     fn persist_hotkeys(&mut self, cx: &mut Context<Self>) {
         if let Err(e) = keybindings::save(&self.state, &self.key_overrides) {
-            self.status = format!("快捷键保存失败:{e}");
+            self.report_failure(format!("快捷键保存失败:{e}"), cx);
         }
         keybindings::apply(cx, &self.key_overrides);
     }
@@ -5164,8 +5265,8 @@ impl Workspace {
                         }
                     }
                     Ok(Ok(None)) => {}
-                    Ok(Err(e)) => this.status = format!("打开仓库失败:{e}"),
-                    Err(e) => this.status = format!("打开仓库失败:{e}"),
+                    Ok(Err(e)) => this.report_failure(format!("打开仓库失败:{e}"), cx),
+                    Err(e) => this.report_failure(format!("打开仓库失败:{e}"), cx),
                 }
                 cx.notify();
             })
@@ -5286,7 +5387,14 @@ impl Workspace {
                         this.install_text(rel_path.clone(), text, window, cx);
                     }
                     Err(e) => {
-                        this.status = format!("读取失败:{}", e);
+                        // The path is not a readable note (a directory, a file
+                        // that vanished): the shell must not keep pretending it
+                        // is open — the next save would target it (TS
+                        // `openNote`'s catch → `closeFile`).
+                        this.open_path = None;
+                        this.close_note(window, cx);
+                        this.status = format!("无法打开文件:{e}");
+                        this.show_toast(format!("无法打开文件: {e}"), cx);
                     }
                 }
                 cx.notify();
@@ -5342,6 +5450,8 @@ impl Workspace {
                 st.set_scroll_offset(gpui::point(gpui::px(0.), gpui::px((line.saturating_sub(1)) as f32 * 26.)), cx)
             });
         }
+        // The sidebar highlight follows the note (TS `.tree-row.current`).
+        self.sync_tree_selection(cx);
         self.update_cursor_label(cx);
     }
 
@@ -5741,34 +5851,154 @@ impl Workspace {
         }
     }
 
-    fn render_file_tree(&self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// The sidebar (TS `Sidebar.tsx`): the header row over the file tree, with
+    /// the 30px top inset the overlay titlebar's traffic lights need.
+    fn render_sidebar(&self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme().clone();
+        let dim = theme.muted_foreground;
+        let hover_bg = theme.border;
+        let hover_fg = theme.foreground;
+
+        // `.icon-btn` (26×26, radius 6): dim at rest, bright on a bg3 hover.
+        let icon_btn = move |id: &'static str| {
+            div()
+                .id(id)
+                .size(px(26.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(dim)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
+        };
+
+        v_flex()
+            .size_full()
+            .bg(theme.sidebar)
+            .text_color(theme.sidebar_foreground)
+            .pt(px(30.))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1p5()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        icon_btn("sidebar-new-note")
+                            .child(IconName::FilePlus)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_note(&actions::NewNote, window, cx);
+                            })),
+                    )
+                    .child(
+                        icon_btn("sidebar-new-folder")
+                            .child(IconName::FolderPlus)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_folder(&actions::NewFolder, window, cx);
+                            })),
+                    )
+                    .child(
+                        Label::new(self.vault_name())
+                            .flex_1()
+                            .text_center()
+                            .text_xs()
+                            .text_color(dim)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_overflow(gpui::TextOverflow::Truncate("…".into())),
+                    )
+                    .child(
+                        icon_btn("sidebar-settings")
+                            .text_sm()
+                            .child(Label::new("⚙"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings_modal(window, cx);
+                            })),
+                    ),
+            )
+            .child(self.render_file_tree(cx))
+            .into_any_element()
+    }
+
+    /// The tree itself: 23px rows (`.tree-row`), a chevron for folders and
+    /// `≡` for notes, the open note in accent.
+    fn render_file_tree(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let view = cx.entity();
+        let theme = cx.theme().clone();
         tree(
             &self.tree_state,
             move |ix, entry, _selected, _window, cx| {
-                let is_folder = entry.is_folder();
-                let expanded = entry.is_expanded();
                 let rel = entry.item().id.clone();
                 let rel_menu = rel.clone();
                 let label = entry.item().label.clone();
-                view.update(cx, |_, cx| {
-                    let icon = if !is_folder {
-                        IconName::File
-                    } else if expanded {
-                        IconName::FolderOpen
+                let expanded = entry.is_expanded();
+                let depth = entry.depth();
+                let theme = theme.clone();
+                view.update(cx, |this, cx| {
+                    // Folder-ness comes from the vault index, not the kit's
+                    // "has children" (an empty directory is still a folder).
+                    let is_dir = this.tree_dirs.contains(rel.as_ref());
+                    let is_current = !is_dir && this.open_path.as_deref() == Some(rel.as_ref());
+                    let name_color = if is_current {
+                        theme.accent
                     } else {
-                        IconName::Folder
+                        theme.foreground
+                    };
+                    let glyph: &'static str = if is_dir {
+                        if expanded { "⌄" } else { "›" }
+                    } else {
+                        "≡"
+                    };
+                    let glyph_size = if is_dir { px(14.) } else { px(12.) };
+
+                    // ListItem stacks its children in a block box, so the row
+                    // is one flex child: [glyph][name] (`.tree-row`'s own
+                    // display: flex).
+                    let glyph_box = h_flex()
+                        .w(px(14.))
+                        .flex_shrink_0()
+                        .text_size(glyph_size)
+                        .text_color(theme.muted);
+                    let glyph_box = if is_dir {
+                        glyph_box
+                    } else {
+                        glyph_box.justify_center()
                     };
 
                     ListItem::new(ix)
                         .w_full()
-                        .rounded(cx.theme().radius)
-                        .py_0p5()
-                        .px_2()
-                        .pl(px(16.) * entry.depth() + px(8.))
-                        .child(h_flex().gap_2().child(icon).child(label))
+                        .h(px(23.))
+                        .rounded(px(6.))
+                        .px_0()
+                        .py_0()
+                        .pl(px(10. + 14. * depth as f32))
+                        .pr_2()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_1()
+                                .child(glyph_box.child(glyph))
+                                .child(
+                                    Label::new(label)
+                                        .text_size(px(12.5))
+                                        .text_color(name_color)
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_overflow(gpui::TextOverflow::Truncate("…".into())),
+                                ),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            if !is_folder {
+                            if is_dir {
+                                // A folder click only toggles (the kit's
+                                // mouse-down handler); the highlight goes back
+                                // to the open note (TS has no clicked-row
+                                // highlight).
+                                this.sync_tree_selection(cx);
+                            } else {
                                 this.open_note(rel.to_string(), window, cx);
                             }
                         }))
@@ -5777,7 +6007,7 @@ impl Workspace {
                             cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                 this.open_tree_menu(
                                     rel_menu.to_string(),
-                                    is_folder,
+                                    is_dir,
                                     event.position,
                                     cx,
                                 );
@@ -5787,9 +6017,8 @@ impl Workspace {
             },
         )
         .text_sm()
-        .p_1()
-        .bg(cx.theme().sidebar)
-        .text_color(cx.theme().sidebar_foreground)
+        .px_1()
+        .py_1p5()
         .h_full()
         .into_any_element()
     }
@@ -6023,7 +6252,7 @@ impl Workspace {
                 .justify_center()
                 .gap_2()
                 .child(
-                    Label::new("打开左侧笔记,或")
+                    Label::new("打开左侧笔记，或")
                         .text_sm()
                         .text_color(theme.muted_foreground),
                 )
@@ -6264,8 +6493,9 @@ impl gpui::Render for Workspace {
                     h_resizable("main")
                         .child(
                             resizable_panel()
-                                .size(px(240.))
-                                .child(self.render_file_tree(window, cx)),
+                                // `.sidebar { width: 220px }`
+                                .size(px(220.))
+                                .child(self.render_sidebar(window, cx)),
                         )
                         .child(editor_col),
                 );
@@ -6395,11 +6625,11 @@ impl gpui::Render for Workspace {
             .children(self.render_toast(cx))
             .child(
                 StatusBar::new()
-                    // The TS bar reads [mode badge][行 N，列 M][…][● 未保存]
-                    // [file path] (`.status-bar` in global.css): the badge is
-                    // accent-bold (`--string` while inserting), the dirty dot
-                    // accent, and the path fills the right end, ellipsised at
-                    // half the bar.
+                    // The TS bar is exactly [mode badge][行 N，列 M] … [●]
+                    // [absolute path] (`.status-bar` in global.css): the badge
+                    // is accent-bold (`--string` while inserting), the dirty
+                    // dot accent, and the path fills the right end, ellipsised
+                    // at half the bar. Messages are toasts there, not bar text.
                     .left(
                         h_flex()
                             .gap_3()
@@ -6410,7 +6640,6 @@ impl gpui::Render for Workspace {
                                     .min_w(px(52.))
                                     .text_color(self.vim_badge_color(cx)),
                             )
-                            .child(Label::new(self.status.clone()).text_xs())
                             .child(Label::new(self.cursor_label.clone()).text_xs()),
                     )
                     .right(
@@ -6422,7 +6651,7 @@ impl gpui::Render for Workspace {
                                     .text_color(self.preview.palette(cx).color("accent")),
                             )
                             .child(
-                                Label::new(self.open_path.clone().unwrap_or_default())
+                                Label::new(self.open_note_abs_path())
                                     .text_xs()
                                     .whitespace_nowrap()
                                     .text_overflow(gpui::TextOverflow::Truncate("…".into()))
@@ -6480,17 +6709,34 @@ async fn reload_tree(
                 cx.notify();
             }
         });
-        let _ = tree.update(cx, |state, cx| {
-            let items = build_items(&index);
-            state.set_items(items, cx);
+        let _ = this.update(cx, |this, cx| {
+            this.tree_dirs = index.dirs.iter().cloned().collect();
+            let items = build_items(&index, &this.expanded_dirs);
+            tree.update(cx, |state, cx| state.set_items(items, cx));
+            // `set_items` drops the selection; the open note's row takes it
+            // back (the rebuilt rows are the same paths).
+            this.sync_tree_selection(cx);
         });
     }
 }
 
 /// Flattens the vault index (dirs + files, both vault-relative) into TreeItems
 /// sorted dirs-first by name, matching the Tauri shell's tree order.
-fn build_items(index: &bnote_core::commands::vault::VaultIndex) -> Vec<TreeItem> {
+///
+/// Directory-ness comes from `index.dirs`, never from "has children": the
+/// recursion is what *creates* the children, so a `TreeItem` is still empty
+/// when its own turn to nest comes — testing `is_folder()` there would end the
+/// recursion at the first level and no directory would ever get any.
+fn build_items(
+    index: &bnote_core::commands::vault::VaultIndex,
+    expanded: &std::collections::HashSet<String>,
+) -> Vec<TreeItem> {
     let mut by_parent: HashMap<String, Vec<TreeItem>> = HashMap::new();
+    let dirs = index
+        .dirs
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
 
     // Register every directory as a child of its parent so empty dirs show.
     for dir in &index.dirs {
@@ -6503,25 +6749,34 @@ fn build_items(index: &bnote_core::commands::vault::VaultIndex) -> Vec<TreeItem>
         by_parent.entry(parent).or_default().push(TreeItem::new(file.clone(), name));
     }
 
-    fn attach(by_parent: &mut HashMap<String, Vec<TreeItem>>, parent: &str) -> Vec<TreeItem> {
+    fn attach(
+        by_parent: &mut HashMap<String, Vec<TreeItem>>,
+        dirs: &std::collections::HashSet<&str>,
+        expanded: &std::collections::HashSet<String>,
+        parent: &str,
+    ) -> Vec<TreeItem> {
         let Some(mut children) = by_parent.remove(parent) else {
             return Vec::new();
         };
         children.sort_by(|a, b| a.label.cmp(&b.label));
         for child in children.iter_mut() {
-            if child.is_folder() {
+            if dirs.contains(child.id.as_ref()) {
                 let id = child.id.to_string();
-                let subs = attach(by_parent, &id);
-                if !subs.is_empty() {
-                    *child = child.clone().children(subs);
-                }
+                let subs = attach(by_parent, dirs, expanded, &id);
+                // The user's open folders come back open after a refresh
+                // (the flag lives on the item, so it is set here, where the
+                // fresh items are built).
+                *child = child.clone().expanded(expanded.contains(&id)).children(subs);
             }
         }
         children
     }
 
-    let mut top = attach(&mut by_parent, "");
-    top.sort_by_key(|item| (!item.is_folder(), item.label.to_lowercase()));
+    let mut top = attach(&mut by_parent, &dirs, expanded, "");
+    top.sort_by_key(|item| {
+        let is_dir = dirs.contains(item.id.as_ref());
+        (!is_dir, item.label.to_lowercase())
+    });
     top
 }
 
@@ -6616,7 +6871,7 @@ async fn save_snapshot(
                 }
             }
             None => {
-                this.status = "保存失败(见日志)".to_string();
+                this.report_failure("保存失败(见日志)".to_string(), cx);
             }
         }
         cx.notify();
@@ -8981,5 +9236,96 @@ mod tests {
                 "zz scrolled without moving the caret"
             );
         });
+    }
+
+    /// A left click on a folder row expands it and reveals its children; a
+    /// second click collapses it again, and a vault refresh in between keeps
+    /// the folder open (the expanded set is the shell's, not the scan's). A
+    /// folder click never opens the directory as a note.
+    #[gpui::test]
+    fn clicking_a_folder_row_toggles_its_children(cx: &mut TestAppContext) {
+        let (workspace, fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write("Folder/inner.md", "");
+            fixture.write("Note.md", "");
+            Vec::new()
+        });
+        let tree = workspace.read_with(cx, |ws, _| ws.tree_state.clone());
+        crate::harness::draw(cx);
+
+        let visible = |tree: &gpui::Entity<gpui_kit::component::tree::TreeState>,
+                       cx: &gpui::VisualTestContext| {
+            tree.read_with(cx, |t, _| {
+                std::iter::from_fn({
+                    let mut ix = 0;
+                    move || {
+                        let entry = t.entry(ix).map(|e| e.item().id.to_string());
+                        ix += 1;
+                        entry
+                    }
+                })
+                .collect::<Vec<_>>()
+            })
+        };
+        let rows = visible(&tree, cx);
+        assert!(rows.contains(&"Folder".to_string()), "rows: {rows:?}");
+        assert!(
+            !rows.contains(&"Folder/inner.md".to_string()),
+            "children start hidden: {rows:?}"
+        );
+
+        // The row is observed through the kit's test-support registry (its
+        // aria label), and the click goes through native mouse dispatch at the
+        // row's painted center — the same hit test a real click takes.
+        let click_row = |cx: &mut gpui::VisualTestContext, label: &str| {
+            crate::harness::draw(cx);
+            let point = cx.update(|window, _| {
+                gpui_kit::base::test_support::snapshots(window)
+                    .into_iter()
+                    .find(|snap| snap.label() == Some(label))
+                    .unwrap_or_else(|| panic!("{label} has a painted row"))
+                    .bounds()
+                    .center()
+            });
+            cx.simulate_click(point, gpui::Modifiers::none());
+            cx.run_until_parked();
+        };
+
+        click_row(cx, "Folder");
+        crate::harness::draw(cx);
+        let rows = visible(&tree, cx);
+        assert!(
+            rows.contains(&"Folder/inner.md".to_string()),
+            "clicking the folder row reveals its children: {rows:?}"
+        );
+        workspace.read_with(cx, |ws, _| {
+            assert!(
+                ws.open_path.is_none(),
+                "a folder click toggles, it does not open the directory as a note"
+            );
+        });
+
+        // The vault watcher rebuilds the items on every change; the rows the
+        // user opened must come back open.
+        fixture.write("Another.md", "");
+        workspace.update(cx, |ws, cx| ws.refresh_tree(cx));
+        cx.run_until_parked();
+        crate::harness::draw(cx);
+        let rows = visible(&tree, cx);
+        assert!(
+            rows.contains(&"Folder/inner.md".to_string()),
+            "a refresh keeps the folder open: {rows:?}"
+        );
+        assert!(
+            rows.contains(&"Another.md".to_string()),
+            "and shows the new file: {rows:?}"
+        );
+
+        click_row(cx, "Folder");
+        crate::harness::draw(cx);
+        let rows = visible(&tree, cx);
+        assert!(
+            !rows.contains(&"Folder/inner.md".to_string()),
+            "clicking again collapses it: {rows:?}"
+        );
     }
 }
