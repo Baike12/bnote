@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context as _};
+use anyhow::Context as _;
 use gpui::{App, AppContext as _, Keystroke, Pixels, Size, px, size};
 use gpui_kit::HeadlessAppContext;
 use gpui_kit::assets::Assets as KitAssets;
@@ -190,11 +190,19 @@ pub fn run(script_path: &str, out_dir: Option<&str>) -> anyhow::Result<PathBuf> 
         }
         if let Some(name) = &step.shot {
             cx.run_until_parked();
+            // Two paints: decorations set during frame N (set_preview_decorations
+            // notifies) settle the editor's layout by frame N+1, so a single
+            // paint would show the previous state.
             cx.update_window(handle, |_, window, cx| {
                 window.refresh();
                 window.draw(cx).clear(cx);
             })
             .context("the shot draw")?;
+            cx.update_window(handle, |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .context("the shot settle draw")?;
             let image = cx.capture_screenshot(handle).context("the capture")?;
             let path = out.join(format!("{name}.png"));
             image.save(&path).with_context(|| format!("saving {}", path.display()))?;

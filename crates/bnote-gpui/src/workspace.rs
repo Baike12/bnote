@@ -95,7 +95,6 @@ const LINK_PANEL_H: f32 = 300.;
 enum PaletteKind {
     Commands,
     Files,
-    Vaults,
 }
 
 /// The file tree's right-click menu, anchored where the click landed (TS
@@ -633,7 +632,7 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) fn harness_load(&mut self, rel: &str, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.open_path = Some(rel.to_string());
-        self.editor.update(cx, |st, cx| st.set_value(text, window, cx));
+        self.replace_buffer(text, window, cx);
     }
     /// Flip the vim setting without the settings UI (the fixture path).
     #[cfg(test)]
@@ -646,12 +645,14 @@ impl Workspace {
     // the test fixture does. They only read/write the open note's text and
     // the vim flag — no production path calls them.
 
+    // The load seams below are driven by the `harness-shot` binary (a
+    // feature, not the default test build), so without that feature the
+    // default target sees them as unused.
+    #[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
     /// Put `text` into the editor as the note's content (cursor at 0).
     pub(crate) fn debug_set_doc(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor.update(cx, |st, cx| {
-            st.set_value(text, window, cx);
-            st.set_selected_range(0..0, cx);
-        });
+        self.replace_buffer(text, window, cx);
+        self.editor.update(cx, |st, cx| st.set_selected_range(0..0, cx));
     }
 
     /// The caret as a byte offset (scripted shots position for vim tests).
@@ -659,6 +660,7 @@ impl Workspace {
         self.editor.update(cx, |st, cx| st.set_selected_range(byte..byte, cx));
     }
 
+    #[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
     /// Open a vault-relative path the mechanical way (read from disk, set as
     /// the note) — the scripted shots start from a known document.
     pub(crate) fn debug_load_note(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -667,15 +669,15 @@ impl Workspace {
         self.load_note_text(rel, &text, window, cx);
     }
 
+    #[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
     /// The mechanical load shared by the fixtures: path + text, cursor at 0.
     pub(crate) fn load_note_text(&mut self, rel: &str, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.open_path = Some(rel.to_string());
-        self.editor.update(cx, |st, cx| {
-            st.set_value(text, window, cx);
-            st.set_selected_range(0..0, cx);
-        });
+        self.replace_buffer(text, window, cx);
+        self.editor.update(cx, |st, cx| st.set_selected_range(0..0, cx));
     }
 
+    #[cfg_attr(not(feature = "harness-shot"), allow(dead_code))]
     pub(crate) fn debug_set_vim(&mut self, on: bool, cx: &mut Context<Self>) {
         self.set_vim_setting(on, cx);
     }
@@ -1085,7 +1087,6 @@ impl Workspace {
         }
         // `:` in a modal vim mode opens the ex command line.
         {
-            let weak = cx.weak_entity();
             // The workspace holds its own window handle: the observer fires
             // from the app-level interceptor, where a synchronous window
             // update would re-enter the keystroke dispatch (gpui rejects
@@ -1096,11 +1097,9 @@ impl Workspace {
                 let weak = weak.clone();
                 cx.spawn(async move |cx| {
                     cx.update(|cx| {
-                        handle
-                            .update(cx, |_view, window, cx| {
-                                weak.update(cx, |this, cx| this.open_ex_line(window, cx));
-                            })
-                            .ok();
+                        let _ = handle.update(cx, |_view, window, cx| {
+                            weak.update(cx, |this, cx| this.open_ex_line(window, cx))
+                        });
                     });
                 })
                 .detach();
@@ -3540,7 +3539,7 @@ impl Workspace {
         self.open_path = None;
         self.dirty = false;
         self.py_lsp_set_path(cx);
-        self.editor.update(cx, |ed, cx| ed.set_value("", window, cx));
+        self.replace_buffer("", window, cx);
         self.snippets.reset(&self.editor);
         cx.notify();
     }
@@ -5119,17 +5118,6 @@ impl Workspace {
         .detach();
     }
 
-    /// The vault list palette — reached by ⌘⇧R and from the settings modal's
-    /// "other vault" button (one path, so both stay in sync).
-    fn open_vault_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_open = false;
-        self.palette = Some(PaletteKind::Vaults);
-        self.ime_sync(cx);
-        let state = self.files_state.clone();
-        state.update(cx, |s, cx| s.focus(window, cx));
-        cx.notify();
-    }
-
     fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
         let focus = self.editor.focus_handle(cx);
@@ -5261,9 +5249,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.editor.update(cx, |ed, cx| {
-            ed.set_value(text.clone(), window, cx);
-        });
+        self.replace_buffer(&text, window, cx);
         self.dirty = false;
         self.open_path = Some(rel_path.clone());
         self.py_lsp_set_path(cx);
@@ -5336,6 +5322,72 @@ impl Workspace {
             })
             .detach();
         }
+    }
+
+    /// Replace the whole buffer, and declare the live preview stale.
+    ///
+    /// `set_value` is the silent door into the editor (`gpui-kit` emits no
+    /// `InputEvent::Change` for it), so the event-driven invalidation that
+    /// covers every keystroke cannot see a wholesale replacement. Every path
+    /// that swaps the document out or rewrites it in one go goes through
+    /// here, so the one signal that path needs cannot be forgotten at a call
+    /// site. Whole-buffer writers: file open/reload (`install_text`), close,
+    /// the auto-numbering rewrite, and the debug seams.
+    fn replace_buffer(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |ed, cx| ed.set_value(text, window, cx));
+        self.preview_dirty = true;
+    }
+
+    /// Bring the editor's live-preview snapshot up to date with the document
+    /// and the viewport as this frame sees them; the frame's own signals are
+    /// checked here too. Returns whether the document/caret feed changed,
+    /// which the caller uses to refresh the snippet marks.
+    ///
+    /// Runs on every render: an image span's width is a function of the
+    /// editor width, so a resize (panel toggle, window drag) makes every image
+    /// span stale — and the scan only emits for the visible window plus a
+    /// margin, so scrolling out of the covered range must rebuild it. Both
+    /// read last frame's measurement, so they settle one frame later. Within
+    /// the margin the second check fires nothing, keeping whole-document
+    /// scans off the scroll path.
+    fn refresh_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.preview.needs_rescan(self.editor_width(cx)) {
+            self.preview_dirty = true;
+        }
+        let visible = self.editor.read(cx).visible_byte_range();
+        if self.preview.needs_rescan_for(visible.as_ref()) {
+            self.preview_dirty = true;
+        }
+        let content_changed = self.preview_dirty;
+        if self.preview_dirty {
+            self.preview_dirty = false;
+            if self.live_preview {
+                let selection = self.editor.read(cx).selected_range();
+                self.preview_selection = Some(selection.clone());
+                let text = self.editor.read(cx).text().to_string();
+                let column = self.preview.text_column(self.editor_width(cx), &text, window);
+                let decorations =
+                    self.preview
+                        .decorations(&text, &[selection], column, visible.as_ref(), window, cx);
+                self.preview_styles.set(decorations.styles, cx);
+                self.editor.update(cx, |state, cx| {
+                    state.set_preview_decorations(decorations.decorations, cx)
+                });
+                // The scan just queued a load for every image whose size it does
+                // not know yet; run them off the UI thread.
+                self.spawn_image_loads(cx);
+            } else {
+                // Source mode owns the opposite invariant: no hidden marks, no
+                // widgets, no styles. Doing it here (not only on the toggle)
+                // covers every path that changes the document under it — a
+                // file switch, a reload, a programmatic edit.
+                self.preview_styles.set(Vec::new(), cx);
+                self.editor.update(cx, |state, cx| {
+                    state.set_preview_decorations(PreviewDecorations::default(), cx)
+                });
+            }
+        }
+        content_changed
     }
 
     /// The study pane's scan, the notes pane's protocol for the second
@@ -5749,7 +5801,6 @@ impl Workspace {
         let kind = self.palette?;
         let weak = cx.entity().downgrade();
         let weak_files = weak.clone();
-        let weak_vaults = weak.clone();
 
         let palette: gpui::AnyElement = match kind {
             PaletteKind::Commands => {
@@ -5799,31 +5850,6 @@ impl Workspace {
                         let _ = weak_confirm.update_in(cx, |this, window, cx| {
                             this.open_note(target, window, cx);
                             this.close_palette(window, cx);
-                        });
-                    })
-                    .on_cancel(move |_window, cx| {
-                        let _ = weak_cancel.update_in(cx, |this, window, cx| {
-                            this.close_palette(window, cx);
-                        });
-                    })
-                    .into_any_element()
-            }
-            PaletteKind::Vaults => {
-                let weak_confirm = weak_vaults.clone();
-                let weak_cancel = weak_vaults.clone();
-                let vaults = self.recent_vaults();
-                let items: Vec<CommandItem> = vaults
-                    .iter()
-                    .map(|v| CommandItem::new().label(v.clone()))
-                    .collect();
-                let vaults_arc = Arc::new(vaults);
-                Command::new(&self.files_state)
-                    .items(items)
-                    .placeholder("切换到最近打开的仓库…")
-                    .on_confirm(move |ix, _window, cx| {
-                        let Some(target) = vaults_arc.get(ix.row).cloned() else { return };
-                        let _ = weak_confirm.update_in(cx, |this, _window, cx| {
-                            this.switch_vault(target, cx);
                         });
                     })
                     .on_cancel(move |_window, cx| {
@@ -5971,55 +5997,7 @@ impl gpui::Render for Workspace {
         if std::mem::take(&mut self.renumber_pending) {
             self.apply_pending_renumber(window, cx);
         }
-        // An image span's width is fixed when the span is emitted, so a change
-        // in the editor's width (window resize, panel toggle) makes every
-        // image span stale. `input_bounds` is last frame's measurement, so the
-        // rescan settles one frame later.
-        if self.preview.needs_rescan(self.editor_width(cx)) {
-            self.preview_dirty = true;
-        }
-        // The scan only emits for the visible window (plus a margin), so
-        // scrolling out of the covered range must rebuild it — one frame after
-        // the scroll, like the resize above. Within the margin this fires
-        // nothing, keeping whole-document scans off the scroll path.
-        let visible = self.editor.read(cx).visible_byte_range();
-        if self.preview.needs_rescan_for(visible.as_ref()) {
-            self.preview_dirty = true;
-        }
-        let content_changed = self.preview_dirty;
-        if self.preview_dirty {
-            self.preview_dirty = false;
-            if self.live_preview {
-                let selection = self.editor.read(cx).selected_range();
-                self.preview_selection = Some(selection.clone());
-                let text = self.editor.read(cx).text().to_string();
-                let column = self.preview.text_column(self.editor_width(cx), &text, window);
-                let decorations = self.preview.decorations(
-                    &text,
-                    &[selection],
-                    column,
-                    visible.as_ref(),
-                    window,
-                    cx,
-                );
-                self.preview_styles.set(decorations.styles, cx);
-                self.editor.update(cx, |state, cx| {
-                    state.set_preview_decorations(decorations.decorations, cx)
-                });
-                // The scan just queued a load for every image whose size it does
-                // not know yet; run them off the UI thread.
-                self.spawn_image_loads(cx);
-            } else {
-                // Source mode owns the opposite invariant: no hidden marks, no
-                // widgets, no styles. Doing it here (not only on the toggle)
-                // covers every path that changes the document under it — a
-                // file switch, a reload, a programmatic edit.
-                self.preview_styles.set(Vec::new(), cx);
-                self.editor.update(cx, |state, cx| {
-                    state.set_preview_decorations(PreviewDecorations::default(), cx)
-                });
-            }
-        }
+        let content_changed = self.refresh_preview(window, cx);
         // LaTeX-suite bracket marks: rebuilt when the document or the caret
         // changed (the same subscription that drives the preview) or when the
         // viewport scrolled, so a frame that changes none of them does no work.
@@ -6383,9 +6361,7 @@ async fn save_snapshot(
                     .and_then(|o| followups.iter().find(|w| w.path == o))
                 {
                     let new_text = w.text.clone();
-                    this.editor.update(cx, |ed, cx| {
-                        ed.set_value(new_text, window, cx);
-                    });
+                    this.replace_buffer(&new_text, window, cx);
                     this.dirty = false;
                 }
             }
@@ -8305,6 +8281,41 @@ mod tests {
         });
     }
 
+    /// Bulk text replacement is the editor's silent door (`set_value` emits
+    /// no `InputEvent::Change`, see gpui-kit `state.rs`), so preview
+    /// invalidation cannot ride the event channel for it — opening a note
+    /// must still land its live preview with no keystroke or cursor move in
+    /// between. The regression this pins: before `replace_buffer`
+    /// consolidated the replacement sites, the frame after `install_text`
+    /// kept the loading state's empty snapshot until the first edit.
+    #[gpui::test]
+    fn a_bulk_load_refreshes_the_preview_without_an_edit(cx: &mut TestAppContext) {
+        use gpui_kit::component::input::PreviewSpan;
+        let (workspace, _fixture, cx) = crate::harness::note_fixture(cx, false);
+        let text = "# 标题\n\n一段 **加粗文字** 与 *斜体*。\n";
+        workspace.update_in(cx, |ws, window, cx| {
+            ws.install_text("note.md".to_string(), text.to_string(), window, cx);
+            // What the frame after the load runs — nothing else happened.
+            ws.refresh_preview(window, cx);
+            let spans = ws
+                .harness_editor()
+                .read(cx)
+                .preview_decorations()
+                .spans
+                .clone();
+            assert_eq!(
+                spans,
+                vec![
+                    PreviewSpan::hidden(17..19),
+                    PreviewSpan::hidden(31..33),
+                    PreviewSpan::hidden(38..39),
+                    PreviewSpan::hidden(45..46),
+                ],
+                "the load's own frame hides line 3's markers; the caret at 0 keeps `#`"
+            );
+        });
+    }
+
     /// TS `openDailyNote`'s toggle: ⌘⇧O from a note remembers the source,
     /// ⌘⇧O inside the daily jumps back, one more ⌘⇧O reports nothing to
     /// jump to.
@@ -8478,8 +8489,10 @@ mod tests {
     }
 
     /// `V`, `<Esc>`, `gv` re-selects the line through the real keys; `zz`
-    /// scrolls without moving the caret.
+    /// scrolls without moving the caret. The name mirrors the keys (the vim
+    /// suite's convention, `editor/vim/tests.rs`).
     #[gpui::test]
+    #[allow(non_snake_case)]
     fn gV_and_zZ_run_through_the_real_keys(cx: &mut TestAppContext) {
         let (workspace, _fixture, cx) = crate::harness::note_fixture(cx, true);
         workspace.update_in(cx, |ws, window, cx| {

@@ -35,6 +35,7 @@ use gpui::{
     SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, div,
     fill, img, point, prelude::*, px, size,
 };
+use gpui_kit::component::theme::ActiveTheme as _;
 use gpui_kit::component::input::{
     PreviewBlock, PreviewBlockView, PreviewDecorations, PreviewLineStyle, PreviewRenderer,
     PreviewSpan, PreviewWidget, TextDecoration,
@@ -585,13 +586,19 @@ impl PreviewHost {
     ) -> Option<Pixels> {
         Some(match kind {
             core::BlockKind::Math { tex, .. } => {
-                let layout = self.block_math_layout(tex, column, window, cx)?;
-                px(layout.height()) + px(6.) * 2.
+                match self.block_math_layout(tex, column, window, cx) {
+                    Some(layout) => px(layout.height()) + px(6.) * 2.,
+                    // KaTeX's `throwOnError: false` keeps a visible (red)
+                    // output for formulas the engine cannot typeset; a bare
+                    // fallback to source reads as "rendering broke".
+                    None => window.line_height() + px(6.) * 2.,
+                }
             }
             core::BlockKind::MathPreview { tex, .. } => {
-                let layout = self.block_math_layout(tex, column, window, cx)?;
-                // 4px padding top and bottom, 2px margin above, 10px below.
-                px(layout.height()) + px(20.)
+                match self.block_math_layout(tex, column, window, cx) {
+                    Some(layout) => px(layout.height()) + px(20.),
+                    None => window.line_height() + px(20.),
+                }
             }
             core::BlockKind::HiddenLine => px(0.),
             core::BlockKind::Callout { title, .. } if !title.is_empty() => {
@@ -857,7 +864,7 @@ impl PreviewRenderer for PreviewHost {
         match kind {
             core::BlockKind::Math { tex, depth } => {
                 let Some(layout) = self.block_math_layout(&tex, block.width, window, cx) else {
-                    return div().into_any_element();
+                    return math_error_line(&tex, block, depth, cx);
                 };
                 // 6px margin above the formula (`.cw-math-block`).
                 block_shell(block.width, block.height, depth, px(6.), cx)
@@ -866,7 +873,7 @@ impl PreviewRenderer for PreviewHost {
             }
             core::BlockKind::MathPreview { tex, depth } => {
                 let Some(layout) = self.block_math_layout(&tex, block.width, window, cx) else {
-                    return div().into_any_element();
+                    return math_error_line(&tex, block, depth, cx);
                 };
                 // 2px margin + 4px padding above the formula (`.cw-math-preview`).
                 block_shell(block.width, block.height, depth, px(6.), cx)
@@ -886,8 +893,29 @@ impl PreviewRenderer for PreviewHost {
     }
 }
 
-/// The box a block paints in: exactly the `width × height` the host declared,
-/// with its content centred horizontally (the TS `.cw-math-block`
+/// A formula the engine cannot typeset still renders — the source in the
+/// danger colour, centred like a formula (TS `katex.render` with
+/// `throwOnError: false, errorColor: "#ff6b6b"`: the block never collapses
+/// to raw source). Whitespace flattens the way the HTML error span renders
+/// it; nothing is elided.
+fn math_error_line(
+    tex: &str,
+    block: PreviewBlockView<'_>,
+    depth: Option<usize>,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let source = tex.split_whitespace().collect::<Vec<_>>().join(" ");
+    block_shell(block.width, block.height, depth, px(6.), cx)
+        .child(
+            gpui_kit::component::label::Label::new(source)
+                .text_sm()
+                .text_color(theme.danger),
+        )
+        .into_any_element()
+}
+
+/// The box a block paints in: exactly the `width × height` the host declared,/// with its content centred horizontally (the TS `.cw-math-block`
 /// `text-align: center`).
 ///
 /// A block nested in a callout also carries the callout face for its lines —

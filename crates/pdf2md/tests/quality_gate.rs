@@ -10,8 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// 相对 `CARGO_MANIFEST_DIR`(src-tauri/crates/pdf2md)的夹具目录。
-const FIXTURES_REL: &str = "../../../tests/data/pdf";
+/// 相对 `CARGO_MANIFEST_DIR`(crates/pdf2md)的夹具目录。
+const FIXTURES_REL: &str = "../../tests/data/pdf";
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURES_REL)

@@ -10,7 +10,6 @@
 // the capitalised segment is the key, not a word.
 #![allow(non_snake_case)]
 
-use crate::editor::vim::core::exec::feed;
 use crate::editor::vim::core::key::Key;
 use crate::editor::vim::core::ops::{CursorPlan, HostContext, HostIntent, Outcome, ScrollAnchor};
 use crate::editor::vim::core::state::Mode;

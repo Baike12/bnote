@@ -191,7 +191,10 @@ pub fn open_path(workspace: &Entity<Workspace>, cx: &VisualTestContext) -> Optio
     workspace.read_with(cx, |ws, _| ws.harness_open_path().map(str::to_string))
 }
 
-/// `cx.debug_bounds` for one element id, after [`draw`].
+/// `cx.debug_bounds` for one element id, after [`draw`]. Part of the
+/// harness's geometry layer (`DEBUGGING.md`); a test picks it up when it
+/// needs painted bounds (no test reads one right now).
+#[allow(dead_code)]
 pub fn bounds(cx: &mut VisualTestContext, id: &'static str) -> Option<gpui::Bounds<gpui::Pixels>> {
     cx.debug_bounds(id)
 }
@@ -221,6 +224,7 @@ mod tests {
         // `b` walks back a word, `x` deletes the char under the cursor.
         press(cx, w, "bx");
         assert_eq!(doc(ws, cx), "hello orld", "the keystroke path edits text");
+        assert_eq!(cursor(ws, cx), 6, "the caret reads back at `orld`");
         assert_eq!(mode(ws, cx), Some(crate::editor::vim::core::Mode::Normal));
         assert_eq!(open_path(ws, cx).as_deref(), Some("note.md"));
         // The vault is real: a save lands on disk.

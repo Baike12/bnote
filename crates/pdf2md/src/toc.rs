@@ -819,7 +819,7 @@ mod tests {
     fn cartier_fixture_page1_yields_nested_toc() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../tests/data/pdf/2609.27549-cartier-toc.pdf"
+            "/../../tests/data/pdf/2609.27549-cartier-toc.pdf"
         );
         let doc = lopdf::Document::load(path).expect("load fixture");
         let page_id = doc.get_pages().into_iter().min_by_key(|(n, _)| *n).unwrap().1;
