@@ -42,6 +42,9 @@ use workspace::Workspace;
 /// shells therefore share one `config.json` (last vault, theme, settings),
 /// `keybindings.json`, `vimrc` and `agent.json`.
 fn data_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("BNOTE_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join("Library/Application Support/com.bnote.app")
 }
@@ -104,13 +107,19 @@ fn main() {
             let (state, rx) = AppState::new(data_dir());
 
 
-            // Restore the last vault (Tauri shell writes the same key).
-            let last_vault = bnote_core::commands::config::load_app_config(&state)
+            // Restore the last vault (Tauri shell writes the same key). The
+            // diagnostic channel overrides it so a probe run never touches the
+            // user's vault.
+            let last_vault = std::env::var("BNOTE_DIAG_VAULT")
                 .ok()
-                .and_then(|cfg| {
-                    cfg.get("lastVault")
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
+                .or_else(|| {
+                    bnote_core::commands::config::load_app_config(&state)
+                        .ok()
+                        .and_then(|cfg| {
+                            cfg.get("lastVault")
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                        })
                 });
 
             let options = WindowOptions {
@@ -136,7 +145,7 @@ fn main() {
             let vim_bridge = VimBridge::init(cx);
 
             let vault_for_window = last_vault.map(PathBuf::from);
-            let _ = gpui_kit::open_window(options, cx, move |window, cx| {
+            let opened = gpui_kit::open_window(options, cx, move |window, cx| {
                 cx.new(|cx| {
                     Workspace::new(
                         state.clone(),
@@ -151,6 +160,13 @@ fn main() {
                     )
                 })
             });
+
+            // Diagnostic channel (`harness-shot` builds only, `BNOTE_DIAG_VAULT`
+            // set at runtime): a real window on the real macOS platform, driven
+            // by synthetic keystrokes injected after the vault settles — the
+            // platform layer a TestWindow cannot exercise. The workspace
+            // schedules its own phases (it owns the window context).
+            let _ = opened;
 
             cx.activate(true);
         });

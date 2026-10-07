@@ -240,6 +240,12 @@ impl SnippetHost {
         }
     }
 
+    /// Install the LaTeX behavior settings (`settings.latex`). A change must
+    /// not disturb the session: only matching and post-edit behavior read it.
+    pub fn set_latex_config(&mut self, config: LatexConfig) {
+        self.config = config;
+    }
+
     /// Replace the snippet source (the loader path; see `load.rs`'s source
     /// ownership invariant — the settings path must only flip `enabled`).
     pub fn set_store(&mut self, store: SnippetStore) {
@@ -971,6 +977,13 @@ impl SnippetBridge {
     /// source untouched, see [`SnippetHost::set_enabled`]).
     pub fn set_enabled(&self, editor: &Entity<EditorState>, enabled: bool) {
         self.with_host_mut(editor, |host| host.set_enabled(enabled));
+    }
+
+    /// Install the LaTeX behavior settings (`settings.latex`, read by
+    /// `bnote_core::snippets::config::latex_config` — one file shared with the
+    /// Tauri shell, so the same toggles apply here).
+    pub fn set_latex_config(&self, editor: &Entity<EditorState>, config: LatexConfig) {
+        self.with_host_mut(editor, |host| host.set_latex_config(config));
     }
 
     /// Refresh the bracket decorations from the current document, caret and

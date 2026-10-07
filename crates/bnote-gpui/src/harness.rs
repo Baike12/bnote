@@ -50,6 +50,16 @@ impl Fixture {
         }
     }
 
+    /// Write `config.json` into the fixture's data dir (the shell reads it at
+    /// construction: `settings.*` and `lastVault` come from here).
+    pub fn write_config(&self, json: serde_json::Value) {
+        std::fs::write(
+            self.data_dir.join("config.json"),
+            serde_json::to_string_pretty(&json).expect("config json"),
+        )
+        .expect("write config.json");
+    }
+
     /// Write a file into the vault (creating parent dirs).
     pub fn write(&self, rel: &str, text: &str) {
         let abs = self.vault.join(rel);
@@ -171,6 +181,14 @@ pub fn draw(cx: &mut VisualTestContext) {
 /// The open note's text.
 pub fn doc(workspace: &Entity<Workspace>, cx: &VisualTestContext) -> String {
     workspace.read_with(cx, |ws, cx| ws.harness_editor().read(cx).value().to_string())
+}
+
+/// Whether the editor tells the platform it accepts text input (the IME gate
+/// the macOS layer consults before routing a printable key to the input
+/// method). `false` in vim's modal modes is what keeps a CJK source from
+/// swallowing `j`/`x`/`:` — see `editor/vim/integration.rs`.
+pub fn ime_gate(workspace: &Entity<Workspace>, cx: &VisualTestContext) -> bool {
+    workspace.read_with(cx, |ws, cx| ws.harness_editor().read(cx).accepts_text_input())
 }
 
 /// The focused editor's vim mode (`None` = the editor is not attached).

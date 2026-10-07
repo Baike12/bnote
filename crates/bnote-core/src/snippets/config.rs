@@ -68,6 +68,45 @@ pub fn default_latex_config() -> LatexConfig {
     }
 }
 
+/// Read `settings.latex` (the TS `LatexConfig` shape, camelCase): missing keys
+/// keep their defaults, and every value is validated against the same rules the
+/// defaults follow — a config written by the Tauri shell is what the user
+/// already sees there, so both shells must read it identically.
+pub fn latex_config(config: &serde_json::Value) -> LatexConfig {
+    let mut out = default_latex_config();
+    let Some(block) = config.get("settings").and_then(|s| s.get("latex")) else {
+        return out;
+    };
+    let flag = |key: &str, slot: &mut bool| {
+        if let Some(value) = block.get(key).and_then(|v| v.as_bool()) {
+            *slot = value;
+        }
+    };
+    flag("autoEnlargeBrackets", &mut out.auto_enlarge_brackets);
+    flag("matrixShortcuts", &mut out.matrix_shortcuts);
+    flag("tabout", &mut out.tabout);
+    flag("bracketColors", &mut out.bracket_colors);
+    flag("highlightCursorBrackets", &mut out.highlight_cursor_brackets);
+    flag("autoDeleteDollar", &mut out.auto_delete_dollar);
+    flag("removeSnippetWhitespace", &mut out.remove_snippet_whitespace);
+    if let Some(list) = block.get("autoEnlargeTriggers").and_then(|v| v.as_array()) {
+        out.auto_enlarge_triggers = list
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+    }
+    if let Some(list) = block.get("matrixEnvs").and_then(|v| v.as_array()) {
+        out.matrix_envs = list
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+    }
+    if let Some(delims) = block.get("wordDelimiters").and_then(|v| v.as_str()) {
+        out.word_delimiters = delims.to_string();
+    }
+    out
+}
+
 impl Default for LatexConfig {
     fn default() -> Self {
         default_latex_config()
@@ -83,6 +122,51 @@ pub static DEFAULT_LATEX_CONFIG: std::sync::LazyLock<LatexConfig> =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `settings.latex` is one file shared with the Tauri shell: the reader
+    /// must take every key it holds, and leave the defaults alone for the keys
+    /// it does not (a config written before a key existed).
+    #[test]
+    fn the_latex_settings_block_overrides_key_by_key() {
+        let config = serde_json::json!({
+            "settings": {
+                "latex": {
+                    "autoDeleteDollar": false,
+                    "matrixShortcuts": false,
+                    "tabout": false,
+                    "bracketColors": false,
+                    "highlightCursorBrackets": false,
+                    "autoEnlargeBrackets": false,
+                    "removeSnippetWhitespace": false,
+                    "autoEnlargeTriggers": ["sum"],
+                    "matrixEnvs": ["align"],
+                    "wordDelimiters": " "
+                }
+            }
+        });
+        let cfg = latex_config(&config);
+        assert!(!cfg.auto_delete_dollar);
+        assert!(!cfg.matrix_shortcuts);
+        assert!(!cfg.tabout);
+        assert!(!cfg.bracket_colors);
+        assert!(!cfg.highlight_cursor_brackets);
+        assert!(!cfg.auto_enlarge_brackets);
+        assert!(!cfg.remove_snippet_whitespace);
+        assert_eq!(cfg.auto_enlarge_triggers, vec!["sum"]);
+        assert_eq!(cfg.matrix_envs, vec!["align"]);
+        assert_eq!(cfg.word_delimiters, " ");
+
+        // A partial block (or none at all) keeps the defaults.
+        let cfg = latex_config(&serde_json::json!({ "settings": { "latex": { "tabout": false } } }));
+        assert!(!cfg.tabout);
+        assert!(cfg.matrix_shortcuts);
+        assert_eq!(cfg, {
+            let mut default = default_latex_config();
+            default.tabout = false;
+            default
+        });
+        assert_eq!(latex_config(&serde_json::json!({})), default_latex_config());
+    }
 
     #[test]
     fn defaults_mirror_the_plugin() {

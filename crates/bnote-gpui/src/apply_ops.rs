@@ -34,10 +34,23 @@ pub fn apply_outcome(
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
+    editor.update(cx, |state, cx| apply_outcome_state(state, out, window, cx));
+}
+
+/// [`apply_outcome`] against an already-borrowed state. The editor's own
+/// update paths (the host's Enter rule, action listeners) hold `&mut
+/// EditorState` — re-entering the entity through `Entity::update` there would
+/// panic on the update stack.
+pub(crate) fn apply_outcome_state(
+    state: &mut EditorState,
+    out: &OpsOutcome,
+    window: &mut Window,
+    cx: &mut gpui::Context<EditorState>,
+) {
     if out.edits.is_empty() {
         return;
     }
-    let text = editor.read(cx).value().to_string();
+    let text = state.value().to_string();
     let mut text_edits: Vec<lsp_types::TextEdit> = out
         .edits
         .iter()
@@ -56,12 +69,10 @@ pub fn apply_outcome(
             .cmp(&(a.range.start.line, a.range.start.character))
     });
 
-    editor.update(cx, |state, cx| {
-        state.apply_lsp_edits(&text_edits, window, cx);
-        if let Some(&(anchor, head)) = out.cursors.first() {
-            state.set_selected_range(anchor.min(head)..anchor.max(head), cx);
-        }
-    });
+    state.apply_lsp_edits(&text_edits, window, cx);
+    if let Some(&(anchor, head)) = out.cursors.first() {
+        state.set_selected_range(anchor.min(head)..anchor.max(head), cx);
+    }
 }
 
 /// Cursor (head) byte offset → 1-based (line, column in chars), for the

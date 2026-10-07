@@ -133,6 +133,10 @@ const LINE_NUMBERS: bool = false;
 /// `needs_rescan_for` only asks for a new pass when the viewport actually
 /// leaves the covered window, not on every scrolled frame (a whole-document
 /// scan per frame would be tens of milliseconds).
+/// TS `.cw-math .katex { font-size: 1.06em }` — the one scale every rendered
+/// formula carries, inline and block alike.
+const MATH_SCALE: f32 = 1.06;
+
 const SCAN_PAD: usize = 4 * 1024;
 
 /// Digits the editor reserves for line numbers: at least three, at most
@@ -836,6 +840,10 @@ impl PreviewHost {
         cx: &mut App,
     ) -> Option<Rc<MathLayout>> {
         let _ = cx;
+        // TS `.cw-math .katex { font-size: 1.06em }`: KaTeX's own metrics sit a
+        // touch below the surrounding text and the stylesheet makes that up
+        // before anything measures the formula.
+        let base = base * MATH_SCALE;
         let key = (
             tex.to_owned(),
             display,
@@ -878,7 +886,9 @@ impl PreviewHost {
         cx: &mut App,
     ) -> Option<Rc<MathLayout>> {
         let _ = cx;
-        let base = self.font.size;
+        // The same 1.06em the inline path applies (TS scales both through
+        // `.cw-math .katex`).
+        let base = self.font.size * MATH_SCALE;
         let key = (
             tex.to_owned(),
             true,

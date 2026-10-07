@@ -384,6 +384,10 @@ pub struct Workspace {
     /// App-wide vim bridge (created in main; shared with the interceptor).
     vim_bridge: VimBridge,
     vim_enabled: bool,
+    /// The diagnostic probe's keystroke counter (`debug_schedule_diag`; the
+    /// `harness-shot` build only, and it is only ever read from there).
+    #[cfg(feature = "harness-shot")]
+    diag_hits: std::rc::Rc<std::cell::Cell<usize>>,
     /// App-wide LaTeX-suite snippet bridge (created in main before the vim
     /// bridge; owns one `SnippetHost` per attached editor).
     snippets: SnippetBridge,
@@ -660,6 +664,14 @@ impl Workspace {
     pub(crate) fn harness_set_vim(&mut self, on: bool, cx: &mut Context<Self>) {
         self.set_vim_setting(on, cx);
     }
+    #[cfg(test)]
+    pub(crate) fn harness_palette_open(&self) -> bool {
+        self.palette.is_some()
+    }
+    #[cfg(test)]
+    pub(crate) fn harness_palette_query(&self, cx: &gpui::App) -> String {
+        self.files_state.read(cx).query(cx).to_string()
+    }
 
     // ---- debug channels (the headless harness, DEBUGGING.md) ------------
     // Non-test: `--harness-shot` (a release binary) drives the same seams
@@ -716,6 +728,205 @@ impl Workspace {
         self.set_vim_setting(on, cx);
     }
 
+    /// The real-platform probe (`BNOTE_DIAG_VAULT`, see `main.rs`): records the
+    /// focus/dispatch facts a `TestWindow` cannot show, then injects a few
+    /// keystrokes through `Window::dispatch_keystroke` — the same entry real
+    /// keys take *after* the macOS platform layer — and logs what each one did.
+    ///
+    /// The script lives in an async task: every dispatch happens through the
+    /// plain window context (never inside a `Workspace` borrow, which would
+    /// re-enter the entity through its own listeners), and the palette phase
+    /// runs a frame later so the palette's input is rendered and reachable.
+    #[cfg(feature = "harness-shot")]
+    pub(crate) fn debug_schedule_diag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if std::env::var("BNOTE_DIAG_VAULT").is_err() {
+            return;
+        }
+        let path = std::env::var("BNOTE_DIAG_LOG")
+            .unwrap_or_else(|_| "/tmp/bnote-gpui-diag.log".to_string());
+        // A probe interceptor registered after the vim/snippet ones: it counts
+        // every keystroke that reaches the interceptor chain (registration
+        // order = call order, and the chain runs all of them). Global, so the
+        // count survives the dispatches below.
+        let hits = self.diag_hits.clone();
+        cx.intercept_keystrokes(move |_event, _window, _cx| {
+            hits.set(hits.get() + 1);
+        })
+        .detach();
+
+        cx.spawn_in(window, async move |this, window| {
+            use std::fmt::Write as _;
+            let mut out = String::new();
+            let _ = writeln!(out, "=== bnote-gpui diag ===");
+            window
+                .background_executor()
+                .timer(std::time::Duration::from_millis(2500))
+                .await;
+            let facts = this.update_in(window, |ws, window, cx| ws.diag_facts(window, cx));
+            if let Ok(facts) = facts {
+                out.push_str(&facts);
+            }
+            // Load the fixture note the way the tree click does, let a frame
+            // render (that is what pushes the preview snapshot), then re-read.
+            let _ = this.update_in(window, |ws, window, cx| {
+                ws.debug_load_note("Note.md", window, cx)
+            });
+            window
+                .background_executor()
+                .timer(std::time::Duration::from_millis(600))
+                .await;
+            if let Ok(facts) = this.update_in(window, |ws, window, cx| ws.diag_facts(window, cx)) {
+                out.push_str("--- after load ---\n");
+                out.push_str(&facts);
+            }
+            for keys in ["j", "j", "x", "i", "H", "i", "escape", "u"] {
+                let ks = gpui::Keystroke::parse(keys).expect("a keystroke");
+                let _ = window.update(|window, cx| window.dispatch_keystroke(ks, cx));
+                let line = this.update_in(window, |ws, _window, cx| {
+                    let mode = ws.vim_bridge.mode_of(&ws.editor);
+                    let cursor = ws.editor.read(cx).cursor();
+                    let text = ws.editor.read(cx).value().to_string();
+                    let _ = writeln!(
+                        out,
+                        "key {keys:>7}: mode={mode:?} cursor={cursor} hits={} text={:?}",
+                        ws.diag_hits.get(),
+                        text.chars().take(40).collect::<String>(),
+                    );
+                });
+                let _ = line;
+            }
+            out.push_str("--- quick switcher ---\n");
+            let settle = std::time::Duration::from_millis(300);
+            let read_palette = |ws: &Workspace, cx: &gpui::App| {
+                format!(
+                    "  palette={} query={:?} open={:?}\n",
+                    ws.palette.is_some(),
+                    ws.files_state.read(cx).query(cx),
+                    ws.open_path,
+                )
+            };
+            let _ = window.update(|window, cx| {
+                window.dispatch_action(Box::new(actions::QuickSwitcher), cx)
+            });
+            window.background_executor().timer(settle).await;
+            if let Ok(text) = this.update_in(window, |ws, window, cx| {
+                format!(
+                    "after open:{}  files_input_focused={} editor_focused={}\n",
+                    read_palette(ws, cx),
+                    ws.files_state.read(cx).focus_handle(cx).is_focused(window),
+                    ws.editor.focus_handle(cx).is_focused(window),
+                )
+            }) {
+                out.push_str(&text);
+            }
+            for keys in ["N", "o", "t", "e"] {
+                let ks = gpui::Keystroke::parse(keys).expect("a keystroke");
+                let _ = window.update(|window, cx| window.dispatch_keystroke(ks, cx));
+                if let Ok(text) = this.update_in(window, |ws, _, cx| read_palette(ws, cx)) {
+                    out.push_str(&format!("key {keys}: {text}"));
+                }
+            }
+            window.background_executor().timer(settle).await;
+            if let Ok(text) = this.update_in(window, |ws, _, cx| read_palette(ws, cx)) {
+                out.push_str(&format!("settled before enter: {text}"));
+            }
+            let _ = window.update(|window, cx| {
+                window.dispatch_keystroke(gpui::Keystroke::parse("enter").expect("k"), cx)
+            });
+            window.background_executor().timer(settle).await;
+            if let Ok(text) = this.update_in(window, |ws, _, cx| read_palette(ws, cx)) {
+                out.push_str(&format!("after enter: {text}"));
+            }
+            // Escape: the first press clears a non-empty query.
+            for round in 1..=3 {
+                let _ = window.update(|window, cx| {
+                    window.dispatch_keystroke(gpui::Keystroke::parse("escape").expect("k"), cx)
+                });
+                window.background_executor().timer(settle).await;
+                if let Ok(text) = this.update_in(window, |ws, _, cx| read_palette(ws, cx)) {
+                    out.push_str(&format!("after escape #{round}: {text}"));
+                }
+                let open = this
+                    .update_in(window, |ws, _, _| ws.palette.is_some())
+                    .unwrap_or(false);
+                if !open {
+                    break;
+                }
+            }
+            // And the direct action dispatch, with a frame in between.
+            let _ = window.update(|window, cx| {
+                window.dispatch_action(
+                    Box::new(gpui_kit::base::actions::Confirm { secondary: false }),
+                    cx,
+                )
+            });
+            window.background_executor().timer(settle).await;
+            if let Ok(text) = this.update_in(window, |ws, _, cx| read_palette(ws, cx)) {
+                out.push_str(&format!("direct Confirm (settled): {text}"));
+            }
+            let _ = std::fs::write(&path, out);
+        })
+        .detach();
+    }
+
+    /// The read-only half of the probe: focus, the vim attachment, and what the
+    /// preview pipeline actually installed on the editor.
+    #[cfg(feature = "harness-shot")]
+    fn diag_facts(&self, window: &mut Window, cx: &mut Context<Self>) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        let focused = window.focused(cx);
+        let editor_handle = self.editor.focus_handle(cx);
+        let _ = writeln!(
+            out,
+            "focus: any_focused={:?} editor_focused={} focused_is_editor={:?}",
+            focused.is_some(),
+            editor_handle.is_focused(window),
+            focused.as_ref().map(|f| f == &editor_handle),
+        );
+        let _ = writeln!(
+            out,
+            "vim_enabled={} mode={:?} open={:?} live_preview={}",
+            self.vim_enabled,
+            self.vim_bridge.mode_of(&self.editor),
+            self.open_path,
+            self.live_preview,
+        );
+        {
+            let ed = self.editor.read(cx);
+            let deco = ed.preview_decorations();
+            let text = ed.text().to_string();
+            let _ = writeln!(
+                out,
+                "preview: text={:?} spans={} blocks={} lines={} revision={} visible_rows={:?}",
+                text.chars().take(60).collect::<String>(),
+                deco.spans.len(),
+                deco.blocks.len(),
+                deco.lines.len(),
+                deco.revision,
+                ed.visible_row_range(),
+            );
+            let _ = writeln!(
+                out,
+                "rescan: width={} needs_rescan={} needs_rescan_for_visible={}",
+                f32::from(self.editor_width(cx)),
+                self.preview.needs_rescan(self.editor_width(cx)),
+                self.preview.needs_rescan_for(ed.visible_byte_range().as_ref()),
+            );
+            for block in deco.blocks.iter().take(12) {
+                let _ = writeln!(out, "  block lines={:?} text={:?}", block.lines, block.text);
+            }
+            for span in deco.spans.iter().take(12) {
+                let _ = writeln!(out, "  span {:?}", span);
+            }
+        }
+        let _ = writeln!(out, "ime_desired={:?}", {
+            let ime = self.ime.read(cx);
+            ime.settings().enabled
+        });
+        out
+    }
+
     /// Install a footprint index (keys = **vault-relative** paths) and rescan:
     /// the scripted shots' way to put a zone on screen without waiting for a
     /// real edit cycle.
@@ -764,6 +975,12 @@ impl Workspace {
         // Snippets run with vim on or off; the bridge reads the mode from the
         // vim bridge, which stays the single mode authority.
         snippets.attach(editor.clone(), vim_bridge.clone(), cx);
+        // The markdown Enter rule rides the editor's own Enter (TS installs
+        // the same rule as a `Prec.highest` keymap entry on Enter), so a
+        // keystroke the snippet bridge already consumed never reaches it.
+        editor.update(cx, |state, cx| {
+            state.set_enter_override(Some(std::rc::Rc::new(crate::editor::markdown_keys::enter_continue)), cx)
+        });
 
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let agent = cx.new(|cx| AgentPanel::new(state.clone(), window, cx));
@@ -783,6 +1000,13 @@ impl Workspace {
                 .and_then(|s| s.get(key))
                 .and_then(|v| v.as_bool())
         };
+        // `settings.latex` (the LaTeX-suite behavior block) is one file shared
+        // with the Tauri shell: read it so the toggles the user set there apply
+        // here too.
+        snippets.set_latex_config(
+            &editor,
+            bnote_core::snippets::config::latex_config(&startup),
+        );
         let code_block_lang = startup
             .get("settings")
             .and_then(|s| s.get("codeBlockLang"))
@@ -1081,6 +1305,8 @@ impl Workspace {
             toast_gen: 0,
             vim_bridge,
             vim_enabled: false,
+            #[cfg(feature = "harness-shot")]
+            diag_hits: std::rc::Rc::new(std::cell::Cell::new(0)),
             snippets,
             snippet_marks_rows: None,
             today: today_string(),
@@ -1285,6 +1511,9 @@ impl Workspace {
         window.defer(cx, move |window, cx| {
             focus_handle.focus(window, cx);
         });
+
+        #[cfg(feature = "harness-shot")]
+        workspace.debug_schedule_diag(window, cx);
 
         workspace
     }
@@ -1662,7 +1891,9 @@ impl Workspace {
     /// in the open note, 300 ms after they stop moving. A newer request
     /// invalidates the older timer (seq comparison in `flush_cursor_save`).
     fn schedule_cursor_save(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.open_path.clone() else {
+        // Absolute, like the restore side and the Tauri shell (see
+        // [`Self::restore_cursor_memory`]).
+        let Some(path) = self.open_note_abs() else {
             return;
         };
         let (pos, scroll) = {
@@ -1830,7 +2061,18 @@ impl Workspace {
         let Ok(config) = bnote_core::commands::config::load_app_config(&self.state) else {
             return;
         };
-        let Some((pos, scroll)) = bnote_core::commands::config::cursor_position(&config, rel_path)
+        // The key is the **absolute** path: the Tauri shell writes
+        // `cursorPositions` under the path it opened the note with, and both
+        // shells share one `config.json` — a relative key here would give each
+        // shell its own cursor memory and neither would see the other's.
+        let Some(abs) = self
+            .vault_root
+            .as_ref()
+            .map(|root| root.join(rel_path).to_string_lossy().to_string())
+        else {
+            return;
+        };
+        let Some((pos, scroll)) = bnote_core::commands::config::cursor_position(&config, &abs)
         else {
             return;
         };
@@ -2232,19 +2474,19 @@ impl Workspace {
             .on_confirm({
                 let rels = rels.clone();
                 let weak = weak.clone();
-                move |ix, _window, cx| {
+                move |ix, window, cx| {
                     let Some(rel) = rels.get(ix.row).cloned() else {
                         return;
                     };
-                    let _ = weak.update_in(cx, |this, window, cx| {
+                    defer_workspace(&weak, window, cx, move |this, window, cx| {
                         this.insert_wikilink_pick(&rel, window, cx);
                     });
                 }
             })
             .on_cancel({
                 let weak = weak.clone();
-                move |_window, cx| {
-                    let _ = weak.update_in(cx, |this, window, cx| {
+                move |window, cx| {
+                    defer_workspace(&weak, window, cx, |this, window, cx| {
                         this.close_link_suggest(window, cx);
                     });
                 }
@@ -2642,8 +2884,7 @@ impl Workspace {
         if enabled {
             self.vim_bridge.attach(editor, cx);
         } else {
-            self.vim_bridge.detach(&editor);
-            editor.update(cx, |state, cx| state.set_readonly(false, cx));
+            self.vim_bridge.detach(&editor, cx);
         }
     }
 
@@ -4407,13 +4648,13 @@ impl Workspace {
             Command::new(&self.qa_state)
                 .items(items)
                 .placeholder("搜索快速添加命令…")
-                .on_confirm(move |ix, _window, cx| {
-                    let _ = weak_confirm.update_in(cx, |this, window, cx| {
+                .on_confirm(move |ix, window, cx| {
+                    defer_workspace(&weak_confirm, window, cx, move |this, window, cx| {
                         this.qa_pick(ix.row, window, cx);
                     });
                 })
-                .on_cancel(move |_window, cx| {
-                    let _ = weak_cancel.update_in(cx, |this, window, cx| {
+                .on_cancel(move |window, cx| {
+                    defer_workspace(&weak_cancel, window, cx, |this, window, cx| {
                         this.close_quick_add(window, cx);
                     });
                 })
@@ -5342,6 +5583,15 @@ impl Workspace {
         // The pending save still refers to the note being left — write it out
         // before the swap (TS `flushCursorSave`).
         self.flush_cursor_save_now(cx);
+        // …and so does unsaved **content**: the swap marks the buffer clean, so
+        // without this a switch inside the auto-save debounce (or with auto-save
+        // off) drops the edits for good. TS `openNote` awaits the pending save
+        // for the same reason; here the write is synchronous — a file switch is
+        // rare and the note is small.
+        if self.dirty && self.open_path.as_deref() != Some(rel_path.as_str()) {
+            self.flush_note_save_blocking(cx);
+            self.dirty = false;
+        }
         let full = root.join(&rel_path);
         let state = self.state.clone();
         self.open_path = Some(rel_path.clone());
@@ -6289,8 +6539,8 @@ impl Workspace {
                     .items(items)
                     .placeholder("输入命令…")
                     .on_confirm(|_ix, _window, _cx| {})
-                    .on_cancel(move |_window, cx| {
-                        let _ = weak.update_in(cx, |this, window, cx| {
+                    .on_cancel(move |window, cx| {
+                        defer_workspace(&weak, window, cx, |this, window, cx| {
                             this.close_palette(window, cx);
                         });
                     })
@@ -6317,15 +6567,17 @@ impl Workspace {
                 Command::new(&self.files_state)
                     .items(items)
                     .placeholder("跳转到笔记…")
-                    .on_confirm(move |ix, _window, cx| {
-                        let Some(target) = names_arc.get(ix.row).cloned() else { return };
-                        let _ = weak_confirm.update_in(cx, |this, window, cx| {
+                    .on_confirm(move |ix, window, cx| {
+                        let Some(target) = names_arc.get(ix.row).cloned() else {
+                            return;
+                        };
+                        defer_workspace(&weak_confirm, window, cx, move |this, window, cx| {
                             this.open_note(target, window, cx);
                             this.close_palette(window, cx);
                         });
                     })
-                    .on_cancel(move |_window, cx| {
-                        let _ = weak_cancel.update_in(cx, |this, window, cx| {
+                    .on_cancel(move |window, cx| {
+                        defer_workspace(&weak_cancel, window, cx, |this, window, cx| {
                             this.close_palette(window, cx);
                         });
                     })
@@ -6392,6 +6644,27 @@ fn settings_hint(text: &str, theme: &gpui_kit::component::theme::Theme) -> impl 
 
 /// Whether deleting `rel` takes the open note with it — the note itself, or a
 /// folder above it (TS `trashEntry`'s prefix test).
+/// Run a workspace update from inside a component callback (the palettes, the
+/// link panel). Those run inside the window's own update frame, and gpui takes
+/// the window out of `App::windows` for the duration of that frame:
+/// `WeakEntity::update_in(&mut App, …)` cannot resolve the entity's window
+/// there and fails with "entity has no current window" — silently, because
+/// every call site used to discard the error, which is how the quick
+/// switcher's Enter and Escape came to do nothing at all.
+///
+/// `Context::defer_in` is the API for this shape: it records the
+/// entity↔window association and runs the closure after the current effect
+/// cycle, where the window is addressable again.
+fn defer_workspace(
+    weak: &gpui::WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+    f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) {
+    let Some(workspace) = weak.upgrade() else { return };
+    workspace.update(cx, |_this, cx| cx.defer_in(&*window, f));
+}
+
 fn deletion_hits_open_note(open: Option<&str>, rel: &str) -> bool {
     open.is_some_and(|p| p == rel || p.starts_with(&format!("{rel}/")))
 }
@@ -9328,4 +9601,339 @@ mod tests {
             "clicking again collapses it: {rows:?}"
         );
     }
+    /// `settings.latex` is read from the shared `config.json`, so a toggle the
+    /// user set in the Tauri shell applies here: with `matrixShortcuts` off,
+    /// Shift+Tab inside a matrix must not insert the column separator.
+    #[gpui::test]
+    fn the_latex_settings_block_reaches_the_snippet_host(cx: &mut TestAppContext) {
+        /// Load a matrix and put the caret on its `x`; Shift+Tab then asks the
+        /// snippet engine for the column separator.
+        fn step_into_a_matrix(
+            cx: &mut gpui::VisualTestContext,
+            ws: &gpui::Entity<Workspace>,
+        ) -> String {
+            const DOC: &str = "$$\n\\begin{align}\nx\n\\end{align}\n$$\n";
+            let at = DOC.find("x\n").expect("the matrix body");
+            ws.update_in(cx, |ws, window, cx| {
+                ws.replace_buffer(DOC, window, cx);
+                ws.editor.update(cx, |ed, cx| ed.set_selected_range(at..at, cx));
+            });
+            crate::harness::draw(cx);
+            let w = crate::harness::window(cx);
+            crate::harness::chord(cx, w, "shift-tab");
+            crate::harness::doc(ws, cx)
+        }
+
+        let (workspace, _fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write_config(serde_json::json!({
+                "settings": { "latex": { "matrixShortcuts": false } }
+            }));
+            fixture.write("Note.md", "");
+            Vec::new()
+        });
+        let off = step_into_a_matrix(cx, &workspace);
+        assert!(
+            !off.contains(" & "),
+            "no matrix shortcut with the setting off: {off:?}"
+        );
+
+        // The same fixture with the default (on) does insert it — the setting
+        // is what makes the difference, not an unrelated regression.
+        let (workspace, _fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write("Note.md", "");
+            Vec::new()
+        });
+        let on = step_into_a_matrix(cx, &workspace);
+        assert!(
+            on.contains(" & "),
+            "the default inserts the column separator: {on:?}"
+        );
+    }
+
+    /// Enter continues the list item under the caret through the real
+    /// keystroke path (TS `ops.ts::enterContinueListItem`, a `Prec.highest`
+    /// entry on Enter): the marker repeats with a fresh checkbox for todos and
+    /// the next number for ordered lists, an empty nested item walks back one
+    /// level, an empty top-level item leaves the list, and a fenced code block
+    /// stays literal.
+    #[gpui::test]
+    fn enter_continues_list_items(cx: &mut TestAppContext) {
+        let (workspace, _fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write(
+                "Note.md",
+                "- 项目一\n- [ ] 待办\n1. 一\n   - 嵌套\n- 空项\n\n```\ncode\n```\n",
+            );
+            vec!["Note.md".to_string()]
+        });
+        let w = crate::harness::window(cx);
+        crate::harness::draw(cx);
+        // Enter at the end of the line that contains `needle` (the caret is
+        // where a user's would be when they press it).
+        let enter_on = |cx: &mut gpui::VisualTestContext, needle: &str| {
+            workspace.update_in(cx, |ws, _window, cx| {
+                let text = ws.editor.read(cx).text().to_string();
+                let start = text.find(needle).expect("the line is in the document");
+                let end = text[start..].find('\n').map(|i| start + i).unwrap_or(text.len());
+                ws.editor.update(cx, |ed, cx| ed.set_selected_range(end..end, cx));
+            });
+            crate::harness::chord(cx, w, "enter");
+        };
+        let text = |cx: &gpui::VisualTestContext| crate::harness::doc(&workspace, cx);
+
+        // A bullet continues as a bullet.
+        enter_on(cx, "- 项目一");
+        assert_eq!(
+            text(cx),
+            "- 项目一\n- \n- [ ] 待办\n1. 一\n   - 嵌套\n- 空项\n\n```\ncode\n```\n"
+        );
+
+        // A todo continues with a fresh unchecked box.
+        enter_on(cx, "- [ ] 待办");
+        assert!(
+            text(cx).contains("- [ ] 待办\n- [ ] \n1. 一"),
+            "the todo continues unchecked: {:?}",
+            text(cx)
+        );
+
+        // An ordered item continues with the next number.
+        enter_on(cx, "1. 一");
+        assert!(
+            text(cx).contains("1. 一\n2. \n"),
+            "ordered items number up: {:?}",
+            text(cx)
+        );
+
+        // A nested item continues at its own level…
+        enter_on(cx, "   - 嵌套");
+        assert!(
+            text(cx).contains("   - 嵌套\n   - \n"),
+            "a nested item stays nested: {:?}",
+            text(cx)
+        );
+
+        // …and an empty nested item walks back out one level.
+        enter_on(cx, "   - \n");
+        assert!(
+            text(cx).contains("- \n- 空项"),
+            "an empty nested item drops one level: {:?}",
+            text(cx)
+        );
+
+        // A fenced code block stays literal: Enter is a plain newline.
+        enter_on(cx, "code");
+        assert!(
+            text(cx).contains("```\ncode\n\n```"),
+            "a code line is not a list: {:?}",
+            text(cx)
+        );
+    }
+
+    /// The list continuation stands down inside a `$$…$$` block: a `- ` line
+    /// there is LaTeX (the snippet bridge owns Enter in formulas).
+    #[gpui::test]
+    fn enter_inside_a_formula_does_not_continue_a_list(cx: &mut TestAppContext) {
+        let (workspace, _fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write("Note.md", "$$
+- a
+$$
+");
+            vec!["Note.md".to_string()]
+        });
+        let w = crate::harness::window(cx);
+        crate::harness::draw(cx);
+        workspace.update_in(cx, |ws, _window, cx| {
+            let text = ws.editor.read(cx).text().to_string();
+            let byte = line_col_to_byte(&text, 2, 4);
+            ws.editor.update(cx, |ed, cx| ed.set_selected_range(byte..byte, cx));
+        });
+        crate::harness::chord(cx, w, "enter");
+        assert!(
+            !crate::harness::doc(&workspace, cx).contains("- a
+- "),
+            "no list continuation inside the block: {:?}",
+            crate::harness::doc(&workspace, cx)
+        );
+    }
+
+    /// Switching notes inside the auto-save debounce (or with auto-save off)
+    /// must not drop the edits: `open_note` writes the dirty buffer out before
+    /// the swap, which is what TS `openNote`'s awaited `saveNote()` does.
+    #[gpui::test]
+    fn switching_notes_writes_the_unsaved_content(cx: &mut TestAppContext) {
+        let (workspace, fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write("A.md", "a");
+            fixture.write("B.md", "b");
+            vec!["A.md".to_string()]
+        });
+        crate::harness::draw(cx);
+        let w = crate::harness::window(cx);
+
+        // Type into A (dirty), then switch before the debounce fires.
+        crate::harness::press(cx, w, "XY");
+        assert_eq!(crate::harness::doc(&workspace, cx), "XYa");
+        workspace.update_in(cx, |ws, window, cx| ws.open_note("B.md".to_string(), window, cx));
+        cx.run_until_parked();
+
+        assert_eq!(
+            fixture.read("A.md"),
+            "XYa",
+            "the edit of the note being left is on disk"
+        );
+        assert_eq!(
+            crate::harness::open_path(&workspace, cx).as_deref(),
+            Some("B.md")
+        );
+    }
+
+    /// Cursor memory is keyed by the **absolute** path — the shape the Tauri
+    /// shell writes, so both shells share one memory per note. A relative key
+    /// would silently give each shell its own.
+    #[gpui::test]
+    fn cursor_memory_is_keyed_by_the_absolute_path(cx: &mut TestAppContext) {
+        let (workspace, fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write("Note.md", "一二三四五六七八九十");
+            vec!["Note.md".to_string()]
+        });
+        crate::harness::draw(cx);
+
+        // Move the caret (the observer queues the debounced save), then flush
+        // it the way the quit path does — synchronously, so the file is
+        // readable right here.
+        workspace.update_in(cx, |ws, _window, cx| {
+            ws.editor.update(cx, |ed, cx| ed.set_selected_range(6..6, cx));
+        });
+        // The caret observer that queues the save runs in the effect flush at
+        // the end of that update.
+        cx.run_until_parked();
+        workspace.update_in(cx, |ws, _window, _cx| ws.flush_cursor_save_blocking());
+        cx.run_until_parked();
+
+        // The shell canonicalizes the vault root (`/var` → `/private/var` on
+        // macOS), and the key follows the path it opened the note with.
+        let abs = fixture
+            .vault
+            .canonicalize()
+            .unwrap_or_else(|_| fixture.vault.clone())
+            .join("Note.md")
+            .to_string_lossy()
+            .to_string();
+        let raw = std::fs::read_to_string(fixture.data_dir.join("config.json")).unwrap_or_default();
+        let config: serde_json::Value = serde_json::from_str(&raw).expect("config json");
+        assert_eq!(
+            config
+                .get("cursorPositions")
+                .and_then(|c| c.get(&abs))
+                .and_then(|entry| entry.get("pos"))
+                .and_then(|pos| pos.as_u64()),
+            Some(6),
+            "the absolute key holds the position: {raw}"
+        );
+        assert!(
+            config
+                .get("cursorPositions")
+                .and_then(|c| c.get("Note.md"))
+                .is_none(),
+            "no relative twin is written: {raw}"
+        );
+    }
+
+    /// The IME gate follows vim's mode through the real keystroke path: closed
+    /// in normal/visual (a CJK input source must not eat the keys), open in
+    /// insert/replace, and open again once vim is switched off. This is the
+    /// host-side half of the platform seam; the platform's own routing is
+    /// gpui's (`ElementInputHandler::prefers_ime_for_printable_keys`).
+    #[gpui::test]
+    fn the_ime_gate_follows_the_vim_mode(cx: &mut TestAppContext) {
+        let (workspace, _fixture, cx) = crate::harness::note_fixture(cx, false);
+        let w = crate::harness::window(cx);
+        crate::harness::draw(cx);
+        assert!(
+            crate::harness::ime_gate(&workspace, cx),
+            "vim off: the editor accepts text input"
+        );
+
+        workspace.update_in(cx, |ws, _window, cx| ws.harness_set_vim(true, cx));
+        cx.run_until_parked();
+        assert!(
+            !crate::harness::ime_gate(&workspace, cx),
+            "vim on starts in normal mode: the IME gate is closed"
+        );
+
+        crate::harness::press(cx, w, "i");
+        assert_eq!(crate::harness::mode(&workspace, cx), Some(crate::editor::vim::core::Mode::Insert));
+        assert!(
+            crate::harness::ime_gate(&workspace, cx),
+            "insert mode takes text input again"
+        );
+
+        crate::harness::chord(cx, w, "escape");
+        assert_eq!(crate::harness::mode(&workspace, cx), Some(crate::editor::vim::core::Mode::Normal));
+        assert!(
+            !crate::harness::ime_gate(&workspace, cx),
+            "leaving insert closes the gate again"
+        );
+
+        workspace.update_in(cx, |ws, _window, cx| ws.harness_set_vim(false, cx));
+        cx.run_until_parked();
+        assert!(
+            crate::harness::ime_gate(&workspace, cx),
+            "vim off hands text input back to the platform"
+        );
+    }
+
+    /// The quick switcher: ⌘O opens it, Enter opens the highlighted row's note,
+    /// and Escape clears the query first and closes on the next press. A real
+    /// regression net for the real-window report "跳转到文件无法生效,弹窗也不能关闭".
+    #[gpui::test]
+    fn the_quick_switcher_opens_a_row_and_escape_closes(cx: &mut TestAppContext) {
+        let (workspace, _fixture, cx) = crate::harness::workspace_fixture_with(cx, |fixture| {
+            fixture.write("Note.md", "hi");
+            Vec::new()
+        });
+        let w = crate::harness::window(cx);
+        crate::harness::draw(cx);
+
+        crate::harness::chord(cx, w, "cmd-o");
+        crate::harness::draw(cx);
+        assert!(workspace.read_with(cx, |ws, _| ws.harness_palette_open()), "⌘O opens the switcher");
+
+        crate::harness::press(cx, w, "Note");
+        assert_eq!(
+            workspace.read_with(cx, |ws, cx| ws.harness_palette_query(cx)),
+            "Note",
+            "the query field takes typed text"
+        );
+
+        crate::harness::chord(cx, w, "enter");
+        cx.run_until_parked();
+        assert_eq!(
+            crate::harness::open_path(&workspace, cx).as_deref(),
+            Some("Note.md"),
+            "Enter opens the highlighted note"
+        );
+        assert!(
+            !workspace.read_with(cx, |ws, _| ws.harness_palette_open()),
+            "Enter closes the switcher"
+        );
+
+        // Escape: first press clears a non-empty query, the second closes.
+        crate::harness::chord(cx, w, "cmd-o");
+        crate::harness::draw(cx);
+        crate::harness::press(cx, w, "N");
+        crate::harness::chord(cx, w, "escape");
+        cx.run_until_parked();
+        assert!(workspace.read_with(cx, |ws, _| ws.harness_palette_open()), "Esc #1 keeps the palette");
+        assert_eq!(
+            workspace.read_with(cx, |ws, cx| ws.harness_palette_query(cx)),
+            "",
+            "Esc #1 clears the query"
+        );
+        crate::harness::chord(cx, w, "escape");
+        cx.run_until_parked();
+        assert!(
+            !workspace.read_with(cx, |ws, _| ws.harness_palette_open()),
+            "Esc #2 closes the switcher"
+        );
+    }
+
 }

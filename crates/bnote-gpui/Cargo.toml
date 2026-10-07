@@ -37,6 +37,16 @@ walkdir = "2"
 gpui-kit = { path = "../../../gpui-kit/crates/kit", features = [
     "tree-sitter-markdown",
     "tree-sitter-markdown-inline",
+    # Fenced-code grammars. The Tauri shell loads a language lazily from the
+    # fence's info string (`@codemirror/language-data`, every language); a
+    # native build compiles them in, so the set is the vault's own mix
+    # (measured: js 265, rust 127, python 10, ts 7, sh 1 fences).
+    "tree-sitter-bash",
+    "tree-sitter-javascript",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-typescript",
+    "tree-sitter-tsx",
 ] }
 # gpui is re-exported by gpui-kit, but this crate names it directly
 # (gpui-kit's own rename of Zed's gpui snapshot; version must match).

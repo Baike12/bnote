@@ -138,8 +138,14 @@ impl VimBridge {
         bridge
     }
 
-    /// Make an editor modal: attach its vim state and start in Normal mode
-    /// (readonly, so a stray IME event cannot edit behind vim's back).
+    /// Make an editor modal: attach its vim state and start in Normal mode.
+    ///
+    /// Normal mode closes the platform's IME gate as well as the editability
+    /// gate: gpui's macOS layer sends a printable key to the input method
+    /// *before* key handling whenever the focused handler accepts text input,
+    /// and with a CJK source active the IME consumes the key there — `j`, `x`,
+    /// `:` never reach this bridge at all. Zed's vim does the same through
+    /// `expects_character_input` (false in normal/visual, true in insert).
     pub fn attach(&self, editor: Entity<EditorState>, cx: &mut App) {
         {
             let mut list = self.attachments.borrow_mut();
@@ -148,11 +154,20 @@ impl VimBridge {
             }
             list.push(Attachment { editor: editor.clone(), vim: VimState::new() });
         }
-        editor.update(cx, |state, cx| state.set_readonly(true, cx));
+        editor.update(cx, |state, cx| {
+            state.set_readonly(true, cx);
+            state.set_accepts_text_input(false, cx);
+        });
     }
 
-    pub fn detach(&self, editor: &Entity<EditorState>) {
+    /// Hand the editor back to the platform: editable, and accepting text
+    /// input again (the IME gate must not stay closed once vim is off).
+    pub fn detach(&self, editor: &Entity<EditorState>, cx: &mut App) {
         self.attachments.borrow_mut().retain(|a| &a.editor != editor);
+        editor.update(cx, |state, cx| {
+            state.set_readonly(false, cx);
+            state.set_accepts_text_input(true, cx);
+        });
     }
 
     /// Observe mode changes (one observer; the shell has one editor).
@@ -705,7 +720,14 @@ fn apply_execution_state(
         }
 
         if let Some(mode) = exec.mode_after {
+            // Two gates follow the mode, and both are needed: readonly keeps
+            // the platform from editing behind vim's back, and the IME gate
+            // (`accepts_text_input`) keeps the platform from sending printable
+            // keys to the input method *before* key handling — with a CJK
+            // source active the IME would consume them and vim would see
+            // nothing. Insert/Replace are the only modes that want text input.
             state.set_readonly(!inserts_natively(mode), cx);
+            state.set_accepts_text_input(inserts_natively(mode), cx);
         }
 
         for intent in &exec.host_intents {

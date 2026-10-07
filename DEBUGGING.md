@@ -84,6 +84,22 @@ type→key/chord→waitMs→shot 顺序执行;`footprints` 直接注入今日足
 无头渲染的盲区（与 Tauri 浏览器调试一致）:OS IME 全貌、系统对话框、Dock
 交互——这几类留待用户实机反馈。
 
+## 3.5 真窗口探针（`BNOTE_DIAG_VAULT`，`harness-shot` 构建）
+
+第 0-3 层都跑在 `TestWindow` 上，看不到**平台层**的事实：真窗口的焦点归属、真键在拦截链里的走向、组件回调（palette 的 Enter/Escape）是否真的执行。这一层补上：同一个可执行文件，带 `harness-shot` feature 构建，运行时给三个环境变量即可——它照常开一个真窗口，等 vault 落定后自注入一串按键（`Window::dispatch_keystroke`，即真实按键在平台层之后的入口），把每一步的 mode/光标/文本、以及界面的关键状态写进日志文件，然后自己退出。
+
+```bash
+cargo build --features harness-shot -p bnote-gpui
+BNOTE_DIAG_VAULT=/tmp/diag-vault \
+BNOTE_DATA_DIR=/tmp/diag-config \
+BNOTE_DIAG_LOG=/tmp/bnote-gpui-diag.log \
+  ./target/debug/bnote-gpui
+```
+
+- `BNOTE_DIAG_VAULT`：用这个 vault（不碰用户的仓库，也避开 `lastVault`）；`BNOTE_DATA_DIR`：另一个配置目录（`config.json` 不互相覆盖）。两个都要给：只给前者仍会写用户的 config。
+- 覆盖：焦点归属（`window.focused` / `editor.focused`）、vim 模式与按键后果、预览快照（spans/blocks/lines + 窗格宽度/可见范围）、quick switcher 的打开/输入/Enter/Escape。加一层就在 `Workspace::debug_schedule_diag` 的脚本里追加，**注意**：派发必须在窗口借用之外（`update_in` 里派发 action 会重入 Workspace 而 panic）。
+- 盲区照旧：平台层**之上**的东西（真实键盘事件 → macOS 的 IME 前置门）注入不出来，那一段只能在真机上手按验证。
+
 ## 4. 性能
 
 - 交互运行挂 `gpui_kit::fps` 的 `fps_monitor`（FPS/帧耗时/CPU/GPU HUD）。

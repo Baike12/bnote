@@ -459,6 +459,37 @@ pub fn highlight_theme(palette: &Palette, appearance: ThemeMode) -> HighlightThe
         // `*x*` / `**x**` (TS `md-em` / `md-strong`).
         emphasis: Some(ThemeStyle::color(strong).italic()),
         emphasis_strong: Some(ThemeStyle::color(strong).bold()),
+
+        // Embedded code (TS `bnoteHighlightStyle`'s code tags): a fenced
+        // language's captures resolve through the same palette variables the
+        // TS classes used, so a ```rust block colours alike in both shells.
+        // Markdown-only captures above stay as they were; these are the slots
+        // the code grammars emit.
+        keyword: Some(ThemeStyle::color(palette.color("keyword"))),
+        string: Some(ThemeStyle::color(palette.color("string"))),
+        string_regex: Some(ThemeStyle::color(palette.color("string"))),
+        string_special: Some(ThemeStyle::color(palette.color("string"))),
+        number: Some(ThemeStyle::color(palette.token("number"))),
+        boolean: Some(ThemeStyle::color(palette.token("number"))),
+        constant: Some(ThemeStyle::color(palette.token("number"))),
+        // TS renders comments in `--tok-comment`, italic.
+        comment: Some(ThemeStyle::color(palette.token("comment")).italic()),
+        comment_doc: Some(ThemeStyle::color(palette.token("comment")).italic()),
+        function: Some(ThemeStyle::color(palette.token("func"))),
+        // `@property` / `@variable` / `@variable.parameter` are TS
+        // `--tok-var` (propertyName, variableName, definition(variableName)).
+        property: Some(ThemeStyle::color(palette.token("var"))),
+        variable: Some(ThemeStyle::color(palette.token("var"))),
+        variable_special: Some(ThemeStyle::color(palette.token("var"))),
+        // `@type` / `@class` / `@constructor` / `@enum` are TS `--tok-type`.
+        type_: Some(ThemeStyle::color(palette.token("type"))),
+        constructor: Some(ThemeStyle::color(palette.token("type"))),
+        enum_: Some(ThemeStyle::color(palette.token("type"))),
+        // `@operator` and `@escape` (+ TS `t.escape`) share `--tok-operator`.
+        operator: Some(ThemeStyle::color(palette.token("operator"))),
+        string_special_symbol: Some(ThemeStyle::color(palette.token("operator"))),
+        punctuation: Some(ThemeStyle::color(palette.token("punct"))),
+        punctuation_bracket: Some(ThemeStyle::color(palette.token("punct"))),
         ..Default::default()
     };
     HighlightTheme {
