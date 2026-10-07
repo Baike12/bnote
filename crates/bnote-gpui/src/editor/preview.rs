@@ -8,8 +8,10 @@
 //!   take zero width, a widget reserves exactly the width the host declares;
 //! - this module measures those widths against the editor's own font (so a
 //!   formula's box matches the glyphs beside it) and builds the elements —
-//!   formulas through [`bnote_mathml`], pictures out of [`ImageStore`]'s
-//!   decoded bitmaps, everything else out of plain divs.
+//!   formulas through [`crate::editor::tex`] (RaTeX, the KaTeX-compatible
+//!   engine), pictures
+//!   out of [`ImageStore`]'s decoded bitmaps, everything else out of plain
+//!   divs.
 //!
 //! Images are the one widget whose size the host cannot derive locally: it
 //! needs the file's pixels, and reading is I/O. So the rule is *no span until
@@ -28,12 +30,11 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use bnote_core::preview::{self as core, ScanInput};
-use bnote_mathml::{MathFontMetrics, MathItem, MathLayout, Measured};
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Font, FontStyle, FontWeight, GlobalElementId,
     HighlightStyle, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, RenderImage,
-    SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, div,
-    fill, img, point, prelude::*, px, size,
+    SharedString, StrikethroughStyle, Style, TextRun, UnderlineStyle, Window, div, img,
+    prelude::*, px,
 };
 use gpui_kit::component::theme::ActiveTheme as _;
 use gpui_kit::component::input::{
@@ -42,6 +43,7 @@ use gpui_kit::component::input::{
 };
 
 use super::images::ImageStore;
+use super::tex::{GlyphCache, MathBox, TexDoc};
 use crate::footprint_zone::{self, ZoneInput};
 use crate::theme::{ActivePalette, Palette};
 
@@ -67,48 +69,6 @@ impl PreviewFont {
         Font {
             family: self.family.clone(),
             ..Default::default()
-        }
-    }
-}
-
-/// Text metrics over gpui's text system, for [`bnote_mathml`].
-struct TextMetrics<'a> {
-    window: &'a mut Window,
-    font: Font,
-}
-
-impl MathFontMetrics for TextMetrics<'_> {
-    fn measure(&self, text: &str, spec: bnote_mathml::FontSpec) -> Measured {
-        let run = TextRun {
-            len: text.len(),
-            font: Font {
-                style: if spec.italic {
-                    FontStyle::Italic
-                } else {
-                    FontStyle::Normal
-                },
-                weight: if spec.bold {
-                    FontWeight::BOLD
-                } else {
-                    FontWeight::NORMAL
-                },
-                ..self.font.clone()
-            },
-            color: gpui::black(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let shaped = self.window.text_system().shape_line(
-            text.to_owned().into(),
-            px(spec.size),
-            &[run],
-            None,
-        );
-        Measured {
-            width: shaped.width().as_f32(),
-            ascent: shaped.ascent.as_f32(),
-            descent: shaped.descent.as_f32(),
         }
     }
 }
@@ -146,17 +106,28 @@ fn line_number_digits(lines: usize) -> usize {
     (lines.max(1).ilog10() as usize + 1).clamp(3, 7)
 }
 
-/// The cache key of one typeset formula: `(tex, display, font size in
+/// The cache key of one fitted formula: `(tex, display, font size in
 /// centi-px, column in centi-px)`. The column is `0` for an inline formula
 /// (its budget is the line height) and the text column for a block one (its
-/// budget is the page width) — the two never share an entry.
+/// budget is the page width) — the two never share an entry. The typeset
+/// display list behind it is shared: it is size-independent ([`TexDoc`]), so
+/// the fit only decides the em.
 type MathKey = (String, bool, u32, u32);
+
+/// Cap on the formula caches — the TS shell's rendered-HTML cache cap
+/// (`MAX_CACHE` in `widgets.ts`); a quarter is dropped when one overflows.
+const MATH_CACHE_MAX: usize = 800;
 
 /// Builds the engine snapshot and the widget elements for it.
 pub struct PreviewHost {
     font: PreviewFont,
-    /// Typeset formulas, keyed by [`MathKey`].
-    math: RefCell<HashMap<MathKey, Rc<MathLayout>>>,
+    /// Fitted formulas, keyed by [`MathKey`].
+    math: RefCell<HashMap<MathKey, Rc<MathBox>>>,
+    /// The typeset formulas themselves, keyed by `(tex, display)`. One entry
+    /// serves every size and every fit of the same formula.
+    docs: RefCell<HashMap<(String, bool), Rc<TexDoc>>>,
+    /// Shaped glyph runs for the paint path (see [`tex::GlyphCache`]).
+    glyphs: Rc<GlyphCache>,
     /// What each pushed widget span should render as, keyed by its start
     /// offset. Rebuilt with every snapshot, so a renderer call can only hit a
     /// span from the snapshot that is in effect.
@@ -215,6 +186,8 @@ impl PreviewHost {
         Self {
             font,
             math: RefCell::new(HashMap::new()),
+            docs: RefCell::new(HashMap::new()),
+            glyphs: Rc::new(GlyphCache::default()),
             widgets: RefCell::new(HashMap::new()),
             blocks: RefCell::new(HashMap::new()),
             images: ImageStore::new(),
@@ -269,6 +242,12 @@ impl PreviewHost {
     /// and runs them on the background executor (see [`ImageStore`]).
     pub fn images(&self) -> &ImageStore {
         &self.images
+    }
+
+    /// The shared glyph-run cache, for the foreign [`MathView`] builders (the
+    /// footprint zone paints formulas through the same memo).
+    pub(crate) fn glyphs(&self) -> Rc<GlyphCache> {
+        self.glyphs.clone()
     }
 
     /// Sets the `mathPreview` setting. Returns true when it changed, so the
@@ -400,7 +379,7 @@ impl PreviewHost {
                         }
                         continue;
                     }
-                    let Some(width) = self.widget_width(widget, line_height, window, cx) else {
+                    let Some(width) = self.widget_width(widget, line_height, window) else {
                         continue;
                     };
                     let source = text
@@ -424,7 +403,7 @@ impl PreviewHost {
         for block in &snapshot.blocks {
             let first = block.first_line as u64;
             let lines = first..block.last_line.map_or(first, |last| last as u64 + 1);
-            let Some(height) = self.block_height(&block.kind, column, window, cx) else {
+            let Some(height) = self.block_height(&block.kind, column, window) else {
                 // A block whose content cannot be laid out (a formula neither
                 // engine typesets) leaves its source visible rather than
                 // collapsing to a box that is not there — the image rule.
@@ -716,17 +695,11 @@ impl PreviewHost {
     /// bottom }` around a 0.88em label; `.cw-callout-edge { height: 8px }`;
     /// `.cw-hr { margin: 10px 0 }` around a 2px rule; `.cw-hidden-line
     /// { height: 0 }`.
-    fn block_height(
-        &self,
-        kind: &core::BlockKind,
-        column: Pixels,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Pixels> {
+    fn block_height(&self, kind: &core::BlockKind, column: Pixels, window: &mut Window) -> Option<Pixels> {
         Some(match kind {
             core::BlockKind::Math { tex, .. } => {
-                match self.block_math_layout(tex, column, window, cx) {
-                    Some(layout) => px(layout.height()) + px(6.) * 2.,
+                match self.block_math_layout(tex, column) {
+                    Some(layout) => layout.height() + px(6.) * 2.,
                     // KaTeX's `throwOnError: false` keeps a visible (red)
                     // output for formulas the engine cannot typeset; a bare
                     // fallback to source reads as "rendering broke".
@@ -734,8 +707,8 @@ impl PreviewHost {
                 }
             }
             core::BlockKind::MathPreview { tex, .. } => {
-                match self.block_math_layout(tex, column, window, cx) {
-                    Some(layout) => px(layout.height()) + px(20.),
+                match self.block_math_layout(tex, column) {
+                    Some(layout) => layout.height() + px(20.),
                     None => window.line_height() + px(20.),
                 }
             }
@@ -771,9 +744,8 @@ impl PreviewHost {
         widget: &core::Widget,
         line_height: Pixels,
         window: &mut Window,
-        cx: &mut App,
     ) -> Option<Pixels> {
-        self.widget_width_at(widget, self.font.size, line_height, window, cx)
+        self.widget_width_at(widget, self.font.size, line_height, window)
     }
 
     /// [`Self::widget_width`] at an explicit base font size — the footprint
@@ -785,12 +757,11 @@ impl PreviewHost {
         base: Pixels,
         line_height: Pixels,
         window: &mut Window,
-        cx: &mut App,
     ) -> Option<Pixels> {
         Some(match widget {
             core::Widget::Math { tex, display } => {
-                let layout = self.math_layout(tex, *display, base, line_height, window, cx)?;
-                px(layout.width).max(px(base.as_f32() * 0.6)) + px(2.)
+                let layout = self.math_layout(tex, *display, base, line_height)?;
+                layout.width().max(px(base.as_f32() * 0.6)) + px(2.)
             }
             // `\X` renders as `X` in body colour: the glyph's own width, plus
             // the same hair of padding the other text-like widgets take.
@@ -836,39 +807,27 @@ impl PreviewHost {
         display: bool,
         base: Pixels,
         line_height: Pixels,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Rc<MathLayout>> {
-        let _ = cx;
+    ) -> Option<Rc<MathBox>> {
         // TS `.cw-math .katex { font-size: 1.06em }`: KaTeX's own metrics sit a
         // touch below the surrounding text and the stylesheet makes that up
         // before anything measures the formula.
         let base = base * MATH_SCALE;
-        let key = (
-            tex.to_owned(),
-            display,
-            (base.as_f32() * 100.) as u32,
-            0,
-        );
+        let key = (tex.to_owned(), display, (base.as_f32() * 100.) as u32, 0);
         if let Some(hit) = self.math.borrow().get(&key) {
             return Some(hit.clone());
         }
-        let metrics = TextMetrics {
-            window,
-            font: self.font.font(),
-        };
-        let mut layout = bnote_mathml::layout(tex, display, base.as_f32(), None, &metrics)?;
-        // The engine boxes an inline widget to the line's height, so a tall
-        // formula is re-typeset smaller rather than clipped.
+        let doc = self.typeset(tex, display)?;
+        // The widget is boxed to the line's height, so a tall formula is
+        // typeset smaller rather than clipped. RaTeX lays out in em, so
+        // fitting is one multiplier — the layout itself is unchanged.
+        let mut em = base;
         let budget = line_height.as_f32() * 0.98;
-        if layout.height() > budget && layout.height() > 0. {
-            let scaled = base.as_f32() * (budget / layout.height());
-            if let Some(fitted) = bnote_mathml::layout(tex, display, scaled, None, &metrics) {
-                layout = fitted;
-            }
+        let height = doc.height_em() * em.as_f32();
+        if height > budget && height > 0. {
+            em = px(em.as_f32() * (budget / height));
         }
-        let layout = Rc::new(layout);
-        self.math.borrow_mut().insert(key, layout.clone());
+        let layout = Rc::new(MathBox::new(doc, em));
+        self.cache_math(key, layout.clone());
         Some(layout)
     }
 
@@ -878,14 +837,7 @@ impl PreviewHost {
     /// would overflow the column (the TS `.cw-math-block` centres a wide
     /// formula and lets it scroll horizontally; GPUI has no scroll box inside
     /// a block, so a wide formula is typeset smaller until it fits).
-    fn block_math_layout(
-        &self,
-        tex: &str,
-        column: Pixels,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Rc<MathLayout>> {
-        let _ = cx;
+    fn block_math_layout(&self, tex: &str, column: Pixels) -> Option<Rc<MathBox>> {
         // The same 1.06em the inline path applies (TS scales both through
         // `.cw-math .katex`).
         let base = self.font.size * MATH_SCALE;
@@ -898,21 +850,50 @@ impl PreviewHost {
         if let Some(hit) = self.math.borrow().get(&key) {
             return Some(hit.clone());
         }
-        let metrics = TextMetrics {
-            window,
-            font: self.font.font(),
-        };
-        let mut layout = bnote_mathml::layout(tex, true, base.as_f32(), None, &metrics)?;
+        let doc = self.typeset(tex, true)?;
+        let mut em = base;
         let budget = column.as_f32();
-        if layout.width > budget + 0.5 && layout.width > 0. && budget > 1. {
-            let scaled = base.as_f32() * (budget / layout.width);
-            if let Some(fitted) = bnote_mathml::layout(tex, true, scaled, None, &metrics) {
-                layout = fitted;
-            }
+        let width = doc.width_em() * em.as_f32();
+        if width > budget + 0.5 && width > 0. && budget > 1. {
+            em = px(em.as_f32() * (budget / width));
         }
-        let layout = Rc::new(layout);
-        self.math.borrow_mut().insert(key, layout.clone());
+        let layout = Rc::new(MathBox::new(doc, em));
+        self.cache_math(key, layout.clone());
         Some(layout)
+    }
+
+    /// The display list behind a formula, typeset once per `(tex, display)`:
+    /// it is size-independent, so a resize or a refit reuses it.
+    fn typeset(&self, tex: &str, display: bool) -> Option<Rc<TexDoc>> {
+        let key = (tex.to_owned(), display);
+        if let Some(hit) = self.docs.borrow().get(&key) {
+            return Some(hit.clone());
+        }
+        let doc = Rc::new(TexDoc::typeset(tex, display)?);
+        let mut cache = self.docs.borrow_mut();
+        if cache.len() >= MATH_CACHE_MAX {
+            drop_quarter(&mut cache);
+        }
+        cache.insert(key, doc.clone());
+        Some(doc)
+    }
+
+    /// Insert into the fitted-formula cache, dropping a quarter when it is
+    /// full (the TS rule: every entry is rebuildable from the text).
+    fn cache_math(&self, key: MathKey, layout: Rc<MathBox>) {
+        let mut cache = self.math.borrow_mut();
+        if cache.len() >= MATH_CACHE_MAX {
+            drop_quarter(&mut cache);
+        }
+        cache.insert(key, layout);
+    }
+}
+
+/// Drop a quarter of a cache's entries (arbitrary order).
+fn drop_quarter<K: Clone + std::hash::Hash + Eq, V>(map: &mut HashMap<K, V>) {
+    let doomed: Vec<K> = map.keys().take(map.len() / 4 + 1).cloned().collect();
+    for key in doomed {
+        map.remove(&key);
     }
 }
 
@@ -920,7 +901,7 @@ impl PreviewRenderer for PreviewHost {
     fn render(
         &self,
         widget: PreviewWidget<'_>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
         let Some(kind) = self.widgets.borrow().get(&widget.range.start).cloned() else {
@@ -937,17 +918,16 @@ impl PreviewRenderer for PreviewHost {
         let body = palette.color("text");
         match kind {
             core::Widget::Math { tex, display } => {
-                let Some(layout) = self.math_layout(
-                    &tex,
-                    display,
-                    self.font.size,
-                    widget.line_height,
-                    window,
-                    cx,
-                ) else {
+                let Some(layout) = self.math_layout(&tex, display, self.font.size, widget.line_height)
+                else {
                     return plain_source(&widget, body);
                 };
-                MathView { layout, color: body }.into_any_element()
+                MathView {
+                    layout,
+                    color: body,
+                    glyphs: self.glyphs.clone(),
+                }
+                .into_any_element()
             }
             // The escaped punctuator, drawn as plain body text (no chip, no
             // dimming): the source `\*` reads as `*`.
@@ -1049,21 +1029,29 @@ impl PreviewRenderer for PreviewHost {
         let color = self.palette(cx).color("text");
         match kind {
             core::BlockKind::Math { tex, depth } => {
-                let Some(layout) = self.block_math_layout(&tex, block.width, window, cx) else {
+                let Some(layout) = self.block_math_layout(&tex, block.width) else {
                     return math_error_line(&tex, block, depth, cx);
                 };
                 // 6px margin above the formula (`.cw-math-block`).
                 block_shell(block.width, block.height, depth, px(6.), cx)
-                    .child(MathView { layout, color })
+                    .child(MathView {
+                        layout,
+                        color,
+                        glyphs: self.glyphs.clone(),
+                    })
                     .into_any_element()
             }
             core::BlockKind::MathPreview { tex, depth } => {
-                let Some(layout) = self.block_math_layout(&tex, block.width, window, cx) else {
+                let Some(layout) = self.block_math_layout(&tex, block.width) else {
                     return math_error_line(&tex, block, depth, cx);
                 };
                 // 2px margin + 4px padding above the formula (`.cw-math-preview`).
                 block_shell(block.width, block.height, depth, px(6.), cx)
-                    .child(MathView { layout, color })
+                    .child(MathView {
+                        layout,
+                        color,
+                        glyphs: self.glyphs.clone(),
+                    })
                     .into_any_element()
             }
             // `.cw-hidden-line { height: 0 }`: the line is removed, and the
@@ -1270,11 +1258,13 @@ fn plain_source(widget: &PreviewWidget<'_>, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// A typeset formula: the layout's runs and rules, painted at their own
-/// positions inside the box the engine reserved.
+/// A typeset formula: the display list, painted at its own positions inside
+/// the box the engine reserved. The glyph runs come from the host's shared
+/// [`GlyphCache`] (shaping is memoized, so a repaint is map hits).
 pub(crate) struct MathView {
-    pub(crate) layout: Rc<MathLayout>,
+    pub(crate) layout: Rc<MathBox>,
     pub(crate) color: Hsla,
+    pub(crate) glyphs: Rc<GlyphCache>,
 }
 
 impl IntoElement for MathView {
@@ -1305,8 +1295,8 @@ impl Element for MathView {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
-        style.size.width = px(self.layout.width.max(1.)).into();
-        style.size.height = px(self.layout.height().max(1.)).into();
+        style.size.width = self.layout.width().max(px(1.)).into();
+        style.size.height = self.layout.height().max(px(1.)).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -1331,66 +1321,8 @@ impl Element for MathView {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let family = window.text_style().font().family;
-        for item in &self.layout.items {
-            match item {
-                MathItem::Run {
-                    x,
-                    baseline,
-                    text,
-                    spec,
-                } => {
-                    let font = Font {
-                        family: family.clone(),
-                        style: if spec.italic {
-                            FontStyle::Italic
-                        } else {
-                            FontStyle::Normal
-                        },
-                        weight: if spec.bold {
-                            FontWeight::BOLD
-                        } else {
-                            FontWeight::NORMAL
-                        },
-                        ..Default::default()
-                    };
-                    let run = TextRun {
-                        len: text.len(),
-                        font,
-                        color: self.color,
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    };
-                    let shaped = window.text_system().shape_line(
-                        text.clone().into(),
-                        px(spec.size),
-                        &[run],
-                        None,
-                    );
-                    // `ShapedLine::paint` centres the glyphs in the line box
-                    // it is given, so handing it the run's own height puts the
-                    // baseline exactly where the layout says.
-                    let origin =
-                        bounds.origin + point(px(*x), px(*baseline) - shaped.ascent);
-                    let _ = shaped.paint(
-                        origin,
-                        shaped.ascent + shaped.descent,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
-                MathItem::Rule { x, y, w, h } => {
-                    let rect = Bounds::new(
-                        bounds.origin + point(px(*x), px(*y)),
-                        size(px(*w).max(px(1.)), px(*h).max(px(1.))),
-                    );
-                    window.paint_quad(fill(rect, self.color));
-                }
-            }
-        }
+        self.layout
+            .paint(bounds, self.color, &self.glyphs, window, cx);
     }
 }
 
@@ -1504,11 +1436,11 @@ let a = 1;
                 );
 
                 let math = host
-                    .block_math_layout("\nx = 1\n", px(700.), window, cx)
+                    .block_math_layout("\nx = 1\n", px(700.))
                     .expect("the formula typesets");
                 let heights: Vec<Pixels> =
                     decorations.blocks.iter().map(|block| block.height).collect();
-                assert_eq!(heights[0], px(math.height()) + px(12.), "6px margins");
+                assert_eq!(heights[0], math.height() + px(12.), "6px margins");
                 assert_eq!(heights[1], px(22.), "the rule's 10px margins + 2px line");
                 assert_eq!(
                     heights[2],
@@ -1867,5 +1799,87 @@ let a = 1;
             })
             .expect("a test window");
         });
+    }
+    /// 公式只排版一次:同一条公式的显示列表跨字号共享(拟合只改 em),而拟合
+    /// 结果按 `(tex, display, 字号, 预算)` 缓存 —— 每帧渲染是纯命中,没有
+    /// parse/layout。这条断言用 `Rc` 身份证明,不靠计时。
+    #[test]
+    fn a_formula_typesets_once_and_the_fit_is_cached() {
+        let host = PreviewHost::new(PreviewFont {
+            family: "Helvetica".into(),
+            size: px(14.),
+        });
+        let a = host
+            .math_layout("x^2", false, px(14.), px(20.))
+            .expect("the formula typesets");
+        let b = host
+            .math_layout("x^2", false, px(14.), px(20.))
+            .expect("the formula typesets");
+        assert!(Rc::ptr_eq(&a, &b), "the fitted box must come from the cache");
+        let doc_a = host.typeset("x^2", false).expect("typeset");
+        let doc_b = host.typeset("x^2", false).expect("typeset");
+        assert!(Rc::ptr_eq(&doc_a, &doc_b), "the display list must be shared");
+        // A different budget is a different fit, but the same display list.
+        assert!(!Rc::ptr_eq(
+            &a,
+            &host
+                .math_layout("x^2", false, px(20.), px(20.))
+                .expect("the formula typesets")
+        ));
+    }
+
+    /// 缩放模型:行内公式按行高预算缩(超了就把 em 乘小),块公式按列宽缩;
+    /// 放得下时就是 TS 的 `1.06em`,一分不多。
+    #[test]
+    fn tall_inline_and_wide_block_formulas_shrink_to_their_budget() {
+        let host = PreviewHost::new(PreviewFont {
+            family: "Helvetica".into(),
+            size: px(14.),
+        });
+        let base = px(14.) * MATH_SCALE;
+        let line = px(20.);
+        let doc = host.typeset("x^2", false).expect("typeset");
+        let inline = host
+            .math_layout("x^2", false, px(14.), line)
+            .expect("the formula typesets");
+        assert_eq!(
+            inline.height(),
+            px(doc.height_em() * base.as_f32()),
+            "a formula that fits keeps the plain 1.06em scale"
+        );
+
+        let tall = r"\begin{pmatrix} a & b \\ c & d \\ e & f \\ g & h \end{pmatrix}";
+        let shrunk = host
+            .math_layout(tall, false, px(14.), line)
+            .expect("the matrix typesets");
+        assert!(
+            shrunk.height() <= line * 0.98 + px(0.5),
+            "a tall inline formula shrinks into the line: {:?}",
+            shrunk.height()
+        );
+
+        let wide =
+            r"\begin{aligned} f(x) &= x^2 + 2x + 1 + y^2 + z^2 + w^2 \\ &= (x+1)^2 \end{aligned}";
+        let column = px(120.);
+        let fitted = host
+            .block_math_layout(wide, column)
+            .expect("the aligned block typesets");
+        assert!(
+            fitted.width() <= column + px(0.5),
+            "a wide block formula shrinks into the column: {:?}",
+            fitted.width()
+        );
+    }
+
+    /// 排版不了的公式返回 `None` —— 调用方退回原始源码,和 TS 的
+    /// `throwOnError: false` 同一个可见结果。
+    #[test]
+    fn an_unparseable_formula_falls_back_to_source() {
+        let host = PreviewHost::new(PreviewFont {
+            family: "Helvetica".into(),
+            size: px(14.),
+        });
+        assert!(host.math_layout(r"\frac{", false, px(14.), px(20.)).is_none());
+        assert!(host.block_math_layout(r"\frac{", px(700.)).is_none());
     }
 }

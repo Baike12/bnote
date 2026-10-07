@@ -57,4 +57,10 @@ $icon_line
 </plist>
 PLIST
 
+# The embedded KaTeX fonts are OFL-1.1, not MIT: the notices travel with the
+# bundle (docs/THIRD_PARTY.md).
+cp "$root/docs/THIRD_PARTY.md" "$app/Contents/Resources/"
+cp "$root/docs/third-party/KaTeX-fonts-NOTICE.txt" "$app/Contents/Resources/"
+cp "$root/docs/third-party/SIL-OFL-1.1.txt" "$app/Contents/Resources/"
+
 echo "$app"

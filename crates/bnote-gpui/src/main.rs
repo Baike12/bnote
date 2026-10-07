@@ -94,6 +94,9 @@ fn main() {
         .with_assets(Assets)
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
+            // The KaTeX faces formulas paint with (RaTeX ships them); without
+            // this registration every glyph would fall back to a system font.
+            editor::tex::register_fonts(cx);
 
             // bnote's own palette (`src/styles/global.css`, transcribed in
             // `theme.rs`): the built-in theme first, then the override — the

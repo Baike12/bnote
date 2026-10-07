@@ -126,6 +126,10 @@ pub fn run(script_path: &str, out_dir: Option<&str>) -> anyhow::Result<PathBuf> 
     );
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // KaTeX faces for the formulas in the shots (the headless text system
+        // is a real one, so this is what makes math measure and paint).
+        crate::editor::tex::register_fonts(cx);
+        }
         let mode = match script.theme.as_deref() {
             Some("light") => ThemeMode::Light,
             _ => ThemeMode::Dark,

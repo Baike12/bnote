@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/bnote-core",
     "crates/bnote-gpui",
-    "crates/bnote-mathml",
     "crates/pdf2md",
     "src-tauri",
 ]

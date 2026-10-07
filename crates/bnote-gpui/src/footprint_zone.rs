@@ -172,7 +172,7 @@ enum BodyLine {
     /// the scan's bullet/checkbox widget spans).
     Text { parts: Vec<Part>, look: LineLook },
     /// A display formula inside the block.
-    Math(Rc<bnote_mathml::MathLayout>),
+    Math(Rc<crate::editor::tex::MathBox>),
     /// A `---` rule.
     Rule,
     /// A line the scan removed entirely (a fence line).
@@ -226,10 +226,10 @@ fn plan_body(
             let last = block.last_line.unwrap_or(block.first_line);
             match &block.kind {
                 core::BlockKind::Math { tex, .. } => {
-                    let (height, line) = match host.math_layout(tex, true, base, line_height, window, cx)
+                    let (height, line) = match host.math_layout(tex, true, base, line_height)
                     {
                         Some(layout) => (
-                            px(layout.height()) + px(6.) * 2.,
+                            layout.height() + px(6.) * 2.,
                             BodyLine::Math(layout),
                         ),
                         None => (
@@ -365,8 +365,8 @@ fn line_parts(
             }
         }
         if let Some(widget) = widget {
-            if let Some(width) = host.widget_width_at(&widget, base, line_height, window, cx) {
-                let element = widget_element(host, &widget, width, line_height, base, window, cx);
+            if let Some(width) = host.widget_width_at(&widget, base, line_height, window) {
+                let element = widget_element(host, &widget, width, line_height, base, cx);
                 parts.push(Part::Widget { width, element });
             }
         }
@@ -516,14 +516,20 @@ fn widget_element(
     width: Pixels,
     line_height: Pixels,
     base: Pixels,
-    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let color = host.palette(cx).color("text");
     match widget {
         core::Widget::Math { tex, display } => host
-            .math_layout(tex, *display, base, line_height, window, cx)
-            .map(|layout| MathView { layout, color }.into_any_element())
+            .math_layout(tex, *display, base, line_height)
+            .map(|layout| {
+                MathView {
+                    layout,
+                    color,
+                    glyphs: host.glyphs(),
+                }
+                .into_any_element()
+            })
             .unwrap_or_else(|| div().w(width).into_any_element()),
         core::Widget::Escape { char } => div()
             .w(width)
@@ -757,7 +763,11 @@ fn body_element(
                         .py(px(6.))
                         .flex()
                         .justify_center()
-                        .child(MathView { layout, color: palette.color("text") }),
+                        .child(MathView {
+                            layout,
+                            color: palette.color("text"),
+                            glyphs: host.glyphs(),
+                        }),
                 );
             }
             BodyLine::Text { parts, look } => {

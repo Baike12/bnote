@@ -105,7 +105,12 @@ pub fn workspace_fixture_with(
 ) -> (Entity<Workspace>, Fixture, &mut VisualTestContext) {
     let fixture = Fixture::new("ws");
     let open = prepare(&fixture);
-    cx.update(|cx| gpui_kit::init(cx));
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        // The same boot step as `main.rs` (a no-op on the test text system,
+        // but the boot paths stay identical).
+        crate::editor::tex::register_fonts(cx);
+    });
     let (state, rx) = bnote_core::state::AppState::new(fixture.data_dir.clone());
     let mut bridges = None;
     cx.update(|cx| {
