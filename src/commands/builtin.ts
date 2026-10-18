@@ -195,7 +195,14 @@ const defs: CommandDef[] = [
   { id: "edit.insert-inline-math", title: "插入行内公式", category: "编辑", run: withView(insertInlineMath) },
   { id: "edit.insert-code-block", title: "插入代码块", category: "编辑", run: withView(insertCodeBlock) },
   { id: "edit.insert-inline-code", title: "插入行内代码", category: "编辑", run: withView(insertInlineCode) },
-  { id: "edit.insert-callout", title: "插入 Callout 块", category: "编辑", run: withView(insertCallout) },
+  {
+    id: "edit.insert-callout",
+    title: "插入 Callout 块 / 跳到关联块",
+    category: "编辑",
+    // 三种行止:有选区 = 文末开一个以选中文字为标题的块(原文成锚点,渲染成
+    // 下划虚线);光标在锚点上或在块内(有来处)= 跳转/回跳;其余 = 就地开空块。
+    run: withView(insertCallout),
+  },
   {
     id: "edit.insert-wikilink",
     title: "插入内部链接 / 跳到本行链接",

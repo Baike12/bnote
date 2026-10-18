@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { cycleHeading, insertCallout, jumpHeaderTodos, planHeaderTodoJump, resetHeaderTodoReturnForTest, toggleTodo, todayStamp } from "./ops";
+import { calloutInsertAnchor, cycleHeading, insertCallout, insertMathBlock, jumpHeaderTodos, planCalloutShortcut, planHeaderTodoJump, resetCalloutReturnForTest, resetHeaderTodoReturnForTest, toggleTodo, todayStamp } from "./ops";
+import { matrixEnter } from "./snippets/matrix";
 import { calloutRegions } from "./callout";
+import { useAppStore } from "@/state/appStore";
 
 /**
  * toggleTodo 只依赖 view 的 {state, dispatch} 面，用假视图即可在 node 里
@@ -31,6 +33,21 @@ function makeView(doc: string, cursors: number[]): EditorView {
 
 const pos = (view: EditorView) => view.state.selection.main.head;
 const text = (view: EditorView) => view.state.doc.toString();
+
+/** 单选区假视图（需要真实选区而非光标的用例，如选中插入 callout）。 */
+function makeRangeView(doc: string, from: number, to: number): EditorView {
+  let state = EditorState.create({ doc, selection: EditorSelection.range(from, to) });
+  return {
+    get state() {
+      return state;
+    },
+    dispatch: (spec: TransactionSpec) => {
+      state = state.update(spec).state;
+    },
+    scrollDOM: { scrollTop: 0, scrollHeight: 0 },
+    focus: () => {},
+  } as unknown as EditorView;
+}
 
 describe("toggleTodo 的光标落点（前缀区 → 新标记之后）", () => {
   it("空行切换待办：光标落在 `- [ ] ` 之后，可直接输入", () => {
@@ -131,7 +148,7 @@ describe("cycleHeading：重复按键在 正文→H1→H2→H3→H4→正文 间
 describe("planHeaderTodoJump:⌘T 的往返决策", () => {
   const state = (doc: string) => EditorState.create({ doc }).doc;
   // 日记分支的插入串无尾换行,光标 = at + insert.length;
-  // 非日记分支插入串带尾换行,光标要显式给(仍落在 `- [ ] ` 行尾)。
+  // 普通笔记分支插入串带尾换行,光标要显式给(仍落在 `- [ ] ` 行尾)。
   const create = (at: number, insert: string, cursor = at + insert.length) => ({
     action: "create",
     at,
@@ -141,62 +158,81 @@ describe("planHeaderTodoJump:⌘T 的往返决策", () => {
 
   it("头部有待办块:正文光标跳到块尾行行尾", () => {
     const doc = "- [ ] 甲\n- [x] 乙\n\n正文第一行\n";
-    const p = planHeaderTodoJump(state(doc), 4, false);
+    const p = planHeaderTodoJump(state(doc), 4, false, false);
     expect(p).toEqual({ action: "jump", anchor: doc.indexOf("乙") + 1 });
   });
 
   it("日记形状:H1 之后的待办区就是头部块(跳到块尾行行尾)", () => {
     const doc = "# 1 2026-10-05\n- [ ] 甲\n- [x] 乙\n\n正文\n";
-    const p = planHeaderTodoJump(state(doc), 6, false);
+    const p = planHeaderTodoJump(state(doc), 6, false, true);
     expect(p).toEqual({ action: "jump", anchor: doc.indexOf("乙") + 1 });
+  });
+
+  it("日记:第一行就是待办(H1 之前的待办区同样认)", () => {
+    const doc = "- [ ] 甲\n# 1 2026-10-05\n\n正文\n";
+    const p = planHeaderTodoJump(state(doc), 4, false, true);
+    expect(p).toEqual({ action: "jump", anchor: doc.indexOf("甲") + 1 });
   });
 
   it("块内光标 + 有来处记忆 → 回跳;无记忆 → 静默", () => {
     const doc = "- [ ] 甲\n\n正文\n";
-    expect(planHeaderTodoJump(state(doc), 1, true)).toEqual({ action: "back" });
-    expect(planHeaderTodoJump(state(doc), 1, false)).toEqual({ action: "stay" });
+    expect(planHeaderTodoJump(state(doc), 1, true, false)).toEqual({ action: "back" });
+    expect(planHeaderTodoJump(state(doc), 1, false, false)).toEqual({ action: "stay" });
   });
 
-  it("无块 + 非日记正文光标:创建在文档顶,光标在待办符号后", () => {
+  it("无块 + 正文光标:创建在文档顶,光标在待办符号后", () => {
     const doc = "段落\n\n正文\n";
-    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual(create(0, "- [ ] \n", 6));
+    expect(planHeaderTodoJump(state(doc), 3, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
   it("无块 + 文档以空行开头:创建仍在文档顶", () => {
     const doc = "\n\n正文\n";
-    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual(create(0, "- [ ] \n", 6));
+    expect(planHeaderTodoJump(state(doc), 3, false, false)).toEqual(create(0, "- [ ] \n", 6));
+  });
+
+  it("普通笔记第一行是 H1 标题、无待办:创建在文件最顶,标题被顶到第二行", () => {
+    const doc = "# 论 transformer\n\n正文\n";
+    expect(planHeaderTodoJump(state(doc), 3, false, false)).toEqual(create(0, "- [ ] \n", 6));
+  });
+
+  it("普通笔记:头部待办区就是文件最顶,H1 之后的待办不算(照旧创建在最顶)", () => {
+    const doc = "# 论 transformer\n- [ ] 正文中的待办\n";
+    expect(planHeaderTodoJump(state(doc), 2, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
   it("无块 + 日记正文光标:创建在 H1 之后(日记待办区的位置)", () => {
     const doc = "# 1 2026-10-05\n\n正文\n";
-    expect(planHeaderTodoJump(state(doc), 3, false)).toEqual(create(14, "\n- [ ] "));
+    expect(planHeaderTodoJump(state(doc), 3, false, true)).toEqual(create(14, "\n- [ ] "));
   });
 
-  it("无块 + 光标在标题行:有记忆回跳,无记忆就地创建", () => {
+  it("无块 + 光标在标题行:日记有记忆回跳,无记忆就地创建", () => {
     const doc = "# 1 2026-10-05\n";
-    expect(planHeaderTodoJump(state(doc), 1, true)).toEqual({ action: "back" });
-    expect(planHeaderTodoJump(state(doc), 1, false)).toEqual(create(14, "\n- [ ] "));
+    expect(planHeaderTodoJump(state(doc), 1, true, true)).toEqual({ action: "back" });
+    expect(planHeaderTodoJump(state(doc), 1, false, true)).toEqual(create(14, "\n- [ ] "));
   });
 
-  it("无块 + 光标在文档首行(非日记):有记忆回跳,无记忆创建", () => {
+  it("无块 + 光标在文档首行:有记忆回跳,无记忆创建", () => {
     const doc = "正文\n- [ ] 块外的待办不算头部\n";
-    expect(planHeaderTodoJump(state(doc), 1, true)).toEqual({ action: "back" });
-    expect(planHeaderTodoJump(state(doc), 1, false)).toEqual(create(0, "- [ ] \n", 6));
+    expect(planHeaderTodoJump(state(doc), 1, true, false)).toEqual({ action: "back" });
+    expect(planHeaderTodoJump(state(doc), 1, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
   it("头部扫描在首个非空非待办行截断:正文的待办不构成头部块(光标在正文→创建)", () => {
     const doc = "段落\n- [ ] 不是头部\n";
-    expect(planHeaderTodoJump(state(doc), 2, false)).toEqual(create(0, "- [ ] \n", 6));
+    expect(planHeaderTodoJump(state(doc), 2, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
   it("空文档:创建,不加尾换行", () => {
-    expect(planHeaderTodoJump(state(""), 1, false)).toEqual(create(0, "- [ ] "));
+    expect(planHeaderTodoJump(state(""), 1, false, false)).toEqual(create(0, "- [ ] "));
   });
 });
 
 describe("jumpHeaderTodos:⌘T 创建空待办端到端", () => {
+  const setFile = (path: string) => useAppStore.setState({ currentFile: path });
+
   it("日记无待办:创建空待办光标落符号后;输入后再按 ⌘T 回到正文原位", () => {
     resetHeaderTodoReturnForTest(); // 模块级往返记忆会跨用例泄漏
+    setFile("/v/Daily/2026-10-05.md");
     // 正文行(行 3)列 2 处按 ⌘T
     const view = makeView("# 1 2026-10-05\n\n正文在这里\n", [18]);
     jumpHeaderTodos(view);
@@ -214,10 +250,25 @@ describe("jumpHeaderTodos:⌘T 创建空待办端到端", () => {
 
   it("普通笔记无待办:创建在文档顶,原内容被顶到下一行", () => {
     resetHeaderTodoReturnForTest();
+    setFile("/v/笔记.md");
     const view = makeView("笔记正文\n", [2]);
     jumpHeaderTodos(view);
     expect(text(view)).toBe("- [ ] \n笔记正文\n");
     expect(pos(view)).toBe("- [ ] ".length);
+  });
+
+  it("普通笔记(H1 标题开头)无待办:待办成为第一行;再按 ⌘T 回到正文原位", () => {
+    resetHeaderTodoReturnForTest();
+    setFile("/v/笔记.md");
+    const view = makeView("# 论 transformer\n\n正文\n", [17]); // 「正文」行行首
+    jumpHeaderTodos(view);
+    expect(text(view)).toBe("- [ ] \n# 论 transformer\n\n正文\n");
+    expect(pos(view)).toBe("- [ ] ".length);
+    // 待办行就是头部块 → 再按回到创建前的正文行列(创建把它顶到了行 4)
+    jumpHeaderTodos(view);
+    const cur = view.state.doc.lineAt(pos(view));
+    expect(cur.text).toBe("正文");
+    expect(pos(view) - cur.from).toBe(0);
   });
 });
 
@@ -272,26 +323,183 @@ describe("insertCallout:插入形状与光标落点", () => {
     }
   });
 
-  it("选区包裹:覆盖行整段收进块内,选区两端平移进块", () => {
-    let state = EditorState.create({
-      doc: "# 一\n正文行\n尾行",
-      selection: EditorSelection.range(4, 10),
-    });
-    const view = {
-      get state() {
-        return state;
-      },
-      dispatch: (spec: TransactionSpec) => {
-        state = state.update(spec).state;
-      },
-      focus: () => {},
-    } as unknown as EditorView;
+  it("选中插入:块建在选区行之后(空一行),原文留原处,光标落块内空行", () => {
+    const view = makeRangeView("开头\n斜率矩阵\n结尾", 3, 7); // 选中「斜率矩阵」
     insertCallout(view);
-    expect(text(view)).toBe("# 一\n:::\n正文行\n尾行\n:::");
-    const sel = view.state.selection.main;
-    // 与 insertCodeBlock 同一条映射规则:选区起点恰在覆盖首行行首时保持原
-    // doc 位置(= 新开栏行首),行尾端平移进块内。
-    expect(sel.anchor).toBe(4); // 新开栏 ::: 行首
-    expect(sel.head).toBe(14); // 尾行行尾
+    expect(text(view)).toBe("开头\n斜率矩阵\n\n::: 斜率矩阵\n\n:::\n结尾");
+    const cur = view.state.doc.lineAt(pos(view));
+    expect(cur.text).toBe(""); // 块内空行:直接输入就是解释内容
+    expect(cur.number).toBe(5);
+    expect(view.state.sliceDoc(3, 7)).toBe("斜率矩阵"); // 原文一个字节没动
+    const regions = calloutRegions(view.state);
+    expect(regions).toHaveLength(1);
+    expect(regions[0].title).toBe("斜率矩阵");
+    expect(regions[0].closed).toBe(true);
+  });
+
+  it("选区行与开栏之间恰好空一行,块后的内容保留", () => {
+    const cases: [string, number, number, string][] = [
+      // doc, 选区, 期望
+      ["甲", 0, 1, "甲\n\n::: 甲\n\n:::"],
+      ["甲\n乙", 0, 1, "甲\n\n::: 甲\n\n:::\n乙"],
+      ["甲\n\n乙", 0, 1, "甲\n\n::: 甲\n\n:::\n\n乙"],
+    ];
+    for (const [doc, from, to, want] of cases) {
+      const view = makeRangeView(doc, from, to);
+      insertCallout(view);
+      expect(text(view), JSON.stringify(doc)).toBe(want);
+    }
+  });
+
+  it("跨行选区:标题压成单行(换行→空格),块建在选区末行之后", () => {
+    const view = makeRangeView("甲\n乙丙", 0, 3); // 选中「甲\n乙」
+    insertCallout(view);
+    expect(text(view)).toBe("甲\n乙丙\n\n::: 甲 乙\n\n:::");
+    expect(calloutRegions(view.state)[0].title).toBe("甲 乙");
+  });
+
+  it("选中插入不吞公式/图片链接源码:标题原样保留", () => {
+    const doc = "前\n$$E=mc^2$$\n后";
+    const view = makeRangeView(doc, 2, 12); // 选中 $$E=mc^2$$
+    insertCallout(view);
+    expect(text(view)).toBe("前\n$$E=mc^2$$\n\n::: $$E=mc^2$$\n\n:::\n后");
+    expect(calloutRegions(view.state)[0].title).toBe("$$E=mc^2$$");
+  });
+
+  it("锚点往返:光标在原文上按 ⌘⇧B 跳到块,再按回到原文", () => {
+    resetCalloutReturnForTest();
+    useAppStore.setState({ currentFile: "/v/笔记.md" });
+    const doc = "开头\n斜率矩阵\n结尾\n\n::: 斜率矩阵\n\n:::\n";
+    const view = makeView(doc, [3]); // 光标落在原文「斜率矩阵」里
+    insertCallout(view);
+    // 落点 = 开栏行行尾(标题槽后),与创建选中块时的落点同一位置
+    const cur = view.state.doc.lineAt(pos(view));
+    expect(cur.text).toBe("::: 斜率矩阵");
+    expect(pos(view)).toBe(cur.to);
+    // 再按:已在块内且有来处记忆 → 回到原文
+    insertCallout(view);
+    expect(pos(view)).toBe(3);
+  });
+
+  it("callout 内无来处记忆:照旧就地开新块(不跳转)", () => {
+    resetCalloutReturnForTest();
+    useAppStore.setState({ currentFile: "/v/笔记.md" });
+    const view = makeView("::: 甲\n内容\n:::\n", [8]);
+    insertCallout(view);
+    expect(text(view)).toBe("::: 甲\n内容\n::: \n:::\n:::\n");
+  });
+
+  it("选区是纯空白:不建空标题块,按无选区处理(就地开空块)", () => {
+    const view = makeRangeView("甲 乙", 1, 2); // 选中一个空格
+    insertCallout(view);
+    expect(text(view)).toBe("甲 乙\n::: \n:::");
+    expect(calloutRegions(view.state)[0].title).toBe("");
+  });
+});
+
+describe("calloutInsertAnchor:选中插入的落点", () => {
+  const anchorOf = (doc: string, from: number, to: number) => {
+    const state = EditorState.create({ doc });
+    return calloutInsertAnchor(state, from, to);
+  };
+
+  it("普通文本:选区末行的行尾(块之后原有的内容被推到块后)", () => {
+    const doc = "第一行\n第二行\n第三行";
+    expect(anchorOf(doc, 0, 3)).toBe(3); // 选区在行 1
+    expect(anchorOf(doc, 4, 8)).toBe(7); // 选区带行尾换行,仍算行 2
+  });
+
+  it("围栏代码块内:延伸到闭栏行行尾(不切开代码块)", () => {
+    expect(anchorOf("```py\ncode line\n```\n后文", 6, 15)).toBe(19);
+  });
+
+  it("未闭合围栏内:延伸到文档末行行尾", () => {
+    expect(anchorOf("```py\ncode", 6, 10)).toBe(10);
+  });
+
+  it("display 公式块内:延伸到闭 $$ 行行尾", () => {
+    expect(anchorOf("前\n$$\nE=mc^2\n$$\n后", 5, 11)).toBe(14);
+  });
+
+  it("单行 display 公式:落点就是本行行尾", () => {
+    expect(anchorOf("前\n$$E=mc^2$$\n后", 2, 12)).toBe(12);
+  });
+});
+
+describe("planCalloutShortcut:无选区 ⌘⇧B 的决策", () => {
+  const mk = (doc: string) => {
+    const state = EditorState.create({ doc });
+    return { doc: state.doc, callouts: calloutRegions(state) };
+  };
+
+  it("光标在锚点文本内:跳到关联 callout", () => {
+    const { doc, callouts } = mk("斜率矩阵\n\n::: 斜率矩阵\n\n:::\n");
+    const p = planCalloutShortcut(doc, callouts, 1, false);
+    expect(p.action).toBe("anchor-jump");
+    if (p.action === "anchor-jump") expect(p.region.title).toBe("斜率矩阵");
+  });
+
+  it("光标恰在锚点末尾之外(区间右开):不跳,就地插入", () => {
+    const { doc, callouts } = mk("斜率矩阵\n\n::: 斜率矩阵\n\n:::\n");
+    expect(planCalloutShortcut(doc, callouts, 4, false)).toEqual({ action: "insert" });
+  });
+
+  it("光标在 callout 内(含边界行):有来处记忆回跳,无记忆就地插入", () => {
+    const { doc, callouts } = mk("正文\n\n::: 甲\n\n:::\n");
+    const inside = doc.line(3).from + 1; // 「::: 甲」行内
+    expect(planCalloutShortcut(doc, callouts, inside, true)).toEqual({ action: "back" });
+    expect(planCalloutShortcut(doc, callouts, inside, false)).toEqual({ action: "insert" });
+  });
+
+  it("光标在普通文本上:就地插入", () => {
+    const { doc, callouts } = mk("正文\n\n::: 甲\n\n:::\n");
+    expect(planCalloutShortcut(doc, callouts, 1, false)).toEqual({ action: "insert" });
+  });
+
+  it("无标题裸块:块外文本不产生锚点", () => {
+    const { doc, callouts } = mk("内容\n\n:::\n甲\n:::\n");
+    expect(planCalloutShortcut(doc, callouts, 1, false)).toEqual({ action: "insert" });
+  });
+});
+
+/**
+ * 公式块骨架(⌘M)的模型:插入的块级公式**原生就是对齐环境**,不是先给
+ * `$$…$$` 再靠片段 `dm`/`#@` 转换。等号对齐与续行是 align 环境的回车语义
+ * (matrix.ts 的 alignEnter),所以这里同时锁"骨架形状"与两个模块的接缝:
+ * 骨架给出的环境名必须是 matrixEnvAt 认得的那个。
+ */
+describe("insertMathBlock:公式块骨架(⌘M)", () => {
+  const SKELETON = "$$\n\\begin{align}\n\n\\end{align}\n$$";
+
+  it("空行:原位替换成 align 骨架,光标落环境内空行", () => {
+    const view = makeView("前\n\n后", [2]);
+    insertMathBlock(view);
+    expect(text(view)).toBe(`前\n${SKELETON}\n后`);
+    const line = view.state.doc.lineAt(pos(view));
+    expect(line.text).toBe("");
+    expect(line.number).toBe(4); // $$ / \begin / ← / \end / $$
+    expect(view.state.doc.line(3).text).toBe("\\begin{align}");
+  });
+
+  it("非空行:骨架插到本行之后,定界行自己占行", () => {
+    const view = makeView("正文", [1]);
+    insertMathBlock(view);
+    expect(text(view)).toBe(`正文\n${SKELETON}`);
+    expect(view.state.doc.lineAt(pos(view)).number).toBe(4);
+  });
+
+  it("插入后回车的接缝:走 align 续行——补对齐点 & 与行尾 \\,光标落新行", () => {
+    const view = makeView("", [0]);
+    insertMathBlock(view);
+    const line = view.state.doc.lineAt(pos(view));
+    view.dispatch({
+      changes: { from: line.from, insert: "a=b=c" },
+      selection: { anchor: line.from + "a=b=c".length },
+    });
+    expect(matrixEnter(view)).toBe(true);
+    expect(text(view)).toBe("$$\n\\begin{align}\na&=b=c \\\\\n\n\\end{align}\n$$");
+    const newLine = view.state.doc.lineAt(pos(view));
+    expect(newLine.text).toBe("");
+    expect(view.state.doc.line(newLine.number + 1).text).toBe("\\end{align}");
   });
 });

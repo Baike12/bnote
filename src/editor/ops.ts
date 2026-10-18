@@ -3,7 +3,10 @@ import { EditorSelection } from "@codemirror/state";
 import type { EditorState, Text } from "@codemirror/state";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit, syntaxTreeAvailable } from "@codemirror/language";
-import { getContextAt, insideFencedCode, insideFencedCodeByScan } from "./context";
+import { fenceStateScan, getContextAt, insideFencedCode, insideFencedCodeByScan, mathRegions } from "./context";
+import { calloutRegions, type CalloutRegion } from "./callout";
+import { anchorRegionAt } from "./calloutAnchor";
+import { takeVimVisual } from "./vim/vim";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 import { useAppStore } from "@/state/appStore";
 
@@ -449,16 +452,22 @@ export function toggleList(view: EditorView, kind: ListKind) {
 /**
  * 往返跳转：正文 → 文档头部最后一个待办项的行尾 → 回到跳转前的位置。
  * 头部待办块 = 从「起点行」开始(允许空行)连续的待办行(`- [ ]` / `- [x]` /
- * 有序待办,中间可夹空行),首个非空且非待办的行结束块。起点行 = 行 1 是
- * H1 标题(`# `)时的行 2,否则行 1——日记的待办区就在 H1 之后
- * (与 daily 的 parseDailyRegion 同一片区域),普通笔记的待办块在文档顶。
- * 头部还没有待办块时创建一个空待办(插在起点位置,光标落在待办符号后,
- * 直接输入);再按一次回到原位。已在头部位置但有来处记忆时回跳。
+ * 有序待办,中间可夹空行),首个非空且非待办的行结束块。
+ *
+ * 起点行按文件形态分两套:日记(Daily/YYYY-MM-DD.md)的待办区在日期标题
+ * 之后(H1 时行 2 起,与 daily 的 parseDailyRegion 同一片区域);其他笔记的
+ * 头部待办区就是文件最顶(行 1 起)——笔记里待办习惯写在第一行(跨文件同步
+ * 写笔记顶部也是这个位置),第一行是 H1 标题也一样,新待办插到标题之前。
+ * 头部还没有待办块时创建一个空待办(日记插在 H1 后、普通笔记插文档顶,
+ * 光标落待办符号后,直接输入);再按一次回到原位。已在头部位置但有来处
+ * 记忆时回跳。
  */
 const HEADER_TODO_RE = /^(\s*)(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\]/;
 const BLANK_LINE_RE = /^\s*$/;
 /** H1 头判定(与 daily 的 HEADER_RE 同形状):行 1 是 `# ` 标题 → 待办区从行 2 起。 */
 const H1_RE = /^#\s/;
+/** 日记文件判定:Daily 目录下的日期文件名(与 dailyPathFor 同一形状)。 */
+export const DAILY_FILE_RE = /(^|\/)Daily\/\d{4}-\d{2}-\d{2}\.md$/;
 
 /** 一次 ⌘T 的决策(纯函数,契约在 ops.test.ts):
  *  jump = 跳到 anchor;back = 回到来处记忆;stay = 无声无效;
@@ -473,8 +482,9 @@ export function planHeaderTodoJump(
   doc: { lines: number; line(n: number): { text: string; from: number; to: number } },
   headLine: number,
   hasReturn: boolean,
+  isDaily: boolean,
 ): HeaderTodoPlan {
-  const headerDoc = doc.lines >= 1 && H1_RE.test(doc.line(1).text);
+  const headerDoc = isDaily && doc.lines >= 1 && H1_RE.test(doc.line(1).text);
   const start = headerDoc ? 2 : 1;
   let first: number | null = null;
   let last: number | null = null;
@@ -499,36 +509,69 @@ export function planHeaderTodoJump(
   // 有来处记忆则回跳(往返优先),否则就地创建;光标在起点行之后则记住来处并创建。
   if (headLine <= start && hasReturn) return { action: "back" };
   if (headerDoc) {
+    // 日记:空待办长在 H1 之后,与 parseDailyRegion 的待办区起点一致。
     const at = doc.line(1).to;
     const insert = "\n- [ ] ";
     return { action: "create", at, insert, cursor: at + insert.length };
   }
-  // 空文档不加尾换行;非空文档把原第一行顶下去。光标一律落在 `- [ ] ` 行尾
-  // (待办符号后),与插入串是否带尾换行无关。
+  // 普通笔记:空待办成为文件第一行(H1 标题也被顶到第二行——笔记的头部
+  // 待办区就是文件最顶)。空文档不加尾换行;非空文档把原第一行顶下去。
+  // 光标一律落在 `- [ ] ` 行尾(待办符号后),与插入串是否带尾换行无关。
   const insert = doc.lines === 1 && doc.line(1).text === "" ? "- [ ] " : "- [ ] \n";
   return { action: "create", at: 0, insert, cursor: "- [ ] ".length };
 }
 
 /**
- * 往返跳转的"来处"记忆：文件路径 → 跳转前的光标(行号+列)与滚动位置。这是
- * 本功能唯一的常驻状态；按访问顺序淘汰、上限 64 条（覆盖任何真实的多文件
- * 往返工作流），内存占用有界。仅在按下快捷键时读写，不挂任何编辑周期。
- * 存行列而非绝对 pos：创建/跳转后用户在头部打字,来处行不受影响,回跳精确。
+ * 往返跳转的「来处」记忆：文件路径 → 跳转前的光标(行号+列)与滚动位置。
+ * 按访问顺序淘汰、上限 64 条（覆盖任何真实的多文件往返工作流），内存占用
+ * 有界。仅在按下快捷键时读写，不挂任何编辑周期。存行列而非绝对 pos：跳转后
+ * 用户在目标处打字，来处的行内容不受影响，回跳精确。⌘T（头部待办）与 ⌘⇧B
+ * （callout 锚点）各持一份，两个功能的往返记忆互不覆盖。
  */
-const headerTodoReturn = new Map<string, { line: number; col: number; scroll: number }>();
-const HEADER_TODO_RETURN_MAX = 64;
-
-function rememberHeaderTodoReturn(path: string, line: number, col: number, scroll: number): void {
-  headerTodoReturn.set(path, { line, col, scroll });
-  if (headerTodoReturn.size > HEADER_TODO_RETURN_MAX) {
-    const oldest = headerTodoReturn.keys().next().value;
-    if (oldest !== undefined) headerTodoReturn.delete(oldest);
-  }
+interface ReturnSpot {
+  line: number;
+  col: number;
+  scroll: number;
 }
+
+const RETURN_MAX = 64;
+
+function makeReturnMemory() {
+  const map = new Map<string, ReturnSpot>();
+  return {
+    has: (path: string) => map.has(path),
+    get: (path: string) => map.get(path),
+    /** 写入并刷新淘汰顺序。 */
+    set(path: string, spot: ReturnSpot) {
+      map.delete(path);
+      map.set(path, spot);
+      if (map.size > RETURN_MAX) {
+        const oldest = map.keys().next().value;
+        if (oldest !== undefined) map.delete(oldest);
+      }
+    },
+    /** 只刷新淘汰顺序（回跳后保留记忆，往返可以反复走）。 */
+    touch(path: string) {
+      const spot = map.get(path);
+      if (spot === undefined) return;
+      map.delete(path);
+      map.set(path, spot);
+    },
+    clear: () => map.clear(),
+  };
+}
+
+const headerTodoReturn = makeReturnMemory();
+const calloutReturn = makeReturnMemory();
 
 /** 测试钩子:清空往返记忆(模块级 Map 会跨用例泄漏)。 */
 export function resetHeaderTodoReturnForTest(): void {
   headerTodoReturn.clear();
+}
+
+/** 测试钩子:清空 ⌘⇧B 的往返回跳记忆。 */
+export function resetCalloutReturnForTest(): void {
+  calloutReturn.clear();
 }
 
 export function jumpHeaderTodos(view: EditorView): void {
@@ -538,13 +581,17 @@ export function jumpHeaderTodos(view: EditorView): void {
   const head = state.selection.main.head;
   const headLine = doc.lineAt(head).number;
   const headCol = head - doc.lineAt(head).from;
-  const plan = planHeaderTodoJump(state.doc, headLine, headerTodoReturn.has(path));
+  const plan = planHeaderTodoJump(
+    state.doc,
+    headLine,
+    headerTodoReturn.has(path),
+    DAILY_FILE_RE.test(path),
+  );
   if (plan.action === "stay") return;
   if (plan.action === "back") {
     // 已在目标处：回到之前记笔记的位置(行列锚,行被改短则钳到行尾)。
     const saved = headerTodoReturn.get(path)!;
-    headerTodoReturn.delete(path);
-    headerTodoReturn.set(path, saved); // 重新插入，刷新淘汰顺序
+    headerTodoReturn.touch(path); // 刷新淘汰顺序,往返可反复走
     const line = doc.line(Math.min(saved.line, doc.lines));
     view.dispatch({
       selection: { anchor: Math.min(line.from + saved.col, line.to) },
@@ -559,7 +606,11 @@ export function jumpHeaderTodos(view: EditorView): void {
   if (plan.action === "create" && plan.at <= doc.line(headLine).from) {
     line = headLine + (plan.insert.split("\n").length - 1);
   }
-  rememberHeaderTodoReturn(path, line, headCol, Math.round(view.scrollDOM.scrollTop));
+  headerTodoReturn.set(path, {
+    line,
+    col: headCol,
+    scroll: Math.round(view.scrollDOM.scrollTop),
+  });
   if (plan.action === "create") {
     // 空待办长在头部起点,光标落在 `- [ ] ` 行尾,直接输入。
     view.dispatch({
@@ -623,25 +674,28 @@ export function toggleWrap(view: EditorView, marker: string) {
 }
 
 /**
- * 独占整行的开/闭定界块（```…``` / $$…$$）插入。定界符必须自己占一行——
- * 粘在正文后面既不是合法围栏也不是块公式：当前行为空行时原位替换（顺带清掉
- * 纯空白），否则插到本行行尾之后。内部空行与闭栏继承本行缩进（块留在列表
- * 项内）。光标位置从构造出的插入串推导——恒落在内部空行的缩进之后（块内
- * 首个内容位，直接开写正文）。
+ * 独占整行的块（```…``` / $$…$$ 与 LaTeX 环境行）插入。open/close 按行给，
+ * 逐行拼接（公式块是 `$$` + `\begin{align}` 两行，中间空行留给光标）。
+ * 定界符必须自己占一行——粘在正文后面既不是合法围栏也不是块公式：当前行为
+ * 空行时原位替换（顺带清掉纯空白），否则插到本行行尾之后。首行（开栏）不缩进，
+ * 其余行（环境行、内部空行、闭栏）继承本行缩进（块留在列表项内）。光标位置
+ * 从构造出的插入串推导——恒落在内部空行的缩进之后（块内首个内容位，直接开写）。
  */
 function insertOwnLineBlock(
   view: EditorView,
-  open: string,
-  close: string,
+  open: string[],
+  close: string[],
   userEvent: string,
 ) {
   const pos = view.state.selection.main.head;
   const line = view.state.doc.lineAt(pos);
   const blank = line.text.trim() === "";
   const indent = blank ? "" : (line.text.match(/^\s*/)?.[0] ?? "");
-  const insert = (blank ? "" : "\n") + open + "\n" + indent + "\n" + indent + close;
+  const openText = open.map((l, i) => (i === 0 ? l : indent + l)).join("\n");
+  const closeText = close.map((l) => indent + l).join("\n");
+  const insert = (blank ? "" : "\n") + openText + "\n" + indent + "\n" + closeText;
   const from = blank ? line.from : line.to;
-  const cursor = from + (blank ? 0 : 1) + open.length + 1 + indent.length;
+  const cursor = from + (blank ? 0 : 1) + openText.length + 1 + indent.length;
 
   view.dispatch({
     changes: blank ? { from: line.from, to: line.to, insert } : { from, insert },
@@ -652,37 +706,162 @@ function insertOwnLineBlock(
 }
 
 /**
- * 插入 Callout 块(`:::` 容器)。无选区时空行原位替换/否则插到本行尾之后:
- * 插入形状是相邻的开栏/闭栏两行,开栏带一个尾随空格作标题槽,光标落在槽
- * 之后——紧接着写标题(`::: 标题`),写完回车就是块内正文行(两栏之间不预置
- * 空行,回车不必先删一行);不写标题直接回车则是无标题裸块(两种形态扫描
- * 同构)。两栏一律栏 0:callout.ts 只认栏 0 的标记,缩进的闭栏永远关不上块。
- * 有选区时把覆盖的行包进块(与 insertCodeBlock 同一映射模型,行中选区扩展
- * 到整行),选区两端平移进块内。
+ * 插入 Callout 块(`:::` 容器,⌘⇧B)。四种落法:
+ *
+ *  - 有选区:「选中插入」——在选区所在行之后(围栏代码块/display 公式块内
+ *    的选区延伸到该块之后,不把块切开)建一个以选中文字为标题的 callout
+ *    (与前文空一行),光标落块内空行直接开写解释;选中的原文留在原处,
+ *    渲染成下划虚线锚点(calloutAnchor.ts 按「标题 = 正文文本」推导),
+ *    光标停在锚点里再按 ⌘⇧B 即跳到这个块。
+ *  - 无选区、光标在 callout 内:往返(有来处记忆回跳;否则就地开新块)。
+ *  - 无选区、光标在锚点上:跳到关联的 callout。
+ *  - 其余:就地开一个空块——空行原位替换/否则插到本行尾之后。插入形状是
+ *    相邻的开栏/闭栏两行,开栏带一个尾随空格作标题槽,光标落在槽之后——
+ *    紧接着写标题(`::: 标题`),写完回车就是块内正文行(两栏之间不预置
+ *    空行,回车不必先删一行);不写标题直接回车则是无标题裸块。两栏一律
+ *    栏 0:callout.ts 只认栏 0 的标记,缩进的闭栏永远关不上块。
  */
 export function insertCallout(view: EditorView) {
+  // vim visual 的选区要先从引擎取(linewise/blockwise 的 CM 选区不完整)——
+  // 顺便退出 visual,命令消费掉这次选择。
+  const visual = takeVimVisual(view);
   const state = view.state;
   const range = state.selection.main;
-  if (!range.empty) {
-    const firstLine = state.doc.lineAt(range.from);
-    // range.to may sit on the first column of an untouched line.
-    const lastLine = state.doc.lineAt(Math.max(range.from, range.to - 1));
-    const covered = state.sliceDoc(firstLine.from, lastLine.to);
-    const openLen = ":::\n".length;
-    const mapPos = (p: number) => {
-      if (p <= firstLine.from) return p;
-      if (p <= lastLine.to) return firstLine.from + openLen + (p - firstLine.from);
-      return firstLine.from + openLen + covered.length + 4 + (p - lastLine.to - 1);
-    };
-    view.dispatch({
-      changes: { from: firstLine.from, to: lastLine.to, insert: `:::\n${covered}\n:::` },
-      selection: { anchor: mapPos(range.anchor), head: mapPos(range.head) },
-      userEvent: "input.bnote-callout",
-    });
-    view.focus();
+  const sel =
+    visual ??
+    (range.empty
+      ? null
+      : { text: state.sliceDoc(range.from, range.to), from: range.from, to: range.to });
+  const title = sel ? normalizeCalloutTitle(sel.text) : "";
+  if (sel && title !== "") {
+    insertTitledCallout(view, title, calloutInsertAnchor(state, sel.from, sel.to));
     return;
   }
-  const line = state.doc.lineAt(range.head);
+  jumpOrInsertCallout(view);
+}
+
+/**
+ * 选中内容作为标题的单行形态:换行(跨行选区)压成空格、连续空白压成一个。
+ * callout 标题是单行语法(开栏行剩余部分);压过之后锚点匹配端对空白弹性
+ * (见 calloutAnchor.findTitleMatches),原文处仍能命中。
+ */
+function normalizeCalloutTitle(raw: string): string {
+  return raw.replace(/[\r\n]+/g, " ").replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/**
+ * 选中插入的落点:选区所在「块」的最后一行行尾。普通文本就是选区末行;
+ * 选区落在围栏代码块或 display 公式块里时延伸到该块末行——插在块的中间会
+ * 把块切开(围栏/$$ 被拆散),整块之后再长 callout 才不破坏它。
+ */
+export function calloutInsertAnchor(state: EditorState, from: number, to: number): number {
+  const doc = state.doc;
+  const end = Math.max(from, to - 1);
+  let anchorLine = doc.lineAt(end).number;
+  // 围栏代码块:行扫描与 callout 扫描同源(树未就绪也准确)。选区末行在围栏
+  // 内时往下找第一个出围栏的行,它的前一行即块的闭合行(未闭合到文末则是末行)。
+  const inside = fenceStateScan(doc);
+  if (inside[anchorLine - 1]) {
+    let n = anchorLine;
+    while (n <= doc.lines && inside[n - 1]) n++;
+    anchorLine = Math.min(n - 1, doc.lines);
+  }
+  // display 公式块:选区与区域相交时延伸到区域末行(取最靠后那个)。
+  for (const r of mathRegions(state)) {
+    if (!r.display) continue;
+    if (end >= r.from && from <= r.to) {
+      const regionEnd = doc.lineAt(Math.max(r.from, r.to - 1)).number;
+      if (regionEnd > anchorLine) anchorLine = regionEnd;
+    }
+  }
+  return doc.line(anchorLine).to;
+}
+
+/**
+ * 在 `at`(某行行尾)之后插入带标题的 callout。与前文恰好隔开一个空行:
+ * 落点行非空补两个换行(原文与开栏之间空一行),落点行本身是空行(未闭合
+ * 围栏延伸到文末的空尾行)只补一个。光标落块内空行(开栏行之后),直接输入
+ * 就是块内容;`at` 之后原有的内容被推到块后面。
+ */
+function insertTitledCallout(view: EditorView, title: string, at: number) {
+  const doc = view.state.doc;
+  const atLine = doc.lineAt(at);
+  const prefix = atLine.text.trim() === "" ? "\n" : "\n\n";
+  const head = `::: ${title}\n`;
+  view.dispatch({
+    changes: { from: at, insert: `${prefix}${head}\n:::` },
+    selection: { anchor: at + prefix.length + head.length },
+    scrollIntoView: true,
+    userEvent: "input.bnote-callout",
+  });
+  view.focus();
+}
+
+/** 一次无选区 ⌘⇧B 的决策(纯函数,契约在 ops.test.ts):
+ *  anchor-jump = 光标在锚点上,跳到关联 callout;back = 已在 callout 内且有
+ *  来处记忆,回跳;insert = 就地开一个空块。 */
+export type CalloutPlan =
+  | { action: "anchor-jump"; region: CalloutRegion }
+  | { action: "back" }
+  | { action: "insert" };
+
+export function planCalloutShortcut(
+  doc: Text,
+  callouts: CalloutRegion[],
+  head: number,
+  hasReturn: boolean,
+): CalloutPlan {
+  // 光标在某个 callout 内(含边界行,与边界行的活动规则同一范围):往返优先——
+  // 刚跳到块里,再按一次就是回去;没有来处的块内编辑照旧就地开新块。
+  if (callouts.some((c) => head >= c.from && head <= c.to)) {
+    return hasReturn ? { action: "back" } : { action: "insert" };
+  }
+  const region = anchorRegionAt(doc, callouts, head);
+  if (region) return { action: "anchor-jump", region };
+  return { action: "insert" };
+}
+
+/** 无选区时的 ⌘⇧B:锚点跳转 / 往返回跳 / 就地插入空块。 */
+function jumpOrInsertCallout(view: EditorView) {
+  const state = view.state;
+  const doc = state.doc;
+  const path = useAppStore.getState().currentFile ?? "";
+  const head = state.selection.main.head;
+  const plan = planCalloutShortcut(doc, calloutRegions(state), head, calloutReturn.has(path));
+  if (plan.action === "back") {
+    // 已在 callout 内:回到跳转前的正文位置(行列锚,行被改短则钳到行尾)。
+    const saved = calloutReturn.get(path)!;
+    calloutReturn.touch(path); // 刷新淘汰顺序,往返可反复走
+    const line = doc.line(Math.min(saved.line, doc.lines));
+    view.dispatch({
+      selection: { anchor: Math.min(line.from + saved.col, line.to) },
+      scrollIntoView: true,
+    });
+    view.scrollDOM.scrollTop = Math.max(0, Math.min(saved.scroll, view.scrollDOM.scrollHeight));
+    return;
+  }
+  if (plan.action === "anchor-jump") {
+    const headLine = doc.lineAt(head).number;
+    calloutReturn.set(path, {
+      line: headLine,
+      col: head - doc.lineAt(head).from,
+      scroll: Math.round(view.scrollDOM.scrollTop),
+    });
+    // 落点 = 开栏行行尾(标题槽后):与「创建选中块时光标落标题槽」同一位置,
+    // 光标已在块内,再按一次 ⌘⇧B 即往回跳。
+    view.dispatch({
+      selection: { anchor: doc.line(plan.region.openLine).to },
+      scrollIntoView: true,
+    });
+    return;
+  }
+  insertEmptyCallout(view);
+}
+
+/** 就地插入空 callout 块(空行原位替换/否则插到本行尾之后)。 */
+function insertEmptyCallout(view: EditorView) {
+  const state = view.state;
+  const line = state.doc.lineAt(state.selection.main.head);
   const blank = line.text.trim() === "";
   const open = "::: ";
   const from = blank ? line.from : line.to;
@@ -696,9 +875,21 @@ export function insertCallout(view: EditorView) {
   view.focus();
 }
 
-/** Inserts a $$ … $$ block on its own lines and places the cursor inside. */
+/**
+ * 插入公式块（⌘M）：原生给出对齐环境骨架——`$$` 定界行之间嵌
+ * `\begin{align}…\end{align}`，光标落环境内的空行。
+ *
+ * 与片段 `dm`/`#@` 同形，区别是热键直达、不必先打触发词再转换。等号对齐与
+ * 换行不在插入时预置：在 align 环境里回车由 matrix.ts 的 alignEnter 接管
+ * （第一个裸关系符前补对齐点 `&`、行尾补 ` \\`），插入只给环境与落点。
+ */
 export function insertMathBlock(view: EditorView) {
-  insertOwnLineBlock(view, "$$", "$$", "input.bnote-math-block");
+  insertOwnLineBlock(
+    view,
+    ["$$", "\\begin{align}"],
+    ["\\end{align}", "$$"],
+    "input.bnote-math-block",
+  );
 }
 
 export function insertInlineMath(view: EditorView) {
@@ -801,7 +992,7 @@ export function insertCodeBlock(view: EditorView, langOverride?: string) {
     view.focus();
     return;
   }
-  insertOwnLineBlock(view, open, "```", "input.bnote-code-block");
+  insertOwnLineBlock(view, [open], ["```"], "input.bnote-code-block");
 }
 
 export function insertHorizontalRule(view: EditorView) {

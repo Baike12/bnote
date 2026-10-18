@@ -5,6 +5,7 @@ import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
 import { mathRegions } from "./context";
 import { calloutRegions } from "./callout";
+import { collectAnchors } from "./calloutAnchor";
 import { documentPath, setDocPath } from "./docPath";
 import { useAppStore } from "@/state/appStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -586,7 +587,8 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   // 留白与圆角由开/合边界行承担。行装饰不依赖光标位置——纯光标移动经
   // selectionAffectsDecos 快路径时整段不重建。嵌套区域各刷一层,深度类
   // d1/d2 让内层右移(见 global.css)。
-  for (const c of calloutRegions(state)) {
+  const callouts = calloutRegions(state);
+  for (const c of callouts) {
     if (c.to < visibleFrom || c.from > visibleTo) continue;
     const firstNo = Math.max(c.openLine, doc.lineAt(visibleFrom).number);
     const lastNo = Math.min(c.closeLine, doc.lineAt(visibleTo).number);
@@ -606,11 +608,20 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
     }
   }
 
+  const exclude: Interval[] = [...codeRanges, ...inlineCodeRanges];
+
+  // ---- Callout 锚点:与某个 callout 标题同一段文字的正文文本 ----
+  // 「选中插入」留在原文处的入口,渲染成下划虚线(与块左竖线同色)。匹配是
+  // 纯文本相等(空白弹性,见 calloutAnchor.ts),不依赖语法树,文件刚载入
+  // 树未解析时也完整;范围排除 callout 区域与代码区域(那里不是入口)。
+  for (const a of collectAnchors(doc, callouts, visibleFrom, visibleTo, exclude)) {
+    out.inline.push(Decoration.mark({ class: "md-callout-anchor" }).range(a.from, a.to));
+  }
+
   // ---- Math ----
   // Whole display blocks (rendered widget / preview) live in the state field;
   // here only single-line display and inline formulas, plus source highlights
   // for the formula being edited.
-  const exclude: Interval[] = [...codeRanges, ...inlineCodeRanges];
   for (const region of maths) {
     if (region.to < visibleFrom || region.from > visibleTo) continue;
     if (inRangeList(exclude, region.from, region.to)) continue;

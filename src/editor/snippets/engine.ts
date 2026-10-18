@@ -168,7 +168,8 @@ export function isWordBoundary(
 }
 
 export interface CompiledSnippetList {
-  /** Sorted: priority desc, then longer triggers first. */
+  /** Sorted: priority desc, then longer triggers first（正则按 source 长度参与，
+   *  与 latex-suite 的 getTriggerLength 一致）。 */
   list: ParsedSnippet[];
 }
 
@@ -178,9 +179,10 @@ export function compileSnippets(raws: RawSnippet[]): CompiledSnippetList {
     .filter((s): s is ParsedSnippet => s !== null)
     .sort((a, b) => {
       if (a.priority !== b.priority) return b.priority - a.priority;
-      const la = a.regex ? 0 : a.displayTrigger.length;
-      const lb = b.regex ? 0 : b.displayTrigger.length;
-      return lb - la;
+      // latex-suite 的 getTriggerLength:字符串 trigger 用本体长度,正则用
+      // source 长度。正则若一律按 0 排（旧行为），任何普通 trigger 都会抢先于
+      // 能匹配同一段文本的正则——"xhat" 便只命中 "hat" 而不是 ([a-zA-Z])hat。
+      return b.displayTrigger.length - a.displayTrigger.length;
     });
   return { list: parsed };
 }

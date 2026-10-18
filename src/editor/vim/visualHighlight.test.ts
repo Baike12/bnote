@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import type { DecorationSet } from "@codemirror/view";
-import { visualLineNumbers, visualRangeSpans, visualSelectionDecos } from "./vim";
+import {
+  visualLineNumbers,
+  visualRangeSpans,
+  visualSelection,
+  visualSelectionDecos,
+} from "./vim";
 
 /**
  * Visual 模式高亮的几何门禁（vimVisualHighlight 的纯函数体）：
@@ -213,5 +218,78 @@ describe("visualSelectionDecos:绘制所有权", () => {
     expect(
       visualSelectionDecos(spanDoc, sel({ line: 1, ch: 3 }, { line: 1, ch: 3 }), []).size,
     ).toBe(0);
+  });
+});
+
+describe("visualSelection:⌘⇧B 选中插入的选区(引擎 sel 坐标模型)", () => {
+  const vstate = (a: Pos, h: Pos, opts: { line?: boolean; block?: boolean } = {}) => ({
+    visualMode: true,
+    visualLine: !!opts.line,
+    visualBlock: !!opts.block,
+    sel: { anchor: a, head: h },
+  });
+
+  it("linewise:整行(含行尾换行),范围为整行区间", () => {
+    expect(visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 2, ch: 0 }, { line: true }))).toEqual({
+      text: "第二行\n第三行",
+      from: 4,
+      to: 11,
+    });
+  });
+
+  it("linewise 折叠(VV 不动):单行整行", () => {
+    expect(visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 1, ch: 0 }, { line: true }))).toEqual({
+      text: "第二行",
+      from: 4,
+      to: 7,
+    });
+  });
+
+  it("linewise 反向(Jk 向上):与正向同一段文本与范围", () => {
+    const forward = visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 3, ch: 0 }, { line: true }));
+    const backward = visualSelection(doc, vstate({ line: 3, ch: 0 }, { line: 1, ch: 0 }, { line: true }));
+    expect(backward).toEqual(forward);
+    expect(forward).toEqual({ text: "第二行\n第三行\n第四行", from: 4, to: 15 });
+  });
+
+  it("blockwise:逐行取列区间(含头字符),范围是整块的行区间", () => {
+    expect(
+      visualSelection(doc, vstate({ line: 0, ch: 1 }, { line: 2, ch: 2 }, { block: true })),
+    ).toEqual({ text: "一行\n二行\n三行", from: 0, to: 11 });
+  });
+
+  it("blockwise 列越界:钳到行尾(vim 的块选就是这样)", () => {
+    expect(
+      visualSelection(doc, vstate({ line: 0, ch: 2 }, { line: 1, ch: 9 }, { block: true })),
+    ).toEqual({ text: "行\n行", from: 0, to: 7 });
+  });
+
+  it("charwise:锚点到光标的字符区间(含头字符)", () => {
+    expect(visualSelection(doc, vstate({ line: 0, ch: 0 }, { line: 1, ch: 1 }))).toEqual({
+      text: "第一行\n第二",
+      from: 0,
+      to: 6,
+    });
+  });
+
+  it("charwise 反向(v 后向上移动):与正向同一区间", () => {
+    const forward = visualSelection(doc, vstate({ line: 0, ch: 1 }, { line: 1, ch: 2 }));
+    const backward = visualSelection(doc, vstate({ line: 1, ch: 2 }, { line: 0, ch: 1 }));
+    expect(backward).toEqual(forward);
+    expect(forward).toEqual({ text: "一行\n第二行", from: 1, to: 7 });
+  });
+
+  it("非 visual 模式 / 引擎没维护 sel:返回 null", () => {
+    expect(visualSelection(doc, { visualMode: false, sel: { anchor: { line: 0, ch: 0 }, head: { line: 1, ch: 0 } } })).toBeNull();
+    expect(visualSelection(doc, { visualMode: true })).toBeNull();
+    expect(visualSelection(doc, null)).toBeNull();
+  });
+
+  it("行号越界钳制到文档范围(引擎 sel 可能瞬时指向文末之后)", () => {
+    expect(visualSelection(doc, vstate({ line: 2, ch: 0 }, { line: 99, ch: 0 }, { line: true }))).toEqual({
+      text: "第三行\n第四行",
+      from: 8,
+      to: 15,
+    });
   });
 });
