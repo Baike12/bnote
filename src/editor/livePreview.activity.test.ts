@@ -366,3 +366,64 @@ describe("数学预览的块级锚点（blockDecorationsField）", () => {
     );
   });
 });
+
+/**
+ * Callout 锚点装饰:与某个 callout 标题同一段文字的正文文本加
+ * md-callout-anchor(下划虚线);标题行、块内文、代码区不加。
+ */
+describe("livePreview callout 锚点装饰", () => {
+  const anchorState = (doc: string, line = 1, col = 0) => {
+    const created = EditorState.create({
+      doc,
+      extensions: [markdown({ base: markdownLanguage, extensions: [GFM] })],
+    });
+    ensureSyntaxTree(created, created.doc.length);
+    const l = created.doc.line(line);
+    return created.update({ selection: EditorSelection.cursor(l.from + col) }).state;
+  };
+
+  const anchorMarks = (state: EditorState) =>
+    decosAt(state, 0, state.doc.length)
+      .filter(
+        (e) => (e.deco as { spec?: { class?: string } }).spec?.class === "md-callout-anchor",
+      )
+      .map((e) => ({ from: e.from, to: e.to }));
+
+  it("正文里与标题同一段文字的位置有锚点;标题行与块内文没有", () => {
+    const state = anchorState("斜率矩阵是错的\n\n::: 斜率矩阵\n\n:::\n");
+    expect(anchorMarks(state)).toEqual([{ from: 0, to: 4 }]);
+  });
+
+  it("光标停进锚点内时装饰仍在(不参与标记的活动规则)", () => {
+    const state = anchorState("斜率矩阵是错的\n\n::: 斜率矩阵\n\n:::\n", 1, 2);
+    expect(anchorMarks(state)).toEqual([{ from: 0, to: 4 }]);
+  });
+
+  it("围栏代码里的同一段文字不加锚点", () => {
+    const state = anchorState("```\n斜率矩阵\n```\n\n::: 斜率矩阵\n\n:::\n", 4, 0);
+    expect(anchorMarks(state)).toEqual([]);
+  });
+
+  it("行内代码里的同一段文字不加锚点", () => {
+    const state = anchorState("`斜率矩阵`\n\n::: 斜率矩阵\n\n:::\n", 3, 0);
+    expect(anchorMarks(state)).toEqual([]);
+  });
+
+  it("锚点扫描跟着视口:只看得到视口内的命中", () => {
+    const doc = "斜率矩阵\n\n::: 斜率矩阵\n\n:::\n";
+    const state = anchorState(doc, 1, 0);
+    const marksIn = (from: number, to: number) => {
+      const set = buildInlineDecorations({ state, visibleRanges: [{ from, to }] });
+      const out: { from: number; to: number }[] = [];
+      set.between(0, state.doc.length, (f, t, deco) => {
+        if ((deco as { spec?: { class?: string } }).spec?.class === "md-callout-anchor") {
+          out.push({ from: f, to: t });
+        }
+      });
+      return out;
+    };
+    expect(marksIn(0, 5)).toEqual([{ from: 0, to: 4 }]);
+    // 视口只含标题行(行 1 的命中在外面):锚点不出现
+    expect(marksIn(6, doc.length)).toEqual([]);
+  });
+});

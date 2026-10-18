@@ -40,6 +40,8 @@
   /* Callout 标题的薄荷绿：调色板里原本没有这个色相（最近的 --ok 鼠尾草绿
      #7ec97e 差 33°、--h2-color 青差 32°），清新且与块面的青底压得住。 */
   --callout-title-color: #3ecf8e;
+  /* Callout 块左竖线 / 锚点下划虚线共用的重音色（两主题各自求值）。 */
+  --callout-accent: color-mix(in srgb, var(--h2-color) 50%, transparent);
   /* 代码 token（HighlightStyle 在 markdown.ts 里按 var() 引用；其余 token
      直接复用上面的 --string/--keyword/--link/--strong-color/--danger）。 */
   --tok-comment: #7f848e;
@@ -102,6 +104,7 @@
   --h6-color: #6b7683;
   --strong-color: #c94f8c;
   --callout-title-color: #0a7f55; /* 同色相加深，白底对比 5.0:1 */
+  --callout-accent: color-mix(in srgb, var(--h2-color) 50%, transparent);
   --tok-comment: #a0a1a7;
   --tok-number: #b76b01;
   --tok-func: #4078f2;
@@ -547,7 +550,7 @@ button {
    缩进规则优先,callout 内列表几何与块外逐像素一致;代码行的底色规则也排在本
    段之后,块内代码块保有自己的更深底色,竖线仍在。 */
 .md-callout-line {
-  border-left: 3px solid color-mix(in srgb, var(--h2-color) 50%, transparent);
+  border-left: 3px solid var(--callout-accent);
   background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
   padding-left: 11px;
 }
@@ -570,7 +573,7 @@ button {
 .cw-callout-title,
 .cw-callout-edge {
   display: block;
-  border-left: 3px solid color-mix(in srgb, var(--h2-color) 50%, transparent);
+  border-left: 3px solid var(--callout-accent);
   background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
   padding-left: 11px;
 }
@@ -601,6 +604,19 @@ button {
 .cw-callout-title.d2,
 .cw-callout-edge.d2 {
   padding-left: 39px;
+}
+/* Callout 锚点：正文里与某个 callout 标题同一段文字的入口（⌘⇧B 选中插入留
+   在原文处的那一段）。下划虚线与块左竖线同一重音色；文本本身不动，光标停
+   在其中按 ⌘⇧B 跳到关联块（见 ops.planCalloutShortcut）。
+   写法必须拆成 text-decoration-* 长属性：WKWebView 丢弃「text-decoration
+   简写里含 var()」的整条声明（Chromium 正常、真应用没有下划线——2026-10-08
+   用系统 WKWebView 离屏渲染实拍四种写法取证），长属性 + var() 在两端都成立。 */
+.md-callout-anchor {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: var(--callout-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
 /* 块级 widget(公式块/公式实时预览/HR)自带的块外排版留白在 callout 内会把
    块面切开——margin 区域露出正文底色,callout 视觉上被切成数块。归零:块内

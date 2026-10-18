@@ -341,7 +341,8 @@ interface Pos {
 interface VisualDoc {
   length: number;
   lines: number;
-  line(n: number): { from: number; to: number };
+  sliceString(from: number, to?: number): string;
+  line(n: number): { from: number; to: number; text: string };
   lineAt(pos: number): { from: number; to: number; number: number };
 }
 
@@ -554,6 +555,80 @@ export function vimActiveLine(): Extension {
 function vimStateOf(view: EditorView): { insertMode?: boolean; visualMode?: boolean } | null {
   const cm = getCM(view) as unknown as { state?: { vim?: { insertMode?: boolean; visualMode?: boolean } } } | null;
   return cm?.state?.vim ?? null;
+}
+
+/** Visual 选区:文本 + 覆盖的 doc 范围(⌘⇧B 选中插入的标题与落点都从这里取)。 */
+export interface VisualSelection {
+  /** 选区文本(linewise 整行含行尾;blockwise 逐行切片;charwise 精确区间)。 */
+  text: string;
+  /** 选区覆盖的 doc 位置范围。 */
+  from: number;
+  to: number;
+}
+
+/**
+ * 引擎 sel(0 基 line/ch,CM5 风格) → visual 模式的选区:linewise 取整行
+ * (含行尾)、blockwise 逐行取列区间(列越界钳到行尾,vim 的块选就是这样)、
+ * charwise 取锚点到光标的字符区间(含头字符)。三类都从引擎 sel 算,不读 CM
+ * 选区——linewise/blockwise 下引擎只把部分区间同步进 CM(实测 ⌃V 块选 CM 只有
+ * 光标那一段),引擎 sel 才是权威。导出供门禁锁坐标模型。
+ */
+export function visualSelection(
+  doc: VisualDoc,
+  vimState: VisualVimState | null,
+): VisualSelection | null {
+  const sel = vimState?.sel;
+  if (!vimState?.visualMode || !sel?.anchor || !sel.head) return null;
+  const lineNo = (n: number) => Math.max(1, Math.min(n + 1, doc.lines));
+  const aLine = lineNo(sel.anchor.line);
+  const hLine = lineNo(sel.head.line);
+  const first = Math.min(aLine, hLine);
+  const last = Math.max(aLine, hLine);
+  const from = doc.line(first).from;
+  const to = doc.line(last).to;
+  if (vimState.visualLine) {
+    return { text: doc.sliceString(from, to), from, to };
+  }
+  if (vimState.visualBlock) {
+    const startCh = Math.min(sel.anchor.ch, sel.head.ch);
+    const endCh = Math.max(sel.anchor.ch, sel.head.ch) + 1; // vim 的选区含头字符
+    const rows: string[] = [];
+    for (let n = first; n <= last; n++) {
+      const lineText = doc.line(n).text;
+      rows.push(
+        lineText.slice(Math.min(startCh, lineText.length), Math.min(endCh, lineText.length)),
+      );
+    }
+    return { text: rows.join("\n"), from, to };
+  }
+  // charwise:锚点与光标各自的字符位置,两端排序后取 [小, 大+1)——含头字符。
+  const posOf = (p: { line: number; ch: number }) => {
+    const line = doc.line(lineNo(p.line));
+    return Math.min(line.from + Math.max(0, p.ch), line.to);
+  };
+  const a = posOf(sel.anchor);
+  const h = posOf(sel.head);
+  const cf = Math.min(a, h);
+  const ct = Math.min(Math.max(a, h) + 1, doc.length);
+  return { text: doc.sliceString(cf, ct), from: cf, to: ct };
+}
+
+/**
+ * ⌘⇧B「选中插入」在 vim visual 模式下的选区来源:取引擎维护的选区
+ * (visualSelection),并退出 visual 模式。返回 null = 不在 visual 模式
+ * (调用方直接用 CM 选区)。退出放在这里:命令已消费掉这次选择,光标随后的
+ * dispatch 落进新块;留着 visual 状态会让引擎的下一次按键把光标拽回旧选区
+ * (选中态还亮着)。
+ */
+export function takeVimVisual(view: EditorView): VisualSelection | null {
+  const cm = getCM(view) as unknown as { state?: { vim?: VisualVimState } } | null;
+  const vim = cm?.state?.vim;
+  if (!cm || !vim?.visualMode) return null;
+  const selection = visualSelection(view.state.doc, vim);
+  (
+    Vim as unknown as { exitVisualMode: (cm: unknown, moveHead?: boolean) => void }
+  ).exitVisualMode(cm, false);
+  return selection;
 }
 
 /** 引擎此刻是否在画块光标。判据照抄 @replit/codemirror-vim 的 measureCursor

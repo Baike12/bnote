@@ -960,6 +960,62 @@ describe("性能门禁:callout 扫描(60块 ~500行)", () => {
   });
 });
 
+// ---- callout 锚点扫描(⌘⇧B 选中插入的锚点:标题 × 视口的弹性匹配) ----
+// 每个带标题的 callout 都要在视口文本里找「同一段文字」的出现——成本 = 标题
+// 数 × 视口文本,命中还要过一次 callout 区域/排除区过滤。这里用「正文反复
+// 出现标题文本」的压力形态(命中拉满)锁量级;视口=全文档是上界。
+
+/** 锚点密集文档:每节一个带标题块;正文段落里反复出现标题文本。 */
+function anchorDoc(sections: number): string {
+  const parts: string[] = [];
+  for (let i = 1; i <= sections; i++) {
+    parts.push(`::: 参考 ${i}`);
+    parts.push(`## ${i} 定理`);
+    parts.push("块内段落,讲一些泛函分析的基本概念,长度中等偏长一些。");
+    parts.push(":::");
+    parts.push("");
+    parts.push(`## ${i} 正文节`);
+    parts.push("");
+    parts.push(`正文段落提到 参考 ${i} 这个说法,并在别处又提 参考 ${i} 一次。`);
+    parts.push("");
+  }
+  return parts.join("\n");
+}
+
+describe("性能门禁:callout 锚点扫描(60 块带标题,正文反复命中)", () => {
+  const ANCHOR_DOC = anchorDoc(60);
+  const state = makeState(ANCHOR_DOC, 0);
+
+  it("全文档视口 inline 装饰重建(锚点扫描在内)中位数 < 5ms", () => {
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      buildInlineDecorations({ state, visibleRanges: [{ from: 0, to: state.doc.length }] });
+      return performance.now() - t0;
+    }, 15);
+    console.warn(`[perf] 锚点文档 inline 装饰中位数 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(5);
+  });
+
+  it("每击输入(update+装饰重建)20 击总计 < 150ms,单击中位数 < 6ms", () => {
+    const line = state.doc.line(8); // 第一处正文命中的那一行
+    const at = line.from + 6;
+    let cur = makeState(ANCHOR_DOC, at);
+    const perKey: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t0 = performance.now();
+      cur = cur.update({ changes: { from: at, insert: "字" } }).state;
+      buildInlineDecorations({ state: cur, visibleRanges: [{ from: 0, to: cur.doc.length }] });
+      perKey.push(performance.now() - t0);
+    }
+    const total = perKey.reduce((a, b) => a + b, 0);
+    perKey.sort((a, b) => a - b);
+    const median = perKey[Math.floor(perKey.length / 2)];
+    console.warn(`[perf] 锚点文档每击 总计 ${total.toFixed(0)}ms, 中位数 ${median.toFixed(2)}ms`);
+    expect(total).toBeLessThan(150);
+    expect(median).toBeLessThan(6);
+  });
+});
+
 // ---- 跨文件待办同步 · 每键意图提取(dailySyncExtension 的固定支出) ----
 // updateListener 里的行级 diff:无意图时只付「变更行解析 + 身份文本比对」,
 // 链接命中时加一次块根上溯(步数有界)。这里测 intentsForRange 本身——监听器

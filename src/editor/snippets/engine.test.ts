@@ -75,6 +75,30 @@ describe("findSnippet:模式上下文", () => {
   });
 });
 
+describe("同级触发词竞争:正则按 source 长度参与排序(latex-suite getTriggerLength)", () => {
+  const load = (s: RawSnippet[]) => reloadSnippets(s, true);
+  // 真实片段集里这两条同时存在:xhat 该走前者,\hat 该走后者。
+  const ACCENT: RawSnippet[] = [
+    { trigger: /([a-zA-Z])hat/, replacement: "\\hat{[[0]]}", options: "rmA" },
+    { trigger: "hat", replacement: "\\hat{$0}$1", options: "mA" },
+  ];
+
+  it("字母在前(xhat)命中的是正则,而不是末尾的 hat 字符串片段", () => {
+    load(ACCENT);
+    const m = findSnippet(state("$xhat$", 5), 5, "t", { auto: true, visualText: null });
+    expect(m?.snippet.displayTrigger).toBe("([a-zA-Z])hat");
+    expect(m?.start).toBe(1);
+    expect(m?.replacement.text).toBe("\\hat{x}");
+  });
+
+  it("正则匹配不上时回落到 hat 片段", () => {
+    load(ACCENT);
+    const m = findSnippet(state("$hat$", 4), 4, "t", { auto: true, visualText: null });
+    expect(m?.snippet.displayTrigger).toBe("hat");
+    expect(m?.replacement.text).toBe("\\hat{}");
+  });
+});
+
 describe("parseReplacement:制表位与转义", () => {
   it("$0/$1 产出空制表位", () => {
     const r = parseReplacement("($0)$1", [], null);
@@ -114,14 +138,14 @@ describe("parseReplacement:制表位与转义", () => {
 });
 
 describe("compileSnippets:排序契约", () => {
-  it("priority 降序,同级长触发器优先(正则最后)", () => {
+  it("priority 降序,同级长触发器优先(正则按 source 长度参与)", () => {
     const { list } = compileSnippets([
       { trigger: "a", replacement: "1", options: "tA" },
       { trigger: "abc", replacement: "2", options: "tA" },
       { trigger: /ab/, replacement: "3", options: "rA" },
       { trigger: "abx", replacement: "4", options: "tA", priority: 1 },
     ]);
-    expect(list.map((s) => s.displayTrigger)).toEqual(["abx", "abc", "a", "ab"]);
+    expect(list.map((s) => s.displayTrigger)).toEqual(["abx", "abc", "ab", "a"]);
   });
 });
 
