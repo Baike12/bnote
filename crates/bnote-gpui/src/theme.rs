@@ -498,6 +498,11 @@ pub fn highlight_theme(palette: &Palette, appearance: ThemeMode) -> HighlightThe
         style: HighlightThemeStyle {
             // The current-line shade (TS `.cm-activeLine { background: var(--sel) }`).
             editor_active_line: Some(palette.color("sel")),
+            // The block caret's ink comes from the plugin the TS build
+            // installs, not from bnote's CSS: `@replit/codemirror-vim`'s
+            // `BlockCursorPlugin` paints `.cm-fat-cursor { background:
+            // #ff9696 }` in both modes, with the character drawn on top of it.
+            caret_block: parse_color(BLOCK_CARET_INK),
             syntax,
             ..Default::default()
         },
@@ -521,6 +526,12 @@ fn installed_mono_family(cx: &App) -> SharedString {
         })
         .clone()
 }
+
+/// The block caret's ink, from the plugin the TS build installs rather than
+/// from bnote's CSS: `@replit/codemirror-vim`'s `BlockCursorPlugin` paints
+/// `.cm-fat-cursor { background: #ff9696 }` in both modes. One value for both
+/// palettes, the way the plugin's own theme is.
+const BLOCK_CARET_INK: &str = "#ff9696";
 
 /// `#rgb` / `#rrggbb` / `#rrggbbaa` / `rgba(r, g, b, a)` — the three forms the
 /// CSS file uses.

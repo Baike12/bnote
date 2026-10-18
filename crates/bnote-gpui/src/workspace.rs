@@ -32,7 +32,7 @@ use gpui_kit::component::{
     button::Button,
     command::{Command, CommandItem, CommandState},
     h_flex, v_flex,
-    input::{Editor, EditorState, Input, InputEvent, InputState, PreviewDecorations, TextDecorationCollection},
+    input::{CaretShape, Editor, EditorState, Input, InputEvent, InputState, PreviewDecorations, TextDecorationCollection},
     label::Label,
     list::ListItem,
     resizable::{h_resizable, resizable_panel},
@@ -1477,11 +1477,15 @@ impl Workspace {
 
         // The IME follow's second editor trigger: the key that just changed
         // vim's mode. Esc out of insert moves neither text nor caret, so the
-        // selection observer never sees it.
+        // selection observer never sees it. The caret's shape rides the same
+        // notification: insert is the one mode with a bar.
         {
             let weak = cx.weak_entity();
             workspace.vim_bridge.set_mode_observer(move |_mode, cx| {
-                let _ = weak.update(cx, |this, cx| this.ime_sync(cx));
+                let _ = weak.update(cx, |this, cx| {
+                    this.apply_vim_caret(cx);
+                    this.ime_sync(cx);
+                });
             });
         }
 
@@ -1492,6 +1496,10 @@ impl Workspace {
             workspace.set_vim_enabled(true, cx);
             workspace.status = "vim 模式开启(普通模式)".to_string();
         }
+        // Applied even with vim off: a plain text field has neither a block
+        // caret nor a current-line shade, and the engine's defaults are the
+        // other way around.
+        workspace.apply_vim_caret(cx);
 
         // The caret position of the closing window is written synchronously —
         // the debounced write would be racing the process teardown. A dirty
@@ -2887,6 +2895,30 @@ impl Workspace {
         } else {
             self.vim_bridge.detach(&editor, cx);
         }
+        self.apply_vim_caret(cx);
+    }
+
+    /// The caret the TS vim draws, and the shade that comes with it.
+    ///
+    /// `@replit/codemirror-vim`'s `BlockCursorPlugin` measures the cursor as
+    /// `vim && (!insertMode || overwrite)`: a filled block over the character
+    /// cell in normal/visual/replace, and the plain bar only while inserting.
+    /// The TS build paints the current-line shade (`.cm-line.cm-activeLine`)
+    /// from that same judgment, so the two never drift: no block, no shade.
+    /// With vim off neither exists — the shade belongs to a modal caret, not
+    /// to a plain text field.
+    fn apply_vim_caret(&self, cx: &mut Context<Self>) {
+        let block = self
+            .vim_bridge
+            .mode_of(&self.editor)
+            .is_some_and(|mode| mode != VimMode::Insert);
+        self.editor.update(cx, |state, cx| {
+            state.set_caret_shape(
+                if block { CaretShape::Block } else { CaretShape::Bar },
+                cx,
+            );
+            state.set_current_line_shade(block, cx);
+        });
     }
 
     fn persist_vim_setting(&self, enabled: bool) {
@@ -3136,13 +3168,26 @@ impl Workspace {
     fn render_editor_column(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = cx.theme().clone();
         let palette = self.preview.palette(cx);
-        // `.cm-content`'s prose column: capped at `--content-line-width`
-        // (700px) plus the two 48px insets and centered in the pane — GPUI's
-        // border-box sizing makes `--content-line-width + 2 * --content-pad-x`
-        // the same 796px box the CSS declares. The 45vh bottom padding is the
-        // engine's own half-viewport scroll margin, already in place.
+        // `EditorPane`'s editor host is the full pane: the scrollbar rides the
+        // pane's edge (TS `.cm-scroller`), so the editor owns the whole width
+        // and the prose column is capped *inside* it — `.cm-content`'s
+        // `max-width: calc(--content-line-width + 2 * --content-pad-x)` (796px,
+        // centered) with `padding: 24px var(--content-pad-x)` and the engine's
+        // own half-viewport margin standing in for the CSS `45vh` bottom.
         let column_width = px(palette.content_line_width + 2. * palette.content_pad_x);
         let pad_x = px(palette.content_pad_x);
+        self.editor.update(cx, |state, cx| {
+            state.set_content_column(
+                Some(column_width),
+                Some(Edges {
+                    top: px(24.),
+                    right: pad_x,
+                    bottom: px(0.),
+                    left: pad_x,
+                }),
+                cx,
+            );
+        });
         let editor = Editor::new(&self.editor)
             .bordered(false)
             .p_0()
@@ -3153,15 +3198,11 @@ impl Workspace {
             .text_size(theme.font_size)
             .flex_1();
         let mut column = v_flex().size_full().min_h_0().child(
-            div().flex_1().min_h_0().w_full().child(
-                div()
-                    .size_full()
-                    .max_w(column_width)
-                    .mx_auto()
-                    .px(pad_x)
-                    .pt(px(24.))
-                    .child(editor.into_any_element()),
-            ),
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(editor.into_any_element()),
         );
         if let Some(panel) = self.render_python_panel(cx) {
             column = column.child(panel);
