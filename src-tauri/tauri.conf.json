@@ -15,7 +15,7 @@
         "title": "bnote",
         "width": 1280,
         "height": 820,
-        "minWidth": 720,
+        "minWidth": 216,
         "minHeight": 480,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
