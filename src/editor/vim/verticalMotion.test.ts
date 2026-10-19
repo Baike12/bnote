@@ -51,12 +51,12 @@ function makeFakeView(state: EditorState): EditorView {
   return view as unknown as EditorView;
 }
 
-function makeState(): EditorState {
+function makeState(doc = DOC, anchor = 0): EditorState {
   const created = EditorState.create({
-    doc: DOC,
+    doc,
     extensions: [blockDecorationsField],
   });
-  return created.update({ selection: { anchor: 0 } }).state;
+  return created.update({ selection: { anchor } }).state;
 }
 
 interface Harness {
@@ -71,8 +71,8 @@ interface Harness {
 
 /** `this`（引擎 motions 表）用最小替身：家族判定需要的成员按需注入，
  *  run/motions 返回给测试，用于模拟引擎的 lastMotion 记账。 */
-function makeHarness(familyKeys: string[] = []): Harness {
-  const state = makeState();
+function makeHarness(familyKeys: string[] = [], doc = DOC, anchor = 0): Harness {
+  const state = makeState(doc, anchor);
   const view = makeFakeView(state);
   const cm = { cm6: view, firstLine: () => 0, lastLine: () => state.doc.lines - 1 };
   const vim: VimCoreState = { lastMotion: null, lastHPos: 0, lastHSPos: Number.NaN };
@@ -168,5 +168,72 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
       vim,
     );
     expect(out).toEqual({ line: 1, ch: 0 });
+  });
+});
+
+/** 行号（1 起）：
+ *  1 plain above
+ *  2 ::: 只有标题
+ *  3 :::
+ *  4 plain below
+ *
+ * 标题-only callout 的块内没有任何可见正文行；两条 `:::` 边界都是 block
+ * replace。不把边界当落点，j 会把整个 callout 跳过（正是缺陷）。HR 的隐藏
+ * 判定依赖 markdown 语法树，单元测试不铺语言扩展，故这里不放 `---`；含 HR
+ * 的真实结构由浏览器 harness 验证。
+ */
+const CALLOUT_ONLY_TITLE = ["plain above", "::: 只有标题", ":::", "plain below"].join("\n");
+
+/** 行号（1 起）：
+ *  1 plain above
+ *  2 ::: 标题
+ *  3 body
+ *  4 :::
+ *  5 plain below
+ */
+const CALLOUT_WITH_BODY = ["plain above", "::: 标题", "body", ":::", "plain below"].join("\n");
+
+describe("moveByLinesVisual：callout 边界是落点", () => {
+  it("标题-only callout：j 落在开标记行（进入块），不再整体跳过", () => {
+    const { run, vim } = makeHarness([], CALLOUT_ONLY_TITLE);
+    const out = run({ line: 0, ch: 0 }, { forward: true, repeat: 1 }, vim);
+    expect(out.line).toBe(1); // 0-based → `::: 只有标题`
+  });
+
+  it("标题-only callout：k 从下方落在合标记行（进入块）", () => {
+    const { run, vim } = makeHarness(
+      [],
+      CALLOUT_ONLY_TITLE,
+      CALLOUT_ONLY_TITLE.indexOf("plain below"),
+    );
+    const out = run({ line: 3, ch: 0 }, { forward: false, repeat: 1 }, vim);
+    expect(out.line).toBe(2); // 0-based → 合标记 `:::`
+  });
+
+  it("进入块后边界行变成普通步：可继续 j 穿过整个块", () => {
+    const { run, vim } = makeHarness(
+      [],
+      CALLOUT_ONLY_TITLE,
+      CALLOUT_ONLY_TITLE.indexOf("::: 只有标题"),
+    );
+    expect(run({ line: 1, ch: 0 }, { forward: true, repeat: 1 }, vim).line).toBe(2);
+    expect(run({ line: 2, ch: 0 }, { forward: true, repeat: 1 }, vim).line).toBe(3);
+  });
+
+  it("计数 j：2j 从块外穿过开、合两条标记行（多步共享同一帧装饰）", () => {
+    const { run, vim } = makeHarness([], CALLOUT_ONLY_TITLE);
+    const out = run({ line: 0, ch: 0 }, { forward: true, repeat: 2 }, vim);
+    expect(out.line).toBe(2); // 0-based → 合标记 `:::`
+  });
+
+  it("有正文的 callout：j 从上方先落在开标记行，再进正文", () => {
+    const outside = makeHarness([], CALLOUT_WITH_BODY, 0);
+    expect(outside.run({ line: 0, ch: 0 }, { forward: true, repeat: 1 }, outside.vim).line).toBe(1);
+    const inside = makeHarness(
+      [],
+      CALLOUT_WITH_BODY,
+      CALLOUT_WITH_BODY.indexOf("::: 标题"),
+    );
+    expect(inside.run({ line: 1, ch: 0 }, { forward: true, repeat: 1 }, inside.vim).line).toBe(2);
   });
 });
