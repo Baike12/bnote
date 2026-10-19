@@ -1,6 +1,7 @@
 import { EditorSelection } from "@codemirror/state";
 import type { EditorState, Line, SelectionRange } from "@codemirror/state";
 import type { Decoration, EditorView } from "@codemirror/view";
+import { calloutRegions } from "./callout";
 import { mathRegions } from "./context";
 import { blockDecorationsField } from "./livePreview";
 
@@ -15,12 +16,15 @@ import { blockDecorationsField } from "./livePreview";
  * An empty-range single-step motion (no explicit pixel distance) whose
  * result spans two or more document lines is re-derived by walking from the
  * start line toward the result: lines hidden under a block replace
- * decoration (collapsed fences, hr, math widgets) are not steps, and the
- * near edge of a display-math region — its opening `$$` coming from above,
- * closing `$$` from below — is the landing point that opens the formula.
- * Counts (5j) clamp per step, so they walk into the block instead of flying
- * past it. Page-style jumps pass an explicit distance and are left alone,
- * as are visual-mode selections and horizontal motions.
+ * decoration (collapsed fences, hr, math widgets, callout markers) are not
+ * steps, and the near edge of a collapsed region — its opening marker coming
+ * from above, closing marker from below — is the landing point that opens the
+ * region to source. Math blocks and callouts share this rule: a title-only
+ * callout has no visible body line, so without its boundary as a landing the
+ * whole block would be skipped by j/k. Counts (5j) clamp per step, so they
+ * walk into the block instead of flying past it. Page-style jumps pass an
+ * explicit distance and are left alone, as are visual-mode selections and
+ * horizontal motions.
  */
 export function installMathMotionClamp(view: EditorView): void {
   const original = view.moveVertically;
@@ -47,12 +51,12 @@ function relineVerticalStep(
   if (step >= -1 && step <= 1) return result;
 
   const down = step > 1;
-  const { isHiddenStep, isMathEdge } = analyze(state, startLineNo, down);
+  const { isHiddenStep, isLandingEdge } = analyze(state, startLineNo, down);
 
   let target: Line | null = null;
   for (let n = startLineNo + (down ? 1 : -1); down ? n <= endLineNo : n >= endLineNo; n += down ? 1 : -1) {
     const line = doc.line(n);
-    if (isMathEdge(n) || !isHiddenStep(line)) {
+    if (isLandingEdge(n) || !isHiddenStep(line)) {
       target = line;
       break;
     }
@@ -100,7 +104,7 @@ export function columnOnLine(view: EditorView, line: Line, goal: number, content
 
 function analyze(state: EditorState, startLineNo: number, down: boolean): {
   isHiddenStep: (line: Line) => boolean;
-  isMathEdge: (lineNo: number) => boolean;
+  isLandingEdge: (lineNo: number) => boolean;
 } {
   const doc = state.doc;
   const field = state.field(blockDecorationsField, false);
@@ -119,9 +123,26 @@ function analyze(state: EditorState, startLineNo: number, down: boolean): {
   // also keeps multi-step counts (5j) walking through the source exactly,
   // even though the collapsed widget still lingers in this frame's field.
   const active = regions.find(([o, c]) => o <= startLineNo && startLineNo <= c);
+  const callouts = calloutRegions(state);
+  const calloutEnd = (c: (typeof callouts)[number]) => (c.closed ? c.closeLine : doc.lines);
+  const activeCallouts = callouts.filter(
+    (c) => c.openLine <= startLineNo && startLineNo <= calloutEnd(c),
+  );
 
   const isHiddenStep = (line: Line): boolean => {
     if (active && active[0] <= line.number && line.number <= active[1]) return false;
+    // Same contract for callouts: a cursor inside the block means its `:::`
+    // source lines are drawn. During a multi-step motion the field still has
+    // the collapsed widgets (the transaction hasn't run yet), so exempt the
+    // boundaries explicitly; interior lines stay subject to their own hidden
+    // blocks (nested math/fences).
+    if (
+      activeCallouts.some(
+        (c) => line.number === c.openLine || (c.closed && line.number === c.closeLine),
+      )
+    ) {
+      return false;
+    }
     if (!field) return false;
     let covered = false;
     field.decos.between(line.from, line.to, (from, to, deco) => {
@@ -139,21 +160,29 @@ function analyze(state: EditorState, startLineNo: number, down: boolean): {
     if (active && active[0] === o) continue;
     edges.add(down ? o : c);
   }
-  return { isHiddenStep, isMathEdge: (n) => edges.has(n) };
+  for (const c of callouts) {
+    // Cursor inside the callout (any line, boundary included) means its `:::`
+    // source is drawn — the markers are plain steps, not edges.
+    if (activeCallouts.includes(c)) continue;
+    if (down) edges.add(c.openLine);
+    else if (c.closed) edges.add(c.closeLine); // unclosed block runs to EOF: no close marker
+  }
+  return { isHiddenStep, isLandingEdge: (n) => edges.has(n) };
 }
 
 /** The doc line one visible step from `fromLineNo`: lines hidden under block
- *  replace decorations (collapsed fences, display math, rules) are not steps;
- *  the near edge of a still-collapsed display-math region is a landing (the
- *  cursor resting there expands the block to source). Predicates are derived
- *  for the CURRENT line each call, so a landing on a math edge turns the
- *  region's source lines into plain steps for the following step — matching
- *  how relineVerticalStep sees the world one moveVertically at a time. */
+ *  replace decorations (collapsed fences, display math, rules, callout
+ *  markers) are not steps; the near edge of a still-collapsed region is a
+ *  landing (the cursor resting there expands the block to source). Predicates
+ *  are derived for the CURRENT line each call, so a landing on an edge turns
+ *  the region's source lines into plain steps for the following step —
+ *  matching how relineVerticalStep sees the world one moveVertically at a
+ *  time. */
 function visibleLineStep(state: EditorState, fromLineNo: number, down: boolean): number {
   const doc = state.doc;
-  const { isHiddenStep, isMathEdge } = analyze(state, fromLineNo, down);
+  const { isHiddenStep, isLandingEdge } = analyze(state, fromLineNo, down);
   let n = fromLineNo + (down ? 1 : -1);
-  while (n >= 1 && n <= doc.lines && !isMathEdge(n) && isHiddenStep(doc.line(n))) {
+  while (n >= 1 && n <= doc.lines && !isLandingEdge(n) && isHiddenStep(doc.line(n))) {
     n += down ? 1 : -1;
   }
   return n >= 1 && n <= doc.lines ? n : fromLineNo;
