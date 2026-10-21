@@ -3,6 +3,11 @@ export interface CommandDef {
   id: string;
   title: string;
   category: string;
+  /**
+   * 现在能不能执行(可选)。窗口级分发必须在 preventDefault 之前问它——返回
+   * false 的键要原样放行,否则像方向键这种与编辑器共享的键会被静默吞掉。
+   */
+  when?: () => boolean;
   run: () => void | Promise<void>;
 }
 
@@ -30,6 +35,7 @@ export function runCommand(id: string): void {
     console.warn(`[bnote] unknown command: ${id}`);
     return;
   }
+  if (cmd.when && !cmd.when()) return;
   Promise.resolve(cmd.run()).catch((e) => {
     console.error(`[bnote] command ${id} failed`, e);
   });

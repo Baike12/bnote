@@ -1,5 +1,10 @@
 import { allCommands, runCommand } from "./registry";
-import { bindingsForCommand, eventToKey } from "./keys";
+import {
+  bindingsForCommand,
+  eventToKey,
+  isEditableTarget,
+  isPlainFocusOwnedKey,
+} from "./keys";
 import { recordCommandChord } from "./lastChord";
 
 /**
@@ -37,8 +42,19 @@ export function installGlobalKeybindings() {
       if (recordingHotkey || e.defaultPrevented) return;
       const key = eventToKey(e);
       if (!key) return;
+      // 裸导航键(翻页/方向键)在编辑器、输入框里有原生含义,必须原样放行;
+      // 带修饰键的绑定(如 ⌃J)则在任何焦点下都生效——用户显式按了组合键。
+      if (
+        isPlainFocusOwnedKey(e) &&
+        (isEditableTarget(e.target) || isEditableTarget(document.activeElement))
+      ) {
+        return;
+      }
       for (const cmd of allCommands()) {
         if (bindingsForCommand(cmd.id).includes(key)) {
+          // 命令声明「现在不可用」时,这个键必须原样交给页面(方向键、PageUp…
+          // 在编辑器/输入框里有它们自己的含义)。
+          if (cmd.when && !cmd.when()) continue;
           if (keyContext === "drawing" && !DRAWING_ALLOWED.has(cmd.id)) return;
           e.preventDefault();
           e.stopPropagation();

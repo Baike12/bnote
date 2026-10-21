@@ -9,6 +9,7 @@ import {
   type StudyUrlEntry,
 } from "@/study/history";
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
+import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 
 export interface ImeSettings {
   /** 跟随 vim 模式切换输入法（仅 macOS 生效） */
@@ -49,8 +50,10 @@ export interface Settings {
   /** 界面主题（编辑器 + 侧栏 + 弹层 + 语法高亮整套变量） */
   theme: ThemeName;
   /**
-   * 学习模式三栏宽度（占可用宽度的比例）：[左侧 Agent, 中间内容]。
-   * 右侧笔记吃剩余宽度，所以只存前两栏。比例而非像素，窗口缩放时按比例跟随。
+   * 学习模式左/中两栏的宽度（像素）：[Agent, 内容]。
+   * 右侧笔记吃剩余宽度，所以只存前两栏。像素而非比例——拖动窗口时中栏
+   * 宽度不变，PDF 页面尺寸和纵向可见内容都不会跟着窗口抖。
+   * 旧配置的比例形式由 normalizeSplit 在加载时一次性换算。
    */
   studySplit: [number, number];
   /** 学习模式左栏(Agent)是否展开。默认收起:多数时候只用 PDF + 笔记。 */
@@ -74,7 +77,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoNumberHeadings: false,
   codeBlockLang: "ts",
   theme: "dark",
-  studySplit: [0.24, 0.44],
+  studySplit: [DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH],
   studyAgentOpen: false,
   studyEyeCare: false,
   fontSize: 16,
@@ -412,7 +415,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDailyBackFrom: (path) => set({ dailyBackFrom: path }),
   showToast: (msg) => set({ toast: msg }),
   clearToast: () => set({ toast: null }),
-  setStudyMode: (active) => set({ studyMode: active }),
+  // 进入学习模式先收起 vault 目录:左边已经有三栏,再挂一条目录树就太挤了。
+  // 只在这一刻收,之后用户在模式里自己展开照常。
+  setStudyMode: (active) =>
+    set(active ? { studyMode: true, sidebarOpen: false } : { studyMode: false }),
   setStudyContent: (content) => set({ studyContent: content }),
   setStudyHistory: (studyHistory) => set({ studyHistory }),
   recordStudyPdf: (entry) => {

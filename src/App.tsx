@@ -45,6 +45,7 @@ import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
 import { fileName } from "@/lib/path";
 import { normalizeStudyHistory } from "@/study/history";
+import { normalizeSplit } from "@/study/layoutModel";
 
 /** 画布是独立 chunk(含 excalidraw 及其字体加载逻辑),只在打开时下载。 */
 const DrawingCanvas = lazy(() => import("@/components/DrawingCanvas"));
@@ -83,12 +84,16 @@ export default function App() {
       // 旧配置没有 studyHistory → 空历史，不是错误。
       useAppStore.setState({ studyHistory: normalizeStudyHistory(cfg?.studyHistory) });
       const saved = cfg?.settings ?? {};
-      useAppStore.getState().replaceSettings({
+      const settings = {
         ...DEFAULT_SETTINGS,
         ...saved,
         ime: { ...DEFAULT_SETTINGS.ime, ...(saved.ime ?? {}) },
         latex: { ...DEFAULT_SETTINGS.latex, ...(saved.latex ?? {}) },
-      });
+      };
+      // 旧版把三栏宽度存成比例;这里按当前窗口宽度换算成像素后落盘一次,
+      // 之后窗口怎么缩放都不会再改中栏宽度。
+      settings.studySplit = normalizeSplit(settings.studySplit, window.innerWidth);
+      useAppStore.getState().replaceSettings(settings);
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);
       });

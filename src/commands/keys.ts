@@ -11,7 +11,7 @@ import { getCommand } from "./registry";
  * `null` removes the default binding; arrays allow several bindings.
  */
 
-export const DEFAULT_BINDINGS: Record<string, string> = {
+export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "workspace.new-note": "Mod-n",
   "workspace.quick-add": "Mod-Shift-a",
   // ⌘⇧O 归「打开今日日记」。原占位者 workspace.open-vault 让出该键位——它仍可
@@ -68,6 +68,11 @@ export const DEFAULT_BINDINGS: Record<string, string> = {
   "view.zoom-in": "Mod-=",
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",
+
+  // 学习模式的 PDF 整页翻页。动作在 PdfViewer 里注册(见 study/pdfNav.ts),
+  // 命令带 `when`:焦点在输入框/可编辑区、弹窗打开或正在框选时不抢键。
+  "study.pdf-prev-page": ["PageUp", "ArrowLeft"],
+  "study.pdf-next-page": ["PageDown", "ArrowRight"],
 };
 
 export type BindingValue = string | string[] | null;
@@ -86,7 +91,8 @@ export function bindingsForCommand(id: string): string[] {
   if (typeof o === "string") return [o];
   if (Array.isArray(o)) return o;
   const d = DEFAULT_BINDINGS[id];
-  return d ? [d] : [];
+  if (!d) return [];
+  return Array.isArray(d) ? d : [d];
 }
 
 export function buildCommandKeymap(): Extension {
@@ -96,8 +102,11 @@ export function buildCommandKeymap(): Extension {
       bindings.push({
         key,
         run: () => {
+          // 这份 keymap 只在编辑器内部生效:裸导航键属于编辑器,命令不能抢。
+          // 带修饰键的绑定(⌘/⌃/⌥/⇧)照常执行。
+          if (FOCUS_OWNED_PLAIN_KEYS.has(key)) return false;
           const cmd = getCommand(id);
-          if (!cmd) return false;
+          if (!cmd || (cmd.when && !cmd.when())) return false;
           void cmd.run();
           return true;
         },
@@ -125,11 +134,73 @@ const SHIFT_SYMBOL_BASE: Record<string, string> = {
   Backquote: "`",
 };
 
+/**
+ * 不带修饰键也能成为快捷键的键。只收导航/功能键:字母数字若允许裸绑,
+ * 窗口级分发会把正常输入吞掉。
+ */
+const PLAIN_KEYS = new Set([
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "F1",
+  "F2",
+  "F3",
+  "F4",
+  "F5",
+  "F6",
+  "F7",
+  "F8",
+  "F9",
+  "F10",
+  "F11",
+  "F12",
+]);
+
+/**
+ * 裸导航键在编辑器/输入框里有原生含义(移动光标、翻页滚动)。窗口级命令分发
+ * 不能抢它们——带修饰键的绑定不在此列:用户显式按 ⌃J,就是要命令生效。
+ */
+const FOCUS_OWNED_PLAIN_KEYS = new Set([
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+]);
+
+/** 不带修饰键、且归编辑器所有的按键。 */
+export function isPlainFocusOwnedKey(event: KeyboardEvent): boolean {
+  return (
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey &&
+    FOCUS_OWNED_PLAIN_KEYS.has(event.key)
+  );
+}
+
+/** 焦点是否落在会自己消费按键的编辑器/输入框里。 */
+export function isEditableTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable) return true;
+  return /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+}
+
 /** Normalizes a KeyboardEvent into a CM6 key string for the settings UI. */
 export function eventToKey(e: KeyboardEvent): string | null {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const mod = isMac ? e.metaKey : e.ctrlKey;
-  if (!mod && !e.altKey && !e.shiftKey && !e.ctrlKey) return null;
+  if (!mod && !e.altKey && !e.shiftKey && !e.ctrlKey && !PLAIN_KEYS.has(e.key)) {
+    return null;
+  }
 
   let key = e.key;
   if (key === " ") key = "Space";
@@ -151,8 +222,17 @@ export function eventToKey(e: KeyboardEvent): string | null {
   return parts.join("-");
 }
 
+/** Navigation keys read better as glyphs in chips and tooltips. */
+const KEY_GLYPH: Record<string, string> = {
+  ArrowLeft: "←",
+  ArrowRight: "→",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+};
+
 /** Human-friendly display, e.g. "Ctrl-Shift-M" → "⌘⇧M" (mac) / "Ctrl+Shift+M". */
 export function formatBinding(key: string): string {
+  const label = (p: string) => KEY_GLYPH[p] ?? (p.length === 1 ? p.toUpperCase() : p);
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   if (isMac) {
     return key
@@ -166,14 +246,12 @@ export function formatBinding(key: string): string {
               ? "⌥"
               : p === "Ctrl"
                 ? "⌃"
-                : p.length === 1
-                  ? p.toUpperCase()
-                  : p,
+                : label(p),
       )
       .join("");
   }
   return key
     .split("-")
-    .map((p) => (p.length === 1 ? p.toUpperCase() : p))
+    .map(label)
     .join("+");
 }

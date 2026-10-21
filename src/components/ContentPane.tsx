@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry } from "@/study/history";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { IconSparkles } from "./icons";
 import { StudyHistoryMenu } from "./StudyHistoryMenu";
 
 /**
@@ -35,7 +36,10 @@ export function ContentPane() {
   const patchSettings = useAppStore((s) => s.patchSettings);
   const showToast = useAppStore((s) => s.showToast);
   const modal = useAppStore((s) => s.modal);
+  const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const previewRef = useRef<HTMLDivElement>(null);
+  /** 挂载期间的重测入口;没有原生预览时为 null。 */
+  const previewSyncRef = useRef<(() => void) | null>(null);
   const [importing, setImporting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [urlInput, setUrlInput] = useState("");
@@ -45,9 +49,9 @@ export function ContentPane() {
   const pdfs = pdfHistoryForVault(studyHistory, vaultPath);
 
   // 中栏内嵌网页:把占位元素的矩形报给后端,并在它变化时同步过去。
-  // 占位元素随三栏布局变化(拖分隔线、缩放窗口、收起侧栏)而变,ResizeObserver
-  // 对这些情况都会触发;同尺寸的纯位移在这里不会发生——布局宽度是百分比,
-  // 位置变了宽度必变。
+  // 尺寸变化靠 ResizeObserver(拖分隔条、窗口变窄到压缩中栏、书签栏开关;
+  // Tauri 里挂的是原生子 webview,布局一变就得跟着挪)。位置变化不改变尺寸,
+  // 由下面的 layout effect 在侧栏/Agent 开关后补一次。
   // 依赖整个 content 而不是 previewUrl:同一个网址再输一次是「重新加载」,
   // 靠的就是新对象让这个 effect 重跑(旧的一轮先关掉预览)。
   useEffect(() => {
@@ -76,14 +80,22 @@ export function ContentPane() {
       );
     };
     sync(true);
+    previewSyncRef.current = () => sync(false);
     const observer = new ResizeObserver(() => sync(false));
     observer.observe(el);
     return () => {
       closed = true;
+      previewSyncRef.current = null;
       observer.disconnect();
       void agentApi.closeStudyPreview().catch(() => {});
     };
   }, [content]);
+
+  // 侧栏/Agent 开关只让中栏平移,尺寸不变,ResizeObserver 收不到——布局提交
+  // 后补报一次坐标,原生 webview 才不会停在旧位置。
+  useLayoutEffect(() => {
+    previewSyncRef.current?.();
+  }, [sidebarOpen, settings.studyAgentOpen]);
 
   // 原生视图永远画在 DOM 之上,所以设置/命令面板这类 HTML 浮层打开时要把它
   // 藏起来,关掉再放出来。画布也一样:全屏浮层,开着时不能被原生视图盖住。
@@ -217,11 +229,24 @@ export function ContentPane() {
       onDragOver={(e) => e.preventDefault()}
     >
       {/* 学习模式没有标题栏,这行是窗口拖动区(按钮、输入框不受影响)。
-          历史下拉固定在最左上角:左边 Agent 收起时这里是整窗的左边缘。 */}
+          三列:左 = 学习助手开关;中 = 文件名(即材料下拉);右 = 网址输入 + PDF。
+          文件名只占中间列,两侧等宽,所以它在整栏里是真正居中的。 */}
       <div className="content-toolbar" data-tauri-drag-region="deep">
+        <div className="content-tool-left">
+          {!settings.studyAgentOpen && (
+            <button
+              className="icon-btn content-agent-toggle"
+              title="展开学习助手"
+              onClick={() => patchSettings({ studyAgentOpen: true })}
+            >
+              <IconSparkles />
+            </button>
+          )}
+        </div>
         <StudyHistoryMenu
           open={historyOpen}
           onOpenChange={setHistoryOpen}
+          title={importing ? "正在导入 PDF…" : content ? content.title : "学习模式"}
           initialTab={content?.kind === "url" ? "url" : "pdf"}
           pdfs={pdfs}
           urls={studyHistory.urls}
@@ -232,40 +257,17 @@ export function ContentPane() {
             void pickPdf();
           }}
         />
-        {!settings.studyAgentOpen && (
-          <button
-            className="icon-btn content-agent-toggle"
-            title="展开学习助手"
-            onClick={() => patchSettings({ studyAgentOpen: true })}
-          >
-            助手
-          </button>
-        )}
-        <span className="content-title" title={content?.title}>
-          {importing ? "正在导入 PDF…" : content ? content.title : "学习模式"}
-        </span>
-        <span className="spacer" />
-        {content?.kind === "url" ? (
-          <>
-            <input
-              className="content-url"
-              type="text"
-              placeholder="输入网址打开网页预览…"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") openUrl();
-              }}
-            />
-            <button
-              className="icon-btn pdf-tool-btn"
-              title="打开这个网址"
-              onClick={() => openUrl()}
-            >
-              打开
-            </button>
-          </>
-        ) : (
+        <div className="content-tool-right">
+          <input
+            className="content-url"
+            type="text"
+            placeholder="网址,回车打开…"
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") openUrl();
+            }}
+          />
           <button
             className="icon-btn pdf-tool-btn"
             title="选择 PDF 文件(存进 vault/pdfs)"
@@ -274,43 +276,27 @@ export function ContentPane() {
           >
             ＋ PDF
           </button>
-        )}
-        {content && (
-          <button
-            className="icon-btn"
-            title="关闭当前内容"
-            onClick={() => setStudyContent(null as StudyContent | null)}
-          >
-            ✕
-          </button>
-        )}
+          {content && (
+            <button
+              className="icon-btn"
+              title="关闭当前内容"
+              onClick={() => setStudyContent(null as StudyContent | null)}
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
       <div className="content-body">
         {!content && !importing && (
           <div className="content-empty">
             <p className="content-empty-title">拖入 PDF 直接阅读</p>
             <p className="content-empty-hint">
-              PDF 会存到 vault 的 <code>{PDF_FOLDER}/</code> 文件夹,不转换成
-              Markdown——书签、图表、公式都按原文显示。
+              PDF 会存到 vault 的 <code>{PDF_FOLDER}/</code> 文件夹。
             </p>
             <button className="btn content-pick" onClick={() => void pickPdf()}>
               选择 PDF 文件
             </button>
-            <div className="content-empty-url">
-              <input
-                className="content-url"
-                type="text"
-                placeholder="或在 web 中预览网址…"
-                value={urlInput}
-                onChange={(e) => setUrlInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") openUrl();
-                }}
-              />
-              <button className="btn" onClick={() => openUrl()}>
-                打开网页
-              </button>
-            </div>
           </div>
         )}
         {content?.kind === "pdf" && (

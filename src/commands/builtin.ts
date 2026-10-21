@@ -29,6 +29,7 @@ import { runtimeDeps } from "@/daily/runtime";
 import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/run";
 import { resetLspStateForPath, syncNow } from "@/python/lsp";
 import { api } from "@/lib/tauri";
+import { canFlipPdfPage, flipPdfPage } from "@/study/pdfNav";
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
   return () => {
@@ -132,6 +133,23 @@ const defs: CommandDef[] = [
     run: () => {
       toggleStudyMode();
     },
+  },
+  // PDF 整页翻页。默认 PageUp/PageDown(含方向键),可在设置里改键;动作由
+  // 阅读器注册(study/pdfNav.ts),没开 PDF 或焦点不该被抢时 when 为 false,
+  // 键原样交给页面。
+  {
+    id: "study.pdf-prev-page",
+    title: "PDF 上一页(整页翻页)",
+    category: "学习",
+    when: canFlipPdfPage,
+    run: () => void flipPdfPage(-1),
+  },
+  {
+    id: "study.pdf-next-page",
+    title: "PDF 下一页(整页翻页)",
+    category: "学习",
+    when: canFlipPdfPage,
+    run: () => void flipPdfPage(1),
   },
   {
     id: "workspace.open-settings",
