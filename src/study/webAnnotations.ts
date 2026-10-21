@@ -503,7 +503,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     fs.left = "0";
     fs.right = "0";
     fs.height = "16px";
-    fs.borderTop = "1px solid rgba(230, 155, 60, 0.35)";
+    fs.borderTop = "2px solid rgba(230, 155, 60, 0.65)";
     fs.borderTopLeftRadius = "12px";
     fs.borderTopRightRadius = "12px";
     fs.pointerEvents = "none";
