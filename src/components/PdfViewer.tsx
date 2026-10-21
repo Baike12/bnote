@@ -1011,9 +1011,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       style={
         {
           "--pdf-outline-w": `${outlineWidth}px`,
-          // 翻页后旧内容占视口上方 1-step，新内容从下方 step 处开始；
-          // 压暗在两者交界处归零，新内容完全不被染色。
-          "--read-clear": `${Math.round((1 - pageStep) * 100)}%`,
+          // 翻页后旧内容占视口上方 1-step，新内容从下方 step 处开始。
+          "--read-old": `${Math.round((1 - pageStep) * 100)}%`,
         } as React.CSSProperties
       }
     >
@@ -1243,13 +1242,17 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
               )}
             </div>
           </div>
-          {/* 上半屏是刚读过、正在移出的内容：轻微压暗到步长边界归零。
-              整层不接鼠标事件，选中/批注/链接照常；右侧批注栏不参与压暗。 */}
+          {/* 翻页后的阅读分区：上方旧内容压暗，下方新内容用圆角边框框成
+              一块「阅读窗」。整层不接鼠标事件，选中/批注/链接照常；
+              右侧批注栏不参与分区。 */}
           <div
-            className="pdf-read-shade"
+            className="pdf-read-guide"
             style={{ right: railWidth || undefined }}
             aria-hidden
-          />
+          >
+            <div className="pdf-read-shade" />
+            <div className="pdf-read-frame" />
+          </div>
           {cropping && (
             <CropLayer
               pageEls={pageEls}
