@@ -196,7 +196,7 @@ function round(value: number): number {
 }
 
 /**
- * 批注文字框连线的起点:选区右侧、纵向底边(多行选区取整体包围盒)。
+ * 批注文字框连线的起点:选区包围盒的**底部中间**(多行选区取整体包围盒)。
  * 从底边引出,线走在行间/文字下方,不会横穿同一行后面的正文。
  */
 export function rectsAnchor(rects: NormRect[]): { x: number; y: number } | null {
@@ -212,7 +212,7 @@ export function rectsAnchor(rects: NormRect[]): { x: number; y: number } | null 
     bottom = Math.max(bottom, r.y + r.h);
   }
   if (left === Number.POSITIVE_INFINITY) return null;
-  return { x: right, y: bottom };
+  return { x: (left + right) / 2, y: bottom };
 }
 
 export function isNoteAnnotation(a: PdfAnnotation): boolean {
@@ -246,19 +246,20 @@ export function sortNotes(list: PdfAnnotation[]): PdfAnnotation[] {
 
 /**
  * 批注卡的纵向排布:每张卡对齐自己的锚点,和前一张重叠时整体往下推。
- * 输入必须已按阅读顺序排好(见 sortNotes),返回的 top 与输入一一对应。
+ * 输入必须已按阅读顺序排好(见 sortNotes);`heights` 是每张卡当前的实际
+ * 高度(卡片随内容行数变化),返回的 top 与输入一一对应。
  */
 export function stackNoteTops(
   desiredTops: number[],
-  boxHeight: number,
+  heights: number[],
   gap: number,
 ): number[] {
   const out: number[] = [];
   let prevBottom = Number.NEGATIVE_INFINITY;
-  for (const desired of desiredTops) {
-    const top = Math.max(desired, prevBottom + gap);
+  for (let i = 0; i < desiredTops.length; i++) {
+    const top = Math.max(desiredTops[i], prevBottom + gap);
     out.push(top);
-    prevBottom = top + boxHeight;
+    prevBottom = top + (heights[i] ?? 0);
   }
   return out;
 }

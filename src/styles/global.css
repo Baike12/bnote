@@ -2826,14 +2826,15 @@ input[type="range"] {
   background: var(--bg3);
 }
 .pdf-note-input {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  min-height: 26px;
   width: 100%;
   box-sizing: border-box;
   padding: 2px 0 0;
   border: none;
   outline: none;
   resize: none;
+  overflow-y: hidden;
   font: inherit;
   font-size: 12px;
   line-height: 1.45;
@@ -2856,9 +2857,9 @@ input[type="range"] {
 .pdf-note-lines path {
   fill: none;
   stroke: var(--pdf-note-line);
-  stroke-width: 1.2;
+  stroke-width: 2;
   stroke-linecap: round;
-  opacity: 0.5;
+  opacity: 0.9;
 }
 .pdf-note-lines circle {
   fill: var(--pdf-note-line);
