@@ -1,13 +1,16 @@
 /*
  * WebKit compatibility shims for pdf.js 6. macOS 15's WKWebView (Safari 18.x)
- * has neither Iterator Helpers, the Map/WeakMap upsert proposal nor async
- * iteration over WHATWG streams, all of which pdf.js reads during startup or
- * while building the text layer:
+ * has neither Iterator Helpers, the Map/WeakMap upsert proposal, async
+ * iteration over WHATWG streams nor Math.sumPrecise, all of which pdf.js uses
+ * during startup, while building the text layer or while compiling the fonts
+ * it embeds:
  *
  *   - no Iterator        -> ReferenceError while the lazy PDF chunk loads,
  *                           React unmounts the whole window (blank app)
  *   - no upsert          -> text layer cannot memoize page methods
  *   - no stream iterator -> getTextContent throws, no text selection
+ *   - no Math.sumPrecise -> every embedded font fails to compile and pdf.js
+ *                           silently falls back to system fonts
  *
  * This external script runs before the module graph, so the shims exist no
  * matter how the bundler orders the pdf.js chunk. The worker gets the same
@@ -44,6 +47,52 @@
   }
   installUpsert(Map.prototype);
   installUpsert(WeakMap.prototype);
+
+  // pdf.js sizes the OpenType tables it builds for embedded fonts with
+  // Math.sumPrecise; without it every font conversion throws and pdf.js
+  // silently substitutes a system font (whole documents render in Helvetica).
+  if (typeof Math.sumPrecise !== "function") {
+    Object.defineProperty(Math, "sumPrecise", {
+      configurable: true,
+      writable: true,
+      value: function sumPrecise(items) {
+        var partials = [];
+        for (var value of items) {
+          if (typeof value !== "number") throw new TypeError("Value is not a number");
+          if (value !== value) return NaN;
+          if (value === Infinity || value === -Infinity) return value;
+          if (value === 0) continue;
+          var x = value;
+          var used = 0;
+          for (var i = 0; i < partials.length; i++) {
+            var y = partials[i];
+            if (Math.abs(x) < Math.abs(y)) {
+              var swap = x;
+              x = y;
+              y = swap;
+            }
+            var hi = x + y;
+            var lo = y - (hi - x);
+            if (lo !== 0) partials[used++] = lo;
+            x = hi;
+          }
+          partials.length = used;
+          partials.push(x);
+        }
+        var index = partials.length - 1;
+        if (index < 0) return 0;
+        var result = partials[index--];
+        while (index >= 0) {
+          var next = partials[index--];
+          var sum = result + next;
+          var error = next - (sum - result);
+          result = sum;
+          if (error !== 0) break;
+        }
+        return result;
+      },
+    });
+  }
 
   if (typeof Symbol.asyncIterator !== "undefined") {
     var ReaderProto = globalThis.ReadableStreamDefaultReader &&

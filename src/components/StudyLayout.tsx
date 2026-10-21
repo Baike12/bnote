@@ -4,19 +4,25 @@ import { ContentPane } from "./ContentPane";
 import { EditorPane } from "./EditorPane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName } from "@/lib/path";
+import {
+  dragAgentEdge,
+  dragContentEdge,
+  normalizeSplit,
+} from "@/study/layoutModel";
 
 /**
  * Study-mode three-column layout with draggable dividers.
  *
- * Widths live in settings as fractions of the layout width (so a window resize
- * keeps the proportions) and are applied through CSS custom properties. During
- * a drag the properties are written to the DOM directly — re-rendering the two
- * panes (one hosts CodeMirror) on every pointer move would be far too
- * expensive — and the final fractions are committed once on pointer up.
+ * 左(Agent)、中(内容)的宽度按像素存进 settings,右(笔记)吃剩余宽度:
+ * 拖窗口边缘只会改笔记栏,中栏宽度不动——PDF 页面大小和纵向可见内容因此
+ * 保持稳定。只有窗口窄到"笔记栏将小于下限"时,CSS 的 clamp 才会依次压缩
+ * 中栏、左栏(见 global.css 的 --content-w / --agent-w),不改用户偏好。
  *
- * The Agent column is collapsible and collapsed by default. Once mounted it
- * stays mounted (hidden) after a collapse, so the conversation survives; the
- * middle column then widens into the freed space.
+ * 拖动期间把像素直接写进 CSS 变量(不 setState):面板里有 CodeMirror,
+ * 60Hz 重渲染代价太大;指针抬起时一次性提交。
+ *
+ * Agent 栏默认收起。收起后中栏保持自己的宽度、笔记栏吃掉空出来的空间;
+ * 首次展开后 Agent 常驻挂载,聊天记录与会话都留着。
  *
  * 三栏的头部都带 `data-tauri-drag-region="deep"`(见各自的组件):标题栏
  * (Overlay 样式)在学习模式下整条不渲染,没有它就一处都拖不动窗口。
@@ -24,30 +30,6 @@ import { fileName } from "@/lib/path";
  * (子 span)上不算;`deep` 走进整棵子树,而 Tauri 的 drag.js 遇到可点元素
  * (button/input/…)本身就截断,所以头部里的按钮照常可点。
  */
-
-/** Resizer hit area (px, layout box). */
-const RESIZER = 8;
-const MIN_AGENT = 220;
-const MIN_CONTENT = 260;
-const MIN_NOTES = 220;
-/** Keeps a hand-edited config.json from producing an unusable layout. */
-const MIN_FRACTION = 0.05;
-const MAX_SUM = 0.95;
-
-export function normalizeSplit(split: unknown): [number, number] {
-  const fallback = DEFAULT_SETTINGS.studySplit;
-  if (!Array.isArray(split) || split.length !== 2) return fallback;
-  const [a, c] = split.map((v) => (typeof v === "number" && Number.isFinite(v) ? v : NaN));
-  if (Number.isNaN(a) || Number.isNaN(c)) return fallback;
-  const agent = Math.min(Math.max(a, MIN_FRACTION), MAX_SUM - MIN_FRACTION);
-  const content = Math.min(Math.max(c, MIN_FRACTION), MAX_SUM - agent);
-  return [agent, content];
-}
-
-function clamp(value: number, lo: number, hi: number): number {
-  return Math.min(Math.max(value, lo), Math.max(lo, hi));
-}
-
 export function StudyLayout() {
   const split = useAppStore((s) => s.settings.studySplit);
   const agentOpen = useAppStore((s) => s.settings.studyAgentOpen);
@@ -61,9 +43,8 @@ export function StudyLayout() {
     if (agentOpen) setAgentMounted(true);
   }, [agentOpen]);
 
-  const [agent, content] = normalizeSplit(split);
-  /** 收起 Agent 时中栏吃掉左栏的宽度。 */
-  const contentEffective = agentOpen ? content : agent + content;
+  // 旧配置的比例形式在 App 启动时已换算;这里再归一一次,防手改 config。
+  const [agent, content] = normalizeSplit(split, window.innerWidth);
   const noteTitle = currentFile
     ? fileName(currentFile).replace(/\.(md|markdown|txt)$/i, "")
     : "笔记";
@@ -73,15 +54,18 @@ export function StudyLayout() {
     return (event: React.PointerEvent<HTMLDivElement>) => {
       const host = hostRef.current;
       if (!host) return;
-      const width = host.getBoundingClientRect().width;
+      const hostRect = host.getBoundingClientRect();
+      const width = hostRect.width;
       if (width <= 0) return;
       event.preventDefault();
 
-      const agentPx0 = agentOpen ? agent * width : 0;
-      const contentPx0 = contentEffective * width;
-      // The pair separated by an inner divider keeps a constant sum: dragging
-      // moves the border, it doesn't steal space from the third column.
-      const pairSum = agentPx0 + contentPx0;
+      // 用实际显示的宽度做基准(窗口变窄时 CSS 已经压缩过),拖动从眼前
+      // 这条线继续,而不是从存着的偏好宽度跳一下。
+      const agentEl = host.querySelector<HTMLElement>(".agent-panel");
+      const contentEl = host.querySelector<HTMLElement>(".content-pane");
+      const agentPx0 = agentOpen ? (agentEl?.getBoundingClientRect().width ?? agent) : 0;
+      const contentPx0 = contentEl?.getBoundingClientRect().width ?? content;
+
       const handle = event.currentTarget;
       handle.classList.add("dragging");
       // Pointer events are followed on the window (not the 8px handle) so the
@@ -95,32 +79,15 @@ export function StudyLayout() {
       let latest: [number, number] | null = null;
 
       const onMove = (move: PointerEvent) => {
-        const x = move.clientX - host.getBoundingClientRect().left;
-        let agentPx = agentPx0;
-        let contentPx = contentPx0;
-        if (edge === 0) {
-          agentPx = clamp(x, MIN_AGENT, pairSum - MIN_CONTENT);
-          contentPx = pairSum - agentPx;
-        } else if (agentOpen) {
-          contentPx = clamp(
-            x - agentPx0 - RESIZER,
-            MIN_CONTENT,
-            width - agentPx0 - RESIZER * 2 - MIN_NOTES,
-          );
-        } else {
-          // Only one divider: the stored agent fraction is kept, the rest of
-          // the old agent space belongs to the middle column.
-          contentPx = clamp(x - RESIZER, MIN_CONTENT, width - RESIZER - MIN_NOTES);
-        }
-        agentPx = Math.round(agentPx);
-        contentPx = Math.round(contentPx);
-        host.style.setProperty("--agent-w", `${agentPx}px`);
-        host.style.setProperty("--content-w", `${contentPx}px`);
-        // Closed: the visible middle width is `agent + content`, so commit the
-        // content fraction as "effective width − stored agent width".
-        latest = agentOpen
-          ? [agentPx / width, contentPx / width]
-          : [agent, Math.max(MIN_FRACTION, contentPx / width - agent)];
+        const x = move.clientX - hostRect.left;
+        latest =
+          edge === 0
+            ? dragAgentEdge(x, agentPx0, contentPx0)
+            : // 中|右分栏只动中栏;左栏写回存储值,不把窗口变窄时的显示
+              // 宽度(被 CSS 压过)当成新偏好。
+              [agent, dragContentEdge(x, agentPx0, width, agentOpen)];
+        host.style.setProperty("--agent-src", `${latest[0]}px`);
+        host.style.setProperty("--content-src", `${latest[1]}px`);
       };
 
       const onUp = () => {
@@ -128,21 +95,15 @@ export function StudyLayout() {
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
         handle.classList.remove("dragging");
-        // Commit → React re-renders the same widths as percentages.
+        // 提交 → React 用同样的像素值重渲染(clamp 由 CSS 负责)。
         const done = latest;
         if (done && (done[0] !== agent || done[1] !== content)) {
           patchSettings({ studySplit: done });
         }
-        // The drag wrote px straight to the style attribute. React only
-        // rewrites a custom property whose *virtual* value changed, so e.g.
-        // `--agent-w: 0px` (closed) would survive re-opening the panel. Put
-        // the committed percentages back explicitly.
-        const [nextAgent, nextContent] = done ?? [agent, content];
-        host.style.setProperty("--agent-w", `${nextAgent * 100}%`);
-        host.style.setProperty(
-          "--content-w",
-          `${(agentOpen ? nextContent : nextAgent + nextContent) * 100}%`,
-        );
+        // `--agent-src` 在只拖中|右分栏时可能被写成了「显示宽度」(窗口窄时
+        // 小于存储宽度)。写回存储值,免得下次渲染前用错基准。
+        host.style.setProperty("--agent-src", `${done ? done[0] : agent}px`);
+        host.style.setProperty("--content-src", `${done ? done[1] : content}px`);
       };
 
       window.addEventListener("pointermove", onMove);
@@ -161,8 +122,8 @@ export function StudyLayout() {
       ref={hostRef}
       style={
         {
-          "--agent-w": `${agent * 100}%`,
-          "--content-w": `${contentEffective * 100}%`,
+          "--agent-src": `${agent}px`,
+          "--content-src": `${content}px`,
         } as React.CSSProperties
       }
     >

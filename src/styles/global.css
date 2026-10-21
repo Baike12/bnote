@@ -236,7 +236,10 @@ button {
 
 /* ===== sidebar ===== */
 
-.sidebar {
+/* 类名不能叫 .sidebar:Excalidraw(DrawingCanvas)的 CSS 里有一条未加作用域的
+   .sidebar{padding:0;position:absolute;top:0;...},打开过画布后它常驻页面,
+   会把这里的顶栏留白(红绿灯)与布局一起覆盖掉。 */
+.app-sidebar {
   width: 220px;
   min-width: 220px;
   background: var(--bg1);
@@ -1698,10 +1701,15 @@ input[type="range"] {
   min-height: 0;
   background: var(--bg0);
   color: var(--text);
-  /* 三栏宽度由 StudyLayout 写入(拖动时是 px,平时是百分比)。
-     右侧笔记吃剩余宽度,所以只有前两栏有变量。 */
-  --agent-w: 320px;
-  --content-w: 44%;
+  /* 三栏宽度由 StudyLayout 写入:--agent-src / --content-src 是用户偏好
+     (像素),--agent-w / --content-w 再按当前窗口夹一次。左/中两栏是固定
+     像素,右侧笔记吃剩余宽度——拖窗口边缘只会改笔记栏,PDF 页面尺寸不变。
+     窗口窄到笔记栏放不下 220px 时,先压中栏、再压左栏;都只压显示,不回写
+     偏好。16px = 两条分隔条的命中区。 */
+  --agent-src: 320px;
+  --content-src: 620px;
+  --agent-w: clamp(220px, var(--agent-src), calc(100% - 260px - 16px - 220px));
+  --content-w: clamp(260px, var(--content-src), calc(100% - var(--agent-w) - 16px - 220px));
   /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。侧栏在时它压在侧栏
      自己的 36px 预留带上,侧栏不在时压在三栏布局左栏的头部——那里要让开。
      与 .titlebar 的 paddingLeft 是同一套判断,只是这里由 DOM 推出来。 */
@@ -1711,8 +1719,14 @@ input[type="range"] {
   --study-head-h: 43px;
 }
 
-.app:has(> .sidebar) .study-layout {
+.app:has(> .app-sidebar) .study-layout {
   --study-lead: 12px;
+}
+
+/* Agent 收起:左栏与它的分隔条都不占布局。 */
+.study-layout.agent-closed {
+  --agent-w: 0px;
+  --content-w: clamp(260px, var(--content-src), calc(100% - 8px - 220px));
 }
 
 .agent-panel {
@@ -1943,13 +1957,27 @@ input[type="range"] {
 .content-pane.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
 
 .content-toolbar {
-  display: flex;
+  /* 左(助手)/ 中(文件名)/ 右(网址 + PDF)三列,两侧等宽 → 文件名真居中。 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
   /* 与左/右栏头部同高(见 --study-head-h)。 */
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
+}
+.content-tool-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.content-tool-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
 }
 
 .content-title {
@@ -1958,7 +1986,7 @@ input[type="range"] {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 40%;
+  max-width: 100%;
 }
 
 .content-url {
@@ -1972,10 +2000,22 @@ input[type="range"] {
   font-size: 12.5px;
   color: var(--text);
 }
+/* 学习模式顶栏里的网址框常驻,给可见边界,平时就是"可输入"的样子。 */
+.content-tool-right .content-url {
+  max-width: 220px;
+  height: 26px;
+  padding: 0 8px;
+  border-color: var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+}
 .content-url:focus {
   outline: none;
   border-color: var(--border);
   background: var(--bg2);
+}
+.content-tool-right .content-url:focus {
+  border-color: var(--accent);
 }
 
 .content-body {
@@ -2326,15 +2366,14 @@ input[type="range"] {
   display: none;
 }
 
-/* 收起 Agent 后中栏成为整窗左缘:头部要让开窗口红绿灯(见 --study-lead)。 */
-.study-layout.agent-closed .content-toolbar {
+/* 收起 Agent 后中栏成为整窗左缘:让开窗口红绿灯的是左侧那一列,不是整条
+   toolbar——否则内容盒整体右移,居中的文件名会偏离整栏中心。 */
+.study-layout.agent-closed .content-tool-left {
   padding-left: var(--study-lead, 12px);
 }
 
-/* 中栏头部的文字按钮(历史下拉 / 助手 / 打开 / ＋PDF):icon-btn 是 26px
-   定宽,装不下文字,这里统一放开。 */
-.content-history-btn,
-.content-agent-toggle,
+/* 中栏头部的文字按钮(打开 / ＋PDF):icon-btn 是 26px 定宽,装不下文字,
+   这里统一放开。助手开关是纯图标,保持 26px 方按钮。 */
 .pdf-tool-btn {
   width: auto;
   padding: 0 8px;
@@ -2343,19 +2382,30 @@ input[type="range"] {
   white-space: nowrap;
 }
 
-.content-history-btn {
+/* 文件名本身就是「材料」下拉的入口——不再单独占一个按钮。 */
+.content-title-btn {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
   height: 26px;
+  padding: 0 6px;
   border-radius: 6px;
-  color: var(--text-dim);
+  color: var(--text);
   background: transparent;
 }
-.content-history-btn:hover,
-.content-history-btn.open {
+.content-title-btn:hover,
+.content-title-btn.open {
   background: var(--bg3);
-  color: var(--text);
+}
+.content-title-btn .content-title {
+  min-width: 0;
+  max-width: none;
+}
+.content-agent-toggle {
+  flex: 0 0 auto;
+  color: var(--text-dim);
 }
 .content-history-caret {
   font-size: 10px;
@@ -2364,7 +2414,8 @@ input[type="range"] {
 
 .study-history {
   position: relative;
-  flex: 0 0 auto;
+  min-width: 0;
+  max-width: min(45vw, 420px);
 }
 
 .study-history-pop {
@@ -2470,21 +2521,6 @@ input[type="range"] {
   background: var(--bg3);
 }
 
-/* 空态里的网址行 */
-.content-empty-url {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  pointer-events: auto;
-}
-.content-empty-url .content-url {
-  width: 220px;
-  flex: 0 1 auto;
-  border-color: var(--border);
-  background: var(--bg2);
-}
-
 /* ---------------- PDF 阅读器 ---------------- */
 
 .pdf-viewer {
@@ -2512,6 +2548,18 @@ input[type="range"] {
 .pdf-tool-btn.active {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.pdf-tool-btn:disabled {
+  opacity: 0.35;
+  background: transparent;
+  color: var(--text-dim);
+}
+.pdf-tool-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--border);
+  flex: 0 0 auto;
 }
 .pdf-zoom-label {
   min-width: 42px;
@@ -2542,12 +2590,35 @@ input[type="range"] {
 }
 
 .pdf-outline {
-  flex: 0 0 210px;
+  /* 宽度由拖动条写入的 CSS 变量控制(见 PdfViewer.startOutlineDrag)。 */
+  flex: 0 0 auto;
+  width: var(--pdf-outline-w, 210px);
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
   background: var(--bg1);
+}
+/* 分栏线由拖动条画(与三栏布局同一套手感),面板不再自带 border。 */
+.pdf-outline-resizer {
+  flex: 0 0 6px;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.pdf-outline-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+  transition: width 0.12s ease, background 0.12s ease;
+}
+.pdf-outline-resizer:hover::before,
+.pdf-outline-resizer.dragging::before {
+  width: 2px;
+  background: var(--accent);
 }
 .pdf-outline-search {
   flex: 0 0 auto;
@@ -2620,6 +2691,12 @@ input[type="range"] {
   color: var(--text-faint);
 }
 
+.pdf-scroll-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
 .pdf-scroll {
   flex: 1;
   min-width: 0;
@@ -2633,7 +2710,8 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 14px;
+  /* 横向不留白:页面宽度直接等于中间栏宽度(贴边),纵向保留页间距。 */
+  padding: 14px 0;
 }
 .pdf-page {
   position: relative;
@@ -2641,6 +2719,11 @@ input[type="range"] {
   margin-bottom: 14px;
   background: var(--pdf-paper);
   box-shadow: 0 1px 5px var(--shadow);
+  /* 裁剪:窗口只留框内的部分,整页在 .pdf-page-full 里用负偏移推出去。 */
+  overflow: hidden;
+}
+.pdf-page-full {
+  position: absolute;
 }
 .pdf-page canvas {
   position: absolute;
@@ -2661,6 +2744,39 @@ input[type="range"] {
 }
 .pdf-viewer.eye-care .pdf-page {
   box-shadow: 0 1px 2px var(--shadow);
+}
+
+/* 框选层:盖住整个阅读视口,只在页面内取框。 */
+.pdf-crop-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  cursor: crosshair;
+  background: color-mix(in srgb, var(--bg0) 30%, transparent);
+  touch-action: none;
+}
+.pdf-crop-box {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: 0 0 0 9999px color-mix(in srgb, var(--bg0) 55%, transparent);
+  pointer-events: none;
+}
+.pdf-crop-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 10px var(--shadow);
 }
 
 .pdf-status {

@@ -6,6 +6,8 @@ type Tab = "pdf" | "url";
 interface StudyHistoryMenuProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 标题即下拉触发器:点文件名就展开材料列表。 */
+  title: string;
   /** Tab shown when the menu opens (follows the content currently open). */
   initialTab: Tab;
   pdfs: StudyPdfEntry[];
@@ -16,7 +18,7 @@ interface StudyHistoryMenuProps {
 }
 
 /**
- * Top-left history dropdown of the study column.
+ * 中栏头部:文件名本身就是「材料」下拉。
  *
  * PDFs and web pages are separate *buttons* (tabs), not one mixed list: a PDF
  * is a file inside the vault, a page is a URL that may be gone tomorrow, and
@@ -25,6 +27,7 @@ interface StudyHistoryMenuProps {
 export function StudyHistoryMenu({
   open,
   onOpenChange,
+  title,
   initialTab,
   pdfs,
   urls,
@@ -63,12 +66,13 @@ export function StudyHistoryMenu({
   return (
     <div className="study-history" ref={rootRef}>
       <button
-        className={`content-history-btn${open ? " open" : ""}`}
-        title="打开历史 PDF / 网页"
+        className={`content-title-btn${open ? " open" : ""}`}
+        title="学习材料:点击展开 PDF / 网页列表"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
       >
-        材料 <span className="content-history-caret">▾</span>
+        <span className="content-title" title={title}>{title}</span>
+        <span className="content-history-caret">▾</span>
       </button>
       {open && (
         <div className="study-history-pop" role="dialog" aria-label="学习材料历史">

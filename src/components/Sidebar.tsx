@@ -177,7 +177,7 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="sidebar">
+    <aside className="app-sidebar">
       <div className="sidebar-header">
         <button className="icon-btn" title="新建笔记" onClick={() => void newNote()}>
           <IconNewNote />
