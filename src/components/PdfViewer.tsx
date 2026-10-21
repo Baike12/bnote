@@ -44,6 +44,14 @@ import {
   type PdfAnnotation,
   type NormRect,
 } from "@/study/pdfAnnotations";
+import {
+  createAnnotationHistory,
+  recordAnnotationHistory,
+  redoAnnotationHistory,
+  resetAnnotationHistory,
+  undoAnnotationHistory,
+  type AnnotationHistory,
+} from "@/study/annotationHistory";
 import { vaultRelPath } from "@/lib/path";
 import {
   PAGE_TOP_PAD,
@@ -99,8 +107,13 @@ const NOTE_BOX_GAP = 10;
 const NOTE_HEAD_OFFSET = 14;
 /** 卡片左右内缩;连线终点 = 留白左缘 + 这个值。 */
 const NOTE_BOX_INSET = 8;
+/** 同一个批注连续改字在这个窗口内并成一步撤销。 */
+const TEXT_UNDO_GROUP_MS = 1000;
 
 export type PdfTool = "highlight" | "note";
+
+/** 批注提交方式:结构改动记一步;改字按输入会话合并;加载/撤销不记。 */
+type AnnotationCommit = "none" | "structure" | "text";
 
 interface NotePlacement {
   id: string;
@@ -156,6 +169,12 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   const annotationsRef = useRef<PdfAnnotation[]>([]);
   /** 异步读盘回来时用它自证「还是当前文档/没有被本地编辑抢先」。 */
   const annotationsEpoch = useRef(0);
+  /** Ctrl+Z/Ctrl+Shift+Z 的批注快照栈(每份 PDF 独立,换文档清空)。 */
+  const historyRef = useRef<AnnotationHistory<PdfAnnotation[]> | null>(null);
+  if (historyRef.current === null) historyRef.current = createAnnotationHistory(100);
+  const history = historyRef.current;
+  /** 改字撤销的分组:同一个批注连续输入只记一步。 */
+  const textEditRef = useRef<{ id: string; at: number } | null>(null);
   /** 右侧留白里批注卡的位置(连线用同一份坐标)。 */
   const [notePlacements, setNotePlacements] = useState<NotePlacement[]>([]);
   /** 刚建/刚点中的批注卡:nonce 变化让输入框重新聚焦。 */
@@ -217,6 +236,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     setTool(null);
     setFocusNote(null);
     setNotePlacements([]);
+    resetAnnotationHistory(history);
+    textEditRef.current = null;
     setActivePages(new Set());
     activeRef.current = new Set();
     visiblePages.current = new Set();
@@ -262,7 +283,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
       cancelled = true;
       if (loaded) void loaded.destroy();
     };
-  }, [path]);
+  }, [path, history]);
 
   // --- annotations ---------------------------------------------------------
   // 换文档先清空,再读这一份的批注;读盘回来时比对 epoch,期间用户已经
@@ -274,6 +295,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     setTool(null);
     setFocusNote(null);
     setNotePlacements([]);
+    resetAnnotationHistory(history);
+    textEditRef.current = null;
     setAnnotationsLoaded(false);
     if (!vaultPath) {
       setAnnotationsLoaded(true);
@@ -291,17 +314,55 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
       .finally(() => {
         if (annotationsEpoch.current === epoch) setAnnotationsLoaded(true);
       });
-  }, [vaultPath, docKey]);
+  }, [vaultPath, docKey, history]);
 
   const commitAnnotations = useCallback(
-    (next: PdfAnnotation[]) => {
+    (next: PdfAnnotation[], mode: AnnotationCommit = "structure", textId?: string) => {
+      if (mode === "structure") {
+        recordAnnotationHistory(history, annotationsRef.current);
+        textEditRef.current = null;
+      } else if (mode === "text" && textId) {
+        const now = Date.now();
+        const last = textEditRef.current;
+        // 连续输入并成一步;换批注或停顿超过窗口就另起一步。
+        if (!last || last.id !== textId || now - last.at > TEXT_UNDO_GROUP_MS) {
+          recordAnnotationHistory(history, annotationsRef.current);
+        }
+        textEditRef.current = { id: textId, at: now };
+      }
       annotationsEpoch.current += 1;
       annotationsRef.current = next;
       setAnnotations(next);
       if (vaultPath) savePdfAnnotations(vaultPath, docKey, next);
     },
-    [vaultPath, docKey],
+    [vaultPath, docKey, history],
   );
+
+  const applyHistory = useCallback(
+    (next: PdfAnnotation[]) => {
+      textEditRef.current = null;
+      commitAnnotations(next, "none");
+      // 撤销掉刚建的批注时输入框会卸载,焦点落回 body——把焦点还给阅读器,
+      // 连续 Ctrl+Z 才不会只生效一次。
+      requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (!active || active === document.body) {
+          viewerRef.current?.focus({ preventScroll: true });
+        }
+      });
+    },
+    [commitAnnotations],
+  );
+
+  const undoAnnotations = useCallback(() => {
+    const previous = undoAnnotationHistory(history, annotationsRef.current);
+    if (previous !== null) applyHistory(previous);
+  }, [applyHistory, history]);
+
+  const redoAnnotations = useCallback(() => {
+    const next = redoAnnotationHistory(history, annotationsRef.current);
+    if (next !== null) applyHistory(next);
+  }, [applyHistory, history]);
 
   const addAnnotation = useCallback(
     (page: number, rects: NormRect[], kind: PdfAnnotation["kind"]): string | null => {
@@ -339,6 +400,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   const removeAnnotation = useCallback(
     (id: string) => {
       commitAnnotations(annotationsRef.current.filter((a) => a.id !== id));
+      // 点卡片上的 × 删除后按钮会卸载;把焦点还给阅读器,紧接着的 Ctrl+Z 才接得住。
+      viewerRef.current?.focus({ preventScroll: true });
     },
     [commitAnnotations],
   );
@@ -352,7 +415,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
       if (list[index].text === clean) return;
       const next = list.slice();
       next[index] = { ...list[index], text: clean };
-      commitAnnotations(next);
+      commitAnnotations(next, "text", id);
     },
     [commitAnnotations],
   );
@@ -803,10 +866,47 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     setTool(tool === "note" ? "highlight" : "note");
   }
 
+  /**
+   * 批注撤销:只在这个 PDF 阅读器拿到焦点时接管,不会和编辑器/侧栏的
+   * Ctrl+Z 抢。批注输入框里也走批注历史(空输入框撤销就是撤掉刚建的批注);
+   * 书签搜索框保留原生撤销。Cmd+Z 同样支持。
+   */
+  function handleViewerKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.altKey || !(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    const isUndo = key === "z" && !event.shiftKey;
+    const isRedo =
+      (key === "z" && event.shiftKey) ||
+      (key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey);
+    if (!isUndo && !isRedo) return;
+    const target = event.target as HTMLElement | null;
+    const editable = target?.closest(
+      "input, textarea, select, [contenteditable='true']",
+    ) as HTMLElement | null;
+    if (editable && !editable.classList.contains("pdf-note-input")) return;
+    if (event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (isRedo) redoAnnotations();
+    else undoAnnotations();
+  }
+
+  /** 点页面/留白时把焦点交给阅读器,随后 Ctrl+Z 才有归属。 */
+  function handleViewerPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("textarea, input, select, button, a, [contenteditable='true']")) {
+      return;
+    }
+    viewerRef.current?.focus({ preventScroll: true });
+  }
+
   return (
     <div
       className={`pdf-viewer${eyeCare ? " eye-care" : ""}${tool ? ` tool-${tool}` : ""}`}
       ref={viewerRef}
+      tabIndex={-1}
+      onKeyDown={handleViewerKeyDown}
+      onPointerDown={handleViewerPointerDown}
       onContextMenu={handleContextMenu}
       style={{ "--pdf-outline-w": `${outlineWidth}px` } as React.CSSProperties}
     >

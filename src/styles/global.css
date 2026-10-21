@@ -2537,6 +2537,9 @@ input[type="range"] {
   min-height: 0;
   background: var(--bg1);
 }
+.pdf-viewer:focus {
+  outline: none;
+}
 
 .pdf-toolbar {
   flex: 0 0 auto;
@@ -2739,6 +2742,8 @@ input[type="range"] {
   margin-bottom: 14px;
   background: var(--pdf-paper);
   box-shadow: 0 1px 5px var(--shadow);
+  /* 正文始终是可选中的 I 形光标;批注工具不改变它。 */
+  cursor: text;
   /* 裁剪:窗口只留框内的部分,整页在 .pdf-page-full 里用负偏移推出去。 */
   overflow: hidden;
 }
@@ -2770,12 +2775,6 @@ input[type="range"] {
 /* 文字批注的选区是亮蓝色,和高亮批注一眼区分。 */
 .pdf-anno-mark.note {
   background: var(--pdf-note);
-}
-.pdf-viewer.tool-highlight .pdf-page {
-  cursor: crosshair;
-}
-.pdf-viewer.tool-note .pdf-page {
-  cursor: text;
 }
 
 /* 右侧留白:不属于任何一页,是 PDF 面板自带的一条空白批注栏。 */

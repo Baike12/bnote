@@ -127,10 +127,10 @@ describe("单击取行", () => {
 });
 
 describe("文字批注锚点与右侧排布", () => {
-  it("锚点取选区右缘、纵向正中;多行取整体包围盒", () => {
+  it("锚点取选区右缘、纵向底边;多行取整体包围盒", () => {
     const anchor = rectsAnchor([rect(0.1, 0.2, 0.3, 0.04), rect(0.1, 0.25, 0.5, 0.04)]);
     expect(anchor?.x).toBeCloseTo(0.6, 6);
-    expect(anchor?.y).toBeCloseTo(0.245, 6);
+    expect(anchor?.y).toBeCloseTo(0.29, 6);
     expect(rectsAnchor([])).toBeNull();
   });
 

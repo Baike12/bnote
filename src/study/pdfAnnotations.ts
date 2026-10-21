@@ -195,7 +195,10 @@ function round(value: number): number {
   return Math.round(value * 1e5) / 1e5;
 }
 
-/** 批注文字框连线的起点:选区右侧、纵向正中(多行选区取整体包围盒)。 */
+/**
+ * 批注文字框连线的起点:选区右侧、纵向底边(多行选区取整体包围盒)。
+ * 从底边引出,线走在行间/文字下方,不会横穿同一行后面的正文。
+ */
 export function rectsAnchor(rects: NormRect[]): { x: number; y: number } | null {
   let left = Number.POSITIVE_INFINITY;
   let right = Number.NEGATIVE_INFINITY;
@@ -209,7 +212,7 @@ export function rectsAnchor(rects: NormRect[]): { x: number; y: number } | null 
     bottom = Math.max(bottom, r.y + r.h);
   }
   if (left === Number.POSITIVE_INFINITY) return null;
-  return { x: right, y: (top + bottom) / 2 };
+  return { x: right, y: bottom };
 }
 
 export function isNoteAnnotation(a: PdfAnnotation): boolean {
