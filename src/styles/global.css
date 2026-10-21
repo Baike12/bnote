@@ -75,7 +75,7 @@
   --pdf-note-line: rgb(30 130 220); /* 锚点到右侧批注卡的连线 */
   /* 学习模式翻页后的阅读分区:上方旧内容压暗,下方新内容用琥珀描边框成阅读窗。 */
   --read-shade: rgb(0 0 0 / 16%);
-  --read-frame-border: color-mix(in srgb, var(--accent) 35%, transparent);
+  --read-frame-border: color-mix(in srgb, var(--accent) 65%, transparent);
   --editor-font-size: 16px;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
@@ -143,7 +143,7 @@
   --pdf-note: rgb(0 140 255 / 42%);
   --pdf-note-line: rgb(30 130 220);
   --read-shade: rgb(0 0 0 / 16%);
-  --read-frame-border: color-mix(in srgb, var(--accent) 35%, transparent);
+  --read-frame-border: color-mix(in srgb, var(--accent) 65%, transparent);
   /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
@@ -2724,6 +2724,7 @@ input[type="range"] {
   position: absolute;
   inset: 0;
   z-index: 4;
+  overflow: hidden;
   pointer-events: none;
 }
 .pdf-read-shade {
@@ -2736,12 +2737,11 @@ input[type="range"] {
 }
 .pdf-read-frame {
   position: absolute;
-  left: 0;
-  right: 0;
-  /* 与压暗结束处留 6px 呼吸位，线不压到新内容第一行；高度只用来撑出圆角。 */
+  /* 左右边界由页面宽度决定（PdfViewer 内联 left/width），不能铺满滚动视口：
+     滚动条和页面居中留白会让线超出绿色纸面。 */
   top: calc(var(--read-old, 50%) + 6px);
   height: 16px;
-  border-top: 1px solid var(--read-frame-border);
+  border-top: 2px solid var(--read-frame-border);
   border-radius: 12px 12px 0 0;
 }
 /* 滚动内容 = 页面区 + 右侧留白。留白随页面一起滚,批注卡才会一直对齐行。 */
