@@ -16,8 +16,24 @@ pub struct ToolContext {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StudyContent {
-    Markdown { path: String, title: String },
+    Pdf { path: String, title: String },
     Url { url: String, title: String },
+}
+
+/// Extracts the markdown text of a PDF for the Agent.
+///
+/// This is a *read*: the study reader shows the PDF itself, and nothing is
+/// written into the vault. pdf2md still writes figure assets into its output
+/// directory, so it gets a scratch dir under the OS temp folder.
+fn read_pdf_text(path: &str) -> Result<String, String> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let scratch = std::env::temp_dir()
+        .join("bnote-pdf-text")
+        .join(format!("{:x}", hasher.finish()));
+    let opts = pdf2md::ConvertOptions::new(scratch, String::new());
+    Ok(pdf2md::convert_file(path, &opts)?.markdown)
 }
 
 impl ToolContext {
@@ -108,7 +124,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "read_study_content",
-        "Read the full content currently open in the study panel (the converted PDF markdown, or the text of the open web page).",
+        "Read the full content currently open in the study panel (the extracted text of the PDF, or the text of the open web page).",
         json!({"type": "object", "properties": {}}),
     ),
     (
@@ -224,13 +240,14 @@ pub async fn execute(
         "read_study_content" => {
             let content = ctx.study_content.read().ok().and_then(|g| g.clone());
             match content {
-                Some(StudyContent::Markdown { path, title }) => {
-                    match tokio::fs::read_to_string(&path).await {
-                        Ok(text) => (
+                Some(StudyContent::Pdf { path, title }) => {
+                    match tokio::task::spawn_blocking(move || read_pdf_text(&path)).await {
+                        Ok(Ok(text)) => (
                             true,
                             format!("# {}\n\n{}", title, truncate(&text, 60_000)),
                         ),
-                        Err(e) => (false, format!("read failed: {}", e)),
+                        Ok(Err(e)) => (false, format!("read failed: {}", e)),
+                        Err(e) => (false, format!("join failed: {}", e)),
                     }
                 }
                 Some(StudyContent::Url { url, title }) => {

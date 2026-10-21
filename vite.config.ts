@@ -61,9 +61,62 @@ function excalidrawAssets(): Plugin {
   };
 }
 
+/**
+ * pdf.js 的 CMap(中日韩字体映射)和标准字体是运行时按 URL 取的,不走打包。
+ * 与上面 Excalidraw 资产同一套路:dev 由中间件服务 node_modules,build 时
+ * 拷进 dist。缺了 cmaps,没内嵌字体的中文 PDF 会整页丢字。
+ */
+function pdfjsAssets(): Plugin {
+  const pkgProd = path.resolve(__dirname, "node_modules/pdfjs-dist");
+  const DIRS = ["cmaps", "standard_fonts"];
+  const MIME: Record<string, string> = {
+    ".bcmap": "application/octet-stream",
+    ".pfb": "application/octet-stream",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+  };
+  return {
+    name: "pdfjs-assets",
+    configureServer(server) {
+      server.middlewares.use("/pdfjs-assets", (req, res, next) => {
+        const url = (req.url ?? "").split("?")[0];
+        const rel = decodeURIComponent(url).replace(/^\/+/, "");
+        if (!rel || rel.includes("..")) return next();
+        const [dir, ...rest] = rel.split("/");
+        if (!DIRS.includes(dir) || rest.length === 0) return next();
+        const base = path.join(pkgProd, dir);
+        const full = path.join(base, ...rest);
+        if (!full.startsWith(base + path.sep)) return next();
+        fs.readFile(full, (err, data) => {
+          if (err) {
+            res.statusCode = 404;
+            res.end("not found");
+            return;
+          }
+          res.setHeader(
+            "Content-Type",
+            MIME[path.extname(full).toLowerCase()] ?? "application/octet-stream",
+          );
+          res.end(data);
+        });
+      });
+    },
+    closeBundle() {
+      for (const dir of DIRS) {
+        const src = path.join(pkgProd, dir);
+        if (fs.existsSync(src)) {
+          fs.cpSync(src, path.resolve(__dirname, "dist/pdfjs-assets", dir), {
+            recursive: true,
+          });
+        }
+      }
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [react(), excalidrawAssets()],
+  plugins: [react(), excalidrawAssets(), pdfjsAssets()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),

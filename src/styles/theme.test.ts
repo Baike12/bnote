@@ -104,6 +104,14 @@ describe("主题变量体系", () => {
   });
 });
 
+describe("光标常亮", () => {
+  it("global.css 关掉普通与 vim 共用的 .cm-cursorLayer 闪烁动画", () => {
+    // CM6 的普通光标层和 vim 的块光标层都带这个 class，插件会用内联
+    // animation-name/duration 重启闪烁，所以规则必须带 !important。
+    expect(css).toMatch(/\.cm-cursorLayer\s*\{[^}]*animation:\s*none\s*!important;/);
+  });
+});
+
 describe("语法高亮跟随主题", () => {
   it("HighlightStyle 的每个 color 都走 var()", () => {
     const colors = [...markdownTs.matchAll(/color:\s*"([^"]+)"/g)].map((m) => m[1]);

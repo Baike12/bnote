@@ -28,6 +28,25 @@ pub async fn read_file(state: State<'_, AppState>, path: String) -> CmdResult<St
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
+/// Reads a binary file (the PDF study reader) as base64.
+///
+/// JSON IPC cannot carry raw bytes, and `read_file` decodes UTF-8 — a PDF read
+/// through it fails or corrupts. Base64 is the same round-trip the drawing
+/// canvas already uses for binary writes.
+#[tauri::command]
+pub async fn read_file_base64(state: State<'_, AppState>, path: String) -> CmdResult<String> {
+    use base64::Engine as _;
+    let root = require_vault(&state)?;
+    let full = std::path::PathBuf::from(&path);
+    ensure_within(&root, &full)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = std::fs::read(&full).map_err(|e| format!("READ_FAILED: {}", e))?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
 #[tauri::command]
 pub async fn write_file(state: State<'_, AppState>, path: String, contents: String) -> CmdResult<()> {
     let root = require_vault(&state)?;

@@ -67,6 +67,9 @@
   --scrim: #00000088; /* 弹层背后的遮罩 */
   --shadow: #000000aa; /* 浮层投影 */
   --image-bg: #fff; /* PDF 截图白底，两主题一致 */
+  --pdf-paper: #fff; /* PDF 页纸 */
+  --pdf-gutter: #dcebd6; /* PDF 护眼模式的桌面底色 */
+  --pdf-tint: #cfe4c4; /* PDF 护眼染色（multiply，只压白底不压黑字） */
   --editor-font-size: 16px;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
@@ -127,6 +130,9 @@
   --scrim: #00000052;
   --shadow: #00000038;
   --image-bg: #ffffff;
+  --pdf-paper: #ffffff;
+  --pdf-gutter: #dcebd6;
+  --pdf-tint: #cfe4c4;
   /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
@@ -386,6 +392,14 @@ button {
 
 .cm-cursor {
   border-left: 2px solid var(--accent) !important;
+}
+
+/* 光标常亮，不闪。CM6 的普通光标层和 vim 引擎的块光标层都带 .cm-cursorLayer
+   （后者额外带 .cm-vimCursorLayer），闪烁由 cm-blink 关键帧驱动；插件在每次
+   选区变化时把 animation-name/duration 写成内联样式重启节奏，因此必须
+   !important 才能压过内联写入。 */
+.cm-cursorLayer {
+  animation: none !important;
 }
 
 /* Selection paint. Only two painters are allowed, and never at once:
@@ -2301,4 +2315,383 @@ input[type="range"] {
 }
 .python-run-body .py-system {
   color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------------------
+ * 学习模式:可折叠 Agent / 历史下拉 / PDF 阅读器
+ * ------------------------------------------------------------------------- */
+
+/* 收起后仍挂载(保住会话与聊天记录),只是不占布局。 */
+.agent-panel.collapsed {
+  display: none;
+}
+
+/* 收起 Agent 后中栏成为整窗左缘:头部要让开窗口红绿灯(见 --study-lead)。 */
+.study-layout.agent-closed .content-toolbar {
+  padding-left: var(--study-lead, 12px);
+}
+
+/* 中栏头部的文字按钮(历史下拉 / 助手 / 打开 / ＋PDF):icon-btn 是 26px
+   定宽,装不下文字,这里统一放开。 */
+.content-history-btn,
+.content-agent-toggle,
+.pdf-tool-btn {
+  width: auto;
+  padding: 0 8px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.content-history-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  background: transparent;
+}
+.content-history-btn:hover,
+.content-history-btn.open {
+  background: var(--bg3);
+  color: var(--text);
+}
+.content-history-caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.study-history {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.study-history-pop {
+  position: absolute;
+  top: 30px;
+  left: 0;
+  z-index: 60;
+  width: 300px;
+  max-width: 70vw;
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px var(--shadow);
+  overflow: hidden;
+}
+
+.study-history-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.study-history-tab {
+  flex: 1;
+  height: 26px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+}
+.study-history-tab:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.study-history-tab.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text);
+  font-weight: 600;
+}
+.study-history-count {
+  font-size: 10.5px;
+  opacity: 0.6;
+  margin-left: 2px;
+}
+
+.study-history-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.study-history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: left;
+  background: transparent;
+}
+.study-history-item:hover {
+  background: var(--bg3);
+}
+.study-history-title {
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.study-history-sub {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.study-history-empty {
+  margin: 0;
+  padding: 14px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.study-history-action {
+  width: 100%;
+  margin-top: 2px;
+  padding: 7px 8px;
+  border-top: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--accent);
+  text-align: left;
+  background: transparent;
+}
+.study-history-action:hover {
+  background: var(--bg3);
+}
+
+/* 空态里的网址行 */
+.content-empty-url {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  pointer-events: auto;
+}
+.content-empty-url .content-url {
+  width: 220px;
+  flex: 0 1 auto;
+  border-color: var(--border);
+  background: var(--bg2);
+}
+
+/* ---------------- PDF 阅读器 ---------------- */
+
+.pdf-viewer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg1);
+}
+
+.pdf-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.pdf-tool-btn {
+  height: 24px;
+  color: var(--text-dim);
+}
+.pdf-tool-btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.pdf-zoom-label {
+  min-width: 42px;
+  height: 24px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: transparent;
+}
+.pdf-zoom-label:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.pdf-page-indicator {
+  margin-left: 4px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.pdf-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.pdf-outline {
+  flex: 0 0 210px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg1);
+}
+.pdf-outline-search {
+  flex: 0 0 auto;
+  margin: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg2);
+  color: var(--text);
+}
+.pdf-outline-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.pdf-outline-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 8px;
+}
+.pdf-outline-empty {
+  margin: 0;
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.pdf-outline-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+  border-radius: 5px;
+}
+.pdf-outline-row:hover {
+  background: var(--bg3);
+}
+.pdf-outline-chevron {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 20px;
+  padding: 0;
+  font-size: 10px;
+  color: var(--text-faint);
+  background: transparent;
+}
+.pdf-outline-chevron.placeholder {
+  pointer-events: none;
+}
+.pdf-outline-title {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text);
+  background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdf-outline-page {
+  flex: 0 0 auto;
+  padding-right: 6px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.pdf-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: var(--bg0);
+}
+.pdf-viewer.eye-care .pdf-scroll {
+  background: var(--pdf-gutter);
+}
+.pdf-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px;
+}
+.pdf-page {
+  position: relative;
+  flex: 0 0 auto;
+  margin-bottom: 14px;
+  background: var(--pdf-paper);
+  box-shadow: 0 1px 5px var(--shadow);
+}
+.pdf-page canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.pdf-page .textLayer {
+  z-index: 2;
+}
+/* 护眼:白纸压成浅绿。multiply 保留黑字(黑 × 绿 = 黑),只染底色。 */
+.pdf-page-tint {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: var(--pdf-tint);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+.pdf-viewer.eye-care .pdf-page {
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+.pdf-status {
+  padding: 40px 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.pdf-status-fail {
+  color: var(--danger);
+}
+.pdf-status-msg {
+  margin: 6px 0 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* PDF 阅读器整块失败(兼容性问题/损坏文件):留在中栏里报错，不能连累整窗。 */
+.pdf-fail {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+.pdf-fail .pdf-status-msg {
+  max-width: 460px;
+  color: var(--text-dim);
 }

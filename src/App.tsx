@@ -44,6 +44,7 @@ import { QuickAddModal } from "@/components/QuickAddModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
 import { fileName } from "@/lib/path";
+import { normalizeStudyHistory } from "@/study/history";
 
 /** 画布是独立 chunk(含 excalidraw 及其字体加载逻辑),只在打开时下载。 */
 const DrawingCanvas = lazy(() => import("@/components/DrawingCanvas"));
@@ -79,6 +80,8 @@ export default function App() {
       if (cfg?.recentFiles?.length) {
         useAppStore.setState({ recentFiles: cfg.recentFiles });
       }
+      // 旧配置没有 studyHistory → 空历史，不是错误。
+      useAppStore.setState({ studyHistory: normalizeStudyHistory(cfg?.studyHistory) });
       const saved = cfg?.settings ?? {};
       useAppStore.getState().replaceSettings({
         ...DEFAULT_SETTINGS,

@@ -1,86 +1,48 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
-import { createEditor, loadDocument } from "@/editor/setup";
-import type { EditorView } from "@codemirror/view";
-import { fileName } from "@/lib/path";
+import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry } from "@/study/history";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { StudyHistoryMenu } from "./StudyHistoryMenu";
 
 /**
- * Study-mode center column: shows the current content (a converted-PDF
- * markdown note), accepts PDF drops for conversion, and embeds a web page in
- * the column itself for `kind: "url"`.
+ * Study-mode center column.
  *
- * The page is a native child webview of the main window, glued to the
- * `.content-web-view` placeholder — see `agent.rs::show_study_preview` for why
- * it is not an iframe.
+ * PDFs are *not* converted: the file is copied into `<vault>/pdfs/` and shown
+ * by the pdf.js reader, so what the user browses is the paper itself. Web
+ * pages are still embedded as a native child webview glued to the placeholder
+ * — see `agent.rs::show_study_preview` for why it is not an iframe.
  */
-/** 转换产物落在这个 vault 目录下:原文 `<stem>.pdf`、结果 `<stem>.md`、
- *  图表 `assets/<stem>/…`(见后端 convert_pdf_to_markdown)。 */
+
+/** 收进来的 PDF 落在 vault 的这个目录下。 */
 const PDF_FOLDER = "pdfs";
+
+/** pdf.js(+worker) 只在真正打开 PDF 时下载，不拖慢应用启动。 */
+const PdfViewer = lazy(() =>
+  import("./PdfViewer").then((m) => ({ default: m.PdfViewer })),
+);
 
 export function ContentPane() {
   const content = useAppStore((s) => s.studyContent);
   const setStudyContent = useAppStore((s) => s.setStudyContent);
+  const studyHistory = useAppStore((s) => s.studyHistory);
+  const recordStudyPdf = useAppStore((s) => s.recordStudyPdf);
+  const recordStudyUrl = useAppStore((s) => s.recordStudyUrl);
+  const vaultPath = useAppStore((s) => s.vaultPath);
+  const settings = useAppStore((s) => s.settings);
+  const patchSettings = useAppStore((s) => s.patchSettings);
   const showToast = useAppStore((s) => s.showToast);
   const modal = useAppStore((s) => s.modal);
-  const hostRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<EditorView | null>(null);
-  const loadedRef = useRef<string | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
-  const [converting, setConverting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const previewUrl = content?.kind === "url" ? content.url : null;
-
-  // Editor lifecycle: create once, swap docs as content changes.
-  useEffect(() => {
-    if (!hostRef.current || viewRef.current) return;
-    const view = createEditor(hostRef.current, "", {
-      onDocChanged: () => {},
-      onCursorMoved: () => {},
-    });
-    viewRef.current = view;
-    return () => {
-      view.destroy();
-      viewRef.current = null;
-      loadedRef.current = null;
-    };
-     
-  }, []);
-
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view) return;
-    if (!content) {
-      if (loadedRef.current !== null) {
-        loadDocument(view, "");
-        loadedRef.current = null;
-      }
-      return;
-    }
-    if (content.kind !== "markdown") return;
-    if (loadedRef.current === content.path) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const text = await invokeReadFile(content.path);
-        if (!cancelled && viewRef.current) {
-          // 带上路径:图表的相对引用(`assets/<stem>/…`)以这份文档为基准,
-          // 而不是右栏那篇笔记的目录。
-          loadDocument(viewRef.current, text, content.path);
-          loadedRef.current = content.path;
-        }
-      } catch (e) {
-        if (!cancelled) showToast(`读取内容失败: ${String(e)}`);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [content, showToast]);
+  const pdfs = pdfHistoryForVault(studyHistory, vaultPath);
 
   // 中栏内嵌网页:把占位元素的矩形报给后端,并在它变化时同步过去。
   // 占位元素随三栏布局变化(拖分隔线、缩放窗口、收起侧栏)而变,ResizeObserver
@@ -128,10 +90,14 @@ export function ContentPane() {
   const canvasOpen = useAppStore((s) => s.drawingSession !== null);
   useEffect(() => {
     if (!previewUrl) return;
-    void agentApi.setStudyPreviewVisible(modal === null && !canvasOpen).catch(() => {});
-  }, [previewUrl, modal, canvasOpen]);
+    // 历史下拉也要藏:它是 DOM 浮层,而原生网页视图永远画在 DOM 之上,
+    // 不藏的话下拉的下半截会被网页盖住。
+    void agentApi
+      .setStudyPreviewVisible(modal === null && !canvasOpen && !historyOpen)
+      .catch(() => {});
+  }, [previewUrl, modal, canvasOpen, historyOpen]);
 
-  // Drag & drop: PDFs convert to markdown; markdown opens directly.
+  // Drag & drop: PDFs are imported into the vault and shown as PDFs.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -163,35 +129,29 @@ export function ContentPane() {
 
   async function handleDrop(paths: string[]) {
     const pdf = paths.find((p) => /\.pdf$/i.test(p));
-    const md = paths.find((p) => /\.(md|markdown|txt)$/i.test(p));
     if (pdf) {
-      await convertAndOpen(pdf);
-    } else if (md) {
-      const title = fileName(md).replace(/\.(md|markdown|txt)$/i, "");
-      setStudyContent({ kind: "markdown", path: md, title });
+      await importAndOpen(pdf);
     } else {
-      showToast("请拖入 PDF 或 Markdown 文件");
+      showToast("请拖入 PDF 文件");
     }
   }
 
-  async function convertAndOpen(pdfPath: string) {
-    setConverting(true);
+  function openPdf(entry: { path: string; relPath: string; title: string }) {
+    setStudyContent({ kind: "pdf", path: entry.path, title: entry.title });
+    recordStudyPdf(entry);
+  }
+
+  async function importAndOpen(pdfPath: string) {
+    setImporting(true);
     try {
-      // 转换结果和原文都落到当前 vault 的 pdfs/ 下(见后端 convert_pdf_to_markdown):
-      // 原文留在下载目录的话,过几天就找不回这篇笔记是从哪份 PDF 来的了。
-      const result = await agentApi.convertPdf(pdfPath, PDF_FOLDER);
-      setStudyContent({
-        kind: "markdown",
-        path: result.mdPath,
-        title: result.title,
-      });
-      showToast(
-        `转换完成:${result.pages} 页,${(result.elapsedMs / 1000).toFixed(1)}s → ${PDF_FOLDER}/${fileName(result.mdPath)}`,
-      );
+      // 原文收进 vault 的 pdfs/:下载目录清空后,笔记里的这份材料仍然在。
+      const result = await agentApi.importPdf(pdfPath, PDF_FOLDER);
+      openPdf({ path: result.pdfPath, relPath: result.relPath, title: result.title });
+      showToast(`已收进 vault/${result.relPath}`);
     } catch (e) {
-      showToast(`PDF 转换失败: ${String(e)}`);
+      showToast(`导入 PDF 失败: ${String(e).replace(/^[A-Z_]+:\s*/, "")}`);
     } finally {
-      setConverting(false);
+      setImporting(false);
     }
   }
 
@@ -210,17 +170,29 @@ export function ContentPane() {
     }
   }
 
-  function openUrl() {
-    const url = normalizeUrl(urlInput);
+  function openUrl(raw?: string) {
+    const url = normalizeUrl(raw ?? urlInput);
     if (!url) {
       showToast("请输入网址");
       return;
     }
     setUrlInput("");
-    // 内容一换,下面的 effect 就把中栏的网页预览切到这个地址(同一个网址
+    // 内容一换,上面的 effect 就把中栏的网页预览切到这个地址(同一个网址
     // 再输一次也会重新加载,因为 content 是新对象)。
     const title = url.replace(/^https?:\/\//, "").split("/")[0] || url;
     setStudyContent({ kind: "url", url, title });
+    recordStudyUrl({ url, title });
+  }
+
+  function openHistoryPdf(entry: StudyPdfEntry) {
+    setHistoryOpen(false);
+    openPdf(entry);
+  }
+
+  function openHistoryUrl(entry: StudyUrlEntry) {
+    setHistoryOpen(false);
+    setStudyContent({ kind: "url", url: entry.url, title: entry.title });
+    recordStudyUrl({ url: entry.url, title: entry.title });
   }
 
   async function pickPdf() {
@@ -233,7 +205,7 @@ export function ContentPane() {
         filters: [{ name: "PDF", extensions: ["pdf"] }],
       });
       const path = typeof picked === "string" ? picked : null;
-      if (path) await convertAndOpen(path);
+      if (path) await importAndOpen(path);
     } catch (e) {
       showToast(`选择文件失败: ${String(e)}`);
     }
@@ -244,28 +216,65 @@ export function ContentPane() {
       className={`content-pane${dragging ? " dragging" : ""}`}
       onDragOver={(e) => e.preventDefault()}
     >
-      {/* 学习模式没有标题栏,这行是窗口拖动区(网址输入框、按钮不受影响)。 */}
+      {/* 学习模式没有标题栏,这行是窗口拖动区(按钮、输入框不受影响)。
+          历史下拉固定在最左上角:左边 Agent 收起时这里是整窗的左边缘。 */}
       <div className="content-toolbar" data-tauri-drag-region="deep">
-        <span className="content-title">
-          {converting
-            ? "正在转换 PDF…"
-            : content
-              ? content.kind === "markdown"
-                ? content.title
-                : content.title
-              : "学习模式"}
-        </span>
-        <span className="spacer" />
-        <input
-          className="content-url"
-          type="text"
-          placeholder="输入网址打开网页预览…"
-          value={urlInput}
-          onChange={(e) => setUrlInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") openUrl();
+        <StudyHistoryMenu
+          open={historyOpen}
+          onOpenChange={setHistoryOpen}
+          initialTab={content?.kind === "url" ? "url" : "pdf"}
+          pdfs={pdfs}
+          urls={studyHistory.urls}
+          onOpenPdf={openHistoryPdf}
+          onOpenUrl={openHistoryUrl}
+          onImportPdf={() => {
+            setHistoryOpen(false);
+            void pickPdf();
           }}
         />
+        {!settings.studyAgentOpen && (
+          <button
+            className="icon-btn content-agent-toggle"
+            title="展开学习助手"
+            onClick={() => patchSettings({ studyAgentOpen: true })}
+          >
+            助手
+          </button>
+        )}
+        <span className="content-title" title={content?.title}>
+          {importing ? "正在导入 PDF…" : content ? content.title : "学习模式"}
+        </span>
+        <span className="spacer" />
+        {content?.kind === "url" ? (
+          <>
+            <input
+              className="content-url"
+              type="text"
+              placeholder="输入网址打开网页预览…"
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") openUrl();
+              }}
+            />
+            <button
+              className="icon-btn pdf-tool-btn"
+              title="打开这个网址"
+              onClick={() => openUrl()}
+            >
+              打开
+            </button>
+          </>
+        ) : (
+          <button
+            className="icon-btn pdf-tool-btn"
+            title="选择 PDF 文件(存进 vault/pdfs)"
+            onClick={() => void pickPdf()}
+            disabled={importing}
+          >
+            ＋ PDF
+          </button>
+        )}
         {content && (
           <button
             className="icon-btn"
@@ -277,20 +286,54 @@ export function ContentPane() {
         )}
       </div>
       <div className="content-body">
-        <div className="content-editor" ref={hostRef} />
-        {!content && !converting && (
+        {!content && !importing && (
           <div className="content-empty">
-            <p className="content-empty-title">拖入 PDF 开始学习</p>
+            <p className="content-empty-title">拖入 PDF 直接阅读</p>
             <p className="content-empty-hint">
-              PDF 会转换成 Markdown(公式转为 LaTeX、图表原位保留),或
+              PDF 会存到 vault 的 <code>{PDF_FOLDER}/</code> 文件夹,不转换成
+              Markdown——书签、图表、公式都按原文显示。
             </p>
             <button className="btn content-pick" onClick={() => void pickPdf()}>
               选择 PDF 文件
             </button>
-            <p className="content-empty-hint">
-              也可以在上方输入网址,直接在中栏预览网页并让 Agent 阅读它
-            </p>
+            <div className="content-empty-url">
+              <input
+                className="content-url"
+                type="text"
+                placeholder="或在 web 中预览网址…"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") openUrl();
+                }}
+              />
+              <button className="btn" onClick={() => openUrl()}>
+                打开网页
+              </button>
+            </div>
           </div>
+        )}
+        {content?.kind === "pdf" && (
+          <ErrorBoundary
+            resetKey={content.path}
+            fallback={(error, reset) => (
+              <div className="pdf-fail">
+                <p className="content-empty-title">PDF 阅读器加载失败</p>
+                <p className="pdf-status-msg">{error.message}</p>
+                <button className="btn" onClick={reset}>
+                  重试
+                </button>
+              </div>
+            )}
+          >
+            <Suspense fallback={<div className="pdf-status">正在加载 PDF 阅读器…</div>}>
+              <PdfViewer
+                path={content.path}
+                eyeCare={settings.studyEyeCare}
+                onToggleEyeCare={() => patchSettings({ studyEyeCare: !settings.studyEyeCare })}
+              />
+            </Suspense>
+          </ErrorBoundary>
         )}
         {content?.kind === "url" && (
           <div className="content-web">
@@ -349,9 +392,4 @@ function normalizeUrl(input: string): string {
   if (!trimmed) return "";
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   return `https://${trimmed}`;
-}
-
-async function invokeReadFile(path: string): Promise<string> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("read_file", { path });
 }

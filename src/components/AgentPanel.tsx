@@ -30,13 +30,25 @@ interface ChatEntry {
   turn?: Turn;
 }
 
+interface AgentPanelProps {
+  /** Hidden but still mounted: keeps the conversation when the column folds. */
+  collapsed?: boolean;
+}
+
+/** Identity of the material a session is pinned to (url re-open = same key). */
+function studyContentKey(content: StudyContent | null): string {
+  if (!content) return "none";
+  return content.kind === "pdf" ? `pdf:${content.path}` : `url:${content.url}`;
+}
+
 /**
  * Study-mode left column: chat with the agent about the current content.
  * Events stream over the `agent-event` Tauri channel.
  */
-export function AgentPanel() {
+export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
   const studyContent = useAppStore((s) => s.studyContent);
   const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
+  const patchSettings = useAppStore((s) => s.patchSettings);
   const showToast = useAppStore((s) => s.showToast);
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState("");
@@ -48,6 +60,8 @@ export function AgentPanel() {
   const sessionRef = useRef<SessionInfo | null>(null);
   const turnRef = useRef<Turn | null>(null);
   const busyRef = useRef(false);
+  /** 已经为哪份内容建过会话:收起再展开不重建(聊天记录留着)。 */
+  const sessionKeyRef = useRef<string | null>(null);
 
   const startSession = useCallback(
     async (content: StudyContent | null) => {
@@ -75,9 +89,18 @@ export function AgentPanel() {
 
   // (Re)open the session when the study content changes, or after the agent
   // config is saved (a session pins the provider it was created with).
+  //
+  // Collapsed: do nothing. The panel stays mounted to keep the conversation,
+  // but a folded panel must not connect a model/MCP for every PDF the user
+  // opens. Re-expanding with unchanged content reuses the live session; a
+  // content change while folded starts a fresh one on the next expand.
   useEffect(() => {
+    if (collapsed) return;
+    const key = `${studyContentKey(studyContent)}|${agentConfigVersion}`;
+    if (sessionKeyRef.current === key) return;
+    sessionKeyRef.current = key;
     void startSession(studyContent);
-  }, [studyContent, agentConfigVersion, startSession]);
+  }, [studyContent, agentConfigVersion, collapsed, startSession]);
 
   // Stream events; append into the live turn.
   useEffect(() => {
@@ -244,7 +267,7 @@ export function AgentPanel() {
   );
 
   return (
-    <aside className="agent-panel">
+    <aside className={`agent-panel${collapsed ? " collapsed" : ""}`}>
       {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让标题文字也能拖,
           头部里的按钮由 Tauri 的 drag.js 自行放行。 */}
       <div className="agent-header" data-tauri-drag-region="deep">
@@ -256,6 +279,13 @@ export function AgentPanel() {
           onClick={() => void startSession(studyContent)}
         >
           ⟳
+        </button>
+        <button
+          className="icon-btn"
+          title="收起学习助手"
+          onClick={() => patchSettings({ studyAgentOpen: false })}
+        >
+          ⇤
         </button>
       </div>
       {session && session.mcpErrors.length > 0 && (
@@ -280,7 +310,7 @@ export function AgentPanel() {
       <div className="agent-scroll" ref={scrollRef}>
         {entries.length === 0 && (
           <div className="agent-welcome">
-            <p>问我关于当前内容的问题。</p>
+            <p>问我关于当前 PDF / 网页的问题。</p>
             <p className="agent-hint">
               例如:「总结这篇论文的核心方法」「第 3 节的公式在讲什么?」「把要点整理进我的笔记」。
             </p>

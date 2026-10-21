@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgentPanel } from "./AgentPanel";
 import { ContentPane } from "./ContentPane";
 import { EditorPane } from "./EditorPane";
@@ -11,8 +11,12 @@ import { fileName } from "@/lib/path";
  * Widths live in settings as fractions of the layout width (so a window resize
  * keeps the proportions) and are applied through CSS custom properties. During
  * a drag the properties are written to the DOM directly — re-rendering the two
- * panes (both host CodeMirror instances) on every pointer move would be far too
+ * panes (one hosts CodeMirror) on every pointer move would be far too
  * expensive — and the final fractions are committed once on pointer up.
+ *
+ * The Agent column is collapsible and collapsed by default. Once mounted it
+ * stays mounted (hidden) after a collapse, so the conversation survives; the
+ * middle column then widens into the freed space.
  *
  * 三栏的头部都带 `data-tauri-drag-region="deep"`(见各自的组件):标题栏
  * (Overlay 样式)在学习模式下整条不渲染,没有它就一处都拖不动窗口。
@@ -46,11 +50,20 @@ function clamp(value: number, lo: number, hi: number): number {
 
 export function StudyLayout() {
   const split = useAppStore((s) => s.settings.studySplit);
+  const agentOpen = useAppStore((s) => s.settings.studyAgentOpen);
   const patchSettings = useAppStore((s) => s.patchSettings);
   const currentFile = useAppStore((s) => s.currentFile);
   const hostRef = useRef<HTMLDivElement>(null);
+  // 首次展开后才挂载 Agent:默认收起时不该发起会话/连接模型;之后收起只隐藏,
+  // 聊天记录与会话都留着。
+  const [agentMounted, setAgentMounted] = useState(agentOpen);
+  useEffect(() => {
+    if (agentOpen) setAgentMounted(true);
+  }, [agentOpen]);
 
   const [agent, content] = normalizeSplit(split);
+  /** 收起 Agent 时中栏吃掉左栏的宽度。 */
+  const contentEffective = agentOpen ? content : agent + content;
   const noteTitle = currentFile
     ? fileName(currentFile).replace(/\.(md|markdown|txt)$/i, "")
     : "笔记";
@@ -64,8 +77,8 @@ export function StudyLayout() {
       if (width <= 0) return;
       event.preventDefault();
 
-      const agentPx0 = agent * width;
-      const contentPx0 = content * width;
+      const agentPx0 = agentOpen ? agent * width : 0;
+      const contentPx0 = contentEffective * width;
       // The pair separated by an inner divider keeps a constant sum: dragging
       // moves the border, it doesn't steal space from the third column.
       const pairSum = agentPx0 + contentPx0;
@@ -88,18 +101,26 @@ export function StudyLayout() {
         if (edge === 0) {
           agentPx = clamp(x, MIN_AGENT, pairSum - MIN_CONTENT);
           contentPx = pairSum - agentPx;
-        } else {
+        } else if (agentOpen) {
           contentPx = clamp(
             x - agentPx0 - RESIZER,
             MIN_CONTENT,
             width - agentPx0 - RESIZER * 2 - MIN_NOTES,
           );
+        } else {
+          // Only one divider: the stored agent fraction is kept, the rest of
+          // the old agent space belongs to the middle column.
+          contentPx = clamp(x - RESIZER, MIN_CONTENT, width - RESIZER - MIN_NOTES);
         }
         agentPx = Math.round(agentPx);
         contentPx = Math.round(contentPx);
         host.style.setProperty("--agent-w", `${agentPx}px`);
         host.style.setProperty("--content-w", `${contentPx}px`);
-        latest = [agentPx / width, contentPx / width];
+        // Closed: the visible middle width is `agent + content`, so commit the
+        // content fraction as "effective width − stored agent width".
+        latest = agentOpen
+          ? [agentPx / width, contentPx / width]
+          : [agent, Math.max(MIN_FRACTION, contentPx / width - agent)];
       };
 
       const onUp = () => {
@@ -112,6 +133,16 @@ export function StudyLayout() {
         if (done && (done[0] !== agent || done[1] !== content)) {
           patchSettings({ studySplit: done });
         }
+        // The drag wrote px straight to the style attribute. React only
+        // rewrites a custom property whose *virtual* value changed, so e.g.
+        // `--agent-w: 0px` (closed) would survive re-opening the panel. Put
+        // the committed percentages back explicitly.
+        const [nextAgent, nextContent] = done ?? [agent, content];
+        host.style.setProperty("--agent-w", `${nextAgent * 100}%`);
+        host.style.setProperty(
+          "--content-w",
+          `${(agentOpen ? nextContent : nextAgent + nextContent) * 100}%`,
+        );
       };
 
       window.addEventListener("pointermove", onMove);
@@ -126,25 +157,27 @@ export function StudyLayout() {
 
   return (
     <div
-      className="study-layout"
+      className={`study-layout${agentOpen ? " agent-open" : " agent-closed"}`}
       ref={hostRef}
       style={
         {
           "--agent-w": `${agent * 100}%`,
-          "--content-w": `${content * 100}%`,
+          "--content-w": `${contentEffective * 100}%`,
         } as React.CSSProperties
       }
     >
-      <AgentPanel />
-      <div
-        className="study-resizer"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整 Agent 面板宽度"
-        title="拖动调整宽度,双击恢复默认"
-        onPointerDown={startDrag(0)}
-        onDoubleClick={resetSplit}
-      />
+      {agentMounted && <AgentPanel collapsed={!agentOpen} />}
+      {agentOpen && (
+        <div
+          className="study-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整 Agent 面板宽度"
+          title="拖动调整宽度,双击恢复默认"
+          onPointerDown={startDrag(0)}
+          onDoubleClick={resetSplit}
+        />
+      )}
       <ContentPane />
       <div
         className="study-resizer"

@@ -195,6 +195,9 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
 
         // ---- files ----
         "read_file" => json_ok!(files::read_file(app.state(), arg_str(args, "path")?).await),
+        "read_file_base64" => {
+            json_ok!(files::read_file_base64(app.state(), arg_str(args, "path")?).await)
+        }
         "write_file" => json_ok!(
             files::write_file(app.state(), arg_str(args, "path")?, arg_str(args, "contents")?).await
         ),
@@ -288,8 +291,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             app.state(),
             arg_opt_str(args, "path")
         )),
-        "convert_pdf_to_markdown" => json_ok!(
-            agent::convert_pdf_to_markdown(
+        "import_pdf" => json_ok!(
+            agent::import_pdf(
                 app.state(),
                 arg_str(args, "pdfPath")?,
                 arg_str(args, "folderRel")?

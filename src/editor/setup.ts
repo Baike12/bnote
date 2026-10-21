@@ -159,8 +159,9 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     // updateListener 会在 vim 开启时把它冲刷到同帧），DOM 重构不再有可见窗口。
     // 普通/可视模式不受影响：shim 的 .cm-vimMode 规则照常隐藏 CM6 光标层、
     // 只显示引擎的块状光标。
-    // 系统 caret 的闪烁节奏（引擎块光标的 blink 也读同一配置）。
-    drawSelection({ cursorBlinkRate: 530 }),
+    // 光标常亮：闪烁动画由 global.css 的 `.cm-cursorLayer { animation: none }`
+    // 统一关闭（普通光标层与 vim 块光标层共用该 class），不在这里配 blink 节奏。
+    drawSelection(),
     EditorView.theme({
       "&": { height: "100%" },
       ".cm-scroller": {
