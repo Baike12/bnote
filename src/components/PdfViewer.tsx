@@ -1243,21 +1243,11 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
             </div>
           </div>
           {/* 翻页后的阅读分区：上方旧内容压暗，下方新内容顶部用一条圆角线
-              标出。线的左右边界跟随实际页面宽度，不铺满滚动视口。
-              整层不接鼠标事件，选中/批注/链接照常；右侧批注栏不参与分区。 */}
-          <div
-            className="pdf-read-guide"
-            style={{ right: railWidth || undefined }}
-            aria-hidden
-          >
+              标出。线横贯整个 PDF 组件（含右侧批注栏）。
+              整层不接鼠标事件，选中/批注/链接照常。 */}
+          <div className="pdf-read-guide" aria-hidden>
             <div className="pdf-read-shade" />
-            <div
-              className="pdf-read-frame"
-              style={{
-                left: Math.round((containerWidth - targetWidth) / 2),
-                width: targetWidth,
-              }}
-            />
+            <div className="pdf-read-frame" />
           </div>
           {cropping && (
             <CropLayer

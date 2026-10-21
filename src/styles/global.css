@@ -74,8 +74,9 @@
   --pdf-note: rgb(0 140 255 / 42%); /* 文字批注的亮蓝高亮（multiply） */
   --pdf-note-line: rgb(30 130 220); /* 锚点到右侧批注卡的连线 */
   /* 学习模式翻页后的阅读分区:上方旧内容压暗,下方新内容用琥珀描边框成阅读窗。 */
-  --read-shade: rgb(0 0 0 / 16%);
-  --read-frame-border: color-mix(in srgb, var(--accent) 65%, transparent);
+  --read-shade: rgb(0 0 0 / 24%);
+  --read-shade-edge: rgb(0 0 0 / 12%);
+  --read-frame-border: color-mix(in srgb, var(--accent) 45%, transparent);
   --editor-font-size: 16px;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
@@ -142,8 +143,9 @@
   --pdf-anno: rgb(255 224 0 / 42%);
   --pdf-note: rgb(0 140 255 / 42%);
   --pdf-note-line: rgb(30 130 220);
-  --read-shade: rgb(0 0 0 / 16%);
-  --read-frame-border: color-mix(in srgb, var(--accent) 65%, transparent);
+  --read-shade: rgb(0 0 0 / 24%);
+  --read-shade-edge: rgb(0 0 0 / 12%);
+  --read-frame-border: color-mix(in srgb, var(--accent) 45%, transparent);
   /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
@@ -2719,7 +2721,7 @@ input[type="range"] {
 }
 /* 翻页后的视觉分区:上方是刚读过、正在被顶出去的旧内容(占 1−步长),
    压暗到新内容边界;下方新内容的顶部用一条淡色圆角线标出。
-   线贴着页面左右边界,不画完整框;两层都固定在视口上、不接鼠标事件。 */
+   线横贯整个 PDF 组件,不画完整框;两层都固定在视口上、不接鼠标事件。 */
 .pdf-read-guide {
   position: absolute;
   inset: 0;
@@ -2733,12 +2735,14 @@ input[type="range"] {
   right: 0;
   top: 0;
   height: var(--read-old, 50%);
-  background: linear-gradient(to bottom, var(--read-shade), transparent);
+  /* 到边界仍保留一层压暗,与下方未染色的新内容形成明确分界。 */
+  background: linear-gradient(to bottom, var(--read-shade), var(--read-shade-edge));
 }
 .pdf-read-frame {
   position: absolute;
-  /* 左右边界由页面宽度决定（PdfViewer 内联 left/width），不能铺满滚动视口：
-     滚动条和页面居中留白会让线超出绿色纸面。 */
+  left: 0;
+  right: 0;
+  /* 与压暗结束处留 6px 呼吸位，线不压到新内容第一行；高度只用来撑出圆角。 */
   top: calc(var(--read-old, 50%) + 6px);
   height: 16px;
   border-top: 2px solid var(--read-frame-border);
