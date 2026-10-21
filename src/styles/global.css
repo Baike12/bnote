@@ -2738,12 +2738,39 @@ input[type="range"] {
   /* 到边界仍保留一层压暗,与下方未染色的新内容形成明确分界。 */
   background: linear-gradient(to bottom, var(--read-shade), var(--read-shade-edge));
 }
+/* 线在两端向下弯出圆角；弯出去的那一小块仍在分界线上方，必须继续压暗，
+   否则角落会出现「线上面没阴影」的缺口。径向渐变正好补出圆角外侧的
+   两个小三角：圆内（线下方）透明，圆外（线上方）用边界同色。 */
+.pdf-read-shade::before,
+.pdf-read-shade::after {
+  content: "";
+  position: absolute;
+  bottom: -12px;
+  width: 12px;
+  height: 12px;
+}
+.pdf-read-shade::before {
+  left: 0;
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent 11.5px,
+    var(--read-shade-edge) 12px
+  );
+}
+.pdf-read-shade::after {
+  right: 0;
+  background: radial-gradient(
+    circle at 0 100%,
+    transparent 11.5px,
+    var(--read-shade-edge) 12px
+  );
+}
 .pdf-read-frame {
   position: absolute;
   left: 0;
   right: 0;
-  /* 与压暗结束处留 6px 呼吸位，线不压到新内容第一行；高度只用来撑出圆角。 */
-  top: calc(var(--read-old, 50%) + 6px);
+  /* 线压在阴影收束的那条线上，中间不留缝。 */
+  top: var(--read-old, 50%);
   height: 16px;
   border-top: 2px solid var(--read-frame-border);
   border-radius: 12px 12px 0 0;
