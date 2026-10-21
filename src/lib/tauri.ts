@@ -202,6 +202,15 @@ export const agentApi = {
   /** 网页批注模式开关(页面内选中文字 → 亮黄色高亮)。 */
   setStudyPreviewAnnotationMode: (enabled: boolean) =>
     invoke<void>("set_study_preview_annotation_mode", { enabled }),
+  /** 把翻页步长推给页内运行时(键盘翻页与上半屏渐变共用)。 */
+  setStudyPreviewReadStep: (step: number) =>
+    invoke<void>("set_study_preview_read_step", { step }),
+  /** 把命令层的翻页绑定推给页内运行时(网页获得焦点时也能用自定义快捷键)。 */
+  setStudyPreviewReadKeys: (prev: string[], next: string[]) =>
+    invoke<void>("set_study_preview_read_keys", { prev, next }),
+  /** 焦点在主窗口时,把一次翻页转给内嵌网页。 */
+  scrollStudyPreview: (delta: 1 | -1) =>
+    invoke<void>("scroll_study_preview", { delta }),
   /** 把仓库里的锚点推回页面(页面按 id 合并,不会覆盖新数据)。 */
   mergeStudyPreviewAnnotations: (url: string, annotations: unknown[]) =>
     invoke<void>("merge_study_preview_annotations", { url, annotations }),

@@ -12,12 +12,23 @@ import { inputGuards } from "@/lib/inputGuards";
 import { FolderSuggest } from "@/components/FolderSuggest";
 import { applySettingsToEditor, openVault, pickVaultDialog, reloadSnippetsFromVault } from "@/app/actions";
 import { parseVimrc } from "@/editor/vim/vimrc";
+import { MAX_PAGE_STEP, MIN_PAGE_STEP, normalizePageStep } from "@/study/reading";
 
-type Tab = "general" | "editor" | "hotkeys" | "vim" | "snippets" | "ime" | "quickadd" | "agent";
+type Tab =
+  | "general"
+  | "editor"
+  | "reading"
+  | "hotkeys"
+  | "vim"
+  | "snippets"
+  | "ime"
+  | "quickadd"
+  | "agent";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "通用" },
   { id: "editor", label: "编辑器" },
+  { id: "reading", label: "阅读" },
   { id: "hotkeys", label: "快捷键" },
   { id: "vim", label: "Vim" },
   { id: "snippets", label: "公式片段" },
@@ -68,6 +79,7 @@ export function SettingsModal() {
         <div className="settings-content">
           {tab === "general" && <GeneralTab />}
           {tab === "editor" && <EditorTab />}
+          {tab === "reading" && <ReadingTab />}
           {tab === "hotkeys" && <HotkeysTab />}
           {tab === "vim" && <VimTab />}
           {tab === "snippets" && <SnippetsTab />}
@@ -212,6 +224,42 @@ function EditorTab() {
           onChange={(e) => patch({ fontSize: Number(e.target.value) })}
         />
       </div>
+    </div>
+  );
+}
+
+function ReadingTab() {
+  const step = normalizePageStep(useAppStore((s) => s.settings.studyPageStep));
+  const patch = useAppStore((s) => s.patchSettings);
+  const percent = Math.round(step * 100);
+  return (
+    <div className="settings-section">
+      <h3>学习模式翻页</h3>
+      <p className="setting-hint">
+        PageUp / PageDown 以及绑定到「上一页 / 下一页」的快捷键，每次移动可见高度的
+        {percent}%。默认 50%：翻页后上一屏的下半部分停在屏幕中央，新内容从下半屏进入。
+      </p>
+      <div className="setting-row">
+        <div>
+          <div className="setting-label">每次翻页的步长</div>
+          <div className="setting-desc">
+            {percent}% 的可见高度（PDF 与网页阅读器共用）
+          </div>
+        </div>
+        <input
+          type="range"
+          min={Math.round(MIN_PAGE_STEP * 100)}
+          max={Math.round(MAX_PAGE_STEP * 100)}
+          step={5}
+          value={percent}
+          onChange={(e) => patch({ studyPageStep: Number(e.target.value) / 100 })}
+        />
+      </div>
+      <p className="setting-hint">
+        屏幕下方是刚进入的新内容（占可见高度的 {percent}%），保持原样；上方是刚读过、
+        正在移出的内容（占 {100 - percent}%），会轻微压暗。压暗只做视觉分区，
+        不影响选中、批注和点击。
+      </p>
     </div>
   );
 }

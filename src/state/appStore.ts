@@ -60,6 +60,8 @@ export interface Settings {
   studyAgentOpen: boolean;
   /** 学习模式 PDF 护眼底色(浅绿纸面)。 */
   studyEyeCare: boolean;
+  /** 学习模式每次翻页滚动的可见高度比例(PDF/网页共用,默认 0.5)。 */
+  studyPageStep: number;
   fontSize: number;
   ime: ImeSettings;
   /** LaTeX Suite 特性开关(对齐 obsidian-latex-suite,见 editor/snippets/config) */
@@ -80,6 +82,7 @@ export const DEFAULT_SETTINGS: Settings = {
   studySplit: [DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH],
   studyAgentOpen: false,
   studyEyeCare: false,
+  studyPageStep: 0.5,
   fontSize: 16,
   ime: {
     enabled: true,

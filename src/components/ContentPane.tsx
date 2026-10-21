@@ -3,8 +3,11 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
+import { bindingsForCommand } from "@/commands/keys";
 import { useAppStore } from "@/state/appStore";
 import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry } from "@/study/history";
+import { setWebNavHandlers } from "@/study/pdfNav";
+import { normalizePageStep } from "@/study/reading";
 import {
   flushWebAnnotations,
   loadWebAnnotations,
@@ -27,6 +30,26 @@ import { StudyHistoryMenu } from "./StudyHistoryMenu";
 
 /** 收进来的 PDF 落在 vault 的这个目录下。 */
 const PDF_FOLDER = "pdfs";
+
+/** 命令层当前的翻页绑定；网页获得焦点时由页内运行时按这套键匹配。 */
+function readPageKeyBindings() {
+  return {
+    prev: bindingsForCommand("study.pdf-prev-page"),
+    next: bindingsForCommand("study.pdf-next-page"),
+  };
+}
+
+/** 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键（每次导航都会重装）。 */
+function previewInitScript(step: number): string {
+  const keys = readPageKeyBindings();
+  return [
+    WEB_ANNOTATION_SCRIPT,
+    `window.__bnoteAnno && window.__bnoteAnno.setStep(${normalizePageStep(step)});`,
+    `window.__bnoteReader && window.__bnoteReader.setKeys(${JSON.stringify(
+      keys.prev,
+    )}, ${JSON.stringify(keys.next)});`,
+  ].join("\n");
+}
 
 /** pdf.js(+worker) 只在真正打开 PDF 时下载，不拖慢应用启动。 */
 const PdfViewer = lazy(() =>
@@ -77,7 +100,11 @@ export function ContentPane() {
       if (key === lastKey) return;
       lastKey = key;
       const call = create
-        ? agentApi.showStudyPreview(url, bounds, WEB_ANNOTATION_SCRIPT)
+        ? agentApi.showStudyPreview(
+            url,
+            bounds,
+            previewInitScript(useAppStore.getState().settings.studyPageStep),
+          )
         : agentApi.setStudyPreviewBounds(bounds);
       void call.then(
         () => {
@@ -120,6 +147,35 @@ export function ContentPane() {
       .catch(() => {});
   }, [previewUrl, modal, canvasOpen, historyOpen]);
 
+  // 步长/翻页键推给页内运行时(键盘翻页与上半屏渐变都用它)。设置弹窗开着时
+  // 原生视图被藏起来,关掉后再推一次——包含刚改过的快捷键绑定。
+  // 首次创建时命令可能早于 webview 就绪,加载完成事件里会再推一次。
+  useEffect(() => {
+    if (!previewUrl || modal !== null) return;
+    const keys = readPageKeyBindings();
+    void agentApi
+      .setStudyPreviewReadStep(normalizePageStep(settings.studyPageStep))
+      .catch(() => {});
+    void agentApi.setStudyPreviewReadKeys(keys.prev, keys.next).catch(() => {});
+  }, [previewUrl, settings.studyPageStep, modal]);
+
+  // 网页阅读器的翻页落点:焦点在主窗口时(点过工具栏/记笔记之后),命令层
+  // 通过这里把 PageUp/PageDown 转给原生子 webview;焦点在网页里时由页内
+  // 运行时自己接管(原生子 webview 的按键不会冒泡到主窗口)。
+  useEffect(() => {
+    if (content?.kind !== "url") return;
+    setWebNavHandlers({
+      canFlip: () => useAppStore.getState().modal === null,
+      prev: () => {
+        void agentApi.scrollStudyPreview(-1).catch(() => {});
+      },
+      next: () => {
+        void agentApi.scrollStudyPreview(1).catch(() => {});
+      },
+    });
+    return () => setWebNavHandlers(null);
+  }, [content]);
+
   // 网页批注:页面运行时把改动写进 document.title,Rust 转成 Tauri 事件送回来
   // (不开远程 IPC)。页面每加载完一次,重新套用批注模式,并把仓库里的锚点
   // 推回页面——页面按 id 合并,不会覆盖它自己更新的数据。
@@ -141,6 +197,17 @@ export function ContentPane() {
       if (useAppStore.getState().studyContent?.kind !== "url") return;
       void (async () => {
         await agentApi.setStudyPreviewAnnotationMode(webAnnotatingRef.current);
+        // 每次导航页面都会重新安装运行时:步长(以及页内上半屏遮罩)要重新推一次。
+        // 推步长失败(正在导航)不能让后面的批注合并跟着中断。
+        await agentApi
+          .setStudyPreviewReadStep(
+            normalizePageStep(useAppStore.getState().settings.studyPageStep),
+          )
+          .catch(() => {});
+        const keys = readPageKeyBindings();
+        await agentApi
+          .setStudyPreviewReadKeys(keys.prev, keys.next)
+          .catch(() => {});
         const vault = useAppStore.getState().vaultPath;
         if (!vault || typeof url !== "string" || !url) return;
         const list = await loadWebAnnotations(vault, url);
@@ -398,6 +465,7 @@ export function ContentPane() {
                 path={content.path}
                 eyeCare={settings.studyEyeCare}
                 onToggleEyeCare={() => patchSettings({ studyEyeCare: !settings.studyEyeCare })}
+                pageStep={normalizePageStep(settings.studyPageStep)}
               />
             </Suspense>
           </ErrorBoundary>
