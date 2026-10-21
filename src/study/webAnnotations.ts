@@ -1,6 +1,6 @@
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
-import { normalizePageStep } from "./reading";
+import { normalizePageStep, snapScrollTopToLine } from "./reading";
 
 /**
  * 网页批注:选中文字 → 亮黄色高亮。
@@ -221,6 +221,7 @@ interface RuntimeHelpers {
   mergeLineRects: typeof mergeLineRects;
   normalizeWebAnnotations: typeof normalizeWebAnnotations;
   normalizePageStep: typeof normalizePageStep;
+  snapScrollTopToLine: typeof snapScrollTopToLine;
 }
 
 interface TextEntry {
@@ -285,6 +286,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let nextKeys: string[] = ["PageDown", "ArrowRight"];
   let shadeHost: HTMLElement | null = null;
   let shadeLayer: HTMLElement | null = null;
+  let shadeCornerLeft: HTMLElement | null = null;
+  let shadeCornerRight: HTMLElement | null = null;
   let frameLayer: HTMLElement | null = null;
 
   function storageKey(target: string): string {
@@ -469,7 +472,16 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
    * 标出（不画完整框）。两层都在 shadow root 里，不吃页面 CSS；不接鼠标事件。
    */
   function ensureShade(): void {
-    if (shadeHost && shadeHost.isConnected && shadeLayer && frameLayer) return;
+    if (
+      shadeHost &&
+      shadeHost.isConnected &&
+      shadeLayer &&
+      shadeCornerLeft &&
+      shadeCornerRight &&
+      frameLayer
+    ) {
+      return;
+    }
     const doc = document;
     if (!doc.documentElement) return;
     const hostEl = doc.createElement("div");
@@ -483,13 +495,19 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     hs.pointerEvents = "none";
     hs.zIndex = "2147483647";
     const shade = doc.createElement("div");
+    const cornerLeft = doc.createElement("div");
+    const cornerRight = doc.createElement("div");
     const frame = doc.createElement("div");
     if (typeof hostEl.attachShadow === "function") {
       const root = hostEl.attachShadow({ mode: "open" });
       root.appendChild(shade);
+      root.appendChild(cornerLeft);
+      root.appendChild(cornerRight);
       root.appendChild(frame);
     } else {
       hostEl.appendChild(shade);
+      hostEl.appendChild(cornerLeft);
+      hostEl.appendChild(cornerRight);
       hostEl.appendChild(frame);
     }
     const ss = shade.style;
@@ -498,6 +516,22 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     ss.top = "0";
     ss.width = "100%";
     ss.pointerEvents = "none";
+    // 线两端向下弯出圆角；圆角外侧（线上方）补同色压暗，圆内透明。
+    const corner = (el: HTMLElement, at: "left" | "right"): void => {
+      const s = el.style;
+      s.position = "fixed";
+      if (at === "left") s.left = "0";
+      else s.right = "0";
+      s.width = "12px";
+      s.height = "12px";
+      s.pointerEvents = "none";
+      s.background =
+        at === "left"
+          ? "radial-gradient(circle at 100% 100%, transparent 11.5px, rgba(0, 0, 0, 0.12) 12px)"
+          : "radial-gradient(circle at 0 100%, transparent 11.5px, rgba(0, 0, 0, 0.12) 12px)";
+    };
+    corner(cornerLeft, "left");
+    corner(cornerRight, "right");
     const fs = frame.style;
     fs.position = "fixed";
     fs.left = "0";
@@ -509,20 +543,24 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     fs.pointerEvents = "none";
     shadeHost = hostEl;
     shadeLayer = shade;
+    shadeCornerLeft = cornerLeft;
+    shadeCornerRight = cornerRight;
     frameLayer = frame;
     doc.documentElement.appendChild(hostEl);
     paintShade();
   }
 
   function paintShade(): void {
-    // 旧内容占上方 1-step；压暗到新内容边界，顶线从边界下方 6px 开始。
+    // 旧内容占上方 1-step；线压在压暗结束的那条线上，不留缝。
     const old = ((1 - pageStep) * 100).toFixed(2);
     if (shadeLayer) {
       shadeLayer.style.height = `${old}%`;
       shadeLayer.style.background =
         "linear-gradient(to bottom, rgba(0, 0, 0, 0.24), rgba(0, 0, 0, 0.12))";
     }
-    if (frameLayer) frameLayer.style.top = `calc(${old}% + 6px)`;
+    if (shadeCornerLeft) shadeCornerLeft.style.top = `${old}%`;
+    if (shadeCornerRight) shadeCornerRight.style.top = `${old}%`;
+    if (frameLayer) frameLayer.style.top = `${old}%`;
   }
 
   function setPageStep(value: unknown): void {
@@ -590,6 +628,30 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return null;
   }
 
+  /** 视口分界线上、文字节点的行矩形（客户区坐标）。 */
+  function lineBandsAtViewportY(y: number): Array<{ top: number; bottom: number }> {
+    const out: Array<{ top: number; bottom: number }> = [];
+    if (typeof document.caretRangeFromPoint !== "function") return out;
+    const xs = [0.15, 0.3, 0.5, 0.7, 0.85].map((f) =>
+      Math.round(window.innerWidth * f),
+    );
+    for (const x of xs) {
+      const caret = document.caretRangeFromPoint(x, y);
+      const node = caret?.startContainer ?? null;
+      if (!node || node.nodeType !== 3) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rects = range.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        const r = rects[i];
+        if (r.width > 0.5 && r.height > 0.5 && r.bottom > y && r.top < y) {
+          out.push({ top: r.top, bottom: r.bottom });
+        }
+      }
+    }
+    return out;
+  }
+
   /** 按步长滚一页；返回是否由本运行时接管（接管了才 preventDefault）。 */
   function scrollPage(delta: number): boolean {
     if (!delta) return false;
@@ -601,8 +663,20 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       target === document.body;
     const view = documentScroller ? window.innerHeight : target.clientHeight;
     const max = Math.max(0, target.scrollHeight - target.clientHeight);
-    const next = Math.min(max, Math.max(0, target.scrollTop + delta * view * pageStep));
-    target.scrollTop = next;
+    const nominal = Math.min(max, Math.max(0, target.scrollTop + delta * view * pageStep));
+    target.scrollTop = nominal;
+    // 已在首尾就停住；否则在 2% 视口内把分界线对齐到文字行边。
+    if (nominal <= 0 || nominal >= max) return true;
+    const boundary = window.innerHeight * (1 - pageStep);
+    const snapped = helpers.snapScrollTopToLine(
+      nominal,
+      view,
+      target.scrollHeight,
+      boundary,
+      lineBandsAtViewportY(boundary),
+      window.innerHeight * 0.02,
+    );
+    if (snapped !== nominal) target.scrollTop = snapped;
     return true;
   }
 
@@ -916,7 +990,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
 /** 注入原生 webview 的完整脚本(运行时 + 它依赖的纯函数)。 */
 export function buildWebAnnotationScript(): string {
-  return `(${webAnnotationRuntime.toString()})({locateQuote:${locateQuote.toString()},mergeLineRects:${mergeLineRects.toString()},normalizeWebAnnotations:${normalizeWebAnnotations.toString()},normalizePageStep:${normalizePageStep.toString()}});`;
+  return `(${webAnnotationRuntime.toString()})({locateQuote:${locateQuote.toString()},mergeLineRects:${mergeLineRects.toString()},normalizeWebAnnotations:${normalizeWebAnnotations.toString()},normalizePageStep:${normalizePageStep.toString()},snapScrollTopToLine:${snapScrollTopToLine.toString()}});`;
 }
 
 /** 只算一次:主窗口每次打开网页都把它交给 Rust 注册成初始化脚本。 */

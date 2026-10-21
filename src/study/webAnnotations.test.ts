@@ -10,7 +10,7 @@ import {
   webAnnotationRelPath,
   type WebAnnotation,
 } from "./webAnnotations";
-import { normalizePageStep } from "./reading";
+import { normalizePageStep, snapScrollTopToLine } from "./reading";
 
 function ann(id: string, quote: string, offset: number, extra: Partial<WebAnnotation> = {}): WebAnnotation {
   return { id, quote, prefix: "", suffix: "", offset, createdAt: 1, ...extra };
@@ -103,6 +103,7 @@ describe("注入脚本", () => {
     expect(script).toContain("setStep");
     expect(script).toContain("setKeys");
     expect(script).toContain("bnote-read-shade-host");
+    expect(script).toContain("snapScrollTopToLine");
     // 纯函数被序列化进页面,不能残留模块级常量名。
     expect(script).not.toContain("MAX_WEB_QUOTE");
   });
@@ -118,5 +119,11 @@ describe("注入脚本", () => {
       `return (${normalizePageStep.toString()});`,
     )() as typeof normalizePageStep;
     expect(isolatedStep(undefined)).toBe(0.5);
+    const isolatedSnap = new Function(
+      `return (${snapScrollTopToLine.toString()});`,
+    )() as typeof snapScrollTopToLine;
+    expect(
+      isolatedSnap(350, 700, 5000, 350, [{ top: 335, bottom: 357 }], 14),
+    ).toBe(357);
   });
 });

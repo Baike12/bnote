@@ -68,7 +68,7 @@ import {
 } from "@/study/pdfLayout";
 import { setPdfNavHandlers } from "@/study/pdfNav";
 import { filterOutline, type PdfOutlineNode } from "@/study/pdfOutline";
-import { steppedScrollTop } from "@/study/reading";
+import { snapScrollTopToLine, steppedScrollTop } from "@/study/reading";
 
 /**
  * Study-mode PDF reader.
@@ -828,20 +828,27 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
    * 翻页 = 以「可见高度 × step」滚动，而不是跳到下一页页首。
    * 默认 50% 时上一屏的下半部分刚好留在屏幕上半区，新内容从下半屏进入；
    * 眼睛不必每次都回到屏幕顶部。首尾由 steppedScrollTop 夹紧。
+   * 落点若切在文字行内，在 2% 视口内把最近的行边对齐到分界线。
    */
   const flipPage = useCallback(
     (delta: 1 | -1) => {
       const scroll = scrollRef.current;
       if (!scroll) return;
-      scroll.scrollTo({
-        top: steppedScrollTop(
-          scroll.scrollTop,
-          scroll.clientHeight,
-          scroll.scrollHeight,
-          delta,
-          pageStep,
-        ),
-      });
+      const viewport = scroll.clientHeight;
+      const content = scroll.scrollHeight;
+      const max = Math.max(0, content - viewport);
+      const nominal = steppedScrollTop(
+        scroll.scrollTop,
+        viewport,
+        content,
+        delta,
+        pageStep,
+      );
+      scroll.scrollTop = nominal;
+      // 已经在首尾时不微调：PageUp 在顶部就该停在顶部。
+      if (nominal <= 0 || nominal >= max) return;
+      const snapped = snapFlipToLine(scroll, nominal, pageStep);
+      if (snapped !== nominal) scroll.scrollTop = snapped;
     },
     [pageStep],
   );
@@ -1664,6 +1671,52 @@ function spanRects(textDiv: HTMLElement): BoxLike[] {
     }
   }
   return out;
+}
+
+/**
+ * 分界线所在的文字行：只量当前页文本层里与分界线相交的 span。
+ * 分界线落在页缝/页边距时没有相交行，返回空数组（保持原落点）。
+ */
+function lineBandsAtY(
+  scroll: HTMLElement,
+  y: number,
+): Array<{ top: number; bottom: number }> {
+  for (const page of scroll.querySelectorAll<HTMLElement>(".pdf-page")) {
+    const pageRect = page.getBoundingClientRect();
+    if (pageRect.top > y || pageRect.bottom < y) continue;
+    const textDiv = page.querySelector<HTMLElement>(".textLayer");
+    if (!textDiv) return [];
+    return spanRects(textDiv)
+      .filter(
+        (r) =>
+          r.bottom > y &&
+          r.top < y &&
+          r.right > pageRect.left &&
+          r.left < pageRect.right,
+      )
+      .map((r) => ({ top: r.top, bottom: r.bottom }));
+  }
+  return [];
+}
+
+/** 按分界线的实际 DOM 位置量文字行，算出微调后的落点。 */
+function snapFlipToLine(scroll: HTMLElement, nominal: number, step: number): number {
+  const wrap = scroll.parentElement;
+  const guide = wrap?.querySelector<HTMLElement>(".pdf-read-guide") ?? null;
+  const height = (guide ?? scroll).clientHeight;
+  const top = (guide ?? scroll).getBoundingClientRect().top;
+  // 与 --read-old 的取整保持一致，线、阴影、量出来的分界线三者同一条。
+  const old = Math.round((1 - step) * 100);
+  const boundary = top + (height * old) / 100;
+  const viewport = scroll.clientHeight;
+  return snapScrollTopToLine(
+    nominal,
+    viewport,
+    scroll.scrollHeight,
+    boundary,
+    lineBandsAtY(scroll, boundary),
+    viewport * 0.02,
+  );
 }
 
 // ---------------------------------------------------------------------------
