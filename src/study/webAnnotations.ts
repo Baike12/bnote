@@ -1,4 +1,4 @@
-import { createVaultJsonStore } from "./vaultJson";
+import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
 
 /**
@@ -11,8 +11,8 @@ import { mergeLineRects } from "./pdfAnnotations";
  *     页面 CSS;CSP 下也能用,样式全部走 CSSOM)。
  *  2. 批注变化时把 `{url, annotations}` 写进 `document.title` 的
  *     `bnote-anno:` 前缀;Rust 的 title 回调把它转成 Tauri 事件发给主窗口,
- *     主窗口落盘到 `<vault>/.bnote/web-annotations.json`。不开远程 IPC——
- *     任意网页都拿不到应用命令。
+ *     主窗口落盘到 `<vault>/.bnote/web-annotations/<host>-<hash>.json`
+ *     (一个网址一个文件)。不开远程 IPC——任意网页都拿不到应用命令。
  *  3. 打开网页时主窗口把仓库里的锚点推回页面(`__bnoteAnno.merge`),页面
  *     按「原文片段 + 前后文 + 偏移」重新定位,并把数据也存一份在 localStorage
  *     (页面自己刷新时立即可用)。
@@ -32,7 +32,9 @@ export interface WebAnnotation {
 
 export interface WebAnnotationFile {
   version: 1;
-  urls: Record<string, WebAnnotation[]>;
+  /** 文件里带上原网址,便于人工辨认(文件名只有域名 + 哈希)。 */
+  url: string;
+  annotations: WebAnnotation[];
 }
 
 export const MAX_WEB_QUOTE = 2000;
@@ -103,11 +105,11 @@ export function locateQuote(
 }
 
 // ---------------------------------------------------------------------------
-// 持久化(<vault>/.bnote/web-annotations.json)
+// 持久化(<vault>/.bnote/web-annotations/<host>-<hash>.json,一个网址一个文件)
 // ---------------------------------------------------------------------------
 
 export function parseWebAnnotationFile(raw: string | null): WebAnnotationFile {
-  const empty: WebAnnotationFile = { version: 1, urls: {} };
+  const empty: WebAnnotationFile = { version: 1, url: "", annotations: [] };
   if (!raw) return empty;
   let parsed: unknown;
   try {
@@ -115,26 +117,43 @@ export function parseWebAnnotationFile(raw: string | null): WebAnnotationFile {
   } catch {
     return empty;
   }
-  if (!parsed || typeof parsed !== "object") return empty;
-  const urls = (parsed as { urls?: unknown }).urls;
-  if (!urls || typeof urls !== "object") return empty;
-  const out: Record<string, WebAnnotation[]> = {};
-  for (const [url, value] of Object.entries(urls as Record<string, unknown>)) {
-    const list = normalizeWebAnnotations(value);
-    if (list.length > 0) out[url] = list;
-  }
-  return { version: 1, urls: out };
+  const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  if (!record) return empty;
+  return {
+    version: 1,
+    url: typeof record.url === "string" ? record.url : "",
+    annotations: normalizeWebAnnotations(record.annotations),
+  };
 }
 
-export function withUrlAnnotations(
-  file: WebAnnotationFile,
-  url: string,
-  list: WebAnnotation[],
-): WebAnnotationFile {
-  const urls = { ...file.urls };
-  if (list.length > 0) urls[url] = list.slice(0, 800);
-  else delete urls[url];
-  return { version: 1, urls };
+export function parseWebAnnotations(raw: string | null): WebAnnotation[] {
+  return parseWebAnnotationFile(raw).annotations;
+}
+
+/** 网址 → 批注文件名:可读域名 + 稳定哈希,同一网址永远落到同一文件。 */
+export function webAnnotationFileName(url: string): string {
+  let host = "page";
+  try {
+    host = new URL(url).hostname || "page";
+  } catch {
+    // 非标准 URL(about:blank 等)也给它一个稳定名字。
+  }
+  const slug =
+    host
+      .toLowerCase()
+      .replace(/^www\./, "")
+      .replace(/[^a-z0-9.-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "page";
+  return `${slug}-${hash53(url)}.json`;
+}
+
+export function webAnnotationRelPath(url: string): string {
+  return `web-annotations/${webAnnotationFileName(url)}`;
+}
+
+export function webAnnotationPath(vaultRoot: string, url: string): string {
+  return vaultDotPath(vaultRoot, webAnnotationRelPath(url));
 }
 
 /** 两组批注按 id 合并(仓库里的 + 页面里的),页面里较新的覆盖。 */
@@ -149,8 +168,8 @@ export function mergeUrlAnnotations(
 }
 
 const store = createVaultJsonStore<WebAnnotationFile>({
-  fileName: "web-annotations.json",
-  empty: () => ({ version: 1, urls: {} }),
+  pathFor: (vaultRoot, url) => webAnnotationPath(vaultRoot, url),
+  empty: () => ({ version: 1, url: "", annotations: [] }),
   parse: parseWebAnnotationFile,
   serialize: (file) => JSON.stringify(file),
 });
@@ -159,8 +178,8 @@ export async function loadWebAnnotations(
   vaultRoot: string,
   url: string,
 ): Promise<WebAnnotation[]> {
-  const file = await store.load(vaultRoot);
-  return file.urls[url] ?? [];
+  const file = await store.load(vaultRoot, url);
+  return file.annotations;
 }
 
 export function saveWebAnnotations(
@@ -168,13 +187,28 @@ export function saveWebAnnotations(
   url: string,
   list: WebAnnotation[],
 ): void {
-  store.update(vaultRoot, (file) =>
-    withUrlAnnotations(file, url, normalizeWebAnnotations(list)),
-  );
+  store.update(vaultRoot, url, () => ({
+    version: 1,
+    url,
+    annotations: normalizeWebAnnotations(list),
+  }));
 }
 
 export function flushWebAnnotations(): void {
   store.flush();
+}
+
+function hash53(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
 // ---------------------------------------------------------------------------

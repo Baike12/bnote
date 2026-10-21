@@ -180,7 +180,13 @@ declare global {
     /** 挂载真实学习模式组件（AgentPanel + ContentPane），返回卸载函数。 */
     __mountStudyLayout: () => () => void;
     /** 学习模式 PDF 验证：塞入一份 PDF 字节并打开阅读器（需先挂载学习布局）。 */
-    __openStudyPdf: (base64: string, relPath?: string, annotationsJson?: string) => string;
+    __openStudyPdf: (
+      base64: string,
+      relPath?: string,
+      annotationsJson?: string,
+    ) => Promise<string>;
+    /** 读假仓库里的文件内容(批注落盘断言用);不存在返回 null。 */
+    __readFakeFile: (path: string) => string | null;
     /** 学习模式 Agent 回复的迷你 markdown 渲染器（返回 HTML）。 */
     __renderAgentMd: (text: string) => string;
     /** 当前文档语法树节点名（调试用）。 */
@@ -411,11 +417,14 @@ const FAKE_ROOT = "/fake-vault";
 let lastCreatedDir: string | null = null;
 /** 学习模式 PDF 验证用的字节（真后端会按路径读盘，浏览器里只能塞进来）。 */
 let pdfBase64: string | null = null;
+/** 当前假仓库的文件内容表（批注落盘断言用）。 */
+let fakeContents: Map<string, string> | null = null;
 
 function installFakeVault(entries: string[]) {
   const dirs = new Set<string>();
   const files = new Set<string>();
   const contents = new Map<string, string>();
+  fakeContents = contents;
   for (const e of entries) (e.endsWith("/") ? dirs : files).add(e.replace(/\/$/, ""));
 
   const nodeOf = (rel: string, kind: "file" | "dir"): FileNode => ({
@@ -665,16 +674,26 @@ window.__renderAgentMd = renderAgentMarkdown;
  * 学习模式 PDF:假仓库里放一份 PDF 字节并打开阅读器。
  * 需先 __mountStudyLayout();批注落盘走同一套假 readFile/writeFile。
  */
-window.__openStudyPdf = (base64: string, relPath = "pdfs/harness.pdf", annotationsJson?: string) => {
+window.__openStudyPdf = async (base64: string, relPath = "pdfs/harness.pdf", annotationsJson?: string) => {
   pdfBase64 = base64;
   installFakeVault(["pdfs/", relPath]);
   // 先落盘批注文件,再打开阅读器:组件挂载时读到的是恢复后的数据。
+  // 一份 PDF 一个文件,路径与 pdfAnnotationRelPath 一致。
   if (annotationsJson) {
-    void api.writeFile(`${FAKE_ROOT}/.bnote/pdf-annotations.json`, annotationsJson);
+    await api.writeFile(
+      `${FAKE_ROOT}/.bnote/pdf-annotations/${relPath}.json`,
+      annotationsJson,
+    );
   }
   const path = `${FAKE_ROOT}/${relPath}`;
   useAppStore.getState().setStudyContent({ kind: "pdf", path, title: "harness.pdf" });
   return path;
+};
+
+/** 读假仓库里的文件内容(批注落盘断言用);不存在返回 null。 */
+window.__readFakeFile = (path: string) => {
+  const rel = path.startsWith(FAKE_ROOT) ? path.slice(FAKE_ROOT.length + 1) : path;
+  return fakeContents?.get(rel) ?? null;
 };
 
 window.__treeNames = () => {

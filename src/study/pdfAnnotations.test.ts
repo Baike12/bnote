@@ -5,7 +5,11 @@ import {
   mergeLineRects,
   normalizeRects,
   parsePdfAnnotationFile,
-  withDocAnnotations,
+  pdfAnnotationPath,
+  pdfAnnotationRelPath,
+  rectsAnchor,
+  sortNotes,
+  stackNoteTops,
   type PdfAnnotation,
 } from "./pdfAnnotations";
 
@@ -13,6 +17,23 @@ const page = { left: 0, top: 0, right: 1000, bottom: 1000 };
 
 function rect(x: number, y: number, w: number, h: number) {
   return { x, y, w, h };
+}
+
+function ann(
+  id: string,
+  pageNumber: number,
+  r: ReturnType<typeof rect>,
+  extra: Partial<PdfAnnotation> = {},
+): PdfAnnotation {
+  return {
+    id,
+    page: pageNumber,
+    rects: [r],
+    kind: "highlight",
+    text: "",
+    createdAt: 1,
+    ...extra,
+  };
 }
 
 describe("PDF 批注几何", () => {
@@ -65,8 +86,8 @@ describe("PDF 批注几何", () => {
 
   it("点中批注:后加的在上层,带一点容差", () => {
     const annotations: PdfAnnotation[] = [
-      { id: "a", page: 1, rects: [rect(0.1, 0.1, 0.2, 0.05)], createdAt: 1 },
-      { id: "b", page: 1, rects: [rect(0.12, 0.1, 0.2, 0.05)], createdAt: 2 },
+      ann("a", 1, rect(0.1, 0.1, 0.2, 0.05), { createdAt: 1 }),
+      ann("b", 1, rect(0.12, 0.1, 0.2, 0.05), { createdAt: 2 }),
     ];
     expect(annotationAt(annotations, 1, 0.15, 0.12)?.id).toBe("b");
     expect(annotationAt(annotations, 2, 0.15, 0.12)).toBeNull();
@@ -105,36 +126,76 @@ describe("单击取行", () => {
   });
 });
 
+describe("文字批注锚点与右侧排布", () => {
+  it("锚点取选区右缘、纵向正中;多行取整体包围盒", () => {
+    const anchor = rectsAnchor([rect(0.1, 0.2, 0.3, 0.04), rect(0.1, 0.25, 0.5, 0.04)]);
+    expect(anchor?.x).toBeCloseTo(0.6, 6);
+    expect(anchor?.y).toBeCloseTo(0.245, 6);
+    expect(rectsAnchor([])).toBeNull();
+  });
+
+  it("按页 → 行(上到下) → 行内(左到右)排序", () => {
+    const list = [
+      ann("c", 1, rect(0.5, 0.3, 0.1, 0.02), { kind: "note" }),
+      ann("a", 1, rect(0.1, 0.2, 0.1, 0.02), { kind: "note" }),
+      ann("b", 1, rect(0.3, 0.2, 0.1, 0.02), { kind: "note", createdAt: 2 }),
+      ann("d", 2, rect(0.1, 0.1, 0.1, 0.02), { kind: "note" }),
+    ];
+    expect(sortNotes(list).map((a) => a.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("同一行的亚像素高差不影响「从左到右」", () => {
+    const list = [
+      ann("right", 1, rect(0.5, 0.204, 0.1, 0.02), { kind: "note" }),
+      ann("left", 1, rect(0.1, 0.2, 0.1, 0.02), { kind: "note" }),
+    ];
+    expect(sortNotes(list).map((a) => a.id)).toEqual(["left", "right"]);
+  });
+
+  it("批注卡不重叠:重叠时往下推,顺序保持", () => {
+    // 两张同一行的卡都想要 100,第二张必须落到 100+高度+间距。
+    expect(stackNoteTops([100, 100, 300], 108, 10)).toEqual([100, 218, 336]);
+    // 起点被夹到 4 也不能把后一张顶进前一张里。
+    expect(stackNoteTops([4, 4], 108, 10)).toEqual([4, 122]);
+  });
+});
+
 describe("PDF 批注存储", () => {
-  it("坏文件退回空库,合法条目保留", () => {
-    expect(parsePdfAnnotationFile("not json")).toEqual({ version: 1, docs: {} });
-    expect(parsePdfAnnotationFile(null)).toEqual({ version: 1, docs: {} });
+  it("一份 PDF 一个文件:目录结构镜像仓库", () => {
+    expect(pdfAnnotationRelPath("pdfs/a.pdf")).toBe("pdf-annotations/pdfs/a.pdf.json");
+    expect(pdfAnnotationPath("/vault", "papers/deep/a.pdf")).toBe(
+      "/vault/.bnote/pdf-annotations/papers/deep/a.pdf.json",
+    );
+    // 越界片段被丢掉,不会逃出 .bnote。
+    expect(pdfAnnotationRelPath("../../etc/passwd")).toBe(
+      "pdf-annotations/etc/passwd.json",
+    );
+  });
+
+  it("坏文件退回空库;旧数据(无 kind)按高亮读", () => {
+    expect(parsePdfAnnotationFile("not json").annotations).toEqual([]);
+    expect(parsePdfAnnotationFile(null).annotations).toEqual([]);
     const good = parsePdfAnnotationFile(
       JSON.stringify({
         version: 1,
-        docs: {
-          "pdfs/a.pdf": [
-            { id: "x", page: 2, rects: [rect(0.1, 0.2, 0.3, 0.01)], createdAt: 5 },
-          ],
-          "pdfs/bad.pdf": [{ id: "y", page: "2", rects: [] }],
-        },
+        annotations: [
+          { id: "x", page: 2, rects: [rect(0.1, 0.2, 0.3, 0.01)], createdAt: 5 },
+          {
+            id: "y",
+            page: 3,
+            rects: [rect(0.2, 0.2, 0.3, 0.01)],
+            kind: "note",
+            text: "想法",
+            createdAt: 6,
+          },
+          { id: "bad", page: "2", rects: [] },
+        ],
       }),
-    );
-    expect(good.docs["pdfs/a.pdf"]).toHaveLength(1);
-    expect(good.docs["pdfs/bad.pdf"]).toBeUndefined();
-  });
-
-  it("按文档写入/清空,不串到别的文档", () => {
-    const a = withDocAnnotations({ version: 1, docs: {} }, "pdfs/a.pdf", [
-      { id: "1", page: 1, rects: [rect(0.1, 0.1, 0.2, 0.02)], createdAt: 1 },
-    ]);
-    const b = withDocAnnotations(a, "pdfs/b.pdf", [
-      { id: "2", page: 3, rects: [rect(0.2, 0.2, 0.2, 0.02)], createdAt: 2 },
-    ]);
-    expect(Object.keys(b.docs).sort()).toEqual(["pdfs/a.pdf", "pdfs/b.pdf"]);
-    const cleared = withDocAnnotations(b, "pdfs/a.pdf", []);
-    expect(Object.keys(cleared.docs)).toEqual(["pdfs/b.pdf"]);
-    // 原对象不被就地改掉
-    expect(Object.keys(b.docs)).toHaveLength(2);
+    ).annotations;
+    expect(good.map((a) => a.id)).toEqual(["x", "y"]);
+    expect(good[0].kind).toBe("highlight");
+    expect(good[0].text).toBe("");
+    expect(good[1].kind).toBe("note");
+    expect(good[1].text).toBe("想法");
   });
 });
