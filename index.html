@@ -7,6 +7,8 @@
     <title>bnote</title>
     <!-- 同步外部脚本：React 启动前按 localStorage 镜像设好 data-theme（light 不闪深色） -->
     <script src="/theme-boot.js"></script>
+    <!-- WebKit 缺 Iterator 时给 pdf.js 的兼容垫片，必须先于任何模块执行 -->
+    <script src="/pdfjs-boot.js"></script>
   </head>
 
   <body>

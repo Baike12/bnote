@@ -43,8 +43,12 @@ export interface SetImeOutcome {
 // Study mode / agent
 // ---------------------------------------------------------------------------
 
+/**
+ * Middle-column content. PDFs are displayed as PDFs (the reader renders them
+ * with pdf.js) — no markdown conversion happens anywhere in this flow.
+ */
 export type StudyContent =
-  | { kind: "markdown"; path: string; title: string }
+  | { kind: "pdf"; path: string; title: string }
   | { kind: "url"; url: string; title: string };
 
 export interface AgentConfig {
@@ -77,13 +81,12 @@ export type AgentEvent =
   | { type: "turn_end"; reason: string }
   | { type: "error"; message: string };
 
-export interface ConvertResult {
-  mdPath: string;
-  /** 原文在 vault 里的副本(`<vault>/pdfs/<stem>.pdf`)。 */
+/** 收进 vault 的 PDF(`<vault>/pdfs/<stem>.pdf`)。 */
+export interface ImportedPdf {
   pdfPath: string;
+  /** vault 相对路径(历史记录展示/跨仓迁移用)。 */
+  relPath: string;
   title: string;
-  pages: number;
-  elapsedMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,8 +183,9 @@ export const agentApi = {
   history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
   setCurrentNote: (path: string | null) =>
     invoke<void>("agent_set_current_note", { path }),
-  convertPdf: (pdfPath: string, folderRel: string) =>
-    invoke<ConvertResult>("convert_pdf_to_markdown", { pdfPath, folderRel }),
+  /** 把 PDF 收进 vault(`<vault>/<folderRel>/<stem>.pdf`),同名不同文件自动加序号。 */
+  importPdf: (pdfPath: string, folderRel: string) =>
+    invoke<ImportedPdf>("import_pdf", { pdfPath, folderRel }),
   /**
    * 中栏内嵌网页预览(主窗口的子 webview,原生视图盖在占位元素上)。
    * 首次调用创建、之后调用只更新矩形并重新导航。
@@ -209,6 +213,8 @@ export const api = {
   listFiles: () => invoke<VaultIndex>("list_files"),
 
   readFile: (path: string) => invoke<string>("read_file", { path }),
+  /** 二进制读(base64):PDF 阅读器用,`read_file` 会按 UTF-8 解码而损坏 PDF。 */
+  readFileBase64: (path: string) => invoke<string>("read_file_base64", { path }),
   writeFile: (path: string, contents: string) =>
     invoke<void>("write_file", { path, contents }),
   /** 二进制写盘(画布导出的 PNG 预览);base64 编码走 JSON,UTF-8 文本请用 writeFile。 */

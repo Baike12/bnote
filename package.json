@@ -34,6 +34,7 @@
     "@tauri-apps/plugin-opener": "^2.5.5",
     "katex": "^0.18.5",
     "lz-string": "^1.5.0",
+    "pdfjs-dist": "^6.4.299",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zustand": "^5.0.15"

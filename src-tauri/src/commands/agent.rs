@@ -180,78 +180,95 @@ pub fn agent_get_history(
     Ok(session.history())
 }
 
-/// Converts a dropped PDF into a markdown note + assets under the vault.
+/// Imported PDF inside the vault.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedPdf {
+    /// Absolute path of the copy (the study reader and the Agent both use it).
+    pub pdf_path: String,
+    /// Vault-relative path, for display and for keeping history vault-portable.
+    pub rel_path: String,
+    pub title: String,
+}
+
+/// Copies a dropped/picked PDF into the vault (`pdfs/` by default).
 ///
-/// The original file is copied into the same folder as the note: a converted
-/// paper is only useful if the PDF it came from stays reachable (figures are
-/// re-converted from it, the Agent is asked about pages we did not turn into
-/// text). Everything for one paper lands together:
+/// The study reader displays the PDF itself — nothing is converted. The copy
+/// keeps the paper next to the notes that discuss it, and keeps the original
+/// in ~/Downloads disposable.
 ///
-/// ```text
-/// <vault>/pdfs/<stem>.pdf          原文(拷贝进来的)
-/// <vault>/pdfs/<stem>.md           转换结果
-/// <vault>/pdfs/assets/<stem>/*.svg 图表
-/// ```
-///
-/// The asset prefix in the markdown is relative to the note (`assets/<stem>`),
-/// which is what both the editor's image renderer and any other markdown tool
-/// reading this vault resolve against.
+/// A file already living at the destination is reused instead of copied onto
+/// itself; a *different* PDF with the same stem gets a `"name 2.pdf"` suffix so
+/// imports never overwrite an earlier paper.
 #[tauri::command]
-pub async fn convert_pdf_to_markdown(
+pub async fn import_pdf(
     state: State<'_, AppState>,
     pdf_path: String,
     folder_rel: String,
-) -> CmdResult<serde_json::Value> {
+) -> CmdResult<ImportedPdf> {
     let vault = super::require_vault(&state)?;
     let pdf = std::path::PathBuf::from(&pdf_path);
     if !pdf.is_file() {
         return Err(format!("PDF_NOT_FOUND: {}", pdf_path));
     }
-    let stem = pdf
+    let title = pdf
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "paper".into());
-    // Folder inside the vault; sanitize the stem for filesystem use.
-    let safe_stem: String = stem
+    // Sanitize the stem for filesystem use; keep the display title untouched.
+    let safe_stem: String = title
         .chars()
         .map(|c| if c.is_whitespace() { '-' } else { c })
         .collect();
-    // The target folder may not exist yet (first PDF of a fresh vault) — the
-    // converter creates the asset directory, but the .md write must not depend
-    // on that side effect.
+
     let folder_rel = folder_rel.trim_matches('/').to_string();
     if folder_rel.split('/').any(|seg| seg == "..") {
         return Err(format!("INVALID_FOLDER: {}", folder_rel));
     }
-    let out_dir = vault.join(&folder_rel);
+    let out_dir = if folder_rel.is_empty() {
+        vault.clone()
+    } else {
+        vault.join(&folder_rel)
+    };
+    super::ensure_within(&vault, &out_dir)?;
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("MKDIR_FAILED: {}", e))?;
 
-    // Copy the original in first: a failed copy must not leave a note behind
-    // pointing at a PDF that is still sitting in ~/Downloads.
-    let pdf_copy = out_dir.join(format!("{}.pdf", safe_stem));
-    let source = std::fs::canonicalize(&pdf).ok();
-    if source.as_deref() != std::fs::canonicalize(&pdf_copy).ok().as_deref() {
-        std::fs::copy(&pdf, &pdf_copy).map_err(|e| format!("COPY_FAILED: {}", e))?;
+    let direct = out_dir.join(format!("{}.pdf", safe_stem));
+    let source = std::fs::canonicalize(&pdf).map_err(|e| format!("PDF_NOT_FOUND: {}", e))?;
+    let is_same_file = std::fs::canonicalize(&direct).ok().as_deref() == Some(source.as_path());
+    let dest = if is_same_file {
+        direct
+    } else if direct.exists() {
+        unique_pdf_path(&out_dir, &safe_stem)
+    } else {
+        direct
+    };
+    if !is_same_file {
+        std::fs::copy(&pdf, &dest).map_err(|e| format!("COPY_FAILED: {}", e))?;
     }
 
-    let asset_dir = out_dir.join("assets").join(&safe_stem);
-    let opts = pdf2md::ConvertOptions::new(asset_dir, format!("assets/{}", safe_stem));
-    let started = std::time::Instant::now();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        pdf2md::convert_file(&pdf_path, &opts)
+    let rel_path = dest
+        .strip_prefix(&vault)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| dest.to_string_lossy().to_string());
+    Ok(ImportedPdf {
+        pdf_path: dest.to_string_lossy().to_string(),
+        rel_path,
+        title,
     })
-    .await
-    .map_err(|e| format!("join: {}", e))?;
-    let output = result.map_err(|e| e)?;
-    let md_path = out_dir.join(format!("{}.md", safe_stem));
-    std::fs::write(&md_path, &output.markdown).map_err(|e| format!("WRITE_FAILED: {}", e))?;
-    Ok(serde_json::json!({
-        "mdPath": md_path.to_string_lossy(),
-        "pdfPath": pdf_copy.to_string_lossy(),
-        "title": stem,
-        "pages": output.page_count,
-        "elapsedMs": started.elapsed().as_millis() as u64,
-    }))
+}
+
+/// `pdfs/name.pdf` taken → `pdfs/name 2.pdf`, `name 3.pdf`, …
+fn unique_pdf_path(dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
+    let mut n = 2u32;
+    loop {
+        let candidate = dir.join(format!("{} {}.pdf", stem, n));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// Label of the study-mode web preview embedded in the middle column.

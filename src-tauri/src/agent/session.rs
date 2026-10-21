@@ -168,7 +168,7 @@ pub fn build_system_prompt(
 ) -> String {
     let mut p = String::from(
         "You are bnote's study assistant, embedded in a markdown note-taking app. \
-The user is studying material (a converted PDF paper or a web page) shown in the \
+The user is studying material (a PDF paper or a web page) shown in the \
 center panel while their own notes stay on the right. Answer in the user's language. \
 Use markdown and $...$ / $$...$$ LaTeX math. When the question relates to the study \
 material, ground your answer in it via the read_study_content tool before answering \
@@ -179,8 +179,8 @@ from memory; quote the relevant formulas precisely.\n\n",
         p.push_str(&format!("- Current note: {}\n", note));
     }
     match study {
-        Some(StudyContent::Markdown { path, title }) => {
-            p.push_str(&format!("- Study content: \"{}\" (markdown file at {})\n", title, path));
+        Some(StudyContent::Pdf { path, title }) => {
+            p.push_str(&format!("- Study content: PDF \"{}\" at {}\n", title, path));
         }
         Some(StudyContent::Url { url, title }) => {
             p.push_str(&format!("- Study content: web page \"{}\" at {}\n", title, url));

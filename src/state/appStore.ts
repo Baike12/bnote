@@ -1,5 +1,13 @@
 import { create } from "zustand";
 import { api, type FileNode, type StudyContent, type VaultInfo } from "@/lib/tauri";
+import {
+  emptyStudyHistory,
+  pushPdfEntry,
+  pushUrlEntry,
+  type StudyHistory,
+  type StudyPdfEntry,
+  type StudyUrlEntry,
+} from "@/study/history";
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
 
 export interface ImeSettings {
@@ -45,6 +53,10 @@ export interface Settings {
    * 右侧笔记吃剩余宽度，所以只存前两栏。比例而非像素，窗口缩放时按比例跟随。
    */
   studySplit: [number, number];
+  /** 学习模式左栏(Agent)是否展开。默认收起:多数时候只用 PDF + 笔记。 */
+  studyAgentOpen: boolean;
+  /** 学习模式 PDF 护眼底色(浅绿纸面)。 */
+  studyEyeCare: boolean;
   fontSize: number;
   ime: ImeSettings;
   /** LaTeX Suite 特性开关(对齐 obsidian-latex-suite,见 editor/snippets/config) */
@@ -63,6 +75,8 @@ export const DEFAULT_SETTINGS: Settings = {
   codeBlockLang: "ts",
   theme: "dark",
   studySplit: [0.24, 0.44],
+  studyAgentOpen: false,
+  studyEyeCare: false,
   fontSize: 16,
   ime: {
     enabled: true,
@@ -119,6 +133,8 @@ export interface PersistedConfig {
   settings?: Partial<Settings>;
   /** Last cursor position per absolute note path (remember-cursor-position). */
   cursorPositions?: Record<string, { pos: number; scroll: number }>;
+  /** 学习模式打开过的 PDF / 网页（两个独立列表，见 study/history.ts）。 */
+  studyHistory?: StudyHistory;
 }
 
 /** Hard cap on remembered files — dropping the oldest entry beyond it. */
@@ -194,6 +210,8 @@ interface AppState {
   studyMode: boolean;
   /** 学习模式中间栏的当前内容(null = 空态,等待拖入 PDF 或输入 URL) */
   studyContent: StudyContent | null;
+  /** 学习模式最近打开(PDF 与网页分开)。启动时从 config.json 恢复。 */
+  studyHistory: StudyHistory;
   /** 画布会话(null = 没开)。全屏浮层 + 命令快捷键挂起。 */
   drawingSession: DrawingSession | null;
   /**
@@ -230,6 +248,10 @@ interface AppState {
   clearToast: () => void;
   setStudyMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
+  setStudyHistory: (history: StudyHistory) => void;
+  /** 打开一份 PDF 后记一笔(去重、置顶、持久化)。 */
+  recordStudyPdf: (entry: Omit<StudyPdfEntry, "at">) => void;
+  recordStudyUrl: (entry: Omit<StudyUrlEntry, "at">) => void;
   openDrawingSession: (session: DrawingSession) => void;
   closeDrawingSession: () => void;
   /** Agent 配置已保存:让学习模式重建会话(见 agentConfigVersion)。 */
@@ -287,6 +309,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   toast: null,
   studyMode: false,
   studyContent: null,
+  studyHistory: emptyStudyHistory(),
   drawingSession: null,
   agentConfigVersion: 0,
 
@@ -391,6 +414,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearToast: () => set({ toast: null }),
   setStudyMode: (active) => set({ studyMode: active }),
   setStudyContent: (content) => set({ studyContent: content }),
+  setStudyHistory: (studyHistory) => set({ studyHistory }),
+  recordStudyPdf: (entry) => {
+    const studyHistory = pushPdfEntry(get().studyHistory, entry);
+    set({ studyHistory });
+    persistConfig({ ...getConfigSnapshot(), studyHistory });
+  },
+  recordStudyUrl: (entry) => {
+    const studyHistory = pushUrlEntry(get().studyHistory, entry);
+    set({ studyHistory });
+    persistConfig({ ...getConfigSnapshot(), studyHistory });
+  },
   openDrawingSession: (session) => set({ drawingSession: session }),
   closeDrawingSession: () => {
     if (get().drawingSession !== null) set({ drawingSession: null });
