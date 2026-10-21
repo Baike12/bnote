@@ -26,6 +26,21 @@ import { bindingsForCommand, formatBinding } from "@/commands/keys";
 import { useAppStore } from "@/state/appStore";
 import { cropFromDrag, loadPdfCrop, savePdfCrop, type PdfCrop } from "@/study/crop";
 import {
+  annotationAt,
+  EMPTY_PDF_ANNOTATIONS,
+  flushPdfAnnotations,
+  lineRectsAtPoint,
+  loadPdfAnnotations,
+  mergeLineRects,
+  newPdfAnnotationId,
+  normalizeRects,
+  savePdfAnnotations,
+  type BoxLike,
+  type PdfAnnotation,
+  type NormRect,
+} from "@/study/pdfAnnotations";
+import { vaultRelPath } from "@/lib/path";
+import {
   PAGE_TOP_PAD,
   basePageWidth,
   contentWidthForRenderedPage,
@@ -100,6 +115,16 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   /** 框选进行中:页面临时铺回整页,才能框到被裁掉的留白。 */
   const [cropping, setCropping] = useState(false);
   const cropShown = cropping ? null : crop;
+  /** 批注模式:单击一行或拖选文字,亮黄色高亮。 */
+  const [annotating, setAnnotating] = useState(false);
+  const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
+  /** 初始批注文件读完之前不允许进入批注模式:否则第一次提交会覆盖掉还没读进来的旧批注。 */
+  const [annotationsLoaded, setAnnotationsLoaded] = useState(false);
+  const annotationsRef = useRef<PdfAnnotation[]>([]);
+  /** 异步读盘回来时用它自证「还是当前文档/没有被本地编辑抢先」。 */
+  const annotationsEpoch = useRef(0);
+  const vaultPath = useAppStore((s) => s.vaultPath);
+  const docKey = vaultRelPath(path, vaultPath ?? "");
 
   const pageEls = useRef(new Map<number, HTMLDivElement>());
   const visiblePages = useRef(new Set<number>());
@@ -192,6 +217,92 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
       if (loaded) void loaded.destroy();
     };
   }, [path]);
+
+  // --- annotations ---------------------------------------------------------
+  // 换文档先清空,再读这一份的批注;读盘回来时比对 epoch,期间用户已经
+  // 开始批注(本地编辑推进了 epoch)就丢弃这份旧结果。
+  useEffect(() => {
+    const epoch = ++annotationsEpoch.current;
+    annotationsRef.current = [];
+    setAnnotations([]);
+    setAnnotating(false);
+    setAnnotationsLoaded(false);
+    if (!vaultPath) {
+      setAnnotationsLoaded(true);
+      return;
+    }
+    void loadPdfAnnotations(vaultPath, docKey)
+      .then((list) => {
+        if (annotationsEpoch.current !== epoch) return;
+        annotationsRef.current = list;
+        setAnnotations(list);
+      })
+      .catch(() => {
+        // 读不到批注文件(尚无批注/权限问题)不影响阅读。
+      })
+      .finally(() => {
+        if (annotationsEpoch.current === epoch) setAnnotationsLoaded(true);
+      });
+  }, [vaultPath, docKey]);
+
+  const commitAnnotations = useCallback(
+    (next: PdfAnnotation[]) => {
+      annotationsEpoch.current += 1;
+      annotationsRef.current = next;
+      setAnnotations(next);
+      if (vaultPath) savePdfAnnotations(vaultPath, docKey, next);
+    },
+    [vaultPath, docKey],
+  );
+
+  const addAnnotations = useCallback(
+    (page: number, rects: NormRect[]) => {
+      if (rects.length === 0) return;
+      commitAnnotations([
+        ...annotationsRef.current,
+        { id: newPdfAnnotationId(), page, rects, createdAt: Date.now() },
+      ]);
+    },
+    [commitAnnotations],
+  );
+
+  const removeAnnotation = useCallback(
+    (id: string) => {
+      commitAnnotations(annotationsRef.current.filter((a) => a.id !== id));
+    },
+    [commitAnnotations],
+  );
+
+  /** 每页一份数组;没有批注的页共用一个空数组,备忘录页不会因别页编辑重渲染。 */
+  const annotationsByPage = useMemo(() => {
+    const map = new Map<number, PdfAnnotation[]>();
+    for (const a of annotations) {
+      const list = map.get(a.page);
+      if (list) list.push(a);
+      else map.set(a.page, [a]);
+    }
+    return map;
+  }, [annotations]);
+
+  // Esc 退出批注模式(与框选的 Esc 不冲突:进入框选会先退出批注)。
+  useEffect(() => {
+    if (!annotating) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAnnotating(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [annotating]);
+
+  // 离页前把 300ms 防抖里的改动冲刷掉。
+  useEffect(() => {
+    const flush = () => flushPdfAnnotations();
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      flushPdfAnnotations();
+    };
+  }, []);
 
   // --- track column width (divider drag / window resize / outline toggle) ---
   useLayoutEffect(() => {
@@ -444,9 +555,16 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   const prevKeys = bindingsForCommand("study.pdf-prev-page").map(formatBinding).join(" / ");
   const nextKeys = bindingsForCommand("study.pdf-next-page").map(formatBinding).join(" / ");
 
+  /** 框选与批注互斥:框选层盖住页面,批注的点击/拖选交给谁必须唯一。 */
+  function toggleCropping() {
+    const next = !cropping;
+    setCropping(next);
+    if (next) setAnnotating(false);
+  }
+
   return (
     <div
-      className={`pdf-viewer${eyeCare ? " eye-care" : ""}`}
+      className={`pdf-viewer${eyeCare ? " eye-care" : ""}${annotating ? " annotating" : ""}`}
       ref={viewerRef}
       style={{ "--pdf-outline-w": `${outlineWidth}px` } as React.CSSProperties}
     >
@@ -479,6 +597,21 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
           onClick={() => flipPage(1)}
         >
           ›
+        </button>
+        <span className="pdf-tool-sep" aria-hidden />
+        <button
+          className={`icon-btn pdf-tool-btn${annotating ? " active" : ""}`}
+          title={
+            !annotationsLoaded
+              ? "正在读取批注…"
+              : annotating
+                ? "退出批注(Esc)"
+                : "批注:单击一行或拖选文字,标成亮黄色高亮;点已有高亮可取消"
+          }
+          disabled={!annotationsLoaded}
+          onClick={() => setAnnotating((v) => !v)}
+        >
+          ✎ 批注
         </button>
         <span className="pdf-tool-sep" aria-hidden />
         <button
@@ -516,7 +649,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
               ? "取消框选(Esc)"
               : "框选显示范围:在页面上拖出一个矩形,所有页都只显示这一块"
           }
-          onClick={() => setCropping((v) => !v)}
+          onClick={toggleCropping}
         >
           框选
         </button>
@@ -588,6 +721,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
                     crop={cropShown}
                     active={activePages.has(n)}
                     eyeCare={eyeCare}
+                    annotating={annotating}
+                    annotations={annotationsByPage.get(n)}
+                    onAddAnnotations={addAnnotations}
+                    onRemoveAnnotation={removeAnnotation}
                     register={registerPage}
                   />
                 ))}
@@ -770,6 +907,11 @@ interface PdfPageProps {
   crop: PdfCrop | null;
   active: boolean;
   eyeCare: boolean;
+  /** 批注模式:页面上接管点击/拖选。 */
+  annotating: boolean;
+  annotations: PdfAnnotation[] | undefined;
+  onAddAnnotations: (page: number, rects: NormRect[]) => void;
+  onRemoveAnnotation: (id: string) => void;
   register: (n: number, el: HTMLDivElement | null) => void;
 }
 
@@ -781,6 +923,10 @@ const PdfPage = memo(function PdfPage({
   crop,
   active,
   eyeCare,
+  annotating,
+  annotations,
+  onAddAnnotations,
+  onRemoveAnnotation,
   register,
 }: PdfPageProps) {
   // Aspect ratio of *this* page once measured. Keeping the ratio (not a pixel
@@ -788,6 +934,7 @@ const PdfPage = memo(function PdfPage({
   // without re-rendering the page.
   const [pageRatio, setPageRatio] = useState<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const fullRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
 
@@ -870,6 +1017,51 @@ const PdfPage = memo(function PdfPage({
   const shownHeight = crop ? Math.max(1, Math.round(height * crop.h)) : height;
   const offsetX = crop ? Math.round(width * crop.x) : 0;
   const offsetY = crop ? Math.round(height * crop.y) : 0;
+  const pageAnnotations = annotations ?? EMPTY_PDF_ANNOTATIONS;
+
+  /**
+   * 批注模式的鼠标落点:
+   *  - 拖选/双击 → 选区矩形(按行切分后合并)直接变成高亮;
+   *  - 单击 → 点在已有高亮上就取消它,否则取光标所在那一行的矩形。
+   * 延迟到宏任务再读选区:mouseup 默认行为之后选区才是最终状态。
+   */
+  function handleMouseUp(event: React.MouseEvent<HTMLDivElement>) {
+    const full = fullRef.current;
+    const textDiv = textRef.current;
+    if (!full || !textDiv) return;
+    const pageRect = full.getBoundingClientRect();
+    if (pageRect.width <= 0 || pageRect.height <= 0) return;
+    const clientX = event.clientX;
+    const clientY = event.clientY;
+    window.setTimeout(() => {
+      if (!full.isConnected) return;
+      const selected = selectionRects(window.getSelection(), textDiv, pageRect);
+      if (selected.length > 0) {
+        onAddAnnotations(
+          pageNumber,
+          mergeLineRects(selected, Math.max(0.006, 18 / pageRect.width)),
+        );
+        window.getSelection()?.removeAllRanges();
+        return;
+      }
+      const x = (clientX - pageRect.left) / pageRect.width;
+      const y = (clientY - pageRect.top) / pageRect.height;
+      const hit = annotationAt(pageAnnotations, pageNumber, x, y);
+      if (hit) {
+        onRemoveAnnotation(hit.id);
+        return;
+      }
+      const line = lineRectsAtPoint(
+        spanRects(textDiv),
+        pageRect,
+        clientX,
+        clientY,
+        Math.max(0.008, 24 / pageRect.width),
+      );
+      if (line.length > 0) onAddAnnotations(pageNumber, line);
+    }, 0);
+  }
+
   return (
     <div
       className="pdf-page"
@@ -879,15 +1071,68 @@ const PdfPage = memo(function PdfPage({
     >
       <div
         className="pdf-page-full"
+        ref={fullRef}
         style={{ width, height, left: -offsetX, top: -offsetY }}
+        onMouseUp={annotating ? handleMouseUp : undefined}
       >
         <canvas ref={canvasRef} />
+        <div className="pdf-anno-layer" aria-hidden>
+          {pageAnnotations.map((a) =>
+            a.rects.map((r, i) => (
+              <div
+                key={`${a.id}:${i}`}
+                className="pdf-anno-mark"
+                style={{
+                  left: `${r.x * width}px`,
+                  top: `${r.y * height}px`,
+                  width: `${r.w * width}px`,
+                  height: `${r.h * height}px`,
+                }}
+              />
+            )),
+          )}
+        </div>
         <div className="textLayer" ref={textRef} />
         {eyeCare && <div className="pdf-page-tint" aria-hidden />}
       </div>
     </div>
   );
 });
+
+/** 选区落在本页的部分(正常化矩形)。跨页拖选时只取本页那段。 */
+function selectionRects(
+  sel: Selection | null,
+  textDiv: HTMLElement,
+  pageRect: DOMRect,
+): NormRect[] {
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return [];
+  const range = sel.getRangeAt(0);
+  if (!textDiv.contains(range.startContainer) && !textDiv.contains(range.endContainer)) {
+    return [];
+  }
+  const boxes = Array.from(range.getClientRects()).filter(
+    (r) =>
+      r.width > 0.5 &&
+      r.height > 0.5 &&
+      r.bottom > pageRect.top &&
+      r.top < pageRect.bottom &&
+      r.right > pageRect.left &&
+      r.left < pageRect.right,
+  );
+  return normalizeRects(boxes, pageRect);
+}
+
+/** 文本层所有 span 的客户区矩形;单击取行用。 */
+function spanRects(textDiv: HTMLElement): BoxLike[] {
+  const out: BoxLike[] = [];
+  for (const span of textDiv.querySelectorAll("span")) {
+    for (const r of span.getClientRects()) {
+      if (r.width <= 0.5 || r.height <= 0.5) continue;
+      out.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+    }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Outline tree

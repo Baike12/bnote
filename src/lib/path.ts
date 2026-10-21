@@ -34,6 +34,17 @@ export function fileName(path: string): string {
   return idx === -1 ? path : path.slice(idx + 1);
 }
 
+/** Vault-relative key for an absolute path; falls back to the input when the
+ *  file sits outside the vault (imported PDFs always live inside it). */
+export function vaultRelPath(absolutePath: string, vaultRoot: string): string {
+  const root = vaultRoot.replace(/\/+$/, "");
+  if (!root) return absolutePath;
+  if (absolutePath === root) return "";
+  return absolutePath.startsWith(`${root}/`)
+    ? absolutePath.slice(root.length + 1)
+    : absolutePath;
+}
+
 /** Note extensions dropped when building a wikilink target. */
 const NOTE_EXT_RE = /\.(md|markdown|txt)$/i;
 

@@ -216,6 +216,8 @@ pub fn run() {
             commands::agent::show_study_preview,
             commands::agent::set_study_preview_bounds,
             commands::agent::set_study_preview_visible,
+            commands::agent::set_study_preview_annotation_mode,
+            commands::agent::merge_study_preview_annotations,
             commands::agent::close_study_preview,
             commands::agent::open_study_url,
             commands::python::python_run,

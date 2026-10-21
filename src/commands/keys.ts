@@ -78,6 +78,24 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
 export type BindingValue = string | string[] | null;
 export type BindingOverrides = Record<string, BindingValue>;
 
+/**
+ * 固定翻页键:PageUp/PageDown **永远**翻 PDF 页,不受 keybindings.json 影响。
+ *
+ * 可配置绑定改到别处后,用户仍要能靠这两个标准阅读键翻页。它们走和普通
+ * 绑定相同的归属规则(焦点在编辑器/输入框里时归编辑器,弹窗/帧选时命令
+ * `when` 为 false 就原样放行),只是不能被覆盖表删掉。
+ */
+export const FIXED_PAGE_COMMANDS: Record<string, string> = {
+  PageUp: "study.pdf-prev-page",
+  PageDown: "study.pdf-next-page",
+};
+
+/** 无修饰键的 PageUp/PageDown → 固定翻页命令;其余按键返回 null。 */
+export function fixedPageCommandFor(event: KeyboardEvent): string | null {
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
+  return FIXED_PAGE_COMMANDS[event.key] ?? null;
+}
+
 let overrides: BindingOverrides = {};
 
 export function setBindingOverrides(o: BindingOverrides) {

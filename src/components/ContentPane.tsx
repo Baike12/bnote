@@ -1,9 +1,17 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry } from "@/study/history";
+import {
+  flushWebAnnotations,
+  loadWebAnnotations,
+  normalizeWebAnnotations,
+  saveWebAnnotations,
+  WEB_ANNOTATION_SCRIPT,
+} from "@/study/webAnnotations";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { IconSparkles } from "./icons";
 import { StudyHistoryMenu } from "./StudyHistoryMenu";
@@ -45,6 +53,9 @@ export function ContentPane() {
   const [urlInput, setUrlInput] = useState("");
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** 网页批注模式:页面内选中文字 → 亮黄色高亮。 */
+  const [webAnnotating, setWebAnnotating] = useState(false);
+  const webAnnotatingRef = useRef(false);
   const previewUrl = content?.kind === "url" ? content.url : null;
   const pdfs = pdfHistoryForVault(studyHistory, vaultPath);
 
@@ -66,7 +77,7 @@ export function ContentPane() {
       if (key === lastKey) return;
       lastKey = key;
       const call = create
-        ? agentApi.showStudyPreview(url, bounds)
+        ? agentApi.showStudyPreview(url, bounds, WEB_ANNOTATION_SCRIPT)
         : agentApi.setStudyPreviewBounds(bounds);
       void call.then(
         () => {
@@ -108,6 +119,68 @@ export function ContentPane() {
       .setStudyPreviewVisible(modal === null && !canvasOpen && !historyOpen)
       .catch(() => {});
   }, [previewUrl, modal, canvasOpen, historyOpen]);
+
+  // 网页批注:页面运行时把改动写进 document.title,Rust 转成 Tauri 事件送回来
+  // (不开远程 IPC)。页面每加载完一次,重新套用批注模式,并把仓库里的锚点
+  // 推回页面——页面按 id 合并,不会覆盖它自己更新的数据。
+  useEffect(() => {
+    let cancelled = false;
+    const offs: Array<() => void> = [];
+    const subscribe = <T,>(name: string, handler: (payload: T) => void) => {
+      void listen<T>(name, (event) => handler(event.payload))
+        .then((off) => {
+          if (cancelled) off();
+          else offs.push(off);
+        })
+        .catch(() => {
+          // 浏览器模式没有原生网页预览,这些事件不会来。
+        });
+    };
+
+    subscribe<string>("study-preview-loaded", (url) => {
+      if (useAppStore.getState().studyContent?.kind !== "url") return;
+      void (async () => {
+        await agentApi.setStudyPreviewAnnotationMode(webAnnotatingRef.current);
+        const vault = useAppStore.getState().vaultPath;
+        if (!vault || typeof url !== "string" || !url) return;
+        const list = await loadWebAnnotations(vault, url);
+        if (list.length > 0) {
+          await agentApi.mergeStudyPreviewAnnotations(url, list);
+        }
+      })().catch(() => {});
+    });
+
+    subscribe<{ url?: unknown; annotations?: unknown }>(
+      "study-web-annotations",
+      (payload) => {
+        const vault = useAppStore.getState().vaultPath;
+        if (!vault || !payload || typeof payload.url !== "string") return;
+        saveWebAnnotations(vault, payload.url, normalizeWebAnnotations(payload.annotations));
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      for (const off of offs) off();
+    };
+  }, []);
+
+  // 换成 PDF / 关掉内容后批注模式自动退出:下次打开网页从普通阅读开始。
+  useEffect(() => {
+    if (content?.kind === "url") return;
+    webAnnotatingRef.current = false;
+    setWebAnnotating(false);
+  }, [content]);
+
+  // 离页前把批注文件的防抖写盘冲刷掉(页面自己仍有 localStorage 兜底)。
+  useEffect(() => {
+    const flush = () => flushWebAnnotations();
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      flushWebAnnotations();
+    };
+  }, []);
 
   // Drag & drop: PDFs are imported into the vault and shown as PDFs.
   useEffect(() => {
@@ -194,6 +267,14 @@ export function ContentPane() {
     const title = url.replace(/^https?:\/\//, "").split("/")[0] || url;
     setStudyContent({ kind: "url", url, title });
     recordStudyUrl({ url, title });
+  }
+
+  /** 网页批注开关:状态在主窗口,页面只是执行者(单一写入者)。 */
+  function toggleWebAnnotation() {
+    const next = !webAnnotatingRef.current;
+    webAnnotatingRef.current = next;
+    setWebAnnotating(next);
+    void agentApi.setStudyPreviewAnnotationMode(next).catch(() => {});
   }
 
   function openHistoryPdf(entry: StudyPdfEntry) {
@@ -327,6 +408,17 @@ export function ContentPane() {
               <span className="content-web-url" title={content.url}>
                 {content.url}
               </span>
+              <button
+                className={`icon-btn pdf-tool-btn${webAnnotating ? " active" : ""}`}
+                title={
+                  webAnnotating
+                    ? "退出批注:网页恢复正常点击/选择"
+                    : "批注:在网页里拖选文字,标成亮黄色高亮;点已有高亮可取消"
+                }
+                onClick={toggleWebAnnotation}
+              >
+                ✎ 批注
+              </button>
               <button
                 className="icon-btn"
                 title="在独立窗口中打开(中栏里页面显示异常时用)"
