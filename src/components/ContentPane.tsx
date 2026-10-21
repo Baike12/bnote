@@ -413,11 +413,11 @@ export function ContentPane() {
                 title={
                   webAnnotating
                     ? "退出批注:网页恢复正常点击/选择"
-                    : "批注:在网页里拖选文字,标成亮黄色高亮;点已有高亮可取消"
+                    : "高亮批注:在网页里拖选文字,标成亮黄色高亮;点已有高亮可取消"
                 }
                 onClick={toggleWebAnnotation}
               >
-                ✎ 批注
+                ✎ 高亮
               </button>
               <button
                 className="icon-btn"

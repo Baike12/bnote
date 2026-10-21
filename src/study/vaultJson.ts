@@ -1,31 +1,32 @@
 import { api } from "@/lib/tauri";
 
 /**
- * `<vault>/.bnote/<name>.json` 的读写器:缓存一份解析结果,写入 300ms 防抖。
+ * `<vault>/.bnote/**` 下的 JSON 文件读写:按「文件」建缓存,一份数据一个文件。
  *
- * 学习模式的批注都属于「随仓库走」的用户数据(与 daily-links 同思路)。
- * 同一时刻只有一个写入者(缓存里的那一份),异步读盘回来时用 vault 路径自证
- * 「我还是当前仓库」,过期结果直接丢弃。
+ * 批注这类用户数据必须跟着被批注的文件走(一对一文件),不能攒进一个全局
+ * 大文件——批注的 PDF 一多,打开任何一份都要读/写整库,还会互相覆盖。
+ * 这里因此按 `(vault, key)` 分开缓存、分开排程写盘;同一份文件同一时刻只有
+ * 一个写入者。异步读盘回来时用 key 自证「我还是那个文件」,过期结果丢弃。
  */
 export interface JsonIO {
   read(path: string): Promise<string>;
   write(path: string, text: string): Promise<void>;
 }
 
-export interface VaultJsonStore<T> {
-  /** 读进缓存并返回当前内容;不存在/坏文件返回 empty。 */
-  load(vaultRoot: string): Promise<T>;
-  /** 已加载的缓存;尚未加载或换了仓库返回 null。 */
-  peek(vaultRoot: string): T | null;
+export interface VaultJsonFileStore<T> {
+  /** 读进缓存并返回该文件的内容;不存在/坏文件返回 empty。 */
+  load(vaultRoot: string, key: string): Promise<T>;
+  /** 已加载的缓存;尚未加载返回 null。 */
+  peek(vaultRoot: string, key: string): T | null;
   /** 改缓存并排程写盘;尚未加载时先读盘再改,顺序由队列保证。 */
-  update(vaultRoot: string, mutate: (data: T) => T): void;
-  /** 立即写出挂起的改动(离开页面/退出前冲刷)。 */
+  update(vaultRoot: string, key: string, mutate: (data: T) => T): void;
+  /** 立即写出全部挂起的改动(离开页面/退出前冲刷)。 */
   flush(): void;
 }
 
 interface Options<T> {
-  /** `.bnote/` 下的文件名。 */
-  fileName: string;
+  /** key → 磁盘绝对路径(必须落在 <vault>/.bnote 下)。 */
+  pathFor: (vaultRoot: string, key: string) => string;
   empty: () => T;
   parse: (raw: string | null) => T;
   serialize: (data: T) => string;
@@ -39,104 +40,153 @@ const DEFAULT_IO: JsonIO = {
   write: (path, text) => api.writeFile(path, text),
 };
 
-export function vaultDotPath(vaultRoot: string, fileName: string): string {
-  return `${vaultRoot.replace(/\/+$/, "")}/.bnote/${fileName}`;
+export function vaultDotPath(vaultRoot: string, relPath: string): string {
+  return `${vaultRoot.replace(/\/+$/, "")}/.bnote/${relPath.replace(/^\/+/, "")}`;
 }
 
-export function createVaultJsonStore<T>(opts: Options<T>): VaultJsonStore<T> {
+interface Entry<T> {
+  vault: string;
+  key: string;
+  path: string;
+  data: T;
+  dirty: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+export function createVaultJsonStore<T>(opts: Options<T>): VaultJsonFileStore<T> {
   const io = opts.io ?? DEFAULT_IO;
   const debounceMs = opts.debounceMs ?? 300;
-  let cache: { vault: string; data: T } | null = null;
-  let loading: { vault: string; promise: Promise<T> } | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  /** 并发读盘时只让「最后一次请求」写缓存,避免换仓时旧结果盖掉新结果。 */
-  let loadSeq = 0;
-  /** 写盘队列:读盘先于改数据完成,后一次 update 覆盖前一次的快照。 */
-  let queue: Promise<void> = Promise.resolve();
+  /** 每个文件一份缓存。 */
+  const entries = new Map<string, Entry<T>>();
+  /** 每个文件最多一轮读盘在途,多个 load 共享同一个 promise。 */
+  const loads = new Map<string, Promise<T>>();
+  /** 每个文件的 read→mutate 串行队列。 */
+  const queues = new Map<string, Promise<void>>();
 
-  function pathFor(vaultRoot: string): string {
-    return vaultDotPath(vaultRoot, opts.fileName);
+  const idOf = (vault: string, key: string) => `${vault}\u0000${key}`;
+
+  function warn(action: string, error: unknown): void {
+    console.warn(`[annotations] ${action} failed`, error);
   }
 
-  async function readFile(vaultRoot: string): Promise<T> {
-    const seq = ++loadSeq;
+  async function read(vault: string, key: string): Promise<T> {
+    const id = idOf(vault, key);
     let raw: string | null = null;
     try {
-      raw = await io.read(pathFor(vaultRoot));
+      raw = await io.read(opts.pathFor(vault, key));
     } catch {
-      raw = null; // 文件还不存在 = 空库
+      raw = null; // 文件还不存在 = 空数据
     }
-    const data = opts.parse(raw);
-    if (seq === loadSeq) cache = { vault: vaultRoot, data };
-    return data;
+    // 读盘期间本地已经建过这份缓存(可能已经编辑):保留本地这份,不能被旧盘面覆盖。
+    const existing = entries.get(id);
+    if (existing) return existing.data;
+    const entry: Entry<T> = {
+      vault,
+      key,
+      path: opts.pathFor(vault, key),
+      data: opts.parse(raw),
+      dirty: false,
+      timer: null,
+    };
+    entries.set(id, entry);
+    return entry.data;
   }
 
-  function load(vaultRoot: string): Promise<T> {
-    if (cache && cache.vault === vaultRoot) return Promise.resolve(cache.data);
-    if (loading && loading.vault === vaultRoot) return loading.promise;
-    const promise = readFile(vaultRoot);
-    loading = { vault: vaultRoot, promise };
-    void promise.finally(() => {
-      if (loading && loading.promise === promise) loading = null;
+  function load(vault: string, key: string): Promise<T> {
+    const id = idOf(vault, key);
+    const entry = entries.get(id);
+    if (entry) return Promise.resolve(entry.data);
+    const pending = loads.get(id);
+    if (pending) return pending;
+    const promise = read(vault, key).finally(() => {
+      if (loads.get(id) === promise) loads.delete(id);
     });
+    loads.set(id, promise);
     return promise;
   }
 
-  function scheduleWrite(vaultRoot: string): void {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = null;
-      const now = cache;
-      if (!now || now.vault !== vaultRoot) return;
-      void io.write(pathFor(vaultRoot), opts.serialize(now.data)).catch((e: unknown) => {
-        console.warn(`[annotations] ${opts.fileName} persist failed`, e);
-      });
+  function write(entry: Entry<T>): void {
+    entry.dirty = false;
+    const id = idOf(entry.vault, entry.key);
+    void io.write(entry.path, opts.serialize(entry.data)).catch((error: unknown) => {
+      // 写失败保留 dirty:下一次 update/flush 会再试。
+      if (entries.get(id) === entry) entry.dirty = true;
+      warn(`write ${entry.key}`, error);
+    });
+  }
+
+  function apply(entry: Entry<T>, mutate: (data: T) => T): void {
+    entry.data = mutate(entry.data);
+    entry.dirty = true;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      write(entry);
     }, debounceMs);
   }
 
-  function update(vaultRoot: string, mutate: (data: T) => T): void {
+  function update(vault: string, key: string, mutate: (data: T) => T): void {
+    const id = idOf(vault, key);
+    const entry = entries.get(id);
     // 常态:缓存已就绪,同步改、同步排程。flush 才能看见这份改动。
-    if (cache && cache.vault === vaultRoot) {
-      const next = mutate(cache.data);
-      cache = { vault: vaultRoot, data: next };
-      scheduleWrite(vaultRoot);
+    if (entry) {
+      apply(entry, mutate);
       return;
     }
-    queue = queue.then(async () => {
-      const base =
-        cache && cache.vault === vaultRoot ? cache.data : await load(vaultRoot);
-      // 读盘期间换了仓库:这份结果不属于当前写入者,丢弃。
-      if (cache && cache.vault !== vaultRoot) return;
-      const next = mutate(base);
-      cache = { vault: vaultRoot, data: next };
-      scheduleWrite(vaultRoot);
-    });
-    // 队列里前一次失败不能卡死后续写入。
-    queue = queue.catch(() => {});
-  }
-
-  function writeNow(): void {
-    const now = cache;
-    if (!now) return;
-    void io.write(pathFor(now.vault), opts.serialize(now.data)).catch((e: unknown) => {
-      console.warn(`[annotations] ${opts.fileName} flush failed`, e);
+    const prev = queues.get(id) ?? Promise.resolve();
+    const next = prev
+      .then(async () => {
+        let current = entries.get(id);
+        if (!current) {
+          await load(vault, key);
+          current = entries.get(id);
+        }
+        // 读盘失败(理论上 read 总会建缓存)时不丢这次改动:在空数据上改。
+        if (!current) {
+          current = {
+            vault,
+            key,
+            path: opts.pathFor(vault, key),
+            data: opts.empty(),
+            dirty: false,
+            timer: null,
+          };
+          entries.set(id, current);
+        }
+        apply(current, mutate);
+      })
+      .catch((error: unknown) => warn(`update ${key}`, error));
+    queues.set(id, next);
+    void next.finally(() => {
+      if (queues.get(id) === next) queues.delete(id);
     });
   }
 
   function flush(): void {
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-      writeNow();
-      return;
+    for (const [id, entry] of entries) {
+      const queued = queues.get(id);
+      if (queued) {
+        // 排队中的 read→mutate 还没落地:排完再写,别把挂起的改动丢掉。
+        void queued.then(() => {
+          if (entry.timer) {
+            clearTimeout(entry.timer);
+            entry.timer = null;
+          }
+          write(entry);
+        });
+        continue;
+      }
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+        entry.timer = null;
+      }
+      if (entry.dirty) write(entry);
     }
-    // 还有排队中的 read→mutate:排完再写,别把挂起的改动丢掉。
-    if (cache) void queue.then(writeNow);
   }
 
   return {
     load,
-    peek: (vaultRoot) => (cache && cache.vault === vaultRoot ? cache.data : null),
+    peek: (vault, key) => entries.get(idOf(vault, key))?.data ?? null,
     update,
     flush,
   };

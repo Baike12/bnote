@@ -5,7 +5,9 @@ import {
   mergeUrlAnnotations,
   normalizeWebAnnotations,
   parseWebAnnotationFile,
-  withUrlAnnotations,
+  parseWebAnnotations,
+  webAnnotationFileName,
+  webAnnotationRelPath,
   type WebAnnotation,
 } from "./webAnnotations";
 
@@ -50,20 +52,32 @@ describe("网页批注数据", () => {
     expect(out[1].quote.length).toBe(2000);
   });
 
-  it("按 URL 写入/清空不串数据", () => {
-    const a = withUrlAnnotations({ version: 1, urls: {} }, "https://a", [ann("1", "q", 0)]);
-    const b = withUrlAnnotations(a, "https://b", [ann("2", "q", 0)]);
-    expect(Object.keys(b.urls).sort()).toEqual(["https://a", "https://b"]);
-    expect(Object.keys(withUrlAnnotations(b, "https://a", []).urls)).toEqual(["https://b"]);
-    expect(a.urls["https://a"]).toHaveLength(1);
+  it("一个网址一个文件:同一网址稳定,不同网址分开", () => {
+    const a = "https://example.com/a?x=1";
+    const b = "https://example.com/b?x=1";
+    expect(webAnnotationFileName(a)).toBe(webAnnotationFileName(a));
+    expect(webAnnotationFileName(a)).not.toBe(webAnnotationFileName(b));
+    expect(webAnnotationFileName(a)).toMatch(/^example\.com-[a-z0-9]+\.json$/);
+    expect(webAnnotationRelPath(a)).toMatch(/^web-annotations\/example\.com-/);
+    expect(webAnnotationFileName("not a url")).toMatch(/^page-[a-z0-9]+\.json$/);
   });
 
-  it("坏文件退回空库", () => {
-    expect(parseWebAnnotationFile("{oops")).toEqual({ version: 1, urls: {} });
-    expect(parseWebAnnotationFile(JSON.stringify({ version: 1, urls: { x: [ann("1", "q", 0)] } }))).toEqual({
+  it("坏文件退回空库;文件里的网址与批注都按字段校验", () => {
+    expect(parseWebAnnotationFile("{oops")).toEqual({
       version: 1,
-      urls: { x: [ann("1", "q", 0)] },
+      url: "",
+      annotations: [],
     });
+    const file = parseWebAnnotationFile(
+      JSON.stringify({
+        version: 1,
+        url: "https://a",
+        annotations: [ann("1", "q", 0), { id: "bad" }],
+      }),
+    );
+    expect(file.url).toBe("https://a");
+    expect(file.annotations.map((a) => a.id)).toEqual(["1"]);
+    expect(parseWebAnnotations(JSON.stringify({ annotations: [ann("2", "x", 1)] }))).toHaveLength(1);
   });
 
   it("合并按 id 取并集,页面里的覆盖仓库里的", () => {

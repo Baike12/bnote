@@ -71,6 +71,8 @@
   --pdf-gutter: #dcebd6; /* PDF 护眼模式的桌面底色 */
   --pdf-tint: #cfe4c4; /* PDF 护眼染色（multiply，只压白底不压黑字） */
   --pdf-anno: rgb(255 224 0 / 42%); /* PDF 批注高亮（multiply） */
+  --pdf-note: rgb(0 140 255 / 42%); /* 文字批注的亮蓝高亮（multiply） */
+  --pdf-note-line: rgb(30 130 220); /* 锚点到右侧批注卡的连线 */
   --editor-font-size: 16px;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
@@ -135,6 +137,8 @@
   --pdf-gutter: #dcebd6;
   --pdf-tint: #cfe4c4;
   --pdf-anno: rgb(255 224 0 / 42%);
+  --pdf-note: rgb(0 140 255 / 42%);
+  --pdf-note-line: rgb(30 130 220);
   /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
@@ -2708,6 +2712,20 @@ input[type="range"] {
 .pdf-viewer.eye-care .pdf-scroll {
   background: var(--pdf-gutter);
 }
+/* 滚动内容 = 页面区 + 右侧留白。留白随页面一起滚,批注卡才会一直对齐行。 */
+.pdf-stage {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-width: 100%;
+  min-height: 100%;
+}
+.pdf-page-area {
+  position: relative;
+  z-index: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .pdf-pages {
   display: flex;
   flex-direction: column;
@@ -2749,8 +2767,106 @@ input[type="range"] {
   border-radius: 2px;
   pointer-events: none;
 }
-.pdf-viewer.annotating .pdf-page {
+/* 文字批注的选区是亮蓝色,和高亮批注一眼区分。 */
+.pdf-anno-mark.note {
+  background: var(--pdf-note);
+}
+.pdf-viewer.tool-highlight .pdf-page {
   cursor: crosshair;
+}
+.pdf-viewer.tool-note .pdf-page {
+  cursor: text;
+}
+
+/* 右侧留白:不属于任何一页,是 PDF 面板自带的一条空白批注栏。 */
+.pdf-notes {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.pdf-notes-hint {
+  margin: 16px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+.pdf-note-box {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg1);
+  box-shadow: 0 1px 4px var(--shadow);
+}
+.pdf-note-head {
+  flex: 0 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.pdf-note-page {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+.pdf-note-remove {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-faint);
+  background: transparent;
+}
+.pdf-note-remove:hover {
+  color: var(--text);
+  background: var(--bg3);
+}
+.pdf-note-input {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 2px 0 0;
+  border: none;
+  outline: none;
+  resize: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  background: transparent;
+}
+.pdf-note-input::placeholder {
+  color: var(--text-faint);
+}
+/* 连线画在页面之上、批注卡之下;整层不接鼠标事件。 */
+.pdf-note-lines {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.pdf-note-lines path {
+  fill: none;
+  stroke: var(--pdf-note-line);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  opacity: 0.5;
+}
+.pdf-note-lines circle {
+  fill: var(--pdf-note-line);
+  opacity: 0.6;
 }
 /* 护眼:白纸压成浅绿。multiply 保留黑字(黑 × 绿 = 黑),只染底色。 */
 .pdf-page-tint {
