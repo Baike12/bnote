@@ -127,9 +127,9 @@ describe("单击取行", () => {
 });
 
 describe("文字批注锚点与右侧排布", () => {
-  it("锚点取选区右缘、纵向底边;多行取整体包围盒", () => {
+  it("锚点取选区包围盒的底部中间;多行取整体包围盒", () => {
     const anchor = rectsAnchor([rect(0.1, 0.2, 0.3, 0.04), rect(0.1, 0.25, 0.5, 0.04)]);
-    expect(anchor?.x).toBeCloseTo(0.6, 6);
+    expect(anchor?.x).toBeCloseTo(0.35, 6);
     expect(anchor?.y).toBeCloseTo(0.29, 6);
     expect(rectsAnchor([])).toBeNull();
   });
@@ -152,11 +152,13 @@ describe("文字批注锚点与右侧排布", () => {
     expect(sortNotes(list).map((a) => a.id)).toEqual(["left", "right"]);
   });
 
-  it("批注卡不重叠:重叠时往下推,顺序保持", () => {
-    // 两张同一行的卡都想要 100,第二张必须落到 100+高度+间距。
-    expect(stackNoteTops([100, 100, 300], 108, 10)).toEqual([100, 218, 336]);
+  it("批注卡不重叠:按各自高度往下推,顺序保持", () => {
+    // 同一行的两张卡都想要 100,第二张落到第一张底边 + 间距。
+    expect(stackNoteTops([100, 100, 300], [108, 108, 108], 10)).toEqual([100, 218, 336]);
+    // 高度随内容变化:第二张的起点取决于第一张的实际高度。
+    expect(stackNoteTops([100, 100], [40, 70], 10)).toEqual([100, 150]);
     // 起点被夹到 4 也不能把后一张顶进前一张里。
-    expect(stackNoteTops([4, 4], 108, 10)).toEqual([4, 122]);
+    expect(stackNoteTops([4, 4], [108, 40], 10)).toEqual([4, 122]);
   });
 });
 

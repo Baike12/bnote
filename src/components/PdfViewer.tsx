@@ -100,8 +100,10 @@ const RENDER_MARGIN = 1000;
 /** Width changes settle before re-rendering every visible page. */
 const RESIZE_DEBOUNCE_MS = 140;
 
-/** 文字批注卡:固定高度,右侧留白里的纵向排布才有确定几何。 */
-const NOTE_BOX_HEIGHT = 108;
+/** 文字批注卡:高度跟文字行数走,堆叠时用实测高度。 */
+const NOTE_INPUT_MIN_HEIGHT = 26;
+/** 再长就在卡内滚动,不把下面的卡片一路推到底。 */
+const NOTE_INPUT_MAX_HEIGHT = 240;
 const NOTE_BOX_GAP = 10;
 /** 连线从卡片顶部下移这么多像素(指向抬头,不是卡片正中)。 */
 const NOTE_HEAD_OFFSET = 14;
@@ -191,6 +193,9 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   const containerWidth = Math.max(0, scrollWidth - railWidth);
 
   const pageEls = useRef(new Map<number, HTMLDivElement>());
+  const noteEls = useRef(new Map<string, HTMLDivElement>());
+  /** 每个批注卡上次的自适应高度依据(文字 + 卡宽),避免重复量布局。 */
+  const noteFits = useRef(new Map<string, { text: string; width: number }>());
   const visiblePages = useRef(new Set<number>());
   const activeRef = useRef(new Set<number>());
   const currentPageRef = useRef(1);
@@ -564,6 +569,11 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
         .join("|"),
     [noteList],
   );
+  /** 改字会改变卡片高度,重排要跟着文字走;key 只用来触发,不参与几何。 */
+  const noteTextKey = useMemo(
+    () => noteList.map((a) => `${a.id}\u0000${a.text}`).join("\u0001"),
+    [noteList],
+  );
   const noteListRef = useRef(noteList);
   useLayoutEffect(() => {
     noteListRef.current = noteList;
@@ -579,8 +589,47 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     }
     const stageRect = stage.getBoundingClientRect();
     const railRect = rail.getBoundingClientRect();
+    // 卡片高度由文字行数决定:文字/宽度没变就不重写,避免长批注每次重排
+    // 都把输入框高度归零、滚动位置跳回顶部。
+    const refits: {
+      id: string;
+      text: string;
+      width: number;
+      input: HTMLTextAreaElement;
+      scrollTop: number;
+    }[] = [];
+    for (const a of list) {
+      const card = noteEls.current.get(a.id);
+      const input = card?.querySelector<HTMLTextAreaElement>(".pdf-note-input");
+      if (!card || !input) continue;
+      const width = card.clientWidth;
+      const fit = noteFits.current.get(a.id);
+      if (fit && fit.text === a.text && fit.width === width) continue;
+      refits.push({
+        id: a.id,
+        text: a.text,
+        width,
+        input,
+        scrollTop: input.scrollTop,
+      });
+      input.style.height = "auto";
+      input.style.overflowY = "hidden";
+    }
+    const naturals = refits.map((f) => f.input.scrollHeight);
+    refits.forEach((f, i) => {
+      const natural = naturals[i] ?? NOTE_INPUT_MIN_HEIGHT;
+      f.input.style.height = `${Math.min(
+        NOTE_INPUT_MAX_HEIGHT,
+        Math.max(NOTE_INPUT_MIN_HEIGHT, natural),
+      )}px`;
+      f.input.style.overflowY =
+        natural > NOTE_INPUT_MAX_HEIGHT ? "auto" : "hidden";
+      f.input.scrollTop = f.scrollTop;
+      noteFits.current.set(f.id, { text: f.text, width: f.width });
+    });
     const anchors: { id: string; x: number; y: number }[] = [];
     const desired: number[] = [];
+    const heights: number[] = [];
     for (const a of list) {
       const pageEl = pageEls.current.get(a.page);
       const anchor = rectsAnchor(a.rects);
@@ -604,12 +653,16 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
       anchors.push({ id: a.id, x, y });
       // 卡片顶端比锚点高半张卡;夹进内容区顶部,再统一做防重叠堆叠。
       desired.push(Math.max(4, y - NOTE_HEAD_OFFSET));
+      // 卡片在留白里始终渲染(未定位时透明),所以这里量得到真实高度。
+      heights.push(
+        noteEls.current.get(a.id)?.offsetHeight ?? NOTE_INPUT_MIN_HEIGHT,
+      );
     }
     if (anchors.length === 0) {
       setNotePlacements((prev) => (prev.length > 0 ? [] : prev));
       return;
     }
-    const tops = stackNoteTops(desired, NOTE_BOX_HEIGHT, NOTE_BOX_GAP);
+    const tops = stackNoteTops(desired, heights, NOTE_BOX_GAP);
     const boxX = railRect.left - stageRect.left + NOTE_BOX_INSET;
     const next = anchors.map((p, i) => ({
       id: p.id,
@@ -628,8 +681,9 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     void cropShown;
     void railWidth;
     void doc;
+    void noteTextKey;
     computeNotePlacements();
-  }, [computeNotePlacements, noteLayoutKey, targetWidth, cropShown, railWidth, doc]);
+  }, [computeNotePlacements, noteLayoutKey, noteTextKey, targetWidth, cropShown, railWidth, doc]);
 
   // 页面高度从「按第一页比例估」变成真实高度、窗口缩放等都会改变锚点 y:
   // 观察内容区尺寸,收敛后重排(用 rAF 合并同一帧的多次回调)。
@@ -654,6 +708,14 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   const placementById = useMemo(
     () => new Map(notePlacements.map((p) => [p.id, p])),
     [notePlacements],
+  );
+
+  const registerNote = useCallback(
+    (id: string, el: HTMLDivElement | null) => {
+      if (el) noteEls.current.set(id, el);
+      else noteEls.current.delete(id);
+    },
+    [],
   );
 
   // --- page visibility: current-page readout + render window ----------------
@@ -1101,15 +1163,16 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
                   )}
                   {noteList.map((annotation) => {
                     const placement = placementById.get(annotation.id);
-                    if (!placement) return null;
                     return (
                       <NoteBox
                         key={annotation.id}
                         annotation={annotation}
-                        top={placement.top}
+                        top={placement?.top ?? 4}
+                        placed={placement !== undefined}
                         focusToken={
                           focusNote?.id === annotation.id ? focusNote.nonce : 0
                         }
+                        register={registerNote}
                         onChange={updateNoteText}
                         onRemove={removeAnnotation}
                       />
@@ -1125,7 +1188,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
                       <circle
                         cx={placement.anchorX}
                         cy={placement.anchorY}
-                        r={2.4}
+                        r={3}
                       />
                     </g>
                   ))}
@@ -1554,14 +1617,30 @@ function spanRects(textDiv: HTMLElement): BoxLike[] {
 interface NoteBoxProps {
   annotation: PdfAnnotation;
   top: number;
+  /** 还没算好锚点时为 false:卡片照常排版(供测量),只是不显示。 */
+  placed: boolean;
   /** 非 0 时聚焦并把光标放到末尾(新建/点中蓝色高亮)。 */
   focusToken: number;
+  register: (id: string, el: HTMLDivElement | null) => void;
   onChange: (id: string, text: string) => void;
   onRemove: (id: string) => void;
 }
 
-function NoteBox({ annotation, top, focusToken, onChange, onRemove }: NoteBoxProps) {
+function NoteBox({
+  annotation,
+  top,
+  placed,
+  focusToken,
+  register,
+  onChange,
+  onRemove,
+}: NoteBoxProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    register(annotation.id, cardRef.current);
+    return () => register(annotation.id, null);
+  }, [register, annotation.id]);
   useEffect(() => {
     if (!focusToken) return;
     const el = inputRef.current;
@@ -1572,10 +1651,11 @@ function NoteBox({ annotation, top, focusToken, onChange, onRemove }: NoteBoxPro
   }, [focusToken]);
   return (
     <div
+      ref={cardRef}
       className="pdf-note-box"
       data-annotation-id={annotation.id}
       data-focus-token={focusToken}
-      style={{ top, height: NOTE_BOX_HEIGHT }}
+      style={{ top, opacity: placed ? 1 : 0 }}
     >
       <div className="pdf-note-head">
         <span className="pdf-note-page">P{annotation.page}</span>
@@ -1590,6 +1670,7 @@ function NoteBox({ annotation, top, focusToken, onChange, onRemove }: NoteBoxPro
       <textarea
         ref={inputRef}
         className="pdf-note-input"
+        rows={1}
         value={annotation.text}
         placeholder="写批注…"
         maxLength={MAX_NOTE_TEXT}
@@ -1601,14 +1682,16 @@ function NoteBox({ annotation, top, focusToken, onChange, onRemove }: NoteBoxPro
   );
 }
 
-/** 锚点到卡片抬头的一条柔和曲线(三次贝塞尔,两端各留一段水平切线)。 */
+/** 锚点到卡片抬头的一条柔和曲线:先竖直离开选区底边,再横向进留白。 */
 function noteConnectorPath(placement: NotePlacement): string {
   const { anchorX, anchorY, boxX, top } = placement;
   const endY = top + NOTE_HEAD_OFFSET;
   const dx = Math.max(16, boxX - anchorX);
-  const c1 = anchorX + dx * 0.45;
-  const c2 = boxX - dx * 0.45;
-  return `M ${anchorX} ${anchorY} C ${c1} ${anchorY}, ${c2} ${endY}, ${boxX} ${endY}`;
+  // 起点切线朝下:线从文字底部「落」出来,而不是贴着同一行的字往右跑。
+  const c1x = anchorX + Math.min(18, dx * 0.2);
+  const c1y = anchorY + 10;
+  const c2x = boxX - dx * 0.45;
+  return `M ${anchorX} ${anchorY} C ${c1x} ${c1y}, ${c2x} ${endY}, ${boxX} ${endY}`;
 }
 
 function samePlacements(a: NotePlacement[], b: NotePlacement[]): boolean {
