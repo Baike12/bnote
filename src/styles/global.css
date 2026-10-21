@@ -70,6 +70,7 @@
   --pdf-paper: #fff; /* PDF 页纸 */
   --pdf-gutter: #dcebd6; /* PDF 护眼模式的桌面底色 */
   --pdf-tint: #cfe4c4; /* PDF 护眼染色（multiply，只压白底不压黑字） */
+  --pdf-anno: rgb(255 224 0 / 42%); /* PDF 批注高亮（multiply） */
   --editor-font-size: 16px;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
@@ -133,6 +134,7 @@
   --pdf-paper: #ffffff;
   --pdf-gutter: #dcebd6;
   --pdf-tint: #cfe4c4;
+  --pdf-anno: rgb(255 224 0 / 42%);
   /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
@@ -2732,6 +2734,23 @@ input[type="range"] {
 }
 .pdf-page .textLayer {
   z-index: 2;
+}
+/* 批注:画布之上、文本层之下。multiply 只染纸面不挡字,与护眼叠色同一套。 */
+.pdf-anno-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.pdf-anno-mark {
+  position: absolute;
+  background: var(--pdf-anno);
+  mix-blend-mode: multiply;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.pdf-viewer.annotating .pdf-page {
+  cursor: crosshair;
 }
 /* 护眼:白纸压成浅绿。multiply 保留黑字(黑 × 绿 = 黑),只染底色。 */
 .pdf-page-tint {

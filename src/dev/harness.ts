@@ -179,6 +179,8 @@ declare global {
     __api: typeof api;
     /** 挂载真实学习模式组件（AgentPanel + ContentPane），返回卸载函数。 */
     __mountStudyLayout: () => () => void;
+    /** 学习模式 PDF 验证：塞入一份 PDF 字节并打开阅读器（需先挂载学习布局）。 */
+    __openStudyPdf: (base64: string, relPath?: string, annotationsJson?: string) => string;
     /** 学习模式 Agent 回复的迷你 markdown 渲染器（返回 HTML）。 */
     __renderAgentMd: (text: string) => string;
     /** 当前文档语法树节点名（调试用）。 */
@@ -407,6 +409,8 @@ window.__api = api;
 const FAKE_ROOT = "/fake-vault";
 /** 假 createDir 最终落地的 relPath——重命名要盯住的正是它（不是请求里的名字）。 */
 let lastCreatedDir: string | null = null;
+/** 学习模式 PDF 验证用的字节（真后端会按路径读盘，浏览器里只能塞进来）。 */
+let pdfBase64: string | null = null;
 
 function installFakeVault(entries: string[]) {
   const dirs = new Set<string>();
@@ -472,9 +476,16 @@ function installFakeVault(entries: string[]) {
       if (!files.has(rel)) throw new Error(`文件不存在: ${rel}`);
       return contents.get(rel) ?? `# ${rel}\n`;
     },
+    // PDF 阅读器走 base64 读盘(JSON IPC 塞不下原始字节);浏览器里用
+    // __openStudyPdf 预先塞进来。
+    readFileBase64: async (path: string) => {
+      if (pdfBase64) return pdfBase64;
+      throw new Error(`没有 PDF 字节: ${path}`);
+    },
     writeFile: async (path: string, text: string) => {
       const rel = path.startsWith(FAKE_ROOT) ? path.slice(FAKE_ROOT.length + 1) : path;
       contents.set(rel, text);
+      files.add(rel); // 写过的文件要能被 readFile 读回(批注落盘验证)
     },
     saveAppConfig: async () => {},
   });
@@ -649,6 +660,22 @@ window.__mountStudyLayout = () => {
 };
 
 window.__renderAgentMd = renderAgentMarkdown;
+
+/**
+ * 学习模式 PDF:假仓库里放一份 PDF 字节并打开阅读器。
+ * 需先 __mountStudyLayout();批注落盘走同一套假 readFile/writeFile。
+ */
+window.__openStudyPdf = (base64: string, relPath = "pdfs/harness.pdf", annotationsJson?: string) => {
+  pdfBase64 = base64;
+  installFakeVault(["pdfs/", relPath]);
+  // 先落盘批注文件,再打开阅读器:组件挂载时读到的是恢复后的数据。
+  if (annotationsJson) {
+    void api.writeFile(`${FAKE_ROOT}/.bnote/pdf-annotations.json`, annotationsJson);
+  }
+  const path = `${FAKE_ROOT}/${relPath}`;
+  useAppStore.getState().setStudyContent({ kind: "pdf", path, title: "harness.pdf" });
+  return path;
+};
 
 window.__treeNames = () => {
   const names: string[] = [];

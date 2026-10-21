@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_BINDINGS, bindingsForCommand, isPlainFocusOwnedKey } from "./keys";
+import {
+  DEFAULT_BINDINGS,
+  FIXED_PAGE_COMMANDS,
+  bindingsForCommand,
+  fixedPageCommandFor,
+  isPlainFocusOwnedKey,
+  setBindingOverrides,
+} from "./keys";
 
 /**
  * ⌘⇧O 的唯一归属门禁:只有「打开今日日记」能拿这个键位。它此前属于
@@ -68,5 +75,36 @@ describe("裸导航键归属", () => {
 
   it("普通字符不算导航键", () => {
     expect(isPlainFocusOwnedKey(ev("j"))).toBe(false);
+  });
+});
+
+/** PageUp/PageDown 是不可覆盖的固定翻页键:改绑之后仍然翻页。 */
+describe("固定翻页键", () => {
+  const ev = (key: string, mods: Partial<KeyboardEvent> = {}) =>
+    ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods }) as KeyboardEvent;
+
+  it("PageUp/PageDown 分别对应上一页/下一页", () => {
+    expect(FIXED_PAGE_COMMANDS).toEqual({
+      PageUp: "study.pdf-prev-page",
+      PageDown: "study.pdf-next-page",
+    });
+    expect(fixedPageCommandFor(ev("PageUp"))).toBe("study.pdf-prev-page");
+    expect(fixedPageCommandFor(ev("PageDown"))).toBe("study.pdf-next-page");
+  });
+
+  it("改绑 study.pdf-* 之后固定键仍然生效", () => {
+    setBindingOverrides({ "study.pdf-next-page": "Mod-j" });
+    try {
+      expect(bindingsForCommand("study.pdf-next-page")).toEqual(["Mod-j"]);
+      expect(fixedPageCommandFor(ev("PageDown"))).toBe("study.pdf-next-page");
+    } finally {
+      setBindingOverrides({});
+    }
+  });
+
+  it("带修饰键/其它按键不触发固定翻页", () => {
+    expect(fixedPageCommandFor(ev("PageDown", { shiftKey: true }))).toBeNull();
+    expect(fixedPageCommandFor(ev("PageDown", { ctrlKey: true }))).toBeNull();
+    expect(fixedPageCommandFor(ev("j"))).toBeNull();
   });
 });

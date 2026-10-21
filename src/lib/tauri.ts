@@ -188,16 +188,23 @@ export const agentApi = {
     invoke<ImportedPdf>("import_pdf", { pdfPath, folderRel }),
   /**
    * 中栏内嵌网页预览(主窗口的子 webview,原生视图盖在占位元素上)。
-   * 首次调用创建、之后调用只更新矩形并重新导航。
+   * 首次调用创建、之后调用只更新矩形并重新导航。`annotationScript` 是页面
+   * 内的批注运行时(注册成初始化脚本,每次导航都会重新安装)。
    */
-  showStudyPreview: (url: string, bounds: PreviewBounds) =>
-    invoke<void>("show_study_preview", { url, bounds }),
+  showStudyPreview: (url: string, bounds: PreviewBounds, annotationScript: string) =>
+    invoke<void>("show_study_preview", { url, bounds, annotationScript }),
   /** 只更新内嵌预览的位置/尺寸(窗口缩放、拖动分隔线时)。 */
   setStudyPreviewBounds: (bounds: PreviewBounds) =>
     invoke<void>("set_study_preview_bounds", { bounds }),
   /** 原生视图永远盖在 DOM 之上,HTML 浮层打开时要把它藏起来。 */
   setStudyPreviewVisible: (visible: boolean) =>
     invoke<void>("set_study_preview_visible", { visible }),
+  /** 网页批注模式开关(页面内选中文字 → 亮黄色高亮)。 */
+  setStudyPreviewAnnotationMode: (enabled: boolean) =>
+    invoke<void>("set_study_preview_annotation_mode", { enabled }),
+  /** 把仓库里的锚点推回页面(页面按 id 合并,不会覆盖新数据)。 */
+  mergeStudyPreviewAnnotations: (url: string, annotations: unknown[]) =>
+    invoke<void>("merge_study_preview_annotations", { url, annotations }),
   /** 关掉内嵌预览(离开学习模式 / 换内容)。 */
   closeStudyPreview: () => invoke<void>("close_study_preview"),
   /** Opens/reuses the standalone study-mode preview window (backend-created so

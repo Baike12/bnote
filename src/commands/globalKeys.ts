@@ -1,7 +1,8 @@
-import { allCommands, runCommand } from "./registry";
+import { allCommands, getCommand, runCommand } from "./registry";
 import {
   bindingsForCommand,
   eventToKey,
+  fixedPageCommandFor,
   isEditableTarget,
   isPlainFocusOwnedKey,
 } from "./keys";
@@ -63,6 +64,19 @@ export function installGlobalKeybindings() {
           return;
         }
       }
+
+      // 固定翻页键:PageUp/PageDown 永远翻 PDF 页,即使用户把
+      // study.pdf-* 改绑到别处。归属规则与可配置绑定相同——走到这里说明
+      // 焦点不在编辑器/输入框(上面的裸导航键早退),命令不可用时原样放行。
+      if (keyContext === "drawing") return;
+      const fixed = fixedPageCommandFor(e);
+      if (!fixed) return;
+      const fixedCmd = getCommand(fixed);
+      if (!fixedCmd || (fixedCmd.when && !fixedCmd.when())) return;
+      e.preventDefault();
+      e.stopPropagation();
+      recordCommandChord(e);
+      runCommand(fixed);
     },
     true,
   );

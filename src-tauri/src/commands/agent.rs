@@ -9,7 +9,8 @@ use crate::agent::Provider;
 use crate::state::AppState;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use tauri::webview::PageLoadEvent;
+use tauri::{Emitter, State};
 
 fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
     state.mcp_manager.lock().ok().and_then(|g| g.clone())
@@ -325,11 +326,18 @@ fn parse_study_url(url: &str) -> Result<tauri::Url, String> {
 ///
 /// Called on mount and whenever the URL changes; a ResizeObserver reports
 /// geometry-only updates through [`set_study_preview_bounds`].
+///
+/// `annotation_script` is the page-side annotation runtime (built by
+/// `study/webAnnotations.ts`). It is registered as an initialization script at
+/// creation, so every navigation — including links the user clicks inside the
+/// page — re-installs it. The script only touches its own DOM/localStorage and
+/// reports changes through `document.title`; remote IPC stays closed.
 #[tauri::command]
 pub async fn show_study_preview(
     app: tauri::AppHandle,
     url: String,
     bounds: PreviewBounds,
+    annotation_script: String,
 ) -> CmdResult<()> {
     use tauri::Manager;
 
@@ -342,6 +350,11 @@ pub async fn show_study_preview(
         existing
             .show()
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+        // 脚本已随 webview 创建时注册;这里再装一次,保证当前文档里已经有运行时
+        // (热更新后旧 webview 里的脚本可能是老版本)。
+        if !annotation_script.trim().is_empty() {
+            let _ = existing.eval(annotation_script);
+        }
         return Ok(());
     }
 
@@ -355,11 +368,73 @@ pub async fn show_study_preview(
             tauri::webview::WebviewBuilder::new(
                 STUDY_PREVIEW_LABEL,
                 tauri::WebviewUrl::External(parsed),
-            ),
+            )
+            .initialization_script(annotation_script)
+            // 页面加载完通知主窗口:重新套用批注模式,并把仓库里的锚点推回页面。
+            .on_page_load(|webview, payload| {
+                if payload.event() == PageLoadEvent::Finished {
+                    let _ = webview.emit_to(
+                        "main",
+                        "study-preview-loaded",
+                        payload.url().to_string(),
+                    );
+                }
+            })
+            // 页面里的批注变化写在 document.title 的 `bnote-anno:` 前缀后面。
+            // 不开远程 IPC:任意网页都拿不到应用命令,这条 title 通道只传数据。
+            .on_document_title_changed(|webview, title| {
+                const PREFIX: &str = "bnote-anno:";
+                let Some(raw) = title.strip_prefix(PREFIX) else {
+                    return;
+                };
+                let Ok(payload) = serde_json::from_str::<serde_json::Value>(raw) else {
+                    return;
+                };
+                let _ = webview.emit_to("main", "study-web-annotations", payload);
+            }),
             bounds.position(),
             bounds.size(),
         )
         .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    Ok(())
+}
+
+/// Toggles the page-side annotation mode (yellow text highlights).
+#[tauri::command]
+pub fn set_study_preview_annotation_mode(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        webview
+            .eval(format!(
+                "window.__bnoteAnno && window.__bnoteAnno.setMode({});",
+                enabled
+            ))
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Pushes vault-side anchors into the page (the page merges by id, so this is
+/// idempotent and never overwrites newer page-side data).
+#[tauri::command]
+pub fn merge_study_preview_annotations(
+    app: tauri::AppHandle,
+    url: String,
+    annotations: serde_json::Value,
+) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        let payload = serde_json::json!({ "url": url, "annotations": annotations });
+        webview
+            .eval(format!(
+                "window.__bnoteAnno && window.__bnoteAnno.merge({});",
+                payload
+            ))
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
     Ok(())
 }
 
