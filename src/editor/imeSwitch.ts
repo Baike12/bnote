@@ -109,6 +109,12 @@ export function imeApply(target: string): void {
   scheduleLaunch();
 }
 
+/** 批注输入框获得焦点:批注是中文写作,直接切到 insert 源。 */
+export function imeOnNoteFocus(): void {
+  const { settings } = useAppStore.getState();
+  imeApply(settings.ime.insertSource);
+}
+
 /** 预热 TIS：启动后后台枚举一次输入源。TIS 的首次调用要去联系输入法服务
  *  （本机实测 ~90ms）而且必须走苹果主线程（见 ime.rs 的 on_main）——等到用户
  *  第一次切模式才付，就正好落在按键那一帧上。这次枚举同时把 Rust 侧的输入源

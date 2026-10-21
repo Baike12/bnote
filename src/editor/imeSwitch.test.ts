@@ -25,7 +25,13 @@ vi.mock("@/lib/tauri", () => ({
   },
 }));
 
-import { imeApply, imeOnWindowBlur, imeOnWindowFocus, imeYield } from "./imeSwitch";
+import {
+  imeApply,
+  imeOnNoteFocus,
+  imeOnWindowBlur,
+  imeOnWindowFocus,
+  imeYield,
+} from "./imeSwitch";
 import { useAppStore } from "@/state/appStore";
 
 /** 可控的 in-flight：setInputSource 的 promise 直到 drain() 才落定。 */
@@ -150,6 +156,30 @@ describe("imeApply 发起时机与在途合并", () => {
       },
     });
     imeApply("A");
+    await drain();
+    expect(setInputSource).not.toHaveBeenCalled();
+  });
+});
+
+describe("批注输入框聚焦", () => {
+  it("切到设置里的 insert 源（给中文批注用）", async () => {
+    imeOnNoteFocus();
+    expect(setInputSource).not.toHaveBeenCalled();
+    await drain();
+    expect(setInputSource).toHaveBeenCalledWith("com.apple.inputmethod.SCIM");
+  });
+
+  it("ime.enabled 关闭时不动系统输入法", async () => {
+    useAppStore.getState().patchSettings({
+      ime: {
+        enabled: false,
+        insertSource: "ZH",
+        normalSource: "EN",
+        mathKeepsEnglish: true,
+        codeKeepsEnglish: true,
+      },
+    });
+    imeOnNoteFocus();
     await drain();
     expect(setInputSource).not.toHaveBeenCalled();
   });
