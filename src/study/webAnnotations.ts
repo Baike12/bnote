@@ -285,6 +285,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let nextKeys: string[] = ["PageDown", "ArrowRight"];
   let shadeHost: HTMLElement | null = null;
   let shadeLayer: HTMLElement | null = null;
+  let frameLayer: HTMLElement | null = null;
 
   function storageKey(target: string): string {
     return STORE_PREFIX + target;
@@ -464,12 +465,11 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   // ---- 翻页与上半屏遮罩 ----
 
   /**
-   * 固定覆盖整个视口的渐变层：顶部压暗，到「步长」边界完全透明。翻页后
-   * 上半屏是刚读过、正在被顶出去的内容，下半屏是刚进入的新内容；只做轻
-   * 微分区，不改变页面本身的排版与配色。整层不接鼠标事件。
+   * 翻页后的阅读分区：上方旧内容压暗，下方新内容用一个固定圆角边框框成
+   * 「阅读窗」。两层都在 shadow root 里，不吃页面 CSS；整层不接鼠标事件。
    */
   function ensureShade(): void {
-    if (shadeHost && shadeHost.isConnected && shadeLayer) return;
+    if (shadeHost && shadeHost.isConnected && shadeLayer && frameLayer) return;
     const doc = document;
     if (!doc.documentElement) return;
     const hostEl = doc.createElement("div");
@@ -482,33 +482,49 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     hs.height = "100%";
     hs.pointerEvents = "none";
     hs.zIndex = "2147483647";
-    let inner: HTMLElement;
+    const shade = doc.createElement("div");
+    const frame = doc.createElement("div");
     if (typeof hostEl.attachShadow === "function") {
       const root = hostEl.attachShadow({ mode: "open" });
-      inner = doc.createElement("div");
-      root.appendChild(inner);
+      root.appendChild(shade);
+      root.appendChild(frame);
     } else {
-      inner = doc.createElement("div");
-      hostEl.appendChild(inner);
+      hostEl.appendChild(shade);
+      hostEl.appendChild(frame);
     }
-    const is = inner.style;
-    is.position = "fixed";
-    is.left = "0";
-    is.top = "0";
-    is.width = "100%";
-    is.height = "100%";
-    is.pointerEvents = "none";
+    const ss = shade.style;
+    ss.position = "fixed";
+    ss.left = "0";
+    ss.top = "0";
+    ss.width = "100%";
+    ss.pointerEvents = "none";
+    const fs = frame.style;
+    fs.position = "fixed";
+    fs.left = "10px";
+    fs.right = "10px";
+    fs.bottom = "10px";
+    fs.border = "2px solid rgba(230, 155, 60, 0.8)";
+    fs.borderRadius = "16px";
+    fs.background = "rgba(230, 155, 60, 0.06)";
+    fs.boxShadow = "0 0 0 3px rgba(230, 155, 60, 0.12), 0 10px 30px rgba(0, 0, 0, 0.16)";
+    fs.boxSizing = "border-box";
+    fs.pointerEvents = "none";
     shadeHost = hostEl;
-    shadeLayer = inner;
+    shadeLayer = shade;
+    frameLayer = frame;
     doc.documentElement.appendChild(hostEl);
     paintShade();
   }
 
   function paintShade(): void {
-    if (!shadeLayer) return;
-    // 旧内容占上方 1-step；压暗到新内容边界归零，新进入的下方区域不染色。
-    const clear = ((1 - pageStep) * 100).toFixed(2);
-    shadeLayer.style.background = `linear-gradient(to bottom, rgba(0, 0, 0, 0.09) 0%, rgba(0, 0, 0, 0) ${clear}%)`;
+    // 旧内容占上方 1-step；压暗到新内容边界，边框从边界下方 6px 开始。
+    const old = ((1 - pageStep) * 100).toFixed(2);
+    if (shadeLayer) {
+      shadeLayer.style.height = `${old}%`;
+      shadeLayer.style.background =
+        "linear-gradient(to bottom, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0))";
+    }
+    if (frameLayer) frameLayer.style.top = `calc(${old}% + 6px)`;
   }
 
   function setPageStep(value: unknown): void {
