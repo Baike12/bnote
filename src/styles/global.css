@@ -2537,9 +2537,6 @@ input[type="range"] {
   min-height: 0;
   background: var(--bg1);
 }
-.pdf-viewer:focus {
-  outline: none;
-}
 
 .pdf-toolbar {
   flex: 0 0 auto;

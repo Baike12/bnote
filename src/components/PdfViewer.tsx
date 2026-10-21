@@ -175,6 +175,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   const history = historyRef.current;
   /** 改字撤销的分组:同一个批注连续输入只记一步。 */
   const textEditRef = useRef<{ id: string; at: number } | null>(null);
+  /** 最近一次 pointerdown 是否落在 PDF 阅读器里(Ctrl+Z 的归属判断)。 */
+  const pdfActiveRef = useRef(false);
   /** 右侧留白里批注卡的位置(连线用同一份坐标)。 */
   const [notePlacements, setNotePlacements] = useState<NotePlacement[]>([]);
   /** 刚建/刚点中的批注卡:nonce 变化让输入框重新聚焦。 */
@@ -342,14 +344,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     (next: PdfAnnotation[]) => {
       textEditRef.current = null;
       commitAnnotations(next, "none");
-      // 撤销掉刚建的批注时输入框会卸载,焦点落回 body——把焦点还给阅读器,
-      // 连续 Ctrl+Z 才不会只生效一次。
-      requestAnimationFrame(() => {
-        const active = document.activeElement;
-        if (!active || active === document.body) {
-          viewerRef.current?.focus({ preventScroll: true });
-        }
-      });
     },
     [commitAnnotations],
   );
@@ -363,6 +357,49 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     const next = redoAnnotationHistory(history, annotationsRef.current);
     if (next !== null) applyHistory(next);
   }, [applyHistory, history]);
+
+  // 键盘归属只看「最近一次鼠标按在哪儿」,不给阅读器加 tabindex / focus()。
+  // 在 mousedown 里 focus 可聚焦容器会让 WebKit 的文字选区锚点跳变,小小的
+  // 拖选会变成一大片;选择行为必须保持浏览器原生。
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      pdfActiveRef.current = !!viewerRef.current?.contains(event.target as Node);
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
+
+  // 批注撤销:只在这个 PDF 阅读器是当前活动面时接管 Ctrl/Cmd+Z。
+  // 批注输入框里也走批注历史(空输入框撤销就是撤掉刚建的批注);
+  // 书签搜索框保留原生撤销。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const active = document.activeElement;
+      const inViewer = !!(active && viewerRef.current?.contains(active));
+      if (!pdfActiveRef.current && !inViewer) return;
+      if (event.altKey || !(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      const isUndo = key === "z" && !event.shiftKey;
+      const isRedo =
+        (key === "z" && event.shiftKey) ||
+        (key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey);
+      if (!isUndo && !isRedo) return;
+      const target = event.target as HTMLElement | null;
+      const editable = target?.closest(
+        "input, textarea, select, [contenteditable='true']",
+      ) as HTMLElement | null;
+      if (editable && !editable.classList.contains("pdf-note-input")) return;
+      if (active && active !== document.body && !inViewer) return;
+      if (event.isComposing) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (isRedo) redoAnnotations();
+      else undoAnnotations();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [redoAnnotations, undoAnnotations]);
 
   const addAnnotation = useCallback(
     (page: number, rects: NormRect[], kind: PdfAnnotation["kind"]): string | null => {
@@ -400,8 +437,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   const removeAnnotation = useCallback(
     (id: string) => {
       commitAnnotations(annotationsRef.current.filter((a) => a.id !== id));
-      // 点卡片上的 × 删除后按钮会卸载;把焦点还给阅读器,紧接着的 Ctrl+Z 才接得住。
-      viewerRef.current?.focus({ preventScroll: true });
     },
     [commitAnnotations],
   );
@@ -866,47 +901,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     setTool(tool === "note" ? "highlight" : "note");
   }
 
-  /**
-   * 批注撤销:只在这个 PDF 阅读器拿到焦点时接管,不会和编辑器/侧栏的
-   * Ctrl+Z 抢。批注输入框里也走批注历史(空输入框撤销就是撤掉刚建的批注);
-   * 书签搜索框保留原生撤销。Cmd+Z 同样支持。
-   */
-  function handleViewerKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.altKey || !(event.metaKey || event.ctrlKey)) return;
-    const key = event.key.toLowerCase();
-    const isUndo = key === "z" && !event.shiftKey;
-    const isRedo =
-      (key === "z" && event.shiftKey) ||
-      (key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey);
-    if (!isUndo && !isRedo) return;
-    const target = event.target as HTMLElement | null;
-    const editable = target?.closest(
-      "input, textarea, select, [contenteditable='true']",
-    ) as HTMLElement | null;
-    if (editable && !editable.classList.contains("pdf-note-input")) return;
-    if (event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (isRedo) redoAnnotations();
-    else undoAnnotations();
-  }
-
-  /** 点页面/留白时把焦点交给阅读器,随后 Ctrl+Z 才有归属。 */
-  function handleViewerPointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    const target = event.target as HTMLElement | null;
-    if (target?.closest("textarea, input, select, button, a, [contenteditable='true']")) {
-      return;
-    }
-    viewerRef.current?.focus({ preventScroll: true });
-  }
-
   return (
     <div
       className={`pdf-viewer${eyeCare ? " eye-care" : ""}${tool ? ` tool-${tool}` : ""}`}
       ref={viewerRef}
-      tabIndex={-1}
-      onKeyDown={handleViewerKeyDown}
-      onPointerDown={handleViewerPointerDown}
       onContextMenu={handleContextMenu}
       style={{ "--pdf-outline-w": `${outlineWidth}px` } as React.CSSProperties}
     >
