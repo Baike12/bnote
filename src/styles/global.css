@@ -75,10 +75,7 @@
   --pdf-note-line: rgb(30 130 220); /* 锚点到右侧批注卡的连线 */
   /* 学习模式翻页后的阅读分区:上方旧内容压暗,下方新内容用琥珀描边框成阅读窗。 */
   --read-shade: rgb(0 0 0 / 16%);
-  --read-frame-border: color-mix(in srgb, var(--accent) 80%, transparent);
-  --read-frame-bg: color-mix(in srgb, var(--accent) 7%, transparent);
-  --read-frame-shadow: color-mix(in srgb, var(--shadow) 55%, transparent);
-  --read-frame-halo: color-mix(in srgb, var(--accent) 12%, transparent);
+  --read-frame-border: color-mix(in srgb, var(--accent) 35%, transparent);
   --editor-font-size: 16px;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
@@ -146,10 +143,7 @@
   --pdf-note: rgb(0 140 255 / 42%);
   --pdf-note-line: rgb(30 130 220);
   --read-shade: rgb(0 0 0 / 16%);
-  --read-frame-border: color-mix(in srgb, var(--accent) 80%, transparent);
-  --read-frame-bg: color-mix(in srgb, var(--accent) 7%, transparent);
-  --read-frame-shadow: color-mix(in srgb, var(--shadow) 55%, transparent);
-  --read-frame-halo: color-mix(in srgb, var(--accent) 12%, transparent);
+  --read-frame-border: color-mix(in srgb, var(--accent) 35%, transparent);
   /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
@@ -2724,8 +2718,8 @@ input[type="range"] {
   background: var(--pdf-gutter);
 }
 /* 翻页后的视觉分区:上方是刚读过、正在被顶出去的旧内容(占 1−步长),
-   压暗到新内容边界;下方刚进入的新内容用圆角描边框成一块阅读窗。
-   两层都固定在视口上、不随内容滚动,也不接鼠标事件。 */
+   压暗到新内容边界;下方新内容的顶部用一条淡色圆角线标出。
+   线贴着页面左右边界,不画完整框;两层都固定在视口上、不接鼠标事件。 */
 .pdf-read-guide {
   position: absolute;
   inset: 0;
@@ -2742,17 +2736,13 @@ input[type="range"] {
 }
 .pdf-read-frame {
   position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 10px;
-  /* 与压暗结束处留 6px 呼吸位，边框不压到新内容第一行。 */
+  left: 0;
+  right: 0;
+  /* 与压暗结束处留 6px 呼吸位，线不压到新内容第一行；高度只用来撑出圆角。 */
   top: calc(var(--read-old, 50%) + 6px);
-  border: 2px solid var(--read-frame-border);
-  border-radius: 16px;
-  background: var(--read-frame-bg);
-  box-shadow:
-    0 0 0 3px var(--read-frame-halo),
-    0 10px 30px var(--read-frame-shadow);
+  height: 16px;
+  border-top: 1px solid var(--read-frame-border);
+  border-radius: 12px 12px 0 0;
 }
 /* 滚动内容 = 页面区 + 右侧留白。留白随页面一起滚,批注卡才会一直对齐行。 */
 .pdf-stage {

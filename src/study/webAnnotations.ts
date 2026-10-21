@@ -465,8 +465,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   // ---- 翻页与上半屏遮罩 ----
 
   /**
-   * 翻页后的阅读分区：上方旧内容压暗，下方新内容用一个固定圆角边框框成
-   * 「阅读窗」。两层都在 shadow root 里，不吃页面 CSS；整层不接鼠标事件。
+   * 翻页后的阅读分区：上方旧内容压暗，下方新内容的顶部用一条淡色圆角线
+   * 标出（不画完整框）。两层都在 shadow root 里，不吃页面 CSS；不接鼠标事件。
    */
   function ensureShade(): void {
     if (shadeHost && shadeHost.isConnected && shadeLayer && frameLayer) return;
@@ -500,14 +500,12 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     ss.pointerEvents = "none";
     const fs = frame.style;
     fs.position = "fixed";
-    fs.left = "10px";
-    fs.right = "10px";
-    fs.bottom = "10px";
-    fs.border = "2px solid rgba(230, 155, 60, 0.8)";
-    fs.borderRadius = "16px";
-    fs.background = "rgba(230, 155, 60, 0.06)";
-    fs.boxShadow = "0 0 0 3px rgba(230, 155, 60, 0.12), 0 10px 30px rgba(0, 0, 0, 0.16)";
-    fs.boxSizing = "border-box";
+    fs.left = "0";
+    fs.right = "0";
+    fs.height = "16px";
+    fs.borderTop = "1px solid rgba(230, 155, 60, 0.35)";
+    fs.borderTopLeftRadius = "12px";
+    fs.borderTopRightRadius = "12px";
     fs.pointerEvents = "none";
     shadeHost = hostEl;
     shadeLayer = shade;
@@ -517,7 +515,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   }
 
   function paintShade(): void {
-    // 旧内容占上方 1-step；压暗到新内容边界，边框从边界下方 6px 开始。
+    // 旧内容占上方 1-step；压暗到新内容边界，顶线从边界下方 6px 开始。
     const old = ((1 - pageStep) * 100).toFixed(2);
     if (shadeLayer) {
       shadeLayer.style.height = `${old}%`;
