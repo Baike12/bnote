@@ -503,7 +503,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     fs.left = "0";
     fs.right = "0";
     fs.height = "16px";
-    fs.borderTop = "2px solid rgba(230, 155, 60, 0.65)";
+    fs.borderTop = "2px solid rgba(230, 155, 60, 0.45)";
     fs.borderTopLeftRadius = "12px";
     fs.borderTopRightRadius = "12px";
     fs.pointerEvents = "none";
@@ -520,7 +520,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (shadeLayer) {
       shadeLayer.style.height = `${old}%`;
       shadeLayer.style.background =
-        "linear-gradient(to bottom, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0))";
+        "linear-gradient(to bottom, rgba(0, 0, 0, 0.24), rgba(0, 0, 0, 0.12))";
     }
     if (frameLayer) frameLayer.style.top = `calc(${old}% + 6px)`;
   }
