@@ -1,5 +1,6 @@
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
+import { normalizePageStep } from "./reading";
 
 /**
  * 网页批注:选中文字 → 亮黄色高亮。
@@ -219,6 +220,7 @@ interface RuntimeHelpers {
   locateQuote: typeof locateQuote;
   mergeLineRects: typeof mergeLineRects;
   normalizeWebAnnotations: typeof normalizeWebAnnotations;
+  normalizePageStep: typeof normalizePageStep;
 }
 
 interface TextEntry {
@@ -248,6 +250,20 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   const TITLE_PREFIX = "bnote-anno:";
   const CONTEXT = 40;
   const MAX_QUOTE = 2000;
+  /** 与 commands/keys.ts 的 eventToKey 同一张表：Shift+符号 的绑定按物理键记。 */
+  const SHIFT_SYMBOL_BASE: Record<string, string> = {
+    Semicolon: ";",
+    Quote: "'",
+    Comma: ",",
+    Period: ".",
+    Slash: "/",
+    Backslash: "\\",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Minus: "-",
+    Equal: "=",
+    Backquote: "`",
+  };
 
   let mode = false;
   let url = location.href;
@@ -262,6 +278,13 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let scrollPending = false;
   let suppressClickUntil = 0;
   let previousCursor: string | null = null;
+  /** 翻页步长(可见高度的比例),由主窗口推入;默认 50%。 */
+  let pageStep = helpers.normalizePageStep(0.5);
+  /** 可配置的翻页键(命令层解析后的绑定字符串),由主窗口推入。 */
+  let prevKeys: string[] = ["PageUp", "ArrowLeft"];
+  let nextKeys: string[] = ["PageDown", "ArrowRight"];
+  let shadeHost: HTMLElement | null = null;
+  let shadeLayer: HTMLElement | null = null;
 
   function storageKey(target: string): string {
     return STORE_PREFIX + target;
@@ -436,6 +459,156 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     ls.pointerEvents = "none";
     doc.documentElement.appendChild(host);
     return layer;
+  }
+
+  // ---- 翻页与上半屏遮罩 ----
+
+  /**
+   * 固定覆盖整个视口的渐变层：顶部压暗，到「步长」边界完全透明。翻页后
+   * 上半屏是刚读过、正在被顶出去的内容，下半屏是刚进入的新内容；只做轻
+   * 微分区，不改变页面本身的排版与配色。整层不接鼠标事件。
+   */
+  function ensureShade(): void {
+    if (shadeHost && shadeHost.isConnected && shadeLayer) return;
+    const doc = document;
+    if (!doc.documentElement) return;
+    const hostEl = doc.createElement("div");
+    hostEl.id = "bnote-read-shade-host";
+    const hs = hostEl.style;
+    hs.position = "fixed";
+    hs.left = "0";
+    hs.top = "0";
+    hs.width = "100%";
+    hs.height = "100%";
+    hs.pointerEvents = "none";
+    hs.zIndex = "2147483647";
+    let inner: HTMLElement;
+    if (typeof hostEl.attachShadow === "function") {
+      const root = hostEl.attachShadow({ mode: "open" });
+      inner = doc.createElement("div");
+      root.appendChild(inner);
+    } else {
+      inner = doc.createElement("div");
+      hostEl.appendChild(inner);
+    }
+    const is = inner.style;
+    is.position = "fixed";
+    is.left = "0";
+    is.top = "0";
+    is.width = "100%";
+    is.height = "100%";
+    is.pointerEvents = "none";
+    shadeHost = hostEl;
+    shadeLayer = inner;
+    doc.documentElement.appendChild(hostEl);
+    paintShade();
+  }
+
+  function paintShade(): void {
+    if (!shadeLayer) return;
+    // 旧内容占上方 1-step；压暗到新内容边界归零，新进入的下方区域不染色。
+    const clear = ((1 - pageStep) * 100).toFixed(2);
+    shadeLayer.style.background = `linear-gradient(to bottom, rgba(0, 0, 0, 0.09) 0%, rgba(0, 0, 0, 0) ${clear}%)`;
+  }
+
+  function setPageStep(value: unknown): void {
+    pageStep = helpers.normalizePageStep(value);
+    paintShade();
+  }
+
+  function keyList(value: unknown): string[] | null {
+    if (!Array.isArray(value)) return null;
+    const out: string[] = [];
+    for (const item of value) {
+      if (typeof item === "string" && item) out.push(item);
+    }
+    return out;
+  }
+
+  /** 主窗口把命令层的绑定原样推过来（空数组 = 用户解绑）。 */
+  function setKeys(prev: unknown, next: unknown): void {
+    const prevList = keyList(prev);
+    const nextList = keyList(next);
+    if (prevList) prevKeys = prevList;
+    if (nextList) nextKeys = nextList;
+  }
+
+  const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+  /** 与 commands/keys.ts::eventToKey 同一套规范化，用来匹配推入的绑定。 */
+  function bindingMatches(event: KeyboardEvent, binding: string): boolean {
+    const parts = binding.split("-");
+    const key = parts[parts.length - 1];
+    if (!key) return false;
+    if (parts.includes("Mod") !== (IS_MAC ? event.metaKey : event.ctrlKey)) return false;
+    if (parts.includes("Shift") !== event.shiftKey) return false;
+    if (parts.includes("Alt") !== event.altKey) return false;
+    if (parts.includes("Ctrl") !== (IS_MAC && event.ctrlKey)) return false;
+    if (parts.includes("Meta") !== (!IS_MAC && event.metaKey)) return false;
+    let actual = event.key;
+    if (actual === " ") actual = "Space";
+    else if (actual.length === 1) actual = actual.toLowerCase();
+    if (event.shiftKey && actual.length === 1 && !/[a-z0-9]/.test(actual)) {
+      actual = SHIFT_SYMBOL_BASE[event.code] ?? actual;
+    }
+    return actual === key;
+  }
+
+  /** 页面的主滚动容器：窗口可滚时就是文档，否则找视口中心下最近的可滚祖先。 */
+  function pageTarget(): HTMLElement | null {
+    const docEl = (document.scrollingElement || document.documentElement) as HTMLElement | null;
+    if (docEl && docEl.scrollHeight > window.innerHeight + 1) return docEl;
+    let el = document.elementFromPoint(
+      window.innerWidth / 2,
+      window.innerHeight / 2,
+    ) as HTMLElement | null;
+    while (el && el !== document.documentElement) {
+      const overflow = getComputedStyle(el).overflowY;
+      if (
+        (overflow === "auto" || overflow === "scroll" || overflow === "overlay") &&
+        el.scrollHeight > el.clientHeight + 1
+      ) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    if (docEl && docEl.scrollHeight > docEl.clientHeight + 1) return docEl;
+    return null;
+  }
+
+  /** 按步长滚一页；返回是否由本运行时接管（接管了才 preventDefault）。 */
+  function scrollPage(delta: number): boolean {
+    if (!delta) return false;
+    const target = pageTarget();
+    if (!target) return false;
+    const documentScroller =
+      target === document.scrollingElement ||
+      target === document.documentElement ||
+      target === document.body;
+    const view = documentScroller ? window.innerHeight : target.clientHeight;
+    const max = Math.max(0, target.scrollHeight - target.clientHeight);
+    const next = Math.min(max, Math.max(0, target.scrollTop + delta * view * pageStep));
+    target.scrollTop = next;
+    return true;
+  }
+
+  function onPageKey(event: KeyboardEvent): void {
+    if (event.defaultPrevented) return;
+    // PageUp/PageDown 是固定翻页键（与主窗口的命令分发一致）：即使被解绑，
+    // 无修饰按时也仍然翻页；带修饰时交给绑定表/页面自己。
+    const plain = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+    let delta = 0;
+    if (plain && event.key === "PageDown") delta = 1;
+    else if (plain && event.key === "PageUp") delta = -1;
+    else if (nextKeys.some((key) => bindingMatches(event, key))) delta = 1;
+    else if (prevKeys.some((key) => bindingMatches(event, key))) delta = -1;
+    if (!delta) return;
+    // 输入框/可编辑区里的翻页与方向键归控件自己（光标移动、文本滚动）。
+    if (isEditable(event.target as Element | null)) return;
+    if (scrollPage(delta)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
   }
 
   function styleMark(el: HTMLElement): void {
@@ -682,22 +855,42 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return { url, annotations: items };
   }
 
-  w.__bnoteAnno = { setMode, merge, export: exportState, refresh: rebuild };
+  w.__bnoteAnno = {
+    setMode,
+    merge,
+    export: exportState,
+    refresh: rebuild,
+    page: scrollPage,
+    setStep: setPageStep,
+    setKeys,
+  };
+  // Rust 的翻页命令只认这个入口：与批注开关解耦，普通阅读也能按步长翻页。
+  (w as { __bnoteReader?: Record<string, unknown> }).__bnoteReader = {
+    page: scrollPage,
+    setStep: setPageStep,
+    setKeys,
+  };
 
   // ---- 启动 ----
   window.addEventListener("mouseup", onMouseUp, true);
   window.addEventListener("click", onClickCapture, true);
+  window.addEventListener("keydown", onPageKey, true);
   window.addEventListener("scroll", onScroll, { passive: true });
   window.addEventListener("resize", () => scheduleRebuild(200));
   window.addEventListener("hashchange", onUrlChange);
   window.addEventListener("popstate", onUrlChange);
   window.addEventListener("load", () => scheduleRebuild(0));
   patchHistory();
+  ensureShade();
   document.addEventListener("DOMContentLoaded", () => {
+    ensureShade();
     scheduleRebuild(0);
     watchDom();
   });
-  if (document.readyState !== "loading") scheduleRebuild(0);
+  if (document.readyState !== "loading") {
+    ensureShade();
+    scheduleRebuild(0);
+  }
   try {
     if (document.fonts && document.fonts.ready) {
       void document.fonts.ready.then(() => scheduleRebuild(0));
@@ -709,7 +902,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
 /** 注入原生 webview 的完整脚本(运行时 + 它依赖的纯函数)。 */
 export function buildWebAnnotationScript(): string {
-  return `(${webAnnotationRuntime.toString()})({locateQuote:${locateQuote.toString()},mergeLineRects:${mergeLineRects.toString()},normalizeWebAnnotations:${normalizeWebAnnotations.toString()}});`;
+  return `(${webAnnotationRuntime.toString()})({locateQuote:${locateQuote.toString()},mergeLineRects:${mergeLineRects.toString()},normalizeWebAnnotations:${normalizeWebAnnotations.toString()},normalizePageStep:${normalizePageStep.toString()}});`;
 }
 
 /** 只算一次:主窗口每次打开网页都把它交给 Rust 注册成初始化脚本。 */

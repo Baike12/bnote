@@ -417,6 +417,65 @@ pub fn set_study_preview_annotation_mode(
     Ok(())
 }
 
+/// 学习模式翻页：焦点在主窗口时，命令层通过这里把 PageUp/PageDown 转给
+/// 内嵌网页。页内运行时自己探测主滚动容器，并按设置步长滚动。
+#[tauri::command]
+pub fn scroll_study_preview(app: tauri::AppHandle, delta: i32) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        let direction = delta.signum();
+        if direction != 0 {
+            webview
+                .eval(format!(
+                    "window.__bnoteReader && window.__bnoteReader.page({});",
+                    direction
+                ))
+                .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
+/// 把翻页步长推给页内运行时（键盘翻页与上半屏渐变共用）。
+#[tauri::command]
+pub fn set_study_preview_read_step(app: tauri::AppHandle, step: f64) -> CmdResult<()> {
+    use tauri::Manager;
+    let step = if step.is_finite() {
+        step.clamp(0.1, 1.0)
+    } else {
+        0.5
+    };
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        webview
+            .eval(format!(
+                "window.__bnoteReader && window.__bnoteReader.setStep({});",
+                step
+            ))
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
+/// 把命令层的翻页绑定推给页内运行时（自定义快捷键在网页里同样生效）。
+#[tauri::command]
+pub fn set_study_preview_read_keys(
+    app: tauri::AppHandle,
+    prev: Vec<String>,
+    next: Vec<String>,
+) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        let payload = serde_json::json!({ "prev": prev, "next": next });
+        webview
+            .eval(format!(
+                "window.__bnoteReader && window.__bnoteReader.setKeys({}, {});",
+                payload["prev"], payload["next"]
+            ))
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
 /// Pushes vault-side anchors into the page (the page merges by id, so this is
 /// idempotent and never overwrites newer page-side data).
 #[tauri::command]

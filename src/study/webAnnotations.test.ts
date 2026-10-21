@@ -10,6 +10,7 @@ import {
   webAnnotationRelPath,
   type WebAnnotation,
 } from "./webAnnotations";
+import { normalizePageStep } from "./reading";
 
 function ann(id: string, quote: string, offset: number, extra: Partial<WebAnnotation> = {}): WebAnnotation {
   return { id, quote, prefix: "", suffix: "", offset, createdAt: 1, ...extra };
@@ -97,6 +98,11 @@ describe("注入脚本", () => {
     expect(script).toContain("bnote-anno:");
     expect(script).toContain("setMode");
     expect(script).toContain("merge");
+    // 翻页入口与主窗口推送步长/键位的通道。
+    expect(script).toContain("__bnoteReader");
+    expect(script).toContain("setStep");
+    expect(script).toContain("setKeys");
+    expect(script).toContain("bnote-read-shade-host");
     // 纯函数被序列化进页面,不能残留模块级常量名。
     expect(script).not.toContain("MAX_WEB_QUOTE");
   });
@@ -108,5 +114,9 @@ describe("注入脚本", () => {
       `return (${normalizeWebAnnotations.toString()});`,
     )() as typeof normalizeWebAnnotations;
     expect(isolatedNormalize([{ id: "a", quote: "q", offset: 0 }])).toHaveLength(1);
+    const isolatedStep = new Function(
+      `return (${normalizePageStep.toString()});`,
+    )() as typeof normalizePageStep;
+    expect(isolatedStep(undefined)).toBe(0.5);
   });
 });

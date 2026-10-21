@@ -69,8 +69,9 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",
 
-  // 学习模式的 PDF 整页翻页。动作在 PdfViewer 里注册(见 study/pdfNav.ts),
-  // 命令带 `when`:焦点在输入框/可编辑区、弹窗打开或正在框选时不抢键。
+  // 学习模式翻页(PDF 与网页阅读器共用,按设置里的步长滚动)。动作由阅读器
+  // 注册(见 study/pdfNav.ts),命令带 `when`:焦点在输入框/可编辑区、弹窗
+  // 打开或正在框选时不抢键。
   "study.pdf-prev-page": ["PageUp", "ArrowLeft"],
   "study.pdf-next-page": ["PageDown", "ArrowRight"],
 };
@@ -79,10 +80,11 @@ export type BindingValue = string | string[] | null;
 export type BindingOverrides = Record<string, BindingValue>;
 
 /**
- * 固定翻页键:PageUp/PageDown **永远**翻 PDF 页,不受 keybindings.json 影响。
+ * 固定翻页键:PageUp/PageDown **永远**翻学习模式的内容页(PDF 或网页),
+ * 不受 keybindings.json 影响。
  *
  * 可配置绑定改到别处后,用户仍要能靠这两个标准阅读键翻页。它们走和普通
- * 绑定相同的归属规则(焦点在编辑器/输入框里时归编辑器,弹窗/帧选时命令
+ * 绑定相同的归属规则(焦点在编辑器/输入框里时归编辑器,弹窗/框选时命令
  * `when` 为 false 就原样放行),只是不能被覆盖表删掉。
  */
 export const FIXED_PAGE_COMMANDS: Record<string, string> = {

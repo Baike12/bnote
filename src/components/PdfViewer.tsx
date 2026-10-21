@@ -68,6 +68,7 @@ import {
 } from "@/study/pdfLayout";
 import { setPdfNavHandlers } from "@/study/pdfNav";
 import { filterOutline, type PdfOutlineNode } from "@/study/pdfOutline";
+import { steppedScrollTop } from "@/study/reading";
 
 /**
  * Study-mode PDF reader.
@@ -135,9 +136,11 @@ interface PdfViewerProps {
   /** Eye-care tint (pale green paper), persisted in settings. */
   eyeCare: boolean;
   onToggleEyeCare: () => void;
+  /** 每次翻页滚动的可见高度比例（0.1–1，默认 0.5）。 */
+  pageStep: number;
 }
 
-export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
+export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState(0);
@@ -158,6 +161,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
   const [outlineWidth, setOutlineWidth] = useState(() => preferredOutlineWidth.current);
   const [outlineQuery, setOutlineQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  /** 滚动区是否已到首/尾：翻页改为按步长滚动后，按钮的可用性由滚动位置决定，
+   *  不再由「当前页是不是第一/最后一页」决定（最后一页可能还有半屏没看）。 */
+  const [atScrollTop, setAtScrollTop] = useState(true);
+  const [atScrollBottom, setAtScrollBottom] = useState(false);
   const [activePages, setActivePages] = useState<Set<number>>(() => new Set());
   /** 只显示每页的这一块(归一化比例);null = 整页。 */
   const [crop, setCrop] = useState<PdfCrop | null>(() => loadPdfCrop(path));
@@ -733,7 +740,13 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
           if (entry.isIntersecting) set.add(n);
           else set.delete(n);
         }
-        if (set.size > 0) setCurrentPage(Math.min(...set));
+        if (set.size > 0) {
+          const top = Math.min(...set);
+          setCurrentPage(top);
+          // 滚动式翻页不再经过 goToPage；裁剪等重排要用「当前可见的顶页」
+          // 做落点，ref 必须跟着可见页一起走。
+          currentPageRef.current = top;
+        }
       },
       { root: scroll, threshold: 0 },
     );
@@ -770,6 +783,36 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     else pageEls.current.delete(n);
   }, []);
 
+  // 首/尾状态只用于翻页按钮的 disabled：按步长翻页后，页号不再是边界
+  // （最后一页也可能还有半屏）。滚动的每帧只读已缓存的 scrollTop/Height，
+  // 状态只在跨过边界时变一次；内容高度由 stage 的 ResizeObserver 补触发。
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    const stage = stageRef.current;
+    if (!scroll) return;
+    let raf = 0;
+    const sync = () => {
+      raf = 0;
+      const top = scroll.scrollTop <= 1;
+      const bottom = scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 1;
+      setAtScrollTop((value) => (value === top ? value : top));
+      setAtScrollBottom((value) => (value === bottom ? value : bottom));
+    };
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(sync);
+    };
+    scroll.addEventListener("scroll", schedule, { passive: true });
+    const observer = new ResizeObserver(schedule);
+    observer.observe(scroll);
+    if (stage) observer.observe(stage);
+    sync();
+    return () => {
+      scroll.removeEventListener("scroll", schedule);
+      if (raf) cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+  }, [doc, numPages]);
+
   function goToPage(n: number) {
     const el = pageEls.current.get(n);
     const scroll = scrollRef.current;
@@ -781,30 +824,26 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
     currentPageRef.current = n;
   }
 
-  /** 视口顶端那一页(可能已经滚过半页)。 */
-  function pageAtScroll(): number {
-    const scroll = scrollRef.current;
-    if (!scroll) return 1;
-    const top = scroll.scrollTop + 4;
-    let found = 1;
-    for (const [n, el] of [...pageEls.current].sort((a, b) => a[0] - b[0])) {
-      const elTop = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;
-      if (elTop + el.offsetHeight > top) {
-        found = n;
-        break;
-      }
-    }
-    return found;
-  }
-
-  /** 整页翻页:跳到上一页/下一页的页首,而不是按视口高度滚一段。 */
+  /**
+   * 翻页 = 以「可见高度 × step」滚动，而不是跳到下一页页首。
+   * 默认 50% 时上一屏的下半部分刚好留在屏幕上半区，新内容从下半屏进入；
+   * 眼睛不必每次都回到屏幕顶部。首尾由 steppedScrollTop 夹紧。
+   */
   const flipPage = useCallback(
     (delta: 1 | -1) => {
-      goToPage(pageAtScroll() + delta);
+      const scroll = scrollRef.current;
+      if (!scroll) return;
+      scroll.scrollTo({
+        top: steppedScrollTop(
+          scroll.scrollTop,
+          scroll.clientHeight,
+          scroll.scrollHeight,
+          delta,
+          pageStep,
+        ),
+      });
     },
-    // goToPage/pageAtScroll 只读 ref 与 numPages;numPages 变化时重建即可。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [numPages],
+    [pageStep],
   );
 
   const applyCrop = useCallback(
@@ -969,7 +1008,14 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
       className={`pdf-viewer${eyeCare ? " eye-care" : ""}${tool ? ` tool-${tool}` : ""}`}
       ref={viewerRef}
       onContextMenu={handleContextMenu}
-      style={{ "--pdf-outline-w": `${outlineWidth}px` } as React.CSSProperties}
+      style={
+        {
+          "--pdf-outline-w": `${outlineWidth}px`,
+          // 翻页后旧内容占视口上方 1-step，新内容从下方 step 处开始；
+          // 压暗在两者交界处归零，新内容完全不被染色。
+          "--read-clear": `${Math.round((1 - pageStep) * 100)}%`,
+        } as React.CSSProperties
+      }
     >
       <div className="pdf-toolbar">
         {hasOutline && (
@@ -984,8 +1030,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
         <span className="spacer" />
         <button
           className="icon-btn pdf-tool-btn"
-          title={prevKeys ? `上一页(${prevKeys})` : "上一页"}
-          disabled={currentPage <= 1}
+          title={prevKeys ? `向上翻页(${prevKeys})` : "向上翻页"}
+          disabled={atScrollTop}
           onClick={() => flipPage(-1)}
         >
           ‹
@@ -995,8 +1041,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
         </span>
         <button
           className="icon-btn pdf-tool-btn"
-          title={nextKeys ? `下一页(${nextKeys})` : "下一页"}
-          disabled={numPages === 0 || currentPage >= numPages}
+          title={nextKeys ? `向下翻页(${nextKeys})` : "向下翻页"}
+          disabled={numPages === 0 || atScrollBottom}
           onClick={() => flipPage(1)}
         >
           ›
@@ -1197,6 +1243,13 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare }: PdfViewerProps) {
               )}
             </div>
           </div>
+          {/* 上半屏是刚读过、正在移出的内容：轻微压暗到步长边界归零。
+              整层不接鼠标事件，选中/批注/链接照常；右侧批注栏不参与压暗。 */}
+          <div
+            className="pdf-read-shade"
+            style={{ right: railWidth || undefined }}
+            aria-hidden
+          />
           {cropping && (
             <CropLayer
               pageEls={pageEls}

@@ -134,19 +134,19 @@ const defs: CommandDef[] = [
       toggleStudyMode();
     },
   },
-  // PDF 整页翻页。默认 PageUp/PageDown(含方向键),可在设置里改键;动作由
-  // 阅读器注册(study/pdfNav.ts),没开 PDF 或焦点不该被抢时 when 为 false,
-  // 键原样交给页面。
+  // 学习模式翻页(按设置里的步长滚动,默认半屏)。默认 PageUp/PageDown(含
+  // 方向键),可在设置里改键;动作由阅读器注册(study/pdfNav.ts),没开
+  // PDF/网页或焦点不该被抢时 when 为 false,键原样交给页面。
   {
     id: "study.pdf-prev-page",
-    title: "PDF 上一页(整页翻页)",
+    title: "学习模式上一页(按步长滚动)",
     category: "学习",
     when: canFlipPdfPage,
     run: () => void flipPdfPage(-1),
   },
   {
     id: "study.pdf-next-page",
-    title: "PDF 下一页(整页翻页)",
+    title: "学习模式下一页(按步长滚动)",
     category: "学习",
     when: canFlipPdfPage,
     run: () => void flipPdfPage(1),
