@@ -2739,13 +2739,30 @@ input[type="range"] {
   margin-bottom: 14px;
   background: var(--pdf-paper);
   box-shadow: 0 1px 5px var(--shadow);
-  /* 正文始终是可选中的 I 形光标;批注工具不改变它。 */
+  /* 正文始终是可选中的 I 形光标;批注工具各自换成笔形光标(见下)。 */
   cursor: text;
   /* 裁剪:窗口只留框内的部分,整页在 .pdf-page-full 里用负偏移推出去。 */
   overflow: hidden;
 }
 .pdf-page-full {
   position: absolute;
+}
+/* 批注工具的光标:高亮=荧光笔,文字批注=蓝笔尖;热点都在笔尖(12 22)。
+   用 24px PNG:WKWebView/Chromium 都认,不依赖 SVG 光标支持。
+   文本层的 span 自带 cursor:text(pdf.js 的规则),这里必须显式压过去。 */
+.pdf-viewer.tool-highlight .pdf-page,
+.pdf-viewer.tool-highlight .pdf-page .textLayer,
+.pdf-viewer.tool-highlight .pdf-page .textLayer span {
+  cursor:
+    url("../assets/cursors/pdf-highlight.png") 12 22,
+    text;
+}
+.pdf-viewer.tool-note .pdf-page,
+.pdf-viewer.tool-note .pdf-page .textLayer,
+.pdf-viewer.tool-note .pdf-page .textLayer span {
+  cursor:
+    url("../assets/cursors/pdf-note.png") 12 22,
+    text;
 }
 .pdf-page canvas {
   position: absolute;

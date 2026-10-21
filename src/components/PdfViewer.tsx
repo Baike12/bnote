@@ -23,6 +23,7 @@ import PdfWorker from "@/study/pdfWorker?worker";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { api } from "@/lib/tauri";
 import { bindingsForCommand, formatBinding } from "@/commands/keys";
+import { imeOnNoteFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { useAppStore } from "@/state/appStore";
 import { cropFromDrag, loadPdfCrop, savePdfCrop, type PdfCrop } from "@/study/crop";
 import {
@@ -1497,6 +1498,9 @@ const PdfPage = memo(function PdfPage({
    * 延迟到宏任务再读选区:mouseup 默认行为之后选区才是最终状态。
    */
   function handleMouseUp(event: React.MouseEvent<HTMLDivElement>) {
+    // 只认左键:右键用于切换批注工具,它的 mouseup 若当成「拖选结束」,
+    // 会拿右键顺手挪出来的那点选区去建批注(或误删点中的高亮)。
+    if (event.button !== 0) return;
     const full = fullRef.current;
     const textDiv = textRef.current;
     if (!full || !textDiv || !tool) return;
@@ -1675,6 +1679,12 @@ function NoteBox({
         placeholder="写批注…"
         maxLength={MAX_NOTE_TEXT}
         onChange={(event) => onChange(annotation.id, event.target.value)}
+        onFocus={() => imeOnNoteFocus()}
+        onBlur={(event) => {
+          // 两张批注卡之间换焦点时保持中文;真正离开批注才交还输入源。
+          const next = event.relatedTarget as Element | null;
+          if (!next?.closest(".pdf-note-box")) imeSyncToEditor();
+        }}
         onMouseDown={(event) => event.stopPropagation()}
         onContextMenu={(event) => event.stopPropagation()}
       />
