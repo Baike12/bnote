@@ -21,14 +21,15 @@
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ffi::c_void;
-    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
     use objc2::{class, define_class, msg_send, sel, AnyThread, MainThreadMarker};
     use objc2_app_kit::{
         NSApplication, NSApplicationDidBecomeActiveNotification, NSCursor, NSEvent, NSImage,
-        NSView, NSWindow, NSWindowDidBecomeKeyNotification,
+        NSView, NSWindowDidBecomeKeyNotification, NSWindowDidChangeScreenNotification,
+        NSWindowDidMoveNotification, NSWindowDidResizeNotification,
     };
     use objc2_foundation::{NSData, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSSize};
 
@@ -51,16 +52,62 @@ mod mac {
     /// 当前批注工具是否为文字批注(蓝笔);其余情况用高亮笔(黄笔)。
     static NOTE_MODE: AtomicBool = AtomicBool::new(false);
     static OBSERVING: AtomicBool = AtomicBool::new(false);
+    /// 网页视图在屏幕坐标里的矩形。热路径(每次 `-[NSCursor set]`)只读这份
+    /// 缓存做算术判断;窗口移动/缩放、视图重新布局时由通知或 refresh 重算。
+    /// 在这里绝不做 WindowServer 查询:`windowNumberAtPoint` 实测 27.7µs/次,
+    /// 而光标 set 在鼠标移动、每次布局后的光标复算里都会发生。
+    static RECT: [AtomicU64; 4] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+    static RECT_VALID: AtomicBool = AtomicBool::new(false);
 
     type SetFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel);
 
-    /// 激活/成为 key 窗口时重新落一次笔。
-    ///
-    /// 切到别的应用时 macOS 会把我们的光标换成箭头,而这一步不经过
-    /// `-[NSCursor set]`,拦截器看不到;切回来时如果没有鼠标移动,WebKit 也
-    /// 不会再发光标。所以在这两个通知上主动把笔重新设一次。
+    /// 重算网页视图的屏幕矩形(主线程)。
+    fn refresh_rect() {
+        let view = WEBVIEW.load(Ordering::Relaxed) as *const NSView;
+        if view.is_null() || MainThreadMarker::new().is_none() {
+            RECT_VALID.store(false, Ordering::Relaxed);
+            return;
+        }
+        unsafe {
+            let view = &*view;
+            let Some(window) = view.window() else {
+                RECT_VALID.store(false, Ordering::Relaxed);
+                return;
+            };
+            let rect = window.convertRectToScreen(view.convertRect_toView(view.bounds(), None));
+            RECT[0].store(rect.origin.x.to_bits(), Ordering::Relaxed);
+            RECT[1].store(rect.origin.y.to_bits(), Ordering::Relaxed);
+            RECT[2].store(rect.size.width.to_bits(), Ordering::Relaxed);
+            RECT[3].store(rect.size.height.to_bits(), Ordering::Relaxed);
+            RECT_VALID.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn inside_cached(mouse: NSPoint) -> bool {
+        if !RECT_VALID.load(Ordering::Relaxed) {
+            return false;
+        }
+        let x = f64::from_bits(RECT[0].load(Ordering::Relaxed));
+        let y = f64::from_bits(RECT[1].load(Ordering::Relaxed));
+        let w = f64::from_bits(RECT[2].load(Ordering::Relaxed));
+        let h = f64::from_bits(RECT[3].load(Ordering::Relaxed));
+        mouse.x >= x && mouse.x <= x + w && mouse.y >= y && mouse.y <= y + h
+    }
+
+    // 激活/成为 key 窗口时重新落一次笔。
+    //
+    // 切到别的应用时 macOS 会把我们的光标换成箭头,而这一步不经过
+    // `-[NSCursor set]`,拦截器看不到;切回来时如果没有鼠标移动,WebKit 也
+    // 不会再发光标。所以在这两个通知上主动把笔重新设一次。
+    //
+    // 窗口移动/缩放同理会改变缓存的矩形,一并重算。
     define_class!(
-        // SAFETY: 观察者只调用 apply_now(),不持有其它 UI 状态。
+        // SAFETY: 观察者只调用 apply_now()/refresh_rect(),不持有其它 UI 状态。
         #[unsafe(super(NSObject))]
         #[name = "BNotePenCursorKeeper"]
         #[ivars = ()]
@@ -70,6 +117,11 @@ mod mac {
             #[unsafe(method(penCursorRefresh:))]
             fn pen_cursor_refresh(&self, _note: &NSNotification) {
                 apply_now();
+            }
+
+            #[unsafe(method(penCursorGeometry:))]
+            fn pen_cursor_geometry(&self, _note: &NSNotification) {
+                refresh_rect();
             }
         }
     );
@@ -100,34 +152,28 @@ mod mac {
     }
 
     /// 指针此刻应该显示哪支笔;None = 不接管,交回原来的光标。
+    ///
+    /// 这段会在**每次** `-[NSCursor set]` 上跑(鼠标移动、布局后的光标复算),
+    /// 所以先用缓存矩形做一次纯算术判断:指针不在网页上就直接返回,一次
+    /// AppKit 调用都不做。
     fn wanted_pen() -> Option<*mut NSCursor> {
         let mtm = MainThreadMarker::new()?;
-        let view = WEBVIEW.load(Ordering::Relaxed) as *mut NSView;
+        let view = WEBVIEW.load(Ordering::Relaxed) as *const NSView;
         if view.is_null() {
+            return None;
+        }
+        let mouse = NSEvent::mouseLocation();
+        if !inside_cached(mouse) {
             return None;
         }
         unsafe {
             let view = &*view;
             let window = view.window()?;
-            // 应用不在前台、视图被藏起(弹窗盖住)时都不接管。
+            // 应用不在前台、视图被藏起(弹窗盖住)、窗口不是 key(别的 bnote
+            // 窗口盖在上面)时都不接管。
             if !NSApplication::sharedApplication(mtm).isActive()
                 || view.isHiddenOrHasHiddenAncestor()
-            {
-                return None;
-            }
-            let mouse = NSEvent::mouseLocation();
-            let in_window = view.convertRect_toView(view.bounds(), None);
-            let rect = window.convertRectToScreen(in_window);
-            if mouse.x < rect.origin.x
-                || mouse.x > rect.origin.x + rect.size.width
-                || mouse.y < rect.origin.y
-                || mouse.y > rect.origin.y + rect.size.height
-            {
-                return None;
-            }
-            // 指针下最上面必须是这个窗口:别的 bnote 窗口/系统面板盖住时不接管。
-            if NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(mouse, 0, mtm)
-                != window.windowNumber()
+                || !window.isKeyWindow()
             {
                 return None;
             }
@@ -185,11 +231,13 @@ mod mac {
     }
 
     /// 立刻把当前光标刷成应当显示的那一支(鼠标可能正停着不动)。
+    /// 调用点都是低频事件(激活、换工具、视图显示/移动),这里顺带刷新矩形缓存。
     fn apply_now() {
         let raw = ORIGINAL_SET.load(Ordering::SeqCst);
         if raw == 0 {
             return;
         }
+        refresh_rect();
         if let Some(pen) = wanted_pen() {
             let current: *mut AnyObject = unsafe { msg_send![class!(NSCursor), currentCursor] };
             if current == pen.cast() {
@@ -226,6 +274,19 @@ mod mac {
                 Some(NSWindowDidBecomeKeyNotification),
                 None,
             );
+            // 窗口几何变了,缓存矩形跟着重算。
+            for name in [
+                NSWindowDidMoveNotification,
+                NSWindowDidResizeNotification,
+                NSWindowDidChangeScreenNotification,
+            ] {
+                center.addObserver_selector_name_object(
+                    observer,
+                    sel!(penCursorGeometry:),
+                    Some(name),
+                    None,
+                );
+            }
         }
     }
 
@@ -244,6 +305,7 @@ mod mac {
     /// 网页视图关掉后调用:交还系统光标(下一次鼠标移动由主窗口自己接管)。
     pub fn detach() {
         WEBVIEW.store(std::ptr::null_mut(), Ordering::SeqCst);
+        RECT_VALID.store(false, Ordering::SeqCst);
         if MainThreadMarker::new().is_some() {
             NSCursor::arrowCursor().set();
         }
@@ -255,7 +317,7 @@ mod mac {
         apply_now();
     }
 
-    /// 视图重新显示后刷新一次(弹窗关掉、原生视图 show 回来)。
+    /// 视图重新显示/重新布局后刷新一次(弹窗关掉、set_bounds 改了位置)。
     pub fn refresh() {
         apply_now();
     }

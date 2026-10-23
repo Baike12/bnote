@@ -519,6 +519,8 @@ pub fn set_study_preview_bounds(app: tauri::AppHandle, bounds: PreviewBounds) ->
         webview
             .set_bounds(bounds.rect())
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+        // 原生视图换位置了:笔形光标缓存的屏幕矩形跟着重算。
+        pen_cursor::refresh();
     }
     Ok(())
 }
