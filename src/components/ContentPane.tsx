@@ -14,6 +14,7 @@ import {
   normalizeWebAnnotations,
   saveWebAnnotations,
   WEB_ANNOTATION_SCRIPT,
+  type WebAnnotationKind,
 } from "@/study/webAnnotations";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { IconSparkles } from "./icons";
@@ -76,9 +77,9 @@ export function ContentPane() {
   const [urlInput, setUrlInput] = useState("");
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  /** 网页批注模式:页面内选中文字 → 亮黄色高亮。 */
-  const [webAnnotating, setWebAnnotating] = useState(false);
-  const webAnnotatingRef = useRef(false);
+  /** 网页批注工具:高亮 / 文字批注;null = 普通阅读。 */
+  const [webTool, setWebTool] = useState<WebAnnotationKind | null>(null);
+  const webToolRef = useRef<WebAnnotationKind | null>(null);
   const previewUrl = content?.kind === "url" ? content.url : null;
   const pdfs = pdfHistoryForVault(studyHistory, vaultPath);
 
@@ -196,7 +197,7 @@ export function ContentPane() {
     subscribe<string>("study-preview-loaded", (url) => {
       if (useAppStore.getState().studyContent?.kind !== "url") return;
       void (async () => {
-        await agentApi.setStudyPreviewAnnotationMode(webAnnotatingRef.current);
+        await agentApi.setStudyPreviewAnnotationMode(webToolRef.current);
         // 每次导航页面都会重新安装运行时:步长(以及页内上半屏遮罩)要重新推一次。
         // 推步长失败(正在导航)不能让后面的批注合并跟着中断。
         await agentApi
@@ -232,11 +233,11 @@ export function ContentPane() {
     };
   }, []);
 
-  // 换成 PDF / 关掉内容后批注模式自动退出:下次打开网页从普通阅读开始。
+  // 换成 PDF / 关掉内容后批注工具自动退出:下次打开网页从普通阅读开始。
   useEffect(() => {
     if (content?.kind === "url") return;
-    webAnnotatingRef.current = false;
-    setWebAnnotating(false);
+    webToolRef.current = null;
+    setWebTool(null);
   }, [content]);
 
   // 离页前把批注文件的防抖写盘冲刷掉(页面自己仍有 localStorage 兜底)。
@@ -336,11 +337,11 @@ export function ContentPane() {
     recordStudyUrl({ url, title });
   }
 
-  /** 网页批注开关:状态在主窗口,页面只是执行者(单一写入者)。 */
-  function toggleWebAnnotation() {
-    const next = !webAnnotatingRef.current;
-    webAnnotatingRef.current = next;
-    setWebAnnotating(next);
+  /** 网页批注工具切换:状态在主窗口,页面只是执行者(单一写入者)。 */
+  function toggleWebTool(tool: WebAnnotationKind) {
+    const next = webToolRef.current === tool ? null : tool;
+    webToolRef.current = next;
+    setWebTool(next);
     void agentApi.setStudyPreviewAnnotationMode(next).catch(() => {});
   }
 
@@ -477,15 +478,26 @@ export function ContentPane() {
                 {content.url}
               </span>
               <button
-                className={`icon-btn pdf-tool-btn${webAnnotating ? " active" : ""}`}
+                className={`icon-btn pdf-tool-btn${webTool === "highlight" ? " active" : ""}`}
                 title={
-                  webAnnotating
+                  webTool === "highlight"
                     ? "退出批注:网页恢复正常点击/选择"
                     : "高亮批注:在网页里拖选文字,标成亮黄色高亮;点已有高亮可取消"
                 }
-                onClick={toggleWebAnnotation}
+                onClick={() => toggleWebTool("highlight")}
               >
                 ✎ 高亮
+              </button>
+              <button
+                className={`icon-btn pdf-tool-btn${webTool === "note" ? " active" : ""}`}
+                title={
+                  webTool === "note"
+                    ? "退出文字批注:网页恢复正常点击/选择"
+                    : "文字批注:在网页里拖选文字,批注卡出现在选区旁;点已有批注卡继续编辑"
+                }
+                onClick={() => toggleWebTool("note")}
+              >
+                ✍ 文字
               </button>
               <button
                 className="icon-btn"

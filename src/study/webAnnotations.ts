@@ -1,14 +1,18 @@
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
+// 页面里的笔形光标:与 PDF 阅读器同一套 PNG(热点 12 22),以 data URL 注入,
+// 不依赖远端页面能否访问应用资源。`?inline` 让 Vite 直接给 base64。
+import cursorHighlight from "@/assets/cursors/pdf-highlight.png?inline";
+import cursorNote from "@/assets/cursors/pdf-note.png?inline";
 
 /**
- * 网页批注:选中文字 → 亮黄色高亮。
+ * 网页批注:高亮(亮黄)与文字批注(亮蓝 + 页内批注卡)。
  *
  * 网页在中栏是**原生子 webview**(不是 iframe,见 commands/agent.rs),主应用
  * 拿不到它的 DOM。所以批注逻辑以初始化脚本的形式注入页面:
  *
- *  1. 页面里的运行时负责选区、锚点、黄色高亮层(自己开 shadow root,不吃
+ *  1. 页面里的运行时负责选区、锚点、高亮层与批注卡(自己开 shadow root,不吃
  *     页面 CSS;CSP 下也能用,样式全部走 CSSOM)。
  *  2. 批注变化时把 `{url, annotations}` 写进 `document.title` 的
  *     `bnote-anno:` 前缀;Rust 的 title 回调把它转成 Tauri 事件发给主窗口,
@@ -19,8 +23,11 @@ import { normalizePageStep, snapScrollTopToLine } from "./reading";
  *     (页面自己刷新时立即可用)。
  *
  * 锚点不用像素:广告/懒加载会让元素位移,重启后像素必然失效。文本片段
- * (±40 字上下文 + 偏移提示)才是稳定的定位依据。
+ * (±40 字上下文 + 偏移提示)才是稳定的定位依据。阅读位置也一样存比例,
+ * 见 `POS_PREFIX`。
  */
+export type WebAnnotationKind = "highlight" | "note";
+
 export interface WebAnnotation {
   id: string;
   quote: string;
@@ -28,6 +35,10 @@ export interface WebAnnotation {
   suffix: string;
   /** 创建时在正文文本流里的起始偏移,重建锚点时的消歧提示。 */
   offset: number;
+  /** 亮黄高亮 / 亮蓝文字批注。旧数据没有这个字段,按高亮读。 */
+  kind: WebAnnotationKind;
+  /** 文字批注内容;高亮批注为空。 */
+  text: string;
   createdAt: number;
 }
 
@@ -40,6 +51,7 @@ export interface WebAnnotationFile {
 
 export const MAX_WEB_QUOTE = 2000;
 export const MAX_WEB_CONTEXT = 40;
+export const MAX_WEB_NOTE_TEXT = 2000;
 export const MAX_WEB_PER_URL = 800;
 
 /**
@@ -63,6 +75,8 @@ export function normalizeWebAnnotations(value: unknown): WebAnnotation[] {
       prefix: typeof a.prefix === "string" ? a.prefix.slice(-40) : "",
       suffix: typeof a.suffix === "string" ? a.suffix.slice(0, 40) : "",
       offset: Math.floor(a.offset),
+      kind: a.kind === "note" ? "note" : "highlight",
+      text: typeof a.text === "string" ? a.text.slice(0, 2000) : "",
       createdAt: typeof a.createdAt === "number" ? a.createdAt : 0,
     });
   }
@@ -222,6 +236,9 @@ interface RuntimeHelpers {
   normalizeWebAnnotations: typeof normalizeWebAnnotations;
   normalizePageStep: typeof normalizePageStep;
   snapScrollTopToLine: typeof snapScrollTopToLine;
+  /** 笔形光标 PNG 的 data URL(高亮=荧光笔,文字批注=蓝笔尖)。 */
+  cursorHighlight: string;
+  cursorNote: string;
 }
 
 interface TextEntry {
@@ -248,9 +265,13 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   const HOST_ID = "bnote-web-anno-host";
   const STORE_PREFIX = "bnote:web-annotations:v1:";
+  const POS_PREFIX = "bnote:web-position:v1:";
   const TITLE_PREFIX = "bnote-anno:";
   const CONTEXT = 40;
   const MAX_QUOTE = 2000;
+  const MAX_NOTE_TEXT = 2000;
+  /** 批注卡宽度(px);放不下时贴到视口右侧。 */
+  const NOTE_CARD_W = 240;
   /** 与 commands/keys.ts 的 eventToKey 同一张表：Shift+符号 的绑定按物理键记。 */
   const SHIFT_SYMBOL_BASE: Record<string, string> = {
     Semicolon: ";",
@@ -266,7 +287,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     Backquote: "`",
   };
 
-  let mode = false;
+  let mode: WebAnnotationKind | null = null;
   let url = location.href;
   let items: WebAnnotation[] = loadFromStorage(url);
   let host: HTMLElement | null = null;
@@ -278,7 +299,20 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let observer: MutationObserver | null = null;
   let scrollPending = false;
   let suppressClickUntil = 0;
-  let previousCursor: string | null = null;
+  /** 笔形光标用一张 CSSOM 样式表(不走内联 style,也不吃页面 CSP)。 */
+  let cursorSheet: CSSStyleSheet | null = null;
+  /** 刚创建/点中的文字批注:重建后把输入框聚焦并把光标放到末尾。 */
+  let focusNoteId: string | null = null;
+  /** 每张批注卡里的输入框(按批注 id),重建/聚焦都走这张表。 */
+  let noteInputs: Map<string, HTMLTextAreaElement> = new Map();
+  /** 打开页面时待恢复的滚动比例;null = 没有记录或用户已接管。 */
+  let restoreRatio: number | null = location.hash ? null : loadPosition(url);
+  /** 用户主动滚动/点击/按键后,之后的定时恢复都不再抢位置。 */
+  let userScrolled = false;
+  /** 程序化恢复滚动的瞬间,别把它当成用户的阅读进度再存一遍。 */
+  let applyingScroll = false;
+  let savePositionTimer: ReturnType<typeof setTimeout> | null = null;
+  let emitAnnotationsTimer: ReturnType<typeof setTimeout> | null = null;
   /** 翻页步长(可见高度的比例),由主窗口推入;默认 50%。 */
   let pageStep = helpers.normalizePageStep(0.5);
   /** 可配置的翻页键(命令层解析后的绑定字符串),由主窗口推入。 */
@@ -314,6 +348,83 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   function saveCurrent(): void {
     saveToStorage(url, items);
+  }
+
+  // ---- 阅读位置:每个网址在 localStorage 里记一个滚动比例 --------------------
+  // 网页的 DOM 不在主窗口,页面自己存最省事;比例而不是像素,窗口宽度变了
+  // 也还能回到同一段文字。URL 带 #锚点时让链接锚点优先,不做恢复。
+
+  function loadPosition(target: string): number | null {
+    try {
+      const raw = localStorage.getItem(POS_PREFIX + target);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { r?: unknown };
+      const ratio =
+        parsed && typeof parsed.r === "number" && Number.isFinite(parsed.r) ? parsed.r : null;
+      if (ratio === null) return null;
+      return Math.min(1, Math.max(0, ratio));
+    } catch {
+      return null;
+    }
+  }
+
+  /** 当前主滚动容器的阅读比例;没有可滚内容时返回 null。 */
+  function scrollRatioNow(): number | null {
+    const target = pageTarget();
+    if (!target) return null;
+    const max = target.scrollHeight - target.clientHeight;
+    if (max < 8) return null;
+    return Math.min(1, Math.max(0, target.scrollTop / max));
+  }
+
+  function savePositionNow(): void {
+    savePositionTimer = null;
+    if (applyingScroll) return;
+    const ratio = scrollRatioNow();
+    if (ratio === null) return;
+    try {
+      localStorage.setItem(POS_PREFIX + url, JSON.stringify({ r: ratio, at: Date.now() }));
+    } catch {
+      // 隐私模式/配额满:位置记不住,但阅读不受影响。
+    }
+  }
+
+  function scheduleSavePosition(): void {
+    if (applyingScroll) return;
+    if (savePositionTimer) clearTimeout(savePositionTimer);
+    savePositionTimer = setTimeout(savePositionNow, 350);
+  }
+
+  function applyStoredScroll(): void {
+    if (userScrolled || restoreRatio === null) return;
+    const target = pageTarget();
+    if (!target) return;
+    const max = target.scrollHeight - target.clientHeight;
+    if (max < 8) return;
+    const y = Math.round(restoreRatio * max);
+    if (Math.abs(target.scrollTop - y) <= 2) return;
+    applyingScroll = true;
+    target.scrollTop = y;
+    // scroll 事件的派发时机在各引擎间不一致;给一整拍再允许存盘。
+    setTimeout(() => {
+      applyingScroll = false;
+    }, 150);
+  }
+
+  /**
+   * 多次尝试:页面脚本/图片/懒加载会在 load 之后继续长高,一次落位往往
+   * 还量不到最终高度。用户一动手(见 userTookOver)所有尝试立即失效。
+   */
+  function scheduleRestore(): void {
+    if (restoreRatio === null) return;
+    for (const delay of [0, 60, 200, 500, 1000, 2000, 3500]) {
+      setTimeout(applyStoredScroll, delay);
+    }
+  }
+
+  function userTookOver(): void {
+    userScrolled = true;
+    restoreRatio = null;
   }
 
   function emit(): void {
@@ -657,6 +768,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (!delta) return false;
     const target = pageTarget();
     if (!target) return false;
+    // 主动翻页后不再按打开时的位置还原。
+    userTookOver();
     const documentScroller =
       target === document.scrollingElement ||
       target === document.documentElement ||
@@ -699,10 +812,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }
   }
 
-  function styleMark(el: HTMLElement): void {
+  function styleMark(el: HTMLElement, kind: WebAnnotationKind): void {
     const s = el.style;
     s.position = "absolute";
-    s.background = "rgba(255, 224, 0, 0.42)";
+    s.background = kind === "note" ? "rgba(0, 140, 255, 0.42)" : "rgba(255, 224, 0, 0.42)";
     s.mixBlendMode = "multiply";
     s.borderRadius = "2px";
     s.pointerEvents = "none";
@@ -715,6 +828,155 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }px)`;
   }
 
+  /** 文字批注卡的输入写回:只在停顿/失焦时落盘和上报,不打断打字。 */
+  function scheduleAnnotationSave(): void {
+    if (emitAnnotationsTimer) clearTimeout(emitAnnotationsTimer);
+    emitAnnotationsTimer = setTimeout(() => {
+      emitAnnotationsTimer = null;
+      saveCurrent();
+      emit();
+    }, 400);
+  }
+
+  function unionRect(rects: DocRect[]): DocRect | null {
+    let left = Number.POSITIVE_INFINITY;
+    let top = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
+    for (const r of rects) {
+      if (!(r.w > 0) || !(r.h > 0)) continue;
+      left = Math.min(left, r.x);
+      top = Math.min(top, r.y);
+      right = Math.max(right, r.x + r.w);
+      bottom = Math.max(bottom, r.y + r.h);
+    }
+    if (left === Number.POSITIVE_INFINITY) return null;
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  }
+
+  /**
+   * 文字批注卡:贴在选区右侧(放不下就放左侧),跟着正文一起滚动。
+   * 卡片在 shadow root 里,页面 CSS 影响不到;输入框是普通 textarea。
+   */
+  function buildNoteCard(
+    annotation: WebAnnotation,
+    rects: DocRect[],
+    sx: number,
+    sy: number,
+  ): HTMLElement {
+    const bbox = unionRect(rects);
+    const card = document.createElement("div");
+    const s = card.style;
+    s.position = "absolute";
+    s.width = `${NOTE_CARD_W}px`;
+    s.boxSizing = "border-box";
+    s.background = "rgba(255, 255, 255, 0.97)";
+    s.color = "#1f2328";
+    s.border = "1px solid rgba(30, 130, 220, 0.45)";
+    s.borderLeft = "3px solid rgb(30, 130, 220)";
+    s.borderRadius = "6px";
+    s.boxShadow = "0 4px 16px rgba(0, 0, 0, 0.18)";
+    s.padding = "6px 24px 6px 8px";
+    s.pointerEvents = "auto";
+    s.cursor = "text";
+    s.zIndex = "1";
+    s.font =
+      "12px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif";
+    // 横向夹在视口内:右边放不下就翻到选区左侧,再不行贴右缘。
+    const limit = Math.max(8, window.innerWidth - NOTE_CARD_W - 8);
+    const rightEdge = bbox ? bbox.x + bbox.w - sx : window.innerWidth;
+    let left = rightEdge + 10;
+    if (left > limit) left = rightEdge - NOTE_CARD_W - 20;
+    s.left = `${Math.round(Math.max(8, Math.min(left, limit)))}px`;
+    s.top = `${Math.round((bbox ? bbox.y : window.scrollY) - sy)}px`;
+
+    const remove = document.createElement("button");
+    const rs = remove.style;
+    rs.position = "absolute";
+    rs.top = "2px";
+    rs.right = "4px";
+    rs.width = "18px";
+    rs.height = "18px";
+    rs.padding = "0";
+    rs.border = "none";
+    rs.background = "transparent";
+    rs.color = "#8a8f98";
+    rs.font = "14px/18px -apple-system, sans-serif";
+    rs.cursor = "pointer";
+    remove.textContent = "×";
+    remove.title = "删除这条批注";
+    remove.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeAnnotation(annotation.id);
+    });
+
+    const input = document.createElement("textarea");
+    const is = input.style;
+    is.display = "block";
+    is.width = "100%";
+    is.boxSizing = "border-box";
+    is.border = "none";
+    is.background = "transparent";
+    is.color = "inherit";
+    is.font = "inherit";
+    is.lineHeight = "inherit";
+    is.resize = "none";
+    is.outline = "none";
+    is.padding = "0";
+    is.margin = "0";
+    is.minHeight = "42px";
+    is.maxHeight = "200px";
+    is.overflowY = "auto";
+    is.cursor = "text";
+    input.rows = 2;
+    input.value = annotation.text;
+    input.placeholder = "写批注…";
+    const autosize = () => {
+      is.height = "auto";
+      is.height = `${Math.min(200, Math.max(42, input.scrollHeight))}px`;
+    };
+    input.addEventListener("input", () => {
+      const value = input.value.slice(0, MAX_NOTE_TEXT);
+      autosize();
+      if (annotation.text === value) return;
+      annotation.text = value;
+      scheduleAnnotationSave();
+    });
+    input.addEventListener("blur", () => {
+      if (annotation.text !== input.value.slice(0, MAX_NOTE_TEXT)) {
+        annotation.text = input.value.slice(0, MAX_NOTE_TEXT);
+      }
+      if (emitAnnotationsTimer) {
+        clearTimeout(emitAnnotationsTimer);
+        emitAnnotationsTimer = null;
+      }
+      saveCurrent();
+      emit();
+    });
+    // 不让页面的拖拽/点击/快捷键处理把批注输入搅乱。
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "keydown"]) {
+      card.addEventListener(type, (event) => event.stopPropagation());
+    }
+    card.appendChild(remove);
+    card.appendChild(input);
+    noteInputs.set(annotation.id, input);
+    setTimeout(autosize, 0);
+
+    if (focusNoteId === annotation.id) {
+      focusNoteId = null;
+      setTimeout(() => {
+        try {
+          input.focus();
+          input.setSelectionRange(input.value.length, input.value.length);
+        } catch {
+          // 输入框已经不在文档里
+        }
+      }, 0);
+    }
+    return card;
+  }
+
   function rebuild(): void {
     if (!document.body) return;
     const layerEl = ensureLayer();
@@ -724,6 +986,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     const sy = window.scrollY;
     const frag = document.createDocumentFragment();
     const nextHits: Array<DocRect & { id: string }> = [];
+    noteInputs = new Map();
     for (const a of items) {
       const range = rangeOf(a, info);
       if (!range) continue;
@@ -731,9 +994,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
         .filter((r) => r.width > 1 && r.height > 1)
         .map((r) => ({ x: r.left + sx, y: r.top + sy, w: r.width, h: r.height }));
       if (boxes.length === 0) continue;
-      for (const r of helpers.mergeLineRects(boxes, 8)) {
+      const merged = helpers.mergeLineRects(boxes, 8);
+      for (const r of merged) {
         const el = document.createElement("div");
-        styleMark(el);
+        styleMark(el, a.kind);
         el.style.left = `${r.x - sx}px`;
         el.style.top = `${r.y - sy}px`;
         el.style.width = `${r.w}px`;
@@ -741,6 +1005,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
         frag.appendChild(el);
         nextHits.push({ id: a.id, ...r });
       }
+      if (a.kind === "note") frag.appendChild(buildNoteCard(a, merged, sx, sy));
     }
     layerEl.replaceChildren(frag);
     hitRects = nextHits;
@@ -753,6 +1018,9 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (rebuildTimer) clearTimeout(rebuildTimer);
     rebuildTimer = setTimeout(() => {
       rebuildTimer = null;
+      // 正在批注卡里打字:这次页面变动先不重建(否则输入框被替换、焦点丢失),
+      // 下一次内容变动/交互会再排一次。
+      if (host && document.activeElement === host) return;
       rebuild();
     }, delay);
   }
@@ -799,7 +1067,25 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     emit();
   }
 
+  /** 聚焦已有批注卡;卡片还没画出来就先记下 id,重建后自动聚焦。 */
+  function focusNote(id: string): void {
+    const input = noteInputs.get(id);
+    if (input) {
+      try {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      } catch {
+        // 输入框已经不在文档里
+      }
+      return;
+    }
+    focusNoteId = id;
+    rebuild();
+  }
+
   function createFromSelection(range: Range): void {
+    const kind = mode;
+    if (!kind) return;
     const info = collectText();
     const start0 = offsetOfPoint(info.entries, range.startContainer, range.startOffset);
     const end0 = offsetOfPoint(info.entries, range.endContainer, range.endOffset);
@@ -813,15 +1099,29 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     const quote = info.text.slice(start, end);
     if (!quote.trim()) return;
     // 同一位置重复 mouseup(双击/拖选结束)不重复建批注。
-    if (items.some((a) => a.offset === start && a.quote === quote)) return;
+    const existing = items.find((a) => a.offset === start && a.quote === quote);
+    if (existing) {
+      // 已经高亮过的句子改用文字批注:原地升级,不再叠一条。
+      if (kind === "note" && existing.kind !== "note") {
+        existing.kind = "note";
+        focusNoteId = existing.id;
+        saveCurrent();
+        rebuild();
+        emit();
+      }
+      return;
+    }
     const annotation: WebAnnotation = {
       id: newId(),
       quote,
       prefix: info.text.slice(Math.max(0, start - CONTEXT), start),
       suffix: info.text.slice(end, end + CONTEXT),
       offset: start,
+      kind,
+      text: "",
       createdAt: Date.now(),
     };
+    if (kind === "note") focusNoteId = annotation.id;
     items.push(annotation);
     saveCurrent();
     rebuild();
@@ -830,6 +1130,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   function onMouseUp(event: MouseEvent): void {
     if (!mode) return;
+    // 落在批注卡(经 shadow 重定向到 host)上:输入/删卡归卡片自己。
+    if (host && event.target === host) return;
     if (isEditable(event.target as Element | null)) return;
     // 等浏览器把这次 mouseup 的选区落定(拖选结束/双击)。
     setTimeout(() => {
@@ -845,8 +1147,15 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       }
       // 单选/双击后有些环境会清空选区(rangeCount 0);取消高亮不能依赖它。
       const hit = hitAt(event.clientX, event.clientY);
-      if (hit) {
-        removeAnnotation(hit);
+      const annotation = hit ? items.find((a) => a.id === hit) : undefined;
+      if (!annotation) return;
+      // 与 PDF 一致:高亮工具只取消高亮,文字工具只聚焦文字批注,
+      // 不会误删另一种批注。
+      if (mode === "note" && annotation.kind === "note") {
+        focusNote(annotation.id);
+        suppressClickUntil = Date.now() + 500;
+      } else if (mode === "highlight" && annotation.kind === "highlight") {
+        removeAnnotation(annotation.id);
         suppressClickUntil = Date.now() + 500;
       }
     }, 0);
@@ -878,6 +1187,9 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (location.href === url) return;
     url = location.href;
     items = loadFromStorage(url);
+    userScrolled = false;
+    restoreRatio = location.hash ? null : loadPosition(url);
+    scheduleRestore();
     scheduleRebuild(0);
   }
 
@@ -899,18 +1211,62 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }
   }
 
-  function setMode(on: boolean): void {
-    const enabled = !!on;
-    if (mode === enabled) return;
-    mode = enabled;
+  /**
+   * 批注工具:`"highlight"` / `"note"`;`false`/`null` 退出。
+   * 光标走一张 CSSOM 样式表 + !important:页面常给 body/a/按钮写死 cursor,
+   * 只改 documentElement 的内联样式会被它们盖掉(看起来就是普通箭头)。
+   * 笔形图片加载失败时回落到 crosshair,不会退回箭头。
+   */
+  function applyCursor(): void {
+    const root = document.documentElement;
+    if (!mode) {
+      root.classList.remove("bnote-annotating");
+      root.style.removeProperty("cursor");
+      try {
+        if (cursorSheet) cursorSheet.replaceSync("");
+      } catch {
+        // 样式表已失效:下次进入模式时重建
+        cursorSheet = null;
+      }
+      return;
+    }
+    const image = mode === "note" ? helpers.cursorNote : helpers.cursorHighlight;
+    const cursor = `url("${image}") 12 22, crosshair`;
+    root.classList.add("bnote-annotating");
+    // 输入控件保留页面自己的文本光标:批注模式不改它们的编辑手感。
+    const css = [
+      `html.bnote-annotating, html.bnote-annotating * { cursor: ${cursor} !important; }`,
+      `html.bnote-annotating input, html.bnote-annotating textarea,`,
+      `html.bnote-annotating select, html.bnote-annotating [contenteditable] {`,
+      `  cursor: auto !important;`,
+      `}`,
+    ].join("\n");
+    try {
+      if (!cursorSheet) {
+        cursorSheet = new CSSStyleSheet();
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, cursorSheet];
+      }
+      cursorSheet.replaceSync(css);
+    } catch {
+      // 老 WebKit 没有构造样式表:至少让 <html> 上生效。
+      try {
+        root.style.setProperty("cursor", cursor, "important");
+      } catch {
+        // 页面拒绝样式修改:光标不好看,但不影响批注。
+      }
+    }
+  }
+
+  function setMode(value: unknown): void {
+    const next: WebAnnotationKind | null =
+      value === "note" ? "note" : value === true || value === "highlight" ? "highlight" : null;
+    if (mode === next) return;
+    mode = next;
+    applyCursor();
     if (mode) {
-      previousCursor = document.documentElement.style.cursor;
-      document.documentElement.style.cursor = "copy";
       watchDom();
       rebuild();
     } else {
-      document.documentElement.style.cursor = previousCursor || "";
-      previousCursor = null;
       unwatchDom();
     }
   }
@@ -964,15 +1320,50 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   window.addEventListener("click", onClickCapture, true);
   window.addEventListener("keydown", onPageKey, true);
   window.addEventListener("scroll", onScroll, { passive: true });
-  window.addEventListener("resize", () => scheduleRebuild(200));
+  // 阅读位置:滚动停止后存比例;捕获阶段才能收到内层滚动容器的 scroll。
+  window.addEventListener("scroll", scheduleSavePosition, { passive: true, capture: true });
+  // 用户一动手就放弃「打开时的落点」,之后的布局变化不再抢滚动位置。
+  window.addEventListener("wheel", userTookOver, { passive: true, capture: true });
+  window.addEventListener("touchstart", userTookOver, { passive: true, capture: true });
+  window.addEventListener("pointerdown", userTookOver, true);
+  window.addEventListener(
+    "keydown",
+    (event: KeyboardEvent) => {
+      if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(event.key)) userTookOver();
+    },
+    true,
+  );
+  window.addEventListener("resize", () => {
+    scheduleRebuild(200);
+    applyStoredScroll();
+  });
   window.addEventListener("hashchange", onUrlChange);
   window.addEventListener("popstate", onUrlChange);
-  window.addEventListener("load", () => scheduleRebuild(0));
+  window.addEventListener("load", () => {
+    scheduleRebuild(0);
+    scheduleRestore();
+  });
+  window.addEventListener("pagehide", () => {
+    if (savePositionTimer) {
+      clearTimeout(savePositionTimer);
+      savePositionTimer = null;
+    }
+    // 正在输入的批注文字也要在离页前落盘(页面内 localStorage + 主窗口)。
+    if (emitAnnotationsTimer) {
+      clearTimeout(emitAnnotationsTimer);
+      emitAnnotationsTimer = null;
+    }
+    saveCurrent();
+    emit();
+    savePositionNow();
+  });
   patchHistory();
   ensureShade();
+  scheduleRestore();
   document.addEventListener("DOMContentLoaded", () => {
     ensureShade();
     scheduleRebuild(0);
+    scheduleRestore();
     watchDom();
   });
   if (document.readyState !== "loading") {
@@ -981,7 +1372,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   }
   try {
     if (document.fonts && document.fonts.ready) {
-      void document.fonts.ready.then(() => scheduleRebuild(0));
+      void document.fonts.ready.then(() => {
+        scheduleRebuild(0);
+        scheduleRestore();
+      });
     }
   } catch {
     // 老 WebKit 没有 FontFaceSet
@@ -990,7 +1384,16 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
 /** 注入原生 webview 的完整脚本(运行时 + 它依赖的纯函数)。 */
 export function buildWebAnnotationScript(): string {
-  return `(${webAnnotationRuntime.toString()})({locateQuote:${locateQuote.toString()},mergeLineRects:${mergeLineRects.toString()},normalizeWebAnnotations:${normalizeWebAnnotations.toString()},normalizePageStep:${normalizePageStep.toString()},snapScrollTopToLine:${snapScrollTopToLine.toString()}});`;
+  const helpers = [
+    `locateQuote:${locateQuote.toString()}`,
+    `mergeLineRects:${mergeLineRects.toString()}`,
+    `normalizeWebAnnotations:${normalizeWebAnnotations.toString()}`,
+    `normalizePageStep:${normalizePageStep.toString()}`,
+    `snapScrollTopToLine:${snapScrollTopToLine.toString()}`,
+    `cursorHighlight:${JSON.stringify(cursorHighlight)}`,
+    `cursorNote:${JSON.stringify(cursorNote)}`,
+  ].join(",");
+  return `(${webAnnotationRuntime.toString()})({${helpers}});`;
 }
 
 /** 只算一次:主窗口每次打开网页都把它交给 Rust 注册成初始化脚本。 */

@@ -68,6 +68,14 @@ import {
 } from "@/study/pdfLayout";
 import { setPdfNavHandlers } from "@/study/pdfNav";
 import { filterOutline, type PdfOutlineNode } from "@/study/pdfOutline";
+import {
+  flushReadPositions,
+  loadReadPositions,
+  pdfPositionAt,
+  savePdfReadPosition,
+  scrollTopForPdfPosition,
+  type PageMetric,
+} from "@/study/readPositions";
 import { snapScrollTopToLine, steppedScrollTop } from "@/study/reading";
 
 /**
@@ -217,6 +225,17 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   /** 最近一趟写进设置的中栏宽度;下一趟前比对,被手动改过就不再动。 */
   const autoFitTarget = useRef<number | null>(null);
 
+  // --- 阅读位置 -------------------------------------------------------------
+  /** 打开文档时的落点(页码 + 页内偏移);用户一动手就清掉。 */
+  const positionAnchor = useRef<{ page: number; offset: number } | null>(null);
+  /** 位置文件读完之前不许存盘,否则初始的 scrollTop=0 会覆盖上次的锚点。 */
+  const positionLoaded = useRef(false);
+  /** 至少落过一次位才允许存盘(或本来就没有锚点)。 */
+  const positionApplied = useRef(false);
+  /** 用户已经主动滚动/翻页/跳转,之后的布局变化不再把位置拉回去。 */
+  const userScrolled = useRef(false);
+  const [positionEpoch, setPositionEpoch] = useState(0);
+
   // 页面宽度 = 中间栏可用宽度,贴边(不再留 14px 横向内边距)。
   // 框选后只剩裁出来的那一块:100% 要让可见部分贴边,所以完整页面按裁剪宽度
   // 等比放大,而不是让裁剪窗口缩在栏中间留两条灰边。
@@ -330,6 +349,106 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         if (annotationsEpoch.current === epoch) setAnnotationsLoaded(true);
       });
   }, [vaultPath, docKey, history]);
+
+  // --- 阅读位置 -------------------------------------------------------------
+  // 换文档先作废旧锚点,再读这份 PDF 上次停下的位置。异步读盘回来时比对
+  // docKey(闭包里的 key),过期结果丢弃。
+  useEffect(() => {
+    positionAnchor.current = null;
+    positionLoaded.current = false;
+    positionApplied.current = false;
+    userScrolled.current = false;
+    const key = docKey;
+    if (!vaultPath) {
+      positionLoaded.current = true;
+      positionApplied.current = true;
+      return;
+    }
+    let cancelled = false;
+    // 页码对不上(文件被替换、裁页)时不能让存盘一直被锁住:2 秒后无论是否
+    // 落位成功都允许记录新位置。
+    const fallback = setTimeout(() => {
+      positionApplied.current = true;
+    }, 2000);
+    void loadReadPositions(vaultPath)
+      .then((data) => {
+        if (cancelled) return;
+        const saved = data.pdfs[key];
+        // 读盘期间用户已经开始滚动:位置归用户,不再还原。
+        positionAnchor.current =
+          saved && !userScrolled.current
+            ? { page: saved.page, offset: saved.offset }
+            : null;
+        positionLoaded.current = true;
+        if (!positionAnchor.current) positionApplied.current = true;
+        // 读盘可能晚于文档/页面就绪:epoch 变化让恢复 effect 再跑一次。
+        setPositionEpoch((n) => n + 1);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        positionLoaded.current = true;
+        positionApplied.current = true;
+      });
+    return () => {
+      cancelled = true;
+      clearTimeout(fallback);
+    };
+  }, [vaultPath, docKey]);
+
+  /** 把锚点落到当前布局上;页面还没挂载/宽度变化后都可以反复调用。 */
+  const applyReadPosition = useCallback(() => {
+    const anchor = positionAnchor.current;
+    if (!anchor) return;
+    if (userScrolled.current || !scrollRef.current) return;
+    const el = pageEls.current.get(anchor.page);
+    if (!el) return;
+    const scroll = scrollRef.current;
+    const scrollRect = scroll.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    const metrics: PageMetric[] = [
+      { page: anchor.page, top: rect.top - scrollRect.top + scroll.scrollTop, height: rect.height },
+    ];
+    const top = scrollTopForPdfPosition(metrics, anchor);
+    if (top === null) return;
+    if (Math.abs(scroll.scrollTop - top) > 1) scroll.scrollTop = top;
+    positionApplied.current = true;
+  }, []);
+
+  // 文档/页面挂载、自动适配改宽、裁剪重排后都重新落一次:锚点是「第几页的
+  // 百分之几」,布局怎么变都还能回到同一处。用户一动手下面的监听就清掉
+  // 锚点,不会把用户拽回旧位置。
+  useEffect(() => {
+    if (!positionAnchor.current || userScrolled.current) return;
+    const raf = requestAnimationFrame(() => applyReadPosition());
+    return () => cancelAnimationFrame(raf);
+  }, [positionEpoch, doc, targetWidth, cropShown, applyReadPosition]);
+
+  // 用户主动滚动/翻页/跳转后,位置归用户所有:之后只存不还原。
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const release = () => {
+      userScrolled.current = true;
+      positionAnchor.current = null;
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(event.key)) release();
+    };
+    scroll.addEventListener("wheel", release, { passive: true });
+    scroll.addEventListener("touchstart", release, { passive: true });
+    scroll.addEventListener("pointerdown", release, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      scroll.removeEventListener("wheel", release);
+      scroll.removeEventListener("touchstart", release);
+      scroll.removeEventListener("pointerdown", release, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [doc]);
+
+  // 离开阅读器/退出学习模式时把挂起的写盘冲刷掉。
+  useEffect(() => () => flushReadPositions(), []);
 
   const commitAnnotations = useCallback(
     (next: PdfAnnotation[], mode: AnnotationCommit = "structure", textId?: string) => {
@@ -778,25 +897,52 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     };
   }, [doc, numPages]);
 
-  const registerPage = useCallback((n: number, el: HTMLDivElement | null) => {
-    if (el) pageEls.current.set(n, el);
-    else pageEls.current.delete(n);
-  }, []);
+  const registerPage = useCallback(
+    (n: number, el: HTMLDivElement | null) => {
+      if (el) {
+        pageEls.current.set(n, el);
+        // 锚点页挂载的那一刻就落位:所有页的占位框已经在同一批提交里,
+        // scrollHeight 是完整的,不必等首帧画完再跳一下。
+        applyReadPosition();
+      } else {
+        pageEls.current.delete(n);
+      }
+    },
+    [applyReadPosition],
+  );
 
   // 首/尾状态只用于翻页按钮的 disabled：按步长翻页后，页号不再是边界
   // （最后一页也可能还有半屏）。滚动的每帧只读已缓存的 scrollTop/Height，
   // 状态只在跨过边界时变一次；内容高度由 stage 的 ResizeObserver 补触发。
+  // 阅读位置也在这里存：滚动停止 350ms 后量一次所有页（一次批量布局读取），
+  // 不在每帧做几何计算。
   useEffect(() => {
     const scroll = scrollRef.current;
     const stage = stageRef.current;
     if (!scroll) return;
     let raf = 0;
+    let saveTimer: ReturnType<typeof setTimeout> | null = null;
+    const saveNow = () => {
+      saveTimer = null;
+      if (!vaultPath || !positionLoaded.current || !positionApplied.current) return;
+      const position = pdfPositionAt(
+        pageMetrics(scroll, pageEls.current),
+        scroll.scrollTop,
+      );
+      if (position) savePdfReadPosition(vaultPath, docKey, position);
+    };
+    const scheduleSave = () => {
+      if (!positionLoaded.current || !positionApplied.current) return;
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveNow, 350);
+    };
     const sync = () => {
       raf = 0;
       const top = scroll.scrollTop <= 1;
       const bottom = scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 1;
       setAtScrollTop((value) => (value === top ? value : top));
       setAtScrollBottom((value) => (value === bottom ? value : bottom));
+      scheduleSave();
     };
     const schedule = () => {
       if (!raf) raf = requestAnimationFrame(sync);
@@ -809,15 +955,18 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     return () => {
       scroll.removeEventListener("scroll", schedule);
       if (raf) cancelAnimationFrame(raf);
+      if (saveTimer) clearTimeout(saveTimer);
       observer.disconnect();
     };
-  }, [doc, numPages]);
+  }, [doc, numPages, vaultPath, docKey]);
 
   function goToPage(n: number) {
     const el = pageEls.current.get(n);
     const scroll = scrollRef.current;
     if (!el || !scroll) return;
     if (n > numPages || n < 1) return;
+    userScrolled.current = true;
+    positionAnchor.current = null;
     const top = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop - 10;
     scroll.scrollTo({ top: Math.max(0, top) });
     setCurrentPage(n);
@@ -834,6 +983,9 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     (delta: 1 | -1) => {
       const scroll = scrollRef.current;
       if (!scroll) return;
+      // 主动翻页 = 阅读位置归用户,不再按打开时的锚点还原。
+      userScrolled.current = true;
+      positionAnchor.current = null;
       const viewport = scroll.clientHeight;
       const content = scroll.scrollHeight;
       const max = Math.max(0, content - viewport);
@@ -1277,6 +1429,20 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
 // ---------------------------------------------------------------------------
 // Crop selection
 // ---------------------------------------------------------------------------
+
+/** 所有页在滚动内容里的位置;一次批量读布局,只在滚动停止/落位时调用。 */
+function pageMetrics(
+  scroll: HTMLElement,
+  pages: Map<number, HTMLDivElement>,
+): PageMetric[] {
+  const offset = scroll.scrollTop - scroll.getBoundingClientRect().top;
+  const out: PageMetric[] = [];
+  for (const [page, el] of pages) {
+    const rect = el.getBoundingClientRect();
+    out.push({ page, top: rect.top + offset, height: rect.height });
+  }
+  return out;
+}
 
 interface CropLayerProps {
   pageEls: React.RefObject<Map<number, HTMLDivElement>>;

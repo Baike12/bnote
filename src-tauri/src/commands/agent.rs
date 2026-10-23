@@ -399,18 +399,24 @@ pub async fn show_study_preview(
     Ok(())
 }
 
-/// Toggles the page-side annotation mode (yellow text highlights).
+/// Sets the page-side annotation tool: `"highlight"` (yellow), `"note"`
+/// (blue + in-page note card), or `None` to leave annotation mode.
 #[tauri::command]
 pub fn set_study_preview_annotation_mode(
     app: tauri::AppHandle,
-    enabled: bool,
+    mode: Option<String>,
 ) -> CmdResult<()> {
     use tauri::Manager;
     if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        let arg = match mode.as_deref() {
+            Some("highlight") => "\"highlight\"",
+            Some("note") => "\"note\"",
+            _ => "null",
+        };
         webview
             .eval(format!(
                 "window.__bnoteAnno && window.__bnoteAnno.setMode({});",
-                enabled
+                arg
             ))
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
     }

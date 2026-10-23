@@ -2812,20 +2812,27 @@ input[type="range"] {
 }
 /* 批注工具的光标:高亮=荧光笔,文字批注=蓝笔尖;热点都在笔尖(12 22)。
    用 24px PNG:WKWebView/Chromium 都认,不依赖 SVG 光标支持。
-   文本层的 span 自带 cursor:text(pdf.js 的规则),这里必须显式压过去。 */
+   文本层的 span 自带 cursor:text(pdf.js 的规则),这里必须显式压过去。
+   整块页面区(不只是页框)都换成笔形:页间空白/上下留白也属于阅读区,
+   否则鼠标一离开文字就退回箭头,"画笔"时有时无。
+   PNG 加载失败时回落到 crosshair——不要回落到 text,那看起来就是普通指针。 */
+.pdf-viewer.tool-highlight .pdf-page-area,
+.pdf-viewer.tool-highlight .pdf-page-area *,
 .pdf-viewer.tool-highlight .pdf-page,
 .pdf-viewer.tool-highlight .pdf-page .textLayer,
 .pdf-viewer.tool-highlight .pdf-page .textLayer span {
   cursor:
     url("../assets/cursors/pdf-highlight.png") 12 22,
-    text;
+    crosshair;
 }
+.pdf-viewer.tool-note .pdf-page-area,
+.pdf-viewer.tool-note .pdf-page-area *,
 .pdf-viewer.tool-note .pdf-page,
 .pdf-viewer.tool-note .pdf-page .textLayer,
 .pdf-viewer.tool-note .pdf-page .textLayer span {
   cursor:
     url("../assets/cursors/pdf-note.png") 12 22,
-    text;
+    crosshair;
 }
 .pdf-page canvas {
   position: absolute;
