@@ -135,6 +135,14 @@ describe("注入脚本", () => {
     expect(script).toContain("data:image/png;base64");
     expect(script).toContain("bnote-annotating");
     expect(script).toContain("cursorHighlight");
+    // 光标:图片只在 <html> 上写一次,后代继承;样式表启动时装好,切模式
+    // 只换类(每个元素各持一份 cursor 值会让 WebKit 反复重建 NSCursor)。
+    expect(script).toContain("installCursorSheet");
+    expect(script).toContain("cursor: inherit !important");
+    expect(script).toContain("bnote-annotating-note");
+    // 阅读分区只在翻页后出现,打开时(以及自由滚动后)不画。
+    expect(script).toContain("shadeVisible");
+    expect(script).toContain("freeScrolled");
     // 纯函数被序列化进页面,不能残留模块级常量名。
     expect(script).not.toContain("MAX_WEB_QUOTE");
   });
