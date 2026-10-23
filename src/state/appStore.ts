@@ -141,6 +141,19 @@ export interface PersistedConfig {
   cursorPositions?: Record<string, { pos: number; scroll: number }>;
   /** 学习模式打开过的 PDF / 网页（两个独立列表，见 study/history.ts）。 */
   studyHistory?: StudyHistory;
+  /**
+   * 主窗口大小与位置（逻辑像素）。由 `lib/windowState.ts` 在移动/缩放后写入,
+   * 启动时由 Rust 侧在首帧前恢复(见 commands/config.rs::restore_window_bounds)。
+   */
+  window?: WindowState;
+}
+
+export interface WindowState {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  maximized: boolean;
 }
 
 /** Hard cap on remembered files — dropping the oldest entry beyond it. */

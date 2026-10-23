@@ -20,6 +20,7 @@ import {
   noteDirtyPaths,
 } from "@/footprint/store";
 import { flushPersistConfig, hasPendingPersist } from "@/state/appStore";
+import { trackWindowState } from "@/lib/windowState";
 import { imeOnWindowBlur, imeOnWindowFocus, imeWarmUp } from "@/editor/imeSwitch";
 import {
   applySettingsToEditor,
@@ -69,10 +70,14 @@ export default function App() {
     registerVimExCommands((id) => runCommand(id));
     let unlisten: (() => void) | undefined;
     let imeUnlisten: (() => void) | undefined;
+    let unlistenWindow: (() => void) | undefined;
 
     void (async () => {
       await loadOverrides().catch(() => {});
       const cfg = (await api.loadAppConfig().catch(() => null)) as PersistedConfig | null;
+      // 窗口几何的恢复在 Rust 首帧前做完(见 config.rs);这里只负责之后的
+      // 移动/缩放落盘,写盘走同一个 config 快照。
+      unlistenWindow = trackWindowState();
       // 一次性迁移:旧版「上次文件」是全局单值,它必然属于上次打开的那个仓,
       // 按 lastVault 落进 per-vault 映射。幂等:落盘失败也只会在下次启动重算。
       if (cfg?.lastFile && cfg?.lastVault && !cfg.lastFileByVault?.[cfg.lastVault]) {
@@ -116,6 +121,7 @@ export default function App() {
     return () => {
       unlisten?.();
       imeUnlisten?.();
+      unlistenWindow?.();
     };
   }, []);
 
