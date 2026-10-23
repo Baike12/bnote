@@ -316,13 +316,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let shadeCornerLeft: HTMLElement | null = null;
   let shadeCornerRight: HTMLElement | null = null;
   let frameLayer: HTMLElement | null = null;
-  /**
-   * 阅读分区只在「真的翻过页」之后才画。打开时就画出来等于给整屏盖一条
-   * 固定在半屏的分界线——它不随任何进度变化,看起来就是一条卡住的加载
-   * 进度条。翻页后它标记「这一屏之前看过的部分」,自由滚动后分区失去意义,
-   * 再收起来。
-   */
-  let shadeVisible = false;
 
   function storageKey(target: string): string {
     return STORE_PREFIX + target;
@@ -425,15 +418,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   function userTookOver(): void {
     userScrolled = true;
     restoreRatio = null;
-  }
-
-  /** 自由滚动(滚轮/触摸/键盘)后,翻页分界线不再对应任何位置,收起。 */
-  function freeScrolled(): void {
-    userTookOver();
-    if (shadeVisible) {
-      shadeVisible = false;
-      paintShade();
-    }
   }
 
   function emit(): void {
@@ -590,10 +574,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   /**
    * 翻页后的阅读分区：上方旧内容压暗，下方新内容的顶部用一条淡色圆角线
    * 标出（不画完整框）。两层都在 shadow root 里，不吃页面 CSS；不接鼠标事件。
-   *
-   * 平时是隐藏的（见 shadeVisible）：这条固定停在步长边界的分界线在打开
-   * 网页时就画出来，看起来就是一条永远加载不完的进度条。只有真的翻过页，
-   * 它才表示「上一屏读到这里」。
+   * 打开网页就画出来，翻页、滚动都保持同一个分区（位置只跟步长有关）。
    */
   function ensureShade(): void {
     if (
@@ -675,7 +656,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   }
 
   function paintShade(): void {
-    if (shadeHost) shadeHost.style.display = shadeVisible ? "" : "none";
     // 旧内容占上方 1-step；线压在压暗结束的那条线上，不留缝。
     const old = ((1 - pageStep) * 100).toFixed(2);
     if (shadeLayer) {
@@ -784,11 +764,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (!target) return false;
     // 主动翻页后不再按打开时的位置还原。
     userTookOver();
-    // 翻页是分区的唯一来源:分界线标记「刚翻过去的那一屏之前」。
-    if (!shadeVisible) {
-      shadeVisible = true;
-      paintShade();
-    }
     const documentScroller =
       target === document.scrollingElement ||
       target === document.documentElement ||
@@ -1208,11 +1183,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     items = loadFromStorage(url);
     userScrolled = false;
     restoreRatio = location.hash ? null : loadPosition(url);
-    // 新页面还没翻过页:分区不该出现(否则看起来像一条卡住的加载条)。
-    if (shadeVisible) {
-      shadeVisible = false;
-      paintShade();
-    }
     scheduleRestore();
     scheduleRebuild(0);
   }
@@ -1345,17 +1315,13 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   // 阅读位置:滚动停止后存比例;捕获阶段才能收到内层滚动容器的 scroll。
   window.addEventListener("scroll", scheduleSavePosition, { passive: true, capture: true });
   // 用户一动手就放弃「打开时的落点」,之后的布局变化不再抢滚动位置。
-  window.addEventListener("wheel", freeScrolled, { passive: true, capture: true });
-  window.addEventListener("touchstart", freeScrolled, { passive: true, capture: true });
+  window.addEventListener("wheel", userTookOver, { passive: true, capture: true });
+  window.addEventListener("touchstart", userTookOver, { passive: true, capture: true });
   window.addEventListener("pointerdown", userTookOver, true);
   window.addEventListener(
     "keydown",
     (event: KeyboardEvent) => {
-      if (!/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(event.key)) return;
-      // 已经被翻页处理器接管的键(PageDown/自定义翻页键)不算自由滚动:
-      // 它们自己会重新画分区。
-      if (event.defaultPrevented) return;
-      freeScrolled();
+      if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(event.key)) userTookOver();
     },
     true,
   );

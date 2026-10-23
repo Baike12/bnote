@@ -138,9 +138,9 @@ describe("注入脚本", () => {
     expect(script).toContain("bnote-annotating");
     expect(script).toContain("cursor: text !important");
     expect(script).not.toContain("data:image/png");
-    // 阅读分区只在翻页后出现,打开时(以及自由滚动后)不画。
-    expect(script).toContain("shadeVisible");
-    expect(script).toContain("freeScrolled");
+    // 阅读分区(压暗 + 分界线)常驻:打开网页就有,不靠翻页触发。
+    expect(script).toContain("paintShade");
+    expect(script).not.toContain("shadeVisible");
     // 纯函数被序列化进页面,不能残留模块级常量名。
     expect(script).not.toContain("MAX_WEB_QUOTE");
   });
