@@ -173,6 +173,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             install_menu(app.handle())?;
 
+            // 主窗口几何:在事件循环启动前恢复,首帧就是用户上次的大小和位置。
+            commands::config::restore_window_bounds(app.handle());
+
             // Debug builds also answer on a loopback port so the same UI can be
             // driven from a browser tab (see `devbridge`).
             #[cfg(debug_assertions)]

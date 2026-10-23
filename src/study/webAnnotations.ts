@@ -1,6 +1,9 @@
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
+// 页面里的笔形光标:与 PDF 阅读器同一张 PNG(热点 12 22),以 data URL 注入,
+// 不依赖远端页面能否访问应用资源。`?inline` 让 Vite 直接给 base64。
+import cursorPen from "@/assets/cursors/pdf-highlight.png?inline";
 
 /**
  * 网页批注:高亮(亮黄)与文字批注(亮蓝 + 页内批注卡)。
@@ -232,6 +235,8 @@ interface RuntimeHelpers {
   normalizeWebAnnotations: typeof normalizeWebAnnotations;
   normalizePageStep: typeof normalizePageStep;
   snapScrollTopToLine: typeof snapScrollTopToLine;
+  /** 笔形光标 PNG 的 data URL(与 PDF 阅读器同一张图)。 */
+  cursorPen: string;
 }
 
 interface TextEntry {
@@ -292,8 +297,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let observer: MutationObserver | null = null;
   let scrollPending = false;
   let suppressClickUntil = 0;
-  /** 批注光标用一张 CSSOM 样式表(不走内联 style,也不吃页面 CSP)。 */
-  let cursorSheet: CSSStyleSheet | null = null;
   /** 刚创建/点中的文字批注:重建后把输入框聚焦并把光标放到末尾。 */
   let focusNoteId: string | null = null;
   /** 每张批注卡里的输入框(按批注 id),重建/聚焦都走这张表。 */
@@ -1206,46 +1209,36 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   }
 
   /**
-   * 批注工具:`"highlight"` / `"note"`;`false`/`null` 退出。
+   * 网页里的光标固定为笔形,**与批注开关、页面内容都无关**:链接、按钮、
+   * 文本、输入框一律同一形状,不出现「笔/箭头/工字形」来回切。
    *
-   * 光标只有两种状态,且都用**原生**光标:批注中整页工字形(`text`),退出
-   * 后交还原页面(箭头/链接手形等)。自定义光标图片会让 WebKit 在鼠标移动
-   * 时不断重建 NSCursor,叠加页面自己的 `cursor: pointer/text` 规则,表现
-   * 就是笔、箭头、工字形之间乱闪——原生关键字没有图片可重建,也没有切换。
+   * 形状只在这一张样式表里声明一次:`<html>` 上是光标图片,后代一律
+   * `cursor: inherit`,全页共享同一个光标值。权重用 `:not(#…)` 抬到 id 级,
+   * 页面自己写的 `a:hover{cursor:pointer!important}` 也压不过它——不抬权重
+   * 就会出现「有时笔、有时箭头」的闪烁。
    *
-   * 样式表启动时装好,切模式只改 `<html>` 上的类(不重算整篇样式)。权重用
-   * `:not(#…)` 抬到 id 级,压过页面自己的 `a:hover{cursor:pointer!important}`。
+   * 样式表在运行时启动时装好,之后不再改动(批注模式切换不碰它)。
    */
   function installCursorSheet(): void {
     // :not(#bnote-cursor) 不提选择器语义,只借用 id 的权重(两次 = (2,1,0))。
     const guard = ":not(#bnote-cursor):not(#bnote-cursor)";
+    const pen = `url("${helpers.cursorPen}") 12 22, crosshair`;
     const css = [
-      `html.bnote-annotating${guard} { cursor: text !important; }`,
-      `html.bnote-annotating${guard} * { cursor: text !important; }`,
+      `html${guard} { cursor: ${pen} !important; }`,
+      `html${guard} * { cursor: inherit !important; }`,
     ].join("\n");
     try {
-      cursorSheet = new CSSStyleSheet();
-      cursorSheet.replaceSync(css);
-      document.adoptedStyleSheets = [...document.adoptedStyleSheets, cursorSheet];
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
     } catch {
-      // 老 WebKit 没有构造样式表:退回到 <html> 上的内联光标(后代里页面
-      // 自己写的 cursor 仍会盖掉它,但至少大半页是工字形)。
-      cursorSheet = null;
-    }
-  }
-
-  function applyCursor(): void {
-    const root = document.documentElement;
-    const on = mode !== null;
-    if (cursorSheet) {
-      root.classList.toggle("bnote-annotating", on);
-      return;
-    }
-    try {
-      if (on) root.style.setProperty("cursor", "text", "important");
-      else root.style.removeProperty("cursor");
-    } catch {
-      // 页面拒绝样式修改:光标不好看,但不影响批注。
+      // 老 WebKit 没有构造样式表:退回 <html> 上的内联光标(后代里页面
+      // 自己写的 cursor 仍会盖掉它,但大半页是笔形)。
+      try {
+        document.documentElement.style.setProperty("cursor", pen, "important");
+      } catch {
+        // 页面拒绝样式修改:光标不好看,但不影响批注。
+      }
     }
   }
 
@@ -1254,7 +1247,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       value === "note" ? "note" : value === true || value === "highlight" ? "highlight" : null;
     if (mode === next) return;
     mode = next;
-    applyCursor();
     if (mode) {
       watchDom();
       rebuild();
@@ -1383,6 +1375,7 @@ export function buildWebAnnotationScript(): string {
     `normalizeWebAnnotations:${normalizeWebAnnotations.toString()}`,
     `normalizePageStep:${normalizePageStep.toString()}`,
     `snapScrollTopToLine:${snapScrollTopToLine.toString()}`,
+    `cursorPen:${JSON.stringify(cursorPen)}`,
   ].join(",");
   return `(${webAnnotationRuntime.toString()})({${helpers}});`;
 }
