@@ -301,6 +301,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let suppressClickUntil = 0;
   /** 笔形光标用一张 CSSOM 样式表(不走内联 style,也不吃页面 CSP)。 */
   let cursorSheet: CSSStyleSheet | null = null;
+  /** 没有构造样式表时的退路:直接写在 `<html>` 上的两条光标值。 */
+  let cursorFallback: { highlight: string; note: string } | null = null;
   /** 刚创建/点中的文字批注:重建后把输入框聚焦并把光标放到末尾。 */
   let focusNoteId: string | null = null;
   /** 每张批注卡里的输入框(按批注 id),重建/聚焦都走这张表。 */
@@ -323,6 +325,13 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let shadeCornerLeft: HTMLElement | null = null;
   let shadeCornerRight: HTMLElement | null = null;
   let frameLayer: HTMLElement | null = null;
+  /**
+   * 阅读分区只在「真的翻过页」之后才画。打开时就画出来等于给整屏盖一条
+   * 固定在半屏的分界线——它不随任何进度变化,看起来就是一条卡住的加载
+   * 进度条。翻页后它标记「这一屏之前看过的部分」,自由滚动后分区失去意义,
+   * 再收起来。
+   */
+  let shadeVisible = false;
 
   function storageKey(target: string): string {
     return STORE_PREFIX + target;
@@ -425,6 +434,15 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   function userTookOver(): void {
     userScrolled = true;
     restoreRatio = null;
+  }
+
+  /** 自由滚动(滚轮/触摸/键盘)后,翻页分界线不再对应任何位置,收起。 */
+  function freeScrolled(): void {
+    userTookOver();
+    if (shadeVisible) {
+      shadeVisible = false;
+      paintShade();
+    }
   }
 
   function emit(): void {
@@ -581,6 +599,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   /**
    * 翻页后的阅读分区：上方旧内容压暗，下方新内容的顶部用一条淡色圆角线
    * 标出（不画完整框）。两层都在 shadow root 里，不吃页面 CSS；不接鼠标事件。
+   *
+   * 平时是隐藏的（见 shadeVisible）：这条固定停在步长边界的分界线在打开
+   * 网页时就画出来，看起来就是一条永远加载不完的进度条。只有真的翻过页，
+   * 它才表示「上一屏读到这里」。
    */
   function ensureShade(): void {
     if (
@@ -662,6 +684,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   }
 
   function paintShade(): void {
+    if (shadeHost) shadeHost.style.display = shadeVisible ? "" : "none";
     // 旧内容占上方 1-step；线压在压暗结束的那条线上，不留缝。
     const old = ((1 - pageStep) * 100).toFixed(2);
     if (shadeLayer) {
@@ -770,6 +793,11 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (!target) return false;
     // 主动翻页后不再按打开时的位置还原。
     userTookOver();
+    // 翻页是分区的唯一来源:分界线标记「刚翻过去的那一屏之前」。
+    if (!shadeVisible) {
+      shadeVisible = true;
+      paintShade();
+    }
     const documentScroller =
       target === document.scrollingElement ||
       target === document.documentElement ||
@@ -1189,6 +1217,11 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     items = loadFromStorage(url);
     userScrolled = false;
     restoreRatio = location.hash ? null : loadPosition(url);
+    // 新页面还没翻过页:分区不该出现(否则看起来像一条卡住的加载条)。
+    if (shadeVisible) {
+      shadeVisible = false;
+      paintShade();
+    }
     scheduleRestore();
     scheduleRebuild(0);
   }
@@ -1213,47 +1246,68 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   /**
    * 批注工具:`"highlight"` / `"note"`;`false`/`null` 退出。
-   * 光标走一张 CSSOM 样式表 + !important:页面常给 body/a/按钮写死 cursor,
-   * 只改 documentElement 的内联样式会被它们盖掉(看起来就是普通箭头)。
-   * 笔形图片加载失败时回落到 crosshair,不会退回箭头。
+   *
+   * 光标分两层,都只写一次样式表(启动时),切模式只改 `<html>` 上的类:
+   *
+   *  - 光标图片只出现在 `<html>` 这一条规则里,后代一律 `cursor: inherit`。
+   *    图片铺在 `*` 上时,页面上成千上万个元素各自持有一份 cursor 值,
+   *    WebKit 在鼠标移动时逐个重建 NSCursor,表现出来就是光标一直在闪。
+   *  - 规则用 `:not(#…)` 抬到 id 级权重:页面自己写的
+   *    `a:hover { cursor: pointer !important }` 权重常常比一条 `*` 规则高,
+   *    不抬权重就会出现「有时是笔、有时是箭头」。
    */
-  function applyCursor(): void {
-    const root = document.documentElement;
-    if (!mode) {
-      root.classList.remove("bnote-annotating");
-      root.style.removeProperty("cursor");
-      try {
-        if (cursorSheet) cursorSheet.replaceSync("");
-      } catch {
-        // 样式表已失效:下次进入模式时重建
-        cursorSheet = null;
-      }
-      return;
-    }
-    const image = mode === "note" ? helpers.cursorNote : helpers.cursorHighlight;
-    const cursor = `url("${image}") 12 22, crosshair`;
-    root.classList.add("bnote-annotating");
-    // 输入控件保留页面自己的文本光标:批注模式不改它们的编辑手感。
+  function installCursorSheet(): void {
+    const highlight = `url("${helpers.cursorHighlight}") 12 22, crosshair`;
+    const note = `url("${helpers.cursorNote}") 12 22, crosshair`;
+    // :not(#bnote-cursor) 不提选择器语义,只借用 id 的权重(两次 = (2,1,0))。
+    const guard = ":not(#bnote-cursor):not(#bnote-cursor)";
     const css = [
-      `html.bnote-annotating, html.bnote-annotating * { cursor: ${cursor} !important; }`,
-      `html.bnote-annotating input, html.bnote-annotating textarea,`,
-      `html.bnote-annotating select, html.bnote-annotating [contenteditable] {`,
+      `html.bnote-annotating${guard} { cursor: ${highlight} !important; }`,
+      `html.bnote-annotating${guard} * { cursor: inherit !important; }`,
+      `html.bnote-annotating-note${guard} { cursor: ${note} !important; }`,
+      `html.bnote-annotating-note${guard} * { cursor: inherit !important; }`,
+      // 输入控件保留页面自己的文本光标:批注模式不改它们的编辑手感。
+      // 权重(2,1,2)高于上面的 (2,1,1),同一张表里排在后面即可。
+      `html.bnote-annotating${guard} input, html.bnote-annotating${guard} textarea,`,
+      `html.bnote-annotating${guard} select, html.bnote-annotating${guard} [contenteditable],`,
+      `html.bnote-annotating-note${guard} input, html.bnote-annotating-note${guard} textarea,`,
+      `html.bnote-annotating-note${guard} select, html.bnote-annotating-note${guard} [contenteditable] {`,
       `  cursor: auto !important;`,
       `}`,
     ].join("\n");
     try {
-      if (!cursorSheet) {
-        cursorSheet = new CSSStyleSheet();
-        document.adoptedStyleSheets = [...document.adoptedStyleSheets, cursorSheet];
-      }
+      cursorSheet = new CSSStyleSheet();
       cursorSheet.replaceSync(css);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, cursorSheet];
+      cursorFallback = null;
     } catch {
-      // 老 WebKit 没有构造样式表:至少让 <html> 上生效。
-      try {
-        root.style.setProperty("cursor", cursor, "important");
-      } catch {
-        // 页面拒绝样式修改:光标不好看,但不影响批注。
+      // 老 WebKit 没有构造样式表:退回只给 <html> 设内联光标(后代规则压不过,
+      // 但至少有笔形可用)。
+      cursorSheet = null;
+      cursorFallback = { highlight, note };
+    }
+  }
+
+  function applyCursor(): void {
+    const root = document.documentElement;
+    if (cursorSheet) {
+      root.classList.toggle("bnote-annotating", mode === "highlight");
+      root.classList.toggle("bnote-annotating-note", mode === "note");
+      return;
+    }
+    if (!cursorFallback) return;
+    try {
+      if (mode) {
+        root.style.setProperty(
+          "cursor",
+          mode === "note" ? cursorFallback.note : cursorFallback.highlight,
+          "important",
+        );
+      } else {
+        root.style.removeProperty("cursor");
       }
+    } catch {
+      // 页面拒绝样式修改:光标不好看,但不影响批注。
     }
   }
 
@@ -1323,13 +1377,17 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   // 阅读位置:滚动停止后存比例;捕获阶段才能收到内层滚动容器的 scroll。
   window.addEventListener("scroll", scheduleSavePosition, { passive: true, capture: true });
   // 用户一动手就放弃「打开时的落点」,之后的布局变化不再抢滚动位置。
-  window.addEventListener("wheel", userTookOver, { passive: true, capture: true });
-  window.addEventListener("touchstart", userTookOver, { passive: true, capture: true });
+  window.addEventListener("wheel", freeScrolled, { passive: true, capture: true });
+  window.addEventListener("touchstart", freeScrolled, { passive: true, capture: true });
   window.addEventListener("pointerdown", userTookOver, true);
   window.addEventListener(
     "keydown",
     (event: KeyboardEvent) => {
-      if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(event.key)) userTookOver();
+      if (!/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(event.key)) return;
+      // 已经被翻页处理器接管的键(PageDown/自定义翻页键)不算自由滚动:
+      // 它们自己会重新画分区。
+      if (event.defaultPrevented) return;
+      freeScrolled();
     },
     true,
   );
@@ -1358,6 +1416,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     savePositionNow();
   });
   patchHistory();
+  installCursorSheet();
   ensureShade();
   scheduleRestore();
   document.addEventListener("DOMContentLoaded", () => {
