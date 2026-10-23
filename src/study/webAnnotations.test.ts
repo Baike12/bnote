@@ -129,17 +129,15 @@ describe("注入脚本", () => {
     expect(script).toContain("setKeys");
     expect(script).toContain("bnote-read-shade-host");
     expect(script).toContain("snapScrollTopToLine");
-    // 文字批注(页内批注卡)与阅读位置、笔形光标。
+    // 文字批注(页内批注卡)与阅读位置。
     expect(script).toContain("bnote:web-position:v1:");
     expect(script).toContain("scheduleRestore");
-    expect(script).toContain("data:image/png;base64");
-    expect(script).toContain("bnote-annotating");
-    expect(script).toContain("cursorHighlight");
-    // 光标:图片只在 <html> 上写一次,后代继承;样式表启动时装好,切模式
-    // 只换类(每个元素各持一份 cursor 值会让 WebKit 反复重建 NSCursor)。
+    // 光标:只用原生关键字,批注中整页工字形;不注入任何光标图片
+    // (自定义光标图片会被 WebKit 在鼠标移动时反复重建,表现为光标闪烁)。
     expect(script).toContain("installCursorSheet");
-    expect(script).toContain("cursor: inherit !important");
-    expect(script).toContain("bnote-annotating-note");
+    expect(script).toContain("bnote-annotating");
+    expect(script).toContain("cursor: text !important");
+    expect(script).not.toContain("data:image/png");
     // 阅读分区只在翻页后出现,打开时(以及自由滚动后)不画。
     expect(script).toContain("shadeVisible");
     expect(script).toContain("freeScrolled");

@@ -1,10 +1,6 @@
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
-// 页面里的笔形光标:与 PDF 阅读器同一套 PNG(热点 12 22),以 data URL 注入,
-// 不依赖远端页面能否访问应用资源。`?inline` 让 Vite 直接给 base64。
-import cursorHighlight from "@/assets/cursors/pdf-highlight.png?inline";
-import cursorNote from "@/assets/cursors/pdf-note.png?inline";
 
 /**
  * 网页批注:高亮(亮黄)与文字批注(亮蓝 + 页内批注卡)。
@@ -236,9 +232,6 @@ interface RuntimeHelpers {
   normalizeWebAnnotations: typeof normalizeWebAnnotations;
   normalizePageStep: typeof normalizePageStep;
   snapScrollTopToLine: typeof snapScrollTopToLine;
-  /** 笔形光标 PNG 的 data URL(高亮=荧光笔,文字批注=蓝笔尖)。 */
-  cursorHighlight: string;
-  cursorNote: string;
 }
 
 interface TextEntry {
@@ -299,10 +292,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let observer: MutationObserver | null = null;
   let scrollPending = false;
   let suppressClickUntil = 0;
-  /** 笔形光标用一张 CSSOM 样式表(不走内联 style,也不吃页面 CSP)。 */
+  /** 批注光标用一张 CSSOM 样式表(不走内联 style,也不吃页面 CSP)。 */
   let cursorSheet: CSSStyleSheet | null = null;
-  /** 没有构造样式表时的退路:直接写在 `<html>` 上的两条光标值。 */
-  let cursorFallback: { highlight: string; note: string } | null = null;
   /** 刚创建/点中的文字批注:重建后把输入框聚焦并把光标放到末尾。 */
   let focusNoteId: string | null = null;
   /** 每张批注卡里的输入框(按批注 id),重建/聚焦都走这张表。 */
@@ -1247,65 +1238,42 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   /**
    * 批注工具:`"highlight"` / `"note"`;`false`/`null` 退出。
    *
-   * 光标分两层,都只写一次样式表(启动时),切模式只改 `<html>` 上的类:
+   * 光标只有两种状态,且都用**原生**光标:批注中整页工字形(`text`),退出
+   * 后交还原页面(箭头/链接手形等)。自定义光标图片会让 WebKit 在鼠标移动
+   * 时不断重建 NSCursor,叠加页面自己的 `cursor: pointer/text` 规则,表现
+   * 就是笔、箭头、工字形之间乱闪——原生关键字没有图片可重建,也没有切换。
    *
-   *  - 光标图片只出现在 `<html>` 这一条规则里,后代一律 `cursor: inherit`。
-   *    图片铺在 `*` 上时,页面上成千上万个元素各自持有一份 cursor 值,
-   *    WebKit 在鼠标移动时逐个重建 NSCursor,表现出来就是光标一直在闪。
-   *  - 规则用 `:not(#…)` 抬到 id 级权重:页面自己写的
-   *    `a:hover { cursor: pointer !important }` 权重常常比一条 `*` 规则高,
-   *    不抬权重就会出现「有时是笔、有时是箭头」。
+   * 样式表启动时装好,切模式只改 `<html>` 上的类(不重算整篇样式)。权重用
+   * `:not(#…)` 抬到 id 级,压过页面自己的 `a:hover{cursor:pointer!important}`。
    */
   function installCursorSheet(): void {
-    const highlight = `url("${helpers.cursorHighlight}") 12 22, crosshair`;
-    const note = `url("${helpers.cursorNote}") 12 22, crosshair`;
     // :not(#bnote-cursor) 不提选择器语义,只借用 id 的权重(两次 = (2,1,0))。
     const guard = ":not(#bnote-cursor):not(#bnote-cursor)";
     const css = [
-      `html.bnote-annotating${guard} { cursor: ${highlight} !important; }`,
-      `html.bnote-annotating${guard} * { cursor: inherit !important; }`,
-      `html.bnote-annotating-note${guard} { cursor: ${note} !important; }`,
-      `html.bnote-annotating-note${guard} * { cursor: inherit !important; }`,
-      // 输入控件保留页面自己的文本光标:批注模式不改它们的编辑手感。
-      // 权重(2,1,2)高于上面的 (2,1,1),同一张表里排在后面即可。
-      `html.bnote-annotating${guard} input, html.bnote-annotating${guard} textarea,`,
-      `html.bnote-annotating${guard} select, html.bnote-annotating${guard} [contenteditable],`,
-      `html.bnote-annotating-note${guard} input, html.bnote-annotating-note${guard} textarea,`,
-      `html.bnote-annotating-note${guard} select, html.bnote-annotating-note${guard} [contenteditable] {`,
-      `  cursor: auto !important;`,
-      `}`,
+      `html.bnote-annotating${guard} { cursor: text !important; }`,
+      `html.bnote-annotating${guard} * { cursor: text !important; }`,
     ].join("\n");
     try {
       cursorSheet = new CSSStyleSheet();
       cursorSheet.replaceSync(css);
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, cursorSheet];
-      cursorFallback = null;
     } catch {
-      // 老 WebKit 没有构造样式表:退回只给 <html> 设内联光标(后代规则压不过,
-      // 但至少有笔形可用)。
+      // 老 WebKit 没有构造样式表:退回到 <html> 上的内联光标(后代里页面
+      // 自己写的 cursor 仍会盖掉它,但至少大半页是工字形)。
       cursorSheet = null;
-      cursorFallback = { highlight, note };
     }
   }
 
   function applyCursor(): void {
     const root = document.documentElement;
+    const on = mode !== null;
     if (cursorSheet) {
-      root.classList.toggle("bnote-annotating", mode === "highlight");
-      root.classList.toggle("bnote-annotating-note", mode === "note");
+      root.classList.toggle("bnote-annotating", on);
       return;
     }
-    if (!cursorFallback) return;
     try {
-      if (mode) {
-        root.style.setProperty(
-          "cursor",
-          mode === "note" ? cursorFallback.note : cursorFallback.highlight,
-          "important",
-        );
-      } else {
-        root.style.removeProperty("cursor");
-      }
+      if (on) root.style.setProperty("cursor", "text", "important");
+      else root.style.removeProperty("cursor");
     } catch {
       // 页面拒绝样式修改:光标不好看,但不影响批注。
     }
@@ -1449,8 +1417,6 @@ export function buildWebAnnotationScript(): string {
     `normalizeWebAnnotations:${normalizeWebAnnotations.toString()}`,
     `normalizePageStep:${normalizePageStep.toString()}`,
     `snapScrollTopToLine:${snapScrollTopToLine.toString()}`,
-    `cursorHighlight:${JSON.stringify(cursorHighlight)}`,
-    `cursorNote:${JSON.stringify(cursorNote)}`,
   ].join(",");
   return `(${webAnnotationRuntime.toString()})({${helpers}});`;
 }

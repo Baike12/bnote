@@ -233,9 +233,15 @@ export function ContentPane() {
     };
   }, []);
 
-  // 换成 PDF / 关掉内容后批注工具自动退出:下次打开网页从普通阅读开始。
+  // 打开网页默认就进批注(高亮):整页工字形光标,拖选即高亮;换成 PDF /
+  // 关掉内容后退出,下次打开再从批注开始。工具切换仍是主窗口说了算。
   useEffect(() => {
-    if (content?.kind === "url") return;
+    if (content?.kind === "url") {
+      webToolRef.current = "highlight";
+      setWebTool("highlight");
+      void agentApi.setStudyPreviewAnnotationMode("highlight").catch(() => {});
+      return;
+    }
     webToolRef.current = null;
     setWebTool(null);
   }, [content]);
