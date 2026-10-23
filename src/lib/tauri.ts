@@ -199,9 +199,9 @@ export const agentApi = {
   /** 原生视图永远盖在 DOM 之上,HTML 浮层打开时要把它藏起来。 */
   setStudyPreviewVisible: (visible: boolean) =>
     invoke<void>("set_study_preview_visible", { visible }),
-  /** 网页批注模式开关(页面内选中文字 → 亮黄色高亮)。 */
-  setStudyPreviewAnnotationMode: (enabled: boolean) =>
-    invoke<void>("set_study_preview_annotation_mode", { enabled }),
+  /** 网页批注工具:高亮 / 文字批注;null 退出(页面内切换光标与选中行为)。 */
+  setStudyPreviewAnnotationMode: (mode: "highlight" | "note" | null) =>
+    invoke<void>("set_study_preview_annotation_mode", { mode }),
   /** 把翻页步长推给页内运行时(键盘翻页与上半屏渐变共用)。 */
   setStudyPreviewReadStep: (step: number) =>
     invoke<void>("set_study_preview_read_step", { step }),

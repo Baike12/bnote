@@ -13,7 +13,17 @@ import {
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
 
 function ann(id: string, quote: string, offset: number, extra: Partial<WebAnnotation> = {}): WebAnnotation {
-  return { id, quote, prefix: "", suffix: "", offset, createdAt: 1, ...extra };
+  return {
+    id,
+    quote,
+    prefix: "",
+    suffix: "",
+    offset,
+    kind: "highlight",
+    text: "",
+    createdAt: 1,
+    ...extra,
+  };
 }
 
 describe("网页批注锚点", () => {
@@ -51,6 +61,21 @@ describe("网页批注数据", () => {
     ]);
     expect(out.map((a) => a.id)).toEqual(["a", "b"]);
     expect(out[1].quote.length).toBe(2000);
+    // 旧数据没有 kind/text:按高亮读,文字为空。
+    expect(out[0].kind).toBe("highlight");
+    expect(out[0].text).toBe("");
+  });
+
+  it("文字批注的 kind/text 原样保留,超长文字裁剪", () => {
+    const out = normalizeWebAnnotations([
+      ann("n", "q", 0, { kind: "note", text: "这是一条批注" }),
+      { id: "long", quote: "q", offset: 0, kind: "note", text: "字".repeat(3000) },
+      { id: "bad", quote: "q", offset: 0, kind: "weird", text: 42 },
+    ]);
+    expect(out[0]).toMatchObject({ kind: "note", text: "这是一条批注" });
+    expect(out[1].text.length).toBe(2000);
+    // 未知 kind 退回高亮,非字符串 text 归空。
+    expect(out[2]).toMatchObject({ kind: "highlight", text: "" });
   });
 
   it("一个网址一个文件:同一网址稳定,不同网址分开", () => {
@@ -104,6 +129,12 @@ describe("注入脚本", () => {
     expect(script).toContain("setKeys");
     expect(script).toContain("bnote-read-shade-host");
     expect(script).toContain("snapScrollTopToLine");
+    // 文字批注(页内批注卡)与阅读位置、笔形光标。
+    expect(script).toContain("bnote:web-position:v1:");
+    expect(script).toContain("scheduleRestore");
+    expect(script).toContain("data:image/png;base64");
+    expect(script).toContain("bnote-annotating");
+    expect(script).toContain("cursorHighlight");
     // 纯函数被序列化进页面,不能残留模块级常量名。
     expect(script).not.toContain("MAX_WEB_QUOTE");
   });
