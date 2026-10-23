@@ -25,9 +25,12 @@ mod mac {
 
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-    use objc2::{class, msg_send, sel, AnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSCursor, NSEvent, NSImage, NSView};
-    use objc2_foundation::{NSData, NSPoint, NSSize};
+    use objc2::{class, define_class, msg_send, sel, AnyThread, MainThreadMarker};
+    use objc2_app_kit::{
+        NSApplication, NSApplicationDidBecomeActiveNotification, NSCursor, NSEvent, NSImage,
+        NSView, NSWindow, NSWindowDidBecomeKeyNotification,
+    };
+    use objc2_foundation::{NSData, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSSize};
 
     /// 与 PDF 阅读器同一张图(`?inline` 那份是给页面用的,这里是原生用)。
     const PEN_HIGHLIGHT_PNG: &[u8] =
@@ -47,8 +50,36 @@ mod mac {
     static PEN_NOTE: AtomicPtr<NSCursor> = AtomicPtr::new(std::ptr::null_mut());
     /// 当前批注工具是否为文字批注(蓝笔);其余情况用高亮笔(黄笔)。
     static NOTE_MODE: AtomicBool = AtomicBool::new(false);
+    static OBSERVING: AtomicBool = AtomicBool::new(false);
 
     type SetFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel);
+
+    /// 激活/成为 key 窗口时重新落一次笔。
+    ///
+    /// 切到别的应用时 macOS 会把我们的光标换成箭头,而这一步不经过
+    /// `-[NSCursor set]`,拦截器看不到;切回来时如果没有鼠标移动,WebKit 也
+    /// 不会再发光标。所以在这两个通知上主动把笔重新设一次。
+    define_class!(
+        // SAFETY: 观察者只调用 apply_now(),不持有其它 UI 状态。
+        #[unsafe(super(NSObject))]
+        #[name = "BNotePenCursorKeeper"]
+        #[ivars = ()]
+        struct PenCursorKeeper;
+
+        impl PenCursorKeeper {
+            #[unsafe(method(penCursorRefresh:))]
+            fn pen_cursor_refresh(&self, _note: &NSNotification) {
+                apply_now();
+            }
+        }
+    );
+
+    impl PenCursorKeeper {
+        fn new() -> Retained<Self> {
+            let this = Self::alloc().set_ivars(());
+            unsafe { msg_send![super(this), init] }
+        }
+    }
 
     /// 装到 `-[NSCursor set]` 上的实现:在网页区域里把任何光标换成那支笔。
     /// 已经是同一支笔就直接返回 —— WebKit 每次鼠标移动都会来一次。
@@ -70,9 +101,7 @@ mod mac {
 
     /// 指针此刻应该显示哪支笔;None = 不接管,交回原来的光标。
     fn wanted_pen() -> Option<*mut NSCursor> {
-        if MainThreadMarker::new().is_none() {
-            return None;
-        }
+        let mtm = MainThreadMarker::new()?;
         let view = WEBVIEW.load(Ordering::Relaxed) as *mut NSView;
         if view.is_null() {
             return None;
@@ -80,7 +109,10 @@ mod mac {
         unsafe {
             let view = &*view;
             let window = view.window()?;
-            if !window.isKeyWindow() || view.isHiddenOrHasHiddenAncestor() {
+            // 应用不在前台、视图被藏起(弹窗盖住)时都不接管。
+            if !NSApplication::sharedApplication(mtm).isActive()
+                || view.isHiddenOrHasHiddenAncestor()
+            {
                 return None;
             }
             let mouse = NSEvent::mouseLocation();
@@ -90,6 +122,12 @@ mod mac {
                 || mouse.x > rect.origin.x + rect.size.width
                 || mouse.y < rect.origin.y
                 || mouse.y > rect.origin.y + rect.size.height
+            {
+                return None;
+            }
+            // 指针下最上面必须是这个窗口:别的 bnote 窗口/系统面板盖住时不接管。
+            if NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(mouse, 0, mtm)
+                != window.windowNumber()
             {
                 return None;
             }
@@ -162,12 +200,42 @@ mod mac {
         }
     }
 
+    /// 应用激活 / 窗口成为 key 时补一次笔:这两个时刻 macOS 会把光标换成
+    /// 箭头,而这一步不走 `-[NSCursor set]`,拦截器看不到。
+    fn install_observers() {
+        if OBSERVING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if MainThreadMarker::new().is_none() {
+            return;
+        }
+        // selector 观察者不被通知中心持有:泄漏一份,让它活到进程结束。
+        let observer = Retained::into_raw(PenCursorKeeper::new()) as *const AnyObject;
+        let center = NSNotificationCenter::defaultCenter();
+        unsafe {
+            let observer = &*observer;
+            center.addObserver_selector_name_object(
+                observer,
+                sel!(penCursorRefresh:),
+                Some(NSApplicationDidBecomeActiveNotification),
+                None,
+            );
+            center.addObserver_selector_name_object(
+                observer,
+                sel!(penCursorRefresh:),
+                Some(NSWindowDidBecomeKeyNotification),
+                None,
+            );
+        }
+    }
+
     /// 网页视图创建/重建后调用;重复调用是幂等的。
     pub fn attach(view: *mut c_void) {
         if view.is_null() {
             return;
         }
         install_once();
+        install_observers();
         ensure_pens();
         WEBVIEW.store(view, Ordering::SeqCst);
         apply_now();

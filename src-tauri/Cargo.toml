@@ -57,6 +57,9 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "std",
   "NSData",
   "NSGeometry",
+  "NSNotification",
+  "NSObject",
+  "NSString",
 ] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
