@@ -132,11 +132,12 @@ describe("注入脚本", () => {
     // 文字批注(页内批注卡)与阅读位置。
     expect(script).toContain("bnote:web-position:v1:");
     expect(script).toContain("scheduleRestore");
-    // 光标:全页固定笔形(图片),与批注开关/页面内容无关;不出现形状切换。
+    // 光标:全页固定笔形,但笔由原生层替换(WKWebView 里图片光标每移动一次
+    // 就重建 NSCursor 并重设,指针会闪)。CSS 只留原生关键字。
     expect(script).toContain("installCursorSheet");
-    expect(script).toContain("cursorPen");
-    expect(script).toContain("data:image/png;base64");
+    expect(script).toContain("cursor: crosshair !important");
     expect(script).toContain("cursor: inherit !important");
+    expect(script).not.toContain("cursorPen");
     expect(script).not.toContain("bnote-annotating");
     // 阅读分区(压暗 + 分界线)常驻:打开网页就有,不靠翻页触发。
     expect(script).toContain("paintShade");

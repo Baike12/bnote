@@ -39,6 +39,26 @@ futures = "0.3"
 scraper = "0.20"
 ego-tree = "0.6"
 
+# 学习模式网页的笔形光标(commands/pen_cursor.rs):浏览器里 CSS 图片光标在
+# WKWebView 下每次鼠标移动都会被重建重设,只能由原生层给同一支 NSCursor。
+# 版本与 tauri 自身的依赖一致,不新增第二份 objc2。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSApplication",
+  "NSCursor",
+  "NSEvent",
+  "NSImage",
+  "NSView",
+  "NSWindow",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSData",
+  "NSGeometry",
+] }
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

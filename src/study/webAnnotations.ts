@@ -1,9 +1,6 @@
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
-// 页面里的笔形光标:与 PDF 阅读器同一张 PNG(热点 12 22),以 data URL 注入,
-// 不依赖远端页面能否访问应用资源。`?inline` 让 Vite 直接给 base64。
-import cursorPen from "@/assets/cursors/pdf-highlight.png?inline";
 
 /**
  * 网页批注:高亮(亮黄)与文字批注(亮蓝 + 页内批注卡)。
@@ -235,8 +232,6 @@ interface RuntimeHelpers {
   normalizeWebAnnotations: typeof normalizeWebAnnotations;
   normalizePageStep: typeof normalizePageStep;
   snapScrollTopToLine: typeof snapScrollTopToLine;
-  /** 笔形光标 PNG 的 data URL(与 PDF 阅读器同一张图)。 */
-  cursorPen: string;
 }
 
 interface TextEntry {
@@ -1209,22 +1204,26 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   }
 
   /**
-   * 网页里的光标固定为笔形,**与批注开关、页面内容都无关**:链接、按钮、
-   * 文本、输入框一律同一形状,不出现「笔/箭头/工字形」来回切。
+   * 网页里的光标固定为笔形,但**笔不在 CSS 里**:WKWebView 每次鼠标移动都会把
+   * 整条 cursor 经 IPC 发到 UI 进程,`PageClientImpl::setCursor` 只在「新建的
+   * 平台光标就是当前光标」时才跳过 set。原生关键字返回 AppKit 单例,恒等;
+   * `url(...)` 图片光标每次都由 `createCustomCursor` 新建 NSCursor,恒不等 →
+   * 鼠标每动一下就重设一次,指针一直闪(源码见 src-tauri/src/commands/
+   * pen_cursor.rs 的说明)。
    *
-   * 形状只在这一张样式表里声明一次:`<html>` 上是光标图片,后代一律
-   * `cursor: inherit`,全页共享同一个光标值。权重用 `:not(#…)` 抬到 id 级,
-   * 页面自己写的 `a:hover{cursor:pointer!important}` 也压不过它——不抬权重
-   * 就会出现「有时笔、有时箭头」的闪烁。
+   * 所以这里只写原生关键字,让 WebKit 每次拿到的都是同一个系统光标;真正的笔
+   * 由原生层在这块 webview 的区域里替换成同一张 PNG 的 NSCursor。crosshair 是
+   * 原生层没生效时(调试页/非 macOS)的退路:至少是十字准星,不会退回箭头。
    *
-   * 样式表在运行时启动时装好,之后不再改动(批注模式切换不碰它)。
+   * 样式表在运行时启动时装好,之后不再改动(批注模式切换不碰它)。权重用
+   * `:not(#…)` 抬到 id 级,页面自己写的 `a:hover{cursor:pointer!important}`
+   * 也压不过它。
    */
   function installCursorSheet(): void {
     // :not(#bnote-cursor) 不提选择器语义,只借用 id 的权重(两次 = (2,1,0))。
     const guard = ":not(#bnote-cursor):not(#bnote-cursor)";
-    const pen = `url("${helpers.cursorPen}") 12 22, crosshair`;
     const css = [
-      `html${guard} { cursor: ${pen} !important; }`,
+      `html${guard} { cursor: crosshair !important; }`,
       `html${guard} * { cursor: inherit !important; }`,
     ].join("\n");
     try {
@@ -1233,9 +1232,9 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
     } catch {
       // 老 WebKit 没有构造样式表:退回 <html> 上的内联光标(后代里页面
-      // 自己写的 cursor 仍会盖掉它,但大半页是笔形)。
+      // 自己写的 cursor 仍会盖掉它,但大半页仍是十字准星)。
       try {
-        document.documentElement.style.setProperty("cursor", pen, "important");
+        document.documentElement.style.setProperty("cursor", "crosshair", "important");
       } catch {
         // 页面拒绝样式修改:光标不好看,但不影响批注。
       }
@@ -1375,7 +1374,6 @@ export function buildWebAnnotationScript(): string {
     `normalizeWebAnnotations:${normalizeWebAnnotations.toString()}`,
     `normalizePageStep:${normalizePageStep.toString()}`,
     `snapScrollTopToLine:${snapScrollTopToLine.toString()}`,
-    `cursorPen:${JSON.stringify(cursorPen)}`,
   ].join(",");
   return `(${webAnnotationRuntime.toString()})({${helpers}});`;
 }

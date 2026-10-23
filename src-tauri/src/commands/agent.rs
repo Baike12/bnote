@@ -1,5 +1,6 @@
 //! Study-mode commands: agent sessions, config, and PDF→markdown conversion.
 
+use super::pen_cursor;
 use super::CmdResult;
 use crate::agent::mcp::McpManager;
 use crate::agent::session::{build_system_prompt, Session, SessionRegistry};
@@ -355,6 +356,8 @@ pub async fn show_study_preview(
         if !annotation_script.trim().is_empty() {
             let _ = existing.eval(annotation_script);
         }
+        // 笔形光标:同一个 webview 可能被复用,重新挂一次(幂等)。
+        let _ = existing.with_webview(|platform| pen_cursor::attach(platform.inner()));
         return Ok(());
     }
 
@@ -363,7 +366,7 @@ pub async fn show_study_preview(
         .ok_or_else(|| "WEBVIEW_FAILED: 找不到主窗口".to_string())?;
     // add_child 内部会把构建排到主线程再等结果,所以只能在异步命令里调用
     // (同步命令/事件回调里调用会死锁,见 tauri 的 WebviewBuilder 文档)。
-    window
+    let webview = window
         .add_child(
             tauri::webview::WebviewBuilder::new(
                 STUDY_PREVIEW_LABEL,
@@ -396,6 +399,8 @@ pub async fn show_study_preview(
             bounds.size(),
         )
         .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    // 笔形光标挂在原生视图上:页面 CSS 只留原生关键字,真正的笔由这里替换。
+    let _ = webview.with_webview(|platform| pen_cursor::attach(platform.inner()));
     Ok(())
 }
 
@@ -419,6 +424,8 @@ pub fn set_study_preview_annotation_mode(
                 arg
             ))
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+        // 原生笔形跟着工具换图(高亮=黄笔、文字批注=蓝笔);退出批注仍用黄笔。
+        pen_cursor::set_mode(mode.as_deref() == Some("note"));
     }
     Ok(())
 }
@@ -524,6 +531,10 @@ pub fn set_study_preview_visible(app: tauri::AppHandle, visible: bool) -> CmdRes
     if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
         let result = if visible { webview.show() } else { webview.hide() };
         result.map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+        // 刚显示回来时鼠标可能正停着不动:立刻补一次笔形,不等下一次移动。
+        if visible {
+            pen_cursor::refresh();
+        }
     }
     Ok(())
 }
@@ -537,6 +548,8 @@ pub fn close_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
             .close()
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
     }
+    // 视图没了:撤掉笔形接管,主窗口自己的光标规则立刻生效。
+    pen_cursor::detach();
     Ok(())
 }
 
