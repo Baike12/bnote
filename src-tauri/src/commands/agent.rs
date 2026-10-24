@@ -16,6 +16,24 @@ fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
     state.mcp_manager.lock().ok().and_then(|g| g.clone())
 }
 
+/// 辅助会话的分叉点:从 `from` 会话的历史里取前 `items` 条(前缀,含分叉
+/// 那条消息)作为新会话的初始历史。原会话不动。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentForkSpec {
+    pub from: String,
+    pub items: usize,
+}
+
+/// vault 里的自定义指令(`.bnote/agent.md`,类比 AGENTS.md / CLAUDE.md);
+/// 文件不存在 = 空串,提示词里就不出现这一节。
+fn load_user_instructions(state: &AppState) -> String {
+    state
+        .vault()
+        .and_then(|v| std::fs::read_to_string(v.join(".bnote").join("agent.md")).ok())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub async fn agent_get_config(state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
     // 与 config.rs 同理：同步命令跑在主线程，IO 一律丢进 worker 池。
@@ -54,6 +72,7 @@ pub async fn agent_start_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     study: Option<StudyContent>,
+    fork: Option<AgentForkSpec>,
 ) -> CmdResult<serde_json::Value> {
     let cfg = crate::agent::AgentConfig::load(&state.data_dir());
     if cfg.api_key.is_empty() {
@@ -72,6 +91,23 @@ pub async fn agent_start_session(
         &cfg.model,
         cfg.max_tokens,
     ));
+
+    // 分叉:从源会话复制历史前缀(条数以后端在结束事件里给的权威计数为准,
+    // 多了截断,少了就用现有的)。源会话不存在是前端状态过期,如实报错。
+    let seed_items: Vec<crate::agent::types::ChatItem> = match &fork {
+        None => Vec::new(),
+        Some(spec) => {
+            let snapshot = {
+                let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+                let src = registry
+                    .get(&spec.from)
+                    .ok_or_else(|| "SESSION_NOT_FOUND: 源会话已不存在".to_string())?;
+                src.history()
+            };
+            let n = spec.items.min(snapshot.len());
+            snapshot[..n].to_vec()
+        }
+    };
 
     // Read MCP errors for the UI + build the system prompt.
     let mcp_block = if mcp.errors.is_empty() {
@@ -95,10 +131,12 @@ pub async fn agent_start_session(
         .lock()
         .ok()
         .and_then(|n| n.clone());
+    let user_instructions = load_user_instructions(&state);
     let system_prompt = build_system_prompt(
         &vault_name,
         current_note.as_deref(),
         study.as_ref(),
+        &user_instructions,
         &skills_block,
         &mcp_block,
     );
@@ -110,10 +148,20 @@ pub async fn agent_start_session(
         abort: Arc::new(AtomicBool::new(false)),
     });
 
-    let id = format!("s{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    // 时间戳 + 递增序号:同一毫秒内开主会话再分叉辅助会话也不会撞 id。
+    static SESSION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SESSION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = format!(
+        "s{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        seq
+    );
     let session = Arc::new(Session {
         id: id.clone(),
-        items: Mutex::new(Vec::new()),
+        items: Mutex::new(seed_items),
         system_prompt,
         ctx,
         skills: Arc::new(skills),

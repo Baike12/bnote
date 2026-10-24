@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import katex from "katex";
 import {
   agentApi,
   type AgentEvent,
-  type SessionInfo,
+  type AgentForkSpec,
   type StudyContent,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
+import { StudyRightTabs } from "./StudyRightTabs";
+import { forkCutoff, forkLabel } from "@/study/agentFork";
+import { renderAgentMarkdown } from "@/study/agentMarkdown";
 
 interface ToolRecord {
   id: string;
@@ -28,11 +30,28 @@ interface ChatEntry {
   role: "user" | "assistant";
   text: string;
   turn?: Turn;
+  /**
+   * 后端会话历史里「到本条为止」的前缀条数(含本条)。user = 前一条 + 1;
+   * assistant = turn_end / error 事件携带的后端权威计数(见 agentFork.ts)。
+   * null = 还未知(出错且拿不到计数)。
+   */
+  items: number | null;
 }
 
-interface AgentPanelProps {
-  /** Hidden but still mounted: keeps the conversation when the column folds. */
-  collapsed?: boolean;
+/** 面板内的一条会话:主会话,或从某条消息分叉出的辅助会话。 */
+interface Conv {
+  key: string;
+  sessionId: string | null;
+  entries: ChatEntry[];
+  label: string;
+  /** 分叉来源会话;主会话为 null。 */
+  parent: string | null;
+  /** 辅助会话的摘要(来源消息首行)。 */
+  basedOn: string;
+  /** 会话启动失败的可见原因。 */
+  error?: string;
+  /** 启动时后端报告的 MCP 连接失败(空数组 = 全部正常)。 */
+  mcpErrors: string[];
 }
 
 /** Identity of the material a session is pinned to (url re-open = same key). */
@@ -41,187 +60,250 @@ function studyContentKey(content: StudyContent | null): string {
   return content.kind === "pdf" ? `pdf:${content.path}` : `url:${content.url}`;
 }
 
+function findConvBySession(convs: Conv[], sessionId: string): Conv | undefined {
+  return convs.find((c) => c.sessionId === sessionId);
+}
+
+let convSeq = 0;
+function nextConvKey(): string {
+  convSeq += 1;
+  return `c${convSeq}`;
+}
+
+function cloneEntry(e: ChatEntry): ChatEntry {
+  return {
+    ...e,
+    turn: e.turn ? { ...e.turn, tools: e.turn.tools.map((t) => ({ ...t })) } : undefined,
+  };
+}
+
 /**
- * Study-mode left column: chat with the agent about the current content.
- * Events stream over the `agent-event` Tauri channel.
+ * 学习模式右栏「学习助手」页签:围绕当前内容问答。
+ *
+ * 会话模型:主会话(跟随当前 PDF/网页,内容或配置一变就重开)+ 若干辅助
+ * 会话(从任意一条消息「⤷」分叉,后端复制历史前缀,原会话不动)。页签头部
+ * 的下拉与 ⌘⇧Y 在会话间切换。
+ *
+ * 事件按 sessionId 路由:后台会话(非当前显示)的流式回复照常写入各自的
+ * entries,切回去时是完整的。
+ *
+ * 只在页签激活时才建会话:用户只在笔记页签里连续翻 PDF 时,不为每次翻页
+ * 连接模型/MCP。
  */
-export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
+export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
   const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
-  const patchSettings = useAppStore((s) => s.patchSettings);
+  const rightTab = useAppStore((s) => s.settings.studyRightTab);
+  const agentSwitchSignal = useAppStore((s) => s.agentSwitchSessionSignal);
   const showToast = useAppStore((s) => s.showToast);
-  const [entries, setEntries] = useState<ChatEntry[]>([]);
+  const [convs, setConvs] = useState<Conv[]>([]);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [session, setSession] = useState<SessionInfo | null>(null);
-  const [sessionError, setSessionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busySession, setBusySession] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const sessionRef = useRef<SessionInfo | null>(null);
-  const turnRef = useRef<Turn | null>(null);
-  const busyRef = useRef(false);
-  /** 已经为哪份内容建过会话:收起再展开不重建(聊天记录留着)。 */
-  const sessionKeyRef = useRef<string | null>(null);
+  const convsRef = useRef<Conv[]>([]);
+  const turnsRef = useRef<Map<string, Turn>>(new Map());
+  const busyRef = useRef<string | null>(null);
+  /** 已为哪份内容+配置建过主会话(页签未激活时不建)。 */
+  const startedKeyRef = useRef<string | null>(null);
+  /** 会话启动请求序号:过期回调(内容/配置已变)直接放弃,不盲写。 */
+  const startTokenRef = useRef(0);
+  /** ⌘⇧Y 的「重新开始主会话」按钮共用同一条启动路径。 */
+  const [restartNonce, setRestartNonce] = useState(0);
 
-  const startSession = useCallback(
-    async (content: StudyContent | null) => {
-      setStarting(true);
-      setSessionError(null);
-      try {
-        const info = await agentApi.startSession(content);
-        sessionRef.current = info;
-        setSession(info);
-        setEntries([]);
-        turnRef.current = null;
-      } catch (e) {
-        // Keep the failure on screen: without it the send button looks alive
-        // but does nothing (no session ⇒ send() used to return silently).
-        sessionRef.current = null;
-        setSession(null);
-        setSessionError(String(e).replace(/^[A-Z_]+:\s*/, ""));
-        showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
-      } finally {
-        setStarting(false);
-      }
-    },
-    [showToast],
-  );
-
-  // (Re)open the session when the study content changes, or after the agent
-  // config is saved (a session pins the provider it was created with).
-  //
-  // Collapsed: do nothing. The panel stays mounted to keep the conversation,
-  // but a folded panel must not connect a model/MCP for every PDF the user
-  // opens. Re-expanding with unchanged content reuses the live session; a
-  // content change while folded starts a fresh one on the next expand.
   useEffect(() => {
-    if (collapsed) return;
-    const key = `${studyContentKey(studyContent)}|${agentConfigVersion}`;
-    if (sessionKeyRef.current === key) return;
-    sessionKeyRef.current = key;
-    void startSession(studyContent);
-  }, [studyContent, agentConfigVersion, collapsed, startSession]);
+    convsRef.current = convs;
+  }, [convs]);
 
-  // Stream events; append into the live turn.
-  useEffect(() => {
-    let off: (() => void) | undefined;
-    void listen<{ sessionId: string; event: AgentEvent }>("agent-event", (event) => {
-      const info = sessionRef.current;
-      if (!info || event.payload.sessionId !== info.sessionId) return;
-      handleAgentEvent(event.payload.event);
-    }).then((un) => {
-      off = un;
-    });
-    return () => off?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const activeConv = convs.find((c) => c.key === activeKey) ?? null;
+  // sessionId 必须非空才算「生成中」:会话还没建好(或启动失败)时 sessionId
+  // 与 busySession 都是 null,相等但不能当成正在流式回复。
+  const activeBusy =
+    activeConv?.sessionId != null && busySession === activeConv.sessionId;
+
+  const updateConv = useCallback((key: string, patch: (c: Conv) => Conv) => {
+    setConvs((prev) => prev.map((c) => (c.key === key ? patch(c) : c)));
   }, []);
 
-  function ensureTurn(): Turn {
-    if (!turnRef.current) {
-      turnRef.current = { text: "", tools: [] };
+  const startSession = useCallback(
+    async (convKey: string, content: StudyContent | null, fork?: AgentForkSpec) => {
+      const token = ++startTokenRef.current;
+      setStarting(true);
+      updateConv(convKey, (c) => ({ ...c, error: undefined }));
+      try {
+        const info = await agentApi.startSession(content, fork);
+        // 过期就放弃:期间内容/配置又变了,新一轮启动已经接管。
+        if (startTokenRef.current !== token) return;
+        setConvs((prev) =>
+          prev.map((c) =>
+            c.key === convKey
+              ? { ...c, sessionId: info.sessionId, mcpErrors: info.mcpErrors }
+              : c,
+          ),
+        );
+      } catch (e) {
+        if (startTokenRef.current !== token) return;
+        const msg = String(e).replace(/^[A-Z_]+:\s*/, "");
+        updateConv(convKey, (c) => ({ ...c, error: msg }));
+        showToast(msg);
+      } finally {
+        if (startTokenRef.current === token) setStarting(false);
+      }
+    },
+    [showToast, updateConv],
+  );
+
+  // 主会话生命周期:页签激活后,内容/配置/重启任一变化都开一条全新主会话
+  // (辅助会话随之作废)。页签不活跃时不建会话,也不重置已建记录——切回来
+  // 内容没变就复用活会话。
+  useEffect(() => {
+    if (rightTab !== "agent") return;
+    const key = `${studyContentKey(studyContent)}|${agentConfigVersion}|${restartNonce}`;
+    if (startedKeyRef.current === key) return;
+    startedKeyRef.current = key;
+    const conv: Conv = {
+      key: nextConvKey(),
+      sessionId: null,
+      entries: [],
+      label: "主会话",
+      parent: null,
+      basedOn: "",
+      mcpErrors: [],
+    };
+    setConvs([conv]);
+    setActiveKey(conv.key);
+    turnsRef.current.clear();
+    void startSession(conv.key, studyContent);
+  }, [studyContent, agentConfigVersion, rightTab, restartNonce, startSession]);
+
+  // ⌘⇧Y / 命令:主会话 ↔ 最近一条辅助会话 来回切换。
+  useEffect(() => {
+    if (agentSwitchSignal === 0) return;
+    const list = convsRef.current;
+    if (list.length < 2) {
+      showToast("还没有辅助会话:悬停消息点「⤷」创建");
+      return;
     }
-    return turnRef.current;
+    setActiveKey((prevKey) => {
+      const cur = list.find((c) => c.key === prevKey);
+      if (cur?.parent) {
+        const parent = list.find((c) => c.key === cur.parent);
+        return parent ? parent.key : list[0].key;
+      }
+      return list[list.length - 1].key;
+    });
+  }, [agentSwitchSignal, showToast]);
+
+  // 切换会话后滚到底(每条会话都从最新消息看起)。
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    });
+  }, [activeKey]);
+
+  function ensureTurn(convKey: string): Turn {
+    let turn = turnsRef.current.get(convKey);
+    if (!turn) {
+      turn = { text: "", tools: [] };
+      turnsRef.current.set(convKey, turn);
+    }
+    return turn;
+  }
+
+  /** 把流式草稿(final 与否同形)写进会话;draft 复用同一个 turn 引用。 */
+  function writeEntries(
+    convKey: string,
+    turn: Turn,
+    finalize: boolean,
+    items: number | null,
+  ) {
+    setConvs((prev) =>
+      prev.map((c) => {
+        if (c.key !== convKey) return c;
+        const entries = c.entries.slice();
+        const draft: ChatEntry = {
+          role: "assistant",
+          text: turn.text,
+          turn,
+          items,
+        };
+        const last = entries[entries.length - 1];
+        if (last && last.role === "assistant" && last.turn === turn) {
+          entries[entries.length - 1] = finalize ? { ...draft } : draft;
+        } else {
+          entries.push(draft);
+        }
+        return { ...c, entries };
+      }),
+    );
   }
 
   /** Finalizes the streaming turn: the draft entry is replaced in place (it
    *  used to be appended a second time, so every reply showed up twice). */
-  function commitTurn() {
-    const turn = turnRef.current;
+  function commitTurn(convKey: string, items: number | null) {
+    const turn = turnsRef.current.get(convKey);
     if (!turn) return;
-    turnRef.current = null;
-    setEntries((prev) => {
-      const next = prev.slice();
-      const last = next[next.length - 1];
-      const done: ChatEntry = { role: "assistant", text: turn.text, turn };
-      if (last && last.role === "assistant" && last.turn === turn) {
-        next[next.length - 1] = done;
-      } else {
-        next.push(done);
-      }
-      return next;
-    });
+    turnsRef.current.delete(convKey);
+    writeEntries(convKey, turn, true, items);
   }
 
-  function handleAgentEvent(event: AgentEvent) {
+  function handleAgentEvent(sessionId: string, event: AgentEvent) {
+    const conv = findConvBySession(convsRef.current, sessionId);
+    if (!conv) return;
     switch (event.type) {
       case "text_delta": {
-        const turn = ensureTurn();
+        const turn = ensureTurn(conv.key);
         turn.text += event.text;
-        setEntries((prev) => {
-          const next = prev.slice();
-          const last = next[next.length - 1];
-          const draft: ChatEntry = {
-            role: "assistant",
-            text: turn.text,
-            turn,
-          };
-          if (last && last.role === "assistant" && last.turn === turn) {
-            next[next.length - 1] = draft;
-          } else {
-            next.push(draft);
-          }
-          return next;
-        });
+        writeEntries(conv.key, turn, false, null);
         break;
       }
       case "tool_start": {
-        const turn = ensureTurn();
-        turn.tools = [
-          ...turn.tools,
-          { id: event.id, name: event.name, input: event.input },
-        ];
-        setEntries((prev) => {
-          const next = prev.slice();
-          const last = next[next.length - 1];
-          const draft: ChatEntry = { role: "assistant", text: turn.text, turn };
-          if (last && last.role === "assistant" && last.turn === turn) {
-            next[next.length - 1] = draft;
-          } else {
-            next.push(draft);
-          }
-          return next;
-        });
+        const turn = ensureTurn(conv.key);
+        turn.tools = [...turn.tools, { id: event.id, name: event.name, input: event.input }];
+        writeEntries(conv.key, turn, false, null);
         break;
       }
       case "tool_end": {
-        const turn = turnRef.current;
+        const turn = turnsRef.current.get(conv.key);
         if (!turn) break;
         turn.tools = turn.tools.map((t) =>
           t.id === event.id ? { ...t, output: event.output, ok: event.ok } : t,
         );
-        setEntries((prev) => {
-          const next = prev.slice();
-          const last = next[next.length - 1];
-          if (last && last.role === "assistant" && last.turn === turn) {
-            next[next.length - 1] = { role: "assistant", text: turn.text, turn };
-          }
-          return next;
-        });
+        writeEntries(conv.key, turn, false, null);
         break;
       }
       case "turn_end": {
-        commitTurn();
-        busyRef.current = false;
-        setBusy(false);
+        commitTurn(conv.key, event.items);
+        if (busyRef.current === sessionId) {
+          busyRef.current = null;
+          setBusySession(null);
+        }
         break;
       }
       case "error": {
-        const turn = turnRef.current;
+        const turn = turnsRef.current.get(conv.key);
         if (turn) {
           turn.error = event.message;
-          commitTurn();
+          commitTurn(conv.key, event.items);
         } else {
-          setEntries((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              text: "",
-              turn: { text: "", tools: [], error: event.message },
-            },
-          ]);
+          updateConv(conv.key, (c) => ({
+            ...c,
+            entries: [
+              ...c.entries,
+              {
+                role: "assistant",
+                text: "",
+                items: event.items > 0 ? event.items : null,
+                turn: { text: "", tools: [], error: event.message },
+              },
+            ],
+          }));
         }
-        busyRef.current = false;
-        setBusy(false);
+        if (busyRef.current === sessionId) {
+          busyRef.current = null;
+          setBusySession(null);
+        }
         break;
       }
     }
@@ -230,120 +312,199 @@ export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
     });
   }
 
+  // Stream events; route by sessionId into the owning conversation.
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    void listen<{ sessionId: string; event: AgentEvent }>("agent-event", (event) => {
+      handleAgentEvent(event.payload.sessionId, event.payload.event);
+    }).then((un) => {
+      off = un;
+    });
+    return () => off?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function send() {
     const text = input.trim();
-    if (!text || busyRef.current) return;
-    const info = sessionRef.current;
+    const conv = activeConv;
+    if (!conv || !text) return;
+    const info = conv.sessionId;
     if (!info) {
       // Never drop the message silently: tell the user why nothing happened.
       showToast(
-        sessionError
-          ? `会话未就绪:${sessionError}`
+        conv.error
+          ? `会话未就绪:${conv.error}`
           : "会话未就绪,请稍候重试或重新开始会话",
       );
       return;
     }
+    if (busyRef.current === info) return;
     setInput("");
-    busyRef.current = true;
-    setBusy(true);
-    setEntries((prev) => [...prev, { role: "user", text }]);
+    busyRef.current = info;
+    setBusySession(info);
+    const last = conv.entries[conv.entries.length - 1];
+    const items = last?.items != null ? last.items + 1 : null;
+    updateConv(conv.key, (c) => ({
+      ...c,
+      entries: [...c.entries, { role: "user", text, items }],
+    }));
     try {
-      await agentApi.send(info.sessionId, text);
+      await agentApi.send(info, text);
     } catch (e) {
-      busyRef.current = false;
-      setBusy(false);
+      busyRef.current = null;
+      setBusySession(null);
       showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
     }
   }
 
   function abort() {
-    const info = sessionRef.current;
-    if (info) void agentApi.abort(info.sessionId);
+    const info = activeConv?.sessionId;
+    if (info) void agentApi.abort(info);
   }
 
-  const rendered = useMemo(
-    () => (text: string) => renderAgentMarkdown(text),
-    [],
-  );
+  /** 从第 index 条消息分叉一条辅助会话:复制前缀历史,原会话不动。 */
+  function forkFrom(index: number) {
+    const src = activeConv;
+    if (!src) return;
+    if (!src.sessionId) {
+      showToast("会话未就绪,不能分叉");
+      return;
+    }
+    const cutoff = forkCutoff(src.entries, index);
+    const conv: Conv = {
+      key: nextConvKey(),
+      sessionId: null,
+      entries: src.entries.slice(0, index + 1).map(cloneEntry),
+      label: `↳ ${forkLabel(src.entries[index].text)}`,
+      parent: src.key,
+      basedOn: forkLabel(src.entries[index].text, 40),
+      mcpErrors: [],
+    };
+    setConvs((prev) => [...prev, conv]);
+    setActiveKey(conv.key);
+    void startSession(conv.key, studyContent, { from: src.sessionId, items: cutoff });
+  }
+
+  const parentConv = activeConv?.parent
+    ? (convs.find((c) => c.key === activeConv.parent) ?? null)
+    : null;
 
   return (
-    <aside className={`agent-panel${collapsed ? " collapsed" : ""}`}>
-      {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让标题文字也能拖,
+    <aside className="agent-panel">
+      {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让文字也能拖,
           头部里的按钮由 Tauri 的 drag.js 自行放行。 */}
       <div className="agent-header" data-tauri-drag-region="deep">
-        <span className="agent-title">学习助手</span>
+        <StudyRightTabs />
+        {convs.length > 1 ? (
+          <select
+            className="agent-conv-select"
+            value={activeKey ?? ""}
+            title="切换会话(⌘⇧Y)"
+            onChange={(e) => setActiveKey(e.target.value)}
+          >
+            {convs.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="agent-conv-label">主会话</span>
+        )}
         <span className="spacer" />
         <button
           className="icon-btn"
-          title="重新开始会话"
-          onClick={() => void startSession(studyContent)}
+          title="重新开始主会话(重读 .bnote/agent.md 与配置)"
+          onClick={() => setRestartNonce((n) => n + 1)}
         >
           ⟳
         </button>
-        <button
-          className="icon-btn"
-          title="收起学习助手"
-          onClick={() => patchSettings({ studyAgentOpen: false })}
-        >
-          ⇤
-        </button>
       </div>
-      {session && session.mcpErrors.length > 0 && (
-        <div className="agent-mcp-warn" title={session.mcpErrors.join("\n")}>
+      {parentConv && (
+        <div className="agent-aux-bar">
+          <span className="agent-aux-badge">辅助会话</span>
+          <span className="agent-aux-based" title={activeConv?.basedOn}>
+            基于「{activeConv?.basedOn}」
+          </span>
+          <button
+            className="btn btn-ghost agent-aux-back"
+            title="返回上一条会话(⌘⇧Y)"
+            onClick={() => parentConv && setActiveKey(parentConv.key)}
+          >
+            ← {parentConv.label}
+          </button>
+        </div>
+      )}
+      {activeConv && activeConv.mcpErrors.length > 0 && (
+        <div className="agent-mcp-warn" title={activeConv.mcpErrors.join("\n")}>
           MCP 部分服务器连接失败
         </div>
       )}
       {starting && <div className="agent-status">正在连接模型…</div>}
-      {!starting && sessionError && (
+      {!starting && activeConv?.error && (
         <div className="agent-status fail">
-          <span className="agent-status-text" title={sessionError}>
-            会话未就绪:{sessionError}
+          <span className="agent-status-text" title={activeConv.error}>
+            会话未就绪:{activeConv.error}
           </span>
           <button
             className="btn btn-ghost agent-status-retry"
-            onClick={() => void startSession(studyContent)}
+            onClick={() => void startSession(activeConv.key, studyContent)}
           >
             重试
           </button>
         </div>
       )}
       <div className="agent-scroll" ref={scrollRef}>
-        {entries.length === 0 && (
+        {!activeConv || activeConv.entries.length === 0 ? (
           <div className="agent-welcome">
             <p>问我关于当前 PDF / 网页的问题。</p>
             <p className="agent-hint">
-              例如:「总结这篇论文的核心方法」「第 3 节的公式在讲什么?」「把要点整理进我的笔记」。
+              例如:「总结这篇论文的核心方法」「第 3 节的公式在讲什么?」
             </p>
+            <p className="agent-hint">悬停任意消息点「⤷」,可以从那里分叉一条辅助会话。</p>
           </div>
-        )}
-        {entries.map((entry, i) =>
-          entry.role === "user" ? (
-            <div className="agent-msg agent-msg-user" key={i}>
-              {entry.text}
-            </div>
-          ) : (
-            <div className="agent-msg agent-msg-assistant" key={i}>
-              {entry.turn?.tools.map((tool) => (
-                <details className="agent-tool" key={tool.id}>
-                  <summary className={tool.ok === false ? "fail" : ""}>
-                    {tool.ok === undefined ? "⏳" : tool.ok ? "🔧" : "⚠️"}{" "}
-                    {tool.name}
-                  </summary>
-                  <pre className="agent-tool-io">
-                    {JSON.stringify(tool.input, null, 2)}
-                    {tool.output !== undefined && `\n→ ${tool.output}`}
-                  </pre>
-                </details>
-              ))}
-              {entry.turn?.error && (
-                <div className="agent-error">{entry.turn.error}</div>
+        ) : (
+          activeConv.entries.map((entry, i) => (
+            <div
+              className={`agent-msg-row${entry.role === "user" ? " is-user" : ""}`}
+              key={i}
+            >
+              {entry.role === "user" ? (
+                <div className="agent-msg agent-msg-user">{entry.text}</div>
+              ) : (
+                <div className="agent-msg agent-msg-assistant">
+                  {entry.turn?.tools.map((tool) => (
+                    <details className="agent-tool" key={tool.id}>
+                      <summary className={tool.ok === false ? "fail" : ""}>
+                        {tool.ok === undefined ? "⏳" : tool.ok ? "🔧" : "⚠️"}{" "}
+                        {tool.name}
+                      </summary>
+                      <pre className="agent-tool-io">
+                        {JSON.stringify(tool.input, null, 2)}
+                        {tool.output !== undefined && `\n→ ${tool.output}`}
+                      </pre>
+                    </details>
+                  ))}
+                  {entry.turn?.error && (
+                    <div className="agent-error">{entry.turn.error}</div>
+                  )}
+                  <div
+                    className="agent-md"
+                    dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(entry.text) }}
+                  />
+                </div>
               )}
-              <div
-                className="agent-md"
-                dangerouslySetInnerHTML={{ __html: rendered(entry.text) }}
-              />
+              {!activeBusy && (
+                <button
+                  className="agent-fork"
+                  title="基于这条消息开启辅助会话"
+                  onClick={() => forkFrom(i)}
+                >
+                  ⤷
+                </button>
+              )}
             </div>
-          ),
+          ))
         )}
       </div>
       <div className="agent-input-row">
@@ -360,7 +521,7 @@ export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
             }
           }}
         />
-        {busy ? (
+        {activeBusy ? (
           <button className="btn agent-send" onClick={abort}>
             停止
           </button>
@@ -368,8 +529,12 @@ export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
           <button
             className="btn agent-send"
             onClick={() => void send()}
-            disabled={!session}
-            title={session ? "发送(Enter)" : sessionError ?? "正在连接模型…"}
+            disabled={!activeConv?.sessionId}
+            title={
+              activeConv?.sessionId
+                ? "发送(Enter)"
+                : (activeConv?.error ?? "正在连接模型…")
+            }
           >
             发送
           </button>
@@ -377,84 +542,4 @@ export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
       </div>
     </aside>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Mini markdown renderer: escapes HTML, renders code fences, $math$, bold,
-// links and lists — enough for agent answers without a heavy dependency.
-// ---------------------------------------------------------------------------
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function renderMath(tex: string, display: boolean): string {
-  try {
-    return katex.renderToString(tex, {
-      displayMode: display,
-      throwOnError: false,
-      output: "html",
-    });
-  } catch {
-    return `<code>${escapeHtml(tex)}</code>`;
-  }
-}
-
-function renderInline(text: string): string {
-  // inline math first ($...$), then bold, code, links
-  const parts: string[] = [];
-  const mathRe = /\$([^$\n]+)\$/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = mathRe.exec(text))) {
-    parts.push(inlinePlain(text.slice(last, m.index)));
-    parts.push(renderMath(m[1], false));
-    last = m.index + m[0].length;
-  }
-  parts.push(inlinePlain(text.slice(last)));
-  return parts.join("");
-}
-
-function inlinePlain(text: string): string {
-  let out = escapeHtml(text);
-  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
-  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-  return out;
-}
-
-export function renderAgentMarkdown(text: string): string {
-  if (!text) return "";
-  const blocks: string[] = [];
-  // split fenced code
-  const fenceRe = /```(\w*)\n?([\s\S]*?)(?:```|$)/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = fenceRe.exec(text))) {
-    blocks.push(...splitMathBlocks(text.slice(last, m.index)));
-    blocks.push(`<pre class="agent-code"><code>${escapeHtml(m[2])}</code></pre>`);
-    last = m.index + m[0].length;
-  }
-  blocks.push(...splitMathBlocks(text.slice(last)));
-  return blocks
-    .map((b) => (b.startsWith("<") ? b : `<p>${b}</p>`))
-    .join("");
-}
-
-function splitMathBlocks(text: string): string[] {
-  const out: string[] = [];
-  const blockRe = /\$\$([\s\S]+?)\$\$/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = blockRe.exec(text))) {
-    out.push(renderInline(text.slice(last, m.index)));
-    out.push(renderMath(m[1], true));
-    last = m.index + m[0].length;
-  }
-  out.push(renderInline(text.slice(last)));
-  return out.filter((s) => s.trim().length > 0 || s.includes("katex"));
 }

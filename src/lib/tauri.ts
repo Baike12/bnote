@@ -26,7 +26,7 @@ export interface VaultIndex {
 }
 
 /** Whitelisted per-vault config files inside `<vault>/.bnote/`. */
-export type VaultConfigFile = "vimrc" | "snippets.js" | "keybindings.json";
+export type VaultConfigFile = "vimrc" | "snippets.js" | "keybindings.json" | "agent.md";
 
 export interface InputSourceInfo {
   id: string;
@@ -74,12 +74,21 @@ export interface SessionInfo {
   mcpErrors: string[];
 }
 
+/**
+ * 辅助会话:从某个会话的第 `items` 条历史(前缀,含该条)分叉出一条新会话。
+ * 原会话不动;`items` 来自 turn_end/error 事件携带的后端历史条数。
+ */
+export interface AgentForkSpec {
+  from: string;
+  items: number;
+}
+
 export type AgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_start"; id: string; name: string; input: unknown }
   | { type: "tool_end"; id: string; ok: boolean; output: string }
-  | { type: "turn_end"; reason: string }
-  | { type: "error"; message: string };
+  | { type: "turn_end"; reason: string; items: number }
+  | { type: "error"; message: string; items: number };
 
 /** 收进 vault 的 PDF(`<vault>/pdfs/<stem>.pdf`)。 */
 export interface ImportedPdf {
@@ -175,8 +184,8 @@ export interface PreviewBounds {
 export const agentApi = {
   getConfig: () => invoke<AgentConfig>("agent_get_config"),
   saveConfig: (config: AgentConfig) => invoke<void>("agent_save_config", { config }),
-  startSession: (study: StudyContent | null) =>
-    invoke<SessionInfo>("agent_start_session", { study }),
+  startSession: (study: StudyContent | null, fork?: AgentForkSpec) =>
+    invoke<SessionInfo>("agent_start_session", { study, fork }),
   send: (sessionId: string, text: string) =>
     invoke<void>("agent_send", { sessionId, text }),
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),

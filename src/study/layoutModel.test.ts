@@ -1,66 +1,64 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_AGENT_WIDTH,
   DEFAULT_CONTENT_WIDTH,
-  MIN_AGENT_WIDTH,
   MIN_CONTENT_WIDTH,
-  MIN_NOTES_WIDTH,
+  MIN_RIGHT_WIDTH,
   RESIZER_WIDTH,
   basePageWidth,
   contentWidthForRenderedPage,
-  dragAgentEdge,
   dragContentEdge,
-  normalizeSplit,
+  normalizeContentWidth,
+  studySplitToContentWidth,
 } from "./layoutModel";
 
-describe("normalizeSplit", () => {
+describe("normalizeContentWidth", () => {
   it("旧配置的比例按窗口宽度换算成像素", () => {
-    expect(normalizeSplit([0.24, 0.44], 1400)).toEqual([336, 616]);
+    expect(normalizeContentWidth(0.44, 1400)).toBe(616);
   });
 
   it("像素宽度原样保留,只夹下限", () => {
-    expect(normalizeSplit([700, 900], 1400)).toEqual([700, 900]);
-    expect(normalizeSplit([10, 20], 1400)).toEqual([MIN_AGENT_WIDTH, MIN_CONTENT_WIDTH]);
+    expect(normalizeContentWidth(900, 1400)).toBe(900);
+    expect(normalizeContentWidth(20, 1400)).toBe(MIN_CONTENT_WIDTH);
   });
 
   it("坏数据回落默认值", () => {
-    expect(normalizeSplit(null, 1400)).toEqual([DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH]);
-    expect(normalizeSplit([NaN, 400], 1400)).toEqual([
-      DEFAULT_AGENT_WIDTH,
-      DEFAULT_CONTENT_WIDTH,
-    ]);
-    expect(normalizeSplit([0, 0], 1400)).toEqual([DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH]);
+    expect(normalizeContentWidth(null, 1400)).toBe(DEFAULT_CONTENT_WIDTH);
+    expect(normalizeContentWidth(NaN, 1400)).toBe(DEFAULT_CONTENT_WIDTH);
+    expect(normalizeContentWidth(0, 1400)).toBe(DEFAULT_CONTENT_WIDTH);
   });
 });
 
-describe("dragAgentEdge", () => {
-  it("拖动只在中|左两栏之间重新分配,两栏之和不变", () => {
-    const [agent, content] = dragAgentEdge(500, 300, 700);
-    expect(agent).toBe(500);
-    expect(agent + content).toBe(1000);
+describe("studySplitToContentWidth", () => {
+  it("旧三栏数组取中栏宽度(第 2 个元素)", () => {
+    expect(studySplitToContentWidth([320, 620])).toBe(620);
+    expect(studySplitToContentWidth([0.24, 0.44])).toBeCloseTo(0.44, 10);
   });
 
-  it("两侧都留出最小宽度", () => {
-    expect(dragAgentEdge(10, 300, 700)).toEqual([MIN_AGENT_WIDTH, 1000 - MIN_AGENT_WIDTH]);
-    expect(dragAgentEdge(5000, 300, 700)).toEqual([1000 - MIN_CONTENT_WIDTH, MIN_CONTENT_WIDTH]);
+  it("单值(已是新配置)原样返回", () => {
+    expect(studySplitToContentWidth(620)).toBe(620);
+  });
+
+  it("没有可迁移的值时返回 null", () => {
+    expect(studySplitToContentWidth(undefined)).toBeNull();
+    expect(studySplitToContentWidth([320])).toBeNull();
+    expect(studySplitToContentWidth([320, "x"] as unknown)).toBeNull();
   });
 });
 
 describe("dragContentEdge", () => {
-  it("Agent 展开时,内容栏宽度扣掉左栏和分隔条", () => {
-    expect(dragContentEdge(300 + RESIZER_WIDTH + 500, 300, 1400, true)).toBe(500);
+  it("内容栏宽度 = 指针位置扣掉分隔条,右栏吃剩余", () => {
+    expect(dragContentEdge(RESIZER_WIDTH + 500, 1400)).toBe(500);
   });
 
-  it("Agent 收起时只有一个分隔条", () => {
-    expect(dragContentEdge(RESIZER_WIDTH + 500, 0, 1400, false)).toBe(500);
-  });
-
-  it("给笔记栏留够最小宽度", () => {
+  it("给右栏留够最小宽度", () => {
     const host = 1200;
-    const agent = 300;
-    const content = dragContentEdge(1190, agent, host, true);
-    expect(content).toBe(host - agent - RESIZER_WIDTH * 2 - MIN_NOTES_WIDTH);
-    expect(host - agent - RESIZER_WIDTH * 2 - content).toBe(MIN_NOTES_WIDTH);
+    const content = dragContentEdge(host - 1, host);
+    expect(content).toBe(host - RESIZER_WIDTH - MIN_RIGHT_WIDTH);
+    expect(host - RESIZER_WIDTH - content).toBe(MIN_RIGHT_WIDTH);
+  });
+
+  it("内容栏保住最小宽度", () => {
+    expect(dragContentEdge(0, 1400)).toBe(MIN_CONTENT_WIDTH);
   });
 });
 

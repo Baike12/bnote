@@ -152,6 +152,23 @@ const defs: CommandDef[] = [
     run: () => void flipPdfPage(1),
   },
   {
+    id: "study.toggle-right-tab",
+    title: "学习模式:切换 笔记/学习助手(⌘⇧U)",
+    category: "学习",
+    run: () => {
+      const s = useAppStore.getState();
+      s.patchSettings({
+        studyRightTab: s.settings.studyRightTab === "agent" ? "notes" : "agent",
+      });
+    },
+  },
+  {
+    id: "study.agent-switch-session",
+    title: "学习助手:切换 主会话/辅助会话(⌘⇧Y)",
+    category: "学习",
+    run: () => useAppStore.getState().bumpAgentSwitchSessionSignal(),
+  },
+  {
     id: "workspace.open-settings",
     title: "打开设置",
     category: "工作区",

@@ -1,22 +1,21 @@
 /**
  * Study-mode column model.
  *
- * 左(Agent)、中(内容)两栏的宽度以**像素**保存,右(笔记)吃剩余宽度。
- * 这样拖动窗口边缘时,中栏宽度不变——PDF 页面尺寸、纵向能看到多少内容都
- * 不会跟着窗口抖。窗口窄到放不下时,由 CSS 的 clamp 依次压缩中栏、左栏,
- * 而不回写偏好。
+ * 布局是两栏:左(内容)+ 右(笔记 / 学习助手二选一,见 StudyLayout 的页签)。
+ * 中栏宽度以**像素**保存(`studyContentWidth`),右栏吃剩余宽度。这样拖动
+ * 窗口边缘时,中栏宽度不变——PDF 页面尺寸、纵向能看到多少内容都不会跟着
+ * 窗口抖。窗口窄到放不下时,由 CSS 的 clamp 压缩中栏,而不回写偏好。
  *
- * 旧配置存的是占可用宽度的比例(两个数都 < 1),`normalizeSplit` 在加载时
- * 用当时的窗口宽度换算成像素,一次性迁移。
+ * 旧配置把三栏宽度存成 `studySplit: [agent, content]`(更早是比例),
+ * `normalizeContentWidth` 在加载时把旧值换算成中栏像素宽度,一次性迁移。
  */
 
-export const MIN_AGENT_WIDTH = 220;
 export const MIN_CONTENT_WIDTH = 260;
-export const MIN_NOTES_WIDTH = 220;
+/** 右栏(笔记 / 学习助手)最小宽度。 */
+export const MIN_RIGHT_WIDTH = 260;
 /** 分隔条命中区宽度,与 global.css 的 .study-resizer 一致。 */
 export const RESIZER_WIDTH = 8;
 
-export const DEFAULT_AGENT_WIDTH = 320;
 export const DEFAULT_CONTENT_WIDTH = 620;
 
 /** PDF 页面上方的留白(.pdf-pages padding-top)。 */
@@ -26,69 +25,46 @@ function clamp(value: number, lo: number, hi: number): number {
   return Math.min(Math.max(value, lo), Math.max(lo, hi));
 }
 
-function finitePositive(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
 /**
- * 把持久化的 `studySplit` 归一成像素宽度 `[agent, content]`。
+ * 把持久化的中栏宽度归一成像素。
  *
- * - 旧配置的比例形式(两个数都在 0..1)按 `viewportWidth` 换算;
- * - 像素形式原样使用;
+ * - 旧配置的比例形式(值在 0..1)按 `viewportWidth` 换算;
+ * - 像素原样使用,只夹下限(上限交给 CSS,窗口变窄时压缩显示而不改偏好);
  * - 坏数据回落默认值。
  */
-export function normalizeSplit(split: unknown, viewportWidth: number): [number, number] {
-  if (!Array.isArray(split) || split.length !== 2) {
-    return [DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH];
+export function normalizeContentWidth(value: unknown, viewportWidth: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_CONTENT_WIDTH;
   }
-  const rawAgent = finitePositive(split[0]);
-  const rawContent = finitePositive(split[1]);
-  if (rawAgent === null || rawContent === null) {
-    return [DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH];
-  }
-  const legacy = rawAgent < 1 && rawContent < 1;
-  if (legacy) {
+  if (value < 1) {
     if (!(Number.isFinite(viewportWidth) && viewportWidth > 0)) {
-      return [DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH];
+      return DEFAULT_CONTENT_WIDTH;
     }
-    return [
-      Math.round(Math.max(MIN_AGENT_WIDTH, rawAgent * viewportWidth)),
-      Math.round(Math.max(MIN_CONTENT_WIDTH, rawContent * viewportWidth)),
-    ];
+    return Math.round(Math.max(MIN_CONTENT_WIDTH, value * viewportWidth));
   }
-  return [
-    Math.round(Math.max(MIN_AGENT_WIDTH, rawAgent)),
-    Math.round(Math.max(MIN_CONTENT_WIDTH, rawContent)),
-  ];
+  return Math.round(Math.max(MIN_CONTENT_WIDTH, value));
 }
 
 /**
- * 拖动 Agent|内容 分隔线:两栏之和保持不变,笔记栏不受影响。
- * `x` 是指针相对布局左缘的坐标。
+ * 旧配置 `studySplit` → 新配置 `studyContentWidth`。
+ *
+ * 旧数组是 `[agent, content]`(像素或比例),中栏宽度取第 2 个元素;
+ * 单值(已是新配置)原样归一。返回 null 表示没有可迁移的值。
  */
-export function dragAgentEdge(
-  x: number,
-  agentWidth: number,
-  contentWidth: number,
-): [number, number] {
-  const pair = agentWidth + contentWidth;
-  const agent = Math.round(clamp(x, MIN_AGENT_WIDTH, pair - MIN_CONTENT_WIDTH));
-  return [agent, Math.round(pair - agent)];
+export function studySplitToContentWidth(split: unknown): number | null {
+  if (Array.isArray(split)) {
+    return split.length === 2 && typeof split[1] === "number" ? split[1] : null;
+  }
+  return typeof split === "number" ? split : null;
 }
 
 /**
- * 拖动 内容|笔记 分隔线:内容栏拿到指针位置,笔记栏吃剩余宽度。
+ * 拖动 内容|右栏 分隔线:内容栏拿到指针位置,右栏吃剩余宽度。
  * `x` 是指针相对布局左缘的坐标;`hostWidth` 是布局宽度。
  */
-export function dragContentEdge(
-  x: number,
-  agentWidth: number,
-  hostWidth: number,
-  agentOpen: boolean,
-): number {
-  const offset = agentOpen ? agentWidth + RESIZER_WIDTH : RESIZER_WIDTH;
-  const upper = hostWidth - offset - RESIZER_WIDTH - MIN_NOTES_WIDTH;
-  return Math.round(clamp(x - offset, MIN_CONTENT_WIDTH, upper));
+export function dragContentEdge(x: number, hostWidth: number): number {
+  const upper = hostWidth - RESIZER_WIDTH - MIN_RIGHT_WIDTH;
+  return Math.round(clamp(x - RESIZER_WIDTH, MIN_CONTENT_WIDTH, Math.max(MIN_CONTENT_WIDTH, upper)));
 }
 
 /**

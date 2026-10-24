@@ -1705,7 +1705,7 @@ input[type="range"] {
 }
 
 /* ---------------------------------------------------------------------------
- * 学习模式:三栏布局(左 agent / 中内容 / 右笔记)
+ * 学习模式:两栏布局(左 内容 / 右 笔记⇄学习助手页签)
  * ------------------------------------------------------------------------- */
 
 .study-layout {
@@ -1714,21 +1714,18 @@ input[type="range"] {
   min-height: 0;
   background: var(--bg0);
   color: var(--text);
-  /* 三栏宽度由 StudyLayout 写入:--agent-src / --content-src 是用户偏好
-     (像素),--agent-w / --content-w 再按当前窗口夹一次。左/中两栏是固定
-     像素,右侧笔记吃剩余宽度——拖窗口边缘只会改笔记栏,PDF 页面尺寸不变。
-     窗口窄到笔记栏放不下 220px 时,先压中栏、再压左栏;都只压显示,不回写
-     偏好。16px = 两条分隔条的命中区。 */
-  --agent-src: 320px;
+  /* 两栏宽度由 StudyLayout 写入:--content-src 是用户偏好(像素),--content-w
+     再按当前窗口夹一次。左栏是固定像素,右栏吃剩余宽度——拖窗口边缘只会改
+     左栏,PDF 页面尺寸和纵向可见内容都不会跟着窗口抖。窗口窄到右栏放不下
+     260px 时,CSS 压缩左栏,只压显示,不回写偏好。8px = 分隔条命中区。 */
   --content-src: 620px;
-  --agent-w: clamp(220px, var(--agent-src), calc(100% - 260px - 16px - 220px));
-  --content-w: clamp(260px, var(--content-src), calc(100% - var(--agent-w) - 16px - 220px));
+  --content-w: clamp(260px, var(--content-src), calc(100% - 8px - 260px));
   /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。侧栏在时它压在侧栏
-     自己的 36px 预留带上,侧栏不在时压在三栏布局左栏的头部——那里要让开。
+     自己的 36px 预留带上,侧栏不在时压在中栏工具栏上——那里要让开。
      与 .titlebar 的 paddingLeft 是同一套判断,只是这里由 DOM 推出来。 */
   --study-lead: 78px;
-  /* 三栏头部同高:它们的下边框在窗口顶部连成一条线,差 1px 就是一个台阶。
-     43 = 8px 上下内边距 ×2 + 26px 图标按钮 + 1px 下边框(左栏头部的自然高度)。 */
+  /* 两栏头部同高:它们的下边框在窗口顶部连成一条线,差 1px 就是一个台阶。
+     43 = 8px 上下内边距 ×2 + 26px 图标按钮 + 1px 下边框。 */
   --study-head-h: 43px;
 }
 
@@ -1736,20 +1733,60 @@ input[type="range"] {
   --study-lead: 12px;
 }
 
-/* Agent 收起:左栏与它的分隔条都不占布局。 */
-.study-layout.agent-closed {
-  --agent-w: 0px;
-  --content-w: clamp(260px, var(--content-src), calc(100% - 8px - 220px));
-}
-
-.agent-panel {
-  width: var(--agent-w);
+/* 右栏:笔记 / 学习助手 二选一(页签见 .study-tabs)。 */
+.study-right {
+  flex: 1 1 0;
   min-width: 0;
-  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
-  background: var(--bg1);
+}
+
+/* 两个页签的内容都常驻挂载(切换零重挂、零重测:CodeMirror 的装饰和滚动
+   位置原样保留),叠在同一块画布上,只显示活动页签。visibility 而不是
+   display:none——后者会把面板尺寸清零,触发一堆无谓的重排/重测。 */
+.study-right-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.study-right-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.study-right-page[data-inactive="true"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 页签控件:两栏头部共用一份(StudyRightTabs)。 */
+.study-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--bg2);
+  border-radius: 8px;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.study-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-dim, var(--text));
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.study-tab:hover { color: var(--text); }
+.study-tab.active {
+  background: var(--bg3);
+  color: var(--text);
+  font-weight: 600;
 }
 
 /* 拖动条:视觉上一条 1px 分栏线,命中区 8px(col-resize 手感)。线画在条自身
@@ -1779,7 +1816,6 @@ input[type="range"] {
 
 /* 分栏线归拖动条画。面板自带的 border-right 会与它并排成两条线(拖起来亮
    的是拖动条那条,静息时看到的是边框那条)。 */
-.study-layout .agent-panel,
 .study-layout .content-pane {
   border-right: none;
 }
@@ -1792,17 +1828,69 @@ input[type="range"] {
   user-select: none;
 }
 
+.agent-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg1);
+}
+
 .agent-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 8px 12px;
-  /* 侧栏收起时左栏顶在最左边,标题会落到窗口红绿灯底下(「学习助手」和放大
-     缩小按钮重合),这里按 --study-lead 让开。 */
-  padding-left: var(--study-lead, 12px);
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
+}
+
+/* 会话切换:多条会话(主 + 辅助)时是下拉,只有主会话时是一段说明文字。 */
+.agent-conv-select {
+  max-width: 150px;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--text);
+}
+.agent-conv-label {
+  font-size: 12px;
+  color: var(--text-dim, var(--text));
+  white-space: nowrap;
+}
+
+/* 辅助会话条:标明当前在看的是分叉会话,一键回上一条。 */
+.agent-aux-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.agent-aux-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
   font-weight: 600;
+}
+.agent-aux-based {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim, var(--text));
+}
+.agent-aux-back {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 12px;
 }
 
 .agent-mcp-warn {
@@ -1845,7 +1933,7 @@ input[type="range"] {
 .agent-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 14px 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1863,6 +1951,42 @@ input[type="range"] {
   margin-top: 6px;
 }
 
+/* 消息行:悬停时露出「⤷ 分叉辅助会话」按钮。 */
+.agent-msg-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+.agent-msg-row.is-user { justify-content: flex-end; }
+.agent-msg-row.is-user .agent-msg { margin-right: 18px; }
+.agent-msg-row:not(.is-user) .agent-msg { margin-left: 18px; }
+
+.agent-fork {
+  /* 占住固定位置,悬停才显形:不hover布局也不抖。 */
+  position: absolute;
+  top: 6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--text-dim, var(--text));
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.agent-msg-row:not(.is-user) .agent-fork { right: -2px; }
+.agent-msg-row.is-user .agent-fork { left: -2px; }
+.agent-msg-row:hover .agent-fork { opacity: 1; }
+.agent-fork:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .agent-msg {
   border-radius: 10px;
   padding: 8px 10px;
@@ -1872,19 +1996,64 @@ input[type="range"] {
 }
 
 .agent-msg-user {
-  align-self: flex-end;
   max-width: 88%;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .agent-msg-assistant {
   align-self: stretch;
+  flex: 1;
+  min-width: 0;
   background: var(--bg2);
   border: 1px solid var(--border);
 }
 
+/* Agent 回复的 markdown:标题 / 列表 / 表格 / 引用 / 行内样式。 */
+.agent-md h1, .agent-md h2, .agent-md h3,
+.agent-md h4, .agent-md h5, .agent-md h6 {
+  margin: 8px 0 4px;
+  line-height: 1.35;
+  font-size: 13.5px;
+}
+.agent-md h1:first-child, .agent-md h2:first-child, .agent-md h3:first-child { margin-top: 0; }
+.agent-md h1 { font-size: 15px; }
 .agent-md p { margin: 0 0 6px; }
 .agent-md p:last-child { margin-bottom: 0; }
+.agent-md ul, .agent-md ol { margin: 4px 0 6px; padding-left: 20px; }
+.agent-md li { margin: 2px 0; }
+.agent-md li > ul, .agent-md li > ol { margin: 2px 0; }
+.agent-md ul:last-child, .agent-md ol:last-child { margin-bottom: 0; }
+.agent-md blockquote {
+  margin: 4px 0 6px;
+  padding: 2px 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim, var(--text));
+}
+.agent-md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+.agent-md table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 12.5px;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+.agent-md th, .agent-md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.agent-md th { background: var(--bg3); font-weight: 600; }
+.agent-md code {
+  background: var(--bg3);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
 .agent-md pre.agent-code {
   background: var(--bg3);
   padding: 8px;
@@ -1893,6 +2062,7 @@ input[type="range"] {
   font-size: 12px;
   margin: 6px 0;
 }
+.agent-md pre.agent-code code { background: transparent; padding: 0; }
 .agent-md .katex-display {
   margin: 6px 0;
   overflow-x: auto;
@@ -2371,17 +2541,12 @@ input[type="range"] {
 }
 
 /* ---------------------------------------------------------------------------
- * 学习模式:可折叠 Agent / 历史下拉 / PDF 阅读器
+ * 学习模式:历史下拉 / PDF 阅读器
  * ------------------------------------------------------------------------- */
 
-/* 收起后仍挂载(保住会话与聊天记录),只是不占布局。 */
-.agent-panel.collapsed {
-  display: none;
-}
-
-/* 收起 Agent 后中栏成为整窗左缘:让开窗口红绿灯的是左侧那一列,不是整条
-   toolbar——否则内容盒整体右移,居中的文件名会偏离整栏中心。 */
-.study-layout.agent-closed .content-tool-left {
+/* 中栏是整窗左缘:让开窗口红绿灯的是左侧那一列,不是整条 toolbar——
+   否则内容盒整体右移,居中的文件名会偏离整栏中心。 */
+.study-layout .content-tool-left {
   padding-left: var(--study-lead, 12px);
 }
 

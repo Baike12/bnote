@@ -35,9 +35,14 @@ impl Session {
         self.running.store(true, Ordering::SeqCst);
         let result = self.run_loop().await;
         self.running.store(false, Ordering::SeqCst);
+        // 条数随结束事件一起给前端:分叉辅助会话时按它截断,不用猜。
+        let count = self.history().len();
         let event = match result {
-            Ok(()) => AgentEvent::TurnEnd { reason: "end".into() },
-            Err(e) => AgentEvent::Error { message: e },
+            Ok(()) => AgentEvent::TurnEnd {
+                reason: "end".into(),
+                items: count,
+            },
+            Err(e) => AgentEvent::Error { message: e, items: count },
         };
         self.emit(event);
     }
@@ -159,20 +164,36 @@ pub struct SessionRegistry {
 }
 
 /// Builds the system prompt for a session.
+///
+/// 三层结构,从固定到可变:
+/// 1. 固定的通用要求(代码写死):简洁、直击本质、符合认知科学——这是学习
+///    场景的底线,用户配置不能把它顶掉;
+/// 2. `user_instructions`:vault 的 `.bnote/agent.md`(类比 ZCode 的
+///    AGENTS.md / Claude Code 的 CLAUDE.md),设置里可编辑;
+/// 3. 运行时上下文(仓库、当前笔记、学习材料、skills、MCP)。
 pub fn build_system_prompt(
     vault_name: &str,
     current_note: Option<&str>,
     study: Option<&StudyContent>,
+    user_instructions: &str,
     skills_block: &str,
     mcp_block: &str,
 ) -> String {
     let mut p = String::from(
         "You are bnote's study assistant, embedded in a markdown note-taking app. \
 The user is studying material (a PDF paper or a web page) shown in the \
-center panel while their own notes stay on the right. Answer in the user's language. \
+center panel while their own notes stay in the right pane. Answer in the user's language. \
 Use markdown and $...$ / $$...$$ LaTeX math. When the question relates to the study \
 material, ground your answer in it via the read_study_content tool before answering \
-from memory; quote the relevant formulas precisely.\n\n",
+from memory; quote the relevant formulas precisely.\n\n\
+\
+## 回答方式(必须遵守)\n\n\
+- 结论先行:第一句直接回答问题,再给最短必要的解释。不要复述问题、不要寒暄、不要绕圈子。\n\
+- 直击本质:先给一句话核心(这个概念到底在解决什么问题),再给细节;细节只保留影响理解的部分。\n\
+- 符合认知科学:组块化——把内容组织成 3~5 个要点,每个要点一个概念;先框架后细节;新概念用已有概念类比;对比易混概念时给出明确的判别标准。\n\
+- 控制长度:默认不超过 200 字或 5 个要点;只有用户明确要求展开、或问题确实复杂时才写长。\n\
+- 结构服务理解:能用一个公式说清就不用三段文字;步骤用有序列表;并列要点用无序列表;重要对比用表格。\n\
+- 不确定就说不确定,并指出验证路径;不要编造论文里没有的内容。\n\n",
     );
     p.push_str(&format!("- Vault: {}\n", vault_name));
     if let Some(note) = current_note {
@@ -187,7 +208,30 @@ from memory; quote the relevant formulas precisely.\n\n",
         }
         None => {}
     }
+    let user = user_instructions.trim();
+    if !user.is_empty() {
+        p.push_str("\n## 用户自定义指令(.bnote/agent.md)\n\n");
+        p.push_str(user);
+        p.push_str("\n");
+    }
     p.push_str(skills_block);
     p.push_str(mcp_block);
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 固定要求在自定义指令之前_且自定义指令为空时不出现该节() {
+        let base = build_system_prompt("vault", None, None, "", "", "");
+        assert!(base.contains("结论先行"));
+        assert!(!base.contains(".bnote/agent.md"));
+
+        let with_user = build_system_prompt("vault", None, None, "  多用表格回答。 \n", "", "");
+        let custom = with_user.find("多用表格回答。").unwrap();
+        let fixed = with_user.find("结论先行").unwrap();
+        assert!(fixed < custom, "用户指令应在固定要求之后追加");
+    }
 }

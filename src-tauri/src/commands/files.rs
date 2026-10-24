@@ -6,7 +6,7 @@ use crate::state::AppState;
 use crate::commands::vault::vault_join;
 
 /// Files inside `<vault>/.bnote/` that the app reads as configuration.
-const VAULT_CONFIG_FILES: &[&str] = &["vimrc", "snippets.js", "keybindings.json"];
+const VAULT_CONFIG_FILES: &[&str] = &["vimrc", "snippets.js", "keybindings.json", "agent.md"];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
