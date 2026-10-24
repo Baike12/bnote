@@ -58,7 +58,6 @@ import {
   PAGE_TOP_PAD,
   basePageWidth,
   contentWidthForRenderedPage,
-  normalizeSplit,
 } from "@/study/layoutModel";
 import {
   clampOutlineWidth,
@@ -941,10 +940,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     });
     if (target === null) return;
     const store = useAppStore.getState();
-    const [agentWidth, currentContent] = normalizeSplit(
-      store.settings.studySplit,
-      window.innerWidth,
-    );
+    const currentContent = store.settings.studyContentWidth;
     if (autoFitPass.current > 0 && currentContent !== autoFitTarget.current) {
       // 上一趟之后用户已经手动拖过中栏:手动值优先,放弃校正。
       autoFitPass.current = MAX_FIT_PASSES;
@@ -954,7 +950,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     autoFitFrom.current = targetWidth;
     if (Math.abs(currentContent - target) >= 2) {
       autoFitTarget.current = target;
-      store.patchSettings({ studySplit: [agentWidth, target] });
+      store.patchSettings({ studyContentWidth: target });
     } else {
       // 已经收敛(页面高度差不到 1px),收工。
       autoFitPass.current = MAX_FIT_PASSES;

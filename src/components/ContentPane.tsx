@@ -129,11 +129,12 @@ export function ContentPane() {
     };
   }, [content]);
 
-  // 侧栏/Agent 开关只让中栏平移,尺寸不变,ResizeObserver 收不到——布局提交
-  // 后补报一次坐标,原生 webview 才不会停在旧位置。
+  // 侧栏开关只让中栏平移,尺寸不变,ResizeObserver 收不到——布局提交
+  // 后补报一次坐标,原生 webview 才不会停在旧位置。(右栏页签切换不动
+  // 中栏几何,无需补报。)
   useLayoutEffect(() => {
     previewSyncRef.current?.();
-  }, [sidebarOpen, settings.studyAgentOpen]);
+  }, [sidebarOpen]);
 
   // 原生视图永远画在 DOM 之上,所以设置/命令面板这类 HTML 浮层打开时要把它
   // 藏起来,关掉再放出来。画布也一样:全屏浮层,开着时不能被原生视图盖住。
@@ -381,11 +382,11 @@ export function ContentPane() {
           文件名只占中间列,两侧等宽,所以它在整栏里是真正居中的。 */}
       <div className="content-toolbar" data-tauri-drag-region="deep">
         <div className="content-tool-left">
-          {!settings.studyAgentOpen && (
+          {settings.studyRightTab !== "agent" && (
             <button
               className="icon-btn content-agent-toggle"
-              title="展开学习助手"
-              onClick={() => patchSettings({ studyAgentOpen: true })}
+              title="切换到学习助手(⌘⇧U)"
+              onClick={() => patchSettings({ studyRightTab: "agent" })}
             >
               <IconSparkles />
             </button>

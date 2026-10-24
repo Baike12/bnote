@@ -276,7 +276,14 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_start_session" => {
             let study: Option<StudyContent> = serde_json::from_value(arg_value(args, "study")?)
                 .map_err(|e| format!("BAD_ARGS: study: {}", e))?;
-            json_ok!(agent::agent_start_session(app.clone(), app.state(), study).await)
+            let fork = match args.get("fork") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: fork: {}", e))?,
+                ),
+            };
+            json_ok!(agent::agent_start_session(app.clone(), app.state(), study, fork).await)
         }
         "agent_send" => json_ok!(
             agent::agent_send(

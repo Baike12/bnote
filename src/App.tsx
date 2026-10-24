@@ -45,7 +45,7 @@ import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
 import { fileName } from "@/lib/path";
 import { normalizeStudyHistory } from "@/study/history";
-import { normalizeSplit } from "@/study/layoutModel";
+import { normalizeContentWidth, studySplitToContentWidth } from "@/study/layoutModel";
 import { normalizePageStep } from "@/study/reading";
 
 /** 画布是独立 chunk(含 excalidraw 及其字体加载逻辑),只在打开时下载。 */
@@ -91,9 +91,18 @@ export default function App() {
         ime: { ...DEFAULT_SETTINGS.ime, ...(saved.ime ?? {}) },
         latex: { ...DEFAULT_SETTINGS.latex, ...(saved.latex ?? {}) },
       };
-      // 旧版把三栏宽度存成比例;这里按当前窗口宽度换算成像素后落盘一次,
-      // 之后窗口怎么缩放都不会再改中栏宽度。
-      settings.studySplit = normalizeSplit(settings.studySplit, window.innerWidth);
+      // 旧版把三栏宽度存成 studySplit:[agent, content](更早是比例);迁移成
+      // 中栏单值像素宽度后落盘一次,之后窗口怎么缩放都不会再改中栏宽度。
+      const legacySplit = studySplitToContentWidth(
+        (saved as Record<string, unknown>).studySplit,
+      );
+      settings.studyContentWidth = normalizeContentWidth(
+        legacySplit ?? settings.studyContentWidth,
+        window.innerWidth,
+      );
+      // 旧键不再使用,剥掉免得一直躺在配置文件里。
+      delete (settings as Record<string, unknown>).studySplit;
+      delete (settings as Record<string, unknown>).studyAgentOpen;
       // 旧配置没有 studyPageStep → 默认 50%;手改坏的值也在这里夹回范围内。
       settings.studyPageStep = normalizePageStep(settings.studyPageStep);
       useAppStore.getState().replaceSettings(settings);

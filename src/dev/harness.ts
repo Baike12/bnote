@@ -26,7 +26,7 @@ import "@/commands/builtin";
 import { installGlobalKeybindings } from "@/commands/globalKeys";
 import { installEditingChords } from "@/lib/editingChords";
 import { setClipboardOverrides } from "@/lib/clipboard";
-import { renderAgentMarkdown } from "@/components/AgentPanel";
+import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import { StudyLayout } from "@/components/StudyLayout";
 import { SettingsModal } from "@/components/SettingsModal";
 import {

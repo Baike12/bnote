@@ -9,7 +9,7 @@ import {
   type StudyUrlEntry,
 } from "@/study/history";
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
-import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
+import { DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 
 export interface ImeSettings {
   /** 跟随 vim 模式切换输入法（仅 macOS 生效） */
@@ -50,14 +50,13 @@ export interface Settings {
   /** 界面主题（编辑器 + 侧栏 + 弹层 + 语法高亮整套变量） */
   theme: ThemeName;
   /**
-   * 学习模式左/中两栏的宽度（像素）：[Agent, 内容]。
-   * 右侧笔记吃剩余宽度，所以只存前两栏。像素而非比例——拖动窗口时中栏
-   * 宽度不变，PDF 页面尺寸和纵向可见内容都不会跟着窗口抖。
-   * 旧配置的比例形式由 normalizeSplit 在加载时一次性换算。
+   * 学习模式中栏(内容)宽度(像素)。右栏(笔记 / 学习助手页签)吃剩余宽度,
+   * 拖动窗口时中栏宽度不变,PDF 页面尺寸和纵向可见内容都不会跟着窗口抖。
+   * 旧配置的比例形式/三栏数组由 normalizeContentWidth 在加载时一次性换算。
    */
-  studySplit: [number, number];
-  /** 学习模式左栏(Agent)是否展开。默认收起:多数时候只用 PDF + 笔记。 */
-  studyAgentOpen: boolean;
+  studyContentWidth: number;
+  /** 学习模式右栏当前页签:笔记 / 学习助手。默认笔记。 */
+  studyRightTab: "notes" | "agent";
   /** 学习模式 PDF 护眼底色(浅绿纸面)。 */
   studyEyeCare: boolean;
   /** 学习模式每次翻页滚动的可见高度比例(PDF/网页共用,默认 0.5)。 */
@@ -79,8 +78,8 @@ export const DEFAULT_SETTINGS: Settings = {
   autoNumberHeadings: false,
   codeBlockLang: "ts",
   theme: "dark",
-  studySplit: [DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH],
-  studyAgentOpen: false,
+  studyContentWidth: DEFAULT_CONTENT_WIDTH,
+  studyRightTab: "notes",
   studyEyeCare: false,
   studyPageStep: 0.5,
   fontSize: 16,
@@ -225,6 +224,11 @@ interface AppState {
    * 保存配置后必须重建会话才会生效——AgentPanel 监听这个计数重开会话。
    */
   agentConfigVersion: number;
+  /**
+   * 「学习助手切换会话(主 ↔ 辅助)」请求计数。命令/快捷键只写这个计数,
+   * AgentPanel 监听它执行切换——会话列表是面板私有状态,不进全局 store。
+   */
+  agentSwitchSessionSignal: number;
 
   setVault: (info: VaultInfo) => void;
   closeVault: () => void;
@@ -262,6 +266,8 @@ interface AppState {
   closeDrawingSession: () => void;
   /** Agent 配置已保存:让学习模式重建会话(见 agentConfigVersion)。 */
   bumpAgentConfigVersion: () => void;
+  /** 学习助手切换会话(主 ↔ 辅助)的请求(见 agentSwitchSessionSignal)。 */
+  bumpAgentSwitchSessionSignal: () => void;
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -318,6 +324,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   studyHistory: emptyStudyHistory(),
   drawingSession: null,
   agentConfigVersion: 0,
+  agentSwitchSessionSignal: 0,
 
   setVault: (info) =>
     set({
@@ -440,6 +447,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   bumpAgentConfigVersion: () =>
     set({ agentConfigVersion: get().agentConfigVersion + 1 }),
+  bumpAgentSwitchSessionSignal: () =>
+    set({ agentSwitchSessionSignal: get().agentSwitchSessionSignal + 1 }),
 }));
 
 export function toggleStudyMode() {

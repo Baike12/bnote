@@ -55,6 +55,12 @@ export default [
 ]
 `;
 
+const AGENT_MD_TEMPLATE = `<!-- .bnote/agent.md — 学习助手的自定义指令(类比 AGENTS.md / CLAUDE.md)。
+     保存在当前仓库,随会话启动加载;内置的通用要求(简洁、结论先行、
+     组块化)始终生效,这里的指令在其后追加。留空 = 只用通用要求。
+     例如:优先用表格对比易混概念;回答末尾给一个检验理解的小问题。 -->
+`;
+
 export function SettingsModal() {
   const open = useAppStore((s) => s.modal === "settings");
   const setModal = useAppStore((s) => s.setModal);
@@ -760,18 +766,36 @@ function Toggle({
 
 function AgentTab() {
   const showToast = useAppStore((s) => s.showToast);
+  const vaultName = useAppStore((s) => s.vaultName);
   const [cfg, setCfg] = useState<AgentConfig | null>(null);
   const [mcpJson, setMcpJson] = useState("{}");
   const [mcpDirty, setMcpDirty] = useState(false);
+  // 自定义指令 = 仓库的 .bnote/agent.md(类比 AGENTS.md / CLAUDE.md)。
+  const [instructions, setInstructions] = useState(AGENT_MD_TEMPLATE);
+  const [instructionsDirty, setInstructionsDirty] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    void agentApi.getConfig().then((c) => {
-      setCfg(c);
-      setMcpJson(JSON.stringify(c.mcp_servers ?? {}, null, 2));
+    void agentApi
+      .getConfig()
+      .then((c) => {
+        setCfg(c);
+        setMcpJson(JSON.stringify(c.mcp_servers ?? {}, null, 2));
+      })
+      .catch((e) => setLoadError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+    void api.readVaultFile("agent.md").then((v) => {
+      setInstructions(v ?? AGENT_MD_TEMPLATE);
     });
   }, []);
 
-  if (!cfg) return <div className="settings-section">加载中…</div>;
+  // 配置读不出来(后端异常/无后端)就如实说,不能永远停在「加载中…」。
+  if (!cfg) {
+    return (
+      <div className="settings-section">
+        {loadError ? `Agent 配置加载失败:${loadError}` : "加载中…"}
+      </div>
+    );
+  }
 
   function update(patch: Partial<AgentConfig>) {
     setCfg({ ...cfg!, ...patch });
@@ -867,6 +891,42 @@ function AgentTab() {
         value={cfg.skill_dirs.join("\n")}
         onChange={(e) => update({ skill_dirs: e.target.value.split("\n").filter((x) => x.trim()) })}
       />
+
+      <h3>自定义指令(仓库 .bnote/agent.md)</h3>
+      <p className="settings-hint">
+        代码里内置的通用要求(结论先行、直击本质、组块化、控制长度)始终生效,
+        这里的指令追加在其后,随会话启动加载——和 ZCode 读 AGENTS.md 同一机制。
+        {vaultName ? "" : " (当前没有打开仓库,保存不可用)"}
+      </p>
+      <textarea
+        className="settings-textarea mono"
+        rows={8}
+        spellCheck={false}
+        value={instructions}
+        onChange={(e) => {
+          setInstructions(e.target.value);
+          setInstructionsDirty(true);
+        }}
+      />
+      <div className="settings-actions">
+        <button
+          className="btn"
+          disabled={!instructionsDirty || !vaultName}
+          onClick={() =>
+            void api
+              .writeVaultFile("agent.md", instructions)
+              .then(() => {
+                setInstructionsDirty(false);
+                // 会话固化了系统提示词,重启会话才吃到新指令。
+                useAppStore.getState().bumpAgentConfigVersion();
+                showToast("自定义指令已保存,学习助手会话将使用新指令");
+              })
+              .catch((e) => showToast(`保存失败: ${String(e)}`))
+          }
+        >
+          保存并应用到新会话
+        </button>
+      </div>
 
       <div className="settings-actions">
         <button className="btn" onClick={() => void save()}>
