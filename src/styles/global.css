@@ -1302,91 +1302,187 @@ button {
 
 /* ===== settings ===== */
 
+/* ===== 设置页:卡片分组 + 行式布局(参考 ZCode 的 SettingsGroupCard/SettingsRow)
+   左侧分组导航;右侧窄列居中,每组一张卡片,卡片内行用 1px 分隔线。 ===== */
+
 .settings {
   display: flex;
-  min-height: 480px;
+  min-height: 520px;
   max-height: 72vh;
 }
 
+/* 左侧导航:分组标签 + 项。active 不再用大色块,改成弱底 + 加重字重。 */
 .settings-nav {
-  width: 170px;
+  width: 196px;
   background: var(--bg1);
   border-right: 1px solid var(--border);
-  padding: 14px 8px;
+  padding: 16px 10px 14px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
   flex-shrink: 0;
+  overflow-y: auto;
 }
 
 .settings-nav-title {
-  color: var(--text-dim);
-  font-size: 12px;
-  padding: 0 10px 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 10px 6px;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.settings-nav-group-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  padding: 14px 10px 5px;
+  user-select: none;
+}
+.settings-nav-title + .settings-nav-group .settings-nav-group-label {
+  padding-top: 8px;
 }
 
 .settings-nav-item {
   text-align: left;
-  padding: 7px 10px;
-  border-radius: 6px;
-  font-size: 13.5px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 13px;
   color: var(--text-dim);
 }
 .settings-nav-item:hover {
-  background: var(--bg3);
+  background: var(--bg2);
   color: var(--text);
 }
 .settings-nav-item.active {
-  background: var(--accent-dim);
-  color: var(--on-accent);
+  background: var(--bg3);
+  color: var(--text);
+  font-weight: 500;
 }
 
+/* 右侧内容:窄列居中(参考 max-w-4xl),卡片之间留呼吸。 */
 .settings-content {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 24px;
+  padding: 22px 26px 26px;
   min-width: 0;
+  background: var(--bg2);
+}
+.settings-section {
+  max-width: 660px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.settings-section h3 {
-  font-size: 13px;
-  color: var(--text-dim);
-  font-weight: 600;
-  margin: 22px 0 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+/* 卡片:标题行(可带描述与动作)+ 内容行。 */
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg1);
 }
-.settings-section h3:first-child {
-  margin-top: 0;
-}
-
-.setting-row {
+.settings-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-card-desc {
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.6;
+  margin-top: 2px;
+}
+.settings-card-body {
+  padding: 3px 0;
+}
+/* 卡片内的兄弟块之间画分隔线:行与行、行与整块内容都适用。 */
+.settings-card-body > * + * {
+  border-top: 1px solid var(--border);
+}
+
+/* 行:左侧标签+描述,右侧控件。 */
+.setting-row {
+  display: flex;
+  align-items: center;
   gap: 20px;
-  padding: 9px 0;
+  padding: 10px 16px;
 }
-
+.setting-row-text {
+  flex: 1;
+  min-width: 0;
+}
 .setting-label {
-  font-size: 14px;
+  font-size: 13.5px;
+  font-weight: 500;
 }
-
 .setting-desc {
   color: var(--text-faint);
-  font-size: 12.5px;
+  font-size: 12px;
   margin-top: 3px;
-  max-width: 460px;
+  line-height: 1.6;
+}
+.setting-control {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.setting-control .settings-input {
+  width: 260px;
+  flex: none;
+}
+.setting-control .settings-select {
+  max-width: 260px;
+}
+.setting-value {
+  font-size: 13px;
+  color: var(--text-dim);
 }
 
+/* 卡片内的整块内容(文本域、错误列表、动作行)。 */
+.settings-block {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 卡片之间的说明文字。 */
 .setting-hint {
   color: var(--text-faint);
   font-size: 12.5px;
   line-height: 1.7;
+  margin: 0;
 }
 
 .setting-hint code,
-.setting-desc code {
+.setting-desc code,
+.settings-card-desc code {
   background: var(--bg3);
   border-radius: 4px;
   padding: 1px 5px;
@@ -1416,10 +1512,10 @@ button {
   width: 100%;
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   padding: 8px 12px;
-  font-size: 13.5px;
+  font-size: 13px;
   outline: none;
 }
 .settings-search:focus {
@@ -1430,31 +1526,29 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 12px 0;
 }
 
 .chip {
+  border: none;
   background: var(--bg3);
-  border-radius: 20px;
-  padding: 4px 14px;
-  font-size: 12.5px;
+  border-radius: 999px;
+  padding: 4px 13px;
+  font: inherit;
+  font-size: 12px;
   color: var(--text-dim);
+  cursor: pointer;
 }
 .chip.active {
-  background: var(--accent-dim);
-  color: var(--on-accent);
-}
-
-.hotkey-list {
-  border-top: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 500;
 }
 
 .hotkey-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 6px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
   cursor: pointer;
   flex-wrap: wrap;
 }
@@ -1464,9 +1558,12 @@ button {
 .hotkey-row.capturing {
   background: var(--accent-soft);
 }
+.hotkey-row + .hotkey-row {
+  border-top: 1px solid var(--border);
+}
 
 .hotkey-title {
-  font-size: 13.5px;
+  font-size: 13px;
 }
 
 .hotkey-actions {
@@ -1479,7 +1576,7 @@ button {
 .hotkey-chip {
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 6px;
   padding: 2px 8px;
   font-family: var(--font-ui);
   font-size: 12px;
@@ -1515,10 +1612,11 @@ button {
   width: 100%;
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: 12.5px;
+  line-height: 1.65;
   outline: none;
   resize: vertical;
   font-family: var(--font-ui);
@@ -1532,10 +1630,10 @@ button {
 }
 
 .settings-select {
-  min-width: 240px;
+  min-width: 220px;
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   padding: 6px 10px;
   font-size: 13px;
@@ -1551,7 +1649,7 @@ button {
   min-width: 0;
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   padding: 6px 10px;
   font-size: 13px;
@@ -1563,6 +1661,27 @@ button {
 }
 .settings-input.mono {
   font-family: var(--font-mono);
+}
+
+/* 滑杆 + 右对齐数值(对齐 ZCode 的 SettingsRangeControl)。 */
+.range-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 240px;
+}
+.range-control input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.range-value {
+  min-width: 42px;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ===== 快速添加 ===== */
@@ -1582,7 +1701,7 @@ button {
 .qa-empty {
   color: var(--text-faint);
   font-size: 13px;
-  padding: 8px 0;
+  padding: 2px 0;
 }
 .qa-modal-actions {
   display: flex;
