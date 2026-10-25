@@ -22,6 +22,20 @@ pub struct Session {
     pub app: tauri::AppHandle,
 }
 
+/// `running` 的守卫:进入 `send` 时建,离开作用域(正常结束 / 出错 / panic)
+/// 时自动把会话放回可发送状态。
+///
+/// 没有它,一次挂起或 panic 会让 `running` 永远为 true:之后每次 `agent_send`
+/// 都被 SESSION_BUSY 拒掉,而前端只弹一个几秒消失的 toast——用户看到的就是
+/// 「再次发送没有回应」。
+struct RunningGuard(Arc<AtomicBool>);
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl Session {
     pub fn history(&self) -> Vec<ChatItem> {
         self.items.lock().map(|g| g.clone()).unwrap_or_default()
@@ -29,16 +43,24 @@ impl Session {
 
     /// Runs one user turn: stream → tool calls → results → repeat.
     /// `images` 是随消息发送的截图/图片(可为空)。
+    ///
+    /// 契约:**每次 send 都以恰好一个终止事件(turn_end / error)结束**。
+    /// 前端靠它清「生成中」状态;少发一次,面板就永远停在忙碌态。
     pub async fn send(&self, text: &str, images: Vec<InlineImage>) {
+        let _guard = RunningGuard(self.running.clone());
         if text.trim().is_empty() && images.is_empty() {
-            return; // 空消息不发:provider 会因空 content 弹 400。
+            // provider 会因空 content 弹 400,这里直接报错结束——但不能静默
+            // return,否则前端等不到终止事件。
+            self.emit(AgentEvent::Error {
+                message: "消息为空:请先输入内容或添加图片".into(),
+                items: self.history().len(),
+            });
+            return;
         }
         if let Ok(mut items) = self.items.lock() {
             items.push(ChatItem::user_message(text, &images));
         }
-        self.running.store(true, Ordering::SeqCst);
         let result = self.run_loop().await;
-        self.running.store(false, Ordering::SeqCst);
         // 条数随结束事件一起给前端:分叉辅助会话时按它截断,不用猜。
         let count = self.history().len();
         let event = match result {
@@ -51,7 +73,8 @@ impl Session {
         self.emit(event);
     }
 
-    fn emit(&self, event: AgentEvent) {
+    /// 把事件推给前端(命令层在 panic 兜底时也要用)。
+    pub fn emit(&self, event: AgentEvent) {
         let payload = serde_json::json!({
             "sessionId": self.id,
             "event": event,
@@ -213,6 +236,28 @@ own knowledge.\n\n\
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn running_guard_离开作用域一定复位_含_panic_展开() {
+        // 历史缺陷:running 只在 send 末尾手动复位,panic 或任务被丢弃
+        // (请求挂起)时永远为 true → 之后每次 agent_send 都被拒绝。
+        let flag = Arc::new(AtomicBool::new(true));
+        {
+            let _g = RunningGuard(flag.clone());
+        }
+        assert!(!flag.load(Ordering::SeqCst));
+
+        flag.store(true, Ordering::SeqCst);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = RunningGuard(flag.clone());
+            panic!("模拟会话内部 panic");
+        }));
+        assert!(result.is_err());
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "panic 展开时守卫必须复位 running"
+        );
+    }
 
     #[test]
     fn 固定要求在自定义指令之前_且自定义指令为空时不出现该节() {
