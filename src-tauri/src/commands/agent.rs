@@ -176,6 +176,8 @@ pub async fn agent_send(
     state: State<'_, AppState>,
     session_id: String,
     text: String,
+    // 旧调用方(浏览器 harness)不带 images:Option 缺省成空,行为同纯文本。
+    images: Option<Vec<crate::agent::types::InlineImage>>,
 ) -> CmdResult<()> {
     let session = {
         let registry = state.sessions.lock().map_err(|e| e.to_string())?;
@@ -189,7 +191,7 @@ pub async fn agent_send(
     }
     // Run the turn in the background; events stream to the frontend.
     tauri::async_runtime::spawn(async move {
-        session.send(&text).await;
+        session.send(&text, images.unwrap_or_default()).await;
     });
     Ok(())
 }

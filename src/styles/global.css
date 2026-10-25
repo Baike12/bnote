@@ -2163,6 +2163,23 @@ input[type="range"] {
   white-space: pre-wrap;
 }
 
+/* 用户消息里随发的图片:气泡内等宽小图,圆角贴气泡内缘。 */
+.agent-msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.agent-msg-images:last-child { margin-bottom: 0; }
+.agent-msg-image {
+  max-width: 220px;
+  max-height: 160px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  object-fit: contain;
+  background: var(--bg2);
+}
+
 .agent-msg-assistant {
   flex: 1;
   min-width: 0;
@@ -2357,6 +2374,64 @@ input[type="range"] {
   padding: 5px 6px 5px 12px;
   border-top: 1px solid var(--border);
 }
+
+/* 附件按钮 + 待发送缩略图行。 */
+.agent-attach-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.agent-attach-btn svg { width: 16px; height: 16px; }
+.agent-attach-btn:hover {
+  color: var(--accent);
+  background: var(--bg3);
+}
+.agent-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px 0;
+}
+.agent-attach-thumb {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+}
+.agent-attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.agent-attach-remove {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 0 0 0 6px;
+  background: color-mix(in srgb, var(--bg1) 82%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.agent-attach-remove:hover { background: var(--danger); color: var(--on-accent); }
 .agent-composer-hint {
   font-size: 11px;
   color: var(--text-faint);
