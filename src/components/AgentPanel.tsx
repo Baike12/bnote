@@ -7,6 +7,7 @@ import {
   type StudyContent,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
+import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { StudyRightTabs } from "./StudyRightTabs";
 import { forkCutoff, forkLabel } from "@/study/agentFork";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
@@ -733,6 +734,9 @@ export function AgentPanel() {
           placeholder="询问当前内容…(可直接粘贴截图)"
           value={input}
           rows={2}
+          data-ime-chinese="true"
+          onFocus={() => imeOnChineseFocus()}
+          onBlur={() => imeSyncToEditor()}
           onChange={(e) => setInput(e.target.value)}
           onPaste={(e) => {
             // 剪贴板里只有图片(截图)才接管:同时有文本时按普通粘贴走,

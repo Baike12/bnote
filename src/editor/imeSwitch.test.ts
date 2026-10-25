@@ -27,9 +27,10 @@ vi.mock("@/lib/tauri", () => ({
 
 import {
   imeApply,
-  imeOnNoteFocus,
+  imeOnChineseFocus,
   imeOnWindowBlur,
   imeOnWindowFocus,
+  imeSyncToEditor,
   imeYield,
 } from "./imeSwitch";
 import { useAppStore } from "@/state/appStore";
@@ -163,7 +164,7 @@ describe("imeApply 发起时机与在途合并", () => {
 
 describe("批注输入框聚焦", () => {
   it("切到设置里的 insert 源（给中文批注用）", async () => {
-    imeOnNoteFocus();
+    imeOnChineseFocus();
     expect(setInputSource).not.toHaveBeenCalled();
     await drain();
     expect(setInputSource).toHaveBeenCalledWith("com.apple.inputmethod.SCIM");
@@ -179,9 +180,57 @@ describe("批注输入框聚焦", () => {
         codeKeepsEnglish: true,
       },
     });
-    imeOnNoteFocus();
+    imeOnChineseFocus();
     await drain();
     expect(setInputSource).not.toHaveBeenCalled();
+  });
+
+  it("中文写作输入框持有焦点时,imeSyncToEditor 不按编辑器上下文覆盖(窗口 focus 回来不丢中文)", async () => {
+    vi.stubGlobal("document", {
+      activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
+    });
+    try {
+      imeOnChineseFocus();
+      await drain();
+      expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
+      const count = setInputSource.mock.calls.length;
+      imeSyncToEditor();
+      await drain();
+      expect(setInputSource).toHaveBeenCalledTimes(count);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("焦点不在中文写作输入框时,imeSyncToEditor 照常交还(归还 baseline)", async () => {
+    vi.stubGlobal("document", { activeElement: null });
+    try {
+      imeOnChineseFocus();
+      await drain(); // baseline 记下 ABC,切到中文
+      imeSyncToEditor();
+      await drain();
+      expect(setInputSource).toHaveBeenLastCalledWith("com.apple.keylayout.ABC");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("失焦归还后,焦点还在中文输入框上时重新聚焦会重发中文源", async () => {
+    vi.stubGlobal("document", {
+      activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
+    });
+    try {
+      imeOnChineseFocus();
+      await drain();
+      imeOnWindowBlur();
+      await drain(); // 归还 ABC
+      expect(setInputSource).toHaveBeenLastCalledWith("com.apple.keylayout.ABC");
+      imeOnWindowFocus();
+      await drain();
+      expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
