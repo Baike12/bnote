@@ -88,6 +88,7 @@ export interface AgentForkSpec {
 
 export type AgentEvent =
   | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; id: string; name: string; input: unknown }
   | { type: "tool_end"; id: string; ok: boolean; output: string }
   | { type: "turn_end"; reason: string; items: number }

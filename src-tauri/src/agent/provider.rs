@@ -186,6 +186,14 @@ impl Provider {
                                 turn.text.push_str(text);
                                 sink(AgentEvent::TextDelta { text: text.to_string() });
                             }
+                            // thinking 块的流式文本(不进历史,见 AgentEvent::ThinkingDelta);
+                            // signature_delta 是块签名,只在回传时有意义,这里丢弃。
+                            Some("thinking_delta") => {
+                                let text = delta["thinking"].as_str().unwrap_or_default();
+                                if !text.is_empty() {
+                                    sink(AgentEvent::ThinkingDelta { text: text.to_string() });
+                                }
+                            }
                             Some("input_json_delta") => {
                                 if let Some((_, _, args)) = current_tool.as_mut() {
                                     args.push_str(delta["partial_json"].as_str().unwrap_or_default());
@@ -365,6 +373,16 @@ impl Provider {
                     Err(_) => continue,
                 };
                 let delta = &v["choices"][0]["delta"];
+                // 推理模型(DeepSeek R1 / GLM / Qwen 等)在 openai 兼容流上的
+                // 思考字段:主流是 reasoning_content,GLM 某些网关用 reasoning。
+                if let Some(text) = delta["reasoning_content"]
+                    .as_str()
+                    .or_else(|| delta["reasoning"].as_str())
+                {
+                    if !text.is_empty() {
+                        sink(AgentEvent::ThinkingDelta { text: text.to_string() });
+                    }
+                }
                 if let Some(text) = delta["content"].as_str() {
                     if !text.is_empty() {
                         turn.text.push_str(text);

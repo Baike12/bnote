@@ -27,6 +27,12 @@ interface ToolRecord {
 interface Turn {
   /** Streaming text buffer for the current assistant reply. */
   text: string;
+  /** 流式思考过程(纯文本;不进会话历史,只用于展示)。 */
+  thinking: string;
+  /** 首个 thinking delta 的时间戳(计时用)。 */
+  thinkingStart: number | null;
+  /** 思考耗时(秒,turn 结束时算好冻结)。 */
+  thinkSeconds: number | null;
   tools: ToolRecord[];
   error?: string;
 }
@@ -75,6 +81,107 @@ let convSeq = 0;
 function nextConvKey(): string {
   convSeq += 1;
   return `c${convSeq}`;
+}
+
+/** 思考摘要吸底判定距离(ZCode reasoning 同值:离底 2px 内算贴底)。 */
+const THINKING_BOTTOM_LOCK_PX = 2;
+
+/** 摘要行:最后一行非空文本(ZCode resolveReasoningStreamingSummary 同逻辑)。 */
+export function thinkingSummaryLine(thinking: string): string {
+  const lines = thinking.replace(/\r\n?/g, "\n").split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const text = lines[i]?.trim() ?? "";
+    if (text) return text;
+  }
+  return "";
+}
+
+/**
+ * 思考过程折叠块,行为照搬 ZCode 的 Reasoning(vercel/ai-elements 改造版):
+ * 流式时收起,摘要行显示最后一行思考文本并向末尾滚动;完成后标签变
+ * 「思考 · 持续了 N 秒」。内容按纯文本展示(不做 markdown 渲染——思考
+ * 流式追加,每个 delta 重跑 markdown 解析在长思考下会卡),展开态限高内
+ * 滚、默认吸底跟随,用户滚离底部后暂停、滚回底部恢复。
+ */
+function ThinkingBlock({
+  thinking,
+  streaming,
+  seconds,
+}: {
+  thinking: string;
+  streaming: boolean;
+  seconds: number | null;
+}) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const tailRef = useRef<HTMLSpanElement | null>(null);
+  const stickBottomRef = useRef(true);
+  const interactedRef = useRef(false);
+  const [open, setOpen] = useState(false);
+
+  // 流式追加:展开时吸底;收起时把单行摘要视口推到末尾(旧内容左移)。
+  useEffect(() => {
+    if (!streaming) return;
+    if (open) {
+      if (stickBottomRef.current) {
+        const el = bodyRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      }
+    } else {
+      const tail = tailRef.current;
+      if (tail) tail.scrollLeft = tail.scrollWidth;
+    }
+  }, [thinking, open, streaming]);
+
+  // 输出边界收起(ZCode autoCollapseKey):turn 结束时若用户没手动展开过,
+  // 折叠块回到收起态。用户点开过(interacted)则尊重选择。
+  useEffect(() => {
+    if (!streaming && !interactedRef.current) setOpen(false);
+  }, [streaming]);
+
+  if (!thinking) return null;
+  const tail = streaming && !open ? thinkingSummaryLine(thinking) : "";
+  return (
+    <details
+      className={`agent-thinking${streaming ? " is-streaming" : ""}`}
+      open={open}
+      onToggle={(e) => {
+        const next = (e.target as HTMLDetailsElement).open;
+        if (next) interactedRef.current = true;
+        setOpen(next);
+      }}
+    >
+      <summary>
+        <svg className="agent-thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 4.5a3 3 0 0 0-3 3v.5a3 3 0 0 0-1.5 5.6A3 3 0 0 0 9 18.5a2.6 2.6 0 0 0 3 0 2.6 2.6 0 0 0 3 0 3 3 0 0 0 1.5-4.9A3 3 0 0 0 15 8v-.5a3 3 0 0 0-3-3Z" />
+          <path d="M12 4.5V3M9.8 11.2c.7.5 1.6.5 2.2 0 .6.5 1.5.5 2.2 0M10 14.5h4" />
+        </svg>
+        {streaming ? (
+          <span className="agent-thinking-live">正在思考</span>
+        ) : (
+          <span className="agent-thinking-done">
+            思考
+            <span className="agent-thinking-sec"> · 持续了 {seconds ?? 0} 秒</span>
+          </span>
+        )}
+        {tail && (
+          <span className="agent-thinking-tail" ref={tailRef}>
+            <span className="agent-thinking-tail-text">{tail}</span>
+          </span>
+        )}
+      </summary>
+      <div
+        className="agent-thinking-body"
+        ref={bodyRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stickBottomRef.current =
+            el.scrollHeight - el.clientHeight - el.scrollTop <= THINKING_BOTTOM_LOCK_PX;
+        }}
+      >
+        {thinking}
+      </div>
+    </details>
+  );
 }
 
 function cloneEntry(e: ChatEntry): ChatEntry {
@@ -216,7 +323,7 @@ export function AgentPanel() {
   function ensureTurn(convKey: string): Turn {
     let turn = turnsRef.current.get(convKey);
     if (!turn) {
-      turn = { text: "", tools: [] };
+      turn = { text: "", thinking: "", thinkingStart: null, thinkSeconds: null, tools: [] };
       turnsRef.current.set(convKey, turn);
     }
     return turn;
@@ -255,6 +362,9 @@ export function AgentPanel() {
   function commitTurn(convKey: string, items: number | null) {
     const turn = turnsRef.current.get(convKey);
     if (!turn) return;
+    if (turn.thinking && turn.thinkSeconds == null && turn.thinkingStart != null) {
+      turn.thinkSeconds = Math.max(1, Math.round((Date.now() - turn.thinkingStart) / 1000));
+    }
     turnsRef.current.delete(convKey);
     writeEntries(convKey, turn, true, items);
   }
@@ -263,6 +373,13 @@ export function AgentPanel() {
     const conv = findConvBySession(convsRef.current, sessionId);
     if (!conv) return;
     switch (event.type) {
+      case "thinking_delta": {
+        const turn = ensureTurn(conv.key);
+        turn.thinking += event.text;
+        turn.thinkingStart ??= Date.now();
+        writeEntries(conv.key, turn, false, null);
+        break;
+      }
       case "text_delta": {
         const turn = ensureTurn(conv.key);
         turn.text += event.text;
@@ -306,7 +423,14 @@ export function AgentPanel() {
                 role: "assistant",
                 text: "",
                 items: event.items > 0 ? event.items : null,
-                turn: { text: "", tools: [], error: event.message },
+                turn: {
+                  text: "",
+                  thinking: "",
+                  thinkingStart: null,
+                  thinkSeconds: null,
+                  tools: [],
+                  error: event.message,
+                },
               },
             ],
           }));
@@ -536,6 +660,11 @@ export function AgentPanel() {
                   </div>
                 ) : (
                   <div className="agent-msg agent-msg-assistant">
+                    <ThinkingBlock
+                      thinking={entry.turn?.thinking ?? ""}
+                      streaming={Boolean(streaming && (entry.turn?.thinking ?? ""))}
+                      seconds={entry.turn?.thinkSeconds ?? null}
+                    />
                     {entry.turn?.tools.map((tool) => (
                       <details className="agent-tool" key={tool.id}>
                         <summary>

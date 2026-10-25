@@ -84,6 +84,24 @@ describe("renderAgentMarkdown", () => {
     expect(bracket).toContain("msupsub");
   });
 
+  it("列表项内容里的块级数学走 KaTeX(回归:模型把 $$ 块缩进在列表项下,曾经整段原样漏出)", () => {
+    // 用户报告的形态:有序列表项续行里跟一个多行 $$…$$ 块
+    const html = renderAgentMarkdown(
+      "1. 全局 Softmax 分母\n   $$\n   s_p=\\sum_{j\\in C_p}e^{x_j-x_{\\max}}\n   $$\n   再 all-reduce。",
+    );
+    expect(html).toContain("<ol>");
+    expect(html).toContain("katex-display");
+    expect(html).toContain("∑");
+    expect(html).not.toContain("$$");
+    // \[…\] 块同样支持
+    const bracket = renderAgentMarkdown("- 要点\n  \\[\n  E = mc^2\n  \\]");
+    expect(bracket).toContain("katex-display");
+    // 数学块前后的文本行照常 inline 渲染、<br> 分隔
+    const mixed = renderAgentMarkdown("- 文本行\n  $$\n  x^2\n  $$\n  **尾行**");
+    expect(mixed).toContain("<strong>尾行</strong>");
+    expect(mixed.indexOf("katex-display")).toBeGreaterThan(-1);
+  });
+
   it("引用块递归渲染内部 markdown", () => {
     const html = renderAgentMarkdown("> 引用 **重点**");
     expect(html).toContain("<blockquote>");
