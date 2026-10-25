@@ -10,6 +10,11 @@ import { useAppStore } from "@/state/appStore";
 import { StudyRightTabs } from "./StudyRightTabs";
 import { forkCutoff, forkLabel } from "@/study/agentFork";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
+import {
+  MAX_IMAGES_PER_MESSAGE,
+  fileToAgentImage,
+  type AgentImage,
+} from "@/study/agentImages";
 
 interface ToolRecord {
   id: string;
@@ -29,6 +34,8 @@ interface Turn {
 interface ChatEntry {
   role: "user" | "assistant";
   text: string;
+  /** 用户消息带的截图/图片(仅展示;模型侧以后端会话历史为准)。 */
+  images?: AgentImage[];
   turn?: Turn;
   /**
    * 后端会话历史里「到本条为止」的前缀条数(含本条)。user = 前一条 + 1;
@@ -73,6 +80,7 @@ function nextConvKey(): string {
 function cloneEntry(e: ChatEntry): ChatEntry {
   return {
     ...e,
+    images: e.images?.map((img) => ({ ...img })),
     turn: e.turn ? { ...e.turn, tools: e.turn.tools.map((t) => ({ ...t })) } : undefined,
   };
 }
@@ -99,6 +107,9 @@ export function AgentPanel() {
   const [convs, setConvs] = useState<Conv[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  /** 待发送的图片(粘贴截图 / 文件选择),随消息一起进后端会话历史。 */
+  const [pendingImages, setPendingImages] = useState<AgentImage[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [starting, setStarting] = useState(false);
   const [busySession, setBusySession] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -324,10 +335,29 @@ export function AgentPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** 附件进队(粘贴与文件选择共用):超限拒绝并说明,失败 toast 不中断。 */
+  async function addImages(files: File[]) {
+    if (files.length === 0) return;
+    const room = MAX_IMAGES_PER_MESSAGE - pendingImages.length;
+    if (files.length > room) {
+      showToast(`一次最多 ${MAX_IMAGES_PER_MESSAGE} 张图片`);
+    }
+    const picked = files.slice(0, Math.max(0, room));
+    const results = await Promise.allSettled(
+      picked.map((file) => fileToAgentImage(file, file.type)),
+    );
+    const ok: AgentImage[] = [];
+    for (const r of results) {
+      if (r.status === "fulfilled") ok.push(r.value);
+      else showToast(String(r.reason?.message ?? r.reason));
+    }
+    if (ok.length > 0) setPendingImages((prev) => [...prev, ...ok]);
+  }
+
   async function send() {
     const text = input.trim();
     const conv = activeConv;
-    if (!conv || !text) return;
+    if (!conv || (!text && pendingImages.length === 0)) return;
     const info = conv.sessionId;
     if (!info) {
       // Never drop the message silently: tell the user why nothing happened.
@@ -339,17 +369,22 @@ export function AgentPanel() {
       return;
     }
     if (busyRef.current === info) return;
+    const images = pendingImages;
     setInput("");
+    setPendingImages([]);
     busyRef.current = info;
     setBusySession(info);
     const last = conv.entries[conv.entries.length - 1];
     const items = last?.items != null ? last.items + 1 : null;
     updateConv(conv.key, (c) => ({
       ...c,
-      entries: [...c.entries, { role: "user", text, items }],
+      entries: [
+        ...c.entries,
+        { role: "user", text, images: images.length > 0 ? images : undefined, items },
+      ],
     }));
     try {
-      await agentApi.send(info, text);
+      await agentApi.send(info, text, images);
     } catch (e) {
       busyRef.current = null;
       setBusySession(null);
@@ -371,13 +406,15 @@ export function AgentPanel() {
       return;
     }
     const cutoff = forkCutoff(src.entries, index);
+    const origin = src.entries[index];
+    const label = origin.text.trim() || (origin.images?.length ? "[图片]" : "");
     const conv: Conv = {
       key: nextConvKey(),
       sessionId: null,
       entries: src.entries.slice(0, index + 1).map(cloneEntry),
-      label: `↳ ${forkLabel(src.entries[index].text)}`,
+      label: `↳ ${forkLabel(label)}`,
       parent: src.key,
-      basedOn: forkLabel(src.entries[index].text, 40),
+      basedOn: forkLabel(label, 40),
       mcpErrors: [],
     };
     setConvs((prev) => [...prev, conv]);
@@ -482,7 +519,21 @@ export function AgentPanel() {
                 key={i}
               >
                 {entry.role === "user" ? (
-                  <div className="agent-msg agent-msg-user">{entry.text}</div>
+                  <div className="agent-msg agent-msg-user">
+                    {entry.images && entry.images.length > 0 && (
+                      <div className="agent-msg-images">
+                        {entry.images.map((img, j) => (
+                          <img
+                            key={j}
+                            className="agent-msg-image"
+                            src={`data:${img.mediaType};base64,${img.data}`}
+                            alt="随消息发送的图片"
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {entry.text}
+                  </div>
                 ) : (
                   <div className="agent-msg agent-msg-assistant">
                     {entry.turn?.tools.map((tool) => (
@@ -530,12 +581,42 @@ export function AgentPanel() {
         )}
       </div>
       <div className="agent-composer">
+        {pendingImages.length > 0 && (
+          <div className="agent-attach-row">
+            {pendingImages.map((img, i) => (
+              <span className="agent-attach-thumb" key={i}>
+                <img src={`data:${img.mediaType};base64,${img.data}`} alt="" />
+                <button
+                  className="agent-attach-remove"
+                  title="移除这张图片"
+                  onClick={() =>
+                    setPendingImages((prev) => prev.filter((_, j) => j !== i))
+                  }
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           className="agent-input"
-          placeholder="询问当前内容…"
+          placeholder="询问当前内容…(可直接粘贴截图)"
           value={input}
           rows={2}
           onChange={(e) => setInput(e.target.value)}
+          onPaste={(e) => {
+            // 剪贴板里只有图片(截图)才接管:同时有文本时按普通粘贴走,
+            // 不抢用户复制网页文字的场景。
+            const files = Array.from(e.clipboardData?.items ?? [])
+              .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+              .map((it) => it.getAsFile())
+              .filter((f): f is File => f !== null);
+            const hasText = (e.clipboardData?.getData("text/plain") ?? "") !== "";
+            if (files.length === 0 || hasText) return;
+            e.preventDefault();
+            void addImages(files);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -544,7 +625,29 @@ export function AgentPanel() {
           }}
         />
         <div className="agent-composer-foot">
-          <span className="agent-composer-hint">Enter 发送 · Shift+Enter 换行</span>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              void addImages(Array.from(e.target.files ?? []));
+              e.target.value = "";
+            }}
+          />
+          <button
+            className="agent-attach-btn"
+            title="插入图片(也可直接粘贴截图)"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2.5" />
+              <circle cx="9" cy="10.5" r="1.6" />
+              <path d="m5 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L16 17.5M14 15l2-2a1.5 1.5 0 0 1 2.1 0L21 15.9" />
+            </svg>
+          </button>
+          <span className="agent-composer-hint">Enter 发送 · Shift+Enter 换行 · 可粘贴截图</span>
           {activeBusy ? (
             <button className="agent-send stop" onClick={abort}>
               停止
@@ -553,7 +656,7 @@ export function AgentPanel() {
             <button
               className="agent-send"
               onClick={() => void send()}
-              disabled={!activeConv?.sessionId}
+              disabled={!activeConv?.sessionId || (input.trim() === "" && pendingImages.length === 0)}
               title={
                 activeConv?.sessionId
                   ? "发送(Enter)"

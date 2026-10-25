@@ -5,6 +5,49 @@ use super::types::{AgentEvent, ChatItem, Content, ToolDef, TurnResult};
 use futures::StreamExt;
 use serde_json::{json, Value};
 
+/// Anthropic content block:Text/Image/ToolUse/ToolResult 各自的线上形态。
+fn anthropic_block(c: &Content) -> Value {
+    match c {
+        Content::Text { text } => json!({"type": "text", "text": text}),
+        // 图片只出现在用户消息里(见 ChatItem::user_message)。
+        Content::Image { media_type, data } => json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }),
+        Content::ToolUse { id, name, input } => {
+            json!({"type": "tool_use", "id": id, "name": name, "input": input})
+        }
+        Content::ToolResult { tool_use_id, content, is_error } => json!({
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content,
+            "is_error": is_error,
+        }),
+    }
+}
+
+/// OpenAI 用户消息的 content:无图片保持纯字符串(既有形态,兼容旧端点),
+/// 有图片时换多部件数组(text + image_url data URL)。
+fn openai_user_content(text_parts: &[String], images: &[Content]) -> Value {
+    if images.is_empty() {
+        return json!(text_parts.join("\n\n"));
+    }
+    let mut parts: Vec<Value> = Vec::new();
+    if !text_parts.is_empty() {
+        parts.push(json!({"type": "text", "text": text_parts.join("\n\n")}));
+    }
+    for img in images {
+        let Content::Image { media_type, data } = img else {
+            continue;
+        };
+        parts.push(json!({
+            "type": "image_url",
+            "image_url": {"url": format!("data:{};base64,{}", media_type, data)},
+        }));
+    }
+    json!(parts)
+}
+
 pub struct Provider {
     pub kind: String, // "anthropic" | "openai"
     pub base_url: String,
@@ -64,21 +107,7 @@ impl Provider {
         let mut messages: Vec<Value> = Vec::new();
         for item in items {
             if let ChatItem::Message { role, content } = item {
-                let blocks: Vec<Value> = content
-                    .iter()
-                    .map(|c| match c {
-                        Content::Text { text } => json!({"type": "text", "text": text}),
-                        Content::ToolUse { id, name, input } => {
-                            json!({"type": "tool_use", "id": id, "name": name, "input": input})
-                        }
-                        Content::ToolResult { tool_use_id, content, is_error } => json!({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": content,
-                            "is_error": is_error,
-                        }),
-                    })
-                    .collect();
+                let blocks: Vec<Value> = content.iter().map(anthropic_block).collect();
                 messages.push(json!({"role": role, "content": blocks}));
             }
         }
@@ -217,6 +246,9 @@ impl Provider {
                         match c {
                             Content::Text { text: t } => text.push_str(t),
                             Content::ToolUse { .. } => tool_calls.push(c),
+                            // 图片按构造只会出现在用户消息里;真出现也带不上
+                            // (OpenAI assistant content 不接受 image 部件),丢弃。
+                            Content::Image { .. } => {}
                             Content::ToolResult { .. } => {}
                         }
                     }
@@ -250,18 +282,20 @@ impl Provider {
                 } else {
                     // user message or tool results
                     let mut text_parts: Vec<String> = Vec::new();
+                    let mut images: Vec<Content> = Vec::new();
                     let mut results: Vec<&Content> = Vec::new();
                     for c in content {
                         match c {
                             Content::Text { text } => text_parts.push(text.clone()),
+                            Content::Image { .. } => images.push(c.clone()),
                             Content::ToolResult { .. } => results.push(c),
                             Content::ToolUse { .. } => {}
                         }
                     }
-                    if !text_parts.is_empty() {
+                    if !text_parts.is_empty() || !images.is_empty() {
                         messages.push(json!({
                             "role": "user",
-                            "content": text_parts.join("\n\n"),
+                            "content": openai_user_content(&text_parts, &images),
                         }));
                     }
                     for r in results {
@@ -442,4 +476,62 @@ fn find_double_newline(buf: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_block_图片映射为_base64_source() {
+        let v = anthropic_block(&Content::Image {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+        });
+        assert_eq!(v["type"], "image");
+        assert_eq!(v["source"]["type"], "base64");
+        assert_eq!(v["source"]["media_type"], "image/png");
+        assert_eq!(v["source"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn openai_无图片保持纯字符串_兼容旧端点() {
+        let v = openai_user_content(&["问题".to_string()], &[]);
+        assert_eq!(v, json!("问题"));
+    }
+
+    #[test]
+    fn openai_带图片换多部件数组_文本在前_data_url格式() {
+        let v = openai_user_content(
+            &["这是什么".to_string()],
+            vec![Content::Image {
+                media_type: "image/jpeg".into(),
+                data: "BBBB".into(),
+            }]
+            .as_slice(),
+        );
+        let parts = v.as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(
+            parts[1]["image_url"]["url"],
+            "data:image/jpeg;base64,BBBB"
+        );
+    }
+
+    #[test]
+    fn openai_纯图片消息_没有空文本部件() {
+        let v = openai_user_content(
+            &[],
+            vec![Content::Image {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }]
+            .as_slice(),
+        );
+        let parts = v.as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+    }
 }

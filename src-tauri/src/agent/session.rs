@@ -3,7 +3,7 @@
 use super::mcp::McpManager;
 use super::provider::Provider;
 use super::tools::{ToolContext, StudyContent};
-use super::types::{AgentEvent, ChatItem, Content, ToolDef};
+use super::types::{AgentEvent, ChatItem, Content, InlineImage, ToolDef};
 use serde_json::Value;
 use tauri::Emitter;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -28,9 +28,13 @@ impl Session {
     }
 
     /// Runs one user turn: stream → tool calls → results → repeat.
-    pub async fn send(&self, text: &str) {
+    /// `images` 是随消息发送的截图/图片(可为空)。
+    pub async fn send(&self, text: &str, images: Vec<InlineImage>) {
+        if text.trim().is_empty() && images.is_empty() {
+            return; // 空消息不发:provider 会因空 content 弹 400。
+        }
         if let Ok(mut items) = self.items.lock() {
-            items.push(ChatItem::user_text(text));
+            items.push(ChatItem::user_message(text, &images));
         }
         self.running.store(true, Ordering::SeqCst);
         let result = self.run_loop().await;

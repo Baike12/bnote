@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AgentImage } from "@/study/agentImages";
+
+export type { AgentImage };
 
 export interface VaultInfo {
   path: string;
@@ -186,8 +189,8 @@ export const agentApi = {
   saveConfig: (config: AgentConfig) => invoke<void>("agent_save_config", { config }),
   startSession: (study: StudyContent | null, fork?: AgentForkSpec) =>
     invoke<SessionInfo>("agent_start_session", { study, fork }),
-  send: (sessionId: string, text: string) =>
-    invoke<void>("agent_send", { sessionId, text }),
+  send: (sessionId: string, text: string, images: AgentImage[] = []) =>
+    invoke<void>("agent_send", { sessionId, text, images }),
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
   history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
   setCurrentNote: (path: string | null) =>
