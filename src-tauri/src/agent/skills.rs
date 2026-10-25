@@ -83,18 +83,6 @@ impl SkillRegistry {
         }
         Some(out)
     }
-
-    /// System-prompt block listing available skills.
-    pub fn prompt_block(&self) -> String {
-        if self.skills.is_empty() {
-            return String::new();
-        }
-        let mut out = String::from("\n## Skills\n\nLoad a skill with the `skill` tool before following it.\n");
-        for s in &self.skills {
-            out.push_str(&format!("- **{}**: {}\n", s.name, s.description));
-        }
-        out
-    }
 }
 
 fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>) {

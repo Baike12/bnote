@@ -98,8 +98,11 @@ impl Provider {
             "max_tokens": self.max_tokens,
             "stream": true,
             "messages": messages,
-            "tools": tools_json,
         });
+        // 纯问答会话没有任何工具:整个不发 tools 字段,而不是发空数组。
+        if !tools_json.is_empty() {
+            body["tools"] = json!(tools_json);
+        }
         if !system.is_empty() {
             body["system"] = json!(system);
         }
@@ -287,12 +290,15 @@ impl Provider {
             })
             .collect();
 
-        let body = json!({
+        let mut body = json!({
             "model": self.model,
             "stream": true,
             "messages": messages,
-            "tools": tools_json,
         });
+        // 纯问答会话没有任何工具:整个不发 tools 字段,而不是发空数组。
+        if !tools_json.is_empty() {
+            body["tools"] = json!(tools_json);
+        }
         let url = format!("{}/chat/completions", self.base_url);
         let resp = self
             .client
