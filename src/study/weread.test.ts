@@ -83,11 +83,22 @@ describe("注入脚本", () => {
   it("排版适配锁住实站测得的三个关键点", () => {
     // 宽度:滚动模式的留白根因是 .app_content 的 max-width:1000px
     expect(WEREAD_SCRIPT).toContain(".app_content { max-width: none");
-    // 目录:左停靠 + 常驻 + 隐遮罩
+    // 目录:左停靠 + 常驻 + 隐遮罩;fixed 才能在横排下也停靠视口左缘
+    // (横排下它的定位祖先是 position:relative 的正文容器)
     expect(WEREAD_SCRIPT).toContain(".readerCatalog { display: block");
     expect(WEREAD_SCRIPT).toContain(".wr_mask:has(~ .readerCatalog)");
+    expect(WEREAD_SCRIPT).toContain(".readerCatalog { position: fixed");
     // 护眼绿 = PDF 护眼模式的 --pdf-gutter
     expect(WEREAD_SCRIPT).toContain("#dcebd6");
+    // 可见字形是 canvas 防复制层:字色要靠 brightness(0) 压黑
+    expect(WEREAD_SCRIPT).toContain(".wr_canvasContainer canvas { filter: brightness(0)");
+    // 横排的页面容器自身带深色底
+    expect(WEREAD_SCRIPT).toContain(".readerChapterContent_container { background");
+    // 内层页面类直接设浅色,字色必须通配到后代
+    expect(WEREAD_SCRIPT).toContain(".readerChapterContent *:not(svg):not(canvas)");
+    // 侧边切换按钮:工具栏与翻页条整体隐藏
+    expect(WEREAD_SCRIPT).toContain(".readerControls { display: none");
+    expect(WEREAD_SCRIPT).toContain(".renderTarget_pager { display: none");
     // 样式注入标签(新版样式 id)
     expect(WEREAD_SCRIPT).toContain("bnote-weread-style");
   });
