@@ -5,6 +5,7 @@ import {
   pdfHistoryForVault,
   pushPdfEntry,
   pushUrlEntry,
+  pushWereadBook,
   STUDY_HISTORY_LIMIT,
 } from "./history";
 
@@ -44,6 +45,57 @@ describe("study history: PDF 与网页分开", () => {
     }
     expect(h.pdfs).toHaveLength(STUDY_HISTORY_LIMIT);
     expect(h.pdfs[0].path).toBe(`/v/pdfs/${STUDY_HISTORY_LIMIT + 4}.pdf`);
+  });
+});
+
+describe("study history: 微信读书独立列表", () => {
+  const reader = (hash: string) => `https://weread.qq.com/web/reader/${hash}`;
+
+  it("书籍与网页/PDF 互不混入", () => {
+    let h = emptyStudyHistory();
+    h = pushUrlEntry(h, { url: "https://example.com", title: "Example" });
+    h = pushWereadBook(h, { url: reader("abc"), title: "三体" });
+    expect(h.urls).toHaveLength(1);
+    expect(h.weread.map((e) => e.title)).toEqual(["三体"]);
+  });
+
+  it("同一本书去重置顶,后到的书名覆盖先到的", () => {
+    // 首报书名还没提取到(兜底标题),提取到后补报正确书名。
+    let h = emptyStudyHistory();
+    h = pushWereadBook(h, { url: reader("abc"), title: "微信读书 abc", at: 1 });
+    h = pushWereadBook(h, { url: reader("def"), title: "算法导论", at: 2 });
+    h = pushWereadBook(h, { url: reader("abc"), title: "三体", at: 3 });
+    expect(h.weread.map((e) => e.title)).toEqual(["三体", "算法导论"]);
+    expect(h.weread[0].at).toBe(3);
+  });
+
+  it("上限之外的老记录被丢弃", () => {
+    let h = emptyStudyHistory();
+    for (let i = 0; i < STUDY_HISTORY_LIMIT + 3; i++) {
+      h = pushWereadBook(h, { url: reader(String(i)), title: `书${i}` });
+    }
+    expect(h.weread).toHaveLength(STUDY_HISTORY_LIMIT);
+    expect(h.weread[0].url).toBe(reader(String(STUDY_HISTORY_LIMIT + 2)));
+  });
+
+  it("旧配置没有 weread 字段也能归一(兼容升级)", () => {
+    const h = normalizeStudyHistory({
+      pdfs: [],
+      urls: [{ url: "https://a.dev", title: "A" }],
+    });
+    expect(h.weread).toEqual([]);
+  });
+
+  it("weread 里的坏条目逐条丢弃", () => {
+    const h = normalizeStudyHistory({
+      weread: [
+        { url: reader("abc"), title: "三体", at: 1 },
+        { url: "", title: "no url" },
+        { url: reader("def") },
+        "junk",
+      ],
+    });
+    expect(h.weread.map((e) => e.title)).toEqual(["三体"]);
   });
 });
 
