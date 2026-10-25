@@ -154,7 +154,7 @@ function renderList(lines: string[], start: number): [string, number] {
     const tag = ordered ? "ol" : "ul";
     const inner = list
       .map((item) => {
-        const body = item.text.map(renderInline).join("<br>");
+        const body = renderTextLines(item.text);
         const nested = item.children.length > 0 ? renderItems(item.children) : "";
         return `<li>${body}${nested}</li>`;
       })
@@ -209,6 +209,43 @@ function collectMath(
     i += 1;
   }
   return [renderMath(buf.join("\n"), true), i];
+}
+
+/**
+ * 富文本行组(列表项内容):文本行与块级数学混排。模型常把 $$…$$ 块缩进
+ * 在列表项下,只走 renderInline 的话块级公式整段原样漏出——这里先扫块级
+ * 数学定界符,数学段进 KaTeX,其余文本行按 inline 渲染 join <br>。
+ */
+function renderTextLines(lines: string[]): string {
+  const parts: string[] = [];
+  let buf: string[] = [];
+  let i = 0;
+  const flush = () => {
+    if (buf.length) {
+      parts.push(buf.map(renderInline).join("<br>"));
+      buf = [];
+    }
+  };
+  while (i < lines.length) {
+    if (/^\s*\$\$/.test(lines[i])) {
+      flush();
+      const [html, next] = collectMath(lines, i, /^\s*\$\$/, "$$");
+      parts.push(html);
+      i = next;
+      continue;
+    }
+    if (/^\s*\\\[/.test(lines[i])) {
+      flush();
+      const [html, next] = collectMath(lines, i, /^\s*\\\[/, "\\]");
+      parts.push(html);
+      i = next;
+      continue;
+    }
+    buf.push(lines[i]);
+    i += 1;
+  }
+  flush();
+  return parts.join("<br>");
 }
 
 export function renderAgentMarkdown(src: string): string {

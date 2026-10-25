@@ -75,6 +75,10 @@ pub struct ToolDef {
 pub enum AgentEvent {
     /// Streaming text of the assistant reply.
     TextDelta { text: String },
+    /// Streaming thinking/reasoning(Anthropic thinking 块 / OpenAI 兼容的
+    /// reasoning_content)。只用于前端展示,不进会话历史——纯问答不带工具,
+    /// 回传 thinking 块要过签名校验,没有收益。
+    ThinkingDelta { text: String },
     /// A tool call begins.
     ToolStart { id: String, name: String, input: Value },
     /// A tool finished.
