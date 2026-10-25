@@ -186,12 +186,33 @@ pub async fn agent_send(
             .cloned()
             .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?
     };
-    if session.running.load(std::sync::atomic::Ordering::SeqCst) {
+    // 检查与占位必须是一个原子操作:先 load 再在 spawned 任务里置位,中间
+    // 存在窗口,两次发送都能挤进来并发跑同一份会话历史。CAS 之后谁先到谁
+    // 占用,占用由 Session 的 RunningGuard 在结束时释放。
+    if session
+        .running
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
         return Err("SESSION_BUSY: 还有回复在生成".into());
     }
     // Run the turn in the background; events stream to the frontend.
     tauri::async_runtime::spawn(async move {
-        session.send(&text, images.unwrap_or_default()).await;
+        use futures::FutureExt;
+        let turn = std::panic::AssertUnwindSafe(session.send(&text, images.unwrap_or_default()));
+        // panic 也必须有终止事件:否则前端永远停在「生成中」,而且后续发送
+        // 会被 SESSION_BUSY 挡掉却只有一个几秒消失的 toast。
+        if turn.catch_unwind().await.is_err() {
+            session.emit(crate::agent::types::AgentEvent::Error {
+                message: "会话内部错误,本轮已中止(可重试)".into(),
+                items: session.history().len(),
+            });
+        }
     });
     Ok(())
 }

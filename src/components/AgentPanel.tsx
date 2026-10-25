@@ -62,8 +62,14 @@ interface Conv {
   parent: string | null;
   /** 辅助会话的摘要(来源消息首行)。 */
   basedOn: string;
-  /** 会话启动失败的可见原因。 */
+  /**
+   * 会话级错误(启动失败 / 发送失败)。持久显示在对话区顶部(照 ZCode 的
+   * ChatErrorBanner),直到用户重试或关闭——不再只弹几秒消失的 toast:
+   * 用户看到的「发送没有回应」绝大多数就是这种被 toast 吞掉的失败。
+   */
   error?: string;
+  /** 错误来源:决定「重试」按钮做什么。 */
+  errorKind?: "start" | "send";
   /** 启动时后端报告的 MCP 连接失败(空数组 = 全部正常)。 */
   mcpErrors: string[];
 }
@@ -249,7 +255,7 @@ export function AgentPanel() {
     async (convKey: string, content: StudyContent | null, fork?: AgentForkSpec) => {
       const token = ++startTokenRef.current;
       setStarting(true);
-      updateConv(convKey, (c) => ({ ...c, error: undefined }));
+      updateConv(convKey, (c) => ({ ...c, error: undefined, errorKind: undefined }));
       try {
         const info = await agentApi.startSession(content, fork);
         // 过期就放弃:期间内容/配置又变了,新一轮启动已经接管。
@@ -264,7 +270,7 @@ export function AgentPanel() {
       } catch (e) {
         if (startTokenRef.current !== token) return;
         const msg = String(e).replace(/^[A-Z_]+:\s*/, "");
-        updateConv(convKey, (c) => ({ ...c, error: msg }));
+        updateConv(convKey, (c) => ({ ...c, error: msg, errorKind: "start" }));
         showToast(msg);
       } finally {
         if (startTokenRef.current === token) setStarting(false);
@@ -372,7 +378,18 @@ export function AgentPanel() {
 
   function handleAgentEvent(sessionId: string, event: AgentEvent) {
     const conv = findConvBySession(convsRef.current, sessionId);
-    if (!conv) return;
+    if (!conv) {
+      // 会话已经不在列表里(内容/配置变更后旧会话作废):流式增量无害丢弃,
+      // 但**终止事件必须清忙碌标记**——否则面板永远停在「生成中」,下一次
+      // 发送会被 busyRef 静默吃掉。
+      if (event.type === "turn_end" || event.type === "error") {
+        if (busyRef.current === sessionId) {
+          busyRef.current = null;
+          setBusySession(null);
+        }
+      }
+      return;
+    }
     switch (event.type) {
       case "thinking_delta": {
         const turn = ensureTurn(conv.key);
@@ -485,12 +502,12 @@ export function AgentPanel() {
     if (!conv || (!text && pendingImages.length === 0)) return;
     const info = conv.sessionId;
     if (!info) {
-      // Never drop the message silently: tell the user why nothing happened.
-      showToast(
-        conv.error
-          ? `会话未就绪:${conv.error}`
-          : "会话未就绪,请稍候重试或重新开始会话",
-      );
+      // 会话还没建好:同样写进持久错误横幅,不只是一闪而过的 toast。
+      updateConv(conv.key, (c) => ({
+        ...c,
+        error: c.error ?? `会话未就绪:${c.error ?? "请稍候重试或重新开始会话"}`,
+        errorKind: c.errorKind ?? "start",
+      }));
       return;
     }
     if (busyRef.current === info) return;
@@ -503,6 +520,8 @@ export function AgentPanel() {
     const items = last?.items != null ? last.items + 1 : null;
     updateConv(conv.key, (c) => ({
       ...c,
+      error: undefined,
+      errorKind: undefined,
       entries: [
         ...c.entries,
         { role: "user", text, images: images.length > 0 ? images : undefined, items },
@@ -513,7 +532,17 @@ export function AgentPanel() {
     } catch (e) {
       busyRef.current = null;
       setBusySession(null);
-      showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      const message = String(e).replace(/^[A-Z_]+:\s*/, "");
+      // 后端没收到这一轮:把刚插进 UI 的幽灵消息撤回,内容放回输入框,并把
+      // 原因留在会话错误横幅上。否则界面里挂着一条永远不会被回答的消息。
+      updateConv(conv.key, (c) => ({
+        ...c,
+        error: message,
+        errorKind: "send",
+        entries: c.entries.slice(0, -1),
+      }));
+      setInput(text);
+      setPendingImages(images);
     }
   }
 
@@ -604,15 +633,40 @@ export function AgentPanel() {
       )}
       {starting && <div className="agent-status">正在连接模型…</div>}
       {!starting && activeConv?.error && (
-        <div className="agent-status fail">
+        <div className="agent-status fail" role="alert">
           <span className="agent-status-text" title={activeConv.error}>
-            会话未就绪:{activeConv.error}
+            {activeConv.errorKind === "send" ? "发送失败:" : "会话未就绪:"}
+            {activeConv.error}
           </span>
+          {activeConv.errorKind === "send" ? (
+            <button
+              className="btn btn-ghost agent-status-retry"
+              title="用刚才的内容重新发送"
+              onClick={() => void send()}
+            >
+              重试
+            </button>
+          ) : (
+            <button
+              className="btn btn-ghost agent-status-retry"
+              onClick={() => void startSession(activeConv.key, studyContent)}
+            >
+              重试
+            </button>
+          )}
           <button
-            className="btn btn-ghost agent-status-retry"
-            onClick={() => void startSession(activeConv.key, studyContent)}
+            className="agent-status-dismiss"
+            title="关闭提示"
+            aria-label="关闭提示"
+            onClick={() =>
+              updateConv(activeConv.key, (c) => ({
+                ...c,
+                error: undefined,
+                errorKind: undefined,
+              }))
+            }
           >
-            重试
+            ×
           </button>
         </div>
       )}

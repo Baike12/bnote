@@ -4,6 +4,42 @@
 use super::types::{AgentEvent, ChatItem, Content, ToolDef, TurnResult};
 use futures::StreamExt;
 use serde_json::{json, Value};
+use std::time::Duration;
+
+/// 建连超时:连不上要尽快报错,而不是挂着。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// 流空闲超时:模型流超过这么久没有一个字节就按失败结束。
+///
+/// 没有它,网关/网络半开时 `stream.next().await` 永远不返回 → 会话的
+/// running 一直为 true → 之后每次发送都被 SESSION_BUSY 拒掉;前端只弹
+/// 一个几秒消失的 toast,用户看到的现象就是「再次发送没有回应」。推理
+/// 模型思考期间会持续发 thinking_delta,真静默 180s 只剩网关挂死一种解释。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// 取下一块流数据,带空闲超时(测试可注入更短的超时)。
+///
+/// `None` = 流正常结束;`Err` = 空闲超时(网关无响应)或连接错误。
+async fn next_chunk_with<S, E>(stream: &mut S, idle: Duration) -> Result<Option<bytes::Bytes>, String>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(idle, stream.next()).await {
+        Ok(Some(chunk)) => chunk.map(Some).map_err(|e| format!("stream: {}", e)),
+        Ok(None) => Ok(None),
+        Err(_) => Err(format!(
+            "模型流空闲超时({}s 没有任何数据):网关或网络无响应,请重试",
+            idle.as_secs()
+        )),
+    }
+}
+
+async fn next_chunk<S>(stream: &mut S) -> Result<Option<bytes::Bytes>, String>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
+{
+    next_chunk_with(stream, STREAM_IDLE_TIMEOUT).await
+}
 
 /// Anthropic content block:Text/Image/ToolUse/ToolResult 各自的线上形态。
 fn anthropic_block(c: &Content) -> Value {
@@ -75,7 +111,10 @@ impl Provider {
             api_key: api_key.to_string(),
             model: model.to_string(),
             max_tokens: max_tokens.max(1024),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
@@ -160,8 +199,7 @@ impl Provider {
         let mut current_tool: Option<(String, String, String)> = None; // (id, name, args)
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| format!("stream: {}", e))?;
+        while let Some(bytes) = next_chunk(&mut stream).await? {
             for event in sse.feed(&bytes) {
                 let v: Value = match serde_json::from_str(&event) {
                     Ok(v) => v,
@@ -362,10 +400,14 @@ impl Provider {
         let mut calls: Vec<(String, String, String)> = Vec::new();
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| format!("stream: {}", e))?;
+        let mut done = false;
+        while !done {
+            let Some(bytes) = next_chunk(&mut stream).await? else {
+                break;
+            };
             for event in sse.feed(&bytes) {
                 if event == "[DONE]" {
+                    done = true;
                     break;
                 }
                 let v: Value = match serde_json::from_str(&event) {
@@ -499,6 +541,38 @@ fn find_double_newline(buf: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn 流空闲超时报错而不是永久挂起() {
+        // 网关半开时 SSE 流不会自己结束:没有这层超时,一轮对话会永远挂着,
+        // 会话的 running 也永远不复位(之后每次发送都被 SESSION_BUSY 拒掉)。
+        let mut stream =
+            futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
+        let err = next_chunk_with(&mut stream, Duration::from_millis(30))
+            .await
+            .unwrap_err();
+        assert!(err.contains("空闲超时"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn 流正常结束返回_none_不误报超时() {
+        let mut stream = futures::stream::iter(Vec::<Result<bytes::Bytes, std::io::Error>>::new());
+        assert!(next_chunk_with(&mut stream, Duration::from_millis(30))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn 流错误原样上报() {
+        let mut stream = futures::stream::iter(vec![Err::<bytes::Bytes, _>(
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset"),
+        )]);
+        let err = next_chunk_with(&mut stream, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(err.contains("reset"), "{}", err);
+    }
 
     #[test]
     fn anthropic_block_图片映射为_base64_source() {
