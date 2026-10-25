@@ -122,22 +122,11 @@ impl Session {
     }
 
     fn tool_defs(&self) -> Vec<ToolDef> {
-        let mut defs: Vec<ToolDef> = super::tools::tool_schemas()
-            .iter()
-            .map(|(name, desc, schema)| ToolDef {
-                name: name.to_string(),
-                description: desc.to_string(),
-                input_schema: schema.clone(),
-                mcp_server: None,
-            })
-            .collect();
-        defs.extend(self.mcp.tools.iter().map(|t| ToolDef {
-            name: t.name.clone(),
-            description: t.description.clone(),
-            input_schema: t.input_schema.clone(),
-            mcp_server: None,
-        }));
-        defs
+        // 学习助手是纯问答:不注册任何工具,提示词也不引导(见
+        // build_system_prompt),模型只凭自身知识直接回答。要恢复工具时,
+        // 在这里重新拼内置工具(tool_schemas)+ MCP 工具,并同步恢复提示词
+        // 里的 skills/MCP 节。
+        Vec::new()
     }
 
     async fn execute_tool(&self, name: &str, input: &Value) -> (bool, String) {
@@ -170,22 +159,22 @@ pub struct SessionRegistry {
 ///    场景的底线,用户配置不能把它顶掉;
 /// 2. `user_instructions`:vault 的 `.bnote/agent.md`(类比 ZCode 的
 ///    AGENTS.md / Claude Code 的 CLAUDE.md),设置里可编辑;
-/// 3. 运行时上下文(仓库、当前笔记、学习材料、skills、MCP)。
+/// 3. 运行时上下文(仓库、当前笔记、学习材料)。
+///
+/// 学习助手是纯问答:不注册任何工具,提示词也不引导调用工具——两边只要
+/// 有一边漏掉,模型就会去调不存在的工具或绕路读文件。
 pub fn build_system_prompt(
     vault_name: &str,
     current_note: Option<&str>,
     study: Option<&StudyContent>,
     user_instructions: &str,
-    skills_block: &str,
-    mcp_block: &str,
 ) -> String {
     let mut p = String::from(
         "You are bnote's study assistant, embedded in a markdown note-taking app. \
 The user is studying material (a PDF paper or a web page) shown in the \
 center panel while their own notes stay in the right pane. Answer in the user's language. \
-Use markdown and $...$ / $$...$$ LaTeX math. When the question relates to the study \
-material, ground your answer in it via the read_study_content tool before answering \
-from memory; quote the relevant formulas precisely.\n\n\
+Use markdown and $...$ / $$...$$ LaTeX math. Answer questions directly from your \
+own knowledge.\n\n\
 \
 ## 回答方式(必须遵守)\n\n\
 - 结论先行:第一句直接回答问题,再给最短必要的解释。不要复述问题、不要寒暄、不要绕圈子。\n\
@@ -214,8 +203,6 @@ from memory; quote the relevant formulas precisely.\n\n\
         p.push_str(user);
         p.push_str("\n");
     }
-    p.push_str(skills_block);
-    p.push_str(mcp_block);
     p
 }
 
@@ -225,13 +212,30 @@ mod tests {
 
     #[test]
     fn 固定要求在自定义指令之前_且自定义指令为空时不出现该节() {
-        let base = build_system_prompt("vault", None, None, "", "", "");
+        let base = build_system_prompt("vault", None, None, "");
         assert!(base.contains("结论先行"));
         assert!(!base.contains(".bnote/agent.md"));
 
-        let with_user = build_system_prompt("vault", None, None, "  多用表格回答。 \n", "", "");
+        let with_user = build_system_prompt("vault", None, None, "  多用表格回答。 \n");
         let custom = with_user.find("多用表格回答。").unwrap();
         let fixed = with_user.find("结论先行").unwrap();
         assert!(fixed < custom, "用户指令应在固定要求之后追加");
+    }
+
+    #[test]
+    fn 纯问答_提示词不出现任何工具引导() {
+        // 历史缺陷:提示词要求"答前先调 read_study_content",叠加把内置 +
+        // MCP 工具全量注册进请求,导致每个问题都触发工具调用。学习助手是
+        // 纯问答,这条不变量锁住:提示词里不得出现任何工具名或加载引导。
+        let study = StudyContent::Pdf {
+            path: "/tmp/paper.pdf".into(),
+            title: "paper".into(),
+        };
+        let p = build_system_prompt("vault", Some("notes/a.md"), Some(&study), "");
+        assert!(!p.contains("tool"), "不得引导调用工具:\n{}", p);
+        assert!(!p.contains("read_study_content"));
+        assert!(!p.contains("skill"));
+        assert!(!p.contains("mcp__"));
+        assert!(!p.contains("MCP"));
     }
 }

@@ -109,19 +109,7 @@ pub async fn agent_start_session(
         }
     };
 
-    // Read MCP errors for the UI + build the system prompt.
-    let mcp_block = if mcp.errors.is_empty() {
-        format!(
-            "\n## MCP\n\n{} MCP tool(s) available via mcp__<server>__<tool>.\n",
-            mcp.tools.len()
-        )
-    } else {
-        format!(
-            "\n## MCP\n\nSome MCP servers failed: {}\n",
-            mcp.errors.join("; ")
-        )
-    };
-    let skills_block = skills.prompt_block();
+    // Read MCP errors for the UI; the system prompt stays tool-free.
     let vault_name = state
         .vault()
         .and_then(|v| v.file_name().map(|s| s.to_string_lossy().to_string()))
@@ -137,8 +125,6 @@ pub async fn agent_start_session(
         current_note.as_deref(),
         study.as_ref(),
         &user_instructions,
-        &skills_block,
-        &mcp_block,
     );
 
     let ctx = Arc::new(ToolContext {
