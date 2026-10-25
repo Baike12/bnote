@@ -457,60 +457,82 @@ export function AgentPanel() {
       <div className="agent-scroll" ref={scrollRef}>
         {!activeConv || activeConv.entries.length === 0 ? (
           <div className="agent-welcome">
-            <p>问我关于当前 PDF / 网页的问题。</p>
-            <p className="agent-hint">
-              例如:「总结这篇论文的核心方法」「第 3 节的公式在讲什么?」
-            </p>
-            <p className="agent-hint">悬停任意消息点「⤷」,可以从那里分叉一条辅助会话。</p>
+            <div className="agent-welcome-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
+              </svg>
+            </div>
+            <p className="agent-welcome-title">问我关于当前 PDF / 网页的问题</p>
+            <div className="agent-chips">
+              {["总结这篇材料的核心方法", "这篇在解决什么问题?", "帮我梳理知识框架"].map((q) => (
+                <button key={q} className="agent-chip" onClick={() => setInput(q)}>
+                  {q}
+                </button>
+              ))}
+            </div>
+            <p className="agent-hint">悬停任意消息点「⤷」,可以从那里分叉一条辅助会话</p>
           </div>
         ) : (
-          activeConv.entries.map((entry, i) => (
-            <div
-              className={`agent-msg-row${entry.role === "user" ? " is-user" : ""}`}
-              key={i}
-            >
-              {entry.role === "user" ? (
-                <div className="agent-msg agent-msg-user">{entry.text}</div>
-              ) : (
-                <div className="agent-msg agent-msg-assistant">
-                  {entry.turn?.tools.map((tool) => (
-                    <details className="agent-tool" key={tool.id}>
-                      <summary className={tool.ok === false ? "fail" : ""}>
-                        {tool.ok === undefined ? "⏳" : tool.ok ? "🔧" : "⚠️"}{" "}
-                        {tool.name}
-                      </summary>
-                      <pre className="agent-tool-io">
-                        {JSON.stringify(tool.input, null, 2)}
-                        {tool.output !== undefined && `\n→ ${tool.output}`}
-                      </pre>
-                    </details>
-                  ))}
-                  {entry.turn?.error && (
-                    <div className="agent-error">{entry.turn.error}</div>
-                  )}
-                  <div
-                    className="agent-md"
-                    dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(entry.text) }}
-                  />
-                </div>
-              )}
-              {!activeBusy && (
-                <button
-                  className="agent-fork"
-                  title="基于这条消息开启辅助会话"
-                  onClick={() => forkFrom(i)}
-                >
-                  ⤷
-                </button>
-              )}
-            </div>
-          ))
+          activeConv.entries.map((entry, i) => {
+            const isLast = i === activeConv.entries.length - 1;
+            const streaming = isLast && activeBusy && entry.role === "assistant";
+            return (
+              <div
+                className={`agent-msg-row${entry.role === "user" ? " is-user" : ""}`}
+                key={i}
+              >
+                {entry.role === "user" ? (
+                  <div className="agent-msg agent-msg-user">{entry.text}</div>
+                ) : (
+                  <div className="agent-msg agent-msg-assistant">
+                    {entry.turn?.tools.map((tool) => (
+                      <details className="agent-tool" key={tool.id}>
+                        <summary>
+                          <span
+                            className={`agent-tool-dot${
+                              tool.ok === false ? " fail" : tool.ok === undefined ? " running" : ""
+                            }`}
+                          />
+                          <span className="agent-tool-name">{tool.name}</span>
+                          {tool.ok === false && <span className="agent-tool-fail">失败</span>}
+                          <svg className="agent-tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="m9 18 6-6-6-6" />
+                          </svg>
+                        </summary>
+                        <pre className="agent-tool-io">
+                          {JSON.stringify(tool.input, null, 2)}
+                          {tool.output !== undefined && `\n→ ${tool.output}`}
+                        </pre>
+                      </details>
+                    ))}
+                    {entry.turn?.error && (
+                      <div className="agent-error">{entry.turn.error}</div>
+                    )}
+                    <div
+                      className="agent-md"
+                      dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(entry.text) }}
+                    />
+                    {streaming && <span className="agent-caret" aria-hidden="true" />}
+                  </div>
+                )}
+                {!activeBusy && (
+                  <button
+                    className="agent-fork"
+                    title="基于这条消息开启辅助会话"
+                    onClick={() => forkFrom(i)}
+                  >
+                    ⤷
+                  </button>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
-      <div className="agent-input-row">
+      <div className="agent-composer">
         <textarea
           className="agent-input"
-          placeholder="询问当前内容…(Enter 发送,Shift+Enter 换行)"
+          placeholder="询问当前内容…"
           value={input}
           rows={2}
           onChange={(e) => setInput(e.target.value)}
@@ -521,24 +543,27 @@ export function AgentPanel() {
             }
           }}
         />
-        {activeBusy ? (
-          <button className="btn agent-send" onClick={abort}>
-            停止
-          </button>
-        ) : (
-          <button
-            className="btn agent-send"
-            onClick={() => void send()}
-            disabled={!activeConv?.sessionId}
-            title={
-              activeConv?.sessionId
-                ? "发送(Enter)"
-                : (activeConv?.error ?? "正在连接模型…")
-            }
-          >
-            发送
-          </button>
-        )}
+        <div className="agent-composer-foot">
+          <span className="agent-composer-hint">Enter 发送 · Shift+Enter 换行</span>
+          {activeBusy ? (
+            <button className="agent-send stop" onClick={abort}>
+              停止
+            </button>
+          ) : (
+            <button
+              className="agent-send"
+              onClick={() => void send()}
+              disabled={!activeConv?.sessionId}
+              title={
+                activeConv?.sessionId
+                  ? "发送(Enter)"
+                  : (activeConv?.error ?? "正在连接模型…")
+              }
+            >
+              发送
+            </button>
+          )}
+        </div>
       </div>
     </aside>
   );
