@@ -416,15 +416,23 @@ pub async fn show_study_preview(
             })
             // 页面里的批注变化写在 document.title 的 `bnote-anno:` 前缀后面。
             // 不开远程 IPC:任意网页都拿不到应用命令,这条 title 通道只传数据。
+            // 微信读书的路由追踪(`src/study/weread.ts`)复用同一条通道,前缀
+            // `bnote-weread:`,分发成 study-weread-route;不带前缀的 title
+            // (微信读书自己设置的页面标题)一律忽略。
             .on_document_title_changed(|webview, title| {
-                const PREFIX: &str = "bnote-anno:";
-                let Some(raw) = title.strip_prefix(PREFIX) else {
+                const ANNO_PREFIX: &str = "bnote-anno:";
+                const WEREAD_PREFIX: &str = "bnote-weread:";
+                let (event, raw) = if let Some(raw) = title.strip_prefix(ANNO_PREFIX) {
+                    ("study-web-annotations", raw)
+                } else if let Some(raw) = title.strip_prefix(WEREAD_PREFIX) {
+                    ("study-weread-route", raw)
+                } else {
                     return;
                 };
                 let Ok(payload) = serde_json::from_str::<serde_json::Value>(raw) else {
                     return;
                 };
-                let _ = webview.emit_to("main", "study-web-annotations", payload);
+                let _ = webview.emit_to("main", event, payload);
             }),
             bounds.position(),
             bounds.size(),

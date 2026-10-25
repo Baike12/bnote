@@ -30,6 +30,7 @@ import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/
 import { resetLspStateForPath, syncNow } from "@/python/lsp";
 import { api } from "@/lib/tauri";
 import { canFlipPdfPage, flipPdfPage } from "@/study/pdfNav";
+import { WEREAD_HOME_URL } from "@/study/weread";
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
   return () => {
@@ -132,6 +133,16 @@ const defs: CommandDef[] = [
     category: "视图",
     run: () => {
       toggleStudyMode();
+    },
+  },
+  {
+    id: "view.open-weread",
+    title: "打开微信读书(书架 / 商城 / 阅读,进学习模式)",
+    category: "视图",
+    run: () => {
+      const store = useAppStore.getState();
+      if (!store.studyMode) store.setStudyMode(true);
+      store.setStudyContent({ kind: "url", url: WEREAD_HOME_URL, title: "微信读书" });
     },
   },
   // 学习模式翻页(按设置里的步长滚动,默认半屏)。默认 PageUp/PageDown(含

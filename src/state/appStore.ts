@@ -4,9 +4,11 @@ import {
   emptyStudyHistory,
   pushPdfEntry,
   pushUrlEntry,
+  pushWereadBook,
   type StudyHistory,
   type StudyPdfEntry,
   type StudyUrlEntry,
+  type WereadBookEntry,
 } from "@/study/history";
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
 import { DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
@@ -262,6 +264,7 @@ interface AppState {
   /** 打开一份 PDF 后记一笔(去重、置顶、持久化)。 */
   recordStudyPdf: (entry: Omit<StudyPdfEntry, "at">) => void;
   recordStudyUrl: (entry: Omit<StudyUrlEntry, "at">) => void;
+  recordWereadBook: (entry: Omit<WereadBookEntry, "at">) => void;
   openDrawingSession: (session: DrawingSession) => void;
   closeDrawingSession: () => void;
   /** Agent 配置已保存:让学习模式重建会话(见 agentConfigVersion)。 */
@@ -438,6 +441,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   recordStudyUrl: (entry) => {
     const studyHistory = pushUrlEntry(get().studyHistory, entry);
+    set({ studyHistory });
+    persistConfig({ ...getConfigSnapshot(), studyHistory });
+  },
+  recordWereadBook: (entry) => {
+    const studyHistory = pushWereadBook(get().studyHistory, entry);
     set({ studyHistory });
     persistConfig({ ...getConfigSnapshot(), studyHistory });
   },
