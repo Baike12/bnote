@@ -20,10 +20,16 @@
  *     - 护眼绿:与 PDF 护眼模式同一底色 `#dcebd6`(global.css 的
  *       `--pdf-gutter`),深色文字。全部规则挂在 `body.wr_page_reader`
  *       (阅读页才有的类)下,书架/商城不受影响。
- *     - 竖排/横排两种模式都有对应规则;竖排滚动是 bnote 集成最好的形态
- *       (PageUp/Down 翻页、批注都按滚动语义工作),weread 在窄容器里会
- *       自动选竖排。**不要**试图用合成事件替用户切模式:weread 的控件
- *       过滤非可信事件(实站验证,click/PointerEvent 全套都不理会)。
+ *     - 正文字色:可见字形是 canvas 按 weread 主题色画的防复制层(盖在
+ *       DOM 文本上),CSS 字色只管得到 DOM 层;对 canvas 用
+ *       `brightness(0)` 把字形压黑(透明度保留),才是绿底黑字。
+ *     - 竖排/横排(双页)两种模式都适配(容器、字色、目录停靠各有差异,
+ *       见 CSS 分组注释);weread 自己的悬浮工具栏与翻页条整体隐藏——
+ *       目录已常驻,翻页走 PageUp/Down,代价是单双页/字号/主题的站内
+ *       切换入口没了。竖排滚动仍是 bnote 集成最好的形态(批注按滚动
+ *       语义工作),weread 在窄容器里也会自动选竖排;**不要**试图用
+ *       合成事件替用户切模式——weread 的控件过滤非可信事件(实站验证,
+ *       click/PointerEvent 全套都不理会)。
  *
  * 运行时挂在**通用初始化脚本**里(每次导航都会重装,SPA 站内跳书后依然
  * 生效),开头按 hostname 自门控:非微信读书的页面一行都不执行。
@@ -135,6 +141,28 @@ function wereadRuntime(args: {
       "body.wr_page_reader .readerControls_item { background: #dcebd6 !important; color: #33413a !important; }",
       "body.wr_page_reader .readerFooter { background: #dcebd6 !important; }",
       "body.wr_page_reader .readerFooter_button { background: #cfe3c8 !important; color: #33413a !important; }",
+      // 4. 可见的正文字形是 canvas 按 weread 主题色画的(防复制,盖在 DOM
+      //    文本之上,z-index:2)——CSS 字色只改得到 DOM 层,所以绿底上还是
+      //    主题的浅色字。canvas 底色透明、只画字形:brightness(0) 把不透明
+      //    像素压成黑色、透明度保留,即黑字绿底,与 PDF 护眼一致。
+      "body.wr_page_reader .wr_canvasContainer canvas { filter: brightness(0) !important; }",
+      // 5. 横排(双页)模式:页面容器(.readerChapterContent/_container)自身
+      //    带深色底,一并涂绿,否则切到双页后正文区还是黑的。
+      "body.wr_page_reader .readerChapterContent, body.wr_page_reader .readerChapterContent_container { background: #dcebd6 !important; }",
+      // 6. 字色通配到所有后代:横排下 weread 在内层页面类(如
+      //    wr_flyleaf_page_*)上直接设浅色——祖先上的 !important 管不到
+      //    直接规则;目录能变深就是靠同款通配。svg/canvas 排除(插图是
+      //    <img> 不吃 color,svg 图标有自己的 fill)。
+      "body.wr_page_reader .readerChapterContent, body.wr_page_reader .readerChapterContent *:not(svg):not(canvas) { color: #2f3a33 !important; }",
+      // 7. 目录 fixed 停靠视口左缘:横排下它的定位祖先是 position:relative
+      //    的正文容器,absolute + left:0 只能停到正文左缘(缩在中间)。
+      "body.wr_page_reader .readerCatalog { position: fixed !important; bottom: 0 !important; }",
+      // 8. 去掉侧边切换按钮:右侧悬浮工具栏(目录/笔记/单双页/字号/主题)
+      //    与底部翻页条。目录已常驻左栏,翻页走 PageUp/Down 或点击页面。
+      //    代价:weread 内部的单双页/字号/主题切换入口没了(两类模式都已
+      //    适配,见上)。
+      "body.wr_page_reader .readerControls { display: none !important; }",
+      "body.wr_page_reader .renderTarget_pager { display: none !important; }",
     ].join("\n");
     (document.head || document.documentElement).appendChild(style);
   };
