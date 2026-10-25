@@ -77,7 +77,8 @@ fi
 # .app 才是部署产物;若构建未正常结束但 .app 已比 marker 新(上一轮 DMG 故障的
 # 兜底,--bundles app 下几乎不会再走到),只要它是这一轮重新产出的就继续。
 marker="$(mktemp -t bnote-build)"
-if pnpm tauri build "${BUILD_ARGS[@]}" >/tmp/bnote-build.log 2>&1; then
+# bash 3.2 + set -u 下，展开空数组("${[@]}")会报 unbound variable；用 ${[@]+...} 守卫
+if pnpm tauri build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} >/tmp/bnote-build.log 2>&1; then
   tail -4 /tmp/bnote-build.log
 elif [ -d "$BUNDLE_SRC" ] && [ -n "$(find "$BUNDLE_SRC" -newer "$marker" -print -quit)" ]; then
   echo "    ⚠ 构建未正常结束，但 .app 已重新产出，继续部署"
