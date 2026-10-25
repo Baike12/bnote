@@ -23,7 +23,7 @@ import PdfWorker from "@/study/pdfWorker?worker";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { api } from "@/lib/tauri";
 import { bindingsForCommand, formatBinding } from "@/commands/keys";
-import { imeOnNoteFocus, imeSyncToEditor } from "@/editor/imeSwitch";
+import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { useAppStore } from "@/state/appStore";
 import { cropFromDrag, loadPdfCrop, savePdfCrop, type PdfCrop } from "@/study/crop";
 import {
@@ -1779,8 +1779,9 @@ function NoteBox({
         value={annotation.text}
         placeholder="写批注…"
         maxLength={MAX_NOTE_TEXT}
+        data-ime-chinese="true"
         onChange={(event) => onChange(annotation.id, event.target.value)}
-        onFocus={() => imeOnNoteFocus()}
+        onFocus={() => imeOnChineseFocus()}
         onBlur={(event) => {
           // 两张批注卡之间换焦点时保持中文;真正离开批注才交还输入源。
           const next = event.relatedTarget as Element | null;

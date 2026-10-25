@@ -109,8 +109,11 @@ export function imeApply(target: string): void {
   scheduleLaunch();
 }
 
-/** 批注输入框获得焦点:批注是中文写作,直接切到 insert 源。 */
-export function imeOnNoteFocus(): void {
+/**
+ * 中文写作输入框(批注卡 / agent 对话框)获得焦点:直接切到 insert 源。
+ * 这些输入框只写中文,焦点即意图;编辑器的 vim 模式不参与。
+ */
+export function imeOnChineseFocus(): void {
   const { settings } = useAppStore.getState();
   imeApply(settings.ime.insertSource);
 }
@@ -135,11 +138,31 @@ export function imeYield(): void {
   if (restore) void api.setInputSource(restore).catch(() => {});
 }
 
+/**
+ * 中文写作输入框(批注卡 / agent 对话框)在 DOM 上带的标记。焦点落在带标记
+ * 的元素上时,输入源意图归它:imeSyncToEditor 不按编辑器上下文覆盖——否则
+ * 聚焦 agent 输入框切到中文后,Cmd-Tab 离开再回来,窗口 focus 会按编辑器的
+ * normal 模式把中文切掉,用户直接打出一串英文原码。
+ */
+const CHINESE_FIELD_ATTR = "data-ime-chinese";
+
+function focusInChineseField(): boolean {
+  if (typeof document === "undefined") return false;
+  const active = document.activeElement as Element | null;
+  return typeof active?.hasAttribute === "function" && active.hasAttribute(CHINESE_FIELD_ATTR);
+}
+
 /** Switch to whatever the current UI context wants (modal or editor vim mode). */
 export function imeSyncToEditor(): void {
   const { settings, modal } = useAppStore.getState();
   if (!settings.ime.enabled) {
     if (desired) imeYield();
+    return;
+  }
+  if (focusInChineseField()) {
+    // 意图属于中文写作输入框:imeOnChineseFocus 已切;挂起态(失焦归还过)
+    // 下 imeApply 的去重会放行,重发一次中文源。
+    imeApply(settings.ime.insertSource);
     return;
   }
   const target = imeDesiredSource(settings, modal);
