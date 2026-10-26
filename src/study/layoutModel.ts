@@ -13,8 +13,9 @@
 export const MIN_CONTENT_WIDTH = 260;
 /** 右栏(笔记 / 学习助手)最小宽度。 */
 export const MIN_RIGHT_WIDTH = 260;
-/** 分隔条命中区宽度,与 global.css 的 .study-resizer 一致。 */
-export const RESIZER_WIDTH = 8;
+/** 分栏线宽度(布局宽度),与 global.css 的 .study-resizer 一致;命中区由
+ *  ::after 向两侧扩展,不占布局。 */
+export const RESIZER_WIDTH = 1;
 
 export const DEFAULT_CONTENT_WIDTH = 620;
 

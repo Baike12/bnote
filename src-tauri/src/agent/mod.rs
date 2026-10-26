@@ -19,12 +19,19 @@ pub struct AgentConfig {
     pub base_url: String,
     pub api_key: String,
     pub max_tokens: u32,
+    /// 模型的上下文窗口(tokens),用于显示占用率。按用户实际模型填写。
+    #[serde(default = "default_context_window")]
+    pub context_window: u64,
     /// MCP servers: name → {command,args,env} or {url,headers}.
     #[serde(default)]
     pub mcp_servers: std::collections::BTreeMap<String, McpServerConfig>,
     /// Extra skill directories to scan (in addition to built-ins).
     #[serde(default)]
     pub skill_dirs: Vec<String>,
+}
+
+fn default_context_window() -> u64 {
+    128_000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +58,7 @@ impl AgentConfig {
             Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
             Err(_) => AgentConfig {
                 max_tokens: 8192,
+                context_window: default_context_window(),
                 ..Default::default()
             },
         };
@@ -67,6 +75,9 @@ impl AgentConfig {
     fn normalize(&mut self) {
         if self.provider != "anthropic" && self.provider != "openai" {
             self.provider = "anthropic".into();
+        }
+        if self.context_window == 0 {
+            self.context_window = default_context_window();
         }
     }
 
@@ -95,5 +106,21 @@ mod tests {
         cfg.provider = "anthropic".into();
         cfg.normalize();
         assert_eq!(cfg.provider, "anthropic");
+    }
+
+    #[test]
+    fn 旧配置没有上下文窗口时回落默认值() {
+        let cfg: AgentConfig = serde_json::from_str(
+            r#"{"provider":"openai","model":"m","base_url":"","api_key":"","max_tokens":8192}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.context_window, default_context_window());
+    }
+
+    #[test]
+    fn 上下文窗口为零时归一为默认值() {
+        let mut cfg = AgentConfig::default();
+        cfg.normalize();
+        assert_eq!(cfg.context_window, default_context_window());
     }
 }

@@ -77,7 +77,7 @@ function uuid(): string {
 
 /** 同一份磁盘文件的读改写串行化(镜像/记录/发送可能来自不同源文件)。 */
 const fileChains = new Map<string, Promise<void>>();
-function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+export function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const prev = fileChains.get(path) ?? Promise.resolve();
   const next = prev.then(fn, fn);
   fileChains.set(path, next.then(() => undefined, () => undefined));

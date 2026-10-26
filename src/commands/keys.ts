@@ -14,6 +14,8 @@ import { getCommand } from "./registry";
 export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "workspace.new-note": "Mod-n",
   "workspace.quick-add": "Mod-Shift-a",
+  // 随手记一条待办:与「发送待办到日记」(⌘⇧J)同族,但入口是弹窗而不是光标行。
+  "workspace.capture-todo": "Mod-Shift-k",
   // ⌘⇧O 归「打开今日日记」。原占位者 workspace.open-vault 让出该键位——它仍可
   // 从命令面板(⌘P)与欢迎页调用;要键位就在 keybindings.json 里自行指派。
   "workspace.open-daily": "Mod-Shift-o",

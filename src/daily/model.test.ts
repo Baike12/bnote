@@ -13,6 +13,7 @@ import {
   linksFilePath,
   parseDailyRegion,
   parseListLine,
+  prependEntrySpec,
   previousDailyFile,
   removeEntrySpec,
   replaceEntrySpec,
@@ -159,6 +160,38 @@ describe("appendEntrySpec / replaceEntrySpec / removeEntrySpec", () => {
     expect(textAfterChanges(text, [removeEntrySpec(d, parseDailyRegion(d).entries[0])])).toBe(
       "# d\n\n正文\n",
     );
+  });
+});
+
+describe("prependEntrySpec", () => {
+  it("有既有待办:插到第一条之前,原条目原样下移", () => {
+    const d = doc("# 2026-10-26\n\n- [ ] 甲\n- [ ] 乙\n");
+    const { change, entry } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新"]);
+    expect(textAfterChanges(d.toString(), [change])).toBe(
+      "# 2026-10-26\n\n- [ ] 新\n- [ ] 甲\n- [ ] 乙\n",
+    );
+    expect(entry).toEqual({ start: 3, end: 3 });
+  });
+
+  it("带子项的块整体前插,条目的行区间覆盖整块", () => {
+    const d = doc("# d\n\n- [ ] 甲\n  - [ ] 子\n");
+    const { change, entry } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新", "  - [ ] 子新"]);
+    expect(textAfterChanges(d.toString(), [change])).toBe(
+      "# d\n\n- [ ] 新\n  - [ ] 子新\n- [ ] 甲\n  - [ ] 子\n",
+    );
+    expect(entry).toEqual({ start: 3, end: 4 });
+  });
+
+  it("空区域:与 appendEntrySpec 同形(头部后空一行)", () => {
+    const d = doc("# 2026-10-26\n");
+    const { change } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新"]);
+    expect(textAfterChanges(d.toString(), [change])).toBe("# 2026-10-26\n\n- [ ] 新\n");
+  });
+
+  it("无头部的纯列表:顶到第一条之前", () => {
+    const d = doc("- [ ] 甲\n- [ ] 乙\n");
+    const { change } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新"]);
+    expect(textAfterChanges(d.toString(), [change])).toBe("- [ ] 新\n- [ ] 甲\n- [ ] 乙\n");
   });
 });
 

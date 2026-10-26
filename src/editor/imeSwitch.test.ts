@@ -53,6 +53,7 @@ beforeEach(() => {
   patchSettings({
     ime: {
       enabled: true,
+      chineseFields: true,
       insertSource: "com.apple.inputmethod.SCIM",
       normalSource: "com.apple.keylayout.ABC",
       mathKeepsEnglish: true,
@@ -150,6 +151,7 @@ describe("imeApply 发起时机与在途合并", () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: false,
+        chineseFields: true,
         insertSource: "ZH",
         normalSource: "EN",
         mathKeepsEnglish: true,
@@ -174,6 +176,23 @@ describe("批注输入框聚焦", () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: false,
+        chineseFields: true,
+        insertSource: "ZH",
+        normalSource: "EN",
+        mathKeepsEnglish: true,
+        codeKeepsEnglish: true,
+      },
+    });
+    imeOnChineseFocus();
+    await drain();
+    expect(setInputSource).not.toHaveBeenCalled();
+  });
+
+  it("chineseFields 关闭时聚焦不切(可独立关闭该行为)", async () => {
+    useAppStore.getState().patchSettings({
+      ime: {
+        enabled: true,
+        chineseFields: false,
         insertSource: "ZH",
         normalSource: "EN",
         mathKeepsEnglish: true,
@@ -247,6 +266,7 @@ describe("imeWarmUp", () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: false,
+        chineseFields: true,
         insertSource: "ZH",
         normalSource: "EN",
         mathKeepsEnglish: true,

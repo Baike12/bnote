@@ -60,6 +60,8 @@ export interface AgentConfig {
   base_url: string;
   api_key: string;
   max_tokens: number;
+  /** 模型上下文窗口(tokens),用于显示占用率。 */
+  context_window: number;
   mcp_servers: Record<string, unknown>;
   skill_dirs: string[];
 }
@@ -91,6 +93,8 @@ export type AgentEvent =
   | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; id: string; name: string; input: unknown }
   | { type: "tool_end"; id: string; ok: boolean; output: string }
+  /** 一次模型请求的 token 用量;保留最新一条 = 当前上下文占用。 */
+  | { type: "usage"; input: number; output: number }
   | { type: "turn_end"; reason: string; items: number }
   | { type: "error"; message: string; items: number };
 

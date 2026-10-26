@@ -24,6 +24,14 @@ import {
 import { isWereadUrl } from "@/study/weread";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import {
+  contextLabel,
+  formatPercent,
+  formatTokenCount,
+  occupancyPercent,
+  usageTitle,
+  type AgentUsage,
+} from "@/study/agentUsage";
+import {
   MAX_IMAGES_PER_MESSAGE,
   fileToAgentImage,
   type AgentImage,
@@ -93,6 +101,8 @@ interface Conv {
   transcriptPath: string | null;
   /** 文件名里的会话 id(历史抽屉里高亮当前项)。 */
   sessionFileId: string | null;
+  /** 最近一次模型请求的 token 用量(上下文占用 = input + output)。 */
+  usage: AgentUsage | null;
 }
 
 /** Identity of the material a session is pinned to (url re-open = same key). */
@@ -304,6 +314,10 @@ export function AgentPanel() {
   const composingRef = useRef(false);
   const [starting, setStarting] = useState(false);
   const [busySession, setBusySession] = useState<string | null>(null);
+  /** 已保存的 Agent 配置(模型 / 上下文窗口);会话没建好时脚注也能显示。 */
+  const [agentConfig, setAgentConfig] = useState<{ model: string; contextWindow: number } | null>(
+    null,
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const convsRef = useRef<Conv[]>([]);
   const turnsRef = useRef<Map<string, Turn>>(new Map());
@@ -334,6 +348,24 @@ export function AgentPanel() {
   useEffect(() => {
     convsRef.current = convs;
   }, [convs]);
+
+  // 脚注的模型名与上下文窗口来自已保存配置(会话用的就是它)。读取期间配置
+  // 又变了一次(保存设置会 bump version)时,旧结果直接丢弃。
+  useEffect(() => {
+    let cancelled = false;
+    void agentApi
+      .getConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        setAgentConfig({ model: cfg.model, contextWindow: cfg.context_window });
+      })
+      .catch(() => {
+        if (!cancelled) setAgentConfig(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentConfigVersion]);
 
   /**
    * 归属用的材料内容:微信读书的 studyContent 停在中栏入口(书架),真正
@@ -461,6 +493,7 @@ export function AgentPanel() {
         mcpErrors: [],
         transcriptPath: path,
         sessionFileId: meta.id,
+        usage: null,
       };
       transcriptRef.current.set(conv.key, path);
       setConvs([conv]);
@@ -517,6 +550,7 @@ export function AgentPanel() {
         mcpErrors: [],
         transcriptPath: null,
         sessionFileId: null,
+        usage: null,
       };
       setConvs([conv]);
       setActiveKey(conv.key);
@@ -695,6 +729,13 @@ export function AgentPanel() {
         writeEntries(conv.key, turn, false, null);
         break;
       }
+      case "usage": {
+        updateConv(conv.key, (c) => ({
+          ...c,
+          usage: { input: event.input, output: event.output },
+        }));
+        break;
+      }
       case "turn_end": {
         commitTurn(conv.key, event.items);
         if (busyRef.current === sessionId) {
@@ -871,6 +912,7 @@ export function AgentPanel() {
       mcpErrors: [],
       transcriptPath: null,
       sessionFileId: null,
+      usage: null,
     };
     setConvs((prev) => [...prev, conv]);
     setActiveKey(conv.key);
@@ -883,6 +925,10 @@ export function AgentPanel() {
   const parentConv = activeConv?.parent
     ? (convs.find((c) => c.key === activeConv.parent) ?? null)
     : null;
+  const modelName = agentConfig?.model.trim() ?? "";
+  const contextLimit = agentConfig?.contextWindow ?? 0;
+  const activeUsage = activeConv?.usage ?? null;
+  const usagePct = occupancyPercent(activeUsage, contextLimit);
 
   return (
     <aside className="agent-panel">
@@ -1177,7 +1223,18 @@ export function AgentPanel() {
               <path d="m5 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L16 17.5M14 15l2-2a1.5 1.5 0 0 1 2.1 0L21 15.9" />
             </svg>
           </button>
-          <span className="agent-composer-hint">Enter 发送 · Shift+Enter 换行 · 可粘贴截图</span>
+          <span className="agent-meta" title={usageTitle(activeUsage, contextLimit, modelName)}>
+            <span className="agent-meta-model">{modelName || "未配置模型"}</span>
+            <span className="agent-meta-ctx">{contextLabel(activeUsage, contextLimit)}</span>
+            {usagePct !== null && (
+              <span className="agent-meta-pct">{formatPercent(usagePct)}</span>
+            )}
+            {activeUsage && (
+              <span className="agent-meta-io">
+                ↑{formatTokenCount(activeUsage.input)} ↓{formatTokenCount(activeUsage.output)}
+              </span>
+            )}
+          </span>
           {activeBusy ? (
             <button className="agent-send stop" onClick={abort}>
               停止

@@ -96,6 +96,13 @@ impl Session {
                 .provider
                 .stream_turn(&self.system_prompt, &snapshot, &tools, sink_ref)
                 .await?;
+            if let Some(usage) = turn.usage {
+                // 只保留最新一条就是当前上下文占用;input 已含系统提示词与全部历史。
+                self.emit(AgentEvent::Usage {
+                    input: usage.input,
+                    output: usage.output,
+                });
+            }
             // Assemble the assistant message.
             let mut content: Vec<Content> = Vec::new();
             if !turn.text.is_empty() {

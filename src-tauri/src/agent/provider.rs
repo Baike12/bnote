@@ -1,7 +1,7 @@
 //! LLM providers: Anthropic Messages API + OpenAI-compatible chat completions,
 //! both streamed over SSE and normalized into AgentEvents.
 
-use super::types::{AgentEvent, ChatItem, Content, ToolDef, TurnResult};
+use super::types::{AgentEvent, ChatItem, Content, TokenUsage, ToolDef, TurnResult};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -82,6 +82,40 @@ fn openai_user_content(text_parts: &[String], images: &[Content]) -> Value {
         }));
     }
     json!(parts)
+}
+
+/// Anthropic `message_start` 的 usage:input_tokens 不含缓存读写,占用要三项相加。
+fn anthropic_start_usage(message: &Value) -> Option<TokenUsage> {
+    let usage = message.get("usage")?;
+    let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    let input = count("input_tokens") + count("cache_creation_input_tokens") + count("cache_read_input_tokens");
+    let output = count("output_tokens");
+    (input > 0 || output > 0).then_some(TokenUsage { input, output })
+}
+
+/// Anthropic `message_delta` 只携带累计 output_tokens;input 沿用 message_start。
+fn anthropic_output_usage(current: Option<TokenUsage>, usage: &Value) -> Option<TokenUsage> {
+    let output = usage.get("output_tokens").and_then(|v| v.as_u64())?;
+    let mut next = current.unwrap_or_default();
+    next.output = output;
+    Some(next)
+}
+
+/// OpenAI 兼容流末尾的 usage(需要请求里带 stream_options.include_usage)。
+/// 有的网关用 input/output_tokens 命名,一并认。
+fn openai_usage(v: &Value) -> Option<TokenUsage> {
+    let usage = v.get("usage")?;
+    if usage.is_null() {
+        return None;
+    }
+    let count = |keys: [&str; 2]| {
+        keys.iter()
+            .find_map(|k| usage.get(*k).and_then(|v| v.as_u64()))
+            .unwrap_or(0)
+    };
+    let input = count(["prompt_tokens", "input_tokens"]);
+    let output = count(["completion_tokens", "output_tokens"]);
+    (input > 0 || output > 0).then_some(TokenUsage { input, output })
 }
 
 pub struct Provider {
@@ -206,6 +240,9 @@ impl Provider {
                     Err(_) => continue,
                 };
                 match v["type"].as_str() {
+                    Some("message_start") => {
+                        turn.usage = anthropic_start_usage(&v["message"]);
+                    }
                     Some("content_block_start") => {
                         let block = &v["content_block"];
                         if block["type"] == "tool_use" {
@@ -255,6 +292,7 @@ impl Provider {
                             .as_str()
                             .unwrap_or("end_turn")
                             .to_string();
+                        turn.usage = anthropic_output_usage(turn.usage, &v["usage"]);
                     }
                     Some("error") => {
                         return Err(format!(
@@ -373,6 +411,8 @@ impl Provider {
         let mut body = json!({
             "model": self.model,
             "stream": true,
+            // 请求流末尾附 usage(OpenAI 规范):前端据此显示上下文占用。
+            "stream_options": {"include_usage": true},
             "messages": messages,
         });
         // 纯问答会话没有任何工具:整个不发 tools 字段,而不是发空数组。
@@ -414,6 +454,9 @@ impl Provider {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
+                if let Some(usage) = openai_usage(&v) {
+                    turn.usage = Some(usage);
+                }
                 let delta = &v["choices"][0]["delta"];
                 // 推理模型(DeepSeek R1 / GLM / Qwen 等)在 openai 兼容流上的
                 // 思考字段:主流是 reasoning_content,GLM 某些网关用 reasoning。
@@ -584,6 +627,56 @@ mod tests {
         assert_eq!(v["source"]["type"], "base64");
         assert_eq!(v["source"]["media_type"], "image/png");
         assert_eq!(v["source"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn anthropic_message_start_usage_把缓存读写计入输入() {
+        let message = json!({
+            "usage": {
+                "input_tokens": 100,
+                "cache_creation_input_tokens": 20,
+                "cache_read_input_tokens": 300,
+                "output_tokens": 1,
+            }
+        });
+        assert_eq!(
+            anthropic_start_usage(&message),
+            Some(TokenUsage { input: 420, output: 1 })
+        );
+    }
+
+    #[test]
+    fn anthropic_message_delta_只更新输出_输入沿用_start() {
+        let start = Some(TokenUsage { input: 420, output: 1 });
+        assert_eq!(
+            anthropic_output_usage(start, &json!({"output_tokens": 88})),
+            Some(TokenUsage { input: 420, output: 88 })
+        );
+        // 没有 start 时也不能丢:输出仍要给出来。
+        assert_eq!(
+            anthropic_output_usage(None, &json!({"output_tokens": 5})),
+            Some(TokenUsage { input: 0, output: 5 })
+        );
+    }
+
+    #[test]
+    fn openai_usage_认_prompt_completion_也认_input_output() {
+        assert_eq!(
+            openai_usage(&json!({"usage": {"prompt_tokens": 61_800, "completion_tokens": 10_000}})),
+            Some(TokenUsage { input: 61_800, output: 10_000 })
+        );
+        assert_eq!(
+            openai_usage(&json!({"usage": {"input_tokens": 7, "output_tokens": 3}})),
+            Some(TokenUsage { input: 7, output: 3 })
+        );
+    }
+
+    #[test]
+    fn usage_缺失_null_或全零时返回_none() {
+        assert_eq!(openai_usage(&json!({})), None);
+        assert_eq!(openai_usage(&json!({"usage": null})), None);
+        assert_eq!(openai_usage(&json!({"usage": {"prompt_tokens": 0, "completion_tokens": 0}})), None);
+        assert_eq!(anthropic_start_usage(&json!({})), None);
     }
 
     #[test]

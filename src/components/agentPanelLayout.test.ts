@@ -35,4 +35,15 @@ describe("agent 面板滚动布局", () => {
     expect(scroll).toMatch(/overflow-y:\s*auto/);
     expect(scroll).toMatch(/flex:\s*1/);
   });
+
+  it("两栏之间没有可见空隙:分栏线只占 1px,命中区靠伪元素外扩", () => {
+    expect(rule(".study-resizer")).toMatch(/flex:\s*0 0 1px/);
+    expect(rule(".study-resizer::after")).toMatch(/left:\s*-4px/);
+    expect(rule(".study-resizer::after")).toMatch(/right:\s*-4px/);
+  });
+
+  it("agent 顶部与 PDF 顶栏同色(bg0),不是面板灰", () => {
+    expect(rule(".agent-panel")).toMatch(/background:\s*var\(--bg0\)/);
+    expect(rule(".agent-header")).toMatch(/background:\s*var\(--bg0\)/);
+  });
 });
