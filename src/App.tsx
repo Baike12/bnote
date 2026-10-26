@@ -42,6 +42,7 @@ import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { LinkSuggest } from "@/components/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
 import { QuickAddModal } from "@/components/QuickAddModal";
+import { QuickTodoModal } from "@/components/QuickTodoModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
 import { fileName } from "@/lib/path";
@@ -299,6 +300,7 @@ export default function App() {
       <QuickSwitcher />
       <CommandPalette />
       <QuickAddModal />
+      <QuickTodoModal />
       <SettingsModal />
       {drawingSession && (
         <Suspense fallback={null}>

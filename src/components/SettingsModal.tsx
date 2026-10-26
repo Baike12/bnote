@@ -805,9 +805,15 @@ function ImeTab() {
       <SettingsCard title="输入法跟随 Vim 模式">
         <Toggle
           label="启用"
-          desc="进入 insert 切到中文输入法，回到 normal/visual 切到英文；打开快速切换器时也切到英文，关闭后还原（仅 macOS；需开启 Vim 模式）"
+          desc="总开关:跟随 Vim 模式切换(insert 中文 / normal 英文)以及学习助手、批注输入框聚焦切中文都由它控制；打开快速切换器时也切到英文，关闭后还原（仅 macOS）"
           checked={ime.enabled}
           onChange={(v) => patchIme({ enabled: v })}
+        />
+        <Toggle
+          label="中文输入框聚焦切中文"
+          desc="聚焦学习助手输入框、PDF 批注框等只写中文的输入框时自动切到上面的 insert 输入法；关闭后保持当前输入法"
+          checked={ime.chineseFields}
+          onChange={(v) => patchIme({ chineseFields: v })}
         />
         {renderPicker("insertSource", "insert 模式输入法", "写中文笔记用的输入法")}
         {renderPicker("normalSource", "normal / visual 模式输入法", "一般选英文键盘（ABC）")}
@@ -969,6 +975,22 @@ function AgentTab() {
               value={cfg.model}
               placeholder="claude-sonnet-4-5 / deepseek-chat / gpt-4o…"
               onChange={(e) => update({ model: e.target.value })}
+            />
+          }
+        />
+        <Row
+          label="上下文窗口"
+          desc="模型的最大上下文(tokens),用于学习助手输入框下方显示占用率;按实际模型填写,如 128000、200000、420000"
+          control={
+            <input
+              className="settings-input mono"
+              type="number"
+              min={1024}
+              step={1024}
+              value={cfg.context_window}
+              onChange={(e) =>
+                update({ context_window: Math.max(0, Number(e.target.value) || 0) })
+              }
             />
           }
         />

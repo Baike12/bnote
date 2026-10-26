@@ -1775,6 +1775,39 @@ button {
   border-top: 1px solid var(--border);
 }
 
+/* 快速待办:标题行 + 输入框(复用 switcher 骨架)+ 操作行。 */
+.quick-todo-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 16px 0;
+}
+.quick-todo-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.quick-todo-hint {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.quick-todo .switcher-input {
+  padding: 10px 16px 12px;
+  font-size: 14px;
+}
+.quick-todo-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px 8px 16px;
+}
+.quick-todo-kbd {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
 input[type="range"] {
   accent-color: var(--accent);
   width: 160px;
@@ -1840,9 +1873,9 @@ input[type="range"] {
   /* 两栏宽度由 StudyLayout 写入:--content-src 是用户偏好(像素),--content-w
      再按当前窗口夹一次。左栏是固定像素,右栏吃剩余宽度——拖窗口边缘只会改
      左栏,PDF 页面尺寸和纵向可见内容都不会跟着窗口抖。窗口窄到右栏放不下
-     260px 时,CSS 压缩左栏,只压显示,不回写偏好。8px = 分隔条命中区。 */
+     260px 时,CSS 压缩左栏,只压显示,不回写偏好。1px = 分栏线本身。 */
   --content-src: 620px;
-  --content-w: clamp(260px, var(--content-src), calc(100% - 8px - 260px));
+  --content-w: clamp(260px, var(--content-src), calc(100% - 1px - 260px));
   /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。侧栏在时它压在侧栏
      自己的 36px 预留带上,侧栏不在时压在中栏工具栏上——那里要让开。
      与 .titlebar 的 paddingLeft 是同一套判断,只是这里由 DOM 推出来。 */
@@ -1912,12 +1945,14 @@ input[type="range"] {
   font-weight: 600;
 }
 
-/* 拖动条:视觉上一条 1px 分栏线,命中区 8px(col-resize 手感)。线画在条自身
+/* 拖动条:视觉上一条 1px 分栏线,命中区 9px(col-resize 手感)。线画在条自身
    的左缘:拖动时列的边界就是指针的位置(见 StudyLayout.startDrag),线与边界
-   才是同一条——线画在条中央会与面板的 border-right 差出 4px,看起来是两条。 */
+   才是同一条。命中区用 ::after 向两侧各扩 4px——布局只占 1px,两栏之间因此
+   没有可见空隙,指针仍能稳稳抓住分栏线。 */
 .study-resizer {
-  flex: 0 0 8px;
+  flex: 0 0 1px;
   position: relative;
+  z-index: 1;
   cursor: col-resize;
   touch-action: none;
 }
@@ -1930,6 +1965,14 @@ input[type="range"] {
   width: 1px;
   background: var(--border);
   transition: width 0.12s ease, background 0.12s ease;
+}
+.study-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
 }
 .study-resizer:hover::before,
 .study-resizer.dragging::before {
@@ -1960,7 +2003,7 @@ input[type="range"] {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg1);
+  background: var(--bg0);
 }
 
 .agent-header {
@@ -1970,6 +2013,8 @@ input[type="range"] {
   padding: 8px 12px;
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
+  /* 与中栏 PDF 顶部工具栏同色:整条顶栏连成一片白,不再是灰色缺口。 */
+  background: var(--bg0);
 }
 
 /* 会话切换:多条会话(主 + 辅助)时是下拉,只有主会话时是一段说明文字。 */
@@ -2658,9 +2703,31 @@ input[type="range"] {
   cursor: pointer;
 }
 .agent-attach-remove:hover { background: var(--danger); color: var(--on-accent); }
-.agent-composer-hint {
+/* 输入区脚注:模型名 + 上下文占用(已用/上限 + 百分比 + ↑输入 ↓输出)。
+   信息靠右贴住发送键,模型名可截断,数字列不缩。 */
+.agent-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   color: var(--text-faint);
+}
+.agent-meta-model {
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+.agent-meta-ctx,
+.agent-meta-pct,
+.agent-meta-io {
+  flex-shrink: 0;
 }
 
 .agent-send {

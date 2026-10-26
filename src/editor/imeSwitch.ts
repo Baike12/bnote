@@ -115,6 +115,7 @@ export function imeApply(target: string): void {
  */
 export function imeOnChineseFocus(): void {
   const { settings } = useAppStore.getState();
+  if (!settings.ime.chineseFields) return;
   imeApply(settings.ime.insertSource);
 }
 

@@ -226,6 +226,25 @@ export function appendEntrySpec(
   return { change: { from: at, insert }, entry: { start, end: start + Math.max(0, lines - 1) } };
 }
 
+/**
+ * 在待办区最前方插入一条一级条目(快捷捕获用)。区域为空时与 appendEntrySpec
+ * 同形(头部之后、无头部时顶到文件头),保证写出的形状与引擎一致。
+ */
+export function prependEntrySpec(
+  doc: Text,
+  region: DailyRegion,
+  block: string[],
+): { change: DocChange; entry: DailyEntry } {
+  if (region.entries.length === 0) return appendEntrySpec(doc, region, block);
+  const text = block.join("\n");
+  const at = doc.line(region.entries[0].start).from;
+  const lines = text === "" ? 0 : text.split("\n").length;
+  return {
+    change: { from: at, insert: text + "\n" },
+    entry: { start: region.entries[0].start, end: region.entries[0].start + Math.max(0, lines - 1) },
+  };
+}
+
 /** 用新块整段替换一个条目。 */
 export function replaceEntrySpec(doc: Text, entry: DailyEntry, block: string[]): DocChange {
   return { from: doc.line(entry.start).from, to: doc.line(entry.end).to, insert: block.join("\n") };

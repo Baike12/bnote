@@ -83,11 +83,22 @@ pub enum AgentEvent {
     ToolStart { id: String, name: String, input: Value },
     /// A tool finished.
     ToolEnd { id: String, ok: bool, output: String },
+    /// 一次模型请求的 token 用量(上下文占用 = input + output)。Anthropic 在
+    /// message_start / message_delta 里给,OpenAI 兼容端点需要 stream_options
+    /// 才会在流末尾给 usage。前端只保留最新一条:它就是当前会话的上下文占用。
+    Usage { input: u64, output: u64 },
     /// A full turn (model response + tool runs) completed. `items` = 会话历史
     /// 此刻的条数(权威计数,前端分叉辅助会话时按它截断,免得各端猜测)。
     TurnEnd { reason: String, items: usize },
     /// The turn failed. `items` = 失败时已写入的历史条数。
     Error { message: String, items: usize },
+}
+
+/// Token usage of one model request.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
 }
 
 /// Provider-agnostic streaming callback.
@@ -99,6 +110,7 @@ pub struct TurnResult {
     pub text: String,
     pub tool_calls: Vec<Content>,
     pub stop_reason: String,
+    pub usage: Option<TokenUsage>,
 }
 
 #[cfg(test)]

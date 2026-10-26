@@ -82,6 +82,12 @@ const defs: CommandDef[] = [
     category: "工作区",
     run: () => void openTodayDailyNote(),
   },
+  {
+    id: "workspace.capture-todo",
+    title: "快速待办:添加到今日日记最前(⌘⇧K)",
+    category: "工作区",
+    run: () => useAppStore.getState().setModal("quicktodo"),
+  },
   { id: "workspace.new-note", title: "新建笔记", category: "工作区", run: () => void actions.newNote() },
   {
     id: "workspace.quick-add",

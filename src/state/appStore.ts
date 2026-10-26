@@ -14,8 +14,10 @@ import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config
 import { DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 
 export interface ImeSettings {
-  /** 跟随 vim 模式切换输入法（仅 macOS 生效） */
+  /** 输入法自动切换总开关（跟随 vim 模式 + 中文输入框聚焦；仅 macOS 生效） */
   enabled: boolean;
+  /** 学习助手 / PDF 批注等中文输入框聚焦时自动切到 insert 输入法 */
+  chineseFields: boolean;
   /** insert 模式使用的输入法源 id */
   insertSource: string;
   /** normal / visual 模式使用的输入法源 id */
@@ -87,6 +89,7 @@ export const DEFAULT_SETTINGS: Settings = {
   fontSize: 16,
   ime: {
     enabled: true,
+    chineseFields: true,
     insertSource: "com.sogou.inputmethod.sogou.pinyin",
     normalSource: "com.apple.keylayout.ABC",
     mathKeepsEnglish: true,
@@ -96,7 +99,7 @@ export const DEFAULT_SETTINGS: Settings = {
   quickAdd: [],
 };
 
-export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | null;
+export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | "quicktodo" | null;
 
 /**
  * 一次画布会话:画布是全屏浮层,期间命令快捷键只放行快速跳转/命令面板
