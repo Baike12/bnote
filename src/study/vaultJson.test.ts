@@ -64,6 +64,19 @@ describe("vault JSON 按文件存储", () => {
     expect(vaultDotPath("/vault/", "x.json")).toBe("/vault/.bnote/x.json");
   });
 
+  it("loadFile 区分「盘上没有」和「盘上是空文件」", async () => {
+    const io = makeIO({ "/vault/.bnote/empty.json": "" });
+    const store = makeStore(io);
+    await expect(store.loadFile("/vault", "missing")).resolves.toEqual({
+      data: emptyDoc(),
+      existed: false,
+    });
+    await expect(store.loadFile("/vault", "empty")).resolves.toEqual({
+      data: emptyDoc(),
+      existed: true,
+    });
+  });
+
   it("一份文件一个缓存:改 A 不碰 B,flush 各写各的", async () => {
     const io = makeIO({
       "/vault/.bnote/a.json": '{"version":1,"values":{"a":"1"}}',

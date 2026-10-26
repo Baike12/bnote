@@ -7,6 +7,7 @@ import {
   parsePdfAnnotationFile,
   pdfAnnotationPath,
   pdfAnnotationRelPath,
+  pdfAnnotationMaterialPath,
   rectsAnchor,
   sortNotes,
   stackNoteTops,
@@ -171,6 +172,12 @@ describe("PDF 批注存储", () => {
     // 越界片段被丢掉,不会逃出 .bnote。
     expect(pdfAnnotationRelPath("../../etc/passwd")).toBe(
       "pdf-annotations/etc/passwd.json",
+    );
+  });
+
+  it("材料目录下的批注落在 <vault>/.bnote/materials/<kind>/<dir>/annotations.json", () => {
+    expect(pdfAnnotationMaterialPath("/vault", "materials/pdfs/ji_qi_xue_xi")).toBe(
+      "/vault/.bnote/materials/pdfs/ji_qi_xue_xi/annotations.json",
     );
   });
 

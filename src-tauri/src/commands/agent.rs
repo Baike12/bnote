@@ -74,6 +74,9 @@ pub async fn agent_start_session(
     state: State<'_, AppState>,
     study: Option<StudyContent>,
     fork: Option<AgentForkSpec>,
+    // 恢复一条已保存的会话:前端从会话记录 jsonl 还原出的模型侧历史。
+    // 与 `fork` 互斥(恢复/分叉不会同时发生)。
+    history: Option<Vec<crate::agent::types::ChatItem>>,
 ) -> CmdResult<serde_json::Value> {
     let cfg = crate::agent::AgentConfig::load(&state.data_dir());
     if cfg.api_key.is_empty() {
@@ -95,9 +98,11 @@ pub async fn agent_start_session(
 
     // 分叉:从源会话复制历史前缀(条数以后端在结束事件里给的权威计数为准,
     // 多了截断,少了就用现有的)。源会话不存在是前端状态过期,如实报错。
-    let seed_items: Vec<crate::agent::types::ChatItem> = match &fork {
-        None => Vec::new(),
-        Some(spec) => {
+    // 恢复:前端把会话记录还原成 ChatItem,直接作为初始历史。
+    let seed_items: Vec<crate::agent::types::ChatItem> = match (history, &fork) {
+        (Some(items), _) => items,
+        (None, None) => Vec::new(),
+        (None, Some(spec)) => {
             let snapshot = {
                 let registry = state.sessions.lock().map_err(|e| e.to_string())?;
                 let src = registry

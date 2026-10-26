@@ -1,3 +1,4 @@
+import { api } from "@/lib/tauri";
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
@@ -178,29 +179,66 @@ export function mergeUrlAnnotations(
   return [...byId.values()].slice(0, 800);
 }
 
+const MATERIAL_PREFIX = "materials/";
+
+export function webAnnotationMaterialPath(vaultRoot: string, materialDir: string): string {
+  return vaultDotPath(vaultRoot, `${materialDir}/annotations.json`);
+}
+
 const store = createVaultJsonStore<WebAnnotationFile>({
-  pathFor: (vaultRoot, url) => webAnnotationPath(vaultRoot, url),
+  pathFor: (vaultRoot, key) =>
+    key.startsWith(MATERIAL_PREFIX)
+      ? webAnnotationMaterialPath(vaultRoot, key)
+      : webAnnotationPath(vaultRoot, key),
   empty: () => ({ version: 1, url: "", annotations: [] }),
   parse: parseWebAnnotationFile,
   serialize: (file) => JSON.stringify(file),
 });
 
+/** 旧位置(`.bnote/web-annotations/<域名-哈希>.json`)的批注。 */
+async function readLegacyAnnotations(
+  vaultRoot: string,
+  url: string,
+): Promise<WebAnnotation[] | null> {
+  try {
+    return parseWebAnnotations(await api.readFile(webAnnotationPath(vaultRoot, url)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 读一份网页/微信读书的批注。给了 `materialDir` 就落到材料的
+ * `annotations.json`;首次找不到文件时从旧位置迁移(读一次、写新路径)。
+ */
 export async function loadWebAnnotations(
   vaultRoot: string,
   url: string,
+  materialDir?: string | null,
 ): Promise<WebAnnotation[]> {
-  const file = await store.load(vaultRoot, url);
-  return file.annotations;
+  const key = materialDir && materialDir.startsWith(MATERIAL_PREFIX) ? materialDir : url;
+  const loaded = await store.loadFile(vaultRoot, key);
+  if (!materialDir || loaded.existed) return loaded.data.annotations;
+  const legacy = await readLegacyAnnotations(vaultRoot, url);
+  if (!legacy || legacy.length === 0) return loaded.data.annotations;
+  store.update(vaultRoot, key, (file) => ({
+    version: 1,
+    url: file.url || url,
+    annotations: legacy,
+  }));
+  return legacy;
 }
 
 export function saveWebAnnotations(
   vaultRoot: string,
   url: string,
   list: WebAnnotation[],
+  materialDir?: string | null,
 ): void {
-  store.update(vaultRoot, url, () => ({
+  const key = materialDir && materialDir.startsWith(MATERIAL_PREFIX) ? materialDir : url;
+  store.update(vaultRoot, key, (file) => ({
     version: 1,
-    url,
+    url: file.url || url,
     annotations: normalizeWebAnnotations(list),
   }));
 }

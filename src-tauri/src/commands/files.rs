@@ -62,6 +62,34 @@ pub async fn write_file(state: State<'_, AppState>, path: String, contents: Stri
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
+/// 追加写入(会话记录 jsonl):一次调用只追加一行,文件不存在则创建。
+/// 与 `write_file` 分开是因为整文件重写在流式对话里会覆盖已写轮次。
+#[tauri::command]
+pub async fn append_file(
+    state: State<'_, AppState>,
+    path: String,
+    contents: String,
+) -> CmdResult<()> {
+    use std::io::Write as _;
+    let root = require_vault(&state)?;
+    let full = std::path::PathBuf::from(&path);
+    ensure_within(&root, &full)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&full)
+            .map_err(|e| format!("WRITE_FAILED: {}", e))?;
+        file.write_all(contents.as_bytes())
+            .map_err(|e| format!("WRITE_FAILED: {}", e))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
 /// Binary writes via base64 (the drawing canvas exports its PNG preview through
 /// this — a text round-trip would corrupt the bytes).
 #[tauri::command]

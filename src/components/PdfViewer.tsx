@@ -54,6 +54,7 @@ import {
   type AnnotationHistory,
 } from "@/study/annotationHistory";
 import { vaultRelPath } from "@/lib/path";
+import { ensureMaterial } from "@/study/materials";
 import {
   PAGE_TOP_PAD,
   basePageWidth,
@@ -133,8 +134,10 @@ interface NotePlacement {
   /** 选区锚点(相对内容区),连线起点。 */
   anchorX: number;
   anchorY: number;
-  /** 卡片左缘(相对内容区),连线终点。 */
+  /** 卡片左缘(相对内容区);留白在右时是连线终点。 */
   boxX: number;
+  /** 卡片右缘(相对内容区);留白在左时是连线终点。 */
+  boxRight: number;
 }
 
 interface PdfViewerProps {
@@ -203,6 +206,12 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const notesRef = useRef<HTMLElement>(null);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const docKey = vaultRelPath(path, vaultPath ?? "");
+  /**
+   * 这份 PDF 的材料目录(`materials/pdfs/<拼音目录>`):批注和 agent 会话
+   * 记录都落在那里。解析完成前不读批注,避免先读到旧路径又被迁移覆盖。
+   */
+  const [materialDir, setMaterialDir] = useState<string | null>(null);
+  const [materialReady, setMaterialReady] = useState(false);
   /** 右侧留白从面板宽度里切出去;能放下一页最小宽度才留。 */
   const railWidth = notesRailWidth(panelWidth);
   const containerWidth = Math.max(0, scrollWidth - railWidth);
@@ -335,7 +344,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       setAnnotationsLoaded(true);
       return;
     }
-    void loadPdfAnnotations(vaultPath, docKey)
+    if (!materialReady) return;
+    void loadPdfAnnotations(vaultPath, docKey, materialDir)
       .then((list) => {
         if (annotationsEpoch.current !== epoch) return;
         annotationsRef.current = list;
@@ -347,7 +357,27 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       .finally(() => {
         if (annotationsEpoch.current === epoch) setAnnotationsLoaded(true);
       });
-  }, [vaultPath, docKey, history]);
+  }, [vaultPath, docKey, history, materialReady, materialDir]);
+
+  // 材料目录:换 PDF 就重新解析(后端按「仓库相对路径」登记,同一份永远同一个目录)。
+  useEffect(() => {
+    setMaterialDir(null);
+    setMaterialReady(false);
+    if (!vaultPath) {
+      setMaterialReady(true);
+      return;
+    }
+    let cancelled = false;
+    const title = path.split("/").pop()?.replace(/\.pdf$/i, "") ?? "";
+    void ensureMaterial(vaultPath, { kind: "pdf", path, title }).then((info) => {
+      if (cancelled) return;
+      setMaterialDir(info?.relDir ?? null);
+      setMaterialReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultPath, path]);
 
   // --- 阅读位置 -------------------------------------------------------------
   // 换文档先作废旧锚点,再读这份 PDF 上次停下的位置。异步读盘回来时比对
@@ -466,9 +496,9 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       annotationsEpoch.current += 1;
       annotationsRef.current = next;
       setAnnotations(next);
-      if (vaultPath) savePdfAnnotations(vaultPath, docKey, next);
+      if (vaultPath) savePdfAnnotations(vaultPath, docKey, next, materialDir);
     },
-    [vaultPath, docKey, history],
+    [vaultPath, docKey, history, materialDir],
   );
 
   const applyHistory = useCallback(
@@ -790,12 +820,14 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     }
     const tops = stackNoteTops(desired, heights, NOTE_BOX_GAP);
     const boxX = railRect.left - stageRect.left + NOTE_BOX_INSET;
+    const boxRight = boxX + Math.max(0, railRect.width - NOTE_BOX_INSET * 2);
     const next = anchors.map((p, i) => ({
       id: p.id,
       anchorX: p.x,
       anchorY: p.y,
       top: tops[i],
       boxX,
+      boxRight,
     }));
     setNotePlacements((prev) => (samePlacements(prev, next) ? prev : next));
   }, []);
@@ -1320,6 +1352,36 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         <div className="pdf-scroll-wrap">
           <div className="pdf-scroll" ref={scrollRef}>
             <div className="pdf-stage" ref={stageRef}>
+              {/* 批注留白在页面左侧(贴着书签栏),阅读区仍贴右边。 */}
+              {railWidth > 0 && (
+                <aside
+                  className="pdf-notes"
+                  ref={notesRef}
+                  style={{ width: railWidth }}
+                  aria-label="文字批注"
+                >
+                  {tool === "note" && noteList.length === 0 && (
+                    <p className="pdf-notes-hint">拖选文字后，批注写在这里</p>
+                  )}
+                  {noteList.map((annotation) => {
+                    const placement = placementById.get(annotation.id);
+                    return (
+                      <NoteBox
+                        key={annotation.id}
+                        annotation={annotation}
+                        top={placement?.top ?? 4}
+                        placed={placement !== undefined}
+                        focusToken={
+                          focusNote?.id === annotation.id ? focusNote.nonce : 0
+                        }
+                        register={registerNote}
+                        onChange={updateNoteText}
+                        onRemove={removeAnnotation}
+                      />
+                    );
+                  })}
+                </aside>
+              )}
               <div className="pdf-page-area">
                 {loading && <div className="pdf-status">正在打开 PDF…</div>}
                 {error && (
@@ -1352,35 +1414,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
                   </div>
                 )}
               </div>
-              {railWidth > 0 && (
-                <aside
-                  className="pdf-notes"
-                  ref={notesRef}
-                  style={{ width: railWidth }}
-                  aria-label="文字批注"
-                >
-                  {tool === "note" && noteList.length === 0 && (
-                    <p className="pdf-notes-hint">拖选文字后，批注写在这里</p>
-                  )}
-                  {noteList.map((annotation) => {
-                    const placement = placementById.get(annotation.id);
-                    return (
-                      <NoteBox
-                        key={annotation.id}
-                        annotation={annotation}
-                        top={placement?.top ?? 4}
-                        placed={placement !== undefined}
-                        focusToken={
-                          focusNote?.id === annotation.id ? focusNote.nonce : 0
-                        }
-                        register={registerNote}
-                        onChange={updateNoteText}
-                        onRemove={removeAnnotation}
-                      />
-                    );
-                  })}
-                </aside>
-              )}
               {notePlacements.length > 0 && (
                 <svg className="pdf-note-lines" aria-hidden>
                   {notePlacements.map((placement) => (
@@ -1398,7 +1431,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
             </div>
           </div>
           {/* 翻页后的阅读分区：上方旧内容压暗，下方新内容顶部用一条圆角线
-              标出。线横贯整个 PDF 组件（含右侧批注栏）。
+              标出。线横贯整个 PDF 组件（含左侧批注栏）。
               整层不接鼠标事件，选中/批注/链接照常。 */}
           <div className="pdf-read-guide" aria-hidden>
             <div className="pdf-read-shade" />
@@ -1960,16 +1993,22 @@ function NoteBox({
   );
 }
 
-/** 锚点到卡片抬头的一条柔和曲线:先竖直离开选区底边,再横向进留白。 */
+/**
+ * 锚点到卡片抬头的一条柔和曲线:先竖直离开选区底边,再横向进留白。
+ * 留白在左(当前布局)时从卡片右缘接入,曲线整体向左收。
+ */
 function noteConnectorPath(placement: NotePlacement): string {
-  const { anchorX, anchorY, boxX, top } = placement;
+  const { anchorX, anchorY, boxX, boxRight, top } = placement;
   const endY = top + NOTE_HEAD_OFFSET;
-  const dx = Math.max(16, boxX - anchorX);
-  // 起点切线朝下:线从文字底部「落」出来,而不是贴着同一行的字往右跑。
-  const c1x = anchorX + Math.min(18, dx * 0.2);
+  const toLeft = boxRight <= anchorX;
+  const endX = toLeft ? boxRight : boxX;
+  const dx = Math.max(16, Math.abs(anchorX - endX));
+  const dir = toLeft ? -1 : 1;
+  // 起点切线朝下:线从文字底部「落」出来,而不是贴着同一行的字横跑。
+  const c1x = anchorX + dir * Math.min(18, dx * 0.2);
   const c1y = anchorY + 10;
-  const c2x = boxX - dx * 0.45;
-  return `M ${anchorX} ${anchorY} C ${c1x} ${c1y}, ${c2x} ${endY}, ${boxX} ${endY}`;
+  const c2x = endX - dir * dx * 0.45;
+  return `M ${anchorX} ${anchorY} C ${c1x} ${c1y}, ${c2x} ${endY}, ${endX} ${endY}`;
 }
 
 function samePlacements(a: NotePlacement[], b: NotePlacement[]): boolean {
@@ -1981,7 +2020,8 @@ function samePlacements(a: NotePlacement[], b: NotePlacement[]): boolean {
       Math.abs(p.top - q.top) < 0.5 &&
       Math.abs(p.anchorX - q.anchorX) < 0.5 &&
       Math.abs(p.anchorY - q.anchorY) < 0.5 &&
-      Math.abs(p.boxX - q.boxX) < 0.5
+      Math.abs(p.boxX - q.boxX) < 0.5 &&
+      Math.abs(p.boxRight - q.boxRight) < 0.5
     );
   });
 }

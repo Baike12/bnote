@@ -13,9 +13,17 @@ export interface JsonIO {
   write(path: string, text: string): Promise<void>;
 }
 
+export interface VaultJsonLoad<T> {
+  data: T;
+  /** 盘上是否真的有这个文件(空文件也算有)。用于「新路径没有就迁旧路径」。 */
+  existed: boolean;
+}
+
 export interface VaultJsonFileStore<T> {
   /** 读进缓存并返回该文件的内容;不存在/坏文件返回 empty。 */
   load(vaultRoot: string, key: string): Promise<T>;
+  /** 同 `load`,另外告诉调用方盘上有没有这个文件。 */
+  loadFile(vaultRoot: string, key: string): Promise<VaultJsonLoad<T>>;
   /** 已加载的缓存;尚未加载返回 null。 */
   peek(vaultRoot: string, key: string): T | null;
   /** 改缓存并排程写盘;尚未加载时先读盘再改,顺序由队列保证。 */
@@ -49,6 +57,8 @@ interface Entry<T> {
   key: string;
   path: string;
   data: T;
+  /** 盘上原本有这个文件(读盘成功),不是「读不到当空数据」。 */
+  existed: boolean;
   dirty: boolean;
   timer: ReturnType<typeof setTimeout> | null;
 }
@@ -59,7 +69,7 @@ export function createVaultJsonStore<T>(opts: Options<T>): VaultJsonFileStore<T>
   /** 每个文件一份缓存。 */
   const entries = new Map<string, Entry<T>>();
   /** 每个文件最多一轮读盘在途,多个 load 共享同一个 promise。 */
-  const loads = new Map<string, Promise<T>>();
+  const loads = new Map<string, Promise<VaultJsonLoad<T>>>();
   /** 每个文件的 read→mutate 串行队列。 */
   const queues = new Map<string, Promise<void>>();
 
@@ -69,7 +79,7 @@ export function createVaultJsonStore<T>(opts: Options<T>): VaultJsonFileStore<T>
     console.warn(`[annotations] ${action} failed`, error);
   }
 
-  async function read(vault: string, key: string): Promise<T> {
+  async function read(vault: string, key: string): Promise<VaultJsonLoad<T>> {
     const id = idOf(vault, key);
     let raw: string | null = null;
     try {
@@ -79,23 +89,28 @@ export function createVaultJsonStore<T>(opts: Options<T>): VaultJsonFileStore<T>
     }
     // 读盘期间本地已经建过这份缓存(可能已经编辑):保留本地这份,不能被旧盘面覆盖。
     const existing = entries.get(id);
-    if (existing) return existing.data;
+    if (existing) return { data: existing.data, existed: existing.existed };
     const entry: Entry<T> = {
       vault,
       key,
       path: opts.pathFor(vault, key),
       data: opts.parse(raw),
+      existed: raw !== null,
       dirty: false,
       timer: null,
     };
     entries.set(id, entry);
-    return entry.data;
+    return { data: entry.data, existed: entry.existed };
   }
 
   function load(vault: string, key: string): Promise<T> {
+    return loadFile(vault, key).then((loaded) => loaded.data);
+  }
+
+  function loadFile(vault: string, key: string): Promise<VaultJsonLoad<T>> {
     const id = idOf(vault, key);
     const entry = entries.get(id);
-    if (entry) return Promise.resolve(entry.data);
+    if (entry) return Promise.resolve({ data: entry.data, existed: entry.existed });
     const pending = loads.get(id);
     if (pending) return pending;
     const promise = read(vault, key).finally(() => {
@@ -148,6 +163,7 @@ export function createVaultJsonStore<T>(opts: Options<T>): VaultJsonFileStore<T>
             key,
             path: opts.pathFor(vault, key),
             data: opts.empty(),
+            existed: false,
             dirty: false,
             timer: null,
           };
@@ -186,6 +202,7 @@ export function createVaultJsonStore<T>(opts: Options<T>): VaultJsonFileStore<T>
 
   return {
     load,
+    loadFile,
     peek: (vault, key) => entries.get(idOf(vault, key))?.data ?? null,
     update,
     flush,

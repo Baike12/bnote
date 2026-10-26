@@ -185,15 +185,51 @@ export interface PreviewBounds {
   height: number;
 }
 
+/** 一份学习材料的私有目录(`<vault>/.bnote/materials/...`)。 */
+export interface MaterialInfo {
+  kind: "pdfs" | "webpages" | "wxreads";
+  dir: string;
+  relDir: string;
+  title: string;
+}
+
+/** 一份已保存的会话(文件元信息;正文按需读)。 */
+export interface SavedSessionMeta {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  bytes: number;
+}
+
+/** 模型侧历史条目,恢复会话时回传给后端(`agent_start_session.history`)。 */
+export interface AgentChatItem {
+  type: "message";
+  role: "user" | "assistant";
+  content: AgentContentBlock[];
+}
+
+export type AgentContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; media_type: string; data: string }
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean };
+
 export const agentApi = {
   getConfig: () => invoke<AgentConfig>("agent_get_config"),
   saveConfig: (config: AgentConfig) => invoke<void>("agent_save_config", { config }),
-  startSession: (study: StudyContent | null, fork?: AgentForkSpec) =>
-    invoke<SessionInfo>("agent_start_session", { study, fork }),
+  startSession: (study: StudyContent | null, fork?: AgentForkSpec, history?: AgentChatItem[]) =>
+    invoke<SessionInfo>("agent_start_session", { study, fork, history }),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
   history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
+  /** 解析/创建一份材料的落盘目录(批注 + 会话记录)。 */
+  materialEnsure: (study: StudyContent) =>
+    invoke<MaterialInfo>("study_material_ensure", { study }),
+  /** 某材料下保存过的会话(新的在前)。 */
+  sessionsList: (relDir: string) =>
+    invoke<SavedSessionMeta[]>("study_sessions_list", { relDir }),
   setCurrentNote: (path: string | null) =>
     invoke<void>("agent_set_current_note", { path }),
   /** 把 PDF 收进 vault(`<vault>/<folderRel>/<stem>.pdf`),同名不同文件自动加序号。 */
@@ -246,6 +282,9 @@ export const api = {
   readFileBase64: (path: string) => invoke<string>("read_file_base64", { path }),
   writeFile: (path: string, contents: string) =>
     invoke<void>("write_file", { path, contents }),
+  /** 追加写入(会话记录):不清空已有内容,文件不存在则创建。 */
+  appendFile: (path: string, contents: string) =>
+    invoke<void>("append_file", { path, contents }),
   /** 二进制写盘(画布导出的 PNG 预览);base64 编码走 JSON,UTF-8 文本请用 writeFile。 */
   writeFileBase64: (path: string, contentsBase64: string) =>
     invoke<void>("write_file_base64", { path, contentsBase64 }),

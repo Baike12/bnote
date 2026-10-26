@@ -1,3 +1,4 @@
+import { api } from "@/lib/tauri";
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 
 /**
@@ -7,7 +8,9 @@ import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
  * 位置;页面重排(渲染宽度变了)时只需按当前页面像素重算样式。裁剪窗口
  * 只是把同一份整页坐标平移/裁掉,批注跟着页面走。
  *
- * 存盘按 PDF 一一对应:`<vault>/.bnote/pdf-annotations/<PDF 相对路径>.json`。
+ * 存盘按材料一一对应:`<vault>/.bnote/materials/pdfs/<目录>/annotations.json`
+ * (材料目录见 study/materials.ts,与 agent 会话记录同目录)。旧位置
+ * `.bnote/pdf-annotations/<PDF 相对路径>.json` 会在首次读取时迁移过来。
  * 一份 PDF 一个文件,打开哪份只读哪份,不会因为批注了很多 PDF 而让读写量
  * 随库增长。
  */
@@ -359,26 +362,69 @@ function fnv1a(text: string): string {
   return hash.toString(36);
 }
 
+/**
+ * 材料目录(pdfAnnotations 在 `<vault>/.bnote/<materialDir>/annotations.json`)。
+ * 传了 materialDir 就用新位置,没传(浏览器/harness)保持旧的按路径镜像。
+ */
+const MATERIAL_PREFIX = "materials/";
+
+export function pdfAnnotationMaterialPath(vaultRoot: string, materialDir: string): string {
+  return vaultDotPath(vaultRoot, `${materialDir}/annotations.json`);
+}
+
+function isMaterialDir(key: string): boolean {
+  return key.startsWith(MATERIAL_PREFIX);
+}
+
 const store = createVaultJsonStore<PdfAnnotation[]>({
-  pathFor: (vaultRoot, docKey) => pdfAnnotationPath(vaultRoot, docKey),
+  pathFor: (vaultRoot, key) =>
+    isMaterialDir(key)
+      ? pdfAnnotationMaterialPath(vaultRoot, key)
+      : pdfAnnotationPath(vaultRoot, key),
   empty: () => [],
   parse: parsePdfAnnotations,
   serialize: (list) => JSON.stringify({ version: 1, annotations: list } satisfies PdfAnnotationFile),
 });
 
+/** 旧位置(`.bnote/pdf-annotations/<pdf 相对路径>.json`)的批注。 */
+async function readLegacyAnnotations(
+  vaultRoot: string,
+  docKey: string,
+): Promise<PdfAnnotation[] | null> {
+  try {
+    const raw = await api.readFile(pdfAnnotationPath(vaultRoot, docKey));
+    return parsePdfAnnotations(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 读一份 PDF 的批注。首次在新位置找不到文件时把旧位置的批注迁过来
+ * (读一次、写新路径;旧文件保留不动),用户已有的批注不会因为换目录消失。
+ */
 export async function loadPdfAnnotations(
   vaultRoot: string,
   docKey: string,
+  materialDir?: string | null,
 ): Promise<PdfAnnotation[]> {
-  return store.load(vaultRoot, docKey);
+  const key = materialDir && isMaterialDir(materialDir) ? materialDir : docKey;
+  const loaded = await store.loadFile(vaultRoot, key);
+  if (!materialDir || loaded.existed) return loaded.data;
+  const legacy = await readLegacyAnnotations(vaultRoot, docKey);
+  if (!legacy || legacy.length === 0) return loaded.data;
+  store.update(vaultRoot, key, () => legacy);
+  return legacy;
 }
 
 export function savePdfAnnotations(
   vaultRoot: string,
   docKey: string,
   list: PdfAnnotation[],
+  materialDir?: string | null,
 ): void {
-  store.update(vaultRoot, docKey, () => list);
+  const key = materialDir && isMaterialDir(materialDir) ? materialDir : docKey;
+  store.update(vaultRoot, key, () => list);
 }
 
 export function flushPdfAnnotations(): void {

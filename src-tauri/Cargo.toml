@@ -38,6 +38,8 @@ bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "net"] }
 futures = "0.3"
 scraper = "0.20"
+# 中文材料目录名(转拼音,词级多音字):pinyin-pro 的 Rust 移植。
+pinyin_pro = "3.29.4"
 ego-tree = "0.6"
 
 # 学习模式网页的笔形光标(commands/pen_cursor.rs):浏览器里 CSS 图片光标在

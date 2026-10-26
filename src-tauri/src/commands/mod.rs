@@ -2,6 +2,7 @@ pub mod agent;
 pub mod config;
 pub mod files;
 pub mod ime;
+pub mod materials;
 pub mod pen_cursor;
 pub mod python;
 pub mod vault;
