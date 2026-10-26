@@ -54,6 +54,10 @@ struct RegistryEntry {
     dir: String,
     #[serde(default)]
     title: String,
+    /// 材料目录里那份 PDF 的文件名(空 = 这份材料指向仓库里别处的 PDF,
+    /// 例如迁移前收在 `<vault>/pdfs/` 的旧文件)。
+    #[serde(default)]
+    file: String,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
@@ -198,6 +202,195 @@ fn unique_dir(registry: &Registry, kind: &str, key: &str, base: &str) -> String 
     format!("{}-{}", base, std::process::id())
 }
 
+/// 导入后的 PDF 位置(学习阅读器与 agent 都用这份副本)。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedPdf {
+    pub pdf_path: String,
+    /// 仓库相对路径(展示用;历史记录也只存这个)。
+    pub rel_path: String,
+    pub title: String,
+}
+
+/// 文件名里只去掉路径分隔符等无法落盘的东西;中文/空格保留(目录名才转拼音)。
+fn safe_file_name(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| if c == '/' || c == '\\' || c == '\0' { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().trim_start_matches('.').to_string();
+    if trimmed.is_empty() {
+        "paper.pdf".to_string()
+    } else if trimmed.chars().count() > 120 {
+        trimmed.chars().take(120).collect()
+    } else {
+        trimmed
+    }
+}
+
+fn import_pdf_sync(
+    vault: &Path,
+    source: &Path,
+    title_hint: Option<&str>,
+) -> Result<ImportedPdf, String> {
+    let _guard = MATERIAL_LOCK.lock().map_err(|e| e.to_string())?;
+    if !source.is_file() {
+        return Err(format!("PDF_NOT_FOUND: {}", source.display()));
+    }
+    let is_pdf = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+    if !is_pdf {
+        return Err(format!("NOT_A_PDF: {}", source.display()));
+    }
+    let canonical = source
+        .canonicalize()
+        .map_err(|e| format!("PDF_NOT_FOUND: {}", e))?;
+    let pdfs_root = vault.join(".bnote").join(MATERIALS_DIR).join(KIND_PDF);
+    let registry_path = vault.join(".bnote").join(MATERIALS_DIR).join(REGISTRY_FILE);
+
+    let fallback_title = canonical
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let title = title_hint
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(fallback_title);
+    let file_name = safe_file_name(
+        &canonical
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "paper.pdf".into()),
+    );
+
+    // 已经躺在材料目录里(拖进来 / 从历史打开):就地使用,不复制。
+    if let Ok(rel) = canonical.strip_prefix(&pdfs_root) {
+        let parts: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        if parts.len() >= 2 {
+            let dir = parts[0].clone();
+            let mut registry = Registry::load(&registry_path);
+            let key = format!("pdf:.bnote/{}/{}/{}", MATERIALS_DIR, KIND_PDF, parts.join("/"));
+            let entry = registry.materials.get(&key).cloned();
+            if entry.is_none() {
+                registry.materials.insert(
+                    key,
+                    RegistryEntry {
+                        kind: KIND_PDF.to_string(),
+                        dir: dir.clone(),
+                        title: title.clone(),
+                        file: parts[parts.len() - 1].clone(),
+                    },
+                );
+                registry.save(&registry_path)?;
+            }
+            let rel_path = format!(
+                ".bnote/{}/{}/{}",
+                MATERIALS_DIR,
+                KIND_PDF,
+                parts.join("/")
+            );
+            return Ok(ImportedPdf {
+                pdf_path: canonical.to_string_lossy().to_string(),
+                rel_path,
+                title,
+            });
+        }
+    }
+
+    let mut registry = Registry::load(&registry_path);
+
+    // 同一个标题、同样大小的文件已经导入过:打开已有副本(重复拖同一份不产副本)。
+    let existing = registry
+        .materials
+        .iter()
+        .find(|(_, e)| e.kind == KIND_PDF && e.title == title && !e.file.is_empty())
+        .map(|(_, e)| (e.dir.clone(), e.file.clone()));
+    if let Some((dir, file)) = existing {
+        let dest = pdfs_root.join(&dir).join(&file);
+        let same_size = std::fs::metadata(&dest)
+            .ok()
+            .zip(std::fs::metadata(&canonical).ok())
+            .map(|(a, b)| a.len() == b.len())
+            .unwrap_or(false);
+        if same_size {
+            let rel_path = format!(".bnote/{}/{}/{}/{}", MATERIALS_DIR, KIND_PDF, dir, file);
+            return Ok(ImportedPdf {
+                pdf_path: dest.to_string_lossy().to_string(),
+                rel_path,
+                title,
+            });
+        }
+    }
+
+    // 新导入:目录名 = 标题的拼音(同名被占则 -2、-3;不覆盖别人的材料)。
+    let base = pinyin_slug(&title);
+    let mut candidate = base.clone();
+    let mut n = 2;
+    loop {
+        let taken = registry
+            .materials
+            .values()
+            .any(|e| e.kind == KIND_PDF && e.dir == candidate);
+        if !taken && !pdfs_root.join(&candidate).join(&file_name).exists() {
+            break;
+        }
+        candidate = format!("{}-{}", base, n);
+        n += 1;
+    }
+    let dir = pdfs_root.join(&candidate);
+    let dest = dir.join(&file_name);
+    // 目标还不存在:词法归一的越界检查(存在后再 canonicalize 会被
+    // /var → /private/var 这类符号链接坑到,和未解析的 vault 前缀对不上)。
+    ensure_within(vault, &dest)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("MKDIR_FAILED: {}", e))?;
+    std::fs::copy(&canonical, &dest).map_err(|e| format!("COPY_FAILED: {}", e))?;
+
+    // 与 identity() 同形(仓库相对路径):下次打开这份副本时 ensure 能命中同一目录。
+    let key = format!(
+        "pdf:.bnote/{}/{}/{}/{}",
+        MATERIALS_DIR, KIND_PDF, candidate, file_name
+    );
+    registry.materials.insert(
+        key,
+        RegistryEntry {
+            kind: KIND_PDF.to_string(),
+            dir: candidate.clone(),
+            title: title.clone(),
+            file: file_name.clone(),
+        },
+    );
+    registry.save(&registry_path)?;
+
+    Ok(ImportedPdf {
+        pdf_path: dest.to_string_lossy().to_string(),
+        rel_path: format!(".bnote/{}/{}/{}/{}", MATERIALS_DIR, KIND_PDF, candidate, file_name),
+        title,
+    })
+}
+
+/// 把一份 PDF 收进材料目录(`.bnote/materials/pdfs/<拼音目录>/<原文件名>`)。
+/// 材料目录与会话/批注同处一地,关掉应用后仍然在。
+#[tauri::command]
+pub async fn study_import_pdf(
+    state: State<'_, AppState>,
+    pdf_path: String,
+    title: Option<String>,
+) -> CmdResult<ImportedPdf> {
+    let vault = require_vault(&state)?;
+    let source = PathBuf::from(&pdf_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        import_pdf_sync(&vault, &source, title.as_deref())
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
 /// 并发保护:同一时刻只有一个材料在「查/改/写 registry + 建目录」。
 static MATERIAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -237,7 +430,7 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
             };
             let base = desired_slug(study);
             let dir = unique_dir(&registry, kind, &key, &base);
-            let entry = RegistryEntry { kind: kind.to_string(), dir, title };
+            let entry = RegistryEntry { kind: kind.to_string(), dir, title, file: String::new() };
             registry.materials.insert(key.clone(), entry.clone());
             registry.save(&registry_path)?;
             entry
@@ -432,13 +625,70 @@ mod tests {
         let mut r = Registry { version: 1, materials: BTreeMap::new() };
         r.materials.insert(
             "pdf:a.pdf".into(),
-            RegistryEntry { kind: "pdfs".into(), dir: "lun_wen".into(), title: String::new() },
+            RegistryEntry {
+                kind: "pdfs".into(),
+                dir: "lun_wen".into(),
+                title: String::new(),
+                file: String::new(),
+            },
         );
         assert_eq!(unique_dir(&r, "pdfs", "pdf:b.pdf", "lun_wen"), "lun_wen-2");
         // 不同 kind 各自独立,不算冲突。
         assert_eq!(unique_dir(&r, "webpages", "url:x", "lun_wen"), "lun_wen");
         // 自己复用自己。
         assert_eq!(unique_dir(&r, "pdfs", "pdf:a.pdf", "lun_wen"), "lun_wen");
+    }
+
+    #[test]
+    fn 导入pdf落在材料目录_同标题复用_已在材料目录就地返回() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("bnote-material-import-{}", stamp));
+        let vault = root.join("vault");
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let src = src_dir.join("LLM-TAP-v2.pdf");
+        std::fs::write(&src, b"%PDF-1.4 test").unwrap();
+        let a = import_pdf_sync(&vault, &src, None).unwrap();
+        assert_eq!(
+            a.rel_path,
+            ".bnote/materials/pdfs/llm_tap_v2/LLM-TAP-v2.pdf"
+        );
+        assert!(Path::new(&a.pdf_path).is_file());
+
+        // 同一份再导一次:打开已有副本,不产生 -2。
+        let b = import_pdf_sync(&vault, &src, None).unwrap();
+        assert_eq!(a.pdf_path, b.pdf_path);
+
+        // 中文标题走拼音目录。
+        let src2 = src_dir.join("论文.pdf");
+        std::fs::write(&src2, b"%PDF-1.4 other").unwrap();
+        let c = import_pdf_sync(&vault, &src2, Some("论 文")).unwrap();
+        assert!(c.rel_path.starts_with(".bnote/materials/pdfs/lun_wen/"));
+
+        // 已经在材料目录里的 PDF:就地返回,不再复制。
+        let d = import_pdf_sync(&vault, Path::new(&a.pdf_path), None).unwrap();
+        assert_eq!(d.pdf_path, a.pdf_path);
+
+        // 注册表键与 identity() 同形:ensureMaterial(打开副本)命中同一目录。
+        let reg = Registry::load(&vault.join(".bnote/materials/index.json"));
+        let key = "pdf:.bnote/materials/pdfs/llm_tap_v2/LLM-TAP-v2.pdf";
+        let entry = reg.materials.get(key).expect("registry 应记录导入的 PDF");
+        assert_eq!(entry.dir, "llm_tap_v2");
+        assert_eq!(entry.file, "LLM-TAP-v2.pdf");
+        // 用 ensure 的同一套身份规则再解析一次,目录不变。
+        let study = StudyContent::Pdf {
+            path: a.pdf_path.clone(),
+            title: a.title.clone(),
+        };
+        let info = ensure_material_sync(&vault, &study).unwrap();
+        assert_eq!(info.dir, "llm_tap_v2");
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

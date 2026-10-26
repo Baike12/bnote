@@ -329,14 +329,14 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             app.state(),
             arg_opt_str(args, "path")
         )),
-        "import_pdf" => json_ok!(
-            agent::import_pdf(
-                app.state(),
-                arg_str(args, "pdfPath")?,
-                arg_str(args, "folderRel")?
-            )
-            .await
-        ),
+        "study_import_pdf" => {
+            let title = match args.get("title") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(_) => return Err("BAD_ARGS: title".into()),
+            };
+            json_ok!(materials::study_import_pdf(app.state(), arg_str(args, "pdfPath")?, title).await)
+        }
 
         // ---- python:嵌入代码块运行 / LSP / uv ----
         "python_run" => json_ok!(
