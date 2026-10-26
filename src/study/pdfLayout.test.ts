@@ -32,9 +32,9 @@ describe("书签栏宽度", () => {
 });
 
 describe("右侧批注留白宽度", () => {
-  it("常用面板宽度占三成,夹在 [170, 340]", () => {
-    expect(notesRailWidth(620)).toBe(186);
-    expect(notesRailWidth(1000)).toBe(300);
+  it("常用面板宽度占两成,夹在 [170, 230]", () => {
+    expect(notesRailWidth(620)).toBe(170);
+    expect(notesRailWidth(1000)).toBe(200);
     expect(notesRailWidth(1600)).toBe(MAX_NOTES_RAIL);
     expect(notesRailWidth(410)).toBe(150); // 给页面留出 MIN_PAGE_AREA
     expect(notesRailWidth(560)).toBe(MIN_NOTES_RAIL);

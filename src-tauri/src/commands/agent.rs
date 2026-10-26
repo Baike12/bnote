@@ -17,6 +17,24 @@ fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
     state.mcp_manager.lock().ok().and_then(|g| g.clone())
 }
 
+/// 辅助会话的分叉点:从 `from` 会话的历史里取前 `items` 条(前缀,含分叉
+/// 那条消息)作为新会话的初始历史。原会话不动。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentForkSpec {
+    pub from: String,
+    pub items: usize,
+}
+
+/// vault 里的自定义指令(`.bnote/agent.md`,类比 AGENTS.md / CLAUDE.md);
+/// 文件不存在 = 空串,提示词里就不出现这一节。
+fn load_user_instructions(state: &AppState) -> String {
+    state
+        .vault()
+        .and_then(|v| std::fs::read_to_string(v.join(".bnote").join("agent.md")).ok())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub async fn agent_get_config(state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
     // 与 config.rs 同理：同步命令跑在主线程，IO 一律丢进 worker 池。
@@ -55,6 +73,7 @@ pub async fn agent_start_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     study: Option<StudyContent>,
+    fork: Option<AgentForkSpec>,
 ) -> CmdResult<serde_json::Value> {
     let cfg = crate::agent::AgentConfig::load(&state.data_dir());
     if cfg.api_key.is_empty() {
@@ -74,19 +93,24 @@ pub async fn agent_start_session(
         cfg.max_tokens,
     ));
 
-    // Read MCP errors for the UI + build the system prompt.
-    let mcp_block = if mcp.errors.is_empty() {
-        format!(
-            "\n## MCP\n\n{} MCP tool(s) available via mcp__<server>__<tool>.\n",
-            mcp.tools.len()
-        )
-    } else {
-        format!(
-            "\n## MCP\n\nSome MCP servers failed: {}\n",
-            mcp.errors.join("; ")
-        )
+    // 分叉:从源会话复制历史前缀(条数以后端在结束事件里给的权威计数为准,
+    // 多了截断,少了就用现有的)。源会话不存在是前端状态过期,如实报错。
+    let seed_items: Vec<crate::agent::types::ChatItem> = match &fork {
+        None => Vec::new(),
+        Some(spec) => {
+            let snapshot = {
+                let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+                let src = registry
+                    .get(&spec.from)
+                    .ok_or_else(|| "SESSION_NOT_FOUND: 源会话已不存在".to_string())?;
+                src.history()
+            };
+            let n = spec.items.min(snapshot.len());
+            snapshot[..n].to_vec()
+        }
     };
-    let skills_block = skills.prompt_block();
+
+    // Read MCP errors for the UI; the system prompt stays tool-free.
     let vault_name = state
         .vault()
         .and_then(|v| v.file_name().map(|s| s.to_string_lossy().to_string()))
@@ -96,12 +120,12 @@ pub async fn agent_start_session(
         .lock()
         .ok()
         .and_then(|n| n.clone());
+    let user_instructions = load_user_instructions(&state);
     let system_prompt = build_system_prompt(
         &vault_name,
         current_note.as_deref(),
         study.as_ref(),
-        &skills_block,
-        &mcp_block,
+        &user_instructions,
     );
 
     let ctx = Arc::new(ToolContext {
@@ -111,10 +135,20 @@ pub async fn agent_start_session(
         abort: Arc::new(AtomicBool::new(false)),
     });
 
-    let id = format!("s{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    // 时间戳 + 递增序号:同一毫秒内开主会话再分叉辅助会话也不会撞 id。
+    static SESSION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SESSION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = format!(
+        "s{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        seq
+    );
     let session = Arc::new(Session {
         id: id.clone(),
-        items: Mutex::new(Vec::new()),
+        items: Mutex::new(seed_items),
         system_prompt,
         ctx,
         skills: Arc::new(skills),
@@ -143,6 +177,8 @@ pub async fn agent_send(
     state: State<'_, AppState>,
     session_id: String,
     text: String,
+    // 旧调用方(浏览器 harness)不带 images:Option 缺省成空,行为同纯文本。
+    images: Option<Vec<crate::agent::types::InlineImage>>,
 ) -> CmdResult<()> {
     let session = {
         let registry = state.sessions.lock().map_err(|e| e.to_string())?;
@@ -151,12 +187,33 @@ pub async fn agent_send(
             .cloned()
             .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?
     };
-    if session.running.load(std::sync::atomic::Ordering::SeqCst) {
+    // 检查与占位必须是一个原子操作:先 load 再在 spawned 任务里置位,中间
+    // 存在窗口,两次发送都能挤进来并发跑同一份会话历史。CAS 之后谁先到谁
+    // 占用,占用由 Session 的 RunningGuard 在结束时释放。
+    if session
+        .running
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
         return Err("SESSION_BUSY: 还有回复在生成".into());
     }
     // Run the turn in the background; events stream to the frontend.
     tauri::async_runtime::spawn(async move {
-        session.send(&text).await;
+        use futures::FutureExt;
+        let turn = std::panic::AssertUnwindSafe(session.send(&text, images.unwrap_or_default()));
+        // panic 也必须有终止事件:否则前端永远停在「生成中」,而且后续发送
+        // 会被 SESSION_BUSY 挡掉却只有一个几秒消失的 toast。
+        if turn.catch_unwind().await.is_err() {
+            session.emit(crate::agent::types::AgentEvent::Error {
+                message: "会话内部错误,本轮已中止(可重试)".into(),
+                items: session.history().len(),
+            });
+        }
     });
     Ok(())
 }
@@ -385,15 +442,23 @@ pub async fn show_study_preview(
             })
             // 页面里的批注变化写在 document.title 的 `bnote-anno:` 前缀后面。
             // 不开远程 IPC:任意网页都拿不到应用命令,这条 title 通道只传数据。
+            // 微信读书的路由追踪(`src/study/weread.ts`)复用同一条通道,前缀
+            // `bnote-weread:`,分发成 study-weread-route;不带前缀的 title
+            // (微信读书自己设置的页面标题)一律忽略。
             .on_document_title_changed(|webview, title| {
-                const PREFIX: &str = "bnote-anno:";
-                let Some(raw) = title.strip_prefix(PREFIX) else {
+                const ANNO_PREFIX: &str = "bnote-anno:";
+                const WEREAD_PREFIX: &str = "bnote-weread:";
+                let (event, raw) = if let Some(raw) = title.strip_prefix(ANNO_PREFIX) {
+                    ("study-web-annotations", raw)
+                } else if let Some(raw) = title.strip_prefix(WEREAD_PREFIX) {
+                    ("study-weread-route", raw)
+                } else {
                     return;
                 };
                 let Ok(payload) = serde_json::from_str::<serde_json::Value>(raw) else {
                     return;
                 };
-                let _ = webview.emit_to("main", "study-web-annotations", payload);
+                let _ = webview.emit_to("main", event, payload);
             }),
             bounds.position(),
             bounds.size(),

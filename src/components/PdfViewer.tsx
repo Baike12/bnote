@@ -23,7 +23,7 @@ import PdfWorker from "@/study/pdfWorker?worker";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { api } from "@/lib/tauri";
 import { bindingsForCommand, formatBinding } from "@/commands/keys";
-import { imeOnNoteFocus, imeSyncToEditor } from "@/editor/imeSwitch";
+import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { useAppStore } from "@/state/appStore";
 import { cropFromDrag, loadPdfCrop, savePdfCrop, type PdfCrop } from "@/study/crop";
 import {
@@ -58,7 +58,6 @@ import {
   PAGE_TOP_PAD,
   basePageWidth,
   contentWidthForRenderedPage,
-  normalizeSplit,
 } from "@/study/layoutModel";
 import {
   clampOutlineWidth,
@@ -1093,10 +1092,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     });
     if (target === null) return;
     const store = useAppStore.getState();
-    const [agentWidth, currentContent] = normalizeSplit(
-      store.settings.studySplit,
-      window.innerWidth,
-    );
+    const currentContent = store.settings.studyContentWidth;
     if (autoFitPass.current > 0 && currentContent !== autoFitTarget.current) {
       // 上一趟之后用户已经手动拖过中栏:手动值优先,放弃校正。
       autoFitPass.current = MAX_FIT_PASSES;
@@ -1106,7 +1102,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     autoFitFrom.current = targetWidth;
     if (Math.abs(currentContent - target) >= 2) {
       autoFitTarget.current = target;
-      store.patchSettings({ studySplit: [agentWidth, target] });
+      store.patchSettings({ studyContentWidth: target });
     } else {
       // 已经收敛(页面高度差不到 1px),收工。
       autoFitPass.current = MAX_FIT_PASSES;
@@ -1949,8 +1945,9 @@ function NoteBox({
         value={annotation.text}
         placeholder="写批注…"
         maxLength={MAX_NOTE_TEXT}
+        data-ime-chinese="true"
         onChange={(event) => onChange(annotation.id, event.target.value)}
-        onFocus={() => imeOnNoteFocus()}
+        onFocus={() => imeOnChineseFocus()}
         onBlur={(event) => {
           // 两张批注卡之间换焦点时保持中文;真正离开批注才交还输入源。
           const next = event.relatedTarget as Element | null;

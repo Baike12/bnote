@@ -30,6 +30,7 @@ import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/
 import { resetLspStateForPath, syncNow } from "@/python/lsp";
 import { api } from "@/lib/tauri";
 import { canFlipPdfPage, flipPdfPage } from "@/study/pdfNav";
+import { WEREAD_HOME_URL } from "@/study/weread";
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
   return () => {
@@ -134,6 +135,16 @@ const defs: CommandDef[] = [
       toggleStudyMode();
     },
   },
+  {
+    id: "view.open-weread",
+    title: "打开微信读书(书架 / 商城 / 阅读,进学习模式)",
+    category: "视图",
+    run: () => {
+      const store = useAppStore.getState();
+      if (!store.studyMode) store.setStudyMode(true);
+      store.setStudyContent({ kind: "url", url: WEREAD_HOME_URL, title: "微信读书" });
+    },
+  },
   // 学习模式翻页(按设置里的步长滚动,默认半屏)。默认 PageUp/PageDown(含
   // 方向键),可在设置里改键;动作由阅读器注册(study/pdfNav.ts),没开
   // PDF/网页或焦点不该被抢时 when 为 false,键原样交给页面。
@@ -150,6 +161,23 @@ const defs: CommandDef[] = [
     category: "学习",
     when: canFlipPdfPage,
     run: () => void flipPdfPage(1),
+  },
+  {
+    id: "study.toggle-right-tab",
+    title: "学习模式:切换 笔记/学习助手(⌘⇧U)",
+    category: "学习",
+    run: () => {
+      const s = useAppStore.getState();
+      s.patchSettings({
+        studyRightTab: s.settings.studyRightTab === "agent" ? "notes" : "agent",
+      });
+    },
+  },
+  {
+    id: "study.agent-switch-session",
+    title: "学习助手:切换 主会话/辅助会话(⌘⇧Y)",
+    category: "学习",
+    run: () => useAppStore.getState().bumpAgentSwitchSessionSignal(),
   },
   {
     id: "workspace.open-settings",

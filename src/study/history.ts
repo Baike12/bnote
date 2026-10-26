@@ -25,15 +25,26 @@ export interface StudyUrlEntry {
   at: number;
 }
 
+/**
+ * 微信读书里打开过的一本书。url 是阅读器路由(origin + pathname,不带
+ * query),微信读书的阅读进度在它自己的账号里,这里只记「打开过哪里」。
+ */
+export interface WereadBookEntry {
+  url: string;
+  title: string;
+  at: number;
+}
+
 export interface StudyHistory {
   pdfs: StudyPdfEntry[];
   urls: StudyUrlEntry[];
+  weread: WereadBookEntry[];
 }
 
 export const STUDY_HISTORY_LIMIT = 30;
 
 export function emptyStudyHistory(): StudyHistory {
-  return { pdfs: [], urls: [] };
+  return { pdfs: [], urls: [], weread: [] };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -79,9 +90,20 @@ export function normalizeStudyHistory(raw: unknown): StudyHistory {
       urls.push({ url, title, at: num(item.at) });
     }
   }
+  const weread: WereadBookEntry[] = [];
+  if (Array.isArray(raw.weread)) {
+    for (const item of raw.weread) {
+      if (!isRecord(item)) continue;
+      const url = str(item.url);
+      const title = str(item.title);
+      if (!url || !title) continue;
+      weread.push({ url, title, at: num(item.at) });
+    }
+  }
   return {
     pdfs: pdfs.slice(0, STUDY_HISTORY_LIMIT),
     urls: urls.slice(0, STUDY_HISTORY_LIMIT),
+    weread: weread.slice(0, STUDY_HISTORY_LIMIT),
   };
 }
 
@@ -117,6 +139,23 @@ export function pushUrlEntry(
   return {
     ...history,
     urls: cap([next, ...history.urls.filter((e) => e.url !== next.url)]),
+  };
+}
+
+/**
+ * Moves/reinserts the opened weread book at the head of the list. The same
+ * book is reported twice per session (route change, then title extraction
+ * finishing) — dedup by url keeps one row and the later, better title wins.
+ */
+export function pushWereadBook(
+  history: StudyHistory,
+  entry: Omit<WereadBookEntry, "at"> & { at?: number },
+): StudyHistory {
+  const at = entry.at ?? Date.now();
+  const next: WereadBookEntry = { url: entry.url, title: entry.title, at };
+  return {
+    ...history,
+    weread: cap([next, ...history.weread.filter((e) => e.url !== next.url)]),
   };
 }
 

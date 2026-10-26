@@ -345,6 +345,7 @@ name = "bnote"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "core-foundation",
  "ego-tree",
  "futures",

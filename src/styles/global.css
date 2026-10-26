@@ -1302,91 +1302,187 @@ button {
 
 /* ===== settings ===== */
 
+/* ===== 设置页:卡片分组 + 行式布局(参考 ZCode 的 SettingsGroupCard/SettingsRow)
+   左侧分组导航;右侧窄列居中,每组一张卡片,卡片内行用 1px 分隔线。 ===== */
+
 .settings {
   display: flex;
-  min-height: 480px;
+  min-height: 520px;
   max-height: 72vh;
 }
 
+/* 左侧导航:分组标签 + 项。active 不再用大色块,改成弱底 + 加重字重。 */
 .settings-nav {
-  width: 170px;
+  width: 196px;
   background: var(--bg1);
   border-right: 1px solid var(--border);
-  padding: 14px 8px;
+  padding: 16px 10px 14px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
   flex-shrink: 0;
+  overflow-y: auto;
 }
 
 .settings-nav-title {
-  color: var(--text-dim);
-  font-size: 12px;
-  padding: 0 10px 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 10px 6px;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.settings-nav-group-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  padding: 14px 10px 5px;
+  user-select: none;
+}
+.settings-nav-title + .settings-nav-group .settings-nav-group-label {
+  padding-top: 8px;
 }
 
 .settings-nav-item {
   text-align: left;
-  padding: 7px 10px;
-  border-radius: 6px;
-  font-size: 13.5px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 13px;
   color: var(--text-dim);
 }
 .settings-nav-item:hover {
-  background: var(--bg3);
+  background: var(--bg2);
   color: var(--text);
 }
 .settings-nav-item.active {
-  background: var(--accent-dim);
-  color: var(--on-accent);
+  background: var(--bg3);
+  color: var(--text);
+  font-weight: 500;
 }
 
+/* 右侧内容:窄列居中(参考 max-w-4xl),卡片之间留呼吸。 */
 .settings-content {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 24px;
+  padding: 22px 26px 26px;
   min-width: 0;
+  background: var(--bg2);
+}
+.settings-section {
+  max-width: 660px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.settings-section h3 {
-  font-size: 13px;
-  color: var(--text-dim);
-  font-weight: 600;
-  margin: 22px 0 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+/* 卡片:标题行(可带描述与动作)+ 内容行。 */
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg1);
 }
-.settings-section h3:first-child {
-  margin-top: 0;
-}
-
-.setting-row {
+.settings-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-card-desc {
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.6;
+  margin-top: 2px;
+}
+.settings-card-body {
+  padding: 3px 0;
+}
+/* 卡片内的兄弟块之间画分隔线:行与行、行与整块内容都适用。 */
+.settings-card-body > * + * {
+  border-top: 1px solid var(--border);
+}
+
+/* 行:左侧标签+描述,右侧控件。 */
+.setting-row {
+  display: flex;
+  align-items: center;
   gap: 20px;
-  padding: 9px 0;
+  padding: 10px 16px;
 }
-
+.setting-row-text {
+  flex: 1;
+  min-width: 0;
+}
 .setting-label {
-  font-size: 14px;
+  font-size: 13.5px;
+  font-weight: 500;
 }
-
 .setting-desc {
   color: var(--text-faint);
-  font-size: 12.5px;
+  font-size: 12px;
   margin-top: 3px;
-  max-width: 460px;
+  line-height: 1.6;
+}
+.setting-control {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.setting-control .settings-input {
+  width: 260px;
+  flex: none;
+}
+.setting-control .settings-select {
+  max-width: 260px;
+}
+.setting-value {
+  font-size: 13px;
+  color: var(--text-dim);
 }
 
+/* 卡片内的整块内容(文本域、错误列表、动作行)。 */
+.settings-block {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 卡片之间的说明文字。 */
 .setting-hint {
   color: var(--text-faint);
   font-size: 12.5px;
   line-height: 1.7;
+  margin: 0;
 }
 
 .setting-hint code,
-.setting-desc code {
+.setting-desc code,
+.settings-card-desc code {
   background: var(--bg3);
   border-radius: 4px;
   padding: 1px 5px;
@@ -1416,10 +1512,10 @@ button {
   width: 100%;
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   padding: 8px 12px;
-  font-size: 13.5px;
+  font-size: 13px;
   outline: none;
 }
 .settings-search:focus {
@@ -1430,31 +1526,29 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 12px 0;
 }
 
 .chip {
+  border: none;
   background: var(--bg3);
-  border-radius: 20px;
-  padding: 4px 14px;
-  font-size: 12.5px;
+  border-radius: 999px;
+  padding: 4px 13px;
+  font: inherit;
+  font-size: 12px;
   color: var(--text-dim);
+  cursor: pointer;
 }
 .chip.active {
-  background: var(--accent-dim);
-  color: var(--on-accent);
-}
-
-.hotkey-list {
-  border-top: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 500;
 }
 
 .hotkey-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 6px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
   cursor: pointer;
   flex-wrap: wrap;
 }
@@ -1464,9 +1558,12 @@ button {
 .hotkey-row.capturing {
   background: var(--accent-soft);
 }
+.hotkey-row + .hotkey-row {
+  border-top: 1px solid var(--border);
+}
 
 .hotkey-title {
-  font-size: 13.5px;
+  font-size: 13px;
 }
 
 .hotkey-actions {
@@ -1479,7 +1576,7 @@ button {
 .hotkey-chip {
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 6px;
   padding: 2px 8px;
   font-family: var(--font-ui);
   font-size: 12px;
@@ -1515,10 +1612,11 @@ button {
   width: 100%;
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: 12.5px;
+  line-height: 1.65;
   outline: none;
   resize: vertical;
   font-family: var(--font-ui);
@@ -1532,10 +1630,10 @@ button {
 }
 
 .settings-select {
-  min-width: 240px;
+  min-width: 220px;
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   padding: 6px 10px;
   font-size: 13px;
@@ -1551,7 +1649,7 @@ button {
   min-width: 0;
   background: var(--bg0);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   padding: 6px 10px;
   font-size: 13px;
@@ -1563,6 +1661,27 @@ button {
 }
 .settings-input.mono {
   font-family: var(--font-mono);
+}
+
+/* 滑杆 + 右对齐数值(对齐 ZCode 的 SettingsRangeControl)。 */
+.range-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 240px;
+}
+.range-control input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.range-value {
+  min-width: 42px;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ===== 快速添加 ===== */
@@ -1582,7 +1701,7 @@ button {
 .qa-empty {
   color: var(--text-faint);
   font-size: 13px;
-  padding: 8px 0;
+  padding: 2px 0;
 }
 .qa-modal-actions {
   display: flex;
@@ -1705,7 +1824,7 @@ input[type="range"] {
 }
 
 /* ---------------------------------------------------------------------------
- * 学习模式:三栏布局(左 agent / 中内容 / 右笔记)
+ * 学习模式:两栏布局(左 内容 / 右 笔记⇄学习助手页签)
  * ------------------------------------------------------------------------- */
 
 .study-layout {
@@ -1714,21 +1833,18 @@ input[type="range"] {
   min-height: 0;
   background: var(--bg0);
   color: var(--text);
-  /* 三栏宽度由 StudyLayout 写入:--agent-src / --content-src 是用户偏好
-     (像素),--agent-w / --content-w 再按当前窗口夹一次。左/中两栏是固定
-     像素,右侧笔记吃剩余宽度——拖窗口边缘只会改笔记栏,PDF 页面尺寸不变。
-     窗口窄到笔记栏放不下 220px 时,先压中栏、再压左栏;都只压显示,不回写
-     偏好。16px = 两条分隔条的命中区。 */
-  --agent-src: 320px;
+  /* 两栏宽度由 StudyLayout 写入:--content-src 是用户偏好(像素),--content-w
+     再按当前窗口夹一次。左栏是固定像素,右栏吃剩余宽度——拖窗口边缘只会改
+     左栏,PDF 页面尺寸和纵向可见内容都不会跟着窗口抖。窗口窄到右栏放不下
+     260px 时,CSS 压缩左栏,只压显示,不回写偏好。8px = 分隔条命中区。 */
   --content-src: 620px;
-  --agent-w: clamp(220px, var(--agent-src), calc(100% - 260px - 16px - 220px));
-  --content-w: clamp(260px, var(--content-src), calc(100% - var(--agent-w) - 16px - 220px));
+  --content-w: clamp(260px, var(--content-src), calc(100% - 8px - 260px));
   /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。侧栏在时它压在侧栏
-     自己的 36px 预留带上,侧栏不在时压在三栏布局左栏的头部——那里要让开。
+     自己的 36px 预留带上,侧栏不在时压在中栏工具栏上——那里要让开。
      与 .titlebar 的 paddingLeft 是同一套判断,只是这里由 DOM 推出来。 */
   --study-lead: 78px;
-  /* 三栏头部同高:它们的下边框在窗口顶部连成一条线,差 1px 就是一个台阶。
-     43 = 8px 上下内边距 ×2 + 26px 图标按钮 + 1px 下边框(左栏头部的自然高度)。 */
+  /* 两栏头部同高:它们的下边框在窗口顶部连成一条线,差 1px 就是一个台阶。
+     43 = 8px 上下内边距 ×2 + 26px 图标按钮 + 1px 下边框。 */
   --study-head-h: 43px;
 }
 
@@ -1736,20 +1852,60 @@ input[type="range"] {
   --study-lead: 12px;
 }
 
-/* Agent 收起:左栏与它的分隔条都不占布局。 */
-.study-layout.agent-closed {
-  --agent-w: 0px;
-  --content-w: clamp(260px, var(--content-src), calc(100% - 8px - 220px));
-}
-
-.agent-panel {
-  width: var(--agent-w);
+/* 右栏:笔记 / 学习助手 二选一(页签见 .study-tabs)。 */
+.study-right {
+  flex: 1 1 0;
   min-width: 0;
-  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
-  background: var(--bg1);
+}
+
+/* 两个页签的内容都常驻挂载(切换零重挂、零重测:CodeMirror 的装饰和滚动
+   位置原样保留),叠在同一块画布上,只显示活动页签。visibility 而不是
+   display:none——后者会把面板尺寸清零,触发一堆无谓的重排/重测。 */
+.study-right-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.study-right-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.study-right-page[data-inactive="true"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 页签控件:两栏头部共用一份(StudyRightTabs)。 */
+.study-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--bg2);
+  border-radius: 8px;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.study-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-dim, var(--text));
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.study-tab:hover { color: var(--text); }
+.study-tab.active {
+  background: var(--bg3);
+  color: var(--text);
+  font-weight: 600;
 }
 
 /* 拖动条:视觉上一条 1px 分栏线,命中区 8px(col-resize 手感)。线画在条自身
@@ -1779,7 +1935,6 @@ input[type="range"] {
 
 /* 分栏线归拖动条画。面板自带的 border-right 会与它并排成两条线(拖起来亮
    的是拖动条那条,静息时看到的是边框那条)。 */
-.study-layout .agent-panel,
 .study-layout .content-pane {
   border-right: none;
 }
@@ -1792,17 +1947,69 @@ input[type="range"] {
   user-select: none;
 }
 
+.agent-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg1);
+}
+
 .agent-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 8px 12px;
-  /* 侧栏收起时左栏顶在最左边,标题会落到窗口红绿灯底下(「学习助手」和放大
-     缩小按钮重合),这里按 --study-lead 让开。 */
-  padding-left: var(--study-lead, 12px);
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
+}
+
+/* 会话切换:多条会话(主 + 辅助)时是下拉,只有主会话时是一段说明文字。 */
+.agent-conv-select {
+  max-width: 150px;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--text);
+}
+.agent-conv-label {
+  font-size: 12px;
+  color: var(--text-dim, var(--text));
+  white-space: nowrap;
+}
+
+/* 辅助会话条:标明当前在看的是分叉会话,一键回上一条。 */
+.agent-aux-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.agent-aux-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
   font-weight: 600;
+}
+.agent-aux-based {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim, var(--text));
+}
+.agent-aux-back {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 12px;
 }
 
 .agent-mcp-warn {
@@ -1841,50 +2048,285 @@ input[type="range"] {
   padding: 2px 8px;
   font-size: 12px;
 }
+.agent-status-dismiss {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.agent-status-dismiss:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
 
 .agent-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 16px 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
+/* 欢迎页:居中 hero + 可点击的示例 chip(点击填入输入框)。 */
 .agent-welcome {
-  opacity: 0.65;
-  font-size: 13px;
-  margin-top: 20px;
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 12px;
   text-align: center;
+}
+.agent-welcome-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+.agent-welcome-icon svg { width: 20px; height: 20px; }
+.agent-welcome-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.agent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+.agent-chip {
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.agent-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .agent-hint {
-  font-size: 12px;
-  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-faint);
 }
 
+/* 消息行:悬停时露出「⤷ 分叉辅助会话」按钮。按钮 absolute 落在行两端的
+   留白里(assistant 行右留白 / user 行左留白),不占布局也不遮文字。 */
+.agent-msg-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+}
+.agent-msg-row.is-user { justify-content: flex-end; }
+.agent-msg-row:not(.is-user) { padding-right: 24px; }
+.agent-msg-row.is-user { padding-left: 24px; }
+
+.agent-fork {
+  /* 占住固定位置,悬停才显形:不hover布局也不抖。 */
+  position: absolute;
+  top: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.agent-msg-row:not(.is-user) .agent-fork { right: 2px; }
+.agent-msg-row.is-user .agent-fork { left: 2px; }
+.agent-msg-row:hover .agent-fork { opacity: 1; }
+.agent-fork:hover {
+  color: var(--accent);
+  background: var(--bg2);
+}
+
+/* 用户消息:右对齐气泡(右下角收小,指向来源一侧);助手消息:无盒子
+   裸排版——参考 b-desktop,通栏 markdown 比每条都套卡片安静得多。 */
 .agent-msg {
-  border-radius: 10px;
-  padding: 8px 10px;
   font-size: 13.5px;
   line-height: 1.55;
   word-break: break-word;
 }
 
 .agent-msg-user {
-  align-self: flex-end;
-  max-width: 88%;
+  max-width: 85%;
+  padding: 7px 12px;
+  border-radius: 14px 14px 4px 14px;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
+  white-space: pre-wrap;
+}
+
+/* 思考过程折叠块(照 ZCode Reasoning):流式收起+末行摘要滚动,完成显示
+   耗时;内容纯文本限高内滚、吸底跟随。左导线标出这是过程性内容。 */
+.agent-thinking {
+  margin: 0 0 8px;
+  border-left: 2px solid var(--border);
+}
+.agent-thinking summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 1px 0 1px 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.agent-thinking summary::-webkit-details-marker { display: none; }
+.agent-thinking-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.agent-thinking-live,
+.agent-thinking-done {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+/* 流式「正在思考」:accent 渐变在文字上扫光(旋转 loader 会长期占渲染)。 */
+.agent-thinking-live {
+  background: linear-gradient(
+    90deg,
+    var(--text-faint) 0%,
+    var(--accent) 45%,
+    var(--text-faint) 90%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: agent-thinking-sweep 1.6s linear infinite;
+}
+@keyframes agent-thinking-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -80% 0; }
+}
+/* 流式摘要:单行向末尾滚动,两侧渐隐(见 thinkingSummaryLine + JS 滚动)。 */
+.agent-thinking-tail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--text-faint);
+  /* mask 只取 alpha 通道:currentColor 与纯黑等价,且不引入裸颜色。 */
+  mask-image: linear-gradient(to right, transparent 0, currentColor 16px, currentColor calc(100% - 16px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, currentColor 16px, currentColor calc(100% - 16px), transparent 100%);
+  mask-repeat: no-repeat;
+  -webkit-mask-repeat: no-repeat;
+  mask-size: 100% 100%;
+  -webkit-mask-size: 100% 100%;
+}
+.agent-thinking-tail-text {
+  display: inline-block;
+  min-width: max-content;
+}
+.agent-thinking-body {
+  max-height: 240px;
+  overflow-y: auto;
+  margin-top: 3px;
+  padding: 2px 0 2px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 用户消息里随发的图片:气泡内等宽小图,圆角贴气泡内缘。 */
+.agent-msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.agent-msg-images:last-child { margin-bottom: 0; }
+.agent-msg-image {
+  max-width: 220px;
+  max-height: 160px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  object-fit: contain;
+  background: var(--bg2);
 }
 
 .agent-msg-assistant {
-  align-self: stretch;
-  background: var(--bg2);
-  border: 1px solid var(--border);
+  flex: 1;
+  min-width: 0;
 }
 
+/* Agent 回复的 markdown:标题 / 列表 / 表格 / 引用 / 行内样式。 */
+.agent-md h1, .agent-md h2, .agent-md h3,
+.agent-md h4, .agent-md h5, .agent-md h6 {
+  margin: 8px 0 4px;
+  line-height: 1.35;
+  font-size: 13.5px;
+}
+.agent-md h1:first-child, .agent-md h2:first-child, .agent-md h3:first-child { margin-top: 0; }
+.agent-md h1 { font-size: 15px; }
 .agent-md p { margin: 0 0 6px; }
 .agent-md p:last-child { margin-bottom: 0; }
+.agent-md ul, .agent-md ol { margin: 4px 0 6px; padding-left: 20px; }
+.agent-md li { margin: 2px 0; }
+.agent-md li > ul, .agent-md li > ol { margin: 2px 0; }
+.agent-md ul:last-child, .agent-md ol:last-child { margin-bottom: 0; }
+.agent-md blockquote {
+  margin: 4px 0 6px;
+  padding: 2px 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim, var(--text));
+}
+.agent-md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+.agent-md table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 12.5px;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+.agent-md th, .agent-md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.agent-md th { background: var(--bg3); font-weight: 600; }
+.agent-md code {
+  background: var(--bg3);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
 .agent-md pre.agent-code {
   background: var(--bg3);
   padding: 8px;
@@ -1893,68 +2335,230 @@ input[type="range"] {
   font-size: 12px;
   margin: 6px 0;
 }
+.agent-md pre.agent-code code { background: transparent; padding: 0; }
 .agent-md .katex-display {
   margin: 6px 0;
   overflow-x: auto;
   overflow-y: hidden;
 }
 
+/* 工具调用:单行摘要行(状态点 + mono 工具名 + 失败标记 + 折叠箭头),
+   hover 抬起为浅底;展开后 IO 落在深底圆角卡里。 */
 .agent-tool {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  margin: 4px 0;
+  margin: 2px 0 6px;
   font-size: 12px;
-  background: var(--bg3);
 }
 .agent-tool summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  list-style: none;
   cursor: pointer;
-  padding: 4px 8px;
   user-select: none;
+  padding: 3px 8px;
+  margin: 0 -8px;
+  border-radius: 8px;
+  color: var(--text-dim, var(--text));
 }
-.agent-tool summary.fail { color: var(--danger); }
+.agent-tool summary::-webkit-details-marker { display: none; }
+.agent-tool summary:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+.agent-tool-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-faint);
+}
+.agent-tool-dot.running {
+  background: var(--accent);
+  animation: agent-pulse 1s ease-in-out infinite;
+}
+.agent-tool-dot.fail { background: var(--danger); }
+.agent-tool-name {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+.agent-tool-fail { font-size: 10.5px; color: var(--danger); }
+.agent-tool-chevron {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+.agent-tool[open] .agent-tool-chevron { transform: rotate(90deg); }
+@keyframes agent-pulse {
+  50% { opacity: 0.35; }
+}
 .agent-tool-io {
-  max-height: 180px;
+  max-height: 200px;
   overflow: auto;
-  padding: 6px 8px;
-  margin: 0;
-  border-top: 1px dashed var(--border);
+  margin: 4px 0 6px;
+  padding: 8px 10px;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim, var(--text));
 }
 
 .agent-error {
   color: var(--danger);
   font-size: 12.5px;
-  padding: 6px 8px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  margin: 0 0 6px;
   background: color-mix(in srgb, var(--danger) 10%, transparent);
-  border-radius: 8px;
-  margin-bottom: 6px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: 10px;
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.agent-input-row {
-  display: flex;
-  gap: 8px;
-  padding: 10px;
-  border-top: 1px solid var(--border);
-  align-items: flex-end;
+/* 流式回复的光标:只在最后一条助手消息、本轮仍在生成时渲染。 */
+.agent-caret::before {
+  content: "▍";
+  color: var(--accent);
+  animation: agent-pulse 1s steps(2) infinite;
+}
+
+/* 输入区:一张圆角卡片(textarea 透明内嵌),底部工具行放着提示与发送。
+   聚焦时整卡亮起 accent 描边 + 光晕,不再只亮 textarea 自己的边。 */
+.agent-composer {
+  flex-shrink: 0;
+  margin: 0 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg2);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.agent-composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .agent-input {
-  flex: 1;
+  display: block;
+  width: 100%;
   resize: none;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  padding: 9px 12px 2px;
   font: inherit;
-  font-size: 13.5px;
-  background: var(--bg2);
+  font-size: 13px;
+  line-height: 1.5;
   color: var(--text);
 }
-.agent-input:focus { outline: none; border-color: var(--accent); }
+.agent-input:focus { outline: none; }
+.agent-input::placeholder { color: var(--text-faint); }
 
-.agent-send { flex-shrink: 0; }
+.agent-composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 5px;
+  padding: 5px 6px 5px 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* 附件按钮 + 待发送缩略图行。 */
+.agent-attach-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.agent-attach-btn svg { width: 16px; height: 16px; }
+.agent-attach-btn:hover {
+  color: var(--accent);
+  background: var(--bg3);
+}
+.agent-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px 0;
+}
+.agent-attach-thumb {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+}
+.agent-attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.agent-attach-remove {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 0 0 0 6px;
+  background: color-mix(in srgb, var(--bg1) 82%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.agent-attach-remove:hover { background: var(--danger); color: var(--on-accent); }
+.agent-composer-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.agent-send {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  padding: 4px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent-dim);
+  color: var(--on-accent);
+}
+.agent-send:hover { background: var(--accent); }
+.agent-send:disabled {
+  background: var(--bg3);
+  color: var(--text-faint);
+  cursor: default;
+}
+.agent-send.stop {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.agent-send.stop:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
 
 /* 中栏:内容 */
 .content-pane {
@@ -2371,17 +2975,12 @@ input[type="range"] {
 }
 
 /* ---------------------------------------------------------------------------
- * 学习模式:可折叠 Agent / 历史下拉 / PDF 阅读器
+ * 学习模式:历史下拉 / PDF 阅读器
  * ------------------------------------------------------------------------- */
 
-/* 收起后仍挂载(保住会话与聊天记录),只是不占布局。 */
-.agent-panel.collapsed {
-  display: none;
-}
-
-/* 收起 Agent 后中栏成为整窗左缘:让开窗口红绿灯的是左侧那一列,不是整条
-   toolbar——否则内容盒整体右移,居中的文件名会偏离整栏中心。 */
-.study-layout.agent-closed .content-tool-left {
+/* 中栏是整窗左缘:让开窗口红绿灯的是左侧那一列,不是整条 toolbar——
+   否则内容盒整体右移,居中的文件名会偏离整栏中心。 */
+.study-layout .content-tool-left {
   padding-left: var(--study-lead, 12px);
 }
 

@@ -34,6 +34,7 @@ pdf2md = { path = "crates/pdf2md" }
 
 # study-mode agent
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "net"] }
 futures = "0.3"
 scraper = "0.20"

@@ -1,13 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import katex from "katex";
 import {
   agentApi,
   type AgentEvent,
-  type SessionInfo,
+  type AgentForkSpec,
   type StudyContent,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
+import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
+import { StudyRightTabs } from "./StudyRightTabs";
+import { forkCutoff, forkLabel } from "@/study/agentFork";
+import { renderAgentMarkdown } from "@/study/agentMarkdown";
+import {
+  MAX_IMAGES_PER_MESSAGE,
+  fileToAgentImage,
+  type AgentImage,
+} from "@/study/agentImages";
 
 interface ToolRecord {
   id: string;
@@ -20,6 +28,12 @@ interface ToolRecord {
 interface Turn {
   /** Streaming text buffer for the current assistant reply. */
   text: string;
+  /** 流式思考过程(纯文本;不进会话历史,只用于展示)。 */
+  thinking: string;
+  /** 首个 thinking delta 的时间戳(计时用)。 */
+  thinkingStart: number | null;
+  /** 思考耗时(秒,turn 结束时算好冻结)。 */
+  thinkSeconds: number | null;
   tools: ToolRecord[];
   error?: string;
 }
@@ -27,12 +41,37 @@ interface Turn {
 interface ChatEntry {
   role: "user" | "assistant";
   text: string;
+  /** 用户消息带的截图/图片(仅展示;模型侧以后端会话历史为准)。 */
+  images?: AgentImage[];
   turn?: Turn;
+  /**
+   * 后端会话历史里「到本条为止」的前缀条数(含本条)。user = 前一条 + 1;
+   * assistant = turn_end / error 事件携带的后端权威计数(见 agentFork.ts)。
+   * null = 还未知(出错且拿不到计数)。
+   */
+  items: number | null;
 }
 
-interface AgentPanelProps {
-  /** Hidden but still mounted: keeps the conversation when the column folds. */
-  collapsed?: boolean;
+/** 面板内的一条会话:主会话,或从某条消息分叉出的辅助会话。 */
+interface Conv {
+  key: string;
+  sessionId: string | null;
+  entries: ChatEntry[];
+  label: string;
+  /** 分叉来源会话;主会话为 null。 */
+  parent: string | null;
+  /** 辅助会话的摘要(来源消息首行)。 */
+  basedOn: string;
+  /**
+   * 会话级错误(启动失败 / 发送失败)。持久显示在对话区顶部(照 ZCode 的
+   * ChatErrorBanner),直到用户重试或关闭——不再只弹几秒消失的 toast:
+   * 用户看到的「发送没有回应」绝大多数就是这种被 toast 吞掉的失败。
+   */
+  error?: string;
+  /** 错误来源:决定「重试」按钮做什么。 */
+  errorKind?: "start" | "send";
+  /** 启动时后端报告的 MCP 连接失败(空数组 = 全部正常)。 */
+  mcpErrors: string[];
 }
 
 /** Identity of the material a session is pinned to (url re-open = same key). */
@@ -41,187 +80,383 @@ function studyContentKey(content: StudyContent | null): string {
   return content.kind === "pdf" ? `pdf:${content.path}` : `url:${content.url}`;
 }
 
+function findConvBySession(convs: Conv[], sessionId: string): Conv | undefined {
+  return convs.find((c) => c.sessionId === sessionId);
+}
+
+let convSeq = 0;
+function nextConvKey(): string {
+  convSeq += 1;
+  return `c${convSeq}`;
+}
+
+/** 思考摘要吸底判定距离(ZCode reasoning 同值:离底 2px 内算贴底)。 */
+const THINKING_BOTTOM_LOCK_PX = 2;
+
+/** 摘要行:最后一行非空文本(ZCode resolveReasoningStreamingSummary 同逻辑)。 */
+export function thinkingSummaryLine(thinking: string): string {
+  const lines = thinking.replace(/\r\n?/g, "\n").split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const text = lines[i]?.trim() ?? "";
+    if (text) return text;
+  }
+  return "";
+}
+
 /**
- * Study-mode left column: chat with the agent about the current content.
- * Events stream over the `agent-event` Tauri channel.
+ * 思考过程折叠块,行为照搬 ZCode 的 Reasoning(vercel/ai-elements 改造版):
+ * 流式时收起,摘要行显示最后一行思考文本并向末尾滚动;完成后标签变
+ * 「思考 · 持续了 N 秒」。内容按纯文本展示(不做 markdown 渲染——思考
+ * 流式追加,每个 delta 重跑 markdown 解析在长思考下会卡),展开态限高内
+ * 滚、默认吸底跟随,用户滚离底部后暂停、滚回底部恢复。
  */
-export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
+function ThinkingBlock({
+  thinking,
+  streaming,
+  seconds,
+}: {
+  thinking: string;
+  streaming: boolean;
+  seconds: number | null;
+}) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const tailRef = useRef<HTMLSpanElement | null>(null);
+  const stickBottomRef = useRef(true);
+  const interactedRef = useRef(false);
+  const [open, setOpen] = useState(false);
+
+  // 流式追加:展开时吸底;收起时把单行摘要视口推到末尾(旧内容左移)。
+  useEffect(() => {
+    if (!streaming) return;
+    if (open) {
+      if (stickBottomRef.current) {
+        const el = bodyRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      }
+    } else {
+      const tail = tailRef.current;
+      if (tail) tail.scrollLeft = tail.scrollWidth;
+    }
+  }, [thinking, open, streaming]);
+
+  // 输出边界收起(ZCode autoCollapseKey):turn 结束时若用户没手动展开过,
+  // 折叠块回到收起态。用户点开过(interacted)则尊重选择。
+  useEffect(() => {
+    if (!streaming && !interactedRef.current) setOpen(false);
+  }, [streaming]);
+
+  if (!thinking) return null;
+  const tail = streaming && !open ? thinkingSummaryLine(thinking) : "";
+  return (
+    <details
+      className={`agent-thinking${streaming ? " is-streaming" : ""}`}
+      open={open}
+      onToggle={(e) => {
+        const next = (e.target as HTMLDetailsElement).open;
+        if (next) interactedRef.current = true;
+        setOpen(next);
+      }}
+    >
+      <summary>
+        <svg className="agent-thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 4.5a3 3 0 0 0-3 3v.5a3 3 0 0 0-1.5 5.6A3 3 0 0 0 9 18.5a2.6 2.6 0 0 0 3 0 2.6 2.6 0 0 0 3 0 3 3 0 0 0 1.5-4.9A3 3 0 0 0 15 8v-.5a3 3 0 0 0-3-3Z" />
+          <path d="M12 4.5V3M9.8 11.2c.7.5 1.6.5 2.2 0 .6.5 1.5.5 2.2 0M10 14.5h4" />
+        </svg>
+        {streaming ? (
+          <span className="agent-thinking-live">正在思考</span>
+        ) : (
+          <span className="agent-thinking-done">
+            思考
+            <span className="agent-thinking-sec"> · 持续了 {seconds ?? 0} 秒</span>
+          </span>
+        )}
+        {tail && (
+          <span className="agent-thinking-tail" ref={tailRef}>
+            <span className="agent-thinking-tail-text">{tail}</span>
+          </span>
+        )}
+      </summary>
+      <div
+        className="agent-thinking-body"
+        ref={bodyRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stickBottomRef.current =
+            el.scrollHeight - el.clientHeight - el.scrollTop <= THINKING_BOTTOM_LOCK_PX;
+        }}
+      >
+        {thinking}
+      </div>
+    </details>
+  );
+}
+
+function cloneEntry(e: ChatEntry): ChatEntry {
+  return {
+    ...e,
+    images: e.images?.map((img) => ({ ...img })),
+    turn: e.turn ? { ...e.turn, tools: e.turn.tools.map((t) => ({ ...t })) } : undefined,
+  };
+}
+
+/**
+ * 学习模式右栏「学习助手」页签:围绕当前内容问答。
+ *
+ * 会话模型:主会话(跟随当前 PDF/网页,内容或配置一变就重开)+ 若干辅助
+ * 会话(从任意一条消息「⤷」分叉,后端复制历史前缀,原会话不动)。页签头部
+ * 的下拉与 ⌘⇧Y 在会话间切换。
+ *
+ * 事件按 sessionId 路由:后台会话(非当前显示)的流式回复照常写入各自的
+ * entries,切回去时是完整的。
+ *
+ * 只在页签激活时才建会话:用户只在笔记页签里连续翻 PDF 时,不为每次翻页
+ * 连接模型/MCP。
+ */
+export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
   const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
-  const patchSettings = useAppStore((s) => s.patchSettings);
+  const rightTab = useAppStore((s) => s.settings.studyRightTab);
+  const agentSwitchSignal = useAppStore((s) => s.agentSwitchSessionSignal);
   const showToast = useAppStore((s) => s.showToast);
-  const [entries, setEntries] = useState<ChatEntry[]>([]);
+  const [convs, setConvs] = useState<Conv[]>([]);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [session, setSession] = useState<SessionInfo | null>(null);
-  const [sessionError, setSessionError] = useState<string | null>(null);
+  /** 待发送的图片(粘贴截图 / 文件选择),随消息一起进后端会话历史。 */
+  const [pendingImages, setPendingImages] = useState<AgentImage[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [starting, setStarting] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busySession, setBusySession] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const sessionRef = useRef<SessionInfo | null>(null);
-  const turnRef = useRef<Turn | null>(null);
-  const busyRef = useRef(false);
-  /** 已经为哪份内容建过会话:收起再展开不重建(聊天记录留着)。 */
-  const sessionKeyRef = useRef<string | null>(null);
+  const convsRef = useRef<Conv[]>([]);
+  const turnsRef = useRef<Map<string, Turn>>(new Map());
+  const busyRef = useRef<string | null>(null);
+  /** 已为哪份内容+配置建过主会话(页签未激活时不建)。 */
+  const startedKeyRef = useRef<string | null>(null);
+  /** 会话启动请求序号:过期回调(内容/配置已变)直接放弃,不盲写。 */
+  const startTokenRef = useRef(0);
+  /** ⌘⇧Y 的「重新开始主会话」按钮共用同一条启动路径。 */
+  const [restartNonce, setRestartNonce] = useState(0);
 
-  const startSession = useCallback(
-    async (content: StudyContent | null) => {
-      setStarting(true);
-      setSessionError(null);
-      try {
-        const info = await agentApi.startSession(content);
-        sessionRef.current = info;
-        setSession(info);
-        setEntries([]);
-        turnRef.current = null;
-      } catch (e) {
-        // Keep the failure on screen: without it the send button looks alive
-        // but does nothing (no session ⇒ send() used to return silently).
-        sessionRef.current = null;
-        setSession(null);
-        setSessionError(String(e).replace(/^[A-Z_]+:\s*/, ""));
-        showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
-      } finally {
-        setStarting(false);
-      }
-    },
-    [showToast],
-  );
-
-  // (Re)open the session when the study content changes, or after the agent
-  // config is saved (a session pins the provider it was created with).
-  //
-  // Collapsed: do nothing. The panel stays mounted to keep the conversation,
-  // but a folded panel must not connect a model/MCP for every PDF the user
-  // opens. Re-expanding with unchanged content reuses the live session; a
-  // content change while folded starts a fresh one on the next expand.
   useEffect(() => {
-    if (collapsed) return;
-    const key = `${studyContentKey(studyContent)}|${agentConfigVersion}`;
-    if (sessionKeyRef.current === key) return;
-    sessionKeyRef.current = key;
-    void startSession(studyContent);
-  }, [studyContent, agentConfigVersion, collapsed, startSession]);
+    convsRef.current = convs;
+  }, [convs]);
 
-  // Stream events; append into the live turn.
-  useEffect(() => {
-    let off: (() => void) | undefined;
-    void listen<{ sessionId: string; event: AgentEvent }>("agent-event", (event) => {
-      const info = sessionRef.current;
-      if (!info || event.payload.sessionId !== info.sessionId) return;
-      handleAgentEvent(event.payload.event);
-    }).then((un) => {
-      off = un;
-    });
-    return () => off?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const activeConv = convs.find((c) => c.key === activeKey) ?? null;
+  // sessionId 必须非空才算「生成中」:会话还没建好(或启动失败)时 sessionId
+  // 与 busySession 都是 null,相等但不能当成正在流式回复。
+  const activeBusy =
+    activeConv?.sessionId != null && busySession === activeConv.sessionId;
+
+  const updateConv = useCallback((key: string, patch: (c: Conv) => Conv) => {
+    setConvs((prev) => prev.map((c) => (c.key === key ? patch(c) : c)));
   }, []);
 
-  function ensureTurn(): Turn {
-    if (!turnRef.current) {
-      turnRef.current = { text: "", tools: [] };
+  const startSession = useCallback(
+    async (convKey: string, content: StudyContent | null, fork?: AgentForkSpec) => {
+      const token = ++startTokenRef.current;
+      setStarting(true);
+      updateConv(convKey, (c) => ({ ...c, error: undefined, errorKind: undefined }));
+      try {
+        const info = await agentApi.startSession(content, fork);
+        // 过期就放弃:期间内容/配置又变了,新一轮启动已经接管。
+        if (startTokenRef.current !== token) return;
+        setConvs((prev) =>
+          prev.map((c) =>
+            c.key === convKey
+              ? { ...c, sessionId: info.sessionId, mcpErrors: info.mcpErrors }
+              : c,
+          ),
+        );
+      } catch (e) {
+        if (startTokenRef.current !== token) return;
+        const msg = String(e).replace(/^[A-Z_]+:\s*/, "");
+        updateConv(convKey, (c) => ({ ...c, error: msg, errorKind: "start" }));
+        showToast(msg);
+      } finally {
+        if (startTokenRef.current === token) setStarting(false);
+      }
+    },
+    [showToast, updateConv],
+  );
+
+  // 主会话生命周期:页签激活后,内容/配置/重启任一变化都开一条全新主会话
+  // (辅助会话随之作废)。页签不活跃时不建会话,也不重置已建记录——切回来
+  // 内容没变就复用活会话。
+  useEffect(() => {
+    if (rightTab !== "agent") return;
+    const key = `${studyContentKey(studyContent)}|${agentConfigVersion}|${restartNonce}`;
+    if (startedKeyRef.current === key) return;
+    startedKeyRef.current = key;
+    const conv: Conv = {
+      key: nextConvKey(),
+      sessionId: null,
+      entries: [],
+      label: "主会话",
+      parent: null,
+      basedOn: "",
+      mcpErrors: [],
+    };
+    setConvs([conv]);
+    setActiveKey(conv.key);
+    turnsRef.current.clear();
+    void startSession(conv.key, studyContent);
+  }, [studyContent, agentConfigVersion, rightTab, restartNonce, startSession]);
+
+  // ⌘⇧Y / 命令:主会话 ↔ 最近一条辅助会话 来回切换。
+  useEffect(() => {
+    if (agentSwitchSignal === 0) return;
+    const list = convsRef.current;
+    if (list.length < 2) {
+      showToast("还没有辅助会话:悬停消息点「⤷」创建");
+      return;
     }
-    return turnRef.current;
+    setActiveKey((prevKey) => {
+      const cur = list.find((c) => c.key === prevKey);
+      if (cur?.parent) {
+        const parent = list.find((c) => c.key === cur.parent);
+        return parent ? parent.key : list[0].key;
+      }
+      return list[list.length - 1].key;
+    });
+  }, [agentSwitchSignal, showToast]);
+
+  // 切换会话后滚到底(每条会话都从最新消息看起)。
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    });
+  }, [activeKey]);
+
+  function ensureTurn(convKey: string): Turn {
+    let turn = turnsRef.current.get(convKey);
+    if (!turn) {
+      turn = { text: "", thinking: "", thinkingStart: null, thinkSeconds: null, tools: [] };
+      turnsRef.current.set(convKey, turn);
+    }
+    return turn;
+  }
+
+  /** 把流式草稿(final 与否同形)写进会话;draft 复用同一个 turn 引用。 */
+  function writeEntries(
+    convKey: string,
+    turn: Turn,
+    finalize: boolean,
+    items: number | null,
+  ) {
+    setConvs((prev) =>
+      prev.map((c) => {
+        if (c.key !== convKey) return c;
+        const entries = c.entries.slice();
+        const draft: ChatEntry = {
+          role: "assistant",
+          text: turn.text,
+          turn,
+          items,
+        };
+        const last = entries[entries.length - 1];
+        if (last && last.role === "assistant" && last.turn === turn) {
+          entries[entries.length - 1] = finalize ? { ...draft } : draft;
+        } else {
+          entries.push(draft);
+        }
+        return { ...c, entries };
+      }),
+    );
   }
 
   /** Finalizes the streaming turn: the draft entry is replaced in place (it
    *  used to be appended a second time, so every reply showed up twice). */
-  function commitTurn() {
-    const turn = turnRef.current;
+  function commitTurn(convKey: string, items: number | null) {
+    const turn = turnsRef.current.get(convKey);
     if (!turn) return;
-    turnRef.current = null;
-    setEntries((prev) => {
-      const next = prev.slice();
-      const last = next[next.length - 1];
-      const done: ChatEntry = { role: "assistant", text: turn.text, turn };
-      if (last && last.role === "assistant" && last.turn === turn) {
-        next[next.length - 1] = done;
-      } else {
-        next.push(done);
-      }
-      return next;
-    });
+    if (turn.thinking && turn.thinkSeconds == null && turn.thinkingStart != null) {
+      turn.thinkSeconds = Math.max(1, Math.round((Date.now() - turn.thinkingStart) / 1000));
+    }
+    turnsRef.current.delete(convKey);
+    writeEntries(convKey, turn, true, items);
   }
 
-  function handleAgentEvent(event: AgentEvent) {
+  function handleAgentEvent(sessionId: string, event: AgentEvent) {
+    const conv = findConvBySession(convsRef.current, sessionId);
+    if (!conv) {
+      // 会话已经不在列表里(内容/配置变更后旧会话作废):流式增量无害丢弃,
+      // 但**终止事件必须清忙碌标记**——否则面板永远停在「生成中」,下一次
+      // 发送会被 busyRef 静默吃掉。
+      if (event.type === "turn_end" || event.type === "error") {
+        if (busyRef.current === sessionId) {
+          busyRef.current = null;
+          setBusySession(null);
+        }
+      }
+      return;
+    }
     switch (event.type) {
+      case "thinking_delta": {
+        const turn = ensureTurn(conv.key);
+        turn.thinking += event.text;
+        turn.thinkingStart ??= Date.now();
+        writeEntries(conv.key, turn, false, null);
+        break;
+      }
       case "text_delta": {
-        const turn = ensureTurn();
+        const turn = ensureTurn(conv.key);
         turn.text += event.text;
-        setEntries((prev) => {
-          const next = prev.slice();
-          const last = next[next.length - 1];
-          const draft: ChatEntry = {
-            role: "assistant",
-            text: turn.text,
-            turn,
-          };
-          if (last && last.role === "assistant" && last.turn === turn) {
-            next[next.length - 1] = draft;
-          } else {
-            next.push(draft);
-          }
-          return next;
-        });
+        writeEntries(conv.key, turn, false, null);
         break;
       }
       case "tool_start": {
-        const turn = ensureTurn();
-        turn.tools = [
-          ...turn.tools,
-          { id: event.id, name: event.name, input: event.input },
-        ];
-        setEntries((prev) => {
-          const next = prev.slice();
-          const last = next[next.length - 1];
-          const draft: ChatEntry = { role: "assistant", text: turn.text, turn };
-          if (last && last.role === "assistant" && last.turn === turn) {
-            next[next.length - 1] = draft;
-          } else {
-            next.push(draft);
-          }
-          return next;
-        });
+        const turn = ensureTurn(conv.key);
+        turn.tools = [...turn.tools, { id: event.id, name: event.name, input: event.input }];
+        writeEntries(conv.key, turn, false, null);
         break;
       }
       case "tool_end": {
-        const turn = turnRef.current;
+        const turn = turnsRef.current.get(conv.key);
         if (!turn) break;
         turn.tools = turn.tools.map((t) =>
           t.id === event.id ? { ...t, output: event.output, ok: event.ok } : t,
         );
-        setEntries((prev) => {
-          const next = prev.slice();
-          const last = next[next.length - 1];
-          if (last && last.role === "assistant" && last.turn === turn) {
-            next[next.length - 1] = { role: "assistant", text: turn.text, turn };
-          }
-          return next;
-        });
+        writeEntries(conv.key, turn, false, null);
         break;
       }
       case "turn_end": {
-        commitTurn();
-        busyRef.current = false;
-        setBusy(false);
+        commitTurn(conv.key, event.items);
+        if (busyRef.current === sessionId) {
+          busyRef.current = null;
+          setBusySession(null);
+        }
         break;
       }
       case "error": {
-        const turn = turnRef.current;
+        const turn = turnsRef.current.get(conv.key);
         if (turn) {
           turn.error = event.message;
-          commitTurn();
+          commitTurn(conv.key, event.items);
         } else {
-          setEntries((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              text: "",
-              turn: { text: "", tools: [], error: event.message },
-            },
-          ]);
+          updateConv(conv.key, (c) => ({
+            ...c,
+            entries: [
+              ...c.entries,
+              {
+                role: "assistant",
+                text: "",
+                items: event.items > 0 ? event.items : null,
+                turn: {
+                  text: "",
+                  thinking: "",
+                  thinkingStart: null,
+                  thinkSeconds: null,
+                  tools: [],
+                  error: event.message,
+                },
+              },
+            ],
+          }));
         }
-        busyRef.current = false;
-        setBusy(false);
+        if (busyRef.current === sessionId) {
+          busyRef.current = null;
+          setBusySession(null);
+        }
         break;
       }
     }
@@ -230,129 +465,345 @@ export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
     });
   }
 
+  // Stream events; route by sessionId into the owning conversation.
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    void listen<{ sessionId: string; event: AgentEvent }>("agent-event", (event) => {
+      handleAgentEvent(event.payload.sessionId, event.payload.event);
+    }).then((un) => {
+      off = un;
+    });
+    return () => off?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 附件进队(粘贴与文件选择共用):超限拒绝并说明,失败 toast 不中断。 */
+  async function addImages(files: File[]) {
+    if (files.length === 0) return;
+    const room = MAX_IMAGES_PER_MESSAGE - pendingImages.length;
+    if (files.length > room) {
+      showToast(`一次最多 ${MAX_IMAGES_PER_MESSAGE} 张图片`);
+    }
+    const picked = files.slice(0, Math.max(0, room));
+    const results = await Promise.allSettled(
+      picked.map((file) => fileToAgentImage(file, file.type)),
+    );
+    const ok: AgentImage[] = [];
+    for (const r of results) {
+      if (r.status === "fulfilled") ok.push(r.value);
+      else showToast(String(r.reason?.message ?? r.reason));
+    }
+    if (ok.length > 0) setPendingImages((prev) => [...prev, ...ok]);
+  }
+
   async function send() {
     const text = input.trim();
-    if (!text || busyRef.current) return;
-    const info = sessionRef.current;
+    const conv = activeConv;
+    if (!conv || (!text && pendingImages.length === 0)) return;
+    const info = conv.sessionId;
     if (!info) {
-      // Never drop the message silently: tell the user why nothing happened.
-      showToast(
-        sessionError
-          ? `会话未就绪:${sessionError}`
-          : "会话未就绪,请稍候重试或重新开始会话",
-      );
+      // 会话还没建好:同样写进持久错误横幅,不只是一闪而过的 toast。
+      updateConv(conv.key, (c) => ({
+        ...c,
+        error: c.error ?? `会话未就绪:${c.error ?? "请稍候重试或重新开始会话"}`,
+        errorKind: c.errorKind ?? "start",
+      }));
       return;
     }
+    if (busyRef.current === info) return;
+    const images = pendingImages;
     setInput("");
-    busyRef.current = true;
-    setBusy(true);
-    setEntries((prev) => [...prev, { role: "user", text }]);
+    setPendingImages([]);
+    busyRef.current = info;
+    setBusySession(info);
+    const last = conv.entries[conv.entries.length - 1];
+    const items = last?.items != null ? last.items + 1 : null;
+    updateConv(conv.key, (c) => ({
+      ...c,
+      error: undefined,
+      errorKind: undefined,
+      entries: [
+        ...c.entries,
+        { role: "user", text, images: images.length > 0 ? images : undefined, items },
+      ],
+    }));
     try {
-      await agentApi.send(info.sessionId, text);
+      await agentApi.send(info, text, images);
     } catch (e) {
-      busyRef.current = false;
-      setBusy(false);
-      showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      busyRef.current = null;
+      setBusySession(null);
+      const message = String(e).replace(/^[A-Z_]+:\s*/, "");
+      // 后端没收到这一轮:把刚插进 UI 的幽灵消息撤回,内容放回输入框,并把
+      // 原因留在会话错误横幅上。否则界面里挂着一条永远不会被回答的消息。
+      updateConv(conv.key, (c) => ({
+        ...c,
+        error: message,
+        errorKind: "send",
+        entries: c.entries.slice(0, -1),
+      }));
+      setInput(text);
+      setPendingImages(images);
     }
   }
 
   function abort() {
-    const info = sessionRef.current;
-    if (info) void agentApi.abort(info.sessionId);
+    const info = activeConv?.sessionId;
+    if (info) void agentApi.abort(info);
   }
 
-  const rendered = useMemo(
-    () => (text: string) => renderAgentMarkdown(text),
-    [],
-  );
+  /** 从第 index 条消息分叉一条辅助会话:复制前缀历史,原会话不动。 */
+  function forkFrom(index: number) {
+    const src = activeConv;
+    if (!src) return;
+    if (!src.sessionId) {
+      showToast("会话未就绪,不能分叉");
+      return;
+    }
+    const cutoff = forkCutoff(src.entries, index);
+    const origin = src.entries[index];
+    const label = origin.text.trim() || (origin.images?.length ? "[图片]" : "");
+    const conv: Conv = {
+      key: nextConvKey(),
+      sessionId: null,
+      entries: src.entries.slice(0, index + 1).map(cloneEntry),
+      label: `↳ ${forkLabel(label)}`,
+      parent: src.key,
+      basedOn: forkLabel(label, 40),
+      mcpErrors: [],
+    };
+    setConvs((prev) => [...prev, conv]);
+    setActiveKey(conv.key);
+    void startSession(conv.key, studyContent, { from: src.sessionId, items: cutoff });
+  }
+
+  const parentConv = activeConv?.parent
+    ? (convs.find((c) => c.key === activeConv.parent) ?? null)
+    : null;
 
   return (
-    <aside className={`agent-panel${collapsed ? " collapsed" : ""}`}>
-      {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让标题文字也能拖,
+    <aside className="agent-panel">
+      {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让文字也能拖,
           头部里的按钮由 Tauri 的 drag.js 自行放行。 */}
       <div className="agent-header" data-tauri-drag-region="deep">
-        <span className="agent-title">学习助手</span>
+        <StudyRightTabs />
+        {convs.length > 1 ? (
+          <select
+            className="agent-conv-select"
+            value={activeKey ?? ""}
+            title="切换会话(⌘⇧Y)"
+            onChange={(e) => setActiveKey(e.target.value)}
+          >
+            {convs.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="agent-conv-label">主会话</span>
+        )}
         <span className="spacer" />
         <button
           className="icon-btn"
-          title="重新开始会话"
-          onClick={() => void startSession(studyContent)}
+          title="重新开始主会话(重读 .bnote/agent.md 与配置)"
+          onClick={() => setRestartNonce((n) => n + 1)}
         >
           ⟳
         </button>
-        <button
-          className="icon-btn"
-          title="收起学习助手"
-          onClick={() => patchSettings({ studyAgentOpen: false })}
-        >
-          ⇤
-        </button>
       </div>
-      {session && session.mcpErrors.length > 0 && (
-        <div className="agent-mcp-warn" title={session.mcpErrors.join("\n")}>
+      {parentConv && (
+        <div className="agent-aux-bar">
+          <span className="agent-aux-badge">辅助会话</span>
+          <span className="agent-aux-based" title={activeConv?.basedOn}>
+            基于「{activeConv?.basedOn}」
+          </span>
+          <button
+            className="btn btn-ghost agent-aux-back"
+            title="返回上一条会话(⌘⇧Y)"
+            onClick={() => parentConv && setActiveKey(parentConv.key)}
+          >
+            ← {parentConv.label}
+          </button>
+        </div>
+      )}
+      {activeConv && activeConv.mcpErrors.length > 0 && (
+        <div className="agent-mcp-warn" title={activeConv.mcpErrors.join("\n")}>
           MCP 部分服务器连接失败
         </div>
       )}
       {starting && <div className="agent-status">正在连接模型…</div>}
-      {!starting && sessionError && (
-        <div className="agent-status fail">
-          <span className="agent-status-text" title={sessionError}>
-            会话未就绪:{sessionError}
+      {!starting && activeConv?.error && (
+        <div className="agent-status fail" role="alert">
+          <span className="agent-status-text" title={activeConv.error}>
+            {activeConv.errorKind === "send" ? "发送失败:" : "会话未就绪:"}
+            {activeConv.error}
           </span>
+          {activeConv.errorKind === "send" ? (
+            <button
+              className="btn btn-ghost agent-status-retry"
+              title="用刚才的内容重新发送"
+              onClick={() => void send()}
+            >
+              重试
+            </button>
+          ) : (
+            <button
+              className="btn btn-ghost agent-status-retry"
+              onClick={() => void startSession(activeConv.key, studyContent)}
+            >
+              重试
+            </button>
+          )}
           <button
-            className="btn btn-ghost agent-status-retry"
-            onClick={() => void startSession(studyContent)}
+            className="agent-status-dismiss"
+            title="关闭提示"
+            aria-label="关闭提示"
+            onClick={() =>
+              updateConv(activeConv.key, (c) => ({
+                ...c,
+                error: undefined,
+                errorKind: undefined,
+              }))
+            }
           >
-            重试
+            ×
           </button>
         </div>
       )}
       <div className="agent-scroll" ref={scrollRef}>
-        {entries.length === 0 && (
+        {!activeConv || activeConv.entries.length === 0 ? (
           <div className="agent-welcome">
-            <p>问我关于当前 PDF / 网页的问题。</p>
-            <p className="agent-hint">
-              例如:「总结这篇论文的核心方法」「第 3 节的公式在讲什么?」「把要点整理进我的笔记」。
-            </p>
-          </div>
-        )}
-        {entries.map((entry, i) =>
-          entry.role === "user" ? (
-            <div className="agent-msg agent-msg-user" key={i}>
-              {entry.text}
+            <div className="agent-welcome-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
+              </svg>
             </div>
-          ) : (
-            <div className="agent-msg agent-msg-assistant" key={i}>
-              {entry.turn?.tools.map((tool) => (
-                <details className="agent-tool" key={tool.id}>
-                  <summary className={tool.ok === false ? "fail" : ""}>
-                    {tool.ok === undefined ? "⏳" : tool.ok ? "🔧" : "⚠️"}{" "}
-                    {tool.name}
-                  </summary>
-                  <pre className="agent-tool-io">
-                    {JSON.stringify(tool.input, null, 2)}
-                    {tool.output !== undefined && `\n→ ${tool.output}`}
-                  </pre>
-                </details>
+            <p className="agent-welcome-title">问我关于当前 PDF / 网页的问题</p>
+            <div className="agent-chips">
+              {["总结这篇材料的核心方法", "这篇在解决什么问题?", "帮我梳理知识框架"].map((q) => (
+                <button key={q} className="agent-chip" onClick={() => setInput(q)}>
+                  {q}
+                </button>
               ))}
-              {entry.turn?.error && (
-                <div className="agent-error">{entry.turn.error}</div>
-              )}
-              <div
-                className="agent-md"
-                dangerouslySetInnerHTML={{ __html: rendered(entry.text) }}
-              />
             </div>
-          ),
+            <p className="agent-hint">悬停任意消息点「⤷」,可以从那里分叉一条辅助会话</p>
+          </div>
+        ) : (
+          activeConv.entries.map((entry, i) => {
+            const isLast = i === activeConv.entries.length - 1;
+            const streaming = isLast && activeBusy && entry.role === "assistant";
+            return (
+              <div
+                className={`agent-msg-row${entry.role === "user" ? " is-user" : ""}`}
+                key={i}
+              >
+                {entry.role === "user" ? (
+                  <div className="agent-msg agent-msg-user">
+                    {entry.images && entry.images.length > 0 && (
+                      <div className="agent-msg-images">
+                        {entry.images.map((img, j) => (
+                          <img
+                            key={j}
+                            className="agent-msg-image"
+                            src={`data:${img.mediaType};base64,${img.data}`}
+                            alt="随消息发送的图片"
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {entry.text}
+                  </div>
+                ) : (
+                  <div className="agent-msg agent-msg-assistant">
+                    <ThinkingBlock
+                      thinking={entry.turn?.thinking ?? ""}
+                      streaming={Boolean(streaming && (entry.turn?.thinking ?? ""))}
+                      seconds={entry.turn?.thinkSeconds ?? null}
+                    />
+                    {entry.turn?.tools.map((tool) => (
+                      <details className="agent-tool" key={tool.id}>
+                        <summary>
+                          <span
+                            className={`agent-tool-dot${
+                              tool.ok === false ? " fail" : tool.ok === undefined ? " running" : ""
+                            }`}
+                          />
+                          <span className="agent-tool-name">{tool.name}</span>
+                          {tool.ok === false && <span className="agent-tool-fail">失败</span>}
+                          <svg className="agent-tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="m9 18 6-6-6-6" />
+                          </svg>
+                        </summary>
+                        <pre className="agent-tool-io">
+                          {JSON.stringify(tool.input, null, 2)}
+                          {tool.output !== undefined && `\n→ ${tool.output}`}
+                        </pre>
+                      </details>
+                    ))}
+                    {entry.turn?.error && (
+                      <div className="agent-error">{entry.turn.error}</div>
+                    )}
+                    <div
+                      className="agent-md"
+                      dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(entry.text) }}
+                    />
+                    {streaming && <span className="agent-caret" aria-hidden="true" />}
+                  </div>
+                )}
+                {!activeBusy && (
+                  <button
+                    className="agent-fork"
+                    title="基于这条消息开启辅助会话"
+                    onClick={() => forkFrom(i)}
+                  >
+                    ⤷
+                  </button>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
-      <div className="agent-input-row">
+      <div className="agent-composer">
+        {pendingImages.length > 0 && (
+          <div className="agent-attach-row">
+            {pendingImages.map((img, i) => (
+              <span className="agent-attach-thumb" key={i}>
+                <img src={`data:${img.mediaType};base64,${img.data}`} alt="" />
+                <button
+                  className="agent-attach-remove"
+                  title="移除这张图片"
+                  onClick={() =>
+                    setPendingImages((prev) => prev.filter((_, j) => j !== i))
+                  }
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           className="agent-input"
-          placeholder="询问当前内容…(Enter 发送,Shift+Enter 换行)"
+          placeholder="询问当前内容…(可直接粘贴截图)"
           value={input}
           rows={2}
+          data-ime-chinese="true"
+          onFocus={() => imeOnChineseFocus()}
+          onBlur={() => imeSyncToEditor()}
           onChange={(e) => setInput(e.target.value)}
+          onPaste={(e) => {
+            // 剪贴板里只有图片(截图)才接管:同时有文本时按普通粘贴走,
+            // 不抢用户复制网页文字的场景。
+            const files = Array.from(e.clipboardData?.items ?? [])
+              .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+              .map((it) => it.getAsFile())
+              .filter((f): f is File => f !== null);
+            const hasText = (e.clipboardData?.getData("text/plain") ?? "") !== "";
+            if (files.length === 0 || hasText) return;
+            e.preventDefault();
+            void addImages(files);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -360,101 +811,50 @@ export function AgentPanel({ collapsed = false }: AgentPanelProps = {}) {
             }
           }}
         />
-        {busy ? (
-          <button className="btn agent-send" onClick={abort}>
-            停止
-          </button>
-        ) : (
+        <div className="agent-composer-foot">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              void addImages(Array.from(e.target.files ?? []));
+              e.target.value = "";
+            }}
+          />
           <button
-            className="btn agent-send"
-            onClick={() => void send()}
-            disabled={!session}
-            title={session ? "发送(Enter)" : sessionError ?? "正在连接模型…"}
+            className="agent-attach-btn"
+            title="插入图片(也可直接粘贴截图)"
+            onClick={() => fileInputRef.current?.click()}
           >
-            发送
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2.5" />
+              <circle cx="9" cy="10.5" r="1.6" />
+              <path d="m5 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L16 17.5M14 15l2-2a1.5 1.5 0 0 1 2.1 0L21 15.9" />
+            </svg>
           </button>
-        )}
+          <span className="agent-composer-hint">Enter 发送 · Shift+Enter 换行 · 可粘贴截图</span>
+          {activeBusy ? (
+            <button className="agent-send stop" onClick={abort}>
+              停止
+            </button>
+          ) : (
+            <button
+              className="agent-send"
+              onClick={() => void send()}
+              disabled={!activeConv?.sessionId || (input.trim() === "" && pendingImages.length === 0)}
+              title={
+                activeConv?.sessionId
+                  ? "发送(Enter)"
+                  : (activeConv?.error ?? "正在连接模型…")
+              }
+            >
+              发送
+            </button>
+          )}
+        </div>
       </div>
     </aside>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Mini markdown renderer: escapes HTML, renders code fences, $math$, bold,
-// links and lists — enough for agent answers without a heavy dependency.
-// ---------------------------------------------------------------------------
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function renderMath(tex: string, display: boolean): string {
-  try {
-    return katex.renderToString(tex, {
-      displayMode: display,
-      throwOnError: false,
-      output: "html",
-    });
-  } catch {
-    return `<code>${escapeHtml(tex)}</code>`;
-  }
-}
-
-function renderInline(text: string): string {
-  // inline math first ($...$), then bold, code, links
-  const parts: string[] = [];
-  const mathRe = /\$([^$\n]+)\$/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = mathRe.exec(text))) {
-    parts.push(inlinePlain(text.slice(last, m.index)));
-    parts.push(renderMath(m[1], false));
-    last = m.index + m[0].length;
-  }
-  parts.push(inlinePlain(text.slice(last)));
-  return parts.join("");
-}
-
-function inlinePlain(text: string): string {
-  let out = escapeHtml(text);
-  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
-  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-  return out;
-}
-
-export function renderAgentMarkdown(text: string): string {
-  if (!text) return "";
-  const blocks: string[] = [];
-  // split fenced code
-  const fenceRe = /```(\w*)\n?([\s\S]*?)(?:```|$)/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = fenceRe.exec(text))) {
-    blocks.push(...splitMathBlocks(text.slice(last, m.index)));
-    blocks.push(`<pre class="agent-code"><code>${escapeHtml(m[2])}</code></pre>`);
-    last = m.index + m[0].length;
-  }
-  blocks.push(...splitMathBlocks(text.slice(last)));
-  return blocks
-    .map((b) => (b.startsWith("<") ? b : `<p>${b}</p>`))
-    .join("");
-}
-
-function splitMathBlocks(text: string): string[] {
-  const out: string[] = [];
-  const blockRe = /\$\$([\s\S]+?)\$\$/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = blockRe.exec(text))) {
-    out.push(renderInline(text.slice(last, m.index)));
-    out.push(renderMath(m[1], true));
-    last = m.index + m[0].length;
-  }
-  out.push(renderInline(text.slice(last)));
-  return out.filter((s) => s.trim().length > 0 || s.includes("katex"));
 }
