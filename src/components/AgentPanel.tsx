@@ -1,16 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  api,
   agentApi,
+  type AgentChatItem,
   type AgentEvent,
-  type AgentForkSpec,
+  type MaterialInfo,
+  type SavedSessionMeta,
   type StudyContent,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { isImeEnter } from "@/lib/imeEnter";
 import { StudyRightTabs } from "./StudyRightTabs";
-import { forkCutoff, forkLabel } from "@/study/agentFork";
+import { forkLabel } from "@/study/agentFork";
+import { ensureMaterial, sessionFilePath } from "@/study/materials";
+import {
+  historyFromTranscript,
+  parseTranscript,
+  serializeTranscript,
+  type TranscriptLine,
+} from "@/study/transcript";
+import { isWereadUrl } from "@/study/weread";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import {
   MAX_IMAGES_PER_MESSAGE,
@@ -42,6 +53,8 @@ interface Turn {
 interface ChatEntry {
   role: "user" | "assistant";
   text: string;
+  /** 写入会话记录用的时间戳。 */
+  at: number;
   /** 用户消息带的截图/图片(仅展示;模型侧以后端会话历史为准)。 */
   images?: AgentImage[];
   turn?: Turn;
@@ -73,6 +86,13 @@ interface Conv {
   errorKind?: "start" | "send";
   /** 启动时后端报告的 MCP 连接失败(空数组 = 全部正常)。 */
   mcpErrors: string[];
+  /**
+   * 会话记录文件(`<材料目录>/sessions/<id>.jsonl`)。null = 还没有 id
+   * (刚启动/启动失败)或浏览器里没有落盘能力。
+   */
+  transcriptPath: string | null;
+  /** 文件名里的会话 id(历史抽屉里高亮当前项)。 */
+  sessionFileId: string | null;
 }
 
 /** Identity of the material a session is pinned to (url re-open = same key). */
@@ -192,12 +212,67 @@ function ThinkingBlock({
   );
 }
 
+/** 会话记录行 → 界面消息(恢复会话时用)。 */
+function entryFromLine(line: TranscriptLine): ChatEntry {
+  if (line.type === "user") {
+    return {
+      role: "user",
+      text: line.text,
+      at: line.at,
+      items: null,
+      images: line.images,
+    };
+  }
+  return {
+    role: "assistant",
+    text: line.text,
+    at: line.at,
+    items: null,
+    turn: {
+      text: line.text,
+      thinking: line.thinking ?? "",
+      thinkingStart: null,
+      thinkSeconds: line.thinkSeconds ?? null,
+      tools: line.tools ?? [],
+      error: line.error,
+    },
+  };
+}
+
+/** 界面消息 → 会话记录行(分叉时把父会话前缀写进新文件)。 */
+function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
+  return entries.map((e): TranscriptLine =>
+    e.role === "user"
+      ? { type: "user", at: e.at, text: e.text, images: e.images }
+      : {
+          type: "assistant",
+          at: e.at,
+          text: e.text,
+          thinking: e.turn?.thinking ?? "",
+          thinkSeconds: e.turn?.thinkSeconds ?? null,
+          tools: e.turn?.tools ?? [],
+          error: e.turn?.error,
+        },
+  );
+}
+
 function cloneEntry(e: ChatEntry): ChatEntry {
   return {
     ...e,
     images: e.images?.map((img) => ({ ...img })),
     turn: e.turn ? { ...e.turn, tools: e.turn.tools.map((t) => ({ ...t })) } : undefined,
   };
+}
+
+/** 历史会话列表里的时间:今天显示时分,更早显示月/日。 */
+function formatSessionTime(ms: number): string {
+  if (!ms) return "";
+  const d = new Date(ms);
+  const now = new Date();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`;
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 /**
@@ -239,10 +314,38 @@ export function AgentPanel() {
   const startTokenRef = useRef(0);
   /** ⌘⇧Y 的「重新开始主会话」按钮共用同一条启动路径。 */
   const [restartNonce, setRestartNonce] = useState(0);
+  /** 本材料的落盘目录(批注 + 会话记录)与保存过的会话列表。 */
+  const studyWereadBook = useAppStore((s) => s.studyWereadBook);
+  const [materialInfo, setMaterialInfo] = useState<MaterialInfo | null>(null);
+  const [savedSessions, setSavedSessions] = useState<SavedSessionMeta[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const materialRef = useRef<{ identity: string; info: MaterialInfo | null } | null>(null);
+  /** convKey → 会话记录文件。启动成功/恢复时写入,每轮结束追加。 */
+  const transcriptRef = useRef<Map<string, string>>(new Map());
+  /** sessionId → { convKey, 记录文件 }:会话切走后(换材料)收尾事件仍要落盘。 */
+  const sessionIndexRef = useRef<Map<string, { convKey: string; path: string | null }>>(
+    new Map(),
+  );
+  /** 每轮用户消息先记在这里,和助手回复一起落盘(发送失败就不落)。 */
+  const pendingUserRef = useRef<Map<string, TranscriptLine>>(new Map());
+  /** 重启键(配置保存 / ⟳):变了就开新会话,而不是恢复最近一条。 */
+  const restartKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     convsRef.current = convs;
   }, [convs]);
+
+  /**
+   * 归属用的材料内容:微信读书的 studyContent 停在中栏入口(书架),真正
+   * 在读的书只有页内路由知道——按书归属,不要把所有书的会话混在书架上。
+   */
+  const materialContent = useMemo<StudyContent | null>(() => {
+    if (!studyContent) return null;
+    if (studyContent.kind !== "url" || !isWereadUrl(studyContent.url)) return studyContent;
+    return studyWereadBook
+      ? { kind: "url", url: studyWereadBook.url, title: studyWereadBook.title }
+      : studyContent;
+  }, [studyContent, studyWereadBook]);
 
   const activeConv = convs.find((c) => c.key === activeKey) ?? null;
   // sessionId 必须非空才算「生成中」:会话还没建好(或启动失败)时 sessionId
@@ -254,22 +357,71 @@ export function AgentPanel() {
     setConvs((prev) => prev.map((c) => (c.key === key ? patch(c) : c)));
   }, []);
 
+  /** 重新拉一遍本材料的会话列表(历史抽屉 + 恢复最近一条)。 */
+  const refreshSessions = useCallback(async (): Promise<SavedSessionMeta[]> => {
+    const material = materialRef.current;
+    if (!material?.info) {
+      setSavedSessions([]);
+      return [];
+    }
+    const list = await agentApi.sessionsList(material.info.relDir).catch(() => []);
+    // 读盘期间换了材料:结果属于上一份材料,不能写进当前列表。
+    if (materialRef.current !== material) return list;
+    setSavedSessions(list);
+    return list;
+  }, []);
+
   const startSession = useCallback(
-    async (convKey: string, content: StudyContent | null, fork?: AgentForkSpec) => {
+    async (
+      convKey: string,
+      content: StudyContent | null,
+      opts?: {
+        /** 恢复:还原出的模型侧历史。 */
+        history?: AgentChatItem[];
+        /** 恢复:继续写这个文件;不传则按新会话建文件。 */
+        transcriptPath?: string | null;
+        /** 分叉:先把父会话的前缀写进新文件。 */
+        seedLines?: TranscriptLine[];
+      },
+    ) => {
       const token = ++startTokenRef.current;
       setStarting(true);
       updateConv(convKey, (c) => ({ ...c, error: undefined, errorKind: undefined }));
       try {
-        const info = await agentApi.startSession(content, fork);
+        const info = await agentApi.startSession(content, undefined, opts?.history);
         // 过期就放弃:期间内容/配置又变了,新一轮启动已经接管。
+        if (startTokenRef.current !== token) return;
+        // 会话记录路径:恢复用旧文件,新会话用「材料目录 + 后端会话 id」。
+        const vault = useAppStore.getState().vaultPath;
+        const relDir = materialRef.current?.info?.relDir ?? null;
+        const transcriptPath =
+          opts?.transcriptPath ??
+          (vault && relDir ? sessionFilePath(vault, relDir, info.sessionId) : null);
+        const fileName = transcriptPath?.split("/").pop() ?? null;
+        const sessionFileId = fileName ? fileName.replace(/\.jsonl$/, "") : null;
+        if (transcriptPath) transcriptRef.current.set(convKey, transcriptPath);
+        sessionIndexRef.current.set(info.sessionId, { convKey, path: transcriptPath });
+        if (transcriptPath && opts?.seedLines && opts.seedLines.length > 0) {
+          // 新文件(新会话 id)不存在旧内容,直接写入前缀即可。
+          await api
+            .writeFile(transcriptPath, serializeTranscript(opts.seedLines))
+            .catch((e) => console.warn("[agent] 写分叉前缀失败", e));
+        }
         if (startTokenRef.current !== token) return;
         setConvs((prev) =>
           prev.map((c) =>
             c.key === convKey
-              ? { ...c, sessionId: info.sessionId, mcpErrors: info.mcpErrors }
+              ? {
+                  ...c,
+                  sessionId: info.sessionId,
+                  mcpErrors: info.mcpErrors,
+                  transcriptPath,
+                  sessionFileId,
+                }
               : c,
           ),
         );
+        if (opts?.seedLines && opts.seedLines.length > 0) void refreshSessions();
       } catch (e) {
         if (startTokenRef.current !== token) return;
         const msg = String(e).replace(/^[A-Z_]+:\s*/, "");
@@ -279,31 +431,106 @@ export function AgentPanel() {
         if (startTokenRef.current === token) setStarting(false);
       }
     },
-    [showToast, updateConv],
+    [showToast, updateConv, refreshSessions],
   );
 
-  // 主会话生命周期:页签激活后,内容/配置/重启任一变化都开一条全新主会话
-  // (辅助会话随之作废)。页签不活跃时不建会话,也不重置已建记录——切回来
-  // 内容没变就复用活会话。
+  /**
+   * 打开一条保存过的会话:读回记录 → 还原界面消息与模型历史 → 继续对话。
+   * 会话记录是唯一来源,后端只是带着历史重新开一条 live 会话。
+   */
+  const openSavedSession = useCallback(
+    async (meta: SavedSessionMeta) => {
+      const info = materialRef.current?.info;
+      const vault = useAppStore.getState().vaultPath;
+      if (!info || !vault) return;
+      setHistoryOpen(false);
+      const path = sessionFilePath(vault, info.relDir, meta.id);
+      const raw = await api.readFile(path).catch(() => null);
+      const lines = parseTranscript(raw);
+      if (lines.length === 0) {
+        showToast("这条会话记录是空的");
+        return;
+      }
+      const conv: Conv = {
+        key: nextConvKey(),
+        sessionId: null,
+        entries: lines.map(entryFromLine),
+        label: meta.title,
+        parent: null,
+        basedOn: "",
+        mcpErrors: [],
+        transcriptPath: path,
+        sessionFileId: meta.id,
+      };
+      transcriptRef.current.set(conv.key, path);
+      setConvs([conv]);
+      setActiveKey(conv.key);
+      turnsRef.current.clear();
+      void startSession(conv.key, materialContent, {
+        history: historyFromTranscript(lines),
+        transcriptPath: path,
+      });
+    },
+    [materialContent, showToast, startSession],
+  );
+
+  // 主会话生命周期:页签激活后,材料/配置/重启任一变化都重建会话。
+  // - 换材料:恢复这份材料最近一条会话(没有才开新的);
+  // - 保存配置 / 点 ⟳:强制开一条新会话(旧会话留在历史里);
+  // - 页签切走再切回:内容没变就复用活会话。
   useEffect(() => {
     if (rightTab !== "agent") return;
-    const key = `${studyContentKey(studyContent)}|${agentConfigVersion}|${restartNonce}`;
+    const identity = studyContentKey(materialContent);
+    const key = `${identity}|${agentConfigVersion}|${restartNonce}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
-    const conv: Conv = {
-      key: nextConvKey(),
-      sessionId: null,
-      entries: [],
-      label: "主会话",
-      parent: null,
-      basedOn: "",
-      mcpErrors: [],
-    };
-    setConvs([conv]);
-    setActiveKey(conv.key);
-    turnsRef.current.clear();
-    void startSession(conv.key, studyContent);
-  }, [studyContent, agentConfigVersion, rightTab, restartNonce, startSession]);
+
+    const restartKey = `${agentConfigVersion}|${restartNonce}`;
+    const forcedNew = restartKeyRef.current !== null && restartKeyRef.current !== restartKey;
+    restartKeyRef.current = restartKey;
+
+    const token = ++startTokenRef.current;
+    void (async () => {
+      const vault = useAppStore.getState().vaultPath;
+      const info =
+        vault && materialContent ? await ensureMaterial(vault, materialContent) : null;
+      if (startTokenRef.current !== token) return;
+      materialRef.current = { identity, info };
+      setMaterialInfo(info);
+      const sessions = info
+        ? await agentApi.sessionsList(info.relDir).catch(() => [])
+        : [];
+      if (startTokenRef.current !== token) return;
+      setSavedSessions(sessions);
+
+      if (!forcedNew && sessions.length > 0) {
+        await openSavedSession(sessions[0]);
+        return;
+      }
+      const conv: Conv = {
+        key: nextConvKey(),
+        sessionId: null,
+        entries: [],
+        label: "主会话",
+        parent: null,
+        basedOn: "",
+        mcpErrors: [],
+        transcriptPath: null,
+        sessionFileId: null,
+      };
+      setConvs([conv]);
+      setActiveKey(conv.key);
+      turnsRef.current.clear();
+      void startSession(conv.key, materialContent);
+    })();
+  }, [
+    materialContent,
+    agentConfigVersion,
+    rightTab,
+    restartNonce,
+    startSession,
+    openSavedSession,
+  ]);
 
   // ⌘⇧Y / 命令:主会话 ↔ 最近一条辅助会话 来回切换。
   useEffect(() => {
@@ -353,6 +580,7 @@ export function AgentPanel() {
         const draft: ChatEntry = {
           role: "assistant",
           text: turn.text,
+          at: Date.now(),
           turn,
           items,
         };
@@ -377,15 +605,60 @@ export function AgentPanel() {
     }
     turnsRef.current.delete(convKey);
     writeEntries(convKey, turn, true, items);
+    persistTurn(convKey, turn);
+  }
+
+  /**
+   * 把这一轮写进会话记录:用户消息 + 助手回复一起追加(同一条 append,
+   * 顺序固定;发送失败时用户消息根本没进过文件)。写失败只记日志,不影响
+   * 对话——落盘是记录,不是发送的前置条件。
+   */
+  function persistTurn(convKey: string, turn: Turn, pathOverride?: string) {
+    const path = pathOverride ?? transcriptRef.current.get(convKey);
+    if (!path) return;
+    const user = pendingUserRef.current.get(convKey);
+    pendingUserRef.current.delete(convKey);
+    const lines: TranscriptLine[] = [];
+    if (user) lines.push(user);
+    lines.push({
+      type: "assistant",
+      at: Date.now(),
+      text: turn.text,
+      thinking: turn.thinking,
+      thinkSeconds: turn.thinkSeconds,
+      tools: turn.tools,
+      error: turn.error,
+    });
+    void api
+      .appendFile(path, serializeTranscript(lines))
+      .then(() => refreshSessions())
+      .catch((e) => console.warn("[agent] 写会话记录失败", e));
   }
 
   function handleAgentEvent(sessionId: string, event: AgentEvent) {
     const conv = findConvBySession(convsRef.current, sessionId);
     if (!conv) {
-      // 会话已经不在列表里(内容/配置变更后旧会话作废):流式增量无害丢弃,
+      // 会话已经不在列表里(换材料/重启后旧会话作废):流式增量无害丢弃,
       // 但**终止事件必须清忙碌标记**——否则面板永远停在「生成中」,下一次
-      // 发送会被 busyRef 静默吃掉。
+      // 发送会被 busyRef 静默吃掉。这一轮已经生成的内容仍然写进它自己的
+      // 会话记录:用户只是切走了材料,答案不该丢。
       if (event.type === "turn_end" || event.type === "error") {
+        const entry = sessionIndexRef.current.get(sessionId);
+        if (entry) {
+          const turn = turnsRef.current.get(entry.convKey);
+          if (turn) {
+            if (event.type === "error") turn.error = event.message;
+            if (turn.thinking && turn.thinkSeconds == null && turn.thinkingStart != null) {
+              turn.thinkSeconds = Math.max(
+                1,
+                Math.round((Date.now() - turn.thinkingStart) / 1000),
+              );
+            }
+            turnsRef.current.delete(entry.convKey);
+            persistTurn(entry.convKey, turn, entry.path ?? undefined);
+          }
+          sessionIndexRef.current.delete(sessionId);
+        }
         if (busyRef.current === sessionId) {
           busyRef.current = null;
           setBusySession(null);
@@ -443,6 +716,7 @@ export function AgentPanel() {
               {
                 role: "assistant",
                 text: "",
+                at: Date.now(),
                 items: event.items > 0 ? event.items : null,
                 turn: {
                   text: "",
@@ -455,6 +729,14 @@ export function AgentPanel() {
               },
             ],
           }));
+          persistTurn(conv.key, {
+            text: "",
+            thinking: "",
+            thinkingStart: null,
+            thinkSeconds: null,
+            tools: [],
+            error: event.message,
+          });
         }
         if (busyRef.current === sessionId) {
           busyRef.current = null;
@@ -521,13 +803,22 @@ export function AgentPanel() {
     setBusySession(info);
     const last = conv.entries[conv.entries.length - 1];
     const items = last?.items != null ? last.items + 1 : null;
+    const at = Date.now();
+    // 用户消息先挂在这轮上,和助手回复一起落盘;发送失败直接丢掉。
+    pendingUserRef.current.set(conv.key, {
+      type: "user",
+      at,
+      text,
+      images: images.length > 0 ? images : undefined,
+    });
     updateConv(conv.key, (c) => ({
       ...c,
       error: undefined,
       errorKind: undefined,
+      label: c.label === "主会话" ? forkLabel(text || "[图片]", 30) : c.label,
       entries: [
         ...c.entries,
-        { role: "user", text, images: images.length > 0 ? images : undefined, items },
+        { role: "user", text, at, images: images.length > 0 ? images : undefined, items },
       ],
     }));
     try {
@@ -535,6 +826,7 @@ export function AgentPanel() {
     } catch (e) {
       busyRef.current = null;
       setBusySession(null);
+      pendingUserRef.current.delete(conv.key);
       const message = String(e).replace(/^[A-Z_]+:\s*/, "");
       // 后端没收到这一轮:把刚插进 UI 的幽灵消息撤回,内容放回输入框,并把
       // 原因留在会话错误横幅上。否则界面里挂着一条永远不会被回答的消息。
@@ -554,7 +846,10 @@ export function AgentPanel() {
     if (info) void agentApi.abort(info);
   }
 
-  /** 从第 index 条消息分叉一条辅助会话:复制前缀历史,原会话不动。 */
+  /**
+   * 从第 index 条消息分叉一条辅助会话:复制前缀历史,原会话不动。
+   * 分叉出来的会话有自己的记录文件(前缀先写进去),关掉再开也能继续。
+   */
   function forkFrom(index: number) {
     const src = activeConv;
     if (!src) return;
@@ -562,21 +857,27 @@ export function AgentPanel() {
       showToast("会话未就绪,不能分叉");
       return;
     }
-    const cutoff = forkCutoff(src.entries, index);
     const origin = src.entries[index];
     const label = origin.text.trim() || (origin.images?.length ? "[图片]" : "");
+    const prefix = src.entries.slice(0, index + 1).map(cloneEntry);
+    const seedLines = entriesToLines(prefix);
     const conv: Conv = {
       key: nextConvKey(),
       sessionId: null,
-      entries: src.entries.slice(0, index + 1).map(cloneEntry),
+      entries: prefix,
       label: `↳ ${forkLabel(label)}`,
       parent: src.key,
       basedOn: forkLabel(label, 40),
       mcpErrors: [],
+      transcriptPath: null,
+      sessionFileId: null,
     };
     setConvs((prev) => [...prev, conv]);
     setActiveKey(conv.key);
-    void startSession(conv.key, studyContent, { from: src.sessionId, items: cutoff });
+    void startSession(conv.key, materialContent, {
+      history: historyFromTranscript(seedLines),
+      seedLines,
+    });
   }
 
   const parentConv = activeConv?.parent
@@ -603,13 +904,40 @@ export function AgentPanel() {
             ))}
           </select>
         ) : (
-          <span className="agent-conv-label">主会话</span>
+          <span className="agent-conv-label" title={activeConv?.label}>
+            {activeConv?.label ?? "主会话"}
+          </span>
         )}
         <span className="spacer" />
         <button
+          className={`icon-btn${historyOpen ? " is-active" : ""}`}
+          title="历史会话(这份材料保存过的对话)"
+          aria-pressed={historyOpen}
+          onClick={() => setHistoryOpen((v) => !v)}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <path d="M3 4v5h5" />
+            <path d="M12 8v4l3 2" />
+          </svg>
+        </button>
+        <button
           className="icon-btn"
-          title="重新开始主会话(重读 .bnote/agent.md 与配置)"
-          onClick={() => setRestartNonce((n) => n + 1)}
+          title="新会话(重读 .bnote/agent.md 与配置)"
+          onClick={() => {
+            setHistoryOpen(false);
+            setRestartNonce((n) => n + 1);
+          }}
         >
           ⟳
         </button>
@@ -652,7 +980,11 @@ export function AgentPanel() {
           ) : (
             <button
               className="btn btn-ghost agent-status-retry"
-              onClick={() => void startSession(activeConv.key, studyContent)}
+              onClick={() =>
+                void startSession(activeConv.key, materialContent, {
+                  transcriptPath: activeConv.transcriptPath,
+                })
+              }
             >
               重试
             </button>
@@ -866,6 +1198,58 @@ export function AgentPanel() {
           )}
         </div>
       </div>
+      {/* 历史会话抽屉:这份材料下保存过的对话,点一条即恢复并继续。 */}
+      {historyOpen && (
+        <div className="agent-history" role="dialog" aria-label="历史会话">
+          <div className="agent-history-head">
+            <div className="agent-history-heading">
+              <span className="agent-history-heading-title">历史会话</span>
+              <span className="agent-history-heading-sub" title={materialInfo?.relDir}>
+                {materialInfo?.title || "本材料"}
+              </span>
+            </div>
+            <button
+              className="agent-history-close"
+              title="关闭"
+              aria-label="关闭"
+              onClick={() => setHistoryOpen(false)}
+            >
+              ×
+            </button>
+          </div>
+          <button
+            className="agent-history-new"
+            onClick={() => {
+              setHistoryOpen(false);
+              setRestartNonce((n) => n + 1);
+            }}
+          >
+            ＋ 新会话
+          </button>
+          {savedSessions.length === 0 ? (
+            <p className="agent-history-empty">这份材料还没有保存过会话</p>
+          ) : (
+            <ul className="agent-history-list">
+              {savedSessions.map((s) => (
+                <li key={s.id}>
+                  <button
+                    className={`agent-history-item${
+                      s.id === activeConv?.sessionFileId ? " is-active" : ""
+                    }`}
+                    title={s.title}
+                    onClick={() => void openSavedSession(s)}
+                  >
+                    <span className="agent-history-item-title">{s.title}</span>
+                    <span className="agent-history-item-time">
+                      {formatSessionTime(s.updatedAt)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </aside>
   );
 }

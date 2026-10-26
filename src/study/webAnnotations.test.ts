@@ -8,6 +8,7 @@ import {
   parseWebAnnotations,
   webAnnotationFileName,
   webAnnotationRelPath,
+  webAnnotationMaterialPath,
   type WebAnnotation,
 } from "./webAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
@@ -85,6 +86,9 @@ describe("网页批注数据", () => {
     expect(webAnnotationFileName(a)).not.toBe(webAnnotationFileName(b));
     expect(webAnnotationFileName(a)).toMatch(/^example\.com-[a-z0-9]+\.json$/);
     expect(webAnnotationRelPath(a)).toMatch(/^web-annotations\/example\.com-/);
+    expect(webAnnotationMaterialPath("/vault", "materials/webpages/x_com_201075")).toBe(
+      "/vault/.bnote/materials/webpages/x_com_201075/annotations.json",
+    );
     expect(webAnnotationFileName("not a url")).toMatch(/^page-[a-z0-9]+\.json$/);
   });
 

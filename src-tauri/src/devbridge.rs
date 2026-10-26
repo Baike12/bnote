@@ -38,7 +38,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
-use crate::commands::{agent, config, files, python, vault};
+use crate::commands::{agent, config, files, materials, python, vault};
 use crate::state::AppState;
 
 /// Fixed port; `vite.config.ts` proxies `/__dev` here.
@@ -204,6 +204,9 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "write_file" => json_ok!(
             files::write_file(app.state(), arg_str(args, "path")?, arg_str(args, "contents")?).await
         ),
+        "append_file" => json_ok!(
+            files::append_file(app.state(), arg_str(args, "path")?, arg_str(args, "contents")?).await
+        ),
         "write_file_base64" => json_ok!(
             files::write_file_base64(
                 app.state(),
@@ -283,8 +286,25 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                         .map_err(|e| format!("BAD_ARGS: fork: {}", e))?,
                 ),
             };
-            json_ok!(agent::agent_start_session(app.clone(), app.state(), study, fork).await)
+            let history: Option<Vec<crate::agent::types::ChatItem>> = match args.get("history") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: history: {}", e))?,
+                ),
+            };
+            json_ok!(agent::agent_start_session(app.clone(), app.state(), study, fork, history).await)
         }
+        "study_material_ensure" => {
+            let study: StudyContent = serde_json::from_value(arg_value(args, "study")?)
+                .map_err(|e| format!("BAD_ARGS: study: {}", e))?;
+            json_ok!(materials::study_material_ensure(app.state(), study).await)
+        }
+        "study_sessions_list" => json_ok!(materials::study_sessions_list(
+            app.state(),
+            arg_str(args, "relDir")?
+        )
+        .await),
         "agent_send" => {
             let images: Vec<crate::agent::types::InlineImage> = match args.get("images") {
                 None | Some(Value::Null) => Vec::new(),

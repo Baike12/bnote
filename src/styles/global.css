@@ -298,6 +298,10 @@ button {
   background: var(--bg3);
   color: var(--text);
 }
+.icon-btn.is-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
 
 .sidebar-tree {
   flex: 1;
@@ -1948,6 +1952,7 @@ input[type="range"] {
 }
 
 .agent-panel {
+  position: relative; /* 历史会话抽屉贴着面板右边展开 */
   flex: 1;
   min-width: 0;
   /* column flex 子项:auto 会解析成内容最小高度,面板被整段对话撑高后
@@ -2022,6 +2027,128 @@ input[type="range"] {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-bottom: 1px solid var(--border);
   cursor: default;
+}
+
+/* 历史会话抽屉:从面板右缘展开,覆盖对话区(不挤压消息宽度)。
+   一份材料的会话都是同一批文件,列表按最近更新时间排序。 */
+.agent-history {
+  position: absolute;
+  /* 让出头部:抽屉开着时仍能切「笔记 / 学习助手」页签。 */
+  top: var(--study-head-h);
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 264px;
+  max-width: 82%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-left: 1px solid var(--border);
+  background: var(--bg1);
+  box-shadow: -8px 0 24px var(--shadow);
+}
+.agent-history-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-history-heading {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-history-heading-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.agent-history-heading-sub {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-close {
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.agent-history-close:hover { background: var(--bg3); color: var(--text); }
+.agent-history-new {
+  flex-shrink: 0;
+  padding: 5px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-history-new:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.agent-history-empty {
+  margin: 12px 4px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-faint);
+}
+.agent-history-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-history-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.agent-history-item:hover { background: var(--bg2); }
+.agent-history-item.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.agent-history-item-title {
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-item-time {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
 }
 
 /* 会话状态条:连接中 / 启动失败(带重试)——失败必须常驻可见,
@@ -3377,7 +3504,7 @@ input[type="range"] {
   border-top: 2px solid var(--read-frame-border);
   border-radius: 12px 12px 0 0;
 }
-/* 滚动内容 = 页面区 + 右侧留白。留白随页面一起滚,批注卡才会一直对齐行。 */
+/* 滚动内容 = 左侧批注留白 + 页面区。留白随页面一起滚,批注卡才会一直对齐行。 */
 .pdf-stage {
   position: relative;
   display: flex;
@@ -3463,7 +3590,7 @@ input[type="range"] {
   background: var(--pdf-note);
 }
 
-/* 右侧留白:不属于任何一页,是 PDF 面板自带的一条空白批注栏。 */
+/* 批注留白:不属于任何一页,是 PDF 面板自带的一条空白批注栏(在页面左侧)。 */
 .pdf-notes {
   position: relative;
   z-index: 2;

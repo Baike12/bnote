@@ -232,6 +232,12 @@ interface AppState {
   studyContent: StudyContent | null;
   /** 学习模式最近打开(PDF 与网页分开)。启动时从 config.json 恢复。 */
   studyHistory: StudyHistory;
+  /**
+   * 微信读书当前在读的书(页内路由事件推来;书架/商城页为 null)。
+   * studyContent 停在中栏的入口网址,读哪本书只有页内知道——学习助手的
+   * 会话与批注要按「书」归属,不能全挂在书架上。
+   */
+  studyWereadBook: { url: string; title: string } | null;
   /** 画布会话(null = 没开)。全屏浮层 + 命令快捷键挂起。 */
   drawingSession: DrawingSession | null;
   /**
@@ -274,6 +280,7 @@ interface AppState {
   setStudyMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
   setStudyHistory: (history: StudyHistory) => void;
+  setStudyWereadBook: (book: { url: string; title: string } | null) => void;
   /** 打开一份 PDF 后记一笔(去重、置顶、持久化)。 */
   recordStudyPdf: (entry: Omit<StudyPdfEntry, "at">) => void;
   recordStudyUrl: (entry: Omit<StudyUrlEntry, "at">) => void;
@@ -338,6 +345,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   studyMode: false,
   studyContent: null,
   studyHistory: emptyStudyHistory(),
+  studyWereadBook: null,
   drawingSession: null,
   agentConfigVersion: 0,
   agentSwitchSessionSignal: 0,
@@ -445,8 +453,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 只在这一刻收,之后用户在模式里自己展开照常。
   setStudyMode: (active) =>
     set(active ? { studyMode: true, sidebarOpen: false } : { studyMode: false }),
-  setStudyContent: (content) => set({ studyContent: content }),
+  setStudyContent: (content) => set({ studyContent: content, studyWereadBook: null }),
   setStudyHistory: (studyHistory) => set({ studyHistory }),
+  setStudyWereadBook: (studyWereadBook) => set({ studyWereadBook }),
   recordStudyPdf: (entry) => {
     const studyHistory = pushPdfEntry(get().studyHistory, entry);
     set({ studyHistory });

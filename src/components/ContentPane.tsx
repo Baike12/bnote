@@ -7,6 +7,7 @@ import { bindingsForCommand } from "@/commands/keys";
 import { useAppStore } from "@/state/appStore";
 import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry, type WereadBookEntry } from "@/study/history";
 import { setWebNavHandlers } from "@/study/pdfNav";
+import { ensureMaterial } from "@/study/materials";
 import { normalizePageStep } from "@/study/reading";
 import {
   flushWebAnnotations,
@@ -36,6 +37,21 @@ import { StudyHistoryMenu } from "./StudyHistoryMenu";
  * pages are still embedded as a native child webview glued to the placeholder
  * — see `agent.rs::show_study_preview` for why it is not an iframe.
  */
+
+/**
+ * 网页/微信读书的材料目录:标题取「当前在读的书 → 历史里的书名」里最好的
+ * 那个(目录名只在首次登记时用到,之后由后端 registry 固定)。
+ */
+async function urlMaterialDir(vaultRoot: string, url: string): Promise<string | null> {
+  const state = useAppStore.getState();
+  const book = state.studyWereadBook;
+  const title =
+    book && book.url === url
+      ? book.title
+      : (state.studyHistory.weread.find((e) => e.url === url)?.title ?? "");
+  const info = await ensureMaterial(vaultRoot, { kind: "url", url, title });
+  return info?.relDir ?? null;
+}
 
 /** 收进来的 PDF 落在 vault 的这个目录下。 */
 const PDF_FOLDER = "pdfs";
@@ -105,6 +121,7 @@ export function ContentPane() {
   // 退回 content 自己的标题。
   useEffect(() => {
     setActiveWeread(null);
+    useAppStore.getState().setStudyWereadBook(null);
   }, [content]);
 
   // 中栏内嵌网页:把占位元素的矩形报给后端,并在它变化时同步过去。
@@ -236,7 +253,8 @@ export function ContentPane() {
           .catch(() => {});
         const vault = useAppStore.getState().vaultPath;
         if (!vault || typeof url !== "string" || !url) return;
-        const list = await loadWebAnnotations(vault, url);
+        const dir = await urlMaterialDir(vault, url);
+        const list = await loadWebAnnotations(vault, url, dir);
         if (list.length > 0) {
           await agentApi.mergeStudyPreviewAnnotations(url, list);
         }
@@ -248,7 +266,12 @@ export function ContentPane() {
       (payload) => {
         const vault = useAppStore.getState().vaultPath;
         if (!vault || !payload || typeof payload.url !== "string") return;
-        saveWebAnnotations(vault, payload.url, normalizeWebAnnotations(payload.annotations));
+        const url = payload.url;
+        const list = normalizeWebAnnotations(payload.annotations);
+        // 材料目录要先解析(可能是第一次写这份网页):解析失败退回旧路径。
+        void urlMaterialDir(vault, url).then((dir) => {
+          saveWebAnnotations(vault, url, list, dir);
+        });
       },
     );
 
@@ -265,6 +288,7 @@ export function ContentPane() {
       const known = state.studyHistory.weread.find((e) => e.url === route.url)?.title;
       const title = route.title || known || wereadFallbackTitle(route.url);
       state.recordWereadBook({ url: route.url, title });
+      state.setStudyWereadBook({ url: route.url, title });
       setActiveWeread({ url: route.url, title });
     });
 
