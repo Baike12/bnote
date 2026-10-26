@@ -32,8 +32,9 @@ import { StudyHistoryMenu } from "./StudyHistoryMenu";
 /**
  * Study-mode center column.
  *
- * PDFs are *not* converted: the file is copied into `<vault>/pdfs/` and shown
- * by the pdf.js reader, so what the user browses is the paper itself. Web
+ * PDFs are *not* converted: the file is copied into its material folder
+ * (`<vault>/.bnote/materials/pdfs/<dir>/`) and shown by the pdf.js reader,
+ * so what the user browses is the paper itself. Web
  * pages are still embedded as a native child webview glued to the placeholder
  * — see `agent.rs::show_study_preview` for why it is not an iframe.
  */
@@ -52,9 +53,6 @@ async function urlMaterialDir(vaultRoot: string, url: string): Promise<string | 
   const info = await ensureMaterial(vaultRoot, { kind: "url", url, title });
   return info?.relDir ?? null;
 }
-
-/** 收进来的 PDF 落在 vault 的这个目录下。 */
-const PDF_FOLDER = "pdfs";
 
 /** 命令层当前的翻页绑定；网页获得焦点时由页内运行时按这套键匹配。 */
 function readPageKeyBindings() {
@@ -368,8 +366,8 @@ export function ContentPane() {
   async function importAndOpen(pdfPath: string) {
     setImporting(true);
     try {
-      // 原文收进 vault 的 pdfs/:下载目录清空后,笔记里的这份材料仍然在。
-      const result = await agentApi.importPdf(pdfPath, PDF_FOLDER);
+      // 原文收进它自己的材料目录(与批注/会话同处一地)。
+      const result = await agentApi.importPdf(pdfPath);
       openPdf({ path: result.pdfPath, relPath: result.relPath, title: result.title });
       showToast(`已收进 vault/${result.relPath}`);
     } catch (e) {
@@ -521,7 +519,7 @@ export function ContentPane() {
           />
           <button
             className="icon-btn pdf-tool-btn"
-            title="选择 PDF 文件(存进 vault/pdfs)"
+            title="选择 PDF 文件(存进材料目录)"
             onClick={() => void pickPdf()}
             disabled={importing}
           >
@@ -543,7 +541,7 @@ export function ContentPane() {
           <div className="content-empty">
             <p className="content-empty-title">拖入 PDF 直接阅读</p>
             <p className="content-empty-hint">
-              PDF 会存到 vault 的 <code>{PDF_FOLDER}/</code> 文件夹。
+              PDF 会存进 <code>.bnote/materials/pdfs/</code>,与批注、会话放在一起。
             </p>
             <button className="btn content-pick" onClick={() => void pickPdf()}>
               选择 PDF 文件

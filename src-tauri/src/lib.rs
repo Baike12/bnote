@@ -218,7 +218,7 @@ pub fn run() {
             commands::agent::agent_set_current_note,
             commands::materials::study_material_ensure,
             commands::materials::study_sessions_list,
-            commands::agent::import_pdf,
+            commands::materials::study_import_pdf,
             commands::agent::show_study_preview,
             commands::agent::set_study_preview_bounds,
             commands::agent::set_study_preview_visible,

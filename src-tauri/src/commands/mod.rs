@@ -19,12 +19,39 @@ pub fn require_vault(state: &crate::state::AppState) -> Result<PathBuf, String> 
         .ok_or_else(|| "NO_VAULT: no vault is open".to_string())
 }
 
+/// 解析成可比较的绝对路径:存在的部分走 canonicalize(符号链接被解析),
+/// 不存在的尾段用最近的已存在祖先解析后按词法接上——这样 `/var/...`
+/// (指向 `/private/var/...`)这类 vault 路径与它下面还没建出来的文件
+/// 能落在同一个前缀下比较。
+fn resolve_for_compare(path: &Path) -> PathBuf {
+    if let Ok(p) = path.canonicalize() {
+        return p;
+    }
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = path;
+    while let Some(parent) = cur.parent() {
+        let Some(name) = cur.file_name() else {
+            // 含 `..` / `.` 的词法片段:交给 normalize,不做符号链接解析。
+            return normalize(path);
+        };
+        suffix.push(name.to_os_string());
+        if let Ok(base) = parent.canonicalize() {
+            let mut out = base;
+            for part in suffix.iter().rev() {
+                out.push(part);
+            }
+            return normalize(&out);
+        }
+        cur = parent;
+    }
+    normalize(path)
+}
+
 /// Ensures `path` lies inside `root` (after canonicalization when the file exists).
 pub fn ensure_within(root: &Path, path: &Path) -> Result<(), String> {
-    let checked = path
-        .canonicalize()
-        .unwrap_or_else(|_| normalize(path));
-    if checked.starts_with(root) {
+    let root_checked = resolve_for_compare(root);
+    let checked = resolve_for_compare(path);
+    if checked.starts_with(&root_checked) {
         Ok(())
     } else {
         Err(format!(

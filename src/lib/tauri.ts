@@ -232,9 +232,12 @@ export const agentApi = {
     invoke<SavedSessionMeta[]>("study_sessions_list", { relDir }),
   setCurrentNote: (path: string | null) =>
     invoke<void>("agent_set_current_note", { path }),
-  /** 把 PDF 收进 vault(`<vault>/<folderRel>/<stem>.pdf`),同名不同文件自动加序号。 */
-  importPdf: (pdfPath: string, folderRel: string) =>
-    invoke<ImportedPdf>("import_pdf", { pdfPath, folderRel }),
+  /**
+   * 把 PDF 收进材料目录(`.bnote/materials/pdfs/<拼音目录>/<原文件名>`),
+   * 与它的批注/会话放在一起;同一份文件重复导入直接打开已有副本。
+   */
+  importPdf: (pdfPath: string, title?: string) =>
+    invoke<ImportedPdf>("study_import_pdf", { pdfPath, title }),
   /**
    * 中栏内嵌网页预览(主窗口的子 webview,原生视图盖在占位元素上)。
    * 首次调用创建、之后调用只更新矩形并重新导航。`annotationScript` 是页面
