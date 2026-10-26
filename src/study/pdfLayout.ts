@@ -10,16 +10,16 @@ export const MAX_OUTLINE_WIDTH = 480;
 /** 拖动时至少给 PDF 页面留出的宽度。 */
 export const MIN_PAGE_AREA = 260;
 
-/** 右侧批注留白:常用面板宽度下占 30%,夹在 [170, 340];面板太窄就不留。 */
+/** 右侧批注留白:常用面板宽度下占 20%,夹在 [170, 230];面板太窄就不留。 */
 export const MIN_NOTES_RAIL = 170;
-export const MAX_NOTES_RAIL = 340;
+export const MAX_NOTES_RAIL = 230;
 
 export function notesRailWidth(panelWidth: number): number {
   if (!Number.isFinite(panelWidth) || panelWidth <= 0) return 0;
   const available = panelWidth - MIN_PAGE_AREA;
   // 留白至少 150px 才放得下批注卡;再窄就把整块空间还给页面。
   if (available < 150) return 0;
-  const preferred = Math.round(panelWidth * 0.3);
+  const preferred = Math.round(panelWidth * 0.2);
   return Math.round(
     Math.min(MAX_NOTES_RAIL, available, Math.max(MIN_NOTES_RAIL, preferred)),
   );

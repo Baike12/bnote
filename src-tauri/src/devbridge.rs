@@ -276,16 +276,31 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_start_session" => {
             let study: Option<StudyContent> = serde_json::from_value(arg_value(args, "study")?)
                 .map_err(|e| format!("BAD_ARGS: study: {}", e))?;
-            json_ok!(agent::agent_start_session(app.clone(), app.state(), study).await)
+            let fork = match args.get("fork") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: fork: {}", e))?,
+                ),
+            };
+            json_ok!(agent::agent_start_session(app.clone(), app.state(), study, fork).await)
         }
-        "agent_send" => json_ok!(
-            agent::agent_send(
-                app.state(),
-                arg_str(args, "sessionId")?,
-                arg_str(args, "text")?
+        "agent_send" => {
+            let images: Vec<crate::agent::types::InlineImage> = match args.get("images") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("BAD_ARGS: images: {}", e))?,
+            };
+            json_ok!(
+                agent::agent_send(
+                    app.state(),
+                    arg_str(args, "sessionId")?,
+                    arg_str(args, "text")?,
+                    Some(images)
+                )
+                .await
             )
-            .await
-        ),
+        }
         "agent_abort" => json_ok!(agent::agent_abort(app.state(), arg_str(args, "sessionId")?)),
         "agent_get_history" => {
             json_ok!(agent::agent_get_history(app.state(), arg_str(args, "sessionId")?))

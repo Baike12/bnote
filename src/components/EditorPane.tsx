@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { createEditor, loadDocument } from "@/editor/setup";
 import { editorApi } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
-import { flushCursorSave, restoreSavedCursor, scheduleCursorSave } from "@/editor/cursorMemory";
+import { flushCursorSave, observeScrollSave, restoreSavedCursor, scheduleCursorSave } from "@/editor/cursorMemory";
 import { applySettingsToEditor, newNote, openNote, saveNote } from "@/app/actions";
 import { useAppStore } from "@/state/appStore";
 import { currentVimMode } from "@/editor/vim/vim";
@@ -59,6 +59,10 @@ export function EditorPane() {
       },
     });
     editorApi.view = view;
+    // 滚轮阅读也是「读到哪了」:滚动位置与光标走同一条防抖保存。
+    const disposeScrollSave = observeScrollSave(view, () =>
+      useAppStore.getState().currentFile,
+    );
     if (reuse) {
       // 文档已经在这个实例里了：标记成已加载，下面的 [currentFile] effect 便不再
       // 读盘，光标照旧按记住的位置复位。
@@ -78,6 +82,7 @@ export function EditorPane() {
       }
       // 光标位置也留着——重挂后靠它复位（不然回到上一篇的旧位置）。
       flushCursorSave();
+      disposeScrollSave();
       // 只交接真正装好的文档：读盘还没回来就切布局的话（刚打开就切），这里还是
       // 空文档，交接出去等于把空内容冒充成笔记内容。
       const path = loadedFile.current;

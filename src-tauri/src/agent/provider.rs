@@ -4,6 +4,85 @@
 use super::types::{AgentEvent, ChatItem, Content, ToolDef, TurnResult};
 use futures::StreamExt;
 use serde_json::{json, Value};
+use std::time::Duration;
+
+/// 建连超时:连不上要尽快报错,而不是挂着。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// 流空闲超时:模型流超过这么久没有一个字节就按失败结束。
+///
+/// 没有它,网关/网络半开时 `stream.next().await` 永远不返回 → 会话的
+/// running 一直为 true → 之后每次发送都被 SESSION_BUSY 拒掉;前端只弹
+/// 一个几秒消失的 toast,用户看到的现象就是「再次发送没有回应」。推理
+/// 模型思考期间会持续发 thinking_delta,真静默 180s 只剩网关挂死一种解释。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// 取下一块流数据,带空闲超时(测试可注入更短的超时)。
+///
+/// `None` = 流正常结束;`Err` = 空闲超时(网关无响应)或连接错误。
+async fn next_chunk_with<S, E>(stream: &mut S, idle: Duration) -> Result<Option<bytes::Bytes>, String>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(idle, stream.next()).await {
+        Ok(Some(chunk)) => chunk.map(Some).map_err(|e| format!("stream: {}", e)),
+        Ok(None) => Ok(None),
+        Err(_) => Err(format!(
+            "模型流空闲超时({}s 没有任何数据):网关或网络无响应,请重试",
+            idle.as_secs()
+        )),
+    }
+}
+
+async fn next_chunk<S>(stream: &mut S) -> Result<Option<bytes::Bytes>, String>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
+{
+    next_chunk_with(stream, STREAM_IDLE_TIMEOUT).await
+}
+
+/// Anthropic content block:Text/Image/ToolUse/ToolResult 各自的线上形态。
+fn anthropic_block(c: &Content) -> Value {
+    match c {
+        Content::Text { text } => json!({"type": "text", "text": text}),
+        // 图片只出现在用户消息里(见 ChatItem::user_message)。
+        Content::Image { media_type, data } => json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }),
+        Content::ToolUse { id, name, input } => {
+            json!({"type": "tool_use", "id": id, "name": name, "input": input})
+        }
+        Content::ToolResult { tool_use_id, content, is_error } => json!({
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content,
+            "is_error": is_error,
+        }),
+    }
+}
+
+/// OpenAI 用户消息的 content:无图片保持纯字符串(既有形态,兼容旧端点),
+/// 有图片时换多部件数组(text + image_url data URL)。
+fn openai_user_content(text_parts: &[String], images: &[Content]) -> Value {
+    if images.is_empty() {
+        return json!(text_parts.join("\n\n"));
+    }
+    let mut parts: Vec<Value> = Vec::new();
+    if !text_parts.is_empty() {
+        parts.push(json!({"type": "text", "text": text_parts.join("\n\n")}));
+    }
+    for img in images {
+        let Content::Image { media_type, data } = img else {
+            continue;
+        };
+        parts.push(json!({
+            "type": "image_url",
+            "image_url": {"url": format!("data:{};base64,{}", media_type, data)},
+        }));
+    }
+    json!(parts)
+}
 
 pub struct Provider {
     pub kind: String, // "anthropic" | "openai"
@@ -32,7 +111,10 @@ impl Provider {
             api_key: api_key.to_string(),
             model: model.to_string(),
             max_tokens: max_tokens.max(1024),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
@@ -64,21 +146,7 @@ impl Provider {
         let mut messages: Vec<Value> = Vec::new();
         for item in items {
             if let ChatItem::Message { role, content } = item {
-                let blocks: Vec<Value> = content
-                    .iter()
-                    .map(|c| match c {
-                        Content::Text { text } => json!({"type": "text", "text": text}),
-                        Content::ToolUse { id, name, input } => {
-                            json!({"type": "tool_use", "id": id, "name": name, "input": input})
-                        }
-                        Content::ToolResult { tool_use_id, content, is_error } => json!({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": content,
-                            "is_error": is_error,
-                        }),
-                    })
-                    .collect();
+                let blocks: Vec<Value> = content.iter().map(anthropic_block).collect();
                 messages.push(json!({"role": role, "content": blocks}));
             }
         }
@@ -98,8 +166,11 @@ impl Provider {
             "max_tokens": self.max_tokens,
             "stream": true,
             "messages": messages,
-            "tools": tools_json,
         });
+        // 纯问答会话没有任何工具:整个不发 tools 字段,而不是发空数组。
+        if !tools_json.is_empty() {
+            body["tools"] = json!(tools_json);
+        }
         if !system.is_empty() {
             body["system"] = json!(system);
         }
@@ -128,8 +199,7 @@ impl Provider {
         let mut current_tool: Option<(String, String, String)> = None; // (id, name, args)
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| format!("stream: {}", e))?;
+        while let Some(bytes) = next_chunk(&mut stream).await? {
             for event in sse.feed(&bytes) {
                 let v: Value = match serde_json::from_str(&event) {
                     Ok(v) => v,
@@ -153,6 +223,14 @@ impl Provider {
                                 let text = delta["text"].as_str().unwrap_or_default();
                                 turn.text.push_str(text);
                                 sink(AgentEvent::TextDelta { text: text.to_string() });
+                            }
+                            // thinking 块的流式文本(不进历史,见 AgentEvent::ThinkingDelta);
+                            // signature_delta 是块签名,只在回传时有意义,这里丢弃。
+                            Some("thinking_delta") => {
+                                let text = delta["thinking"].as_str().unwrap_or_default();
+                                if !text.is_empty() {
+                                    sink(AgentEvent::ThinkingDelta { text: text.to_string() });
+                                }
                             }
                             Some("input_json_delta") => {
                                 if let Some((_, _, args)) = current_tool.as_mut() {
@@ -214,6 +292,9 @@ impl Provider {
                         match c {
                             Content::Text { text: t } => text.push_str(t),
                             Content::ToolUse { .. } => tool_calls.push(c),
+                            // 图片按构造只会出现在用户消息里;真出现也带不上
+                            // (OpenAI assistant content 不接受 image 部件),丢弃。
+                            Content::Image { .. } => {}
                             Content::ToolResult { .. } => {}
                         }
                     }
@@ -247,18 +328,20 @@ impl Provider {
                 } else {
                     // user message or tool results
                     let mut text_parts: Vec<String> = Vec::new();
+                    let mut images: Vec<Content> = Vec::new();
                     let mut results: Vec<&Content> = Vec::new();
                     for c in content {
                         match c {
                             Content::Text { text } => text_parts.push(text.clone()),
+                            Content::Image { .. } => images.push(c.clone()),
                             Content::ToolResult { .. } => results.push(c),
                             Content::ToolUse { .. } => {}
                         }
                     }
-                    if !text_parts.is_empty() {
+                    if !text_parts.is_empty() || !images.is_empty() {
                         messages.push(json!({
                             "role": "user",
-                            "content": text_parts.join("\n\n"),
+                            "content": openai_user_content(&text_parts, &images),
                         }));
                     }
                     for r in results {
@@ -287,12 +370,15 @@ impl Provider {
             })
             .collect();
 
-        let body = json!({
+        let mut body = json!({
             "model": self.model,
             "stream": true,
             "messages": messages,
-            "tools": tools_json,
         });
+        // 纯问答会话没有任何工具:整个不发 tools 字段,而不是发空数组。
+        if !tools_json.is_empty() {
+            body["tools"] = json!(tools_json);
+        }
         let url = format!("{}/chat/completions", self.base_url);
         let resp = self
             .client
@@ -314,10 +400,14 @@ impl Provider {
         let mut calls: Vec<(String, String, String)> = Vec::new();
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| format!("stream: {}", e))?;
+        let mut done = false;
+        while !done {
+            let Some(bytes) = next_chunk(&mut stream).await? else {
+                break;
+            };
             for event in sse.feed(&bytes) {
                 if event == "[DONE]" {
+                    done = true;
                     break;
                 }
                 let v: Value = match serde_json::from_str(&event) {
@@ -325,6 +415,16 @@ impl Provider {
                     Err(_) => continue,
                 };
                 let delta = &v["choices"][0]["delta"];
+                // 推理模型(DeepSeek R1 / GLM / Qwen 等)在 openai 兼容流上的
+                // 思考字段:主流是 reasoning_content,GLM 某些网关用 reasoning。
+                if let Some(text) = delta["reasoning_content"]
+                    .as_str()
+                    .or_else(|| delta["reasoning"].as_str())
+                {
+                    if !text.is_empty() {
+                        sink(AgentEvent::ThinkingDelta { text: text.to_string() });
+                    }
+                }
                 if let Some(text) = delta["content"].as_str() {
                     if !text.is_empty() {
                         turn.text.push_str(text);
@@ -436,4 +536,94 @@ fn find_double_newline(buf: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn 流空闲超时报错而不是永久挂起() {
+        // 网关半开时 SSE 流不会自己结束:没有这层超时,一轮对话会永远挂着,
+        // 会话的 running 也永远不复位(之后每次发送都被 SESSION_BUSY 拒掉)。
+        let mut stream =
+            futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
+        let err = next_chunk_with(&mut stream, Duration::from_millis(30))
+            .await
+            .unwrap_err();
+        assert!(err.contains("空闲超时"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn 流正常结束返回_none_不误报超时() {
+        let mut stream = futures::stream::iter(Vec::<Result<bytes::Bytes, std::io::Error>>::new());
+        assert!(next_chunk_with(&mut stream, Duration::from_millis(30))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn 流错误原样上报() {
+        let mut stream = futures::stream::iter(vec![Err::<bytes::Bytes, _>(
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset"),
+        )]);
+        let err = next_chunk_with(&mut stream, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(err.contains("reset"), "{}", err);
+    }
+
+    #[test]
+    fn anthropic_block_图片映射为_base64_source() {
+        let v = anthropic_block(&Content::Image {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+        });
+        assert_eq!(v["type"], "image");
+        assert_eq!(v["source"]["type"], "base64");
+        assert_eq!(v["source"]["media_type"], "image/png");
+        assert_eq!(v["source"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn openai_无图片保持纯字符串_兼容旧端点() {
+        let v = openai_user_content(&["问题".to_string()], &[]);
+        assert_eq!(v, json!("问题"));
+    }
+
+    #[test]
+    fn openai_带图片换多部件数组_文本在前_data_url格式() {
+        let v = openai_user_content(
+            &["这是什么".to_string()],
+            vec![Content::Image {
+                media_type: "image/jpeg".into(),
+                data: "BBBB".into(),
+            }]
+            .as_slice(),
+        );
+        let parts = v.as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(
+            parts[1]["image_url"]["url"],
+            "data:image/jpeg;base64,BBBB"
+        );
+    }
+
+    #[test]
+    fn openai_纯图片消息_没有空文本部件() {
+        let v = openai_user_content(
+            &[],
+            vec![Content::Image {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }]
+            .as_slice(),
+        );
+        let parts = v.as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+    }
 }

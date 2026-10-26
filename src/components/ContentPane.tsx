@@ -5,7 +5,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
 import { bindingsForCommand } from "@/commands/keys";
 import { useAppStore } from "@/state/appStore";
-import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry } from "@/study/history";
+import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry, type WereadBookEntry } from "@/study/history";
 import { setWebNavHandlers } from "@/study/pdfNav";
 import { normalizePageStep } from "@/study/reading";
 import {
@@ -16,6 +16,14 @@ import {
   WEB_ANNOTATION_SCRIPT,
   type WebAnnotationKind,
 } from "@/study/webAnnotations";
+import {
+  isWereadUrl,
+  normalizeWereadRoute,
+  wereadFallbackTitle,
+  WEREAD_HOME_URL,
+  WEREAD_SCRIPT,
+  type WereadRoutePayload,
+} from "@/study/weread";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { IconSparkles } from "./icons";
 import { StudyHistoryMenu } from "./StudyHistoryMenu";
@@ -40,7 +48,10 @@ function readPageKeyBindings() {
   };
 }
 
-/** 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键（每次导航都会重装）。 */
+/**
+ * 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键 + 微信读书运行时
+ * (每次导航都会重装;微信读书运行时开头按 hostname 自门控,其他网站零开销)。
+ */
 function previewInitScript(step: number): string {
   const keys = readPageKeyBindings();
   return [
@@ -49,6 +60,7 @@ function previewInitScript(step: number): string {
     `window.__bnoteReader && window.__bnoteReader.setKeys(${JSON.stringify(
       keys.prev,
     )}, ${JSON.stringify(keys.next)});`,
+    WEREAD_SCRIPT,
   ].join("\n");
 }
 
@@ -63,6 +75,7 @@ export function ContentPane() {
   const studyHistory = useAppStore((s) => s.studyHistory);
   const recordStudyPdf = useAppStore((s) => s.recordStudyPdf);
   const recordStudyUrl = useAppStore((s) => s.recordStudyUrl);
+  const recordWereadBook = useAppStore((s) => s.recordWereadBook);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const settings = useAppStore((s) => s.settings);
   const patchSettings = useAppStore((s) => s.patchSettings);
@@ -80,8 +93,19 @@ export function ContentPane() {
   /** 网页批注工具:高亮 / 文字批注;null = 普通阅读。 */
   const [webTool, setWebTool] = useState<WebAnnotationKind | null>(null);
   const webToolRef = useRef<WebAnnotationKind | null>(null);
+  /**
+   * webview 实际所在的微信读书路由。从书架点开一本书只改变 webview 内部的
+   * SPA 路由,content.url 仍是书架——顶栏书名与历史记录都跟着这条走。
+   */
+  const [activeWeread, setActiveWeread] = useState<WereadRoutePayload | null>(null);
   const previewUrl = content?.kind === "url" ? content.url : null;
   const pdfs = pdfHistoryForVault(studyHistory, vaultPath);
+
+  // 内容一换,「webview 当前所在的书」就作废;下一条路由事件到来前,顶栏
+  // 退回 content 自己的标题。
+  useEffect(() => {
+    setActiveWeread(null);
+  }, [content]);
 
   // 中栏内嵌网页:把占位元素的矩形报给后端,并在它变化时同步过去。
   // 尺寸变化靠 ResizeObserver(拖分隔条、窗口变窄到压缩中栏、书签栏开关;
@@ -130,11 +154,12 @@ export function ContentPane() {
     };
   }, [content]);
 
-  // 侧栏/Agent 开关只让中栏平移,尺寸不变,ResizeObserver 收不到——布局提交
-  // 后补报一次坐标,原生 webview 才不会停在旧位置。
+  // 侧栏开关只让中栏平移,尺寸不变,ResizeObserver 收不到——布局提交
+  // 后补报一次坐标,原生 webview 才不会停在旧位置。(右栏页签切换不动
+  // 中栏几何,无需补报。)
   useLayoutEffect(() => {
     previewSyncRef.current?.();
-  }, [sidebarOpen, settings.studyAgentOpen]);
+  }, [sidebarOpen]);
 
   // 原生视图永远画在 DOM 之上,所以设置/命令面板这类 HTML 浮层打开时要把它
   // 藏起来,关掉再放出来。画布也一样:全屏浮层,开着时不能被原生视图盖住。
@@ -226,6 +251,22 @@ export function ContentPane() {
         saveWebAnnotations(vault, payload.url, normalizeWebAnnotations(payload.annotations));
       },
     );
+
+    // 微信读书路由:页内运行时把「正在读的书」写进 title 通道(study/weread.ts),
+    // Rust 按前缀分发到这里。只有当前内容确实是微信读书站点才处理——换了
+    // 内容之后迟到的旧事件不许写进历史。书名取「事件书名 → 历史里已有的
+    // 书名 → URL 兜底」中最优的一个:空书名的首报不许把已知书名冲掉。
+    subscribe<unknown>("study-weread-route", (payload) => {
+      const state = useAppStore.getState();
+      const current = state.studyContent;
+      if (!current || current.kind !== "url" || !isWereadUrl(current.url)) return;
+      const route = normalizeWereadRoute(payload);
+      if (!route) return;
+      const known = state.studyHistory.weread.find((e) => e.url === route.url)?.title;
+      const title = route.title || known || wereadFallbackTitle(route.url);
+      state.recordWereadBook({ url: route.url, title });
+      setActiveWeread({ url: route.url, title });
+    });
 
     return () => {
       cancelled = true;
@@ -338,9 +379,13 @@ export function ContentPane() {
     setUrlInput("");
     // 内容一换,上面的 effect 就把中栏的网页预览切到这个地址(同一个网址
     // 再输一次也会重新加载,因为 content 是新对象)。
-    const title = url.replace(/^https?:\/\//, "").split("/")[0] || url;
+    // 微信读书的网址不进「网页」历史:读书记录由页内路由事件产生,那时
+    // 才有书名;这里记的只有域名,没有信息量。
+    const title = isWereadUrl(url)
+      ? "微信读书"
+      : url.replace(/^https?:\/\//, "").split("/")[0] || url;
     setStudyContent({ kind: "url", url, title });
-    recordStudyUrl({ url, title });
+    if (!isWereadUrl(url)) recordStudyUrl({ url, title });
   }
 
   /** 网页批注工具切换:状态在主窗口,页面只是执行者(单一写入者)。 */
@@ -359,7 +404,21 @@ export function ContentPane() {
   function openHistoryUrl(entry: StudyUrlEntry) {
     setHistoryOpen(false);
     setStudyContent({ kind: "url", url: entry.url, title: entry.title });
-    recordStudyUrl({ url: entry.url, title: entry.title });
+    // 微信读书网址属于「微信读书」页签(旧配置里可能残留):不再进网页历史。
+    if (!isWereadUrl(entry.url)) recordStudyUrl({ url: entry.url, title: entry.title });
+  }
+
+  function openHistoryBook(entry: WereadBookEntry) {
+    setHistoryOpen(false);
+    setStudyContent({ kind: "url", url: entry.url, title: entry.title });
+    // 重开一本旧书也要置顶;页内路由事件稍后会再记一次,按 url 去重。
+    recordWereadBook({ url: entry.url, title: entry.title });
+  }
+
+  /** 书架 / 商城 / 阅读都在这一个入口里,由微信读书自己的导航完成。 */
+  function openWereadShelf() {
+    setHistoryOpen(false);
+    setStudyContent({ kind: "url", url: WEREAD_HOME_URL, title: "微信读书" });
   }
 
   async function pickPdf() {
@@ -388,11 +447,11 @@ export function ContentPane() {
           文件名只占中间列,两侧等宽,所以它在整栏里是真正居中的。 */}
       <div className="content-toolbar" data-tauri-drag-region="deep">
         <div className="content-tool-left">
-          {!settings.studyAgentOpen && (
+          {settings.studyRightTab !== "agent" && (
             <button
               className="icon-btn content-agent-toggle"
-              title="展开学习助手"
-              onClick={() => patchSettings({ studyAgentOpen: true })}
+              title="切换到学习助手(⌘⇧U)"
+              onClick={() => patchSettings({ studyRightTab: "agent" })}
             >
               <IconSparkles />
             </button>
@@ -401,12 +460,25 @@ export function ContentPane() {
         <StudyHistoryMenu
           open={historyOpen}
           onOpenChange={setHistoryOpen}
-          title={importing ? "正在导入 PDF…" : content ? content.title : "学习模式"}
-          initialTab={content?.kind === "url" ? "url" : "pdf"}
+          title={
+            importing
+              ? "正在导入 PDF…"
+              : content
+                ? activeWeread && content.kind === "url" && isWereadUrl(content.url)
+                  ? activeWeread.title
+                  : content.title
+                : "学习模式"
+          }
+          initialTab={
+            content?.kind === "url" ? (isWereadUrl(content.url) ? "weread" : "url") : "pdf"
+          }
           pdfs={pdfs}
           urls={studyHistory.urls}
+          books={studyHistory.weread}
           onOpenPdf={openHistoryPdf}
           onOpenUrl={openHistoryUrl}
+          onOpenBook={openHistoryBook}
+          onOpenShelf={openWereadShelf}
           onImportPdf={() => {
             setHistoryOpen(false);
             void pickPdf();

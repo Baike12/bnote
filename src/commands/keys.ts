@@ -74,6 +74,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   // 打开或正在框选时不抢键。
   "study.pdf-prev-page": ["PageUp", "ArrowLeft"],
   "study.pdf-next-page": ["PageDown", "ArrowRight"],
+  // 学习模式右栏:笔记页与学习助手页来回切;学习助手里主会话与辅助会话
+  // 来回切(会话列表在面板内部,命令只发信号,见 appStore)。
+  "study.toggle-right-tab": "Mod-Shift-u",
+  "study.agent-switch-session": "Mod-Shift-y",
 };
 
 export type BindingValue = string | string[] | null;
