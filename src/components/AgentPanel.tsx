@@ -8,6 +8,7 @@ import {
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
+import { isImeEnter } from "@/lib/imeEnter";
 import { StudyRightTabs } from "./StudyRightTabs";
 import { forkCutoff, forkLabel } from "@/study/agentFork";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
@@ -224,6 +225,8 @@ export function AgentPanel() {
   /** 待发送的图片(粘贴截图 / 文件选择),随消息一起进后端会话历史。 */
   const [pendingImages, setPendingImages] = useState<AgentImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /** 输入法组词会话(compositionstart/end 记账):Enter 确认候选时不能发送。 */
+  const composingRef = useRef(false);
   const [starting, setStarting] = useState(false);
   const [busySession, setBusySession] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -792,6 +795,12 @@ export function AgentPanel() {
           onFocus={() => imeOnChineseFocus()}
           onBlur={() => imeSyncToEditor()}
           onChange={(e) => setInput(e.target.value)}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
           onPaste={(e) => {
             // 剪贴板里只有图片(截图)才接管:同时有文本时按普通粘贴走,
             // 不抢用户复制网页文字的场景。
@@ -805,10 +814,12 @@ export function AgentPanel() {
             void addImages(files);
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void send();
-            }
+            if (e.key !== "Enter" || e.shiftKey) return;
+            // 输入法的确认键(中文模式下敲英文字母后回车)不能当发送:
+            // 放行给 IME 把字母填进输入框。
+            if (isImeEnter(e.nativeEvent, composingRef.current)) return;
+            e.preventDefault();
+            void send();
           }}
         />
         <div className="agent-composer-foot">

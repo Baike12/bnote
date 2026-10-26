@@ -1950,6 +1950,9 @@ input[type="range"] {
 .agent-panel {
   flex: 1;
   min-width: 0;
+  /* column flex 子项:auto 会解析成内容最小高度,面板被整段对话撑高后
+     .agent-scroll 永远和内容一样高,滚不动,输入框也被顶出窗口。 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg1);
