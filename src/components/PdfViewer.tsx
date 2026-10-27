@@ -21,10 +21,11 @@ import {
 // Our worker entry (not pdf.js's own URL) so the worker global gets the shim.
 import PdfWorker from "@/study/pdfWorker?worker";
 import "pdfjs-dist/web/pdf_viewer.css";
-import { api } from "@/lib/tauri";
+import { api, translateApi } from "@/lib/tauri";
 import { bindingsForCommand, formatBinding } from "@/commands/keys";
 import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { useAppStore } from "@/state/appStore";
+import { TranslateCard, type TranslateCardState } from "./TranslateCard";
 import { cropFromDrag, loadPdfCrop, savePdfCrop, type PdfCrop } from "@/study/crop";
 import {
   annotationAt,
@@ -210,10 +211,129 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   /** 刚建/刚点中的批注卡:nonce 变化让输入框重新聚焦。 */
   const [focusNote, setFocusNote] = useState<{ id: string; nonce: number } | null>(null);
   const focusNonce = useRef(0);
+  /**
+   * 正文选中翻译卡片。`translateSeq` 是唯一的写入者令牌:换选区、关卡片、
+   * 切批注工具、关开关都会 +1,迟到的 IPC 结果自证不过就丢弃。
+   */
+  const translateEnabled = useAppStore((s) => s.settings.studyTranslate.enabled);
+  const [translateCard, setTranslateCard] = useState<TranslateCardState | null>(null);
+  const translateSeq = useRef(0);
+  /**
+   * mouseup 到 setTimeout 之间用户可能已经点中批注工具。setTimeout 闭包里的
+   * `tool` 是旧值,所以用 ref 读当前值:批注工具一旦生效,翻译请求连创建都
+   * 不做,避免「工具已选但翻译卡还弹出来」的竞争。
+   */
+  const toolRef = useRef<PdfTool | null>(tool);
+  useLayoutEffect(() => {
+    toolRef.current = tool;
+  }, [tool]);
   const stageRef = useRef<HTMLDivElement>(null);
   const notesRef = useRef<HTMLElement>(null);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const docKey = vaultRelPath(path, vaultPath ?? "");
+
+  /**
+   * 一次选中翻译。Rust 决定单词/句子:单词只查内置词典(未收录返回 miss,
+   * 不联网);两个及以上单词才走模型 API。迟到的结果用 translateSeq 丢弃。
+   */
+  const requestTranslation = useCallback(
+    async (text: string, x: number, y: number) => {
+      if (!useAppStore.getState().settings.studyTranslate.enabled) return;
+      if (toolRef.current) return;
+      const id = ++translateSeq.current;
+      setTranslateCard({ id, status: "loading", text, x, y });
+      try {
+        const result = await translateApi.selection(text);
+        if (
+          !useAppStore.getState().settings.studyTranslate.enabled ||
+          translateSeq.current !== id ||
+          toolRef.current
+        ) {
+          return;
+        }
+        if (result.kind === "none") {
+          setTranslateCard(null);
+        } else if (result.kind === "word") {
+          setTranslateCard({ id, status: "word", text, x, y, entry: result.entry });
+        } else if (result.kind === "miss") {
+          setTranslateCard({ id, status: "miss", text, x, y, word: result.word });
+        } else {
+          setTranslateCard({
+            id,
+            status: "sentence",
+            text,
+            x,
+            y,
+            translation: result.translation,
+          });
+        }
+      } catch (e) {
+        if (
+          !useAppStore.getState().settings.studyTranslate.enabled ||
+          translateSeq.current !== id ||
+          toolRef.current
+        ) {
+          return;
+        }
+        setTranslateCard({
+          id,
+          status: "error",
+          text,
+          x,
+          y,
+          message: String(e).replace(/^[A-Z_]+:\s*/, ""),
+        });
+      }
+    },
+    [],
+  );
+
+  // 关开关/换文档/进入批注工具:立即作废未返回的请求并收卡片。批注工具
+  // 优先是硬规则——页面在 tool 非空时根本不挂翻译 mouseup。
+  useEffect(() => {
+    if (!translateEnabled) {
+      translateSeq.current++;
+      setTranslateCard(null);
+    }
+  }, [translateEnabled]);
+  useEffect(() => {
+    translateSeq.current++;
+    setTranslateCard(null);
+  }, [path]);
+  useEffect(() => {
+    if (tool) {
+      translateSeq.current++;
+      setTranslateCard(null);
+    }
+  }, [tool]);
+
+  // 卡片是 fixed 定位:滚动后选区位置不再对应,直接收掉;点卡片外或 Esc
+  // 同样收掉。点正文开始新选区时会先收旧卡,新卡在 mouseup 后重开。
+  useEffect(() => {
+    if (!translateCard) return;
+    const close = () => {
+      translateSeq.current++;
+      setTranslateCard(null);
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target instanceof Element && e.target.closest(".translate-card")) return;
+      close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    const scroll = scrollRef.current;
+    scroll?.addEventListener("scroll", close, { passive: true });
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", close);
+    return () => {
+      scroll?.removeEventListener("scroll", close);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [translateCard]);
   /**
    * 这份 PDF 的材料目录(`materials/pdfs/<拼音目录>`):批注和 agent 会话
    * 记录都落在那里。解析完成前不读批注,避免先读到旧路径又被迁移覆盖。
@@ -1469,11 +1589,13 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
                         active={activePages.has(n)}
                         eyeCare={eyeCare}
                         tool={tool}
+                        translateEnabled={translateEnabled}
                         annotations={annotationsByPage.get(n)}
                         onAddHighlight={addHighlight}
                         onAddNote={addNote}
                         onFocusNote={focusNoteById}
                         onRemoveAnnotation={removeAnnotation}
+                        onTranslateSelection={requestTranslation}
                         register={registerPage}
                       />
                     ))}
@@ -1517,6 +1639,15 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
           )}
         </div>
       </div>
+      {translateCard && (
+        <TranslateCard
+          state={translateCard}
+          onClose={() => {
+            translateSeq.current++;
+            setTranslateCard(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1695,11 +1826,14 @@ interface PdfPageProps {
   eyeCare: boolean;
   /** 当前批注工具;null = 普通阅读,页面不接管点击。 */
   tool: PdfTool | null;
+  /** 选中翻译开关;tool 非空时父层不会挂翻译 handler。 */
+  translateEnabled: boolean;
   annotations: PdfAnnotation[] | undefined;
   onAddHighlight: (page: number, rects: NormRect[]) => void;
   onAddNote: (page: number, rects: NormRect[]) => void;
   onFocusNote: (id: string) => void;
   onRemoveAnnotation: (id: string) => void;
+  onTranslateSelection: (text: string, x: number, y: number) => void;
   register: (n: number, el: HTMLDivElement | null) => void;
 }
 
@@ -1712,11 +1846,13 @@ const PdfPage = memo(function PdfPage({
   active,
   eyeCare,
   tool,
+  translateEnabled,
   annotations,
   onAddHighlight,
   onAddNote,
   onFocusNote,
   onRemoveAnnotation,
+  onTranslateSelection,
   register,
 }: PdfPageProps) {
   // Aspect ratio of *this* page once measured. Keeping the ratio (not a pixel
@@ -1810,6 +1946,36 @@ const PdfPage = memo(function PdfPage({
   const pageAnnotations = annotations ?? EMPTY_PDF_ANNOTATIONS;
 
   /**
+   * 普通阅读模式的选中翻译。只在 tool 为空时挂载(见下面的 onMouseUp),
+   * 批注工具一旦选中,这个 handler 连挂都不挂——两种手势不共享任何状态。
+   *
+   * 延迟到宏任务再读选区(mouseup 默认行为之后选区才落定);起止节点都
+   * 必须落在 pdf.js 的 .textLayer 里,排除右侧批注留白等非正文选中。
+   */
+  function handleTranslateMouseUp(event: React.MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0 || tool) return;
+    const clientX = event.clientX;
+    const clientY = event.clientY;
+    window.setTimeout(() => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      const start =
+        range.startContainer instanceof Element
+          ? range.startContainer
+          : range.startContainer.parentElement;
+      const end =
+        range.endContainer instanceof Element
+          ? range.endContainer
+          : range.endContainer.parentElement;
+      if (!start?.closest(".textLayer") || !end?.closest(".textLayer")) return;
+      const text = sel.toString().trim();
+      if (!text) return;
+      onTranslateSelection(text, clientX, clientY);
+    }, 0);
+  }
+
+  /**
    * 批注模式的鼠标落点:
    *  - 拖选/双击 → 选区矩形(按行切分后合并):高亮模式标黄,文字模式标蓝并
    *    在建卡后把光标送进右侧留白;
@@ -1872,7 +2038,13 @@ const PdfPage = memo(function PdfPage({
         className="pdf-page-full"
         ref={fullRef}
         style={{ width, height, left: -offsetX, top: -offsetY }}
-        onMouseUp={tool ? handleMouseUp : undefined}
+        onMouseUp={
+          tool
+            ? handleMouseUp
+            : translateEnabled
+              ? handleTranslateMouseUp
+              : undefined
+        }
       >
         <canvas ref={canvasRef} />
         <div className="pdf-anno-layer" aria-hidden>

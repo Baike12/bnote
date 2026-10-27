@@ -66,6 +66,11 @@ export interface Settings {
   studyEyeCare: boolean;
   /** 学习模式每次翻页滚动的可见高度比例(PDF/网页共用,默认 0.5)。 */
   studyPageStep: number;
+  /**
+   * 学习模式正文选中翻译总开关。关闭后 PDF/网页都不响应选中;
+   * 开启时单词只查内置词典,两个及以上单词才调用翻译 API。
+   */
+  studyTranslate: { enabled: boolean };
   fontSize: number;
   ime: ImeSettings;
   /** LaTeX Suite 特性开关(对齐 obsidian-latex-suite,见 editor/snippets/config) */
@@ -87,6 +92,7 @@ export const DEFAULT_SETTINGS: Settings = {
   studyRightTab: "notes",
   studyEyeCare: false,
   studyPageStep: 0.5,
+  studyTranslate: { enabled: false },
   fontSize: 16,
   ime: {
     enabled: true,

@@ -79,11 +79,12 @@ function readReadingShortcutKeys(): string[] {
  * 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键/转发键 + 微信读书运行时
  * (每次导航都会重装;微信读书运行时开头按 hostname 自门控,其他网站零开销)。
  */
-function previewInitScript(step: number): string {
+function previewInitScript(step: number, translate: boolean): string {
   const keys = readPageKeyBindings();
   return [
     WEB_ANNOTATION_SCRIPT,
     `window.__bnoteAnno && window.__bnoteAnno.setStep(${normalizePageStep(step)});`,
+    `window.__bnoteAnno && window.__bnoteAnno.setTranslate(${translate});`,
     `window.__bnoteReader && window.__bnoteReader.setKeys(${JSON.stringify(
       keys.prev,
     )}, ${JSON.stringify(keys.next)});`,
@@ -161,7 +162,10 @@ export function ContentPane() {
         ? agentApi.showStudyPreview(
             url,
             bounds,
-            previewInitScript(useAppStore.getState().settings.studyPageStep),
+            previewInitScript(
+              useAppStore.getState().settings.studyPageStep,
+              useAppStore.getState().settings.studyTranslate.enabled,
+            ),
           )
         : agentApi.setStudyPreviewBounds(bounds);
       void call.then(
@@ -262,6 +266,11 @@ export function ContentPane() {
     subscribe<string>("study-preview-loaded", (url) => {
       if (useAppStore.getState().studyContent?.kind !== "url") return;
       void (async () => {
+        await agentApi
+          .setStudyPreviewTranslate(
+            useAppStore.getState().settings.studyTranslate.enabled,
+          )
+          .catch(() => {});
         await agentApi.setStudyPreviewAnnotationMode(webToolRef.current);
         // 每次导航页面都会重新安装运行时:步长(以及页内上半屏遮罩)要重新推一次。
         // 推步长失败(正在导航)不能让后面的批注合并跟着中断。
@@ -333,18 +342,35 @@ export function ContentPane() {
     };
   }, []);
 
-  // 打开网页默认就进批注(高亮):整页工字形光标,拖选即高亮;换成 PDF /
-  // 关掉内容后退出,下次打开再从批注开始。工具切换仍是主窗口说了算。
+  // 打开网页:翻译开着时默认普通阅读(否则选中会被批注吃掉,翻译永远用
+  // 不上);翻译关着时保持原有默认——直接进高亮批注。工具切换仍是主窗口
+  // 说了算。
   useEffect(() => {
     if (content?.kind === "url") {
-      webToolRef.current = "highlight";
-      setWebTool("highlight");
-      void agentApi.setStudyPreviewAnnotationMode("highlight").catch(() => {});
+      const initial = useAppStore.getState().settings.studyTranslate.enabled
+        ? null
+        : "highlight";
+      webToolRef.current = initial;
+      setWebTool(initial);
+      void agentApi.setStudyPreviewAnnotationMode(initial).catch(() => {});
       return;
     }
     webToolRef.current = null;
     setWebTool(null);
   }, [content]);
+
+  // 翻译开关变化:把标志推给页内运行时;开启时退出当前批注工具,让翻译
+  // 立即可用。关闭时保留当前工具,不强行切回高亮。
+  const translateEnabled = settings.studyTranslate.enabled;
+  useEffect(() => {
+    if (!previewUrl) return;
+    void agentApi.setStudyPreviewTranslate(translateEnabled).catch(() => {});
+    if (translateEnabled && webToolRef.current !== null) {
+      webToolRef.current = null;
+      setWebTool(null);
+      void agentApi.setStudyPreviewAnnotationMode(null).catch(() => {});
+    }
+  }, [previewUrl, translateEnabled]);
 
   // 离页前把批注文件的防抖写盘冲刷掉(页面自己仍有 localStorage 兜底)。
   useEffect(() => {

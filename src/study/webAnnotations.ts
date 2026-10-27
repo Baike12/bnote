@@ -323,6 +323,24 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let items: WebAnnotation[] = loadFromStorage(url);
   let host: HTMLElement | null = null;
   let layer: HTMLElement | null = null;
+  /**
+   * 选中翻译:总开关由主窗口推入;批注模式(mode 非空)永远优先。请求号
+   * translateSeq 是页面侧唯一的写入者令牌——新选区/关卡片/切模式都会 +1,
+   * Rust 迟到的结果自证不过就丢弃,不会出现两张卡片抢同一个位置。
+   */
+  let translateEnabled = false;
+  let translateSeq = 0;
+  /**
+   * 本次页面加载的标识。Rust 回传结果时原样带回,页面只认当前文档的令牌:
+   * 导航后旧页面的翻译请求才返回时,新页面的运行时不会把它画出来。
+   */
+  const TRANSLATE_DOC = `${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+  let translateHost: HTMLElement | null = null;
+  let translateCard: HTMLElement | null = null;
+  let translateX = 0;
+  let translateY = 0;
   let buildScrollX = 0;
   let buildScrollY = 0;
   let hitRects: Array<DocRect & { id: string }> = [];
@@ -1183,8 +1201,285 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     emit();
   }
 
+  // ---- 选中翻译 ----
+  // 单词/句子分流在 Rust:单词只查内置词典(未收录返回 miss,不联网),
+  // 两个及以上单词才调模型。页面这里只负责收选区、发请求、画结果卡片。
+  const TRANSLATE_W = 340;
+  const MAX_TRANSLATE_TEXT = 4000;
+
+  function ensureTranslateHost(): HTMLElement | null {
+    if (translateHost && translateHost.isConnected) return translateHost;
+    const doc = document;
+    if (!doc.documentElement) return null;
+    const el = doc.createElement("div");
+    el.id = "bnote-web-translate-host";
+    const s = el.style;
+    s.position = "fixed";
+    s.left = "0";
+    s.top = "0";
+    s.width = "0";
+    s.height = "0";
+    s.overflow = "visible";
+    s.pointerEvents = "none";
+    s.zIndex = "2147483646";
+    if (typeof el.attachShadow === "function") {
+      el.attachShadow({ mode: "open" });
+    }
+    doc.documentElement.appendChild(el);
+    translateHost = el;
+    return el;
+  }
+
+  /** 关卡片并把请求号 +1:之后迟到的翻译结果一律作废。 */
+  function hideTranslation(): void {
+    translateSeq++;
+    if (translateCard) {
+      translateCard.remove();
+      translateCard = null;
+    }
+  }
+
+  type TranslateRow = { text: string; tone?: "phonetic" | "dim" | "error" };
+
+  /**
+   * 卡片画在自己的 shadow root 里,固定浅色外观(网页可能是深色;卡片要能读)。
+   * fixed 定位 + 视口夹取;卡片外的 pointerdown 会关掉它。
+   */
+  function renderTranslationCard(
+    title: string,
+    rows: TranslateRow[],
+    foot: string,
+  ): void {
+    const hostEl = ensureTranslateHost();
+    if (!hostEl) return;
+    if (translateCard) translateCard.remove();
+    const card = document.createElement("div");
+    const s = card.style;
+    s.position = "fixed";
+    s.boxSizing = "border-box";
+    const width = Math.min(TRANSLATE_W, Math.max(200, window.innerWidth - 20));
+    s.width = `${width}px`;
+    s.maxHeight = `${Math.max(160, window.innerHeight - 20)}px`;
+    s.overflowY = "auto";
+    s.padding = "10px 12px";
+    s.background = "rgba(255, 255, 255, 0.98)";
+    s.color = "#1f2328";
+    s.border = "1px solid rgba(31, 35, 40, 0.18)";
+    s.borderRadius = "10px";
+    s.boxShadow = "0 10px 30px rgba(0, 0, 0, 0.22)";
+    s.font =
+      "13px/1.55 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif";
+    s.pointerEvents = "auto";
+    s.cursor = "auto";
+    s.zIndex = "2";
+    s.colorScheme = "light";
+    s.textAlign = "left";
+    s.userSelect = "text";
+
+    const head = document.createElement("div");
+    head.style.display = "flex";
+    head.style.alignItems = "center";
+    head.style.gap = "8px";
+    const titleEl = document.createElement("div");
+    titleEl.style.flex = "1";
+    titleEl.style.minWidth = "0";
+    titleEl.style.fontWeight = "600";
+    titleEl.style.overflowWrap = "anywhere";
+    titleEl.textContent = title;
+    const close = document.createElement("button");
+    close.textContent = "×";
+    close.title = "关闭";
+    const cs = close.style;
+    cs.flex = "0 0 auto";
+    cs.width = "22px";
+    cs.height = "22px";
+    cs.padding = "0";
+    cs.border = "none";
+    cs.borderRadius = "5px";
+    cs.background = "transparent";
+    cs.color = "#8a8f98";
+    cs.font = "16px/22px -apple-system, sans-serif";
+    cs.cursor = "pointer";
+    close.addEventListener("mousedown", (event) => event.preventDefault());
+    close.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      hideTranslation();
+    });
+    head.appendChild(titleEl);
+    head.appendChild(close);
+    card.appendChild(head);
+
+    const body = document.createElement("div");
+    body.style.display = "flex";
+    body.style.flexDirection = "column";
+    body.style.gap = "3px";
+    body.style.marginTop = "6px";
+    for (const row of rows) {
+      const line = document.createElement("div");
+      line.textContent = row.text;
+      line.style.whiteSpace = "pre-wrap";
+      line.style.overflowWrap = "anywhere";
+      if (row.tone === "phonetic") {
+        line.style.color = "#6b7280";
+        line.style.fontSize = "11.5px";
+      } else if (row.tone === "dim") {
+        line.style.color = "#6b7280";
+        line.style.fontSize = "12px";
+      } else if (row.tone === "error") {
+        line.style.color = "#c0392b";
+      }
+      body.appendChild(line);
+    }
+    card.appendChild(body);
+
+    const footEl = document.createElement("div");
+    footEl.textContent = foot;
+    footEl.style.marginTop = "7px";
+    footEl.style.paddingTop = "5px";
+    footEl.style.borderTop = "1px solid rgba(31, 35, 40, 0.12)";
+    footEl.style.color = "#8a8f98";
+    footEl.style.fontSize = "11px";
+    card.appendChild(footEl);
+
+    // 卡片上的点击/拖选归卡片自己,不要再落回页面的选中/链接处理。
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click", "dblclick"]) {
+      card.addEventListener(type, (event) => event.stopPropagation());
+    }
+
+    const root = hostEl.shadowRoot ?? hostEl;
+    root.appendChild(card);
+
+    let left = translateX + 12;
+    if (left + width + 10 > window.innerWidth) left = translateX - width - 12;
+    left = Math.max(10, Math.min(left, window.innerWidth - width - 10));
+    let top = translateY + 18;
+    const height = card.offsetHeight;
+    if (top + height + 10 > window.innerHeight) top = translateY - height - 12;
+    top = Math.max(10, Math.min(top, window.innerHeight - height - 10));
+    s.left = `${Math.round(left)}px`;
+    s.top = `${Math.round(top)}px`;
+    translateCard = card;
+  }
+
+  /** 发一次翻译请求。页面只送文本/请求号/鼠标位置,不接触 API key。 */
+  function requestTranslation(text: string, x: number, y: number): void {
+    // 批注模式优先:即使调用点漏了状态判断,这里也不发请求。
+    if (!translateEnabled || mode) return;
+    translateX = x;
+    translateY = y;
+    const id = ++translateSeq;
+    if (text.length > MAX_TRANSLATE_TEXT) {
+      renderTranslationCard(
+        "选中内容过长",
+        [{ text: `一次最多 ${MAX_TRANSLATE_TEXT} 字符。`, tone: "error" }],
+        "未发送",
+      );
+      return;
+    }
+    renderTranslationCard(
+      "查询中…",
+      [{ text: "正在查询内置词典或翻译模型…", tone: "dim" }],
+      "…",
+    );
+    try {
+      document.title =
+        "bnote-translate:" +
+        JSON.stringify({ id, doc: TRANSLATE_DOC, text, x, y });
+    } catch {
+      hideTranslation();
+    }
+  }
+
+  /** Rust 把翻译结果 eval 回来;只认当前请求号,迟到结果直接丢。 */
+  function showTranslation(id: unknown, doc: unknown, payload: unknown): void {
+    if (doc !== TRANSLATE_DOC) return;
+    if (!translateEnabled || mode) return;
+    if (typeof id !== "number" || id !== translateSeq) return;
+    if (!payload || typeof payload !== "object") return;
+    const p = payload as Record<string, unknown>;
+    const kind = typeof p.kind === "string" ? p.kind : "";
+    if (kind === "none") {
+      hideTranslation();
+      return;
+    }
+    if (kind === "word") {
+      const entry = p.entry as Record<string, unknown> | undefined;
+      if (!entry) return;
+      const word = typeof entry.word === "string" ? entry.word : "";
+      const phonetic =
+        typeof entry.phonetic === "string" ? entry.phonetic.trim() : "";
+      const translation =
+        typeof entry.translation === "string" ? entry.translation : "";
+      const rows: TranslateRow[] = [];
+      if (phonetic) rows.push({ text: `/${phonetic}/`, tone: "phonetic" });
+      for (const line of translation.split("\n")) {
+        if (line.trim()) rows.push({ text: line.trim() });
+      }
+      renderTranslationCard(word || "单词", rows, "内置词典");
+      return;
+    }
+    if (kind === "miss") {
+      const word = typeof p.word === "string" ? p.word : "";
+      renderTranslationCard(
+        word || "未收录",
+        [
+          { text: "内置词典未收录这个词。" },
+          { text: "选中两个及以上单词可调用模型翻译。", tone: "dim" },
+        ],
+        "本地查询 · 未收录",
+      );
+      return;
+    }
+    if (kind === "sentence") {
+      const translation =
+        typeof p.translation === "string" ? p.translation : "";
+      renderTranslationCard(
+        "句子翻译",
+        [{ text: translation }],
+        "模型翻译",
+      );
+      return;
+    }
+    if (kind === "error") {
+      const message = typeof p.message === "string" ? p.message : "翻译失败";
+      renderTranslationCard(
+        "翻译失败",
+        [{ text: message, tone: "error" }],
+        "未发送译文",
+      );
+    }
+  }
+
+  /** 主窗口推入总开关。关闭时立即收卡;批注模式仍由 setMode 优先。 */
+  function setTranslate(value: unknown): void {
+    translateEnabled = value === true;
+    if (!translateEnabled) hideTranslation();
+  }
+
   function onMouseUp(event: MouseEvent): void {
-    if (!mode) return;
+    // 翻译卡上的操作归卡片自己(shadow 内事件重定向到 host)。
+    if (translateHost && translateHost.contains(event.target as Node)) return;
+    if (!mode) {
+      // 普通阅读:只做选中翻译;开关关着就什么都不接。批注模式在下面,
+      // 两种手势互斥——mode 非空时这个分支根本进不来。
+      if (!translateEnabled) return;
+      if (host && event.target === host) return;
+      if (isEditable(event.target as Element | null)) return;
+      const x = event.clientX;
+      const y = event.clientY;
+      window.setTimeout(() => {
+        if (mode || !translateEnabled) return;
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+        const range = sel.getRangeAt(0);
+        if (!document.body || !document.body.contains(range.commonAncestorContainer)) return;
+        const text = sel.toString().trim();
+        if (!text) return;
+        requestTranslation(text, x, y);
+      }, 0);
+      return;
+    }
     // 落在批注卡(经 shadow 重定向到 host)上:输入/删卡归卡片自己。
     if (host && event.target === host) return;
     if (isEditable(event.target as Element | null)) return;
@@ -1240,6 +1535,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   function onUrlChange(): void {
     if (location.href === url) return;
+    hideTranslation();
     url = location.href;
     items = loadFromStorage(url);
     userScrolled = false;
@@ -1310,6 +1606,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (mode === next) return;
     mode = next;
     if (mode) {
+      // 批注模式优先:进入批注立即收掉翻译卡,并作废在途请求。
+      hideTranslation();
       watchDom();
       rebuild();
     } else {
@@ -1347,6 +1645,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   w.__bnoteAnno = {
     setMode,
+    setTranslate,
+    showTranslation,
     merge,
     export: exportState,
     refresh: rebuild,
@@ -1363,8 +1663,34 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     setHostKeys,
   };
 
+  /** 卡片自己的滚动(长译文)不算页面滚动:只收页面滚动。 */
+  function onTranslateScroll(event: Event): void {
+    if (translateHost && event.target instanceof Node && translateHost.contains(event.target)) {
+      return;
+    }
+    hideTranslation();
+  }
+
   // ---- 启动 ----
   window.addEventListener("mouseup", onMouseUp, true);
+  // 选中翻译:点卡片外、滚动、Esc 都收卡。捕获阶段先于页面自己的处理;
+  // 卡片自己的事件已重定向到 translateHost,不会被这里误关。
+  window.addEventListener(
+    "pointerdown",
+    (event: PointerEvent) => {
+      if (translateHost && translateHost.contains(event.target as Node)) return;
+      hideTranslation();
+    },
+    true,
+  );
+  window.addEventListener("scroll", onTranslateScroll, { passive: true, capture: true });
+  window.addEventListener(
+    "keydown",
+    (event: KeyboardEvent) => {
+      if (event.key === "Escape") hideTranslation();
+    },
+    true,
+  );
   window.addEventListener("click", onClickCapture, true);
   window.addEventListener("keydown", onPageKey, true);
   window.addEventListener("scroll", onScroll, { passive: true });
@@ -1382,6 +1708,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     true,
   );
   window.addEventListener("resize", () => {
+    hideTranslation();
     scheduleRebuild(200);
     applyStoredScroll();
   });

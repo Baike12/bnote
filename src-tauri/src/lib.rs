@@ -3,7 +3,9 @@ mod commands;
 /// Browser-preview bridge; debug builds only (see the module docs).
 #[cfg(debug_assertions)]
 mod devbridge;
+pub mod dict;
 mod state;
+pub mod translate;
 
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -173,6 +175,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             install_menu(app.handle())?;
 
+            // 词典的冷解压(~5–20ms)放到后台线程,第一次选词时已经是热态。
+            dict::warm_up();
+
             // 主窗口几何:在事件循环启动前恢复,首帧就是用户上次的大小和位置。
             commands::config::restore_window_bounds(app.handle());
 
@@ -223,6 +228,7 @@ pub fn run() {
             commands::agent::set_study_preview_bounds,
             commands::agent::set_study_preview_visible,
             commands::agent::set_study_preview_annotation_mode,
+            commands::agent::set_study_preview_translate,
             commands::agent::set_study_preview_read_step,
             commands::agent::set_study_preview_read_keys,
             commands::agent::set_study_preview_shortcuts,
@@ -231,6 +237,10 @@ pub fn run() {
             commands::agent::merge_study_preview_annotations,
             commands::agent::close_study_preview,
             commands::agent::open_study_url,
+            commands::translate::translate_selection,
+            commands::translate::translate_get_config,
+            commands::translate::translate_save_config,
+            commands::translate::translate_test,
             commands::python::python_run,
             commands::python::python_run_cancel,
             commands::python::python_get_info,

@@ -8,10 +8,17 @@ use crate::agent::skills::SkillRegistry;
 use crate::agent::tools::{StudyContent, ToolContext};
 use crate::agent::Provider;
 use crate::state::AppState;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, State};
+
+/// 网页选中翻译的总开关。页面通过 document.title 发请求,任意页面脚本也能
+/// 伪造同一条 title——这里先按开关硬门控,再对句子请求做 600ms 限频;单词
+/// 只查本地词典,不占 API。
+static PREVIEW_TRANSLATE_ENABLED: AtomicBool = AtomicBool::new(false);
+static PREVIEW_TRANSLATE_LAST: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
     state.mcp_manager.lock().ok().and_then(|g| g.clone())
@@ -420,6 +427,108 @@ pub async fn show_study_preview(
                 // 页内按下的阅读区快捷键(切到 Agent / 笔记区)。子 webview 的
                 // 按键不冒泡到主窗口,只能借这条已有的 title 通道转回去。
                 const KEY_PREFIX: &str = "bnote-key:";
+                // 选中翻译:页面只送文本和请求号,翻译在 Rust 里做(单词查内置
+                // 词典,句子走配置的 API),结果再 eval 回页面的卡片。这样网页
+                // 拿不到 API key,也不需要在主窗口和子 webview 之间多绕一圈。
+                const TRANSLATE_PREFIX: &str = "bnote-translate:";
+                if let Some(raw) = title.strip_prefix(TRANSLATE_PREFIX) {
+                    let Ok(payload) = serde_json::from_str::<serde_json::Value>(raw) else {
+                        return;
+                    };
+                    let id = payload
+                        .get("id")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    let text = payload
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    // 页面每次加载生成一个文档令牌;结果回传时原样带回,导航后
+                    // 旧请求的迟到结果不会画到新页面上。
+                    let doc = payload
+                        .get("doc")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    if id == 0 || text.trim().is_empty() || doc.is_empty() || doc.len() > 80 {
+                        return;
+                    }
+                    let doc_lit =
+                        serde_json::to_string(&doc).unwrap_or_else(|_| "\"\"".to_string());
+                    // 开关关着:页面脚本伪造 title 也不能触发查词/翻译。
+                    if !PREVIEW_TRANSLATE_ENABLED.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    // 句子会走付费 API:600ms 内最多一次;单词只查内置词典,
+                    // 不占额度,快速连续选词照常。
+                    if matches!(
+                        crate::translate::classify(&text),
+                        crate::translate::SelectionKind::Sentence
+                    ) {
+                        let allowed = match PREVIEW_TRANSLATE_LAST.lock() {
+                            Ok(mut slot) => {
+                                let now = Instant::now();
+                                let fresh = match *slot {
+                                    Some(last) => {
+                                        now.saturating_duration_since(last)
+                                            >= Duration::from_millis(600)
+                                    }
+                                    None => true,
+                                };
+                                if fresh {
+                                    *slot = Some(now);
+                                }
+                                fresh
+                            }
+                            Err(_) => false,
+                        };
+                        if !allowed {
+                            let js = format!(
+                                "window.__bnoteAnno && window.__bnoteAnno.showTranslation({}, {}, {});",
+                                id,
+                                doc_lit,
+                                serde_json::json!({
+                                    "kind": "error",
+                                    "message": "翻译请求过于频繁，请稍后再试。",
+                                })
+                            );
+                            let _ = webview.eval(js);
+                            return;
+                        }
+                    }
+                    let webview = webview.clone();
+                    let data_dir = webview.app_handle().path().app_data_dir().ok();
+                    tauri::async_runtime::spawn(async move {
+                        let payload = match data_dir {
+                            None => serde_json::json!({
+                                "kind": "error",
+                                "message": "无法定位应用数据目录",
+                            }),
+                            Some(dir) => {
+                                match crate::translate::translate_selection(&dir, &text).await {
+                                    Ok(result) => {
+                                        serde_json::to_value(result).unwrap_or_else(|_| {
+                                            serde_json::json!({
+                                                "kind": "error",
+                                                "message": "翻译结果序列化失败",
+                                            })
+                                        })
+                                    }
+                                    Err(e) => {
+                                        serde_json::json!({ "kind": "error", "message": e })
+                                    }
+                                }
+                            }
+                        };
+                        let js = format!(
+                            "window.__bnoteAnno && window.__bnoteAnno.showTranslation({}, {}, {});",
+                            id, doc_lit, payload
+                        );
+                        let _ = webview.eval(js);
+                    });
+                    return;
+                }
                 let (event, raw) = if let Some(raw) = title.strip_prefix(ANNO_PREFIX) {
                     ("study-web-annotations", raw)
                 } else if let Some(raw) = title.strip_prefix(WEREAD_PREFIX) {
@@ -465,6 +574,30 @@ pub fn set_study_preview_annotation_mode(
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
         // 原生笔形跟着工具换图(高亮=黄笔、文字批注=蓝笔);退出批注仍用黄笔。
         pen_cursor::set_mode(mode.as_deref() == Some("note"));
+    }
+    Ok(())
+}
+
+/// Enables/disables selection translation in the embedded web page.
+///
+/// Translation and annotation never compete for the same gesture: the page
+/// runtime only translates when its annotation mode is `null`, and entering an
+/// annotation mode closes any open translation card. This flag is the user's
+/// global switch; the annotation tool remains the higher-priority mode.
+#[tauri::command]
+pub fn set_study_preview_translate(app: tauri::AppHandle, enabled: bool) -> CmdResult<()> {
+    PREVIEW_TRANSLATE_ENABLED.store(enabled, Ordering::Relaxed);
+    if let Ok(mut slot) = PREVIEW_TRANSLATE_LAST.lock() {
+        *slot = None;
+    }
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        webview
+            .eval(format!(
+                "window.__bnoteAnno && window.__bnoteAnno.setTranslate({});",
+                enabled
+            ))
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
     }
     Ok(())
 }
@@ -621,6 +754,11 @@ pub fn set_study_preview_visible(app: tauri::AppHandle, visible: bool) -> CmdRes
 #[tauri::command]
 pub fn close_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
     use tauri::Manager;
+    // 预览没了,网页侧的翻译通道也随之关闭;残留的 title 不再触发请求。
+    PREVIEW_TRANSLATE_ENABLED.store(false, Ordering::Relaxed);
+    if let Ok(mut slot) = PREVIEW_TRANSLATE_LAST.lock() {
+        *slot = None;
+    }
     if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
         webview
             .close()

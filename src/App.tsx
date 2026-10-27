@@ -98,6 +98,10 @@ export default function App() {
         ...saved,
         ime: { ...DEFAULT_SETTINGS.ime, ...(saved.ime ?? {}) },
         latex: { ...DEFAULT_SETTINGS.latex, ...(saved.latex ?? {}) },
+        studyTranslate: {
+          ...DEFAULT_SETTINGS.studyTranslate,
+          ...(saved.studyTranslate ?? {}),
+        },
       };
       // 旧版把三栏宽度存成 studySplit:[agent, content](更早是比例);迁移成
       // 中栏单值像素宽度后落盘一次,之后窗口怎么缩放都不会再改中栏宽度。
