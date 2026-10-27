@@ -249,11 +249,17 @@ describe("FootprintCore 历史档:跨天轮转固化,历史日记按日聚合", 
     ]);
     const core = coreOf(files, "2026-09-30");
     await core.init();
-    // 09-29 的足迹被固化;当日(09-30)从零开始
-    expect(core.entriesFor("2026-09-29")).toEqual([
-      { path: NOTE, blocks: [{ text: "09-29 写的段", start: 3, end: 3 }] },
-      { path: OTHER, blocks: [{ text: "09-29 也写了", start: 1, end: 1 }] },
-    ]);
+    // 09-29 的足迹被固化;当日(09-30)从零开始。
+    // 条目按 localeCompare 排序,顺序随宿主 locale 变(zh-CN 汉字排 Latin 前),
+    // 断言只锁内容,用码点序把两边归一后再比。
+    const sorted = <T extends { path: string }>(es: T[]): T[] =>
+      [...es].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    expect(sorted(core.entriesFor("2026-09-29"))).toEqual(
+      sorted([
+        { path: NOTE, blocks: [{ text: "09-29 写的段", start: 3, end: 3 }] },
+        { path: OTHER, blocks: [{ text: "09-29 也写了", start: 1, end: 1 }] },
+      ]),
+    );
     expect(core.entriesFor("2026-09-30")).toEqual([]);
     core.flushPersist();
     const persisted = JSON.parse(files.get(footprintsFilePath(VAULT))!) as StoredFootprints;

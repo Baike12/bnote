@@ -5,6 +5,7 @@ pub mod ime;
 pub mod materials;
 pub mod pen_cursor;
 pub mod python;
+pub mod translate;
 pub mod vault;
 
 use std::path::{Path, PathBuf};

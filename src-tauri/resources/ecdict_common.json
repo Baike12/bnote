@@ -1,0 +1,10 @@
+{
+  "source": "skywind3000/ECDICT",
+  "commit": "9c46923fb81a2eb6c264a3a1689562ea7bc56b6a",
+  "license": "MIT",
+  "filter": "frq<=50000 or bnc<=50000 or collins/oxford/tag",
+  "entries": 59137,
+  "rawBytes": 4307015,
+  "compressedBytes": 1546790,
+  "sha256": "2782143835c0e4d267837a4acbab3100ba1bfab91d4e8cacac42a7e368022631"
+}

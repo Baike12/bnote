@@ -38,7 +38,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
-use crate::commands::{agent, config, files, materials, python, vault};
+use crate::commands::{agent, config, files, materials, python, translate, vault};
 use crate::state::AppState;
 
 /// Fixed port; `vite.config.ts` proxies `/__dev` here.
@@ -293,7 +293,22 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                         .map_err(|e| format!("BAD_ARGS: history: {}", e))?,
                 ),
             };
-            json_ok!(agent::agent_start_session(app.clone(), app.state(), study, fork, history).await)
+            let model: Option<agent::AgentModelChoice> = match args.get("model") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: model: {}", e))?,
+                ),
+            };
+            json_ok!(agent::agent_start_session(
+                app.clone(),
+                app.state(),
+                study,
+                fork,
+                history,
+                model
+            )
+            .await)
         }
         "study_material_ensure" => {
             let study: StudyContent = serde_json::from_value(arg_value(args, "study")?)
@@ -329,6 +344,23 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             app.state(),
             arg_opt_str(args, "path")
         )),
+
+        // ---- translate ----
+        "translate_get_config" => json_ok!(translate::translate_get_config(app.state()).await),
+        "translate_save_config" => json_ok!(translate::translate_save_config(
+            app.state(),
+            serde_json::from_value(arg_value(args, "config")?)
+                .map_err(|e| format!("BAD_ARGS: config: {}", e))?
+        )
+        .await),
+        "translate_selection" => json_ok!(
+            translate::translate_selection(app.state(), arg_str(args, "text")?).await
+        ),
+        "translate_test" => json_ok!(translate::translate_test(
+            serde_json::from_value(arg_value(args, "config")?)
+                .map_err(|e| format!("BAD_ARGS: config: {}", e))?
+        )
+        .await),
         "study_import_pdf" => {
             let title = match args.get("title") {
                 None | Some(Value::Null) => None,
@@ -394,8 +426,9 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         // ---- native views: no browser equivalent ----
         "show_study_preview" | "set_study_preview_bounds" | "set_study_preview_visible"
         | "close_study_preview" | "open_study_url" | "set_study_preview_annotation_mode"
-        | "set_study_preview_read_step" | "set_study_preview_read_keys"
-        | "scroll_study_preview" | "merge_study_preview_annotations" => {
+        | "set_study_preview_translate" | "set_study_preview_read_step"
+        | "set_study_preview_read_keys" | "scroll_study_preview"
+        | "merge_study_preview_annotations" => {
             return Err(format!(
                 "BROWSER_MODE: `{}` creates a native webview/window in the app — not available from a browser tab",
                 cmd
