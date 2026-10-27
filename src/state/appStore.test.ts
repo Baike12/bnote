@@ -17,6 +17,12 @@ beforeEach(() => {
   useAppStore.setState({ sidebarOpen: false, sidebarFocusRequest: null });
 });
 
+describe("设置默认值", () => {
+  it("选中翻译默认关闭", () => {
+    expect(useAppStore.getState().settings.studyTranslate.enabled).toBe(false);
+  });
+});
+
 describe("focusSidebar 请求", () => {
   it("按下时展开侧栏并留下一张待消费的票据", () => {
     useAppStore.getState().focusSidebar();

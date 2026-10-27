@@ -66,6 +66,36 @@ export interface AgentConfig {
   skill_dirs: string[];
 }
 
+/** 内置词典的一条词条(选中翻译 → 单词)。 */
+export interface DictEntry {
+  word: string;
+  phonetic: string;
+  translation: string;
+  pos: string;
+}
+
+/**
+ * 一次选中翻译的结果。单词只查内置词典;未收录是 `miss`,不会自动调用 API。
+ * 句子/短语才走 `sentence`。
+ */
+export type TranslateSelection =
+  | { kind: "word"; entry: DictEntry }
+  | { kind: "miss"; word: string }
+  | { kind: "sentence"; translation: string }
+  | { kind: "none" };
+
+/** 句子翻译 API 配置(独立于学习助手,存在 translate.json)。 */
+export interface TranslateConfig {
+  protocol: string;
+  base_url: string;
+  api_key: string;
+  model: string;
+  /** 默认 false;开启后按协议发 think/thinking/enable_thinking。 */
+  thinking: boolean;
+  timeout_ms: number;
+  extra_body: Record<string, unknown>;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -275,6 +305,9 @@ export const agentApi = {
   /** 网页批注工具:高亮 / 文字批注;null 退出(页面内切换光标与选中行为)。 */
   setStudyPreviewAnnotationMode: (mode: "highlight" | "note" | null) =>
     invoke<void>("set_study_preview_annotation_mode", { mode }),
+  /** 网页选中翻译总开关(批注模式优先:进入批注后页面不再响应翻译)。 */
+  setStudyPreviewTranslate: (enabled: boolean) =>
+    invoke<void>("set_study_preview_translate", { enabled }),
   /** 把翻页步长推给页内运行时(键盘翻页与上半屏渐变共用)。 */
   setStudyPreviewReadStep: (step: number) =>
     invoke<void>("set_study_preview_read_step", { step }),
@@ -298,6 +331,21 @@ export const agentApi = {
   /** Opens/reuses the standalone study-mode preview window (backend-created so
    *  that failures come back as errors instead of a swallowed `tauri://error`). */
   openStudyUrl: (url: string) => invoke<void>("open_study_url", { url }),
+};
+
+/**
+ * 选中翻译。单词/句子的分流和"单词未收录不降级到 API"都由 Rust 决定,
+ * 前端只送选中文本,拿回一个判别联合结果。
+ */
+export const translateApi = {
+  selection: (text: string) =>
+    invoke<TranslateSelection>("translate_selection", { text }),
+  getConfig: () => invoke<TranslateConfig>("translate_get_config"),
+  saveConfig: (config: TranslateConfig) =>
+    invoke<void>("translate_save_config", { config }),
+  /** 用表单当前值测试连接(不落盘)。 */
+  test: (config: TranslateConfig) =>
+    invoke<string>("translate_test", { config }),
 };
 
 export const api = {

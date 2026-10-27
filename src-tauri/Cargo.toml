@@ -31,6 +31,9 @@ trash = "5"
 base64 = "0.22"
 core-foundation = "0.10"
 pdf2md = { path = "crates/pdf2md" }
+# 内置英汉词典(学习模式选中翻译):压缩数据在编译期进二进制,运行时一次性
+# 解压到内存,不落盘、不依赖外部资源文件。数据由 scripts/build-dict.py 生成。
+zstd = "0.13"
 
 # study-mode agent
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
