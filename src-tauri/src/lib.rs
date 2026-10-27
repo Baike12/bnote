@@ -225,6 +225,8 @@ pub fn run() {
             commands::agent::set_study_preview_annotation_mode,
             commands::agent::set_study_preview_read_step,
             commands::agent::set_study_preview_read_keys,
+            commands::agent::set_study_preview_shortcuts,
+            commands::agent::focus_study_preview,
             commands::agent::scroll_study_preview,
             commands::agent::merge_study_preview_annotations,
             commands::agent::close_study_preview,

@@ -27,6 +27,8 @@ vi.mock("@/lib/tauri", () => ({
 
 import {
   imeApply,
+  imeBeginTransientChinese,
+  imeEndTransientChinese,
   imeOnChineseFocus,
   imeOnWindowBlur,
   imeOnWindowFocus,
@@ -62,8 +64,12 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   imeYield();
+  // 把归还调用与它的收尾链都落定:留下一条未落定的 setInputSource 会让
+  // switching 卡在 true,下一个用例的切换就只会排队、永远发不出去。
+  await drain();
+  await drain();
 });
 
 /** 放行推迟到任务末尾的发起，落定在途调用，并把微任务刷干净。 */
@@ -170,6 +176,103 @@ describe("批注输入框聚焦", () => {
     expect(setInputSource).not.toHaveBeenCalled();
     await drain();
     expect(setInputSource).toHaveBeenCalledWith("com.apple.inputmethod.SCIM");
+  });
+
+  it("force 绕过去重:已切过中文后再点进输入框仍重发中文源", async () => {
+    imeOnChineseFocus();
+    await drain();
+    expect(setInputSource).toHaveBeenCalledTimes(1);
+    expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
+    // 用户在框里 Ctrl+Space 切回英文:前端 desired 仍是中文,普通去重吞掉。
+    imeOnChineseFocus();
+    await drain();
+    expect(setInputSource).toHaveBeenCalledTimes(1);
+    // 再点进来/再按快捷键 = 显式进入中文框,强制重发。
+    imeOnChineseFocus(true);
+    await drain();
+    expect(setInputSource).toHaveBeenCalledTimes(2);
+    expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
+  });
+
+  it("force 在途时切着英文:落定后补发中文(收尾意图不被丢)", async () => {
+    imeApply("com.apple.keylayout.ABC");
+    await new Promise((r) => setTimeout(r, 0)); // 英文切换已发出、在途
+    expect(pending.length).toBe(1);
+    imeOnChineseFocus(true);
+    await new Promise((r) => setTimeout(r, 0)); // 强制意图到期:排进收尾
+    pending.shift()!(); // 英文落定 → 收尾发中文
+    await new Promise((r) => setTimeout(r, 0));
+    expect(setInputSource).toHaveBeenCalledTimes(2);
+    expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
+    pending.shift()!(); // 中文落定,别让 switching 卡住
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it("force 同样受 enabled / chineseFields 开关约束", async () => {
+    useAppStore.getState().patchSettings({
+      ime: {
+        enabled: true,
+        chineseFields: false,
+        insertSource: "ZH",
+        normalSource: "EN",
+        mathKeepsEnglish: true,
+        codeKeepsEnglish: true,
+      },
+    });
+    imeOnChineseFocus(true);
+    await drain();
+    expect(setInputSource).not.toHaveBeenCalled();
+  });
+
+  it("焦点落定后系统把源恢复回英文时,核对补发一次中文", async () => {
+    // 「按上下文记忆输入源」开着:焦点切换完成后 AppKit 会把源恢复成该
+    // 上下文记住的英文,表现为 Sogou 图标闪一下就没了。
+    vi.stubGlobal("document", {
+      activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
+    });
+    try {
+      imeOnChineseFocus(true);
+      await drain();
+      expect(setInputSource).toHaveBeenCalledTimes(1);
+      // 核对定时器(120ms)到期:系统源是 ABC → 与意图不一致 → 补发
+      await new Promise((r) => setTimeout(r, 160));
+      await drain();
+      expect(setInputSource).toHaveBeenCalledTimes(2);
+      expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("核对时系统已是中文:不重复发送", async () => {
+    vi.stubGlobal("document", {
+      activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
+    });
+    getCurrentInputSource.mockResolvedValue("com.apple.inputmethod.SCIM");
+    try {
+      imeOnChineseFocus(true);
+      await drain();
+      expect(setInputSource).toHaveBeenCalledTimes(1);
+      await new Promise((r) => setTimeout(r, 160));
+      await drain();
+      expect(setInputSource).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("核对前已离开输入框:不补发", async () => {
+    vi.stubGlobal("document", { activeElement: null });
+    try {
+      imeOnChineseFocus(true);
+      await drain();
+      expect(setInputSource).toHaveBeenCalledTimes(1);
+      await new Promise((r) => setTimeout(r, 160));
+      await drain();
+      expect(setInputSource).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("ime.enabled 关闭时不动系统输入法", async () => {
@@ -286,5 +389,79 @@ describe("imeOnWindowFocus", () => {
     imeOnWindowFocus();
     await drain();
     expect(setInputSource).not.toHaveBeenCalled();
+  });
+});
+
+/** 快速待办这类弹窗:打开切中文,关闭把打开前的输入源原样还回去。 */
+describe("临时中文输入作用域(快速待办弹窗)", () => {
+  const ZH = "com.apple.inputmethod.SCIM";
+  const EN = "com.apple.keylayout.ABC";
+
+  /** 每拍 setTimeout(0):read 源 → 排切换 → 真的发出去,三拍足够收敛。 */
+  const settle = async () => {
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  /** 等在途调用出现(不让断言依赖定时器的相对顺序)。 */
+  const waitInFlight = async () => {
+    for (let i = 0; i < 20 && pending.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(pending.length).toBe(1);
+  };
+
+  it("打开:先读此刻的源再切中文;关闭:还回那个源", async () => {
+    imeBeginTransientChinese();
+    await settle();
+    expect(setInputSource).toHaveBeenCalledTimes(1);
+    expect(setInputSource).toHaveBeenLastCalledWith(ZH);
+
+    imeEndTransientChinese();
+    await drain();
+    expect(setInputSource).toHaveBeenCalledTimes(2);
+    expect(setInputSource).toHaveBeenLastCalledWith(EN);
+  });
+
+  it("中文切换在途时关闭:收尾那次是原源,不会晚到把用户打回中文", async () => {
+    imeBeginTransientChinese();
+    await waitInFlight(); // 中文切换已发出、尚未落定
+    expect(setInputSource).toHaveBeenLastCalledWith(ZH);
+
+    imeEndTransientChinese();
+    await drain(); // 在途落定 → 收尾发原源
+    expect(setInputSource).toHaveBeenCalledTimes(2);
+    expect(setInputSource).toHaveBeenLastCalledWith(EN);
+  });
+
+  it("读源还没返回就关闭:不切中文,也不多发一次切换", async () => {
+    let resolveCapture: (id: string) => void = () => {};
+    getCurrentInputSource.mockImplementation(
+      () => new Promise<string>((resolve) => (resolveCapture = resolve)),
+    );
+    imeBeginTransientChinese();
+    imeEndTransientChinese();
+    resolveCapture(EN);
+    await settle();
+    expect(setInputSource).not.toHaveBeenCalled();
+  });
+
+  it("重复进入不覆盖「原来的源」", async () => {
+    imeBeginTransientChinese();
+    await waitInFlight();
+    imeBeginTransientChinese(); // 重渲染/再次聚焦
+    await settle();
+    expect(getCurrentInputSource).toHaveBeenCalledTimes(1);
+    expect(setInputSource).toHaveBeenCalledTimes(1);
+  });
+
+  it("还回原源后,同一个目标不再重复切(意图与真实源保持一致)", async () => {
+    imeBeginTransientChinese();
+    await waitInFlight();
+    await drain(); // 中文切换落定
+    imeEndTransientChinese();
+    await drain(); // 原源还回去
+    const calls = setInputSource.mock.calls.length;
+    imeApply(EN);
+    await settle();
+    expect(setInputSource).toHaveBeenCalledTimes(calls);
   });
 });

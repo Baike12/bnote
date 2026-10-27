@@ -77,6 +77,17 @@ export interface SessionInfo {
   skills: SkillInfo[];
   mcpTools: string[];
   mcpErrors: string[];
+  /** 本会话实际使用的模型配置(设置改了也不影响已开会话)。 */
+  model?: SessionModelConfig;
+}
+
+/** 会话级模型配置快照(写进会话记录第一行,恢复时按它继续)。 */
+export interface SessionModelConfig {
+  provider: string;
+  model: string;
+  baseUrl: string;
+  maxTokens: number;
+  contextWindow: number;
 }
 
 /**
@@ -222,8 +233,14 @@ export type AgentContentBlock =
 export const agentApi = {
   getConfig: () => invoke<AgentConfig>("agent_get_config"),
   saveConfig: (config: AgentConfig) => invoke<void>("agent_save_config", { config }),
-  startSession: (study: StudyContent | null, fork?: AgentForkSpec, history?: AgentChatItem[]) =>
-    invoke<SessionInfo>("agent_start_session", { study, fork, history }),
+  startSession: (
+    study: StudyContent | null,
+    fork?: AgentForkSpec,
+    history?: AgentChatItem[],
+    /** 恢复/分叉:沿用源会话的模型配置;不传则用当前保存的配置。 */
+    model?: SessionModelConfig,
+  ) =>
+    invoke<SessionInfo>("agent_start_session", { study, fork, history, model }),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
@@ -264,6 +281,12 @@ export const agentApi = {
   /** 把命令层的翻页绑定推给页内运行时(网页获得焦点时也能用自定义快捷键)。 */
   setStudyPreviewReadKeys: (prev: string[], next: string[]) =>
     invoke<void>("set_study_preview_read_keys", { prev, next }),
+  /** 把「要转回主窗口」的阅读区快捷键推给页内运行时(原生子 webview 的按键
+   *  不冒泡:页内匹配后经 title 通道上报)。 */
+  setStudyPreviewShortcuts: (keys: string[]) =>
+    invoke<void>("set_study_preview_shortcuts", { keys }),
+  /** 把键盘焦点交给内嵌网页(切到阅读区用)。 */
+  focusStudyPreview: () => invoke<void>("focus_study_preview"),
   /** 焦点在主窗口时,把一次翻页转给内嵌网页。 */
   scrollStudyPreview: (delta: 1 | -1) =>
     invoke<void>("scroll_study_preview", { delta }),

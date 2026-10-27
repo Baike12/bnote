@@ -1,19 +1,54 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_BINDINGS,
   FIXED_PAGE_COMMANDS,
+  applyOverrides,
   bindingsForCommand,
+  commandBelongs,
+  commandRegions,
+  commandsForKey,
+  defaultRegionOf,
+  defaultRegionsOf,
   fixedPageCommandFor,
+  formOwnsEditChord,
   isPlainFocusOwnedKey,
-  setBindingOverrides,
+  keysOf,
+  normalizeOverrides,
+  serializeOverrides,
 } from "./keys";
 
+const reset = () => applyOverrides({});
+afterEach(reset);
+
 /**
- * ⌘⇧O 的唯一归属门禁:只有「打开今日日记」能拿这个键位。它此前属于
- * workspace.open-vault——任何人再把别的命令绑到 ⌘⇧O,这条会拦下来(键位重复
- * 由窗口级分发的命令顺序决定,静默抢占比报错更难查)。
+ * 默认键位的唯一归属门禁。区域化之后「同一个键」可以出现在不同区域里
+ * (各自生效),但**同一区域内**不许重复:窗口级分发按命令注册顺序取第一条,
+ * 静默抢占比报错更难查。
  */
 describe("默认键位", () => {
+  it("同一区域内没有重复键位", () => {
+    const byRegion = new Map<string, string[]>();
+    for (const [id, value] of Object.entries(DEFAULT_BINDINGS)) {
+      for (const region of defaultRegionsOf(id)) {
+        for (const key of keysOf(value)) {
+          const list = byRegion.get(region) ?? [];
+          list.push(`${id}:${key}`);
+          byRegion.set(region, list);
+        }
+      }
+    }
+    for (const [region, list] of byRegion) {
+      const seen = new Map<string, string>();
+      const dupes: string[] = [];
+      for (const entry of list) {
+        const key = entry.slice(entry.lastIndexOf(":") + 1);
+        if (seen.has(key)) dupes.push(`${seen.get(key)} / ${entry}`);
+        else seen.set(key, entry);
+      }
+      expect(dupes, `${region} 区域重复键位`).toEqual([]);
+    }
+  });
+
   it("Mod-Shift-o 归 workspace.open-daily,且无人与之重复", () => {
     expect(bindingsForCommand("workspace.open-daily")).toEqual(["Mod-Shift-o"]);
     const others = Object.entries(DEFAULT_BINDINGS).filter(
@@ -48,10 +83,179 @@ describe("默认键位", () => {
     const used = ["PageUp", "PageDown", "ArrowLeft", "ArrowRight"];
     const others = Object.entries(DEFAULT_BINDINGS).flatMap(([id, key]) => {
       if (id.startsWith("study.pdf-")) return [];
-      const keys = Array.isArray(key) ? key : [key];
-      return keys.filter((k) => used.includes(k)).map((k) => `${id}:${k}`);
+      return keysOf(key)
+        .filter((k) => used.includes(k))
+        .map((k) => `${id}:${k}`);
     });
     expect(others).toEqual([]);
+  });
+
+  it("阅读区截图默认 ⌘⇧E,归阅读区且无人重复", () => {
+    expect(bindingsForCommand("study.pdf-snap-to-agent")).toEqual(["Mod-Shift-e"]);
+    expect(defaultRegionOf("study.pdf-snap-to-agent")).toBe("reading");
+    const others = Object.entries(DEFAULT_BINDINGS).filter(
+      ([id, key]) =>
+        id !== "study.pdf-snap-to-agent" && keysOf(key).includes("Mod-Shift-e"),
+    );
+    expect(others).toEqual([]);
+  });
+});
+
+/** 区域归属:谁在哪个区域生效、区域如何盖住通用。 */
+describe("区域分发", () => {
+  it("命令按语义分到默认区域", () => {
+    expect(defaultRegionOf("edit.toggle-bold")).toBe("notes");
+    expect(defaultRegionOf("nav.header-todos")).toBe("notes");
+    expect(defaultRegionOf("study.pdf-next-page")).toBe("reading");
+    expect(defaultRegionOf("region.focus-agent")).toBe("reading");
+    expect(defaultRegionOf("agent.new-session")).toBe("agent");
+    expect(defaultRegionOf("study.agent-switch-session")).toBe("agent");
+    expect(defaultRegionOf("study.toggle-right-tab")).toBe("global");
+    expect(defaultRegionOf("nav.command-palette")).toBe("global");
+    expect(defaultRegionOf("view.toggle-study-mode")).toBe("global");
+  });
+
+  it("三个区域切换命令同时属于两个区域(任意区域都能去另外两个)", () => {
+    expect(defaultRegionsOf("region.focus-agent")).toEqual(["reading", "notes"]);
+    expect(defaultRegionsOf("region.focus-notes")).toEqual(["reading", "agent"]);
+    expect(defaultRegionsOf("region.focus-reading")).toEqual(["notes", "agent"]);
+    expect(commandsForKey("Mod-Alt-a", "reading")).toContain("region.focus-agent");
+    expect(commandsForKey("Mod-Alt-a", "notes")).toContain("region.focus-agent");
+    expect(commandsForKey("Mod-Alt-n", "reading")).toContain("region.focus-notes");
+    expect(commandsForKey("Mod-Alt-n", "agent")).toContain("region.focus-notes");
+    expect(commandsForKey("Mod-Alt-r", "notes")).toContain("region.focus-reading");
+    expect(commandsForKey("Mod-Alt-r", "agent")).toContain("region.focus-reading");
+    // 设置页两个页签里都能看到它。
+    expect(commandBelongs("region.focus-agent", "reading")).toBe(true);
+    expect(commandBelongs("region.focus-agent", "notes")).toBe(true);
+    expect(commandBelongs("region.focus-agent", "agent")).toBe(false);
+    expect(bindingsForCommand("region.focus-agent")).toEqual(["Mod-Alt-a"]);
+  });
+
+  it("笔记区的键不会在 Agent 面板触发,通用的键到处都在", () => {
+    expect(commandsForKey("Mod-b", "notes")).toContain("edit.toggle-bold");
+    expect(commandsForKey("Mod-b", "agent")).not.toContain("edit.toggle-bold");
+    expect(commandsForKey("Mod-p", "agent")).toContain("nav.command-palette");
+    expect(commandsForKey("Mod-p", "reading")).toContain("nav.command-palette");
+  });
+
+  it("区域绑定排在同键的通用绑定前面(Agent 里 ⌘[ 是返回会话)", () => {
+    expect(commandsForKey("Mod-[", "agent")[0]).toBe("agent.back-from-fork");
+    expect(commandsForKey("Mod-[", "agent")).toContain("nav.back-link");
+    // 笔记区没有区域绑定,⌘[ 仍是回退链接。
+    expect(commandsForKey("Mod-[", "notes")).toEqual(["nav.back-link"]);
+  });
+
+  it("null 解绑:该区域里这个键不再触发命令", () => {
+    applyOverrides({ notes: { "edit.toggle-italic": null } });
+    expect(bindingsForCommand("edit.toggle-italic")).toEqual([]);
+    expect(commandsForKey("Mod-Shift-i", "notes")).not.toContain("edit.toggle-italic");
+  });
+
+  it("区域互不影响:在别的区域加绑定,原区域的默认绑定保留", () => {
+    applyOverrides(normalizeOverrides({ agent: { "study.pdf-next-page": "Mod-j" } }));
+    expect(commandRegions("study.pdf-next-page")).toEqual(["reading", "agent"]);
+    expect(bindingsForCommand("study.pdf-next-page", "agent")).toEqual(["Mod-j"]);
+    expect(bindingsForCommand("study.pdf-next-page", "reading")).toEqual([
+      "PageDown",
+      "ArrowRight",
+    ]);
+    expect(commandsForKey("Mod-j", "agent")).toContain("study.pdf-next-page");
+    expect(commandsForKey("PageDown", "reading")).toContain("study.pdf-next-page");
+  });
+
+  it("解绑只影响当前区域", () => {
+    applyOverrides(
+      normalizeOverrides({ notes: { "region.focus-agent": null } }),
+    );
+    expect(bindingsForCommand("region.focus-agent", "notes")).toEqual([]);
+    expect(bindingsForCommand("region.focus-agent", "reading")).toEqual(["Mod-Alt-a"]);
+    expect(commandsForKey("Mod-Alt-a", "notes")).not.toContain("region.focus-agent");
+  });
+
+  it("翻页和弦跨区域:笔记区 / Agent 面板按下也命中阅读区那份绑定", () => {
+    applyOverrides(
+      normalizeOverrides({
+        reading: {
+          "study.pdf-prev-page": "Ctrl-k",
+          "study.pdf-next-page": "Ctrl-j",
+        },
+      }),
+    );
+    for (const region of ["notes", "agent"] as const) {
+      expect(commandsForKey("Ctrl-j", region)).toContain("study.pdf-next-page");
+      expect(commandsForKey("Ctrl-k", region)).toContain("study.pdf-prev-page");
+    }
+    // 阅读区自己不重复出现两次。
+    expect(
+      commandsForKey("Ctrl-j", "reading").filter((id) => id === "study.pdf-next-page"),
+    ).toEqual(["study.pdf-next-page"]);
+  });
+
+  it("翻页的裸导航键仍只归阅读区(不抢编辑器光标键)", () => {
+    expect(commandsForKey("PageDown", "reading")).toContain("study.pdf-next-page");
+    expect(commandsForKey("PageDown", "notes")).not.toContain("study.pdf-next-page");
+    expect(commandsForKey("ArrowRight", "agent")).not.toContain("study.pdf-next-page");
+    // 跨区域只对带 Mod/Ctrl/Alt 的和弦成立。
+    applyOverrides(normalizeOverrides({ reading: { "study.pdf-next-page": "F5" } }));
+    expect(commandsForKey("F5", "notes")).not.toContain("study.pdf-next-page");
+  });
+
+  it("⌘A 默认不拦截;只写进笔记区时,Agent/阅读区原样放行", () => {
+    expect(commandsForKey("Mod-a", "notes")).toEqual([]);
+    expect(commandsForKey("Mod-a", "agent")).toEqual([]);
+    applyOverrides(normalizeOverrides({ notes: { "edit.toggle-todo": "Mod-a" } }));
+    expect(commandsForKey("Mod-a", "notes")).toContain("edit.toggle-todo");
+    expect(commandsForKey("Mod-a", "agent")).toEqual([]);
+    expect(commandsForKey("Mod-a", "reading")).toEqual([]);
+  });
+});
+
+/** 配置文件:新格式按区域分组,旧版扁平表自动分区(升级不丢键位)。 */
+describe("配置文件读写", () => {
+  it("旧版扁平表按命令默认归属分区", () => {
+    const overrides = normalizeOverrides({
+      "edit.toggle-bold": "Mod-b",
+      "study.pdf-next-page": "Ctrl-j",
+      "nav.command-palette": "Mod-p",
+      "edit.toggle-italic": null,
+    });
+    expect(overrides.notes).toEqual({
+      "edit.toggle-bold": "Mod-b",
+      "edit.toggle-italic": null,
+    });
+    expect(overrides.reading).toEqual({ "study.pdf-next-page": "Ctrl-j" });
+    expect(overrides.global).toEqual({ "nav.command-palette": "Mod-p" });
+    expect(overrides.agent).toBeUndefined();
+  });
+
+  it("新格式按区域读取,忽略 _hint 之类的说明字段", () => {
+    const overrides = normalizeOverrides({
+      _hint: "说明",
+      global: { "nav.command-palette": ["Mod-p", "Mod-Shift-p"] },
+      agent: { "agent.new-session": null },
+    });
+    expect(overrides.global).toEqual({ "nav.command-palette": ["Mod-p", "Mod-Shift-p"] });
+    expect(overrides.agent).toEqual({ "agent.new-session": null });
+  });
+
+  it("非法值被丢掉,数组里的空项被清掉", () => {
+    const overrides = normalizeOverrides({
+      notes: { "edit.toggle-bold": 42, "edit.toggle-italic": ["", "Mod-i"] },
+    });
+    expect(overrides.notes).toEqual({ "edit.toggle-italic": ["Mod-i"] });
+  });
+
+  it("只写覆盖项,并能原样读回", () => {
+    const overrides = normalizeOverrides({
+      reading: { "study.pdf-prev-page": "Ctrl-k" },
+      agent: { "agent.focus-history": "Mod-Shift-h" },
+    });
+    const text = serializeOverrides(overrides);
+    expect(text).toContain("_hint");
+    expect(text).toContain("study.pdf-prev-page");
+    expect(text).not.toContain('"notes"');
+    expect(normalizeOverrides(JSON.parse(text))).toEqual(overrides);
   });
 });
 
@@ -78,6 +282,22 @@ describe("裸导航键归属", () => {
   });
 });
 
+/** 文本输入控件(input/textarea)自己的编辑和弦:同区域里绑了也不许抢。 */
+describe("表单编辑和弦", () => {
+  it("input/textarea 拥有 ⌘A/C/X/V/⌘Z,其它元素与其它按键不放行", () => {
+    for (const tag of ["INPUT", "TEXTAREA"]) {
+      for (const key of ["Mod-a", "Mod-c", "Mod-x", "Mod-v", "Mod-z", "Mod-Shift-z"]) {
+        expect(formOwnsEditChord(key, tag), `${tag} ${key}`).toBe(true);
+      }
+      expect(formOwnsEditChord("Ctrl-j", tag)).toBe(false);
+    }
+    // contenteditable 的编辑器不是 INPUT/TEXTAREA:笔记区的 ⌘A 归命令。
+    expect(formOwnsEditChord("Mod-a", "DIV")).toBe(false);
+    expect(formOwnsEditChord("Mod-a", null)).toBe(false);
+    expect(formOwnsEditChord("Mod-a", "SELECT")).toBe(false);
+  });
+});
+
 /** PageUp/PageDown 是不可覆盖的固定翻页键:改绑之后仍然翻页。 */
 describe("固定翻页键", () => {
   const ev = (key: string, mods: Partial<KeyboardEvent> = {}) =>
@@ -93,13 +313,9 @@ describe("固定翻页键", () => {
   });
 
   it("改绑 study.pdf-* 之后固定键仍然生效", () => {
-    setBindingOverrides({ "study.pdf-next-page": "Mod-j" });
-    try {
-      expect(bindingsForCommand("study.pdf-next-page")).toEqual(["Mod-j"]);
-      expect(fixedPageCommandFor(ev("PageDown"))).toBe("study.pdf-next-page");
-    } finally {
-      setBindingOverrides({});
-    }
+    applyOverrides({ reading: { "study.pdf-next-page": "Mod-j" } });
+    expect(bindingsForCommand("study.pdf-next-page")).toEqual(["Mod-j"]);
+    expect(fixedPageCommandFor(ev("PageDown"))).toBe("study.pdf-next-page");
   });
 
   it("带修饰键/其它按键不触发固定翻页", () => {

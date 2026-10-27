@@ -21,6 +21,7 @@ import { dirname, fileName, joinPath, wikilinkText } from "@/lib/path";
 import { ensureLinks } from "@/daily/links";
 import { ensureFootprints } from "@/footprint/store";
 import { recentVaultTarget, touchRecentVault } from "@/vault/recent";
+import { loadKeymap } from "@/commands/keybindingOverrides";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -38,6 +39,9 @@ export async function openVault(path: string): Promise<boolean> {
     const info = await api.setVault(path);
     const store = useAppStore.getState();
     store.setVault(info);
+    // 快捷键配置是 per-vault 的(和 vimrc / snippets 同目录),开仓即换一套。
+    // 配置读失败不能拖垮开仓:退回默认键位,下次保存会重写。
+    await loadKeymap(info.path).catch((e) => console.warn("load keybindings failed", e));
     // 跨文件待办同步的链接库:开仓即加载。updateListener 里的同步路径靠
     // peekLinks 同步读取,这里提前把 IPC 打出去,用户编辑前通常已就绪。
     void ensureLinks(info.path).catch((e) => console.warn("load daily links failed", e));

@@ -347,6 +347,12 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   /** 可配置的翻页键(命令层解析后的绑定字符串),由主窗口推入。 */
   let prevKeys: string[] = ["PageUp", "ArrowLeft"];
   let nextKeys: string[] = ["PageDown", "ArrowRight"];
+  /**
+   * 要转回主窗口的阅读区快捷键(切到 Agent / 笔记区)。原生子 webview 的按键
+   * 不冒泡到主窗口,这里匹配到就写 document.title,Rust 侧转成 Tauri 事件。
+   */
+  let hostKeys: string[] = [];
+  let hostKeySeq = 0;
   let shadeHost: HTMLElement | null = null;
   let shadeLayer: HTMLElement | null = null;
   let shadeCornerLeft: HTMLElement | null = null;
@@ -726,6 +732,12 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (nextList) nextKeys = nextList;
   }
 
+  /** 主窗口推来的「转发给主窗口」的键(阅读区里切区域的快捷键)。 */
+  function setHostKeys(value: unknown): void {
+    const list = keyList(value);
+    if (list) hostKeys = list;
+  }
+
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
   /** 与 commands/keys.ts::eventToKey 同一套规范化，用来匹配推入的绑定。 */
@@ -825,6 +837,19 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   function onPageKey(event: KeyboardEvent): void {
     if (event.defaultPrevented) return;
+    // 主窗口的阅读区快捷键(切到 Agent / 笔记区):页内先匹配,命中就转给
+    // 主窗口执行——两边走同一套区域键位,改键后主窗口会重新推入。
+    if (hostKeys.length > 0) {
+      const forwarded = hostKeys.find((binding) => bindingMatches(event, binding));
+      if (forwarded) {
+        if (isEditable(event.target as Element | null)) return;
+        hostKeySeq += 1;
+        document.title = `bnote-key:${JSON.stringify({ key: forwarded, n: hostKeySeq })}`;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
     // PageUp/PageDown 是固定翻页键（与主窗口的命令分发一致）：即使被解绑，
     // 无修饰按时也仍然翻页；带修饰时交给绑定表/页面自己。
     const plain = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
@@ -1328,12 +1353,14 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     page: scrollPage,
     setStep: setPageStep,
     setKeys,
+    setHostKeys,
   };
   // Rust 的翻页命令只认这个入口：与批注开关解耦，普通阅读也能按步长翻页。
   (w as { __bnoteReader?: Record<string, unknown> }).__bnoteReader = {
     page: scrollPage,
     setStep: setPageStep,
     setKeys,
+    setHostKeys,
   };
 
   // ---- 启动 ----

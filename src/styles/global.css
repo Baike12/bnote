@@ -1451,8 +1451,8 @@ button {
   width: 260px;
   flex: none;
 }
-.setting-control .settings-select {
-  max-width: 260px;
+.setting-control .settings-select-wrap {
+  width: 260px;
 }
 .setting-value {
   font-size: 13px;
@@ -1633,15 +1633,42 @@ button {
   border-color: var(--accent-dim);
 }
 
-.settings-select {
+/* 下拉:WKWebView 的原生 select 会画系统渐变 + 步进箭头,与扁平的输入框不搭。
+   appearance: none 剥掉原生外观,箭头由 wrapper 的 ::after 画(data URL 里的
+   SVG 取不到主题变量,换主题会掉色)。点击后弹出的仍是系统菜单。 */
+.settings-select-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
   min-width: 220px;
+  max-width: 260px;
+}
+.settings-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--text-faint);
+  border-bottom: 1.5px solid var(--text-faint);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+.settings-select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-width: 0;
   background: var(--bg0);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
-  padding: 6px 10px;
+  padding: 6px 30px 6px 10px;
   font-size: 13px;
   font-family: var(--font-ui);
+  text-overflow: ellipsis;
+  cursor: pointer;
   outline: none;
 }
 .settings-select:focus {
