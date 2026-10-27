@@ -93,6 +93,14 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",
 
+  // 学习模式网页预览的页面缩放(浏览器级缩放:文字重排、整页一起放大)。
+  // 与 Chrome 同键:⌘= / ⌘- / ⌘0。配置归属阅读区;焦点在原生子 webview
+  // 里时由页内运行时经 title 通道转回主窗口执行(见 ContentPane)。
+  // ⌘⇧= 是 "+" 键的物理形式,与 ⌘= 同义。
+  "study.web-zoom-in": ["Mod-=", "Mod-Shift-="],
+  "study.web-zoom-out": "Mod--",
+  "study.web-zoom-reset": "Mod-0",
+
   // 学习模式翻页(PDF 与网页阅读器共用,按设置里的步长滚动)。只有焦点在
   // 阅读区时才按这套键翻页(见 globalKeys 的区域分发)。
   "study.pdf-prev-page": ["PageUp", "ArrowLeft"],
@@ -132,6 +140,7 @@ const REGION_EXACT: Record<string, KeyRegion> = {
 
 const REGION_PREFIXES: [string, KeyRegion][] = [
   ["study.pdf-", "reading"],
+  ["study.web-", "reading"],
   ["region.", "reading"],
   ["agent.", "agent"],
   ["edit.", "notes"],
@@ -562,28 +571,40 @@ const KEY_GLYPH: Record<string, string> = {
   ArrowDown: "↓",
 };
 
+/**
+ * 把绑定串拆成「修饰键 + 主键」。
+ *
+ * 不能简单 `split("-")`:减号键自己就是 "-"(⌘− 写作 "Mod--"),按分隔符
+ * 切开只会剩下一串空串。改成从头逐个剥修饰键,剩下的整段都是主键——"Mod--"
+ * 剥掉 "Mod-" 后主键是 "-","Mod-Shift-=" 剥两次后主键是 "="。
+ *
+ * 这个函数会被序列化进网页运行时(注入原生 webview),函数体必须自包含:
+ * 修饰键表写在函数内部,不引用模块常量。
+ */
+export function parseBinding(binding: string): { mods: string[]; key: string } {
+  const MODIFIERS = ["Mod", "Shift", "Alt", "Ctrl", "Meta"];
+  const mods: string[] = [];
+  let rest = binding;
+  for (;;) {
+    const name = MODIFIERS.find(
+      (m) => rest.length > m.length + 1 && rest.startsWith(`${m}-`),
+    );
+    if (!name) break;
+    mods.push(name);
+    rest = rest.slice(name.length + 1);
+  }
+  return { mods, key: rest };
+}
+
 /** Human-friendly display, e.g. "Ctrl-Shift-M" → "⌘⇧M" (mac) / "Ctrl+Shift+M". */
 export function formatBinding(key: string): string {
   const label = (p: string) => KEY_GLYPH[p] ?? (p.length === 1 ? p.toUpperCase() : p);
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const { mods, key: base } = parseBinding(key);
   if (isMac) {
-    return key
-      .split("-")
-      .map((p) =>
-        p === "Mod"
-          ? "⌘"
-          : p === "Shift"
-            ? "⇧"
-            : p === "Alt"
-              ? "⌥"
-              : p === "Ctrl"
-                ? "⌃"
-                : label(p),
-      )
-      .join("");
+    const glyph = (p: string) =>
+      p === "Mod" ? "⌘" : p === "Shift" ? "⇧" : p === "Alt" ? "⌥" : p === "Ctrl" ? "⌃" : label(p);
+    return [...mods.map(glyph), label(base)].join("");
   }
-  return key
-    .split("-")
-    .map(label)
-    .join("+");
+  return [...mods, base].map(label).join("+");
 }

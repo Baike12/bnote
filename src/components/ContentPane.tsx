@@ -3,14 +3,15 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
-import { bindingsForCommand } from "@/commands/keys";
+import { bindingsForCommand, formatBinding } from "@/commands/keys";
 import { getKeymapRevision, subscribeKeymap } from "@/commands/keybindingOverrides";
-import { runBoundKey } from "@/commands/globalKeys";
+import { resolveBoundCommand, runBoundKey } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
 import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry, type WereadBookEntry } from "@/study/history";
 import { setWebNavHandlers } from "@/study/pdfNav";
 import { ensureMaterial } from "@/study/materials";
 import { normalizePageStep } from "@/study/reading";
+import { formatWebZoom, normalizeWebZoom, stepWebZoom } from "@/study/webZoom";
 import {
   flushWebAnnotations,
   loadWebAnnotations,
@@ -72,7 +73,18 @@ function readReadingShortcutKeys(): string[] {
   return [
     ...bindingsForCommand("region.focus-agent", "reading"),
     ...bindingsForCommand("region.focus-notes", "reading"),
+    // 网页缩放(⌘= / ⌘- / ⌘0):页内匹配后同样转给主窗口——缩放只是 Rust 侧
+    // 改一个页面属性,不动焦点(见 CommandDef.keepsPageFocus)。
+    ...bindingsForCommand("study.web-zoom-in", "reading"),
+    ...bindingsForCommand("study.web-zoom-out", "reading"),
+    ...bindingsForCommand("study.web-zoom-reset", "reading"),
   ];
+}
+
+/** 工具栏提示里的快捷键跟着当前绑定走(设置里改键后提示不会说谎)。 */
+function bindingLabel(id: string): string {
+  const [first] = bindingsForCommand(id, "reading");
+  return first ? formatBinding(first) : "未绑定";
 }
 
 /**
@@ -171,6 +183,15 @@ export function ContentPane() {
       void call.then(
         () => {
           if (create && !closed) setPreviewError(null);
+          // 新建的 webview 缩放是 100%:把设置里的值补推一次(已存在的
+          // webview 导航不会被清零,重复推也是幂等的)。
+          if (create && !closed) {
+            void agentApi
+              .setStudyPreviewZoom(
+                normalizeWebZoom(useAppStore.getState().settings.studyWebZoom),
+              )
+              .catch(() => {});
+          }
         },
         (e: unknown) => {
           if (create && !closed) {
@@ -229,6 +250,14 @@ export function ContentPane() {
     void agentApi.setStudyPreviewShortcuts(readReadingShortcutKeys()).catch(() => {});
   }, [previewUrl, modal, keymapRev]);
 
+  // 网页缩放:设置是唯一写入者(工具栏按钮与命令都只写设置),这里把它推给
+  // 原生视图。新建 webview 与每次导航完成时各补推一次。
+  const webZoom = normalizeWebZoom(settings.studyWebZoom);
+  useEffect(() => {
+    if (!previewUrl) return;
+    void agentApi.setStudyPreviewZoom(webZoom).catch(() => {});
+  }, [previewUrl, webZoom]);
+
   // 网页阅读器的翻页落点:焦点在主窗口时(点过工具栏/记笔记之后),命令层
   // 通过这里把 PageUp/PageDown 转给原生子 webview;焦点在网页里时由页内
   // 运行时自己接管(原生子 webview 的按键不会冒泡到主窗口)。
@@ -284,6 +313,12 @@ export function ContentPane() {
           .setStudyPreviewReadKeys(keys.prev, keys.next)
           .catch(() => {});
         await agentApi.setStudyPreviewShortcuts(readReadingShortcutKeys()).catch(() => {});
+        // 导航完成后补推缩放:设置才是唯一事实,页面自己不用记比例。
+        await agentApi
+          .setStudyPreviewZoom(
+            normalizeWebZoom(useAppStore.getState().settings.studyWebZoom),
+          )
+          .catch(() => {});
         const vault = useAppStore.getState().vaultPath;
         if (!vault || typeof url !== "string" || !url) return;
         const dir = await urlMaterialDir(vault, url);
@@ -328,6 +363,12 @@ export function ContentPane() {
     subscribe<{ key?: unknown }>("study-preview-key", (payload) => {
       const key = typeof payload?.key === "string" ? payload.key : null;
       if (!key) return;
+      // 网页缩放只在 Rust 侧改页面属性,不需要主窗口焦点。抢焦点会让用户按完
+      // ⌘= 之后滚不动、页面里的输入框也打不进字——这类命令原地执行即可。
+      if (resolveBoundCommand(key, "reading")?.keepsPageFocus) {
+        runBoundKey(key, "reading");
+        return;
+      }
       // 按键来自原生子 webview:先把主窗口的 webview 接回来,再按 reading
       // 区域执行——目标命令自己会把焦点交给输入框 / 编辑器。
       void getCurrentWebview()
@@ -642,6 +683,37 @@ export function ContentPane() {
               <span className="content-web-url" title={content.url}>
                 {content.url}
               </span>
+              {/* 页面缩放:原生子 webview 里没有浏览器自己的缩放控件,这里给
+                  一套最小的 −/读数/+;点读数回到 100%。 */}
+              <div className="content-web-zoom" role="group" aria-label="网页缩放">
+                <button
+                  className="icon-btn content-web-zoom-btn"
+                  title={`缩小网页(${bindingLabel("study.web-zoom-out")})`}
+                  onClick={() =>
+                    patchSettings({ studyWebZoom: stepWebZoom(webZoom, -1) })
+                  }
+                >
+                  −
+                </button>
+                <button
+                  className="content-web-zoom-value"
+                  title={`当前 ${formatWebZoom(webZoom)},点击回到 100%(${bindingLabel(
+                    "study.web-zoom-reset",
+                  )})`}
+                  onClick={() => patchSettings({ studyWebZoom: 1 })}
+                >
+                  {formatWebZoom(webZoom)}
+                </button>
+                <button
+                  className="icon-btn content-web-zoom-btn"
+                  title={`放大网页(${bindingLabel("study.web-zoom-in")})`}
+                  onClick={() =>
+                    patchSettings({ studyWebZoom: stepWebZoom(webZoom, 1) })
+                  }
+                >
+                  +
+                </button>
+              </div>
               <button
                 className={`icon-btn pdf-tool-btn${webTool === "highlight" ? " active" : ""}`}
                 title={

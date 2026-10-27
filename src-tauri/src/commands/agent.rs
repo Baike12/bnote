@@ -698,6 +698,27 @@ pub fn set_study_preview_shortcuts(
     Ok(())
 }
 
+/// 内嵌网页的页面缩放(浏览器级:文字重排、整页一起放大)。
+///
+/// 缩放值只在主窗口的设置里持有(单一写入者);这里把它转成原生视图的页面
+/// 缩放:macOS 是 `WKWebView.pageZoom`,Windows 是 WebView2 的
+/// `SetZoomFactor`——两者都挂在视图上,同一次 webview 里导航不会清零。
+/// 范围在前端夹过,这里再兜一次底。
+#[tauri::command]
+pub fn set_study_preview_zoom(app: tauri::AppHandle, zoom: f64) -> CmdResult<()> {
+    use tauri::Manager;
+    if !zoom.is_finite() {
+        return Err("INVALID_ZOOM: 网页缩放必须是有限数值".into());
+    }
+    let zoom = zoom.clamp(0.5, 3.0);
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        webview
+            .set_zoom(zoom)
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
 /// Pushes vault-side anchors into the page (the page merges by id, so this is
 /// idempotent and never overwrites newer page-side data).
 #[tauri::command]

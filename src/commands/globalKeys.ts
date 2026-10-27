@@ -1,4 +1,4 @@
-import { getCommand, runCommand } from "./registry";
+import { getCommand, runCommand, type CommandDef } from "./registry";
 import {
   commandsForKey,
   eventToKey,
@@ -90,14 +90,28 @@ function pickCommand(ids: string[]): string | null {
 }
 
 /**
+ * 当前区域里这个键最终会执行的命令(已过 `when` 筛选)。
+ *
+ * 网页转发通道要在「抢焦点 → 执行」之前知道目标命令是不是需要主窗口焦点
+ * (见 CommandDef.keepsPageFocus),所以这里把解析结果暴露出来。
+ */
+export function resolveBoundCommand(
+  key: string,
+  region: FocusRegion,
+): CommandDef | null {
+  const id = pickCommand(commandsForKey(key, region));
+  return id ? (getCommand(id) ?? null) : null;
+}
+
+/**
  * 按已解析的按键执行命令。窗口级分发与网页阅读器的转发通道共用这一条路径,
  * 保证「页内按的键」和「主窗口按的键」走同一套区域规则。
  */
 export function runBoundKey(key: string, region: FocusRegion): boolean {
-  const id = pickCommand(commandsForKey(key, region));
-  if (!id) return false;
-  if (keyContext === "drawing" && !DRAWING_ALLOWED.has(id)) return false;
-  runCommand(id);
+  const cmd = resolveBoundCommand(key, region);
+  if (!cmd) return false;
+  if (keyContext === "drawing" && !DRAWING_ALLOWED.has(cmd.id)) return false;
+  runCommand(cmd.id);
   return true;
 }
 

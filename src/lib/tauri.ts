@@ -318,6 +318,9 @@ export const agentApi = {
    *  不冒泡:页内匹配后经 title 通道上报)。 */
   setStudyPreviewShortcuts: (keys: string[]) =>
     invoke<void>("set_study_preview_shortcuts", { keys }),
+  /** 内嵌网页的页面缩放(1 = 100%;浏览器级缩放,文字重排)。 */
+  setStudyPreviewZoom: (zoom: number) =>
+    invoke<void>("set_study_preview_zoom", { zoom }),
   /** 把键盘焦点交给内嵌网页(切到阅读区用)。 */
   focusStudyPreview: () => invoke<void>("focus_study_preview"),
   /** 焦点在主窗口时,把一次翻页转给内嵌网页。 */

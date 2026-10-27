@@ -49,6 +49,7 @@ import { fileName } from "@/lib/path";
 import { normalizeStudyHistory } from "@/study/history";
 import { normalizeContentWidth, studySplitToContentWidth } from "@/study/layoutModel";
 import { normalizePageStep } from "@/study/reading";
+import { normalizeWebZoom } from "@/study/webZoom";
 
 /** 画布是独立 chunk(含 excalidraw 及其字体加载逻辑),只在打开时下载。 */
 const DrawingCanvas = lazy(() => import("@/components/DrawingCanvas"));
@@ -117,6 +118,8 @@ export default function App() {
       delete (settings as Record<string, unknown>).studyAgentOpen;
       // 旧配置没有 studyPageStep → 默认 50%;手改坏的值也在这里夹回范围内。
       settings.studyPageStep = normalizePageStep(settings.studyPageStep);
+      // 网页缩放同理:旧配置没有这一项 → 100%,手改越界的夹回 50%–300%。
+      settings.studyWebZoom = normalizeWebZoom(settings.studyWebZoom);
       useAppStore.getState().replaceSettings(settings);
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);

@@ -20,7 +20,7 @@
 //!   `set_study_preview_visible` / `close_study_preview` / `open_study_url` /
 //!   `set_study_preview_annotation_mode` / `set_study_preview_read_step` /
 //!   `set_study_preview_read_keys` / `scroll_study_preview` /
-//!   `merge_study_preview_annotations` —
+//!   `set_study_preview_zoom` / `merge_study_preview_annotations` —
 //!   these create native child webviews and windows inside the real app. A
 //!   browser tab triggering them would put a native view in someone else's
 //!   window.
@@ -428,7 +428,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         | "close_study_preview" | "open_study_url" | "set_study_preview_annotation_mode"
         | "set_study_preview_translate" | "set_study_preview_read_step"
         | "set_study_preview_read_keys" | "scroll_study_preview"
-        | "merge_study_preview_annotations" => {
+        | "set_study_preview_zoom" | "merge_study_preview_annotations" => {
             return Err(format!(
                 "BROWSER_MODE: `{}` creates a native webview/window in the app — not available from a browser tab",
                 cmd

@@ -1,4 +1,5 @@
 import { api } from "@/lib/tauri";
+import { parseBinding } from "@/commands/keys";
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
@@ -270,6 +271,7 @@ interface RuntimeHelpers {
   normalizeWebAnnotations: typeof normalizeWebAnnotations;
   normalizePageStep: typeof normalizePageStep;
   snapScrollTopToLine: typeof snapScrollTopToLine;
+  parseBinding: typeof parseBinding;
 }
 
 interface TextEntry {
@@ -758,16 +760,20 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
-  /** 与 commands/keys.ts::eventToKey 同一套规范化，用来匹配推入的绑定。 */
+  /**
+   * 与 commands/keys.ts 共用同一套绑定解析(含 ⌘− 这种主键本身就是 "-" 的
+   * 写法);规范化事件按键的规则与 eventToKey 一致。
+   */
   function bindingMatches(event: KeyboardEvent, binding: string): boolean {
-    const parts = binding.split("-");
-    const key = parts[parts.length - 1];
+    const parsed = helpers.parseBinding(binding);
+    const key = parsed.key;
     if (!key) return false;
-    if (parts.includes("Mod") !== (IS_MAC ? event.metaKey : event.ctrlKey)) return false;
-    if (parts.includes("Shift") !== event.shiftKey) return false;
-    if (parts.includes("Alt") !== event.altKey) return false;
-    if (parts.includes("Ctrl") !== (IS_MAC && event.ctrlKey)) return false;
-    if (parts.includes("Meta") !== (!IS_MAC && event.metaKey)) return false;
+    const mods = parsed.mods;
+    if (mods.includes("Mod") !== (IS_MAC ? event.metaKey : event.ctrlKey)) return false;
+    if (mods.includes("Shift") !== event.shiftKey) return false;
+    if (mods.includes("Alt") !== event.altKey) return false;
+    if (mods.includes("Ctrl") !== (IS_MAC && event.ctrlKey)) return false;
+    if (mods.includes("Meta") !== (!IS_MAC && event.metaKey)) return false;
     let actual = event.key;
     if (actual === " ") actual = "Space";
     else if (actual.length === 1) actual = actual.toLowerCase();
@@ -1766,6 +1772,7 @@ export function buildWebAnnotationScript(): string {
     `normalizeWebAnnotations:${normalizeWebAnnotations.toString()}`,
     `normalizePageStep:${normalizePageStep.toString()}`,
     `snapScrollTopToLine:${snapScrollTopToLine.toString()}`,
+    `parseBinding:${parseBinding.toString()}`,
   ].join(",");
   return `(${webAnnotationRuntime.toString()})({${helpers}});`;
 }
