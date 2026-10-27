@@ -1,9 +1,11 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
 import { bindingsForCommand } from "@/commands/keys";
+import { getKeymapRevision, subscribeKeymap } from "@/commands/keybindingOverrides";
+import { runBoundKey } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
 import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry, type WereadBookEntry } from "@/study/history";
 import { setWebNavHandlers } from "@/study/pdfNav";
@@ -63,7 +65,18 @@ function readPageKeyBindings() {
 }
 
 /**
- * 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键 + 微信读书运行时
+ * 要转回主窗口执行的阅读区快捷键:焦点在原生子 webview 里时,页内运行时匹配
+ * 到这些键后经 title 通道上报,主窗口按同一套 reading 键位执行。
+ */
+function readReadingShortcutKeys(): string[] {
+  return [
+    ...bindingsForCommand("region.focus-agent", "reading"),
+    ...bindingsForCommand("region.focus-notes", "reading"),
+  ];
+}
+
+/**
+ * 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键/转发键 + 微信读书运行时
  * (每次导航都会重装;微信读书运行时开头按 hostname 自门控,其他网站零开销)。
  */
 function previewInitScript(step: number): string {
@@ -74,6 +87,9 @@ function previewInitScript(step: number): string {
     `window.__bnoteReader && window.__bnoteReader.setKeys(${JSON.stringify(
       keys.prev,
     )}, ${JSON.stringify(keys.next)});`,
+    `window.__bnoteReader && window.__bnoteReader.setHostKeys(${JSON.stringify(
+      readReadingShortcutKeys(),
+    )});`,
     WEREAD_SCRIPT,
   ].join("\n");
 }
@@ -96,6 +112,8 @@ export function ContentPane() {
   const showToast = useAppStore((s) => s.showToast);
   const modal = useAppStore((s) => s.modal);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
+  // 快捷键覆盖表变化时要把新的转发键推给页内运行时。
+  const keymapRev = useSyncExternalStore(subscribeKeymap, getKeymapRevision, getKeymapRevision);
   const previewRef = useRef<HTMLDivElement>(null);
   /** 挂载期间的重测入口;没有原生预览时为 null。 */
   const previewSyncRef = useRef<(() => void) | null>(null);
@@ -200,6 +218,13 @@ export function ContentPane() {
     void agentApi.setStudyPreviewReadKeys(keys.prev, keys.next).catch(() => {});
   }, [previewUrl, settings.studyPageStep, modal]);
 
+  // 转发键跟着配置走:设置里改了「阅读区 → Agent/笔记区」的键,页内运行时
+  // 立刻换新键,不用重新加载网页。
+  useEffect(() => {
+    if (!previewUrl || modal !== null) return;
+    void agentApi.setStudyPreviewShortcuts(readReadingShortcutKeys()).catch(() => {});
+  }, [previewUrl, modal, keymapRev]);
+
   // 网页阅读器的翻页落点:焦点在主窗口时(点过工具栏/记笔记之后),命令层
   // 通过这里把 PageUp/PageDown 转给原生子 webview;焦点在网页里时由页内
   // 运行时自己接管(原生子 webview 的按键不会冒泡到主窗口)。
@@ -249,6 +274,7 @@ export function ContentPane() {
         await agentApi
           .setStudyPreviewReadKeys(keys.prev, keys.next)
           .catch(() => {});
+        await agentApi.setStudyPreviewShortcuts(readReadingShortcutKeys()).catch(() => {});
         const vault = useAppStore.getState().vaultPath;
         if (!vault || typeof url !== "string" || !url) return;
         const dir = await urlMaterialDir(vault, url);
@@ -288,6 +314,17 @@ export function ContentPane() {
       state.recordWereadBook({ url: route.url, title });
       state.setStudyWereadBook({ url: route.url, title });
       setActiveWeread({ url: route.url, title });
+    });
+
+    subscribe<{ key?: unknown }>("study-preview-key", (payload) => {
+      const key = typeof payload?.key === "string" ? payload.key : null;
+      if (!key) return;
+      // 按键来自原生子 webview:先把主窗口的 webview 接回来,再按 reading
+      // 区域执行——目标命令自己会把焦点交给输入框 / 编辑器。
+      void getCurrentWebview()
+        .setFocus()
+        .then(() => runBoundKey(key, "reading"))
+        .catch(() => runBoundKey(key, "reading"));
     });
 
     return () => {
@@ -462,6 +499,8 @@ export function ContentPane() {
   return (
     <div
       className={`content-pane${dragging ? " dragging" : ""}`}
+      data-key-region="reading"
+      tabIndex={-1}
       onDragOver={(e) => e.preventDefault()}
     >
       {/* 学习模式没有标题栏,这行是窗口拖动区(按钮、输入框不受影响)。

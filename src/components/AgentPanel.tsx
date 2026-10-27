@@ -7,6 +7,7 @@ import {
   type AgentEvent,
   type MaterialInfo,
   type SavedSessionMeta,
+  type SessionModelConfig,
   type StudyContent,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
@@ -16,10 +17,15 @@ import { StudyRightTabs } from "./StudyRightTabs";
 import { forkLabel } from "@/study/agentFork";
 import { ensureMaterial, sessionFilePath } from "@/study/materials";
 import {
+  buildSessionMeta,
   historyFromTranscript,
   parseTranscript,
   serializeTranscript,
+  sessionMetaFromRaw,
+  sessionTitleFromLines,
+  turnLines,
   type TranscriptLine,
+  type TranscriptUserLine,
 } from "@/study/transcript";
 import { isWereadUrl } from "@/study/weread";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
@@ -101,6 +107,8 @@ interface Conv {
   transcriptPath: string | null;
   /** 文件名里的会话 id(历史抽屉里高亮当前项)。 */
   sessionFileId: string | null;
+  /** 这条会话启动时的模型配置快照:之后改设置不影响它,恢复也按它继续。 */
+  model: SessionModelConfig | null;
   /** 最近一次模型请求的 token 用量(上下文占用 = input + output)。 */
   usage: AgentUsage | null;
 }
@@ -303,6 +311,7 @@ export function AgentPanel() {
   const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
   const rightTab = useAppStore((s) => s.settings.studyRightTab);
   const agentSwitchSignal = useAppStore((s) => s.agentSwitchSessionSignal);
+  const agentPanelCommand = useAppStore((s) => s.agentPanelCommand);
   const showToast = useAppStore((s) => s.showToast);
   const [convs, setConvs] = useState<Conv[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -333,6 +342,11 @@ export function AgentPanel() {
   const [materialInfo, setMaterialInfo] = useState<MaterialInfo | null>(null);
   const [savedSessions, setSavedSessions] = useState<SavedSessionMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+  const historyFocusPending = useRef(false);
+  /** agentPanelCommand 是递增计数:只执行比上次新的那条。 */
+  const lastAgentCommandSeq = useRef(0);
   const materialRef = useRef<{ identity: string; info: MaterialInfo | null } | null>(null);
   /** convKey → 会话记录文件。启动成功/恢复时写入,每轮结束追加。 */
   const transcriptRef = useRef<Map<string, string>>(new Map());
@@ -340,10 +354,14 @@ export function AgentPanel() {
   const sessionIndexRef = useRef<Map<string, { convKey: string; path: string | null }>>(
     new Map(),
   );
+  /** convKey → 已写过元数据行(标题 + 模型快照)。一个会话只写一次,永远在文件最前面。 */
+  const metaWrittenRef = useRef<Map<string, boolean>>(new Map());
+  /** convKey → 会话模型配置快照(写元数据行用;会话切走后收尾那轮也要能取到)。 */
+  const modelByConvRef = useRef<Map<string, SessionModelConfig | null>>(new Map());
   /** 每轮用户消息先记在这里,和助手回复一起落盘(发送失败就不落)。 */
-  const pendingUserRef = useRef<Map<string, TranscriptLine>>(new Map());
-  /** 重启键(配置保存 / ⟳):变了就开新会话,而不是恢复最近一条。 */
-  const restartKeyRef = useRef<string | null>(null);
+  const pendingUserRef = useRef<Map<string, TranscriptUserLine>>(new Map());
+  /** 重启计数(⟳ / ＋新会话):变了就开新会话,而不是恢复最近一条。 */
+  const restartKeyRef = useRef<number | null>(null);
 
   useEffect(() => {
     convsRef.current = convs;
@@ -414,14 +432,21 @@ export function AgentPanel() {
         transcriptPath?: string | null;
         /** 分叉:先把父会话的前缀写进新文件。 */
         seedLines?: TranscriptLine[];
+        /** 恢复/分叉:沿用源会话的模型配置;不传则用设置里的当前配置。 */
+        model?: SessionModelConfig;
       },
     ) => {
       const token = ++startTokenRef.current;
       setStarting(true);
       updateConv(convKey, (c) => ({ ...c, error: undefined, errorKind: undefined }));
       try {
-        const info = await agentApi.startSession(content, undefined, opts?.history);
-        // 过期就放弃:期间内容/配置又变了,新一轮启动已经接管。
+        const info = await agentApi.startSession(
+          content,
+          undefined,
+          opts?.history,
+          opts?.model,
+        );
+        // 过期就放弃:期间内容又变了(换材料/新会话),新一轮启动已经接管。
         if (startTokenRef.current !== token) return;
         // 会话记录路径:恢复用旧文件,新会话用「材料目录 + 后端会话 id」。
         const vault = useAppStore.getState().vaultPath;
@@ -433,11 +458,24 @@ export function AgentPanel() {
         const sessionFileId = fileName ? fileName.replace(/\.jsonl$/, "") : null;
         if (transcriptPath) transcriptRef.current.set(convKey, transcriptPath);
         sessionIndexRef.current.set(info.sessionId, { convKey, path: transcriptPath });
+        const model = info.model ?? opts?.model ?? null;
+        modelByConvRef.current.set(convKey, model);
         if (transcriptPath && opts?.seedLines && opts.seedLines.length > 0) {
-          // 新文件(新会话 id)不存在旧内容,直接写入前缀即可。
+          // 分叉:新文件(新会话 id)不存在旧内容,元数据行 + 前缀一次写入。
+          // 元数据必须在第一行——列表侧只读文件头部就能拿到标题与模型快照。
+          const meta = buildSessionMeta({
+            at: Date.now(),
+            title: sessionTitleFromLines(opts.seedLines),
+            model,
+          });
           await api
-            .writeFile(transcriptPath, serializeTranscript(opts.seedLines))
+            .writeFile(transcriptPath, serializeTranscript([meta, ...opts.seedLines]))
             .catch((e) => console.warn("[agent] 写分叉前缀失败", e));
+          metaWrittenRef.current.set(convKey, true);
+        } else {
+          // 恢复:文件里已有元数据(旧记录没有,标题走列表侧的兜底解析);
+          // 新会话:第一条消息落盘时再把元数据行一起写进去,避免空会话进列表。
+          metaWrittenRef.current.set(convKey, Boolean(opts?.transcriptPath));
         }
         if (startTokenRef.current !== token) return;
         setConvs((prev) =>
@@ -449,6 +487,7 @@ export function AgentPanel() {
                   mcpErrors: info.mcpErrors,
                   transcriptPath,
                   sessionFileId,
+                  model,
                 }
               : c,
           ),
@@ -483,6 +522,8 @@ export function AgentPanel() {
         showToast("这条会话记录是空的");
         return;
       }
+      // 会话自己的模型配置快照:之后改设置不影响这条会话,恢复也按它继续。
+      const sessionMeta = sessionMetaFromRaw(raw);
       const conv: Conv = {
         key: nextConvKey(),
         sessionId: null,
@@ -493,34 +534,40 @@ export function AgentPanel() {
         mcpErrors: [],
         transcriptPath: path,
         sessionFileId: meta.id,
+        model: sessionMeta?.model ?? null,
         usage: null,
       };
       transcriptRef.current.set(conv.key, path);
       setConvs([conv]);
       setActiveKey(conv.key);
       turnsRef.current.clear();
+      // 恢复的会话文件里已有元数据(旧记录没有,标题走列表侧兜底);
+      // 不重复写,也不清别的会话的记账——还在流的那一轮收尾时还要用。
+      metaWrittenRef.current.set(conv.key, true);
       void startSession(conv.key, materialContent, {
         history: historyFromTranscript(lines),
         transcriptPath: path,
+        model: sessionMeta?.model,
       });
     },
     [materialContent, showToast, startSession],
   );
 
-  // 主会话生命周期:页签激活后,材料/配置/重启任一变化都重建会话。
+  // 主会话生命周期:页签激活后,材料/重启任一变化都重建会话。
   // - 换材料:恢复这份材料最近一条会话(没有才开新的);
-  // - 保存配置 / 点 ⟳:强制开一条新会话(旧会话留在历史里);
+  // - 点 ⟳ / ＋新会话:强制开一条新会话(旧会话留在历史里,配置用当前设置);
+  // - 保存设置:什么都不发生——已开的会话继续用它自己的模型配置快照。
   // - 页签切走再切回:内容没变就复用活会话。
   useEffect(() => {
     if (rightTab !== "agent") return;
     const identity = studyContentKey(materialContent);
-    const key = `${identity}|${agentConfigVersion}|${restartNonce}`;
+    const key = `${identity}|${restartNonce}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
 
-    const restartKey = `${agentConfigVersion}|${restartNonce}`;
-    const forcedNew = restartKeyRef.current !== null && restartKeyRef.current !== restartKey;
-    restartKeyRef.current = restartKey;
+    const forcedNew =
+      restartKeyRef.current !== null && restartKeyRef.current !== restartNonce;
+    restartKeyRef.current = restartNonce;
 
     const token = ++startTokenRef.current;
     void (async () => {
@@ -550,6 +597,7 @@ export function AgentPanel() {
         mcpErrors: [],
         transcriptPath: null,
         sessionFileId: null,
+        model: null,
         usage: null,
       };
       setConvs([conv]);
@@ -559,7 +607,6 @@ export function AgentPanel() {
     })();
   }, [
     materialContent,
-    agentConfigVersion,
     rightTab,
     restartNonce,
     startSession,
@@ -650,18 +697,24 @@ export function AgentPanel() {
   function persistTurn(convKey: string, turn: Turn, pathOverride?: string) {
     const path = pathOverride ?? transcriptRef.current.get(convKey);
     if (!path) return;
-    const user = pendingUserRef.current.get(convKey);
+    const user = pendingUserRef.current.get(convKey) ?? null;
     pendingUserRef.current.delete(convKey);
-    const lines: TranscriptLine[] = [];
-    if (user) lines.push(user);
-    lines.push({
-      type: "assistant",
-      at: Date.now(),
-      text: turn.text,
-      thinking: turn.thinking,
-      thinkSeconds: turn.thinkSeconds,
-      tools: turn.tools,
-      error: turn.error,
+    // 第一轮会把元数据行(标题 + 模型快照)插在最前面,见 turnLines。
+    const firstWrite = !metaWrittenRef.current.get(convKey);
+    if (firstWrite) metaWrittenRef.current.set(convKey, true);
+    const lines = turnLines({
+      user,
+      assistant: {
+        type: "assistant",
+        at: Date.now(),
+        text: turn.text,
+        thinking: turn.thinking,
+        thinkSeconds: turn.thinkSeconds,
+        tools: turn.tools,
+        error: turn.error,
+      },
+      first: firstWrite,
+      model: modelByConvRef.current.get(convKey) ?? null,
     });
     void api
       .appendFile(path, serializeTranscript(lines))
@@ -891,47 +944,134 @@ export function AgentPanel() {
    * 从第 index 条消息分叉一条辅助会话:复制前缀历史,原会话不动。
    * 分叉出来的会话有自己的记录文件(前缀先写进去),关掉再开也能继续。
    */
-  function forkFrom(index: number) {
-    const src = activeConv;
-    if (!src) return;
-    if (!src.sessionId) {
-      showToast("会话未就绪,不能分叉");
-      return;
-    }
-    const origin = src.entries[index];
-    const label = origin.text.trim() || (origin.images?.length ? "[图片]" : "");
-    const prefix = src.entries.slice(0, index + 1).map(cloneEntry);
-    const seedLines = entriesToLines(prefix);
-    const conv: Conv = {
-      key: nextConvKey(),
-      sessionId: null,
-      entries: prefix,
-      label: `↳ ${forkLabel(label)}`,
-      parent: src.key,
-      basedOn: forkLabel(label, 40),
-      mcpErrors: [],
-      transcriptPath: null,
-      sessionFileId: null,
-      usage: null,
-    };
-    setConvs((prev) => [...prev, conv]);
-    setActiveKey(conv.key);
-    void startSession(conv.key, materialContent, {
-      history: historyFromTranscript(seedLines),
-      seedLines,
-    });
-  }
+  const forkFrom = useCallback(
+    (index: number) => {
+      const src = activeConv;
+      if (!src) return;
+      if (!src.sessionId) {
+        showToast("会话未就绪,不能分叉");
+        return;
+      }
+      const origin = src.entries[index];
+      if (!origin) return;
+      const label = origin.text.trim() || (origin.images?.length ? "[图片]" : "");
+      const prefix = src.entries.slice(0, index + 1).map(cloneEntry);
+      const seedLines = entriesToLines(prefix);
+      const conv: Conv = {
+        key: nextConvKey(),
+        sessionId: null,
+        entries: prefix,
+        label: `↳ ${forkLabel(label)}`,
+        parent: src.key,
+        basedOn: forkLabel(label, 40),
+        mcpErrors: [],
+        transcriptPath: null,
+        sessionFileId: null,
+        // 辅助会话沿用源会话的模型配置:分叉不该换模型。
+        model: src.model,
+        usage: null,
+      };
+      setConvs((prev) => [...prev, conv]);
+      setActiveKey(conv.key);
+      void startSession(conv.key, materialContent, {
+        history: historyFromTranscript(seedLines),
+        seedLines,
+        model: src.model ?? undefined,
+      });
+    },
+    [activeConv, materialContent, showToast, startSession],
+  );
 
   const parentConv = activeConv?.parent
     ? (convs.find((c) => c.key === activeConv.parent) ?? null)
     : null;
-  const modelName = agentConfig?.model.trim() ?? "";
-  const contextLimit = agentConfig?.contextWindow ?? 0;
+
+  /** 把焦点交给历史列表:第一条会话,没有会话就交给抽屉本身。 */
+  const focusHistory = useCallback(() => {
+    const first = historyRef.current?.querySelector<HTMLButtonElement>(".agent-history-item");
+    (first ?? historyRef.current)?.focus();
+  }, []);
+
+  // 快捷键/命令 → 面板动作。信号里只有 kind;具体会话、输入框都是面板私有状态。
+  useEffect(() => {
+    const cmd = agentPanelCommand;
+    if (!cmd || cmd.seq === lastAgentCommandSeq.current) return;
+    lastAgentCommandSeq.current = cmd.seq;
+    // 聚焦输入框 = 显式进入中文写作框:即使它本来就是焦点(快捷键反复按、
+    // 框里手动切回过英文),也要把输入法重新拉回中文。
+    const focusInput = () => {
+      inputRef.current?.focus();
+      imeOnChineseFocus(true);
+    };
+    switch (cmd.kind) {
+      case "focus-input":
+        focusInput();
+        break;
+      case "new":
+        setHistoryOpen(false);
+        setRestartNonce((n) => n + 1);
+        focusInput();
+        break;
+      case "fork": {
+        if (!activeConv || activeConv.entries.length === 0) {
+          showToast("当前会话还没有消息可分叉");
+          return;
+        }
+        forkFrom(activeConv.entries.length - 1);
+        focusInput();
+        break;
+      }
+      case "back": {
+        if (!parentConv) {
+          showToast("当前不是辅助会话");
+          return;
+        }
+        setActiveKey(parentConv.key);
+        focusInput();
+        break;
+      }
+      case "attach-images": {
+        const incoming = cmd.images ?? [];
+        if (incoming.length === 0) break;
+        const room = MAX_IMAGES_PER_MESSAGE - pendingImages.length;
+        if (room <= 0) {
+          showToast(`一次最多 ${MAX_IMAGES_PER_MESSAGE} 张图片`);
+          break;
+        }
+        if (incoming.length > room) {
+          showToast(`一次最多 ${MAX_IMAGES_PER_MESSAGE} 张图片`);
+        }
+        setPendingImages((prev) => [...prev, ...incoming.slice(0, room)]);
+        focusInput();
+        break;
+      }
+      case "history":
+        historyFocusPending.current = true;
+        // 抽屉已经开着时再按一次,直接把焦点送进去。
+        if (historyOpen) focusHistory();
+        else setHistoryOpen(true);
+        break;
+    }
+  }, [agentPanelCommand, activeConv, parentConv, forkFrom, historyOpen, focusHistory, showToast, pendingImages]);
+
+  // 历史抽屉打开后把焦点交给列表,接着就能 Tab / 回车操作。
+  useEffect(() => {
+    if (!historyOpen || !historyFocusPending.current) return;
+    historyFocusPending.current = false;
+    focusHistory();
+  }, [historyOpen, focusHistory]);
+
+  // 脚注显示**本会话**的模型配置:设置改了不影响已开会话,显示当前设置
+  // 会骗人。会话还没起来时退回当前配置。
+  const configuredModel = agentConfig?.model.trim() ?? "";
+  const modelName = activeConv?.model?.model.trim() || configuredModel;
+  const contextLimit = activeConv?.model?.contextWindow ?? agentConfig?.contextWindow ?? 0;
+  const modelStale = Boolean(modelName && configuredModel && modelName !== configuredModel);
   const activeUsage = activeConv?.usage ?? null;
   const usagePct = occupancyPercent(activeUsage, contextLimit);
 
   return (
-    <aside className="agent-panel">
+    <aside className="agent-panel" data-key-region="agent">
       {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让文字也能拖,
           头部里的按钮由 Tauri 的 drag.js 自行放行。 */}
       <div className="agent-header" data-tauri-drag-region="deep">
@@ -1029,6 +1169,7 @@ export function AgentPanel() {
               onClick={() =>
                 void startSession(activeConv.key, materialContent, {
                   transcriptPath: activeConv.transcriptPath,
+                  model: activeConv.model ?? undefined,
                 })
               }
             >
@@ -1165,12 +1306,16 @@ export function AgentPanel() {
           </div>
         )}
         <textarea
+          ref={inputRef}
           className="agent-input"
           placeholder="询问当前内容…(可直接粘贴截图)"
           value={input}
           rows={2}
           data-ime-chinese="true"
-          onFocus={() => imeOnChineseFocus()}
+          onFocus={() => imeOnChineseFocus(true)}
+          // 点击也强制:已经聚焦时 focus 事件不会再触发(用户在框里用
+          // Ctrl+Space 切回英文后点回来,这里必须把中文再要一次)。
+          onPointerDown={() => imeOnChineseFocus(true)}
           onBlur={() => imeSyncToEditor()}
           onChange={(e) => setInput(e.target.value)}
           onCompositionStart={() => {
@@ -1223,8 +1368,19 @@ export function AgentPanel() {
               <path d="m5 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L16 17.5M14 15l2-2a1.5 1.5 0 0 1 2.1 0L21 15.9" />
             </svg>
           </button>
-          <span className="agent-meta" title={usageTitle(activeUsage, contextLimit, modelName)}>
-            <span className="agent-meta-model">{modelName || "未配置模型"}</span>
+          <span
+            className="agent-meta"
+            title={
+              usageTitle(activeUsage, contextLimit, modelName) +
+              (modelStale
+                ? `\n本会话按自己的配置继续(设置里现在是 ${configuredModel});点 ⟳ 开始新会话才会用新配置。`
+                : "")
+            }
+          >
+            <span className="agent-meta-model">
+              {modelName || "未配置模型"}
+              {modelStale ? " · 会话配置" : ""}
+            </span>
             <span className="agent-meta-ctx">{contextLabel(activeUsage, contextLimit)}</span>
             {usagePct !== null && (
               <span className="agent-meta-pct">{formatPercent(usagePct)}</span>
@@ -1257,7 +1413,7 @@ export function AgentPanel() {
       </div>
       {/* 历史会话抽屉:这份材料下保存过的对话,点一条即恢复并继续。 */}
       {historyOpen && (
-        <div className="agent-history" role="dialog" aria-label="历史会话">
+        <div className="agent-history" role="dialog" aria-label="历史会话" ref={historyRef} tabIndex={-1}>
           <div className="agent-history-head">
             <div className="agent-history-heading">
               <span className="agent-history-heading-title">历史会话</span>

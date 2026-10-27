@@ -159,7 +159,7 @@ export function EditorPane() {
   }, [currentFile]);
 
   return (
-    <div className="editor-pane">
+    <div className="editor-pane" data-key-region="notes">
       <div className="editor-host" ref={hostRef} />
       <PythonRunPanel />
       {!currentFile && vaultPath && (

@@ -48,6 +48,21 @@ let switching = false;
 let queued: string | null = null;
 let launchScheduled = false;
 
+/** 焦点落定后核对输入源的一次性定时器(见 scheduleFocusVerify)。 */
+let focusVerifyTimer: ReturnType<typeof setTimeout> | null = null;
+/** 核对代数:新意图 / 离开输入框 / 交还都会作废在途的核对回调。 */
+let focusVerifySeq = 0;
+/** 焦点切换完成到上下文输入源恢复之间隔一个 run loop,120ms 足够落定。 */
+const FOCUS_VERIFY_DELAY_MS = 120;
+
+function cancelFocusVerify(): void {
+  focusVerifySeq++;
+  if (focusVerifyTimer !== null) {
+    clearTimeout(focusVerifyTimer);
+    focusVerifyTimer = null;
+  }
+}
+
 /** 把切换推迟到当前任务之后。模式切换那一帧里已经有一轮 DOM 同步 + measure
  *  （见 setup.ts 的光标冲刷），而 TIS 必须占用苹果主线程（ime.rs 的 on_main）
  *  ——先让模式与光标落到位，再去动输入法，不要叠在同一帧里。同一批里的连续
@@ -104,6 +119,7 @@ export function imeApply(target: string): void {
   const { settings } = useAppStore.getState();
   if (!settings.ime.enabled) return;
   if (desired === target && !suspended) return;
+  cancelFocusVerify();
   desired = target;
   suspended = false;
   scheduleLaunch();
@@ -112,11 +128,126 @@ export function imeApply(target: string): void {
 /**
  * 中文写作输入框(批注卡 / agent 对话框)获得焦点:直接切到 insert 源。
  * 这些输入框只写中文,焦点即意图;编辑器的 vim 模式不参与。
+ *
+ * `force` = 用户显式进入输入框(鼠标点击 / 快捷键聚焦):用户在框里用
+ * Ctrl+Space 切回英文后再点进来,`desired` 仍停在中文,普通去重会认为
+ * 「已经是中文」而什么都不做。强制路径绕过这层去重,重新下发一次意图;
+ * Rust 侧 `tis::select` 对「已经在目标源」本身就是 cheap no-op,不会重复
+ * 触发 CJK 验证链。
  */
-export function imeOnChineseFocus(): void {
+export function imeOnChineseFocus(force = false): void {
   const { settings } = useAppStore.getState();
-  if (!settings.ime.chineseFields) return;
-  imeApply(settings.ime.insertSource);
+  if (!settings.ime.enabled || !settings.ime.chineseFields) return;
+  if (!force) {
+    imeApply(settings.ime.insertSource);
+    return;
+  }
+  desired = settings.ime.insertSource;
+  suspended = false;
+  // 排队中的旧意图(失焦归还、上一个输入框)作废:用户刚显式进了输入框,
+  // 中文是最终意图。在途调用落定后由 launchSwitch 的收尾补发。
+  queued = null;
+  scheduleLaunch();
+  scheduleFocusVerify(settings.ime.insertSource);
+}
+
+/**
+ * 焦点落定后核对一次系统输入源。
+ *
+ * 系统开着「按上下文记忆输入源」(`TextInputGlobalPropertyPerContextInput = 1`)
+ * 时,新的文本上下文激活后 AppKit 会把输入源恢复成这个上下文记住的源。
+ * 切换发生在焦点切换过程中时会被这次恢复盖掉——表现就是 Sogou 图标闪一下
+ * 又回到英文。等焦点稳定后再读一次系统源,与意图不一致就补发一次(只补
+ * 一次,不循环);期间离开输入框或意图变化,核对自动作废。
+ */
+function scheduleFocusVerify(target: string): void {
+  cancelFocusVerify();
+  const seq = focusVerifySeq;
+  focusVerifyTimer = setTimeout(() => {
+    focusVerifyTimer = null;
+    if (seq !== focusVerifySeq) return;
+    const { settings } = useAppStore.getState();
+    if (!settings.ime.enabled || !settings.ime.chineseFields) return;
+    if (desired !== target || suspended || !focusInChineseField()) return;
+    void api
+      .getCurrentInputSource()
+      .then((current) => {
+        if (seq !== focusVerifySeq) return;
+        if (desired !== target || suspended || !focusInChineseField()) return;
+        if (current === target) return;
+        desired = target;
+        queued = null;
+        scheduleLaunch();
+      })
+      .catch(() => {});
+  }, FOCUS_VERIFY_DELAY_MS);
+}
+
+/**
+ * 临时中文输入作用域:一个弹窗的生命周期(快速待办)。
+ *
+ * 打开时**先读用户此刻的输入源、再切中文**——先切后读会把中文源误当成
+ * 「原来的」。关闭时按唯一意图通道把原源交还(在途的中文切换会被收尾那次
+ * 覆盖,不会出现「归还之后又被晚到的切换打成中文」)。捕获还没返回就关闭
+ * 的,等它返回时自己收尾,不留下半截状态。
+ */
+interface TransientScope {
+  /** 打开那一刻用户用的源(捕获未返回时为 null)。 */
+  source: string | null;
+  /** 捕获未返回就关闭了。 */
+  closed: boolean;
+  /** 真的发出过中文切换意图——没发过就不必再去「还」一次。 */
+  applied: boolean;
+}
+
+let transient: TransientScope | null = null;
+
+export function imeBeginTransientChinese(): void {
+  const { settings } = useAppStore.getState();
+  if (!settings.ime.enabled || !settings.ime.chineseFields) return;
+  if (transient) return; // 同一作用域重复进入(重渲染)不覆盖原始源
+  const scope: TransientScope = { source: null, closed: false, applied: false };
+  transient = scope;
+  const start = () => {
+    scope.applied = true;
+    imeApply(settings.ime.insertSource);
+  };
+  void api
+    .getCurrentInputSource()
+    .then((id) => {
+      if (transient !== scope) return;
+      scope.source = id;
+      if (scope.closed) {
+        transient = null;
+        if (scope.applied) restoreSource(id);
+        return;
+      }
+      start();
+    })
+    .catch(() => {
+      if (transient !== scope || scope.closed) return;
+      start();
+    });
+}
+
+export function imeEndTransientChinese(): void {
+  const scope = transient;
+  if (!scope) return;
+  if (scope.source === null) {
+    scope.closed = true; // 捕获未返回:由 begin 的回调收尾
+    return;
+  }
+  transient = null;
+  if (scope.applied) restoreSource(scope.source);
+}
+
+/** 把用户的原始源交还:走唯一意图通道,排队中的中文切换被这一次覆盖。 */
+function restoreSource(source: string): void {
+  cancelFocusVerify();
+  desired = source;
+  suspended = false;
+  queued = null;
+  scheduleLaunch();
 }
 
 /** 预热 TIS：启动后后台枚举一次输入源。TIS 的首次调用要去联系输入法服务
@@ -132,10 +263,12 @@ export function imeWarmUp(): void {
 /** Drop bnote's forced source and restore what the user had before it. */
 export function imeYield(): void {
   const restore = baseline;
+  cancelFocusVerify();
   desired = null;
   suspended = false;
   queued = null;
   forcedThisSession = false;
+  transient = null; // 交还控制权:不再替任何弹窗记着「原来的源」
   if (restore) void api.setInputSource(restore).catch(() => {});
 }
 
@@ -162,8 +295,11 @@ export function imeSyncToEditor(): void {
   }
   if (focusInChineseField()) {
     // 意图属于中文写作输入框:imeOnChineseFocus 已切;挂起态(失焦归还过)
-    // 下 imeApply 的去重会放行,重发一次中文源。
-    imeApply(settings.ime.insertSource);
+    // 下 imeApply 的去重会放行,重发一次中文源。窗口重新激活也走这里,
+    // 同样要核对一次(上下文恢复可能在激活后把源盖掉)。
+    const target = settings.ime.insertSource;
+    imeApply(target);
+    scheduleFocusVerify(target);
     return;
   }
   const target = imeDesiredSource(settings, modal);
@@ -207,6 +343,7 @@ function insertRegionWantsEnglish(settings: Settings, view: EditorView): boolean
 export function imeOnWindowBlur(): void {
   focusSeq++;
   queued = null;
+  cancelFocusVerify();
   // 只有真的强制切过才需要归还。推迟中（意图还没发出去）时不许这里白发一次
   // 主线程 TIS 调用去「切」一个本来就活跃的源——那次调用同样会占住主线程。
   if (forcedThisSession && desired !== null && baseline !== null) {

@@ -26,6 +26,47 @@ pub struct AgentForkSpec {
     pub items: usize,
 }
 
+/// 恢复会话时沿用它自己的模型配置(会话记录第一行的快照)。
+///
+/// 设置里改了模型/上下文长度后,已保存的会话仍按创建时的配置继续——这是
+/// 用户的明确选择:一个会话的模型不该被之后的设置悄悄换掉。密钥不在快照
+/// 里,始终用当前保存的 api_key(换供应商时用户本来就要改密钥)。
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelChoice {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub context_window: u64,
+}
+
+impl AgentModelChoice {
+    /// 只覆盖快照里真正有值的字段:旧记录缺字段时沿用当前配置。
+    fn apply(self, cfg: &mut crate::agent::AgentConfig) {
+        if !self.provider.is_empty() {
+            cfg.provider = self.provider;
+        }
+        if !self.model.is_empty() {
+            cfg.model = self.model;
+        }
+        if !self.base_url.is_empty() {
+            cfg.base_url = self.base_url;
+        }
+        if self.max_tokens > 0 {
+            cfg.max_tokens = self.max_tokens;
+        }
+        if self.context_window > 0 {
+            cfg.context_window = self.context_window;
+        }
+    }
+}
+
 /// vault 里的自定义指令(`.bnote/agent.md`,类比 AGENTS.md / CLAUDE.md);
 /// 文件不存在 = 空串,提示词里就不出现这一节。
 fn load_user_instructions(state: &AppState) -> String {
@@ -77,8 +118,13 @@ pub async fn agent_start_session(
     // 恢复一条已保存的会话:前端从会话记录 jsonl 还原出的模型侧历史。
     // 与 `fork` 互斥(恢复/分叉不会同时发生)。
     history: Option<Vec<crate::agent::types::ChatItem>>,
+    // 恢复/分叉时沿用源会话的模型配置(见 AgentModelChoice)。
+    model: Option<AgentModelChoice>,
 ) -> CmdResult<serde_json::Value> {
-    let cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    let mut cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    if let Some(choice) = model {
+        choice.apply(&mut cfg);
+    }
     if cfg.api_key.is_empty() {
         return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
     }
@@ -174,6 +220,15 @@ pub async fn agent_start_session(
         "skills": session.skills.skills,
         "mcpTools": mcp.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
         "mcpErrors": mcp.errors.clone(),
+        // 本会话实际使用的模型配置:前端脚注显示它、会话记录也把它写进
+        // 元数据行,恢复时按快照继续(与设置里的当前配置解耦)。
+        "model": {
+            "provider": cfg.provider,
+            "model": cfg.model,
+            "baseUrl": cfg.base_url,
+            "maxTokens": cfg.max_tokens,
+            "contextWindow": cfg.context_window,
+        },
     }))
 }
 
@@ -362,10 +417,15 @@ pub async fn show_study_preview(
             .on_document_title_changed(|webview, title| {
                 const ANNO_PREFIX: &str = "bnote-anno:";
                 const WEREAD_PREFIX: &str = "bnote-weread:";
+                // 页内按下的阅读区快捷键(切到 Agent / 笔记区)。子 webview 的
+                // 按键不冒泡到主窗口,只能借这条已有的 title 通道转回去。
+                const KEY_PREFIX: &str = "bnote-key:";
                 let (event, raw) = if let Some(raw) = title.strip_prefix(ANNO_PREFIX) {
                     ("study-web-annotations", raw)
                 } else if let Some(raw) = title.strip_prefix(WEREAD_PREFIX) {
                     ("study-weread-route", raw)
+                } else if let Some(raw) = title.strip_prefix(KEY_PREFIX) {
+                    ("study-preview-key", raw)
                 } else {
                     return;
                 };
@@ -448,6 +508,21 @@ pub fn set_study_preview_read_step(app: tauri::AppHandle, step: f64) -> CmdResul
     Ok(())
 }
 
+/// 把键盘焦点交给内嵌网页(区域切换快捷键「切到阅读区」用)。
+///
+/// 原生子 webview 的焦点不在主窗口的 DOM 里:只 focus 主窗口的占位 div,
+/// 按键仍然进不了网页。这里把原生视图设为焦点,之后按键由页内运行时接管。
+#[tauri::command]
+pub fn focus_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        webview
+            .set_focus()
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
 /// 把命令层的翻页绑定推给页内运行时（自定义快捷键在网页里同样生效）。
 #[tauri::command]
 pub fn set_study_preview_read_keys(
@@ -462,6 +537,28 @@ pub fn set_study_preview_read_keys(
             .eval(format!(
                 "window.__bnoteReader && window.__bnoteReader.setKeys({}, {});",
                 payload["prev"], payload["next"]
+            ))
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
+/// 把「转发给主窗口」的阅读区快捷键推给页内运行时。
+///
+/// 网页/微信读书跑在原生子 webview 里,按键不会冒泡到主窗口;页内运行时匹配
+/// 这些键后写 document.title,由上面的 title 通道转成 `study-preview-key`。
+#[tauri::command]
+pub fn set_study_preview_shortcuts(
+    app: tauri::AppHandle,
+    keys: Vec<String>,
+) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        let list = serde_json::to_string(&keys).unwrap_or_else(|_| "[]".to_string());
+        webview
+            .eval(format!(
+                "window.__bnoteReader && window.__bnoteReader.setHostKeys({});",
+                list
             ))
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
     }
@@ -570,4 +667,44 @@ pub fn agent_set_current_note(state: State<'_, AppState>, path: Option<String>) 
         *note = path;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::AgentConfig;
+
+    /// 恢复会话时按快照覆盖:有值的字段才覆盖,空字段沿用当前设置
+    /// (旧记录缺字段时不能让模型变成空串)。
+    #[test]
+    fn 会话模型快照只覆盖有值的字段() {
+        let mut cfg = AgentConfig {
+            provider: "openai".into(),
+            model: "current".into(),
+            base_url: "https://current.example".into(),
+            api_key: "sk-current".into(),
+            max_tokens: 4096,
+            context_window: 128_000,
+            mcp_servers: Default::default(),
+            skill_dirs: Vec::new(),
+        };
+        AgentModelChoice {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-5".into(),
+            base_url: "https://old.example".into(),
+            max_tokens: 8192,
+            context_window: 200_000,
+        }
+        .apply(&mut cfg);
+        assert_eq!(cfg.provider, "anthropic");
+        assert_eq!(cfg.model, "claude-sonnet-4-5");
+        assert_eq!(cfg.base_url, "https://old.example");
+        assert_eq!(cfg.max_tokens, 8192);
+        assert_eq!(cfg.context_window, 200_000);
+        // 密钥永远用当前保存的,不写进会话记录。
+        assert_eq!(cfg.api_key, "sk-current");
+
+        AgentModelChoice::default().apply(&mut cfg);
+        assert_eq!(cfg.model, "claude-sonnet-4-5");
+    }
 }

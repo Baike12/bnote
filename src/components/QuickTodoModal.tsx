@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { useAppStore } from "@/state/appStore";
 import { captureTodoToToday } from "@/daily/capture";
-import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
+import { imeBeginTransientChinese, imeEndTransientChinese } from "@/editor/imeSwitch";
 import { isImeEnter } from "@/lib/imeEnter";
 import { inputGuards } from "@/lib/inputGuards";
 
@@ -22,6 +22,11 @@ export function QuickTodoModal() {
     if (!open) return;
     setText("");
     setBusy(false);
+    // 弹窗的生命周期就是中文输入作用域:打开时切中文并记住打开前的输入源,
+    // 按 Enter 添加、Esc 取消或点遮罩关闭时原样还回去(不按 blur 走——输入框
+    // 随弹窗卸载,blur 的时序不可靠)。
+    imeBeginTransientChinese();
+    return () => imeEndTransientChinese();
   }, [open]);
 
   const close = () => setModal(null);
@@ -52,8 +57,6 @@ export function QuickTodoModal() {
           placeholder="要做的事…"
           value={text}
           data-ime-chinese="true"
-          onFocus={() => imeOnChineseFocus()}
-          onBlur={() => imeSyncToEditor()}
           onChange={(e) => setText(e.target.value)}
           onCompositionStart={() => {
             composingRef.current = true;

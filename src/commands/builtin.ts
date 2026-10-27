@@ -28,9 +28,27 @@ import { openTodayDailyNote } from "@/daily/open";
 import { runtimeDeps } from "@/daily/runtime";
 import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/run";
 import { resetLspStateForPath, syncNow } from "@/python/lsp";
-import { api } from "@/lib/tauri";
+import { agentApi, api } from "@/lib/tauri";
 import { canFlipPdfPage, flipPdfPage } from "@/study/pdfNav";
+import { capturePdfSnapshot, hasPdfSnapshotSource } from "@/study/pdfSnapshot";
+import { fileToAgentImage } from "@/study/agentImages";
 import { WEREAD_HOME_URL } from "@/study/weread";
+import { activeKeyRegion } from "./globalKeys";
+
+/** 把焦点交回阅读区;网页在原生子 webview 里时交给它。 */
+function focusReadingPane() {
+  const focusPane = () => {
+    document
+      .querySelector<HTMLElement>('[data-key-region="reading"]')
+      ?.focus({ preventScroll: true });
+  };
+  if (useAppStore.getState().studyContent?.kind === "url") {
+    // 浏览器模式没有原生视图,命令不存在 → 退回 DOM 占位区(区域判定仍成立)。
+    void agentApi.focusStudyPreview().catch(focusPane);
+    return;
+  }
+  focusPane();
+}
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
   return () => {
@@ -57,6 +75,12 @@ function settleHeadingNumbering(
     if (m) view.dispatch({ changes: { from: after.from, to: after.from + m[1].length, insert: "" } });
   }
   renumberHeadings(view);
+}
+
+/** 学习助手面板当前是否可见(页签切走时面板仍在,只是隐藏)。 */
+function agentPanelActive(): boolean {
+  const store = useAppStore.getState();
+  return store.studyMode && store.settings.studyRightTab === "agent";
 }
 
 const defs: CommandDef[] = [
@@ -104,7 +128,7 @@ const defs: CommandDef[] = [
   { id: "workspace.save-note", title: "保存当前笔记", category: "工作区", run: () => void actions.saveNote() },
   {
     id: "workspace.open-drawing",
-    title: "画图:打开画布,回到笔记时插入光标处(⌘D)",
+    title: "画图:打开画布,回到笔记时插入光标处",
     category: "工作区",
     run: () => void openNewDrawing(),
   },
@@ -154,19 +178,57 @@ const defs: CommandDef[] = [
   // 学习模式翻页(按设置里的步长滚动,默认半屏)。默认 PageUp/PageDown(含
   // 方向键),可在设置里改键;动作由阅读器注册(study/pdfNav.ts),没开
   // PDF/网页或焦点不该被抢时 when 为 false,键原样交给页面。
+  //
+  // 键位配在阅读区,带修饰键的和弦跨区域生效(keys.ts 的 REGION_FREE_COMMANDS):
+  // 在笔记区或 Agent 面板按它同样滚动,并把焦点交回阅读区——先滚再交焦点,
+  // 切换本身的开销(子 webview 聚焦要走一次 IPC)不挡在滚动前面。
   {
     id: "study.pdf-prev-page",
     title: "学习模式上一页(按步长滚动)",
     category: "学习",
     when: canFlipPdfPage,
-    run: () => void flipPdfPage(-1),
+    run: () => {
+      void flipPdfPage(-1);
+      if (activeKeyRegion() !== "reading") focusReadingPane();
+    },
   },
   {
     id: "study.pdf-next-page",
     title: "学习模式下一页(按步长滚动)",
     category: "学习",
     when: canFlipPdfPage,
-    run: () => void flipPdfPage(1),
+    run: () => {
+      void flipPdfPage(1);
+      if (activeKeyRegion() !== "reading") focusReadingPane();
+    },
+  },
+  {
+    id: "study.pdf-snap-to-agent",
+    title: "学习模式:截取阅读区可见内容到学习助手(⌘⇧E)",
+    category: "学习",
+    when: () =>
+      useAppStore.getState().studyMode &&
+      useAppStore.getState().studyContent?.kind === "pdf" &&
+      hasPdfSnapshotSource(),
+    // 截图与投递都走前端:页面本来就是 canvas,不需要系统截图权限,也不经过
+    // 剪贴板——直接变成附件排进输入框,和手动粘贴截图同一条管道。
+    run: async () => {
+      const store = useAppStore.getState();
+      if (store.settings.studyRightTab !== "agent") {
+        store.patchSettings({ studyRightTab: "agent" });
+      }
+      try {
+        const file = await capturePdfSnapshot();
+        if (!file) {
+          store.showToast("阅读区还没有渲染出页面,稍后再试");
+          return;
+        }
+        const image = await fileToAgentImage(file, file.type);
+        store.runAgentPanelCommand("attach-images", [image]);
+      } catch (e) {
+        store.showToast(`截图失败: ${String(e)}`);
+      }
+    },
   },
   {
     id: "study.toggle-right-tab",
@@ -184,6 +246,73 @@ const defs: CommandDef[] = [
     title: "学习助手:切换 主会话/辅助会话(⌘⇧Y)",
     category: "学习",
     run: () => useAppStore.getState().bumpAgentSwitchSessionSignal(),
+  },
+  // ---- 三个可聚焦区域之间互相切换 ----
+  // 同一组命令在多个区域各有一份默认键位(见 commands/keys.ts 的
+  // REGION_PLACEMENT):⌘⌥A/N/R = Agent / 笔记区 / 阅读区。网页/微信读书里的
+  // 按键由页内运行时经 title 通道转回主窗口(见 study/webAnnotations.ts)。
+  {
+    id: "region.focus-agent",
+    title: "切换到学习助手并聚焦输入框",
+    category: "区域切换",
+    when: () => useAppStore.getState().studyMode,
+    run: () => {
+      const store = useAppStore.getState();
+      if (store.settings.studyRightTab !== "agent") {
+        store.patchSettings({ studyRightTab: "agent" });
+      }
+      store.runAgentPanelCommand("focus-input");
+    },
+  },
+  {
+    id: "region.focus-notes",
+    title: "切换到笔记区并聚焦编辑器",
+    category: "区域切换",
+    run: () => {
+      const store = useAppStore.getState();
+      if (store.studyMode && store.settings.studyRightTab !== "notes") {
+        store.patchSettings({ studyRightTab: "notes" });
+      }
+      // 页签刚从隐藏切到可见时编辑器还拿不到焦点:等这次提交渲染完再聚焦。
+      requestAnimationFrame(() => getView()?.focus());
+    },
+  },
+  {
+    id: "region.focus-reading",
+    title: "切换到阅读区(PDF / 网页)",
+    category: "区域切换",
+    when: () => useAppStore.getState().studyMode,
+    // 中栏一直可见,不需要切页签;只要把焦点从编辑器/输入框交还给阅读区。
+    run: focusReadingPane,
+  },
+  // ---- 学习助手面板内的会话操作 ----
+  {
+    id: "agent.new-session",
+    title: "学习助手:新建一个全新会话",
+    category: "学习助手",
+    when: agentPanelActive,
+    run: () => useAppStore.getState().runAgentPanelCommand("new"),
+  },
+  {
+    id: "agent.fork-session",
+    title: "学习助手:从当前会话分叉出一个新会话",
+    category: "学习助手",
+    when: agentPanelActive,
+    run: () => useAppStore.getState().runAgentPanelCommand("fork"),
+  },
+  {
+    id: "agent.back-from-fork",
+    title: "学习助手:从分叉会话返回上一条会话",
+    category: "学习助手",
+    when: agentPanelActive,
+    run: () => useAppStore.getState().runAgentPanelCommand("back"),
+  },
+  {
+    id: "agent.focus-history",
+    title: "学习助手:打开并聚焦历史会话列表",
+    category: "学习助手",
+    when: agentPanelActive,
+    run: () => useAppStore.getState().runAgentPanelCommand("history"),
   },
   {
     id: "workspace.open-settings",

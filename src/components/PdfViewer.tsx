@@ -67,6 +67,14 @@ import {
   saveOutlineWidth,
 } from "@/study/pdfLayout";
 import { setPdfNavHandlers } from "@/study/pdfNav";
+import {
+  canvasToFile,
+  paintSnapshot,
+  planSnapshot,
+  registerPdfSnapshotSource,
+  snapshotRect,
+  type SnapshotPage,
+} from "@/study/pdfSnapshot";
 import { filterOutline, type PdfOutlineNode } from "@/study/pdfOutline";
 import {
   flushReadPositions,
@@ -648,6 +656,64 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     for (const page of [...cache.keys()]) if (!out.has(page)) cache.delete(page);
     return out;
   }, [annotations]);
+
+  // --- 阅读区截图(⌘⇧E → 学习助手) ---------------------------------------
+  // 把可见页面拼成一张 PNG:只取「滚动视口 ∩ 页面列」,目录栏/批注留白/
+  // 页框阴影都不进图。页面 canvas 还没画完时等下一帧,最多 12 帧(≈200ms);
+  // 仍不齐返回 null,由命令提示「还没渲染完」。
+  useEffect(
+    () =>
+      registerPdfSnapshotSource(async () => {
+        for (let attempt = 0; attempt < 12; attempt++) {
+          const scroll = scrollRef.current;
+          if (!scroll) return null;
+          const view = scroll.getBoundingClientRect();
+          const viewport = {
+            left: view.left + scroll.clientLeft,
+            top: view.top + scroll.clientTop,
+            width: scroll.clientWidth,
+            height: scroll.clientHeight,
+          };
+          const pages: SnapshotPage[] = [];
+          const canvases: HTMLCanvasElement[] = [];
+          let styleOwner: HTMLElement | null = null;
+          for (const [n, el] of pageEls.current) {
+            const full = el.firstElementChild as HTMLElement | null;
+            const canvas = full?.querySelector("canvas");
+            if (!full || !canvas) continue;
+            if (!styleOwner) styleOwner = el;
+            pages.push({
+              box: snapshotRect(el),
+              full: snapshotRect(full),
+              pixels: canvas.width,
+              annotations: (annotationsByPage.get(n) ?? []).map((a) => ({
+                kind: a.kind,
+                rects: a.rects,
+              })),
+            });
+            canvases.push(canvas);
+          }
+          const plan = planSnapshot(viewport, pages);
+          if (plan) {
+            const cssVar = (name: string, fallback: string) =>
+              (styleOwner ? getComputedStyle(styleOwner).getPropertyValue(name) : "").trim() ||
+              fallback;
+            return canvasToFile(
+              paintSnapshot(plan, canvases, {
+                background: getComputedStyle(scroll).backgroundColor,
+                paper: cssVar("--pdf-paper", "#ffffff"),
+                tint: eyeCare ? cssVar("--pdf-tint", "#cfe4c4") : null,
+                highlight: cssVar("--pdf-anno", "rgb(255 224 0 / 42%)"),
+                note: cssVar("--pdf-note", "rgb(0 140 255 / 42%)"),
+              }),
+            );
+          }
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+        return null;
+      }),
+    [annotationsByPage, eyeCare],
+  );
 
   // Esc 退出批注模式(与框选的 Esc 不冲突:进入框选会先退出批注)。
   useEffect(() => {
