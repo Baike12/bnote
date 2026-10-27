@@ -50,8 +50,9 @@ impl DictEntry {
         Some(DictEntry {
             word: std::str::from_utf8(key).ok()?.to_string(),
             phonetic: std::str::from_utf8(phon).ok()?.to_string(),
-            // ECDICT keeps CRLF inside translations; the card renders plain lines.
-            translation: std::str::from_utf8(trans).ok()?.replace("\r\n", "\n"),
+            // The generator already turned ECDICT's escaped breaks into LF, so
+            // one sense per line is the contract every card renders.
+            translation: std::str::from_utf8(trans).ok()?.to_string(),
             pos: std::str::from_utf8(pos).ok()?.to_string(),
         })
     }
@@ -301,6 +302,40 @@ mod tests {
         assert!(lookup("tokenization").is_none());
         assert!(lookup("").is_none());
         assert!(lookup("two words").is_none());
+    }
+
+    /// The cards split each translation on a real newline. ECDICT stores those
+    /// breaks as the two characters `\n`, so the generator must unescape them;
+    /// an escaped break renders as literal text in the popup.
+    #[test]
+    fn translations_carry_real_line_breaks() {
+        let dict = dictionary();
+        let mut multi_sense = 0usize;
+        for i in 0..dict.count {
+            let entry = DictEntry::from_record(&dict.raw, dict.record_offset(i))
+                .expect("every embedded record decodes");
+            assert!(
+                !entry.translation.contains("\\n") && !entry.translation.contains('\r'),
+                "{} carries an escaped or CR break: {:?}",
+                entry.word,
+                entry.translation
+            );
+            if entry.translation.contains('\n') {
+                multi_sense += 1;
+            }
+        }
+        assert!(
+            multi_sense > 19_000,
+            "expected the multi-sense entries to have real breaks, got {}",
+            multi_sense
+        );
+        assert!(
+            lookup("reserve")
+                .expect("reserve is in the dictionary")
+                .translation
+                .contains('\n'),
+            "reserve has two senses and must break them apart"
+        );
     }
 
     #[test]

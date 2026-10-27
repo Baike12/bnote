@@ -4,7 +4,7 @@
   "license": "MIT",
   "filter": "frq<=50000 or bnc<=50000 or collins/oxford/tag",
   "entries": 59137,
-  "rawBytes": 4307015,
-  "compressedBytes": 1546790,
-  "sha256": "2782143835c0e4d267837a4acbab3100ba1bfab91d4e8cacac42a7e368022631"
+  "rawBytes": 4283525,
+  "compressedBytes": 1546738,
+  "sha256": "7da54b923baeb4d787683f9388392f73e2aea2055b32e2bf5dbe4e21047b3633"
 }
