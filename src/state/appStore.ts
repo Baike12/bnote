@@ -66,6 +66,8 @@ export interface Settings {
   studyEyeCare: boolean;
   /** 学习模式每次翻页滚动的可见高度比例(PDF/网页共用,默认 0.5)。 */
   studyPageStep: number;
+  /** 学习模式网页预览的页面缩放(1 = 100%,50%–300%)。 */
+  studyWebZoom: number;
   /**
    * 学习模式正文选中翻译总开关。关闭后 PDF/网页都不响应选中;
    * 开启时单词只查内置词典,两个及以上单词才调用翻译 API。
@@ -92,6 +94,7 @@ export const DEFAULT_SETTINGS: Settings = {
   studyRightTab: "notes",
   studyEyeCare: false,
   studyPageStep: 0.5,
+  studyWebZoom: 1,
   studyTranslate: { enabled: false },
   fontSize: 16,
   ime: {

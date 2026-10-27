@@ -14,6 +14,7 @@ import {
   isPlainFocusOwnedKey,
   keysOf,
   normalizeOverrides,
+  parseBinding,
   serializeOverrides,
 } from "./keys";
 
@@ -322,5 +323,57 @@ describe("固定翻页键", () => {
     expect(fixedPageCommandFor(ev("PageDown", { shiftKey: true }))).toBeNull();
     expect(fixedPageCommandFor(ev("PageDown", { ctrlKey: true }))).toBeNull();
     expect(fixedPageCommandFor(ev("j"))).toBeNull();
+  });
+});
+
+/**
+ * 绑定串里主键可能本身就是 "-"(⌘− 写作 "Mod--")。按分隔符切分会把它切成
+ * 一串空串——网页运行时与快捷键展示都用 parseBinding,这条门禁锁住两边。
+ */
+describe("绑定解析", () => {
+  it("主键是减号时不被分隔符拆坏", () => {
+    expect(parseBinding("Mod--")).toEqual({ mods: ["Mod"], key: "-" });
+    expect(parseBinding("Mod-Shift--")).toEqual({ mods: ["Mod", "Shift"], key: "-" });
+  });
+
+  it("普通和弦与单键照旧", () => {
+    expect(parseBinding("Mod-Shift-=")).toEqual({ mods: ["Mod", "Shift"], key: "=" });
+    expect(parseBinding("Mod-,")).toEqual({ mods: ["Mod"], key: "," });
+    expect(parseBinding("PageDown")).toEqual({ mods: [], key: "PageDown" });
+  });
+
+  it("所有默认绑定都能解析出非空主键", () => {
+    for (const [id, value] of Object.entries(DEFAULT_BINDINGS)) {
+      for (const key of keysOf(value)) {
+        expect(parseBinding(key).key, `${id} ${key}`).not.toBe("");
+      }
+    }
+  });
+});
+
+/** 网页缩放:⌘= / ⌘- / ⌘0 归阅读区,网页打开时盖住全局的编辑区字号缩放。 */
+describe("网页缩放键位", () => {
+  it("默认绑定在阅读区", () => {
+    expect(defaultRegionOf("study.web-zoom-in")).toBe("reading");
+    expect(defaultRegionOf("study.web-zoom-out")).toBe("reading");
+    expect(bindingsForCommand("study.web-zoom-in", "reading")).toEqual([
+      "Mod-=",
+      "Mod-Shift-=",
+    ]);
+    expect(bindingsForCommand("study.web-zoom-out", "reading")).toEqual(["Mod--"]);
+    expect(bindingsForCommand("study.web-zoom-reset", "reading")).toEqual(["Mod-0"]);
+  });
+
+  it("阅读区里排在编辑区字号缩放之前(网页打开时由命令的 when 决定)", () => {
+    expect(commandsForKey("Mod-=", "reading")).toEqual([
+      "study.web-zoom-in",
+      "view.zoom-in",
+    ]);
+    expect(commandsForKey("Mod--", "reading")).toEqual([
+      "study.web-zoom-out",
+      "view.zoom-out",
+    ]);
+    // 笔记区没有网页缩放绑定,仍是编辑区字号缩放。
+    expect(commandsForKey("Mod-=", "notes")).toEqual(["view.zoom-in"]);
   });
 });

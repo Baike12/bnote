@@ -31,9 +31,21 @@ import { resetLspStateForPath, syncNow } from "@/python/lsp";
 import { agentApi, api } from "@/lib/tauri";
 import { canFlipPdfPage, flipPdfPage } from "@/study/pdfNav";
 import { capturePdfSnapshot, hasPdfSnapshotSource } from "@/study/pdfSnapshot";
+import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
 import { fileToAgentImage } from "@/study/agentImages";
 import { WEREAD_HOME_URL } from "@/study/weread";
 import { activeKeyRegion } from "./globalKeys";
+
+/** 中栏是否开着网页(缩放键只在这种时候接管 ⌘= / ⌘- / ⌘0)。 */
+function hasWebPreview(): boolean {
+  return useAppStore.getState().studyContent?.kind === "url";
+}
+
+/** 写入者是设置:ContentPane 订阅它,再推给原生子 webview(见 setStudyPreviewZoom)。 */
+function applyWebZoom(direction: 1 | -1): void {
+  const { settings, patchSettings } = useAppStore.getState();
+  patchSettings({ studyWebZoom: stepWebZoom(settings.studyWebZoom, direction) });
+}
 
 /** 把焦点交回阅读区;网页在原生子 webview 里时交给它。 */
 function focusReadingPane() {
@@ -229,6 +241,30 @@ const defs: CommandDef[] = [
         store.showToast(`截图失败: ${String(e)}`);
       }
     },
+  },
+  {
+    id: "study.web-zoom-in",
+    title: "放大网页(⌘=)",
+    category: "学习",
+    when: hasWebPreview,
+    keepsPageFocus: true,
+    run: () => applyWebZoom(1),
+  },
+  {
+    id: "study.web-zoom-out",
+    title: "缩小网页(⌘-)",
+    category: "学习",
+    when: hasWebPreview,
+    keepsPageFocus: true,
+    run: () => applyWebZoom(-1),
+  },
+  {
+    id: "study.web-zoom-reset",
+    title: "网页缩放回到 100%(⌘0)",
+    category: "学习",
+    when: hasWebPreview,
+    keepsPageFocus: true,
+    run: () => useAppStore.getState().patchSettings({ studyWebZoom: DEFAULT_WEB_ZOOM }),
   },
   {
     id: "study.toggle-right-tab",
