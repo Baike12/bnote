@@ -50,6 +50,16 @@ OUT_REL = os.path.join("src-tauri", "resources", "ecdict_common.zst")
 MANIFEST_REL = os.path.join("src-tauri", "resources", "ecdict_common.json")
 
 
+def unescape_translation(text: str) -> str:
+    """Turn ECDICT's escaped sense breaks into real line breaks.
+
+    The CSV stores one sense per line as the two characters ``\\n`` (and one
+    record uses ``\\r\\n``); consumers split on a real newline, so the asset
+    must carry LF, never the escape.
+    """
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+
 def rank(value: str) -> int:
     try:
         return int(value or 0)
@@ -76,7 +86,7 @@ def read_rows(path: str) -> list[tuple[str, str, str, str]]:
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            translation = (row.get("translation") or "").strip()
+            translation = unescape_translation((row.get("translation") or "").strip())
             if not translation or not keep(row):
                 continue
             word = (row.get("word") or "").strip().lower()
