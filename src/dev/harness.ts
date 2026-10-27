@@ -24,6 +24,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { LinkSuggest } from "@/components/LinkSuggest";
 import "@/commands/builtin";
 import { installGlobalKeybindings } from "@/commands/globalKeys";
+import { applyOverrides, normalizeOverrides } from "@/commands/keys";
 import { installEditingChords } from "@/lib/editingChords";
 import { setClipboardOverrides } from "@/lib/clipboard";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
@@ -161,6 +162,8 @@ declare global {
     __linkPanel: () => LinkPanelState | null;
     /** 安装真实快捷键分发（走 globalKeys → runCommand）。 */
     __installGlobalKeys: () => void;
+    /** 快捷键覆盖表（不写盘）：验证同一按键在各区域的归属。 */
+    __applyKeyOverrides: (overrides: unknown) => void;
     /** 当前树行（含内联重命名状态）。 */
     __treeRows: () => TreeRow[];
     /** 跑真实 newFolder 并等链路收敛。 */
@@ -588,6 +591,11 @@ window.__linkPanel = () => {
 
 /** 安装真实快捷键分发（globalKeys → runCommand），用于验证 Cmd-K 全链路。 */
 window.__installGlobalKeys = () => installGlobalKeybindings();
+
+/** 快捷键覆盖（不写盘）：验证区域分发（同一按键在不同区域绑不同命令）。 */
+window.__applyKeyOverrides = (overrides) => {
+  applyOverrides(normalizeOverrides(overrides));
+};
 
 /** 当前渲染出来的树行（含内联重命名输入框状态）。 */
 window.__treeRows = () =>

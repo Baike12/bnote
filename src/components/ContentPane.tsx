@@ -1,9 +1,11 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
 import { bindingsForCommand } from "@/commands/keys";
+import { getKeymapRevision, subscribeKeymap } from "@/commands/keybindingOverrides";
+import { runBoundKey } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
 import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry, type WereadBookEntry } from "@/study/history";
 import { setWebNavHandlers } from "@/study/pdfNav";
@@ -63,17 +65,32 @@ function readPageKeyBindings() {
 }
 
 /**
- * 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键 + 微信读书运行时
+ * 要转回主窗口执行的阅读区快捷键:焦点在原生子 webview 里时,页内运行时匹配
+ * 到这些键后经 title 通道上报,主窗口按同一套 reading 键位执行。
+ */
+function readReadingShortcutKeys(): string[] {
+  return [
+    ...bindingsForCommand("region.focus-agent", "reading"),
+    ...bindingsForCommand("region.focus-notes", "reading"),
+  ];
+}
+
+/**
+ * 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键/转发键 + 微信读书运行时
  * (每次导航都会重装;微信读书运行时开头按 hostname 自门控,其他网站零开销)。
  */
-function previewInitScript(step: number): string {
+function previewInitScript(step: number, translate: boolean): string {
   const keys = readPageKeyBindings();
   return [
     WEB_ANNOTATION_SCRIPT,
     `window.__bnoteAnno && window.__bnoteAnno.setStep(${normalizePageStep(step)});`,
+    `window.__bnoteAnno && window.__bnoteAnno.setTranslate(${translate});`,
     `window.__bnoteReader && window.__bnoteReader.setKeys(${JSON.stringify(
       keys.prev,
     )}, ${JSON.stringify(keys.next)});`,
+    `window.__bnoteReader && window.__bnoteReader.setHostKeys(${JSON.stringify(
+      readReadingShortcutKeys(),
+    )});`,
     WEREAD_SCRIPT,
   ].join("\n");
 }
@@ -96,6 +113,8 @@ export function ContentPane() {
   const showToast = useAppStore((s) => s.showToast);
   const modal = useAppStore((s) => s.modal);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
+  // 快捷键覆盖表变化时要把新的转发键推给页内运行时。
+  const keymapRev = useSyncExternalStore(subscribeKeymap, getKeymapRevision, getKeymapRevision);
   const previewRef = useRef<HTMLDivElement>(null);
   /** 挂载期间的重测入口;没有原生预览时为 null。 */
   const previewSyncRef = useRef<(() => void) | null>(null);
@@ -143,7 +162,10 @@ export function ContentPane() {
         ? agentApi.showStudyPreview(
             url,
             bounds,
-            previewInitScript(useAppStore.getState().settings.studyPageStep),
+            previewInitScript(
+              useAppStore.getState().settings.studyPageStep,
+              useAppStore.getState().settings.studyTranslate.enabled,
+            ),
           )
         : agentApi.setStudyPreviewBounds(bounds);
       void call.then(
@@ -200,6 +222,13 @@ export function ContentPane() {
     void agentApi.setStudyPreviewReadKeys(keys.prev, keys.next).catch(() => {});
   }, [previewUrl, settings.studyPageStep, modal]);
 
+  // 转发键跟着配置走:设置里改了「阅读区 → Agent/笔记区」的键,页内运行时
+  // 立刻换新键,不用重新加载网页。
+  useEffect(() => {
+    if (!previewUrl || modal !== null) return;
+    void agentApi.setStudyPreviewShortcuts(readReadingShortcutKeys()).catch(() => {});
+  }, [previewUrl, modal, keymapRev]);
+
   // 网页阅读器的翻页落点:焦点在主窗口时(点过工具栏/记笔记之后),命令层
   // 通过这里把 PageUp/PageDown 转给原生子 webview;焦点在网页里时由页内
   // 运行时自己接管(原生子 webview 的按键不会冒泡到主窗口)。
@@ -237,6 +266,11 @@ export function ContentPane() {
     subscribe<string>("study-preview-loaded", (url) => {
       if (useAppStore.getState().studyContent?.kind !== "url") return;
       void (async () => {
+        await agentApi
+          .setStudyPreviewTranslate(
+            useAppStore.getState().settings.studyTranslate.enabled,
+          )
+          .catch(() => {});
         await agentApi.setStudyPreviewAnnotationMode(webToolRef.current);
         // 每次导航页面都会重新安装运行时:步长(以及页内上半屏遮罩)要重新推一次。
         // 推步长失败(正在导航)不能让后面的批注合并跟着中断。
@@ -249,6 +283,7 @@ export function ContentPane() {
         await agentApi
           .setStudyPreviewReadKeys(keys.prev, keys.next)
           .catch(() => {});
+        await agentApi.setStudyPreviewShortcuts(readReadingShortcutKeys()).catch(() => {});
         const vault = useAppStore.getState().vaultPath;
         if (!vault || typeof url !== "string" || !url) return;
         const dir = await urlMaterialDir(vault, url);
@@ -290,24 +325,52 @@ export function ContentPane() {
       setActiveWeread({ url: route.url, title });
     });
 
+    subscribe<{ key?: unknown }>("study-preview-key", (payload) => {
+      const key = typeof payload?.key === "string" ? payload.key : null;
+      if (!key) return;
+      // 按键来自原生子 webview:先把主窗口的 webview 接回来,再按 reading
+      // 区域执行——目标命令自己会把焦点交给输入框 / 编辑器。
+      void getCurrentWebview()
+        .setFocus()
+        .then(() => runBoundKey(key, "reading"))
+        .catch(() => runBoundKey(key, "reading"));
+    });
+
     return () => {
       cancelled = true;
       for (const off of offs) off();
     };
   }, []);
 
-  // 打开网页默认就进批注(高亮):整页工字形光标,拖选即高亮;换成 PDF /
-  // 关掉内容后退出,下次打开再从批注开始。工具切换仍是主窗口说了算。
+  // 打开网页:翻译开着时默认普通阅读(否则选中会被批注吃掉,翻译永远用
+  // 不上);翻译关着时保持原有默认——直接进高亮批注。工具切换仍是主窗口
+  // 说了算。
   useEffect(() => {
     if (content?.kind === "url") {
-      webToolRef.current = "highlight";
-      setWebTool("highlight");
-      void agentApi.setStudyPreviewAnnotationMode("highlight").catch(() => {});
+      const initial = useAppStore.getState().settings.studyTranslate.enabled
+        ? null
+        : "highlight";
+      webToolRef.current = initial;
+      setWebTool(initial);
+      void agentApi.setStudyPreviewAnnotationMode(initial).catch(() => {});
       return;
     }
     webToolRef.current = null;
     setWebTool(null);
   }, [content]);
+
+  // 翻译开关变化:把标志推给页内运行时;开启时退出当前批注工具,让翻译
+  // 立即可用。关闭时保留当前工具,不强行切回高亮。
+  const translateEnabled = settings.studyTranslate.enabled;
+  useEffect(() => {
+    if (!previewUrl) return;
+    void agentApi.setStudyPreviewTranslate(translateEnabled).catch(() => {});
+    if (translateEnabled && webToolRef.current !== null) {
+      webToolRef.current = null;
+      setWebTool(null);
+      void agentApi.setStudyPreviewAnnotationMode(null).catch(() => {});
+    }
+  }, [previewUrl, translateEnabled]);
 
   // 离页前把批注文件的防抖写盘冲刷掉(页面自己仍有 localStorage 兜底)。
   useEffect(() => {
@@ -462,6 +525,8 @@ export function ContentPane() {
   return (
     <div
       className={`content-pane${dragging ? " dragging" : ""}`}
+      data-key-region="reading"
+      tabIndex={-1}
       onDragOver={(e) => e.preventDefault()}
     >
       {/* 学习模式没有标题栏,这行是窗口拖动区(按钮、输入框不受影响)。

@@ -127,6 +127,12 @@ describe("注入脚本", () => {
     expect(script).toContain("bnote-anno:");
     expect(script).toContain("setMode");
     expect(script).toContain("merge");
+    // 选中翻译:总开关/结果回填/请求通道都要在注入运行时里。
+    expect(script).toContain("setTranslate");
+    expect(script).toContain("showTranslation");
+    expect(script).toContain("bnote-translate:");
+    expect(script).toContain("doc: TRANSLATE_DOC");
+    expect(script).toContain("bnote-web-translate-host");
     // 翻页入口与主窗口推送步长/键位的通道。
     expect(script).toContain("__bnoteReader");
     expect(script).toContain("setStep");

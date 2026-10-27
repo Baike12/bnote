@@ -467,7 +467,8 @@ pub async fn study_material_ensure(
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
     pub id: String,
-    /// 第一条用户消息(截断),空会话退回助手首句/「(空会话)」。
+    /// 会话标题:元数据行的 title(新记录),没有就取第一条用户消息,
+    /// 再退回助手首句/「(空会话)」。
     pub title: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -475,12 +476,67 @@ pub struct SessionMeta {
 }
 
 fn line_type_title(line: &str) -> Option<(String, u64, String)> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    let at = v.get("at").and_then(|x| x.as_u64()).unwrap_or(0);
-    let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-    let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
-    Some((ty.to_string(), at, text))
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+        let at = v.get("at").and_then(|x| x.as_u64()).unwrap_or(0);
+        let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        return Some((ty.to_string(), at, text));
+    }
+    // 头部只读文件前 16KB:首条用户消息带着几 MB 的 base64 截图时,这一行
+    // 必然被截断。记录由前端按 type→at→text→images 的顺序序列化,截断只
+    // 会打断后面的图片数据,前面三个字段本身是完整的——按前缀取即可。
+    let ty = prefix_string_field(line, "type")?;
+    let at = prefix_u64_field(line, "at").unwrap_or(0);
+    let text = prefix_string_field(line, "text").unwrap_or_default();
+    Some((ty, at, text))
 }
+
+/// `"key"` 之后的值起点(跳过冒号与空白)。
+fn prefix_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{}\"", key);
+    let start = line.find(&needle)? + needle.len();
+    line[start..].trim_start().strip_prefix(':').map(|r| r.trim_start())
+}
+
+/** 取 `"key":"..."` 的值;字符串被截断(没有收尾引号)时返回 None。 */
+fn prefix_string_field(line: &str, key: &str) -> Option<String> {
+    let rest = prefix_field(line, key)?.strip_prefix('"')?;
+    let mut escaped = false;
+    for (i, c) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => return serde_json::from_str(&format!("\"{}\"", &rest[..i])).ok(),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn prefix_u64_field(line: &str, key: &str) -> Option<u64> {
+    let rest = prefix_field(line, key)?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// 会话元数据行(`{"type":"meta","title":...}`)的标题。
+fn meta_title(line: &str) -> Option<String> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+        if v.get("type").and_then(|x| x.as_str()) != Some("meta") {
+            return None;
+        }
+        return v
+            .get("title")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+    }
+    None
+}
+
 
 /// 读文件首尾各一段(会话大到几十 MB 时也不整份读):标题/创建时间在头部,
 /// 最后一条时间戳在尾部。中间行不参与列表。
@@ -511,9 +567,16 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
     }
     let (head, tail) = read_head_tail(path, 16 * 1024, 8 * 1024)?;
     let mut first_at = 0u64;
+    let mut meta = String::new();
     let mut title = String::new();
     let mut first_assistant = String::new();
     for line in head.lines() {
+        if meta.is_empty() {
+            if let Some(t) = meta_title(line) {
+                meta = t;
+                continue;
+            }
+        }
         let Some((ty, at, text)) = line_type_title(line) else { continue };
         if first_at == 0 {
             first_at = at;
@@ -524,7 +587,7 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
         if first_assistant.is_empty() && ty == "assistant" && !text.is_empty() {
             first_assistant = text;
         }
-        if !title.is_empty() && first_at > 0 {
+        if !title.is_empty() && !first_assistant.is_empty() && first_at > 0 {
             // 头部只需扫到标题;时间戳继续从尾部取。
             break;
         }
@@ -536,7 +599,16 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
             last_at = last_at.max(at);
         }
     }
-    let title = if title.is_empty() { first_assistant } else { title };
+    // 标题优先用元数据行(会话创建时写的首条用户消息),其次用户首句,
+    // 再退回助手首句。元数据行很小、永远在文件最前面,不受首条大图消息
+    // 被头部窗口截断的影响。
+    let title = if !meta.is_empty() {
+        meta
+    } else if title.is_empty() {
+        first_assistant
+    } else {
+        title
+    };
     let title: String = title.replace(['\r', '\n'], " ").chars().take(80).collect();
     let updated = std::fs::metadata(path)
         .ok()
@@ -705,5 +777,69 @@ mod tests {
             title: "x.com".into(),
         };
         assert_eq!(desired_slug(&page), "x_com_201075");
+    }
+
+    fn tmp_session(name: &str, body: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("bnote-session-{}-{}", name, stamp));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.jsonl", name));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// 首条用户消息带几 MB 截图时,列表读不到标题会被显示成「(空会话)」——
+    /// 头部 16KB 落在 base64 图片中间,整行 JSON 解析失败。按前缀取文本即可。
+    #[test]
+    fn 首条消息带大图也能读出标题() {
+        let image = "A".repeat(64 * 1024);
+        let body = format!(
+            "{{\"type\":\"user\",\"at\":1793000793461,\"text\":\"这里为什么是4倍\",\"images\":[{{\"mediaType\":\"image/png\",\"data\":\"{}\"}}]}}\n",
+            image
+        );
+        let path = tmp_session("big-image", &body);
+        let meta = summarize_session(&path).unwrap();
+        assert_eq!(meta.title, "这里为什么是4倍");
+        assert_eq!(meta.created_at, 1793000793461);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// 元数据行永远在文件最前面且很小:标题直接取它,不必再解析用户消息。
+    #[test]
+    fn 元数据行标题优先于用户首句() {
+        let body = concat!(
+            r#"{"type":"meta","at":100,"title":"会话标题","model":{"provider":"anthropic","model":"m","baseUrl":"","maxTokens":1,"contextWindow":2}}"#,
+            "\n",
+            r#"{"type":"user","at":101,"text":"用户原话"}"#,
+            "\n",
+            r#"{"type":"assistant","at":102,"text":"回答"}"#,
+            "\n"
+        );
+        let path = tmp_session("meta", body);
+        let meta = summarize_session(&path).unwrap();
+        assert_eq!(meta.title, "会话标题");
+        assert_eq!(meta.created_at, 101);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// 没有元数据行的旧记录:退回用户首句;空文件不出现在列表里。
+    #[test]
+    fn 旧记录退回用户首句_空文件跳过() {
+        let body = concat!(
+            r#"{"type":"user","at":1,"text":"  第一行\n第二行  "}"#,
+            "\n",
+            r#"{"type":"assistant","at":2,"text":"回答"}"#,
+            "\n"
+        );
+        let path = tmp_session("legacy", body);
+        assert_eq!(summarize_session(&path).unwrap().title, "第一行 第二行");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+
+        let empty = tmp_session("empty", "");
+        assert!(summarize_session(&empty).is_none());
+        std::fs::remove_dir_all(empty.parent().unwrap()).ok();
     }
 }

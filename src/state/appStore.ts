@@ -12,6 +12,7 @@ import {
 } from "@/study/history";
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
 import { DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
+import type { AgentImage } from "@/study/agentImages";
 
 export interface ImeSettings {
   /** 输入法自动切换总开关（跟随 vim 模式 + 中文输入框聚焦；仅 macOS 生效） */
@@ -65,6 +66,11 @@ export interface Settings {
   studyEyeCare: boolean;
   /** 学习模式每次翻页滚动的可见高度比例(PDF/网页共用,默认 0.5)。 */
   studyPageStep: number;
+  /**
+   * 学习模式正文选中翻译总开关。关闭后 PDF/网页都不响应选中;
+   * 开启时单词只查内置词典,两个及以上单词才调用翻译 API。
+   */
+  studyTranslate: { enabled: boolean };
   fontSize: number;
   ime: ImeSettings;
   /** LaTeX Suite 特性开关(对齐 obsidian-latex-suite,见 editor/snippets/config) */
@@ -86,6 +92,7 @@ export const DEFAULT_SETTINGS: Settings = {
   studyRightTab: "notes",
   studyEyeCare: false,
   studyPageStep: 0.5,
+  studyTranslate: { enabled: false },
   fontSize: 16,
   ime: {
     enabled: true,
@@ -183,6 +190,21 @@ export function rememberCursorPosition(path: string, pos: number, scroll: number
   persistConfig({ ...snap, cursorPositions: map });
 }
 
+/** 学习助手面板能执行的命令(由快捷键/命令层发信号,面板自己执行)。 */
+export type AgentPanelCommand =
+  | "new"
+  | "fork"
+  | "back"
+  | "history"
+  | "focus-input"
+  | "attach-images";
+export interface AgentPanelCommandRequest {
+  seq: number;
+  kind: AgentPanelCommand;
+  /** attach-images 的图片负载(阅读区截图走这里,不经过系统剪贴板)。 */
+  images?: AgentImage[];
+}
+
 interface AppState {
   vaultPath: string | null;
   vaultName: string;
@@ -244,8 +266,9 @@ interface AppState {
   /** 画布会话(null = 没开)。全屏浮层 + 命令快捷键挂起。 */
   drawingSession: DrawingSession | null;
   /**
-   * Agent 配置(模型/Key/MCP)的保存次数。会话在创建时就把 provider 固化了,
-   * 保存配置后必须重建会话才会生效——AgentPanel 监听这个计数重开会话。
+   * Agent 配置(模型/Key/MCP)的保存次数。已开的会话按启动时的模型配置快照
+   * 跑到底,保存配置**不**重建会话——AgentPanel 监听这个计数只重读「当前
+   * 配置」(脚注兜底与「会话配置 ≠ 当前配置」提示)。
    */
   agentConfigVersion: number;
   /**
@@ -253,6 +276,11 @@ interface AppState {
    * AgentPanel 监听它执行切换——会话列表是面板私有状态,不进全局 store。
    */
   agentSwitchSessionSignal: number;
+  /**
+   * 学习助手面板的命令请求(新建 / 分叉 / 返回 / 历史 / 聚焦输入框)。命令层
+   * 只写这个信号,面板自己执行——会话与输入框都是面板私有状态。
+   */
+  agentPanelCommand: AgentPanelCommandRequest | null;
 
   setVault: (info: VaultInfo) => void;
   closeVault: () => void;
@@ -290,10 +318,12 @@ interface AppState {
   recordWereadBook: (entry: Omit<WereadBookEntry, "at">) => void;
   openDrawingSession: (session: DrawingSession) => void;
   closeDrawingSession: () => void;
-  /** Agent 配置已保存:让学习模式重建会话(见 agentConfigVersion)。 */
+  /** Agent 配置已保存:让学习模式重读当前配置(不重建会话,见 agentConfigVersion)。 */
   bumpAgentConfigVersion: () => void;
   /** 学习助手切换会话(主 ↔ 辅助)的请求(见 agentSwitchSessionSignal)。 */
   bumpAgentSwitchSessionSignal: () => void;
+  /** 学习助手面板命令(见 agentPanelCommand)。 */
+  runAgentPanelCommand: (kind: AgentPanelCommand, images?: AgentImage[]) => void;
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -352,6 +382,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   drawingSession: null,
   agentConfigVersion: 0,
   agentSwitchSessionSignal: 0,
+  agentPanelCommand: null,
 
   setVault: (info) =>
     set({
@@ -482,6 +513,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ agentConfigVersion: get().agentConfigVersion + 1 }),
   bumpAgentSwitchSessionSignal: () =>
     set({ agentSwitchSessionSignal: get().agentSwitchSessionSignal + 1 }),
+  runAgentPanelCommand: (kind, images) =>
+    set({
+      agentPanelCommand: { seq: (get().agentPanelCommand?.seq ?? 0) + 1, kind, images },
+    }),
 }));
 
 export function toggleStudyMode() {

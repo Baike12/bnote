@@ -4,8 +4,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { agentApi, api } from "@/lib/tauri";
 import "./commands/builtin";
 import { runCommand } from "@/commands/registry";
-import { installGlobalKeybindings } from "@/commands/globalKeys";
-import { loadOverrides } from "@/commands/keybindingOverrides";
+import { installGlobalKeybindings, setKeyModalOpen } from "@/commands/globalKeys";
+import { loadKeymap, reloadKeymap } from "@/commands/keybindingOverrides";
 import { installEditingChords } from "@/lib/editingChords";
 import { registerVimExCommands } from "@/editor/vim/vim";
 import { reloadDocument } from "@/editor/setup";
@@ -74,8 +74,10 @@ export default function App() {
     let unlistenWindow: (() => void) | undefined;
 
     void (async () => {
-      await loadOverrides().catch(() => {});
       const cfg = (await api.loadAppConfig().catch(() => null)) as PersistedConfig | null;
+      // 快捷键配置跟着仓库走:有上次的仓库就等 openVault 里开好仓再读
+      // `<vault>/.bnote/keybindings.json`;还没开仓时先读旧版应用配置。
+      if (!cfg?.lastVault) await loadKeymap(null).catch(() => {});
       // 窗口几何的恢复在 Rust 首帧前做完(见 config.rs);这里只负责之后的
       // 移动/缩放落盘,写盘走同一个 config 快照。
       unlistenWindow = trackWindowState();
@@ -96,6 +98,10 @@ export default function App() {
         ...saved,
         ime: { ...DEFAULT_SETTINGS.ime, ...(saved.ime ?? {}) },
         latex: { ...DEFAULT_SETTINGS.latex, ...(saved.latex ?? {}) },
+        studyTranslate: {
+          ...DEFAULT_SETTINGS.studyTranslate,
+          ...(saved.studyTranslate ?? {}),
+        },
       };
       // 旧版把三栏宽度存成 studySplit:[agent, content](更早是比例);迁移成
       // 中栏单值像素宽度后落盘一次,之后窗口怎么缩放都不会再改中栏宽度。
@@ -150,6 +156,8 @@ export default function App() {
       if (s.modal === null && prev.modal !== null) {
         setTimeout(restoreEditorFocus, 0);
       }
+      // 弹窗打开时焦点在浮层里,不属于三个区域:区域键位让路,只留通用命令。
+      if (s.modal !== prev.modal) setKeyModalOpen(s.modal !== null);
     });
     return unsub;
   }, []);
@@ -320,6 +328,11 @@ async function handleVaultChanged(paths: string[]) {
   // 下面的 self-write echo 早退之前——「编辑器打字 → 自动保存 → watcher」
   // 正是足迹的主数据链路。
   noteDirtyPaths(paths);
+
+  // 快捷键配置是仓库里的普通文件:外部编辑器改完保存,watcher 触发这里重读。
+  if (paths.some((p) => p.replace(/\\/g, "/").endsWith("/.bnote/keybindings.json"))) {
+    void reloadKeymap();
+  }
 
   // Self-write echo: autosave/manual save triggers the watcher. When the only
   // change is the open note and disk matches memory, do nothing — reloading

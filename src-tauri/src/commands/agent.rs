@@ -8,10 +8,17 @@ use crate::agent::skills::SkillRegistry;
 use crate::agent::tools::{StudyContent, ToolContext};
 use crate::agent::Provider;
 use crate::state::AppState;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, State};
+
+/// 网页选中翻译的总开关。页面通过 document.title 发请求,任意页面脚本也能
+/// 伪造同一条 title——这里先按开关硬门控,再对句子请求做 600ms 限频;单词
+/// 只查本地词典,不占 API。
+static PREVIEW_TRANSLATE_ENABLED: AtomicBool = AtomicBool::new(false);
+static PREVIEW_TRANSLATE_LAST: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
     state.mcp_manager.lock().ok().and_then(|g| g.clone())
@@ -24,6 +31,47 @@ fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
 pub struct AgentForkSpec {
     pub from: String,
     pub items: usize,
+}
+
+/// 恢复会话时沿用它自己的模型配置(会话记录第一行的快照)。
+///
+/// 设置里改了模型/上下文长度后,已保存的会话仍按创建时的配置继续——这是
+/// 用户的明确选择:一个会话的模型不该被之后的设置悄悄换掉。密钥不在快照
+/// 里,始终用当前保存的 api_key(换供应商时用户本来就要改密钥)。
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelChoice {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub context_window: u64,
+}
+
+impl AgentModelChoice {
+    /// 只覆盖快照里真正有值的字段:旧记录缺字段时沿用当前配置。
+    fn apply(self, cfg: &mut crate::agent::AgentConfig) {
+        if !self.provider.is_empty() {
+            cfg.provider = self.provider;
+        }
+        if !self.model.is_empty() {
+            cfg.model = self.model;
+        }
+        if !self.base_url.is_empty() {
+            cfg.base_url = self.base_url;
+        }
+        if self.max_tokens > 0 {
+            cfg.max_tokens = self.max_tokens;
+        }
+        if self.context_window > 0 {
+            cfg.context_window = self.context_window;
+        }
+    }
 }
 
 /// vault 里的自定义指令(`.bnote/agent.md`,类比 AGENTS.md / CLAUDE.md);
@@ -77,8 +125,13 @@ pub async fn agent_start_session(
     // 恢复一条已保存的会话:前端从会话记录 jsonl 还原出的模型侧历史。
     // 与 `fork` 互斥(恢复/分叉不会同时发生)。
     history: Option<Vec<crate::agent::types::ChatItem>>,
+    // 恢复/分叉时沿用源会话的模型配置(见 AgentModelChoice)。
+    model: Option<AgentModelChoice>,
 ) -> CmdResult<serde_json::Value> {
-    let cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    let mut cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    if let Some(choice) = model {
+        choice.apply(&mut cfg);
+    }
     if cfg.api_key.is_empty() {
         return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
     }
@@ -174,6 +227,15 @@ pub async fn agent_start_session(
         "skills": session.skills.skills,
         "mcpTools": mcp.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
         "mcpErrors": mcp.errors.clone(),
+        // 本会话实际使用的模型配置:前端脚注显示它、会话记录也把它写进
+        // 元数据行,恢复时按快照继续(与设置里的当前配置解耦)。
+        "model": {
+            "provider": cfg.provider,
+            "model": cfg.model,
+            "baseUrl": cfg.base_url,
+            "maxTokens": cfg.max_tokens,
+            "contextWindow": cfg.context_window,
+        },
     }))
 }
 
@@ -362,10 +424,117 @@ pub async fn show_study_preview(
             .on_document_title_changed(|webview, title| {
                 const ANNO_PREFIX: &str = "bnote-anno:";
                 const WEREAD_PREFIX: &str = "bnote-weread:";
+                // 页内按下的阅读区快捷键(切到 Agent / 笔记区)。子 webview 的
+                // 按键不冒泡到主窗口,只能借这条已有的 title 通道转回去。
+                const KEY_PREFIX: &str = "bnote-key:";
+                // 选中翻译:页面只送文本和请求号,翻译在 Rust 里做(单词查内置
+                // 词典,句子走配置的 API),结果再 eval 回页面的卡片。这样网页
+                // 拿不到 API key,也不需要在主窗口和子 webview 之间多绕一圈。
+                const TRANSLATE_PREFIX: &str = "bnote-translate:";
+                if let Some(raw) = title.strip_prefix(TRANSLATE_PREFIX) {
+                    let Ok(payload) = serde_json::from_str::<serde_json::Value>(raw) else {
+                        return;
+                    };
+                    let id = payload
+                        .get("id")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    let text = payload
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    // 页面每次加载生成一个文档令牌;结果回传时原样带回,导航后
+                    // 旧请求的迟到结果不会画到新页面上。
+                    let doc = payload
+                        .get("doc")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    if id == 0 || text.trim().is_empty() || doc.is_empty() || doc.len() > 80 {
+                        return;
+                    }
+                    let doc_lit =
+                        serde_json::to_string(&doc).unwrap_or_else(|_| "\"\"".to_string());
+                    // 开关关着:页面脚本伪造 title 也不能触发查词/翻译。
+                    if !PREVIEW_TRANSLATE_ENABLED.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    // 句子会走付费 API:600ms 内最多一次;单词只查内置词典,
+                    // 不占额度,快速连续选词照常。
+                    if matches!(
+                        crate::translate::classify(&text),
+                        crate::translate::SelectionKind::Sentence
+                    ) {
+                        let allowed = match PREVIEW_TRANSLATE_LAST.lock() {
+                            Ok(mut slot) => {
+                                let now = Instant::now();
+                                let fresh = match *slot {
+                                    Some(last) => {
+                                        now.saturating_duration_since(last)
+                                            >= Duration::from_millis(600)
+                                    }
+                                    None => true,
+                                };
+                                if fresh {
+                                    *slot = Some(now);
+                                }
+                                fresh
+                            }
+                            Err(_) => false,
+                        };
+                        if !allowed {
+                            let js = format!(
+                                "window.__bnoteAnno && window.__bnoteAnno.showTranslation({}, {}, {});",
+                                id,
+                                doc_lit,
+                                serde_json::json!({
+                                    "kind": "error",
+                                    "message": "翻译请求过于频繁，请稍后再试。",
+                                })
+                            );
+                            let _ = webview.eval(js);
+                            return;
+                        }
+                    }
+                    let webview = webview.clone();
+                    let data_dir = webview.app_handle().path().app_data_dir().ok();
+                    tauri::async_runtime::spawn(async move {
+                        let payload = match data_dir {
+                            None => serde_json::json!({
+                                "kind": "error",
+                                "message": "无法定位应用数据目录",
+                            }),
+                            Some(dir) => {
+                                match crate::translate::translate_selection(&dir, &text).await {
+                                    Ok(result) => {
+                                        serde_json::to_value(result).unwrap_or_else(|_| {
+                                            serde_json::json!({
+                                                "kind": "error",
+                                                "message": "翻译结果序列化失败",
+                                            })
+                                        })
+                                    }
+                                    Err(e) => {
+                                        serde_json::json!({ "kind": "error", "message": e })
+                                    }
+                                }
+                            }
+                        };
+                        let js = format!(
+                            "window.__bnoteAnno && window.__bnoteAnno.showTranslation({}, {}, {});",
+                            id, doc_lit, payload
+                        );
+                        let _ = webview.eval(js);
+                    });
+                    return;
+                }
                 let (event, raw) = if let Some(raw) = title.strip_prefix(ANNO_PREFIX) {
                     ("study-web-annotations", raw)
                 } else if let Some(raw) = title.strip_prefix(WEREAD_PREFIX) {
                     ("study-weread-route", raw)
+                } else if let Some(raw) = title.strip_prefix(KEY_PREFIX) {
+                    ("study-preview-key", raw)
                 } else {
                     return;
                 };
@@ -409,6 +578,30 @@ pub fn set_study_preview_annotation_mode(
     Ok(())
 }
 
+/// Enables/disables selection translation in the embedded web page.
+///
+/// Translation and annotation never compete for the same gesture: the page
+/// runtime only translates when its annotation mode is `null`, and entering an
+/// annotation mode closes any open translation card. This flag is the user's
+/// global switch; the annotation tool remains the higher-priority mode.
+#[tauri::command]
+pub fn set_study_preview_translate(app: tauri::AppHandle, enabled: bool) -> CmdResult<()> {
+    PREVIEW_TRANSLATE_ENABLED.store(enabled, Ordering::Relaxed);
+    if let Ok(mut slot) = PREVIEW_TRANSLATE_LAST.lock() {
+        *slot = None;
+    }
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        webview
+            .eval(format!(
+                "window.__bnoteAnno && window.__bnoteAnno.setTranslate({});",
+                enabled
+            ))
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
 /// 学习模式翻页：焦点在主窗口时，命令层通过这里把 PageUp/PageDown 转给
 /// 内嵌网页。页内运行时自己探测主滚动容器，并按设置步长滚动。
 #[tauri::command]
@@ -448,6 +641,21 @@ pub fn set_study_preview_read_step(app: tauri::AppHandle, step: f64) -> CmdResul
     Ok(())
 }
 
+/// 把键盘焦点交给内嵌网页(区域切换快捷键「切到阅读区」用)。
+///
+/// 原生子 webview 的焦点不在主窗口的 DOM 里:只 focus 主窗口的占位 div,
+/// 按键仍然进不了网页。这里把原生视图设为焦点,之后按键由页内运行时接管。
+#[tauri::command]
+pub fn focus_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        webview
+            .set_focus()
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
 /// 把命令层的翻页绑定推给页内运行时（自定义快捷键在网页里同样生效）。
 #[tauri::command]
 pub fn set_study_preview_read_keys(
@@ -462,6 +670,28 @@ pub fn set_study_preview_read_keys(
             .eval(format!(
                 "window.__bnoteReader && window.__bnoteReader.setKeys({}, {});",
                 payload["prev"], payload["next"]
+            ))
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
+/// 把「转发给主窗口」的阅读区快捷键推给页内运行时。
+///
+/// 网页/微信读书跑在原生子 webview 里,按键不会冒泡到主窗口;页内运行时匹配
+/// 这些键后写 document.title,由上面的 title 通道转成 `study-preview-key`。
+#[tauri::command]
+pub fn set_study_preview_shortcuts(
+    app: tauri::AppHandle,
+    keys: Vec<String>,
+) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
+        let list = serde_json::to_string(&keys).unwrap_or_else(|_| "[]".to_string());
+        webview
+            .eval(format!(
+                "window.__bnoteReader && window.__bnoteReader.setHostKeys({});",
+                list
             ))
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
     }
@@ -524,6 +754,11 @@ pub fn set_study_preview_visible(app: tauri::AppHandle, visible: bool) -> CmdRes
 #[tauri::command]
 pub fn close_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
     use tauri::Manager;
+    // 预览没了,网页侧的翻译通道也随之关闭;残留的 title 不再触发请求。
+    PREVIEW_TRANSLATE_ENABLED.store(false, Ordering::Relaxed);
+    if let Ok(mut slot) = PREVIEW_TRANSLATE_LAST.lock() {
+        *slot = None;
+    }
     if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
         webview
             .close()
@@ -570,4 +805,44 @@ pub fn agent_set_current_note(state: State<'_, AppState>, path: Option<String>) 
         *note = path;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::AgentConfig;
+
+    /// 恢复会话时按快照覆盖:有值的字段才覆盖,空字段沿用当前设置
+    /// (旧记录缺字段时不能让模型变成空串)。
+    #[test]
+    fn 会话模型快照只覆盖有值的字段() {
+        let mut cfg = AgentConfig {
+            provider: "openai".into(),
+            model: "current".into(),
+            base_url: "https://current.example".into(),
+            api_key: "sk-current".into(),
+            max_tokens: 4096,
+            context_window: 128_000,
+            mcp_servers: Default::default(),
+            skill_dirs: Vec::new(),
+        };
+        AgentModelChoice {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-5".into(),
+            base_url: "https://old.example".into(),
+            max_tokens: 8192,
+            context_window: 200_000,
+        }
+        .apply(&mut cfg);
+        assert_eq!(cfg.provider, "anthropic");
+        assert_eq!(cfg.model, "claude-sonnet-4-5");
+        assert_eq!(cfg.base_url, "https://old.example");
+        assert_eq!(cfg.max_tokens, 8192);
+        assert_eq!(cfg.context_window, 200_000);
+        // 密钥永远用当前保存的,不写进会话记录。
+        assert_eq!(cfg.api_key, "sk-current");
+
+        AgentModelChoice::default().apply(&mut cfg);
+        assert_eq!(cfg.model, "claude-sonnet-4-5");
+    }
 }

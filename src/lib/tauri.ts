@@ -66,6 +66,36 @@ export interface AgentConfig {
   skill_dirs: string[];
 }
 
+/** 内置词典的一条词条(选中翻译 → 单词)。 */
+export interface DictEntry {
+  word: string;
+  phonetic: string;
+  translation: string;
+  pos: string;
+}
+
+/**
+ * 一次选中翻译的结果。单词只查内置词典;未收录是 `miss`,不会自动调用 API。
+ * 句子/短语才走 `sentence`。
+ */
+export type TranslateSelection =
+  | { kind: "word"; entry: DictEntry }
+  | { kind: "miss"; word: string }
+  | { kind: "sentence"; translation: string }
+  | { kind: "none" };
+
+/** 句子翻译 API 配置(独立于学习助手,存在 translate.json)。 */
+export interface TranslateConfig {
+  protocol: string;
+  base_url: string;
+  api_key: string;
+  model: string;
+  /** 默认 false;开启后按协议发 think/thinking/enable_thinking。 */
+  thinking: boolean;
+  timeout_ms: number;
+  extra_body: Record<string, unknown>;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -77,6 +107,17 @@ export interface SessionInfo {
   skills: SkillInfo[];
   mcpTools: string[];
   mcpErrors: string[];
+  /** 本会话实际使用的模型配置(设置改了也不影响已开会话)。 */
+  model?: SessionModelConfig;
+}
+
+/** 会话级模型配置快照(写进会话记录第一行,恢复时按它继续)。 */
+export interface SessionModelConfig {
+  provider: string;
+  model: string;
+  baseUrl: string;
+  maxTokens: number;
+  contextWindow: number;
 }
 
 /**
@@ -222,8 +263,14 @@ export type AgentContentBlock =
 export const agentApi = {
   getConfig: () => invoke<AgentConfig>("agent_get_config"),
   saveConfig: (config: AgentConfig) => invoke<void>("agent_save_config", { config }),
-  startSession: (study: StudyContent | null, fork?: AgentForkSpec, history?: AgentChatItem[]) =>
-    invoke<SessionInfo>("agent_start_session", { study, fork, history }),
+  startSession: (
+    study: StudyContent | null,
+    fork?: AgentForkSpec,
+    history?: AgentChatItem[],
+    /** 恢复/分叉:沿用源会话的模型配置;不传则用当前保存的配置。 */
+    model?: SessionModelConfig,
+  ) =>
+    invoke<SessionInfo>("agent_start_session", { study, fork, history, model }),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
@@ -258,12 +305,21 @@ export const agentApi = {
   /** 网页批注工具:高亮 / 文字批注;null 退出(页面内切换光标与选中行为)。 */
   setStudyPreviewAnnotationMode: (mode: "highlight" | "note" | null) =>
     invoke<void>("set_study_preview_annotation_mode", { mode }),
+  /** 网页选中翻译总开关(批注模式优先:进入批注后页面不再响应翻译)。 */
+  setStudyPreviewTranslate: (enabled: boolean) =>
+    invoke<void>("set_study_preview_translate", { enabled }),
   /** 把翻页步长推给页内运行时(键盘翻页与上半屏渐变共用)。 */
   setStudyPreviewReadStep: (step: number) =>
     invoke<void>("set_study_preview_read_step", { step }),
   /** 把命令层的翻页绑定推给页内运行时(网页获得焦点时也能用自定义快捷键)。 */
   setStudyPreviewReadKeys: (prev: string[], next: string[]) =>
     invoke<void>("set_study_preview_read_keys", { prev, next }),
+  /** 把「要转回主窗口」的阅读区快捷键推给页内运行时(原生子 webview 的按键
+   *  不冒泡:页内匹配后经 title 通道上报)。 */
+  setStudyPreviewShortcuts: (keys: string[]) =>
+    invoke<void>("set_study_preview_shortcuts", { keys }),
+  /** 把键盘焦点交给内嵌网页(切到阅读区用)。 */
+  focusStudyPreview: () => invoke<void>("focus_study_preview"),
   /** 焦点在主窗口时,把一次翻页转给内嵌网页。 */
   scrollStudyPreview: (delta: 1 | -1) =>
     invoke<void>("scroll_study_preview", { delta }),
@@ -275,6 +331,21 @@ export const agentApi = {
   /** Opens/reuses the standalone study-mode preview window (backend-created so
    *  that failures come back as errors instead of a swallowed `tauri://error`). */
   openStudyUrl: (url: string) => invoke<void>("open_study_url", { url }),
+};
+
+/**
+ * 选中翻译。单词/句子的分流和"单词未收录不降级到 API"都由 Rust 决定,
+ * 前端只送选中文本,拿回一个判别联合结果。
+ */
+export const translateApi = {
+  selection: (text: string) =>
+    invoke<TranslateSelection>("translate_selection", { text }),
+  getConfig: () => invoke<TranslateConfig>("translate_get_config"),
+  saveConfig: (config: TranslateConfig) =>
+    invoke<void>("translate_save_config", { config }),
+  /** 用表单当前值测试连接(不落盘)。 */
+  test: (config: TranslateConfig) =>
+    invoke<string>("translate_test", { config }),
 };
 
 export const api = {
