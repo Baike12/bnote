@@ -119,7 +119,10 @@ export default function App() {
         legacySplit ?? settings.studyContentWidth,
         window.innerWidth,
       );
-      settings.studyAgentWidth = normalizeAgentWidth(settings.studyAgentWidth);
+      settings.studyAgentWidth = normalizeAgentWidth(
+        settings.studyAgentWidth,
+        window.innerWidth,
+      );
       // 旧键不再使用,剥掉免得一直躺在配置文件里。右栏页签模型已由三栏布局
       // 取代(助手栏常驻在最左),这个键只可能是旧配置留下的。
       delete (settings as Record<string, unknown>).studySplit;

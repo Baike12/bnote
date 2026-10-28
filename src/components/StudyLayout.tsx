@@ -4,7 +4,7 @@ import { ContentPane } from "./ContentPane";
 import { EditorPane } from "./EditorPane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName } from "@/lib/path";
-import { dragAgentEdge, dragContentEdge } from "@/study/layoutModel";
+import { dragAgentEdge, dragContentEdge, RESIZER_WIDTH } from "@/study/layoutModel";
 
 /**
  * Study-mode three-column layout: agent (left) + content (middle) + notes
@@ -15,9 +15,13 @@ import { dragAgentEdge, dragContentEdge } from "@/study/layoutModel";
  * ——笔记/助手的内容宽度、PDF 页面尺寸因此稳定。窗口窄到放不下时,CSS 的
  * clamp 压缩前两栏(见 global.css 的 --agent-w / --content-w),不改用户偏好。
  *
+ * 拖分栏线只动相邻的两栏:宽度在相邻两栏之间转移,不相邻的那栏原地不动
+ * (拖 助手|内容 不牵动笔记栏;拖 内容|笔记 不牵动助手栏)。每栏最小宽度是
+ * 布局宽度的 10%,相邻栏到界时把线顶住(见 layoutModel)。
+ *
  * 拖动期间把像素直接写进 CSS 变量(不 setState):面板里有 CodeMirror,
- * 60Hz 重渲染代价太大;指针抬起时一次性提交。指针位置就是列的边界,拖动
- * 不需要起点宽度——存值只用来在指针抬起时判断要不要提交。
+ * 60Hz 重渲染代价太大;指针抬起时一次性提交。拖动按**位移**算:起点是线
+ * 当前的位置,握线偏了 4px 也不会跳一下。
  *
  * 三栏**都常驻挂载**:助手面板与笔记编辑器一直在树里,切内容/翻页零重挂、
  * 零重测——CodeMirror 的装饰和滚动位置原样保留,这是手感要求。
@@ -43,14 +47,15 @@ export function StudyLayout() {
 
   /**
    * 一根分栏线的公共拖动骨架:指针移动时只写 CSS 变量,抬起时提交一次。
-   * `toWidth(x)` 把「指针相对布局左缘的坐标」换算成这一栏的宽度。
+   * `compute(dx)` 把「指针相对按下点的位移」换算成这次要写的几个变量;
+   * `commit` 把同一组值提交进设置。
    */
   function startDrag(
     event: React.PointerEvent<HTMLDivElement>,
-    variable: "--agent-src" | "--content-src",
-    stored: number,
-    toWidth: (x: number) => number,
-    commit: (width: number) => void,
+    variables: string[],
+    stored: Record<string, number>,
+    compute: (dx: number) => Record<string, number>,
+    commit: (values: Record<string, number>) => void,
   ) {
     const host = hostRef.current;
     if (!host) return;
@@ -68,12 +73,15 @@ export function StudyLayout() {
       // no active pointer (hover-less input / synthetic events)
     }
 
-    let latest: number | null = null;
+    const startX = event.clientX;
+    let latest: Record<string, number> | null = null;
 
     const onMove = (move: PointerEvent) => {
-      const width = toWidth(move.clientX - hostRect.left);
-      latest = width;
-      host.style.setProperty(variable, `${width}px`);
+      const values = compute(move.clientX - startX);
+      latest = values;
+      for (const [name, value] of Object.entries(values)) {
+        host.style.setProperty(name, `${value}px`);
+      }
       // 原生网页预览是挂在 DOM 之上的子 webview,只会按尺寸变化自己跟着挪;
       // 拖助手栏只平移内容栏、尺寸不变,需要这个信号让它重报矩形(见
       // ContentPane 的 previewSyncRef)。
@@ -87,9 +95,14 @@ export function StudyLayout() {
       handle.classList.remove("dragging");
       // 提交 → React 用同样的像素值重渲染(clamp 由 CSS 负责)。
       const done = latest;
-      if (done !== null && done !== stored) commit(done);
+      if (done) {
+        const changed = variables.some((name) => done[name] !== stored[name]);
+        if (changed) commit(done);
+      }
       // 显示宽度(窗口窄时被 CSS 压过)不能当成新偏好写回变量:还原成存值。
-      host.style.setProperty(variable, `${done ?? stored}px`);
+      for (const name of variables) {
+        host.style.setProperty(name, `${latest?.[name] ?? stored[name]}px`);
+      }
     };
 
     window.addEventListener("pointermove", onMove);
@@ -97,19 +110,37 @@ export function StudyLayout() {
     window.addEventListener("pointercancel", onUp);
   }
 
-  /** 助手|内容:助手栏拿指针位置。 */
+  /**
+   * 助手|内容:宽度在助手栏与中栏之间转移,笔记栏不动。
+   * 起点量的是**屏幕上真实的两栏宽度**(CSS 可能夹过),位移从线的当前位置起算。
+   */
   function startAgentDrag(event: React.PointerEvent<HTMLDivElement>) {
-    const hostWidth = hostRef.current?.getBoundingClientRect().width ?? 0;
+    const host = hostRef.current;
+    if (!host) return;
+    const hostRect = host.getBoundingClientRect();
+    const left = host.querySelector(".study-left");
+    const content = host.querySelector(".content-pane");
+    if (!left || !content) return;
+    const agent0 = left.getBoundingClientRect().width;
+    const content0 = content.getBoundingClientRect().width;
+    const sum = agent0 + content0;
     startDrag(
       event,
-      "--agent-src",
-      agentWidth,
-      (x) => dragAgentEdge(x, hostWidth),
-      (width) => patchSettings({ studyAgentWidth: width }),
+      ["--agent-src", "--content-src"],
+      { "--agent-src": agentWidth, "--content-src": contentWidth },
+      (dx) => {
+        const widths = dragAgentEdge(agent0 + RESIZER_WIDTH + dx, hostRect.width, sum);
+        return { "--agent-src": widths.agent, "--content-src": widths.content };
+      },
+      (values) =>
+        patchSettings({
+          studyAgentWidth: values["--agent-src"],
+          studyContentWidth: values["--content-src"],
+        }),
     );
   }
 
-  /** 内容|笔记:内容栏拿指针位置,左缘(助手栏)不动。 */
+  /** 内容|笔记:宽度在中栏与笔记栏之间转移,助手栏不动。 */
   function startContentDrag(event: React.PointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
     if (!host) return;
@@ -117,13 +148,22 @@ export function StudyLayout() {
     // 内容栏左缘在拖动中不动(线只在中栏与笔记栏之间),量一次即可。
     const content = host.querySelector(".content-pane");
     if (!content) return;
-    const contentLeft = content.getBoundingClientRect().left - hostRect.left;
+    const contentRect = content.getBoundingClientRect();
+    const contentLeft = contentRect.left - hostRect.left;
+    const content0 = contentRect.width;
     startDrag(
       event,
-      "--content-src",
-      contentWidth,
-      (x) => dragContentEdge(x, hostRect.width, contentLeft),
-      (width) => patchSettings({ studyContentWidth: width }),
+      ["--content-src"],
+      { "--content-src": contentWidth },
+      (dx) => {
+        const widths = dragContentEdge(
+          contentLeft + content0 + RESIZER_WIDTH + dx,
+          hostRect.width,
+          contentLeft,
+        );
+        return { "--content-src": widths.content };
+      },
+      (values) => patchSettings({ studyContentWidth: values["--content-src"] }),
     );
   }
 

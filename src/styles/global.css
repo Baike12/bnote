@@ -1978,11 +1978,13 @@ input[type="range"] {
      (像素),--agent-w / --content-w 再按当前窗口夹一次。助手栏与中栏都是
      固定像素,笔记栏吃剩余宽度——拖窗口边缘只改笔记栏,PDF 页面尺寸和纵向
      可见内容都不会跟着窗口抖。窗口窄到放不下时,CSS 压缩前两栏的显示宽度,
-     不回写偏好。1px = 每根分栏线。 */
+     不回写偏好。1px = 每根分栏线。
+     每栏最小宽度是布局宽度的 10%(与 layoutModel 的 MIN_COLUMN_RATIO 一致):
+     助手栏的上界给中栏与笔记栏各留 10%,中栏的上界给笔记栏留 10%。 */
   --agent-src: 320px;
   --content-src: 620px;
-  --agent-w: clamp(240px, var(--agent-src), calc(100% - 2px - 520px));
-  --content-w: clamp(260px, var(--content-src), calc(100% - 2px - 260px - var(--agent-w)));
+  --agent-w: clamp(10%, var(--agent-src), calc(100% - 2px - 20%));
+  --content-w: clamp(10%, var(--content-src), calc(100% - 2px - 10% - var(--agent-w)));
   /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。最左是助手栏,它
      的头部要让开;侧栏在时红绿灯压在侧栏自己的 36px 预留带上,不用让。
      与 .titlebar 的 paddingLeft 是同一套判断,只是这里由 DOM 推出来。 */
