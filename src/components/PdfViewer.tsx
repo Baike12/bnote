@@ -147,7 +147,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   /** 目录解析完(哪怕没有目录)才量一次中栏宽度:书签栏占的横向空间要算进
    *  「一页正好放下」的目标宽度里。 */
   const [outlineLoaded, setOutlineLoaded] = useState(false);
-  const [outlineOpen, setOutlineOpen] = useState(true);
+  /** 书签栏默认收起:打开 PDF 先看正文,要看目录再点工具栏的「书签」。 */
+  const [outlineOpen, setOutlineOpen] = useState(false);
   /** 用户偏好宽度(持久化);实际显示宽度按当前栏宽再夹一次,见下面的 effect。 */
   const preferredOutlineWidth = useRef(loadOutlineWidth());
   const [outlineWidth, setOutlineWidth] = useState(() => preferredOutlineWidth.current);

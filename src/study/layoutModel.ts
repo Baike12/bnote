@@ -2,20 +2,21 @@
  * Study-mode column model.
  *
  * 布局是三栏:助手 | 内容 | 笔记(见 StudyLayout)。助手栏与中栏的宽度都以
- * **像素**保存(`studyAgentWidth` / `studyContentWidth`),右栏吃剩余宽度。
- * 这样拖动窗口边缘时,助手栏与内容栏都不变——PDF 页面尺寸、纵向能看到多少
+ * **像素**保存(`studyAgentWidth` / `studyContentWidth`),笔记栏吃剩余宽度。
+ * 这样拖动窗口边缘时,助手栏与中栏都不变——PDF 页面尺寸、纵向能看到多少
  * 内容都不会跟着窗口抖。窗口窄到放不下时,由 CSS 的 clamp 压缩,而不回写
  * 偏好。
+ *
+ * 拖分栏线只动**相邻的两栏**:宽度在相邻两栏之间转移,不相邻的那栏原地不动
+ * (拖 助手|内容 不牵动笔记栏;拖 内容|笔记 不牵动助手栏)。每栏最小宽度是
+ * 布局宽度的 10%,相邻栏到界时把分隔线顶住。
  *
  * 旧配置把三栏宽度存成 `studySplit: [agent, content]`(更早是比例),
  * `normalizeContentWidth` 在加载时把旧值换算成中栏像素宽度,一次性迁移。
  */
 
-export const MIN_CONTENT_WIDTH = 260;
-/** 助手栏最小宽度:输入框与消息在更窄时没法读。 */
-export const MIN_AGENT_WIDTH = 240;
-/** 右栏(笔记)最小宽度。 */
-export const MIN_RIGHT_WIDTH = 260;
+/** 每栏最小宽度占布局宽度的比例。 */
+export const MIN_COLUMN_RATIO = 0.1;
 /** 分栏线宽度(布局宽度),与 global.css 的 .study-resizer 一致;命中区由
  *  ::after 向两侧扩展,不占布局。 */
 export const RESIZER_WIDTH = 1;
@@ -31,14 +32,22 @@ function clamp(value: number, lo: number, hi: number): number {
   return Math.min(Math.max(value, lo), Math.max(lo, hi));
 }
 
+/** 每栏最小宽度(像素):布局宽度的 10%。 */
+export function minColumnWidth(hostWidth: number): number {
+  if (!Number.isFinite(hostWidth) || hostWidth <= 0) return 0;
+  return Math.round(hostWidth * MIN_COLUMN_RATIO);
+}
+
 /**
  * 把持久化的中栏宽度归一成像素。
  *
  * - 旧配置的比例形式(值在 0..1)按 `viewportWidth` 换算;
- * - 像素原样使用,只夹下限(上限交给 CSS,窗口变窄时压缩显示而不改偏好);
+ * - 像素原样使用,只夹下限(下限 = 布局宽度的 10%,与拖动时一致;上限交给
+ *   CSS,窗口变窄时压缩显示而不改偏好);
  * - 坏数据回落默认值。
  */
 export function normalizeContentWidth(value: unknown, viewportWidth: number): number {
+  const floor = minColumnWidth(viewportWidth);
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return DEFAULT_CONTENT_WIDTH;
   }
@@ -46,17 +55,18 @@ export function normalizeContentWidth(value: unknown, viewportWidth: number): nu
     if (!(Number.isFinite(viewportWidth) && viewportWidth > 0)) {
       return DEFAULT_CONTENT_WIDTH;
     }
-    return Math.round(Math.max(MIN_CONTENT_WIDTH, value * viewportWidth));
+    return Math.round(Math.max(floor, value * viewportWidth));
   }
-  return Math.round(Math.max(MIN_CONTENT_WIDTH, value));
+  return Math.round(Math.max(floor, value));
 }
 
-/** 助手栏宽度归一:像素,只夹下限(上限交给 CSS,窗口变窄时压缩显示)。 */
-export function normalizeAgentWidth(value: unknown): number {
+/** 助手栏宽度归一:像素,只夹下限(下限同上,上限交给 CSS)。 */
+export function normalizeAgentWidth(value: unknown, viewportWidth: number): number {
+  const floor = minColumnWidth(viewportWidth);
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return DEFAULT_AGENT_WIDTH;
   }
-  return Math.round(Math.max(MIN_AGENT_WIDTH, value));
+  return Math.round(Math.max(floor, value));
 }
 
 /**
@@ -72,38 +82,65 @@ export function studySplitToContentWidth(split: unknown): number | null {
   return typeof split === "number" ? split : null;
 }
 
-/**
- * 拖动 助手|内容 分隔线:助手栏拿到指针位置,内容与笔记吃掉剩下的。
- * `x` 是指针相对布局左缘的坐标;`hostWidth` 是布局宽度。
- *
- * 指针的位置就是列的边界(线的左缘),所以宽度 = x − 线宽;上界替内容栏与
- * 笔记栏各留出最小宽度。
- */
-export function dragAgentEdge(x: number, hostWidth: number): number {
-  const upper = hostWidth - RESIZER_WIDTH * 2 - MIN_CONTENT_WIDTH - MIN_RIGHT_WIDTH;
-  return Math.round(
-    clamp(x - RESIZER_WIDTH, MIN_AGENT_WIDTH, Math.max(MIN_AGENT_WIDTH, upper)),
-  );
+/** 三栏宽度(像素)。 */
+export interface ColumnWidths {
+  /** 助手栏。 */
+  agent: number;
+  /** 中栏(内容)。 */
+  content: number;
+  /** 右栏(笔记)。 */
+  right: number;
 }
 
 /**
- * 拖动 内容|笔记 分隔线:内容栏拿到指针位置,笔记栏吃剩余宽度。
- * `x` 是指针相对布局左缘的坐标;`contentLeft` 是内容栏左缘(助手栏 + 线宽),
- * 拖动时它不动——线只在中栏与笔记栏之间移动。
+ * 拖动 助手|内容 分隔线:宽度在相邻的助手栏与中栏之间转移,笔记栏原地不动。
+ *
+ * `x` 是分隔线右缘相对布局左缘的坐标(= 中栏左缘);`sum` 是这两栏当前的
+ * 总宽度(助手 + 中栏)——拖动时它不变,所以笔记栏的宽度也就不变。
+ *
+ * 指针的位置就是列的边界:助手栏宽 = x − 线宽,中栏宽 = sum − 助手栏宽。
+ * 相邻栏的最小宽度是布局宽度的 10%,先到界的那个把线顶住。
+ */
+export function dragAgentEdge(
+  x: number,
+  hostWidth: number,
+  sum: number,
+): ColumnWidths {
+  const min = minColumnWidth(hostWidth);
+  // 助手栏到 10% → 线右缘最靠左;中栏到 10% → 线右缘最靠右。
+  const lo = min + RESIZER_WIDTH;
+  const hi = sum + RESIZER_WIDTH - min;
+  const edge = lo <= hi ? clamp(x, lo, hi) : (lo + hi) / 2;
+  const agent = edge - RESIZER_WIDTH;
+  return {
+    agent: Math.round(agent),
+    content: Math.round(sum - agent),
+    right: Math.round(hostWidth - RESIZER_WIDTH * 2 - sum),
+  };
+}
+
+/**
+ * 拖动 内容|笔记 分隔线:宽度在相邻的中栏与笔记栏之间转移,助手栏原地不动。
+ *
+ * `x` 是分隔线右缘相对布局左缘的坐标(= 笔记栏左缘);`contentLeft` 是中栏
+ * 左缘(拖动时不动——线只在中栏与笔记栏之间移动)。
+ *
+ * 相邻栏的最小宽度是布局宽度的 10%,先到界的那个把线顶住。
  */
 export function dragContentEdge(
   x: number,
   hostWidth: number,
   contentLeft = 0,
-): number {
-  const upper = hostWidth - contentLeft - RESIZER_WIDTH - MIN_RIGHT_WIDTH;
-  return Math.round(
-    clamp(
-      x - contentLeft - RESIZER_WIDTH,
-      MIN_CONTENT_WIDTH,
-      Math.max(MIN_CONTENT_WIDTH, upper),
-    ),
-  );
+): { content: number; right: number } {
+  const min = minColumnWidth(hostWidth);
+  const lo = contentLeft + RESIZER_WIDTH + min; // 中栏到 10%
+  const hi = hostWidth - min; // 笔记栏到 10%
+  const edge = lo <= hi ? clamp(x, lo, hi) : (lo + hi) / 2;
+  const content = edge - contentLeft - RESIZER_WIDTH;
+  return {
+    content: Math.round(content),
+    right: Math.round(hostWidth - edge),
+  };
 }
 
 /**
