@@ -3,7 +3,9 @@
  *
  * 页面本来就是 pdf.js 画进 `<canvas>` 的(PdfViewer 每页一个),所以这里
  * 不需要系统截图权限,也不需要 html2canvas:新建一块画布,把可见的页面片段
- * 用 drawImage 搬过去。取景框 = 「滚动视口 ∩ 页面列」:
+ * 用 drawImage 搬过去。取景框 = 「滚动视口 ∩ 当前内容区 ∩ 页面列」:
+ *   - 当前内容区 = 压暗遮罩(.pdf-read-shade)以下的部分:上方是刚读完的旧
+ *     内容,截进去只会带偏模型;
  *   - 左侧目录栏(.pdf-outline)在页面列之外,自然不进图;
  *   - 页框阴影是 .pdf-page 的 CSS box-shadow,canvas 像素里根本不存在。
  * 护眼染色与高亮批注是 DOM 覆盖层(multiply),按同一坐标与颜色补画。
@@ -57,6 +59,14 @@ export interface SnapshotPlan {
   pages: PlannedPage[];
 }
 
+export interface SnapshotOptions {
+  /**
+   * 「当前内容区」的上沿(视口坐标)。阅读区上半屏是压暗的旧内容
+   * (翻页分区用的阴影遮罩),那部分不进图;null = 整屏都是当前内容。
+   */
+  currentTop?: number | null;
+}
+
 export interface SnapshotColors {
   /** 滚动区底色:页间空隙与页面外的视口底色。 */
   background: string;
@@ -94,20 +104,40 @@ interface VisiblePage {
 }
 
 /**
- * 视口 + 每页几何 → 取景与逐页搬运计划。返回 null 的两种情况:
+ * 视口 → 取景用的区域:压暗层(旧内容)以上的部分切掉,只留当前内容区。
+ * 切完空了就返回 null(没有可截的内容)。
+ */
+export function currentRegion(
+  viewport: SnapshotRect,
+  currentTop: number | null | undefined,
+): SnapshotRect | null {
+  if (currentTop == null) return viewport;
+  const top = Math.max(viewport.top, currentTop);
+  const bottom = viewport.top + viewport.height;
+  if (bottom <= top) return null;
+  return { left: viewport.left, top, width: viewport.width, height: bottom - top };
+}
+
+/**
+ * 视口 + 每页几何 → 取景与逐页搬运计划。返回 null 的三种情况:
  *   1. 没有任何页面与视口相交(没打开文档 / 全在视口外);
- *   2. 有页面可见但它的 canvas 还是 0 宽(刚跳页、刚缩放,渲染没完成)。
+ *   2. 有页面可见但它的 canvas 还是 0 宽(刚跳页、刚缩放,渲染没完成);
+ *   3. 压暗层盖住了整个视口,当前内容区是空的。
  * 调用方据此重试下一帧。
  */
 export function planSnapshot(
   viewport: SnapshotRect,
   pages: SnapshotPage[],
+  options: SnapshotOptions = {},
 ): SnapshotPlan | null {
+  // 取景只看当前内容区:阴影里是刚读完的旧内容,截进去只会带偏模型。
+  const capture = currentRegion(viewport, options.currentTop);
+  if (!capture) return null;
   const visible: VisiblePage[] = [];
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i];
     if (page.full.width <= 0 || page.full.height <= 0) continue;
-    const frag = intersectRect(page.box, viewport);
+    const frag = intersectRect(page.box, capture);
     if (
       !frag ||
       frag.width < MIN_VISIBLE_FRAGMENT ||
@@ -122,20 +152,20 @@ export function planSnapshot(
 
   // 横向只取页面列:目录栏在页面矩形之外。
   const left = Math.max(
-    viewport.left,
+    capture.left,
     Math.min(...visible.map((v) => v.page.box.left)),
   );
   const right = Math.min(
-    viewport.left + viewport.width,
+    capture.left + capture.width,
     Math.max(...visible.map((v) => v.page.box.left + v.page.box.width)),
   );
   // 纵向同时裁掉视口外的部分与页面外的底色(顶部/底部留白、短文档的空白)。
   const top = Math.max(
-    viewport.top,
+    capture.top,
     Math.min(...visible.map((v) => v.page.box.top)),
   );
   const bottom = Math.min(
-    viewport.top + viewport.height,
+    capture.top + capture.height,
     Math.max(...visible.map((v) => v.page.box.top + v.page.box.height)),
   );
   if (right <= left || bottom <= top) return null;
