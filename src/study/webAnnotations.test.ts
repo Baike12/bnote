@@ -12,6 +12,7 @@ import {
   type WebAnnotation,
 } from "./webAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
+import { eventKeyName } from "@/commands/keys";
 
 function ann(id: string, quote: string, offset: number, extra: Partial<WebAnnotation> = {}): WebAnnotation {
   return {
@@ -139,6 +140,8 @@ describe("注入脚本", () => {
     expect(script).toContain("setKeys");
     expect(script).toContain("bnote-read-shade-host");
     expect(script).toContain("snapScrollTopToLine");
+    // 页内键位匹配与主窗口共用同一套主键规范化(⌘⌥A 在 macOS 上是 "å")。
+    expect(script).toContain("eventKeyName");
     // 文字批注(页内批注卡)与阅读位置。
     expect(script).toContain("bnote:web-position:v1:");
     expect(script).toContain("scheduleRestore");
@@ -173,5 +176,11 @@ describe("注入脚本", () => {
     expect(
       isolatedSnap(350, 700, 5000, 350, [{ top: 335, bottom: 357 }], 14),
     ).toBe(357);
+    const isolatedKey = new Function(
+      `return (${eventKeyName.toString()});`,
+    )() as typeof eventKeyName;
+    expect(
+      isolatedKey({ key: "å", code: "KeyA", shiftKey: false, altKey: true }),
+    ).toBe("a");
   });
 });

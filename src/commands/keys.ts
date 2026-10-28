@@ -442,23 +442,45 @@ export function fixedPageCommandFor(event: KeyboardEvent): string | null {
   return FIXED_PAGE_COMMANDS[event.key] ?? null;
 }
 
-/** Maps a shifted symbol key back to its base key via the physical key
- *  (US/macOS: Shift+; reports ":", Shift+- reports "_", …). Bindings are
- *  written for the physical key — "Mod-Shift-;" — like the letters, whose
- *  Shift state already survives via toLowerCase above. */
-const SHIFT_SYMBOL_BASE: Record<string, string> = {
-  Semicolon: ";",
-  Quote: "'",
-  Comma: ",",
-  Period: ".",
-  Slash: "/",
-  Backslash: "\\",
-  BracketLeft: "[",
-  BracketRight: "]",
-  Minus: "-",
-  Equal: "=",
-  Backquote: "`",
-};
+/**
+ * 事件主键的规范化:Shift+符号与 macOS Option+字母都还原成**物理键**。
+ *
+ * macOS 上 Option+字母产出的 event.key 是 å/ß/®,Option+N 甚至是 "Dead"——
+ * 绑定表里写的是 "Mod-Alt-a",直接拿 event.key 永远匹配不上。函数体必须
+ * 自包含:它会被序列化进网页运行时(见 study/webAnnotations.ts)。
+ */
+export function eventKeyName(event: {
+  key: string;
+  code: string;
+  shiftKey: boolean;
+  altKey: boolean;
+}): string {
+  const SYMBOLS: Record<string, string> = {
+    Semicolon: ";",
+    Quote: "'",
+    Comma: ",",
+    Period: ".",
+    Slash: "/",
+    Backslash: "\\",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Minus: "-",
+    Equal: "=",
+    Backquote: "`",
+  };
+  let key = event.key;
+  if (key === " ") return "Space";
+  if (key.length === 1) key = key.toLowerCase();
+  if (event.shiftKey && key.length === 1 && !/[a-z0-9]/.test(key)) {
+    key = SYMBOLS[event.code] ?? key;
+  }
+  if (event.altKey && (key === "Dead" || (key.length === 1 && !/[a-z0-9]/.test(key)))) {
+    if (/^Key[A-Z]$/.test(event.code)) key = event.code.slice(3).toLowerCase();
+    else if (/^Digit[0-9]$/.test(event.code)) key = event.code.slice(5);
+    else key = SYMBOLS[event.code] ?? key;
+  }
+  return key;
+}
 
 /**
  * 不带修饰键也能成为快捷键的键。只收导航/功能键:字母数字若允许裸绑,
@@ -543,12 +565,7 @@ export function eventToKey(e: KeyboardEvent): string | null {
     return null;
   }
 
-  let key = e.key;
-  if (key === " ") key = "Space";
-  else if (key.length === 1) key = key.toLowerCase();
-  if (e.shiftKey && key.length === 1 && !/[a-z0-9]/.test(key)) {
-    key = SHIFT_SYMBOL_BASE[e.code] ?? key;
-  }
+  const key = eventKeyName(e);
 
   // A lone modifier press is not a binding.
   if (["Shift", "Control", "Alt", "Meta"].includes(key)) return null;
