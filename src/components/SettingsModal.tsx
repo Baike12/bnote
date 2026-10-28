@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { agentApi, translateApi, type AgentConfig, type TranslateConfig } from "@/lib/tauri";
+import {
+  agentApi,
+  translateApi,
+  type AgentConfig,
+  type SkillInfo,
+  type TranslateConfig,
+} from "@/lib/tauri";
 import { Modal } from "./Modal";
 import { allCommands } from "@/commands/registry";
 import {
@@ -43,7 +49,10 @@ type Tab =
   | "ime"
   | "quickadd"
   | "translate"
-  | "agent";
+  | "agent-model"
+  | "agent-mcp"
+  | "agent-skills"
+  | "agent-instructions";
 
 /** 左侧导航按用途分组(参考 ZCode 设置页的分组侧栏),渲染见 SettingsModal。 */
 const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
@@ -67,9 +76,15 @@ const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
   },
   {
     label: "学习",
+    items: [{ id: "translate", label: "翻译" }],
+  },
+  {
+    label: "Agent",
     items: [
-      { id: "translate", label: "翻译" },
-      { id: "agent", label: "Agent(学习模式)" },
+      { id: "agent-model", label: "模型" },
+      { id: "agent-mcp", label: "MCP" },
+      { id: "agent-skills", label: "技能" },
+      { id: "agent-instructions", label: "AGENTS.md" },
     ],
   },
 ];
@@ -92,11 +107,11 @@ export default [
 ]
 `;
 
-const AGENT_MD_TEMPLATE = `<!-- .bnote/agent.md — 学习助手的自定义指令(类比 AGENTS.md / CLAUDE.md)。
+/** AGENTS.md 的输入框占位文案(仅 placeholder,不写入文件)。 */
+const AGENTS_MD_TEMPLATE = `<!-- .bnote/AGENTS.md — 学习助手与创作模式的自定义指令。
      保存在当前仓库,随会话启动加载;内置的通用要求(简洁、结论先行、
      组块化)始终生效,这里的指令在其后追加。留空 = 只用通用要求。
-     例如:优先用表格对比易混概念;回答末尾给一个检验理解的小问题。 -->
-`;
+     例如:优先用表格对比易混概念;创作时先给提纲再动笔。 -->`;
 
 export function SettingsModal() {
   const open = useAppStore((s) => s.modal === "settings");
@@ -134,7 +149,10 @@ export function SettingsModal() {
           {tab === "ime" && <ImeTab />}
           {tab === "quickadd" && <QuickAddTab />}
           {tab === "translate" && <TranslateTab />}
-          {tab === "agent" && <AgentTab />}
+          {tab === "agent-model" && <AgentModelTab />}
+          {tab === "agent-mcp" && <AgentMcpTab />}
+          {tab === "agent-skills" && <AgentSkillsTab />}
+          {tab === "agent-instructions" && <AgentInstructionsTab />}
         </div>
       </div>
     </Modal>
@@ -1300,66 +1318,67 @@ const TRANSLATE_PROTOCOLS: Record<
   },
 };
 
-function AgentTab() {
-  const showToast = useAppStore((s) => s.showToast);
-  const vaultName = useAppStore((s) => s.vaultName);
+/**
+ * Agent 四个子页共享的配置装载/保存:一份 agent.json,各自保存自己关心的
+ * 字段(整包写出,后端 normalize 兜底)。已开的会话按启动快照跑到底,
+ * 保存只影响之后的新会话。
+ */
+function useAgentSettings() {
   const [cfg, setCfg] = useState<AgentConfig | null>(null);
-  const [mcpJson, setMcpJson] = useState("{}");
-  const [mcpDirty, setMcpDirty] = useState(false);
-  // 自定义指令 = 仓库的 .bnote/agent.md(类比 AGENTS.md / CLAUDE.md)。
-  const [instructions, setInstructions] = useState(AGENT_MD_TEMPLATE);
-  const [instructionsDirty, setInstructionsDirty] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     void agentApi
       .getConfig()
       .then((c) => {
-        setCfg(c);
-        setMcpJson(JSON.stringify(c.mcp_servers ?? {}, null, 2));
+        if (!cancelled) setCfg(c);
       })
-      .catch((e) => setLoadError(String(e).replace(/^[A-Z_]+:\s*/, "")));
-    void api.readVaultFile("agent.md").then((v) => {
-      setInstructions(v ?? AGENT_MD_TEMPLATE);
-    });
+      .catch((e) => {
+        if (!cancelled) setLoadError(String(e).replace(/^[A-Z_]+:\\s*/, ""));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // 配置读不出来(后端异常/无后端)就如实说,不能永远停在「加载中…」。
-  if (!cfg) {
-    return (
-      <div className="settings-section">
-        {loadError ? `Agent 配置加载失败:${loadError}` : "加载中…"}
-      </div>
-    );
-  }
+  const update = (patch: Partial<AgentConfig>) =>
+    setCfg((prev) => (prev ? { ...prev, ...patch } : prev));
 
-  function update(patch: Partial<AgentConfig>) {
-    setCfg({ ...cfg!, ...patch });
-  }
-
-  async function save() {
+  const save = async (patch: Partial<AgentConfig>, note: string, showToast: (m: string) => void) => {
+    if (!cfg) return;
     try {
-      let mcp_servers: Record<string, unknown> = {};
-      if (mcpDirty) {
-        mcp_servers = JSON.parse(mcpJson || "{}");
-      } else {
-        mcp_servers = cfg!.mcp_servers ?? {};
-      }
-      await agentApi.saveConfig({ ...cfg!, mcp_servers });
+      await agentApi.saveConfig({ ...cfg, ...patch });
       // 已开的会话不受影响:它按启动时的模型配置快照跑到底,这里只让面板
-      // 重新读一次「当前配置」(脚注在会话还没起来时用它,也会提示两者不同)。
+      // 重新读一次「当前配置」(脚注与技能清单会刷新)。
       useAppStore.getState().bumpAgentConfigVersion();
-      showToast("Agent 配置已保存;新会话生效(已开会话沿用原配置)");
+      showToast(note);
     } catch (e) {
       showToast(`保存失败: ${String(e)}`);
     }
-  }
+  };
 
+  return { cfg, loadError, update, save };
+}
+
+function AgentLoading({ loadError }: { loadError: string | null }) {
+  return (
+    <div className="settings-section">
+      {loadError ? `Agent 配置加载失败:${loadError}` : "加载中…"}
+    </div>
+  );
+}
+
+/** Agent / 模型:协议、模型、上下文窗口、Base URL、API Key。 */
+function AgentModelTab() {
+  const showToast = useAppStore((s) => s.showToast);
+  const { cfg, loadError, update, save } = useAgentSettings();
+  if (!cfg) return <AgentLoading loadError={loadError} />;
   return (
     <div className="settings-section">
       <SettingsCard
         title="模型"
-        desc="改动只影响之后新建的会话;已开的会话按创建时的配置继续(学习助手头部点 ⟳ 开新会话)。"
+        desc="学习助手与创作模式共用;改动只影响之后新建的会话,已开的会话按创建时的配置继续(面板头部点 ⟳ 开新会话)。"
       >
         <Row
           label="协议"
@@ -1386,7 +1405,7 @@ function AgentTab() {
         />
         <Row
           label="上下文窗口"
-          desc="模型的最大上下文(tokens),用于学习助手输入框下方显示占用率;按实际模型填写,如 128000、200000、420000"
+          desc="模型的最大上下文(tokens),用于助手输入框下方显示占用率;按实际模型填写,如 128000、200000、420000"
           control={
             <input
               className="settings-input mono"
@@ -1424,51 +1443,222 @@ function AgentTab() {
           }
         />
       </SettingsCard>
+      <div className="settings-footer">
+        <button
+          className="btn primary"
+          onClick={() => void save({}, "Agent 配置已保存;新会话生效(已开会话沿用原配置)", showToast)}
+        >
+          保存模型配置
+        </button>
+      </div>
+    </div>
+  );
+}
 
+/** MCP 服务器的当前清单(JSON 里能安全解析出来的部分)。 */
+function McpSummary({ servers }: { servers: Record<string, unknown> }) {
+  const rows = Object.entries(servers);
+  if (rows.length === 0) {
+    return <p className="settings-hint">还没有配置 MCP 服务器。</p>;
+  }
+  return (
+    <ul className="mcp-summary">
+      {rows.map(([name, value]) => {
+        const v = (value ?? {}) as Record<string, unknown>;
+        const target =
+          typeof v.command === "string"
+            ? [v.command, ...(Array.isArray(v.args) ? v.args.map(String) : [])].join(" ")
+            : typeof v.url === "string"
+              ? v.url
+              : "(配置不完整)";
+        return (
+          <li key={name}>
+            <code>{name}</code>
+            <span className="mcp-summary-type">{v.type === "http" ? "http" : "stdio"}</span>
+            <span className="mcp-summary-target">{target}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Agent / MCP:服务器清单一览 + JSON 编辑。 */
+function AgentMcpTab() {
+  const showToast = useAppStore((s) => s.showToast);
+  const { cfg, loadError, save } = useAgentSettings();
+  const [mcpJson, setMcpJson] = useState<string | null>(null);
+  if (!cfg) return <AgentLoading loadError={loadError} />;
+  const json = mcpJson ?? JSON.stringify(cfg.mcp_servers ?? {}, null, 2);
+  let parsed: Record<string, unknown> | null = null;
+  let parseError: string | null = null;
+  try {
+    parsed = JSON.parse(json || "{}") as Record<string, unknown>;
+  } catch {
+    parseError = "JSON 尚不合法(下方清单显示的是上一次合法内容)";
+  }
+  return (
+    <div className="settings-section">
       <SettingsCard
         title="MCP 服务器"
         desc={
           <>
-            每个会话启动时连接;stdio 形如{" "}
+            会话启动时连接(创作模式把工具交给模型;学习模式不注册工具)。stdio 形如{" "}
             <code>{`{ "server": { "type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"] } }`}</code>
-            , HTTP 形如 <code>{`{ "type": "http", "url": "https://…" }`}</code>。工具以
-            mcp__服务器__工具 命名。
+            ,HTTP 形如 <code>{`{ "server": { "type": "http", "url": "https://…" } }`}</code>。工具以
+            mcp__服务器__工具 命名,连接失败会在面板顶部提示。
           </>
         }
       >
+        {parsed && <McpSummary servers={parsed} />}
+        {parseError && <p className="settings-hint">{parseError}</p>}
         <div className="settings-block">
           <textarea
             className="settings-textarea mono"
-            rows={8}
-            value={mcpJson}
-            onChange={(e) => {
-              setMcpJson(e.target.value);
-              setMcpDirty(true);
-            }}
+            rows={10}
+            spellCheck={false}
+            value={json}
+            onChange={(e) => setMcpJson(e.target.value)}
           />
         </div>
+        <div className="settings-actions">
+          <button
+            className="btn primary"
+            disabled={parseError !== null}
+            onClick={() => void save({ mcp_servers: parsed ?? {} }, "MCP 配置已保存;新会话生效", showToast)}
+          >
+            保存 MCP 配置
+          </button>
+        </div>
       </SettingsCard>
+    </div>
+  );
+}
 
+/** Agent / 技能:磁盘上发现的 SKILL.md 清单 + 额外扫描目录。 */
+function AgentSkillsTab() {
+  const showToast = useAppStore((s) => s.showToast);
+  const { cfg, loadError, update, save } = useAgentSettings();
+  const [skills, setSkills] = useState<SkillInfo[] | null>(null);
+  const [dirsDirty, setDirsDirty] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void agentApi
+      .listSkills()
+      .then((list) => {
+        if (!cancelled) setSkills(list);
+      })
+      .catch(() => {
+        if (!cancelled) setSkills([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!cfg) return <AgentLoading loadError={loadError} />;
+  return (
+    <div className="settings-section">
       <SettingsCard
-        title="额外 Skill 目录"
-        desc="每行一个目录;内置会扫描 应用数据/skills、仓库 .bnote/skills 与 ~/.agents/skills。"
+        title="技能"
+        desc="每个技能是一个目录下的 SKILL.md(frontmatter 提供 name 与 description)。内置会扫描 应用数据/skills、仓库 .bnote/skills(推荐)与 ~/.agents/skills,外加下面配置的额外目录。创作模式里用 /技能名 调用。"
       >
+        {skills === null ? (
+          <p className="settings-hint">加载中…</p>
+        ) : skills.length === 0 ? (
+          <p className="settings-hint">
+            还没有发现技能。在仓库里建 <code>.bnote/skills/&lt;技能名&gt;/SKILL.md</code> 即可。
+          </p>
+        ) : (
+          <ul className="skill-summary">
+            {skills.map((s) => (
+              <li key={s.path}>
+                <code>/{s.name}</code>
+                <span className="skill-summary-desc">{s.description || "(无描述)"}</span>
+                <span className="skill-summary-path" title={s.path}>
+                  {s.path}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </SettingsCard>
+      <SettingsCard title="额外扫描目录" desc="每行一个目录,与内置目录合并扫描。">
         <div className="settings-block">
           <textarea
             className="settings-textarea mono"
             rows={3}
             value={cfg.skill_dirs.join("\n")}
-            onChange={(e) => update({ skill_dirs: e.target.value.split("\n").filter((x) => x.trim()) })}
+            onChange={(e) => {
+              update({ skill_dirs: e.target.value.split("\n").filter((x) => x.trim()) });
+              setDirsDirty(true);
+            }}
           />
         </div>
+        <div className="settings-actions">
+          <button
+            className="btn primary"
+            disabled={!dirsDirty}
+            onClick={() => {
+              void save({}, "技能目录已保存", showToast);
+              setDirsDirty(false);
+            }}
+          >
+            保存技能目录
+          </button>
+        </div>
       </SettingsCard>
+    </div>
+  );
+}
 
+/** Agent / AGENTS.md:仓库自定义指令(旧版 .bnote/agent.md 兼容读取)。 */
+function AgentInstructionsTab() {
+  const showToast = useAppStore((s) => s.showToast);
+  const vaultName = useAppStore((s) => s.vaultName);
+  const [instructions, setInstructions] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [legacy, setLegacy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .readVaultFile("AGENTS.md")
+      .then((v) => {
+        if (cancelled) return;
+        if (v !== null) {
+          setInstructions(v);
+        } else {
+          // 旧版文件名:读出来方便迁移,保存时才写 AGENTS.md。
+          void api.readVaultFile("agent.md").then((old) => {
+            if (cancelled) return;
+            if (old !== null && old.trim()) {
+              setInstructions(old);
+              setLegacy(true);
+            }
+            setLoaded(true);
+          });
+          return;
+        }
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className="settings-section">
       <SettingsCard
-        title="自定义指令(仓库 .bnote/agent.md)"
+        title="AGENTS.md(仓库自定义指令)"
         desc={
           <>
-            代码里内置的通用要求(结论先行、直击本质、组块化、控制长度)始终生效,
-            这里的指令追加在其后,随会话启动加载——和 ZCode 读 AGENTS.md 同一机制。
+            保存为仓库的 <code>.bnote/AGENTS.md</code>,学习助手与创作模式的会话启动时加载;
+            内置通用要求(结论先行、直击本质、组块化)始终生效,这里的指令追加在其后。
+            {legacy && " 检测到旧版 .bnote/agent.md,内容已载入;保存后运行时将优先读 AGENTS.md。"}
             {vaultName ? "" : " (当前没有打开仓库,保存不可用)"}
           </>
         }
@@ -1476,26 +1666,28 @@ function AgentTab() {
         <div className="settings-block">
           <textarea
             className="settings-textarea mono"
-            rows={8}
+            rows={12}
             spellCheck={false}
+            placeholder={loaded ? AGENTS_MD_TEMPLATE : "加载中…"}
             value={instructions}
             onChange={(e) => {
               setInstructions(e.target.value);
-              setInstructionsDirty(true);
+              setDirty(true);
             }}
           />
           <div className="settings-actions">
             <button
-              className="btn"
-              disabled={!instructionsDirty || !vaultName}
+              className="btn primary"
+              disabled={!dirty || !vaultName}
               onClick={() =>
                 void api
-                  .writeVaultFile("agent.md", instructions)
+                  .writeVaultFile("AGENTS.md", instructions)
                   .then(() => {
-                    setInstructionsDirty(false);
+                    setDirty(false);
+                    setLegacy(false);
                     // 会话固化了系统提示词,重启会话才吃到新指令。
                     useAppStore.getState().bumpAgentConfigVersion();
-                    showToast("自定义指令已保存,学习助手会话将使用新指令");
+                    showToast("AGENTS.md 已保存;新会话生效");
                   })
                   .catch((e) => showToast(`保存失败: ${String(e)}`))
               }
@@ -1505,12 +1697,6 @@ function AgentTab() {
           </div>
         </div>
       </SettingsCard>
-
-      <div className="settings-footer">
-        <button className="btn primary" onClick={() => void save()}>
-          保存 Agent 配置
-        </button>
-      </div>
     </div>
   );
 }

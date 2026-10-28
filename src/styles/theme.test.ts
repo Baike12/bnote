@@ -63,6 +63,35 @@ function blockBodies(cssText: string, header: string): string[] {
   return bodies;
 }
 
+/**
+ * 删掉每一段 `var(...)`（连同 fallback,含嵌套括号的 fallback,如
+ * `var(--x, rgba(0,0,0,.2))`）。历史缺陷:用 `var\([^()]*\)` 正则循环剥除,
+ * fallback 里出现函数括号时每轮 replace 都匹配不到、no-op 自旋,
+ * 门禁测试直接挂死——换成括号配对扫描,单遍完成、未闭合也不会死循环。
+ */
+function stripVarCalls(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; ) {
+    if (s.startsWith("var(", i)) {
+      let depth = 0;
+      let j = i + 3; // 指向 var( 的 `(`,起点自身计入深度
+      for (; j < s.length; j++) {
+        if (s[j] === "(") depth++;
+        else if (s[j] === ")") {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      if (j >= s.length) break; // 未闭合的 var(:其余不再可能是合法规则体
+      i = j + 1;
+      continue;
+    }
+    out += s[i];
+    i++;
+  }
+  return out;
+}
+
 function customProps(body: string): Set<string> {
   return new Set([...body.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)].map((m) => m[1]));
 }
@@ -95,12 +124,19 @@ describe("主题变量体系", () => {
       .split("\n")
       .filter((line) => !/^\s*--/.test(line))
       .join("\n");
-    let stripped = rules.replace(/var\([^()]*\)/g, "");
-    while (stripped.includes("var(")) {
-      stripped = stripped.replace(/var\([^()]*\)/g, "");
-    }
+    const stripped = stripVarCalls(rules);
     const bare = stripped.match(/#[0-9a-fA-F]{3,8}\b|rgba?\s*\(/g) ?? [];
     expect(bare, `规则体里出现裸颜色: ${bare.join(", ")}`).toEqual([]);
+  });
+
+  it("stripVarCalls 剥掉嵌套括号的 fallback 且永不定环", () => {
+    // 历史缺陷回归:正则循环遇 var(--x, rgba(...)) 自旋挂死。
+    expect(stripVarCalls("a var(--x, rgba(0, 0, 0, 0.2)) b")).toBe("a  b");
+    expect(stripVarCalls("var(--a, var(--b, #fff)) c")).toBe(" c");
+    expect(stripVarCalls("color: var(--accent);")).toBe("color: ;");
+    // 未闭合:剩余全部丢弃,不再尝试匹配(防自旋)
+    expect(stripVarCalls("x var(--unclosed tail")).toBe("x ");
+    expect(stripVarCalls("no vars here")).toBe("no vars here");
   });
 });
 

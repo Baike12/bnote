@@ -123,6 +123,7 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "region.focus-reading": "Mod-Alt-r",
 
   // 学习助手面板内的会话操作。⌘[ 在这里盖住全局的「回退链接」。
+  "agent.toggle-creative": "Mod-Shift-g",
   "agent.new-session": "Mod-Shift-n",
   "agent.fork-session": "Mod-Shift-f",
   "agent.back-from-fork": "Mod-[",

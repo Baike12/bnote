@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { AgentPanel } from "./AgentPanel";
 import { ContentPane } from "./ContentPane";
+import { CreativePreview } from "./CreativePreview";
 import { EditorPane } from "./EditorPane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName } from "@/lib/path";
@@ -40,6 +41,7 @@ export function StudyLayout() {
   const contentWidth = useAppStore((s) => s.settings.studyContentWidth);
   const patchSettings = useAppStore((s) => s.patchSettings);
   const currentFile = useAppStore((s) => s.currentFile);
+  const creativeMode = useAppStore((s) => s.creativeMode);
   const hostRef = useRef<HTMLDivElement>(null);
   const noteTitle = currentFile
     ? fileName(currentFile).replace(/\.(md|markdown|txt)$/i, "")
@@ -198,7 +200,7 @@ export function StudyLayout() {
         onPointerDown={startAgentDrag}
         onDoubleClick={resetAgentSplit}
       />
-      <ContentPane />
+      {creativeMode ? <CreativePreview /> : <ContentPane />}
       <div
         className="study-resizer"
         role="separator"

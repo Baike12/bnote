@@ -301,13 +301,21 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                         .map_err(|e| format!("BAD_ARGS: model: {}", e))?,
                 ),
             };
+            let mode: Option<String> = match args.get("mode") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: mode: {}", e))?,
+                ),
+            };
             json_ok!(agent::agent_start_session(
                 app.clone(),
                 app.state(),
                 study,
                 fork,
                 history,
-                model
+                model,
+                mode
             )
             .await)
         }
@@ -319,6 +327,20 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "study_sessions_list" => json_ok!(materials::study_sessions_list(
             app.state(),
             arg_str(args, "relDir")?
+        )
+        .await),
+        "agent_list_skills" => json_ok!(agent::agent_list_skills(app.state()).await),
+        "bblog_sections" => json_ok!(crate::commands::bblog::bblog_sections(
+            arg_str(args, "server")?
+        )
+        .await),
+        "bblog_publish" => json_ok!(crate::commands::bblog::bblog_publish(
+            arg_str(args, "server")?,
+            arg_str(args, "token")?,
+            arg_str(args, "category")?,
+            arg_str(args, "topic")?,
+            arg_str(args, "filename")?,
+            arg_str(args, "content")?
         )
         .await),
         "agent_send" => {

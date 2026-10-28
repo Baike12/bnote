@@ -3805,3 +3805,299 @@ input[type="range"] {
   max-width: 460px;
   color: var(--text-dim);
 }
+
+/* ---------- 创作模式:/ @ 补全、中栏 HTML 预览、发布对话框 ---------- */
+
+/* 输入框上方的补全弹层 */
+.agent-suggest {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% - 4px);
+  z-index: 30;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg1);
+  box-shadow: var(--shadow-pop, 0 8px 28px rgba(0, 0, 0, 0.18));
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.agent-suggest-head {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.agent-suggest-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-suggest-item.is-active {
+  background: var(--hover, var(--bg3));
+}
+
+.agent-suggest-title {
+  font-size: 12.5px;
+  font-family: var(--mono);
+}
+
+.agent-suggest-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 中栏:创作预览 */
+.creative-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.creative-title {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.creative-publish {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.creative-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: var(--bg1);
+}
+
+.creative-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  text-align: center;
+}
+
+.creative-empty-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.creative-empty-hint {
+  margin: 0;
+  max-width: 300px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-3);
+}
+
+/* 发布对话框(HTML 浮层,打开时原生预览被藏起) */
+.publish-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--overlay, rgba(0, 0, 0, 0.35));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.publish-box {
+  width: 400px;
+  max-width: calc(100vw - 48px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg1);
+  box-shadow: var(--shadow-pop, 0 16px 48px rgba(0, 0, 0, 0.28));
+  padding: 14px 16px 16px;
+}
+
+.publish-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.publish-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.publish-close {
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.publish-close:hover {
+  color: var(--text-1);
+}
+
+.publish-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.publish-row select,
+.publish-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--text-1);
+  font-size: 12.5px;
+  padding: 5px 8px;
+}
+
+.publish-source {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.publish-hint {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.publish-hint pre {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--text-1);
+  overflow-x: auto;
+}
+
+.publish-hint-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.publish-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--danger, #c4453d);
+}
+
+.publish-ok {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  word-break: break-all;
+}
+
+.publish-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.publish-go {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+/* 设置页:MCP / 技能清单 */
+.mcp-summary,
+.skill-summary {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mcp-summary li,
+.skill-summary li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.mcp-summary code,
+.skill-summary code {
+  flex-shrink: 0;
+}
+
+.mcp-summary-type {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.mcp-summary-target,
+.skill-summary-desc {
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-summary-path {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-hint {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  line-height: 1.7;
+}

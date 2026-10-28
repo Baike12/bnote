@@ -8,6 +8,7 @@ import {
   type MaterialInfo,
   type SavedSessionMeta,
   type SessionModelConfig,
+  type SkillInfo,
   type StudyContent,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
@@ -27,6 +28,8 @@ import {
   type TranscriptUserLine,
 } from "@/study/transcript";
 import { isWereadUrl } from "@/study/weread";
+import { applySuggestion, parseSuggestTrigger, type SuggestTrigger } from "@/agent/suggest";
+import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/AgentSuggest";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import {
   contextLabel,
@@ -307,6 +310,12 @@ function formatSessionTime(ms: number): string {
  */
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
+  const creativeMode = useAppStore((s) => s.creativeMode);
+  const setCreativeMode = useAppStore((s) => s.setCreativeMode);
+  const flatFiles = useAppStore((s) => s.flatFiles);
+  const recentFiles = useAppStore((s) => s.recentFiles);
+  const currentFile = useAppStore((s) => s.currentFile);
+  const vaultPath = useAppStore((s) => s.vaultPath);
   const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
   const agentSwitchSignal = useAppStore((s) => s.agentSwitchSessionSignal);
   const agentPanelCommand = useAppStore((s) => s.agentPanelCommand);
@@ -360,10 +369,36 @@ export function AgentPanel() {
   const pendingUserRef = useRef<Map<string, TranscriptUserLine>>(new Map());
   /** 重启计数(⟳ / ＋新会话):变了就开新会话,而不是恢复最近一条。 */
   const restartKeyRef = useRef<number | null>(null);
+  /** 创作模式的最新值(startSession 的 useCallback 闭包里经 ref 读取)。 */
+  const creativeModeRef = useRef(creativeMode);
+  useEffect(() => {
+    creativeModeRef.current = creativeMode;
+  }, [creativeMode]);
+  /** 输入框 / 技能 与 @ 文件补全。 */
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [suggestTrigger, setSuggestTrigger] = useState<SuggestTrigger | null>(null);
+  const [suggestIndex, setSuggestIndex] = useState(0);
 
   useEffect(() => {
     convsRef.current = convs;
   }, [convs]);
+
+  // 技能清单:输入框 / 补全与创作模式欢迎页用;配置保存(可能改了 skill
+  // 目录)后刷新。失败静默为空(浏览器 harness 无后端)。
+  useEffect(() => {
+    let cancelled = false;
+    void agentApi
+      .listSkills()
+      .then((list) => {
+        if (!cancelled) setSkills(list);
+      })
+      .catch(() => {
+        if (!cancelled) setSkills([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentConfigVersion]);
 
   // 脚注的模型名与上下文窗口来自已保存配置(会话用的就是它)。读取期间配置
   // 又变了一次(保存设置会 bump version)时,旧结果直接丢弃。
@@ -394,6 +429,19 @@ export function AgentPanel() {
       ? { kind: "url", url: studyWereadBook.url, title: studyWereadBook.title }
       : studyContent;
   }, [studyContent, studyWereadBook]);
+
+  const suggestItems = useMemo(
+    () =>
+      buildSuggestItems({
+        trigger: suggestTrigger,
+        skills,
+        flatFiles,
+        recentFiles,
+        vaultPath,
+        currentFile,
+      }),
+    [suggestTrigger, skills, flatFiles, recentFiles, vaultPath, currentFile],
+  );
 
   const activeConv = convs.find((c) => c.key === activeKey) ?? null;
   // sessionId 必须非空才算「生成中」:会话还没建好(或启动失败)时 sessionId
@@ -443,12 +491,16 @@ export function AgentPanel() {
           undefined,
           opts?.history,
           opts?.model,
+          creativeModeRef.current ? "creative" : undefined,
         );
         // 过期就放弃:期间内容又变了(换材料/新会话),新一轮启动已经接管。
         if (startTokenRef.current !== token) return;
-        // 会话记录路径:恢复用旧文件,新会话用「材料目录 + 后端会话 id」。
+        // 会话记录路径:恢复用旧文件,新会话用「材料目录 + 后端会话 id」;
+        // 创作模式固定 .bnote/creative/sessions/,与材料的会话互不混放。
         const vault = useAppStore.getState().vaultPath;
-        const relDir = materialRef.current?.info?.relDir ?? null;
+        const relDir = creativeModeRef.current
+          ? "creative"
+          : (materialRef.current?.info?.relDir ?? null);
         const transcriptPath =
           opts?.transcriptPath ??
           (vault && relDir ? sessionFilePath(vault, relDir, info.sessionId) : null);
@@ -557,8 +609,10 @@ export function AgentPanel() {
   // - 保存设置:什么都不发生——已开的会话继续用它自己的模型配置快照。
   // - 离开再进学习模式:面板重挂,按材料重新恢复。
   useEffect(() => {
-    const identity = studyContentKey(materialContent);
-    const key = `${identity}|${restartNonce}`;
+    const identity = creativeMode
+      ? `creative|${restartNonce}`
+      : studyContentKey(materialContent);
+    const key = `${creativeMode ? "c" : "s"}|${identity}|${restartNonce}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
 
@@ -569,8 +623,13 @@ export function AgentPanel() {
     const token = ++startTokenRef.current;
     void (async () => {
       const vault = useAppStore.getState().vaultPath;
-      const info =
-        vault && materialContent ? await ensureMaterial(vault, materialContent) : null;
+      let info: MaterialInfo | null = null;
+      if (creativeMode) {
+        // 创作模式没有材料目录:会话统一落在 .bnote/creative/sessions/。
+        info = { kind: "pdfs", dir: "creative", relDir: "creative", title: "创作模式" };
+      } else {
+        info = vault && materialContent ? await ensureMaterial(vault, materialContent) : null;
+      }
       if (startTokenRef.current !== token) return;
       materialRef.current = { identity, info };
       setMaterialInfo(info);
@@ -602,7 +661,7 @@ export function AgentPanel() {
       turnsRef.current.clear();
       void startSession(conv.key, materialContent);
     })();
-  }, [materialContent, restartNonce, startSession, openSavedSession]);
+  }, [materialContent, creativeMode, restartNonce, startSession, openSavedSession]);
 
   // ⌘⇧Y / 命令:主会话 ↔ 最近一条辅助会话 来回切换。
   useEffect(() => {
@@ -866,6 +925,21 @@ export function AgentPanel() {
     if (ok.length > 0) setPendingImages((prev) => [...prev, ...ok]);
   }
 
+  /** 选中补全候选:替换触发词、光标落到插入内容之后。 */
+  const pickSuggestion = (item: SuggestItem) => {
+    if (!suggestTrigger) return;
+    const next = applySuggestion(input, suggestTrigger, item.insert);
+    setInput(next.text);
+    setSuggestTrigger(null);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(next.caret, next.caret);
+      }
+    });
+  };
+
   async function send() {
     const text = input.trim();
     const conv = activeConv;
@@ -1036,6 +1110,10 @@ export function AgentPanel() {
         focusInput();
         break;
       }
+      case "toggle-creative":
+        setCreativeMode(!creativeModeRef.current);
+        focusInput();
+        break;
       case "history":
         historyFocusPending.current = true;
         // 抽屉已经开着时再按一次,直接把焦点送进去。
@@ -1043,7 +1121,7 @@ export function AgentPanel() {
         else setHistoryOpen(true);
         break;
     }
-  }, [agentPanelCommand, activeConv, parentConv, forkFrom, historyOpen, focusHistory, showToast, pendingImages]);
+  }, [agentPanelCommand, activeConv, parentConv, forkFrom, historyOpen, focusHistory, showToast, pendingImages, setCreativeMode]);
 
   // 历史抽屉打开后把焦点交给列表,接着就能 Tab / 回车操作。
   useEffect(() => {
@@ -1086,6 +1164,21 @@ export function AgentPanel() {
         )}
         <span className="spacer" />
         <button
+          className={`icon-btn${creativeMode ? " is-active" : ""}`}
+          title={
+            creativeMode
+              ? "创作模式(⌘⇧G):开启中,点这里切回学习问答"
+              : "切换到创作模式(⌘⇧G):带工具与技能,生成 HTML 实时预览"
+          }
+          aria-pressed={creativeMode}
+          onClick={() => setCreativeMode(!creativeMode)}
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 19l7-7a2.4 2.4 0 0 0-3.4-3.4l-9.6 9.6L4 22l2.1-.5a10 10 0 0 0 2.4-1L12 19z" />
+            <path d="M14.5 6.5l3 3" />
+          </svg>
+        </button>
+        <button
           className={`icon-btn${historyOpen ? " is-active" : ""}`}
           title="历史会话(这份材料保存过的对话)"
           aria-pressed={historyOpen}
@@ -1109,7 +1202,7 @@ export function AgentPanel() {
         </button>
         <button
           className="icon-btn"
-          title="新会话(重读 .bnote/agent.md 与配置)"
+          title="新会话(重读 .bnote/AGENTS.md 与配置)"
           onClick={() => {
             setHistoryOpen(false);
             setRestartNonce((n) => n + 1);
@@ -1190,15 +1283,24 @@ export function AgentPanel() {
                 <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
               </svg>
             </div>
-            <p className="agent-welcome-title">问我关于当前 PDF / 网页的问题</p>
+            <p className="agent-welcome-title">
+              {creativeMode ? "创作模式:生成 HTML 会在中栏实时预览" : "问我关于当前 PDF / 网页的问题"}
+            </p>
             <div className="agent-chips">
-              {["总结这篇材料的核心方法", "这篇在解决什么问题?", "帮我梳理知识框架"].map((q) => (
+              {(creativeMode
+                ? ["把当前笔记改写成一篇博客文章", "输入 / 选择技能,按它的规范生成 HTML", "帮我梳理这篇文档的结构与要点"]
+                : ["总结这篇材料的核心方法", "这篇在解决什么问题?", "帮我梳理知识框架"]
+              ).map((q) => (
                 <button key={q} className="agent-chip" onClick={() => setInput(q)}>
                   {q}
                 </button>
               ))}
             </div>
-            <p className="agent-hint">悬停任意消息点「⤷」,可以从那里分叉一条辅助会话</p>
+            <p className="agent-hint">
+              {creativeMode
+                ? "输入 / 调用技能、@ 引用仓库文件;满意后点中栏的「发布」推到 bblog"
+                : "悬停任意消息点「⤷」,可以从那里分叉一条辅助会话"}
+            </p>
           </div>
         ) : (
           activeConv.entries.map((entry, i) => {
@@ -1277,6 +1379,15 @@ export function AgentPanel() {
         )}
       </div>
       <div className="agent-composer">
+        {suggestTrigger && suggestItems.length > 0 && (
+          <AgentSuggest
+            kind={suggestTrigger.kind}
+            items={suggestItems}
+            activeIndex={suggestIndex}
+            onPick={pickSuggestion}
+            onHover={setSuggestIndex}
+          />
+        )}
         {pendingImages.length > 0 && (
           <div className="agent-attach-row">
             {pendingImages.map((img, i) => (
@@ -1298,7 +1409,11 @@ export function AgentPanel() {
         <textarea
           ref={inputRef}
           className="agent-input"
-          placeholder="询问当前内容…(可直接粘贴截图)"
+          placeholder={
+            creativeMode
+              ? "描述要创作的内容…(输入 / 调技能、@ 引用文件,可粘贴截图)"
+              : "询问当前内容…(可直接粘贴截图)"
+          }
           value={input}
           rows={2}
           data-ime-chinese="true"
@@ -1306,8 +1421,16 @@ export function AgentPanel() {
           // 点击也强制:已经聚焦时 focus 事件不会再触发(用户在框里用
           // Ctrl+Space 切回英文后点回来,这里必须把中文再要一次)。
           onPointerDown={() => imeOnChineseFocus(true)}
-          onBlur={() => imeSyncToEditor()}
-          onChange={(e) => setInput(e.target.value)}
+          onBlur={() => {
+            imeSyncToEditor();
+            setSuggestTrigger(null);
+          }}
+          onChange={(e) => {
+            setInput(e.target.value);
+            const caret = e.target.selectionStart ?? e.target.value.length;
+            setSuggestTrigger(parseSuggestTrigger(e.target.value, caret));
+            setSuggestIndex(0);
+          }}
           onCompositionStart={() => {
             composingRef.current = true;
           }}
@@ -1327,6 +1450,30 @@ export function AgentPanel() {
             void addImages(files);
           }}
           onKeyDown={(e) => {
+            // 补全弹层开着时,方向键/回车/Tab/Esc 归弹层;输入法确认键不抢。
+            if (suggestTrigger && suggestItems.length > 0) {
+              const ime = isImeEnter(e.nativeEvent, composingRef.current);
+              if (e.key === "ArrowDown" && !ime) {
+                e.preventDefault();
+                setSuggestIndex((i) => (i + 1) % suggestItems.length);
+                return;
+              }
+              if (e.key === "ArrowUp" && !ime) {
+                e.preventDefault();
+                setSuggestIndex((i) => (i - 1 + suggestItems.length) % suggestItems.length);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setSuggestTrigger(null);
+                return;
+              }
+              if ((e.key === "Tab" || e.key === "Enter") && !e.shiftKey && !ime) {
+                e.preventDefault();
+                pickSuggestion(suggestItems[suggestIndex] ?? suggestItems[0]);
+                return;
+              }
+            }
             if (e.key !== "Enter" || e.shiftKey) return;
             // 输入法的确认键(中文模式下敲英文字母后回车)不能当发送:
             // 放行给 IME 把字母填进输入框。
