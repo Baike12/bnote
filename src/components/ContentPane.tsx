@@ -9,6 +9,7 @@ import { resolveBoundCommand, runBoundKey } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
 import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry, type WereadBookEntry } from "@/study/history";
 import { setWebNavHandlers } from "@/study/pdfNav";
+import { needsMainWebviewFocus } from "@/study/previewFocus";
 import { ensureMaterial } from "@/study/materials";
 import { normalizePageStep } from "@/study/reading";
 import { formatWebZoom, normalizeWebZoom, stepWebZoom } from "@/study/webZoom";
@@ -29,7 +30,6 @@ import {
   type WereadRoutePayload,
 } from "@/study/weread";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { IconSparkles } from "./icons";
 import { StudyHistoryMenu } from "./StudyHistoryMenu";
 
 /**
@@ -138,9 +138,10 @@ export function ContentPane() {
   }, [content]);
 
   // 中栏内嵌网页:把占位元素的矩形报给后端,并在它变化时同步过去。
-  // 尺寸变化靠 ResizeObserver(拖分隔条、窗口变窄到压缩中栏、书签栏开关;
-  // Tauri 里挂的是原生子 webview,布局一变就得跟着挪)。位置变化不改变尺寸,
-  // 由下面的 layout effect 在侧栏/Agent 开关后补一次。
+  // 尺寸变化靠 ResizeObserver(拖内容栏的分隔条、窗口变窄到压缩中栏、书签栏
+  // 开关;Tauri 里挂的是原生子 webview,布局一变就得跟着挪)。只挪位置不改
+  // 尺寸的变化 ResizeObserver 收不到(拖助手栏的分隔条):那条路径由
+  // StudyLayout 在拖动中派发 `bnote:study-layout-resize`,这里顺手补报。
   // 依赖整个 content 而不是 previewUrl:同一个网址再输一次是「重新加载」,
   // 靠的就是新对象让这个 effect 重跑(旧的一轮先关掉预览)。
   useEffect(() => {
@@ -188,20 +189,23 @@ export function ContentPane() {
     previewSyncRef.current = () => sync(false);
     const observer = new ResizeObserver(() => sync(false));
     observer.observe(el);
+    const onLayoutResize = () => sync(false);
+    window.addEventListener("bnote:study-layout-resize", onLayoutResize);
     return () => {
       closed = true;
       previewSyncRef.current = null;
       observer.disconnect();
+      window.removeEventListener("bnote:study-layout-resize", onLayoutResize);
       void agentApi.closeStudyPreview().catch(() => {});
     };
   }, [content]);
 
   // 侧栏开关只让中栏平移,尺寸不变,ResizeObserver 收不到——布局提交
-  // 后补报一次坐标,原生 webview 才不会停在旧位置。(右栏页签切换不动
-  // 中栏几何,无需补报。)
+  // 后补报一次坐标,原生 webview 才不会停在旧位置。(三栏宽度提交后同理:
+  // 内容栏左缘跟着助手栏宽度走。)
   useLayoutEffect(() => {
     previewSyncRef.current?.();
-  }, [sidebarOpen]);
+  }, [sidebarOpen, settings.studyAgentWidth]);
 
   // 原生视图永远画在 DOM 之上,所以设置/命令面板这类 HTML 浮层打开时要把它
   // 藏起来,关掉再放出来。画布也一样:全屏浮层,开着时不能被原生视图盖住。
@@ -347,14 +351,16 @@ export function ContentPane() {
     subscribe<{ key?: unknown }>("study-preview-key", (payload) => {
       const key = typeof payload?.key === "string" ? payload.key : null;
       if (!key) return;
+      const target = resolveBoundCommand(key, "reading");
       // 网页缩放只在 Rust 侧改页面属性,不需要主窗口焦点。抢焦点会让用户按完
       // ⌘= 之后滚不动、页面里的输入框也打不进字——这类命令原地执行即可。
-      if (resolveBoundCommand(key, "reading")?.keepsPageFocus) {
-        runBoundKey(key, "reading");
+      if (!needsMainWebviewFocus(target)) {
+        if (target) runBoundKey(key, "reading");
         return;
       }
-      // 按键来自原生子 webview:先把主窗口的 webview 接回来,再按 reading
-      // 区域执行——目标命令自己会把焦点交给输入框 / 编辑器。
+      // 按键来自原生子 webview:先把键盘收回主窗口 webview(`Webview.setFocus`
+      // → makeFirstResponder 主 WKWebView),再按 reading 区域执行——目标命令
+      // 自己会把焦点交给输入框 / 编辑器。
       void getCurrentWebview()
         .setFocus()
         .then(() => runBoundKey(key, "reading"))
@@ -555,20 +561,11 @@ export function ContentPane() {
       onDragOver={(e) => e.preventDefault()}
     >
       {/* 学习模式没有标题栏,这行是窗口拖动区(按钮、输入框不受影响)。
-          三列:左 = 学习助手开关;中 = 文件名(即材料下拉);右 = 网址输入 + PDF。
-          文件名只占中间列,两侧等宽,所以它在整栏里是真正居中的。 */}
+          三列:左 = 红绿灯让位;中 = 文件名(即材料下拉);右 = 网址输入 + PDF。
+          文件名只占中间列,两侧等宽,所以它在整栏里是真正居中的。左侧这一格
+          现在是空的(助手栏已独立在最左),留空只为保住文件名在整栏居中。 */}
       <div className="content-toolbar" data-tauri-drag-region="deep">
-        <div className="content-tool-left">
-          {settings.studyRightTab !== "agent" && (
-            <button
-              className="icon-btn content-agent-toggle"
-              title="切换到学习助手(⌘⇧U)"
-              onClick={() => patchSettings({ studyRightTab: "agent" })}
-            >
-              <IconSparkles />
-            </button>
-          )}
-        </div>
+        <div className="content-tool-left" />
         <StudyHistoryMenu
           open={historyOpen}
           onOpenChange={setHistoryOpen}

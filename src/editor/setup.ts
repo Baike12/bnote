@@ -396,8 +396,13 @@ export function reconfigureVim(view: EditorView, enabled: boolean, mappings: Vim
 }
 
 export function reconfigureTypewriter(view: EditorView, enabled: boolean) {
+  // 位置和开关都走同一份设置：插件按比例算上下留白，位置变了必须重建
+  // （compartment 重建会重新铺留白并立刻把光标推回新高度，拖动滑杆即预览）。
+  const position = useAppStore.getState().settings.typewriterPosition;
   view.dispatch({
-    effects: typewriterCompartment.reconfigure(enabled ? typewriterExtension() : []),
+    effects: typewriterCompartment.reconfigure(
+      enabled ? typewriterExtension(position) : [],
+    ),
   });
 }
 

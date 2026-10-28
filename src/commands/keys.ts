@@ -26,8 +26,8 @@ export type KeyRegion = "global" | "notes" | "reading" | "agent";
 
 export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
   { id: "global", label: "通用", hint: "焦点在任何地方都生效。命令面板、保存、切换学习模式这类动作放这里。" },
-  { id: "notes", label: "笔记区", hint: "焦点在笔记编辑器时生效(学习模式右栏的笔记页签也算笔记区)。" },
-  { id: "reading", label: "阅读区", hint: "焦点在阅读区时生效:PDF、网页、微信读书,以及中栏的工具栏。翻页的两条命令例外——带修饰键的键位在笔记区 / Agent 面板按下也会滚动,并把焦点交回阅读区。" },
+  { id: "notes", label: "笔记区", hint: "焦点在笔记编辑器时生效(学习模式右栏的笔记也算笔记区)。" },
+  { id: "reading", label: "阅读区", hint: "焦点在阅读区时生效:PDF、网页、微信读书,以及中栏的工具栏。对阅读区动手的两条命令例外——翻页与截图,带修饰键的键位在笔记区 / Agent 面板按下也执行;翻页只滚内容,不改变焦点。滚轮/点击滚过阅读区后,键盘也归它(阅读区不取得 DOM 焦点)。" },
   { id: "agent", label: "Agent 面板", hint: "焦点在学习助手面板时生效(输入框、消息区、历史会话)。" },
 ];
 
@@ -110,16 +110,14 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   // 区域没有占用(⌘⇧S 是全局的「切换学习模式」,不能抢)。动作见
   // builtin.ts + study/pdfSnapshot.ts。
   "study.pdf-snap-to-agent": "Mod-Shift-e",
-  // 学习模式右栏:笔记页与学习助手页来回切。它是「切换视图」,任何焦点下
-  // 都该能用,所以归通用。
-  "study.toggle-right-tab": "Mod-Shift-u",
   // 学习助手里主会话与辅助会话来回切(会话列表在面板内部,命令只发信号)。
   "study.agent-switch-session": "Mod-Shift-y",
 
   // 三个可聚焦区域之间互相切换:⌘⌥A / ⌘⌥N / ⌘⌥R = 聚焦 Agent / 笔记区 /
-  // 阅读区。同一条命令在多个区域各有一份默认键位(区域之间互不影响),所以
-  // 从任意区域都能去另外两个。焦点在 PDF/网页里时,网页里的按键由页内
-  // 运行时经 title 通道转回主窗口(见 study/webAnnotations.ts)。
+  // 阅读区。同一条命令在三个区域各有一份默认键位(区域之间互不影响),所以
+  // 从任意区域都能去任意区域;在同一个区域里按下也有用——把焦点交回它的
+  // 输入框 / 编辑器(例如 Agent 面板里 ⌘⌥A)。焦点在 PDF/网页里时,网页里的
+  // 按键由页内运行时经 title 通道转回主窗口(见 study/webAnnotations.ts)。
   "region.focus-agent": "Mod-Alt-a",
   "region.focus-notes": "Mod-Alt-n",
   "region.focus-reading": "Mod-Alt-r",
@@ -149,23 +147,42 @@ const REGION_PREFIXES: [string, KeyRegion][] = [
 ];
 
 /**
- * 同一条命令可以同时属于多个区域(区域各自独立)。只有区域切换命令需要这样:
- * 焦点在 A 区时要能去 B/C 区,反过来也一样。
+ * 同一条命令可以同时属于多个区域(区域各自独立)。区域切换命令三个区域都有
+ * 一份:从任意区域都能去任意区域,而且「把焦点交回自己所在区域」同样有意义
+ * ——Agent 面板里 ⌘⌥A 就是把焦点送回输入框(在消息列表/历史里时尤其需要)。
  */
 const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
-  "region.focus-agent": ["reading", "notes"],
-  "region.focus-notes": ["reading", "agent"],
-  "region.focus-reading": ["notes", "agent"],
+  "region.focus-agent": ["reading", "notes", "agent"],
+  "region.focus-notes": ["reading", "notes", "agent"],
+  "region.focus-reading": ["reading", "notes", "agent"],
 };
 
 /**
- * 翻页命令的键位**不按焦点区域设限**:配置仍在阅读区(改键也在阅读区改),
- * 但在任何区域按下都滚阅读内容——命令自己负责把焦点交回阅读区。
+ * 不随焦点变化的两类命令:键位**不按焦点区域设限**,在哪个区域按下都执行。
  *
- * 只对带 Mod/Ctrl/Alt 的和弦这样处理:PageUp/PageDown/方向键在编辑器与普通
- * 页面里有原生含义,必须继续只在阅读区生效(见 globalKeys 的裸键让路)。
+ *   - 对阅读区动手:翻页(只滚内容,焦点留在原处)、截图(把当前这页附进
+ *     助手输入框)。它们只跟阅读区里是什么有关,跟光标停在哪无关。
+ *   - 区域导航:⌘⌥A/N/R 去 Agent / 笔记区 / 阅读区。导航的意思就是「从哪儿
+ *     都能过去」,按下的位置不该有区别(在 Agent 面板里 ⌘⌥A 把焦点送回输入框
+ *     同样成立)。
+ *
+ * 两条纪律:
+ *   1. 区域自己的绑定优先(见 commandsForKey):笔记区把同一个键绑给别的命令,
+ *      笔记区按下去执行的是笔记区的意思。
+ *   2. 显式解绑只在该区域生效:某个区域把命令写 null,就在这个区域里彻底不
+ *      响应(不因为别处还有一份绑定而复活)。
+ *
+ * 只对和弦生效:PageUp/PageDown/方向键这类裸键在编辑器与普通页面里有原生
+ * 含义,必须继续只在阅读区生效(见 globalKeys 的裸键让路)。
  */
-const REGION_FREE_COMMANDS = new Set(["study.pdf-prev-page", "study.pdf-next-page"]);
+const REGION_FREE_COMMANDS = new Set([
+  "study.pdf-prev-page",
+  "study.pdf-next-page",
+  "study.pdf-snap-to-agent",
+  "region.focus-agent",
+  "region.focus-notes",
+  "region.focus-reading",
+]);
 
 /** 键位规格(如 "Mod-Shift-a")是否带占用性强、不会和文本输入撞车的修饰键。 */
 function isChord(key: string): boolean {
@@ -212,7 +229,7 @@ let keyIndex: Record<KeyRegion, Map<string, string[]>> = {
   reading: new Map(),
   agent: new Map(),
 };
-/** REGION_FREE_COMMANDS 的和弦:各区都可命中,键位取自阅读区那一份。 */
+/** REGION_FREE_COMMANDS 的和弦:哪个区域都命中(键位来自配置它的区域)。 */
 let regionFreeIndex = new Map<string, string[]>();
 
 function reindex(): void {
@@ -235,13 +252,16 @@ function reindex(): void {
   keyIndex = byKey;
 
   const free = new Map<string, string[]>();
-  for (const [id, value] of Object.entries(current.reading)) {
-    if (!REGION_FREE_COMMANDS.has(id)) continue;
-    for (const key of keysOf(value)) {
-      if (!isChord(key)) continue;
-      const list = free.get(key);
-      if (list) list.push(id);
-      else free.set(key, [id]);
+  for (const region of KEY_REGION_IDS) {
+    for (const [id, value] of Object.entries(current[region])) {
+      if (!REGION_FREE_COMMANDS.has(id)) continue;
+      for (const key of keysOf(value)) {
+        if (!isChord(key)) continue;
+        const list = free.get(key);
+        if (list) {
+          if (!list.includes(id)) list.push(id);
+        } else free.set(key, [id]);
+      }
     }
   }
   regionFreeIndex = free;
@@ -316,8 +336,8 @@ export function bindingsForCommand(id: string, region?: KeyRegion): string[] {
 
 /**
  * 当前区域里这个键可能触发的命令:先区域绑定,再通用绑定,最后是跨区域
- * 生效的翻页和弦。返回列表而不是单个 id——前一条命令的 `when` 为 false 时,
- * 分发层会继续试下一条。
+ * 生效的命令(REGION_FREE_COMMANDS)。返回列表而不是单个 id——前一条命令的
+ * `when` 为 false 时,分发层会继续试下一条。
  */
 export function commandsForKey(key: string, region: KeyRegion): string[] {
   const own = keyIndex[region].get(key);
@@ -327,9 +347,23 @@ export function commandsForKey(key: string, region: KeyRegion): string[] {
     for (const id of ids) if (!out.includes(id)) out.push(id);
   };
   if (region !== "global") add(keyIndex.global.get(key));
-  // 阅读区的 own 里已经有一份,add 去重。
-  add(regionFreeIndex.get(key));
+  // own 里已经有一份时 add 去重。显式解绑(null / 空数组)只在本区域生效:
+  // 在 notes 里把 ⌘⌥A 写成 null,就不能靠阅读区那份绑定在 notes 里复活。
+  //
+  // 弹窗打开时 region 传的是 "global"(焦点不属于任何区域,只放行通用命令):
+  // 跨区域命令也不放行——它们会把焦点从弹窗里抢走(翻页同理,别去滚背后
+  // 被盖住的阅读区)。
+  if (region !== "global") {
+    add(regionFreeIndex.get(key)?.filter((id) => !unboundHere(id, region)));
+  }
   return out;
+}
+
+/** 这条命令在这个区域里被显式解绑了吗(有键名条目但一个键都没有)。 */
+function unboundHere(id: string, region: KeyRegion): boolean {
+  const map = current[region];
+  if (!Object.prototype.hasOwnProperty.call(map, id)) return false;
+  return keysOf(map[id]).length === 0;
 }
 
 /**
@@ -338,7 +372,8 @@ export function commandsForKey(key: string, region: KeyRegion): string[] {
  * 子 webview 的 keydown 不冒泡到主窗口,页内运行时只认这份列表(匹配后写
  * document.title 经 title 通道转回来)。列表直接从键位表推导,而不是手写
  * 枚举——通用命令按定义「任何焦点都生效」(快速待办、命令面板…),阅读区的
- * 绑定也归主窗口执行;漏一条就是网页里一条静默失效的快捷键。
+ * 绑定也归主窗口执行,跨区域生效的区域导航同理;漏一条就是网页里一条静默
+ * 失效的快捷键。
  *
  * 例外是页内自己消化的命令:翻页在页内本地滚动(不绕 IPC),PDF 截图对网页
  * 没有意义。它们在页内处理,不转发。
@@ -358,6 +393,15 @@ export function pageForwardKeys(): string[] {
   for (const [id, value] of Object.entries(current.reading)) {
     if (PAGE_OWNED_COMMANDS.has(id)) continue;
     add(keysOf(value));
+  }
+  // 跨区域生效的命令(区域导航)不管配在哪个区域,都算「在任何地方都能用」:
+  // 网页里按下去也要转回主窗口,否则绑在笔记区/Agent 区的那份在网页里静默失效。
+  for (const region of KEY_REGION_IDS) {
+    if (region === "reading") continue;
+    for (const [id, value] of Object.entries(current[region])) {
+      if (!REGION_FREE_COMMANDS.has(id) || PAGE_OWNED_COMMANDS.has(id)) continue;
+      add(keysOf(value).filter(isChord));
+    }
   }
   return out;
 }
@@ -426,7 +470,7 @@ export function normalizeOverrides(raw: unknown): OverrideMap {
 }
 
 const FILE_HINT =
-  "按焦点区域覆盖快捷键。global 在所有区域生效;notes/reading/agent 只在焦点位于该区域时生效,并可盖住同一个键的通用绑定。同一条命令可以在多个区域各有一份,区域互不影响;省略的命令用默认键位,null 只解绑该区域。保存即生效。";
+  "按焦点区域覆盖快捷键。global 在所有区域生效;notes/reading/agent 只在焦点位于该区域时生效,并可盖住同一个键的通用绑定。同一条命令可以在多个区域各有一份,区域互不影响;省略的命令用默认键位,null 只解绑该区域(跨区域生效的命令也一样)。翻页、截图、区域切换这类跨区域命令带修饰键的键位在哪个区域按下都生效。保存即生效。";
 
 /** 写配置文件:只落覆盖项(与默认相同的项不必写),空区域省略。 */
 export function serializeOverrides(overrides: OverrideMap): string {

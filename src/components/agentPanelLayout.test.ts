@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 /**
  * 学习助手的滚动链条门禁。
  *
- * 根因(2026-10-26):`.agent-panel` 是 `.study-right-page`(column flex)的
- * 子项,`min-height: auto` 解析成内容最小高度——对话一长,面板长到内容高度、
+ * 根因(2026-10-26):`.agent-panel` 是 column flex 的子项(`.study-left`),
+ * `min-height: auto` 解析成内容最小高度——对话一长,面板长到内容高度、
  * 溢出页面,`.agent-scroll` 的 clientHeight 恒等于 scrollHeight,`overflow-y:
  * auto` 无可滚动余量,于是滚轮不动、输入框被顶出窗口。
  *

@@ -23,7 +23,6 @@ import PdfWorker from "@/study/pdfWorker?worker";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { api, translateApi } from "@/lib/tauri";
 import { bindingsForCommand, formatBinding } from "@/commands/keys";
-import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { useAppStore } from "@/state/appStore";
 import { TranslateCard, type TranslateCardState } from "./TranslateCard";
 import { cropFromDrag, loadPdfCrop, savePdfCrop, type PdfCrop } from "@/study/crop";
@@ -31,17 +30,12 @@ import {
   annotationAt,
   EMPTY_PDF_ANNOTATIONS,
   flushPdfAnnotations,
-  isNoteAnnotation,
   lineRectsAtPoint,
   loadPdfAnnotations,
-  MAX_NOTE_TEXT,
   mergeLineRects,
   newPdfAnnotationId,
   normalizeRects,
-  rectsAnchor,
   savePdfAnnotations,
-  sortNotes,
-  stackNoteTops,
   type BoxLike,
   type PdfAnnotation,
   type NormRect,
@@ -64,7 +58,6 @@ import {
 import {
   clampOutlineWidth,
   loadOutlineWidth,
-  notesRailWidth,
   saveOutlineWidth,
 } from "@/study/pdfLayout";
 import { setPdfNavHandlers } from "@/study/pdfNav";
@@ -119,35 +112,16 @@ const RENDER_MARGIN = 1000;
 /** Width changes settle before re-rendering every visible page. */
 const RESIZE_DEBOUNCE_MS = 140;
 
-/** 文字批注卡:高度跟文字行数走,堆叠时用实测高度。 */
-const NOTE_INPUT_MIN_HEIGHT = 26;
-/** 再长就在卡内滚动,不把下面的卡片一路推到底。 */
-const NOTE_INPUT_MAX_HEIGHT = 240;
-const NOTE_BOX_GAP = 10;
-/** 连线从卡片顶部下移这么多像素(指向抬头,不是卡片正中)。 */
-const NOTE_HEAD_OFFSET = 14;
-/** 卡片左右内缩;连线终点 = 留白左缘 + 这个值。 */
-const NOTE_BOX_INSET = 8;
-/** 同一个批注连续改字在这个窗口内并成一步撤销。 */
-const TEXT_UNDO_GROUP_MS = 1000;
+/**
+ * PDF 批注只剩高亮一种(文字批注已移除:标注内容写到右栏笔记里更直接,
+ * 页面也不需要再为批注卡留一条竖向空白)。旧文件里的 note 条目原样保留在
+ * 磁盘上,只是不再新建、不再渲染。
+ */
+export type PdfTool = "highlight";
 
-export type PdfTool = "highlight" | "note";
+/** 批注提交方式:结构改动记一步;加载/撤销不记。 */
+type AnnotationCommit = "none" | "structure";
 
-/** 批注提交方式:结构改动记一步;改字按输入会话合并;加载/撤销不记。 */
-type AnnotationCommit = "none" | "structure" | "text";
-
-interface NotePlacement {
-  id: string;
-  /** 卡片 top(相对整个 PDF 内容区)。 */
-  top: number;
-  /** 选区锚点(相对内容区),连线起点。 */
-  anchorX: number;
-  anchorY: number;
-  /** 卡片左缘(相对内容区);留白在右时是连线终点。 */
-  boxX: number;
-  /** 卡片右缘(相对内容区);留白在左时是连线终点。 */
-  boxRight: number;
-}
 
 interface PdfViewerProps {
   /** Absolute path inside the vault. */
@@ -167,9 +141,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [zoom, setZoom] = useState(1);
-  /** 滚动区视口宽度(clientWidth,不含纵向滚动条)与面板总宽(含滚动条)。 */
+  /** 滚动区视口宽度(clientWidth,不含纵向滚动条)。 */
   const [scrollWidth, setScrollWidth] = useState(0);
-  const [panelWidth, setPanelWidth] = useState(0);
   const [outline, setOutline] = useState<PdfOutlineNode[]>([]);
   /** 目录解析完(哪怕没有目录)才量一次中栏宽度:书签栏占的横向空间要算进
    *  「一页正好放下」的目标宽度里。 */
@@ -190,7 +163,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   /** 框选进行中:页面临时铺回整页,才能框到被裁掉的留白。 */
   const [cropping, setCropping] = useState(false);
   const cropShown = cropping ? null : crop;
-  /** 当前批注工具:亮黄高亮 / 亮蓝文字批注;null = 普通阅读。 */
+  /** 当前批注工具:只剩高亮;null = 普通阅读。 */
   const [tool, setTool] = useState<PdfTool | null>(null);
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
   /** 初始批注文件读完之前不允许进入批注模式:否则第一次提交会覆盖掉还没读进来的旧批注。 */
@@ -202,15 +175,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const historyRef = useRef<AnnotationHistory<PdfAnnotation[]> | null>(null);
   if (historyRef.current === null) historyRef.current = createAnnotationHistory(100);
   const history = historyRef.current;
-  /** 改字撤销的分组:同一个批注连续输入只记一步。 */
-  const textEditRef = useRef<{ id: string; at: number } | null>(null);
   /** 最近一次 pointerdown 是否落在 PDF 阅读器里(Ctrl+Z 的归属判断)。 */
   const pdfActiveRef = useRef(false);
-  /** 右侧留白里批注卡的位置(连线用同一份坐标)。 */
-  const [notePlacements, setNotePlacements] = useState<NotePlacement[]>([]);
-  /** 刚建/刚点中的批注卡:nonce 变化让输入框重新聚焦。 */
-  const [focusNote, setFocusNote] = useState<{ id: string; nonce: number } | null>(null);
-  const focusNonce = useRef(0);
   /**
    * 正文选中翻译卡片。`translateSeq` 是唯一的写入者令牌:换选区、关卡片、
    * 切批注工具、关开关都会 +1,迟到的 IPC 结果自证不过就丢弃。
@@ -228,7 +194,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     toolRef.current = tool;
   }, [tool]);
   const stageRef = useRef<HTMLDivElement>(null);
-  const notesRef = useRef<HTMLElement>(null);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const docKey = vaultRelPath(path, vaultPath ?? "");
 
@@ -340,14 +305,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
    */
   const [materialDir, setMaterialDir] = useState<string | null>(null);
   const [materialReady, setMaterialReady] = useState(false);
-  /** 右侧留白从面板宽度里切出去;能放下一页最小宽度才留。 */
-  const railWidth = notesRailWidth(panelWidth);
-  const containerWidth = Math.max(0, scrollWidth - railWidth);
+  /** 页面列 = 整个滚动视口:没有批注留白,PDF 从栏左缘贴边排。 */
+  const containerWidth = Math.max(0, scrollWidth);
 
   const pageEls = useRef(new Map<number, HTMLDivElement>());
-  const noteEls = useRef(new Map<string, HTMLDivElement>());
-  /** 每个批注卡上次的自适应高度依据(文字 + 卡宽),避免重复量布局。 */
-  const noteFits = useRef(new Map<string, { text: string; width: number }>());
   const visiblePages = useRef(new Set<number>());
   const activeRef = useRef(new Set<number>());
   const currentPageRef = useRef(1);
@@ -404,10 +365,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     setCrop(loadPdfCrop(path));
     setCropping(false);
     setTool(null);
-    setFocusNote(null);
-    setNotePlacements([]);
     resetAnnotationHistory(history);
-    textEditRef.current = null;
     setActivePages(new Set());
     activeRef.current = new Set();
     visiblePages.current = new Set();
@@ -463,10 +421,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     annotationsRef.current = [];
     setAnnotations([]);
     setTool(null);
-    setFocusNote(null);
-    setNotePlacements([]);
     resetAnnotationHistory(history);
-    textEditRef.current = null;
     setAnnotationsLoaded(false);
     if (!vaultPath) {
       setAnnotationsLoaded(true);
@@ -608,19 +563,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   useEffect(() => () => flushReadPositions(), []);
 
   const commitAnnotations = useCallback(
-    (next: PdfAnnotation[], mode: AnnotationCommit = "structure", textId?: string) => {
-      if (mode === "structure") {
-        recordAnnotationHistory(history, annotationsRef.current);
-        textEditRef.current = null;
-      } else if (mode === "text" && textId) {
-        const now = Date.now();
-        const last = textEditRef.current;
-        // 连续输入并成一步;换批注或停顿超过窗口就另起一步。
-        if (!last || last.id !== textId || now - last.at > TEXT_UNDO_GROUP_MS) {
-          recordAnnotationHistory(history, annotationsRef.current);
-        }
-        textEditRef.current = { id: textId, at: now };
-      }
+    (next: PdfAnnotation[], mode: AnnotationCommit = "structure") => {
+      if (mode === "structure") recordAnnotationHistory(history, annotationsRef.current);
       annotationsEpoch.current += 1;
       annotationsRef.current = next;
       setAnnotations(next);
@@ -631,7 +575,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
 
   const applyHistory = useCallback(
     (next: PdfAnnotation[]) => {
-      textEditRef.current = null;
       commitAnnotations(next, "none");
     },
     [commitAnnotations],
@@ -659,8 +602,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   }, []);
 
   // 批注撤销:只在这个 PDF 阅读器是当前活动面时接管 Ctrl/Cmd+Z。
-  // 批注输入框里也走批注历史(空输入框撤销就是撤掉刚建的批注);
-  // 书签搜索框保留原生撤销。
+  // 输入框(书签搜索)保留原生撤销。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
@@ -678,7 +620,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       const editable = target?.closest(
         "input, textarea, select, [contenteditable='true']",
       ) as HTMLElement | null;
-      if (editable && !editable.classList.contains("pdf-note-input")) return;
+      if (editable) return;
       if (active && active !== document.body && !inViewer) return;
       if (event.isComposing) return;
       event.preventDefault();
@@ -710,19 +652,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     [addAnnotation],
   );
 
-  /** 选中文字 → 建文字批注并把光标送进右侧留白的输入框。 */
-  const addNote = useCallback(
-    (page: number, rects: NormRect[]) => {
-      const id = addAnnotation(page, rects, "note");
-      if (id) setFocusNote({ id, nonce: ++focusNonce.current });
-    },
-    [addAnnotation],
-  );
-
-  const focusNoteById = useCallback((id: string) => {
-    setFocusNote({ id, nonce: ++focusNonce.current });
-  }, []);
-
   const removeAnnotation = useCallback(
     (id: string) => {
       commitAnnotations(annotationsRef.current.filter((a) => a.id !== id));
@@ -730,23 +659,11 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     [commitAnnotations],
   );
 
-  const updateNoteText = useCallback(
-    (id: string, text: string) => {
-      const list = annotationsRef.current;
-      const index = list.findIndex((a) => a.id === id);
-      if (index < 0) return;
-      const clean = text.slice(0, MAX_NOTE_TEXT);
-      if (list[index].text === clean) return;
-      const next = list.slice();
-      next[index] = { ...list[index], text: clean };
-      commitAnnotations(next, "text", id);
-    },
-    [commitAnnotations],
-  );
-
   /**
-   * 每页一份数组;对象身份没变的页复用上一份数组,文字批注改字时只有那一页
-   * 重渲染,别让整篇 PDF 跟着输入抖动。
+   * 每页一份数组;对象身份没变的页复用上一份数组,避免整篇重渲染。
+   *
+   * 只放高亮:旧文件里的文字批注条目不再上屏(数据仍在磁盘上,保存时原样
+   * 带回去,不会丢)。
    */
   const pageCacheRef = useRef(
     new Map<number, { items: PdfAnnotation[]; list: PdfAnnotation[] }>(),
@@ -754,6 +671,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const annotationsByPage = useMemo(() => {
     const grouped = new Map<number, PdfAnnotation[]>();
     for (const a of annotations) {
+      if (a.kind === "note") continue;
       const list = grouped.get(a.page);
       if (list) list.push(a);
       else grouped.set(a.page, [a]);
@@ -864,11 +782,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       if (timer) clearTimeout(timer);
       timer = null;
       const width = el.clientWidth;
-      const outer = el.offsetWidth;
       const apply = () => {
         setScrollWidth((prev) => (prev === width ? prev : width));
-        // 留白宽度按面板总宽(含滚动条)算,滚动条出现/消失时留白不跟着抖。
-        setPanelWidth((prev) => (prev === outer ? prev : outer));
       };
       if (immediate) {
         apply();
@@ -890,177 +805,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       if (timer) clearTimeout(timer);
     };
   }, []);
-
-  // --- 文字批注的右侧留白:几何 ---------------------------------------------
-  // 批注卡对齐选区锚点的纵向位置;同一行选了多次就按从左到右、从上到下排,
-  // 互相重叠时整体往下推。坐标都相对整个 PDF 内容区(stage),连线用同一份。
-  const noteList = useMemo(
-    () => sortNotes(annotations.filter(isNoteAnnotation)),
-    [annotations],
-  );
-  /** 只由「页 + 矩形」决定;改批注文字不重新量布局。 */
-  const noteLayoutKey = useMemo(
-    () =>
-      noteList
-        .map(
-          (a) =>
-            `${a.id}:${a.page}:${a.rects
-              .map((r) => `${r.x},${r.y},${r.w},${r.h}`)
-              .join(";")}`,
-        )
-        .join("|"),
-    [noteList],
-  );
-  /** 改字会改变卡片高度,重排要跟着文字走;key 只用来触发,不参与几何。 */
-  const noteTextKey = useMemo(
-    () => noteList.map((a) => `${a.id}\u0000${a.text}`).join("\u0001"),
-    [noteList],
-  );
-  const noteListRef = useRef(noteList);
-  useLayoutEffect(() => {
-    noteListRef.current = noteList;
-  });
-
-  const computeNotePlacements = useCallback(() => {
-    const list = noteListRef.current;
-    const stage = stageRef.current;
-    const rail = notesRef.current;
-    if (!stage || !rail || list.length === 0) {
-      setNotePlacements((prev) => (prev.length > 0 ? [] : prev));
-      return;
-    }
-    const stageRect = stage.getBoundingClientRect();
-    const railRect = rail.getBoundingClientRect();
-    // 卡片高度由文字行数决定:文字/宽度没变就不重写,避免长批注每次重排
-    // 都把输入框高度归零、滚动位置跳回顶部。
-    const refits: {
-      id: string;
-      text: string;
-      width: number;
-      input: HTMLTextAreaElement;
-      scrollTop: number;
-    }[] = [];
-    for (const a of list) {
-      const card = noteEls.current.get(a.id);
-      const input = card?.querySelector<HTMLTextAreaElement>(".pdf-note-input");
-      if (!card || !input) continue;
-      const width = card.clientWidth;
-      const fit = noteFits.current.get(a.id);
-      if (fit && fit.text === a.text && fit.width === width) continue;
-      refits.push({
-        id: a.id,
-        text: a.text,
-        width,
-        input,
-        scrollTop: input.scrollTop,
-      });
-      input.style.height = "auto";
-      input.style.overflowY = "hidden";
-    }
-    const naturals = refits.map((f) => f.input.scrollHeight);
-    refits.forEach((f, i) => {
-      const natural = naturals[i] ?? NOTE_INPUT_MIN_HEIGHT;
-      f.input.style.height = `${Math.min(
-        NOTE_INPUT_MAX_HEIGHT,
-        Math.max(NOTE_INPUT_MIN_HEIGHT, natural),
-      )}px`;
-      f.input.style.overflowY =
-        natural > NOTE_INPUT_MAX_HEIGHT ? "auto" : "hidden";
-      f.input.scrollTop = f.scrollTop;
-      noteFits.current.set(f.id, { text: f.text, width: f.width });
-    });
-    const anchors: { id: string; x: number; y: number }[] = [];
-    const desired: number[] = [];
-    const heights: number[] = [];
-    for (const a of list) {
-      const pageEl = pageEls.current.get(a.page);
-      const anchor = rectsAnchor(a.rects);
-      if (!pageEl || !anchor) continue;
-      const full = (pageEl.firstElementChild as HTMLElement | null) ?? pageEl;
-      const fullRect = full.getBoundingClientRect();
-      const pageRect = pageEl.getBoundingClientRect();
-      if (fullRect.width <= 0 || fullRect.height <= 0) continue;
-      const clampX = (value: number) =>
-        Math.min(
-          Math.max(value, pageRect.left - stageRect.left + 2),
-          pageRect.right - stageRect.left - 2,
-        );
-      const clampY = (value: number) =>
-        Math.min(
-          Math.max(value, pageRect.top - stageRect.top + 2),
-          pageRect.bottom - stageRect.top - 2,
-        );
-      const x = clampX(fullRect.left - stageRect.left + anchor.x * fullRect.width);
-      const y = clampY(fullRect.top - stageRect.top + anchor.y * fullRect.height);
-      anchors.push({ id: a.id, x, y });
-      // 卡片顶端比锚点高半张卡;夹进内容区顶部,再统一做防重叠堆叠。
-      desired.push(Math.max(4, y - NOTE_HEAD_OFFSET));
-      // 卡片在留白里始终渲染(未定位时透明),所以这里量得到真实高度。
-      heights.push(
-        noteEls.current.get(a.id)?.offsetHeight ?? NOTE_INPUT_MIN_HEIGHT,
-      );
-    }
-    if (anchors.length === 0) {
-      setNotePlacements((prev) => (prev.length > 0 ? [] : prev));
-      return;
-    }
-    const tops = stackNoteTops(desired, heights, NOTE_BOX_GAP);
-    const boxX = railRect.left - stageRect.left + NOTE_BOX_INSET;
-    const boxRight = boxX + Math.max(0, railRect.width - NOTE_BOX_INSET * 2);
-    const next = anchors.map((p, i) => ({
-      id: p.id,
-      anchorX: p.x,
-      anchorY: p.y,
-      top: tops[i],
-      boxX,
-      boxRight,
-    }));
-    setNotePlacements((prev) => (samePlacements(prev, next) ? prev : next));
-  }, []);
-
-  useLayoutEffect(() => {
-    // 几何一律现场量(DOM 是唯一来源);这些依赖只负责在页面重排后重算:
-    // 换文档、缩放/栏宽变化、裁剪改变都会让锚点像素位置变。
-    void targetWidth;
-    void cropShown;
-    void railWidth;
-    void doc;
-    void noteTextKey;
-    computeNotePlacements();
-  }, [computeNotePlacements, noteLayoutKey, noteTextKey, targetWidth, cropShown, railWidth, doc]);
-
-  // 页面高度从「按第一页比例估」变成真实高度、窗口缩放等都会改变锚点 y:
-  // 观察内容区尺寸,收敛后重排(用 rAF 合并同一帧的多次回调)。
-  useEffect(() => {
-    const stage = stageRef.current;
-    if (!stage) return;
-    let raf = 0;
-    const observer = new ResizeObserver(() => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        computeNotePlacements();
-      });
-    });
-    observer.observe(stage);
-    return () => {
-      observer.disconnect();
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [computeNotePlacements]);
-
-  const placementById = useMemo(
-    () => new Map(notePlacements.map((p) => [p.id, p])),
-    [notePlacements],
-  );
-
-  const registerNote = useCallback(
-    (id: string, el: HTMLDivElement | null) => {
-      if (el) noteEls.current.set(id, el);
-      else noteEls.current.delete(id);
-    },
-    [],
-  );
 
   // --- page visibility: current-page readout + render window ----------------
   useEffect(() => {
@@ -1364,23 +1108,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     setCropping(false);
   }
 
-  /**
-   * 右键在高亮/文字批注之间切换——只有已经点过其中一种批注才接管右键,
-   * 普通阅读时的右键菜单原样保留。输入框里的右键也不拦(用户可能要复制/粘贴)。
-   */
-  function handleContextMenu(event: React.MouseEvent) {
-    if (!tool) return;
-    const target = event.target as Element | null;
-    if (target?.closest(".pdf-note-box")) return;
-    event.preventDefault();
-    setTool(tool === "note" ? "highlight" : "note");
-  }
-
   return (
     <div
       className={`pdf-viewer${eyeCare ? " eye-care" : ""}${tool ? ` tool-${tool}` : ""}`}
       ref={viewerRef}
-      onContextMenu={handleContextMenu}
       style={
         {
           "--pdf-outline-w": `${outlineWidth}px`,
@@ -1427,26 +1158,12 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
               ? "正在读取批注…"
               : tool === "highlight"
                 ? "退出高亮批注(Esc)"
-                : "高亮批注:单击一行或拖选文字,标成亮黄色;点已有高亮可取消。右键切换到文字批注"
+                : "高亮批注:单击一行或拖选文字,标成亮黄色;点已有高亮可取消"
           }
           disabled={!annotationsLoaded}
           onClick={() => toggleTool("highlight")}
         >
           ✎ 高亮
-        </button>
-        <button
-          className={`icon-btn pdf-tool-btn${tool === "note" ? " active" : ""}`}
-          title={
-            !annotationsLoaded
-              ? "正在读取批注…"
-              : tool === "note"
-                ? "退出文字批注(Esc)"
-                : "文字批注:拖选一段文字,右侧留白出现批注框。右键切换到高亮批注"
-          }
-          disabled={!annotationsLoaded}
-          onClick={() => toggleTool("note")}
-        >
-          ✍ 文字
         </button>
         <span className="pdf-tool-sep" aria-hidden />
         <button
@@ -1538,36 +1255,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         <div className="pdf-scroll-wrap">
           <div className="pdf-scroll" ref={scrollRef}>
             <div className="pdf-stage" ref={stageRef}>
-              {/* 批注留白在页面左侧(贴着书签栏),阅读区仍贴右边。 */}
-              {railWidth > 0 && (
-                <aside
-                  className="pdf-notes"
-                  ref={notesRef}
-                  style={{ width: railWidth }}
-                  aria-label="文字批注"
-                >
-                  {tool === "note" && noteList.length === 0 && (
-                    <p className="pdf-notes-hint">拖选文字后，批注写在这里</p>
-                  )}
-                  {noteList.map((annotation) => {
-                    const placement = placementById.get(annotation.id);
-                    return (
-                      <NoteBox
-                        key={annotation.id}
-                        annotation={annotation}
-                        top={placement?.top ?? 4}
-                        placed={placement !== undefined}
-                        focusToken={
-                          focusNote?.id === annotation.id ? focusNote.nonce : 0
-                        }
-                        register={registerNote}
-                        onChange={updateNoteText}
-                        onRemove={removeAnnotation}
-                      />
-                    );
-                  })}
-                </aside>
-              )}
               <div className="pdf-page-area">
                 {loading && <div className="pdf-status">正在打开 PDF…</div>}
                 {error && (
@@ -1592,8 +1279,6 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
                         translateEnabled={translateEnabled}
                         annotations={annotationsByPage.get(n)}
                         onAddHighlight={addHighlight}
-                        onAddNote={addNote}
-                        onFocusNote={focusNoteById}
                         onRemoveAnnotation={removeAnnotation}
                         onTranslateSelection={requestTranslation}
                         register={registerPage}
@@ -1602,28 +1287,12 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
                   </div>
                 )}
               </div>
-              {notePlacements.length > 0 && (
-                <svg className="pdf-note-lines" aria-hidden>
-                  {notePlacements.map((placement) => (
-                    <g key={placement.id}>
-                      <path d={noteConnectorPath(placement)} />
-                      <circle
-                        cx={placement.anchorX}
-                        cy={placement.anchorY}
-                        r={3}
-                      />
-                    </g>
-                  ))}
-                </svg>
-              )}
             </div>
           </div>
-          {/* 翻页后的阅读分区：上方旧内容压暗，下方新内容顶部用一条圆角线
-              标出。线横贯整个 PDF 组件（含左侧批注栏）。
-              整层不接鼠标事件，选中/批注/链接照常。 */}
+          {/* 翻页后的阅读分区：上方旧内容压暗、到边界渐隐（不画分界线，
+              两端靠阴影的圆角尖收尾）。整层不接鼠标事件，选中/批注/链接照常。 */}
           <div className="pdf-read-guide" aria-hidden>
             <div className="pdf-read-shade" />
-            <div className="pdf-read-frame" />
           </div>
           {cropping && (
             <CropLayer
@@ -1830,8 +1499,6 @@ interface PdfPageProps {
   translateEnabled: boolean;
   annotations: PdfAnnotation[] | undefined;
   onAddHighlight: (page: number, rects: NormRect[]) => void;
-  onAddNote: (page: number, rects: NormRect[]) => void;
-  onFocusNote: (id: string) => void;
   onRemoveAnnotation: (id: string) => void;
   onTranslateSelection: (text: string, x: number, y: number) => void;
   register: (n: number, el: HTMLDivElement | null) => void;
@@ -1849,8 +1516,6 @@ const PdfPage = memo(function PdfPage({
   translateEnabled,
   annotations,
   onAddHighlight,
-  onAddNote,
-  onFocusNote,
   onRemoveAnnotation,
   onTranslateSelection,
   register,
@@ -1999,8 +1664,7 @@ const PdfPage = memo(function PdfPage({
       const selected = selectionRects(window.getSelection(), textDiv, pageRect);
       if (selected.length > 0) {
         const rects = mergeLineRects(selected, Math.max(0.006, 18 / pageRect.width));
-        if (tool === "note") onAddNote(pageNumber, rects);
-        else onAddHighlight(pageNumber, rects);
+        onAddHighlight(pageNumber, rects);
         window.getSelection()?.removeAllRanges();
         return;
       }
@@ -2008,14 +1672,9 @@ const PdfPage = memo(function PdfPage({
       const y = (clientY - pageRect.top) / pageRect.height;
       const hit = annotationAt(pageAnnotations, pageNumber, x, y);
       if (hit) {
-        if (tool === "note") {
-          if (hit.kind === "note") onFocusNote(hit.id);
-        } else if (hit.kind === "highlight") {
-          onRemoveAnnotation(hit.id);
-        }
+        if (hit.kind === "highlight") onRemoveAnnotation(hit.id);
         return;
       }
-      if (tool === "note") return;
       const line = lineRectsAtPoint(
         spanRects(textDiv),
         pageRect,
@@ -2052,7 +1711,7 @@ const PdfPage = memo(function PdfPage({
             a.rects.map((r, i) => (
               <div
                 key={`${a.id}:${i}`}
-                className={`pdf-anno-mark${a.kind === "note" ? " note" : ""}`}
+                className="pdf-anno-mark"
                 data-annotation-id={a.id}
                 style={{
                   left: `${r.x * width}px`,
@@ -2138,7 +1797,7 @@ function snapFlipToLine(scroll: HTMLElement, nominal: number, step: number): num
   const guide = wrap?.querySelector<HTMLElement>(".pdf-read-guide") ?? null;
   const height = (guide ?? scroll).clientHeight;
   const top = (guide ?? scroll).getBoundingClientRect().top;
-  // 与 --read-old 的取整保持一致，线、阴影、量出来的分界线三者同一条。
+  // 与 --read-old 的取整保持一致：阴影收尾与量出来的分界线是同一条。
   const old = Math.round((1 - step) * 100);
   const boundary = top + (height * old) / 100;
   const viewport = scroll.clientHeight;
@@ -2150,118 +1809,6 @@ function snapFlipToLine(scroll: HTMLElement, nominal: number, step: number): num
     lineBandsAtY(scroll, boundary),
     viewport * 0.02,
   );
-}
-
-// ---------------------------------------------------------------------------
-// Text-annotation cards (right margin)
-// ---------------------------------------------------------------------------
-
-interface NoteBoxProps {
-  annotation: PdfAnnotation;
-  top: number;
-  /** 还没算好锚点时为 false:卡片照常排版(供测量),只是不显示。 */
-  placed: boolean;
-  /** 非 0 时聚焦并把光标放到末尾(新建/点中蓝色高亮)。 */
-  focusToken: number;
-  register: (id: string, el: HTMLDivElement | null) => void;
-  onChange: (id: string, text: string) => void;
-  onRemove: (id: string) => void;
-}
-
-function NoteBox({
-  annotation,
-  top,
-  placed,
-  focusToken,
-  register,
-  onChange,
-  onRemove,
-}: NoteBoxProps) {
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    register(annotation.id, cardRef.current);
-    return () => register(annotation.id, null);
-  }, [register, annotation.id]);
-  useEffect(() => {
-    if (!focusToken) return;
-    const el = inputRef.current;
-    if (!el) return;
-    el.focus();
-    const end = el.value.length;
-    el.setSelectionRange(end, end);
-  }, [focusToken]);
-  return (
-    <div
-      ref={cardRef}
-      className="pdf-note-box"
-      data-annotation-id={annotation.id}
-      data-focus-token={focusToken}
-      style={{ top, opacity: placed ? 1 : 0 }}
-    >
-      <div className="pdf-note-head">
-        <span className="pdf-note-page">P{annotation.page}</span>
-        <button
-          className="pdf-note-remove"
-          title="删除这条文字批注"
-          onClick={() => onRemove(annotation.id)}
-        >
-          ×
-        </button>
-      </div>
-      <textarea
-        ref={inputRef}
-        className="pdf-note-input"
-        rows={1}
-        value={annotation.text}
-        placeholder="写批注…"
-        maxLength={MAX_NOTE_TEXT}
-        data-ime-chinese="true"
-        onChange={(event) => onChange(annotation.id, event.target.value)}
-        onFocus={() => imeOnChineseFocus()}
-        onBlur={(event) => {
-          // 两张批注卡之间换焦点时保持中文;真正离开批注才交还输入源。
-          const next = event.relatedTarget as Element | null;
-          if (!next?.closest(".pdf-note-box")) imeSyncToEditor();
-        }}
-        onMouseDown={(event) => event.stopPropagation()}
-        onContextMenu={(event) => event.stopPropagation()}
-      />
-    </div>
-  );
-}
-
-/**
- * 锚点到卡片抬头的一条柔和曲线:先竖直离开选区底边,再横向进留白。
- * 留白在左(当前布局)时从卡片右缘接入,曲线整体向左收。
- */
-function noteConnectorPath(placement: NotePlacement): string {
-  const { anchorX, anchorY, boxX, boxRight, top } = placement;
-  const endY = top + NOTE_HEAD_OFFSET;
-  const toLeft = boxRight <= anchorX;
-  const endX = toLeft ? boxRight : boxX;
-  const dx = Math.max(16, Math.abs(anchorX - endX));
-  const dir = toLeft ? -1 : 1;
-  // 起点切线朝下:线从文字底部「落」出来,而不是贴着同一行的字横跑。
-  const c1x = anchorX + dir * Math.min(18, dx * 0.2);
-  const c1y = anchorY + 10;
-  const c2x = endX - dir * dx * 0.45;
-  return `M ${anchorX} ${anchorY} C ${c1x} ${c1y}, ${c2x} ${endY}, ${endX} ${endY}`;
-}
-
-function samePlacements(a: NotePlacement[], b: NotePlacement[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((p, i) => {
-    const q = b[i];
-    return (
-      p.id === q.id &&
-      Math.abs(p.top - q.top) < 0.5 &&
-      Math.abs(p.anchorX - q.anchorX) < 0.5 &&
-      Math.abs(p.anchorY - q.anchorY) < 0.5 &&
-      Math.abs(p.boxX - q.boxX) < 0.5 &&
-      Math.abs(p.boxRight - q.boxRight) < 0.5
-    );
-  });
 }
 
 // ---------------------------------------------------------------------------

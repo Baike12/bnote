@@ -13,7 +13,6 @@ import {
 import { useAppStore } from "@/state/appStore";
 import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { isImeEnter } from "@/lib/imeEnter";
-import { StudyRightTabs } from "./StudyRightTabs";
 import { forkLabel } from "@/study/agentFork";
 import { ensureMaterial, sessionFilePath } from "@/study/materials";
 import {
@@ -294,22 +293,21 @@ function formatSessionTime(ms: number): string {
 }
 
 /**
- * 学习模式右栏「学习助手」页签:围绕当前内容问答。
+ * 学习模式左栏:围绕当前内容问答。
  *
  * 会话模型:主会话(跟随当前 PDF/网页,内容或配置一变就重开)+ 若干辅助
- * 会话(从任意一条消息「⤷」分叉,后端复制历史前缀,原会话不动)。页签头部
- * 的下拉与 ⌘⇧Y 在会话间切换。
+ * 会话(从任意一条消息「⤷」分叉,后端复制历史前缀,原会话不动)。头部的
+ * 下拉与 ⌘⇧Y 在会话间切换。
  *
  * 事件按 sessionId 路由:后台会话(非当前显示)的流式回复照常写入各自的
  * entries,切回去时是完整的。
  *
- * 只在页签激活时才建会话:用户只在笔记页签里连续翻 PDF 时,不为每次翻页
- * 连接模型/MCP。
+ * 面板在三栏布局里常驻(学习模式一进来就在场),所以主会话随内容就绪而建:
+ * 打开材料即连接一次,换材料再重开。
  */
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
   const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
-  const rightTab = useAppStore((s) => s.settings.studyRightTab);
   const agentSwitchSignal = useAppStore((s) => s.agentSwitchSessionSignal);
   const agentPanelCommand = useAppStore((s) => s.agentPanelCommand);
   const showToast = useAppStore((s) => s.showToast);
@@ -331,7 +329,7 @@ export function AgentPanel() {
   const convsRef = useRef<Conv[]>([]);
   const turnsRef = useRef<Map<string, Turn>>(new Map());
   const busyRef = useRef<string | null>(null);
-  /** 已为哪份内容+配置建过主会话(页签未激活时不建)。 */
+  /** 已为哪份内容+配置建过主会话。 */
   const startedKeyRef = useRef<string | null>(null);
   /** 会话启动请求序号:过期回调(内容/配置已变)直接放弃,不盲写。 */
   const startTokenRef = useRef(0);
@@ -553,13 +551,12 @@ export function AgentPanel() {
     [materialContent, showToast, startSession],
   );
 
-  // 主会话生命周期:页签激活后,材料/重启任一变化都重建会话。
+  // 主会话生命周期:面板常驻(三栏布局),材料/重启任一变化都重建会话。
   // - 换材料:恢复这份材料最近一条会话(没有才开新的);
   // - 点 ⟳ / ＋新会话:强制开一条新会话(旧会话留在历史里,配置用当前设置);
   // - 保存设置:什么都不发生——已开的会话继续用它自己的模型配置快照。
-  // - 页签切走再切回:内容没变就复用活会话。
+  // - 离开再进学习模式:面板重挂,按材料重新恢复。
   useEffect(() => {
-    if (rightTab !== "agent") return;
     const identity = studyContentKey(materialContent);
     const key = `${identity}|${restartNonce}`;
     if (startedKeyRef.current === key) return;
@@ -605,13 +602,7 @@ export function AgentPanel() {
       turnsRef.current.clear();
       void startSession(conv.key, materialContent);
     })();
-  }, [
-    materialContent,
-    rightTab,
-    restartNonce,
-    startSession,
-    openSavedSession,
-  ]);
+  }, [materialContent, restartNonce, startSession, openSavedSession]);
 
   // ⌘⇧Y / 命令:主会话 ↔ 最近一条辅助会话 来回切换。
   useEffect(() => {
@@ -1075,7 +1066,6 @@ export function AgentPanel() {
       {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让文字也能拖,
           头部里的按钮由 Tauri 的 drag.js 自行放行。 */}
       <div className="agent-header" data-tauri-drag-region="deep">
-        <StudyRightTabs />
         {convs.length > 1 ? (
           <select
             className="agent-conv-select"

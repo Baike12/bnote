@@ -152,9 +152,13 @@ describe("注入脚本", () => {
     expect(script).toContain("cursor: inherit !important");
     expect(script).not.toContain("cursorPen");
     expect(script).not.toContain("bnote-annotating");
-    // 阅读分区(压暗 + 分界线)常驻:打开网页就有,不靠翻页触发。
+    // 阅读分区(只有压暗,不画分界线)常驻:打开网页就有,不靠翻页触发。
+    // 边界靠阴影渐隐收尾,两端保留径向补出的圆角尖(去掉线后那是唯一形状)。
     expect(script).toContain("paintShade");
     expect(script).not.toContain("shadeVisible");
+    expect(script).toContain("radial-gradient(circle at 100% 100%");
+    expect(script).not.toContain("borderTopLeftRadius");
+    expect(script).not.toContain("230, 155, 60");
     // 纯函数被序列化进页面,不能残留模块级常量名。
     expect(script).not.toContain("MAX_WEB_QUOTE");
   });

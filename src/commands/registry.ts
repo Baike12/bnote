@@ -11,10 +11,10 @@ export interface CommandDef {
   /**
    * 由原生网页转发执行时不要抢走页面的键盘焦点(可选)。
    *
-   * 网页跑在子 webview 里:按键经 title 通道转回主窗口时,焦点仍在子
-   * webview 上。区域切换这类命令必须先 `setFocus()` 把焦点收回主窗口;
-   * 而网页缩放只是在 Rust 侧改一个属性,抢焦点会让用户按完 ⌘= 就滚不动、
-   * 打字也进不了页面。
+   * 网页跑在子 webview 里:按键经 title 通道转回主窗口时,键盘(第一响应者)
+   * 仍在子 webview 上。区域切换这类命令必须先用 `Webview.setFocus` 把键盘
+   * 收回主窗口;而网页缩放只是在 Rust 侧改一个属性,抢焦点会让用户按完 ⌘=
+   * 就滚不动、打字也进不了页面。
    */
   keepsPageFocus?: boolean;
   run: () => void | Promise<void>;

@@ -2,7 +2,8 @@ import { api } from "@/lib/tauri";
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 
 /**
- * PDF 批注:亮黄色高亮 + 亮蓝色文字批注。
+ * PDF 批注:目前只有亮黄色高亮。数据模型仍保留 `kind: "note"`(旧文件里
+ * 的文字批注条目原样读写,不清洗),只是界面上不再新建、不再上屏。
  *
  * 高亮矩形以「整页比例」(0..1) 存盘——缩放、裁剪、DPR 变化都不影响批注
  * 位置;页面重排(渲染宽度变了)时只需按当前页面像素重算样式。裁剪窗口
@@ -46,7 +47,7 @@ export interface BoxLike {
   bottom: number;
 }
 
-/** 文字批注内容上限;超长内容在输入框里滚动,不拖垮渲染。 */
+/** 旧文字批注内容的读取上限(只用于解析旧数据,界面不再编辑它)。 */
 export const MAX_NOTE_TEXT = 5000;
 
 export const EMPTY_PDF_ANNOTATIONS: PdfAnnotation[] = [];
@@ -196,75 +197,6 @@ function lineDistance(b: BoxLike, y: number): number {
 
 function round(value: number): number {
   return Math.round(value * 1e5) / 1e5;
-}
-
-/**
- * 批注文字框连线的起点:选区包围盒的**底部中间**(多行选区取整体包围盒)。
- * 从底边引出,线走在行间/文字下方,不会横穿同一行后面的正文。
- */
-export function rectsAnchor(rects: NormRect[]): { x: number; y: number } | null {
-  let left = Number.POSITIVE_INFINITY;
-  let right = Number.NEGATIVE_INFINITY;
-  let top = Number.POSITIVE_INFINITY;
-  let bottom = Number.NEGATIVE_INFINITY;
-  for (const r of rects) {
-    if (!(r.w > 0) || !(r.h > 0)) continue;
-    left = Math.min(left, r.x);
-    right = Math.max(right, r.x + r.w);
-    top = Math.min(top, r.y);
-    bottom = Math.max(bottom, r.y + r.h);
-  }
-  if (left === Number.POSITIVE_INFINITY) return null;
-  return { x: (left + right) / 2, y: bottom };
-}
-
-export function isNoteAnnotation(a: PdfAnnotation): boolean {
-  return a.kind === "note";
-}
-
-/**
- * 右侧留白的阅读顺序:页 → 行(上→下) → 行内(左→右)。同一行选了两次,
- * 先出现的批注卡在上,后出现的往下排。
- *
- * 同一行的 span 常有几像素的高差(上标、不同字号),所以纵向差在
- * NOTE_LINE_TOLERANCE 内视为同一行,先比 x 再比 y——否则一行内的先后会被
- * 亚像素差打乱,违背「从左到右」。
- */
-export const NOTE_LINE_TOLERANCE = 0.008;
-
-export function sortNotes(list: PdfAnnotation[]): PdfAnnotation[] {
-  return [...list].sort((a, b) => {
-    if (a.page !== b.page) return a.page - b.page;
-    const pa = rectsAnchor(a.rects);
-    const pb = rectsAnchor(b.rects);
-    const ay = pa?.y ?? Number.POSITIVE_INFINITY;
-    const by = pb?.y ?? Number.POSITIVE_INFINITY;
-    if (Math.abs(ay - by) > NOTE_LINE_TOLERANCE) return ay - by;
-    const ax = pa?.x ?? Number.POSITIVE_INFINITY;
-    const bx = pb?.x ?? Number.POSITIVE_INFINITY;
-    if (Math.abs(ax - bx) > 1e-6) return ax - bx;
-    return a.createdAt - b.createdAt;
-  });
-}
-
-/**
- * 批注卡的纵向排布:每张卡对齐自己的锚点,和前一张重叠时整体往下推。
- * 输入必须已按阅读顺序排好(见 sortNotes);`heights` 是每张卡当前的实际
- * 高度(卡片随内容行数变化),返回的 top 与输入一一对应。
- */
-export function stackNoteTops(
-  desiredTops: number[],
-  heights: number[],
-  gap: number,
-): number[] {
-  const out: number[] = [];
-  let prevBottom = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < desiredTops.length; i++) {
-    const top = Math.max(desiredTops[i], prevBottom + gap);
-    out.push(top);
-    prevBottom = top + (heights[i] ?? 0);
-  }
-  return out;
 }
 
 export function newPdfAnnotationId(): string {

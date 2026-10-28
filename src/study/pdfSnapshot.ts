@@ -4,8 +4,7 @@
  * 页面本来就是 pdf.js 画进 `<canvas>` 的(PdfViewer 每页一个),所以这里
  * 不需要系统截图权限,也不需要 html2canvas:新建一块画布,把可见的页面片段
  * 用 drawImage 搬过去。取景框 = 「滚动视口 ∩ 页面列」:
- *   - 左侧目录栏(.pdf-outline)与批注留白(.pdf-notes)在页面列之外,自然
- *     不进图;
+ *   - 左侧目录栏(.pdf-outline)在页面列之外,自然不进图;
  *   - 页框阴影是 .pdf-page 的 CSS box-shadow,canvas 像素里根本不存在。
  * 护眼染色与高亮批注是 DOM 覆盖层(multiply),按同一坐标与颜色补画。
  *
@@ -121,7 +120,7 @@ export function planSnapshot(
   }
   if (visible.length === 0) return null;
 
-  // 横向只取页面列:目录栏与批注留白都在页面矩形之外。
+  // 横向只取页面列:目录栏在页面矩形之外。
   const left = Math.max(
     viewport.left,
     Math.min(...visible.map((v) => v.page.box.left)),

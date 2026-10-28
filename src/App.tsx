@@ -47,9 +47,14 @@ import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
 import { fileName } from "@/lib/path";
 import { normalizeStudyHistory } from "@/study/history";
-import { normalizeContentWidth, studySplitToContentWidth } from "@/study/layoutModel";
+import {
+  normalizeAgentWidth,
+  normalizeContentWidth,
+  studySplitToContentWidth,
+} from "@/study/layoutModel";
 import { normalizePageStep } from "@/study/reading";
 import { normalizeWebZoom } from "@/study/webZoom";
+import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
 
 /** 画布是独立 chunk(含 excalidraw 及其字体加载逻辑),只在打开时下载。 */
 const DrawingCanvas = lazy(() => import("@/components/DrawingCanvas"));
@@ -105,7 +110,8 @@ export default function App() {
         },
       };
       // 旧版把三栏宽度存成 studySplit:[agent, content](更早是比例);迁移成
-      // 中栏单值像素宽度后落盘一次,之后窗口怎么缩放都不会再改中栏宽度。
+      // 助手栏 / 中栏各自单值像素宽度后落盘一次,之后窗口怎么缩放都不会再改
+      // 这两栏宽度。
       const legacySplit = studySplitToContentWidth(
         (saved as Record<string, unknown>).studySplit,
       );
@@ -113,11 +119,18 @@ export default function App() {
         legacySplit ?? settings.studyContentWidth,
         window.innerWidth,
       );
-      // 旧键不再使用,剥掉免得一直躺在配置文件里。
+      settings.studyAgentWidth = normalizeAgentWidth(settings.studyAgentWidth);
+      // 旧键不再使用,剥掉免得一直躺在配置文件里。右栏页签模型已由三栏布局
+      // 取代(助手栏常驻在最左),这个键只可能是旧配置留下的。
       delete (settings as Record<string, unknown>).studySplit;
       delete (settings as Record<string, unknown>).studyAgentOpen;
+      delete (settings as Record<string, unknown>).studyRightTab;
       // 旧配置没有 studyPageStep → 默认 50%;手改坏的值也在这里夹回范围内。
       settings.studyPageStep = normalizePageStep(settings.studyPageStep);
+      // 打字机位置同理:旧配置没有这一项 → 50%(垂直居中),越界值夹回 20%–80%。
+      settings.typewriterPosition = normalizeTypewriterPosition(
+        settings.typewriterPosition,
+      );
       // 网页缩放同理:旧配置没有这一项 → 100%,手改越界的夹回 50%–300%。
       settings.studyWebZoom = normalizeWebZoom(settings.studyWebZoom);
       useAppStore.getState().replaceSettings(settings);
