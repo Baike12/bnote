@@ -53,14 +53,22 @@ export function setCommandKeyContext(ctx: CommandKeyContext) {
  * 焦点区域。三个可聚焦区域在 DOM 上各带 `data-key-region`:
  * 阅读区(ContentPane)、笔记区(EditorPane)、Agent 面板。
  *
- * 按键时优先看 `document.activeElement`:PDF/画布这类不可聚焦的容器点了
- * 不会转移焦点,所以 pointerdown / focusin 时再记一次「最后落在哪个区域」,
- * 焦点回到 body(点侧栏、标题栏)后沿用这个记忆。
+ * 归属只认「用户最近一次在哪个区域里动手」:指针按下、焦点进入、滚轮/触摸
+ * 滚动都算,谁后发生听谁的(单一写入者 = 下面四个输入事件)。
+ *
+ * 不能只看 `document.activeElement`:阅读区(PDF / 网页占位)故意不取得焦点
+ * ——给阅读器加 tabindex/focus 会让 WebKit 的文字选区锚点跳变(见
+ * PdfViewer 的键盘归属注释),所以滚页面、点正文都不改 activeElement。焦点
+ * 停在 Agent 输入框或笔记编辑器上时就照它算区域,阅读区的快捷键(截图、
+ * 区域切换)会静默落到别的命令上或什么也不做。滚轮算「动手」也是这个道理:
+ * 阅读一篇 PDF 的主要动作就是滚,不点也在读。
  */
 const REGION_ATTR = "data-key-region";
 export type FocusRegion = Exclude<KeyRegion, "global">;
+/** 兜底顺序:阅读区不会取得焦点,「无主」时它是最安全的落点。 */
+const FOCUS_REGIONS: FocusRegion[] = ["reading", "notes", "agent"];
 
-let lastRegion: FocusRegion = "notes";
+let ownerRegion: FocusRegion | null = null;
 
 export function regionFromTarget(target: EventTarget | null): FocusRegion | null {
   const el = target instanceof Element ? target : null;
@@ -69,13 +77,44 @@ export function regionFromTarget(target: EventTarget | null): FocusRegion | null
   return attr === "reading" || attr === "agent" || attr === "notes" ? attr : null;
 }
 
+/**
+ * 区域此刻是否在场。三栏(助手 / 内容 / 笔记)都常驻挂载;不在学习模式时
+ * 只有笔记区存在。看不见的区域不能占着键盘——不可见的东西不该接收按键。
+ */
+export function regionOnScreen(region: FocusRegion): boolean {
+  const el = document.querySelector(`[${REGION_ATTR}="${region}"]`);
+  if (!el) return false;
+  if (el.getClientRects().length === 0) return false;
+  return getComputedStyle(el).visibility !== "hidden";
+}
+
+/**
+ * 键盘此刻归哪个区域(纯函数,门禁在 globalKeys.test.ts)。
+ * 顺序:最近一次输入落在的区域 → 焦点所在 → 任一在场区域(阅读区优先)。
+ */
+export function pickKeyRegion(input: {
+  owner: FocusRegion | null;
+  focus: FocusRegion | null;
+  onScreen: (region: FocusRegion) => boolean;
+}): FocusRegion {
+  if (input.owner && input.onScreen(input.owner)) return input.owner;
+  if (input.focus && input.onScreen(input.focus)) return input.focus;
+  for (const region of FOCUS_REGIONS) {
+    if (input.onScreen(region)) return region;
+  }
+  return "notes";
+}
+
 export function setActiveKeyRegion(region: FocusRegion): void {
-  lastRegion = region;
+  ownerRegion = region;
 }
 
 export function activeKeyRegion(): FocusRegion {
-  const fromFocus = regionFromTarget(document.activeElement);
-  return fromFocus ?? lastRegion;
+  return pickKeyRegion({
+    owner: ownerRegion,
+    focus: regionFromTarget(document.activeElement),
+    onScreen: regionOnScreen,
+  });
 }
 
 /** 挑一条现在能执行的命令(前一条的 `when` 为 false 就试下一条)。 */
@@ -116,12 +155,16 @@ export function runBoundKey(key: string, region: FocusRegion): boolean {
 }
 
 export function installGlobalKeybindings() {
-  const rememberRegion = (event: Event) => {
+  // 区域归属的四个写入点:都是「用户主动动手」的事件,合成事件(tooltip、
+  // 程序 focus)不算。滚动用 passive,滚动是热路径,监听不能拖慢它。
+  const claimRegion = (event: Event) => {
     const region = regionFromTarget(event.target);
-    if (region) lastRegion = region;
+    if (region) ownerRegion = region;
   };
-  window.addEventListener("pointerdown", rememberRegion, true);
-  window.addEventListener("focusin", rememberRegion, true);
+  window.addEventListener("pointerdown", claimRegion, true);
+  window.addEventListener("focusin", claimRegion, true);
+  window.addEventListener("wheel", claimRegion, { capture: true, passive: true });
+  window.addEventListener("touchmove", claimRegion, { capture: true, passive: true });
 
   window.addEventListener(
     "keydown",

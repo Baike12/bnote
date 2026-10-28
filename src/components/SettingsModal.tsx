@@ -27,6 +27,11 @@ import { FolderSuggest } from "@/components/FolderSuggest";
 import { applySettingsToEditor, openVault, pickVaultDialog, reloadSnippetsFromVault } from "@/app/actions";
 import { parseVimrc } from "@/editor/vim/vimrc";
 import { MAX_PAGE_STEP, MIN_PAGE_STEP, normalizePageStep } from "@/study/reading";
+import {
+  MAX_TYPEWRITER_POSITION,
+  MIN_TYPEWRITER_POSITION,
+  normalizeTypewriterPosition,
+} from "@/editor/typewriterPosition";
 
 type Tab =
   | "general"
@@ -320,6 +325,9 @@ async function openVaultFlow() {
 function EditorTab() {
   const settings = useAppStore((s) => s.settings);
   const patch = useAppStore((s) => s.patchSettings);
+  const positionPercent = Math.round(
+    normalizeTypewriterPosition(settings.typewriterPosition) * 100,
+  );
   return (
     <div className="settings-section">
       <SettingsCard title="编辑行为">
@@ -349,9 +357,23 @@ function EditorTab() {
         />
         <Toggle
           label="打字机模式"
-          desc="光标所在行始终保持屏幕垂直居中"
+          desc="光标所在行始终停在屏幕的固定高度（下方可调）"
           checked={settings.typewriter}
           onChange={(v) => patch({ typewriter: v })}
+        />
+        <Row
+          label="打字机位置"
+          desc={`光标行停在屏幕高度的 ${positionPercent}%：50% 垂直居中，越小越靠上（下方留出更多待读内容），越大越靠下。上方留白与下方留白互补，首行和末行也停在同一个高度。`}
+          control={
+            <RangeControl
+              value={positionPercent}
+              min={Math.round(MIN_TYPEWRITER_POSITION * 100)}
+              max={Math.round(MAX_TYPEWRITER_POSITION * 100)}
+              step={1}
+              onChange={(v) => patch({ typewriterPosition: v / 100 })}
+              format={(v) => `${v}%`}
+            />
+          }
         />
         <Toggle
           label="Vim 模式"
@@ -434,10 +456,10 @@ function ReadingTab() {
         />
       </SettingsCard>
       <p className="setting-hint">
-        屏幕下方是刚进入的新内容（占可见高度的 {percent}%），顶部用一条淡色圆角线
-        标出；上方是刚读过、正在移出的内容（占 {100 - percent}%），会轻微压暗。
-        两层只做视觉分区，不影响选中、批注和点击；翻页落点会在 2% 视口内微调，
-        避免分界线切在文字行中间。
+        屏幕下方是刚进入的新内容（占可见高度的 {percent}%）；上方是刚读过、
+        正在移出的内容（占 {100 - percent}%），压暗后向边界渐隐，不画分界线，
+        两端保留阴影的圆角尖。两层只做视觉分区，不影响选中、批注和点击；
+        翻页落点会在 2% 视口内微调，避免边界切在文字行中间。
       </p>
     </div>
   );

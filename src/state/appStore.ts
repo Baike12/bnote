@@ -11,7 +11,8 @@ import {
   type WereadBookEntry,
 } from "@/study/history";
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
-import { DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
+import { DEFAULT_TYPEWRITER_POSITION } from "@/editor/typewriterPosition";
+import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 import type { AgentImage } from "@/study/agentImages";
 
 export interface ImeSettings {
@@ -44,6 +45,8 @@ export type ThemeName = "dark" | "light";
 export interface Settings {
   vim: boolean;
   typewriter: boolean;
+  /** 打字机模式的光标纵向位置(视口高度的比例,0.5 = 垂直居中,20%–80%)。 */
+  typewriterPosition: number;
   livePreview: boolean;
   mathPreview: boolean;
   snippets: boolean;
@@ -55,13 +58,13 @@ export interface Settings {
   /** 界面主题（编辑器 + 侧栏 + 弹层 + 语法高亮整套变量） */
   theme: ThemeName;
   /**
-   * 学习模式中栏(内容)宽度(像素)。右栏(笔记 / 学习助手页签)吃剩余宽度,
-   * 拖动窗口时中栏宽度不变,PDF 页面尺寸和纵向可见内容都不会跟着窗口抖。
+   * 学习模式三栏:左「学习助手」、中「内容」、右「笔记」。助手栏与中栏宽度
+   * 都是像素、固定,笔记栏吃剩余宽度——拖动窗口时前两栏不变,PDF 页面尺寸
+   * 和纵向可见内容都不会跟着窗口抖。窗口窄到放不下时由 CSS 压缩显示。
    * 旧配置的比例形式/三栏数组由 normalizeContentWidth 在加载时一次性换算。
    */
+  studyAgentWidth: number;
   studyContentWidth: number;
-  /** 学习模式右栏当前页签:笔记 / 学习助手。默认笔记。 */
-  studyRightTab: "notes" | "agent";
   /** 学习模式 PDF 护眼底色(浅绿纸面)。 */
   studyEyeCare: boolean;
   /** 学习模式每次翻页滚动的可见高度比例(PDF/网页共用,默认 0.5)。 */
@@ -83,6 +86,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   vim: false,
   typewriter: false,
+  typewriterPosition: DEFAULT_TYPEWRITER_POSITION,
   livePreview: true,
   mathPreview: true,
   snippets: true,
@@ -90,8 +94,8 @@ export const DEFAULT_SETTINGS: Settings = {
   autoNumberHeadings: false,
   codeBlockLang: "ts",
   theme: "dark",
+  studyAgentWidth: DEFAULT_AGENT_WIDTH,
   studyContentWidth: DEFAULT_CONTENT_WIDTH,
-  studyRightTab: "notes",
   studyEyeCare: false,
   studyPageStep: 0.5,
   studyWebZoom: 1,

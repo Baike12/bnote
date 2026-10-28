@@ -365,7 +365,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let shadeLayer: HTMLElement | null = null;
   let shadeCornerLeft: HTMLElement | null = null;
   let shadeCornerRight: HTMLElement | null = null;
-  let frameLayer: HTMLElement | null = null;
 
   function storageKey(target: string): string {
     return STORE_PREFIX + target;
@@ -622,8 +621,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   // ---- 翻页与上半屏遮罩 ----
 
   /**
-   * 翻页后的阅读分区：上方旧内容压暗，下方新内容的顶部用一条淡色圆角线
-   * 标出（不画完整框）。两层都在 shadow root 里，不吃页面 CSS；不接鼠标事件。
+   * 翻页后的阅读分区：上方旧内容压暗、到边界渐隐，不画分界线；两端用
+   * 阴影的圆角尖收尾。都在 shadow root 里，不吃页面 CSS；不接鼠标事件。
    * 打开网页就画出来，翻页、滚动都保持同一个分区（位置只跟步长有关）。
    */
   function ensureShade(): void {
@@ -632,8 +631,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       shadeHost.isConnected &&
       shadeLayer &&
       shadeCornerLeft &&
-      shadeCornerRight &&
-      frameLayer
+      shadeCornerRight
     ) {
       return;
     }
@@ -652,18 +650,15 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     const shade = doc.createElement("div");
     const cornerLeft = doc.createElement("div");
     const cornerRight = doc.createElement("div");
-    const frame = doc.createElement("div");
     if (typeof hostEl.attachShadow === "function") {
       const root = hostEl.attachShadow({ mode: "open" });
       root.appendChild(shade);
       root.appendChild(cornerLeft);
       root.appendChild(cornerRight);
-      root.appendChild(frame);
     } else {
       hostEl.appendChild(shade);
       hostEl.appendChild(cornerLeft);
       hostEl.appendChild(cornerRight);
-      hostEl.appendChild(frame);
     }
     const ss = shade.style;
     ss.position = "fixed";
@@ -671,7 +666,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     ss.top = "0";
     ss.width = "100%";
     ss.pointerEvents = "none";
-    // 线两端向下弯出圆角；圆角外侧（线上方）补同色压暗，圆内透明。
+    // 阴影在两端向下弯出圆角尖；圆角外侧（阴影一侧）补同色压暗，圆内透明。
+    // 没有分界线，这两个尖角就是边界的唯一形状。
     const corner = (el: HTMLElement, at: "left" | "right"): void => {
       const s = el.style;
       s.position = "fixed";
@@ -687,26 +683,16 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     };
     corner(cornerLeft, "left");
     corner(cornerRight, "right");
-    const fs = frame.style;
-    fs.position = "fixed";
-    fs.left = "0";
-    fs.right = "0";
-    fs.height = "16px";
-    fs.borderTop = "2px solid rgba(230, 155, 60, 0.45)";
-    fs.borderTopLeftRadius = "12px";
-    fs.borderTopRightRadius = "12px";
-    fs.pointerEvents = "none";
     shadeHost = hostEl;
     shadeLayer = shade;
     shadeCornerLeft = cornerLeft;
     shadeCornerRight = cornerRight;
-    frameLayer = frame;
     doc.documentElement.appendChild(hostEl);
     paintShade();
   }
 
   function paintShade(): void {
-    // 旧内容占上方 1-step；线压在压暗结束的那条线上，不留缝。
+    // 旧内容占上方 1-step，压暗到边界收到最浅一档（无描边）。
     const old = ((1 - pageStep) * 100).toFixed(2);
     if (shadeLayer) {
       shadeLayer.style.height = `${old}%`;
@@ -715,7 +701,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }
     if (shadeCornerLeft) shadeCornerLeft.style.top = `${old}%`;
     if (shadeCornerRight) shadeCornerRight.style.top = `${old}%`;
-    if (frameLayer) frameLayer.style.top = `${old}%`;
   }
 
   function setPageStep(value: unknown): void {

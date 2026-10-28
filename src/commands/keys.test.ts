@@ -114,25 +114,28 @@ describe("区域分发", () => {
     expect(defaultRegionOf("region.focus-agent")).toBe("reading");
     expect(defaultRegionOf("agent.new-session")).toBe("agent");
     expect(defaultRegionOf("study.agent-switch-session")).toBe("agent");
-    expect(defaultRegionOf("study.toggle-right-tab")).toBe("global");
     expect(defaultRegionOf("nav.command-palette")).toBe("global");
     expect(defaultRegionOf("view.toggle-study-mode")).toBe("global");
   });
 
-  it("三个区域切换命令同时属于两个区域(任意区域都能去另外两个)", () => {
-    expect(defaultRegionsOf("region.focus-agent")).toEqual(["reading", "notes"]);
-    expect(defaultRegionsOf("region.focus-notes")).toEqual(["reading", "agent"]);
-    expect(defaultRegionsOf("region.focus-reading")).toEqual(["notes", "agent"]);
+  it("三个区域切换命令三个区域都有(任意区域都能去任意区域,含回自己)", () => {
+    for (const id of ["region.focus-agent", "region.focus-notes", "region.focus-reading"]) {
+      expect(defaultRegionsOf(id)).toEqual(["reading", "notes", "agent"]);
+      for (const region of ["reading", "notes", "agent"] as const) {
+        expect(commandBelongs(id, region)).toBe(true);
+      }
+    }
+    expect(defaultRegionOf("region.focus-agent")).toBe("reading");
     expect(commandsForKey("Mod-Alt-a", "reading")).toContain("region.focus-agent");
     expect(commandsForKey("Mod-Alt-a", "notes")).toContain("region.focus-agent");
+    // Agent 面板里 ⌘⌥A 把焦点送回输入框:在消息列表/历史里按下也要能用。
+    expect(commandsForKey("Mod-Alt-a", "agent")).toContain("region.focus-agent");
     expect(commandsForKey("Mod-Alt-n", "reading")).toContain("region.focus-notes");
+    expect(commandsForKey("Mod-Alt-n", "notes")).toContain("region.focus-notes");
     expect(commandsForKey("Mod-Alt-n", "agent")).toContain("region.focus-notes");
     expect(commandsForKey("Mod-Alt-r", "notes")).toContain("region.focus-reading");
+    expect(commandsForKey("Mod-Alt-r", "reading")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-r", "agent")).toContain("region.focus-reading");
-    // 设置页两个页签里都能看到它。
-    expect(commandBelongs("region.focus-agent", "reading")).toBe(true);
-    expect(commandBelongs("region.focus-agent", "notes")).toBe(true);
-    expect(commandBelongs("region.focus-agent", "agent")).toBe(false);
     expect(bindingsForCommand("region.focus-agent")).toEqual(["Mod-Alt-a"]);
   });
 
@@ -203,6 +206,55 @@ describe("区域分发", () => {
     // 跨区域只对带 Mod/Ctrl/Alt 的和弦成立。
     applyOverrides(normalizeOverrides({ reading: { "study.pdf-next-page": "F5" } }));
     expect(commandsForKey("F5", "notes")).not.toContain("study.pdf-next-page");
+  });
+
+  it("截图和弦同样跨区域:焦点在 Agent 面板/笔记区也命中阅读区那份绑定", () => {
+    expect(commandsForKey("Mod-Shift-e", "reading")).toContain("study.pdf-snap-to-agent");
+    for (const region of ["notes", "agent"] as const) {
+      expect(commandsForKey("Mod-Shift-e", region)).toContain("study.pdf-snap-to-agent");
+    }
+  });
+
+  it("区域导航和弦跨区域:只配在阅读区,Agent 面板里按下去也生效", () => {
+    applyOverrides(
+      normalizeOverrides({ reading: { "region.focus-agent": "Mod-Shift-w" } }),
+    );
+    expect(commandsForKey("Mod-Shift-w", "reading")).toContain("region.focus-agent");
+    for (const region of ["notes", "agent"] as const) {
+      expect(commandsForKey("Mod-Shift-w", region)).toContain("region.focus-agent");
+    }
+  });
+
+  it("跨区域只在显式解绑之外生效:null 解绑该区域后不再从别处复活", () => {
+    applyOverrides(
+      normalizeOverrides({
+        reading: { "region.focus-agent": "Mod-Shift-w" },
+        agent: { "region.focus-agent": null },
+      }),
+    );
+    expect(commandsForKey("Mod-Shift-w", "notes")).toContain("region.focus-agent");
+    expect(commandsForKey("Mod-Shift-w", "agent")).not.toContain("region.focus-agent");
+  });
+
+  it("弹窗打开时(region = global)不放行跨区域命令,焦点不被抢走", () => {
+    // 弹窗里只认通用命令:⌘⌥A 不该把焦点交给 Agent 输入框,翻页也不该滚背后。
+    expect(commandsForKey("Mod-Alt-a", "global")).toEqual([]);
+    expect(commandsForKey("Mod-Shift-e", "global")).toEqual([]);
+    expect(commandsForKey("Ctrl-j", "global")).toEqual([]);
+    expect(commandsForKey("Mod-p", "global")).toEqual(["nav.command-palette"]);
+  });
+
+  it("区域自己的绑定优先:笔记区把同一个键绑给别的命令,笔记里按下去仍是它", () => {
+    applyOverrides(
+      normalizeOverrides({
+        notes: { "edit.toggle-todo": "Mod-w" },
+        reading: { "study.pdf-snap-to-agent": "Mod-w" },
+      }),
+    );
+    // 笔记区:自己的绑定排第一,跨区截图排在后面。
+    expect(commandsForKey("Mod-w", "notes")[0]).toBe("edit.toggle-todo");
+    // Agent 面板没有自己的 Mod-w,落到阅读区那份截图。
+    expect(commandsForKey("Mod-w", "agent")).toEqual(["study.pdf-snap-to-agent"]);
   });
 
   it("⌘A 默认不拦截;只写进笔记区时,Agent/阅读区原样放行", () => {
@@ -405,6 +457,18 @@ describe("网页转发键", () => {
       normalizeOverrides({ reading: { "region.focus-agent": "Mod-Alt-z" } }),
     );
     expect(pageForwardKeys()).toContain("Mod-Alt-z");
+  });
+
+  it("跨区域生效的区域导航,配在笔记区/Agent 区也要转发", () => {
+    applyOverrides(
+      normalizeOverrides({
+        notes: { "region.focus-reading": "Mod-Alt-y" },
+        agent: { "region.focus-notes": "Mod-Alt-u" },
+      }),
+    );
+    const keys = pageForwardKeys();
+    expect(keys).toContain("Mod-Alt-y");
+    expect(keys).toContain("Mod-Alt-u");
   });
 
   it("跟随用户覆盖:改键生效、解绑即移除", () => {

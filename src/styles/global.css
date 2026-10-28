@@ -71,12 +71,10 @@
   --pdf-gutter: #dcebd6; /* PDF 护眼模式的桌面底色 */
   --pdf-tint: #cfe4c4; /* PDF 护眼染色（multiply，只压白底不压黑字） */
   --pdf-anno: rgb(255 224 0 / 42%); /* PDF 批注高亮（multiply） */
-  --pdf-note: rgb(0 140 255 / 42%); /* 文字批注的亮蓝高亮（multiply） */
-  --pdf-note-line: rgb(30 130 220); /* 锚点到右侧批注卡的连线 */
-  /* 学习模式翻页后的阅读分区:上方旧内容压暗,下方新内容用琥珀描边框成阅读窗。 */
+  --pdf-note: rgb(0 140 255 / 42%); /* 旧文字批注条目(已停止上屏;截图拼图仍按它上色) */
+  /* 学习模式翻页后的阅读分区:上方旧内容压暗(渐变收束,不收边、不画线)。 */
   --read-shade: rgb(0 0 0 / 24%);
   --read-shade-edge: rgb(0 0 0 / 12%);
-  --read-frame-border: color-mix(in srgb, var(--accent) 45%, transparent);
   --editor-font-size: 16px;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
@@ -142,10 +140,8 @@
   --pdf-tint: #cfe4c4;
   --pdf-anno: rgb(255 224 0 / 42%);
   --pdf-note: rgb(0 140 255 / 42%);
-  --pdf-note-line: rgb(30 130 220);
   --read-shade: rgb(0 0 0 / 24%);
   --read-shade-edge: rgb(0 0 0 / 12%);
-  --read-frame-border: color-mix(in srgb, var(--accent) 45%, transparent);
   /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
@@ -397,13 +393,15 @@ button {
 .cm-content {
   /* 正文列按 --content-line-width 收窄并在编辑区内居中（Obsidian 可读行宽那
      样的排版）；auto 外边距吃掉 flex 剩余空间，窗格变窄时自动回到铺满。
-     --typewriter-top is set inline by the typewriter plugin (half viewport)
-     so the first line can reach vertical center; defaults to normal padding. */
+     --typewriter-top / --typewriter-bottom are set inline by the typewriter
+     plugin from its position setting (p and 1-p of the viewport), so the first
+     and last lines can reach that height; off-mode falls back to normal
+     padding + 45vh scroll-past-end. */
   max-width: calc(var(--content-line-width) + 2 * var(--content-pad-x));
   /* !important：CM 运行时注入的 baseTheme 里有 `.cm-content { margin: 0 }`，
      同权重且后插入，必须提权才能让 auto 外边距吃掉两侧剩余空间。 */
   margin: 0 auto !important;
-  padding: var(--typewriter-top, 24px) var(--content-pad-x) 45vh !important;
+  padding: var(--typewriter-top, 24px) var(--content-pad-x) var(--typewriter-bottom, 45vh) !important;
   font-size: var(--editor-font-size) !important;
   line-height: 1.5;
   color: var(--text);
@@ -1967,7 +1965,7 @@ input[type="range"] {
 }
 
 /* ---------------------------------------------------------------------------
- * 学习模式:两栏布局(左 内容 / 右 笔记⇄学习助手页签)
+ * 学习模式:三栏布局(左 学习助手 / 中 内容 / 右 笔记)
  * ------------------------------------------------------------------------- */
 
 .study-layout {
@@ -1976,17 +1974,20 @@ input[type="range"] {
   min-height: 0;
   background: var(--bg0);
   color: var(--text);
-  /* 两栏宽度由 StudyLayout 写入:--content-src 是用户偏好(像素),--content-w
-     再按当前窗口夹一次。左栏是固定像素,右栏吃剩余宽度——拖窗口边缘只会改
-     左栏,PDF 页面尺寸和纵向可见内容都不会跟着窗口抖。窗口窄到右栏放不下
-     260px 时,CSS 压缩左栏,只压显示,不回写偏好。1px = 分栏线本身。 */
+  /* 三栏宽度由 StudyLayout 写入:--agent-src / --content-src 是用户偏好
+     (像素),--agent-w / --content-w 再按当前窗口夹一次。助手栏与中栏都是
+     固定像素,笔记栏吃剩余宽度——拖窗口边缘只改笔记栏,PDF 页面尺寸和纵向
+     可见内容都不会跟着窗口抖。窗口窄到放不下时,CSS 压缩前两栏的显示宽度,
+     不回写偏好。1px = 每根分栏线。 */
+  --agent-src: 320px;
   --content-src: 620px;
-  --content-w: clamp(260px, var(--content-src), calc(100% - 1px - 260px));
-  /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。侧栏在时它压在侧栏
-     自己的 36px 预留带上,侧栏不在时压在中栏工具栏上——那里要让开。
+  --agent-w: clamp(240px, var(--agent-src), calc(100% - 2px - 520px));
+  --content-w: clamp(260px, var(--content-src), calc(100% - 2px - 260px - var(--agent-w)));
+  /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。最左是助手栏,它
+     的头部要让开;侧栏在时红绿灯压在侧栏自己的 36px 预留带上,不用让。
      与 .titlebar 的 paddingLeft 是同一套判断,只是这里由 DOM 推出来。 */
   --study-lead: 78px;
-  /* 两栏头部同高:它们的下边框在窗口顶部连成一条线,差 1px 就是一个台阶。
+  /* 三栏头部同高:它们的下边框在窗口顶部连成一条线,差 1px 就是一个台阶。
      43 = 8px 上下内边距 ×2 + 26px 图标按钮 + 1px 下边框。 */
   --study-head-h: 43px;
 }
@@ -1995,7 +1996,16 @@ input[type="range"] {
   --study-lead: 12px;
 }
 
-/* 右栏:笔记 / 学习助手 二选一(页签见 .study-tabs)。 */
+/* 左栏:学习助手常驻。 */
+.study-left {
+  flex: 0 0 var(--agent-w);
+  width: var(--agent-w);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 右栏:笔记。 */
 .study-right {
   flex: 1 1 0;
   min-width: 0;
@@ -2003,58 +2013,10 @@ input[type="range"] {
   flex-direction: column;
 }
 
-/* 两个页签的内容都常驻挂载(切换零重挂、零重测:CodeMirror 的装饰和滚动
-   位置原样保留),叠在同一块画布上,只显示活动页签。visibility 而不是
-   display:none——后者会把面板尺寸清零,触发一堆无谓的重排/重测。 */
-.study-right-body {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-}
-.study-right-page {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.study-right-page[data-inactive="true"] {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-/* 页签控件:两栏头部共用一份(StudyRightTabs)。 */
-.study-tabs {
-  display: flex;
-  gap: 2px;
-  background: var(--bg2);
-  border-radius: 8px;
-  padding: 2px;
-  flex-shrink: 0;
-}
-.study-tab {
-  border: none;
-  background: transparent;
-  color: var(--text-dim, var(--text));
-  font: inherit;
-  font-size: 12.5px;
-  line-height: 1;
-  padding: 5px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.study-tab:hover { color: var(--text); }
-.study-tab.active {
-  background: var(--bg3);
-  color: var(--text);
-  font-weight: 600;
-}
-
 /* 拖动条:视觉上一条 1px 分栏线,命中区 9px(col-resize 手感)。线画在条自身
-   的左缘:拖动时列的边界就是指针的位置(见 StudyLayout.startDrag),线与边界
-   才是同一条。命中区用 ::after 向两侧各扩 4px——布局只占 1px,两栏之间因此
-   没有可见空隙,指针仍能稳稳抓住分栏线。 */
+   的左缘:拖动时列的边界就是指针的位置(见 StudyLayout 的 startDrag),线与
+   边界才是同一条。命中区用 ::after 向两侧各扩 4px——布局只占 1px,两栏之间
+   因此没有可见空隙,指针仍能稳稳抓住分栏线。三栏有两根(助手|内容、内容|笔记)。 */
 .study-resizer {
   flex: 0 0 1px;
   position: relative;
@@ -2184,7 +2146,7 @@ input[type="range"] {
    一份材料的会话都是同一批文件,列表按最近更新时间排序。 */
 .agent-history {
   position: absolute;
-  /* 让出头部:抽屉开着时仍能切「笔记 / 学习助手」页签。 */
+  /* 让出头部:抽屉开着时头部(会话下拉/历史/新会话)仍然可点。 */
   top: var(--study-head-h);
   right: 0;
   bottom: 0;
@@ -3307,14 +3269,14 @@ input[type="range"] {
  * 学习模式:历史下拉 / PDF 阅读器
  * ------------------------------------------------------------------------- */
 
-/* 中栏是整窗左缘:让开窗口红绿灯的是左侧那一列,不是整条 toolbar——
-   否则内容盒整体右移,居中的文件名会偏离整栏中心。 */
-.study-layout .content-tool-left {
+/* 窗口红绿灯压在整窗左上角,现在最左是助手栏:让位由它的头部承担,中栏
+   工具栏不再额外缩进(否则居中文件名会偏离整栏中心)。 */
+.study-layout .agent-header {
   padding-left: var(--study-lead, 12px);
 }
 
 /* 中栏头部的文字按钮(打开 / ＋PDF):icon-btn 是 26px 定宽,装不下文字,
-   这里统一放开。助手开关是纯图标,保持 26px 方按钮。 */
+   这里统一放开。 */
 .pdf-tool-btn {
   width: auto;
   padding: 0 8px;
@@ -3343,10 +3305,6 @@ input[type="range"] {
 .content-title-btn .content-title {
   min-width: 0;
   max-width: none;
-}
-.content-agent-toggle {
-  flex: 0 0 auto;
-  color: var(--text-dim);
 }
 .content-history-caret {
   font-size: 10px;
@@ -3648,8 +3606,8 @@ input[type="range"] {
   background: var(--pdf-gutter);
 }
 /* 翻页后的视觉分区:上方是刚读过、正在被顶出去的旧内容(占 1−步长),
-   压暗到新内容边界;下方新内容的顶部用一条淡色圆角线标出。
-   线横贯整个 PDF 组件,不画完整框;两层都固定在视口上、不接鼠标事件。 */
+   压暗逐渐收束;不画分界线,新内容只靠阴影的消失区隔。
+   阴影横贯整个 PDF 组件,不接鼠标事件。 */
 .pdf-read-guide {
   position: absolute;
   inset: 0;
@@ -3663,12 +3621,14 @@ input[type="range"] {
   right: 0;
   top: 0;
   height: var(--read-old, 50%);
-  /* 到边界仍保留一层压暗,与下方未染色的新内容形成明确分界。 */
+  /* 压暗在边界处收到最浅一档：没有描边，靠阴影变浅收尾；这一档也是
+     两端圆角尖的颜色（见下面的径向补角）。 */
   background: linear-gradient(to bottom, var(--read-shade), var(--read-shade-edge));
 }
-/* 线在两端向下弯出圆角；弯出去的那一小块仍在分界线上方，必须继续压暗，
-   否则角落会出现「线上面没阴影」的缺口。径向渐变正好补出圆角外侧的
-   两个小三角：圆内（线下方）透明，圆外（线上方）用边界同色。 */
+/* 阴影在两端向下弯出圆角尖；弯出去的那一小块仍在分界线上方，必须继续
+   压暗，否则角落会出现「阴影到头、两端却是直角」的缺口。径向渐变正好补
+   出圆角外侧的两个小三角：圆内（阴影结束处下方）透明，圆外（阴影一侧）
+   用边界同色。去掉分界线后，这两个尖角就是边界的唯一形状。 */
 .pdf-read-shade::before,
 .pdf-read-shade::after {
   content: "";
@@ -3692,16 +3652,6 @@ input[type="range"] {
     transparent 11.5px,
     var(--read-shade-edge) 12px
   );
-}
-.pdf-read-frame {
-  position: absolute;
-  left: 0;
-  right: 0;
-  /* 线压在阴影收束的那条线上，中间不留缝。 */
-  top: var(--read-old, 50%);
-  height: 16px;
-  border-top: 2px solid var(--read-frame-border);
-  border-radius: 12px 12px 0 0;
 }
 /* 滚动内容 = 左侧批注留白 + 页面区。留白随页面一起滚,批注卡才会一直对齐行。 */
 .pdf-stage {
@@ -3753,15 +3703,6 @@ input[type="range"] {
     url("../assets/cursors/pdf-highlight.png") 12 22,
     crosshair;
 }
-.pdf-viewer.tool-note .pdf-page-area,
-.pdf-viewer.tool-note .pdf-page-area *,
-.pdf-viewer.tool-note .pdf-page,
-.pdf-viewer.tool-note .pdf-page .textLayer,
-.pdf-viewer.tool-note .pdf-page .textLayer span {
-  cursor:
-    url("../assets/cursors/pdf-note.png") 12 22,
-    crosshair;
-}
 .pdf-page canvas {
   position: absolute;
   inset: 0;
@@ -3783,102 +3724,6 @@ input[type="range"] {
   mix-blend-mode: multiply;
   border-radius: 2px;
   pointer-events: none;
-}
-/* 文字批注的选区是亮蓝色,和高亮批注一眼区分。 */
-.pdf-anno-mark.note {
-  background: var(--pdf-note);
-}
-
-/* 批注留白:不属于任何一页,是 PDF 面板自带的一条空白批注栏(在页面左侧)。 */
-.pdf-notes {
-  position: relative;
-  z-index: 2;
-  flex: 0 0 auto;
-  min-width: 0;
-}
-.pdf-notes-hint {
-  margin: 16px 10px;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--text-faint);
-}
-.pdf-note-box {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  padding: 6px 8px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg1);
-  box-shadow: 0 1px 4px var(--shadow);
-}
-.pdf-note-head {
-  flex: 0 0 18px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.pdf-note-page {
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
-}
-.pdf-note-remove {
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border-radius: 4px;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--text-faint);
-  background: transparent;
-}
-.pdf-note-remove:hover {
-  color: var(--text);
-  background: var(--bg3);
-}
-.pdf-note-input {
-  flex: 0 0 auto;
-  min-height: 26px;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 2px 0 0;
-  border: none;
-  outline: none;
-  resize: none;
-  overflow-y: hidden;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--text);
-  background: transparent;
-}
-.pdf-note-input::placeholder {
-  color: var(--text-faint);
-}
-/* 连线画在页面之上、批注卡之下;整层不接鼠标事件。 */
-.pdf-note-lines {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  pointer-events: none;
-}
-.pdf-note-lines path {
-  fill: none;
-  stroke: var(--pdf-note-line);
-  stroke-width: 2;
-  stroke-linecap: round;
-  opacity: 0.9;
-}
-.pdf-note-lines circle {
-  fill: var(--pdf-note-line);
-  opacity: 0.6;
 }
 /* 护眼:白纸压成浅绿。multiply 保留黑字(黑 × 绿 = 黑),只染底色。 */
 .pdf-page-tint {

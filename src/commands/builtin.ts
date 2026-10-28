@@ -34,7 +34,7 @@ import { capturePdfSnapshot, hasPdfSnapshotSource } from "@/study/pdfSnapshot";
 import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
 import { fileToAgentImage } from "@/study/agentImages";
 import { WEREAD_HOME_URL } from "@/study/weread";
-import { activeKeyRegion } from "./globalKeys";
+import { setActiveKeyRegion } from "./globalKeys";
 
 /** 中栏是否开着网页(缩放键只在这种时候接管 ⌘= / ⌘- / ⌘0)。 */
 function hasWebPreview(): boolean {
@@ -47,14 +47,27 @@ function applyWebZoom(direction: 1 | -1): void {
   patchSettings({ studyWebZoom: stepWebZoom(settings.studyWebZoom, direction) });
 }
 
-/** 把焦点交回阅读区;网页在原生子 webview 里时交给它。 */
+/**
+ * 把焦点交回阅读区;网页在原生子 webview 里时交给它。
+ *
+ * 同时直接写入键盘归属:网页分支的焦点落在原生子 webview 上,主窗口的
+ * pointerdown/focusin 永远收不到,区域归属会一直停在笔记区 / Agent——之后
+ * 主窗口接到的按键就按错的区域解析(⌘E 会被笔记区自带的实时预览开关吃掉)。
+ * 命令是用户按键的直接结果,它本身就是「最近一次动手」。
+ */
 function focusReadingPane() {
   const focusPane = () => {
     document
       .querySelector<HTMLElement>('[data-key-region="reading"]')
       ?.focus({ preventScroll: true });
   };
+  setActiveKeyRegion("reading");
   if (useAppStore.getState().studyContent?.kind === "url") {
+    // 先结束主窗口的编辑态:编辑器(contenteditable)在编辑时,窗口的第一响应者
+    // 是它内部的字段编辑器;不 resign 就直接把第一响应者换成原生子 webview 会
+    // 被挡下,键盘留在主窗口——之后的按键全部按旧区域解析。
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) active.blur();
     // 浏览器模式没有原生视图,命令不存在 → 退回 DOM 占位区(区域判定仍成立)。
     void agentApi.focusStudyPreview().catch(focusPane);
     return;
@@ -89,10 +102,9 @@ function settleHeadingNumbering(
   renumberHeadings(view);
 }
 
-/** 学习助手面板当前是否可见(页签切走时面板仍在,只是隐藏)。 */
+/** 学习助手面板是否在场:三栏布局里常驻,进入学习模式即可用。 */
 function agentPanelActive(): boolean {
-  const store = useAppStore.getState();
-  return store.studyMode && store.settings.studyRightTab === "agent";
+  return useAppStore.getState().studyMode;
 }
 
 const defs: CommandDef[] = [
@@ -198,8 +210,8 @@ const defs: CommandDef[] = [
   // PDF/网页或焦点不该被抢时 when 为 false,键原样交给页面。
   //
   // 键位配在阅读区,带修饰键的和弦跨区域生效(keys.ts 的 REGION_FREE_COMMANDS):
-  // 在笔记区或 Agent 面板按它同样滚动,并把焦点交回阅读区——先滚再交焦点,
-  // 切换本身的开销(子 webview 聚焦要走一次 IPC)不挡在滚动前面。
+  // 在笔记区或 Agent 面板按它同样滚动。翻页**不动焦点**:焦点在哪就留在哪,
+  // 笔记区里连按 ⌃J 仍然是继续翻页,打完字也不用再点回编辑器。
   {
     id: "study.pdf-prev-page",
     title: "学习模式上一页(按步长滚动)",
@@ -207,7 +219,6 @@ const defs: CommandDef[] = [
     when: canFlipPdfPage,
     run: () => {
       void flipPdfPage(-1);
-      if (activeKeyRegion() !== "reading") focusReadingPane();
     },
   },
   {
@@ -217,7 +228,6 @@ const defs: CommandDef[] = [
     when: canFlipPdfPage,
     run: () => {
       void flipPdfPage(1);
-      if (activeKeyRegion() !== "reading") focusReadingPane();
     },
   },
   {
@@ -229,12 +239,10 @@ const defs: CommandDef[] = [
       useAppStore.getState().studyContent?.kind === "pdf" &&
       hasPdfSnapshotSource(),
     // 截图与投递都走前端:页面本来就是 canvas,不需要系统截图权限,也不经过
-    // 剪贴板——直接变成附件排进输入框,和手动粘贴截图同一条管道。
+    // 剪贴板——直接变成附件排进输入框,和手动粘贴截图同一条管道。助手面板
+    // 在三栏布局里常驻,不需要先切页签。
     run: async () => {
       const store = useAppStore.getState();
-      if (store.settings.studyRightTab !== "agent") {
-        store.patchSettings({ studyRightTab: "agent" });
-      }
       try {
         const file = await capturePdfSnapshot();
         if (!file) {
@@ -273,18 +281,6 @@ const defs: CommandDef[] = [
     run: () => useAppStore.getState().patchSettings({ studyWebZoom: DEFAULT_WEB_ZOOM }),
   },
   {
-    id: "study.toggle-right-tab",
-    keepsPageFocus: true,
-    title: "学习模式:切换 笔记/学习助手(⌘⇧U)",
-    category: "学习",
-    run: () => {
-      const s = useAppStore.getState();
-      s.patchSettings({
-        studyRightTab: s.settings.studyRightTab === "agent" ? "notes" : "agent",
-      });
-    },
-  },
-  {
     id: "study.agent-switch-session",
     title: "学习助手:切换 主会话/辅助会话(⌘⇧Y)",
     category: "学习",
@@ -296,27 +292,17 @@ const defs: CommandDef[] = [
   // 按键由页内运行时经 title 通道转回主窗口(见 study/webAnnotations.ts)。
   {
     id: "region.focus-agent",
-    title: "切换到学习助手并聚焦输入框",
+    title: "聚焦学习助手输入框",
     category: "区域切换",
     when: () => useAppStore.getState().studyMode,
-    run: () => {
-      const store = useAppStore.getState();
-      if (store.settings.studyRightTab !== "agent") {
-        store.patchSettings({ studyRightTab: "agent" });
-      }
-      store.runAgentPanelCommand("focus-input");
-    },
+    run: () => useAppStore.getState().runAgentPanelCommand("focus-input"),
   },
   {
     id: "region.focus-notes",
-    title: "切换到笔记区并聚焦编辑器",
+    title: "聚焦笔记区编辑器",
     category: "区域切换",
     run: () => {
-      const store = useAppStore.getState();
-      if (store.studyMode && store.settings.studyRightTab !== "notes") {
-        store.patchSettings({ studyRightTab: "notes" });
-      }
-      // 页签刚从隐藏切到可见时编辑器还拿不到焦点:等这次提交渲染完再聚焦。
+      // 编辑器一直可见(三栏常驻),聚焦后焦点事件会把键盘归属带过来。
       requestAnimationFrame(() => getView()?.focus());
     },
   },

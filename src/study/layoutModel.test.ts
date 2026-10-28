@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_AGENT_WIDTH,
   DEFAULT_CONTENT_WIDTH,
+  MIN_AGENT_WIDTH,
   MIN_CONTENT_WIDTH,
   MIN_RIGHT_WIDTH,
   RESIZER_WIDTH,
   basePageWidth,
   contentWidthForRenderedPage,
+  dragAgentEdge,
   dragContentEdge,
+  normalizeAgentWidth,
   normalizeContentWidth,
   studySplitToContentWidth,
 } from "./layoutModel";
@@ -45,9 +49,45 @@ describe("studySplitToContentWidth", () => {
   });
 });
 
+describe("normalizeAgentWidth", () => {
+  it("像素原样保留,只夹下限", () => {
+    expect(normalizeAgentWidth(360)).toBe(360);
+    expect(normalizeAgentWidth(20)).toBe(MIN_AGENT_WIDTH);
+  });
+
+  it("坏数据回落默认值", () => {
+    expect(normalizeAgentWidth(undefined)).toBe(DEFAULT_AGENT_WIDTH);
+    expect(normalizeAgentWidth(NaN)).toBe(DEFAULT_AGENT_WIDTH);
+    expect(normalizeAgentWidth(0)).toBe(DEFAULT_AGENT_WIDTH);
+  });
+});
+
+describe("dragAgentEdge", () => {
+  it("助手栏宽度 = 指针位置扣掉分隔条", () => {
+    expect(dragAgentEdge(RESIZER_WIDTH + 300, 1400)).toBe(300);
+  });
+
+  it("给中栏与笔记栏都留够最小宽度", () => {
+    const host = 1200;
+    const agent = dragAgentEdge(host - 1, host);
+    expect(agent).toBe(
+      host - RESIZER_WIDTH * 2 - MIN_CONTENT_WIDTH - MIN_RIGHT_WIDTH,
+    );
+  });
+
+  it("助手栏保住最小宽度", () => {
+    expect(dragAgentEdge(0, 1400)).toBe(MIN_AGENT_WIDTH);
+  });
+});
+
 describe("dragContentEdge", () => {
   it("内容栏宽度 = 指针位置扣掉分隔条,右栏吃剩余", () => {
     expect(dragContentEdge(RESIZER_WIDTH + 500, 1400)).toBe(500);
+  });
+
+  it("助手栏占着左缘时,内容栏宽度按它左缘算", () => {
+    const contentLeft = MIN_AGENT_WIDTH + RESIZER_WIDTH;
+    expect(dragContentEdge(contentLeft + RESIZER_WIDTH + 500, 1400, contentLeft)).toBe(500);
   });
 
   it("给右栏留够最小宽度", () => {

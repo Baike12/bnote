@@ -78,6 +78,7 @@ declare global {
     __cycleHeading: () => void;
     __toggleList: (kind: "bullet" | "numbered") => void;
     __setTypewriter: (on: boolean) => void;
+    __setTypewriterPosition: (position: number) => void;
     __enterAt: (
       text: string,
       line: number,
@@ -265,6 +266,11 @@ window.__toggleList = (kind) => toggleList(view, kind);
 window.__setTypewriter = (on) => {
   useAppStore.getState().patchSettings({ typewriter: on });
   reconfigureTypewriter(view, on);
+};
+// 位置设置走同一条 reconfigure:插件按新比例重铺上下留白并立刻回中。
+window.__setTypewriterPosition = (position) => {
+  useAppStore.getState().patchSettings({ typewriterPosition: position });
+  reconfigureTypewriter(view, useAppStore.getState().settings.typewriter);
 };
 // Enter 键真实键序（bnote 列表续行 → lang-markdown 续行 → defaultKeymap），用于调试续行行为。
 const runEnterChain = () =>
