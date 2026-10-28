@@ -3,7 +3,7 @@
 use super::pen_cursor;
 use super::CmdResult;
 use crate::agent::mcp::McpManager;
-use crate::agent::session::{build_system_prompt, Session, SessionRegistry};
+use crate::agent::session::{build_study_prompt, Session, SessionRegistry};
 use crate::agent::skills::SkillRegistry;
 use crate::agent::tools::{StudyContent, ToolContext};
 use crate::agent::Provider;
@@ -74,13 +74,22 @@ impl AgentModelChoice {
     }
 }
 
-/// vault 里的自定义指令(`.bnote/agent.md`,类比 AGENTS.md / CLAUDE.md);
-/// 文件不存在 = 空串,提示词里就不出现这一节。
+/// vault 里的自定义指令,类比 ZCode 的 AGENTS.md / Claude Code 的 CLAUDE.md。
+///
+/// 读 `.bnote/AGENTS.md`;旧版文件名 `.bnote/agent.md` 作为回退(不自动改名,
+/// 用户在设置页保存时才会落成 AGENTS.md)。文件不存在 = 空串,提示词里就不
+/// 出现这一节。
 fn load_user_instructions(state: &AppState) -> String {
-    state
+    let dot = state
         .vault()
-        .and_then(|v| std::fs::read_to_string(v.join(".bnote").join("agent.md")).ok())
-        .unwrap_or_default()
+        .map(|v| v.join(".bnote"))
+        .unwrap_or_default();
+    for name in ["AGENTS.md", "agent.md"] {
+        if let Ok(content) = std::fs::read_to_string(dot.join(name)) {
+            return content;
+        }
+    }
+    String::new()
 }
 
 #[tauri::command]
@@ -127,7 +136,14 @@ pub async fn agent_start_session(
     history: Option<Vec<crate::agent::types::ChatItem>>,
     // 恢复/分叉时沿用源会话的模型配置(见 AgentModelChoice)。
     model: Option<AgentModelChoice>,
+    // 会话形态:省略 = 学习模式(纯问答);"creative" = 创作模式(工具+skill)。
+    mode: Option<String>,
 ) -> CmdResult<serde_json::Value> {
+    let session_mode = match mode.as_deref() {
+        None | Some("") | Some("study") => crate::agent::session::SessionMode::Study,
+        Some("creative") => crate::agent::session::SessionMode::Creative,
+        other => return Err(format!("INVALID_MODE: 未知的会话模式 {other:?}")),
+    };
     let mut cfg = crate::agent::AgentConfig::load(&state.data_dir());
     if let Some(choice) = model {
         choice.apply(&mut cfg);
@@ -179,18 +195,32 @@ pub async fn agent_start_session(
         .ok()
         .and_then(|n| n.clone());
     let user_instructions = load_user_instructions(&state);
-    let system_prompt = build_system_prompt(
-        &vault_name,
-        current_note.as_deref(),
-        study.as_ref(),
-        &user_instructions,
-    );
+    let system_prompt = match session_mode {
+        crate::agent::session::SessionMode::Study => build_study_prompt(
+            &vault_name,
+            current_note.as_deref(),
+            study.as_ref(),
+            &user_instructions,
+        ),
+        crate::agent::session::SessionMode::Creative => {
+            let mcp_names: Vec<String> = mcp.tools.iter().map(|t| t.name.clone()).collect();
+            crate::agent::session::build_creative_prompt(
+                &vault_name,
+                current_note.as_deref(),
+                &user_instructions,
+                &skills.skills,
+                &mcp_names,
+            )
+        }
+    };
 
     let ctx = Arc::new(ToolContext {
         vault: state.vault(),
         data_dir: state.data_dir(),
         study_content: Arc::new(std::sync::RwLock::new(study)),
         abort: Arc::new(AtomicBool::new(false)),
+        app: Some(app.clone()),
+        preview_seq: std::sync::atomic::AtomicU64::new(0),
     });
 
     // 时间戳 + 递增序号:同一毫秒内开主会话再分叉辅助会话也不会撞 id。
@@ -206,6 +236,7 @@ pub async fn agent_start_session(
     );
     let session = Arc::new(Session {
         id: id.clone(),
+        mode: session_mode,
         items: Mutex::new(seed_items),
         system_prompt,
         ctx,
@@ -237,6 +268,19 @@ pub async fn agent_start_session(
             "contextWindow": cfg.context_window,
         },
     }))
+}
+
+/// 设置页与输入框 `/` 补全用的技能清单(每次即时发现,反映磁盘现状)。
+#[tauri::command]
+pub async fn agent_list_skills(state: State<'_, AppState>) -> CmdResult<Vec<crate::agent::skills::SkillInfo>> {
+    let cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    let dir = state.data_dir();
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(SkillRegistry::discover(&dir, vault.as_ref(), &cfg.skill_dirs).skills)
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
 #[tauri::command]
@@ -787,6 +831,94 @@ pub fn close_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
     }
     // 视图没了:撤掉笔形接管,主窗口自己的光标规则立刻生效。
     pen_cursor::detach();
+    Ok(())
+}
+
+/// Label of the creation-mode live preview (agent-generated HTML) embedded
+/// in the middle column. 与 study-preview 同一套「占位矩形 + 原生子 webview」
+/// 协作模型;二者互斥出现(创作模式与学习模式是面板的不同状态)。
+const CREATIVE_PREVIEW_LABEL: &str = "creative-preview";
+
+fn parse_preview_file_url(url: &str) -> Result<tauri::Url, String> {
+    let parsed = tauri::Url::parse(url.trim()).map_err(|e| format!("INVALID_URL: {}", e))?;
+    if parsed.scheme() != "file" {
+        return Err(format!("INVALID_URL: 创作预览只接受 file:// URL({})", url));
+    }
+    Ok(parsed)
+}
+
+/// Shows (creating if needed) the creation-mode preview on the middle column.
+/// 由 `creative-preview-updated` 事件驱动:每次 preview_html 落一个新的带版本
+/// 快照,前端换 URL 触发重载。
+#[tauri::command]
+pub async fn show_creative_preview(
+    app: tauri::AppHandle,
+    url: String,
+    bounds: PreviewBounds,
+) -> CmdResult<()> {
+    use tauri::Manager;
+
+    let parsed = parse_preview_file_url(&url)?;
+    if let Some(existing) = app.get_webview(CREATIVE_PREVIEW_LABEL) {
+        let _ = existing.set_bounds(bounds.rect());
+        existing
+            .navigate(parsed)
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+        existing
+            .show()
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+        return Ok(());
+    }
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "WEBVIEW_FAILED: 找不到主窗口".to_string())?;
+    // add_child 必须在异步命令里调用(内部会排到主线程并等待,同步命令里
+    // 调用会死锁,与 show_study_preview 同一约束)。
+    window
+        .add_child(
+            tauri::webview::WebviewBuilder::new(
+                CREATIVE_PREVIEW_LABEL,
+                tauri::WebviewUrl::External(parsed),
+            ),
+            bounds.position(),
+            bounds.size(),
+        )
+        .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_creative_preview_bounds(
+    app: tauri::AppHandle,
+    bounds: PreviewBounds,
+) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(CREATIVE_PREVIEW_LABEL) {
+        webview
+            .set_bounds(bounds.rect())
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_creative_preview_visible(app: tauri::AppHandle, visible: bool) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(CREATIVE_PREVIEW_LABEL) {
+        let result = if visible { webview.show() } else { webview.hide() };
+        result.map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn close_creative_preview(app: tauri::AppHandle) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(webview) = app.get_webview(CREATIVE_PREVIEW_LABEL) {
+        webview
+            .close()
+            .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
+    }
     Ok(())
 }
 

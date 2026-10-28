@@ -204,7 +204,8 @@ export type AgentPanelCommand =
   | "back"
   | "history"
   | "focus-input"
-  | "attach-images";
+  | "attach-images"
+  | "toggle-creative";
 export interface AgentPanelCommandRequest {
   seq: number;
   kind: AgentPanelCommand;
@@ -260,6 +261,8 @@ interface AppState {
   toast: string | null;
   /** 学习模式:激活时主区变为 agent | 内容 | 笔记 三栏 */
   studyMode: boolean;
+  /** 创作模式:学习模式内 agent 面板与中栏预览的形态开关。 */
+  creativeMode: boolean;
   /** 学习模式中间栏的当前内容(null = 空态,等待拖入 PDF 或输入 URL) */
   studyContent: StudyContent | null;
   /** 学习模式最近打开(PDF 与网页分开)。启动时从 config.json 恢复。 */
@@ -316,6 +319,7 @@ interface AppState {
   showToast: (msg: string) => void;
   clearToast: () => void;
   setStudyMode: (active: boolean) => void;
+  setCreativeMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
   setStudyHistory: (history: StudyHistory) => void;
   setStudyWereadBook: (book: { url: string; title: string } | null) => void;
@@ -383,6 +387,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   dailyBackFrom: null,
   toast: null,
   studyMode: false,
+  creativeMode: false,
   studyContent: null,
   studyHistory: emptyStudyHistory(),
   studyWereadBook: null,
@@ -494,6 +499,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 只在这一刻收,之后用户在模式里自己展开照常。
   setStudyMode: (active) =>
     set(active ? { studyMode: true, sidebarOpen: false } : { studyMode: false }),
+  setCreativeMode: (active) => set({ creativeMode: active }),
   setStudyContent: (content) => set({ studyContent: content, studyWereadBook: null }),
   setStudyHistory: (studyHistory) => set({ studyHistory }),
   setStudyWereadBook: (studyWereadBook) => set({ studyWereadBook }),

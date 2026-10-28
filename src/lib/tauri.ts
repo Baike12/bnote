@@ -29,7 +29,7 @@ export interface VaultIndex {
 }
 
 /** Whitelisted per-vault config files inside `<vault>/.bnote/`. */
-export type VaultConfigFile = "vimrc" | "snippets.js" | "keybindings.json" | "agent.md";
+export type VaultConfigFile = "vimrc" | "snippets.js" | "keybindings.json" | "agent.md" | "AGENTS.md";
 
 export interface InputSourceInfo {
   id: string;
@@ -260,6 +260,40 @@ export type AgentContentBlock =
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean };
 
+/** bblog 博客服务(创作模式发布目标)。 */
+export const bblogApi = {
+  /** 栏目树(公开;手工目录与前端创建的栏目同权)。 */
+  sections: (server: string) => invoke<BblogSections>("bblog_sections", { server }),
+  publish: (input: {
+    server: string;
+    token: string;
+    category: string;
+    topic: string;
+    filename: string;
+    content: string;
+  }) => invoke<BblogPublishResult>("bblog_publish", input),
+};
+
+export interface BblogTopic {
+  name: string;
+  count: number;
+}
+
+export interface BblogCategory {
+  name: string;
+  topics: BblogTopic[];
+}
+
+export interface BblogSections {
+  categories: BblogCategory[];
+}
+
+export interface BblogPublishResult {
+  ok: boolean;
+  url: string;
+  slug: string;
+}
+
 export const agentApi = {
   getConfig: () => invoke<AgentConfig>("agent_get_config"),
   saveConfig: (config: AgentConfig) => invoke<void>("agent_save_config", { config }),
@@ -269,8 +303,12 @@ export const agentApi = {
     history?: AgentChatItem[],
     /** 恢复/分叉:沿用源会话的模型配置;不传则用当前保存的配置。 */
     model?: SessionModelConfig,
+    /** "creative" = 创作模式(带工具/skill/MCP);省略 = 学习模式纯问答。 */
+    mode?: "study" | "creative",
   ) =>
-    invoke<SessionInfo>("agent_start_session", { study, fork, history, model }),
+    invoke<SessionInfo>("agent_start_session", { study, fork, history, model, mode }),
+  /** 磁盘上当前可用的技能清单(设置页与输入框 / 补全)。 */
+  listSkills: () => invoke<SkillInfo[]>("agent_list_skills"),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
@@ -331,6 +369,16 @@ export const agentApi = {
     invoke<void>("merge_study_preview_annotations", { url, annotations }),
   /** 关掉内嵌预览(离开学习模式 / 换内容)。 */
   closeStudyPreview: () => invoke<void>("close_study_preview"),
+  /** 创作模式:中栏实时预览(原生子 webview 加载 preview_html 落的快照)。
+   *  首次调用创建、之后换 URL 重载并更新矩形。 */
+  showCreativePreview: (url: string, bounds: PreviewBounds) =>
+    invoke<void>("show_creative_preview", { url, bounds }),
+  setCreativePreviewBounds: (bounds: PreviewBounds) =>
+    invoke<void>("set_creative_preview_bounds", { bounds }),
+  /** 原生视图盖在 DOM 之上:HTML 弹层(设置/发布对话框)打开时要藏起来。 */
+  setCreativePreviewVisible: (visible: boolean) =>
+    invoke<void>("set_creative_preview_visible", { visible }),
+  closeCreativePreview: () => invoke<void>("close_creative_preview"),
   /** Opens/reuses the standalone study-mode preview window (backend-created so
    *  that failures come back as errors instead of a swallowed `tauri://error`). */
   openStudyUrl: (url: string) => invoke<void>("open_study_url", { url }),

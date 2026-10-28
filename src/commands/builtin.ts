@@ -316,6 +316,13 @@ const defs: CommandDef[] = [
   },
   // ---- 学习助手面板内的会话操作 ----
   {
+    id: "agent.toggle-creative",
+    title: "学习助手:切换创作模式(生成 HTML 实时预览)",
+    category: "学习助手",
+    when: agentPanelActive,
+    run: () => useAppStore.getState().runAgentPanelCommand("toggle-creative"),
+  },
+  {
     id: "agent.new-session",
     title: "学习助手:新建一个全新会话",
     category: "学习助手",
