@@ -1,5 +1,5 @@
 import { api } from "@/lib/tauri";
-import { parseBinding } from "@/commands/keys";
+import { eventKeyName, parseBinding } from "@/commands/keys";
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
@@ -272,6 +272,7 @@ interface RuntimeHelpers {
   normalizePageStep: typeof normalizePageStep;
   snapScrollTopToLine: typeof snapScrollTopToLine;
   parseBinding: typeof parseBinding;
+  eventKeyName: typeof eventKeyName;
 }
 
 interface TextEntry {
@@ -305,20 +306,6 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   const MAX_NOTE_TEXT = 2000;
   /** 批注卡宽度(px);放不下时贴到视口右侧。 */
   const NOTE_CARD_W = 240;
-  /** 与 commands/keys.ts 的 eventToKey 同一张表：Shift+符号 的绑定按物理键记。 */
-  const SHIFT_SYMBOL_BASE: Record<string, string> = {
-    Semicolon: ";",
-    Quote: "'",
-    Comma: ",",
-    Period: ".",
-    Slash: "/",
-    Backslash: "\\",
-    BracketLeft: "[",
-    BracketRight: "]",
-    Minus: "-",
-    Equal: "=",
-    Backquote: "`",
-  };
 
   let mode: WebAnnotationKind | null = null;
   let url = location.href;
@@ -368,8 +355,9 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let prevKeys: string[] = ["PageUp", "ArrowLeft"];
   let nextKeys: string[] = ["PageDown", "ArrowRight"];
   /**
-   * 要转回主窗口的阅读区快捷键(切到 Agent / 笔记区)。原生子 webview 的按键
-   * 不冒泡到主窗口,这里匹配到就写 document.title,Rust 侧转成 Tauri 事件。
+   * 要转回主窗口的快捷键(通用命令 + 阅读区的区域切换/网页缩放)。原生子
+   * webview 的按键不冒泡到主窗口,这里匹配到就写 document.title,Rust 侧
+   * 转成 Tauri 事件。
    */
   let hostKeys: string[] = [];
   let hostKeySeq = 0;
@@ -752,7 +740,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (nextList) nextKeys = nextList;
   }
 
-  /** 主窗口推来的「转发给主窗口」的键(阅读区里切区域的快捷键)。 */
+  /** 主窗口推来的「转发给主窗口」的键(通用命令 + 区域切换/网页缩放)。 */
   function setHostKeys(value: unknown): void {
     const list = keyList(value);
     if (list) hostKeys = list;
@@ -762,7 +750,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   /**
    * 与 commands/keys.ts 共用同一套绑定解析(含 ⌘− 这种主键本身就是 "-" 的
-   * 写法);规范化事件按键的规则与 eventToKey 一致。
+   * 写法)与主键规范化(Shift+符号、macOS Option+字母都按物理键认)。
    */
   function bindingMatches(event: KeyboardEvent, binding: string): boolean {
     const parsed = helpers.parseBinding(binding);
@@ -774,13 +762,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (mods.includes("Alt") !== event.altKey) return false;
     if (mods.includes("Ctrl") !== (IS_MAC && event.ctrlKey)) return false;
     if (mods.includes("Meta") !== (!IS_MAC && event.metaKey)) return false;
-    let actual = event.key;
-    if (actual === " ") actual = "Space";
-    else if (actual.length === 1) actual = actual.toLowerCase();
-    if (event.shiftKey && actual.length === 1 && !/[a-z0-9]/.test(actual)) {
-      actual = SHIFT_SYMBOL_BASE[event.code] ?? actual;
-    }
-    return actual === key;
+    return helpers.eventKeyName(event) === key;
   }
 
   /** 页面的主滚动容器：窗口可滚时就是文档，否则找视口中心下最近的可滚祖先。 */
@@ -1773,6 +1755,7 @@ export function buildWebAnnotationScript(): string {
     `normalizePageStep:${normalizePageStep.toString()}`,
     `snapScrollTopToLine:${snapScrollTopToLine.toString()}`,
     `parseBinding:${parseBinding.toString()}`,
+    `eventKeyName:${eventKeyName.toString()}`,
   ].join(",");
   return `(${webAnnotationRuntime.toString()})({${helpers}});`;
 }

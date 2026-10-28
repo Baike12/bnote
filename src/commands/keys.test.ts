@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_BINDINGS,
   FIXED_PAGE_COMMANDS,
@@ -9,6 +9,8 @@ import {
   commandsForKey,
   defaultRegionOf,
   defaultRegionsOf,
+  eventKeyName,
+  eventToKey,
   fixedPageCommandFor,
   formOwnsEditChord,
   isPlainFocusOwnedKey,
@@ -375,5 +377,63 @@ describe("网页缩放键位", () => {
     ]);
     // 笔记区没有网页缩放绑定,仍是编辑区字号缩放。
     expect(commandsForKey("Mod-=", "notes")).toEqual(["view.zoom-in"]);
+  });
+});
+
+/**
+ * macOS 上 Option+字母的 event.key 是打出来的字符(å/ß/®,Option+N 还是
+ * "Dead")。绑定表按物理键写(⌘⌥A = "Mod-Alt-a"),主窗口与网页运行时都必须
+ * 从 event.code 还原,否则这些快捷键永远匹配不上。
+ */
+describe("事件主键规范化", () => {
+  const ev = (
+    key: string,
+    code: string,
+    mods: { shiftKey?: boolean; altKey?: boolean } = {},
+  ) => ({ key, code, shiftKey: mods.shiftKey ?? false, altKey: mods.altKey ?? false });
+
+  it("Option+字母 / 数字还原成物理键", () => {
+    expect(eventKeyName(ev("å", "KeyA", { altKey: true }))).toBe("a");
+    expect(eventKeyName(ev("Dead", "KeyN", { altKey: true }))).toBe("n");
+    expect(eventKeyName(ev("®", "KeyR", { altKey: true }))).toBe("r");
+    expect(eventKeyName(ev("¡", "Digit1", { altKey: true }))).toBe("1");
+  });
+
+  it("Shift+符号仍按物理键", () => {
+    expect(eventKeyName(ev(":", "Semicolon", { shiftKey: true }))).toBe(";");
+    expect(eventKeyName(ev("_", "Minus", { shiftKey: true }))).toBe("-");
+  });
+
+  it("普通按键不受影响", () => {
+    expect(eventKeyName(ev("K", "KeyK", { shiftKey: true }))).toBe("k");
+    expect(eventKeyName(ev("ArrowLeft", "ArrowLeft", { altKey: true }))).toBe("ArrowLeft");
+    expect(eventKeyName(ev(" ", "Space"))).toBe("Space");
+  });
+
+  it("eventToKey 把 ⌘⌥A / ⌘⌥N 解析成可命中的绑定串", () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel", userAgent: "" });
+    try {
+      const chord = (init: Record<string, unknown>) =>
+        eventToKey({
+          key: "",
+          code: "",
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: false,
+          ...init,
+        } as unknown as KeyboardEvent);
+      expect(chord({ key: "å", code: "KeyA", metaKey: true, altKey: true })).toBe(
+        "Mod-Alt-a",
+      );
+      expect(chord({ key: "Dead", code: "KeyN", metaKey: true, altKey: true })).toBe(
+        "Mod-Alt-n",
+      );
+      expect(chord({ key: "K", code: "KeyK", metaKey: true, shiftKey: true })).toBe(
+        "Mod-Shift-k",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
