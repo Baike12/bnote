@@ -137,7 +137,13 @@ const defs: CommandDef[] = [
     category: "工作区",
     run: () => void actions.newFolder(),
   },
-  { id: "workspace.save-note", title: "保存当前笔记", category: "工作区", run: () => void actions.saveNote() },
+  {
+    id: "workspace.save-note",
+    keepsPageFocus: true,
+    title: "保存当前笔记",
+    category: "工作区",
+    run: () => void actions.saveNote(),
+  },
   {
     id: "workspace.open-drawing",
     title: "画图:打开画布,回到笔记时插入光标处",
@@ -268,6 +274,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "study.toggle-right-tab",
+    keepsPageFocus: true,
     title: "学习模式:切换 笔记/学习助手(⌘⇧U)",
     category: "学习",
     run: () => {
@@ -500,6 +507,7 @@ const defs: CommandDef[] = [
   // ---- editor toggles ----
   {
     id: "editor.toggle-live-preview",
+    keepsPageFocus: true,
     title: "切换实时渲染/源码模式",
     category: "编辑器",
     run: () => {
@@ -509,6 +517,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "editor.toggle-vim",
+    keepsPageFocus: true,
     title: "切换 Vim 模式",
     category: "编辑器",
     run: () => {
@@ -518,6 +527,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "editor.toggle-typewriter",
+    keepsPageFocus: true,
     title: "切换打字机模式",
     category: "编辑器",
     run: () => {
@@ -527,6 +537,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "editor.toggle-snippets",
+    keepsPageFocus: true,
     title: "切换 LaTeX 快捷片段",
     category: "编辑器",
     run: () => {
@@ -602,7 +613,9 @@ const defs: CommandDef[] = [
 
   // ---- view ----
   {
-    id: "view.zoom-in",    title: "放大编辑区字号",
+    id: "view.zoom-in",
+    keepsPageFocus: true,
+    title: "放大编辑区字号",
     category: "视图",
     run: () => {
       const { settings, patchSettings } = useAppStore.getState();
@@ -611,6 +624,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "view.zoom-out",
+    keepsPageFocus: true,
     title: "缩小编辑区字号",
     category: "视图",
     run: () => {
@@ -620,6 +634,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "view.zoom-reset",
+    keepsPageFocus: true,
     title: "重置编辑区字号",
     category: "视图",
     run: () => {

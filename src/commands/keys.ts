@@ -333,6 +333,36 @@ export function commandsForKey(key: string, region: KeyRegion): string[] {
 }
 
 /**
+ * 焦点在原生网页子 webview 里时要转回主窗口执行的键。
+ *
+ * 子 webview 的 keydown 不冒泡到主窗口,页内运行时只认这份列表(匹配后写
+ * document.title 经 title 通道转回来)。列表直接从键位表推导,而不是手写
+ * 枚举——通用命令按定义「任何焦点都生效」(快速待办、命令面板…),阅读区的
+ * 绑定也归主窗口执行;漏一条就是网页里一条静默失效的快捷键。
+ *
+ * 例外是页内自己消化的命令:翻页在页内本地滚动(不绕 IPC),PDF 截图对网页
+ * 没有意义。它们在页内处理,不转发。
+ */
+const PAGE_OWNED_COMMANDS = new Set([
+  "study.pdf-prev-page",
+  "study.pdf-next-page",
+  "study.pdf-snap-to-agent",
+]);
+
+export function pageForwardKeys(): string[] {
+  const out: string[] = [];
+  const add = (keys: string[]) => {
+    for (const key of keys) if (!out.includes(key)) out.push(key);
+  };
+  for (const value of Object.values(current.global)) add(keysOf(value));
+  for (const [id, value] of Object.entries(current.reading)) {
+    if (PAGE_OWNED_COMMANDS.has(id)) continue;
+    add(keysOf(value));
+  }
+  return out;
+}
+
+/**
  * 应用用户覆盖:先铺默认,再按区域放覆盖项。区域之间**互不影响**——同一条
  * 命令可以在多个区域各有一份绑定(区域切换命令就是如此);null 只解绑该区域。
  */
