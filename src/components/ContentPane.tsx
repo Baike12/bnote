@@ -3,7 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { agentApi, type PreviewBounds, type StudyContent } from "@/lib/tauri";
-import { bindingsForCommand, formatBinding } from "@/commands/keys";
+import { bindingsForCommand, formatBinding, pageForwardKeys } from "@/commands/keys";
 import { getKeymapRevision, subscribeKeymap } from "@/commands/keybindingOverrides";
 import { resolveBoundCommand, runBoundKey } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
@@ -65,22 +65,6 @@ function readPageKeyBindings() {
   };
 }
 
-/**
- * 要转回主窗口执行的阅读区快捷键:焦点在原生子 webview 里时,页内运行时匹配
- * 到这些键后经 title 通道上报,主窗口按同一套 reading 键位执行。
- */
-function readReadingShortcutKeys(): string[] {
-  return [
-    ...bindingsForCommand("region.focus-agent", "reading"),
-    ...bindingsForCommand("region.focus-notes", "reading"),
-    // 网页缩放(⌘= / ⌘- / ⌘0):页内匹配后同样转给主窗口——缩放只是 Rust 侧
-    // 改一个页面属性,不动焦点(见 CommandDef.keepsPageFocus)。
-    ...bindingsForCommand("study.web-zoom-in", "reading"),
-    ...bindingsForCommand("study.web-zoom-out", "reading"),
-    ...bindingsForCommand("study.web-zoom-reset", "reading"),
-  ];
-}
-
 /** 工具栏提示里的快捷键跟着当前绑定走(设置里改键后提示不会说谎)。 */
 function bindingLabel(id: string): string {
   const [first] = bindingsForCommand(id, "reading");
@@ -101,7 +85,7 @@ function previewInitScript(step: number, translate: boolean): string {
       keys.prev,
     )}, ${JSON.stringify(keys.next)});`,
     `window.__bnoteReader && window.__bnoteReader.setHostKeys(${JSON.stringify(
-      readReadingShortcutKeys(),
+      pageForwardKeys(),
     )});`,
     WEREAD_SCRIPT,
   ].join("\n");
@@ -247,7 +231,7 @@ export function ContentPane() {
   // 立刻换新键,不用重新加载网页。
   useEffect(() => {
     if (!previewUrl || modal !== null) return;
-    void agentApi.setStudyPreviewShortcuts(readReadingShortcutKeys()).catch(() => {});
+    void agentApi.setStudyPreviewShortcuts(pageForwardKeys()).catch(() => {});
   }, [previewUrl, modal, keymapRev]);
 
   // 网页缩放:设置是唯一写入者(工具栏按钮与命令都只写设置),这里把它推给
@@ -312,7 +296,7 @@ export function ContentPane() {
         await agentApi
           .setStudyPreviewReadKeys(keys.prev, keys.next)
           .catch(() => {});
-        await agentApi.setStudyPreviewShortcuts(readReadingShortcutKeys()).catch(() => {});
+        await agentApi.setStudyPreviewShortcuts(pageForwardKeys()).catch(() => {});
         // 导航完成后补推缩放:设置才是唯一事实,页面自己不用记比例。
         await agentApi
           .setStudyPreviewZoom(

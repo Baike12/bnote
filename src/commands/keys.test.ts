@@ -16,6 +16,7 @@ import {
   isPlainFocusOwnedKey,
   keysOf,
   normalizeOverrides,
+  pageForwardKeys,
   parseBinding,
   serializeOverrides,
 } from "./keys";
@@ -377,6 +378,49 @@ describe("网页缩放键位", () => {
     ]);
     // 笔记区没有网页缩放绑定,仍是编辑区字号缩放。
     expect(commandsForKey("Mod-=", "notes")).toEqual(["view.zoom-in"]);
+  });
+});
+
+/**
+ * 原生网页子 webview 里的按键不冒泡到主窗口,页内运行时只认主窗口推过去的
+ * 转发列表。通用命令「任何焦点都生效」——快速待办、命令面板这些必须包含在
+ * 内,漏一条就是网页里一条静默失效的快捷键。
+ */
+describe("网页转发键", () => {
+  it("通用区域整张表都转发(快速待办 / 命令面板 / 区域切换)", () => {
+    const keys = pageForwardKeys();
+    expect(keys).toContain("Mod-Shift-k"); // workspace.capture-todo
+    expect(keys).toContain("Mod-p");
+    expect(keys).toContain("Mod-Alt-a"); // region.focus-agent(阅读区)
+    expect(keys).toContain("Mod-="); // 网页缩放
+    // 翻页的裸键由页内自己处理,不绕 IPC 转发。
+    expect(keys).not.toContain("PageDown");
+    expect(keys).not.toContain("ArrowRight");
+    // 只对 PDF 有意义的截图键不转发:网页里按下不能被静默吞掉。
+    expect(keys).not.toContain("Mod-Shift-e");
+  });
+
+  it("用户挪进阅读区的绑定也会转发", () => {
+    applyOverrides(
+      normalizeOverrides({ reading: { "region.focus-agent": "Mod-Alt-z" } }),
+    );
+    expect(pageForwardKeys()).toContain("Mod-Alt-z");
+  });
+
+  it("跟随用户覆盖:改键生效、解绑即移除", () => {
+    applyOverrides(
+      normalizeOverrides({
+        global: { "workspace.capture-todo": "Mod-Shift-j" },
+        reading: { "study.web-zoom-in": "Mod-Shift-=" },
+      }),
+    );
+    const keys = pageForwardKeys();
+    expect(keys).toContain("Mod-Shift-j");
+    expect(keys).not.toContain("Mod-Shift-k");
+    expect(keys).toContain("Mod-Shift-=");
+
+    applyOverrides({ global: { "workspace.capture-todo": null } });
+    expect(pageForwardKeys()).not.toContain("Mod-Shift-j");
   });
 });
 
