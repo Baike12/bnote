@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  currentRegion,
   intersectRect,
   planSnapshot,
   type SnapshotPage,
@@ -101,5 +102,69 @@ describe("planSnapshot 取景几何", () => {
       rect(5, 5, 5, 5),
     );
     expect(intersectRect(rect(0, 0, 10, 10), rect(20, 20, 5, 5))).toBeNull();
+  });
+});
+
+describe("阅读分区:压暗的旧内容不进图", () => {
+  it("currentRegion 只保留当前内容区(阴影下沿以下)", () => {
+    expect(currentRegion(rect(0, 100, 500, 800), 500)).toEqual(
+      rect(0, 500, 500, 400),
+    );
+  });
+
+  it("没有压暗层 → 整屏都是当前内容", () => {
+    expect(currentRegion(rect(0, 100, 500, 800), null)).toEqual(
+      rect(0, 100, 500, 800),
+    );
+  });
+
+  it("压暗层下沿在视口之上 → 不裁(整屏都在当前区)", () => {
+    expect(currentRegion(rect(0, 100, 500, 800), 20)).toEqual(
+      rect(0, 100, 500, 800),
+    );
+  });
+
+  it("压暗层盖住整个视口 → 没有可截的内容", () => {
+    expect(currentRegion(rect(0, 100, 500, 800), 900)).toBeNull();
+  });
+
+  it("取景从阴影下沿开始:上半屏的旧内容不进图", () => {
+    // 视口 0..800,阴影盖住 0..400(旧内容),当前内容区 400..800。
+    const plan = planSnapshot(
+      rect(0, 0, 500, 800),
+      [page({ box: rect(0, -100, 500, 900), full: rect(0, -100, 500, 900) })],
+      { currentTop: 400 },
+    );
+    expect(plan).not.toBeNull();
+    expect(plan!.origin).toEqual({ left: 0, top: 400 });
+    expect(plan!.height).toBe(800); // 400 CSS × 2(Dpr)
+    // 源矩形同步上移:旧内容那 500px 不进图。
+    expect(plan!.pages[0].src).toEqual(rect(0, 1000, 1000, 800));
+    expect(plan!.pages[0].dest).toEqual(rect(0, 0, 1000, 800));
+  });
+
+  it("不传阴影边界 → 旧行为不变(整屏取景)", () => {
+    const plan = planSnapshot(rect(0, 0, 500, 800), [
+      page({ box: rect(0, -100, 500, 900), full: rect(0, -100, 500, 900) }),
+    ]);
+    expect(plan!.origin).toEqual({ left: 0, top: 0 });
+    expect(plan!.height).toBe(1600);
+  });
+
+  it("阴影盖住整屏 → null(调用方提示没有当前内容)", () => {
+    const plan = planSnapshot(rect(0, 0, 500, 800), [
+      page({ box: rect(0, -100, 500, 900), full: rect(0, -100, 500, 900) }),
+    ], { currentTop: 900 });
+    expect(plan).toBeNull();
+  });
+
+  it("完全落在阴影里的页面不进图", () => {
+    // 页面 0..300 全在阴影里(0..400),当前区里没有这一页。
+    const plan = planSnapshot(
+      rect(0, 0, 500, 800),
+      [page({ box: rect(0, 0, 500, 300), full: rect(0, 0, 500, 300) })],
+      { currentTop: 400 },
+    );
+    expect(plan).toBeNull();
   });
 });

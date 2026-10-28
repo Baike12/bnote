@@ -696,9 +696,9 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   }, [annotations]);
 
   // --- 阅读区截图(⌘⇧E → 学习助手) ---------------------------------------
-  // 把可见页面拼成一张 PNG:只取「滚动视口 ∩ 页面列」,目录栏/批注留白/
-  // 页框阴影都不进图。页面 canvas 还没画完时等下一帧,最多 12 帧(≈200ms);
-  // 仍不齐返回 null,由命令提示「还没渲染完」。
+  // 把可见页面拼成一张 PNG:只取「滚动视口 ∩ 当前内容区 ∩ 页面列」,压暗的
+  // 旧内容/目录栏/批注留白/页框阴影都不进图。页面 canvas 还没画完时等下一帧,
+  // 最多 12 帧(≈200ms);仍不齐返回 null,由命令提示「还没渲染完」。
   useEffect(
     () =>
       registerPdfSnapshotSource(async () => {
@@ -731,7 +731,15 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
             });
             canvases.push(canvas);
           }
-          const plan = planSnapshot(viewport, pages);
+          // 阅读分区:压暗遮罩的下沿就是「刚读完的旧内容」与「当前内容」的分界,
+          // 截图只取分界以下的当前内容区。遮罩是 DOM 覆盖层,量它的下沿即可,
+          // 不必再把步长换算一遍。
+          const shade = scroll.parentElement?.querySelector<HTMLElement>(
+            ".pdf-read-shade",
+          );
+          const shadeBox = shade ? snapshotRect(shade) : null;
+          const currentTop = shadeBox ? shadeBox.top + shadeBox.height : null;
+          const plan = planSnapshot(viewport, pages, { currentTop });
           if (plan) {
             const cssVar = (name: string, fallback: string) =>
               (styleOwner ? getComputedStyle(styleOwner).getPropertyValue(name) : "").trim() ||
