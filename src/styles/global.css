@@ -2656,6 +2656,12 @@ input[type="range"] {
   color: var(--text-dim, var(--text));
 }
 
+/* 工具结果里随附的截图(如预览渲染图):与用户消息图片同一套小图样式,
+   只是间距接在 io 块下方。 */
+.agent-tool .agent-msg-images {
+  margin: 8px 0 0;
+}
+
 .agent-error {
   color: var(--danger);
   font-size: 12.5px;

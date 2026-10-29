@@ -53,12 +53,35 @@ fn anthropic_block(c: &Content) -> Value {
         Content::ToolUse { id, name, input } => {
             json!({"type": "tool_use", "id": id, "name": name, "input": input})
         }
-        Content::ToolResult { tool_use_id, content, is_error } => json!({
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": content,
-            "is_error": is_error,
-        }),
+        // 无图时保持纯字符串形态(与既有会话记录/兼容端点的最小公倍数);
+        // 有图时 content 换 blocks 数组(text + image),这是 Anthropic 官方
+        // 协议里 tool_result 的标准形态。
+        Content::ToolResult { tool_use_id, content, is_error, images } if images.is_empty() => {
+            json!({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+                "is_error": is_error,
+            })
+        }
+        Content::ToolResult { tool_use_id, content, is_error, images } => {
+            let mut blocks = Vec::with_capacity(1 + images.len());
+            if !content.is_empty() {
+                blocks.push(json!({"type": "text", "text": content}));
+            }
+            for img in images {
+                blocks.push(json!({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": img.media_type, "data": img.data},
+                }));
+            }
+            json!({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": blocks,
+                "is_error": is_error,
+            })
+        }
     }
 }
 
@@ -82,6 +105,93 @@ fn openai_user_content(text_parts: &[String], images: &[Content]) -> Value {
         }));
     }
     json!(parts)
+}
+
+/// ChatItem[] → OpenAI messages 数组。system 非空时放首位;assistant 文本 +
+/// tool_calls;用户消息走 openai_user_content;工具结果逐条 tool 消息——
+/// OpenAI 协议的 tool 消息只接受文本部件,ToolResult 里随附的截图带不上
+/// (与 assistant 分支丢 image 同一约定);文本里的说明仍在,模型不至于
+/// 以为看到了图。
+fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
+    let mut messages: Vec<Value> = Vec::new();
+    if !system.is_empty() {
+        messages.push(json!({"role": "system", "content": system}));
+    }
+    for item in items {
+        // ChatItem 目前只有 Message 一种;将来加变体时这里会编译报错,
+        // 正好逼着把新变体接进消息组装。
+        let ChatItem::Message { role, content } = item;
+        if role == "assistant" {
+            let mut text = String::new();
+            let mut tool_calls: Vec<&Content> = Vec::new();
+            for c in content {
+                match c {
+                    Content::Text { text: t } => text.push_str(t),
+                    Content::ToolUse { .. } => tool_calls.push(c),
+                    // 图片按构造只会出现在用户消息里;真出现也带不上
+                    // (OpenAI assistant content 不接受 image 部件),丢弃。
+                    Content::Image { .. } => {}
+                    Content::ToolResult { .. } => {}
+                }
+            }
+            let mut msg = json!({"role": "assistant"});
+            if !text.is_empty() {
+                msg["content"] = json!(text);
+            }
+            if !tool_calls.is_empty() {
+                let calls: Vec<Value> = tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| match c {
+                        Content::ToolUse { id, name, input } => json!({
+                            "id": id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": input.to_string(),
+                            },
+                            "index": i,
+                        }),
+                        _ => json!({}),
+                    })
+                    .collect();
+                msg["tool_calls"] = json!(calls);
+            }
+            if text.is_empty() && tool_calls.is_empty() {
+                msg["content"] = json!("");
+            }
+            messages.push(msg);
+        } else {
+            // user message or tool results
+            let mut text_parts: Vec<String> = Vec::new();
+            let mut images: Vec<Content> = Vec::new();
+            let mut results: Vec<&Content> = Vec::new();
+            for c in content {
+                match c {
+                    Content::Text { text } => text_parts.push(text.clone()),
+                    Content::Image { .. } => images.push(c.clone()),
+                    Content::ToolResult { .. } => results.push(c),
+                    Content::ToolUse { .. } => {}
+                }
+            }
+            if !text_parts.is_empty() || !images.is_empty() {
+                messages.push(json!({
+                    "role": "user",
+                    "content": openai_user_content(&text_parts, &images),
+                }));
+            }
+            for r in results {
+                if let Content::ToolResult { tool_use_id, content, .. } = r {
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": tool_use_id,
+                        "content": content,
+                    }));
+                }
+            }
+        }
+    }
+    messages
 }
 
 /// Anthropic `message_start` 的 usage:input_tokens 不含缓存读写,占用要三项相加。
@@ -317,83 +427,7 @@ impl Provider {
         tools: &[ToolDef],
         sink: &(dyn Fn(AgentEvent) + Send + Sync),
     ) -> Result<TurnResult, String> {
-        let mut messages: Vec<Value> = Vec::new();
-        if !system.is_empty() {
-            messages.push(json!({"role": "system", "content": system}));
-        }
-        for item in items {
-            if let ChatItem::Message { role, content } = item {
-                if role == "assistant" {
-                    let mut text = String::new();
-                    let mut tool_calls: Vec<&Content> = Vec::new();
-                    for c in content {
-                        match c {
-                            Content::Text { text: t } => text.push_str(t),
-                            Content::ToolUse { .. } => tool_calls.push(c),
-                            // 图片按构造只会出现在用户消息里;真出现也带不上
-                            // (OpenAI assistant content 不接受 image 部件),丢弃。
-                            Content::Image { .. } => {}
-                            Content::ToolResult { .. } => {}
-                        }
-                    }
-                    let mut msg = json!({"role": "assistant"});
-                    if !text.is_empty() {
-                        msg["content"] = json!(text);
-                    }
-                    if !tool_calls.is_empty() {
-                        let calls: Vec<Value> = tool_calls
-                            .iter()
-                            .enumerate()
-                            .map(|(i, c)| match c {
-                                Content::ToolUse { id, name, input } => json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": input.to_string(),
-                                    },
-                                    "index": i,
-                                }),
-                                _ => json!({}),
-                            })
-                            .collect();
-                        msg["tool_calls"] = json!(calls);
-                    }
-                    if text.is_empty() && tool_calls.is_empty() {
-                        msg["content"] = json!("");
-                    }
-                    messages.push(msg);
-                } else {
-                    // user message or tool results
-                    let mut text_parts: Vec<String> = Vec::new();
-                    let mut images: Vec<Content> = Vec::new();
-                    let mut results: Vec<&Content> = Vec::new();
-                    for c in content {
-                        match c {
-                            Content::Text { text } => text_parts.push(text.clone()),
-                            Content::Image { .. } => images.push(c.clone()),
-                            Content::ToolResult { .. } => results.push(c),
-                            Content::ToolUse { .. } => {}
-                        }
-                    }
-                    if !text_parts.is_empty() || !images.is_empty() {
-                        messages.push(json!({
-                            "role": "user",
-                            "content": openai_user_content(&text_parts, &images),
-                        }));
-                    }
-                    for r in results {
-                        if let Content::ToolResult { tool_use_id, content, .. } = r {
-                            messages.push(json!({
-                                "role": "tool",
-                                "tool_call_id": tool_use_id,
-                                "content": content,
-                            }));
-                        }
-                    }
-                }
-            }
-        }
+        let messages: Vec<Value> = openai_messages(system, items);
         let tools_json: Vec<Value> = tools
             .iter()
             .map(|t| {
@@ -584,6 +618,7 @@ fn find_double_newline(buf: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::types::InlineImage;
 
     #[tokio::test]
     async fn 流空闲超时报错而不是永久挂起() {
@@ -627,6 +662,55 @@ mod tests {
         assert_eq!(v["source"]["type"], "base64");
         assert_eq!(v["source"]["media_type"], "image/png");
         assert_eq!(v["source"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn anthropic_tool_result_无图保持字符串_有图换_blocks_数组() {
+        let plain = anthropic_block(&Content::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "preview updated".into(),
+            is_error: false,
+            images: vec![],
+        });
+        assert_eq!(plain["type"], "tool_result");
+        assert_eq!(plain["content"], "preview updated");
+        assert_eq!(plain["tool_use_id"], "t1");
+
+        let with_img = anthropic_block(&Content::ToolResult {
+            tool_use_id: "t2".into(),
+            content: "preview updated: page.html".into(),
+            is_error: false,
+            images: vec![InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
+        });
+        assert_eq!(with_img["type"], "tool_result");
+        let blocks = with_img["content"].as_array().expect("有图时 content 应为数组");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "preview updated: page.html");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+        assert_eq!(blocks[1]["source"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn openai_消息组装_tool_result_只出文本_图片不进_tool_消息() {
+        // OpenAI 协议 tool 消息只接受文本:带图的结果序列化后 content 仍是
+        // 纯文本,tool_call_id 对得上,不带任何 image_url 部件。
+        let items = vec![ChatItem::Message {
+            role: "user".into(),
+            content: vec![Content::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "preview updated".into(),
+                is_error: false,
+                images: vec![InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
+            }],
+        }];
+        let messages = openai_messages("", &items);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "tool");
+        assert_eq!(messages[0]["tool_call_id"], "t1");
+        assert_eq!(messages[0]["content"], "preview updated");
+        assert!(messages[0].get("content").unwrap().is_string());
     }
 
     #[test]

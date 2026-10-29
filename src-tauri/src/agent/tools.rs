@@ -5,6 +5,22 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::types::InlineImage;
+
+/// 工具执行结果。文本工具只有 `text`;富输出工具(目前仅 preview_html)可附
+/// 渲染截图,由 session 写进 ToolResult.images,模型据此自检页面渲染。
+pub struct ToolOutput {
+    pub ok: bool,
+    pub text: String,
+    pub images: Vec<InlineImage>,
+}
+
+impl ToolOutput {
+    pub fn text(ok: bool, text: impl Into<String>) -> Self {
+        Self { ok, text: text.into(), images: Vec::new() }
+    }
+}
+
 pub struct ToolContext {
     pub vault: Option<PathBuf>,
     pub data_dir: PathBuf,
@@ -143,7 +159,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "preview_html",
-        "Show a vault HTML file in the middle column live preview (creation mode). Call it after write_file/edit_file so the user sees the current version; call again after every change. Do NOT pass HTML content here — write the file first, then preview it.",
+        "Show a vault HTML file in the middle column live preview (creation mode). Call it after write_file/edit_file so the user sees the current version; call again after every change. The result includes a screenshot of the rendered page — look at it and fix layout problems before delivering. Do NOT pass HTML content here — write the file first, then preview it.",
         json!({
             "type": "object",
             "properties": {
@@ -171,8 +187,24 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
 ])
 }
 
-/// Executes a built-in tool. Returns (ok, output).
+/// Executes a built-in tool.
 pub async fn execute(
+    ctx: &ToolContext,
+    skills: &super::skills::SkillRegistry,
+    name: &str,
+    input: &Value,
+) -> ToolOutput {
+    // 富输出工具:除文本外还回渲染截图(见 preview_html)。
+    if name == "preview_html" {
+        let path = input["path"].as_str().unwrap_or_default();
+        return preview_html(ctx, path).await;
+    }
+    let (ok, text) = execute_text(ctx, skills, name, input).await;
+    ToolOutput::text(ok, text)
+}
+
+/// Executes a built-in tool. Returns (ok, output).
+async fn execute_text(
     ctx: &ToolContext,
     skills: &super::skills::SkillRegistry,
     name: &str,
@@ -299,10 +331,6 @@ pub async fn execute(
                 }
                 Err(e) => (false, e),
             }
-        }
-        "preview_html" => {
-            let path = input["path"].as_str().unwrap_or_default();
-            preview_html(ctx, path).await
         }
         "read_study_content" => {
             let content = ctx.study_content.read().ok().and_then(|g| g.clone());
@@ -486,32 +514,32 @@ fn walk_html(node: ego_tree::NodeRef<scraper::Node>, out: &mut String) {
 /// 同名 URL 的重载在 WKWebView/WebView2 上缓存行为不可靠;带版本号的独立
 /// 文件让「换 URL」变成可靠的重载信号。快照留在磁盘上无害(下一次预览会
 /// 覆盖),也便于排查。
-async fn preview_html(ctx: &ToolContext, path: &str) -> (bool, String) {
+async fn preview_html(ctx: &ToolContext, path: &str) -> ToolOutput {
     if !path.to_ascii_lowercase().ends_with(".html") {
-        return (false, "preview_html 只接受 .html 文件".into());
+        return ToolOutput::text(false, "preview_html 只接受 .html 文件");
     }
     let source = match ctx.resolve(path) {
         Ok(p) => p,
-        Err(e) => return (false, e),
+        Err(e) => return ToolOutput::text(false, e),
     };
     let content = match tokio::fs::read_to_string(&source).await {
         Ok(c) => c,
-        Err(e) => return (false, format!("read failed: {}", e)),
+        Err(e) => return ToolOutput::text(false, format!("read failed: {}", e)),
     };
     let version = ctx
         .preview_seq
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = ctx.data_dir.join("creative-preview");
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        return (false, format!("prepare preview dir failed: {}", e));
+        return ToolOutput::text(false, format!("prepare preview dir failed: {}", e));
     }
     let snapshot = dir.join(format!("preview-{version}.html"));
     if let Err(e) = tokio::fs::write(&snapshot, content).await {
-        return (false, format!("write preview failed: {}", e));
+        return ToolOutput::text(false, format!("write preview failed: {}", e));
     }
     let file_url = match tauri::Url::from_file_path(&snapshot) {
         Ok(url) => url.to_string(),
-        Err(_) => return (false, "无法构造预览 URL".into()),
+        Err(_) => return ToolOutput::text(false, "无法构造预览 URL"),
     };
     if let Some(app) = &ctx.app {
         use tauri::Emitter;
@@ -520,7 +548,29 @@ async fn preview_html(ctx: &ToolContext, path: &str) -> (bool, String) {
             serde_json::json!({ "url": file_url, "source": path, "version": version }),
         );
     }
-    (true, format!("preview updated: {path}"))
+    // 渲染截图:预览 webview 加载完这一版快照后由原生层拍下(PNG),这里按
+    // 版本号取回。截不到(平台不支持/超时)只降级为纯文本,预览本身不受影响。
+    let mut images = Vec::new();
+    if ctx.app.is_some() && cfg!(target_os = "macos") {
+        if let Some(png) = crate::commands::agent::wait_preview_shot(
+            version,
+            std::time::Duration::from_secs(4),
+        )
+        .await
+        {
+            use base64::Engine as _;
+            images.push(InlineImage {
+                media_type: "image/png".into(),
+                data: base64::engine::general_purpose::STANDARD.encode(&png),
+            });
+        }
+    }
+    let text = if images.is_empty() {
+        format!("preview updated: {path}\n[no screenshot this time — the render is on the middle column for the user]")
+    } else {
+        format!("preview updated: {path}\n[attached] screenshot of the rendered page — check the layout before delivering")
+    };
+    ToolOutput { ok: true, text, images }
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -558,14 +608,14 @@ mod tests {
         let file = vault.join("post.html");
         std::fs::write(&file, "<h1>旧标题</h1>\n<p>正文</p>\n").unwrap();
         let c = ctx(&vault, &vault);
-        let (ok, out) = execute(
+        let out = execute(
             &c,
             &super::super::skills::SkillRegistry { skills: vec![] },
             "edit_file",
             &json!({"path": "post.html", "old_string": "<h1>旧标题</h1>", "new_string": "<h1>新标题</h1>"}),
         )
         .await;
-        assert!(ok, "{out}");
+        assert!(out.ok, "{}", out.text);
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             "<h1>新标题</h1>\n<p>正文</p>\n"
@@ -581,10 +631,10 @@ mod tests {
         std::fs::write(&file, "a b a").unwrap();
         let c = ctx(&vault, &vault);
         let skills = super::super::skills::SkillRegistry { skills: vec![] };
-        let (ok, out) = execute(&c, &skills, "edit_file", &json!({"path": "post.md", "old_string": "xyz", "new_string": "q"})).await;
-        assert!(!ok && out.contains("不存在"), "{out}");
-        let (ok, out) = execute(&c, &skills, "edit_file", &json!({"path": "post.md", "old_string": "a", "new_string": "q"})).await;
-        assert!(!ok && out.contains("2 次"), "{out}");
+        let out = execute(&c, &skills, "edit_file", &json!({"path": "post.md", "old_string": "xyz", "new_string": "q"})).await;
+        assert!(!out.ok && out.text.contains("不存在"), "{}", out.text);
+        let out = execute(&c, &skills, "edit_file", &json!({"path": "post.md", "old_string": "a", "new_string": "q"})).await;
+        assert!(!out.ok && out.text.contains("2 次"), "{}", out.text);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "a b a", "失败的编辑不能改文件");
     }
 
@@ -596,14 +646,14 @@ mod tests {
         let c = ctx(&vault, &vault);
         let outside = std::env::temp_dir().join("bnote-edit-outside.md");
         std::fs::write(&outside, "x").unwrap();
-        let (ok, out) = execute(
+        let out = execute(
             &c,
             &super::super::skills::SkillRegistry { skills: vec![] },
             "edit_file",
             &json!({"path": outside, "old_string": "x", "new_string": "y"}),
         )
         .await;
-        assert!(!ok && out.contains("FORBIDDEN"), "{out}");
+        assert!(!out.ok && out.text.contains("FORBIDDEN"), "{}", out.text);
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "x");
     }
 
@@ -617,12 +667,15 @@ mod tests {
         std::fs::write(vault.join("page.html"), "<p>hi</p>").unwrap();
         let c = ctx(&vault, &data);
         let skills = super::super::skills::SkillRegistry { skills: vec![] };
-        let (ok, out) = execute(&c, &skills, "preview_html", &json!({"path": "page.html"})).await;
-        assert!(ok, "{out}");
+        let out = execute(&c, &skills, "preview_html", &json!({"path": "page.html"})).await;
+        assert!(out.ok, "{}", out.text);
         let snapshot = data.join("creative-preview").join("preview-0.html");
         assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "<p>hi</p>");
+        // 测试环境没有 AppHandle:不等待截图,纯文本降级并如实说明
+        assert!(out.images.is_empty(), "无 app 时不应有图");
+        assert!(out.text.contains("no screenshot"), "{}", out.text);
         // 非 .html 拒绝
-        let (ok, out) = execute(&c, &skills, "preview_html", &json!({"path": "page.md"})).await;
-        assert!(!ok && out.contains(".html"), "{out}");
+        let out = execute(&c, &skills, "preview_html", &json!({"path": "page.md"})).await;
+        assert!(!out.ok && out.text.contains(".html"), "{}", out.text);
     }
 }

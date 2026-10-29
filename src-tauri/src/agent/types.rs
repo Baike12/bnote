@@ -12,7 +12,15 @@ pub enum Content {
     /// Anthropic(base64 source)/ OpenAI(data URL)各自的格式映射。
     Image { media_type: String, data: String },
     ToolUse { id: String, name: String, input: Value },
-    ToolResult { tool_use_id: String, content: String, is_error: bool },
+    /// 工具结果。`images` 是随结果回传给模型的渲染截图(目前仅
+    /// preview_html),旧会话记录没有该字段,反序列化时补空。
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<InlineImage>,
+    },
 }
 
 /// A conversation item.
@@ -81,8 +89,15 @@ pub enum AgentEvent {
     ThinkingDelta { text: String },
     /// A tool call begins.
     ToolStart { id: String, name: String, input: Value },
-    /// A tool finished.
-    ToolEnd { id: String, ok: bool, output: String },
+    /// A tool finished. `images` 是随结果给模型的截图(如预览渲染图),
+    /// 前端只用于展示;没有时不带字段,避免每条工具事件的空开销。
+    ToolEnd {
+        id: String,
+        ok: bool,
+        output: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<InlineImage>,
+    },
     /// 一次模型请求的 token 用量(上下文占用 = input + output)。Anthropic 在
     /// message_start / message_delta 里给,OpenAI 兼容端点需要 stream_options
     /// 才会在流末尾给 usage。前端只保留最新一条:它就是当前会话的上下文占用。
@@ -156,5 +171,41 @@ mod tests {
             serde_json::from_str(r#"{"mediaType":"image/png","data":"AAAA"}"#).unwrap();
         assert_eq!(img.media_type, "image/png");
         assert_eq!(img.data, "AAAA");
+    }
+
+    #[test]
+    fn tool_result_旧会话记录缺_images_字段时补空() {
+        // 落盘的历史会话没有 images 字段:反序列化必须补空,不能报错,
+        // 否则升级后旧会话全部恢复失败。
+        let content: Content = serde_json::from_str(
+            r#"{"type":"tool_result","tool_use_id":"t1","content":"ok","is_error":false}"#,
+        )
+        .unwrap();
+        let Content::ToolResult { tool_use_id, images, .. } = content else {
+            panic!("应为 ToolResult");
+        };
+        assert_eq!(tool_use_id, "t1");
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn tool_result_带图序列化_camel_case_空图不写字段() {
+        let with_img = Content::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "preview updated".into(),
+            is_error: false,
+            images: vec![InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
+        };
+        let v = serde_json::to_value(&with_img).unwrap();
+        assert_eq!(v["images"][0]["mediaType"], "image/png");
+
+        let plain = Content::ToolResult {
+            tool_use_id: "t2".into(),
+            content: "ok".into(),
+            is_error: false,
+            images: vec![],
+        };
+        let v = serde_json::to_value(&plain).unwrap();
+        assert!(v.get("images").is_none(), "空 images 不该序列化出来");
     }
 }

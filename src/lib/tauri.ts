@@ -133,7 +133,7 @@ export type AgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; id: string; name: string; input: unknown }
-  | { type: "tool_end"; id: string; ok: boolean; output: string }
+  | { type: "tool_end"; id: string; ok: boolean; output: string; images?: AgentImage[] }
   /** 一次模型请求的 token 用量;保留最新一条 = 当前上下文占用。 */
   | { type: "usage"; input: number; output: number }
   | { type: "turn_end"; reason: string; items: number }
