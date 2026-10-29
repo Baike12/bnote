@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createEditor, loadDocument } from "@/editor/setup";
-import { editorApi } from "@/editor/api";
+import { editorApi, registerEditorView, unregisterEditorView } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, observeScrollSave, restoreSavedCursor, scheduleCursorSave } from "@/editor/cursorMemory";
 import { applySettingsToEditor, newNote, openNote, saveNote } from "@/app/actions";
@@ -59,6 +59,7 @@ export function EditorPane() {
       },
     });
     editorApi.view = view;
+    registerEditorView(view);
     // 滚轮阅读也是「读到哪了」:滚动位置与光标走同一条防抖保存。
     const disposeScrollSave = observeScrollSave(view, () =>
       useAppStore.getState().currentFile,
@@ -88,7 +89,8 @@ export function EditorPane() {
       const path = loadedFile.current;
       handoff = path ? { path, doc: view.state.doc.toString() } : null;
       view.destroy();
-      editorApi.view = null;
+      // 只在活动视图就是它时才清空(项目视图里可能已经切到别的实例)。
+      unregisterEditorView(view);
     };
      
   }, []);

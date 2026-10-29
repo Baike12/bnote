@@ -4119,3 +4119,369 @@ input[type="range"] {
   color: var(--text-3);
   line-height: 1.7;
 }
+
+/* ========================== 项目管理视图 ==========================
+   项目列表 | 项目卡片带(当前项目居中、可编辑) | 日记。
+   与学习模式同级、互斥;颜色全部走主题变量(见 theme.test.ts 的门禁)。 */
+.projects-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg0);
+  --projects-head-h: 43px; /* 与学习模式三栏头部同高 */
+  --projects-side-w: 200px;
+  --projects-daily-w: 420px;
+}
+
+.projects-side {
+  flex: 0 0 var(--projects-side-w);
+  width: var(--projects-side-w);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg1);
+}
+
+.projects-side-head {
+  min-height: var(--projects-head-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  /* 侧栏收起时红绿灯覆盖主区左上角,头部内容让开(与 titlebar 同一约定)。 */
+  padding: 0 8px 0 var(--projects-lead, 78px);
+  border-bottom: 1px solid var(--border);
+}
+
+.projects-side-title {
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+
+.projects-side-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 8px 20px;
+}
+
+.projects-side-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  margin-bottom: 5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projects-side-item:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+.projects-side-item.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.projects-side-empty {
+  padding: 14px 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.8;
+}
+
+.projects-new-input {
+  margin: 8px 8px 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 13px;
+}
+.projects-new-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.projects-split {
+  flex: 0 0 1px;
+  background: var(--border);
+}
+
+.projects-deck {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg0);
+}
+
+.projects-deck-head {
+  min-height: var(--projects-head-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.projects-search {
+  width: min(420px, 100%);
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--bg1);
+  color: var(--text);
+  font-size: 12px;
+}
+.projects-search:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+/* 三槽轮播:当前项目居中且更宽,左右是相邻项目的只读预览。 */
+.projects-deck-track {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 14px;
+  padding: 16px;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+.project-card {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg1);
+  overflow: hidden;
+}
+.project-card.current {
+  border-color: var(--accent-dim);
+  background: var(--bg0);
+}
+.project-card.preview {
+  opacity: 0.7;
+  cursor: pointer;
+  transition: opacity 0.12s ease;
+}
+.project-card.preview:hover {
+  opacity: 1;
+}
+.project-card.preview:focus-visible {
+  outline: none;
+  border-color: var(--accent-dim);
+  opacity: 1;
+}
+.project-card.blank {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.project-card-title {
+  padding: 14px 16px 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-card-title.muted {
+  color: var(--text-faint);
+}
+
+.project-card-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.project-card-editor .cm-editor {
+  height: 100%;
+}
+.project-card-editor .cm-scroller {
+  padding: 6px 14px 24px;
+}
+
+.project-card-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+/* 左右卡片里的待办是纯 DOM(可拖),不装编辑器。 */
+.project-preview-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px 24px;
+  list-style: none;
+}
+.project-preview-todo {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: grab;
+  word-break: break-word;
+}
+.project-preview-todo:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+.project-preview-todo.done {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+.project-preview-box {
+  color: var(--accent-dim);
+  flex: 0 0 auto;
+}
+.project-preview-todo.done .project-preview-box {
+  color: var(--text-faint);
+}
+.project-preview-text {
+  min-width: 0;
+}
+.project-preview-empty {
+  padding: 6px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+/* 项目卡片里已发送到今日日记的待办:置灰(编辑权在日记那份)。 */
+.projects-deck .cm-line.md-daily-link[data-daily-sent] {
+  opacity: 0.42;
+}
+
+/* 待办行的拖拽手柄(CodeMirror gutter)。平时几乎透明,悬停才显形;
+   不在行内插 widget,不改变列表几何。 */
+.cm-project-drag-gutter {
+  width: 14px;
+  padding-right: 2px;
+}
+.cm-project-drag-gutter .cm-gutterElement {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cm-project-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 1.4em;
+  font-size: 0.8em;
+  color: var(--text-faint);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  user-select: none;
+}
+.cm-editor:hover .cm-project-drag-handle {
+  opacity: 0.5;
+}
+.cm-project-drag-handle:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.projects-daily {
+  flex: 0 0 var(--projects-daily-w);
+  width: var(--projects-daily-w);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg1);
+  position: relative;
+}
+
+.projects-daily-head {
+  min-height: var(--projects-head-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+.projects-daily-title {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.projects-daily-picker {
+  flex: 1;
+  min-width: 0;
+  max-width: 190px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.projects-daily-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.projects-daily-editor .cm-editor {
+  height: 100%;
+}
+.projects-daily-editor .cm-scroller {
+  padding: 10px 14px 26px;
+}
+
+.projects-daily-empty {
+  padding: 24px 18px;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+/* 拖拽悬停:整块日记区给一个明确的落点提示。 */
+.projects-daily.drop-target::after {
+  content: "松手 → 发到今日待办最前";
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--accent);
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  pointer-events: none;
+}

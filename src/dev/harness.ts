@@ -29,6 +29,8 @@ import { installEditingChords } from "@/lib/editingChords";
 import { setClipboardOverrides } from "@/lib/clipboard";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import { StudyLayout } from "@/components/StudyLayout";
+import { ProjectsLayout } from "@/components/ProjectsLayout";
+import { runCommand } from "@/commands/registry";
 import { SettingsModal } from "@/components/SettingsModal";
 import {
   footprintDay,
@@ -183,6 +185,26 @@ declare global {
     __api: typeof api;
     /** 挂载真实学习模式组件（AgentPanel + ContentPane），返回卸载函数。 */
     __mountStudyLayout: () => () => void;
+    /** 挂载真实项目管理视图（项目列表 / 卡片带 / 日记），返回卸载函数。
+     *  contents 预置假仓库里的文件内容(vault 相对路径 → 文本)。 */
+    __mountProjects: (
+      entries: string[],
+      contents?: Record<string, string>,
+    ) => Promise<() => void>;
+    /** 执行一条命令（快捷键链路的直接入口，绕过 keydown 合成）。 */
+    __runCommand: (id: string) => void;
+    /** 读聚焦编辑器（项目卡片/日记）的文档文本。 */
+    __paneDoc: () => string | null;
+    /** 聚焦编辑器里某一行(1 基)的文本。 */
+    __paneLine: (line: number) => string | null;
+    /** 把聚焦编辑器设到某行某列(1 基行,0 基列)。 */
+    __paneCursor: (line: number, col?: number) => void;
+    /** 当前聚焦编辑器的文件路径。 */
+    __panePath: () => string | null;
+    /** 聚焦编辑器实例(项目视图里有两个:项目卡片 / 日记)。 */
+    __editorApi: typeof editorApi;
+    /** 替换聚焦编辑器的某一行(1 基),用来模拟「在日记里改待办」。 */
+    __paneReplaceLine: (line: number, text: string) => void;
     /** 学习模式 PDF 验证：塞入一份 PDF 字节并打开阅读器（需先挂载学习布局）。 */
     __openStudyPdf: (
       base64: string,
@@ -505,6 +527,10 @@ function installFakeVault(entries: string[]) {
       contents.set(rel, text);
       files.add(rel); // 写过的文件要能被 readFile 读回(批注落盘验证)
     },
+    ensureDir: async (relPath: string) => {
+      const parts = relPath.split("/").filter(Boolean);
+      for (let i = 1; i <= parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+    },
     saveAppConfig: async () => {},
   });
 
@@ -680,6 +706,73 @@ window.__mountStudyLayout = () => {
     root.unmount();
     host.remove();
   };
+};
+
+/**
+ * 项目管理视图:假仓库 + 真实 ProjectsLayout(左列表 / 中卡片 / 右日记)。
+ * entries 是 vault 相对路径(文件或目录)。返回卸载函数。
+ */
+window.__mountProjects = async (entries: string[], contents: Record<string, string> = {}) => {
+  installFakeVault(entries);
+  for (const [rel, text] of Object.entries(contents)) {
+    await api.writeFile(`${FAKE_ROOT}/${rel}`, text);
+  }
+  // flatFiles 是日记下拉的数据源(listFiles 的索引由 refreshTree 写进 store)。
+  await actions.refreshTree();
+  const host = document.createElement("div");
+  host.id = "projects-layout-host";
+  host.style.position = "fixed";
+  host.style.inset = "0";
+  host.style.zIndex = "9999";
+  host.style.display = "flex";
+  host.style.background = "var(--bg0, #0b0b0d)";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  root.render(createElement(ProjectsLayout));
+  return () => {
+    root.unmount();
+    host.remove();
+  };
+};
+
+window.__runCommand = (id: string) => {
+  runCommand(id);
+};
+
+window.__paneDoc = () => {
+  const v = editorApi.view;
+  return v ? v.state.doc.toString() : null;
+};
+
+window.__paneLine = (line: number) => {
+  const v = editorApi.view;
+  if (!v) return null;
+  const n = Math.min(Math.max(1, line), v.state.doc.lines);
+  return v.state.doc.line(n).text;
+};
+
+window.__paneCursor = (line: number, col = 0) => {
+  const v = editorApi.view;
+  if (!v) return;
+  const n = Math.min(Math.max(1, line), v.state.doc.lines);
+  const l = v.state.doc.line(n);
+  v.dispatch({ selection: { anchor: Math.min(l.from + col, l.to) } });
+  v.focus();
+};
+
+window.__panePath = () => {
+  const v = editorApi.view;
+  return v ? documentPath(v.state) : null;
+};
+
+window.__editorApi = editorApi;
+
+window.__paneReplaceLine = (line: number, text: string) => {
+  const v = editorApi.view;
+  if (!v) return;
+  const n = Math.min(Math.max(1, line), v.state.doc.lines);
+  const l = v.state.doc.line(n);
+  v.dispatch({ changes: { from: l.from, to: l.to, insert: text } });
 };
 
 window.__renderAgentMd = renderAgentMarkdown;

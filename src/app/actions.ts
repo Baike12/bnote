@@ -4,7 +4,8 @@ import type { EditorView } from "@codemirror/view";
 import { api, type FileNode } from "@/lib/tauri";
 import { useAppStore, getConfigSnapshot, persistConfig, flushPersistConfig, type ThemeName } from "@/state/appStore";
 import { loadDocument } from "@/editor/setup";
-import { getView } from "@/editor/api";
+import { getView, activeEditors } from "@/editor/api";
+import { documentPath } from "@/editor/docPath";
 import { insertWikilinkText, wikilinkTargetOnLine } from "@/editor/ops";
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, restoreSavedCursor } from "@/editor/cursorMemory";
@@ -203,7 +204,7 @@ export async function openNote(path: string, line?: number): Promise<void> {
   loadedFile.current = path;
   useAppStore.getState().openFile(path);
   // setState() reset compartment values — re-apply current settings.
-  await applySettingsToEditor();
+  await applySettingsToEditor(view);
   restoreSavedCursor(view, path);
   if (line !== undefined) {
     // 足迹/跳转带行号落点:光标记忆(restoreSavedCursor)先走,这里覆盖。
@@ -225,13 +226,23 @@ export async function openNote(path: string, line?: number): Promise<void> {
   view.focus();
 }
 
+/**
+ * 保存聚焦编辑器里的那份文档。
+ *
+ * 目标文件按 `documentPath` 取,不再只看 `currentFile`:项目视图里聚焦的
+ * 编辑装的是 `.bnote/projects/<项目>.md`,而 `currentFile` 还停在上一份笔记
+ * ——按 currentFile 写会把项目文档覆盖进那篇笔记。只有保存的正好是当前
+ * 笔记时才动全局 dirty 标记(项目/日记编辑器各有自己的自动保存)。
+ */
 export async function saveNote(): Promise<void> {
-  const { currentFile, showToast } = useAppStore.getState();
   const view = getView();
-  if (!currentFile || !view) return;
+  if (!view) return;
+  const { currentFile, showToast } = useAppStore.getState();
+  const path = documentPath(view.state) ?? currentFile;
+  if (!path) return;
   try {
-    await api.writeFile(currentFile, view.state.doc.toString());
-    useAppStore.getState().markDirty(false);
+    await api.writeFile(path, view.state.doc.toString());
+    if (currentFile === path) useAppStore.getState().markDirty(false);
   } catch (e) {
     showToast(`保存失败: ${String(e)}`);
   }
@@ -455,22 +466,35 @@ function applyTheme(theme: ThemeName): void {
   }
 }
 
-/** Applies store settings (vim, typewriter, live preview, snippets) to the editor. */
-export async function applySettingsToEditor(): Promise<void> {
-  const view = getView();
+/**
+ * Applies store settings (vim, typewriter, live preview, snippets) to the editors.
+ *
+ * 项目视图里有多个实例(项目卡片 / 右栏日记),设置变更必须逐个 reconfigure:
+ * 只作用于 `getView()` 会让没聚焦的那个停留在旧开关上,重新聚焦时才「突然」
+ * 变样。`target` 用于刚换过文档的单个实例(openNote 后只重建它那份)。
+ */
+export async function applySettingsToEditor(target?: EditorView): Promise<void> {
   const { settings } = useAppStore.getState();
   document.documentElement.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
   applyTheme(settings.theme);
-  if (!view) return;
+  const views = target
+    ? target.dom.isConnected
+      ? [target]
+      : []
+    : activeEditors();
+  if (views.length === 0) return;
   // 只翻开关、不动来源：若把来源重置为 null，每次打开文件/改设置都会把
   // 仓库片段打回内置（真实回归，load.test.ts 有接线门禁）。
   applySnippetsEnabled(settings.snippets);
   configureLatexSuite(settings.latex);
   configureLivePreview({ mathPreview: settings.mathPreview });
-  reconfigureLivePreview(view, settings.livePreview);
-  reconfigureTypewriter(view, settings.typewriter);
   const mappings = settings.vim ? await loadVimrc().catch(() => []) : [];
-  reconfigureVim(view, settings.vim, mappings);
+  for (const view of views) {
+    if (!view.dom.isConnected) continue;
+    reconfigureLivePreview(view, settings.livePreview);
+    reconfigureTypewriter(view, settings.typewriter);
+    reconfigureVim(view, settings.vim, mappings);
+  }
 }
 
 /**

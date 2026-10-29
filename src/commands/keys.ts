@@ -1,14 +1,17 @@
 /**
  * 分区域的快捷键模型。
  *
- * 同一个按键在三个焦点区域里可以绑到不同命令(参考 zed 的 context 键位):
+ * 同一个按键在四个焦点区域里可以绑到不同命令(参考 zed 的 context 键位):
  *   global  —— 任何焦点都生效(工作区/导航/视图这类全局动作)
  *   notes   —— 焦点在笔记编辑器时生效
  *   reading —— 焦点在阅读区(PDF / 网页 / 微信读书)时生效
  *   agent   —— 焦点在学习助手面板时生效
+ *   project —— 焦点在项目管理视图时生效(项目列表 / 项目卡片)
  *
  * 区域分发:先查当前区域,再退回 global;区域绑定因此可以「盖住」同一个键的
  * 全局含义(例如 Agent 面板里 ⌘[ 是「返回上一条会话」,不是笔记的回退链接)。
+ * project 额外继承 notes 的绑定(见 commandsForKey):项目卡片里同样要能加粗、
+ * 切待办、用编辑命令,只是项目专属动作优先。
  *
  * 配置在候选键的归属区域里覆盖,文件是 `<vault>/.bnote/keybindings.json`:
  *   {
@@ -22,13 +25,14 @@
  * 旧版扁平表(命令 → 键位,没有区域)仍能读,按命令的默认归属自动分区。
  */
 
-export type KeyRegion = "global" | "notes" | "reading" | "agent";
+export type KeyRegion = "global" | "notes" | "reading" | "agent" | "project";
 
 export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
-  { id: "global", label: "通用", hint: "焦点在任何地方都生效。命令面板、保存、切换学习模式这类动作放这里。" },
+  { id: "global", label: "通用", hint: "焦点在任何地方都生效。命令面板、保存、切换学习模式/项目管理这类动作放这里。" },
   { id: "notes", label: "笔记区", hint: "焦点在笔记编辑器时生效(学习模式右栏的笔记也算笔记区)。" },
   { id: "reading", label: "阅读区", hint: "焦点在阅读区时生效:PDF、网页、微信读书,以及中栏的工具栏。对阅读区动手的两条命令例外——翻页与截图,带修饰键的键位在笔记区 / Agent 面板按下也执行;翻页只滚内容,不改变焦点。滚轮/点击滚过阅读区后,键盘也归它(阅读区不取得 DOM 焦点)。" },
   { id: "agent", label: "Agent 面板", hint: "焦点在学习助手面板时生效(输入框、消息区、历史会话)。" },
+  { id: "project", label: "项目管理", hint: "焦点在项目管理视图(项目列表、项目卡片)时生效。这里继承笔记区的编辑键位(加粗、切换待办、保存等),只是项目专属动作优先:⌘⇧↑/↓ 轮转项目、⌘⇧J 把待办发到今日待办区最前、⌘⌥N 跳到右侧日记。" },
 ];
 
 export const KEY_REGION_IDS: KeyRegion[] = KEY_REGIONS.map((r) => r.id);
@@ -89,9 +93,20 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "editor.toggle-snippets": "Mod-Shift-l",
 
   "view.toggle-study-mode": "Mod-Shift-s",
+  "view.toggle-projects": "Mod-Shift-p",
   "view.zoom-in": "Mod-=",
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",
+
+  // 项目管理视图(project 区域)。⌘⇧↑/↓ 轮转卡片;⌘⇧J 与笔记区的「发送到
+  // 今日日记末尾」同一个键,但项目里的语义是「插到今天待办区最前」——区域
+  // 覆盖让同键按语境表达两种意图。⌘⌥N 在项目区被覆盖成「去右侧日记」。
+  "project.prev": "Mod-Shift-ArrowUp",
+  "project.next": "Mod-Shift-ArrowDown",
+  "project.send-todo": "Mod-Shift-j",
+  "project.new": "Mod-Shift-n",
+  "project.focus-daily": "Mod-Alt-n",
+  "region.focus-project": "Mod-Alt-p",
 
   // 学习模式网页预览的页面缩放(浏览器级缩放:文字重排、整页一起放大)。
   // 与 Chrome 同键:⌘= / ⌘- / ⌘0。配置归属阅读区;焦点在原生子 webview
@@ -142,6 +157,7 @@ const REGION_PREFIXES: [string, KeyRegion][] = [
   ["study.web-", "reading"],
   ["region.", "reading"],
   ["agent.", "agent"],
+  ["project.", "project"],
   ["edit.", "notes"],
   ["editor.", "notes"],
   ["python.", "notes"],
@@ -156,6 +172,9 @@ const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
   "region.focus-agent": ["reading", "notes", "agent"],
   "region.focus-notes": ["reading", "notes", "agent"],
   "region.focus-reading": ["reading", "notes", "agent"],
+  // 项目视图里两栏都是可聚焦的:卡片区与右栏日记。⌘⌥P 在项目区把焦点送回
+  // 卡片,在日记区也成立(不用先回卡片再跳)。
+  "region.focus-project": ["project", "notes"],
 };
 
 /**
@@ -183,6 +202,7 @@ const REGION_FREE_COMMANDS = new Set([
   "region.focus-agent",
   "region.focus-notes",
   "region.focus-reading",
+  "region.focus-project",
 ]);
 
 /** 键位规格(如 "Mod-Shift-a")是否带占用性强、不会和文本输入撞车的修饰键。 */
@@ -213,8 +233,14 @@ export type BindingMap = Record<string, BindingValue>;
 export type Keymap = Record<KeyRegion, BindingMap>;
 export type OverrideMap = Partial<Record<KeyRegion, BindingMap>>;
 
+function emptyKeymap(): Keymap {
+  const km = {} as Keymap;
+  for (const region of KEY_REGION_IDS) km[region] = {};
+  return km;
+}
+
 function defaultKeymap(): Keymap {
-  const km = { global: {}, notes: {}, reading: {}, agent: {} } as Keymap;
+  const km = emptyKeymap();
   for (const [id, value] of Object.entries(DEFAULT_BINDINGS)) {
     for (const region of defaultRegionsOf(id)) km[region][id] = value;
   }
@@ -224,22 +250,18 @@ function defaultKeymap(): Keymap {
 let current: Keymap = defaultKeymap();
 let revision = 0;
 /** 每个区域的「按键 → 命令」索引:每次按键只查两次 Map,不遍历绑定表。 */
-let keyIndex: Record<KeyRegion, Map<string, string[]>> = {
-  global: new Map(),
-  notes: new Map(),
-  reading: new Map(),
-  agent: new Map(),
-};
+let keyIndex: Record<KeyRegion, Map<string, string[]>> = indexShell();
 /** REGION_FREE_COMMANDS 的和弦:哪个区域都命中(键位来自配置它的区域)。 */
 let regionFreeIndex = new Map<string, string[]>();
 
+function indexShell(): Record<KeyRegion, Map<string, string[]>> {
+  const out = {} as Record<KeyRegion, Map<string, string[]>>;
+  for (const region of KEY_REGION_IDS) out[region] = new Map();
+  return out;
+}
+
 function reindex(): void {
-  const byKey: Record<KeyRegion, Map<string, string[]>> = {
-    global: new Map(),
-    notes: new Map(),
-    reading: new Map(),
-    agent: new Map(),
-  };
+  const byKey = indexShell();
   for (const region of KEY_REGION_IDS) {
     const keys = byKey[region];
     for (const [id, value] of Object.entries(current[region])) {
@@ -347,6 +369,12 @@ export function commandsForKey(key: string, region: KeyRegion): string[] {
     if (!ids) return;
     for (const id of ids) if (!out.includes(id)) out.push(id);
   };
+  // 项目区是「笔记区 + 项目专属动作」:卡片里同样在编辑 markdown,加粗/切待办/
+  // 保存这些 edit.* 不该因为换了区域就失灵。项目自己的绑定排在最前面;在项目区
+  // 显式解绑(null)的命令也不再从笔记区继承回来。
+  if (region === "project") {
+    add(keyIndex.notes.get(key)?.filter((id) => !unboundHere(id, "project")));
+  }
   if (region !== "global") add(keyIndex.global.get(key));
   // own 里已经有一份时 add 去重。显式解绑(null / 空数组)只在本区域生效:
   // 在 notes 里把 ⌘⌥A 写成 null,就不能靠阅读区那份绑定在 notes 里复活。

@@ -1,6 +1,7 @@
 import { Compartment, EditorSelection, EditorState, Prec } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { setDocPath, docPathField } from "./docPath";
+import { setActiveEditor } from "./api";
 import { EditorView, keymap, drawSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
 import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
@@ -68,7 +69,20 @@ const typewriterCompartment = new Compartment();
 const livePreviewCompartment = new Compartment();
 const vimCommandMapCompartment = new Compartment();
 
-export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
+export interface EditorCreateOptions {
+  /**
+   * 待办同步里的「自动发送」开关:普通笔记保持开启(输入待办就进今日日记),
+   * 项目卡片关掉——项目待办只有拖进日记或按发送快捷键才过去。
+   */
+  allowAutoSend?: boolean;
+  /** 实例额外的扩展(项目卡片的拖拽手柄等),与基础扩展同批注册。 */
+  extraExtensions?: Extension[];
+}
+
+export function baseExtensions(
+  callbacks: EditorCallbacks,
+  options: EditorCreateOptions = {},
+): Extension[] {
   return [
     // Snippet Tab handling takes precedence over everything else.
     snippetsExtension(),
@@ -102,6 +116,15 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     codeHighlighting(),
 
     docPathField,
+    // 焦点进入哪个实例,命令层就作用于哪个实例(getView)。项目视图里同时
+    // 有项目卡片与日记两个编辑器,只靠「最后挂载的那个」会在用户来回点击
+    // 之后指错目标。
+    EditorView.domEventHandlers({
+      focusin: (_event, view) => {
+        setActiveEditor(view);
+        return false;
+      },
+    }),
     livePreviewCompartment.of(livePreviewExtension()),
     typewriterCompartment.of([]),
     vimCompartment.of([]),
@@ -114,7 +137,7 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
     pythonLspExtension(),
 
     // 跨文件待办同步:勾选/子待办/改名镜像到日记(自带链接库未加载直通门槛)。
-    dailySyncExtension(),
+    dailySyncExtension({ allowAutoSend: options.allowAutoSend }),
     // 已链接待办的可视标识(视口内行装饰,只占标记槽的绝对定位伪元素)。
     dailyMarksExtension(),
     // 今日足迹:今天的日记末尾聚合其他文件今日记录的块(引用式,只读);
@@ -246,6 +269,10 @@ export function baseExtensions(callbacks: EditorCallbacks): Extension[] {
       }
       scheduleVimCursorFlush(u.view);
     }),
+
+    // 实例自己的扩展(项目卡片的拖拽手柄),放在基础扩展之后:它们不改变
+    // 既有优先级,只是多挂一层装饰/gutter。
+    ...(options.extraExtensions ?? []),
   ];
 }
 
@@ -302,8 +329,13 @@ function ownExtensions(view: EditorView): Extension[] | null {
   return extensionsByView.get(view) ?? null;
 }
 
-export function createEditor(parent: HTMLElement, doc: string, callbacks: EditorCallbacks): EditorView {
-  const extensions = baseExtensions(callbacks);
+export function createEditor(
+  parent: HTMLElement,
+  doc: string,
+  callbacks: EditorCallbacks,
+  options: EditorCreateOptions = {},
+): EditorView {
+  const extensions = baseExtensions(callbacks, options);
   const view = new EditorView({
     state: EditorState.create({ doc, extensions }),
     parent,

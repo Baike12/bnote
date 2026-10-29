@@ -10,7 +10,9 @@ import { installEditingChords } from "@/lib/editingChords";
 import { registerVimExCommands } from "@/editor/vim/vim";
 import { reloadDocument } from "@/editor/setup";
 import { renumberHeadings } from "@/editor/numbering";
-import { editorApi } from "@/editor/api";
+import { editorApi, findEditorFor } from "@/editor/api";
+import { refreshProjects } from "@/projects/store";
+import { PROJECTS_DIR } from "@/projects/model";
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, hasPendingCursorSave } from "@/editor/cursorMemory";
 import { flushLinksPersist, hasPendingLinksPersist } from "@/daily/links";
@@ -38,6 +40,7 @@ import {
 import { Sidebar } from "@/components/Sidebar";
 import { EditorPane } from "@/components/EditorPane";
 import { StudyLayout } from "@/components/StudyLayout";
+import { ProjectsLayout } from "@/components/ProjectsLayout";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { LinkSuggest } from "@/components/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -65,6 +68,7 @@ export default function App() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const currentFile = useAppStore((s) => s.currentFile);
   const studyMode = useAppStore((s) => s.studyMode);
+  const projectsMode = useAppStore((s) => s.projectsMode);
   const drawingSession = useAppStore((s) => s.drawingSession);
   // Agent context: the backend reads the current note path for its system prompt.
   useEffect(() => {
@@ -292,7 +296,9 @@ export default function App() {
 
   const main = (
     <main className="main">
-      {studyMode ? (
+      {projectsMode ? (
+        <ProjectsLayout />
+      ) : studyMode ? (
         <StudyLayout />
       ) : (
         <>
@@ -341,7 +347,9 @@ export default function App() {
 
 async function handleVaultChanged(paths: string[]) {
   const store = useAppStore.getState();
-  const view = editorApi.view;
+  // 外部变更只可能落到「装着 currentFile 的那个实例」——项目视图里活动
+  // 视图可能是项目卡片编辑器,拿它跟笔记的磁盘内容比会把笔记塞进项目文档。
+  const view = store.currentFile ? findEditorFor(store.currentFile) : null;
 
   // 今日足迹:任何来源的文件变更都先喂给足迹库(自带过滤与防抖)。必须在
   // 下面的 self-write echo 早退之前——「编辑器打字 → 自动保存 → watcher」
@@ -351,6 +359,13 @@ async function handleVaultChanged(paths: string[]) {
   // 快捷键配置是仓库里的普通文件:外部编辑器改完保存,watcher 触发这里重读。
   if (paths.some((p) => p.replace(/\\/g, "/").endsWith("/.bnote/keybindings.json"))) {
     void reloadKeymap();
+  }
+
+  // 项目文件(新建/删除/外部改名)只影响左栏列表;文档内容归卡片编辑器,
+  // 这里不碰正在编辑的文档,避免把用户没保存的输入冲掉。
+  if (paths.some((p) => p.replace(/\\/g, "/").includes(`/${PROJECTS_DIR}/`))) {
+    const vaultRoot = useAppStore.getState().vaultPath;
+    if (vaultRoot) void refreshProjects(vaultRoot);
   }
 
   // Self-write echo: autosave/manual save triggers the watcher. When the only
@@ -383,7 +398,7 @@ async function handleVaultChanged(paths: string[]) {
           // re-apply settings — setState() resets the extension compartments.
           reloadDocument(view, content, store.currentFile);
           loadedFile.current = store.currentFile;
-          await applySettingsToEditor();
+          await applySettingsToEditor(view);
         }
       } catch {
         // 重命名刚打开的新路径与旧路径的 watcher 事件交错时，可能读到已被

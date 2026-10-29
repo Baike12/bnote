@@ -1,6 +1,7 @@
 import { EditorState, type Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { documentPath } from "@/editor/docPath";
+import { findEditorFor } from "@/editor/api";
 import { DONE_STAMP_RE } from "@/editor/ops";
 import type { DailyLink, LinkStore } from "./links";
 import { scheduleLinksPersist } from "./links";
@@ -17,6 +18,7 @@ import {
   isTodo,
   parseDailyRegion,
   parseListLine,
+  prependEntrySpec,
   previousDailyFile,
   removeEntrySpec,
   replaceEntrySpec,
@@ -26,6 +28,7 @@ import {
   textAfterChanges,
   todoText,
   todoTextAt,
+  type DocChange,
 } from "./model";
 
 /**
@@ -241,8 +244,36 @@ function uncheckSpecs(doc: Text, lineNo: number): { changes: { from: number; to?
   return { changes };
 }
 
-async function writeDisk(deps: DailyDeps, path: string, baseText: string, specs: { from: number; to?: number; insert?: string }[]): Promise<void> {
-  await deps.io.writeFile(path, textAfterChanges(baseText, specs));
+/**
+ * 对侧文件的落点:正被编辑器打开时改内存,否则写盘。
+ *
+ * 项目视图里项目卡片与右栏日记同时打开,镜像的两侧都可能「活着」。写盘会
+ * 让编辑器里的旧内容在下一次保存时盖掉这次改动,所以有编辑器就 dispatch;
+ * 位置必须按同一份基准算——有编辑器时基准就是它的内存文档(磁盘可能落后于
+ * 未保存的输入),没有时是刚读出的磁盘文本。
+ */
+function commitSpecs(
+  deps: DailyDeps,
+  path: string,
+  baseText: string,
+  specs: DocChange[],
+  editor: EditorView | null,
+): Promise<void> | void {
+  if (editor && editor.dom.isConnected && documentPath(editor.state) === path) {
+    editor.dispatch({ changes: specs, userEvent: SYNC_USER_EVENT });
+    return;
+  }
+  return deps.io.writeFile(path, textAfterChanges(baseText, specs));
+}
+
+/** 对侧文件的当前内容与「基准编辑器」:有编辑器用内存(最新),否则读盘。 */
+async function readOther(
+  deps: DailyDeps,
+  path: string,
+): Promise<{ text: string | null; editor: EditorView | null }> {
+  const editor = findEditorFor(path);
+  if (editor) return { text: editor.state.doc.toString(), editor };
+  return { text: await deps.io.readFile(path).catch(() => null), editor: null };
 }
 
 async function applyMirror(
@@ -259,14 +290,15 @@ async function applyMirror(
   const otherPath = side === "src" ? link.dailyPath : link.srcPath;
   await withFileLock(otherPath, async () => {
     if (!viewAlive(view, path)) return;
-    const otherText = await deps.io.readFile(otherPath).catch(() => null);
+    const other = await readOther(deps, otherPath);
     if (!viewAlive(view, path)) return; // 读盘窗口期里文件被切走:过期放弃
-    if (otherText === null) {
+    if (other.text === null) {
       // 对侧文件没了(删除/改名):解链,不再镜像
       store.remove(link.id);
       scheduleLinksPersist();
       return;
     }
+    const otherText = other.text;
     const otherDoc = parseDoc(otherText);
     const doc = view.state.doc;
     const texts = renamedTo && renamedTo !== link.text ? [renamedTo, link.text] : [link.text];
@@ -279,13 +311,13 @@ async function applyMirror(
         // 源侧已取消:删日记条目 + 解链
         const region = parseDailyRegion(otherDoc);
         const entry = findEntryByText(otherDoc, region, link.text, link.dailyLine);
-        if (entry) await writeDisk(deps, otherPath, otherText, [removeEntrySpec(otherDoc, entry)]);
+        if (entry) await commitSpecs(deps, otherPath, otherText, [removeEntrySpec(otherDoc, entry)], other.editor);
       } else {
         // 日记侧取消:摘掉本地条目,并把源待办翻回未完成
         removeLocalEntry(view, doc, link, store);
         const srcRootNo = resolveRootLine(otherDoc, [link.text], link.srcLine);
         const specs = srcRootNo !== null ? uncheckSpecs(otherDoc, srcRootNo)?.changes : null;
-        if (specs) await writeDisk(deps, otherPath, otherText, specs);
+        if (specs) await commitSpecs(deps, otherPath, otherText, specs, other.editor);
       }
       store.remove(link.id);
       scheduleLinksPersist();
@@ -298,7 +330,7 @@ async function applyMirror(
       if (side === "src") {
         const region = parseDailyRegion(otherDoc);
         const entry = findEntryByText(otherDoc, region, link.text, link.dailyLine);
-        if (entry) await writeDisk(deps, otherPath, otherText, [removeEntrySpec(otherDoc, entry)]);
+        if (entry) await commitSpecs(deps, otherPath, otherText, [removeEntrySpec(otherDoc, entry)], other.editor);
       }
       store.remove(link.id);
       scheduleLinksPersist();
@@ -316,7 +348,7 @@ async function applyMirror(
         return;
       }
       const reindented = reindentBlock(block, root.indent.length, "");
-      await writeDisk(deps, otherPath, otherText, [replaceEntrySpec(otherDoc, entry, reindented)]);
+      await commitSpecs(deps, otherPath, otherText, [replaceEntrySpec(otherDoc, entry, reindented)], other.editor);
       store.update(link.id, { text: todoText(root), srcLine: rootNo, dailyLine: entry.start });
     } else {
       const srcRootNo = resolveRootLine(otherDoc, [link.text], link.srcLine);
@@ -329,13 +361,19 @@ async function applyMirror(
         return;
       }
       const reindented = reindentBlock(block, 0, srcRoot.indent);
-      await writeDisk(deps, otherPath, otherText, [
-        {
-          from: otherDoc.line(srcRootNo).from,
-          to: otherDoc.line(blockEnd(otherDoc, srcRootNo)).to,
-          insert: reindented.join("\n"),
-        },
-      ]);
+      await commitSpecs(
+        deps,
+        otherPath,
+        otherText,
+        [
+          {
+            from: otherDoc.line(srcRootNo).from,
+            to: otherDoc.line(blockEnd(otherDoc, srcRootNo)).to,
+            insert: reindented.join("\n"),
+          },
+        ],
+        other.editor,
+      );
       store.update(link.id, { text: todoText(root), srcLine: srcRootNo, dailyLine: rootNo });
     }
     scheduleLinksPersist();
@@ -370,7 +408,7 @@ async function applySend(
   const dailyPath = dailyPathFor(vaultRoot, deps.today());
   await withFileLock(dailyPath, async () => {
     if (!viewAlive(view, path)) return;
-    const dailyText = await deps.io.readFile(dailyPath).catch(() => null);
+    const daily = await readOther(deps, dailyPath);
     if (!viewAlive(view, path)) return;
     const doc = view.state.doc;
     const rootNo = resolveRootLine(doc, [text], rootHint);
@@ -380,23 +418,21 @@ async function applySend(
     if (store.findByText(path, text, rootNo)) return; // 已有链接(竞态):镜像会带上
     const block = blockLines(doc, rootNo);
     const reindented = reindentBlock(block, root.indent.length, "");
-    const base = dailyText ?? (await dailyScaffoldWithRollover(deps.io, vaultRoot, deps.today()));
+    const base = daily.text ?? (await dailyScaffoldWithRollover(deps.io, vaultRoot, deps.today()));
     const bdoc = parseDoc(base);
     const region = parseDailyRegion(bdoc);
     const existing = findEntryByText(bdoc, region, text, 0);
-    let newDaily = base;
     let dailyLine: number;
     if (existing) {
       // 日记里已有同文条目(rollover 带过来的/手工贴的):直接认领为镜像根
       dailyLine = existing.start;
     } else {
       const { change } = appendEntrySpec(bdoc, region, reindented);
-      newDaily = textAfterChanges(base, [change]);
-      const ndoc = parseDoc(newDaily);
+      const ndoc = parseDoc(textAfterChanges(base, [change]));
       dailyLine =
         findEntryByText(ndoc, parseDailyRegion(ndoc), text, Number.MAX_SAFE_INTEGER)?.start ?? 1;
+      await commitSpecs(deps, dailyPath, base, [change], daily.editor);
     }
-    await deps.io.writeFile(dailyPath, newDaily);
     store.upsert({
       id: uuid(),
       kind: "auto",
@@ -487,7 +523,13 @@ function ancestorLinkForDaily(
  *
  * 记录型链接在显式发送时升级为正式映射。
  */
-export async function sendTodoToDaily(view: EditorView, deps: DailyDeps, store: LinkStore): Promise<void> {
+export async function sendTodoToDaily(
+  view: EditorView,
+  deps: DailyDeps,
+  store: LinkStore,
+  /** append = 今天列表末尾(时间顺序);prepend = 待办区最前(项目视图的发送/拖拽)。 */
+  position: "append" | "prepend" = "append",
+): Promise<void> {
   const vaultRoot = deps.vaultRoot();
   if (!vaultRoot) {
     deps.toast("没有打开仓库");
@@ -505,7 +547,10 @@ export async function sendTodoToDaily(view: EditorView, deps: DailyDeps, store: 
   const today = deps.today();
   const dailyPath = dailyPathFor(vaultRoot, today);
   await withFileLock(dailyPath, async () => {
-    let dailyText: string | null = await deps.io.readFile(dailyPath).catch(() => null);
+    const daily = await readOther(deps, dailyPath);
+    /** 编辑器打开着今日日记时:改动就地 dispatch,末尾不再写盘。 */
+    const dailyEditor = daily.editor;
+    let dailyText: string | null = daily.text;
     let mutated = false;
     let linksDirty = false;
     let sent = 0;
@@ -565,12 +610,20 @@ export async function sendTodoToDaily(view: EditorView, deps: DailyDeps, store: 
       if (existing) {
         dailyLine = existing.start; // 已有同文条目:认领,不重复追加
       } else {
-        const { change } = appendEntrySpec(bdoc, region, reindented);
+        const { change } =
+          position === "prepend"
+            ? prependEntrySpec(bdoc, region, reindented)
+            : appendEntrySpec(bdoc, region, reindented);
         const newDaily = textAfterChanges(dailyText, [change]);
         const ndoc = parseDoc(newDaily);
         dailyLine =
           findEntryByText(ndoc, parseDailyRegion(ndoc), text, Number.MAX_SAFE_INTEGER)?.start ?? 1;
-        dailyText = newDaily;
+        if (dailyEditor && dailyEditor.dom.isConnected && documentPath(dailyEditor.state) === dailyPath) {
+          dailyEditor.dispatch({ changes: change, userEvent: SYNC_USER_EVENT });
+          dailyText = dailyEditor.state.doc.toString();
+        } else {
+          dailyText = newDaily;
+        }
       }
       store.upsert({
         id: uuid(),
@@ -586,7 +639,15 @@ export async function sendTodoToDaily(view: EditorView, deps: DailyDeps, store: 
       linksDirty = true;
       sent++;
     }
-    if (mutated && dailyText !== null) await deps.io.writeFile(dailyPath, dailyText);
+    // 日记开在编辑器里时改动已经在内存(自动保存会落盘),再写盘会把编辑器
+    // 里的旧内容留在内存,下一次保存又盖回去。
+    const useEditor =
+      dailyEditor !== null &&
+      dailyEditor.dom.isConnected &&
+      documentPath(dailyEditor.state) === dailyPath;
+    if (mutated && dailyText !== null && !useEditor) {
+      await deps.io.writeFile(dailyPath, dailyText);
+    }
     if (linksDirty) scheduleLinksPersist();
     if (sent > 0) deps.toast(sent === 1 ? "已发送到今日日记" : `已发送 ${sent} 条到今日日记`);
     else if (already > 0) deps.toast("已在今日日记中,自动保持同步");

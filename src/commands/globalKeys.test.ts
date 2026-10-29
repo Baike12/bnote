@@ -11,7 +11,7 @@ import { pickKeyRegion, type FocusRegion } from "./globalKeys";
  * 别的命令上或什么也不做。反过来,不在场的区域(三栏里被临时隐藏/收起、
  * 或不在学习模式时没有 Agent/阅读区)同样不能占着键盘。
  */
-const ALL: FocusRegion[] = ["reading", "notes", "agent"];
+const ALL: FocusRegion[] = ["reading", "notes", "agent", "project"];
 const onScreenAll = () => true;
 
 describe("pickKeyRegion", () => {
@@ -42,7 +42,7 @@ describe("pickKeyRegion", () => {
     expect(pickKeyRegion({ owner: "agent", focus: "notes", onScreen })).toBe("notes");
   });
 
-  it("无主也无焦点时按阅读区 → 笔记区 → Agent 兜底(阅读区不取焦点,最安全)", () => {
+  it("无主也无焦点时按阅读区 → 项目卡片 → 笔记区 → Agent 兜底(阅读区不取焦点,最安全)", () => {
     expect(
       pickKeyRegion({
         owner: null,
@@ -50,11 +50,20 @@ describe("pickKeyRegion", () => {
         onScreen: () => true,
       }),
     ).toBe("reading");
+    // 阅读区不在场:项目管理排在笔记区之前——项目视图刚切进来时还没有
+    // 「最近动手」,键盘该落在中间的卡片,而不是右栏日记。
     expect(
       pickKeyRegion({
         owner: null,
         focus: null,
         onScreen: (region) => region !== "reading",
+      }),
+    ).toBe("project");
+    expect(
+      pickKeyRegion({
+        owner: null,
+        focus: null,
+        onScreen: (region) => region !== "reading" && region !== "project",
       }),
     ).toBe("notes");
   });
