@@ -97,6 +97,42 @@ export function mathRegionsForDoc(doc: Text): MathRegion[] {
   return regions;
 }
 
+/**
+ * 光标是否停在公式**正文**上——也就是「下一个键入的字符会不会写进公式源码」。
+ *
+ * 位置语义(CM6 里 position 是字符之间):`from` 是开定界符之前、`to` 是闭合
+ * 定界符之后,两点都落在**正文侧**——在那里打字,字符落在公式外面。所以闭合
+ * 区域只认严格内部;未闭合区域(unclosed:只有一个 `$$`、还在打字)没有闭合
+ * 符,`to` 就是正文末尾,那里打字仍写进公式。
+ *
+ * 这是「打字意图」的唯一判定:输入法按它决定英文/中文源(公式是 ASCII),
+ * 行内公式的源码展开也按它(光标在边界上=公式已渲染、光标在 widget 之外,
+ * 再展源码就会把光标夹在源码与预览之间)。**块级**公式的活动规则是另一回事:
+ * 整行 block widget 覆盖边界位置所在的行,收起时会把光标画到自己那一行之外,
+ * 见 livePreview 的 active()。
+ */
+export function caretInMathBody(region: MathRegion, pos: number): boolean {
+  return pos > region.from && (pos < region.to || region.unclosed === true);
+}
+
+/**
+ * 选区是否压在公式正文上:空选区按光标判定,非空选区与正文相交即算
+ * (用户正在选中公式文本,要能看见自己选了什么)。
+ */
+export function selectionInMathBody(region: MathRegion, from: number, to: number): boolean {
+  if (from === to) return caretInMathBody(region, from);
+  const bodyEnd = region.unclosed === true ? region.to : region.to - 1;
+  return from <= bodyEnd && to >= region.from + 1;
+}
+
+/** 公式正文的位置区间,夹进定界符之内(点击渲染态公式时落进正文用)。
+ *  闭合区域去掉两侧定界符;未闭合区域的 `to` 本身就是正文末尾。 */
+export function mathBodySpan(region: MathRegion): { from: number; to: number } {
+  const open = region.display ? region.from + 2 : region.from + 1;
+  const close = region.unclosed === true ? region.to : region.to - (region.display ? 2 : 1);
+  return { from: open, to: Math.max(open, close) };
+}
+
 /** Classifies the cursor position for snippet-mode matching, in the spirit of
  *  latex-suite's Context (math / code / \text{} environments). */
 export function getContextAt(state: EditorState, pos: number): EditContext {

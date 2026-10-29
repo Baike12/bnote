@@ -34,7 +34,9 @@ import {
   imeOnWindowFocus,
   imeSyncToEditor,
   imeYield,
+  insertRegionWantsEnglishAt,
 } from "./imeSwitch";
+import { EditorState } from "@codemirror/state";
 import { useAppStore } from "@/state/appStore";
 
 /** 可控的 in-flight：setInputSource 的 promise 直到 drain() 才落定。 */
@@ -389,6 +391,66 @@ describe("imeOnWindowFocus", () => {
     imeOnWindowFocus();
     await drain();
     expect(setInputSource).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 公式边界处的输入源意图。用户报告:Tab 跳出 / 切 normal 移出公式后,光标
+ * 停在闭合 `$` 之后仍是英文源,接着打字把中文原码当公式敲进正文;块级公式
+ * 移到末尾 `$$` 再进 insert 也一样。
+ *
+ * 判定看「下一个字符落在哪儿」:只有公式正文里才是英文源,边界之后是正文,
+ * 该回到 insert 源(中文)。未闭合块(打字中)的 `to` 仍是正文——那里每敲一个
+ * 字符光标都落在 `to`。
+ */
+describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", () => {
+  const wantsEnglish = (doc: string, pos: number) =>
+    insertRegionWantsEnglishAt(
+      useAppStore.getState().settings,
+      EditorState.create({ doc }),
+      pos,
+    );
+
+  it("行内公式：严格内部才是英文源，闭合 `$` 之后回到中文", () => {
+    const doc = "前文 $f(x)$ 后文"; // $f(x)$ = 3..9
+    expect(wantsEnglish(doc, 4)).toBe(true);
+    expect(wantsEnglish(doc, 6)).toBe(true);
+    expect(wantsEnglish(doc, 8)).toBe(true);
+    // 开符之前(3)与闭合符之后(9):下一个字符落在公式外面。
+    expect(wantsEnglish(doc, 3)).toBe(false);
+    expect(wantsEnglish(doc, 9)).toBe(false);
+    expect(wantsEnglish(doc, 10)).toBe(false);
+  });
+
+  it("块级公式：末尾 `$$` 之后(区域 to)回到中文", () => {
+    const doc = "$$\nx=1\n$$"; // 0..9
+    expect(wantsEnglish(doc, 1)).toBe(true);
+    expect(wantsEnglish(doc, 8)).toBe(true);
+    expect(wantsEnglish(doc, 0)).toBe(false);
+    expect(wantsEnglish(doc, 9)).toBe(false);
+  });
+
+  it("未闭合块：末尾仍是英文源（公式还在打字）", () => {
+    const doc = "$$\nx=1"; // 0..6, unclosed
+    expect(wantsEnglish(doc, 6)).toBe(true);
+  });
+
+  it("单个 `$$` 后接着打字仍是英文源", () => {
+    expect(wantsEnglish("$$", 2)).toBe(true);
+  });
+
+  it("mathKeepsEnglish 关闭：公式里也用 insert 源", () => {
+    useAppStore.getState().patchSettings({
+      ime: {
+        enabled: true,
+        chineseFields: true,
+        insertSource: "com.apple.inputmethod.SCIM",
+        normalSource: "com.apple.keylayout.ABC",
+        mathKeepsEnglish: false,
+        codeKeepsEnglish: true,
+      },
+    });
+    expect(wantsEnglish("前文 $f(x)$ 后文", 6)).toBe(false);
   });
 });
 

@@ -71,19 +71,19 @@ describe("scanMath 块公式配对", () => {
   it("落单 $$ 只渲染到段落末尾,不吞后续段落", () => {
     const doc = "$$\nx=1\n\n后面文字";
     const rs = display(doc);
-    expect(rs).toEqual([{ from: 0, to: 6, display: true, content: "\nx=1" }]);
+    expect(rs).toEqual([{ from: 0, to: 6, display: true, content: "\nx=1", unclosed: true }]);
     expect(doc.indexOf("后面文字")).toBeGreaterThan(rs[0].to - 1);
   });
 
   it("落单 $$ 后紧跟空行:区域只含 $$ 本身,不越过行尾(行内替换装饰不得跨行)", () => {
     const rs = display("a\n\n$$\n\n结尾");
-    expect(rs).toEqual([{ from: 3, to: 5, display: true, content: "" }]);
+    expect(rs).toEqual([{ from: 3, to: 5, display: true, content: "", unclosed: true }]);
     expect(insideAny("a\n\n$$\n\n结尾", "结尾")).toBe(false);
   });
 
   it("未配对 $$ 且其后没有空行:维持到文档末尾(打字中的公式保持实时渲染)", () => {
     const rs = display("前文\n\n$$\nx=1");
-    expect(rs).toEqual([{ from: 4, to: 10, display: true, content: "\nx=1" }]);
+    expect(rs).toEqual([{ from: 4, to: 10, display: true, content: "\nx=1", unclosed: true }]);
   });
 });
 

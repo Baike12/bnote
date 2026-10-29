@@ -973,18 +973,6 @@ button {
   display: none;
 }
 
-/* 编辑中的行内公式:源码留在左边,渲染预览紧随闭合定界符(块公式的预览
-   在源码下方)。必须是 inline 盒:inline-block 的基线会把整行撑高,光标
-   进出公式时下方内容跟着抖 1-2px;inline 的上下 padding 只画不占位,行高
-   与渲染态完全一致。 */
-.cw-math-preview-inline {
-  display: inline;
-  margin-left: 0.4em;
-  padding: 0.12em 0.35em;
-  border-radius: 4px;
-  background: var(--code-inline-bg);
-}
-
 /* Obsidian-style coloring of raw math source while editing. */
 .md-math-delim {
   color: var(--keyword);
@@ -4328,17 +4316,45 @@ input[type="range"] {
 }
 
 .projects-deck-pos {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11.5px;
   color: var(--text-faint);
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .projects-deck-hint {
+  min-width: 0;
   font-size: 11px;
   color: var(--text-faint);
   opacity: 0.72;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 窄窗口里先截断提示文字,「⋯」(删项目等操作)永远留在头部内。 */
+.projects-deck-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.projects-deck-more {
+  flex: 0 0 auto;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+}
+.projects-deck-more:disabled {
+  opacity: 0.4;
+  background: transparent;
+  color: var(--text-dim);
 }
 
 .projects-board {

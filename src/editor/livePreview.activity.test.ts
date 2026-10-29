@@ -6,12 +6,10 @@ import { GFM } from "@lezer/markdown";
 import {
   buildInlineDecorations,
   blockDecorationsField,
-  configureLivePreview,
   selectionAffectsDecos,
 } from "./livePreview";
 import {
   ListBulletWidget,
-  MathInlinePreviewWidget,
   MathPreviewWidget,
   MathWidget,
   TaskCheckboxWidget,
@@ -376,17 +374,31 @@ describe("数学预览的块级锚点（blockDecorationsField）", () => {
       true,
     );
   });
+
+  it("闭合 $$ 同行带正文：块 widget 只盖到定界符，不吞掉后面的正文", () => {
+    // "a\n$$\nx = 1\n$$后文\n"：区域 2..13，闭合行 11..16——整行替换会让
+    // "后文" 从 DOM 里消失(被 widget 盖住),光标落在那里却看不见字。
+    const state = blockState("a\n$$\nx = 1\n$$后文\n", 0);
+    const block = blockPoints(state).find((p) => p.widget instanceof MathWidget);
+    expect(block).toEqual({ from: 2, to: 13, widget: expect.any(MathWidget) });
+  });
 });
 
 /**
- * 行内公式的编辑态预览（buildInlineDecorations）。块公式的预览由块层补在
- * 源码下方；行内区域没有块层，必须在闭合定界符之后紧跟一个行内预览 widget，
- * 否则「输入行内公式时看不到渲染结果」——光标停在闭合 `$` 之后也算活动态
- * （区域触点算活动），这正是打完公式立刻看不到预览的原因。
+ * 行内公式的渲染规则（buildInlineDecorations）。
  *
- * 夹具 "前文 $f(x)$ 后文"：`$f(x)$` 占 3..9，闭合定界符在 8，预览锚在 9。
+ * 活动规则按**正文**判定（context.ts 的 selectionInMathBody）：`$f(x)$` 占
+ * 3..9，位置 3（开符之前）与 9（闭合符之后）都在 widget 之外——那里已经是
+ * 正文，公式照常渲染，光标落在渲染结果之后（Tab 跳出、打完闭合 `$` 的自然
+ * 位置）。只有严格内部的 4..8 展开源码。
+ *
+ * 编辑时**只显示源码**：不再在闭合定界符后插一份渲染副本（同一公式的第二
+ * 遍渲染）。一行里有两个以上行内公式时，那份副本正好挤在相邻公式的渲染
+ * 旁边（用户报的「渲染重合」），而且宽度每次击键都变、整行跟着重排。
+ *
+ * 夹具 "前文 $f(x)$ 后文"：`$f(x)$` 占 3..9，闭合定界符在 8。
  */
-describe("行内公式的编辑态预览（buildInlineDecorations）", () => {
+describe("行内公式的渲染规则（buildInlineDecorations）", () => {
   const DOC_MATH = "前文 $f(x)$ 后文";
 
   function inlinePoints(doc: string, pos: number) {
@@ -400,43 +412,55 @@ describe("行内公式的编辑态预览（buildInlineDecorations）", () => {
       state,
       visibleRanges: [{ from: 0, to: state.doc.length }],
     });
-    const out: { from: number; to: number; widget: unknown }[] = [];
+    // mark 装饰(widget 为 undefined)与 replace 装饰一起收,才能断言「只有源码高亮」
+    const out: { from: number; to: number; widget: unknown; mark: unknown }[] = [];
     set.between(0, state.doc.length, (from, to, deco) => {
-      const w = (deco as { spec?: { widget?: unknown } }).spec?.widget;
-      if (w) out.push({ from, to, widget: w });
+      const spec = (deco as { spec?: { widget?: unknown; class?: unknown } }).spec;
+      out.push({ from, to, widget: spec?.widget, mark: spec?.class });
     });
     return out;
   }
 
-  it("光标在公式内：源码保持可见（无 replace），闭合定界符后紧跟预览", () => {
-    const points = inlinePoints(DOC_MATH, 6);
-    expect(points.filter((p) => p.widget instanceof MathInlinePreviewWidget)).toEqual([
-      { from: 9, to: 9, widget: expect.any(MathInlinePreviewWidget) },
-    ]);
+  it("光标在公式内：只显示源码，不插渲染副本（无 replace、无第二遍渲染）", () => {
+    for (const pos of [4, 6, 8]) {
+      const points = inlinePoints(DOC_MATH, pos);
+      // 整个区域没有任何 replace:源码原样留在文档里,只有渲染态才折成 widget
+      expect(points.some((p) => p.widget instanceof MathWidget)).toBe(false);
+    }
+  });
+
+  it("光标在公式内：源码按 token 上色（命令/结构符有 mark）", () => {
+    // highlightMathSource 只标 $$、\cmd、{}[]^_&~——普通 $f(x)$ 没有 token。
+    const points = inlinePoints("前文 $\\alpha_{x}$ 后文", 6);
     expect(points.some((p) => p.widget instanceof MathWidget)).toBe(false);
+    expect(points.filter((p) => p.mark !== undefined).length).toBeGreaterThan(0);
   });
 
-  it("光标停在闭合定界符之后（打完公式的自然位置）：预览仍在", () => {
-    const points = inlinePoints(DOC_MATH, 9);
-    expect(points.some((p) => p.widget instanceof MathInlinePreviewWidget)).toBe(true);
+  it("光标压在边界上（开符之前 3 / 闭合符之后 9）：公式已渲染", () => {
+    for (const pos of [3, 9]) {
+      const points = inlinePoints(DOC_MATH, pos);
+      expect(
+        points.some((p) => p.widget instanceof MathWidget && p.from === 3 && p.to === 9),
+      ).toBe(true);
+    }
   });
 
-  it("光标离开区域：折成渲染 widget，不留预览", () => {
+  it("光标离开区域：折成渲染 widget", () => {
     const points = inlinePoints(DOC_MATH, 0);
-    expect(points.some((p) => p.widget instanceof MathInlinePreviewWidget)).toBe(false);
     expect(
       points.some((p) => p.widget instanceof MathWidget && p.from === 3 && p.to === 9),
     ).toBe(true);
   });
 
-  it("mathPreview 关闭：与块公式同一开关，行内也不出预览", () => {
-    configureLivePreview({ mathPreview: false });
-    try {
-      const points = inlinePoints(DOC_MATH, 6);
-      expect(points.some((p) => p.widget instanceof MathInlinePreviewWidget)).toBe(false);
-    } finally {
-      configureLivePreview({ mathPreview: true });
-    }
+  it("一行两个公式、编辑前一个：只渲染后一个，前一个不出现第二份渲染", () => {
+    // "甲 $a$ 乙 $b$ 丙"：region 2..5 与 8..11。
+    const doc = "甲 $a$ 乙 $b$ 丙";
+    const points = inlinePoints(doc, 3); // 光标在第一个公式内
+    const widgets = points.filter((p) => p.widget instanceof MathWidget);
+    expect(widgets).toHaveLength(1);
+    expect(widgets[0]).toMatchObject({ from: 8, to: 11 });
+    // 正在编辑的第一个公式:区间内一条装饰都没有(既不折、也没有副本)
+    expect(points.filter((p) => p.from >= 2 && p.to <= 5)).toHaveLength(0);
   });
 });
 

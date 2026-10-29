@@ -105,6 +105,9 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "project.next": "Mod-Shift-ArrowDown",
   "project.send-todo": "Mod-Shift-j",
   "project.new": "Mod-Shift-n",
+  // ⌘⌫ 与访达同义(删到废纸篓)。只管「当前项目」,且只在项目区生效:
+  // 笔记区的 ⌘⌫ 不占用,正文编辑时不会误删项目。
+  "project.delete": "Mod-Backspace",
   "project.focus-daily": "Mod-Alt-n",
   "region.focus-project": "Mod-Alt-p",
 

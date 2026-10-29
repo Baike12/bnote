@@ -1,7 +1,7 @@
 import { EditorView } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
+import type { Extension, EditorState } from "@codemirror/state";
 import { currentVimMode } from "./vim/vim";
-import { insideFencedCode, mathRegions } from "./context";
+import { caretInMathBody, insideFencedCode, mathRegions } from "./context";
 import { getView } from "./api";
 import { api } from "@/lib/tauri";
 import { useAppStore, type ModalKind, type Settings } from "@/state/appStore";
@@ -324,19 +324,33 @@ function imeDesiredSource(settings: Settings, modal: ModalKind): string | null {
 }
 
 /**
- * insert 模式下光标是否落在「该保持英文」的区域:公式(公式是 ASCII)或
- * 围栏代码块(代码是 ASCII)。imeDesiredSource 与 updateListener 两条路径
- * 共用这一个判定,不许各写一份——区域清单变化时只改这里。
+ * insert 模式下光标处「该保持英文」吗:接下来的字符会写进公式(ASCII)或
+ * 围栏代码块(ASCII)。判定只看**正文**:光标压在公式的闭合定界符之后、
+ * 或开定界符之前时,下一个字符落在公式外面,该按正文用中文源
+ * (见 context.ts 的 caretInMathBody)。
+ *
+ * 纯函数(不持 view),imeDesiredSource 与 updateListener 两条路径共用,
+ * 门禁直接对它断言。
  */
-function insertRegionWantsEnglish(settings: Settings, view: EditorView): boolean {
-  const head = view.state.selection.main.head;
-  if (settings.ime.mathKeepsEnglish && mathRegions(view.state).some((r) => head >= r.from && head <= r.to)) {
+export function insertRegionWantsEnglishAt(
+  settings: Settings,
+  state: EditorState,
+  head: number,
+): boolean {
+  if (
+    settings.ime.mathKeepsEnglish &&
+    mathRegions(state).some((r) => caretInMathBody(r, head))
+  ) {
     return true;
   }
-  if (settings.ime.codeKeepsEnglish && insideFencedCode(view.state, head)) {
+  if (settings.ime.codeKeepsEnglish && insideFencedCode(state, head)) {
     return true;
   }
   return false;
+}
+
+function insertRegionWantsEnglish(settings: Settings, view: EditorView): boolean {
+  return insertRegionWantsEnglishAt(settings, view.state, view.state.selection.main.head);
 }
 
 /** Window deactivated: hand the user's original source back to the system. */
