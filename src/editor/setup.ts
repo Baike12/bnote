@@ -193,6 +193,14 @@ export function baseExtensions(
           "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
       },
       "&.cm-focused": { outline: "none" },
+      // CM6 的 baseTheme 给 gutter 配了浅灰底(为 light 场景),深色主题下会
+      // 变成编辑器里插进一条白柱。gutter 只出现在项目看板(拖拽手柄),统一
+      // 还给主题色,将来再加别的 gutter 也不会踩同一处。
+      ".cm-gutters": {
+        backgroundColor: "transparent",
+        color: "var(--text-faint, #67676d)",
+        border: "none",
+      },
       ".cm-content": { caretColor: "var(--accent, #f5a83c)" },
       ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent, #f5a83c)" },
     }),

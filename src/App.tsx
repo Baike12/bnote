@@ -57,6 +57,7 @@ import {
 } from "@/study/layoutModel";
 import { normalizePageStep } from "@/study/reading";
 import { normalizeWebZoom } from "@/study/webZoom";
+import { normalizeDailyWidth, normalizeSideWidth } from "@/projects/layoutModel";
 import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
 
 /** 画布是独立 chunk(含 excalidraw 及其字体加载逻辑),只在打开时下载。 */
@@ -127,6 +128,9 @@ export default function App() {
         settings.studyAgentWidth,
         window.innerWidth,
       );
+      // 项目视图的两栏宽度同理:旧配置没有这两项 → 默认值,手改坏的值回落默认。
+      settings.projectsSideWidth = normalizeSideWidth(settings.projectsSideWidth);
+      settings.projectsDailyWidth = normalizeDailyWidth(settings.projectsDailyWidth);
       // 旧键不再使用,剥掉免得一直躺在配置文件里。右栏页签模型已由三栏布局
       // 取代(助手栏常驻在最左),这个键只可能是旧配置留下的。
       delete (settings as Record<string, unknown>).studySplit;

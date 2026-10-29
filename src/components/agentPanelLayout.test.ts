@@ -19,10 +19,19 @@ const css = readFileSync("src/styles/global.css", "utf8").replace(
 );
 
 const rule = (selector: string): string => {
-  const re = new RegExp(`(^|\\n)${selector.replace(/\./g, "\\.")}\\s*\\{([^}]*)\\}`);
-  const m = re.exec(css);
-  expect(m, `${selector} 规则消失`).not.toBeNull();
-  return m![2];
+  // 按规则块解析而不是按行首正则:分栏线是共用样式,选择器列表写成
+  // `.study-resizer,\n.projects-resizer {` 时行首正则取不到。
+  for (const block of css.split("}")) {
+    const at = block.lastIndexOf("{");
+    if (at < 0) continue;
+    const selectors = block
+      .slice(0, at)
+      .split(",")
+      .map((s: string) => s.trim());
+    if (selectors.includes(selector)) return block.slice(at + 1);
+  }
+  expect(null, `${selector} 规则消失`).not.toBeNull();
+  return "";
 };
 
 describe("agent 面板滚动布局", () => {
@@ -40,6 +49,12 @@ describe("agent 面板滚动布局", () => {
     expect(rule(".study-resizer")).toMatch(/flex:\s*0 0 1px/);
     expect(rule(".study-resizer::after")).toMatch(/left:\s*-4px/);
     expect(rule(".study-resizer::after")).toMatch(/right:\s*-4px/);
+  });
+
+  it("项目视图的两根分栏线与学习模式共用同一套几何(只占 1px,不外扩布局)", () => {
+    expect(rule(".projects-resizer")).toMatch(/flex:\s*0 0 1px/);
+    expect(rule(".projects-resizer::after")).toMatch(/left:\s*-4px/);
+    expect(rule(".projects-resizer::after")).toMatch(/right:\s*-4px/);
   });
 
   it("agent 顶部与 PDF 顶栏同色(bg0),不是面板灰", () => {

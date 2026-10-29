@@ -2028,17 +2028,19 @@ input[type="range"] {
 }
 
 /* 拖动条:视觉上一条 1px 分栏线,命中区 9px(col-resize 手感)。线画在条自身
-   的左缘:拖动时列的边界就是指针的位置(见 StudyLayout 的 startDrag),线与
-   边界才是同一条。命中区用 ::after 向两侧各扩 4px——布局只占 1px,两栏之间
-   因此没有可见空隙,指针仍能稳稳抓住分栏线。三栏有两根(助手|内容、内容|笔记)。 */
-.study-resizer {
+   的左缘:拖动时列的边界就是指针的位置(见 splitDrag),线与边界才是同一条。
+   命中区用 ::after 向两侧各扩 4px——布局只占 1px,两栏之间因此没有可见空隙,
+   指针仍能稳稳抓住分栏线。学习模式三栏有两根,项目视图三栏也有两根。 */
+.study-resizer,
+.projects-resizer {
   flex: 0 0 1px;
   position: relative;
   z-index: 1;
   cursor: col-resize;
   touch-action: none;
 }
-.study-resizer::before {
+.study-resizer::before,
+.projects-resizer::before {
   content: "";
   position: absolute;
   top: 0;
@@ -2048,7 +2050,8 @@ input[type="range"] {
   background: var(--border);
   transition: width 0.12s ease, background 0.12s ease;
 }
-.study-resizer::after {
+.study-resizer::after,
+.projects-resizer::after {
   content: "";
   position: absolute;
   top: 0;
@@ -2057,7 +2060,9 @@ input[type="range"] {
   right: -4px;
 }
 .study-resizer:hover::before,
-.study-resizer.dragging::before {
+.study-resizer.dragging::before,
+.projects-resizer:hover::before,
+.projects-resizer.dragging::before {
   width: 2px;
   background: var(--accent);
 }
@@ -2068,10 +2073,12 @@ input[type="range"] {
   border-right: none;
 }
 /* 拖动时锁住选中与指针,鼠标滑出面板也不会选中文字。 */
-.study-resizer.dragging {
+.study-resizer.dragging,
+.projects-resizer.dragging {
   user-select: none;
 }
-.study-layout:has(.study-resizer.dragging) {
+.study-layout:has(.study-resizer.dragging),
+.projects-layout:has(.projects-resizer.dragging) {
   cursor: col-resize;
   user-select: none;
 }
@@ -4119,24 +4126,29 @@ input[type="range"] {
   color: var(--text-3);
   line-height: 1.7;
 }
-
 /* ========================== 项目管理视图 ==========================
-   项目列表 | 项目卡片带(当前项目居中、可编辑) | 日记。
-   与学习模式同级、互斥;颜色全部走主题变量(见 theme.test.ts 的门禁)。 */
+   项目导航 | 项目看板(横向多列,当前列居中可编辑) | 日记。
+   两侧栏宽度由 ProjectsLayout 写入(--side-src / --daily-src 是用户偏好,
+   看板吃剩余);窗口窄到放不下时由 --side-w / --daily-w 的 clamp 压缩显示,
+   不回写偏好。颜色全部走主题变量(见 theme.test.ts 的门禁)。 */
 .projects-layout {
   flex: 1;
   display: flex;
   min-height: 0;
   min-width: 0;
   background: var(--bg0);
-  --projects-head-h: 43px; /* 与学习模式三栏头部同高 */
-  --projects-side-w: 200px;
-  --projects-daily-w: 420px;
+  --projects-head-h: 44px;
+  --side-src: 232px;
+  --daily-src: 420px;
+  /* 日记栏先夹(给看板留 300px + 导航 10%),导航栏再按实际日记宽度夹。 */
+  --daily-w: clamp(12%, var(--daily-src), calc(100% - 300px - 10%));
+  --side-w: clamp(10%, var(--side-src), calc(100% - var(--daily-w) - 2px - 300px));
 }
 
+/* 左栏:项目导航 */
 .projects-side {
-  flex: 0 0 var(--projects-side-w);
-  width: var(--projects-side-w);
+  flex: 0 0 var(--side-w);
+  width: var(--side-w);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -4147,50 +4159,145 @@ input[type="range"] {
   min-height: var(--projects-head-h);
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   /* 侧栏收起时红绿灯覆盖主区左上角,头部内容让开(与 titlebar 同一约定)。 */
-  padding: 0 8px 0 var(--projects-lead, 78px);
+  padding: 0 10px 0 var(--projects-lead, 78px);
   border-bottom: 1px solid var(--border);
 }
 
 .projects-side-title {
   font-size: 12px;
+  font-weight: 600;
   color: var(--text-dim);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.06em;
+}
+
+.projects-side-total {
+  min-width: 18px;
+  padding: 0 6px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--bg3);
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.projects-side-new {
+  margin-left: auto;
+}
+
+.projects-side-filter {
+  padding: 10px 10px 4px;
+}
+
+.projects-search {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.projects-search::placeholder {
+  color: var(--text-faint);
+}
+.projects-search:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  background: var(--bg0);
+}
+
+.projects-new-input {
+  margin: 6px 10px 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  background: var(--bg0);
+  color: var(--text);
+  font-size: 13px;
+}
+.projects-new-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .projects-side-list {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 10px 8px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px 20px;
 }
 
 .projects-side-item {
-  display: block;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   width: 100%;
-  text-align: left;
-  padding: 7px 10px;
-  margin-bottom: 5px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-dim);
   font-size: 13px;
+  text-align: left;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .projects-side-item:hover {
-  background: var(--bg2);
+  background: var(--bg3);
   color: var(--text);
 }
 .projects-side-item.active {
   background: var(--accent-soft);
-  border-color: var(--accent-dim);
   color: var(--text);
+}
+/* 选中项的左竖条:与学习模式的分栏线同一套视觉语言。 */
+.projects-side-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.projects-side-dot {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--bg3);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+.projects-side-item.active .projects-side-dot {
+  /* 底色当前景色:dark 下是橙底黑字、light 下是深琥珀底白字,两主题都够对比。 */
+  background: var(--accent);
+  color: var(--bg0);
+}
+
+.projects-side-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .projects-side-empty {
@@ -4200,26 +4307,7 @@ input[type="range"] {
   line-height: 1.8;
 }
 
-.projects-new-input {
-  margin: 8px 8px 0;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--accent-dim);
-  border-radius: 8px;
-  background: var(--bg2);
-  color: var(--text);
-  font-size: 13px;
-}
-.projects-new-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.projects-split {
-  flex: 0 0 1px;
-  background: var(--border);
-}
-
+/* 中栏:项目看板 */
 .projects-deck {
   flex: 1 1 0;
   min-width: 0;
@@ -4233,149 +4321,231 @@ input[type="range"] {
   min-height: var(--projects-head-h);
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 0 16px;
   border-bottom: 1px solid var(--border);
 }
 
-.projects-search {
-  width: min(420px, 100%);
-  height: 26px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--bg1);
-  color: var(--text);
-  font-size: 12px;
-}
-.projects-search:focus {
-  outline: none;
-  border-color: var(--accent-dim);
+.projects-deck-pos {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
-/* 三槽轮播:当前项目居中且更宽,左右是相邻项目的只读预览。 */
-.projects-deck-track {
+.projects-deck-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  opacity: 0.72;
+  white-space: nowrap;
+}
+
+.projects-board {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
-  gap: 14px;
-  padding: 16px;
-  overflow: hidden;
-  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 横向滚动必然把邻列裁掉一截:左右边缘渐隐,让裁切线消失在「视野之外」,
+     而不是一刀切在文字中间。渐隐宽度 = min(64px, 轨道留白),由布局写进
+     --board-fade——留白很小时(窄窗口)不会把当前列也淡掉。mask 的颜色只表示
+     不透明度,不是主题色。 */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--board-fade, 22px),
+    black calc(100% - var(--board-fade, 22px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--board-fade, 22px),
+    black calc(100% - var(--board-fade, 22px)),
+    transparent
+  );
 }
 
-.project-card {
-  min-width: 0;
+/* 看板轨道:列宽固定(看板语义:拖宽中栏只改变「能放下几列」,不拉伸列)。
+   左右留白 = (看板宽 − 列宽) / 2,由 ProjectsLayout 写进 --board-edge-pad:
+   当前列因此能停在正中间(首个/末个项目也一样),不会贴边。 */
+.projects-board-track {
+  position: relative; /* 列的 offsetLeft 因此相对轨道(居中计算按它算) */
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  width: max-content;
+  min-width: 100%;
+  height: 100%;
+  padding: 14px var(--board-edge-pad, 18px) 16px;
+  box-sizing: border-box;
+}
+
+.project-col {
+  flex: 0 0 288px;
   min-height: 0;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--bg1);
   overflow: hidden;
 }
-.project-card.current {
+
+.project-col.current {
+  flex-basis: 320px;
   border-color: var(--accent-dim);
   background: var(--bg0);
-}
-.project-card.preview {
-  opacity: 0.7;
-  cursor: pointer;
-  transition: opacity 0.12s ease;
-}
-.project-card.preview:hover {
-  opacity: 1;
-}
-.project-card.preview:focus-visible {
-  outline: none;
-  border-color: var(--accent-dim);
-  opacity: 1;
-}
-.project-card.blank {
-  opacity: 0.28;
-  cursor: default;
+  box-shadow: 0 6px 18px -12px var(--shadow);
 }
 
-.project-card-title {
-  padding: 14px 16px 10px;
-  font-size: 14px;
+.project-col.preview {
+  cursor: pointer;
+  opacity: 0.78;
+  transition: opacity 0.12s ease, border-color 0.12s ease;
+}
+.project-col.preview:hover,
+.project-col.preview:focus-visible {
+  opacity: 1;
+  border-color: var(--accent-dim);
+  outline: none;
+}
+
+.project-col-head {
+  flex: 0 0 auto;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project-col-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
-  border-bottom: 1px solid var(--border);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.project-card-title.muted {
-  color: var(--text-faint);
+
+.project-col-badge {
+  flex: 0 0 auto;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--bg3);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.project-col.current .project-col-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
-.project-card-editor {
+/* 当前项目的完成度:列头下面一条 2px 的细线。 */
+.project-col-progress {
+  flex: 0 0 auto;
+  height: 2px;
+  background: var(--bg3);
+}
+.project-col-progress-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.18s ease;
+}
+
+.project-col-editor {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* 看板列窄:正文的「可读行宽」那套留白(48px 侧边 + 16px 字号 + 45vh 底部)
+     在这里会把一行待办挤成两行。只改这两处变量,不碰 .cm-content 规则本身
+     (变量是唯一来源,普通笔记的排版不受影响)。 */
+  --content-pad-x: 10px;
+  --editor-font-size: 13.5px;
+  --typewriter-bottom: 28px;
 }
-.project-card-editor .cm-editor {
+.project-col-editor .cm-editor {
   height: 100%;
 }
-.project-card-editor .cm-scroller {
+.project-col-editor .cm-scroller {
   padding: 6px 14px 24px;
 }
 
-.project-card-empty {
+/* 非当前列:纯 DOM 待办(可拖到日记,点击聚焦)。 */
+.project-col-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 8px 20px;
+  list-style: none;
+}
+
+.project-col-todo {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  cursor: grab;
+  word-break: break-word;
+}
+.project-col-todo:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.project-col-todo.done {
+  color: var(--text-faint);
+}
+.project-col-todo.done .project-col-text {
+  text-decoration: line-through;
+}
+.project-col-box {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--accent-dim);
+}
+.project-col-todo.done .project-col-box {
+  color: var(--text-faint);
+}
+.project-col-text {
+  min-width: 0;
+}
+.project-col-empty {
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.projects-board-empty {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  color: var(--text-faint);
-  font-size: 13px;
-}
-
-/* 左右卡片里的待办是纯 DOM(可拖),不装编辑器。 */
-.project-preview-list {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  margin: 0;
-  padding: 10px 12px 24px;
-  list-style: none;
-}
-.project-preview-todo {
-  display: flex;
-  align-items: baseline;
   gap: 6px;
-  padding: 4px 6px;
-  border-radius: 6px;
+  color: var(--text-faint);
   font-size: 13px;
+  line-height: 1.8;
+}
+.projects-board-empty-title {
+  font-size: 15px;
+  font-weight: 600;
   color: var(--text-dim);
-  cursor: grab;
-  word-break: break-word;
-}
-.project-preview-todo:hover {
-  background: var(--bg2);
-  color: var(--text);
-}
-.project-preview-todo.done {
-  color: var(--text-faint);
-  text-decoration: line-through;
-}
-.project-preview-box {
-  color: var(--accent-dim);
-  flex: 0 0 auto;
-}
-.project-preview-todo.done .project-preview-box {
-  color: var(--text-faint);
-}
-.project-preview-text {
-  min-width: 0;
-}
-.project-preview-empty {
-  padding: 6px;
-  font-size: 12.5px;
-  color: var(--text-faint);
 }
 
 /* 项目卡片里已发送到今日日记的待办:置灰(编辑权在日记那份)。 */
@@ -4415,9 +4585,10 @@ input[type="range"] {
   color: var(--accent);
 }
 
+/* 右栏:日记 */
 .projects-daily {
-  flex: 0 0 var(--projects-daily-w);
-  width: var(--projects-daily-w);
+  flex: 0 0 var(--daily-w);
+  width: var(--daily-w);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -4426,35 +4597,106 @@ input[type="range"] {
 }
 
 .projects-daily-head {
+  position: relative;
   min-height: var(--projects-head-h);
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--border);
 }
-.projects-daily-title {
-  font-size: 12px;
+
+.daily-nav {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-dim);
-  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
 }
-.projects-daily-picker {
-  flex: 1;
+.daily-nav:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--text);
+}
+.daily-nav:disabled {
+  color: var(--text-faint);
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 日期就是下拉:原生 select 透明铺满,外观(悬停底、省略号)由这里决定。 */
+.daily-nav.prev {
+  justify-self: end;
+}
+.daily-nav.next {
+  justify-self: start;
+}
+
+.daily-date {
+  position: relative;
+  /* 日期组([‹][日期][›])在头部正中,两个箭头紧贴日期两侧。 */
   min-width: 0;
-  max-width: 190px;
-  height: 24px;
-  padding: 0 6px;
+  padding: 0 8px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+}
+.daily-date:hover {
+  background: var(--bg3);
+}
+.daily-date-text {
+  font-size: 12.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.daily-date-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  appearance: none;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.daily-today {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 22px;
+  padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg2);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.daily-today:hover {
+  background: var(--bg3);
+  border-color: var(--accent-dim);
   color: var(--text);
-  font-size: 12px;
 }
 
 .projects-daily-editor {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  --content-pad-x: 16px;
+  --typewriter-bottom: 32px;
 }
 .projects-daily-editor .cm-editor {
   height: 100%;
