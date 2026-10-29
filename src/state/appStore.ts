@@ -13,6 +13,7 @@ import {
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
 import { DEFAULT_TYPEWRITER_POSITION } from "@/editor/typewriterPosition";
 import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
+import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
 import type { AgentImage } from "@/study/agentImages";
 
 export interface ImeSettings {
@@ -65,6 +66,13 @@ export interface Settings {
    */
   studyAgentWidth: number;
   studyContentWidth: number;
+  /**
+   * 项目视图三栏:左「项目导航」、中「项目看板」、右「日记」。导航与日记
+   * 宽度是像素,看板吃剩余宽度——拖窗口只改看板,日记换行宽度与能放下几列
+   * 都不跟着窗口抖。窗口窄到放不下时由 CSS clamp 压缩显示。
+   */
+  projectsSideWidth: number;
+  projectsDailyWidth: number;
   /** 学习模式 PDF 护眼底色(浅绿纸面)。 */
   studyEyeCare: boolean;
   /** 学习模式每次翻页滚动的可见高度比例(PDF/网页共用,默认 0.5)。 */
@@ -96,6 +104,8 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "dark",
   studyAgentWidth: DEFAULT_AGENT_WIDTH,
   studyContentWidth: DEFAULT_CONTENT_WIDTH,
+  projectsSideWidth: DEFAULT_SIDE_WIDTH,
+  projectsDailyWidth: DEFAULT_DAILY_WIDTH,
   studyEyeCare: false,
   studyPageStep: 0.5,
   studyWebZoom: 1,

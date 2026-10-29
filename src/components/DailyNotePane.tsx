@@ -8,10 +8,23 @@ import { dailyScaffoldWithRollover } from "@/daily/engine";
 import { tauriIO } from "@/daily/runtime";
 import { todayStamp } from "@/editor/ops";
 import { refreshTree } from "@/app/actions";
+import { focusEditor } from "@/editor/api";
 import { setActiveKeyRegion } from "@/commands/globalKeys";
 import { PaneEditor } from "./PaneEditor";
 import { TODO_DRAG_MIME, decodeTodoDrag } from "@/projects/drag";
 import { sendTodoWithToast } from "@/projects/send";
+
+/**
+ * 日期标签:今天明说,其余日子带星期(日记是按日子翻的,星期比「周几」好认)。
+ */
+const WEEKDAY = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+function dayLabel(day: string, today: string): string {
+  const d = new Date(`${day}T00:00:00`);
+  const wd = Number.isNaN(d.getTime()) ? "" : WEEKDAY[d.getDay()];
+  if (day === today) return `今天 · ${day}`;
+  return wd ? `${day} · ${wd}` : day;
+}
 
 /**
  * 项目视图右栏:只放日记(`<vault>/Daily/YYYY-MM-DD.md`)。
@@ -76,16 +89,23 @@ export function DailyNotePane() {
       await refreshTree();
     }
     setCurrent(path);
-    viewRef.current?.focus();
+    focusEditor(viewRef.current);
   };
 
   const isTodoDrag = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes(TODO_DRAG_MIME);
+
+  const idx = current ? days.findIndex((d) => d.path === current) : -1;
+  /** 更早的一篇(列表是降序,index 更大)。 */
+  const older = idx >= 0 && idx + 1 < days.length ? days[idx + 1] : null;
+  /** 更晚的一篇。 */
+  const newer = idx > 0 ? days[idx - 1] : null;
+  const currentDay = idx >= 0 ? days[idx].day : null;
 
   // 「聚焦日记区」命令只发信号:编辑器实例在组件里,命令层拿不到。
   useEffect(() => {
     const focusDaily = () => {
       setActiveKeyRegion("notes");
-      viewRef.current?.focus();
+      focusEditor(viewRef.current);
     };
     window.addEventListener("bnote:focus-daily", focusDaily);
     return () => window.removeEventListener("bnote:focus-daily", focusDaily);
@@ -124,23 +144,47 @@ export function DailyNotePane() {
       onDropCapture={onDrop}
     >
       <div className="projects-daily-head" data-tauri-drag-region="deep">
-        <span className="projects-daily-title">笔记区</span>
-        <select
-          className="projects-daily-picker"
-          value={current ?? ""}
-          onChange={(e) => setCurrent(e.target.value || null)}
-          title="打开以往的日记"
+        <button
+          className="daily-nav prev"
+          disabled={!older}
+          title={older ? `前一天（${older.day}）` : "没有更早的日记"}
+          onClick={() => older && setCurrent(older.path)}
         >
-          {days.length === 0 && <option value="">还没有日记</option>}
-          {days.map((d) => (
-            <option key={d.path} value={d.path}>
-              {d.day === today ? `${d.day}（今天）` : d.day}
-            </option>
-          ))}
-        </select>
-        <button className="icon-btn" title="打开今日日记" onClick={() => void openToday()}>
-          今天
+          ‹
         </button>
+        <div className="daily-date">
+          <span className="daily-date-text">
+            {currentDay ? dayLabel(currentDay, today) : "还没有日记"}
+          </span>
+          {/* 原生下拉铺满日期文字(透明),点日期即选任意一天:外观由 CSS 决定,
+              交互仍是系统原生的翻找体验。 */}
+          <select
+            className="daily-date-select"
+            value={current ?? ""}
+            onChange={(e) => setCurrent(e.target.value || null)}
+            title="打开以往的日记"
+          >
+            {days.length === 0 && <option value="">还没有日记</option>}
+            {days.map((d) => (
+              <option key={d.path} value={d.path}>
+                {d.day === today ? `${d.day}（今天）` : d.day}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button
+          className="daily-nav next"
+          disabled={!newer}
+          title={newer ? `后一天（${newer.day}）` : "没有更新的日记"}
+          onClick={() => newer && setCurrent(newer.path)}
+        >
+          ›
+        </button>
+        {current !== todayPath && (
+          <button className="daily-today" title="打开今日日记" onClick={() => void openToday()}>
+            今天
+          </button>
+        )}
       </div>
       {current ? (
         <PaneEditor
@@ -155,7 +199,7 @@ export function DailyNotePane() {
       ) : (
         <div className="projects-daily-empty">
           <p>今天还没有日记。</p>
-          <p>把项目里的待办拖进来,或点右上角「今天」。</p>
+          <p>把项目里的待办拖进来，或点右上角「今天」。</p>
         </div>
       )}
     </section>

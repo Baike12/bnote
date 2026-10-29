@@ -51,3 +51,14 @@ export function findEditorFor(path: string): EditorView | null {
 export function getView(): EditorView | null {
   return editorApi.view;
 }
+
+/**
+ * 把焦点交给编辑器,但**不让浏览器滚动它的祖先**。
+ *
+ * 项目看板的横向位置由布局自己管(`--board-edge-pad` + 居中滚动);一次普通的
+ * `view.focus()` 会让浏览器把编辑器滚进视口,把刚算好的居中位置顶掉(实测
+ * scrollLeft 从 0 跳到 237)。焦点只该改焦点,不该改滚动。
+ */
+export function focusEditor(view: EditorView | null): void {
+  view?.contentDOM.focus({ preventScroll: true });
+}

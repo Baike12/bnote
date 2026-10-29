@@ -709,7 +709,7 @@ window.__mountStudyLayout = () => {
 };
 
 /**
- * 项目管理视图:假仓库 + 真实 ProjectsLayout(左列表 / 中卡片 / 右日记)。
+ * 项目管理视图:假仓库 + 真实 ProjectsLayout(项目导航 / 看板 / 日记)。
  * entries 是 vault 相对路径(文件或目录)。返回卸载函数。
  */
 window.__mountProjects = async (entries: string[], contents: Record<string, string> = {}) => {

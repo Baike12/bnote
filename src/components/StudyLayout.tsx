@@ -6,6 +6,7 @@ import { EditorPane } from "./EditorPane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName } from "@/lib/path";
 import { dragAgentEdge, dragContentEdge, RESIZER_WIDTH } from "@/study/layoutModel";
+import { startSplitDrag } from "./splitDrag";
 
 /**
  * Study-mode three-column layout: agent (left) + content (middle) + notes
@@ -48,9 +49,8 @@ export function StudyLayout() {
     : "笔记";
 
   /**
-   * 一根分栏线的公共拖动骨架:指针移动时只写 CSS 变量,抬起时提交一次。
-   * `compute(dx)` 把「指针相对按下点的位移」换算成这次要写的几个变量;
-   * `commit` 把同一组值提交进设置。
+   * 一根分栏线的公共拖动骨架:`compute(dx)` 把「指针相对按下点的位移」换算
+   * 成这次要写的几个变量;抬起时提交一次(见 splitDrag)。项目视图共用同一套。
    */
   function startDrag(
     event: React.PointerEvent<HTMLDivElement>,
@@ -59,57 +59,18 @@ export function StudyLayout() {
     compute: (dx: number) => Record<string, number>,
     commit: (values: Record<string, number>) => void,
   ) {
-    const host = hostRef.current;
-    if (!host) return;
-    const hostRect = host.getBoundingClientRect();
-    if (hostRect.width <= 0) return;
-    event.preventDefault();
-
-    const handle = event.currentTarget;
-    handle.classList.add("dragging");
-    // Pointer events are followed on the window (not the 8px handle) so the
-    // drag survives fast moves and leaving the window.
-    try {
-      handle.setPointerCapture(event.pointerId);
-    } catch {
-      // no active pointer (hover-less input / synthetic events)
-    }
-
-    const startX = event.clientX;
-    let latest: Record<string, number> | null = null;
-
-    const onMove = (move: PointerEvent) => {
-      const values = compute(move.clientX - startX);
-      latest = values;
-      for (const [name, value] of Object.entries(values)) {
-        host.style.setProperty(name, `${value}px`);
-      }
+    startSplitDrag({
+      event,
+      host: hostRef.current,
+      variables,
+      stored,
+      compute,
+      commit,
       // 原生网页预览是挂在 DOM 之上的子 webview,只会按尺寸变化自己跟着挪;
       // 拖助手栏只平移内容栏、尺寸不变,需要这个信号让它重报矩形(见
       // ContentPane 的 previewSyncRef)。
-      window.dispatchEvent(new Event("bnote:study-layout-resize"));
-    };
-
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-      handle.classList.remove("dragging");
-      // 提交 → React 用同样的像素值重渲染(clamp 由 CSS 负责)。
-      const done = latest;
-      if (done) {
-        const changed = variables.some((name) => done[name] !== stored[name]);
-        if (changed) commit(done);
-      }
-      // 显示宽度(窗口窄时被 CSS 压过)不能当成新偏好写回变量:还原成存值。
-      for (const name of variables) {
-        host.style.setProperty(name, `${latest?.[name] ?? stored[name]}px`);
-      }
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
+      onMove: () => window.dispatchEvent(new Event("bnote:study-layout-resize")),
+    });
   }
 
   /**
