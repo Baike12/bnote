@@ -345,6 +345,7 @@ name = "bnote"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "bytes",
  "core-foundation",
  "ego-tree",
@@ -353,6 +354,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "objc2-web-kit",
  "pdf2md",
  "pinyin_pro",
  "reqwest 0.12.28",

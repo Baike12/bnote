@@ -879,7 +879,18 @@ pub async fn show_creative_preview(
             tauri::webview::WebviewBuilder::new(
                 CREATIVE_PREVIEW_LABEL,
                 tauri::WebviewUrl::External(parsed),
-            ),
+            )
+            // 每一版快照加载完就截一张图给 agent 的 preview_html(按版本号
+            // 取回,见下面截图注册表);不是快照页的导航(重定向等)不截。
+            .on_page_load(|webview, payload| {
+                if payload.event() != PageLoadEvent::Finished {
+                    return;
+                }
+                let Some(version) = preview_version_from_url(payload.url().as_str()) else {
+                    return;
+                };
+                capture_preview_shot(&webview, version);
+            }),
             bounds.position(),
             bounds.size(),
         )
@@ -920,6 +931,131 @@ pub fn close_creative_preview(app: tauri::AppHandle) -> CmdResult<()> {
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
     }
     Ok(())
+}
+
+// ---------- 创作预览截图:preview_html 把渲染图回给模型 ----------
+
+/// 已拍好的预览截图,按快照版本号索引。写入方只有预览 webview 的
+/// on_page_load(主线程),读取方只有 preview_html(等自己那一版)。
+/// 上限 8 张:旧版本不会再有等待方,挤掉最老的防内存增长。
+static PREVIEW_SHOTS: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<u64, Vec<u8>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+static PREVIEW_SHOT_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+fn store_preview_shot(version: u64, png: Vec<u8>) {
+    if let Ok(mut shots) = PREVIEW_SHOTS.lock() {
+        shots.insert(version, png);
+        while shots.len() > 8 {
+            let Some(oldest) = shots.keys().min().copied() else { break };
+            shots.remove(&oldest);
+        }
+    }
+    PREVIEW_SHOT_NOTIFY.notify_one();
+}
+
+/// preview_html 落盘后等自己那个版本的截图。先注册 notified 再查表:
+/// notify_one 在无等待者时会存许可,查表与等待之间没有竞态窗口。
+pub(crate) async fn wait_preview_shot(version: u64, timeout: Duration) -> Option<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let notified = PREVIEW_SHOT_NOTIFY.notified();
+        if let Ok(shots) = PREVIEW_SHOTS.lock() {
+            if let Some(png) = shots.get(&version) {
+                return Some(png.clone());
+            }
+        }
+        tokio::time::timeout_at(deadline, notified).await.ok()?;
+    }
+}
+
+/// 快照文件名 `preview-{version}.html` → 版本号;其他 URL(用户自己的页面、
+/// 重定向)返回 None,不截图。
+fn preview_version_from_url(url: &str) -> Option<u64> {
+    let path = url.split(['?', '#']).next()?;
+    let name = path.rsplit('/').next()?;
+    let digits = name.strip_prefix("preview-")?.strip_suffix(".html")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// on_page_load(主线程)里发起截图。macOS:延后 250ms 等首帧样式与图片
+/// 铺完,再回主线程对 WKWebView takeSnapshot,编码成 PNG 交给等待方。
+/// 延时用「线程 sleep + run_on_main_thread」而不是 dispatch_after:后者
+/// 的闭包要跨线程携带 WKWebView 指针(非 Send);这里指针只在主线程闭包
+/// 内取出和使用。其他平台暂无实现,preview_html 得到「无截图」的纯文本降级。
+fn capture_preview_shot<R: tauri::Runtime>(webview: &tauri::Webview<R>, version: u64) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        let app = webview.app_handle().clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let app2 = app.clone();
+            let on_main = move || {
+                use tauri::Manager;
+                // 预览已关:这一版不截图,等待方按超时降级为纯文本。
+                let Some(webview) = app2.get_webview(CREATIVE_PREVIEW_LABEL) else {
+                    return;
+                };
+                let _ = webview.with_webview(move |platform| {
+                    let wk = platform.inner() as *mut objc2_web_kit::WKWebView;
+                    unsafe { capture_wkwebview_png(wk, version) };
+                });
+            };
+            let _ = app.run_on_main_thread(on_main);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (webview, version);
+    }
+}
+
+/// takeSnapshot:可见视口按 1x(逻辑点)输出,模型侧 token 开销减半且够读。
+/// 只在主线程调用;指针由原 webview 持有,这里只借。
+#[cfg(target_os = "macos")]
+unsafe fn capture_wkwebview_png(wk: *mut objc2_web_kit::WKWebView, version: u64) {
+    use objc2::rc::{autoreleasepool, Retained};
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+    use objc2_foundation::{NSDictionary, NSError, NSNumber};
+    use objc2_web_kit::WKSnapshotConfiguration;
+
+    let Some(webview) = (unsafe { Retained::retain(wk) }) else {
+        return;
+    };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let config = unsafe { WKSnapshotConfiguration::new(mtm) };
+    // snapshotWidth 是逻辑点宽度:设成视图宽度即 1x 输出(不设则是 Retina 2x)。
+    unsafe { config.setSnapshotWidth(Some(&NSNumber::new_f64(webview.bounds().size.width))) };
+    let block = block2::RcBlock::new(move |image: *mut objc2_app_kit::NSImage, _error: *mut NSError| {
+        let Some(image) = (unsafe { Retained::retain(image) }) else {
+            return;
+        };
+        autoreleasepool(|_| {
+            // NSImage → TIFF → 位图表示 → PNG 数据。三步都是 Option:任何
+            // 一步拿不到就放弃这一版截图,preview_html 按超时降级。
+            let Some(tiff) = image.TIFFRepresentation() else { return };
+            let Some(rep) = NSBitmapImageRep::imageRepWithData(&tiff) else { return };
+            let Some(png) = (unsafe {
+                rep.representationUsingType_properties(
+                    NSBitmapImageFileType::PNG,
+                    &NSDictionary::new(),
+                )
+            }) else {
+                return;
+            };
+            store_preview_shot(version, png.to_vec());
+        });
+    });
+    unsafe {
+        webview.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block);
+    }
 }
 
 /// Opens (or re-navigates) the standalone preview window.
@@ -997,5 +1133,44 @@ mod tests {
 
         AgentModelChoice::default().apply(&mut cfg);
         assert_eq!(cfg.model, "claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn 预览版本号只从快照文件名解析() {
+        assert_eq!(
+            preview_version_from_url("file:///tmp/creative-preview/preview-7.html"),
+            Some(7)
+        );
+        assert_eq!(
+            preview_version_from_url("file:///tmp/creative-preview/preview-12.html?a=1#f"),
+            Some(12)
+        );
+        // 用户自己的页面、目录、非数字版本、相邻命名都不截
+        assert_eq!(preview_version_from_url("file:///tmp/page.html"), None);
+        assert_eq!(
+            preview_version_from_url("file:///tmp/preview-x.html"),
+            None
+        );
+        assert_eq!(
+            preview_version_from_url("file:///tmp/repreview-3.html"),
+            None
+        );
+        assert_eq!(
+            preview_version_from_url("file:///tmp/preview-3.html.bak"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn 预览截图按版本号存取_等待先注册再查表() {
+        // 没有截图时按超时返回 None(用短超时,不让测试拖 4 秒)
+        assert!(
+            wait_preview_shot(987_654, Duration::from_millis(50)).await.is_none(),
+            "未存的版本必须等不到"
+        );
+        // 存进去之后,等待方立刻拿到该版本
+        store_preview_shot(987_655, b"fake-png".to_vec());
+        let shot = wait_preview_shot(987_655, Duration::from_secs(1)).await;
+        assert_eq!(shot.as_deref(), Some(b"fake-png".as_slice()));
     }
 }

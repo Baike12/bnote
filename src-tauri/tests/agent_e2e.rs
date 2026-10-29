@@ -147,6 +147,7 @@ async fn live_provider_turn_with_tool() {
                 tool_use_id: id,
                 content,
                 is_error: false,
+                images: vec![],
             }],
         },
     ];

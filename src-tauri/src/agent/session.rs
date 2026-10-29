@@ -144,16 +144,18 @@ impl Session {
                     name: name.clone(),
                     input: input.clone(),
                 });
-                let (ok, output) = self.execute_tool(name, input).await;
+                let out = self.execute_tool(name, input).await;
                 self.emit(AgentEvent::ToolEnd {
                     id: id.clone(),
-                    ok,
-                    output: output.clone(),
+                    ok: out.ok,
+                    output: out.text.clone(),
+                    images: out.images.clone(),
                 });
                 results.push(Content::ToolResult {
                     tool_use_id: id.clone(),
-                    content: output,
-                    is_error: !ok,
+                    content: out.text,
+                    is_error: !out.ok,
+                    images: out.images,
                 });
             }
             if let Ok(mut items) = self.items.lock() {
@@ -196,16 +198,16 @@ impl Session {
         }
     }
 
-    async fn execute_tool(&self, name: &str, input: &Value) -> (bool, String) {
+    async fn execute_tool(&self, name: &str, input: &Value) -> super::tools::ToolOutput {
         if let Some(rest) = name.strip_prefix("mcp__") {
             let mut parts = rest.splitn(2, "__");
             let (server, tool) = match (parts.next(), parts.next()) {
                 (Some(s), Some(t)) => (s, t),
-                _ => return (false, format!("malformed mcp tool name: {}", name)),
+                _ => return super::tools::ToolOutput::text(false, format!("malformed mcp tool name: {}", name)),
             };
             match self.mcp.call(server, tool, input).await {
-                Ok(text) => (true, text),
-                Err(e) => (false, e),
+                Ok(text) => super::tools::ToolOutput::text(true, text),
+                Err(e) => super::tools::ToolOutput::text(false, e),
             }
         } else {
             super::tools::execute(&self.ctx, &self.skills, name, input).await

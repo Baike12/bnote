@@ -51,6 +51,8 @@ interface ToolRecord {
   input?: unknown;
   output?: string;
   ok?: boolean;
+  /** 工具随结果回给模型的截图(如预览渲染图);只用于展示。 */
+  images?: AgentImage[];
 }
 
 interface Turn {
@@ -827,7 +829,9 @@ export function AgentPanel() {
         const turn = turnsRef.current.get(conv.key);
         if (!turn) break;
         turn.tools = turn.tools.map((t) =>
-          t.id === event.id ? { ...t, output: event.output, ok: event.ok } : t,
+          t.id === event.id
+            ? { ...t, output: event.output, ok: event.ok, images: event.images }
+            : t,
         );
         writeEntries(conv.key, turn, false, null);
         break;
@@ -1352,6 +1356,18 @@ export function AgentPanel() {
                           {JSON.stringify(tool.input, null, 2)}
                           {tool.output !== undefined && `\n→ ${tool.output}`}
                         </pre>
+                        {tool.images && tool.images.length > 0 && (
+                          <div className="agent-msg-images">
+                            {tool.images.map((img, j) => (
+                              <img
+                                key={j}
+                                className="agent-msg-image"
+                                src={`data:${img.mediaType};base64,${img.data}`}
+                                alt="工具返回的截图"
+                              />
+                            ))}
+                          </div>
+                        )}
                       </details>
                     ))}
                     {entry.turn?.error && (

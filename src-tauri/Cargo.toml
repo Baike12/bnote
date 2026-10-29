@@ -53,15 +53,27 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
   "std",
   "NSApplication",
+  "NSBitmapImageRep",
   "NSCursor",
   "NSEvent",
   "NSImage",
+  "NSImageRep",
   "NSView",
   "NSWindow",
 ] }
+# 创作预览截图(agent 的 preview_html 回图):WKWebView takeSnapshot。
+objc2-web-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "WKSnapshotConfiguration",
+  "WKWebView",
+  "block2",
+] }
+block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = [
   "std",
   "NSData",
+  "NSDictionary",
+  "NSError",
   "NSGeometry",
   "NSNotification",
   "NSObject",
