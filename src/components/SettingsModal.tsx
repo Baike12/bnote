@@ -357,7 +357,7 @@ function EditorTab() {
         />
         <Toggle
           label="公式实时预览"
-          desc="光标在公式内编辑时，保留源码并在下方实时显示渲染结果"
+          desc="光标在块公式（$$…$$）内编辑时，保留源码并在下方实时显示渲染结果；行内公式编辑时只显示源码"
           checked={settings.mathPreview}
           onChange={(v) => patch({ mathPreview: v })}
         />

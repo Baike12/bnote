@@ -5,6 +5,7 @@ import { useAppStore } from "@/state/appStore";
 import {
   cachedProjectDoc,
   createProject,
+  deleteProject,
   focusedProjectPath,
   loadProjects,
   projectEntries,
@@ -30,6 +31,7 @@ import { setActiveKeyRegion } from "@/commands/globalKeys";
 import { startSplitDrag } from "./splitDrag";
 import { PaneEditor } from "./PaneEditor";
 import { DailyNotePane } from "./DailyNotePane";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 /**
  * 项目管理视图(与学习模式同级、互斥)。
@@ -48,6 +50,30 @@ import { DailyNotePane } from "./DailyNotePane";
 
 const PROJECT_EXTENSIONS = [projectTodoDragExtension()];
 
+/**
+ * 删除一个项目(菜单与 ⌘⌫ 共用)。
+ *
+ * 全从 store 取(vault 与聚焦):命令层的事件监听只注册一次,闭包里的
+ * 渲染值会是过期的。删除本身由 projects/store 保证「迟到写入不复活文件」。
+ */
+async function trashProject(project: ProjectEntry): Promise<void> {
+  const root = useAppStore.getState().vaultPath;
+  if (!root) return;
+  try {
+    await deleteProject(root, project.path);
+    useAppStore.getState().showToast(`已删除项目「${project.name}」,可在废纸篓恢复`);
+  } catch (e) {
+    useAppStore.getState().showToast(`删除项目失败: ${String(e)}`);
+  }
+}
+
+/** ⌘⌫:删当前聚焦的项目。 */
+function trashFocusedProject(): Promise<void> | void {
+  const path = focusedProjectPath();
+  const entry = path ? projectEntries().find((e) => e.path === path) : null;
+  return entry ? trashProject(entry) : undefined;
+}
+
 export function ProjectsLayout() {
   const vaultRoot = useAppStore((s) => s.vaultPath);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
@@ -61,6 +87,7 @@ export function ProjectsLayout() {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState("");
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const projectViewRef = useRef<EditorView | null>(null);
@@ -95,11 +122,14 @@ export function ProjectsLayout() {
       setCreating(true);
       setDraft("");
     };
+    const removeFocused = () => void trashFocusedProject();
     window.addEventListener("bnote:focus-project", focusCard);
     window.addEventListener("bnote:new-project", startNew);
+    window.addEventListener("bnote:delete-project", removeFocused);
     return () => {
       window.removeEventListener("bnote:focus-project", focusCard);
       window.removeEventListener("bnote:new-project", startNew);
+      window.removeEventListener("bnote:delete-project", removeFocused);
     };
   }, []);
 
@@ -198,6 +228,17 @@ export function ProjectsLayout() {
     else useAppStore.getState().showToast("新建项目失败");
   };
 
+  const removeProject = (project: ProjectEntry) => void trashProject(project);
+
+  /** 项目操作菜单:列表项/列头的右键与顶部「⋯」共用同一份条目。 */
+  const openProjectMenu = (project: ProjectEntry, x: number, y: number) => {
+    setMenu({
+      x,
+      y,
+      items: [{ label: "删除项目", danger: true, action: () => removeProject(project) }],
+    });
+  };
+
   return (
     <div
       className="projects-layout"
@@ -261,6 +302,11 @@ export function ProjectsLayout() {
               key={e.path}
               className={`projects-side-item${focusPath === e.path ? " active" : ""}`}
               onClick={() => setFocusedProject(e.path)}
+              onContextMenu={(ev) => {
+                ev.preventDefault();
+                setFocusedProject(e.path);
+                openProjectMenu(e, ev.clientX, ev.clientY);
+              }}
               title={e.name}
             >
               <span className="projects-side-dot" aria-hidden>
@@ -293,7 +339,22 @@ export function ProjectsLayout() {
           <span className="projects-deck-pos">
             {focused ? `第 ${idx + 1} / ${list.length} 个项目` : entries.length ? "没有匹配的项目" : "还没有项目"}
           </span>
-          <span className="projects-deck-hint">⌘⇧J 发送到日记 · ⌘⇧↑↓ 切换</span>
+          <span className="projects-deck-actions">
+            <span className="projects-deck-hint">⌘⇧J 发送到日记 · ⌘⇧↑↓ 切换 · ⌘⌫ 删除</span>
+            <button
+              className="icon-btn projects-deck-more"
+              title="项目操作"
+              aria-label="项目操作"
+              disabled={!focused}
+              onClick={(ev) => {
+                if (!focused) return;
+                const rect = ev.currentTarget.getBoundingClientRect();
+                openProjectMenu(focused, rect.left, rect.bottom + 4);
+              }}
+            >
+              ⋯
+            </button>
+          </span>
         </div>
         <div className="projects-board" ref={boardRef}>
           <div className="projects-board-track">
@@ -307,6 +368,7 @@ export function ProjectsLayout() {
                       order={i}
                       position={i < idx ? "prev" : "next"}
                       onFocus={setFocusedProject}
+                      onMenu={openProjectMenu}
                     />
                   ),
                 )}
@@ -314,6 +376,7 @@ export function ProjectsLayout() {
                   key="current"
                   project={focused}
                   order={idx}
+                  onMenu={openProjectMenu}
                   onView={(view) => {
                     projectViewRef.current = view;
                   }}
@@ -341,6 +404,7 @@ export function ProjectsLayout() {
       />
 
       <DailyNotePane />
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
     </div>
   );
 }
@@ -355,10 +419,12 @@ function CurrentColumn({
   project,
   order,
   onView,
+  onMenu,
 }: {
   project: ProjectEntry;
   order: number;
   onView: (view: EditorView | null) => void;
+  onMenu: (project: ProjectEntry, x: number, y: number) => void;
 }) {
   const [counts, setCounts] = useState(() => {
     const hit = cachedProjectDoc(project.path);
@@ -386,7 +452,13 @@ function CurrentColumn({
 
   return (
     <div className="project-col current" style={{ order }} data-current-col="">
-      <div className="project-col-head">
+      <div
+        className="project-col-head"
+        onContextMenu={(ev) => {
+          ev.preventDefault();
+          onMenu(project, ev.clientX, ev.clientY);
+        }}
+      >
         <span className="project-col-name" title={project.name}>
           {project.name}
         </span>
@@ -425,11 +497,13 @@ function ProjectColumn({
   order,
   position,
   onFocus,
+  onMenu,
 }: {
   project: ProjectEntry;
   order: number;
   position: "prev" | "next";
   onFocus: (path: string) => void;
+  onMenu: (project: ProjectEntry, x: number, y: number) => void;
 }) {
   const [text, setText] = useState("");
 
@@ -474,7 +548,14 @@ function ProjectColumn({
       }}
       title={`点击聚焦「${project.name}」`}
     >
-      <div className="project-col-head">
+      <div
+        className="project-col-head"
+        onContextMenu={(ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          onMenu(project, ev.clientX, ev.clientY);
+        }}
+      >
         <span className="project-col-name" title={project.name}>
           {project.name}
         </span>

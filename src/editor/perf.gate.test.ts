@@ -412,10 +412,9 @@ describe("性能门禁：公式块插入与输入", () => {
     expect(total).toBeLessThan(320);
   });
 
-  // 行内公式的编辑态预览每次击键都要重新渲染(源串变了,缓存必 miss)——与
-  // 块公式同一笔 KaTeX 成本,只是 displayMode=false。实测(load≈9 的高负载下)
-  // 20 击 83–90ms,预算与块公式同档。
-  it("行内公式内 20 击(update+重建+KaTeX渲染)总计 < 320ms", () => {
+  // 行内公式编辑时只显示源码(不再插渲染副本),每击只剩 update + 装饰重建
+  // ——没有 KaTeX 那笔成本了。预算沿用同档,拦的是装饰重建退化。
+  it("行内公式内 20 击(update+装饰重建)总计 < 320ms", () => {
     const insert = "\\alpha_{x}+";
     let state = makeState("前文 $f(x)$ 后文\n", 6);
     const samples: number[] = [];
@@ -427,10 +426,6 @@ describe("性能门禁：公式块插入与输入", () => {
         selection: EditorSelection.cursor(at + insert.length),
       }).state;
       buildInlineDecorations({ state, visibleRanges: [{ from: 0, to: state.doc.length }] });
-      const region = mathRegions(state).find(
-        (r) => !r.display && at >= r.from && at <= r.to,
-      );
-      if (region) renderMathHtml(region.content, false); // MathInlinePreviewWidget.toDOM 的真实调用
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);

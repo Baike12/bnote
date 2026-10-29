@@ -68,6 +68,33 @@ describe("PDF 位置换算", () => {
     expect(scrollTopForPdfPosition(pages, { page: 9, offset: 0 })).toBeNull();
   });
 
+  // 栏宽拖动/缩放会把页面等比放大缩小:页高变了,同一个 scrollTop 就指向
+  // 完全不同的内容(实测 981px 宽 scrollTop=2900 在第 3 页 53%,拖窄到 390px
+  // 后同一个 scrollTop 落到第 6 页 632%)。重排前后必须按「页码 + 页内比例」
+  // 换算,而不是沿用像素值。
+  it("重排前后按页码+比例换算:同一处内容仍停在视口顶部", () => {
+    const GAP = 58;
+    const build = (height: number, count: number): PageMetric[] =>
+      Array.from({ length: count }, (_, i) => ({
+        page: i + 1,
+        top: 14 + i * (height + GAP),
+        height,
+      }));
+    const wide = build(1244, 9);
+    const narrow = build(531, 9);
+    // 宽布局:视口顶部停在 第 3 页、页内 80%。
+    const top = wide[2].top + 0.8 * wide[2].height;
+    const anchor = pdfPositionAt(wide, top);
+    expect(anchor).toMatchObject({ page: 3 });
+    expect(anchor?.offset).toBeCloseTo(0.8, 4);
+    // 换成窄布局:同一条锚点还落在第 3 页,页内还是 80%。
+    const restored = scrollTopForPdfPosition(narrow, anchor!)!;
+    expect(pdfPositionAt(narrow, restored)).toMatchObject({ page: 3 });
+    expect(pdfPositionAt(narrow, restored)?.offset).toBeCloseTo(0.8, 4);
+    // 对照:沿用旧像素值会跑到第 7 页(用户要重新滚动的原因)。
+    expect(pdfPositionAt(narrow, top)?.page).toBe(7);
+  });
+
   it("存盘走同一份文件,payload 带页码/偏移", async () => {
     const files = new Map<string, string>();
     const writes: string[] = [];

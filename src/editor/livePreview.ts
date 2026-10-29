@@ -3,7 +3,7 @@ import { StateField, Transaction } from "@codemirror/state";
 import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
-import { mathRegions } from "./context";
+import { mathBodySpan, mathRegions, selectionInMathBody } from "./context";
 import { calloutRegions } from "./callout";
 import { collectAnchors } from "./calloutAnchor";
 import { documentPath, setDocPath } from "./docPath";
@@ -17,7 +17,6 @@ import {
   HiddenLineWidget,
   HrWidget,
   ListBulletWidget,
-  MathInlinePreviewWidget,
   MathPreviewWidget,
   MathWidget,
   TaskCheckboxWidget,
@@ -320,6 +319,9 @@ function buildBlockDecos(
           Decoration.widget({
             widget: new MathPreviewWidget(region.content, true, calloutDepthAt(region.from)),
             block: true,
+            // 预览在源码**之后**:区域压到文档末尾时锚点就是光标所在位置,
+            // side<0 会把光标画到预览下方(看起来像"跳到了下一行")。
+            side: 1,
           }).range(anchor),
         );
         sig.push(`p${region.from}:${region.content}`);
@@ -334,7 +336,7 @@ function buildBlockDecos(
       Decoration.replace({
         widget: new MathWidget(region.content, true, region.from, calloutDepthAt(region.from)),
         block: true,
-      }).range(openLine.from, closeLine.to),
+      }).range(openLine.from, Math.min(closeLine.to, region.to)),
     );
     sig.push(`m${region.from}:${region.content}`);
   }
@@ -621,8 +623,8 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
 
   // ---- Math ----
   // Whole display blocks (rendered widget / preview) live in the state field;
-  // here only single-line display and inline formulas, plus source highlights
-  // and an inline preview for the formula being edited.
+  // here only single-line display and inline formulas — rendered when the
+  // caret is outside, source-highlighted while editing.
   for (const region of maths) {
     if (region.to < visibleFrom || region.from > visibleTo) continue;
     if (inRangeList(exclude, region.from, region.to)) continue;
@@ -631,19 +633,16 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
       !region.display ||
       doc.lineAt(region.from).number === doc.lineAt(Math.max(region.from, region.to - 1)).number;
 
-    if (active(region.from, region.to)) {
+    // 行内公式按「正文」判定,不用 active():边界位置(from/to)在 widget 之外,
+    // 收起源码后光标正好落在渲染结果之后(Tab 跳出/打完闭合 $ 的自然位置)。
+    // 块级公式仍用 active()——整行 widget 的边界位置属于块自己的行。
+    //
+    // 编辑时**只显示源码**:不在闭合定界符后插渲染副本。那份副本是同一个
+    // 公式的第二遍渲染——一行里有两个以上行内公式时,它正好挤在相邻公式的
+    // 渲染旁边(用户看到「渲染重合」),而且宽度每次击键都变、整行跟着重排。
+    // 光标移出公式立刻渲染(边界即正文侧),编辑时看源码就够。
+    if (selections.some((r) => selectionInMathBody(region, r.from, r.to))) {
       highlightMathSource(doc, region, out);
-      // 编辑中的行内公式也要能看到渲染结果:块公式由块层在源码下方补预览,
-      // 行内区域没有那一层,在闭合定界符后紧跟一段行内渲染预览。跨行显示块
-      // 由块层负责,这里不重复出预览。
-      if (singleLine && hooks.mathPreview !== false && region.content.trim()) {
-        out.inline.push(
-          Decoration.widget({
-            widget: new MathInlinePreviewWidget(region.content),
-            side: 1,
-          }).range(region.to),
-        );
-      }
       continue;
     }
 
@@ -654,7 +653,9 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
       // "Decorations that replace line breaks may not be specified via plugins"。
       const to = Math.min(region.to, doc.lineAt(region.from).to);
       out.inline.push(
-        Decoration.replace({ widget: new MathWidget(region.content, false) }).range(
+        // from 一并交给 widget:渲染态点击要按 dataset.mathFrom 找回区域、
+        // 落进正文(边界位置不再展开源码,见 selectionInMathBody)。
+        Decoration.replace({ widget: new MathWidget(region.content, false, region.from) }).range(
           region.from,
           to,
         ),
@@ -1249,6 +1250,24 @@ const linkHandlers = EditorView.domEventHandlers({
       event.preventDefault();
       view.dispatch({ selection: { anchor: Number(calloutEdge.dataset.calloutFrom) } });
       return true;
+    }
+
+    // 渲染态的行内公式:点它就是进正文。边界位置(from/to)不再展开源码
+    // (见 selectionInMathBody),点上去会落在公式外侧、看起来像点空了。
+    // 落点按水平位置取正文首/尾,与"点哪儿改哪儿"的直觉一致。
+    const mathInline = target.closest?.(".cw-math-inline") as HTMLElement | null;
+    if (mathInline?.dataset?.mathFrom) {
+      const region = mathRegions(view.state).find(
+        (r) => r.from === Number(mathInline.dataset.mathFrom),
+      );
+      if (region) {
+        const body = mathBodySpan(region);
+        const rect = mathInline.getBoundingClientRect();
+        const anchor = event.clientX < rect.left + rect.width / 2 ? body.from : body.to;
+        event.preventDefault();
+        view.dispatch({ selection: { anchor } });
+        return true;
+      }
     }
 
     // Rendered display-math block: reopen the raw source at the clicked line.

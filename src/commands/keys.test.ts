@@ -555,8 +555,15 @@ describe("项目区快捷键盘", () => {
   it("项目专属命令归属 project,视图开关归属 global", () => {
     expect(defaultRegionOf("project.next")).toBe("project");
     expect(defaultRegionOf("project.send-todo")).toBe("project");
+    expect(defaultRegionOf("project.delete")).toBe("project");
     expect(defaultRegionOf("project.focus-daily")).toBe("project");
     expect(defaultRegionOf("view.toggle-projects")).toBe("global");
+  });
+
+  it("⌘⌫ 删项目只在项目区生效,笔记区不占用", () => {
+    applyOverrides({});
+    expect(commandsForKey("Mod-Backspace", "project")[0]).toBe("project.delete");
+    expect(commandsForKey("Mod-Backspace", "notes")).toEqual([]);
   });
 
   it("区域导航同时挂在 project 与 notes", () => {

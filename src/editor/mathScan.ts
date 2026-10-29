@@ -5,6 +5,9 @@ export interface MathRegion {
   to: number;
   display: boolean;
   content: string;
+  /** 只有开标记、还没等到闭合标记(打字中的公式)。这类区域的 `to` 是段落
+   *  末尾而不是闭合符之后——打字位置在 `to` 时字符仍写进公式正文。 */
+  unclosed?: true;
 }
 
 /**
@@ -182,6 +185,7 @@ function pushStrayRegion(out: MathRegion[], text: string, from: number): void {
     to: from + 2 + paraEnd,
     display: true,
     content: rest.slice(0, paraEnd),
+    unclosed: true,
   });
 }
 

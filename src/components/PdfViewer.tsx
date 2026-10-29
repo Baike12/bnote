@@ -332,6 +332,13 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const positionApplied = useRef(false);
   /** 用户已经主动滚动/翻页/跳转,之后的布局变化不再把位置拉回去。 */
   const userScrolled = useRef(false);
+  /**
+   * 重排前的视口锚点(栏宽拖动 / 窗口变宽 / 缩放 / 自动适配)。与
+   * `positionAnchor` 的区别:那个是「上次读到哪」,用户滚一下就不该再管;
+   * 这个是「此刻屏幕顶上是什么」,重排后必须还是它,否则页面一变小,同一个
+   * scrollTop 就落到后面好几页去了。
+   */
+  const reflowAnchor = useRef<{ page: number; offset: number } | null>(null);
   const [positionEpoch, setPositionEpoch] = useState(0);
 
   // 页面宽度 = 中间栏可用宽度,贴边(不再留 14px 横向内边距)。
@@ -509,10 +516,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   }, [vaultPath, docKey]);
 
   /** 把锚点落到当前布局上;页面还没挂载/宽度变化后都可以反复调用。 */
-  const applyReadPosition = useCallback(() => {
-    const anchor = positionAnchor.current;
-    if (!anchor) return;
-    if (userScrolled.current || !scrollRef.current) return;
+  const applyAnchor = useCallback((anchor: { page: number; offset: number } | null) => {
+    if (!anchor || !scrollRef.current) return;
     const el = pageEls.current.get(anchor.page);
     if (!el) return;
     const scroll = scrollRef.current;
@@ -527,14 +532,48 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     positionApplied.current = true;
   }, []);
 
+  /** 打开文档时的落点:只在用户还没动过手时生效(锚点是「上次读到哪」)。 */
+  const applyReadPosition = useCallback(() => {
+    if (userScrolled.current) return;
+    applyAnchor(positionAnchor.current);
+  }, [applyAnchor]);
+
+  /**
+   * 记录「重排前视口顶部是哪一页的百分之几」。页面宽度随中栏/窗口宽度与缩放
+   * 变化,页面高度跟着变——同一个 `scrollTop` 这个像素值就会指向完全不同的
+   * 内容(实测 981px 宽时 scrollTop=2900 停在第 3 页 53%,拖窄到 390px 后
+   * 同一个 scrollTop 落到第 6 页 632%)。所以凡是会让页面尺寸变化的状态更新
+   * 之前,先把内容锚点记下来,提交后用 applyReflowAnchor 落回去。
+   */
+  const captureReflowAnchor = useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const position = pdfPositionAt(pageMetrics(scroll, pageEls.current), scroll.scrollTop);
+    if (position) reflowAnchor.current = { page: position.page, offset: position.offset };
+  }, []);
+
+  /** 重排后落回同一处:只做一次,落了就清,免得跟用户的后续滚动抢。 */
+  const applyReflowAnchor = useCallback(() => {
+    const anchor = reflowAnchor.current;
+    if (!anchor) return false;
+    reflowAnchor.current = null;
+    applyAnchor(anchor);
+    return true;
+  }, [applyAnchor]);
+
   // 文档/页面挂载、自动适配改宽、裁剪重排后都重新落一次:锚点是「第几页的
   // 百分之几」,布局怎么变都还能回到同一处。用户一动手下面的监听就清掉
   // 锚点,不会把用户拽回旧位置。
-  useEffect(() => {
+  //
+  // 栏宽/缩放这类**重排**优先用 reflow 锚点(它就是用户此刻看的那一行),
+  // 而且必须在提交里同步落位:layoutEffect 里写完 scrollTop,浏览器才画这一
+  // 帧——晚一帧就是肉眼可见的一次跳动。
+  useLayoutEffect(() => {
+    if (applyReflowAnchor()) return;
     if (!positionAnchor.current || userScrolled.current) return;
     const raf = requestAnimationFrame(() => applyReadPosition());
     return () => cancelAnimationFrame(raf);
-  }, [positionEpoch, doc, targetWidth, cropShown, applyReadPosition]);
+  }, [positionEpoch, doc, targetWidth, cropShown, applyReadPosition, applyReflowAnchor]);
 
   // 用户主动滚动/翻页/跳转后,位置归用户所有:之后只存不还原。
   useEffect(() => {
@@ -543,6 +582,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     const release = () => {
       userScrolled.current = true;
       positionAnchor.current = null;
+      reflowAnchor.current = null;
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -783,6 +823,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   }, []);
 
   // --- track column width (divider drag / window resize / outline toggle) ---
+  const appliedWidthRef = useRef(0);
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -791,11 +832,16 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       if (timer) clearTimeout(timer);
       timer = null;
       const width = el.clientWidth;
-      const apply = () => {
+      const apply = (capture: boolean) => {
+        // 宽度没变就不动:ResizeObserver 会重复报同尺寸,反复落锚点会跟滚动抢。
+        if (width === appliedWidthRef.current) return;
+        appliedWidthRef.current = width;
+        // 先记住视口顶部(此刻页面还是旧尺寸),再让页面按新宽度重排。
+        if (capture) captureReflowAnchor();
         setScrollWidth((prev) => (prev === width ? prev : width));
       };
       if (immediate) {
-        apply();
+        apply(false);
         return;
       }
       // A divider drag reflows the column at 60 Hz. Re-rendering the reader
@@ -803,7 +849,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       // is pure jank; one update after the drag settles is enough.
       timer = setTimeout(() => {
         timer = null;
-        apply();
+        apply(true);
       }, RESIZE_DEBOUNCE_MS);
     };
     measure(true);
@@ -813,7 +859,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       observer.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [captureReflowAnchor]);
 
   // --- page visibility: current-page readout + render window ----------------
   useEffect(() => {
@@ -937,6 +983,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     if (n > numPages || n < 1) return;
     userScrolled.current = true;
     positionAnchor.current = null;
+    reflowAnchor.current = null;
     const top = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop - 10;
     scroll.scrollTo({ top: Math.max(0, top) });
     setCurrentPage(n);
@@ -956,6 +1003,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       // 主动翻页 = 阅读位置归用户,不再按打开时的锚点还原。
       userScrolled.current = true;
       positionAnchor.current = null;
+      reflowAnchor.current = null;
       const viewport = scroll.clientHeight;
       const content = scroll.scrollHeight;
       const max = Math.max(0, content - viewport);
@@ -982,6 +1030,17 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     },
     [path],
   );
+
+  /** 缩放 = 页面尺寸重排:与栏宽拖动同一条路,先记视口顶部再换尺寸。
+   *  值用函数式更新:连点两下(同一 tick 里两次点击)必须累积两步,不能都从
+   *  渲染时的旧值起算。 */
+  function zoomStep(step: (z: number) => number) {
+    captureReflowAnchor();
+    setZoom((z) => {
+      const next = Math.min(maxZoom, Math.max(minZoom, Math.round(step(z) * 10) / 10));
+      return next === z ? z : next;
+    });
+  }
 
   // 书签栏宽度:拖动只改这一栏,中栏的 PDF 区域吃剩余宽度,左右两栏不受影响。
   // 拖动期间写 CSS 变量(不 setState):书签可能有几百项,60Hz 重渲染整棵树不划算,
@@ -1178,21 +1237,21 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         <button
           className="icon-btn pdf-tool-btn"
           title="缩小"
-          onClick={() => setZoom((z) => Math.max(minZoom, Math.round((z - ZOOM_STEP) * 10) / 10))}
+          onClick={() => zoomStep((z) => z - ZOOM_STEP)}
         >
           −
         </button>
         <button
           className="pdf-zoom-label"
           title="点击恢复适合宽度"
-          onClick={() => setZoom(1)}
+          onClick={() => zoomStep(() => 1)}
         >
           {Math.round(zoomValue * 100)}%
         </button>
         <button
           className="icon-btn pdf-tool-btn"
           title="放大"
-          onClick={() => setZoom((z) => Math.min(maxZoom, Math.round((z + ZOOM_STEP) * 10) / 10))}
+          onClick={() => zoomStep((z) => z + ZOOM_STEP)}
         >
           ＋
         </button>

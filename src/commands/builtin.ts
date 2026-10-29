@@ -243,6 +243,14 @@ const defs: CommandDef[] = [
     },
   },
   {
+    id: "project.delete",
+    title: "删除当前项目(整份项目文件进废纸篓,可恢复)",
+    category: "项目",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:delete-project"));
+    },
+  },
+  {
     id: "project.focus-daily",
     title: "聚焦日记区",
     category: "项目",
