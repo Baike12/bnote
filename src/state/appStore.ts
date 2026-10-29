@@ -261,6 +261,8 @@ interface AppState {
   toast: string | null;
   /** 学习模式:激活时主区变为 agent | 内容 | 笔记 三栏 */
   studyMode: boolean;
+  /** 项目管理视图:激活时主区变为 项目列表 | 项目卡片 | 日记 三栏。 */
+  projectsMode: boolean;
   /** 创作模式:学习模式内 agent 面板与中栏预览的形态开关。 */
   creativeMode: boolean;
   /** 学习模式中间栏的当前内容(null = 空态,等待拖入 PDF 或输入 URL) */
@@ -319,6 +321,7 @@ interface AppState {
   showToast: (msg: string) => void;
   clearToast: () => void;
   setStudyMode: (active: boolean) => void;
+  setProjectsMode: (active: boolean) => void;
   setCreativeMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
   setStudyHistory: (history: StudyHistory) => void;
@@ -387,6 +390,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   dailyBackFrom: null,
   toast: null,
   studyMode: false,
+  projectsMode: false,
   creativeMode: false,
   studyContent: null,
   studyHistory: emptyStudyHistory(),
@@ -498,7 +502,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 进入学习模式先收起 vault 目录:左边已经有三栏,再挂一条目录树就太挤了。
   // 只在这一刻收,之后用户在模式里自己展开照常。
   setStudyMode: (active) =>
-    set(active ? { studyMode: true, sidebarOpen: false } : { studyMode: false }),
+    set(
+      active
+        ? { studyMode: true, projectsMode: false, sidebarOpen: false }
+        : { studyMode: false },
+    ),
+  // 两个全屏视图互斥:同时只有一种主区形态,否则切换命令会叠出两层三栏。
+  setProjectsMode: (active) =>
+    set(
+      active
+        ? { projectsMode: true, studyMode: false, sidebarOpen: false }
+        : { projectsMode: false },
+    ),
   setCreativeMode: (active) => set({ creativeMode: active }),
   setStudyContent: (content) => set({ studyContent: content, studyWereadBook: null }),
   setStudyHistory: (studyHistory) => set({ studyHistory }),
@@ -535,6 +550,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 export function toggleStudyMode() {
   const store = useAppStore.getState();
   store.setStudyMode(!store.studyMode);
+}
+
+/** 项目管理视图开关(与学习模式同级、互斥)。 */
+export function toggleProjectsMode() {
+  const store = useAppStore.getState();
+  store.setProjectsMode(!store.projectsMode);
 }
 
 let configSnapshot: PersistedConfig = {};

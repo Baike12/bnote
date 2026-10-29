@@ -59,6 +59,8 @@ describe("待办链接的可视标识", () => {
     expect(got[0].cls).toBe("md-daily-link");
     // 源侧不显示来源名(来源就是这篇笔记自己),只有 title 提示
     expect(got[0].attrs["data-daily-src"]).toBeUndefined();
+    // 源侧带 data-daily-sent:项目卡片据此把已发送的待办画成阴影。
+    expect(got[0].attrs["data-daily-sent"]).toBe("1");
     expect(got[0].attrs.title).toContain("今日日记");
   });
 

@@ -7,6 +7,7 @@ import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemi
 import { insertNewlineAndIndent, history, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
 import { blockDecorationsField, buildInlineDecorations, selectionAffectsDecos } from "./livePreview";
+import { projectTodos } from "@/projects/model";
 import { fenceStateScan, mathRegions } from "./context";
 import { computeCalloutRegions } from "./callout";
 import { planTabout } from "./snippets/tabout";
@@ -1227,5 +1228,25 @@ describe("性能门禁:今日足迹块 markdown 渲染(块级 widget 重建面)"
     const html = renderBlockHtml("## 章节\n\n- 列表项\n");
     expect(html).toContain("md-h2");
     expect(html).toContain("md-list-line");
+  });
+});
+
+// ---- 项目卡片:待办解析(卡片预览每次渲染都要跑) ----
+
+describe("性能门禁:项目卡片待办解析", () => {
+  it("1000 行项目文档解析中位 < 1.5ms", () => {
+    // 左右预览卡片每次渲染都把整份项目文档扫一遍;项目文件按 1000 行上限
+    // 标定(实际通常几十行),量级回归(逐字符正则、二次遍历)会被拦下。
+    const lines: string[] = [];
+    for (let i = 0; i < 500; i++) lines.push(`- [ ] 任务 ${i}`, "普通正文行");
+    const text = lines.join("\n");
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const todos = projectTodos(text);
+      if (todos.length !== 500) throw new Error("解析漏项");
+      return performance.now() - t0;
+    }, 30);
+    console.warn(`[perf] 项目待办解析 中位 ${median.toFixed(3)}ms`);
+    expect(median).toBeLessThan(1.5);
   });
 });

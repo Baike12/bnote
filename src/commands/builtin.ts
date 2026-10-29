@@ -21,7 +21,11 @@ import { configureLivePreview } from "@/editor/livePreview";
 import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
-import { useAppStore, toggleStudyMode } from "@/state/appStore";
+import { useAppStore, toggleProjectsMode, toggleStudyMode } from "@/state/appStore";
+import { focusAdjacentProject } from "@/projects/store";
+import { isProjectPath } from "@/projects/model";
+import { sendTodoWithToast } from "@/projects/send";
+import { documentPath } from "@/editor/docPath";
 import { ensureLinks } from "@/daily/links";
 import { sendTodoToDaily } from "@/daily/engine";
 import { openTodayDailyNote } from "@/daily/open";
@@ -194,6 +198,71 @@ const defs: CommandDef[] = [
     run: () => {
       toggleStudyMode();
     },
+  },
+  {
+    id: "view.toggle-projects",
+    title: "进入 / 退出项目管理(项目列表、项目待办、日记)",
+    category: "视图",
+    run: () => {
+      toggleProjectsMode();
+    },
+  },
+  // ---- 项目管理(project 区域) ----
+  // 组件私有状态通过窗口事件交给视图:命令层不持有卡片轮播的 DOM 与编辑器
+  // 实例,只发「把焦点交给谁」的信号(与 agentPanelCommand 同一分工)。
+  {
+    id: "region.focus-project",
+    title: "聚焦项目卡片",
+    category: "区域",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:focus-project"));
+    },
+  },
+  {
+    id: "project.next",
+    title: "下一个项目",
+    category: "项目",
+    run: () => {
+      focusAdjacentProject(1);
+    },
+  },
+  {
+    id: "project.prev",
+    title: "上一个项目",
+    category: "项目",
+    run: () => {
+      focusAdjacentProject(-1);
+    },
+  },
+  {
+    id: "project.new",
+    title: "新建项目",
+    category: "项目",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:new-project"));
+    },
+  },
+  {
+    id: "project.focus-daily",
+    title: "聚焦日记区",
+    category: "项目",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:focus-daily"));
+    },
+  },
+  {
+    id: "project.send-todo",
+    title: "把当前待办发送到今日日记最前",
+    category: "项目",
+    run: withView((v) => {
+      const path = documentPath(v.state);
+      if (!path || !isProjectPath(path)) {
+        useAppStore.getState().showToast("当前不是项目卡片");
+        return;
+      }
+      const line = v.state.doc.lineAt(v.state.selection.main.head).number;
+      void sendTodoWithToast({ srcPath: path, line });
+    }),
   },
   {
     id: "view.open-weread",

@@ -61,6 +61,9 @@ function markFor(link: DailyLink, dailySide: boolean): Decoration {
         title: `与《${sourceLabel(link.srcPath)}》的待办同步中`,
       }
     : {
+        // 源侧「已发送」:项目卡片把这一行画成阴影(编辑权在日记那份)。
+        // 普通笔记里没有对应样式,属性本身无害。
+        "data-daily-sent": "1",
         title:
           link.kind === "recorded"
             ? "勾选完成时已记录到今日日记,两侧保持同步"

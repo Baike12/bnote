@@ -65,8 +65,11 @@ export function setCommandKeyContext(ctx: CommandKeyContext) {
  */
 const REGION_ATTR = "data-key-region";
 export type FocusRegion = Exclude<KeyRegion, "global">;
-/** 兜底顺序:阅读区不会取得焦点,「无主」时它是最安全的落点。 */
-const FOCUS_REGIONS: FocusRegion[] = ["reading", "notes", "agent"];
+/** 兜底顺序:阅读区最优先(它不取得焦点,「无主」时最安全);项目管理排在
+ *  笔记区之前——项目视图里刚切进来还没有「最近动手」,右栏日记虽然在屏上,
+ *  键盘该归中间的卡片。学习模式里 project 不在场,直接跳过,顺序不变。 */
+const FOCUS_REGIONS: FocusRegion[] = ["reading", "project", "notes", "agent"];
+const FOCUS_REGION_SET = new Set<string>(FOCUS_REGIONS);
 
 let ownerRegion: FocusRegion | null = null;
 
@@ -74,7 +77,7 @@ export function regionFromTarget(target: EventTarget | null): FocusRegion | null
   const el = target instanceof Element ? target : null;
   const host = el?.closest(`[${REGION_ATTR}]`);
   const attr = host?.getAttribute(REGION_ATTR);
-  return attr === "reading" || attr === "agent" || attr === "notes" ? attr : null;
+  return attr && FOCUS_REGION_SET.has(attr) ? (attr as FocusRegion) : null;
 }
 
 /**

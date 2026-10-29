@@ -545,3 +545,41 @@ describe("事件主键规范化", () => {
     }
   });
 });
+
+/**
+ * 项目管理区域(project):项目卡片里同样在编辑 markdown,所以它**继承**
+ * 笔记区的编辑键位;项目自己的动作(轮转卡片、发送到今日最前)排在最前,
+ * 同一个键按语境表达不同意图(⌘⇧J:笔记区发到末尾,项目区发到最前)。
+ */
+describe("项目区快捷键盘", () => {
+  it("项目专属命令归属 project,视图开关归属 global", () => {
+    expect(defaultRegionOf("project.next")).toBe("project");
+    expect(defaultRegionOf("project.send-todo")).toBe("project");
+    expect(defaultRegionOf("project.focus-daily")).toBe("project");
+    expect(defaultRegionOf("view.toggle-projects")).toBe("global");
+  });
+
+  it("区域导航同时挂在 project 与 notes", () => {
+    expect(defaultRegionsOf("region.focus-project")).toEqual(["project", "notes"]);
+  });
+
+  it("项目区内自己的绑定排在继承来的笔记绑定前面", () => {
+    applyOverrides({});
+    const ids = commandsForKey("Mod-Shift-j", "project");
+    expect(ids[0]).toBe("project.send-todo");
+    expect(ids).toContain("edit.todo-to-daily");
+  });
+
+  it("项目区继承笔记区的编辑键位(加粗/切待办)", () => {
+    applyOverrides({});
+    expect(commandsForKey("Mod-b", "project")[0]).toBe("edit.toggle-bold");
+    expect(commandsForKey("Mod-l", "project")[0]).toBe("edit.toggle-todo");
+    // 笔记区自己没有的项目动作不会漏进来
+    expect(commandsForKey("Mod-Shift-ArrowDown", "notes")).toEqual([]);
+  });
+
+  it("项目区的显式覆盖优先于继承", () => {
+    applyOverrides({ project: { "edit.toggle-bold": null } });
+    expect(commandsForKey("Mod-b", "project")).not.toContain("edit.toggle-bold");
+  });
+});
