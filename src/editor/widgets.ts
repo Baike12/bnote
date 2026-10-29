@@ -130,6 +130,31 @@ export class MathPreviewWidget extends WidgetType {
   }
 }
 
+/** Live preview of an inline formula while the cursor edits it: source stays
+ *  visible on the left, the rendered formula sits right after the closing
+ *  delimiter (block formulas get MathPreviewWidget below their source; an
+ *  inline formula has no block layer to host a preview). */
+export class MathInlinePreviewWidget extends WidgetType {
+  constructor(readonly src: string) {
+    super();
+  }
+
+  eq(other: MathInlinePreviewWidget) {
+    return other.src === this.src;
+  }
+
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "cw-math cw-math-preview-inline";
+    el.innerHTML = renderMathHtml(this.src, false);
+    return el;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
 /** Zero-height block widget used to hide fence lines entirely. */
 export class HiddenLineWidget extends WidgetType {
   eq() {

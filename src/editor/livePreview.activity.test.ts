@@ -3,8 +3,19 @@ import { EditorState, EditorSelection } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { GFM } from "@lezer/markdown";
-import { buildInlineDecorations, blockDecorationsField, selectionAffectsDecos } from "./livePreview";
-import { ListBulletWidget, MathWidget, MathPreviewWidget, TaskCheckboxWidget } from "./widgets";
+import {
+  buildInlineDecorations,
+  blockDecorationsField,
+  configureLivePreview,
+  selectionAffectsDecos,
+} from "./livePreview";
+import {
+  ListBulletWidget,
+  MathInlinePreviewWidget,
+  MathPreviewWidget,
+  MathWidget,
+  TaskCheckboxWidget,
+} from "./widgets";
 
 const DOC = [
   "- [ ] task item",
@@ -364,6 +375,68 @@ describe("数学预览的块级锚点（blockDecorationsField）", () => {
     expect(points.some((p) => p.widget instanceof MathWidget && p.from === 2 && p.to === 13)).toBe(
       true,
     );
+  });
+});
+
+/**
+ * 行内公式的编辑态预览（buildInlineDecorations）。块公式的预览由块层补在
+ * 源码下方；行内区域没有块层，必须在闭合定界符之后紧跟一个行内预览 widget，
+ * 否则「输入行内公式时看不到渲染结果」——光标停在闭合 `$` 之后也算活动态
+ * （区域触点算活动），这正是打完公式立刻看不到预览的原因。
+ *
+ * 夹具 "前文 $f(x)$ 后文"：`$f(x)$` 占 3..9，闭合定界符在 8，预览锚在 9。
+ */
+describe("行内公式的编辑态预览（buildInlineDecorations）", () => {
+  const DOC_MATH = "前文 $f(x)$ 后文";
+
+  function inlinePoints(doc: string, pos: number) {
+    const created = EditorState.create({
+      doc,
+      extensions: [markdown({ base: markdownLanguage, extensions: [GFM] })],
+    });
+    ensureSyntaxTree(created, created.doc.length);
+    const state = created.update({ selection: EditorSelection.cursor(pos) }).state;
+    const set = buildInlineDecorations({
+      state,
+      visibleRanges: [{ from: 0, to: state.doc.length }],
+    });
+    const out: { from: number; to: number; widget: unknown }[] = [];
+    set.between(0, state.doc.length, (from, to, deco) => {
+      const w = (deco as { spec?: { widget?: unknown } }).spec?.widget;
+      if (w) out.push({ from, to, widget: w });
+    });
+    return out;
+  }
+
+  it("光标在公式内：源码保持可见（无 replace），闭合定界符后紧跟预览", () => {
+    const points = inlinePoints(DOC_MATH, 6);
+    expect(points.filter((p) => p.widget instanceof MathInlinePreviewWidget)).toEqual([
+      { from: 9, to: 9, widget: expect.any(MathInlinePreviewWidget) },
+    ]);
+    expect(points.some((p) => p.widget instanceof MathWidget)).toBe(false);
+  });
+
+  it("光标停在闭合定界符之后（打完公式的自然位置）：预览仍在", () => {
+    const points = inlinePoints(DOC_MATH, 9);
+    expect(points.some((p) => p.widget instanceof MathInlinePreviewWidget)).toBe(true);
+  });
+
+  it("光标离开区域：折成渲染 widget，不留预览", () => {
+    const points = inlinePoints(DOC_MATH, 0);
+    expect(points.some((p) => p.widget instanceof MathInlinePreviewWidget)).toBe(false);
+    expect(
+      points.some((p) => p.widget instanceof MathWidget && p.from === 3 && p.to === 9),
+    ).toBe(true);
+  });
+
+  it("mathPreview 关闭：与块公式同一开关，行内也不出预览", () => {
+    configureLivePreview({ mathPreview: false });
+    try {
+      const points = inlinePoints(DOC_MATH, 6);
+      expect(points.some((p) => p.widget instanceof MathInlinePreviewWidget)).toBe(false);
+    } finally {
+      configureLivePreview({ mathPreview: true });
+    }
   });
 });
 

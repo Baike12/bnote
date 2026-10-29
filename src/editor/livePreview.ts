@@ -17,6 +17,7 @@ import {
   HiddenLineWidget,
   HrWidget,
   ListBulletWidget,
+  MathInlinePreviewWidget,
   MathPreviewWidget,
   MathWidget,
   TaskCheckboxWidget,
@@ -621,19 +622,31 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   // ---- Math ----
   // Whole display blocks (rendered widget / preview) live in the state field;
   // here only single-line display and inline formulas, plus source highlights
-  // for the formula being edited.
+  // and an inline preview for the formula being edited.
   for (const region of maths) {
     if (region.to < visibleFrom || region.from > visibleTo) continue;
     if (inRangeList(exclude, region.from, region.to)) continue;
 
-    if (active(region.from, region.to)) {
-      highlightMathSource(doc, region, out);
-      continue;
-    }
-
     const singleLine =
       !region.display ||
       doc.lineAt(region.from).number === doc.lineAt(Math.max(region.from, region.to - 1)).number;
+
+    if (active(region.from, region.to)) {
+      highlightMathSource(doc, region, out);
+      // 编辑中的行内公式也要能看到渲染结果:块公式由块层在源码下方补预览,
+      // 行内区域没有那一层,在闭合定界符后紧跟一段行内渲染预览。跨行显示块
+      // 由块层负责,这里不重复出预览。
+      if (singleLine && hooks.mathPreview !== false && region.content.trim()) {
+        out.inline.push(
+          Decoration.widget({
+            widget: new MathInlinePreviewWidget(region.content),
+            side: 1,
+          }).range(region.to),
+        );
+      }
+      continue;
+    }
+
     if (!singleLine) continue; // rendered by the block-decorations field
 
     if (claim(region.from, region.to)) {
