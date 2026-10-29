@@ -80,14 +80,9 @@ describe("the injected script", () => {
     expect(WEREAD_SCRIPT).not.toContain(".readerTopBarTitleLink");
   });
 
-  it("the layout adaptation locks the three key points measured on the live site", () => {
+  it("the layout adaptation only touches colors and locks the key points measured on the live site", () => {
     // Width: the root cause of the margin in the scrolling mode is the max-width:1000px of .app_content
     expect(WEREAD_SCRIPT).toContain(".app_content { max-width: none");
-    // Catalog: docked left + permanent + hidden mask; only fixed can also dock at the left edge of the viewport in the horizontal mode
-    // (in the horizontal mode its positioning ancestor is the position:relative body container)
-    expect(WEREAD_SCRIPT).toContain(".readerCatalog { display: block");
-    expect(WEREAD_SCRIPT).toContain(".wr_mask:has(~ .readerCatalog)");
-    expect(WEREAD_SCRIPT).toContain(".readerCatalog { position: fixed");
     // Eye-care green = the --pdf-gutter of the PDF eye-care mode
     expect(WEREAD_SCRIPT).toContain("#dcebd6");
     // The visible glyphs are a canvas copy-protection layer: the text color has to be pressed to black with brightness(0)
@@ -96,11 +91,25 @@ describe("the injected script", () => {
     expect(WEREAD_SCRIPT).toContain(".readerChapterContent_container { background");
     // The inner page classes set a light color directly, so the text color must be wildcarded to the descendants
     expect(WEREAD_SCRIPT).toContain(".readerChapterContent *:not(svg):not(canvas)");
-    // The side switch buttons: the toolbar and the page bar are hidden entirely
-    expect(WEREAD_SCRIPT).toContain(".readerControls { display: none");
-    expect(WEREAD_SCRIPT).toContain(".renderTarget_pager { display: none");
     // The style injection tag (the new style id)
     expect(WEREAD_SCRIPT).toContain("bnote-weread-style");
+  });
+
+  it("the catalog and the toolbar stay under the site's control: their geometry and open state must not be taken over", () => {
+    // The closed catalog is an inline display:none and the component switches it back to display:flex when opened (natively
+    // position:fixed + a flex column, the list .readerCatalog_list{flex:auto} scrolls through PerfectScrollbar). A forced
+    // display:block only flips visibility and bypasses the open state → the scrolling container is never initialized, so the
+    // catalog cannot scroll; the mask (close on an outside click) is hidden and the toolbar is hidden too → there is not even
+    // an entry to collapse it.
+    expect(WEREAD_SCRIPT).not.toContain(".readerCatalog { display: block");
+    expect(WEREAD_SCRIPT).not.toContain(".wr_mask:has(~ .readerCatalog)");
+    // .readerContent is box-sizing:border-box: padding does not change its clientWidth, so the site paginates at the full width
+    // while the drawing origin shifts right → the second page of the horizontal (two-page) mode is clipped outside the viewport.
+    expect(WEREAD_SCRIPT).not.toContain("padding-left: 320px");
+    // The toolbar holds the catalog / scroll reading (single column) / font size / light theme entries, and the page bar turns
+    // pages in the horizontal mode — both must stay, otherwise the user has no way out.
+    expect(WEREAD_SCRIPT).not.toContain(".readerControls { display: none");
+    expect(WEREAD_SCRIPT).not.toContain(".renderTarget_pager { display: none");
   });
 
   it("it is a single immediately executed expression, the constants are passed in as arguments (no module scope is referenced)", () => {

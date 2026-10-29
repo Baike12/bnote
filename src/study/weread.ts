@@ -21,11 +21,6 @@
  *       is the `max-width:1000px` of `.app_content` plus the 100px margin of
  *       the body text; all of it is released and the body text keeps only a
  *       48px breathing margin.
- *     - The catalog stays docked on the left: `.readerCatalog` is forced to
- *       display and docked 320px to the left, the mask (`wr_mask`, which
- *       handles "close on an outside click") is hidden, and the body area
- *       shifts right to make room — the catalog does not collapse after a
- *       chapter jump either, it stays visible while reading.
  *     - Eye-care green: the same base color `#dcebd6` as the PDF eye-care
  *       mode (the `--pdf-gutter` in global.css), with dark text. All the
  *       rules hang under `body.wr_page_reader` (the class only the reader
@@ -35,20 +30,36 @@
  *       text), and the CSS text color only reaches the DOM layer; the canvas
  *       uses `brightness(0)` to press the glyphs to black (the alpha is
  *       kept), which is what gives dark text on a green background.
+ *     - The catalog and the side toolbar **must stay under WeRead's own
+ *       control** (the live DOM/CSS was checked): the closed catalog is an
+ *       inline `style="display:none"` and the component switches it back to
+ *       `display:flex` when opened (the panel is natively `position:fixed;
+ *       flex-direction:column`), its list `ul.readerCatalog_list{flex:auto}`
+ *       scrolls through PerfectScrollbar; the `wr_mask` overlay handles
+ *       close-on-outside-click; `.readerControls{position:fixed;
+ *       width:48px}` holds the catalog / notes / **scroll reading** (single
+ *       column) / font size / light theme entries. Taking it over with CSS
+ *       breaks three things at once: a forced `display:block` only flips
+ *       visibility and bypasses the component's open state (the scrolling
+ *       container is never initialized, so the catalog cannot scroll); the
+ *       mask and the toolbar are hidden, which leaves no entry to collapse
+ *       the catalog; and a `padding-left` on the body (`.readerContent` is
+ *       `box-sizing:border-box`, so padding does not change its
+ *       clientWidth) makes WeRead paginate at the full width while the
+ *       drawing origin shifts right, clipping the second page of the
+ *       horizontal (two-page) mode outside the viewport, with the
+ *       single/two-column toggle hidden as well, so there is no way out.
+ *       All three are one mistake: **taking over with CSS the geometry that
+ *       belongs to the site's own state machine**.
  *     - Both the vertical and the horizontal (two-page) mode are adapted
- *       (the container, the text color and the catalog docking each differ,
- *       see the CSS group comments); WeRead's own floating toolbar and the
- *       bottom page bar are hidden entirely — the catalog is already
- *       permanent, page turning goes through PageUp/Down or a click on the
- *       page. The price is that WeRead's own entries for switching
- *       single/two-page, the font size and the theme are gone (both modes
- *       are adapted, see above). The vertical scrolling mode is still the
- *       shape that integrates best with bnote (annotations work on the
- *       scrolling semantics), and WeRead also picks the vertical mode by
- *       itself in a narrow container; **do not** try to switch the mode for
- *       the user with synthesized events — WeRead's controls filter
- *       untrusted events (verified on the live site, the whole click /
- *       PointerEvent set is ignored).
+ *       (the container and the text color each differ, see the CSS group
+ *       comments). The vertical scrolling mode is still the shape that
+ *       integrates best with bnote (annotations work on the scrolling
+ *       semantics), and WeRead also picks the vertical mode by itself in a
+ *       narrow container; **do not** try to switch the mode for the user
+ *       with synthesized events — WeRead's controls filter untrusted events
+ *       (verified on the live site, the whole click / PointerEvent set is
+ *       ignored).
  *
  * The runtime is installed from the **general init script** (it is
  * reinstalled on every navigation, so it still works after an in-SPA book
@@ -147,15 +158,13 @@ function wereadRuntime(args: {
     style.textContent = [
       // 1. Fill the width: the root cause of the margin in the scrolling mode is the max-width:1000px of .app_content,
       //    in the horizontal mode it is the max-width:2096px of the body text; the margin shrinks from 100px to 48px.
+      //    A margin (not a padding) counts toward clientWidth — the site's pagination and drawing origin still come from
+      //    the same box, so they cannot drift apart.
       "body.wr_page_reader .app_content { max-width: none !important; }",
       "body.wr_page_reader .readerChapterContent { max-width: none !important; }",
       "body.wr_page_reader .readerChapterContent { margin-left: 48px !important; margin-right: 48px !important; }",
-      // 2. The catalog stays docked on the left: the panel is originally absolute right:0 and closes on an outside click through wr_mask.
-      //    Force it to display + dock left + hide the mask + shift the body right; it still opens after a chapter jump.
-      "body.wr_page_reader .readerCatalog { display: block !important; left: 0 !important; right: auto !important; top: 72px !important; width: 320px !important; margin-left: 0 !important; transform: none !important; }",
-      "body.wr_page_reader .wr_mask:has(~ .readerCatalog) { display: none !important; }",
-      "body.wr_page_reader .readerContent, body.wr_page_reader .wr_horizontalReader_app_content { padding-left: 320px !important; }",
-      // 3. Eye-care green #dcebd6 = the --pdf-gutter of the PDF eye-care mode, with dark text.
+      // 2. Eye-care green #dcebd6 = the --pdf-gutter of the PDF eye-care mode, with dark text.
+      //    The catalog drawer and the toolbar keep the site's own open/close/scroll state machine; only the colors change.
       "body.wr_page_reader { background: #dcebd6 !important; color: #33413a !important; }",
       "body.wr_page_reader .app_content, body.wr_page_reader .wr_horizontalReader_app_content { background: #dcebd6 !important; }",
       "body.wr_page_reader .readerTopBar { background: #dcebd6 !important; }",
@@ -166,27 +175,18 @@ function wereadRuntime(args: {
       "body.wr_page_reader .readerControls_item { background: #dcebd6 !important; color: #33413a !important; }",
       "body.wr_page_reader .readerFooter { background: #dcebd6 !important; }",
       "body.wr_page_reader .readerFooter_button { background: #cfe3c8 !important; color: #33413a !important; }",
-      // 4. The visible body glyphs are drawn on a canvas in the WeRead theme color (copy protection, on top of the DOM
+      // 3. The visible body glyphs are drawn on a canvas in the WeRead theme color (copy protection, on top of the DOM
       //    text, z-index:2) — the CSS text color only reaches the DOM layer, so on the green background the text would still be the
       //    theme's light color. The canvas has a transparent background and only draws the glyphs: brightness(0) presses the
       //    opaque pixels to black while keeping the alpha, that is dark text on a green background, same as the PDF eye-care mode.
       "body.wr_page_reader .wr_canvasContainer canvas { filter: brightness(0) !important; }",
-      // 5. Horizontal (two-page) mode: the page container (.readerChapterContent/_container) carries a dark background of
+      // 4. Horizontal (two-page) mode: the page container (.readerChapterContent/_container) carries a dark background of
       //    its own, so it is painted green as well, otherwise the body area stays black after switching to two pages.
       "body.wr_page_reader .readerChapterContent, body.wr_page_reader .readerChapterContent_container { background: #dcebd6 !important; }",
-      // 6. The text color is wildcarded to all descendants: in the horizontal mode WeRead sets a light color directly on the inner page
+      // 5. The text color is wildcarded to all descendants: in the horizontal mode WeRead sets a light color directly on the inner page
       //    classes (such as wr_flyleaf_page_*) — an !important on the ancestor does not beat a direct rule; the catalog turns dark
       //    through the same wildcard. svg/canvas are excluded (the illustrations are <img> and ignore color, the svg icons have their own fill).
       "body.wr_page_reader .readerChapterContent, body.wr_page_reader .readerChapterContent *:not(svg):not(canvas) { color: #2f3a33 !important; }",
-      // 7. The catalog is fixed and docked at the left edge of the viewport: in the horizontal mode its positioning ancestor is the
-      //    position:relative body container, so absolute + left:0 can only reach the left edge of the body text (it shrinks to the middle).
-      "body.wr_page_reader .readerCatalog { position: fixed !important; bottom: 0 !important; }",
-      // 8. Remove the side switch buttons: the floating toolbar on the right (catalog / notes / single-two-page / font size / theme)
-      //    and the bottom page bar. The catalog is already permanent on the left, page turning goes through PageUp/Down or a click on the page.
-      //    The price: WeRead's own entries for switching single/two-page, the font size and the theme are gone (both modes are
-      //    adapted, see above).
-      "body.wr_page_reader .readerControls { display: none !important; }",
-      "body.wr_page_reader .renderTarget_pager { display: none !important; }",
     ].join("\n");
     (document.head || document.documentElement).appendChild(style);
   };
