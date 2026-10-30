@@ -242,6 +242,12 @@ export interface MaterialInfo {
 export interface SavedSessionMeta {
   id: string;
   title: string;
+  /** 分叉来源会话的文件 id;主会话为 null(恢复时据此还原会话家族)。 */
+  parent: string | null;
+  /** 辅助会话的来源消息摘要。 */
+  basedOn: string | null;
+  /** 分叉时复制过来的前缀条数;自有消息从这一条起算。 */
+  forkAt: number | null;
   createdAt: number;
   updatedAt: number;
   bytes: number;
@@ -319,6 +325,18 @@ export const agentApi = {
   /** 某材料下保存过的会话(新的在前)。 */
   sessionsList: (relDir: string) =>
     invoke<SavedSessionMeta[]>("study_sessions_list", { relDir }),
+  /** 把模型生成的标题写回会话记录第一行的元数据行。 */
+  setSessionTitle: (relDir: string, id: string, title: string) =>
+    invoke<void>("study_session_set_title", { relDir, id, title }),
+  /**
+   * 用某条会话自己的第一句话让模型起标题(一次短请求,不注册会话、不进
+   * 历史)。失败由调用方保留本地截断标题。
+   */
+  generateTitle: (
+    text: string,
+    /** 会话的模型配置快照(恢复的会话按它继续,标题也用它)。 */
+    model?: SessionModelConfig,
+  ) => invoke<string>("agent_generate_title", { text, model }),
   setCurrentNote: (path: string | null) =>
     invoke<void>("agent_set_current_note", { path }),
   /**

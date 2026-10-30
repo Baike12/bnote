@@ -15,7 +15,10 @@ import { useAppStore } from "@/state/appStore";
 import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { isImeEnter } from "@/lib/imeEnter";
 import { forkLabel } from "@/study/agentFork";
+import { DEFAULT_AGENT_FONT, stepAgentFont } from "@/study/agentFont";
 import { ensureMaterial, sessionFilePath } from "@/study/materials";
+import { cleanGeneratedTitle, displayTitle } from "@/study/sessionTitle";
+import { resolveFamily, type SessionNode } from "@/study/sessionTree";
 import {
   buildSessionMeta,
   historyFromTranscript,
@@ -29,6 +32,7 @@ import {
 } from "@/study/transcript";
 import { isWereadUrl } from "@/study/weread";
 import { applySuggestion, parseSuggestTrigger, type SuggestTrigger } from "@/agent/suggest";
+import { AgentHeader } from "@/components/AgentHeader";
 import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/AgentSuggest";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import {
@@ -95,6 +99,13 @@ interface Conv {
   /** 辅助会话的摘要(来源消息首行)。 */
   basedOn: string;
   /**
+   * 分叉时复制过来的前缀条数:`entries[forkAt]` 才是这条会话自己的第一条
+   * 消息。起标题必须用它,不能拿父会话的提问顶替。
+   */
+  forkAt: number;
+  /** 标题来源:llm = 模型生成过(重启后不再重复生成)。 */
+  titleSource: "llm" | "first-message";
+  /**
    * 会话级错误(启动失败 / 发送失败)。持久显示在对话区顶部(照 ZCode 的
    * ChatErrorBanner),直到用户重试或关闭——不再只弹几秒消失的 toast:
    * 用户看到的「发送没有回应」绝大多数就是这种被 toast 吞掉的失败。
@@ -121,6 +132,19 @@ interface Conv {
 function studyContentKey(content: StudyContent | null): string {
   if (!content) return "none";
   return content.kind === "pdf" ? `pdf:${content.path}` : `url:${content.url}`;
+}
+
+/** 列表项 → 家族解析用的节点(缺字段按主会话/空前缀处理)。 */
+function toSessionNode(meta: SavedSessionMeta): SessionNode {
+  return {
+    id: meta.id,
+    title: meta.title,
+    parent: meta.parent ?? null,
+    basedOn: meta.basedOn ?? "",
+    forkAt: meta.forkAt ?? 0,
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+  };
 }
 
 function findConvBySession(convs: Conv[], sessionId: string): Conv | undefined {
@@ -322,6 +346,9 @@ export function AgentPanel() {
   const agentSwitchSignal = useAppStore((s) => s.agentSwitchSessionSignal);
   const agentPanelCommand = useAppStore((s) => s.agentPanelCommand);
   const showToast = useAppStore((s) => s.showToast);
+  const patchSettings = useAppStore((s) => s.patchSettings);
+  /** 对话字号缩放:写在面板根元素的 --agent-fs 上,CSS 里正文与派生字号都乘它。 */
+  const agentFontScale = useAppStore((s) => s.settings.agentFontScale);
   const [convs, setConvs] = useState<Conv[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -338,6 +365,14 @@ export function AgentPanel() {
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const convsRef = useRef<Conv[]>([]);
+  /** 恢复代:换材料/新会话/重新恢复家族后,旧的读盘结果一律作废。 */
+  const restoreTokenRef = useRef(0);
+  /** 已经发起过懒启动的会话(切换时只启动一次,不等第一次回来)。 */
+  const lazyStartingRef = useRef<Set<string>>(new Set());
+  /** convKey → 该会话自己的第一句话:首轮成功后用它让模型起标题。 */
+  const titleSeedRef = useRef<Map<string, string>>(new Map());
+  /** 已经请求过标题的会话(失败不重试,保持本地兜底标题)。 */
+  const titleAskedRef = useRef<Set<string>>(new Set());
   const turnsRef = useRef<Map<string, Turn>>(new Map());
   const busyRef = useRef<string | null>(null);
   /** 已为哪份内容+配置建过主会话。 */
@@ -384,6 +419,11 @@ export function AgentPanel() {
   useEffect(() => {
     convsRef.current = convs;
   }, [convs]);
+  /** 当前会话 key 的即时副本(快捷键 effect 不该因为换会话重跑)。 */
+  const activeKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeKeyRef.current = activeKey;
+  }, [activeKey]);
 
   // 技能清单:输入框 / 补全与创作模式欢迎页用;配置保存(可能改了 skill
   // 目录)后刷新。失败静默为空(浏览器 harness 无后端)。
@@ -480,6 +520,14 @@ export function AgentPanel() {
         transcriptPath?: string | null;
         /** 分叉:先把父会话的前缀写进新文件。 */
         seedLines?: TranscriptLine[];
+        /** 分叉:写进元数据行的父子关系(重启恢复靠它还原会话家族)。 */
+        forkMeta?: {
+          parent: string | null;
+          basedOn: string;
+          forkAt: number;
+          /** 与内存 label 一致的分叉标题(缺省才退回前缀首句)。 */
+          title?: string;
+        };
         /** 恢复/分叉:沿用源会话的模型配置;不传则用设置里的当前配置。 */
         model?: SessionModelConfig;
       },
@@ -517,8 +565,12 @@ export function AgentPanel() {
           // 元数据必须在第一行——列表侧只读文件头部就能拿到标题与模型快照。
           const meta = buildSessionMeta({
             at: Date.now(),
-            title: sessionTitleFromLines(opts.seedLines),
+            // 与内存 label 一致(分叉点摘要):重启后列表与头部显示同一个标题。
+            title: opts.forkMeta?.title ?? sessionTitleFromLines(opts.seedLines),
             model,
+            parent: opts.forkMeta?.parent ?? null,
+            basedOn: opts.forkMeta?.basedOn,
+            forkAt: opts.forkMeta?.forkAt,
           });
           await api
             .writeFile(transcriptPath, serializeTranscript([meta, ...opts.seedLines]))
@@ -558,17 +610,18 @@ export function AgentPanel() {
   );
 
   /**
-   * 打开一条保存过的会话:读回记录 → 还原界面消息与模型历史 → 继续对话。
+   * 恢复一条已保存的会话:读回记录 → 还原界面消息与模型历史 → 继续对话。
    * 会话记录是唯一来源,后端只是带着历史重新开一条 live 会话。
+   *
+   * token 是恢复代:读盘期间换了材料/新会话,结果直接作废,不往已经不在
+   * 列表里的 conv 上写。
    */
-  const openSavedSession = useCallback(
-    async (meta: SavedSessionMeta) => {
-      const info = materialRef.current?.info;
-      const vault = useAppStore.getState().vaultPath;
-      if (!info || !vault) return;
-      setHistoryOpen(false);
-      const path = sessionFilePath(vault, info.relDir, meta.id);
+  const launchRestored = useCallback(
+    async (conv: Conv, token: number) => {
+      const path = conv.transcriptPath;
+      if (!path) return;
       const raw = await api.readFile(path).catch(() => null);
+      if (restoreTokenRef.current !== token) return;
       const lines = parseTranscript(raw);
       if (lines.length === 0) {
         showToast("这条会话记录是空的");
@@ -576,25 +629,18 @@ export function AgentPanel() {
       }
       // 会话自己的模型配置快照:之后改设置不影响这条会话,恢复也按它继续。
       const sessionMeta = sessionMetaFromRaw(raw);
-      const conv: Conv = {
-        key: nextConvKey(),
-        sessionId: null,
+      updateConv(conv.key, (c) => ({
+        ...c,
         entries: lines.map(entryFromLine),
-        label: meta.title,
-        parent: null,
-        basedOn: "",
-        mcpErrors: [],
-        transcriptPath: path,
-        sessionFileId: meta.id,
-        model: sessionMeta?.model ?? null,
-        usage: null,
-      };
+        label: sessionMeta?.title?.trim() ? sessionMeta.title : c.label,
+        basedOn: sessionMeta?.basedOn ?? c.basedOn,
+        forkAt: sessionMeta?.forkAt ?? c.forkAt,
+        titleSource: sessionMeta?.titleSource === "llm" ? "llm" : "first-message",
+        model: sessionMeta?.model ?? c.model,
+      }));
       transcriptRef.current.set(conv.key, path);
-      setConvs([conv]);
-      setActiveKey(conv.key);
-      turnsRef.current.clear();
-      // 恢复的会话文件里已有元数据(旧记录没有,标题走列表侧兜底);
-      // 不重复写,也不清别的会话的记账——还在流的那一轮收尾时还要用。
+      // 记录文件里已有元数据(旧记录没有,标题走列表侧兜底);不重复写,
+      // 也不清别的会话的记账——还在流的那一轮收尾时还要用。
       metaWrittenRef.current.set(conv.key, true);
       void startSession(conv.key, materialContent, {
         history: historyFromTranscript(lines),
@@ -602,10 +648,114 @@ export function AgentPanel() {
         model: sessionMeta?.model,
       });
     },
-    [materialContent, showToast, startSession],
+    [materialContent, showToast, startSession, updateConv],
   );
 
-  // 主会话生命周期:面板常驻(三栏布局),材料/重启任一变化都重建会话。
+  /**
+   * 恢复一个会话家族:按 parent 链把主会话与它分叉出的辅助会话一起还原。
+   *
+   * 以前只挂「最近更新的那一条」——那往往正是刚分叉出来的辅助会话,重启
+   * 后面板就停在子会话上,主会话没有任何入口。现在根(主会话)是默认落点,
+   * 辅助会话先在列表里立着,切过去时才读盘 + 启动后端会话。
+   */
+  const restoreFamily = useCallback(
+    async (anchorId: string, sessions: SavedSessionMeta[], activate: "root" | "anchor") => {
+      const info = materialRef.current?.info;
+      const vault = useAppStore.getState().vaultPath;
+      if (!info || !vault) return;
+      const family = resolveFamily(anchorId, sessions.map(toSessionNode));
+      if (!family) return;
+      const token = ++restoreTokenRef.current;
+
+      const keyByFile = new Map<string, string>();
+      for (const member of family.members) keyByFile.set(member.id, nextConvKey());
+      const convs: Conv[] = family.members.map((member) => ({
+        key: keyByFile.get(member.id)!,
+        sessionId: null,
+        entries: [],
+        label: member.title,
+        parent: member.parent ? (keyByFile.get(member.parent) ?? null) : null,
+        basedOn: member.basedOn,
+        forkAt: member.forkAt,
+        titleSource: "first-message",
+        mcpErrors: [],
+        transcriptPath: sessionFilePath(vault, info.relDir, member.id),
+        sessionFileId: member.id,
+        model: null,
+        usage: null,
+      }));
+      setConvs(convs);
+      turnsRef.current.clear();
+      lazyStartingRef.current.clear();
+
+      const rootKey = keyByFile.get(family.rootId)!;
+      const focusKey = activate === "anchor" ? (keyByFile.get(anchorId) ?? rootKey) : rootKey;
+      setActiveKey(focusKey);
+      // 只启动落点那条:后端会话是全局单飞的(startSession 的 token),
+      // 同时开两条会让先到的那条作废。其余切换时懒启动。
+      const focus = convs.find((c) => c.key === focusKey);
+      if (focus) {
+        lazyStartingRef.current.add(focusKey);
+        void launchRestored(focus, token).finally(() =>
+          lazyStartingRef.current.delete(focusKey),
+        );
+      }
+    },
+    [launchRestored],
+  );
+
+  /**
+   * 切到某条会话。家族里只有落点那条在恢复时启动过,其它会话第一次切过去
+   * 才读盘 + 起后端会话(不切就永不付这次成本)。
+   */
+  const activateConv = useCallback(
+    (key: string) => {
+      setActiveKey(key);
+      const conv = convsRef.current.find((c) => c.key === key);
+      if (!conv || conv.sessionId || !conv.transcriptPath) return;
+      if (lazyStartingRef.current.has(key)) return;
+      lazyStartingRef.current.add(key);
+      void launchRestored(conv, restoreTokenRef.current).finally(() =>
+        lazyStartingRef.current.delete(key),
+      );
+    },
+    [launchRestored],
+  );
+
+  /**
+   * 首轮回复结束后让模型给会话起标题(用会话**自己的**第一句话)。
+   *
+   * 本地兜底标题(首句截断 / ↳ 分叉点)已经在 label 里,这里只把它换成更
+   * 像标题的说法;失败就保持原样。标题同时写回记录文件第一行,历史列表与
+   * 重启恢复都读它。
+   */
+  const generateTitle = useCallback(
+    (convKey: string, seed: string) => {
+      if (titleAskedRef.current.has(convKey)) return;
+      const conv = convsRef.current.find((c) => c.key === convKey);
+      if (!conv || conv.titleSource === "llm") return;
+      titleAskedRef.current.add(convKey);
+      const relDir = materialRef.current?.info?.relDir;
+      void agentApi
+        .generateTitle(seed, conv.model ?? undefined)
+        .then((raw) => {
+          const clean = cleanGeneratedTitle(raw);
+          if (!clean) return;
+          const label = displayTitle(clean, conv.parent !== null);
+          updateConv(convKey, (c) => ({ ...c, label, titleSource: "llm" }));
+          if (relDir && conv.sessionFileId) {
+            void agentApi
+              .setSessionTitle(relDir, conv.sessionFileId, label)
+              .then(() => refreshSessions())
+              .catch(() => {});
+          }
+        })
+        .catch(() => {
+          // 没配 key / 网络失败 / 模型拒绝:保持本地兜底标题,不打扰用户。
+        });
+    },
+    [refreshSessions, updateConv],
+  );
   // - 换材料:恢复这份材料最近一条会话(没有才开新的);
   // - 点 ⟳ / ＋新会话:强制开一条新会话(旧会话留在历史里,配置用当前设置);
   // - 保存设置:什么都不发生——已开的会话继续用它自己的模型配置快照。
@@ -642,7 +792,8 @@ export function AgentPanel() {
       setSavedSessions(sessions);
 
       if (!forcedNew && sessions.length > 0) {
-        await openSavedSession(sessions[0]);
+        // 最新一条所在的家族:根(主会话)是落点,辅助会话挂在会话切换里。
+        await restoreFamily(sessions[0].id, sessions, "root");
         return;
       }
       const conv: Conv = {
@@ -652,6 +803,8 @@ export function AgentPanel() {
         label: "主会话",
         parent: null,
         basedOn: "",
+        forkAt: 0,
+        titleSource: "first-message",
         mcpErrors: [],
         transcriptPath: null,
         sessionFileId: null,
@@ -663,7 +816,7 @@ export function AgentPanel() {
       turnsRef.current.clear();
       void startSession(conv.key, materialContent);
     })();
-  }, [materialContent, creativeMode, restartNonce, startSession, openSavedSession]);
+  }, [materialContent, creativeMode, restartNonce, startSession, restoreFamily]);
 
   // ⌘⇧Y / 命令:主会话 ↔ 最近一条辅助会话 来回切换。
   useEffect(() => {
@@ -673,15 +826,14 @@ export function AgentPanel() {
       showToast("还没有辅助会话:悬停消息点「⤷」创建");
       return;
     }
-    setActiveKey((prevKey) => {
-      const cur = list.find((c) => c.key === prevKey);
-      if (cur?.parent) {
-        const parent = list.find((c) => c.key === cur.parent);
-        return parent ? parent.key : list[0].key;
-      }
-      return list[list.length - 1].key;
-    });
-  }, [agentSwitchSignal, showToast]);
+    const cur = list.find((c) => c.key === activeKeyRef.current);
+    let next = list[list.length - 1].key;
+    if (cur?.parent) {
+      const parent = list.find((c) => c.key === cur.parent);
+      next = parent ? parent.key : list[0].key;
+    }
+    activateConv(next);
+  }, [agentSwitchSignal, showToast, activateConv]);
 
   // 切换会话后滚到底(每条会话都从最新消息看起)。
   useEffect(() => {
@@ -845,6 +997,12 @@ export function AgentPanel() {
       }
       case "turn_end": {
         commitTurn(conv.key, event.items);
+        // 首轮成功:用会话自己的第一句话起标题(本地兜底标题先顶着)。
+        const seed = titleSeedRef.current.get(conv.key);
+        if (seed) {
+          titleSeedRef.current.delete(conv.key);
+          generateTitle(conv.key, seed);
+        }
         if (busyRef.current === sessionId) {
           busyRef.current = null;
           setBusySession(null);
@@ -974,6 +1132,11 @@ export function AgentPanel() {
       text,
       images: images.length > 0 ? images : undefined,
     });
+    // 会话自己的第一次请求:记下这句话。这一轮成功后用它让模型起标题——
+    // 辅助会话的标题必须来自它自己的提问,不能拿父会话的消息顶替。
+    if (conv.titleSource !== "llm" && !titleSeedRef.current.has(conv.key)) {
+      titleSeedRef.current.set(conv.key, text || "[图片]");
+    }
     updateConv(conv.key, (c) => ({
       ...c,
       error: undefined,
@@ -1033,6 +1196,8 @@ export function AgentPanel() {
         label: `↳ ${forkLabel(label)}`,
         parent: src.key,
         basedOn: forkLabel(label, 40),
+        forkAt: prefix.length,
+        titleSource: "first-message",
         mcpErrors: [],
         transcriptPath: null,
         sessionFileId: null,
@@ -1046,6 +1211,13 @@ export function AgentPanel() {
         history: historyFromTranscript(seedLines),
         seedLines,
         model: src.model ?? undefined,
+        // 父子关系写进新文件:重启后靠它把这条辅助会话挂回主会话。
+        forkMeta: {
+          parent: src.sessionFileId,
+          basedOn: conv.basedOn,
+          forkAt: prefix.length,
+          title: conv.label,
+        },
       });
     },
     [activeConv, materialContent, showToast, startSession],
@@ -1095,7 +1267,7 @@ export function AgentPanel() {
           showToast("当前不是辅助会话");
           return;
         }
-        setActiveKey(parentConv.key);
+        activateConv(parentConv.key);
         focusInput();
         break;
       }
@@ -1125,7 +1297,7 @@ export function AgentPanel() {
         else setHistoryOpen(true);
         break;
     }
-  }, [agentPanelCommand, activeConv, parentConv, forkFrom, historyOpen, focusHistory, showToast, pendingImages, setCreativeMode]);
+  }, [agentPanelCommand, activeConv, parentConv, forkFrom, historyOpen, focusHistory, showToast, pendingImages, activateConv, setCreativeMode]);
 
   // 历史抽屉打开后把焦点交给列表,接着就能 Tab / 回车操作。
   useEffect(() => {
@@ -1144,92 +1316,47 @@ export function AgentPanel() {
   const usagePct = occupancyPercent(activeUsage, contextLimit);
 
   return (
-    <aside className="agent-panel" data-key-region="agent">
+    <aside
+      className="agent-panel"
+      data-key-region="agent"
+      style={{ "--agent-fs": String(agentFontScale) } as React.CSSProperties}
+    >
       {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让文字也能拖,
-          头部里的按钮由 Tauri 的 drag.js 自行放行。 */}
-      <div className="agent-header" data-tauri-drag-region="deep">
-        {convs.length > 1 ? (
-          <select
-            className="agent-conv-select"
-            value={activeKey ?? ""}
-            title="切换会话(⌘⇧Y)"
-            onChange={(e) => setActiveKey(e.target.value)}
-          >
-            {convs.map((c) => (
-              <option key={c.key} value={c.key}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="agent-conv-label" title={activeConv?.label}>
-            {activeConv?.label ?? "主会话"}
-          </span>
-        )}
-        <span className="spacer" />
-        <button
-          className={`icon-btn${creativeMode ? " is-active" : ""}`}
-          title={
-            creativeMode
-              ? "创作模式(⌘⇧G):开启中,点这里切回学习问答"
-              : "切换到创作模式(⌘⇧G):带工具与技能,生成 HTML 实时预览"
-          }
-          aria-pressed={creativeMode}
-          onClick={() => setCreativeMode(!creativeMode)}
-        >
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M12 19l7-7a2.4 2.4 0 0 0-3.4-3.4l-9.6 9.6L4 22l2.1-.5a10 10 0 0 0 2.4-1L12 19z" />
-            <path d="M14.5 6.5l3 3" />
-          </svg>
-        </button>
-        <button
-          className={`icon-btn${historyOpen ? " is-active" : ""}`}
-          title="历史会话(这份材料保存过的对话)"
-          aria-pressed={historyOpen}
-          onClick={() => setHistoryOpen((v) => !v)}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M3 12a9 9 0 1 0 3-6.7" />
-            <path d="M3 4v5h5" />
-            <path d="M12 8v4l3 2" />
-          </svg>
-        </button>
-        <button
-          className="icon-btn"
-          title="新会话(重读 .bnote/AGENTS.md 与配置)"
-          onClick={() => {
-            setHistoryOpen(false);
-            setRestartNonce((n) => n + 1);
-          }}
-        >
-          ⟳
-        </button>
-      </div>
-      {parentConv && (
-        <div className="agent-aux-bar">
-          <span className="agent-aux-badge">辅助会话</span>
-          <span className="agent-aux-based" title={activeConv?.basedOn}>
-            基于「{activeConv?.basedOn}」
-          </span>
-          <button
-            className="btn btn-ghost agent-aux-back"
-            title="返回上一条会话(⌘⇧Y)"
-            onClick={() => parentConv && setActiveKey(parentConv.key)}
-          >
-            ← {parentConv.label}
-          </button>
-        </div>
-      )}
+          头部里的按钮由 Tauri 的 drag.js 自行放行(见 AgentHeader)。 */}
+      <AgentHeader
+        convs={convs.map((c) => ({
+          key: c.key,
+          label: c.label,
+          parent: c.parent,
+          basedOn: c.basedOn,
+        }))}
+        activeKey={activeKey}
+        onSelect={activateConv}
+        creativeMode={creativeMode}
+        onToggleCreative={() => setCreativeMode(!creativeMode)}
+        historyOpen={historyOpen}
+        onToggleHistory={() => setHistoryOpen((v) => !v)}
+        onNewSession={() => {
+          setHistoryOpen(false);
+          setRestartNonce((n) => n + 1);
+        }}
+        parent={
+          parentConv
+            ? {
+                key: parentConv.key,
+                label: parentConv.label,
+                parent: parentConv.parent,
+                basedOn: parentConv.basedOn,
+              }
+            : null
+        }
+        onBack={() => parentConv && activateConv(parentConv.key)}
+        fontScale={agentFontScale}
+        onFontStep={(direction) =>
+          patchSettings({ agentFontScale: stepAgentFont(agentFontScale, direction) })
+        }
+        onFontReset={() => patchSettings({ agentFontScale: DEFAULT_AGENT_FONT })}
+      />
       {activeConv && activeConv.mcpErrors.length > 0 && (
         <div className="agent-mcp-warn" title={activeConv.mcpErrors.join("\n")}>
           MCP 部分服务器连接失败
@@ -1603,7 +1730,15 @@ export function AgentPanel() {
                       s.id === activeConv?.sessionFileId ? " is-active" : ""
                     }`}
                     title={s.title}
-                    onClick={() => void openSavedSession(s)}
+                    onClick={() => {
+                      setHistoryOpen(false);
+                      if (s.id === activeConv?.sessionFileId) return;
+                      // 已在这份家族里(内存里有)→ 直接切;否则按它重建家族,
+                      // 主会话照样挂回来,只是落点在这条。
+                      const existing = convs.find((c) => c.sessionFileId === s.id);
+                      if (existing) activateConv(existing.key);
+                      else void restoreFamily(s.id, savedSessions, "anchor");
+                    }}
                   >
                     <span className="agent-history-item-title">{s.title}</span>
                     <span className="agent-history-item-time">

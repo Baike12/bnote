@@ -2081,6 +2081,12 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   background: var(--bg0);
+  /* 对话字号:正文基准 15px(2026-10-30 由 13.5px 上调——助手栏只有几百
+     像素宽,13.5 读长答案发虚);头部「Aa」写 --agent-fs(85%–160%),其余
+     文字按 --agent-text 的比例派生。头部 / 辅助条是外框,不跟着缩放。 */
+  --agent-body: 15px;
+  --agent-fs: 1;
+  --agent-text: calc(var(--agent-body) * var(--agent-fs));
 }
 
 .agent-header {
@@ -2094,38 +2100,195 @@ input[type="range"] {
   background: var(--bg0);
 }
 
-/* 会话切换:多条会话(主 + 辅助)时是下拉,只有主会话时是一段说明文字。 */
-.agent-conv-select {
-  max-width: 150px;
-  font-size: 12px;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg2);
-  color: var(--text);
+/* 会话切换:标题本身就是入口,点开是会话列表 popover——与中栏「文件名 =
+   材料下拉」同一套语言(透明底、hover 才出底色、▾ 提示可点),不再是原生
+   <select>(系统控件在各平台长得完全不一样,和这里的 UI 最不搭)。 */
+.agent-conv {
+  position: relative;
+  min-width: 0;
+  /* 标题可以吃满剩余宽度,但给右侧四个图标按钮(4 × 26 + 3 × 8 = 128)留位:
+     少留一点,窄窗口下被压扁的就是图标本身。 */
+  max-width: calc(100% - 144px);
+  display: flex;
 }
-.agent-conv-label {
-  font-size: 12px;
-  color: var(--text-dim, var(--text));
+.agent-conv-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+}
+.agent-conv-btn:hover,
+.agent-conv-btn.open {
+  background: var(--bg3);
+}
+.agent-conv-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 只有一条会话:静态标题,与可点的按钮同字体同高度,只是没有 hover 底。 */
+.agent-conv-static {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-conv-caret {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.agent-conv-btn:hover .agent-conv-caret { color: var(--text-dim); }
+
+.agent-conv-pop {
+  position: absolute;
+  top: 30px;
+  left: 0;
+  z-index: 60;
+  width: 292px;
+  max-width: min(78vw, 340px);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px var(--shadow);
+}
+.agent-conv-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+.agent-conv-item:hover { background: var(--bg3); }
+.agent-conv-item.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.agent-conv-item-title {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-conv-item.is-active .agent-conv-item-title { color: var(--accent); }
+.agent-conv-item-sub {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 辅助会话条:标明当前在看的是分叉会话,一键回上一条。 */
+/* 对话字号:按钮常驻头部,−/读数/+ 收在 popover 里。读数与中栏网页缩放
+   同一套语言(等宽数字、点一下回到 100%),只是改的是面板文字而不是页面。 */
+.agent-font {
+  position: relative;
+  display: flex;
+}
+.agent-font-glyph {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.agent-font-pop {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 9px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px var(--shadow);
+}
+.agent-font-label {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.agent-font-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.agent-font-step {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+}
+.agent-font-step:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--text);
+}
+.agent-font-step:disabled {
+  opacity: 0.35;
+}
+.agent-font-value {
+  min-width: 46px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.agent-font-value:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+/* 辅助会话条:标明当前这条是分叉会话、基于哪条消息,一键回上一条。
+   与头部同底色,整块只画一条下边框(见下面的 :has)——两行属于同一个
+   头部,不是两条彩色带。 */
 .agent-aux-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 12px;
-  font-size: 12px;
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 11.5px;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  background: var(--bg0);
 }
 .agent-aux-badge {
   flex-shrink: 0;
-  padding: 2px 8px;
+  padding: 1px 7px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
+  font-size: 11px;
   font-weight: 600;
 }
 .agent-aux-based {
@@ -2136,15 +2299,35 @@ input[type="range"] {
   color: var(--text-dim, var(--text));
 }
 .agent-aux-back {
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   margin-left: auto;
   padding: 2px 8px;
-  font-size: 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim, var(--text));
+  font-size: 11.5px;
+}
+.agent-aux-back:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+/* 头部与辅助会话条连成一块:两条之间不画线,只有整块底部一条。 */
+.agent-header:has(+ .agent-aux-bar) {
+  border-bottom: none;
+}
+
+/* 头部按钮不参与收缩:窄窗口里被压扁的必须是会话名,不是图标。 */
+.agent-header .icon-btn {
+  flex: 0 0 auto;
 }
 
 .agent-mcp-warn {
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.8);
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-bottom: 1px solid var(--border);
@@ -2169,6 +2352,10 @@ input[type="range"] {
   border-left: 1px solid var(--border);
   background: var(--bg1);
   box-shadow: -8px 0 24px var(--shadow);
+}
+/* 辅助会话时头部多一行(辅助条 30px):抽屉从它下面展开,不盖住来源与返回。 */
+.agent-panel:has(.agent-aux-bar) .agent-history {
+  top: calc(var(--study-head-h) + 30px);
 }
 .agent-history-head {
   display: flex;
@@ -2280,7 +2467,7 @@ input[type="range"] {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.8);
   color: var(--text-dim, var(--text));
   border-bottom: 1px solid var(--border);
 }
@@ -2350,7 +2537,7 @@ input[type="range"] {
 }
 .agent-welcome-icon svg { width: 20px; height: 20px; }
 .agent-welcome-title {
-  font-size: 13.5px;
+  font-size: calc(var(--agent-text) * 0.97);
   font-weight: 600;
   color: var(--text);
 }
@@ -2365,7 +2552,7 @@ input[type="range"] {
   background: var(--bg2);
   color: var(--text-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.87);
   padding: 4px 10px;
   border-radius: 999px;
   cursor: pointer;
@@ -2377,7 +2564,7 @@ input[type="range"] {
 }
 
 .agent-hint {
-  font-size: 11.5px;
+  font-size: calc(var(--agent-text) * 0.8);
   color: var(--text-faint);
 }
 
@@ -2403,7 +2590,7 @@ input[type="range"] {
   border-radius: 6px;
   background: transparent;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.8);
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -2420,7 +2607,7 @@ input[type="range"] {
 /* 用户消息:右对齐气泡(右下角收小,指向来源一侧);助手消息:无盒子
    裸排版——参考 b-desktop,通栏 markdown 比每条都套卡片安静得多。 */
 .agent-msg {
-  font-size: 13.5px;
+  font-size: var(--agent-text);
   line-height: 1.55;
   word-break: break-word;
 }
@@ -2445,7 +2632,7 @@ input[type="range"] {
   gap: 6px;
   min-width: 0;
   padding: 1px 0 1px 8px;
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.8);
   color: var(--text-faint);
   cursor: pointer;
   user-select: none;
@@ -2504,7 +2691,7 @@ input[type="range"] {
   overflow-y: auto;
   margin-top: 3px;
   padding: 2px 0 2px 10px;
-  font-size: 12.5px;
+  font-size: calc(var(--agent-text) * 0.83);
   line-height: 1.5;
   color: var(--text-faint);
   white-space: pre-wrap;
@@ -2533,19 +2720,30 @@ input[type="range"] {
   min-width: 0;
 }
 
-/* Agent 回复的 markdown:标题 / 列表 / 表格 / 引用 / 行内样式。 */
+/* Agent 回复的 markdown:标题 / 列表 / 表格 / 引用 / 行内样式。
+   字号在容器上取一次 --agent-text:正文、列表、段落的继承都从这里来,
+   KaTeX(em 记尺寸)也因此跟着缩放;下面只有标题 / 表格 / 代码另行派生。 */
+.agent-md {
+  font-size: var(--agent-text);
+}
 .agent-md h1, .agent-md h2, .agent-md h3,
 .agent-md h4, .agent-md h5, .agent-md h6 {
   margin: 8px 0 4px;
   line-height: 1.35;
-  font-size: 13.5px;
+  font-size: var(--agent-text);
 }
 .agent-md h1:first-child, .agent-md h2:first-child, .agent-md h3:first-child { margin-top: 0; }
-.agent-md h1 { font-size: 15px; }
+.agent-md h1 { font-size: calc(var(--agent-text) * 1.1); }
 .agent-md p { margin: 0 0 6px; }
 .agent-md p:last-child { margin-bottom: 0; }
 .agent-md ul, .agent-md ol { margin: 4px 0 6px; padding-left: 20px; }
 .agent-md li { margin: 2px 0; }
+/* 松散列表(源码里项与项之间夹着空行):每一项本来是独立段落,合并成一个
+   列表后靠间距保住这个边界,不然四段长文字会糊成一坨。 */
+.agent-md .is-loose { margin: 6px 0; }
+.agent-md .is-loose > li { margin: 6px 0; }
+.agent-md .is-loose > li:first-child { margin-top: 0; }
+.agent-md .is-loose > li:last-child { margin-bottom: 0; }
 .agent-md li > ul, .agent-md li > ol { margin: 2px 0; }
 .agent-md ul:last-child, .agent-md ol:last-child { margin-bottom: 0; }
 .agent-md blockquote {
@@ -2562,7 +2760,7 @@ input[type="range"] {
 .agent-md table {
   border-collapse: collapse;
   margin: 6px 0;
-  font-size: 12.5px;
+  font-size: calc(var(--agent-text) * 0.9);
   max-width: 100%;
   display: block;
   overflow-x: auto;
@@ -2577,14 +2775,14 @@ input[type="range"] {
   background: var(--bg3);
   border-radius: 4px;
   padding: 1px 4px;
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.87);
 }
 .agent-md pre.agent-code {
   background: var(--bg3);
   padding: 8px;
   border-radius: 8px;
   overflow-x: auto;
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.87);
   margin: 6px 0;
 }
 .agent-md pre.agent-code code { background: transparent; padding: 0; }
@@ -2598,7 +2796,7 @@ input[type="range"] {
    hover 抬起为浅底;展开后 IO 落在深底圆角卡里。 */
 .agent-tool {
   margin: 2px 0 6px;
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.8);
 }
 .agent-tool summary {
   display: flex;
@@ -2631,10 +2829,10 @@ input[type="range"] {
 .agent-tool-dot.fail { background: var(--danger); }
 .agent-tool-name {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: calc(var(--agent-text) * 0.77);
   color: var(--text);
 }
-.agent-tool-fail { font-size: 10.5px; color: var(--danger); }
+.agent-tool-fail { font-size: calc(var(--agent-text) * 0.7); color: var(--danger); }
 .agent-tool-chevron {
   flex-shrink: 0;
   width: 12px;
@@ -2658,7 +2856,7 @@ input[type="range"] {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(var(--agent-text) * 0.73);
   line-height: 1.5;
   color: var(--text-dim, var(--text));
 }
@@ -2671,7 +2869,7 @@ input[type="range"] {
 
 .agent-error {
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: calc(var(--agent-text) * 0.83);
   line-height: 1.5;
   padding: 8px 10px;
   margin: 0 0 6px;
@@ -2712,7 +2910,7 @@ input[type="range"] {
   background: transparent;
   padding: 9px 12px 2px;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--agent-text);
   line-height: 1.5;
   color: var(--text);
 }
@@ -2781,7 +2979,7 @@ input[type="range"] {
   border-radius: 0 0 0 6px;
   background: color-mix(in srgb, var(--bg1) 82%, transparent);
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.8);
   line-height: 16px;
   cursor: pointer;
 }
@@ -2797,7 +2995,7 @@ input[type="range"] {
   gap: 8px;
   overflow: hidden;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: calc(var(--agent-text) * 0.75);
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
 }
@@ -2820,7 +3018,7 @@ input[type="range"] {
   cursor: pointer;
   padding: 4px 14px;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(var(--agent-text) * 0.8);
   font-weight: 600;
   background: var(--accent-dim);
   color: var(--on-accent);

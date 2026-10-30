@@ -257,4 +257,51 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     });
     expect(meta).toEqual({ type: "meta", at: 2, title: "图中是矩阵乘法" });
   });
+
+  it("辅助会话的 meta 带上父会话文件 id、来源摘要与前缀条数", () => {
+    const meta = buildSessionMeta({
+      at: 5,
+      title: "↳ 父会话的提问",
+      model,
+      parent: "s1700000000000-0",
+      basedOn: "父会话的提问",
+      forkAt: 4,
+    });
+    expect(meta).toEqual({
+      type: "meta",
+      at: 5,
+      title: "↳ 父会话的提问",
+      model,
+      parent: "s1700000000000-0",
+      basedOn: "父会话的提问",
+      forkAt: 4,
+    });
+    // 落盘再读回:父子关系是重启恢复的唯一来源,必须原样往返。
+    const raw = serializeTranscript([meta, { type: "user", at: 6, text: "子会话的问题" }]);
+    expect(sessionMetaFromRaw(raw)).toEqual(meta);
+  });
+
+  it("主会话的 meta 不带父子字段(缺省即主会话)", () => {
+    const meta = buildSessionMeta({ at: 1, title: "主会话", model });
+    expect(meta.parent).toBeUndefined();
+    expect(meta.basedOn).toBeUndefined();
+    expect(meta.forkAt).toBeUndefined();
+  });
+
+  it("标题来源标记往返:LLM 生成过的会话恢复时不再重复生成", () => {
+    const raw =
+      '{"type":"meta","at":1,"title":"特征值","titleSource":"llm"}\n' +
+      '{"type":"user","at":2,"text":"q"}\n';
+    expect(sessionMetaFromRaw(raw)?.titleSource).toBe("llm");
+    // 脏值(手改/未来版本)按「未生成」处理,不当成 llm。
+    const dirty = '{"type":"meta","at":1,"title":"x","titleSource":"model-v2"}\n';
+    expect(sessionMetaFromRaw(dirty)?.titleSource).toBeUndefined();
+  });
+
+  it("坏 forkAt(负数/小数/字符串)被丢弃,不影响恢复", () => {
+    expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":-2}\n')?.forkAt).toBeUndefined();
+    expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":1.5}\n')?.forkAt).toBeUndefined();
+    expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":"3"}\n')?.forkAt).toBeUndefined();
+    expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":0}\n')?.forkAt).toBe(0);
+  });
 });

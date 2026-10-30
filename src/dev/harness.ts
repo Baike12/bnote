@@ -29,6 +29,7 @@ import { installEditingChords } from "@/lib/editingChords";
 import { setClipboardOverrides } from "@/lib/clipboard";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import { StudyLayout } from "@/components/StudyLayout";
+import { AgentHeader } from "@/components/AgentHeader";
 import { ProjectsLayout } from "@/components/ProjectsLayout";
 import { runCommand } from "@/commands/registry";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -185,6 +186,19 @@ declare global {
     __api: typeof api;
     /** 挂载真实学习模式组件（AgentPanel + ContentPane），返回卸载函数。 */
     __mountStudyLayout: () => () => void;
+    /** 挂载学习助手头部（纯展示组件，假会话数据），验证下拉/辅助条几何。 */
+    __mountAgentHeader: (spec: {
+      convs: {
+        key: string;
+        label: string;
+        parent: string | null;
+        basedOn: string;
+      }[];
+      activeKey?: string;
+      width?: number;
+      /** 对话字号缩放(--agent-fs,默认 1)。 */
+      fontScale?: number;
+    }) => () => void;
     /** 挂载真实项目管理视图（项目列表 / 卡片带 / 日记），返回卸载函数。
      *  contents 预置假仓库里的文件内容(vault 相对路径 → 文本)。 */
     __mountProjects: (
@@ -702,6 +716,61 @@ window.__mountStudyLayout = () => {
   document.body.appendChild(host);
   const root = createRoot(host);
   root.render(createElement(StudyLayout));
+  return () => {
+    root.unmount();
+    host.remove();
+  };
+};
+
+/**
+ * 学习助手头部(纯展示组件,不连后端):验证会话下拉 / 辅助会话条的几何与
+ * 交互。真实面板的 convs 来自后端会话,harness 造不出来,所以单独挂这一层。
+ * 交互结果写在 host 的 dataset.lastAction 上(select:<key> / back / …)。
+ */
+window.__mountAgentHeader = (spec) => {
+  // 只保留一份:重复挂载时旧的 host 会抢走同一个 id(量到的是上一份的几何)。
+  for (const stale of document.querySelectorAll("#agent-header-host")) stale.remove();
+  const host = document.createElement("div");
+  host.id = "agent-header-host";
+  host.style.cssText = `position:fixed;left:0;top:0;width:${spec.width ?? 360}px;height:100vh;z-index:9999;display:flex;background:var(--bg1)`;
+  document.body.appendChild(host);
+  const panel = document.createElement("aside");
+  // 头部几何依赖 .study-layout 上的变量(--study-head-h / --study-lead):
+  // 挂进这个类,量的才是真应用里的那套像素。
+  host.className = "study-layout";
+  panel.className = "agent-panel";
+  panel.style.flex = "1";
+  panel.style.minWidth = "0";
+  host.appendChild(panel);
+  const root = createRoot(panel);
+  const activeKey = spec.activeKey ?? spec.convs[0]?.key ?? null;
+  const active = spec.convs.find((c) => c.key === activeKey) ?? null;
+  const parent = active?.parent
+    ? (spec.convs.find((c) => c.key === active.parent) ?? null)
+    : null;
+  const record = (action: string) => {
+    host.dataset.lastAction = action;
+  };
+  const fontScale = spec.fontScale ?? 1;
+  // 字号面板量的是真像素:--agent-fs 与真面板一样写在面板根元素上。
+  panel.style.setProperty("--agent-fs", String(fontScale));
+  root.render(
+    createElement(AgentHeader, {
+      convs: spec.convs,
+      activeKey,
+      onSelect: (key: string) => record(`select:${key}`),
+      creativeMode: false,
+      onToggleCreative: () => record("creative"),
+      historyOpen: false,
+      onToggleHistory: () => record("history"),
+      onNewSession: () => record("new"),
+      parent,
+      onBack: () => record("back"),
+      fontScale,
+      onFontStep: (direction: 1 | -1) => record(`font:${direction}`),
+      onFontReset: () => record("font:reset"),
+    }),
+  );
   return () => {
     root.unmount();
     host.remove();

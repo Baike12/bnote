@@ -80,6 +80,11 @@ export interface Settings {
   /** 学习模式网页预览的页面缩放(1 = 100%,50%–300%)。 */
   studyWebZoom: number;
   /**
+   * 学习助手对话字号缩放(1 = 100%,85%–160%)。正文基准 15px × 这个倍数,
+   * 标题/代码/工具行按同一比例派生;头部「Aa」调,读数即百分比。
+   */
+  agentFontScale: number;
+  /**
    * 学习模式正文选中翻译总开关。关闭后 PDF/网页都不响应选中;
    * 开启时单词只查内置词典,两个及以上单词才调用翻译 API。
    */
@@ -109,6 +114,7 @@ export const DEFAULT_SETTINGS: Settings = {
   studyEyeCare: false,
   studyPageStep: 0.5,
   studyWebZoom: 1,
+  agentFontScale: 1,
   studyTranslate: { enabled: false },
   fontSize: 16,
   ime: {
