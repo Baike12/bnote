@@ -104,21 +104,51 @@ function renderTable(header: string[], rows: string[][]): string {
 interface ListItem {
   indent: number;
   ordered: boolean;
+  /** 标记里的数字(有序列表);`<ol start>` 取列表首项的。 */
+  number: number;
   text: string[];
   children: ListItem[];
+}
+
+/**
+ * 空行之后这个列表是否还在继续:下一个非空行是**同类型**标记(有序↔无序
+ * 换了就是另一个列表),或者是属于上一项的缩进续段。
+ */
+function listContinues(lines: string[], from: number, ordered: boolean): boolean {
+  let i = from;
+  while (i < lines.length && !lines[i].trim()) i += 1;
+  if (i >= lines.length) return false;
+  const m = ITEM_RE.exec(lines[i]);
+  if (m) return /\d/.test(m[2]) === ordered;
+  return /^\s{2,}\S/.test(lines[i]);
 }
 
 /** 收集从 `start` 开始的列表项(含缩进续行),按缩进建树,渲染成 HTML。 */
 function renderList(lines: string[], start: number): [string, number] {
   const items: ListItem[] = [];
+  /** 项之间出现过空行 = 松散列表:项与项之间要留出段落级的间距。 */
+  let loose = false;
   let i = start;
   while (i < lines.length) {
-    const m = ITEM_RE.exec(lines[i]);
+    const line = lines[i];
+    if (!line.trim()) {
+      // 松散列表:项之间夹空行仍然是同一个列表(CommonMark 的 loose list)。
+      // 漏了这条,模型常见的「1. …/空行/1. …」会变成一串各自从 1 起算的
+      // <ol>,屏幕上就是 1. 1. 1. 1.
+      if (items.length === 0 || !listContinues(lines, i + 1, items[0].ordered)) break;
+      loose = true;
+      i += 1;
+      continue;
+    }
+    const m = ITEM_RE.exec(line);
     if (m) {
-      const indent = Math.floor(m[1].replace(/\t/g, "  ").length / LIST_INDENT);
+      const ordered = /\d/.test(m[2]);
+      // 有序 ↔ 无序换了标记:另一个列表,交给外层重新开始。
+      if (items.length > 0 && ordered !== items[0].ordered) break;
       items.push({
-        indent,
-        ordered: /\d/.test(m[2]),
+        indent: Math.floor(m[1].replace(/\t/g, "  ").length / LIST_INDENT),
+        ordered,
+        number: ordered ? parseInt(m[2], 10) : 0,
         text: [m[3]],
         children: [],
       });
@@ -126,8 +156,8 @@ function renderList(lines: string[], start: number): [string, number] {
       continue;
     }
     // 缩进的续行属于上一个列表项(空行后的非列表行结束列表)。
-    if (items.length && lines[i].trim() && /^\s{2,}\S/.test(lines[i])) {
-      items[items.length - 1].text.push(lines[i].trim());
+    if (items.length && /^\s{2,}\S/.test(line)) {
+      items[items.length - 1].text.push(line.trim());
       i += 1;
       continue;
     }
@@ -152,6 +182,13 @@ function renderList(lines: string[], start: number): [string, number] {
   function renderItems(list: ListItem[]): string {
     const ordered = list[0]?.ordered ?? false;
     const tag = ordered ? "ol" : "ul";
+    // 起始编号取首项的标记数字(模型常把每项都写成「1.」:自增正好给出
+    // 1/2/3/4;真从「3.」起排的列表也照样对齐)。
+    const startAttr =
+      ordered && list[0].number > 1 ? ` start="${list[0].number}"` : "";
+    // 松散列表的每一项在源码里是独立段落,合并成一个列表后靠间距保住这个
+    // 边界(仅根层:嵌套列表的松散程度不值得再多一套记账)。
+    const looseAttr = list === root && loose ? ' class="is-loose"' : "";
     const inner = list
       .map((item) => {
         const body = renderTextLines(item.text);
@@ -159,7 +196,7 @@ function renderList(lines: string[], start: number): [string, number] {
         return `<li>${body}${nested}</li>`;
       })
       .join("");
-    return `<${tag}>${inner}</${tag}>`;
+    return `<${tag}${startAttr}${looseAttr}>${inner}</${tag}>`;
   }
   return [renderItems(root), i];
 }

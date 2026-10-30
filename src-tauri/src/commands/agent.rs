@@ -270,6 +270,51 @@ pub async fn agent_start_session(
     }))
 }
 
+/// 起标题用的系统提示:只要标题本身,别复述整句、别加符号。
+const TITLE_SYSTEM_PROMPT: &str = "你在给一段对话起标题。根据用户的第一条消息，给出一个能概括主题的短标题：不超过 14 个汉字（英文不超过 8 个词），不要引号、不要书名号、不要句末标点、不要「标题：」这类前缀，只输出标题本身。";
+
+/// 给会话起标题:用这条会话**自己的**第一句话,让模型起一个短标题。
+///
+/// 与对话共用模型配置(恢复的会话传它自己的快照);只发一次短请求,不注册
+/// 会话、不进任何会话历史。失败时调用方保留本地截断标题。
+#[tauri::command]
+pub async fn agent_generate_title(
+    state: State<'_, AppState>,
+    text: String,
+    model: Option<AgentModelChoice>,
+) -> CmdResult<String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("BAD_ARGS: text".into());
+    }
+    let mut cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    if let Some(choice) = model {
+        choice.apply(&mut cfg);
+    }
+    if cfg.api_key.is_empty() {
+        return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
+    }
+    let provider = Provider::new(
+        &cfg.provider,
+        &cfg.base_url,
+        &cfg.api_key,
+        &cfg.model,
+        cfg.max_tokens,
+    );
+    let items = vec![crate::agent::types::ChatItem::user_text(&text)];
+    let collected = Mutex::new(String::new());
+    provider
+        .stream_turn(TITLE_SYSTEM_PROMPT, &items, &[], &|event| {
+            if let crate::agent::types::AgentEvent::TextDelta { text } = event {
+                if let Ok(mut buf) = collected.lock() {
+                    buf.push_str(&text);
+                }
+            }
+        })
+        .await?;
+    collected.into_inner().map_err(|e| e.to_string())
+}
+
 /// 设置页与输入框 `/` 补全用的技能清单(每次即时发现,反映磁盘现状)。
 #[tauri::command]
 pub async fn agent_list_skills(state: State<'_, AppState>) -> CmdResult<Vec<crate::agent::skills::SkillInfo>> {

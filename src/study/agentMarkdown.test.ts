@@ -62,6 +62,47 @@ describe("renderAgentMarkdown", () => {
     expect(renderAgentMarkdown("- **重点**项")).toContain("<li><strong>重点</strong>项</li>");
   });
 
+  it("空行分隔的有序列表是一个列表,编号连续(回归:曾经拆成各自从 1 起的 <ol>,屏幕上是 1. 1. 1. 1.)", () => {
+    // 模型的典型输出:每项都写成「1.」,项与项之间夹空行。
+    const html = renderAgentMarkdown("1. 甲\n\n1. 乙\n\n1. 丙\n\n1. 丁");
+    expect(html.match(/<ol/g)).toHaveLength(1);
+    expect(html).toBe('<ol class="is-loose"><li>甲</li><li>乙</li><li>丙</li><li>丁</li></ol>');
+    // 显式编号同理:连续编号由浏览器自增,源码里的 2./3. 不另开列表
+    expect(renderAgentMarkdown("1. 甲\n\n2. 乙\n\n3. 丙").match(/<ol/g)).toHaveLength(1);
+  });
+
+  it("空行分隔的无序列表同属一个 <ul>", () => {
+    expect(renderAgentMarkdown("- 甲\n\n- 乙")).toBe('<ul class="is-loose"><li>甲</li><li>乙</li></ul>');
+  });
+
+  it("紧密列表不带 is-loose(项之间没有空行就不用加间距)", () => {
+    expect(renderAgentMarkdown("- 甲\n- 乙")).toBe("<ul><li>甲</li><li>乙</li></ul>");
+  });
+
+  it("起始编号取首项(真从 3. 起的列表上屏也从 3 开始)", () => {
+    expect(renderAgentMarkdown("3. 丙\n4. 丁")).toBe('<ol start="3"><li>丙</li><li>丁</li></ol>');
+    // 从 1. 起的列表不带 start(不和浏览器默认编号重复声明)
+    expect(renderAgentMarkdown("1. 甲")).toBe("<ol><li>甲</li></ol>");
+  });
+
+  it("空行后换了标记类型就是另一个列表", () => {
+    expect(renderAgentMarkdown("1. 有序\n\n- 无序")).toBe(
+      "<ol><li>有序</li></ol><ul><li>无序</li></ul>",
+    );
+  });
+
+  it("松散列表项的续段(缩进)仍属于该项", () => {
+    expect(renderAgentMarkdown("1. 第一段\n\n   第二段")).toBe(
+      '<ol class="is-loose"><li>第一段<br>第二段</li></ol>',
+    );
+  });
+
+  it("列表后的普通段落不被吞进最后一项", () => {
+    expect(renderAgentMarkdown("- 甲\n\n这是一段正文。")).toBe(
+      "<ul><li>甲</li></ul><p>这是一段正文。</p>",
+    );
+  });
+
   it("围栏代码块整体转义,带语言类名", () => {
     const html = renderAgentMarkdown('```ts\nconst a = "<b>";\n```');
     expect(html).toContain('<pre class="agent-code language-ts"><code>');

@@ -57,6 +57,7 @@ import {
 } from "@/study/layoutModel";
 import { normalizePageStep } from "@/study/reading";
 import { normalizeWebZoom } from "@/study/webZoom";
+import { normalizeAgentFont } from "@/study/agentFont";
 import { normalizeDailyWidth, normalizeSideWidth } from "@/projects/layoutModel";
 import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
 
@@ -144,6 +145,8 @@ export default function App() {
       );
       // 网页缩放同理:旧配置没有这一项 → 100%,手改越界的夹回 50%–300%。
       settings.studyWebZoom = normalizeWebZoom(settings.studyWebZoom);
+      // 助手对话字号同理:没有这一项 → 100%,坏值夹回 85%–160%。
+      settings.agentFontScale = normalizeAgentFont(settings.agentFontScale);
       useAppStore.getState().replaceSettings(settings);
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);

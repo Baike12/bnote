@@ -470,6 +470,13 @@ pub struct SessionMeta {
     /// 会话标题:元数据行的 title(新记录),没有就取第一条用户消息,
     /// 再退回助手首句/「(空会话)」。
     pub title: String,
+    /// 分叉来源会话的文件 id(主会话没有)。重启恢复靠它把辅助会话挂回
+    /// 主会话——否则只恢复「最近更新的一条」,主会话就没入口了。
+    pub parent: Option<String>,
+    /// 辅助会话的来源消息摘要。
+    pub based_on: Option<String>,
+    /// 分叉时复制过来的前缀条数(自有消息从这一条起算)。
+    pub fork_at: Option<u32>,
     pub created_at: u64,
     pub updated_at: u64,
     pub bytes: u64,
@@ -522,19 +529,35 @@ fn prefix_u64_field(line: &str, key: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// 会话元数据行(`{"type":"meta","title":...}`)的标题。
-fn meta_title(line: &str) -> Option<String> {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-        if v.get("type").and_then(|x| x.as_str()) != Some("meta") {
-            return None;
-        }
-        return v
-            .get("title")
+/// 会话元数据行(`{"type":"meta","title":...}`)里列表需要的字段。
+#[derive(Default, Clone)]
+struct MetaLine {
+    title: String,
+    parent: Option<String>,
+    based_on: Option<String>,
+    fork_at: Option<u32>,
+}
+
+fn meta_line(line: &str) -> Option<MetaLine> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type").and_then(|x| x.as_str()) != Some("meta") {
+        return None;
+    }
+    let text = |key: &str| {
+        v.get(key)
             .and_then(|x| x.as_str())
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-    }
-    None
+            .filter(|s| !s.is_empty())
+    };
+    Some(MetaLine {
+        title: text("title").unwrap_or_default(),
+        parent: text("parent"),
+        based_on: text("basedOn"),
+        fork_at: v
+            .get("forkAt")
+            .and_then(|x| x.as_u64())
+            .map(|n| n.min(u32::MAX as u64) as u32),
+    })
 }
 
 
@@ -567,13 +590,25 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
     }
     let (head, tail) = read_head_tail(path, 16 * 1024, 8 * 1024)?;
     let mut first_at = 0u64;
-    let mut meta = String::new();
+    let mut meta = MetaLine::default();
     let mut title = String::new();
     let mut first_assistant = String::new();
     for line in head.lines() {
-        if meta.is_empty() {
-            if let Some(t) = meta_title(line) {
-                meta = t;
+        if meta.title.is_empty() {
+            if let Some(m) = meta_line(line) {
+                // 标题为空时继续扫下一行(坏记录),父子字段仍保留。
+                if meta.parent.is_none() {
+                    meta.parent = m.parent.clone();
+                }
+                if meta.based_on.is_none() {
+                    meta.based_on = m.based_on.clone();
+                }
+                if meta.fork_at.is_none() {
+                    meta.fork_at = m.fork_at;
+                }
+                if !m.title.is_empty() {
+                    meta.title = m.title;
+                }
                 continue;
             }
         }
@@ -602,8 +637,8 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
     // 标题优先用元数据行(会话创建时写的首条用户消息),其次用户首句,
     // 再退回助手首句。元数据行很小、永远在文件最前面,不受首条大图消息
     // 被头部窗口截断的影响。
-    let title = if !meta.is_empty() {
-        meta
+    let title = if !meta.title.is_empty() {
+        meta.title.clone()
     } else if title.is_empty() {
         first_assistant
     } else {
@@ -619,6 +654,9 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
     Some(SessionMeta {
         id: path.file_stem()?.to_string_lossy().to_string(),
         title: if title.is_empty() { "(空会话)".to_string() } else { title },
+        parent: meta.parent,
+        based_on: meta.based_on,
+        fork_at: meta.fork_at,
         created_at: first_at,
         updated_at: updated.max(last_at),
         bytes,
@@ -655,6 +693,83 @@ pub async fn study_sessions_list(
         }
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// 把记录原文第一行的元数据标题换成新标题(模型生成标题后落盘)。
+///
+/// 元数据行必须留在第一行:列表侧只读文件头部 16KB,标题挪到后面就看不
+/// 见了。首行不是 meta 的旧记录(没有元数据行)则补一行到最前面。
+fn retitle_transcript(raw: &str, title: &str) -> String {
+    let (first, rest) = match raw.split_once('\n') {
+        Some((head, tail)) => (head, tail),
+        None => (raw, ""),
+    };
+    let existing = serde_json::from_str::<serde_json::Value>(first.trim())
+        .ok()
+        .filter(|v| v.get("type").and_then(|x| x.as_str()) == Some("meta"));
+    let (line, body) = match existing {
+        Some(mut v) => {
+            v["title"] = serde_json::Value::String(title.to_string());
+            v["titleSource"] = serde_json::Value::String("llm".to_string());
+            (v, rest)
+        }
+        // 旧记录没有元数据行:新 meta 放最前,原文整体接在后面。
+        None => (
+            serde_json::json!({"type": "meta", "at": 0, "title": title, "titleSource": "llm"}),
+            raw,
+        ),
+    };
+    let mut out = String::new();
+    out.push_str(&line.to_string());
+    out.push('\n');
+    out.push_str(body);
+    out
+}
+
+/// 把一条会话的标题写回记录文件(模型生成标题后调用)。
+///
+/// 只改第一行元数据,其余字节原样保留;写临时文件再 rename,写一半崩溃
+/// 不会留下截断的记录。
+#[tauri::command]
+pub async fn study_session_set_title(
+    state: State<'_, AppState>,
+    rel_dir: String,
+    id: String,
+    title: String,
+) -> CmdResult<()> {
+    let vault = require_vault(&state)?;
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("BAD_ARGS: title".into());
+    }
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return Err(format!("INVALID_ID: {}", id));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let parts: Vec<&str> = rel_dir.split('/').filter(|p| !p.is_empty()).collect();
+        // 学习材料与会话统一落在 .bnote 下;creative 的会话进不了列表,但
+        // 标题照样写回文件,将来支持时数据是对的。
+        let allowed_root =
+            parts.first() == Some(&MATERIALS_DIR) || parts.first() == Some(&"creative");
+        if !allowed_root || parts.iter().any(|p| *p == ".." || *p == ".") {
+            return Err(format!("INVALID_DIR: {}", rel_dir));
+        }
+        let dir = vault.join(".bnote").join(&rel_dir).join("sessions");
+        ensure_within(&vault, &dir)?;
+        let path = dir.join(format!("{}.jsonl", id));
+        ensure_within(&vault, &path)?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("IO: {}", e))?;
+        let next = retitle_transcript(&raw, &title);
+        if next == raw {
+            return Ok(());
+        }
+        let tmp = dir.join(format!(".{}.jsonl.tmp", id));
+        std::fs::write(&tmp, next).map_err(|e| format!("IO: {}", e))?;
+        std::fs::rename(&tmp, &path).map_err(|e| format!("IO: {}", e))?;
+        Ok(())
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
@@ -841,5 +956,60 @@ mod tests {
         let empty = tmp_session("empty", "");
         assert!(summarize_session(&empty).is_none());
         std::fs::remove_dir_all(empty.parent().unwrap()).ok();
+    }
+
+    /// 父子关系从元数据行读出来:重启恢复靠它把辅助会话挂回主会话。
+    #[test]
+    fn 元数据行带出父子关系与分叉前缀() {
+        let body = concat!(
+            r#"{"type":"meta","at":100,"title":"↳ 父会话的提问","parent":"s1-0","basedOn":"父会话的提问","forkAt":4}"#,
+            "\n",
+            r#"{"type":"user","at":101,"text":"子会话的问题"}"#,
+            "\n"
+        );
+        let path = tmp_session("aux", body);
+        let meta = summarize_session(&path).unwrap();
+        assert_eq!(meta.parent.as_deref(), Some("s1-0"));
+        assert_eq!(meta.based_on.as_deref(), Some("父会话的提问"));
+        assert_eq!(meta.fork_at, Some(4));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+
+        // 主会话没有这三项 → None(前端据此判定为根)。
+        let main = tmp_session("main", "{\"type\":\"meta\",\"at\":1,\"title\":\"主会话\"}\n");
+        let meta = summarize_session(&main).unwrap();
+        assert_eq!(meta.parent, None);
+        assert_eq!(meta.fork_at, None);
+        std::fs::remove_dir_all(main.parent().unwrap()).ok();
+    }
+
+    /// 模型生成的标题只改第一行元数据,正文与其余元数据字段原样保留。
+    #[test]
+    fn 改标题只动第一行元数据() {
+        let raw = concat!(
+            r#"{"type":"meta","at":1,"title":"旧标题","parent":"s1-0","forkAt":2}"#,
+            "\n",
+            r#"{"type":"user","at":2,"text":"问题"}"#,
+            "\n"
+        );
+        let next = retitle_transcript(raw, "特征值与矩阵对角化");
+        let lines: Vec<&str> = next.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let meta: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(meta["title"], "特征值与矩阵对角化");
+        assert_eq!(meta["titleSource"], "llm");
+        // 父链与分叉点不因改标题丢失。
+        assert_eq!(meta["parent"], "s1-0");
+        assert_eq!(meta["forkAt"], 2);
+        assert_eq!(lines[1], r#"{"type":"user","at":2,"text":"问题"}"#);
+
+        // 旧记录(没有元数据行):补一行到最前面,原文一字不改。
+        let legacy = "{\"type\":\"user\",\"at\":2,\"text\":\"问题\"}\n";
+        let next = retitle_transcript(legacy, "新标题");
+        let mut lines = next.lines();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines.next().unwrap()).unwrap()["title"],
+            "新标题"
+        );
+        assert_eq!(lines.next().unwrap(), legacy.trim_end());
     }
 }

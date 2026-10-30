@@ -59,6 +59,20 @@ export interface TranscriptMetaLine {
   /** 首条用户消息(单行、截断);没有就留空,由展示侧兜底。 */
   title?: string;
   model?: SessionModelConfig;
+  /**
+   * 分叉来源会话的记录文件 id(主会话没有这一项)。重启恢复靠它把辅助
+   * 会话挂回主会话——只存内存里的 convKey 活不过一次重启。
+   */
+  parent?: string;
+  /** 辅助会话的来源消息摘要(头部辅助条与切换列表的第二行)。 */
+  basedOn?: string;
+  /**
+   * 分叉时复制过来的前缀条数:`entries[forkAt]` 才是这条会话自己的第一条
+   * 消息(生成自己的标题时要从这里起算,不能拿父会话的提问顶替)。
+   */
+  forkAt?: number;
+  /** 标题来源:llm = 模型生成过;缺省按首条消息截断(旧记录同此)。 */
+  titleSource?: "llm" | "first-message";
 }
 
 /** 会话记录里可能出现的一行(元数据行不参与对话还原)。 */
@@ -130,6 +144,16 @@ export function sessionMetaFromRaw(raw: string | null): TranscriptMetaLine | nul
       at: typeof v.at === "number" && Number.isFinite(v.at) ? v.at : 0,
       title: typeof v.title === "string" && v.title.trim() ? v.title : undefined,
       model: isModelConfig(v.model) ? v.model : undefined,
+      parent: typeof v.parent === "string" && v.parent ? v.parent : undefined,
+      basedOn: typeof v.basedOn === "string" && v.basedOn ? v.basedOn : undefined,
+      forkAt:
+        typeof v.forkAt === "number" && Number.isInteger(v.forkAt) && v.forkAt >= 0
+          ? v.forkAt
+          : undefined,
+      titleSource:
+        v.titleSource === "llm" || v.titleSource === "first-message"
+          ? v.titleSource
+          : undefined,
     };
   }
   return null;
@@ -140,9 +164,16 @@ export function buildSessionMeta(input: {
   at: number;
   title: string;
   model: SessionModelConfig | null;
+  /** 分叉:来源会话的文件 id(主会话不传)。 */
+  parent?: string | null;
+  basedOn?: string;
+  forkAt?: number;
 }): TranscriptMetaLine {
   const meta: TranscriptMetaLine = { type: "meta", at: input.at, title: input.title };
   if (input.model) meta.model = input.model;
+  if (input.parent) meta.parent = input.parent;
+  if (input.basedOn) meta.basedOn = input.basedOn;
+  if (input.forkAt) meta.forkAt = input.forkAt;
   return meta;
 }
 

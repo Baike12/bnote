@@ -329,6 +329,23 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             arg_str(args, "relDir")?
         )
         .await),
+        "study_session_set_title" => json_ok!(materials::study_session_set_title(
+            app.state(),
+            arg_str(args, "relDir")?,
+            arg_str(args, "id")?,
+            arg_str(args, "title")?
+        )
+        .await),
+        "agent_generate_title" => {
+            let model: Option<agent::AgentModelChoice> = match args.get("model") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: model: {}", e))?,
+                ),
+            };
+            json_ok!(agent::agent_generate_title(app.state(), arg_str(args, "text")?, model).await)
+        }
         "agent_list_skills" => json_ok!(agent::agent_list_skills(app.state()).await),
         "bblog_sections" => json_ok!(crate::commands::bblog::bblog_sections(
             arg_str(args, "server")?
