@@ -14,6 +14,12 @@
 //! 另加**硬锁**:CGEventTap 吞掉 ⌘Tab / ⌘Space 等系统级快捷键——这是唯一能让
 //! 「按了没反应」的手段,需要辅助功能权限;没权限就只做上面三层。
 //!
+//! 硬锁同时管鼠标:Dock 自动隐藏时,悬停屏幕底边会把 Dock 唤到全屏窗口**之上**
+//! (窗口层级压不住,level 25 也没用),点 Dock 图标照样能切走。所以 tap 也挂在
+//! 鼠标按下上:按下点落在 Dock 可见条带里,整段手势(Down/Dragged/Up)直接吞掉。
+//! 条带由独立线程轮询辅助功能(AX)拿 Dock 的真实矩形——AX 是同步 IPC,放进 tap
+//! 回调会把回调拖超时、被系统关掉 tap;回调里只做一次内存读和坐标比较。
+//!
 //! 复原纪律:进锁前快照 level / collectionBehavior / styleMask / 内框尺寸 / 位置,
 //! 退锁时逐项还原。漏一项就再也回不到正常窗口(别的应用会被 bnote 一直压住,
 //! 而且用户看不出来),所以快照与还原写在同一个模块、同一条路径上。
@@ -147,12 +153,16 @@ pub fn install_focus_guard(app: &AppHandle) {
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ffi::{c_char, c_void};
-    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
     use std::time::Duration;
 
+    use core_foundation::base::{CFRelease, TCFType};
+    use core_foundation::string::CFString;
     use objc2::{class, msg_send};
     use objc2::runtime::AnyObject;
     use objc2_app_kit::{NSApplication, NSStatusWindowLevel, NSWindowStyleMask};
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_core_graphics::CGEventFlags;
     use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewWindow};
 
@@ -190,6 +200,221 @@ mod mac {
             let _: () = msg_send![dict, setObject: value, forKey: key];
             let _ = AXIsProcessTrustedWithOptions(dict as *const c_void);
         }
+    }
+
+    // ---- Dock 条带(硬锁挡住 Dock 点击) --------------------------------------
+    //
+    // Dock 的可见区域只能从辅助功能树拿:WindowServer 里 Dock 的窗口是整屏大小
+    // (实测 bounds = 2560×1440),窗口列表分不出那一条;AX 里 Dock 的
+    // AXList 子元素就是条带本身(隐藏时 y = 屏幕高,整条在屏外)。
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> *const c_void;
+        fn AXUIElementCopyAttributeValue(
+            element: *const c_void,
+            attribute: *const c_void,
+            value: *mut *const c_void,
+        ) -> i32;
+        fn AXValueGetValue(value: *const c_void, value_type: u32, out: *mut c_void) -> bool;
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+    }
+
+    /// kAXValueCGPointType / kAXValueCGSizeType(AXValueConstants.h)。
+    const AX_VALUE_CG_POINT: u32 = 1;
+    const AX_VALUE_CG_SIZE: u32 = 2;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGGetActiveDisplayList(
+            max_displays: u32,
+            displays: *mut u32,
+            count: *mut u32,
+        ) -> i32;
+        fn CGDisplayBounds(display: u32) -> CGRect;
+    }
+
+    /// Dock 可见条带(全局屏幕坐标,左上角原点):[x, y, w, h]。
+    /// None = Dock 整条在屏幕外(自动隐藏中),此时不拦任何点击。
+    static DOCK_BAND: Mutex<Option<[f64; 4]>> = Mutex::new(None);
+    /// 轮询线程只起一次。
+    static DOCK_WATCHED: AtomicBool = AtomicBool::new(false);
+    /// Dock 进程号;Dock 重启后 AX 查询会失败,清 0 重找。
+    static DOCK_PID: AtomicI32 = AtomicI32::new(0);
+    /// 这一次鼠标手势的按下点落在 Dock 上:后续 Dragged/Up 一起吞,
+    /// 不留下半段手势给别的窗口。
+    static DOCK_GESTURE: AtomicBool = AtomicBool::new(false);
+    /// 见过 Dock 整条在屏幕外 ⇒ 它是自动隐藏的,唤出后会盖到窗口上面,必须拦。
+    /// 常驻 Dock 永远在屏上,而锁态窗口(level 25)本来就盖住它,拦了只会
+    /// 把应用自己底部那条区域点不动——所以不拦。
+    static DOCK_AUTOHIDE: AtomicBool = AtomicBool::new(false);
+
+    /// 条带外扩几像素:轮询有延迟,Dock 唤出动画期间条带在上移。
+    const DOCK_PAD: f64 = 6.0;
+
+    unsafe fn ns_string(text: &str) -> *mut AnyObject {
+        let c = std::ffi::CString::new(text).unwrap_or_default();
+        let s: *mut AnyObject = msg_send![class!(NSString), alloc];
+        msg_send![s, initWithUTF8String: c.as_ptr()]
+    }
+
+    /// Dock 的 pid。NSRunningApplication 是 AppKit 的类,这里只用类方法,
+    /// 不为它引入新的 objc2-app-kit feature。
+    fn dock_pid() -> Option<i32> {
+        let cached = DOCK_PID.load(Ordering::Relaxed);
+        if cached > 0 {
+            return Some(cached);
+        }
+        unsafe {
+            let bundle = ns_string("com.apple.dock");
+            let apps: *mut AnyObject = msg_send![
+                class!(NSRunningApplication),
+                runningApplicationsWithBundleIdentifier: bundle
+            ];
+            let _: () = msg_send![bundle, release];
+            if apps.is_null() {
+                return None;
+            }
+            let app: *mut AnyObject = msg_send![apps, firstObject];
+            if app.is_null() {
+                return None;
+            }
+            let pid: i32 = msg_send![app, processIdentifier];
+            if pid <= 0 {
+                return None;
+            }
+            DOCK_PID.store(pid, Ordering::Relaxed);
+            Some(pid)
+        }
+    }
+
+    /// 读一个 AX 属性(Copy 规则:+1,调用方负责 CFRelease)。
+    unsafe fn ax_attr(element: *const c_void, name: &str) -> Option<*const c_void> {
+        let attr = CFString::new(name);
+        let mut value: *const c_void = std::ptr::null();
+        let err = AXUIElementCopyAttributeValue(
+            element,
+            attr.as_concrete_TypeRef().cast(),
+            &mut value,
+        );
+        if err == 0 && !value.is_null() {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    unsafe fn ax_point(element: *const c_void, name: &str) -> Option<CGPoint> {
+        let value = ax_attr(element, name)?;
+        let mut out = CGPoint { x: 0.0, y: 0.0 };
+        let ok = AXValueGetValue(value, AX_VALUE_CG_POINT, (&mut out as *mut CGPoint).cast());
+        CFRelease(value);
+        ok.then_some(out)
+    }
+
+    unsafe fn ax_size(element: *const c_void, name: &str) -> Option<CGSize> {
+        let value = ax_attr(element, name)?;
+        let mut out = CGSize { width: 0.0, height: 0.0 };
+        let ok = AXValueGetValue(value, AX_VALUE_CG_SIZE, (&mut out as *mut CGSize).cast());
+        CFRelease(value);
+        ok.then_some(out)
+    }
+
+    /// Dock 的可见条带。隐藏时 AXList 在屏幕底边之下(y == 屏幕高),原样返回,
+    /// 由 `on_screen` 判掉。
+    fn dock_strip() -> Option<[f64; 4]> {
+        let pid = dock_pid()?;
+        let strip = unsafe {
+            let app = AXUIElementCreateApplication(pid);
+            if app.is_null() {
+                return None;
+            }
+            let mut out = None;
+            if let Some(children) = ax_attr(app, "AXChildren") {
+                if CFArrayGetCount(children) > 0 {
+                    // children[0] 是 AXList:整条 Dock(不含菜单栏里的东西)。
+                    let list = CFArrayGetValueAtIndex(children, 0);
+                    if !list.is_null() {
+                        if let (Some(pos), Some(size)) =
+                            (ax_point(list, "AXPosition"), ax_size(list, "AXSize"))
+                        {
+                            if size.width > 1.0 && size.height > 1.0 {
+                                out = Some([pos.x, pos.y, size.width, size.height]);
+                            }
+                        }
+                    }
+                }
+                CFRelease(children);
+            }
+            CFRelease(app);
+            out
+        };
+        if strip.is_none() {
+            // 查不到大概率是 Dock 重启换了 pid:下次重新找。
+            DOCK_PID.store(0, Ordering::Relaxed);
+        }
+        strip
+    }
+
+    /// 条带是否和任意一块在用的屏幕有交集。隐藏状态整条在屏幕外,交集为 0。
+    fn on_screen(band: [f64; 4]) -> bool {
+        let [x, y, w, h] = band;
+        let mut displays = [0u32; 8];
+        let mut count = 0u32;
+        let ok = unsafe {
+            CGGetActiveDisplayList(displays.len() as u32, displays.as_mut_ptr(), &mut count)
+        } == 0;
+        if !ok {
+            return false;
+        }
+        displays.iter().take(count as usize).any(|&id| {
+            let b = unsafe { CGDisplayBounds(id) };
+            (x + w).min(b.origin.x + b.size.width) - x.max(b.origin.x) > 0.0
+                && (y + h).min(b.origin.y + b.size.height) - y.max(b.origin.y) > 0.0
+        })
+    }
+
+    fn in_dock_band(point: CGPoint) -> bool {
+        let band = *DOCK_BAND.lock().unwrap_or_else(|e| e.into_inner());
+        let Some([x, y, w, h]) = band else {
+            return false;
+        };
+        point.x >= x - DOCK_PAD
+            && point.x <= x + w + DOCK_PAD
+            && point.y >= y - DOCK_PAD
+            && point.y <= y + h + DOCK_PAD
+    }
+
+    /// 轮询 Dock 条带。只在硬锁真正生效(番茄钟在跑)时查 AX;平时把条带写成
+    /// None,不做任何拦截。Dock 可见时加快到 ~60ms:唤出动画里条带在上移,
+    /// 轮询太慢会漏掉动画早段的点击。
+    fn ensure_dock_watch() {
+        if DOCK_WATCHED.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let _ = std::thread::Builder::new()
+            .name("bnote-dock-watch".into())
+            .spawn(|| loop {
+                let strip = if HARD_LOCK.load(Ordering::Relaxed)
+                    && HARD_ACTIVE.load(Ordering::Relaxed)
+                {
+                    dock_strip()
+                } else {
+                    None
+                };
+                if let Some(b) = strip {
+                    if !on_screen(b) {
+                        DOCK_AUTOHIDE.store(true, Ordering::Relaxed);
+                    }
+                }
+                let band = strip.filter(|b| {
+                    on_screen(*b) && DOCK_AUTOHIDE.load(Ordering::Relaxed)
+                });
+                let visible = band.is_some();
+                *DOCK_BAND.lock().unwrap_or_else(|e| e.into_inner()) = band;
+                std::thread::sleep(Duration::from_millis(if visible { 60 } else { 250 }));
+            });
     }
 
     /// NSWindow 的原生层级(NSWindowLevel)。
@@ -445,7 +670,38 @@ mod mac {
         if !HARD_LOCK.load(Ordering::Relaxed) || !HARD_ACTIVE.load(Ordering::Relaxed) {
             return event.as_ptr();
         }
-        if event_type != CGEventType::KeyDown && event_type != CGEventType::KeyUp {
+        let et = event_type.0;
+        let keyboard = et == CGEventType::KeyDown.0 || et == CGEventType::KeyUp.0;
+        if !keyboard {
+            // 鼠标:只认按下/抬起/拖动,其余(滚轮、移动)原样放行。
+            let down = et == CGEventType::LeftMouseDown.0
+                || et == CGEventType::RightMouseDown.0
+                || et == CGEventType::OtherMouseDown.0;
+            let up = et == CGEventType::LeftMouseUp.0
+                || et == CGEventType::RightMouseUp.0
+                || et == CGEventType::OtherMouseUp.0;
+            let dragged = et == CGEventType::LeftMouseDragged.0
+                || et == CGEventType::RightMouseDragged.0
+                || et == CGEventType::OtherMouseDragged.0;
+            if !(down || up || dragged) {
+                return event.as_ptr();
+            }
+            let event_ref = unsafe { event.as_ref() };
+            if down {
+                let hit = in_dock_band(CGEvent::location(Some(event_ref)));
+                DOCK_GESTURE.store(hit, Ordering::Relaxed);
+                if hit {
+                    return std::ptr::null_mut();
+                }
+                return event.as_ptr();
+            }
+            // 按下点落在 Dock 上:整段手势都吞。抬手时复位。
+            if DOCK_GESTURE.load(Ordering::Relaxed) {
+                if up {
+                    DOCK_GESTURE.store(false, Ordering::Relaxed);
+                }
+                return std::ptr::null_mut();
+            }
             return event.as_ptr();
         }
         let event_ref = unsafe { event.as_ref() };
@@ -464,6 +720,8 @@ mod mac {
         if ptr.is_null() {
             return;
         }
+        // tap 关/开之间可能漏掉抬手:手势状态不能跨段残留,否则下一次拖动被吞。
+        DOCK_GESTURE.store(false, Ordering::Relaxed);
         unsafe {
             let port = &*(ptr as *const objc2_core_foundation::CFMachPort);
             objc2_core_graphics::CGEvent::tap_enable(port, enabled);
@@ -507,6 +765,7 @@ mod mac {
             );
         }
         ensure_tap()?;
+        ensure_dock_watch();
         set_tap_enabled(true);
         Ok(())
     }
@@ -522,10 +781,20 @@ mod mac {
             return Ok(());
         }
 
-        // 只关心按键按下/抬起。
+        // 按键 + 鼠标:键盘用来吞系统级快捷键,Dock 的鼠标手势用来挡点击切换。
+        // 不挂鼠标移动:每条移动都进回调没有意义。
         let mask: CGEventMask = (1u64 << CGEventType::KeyDown.0)
             | (1u64 << CGEventType::KeyUp.0)
-            | (1u64 << CGEventType::FlagsChanged.0);
+            | (1u64 << CGEventType::FlagsChanged.0)
+            | (1u64 << CGEventType::LeftMouseDown.0)
+            | (1u64 << CGEventType::LeftMouseUp.0)
+            | (1u64 << CGEventType::LeftMouseDragged.0)
+            | (1u64 << CGEventType::RightMouseDown.0)
+            | (1u64 << CGEventType::RightMouseUp.0)
+            | (1u64 << CGEventType::RightMouseDragged.0)
+            | (1u64 << CGEventType::OtherMouseDown.0)
+            | (1u64 << CGEventType::OtherMouseUp.0)
+            | (1u64 << CGEventType::OtherMouseDragged.0);
 
         let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
         std::thread::Builder::new()
