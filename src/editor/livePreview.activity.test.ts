@@ -326,13 +326,14 @@ describe("选区触发器:同行内跨标记槽移动必须重建", () => {
 });
 
 /**
- * 公式块「编辑态实时预览」的块级装饰规则。块级 widget 的规范锚点是行首：
- * 锚在行尾（换行符之前）CM6 会把该行劈成两行，DOM 里多出一个不属于任何
- * 文档行的幽灵空行（预览与下文之间的大间隙）。blockDecorationsField 是
- * 纯 RangeSet，node 环境即可断言锚点位置。
+ * 公式块「编辑态实时预览」的块级装饰规则。锚点是本块闭合行的**行尾**：
+ * 锚到下一行行首时，若下一行正好是另一个 display 公式块，它的整块替换从
+ * 行首开始，落在替换范围内的块 widget 会被 CM 丢弃（预览凭空消失），而且
+ * 行首锚点还会多渲染一个空 cm-line。blockDecorationsField 是纯 RangeSet，
+ * node 环境即可断言锚点位置。
  */
 describe("数学预览的块级锚点（blockDecorationsField）", () => {
-  /** "a\n$$\nx = 1\n$$\nb\n":region 2..13(行 2-4),下一行行首 14。 */
+  /** "a\n$$\nx = 1\n$$\nb\n":region 2..13(行 2-4),区域末行行尾 13。 */
   function blockState(doc: string, pos: number) {
     const created = EditorState.create({ doc, extensions: [blockDecorationsField] });
     return created.update({ selection: EditorSelection.cursor(pos) }).state;
@@ -348,12 +349,27 @@ describe("数学预览的块级锚点（blockDecorationsField）", () => {
     return out;
   }
 
-  it("预览 widget 锚在下一行行首，不是区域末行行尾", () => {
+  it("预览 widget 锚在区域末行行尾，不是下一行行首", () => {
     const state = blockState("a\n$$\nx = 1\n$$\nb\n", 6);
     const previews = blockPoints(state).filter((p) => p.widget instanceof MathPreviewWidget);
-    expect(previews).toEqual([{ from: 14, to: 14, widget: expect.any(MathPreviewWidget) }]);
+    expect(previews).toEqual([{ from: 13, to: 13, widget: expect.any(MathPreviewWidget) }]);
     // 编辑态：整块不折叠成渲染 widget。
     expect(blockPoints(state).some((p) => p.widget instanceof MathWidget)).toBe(false);
+  });
+
+  it("紧挨着另一个公式块时预览仍然存在（不落进它的整块替换范围）", () => {
+    // "a\n$$\nx = 1\n$$\n$$\ny = 2\n$$\n"：第二个块 14..25 被整块替换，
+    // 预览若锚在 14 会被 CM 丢弃——这正是「即时渲染没了」的根因。
+    const doc = "a\n$$\nx = 1\n$$\n$$\ny = 2\n$$\n";
+    const state = blockState(doc, 6);
+    const points = blockPoints(state);
+    const previews = points.filter((p) => p.widget instanceof MathPreviewWidget);
+    expect(previews).toEqual([{ from: 13, to: 13, widget: expect.any(MathPreviewWidget) }]);
+    const nextReplace = points.find(
+      (p) => p.widget instanceof MathWidget && p.from === 14,
+    );
+    expect(nextReplace).toBeDefined();
+    expect(previews[0].from).toBeLessThan(nextReplace!.from);
   });
 
   it("空内容不出预览：插入公式块后下方不凭空多出空白", () => {

@@ -311,11 +311,15 @@ function buildBlockDecos(
       // 空内容没有可预览的东西，不占位——插入公式块后下方立刻多出一段空白。
       if (hooks.mathPreview !== false && region.content.trim()) {
         const anchorLine = doc.lineAt(Math.max(region.from, region.to - 1));
-        // 块级 widget 必须锚在行首：锚在 anchorLine.to（换行符之前）会把该行
-        // 劈成两行，DOM 里多出一个不属于任何文档行的幽灵空行（预览与下文
-        // 之间的大间隙，j/k 的像素落点也随之多一步）。
-        const anchor =
-          anchorLine.to < doc.length ? doc.line(anchorLine.number + 1).from : doc.length;
+        // 锚在本块闭合行的**行尾**（区域末行行尾，文档末尾即 doc.length）。
+        // 锚到下一行行首有两个问题(浏览器实测,@codemirror/view 6.43):
+        //   1. 下一行若是另一个 display 公式块,它的整块替换正好从行首开始,
+        //      落在替换范围内的块 widget 会被 CM 丢弃——紧挨着的第二个公式块
+        //      会让预览凭空消失(用户 2026-10-31 报的"即时渲染没了");
+        //   2. 块 widget 独占下一行行首会在 DOM 里多出一个空 cm-line
+        //      (7 行文档渲染出 8 个行盒),预览与下文之间凭空多 ~24px。
+        // 行尾锚点让预览接在本块之后,与相邻块无关。
+        const anchor = anchorLine.to;
         out.push(
           Decoration.widget({
             widget: new MathPreviewWidget(region.content, true, calloutDepthAt(region.from)),
