@@ -33,6 +33,7 @@ import type { LatexConfig } from "@/editor/snippets/config";
 import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
 import { inputGuards } from "@/lib/inputGuards";
 import { FolderSuggest } from "@/components/FolderSuggest";
+import { CodeArea } from "@/components/CodeArea";
 import { applySettingsToEditor, openVault, pickVaultDialog, reloadSnippetsFromVault } from "@/app/actions";
 import { parseVimrc } from "@/editor/vim/vimrc";
 import { MAX_PAGE_STEP, MIN_PAGE_STEP, normalizePageStep } from "@/study/reading";
@@ -865,15 +866,13 @@ function SnippetsTab() {
         }
       >
         <div className="settings-block">
-          <textarea
-            className="settings-textarea mono"
-            spellCheck={false}
+          <CodeArea
             value={content}
-            onChange={(e) => {
-              setContent(e.target.value);
+            searchPlaceholder="搜索片段（trigger / replacement）"
+            onChange={(next) => {
+              setContent(next);
               setDirtyLocal(true);
             }}
-            rows={16}
           />
           <div className="settings-actions">
             <button

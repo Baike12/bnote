@@ -1842,6 +1842,97 @@ button {
   border-color: var(--accent-dim);
 }
 
+/* 设置里的代码框(公式片段):常驻搜索栏 + 行号 + 等宽正文。
+
+   CodeMirror 的通用规则(global.css 前段)是按正文编辑器标的——收窄行宽、
+   超大上下内边距、正文衬线字体、100% 高度——在这个紧凑的小框里全部要改回
+   来;规则都挂在 .code-area 下,不影响笔记编辑器。gutter 的浅色底来自 CM
+   baseTheme(light/dark 各一套),必须 !important 才能压过。 */
+.code-area {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+  overflow: hidden;
+}
+.code-area:focus-within {
+  border-color: var(--accent-dim);
+}
+.code-area-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 2px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+}
+.code-area-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 6px 0;
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: var(--font-ui);
+}
+.code-area-input::placeholder {
+  color: var(--text-faint);
+}
+.code-area-count {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.code-area-nav {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.code-area-nav:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--text);
+}
+.code-area-nav:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.code-area .cm-editor {
+  height: 100%;
+  background: transparent;
+}
+.code-area .cm-editor.cm-focused {
+  outline: none;
+}
+.code-area .cm-content {
+  max-width: none;
+  margin: 0 !important;
+  padding: 10px 12px !important;
+  font-family: var(--font-mono) !important;
+  font-size: 12.5px !important;
+  line-height: 1.6;
+}
+.code-area .cm-gutters {
+  background: transparent !important;
+  color: var(--text-faint) !important;
+  border-right: 1px solid var(--border) !important;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.code-area .cm-lineNumbers .cm-gutterElement {
+  padding: 0 8px 0 10px;
+}
+
 /* 下拉:WKWebView 的原生 select 会画系统渐变 + 步进箭头,与扁平的输入框不搭。
    appearance: none 剥掉原生外观,箭头由 wrapper 的 ::after 画(data URL 里的
    SVG 取不到主题变量,换主题会掉色)。点击后弹出的仍是系统菜单。 */
