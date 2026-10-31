@@ -9,6 +9,7 @@ import { ensureSyntaxTree } from "@codemirror/language";
 import { markdownExtensions, codeHighlighting } from "./markdown";
 import { insertNewlineContinueMarkup, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { livePreviewExtension, configureLivePreview, selectionAffectsDecos } from "./livePreview";
+import { emphasisMarksExtension } from "./emphasisMarks";
 import { typewriterExtension } from "./typewriter";
 import { imeSwitchExtension } from "./imeSwitch";
 import { pythonLspExtension } from "@/python/lsp";
@@ -114,6 +115,10 @@ export function baseExtensions(
 
     markdownExtensions(),
     codeHighlighting(),
+    // 强调文本(斜体/加粗/删除线)的样式:语法高亮的 tag 按节点范围染色,
+    // 公式里的 `_` 下标被 lezer 误配成 Emphasis 时会把中间整段正文一起染,
+    // 只能由这条数学感知的装饰统一画(见 emphasisMarks.ts)。
+    emphasisMarksExtension(),
 
     docPathField,
     // 焦点进入哪个实例,命令层就作用于哪个实例(getView)。项目视图里同时
