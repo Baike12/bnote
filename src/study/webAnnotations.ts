@@ -117,6 +117,33 @@ export function locateQuote(
   return best;
 }
 
+/**
+ * 文本偏移 → DOM 点。偏移正好落在两段文本的交界时,起点归后一段的开头
+ * (offset 0)、终点归前一段的末尾——半开区间 `[start, end)`。
+ *
+ * 不能两边都取前一段末尾:两段文本之间可能隔着空行/其它块(行首第一个字
+ * 就是新文本节点的常态),Range 一跨过去,WebKit 会把中间整块空行算成选中,
+ * 返回一个满宽矩形——高亮上凭空多出一条压在空行上的黄条。
+ * 自包含:会被序列化进网页运行时。
+ */
+export function textPointAt<T>(
+  entries: Array<{ node: T; start: number; end: number }>,
+  offset: number,
+  edge: "start" | "end",
+): { node: T; offset: number } | null {
+  for (const e of entries) {
+    if (edge === "start") {
+      if (offset >= e.start && offset < e.end) return { node: e.node, offset: offset - e.start };
+    } else if (offset > e.start && offset <= e.end) {
+      return { node: e.node, offset: offset - e.start };
+    }
+  }
+  // 只在全文末尾越界:起点永远 < 全文长度,这里只是兜底。
+  const last = entries[entries.length - 1];
+  if (last && offset === last.end) return { node: last.node, offset: last.end - last.start };
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // 持久化(<vault>/.bnote/web-annotations/<host>-<hash>.json,一个网址一个文件)
 // ---------------------------------------------------------------------------
@@ -267,6 +294,7 @@ function hash53(text: string): string {
 
 interface RuntimeHelpers {
   locateQuote: typeof locateQuote;
+  textPointAt: typeof textPointAt;
   mergeLineRects: typeof mergeLineRects;
   normalizeWebAnnotations: typeof normalizeWebAnnotations;
   normalizePageStep: typeof normalizePageStep;
@@ -553,24 +581,14 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return last ? last.end : first.start;
   }
 
-  function nodeAt(entries: TextEntry[], offset: number): { node: Text; offset: number } | null {
-    for (const e of entries) {
-      if (offset >= e.start && offset <= e.end) {
-        const len = e.node.nodeValue ? e.node.nodeValue.length : 0;
-        return { node: e.node, offset: Math.min(offset - e.start, len) };
-      }
-    }
-    return null;
-  }
-
   function rangeOf(
     a: WebAnnotation,
     info: { text: string; entries: TextEntry[] },
   ): Range | null {
     const start = helpers.locateQuote(info.text, a.quote, a.offset, a.prefix, a.suffix);
     if (start < 0) return null;
-    const from = nodeAt(info.entries, start);
-    const to = nodeAt(info.entries, start + a.quote.length);
+    const from = helpers.textPointAt(info.entries, start, "start");
+    const to = helpers.textPointAt(info.entries, start + a.quote.length, "end");
     if (!from || !to) return null;
     try {
       const range = document.createRange();
@@ -1735,6 +1753,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 export function buildWebAnnotationScript(): string {
   const helpers = [
     `locateQuote:${locateQuote.toString()}`,
+    `textPointAt:${textPointAt.toString()}`,
     `mergeLineRects:${mergeLineRects.toString()}`,
     `normalizeWebAnnotations:${normalizeWebAnnotations.toString()}`,
     `normalizePageStep:${normalizePageStep.toString()}`,

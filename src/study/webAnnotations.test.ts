@@ -6,6 +6,7 @@ import {
   normalizeWebAnnotations,
   parseWebAnnotationFile,
   parseWebAnnotations,
+  textPointAt,
   webAnnotationFileName,
   webAnnotationRelPath,
   webAnnotationMaterialPath,
@@ -48,6 +49,32 @@ describe("网页批注锚点", () => {
   it("文本被改动后找不到就返回 -1(批注不丢,只是这一轮不画)", () => {
     expect(locateQuote("改革后的新正文", "记忆系统", 0, "", "")).toBe(-1);
     expect(locateQuote("anything", "", 0, "", "")).toBe(-1);
+  });
+});
+
+describe("网页批注:偏移 → DOM 点", () => {
+  const a = { node: "A", start: 0, end: 6 }; // 上一段最后一个文本节点
+  const b = { node: "B", start: 6, end: 45 }; // 下一段第一个文本节点(中间隔着空行块)
+  const entries = [a, b];
+
+  it("交界偏移:起点归后一段开头,终点归前一段末尾", () => {
+    // 行首第一个字符的全局偏移正好是 6:两边都取 A 的末尾会让 Range 跨过
+    // 中间的空行块,WebKit 给整条空行返回满宽矩形。
+    expect(textPointAt(entries, 6, "start")).toEqual({ node: "B", offset: 0 });
+    expect(textPointAt(entries, 6, "end")).toEqual({ node: "A", offset: 6 });
+  });
+
+  it("段内偏移原样落到所属节点", () => {
+    expect(textPointAt(entries, 2, "start")).toEqual({ node: "A", offset: 2 });
+    expect(textPointAt(entries, 2, "end")).toEqual({ node: "A", offset: 2 });
+    expect(textPointAt(entries, 10, "start")).toEqual({ node: "B", offset: 4 });
+    expect(textPointAt(entries, 10, "end")).toEqual({ node: "B", offset: 4 });
+  });
+
+  it("全文末尾:起点兜底到最后一段末尾", () => {
+    expect(textPointAt(entries, 45, "start")).toEqual({ node: "B", offset: 39 });
+    expect(textPointAt(entries, 45, "end")).toEqual({ node: "B", offset: 39 });
+    expect(textPointAt([], 0, "start")).toBeNull();
   });
 });
 
