@@ -17,13 +17,13 @@ export function markdownExtensions(): Extension {
 
 /** Code palette comes from global.css variables (:root dark, [data-theme="light"]
  *  override) so the highlight follows the theme switch without reconfiguring.
- *  Markdown styling is applied by the live-preview decorations (classes) so only
- *  code tags are colored here; markdown text tags mirror the same variables so
- *  lines stay consistently colored while the cursor edits them. */
+ *  Markdown inline text styling (strong / emphasis / strikethrough) is NOT here:
+ *  a tag paints the parser's whole node, and lezer pairs the `_` of LaTeX
+ *  subscripts inside formulas into one bogus Emphasis spanning the prose
+ *  between them — no decoration-side filter can undo that. Those marks are
+ *  drawn by `emphasisMarksExtension` (math-aware) instead, identically in live
+ *  preview and raw mode. */
 export const bnoteHighlightStyle = HighlightStyle.define([
-  { tag: t.strong, fontWeight: "700", color: "var(--strong-color, #ff82b2)" },
-  { tag: t.emphasis, fontStyle: "italic", color: "var(--strong-color, #ff82b2)" },
-  { tag: t.strikethrough, textDecoration: "line-through" },
   { tag: t.link, color: "var(--link, #79a9ec)" },
   { tag: t.url, color: "var(--tok-comment, #7f848e)" },
   { tag: t.monospace, color: "var(--tok-number, #d19a66)" },

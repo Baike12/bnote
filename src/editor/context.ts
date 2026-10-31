@@ -133,6 +133,27 @@ export function mathBodySpan(region: MathRegion): { from: number; to: number } {
   return { from: open, to: Math.max(open, close) };
 }
 
+/**
+ * 行内节点的分隔符是否落在公式里——公式内容不是 markdown。
+ *
+ * lezer 不认识 `$$…$$` / `$…$`,公式里的 `_`(下标)会被当成斜体标记;两个
+ * 不同公式里的 `_` 一旦配成一对 Emphasis,中间整段正文(哪怕跨十几行)都会
+ * 被染成斜体。节点**首字符或末字符**落在公式区里,就说明这对分隔符至少有一
+ * 端是 LaTeX 文本,节点应整体作废。只查两端是有意的:强调合法地包住一个行内
+ * 公式(`_文字 $x$ 文字_`)时两端都在正文里,必须保留。
+ */
+export function mathOwnsEndpoints(
+  regions: readonly MathRegion[],
+  from: number,
+  to: number,
+): boolean {
+  if (to <= from) return false;
+  const last = to - 1;
+  return regions.some(
+    (r) => (from >= r.from && from < r.to) || (last >= r.from && last < r.to),
+  );
+}
+
 /** Classifies the cursor position for snippet-mode matching, in the spirit of
  *  latex-suite's Context (math / code / \text{} environments). */
 export function getContextAt(state: EditorState, pos: number): EditContext {

@@ -3,7 +3,7 @@ import { StateField, Transaction } from "@codemirror/state";
 import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef, Tree } from "@lezer/common";
-import { mathBodySpan, mathRegions, selectionInMathBody } from "./context";
+import { mathBodySpan, mathOwnsEndpoints, mathRegions, selectionInMathBody } from "./context";
 import { calloutRegions } from "./callout";
 import { collectAnchors } from "./calloutAnchor";
 import { documentPath, setDocPath } from "./docPath";
@@ -484,8 +484,11 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         return false;
       }
       if (name === "Emphasis" || name === "StrongEmphasis") {
+        // 公式里配出来的误配节点(见 mathOwnsEndpoints):文本样式由
+        // emphasisMarksExtension 统一过滤,这里连标记隐藏都不做。
+        if (mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to)) return true;
         if (!active(nodeRef.from, nodeRef.to)) {
-          decorateEmphasis(nodeRef.node, name === "StrongEmphasis" ? "md-strong" : "md-em", out, claim);
+          hideEmphasisMarks(nodeRef.node, out, claim);
         }
         return false;
       }
@@ -494,8 +497,9 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         return false;
       }
       if (name === "Strikethrough") {
+        if (mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to)) return true;
         if (!active(nodeRef.from, nodeRef.to)) {
-          decorateEmphasis(nodeRef.node, "md-strike", out, claim);
+          hideEmphasisMarks(nodeRef.node, out, claim);
         }
         return false;
       }
@@ -516,13 +520,13 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         return false;
       }
       if (name === "Link") {
-        if (!active(nodeRef.from, nodeRef.to)) {
+        if (!mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to) && !active(nodeRef.from, nodeRef.to)) {
           decorateLink(nodeRef.node, out);
         }
         return false;
       }
       if (name === "Image") {
-        if (!active(nodeRef.from, nodeRef.to)) {
+        if (!mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to) && !active(nodeRef.from, nodeRef.to)) {
           decorateImage(nodeRef.node, state, out, claim);
         }
         return false;
@@ -871,28 +875,18 @@ function decorateHeading(
   );
 }
 
-function decorateEmphasis(
+/** 只隐藏强调/加粗/删除线的分隔符;文本样式(斜体、加粗、颜色)由
+ *  emphasisMarksExtension 画——那条规则要能识别公式里配出来的误配节点。 */
+function hideEmphasisMarks(
   node: SyntaxNode,
-  contentClass: string,
   out: DecorationSink,
   claim: (from: number, to: number) => boolean,
 ) {
-  const marks: SyntaxNode[] = [];
   for (let child = node.firstChild; child; child = child.nextSibling) {
-    if (child.name === "EmphasisMark" || child.name === "StrikethroughMark") {
-      marks.push(child);
+    if (child.name !== "EmphasisMark" && child.name !== "StrikethroughMark") continue;
+    if (claim(child.from, child.to)) {
+      out.inline.push(Decoration.replace({}).range(child.from, child.to));
     }
-  }
-  if (marks.length === 0) return;
-  const first = marks[0];
-  const last = marks[marks.length - 1];
-  for (const m of marks) {
-    if (claim(m.from, m.to)) {
-      out.inline.push(Decoration.replace({}).range(m.from, m.to));
-    }
-  }
-  if (last.to > first.to) {
-    out.inline.push(Decoration.mark({ class: contentClass }).range(first.to, last.from));
   }
 }
 

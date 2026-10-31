@@ -7,6 +7,7 @@ import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemi
 import { insertNewlineAndIndent, history, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
 import { blockDecorationsField, buildInlineDecorations, selectionAffectsDecos } from "./livePreview";
+import { buildEmphasisMarks } from "./emphasisMarks";
 import { projectTodos } from "@/projects/model";
 import { fenceStateScan, mathRegions } from "./context";
 import { computeCalloutRegions } from "./callout";
@@ -101,6 +102,23 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
     }, 15);
     console.warn(`[perf] inline 装饰构建中位数 ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(4);
+  });
+
+  // 强调样式从语法高亮 tag 挪到装饰后(见 emphasisMarks.ts),它在每次文档
+  // 变化时走一遍可见区的语法树。全文档(上界)构建必须保持量级,否则每击会
+  // 多出一份全文树遍历。
+  it("强调标记构建(全文档=上界,每击重建)中位数 < 2ms", () => {
+    const emphState = makeState(
+      bigDoc(60).replace(/这是段落文字/g, "这是 _斜体_ 与 **加粗** 段落文字"),
+      0,
+    );
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      buildEmphasisMarks(emphState, [{ from: 0, to: emphState.doc.length }]);
+      return performance.now() - t0;
+    }, 15);
+    console.warn(`[perf] 强调标记构建中位数 ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(2);
   });
 
   it("60 次每击输入(update+装饰重建)总计 < 640ms,单击中位数 < 10ms", () => {
