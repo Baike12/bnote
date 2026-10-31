@@ -3,6 +3,8 @@ import type { EditorView } from "@codemirror/view";
 import { documentPath } from "@/editor/docPath";
 import { findEditorFor } from "@/editor/api";
 import { DONE_STAMP_RE } from "@/editor/ops";
+import { joinPath } from "@/lib/path";
+import { normalizeTemplateDir, renderTemplate } from "@/templates/template";
 import type { DailyLink, LinkStore } from "./links";
 import { scheduleLinksPersist } from "./links";
 import {
@@ -67,6 +69,8 @@ export interface DailyDeps {
   vaultRoot: () => string | null;
   today: () => string;
   toast: (msg: string) => void;
+  /** 新建日记用的模板文件(仓库相对路径);null/空 = 默认 `# 日期` 开篇。 */
+  templatePath: () => string | null;
 }
 
 /** 引擎写回打开编辑器时给事务打的标记;监听器看到它直接跳过(防回环)。 */
@@ -418,7 +422,7 @@ async function applySend(
     if (store.findByText(path, text, rootNo)) return; // 已有链接(竞态):镜像会带上
     const block = blockLines(doc, rootNo);
     const reindented = reindentBlock(block, root.indent.length, "");
-    const base = daily.text ?? (await dailyScaffoldWithRollover(deps.io, vaultRoot, deps.today()));
+    const base = daily.text ?? (await dailyScaffoldWithRollover(deps.io, vaultRoot, deps.today(), deps.templatePath()));
     const bdoc = parseDoc(base);
     const region = parseDailyRegion(bdoc);
     const existing = findEntryByText(bdoc, region, text, 0);
@@ -450,14 +454,20 @@ async function applySend(
 // ---------------------------------------------------------------- 待办跟随
 
 /**
- * 新一天日记的初始内容:裸 scaffold + 上一篇日记的未完成待办(待办跟随,
- * 规则见 model.rolloverBlocks)。「上一篇」= Daily/ 里早于今天的最近一篇。
- * 跟随是增强不是义务:目录列不到、上一篇读不到、任何一步出错都折叠为裸
- * scaffold,绝不挡日记创建。三个创建入口(⌘⇧O 打开、⌘⇧J 发送、勾选记录)
- * 都走这里,谁先创建,落下的字节都一致。
+ * 新一天日记的初始内容:模板(有则用,变量换成当天日期)+ 上一篇日记的
+ * 未完成待办(待办跟随,规则见 model.rolloverBlocks)。「上一篇」= Daily/ 里
+ * 早于今天的最近一篇。跟随与模板都是增强不是义务:目录列不到、上一篇读不到、
+ * 模板读不到,任何一步出错都折叠为默认内容,绝不挡日记创建。所有创建入口
+ * (⌘⇧O 打开、⌘⇧J 发送、勾选记录、项目发送、日记栏)都走这里,谁先创建,
+ * 落下的字节都一致。
  */
-export async function dailyScaffoldWithRollover(io: DailyIO, vaultRoot: string, today: string): Promise<string> {
-  const base = dailyScaffold(today);
+export async function dailyScaffoldWithRollover(
+  io: DailyIO,
+  vaultRoot: string,
+  today: string,
+  templatePath: string | null = null,
+): Promise<string> {
+  const base = await dailyBase(io, vaultRoot, today, templatePath);
   try {
     const names = await io.readDir("Daily");
     if (!names) return base;
@@ -465,9 +475,31 @@ export async function dailyScaffoldWithRollover(io: DailyIO, vaultRoot: string, 
     if (!prev) return base;
     const prevText = await io.readFile(dailyPathFor(vaultRoot, prev));
     if (prevText === null) return base;
-    return composeDailyScaffold(today, rolloverBlocks(prevText));
+    return composeDailyScaffold(today, rolloverBlocks(prevText), base);
   } catch {
     return base;
+  }
+}
+
+/**
+ * 新日记正文的起点:配了模板文件就读它,`{{date}}`/`{{title}}` 都换成当天
+ * 日期;没配、读不到(文件被删/改名)时回落到默认的 `# 日期`。模板内容原样
+ * 落入文件,待办区仍按 parseDailyRegion 的规则紧随首个 H1。
+ */
+async function dailyBase(
+  io: DailyIO,
+  vaultRoot: string,
+  today: string,
+  templatePath: string | null,
+): Promise<string> {
+  const fallback = dailyScaffold(today);
+  const rel = normalizeTemplateDir(templatePath ?? "");
+  if (!rel) return fallback;
+  try {
+    const text = await io.readFile(joinPath(vaultRoot, rel));
+    return text === null ? fallback : renderTemplate(text, { date: today, title: today });
+  } catch {
+    return fallback;
   }
 }
 
@@ -602,7 +634,7 @@ export async function sendTodoToDaily(
       }
       const block = blockLines(doc, lineNo);
       const reindented = reindentBlock(block, l.indent.length, "");
-      if (dailyText === null) dailyText = await dailyScaffoldWithRollover(deps.io, vaultRoot, today);
+      if (dailyText === null) dailyText = await dailyScaffoldWithRollover(deps.io, vaultRoot, today, deps.templatePath());
       const bdoc = parseDoc(dailyText);
       const region = parseDailyRegion(bdoc);
       const existing = findEntryByText(bdoc, region, text, 0);

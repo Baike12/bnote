@@ -101,8 +101,18 @@ function memIO() {
   };
 }
 
-function deps(io: DailyIO, toasts: string[] = []): DailyDeps {
-  return { io, vaultRoot: () => VAULT, today: () => "2026-09-23", toast: (m) => toasts.push(m) };
+function deps(
+  io: DailyIO,
+  toasts: string[] = [],
+  templatePath: () => string | null = () => null,
+): DailyDeps {
+  return {
+    io,
+    vaultRoot: () => VAULT,
+    today: () => "2026-09-23",
+    toast: (m) => toasts.push(m),
+    templatePath,
+  };
 }
 
 function makeLink(patch: Partial<DailyLink>): DailyLink {
@@ -166,6 +176,18 @@ describe("发送命令", () => {
     const { view } = makeDocView("- [ ] 新任务\n", "/vault/p.md", [0]);
     await sendTodoToDaily(view, deps(io), store);
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 昨天没做完\n- [ ] 新任务\n");
+  });
+
+  it("发送时日记不存在且配了模板:模板开篇,发送条目进入待办区", async () => {
+    const { files, io } = memIO();
+    files.set("/vault/Templates/日记.md", "# {{date}}\n\n## 计划\n");
+    const { view } = makeDocView("- [ ] 新任务\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(
+      view,
+      deps(io, [], () => "Templates/日记.md"),
+      new LinkStore(),
+    );
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 新任务\n\n## 计划\n");
   });
 
   it("第二次发送按时间顺序追加在既有条目之后", async () => {

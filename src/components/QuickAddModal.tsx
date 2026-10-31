@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Modal } from "./Modal";
 import { fuzzySort } from "@/lib/fuzzy";
 import { inputGuards } from "@/lib/inputGuards";
-import { useAppStore } from "@/state/appStore";
+import { useAppStore, type QuickAddCommand } from "@/state/appStore";
 import { quickAddNote } from "@/app/actions";
 import { imeApply, imeSyncToEditor } from "@/editor/imeSwitch";
 
@@ -17,7 +17,7 @@ export function QuickAddModal() {
   const commands = useAppStore((s) => s.settings.quickAdd);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
-  const [picked, setPicked] = useState<{ name: string; folder: string } | null>(null);
+  const [picked, setPicked] = useState<QuickAddCommand | null>(null);
   const [name, setName] = useState("");
 
   // Reset the two-stage flow every time the modal opens.
@@ -60,7 +60,7 @@ export function QuickAddModal() {
   const create = () => {
     if (!picked || !name.trim()) return;
     close();
-    void quickAddNote(picked.folder, name);
+    void quickAddNote(picked.folder, name, picked.template);
   };
 
   if (commands.length === 0) {

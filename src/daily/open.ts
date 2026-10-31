@@ -28,6 +28,8 @@ export interface OpenDailyDeps {
   currentFile: () => string | null;
   getDailyBack: () => string | null;
   setDailyBack: (path: string | null) => void;
+  /** 新建日记用的模板文件(仓库相对路径);空 = 默认 `# 日期` 开篇。 */
+  templatePath: () => string | null;
 }
 
 /** 返回打开的日记路径;没有仓库时返回 null。 */
@@ -59,7 +61,10 @@ export async function openDailyNote(deps: OpenDailyDeps): Promise<string | null>
   if (current) deps.setDailyBack(current);
   // 读失败(不存在)才算缺文件:盘上已有内容一律不动,只打开。
   if ((await deps.io.readFile(path)) === null) {
-    await deps.io.writeFile(path, await dailyScaffoldWithRollover(deps.io, vaultRoot, day));
+    await deps.io.writeFile(
+      path,
+      await dailyScaffoldWithRollover(deps.io, vaultRoot, day, deps.templatePath()),
+    );
     await deps.refresh();
   }
   await deps.open(path);

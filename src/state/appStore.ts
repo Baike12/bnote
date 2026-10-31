@@ -38,6 +38,14 @@ export interface QuickAddCommand {
   name: string;
   /** 仓库根目录下的目标文件夹，支持 "a/b" 子路径；不存在时自动创建 */
   folder: string;
+  /** 模板文件(仓库相对路径,通常在「设置 → 模板」配的目录里);空 = 不套模板 */
+  template?: string;
+}
+
+/** 日记:目前只有「新建日记用哪份模板」。 */
+export interface DailySettings {
+  /** 模板文件(仓库相对路径);空 = 默认的 `# 日期` 开篇。 */
+  template: string;
 }
 
 /** 界面主题：dark 是无 data-theme 属性时的默认；light 走 [data-theme="light"]
@@ -96,6 +104,13 @@ export interface Settings {
   latex: LatexConfig;
   quickAdd: QuickAddCommand[];
   /**
+   * 模板目录(仓库相对路径)。目录里的文件可以在快速添加命令与日记里
+   * 选作模板;空 = 未设置。
+   */
+  templatesDir: string;
+  /** 日记相关配置(新建日记的初始内容等)。 */
+  daily: DailySettings;
+  /**
    * 专注段开始时自动进锁(伪全屏 + 层级独占 + 焦点抢回),离开专注段自动退锁。
    * 这就是"一段时间内屏幕上只有 bnote"的那条链。
    */
@@ -138,6 +153,8 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   latex: { ...DEFAULT_LATEX_CONFIG },
   quickAdd: [],
+  templatesDir: "",
+  daily: { template: "" },
   focusAutoLock: true,
   focusHardLock: false,
 };

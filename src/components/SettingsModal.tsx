@@ -34,6 +34,11 @@ import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
 import { inputGuards } from "@/lib/inputGuards";
 import { FolderSuggest } from "@/components/FolderSuggest";
 import { CodeArea } from "@/components/CodeArea";
+import {
+  normalizeTemplateDir,
+  templateFiles,
+  templateLabel,
+} from "@/templates/template";
 import { applySettingsToEditor, openVault, pickVaultDialog, reloadSnippetsFromVault } from "@/app/actions";
 import { parseVimrc } from "@/editor/vim/vimrc";
 import { MAX_PAGE_STEP, MIN_PAGE_STEP, normalizePageStep } from "@/study/reading";
@@ -48,6 +53,8 @@ type Tab =
   | "editor"
   | "reading"
   | "focus"
+  | "daily"
+  | "templates"
   | "hotkeys"
   | "vim"
   | "snippets"
@@ -68,6 +75,13 @@ const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
       { id: "editor", label: "编辑器" },
       { id: "reading", label: "阅读" },
       { id: "focus", label: "专注" },
+    ],
+  },
+  {
+    label: "笔记",
+    items: [
+      { id: "daily", label: "日记" },
+      { id: "templates", label: "模板" },
     ],
   },
   {
@@ -150,6 +164,8 @@ export function SettingsModal() {
           {tab === "editor" && <EditorTab />}
           {tab === "reading" && <ReadingTab />}
           {tab === "focus" && <FocusTab />}
+          {tab === "daily" && <DailyTab />}
+          {tab === "templates" && <TemplatesTab />}
           {tab === "hotkeys" && <HotkeysTab />}
           {tab === "vim" && <VimTab />}
           {tab === "snippets" && <SnippetsTab />}
@@ -1061,14 +1077,59 @@ function ImeTab() {
   );
 }
 
+/** 模板下拉:模板目录里的文件 + 无模板。已选模板不在当前目录时也保留这一项,
+ *  否则换目录会把已有命令指向的模板悄悄清掉。 */
+function TemplateSelect({
+  value,
+  files,
+  dir,
+  onChange,
+}: {
+  value: string;
+  files: string[];
+  dir: string;
+  onChange: (template: string) => void;
+}) {
+  return (
+    <SettingsSelect value={value} onChange={onChange}>
+      <option value="">无模板</option>
+      {files.map((file) => (
+        <option key={file} value={file}>
+          {templateLabel(file, dir)}
+        </option>
+      ))}
+      {value !== "" && !files.includes(value) && (
+        <option value={value}>{value}（不在当前模板目录）</option>
+      )}
+    </SettingsSelect>
+  );
+}
+
+/** 模板正文的规则说明(日记页与模板页共用同一份措辞)。 */
+function TemplateHint() {
+  return (
+    <p className="setting-hint">
+      模板是普通笔记文件，内容会原样写进新文件：<code>{"{{date}}"}</code> 换成当天日期（YYYY-MM-DD），
+      <code>{"{{title}}"}</code> 换成新文件名（日记里是日期），其它文字照抄。改完模板文件，下次创建立即生效。
+    </p>
+  );
+}
+
 function QuickAddTab() {
   const quickAdd = useAppStore((s) => s.settings.quickAdd);
+  const templatesDir = useAppStore((s) => s.settings.templatesDir);
+  const flatFiles = useAppStore((s) => s.flatFiles);
   const patch = useAppStore((s) => s.patchSettings);
+  const templates = useMemo(
+    () => templateFiles(flatFiles, templatesDir),
+    [flatFiles, templatesDir],
+  );
 
   const update = (i: number, p: Partial<QuickAddCommand>) =>
     patch({ quickAdd: quickAdd.map((c, j) => (j === i ? { ...c, ...p } : c)) });
   const remove = (i: number) => patch({ quickAdd: quickAdd.filter((_, j) => j !== i) });
-  const add = () => patch({ quickAdd: [...quickAdd, { name: "", folder: "" }] });
+  const add = () =>
+    patch({ quickAdd: [...quickAdd, { name: "", folder: "", template: "" }] });
 
   return (
     <div className="settings-section">
@@ -1083,23 +1144,34 @@ function QuickAddTab() {
       >
         <div className="settings-block">
           {quickAdd.map((c, i) => (
-            <div className="qa-row" key={i}>
-              <input
-                className="settings-input"
-                placeholder="命令名，如 add bnote file"
-                value={c.name}
-                onChange={(e) => update(i, { name: e.target.value })}
-                {...inputGuards}
-              />
-              <FolderSuggest
-                className="settings-input mono"
-                placeholder="目标文件夹，如 bnote 或 notes/收集箱"
-                value={c.folder}
-                onChange={(folder) => update(i, { folder })}
-              />
-              <button className="btn btn-ghost qa-remove" title="删除命令" onClick={() => remove(i)}>
-                ✕
-              </button>
+            <div className="qa-item" key={i}>
+              <div className="qa-row">
+                <input
+                  className="settings-input"
+                  placeholder="命令名，如 add bnote file"
+                  value={c.name}
+                  onChange={(e) => update(i, { name: e.target.value })}
+                  {...inputGuards}
+                />
+                <FolderSuggest
+                  className="settings-input mono"
+                  placeholder="目标文件夹，如 bnote 或 notes/收集箱"
+                  value={c.folder}
+                  onChange={(folder) => update(i, { folder })}
+                />
+                <button className="btn btn-ghost qa-remove" title="删除命令" onClick={() => remove(i)}>
+                  ✕
+                </button>
+              </div>
+              <div className="qa-row qa-template-row">
+                <span className="qa-template-label">模板</span>
+                <TemplateSelect
+                  value={c.template ?? ""}
+                  files={templates}
+                  dir={templatesDir}
+                  onChange={(template) => update(i, { template })}
+                />
+              </div>
             </div>
           ))}
           {quickAdd.length === 0 && (
@@ -1112,6 +1184,93 @@ function QuickAddTab() {
           </div>
         </div>
       </SettingsCard>
+      {templates.length === 0 && (
+        <p className="setting-hint">
+          模板下拉是空的：先到「模板」页设置模板目录（模板目录里的笔记才会出现在这里）。
+        </p>
+      )}
+    </div>
+  );
+}
+
+function DailyTab() {
+  const daily = useAppStore((s) => s.settings.daily);
+  const templatesDir = useAppStore((s) => s.settings.templatesDir);
+  const flatFiles = useAppStore((s) => s.flatFiles);
+  const patch = useAppStore((s) => s.patchSettings);
+  const templates = useMemo(
+    () => templateFiles(flatFiles, templatesDir),
+    [flatFiles, templatesDir],
+  );
+
+  return (
+    <div className="settings-section">
+      <SettingsCard
+        title="日记模板"
+        desc="新建日记时用这份模板生成初始内容（⌘⇧O 打开今日日记、快速待办、项目发送、日记栏四个入口共用）；不选则默认以「# 日期」开篇。"
+      >
+        <Row
+          label="模板文件"
+          desc={
+            templates.length > 0
+              ? "模板来自「模板」页设置的目录。日记的待办区紧跟在首个 H1 之后；模板没有 H1 时待办顶到文件最前。"
+              : "还没有可用模板：先到「模板」页设置模板目录并放入模板笔记。"
+          }
+          control={
+            <TemplateSelect
+              value={daily.template}
+              files={templates}
+              dir={templatesDir}
+              onChange={(template) => patch({ daily: { ...daily, template } })}
+            />
+          }
+        />
+      </SettingsCard>
+      <TemplateHint />
+    </div>
+  );
+}
+
+function TemplatesTab() {
+  const dir = useAppStore((s) => s.settings.templatesDir);
+  const flatFiles = useAppStore((s) => s.flatFiles);
+  const patch = useAppStore((s) => s.patchSettings);
+  const templates = useMemo(() => templateFiles(flatFiles, dir), [flatFiles, dir]);
+
+  return (
+    <div className="settings-section">
+      <SettingsCard
+        title="模板目录"
+        desc="快速添加命令与日记都可以选用这个目录里的文件作为模板（含子目录）。目录不存在时先选择一个已有文件夹。"
+      >
+        <div className="settings-block">
+          <FolderSuggest
+            className="settings-input mono"
+            placeholder="模板文件夹，如 Templates"
+            value={dir}
+            onChange={(templatesDir) => patch({ templatesDir })}
+          />
+          <div className="qa-empty">
+            {normalizeTemplateDir(dir)
+              ? templates.length > 0
+                ? `找到 ${templates.length} 个模板`
+                : "目录里还没有笔记文件"
+              : "还没有设置模板目录"}
+          </div>
+        </div>
+      </SettingsCard>
+      {templates.length > 0 && (
+        <SettingsCard title="可用模板">
+          <div className="settings-block">
+            {templates.map((file) => (
+              <div className="setting-value" key={file}>
+                {templateLabel(file, dir)}
+              </div>
+            ))}
+          </div>
+        </SettingsCard>
+      )}
+      <TemplateHint />
     </div>
   );
 }

@@ -409,10 +409,15 @@ export function previousDailyFile(names: string[], today: string): string | null
   return best;
 }
 
-/** 新一天日记的初始内容:裸 scaffold + 逐块 appendEntrySpec,与引擎写盘
- *  同一形状(H1 + 空行 + 条目单换行相邻,文件尾单换行)。 */
-export function composeDailyScaffold(day: string, blocks: string[][]): string {
-  let text = dailyScaffold(day);
+/** 新一天日记的初始内容:正文起点(默认裸 scaffold,有模板时是模板正文)
+ *  + 逐块 appendEntrySpec,与引擎写盘同一形状(条目跟在头部之后、单换行
+ *  相邻,文件尾单换行)。 */
+export function composeDailyScaffold(
+  day: string,
+  blocks: string[][],
+  base: string = dailyScaffold(day),
+): string {
+  let text = base;
   for (const block of blocks) {
     const doc = EditorState.create({ doc: text }).doc;
     const { change } = appendEntrySpec(doc, parseDailyRegion(doc), block);

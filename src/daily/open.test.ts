@@ -50,6 +50,7 @@ function harness(files: Record<string, string> = {}, over: Partial<OpenDailyDeps
     setDailyBack: (p) => {
       dailyBack = p;
     },
+    templatePath: () => null,
     ...over,
   };
   return {
@@ -128,6 +129,60 @@ describe("新建日记的待办跟随", () => {
   it("Daily 目录列不到:裸 scaffold,跟随失败不挡创建", async () => {
     const h = harness();
     h.deps.io = { ...h.deps.io, readDir: async () => null };
+    await openDailyNote(h.deps);
+    expect(h.written[0].content).toBe(dailyScaffold(DAY));
+  });
+});
+
+describe("新建日记的模板", () => {
+  const TPL = "/v/Templates/日记.md";
+
+  it("模板内容开篇,{{date}}/{{title}} 换成当天日期", async () => {
+    const h = harness(
+      { [TPL]: "# {{date}}\n\n## 计划\n- 早会\n" },
+      { templatePath: () => "Templates/日记.md" },
+    );
+    await openDailyNote(h.deps);
+    expect(h.written[0].content).toBe("# 2026-09-27\n\n## 计划\n- 早会\n");
+  });
+
+  it("模板与待办跟随叠加:待办区仍紧跟在首个 H1 之后", async () => {
+    const h = harness(
+      {
+        "/v/Daily/2026-09-26.md": "# 前一天\n- [ ] 还没做完\n",
+        [TPL]: "# {{title}}\n\n## 计划\n",
+      },
+      { templatePath: () => "Templates/日记.md" },
+    );
+    await openDailyNote(h.deps);
+    expect(h.written[0].content).toBe(
+      "# 2026-09-27\n\n- [ ] 还没做完\n\n## 计划\n",
+    );
+  });
+
+  it("模板文件读不到:回落到默认 `# 日期`,不挡创建", async () => {
+    const h = harness({}, { templatePath: () => "Templates/已删除.md" });
+    await openDailyNote(h.deps);
+    expect(h.written[0].content).toBe(dailyScaffold(DAY));
+  });
+
+  it("模板没有 H1:待办按引擎既有规则顶到文件最前", async () => {
+    const h = harness(
+      {
+        "/v/Daily/2026-09-26.md": "# 前一天\n- [ ] 还没做完\n",
+        [TPL]: "## 计划\n",
+      },
+      { templatePath: () => "Templates/日记.md" },
+    );
+    await openDailyNote(h.deps);
+    expect(h.written[0].content).toBe("- [ ] 还没做完\n\n## 计划\n");
+  });
+
+  it("模板路径越出仓库(`..`):按未设置处理", async () => {
+    const h = harness(
+      { "/v/../secret.md": "# 不该读\n" },
+      { templatePath: () => "../secret.md" },
+    );
     await openDailyNote(h.deps);
     expect(h.written[0].content).toBe(dailyScaffold(DAY));
   });

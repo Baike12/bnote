@@ -6,7 +6,7 @@ import { useAppStore, getConfigSnapshot, persistConfig, flushPersistConfig, type
 import { loadDocument } from "@/editor/setup";
 import { getView, activeEditors } from "@/editor/api";
 import { documentPath } from "@/editor/docPath";
-import { insertWikilinkText, wikilinkTargetOnLine } from "@/editor/ops";
+import { insertWikilinkText, wikilinkTargetOnLine, todayStamp } from "@/editor/ops";
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, restoreSavedCursor } from "@/editor/cursorMemory";
 import { reconfigureLivePreview, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
@@ -23,6 +23,7 @@ import { ensureLinks } from "@/daily/links";
 import { ensureFootprints } from "@/footprint/store";
 import { recentVaultTarget, touchRecentVault } from "@/vault/recent";
 import { loadKeymap } from "@/commands/keybindingOverrides";
+import { normalizeTemplateDir, renderTemplate } from "@/templates/template";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -266,16 +267,37 @@ export async function newNote(): Promise<void> {
  * Quick-add: create a note in a quick-add command's folder. The folder is
  * vault-relative and created at the root when missing (mkdir -p); the note
  * name dedups like newNote ("name 2.md").
+ *
+ * `template` is a vault-relative template file chosen on the command: its
+ * content becomes the new note's initial content (`{{date}}` / `{{title}}`
+ * substituted). A missing/unreadable template never blocks creation — the
+ * note is created empty and the user is told why.
  */
-export async function quickAddNote(folder: string, name: string): Promise<void> {
+export async function quickAddNote(
+  folder: string,
+  name: string,
+  template?: string | null,
+): Promise<void> {
   const { vaultPath } = useAppStore.getState();
   if (!vaultPath) return;
   const base = name.replace(/\.(md|markdown|txt)$/i, "").trim();
   if (!base) return;
   const rel = folder.trim().replace(/^\/+|\/+$/g, "");
+  const templateRel = normalizeTemplateDir(template ?? "");
   try {
     if (rel) await api.ensureDir(rel);
     const created = await api.createFile(rel, `${base}.md`);
+    if (templateRel) {
+      try {
+        const text = await api.readFile(joinPath(vaultPath, templateRel));
+        await api.writeFile(
+          created.path,
+          renderTemplate(text, { date: todayStamp(), title: base }),
+        );
+      } catch {
+        useAppStore.getState().showToast("模板读取失败，已创建空文件");
+      }
+    }
     await refreshTree();
     await openNote(created.path);
   } catch (e) {

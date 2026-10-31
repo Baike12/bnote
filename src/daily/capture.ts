@@ -2,11 +2,10 @@ import { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { getView } from "@/editor/api";
 import { documentPath } from "@/editor/docPath";
-import { todayStamp } from "@/editor/ops";
 import { useAppStore } from "@/state/appStore";
 import { dailyScaffoldWithRollover, withFileLock, type DailyIO } from "./engine";
 import { dailyPathFor, parseDailyRegion, prependEntrySpec, textAfterChanges } from "./model";
-import { tauriIO } from "./runtime";
+import { runtimeDeps } from "./runtime";
 
 /**
  * 快速待办:输入一行文字,直接落进今日日记待办区的最前方。
@@ -24,6 +23,8 @@ export interface CaptureTodoDeps {
   currentFile: () => string | null;
   refresh: () => Promise<void>;
   toast: (msg: string) => void;
+  /** 新建日记用的模板文件(仓库相对路径);空 = 默认 `# 日期` 开篇。 */
+  templatePath: () => string | null;
 }
 
 /** 输入 → 日记里的待办行:已是 checkbox 行就原样用,多行折成一行。 */
@@ -75,7 +76,7 @@ export async function captureTodo(
     const existing = await deps.io.readFile(path);
     const created = existing === null;
     const base = existing === null
-      ? await dailyScaffoldWithRollover(deps.io, vaultRoot, day)
+      ? await dailyScaffoldWithRollover(deps.io, vaultRoot, day, deps.templatePath())
       : existing;
     const doc = EditorState.create({ doc: base }).doc;
     const spec = prependEntrySpec(doc, parseDailyRegion(doc), [todo]);
@@ -89,15 +90,12 @@ export async function captureTodo(
 /** 应用运行期的依赖:当前仓库 / 今天 / 单个编辑器实例 / toast。 */
 export function captureTodoToToday(raw: string): Promise<string | null> {
   return captureTodo(raw, {
-    vaultRoot: () => useAppStore.getState().vaultPath,
-    today: () => todayStamp(),
-    io: tauriIO,
+    ...runtimeDeps(),
     view: () => getView(),
     currentFile: () => useAppStore.getState().currentFile,
     refresh: async () => {
       const { refreshTree } = await import("@/app/actions");
       await refreshTree();
     },
-    toast: (msg) => useAppStore.getState().showToast(msg),
   });
 }

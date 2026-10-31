@@ -2023,6 +2023,29 @@ button {
   gap: 8px;
   margin-bottom: 8px;
 }
+/* 一条命令 = 名称/文件夹一行 + 模板一行。两条命令之间用卡片分开,避免
+   「模板」看起来属于下一条命令。 */
+.qa-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.qa-item .qa-row {
+  margin-bottom: 0;
+}
+.qa-item .qa-row + .qa-row {
+  margin-top: 8px;
+}
+.qa-template-label {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.qa-template-row .settings-select-wrap {
+  flex: 1;
+  max-width: none;
+  min-width: 0;
+}
 .qa-row .settings-input.mono {
   flex: 0.8;
 }

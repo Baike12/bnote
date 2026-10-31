@@ -1,6 +1,5 @@
 import { EditorState } from "@codemirror/state";
 import { findEditorFor } from "@/editor/api";
-import { todayStamp } from "@/editor/ops";
 import { useAppStore } from "@/state/appStore";
 import {
   blockLines,
@@ -21,7 +20,7 @@ import {
   type DailyIO,
 } from "@/daily/engine";
 import { ensureLinks, scheduleLinksPersist } from "@/daily/links";
-import { tauriIO } from "@/daily/runtime";
+import { runtimeDeps } from "@/daily/runtime";
 
 /**
  * 项目待办 → 今日日记待办区**最前面**。
@@ -54,16 +53,13 @@ export interface SendTodoDeps {
   vaultRoot: () => string | null;
   today: () => string;
   toast: (msg: string) => void;
+  /** 新建日记用的模板文件(仓库相对路径);空 = 默认 `# 日期` 开篇。 */
+  templatePath: () => string | null;
 }
 
 export async function sendTodoToTodayFront(
   target: SendTodoTarget,
-  deps: SendTodoDeps = {
-    io: tauriIO,
-    vaultRoot: () => useAppStore.getState().vaultPath,
-    today: () => todayStamp(),
-    toast: (msg) => useAppStore.getState().showToast(msg),
-  },
+  deps: SendTodoDeps = runtimeDeps(),
 ): Promise<SendTodoResult> {
   const vaultRoot = deps.vaultRoot();
   if (!vaultRoot) return "no-vault";
@@ -104,7 +100,7 @@ export async function sendTodoToTodayFront(
     await withFileLock(dailyPath, async () => {
       let raw = await deps.io.readFile(dailyPath);
       if (raw === null) {
-        raw = await dailyScaffoldWithRollover(deps.io, vaultRoot, today);
+        raw = await dailyScaffoldWithRollover(deps.io, vaultRoot, today, deps.templatePath());
         createdDaily = true;
       }
       const doc = EditorState.create({ doc: raw }).doc;

@@ -115,6 +115,7 @@ export default function App() {
           ...DEFAULT_SETTINGS.studyTranslate,
           ...(saved.studyTranslate ?? {}),
         },
+        daily: { ...DEFAULT_SETTINGS.daily, ...(saved.daily ?? {}) },
       };
       // 旧版把三栏宽度存成 studySplit:[agent, content](更早是比例);迁移成
       // 助手栏 / 中栏各自单值像素宽度后落盘一次,之后窗口怎么缩放都不会再改

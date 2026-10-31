@@ -60,7 +60,13 @@ function memIO(initial: Record<string, string> = {}) {
 }
 
 function makeDeps(io: DailyIO) {
-  return { io, vaultRoot: () => VAULT, today: () => "2026-09-23", toast: () => {} };
+  return {
+    io,
+    vaultRoot: () => VAULT,
+    today: () => "2026-09-23",
+    toast: () => {},
+    templatePath: () => null,
+  };
 }
 
 beforeEach(() => {

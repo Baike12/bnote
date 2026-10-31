@@ -5,7 +5,7 @@ import { api } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { dailyDayOf, dailyPathFor } from "@/daily/model";
 import { dailyScaffoldWithRollover } from "@/daily/engine";
-import { tauriIO } from "@/daily/runtime";
+import { dailyTemplatePath, tauriIO } from "@/daily/runtime";
 import { todayStamp } from "@/editor/ops";
 import { refreshTree } from "@/app/actions";
 import { focusEditor } from "@/editor/api";
@@ -84,7 +84,7 @@ export function DailyNotePane() {
     try {
       await api.readFile(path);
     } catch {
-      const text = await dailyScaffoldWithRollover(tauriIO, vaultRoot, today);
+      const text = await dailyScaffoldWithRollover(tauriIO, vaultRoot, today, dailyTemplatePath());
       await api.writeFile(path, text);
       await refreshTree();
     }

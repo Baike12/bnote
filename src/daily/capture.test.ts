@@ -31,6 +31,7 @@ function deps(io: DailyIO, overrides: Partial<Parameters<typeof captureTodo>[1]>
     currentFile: () => null,
     refresh: vi.fn(async () => {}),
     toast: vi.fn(),
+    templatePath: () => null,
     ...overrides,
   };
 }
@@ -94,6 +95,19 @@ describe("captureTodo", () => {
     const { map, io } = fakeIO({}, []);
     await captureTodo("新任务", deps(io));
     expect(map.get(DAILY)).toBe("# 2026-10-26\n\n- [ ] 新任务\n");
+  });
+
+  it("配了日记模板:模板开篇,新待办仍紧跟在头部之后", async () => {
+    const { map, io } = fakeIO({
+      [`${ROOT}/Templates/日记.md`]: "# {{date}} · 记录\n\n## 计划\n",
+    });
+    await captureTodo(
+      "新任务",
+      deps(io, { templatePath: () => "Templates/日记.md" }),
+    );
+    expect(map.get(DAILY)).toBe(
+      "# 2026-10-26 · 记录\n\n- [ ] 新任务\n\n## 计划\n",
+    );
   });
 
   it("日记正开在编辑器里:改内存文档(交给自动保存),不直接写盘", async () => {
