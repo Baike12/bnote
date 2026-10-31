@@ -15,7 +15,9 @@ import { autoFraction } from "@/editor/snippets/autofraction";
 import { tryAutoExpand } from "@/editor/snippets/extension";
 import { snippetStore } from "@/editor/snippets/engine";
 import { useAppStore } from "@/state/appStore";
-import { api, type FileNode } from "@/lib/tauri";
+import { api, focusApi, type FileNode } from "@/lib/tauri";
+import { FocusChip } from "@/components/FocusChip";
+import { EditorPane } from "@/components/EditorPane";
 import { relDirname } from "@/lib/path";
 import * as actions from "@/app/actions";
 import { createElement } from "react";
@@ -138,6 +140,10 @@ declare global {
     __typeChar: (ch: string) => { doc: string; head: number };
     /** 挂载设置弹窗（真实组件 + 页面自身的 store 实例），返回可见文本。 */
     __mountSettings: () => Promise<string>;
+    /** 挂载专注芯片（真实组件 + 状态栏外壳），返回卸载函数。 */
+    __mountFocusChip: () => () => void;
+    /** 挂载笔记栏（真实组件），返回状态栏文字（布局核对用）。 */
+    __mountEditorPane: () => Promise<string>;
     __unmountSettings: () => void;
     /** 直接走引擎的 openNotification，返回底部面板内容（没有面板则 null）。 */
     __vimNotify: (text: string, durationMs?: number) => string | null;
@@ -573,6 +579,65 @@ window.__mountSidebar = async (entries: string[]) => {
 };
 
 /** 真卸载：只摘 DOM 不卸载的话，旧实例仍订阅 store（⌘\ 收起再展开就测不出来）。 */
+/**
+ * 挂载真实 <EditorPane/>:状态栏(番茄钟芯片 + vim 模式 + 光标位置)的布局
+ * 就住在这儿,返回状态栏文字便于断言"路径没了、芯片在左、vim 在右"。
+ */
+window.__mountEditorPane = async () => {
+  const host = document.createElement("div");
+  host.id = "editor-pane-host";
+  host.style.cssText = "position:fixed;left:0;top:0;width:900px;height:600px;z-index:98";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  root.render(createElement(EditorPane));
+  await new Promise((r) => setTimeout(r, 150));
+  const bar = host.querySelector<HTMLElement>(".status-bar");
+  return bar ? bar.innerText : "";
+};
+
+/**
+ * 挂载专注芯片(真实组件 + 状态栏外壳)。
+ *
+ * 原生侧(铺屏 / 层级 / 事件 tap)在浏览器里没有——这里给 focusApi 装一份假
+ * 实现,芯片的渲染、面板、倒计时都能验;真窗口行为只能等部署后实测。
+ */
+let focusChipRoot: ReturnType<typeof createRoot> | null = null;
+window.__mountFocusChip = () => {
+  Object.assign(focusApi, {
+    status: async () => ({ locked: false, hard_lock: false, hard_active: false, trusted: true, seen: 0, swallowed: 0 }),
+    lock: async () => ({ locked: true, hard_lock: false, hard_active: false, trusted: true, seen: 0, swallowed: 0 }),
+    unlock: async () => ({ locked: false, hard_lock: false, hard_active: false, trusted: true, seen: 0, swallowed: 0 }),
+    setHardLock: async (enabled: boolean) => ({
+      locked: false,
+      hard_lock: enabled,
+      hard_active: false,
+      trusted: true,
+      seen: 0,
+      swallowed: 0,
+    }),
+    setHardLockActive: async (active: boolean) => ({
+      locked: false,
+      hard_lock: true,
+      hard_active: active,
+      trusted: true,
+      seen: 0,
+      swallowed: 0,
+    }),
+  });
+  const host = document.createElement("div");
+  host.id = "focus-chip-host";
+  host.className = "status-bar";
+  host.style.cssText = "position:fixed;left:0;bottom:0;width:420px;z-index:99";
+  document.body.appendChild(host);
+  focusChipRoot = createRoot(host);
+  focusChipRoot.render(createElement(FocusChip));
+  return () => {
+    focusChipRoot?.unmount();
+    focusChipRoot = null;
+    document.getElementById("focus-chip-host")?.remove();
+  };
+};
+
 /** 挂载设置弹窗（真实组件 + 页面自身的 store 实例），用来核对设置项接线。
     返回渲染后容器里的可见文本，便于断言某一节是否出现。 */
 window.__mountSettings = async () => {

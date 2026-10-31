@@ -39,7 +39,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
-use crate::commands::{agent, config, files, materials, python, translate, vault};
+use crate::commands::{agent, config, files, focus, materials, python, translate, vault};
 use crate::state::AppState;
 
 /// Fixed port; `vite.config.ts` proxies `/__dev` here.
@@ -263,6 +263,20 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         }
         "read_vimrc" => json_ok!(config::read_vimrc(app.state()).await),
         "save_vimrc" => json_ok!(config::save_vimrc(app.state(), arg_str(args, "contents")?).await),
+
+        // ---- 专注模式 ----
+        // 进/退锁真的会动窗口(铺屏、抬层级),所以这里不做浏览器端的假实现:
+        // 让它走同一个 #[tauri::command],行为与真应用一致。调试时注意——进锁
+        // 会把开发者的屏幕占满。
+        "focus_status" => json_ok!(focus::focus_status()),
+        "focus_lock" => json_ok!(focus::focus_lock(app.clone())),
+        "focus_unlock" => json_ok!(focus::focus_unlock(app.clone())),
+        "focus_set_hard_lock" => json_ok!(focus::focus_set_hard_lock(
+            arg_bool(args, "enabled")?
+        )),
+        "focus_set_hard_lock_active" => json_ok!(focus::focus_set_hard_lock_active(
+            arg_bool(args, "active")?
+        )),
 
         // ---- input sources: refuse to touch the machine's keyboard ----
         "list_input_sources" => json!([]),
@@ -497,6 +511,12 @@ fn arg_value(args: &Value, key: &str) -> Result<Value, String> {
     args.get(key)
         .cloned()
         .ok_or_else(|| format!("BAD_ARGS: `{}` is missing", key))
+}
+
+fn arg_bool(args: &Value, key: &str) -> Result<bool, String> {
+    args.get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("BAD_ARGS: `{}` is not a boolean", key))
 }
 
 // ---------------------------------------------------------------------------

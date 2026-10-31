@@ -181,6 +181,10 @@ pub fn run() {
             // 主窗口几何:在事件循环启动前恢复,首帧就是用户上次的大小和位置。
             commands::config::restore_window_bounds(app.handle());
 
+            // 专注模式的"失焦抢回"监听:装一次,之后由 focus.rs 自己判断要不要
+            // 拉回(没进锁就不动)。
+            commands::focus::install_focus_guard(app.handle());
+
             // Debug builds also answer on a loopback port so the same UI can be
             // driven from a browser tab (see `devbridge`).
             #[cfg(debug_assertions)]
@@ -211,6 +215,11 @@ pub fn run() {
             commands::config::save_keybindings,
             commands::config::read_vimrc,
             commands::config::save_vimrc,
+            commands::focus::focus_status,
+            commands::focus::focus_lock,
+            commands::focus::focus_unlock,
+            commands::focus::focus_set_hard_lock,
+            commands::focus::focus_set_hard_lock_active,
             commands::ime::list_input_sources,
             commands::ime::get_current_input_source,
             commands::ime::set_input_source,

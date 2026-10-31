@@ -2,6 +2,7 @@ pub mod agent;
 pub mod bblog;
 pub mod config;
 pub mod files;
+pub mod focus;
 pub mod ime;
 pub mod materials;
 pub mod pen_cursor;

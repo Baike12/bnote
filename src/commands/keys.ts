@@ -98,6 +98,15 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",
 
+  // 专注模式:番茄钟 + 独占锁。⌘⌥F 进/退独占(⌘⇧F 已被 agent.fork-session
+  // 占着),⌘⌥T 开始一段专注(幂等:正在跑时再按不重开),⌘⌥Y 暂停/继续。
+  // ⌘. 是锁住时的键盘逃生口——独占时原生红绿灯被摘掉,屏幕上唯一能点的是
+  // 状态栏的芯片,但那要鼠标;⌘. 随时可用。
+  "focus.pomodoro-start": "Mod-Alt-t",
+  "focus.timer-toggle": "Mod-Alt-y",
+  "focus.lock-toggle": "Mod-Alt-f",
+  "focus.lock-exit": "Mod-.",
+
   // 项目管理视图(project 区域)。⌘⇧↑/↓ 轮转卡片;⌘⇧J 与笔记区的「发送到
   // 今日日记末尾」同一个键,但项目里的语义是「插到今天待办区最前」——区域
   // 覆盖让同键按语境表达两种意图。⌘⌥N 在项目区被覆盖成「去右侧日记」。

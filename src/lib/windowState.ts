@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getConfigSnapshot, persistConfig, type WindowState } from "@/state/appStore";
+import { useFocusStore } from "@/focus/store";
 
 /**
  * 主窗口的大小/位置记忆。
@@ -89,6 +90,9 @@ export function trackWindowState(): () => void {
       .then((state) => {
         // 读盘/查询期间窗口可能已经关了:放弃这次写入。
         if (disposed || !state) return;
+        // 独占锁期间窗口是铺满屏幕的,那不是用户想要的窗口大小,存下去下次
+        // 启动就变成全屏窗口了。锁退掉后会有一次正常的 resize,那时再存。
+        if (useFocusStore.getState().locked) return;
         persistConfig({ ...getConfigSnapshot(), window: state });
       })
       .catch(() => {});
