@@ -69,9 +69,19 @@ describe("findSnippet:模式上下文", () => {
     expect(m?.start).toBe(1);
   });
 
-  it("手动展开(Tab 路径):非 auto 上下文下 typedKey=null 也要能命中", () => {
+  it("手动展开(Tab 路径)不认自动片段:插件里自动片段要求真的敲了一个字符", () => {
+    // dm 是 tAw(自动):插件 runSnippetCursor 对自动片段要求 `key.length === 1`,
+    // Tab 的 key 是 "Tab"(长度 3)一律跳过。让 Tab 认自动片段,光标停在已经完整
+    // 的 `\theta` 这类尾巴上时会被「补反斜杠」正则再展开一次(Tab → `\th\eta`,
+    // 端到端回归见 tabout.test.ts)。
     const m = findSnippet(state("dm", 2), 2, null, { auto: false, visualText: null });
-    expect(m?.snippet.trigger).toBe("dm");
+    expect(m).toBeNull();
+  });
+
+  it("手动展开仍认非自动片段(只写 m,没有 A)", () => {
+    reloadSnippets([{ trigger: "sr", replacement: "^{2}", options: "m" }], true);
+    const m = findSnippet(state("$xsr$", 4), 4, null, { auto: false, visualText: null });
+    expect(m?.snippet.trigger).toBe("sr");
   });
 });
 

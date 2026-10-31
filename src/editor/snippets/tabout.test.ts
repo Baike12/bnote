@@ -204,6 +204,17 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     expect(text(view)).toBe(doc); // 只是移光标,不改文档
   });
 
+  it("光标停在完整命令 \\theta 之后:Tab 只跳出括号,不再把尾巴展开成 \\th\\eta", () => {
+    // 回归(实机复现):`tt` 自动展开出 `\theta` 之后按 Tab,「给希腊字母补反斜杠」
+    // 那条自动正则 `([^\\])(${GREEK})` 命中行尾的 `h`+`eta`,把 `eta` 改写成
+    // `\eta`。插件的自动片段要求"真的敲了一个字符"(key.length === 1),Tab 不认。
+    const doc = "$J(\\theta)$";
+    const view = makeView(doc, [doc.indexOf("\\theta") + "\\theta".length]);
+    expect(runTab(view)).toBe(true);
+    expect(text(view)).toBe(doc);
+    expect(head(view)).toBe(doc.indexOf(")") + 1); // 跨过右括号
+  });
+
   it("矩阵里普通 Tab 不再插 ` & `(留给 tabout),Shift+Tab 才是列分隔", () => {
     const separator = makeView(DM, [DM.indexOf("Q")]);
     expect(matrixSeparator(separator)).toBe(true);

@@ -17,6 +17,7 @@ import {
   HiddenLineWidget,
   HrWidget,
   ListBulletWidget,
+  MathInlinePreviewWidget,
   MathPreviewWidget,
   MathWidget,
   TaskCheckboxWidget,
@@ -624,7 +625,7 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   // ---- Math ----
   // Whole display blocks (rendered widget / preview) live in the state field;
   // here only single-line display and inline formulas — rendered when the
-  // caret is outside, source-highlighted while editing.
+  // caret is outside, source + rendering copy while editing.
   for (const region of maths) {
     if (region.to < visibleFrom || region.from > visibleTo) continue;
     if (inRangeList(exclude, region.from, region.to)) continue;
@@ -637,12 +638,19 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
     // 收起源码后光标正好落在渲染结果之后(Tab 跳出/打完闭合 $ 的自然位置)。
     // 块级公式仍用 active()——整行 widget 的边界位置属于块自己的行。
     //
-    // 编辑时**只显示源码**:不在闭合定界符后插渲染副本。那份副本是同一个
-    // 公式的第二遍渲染——一行里有两个以上行内公式时,它正好挤在相邻公式的
-    // 渲染旁边(用户看到「渲染重合」),而且宽度每次击键都变、整行跟着重排。
-    // 光标移出公式立刻渲染(边界即正文侧),编辑时看源码就够。
+    // 编辑时源码 + **紧随闭合定界符的渲染副本**:副本是行内盒,后面的文字
+    // (含同行的下一个公式,`a xxxx b` 里编辑 a 时)整体往后推,不覆盖任何
+    // 东西。块公式由块层在源码下方补预览,行内区域没有那一层,只能在这里补。
     if (selections.some((r) => selectionInMathBody(region, r.from, r.to))) {
       highlightMathSource(doc, region, out);
+      if (singleLine && hooks.mathPreview !== false && region.content.trim()) {
+        out.inline.push(
+          Decoration.widget({
+            widget: new MathInlinePreviewWidget(region.content),
+            side: 1,
+          }).range(region.to),
+        );
+      }
       continue;
     }
 

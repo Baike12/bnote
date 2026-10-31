@@ -973,6 +973,18 @@ button {
   display: none;
 }
 
+/* 编辑中的行内公式:源码留在左边,渲染预览紧随闭合定界符、把后面的文字
+   往后推(块公式的预览在源码下方)。必须是 inline 盒:inline-block 的基线
+   会把整行撑高,光标进出公式时下方内容跟着抖 1-2px;inline 的上下 padding
+   只画不占位,行高与渲染态完全一致。 */
+.cw-math-preview-inline {
+  display: inline;
+  margin-left: 0.4em;
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+  background: var(--code-inline-bg);
+}
+
 /* Obsidian-style coloring of raw math source while editing. */
 .md-math-delim {
   color: var(--keyword);
@@ -2786,8 +2798,16 @@ input[type="range"] {
   margin: 6px 0;
 }
 .agent-md pre.agent-code code { background: transparent; padding: 0; }
+/* 公式块:横向可滚(宽公式能拖到),但绝不裁切竖直方向。
+   KaTeX 的盒子高度只按自己的字体度量算 —— \text{中文} 走的是系统 CJK 回退
+   字体,字形盒比它算出来的 depth 更深,下花括号标签(\underbrace{…}_{…})
+   会探出盒子底部几个像素;overflow-y:hidden 会把探出的那截直接切掉(标签
+   底边被削平)。所以把竖直的裁切盒往下撑开 0.2em,再从下边距里扣回来:
+   视觉节奏不变,标签完整。 */
 .agent-md .katex-display {
   margin: 6px 0;
+  padding-bottom: 0.3em;
+  margin-bottom: calc(6px - 0.3em);
   overflow-x: auto;
   overflow-y: hidden;
 }

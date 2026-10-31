@@ -362,6 +362,13 @@ export function findSnippet(
 
   for (const snippet of compiled.list) {
     if (opts.auto && !snippet.auto) continue;
+    // 手动展开(Tab,typedKey === null)不认自动片段:插件的 runSnippetCursor
+    // 对自动片段要求 `key.length === 1`(真的敲下一个字符),Tab 永远轮不到它。
+    // 少了这条,光标停在行尾时任何撞上自动正则的尾巴都会被再展开一次——
+    // `\theta` 末尾的 `h`+`eta` 命中「给希腊字母补反斜杠」片段(`([^\\])(${GREEK})`),
+    // Tab 就把 `eta` 改写成 `\eta`(`$\theta$` + Tab → `$\th\eta$`)。
+    // 视觉片段不在此列:选区 + 触发键是它唯一的入口(bnote 允许它走 Tab 路径)。
+    if (!opts.auto && snippet.auto && !snippet.visual) continue;
 
     // Visual snippets only fire when there is a selection to operate on.
     if (snippet.visual) {
