@@ -10,6 +10,7 @@ import {
 } from "./livePreview";
 import {
   ListBulletWidget,
+  MathInlinePreviewWidget,
   MathPreviewWidget,
   MathWidget,
   TaskCheckboxWidget,
@@ -452,15 +453,19 @@ describe("行内公式的渲染规则（buildInlineDecorations）", () => {
     ).toBe(true);
   });
 
-  it("一行两个公式、编辑前一个：只渲染后一个，前一个不出现第二份渲染", () => {
+  it("一行两个公式、编辑前一个：前一个的渲染副本紧随闭合 $，后一个照常渲染", () => {
     // "甲 $a$ 乙 $b$ 丙"：region 2..5 与 8..11。
     const doc = "甲 $a$ 乙 $b$ 丙";
     const points = inlinePoints(doc, 3); // 光标在第一个公式内
     const widgets = points.filter((p) => p.widget instanceof MathWidget);
     expect(widgets).toHaveLength(1);
     expect(widgets[0]).toMatchObject({ from: 8, to: 11 });
-    // 正在编辑的第一个公式:区间内一条装饰都没有(既不折、也没有副本)
-    expect(points.filter((p) => p.from >= 2 && p.to <= 5)).toHaveLength(0);
+    // 正在编辑的第一个公式:源码不折,渲染副本插在闭合定界符之后(=5),
+    // 把「乙」与后一个公式整体往后推——不覆盖、也不并排重合。
+    const copy = points.filter((p) => p.widget instanceof MathInlinePreviewWidget);
+    expect(copy).toHaveLength(1);
+    expect(copy[0].from).toBe(5);
+    expect(copy[0].from).toBeLessThan(widgets[0].from);
   });
 });
 
