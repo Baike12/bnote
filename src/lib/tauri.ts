@@ -484,3 +484,33 @@ export const api = {
   pythonLspStopAll: () => invoke<void>("python_lsp_stop_all"),
   pythonUvCreate: (mdPath: string) => invoke<PythonUvOutcome>("python_uv_create", { mdPath }),
 };
+
+/** 专注模式(伪全屏锁 + 硬锁)的原生状态。字段名与 Rust 侧一致。 */
+export interface FocusStatus {
+  /** 伪全屏锁是否开着。 */
+  locked: boolean;
+  /** 硬锁是否武装(用户打开了开关,表示"专注期间吞系统级快捷键")。 */
+  hard_lock: boolean;
+  /** 硬锁是否正在拦截:只有一段番茄钟在跑的时候才为真。 */
+  hard_active: boolean;
+  /** 辅助功能权限是否已授予——硬锁的前提。 */
+  trusted: boolean;
+  /** 硬锁的 tap 见过的按键事件数(证明 tap 活着)。 */
+  seen: number;
+  /** 硬锁吞掉的按键事件数。 */
+  swallowed: number;
+}
+
+export const focusApi = {
+  status: () => invoke<FocusStatus>("focus_status"),
+  /** 进锁:伪全屏 + 层级独占 + 焦点抢回。 */
+  lock: () => invoke<FocusStatus>("focus_lock"),
+  /** 退锁:把窗口的层级/装饰/几何原样放回去。 */
+  unlock: () => invoke<FocusStatus>("focus_unlock"),
+  /** 武装/解除硬锁。只是意向:真正的拦截发生在番茄钟期间。 */
+  setHardLock: (enabled: boolean) =>
+    invoke<FocusStatus>("focus_set_hard_lock", { enabled }),
+  /** 开始/停止真正拦截(番茄钟跑起来时开,停下来时关)。 */
+  setHardLockActive: (active: boolean) =>
+    invoke<FocusStatus>("focus_set_hard_lock_active", { active }),
+};

@@ -8,6 +8,7 @@ import { useAppStore } from "@/state/appStore";
 import { currentVimMode } from "@/editor/vim/vim";
 import { fileName } from "@/lib/path";
 import { PythonRunPanel } from "@/components/PythonRunPanel";
+import { FocusChip } from "@/components/FocusChip";
 
 const AUTOSAVE_DELAY = 800;
 
@@ -173,11 +174,13 @@ export function EditorPane() {
         </div>
       )}
       <div className="status-bar">
-        <span ref={modeRef} className="vim-mode" />
-        <span ref={statusRef} />
+        {/* 左侧:番茄钟芯片(专注计时 + 独占锁的入口)。
+            右侧:vim 模式 + 光标位置。文件路径不再重复——顶部标题栏已经有了。 */}
+        <FocusChip />
         <span className="spacer" />
         {dirty && <span className="dirty-dot" title="未保存">●</span>}
-        <span className="file-hint">{currentFile ?? ""}</span>
+        <span ref={modeRef} className="vim-mode" />
+        <span ref={statusRef} />
       </div>
     </div>
   );

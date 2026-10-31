@@ -79,6 +79,19 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSObject",
   "NSString",
 ] }
+# 专注模式的硬锁(commands/focus.rs):CGEventTap 吞掉 ⌘Tab / ⌘Space 这类系统级
+# 快捷键,需要辅助功能权限。事件 tap 的 MachPort 要挂到 run loop 上,所以还要
+# CoreFoundation 的 CFRunLoop / CFMachPort。
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "CFMachPort",
+  "CFRunLoop",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+  "std",
+  "CGEvent",
+  "CGEventTypes",
+] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

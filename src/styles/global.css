@@ -1039,15 +1039,214 @@ button {
   color: var(--string);
 }
 
+/* 开关那一行:文字本身也能点(和右边的小开关同一个动作)。 */
+.toggle-label {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.toggle-label:hover {
+  color: var(--text);
+}
+/* 封存态:开关点不动,文字也不给 hover 反馈——别让人以为"再点一下就生效"。 */
+.toggle-label:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.toggle-label:disabled:hover {
+  color: inherit;
+}
+.toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .dirty-dot {
   color: var(--accent);
 }
 
-.file-hint {
-  white-space: nowrap;
+/* 专注芯片(状态栏左端):番茄钟 + 独占锁的入口。
+   面板向上弹——状态栏在最底下,往下弹会出屏。 */
+.focus-chip-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.focus-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  cursor: pointer;
+}
+.focus-chip:hover {
+  background: var(--bg3);
+  color: var(--text-dim);
+}
+.focus-chip.running {
+  color: var(--text-dim);
+}
+.focus-chip.locked {
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.focus-chip .focus-time {
+  font-variant-numeric: tabular-nums;
+}
+.focus-chip .focus-paused {
+  color: var(--text-faint);
+}
+
+.focus-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 240px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  box-shadow: 0 6px 24px var(--shadow);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.focus-pop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+}
+.focus-pop-clock {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.focus-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.focus-pop-row .btn.on {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+.focus-durations label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.focus-durations input {
+  width: 44px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg1);
+  color: var(--text);
+  font: inherit;
+  text-align: center;
+}
+.focus-pop-count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.focus-pop-note {
+  color: var(--text-faint);
+}
+/* 一段专注进行中:锁的配置封存了。用一条收口的内联提示,不做成可点的开关。 */
+.focus-pop-seal {
+  padding: 4px 6px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
+/* 设置页的独占锁:一整块「承诺」而不是随手可翻的开关表。
+   封存时加一句横贯的封条 + 整体压暗,和"可改"状态一眼能分开。 */
+.focus-seal {
+  position: relative;
+}
+.focus-seal.sealed {
+  opacity: 0.72;
+}
+.focus-seal-bar {
+  margin-bottom: 8px;
+  padding: 5px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  letter-spacing: 0.2px;
+}
+
+.focus-pop-hint {
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+/* 折叠的卡片头(独占锁):整条都能点开/收起。
+   卡片裁掉溢出的圆角(overflow: hidden),否则 hover 底色是个 0 圆角的方块,
+   压在 10px 圆角的卡片上会露出直角;分隔线只在展开时由 body 的 border-top 画,
+   折叠时不画——否则它和卡片底边叠成一条双线。 */
+.focus-fold-card {
   overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 50%;
+}
+.settings-card-head.focus-fold-head {
+  width: 100%;
+  border-bottom: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-card-head.focus-fold-head:hover {
+  background: var(--bg2);
+}
+.focus-fold-card > .settings-card-body {
+  border-top: 1px solid var(--border);
+}
+.focus-fold-chevron {
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1;
+}
+.link-btn {
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.setting-error {
+  margin-top: 6px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.focus-pop-error {
+  color: var(--danger);
+  word-break: break-all;
 }
 
 .editor-empty {

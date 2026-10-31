@@ -23,6 +23,7 @@ import {
 } from "@/footprint/store";
 import { flushPersistConfig, hasPendingPersist } from "@/state/appStore";
 import { trackWindowState } from "@/lib/windowState";
+import { useFocusStore } from "@/focus/store";
 import { imeOnWindowBlur, imeOnWindowFocus, imeWarmUp } from "@/editor/imeSwitch";
 import {
   applySettingsToEditor,
@@ -148,6 +149,16 @@ export default function App() {
       // 助手对话字号同理:没有这一项 → 100%,坏值夹回 85%–160%。
       settings.agentFontScale = normalizeAgentFont(settings.agentFontScale);
       useAppStore.getState().replaceSettings(settings);
+      // 番茄钟:恢复上次的计时状态(endsAt 是绝对时间,重启后照样判超时),
+      // 并读一次原生侧的锁状态。启动**不**自动进锁——用户重启应用不是要求
+      // 被关进去,自动锁只由计时器的阶段切换触发。
+      useFocusStore.getState().restore(cfg?.focusTimer);
+      void useFocusStore.getState().refreshStatus();
+      // 硬锁是"常开"型设置:上次开着、这次也把权限给足了,启动就把硬锁重新
+      // 装上(原生侧的事件 tap 随进程一起没了,不重装等于设置形同虚设)。
+      if (settings.focusHardLock) {
+        void useFocusStore.getState().setHardLock(true);
+      }
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);
       });
@@ -266,9 +277,21 @@ export default function App() {
     const onFocus = () => {
       imeOnWindowFocus();
       restoreEditorFocus();
+      // 辅助功能权限是用户在**系统设置**里授的,app 收不到任何通知——
+      // 从系统设置切回 bnote 时重读一次,否则界面还停在"没权限"的老状态,
+      // 用户会以为授权没生效(而实际上早就生效了)。
+      void useFocusStore.getState().refreshStatus();
+      // 窗口回来时对一次表:窗口在后台被系统节流/机器睡过之后,番茄钟的显示
+      // 必须按真实时钟重算,而不是等着"补拍子"。
+      useFocusStore.getState().syncNow();
     };
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
+    // 切 Space / 最小化再回来不一定伴随窗口 focus 变化,但一定会翻可见性。
+    const onVisible = () => {
+      if (document.visibilityState === "visible") useFocusStore.getState().syncNow();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     let unlisten: (() => void) | undefined;
     try {
       // getCurrentWindow() 在非 Tauri 环境（浏览器 harness）会同步抛错，
@@ -283,6 +306,8 @@ export default function App() {
     }
     return () => {
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
       unlisten?.();
     };
   }, []);

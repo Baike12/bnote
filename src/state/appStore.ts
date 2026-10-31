@@ -15,6 +15,7 @@ import { DEFAULT_TYPEWRITER_POSITION } from "@/editor/typewriterPosition";
 import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
 import type { AgentImage } from "@/study/agentImages";
+import type { TimerState as FocusTimerState } from "@/focus/timer";
 
 export interface ImeSettings {
   /** 输入法自动切换总开关（跟随 vim 模式 + 中文输入框聚焦；仅 macOS 生效） */
@@ -94,6 +95,16 @@ export interface Settings {
   /** LaTeX Suite 特性开关(对齐 obsidian-latex-suite,见 editor/snippets/config) */
   latex: LatexConfig;
   quickAdd: QuickAddCommand[];
+  /**
+   * 专注段开始时自动进锁(伪全屏 + 层级独占 + 焦点抢回),离开专注段自动退锁。
+   * 这就是"一段时间内屏幕上只有 bnote"的那条链。
+   */
+  focusAutoLock: boolean;
+  /**
+   * 硬锁:吞掉 ⌘Tab / ⌘Space 等系统级快捷键。macOS 没有禁止切换应用的公开
+   * API,这是唯一能让"按了没反应"的办法,需要辅助功能权限。
+   */
+  focusHardLock: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -127,6 +138,8 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   latex: { ...DEFAULT_LATEX_CONFIG },
   quickAdd: [],
+  focusAutoLock: true,
+  focusHardLock: false,
 };
 
 export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | "quicktodo" | null;
@@ -180,6 +193,11 @@ export interface PersistedConfig {
    * 启动时由 Rust 侧在首帧前恢复(见 commands/config.rs::restore_window_bounds)。
    */
   window?: WindowState;
+  /**
+   * 番茄钟的计时状态。`endsAt` 是绝对时间戳,所以重启后照样能判断这一段
+   * 有没有到点(见 focus/store.ts)。
+   */
+  focusTimer?: FocusTimerState;
 }
 
 export interface WindowState {

@@ -26,6 +26,8 @@ import {
 } from "@/commands/keybindingOverrides";
 import { setHotkeyRecording } from "@/commands/globalKeys";
 import { useAppStore, type ImeSettings, type QuickAddCommand } from "@/state/appStore";
+import { openAccessibilitySettings, useFocusStore } from "@/focus/store";
+import { isActive } from "@/focus/timer";
 import type { LatexConfig } from "@/editor/snippets/config";
 import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
 import { inputGuards } from "@/lib/inputGuards";
@@ -43,6 +45,7 @@ type Tab =
   | "general"
   | "editor"
   | "reading"
+  | "focus"
   | "hotkeys"
   | "vim"
   | "snippets"
@@ -62,6 +65,7 @@ const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
       { id: "general", label: "通用" },
       { id: "editor", label: "编辑器" },
       { id: "reading", label: "阅读" },
+      { id: "focus", label: "专注" },
     ],
   },
   {
@@ -143,6 +147,7 @@ export function SettingsModal() {
           {tab === "general" && <GeneralTab />}
           {tab === "editor" && <EditorTab />}
           {tab === "reading" && <ReadingTab />}
+          {tab === "focus" && <FocusTab />}
           {tab === "hotkeys" && <HotkeysTab />}
           {tab === "vim" && <VimTab />}
           {tab === "snippets" && <SnippetsTab />}
@@ -275,21 +280,30 @@ function Toggle({
   desc,
   checked,
   onChange,
+  disabled = false,
 }: {
   label: ReactNode;
   desc?: ReactNode;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <Row
-      label={label}
+      // 文字也能点:开关只有一颗小圆点,用户多半会去点那一行字——点了没反应
+      // 会被当成"坏了",而不是"点错地方"。
+      label={
+        <button className="toggle-label" disabled={disabled} onClick={() => onChange(!checked)}>
+          {label}
+        </button>
+      }
       desc={desc}
       control={
         <button
           className={`toggle${checked ? " on" : ""}`}
           role="switch"
           aria-checked={checked}
+          disabled={disabled}
           onClick={() => onChange(!checked)}
         >
           <span className="toggle-knob" />
@@ -479,6 +493,97 @@ function ReadingTab() {
         两端保留阴影的圆角尖。两层只做视觉分区，不影响选中、批注和点击；
         翻页落点会在 2% 视口内微调，避免边界切在文字行中间。
       </p>
+    </div>
+  );
+}
+
+/**
+ * 专注:番茄钟的时长 + 独占锁的两个开关。
+ *
+ * 时长住在 focus/store 的计时状态里(它是计时状态的一部分,一起落盘),
+ * 不在 settings 里再存一份——两处都存,迟早对不上。
+ */
+function FocusTab() {
+  const settings = useAppStore((s) => s.settings);
+  const patch = useAppStore((s) => s.patchSettings);
+  const timer = useFocusStore((s) => s.timer);
+  const setDurations = useFocusStore((s) => s.setDurations);
+  const trusted = useFocusStore((s) => s.trusted);
+  const hardLock = useFocusStore((s) => s.hardLock);
+  const pendingHardLock = useFocusStore((s) => s.pendingHardLock);
+  const setHardLock = useFocusStore((s) => s.setHardLock);
+  const error = useFocusStore((s) => s.error);
+  const refreshStatus = useFocusStore((s) => s.refreshStatus);
+  // 一段专注进行中(跑着或暂停):锁的配置封存,改不了。
+  const sealed = isActive(timer);
+  // 独占锁默认折叠:它不是常用设置,展开一次就为了改一次决定。
+  const [lockOpen, setLockOpen] = useState(false);
+
+  // 打开这一页时重读一次原生状态:辅助功能权限可能刚刚在系统设置里被授予。
+  useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+  return (
+    <div className="settings-section">
+      <SettingsCard title="番茄钟">
+        <Row
+          label="一次专注多长"
+          control={
+            <input
+              className="settings-input mono"
+              type="number"
+              min={1}
+              max={180}
+              value={timer.config.focusMinutes}
+              onChange={(e) => setDurations({ focusMinutes: Number(e.target.value) })}
+            />
+          }
+        />
+      </SettingsCard>
+
+      {/* 独占锁是「一次承诺」:默认折叠,手动点开才看到那两颗开关。 */}
+      <section className="settings-card focus-fold-card">
+        <button
+          className="settings-card-head focus-fold-head"
+          aria-expanded={lockOpen}
+          onClick={() => setLockOpen((v) => !v)}
+        >
+          <span className="settings-card-title">独占锁</span>
+          <span className="focus-fold-chevron" aria-hidden="true">
+            {lockOpen ? "▾" : "▸"}
+          </span>
+        </button>
+        {lockOpen && (
+          <div className="settings-card-body">
+            <div className={`focus-seal${sealed ? " sealed" : ""}`}>
+              {sealed && <div className="focus-seal-bar">🔒 本次专注进行中，结束后才能调整</div>}
+              <Toggle
+                label="专注时独占屏幕"
+                checked={settings.focusAutoLock}
+                onChange={(v) => patch({ focusAutoLock: v })}
+                disabled={sealed}
+              />
+              <Toggle
+                label="专注期间吞掉 ⌘Tab / ⌘Space"
+                checked={hardLock || pendingHardLock}
+                onChange={(v) => void setHardLock(v)}
+                disabled={sealed}
+              />
+              {error && !pendingHardLock && <div className="setting-error">{error}</div>}
+            </div>
+            {(!trusted || pendingHardLock) && (
+              <div className="setting-row">
+                <span className="setting-label">辅助功能</span>
+                <span className="setting-control">
+                  <button className="link-btn" onClick={() => void openAccessibilitySettings()}>
+                    {pendingHardLock ? "等待授权" : "去授权"}
+                  </button>
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
