@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { MinutesInput } from "./MinutesInput";
 import { openAccessibilitySettings, useFocusStore } from "@/focus/store";
 import { formatClock, isActive, isPaused, isRunning, remainingMs } from "@/focus/timer";
 
@@ -110,12 +111,9 @@ export function FocusChip() {
           <div className="focus-pop-row focus-durations">
             <label>
               时长
-              <input
-                type="number"
-                min={1}
-                max={180}
+              <MinutesInput
                 value={timer.config.focusMinutes}
-                onChange={(e) => setDurations({ focusMinutes: Number(e.target.value) })}
+                onChange={(n) => setDurations({ focusMinutes: n })}
               />
               分
             </label>

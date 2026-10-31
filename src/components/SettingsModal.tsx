@@ -27,6 +27,7 @@ import {
 import { setHotkeyRecording } from "@/commands/globalKeys";
 import { useAppStore, type ImeSettings, type QuickAddCommand } from "@/state/appStore";
 import { openAccessibilitySettings, useFocusStore } from "@/focus/store";
+import { MinutesInput } from "./MinutesInput";
 import { isActive } from "@/focus/timer";
 import type { LatexConfig } from "@/editor/snippets/config";
 import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
@@ -529,13 +530,10 @@ function FocusTab() {
         <Row
           label="一次专注多长"
           control={
-            <input
+            <MinutesInput
               className="settings-input mono"
-              type="number"
-              min={1}
-              max={180}
               value={timer.config.focusMinutes}
-              onChange={(e) => setDurations({ focusMinutes: Number(e.target.value) })}
+              onChange={(n) => setDurations({ focusMinutes: n })}
             />
           }
         />
