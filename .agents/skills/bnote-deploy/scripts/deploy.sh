@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # bnote-deploy: typecheck → tauri build → stop every running instance (verified) →
-# replace /Applications/bnote.app → relaunch → verify.
+# replace /Applications/bnote.app → sign (stable identity) → relaunch → verify.
 set -euo pipefail
 
 APP_ID="com.bnote.app"
 APP_DST="/Applications/bnote.app"
 APP_BIN="$APP_DST/Contents/MacOS/bnote"
+# 本地代码签名身份(scripts/setup-dev-signing.sh 创建)。**必须**签:不签的话
+# 应用的 designated requirement 就是 cdhash,每次重建都把 macOS 的辅助功能
+# 授权作废——"授权过了还要再授权一次"那个循环就是这么来的。
+SIGN_KC="$HOME/Library/Keychains/bnote-dev.keychain-db"
+SIGN_ID="bnote-dev"
+SIGN_PASS="${BNOTE_SIGN_PASSWORD:-bnote-dev-sign}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 BUNDLE_SRC="$ROOT/src-tauri/target/release/bundle/macos/bnote.app"
@@ -51,21 +57,22 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "3. [stop]        关闭所有实例（/Applications 包 + 本地 dev/release 二进制）:"
   echo "                 osascript quit → SIGTERM → SIGKILL，并验证进程真的消失"
   echo "4. [replace]     rm -rf $APP_DST && ditto $BUNDLE_SRC $APP_DST"
-  echo "5. [launch]      open ${APP_DST}，等新包进程出现并用 ps 校验"
+  echo "5. [sign]        codesign -s $SIGN_ID（稳定身份；不签则辅助功能授权每次重建都作废）"
+  echo "6. [launch]      open ${APP_DST}，等新包进程出现并用 ps 校验"
   echo "root=$ROOT"
   echo
   echo "当前检测到的实例: $(instance_pids | tr '\n' ' ')"
   exit 0
 fi
 
-echo "==> 1/5 类型检查"
+echo "==> 1/6 类型检查"
 if [ "$SKIP_TYPECHECK" = 0 ]; then
   pnpm exec tsc --noEmit
 else
   echo "    (跳过)"
 fi
 
-echo "==> 2/5 构建 (tauri build)"
+echo "==> 2/6 构建 (tauri build)"
 # 部署只需要 .app:DMG 由 create-dmg 走 Finder AppleScript 排版,单次约半分钟,
 # 还会偶发失败(留下挂载卷)——替换运行实例用不到它,只有 --build-only 才打。
 # cargo 的 release 重编译(资产嵌入,前端改动也触发)是真正的大头,省不掉。
@@ -99,7 +106,7 @@ if [ "$BUILD_ONLY" = 1 ]; then
   exit 0
 fi
 
-echo "==> 3/5 关闭正在运行的实例"
+echo "==> 3/6 关闭正在运行的实例"
 # 先礼后兵：AppleScript 优雅退出让自动保存落盘，再用 SIGTERM / SIGKILL 兜底，每一步
 # 都确认进程真的消失。本地实例（dev 二进制、本地构建的包）不注册 bundle id，
 # AppleScript 找不到它们，只能靠信号——它们能和 /Applications 的副本同时开着，
@@ -136,13 +143,31 @@ if ! stop_instances; then
 fi
 echo "    已无运行中的实例"
 
-echo "==> 4/5 替换 $APP_DST"
+echo "==> 4/6 替换 $APP_DST"
 rm -rf "$APP_DST"
 [ -e "$APP_DST" ] && { echo "错误: 旧包未能删除（${APP_DST}）"; exit 1; }
 ditto "$BUNDLE_SRC" "$APP_DST"
 [ -x "$APP_BIN" ] || { echo "错误: 替换后未找到可执行文件 $APP_BIN"; exit 1; }
 
-echo "==> 5/5 启动并验证"
+echo "==> 5/6 签名（稳定代码身份）"
+# 没有稳定身份,TCC 授权每次重建都作废。宁可这里失败,也不要悄悄部署一个
+# 「下次打开又没权限」的包。
+if [ ! -f "$SIGN_KC" ]; then
+  echo "错误: 找不到签名身份 $SIGN_KC"
+  echo "      先跑: scripts/setup-dev-signing.sh（只需一次）"
+  exit 1
+fi
+security unlock-keychain -p "$SIGN_PASS" "$SIGN_KC"
+codesign --force --sign "$SIGN_ID" --identifier "$APP_ID" --timestamp=none "$APP_DST"
+codesign --verify --strict "$APP_DST"
+DR="$(codesign -d -r- "$APP_DST" 2>&1 | grep 'designated =>' | sed 's/^[[:space:]]*//')"
+case "$DR" in
+  *"certificate root"*) echo "    $DR" ;;
+  *) echo "错误: 签名没有形成稳定身份（DR 不是证书锚定）: $DR"; exit 1 ;;
+esac
+echo "    辅助功能授权从此跨重建有效"
+
+echo "==> 6/6 启动并验证"
 open "$APP_DST"
 # 等到新包自己的进程出现：新包首次启动要走一遍系统校验，可能慢于 open 返回。
 pids=""
