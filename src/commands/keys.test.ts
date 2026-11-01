@@ -100,14 +100,40 @@ describe("默认键位", () => {
     expect(others).toEqual([]);
   });
 
-  it("阅读区截图默认 ⌘⇧E,归阅读区且无人重复", () => {
+  it("⌘⇧E:阅读区截图、代码区聚焦文件树,各归各的区域", () => {
     expect(bindingsForCommand("study.pdf-snap-to-agent")).toEqual(["Mod-Shift-e"]);
     expect(defaultRegionOf("study.pdf-snap-to-agent")).toBe("reading");
+    // 代码区的「聚焦文件树」用同一个物理键。两个区域各有一份绑定,互不
+    // 干扰(区域自己的绑定排在跨区域和弦之前,见 commandsForKey)。
+    expect(bindingsForCommand("code.focus-tree")).toEqual(["Mod-Shift-e"]);
+    expect(defaultRegionOf("code.focus-tree")).toBe("code");
     const others = Object.entries(DEFAULT_BINDINGS).filter(
       ([id, key]) =>
-        id !== "study.pdf-snap-to-agent" && keysOf(key).includes("Mod-Shift-e"),
+        id !== "study.pdf-snap-to-agent" &&
+        id !== "code.focus-tree" &&
+        keysOf(key).includes("Mod-Shift-e"),
     );
     expect(others).toEqual([]);
+  });
+});
+
+describe("专注:只有开始,没有中途出口", () => {
+  it("开始番茄钟绑定 ⌘⌥T,且是唯一的专注键位", () => {
+    expect(bindingsForCommand("focus.pomodoro-start")).toEqual(["Mod-Alt-t"]);
+    expect(commandsForKey("Mod-Alt-t", "global")).toContain("focus.pomodoro-start");
+  });
+
+  it("暂停 / 结束 / 进退出独占 / 硬锁开关的键位都不存在", () => {
+    for (const id of [
+      "focus.timer-toggle",
+      "focus.timer-stop",
+      "focus.lock-toggle",
+      "focus.lock-exit",
+      "focus.hard-lock-toggle",
+    ]) {
+      expect(DEFAULT_BINDINGS[id], id).toBeUndefined();
+      expect(bindingsForCommand(id), id).toEqual([]);
+    }
   });
 });
 
@@ -223,6 +249,9 @@ describe("区域分发", () => {
 
   it("截图和弦同样跨区域:焦点在 Agent 面板/笔记区也命中阅读区那份绑定", () => {
     expect(commandsForKey("Mod-Shift-e", "reading")).toContain("study.pdf-snap-to-agent");
+    // 代码区里同一个键先命中自己的「聚焦文件树」,摘要键不会跟着执行
+    // (pickCommand 只取第一条 when 成立的命令)。
+    expect(commandsForKey("Mod-Shift-e", "code")[0]).toBe("code.focus-tree");
     for (const region of ["notes", "agent"] as const) {
       expect(commandsForKey("Mod-Shift-e", region)).toContain("study.pdf-snap-to-agent");
     }

@@ -35,7 +35,6 @@ import { resetLspStateForPath, syncNow } from "@/python/lsp";
 import { agentApi, api } from "@/lib/tauri";
 import { canFlipPdfPage, flipPdfPage } from "@/study/pdfNav";
 import { useFocusStore } from "@/focus/store";
-import { isRunning } from "@/focus/timer";
 import { capturePdfSnapshot, hasPdfSnapshotSource } from "@/study/pdfSnapshot";
 import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
 import { fileToAgentImage } from "@/study/agentImages";
@@ -212,49 +211,13 @@ const defs: CommandDef[] = [
   },
   // ---- 专注模式(番茄钟 + 独占锁) ----
   // 命令只是转发:计时状态只有 focus/store.ts 一处写(见那里的"单一写入者")。
-  // 一次番茄钟是一段连续的专注:没有休息段,到点即停,不自动接下一段。
+  // 一次番茄钟是一段连续的专注:没有休息段、没有暂停、没有中途结束——
+  // 唯一的中途操作是"开始"。所以这里只有一条命令,没有任何退出/改锁入口。
   {
     id: "focus.pomodoro-start",
-    title: "专注:开始番茄钟",
+    title: "专注:开始番茄钟(独占屏幕 + 硬锁,结束前不能退出)",
     category: "专注",
-    run: () => useFocusStore.getState().start(),
-  },
-  {
-    id: "focus.timer-toggle",
-    title: "专注:暂停 / 继续本次专注",
-    category: "专注",
-    run: () => {
-      const store = useFocusStore.getState();
-      if (isRunning(store.timer)) store.pause();
-      else store.start();
-    },
-  },
-  {
-    id: "focus.timer-stop",
-    title: "专注:结束本次专注(清空计时并退锁)",
-    category: "专注",
-    run: () => useFocusStore.getState().stop(),
-  },
-  {
-    id: "focus.lock-toggle",
-    title: "专注锁定:进入 / 退出独占屏幕(屏幕上只有 bnote)",
-    category: "专注",
-    run: () => void useFocusStore.getState().toggleLock(),
-  },
-  {
-    id: "focus.lock-exit",
-    title: "专注锁定:退出独占屏幕",
-    category: "专注",
-    run: () => void useFocusStore.getState().exitLock(),
-  },
-  {
-    id: "focus.hard-lock-toggle",
-    title: "硬锁:吞掉 ⌘Tab / ⌘Space 等系统级快捷键(需辅助功能权限)",
-    category: "专注",
-    run: () => {
-      const store = useFocusStore.getState();
-      void store.setHardLock(!store.hardLock);
-    },
+    run: () => void useFocusStore.getState().start(),
   },
   // ---- 项目管理(project 区域) ----
   // 组件私有状态通过窗口事件交给视图:命令层不持有卡片轮播的 DOM 与编辑器

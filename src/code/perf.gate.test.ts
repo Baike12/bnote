@@ -35,6 +35,16 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)];
 }
 
+/** 把条目里出现的每一级目录都算作「展开」(量最大的拍平)。 */
+function allDirPaths(entries: readonly CodeEntry[]): Set<string> {
+  const dirs = new Set<string>();
+  for (const entry of entries) {
+    const parts = entry.path.split("/");
+    for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+  }
+  return dirs;
+}
+
 describe("代码模块量级门禁", () => {
   it("折 2000 个文件的项目树 < 10ms", () => {
     const entries = repoEntries(2000);
@@ -111,11 +121,13 @@ describe("代码模块量级门禁", () => {
   });
 
   it("拍平文件树(2 万个文件) < 6ms(虚拟滚动每次都拍一次)", () => {
-    const roots = buildTree(repoEntries(20000));
+    const entries = repoEntries(20000);
+    const roots = buildTree(entries);
+    const expanded = allDirPaths(entries);
     const samples: number[] = [];
     for (let i = 0; i < 7; i++) {
       const t0 = performance.now();
-      visibleRows(roots, new Set());
+      visibleRows(roots, expanded);
       samples.push(performance.now() - t0);
     }
     const med = median(samples);

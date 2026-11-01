@@ -152,6 +152,22 @@ export const codeCommandDefs: CommandDef[] = [
     },
   },
   {
+    id: "code.focus-tree",
+    title: "聚焦文件树",
+    category: "代码",
+    when: hasProject,
+    run: () => {
+      const store = useCodeStore.getState();
+      // 抽屉关着就先打开:聚焦的目标在树里,不在虚空里。
+      store.setTreeOpen(true);
+      // 有打开的文件就展开到它(虚拟滚动里那行得先成为可见行,才能聚焦);
+      // 没有就落在第一行。
+      const path = store.activePath;
+      if (path) store.expandTo(path);
+      store.requestTreeFocus(path);
+    },
+  },
+  {
     id: "code.toggle-problems",
     title: "显示/隐藏问题面板",
     category: "代码",

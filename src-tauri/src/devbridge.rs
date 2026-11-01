@@ -647,8 +647,13 @@ fn arg_bool(args: &Value, key: &str) -> Result<bool, String> {
 // /__dev/asset — the browser's stand-in for `asset://localhost/…`
 // ---------------------------------------------------------------------------
 
-/// Serves a file from the open vault or the app data dir (nothing else — this
-/// port is unauthenticated loopback).
+/// Serves a file from the open vault, the app data dir, or a code project
+/// opened in this dev session (nothing else — this port is unauthenticated
+/// loopback).
+///
+/// Code projects usually live outside the vault; their roots are exactly the
+/// keys of `code_trees`, i.e. the directories the user opened through the dev
+/// bridge, so the same sandbox boundary applies as for `code_read_file`.
 fn asset(app: &AppHandle, stream: &TcpStream, query: &str) {
     let Some(raw) = query_param(query, "p") else {
         return respond(stream, "400 Bad Request", "text/plain", b"MISSING p");
@@ -656,9 +661,19 @@ fn asset(app: &AppHandle, stream: &TcpStream, query: &str) {
     let path = std::path::PathBuf::from(raw);
 
     let state = app.state::<AppState>();
+    let in_code_project = state
+        .code_trees
+        .lock()
+        .map(|trees| {
+            trees
+                .keys()
+                .any(|root| crate::commands::ensure_within(std::path::Path::new(root), &path).is_ok())
+        })
+        .unwrap_or(false);
     let allowed = state.vault().map(|v| crate::commands::ensure_within(&v, &path).is_ok())
         == Some(true)
-        || crate::commands::ensure_within(&state.data_dir(), &path).is_ok();
+        || crate::commands::ensure_within(&state.data_dir(), &path).is_ok()
+        || in_code_project;
     if !allowed {
         return respond(stream, "403 Forbidden", "text/plain", b"OUTSIDE_VAULT");
     }

@@ -146,20 +146,38 @@ export interface VisibleRow {
  * 一次性开销,滚起来还要一直养着上万个节点;拍平成行之后只有视口附近那
  * 几十行真的进 DOM。
  *
- * 折叠的目录不展开它的子节点(与展开态一致)。返回新数组,不改树。
+ * `expanded` 是**展开的目录路径集合**:不在里面的目录只留自己一行,子节点
+ * 不进列表——默认空集 = 只显示顶层(不默认展开所有文件夹)。返回新数组,
+ * 不改树。
  */
 export function visibleRows(
   roots: readonly TreeNode[],
-  collapsed: ReadonlySet<string>,
+  expanded: ReadonlySet<string>,
 ): VisibleRow[] {
   const out: VisibleRow[] = [];
   const walk = (nodes: readonly TreeNode[], depth: number): void => {
     for (const node of nodes) {
       out.push({ node, depth });
-      if (node.isDir && !collapsed.has(node.path)) walk(node.children, depth + 1);
+      if (node.isDir && expanded.has(node.path)) walk(node.children, depth + 1);
     }
   };
   walk(roots, 0);
+  return out;
+}
+
+/**
+ * 一个路径的所有祖先目录(不含自身,顶层项给空数组)。
+ *
+ * 用来把某个文件「露出来」:聚焦文件树时要把它所在的每一层目录都展开,
+ * 否则虚拟滚动的行数组里根本没有这一行。
+ */
+export function ancestorDirs(path: string): string[] {
+  const out: string[] = [];
+  let slash = path.indexOf("/");
+  while (slash > 0) {
+    out.push(path.slice(0, slash));
+    slash = path.indexOf("/", slash + 1);
+  }
   return out;
 }
 

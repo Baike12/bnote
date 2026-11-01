@@ -529,31 +529,40 @@ function ReadingTab() {
 }
 
 /**
- * 专注:番茄钟的时长 + 独占锁的两个开关。
+ * 专注:一次专注多长 + 两把锁的说明与授权状态。
  *
  * 时长住在 focus/store 的计时状态里(它是计时状态的一部分,一起落盘),
  * 不在 settings 里再存一份——两处都存,迟早对不上。
+ *
+ * 锁没有开关:开始一段专注 = 独占屏幕 + 硬锁 + 计时一起生效,中途没有
+ * 退出入口。所以这里只显示状态,不提供任何能打断这一段的控制。
  */
 function FocusTab() {
-  const settings = useAppStore((s) => s.settings);
-  const patch = useAppStore((s) => s.patchSettings);
   const timer = useFocusStore((s) => s.timer);
   const setDurations = useFocusStore((s) => s.setDurations);
   const trusted = useFocusStore((s) => s.trusted);
   const hardLock = useFocusStore((s) => s.hardLock);
+  const hardActive = useFocusStore((s) => s.hardActive);
   const pendingHardLock = useFocusStore((s) => s.pendingHardLock);
-  const setHardLock = useFocusStore((s) => s.setHardLock);
   const error = useFocusStore((s) => s.error);
   const refreshStatus = useFocusStore((s) => s.refreshStatus);
-  // 一段专注进行中(跑着或暂停):锁的配置封存,改不了。
-  const sealed = isActive(timer);
-  // 独占锁默认折叠:它不是常用设置,展开一次就为了改一次决定。
-  const [lockOpen, setLockOpen] = useState(false);
+  const active = isActive(timer);
 
   // 打开这一页时重读一次原生状态:辅助功能权限可能刚刚在系统设置里被授予。
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus]);
+
+  const hardText = hardActive
+    ? "拦截中"
+    : pendingHardLock
+      ? "等待授权"
+      : hardLock
+        ? "已武装(开始专注时拦截)"
+        : trusted
+          ? "开始专注时自动武装"
+          : "未授权";
+
   return (
     <div className="settings-section">
       <SettingsCard title="番茄钟">
@@ -567,51 +576,30 @@ function FocusTab() {
             />
           }
         />
+        <div className="setting-hint">
+          {active
+            ? "本次专注进行中:不能暂停、不能提前结束。改时长只影响下一段。"
+            : "点状态栏左侧的番茄钟开始。开始后独占屏幕与硬锁同时生效,到点才解锁;改时长只影响下一段。"}
+        </div>
       </SettingsCard>
 
-      {/* 独占锁是「一次承诺」:默认折叠,手动点开才看到那两颗开关。 */}
-      <section className="settings-card focus-fold-card">
-        <button
-          className="settings-card-head focus-fold-head"
-          aria-expanded={lockOpen}
-          onClick={() => setLockOpen((v) => !v)}
-        >
-          <span className="settings-card-title">独占锁</span>
-          <span className="focus-fold-chevron" aria-hidden="true">
-            {lockOpen ? "▾" : "▸"}
-          </span>
-        </button>
-        {lockOpen && (
-          <div className="settings-card-body">
-            <div className={`focus-seal${sealed ? " sealed" : ""}`}>
-              {sealed && <div className="focus-seal-bar">🔒 本次专注进行中，结束后才能调整</div>}
-              <Toggle
-                label="专注时独占屏幕"
-                checked={settings.focusAutoLock}
-                onChange={(v) => patch({ focusAutoLock: v })}
-                disabled={sealed}
-              />
-              <Toggle
-                label="专注期间吞掉 ⌘Tab / ⌘Space"
-                checked={hardLock || pendingHardLock}
-                onChange={(v) => void setHardLock(v)}
-                disabled={sealed}
-              />
-              {error && !pendingHardLock && <div className="setting-error">{error}</div>}
-            </div>
-            {(!trusted || pendingHardLock) && (
-              <div className="setting-row">
-                <span className="setting-label">辅助功能</span>
-                <span className="setting-control">
-                  <button className="link-btn" onClick={() => void openAccessibilitySettings()}>
-                    {pendingHardLock ? "等待授权" : "去授权"}
-                  </button>
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
+      <SettingsCard title="专注锁">
+        <Row label="独占屏幕" control={<span className="setting-value">专注期间始终开启</span>} />
+        <Row label="硬锁" control={<span className="setting-value">{hardText}</span>} />
+        <Row
+          label="辅助功能"
+          control={
+            trusted && !pendingHardLock ? (
+              <span className="setting-value">已授权</span>
+            ) : (
+              <button className="link-btn" onClick={() => void openAccessibilitySettings()}>
+                {pendingHardLock ? "等待授权 · 去设置" : "去授权"}
+              </button>
+            )
+          }
+        />
+        {error && !pendingHardLock && <div className="setting-error">{error}</div>}
+      </SettingsCard>
     </div>
   );
 }

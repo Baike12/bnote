@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { codeApi } from "./api";
+import { ancestorDirs } from "./tree";
 import { useAppStore } from "@/state/appStore";
 import type {
   CodeEntry,
@@ -62,6 +63,19 @@ export interface CodeState {
   lspLog: { language: string; level: number; message: string }[];
   /** 文件树抽屉是否展开。 */
   treeOpen: boolean;
+  /**
+   * 文件树里展开的目录路径集合。**空集 = 只显示顶层**(默认不展开所有
+   * 文件夹);关掉抽屉再打开、重扫之后都保留,换项目才清空。
+   */
+  expandedDirs: Set<string>;
+  /**
+   * 「把焦点交给文件树」的请求(路径为 null = 落在第一行)。
+   *
+   * 走请求而不是命令层直接摸 DOM:抽屉可能还没挂载,而且文件树是虚拟滚动
+   * 的——目标行要先展开、滚动进窗口,才有元素可以聚焦。FileTree 消费一次
+   * 就清掉,关掉抽屉再打开不会又抢一次焦点。
+   */
+  treeFocus: { path: string | null; seq: number } | null;
   /** 问题面板是否展开。 */
   problemsOpen: boolean;
   /** 正在看 diff 的文件(null = 不看)。 */
@@ -96,6 +110,14 @@ export interface CodeState {
   appendLspLog: (language: string, level: number, message: string) => void;
   ensureLsp: (language: string, overrides?: ServerConfig) => Promise<boolean>;
   setTreeOpen: (open: boolean) => void;
+  /** 切换一个目录的展开态。 */
+  toggleDir: (path: string) => void;
+  /** 请求把焦点交给文件树(null = 第一行)。 */
+  requestTreeFocus: (path: string | null) => void;
+  /** 消费掉焦点请求(只消费一次)。 */
+  clearTreeFocus: () => void;
+  /** 展开到某个文件:把它的每一层祖先目录都打开。 */
+  expandTo: (path: string) => void;
   setProblemsOpen: (open: boolean) => void;
   setDiff: (path: string | null, staged?: boolean) => void;
   toggleDiffStaged: () => void;
@@ -121,6 +143,12 @@ const TAB_DISPLAY_WIDTH = 4;
  * 模块级而不是 state:它不驱动渲染,只是个丢弃过期读盘结果的闸门。
  */
 let openSeq = 0;
+
+/**
+ * 文件树聚焦请求的序号。同一路径连按快捷键也要重新定位(用户可能已经把
+ * 焦点挪走),所以每次请求都自增,消费方按对象/序号触发。
+ */
+let treeFocusSeq = 0;
 
 /**
  * 从内容里猜缩进单位(取前若干行里第一条缩进行)。
@@ -152,6 +180,8 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   lspStates: {},
   lspLog: [],
   treeOpen: false,
+  expandedDirs: new Set<string>(),
+  treeFocus: null,
   problemsOpen: false,
   diffPath: null,
   diffStaged: false,
@@ -184,6 +214,8 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       lspStates: {},
       lspLog: [],
       treeOpen: false,
+      expandedDirs: new Set<string>(),
+      treeFocus: null,
       problemsOpen: false,
       diffPath: null,
       diffStaged: false,
@@ -213,6 +245,8 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       lspStates: {},
       lspLog: [],
       treeOpen: false,
+      expandedDirs: new Set<string>(),
+      treeFocus: null,
       problemsOpen: false,
       diffPath: null,
       jump: null,
@@ -383,6 +417,40 @@ export const useCodeStore = create<CodeState>((set, get) => ({
 
   setTreeOpen(open) {
     set({ treeOpen: open });
+  },
+
+  toggleDir(path) {
+    set((s) => {
+      const next = new Set(s.expandedDirs);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return { expandedDirs: next };
+    });
+  },
+
+  requestTreeFocus(path) {
+    treeFocusSeq += 1;
+    set({ treeFocus: { path, seq: treeFocusSeq } });
+  },
+
+  clearTreeFocus() {
+    set({ treeFocus: null });
+  },
+
+  expandTo(path) {
+    const dirs = ancestorDirs(path);
+    if (dirs.length === 0) return;
+    set((s) => {
+      const next = new Set(s.expandedDirs);
+      let changed = false;
+      for (const dir of dirs) {
+        if (!next.has(dir)) {
+          next.add(dir);
+          changed = true;
+        }
+      }
+      return changed ? { expandedDirs: next } : s;
+    });
   },
 
   setProblemsOpen(open) {

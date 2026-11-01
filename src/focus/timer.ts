@@ -1,8 +1,9 @@
 /**
  * 番茄钟的纯逻辑:状态机 + 时间计算。
  *
- * 一次番茄钟 = **一段连续的专注**:没有休息段,到点就停,不会自动接下一段
- * (要不要再来一轮由人决定)。所以状态只有 idle / focus 两个。
+ * 一次番茄钟 = **一段连续的专注**:没有休息段,到点就停,不会自动接下一段。
+ * 也**没有暂停**:开始之后这一段必须走完——暂停等于把锁和计时拆开,而锁是
+ * 这段承诺的一部分(见 focus/store.ts)。所以状态只有 idle / focus 两个。
  *
  * 时间是**时间戳**,不是"每秒减一"的累加器:剩余时间一律由
  * `endsAt - now` 现算。累加器会把每次 tick 的误差攒起来(系统繁忙、标签页
@@ -23,10 +24,8 @@ export interface TimerConfig {
 
 export interface TimerState {
   phase: TimerPhase;
-  /** 这一段的结束时间戳(epoch ms)。暂停时为 null。 */
+  /** 这一段的结束时间戳(epoch ms);空闲时为 null。 */
   endsAt: number | null;
-  /** 暂停时冻结的剩余毫秒数;恢复时按它重新算 endsAt。 */
-  pausedRemaining: number | null;
   config: TimerConfig;
 }
 
@@ -39,7 +38,6 @@ export function createTimerState(config?: Partial<TimerConfig> | null): TimerSta
   return {
     phase: "idle",
     endsAt: null,
-    pausedRemaining: null,
     config: normalizeConfig(config),
   };
 }
@@ -69,46 +67,33 @@ export function isRunning(state: TimerState): boolean {
   return state.endsAt !== null;
 }
 
-/** 有没有一段专注正在进行(跑着或暂停着都算)。 */
+/** 有没有一段专注正在进行。 */
 export function isActive(state: TimerState): boolean {
   return state.phase === "focus";
 }
 
-export function isPaused(state: TimerState): boolean {
-  return state.phase === "focus" && state.endsAt === null && state.pausedRemaining !== null;
-}
-
 /**
- * 开始计时。
- *
- * 已经在跑就是空操作(幂等):重复按开始不会把已走的进度重置成满格。
- * 从 idle 起则开一段专注;暂停中则接着走剩下的。
+ * 开始计时。已经在跑就是空操作(幂等):重复按开始不会把已走的进度重置成
+ * 满格。
  */
 export function startTimer(state: TimerState, now: number): TimerState {
   if (state.endsAt !== null) return state;
-  if (state.phase === "idle") {
-    return { ...state, phase: "focus", endsAt: now + focusDurationMs(state), pausedRemaining: null };
-  }
-  const remaining = state.pausedRemaining ?? focusDurationMs(state);
-  return { ...state, endsAt: now + remaining, pausedRemaining: null };
+  return {
+    ...state,
+    phase: "focus",
+    endsAt: now + focusDurationMs(state),
+  };
 }
 
-/** 暂停:冻结剩余时间,阶段不变。 */
-export function pauseTimer(state: TimerState, now: number): TimerState {
-  if (state.endsAt === null) return state;
-  return { ...state, endsAt: null, pausedRemaining: Math.max(0, state.endsAt - now) };
-}
-
-/** 结束/重置:回到 idle。一段番茄钟只有"走完"和"提前结束"两种收尾。 */
+/** 结束/重置:回到 idle。一段番茄钟只有"走完"这一种收尾。 */
 export function stopTimer(state: TimerState): TimerState {
-  return { ...state, phase: "idle", endsAt: null, pausedRemaining: null };
+  return { ...state, phase: "idle", endsAt: null };
 }
 
 /** 剩余毫秒;空闲时是 0。 */
 export function remainingMs(state: TimerState, now: number): number {
-  if (state.endsAt !== null) return Math.max(0, state.endsAt - now);
-  if (state.pausedRemaining !== null) return Math.max(0, state.pausedRemaining);
-  return 0;
+  if (state.endsAt === null) return 0;
+  return Math.max(0, state.endsAt - now);
 }
 
 /** 这一段是否已经到点。 */

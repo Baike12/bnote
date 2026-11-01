@@ -138,16 +138,6 @@ export interface Settings {
   templatesDir: string;
   /** 日记相关配置(新建日记的初始内容等)。 */
   daily: DailySettings;
-  /**
-   * 专注段开始时自动进锁(伪全屏 + 层级独占 + 焦点抢回),离开专注段自动退锁。
-   * 这就是"一段时间内屏幕上只有 bnote"的那条链。
-   */
-  focusAutoLock: boolean;
-  /**
-   * 硬锁:吞掉 ⌘Tab / ⌘Space 等系统级快捷键。macOS 没有禁止切换应用的公开
-   * API,这是唯一能让"按了没反应"的办法,需要辅助功能权限。
-   */
-  focusHardLock: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -187,8 +177,6 @@ export const DEFAULT_SETTINGS: Settings = {
   quickAdd: [],
   templatesDir: "",
   daily: { template: "" },
-  focusAutoLock: true,
-  focusHardLock: false,
 };
 
 export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | "quicktodo" | null;

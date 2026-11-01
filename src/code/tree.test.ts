@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ancestorDirs,
   buildTree,
   filterTree,
   naturalCompare,
@@ -115,31 +116,43 @@ describe("visibleRows(虚拟滚动的拍平)", () => {
     entry("d.ts"),
   ]);
 
-  it("按展示顺序拍平,并记下层级", () => {
+  it("默认一个目录都没展开:只留顶层(不默认展开所有文件夹)", () => {
     const rows = visibleRows(roots, new Set());
     expect(rows.map((r) => `${r.depth}:${r.node.name}`)).toEqual([
       "0:docs",
-      "1:c.md",
+      "0:src",
+      "0:d.ts",
+    ]);
+  });
+
+  it("展开的目录才带出子节点,并记下层级", () => {
+    const rows = visibleRows(roots, new Set(["src"]));
+    expect(rows.map((r) => `${r.depth}:${r.node.name}`)).toEqual([
+      "0:docs",
       "0:src",
       "1:nested",
-      "2:b.ts",
       "1:a.ts",
       "0:d.ts",
     ]);
   });
 
-  it("折叠的目录只留它自己,子节点不进列表", () => {
-    const rows = visibleRows(roots, new Set(["src"]));
-    expect(rows.map((r) => r.node.name)).toEqual(["docs", "c.md", "src", "d.ts"]);
-  });
-
-  it("全折叠时行数 = 顶层节点数", () => {
+  it("全部展开时行数 = 所有节点数", () => {
     const all = new Set(["docs", "src", "src/nested"]);
-    expect(visibleRows(roots, all)).toHaveLength(3);
+    expect(visibleRows(roots, all)).toHaveLength(7);
   });
 
   it("空树给空列表", () => {
     expect(visibleRows([], new Set())).toEqual([]);
+  });
+});
+
+describe("ancestorDirs(聚焦文件时展开到它)", () => {
+  it("逐层给出祖先目录", () => {
+    expect(ancestorDirs("src/pkg/mod/a.ts")).toEqual(["src", "src/pkg", "src/pkg/mod"]);
+  });
+
+  it("顶层文件没有祖先", () => {
+    expect(ancestorDirs("README.md")).toEqual([]);
   });
 });
 

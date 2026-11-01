@@ -4,10 +4,8 @@ import {
   formatClock,
   isActive,
   isExpired,
-  isPaused,
   isRunning,
   normalizeConfig,
-  pauseTimer,
   remainingMs,
   startTimer,
   stopTimer,
@@ -49,24 +47,14 @@ describe("番茄钟:一段连续的专注", () => {
     expect(isRunning(stopped)).toBe(false);
   });
 
-  it("暂停冻结剩余时间,继续接着走剩下的", () => {
+  it("没有暂停:计时一旦开始,endAt 就不会被改掉", () => {
     const started = startTimer(session(25), T0);
-    const paused = pauseTimer(started, T0 + 5 * 60_000);
-    expect(isRunning(paused)).toBe(false);
-    expect(isPaused(paused)).toBe(true);
-    expect(remainingMs(paused, T0 + 9 * 60_000)).toBe(20 * 60_000);
-
-    const resumed = startTimer(paused, T0 + 60 * 60_000);
-    expect(resumed.endsAt).toBe(T0 + 60 * 60_000 + 20 * 60_000);
-    expect(isRunning(resumed)).toBe(true);
+    // 再调用 start 是幂等的空操作——不存在"冻结剩余时间再续上"的路径。
+    expect(startTimer(started, T0 + 5 * 60_000)).toBe(started);
+    expect(started.endsAt).toBe(T0 + 25 * 60_000);
   });
 
-  it("暂停后再暂停是空操作", () => {
-    const paused = pauseTimer(startTimer(session(), T0), T0 + 1000);
-    expect(pauseTimer(paused, T0 + 2000)).toBe(paused);
-  });
-
-  it("提前结束就是回到空闲(没有「跳去休息段」这种事)", () => {
+  it("收尾回到空闲(没有「跳去休息段」这种事)", () => {
     const started = startTimer(session(), T0);
     const stopped = stopTimer(started);
     expect(stopped.phase).toBe("idle");

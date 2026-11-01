@@ -211,6 +211,16 @@ pub fn read_text(path: &Path) -> Result<(String, bool, u64), String> {
     if size > MAX_TEXT_BYTES {
         return Ok((String::new(), true, size));
     }
+    // 已知的二进制后缀直接按二进制处理,不做内容嗅探:位图/字体/压缩包即便
+    // 前 8 KiB 恰好没有 NUL,解出来也是乱码——当成文本开进编辑器,一保存就
+    // 把原文件写坏(图片预览走 asset 协议读原文件,不经过这里)。
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if is_binary_ext(&ext) {
+        return Ok((String::new(), true, size));
+    }
     let bytes = std::fs::read(path).map_err(|e| format!("READ_FAILED: {}", e))?;
     // 前 8 KiB 里有 NUL 就是二进制(和 git 判二进制一个思路)。
     let head = &bytes[..bytes.len().min(8192)];
@@ -390,6 +400,20 @@ mod tests {
         assert!(binary);
         assert_eq!(text, "");
         assert_eq!(size, 4);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_text_treats_image_extension_as_binary_even_if_utf8() {
+        // 「前 8 KiB 里没有 NUL 的 png」:按内容嗅探会当成文本,保存就把图
+        // 写坏。后缀在已知二进制表里就必须走二进制通道。
+        let root = tmpdir("imgext");
+        let p = root.join("fake.png");
+        std::fs::write(&p, b"plain utf8 text, no nul").unwrap();
+        let (text, binary, size) = read_text(&p).unwrap();
+        assert!(binary);
+        assert_eq!(text, "");
+        assert_eq!(size, 23);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -99,14 +99,9 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",
 
-  // 专注模式:番茄钟 + 独占锁。⌘⌥F 进/退独占(⌘⇧F 已被 agent.fork-session
-  // 占着),⌘⌥T 开始一段专注(幂等:正在跑时再按不重开),⌘⌥Y 暂停/继续。
-  // ⌘. 是锁住时的键盘逃生口——独占时原生红绿灯被摘掉,屏幕上唯一能点的是
-  // 状态栏的芯片,但那要鼠标;⌘. 随时可用。
+  // 专注模式:⌘⌥T 开始一段专注(幂等:正在跑时再按不重开)。开始后没有
+  // 暂停/结束/退锁的快捷键——这一段必须走完,所以不需要第二个键。
   "focus.pomodoro-start": "Mod-Alt-t",
-  "focus.timer-toggle": "Mod-Alt-y",
-  "focus.lock-toggle": "Mod-Alt-f",
-  "focus.lock-exit": "Mod-.",
 
   // 项目管理视图(project 区域)。⌘⇧↑/↓ 轮转卡片;⌘⇧J 与笔记区的「发送到
   // 今日日记末尾」同一个键,但项目里的语义是「插到今天待办区最前」——区域
@@ -169,6 +164,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.rename-symbol": "F2",
   "code.trigger-completion": "Mod-Space",
   "code.toggle-tree": "Mod-b",
+  // 聚焦文件树(VSCode/Zed 的 Explorer 键位)。只在代码区生效;阅读区的
+  // 截图键 ⌘⇧E 是跨区域和弦,但「区域自己的绑定优先」——代码区内按 ⌘⇧E
+  // 聚焦的是树,不会顺带截阅读区一张。
+  "code.focus-tree": "Mod-Shift-e",
   "code.toggle-problems": "Mod-Shift-m",
   "code.next-tab": "Mod-Alt-ArrowRight",
   "code.prev-tab": "Mod-Alt-ArrowLeft",

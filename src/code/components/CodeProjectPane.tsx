@@ -15,6 +15,8 @@ import { ProblemsPanel, ReferencesPanel } from "./Panels";
 import { CodeEditor } from "../editor/CodeEditor";
 import { CodeOverlays } from "./CodeOverlays";
 import { openProjectAt, openProjectDialog } from "../commands";
+import { isRasterImage } from "../image";
+import { ImageView } from "./ImageView";
 
 /**
  * 学习模式中栏的「代码项目」视图。
@@ -199,9 +201,12 @@ export function CodeProjectPane() {
         <div className="code-main">
           {diffPath ? (
             <DiffView path={diffPath} />
+          ) : activeFile?.binary && isRasterImage(activeFile.path) ? (
+            // 位图直接在面板里看(asset 协议读原文件,不走编辑器)。
+            <ImageView root={project.root} file={activeFile} />
           ) : activeFile?.binary ? (
-            // 二进制 / 超过 2 MiB 的文件后端只回空串:绝不能把空编辑器摆出来
-            // ——一敲键再保存就把原文件整篇清空了。
+            // 其它二进制 / 超过 2 MiB 的文件后端只回空串:绝不能把空编辑器
+            // 摆出来——一敲键再保存就把原文件整篇清空了。
             <div className="code-empty">
               二进制文件(或超过 2 MiB),不在这里编辑
             </div>

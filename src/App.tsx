@@ -154,16 +154,11 @@ export default function App() {
       // 助手对话字号同理:没有这一项 → 100%,坏值夹回 85%–160%。
       settings.agentFontScale = normalizeAgentFont(settings.agentFontScale);
       useAppStore.getState().replaceSettings(settings);
-      // 番茄钟:恢复上次的计时状态(endsAt 是绝对时间,重启后照样判超时),
-      // 并读一次原生侧的锁状态。启动**不**自动进锁——用户重启应用不是要求
-      // 被关进去,自动锁只由计时器的阶段切换触发。
-      useFocusStore.getState().restore(cfg?.focusTimer);
-      void useFocusStore.getState().refreshStatus();
-      // 硬锁是"常开"型设置:上次开着、这次也把权限给足了,启动就把硬锁重新
-      // 装上(原生侧的事件 tap 随进程一起没了,不重装等于设置形同虚设)。
-      if (settings.focusHardLock) {
-        void useFocusStore.getState().setHardLock(true);
-      }
+      // 番茄钟:恢复上次的计时状态(endsAt 是绝对时间,重启后照样判超时)。
+      // 一段专注还在跑时 restore 会把独占屏幕与硬锁一起接回来——退出应用
+      // 不等于结束这一段;恢复完再对一次原生状态(崩溃残留的锁在这里放开)。
+      await useFocusStore.getState().restore(cfg?.focusTimer);
+      await useFocusStore.getState().refreshStatus();
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);
       });

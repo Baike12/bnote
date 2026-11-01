@@ -11,8 +11,9 @@
 //!    最上面。
 //! 3. **焦点抢回**:失焦即拉回,让切走的应用拿不到输入。
 //!
-//! 另加**硬锁**:CGEventTap 吞掉 ⌘Tab / ⌘Space 等系统级快捷键——这是唯一能让
-//! 「按了没反应」的手段,需要辅助功能权限;没权限就只做上面三层。
+//! 另加**硬锁**:CGEventTap 吞掉 ⌘Tab / ⌘Space / ⌘Q / ⌘W 等系统级快捷键——这是
+//! 唯一能让「按了没反应」的手段,需要辅助功能权限;没权限就只做上面三层。专注
+//! 期间没有退出应用的路(⌘⌥Esc 强制退出拦不住,重开应用会接着这一段)。
 //!
 //! 硬锁同时管鼠标:Dock 自动隐藏时,悬停屏幕底边会把 Dock 唤到全屏窗口**之上**
 //! (窗口层级压不住,level 25 也没用),点 Dock 图标照样能切走。所以 tap 也挂在
@@ -623,15 +624,21 @@ mod mac {
     ///
     /// 只吞「系统自己处理、因而根本到不了应用」的那几个:⌘Tab(切应用)、
     /// ⌘Space(Spotlight)、⌘`(同应用窗口切换)、⌃↑/⌃↓(调度中心)、⌃⌘←/→(切
-    /// Space)、⌘H(隐藏)、⌘M(最小化)。⌘Q 刻意放行——那是一条正当的逃生口。
+    /// Space)、⌘H(隐藏)、⌘M(最小化)。
+    ///
+    /// **⌘Q / ⌘W 也吞**:「开始后不能中途退出」包含退出应用——否则按一下 ⌘Q
+    /// 就绕过了整段专注。系统级的强制退出(⌘⌥Esc)拦不住,那是 OS 的最后出口;
+    /// 即便被强杀,计时状态与 endsAt 都落盘,重开应用会接着这段并重新上锁。
     const BLOCKED: &[(u64, u64)] = &[
-        (48, CGEventFlags::MaskCommand.0),          // Tab
-        (49, CGEventFlags::MaskCommand.0),          // Space
-        (50, CGEventFlags::MaskCommand.0),          // `
-        (4, CGEventFlags::MaskCommand.0),           // H
-        (46, CGEventFlags::MaskCommand.0),          // M
-        (126, CGEventFlags::MaskControl.0),         // Up(调度中心)
-        (125, CGEventFlags::MaskControl.0),         // Down
+        (48, CGEventFlags::MaskCommand.0), // Tab
+        (49, CGEventFlags::MaskCommand.0), // Space
+        (50, CGEventFlags::MaskCommand.0), // `
+        (4, CGEventFlags::MaskCommand.0),  // H
+        (46, CGEventFlags::MaskCommand.0), // M
+        (12, CGEventFlags::MaskCommand.0), // Q(退出应用)
+        (13, CGEventFlags::MaskCommand.0), // W(关窗口=单窗口下也等于退出)
+        (126, CGEventFlags::MaskControl.0), // Up(调度中心)
+        (125, CGEventFlags::MaskControl.0), // Down
         (
             123,
             CGEventFlags::MaskControl.0 | CGEventFlags::MaskCommand.0,
