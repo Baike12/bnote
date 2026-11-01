@@ -1,26 +1,36 @@
-# DEBUG.md — bnote 调试与验证方式
+# DEBUG.md — debugging and verification protocol
 
-本文件是 [AGENTS.md](./AGENTS.md) 的从属文档,规定**默认必须遵守**的调试与验证协议;改前端逻辑、量性能、复现 bug 时按这里走。
+This is a subordinate document of [AGENTS.md](./AGENTS.md). It defines the **default** protocol for changing front-end behavior, measuring performance, and reproducing bugs. Read it before you start.
 
-改前端逻辑后**不构建、不部署**(由用户决定,历史上明确过"只调试不构建")。验证在浏览器里做,不抢焦点、不动用户的鼠标键盘;严禁 computer-use / 整屏截图(会占用用户桌面)。驱动一律用**会话内的浏览器**(ZCode 应用内浏览器,走 control-browser 技能那套):自己开标签页(`tabs.new()`)、用 `playwright.evaluate` 读 DOM/量几何;截图偶发拼接伪影,只当参考,**以 DOM 断言和磁盘字节为准**。不许另起 playwright-cli 或别的浏览器工具;用完关掉自己开的标签页,dev server 若是本会话起的就停掉。
+After a front-end change, **do not build and do not deploy** — that decision belongs to the user (historically: "debug only, do not build"). Verify in the browser without stealing focus or touching the user's mouse and keyboard. Full-screen screenshots and computer-use are forbidden; they take over the user's desktop.
 
-## 两条回路
+Drive verification with **browseros**: keep one tab group per task and pass the session handle on every call. Never start playwright-cli or another browser tool. Screenshots occasionally contain stitching artifacts, so treat them as reference only — **DOM assertions and bytes on disk are the source of truth**. Close the tabs you opened; stop the dev server if this session started it.
 
-1. **直连真后端(首选)**:`pnpm tauri dev` 跑着时,浏览器打开 `http://localhost:1430/` 就是真应用——和 Tauri 窗口加载的是同一份构建(`devUrl`),缺的 `window.__TAURI_INTERNALS__` 由 `src/dev/browserMode.ts` 用官方 `@tauri-apps/api/mocks` 补上,IPC 指向 `src-tauri/src/devbridge.rs` 在 `127.0.0.1:1439` 上的 debug 口。真 vault、真文件树、真图片(`/__dev/asset` 顶替 `asset://`)、真 watcher(后端事件经 SSE 推给标签页)。
-   - **真 vault 在 `/Users/baike3/Documents/baike`**:用户的真实笔记库(日记在 `Daily/YYYY-MM-DD.md`,同步映射在 `.bnote/daily-links.json`)。排查"某某功能把文件写坏了"这类问题就直读这里的文件——磁盘字节比屏幕现象可靠,`diff` 一下就能分清"这次操作写的"和"本来就有的"。
-   - **LaTeX 快捷键的参考实现是 Obsidian 那份插件的源码**:`/Users/baike3/Documents/baike/.obsidian/plugins/obsidian-vim-input-auto-switch/`——目录名和内容不符,它 manifest 里的 id 是 `obsidian-latex-suite`(v1.9.4,作者的魔改版:并入 vim 输入法自动切换)。`main.js` 是打包产物但变量名基本保留,改 `src/editor/snippets/` 里任何语义之前先对着它核一遍;用户实际在用的片段配置在该目录的 `data.json`(`snippets` 字段,214 条),bnote 仓库级片段 `.bnote/snippets.js` 就是它的移植。
-   - **公式片段的实际生效定义在 vault 里**:`/Users/baike3/Documents/baike/.bnote/snippets.js`(214 条,移植自上面那份 data.json)——该文件存在即**完全取代**内置片段集(`src/editor/snippets/default-snippets.ts`),不是叠加;改快捷键直接编辑它,保存热加载,字段语义说明在文件头。
-   - **只有一份后端实现**:`devbridge.rs::dispatch` 把 `{cmd,args}` 转给同一个 `#[tauri::command]`;加命令就在那张 match 表里加分支,不要在 JS 侧另写实现。
-   - **别把 `/__dev` 放进 Vite 的 `server.proxy`**:代理会缓冲无法预知长度的响应,SSE 一个字节都不转发(实测经 1430 为 0 字节)。
-   - **浏览器里没有**:原生子 webview(`*_study_preview*` 四个、创作预览的 `*_creative_preview*` 四个、`open_study_url`)、以及 dialog / opener / clipboard 这些 `plugin:*` 命令(`dispatch` 里没有 → `UNKNOWN_COMMAND`)。这几类只能逻辑层验证,**平台行为留待用户部署后实测,并在总结里说明**。**IME 三个命令有 devbridge 桩**(`list_input_sources` 返回 `[]`、`set_input_source` 立即返回),调用链能走通但 TIS 一行都不执行——所以「切模式卡顿」那类主线程开销在浏览器里**量不到**,只能读 `src-tauri/src/commands/ime.rs` 的实测数据(`cargo test --lib probe_switch_sources -- --nocapture`)。
-   - 浏览器里编辑会写进真 vault,跟用户的窗口共用同一份文件——**同一时刻只允许一方在写**。
+## Two loops
 
-2. **harness(纯前端、假数据)**:`http://localhost:1430/harness.html`,不需要 Tauri,挂载带全部真实扩展的编辑器 + 内存假仓库,适合确定性断言。钩子:`__view`、`__loadDoc(text)`、`__loadFileDoc(text, path?)`、`__setCursor(line, col)`/`__cursor()`、`__store`/`__api`/`__actions`、`__mountSidebar(entries)`/`__unmountSidebar()`(真卸载,重挂载类场景必用)/`__mountStudyLayout()`;新钩子加在 `src/dev/harness.ts`,模式照抄。起 dev server 前先探测 1430(`harness.html` 返回 200 就直接用,别重复起服务——`strictPort: true`,端口被占会让 `pnpm dev` 退出);HMR 自动生效,改完无需重启。
+### 1. Real backend (preferred)
 
-## 必踩的坑
+With `pnpm tauri dev` running, `http://localhost:1430/` is the real app: the Tauri window loads the same build (`devUrl`). The missing `window.__TAURI_INTERNALS__` is provided by `src/dev/browserMode.ts` using the official `@tauri-apps/api/mocks`, and IPC goes to `src-tauri/src/devbridge.rs` on `127.0.0.1:1439`. You get the real vault, the real file tree, real images (`/__dev/asset` stands in for `asset://`), and the real watcher (backend events are pushed to the tab over SSE).
 
-- `evaluate()` 的沙箱不支持动态 import:要测任意 TS 模块就注入 module script 从 vite 加载真源码,把结果挂到 `window` 再读回。
-- CodeMirror 只渲染视口,长文档里 `querySelectorAll(".cw-image")` 会是 0;且 live preview 只在光标**不在**该行时才把图片源码换成 widget——先把光标移到目标行下方再量。
-- 图片的 `naturalWidth` 是懒加载 + 异步解码,量之前等 1s 左右,否则读到 0。
-- 图标资产必须用浏览器 canvas 栅格化(`toDataURL` 存文件);`qlmanage -t -s N` 会铺**白色不透明背景**,只能目检构图。图标数值用 python PIL 量像素,别目测。
-- **harness 的 vim 只走到 `reconfigureVim(view,true,[])`**:store 里的 `settings.vim` 仍是默认 `false`,setup.ts 里那条按 `settings.vim` 自门控的光标冲刷监听器因此整条早退——量 vim 相关开销前先 `__setVim(true)`,否则量到的是少了强制回流的假数据(2026-09 第一次测量就踩了)。同理 `__vimKeys`/`__typeChar` 绕过引擎自己的 inputHandler:同一任务里连发键、或 `__typeChar` 之后紧跟 `<Esc>`,引擎记账会失步(第一个 Esc 被吞、`A` 不动光标),每个键一个 rAF 任务复测才可信。**挂载即 normal 模式**(`__vimMode()` = `"normal"`):走真实 keydown 通道的按键先被引擎解释——Enter 是 `j`(下行,不换行),测"打字/回车"这类文本编辑流程前先 `__setVim(false)`(置后 `__vimMode()` = null),且要在**刚 reload 的页面**上调(被先前实验改过状态的页面会坏:`__setCursor` 抛 `Cannot read properties of undefined`)。
+- **The real vault is `/Users/baike3/Documents/baike`**: the user's actual notes (daily notes in `Daily/YYYY-MM-DD.md`, sync map in `.bnote/daily-links.json`). For bugs of the form "this feature corrupted a file", read those files directly — disk bytes beat screen symptoms, and a `diff` separates "written by this operation" from "already there".
+- **The reference implementation for LaTeX shortcuts is the Obsidian plugin source**: `/Users/baike3/Documents/baike/.obsidian/plugins/obsidian-vim-input-auto-switch/`. The directory name does not match its contents; the manifest id is `obsidian-latex-suite` (v1.9.4, a modified build that also switches the IME for vim). `main.js` is a bundle but keeps most variable names — check it before changing any semantics under `src/editor/snippets/`. The user's live snippet config is `data.json` in that directory (`snippets`, 214 entries); the repo-level `.bnote/snippets.js` is its port.
+- **Formula snippets actually come from the vault**: `/Users/baike3/Documents/baike/.bnote/snippets.js` (214 entries). When that file exists it **replaces** the built-in set (`src/editor/snippets/default-snippets.ts`) entirely; it does not merge. Edit it directly — it hot-reloads on save, and the field semantics are documented in its header.
+- **There is only one backend implementation**: `devbridge.rs::dispatch` forwards `{cmd,args}` to the same `#[tauri::command]`. To add a command, add a match arm there; never write a second implementation on the JS side.
+- **Never put `/__dev` in Vite's `server.proxy`**: the proxy buffers responses of unknown length, so SSE forwards zero bytes (measured: 0 bytes through 1430).
+- **Not available in the browser**: native sub-webviews (the `study_preview` commands and `open_study_url` return `BROWSER_MODE`; the creative-preview commands are absent and return `UNKNOWN_COMMAND`) and the `plugin:*` commands (dialog/opener/clipboard). These can only be verified at the logic layer; **platform behavior requires a deployed check, and the summary must say so**. The three IME commands have devbridge stubs (`list_input_sources` returns `[]`, `set_input_source` returns immediately), so the call chain works but TIS never runs — main-thread cost of mode switching **cannot** be measured in the browser; read the measurements in `src-tauri/src/commands/ime.rs` (`cargo test --lib probe_switch_sources -- --nocapture`).
+- Editing in the browser writes to the real vault and shares files with the user's window — **only one side may write at a time**.
+
+### 2. Harness (pure front end, fake data)
+
+`http://localhost:1430/harness.html` needs no Tauri. It mounts the editor with all real extensions plus an in-memory fake vault, so assertions are deterministic. Hooks: `__view`, `__loadDoc(text)`, `__loadFileDoc(text, path?)`, `__setCursor(line, col)`/`__cursor()`, `__store`/`__api`/`__actions`, `__mountSidebar(entries)`/`__unmountSidebar()` (a real unmount — required for remount scenarios), `__mountStudyLayout()`. Add new hooks in `src/dev/harness.ts`, copying the existing pattern.
+
+Before starting a dev server, probe 1430: if `harness.html` returns 200, reuse it and do not start a second server (`strictPort: true`; a busy port makes `pnpm dev` exit). HMR is automatic; no restart is needed.
+
+## Traps you will hit
+
+- `evaluate()`'s sandbox does not support dynamic `import`: to test any TS module, inject a module script that loads the real source through Vite, attach the result to `window`, then read it back.
+- CodeMirror renders only the viewport, so in a long document `querySelectorAll(".cw-image")` returns 0. Live preview also replaces image source with a widget only when the caret is **not** on that line — move the caret below the target line before measuring.
+- An image's `naturalWidth` is lazy and decoded asynchronously; wait about 1s before reading it, or you get 0.
+- Icon assets must be rasterized with the browser's canvas (`toDataURL` to a file); `qlmanage -t -s N` paints an **opaque white background** and is only good for eyeballing composition. Measure icon pixels with Python PIL, never by eye.
+- **The harness's vim only goes as far as `reconfigureVim(view, true, [])`**: `settings.vim` in the store stays at its default `false`, so the cursor-flush listener in `setup.ts` that self-gates on `settings.vim` returns early — measuring vim costs without calling `__setVim(true)` measures data with the forced reflow missing (the first measurement in 2026-09 hit exactly this). Likewise `__vimKeys`/`__typeChar` bypass the engine's own input handler: sending several keys in one task, or `__typeChar` immediately followed by `<Esc>`, desynchronizes the engine's accounting (the first Esc is swallowed, `A` does not move the caret); one key per rAF task is the only trustworthy protocol.
+- **Mounting starts in normal mode** (`__vimMode()` = `"normal"`): keys that go through the real keydown path are interpreted by the engine first — Enter is `j` (move down, no newline). Call `__setVim(false)` before testing typing/Enter workflows (afterwards `__vimMode()` is null), and do it on a **freshly reloaded page** (a page mutated by earlier experiments breaks: `__setCursor` throws `Cannot read properties of undefined`).

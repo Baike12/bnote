@@ -135,7 +135,7 @@ Read **[DEBUG.md](./DEBUG.md)** before changing behavior; it defines the two loo
 
 - **Do not build or deploy after a front-end change** unless the user asks. Building is the user's decision.
 - Verify in the session browser against `localhost:1430`; do not steal focus and do not take full-screen screenshots. DOM assertions and bytes on disk are the source of truth.
-- Browser verification uses **browseros**, with one tab group per task; never start playwright-cli or another browser tool. DEBUG.md's note about an older in-app browser is superseded.
+- Browser verification uses **browseros**, with one tab group per task and the session handle passed on every call; never start playwright-cli or another browser tool. See DEBUG.md for the harness protocol.
 - Native-only behavior (window levels, event taps, IME, native webviews) cannot be proven in a browser; say so and leave it for a deployed check.
 - Close the tabs you opened; stop any dev server this session started.
 
