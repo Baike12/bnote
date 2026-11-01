@@ -52,7 +52,9 @@ export interface SetImeOutcome {
  */
 export type StudyContent =
   | { kind: "pdf"; path: string; title: string }
-  | { kind: "url"; url: string; title: string };
+  | { kind: "url"; url: string; title: string }
+  /** 代码项目:`path` 是项目根的绝对路径(通常在 vault 之外)。 */
+  | { kind: "code"; path: string; title: string };
 
 export interface AgentConfig {
   provider: string;

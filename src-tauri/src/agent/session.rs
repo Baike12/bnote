@@ -265,6 +265,9 @@ own knowledge.\n\n\
         Some(StudyContent::Url { url, title }) => {
             p.push_str(&format!("- Study content: web page \"{}\" at {}\n", title, url));
         }
+        Some(StudyContent::Code { path, title }) => {
+            p.push_str(&format!("- Study content: code project \"{}\" at {}\n", title, path));
+        }
         None => {}
     }
     let user = user_instructions.trim();

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use notify::RecommendedWatcher;
 
 use crate::agent::mcp::McpManager;
+use crate::code::lsp::LspManager;
 use crate::agent::session::Session;
 use crate::python::lsp::LspServer;
 use crate::python::runner::RunRegistry;
@@ -35,6 +36,8 @@ pub struct AppState {
     pub python_runs: Arc<RunRegistry>,
     /// 活跃的 python LSP 服务器(key = 项目根绝对路径)。
     pub python_lsp: Mutex<HashMap<String, Arc<LspServer>>>,
+    /// 活跃的代码项目语言服务器(key = 项目根绝对路径)。
+    pub code_lsp: Mutex<HashMap<String, Arc<LspManager>>>,
 }
 
 impl AppState {

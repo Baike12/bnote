@@ -39,7 +39,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
-use crate::commands::{agent, config, files, focus, materials, python, translate, vault};
+use crate::commands::{agent, code, config, files, focus, materials, python, translate, vault};
 use crate::state::AppState;
 
 /// Fixed port; `vite.config.ts` proxies `/__dev` here.
@@ -79,6 +79,9 @@ fn subscribe_events(app: &AppHandle) {
         "python-run-exit",
         "python-lsp-diagnostics",
         "python-lsp-status",
+        "code-lsp-diagnostics",
+        "code-lsp-status",
+        "code-lsp-log",
     ] {
         let label = name.to_string();
         app.listen(name, move |event| {
@@ -477,6 +480,97 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             json_ok!(python::python_uv_create(app.state(), arg_str(args, "mdPath")?).await)
         }
 
+        // ---- code project ----
+        "code_open_project" => {
+            json_ok!(code::code_open_project(arg_str(args, "root")?).await)
+        }
+        "code_rescan" => json_ok!(code::code_rescan(arg_str(args, "root")?).await),
+        "code_read_file" => json_ok!(
+            code::code_read_file(arg_str(args, "root")?, arg_str(args, "path")?).await
+        ),
+        "code_write_file" => json_ok!(
+            code::code_write_file(
+                arg_str(args, "root")?,
+                arg_str(args, "path")?,
+                arg_str(args, "content")?,
+            )
+            .await
+        ),
+        "code_search" => json_ok!(
+            code::code_search(
+                arg_str(args, "root")?,
+                arg_str(args, "query")?,
+                arg_opt_u64(args, "limit").map(|v| v as usize),
+            )
+            .await
+        ),
+        "code_search_files" => {
+            json_ok!(code::code_search_files(arg_str(args, "root")?, arg_str(args, "query")?).await)
+        }
+        "code_git_status" => {
+            json_ok!(code::code_git_status(arg_str(args, "root")?).await)
+        }
+        "code_git_diff" => json_ok!(
+            code::code_git_diff(
+                arg_str(args, "root")?,
+                arg_str(args, "path")?,
+                arg_opt_bool(args, "staged").unwrap_or(false),
+            )
+            .await
+        ),
+        "code_git_stage" => {
+            json_ok!(code::code_git_stage(arg_str(args, "root")?, arg_str(args, "path")?).await)
+        }
+        "code_git_unstage" => {
+            json_ok!(code::code_git_unstage(arg_str(args, "root")?, arg_str(args, "path")?).await)
+        }
+        "code_lsp_resolve" => json_ok!(
+            code::code_lsp_resolve(
+                arg_str(args, "root")?,
+                arg_str(args, "language")?,
+                arg_opt_server_config(args, "overrides")?,
+            )
+            .await
+        ),
+        "code_lsp_start" => json_ok!(
+            code::code_lsp_start(
+                app.clone(),
+                app.state(),
+                arg_str(args, "root")?,
+                arg_str(args, "language")?,
+                arg_opt_server_config(args, "overrides")?,
+            )
+            .await
+        ),
+        "code_lsp_stop" => json_ok!(code::code_lsp_stop(app.state(), arg_str(args, "root")?).await),
+        "code_lsp_status" => {
+            json_ok!(code::code_lsp_status(app.state(), arg_str(args, "root")?).await)
+        }
+        "code_lsp_sync" => json_ok!(
+            code::code_lsp_sync(
+                app.clone(),
+                app.state(),
+                arg_str(args, "root")?,
+                arg_str(args, "path")?,
+                arg_str(args, "content")?,
+            )
+            .await
+        ),
+        "code_lsp_close" => {
+            json_ok!(code::code_lsp_close(app.state(), arg_str(args, "root")?, arg_str(args, "path")?).await)
+        }
+        "code_lsp_request" => json_ok!(
+            code::code_lsp_request(
+                app.state(),
+                arg_str(args, "root")?,
+                arg_str(args, "language")?,
+                arg_str(args, "method")?,
+                arg_opt_str(args, "path"),
+                arg_value(args, "params").unwrap_or_else(|_| serde_json::Value::Null),
+            )
+            .await
+        ),
+
         // ---- native views: no browser equivalent ----
         "show_study_preview" | "set_study_preview_bounds" | "set_study_preview_visible"
         | "close_study_preview" | "open_study_url" | "set_study_preview_annotation_mode"
@@ -501,6 +595,35 @@ fn arg_str(args: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("BAD_ARGS: `{}` is not a string", key))
+}
+
+fn arg_opt_u64(args: &Value, key: &str) -> Option<u64> {
+    args.get(key).and_then(Value::as_u64)
+}
+
+fn arg_opt_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(Value::as_bool)
+}
+
+/// 语言服务器的覆盖配置(前端从设置里来的那一层)。
+fn arg_opt_server_config(
+    args: &Value,
+    key: &str,
+) -> Result<Option<crate::code::lsp::ServerConfig>, String> {
+    match arg_opt_value(args, key) {
+        None => Ok(None),
+        Some(v) => serde_json::from_value(v)
+            .map(Some)
+            .map_err(|e| format!("BAD_OVERRIDES: {}", e)),
+    }
+}
+
+/// 可选值(缺省与 null 都算「没有」)。
+fn arg_opt_value(args: &Value, key: &str) -> Option<Value> {
+    match args.get(key) {
+        Some(Value::Null) | None => None,
+        Some(v) => Some(v.clone()),
+    }
 }
 
 fn arg_opt_str(args: &Value, key: &str) -> Option<String> {

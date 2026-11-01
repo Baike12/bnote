@@ -131,7 +131,9 @@ interface Conv {
 /** Identity of the material a session is pinned to (url re-open = same key). */
 function studyContentKey(content: StudyContent | null): string {
   if (!content) return "none";
-  return content.kind === "pdf" ? `pdf:${content.path}` : `url:${content.url}`;
+  if (content.kind === "pdf") return `pdf:${content.path}`;
+  if (content.kind === "code") return `code:${content.path}`;
+  return `url:${content.url}`;
 }
 
 /** 列表项 → 家族解析用的节点(缺字段按主会话/空前缀处理)。 */

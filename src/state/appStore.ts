@@ -5,6 +5,8 @@ import {
   pushPdfEntry,
   pushUrlEntry,
   pushWereadBook,
+  pushCodeEntry,
+  type StudyCodeEntry,
   type StudyHistory,
   type StudyPdfEntry,
   type StudyUrlEntry,
@@ -54,6 +56,19 @@ export type ThemeName = "dark" | "light";
 
 export interface Settings {
   vim: boolean;
+  /**
+   * 代码编辑器的 vim 开关。与笔记的 `vim` **分开**:在代码里按 j/k 是移动、
+   * 在笔记里是排版,两边的习惯常常不同,各开各的更贴近真实工作流。
+   */
+  codeVim: boolean;
+  /**
+   * 语言服务器的全局覆盖:languageId → 启动命令。
+   *
+   * 内置默认覆盖 ts / rust / go / python 等常见语言;这里改的是「用哪个
+   * 可执行文件、传什么参数」。项目内还可以放 `.bnote/lsp.json` 再覆盖一层
+   * (跟着仓库走,团队共享)。
+   */
+  codeLspServers: Record<string, { command: string; args?: string[] }>;
   typewriter: boolean;
   /** 打字机模式的光标纵向位置(视口高度的比例,0.5 = 垂直居中,20%–80%)。 */
   typewriterPosition: number;
@@ -124,6 +139,8 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   vim: false,
+  codeVim: false,
+  codeLspServers: {},
   typewriter: false,
   typewriterPosition: DEFAULT_TYPEWRITER_POSITION,
   livePreview: true,
@@ -205,6 +222,8 @@ export interface PersistedConfig {
   cursorPositions?: Record<string, { pos: number; scroll: number }>;
   /** 学习模式打开过的 PDF / 网页（两个独立列表，见 study/history.ts）。 */
   studyHistory?: StudyHistory;
+  /** 最近打开的代码项目(MRU,队首最新)。 */
+  recentCodeProjects?: string[];
   /**
    * 主窗口大小与位置（逻辑像素）。由 `lib/windowState.ts` 在移动/缩放后写入,
    * 启动时由 Rust 侧在首帧前恢复(见 commands/config.rs::restore_window_bounds)。
@@ -318,6 +337,8 @@ interface AppState {
   creativeMode: boolean;
   /** 学习模式中间栏的当前内容(null = 空态,等待拖入 PDF 或输入 URL) */
   studyContent: StudyContent | null;
+  /** 最近打开的代码项目(MRU,队首最新)。 */
+  recentCodeProjects: string[];
   /** 学习模式最近打开(PDF 与网页分开)。启动时从 config.json 恢复。 */
   studyHistory: StudyHistory;
   /**
@@ -375,12 +396,16 @@ interface AppState {
   setProjectsMode: (active: boolean) => void;
   setCreativeMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
+  /** 最近打开的代码项目(MRU,队首最新)。 */
+  setRecentCodeProjects: (recentCodeProjects: string[]) => void;
   setStudyHistory: (history: StudyHistory) => void;
   setStudyWereadBook: (book: { url: string; title: string } | null) => void;
   /** 打开一份 PDF 后记一笔(去重、置顶、持久化)。 */
   recordStudyPdf: (entry: Omit<StudyPdfEntry, "at">) => void;
   recordStudyUrl: (entry: Omit<StudyUrlEntry, "at">) => void;
   recordWereadBook: (entry: Omit<WereadBookEntry, "at">) => void;
+  /** 记一次「打开了这个代码项目」,供历史菜单回列。 */
+  recordStudyCode: (entry: Omit<StudyCodeEntry, "at"> & { at?: number }) => void;
   openDrawingSession: (session: DrawingSession) => void;
   closeDrawingSession: () => void;
   /** Agent 配置已保存:让学习模式重读当前配置(不重建会话,见 agentConfigVersion)。 */
@@ -444,6 +469,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   projectsMode: false,
   creativeMode: false,
   studyContent: null,
+  recentCodeProjects: [],
   studyHistory: emptyStudyHistory(),
   studyWereadBook: null,
   drawingSession: null,
@@ -567,6 +593,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     ),
   setCreativeMode: (active) => set({ creativeMode: active }),
   setStudyContent: (content) => set({ studyContent: content, studyWereadBook: null }),
+  setRecentCodeProjects: (recentCodeProjects: string[]) => {
+    set({ recentCodeProjects });
+    persistConfig({ ...getConfigSnapshot(), recentCodeProjects });
+  },
   setStudyHistory: (studyHistory) => set({ studyHistory }),
   setStudyWereadBook: (studyWereadBook) => set({ studyWereadBook }),
   recordStudyPdf: (entry) => {
@@ -576,6 +606,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   recordStudyUrl: (entry) => {
     const studyHistory = pushUrlEntry(get().studyHistory, entry);
+    set({ studyHistory });
+    persistConfig({ ...getConfigSnapshot(), studyHistory });
+  },
+  recordStudyCode: (entry: Omit<StudyCodeEntry, "at"> & { at?: number }) => {
+    const studyHistory = pushCodeEntry(get().studyHistory, entry);
     set({ studyHistory });
     persistConfig({ ...getConfigSnapshot(), studyHistory });
   },

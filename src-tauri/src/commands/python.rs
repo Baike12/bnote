@@ -165,7 +165,7 @@ pub async fn python_lsp_sync(
             .lock()
             .ok()
             .and_then(|m| m.get(&key).cloned())
-            .filter(|s| s.alive.load(std::sync::atomic::Ordering::Relaxed));
+            .filter(|s| s.alive());
         match existing {
             Some(s) => s,
             None => {
@@ -173,7 +173,7 @@ pub async fn python_lsp_sync(
                 server.initialize().await?;
                 let mut map = state.python_lsp.lock().map_err(|_| "lock poisoned")?;
                 match map.get(&key) {
-                    Some(s) if s.alive.load(std::sync::atomic::Ordering::Relaxed) => s.clone(),
+                    Some(s) if s.alive() => s.clone(),
                     _ => {
                         map.insert(key.clone(), server.clone());
                         let _ = app.emit(
@@ -187,26 +187,8 @@ pub async fn python_lsp_sync(
         }
     };
 
-    // open / change(版本记账在 server.docs,锁在算出动作后立刻放掉,
-    // await 不进锁的作用域)。
-    let to_change: Option<u32> = {
-        let mut docs = server.docs.lock().map_err(|_| "lock poisoned")?;
-        match docs.get(&md_path) {
-            None => {
-                docs.insert(md_path.clone(), 0);
-                None
-            }
-            Some(v) => {
-                let next = *v + 1;
-                docs.insert(md_path.clone(), next);
-                Some(next)
-            }
-        }
-    };
-    match to_change {
-        None => server.open_doc(&md_path, &text).await?,
-        Some(version) => server.change_doc(&md_path, version, &text).await?,
-    }
+    // open / change:版本记账在客户端里(唯一写入者),调用方只给内容。
+    server.sync_doc(&md_path, &text).await?;
     Ok(LspSyncResult { enabled: true })
 }
 
@@ -236,7 +218,7 @@ pub async fn python_lsp_request(
         .lock()
         .ok()
         .and_then(|m| m.get(&key).cloned())
-        .filter(|s| s.alive.load(std::sync::atomic::Ordering::Relaxed));
+        .filter(|s| s.alive());
     match server {
         Some(s) => s.interaction_request(&method, &md_path, params).await,
         None => Ok(serde_json::Value::Null),
@@ -255,7 +237,7 @@ pub async fn python_lsp_close(state: State<'_, AppState>, md_path: String) -> Cm
         .ok()
         .and_then(|m| m.get(&key).cloned());
     if let Some(server) = server {
-        if server.alive.load(std::sync::atomic::Ordering::Relaxed) {
+        if server.alive() {
             let _ = server.close_doc(&md_path).await;
         }
     }

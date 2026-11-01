@@ -25,7 +25,7 @@
  * 旧版扁平表(命令 → 键位,没有区域)仍能读,按命令的默认归属自动分区。
  */
 
-export type KeyRegion = "global" | "notes" | "reading" | "agent" | "project";
+export type KeyRegion = "global" | "notes" | "reading" | "agent" | "project" | "code";
 
 export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
   { id: "global", label: "通用", hint: "焦点在任何地方都生效。命令面板、保存、切换学习模式/项目管理这类动作放这里。" },
@@ -33,6 +33,7 @@ export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
   { id: "reading", label: "阅读区", hint: "焦点在阅读区时生效:PDF、网页、微信读书,以及中栏的工具栏。对阅读区动手的两条命令例外——翻页与截图,带修饰键的键位在笔记区 / Agent 面板按下也执行;翻页只滚内容,不改变焦点。滚轮/点击滚过阅读区后,键盘也归它(阅读区不取得 DOM 焦点)。" },
   { id: "agent", label: "Agent 面板", hint: "焦点在学习助手面板时生效(输入框、消息区、历史会话)。" },
   { id: "project", label: "项目管理", hint: "焦点在项目管理视图(项目列表、项目卡片)时生效。这里继承笔记区的编辑键位(加粗、切换待办、保存等),只是项目专属动作优先:⌘⇧↑/↓ 轮转项目、⌘⇧J 把待办发到今日待办区最前、⌘⌥N 跳到右侧日记。" },
+  { id: "code", label: "代码区", hint: "焦点在代码编辑器时生效。**这是独立的一界**:⌘S 在这里是「保存代码文件」,⌘⇧O 是「快速打开文件」,与笔记区各说各的。代码区只继承少数应用级命令(命令面板、快速跳转、切学习模式、设置),其余键位一律归代码区自己,可在 keybindings.json 的 code 段里改绑。" },
 ];
 
 export const KEY_REGION_IDS: KeyRegion[] = KEY_REGIONS.map((r) => r.id);
@@ -155,6 +156,25 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "agent.fork-session": "Mod-Shift-f",
   "agent.back-from-fork": "Mod-[",
   "agent.focus-history": "Mod-Shift-h",
+
+  // 代码区(code 区域)。这一套键位只在这里生效——笔记区/阅读区/Agent
+  // 面板不受影响,反之亦然(⌘S 在笔记区保存笔记,在代码区保存代码文件)。
+  // 键位大体对齐 VSCode:F12 定义、⇧F12 引用、F2 重命名、⌘Space 提示。
+  "code.save-file": "Mod-s",
+  "code.quick-open": "Mod-Shift-o",
+  "code.find-in-files": "Mod-Shift-f",
+  "code.go-to-definition": "F12",
+  "code.go-to-type-definition": "Mod-F12",
+  "code.find-references": "Shift-F12",
+  "code.rename-symbol": "F2",
+  "code.trigger-completion": "Mod-Space",
+  "code.toggle-tree": "Mod-b",
+  "code.toggle-problems": "Mod-Shift-m",
+  "code.next-tab": "Mod-Alt-ArrowRight",
+  "code.prev-tab": "Mod-Alt-ArrowLeft",
+  "code.next-problem": "F8",
+  "code.prev-problem": "Shift-F8",
+  "code.git-diff": "Mod-Shift-d",
 };
 
 /** 无显式归属表的命令按前缀分;少数例外写在下面。 */
@@ -173,6 +193,7 @@ const REGION_PREFIXES: [string, KeyRegion][] = [
   ["edit.", "notes"],
   ["editor.", "notes"],
   ["python.", "notes"],
+  ["code.", "code"],
 ];
 
 /**
@@ -181,13 +202,28 @@ const REGION_PREFIXES: [string, KeyRegion][] = [
  * ——Agent 面板里 ⌘⌥A 就是把焦点送回输入框(在消息列表/历史里时尤其需要)。
  */
 const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
-  "region.focus-agent": ["reading", "notes", "agent"],
-  "region.focus-notes": ["reading", "notes", "agent"],
+  "region.focus-agent": ["reading", "notes", "agent", "code"],
+  "region.focus-notes": ["reading", "notes", "agent", "code"],
   "region.focus-reading": ["reading", "notes", "agent"],
   // 项目视图里两栏都是可聚焦的:卡片区与右栏日记。⌘⌥P 在项目区把焦点送回
   // 卡片,在日记区也成立(不用先回卡片再跳)。
   "region.focus-project": ["project", "notes"],
 };
+
+/**
+ * 代码区继承的全局命令(白名单)。
+ *
+ * 代码编辑器是**独立的一界**:⌘S 在这里是「保存代码文件」,不是「保存笔记」。
+ * 所以代码区不继承整个 global 层,只继承这几条真正应用级的——命令面板、
+ * 快速跳转、切学习模式、设置。别的全局键位(⌘⇧P 切项目管理视图、⌘⇧O 开
+ * 今日日记)在代码区让位给代码自己的动作。
+ */
+const CODE_INHERITED_GLOBALS = new Set([
+  "nav.command-palette",
+  "nav.quick-switcher",
+  "view.toggle-study-mode",
+  "workspace.open-settings",
+]);
 
 /**
  * 不随焦点变化的两类命令:键位**不按焦点区域设限**,在哪个区域按下都执行。
@@ -387,7 +423,12 @@ export function commandsForKey(key: string, region: KeyRegion): string[] {
   if (region === "project") {
     add(keyIndex.notes.get(key)?.filter((id) => !unboundHere(id, "project")));
   }
-  if (region !== "global") add(keyIndex.global.get(key));
+  if (region === "code") {
+    // 代码区只继承白名单里的全局命令(见 CODE_INHERITED_GLOBALS)。
+    add((keyIndex.global.get(key) ?? []).filter((id) => CODE_INHERITED_GLOBALS.has(id)));
+  } else if (region !== "global") {
+    add(keyIndex.global.get(key));
+  }
   // own 里已经有一份时 add 去重。显式解绑(null / 空数组)只在本区域生效:
   // 在 notes 里把 ⌘⌥A 写成 null,就不能靠阅读区那份绑定在 notes 里复活。
   //

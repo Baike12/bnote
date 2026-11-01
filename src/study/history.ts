@@ -35,16 +35,24 @@ export interface WereadBookEntry {
   at: number;
 }
 
+/** 打开过的代码项目。`path` 是项目根的绝对路径(通常在 vault 之外)。 */
+export interface StudyCodeEntry {
+  path: string;
+  title: string;
+  at: number;
+}
+
 export interface StudyHistory {
   pdfs: StudyPdfEntry[];
   urls: StudyUrlEntry[];
   weread: WereadBookEntry[];
+  codes: StudyCodeEntry[];
 }
 
 export const STUDY_HISTORY_LIMIT = 30;
 
 export function emptyStudyHistory(): StudyHistory {
-  return { pdfs: [], urls: [], weread: [] };
+  return { pdfs: [], urls: [], weread: [], codes: [] };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -100,10 +108,21 @@ export function normalizeStudyHistory(raw: unknown): StudyHistory {
       weread.push({ url, title, at: num(item.at) });
     }
   }
+  const codes: StudyCodeEntry[] = [];
+  if (Array.isArray(raw.codes)) {
+    for (const item of raw.codes) {
+      if (!isRecord(item)) continue;
+      const path = str(item.path);
+      const title = str(item.title);
+      if (!path || !title) continue;
+      codes.push({ path, title, at: num(item.at) });
+    }
+  }
   return {
     pdfs: pdfs.slice(0, STUDY_HISTORY_LIMIT),
     urls: urls.slice(0, STUDY_HISTORY_LIMIT),
     weread: weread.slice(0, STUDY_HISTORY_LIMIT),
+    codes: codes.slice(0, STUDY_HISTORY_LIMIT),
   };
 }
 
@@ -156,6 +175,19 @@ export function pushWereadBook(
   return {
     ...history,
     weread: cap([next, ...history.weread.filter((e) => e.url !== next.url)]),
+  };
+}
+
+/** Moves/reinserts the opened code project at the head of the list. */
+export function pushCodeEntry(
+  history: StudyHistory,
+  entry: Omit<StudyCodeEntry, "at"> & { at?: number },
+): StudyHistory {
+  const at = entry.at ?? Date.now();
+  const next: StudyCodeEntry = { path: entry.path, title: entry.title, at };
+  return {
+    ...history,
+    codes: cap([next, ...history.codes.filter((e) => e.path !== next.path)]),
   };
 }
 

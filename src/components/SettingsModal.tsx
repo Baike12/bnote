@@ -431,6 +431,12 @@ function EditorTab() {
           checked={settings.vim}
           onChange={(v) => patch({ vim: v })}
         />
+        <Toggle
+          label="代码编辑器 Vim 模式"
+          desc="代码编辑器里单独开 vim。与笔记的开关分开：两边的手感常常不同，各开各的更贴近真实工作流。快捷键也各归各的代码区/笔记区，互不干扰。"
+          checked={settings.codeVim}
+          onChange={(v) => patch({ codeVim: v })}
+        />
         <Row
           label="代码块语言"
           desc="「插入代码块」（默认 ⌘⇧C）在开栏预填的语言标识，如 ts、python；留空则插入不带语言的代码块"
@@ -445,6 +451,7 @@ function EditorTab() {
           }
         />
       </SettingsCard>
+      <CodeLspSettingsCard />
       <SettingsCard title="外观">
         <Row
           label="主题"
@@ -1959,5 +1966,77 @@ function AgentInstructionsTab() {
         </div>
       </SettingsCard>
     </div>
+  );
+}
+
+
+/**
+ * 语言服务器的全局配置。
+ *
+ * 内置默认已经覆盖 ts / rust / go / python 等常见语言(开箱即用,前提是本机
+ * 装了对应的服务器)。这里改的是「用哪个可执行文件、传什么参数」——
+ * 比如 TypeScript 用 tsserver 还是 typescript-language-server。
+ *
+ * 项目内还可以放 `.bnote/lsp.json` 再盖一层(跟着仓库走,团队共享):
+ *
+ * ```json
+ * { "languages": { "go": { "command": "/opt/homebrew/bin/gopls" } },
+ *   "disabled": ["python"] }
+ * ```
+ */
+function CodeLspSettingsCard() {
+  const settings = useAppStore((s) => s.settings);
+  const patch = useAppStore((s) => s.patchSettings);
+  const [text, setText] = useState(() => JSON.stringify(settings.codeLspServers ?? {}, null, 2));
+  const [error, setError] = useState<string | null>(null);
+
+  const apply = () => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      patch({ codeLspServers: {} });
+      setError(null);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        setError("要是一个对象：{ \"typescript\": { \"command\": \"...\" } }");
+        return;
+      }
+      patch({ codeLspServers: parsed });
+      setError(null);
+    } catch (e) {
+      setError(`JSON 解析失败：${(e as Error).message}`);
+    }
+  };
+
+  return (
+    <SettingsCard
+      title="代码项目"
+      desc={
+        <>
+          内置默认已经覆盖 TypeScript / Rust / Go / Python 等常见语言。这里改的是
+          <strong>用哪个可执行文件、传什么参数</strong>（本机装了对应服务器就能直接用）。
+          项目内再放 <code>.bnote/lsp.json</code> 可以再盖一层，跟着仓库走、团队共享。
+        </>
+      }
+    >
+      <div className="settings-block">
+        <textarea
+          className="settings-textarea"
+          spellCheck={false}
+          rows={6}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={apply}
+          placeholder={'{\n  "typescript": { "command": "typescript-language-server", "args": ["--stdio"] }\n}'}
+        />
+        {error ? (
+          <div className="settings-error">{error}</div>
+        ) : (
+          <div className="settings-desc">失焦即生效。键名是语言 id（typescript / rust / go / python …）。</div>
+        )}
+      </div>
+    </SettingsCard>
   );
 }

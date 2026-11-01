@@ -40,6 +40,28 @@ pub struct ToolContext {
 pub enum StudyContent {
     Pdf { path: String, title: String },
     Url { url: String, title: String },
+    /// 代码项目:`path` 是项目根的绝对路径。
+    Code { path: String, title: String },
+}
+
+/// 列一个代码项目的文件清单(给 Agent 看仓库里有什么)。
+fn list_code_project(root: &str) -> Result<String, String> {
+    let tree = crate::code::project::scan(std::path::Path::new(root));
+    let mut out = String::new();
+    for entry in &tree.entries {
+        if entry.is_dir {
+            continue;
+        }
+        out.push_str(&format!("{}\n", entry.path));
+        if out.len() > 60_000 {
+            out.push_str("…(清单已截断)\n");
+            break;
+        }
+    }
+    if out.is_empty() {
+        out.push_str("(空项目)");
+    }
+    Ok(out)
 }
 
 /// Extracts the markdown text of a PDF for the Agent.
@@ -359,6 +381,23 @@ async fn execute_text(
                             )
                         }
                         Err(e) => (false, format!("fetch failed: {}", e)),
+                    }
+                }
+                Some(StudyContent::Code { path, title }) => {
+                    // 代码项目:给助手一份文件清单(路径 + 大小),让它知道
+                    // 这个仓库里有什么。不读文件内容——真正要看某个文件时
+                    // 助手用 read_file 工具自己读。
+                    match tokio::task::spawn_blocking(move || {
+                        list_code_project(&path)
+                    })
+                    .await
+                    {
+                        Ok(Ok(text)) => (
+                            true,
+                            format!("# {}\n\n{}", title, truncate(&text, 60_000)),
+                        ),
+                        Ok(Err(e)) => (false, format!("read failed: {}", e)),
+                        Err(e) => (false, format!("join failed: {}", e)),
                     }
                 }
                 None => (false, "no study content is open".into()),

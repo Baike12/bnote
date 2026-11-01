@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod bblog;
+pub mod code;
 pub mod config;
 pub mod files;
 pub mod focus;

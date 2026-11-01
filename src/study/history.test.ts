@@ -6,6 +6,7 @@ import {
   pushPdfEntry,
   pushUrlEntry,
   pushWereadBook,
+  pushCodeEntry,
   STUDY_HISTORY_LIMIT,
 } from "./history";
 
@@ -96,6 +97,44 @@ describe("study history: 微信读书独立列表", () => {
       ],
     });
     expect(h.weread.map((e) => e.title)).toEqual(["三体"]);
+  });
+});
+
+describe("study history: 代码项目独立列表", () => {
+  it("代码项目与 PDF/网页/微信读书互不混入", () => {
+    let h = emptyStudyHistory();
+    h = pushCodeEntry(h, { path: "/Users/me/code/app", title: "app" });
+    h = pushPdfEntry(h, pdf("/v/pdfs/a.pdf", "A"));
+    h = pushUrlEntry(h, { url: "https://example.com", title: "Example" });
+    expect(h.codes.map((e) => e.path)).toEqual(["/Users/me/code/app"]);
+    expect(h.pdfs).toHaveLength(1);
+    expect(h.urls).toHaveLength(1);
+  });
+
+  it("同一个项目按路径去重置顶", () => {
+    let h = emptyStudyHistory();
+    h = pushCodeEntry(h, { path: "/a", title: "a" });
+    h = pushCodeEntry(h, { path: "/b", title: "b" });
+    h = pushCodeEntry(h, { path: "/a", title: "a2" });
+    expect(h.codes.map((e) => e.path)).toEqual(["/a", "/b"]);
+    expect(h.codes[0].title).toBe("a2");
+  });
+
+  it("旧配置没有 codes 字段也能归一(兼容升级)", () => {
+    const h = normalizeStudyHistory({ pdfs: [], urls: [] });
+    expect(h.codes).toEqual([]);
+  });
+
+  it("codes 里的坏条目逐条丢弃", () => {
+    const h = normalizeStudyHistory({
+      codes: [
+        { path: "/a", title: "A", at: 1 },
+        { path: "", title: "no path" },
+        { path: "/b" },
+        "junk",
+      ],
+    });
+    expect(h.codes.map((e) => e.title)).toEqual(["A"]);
   });
 });
 

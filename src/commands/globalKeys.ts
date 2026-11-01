@@ -50,7 +50,7 @@ export function setCommandKeyContext(ctx: CommandKeyContext) {
 }
 
 /**
- * 焦点区域。三个可聚焦区域在 DOM 上各带 `data-key-region`:
+ * 焦点区域。各可聚焦区域在 DOM 上各带 `data-key-region`:
  * 阅读区(ContentPane)、笔记区(EditorPane)、Agent 面板。
  *
  * 归属只认「用户最近一次在哪个区域里动手」:指针按下、焦点进入、滚轮/触摸
@@ -68,7 +68,14 @@ export type FocusRegion = Exclude<KeyRegion, "global">;
 /** 兜底顺序:阅读区最优先(它不取得焦点,「无主」时最安全);项目管理排在
  *  笔记区之前——项目视图里刚切进来还没有「最近动手」,右栏日记虽然在屏上,
  *  键盘该归中间的卡片。学习模式里 project 不在场,直接跳过,顺序不变。 */
-const FOCUS_REGIONS: FocusRegion[] = ["reading", "project", "notes", "agent"];
+/**
+ * 兜底顺序:阅读区 → 项目卡片 → 笔记区 → Agent。
+ *
+ * 代码区排在最后:它**长在阅读区那一栏里**(中栏),阅读区不在场时它也不在
+ * 场,兜底永远轮不到它。它能拿到键盘靠的是「用户在里面动手过」(owner)或
+ * 「焦点在里面」(focus),不是这个兜底列表。
+ */
+const FOCUS_REGIONS: FocusRegion[] = ["reading", "project", "notes", "agent", "code"];
 const FOCUS_REGION_SET = new Set<string>(FOCUS_REGIONS);
 
 let ownerRegion: FocusRegion | null = null;

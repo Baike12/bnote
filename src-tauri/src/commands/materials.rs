@@ -32,6 +32,8 @@ const REGISTRY_FILE: &str = "index.json";
 const KIND_PDF: &str = "pdfs";
 const KIND_WEB: &str = "webpages";
 const KIND_WEREAD: &str = "wxreads";
+/// 代码项目:会话与批注按项目归档。
+const KIND_CODE: &str = "codes";
 /// 目录名上限:APFS 单段 255 字节,留足 `annotations.json` 等文件名的余量。
 const MAX_SLUG_CHARS: usize = 60;
 
@@ -93,6 +95,8 @@ fn identity(study: &StudyContent, vault: &Path) -> String {
             format!("pdf:{}", rel.to_string_lossy().replace('\\', "/"))
         }
         StudyContent::Url { url, .. } => format!("url:{}", url.trim_end_matches('/')),
+        // 代码项目在 vault 外(那才是常态),身份就是它的绝对路径。
+        StudyContent::Code { path, .. } => format!("code:{}", path.trim_end_matches('/')),
     }
 }
 
@@ -178,6 +182,15 @@ fn desired_slug(study: &StudyContent) -> String {
             } else {
                 url_slug(url)
             }
+        }
+        // 代码项目:项目目录名(没有就用路径末段)。
+        StudyContent::Code { path, title } => {
+            let stem = Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let name = if title.trim().is_empty() { stem } else { title.clone() };
+            pinyin_slug(&name)
         }
     }
 }
@@ -405,6 +418,7 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
                 KIND_WEB
             }
         }
+        StudyContent::Code { .. } => KIND_CODE,
     };
     let key = identity(study, vault);
     let registry_path = vault.join(".bnote").join(MATERIALS_DIR).join(REGISTRY_FILE);
@@ -415,7 +429,9 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
         Some(mut e) => {
             // 书名/标题后续才拿到时补进 registry(目录名不动)。
             let title = match study {
-                StudyContent::Pdf { title, .. } | StudyContent::Url { title, .. } => title.clone(),
+                StudyContent::Pdf { title, .. }
+                | StudyContent::Url { title, .. }
+                | StudyContent::Code { title, .. } => title.clone(),
             };
             if !title.trim().is_empty() && e.title != title {
                 e.title = title;
@@ -426,7 +442,9 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
         }
         None => {
             let title = match study {
-                StudyContent::Pdf { title, .. } | StudyContent::Url { title, .. } => title.clone(),
+                StudyContent::Pdf { title, .. }
+                | StudyContent::Url { title, .. }
+                | StudyContent::Code { title, .. } => title.clone(),
             };
             let base = desired_slug(study);
             let dir = unique_dir(&registry, kind, &key, &base);

@@ -38,6 +38,9 @@ const EVENTS = [
   "python-run-exit",
   "python-lsp-diagnostics",
   "python-lsp-status",
+  "code-lsp-diagnostics",
+  "code-lsp-status",
+  "code-lsp-log",
 ] as const;
 
 type Internals = {
@@ -59,7 +62,67 @@ export function installBrowserMode(): void {
   internals.convertFileSrc = (path: string) => `${BASE}/asset?p=${encodeURIComponent(path)}`;
 
   subscribeEvents();
+  installDevHooks();
   console.info(`[bnote] browser mode: IPC → ${BASE} (real vault)`);
+}
+
+/**
+ * 浏览器里的调试钩子。
+ *
+ * 浏览器没有原生目录选择框,所以「打开代码项目」那条路走不通——这里挂几个
+ * 钩子,让浏览器能直接打开一个项目并读到它的状态。生产构建里 `import.meta.env.DEV`
+ * 是 false,整段不执行。
+ */
+function installDevHooks(): void {
+  const hooks = window as unknown as Record<string, unknown>;
+  hooks.__bnoteDev = {
+    /** 打开一个代码项目(路径 → 中栏切到代码视图)。 */
+    openCodeProject: async (root: string) => {
+      const { openProjectAt } = await import("@/code/commands");
+      await openProjectAt(root);
+    },
+    /** 代码项目的当前状态。 */
+    codeState: () => {
+      // 动态导入:browserMode 是入口模块,静态引入会把整个代码模块拖进首屏。
+      return import("@/code/store").then((m) => m.useCodeStore.getState());
+    },
+    /** 执行一条命令(快捷键链路的直接入口)。 */
+    runCommand: async (id: string) => {
+      const { runCommand } = await import("@/commands/registry");
+      runCommand(id);
+    },
+    /** 代码编辑器里放光标(1 基行、0 基列)。 */
+    setCodeCursor: async (line: number, column: number) => {
+      const { activeCodeEditor } = await import("@/code/editor/registry");
+      const handle = activeCodeEditor();
+      if (!handle) return false;
+      const doc = handle.view.state.doc;
+      const l = doc.line(Math.min(Math.max(line, 1), doc.lines));
+      const offset = Math.min(l.from + Math.max(0, column), l.to);
+      handle.view.dispatch({ selection: { anchor: offset } });
+      handle.view.focus();
+      return true;
+    },
+    /** 在代码编辑器里插入一段文本(模拟输入)。 */
+    insertCodeText: async (text: string) => {
+      const { activeCodeEditor } = await import("@/code/editor/registry");
+      const handle = activeCodeEditor();
+      if (!handle) return false;
+      const pos = handle.view.state.selection.main.head;
+      handle.view.dispatch({
+        changes: { from: pos, to: pos, insert: text },
+        selection: { anchor: pos + text.length },
+        userEvent: "input.type",
+      });
+      return true;
+    },
+    /** 代码编辑器里的文本。 */
+    codeText: async () => {
+      const { activeCodeEditor } = await import("@/code/editor/registry");
+      const handle = activeCodeEditor();
+      return handle ? handle.view.state.doc.toString() : null;
+    },
+  };
 }
 
 /** Every `invoke()` from `@tauri-apps/api` ends up here. */
