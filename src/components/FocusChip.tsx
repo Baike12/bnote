@@ -14,6 +14,7 @@ export function FocusChip() {
   const timer = useFocusStore((s) => s.timer);
   const now = useFocusStore((s) => s.now);
   const locked = useFocusStore((s) => s.locked);
+  const error = useFocusStore((s) => s.error);
   const start = useFocusStore((s) => s.start);
 
   const active = isActive(timer);
@@ -42,7 +43,9 @@ export function FocusChip() {
         title={
           active
             ? "专注进行中:这一段走完才会解锁"
-            : "点一下开始专注:独占屏幕 + 硬锁,开始后不能中途退出"
+            : error
+              ? `上一次没有开始:${error}`
+              : "点一下开始专注:独占屏幕 + 硬锁,开始后不能中途退出"
         }
         onClick={() => void start()}
       >
