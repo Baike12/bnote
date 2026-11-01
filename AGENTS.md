@@ -1,37 +1,157 @@
-# AGENTS.md — bnote 代理工作约定
+# AGENTS.md — bnote agent conventions
 
-**`git push` 只在被明确要求时执行**:平时只做本地提交(`git commit`),不许主动推送远端;只有当用户在对话里明确要求推送(如"推送到 GitHub"、"push 一下")时才 `git push`,且仅推用户指定的分支。
+## Project Overview
 
-## 性能是生命线
+bnote is a local-first Markdown notebook for macOS: a vault is a folder of plain `.md` files, and the app is the editor over it.
 
-bnote 的核心是**手感**:编辑、滚动、光标移动、渲染都不许有可感知的卡顿,也不许有竞争。
+- **Frontend:** TypeScript (strict) + React 19 + Vite 8 + CodeMirror 6 + Zustand 5.
+- **Backend:** Rust + Tauri 2. Commands live in `src-tauri/src/commands/` and return `CmdResult<T>` (`Result<T, String>`); feature logic lives in `src-tauri/src/{agent,code,lsp,python}/`.
+- **What it does:** live-preview Markdown with vim mode, LaTeX snippets and KaTeX math, callouts, daily notes with cross-file todo sync, study mode (PDF/web reading plus an agent), a code-project pane with LSP, kanban projects, a pomodoro focus mode that takes over the screen, and a drawing canvas.
+- **Runtime:** `pnpm dev` serves the app on `localhost:1430`; the Tauri window loads the same URL. In browser mode, `src/dev/browserMode.ts` mocks `window.__TAURI_INTERNALS__` and routes IPC to `src-tauri/src/devbridge.rs` (`127.0.0.1:1439`), which calls the real `#[tauri::command]` implementations.
+- **Entry points:** `src/main.tsx` → `src/App.tsx` (startup order: config → vault → focus restore); `src-tauri/src/main.rs` → `src-tauri/src/lib.rs`.
+- **Platform:** macOS-first. Window levels, event taps, IME, and the pen cursor are native; they cannot be exercised in a browser.
 
-- **不许卡顿**:动任何热路径(输入事务、装饰重建、updateListener、measure 周期、滚动)之前,先算清"每次输入/每帧跑几次、读几次布局、会不会强制同步 reflow"。要引入 O(文档长度) 的全量计算,先证明它必要。
-- **不许竞争**:同一份状态只允许一个写入者。异步回调(requestMeasure、rAF、setTimeout、微任务、IPC、文件 watcher)拿到结果后必须自证"我还是针对当前这份状态"(比对引用/版本号/文档长度),过期就放弃,不许盲写。
-- **用测量说话**:性能问题用确定性测量定位(逐帧记录 DOM/布局/光标位置、事务次数、measure 次数),不许用"看起来还行""应该很快"下结论。
+## Project Structure
 
-## 修 bug:从第一性原理出发,禁止补丁式修改
+```
+src/                          frontend
+├── main.tsx, App.tsx         entry, app shell, startup order
+├── editor/                   CodeMirror core: setup.ts assembles extensions; live preview,
+│                             decorations, vim, snippets, math, typewriter, geometry
+├── study/                    study mode: assistant | content | notes columns, PDF, web, materials
+├── code/                     code-project pane: file tree, editor, LSP client, git diff, problems
+├── agent/                    agent panel: sessions, providers, tools, markdown rendering
+├── daily/                    daily notes, cross-file todo sync, rollover
+├── projects/                 kanban project view
+├── footprint/                today's-footprint aggregation into the daily note
+├── python/                   embedded Python: extraction, LSP, runner
+├── focus/                    pomodoro timer and screen-lock state (native side: commands/focus.rs)
+├── commands/                 command registry, key bindings, key regions
+├── state/                    app store, settings, config persistence
+├── components/               app chrome: title bar, status bar, settings, palettes, toasts
+├── vault/                    vault MRU and quick switch
+├── lib/                      shared helpers and the typed IPC boundary (lib/tauri.ts)
+├── dev/                      browser mode and harness hooks
+├── styles/                   global.css: design tokens (dark/light) and component styles
+└── assets/                   static assets (custom cursors)
 
-出现 bug 时**禁止打补丁**(加特判、加兜底分支、加延时或重试、把症状压住、在调用点加例外)。必须走完这条链:
+src-tauri/src/                Rust backend
+├── lib.rs, main.rs           Tauri setup, window creation, command registration
+├── state.rs                  AppState: vault, watchers, sessions, LSP managers
+├── commands/                 #[tauri::command] surface; mod.rs lists the modules
+├── agent/                    providers, sessions, tools, MCP
+├── code/                     project tree cache, LSP manager, git
+├── lsp/                      shared LSP transport
+├── python/                   runtimes, venvs, runner
+├── devbridge.rs              HTTP bridge for browser mode (same command implementations)
+└── dict.rs, translate.rs     offline dictionary and translation
 
-1. **复现并量化**:用最小可复现输入 + 逐帧/逐事务证据定位到具体代码路径,能说清"哪一行、为什么会这样"。
-2. **找到根本原因**:从数据流、时序、几何模型的第一性原理解释现象,而不是从症状倒推一个刚好能盖住它的改动。
-3. **按根本原因改**:优先改模型——收敛成唯一的几何来源、唯一的写入者、明确的时序契约——而不是在每个调用点加例外。**该重构就重构**:宁可一次改对,也不要留下互相抵消的补丁。
-4. **收尾必须能回答**:为什么同类问题不会再从别的入口复现?答不上来,就说明还没改到根本原因。
+tests/data/pdf/               PDF conversion fixtures and quality gate
+vendor/                       vendored crates (anydoc, pdf-inspector)
+scripts/                      dev-signing setup
+```
 
-## 调试与验证方式(默认必须遵守)
+### Key Concepts
 
-完整协议见 **[DEBUG.md](./DEBUG.md)**:两条回路(直连真后端 `localhost:1430`、纯前端 harness)、真 vault / LaTeX 参考实现的位置、浏览器里没有的命令、以及必踩的坑。动手调试前先读它,按其中的 harness 协议测量。
+- **Commands, not ad-hoc handlers.** User-visible actions are commands (`src/commands/builtin.ts`, registered in `registry.ts`, bound in `keys.ts`, scoped by key regions). A UI control and its keybinding call the same command, so the palette and rebinding stay honest.
+- **Extensions are assembled in one place.** `src/editor/setup.ts` composes the CodeMirror extension tree; settings change behavior through compartments (`wrapCompartment`, `typewriterCompartment`), never by rebuilding editor state.
+- **Single writer.** Zustand stores (and the Rust `AppState`) own their data. Components subscribe with selectors and do not mirror store state locally; async results must prove they still belong to the current state before writing.
+- **Thin Rust surface.** Commands parse and validate input, then call feature modules. Long work (LSP, indexing, PDF conversion) runs off the command thread and reports through events.
+- **Two debugging loops.** Real backend on `localhost:1430`; deterministic harness at `/harness.html`. See DEBUG.md.
 
-红线仍在此:**改前端逻辑后不构建、不部署**(由用户决定);验证一律用会话内浏览器,不抢焦点、不整屏截图、不另起别的浏览器工具;以 DOM 断言和磁盘字节为准。
+### Important Files
 
-## 测试门禁(每次改动必须通过)
+| File | Purpose |
+|------|---------|
+| `src/main.tsx`, `src/App.tsx` | Frontend entry and startup order (config, vault, focus restore) |
+| `src/editor/setup.ts` | The single place where CodeMirror extensions are assembled |
+| `src/commands/builtin.ts`, `keys.ts` | Command registry and key bindings |
+| `src/state/appStore.ts` | Settings, config snapshot, persistence |
+| `src/lib/tauri.ts` | Typed IPC boundary (`api`, `agentApi`, `focusApi`, ...) |
+| `src-tauri/src/lib.rs` | Tauri setup and command registration |
+| `src-tauri/src/state.rs` | `AppState` shared by every command |
+| `src-tauri/src/devbridge.rs` | HTTP bridge used by browser mode; calls the same command implementations |
+| `DEBUG.md` | Required debugging and verification protocol |
 
-收尾前必须跑 **`pnpm gate`** 并通过(= `pnpm lint` + `pnpm typecheck` + `pnpm test`,秒级)。这是"改动完成"的定义之一,与"修 bug 要给出证据"同级。
+## Code Quality
 
-- **测试写根因,不写症状**:修 bug/改模型时,把根因固化成回归测试放在被测模块旁(`*.test.ts`,vitest node 环境)。范例:`src/editor/motionClamp.test.ts`(隐藏行步进模型)、`src/editor/vim/verticalMotion.test.ts`(vim 运动控制流+记账,用确定性假几何)、`src/editor/livePreview.activity.test.ts`(标记 token 活动规则)。
-- **功能完成即建门禁**:所有功能完成之后都要建立充分测试和门禁,以确保日后的其他修改不会导致功能回退——纯逻辑单测锁住行为与不变量(正常流/边界/幂等/双向与解链这类规则),性能敏感路径再加量级门禁;没有测试与门禁的功能不算完成(范例:`src/daily/` 跨文件待办同步,模型/链接/引擎三层各有测试 + perf.gate 有每键开销门禁)。
-- **几何/手感改动,门禁之外仍须浏览器测量**:无 DOM 测试只能锁控制流和不变量;真实像素行为(隐藏前缀零宽、widget 命中偏向、视觉锚稳定性)只有浏览器能证明——按 [DEBUG.md](./DEBUG.md) 的 harness 协议测量,修复前后用同一协议对比。
-- **性能门禁,量级回归必拦**:性能是 bnote 的生命线。`src/editor/perf.gate.test.ts` 锁全部高频操作的量级(装饰构建/每击输入/光标移动/toggleList/vim j-k 像素锚定运动/bullet-ordered-todo 列表换行/公式块与代码块的插入和输入——公式输入含 KaTeX 每击渲染,~900 行混合文档);预算按本机实测中位数放大 ~6-10 倍标定——10 倍级回归(意外全文扫描、装饰失稳、解析歧义翻转)必被拦下,机器抖动不误报。动性能敏感路径后先在浏览器实测修复前后对比(同一协议、同一文档),再用门禁锁量级;预算要随实测更新,不许拍脑袋放宽。
-- **lint error 拦门禁,warning 不拦但会积累**:新增 warning 要有理由(如引擎适配层的 any 断言、dev 桥的 console.log)。
-- **Rust 侧改动**在 `src-tauri` 下跑 `cargo check`,不进 pnpm gate(前端迭代不该付 Rust 编译成本)。
+### TypeScript — five rules
+
+1. **Types at the boundary, no `any`.** `strict`, `noUnusedLocals`, and `noUnusedParameters` are on. Narrow `unknown` at IPC/DOM edges instead of casting; `as` is a last resort and needs a one-line reason. Type exported APIs explicitly; local inference is fine.
+2. **Make illegal states unrepresentable.** Use discriminated unions (`{ phase: "idle" } | { phase: "focus"; endsAt: number }`), not parallel booleans that can disagree. Derive values (`remainingMs`) instead of storing a second copy.
+3. **No floating promises.** `await` every async call, or `void` it with a stated reason. Every rejection either reaches the user (toast/error state) or is an intentional fallback. Typed linting is not enabled, so this is review-enforced.
+4. **Pure logic outside UI glue.** Rules belong in plain modules (`focus/timer.ts`, `code/tree.ts`, `code/image.ts`) covered by vitest; React components and CodeMirror extensions only wire them to the DOM.
+5. **One owner per state.** A store or a single module owns each value: no component-level mirrors, no module-level caches that survive HMR without an owner. Async callbacks re-check the reference or version before writing.
+
+### Rust — five rules
+
+1. **Correctness and clarity first.** New code must not `unwrap()`, `expect()`, or `panic!` on paths reachable from user input, disk contents, or IPC; propagate with `?`. Never discard a fallible result with `let _ =` — handle it or log it deliberately.
+2. **Indexing and slicing can panic.** Use `get`, `strip_prefix`, and `split_once`; slice user text only on character boundaries. Markdown and PDF parsing code gets extra care.
+3. **Errors must cross the IPC boundary.** Every command returns `CmdResult<T>` with a message the UI can act on. A command that fails silently is a bug.
+4. **Follow the existing module layout.** One file per logical component; prefer extending an existing file over adding a small one. Feature directories keep their `mod.rs` module list (`commands/`, `agent/`, `code/`, `lsp/`, `python/`).
+5. **Never hold a lock across blocking work or `.await`.** `AppState` mutexes are shared by every command: clone what you need, drop the guard, then do the work.
+
+### Design: SOLID and root-cause fixes
+
+- **S** — one module, one model; one piece of state, one writer.
+- **O** — extend through registries, commands, and compartments instead of editing every call site.
+- **L** — adapters keep the contract: `devbridge.rs` calls the same command implementations, not a parallel copy.
+- **I** — expose only the actions callers need; no god store, no 40-method interface.
+- **D** — core logic depends on seams (pure modules, `src/lib/tauri.ts`); platform code sits behind thin adapters.
+
+**Never patch a bug.** Fix the model, not the symptom:
+
+1. **Reproduce and quantify** — a minimal input plus per-frame/per-transaction evidence that names the exact code path.
+2. **Explain the root cause** from the data flow, ordering, or geometry model, not from the symptom.
+3. **Fix the model** — converge to one source of truth, one writer, an explicit ordering contract. Refactor when that is the honest fix; no special cases, fallbacks, delays, retries, or call-site exceptions.
+4. **Prove the class is closed** — answer why the same bug cannot reappear through another entry point. If you cannot, the root cause is still unfound.
+
+## Performance Is the Lifeline
+
+bnote's core is **feel**: editing, scrolling, caret movement, and rendering must not jank, and must not race.
+
+- **No jank.** Before touching a hot path (input transactions, decoration rebuilds, `updateListener`, measure cycles, scrolling), count the work per keystroke/frame and the layout reads; prove any O(document length) computation is necessary.
+- **No races.** One writer per state (see above). Every async callback (`requestMeasure`, rAF, `setTimeout`, microtasks, IPC, file watcher) must re-validate against current state and drop stale results.
+- **Measure, never guess.** Locate performance problems with deterministic measurements (per-frame DOM/layout/caret traces, transaction counts, measure counts). "Feels fine" is not evidence.
+- **Keep the budget honest.** `src/editor/perf.gate.test.ts` and `src/code/perf.gate.test.ts` lock the order of magnitude of hot operations. Calibrate budgets from measured medians (~6–10×); update them from measurements, never by guesswork. Perf-sensitive changes get before/after measurement with the same protocol.
+
+## Comments
+
+- Explain **why**, not what. If the code already says it, do not repeat it.
+- Complex logic needs a comment at the decision point: ordering contracts, single-writer invariants, geometry models, platform workarounds. State the invariant and the failure it prevents.
+- Prefer a short comment beside the tricky line over a long block at the top of the file.
+- New and edited comments are English (see Language).
+
+## Git
+
+- **`git push` only when explicitly asked.** Local commits are the default; only push the branch the user names.
+- Use Conventional Commits in English, imperative mood, subject at most 20 words: `feat:`, `fix:`, `refactor:`, `perf:`, `test:`, `docs:`, `build:`, `chore:`.
+- One logical change per commit; do not mix refactors with behavior changes.
+- Example: `fix: reflow math widgets after font load`.
+
+## Debugging
+
+Read **[DEBUG.md](./DEBUG.md)** before changing behavior; it defines the two loops, the real vault location, and the traps. The rules that must not be broken:
+
+- **Do not build or deploy after a front-end change** unless the user asks. Building is the user's decision.
+- Verify in the session browser against `localhost:1430`; do not steal focus and do not take full-screen screenshots. DOM assertions and bytes on disk are the source of truth.
+- Browser verification uses **browseros**, with one tab group per task; never start playwright-cli or another browser tool. DEBUG.md's note about an older in-app browser is superseded.
+- Native-only behavior (window levels, event taps, IME, native webviews) cannot be proven in a browser; say so and leave it for a deployed check.
+- Close the tabs you opened; stop any dev server this session started.
+
+## Test Gate
+
+Run **`pnpm gate`** (= `pnpm lint` + `pnpm typecheck` + `pnpm test`) and make it pass before calling any change done.
+
+- **Test root causes, not symptoms.** Put regression tests next to the module as `*.test.ts` (vitest, node environment). Lock behavior and invariants: normal flow, boundaries, idempotence, bidirectional rules.
+- **A feature is not done without tests and gates.** Hot paths also get an order-of-magnitude perf gate.
+- **Geometry and feel need browser measurement** in addition to unit tests: pure tests lock control flow, not pixels. Use the harness protocol in DEBUG.md and compare before/after.
+- **Lint errors block; warnings need a reason.** New warnings (engine `any` assertions, dev-bridge `console.log`) must be justified.
+- **Rust changes** run `cargo check` in `src-tauri` (and `cargo test --lib` for behavior changes). Rust is not part of `pnpm gate`.
+- If the gate fails under heavy machine load, check the load average and rerun the failing test alone; report the real result.
+
+## Language
+
+- All code is English: identifiers, types, comments, doc comments, test names, commit messages, and documentation (including this file).
+- Chinese is reserved for user-facing UI copy and product strings.
+- Legacy Chinese comments are migrated in a separate task; new or edited comments must be English.
