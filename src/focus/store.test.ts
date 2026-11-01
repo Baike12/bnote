@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { FocusStatus } from "@/lib/tauri";
 import { createTimerState, remainingMs } from "./timer";
 
 /**
- * 原生侧(窗口铺屏 / 层级 / 事件 tap)在这里是假实现:这一层要锁的是
- * **承诺规则**——点开始 = 硬锁武装 + 独占锁 + 计时一起生效;这一段只有
- * 走完才释放;开始失败不会留下"计时在走但锁没上"的半截状态。真窗口行为
- * 只能在真应用里验。
+ * The native side (covering the window, the window level, the event tap) is a
+ * fake implementation here: the layer this test locks down is the **promise
+ * rules** - pressing start means the hard lock is armed, the exclusive lock is
+ * taken and the timing starts, all at once; the locks are released only when the
+ * stretch ran out; a failed start leaves no half state where the timer runs but
+ * the lock is not on. The real window behaviour can only be verified in the real
+ * app.
  */
 const focusMock = vi.hoisted(() => ({
   status: vi.fn(async () => ({
@@ -54,7 +58,8 @@ vi.mock("@/lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/tauri")>();
   return {
     ...actual,
-    // 落盘在 node 环境里没有 IPC:换成空实现,免得刷一屏 warn。
+    // Persisting has no IPC in the node environment: use an empty implementation
+    // so the test does not spam a screen of warnings.
     api: { ...actual.api, saveAppConfig: async () => {} },
     focusApi: focusMock,
   };
@@ -136,8 +141,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  // 让可能还在跑的段走完:applyTimer(stop) 会清掉内部 tick 句柄,否则下一个
-  // 用例会拿到一个属于上一条假时钟的定时器,永远不触发。
+  // Let a stretch that may still be running finish: applyTimer(stop) clears the
+  // internal tick handle, otherwise the next case would inherit a timer of the
+  // previous fake clock that never fires.
   vi.setSystemTime(Date.now() + 2 * 60 * 60_000);
   await vi.advanceTimersByTimeAsync(2_000);
   vi.useRealTimers();
@@ -154,7 +160,8 @@ describe("开始就是承诺:硬锁 + 独占锁 + 计时一起生效", () => {
     expect(useFocusStore.getState().locked).toBe(true);
     expect(useFocusStore.getState().hardActive).toBe(true);
 
-    // 顺序:先有硬锁,才起表/进锁(不能出现"计时在走但挡不住 ⌘Tab")。
+    // Order: the hard lock first, then the timer and the screen lock (there must
+    // never be a "timer runs but ⌘Tab is not blocked" state).
     const arm = focusMock.setHardLock.mock.invocationCallOrder[0];
     const lock = focusMock.lock.mock.invocationCallOrder[0];
     expect(arm).toBeLessThan(lock);
@@ -237,7 +244,8 @@ describe("到点收尾:先撤硬锁,再退锁", () => {
     expect(focusMock.unlock).toHaveBeenCalledTimes(1);
     expect(focusMock.setHardLockActive).toHaveBeenLastCalledWith(false);
 
-    // 先停止拦截,再退屏幕锁(反向顺序会在两个原生调用之间留下窗口)。
+    // Stop intercepting first, then release the screen lock (the other order
+    // would leave a window between the two native calls).
     const order = focusMock.setHardLockActive.mock.invocationCallOrder;
     const disarm = order[order.length - 1];
     const unlock = focusMock.unlock.mock.invocationCallOrder[0];
@@ -315,7 +323,7 @@ describe("跨重启:退出应用不等于结束这一段", () => {
 
     expect(useFocusStore.getState().timer.phase).toBe("idle");
     expect(useFocusStore.getState().timer.endsAt).toBeNull();
-    // 时长别被旧字段带偏
+    // The duration must not be thrown off by the old fields
     expect(useFocusStore.getState().timer.config.focusMinutes).toBe(30);
   });
 
@@ -358,5 +366,51 @@ describe("原生状态对账(崩溃残留)", () => {
     expect(focusMock.lock).toHaveBeenCalledTimes(1);
     expect(focusMock.setHardLock).toHaveBeenCalledWith(true);
     expect(useFocusStore.getState().hardActive).toBe(true);
+  });
+});
+
+describe("解锁以原生侧为准,不被前端标记挡住", () => {
+  it("到点时 locked 已经被过期对账清掉,仍然要调原生 unlock", async () => {
+    await useFocusStore.getState().start();
+    // A stale reconciliation cleared the flag while the stretch was running.
+    useFocusStore.setState({ locked: false });
+
+    vi.setSystemTime(T0 + 26 * 60_000);
+    useFocusStore.getState().syncNow();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(focusMock.unlock).toHaveBeenCalled();
+    expect(useFocusStore.getState().locked).toBe(false);
+    expect(useFocusStore.getState().timer.phase).toBe("idle");
+  });
+
+  it("空闲对账无条件退锁:focused 解锁是幂等的,不能因为标记为 false 就跳过", async () => {
+    await useFocusStore.getState().refreshStatus();
+    expect(focusMock.unlock).toHaveBeenCalledTimes(1);
+  });
+
+  it("对账结果过期就不写回:不再重复进锁/武装", async () => {
+    let release!: (status: FocusStatus) => void;
+    const stale = new Promise<FocusStatus>((resolve) => {
+      release = resolve;
+    });
+    focusMock.status.mockReturnValueOnce(stale);
+
+    const refreshing = useFocusStore.getState().refreshStatus();
+    await useFocusStore.getState().start();
+    const lockCalls = focusMock.lock.mock.calls.length;
+
+    release({
+      locked: false,
+      hard_lock: false,
+      hard_active: false,
+      trusted: true,
+      seen: 0,
+      swallowed: 0,
+    });
+    await refreshing;
+
+    expect(focusMock.lock.mock.calls.length).toBe(lockCalls);
+    expect(useFocusStore.getState().locked).toBe(true);
   });
 });

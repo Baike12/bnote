@@ -1,34 +1,53 @@
-//! 专注模式:一段时间里屏幕上只有 bnote,而且切不到别的应用。
+//! Focus mode: for a stretch of time bnote is the only thing on screen and the
+//! user cannot switch to another app.
 //!
-//! 三层叠在一起,任何一层失效都只是降级,不会把应用搞坏:
+//! Three layers stack on top of each other; if any one of them fails, the
+//! result is only a degradation and never a broken app:
 //!
-//! 1. **伪全屏**(窗口层):窗口铺满当前屏幕、摘掉原生装饰。
-//!    刻意**不用** macOS 的原生全屏:原生全屏独占一个 Space,⌘Tab 会把人送进
-//!    别的应用的 Space,bnote 整个不在屏上——那正好和目标相反。
-//! 2. **层级独占**(窗口层):level 抬到 `NSStatusWindowLevel`(25),盖过系统菜单栏
-//!    (24);`collectionBehavior` 加上 `canJoinAllSpaces` + `fullScreenAuxiliary` +
-//!    `stationary`——切 Space、切到别的应用进全屏,bnote 都出现在那个 Space 的
-//!    最上面。
-//! 3. **焦点抢回**:失焦即拉回,让切走的应用拿不到输入。
+//! 1. **Fake fullscreen** (window layer): the window fills the current screen
+//!    and drops the native decorations. Deliberately **not** using macOS native
+//!    fullscreen: native fullscreen owns a Space, and ⌘Tab sends the user into
+//!    another app's Space where bnote is not on screen at all -- exactly the
+//!    opposite of the goal.
+//! 2. **Level exclusivity** (window layer): the level is raised to
+//!    `NSStatusWindowLevel` (25) so it sits above the system menu bar (24);
+//!    `collectionBehavior` gains `canJoinAllSpaces` + `fullScreenAuxiliary` +
+//!    `stationary` -- switching Spaces or fullscreening another app still leaves
+//!    bnote on top of that Space.
+//! 3. **Focus steal-back**: whenever the app loses focus it is pulled back, so
+//!    the app the user switched to never gets input.
 //!
-//! 另加**硬锁**:CGEventTap 吞掉 ⌘Tab / ⌘Space / ⌘Q / ⌘W 等系统级快捷键——这是
-//! 唯一能让「按了没反应」的手段,需要辅助功能权限;没权限就只做上面三层。专注
-//! 期间没有退出应用的路(⌘⌥Esc 强制退出拦不住,重开应用会接着这一段)。
+//! On top of that sits a **hard lock**: a CGEventTap swallows system-wide
+//! shortcuts such as ⌘Tab / ⌘Space / ⌘Q / ⌘W -- the only way to make "I pressed
+//! it and nothing happened" real; it needs Accessibility permission, and without
+//! it only the three layers above apply. During a focus session there is no way
+//! out of the app (⌘⌥Esc force quit cannot be blocked, and reopening the app
+//! resumes the same session).
 //!
-//! 硬锁同时管鼠标:Dock 自动隐藏时,悬停屏幕底边会把 Dock 唤到全屏窗口**之上**
-//! (窗口层级压不住,level 25 也没用),点 Dock 图标照样能切走。所以 tap 也挂在
-//! 鼠标按下上:按下点落在 Dock 可见条带里,整段手势(Down/Dragged/Up)直接吞掉。
-//! 条带由独立线程轮询辅助功能(AX)拿 Dock 的真实矩形——AX 是同步 IPC,放进 tap
-//! 回调会把回调拖超时、被系统关掉 tap;回调里只做一次内存读和坐标比较。
+//! The hard lock covers the mouse too: when the Dock auto-hides, hovering the
+//! bottom edge of the screen raises the Dock **above** the fullscreen window
+//! (the window level cannot hold it down, level 25 does not help either), so
+//! clicking a Dock icon still switches away. Hence the tap is also attached to
+//! mouse-down: when the press lands inside the visible Dock strip, the whole
+//! gesture (Down/Dragged/Up) is swallowed. The strip is polled from a separate
+//! thread through the Accessibility API (AX) -- AX is synchronous IPC, and
+//! calling it inside the tap callback would time the callback out and get the
+//! tap disabled by the system; the callback itself only does an in-memory read
+//! and a coordinate comparison.
 //!
-//! 复原纪律:进锁前快照 level / collectionBehavior / styleMask / 内框尺寸 / 位置,
-//! 退锁时逐项还原。漏一项就再也回不到正常窗口(别的应用会被 bnote 一直压住,
-//! 而且用户看不出来),所以快照与还原写在同一个模块、同一条路径上。
+//! Restore discipline: before locking, snapshot the level / collectionBehavior
+//! / styleMask / inner size / position, and on unlock restore each item one by
+//! one. Missing a single item leaves the window permanently unable to behave
+//! normally (other apps stay pinned under bnote, and the user cannot tell
+//! why), so the snapshot and the restore live in the same module and on the
+//! same code path.
 //!
-//! 样式表另有一处配套:styleMask 里带着 `FullSizeContentView`(macOS 的 overlay
-//! 标题栏),所以还原必须用快照的**原值**,不能用 `set_decorations(true)`——
-//! tao 的 true 分支只给 Closable|Miniaturizable|Resizable|Titled,会把 overlay
-//! 标题栏抹掉,窗口顶上会多出一条原生标题栏。
+//! The stylesheet has a matching constraint: the styleMask carries
+//! `FullSizeContentView` (macOS's overlay title bar), so the restore must use
+//! the snapshot's **original** value and never `set_decorations(true)` -- tao's
+//! `true` branch only yields Closable|Miniaturizable|Resizable|Titled, which
+//! strips the overlay title bar and leaves a native title bar at the top of the
+//! window.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -38,33 +57,38 @@ use tauri::AppHandle;
 
 use super::CmdResult;
 
-/// 专注模式的当前状态(前端回读用)。
+/// Current focus mode state (read back by the frontend).
 #[derive(Serialize, Clone, Copy, Debug, Default)]
 pub struct FocusStatus {
-    /// 伪全屏锁是否开着。
+    /// Whether the fake-fullscreen lock is on.
     pub locked: bool,
-    /// 硬锁是否**武装**(用户打开了这个开关,表示"专注期间吞系统级快捷键")。
+    /// Whether the hard lock is **armed** (the user turned the switch on, meaning
+    /// "swallow system-wide shortcuts during a focus session").
     pub hard_lock: bool,
-    /// 硬锁是否**正在拦截**:只有一段番茄钟在跑的时候才为真。
-    /// 武装 ≠ 拦截:没在专注时 ⌘Tab 必须照常可用。
+    /// Whether the hard lock is **actively intercepting**: true only while a
+    /// pomodoro is running.
+    /// Armed is not the same as intercepting: outside a focus session ⌘Tab must
+    /// keep working as usual.
     pub hard_active: bool,
-    /// 辅助功能权限是否已授予——硬锁的前提。没授权时硬锁开不起来。
+    /// Whether Accessibility permission has been granted -- the precondition for
+    /// the hard lock. Without it the hard lock cannot be armed.
     pub trusted: bool,
-    /// 硬锁的 tap 看到过多少个按键事件(不含被吞的诊断计数,只是"活着"的证据)。
+    /// How many key events the hard lock's tap has seen (not a count of swallowed
+    /// events; just evidence that the tap is alive).
     pub seen: u32,
-    /// 硬锁吞掉了多少个按键事件。
+    /// How many key events the hard lock swallowed.
     pub swallowed: u32,
 }
 
-/// 进锁前的窗口快照;退锁时逐项还原。
-#[derive(Debug)]
+/// Window snapshot taken before locking; restored item by item on unlock.
+#[derive(Debug, Clone, Copy)]
 struct WindowSnapshot {
     level: isize,
     behavior: usize,
     style_mask: usize,
-    /// 内框尺寸(逻辑像素)。
+    /// Inner size (logical pixels).
     inner: (f64, f64),
-    /// 窗口位置(逻辑像素)。
+    /// Window position (logical pixels).
     pos: (f64, f64),
 }
 
@@ -73,7 +97,7 @@ static HARD_LOCK: AtomicBool = AtomicBool::new(false);
 static HARD_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SNAPSHOT: Mutex<Option<WindowSnapshot>> = Mutex::new(None);
 
-/// 专注模式的当前状态。
+/// Reports the current focus mode state.
 #[tauri::command]
 pub fn focus_status() -> CmdResult<FocusStatus> {
     Ok(FocusStatus {
@@ -86,7 +110,8 @@ pub fn focus_status() -> CmdResult<FocusStatus> {
     })
 }
 
-/// 进锁:伪全屏 + 层级独占 + 焦点抢回。已经在锁里就是幂等的空操作。
+/// Enters the lock: fake fullscreen + level exclusivity + focus steal-back.
+/// Idempotent no-op when already locked.
 #[tauri::command]
 pub fn focus_lock(app: AppHandle) -> CmdResult<FocusStatus> {
     if LOCKED.load(Ordering::Relaxed) {
@@ -97,36 +122,43 @@ pub fn focus_lock(app: AppHandle) -> CmdResult<FocusStatus> {
     focus_status()
 }
 
-/// 退锁:把快照里的每一项原样放回去。
+/// Leaves the lock: puts every snapshotted item back exactly as it was.
+///
+/// Unconditional and idempotent: the native window is the truth. A front-end
+/// flag can be stale (a reconciliation may clear it), and that must never leave
+/// the window above every other app.
 #[tauri::command]
 pub fn focus_unlock(app: AppHandle) -> CmdResult<FocusStatus> {
-    if LOCKED.load(Ordering::Relaxed) {
-        mac::unlock(&app)?;
-        LOCKED.store(false, Ordering::Relaxed);
-    }
+    mac::unlock(&app)?;
+    LOCKED.store(false, Ordering::Relaxed);
     focus_status()
 }
 
-/// 武装/解除硬锁(吞系统级快捷键)。
+/// Arms or disarms the hard lock (swallowing system-wide shortcuts).
 ///
-/// 它只是**武装**:真正开始吞键要等一段番茄钟跑起来(focus_set_hard_lock_active)。
-/// 没在专注时 ⌘Tab 必须照常能用——否则"打开硬锁"就等于把自己锁在应用里。
+/// Arming alone intercepts nothing: real key swallowing starts when a pomodoro
+/// runs (`focus_set_hard_lock_active`). Outside a focus session ⌘Tab must keep
+/// working as usual -- otherwise "turn on the hard lock" would mean trapping
+/// the user inside the app.
 ///
-/// 没有辅助功能权限时直接报错,不静默降级:用户以为锁住了,其实 ⌘Tab 还能用,
-/// 比明说"锁不住"更糟。
+/// Without Accessibility permission this reports the error instead of degrading
+/// silently: the user would think the app was locked while ⌘Tab still works,
+/// which is worse than being told up front that it cannot be locked.
 #[tauri::command]
 pub fn focus_set_hard_lock(enabled: bool) -> CmdResult<FocusStatus> {
     mac::set_hard_lock(enabled)?;
     HARD_LOCK.store(enabled, Ordering::Relaxed);
     if !enabled {
-        // 解除武装立刻停手:不能等到下一次会话结束才放开。
+        // Disarming stops immediately: the lock must not stay on until the end
+        // of the current session.
         mac::set_hard_lock_active(false)?;
         HARD_ACTIVE.store(false, Ordering::Relaxed);
     }
     focus_status()
 }
 
-/// 一段番茄钟开始/结束时切换"真正拦截"。前端只在计时跑着的时候传 true。
+/// Toggles real interception when a pomodoro starts or ends. The frontend
+/// passes true only while the timer runs.
 #[tauri::command]
 pub fn focus_set_hard_lock_active(active: bool) -> CmdResult<FocusStatus> {
     if active && !HARD_LOCK.load(Ordering::Relaxed) {
@@ -137,7 +169,7 @@ pub fn focus_set_hard_lock_active(active: bool) -> CmdResult<FocusStatus> {
     focus_status()
 }
 
-/// 装上"失焦抢回"的监听。进 setup 里调一次。
+/// Installs the "steal focus back" listener. Call once from setup.
 pub fn install_focus_guard(app: &AppHandle) {
     use tauri::Manager;
     let Some(window) = app.get_webview_window("main") else {
@@ -169,16 +201,19 @@ mod mac {
 
     use super::{HARD_ACTIVE, HARD_LOCK, LOCKED, SNAPSHOT, WindowSnapshot};
 
-    /// 集合行为位(canJoinAllSpaces / stationary / fullScreenAuxiliary)。
+    /// Collection behavior bits (canJoinAllSpaces / stationary / fullScreenAuxiliary).
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
     const STATIONARY: usize = 1 << 4;
     const FULLSCREEN_AUXILIARY: usize = 1 << 8;
 
-    // 辅助功能权限(AXIsProcessTrusted)。硬锁要吞系统级按键,没有这个权限
-    // 事件 tap 建不起来。
+    // Accessibility permission (AXIsProcessTrusted). The hard lock has to
+    // swallow system-wide key events, and without this permission the event tap
+    // cannot be created.
     //
-    // 带 Prompt 的那个变体能在没权限时让系统直接弹出授权框(框里有"打开系统
-    // 设置"的按钮)——只回一句"需要权限"的话,用户不知道该去哪儿点。
+    // The variant with a prompt makes the system show the authorization sheet
+    // itself when permission is missing (the sheet has an "open System
+    // Settings" button) -- a bare "permission required" message leaves the user
+    // with no idea where to click.
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn AXIsProcessTrusted() -> bool;
@@ -189,7 +224,7 @@ mod mac {
         unsafe { AXIsProcessTrusted() }
     }
 
-    /// 让 macOS 弹出「bnote 想要控制这台电脑」的授权提示。
+    /// Makes macOS show the "bnote wants to control this computer" authorization prompt.
     fn prompt_accessibility() {
         unsafe {
             let dict: *mut AnyObject = msg_send![class!(NSMutableDictionary), new];
@@ -203,11 +238,13 @@ mod mac {
         }
     }
 
-    // ---- Dock 条带(硬锁挡住 Dock 点击) --------------------------------------
+    // ---- Dock strip (the hard lock blocks Dock clicks) ----------------------
     //
-    // Dock 的可见区域只能从辅助功能树拿:WindowServer 里 Dock 的窗口是整屏大小
-    // (实测 bounds = 2560×1440),窗口列表分不出那一条;AX 里 Dock 的
-    // AXList 子元素就是条带本身(隐藏时 y = 屏幕高,整条在屏外)。
+    // The Dock's visible area can only be obtained from the accessibility tree:
+    // in WindowServer the Dock's window spans the whole screen (measured bounds
+    // = 2560x1440), so the window list cannot pick out that strip; in AX the
+    // Dock's AXList child element *is* the strip (when hidden, y = screen
+    // height and the whole strip is off-screen).
 
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
@@ -222,7 +259,7 @@ mod mac {
         fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
     }
 
-    /// kAXValueCGPointType / kAXValueCGSizeType(AXValueConstants.h)。
+    /// kAXValueCGPointType / kAXValueCGSizeType (AXValueConstants.h).
     const AX_VALUE_CG_POINT: u32 = 1;
     const AX_VALUE_CG_SIZE: u32 = 2;
 
@@ -236,22 +273,28 @@ mod mac {
         fn CGDisplayBounds(display: u32) -> CGRect;
     }
 
-    /// Dock 可见条带(全局屏幕坐标,左上角原点):[x, y, w, h]。
-    /// None = Dock 整条在屏幕外(自动隐藏中),此时不拦任何点击。
+    /// Visible Dock strip (global screen coordinates, top-left origin): [x, y, w, h].
+    /// None = the whole Dock is off-screen (auto-hiding), in which case no click
+    /// is blocked at all.
     static DOCK_BAND: Mutex<Option<[f64; 4]>> = Mutex::new(None);
-    /// 轮询线程只起一次。
+    /// The polling thread is started only once.
     static DOCK_WATCHED: AtomicBool = AtomicBool::new(false);
-    /// Dock 进程号;Dock 重启后 AX 查询会失败,清 0 重找。
+    /// Dock process id; AX queries fail after the Dock restarts, so clear it to
+    /// 0 and look it up again.
     static DOCK_PID: AtomicI32 = AtomicI32::new(0);
-    /// 这一次鼠标手势的按下点落在 Dock 上:后续 Dragged/Up 一起吞,
-    /// 不留下半段手势给别的窗口。
+    /// Whether this mouse gesture started with a press inside the Dock: the
+    /// following Dragged/Up are swallowed together, so no half-gesture is left
+    /// over for another window.
     static DOCK_GESTURE: AtomicBool = AtomicBool::new(false);
-    /// 见过 Dock 整条在屏幕外 ⇒ 它是自动隐藏的,唤出后会盖到窗口上面,必须拦。
-    /// 常驻 Dock 永远在屏上,而锁态窗口(level 25)本来就盖住它,拦了只会
-    /// 把应用自己底部那条区域点不动——所以不拦。
+    /// Seeing the Dock entirely off-screen means it auto-hides, so when it rises
+    /// it covers the window and must be blocked. A permanent Dock is always on
+    /// screen, and the locked window (level 25) already covers it, so blocking
+    /// it would only make the app's own bottom strip unclickable -- hence it is
+    /// not blocked.
     static DOCK_AUTOHIDE: AtomicBool = AtomicBool::new(false);
 
-    /// 条带外扩几像素:轮询有延迟,Dock 唤出动画期间条带在上移。
+    /// Padding added around the strip: polling lags, and during the Dock's rise
+    /// animation the strip is moving up.
     const DOCK_PAD: f64 = 6.0;
 
     unsafe fn ns_string(text: &str) -> *mut AnyObject {
@@ -260,8 +303,8 @@ mod mac {
         msg_send![s, initWithUTF8String: c.as_ptr()]
     }
 
-    /// Dock 的 pid。NSRunningApplication 是 AppKit 的类,这里只用类方法,
-    /// 不为它引入新的 objc2-app-kit feature。
+    /// The Dock's pid. NSRunningApplication is an AppKit class; only its class
+    /// method is used here, to avoid pulling in another objc2-app-kit feature.
     fn dock_pid() -> Option<i32> {
         let cached = DOCK_PID.load(Ordering::Relaxed);
         if cached > 0 {
@@ -290,7 +333,7 @@ mod mac {
         }
     }
 
-    /// 读一个 AX 属性(Copy 规则:+1,调用方负责 CFRelease)。
+    /// Reads one AX attribute (Copy rule: +1, the caller owns the CFRelease).
     unsafe fn ax_attr(element: *const c_void, name: &str) -> Option<*const c_void> {
         let attr = CFString::new(name);
         let mut value: *const c_void = std::ptr::null();
@@ -322,8 +365,9 @@ mod mac {
         ok.then_some(out)
     }
 
-    /// Dock 的可见条带。隐藏时 AXList 在屏幕底边之下(y == 屏幕高),原样返回,
-    /// 由 `on_screen` 判掉。
+    /// The Dock's visible strip. When hidden the AXList sits below the bottom
+    /// edge of the screen (y == screen height); it is returned as-is and
+    /// rejected by `on_screen`.
     fn dock_strip() -> Option<[f64; 4]> {
         let pid = dock_pid()?;
         let strip = unsafe {
@@ -334,7 +378,8 @@ mod mac {
             let mut out = None;
             if let Some(children) = ax_attr(app, "AXChildren") {
                 if CFArrayGetCount(children) > 0 {
-                    // children[0] 是 AXList:整条 Dock(不含菜单栏里的东西)。
+                    // children[0] is the AXList: the whole Dock (without
+                    // whatever lives in the menu bar).
                     let list = CFArrayGetValueAtIndex(children, 0);
                     if !list.is_null() {
                         if let (Some(pos), Some(size)) =
@@ -352,13 +397,15 @@ mod mac {
             out
         };
         if strip.is_none() {
-            // 查不到大概率是 Dock 重启换了 pid:下次重新找。
+            // Failing to find it most likely means the Dock restarted with a
+            // new pid: look it up again next time.
             DOCK_PID.store(0, Ordering::Relaxed);
         }
         strip
     }
 
-    /// 条带是否和任意一块在用的屏幕有交集。隐藏状态整条在屏幕外,交集为 0。
+    /// Whether the strip intersects any display in use. A hidden Dock lies
+    /// entirely off-screen, so the intersection is 0.
     fn on_screen(band: [f64; 4]) -> bool {
         let [x, y, w, h] = band;
         let mut displays = [0u32; 8];
@@ -387,9 +434,11 @@ mod mac {
             && point.y <= y + h + DOCK_PAD
     }
 
-    /// 轮询 Dock 条带。只在硬锁真正生效(番茄钟在跑)时查 AX;平时把条带写成
-    /// None,不做任何拦截。Dock 可见时加快到 ~60ms:唤出动画里条带在上移,
-    /// 轮询太慢会漏掉动画早段的点击。
+    /// Polls the Dock strip. AX is only queried while the hard lock is really
+    /// active (a pomodoro is running); otherwise the strip is written as None
+    /// and nothing is blocked. When the Dock is visible the poll speeds up to
+    /// ~60ms: during the rise animation the strip is moving up, and a slower
+    /// poll would miss clicks in the early part of the animation.
     fn ensure_dock_watch() {
         if DOCK_WATCHED.swap(true, Ordering::Relaxed) {
             return;
@@ -418,7 +467,7 @@ mod mac {
             });
     }
 
-    /// NSWindow 的原生层级(NSWindowLevel)。
+    /// The window's native level (NSWindowLevel).
     fn native_level(ns: *mut AnyObject) -> isize {
         unsafe { msg_send![ns, level] }
     }
@@ -439,16 +488,19 @@ mod mac {
         unsafe { msg_send![ns, styleMask] }
     }
 
-    /// 改 styleMask,并把 first responder 交回 webview。
+    /// Changes the styleMask and hands first responder back to the webview.
     ///
-    /// **不**用 tao 的 `set_decorations`:它走 GCD 异步改 mask,恢复时那份
-    /// 异步改动会盖掉我们精确的还原值(tao 只给
-    /// Titled|Closable|Miniaturizable|Resizable,把 FullSizeContentView 丢了,
-    /// overlay 标题栏就没了,窗口顶上会多出一条原生标题栏)。这里自己同步改
-    /// ——我们本来就在主线程(setStyleMask: 只在主线程安全)。
+    /// Deliberately **not** using tao's `set_decorations`: it changes the mask
+    /// asynchronously through GCD, and that late change would overwrite our
+    /// exact restore value (tao only gives
+    /// Titled|Closable|Miniaturizable|Resizable, dropping FullSizeContentView,
+    /// so the overlay title bar is gone and a native title bar appears at the
+    /// top of the window). We change it synchronously ourselves -- we are on
+    /// the main thread anyway (`setStyleMask:` is only safe on the main thread).
     ///
-    /// 改完必须 makeFirstResponder(webview):否则窗口不是 key,键盘输入会失灵
-    /// (tao 自己的 set_style_mask 也是这么做的)。
+    /// Afterwards `makeFirstResponder(webview)` is mandatory: otherwise the
+    /// window is not key and keyboard input stops working (tao's own
+    /// `set_style_mask` does the same).
     fn set_style_mask(ns: *mut AnyObject, view: *mut AnyObject, mask: usize) {
         unsafe {
             let _: () = msg_send![ns, setStyleMask: mask];
@@ -456,16 +508,19 @@ mod mac {
         }
     }
 
-    /// 无边框窗口的 styleMask:和 tao 的「关装饰」分支取同一个值。
+    /// The styleMask of a borderless window: the same value tao's "no
+    /// decorations" branch uses.
     fn borderless_mask() -> usize {
         (NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable).0 as usize
     }
 
-    /// 把一段 AppKit 操作放到主线程执行,并等它做完。
+    /// Runs a block of AppKit work on the main thread and waits for it.
     ///
-    /// AppKit 不是线程安全的。Tauri 的同步命令跑在 IPC 到达的那个线程
-    /// (通常是主线程),但命令也可能从别处被调到,所以统一走这里,不在调用点
-    /// 赌线程。已经在主线程就直接执行,免得自己等自己。
+    /// AppKit is not thread safe. Tauri's synchronous commands run on the thread
+    /// the IPC arrived on (usually the main thread), but a command may also be
+    /// called from elsewhere, so everything goes through here instead of
+    /// gambling on the thread at each call site. Already on the main thread
+    /// means run it directly, so we never wait on ourselves.
     fn on_main_thread<T: Send + 'static>(
         app: &AppHandle,
         f: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -502,7 +557,8 @@ mod mac {
                 .map_err(|e| e.to_string())?;
             let ns = win.ns_window().map_err(|e| e.to_string())? as *mut AnyObject;
 
-            // 快照:退锁时逐项还原,漏一项都算事故。
+            // Snapshot: restored item by item on unlock; missing a single item
+            // is an incident.
             let snap = WindowSnapshot {
                 level: native_level(ns),
                 behavior: native_behavior(ns),
@@ -511,12 +567,15 @@ mod mac {
                 pos: (pos.x, pos.y),
             };
 
-            // 先摘装饰:摘掉后内框 == 外框,铺屏才严丝合缝(否则会小一圈)。
+            // Strip the decorations first: once they are gone inner size ==
+            // outer size, so filling the screen is exact (otherwise it would
+            // fall short by a strip).
             let view = win.ns_view().map_err(|e| e.to_string())? as *mut AnyObject;
             set_style_mask(ns, view, borderless_mask());
 
-            // 铺满当前屏幕(整块,含菜单栏那条——level 25 会盖住菜单栏,画面才
-            // 真的只剩 bnote)。只有一块屏,当前屏就是它。
+            // Fill the current screen (the whole thing, including the menu bar
+            // strip -- level 25 covers the menu bar, so the picture really is
+            // only bnote). With a single display, the current one is it.
             let monitor = win
                 .current_monitor()
                 .map_err(|e| e.to_string())?
@@ -530,8 +589,9 @@ mod mac {
             win.set_position(LogicalPosition::new(m_pos.x, m_pos.y))
                 .map_err(|e| e.to_string())?;
 
-            // 层级独占:盖过系统菜单栏(24);跨 Space + 伴随全屏,切到哪儿都在
-            // 最上面。
+            // Level exclusivity: above the system menu bar (24); across Spaces
+            // and accompanying fullscreen, so it stays on top wherever the user
+            // goes.
             set_native_level(ns, NSStatusWindowLevel);
             set_native_behavior(
                 ns,
@@ -547,39 +607,54 @@ mod mac {
         let app = app.clone();
         let inner_app = app.clone();
         on_main_thread(&app, move || {
-            let snap = SNAPSHOT
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            let Some(snap) = snap else {
-                return Ok(());
-            };
+            // Copy instead of taking: when a restore step fails, the snapshot
+            // must survive so the next attempt can still put the window back.
+            let snap = *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
             let Some(win) = inner_app.get_webview_window("main") else {
                 return Ok(());
             };
             let ns = win.ns_window().map_err(|e| e.to_string())? as *mut AnyObject;
 
-            // 装饰:把快照里的 styleMask 原样放回去(带 FullSizeContentView 的
-            // overlay 标题栏)。走自己的同步路径,别让 tao 的异步改动盖掉它。
-            let view = win.ns_view().map_err(|e| e.to_string())? as *mut AnyObject;
-            set_style_mask(ns, view, snap.style_mask);
+            match snap {
+                Some(snap) => {
+                    // Decorations: put the snapshotted styleMask back verbatim
+                    // (with the FullSizeContentView overlay title bar). Use our
+                    // own synchronous path so tao's asynchronous change cannot
+                    // overwrite it.
+                    let view = win.ns_view().map_err(|e| e.to_string())? as *mut AnyObject;
+                    set_style_mask(ns, view, snap.style_mask);
 
-            set_native_level(ns, snap.level);
-            set_native_behavior(ns, snap.behavior);
+                    set_native_level(ns, snap.level);
+                    set_native_behavior(ns, snap.behavior);
 
-            win.set_size(LogicalSize::new(snap.inner.0, snap.inner.1))
-                .map_err(|e| e.to_string())?;
-            win.set_position(LogicalPosition::new(snap.pos.0, snap.pos.1))
-                .map_err(|e| e.to_string())?;
+                    win.set_size(LogicalSize::new(snap.inner.0, snap.inner.1))
+                        .map_err(|e| e.to_string())?;
+                    win.set_position(LogicalPosition::new(snap.pos.0, snap.pos.1))
+                        .map_err(|e| e.to_string())?;
+                }
+                None => {
+                    // No snapshot to restore: the locked geometry is gone, but a
+                    // window left above every other app is worse. Drop the level
+                    // and remove exactly the collection bits we added.
+                    set_native_level(ns, 0);
+                    let behavior = native_behavior(ns)
+                        & !(CAN_JOIN_ALL_SPACES | STATIONARY | FULLSCREEN_AUXILIARY);
+                    set_native_behavior(ns, behavior);
+                }
+            }
+            *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
             Ok(())
         })
     }
 
-    /// 失焦抢回:把 bnote 拉回前台,让切走的应用拿不到输入。
+    /// Focus steal-back: pulls bnote back to the foreground so the app the
+    /// user switched to gets no input.
     ///
-    /// 原生模态框(选仓库/选文件)打开时 app 本来就 resign key,这时拉回会
-    /// 和对话框打架——用 `modalWindow` 判掉。窗口最小化/不可见时 tao 的
-    /// `set_focus` 自己就不做事,不会把最小化的窗口弹出来。
+    /// A native modal sheet (pick repository / pick file) resigns the app as
+    /// key on its own, and pulling focus back then fights the dialog -- reject
+    /// that case with `modalWindow`. When the window is minimized or hidden,
+    /// tao's `set_focus` does nothing by itself, so a minimized window is never
+    /// popped back up.
     pub fn maybe_refocus(window: &WebviewWindow) {
         if !LOCKED.load(Ordering::Relaxed) {
             return;
@@ -596,19 +671,24 @@ mod mac {
         }
     }
 
-    // ---- 硬锁(CGEventTap) ----------------------------------------------------
+    // ---- Hard lock (CGEventTap) -----------------------------------------------
 
-    /// 事件 tap 的 MachPort;关/开硬锁时要用它 enable/disable。
+    /// The event tap's MachPort; used to enable/disable the tap when the hard
+    /// lock is turned on or off.
     static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-    /// 系统授权框是否已经弹过。每个进程只弹一次:反复点开关就反复弹框,
-    /// 而 macOS 本来也只对同一个应用弹一次——再点由界面上的「去授权」兜底。
+    /// Whether the system authorization sheet has already been shown. Each
+    /// process shows it only once: toggling the switch would otherwise re-prompt
+    /// every time, and macOS only ever prompts once per app anyway -- the
+    /// "grant access" button in the UI covers the retry.
     static PROMPTED: AtomicBool = AtomicBool::new(false);
 
-    /// tap 见过的按键事件数 / 吞掉的按键事件数。
+    /// Number of key events the tap has seen / number of key events it swallowed.
     ///
-    /// 这两个计数是"硬锁到底活着没有"的证据:合成事件走的是注入通道,tap 看不见,
-    /// 只有真键盘事件才进得来——计数不动就说明 tap 没建起来或被系统关了。
+    /// These two counters are the evidence that the hard lock is actually alive:
+    /// synthesized events travel through the injection channel and the tap never
+    /// sees them, only real keyboard events get in -- if the counters do not
+    /// move, the tap was never created or the system disabled it.
     static SEEN: AtomicU32 = AtomicU32::new(0);
     static SWALLOWED: AtomicU32 = AtomicU32::new(0);
 
@@ -620,29 +700,33 @@ mod mac {
         SWALLOWED.load(Ordering::Relaxed)
     }
 
-    /// 硬锁吞掉的组合:键码(ANSI 布局) → 必须同时按下的修饰键。
+    /// Combinations the hard lock swallows: key code (ANSI layout) -> the
+    /// modifiers that must be held down at the same time.
     ///
-    /// 只吞「系统自己处理、因而根本到不了应用」的那几个:⌘Tab(切应用)、
-    /// ⌘Space(Spotlight)、⌘`(同应用窗口切换)、⌃↑/⌃↓(调度中心)、⌃⌘←/→(切
-    /// Space)、⌘H(隐藏)、⌘M(最小化)。
+    /// Only the ones macOS handles itself and therefore never reaches the app:
+    /// ⌘Tab (switch app), ⌘Space (Spotlight), ⌘` (switch windows of the same
+    /// app), ⌃↑/⌃↓ (Mission Control), ⌃⌘←/→ (switch Space), ⌘H (hide),
+    /// ⌘M (minimize).
     ///
-    /// **⌘Q / ⌘W 也吞**:「开始后不能中途退出」包含退出应用——否则按一下 ⌘Q
-    /// 就绕过了整段专注。系统级的强制退出(⌘⌥Esc)拦不住,那是 OS 的最后出口;
-    /// 即便被强杀,计时状态与 endsAt 都落盘,重开应用会接着这段并重新上锁。
+    /// **⌘Q / ⌘W are swallowed too**: "no leaving midway" includes quitting the
+    /// app -- otherwise one ⌘Q press would defeat the whole session. The
+    /// system-level force quit (⌘⌥Esc) cannot be blocked; it is the OS's last
+    /// exit -- and even after a kill the timer state and endsAt are on disk, so
+    /// reopening the app resumes the session and re-locks.
     const BLOCKED: &[(u64, u64)] = &[
         (48, CGEventFlags::MaskCommand.0), // Tab
         (49, CGEventFlags::MaskCommand.0), // Space
         (50, CGEventFlags::MaskCommand.0), // `
         (4, CGEventFlags::MaskCommand.0),  // H
         (46, CGEventFlags::MaskCommand.0), // M
-        (12, CGEventFlags::MaskCommand.0), // Q(退出应用)
-        (13, CGEventFlags::MaskCommand.0), // W(关窗口=单窗口下也等于退出)
-        (126, CGEventFlags::MaskControl.0), // Up(调度中心)
+        (12, CGEventFlags::MaskCommand.0), // Q (quits the app)
+        (13, CGEventFlags::MaskCommand.0), // W (closes the window: one window means a quit)
+        (126, CGEventFlags::MaskControl.0), // Up (Mission Control)
         (125, CGEventFlags::MaskControl.0), // Down
         (
             123,
             CGEventFlags::MaskControl.0 | CGEventFlags::MaskCommand.0,
-        ), // Left(切 Space)
+        ), // Left (switch Space)
         (
             124,
             CGEventFlags::MaskControl.0 | CGEventFlags::MaskCommand.0,
@@ -655,10 +739,12 @@ mod mac {
             .any(|(key, need)| code == *key as i64 && flags & need == *need)
     }
 
-    /// 事件 tap 的回调:命中要吞的组合就返回 null(事件被吃掉)。
+    /// The event tap's callback: a blocked combination returns null, which eats
+    /// the event.
     ///
-    /// 系统会在回调超时或用户输入过多时把 tap 关掉(`kCGEventTapDisabledBy…`),
-    /// 这时硬锁会静默失效——所以要把 tap 重新打开。
+    /// macOS disables the tap when the callback times out or the user generates
+    /// too much input (`kCGEventTapDisabledBy...`), which makes the hard lock
+    /// fail silently -- so the tap has to be re-enabled.
     unsafe extern "C-unwind" fn tap_callback(
         _proxy: objc2_core_graphics::CGEventTapProxy,
         event_type: objc2_core_graphics::CGEventType,
@@ -680,7 +766,8 @@ mod mac {
         let et = event_type.0;
         let keyboard = et == CGEventType::KeyDown.0 || et == CGEventType::KeyUp.0;
         if !keyboard {
-            // 鼠标:只认按下/抬起/拖动,其余(滚轮、移动)原样放行。
+            // Mouse: only press/release/drag matter; everything else (scroll,
+            // movement) passes through untouched.
             let down = et == CGEventType::LeftMouseDown.0
                 || et == CGEventType::RightMouseDown.0
                 || et == CGEventType::OtherMouseDown.0;
@@ -702,7 +789,8 @@ mod mac {
                 }
                 return event.as_ptr();
             }
-            // 按下点落在 Dock 上:整段手势都吞。抬手时复位。
+            // The press landed on the Dock: swallow the whole gesture. Reset
+            // on release.
             if DOCK_GESTURE.load(Ordering::Relaxed) {
                 if up {
                     DOCK_GESTURE.store(false, Ordering::Relaxed);
@@ -727,7 +815,9 @@ mod mac {
         if ptr.is_null() {
             return;
         }
-        // tap 关/开之间可能漏掉抬手:手势状态不能跨段残留,否则下一次拖动被吞。
+        // The mouse-up can be missed between disabling and re-enabling the tap:
+        // the gesture state must not survive across segments, or the next drag
+        // would be swallowed.
         DOCK_GESTURE.store(false, Ordering::Relaxed);
         unsafe {
             let port = &*(ptr as *const objc2_core_foundation::CFMachPort);
@@ -735,17 +825,21 @@ mod mac {
         }
     }
 
-    /// 武装硬锁:只检查权限,**不建 tap**。
+    /// Arms the hard lock: only checks permission, **does not create the tap**.
     ///
-    /// 真正的拦截由 `set_hard_lock_active` 在一段番茄钟开始时打开——武装只是
-    /// "我同意专注期间吞掉系统级快捷键"这个意向,不改变当前能不能切走。
+    /// Real interception is turned on by `set_hard_lock_active` when a pomodoro
+    /// starts -- arming only expresses the intent "I agree to swallow
+    /// system-wide shortcuts during a focus session"; it does not change whether
+    /// the user can switch away right now.
     pub fn set_hard_lock(enabled: bool) -> Result<(), String> {
         if !enabled {
             return Ok(());
         }
         if !trusted() {
-            // 先弹系统授权框,再回错误:用户允许之后,前端会在窗口回到前台
-            // 时重新查一次权限并自动把武装补上——不用再点一次开关。
+            // Show the system authorization sheet first, then report the error:
+            // once the user allows it, the frontend re-checks the permission
+            // when the window comes back to the foreground and arms the hard
+            // lock automatically -- no second trip to the switch.
             if !PROMPTED.swap(true, Ordering::Relaxed) {
                 prompt_accessibility();
             }
@@ -757,10 +851,13 @@ mod mac {
         Ok(())
     }
 
-    /// 开始/停止真正拦截。番茄钟跑起来(stop 掉)时由前端切。
+    /// Starts/stops real interception. The frontend toggles it when a pomodoro
+    /// starts (and stops).
     ///
-    /// 停:把 tap 关掉——线程留着,tap 也留着,下次不用重建。
-    /// 起:确保 tap 建好并启用。没权限时不弹框(会话开始不该弹系统提示),直接报错。
+    /// Stop: turn the tap off -- the thread stays, the tap stays, so the next
+    /// start does not have to rebuild it. Start: make sure the tap exists and
+    /// is enabled. Without permission it does not prompt (starting a session
+    /// must not raise a system sheet) and just reports the error.
     pub fn set_hard_lock_active(active: bool) -> Result<(), String> {
         if !active {
             set_tap_enabled(false);
@@ -777,7 +874,8 @@ mod mac {
         Ok(())
     }
 
-    /// 建一次事件 tap,跑在专属线程的 run loop 上(不占主线程)。
+    /// Builds the event tap once, on a dedicated thread's run loop (it does not
+    /// take the main thread).
     fn ensure_tap() -> Result<(), String> {
         use objc2_core_graphics::{
             CGEvent, CGEventMask, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
@@ -788,8 +886,9 @@ mod mac {
             return Ok(());
         }
 
-        // 按键 + 鼠标:键盘用来吞系统级快捷键,Dock 的鼠标手势用来挡点击切换。
-        // 不挂鼠标移动:每条移动都进回调没有意义。
+        // Keys and mouse: the keyboard swallows system-wide shortcuts, the Dock
+        // mouse gestures block click-away. Mouse movement is not hooked: every
+        // move entering the callback is pointless.
         let mask: CGEventMask = (1u64 << CGEventType::KeyDown.0)
             | (1u64 << CGEventType::KeyUp.0)
             | (1u64 << CGEventType::FlagsChanged.0)
@@ -810,9 +909,12 @@ mod mac {
                 let created = (|| -> Result<(), String> {
                     let tap = unsafe {
                         CGEvent::tap_create(
-                            // HID 层(窗口服务器之前):只有这一层能让「按了没反应」。
-                            // session 层太晚——⌘Tab 的切换在那之前就发生了,吞掉按键
-                            // 只是不让应用收到键,应用已经切走了。
+                            // HID level (before the window server): only this
+                            // level can make "I pressed it and nothing happened"
+                            // real. The session level is too late -- the ⌘Tab
+                            // switch has already happened by then, so swallowing
+                            // the key only keeps the app from receiving it while
+                            // the app has already switched away.
                             CGEventTapLocation::HIDEventTap,
                             CGEventTapPlacement::HeadInsertEventTap,
                             CGEventTapOptions::Default,
@@ -834,9 +936,9 @@ mod mac {
                     let Some(loop_) = objc2_core_foundation::CFRunLoop::current() else {
                         return Err("TAP_FAILED: 拿不到当前 run loop".into());
                     };
-                    // mode 必须给 kCFRunLoopDefaultMode:传 NULL 会让
-                    // CFRunLoopAddSource 在 CoreFoundation 内部直接崩
-                    // (CFRunLoopCopyMode → CFHash → SIGTRAP,实测过)。
+                    // The mode must be kCFRunLoopDefaultMode: passing NULL makes
+                    // CFRunLoopAddSource crash inside CoreFoundation
+                    // (CFRunLoopCopyMode -> CFHash -> SIGTRAP, measured).
                     loop_.add_source(
                         Some(source.as_ref()),
                         unsafe { objc2_core_foundation::kCFRunLoopDefaultMode },
@@ -844,7 +946,8 @@ mod mac {
                     Ok(())
                 })();
                 let _ = tx.send(created);
-                // 线程停在这个 run loop 上,tap 的回调就在这条线程里跑。
+                // The thread parks on this run loop; the tap's callback runs on
+                // this thread.
                 objc2_core_foundation::CFRunLoop::run();
             })
             .map_err(|e| format!("TAP_THREAD: {}", e))?;

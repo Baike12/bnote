@@ -1,19 +1,29 @@
 /**
- * 专注模式的状态仓库:番茄钟 + 伪全屏锁 + 硬锁。
+ * State store of the focus mode: pomodoro timer plus pseudo fullscreen lock plus
+ * hard lock.
  *
- * **单一写入者**:计时状态只有这里改。命令面板、快捷键、状态栏上的芯片、
- * 设置页全都调这里的动作,不各写各的——否则两路写者会打架,谁后写谁生效。
+ * **Single writer**: only this module changes the timer state. The command
+ * palette, the key bindings, the chip in the status bar and the settings page all
+ * call the actions here instead of writing on their own - two writers would fight
+ * each other and the last write would win.
  *
- * 一次番茄钟是**一段连续的专注**:没有休息段,到点即结束,不自动接下一段。
- * 时间和显示都从 `endsAt` 现算(见 timer.ts),不做"每秒减一"。
+ * One pomodoro is **one continuous stretch of focus**: no break phase, it ends
+ * when the time is up and never continues into the next stretch by itself. Time
+ * and display are always computed from `endsAt` (see timer.ts), never by "minus one
+ * every second".
  *
- * **开始即承诺**:点开始就是「独占屏幕 + 硬锁 + 计时」三件事一起生效,并且
- * 中途没有出口——没有暂停、没有提前结束、没有退锁命令。唯一释放锁的路径是
- * 这一段走完(`applyTimer` 的到点分支)。硬锁要先武装成功才开始:开始了却
- * 挡不住 ⌘Tab,等于骗自己。硬锁没权限时不开始,提示去系统设置授权。
+ * **Starting is a promise**: pressing start takes effect as "own the screen + hard
+ * lock + timing" all at once, and there is no way out in between - no pause, no
+ * early end, no unlock command. The only path that releases the locks is the
+ * stretch running out (the expired branch of `applyTimer`). The hard lock has to
+ * be armed successfully before the stretch starts: a stretch that started but
+ * cannot block ⌘Tab would be a lie to oneself. Without the accessibility
+ * permission the stretch does not start and the user is pointed at the system
+ * settings.
  *
- * 跨重启也接得上:计时状态(endsAt)落盘,重启时 `restore` 会把这一段和
- * 两把锁一起接回来——退出应用不等于结束这一段。
+ * It also survives a restart: the timer state (endsAt) is persisted and on
+ * restart `restore` picks the stretch and both locks back up - quitting the app
+ * does not end the stretch.
  */
 
 import { create } from "zustand";
@@ -34,44 +44,46 @@ import {
 
 export interface FocusStore {
   timer: TimerState;
-  /** 上一次 tick 的时刻——显示剩余时间用它,不用自己取 Date.now。 */
+  /** Moment of the last tick - the display uses it to show the remaining time instead of taking Date.now itself. */
   now: number;
-  /** 伪全屏锁是否开着(以原生侧状态为准)。 */
+  /** Whether the pseudo fullscreen lock is on (the native side is the truth here). */
   locked: boolean;
-  /** 硬锁是否武装(tap 已建好,专注期间会真正拦截)。 */
+  /** Whether the hard lock is armed (the tap is in place and will really intercept during the focus stretch). */
   hardLock: boolean;
-  /** 硬锁是否**正在拦截**:只有一段番茄钟在跑的时候才为真。 */
+  /** Whether the hard lock is **actually intercepting**: only true while a pomodoro is running. */
   hardActive: boolean;
-  /** 请求过硬锁但辅助功能权限还没给。 */
+  /** The hard lock was requested but the accessibility permission is missing. */
   pendingHardLock: boolean;
-  /** 辅助功能权限是否已授予(硬锁的前提)。 */
+  /** Whether the accessibility permission was granted (the precondition of the hard lock). */
   trusted: boolean;
-  /** 硬锁的 tap 见过的按键事件数——>0 才说明 tap 真的活着。 */
+  /** Number of key events the tap of the hard lock has seen - only a value above 0 proves that the tap is alive. */
   seen: number;
-  /** 硬锁吞掉的按键事件数。 */
+  /** Number of key events the hard lock swallowed. */
   swallowed: number;
-  /** 最近一次原生调用的错误,给设置页提示用。 */
+  /** Error of the most recent native call, shown as a hint on the settings page. */
   error: string | null;
 
   /**
-   * 开始一段专注:先武装硬锁、再起表、再进锁。硬锁没权限或进锁失败就
-   * 不开始(不会出现"计时在走但锁没上"的半截状态)。
+   * Start a focus stretch: arm the hard lock first, then start the timer, then
+   * take the screen lock. Without the permission or when the screen lock fails the
+   * stretch does not start, so there is never a half state where the timer runs
+   * but the lock is not on.
    */
   start: () => Promise<void>;
   setDurations: (patch: Partial<TimerConfig>) => void;
-  /** 窗口回到前台/系统唤醒后对一次表:到点就收尾,没到点就把显示拉到当下。 */
+  /** Reconcile the clock after the window came back to the foreground or the system woke up: finish the stretch when it is due, otherwise pull the display up to the present. */
   syncNow: () => void;
-  /** 重读原生锁状态并和当前计时对账(启动、打开设置页、窗口回到前台时)。 */
+  /** Re-read the native lock state and reconcile it with the current timer (on startup, when the settings page opens, when the window returns to the foreground). */
   refreshStatus: () => Promise<void>;
-  /** 启动时从配置里恢复计时状态;还在跑就把两把锁重新接上。 */
+  /** Restore the timer state from the config on startup; when it is still running, reconnect both locks. */
   restore: (timer: TimerState | undefined) => Promise<void>;
 }
 
-/** 辅助功能权限页的系统设置深链(硬锁要它)。 */
+/** Deep link into the system settings page for the accessibility permission (the hard lock needs it). */
 export const ACCESSIBILITY_PANEL =
   "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
-/** 打开系统的辅助功能设置页。 */
+/** Open the accessibility page of the system settings. */
 export async function openAccessibilitySettings(): Promise<void> {
   try {
     await openUrl(ACCESSIBILITY_PANEL);
@@ -82,13 +94,20 @@ export async function openAccessibilitySettings(): Promise<void> {
   }
 }
 
-/** tick 的间隔。半秒:到点的那一秒不至于显示成"卡住"的一整秒。 */
+/** Interval of the tick. Half a second, so the second in which the time is up does not read as a whole stuck second. */
 const TICK_MS = 500;
 
 let tickHandle: ReturnType<typeof setTimeout> | null = null;
 
-/** start 正在武装+进锁:连点两下不能并发开两次原生锁。 */
+/** start is arming and locking: two quick presses must not open the native lock twice concurrently. */
 let starting = false;
+
+/**
+ * Bumped on every timer transition. Async reconciliations capture it before
+ * awaiting and drop their snapshot when it moved: a status read that started
+ * before a start/end must not write the old lock flags back.
+ */
+let revision = 0;
 
 function stopTicking() {
   if (tickHandle === null) return;
@@ -97,19 +116,22 @@ function stopTicking() {
 }
 
 /**
- * 下一拍。
+ * The next tick.
  *
- * 用**自续的 setTimeout 链**而不是 setInterval:窗口被遮挡、系统睡眠、
- * WebView 节流之后,补偿性的连发只会把一串过期的拍子挤在一起;链式每次
- * 从"现在"重新排下一拍,并且在每一拍里用 `Date.now()` 现算——不管中间被
- * 挂起多久,显示的时间都不会错,也不会越走越慢。
+ * A **self-rescheduling setTimeout chain** instead of setInterval: after the window
+ * was occluded, the system slept or the WebView was throttled, a compensating
+ * burst only crowds a series of stale ticks together; the chain schedules the next
+ * tick from "now" every time and computes with `Date.now()` on every tick - no
+ * matter how long it was suspended in between, the displayed time stays correct
+ * and never drifts slower and slower.
  */
 function tickOnce() {
   tickHandle = null;
   const state = useFocusStore.getState();
   const now = Date.now();
   if (isExpired(state.timer, now)) {
-    // 到点:这一段结束(不自动接下一段),联动逻辑会把两把锁一起退掉。
+    // Time is up: the stretch ends (it does not continue into the next one), the
+    // coupling logic releases both locks.
     void applyTimer(stopTimer(state.timer));
     return;
   }
@@ -122,12 +144,12 @@ function ensureTicking() {
   tickHandle = setTimeout(tickOnce, TICK_MS);
 }
 
-/** 计时状态落盘:跨重启还在跑(endsAt 是绝对时间,重启后照样判超时)。 */
+/** Persist the timer state: it keeps running across a restart (endsAt is an absolute time, so it is still judged expired after the restart). */
 function persistTimer(timer: TimerState) {
   persistConfig({ ...getConfigSnapshot(), focusTimer: timer });
 }
 
-/** 武装硬锁。没权限时记下"等待授权"并提示,不开始这一段。 */
+/** Arm the hard lock. Without the permission it records "waiting for the grant" and shows a hint, and the stretch does not start. */
 async function armHardLock(): Promise<boolean> {
   try {
     const status = await focusApi.setHardLock(true);
@@ -160,7 +182,7 @@ async function armHardLock(): Promise<boolean> {
   }
 }
 
-/** 进独占锁。失败返回 false,由调用方决定不开始这一段。 */
+/** Take the exclusive screen lock. Returns false on failure and the caller decides not to start the stretch. */
 async function lockNow(): Promise<boolean> {
   try {
     const status = await focusApi.lock();
@@ -174,9 +196,14 @@ async function lockNow(): Promise<boolean> {
   }
 }
 
-/** 退独占锁。**只**在 session 结束时由 applyTimer 调,没有任何用户入口。 */
+/**
+ * Release the exclusive screen lock.
+ *
+ * Unconditional and idempotent: the native window is the truth, and the
+ * `locked` flag here can be stale (a reconciliation may have cleared it). A
+ * skipped native call would leave the window above every other app forever.
+ */
 async function unlockNow(): Promise<void> {
-  if (!useFocusStore.getState().locked) return;
   try {
     const status = await focusApi.unlock();
     useFocusStore.setState({ locked: status.locked, error: null });
@@ -186,10 +213,13 @@ async function unlockNow(): Promise<void> {
 }
 
 /**
- * 按会话状态切换"真正拦截":只有**一段专注在跑**才拦。
+ * Switch the real interception by the session state: it only intercepts while
+ * **a focus stretch is running**.
  *
- * 到点结束时先撤硬锁、再退屏幕锁:硬锁拦着的时候不存在"解锁"这个用户动作,
- * 顺序反过来会在两个原生调用之间留下一个没人负责的窗口。
+ * When the time is up the hard lock is withdrawn first and the screen lock is
+ * released afterwards: while the hard lock intercepts there is no user action
+ * called "unlock", and the other order would leave a window between the two
+ * native calls that nobody is responsible for.
  */
 async function syncHardActive(active: boolean): Promise<boolean> {
   const state = useFocusStore.getState();
@@ -210,13 +240,16 @@ async function syncHardActive(active: boolean): Promise<boolean> {
 }
 
 /**
- * 换计时状态,并处理与锁的联动。
+ * Replace the timer state and handle the coupling with the locks.
  *
- * 一段开始 → 硬锁开始拦截;这一段结束(走完) → 先停止拦截,再退出屏幕锁。
- * 锁没有"手动"来源:它们只属于会话,所以不需要归属记账。
+ * A stretch starts -> the hard lock starts intercepting; the stretch ends (it ran
+ * out) -> stop intercepting first, then release the screen lock. The locks have no
+ * "manual" source: they belong to the session alone, so there is no ownership
+ * bookkeeping.
  */
 async function applyTimer(next: TimerState): Promise<void> {
   const prev = useFocusStore.getState().timer;
+  revision += 1;
   useFocusStore.setState({ timer: next, now: Date.now() });
   persistTimer(next);
   if (isRunning(next)) ensureTicking();
@@ -231,8 +264,10 @@ async function applyTimer(next: TimerState): Promise<void> {
 }
 
 /**
- * 开始一段专注。硬锁先到位,再起表,再进锁;进锁失败就立刻收回这一段
- * (这是"开始失败"的收尾,不是用户可以点的退出)。
+ * Start a focus stretch. The hard lock comes first, then the timer, then the
+ * screen lock; when taking the screen lock fails the stretch is taken back
+ * immediately (this is the cleanup of a failed start, not an exit the user can
+ * press).
  */
 async function startFocus(): Promise<void> {
   const state = useFocusStore.getState();
@@ -241,7 +276,8 @@ async function startFocus(): Promise<void> {
   try {
     if (!(await armHardLock())) return;
     await applyTimer(startTimer(useFocusStore.getState().timer, Date.now()));
-    // 武装成功不等于真的在拦(建 tap 也可能失败):没拦上就不开始这一段。
+    // Armed successfully does not mean it really intercepts (creating the tap can
+    // fail too): without interception the stretch does not start.
     if (!useFocusStore.getState().hardActive) {
       await applyTimer(stopTimer(useFocusStore.getState().timer));
       useAppStore
@@ -257,7 +293,7 @@ async function startFocus(): Promise<void> {
   }
 }
 
-/** 把落盘的旧状态收敛成当前模型:没有暂停/休息段,缺 endsAt 的专注段作废。 */
+/** Fold the persisted old state into the current model: there is no pause and no break phase, a focus stretch without endsAt is void. */
 function sanitize(timer: TimerState | undefined): TimerState {
   if (!timer) return createTimerState();
   const endsAt = timer.phase === "focus" && typeof timer.endsAt === "number" ? timer.endsAt : null;
@@ -285,7 +321,9 @@ export const useFocusStore = create<FocusStore>((set, get) => ({
   setDurations: (patch) => {
     const timer = get().timer;
     const next = { ...timer, config: normalizeConfig({ ...timer.config, ...patch }) };
-    // 正在跑的段不受影响:endsAt 已经定死,新时长只作用于下一段。
+    // The running stretch is not affected: endsAt is already fixed, a new duration
+    // only applies to the next stretch.
+    revision += 1;
     set({ timer: next, now: Date.now() });
     persistTimer(next);
   },
@@ -303,8 +341,12 @@ export const useFocusStore = create<FocusStore>((set, get) => ({
   },
 
   refreshStatus: async () => {
+    const rev = revision;
     try {
       const status = await focusApi.status();
+      // The timer moved while the status was in flight: this snapshot describes
+      // an older world and must not overwrite the current lock flags.
+      if (rev !== revision) return;
       set({
         locked: status.locked,
         hardLock: status.hard_lock,
@@ -316,35 +358,41 @@ export const useFocusStore = create<FocusStore>((set, get) => ({
       const timer = get().timer;
       const active = isActive(timer) && isRunning(timer);
       if (!isActive(timer)) {
-        // 空闲却还锁着(上次被杀/崩了留下的):把窗口放出来,硬锁也回到待命。
-        if (status.locked) await unlockNow();
+        // Idle means the window must be unlocked. Always ask the native side:
+        // `focus_unlock` is idempotent, and `locked` here can be stale (this is
+        // exactly how the window could stay above every other app).
+        await unlockNow();
         await syncHardActive(false);
         return;
       }
       if (!status.locked) {
-        // 有会话在跑却没有锁:补上(启动早期/原生侧状态丢失)。
+        // A session is running but there is no lock: add it (early startup, the
+        // native side lost its state).
         await lockNow();
       }
       if (!status.hard_lock) await armHardLock();
       await syncHardActive(active);
     } catch {
-      // 浏览器 harness 里没有原生侧:状态读不到就当作没锁。
+      // The browser harness has no native side: when the state cannot be read,
+      // treat it as unlocked.
       set({ locked: false });
     }
   },
 
   restore: async (saved) => {
     const next = sanitize(saved);
+    revision += 1;
     set({ timer: next, now: Date.now() });
     if (!isActive(next)) {
-      if (get().locked) await unlockNow();
+      await unlockNow();
       return;
     }
     if (!isRunning(next) || isExpired(next, Date.now())) {
       await applyTimer(stopTimer(next));
       return;
     }
-    // 重启前这一段还在跑:计时接上,锁也接上(退出应用不等于结束承诺)。
+    // The stretch was still running before the restart: the timing is picked up
+    // and so are the locks (quitting the app does not end the promise).
     ensureTicking();
     if (!(await armHardLock())) {
       useAppStore.getState().showToast("硬锁未授权:本次专注只剩独占屏幕");
