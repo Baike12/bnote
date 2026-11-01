@@ -14,6 +14,7 @@ import {
 } from "@/study/history";
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
 import { DEFAULT_TYPEWRITER_POSITION } from "@/editor/typewriterPosition";
+import { TREE_DEFAULT_WIDTH } from "@/code/treeWidth";
 import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
 import type { AgentImage } from "@/study/agentImages";
@@ -65,9 +66,14 @@ export interface Settings {
    * 代码编辑器是否折行。
    *
    * 中栏就那么宽(默认 620px,展开文件树后只剩 430px),不折行时长行只能
-   * 横向拖着看。默认折行;要按列对齐的文件可以临时关掉(⌥Z / 工具条)。
+   * 横向拖着看。默认折行;要按列对齐的文件可以临时关掉(⌥Z)。
    */
   codeWrap: boolean;
+  /**
+   * 文件树宽度(px)。编辑器吃剩余宽度;中栏变窄时 CSS 的 clamp 压缩显示,
+   * 不改这里的偏好。拖动文件树右缘调整,双击复位。
+   */
+  codeTreeWidth: number;
   /**
    * 语言服务器的全局覆盖:languageId → 启动命令。
    *
@@ -148,6 +154,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vim: false,
   codeVim: false,
   codeWrap: true,
+  codeTreeWidth: TREE_DEFAULT_WIDTH,
   codeLspServers: {},
   typewriter: false,
   typewriterPosition: DEFAULT_TYPEWRITER_POSITION,

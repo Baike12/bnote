@@ -27,17 +27,22 @@ export function normalizeTypewriterPosition(value: unknown): number {
  * 滚动容器的上下留白（px）。光标行中心要落在 `position` 高度上，留白就要
  * 扣掉半行行高：首行中心 = 上留白 + 半行；末行中心 = 视口高 - 下留白 - 半行，
  * 两处都恰好等于 `position × 视口高`。
+ *
+ * `reserveTop = false` 时上留白为 0：**第一行始终钉在顶部**，光标行在上面
+ * 几屏时不再为了居中把首行拉下来，而是让光标自己在屏幕上往上走（代码区用；
+ * 笔记正文仍留上白，首行也能停在设定高度）。下留白照旧，末行仍能停到目标高度。
  */
 export function typewriterReserve(
   clientHeight: number,
   lineHeight: number,
   position: number,
+  reserveTop = true,
 ): { top: number; bottom: number } {
   const ratio = normalizeTypewriterPosition(position);
   const height = Math.max(0, clientHeight);
   const line = Math.max(0, lineHeight);
   return {
-    top: Math.max(0, Math.round(ratio * height - line / 2)),
+    top: reserveTop ? Math.max(0, Math.round(ratio * height - line / 2)) : 0,
     bottom: Math.max(0, Math.round((1 - ratio) * height - line / 2)),
   };
 }

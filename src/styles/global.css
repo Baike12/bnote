@@ -5456,15 +5456,51 @@ input[type="range"] {
 
 /* 文件树是**并排**的一栏,不是浮在编辑器上的浮层:浮层会把代码从中间切断,
    看起来像渲染坏了(半行字压在树下面)。并排时两边各占各的,代码被完整地
-   挤到右边,中栏总宽度不变。 */
+   挤到右边,中栏总宽度不变。
+
+   宽度由设置 `codeTreeWidth` 写进 `--code-tree-w`;clamp 的下限/默认值必须
+   与 `src/code/treeWidth.ts` 一致(120 / 190)。中栏太窄时显示被压到 60%,
+   偏好值不动(与学习模式三栏同一套纪律)。 */
 .code-tree-drawer {
-  flex: 0 0 190px;
-  width: 190px;
+  flex: 0 0 clamp(120px, var(--code-tree-w, 190px), 60%);
+  width: auto;
   min-width: 0;
   display: flex;
-  border-right: 1px solid var(--border);
   background: var(--bg1);
   overflow: hidden;
+}
+
+/* 文件树右缘的分栏线:1px 线 + 两侧各 4px 的命中区(不占布局)。
+   样式与 .study-resizer 同一套,只是颜色挂在代码面板里。 */
+.code-resizer {
+  flex: 0 0 1px;
+  position: relative;
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+}
+.code-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+  transition: width 0.12s ease, background 0.12s ease;
+}
+.code-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+.code-resizer:hover::before,
+.code-resizer.dragging::before {
+  width: 2px;
+  background: var(--accent-dim);
 }
 
 .code-main {

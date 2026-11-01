@@ -68,6 +68,16 @@ describe("typewriterReserve", () => {
     expect(top).toBe(0);
     expect(bottom).toBe(0);
   });
+
+  it("reserveTop=false:首行钉在顶部,下留白照旧让末行能停到目标高度", () => {
+    const centered = typewriterReserve(H, LH, 0.5, false);
+    expect(centered.top).toBe(0);
+    expect(centered.bottom).toBe((H - LH) / 2);
+    expect(typewriterReserve(H, LH, 0.3, false)).toEqual({
+      top: 0,
+      bottom: 0.7 * H - LH / 2,
+    });
+  });
 });
 
 describe("typewriterScrollDelta", () => {

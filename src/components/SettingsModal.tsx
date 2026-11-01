@@ -439,7 +439,7 @@ function EditorTab() {
         />
         <Toggle
           label="代码编辑器折行"
-          desc="中栏不宽（展开文件树后更窄），长行默认折着看。要按列对齐的文件可以关掉；代码区里按 ⌥Z 或点工具条的「折行」临时切换。"
+          desc="中栏不宽（展开文件树后更窄），长行默认折着看。要按列对齐的文件可以关掉；代码区里按 ⌥Z 临时切换。"
           checked={settings.codeWrap}
           onChange={(v) => patch({ codeWrap: v })}
         />

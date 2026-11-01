@@ -180,7 +180,11 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       languageCompartment.of([]),
       vimCompartment.of([]),
       wrapCompartment.of(codeWrap ? EditorView.lineWrapping : []),
-      typewriterCompartment.of(typewriter ? typewriterExtension(typewriterPosition) : []),
+      // 代码区第一行钉在顶部:光标行在上面几屏时不为居中把首行拉下来,
+      // 而是光标自己在屏幕上往上走(笔记正文仍留上白,见 typewriter.ts)。
+      typewriterCompartment.of(
+        typewriter ? typewriterExtension(typewriterPosition, { reserveTop: false }) : [],
+      ),
       EditorView.theme({
         "&": { height: "100%" },
         ".cm-scroller": {
@@ -380,7 +384,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     if (!view) return;
     view.dispatch({
       effects: typewriterCompartment.reconfigure(
-        typewriter ? typewriterExtension(typewriterPosition) : [],
+        typewriter ? typewriterExtension(typewriterPosition, { reserveTop: false }) : [],
       ),
     });
   }, [typewriter, typewriterPosition, file.path]);

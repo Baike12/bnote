@@ -21,7 +21,7 @@ import { typewriterReserve, typewriterScrollDelta } from "./typewriterPosition";
  * there. Position changes rebuild this plugin (compartment reconfigure), which
  * re-applies the reserve and re-centers in one transaction.
  */
-function typewriterPlugin(position: number) {
+function typewriterPlugin(position: number, reserveTop: boolean) {
   return ViewPlugin.fromClass(
     class {
       private view: EditorView;
@@ -29,9 +29,9 @@ function typewriterPlugin(position: number) {
 
       constructor(view: EditorView) {
         this.view = view;
-        applyReserve(view, position);
+        applyReserve(view, position, reserveTop);
         centerCursor(view, position);
-        this.ro = new ResizeObserver(() => applyReserve(this.view, position));
+        this.ro = new ResizeObserver(() => applyReserve(this.view, position, reserveTop));
         this.ro.observe(view.scrollDOM);
       }
 
@@ -39,7 +39,7 @@ function typewriterPlugin(position: number) {
         if (u.selectionSet || u.docChanged) {
           centerCursor(u.view, position);
         }
-        if (u.geometryChanged) applyReserve(u.view, position);
+        if (u.geometryChanged) applyReserve(u.view, position, reserveTop);
       }
 
       destroy() {
@@ -52,11 +52,12 @@ function typewriterPlugin(position: number) {
 }
 
 /** Space above and below the content so line 1 / the last line can reach it. */
-function applyReserve(view: EditorView, position: number) {
+function applyReserve(view: EditorView, position: number, reserveTop: boolean) {
   const { top, bottom } = typewriterReserve(
     view.scrollDOM.clientHeight,
     view.defaultLineHeight,
     position,
+    reserveTop,
   );
   view.scrollDOM.style.setProperty("--typewriter-top", `${top}px`);
   view.scrollDOM.style.setProperty("--typewriter-bottom", `${bottom}px`);
@@ -82,7 +83,19 @@ function centerCursor(view: EditorView, position: number) {
  * Extension factory so a Compartment can enable/disable the mode and change
  * its position. `scrollPastEnd` keeps the last lines reachable when the
  * position is above 50%, on top of the bottom reserve.
+ *
+ * `reserveTop: false` 让第一行钉在顶部(代码区):光标行在上面几屏时不再为
+ * 居中把首行拉下来,而是光标自己在屏幕上往上走;笔记正文用默认的 true,
+ * 首行也能停在设定高度。
  */
-export function typewriterExtension(position: number): Extension {
-  return [typewriterPlugin(position), scrollPastEnd()];
+export interface TypewriterOptions {
+  reserveTop?: boolean;
+}
+
+export function typewriterExtension(
+  position: number,
+  options: TypewriterOptions = {},
+): Extension {
+  const reserveTop = options.reserveTop !== false;
+  return [typewriterPlugin(position, reserveTop), scrollPastEnd()];
 }

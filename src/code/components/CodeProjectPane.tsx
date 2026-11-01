@@ -1,6 +1,14 @@
-import { useCallback, useMemo, useState } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useAppStore } from "@/state/appStore";
+import { startSplitDrag } from "@/components/splitDrag";
 import { useCodeStore } from "../store";
+import { clampTreeWidth, TREE_DEFAULT_WIDTH } from "../treeWidth";
 import { FileTree } from "./FileTree";
 import { DiffView } from "./DiffView";
 import { ProblemsPanel, ReferencesPanel } from "./Panels";
@@ -15,10 +23,10 @@ import { openProjectAt, openProjectDialog } from "../commands";
  *
  * ```
  * ┌──────────────────────────────────────────┐
- * │ [文件树] │ 标签页…            │ 差异 问题 │  ← 工具条
- * ├──────────┴───────────────────┴──────────┤
- * │ 文件树      │ 编辑器 / 差异视图            │
- * ├──────────────────────────────────────────┤
+ * │ [文件树] [差异] │ 标签页…      │ 问题 重扫 │  ← 工具条
+ * ├──────────┬───────────────────┴──────────┤
+ * │ 文件树   ┃ 编辑器 / 差异视图            │
+ * ├──────────┴──────────────────────────────┤
  * │ 问题 / 引用(可折叠)                       │
  * ├──────────────────────────────────────────┤
  * │ 分支 · 语言 · LSP · 光标位置 · vim 模式     │  ← 状态条
@@ -26,7 +34,8 @@ import { openProjectAt, openProjectDialog } from "../commands";
  * ```
  *
  * 文件树是**并排的一栏**:展开时把编辑器挤到右边,而不是盖在编辑器上面。
- * 盖着会把代码从中间切断(半行字压在树底下),看着像渲染坏了。
+ * 盖着会把代码从中间切断(半行字压在树底下),看着像渲染坏了。右缘是可拖
+ * 的分栏线(见 startTreeDrag),宽度存设置。
  */
 export function CodeProjectPane() {
   const project = useCodeStore((s) => s.project);
@@ -48,8 +57,9 @@ export function CodeProjectPane() {
   const setProblemsOpen = useCodeStore((s) => s.setProblemsOpen);
   const setDiff = useCodeStore((s) => s.setDiff);
   const rescan = useCodeStore((s) => s.rescan);
-  const codeWrap = useAppStore((s) => s.settings.codeWrap);
+  const codeTreeWidth = useAppStore((s) => s.settings.codeTreeWidth);
   const patchSettings = useAppStore((s) => s.patchSettings);
+  const paneRef = useRef<HTMLDivElement | null>(null);
 
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
   const [vimMode, setVimMode] = useState("");
@@ -62,6 +72,29 @@ export function CodeProjectPane() {
     [diagnostics],
   );
 
+  /**
+   * 拖文件树右缘:拖动期间只写 CSS 变量(不 setState——面板里是 CodeMirror,
+   * 60Hz 重渲染代价大),指针抬起提交一次偏好。起点量**屏幕上实际的宽度**
+   * (中栏窄时 CSS 夹过),位移从按下点算,握歪了也不会跳。
+   */
+  const startTreeDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const paneWidth = pane.getBoundingClientRect().width;
+    const drawer = pane.querySelector(".code-tree-drawer");
+    const startWidth = drawer?.getBoundingClientRect().width ?? codeTreeWidth;
+    startSplitDrag({
+      event,
+      host: pane,
+      variables: ["--code-tree-w"],
+      stored: { "--code-tree-w": codeTreeWidth },
+      compute: (dx) => ({ "--code-tree-w": clampTreeWidth(startWidth + dx, paneWidth) }),
+      commit: (values) => patchSettings({ codeTreeWidth: values["--code-tree-w"] }),
+    });
+  };
+
+  const resetTreeWidth = () => patchSettings({ codeTreeWidth: TREE_DEFAULT_WIDTH });
+
   if (!project) {
     return (
       <div className="code-pane" data-key-region="code">
@@ -71,7 +104,12 @@ export function CodeProjectPane() {
   }
 
   return (
-    <div className="code-pane" data-key-region="code">
+    <div
+      className="code-pane"
+      data-key-region="code"
+      ref={paneRef}
+      style={{ "--code-tree-w": `${codeTreeWidth}px` } as React.CSSProperties}
+    >
       <div className="code-toolbar">
         <button
           type="button"
@@ -81,6 +119,16 @@ export function CodeProjectPane() {
           onClick={() => setTreeOpen(!treeOpen)}
         >
           文件树
+        </button>
+        <button
+          type="button"
+          className="code-tool-btn"
+          title="查看当前文件的 git 差异"
+          disabled={!activePath}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => activePath && setDiff(activePath)}
+        >
+          差异
         </button>
         <div className="code-tabs">
           {tabs.map((path) => {
@@ -111,25 +159,6 @@ export function CodeProjectPane() {
         </div>
         <button
           type="button"
-          className="code-tool-btn"
-          title="重新扫描文件树(在外部新建/删除了文件时用)"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => void rescan()}
-        >
-          重扫
-        </button>
-        <button
-          type="button"
-          className="code-tool-btn"
-          title="查看当前文件的 git 差异"
-          disabled={!activePath}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => activePath && setDiff(activePath)}
-        >
-          差异
-        </button>
-        <button
-          type="button"
           className={`code-tool-btn${problemsOpen ? " is-on" : ""}`}
           title="问题面板"
           onMouseDown={(e) => e.preventDefault()}
@@ -137,22 +166,35 @@ export function CodeProjectPane() {
         >
           问题{problemCount > 0 ? ` ${problemCount}` : ""}
         </button>
+        {/* 文件树与搜索都读后端缓存(不为每次查询重扫仓库),外部新建/删除
+            文件不会自己出现——这条入口不能去掉,只放在次要位置。 */}
         <button
           type="button"
-          className={`code-tool-btn${codeWrap ? " is-on" : ""}`}
-          title="长行折行(⌥Z)"
+          className="code-tool-btn"
+          title="重新扫描文件树(在外部新建/删除了文件时用)"
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => patchSettings({ codeWrap: !codeWrap })}
+          onClick={() => void rescan()}
         >
-          折行
+          重扫
         </button>
       </div>
 
       <div className="code-body">
         {treeOpen && (
-          <aside className="code-tree-drawer">
-            <FileTree activePath={activePath} onOpen={handleOpen} />
-          </aside>
+          <>
+            <aside className="code-tree-drawer">
+              <FileTree activePath={activePath} onOpen={handleOpen} />
+            </aside>
+            <div
+              className="code-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整文件树宽度"
+              title="拖动调整文件树宽度,双击恢复默认"
+              onPointerDown={startTreeDrag}
+              onDoubleClick={resetTreeWidth}
+            />
+          </>
         )}
         <div className="code-main">
           {diffPath ? (
