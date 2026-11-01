@@ -7,10 +7,11 @@ import { searchFilesByName } from "../tree";
 import type { CodeEntry, CodeSearchHit } from "../types";
 
 /**
- * 代码面板的浮层:快速打开文件、项目内查找、重命名。
+ * The overlays of the code panel: quick open, find in files, rename.
  *
- * 浮层由命令层请起来(`requestCodeUi`),不是常驻的——用完即走,面板上
- * 永远只留当前需要的那一个。
+ * The overlays are summoned by the command layer (`requestCodeUi`) and are
+ * not permanent — they come and go, and the panel only ever keeps the one
+ * that is currently needed.
  */
 export function CodeOverlays() {
   const [request, setRequest] = useState<CodeUiRequest | null>(null);
@@ -27,7 +28,7 @@ export function CodeOverlays() {
   return <RenamePrompt onClose={() => setRequest(null)} />;
 }
 
-/** 快速打开:按文件名模糊搜,回车打开。 */
+/** Quick open: fuzzy-search by file name, Enter opens. */
 function QuickOpen({ onClose }: { onClose: () => void }) {
   const root = useCodeStore((s) => s.project?.root ?? "");
   const entries = useCodeStore((s) => s.project?.tree.entries);
@@ -48,14 +49,17 @@ function QuickOpen({ onClose }: { onClose: () => void }) {
       setIndex(0);
       return;
     }
-    // 打开项目时文件树已经扫全了:在本地索引里过滤,每敲一个键都不用
-    // 走 IPC(让 Rust 每条输入重走一遍仓库太贵,结果还一样)。
+    // Opening the project already scanned the whole file tree: filter the
+    // local index, so no keystroke has to go through IPC (making Rust walk
+    // the repository again per input is too expensive and yields the same
+    // result).
     if (!truncated) {
       setResults(searchFilesByName(entries ?? [], query));
       setIndex(0);
       return;
     }
-    // 索引被截断(超大仓库):只能回后端补扫,结果以最后一次输入为准。
+    // The index is truncated (a huge repository): the backend has to scan
+    // again, and the result of the last input wins.
     let cancelled = false;
     codeApi
       .searchFiles(root, query)
@@ -131,7 +135,7 @@ function QuickOpen({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** 项目内查找:搜文件内容,点结果跳到那一行。 */
+/** Find in files: search the file contents, click a result to jump to that line. */
 function FindInFiles({ onClose }: { onClose: () => void }) {
   const root = useCodeStore((s) => s.project?.root ?? "");
   const openFile = useCodeStore((s) => s.openFile);
@@ -210,7 +214,7 @@ function FindInFiles({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** 重命名:问一个新名字,交给语言服务器去改(它知道该改哪些地方)。 */
+/** Rename: ask for a new name and hand it to the language server, which knows what has to change. */
 function RenamePrompt({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -232,7 +236,8 @@ function RenamePrompt({ onClose }: { onClose: () => void }) {
       onClose();
       return;
     }
-    // 改名失败原来什么都不说:框还开着,用户只会以为没按上。
+    // A failed rename used to say nothing: the box stayed open and the user
+    // would only think the button did not register.
     setError("这个位置不能重命名(或语言服务器没在运行)");
   };
 

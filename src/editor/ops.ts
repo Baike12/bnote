@@ -97,9 +97,11 @@ function bumpFollowingOrdered(
 export function enterContinueListItem(view: EditorView): boolean {
   const state = view.state;
   const indentUnitText = state.facet(indentUnit);
-  // 多光标时不做序号顺延：changeByRange 把各 range 的改动都当起始文档坐标合成，
-  // 顺延改动可能落进另一个光标的编辑范围，合成结果会错乱（主编辑本身仍在各自
-  // 行内，互不重叠）。
+  // No number sequence continuation with multiple cursors: changeByRange
+  // composes the changes of all ranges as start-document coordinates, and a
+  // continuation change could land inside another cursor's edit range, which
+  // garbles the composed result (the primary edit itself stays within its own
+  // line, and the ranges do not overlap).
   const renumber = state.selection.ranges.length === 1;
   let handledAll = true;
   const changes = state.changeByRange((range) => {
@@ -110,7 +112,8 @@ export function enterContinueListItem(view: EditorView): boolean {
     if (!range.empty) return unhandled();
     let pos = range.from;
     // Inside a fenced code block the markup is literal text — never continue.
-    // 树还没就绪（文件刚载入）时由共享判定内部退回行扫描，守卫始终成立。
+    // When the tree is not ready yet (file just loaded) the shared decision
+    // falls back to the line scan internally, so the guard always holds.
     if (insideFencedCode(state, pos)) return unhandled();
     // markdown-only editor: this gate only matters against nested-language
     // regions, and only the parsed tree knows about them. With an empty tree
@@ -228,9 +231,11 @@ export function toggleHeading(view: EditorView, level: number) {
 }
 
 /**
- * 标题层级循环（同一快捷键重复按）：正文 → H1 → H2 → H3 → H4 → 正文。
- * H5/H6 只能经「设为 N 级标题」到达，从它们出发的下一档也是取消。
- * 多光标/多行选区里每行各前进一步；残留的自动编号由命令层收尾。
+ * The heading level cycle (repeating the same shortcut): body -> H1 -> H2 ->
+ * H3 -> H4 -> body. H5/H6 are only reachable through "set to N-level heading",
+ * and the next step from them is also "unset". With multiple cursors or a
+ * multi-line selection each line advances one step; the leftover automatic
+ * numbering is cleaned up by the command layer.
  */
 export function cycleHeading(view: EditorView) {
   const state = view.state;
@@ -390,9 +395,13 @@ export function toggleList(view: EditorView, kind: ListKind) {
       seenLines.add(n);
       const line = doc.line(n);
 
-      // 树已覆盖该行时走树查询（能识别深层缩进的围栏）；刚载入的空树查不到
-      // 围栏行不参与列表/标题转换:树就绪走树查询,树没跟上行扫描兜底,
-      // 否则切换文件后立刻转换会把围栏内标记也换掉。
+      // With the tree covering that line the tree query is used (it
+      // recognizes deeply indented fences); the empty tree of a freshly
+      // loaded file does not find them. Fence lines do not take part in the
+      // list/heading conversion: the tree query handles the tree-ready case
+      // and the line scan is the fallback when the tree has not caught up —
+      // otherwise converting right after a file switch would also rewrite the
+      // markers inside the fence.
       const probePos = Math.min(line.from + 1, doc.length);
       if (insideFencedCode(state, probePos)) continue;
 
@@ -450,28 +459,37 @@ export function toggleList(view: EditorView, kind: ListKind) {
 }
 
 /**
- * 往返跳转：正文 → 文档头部最后一个待办项的行尾 → 回到跳转前的位置。
- * 头部待办块 = 从「起点行」开始(允许空行)连续的待办行(`- [ ]` / `- [x]` /
- * 有序待办,中间可夹空行),首个非空且非待办的行结束块。
+ * The round trip: body -> the end of the last todo item of the document
+ * header -> back to the position before the jump. The header todo block =
+ * the run of todo lines (`- [ ]` / `- [x]` / ordered todos, blank lines
+ * allowed in between) starting at the "start line"; the first non-empty,
+ * non-todo line ends the block.
  *
- * 起点行按文件形态分两套:日记(Daily/YYYY-MM-DD.md)的待办区在日期标题
- * 之后(H1 时行 2 起,与 daily 的 parseDailyRegion 同一片区域);其他笔记的
- * 头部待办区就是文件最顶(行 1 起)——笔记里待办习惯写在第一行(跨文件同步
- * 写笔记顶部也是这个位置),第一行是 H1 标题也一样,新待办插到标题之前。
- * 头部还没有待办块时创建一个空待办(日记插在 H1 后、普通笔记插文档顶,
- * 光标落待办符号后,直接输入);再按一次回到原位。已在头部位置但有来处
- * 记忆时回跳。
+ * The start line depends on the shape of the file: for a daily note
+ * (Daily/YYYY-MM-DD.md) the todo area is after the date heading (from line 2
+ * when there is an H1, the same region as parseDailyRegion in daily); for
+ * other notes the header todo area is the very top of the file (from line 1)
+ * — in a note todos are habitually written on the first line (writing them to
+ * the top of the note is the same position for the cross-file sync), and
+ * that is true even when the first line is an H1 heading: a new todo is
+ * inserted before the title. When the header has no todo block yet, an empty
+ * todo is created (after the H1 for a daily note, at the top of the document
+ * for a plain note, with the caret after the todo marker so you can type
+ * right away); pressing it again returns to the previous position. When the
+ * caret is already at the header position but a return memory exists, it
+ * jumps back.
  */
 const HEADER_TODO_RE = /^(\s*)(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\]/;
 const BLANK_LINE_RE = /^\s*$/;
-/** H1 头判定(与 daily 的 HEADER_RE 同形状):行 1 是 `# ` 标题 → 待办区从行 2 起。 */
+/** The H1 header test (same shape as HEADER_RE in daily): line 1 is a `# ` heading → the todo area starts at line 2. */
 const H1_RE = /^#\s/;
-/** 日记文件判定:Daily 目录下的日期文件名(与 dailyPathFor 同一形状)。 */
+/** The daily note test: a date file name under the Daily directory (same shape as dailyPathFor). */
 export const DAILY_FILE_RE = /(^|\/)Daily\/\d{4}-\d{2}-\d{2}\.md$/;
 
-/** 一次 ⌘T 的决策(纯函数,契约在 ops.test.ts):
- *  jump = 跳到 anchor;back = 回到来处记忆;stay = 无声无效;
- *  create = 在 at 插入 insert,光标落 cursor(待办符号后)。 */
+/** The decision of one ⌘T (a pure function, the contract lives in ops.test.ts):
+ *  jump = jump to anchor; back = go back to the return memory; stay = silently
+ *  do nothing; create = insert `insert` at `at` and put the caret at `cursor`
+ *  (after the todo marker). */
 export type HeaderTodoPlan =
   | { action: "jump"; anchor: number }
   | { action: "back" }
@@ -488,7 +506,8 @@ export function planHeaderTodoJump(
   const start = headerDoc ? 2 : 1;
   let first: number | null = null;
   let last: number | null = null;
-  // 只扫到首个非空非待办行为止:头部块通常几行,成本与文档总长无关。
+  // Scan only up to the first non-empty non-todo line: the header block is
+  // usually a few lines, so the cost does not depend on the document length.
   for (let n = start; n <= doc.lines; n++) {
     const text = doc.line(n).text;
     if (HEADER_TODO_RE.test(text)) {
@@ -497,7 +516,7 @@ export function planHeaderTodoJump(
       continue;
     }
     if (BLANK_LINE_RE.test(text)) continue;
-    break; // 首个非空非待办行:头部待办块结束
+    break; // the first non-empty non-todo line ends the header todo block
   }
   if (first !== null && last !== null) {
     if (headLine >= first && headLine <= last) {
@@ -505,28 +524,41 @@ export function planHeaderTodoJump(
     }
     return { action: "jump", anchor: doc.line(last).to };
   }
-  // 头部还没有待办块。光标已在「块将长出的位置」(起点行或其前的标题行):
-  // 有来处记忆则回跳(往返优先),否则就地创建;光标在起点行之后则记住来处并创建。
+  // The header has no todo block yet. The caret already sits at "where the
+  // block will grow" (the start line or the heading before it): with a return
+  // memory it jumps back (the round trip comes first), otherwise it creates
+  // the block in place; a caret after the start line remembers where it came
+  // from and creates the block.
   if (headLine <= start && hasReturn) return { action: "back" };
   if (headerDoc) {
-    // 日记:空待办长在 H1 之后,与 parseDailyRegion 的待办区起点一致。
+    // Daily note: the empty todo grows after the H1, matching the start of
+    // the todo area in parseDailyRegion.
     const at = doc.line(1).to;
     const insert = "\n- [ ] ";
     return { action: "create", at, insert, cursor: at + insert.length };
   }
-  // 普通笔记:空待办成为文件第一行(H1 标题也被顶到第二行——笔记的头部
-  // 待办区就是文件最顶)。空文档不加尾换行;非空文档把原第一行顶下去。
-  // 光标一律落在 `- [ ] ` 行尾(待办符号后),与插入串是否带尾换行无关。
+  // Plain note: the empty todo becomes the first line of the file (an H1
+  // heading is pushed to the second line as well — the header todo area of a
+  // note is the very top of the file). An empty document gets no trailing
+  // newline; a non-empty document has its original first line pushed down.
+  // The caret always lands at the end of the `- [ ] ` line (after the todo
+  // marker), regardless of whether the inserted string carries a trailing
+  // newline.
   const insert = doc.lines === 1 && doc.line(1).text === "" ? "- [ ] " : "- [ ] \n";
   return { action: "create", at: 0, insert, cursor: "- [ ] ".length };
 }
 
 /**
- * 往返跳转的「来处」记忆：文件路径 → 跳转前的光标(行号+列)与滚动位置。
- * 按访问顺序淘汰、上限 64 条（覆盖任何真实的多文件往返工作流），内存占用
- * 有界。仅在按下快捷键时读写，不挂任何编辑周期。存行列而非绝对 pos：跳转后
- * 用户在目标处打字，来处的行内容不受影响，回跳精确。⌘T（头部待办）与 ⌘⇧B
- * （callout 锚点）各持一份，两个功能的往返记忆互不覆盖。
+ * The "where I came from" memory of the round trip: file path -> the caret
+ * (line number + column) and scroll position before the jump. Evicted in
+ * access order with a cap of 64 entries (enough for any realistic multi-file
+ * round-trip workflow), so the memory usage stays bounded. It is read and
+ * written only when the shortcut is pressed, never hooked into any editing
+ * cycle. It stores line and column rather than an absolute pos: after the
+ * jump the user types at the target and the content of the origin line is
+ * unaffected, so the return is exact. ⌘T (the header todo) and ⌘⇧B (the
+ * callout anchor) each keep their own copy, and the two round-trip memories
+ * never overwrite each other.
  */
 interface ReturnSpot {
   line: number;
@@ -541,7 +573,7 @@ function makeReturnMemory() {
   return {
     has: (path: string) => map.has(path),
     get: (path: string) => map.get(path),
-    /** 写入并刷新淘汰顺序。 */
+    /** Writes the spot and refreshes the eviction order. */
     set(path: string, spot: ReturnSpot) {
       map.delete(path);
       map.set(path, spot);
@@ -550,7 +582,7 @@ function makeReturnMemory() {
         if (oldest !== undefined) map.delete(oldest);
       }
     },
-    /** 只刷新淘汰顺序（回跳后保留记忆，往返可以反复走）。 */
+    /** Only refreshes the eviction order (the memory survives the jump back, so the round trip can be taken repeatedly). */
     touch(path: string) {
       const spot = map.get(path);
       if (spot === undefined) return;
@@ -564,12 +596,12 @@ function makeReturnMemory() {
 const headerTodoReturn = makeReturnMemory();
 const calloutReturn = makeReturnMemory();
 
-/** 测试钩子:清空往返记忆(模块级 Map 会跨用例泄漏)。 */
+/** Test hook: clears the round-trip memory (the module-level Map would leak across test cases). */
 export function resetHeaderTodoReturnForTest(): void {
   headerTodoReturn.clear();
 }
 
-/** 测试钩子:清空 ⌘⇧B 的往返回跳记忆。 */
+/** Test hook: clears the ⌘⇧B round-trip memory. */
 export function resetCalloutReturnForTest(): void {
   calloutReturn.clear();
 }
@@ -589,9 +621,10 @@ export function jumpHeaderTodos(view: EditorView): void {
   );
   if (plan.action === "stay") return;
   if (plan.action === "back") {
-    // 已在目标处：回到之前记笔记的位置(行列锚,行被改短则钳到行尾)。
+    // Already at the target: go back to where the note was written (a
+    // line/column anchor, clamped to the line end when the line got shorter).
     const saved = headerTodoReturn.get(path)!;
-    headerTodoReturn.touch(path); // 刷新淘汰顺序,往返可反复走
+    headerTodoReturn.touch(path); // refresh the eviction order, the round trip can be taken repeatedly
     const line = doc.line(Math.min(saved.line, doc.lines));
     view.dispatch({
       selection: { anchor: Math.min(line.from + saved.col, line.to) },
@@ -600,8 +633,10 @@ export function jumpHeaderTodos(view: EditorView): void {
     view.scrollDOM.scrollTop = Math.max(0, Math.min(saved.scroll, view.scrollDOM.scrollHeight));
     return;
   }
-  // 在正文:记下当前位置,跳到目标或创建空待办。创建的整行插入在来处之前时,
-  // 来处行号随插入平移(行内列不变)。
+  // In the body: remember the current position, then jump to the target or
+  // create an empty todo. When the created whole line is inserted before the
+  // origin, the origin's line number shifts with the insertion (the column
+  // within the line stays the same).
   let line = headLine;
   if (plan.action === "create" && plan.at <= doc.line(headLine).from) {
     line = headLine + (plan.insert.split("\n").length - 1);
@@ -612,7 +647,8 @@ export function jumpHeaderTodos(view: EditorView): void {
     scroll: Math.round(view.scrollDOM.scrollTop),
   });
   if (plan.action === "create") {
-    // 空待办长在头部起点,光标落在 `- [ ] ` 行尾,直接输入。
+    // The empty todo grows at the start of the header and the caret lands at
+    // the end of the `- [ ] ` line, ready to type.
     view.dispatch({
       changes: [{ from: plan.at, insert: plan.insert }],
       selection: { anchor: plan.cursor },
@@ -674,12 +710,19 @@ export function toggleWrap(view: EditorView, marker: string) {
 }
 
 /**
- * 独占整行的块（```…``` / $$…$$ 与 LaTeX 环境行）插入。open/close 按行给，
- * 逐行拼接（公式块是 `$$` + `\begin{align}` 两行，中间空行留给光标）。
- * 定界符必须自己占一行——粘在正文后面既不是合法围栏也不是块公式：当前行为
- * 空行时原位替换（顺带清掉纯空白），否则插到本行行尾之后。首行（开栏）不缩进，
- * 其余行（环境行、内部空行、闭栏）继承本行缩进（块留在列表项内）。光标位置
- * 从构造出的插入串推导——恒落在内部空行的缩进之后（块内首个内容位，直接开写）。
+ * Inserts a block that occupies whole lines (```…``` / $$…$$ and the LaTeX
+ * environment lines). open/close are given per line and concatenated line by
+ * line (a math block is the two lines `$$` + `\begin{align}`, with the blank
+ * line in between left for the caret). The delimiters must own a line each —
+ * glued to the body they are neither a legal fence nor a block formula: the
+ * current behavior replaces a blank line in place (clearing the pure
+ * whitespace along the way), otherwise it inserts after the end of the
+ * current line. The first line (the opening) is not indented, the remaining
+ * lines (the environment line, the inner blank line, the closing) inherit
+ * the indent of the current line (so the block stays inside the list item).
+ * The caret position is derived from the constructed insert string — it
+ * always lands after the indent of the inner blank line (the first content
+ * position inside the block, ready to type).
  */
 function insertOwnLineBlock(
   view: EditorView,
@@ -706,24 +749,36 @@ function insertOwnLineBlock(
 }
 
 /**
- * 插入 Callout 块(`:::` 容器,⌘⇧B)。四种落法:
+ * Inserts a Callout block (`:::` container, ⌘⇧B). Four landing cases:
  *
- *  - 有选区:「选中插入」——在选区所在行之后(围栏代码块/display 公式块内
- *    的选区延伸到该块之后,不把块切开)建一个以选中文字为标题的 callout
- *    (与前文空一行),光标落块内空行直接开写解释;选中的原文留在原处,
- *    渲染成下划虚线锚点(calloutAnchor.ts 按「标题 = 正文文本」推导),
- *    光标停在锚点里再按 ⌘⇧B 即跳到这个块。
- *  - 无选区、光标在 callout 内:往返(有来处记忆回跳;否则就地开新块)。
- *  - 无选区、光标在锚点上:跳到关联的 callout。
- *  - 其余:就地开一个空块——空行原位替换/否则插到本行尾之后。插入形状是
- *    相邻的开栏/闭栏两行,开栏带一个尾随空格作标题槽,光标落在槽之后——
- *    紧接着写标题(`::: 标题`),写完回车就是块内正文行(两栏之间不预置
- *    空行,回车不必先删一行);不写标题直接回车则是无标题裸块。两栏一律
- *    栏 0:callout.ts 只认栏 0 的标记,缩进的闭栏永远关不上块。
+ *  - With a selection: "insert with selection" — a callout titled with the
+ *    selected text is created after the line of the selection (a selection
+ *    inside a fenced code block / display math block extends past that block,
+ *    so the block is not cut in half), separated from the preceding text by
+ *    one blank line, and the caret lands on the blank line inside the block
+ *    so the explanation can be typed right away; the selected original stays
+ *    in place and renders as an underlined dashed anchor (calloutAnchor.ts
+ *    derives it from "title = body text"), and pressing ⌘⇧B again with the
+ *    caret inside that anchor jumps to this block.
+ *  - Without a selection, caret inside a callout: the round trip (jump back
+ *    with a return memory; otherwise open a new block in place).
+ *  - Without a selection, caret on an anchor: jump to the linked callout.
+ *  - Otherwise: open an empty block in place — a blank line is replaced in
+ *    place, otherwise it is inserted after the end of the current line. The
+ *    inserted shape is two adjacent lines, the opening and the closing; the
+ *    opening carries a trailing space as the title slot and the caret lands
+ *    right after that slot — so a title can be typed immediately
+ *    (`::: title`), and pressing Enter then yields the body line of the block
+ *    (no blank line is pre-inserted between the two lines, so Enter does not
+ *    have to delete a line first); pressing Enter without a title gives a
+ *    titleless bare block. Both lines are always at column 0: callout.ts
+ *    only recognizes column-0 markers, so an indented closing line could
+ *    never close the block.
  */
 export function insertCallout(view: EditorView) {
-  // vim visual 的选区要先从引擎取(linewise/blockwise 的 CM 选区不完整)——
-  // 顺便退出 visual,命令消费掉这次选择。
+  // The selection of a vim visual mode must be taken from the engine first
+  // (the CM selection of linewise/blockwise is incomplete) — that also exits
+  // visual mode, so the command consumes this selection.
   const visual = takeVimVisual(view);
   const state = view.state;
   const range = state.selection.main;
@@ -741,32 +796,42 @@ export function insertCallout(view: EditorView) {
 }
 
 /**
- * 选中内容作为标题的单行形态:换行(跨行选区)压成空格、连续空白压成一个。
- * callout 标题是单行语法(开栏行剩余部分);压过之后锚点匹配端对空白弹性
- * (见 calloutAnchor.findTitleMatches),原文处仍能命中。
+ * The single-line form of the selected content used as the title: newlines
+ * (a multi-line selection) are squeezed into spaces and runs of whitespace
+ * into a single space. A callout title is single-line syntax (the rest of
+ * the opening line); after squeezing, the anchor matching end stays
+ * whitespace-flexible (see calloutAnchor.findTitleMatches), so the original
+ * text still matches at its place.
  */
 function normalizeCalloutTitle(raw: string): string {
   return raw.replace(/[\r\n]+/g, " ").replace(/[ \t]{2,}/g, " ").trim();
 }
 
 /**
- * 选中插入的落点:选区所在「块」的最后一行行尾。普通文本就是选区末行;
- * 选区落在围栏代码块或 display 公式块里时延伸到该块末行——插在块的中间会
- * 把块切开(围栏/$$ 被拆散),整块之后再长 callout 才不破坏它。
+ * The landing point of "insert with selection": the end of the last line of
+ * the "block" the selection is in. For plain text that is the last line of
+ * the selection; a selection inside a fenced code block or a display math
+ * block extends to the last line of that block — inserting in the middle of
+ * the block would cut it in half (the fence / $$ would be torn apart), only
+ * growing the callout after the whole block keeps it intact.
  */
 export function calloutInsertAnchor(state: EditorState, from: number, to: number): number {
   const doc = state.doc;
   const end = Math.max(from, to - 1);
   let anchorLine = doc.lineAt(end).number;
-  // 围栏代码块:行扫描与 callout 扫描同源(树未就绪也准确)。选区末行在围栏
-  // 内时往下找第一个出围栏的行,它的前一行即块的闭合行(未闭合到文末则是末行)。
+  // Fenced code block: the line scan shares its source with the callout scan
+  // (accurate even when the tree is not ready). When the last line of the
+  // selection is inside a fence, look further down for the first line that
+  // leaves the fence; the line before it is the closing line of the block
+  // (for an unclosed fence reaching the end of the document, the last line).
   const inside = fenceStateScan(doc);
   if (inside[anchorLine - 1]) {
     let n = anchorLine;
     while (n <= doc.lines && inside[n - 1]) n++;
     anchorLine = Math.min(n - 1, doc.lines);
   }
-  // display 公式块:选区与区域相交时延伸到区域末行(取最靠后那个)。
+  // Display math block: when the selection intersects the region, extend to
+  // the last line of the region (the latest of those regions).
   for (const r of mathRegions(state)) {
     if (!r.display) continue;
     if (end >= r.from && from <= r.to) {
@@ -778,10 +843,14 @@ export function calloutInsertAnchor(state: EditorState, from: number, to: number
 }
 
 /**
- * 在 `at`(某行行尾)之后插入带标题的 callout。与前文恰好隔开一个空行:
- * 落点行非空补两个换行(原文与开栏之间空一行),落点行本身是空行(未闭合
- * 围栏延伸到文末的空尾行)只补一个。光标落块内空行(开栏行之后),直接输入
- * 就是块内容;`at` 之后原有的内容被推到块后面。
+ * Inserts a titled callout after `at` (the end of some line). Exactly one
+ * blank line separates it from the preceding text: a non-empty landing line
+ * gets two newlines (one blank line between the original text and the
+ * opening), a landing line that is itself blank (the empty tail line of an
+ * unclosed fence reaching the end of the document) gets only one. The caret
+ * lands on the blank line inside the block (after the opening line), so
+ * typing right away produces the block content; the content that followed
+ * `at` is pushed behind the block.
  */
 function insertTitledCallout(view: EditorView, title: string, at: number) {
   const doc = view.state.doc;
@@ -797,9 +866,11 @@ function insertTitledCallout(view: EditorView, title: string, at: number) {
   view.focus();
 }
 
-/** 一次无选区 ⌘⇧B 的决策(纯函数,契约在 ops.test.ts):
- *  anchor-jump = 光标在锚点上,跳到关联 callout;back = 已在 callout 内且有
- *  来处记忆,回跳;insert = 就地开一个空块。 */
+/** The decision of one ⌘⇧B without a selection (a pure function, the
+ *  contract lives in ops.test.ts):
+ *  anchor-jump = the caret is on an anchor, jump to the linked callout;
+ *  back = already inside a callout with a return memory, jump back;
+ *  insert = open an empty block in place. */
 export type CalloutPlan =
   | { action: "anchor-jump"; region: CalloutRegion }
   | { action: "back" }
@@ -811,8 +882,10 @@ export function planCalloutShortcut(
   head: number,
   hasReturn: boolean,
 ): CalloutPlan {
-  // 光标在某个 callout 内(含边界行,与边界行的活动规则同一范围):往返优先——
-  // 刚跳到块里,再按一次就是回去;没有来处的块内编辑照旧就地开新块。
+  // The caret is inside some callout (boundary lines included, the same range
+  // as the activity rule of the boundary lines): the round trip comes first —
+  // having just jumped into the block, pressing again goes back; editing
+  // inside a block with no return memory still opens a new block in place.
   if (callouts.some((c) => head >= c.from && head <= c.to)) {
     return hasReturn ? { action: "back" } : { action: "insert" };
   }
@@ -821,7 +894,7 @@ export function planCalloutShortcut(
   return { action: "insert" };
 }
 
-/** 无选区时的 ⌘⇧B:锚点跳转 / 往返回跳 / 就地插入空块。 */
+/** ⌘⇧B without a selection: anchor jump / round-trip jump back / insert an empty block in place. */
 function jumpOrInsertCallout(view: EditorView) {
   const state = view.state;
   const doc = state.doc;
@@ -829,9 +902,11 @@ function jumpOrInsertCallout(view: EditorView) {
   const head = state.selection.main.head;
   const plan = planCalloutShortcut(doc, calloutRegions(state), head, calloutReturn.has(path));
   if (plan.action === "back") {
-    // 已在 callout 内:回到跳转前的正文位置(行列锚,行被改短则钳到行尾)。
+    // Already inside a callout: go back to the body position from before the
+    // jump (a line/column anchor, clamped to the line end when the line got
+    // shorter).
     const saved = calloutReturn.get(path)!;
-    calloutReturn.touch(path); // 刷新淘汰顺序,往返可反复走
+    calloutReturn.touch(path); // refresh the eviction order, the round trip can be taken repeatedly
     const line = doc.line(Math.min(saved.line, doc.lines));
     view.dispatch({
       selection: { anchor: Math.min(line.from + saved.col, line.to) },
@@ -847,8 +922,10 @@ function jumpOrInsertCallout(view: EditorView) {
       col: head - doc.lineAt(head).from,
       scroll: Math.round(view.scrollDOM.scrollTop),
     });
-    // 落点 = 开栏行行尾(标题槽后):与「创建选中块时光标落标题槽」同一位置,
-    // 光标已在块内,再按一次 ⌘⇧B 即往回跳。
+    // The landing point = the end of the opening line (after the title
+    // slot): the same position as "when creating a block from a selection
+    // the caret lands in the title slot"; with the caret already inside the
+    // block, pressing ⌘⇧B again jumps back.
     view.dispatch({
       selection: { anchor: doc.line(plan.region.openLine).to },
       scrollIntoView: true,
@@ -858,7 +935,7 @@ function jumpOrInsertCallout(view: EditorView) {
   insertEmptyCallout(view);
 }
 
-/** 就地插入空 callout 块(空行原位替换/否则插到本行尾之后)。 */
+/** Inserts an empty callout block in place (a blank line is replaced in place, otherwise it is inserted after the end of the current line). */
 function insertEmptyCallout(view: EditorView) {
   const state = view.state;
   const line = state.doc.lineAt(state.selection.main.head);
@@ -876,12 +953,17 @@ function insertEmptyCallout(view: EditorView) {
 }
 
 /**
- * 插入公式块（⌘M）：原生给出对齐环境骨架——`$$` 定界行之间嵌
- * `\begin{align}…\end{align}`，光标落环境内的空行。
+ * Inserts a math block (⌘M): it natively provides the skeleton of an aligned
+ * environment — `\begin{align}…\end{align}` nested between the `$$`
+ * delimiter lines, with the caret on the blank line inside the environment.
  *
- * 与片段 `dm`/`#@` 同形，区别是热键直达、不必先打触发词再转换。等号对齐与
- * 换行不在插入时预置：在 align 环境里回车由 matrix.ts 的 alignEnter 接管
- * （第一个裸关系符前补对齐点 `&`、行尾补 ` \\`），插入只给环境与落点。
+ * Same shape as the `dm` / `#@` snippets, except that the shortcut reaches
+ * it directly without typing a trigger word first. The alignment of the
+ * equals signs and the line breaks are not pre-inserted: pressing Enter
+ * inside an align environment is handled by alignEnter in matrix.ts (it adds
+ * the alignment point `&` before the first bare relation operator and a ` \\`
+ * at the line end), so the insertion only provides the environment and the
+ * landing point.
  */
 export function insertMathBlock(view: EditorView) {
   insertOwnLineBlock(
@@ -904,21 +986,25 @@ export function insertWikilink(view: EditorView) {
   wrapOrPlace(view, "[[", "]]");
 }
 
-/** `[[目标]]` / `[[目标|别名]]` 的形状，与 livePreview 的渲染正则同源。 */
+/** The shape of `[[target]]` / `[[target|alias]]`, the same source as the rendering regex in livePreview. */
 const WIKILINK_RE = /\[\[([^\[\]\n]+?)\]\]/g;
 
 /**
- * 光标所在行上的第一个链接目标（`[[目标|别名]]` / `[[目标#标题]]` 都取目标），
- * 行内代码与围栏代码里的 `[[…]]` 不算——那是示例文本，不是链接。
- * 一行只允许一个链接，所以取第一个就是那一行的链接。
+ * The first link target on the caret's line (`[[target|alias]]` and
+ * `[[target#heading]]` both yield the target); a `[[…]]` inside inline code
+ * or fenced code does not count — that is sample text, not a link. Only one
+ * link is allowed per line, so the first one is that line's link.
  */
 export function wikilinkTargetOnLine(view: EditorView): string | null {
   const state = view.state;
   const line = state.doc.lineAt(state.selection.main.head);
   if (!line.text.includes("[[")) return null;
-  // 语法树解析到这一行时，getContextAt 就能判出围栏/行内代码；整行扫描只是刚载入、
-  // 树还没跟上时的兜底（与回车续行同一套约定）。无条件扫会变成 O(光标之前的行数)——
-  // 一万行文档里光标贴着底部时约 4.5ms，每按一次都要付。
+  // Once the syntax tree has parsed that line, getContextAt can tell fenced
+  // code / inline code apart; the whole-line scan is only the fallback right
+  // after a load, when the tree has not caught up yet (the same convention as
+  // the list continuation on Enter). Scanning unconditionally would cost
+  // O(lines before the caret) — about 4.5ms in a 10k-line document with the
+  // caret at the bottom, paid on every press.
   if (!syntaxTreeAvailable(state, line.to) && insideFencedCodeByScan(state.doc, line.number)) {
     return null;
   }
@@ -935,8 +1021,11 @@ export function wikilinkTargetOnLine(view: EditorView): string | null {
 }
 
 /**
- * 写一条链接进文档：有选区时选区文字当别名（`[[目标|别名]]` 顶掉选区），否则插在
- * 光标处、光标落在链接之后。别名里的链接语法字符会截断链接，一律换成空格。
+ * Writes a link into the document: with a selection the selected text becomes
+ * the alias (`[[target|alias]]` replaces the selection), otherwise it is
+ * inserted at the caret and the caret lands after the link. Link syntax
+ * characters inside the alias would truncate the link, so they are all
+ * replaced with spaces.
  */
 export function insertWikilinkText(view: EditorView, target: string) {
   const state = view.state;
@@ -957,7 +1046,8 @@ export function insertWikilinkText(view: EditorView, target: string) {
 }
 
 /**
- * 围栏信息串：剥掉反引号/换行（会提前终止围栏）并裁空白；空 = 裸 ```。
+ * The fence info string: strips backticks and newlines (they would end the
+ * fence early) and trims whitespace; empty = a bare ```.
  */
 function fenceInfoString(langOverride?: string): string {
   const raw = langOverride ?? useAppStore.getState().settings.codeBlockLang;
@@ -965,9 +1055,11 @@ function fenceInfoString(langOverride?: string): string {
 }
 
 /**
- * 插入代码块：无选区时在光标处开一个带设置语言的开栏，光标落在内部空行；
- * 有选区时把覆盖的行包进围栏（围栏独占整行，行中选区扩展到整行），选区
- * 两端平移进块内。
+ * Inserts a code block: without a selection it opens a fence with the
+ * configured language at the caret and the caret lands on the inner blank
+ * line; with a selection it wraps the covered lines in a fence (the fence
+ * owns whole lines, so a selection inside a line extends to whole lines) and
+ * both ends of the selection shift into the block.
  */
 export function insertCodeBlock(view: EditorView, langOverride?: string) {
   const state = view.state;
@@ -1007,7 +1099,7 @@ export function insertHorizontalRule(view: EditorView) {
   view.focus();
 }
 
-/** 全部非空选区文本（按文档位置排序，多光标以换行相连）。 */
+/** The text of all non-empty selections (sorted by document position, multiple cursors joined by a newline). */
 function selectedText(state: EditorState): string {
   const ranges = [...state.selection.ranges].sort((a, b) => a.from - b.from);
   return ranges
@@ -1017,9 +1109,11 @@ function selectedText(state: EditorState): string {
 }
 
 /**
- * ⌘C：把选中内容写入系统剪贴板。wry 的 WKWebView 把 ⌘ 和弦当普通 keydown
- * 送进页面、AppKit 菜单角色收不到，复制粘贴只能在这里显式实现；无选区时
- * 放行（拦下来也无事可做）。
+ * ⌘C: writes the selected content to the system clipboard. wry's WKWebView
+ * sends ⌘ chords into the page as ordinary keydowns and the AppKit menu roles
+ * never see them, so copy and paste must be implemented explicitly here;
+ * without a selection it lets the event through (there is nothing to do
+ * anyway).
  */
 export function copySelection(view: EditorView): boolean {
   const text = selectedText(view.state);
@@ -1028,7 +1122,7 @@ export function copySelection(view: EditorView): boolean {
   return true;
 }
 
-/** ⌘X：写入剪贴板并删除选中内容。 */
+/** ⌘X: writes to the clipboard and deletes the selected content. */
 export function cutSelection(view: EditorView): boolean {
   const text = selectedText(view.state);
   if (!text) return false;
@@ -1041,9 +1135,11 @@ export function cutSelection(view: EditorView): boolean {
 }
 
 /**
- * ⌘V：读系统剪贴板，替换每个选区（多光标同文粘贴），光标落在插入文本后。
- * IPC 是异步的：完成时按"当时"的最新选区执行（changeByRange 读的是解析后
- * 的 state），不绑定按键瞬间的旧光标，避免过期写入。
+ * ⌘V: reads the system clipboard and replaces every selection (multiple
+ * cursors paste the same text), with the caret landing after the inserted
+ * text. The IPC is asynchronous: when it completes the action runs against
+ * the then-current selections (changeByRange reads the resolved state), not
+ * against the caret of the keystroke moment, so no stale write happens.
  */
 export function pasteClipboard(view: EditorView): boolean {
   void readClipboardText().then((text) => {

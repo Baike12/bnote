@@ -59,7 +59,7 @@ describe("模板:目录与文件列表", () => {
       "Templates/会议/周会.md",
       "Templates/日记.md",
     ]);
-    // 前缀必须带斜杠:`Templates.md` 不是 `Templates` 目录里的文件。
+    // The prefix must carry the slash: `Templates.md` is not a file inside the `Templates` directory.
     expect(templateFiles(files, "Templates/")).toEqual([
       "Templates/会议/周会.md",
       "Templates/日记.md",

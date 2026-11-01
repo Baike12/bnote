@@ -1,30 +1,35 @@
 import type { LspPosition } from "./types";
 
 /**
- * 「下一个 / 上一个问题」(F8 / ⇧F8)的目标选择。
+ * Target selection for "next / previous problem" (F8 / ⇧F8).
  *
- * 纯函数:诊断来自 store,光标来自编辑器,这里只决定该跳去哪。单拎出来是
- * 因为旧实现把「当前在第几条」写成了猜——它拿当前文件的**第 0 条**诊断当
- * 游标,于是连按 F8 只在两个文件之间来回跳,同一个文件里的第 2、3 条问题
- * 永远轮不到。
+ * A pure function: the diagnostics come from the store, the cursor comes from
+ * the editor, and this module only decides where to jump. It is pulled out
+ * because the old implementation *guessed* "which one are we on": it took the
+ * **first** diagnostic of the current file as the cursor, so pressing F8 kept
+ * bouncing between two files and the 2nd and 3rd problems of a file were
+ * never reached.
  *
- * 规则(与主流 IDE 一致):
- * - 先在**当前文件**里找光标之后(direction = 1)/ 之前(-1)的第一条;
- * - 当前文件没有了,按「有问题的文件」的顺序跨到相邻文件的头 / 尾;
- * - 只有一个文件时绕回它自己(单文件也要能循环);
- * - 当前文件没有诊断,从整个列表的头 / 尾开始。
+ * The rules (same as the mainstream IDEs):
+ * - first look for the first diagnostic **after** the caret (direction = 1) /
+ *   before it (-1) in the **current file**;
+ * - when the current file has none left, cross to the head / tail of the
+ *   neighbouring file in the order of the files that have problems;
+ * - with a single file, wrap around to itself (a single file must cycle too);
+ * - when the current file has no diagnostics at all, start from the head /
+ *   tail of the whole list.
  */
 
 export interface ProblemTarget {
-  /** 项目相对路径。 */
+  /** Project-relative path. */
   path: string;
   position: LspPosition;
 }
 
 export interface ProblemCursor {
-  /** 光标所在文件(null = 不知道)。 */
+  /** The file the caret is in (null = unknown). */
   path: string | null;
-  /** 光标位置;没有编辑器时给 null(按文件头 / 尾处理)。 */
+  /** The caret position; null when there is no editor (handled as file head / tail). */
   position: LspPosition | null;
 }
 
@@ -39,8 +44,9 @@ export function nextProblemTarget(
 ): ProblemTarget | null {
   if (problems.length === 0) return null;
 
-  // 按文件分组(文件顺序 = 诊断首次出现的顺序),组内按位置排好:
-  // 服务器推来的诊断不保证有序。
+  // Group by file (file order = order of first appearance of a diagnostic),
+  // sorted by position inside a group: the diagnostics pushed by the server
+  // are not guaranteed to be ordered.
   const groups = new Map<string, ProblemTarget[]>();
   for (const problem of problems) {
     const list = groups.get(problem.path);
@@ -52,7 +58,7 @@ export function nextProblemTarget(
   }
   const paths = [...groups.keys()];
 
-  /** 某个文件的头 / 尾一条。 */
+  /** The head / tail diagnostic of a file. */
   const edgeOf = (path: string): ProblemTarget => {
     const list = groups.get(path)!;
     return direction === 1 ? list[0] : list[list.length - 1];
@@ -67,11 +73,13 @@ export function nextProblemTarget(
         ? list.find((p) => comparePosition(p.position, position) > 0)
         : [...list].reverse().find((p) => comparePosition(p.position, position) < 0);
     if (hit) return hit;
-    // 本文件已经没有下一条:换到相邻文件的头 / 尾(单文件时绕回自己)。
+    // No next one in this file: switch to the head / tail of the neighbouring
+    // file (with a single file, wrap around to itself).
     const index = paths.indexOf(cursor.path);
     return edgeOf(paths[(index + direction + paths.length) % paths.length]);
   }
 
-  // 当前文件没有诊断:从整个列表的头 / 尾开始。
+  // The current file has no diagnostics: start from the head / tail of the
+  // whole list.
   return edgeOf(paths[direction === 1 ? 0 : paths.length - 1]);
 }

@@ -25,9 +25,11 @@ const reset = () => applyOverrides({});
 afterEach(reset);
 
 /**
- * 默认键位的唯一归属门禁。区域化之后「同一个键」可以出现在不同区域里
- * (各自生效),但**同一区域内**不许重复:窗口级分发按命令注册顺序取第一条,
- * 静默抢占比报错更难查。
+ * Gate for unique ownership of the default bindings. After regions were
+ * introduced the "same key" may appear in different regions (each taking
+ * effect on its own), but **within one region** it must not repeat: the
+ * window-level dispatch takes the first command in registration order, and a
+ * silent takeover is much harder to debug than a failure.
  */
 describe("默认键位", () => {
   it("同一区域内没有重复键位", () => {
@@ -55,9 +57,11 @@ describe("默认键位", () => {
 
   it("Mod-Shift-o 归 workspace.open-daily,通用区里无人与之重复", () => {
     expect(bindingsForCommand("workspace.open-daily")).toEqual(["Mod-Shift-o"]);
-    // 同一个键可以出现在别的区域——区域化之后各自生效(上面那条门禁守的
-    // 是「同一区域内不许重复」)。代码区把 ⌘⇧O 用作「快速打开文件」;
-    // 这里守的是**通用区**不许有第二个命令抢这个键。
+    // The same key may appear in another region — after regions were
+    // introduced each takes effect on its own (the gate above guards "no
+    // duplicate within one region"). The code region uses ⌘⇧O for "quick
+    // open file"; this one guards that **the global region** has no second
+    // command grabbing this key.
     const others = Object.entries(DEFAULT_BINDINGS).filter(
       ([id, key]) =>
         id !== "workspace.open-daily" &&
@@ -103,8 +107,10 @@ describe("默认键位", () => {
   it("⌘⇧E:阅读区截图、代码区聚焦文件树,各归各的区域", () => {
     expect(bindingsForCommand("study.pdf-snap-to-agent")).toEqual(["Mod-Shift-e"]);
     expect(defaultRegionOf("study.pdf-snap-to-agent")).toBe("reading");
-    // 代码区的「聚焦文件树」用同一个物理键。两个区域各有一份绑定,互不
-    // 干扰(区域自己的绑定排在跨区域和弦之前,见 commandsForKey)。
+    // The code region's "focus file tree" uses the same physical key. Each
+    // region has its own binding and they do not interfere (a region's own
+    // binding is ordered before the cross-region chords, see
+    // commandsForKey).
     expect(bindingsForCommand("code.focus-tree")).toEqual(["Mod-Shift-e"]);
     expect(defaultRegionOf("code.focus-tree")).toBe("code");
     const others = Object.entries(DEFAULT_BINDINGS).filter(
@@ -137,7 +143,7 @@ describe("专注:只有开始,没有中途出口", () => {
   });
 });
 
-/** 区域归属:谁在哪个区域生效、区域如何盖住通用。 */
+/** Region ownership: who takes effect in which region, and how a region overrides the global one. */
 describe("区域分发", () => {
   it("命令按语义分到默认区域", () => {
     expect(defaultRegionOf("edit.toggle-bold")).toBe("notes");
@@ -156,9 +162,10 @@ describe("区域分发", () => {
         expect(commandBelongs(id, region)).toBe(true);
       }
     }
-    // 「聚焦阅读区」没有代码区的份——代码区就长在阅读区那一栏里,没有
-    // 第四个地方可去。「聚焦笔记区 / 聚焦 Agent」有:代码编辑器能直接跳
-    // 回笔记区与助手面板。
+    // "Focus reading" has no share in the code region — the code region
+    // grows inside the reading column, there is no fourth place to go to.
+    // "Focus notes" / "Focus Agent" do have one: the code editor can jump
+    // straight back to the notes region and the assistant panel.
     expect(defaultRegionsOf("region.focus-reading")).toEqual(["reading", "notes", "agent"]);
     for (const id of ["region.focus-agent", "region.focus-notes"]) {
       expect(defaultRegionsOf(id)).toEqual(["reading", "notes", "agent", "code"]);
@@ -167,7 +174,8 @@ describe("区域分发", () => {
     expect(defaultRegionOf("region.focus-agent")).toBe("reading");
     expect(commandsForKey("Mod-Alt-a", "reading")).toContain("region.focus-agent");
     expect(commandsForKey("Mod-Alt-a", "notes")).toContain("region.focus-agent");
-    // Agent 面板里 ⌘⌥A 把焦点送回输入框:在消息列表/历史里按下也要能用。
+    // ⌘⌥A inside the Agent panel sends the focus back to its input: it must
+    // work when pressed in the message list / history too.
     expect(commandsForKey("Mod-Alt-a", "agent")).toContain("region.focus-agent");
     expect(commandsForKey("Mod-Alt-n", "reading")).toContain("region.focus-notes");
     expect(commandsForKey("Mod-Alt-n", "notes")).toContain("region.focus-notes");
@@ -188,7 +196,7 @@ describe("区域分发", () => {
   it("区域绑定排在同键的通用绑定前面(Agent 里 ⌘[ 是返回会话)", () => {
     expect(commandsForKey("Mod-[", "agent")[0]).toBe("agent.back-from-fork");
     expect(commandsForKey("Mod-[", "agent")).toContain("nav.back-link");
-    // 笔记区没有区域绑定,⌘[ 仍是回退链接。
+    // The notes region has no region binding, so ⌘[ is still the back-link.
     expect(commandsForKey("Mod-[", "notes")).toEqual(["nav.back-link"]);
   });
 
@@ -232,7 +240,7 @@ describe("区域分发", () => {
       expect(commandsForKey("Ctrl-j", region)).toContain("study.pdf-next-page");
       expect(commandsForKey("Ctrl-k", region)).toContain("study.pdf-prev-page");
     }
-    // 阅读区自己不重复出现两次。
+    // The reading region does not list it twice.
     expect(
       commandsForKey("Ctrl-j", "reading").filter((id) => id === "study.pdf-next-page"),
     ).toEqual(["study.pdf-next-page"]);
@@ -242,15 +250,16 @@ describe("区域分发", () => {
     expect(commandsForKey("PageDown", "reading")).toContain("study.pdf-next-page");
     expect(commandsForKey("PageDown", "notes")).not.toContain("study.pdf-next-page");
     expect(commandsForKey("ArrowRight", "agent")).not.toContain("study.pdf-next-page");
-    // 跨区域只对带 Mod/Ctrl/Alt 的和弦成立。
+    // Cross-region only holds for chords with Mod/Ctrl/Alt.
     applyOverrides(normalizeOverrides({ reading: { "study.pdf-next-page": "F5" } }));
     expect(commandsForKey("F5", "notes")).not.toContain("study.pdf-next-page");
   });
 
   it("截图和弦同样跨区域:焦点在 Agent 面板/笔记区也命中阅读区那份绑定", () => {
     expect(commandsForKey("Mod-Shift-e", "reading")).toContain("study.pdf-snap-to-agent");
-    // 代码区里同一个键先命中自己的「聚焦文件树」,摘要键不会跟着执行
-    // (pickCommand 只取第一条 when 成立的命令)。
+    // In the code region the same key first hits its own "focus file tree",
+    // and the screenshot does not run along (pickCommand takes only the
+    // first command whose when holds).
     expect(commandsForKey("Mod-Shift-e", "code")[0]).toBe("code.focus-tree");
     for (const region of ["notes", "agent"] as const) {
       expect(commandsForKey("Mod-Shift-e", region)).toContain("study.pdf-snap-to-agent");
@@ -279,7 +288,8 @@ describe("区域分发", () => {
   });
 
   it("弹窗打开时(region = global)不放行跨区域命令,焦点不被抢走", () => {
-    // 弹窗里只认通用命令:⌘⌥A 不该把焦点交给 Agent 输入框,翻页也不该滚背后。
+    // Only global commands are recognized inside a modal: ⌘⌥A must not hand
+    // the focus to the Agent input, and paging must not scroll behind it.
     expect(commandsForKey("Mod-Alt-a", "global")).toEqual([]);
     expect(commandsForKey("Mod-Shift-e", "global")).toEqual([]);
     expect(commandsForKey("Ctrl-j", "global")).toEqual([]);
@@ -293,9 +303,11 @@ describe("区域分发", () => {
         reading: { "study.pdf-snap-to-agent": "Mod-w" },
       }),
     );
-    // 笔记区:自己的绑定排第一,跨区截图排在后面。
+    // The notes region: its own binding comes first, the cross-region
+    // screenshot comes after.
     expect(commandsForKey("Mod-w", "notes")[0]).toBe("edit.toggle-todo");
-    // Agent 面板没有自己的 Mod-w,落到阅读区那份截图。
+    // The Agent panel has no Mod-w of its own, so it falls through to the
+    // reading region's screenshot.
     expect(commandsForKey("Mod-w", "agent")).toEqual(["study.pdf-snap-to-agent"]);
   });
 
@@ -309,7 +321,7 @@ describe("区域分发", () => {
   });
 });
 
-/** 配置文件:新格式按区域分组,旧版扁平表自动分区(升级不丢键位)。 */
+/** Config file: the new format is grouped by region, the legacy flat table is split automatically (an upgrade loses no keybinding). */
 describe("配置文件读写", () => {
   it("旧版扁平表按命令默认归属分区", () => {
     const overrides = normalizeOverrides({
@@ -357,7 +369,7 @@ describe("配置文件读写", () => {
   });
 });
 
-/** 编辑器/输入框的按键归属:裸导航键归它们,带修饰键的绑定任何焦点下都生效。 */
+/** Key ownership of the editor/inputs: bare navigation keys belong to them, modified bindings take effect under any focus. */
 describe("裸导航键归属", () => {
   const ev = (key: string, mods: Partial<KeyboardEvent> = {}) =>
     ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods }) as KeyboardEvent;
@@ -380,7 +392,7 @@ describe("裸导航键归属", () => {
   });
 });
 
-/** 文本输入控件(input/textarea)自己的编辑和弦:同区域里绑了也不许抢。 */
+/** The editing chords of the text input controls (input/textarea): even when the same region binds them, they may not be taken. */
 describe("表单编辑和弦", () => {
   it("input/textarea 拥有 ⌘A/C/X/V/⌘Z,其它元素与其它按键不放行", () => {
     for (const tag of ["INPUT", "TEXTAREA"]) {
@@ -389,14 +401,15 @@ describe("表单编辑和弦", () => {
       }
       expect(formOwnsEditChord("Ctrl-j", tag)).toBe(false);
     }
-    // contenteditable 的编辑器不是 INPUT/TEXTAREA:笔记区的 ⌘A 归命令。
+    // The contenteditable editor is not an INPUT/TEXTAREA: in the notes
+    // region ⌘A belongs to the command.
     expect(formOwnsEditChord("Mod-a", "DIV")).toBe(false);
     expect(formOwnsEditChord("Mod-a", null)).toBe(false);
     expect(formOwnsEditChord("Mod-a", "SELECT")).toBe(false);
   });
 });
 
-/** PageUp/PageDown 是不可覆盖的固定翻页键:改绑之后仍然翻页。 */
+/** PageUp/PageDown are the fixed paging keys that cannot be overridden: they still page after a rebind. */
 describe("固定翻页键", () => {
   const ev = (key: string, mods: Partial<KeyboardEvent> = {}) =>
     ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods }) as KeyboardEvent;
@@ -424,8 +437,10 @@ describe("固定翻页键", () => {
 });
 
 /**
- * 绑定串里主键可能本身就是 "-"(⌘− 写作 "Mod--")。按分隔符切分会把它切成
- * 一串空串——网页运行时与快捷键展示都用 parseBinding,这条门禁锁住两边。
+ * The main key of a binding string may itself be "-" (⌘− is written
+ * "Mod--"). Splitting on the separator would cut it into a row of empty
+ * strings — the web runtime and the keybinding display both use
+ * parseBinding, and this gate locks both sides.
  */
 describe("绑定解析", () => {
   it("主键是减号时不被分隔符拆坏", () => {
@@ -448,7 +463,7 @@ describe("绑定解析", () => {
   });
 });
 
-/** 网页缩放:⌘= / ⌘- / ⌘0 归阅读区,网页打开时盖住全局的编辑区字号缩放。 */
+/** Web zoom: ⌘= / ⌘- / ⌘0 belong to the reading region and, while a web page is open, override the global editor font-size zoom. */
 describe("网页缩放键位", () => {
   it("默认绑定在阅读区", () => {
     expect(defaultRegionOf("study.web-zoom-in")).toBe("reading");
@@ -470,27 +485,32 @@ describe("网页缩放键位", () => {
       "study.web-zoom-out",
       "view.zoom-out",
     ]);
-    // 笔记区没有网页缩放绑定,仍是编辑区字号缩放。
+    // The notes region has no web zoom binding, so it stays the editor
+    // font-size zoom.
     expect(commandsForKey("Mod-=", "notes")).toEqual(["view.zoom-in"]);
   });
 });
 
 /**
- * 原生网页子 webview 里的按键不冒泡到主窗口,页内运行时只认主窗口推过去的
- * 转发列表。通用命令「任何焦点都生效」——快速待办、命令面板这些必须包含在
- * 内,漏一条就是网页里一条静默失效的快捷键。
+ * Keys pressed in the native web child webview do not bubble to the main
+ * window, and the in-page runtime only honors the forwarding list pushed
+ * from the main window. Global commands are "active under any focus" — quick
+ * todo, command palette and the like must be included, because missing one
+ * means one keybinding silently dies inside a web page.
  */
 describe("网页转发键", () => {
   it("通用区域整张表都转发(快速待办 / 命令面板 / 区域切换)", () => {
     const keys = pageForwardKeys();
     expect(keys).toContain("Mod-Shift-k"); // workspace.capture-todo
     expect(keys).toContain("Mod-p");
-    expect(keys).toContain("Mod-Alt-a"); // region.focus-agent(阅读区)
-    expect(keys).toContain("Mod-="); // 网页缩放
-    // 翻页的裸键由页内自己处理,不绕 IPC 转发。
+    expect(keys).toContain("Mod-Alt-a"); // region.focus-agent (reading region)
+    expect(keys).toContain("Mod-="); // web zoom
+    // The bare paging keys are handled by the page itself and are not
+    // forwarded through IPC.
     expect(keys).not.toContain("PageDown");
     expect(keys).not.toContain("ArrowRight");
-    // 只对 PDF 有意义的截图键不转发:网页里按下不能被静默吞掉。
+    // The screenshot key, which only makes sense for a PDF, is not
+    // forwarded: pressing it inside a web page must not be silently swallowed.
     expect(keys).not.toContain("Mod-Shift-e");
   });
 
@@ -531,9 +551,10 @@ describe("网页转发键", () => {
 });
 
 /**
- * macOS 上 Option+字母的 event.key 是打出来的字符(å/ß/®,Option+N 还是
- * "Dead")。绑定表按物理键写(⌘⌥A = "Mod-Alt-a"),主窗口与网页运行时都必须
- * 从 event.code 还原,否则这些快捷键永远匹配不上。
+ * On macOS the event.key of Option+letter is the typed character (å/ß/®, and
+ * Option+N is even "Dead"). The binding table is written with physical keys
+ * (⌘⌥A = "Mod-Alt-a"), so both the main window and the web runtime must
+ * restore the key from event.code, otherwise these keybindings never match.
  */
 describe("事件主键规范化", () => {
   const ev = (
@@ -589,9 +610,11 @@ describe("事件主键规范化", () => {
 });
 
 /**
- * 项目管理区域(project):项目卡片里同样在编辑 markdown,所以它**继承**
- * 笔记区的编辑键位;项目自己的动作(轮转卡片、发送到今日最前)排在最前,
- * 同一个键按语境表达不同意图(⌘⇧J:笔记区发到末尾,项目区发到最前)。
+ * Project management region (project): the project cards edit markdown too,
+ * so it **inherits** the notes region's edit bindings; the project's own
+ * actions (rotate cards, send to the top of today) come first, and the same
+ * key carries a different intent per context (⌘⇧J: the notes region sends
+ * to the end, the project region sends to the front).
  */
 describe("项目区快捷键盘", () => {
   it("项目专属命令归属 project,视图开关归属 global", () => {
@@ -623,7 +646,8 @@ describe("项目区快捷键盘", () => {
     applyOverrides({});
     expect(commandsForKey("Mod-b", "project")[0]).toBe("edit.toggle-bold");
     expect(commandsForKey("Mod-l", "project")[0]).toBe("edit.toggle-todo");
-    // 笔记区自己没有的项目动作不会漏进来
+    // The project-only actions of the project region do not leak into the
+    // notes region
     expect(commandsForKey("Mod-Shift-ArrowDown", "notes")).toEqual([]);
   });
 

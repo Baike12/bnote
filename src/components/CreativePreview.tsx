@@ -6,14 +6,14 @@ import { useAppStore } from "@/state/appStore";
 import { vaultDotPath } from "@/study/vaultJson";
 
 interface PreviewState {
-  /** preview_html 落下的快照(file:// URL),子 webview 换它即重载。 */
+  /** The snapshot written by preview_html (a file:// URL); the child webview reloads when it changes. */
   url: string;
-  /** 快照对应的仓库源文件(vault 相对路径),发布与刷新都用它。 */
+  /** The vault source file the snapshot came from (vault relative path), used for publishing and refreshing. */
   source: string;
   version: number;
 }
 
-/** 中栏占位元素的几何(视口坐标即窗口内容区坐标,标题栏为 Overlay)。 */
+/** Geometry of the placeholder element in the middle column (viewport coordinates are window content coordinates, the title bar is an Overlay). */
 function previewBounds(el: HTMLElement) {
   const rect = el.getBoundingClientRect();
   return {
@@ -25,19 +25,23 @@ function previewBounds(el: HTMLElement) {
 }
 
 /**
- * 创作模式的中栏:agent 生成/修改 HTML 后,preview_html 工具落一份带版本
- * 的快照并推 `creative-preview-updated` 事件;这里把原生子 webview 粘在
- * 占位元素上,事件到达就换 URL 重载——「实时预览」由此而来。
+ * The middle column of creative mode: after the agent generates or edits
+ * HTML, the preview_html tool writes a versioned snapshot and pushes a
+ * `creative-preview-updated` event; here the native child webview is glued
+ * to the placeholder element and reloads with a new URL when the event
+ * arrives, which is where the "live preview" comes from.
  *
- * 与 ContentPane(学习模式中栏)同一套原生视图协作模型:ResizeObserver +
- * 分隔条拖动事件补报几何;HTML 弹层(设置/发布对话框)打开时藏原生视图。
+ * It collaborates with the native view the same way ContentPane (the middle
+ * column of study mode) does: a ResizeObserver plus the divider drag event
+ * report the geometry again, and the native view is hidden while an HTML
+ * overlay (settings / publish dialog) is open.
  */
 export function CreativePreview() {
   const modal = useAppStore((s) => s.modal);
   const canvasOpen = useAppStore((s) => s.drawingSession !== null);
   const showToast = useAppStore((s) => s.showToast);
   const [preview, setPreview] = useState<PreviewState | null>(null);
-  /** 发布对话框展示的源文件(null = 关闭)。 */
+  /** The source file shown in the publish dialog (null = closed). */
   const [publishSource, setPublishSource] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -54,7 +58,7 @@ export function CreativePreview() {
     return () => off?.();
   }, []);
 
-  // 预览 webview 同步:URL 变化 → 创建/导航;几何变化 → 只报 bounds。
+  // Preview webview sync: a changed URL creates or navigates it, a changed geometry only reports the bounds.
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
@@ -69,7 +73,7 @@ export function CreativePreview() {
         ? agentApi.showCreativePreview(preview?.url ?? "", bounds)
         : agentApi.setCreativePreviewBounds(bounds);
       void call.catch((e: unknown) => {
-        // 浏览器 harness 没有 webview 命令;预览不可用只提示,不打断创作。
+        // The browser harness has no webview commands; an unavailable preview is only reported, it must not interrupt the creative flow.
         if (create && !closed) {
           console.warn("[creative] 预览不可用", e);
           showToast("预览仅在桌面应用中可用");
@@ -88,15 +92,15 @@ export function CreativePreview() {
     };
   }, [preview, showToast]);
 
-  // 切回学习模式/组件卸载:撤掉创作预览的原生视图。
+  // Switching back to study mode / unmounting: take down the native view of the creative preview.
   useEffect(() => {
     return () => {
       void agentApi.closeCreativePreview().catch(() => {});
     };
   }, []);
 
-  // HTML 浮层(全局 modal / 画布 / 发布对话框)打开时藏原生视图
-  // (原生视图永远画在 DOM 之上)。
+  // Hide the native view while an HTML overlay (global modal / canvas /
+  // publish dialog) is open (the native view always paints above the DOM).
   useEffect(() => {
     if (!preview) return;
     void agentApi
@@ -164,7 +168,7 @@ interface BblogAuth {
   token: string;
 }
 
-/** 读 vault 的 .bnote/bblog/auth.json(不存在或格式不对返回 null)。 */
+/** Reads .bnote/bblog/auth.json from the vault (returns null when it is missing or malformed). */
 export async function readBblogAuth(vaultPath: string | null): Promise<BblogAuth | null> {
   if (!vaultPath) return null;
   try {
@@ -180,8 +184,10 @@ export async function readBblogAuth(vaultPath: string | null): Promise<BblogAuth
 }
 
 /**
- * 发布对话框:选择栏目/主题(来自 bblog 的 /api/sections,手工目录同权),
- * 把预览的仓库源文件内容经 Bearer 令牌上传到 /api/upload。
+ * The publish dialog: pick the section / topic (they come from the
+ * /api/sections of bblog, a hand written directory has the same weight) and
+ * upload the content of the previewed source file of the repository to
+ * /api/upload with the Bearer token.
  */
 export function PublishDialog({ source, onClose }: { source: string; onClose: () => void }) {
   const vaultPath = useAppStore((s) => s.vaultPath);

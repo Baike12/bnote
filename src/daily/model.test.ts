@@ -210,8 +210,8 @@ describe("resolveRootLine", () => {
   const d = doc("前言\n- [ ] 甲\n- [ ] 乙\n- [ ] 丙\n");
   it("hint 命中 / 窗口命中 / 全文命中 / 找不到", () => {
     expect(resolveRootLine(d, ["乙"], 3)).toBe(3);
-    expect(resolveRootLine(d, ["乙"], 8)).toBe(3); // 窗口 ±30
-    expect(resolveRootLine(d, ["丙"], 2)).toBe(4); // hint 行不是它,就近找
+    expect(resolveRootLine(d, ["乙"], 8)).toBe(3); // the +/-30 window
+    expect(resolveRootLine(d, ["丙"], 2)).toBe(4); // the hint line is not it, the nearest one wins
     expect(resolveRootLine(d, ["丁"], 2)).toBe(null);
   });
   it("非待办行永远不匹配", () => {

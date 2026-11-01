@@ -1,7 +1,9 @@
-//! Python 功能的 Tauri 命令:运行、取消、项目信息、项目配置、LSP 同步、uv 环境。
+//! Tauri commands for the Python features: run, cancel, project info, project
+//! config, LSP sync, and uv environments.
 //!
-//! 结构约定:spawn_blocking 只搬纯数据(cloned vault / 路径),不搬 `State`;
-//! std 锁的守卫一律不跨 await(python_lsp map 用「读出 → 放锁 → await → 复查」)。
+//! Structural rule: `spawn_blocking` only carries plain data (cloned vault /
+//! paths), never `State`; a std lock guard never crosses an `.await` (the
+//! python_lsp map follows "read out -> drop the lock -> await -> re-check").
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +25,7 @@ pub struct LspSyncResult {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PythonInfo {
-    /// 笔记不在 vault 内时为 null。
+    /// Null when the note is not inside the vault.
     pub project_root: Option<String>,
     pub project_name: String,
     /// "off" | "ty"
@@ -37,7 +39,7 @@ pub struct PythonInfo {
     pub ty_available: bool,
 }
 
-/// 解析 md 路径 → (vault, 项目, 项目配置)。
+/// Resolves an md path -> (vault, project, project config).
 fn with_project(
     state: &State<'_, AppState>,
     md_path: &str,
@@ -86,8 +88,9 @@ pub async fn python_get_info(state: State<'_, AppState>, md_path: String) -> Cmd
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-/// 合并单项目配置(None = 不动,Some("") = 清除);lsp 被关掉时顺带停掉
-/// 该项目的 LSP 服务器。返回合并后的项目配置。
+/// Merges a single project's config (None = leave unchanged, Some("") = clear);
+/// turning the LSP off also stops that project's LSP server. Returns the merged
+/// project config.
 #[tauri::command]
 pub async fn python_set_project_config(
     app: AppHandle,
@@ -141,8 +144,9 @@ fn set_or_remove(slot: &mut Option<String>, value: &str) {
     }
 }
 
-/// 前端防抖后的同步入口:项目 LSP 关着就静默返回 enabled=false;开着则
-/// 确保 server 起来并 didOpen/didChange。
+/// Sync entry point called after the frontend debounce: with the project LSP
+/// off it silently returns enabled=false; with it on it makes sure the server
+/// is running and that didOpen/didChange were sent.
 #[tauri::command]
 pub async fn python_lsp_sync(
     app: AppHandle,
@@ -157,8 +161,9 @@ pub async fn python_lsp_sync(
     let ty = python::lsp::find_ty(&project.root, &config)?;
     let key = project.root.to_string_lossy().to_string();
 
-    // 取活跃 server;没有就 spawn + 握手(全程不持 map 锁,插入前复查,
-    // 并发的首次同步各自 spawn 后只留一个活的)。
+    // Grab the live server; if there is none, spawn + handshake (the map lock
+    // is never held across the spawn, and the map is re-checked before the
+    // insert, so concurrent first syncs each spawn one and only one survives).
     let server = {
         let existing = state
             .python_lsp
@@ -187,16 +192,21 @@ pub async fn python_lsp_sync(
         }
     };
 
-    // open / change:版本记账在客户端里(唯一写入者),调用方只给内容。
+    // open / change: the version accounting lives in the client (the only
+    // writer), so the caller only supplies the content.
     server.sync_doc(&md_path, &text).await?;
     Ok(LspSyncResult { enabled: true })
 }
 
-/// 交互内 LSP 请求(补全 / hover)的转发口。约束:
-/// - 只放行只读方法,杜绝别的请求从这条路溜进 ty;
-/// - server 不在这里 spawn —— 前端补全/hover 源都先走 python_lsp_sync 把
-///   文档同步上去,这里只在 server 已活着时转发,拿不到就回 null;
-/// - textDocument.uri 由 interaction_request 按 md 路径注入,前端给不了假文档。
+/// Forwarding point for the in-chat LSP requests (completion / hover).
+/// Constraints:
+/// - only read-only methods are allowed, so no other request can slip into ty
+///   through this path;
+/// - the server is not spawned here -- the frontend completion/hover sources
+///   first sync the document through python_lsp_sync, and this only forwards
+///   while the server is already alive; without one it answers null;
+/// - textDocument.uri is injected by interaction_request from the md path, so
+///   the frontend cannot hand in a forged document.
 #[tauri::command]
 pub async fn python_lsp_request(
     state: State<'_, AppState>,
@@ -244,7 +254,7 @@ pub async fn python_lsp_close(state: State<'_, AppState>, md_path: String) -> Cm
     Ok(())
 }
 
-/// 换 vault / 退出前清场。
+/// Tears down every server when the vault is switched or before quitting.
 #[tauri::command]
 pub async fn python_lsp_stop_all(state: State<'_, AppState>) -> CmdResult<()> {
     if let Ok(mut map) = state.python_lsp.lock() {

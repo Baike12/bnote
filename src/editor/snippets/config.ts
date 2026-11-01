@@ -1,40 +1,44 @@
 /**
- * latex-suite 的 `wordDelimiters` 默认值:`"., +-\n\t:;!?\\/{}[]()=~$"`。
- * 逗号串里的 `\n` 是字面两字符,使用时还原成真换行(见 engine 的 isWordBoundary)。
+ * latex-suite's default `wordDelimiters`: `"., +-\n\t:;!?\\/{}[]()=~$"`.
+ * The `\n` in the comma string is a literal two-character sequence; it is
+ * turned back into a real newline when used (see isWordBoundary in engine).
  */
 export const LATEX_SUITE_WORD_DELIMITERS = "., +-\n\t:;!?\\/{}[]()=~$";
 
 /**
- * LaTeX Suite 的设置项,逐项对应 obsidian-latex-suite 的同名设置(见
- * obsidian-vim-input-auto-switch/manifest.json 里 id=obsidian-latex-suite 的
- * 那份插件,源码路径记在 AGENTS.md)。默认值取插件的默认值,也正是用户
- * data.json 里的取值;字段名照插件命名,便于和插件源码逐条对照。
+ * The LaTeX Suite settings, one per same-named option of obsidian-latex-suite
+ * (see the plugin with id=obsidian-latex-suite in
+ * obsidian-vim-input-auto-switch/manifest.json; its source path is recorded in
+ * AGENTS.md). The defaults are the plugin's own defaults, which are also the
+ * values in the user's data.json; the field names follow the plugin so each
+ * entry can be compared against the plugin source.
  *
- * 这里是模块级可变状态(与 `snippetStore` 同款):持久化在应用设置里,
- * applySettingsToEditor 时灌进来;编辑器扩展直接读它,免去在扩展里穿 store。
- * 本模块刻意不 import 任何东西——appStore 要引用它的类型与默认值,不能被
- * 拖进编辑器依赖图。
+ * This is module-level mutable state (like `snippetStore`): it is persisted
+ * in the app settings and pushed in by applySettingsToEditor; the editor
+ * extension reads it directly instead of threading the store through the
+ * extension. This module deliberately imports nothing — appStore needs its
+ * types and defaults and must not be dragged into the editor dependency graph.
  */
 export interface LatexConfig {
-  /** 括号内出现触发词时自动升级成 \left…\right(自动分数后无条件跑一次) */
+  /** Upgrade to \left…\right when a trigger word appears inside brackets (runs unconditionally after auto-fraction) */
   autoEnlargeBrackets: boolean;
-  /** 放大触发词,子串匹配(插件 autoEnlargeBracketsTriggers) */
+  /** The words that trigger enlargement, matched as substrings (the plugin's autoEnlargeBracketsTriggers) */
   autoEnlargeTriggers: string[];
-  /** 矩阵环境里 Shift+Tab 插 ` & `、Enter 插 ` \\` 换行(插件 matrixShortcutsEnabled) */
+  /** In a matrix environment, Shift+Tab inserts ` & ` and Enter inserts a ` \\` line break (the plugin's matrixShortcutsEnabled) */
   matrixShortcuts: boolean;
-  /** 矩阵环境名(插件 matrixShortcutsEnvNames) */
+  /** The matrix environment names (the plugin's matrixShortcutsEnvNames) */
   matrixEnvs: string[];
-  /** Tab 走完片段后跳出括号/公式块(插件 taboutEnabled) */
+  /** After Tab finishes a snippet, leave the bracket/formula block (the plugin's taboutEnabled) */
   tabout: boolean;
-  /** 括号彩色配对(插件 colorPairedBracketsEnabled) */
+  /** Colored bracket pairs (the plugin's colorPairedBracketsEnabled) */
   bracketColors: boolean;
-  /** 光标处括号与配对括号高亮(插件 highlightCursorBracketsEnabled) */
+  /** Highlight the bracket at the caret and its partner (the plugin's highlightCursorBracketsEnabled) */
   highlightCursorBrackets: boolean;
-  /** 光标夹在两个 $ 之间按 Backspace 一次删掉两个(插件 autoDelete$) */
+  /** Delete both `$` at once with Backspace when the caret sits between them (the plugin's autoDelete$) */
   autoDeleteDollar: boolean;
-  /** 行内公式里展开片段后去掉多余空格(插件 removeSnippetWhitespace) */
+  /** Remove the extra whitespace after a snippet expands inside inline math (the plugin's removeSnippetWhitespace) */
   removeSnippetWhitespace: boolean;
-  /** `w`(词边界)片段的分隔符集合(插件 wordDelimiters,逗号串里的 \n 是字面两字符) */
+  /** The delimiter set for `w` (word boundary) snippets (the plugin's wordDelimiters, whose `\n` is a literal two-character sequence) */
   wordDelimiters: string;
 }
 
@@ -63,7 +67,8 @@ export const DEFAULT_LATEX_CONFIG: LatexConfig = {
 
 let current: LatexConfig = { ...DEFAULT_LATEX_CONFIG };
 
-/** 当前设置(编辑器扩展在读键时调用,不要缓存到闭包里)。 */
+/** The current settings (the editor extension calls this while reading keys,
+ *  so do not cache it in a closure). */
 export function latexConfig(): LatexConfig {
   return current;
 }
@@ -72,7 +77,7 @@ export function configureLatexSuite(patch: Partial<LatexConfig>): void {
   current = { ...current, ...patch };
 }
 
-/** 恢复默认(测试与「恢复内置」用)。 */
+/** Restores the defaults (used by the tests and by "restore built-in"). */
 export function resetLatexConfig(): void {
   current = { ...DEFAULT_LATEX_CONFIG };
 }

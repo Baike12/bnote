@@ -7,8 +7,9 @@ import { isImeEnter } from "@/lib/imeEnter";
 import { inputGuards } from "@/lib/inputGuards";
 
 /**
- * 快速待办:一个输入框,Enter 落进今日日记待办区最前方。不打开、不切换
- * 当前文件——捕获动作不该打断手头的事。
+ * Quick todo: one input box, Enter drops the entry at the very top of
+ * today's daily note todo list. It neither opens nor switches the current
+ * file: capturing a todo must not interrupt what the user is doing.
  */
 export function QuickTodoModal() {
   const open = useAppStore((s) => s.modal === "quicktodo");
@@ -22,9 +23,11 @@ export function QuickTodoModal() {
     if (!open) return;
     setText("");
     setBusy(false);
-    // 弹窗的生命周期就是中文输入作用域:打开时切中文并记住打开前的输入源,
-    // 按 Enter 添加、Esc 取消或点遮罩关闭时原样还回去(不按 blur 走——输入框
-    // 随弹窗卸载,blur 的时序不可靠)。
+    // The modal's lifetime is the Chinese input scope: switch to Chinese on
+    // open and remember the input source from before, then restore it as-is
+    // when the modal goes away (Enter to add, Escape to cancel, or a click on
+    // the backdrop to close) - not on blur, because the input unmounts with
+    // the modal and the blur timing is unreliable.
     imeBeginTransientChinese();
     return () => imeEndTransientChinese();
   }, [open]);

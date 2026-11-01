@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { absoluteInProject, formatBytes, isRasterImage } from "./image";
 
 /**
- * 图片判定的门禁:哪些文件按图片渲染、绝对路径怎么拼。
+ * Gate for image classification: which files render as images and how the
+ * absolute path is built.
  *
- * 分类错了会走错通道——位图送进编辑器会被当成空文本(保存就清空文件),
- * 文本图片(svg)送进 `<img>` 就再也改不了源码。
+ * A wrong classification sends the file down the wrong channel — a bitmap
+ * opened in the editor is treated as empty text (saving wipes the file), and a
+ * text image (svg) opened in `<img>` can never be edited as source again.
  */
 
 describe("isRasterImage", () => {

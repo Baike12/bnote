@@ -1,45 +1,66 @@
 /**
- * 微信读书(weread.qq.com)作为学习模式网页内容的专属适配。
+ * The dedicated adaptation of WeRead (weread.qq.com) as web content in study
+ * mode.
  *
- * 它在中栏还是那一条 `kind:"url"` 链路(见 commands/agent.rs 的原生子
- * webview),这里只提供两样东西:
+ * In the content column it is still the same `kind:"url"` path (see the
+ * native sub-webview in commands/agent.rs); this file provides two things:
  *
- *  1. **路由追踪**:微信读书是 SPA,从书架点开一本书只是 pushState,主窗口
- *     感知不到。运行时 hook history,进入 `/web/reader/` 路由后把
- *     `{url, title}` 写进 `document.title` 的 `bnote-weread:` 前缀——和批注
- *     的 `bnote-anno:` 走同一条 title 通道,Rust 按前缀分发成
- *     `study-weread-route` 事件,主窗口据此记录「最近读的书」。书名是异步
- *     渲染的,先以空书名上报(书籍立刻进历史),提取到后再补一次正确书名
- *     (按 url 去重,后来的正确书名覆盖)。
- *  2. **排版适配**(在 weread 实站逐条量过并验证过效果,2026-10):
- *     - 铺满:滚动模式的留白根因是 `.app_content` 的 `max-width:1000px` +
- *       正文 100px 边距;全部放开,正文只留 48px 呼吸边距。
- *     - 目录左停靠常驻:`.readerCatalog` 强制显示、停靠左侧 320px,遮罩
- *       (`wr_mask`,负责「点外部关闭」)隐藏,正文区右移让位——点章节跳转
- *       后目录也不收起,阅读时一直可见。
- *     - 护眼绿:与 PDF 护眼模式同一底色 `#dcebd6`(global.css 的
- *       `--pdf-gutter`),深色文字。全部规则挂在 `body.wr_page_reader`
- *       (阅读页才有的类)下,书架/商城不受影响。
- *     - 正文字色:可见字形是 canvas 按 weread 主题色画的防复制层(盖在
- *       DOM 文本上),CSS 字色只管得到 DOM 层;对 canvas 用
- *       `brightness(0)` 把字形压黑(透明度保留),才是绿底黑字。
- *     - 竖排/横排(双页)两种模式都适配(容器、字色、目录停靠各有差异,
- *       见 CSS 分组注释);weread 自己的悬浮工具栏与翻页条整体隐藏——
- *       目录已常驻,翻页走 PageUp/Down,代价是单双页/字号/主题的站内
- *       切换入口没了。竖排滚动仍是 bnote 集成最好的形态(批注按滚动
- *       语义工作),weread 在窄容器里也会自动选竖排;**不要**试图用
- *       合成事件替用户切模式——weread 的控件过滤非可信事件(实站验证,
- *       click/PointerEvent 全套都不理会)。
+ *  1. **Route tracking**: WeRead is an SPA, so opening a book from the
+ *     shelf is just a pushState that the main window cannot see. The runtime
+ *     hooks history and, once the `/web/reader/` route is entered, writes
+ *     `{url, title}` into `document.title` behind the `bnote-weread:` prefix
+ *     — the same title channel as the annotations' `bnote-anno:`, dispatched
+ *     by Rust into a `study-weread-route` event, and the main window records
+ *     "the books read recently" from it. The title is rendered
+ *     asynchronously, so it is first reported with an empty title (the book
+ *     enters the history right away) and the correct title is reported once
+ *     it is extracted (deduplicated by url, the later correct title wins).
+ *  2. **Layout adaptation** (measured rule by rule on the live WeRead site
+ *     and verified by its effect, 2026-10):
+ *     - Fill the width: the root cause of the margin in the scrolling mode
+ *       is the `max-width:1000px` of `.app_content` plus the 100px margin of
+ *       the body text; all of it is released and the body text keeps only a
+ *       48px breathing margin.
+ *     - The catalog stays docked on the left: `.readerCatalog` is forced to
+ *       display and docked 320px to the left, the mask (`wr_mask`, which
+ *       handles "close on an outside click") is hidden, and the body area
+ *       shifts right to make room — the catalog does not collapse after a
+ *       chapter jump either, it stays visible while reading.
+ *     - Eye-care green: the same base color `#dcebd6` as the PDF eye-care
+ *       mode (the `--pdf-gutter` in global.css), with dark text. All the
+ *       rules hang under `body.wr_page_reader` (the class only the reader
+ *       page has), so the shelf and the store are unaffected.
+ *     - Body text color: the visible glyphs are a copy-protection layer
+ *       drawn on a canvas in the WeRead theme color (it covers the DOM
+ *       text), and the CSS text color only reaches the DOM layer; the canvas
+ *       uses `brightness(0)` to press the glyphs to black (the alpha is
+ *       kept), which is what gives dark text on a green background.
+ *     - Both the vertical and the horizontal (two-page) mode are adapted
+ *       (the container, the text color and the catalog docking each differ,
+ *       see the CSS group comments); WeRead's own floating toolbar and the
+ *       bottom page bar are hidden entirely — the catalog is already
+ *       permanent, page turning goes through PageUp/Down or a click on the
+ *       page. The price is that WeRead's own entries for switching
+ *       single/two-page, the font size and the theme are gone (both modes
+ *       are adapted, see above). The vertical scrolling mode is still the
+ *       shape that integrates best with bnote (annotations work on the
+ *       scrolling semantics), and WeRead also picks the vertical mode by
+ *       itself in a narrow container; **do not** try to switch the mode for
+ *       the user with synthesized events — WeRead's controls filter
+ *       untrusted events (verified on the live site, the whole click /
+ *       PointerEvent set is ignored).
  *
- * 运行时挂在**通用初始化脚本**里(每次导航都会重装,SPA 站内跳书后依然
- * 生效),开头按 hostname 自门控:非微信读书的页面一行都不执行。
+ * The runtime is installed from the **general init script** (it is
+ * reinstalled on every navigation, so it still works after an in-SPA book
+ * switch) and self-gates on the hostname at the top: on a page that is not
+ * WeRead not a single line runs.
  */
 
-/** 微信读书站点与书架入口。 */
+/** The WeRead site and the shelf entry. */
 export const WEREAD_HOST = "weread.qq.com";
 export const WEREAD_HOME_URL = `https://${WEREAD_HOST}/`;
 
-/** title 通道前缀(Rust 侧 agent.rs 按它分发 study-weread-route 事件)。 */
+/** The title channel prefix (Rust's agent.rs dispatches the study-weread-route event by it). */
 export const WEREAD_TITLE_PREFIX = "bnote-weread:";
 
 const READER_PATH = "/web/reader/";
@@ -53,7 +74,7 @@ export function isWereadUrl(url: string): boolean {
   }
 }
 
-/** 只有真正打开书的阅读器路由才记历史;书架/商城/详情页不算。 */
+/** Only the reader route with a book actually opened is recorded in the history; the shelf / store / detail page do not count. */
 export function isWereadReaderUrl(url: string): boolean {
   if (!isWereadUrl(url)) return false;
   try {
@@ -63,7 +84,7 @@ export function isWereadReaderUrl(url: string): boolean {
   }
 }
 
-/** 书名还没提取到时的兜底显示(去掉路由前缀取书哈希的一段)。 */
+/** The fallback display when the title has not been extracted yet (the route prefix is dropped and a slice of the book hash is taken). */
 export function wereadFallbackTitle(url: string): string {
   try {
     const tail = new URL(url).pathname.slice(READER_PATH.length).trim();
@@ -79,8 +100,9 @@ export interface WereadRoutePayload {
 }
 
 /**
- * 校验 study-weread-route 事件的负载。Rust 只做了「前缀匹配 + JSON 解析」,
- * 字段形状由这里把关:坏数据一律 null,绝不把垃圾写进历史。
+ * Validate the payload of the study-weread-route event. Rust only does
+ * "prefix match + JSON parse"; the shape of the fields is checked here: bad
+ * data always yields null, and junk never reaches the history.
  */
 export function normalizeWereadRoute(value: unknown): WereadRoutePayload | null {
   if (typeof value !== "object" || value === null) return null;
@@ -91,16 +113,19 @@ export function normalizeWereadRoute(value: unknown): WereadRoutePayload | null 
 }
 
 // ---------------------------------------------------------------------------
-// 注入页面的运行时
+// The runtime injected into the page
 // ---------------------------------------------------------------------------
 
 /**
- * 自包含:整个函数会被 `toString()` 序列化进页面(见 buildWereadScript),
- * 不能引用任何模块级变量,常量经 args 传入。微信读书之外的网站在第一行
- * 就返回,零开销。
+ * Self-contained: the whole function is serialized into the page with
+ * `toString()` (see buildWereadScript), so it must not reference any
+ * module-level variable; the constants come in through args. A site other
+ * than WeRead returns on the very first line, at zero cost.
  *
- * 选择器与色值都是在 weread 实站上量出来的(见文件头);weread 改版时的
- * 症状:留白回来 / 目录回右侧 / 主题回它自己的配色——按类名核对即可。
+ * The selectors and the color values were all measured on the live WeRead
+ * site (see the file header); the symptoms of a WeRead redesign are: the
+ * margin comes back / the catalog returns to the right / the theme returns
+ * to its own colors — checking the class names is enough.
  */
 function wereadRuntime(args: {
   marker: string;
@@ -114,23 +139,23 @@ function wereadRuntime(args: {
   const isReader = () => location.pathname.startsWith(args.readerPath);
   const routeUrl = () => location.origin + location.pathname;
 
-  // ---- 排版适配 CSS(实站验证过;依据与分组见文件头)----
+  // ---- Layout adaptation CSS (verified on the live site; the rationale and the grouping are in the file header) ----
   const ensureStyle = () => {
     if (document.getElementById(args.styleId)) return;
     const style = document.createElement("style");
     style.id = args.styleId;
     style.textContent = [
-      // 1. 宽度铺满:滚动模式的留白根因是 .app_content 的 max-width:1000px,
-      //    横排模式是正文的 max-width:2096px;边距从 100px 收到 48px。
+      // 1. Fill the width: the root cause of the margin in the scrolling mode is the max-width:1000px of .app_content,
+      //    in the horizontal mode it is the max-width:2096px of the body text; the margin shrinks from 100px to 48px.
       "body.wr_page_reader .app_content { max-width: none !important; }",
       "body.wr_page_reader .readerChapterContent { max-width: none !important; }",
       "body.wr_page_reader .readerChapterContent { margin-left: 48px !important; margin-right: 48px !important; }",
-      // 2. 目录左停靠常驻:面板原本 absolute right:0、靠 wr_mask 点外部关闭。
-      //    强制显示 + 停左 + 隐遮罩 + 正文右移;点章节跳转后照样打开。
+      // 2. The catalog stays docked on the left: the panel is originally absolute right:0 and closes on an outside click through wr_mask.
+      //    Force it to display + dock left + hide the mask + shift the body right; it still opens after a chapter jump.
       "body.wr_page_reader .readerCatalog { display: block !important; left: 0 !important; right: auto !important; top: 72px !important; width: 320px !important; margin-left: 0 !important; transform: none !important; }",
       "body.wr_page_reader .wr_mask:has(~ .readerCatalog) { display: none !important; }",
       "body.wr_page_reader .readerContent, body.wr_page_reader .wr_horizontalReader_app_content { padding-left: 320px !important; }",
-      // 3. 护眼绿 #dcebd6 = PDF 护眼模式的 --pdf-gutter,深色文字。
+      // 3. Eye-care green #dcebd6 = the --pdf-gutter of the PDF eye-care mode, with dark text.
       "body.wr_page_reader { background: #dcebd6 !important; color: #33413a !important; }",
       "body.wr_page_reader .app_content, body.wr_page_reader .wr_horizontalReader_app_content { background: #dcebd6 !important; }",
       "body.wr_page_reader .readerTopBar { background: #dcebd6 !important; }",
@@ -141,33 +166,32 @@ function wereadRuntime(args: {
       "body.wr_page_reader .readerControls_item { background: #dcebd6 !important; color: #33413a !important; }",
       "body.wr_page_reader .readerFooter { background: #dcebd6 !important; }",
       "body.wr_page_reader .readerFooter_button { background: #cfe3c8 !important; color: #33413a !important; }",
-      // 4. 可见的正文字形是 canvas 按 weread 主题色画的(防复制,盖在 DOM
-      //    文本之上,z-index:2)——CSS 字色只改得到 DOM 层,所以绿底上还是
-      //    主题的浅色字。canvas 底色透明、只画字形:brightness(0) 把不透明
-      //    像素压成黑色、透明度保留,即黑字绿底,与 PDF 护眼一致。
+      // 4. The visible body glyphs are drawn on a canvas in the WeRead theme color (copy protection, on top of the DOM
+      //    text, z-index:2) — the CSS text color only reaches the DOM layer, so on the green background the text would still be the
+      //    theme's light color. The canvas has a transparent background and only draws the glyphs: brightness(0) presses the
+      //    opaque pixels to black while keeping the alpha, that is dark text on a green background, same as the PDF eye-care mode.
       "body.wr_page_reader .wr_canvasContainer canvas { filter: brightness(0) !important; }",
-      // 5. 横排(双页)模式:页面容器(.readerChapterContent/_container)自身
-      //    带深色底,一并涂绿,否则切到双页后正文区还是黑的。
+      // 5. Horizontal (two-page) mode: the page container (.readerChapterContent/_container) carries a dark background of
+      //    its own, so it is painted green as well, otherwise the body area stays black after switching to two pages.
       "body.wr_page_reader .readerChapterContent, body.wr_page_reader .readerChapterContent_container { background: #dcebd6 !important; }",
-      // 6. 字色通配到所有后代:横排下 weread 在内层页面类(如
-      //    wr_flyleaf_page_*)上直接设浅色——祖先上的 !important 管不到
-      //    直接规则;目录能变深就是靠同款通配。svg/canvas 排除(插图是
-      //    <img> 不吃 color,svg 图标有自己的 fill)。
+      // 6. The text color is wildcarded to all descendants: in the horizontal mode WeRead sets a light color directly on the inner page
+      //    classes (such as wr_flyleaf_page_*) — an !important on the ancestor does not beat a direct rule; the catalog turns dark
+      //    through the same wildcard. svg/canvas are excluded (the illustrations are <img> and ignore color, the svg icons have their own fill).
       "body.wr_page_reader .readerChapterContent, body.wr_page_reader .readerChapterContent *:not(svg):not(canvas) { color: #2f3a33 !important; }",
-      // 7. 目录 fixed 停靠视口左缘:横排下它的定位祖先是 position:relative
-      //    的正文容器,absolute + left:0 只能停到正文左缘(缩在中间)。
+      // 7. The catalog is fixed and docked at the left edge of the viewport: in the horizontal mode its positioning ancestor is the
+      //    position:relative body container, so absolute + left:0 can only reach the left edge of the body text (it shrinks to the middle).
       "body.wr_page_reader .readerCatalog { position: fixed !important; bottom: 0 !important; }",
-      // 8. 去掉侧边切换按钮:右侧悬浮工具栏(目录/笔记/单双页/字号/主题)
-      //    与底部翻页条。目录已常驻左栏,翻页走 PageUp/Down 或点击页面。
-      //    代价:weread 内部的单双页/字号/主题切换入口没了(两类模式都已
-      //    适配,见上)。
+      // 8. Remove the side switch buttons: the floating toolbar on the right (catalog / notes / single-two-page / font size / theme)
+      //    and the bottom page bar. The catalog is already permanent on the left, page turning goes through PageUp/Down or a click on the page.
+      //    The price: WeRead's own entries for switching single/two-page, the font size and the theme are gone (both modes are
+      //    adapted, see above).
       "body.wr_page_reader .readerControls { display: none !important; }",
       "body.wr_page_reader .renderTarget_pager { display: none !important; }",
     ].join("\n");
     (document.head || document.documentElement).appendChild(style);
   };
 
-  // ---- 路由追踪:reader 路由 → title 通道 ----
+  // ---- Route tracking: reader route -> title channel ----
   let reportedUrl = "";
   let reportedTitle = "";
   let titleRetries = 0;
@@ -181,10 +205,9 @@ function wereadRuntime(args: {
     document.title = `${args.marker}${JSON.stringify({ url, title })}`;
   };
 
-  // 书名在顶栏,异步渲染:每 500ms 看一眼,拿到就补报一次并停止。
-  // DOM 选择器是 weread 实站的下划线风格类名;兜底解析 weread 自己设置的
-  // document.title(「书名 - 作者 - 微信读书」)。注意别把我们自己写入的
-  // marker 消息当成书名。
+  // The title is in the top bar and rendered asynchronously: look at it every 500ms, and once it is there report it once more and stop.
+  // The DOM selectors are the underscore-style class names of the live WeRead site; the fallback parses the document.title that WeRead
+  // sets itself ("title - author - WeRead"). Do not mistake the marker message we write ourselves for a title.
   const TITLE_SELECTORS = [
     ".readerTopBar_title_link",
     ".readerTopBar_title",
@@ -227,7 +250,7 @@ function wereadRuntime(args: {
     scheduleTitleRetry();
   };
 
-  // SPA 路由:hook pushState/replaceState,popstate 走事件。
+  // SPA routing: hook pushState/replaceState, popstate goes through the event.
   const wrapHistory = (key: "pushState" | "replaceState") => {
     const original = history[key].bind(history);
     history[key] = ((
@@ -243,14 +266,14 @@ function wereadRuntime(args: {
   wrapHistory("pushState");
   wrapHistory("replaceState");
 
-  // document_start 时 head 可能还没就绪(样式先挂到 html 上),补一次。
+  // At document_start the head may not be ready yet (the style is attached to the html element first), so add it once more.
   document.addEventListener("DOMContentLoaded", ensureStyle);
   window.addEventListener("popstate", onRoute);
   ensureStyle();
   onRoute();
 }
 
-/** 注入原生 webview 的微信读书运行时(自包含,常量内联)。 */
+/** The WeRead runtime injected into the native webview (self-contained, the constants are inlined). */
 export function buildWereadScript(): string {
   return `(${wereadRuntime.toString()})(${JSON.stringify({
     marker: WEREAD_TITLE_PREFIX,
@@ -259,5 +282,5 @@ export function buildWereadScript(): string {
   })});`;
 }
 
-/** 只算一次:主窗口把它拼进 previewInitScript,交给 Rust 注册成初始化脚本。 */
+/** Computed only once: the main window splices it into previewInitScript and hands it to Rust to register as an init script. */
 export const WEREAD_SCRIPT = buildWereadScript();

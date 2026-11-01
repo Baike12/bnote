@@ -1,55 +1,59 @@
 /**
- * 学习助手输入框的图片附件(参考 cc 的 attachments/imageResizer 管道)。
+ * Image attachments for the study assistant input box (modeled on cc's
+ * attachments/imageResizer pipeline).
  *
- * 入口两种:粘贴截图(textarea 的 paste 事件)与文件选择。统一步骤:
- * Blob → dataURL → 解出 mediaType + base64 → 超限(像素 > 2000 或原始字节
- * > 3.75MB,cc 同值)时用 canvas 等比缩到限内并转 JPEG → 输出
- * `{mediaType, data}`。`data` 是不带 `data:` 前缀的纯 base64,与后端
- * `Content::Image`(Anthropic base64 source / OpenAI data URL)对齐。
+ * Two entry points: pasted screenshots (the textarea's paste event) and file
+ * pick. One shared path: Blob -> dataURL -> extract mediaType + base64 ->
+ * when over the limit (pixels > 2000 or raw bytes > 3.75MB, the same values
+ * as cc) scale proportionally on a canvas and convert to JPEG -> output
+ * `{mediaType, data}`. `data` is plain base64 without the `data:` prefix,
+ * matching the backend's `Content::Image` (Anthropic base64 source / OpenAI
+ * data URL).
  *
- * 纯函数(parseDataUrl / base64Bytes / scaledSize / needsResize)
- * 与 DOM 管道(fileToAgentImage)分开,前者进 node 单测。
+ * The pure functions (parseDataUrl / base64Bytes / scaledSize / needsResize)
+ * are kept apart from the DOM pipeline (fileToAgentImage); the former go into
+ * the node unit tests.
  */
 
 export interface AgentImage {
-  /** 如 "image/png"。 */
+  /** e.g. "image/png". */
   mediaType: string;
-  /** 纯 base64,无 data: 前缀。 */
+  /** Plain base64, no `data:` prefix. */
   data: string;
 }
 
-/** API 对图片像素的硬上限(cc constants/apiLimits 同值)。 */
+/** Hard pixel limit the API imposes on an image (same value as cc constants/apiLimits). */
 export const MAX_IMAGE_DIM = 2000;
-/** 原始字节预算:base64 后 ≈5MB,是 Anthropic 的单图硬限。 */
+/** Raw byte budget: ~5MB once base64-encoded, which is Anthropic's hard per-image limit. */
 export const MAX_IMAGE_RAW_BYTES = 3.75 * 1024 * 1024;
-/** base64 后的绝对上限,压缩后仍超出就拒绝(不发给必被 API 弹回的请求)。 */
+/** Absolute limit after base64 encoding; reject anything still over it (never send a request the API will bounce). */
 export const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024;
-/** 一条消息最多几张图:防误触连续粘贴把上下文炸掉。 */
+/** Max images per message: guards against accidental repeated pastes blowing up the context. */
 export const MAX_IMAGES_PER_MESSAGE = 4;
 
 const DATA_URL_RE = /^data:([\w.+-]+\/[\w.+-]+);base64,([A-Za-z0-9+/=\s]+)$/;
 
-/** dataURL → {mediaType, data};不是 base64 dataURL 返回 null。 */
+/** dataURL -> {mediaType, data}; null when the URL is not a base64 data URL. */
 export function parseDataUrl(dataUrl: string): AgentImage | null {
   const m = DATA_URL_RE.exec(dataUrl.trim());
   if (!m) return null;
   return { mediaType: m[1], data: m[2].replace(/\s+/g, "") };
 }
 
-/** base64 文本对应的原始字节数(算上去掉 padding)。 */
+/** Raw byte size of a base64 payload (accounting for the stripped padding). */
 export function base64Bytes(data: string): number {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor((data.length * 3) / 4) - padding);
 }
 
-/** 等比缩到 max×max 以内(只缩不放)。 */
+/** Scale proportionally to fit within max x max (only down, never up). */
 export function scaledSize(w: number, h: number, max: number): [number, number] {
   if (w <= max && h <= max) return [w, h];
   const scale = Math.min(max / w, max / h);
   return [Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale))];
 }
 
-/** 是否超出 API 限制(像素或字节),需要缩放重编码。 */
+/** Whether the image breaks an API limit (pixels or bytes) and needs scaling plus re-encoding. */
 export function needsResize(w: number, h: number, rawBytes: number): boolean {
   return w > MAX_IMAGE_DIM || h > MAX_IMAGE_DIM || rawBytes > MAX_IMAGE_RAW_BYTES;
 }
@@ -73,8 +77,9 @@ function decodeImage(dataUrl: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Blob(粘贴的截图 / 选择的文件)→ AgentImage。超限时 canvas 重编码为
- * JPEG;重编码后仍超 base64 上限则抛错(调用方 toast,不发请求)。
+ * Blob (pasted screenshot / picked file) -> AgentImage. Over the limit it is
+ * re-encoded as JPEG on a canvas; still over the base64 limit afterwards it
+ * throws (the caller toasts and sends no request).
  */
 export async function fileToAgentImage(file: Blob, fallbackType?: string): Promise<AgentImage> {
   const dataUrl = await readAsDataUrl(file);
@@ -102,6 +107,6 @@ export async function fileToAgentImage(file: Blob, fallbackType?: string): Promi
   if (base64Bytes(data) > MAX_IMAGE_BASE64_BYTES) {
     throw new Error("图片过大且无法压缩到 5MB 以内,请缩小后再试");
   }
-  // 重编码成 JPEG 后 mediaType 必须跟着换,否则后端按 PNG 解会失败。
+  // After re-encoding to JPEG the mediaType must follow, otherwise the backend decodes it as PNG and fails.
   return { mediaType: resized ? "image/jpeg" : mediaType, data };
 }

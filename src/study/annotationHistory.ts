@@ -1,9 +1,11 @@
 /**
- * 批注操作的撤销/重做栈。
+ * Undo/redo stack for annotation operations.
  *
- * 存的是**整份批注数组的快照**(数组与批注对象都不可变修改),所以撤销
- * 一次删除能原样恢复矩形与文字。上限防止长时间编辑把内存越攒越大。
- * 文字输入是否合并成一步由调用方决定(见 PdfViewer 的 textEditRef)。
+ * It stores **snapshots of the whole annotation array** (both the array and
+ * the annotation objects are modified immutably), so undoing a delete restores
+ * the rectangles and texts exactly. The limit keeps a long editing session
+ * from growing memory without bound. Whether text input collapses into a
+ * single step is the caller's decision (see PdfViewer's textEditRef).
  */
 export interface AnnotationHistory<T> {
   undo: T[];
@@ -15,7 +17,7 @@ export function createAnnotationHistory<T>(limit = 100): AnnotationHistory<T> {
   return { undo: [], redo: [], limit };
 }
 
-/** 记录改动前的状态;新改动让重做栈失效。 */
+/** Record the state before a change; a new change invalidates the redo stack. */
 export function recordAnnotationHistory<T>(
   history: AnnotationHistory<T>,
   before: T,
@@ -25,7 +27,7 @@ export function recordAnnotationHistory<T>(
   history.redo.length = 0;
 }
 
-/** 返回上一份状态(当前状态进重做栈);没有可撤销的返回 null。 */
+/** Return the previous state (the current state goes onto the redo stack); null when there is nothing to undo. */
 export function undoAnnotationHistory<T>(
   history: AnnotationHistory<T>,
   current: T,
@@ -36,7 +38,7 @@ export function undoAnnotationHistory<T>(
   return previous;
 }
 
-/** 返回下一份状态(当前状态回撤销栈);没有可重做的返回 null。 */
+/** Return the next state (the current state goes back onto the undo stack); null when there is nothing to redo. */
 export function redoAnnotationHistory<T>(
   history: AnnotationHistory<T>,
   current: T,

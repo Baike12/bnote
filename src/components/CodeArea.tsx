@@ -12,17 +12,21 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { findMatches, type TextMatch } from "./codeSearch";
 
 /**
- * 设置里的代码框(公式片段):左侧行号 + 常驻搜索框。
+ * The code box in the settings (formula snippets): line numbers on the left
+ * plus a permanent search field.
  *
- * 用 CodeMirror 而不是 textarea,是因为「全部命中高亮、当前命中单独着色、
- * 行号与折行后的行对齐」这三件事 textarea 都做不到(只能用透明镜像层硬凑,
- * 字体度量一漂就错位)。这里不装笔记编辑器的任何扩展——没有 vim、没有
- * live preview、没有 LaTeX 片段,只有行号、历史、搜索与折行。
+ * CodeMirror instead of a textarea, because a textarea cannot do the three
+ * things we need (highlight every match, colour the current match
+ * separately, and keep the line numbers aligned with the wrapped lines); it
+ * would take a transparent mirror layer to fake it, and that misaligns as
+ * soon as the font metrics drift. None of the note editor's extensions are
+ * installed here: no vim, no live preview, no LaTeX snippets, only line
+ * numbers, history, search and line wrapping.
  */
 
 interface SearchSpec {
   query: string;
-  /** 当前命中的起点(null = 没有当前命中)。 */
+  /** Start of the current match (null = no current match). */
   activeFrom: number | null;
   decos: DecorationSet;
 }
@@ -33,8 +37,10 @@ const matchMark = Decoration.mark({ class: "cm-searchMatch" });
 const activeMatchMark = Decoration.mark({ class: "cm-searchMatch cm-searchMatch-selected" });
 
 /**
- * 命中装饰的唯一写入者:只在「查询变了」或「文档变了」时重建。文档很小
- * (设置里的一个配置文件),全量扫一遍比映射旧装饰后校正更简单也更准。
+ * The single writer of the match decorations: they are rebuilt only when the
+ * "query changed" or the "document changed". The document is tiny (one config
+ * file in the settings), so scanning it fully is simpler and more accurate
+ * than mapping the old decorations and correcting them.
  */
 const searchField = StateField.define<SearchSpec>({
   create: () => ({ query: "", activeFrom: null, decos: Decoration.none }),
@@ -77,7 +83,7 @@ export function CodeArea({
   const queryRef = useRef(query);
   queryRef.current = query;
   const [active, setActive] = useState(-1);
-  // 计数只服务显示;真正导航以 view 里的文档为准(见 runSearch/step)。
+  // The count only serves the display; the real navigation follows the document in the view (see runSearch/step).
   const matches = useMemo(() => findMatches(value, query), [value, query]);
 
   useEffect(() => {
@@ -112,8 +118,10 @@ export function CodeArea({
           EditorView.updateListener.of((u) => {
             if (!u.docChanged) return;
             onChangeRef.current(u.state.doc.toString());
-            // 文档一改,命中偏移就不可信了(装饰侧也会清掉当前命中):
-            // 计数退回「共 N 处」,下一次 Enter 从光标处重新落位。
+            // Once the document changes the match offsets are no longer
+            // trustworthy (the decoration side clears the current match
+            // too): the count falls back to "N matches", and the next Enter
+            // lands on a match again from the caret.
             if (queryRef.current) setActive(-1);
           }),
         ],
@@ -126,8 +134,10 @@ export function CodeArea({
     };
   }, []);
 
-  // 外部替换(异步读盘、恢复内置片段)。编辑本身由 view 写,这里只在两者
-  // 真的不一致时才整篇替换,避免每次渲染都打断撤销栈。
+  // External replacement (async read, restoring the built-in snippets).
+  // The editing itself is done by the view, so the whole document is
+  // replaced here only when the two really differ, so that every render
+  // does not break the undo stack.
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -172,7 +182,7 @@ export function CodeArea({
     if (active >= 0 && active < list.length) {
       next = (active + dir + list.length) % list.length;
     } else {
-      // 没有当前命中(刚改过文档):从编辑器光标处接着找,找不到就环绕。
+      // No current match (the document was just changed): continue from the caret in the editor and wrap around when there is none.
       const pos = view.state.selection.main.from;
       if (dir === 1) {
         next = list.findIndex((m) => m.from >= pos);
@@ -190,8 +200,9 @@ export function CodeArea({
     reveal(list, next, query);
   };
 
-  // 计数条:有当前命中时是「第几处/共几处」;刚改过文档(当前命中已失效)时
-  // 只报总数,下一次 Enter 从光标处重新落位。
+  // Count bar: with a current match it reads "which one of how many"; right
+  // after the document changed (the current match is invalid) it only reports
+  // the total, and the next Enter lands on a match again from the caret.
   const total = matches.length;
   const count = query
     ? total === 0

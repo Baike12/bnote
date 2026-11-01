@@ -40,7 +40,7 @@ describe("blocksOf", () => {
 describe("blockKey", () => {
   it("剥掉每行尾随空白、首尾空行;非整体的行首缩进保留", () => {
     expect(blockKey("  a  \nb\t\n")).toBe("  a\nb");
-    expect(blockKey("a\nb")).toBe(blockKey("  a\n  b")); // 真整体缩进归一
+    expect(blockKey("a\nb")).toBe(blockKey("  a\n  b")); // a genuine whole block indent is normalized
   });
 
   it("行中与行首缩进保留——部分缩进变化算内容变化", () => {

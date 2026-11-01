@@ -12,9 +12,11 @@ import {
 } from "./transcript";
 
 /**
- * 会话记录门禁:行格式、容错解析、以及「记录 → 模型历史」的还原契约。
- * 恢复会话时后端拿到的历史必须与当初一致——用户消息在前、助手回复一次
- * 一轮、出错的一轮不进历史。
+ * Gate for the session transcript: the line format, the fault-tolerant
+ * parsing, and the "record -> model history" rebuild contract.
+ * The history the backend gets when restoring a session must match what it
+ * was originally — user messages first, one assistant reply per turn, and a
+ * turn that errored never enters the history.
  */
 describe("transcript 行格式", () => {
   it("序列化 = 一行一条 JSON,解析可往返", () => {
@@ -276,7 +278,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
       basedOn: "父会话的提问",
       forkAt: 4,
     });
-    // 落盘再读回:父子关系是重启恢复的唯一来源,必须原样往返。
+    // Write to disk and read back: the parent/child relation is the only source for the restart restore and must round-trip unchanged.
     const raw = serializeTranscript([meta, { type: "user", at: 6, text: "子会话的问题" }]);
     expect(sessionMetaFromRaw(raw)).toEqual(meta);
   });
@@ -293,7 +295,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
       '{"type":"meta","at":1,"title":"特征值","titleSource":"llm"}\n' +
       '{"type":"user","at":2,"text":"q"}\n';
     expect(sessionMetaFromRaw(raw)?.titleSource).toBe("llm");
-    // 脏值(手改/未来版本)按「未生成」处理,不当成 llm。
+    // A dirty value (hand edit / a future version) is treated as "not generated" and never as llm.
     const dirty = '{"type":"meta","at":1,"title":"x","titleSource":"model-v2"}\n';
     expect(sessionMetaFromRaw(dirty)?.titleSource).toBeUndefined();
   });

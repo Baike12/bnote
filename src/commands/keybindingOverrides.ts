@@ -16,15 +16,19 @@ import {
 } from "./keys";
 
 /**
- * 快捷键覆盖的唯一写入者。
+ * The single writer of keybinding overrides.
  *
- * 配置跟着仓库走:`<vault>/.bnote/keybindings.json`(与 vimrc / snippets.js
- * 同一个目录),写入走 `write_vault_file` 白名单命令。没有打开仓库时退回旧版
- * 的 `<app_data>/keybindings.json`,保证欢迎页改键也不会丢。
+ * The config follows the vault: `<vault>/.bnote/keybindings.json` (the same
+ * folder as vimrc / snippets.js), written through the whitelisted
+ * `write_vault_file` command. Without an open vault it falls back to the
+ * legacy `<app_data>/keybindings.json`, so rebinding on the welcome screen
+ * is not lost either.
  *
- * 读盘一次性迁移:仓库里还没有 keybindings.json、但应用数据里存着旧版扁平表
- * (命令 → 键位)时,按命令的默认归属分区写进仓库,再把旧文件清空——从此只有
- * 一个来源,不会出现两份配置互相覆盖。
+ * One-time migration on read: when the vault has no keybindings.json yet but
+ * the app data still holds the legacy flat table (command → binding), the
+ * table is split by each command's default region and written into the
+ * vault, after which the legacy file is cleared — from then on there is one
+ * source only and two configs can no longer overwrite each other.
  */
 
 let overrides: OverrideMap = {};
@@ -45,7 +49,7 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
-/** useSyncExternalStore 的快照:每次覆盖表变化都递增。 */
+/** The useSyncExternalStore snapshot: incremented on every override table change. */
 export function getKeymapRevision(): number {
   return revision;
 }
@@ -84,14 +88,16 @@ function parseFile(text: string | null): OverrideMap | null {
 }
 
 /**
- * 写盘串行:连点解绑/改键时两次 IPC 同时发出,完成顺序不保证——排队后
- * 最后一次写完的一定是最后一份内存快照(单一写入者)。
+ * Serialized writes: clicking unbind/rebind quickly fires two IPCs at once and
+ * their completion order is not guaranteed — with a queue, the last write to
+ * finish is guaranteed to carry the last in-memory snapshot (single writer).
  */
 let writeChain: Promise<void> = Promise.resolve();
 
 function persist(): Promise<void> {
   const path = vaultRoot;
-  // 快照在入队时取:排在前面的写盘不会把后面的新改动提前写出去。
+  // The snapshot is taken when the write is queued: a write that is already
+  // ahead in the queue cannot push out a newer change prematurely.
   const text = path ? serializeOverrides(overrides) : null;
   const flat = path ? null : flattenOverrides(overrides);
   writeChain = writeChain.then(async () => {
@@ -109,8 +115,10 @@ function persist(): Promise<void> {
 }
 
 /**
- * 读取当前仓库的快捷键配置。传 null = 还没开仓库,只读旧版应用配置。
- * 重复调用是安全的(切仓、watcher 触发都会走这里)。
+ * Read the keybinding config of the current vault. Passing null means no
+ * vault is open yet, so only the legacy app config is read.
+ * Calling it repeatedly is safe (switching vaults and watcher triggers both
+ * come through here).
  */
 export async function loadKeymap(vaultPath: string | null): Promise<void> {
   vaultRoot = vaultPath;
@@ -131,7 +139,8 @@ export async function loadKeymap(vaultPath: string | null): Promise<void> {
     return;
   }
 
-  // 仓库里还没有配置文件:把旧版应用配置迁进来(一次性)。
+  // The vault has no config file yet: migrate the legacy app config in
+  // (one-time).
   const legacy = (await api.loadKeybindings().catch(() => null)) as Record<
     string,
     BindingValue
@@ -141,14 +150,15 @@ export async function loadKeymap(vaultPath: string | null): Promise<void> {
   if (Object.keys(flattenOverrides(migrated)).length === 0) return;
   try {
     await api.writeVaultFile("keybindings.json", serializeOverrides(migrated));
-    // 迁移成功才清旧表:万一写仓库失败,下次启动还能再迁一次。
+    // The legacy table is cleared only after a successful migration: if the
+    // vault write fails, the next startup can migrate again.
     await api.saveKeybindings({});
   } catch (e) {
     toast(`迁移快捷键配置失败: ${String(e)}`);
   }
 }
 
-/** 重新读当前仓库的配置(外部编辑 / 切仓后)。 */
+/** Re-read the config of the current vault (external edit / after switching vaults). */
 export async function reloadKeymap(): Promise<void> {
   await loadKeymap(vaultRoot);
 }
@@ -159,7 +169,8 @@ export async function setOverride(
   region: KeyRegion = regionOfCommand(id),
 ): Promise<void> {
   const next = cloneOverrides(overrides);
-  // 只动这一个区域:同一条命令在别的区域的绑定保持不变。
+  // Only this one region is touched: the same command's binding in the other
+  // regions stays as it is.
   const isDefault = bindingEquals(defaultBindingsFor(id, region), value);
   if (isDefault) {
     if (next[region]) delete next[region][id];
@@ -170,7 +181,7 @@ export async function setOverride(
   await persist();
 }
 
-/** 删掉一个区域的覆盖(回到内置默认)。不传区域 = 所有区域。 */
+/** Drop the override of one region (back to the built-in default). Omitting the region means all regions. */
 export async function clearOverride(id: string, region?: KeyRegion): Promise<void> {
   const next = cloneOverrides(overrides);
   for (const r of region ? [region] : KEY_REGION_IDS) {
@@ -185,7 +196,7 @@ export async function resetAllOverrides(): Promise<void> {
   await persist();
 }
 
-/** 读当前覆盖表(设置页的「已改」标记、测试用)。 */
+/** Read the current override table (the "changed" marker in settings, and tests). */
 export function getOverrides(): OverrideMap {
   return overrides;
 }

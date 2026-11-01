@@ -11,11 +11,13 @@ import {
 import type { CodeEntry, GitFileState } from "./types";
 
 /**
- * 文件树的门禁。
+ * The gate of the file tree.
  *
- * 树是「拍平条目 → 目录结构」这一步的唯一实现:后端只给列表,折叠、排序、
- * 过滤都在这里。目录节点缺失时要能补出来(否则文件无处安放),排序要目录
- * 在前且按自然序(文件10 排在文件9 后面)。
+ * The tree is the only implementation of the "flat entries → directory
+ * structure" step: the backend only hands over a list, and the folding, the
+ * sorting and the filtering happen here. A missing directory node has to be
+ * synthesized (otherwise a file has nowhere to go), and the sorting has to
+ * put directories first and use the natural order (file10 after file9).
  */
 
 function entry(path: string, isDir = false, size = 0): CodeEntry {
@@ -38,7 +40,8 @@ describe("buildTree", () => {
   });
 
   it("中间目录缺失时按路径补出来", () => {
-    // 后端可能只给文件(空目录不进列表):a/b/c.rs 要能落到树上。
+    // The backend may only give files (empty directories are not in the
+    // list): a/b/c.rs still has to land on the tree.
     const roots = buildTree([entry("a/b/c.rs")]);
     const a = roots[0];
     expect(a.name).toBe("a");
@@ -47,9 +50,11 @@ describe("buildTree", () => {
   });
 
   it("目录条目与按路径补出的中间目录是同一个节点", () => {
-    // 后端既会给目录条目(.github),又会给目录里的文件;按路径补出来的
-    // 中间目录必须落进同一个节点,否则同一个目录在树上出现两次
-    // (一次是空的目录条目,一次是带文件的补出来的目录)。
+    // The backend gives both directory entries (.github) and the files inside
+    // them; the intermediate directories synthesized from the path have to
+    // land in the same node, otherwise the same directory appears twice on
+    // the tree (once as the empty directory entry, once as the synthesized
+    // directory that carries the files).
     const roots = buildTree([
       entry(".github", true),
       entry(".github/ISSUE_TEMPLATE", true),
@@ -181,14 +186,15 @@ describe("searchFilesByName(快速打开)", () => {
   ];
 
   it("完全相等排最前,包含其次,子序列最后", () => {
-    // my-app.tsx 里 "app.ts" 是**连续**子串(rank 2);app-router.ts 只是
-    // 子序列(rank 3)。
+    // In my-app.tsx "app.ts" is a **contiguous** substring (rank 2);
+    // app-router.ts is only a subsequence (rank 3).
     const hits = searchFilesByName(entries, "app.ts");
     expect(hits.map((h) => h.path)).toEqual(["src/app.ts", "src/my-app.tsx", "src/app-router.ts"]);
   });
 
   it("只按文件名匹配,目录不参与", () => {
-    // 目录 "src" 自己不是候选;没有哪个**文件名**含 src。
+    // The directory "src" is not a candidate itself; no **file name** contains
+    // src.
     expect(searchFilesByName(entries, "src")).toEqual([]);
     expect(searchFilesByName(entries, "helper").map((h) => h.path)).toEqual(["src/helper.ts"]);
   });

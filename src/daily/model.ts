@@ -3,27 +3,29 @@ import { fenceStateScan } from "@/editor/context";
 import { DONE_STAMP_RE } from "@/editor/ops";
 
 /**
- * 跨文件待办同步的纯文本模型：列表行解析、待办块提取、日记文件头部待办区
- * 的解析与增删改。全部函数只吃行文本 / CM Text,不做任何 IO——engine 负责
- * 编排,这里负责「文档长什么样、改动落在哪」的唯一事实,所有规则都在
- * model.test.ts 里锁死。
+ * Pure text model for cross-file todo sync: list line parsing, todo block
+ * extraction, and parsing plus editing of the todo region at the head of a daily
+ * note. Every function takes only line text or CM Text and does no IO - engine.ts
+ * drives the orchestration, this module owns the single source of truth for what
+ * the document looks like and where a change lands. All rules are locked down in
+ * model.test.ts.
  */
 
-// ---------------------------------------------------------------- 行模型
+// ---------------------------------------------------------------- line model
 
 const LIST_LINE_RE = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)(.*)$/;
 const BOX_RE = /^\[([ xX])\][ \t]?/;
 
 export interface ListLine {
-  /** 前导空白原文(tab/空格保真,与 enterContinueListItem 同一约定) */
+  /** Leading whitespace verbatim (tabs/spaces preserved, same convention as enterContinueListItem) */
   indent: string;
   /** "-" / "*" / "+" / "1." / "2)" */
   marker: string;
-  /** marker 与内容之间的空白 */
+  /** Whitespace between the marker and the content */
   gap: string;
-  /** checkbox 状态;null = 普通列表项(没有 checkbox) */
+  /** Checkbox state; null = plain list item (no checkbox) */
   box: " " | "x" | "X" | null;
-  /** checkbox 之后(无 checkbox 时为 marker 之后)的行内容 */
+  /** Line content after the checkbox (after the marker when there is no checkbox) */
   text: string;
 }
 
@@ -40,28 +42,30 @@ export function parseListLine(text: string): ListLine | null {
   return { indent: m[1], marker: m[2], gap: m[3], box, text: content };
 }
 
-/** 是否为待办行(带 checkbox 的列表项)。 */
+/** Whether the line is a todo line (a list item carrying a checkbox). */
 export function isTodo(l: ListLine | null): l is ListLine & { box: " " | "x" | "X" } {
   return l !== null && l.box !== null;
 }
 
-/** 待办的身份文本:剥掉 ✅ 完成戳、去两端空白。链接锚与条目匹配都用它。 */
+/** Identity text of a todo: the done stamp stripped and both ends trimmed. Link anchors and entry matching both use it. */
 export function todoText(l: ListLine): string {
   return l.text.replace(DONE_STAMP_RE, "").trim();
 }
 
-/** 文档第 n 行(1-based)的待办身份文本;该行不是待办时返回 null。 */
+/** Identity text of the todo on document line n (1-based); null when that line is not a todo. */
 export function todoTextAt(doc: Text, lineNo: number): string | null {
   const p = parseListLine(doc.line(lineNo).text);
   return isTodo(p) ? todoText(p) : null;
 }
 
-// ---------------------------------------------------------------- 块提取
+// ---------------------------------------------------------------- block extraction
 
 /**
- * 行所在的待办块根:从 `lineNo` 沿「更浅缩进的连续祖先链」向上走。空行或
- * 非列表行断链;同级/更深行是兄弟或子辈,跳过继续。顶层缩进(0)直接是根。
- * 步数上限 500 是防 malformed 文档(超长同级链)的保险,正常块远小于此。
+ * Root of the todo block holding `lineNo`: walk up the chain of ancestors whose
+ * indent is strictly shallower. A blank or non-list line breaks the chain; a line
+ * at the same or deeper indent is a sibling or a child, so it is skipped. Indent 0
+ * is the root itself. The 500 step cap is insurance against malformed documents
+ * (endless same-level chains); real blocks are far smaller.
  */
 export function blockRootLine(doc: Text, lineNo: number): number {
   const cur = parseListLine(doc.line(lineNo).text);
@@ -81,7 +85,7 @@ export function blockRootLine(doc: Text, lineNo: number): number {
   return root;
 }
 
-/** 待办块的最后一行:根之后连续的更深列表行(空行/非列表/同深即止)。 */
+/** Last line of a todo block: the run of deeper list lines after the root, ending at a blank line, a non-list line, or a line at the same depth. */
 export function blockEnd(doc: Text, rootNo: number): number {
   const root = parseListLine(doc.line(rootNo).text);
   if (!root) return rootNo;
@@ -94,7 +98,7 @@ export function blockEnd(doc: Text, rootNo: number): number {
   return end;
 }
 
-/** 块的行文本(根 + 其下更深列表行)。 */
+/** Line texts of the block (the root plus its deeper list lines). */
 export function blockLines(doc: Text, rootNo: number): string[] {
   const out: string[] = [];
   for (let n = rootNo; n <= blockEnd(doc, rootNo); n++) out.push(doc.line(n).text);
@@ -102,9 +106,10 @@ export function blockLines(doc: Text, rootNo: number): string[] {
 }
 
 /**
- * 重缩进块:每行剥掉最多 `stripLen` 个前导空白(只剥空白字符,不会啃进
- * marker),再统一加上目标根缩进——子行的相对缩进保真。源块根缩进为
- * `stripLen`,目标根缩进为 `toIndent`。
+ * Re-indent a block: strip up to `stripLen` leading whitespace from every line
+ * (whitespace only, so a marker is never eaten) and prefix the target root indent
+ * - the relative indent of the children survives. The source root indent is
+ * `stripLen`, the target root indent is `toIndent`.
  */
 export function reindentBlock(lines: string[], stripLen: number, toIndent: string): string[] {
   if (stripLen <= 0 && toIndent === "") return lines;
@@ -112,31 +117,33 @@ export function reindentBlock(lines: string[], stripLen: number, toIndent: strin
   return lines.map((l) => toIndent + l.replace(strip, ""));
 }
 
-// ---------------------------------------------------------------- 日记待办区
+// ---------------------------------------------------------------- daily note todo region
 
 const BLANK_RE = /^\s*$/;
 const HEADER_RE = /^#\s/;
 
-/** 日记文件头部待办区里的一条一级条目(1-based 行区间)。 */
+/** One top-level entry of the todo region at the head of a daily note (1-based line range). */
 export interface DailyEntry {
   start: number;
   end: number;
 }
 
 export interface DailyRegion {
-  /** 头部 H1 行号(1-based);无头部为 0。 */
+  /** Header H1 line number (1-based); 0 when there is no header. */
   headerEnd: number;
-  /** 一级条目(按文档顺序)。 */
+  /** Top-level entries, in document order. */
   entries: DailyEntry[];
-  /** 区域内最后一个列表行;无条目时等于 headerEnd。 */
+  /** Last list line inside the region; equals headerEnd when there are no entries. */
   lastListLine: number;
 }
 
 /**
- * 日记文件的结构:可选的 `# 标题` 行,其后(跳过空行)是待办区——连续的
- * 列表行,一级条目从缩进 0 的列表行开始、更深层行归入当前条目;条目间的
- * 单个空行是分隔符(其后仍是列表行才属于区域)。首个非空非列表行结束
- * 待办区,之后是用户正文。
+ * Structure of a daily note: an optional `# title` line, then (skipping blank
+ * lines) the todo region - a run of list lines where a top-level entry starts at
+ * a list line with indent 0 and deeper lines belong to the current entry. A
+ * single blank line between entries is a separator (the region only continues when
+ * a list line follows it). The first non-blank non-list line ends the region;
+ * everything after it is the user's prose.
  */
 export function parseDailyRegion(doc: Text): DailyRegion {
   const headerEnd = doc.lines >= 1 && HEADER_RE.test(doc.line(1).text) ? 1 : 0;
@@ -159,14 +166,14 @@ export function parseDailyRegion(doc: Text): DailyRegion {
     } else if (cur) {
       cur.end = i;
     } else {
-      break; // 顶层条目出现之前的深层行:不当成待办区
+      break; // a deeper line before any top-level entry: not part of the todo region
     }
     lastListLine = i;
   }
   return { headerEnd, entries, lastListLine };
 }
 
-/** 在区域里找身份文本为 `normalized` 的条目;同文多条时取离 `nearLine` 最近者。 */
+/** Find the entry in the region whose identity text is `normalized`; with several matches take the one closest to `nearLine`. */
 export function findEntryByText(
   doc: Text,
   region: DailyRegion,
@@ -187,7 +194,7 @@ export function findEntryByText(
   return best;
 }
 
-// ---------------------------------------------------------------- 改动 spec
+// ---------------------------------------------------------------- change specs
 
 export interface DocChange {
   from: number;
@@ -196,8 +203,10 @@ export interface DocChange {
 }
 
 /**
- * 追加一条一级条目(时间顺序:紧跟最后一个条目;区域为空时在头部之后,
- * 无头部且非空文档时顶到文件头)。返回的行号是新区条目在新文档中的区间。
+ * Append one top-level entry (chronological order: right after the last entry;
+ * after the header when the region is empty; at the top of the file when there is
+ * no header and the document is not empty). The returned line range is where the
+ * new entry lands in the new document.
  */
 export function appendEntrySpec(
   doc: Text,
@@ -212,7 +221,7 @@ export function appendEntrySpec(
     start = region.lastListLine + 1;
   } else if (region.headerEnd >= 1) {
     at = doc.line(region.headerEnd).to;
-    start = region.headerEnd + 2; // 头部 + 一个空行
+    start = region.headerEnd + 2; // header plus one blank line
   } else if (doc.length === 0) {
     at = 0;
     start = 1;
@@ -227,8 +236,10 @@ export function appendEntrySpec(
 }
 
 /**
- * 在待办区最前方插入一条一级条目(快捷捕获用)。区域为空时与 appendEntrySpec
- * 同形(头部之后、无头部时顶到文件头),保证写出的形状与引擎一致。
+ * Insert one top-level entry at the front of the todo region (quick capture).
+ * With an empty region this matches appendEntrySpec (after the header, or at the
+ * top of the file when there is no header), so the written shape stays identical
+ * to what the engine produces.
  */
 export function prependEntrySpec(
   doc: Text,
@@ -245,14 +256,16 @@ export function prependEntrySpec(
   };
 }
 
-/** 用新块整段替换一个条目。 */
+/** Replace an entry wholesale with a new block. */
 export function replaceEntrySpec(doc: Text, entry: DailyEntry, block: string[]): DocChange {
   return { from: doc.line(entry.start).from, to: doc.line(entry.end).to, insert: block.join("\n") };
 }
 
-/** 删除一个条目(整行语义,连换行一起删);其后紧跟的一个空行一并删掉,
- * 避免反复增删攒出成串空行;删到文件尾(区域清空)时,头部后的分隔空行
- * 也一并收掉,不留真空尾巴。 */
+/** Delete an entry (whole-line semantics, the trailing newline goes with it);
+ * the single blank line right after it is removed as well, so repeated add and
+ * remove cycles do not pile up blank lines. When the deletion reaches the end of
+ * the file (the region is now empty) the separating blank line after the header is
+ * removed too, so no empty tail is left behind. */
 export function removeEntrySpec(doc: Text, entry: DailyEntry): DocChange {
   const afterEnd = entry.end + 1;
   let from = doc.line(entry.start).from;
@@ -268,46 +281,48 @@ export function removeEntrySpec(doc: Text, entry: DailyEntry): DocChange {
   return { from, to };
 }
 
-/** 把改动 spec 应用到文档文本(纯字符串运算,用于盘外文件的读写)。 */
+/** Apply change specs to document text (pure string arithmetic, used for files that are not open in an editor). */
 export function textAfterChanges(docText: string, specs: DocChange[]): string {
   const state = EditorStateOf(docText);
   return state.update({ changes: specs }).state.doc.toString();
 }
 
-// ---------------------------------------------------------------- 路径与定位
+// ---------------------------------------------------------------- paths and lookup
 
 const DAILY_FILE_RE = /\/Daily\/(\d{4}-\d{2}-\d{2})\.md$/;
 
-/** 是否为日记文件(`<vault>/Daily/YYYY-MM-DD.md`,任意一天)。 */
+/** Whether the path is a daily note file (`<vault>/Daily/YYYY-MM-DD.md`, any day). */
 export function isDailyPath(path: string): boolean {
   return dailyDayOf(path) !== null;
 }
 
-/** 日记文件路径里的日期(YYYY-MM-DD);非日记路径返回 null。 */
+/** The date (YYYY-MM-DD) encoded in a daily note path; null for any other path. */
 export function dailyDayOf(path: string): string | null {
   return DAILY_FILE_RE.exec(path)?.[1] ?? null;
 }
 
-/** 某天的日记文件绝对路径。 */
+/** Absolute path of the daily note for a given day. */
 export function dailyPathFor(vaultRoot: string, day: string): string {
   return `${vaultRoot.replace(/\/+$/, "")}/Daily/${day}.md`;
 }
 
-/** 新建日记的初始内容。发送/记录路径与「打开今日日记」共用同一份形状
- *  (H1 + 其后的待办区),两个入口建出来的文件因此逐字节一致。 */
+/** Initial content of a newly created daily note. The send/record path and
+ *  "open today's daily note" share the same shape (H1 plus the todo region after
+ *  it), so files created through either entry point are byte-identical. */
 export function dailyScaffold(day: string): string {
   return `# ${day}\n`;
 }
 
-/** 链接元数据文件路径(vault 内,随仓库走)。 */
+/** Path of the link metadata file (inside the vault, travels with the repo). */
 export function linksFilePath(vaultRoot: string): string {
   return `${vaultRoot.replace(/\/+$/, "")}/.bnote/daily-links.json`;
 }
 
 /**
- * 在文档里找身份文本为 `texts` 之一的待办块根行:先试 hint 行,再在
- * hint ±30 行窗口内按距离找,最后全文找(防抖后的低频路径,可接受)。
- * 找不到返回 null。
+ * Find the todo block root line in the document whose identity text is one of
+ * `texts`: try the hint line first, then look in the hint +/- 30 line window by
+ * distance, then the whole document (a low-frequency path after debouncing, so
+ * the full scan is acceptable). Returns null when nothing matches.
  */
 export function resolveRootLine(doc: Text, texts: string[], hint: number | null): number | null {
   const want = new Set(texts);
@@ -329,22 +344,24 @@ function EditorStateOf(docText: string): EditorState {
   return EditorState.create({ doc: docText });
 }
 
-// ---------------------------------------------------------------- 待办跟随(rollover)
+// ---------------------------------------------------------------- todo rollover
 
 const DATE_FILE_RE = /^(\d{4}-\d{2}-\d{2})\.md$/;
 
-/** 块内保留行:未完成行 + 未完成后代的祖先锚链;全无未完成返回 null。 */
+/** Lines kept from a block: the unfinished lines plus the ancestor chain of every unfinished descendant; null when nothing is unfinished. */
 function carriedLines(doc: Text, rootNo: number, endNo: number): string[] | null {
   const indent: number[] = [];
   const kept: boolean[] = [];
   for (let n = rootNo; n <= endNo; n++) {
     const p = parseListLine(doc.line(n).text);
-    if (!p) break; // blockEnd 保证到 endNo 都是列表行
+    if (!p) break; // blockEnd guarantees every line up to endNo is a list line
     indent.push(p.indent.length);
     kept.push(p.box === " ");
   }
-  // 自底向上补锚:更深的连续子树窗口里有被保留的后代,本行就得留下,否则
-  // 层级断链。窗口在第一个 ≤ 本行缩进的行处封闭,不会越过兄弟子树。
+  // Add anchors bottom-up: when the window of deeper consecutive lines holds a
+  // kept descendant, this line has to stay too, otherwise the hierarchy breaks.
+  // The window closes at the first line with indent <= this line's, so it never
+  // reaches into a sibling subtree.
   for (let i = kept.length - 2; i >= 0; i--) {
     if (kept[i]) continue;
     for (let j = i + 1; j < kept.length && indent[j] > indent[i]; j++) {
@@ -360,8 +377,9 @@ function carriedLines(doc: Text, rootNo: number, endNo: number): string[] | null
   return lines;
 }
 
-/** 一级列表块(围栏代码内不算):根行号、块尾行号。根为缩进 0 的列表行
- *  (待办或普通 bullet——过滤留给调用方按语义决定)。 */
+/** Top-level list blocks (lines inside fenced code do not count): root line
+ *  number and block end line. The root is a list line with indent 0 (todo or plain
+ *  bullet - filtering is left to the caller, which knows the semantics). */
 function topBlocks(doc: Text, fenced: boolean[]): { rootNo: number; endNo: number }[] {
   const out: { rootNo: number; endNo: number }[] = [];
   let n = 1;
@@ -383,8 +401,10 @@ function topBlocks(doc: Text, fenced: boolean[]): { rootNo: number; endNo: numbe
 }
 
 /**
- * 待办跟随(rollover)的块提取:日记文件里所有含未完成的块(含纯 bullet
- * 根与空文本待办——日记里的手写形状不做特判),跟随规则见 carriedLines。
+ * Block extraction for todo rollover: every block in the daily note that contains
+ * an unfinished item (including blocks rooted at a plain bullet and todos with
+ * empty text - handwritten shapes in the daily note get no special casing). The
+ * rollover rule lives in carriedLines.
  */
 export function rolloverBlocks(prevText: string): string[][] {
   const doc = EditorState.create({ doc: prevText }).doc;
@@ -397,8 +417,9 @@ export function rolloverBlocks(prevText: string): string[][] {
   return out;
 }
 
-/** Daily/ 目录的文件名里,早于 `today` 的最近一篇日记日期;没有返回 null。
- *  隔了几天没写日记就跟最近那篇,不是严格意义上的「昨天」。 */
+/** The most recent daily note date earlier than `today` among the file names in
+ *  Daily/; null when there is none. After a few days without writing we roll over
+ *  from the most recent note, not strictly from "yesterday". */
 export function previousDailyFile(names: string[], today: string): string | null {
   let best: string | null = null;
   for (const name of names) {
@@ -409,9 +430,11 @@ export function previousDailyFile(names: string[], today: string): string | null
   return best;
 }
 
-/** 新一天日记的初始内容:正文起点(默认裸 scaffold,有模板时是模板正文)
- *  + 逐块 appendEntrySpec,与引擎写盘同一形状(条目跟在头部之后、单换行
- *  相邻,文件尾单换行)。 */
+/** Initial content of a new daily note: the body start (the bare scaffold by
+ *  default, the template body when a template is configured) plus one
+ *  appendEntrySpec per block, producing the same shape the engine writes to disk
+ *  (entries follow the header, adjacent entries are separated by a single
+ *  newline, and the file ends with one newline). */
 export function composeDailyScaffold(
   day: string,
   blocks: string[][],

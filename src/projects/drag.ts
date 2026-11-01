@@ -4,12 +4,14 @@ import { documentPath } from "@/editor/docPath";
 import { isTodo, parseListLine } from "@/daily/model";
 
 /**
- * 项目卡片的待办拖拽源。
+ * Drag source of the todos on a project card.
  *
- * 用左侧 gutter 的拖拽手柄,而不是把整行 `.cm-line` 设成 draggable:后者会
- * 抢掉鼠标拖选文本(按住拖动变成 HTML5 拖拽),在 vim 之外的手感上不可接受。
- * 手柄是真实 DOM(CM 的 gutter marker),dragstart 时才把源路径与行号写进
- * dataTransfer;落点是日记编辑器(见 DailyNotePane 的 drop 处理)。
+ * It uses a drag handle in the left gutter instead of making the whole `.cm-line`
+ * draggable: the latter would steal the mouse drag for selecting text (holding and
+ * dragging turns into an HTML5 drag), which is unacceptable for the feel outside
+ * of vim. The handle is real DOM (a CM gutter marker) and only writes the source
+ * path and the line number into the dataTransfer on dragstart; the drop target is
+ * the daily note editor (see the drop handling of DailyNotePane).
  */
 
 export const TODO_DRAG_MIME = "application/x-bnote-todo";
@@ -66,7 +68,7 @@ class TodoDragMarker extends GutterMarker {
   }
 }
 
-/** marker → 所属视图;拖拽时要读当前文档(路径与行文本)。 */
+/** marker -> the view it belongs to; the drag reads the current document (the path and the line text). */
 const owner = new WeakMap<TodoDragMarker, EditorView>();
 
 function viewOfMarker(marker: TodoDragMarker): EditorView | null {
@@ -105,7 +107,7 @@ function buildMarkers(view: EditorView): RangeSet<GutterMarker> {
   return RangeSet.of(ranges, true);
 }
 
-/** 项目卡片的编辑器扩展:左侧一列待办拖拽手柄。 */
+/** Editor extension of a project card: a column of todo drag handles on the left. */
 export function projectTodoDragExtension(): Extension {
   return gutter({
     class: "cm-project-drag-gutter",

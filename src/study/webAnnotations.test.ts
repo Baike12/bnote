@@ -53,13 +53,13 @@ describe("网页批注锚点", () => {
 });
 
 describe("网页批注:偏移 → DOM 点", () => {
-  const a = { node: "A", start: 0, end: 6 }; // 上一段最后一个文本节点
-  const b = { node: "B", start: 6, end: 45 }; // 下一段第一个文本节点(中间隔着空行块)
+  const a = { node: "A", start: 0, end: 6 }; // the last text node of the previous run
+  const b = { node: "B", start: 6, end: 45 }; // the first text node of the next run (a blank-line block sits in between)
   const entries = [a, b];
 
   it("交界偏移:起点归后一段开头,终点归前一段末尾", () => {
-    // 行首第一个字符的全局偏移正好是 6:两边都取 A 的末尾会让 Range 跨过
-    // 中间的空行块,WebKit 给整条空行返回满宽矩形。
+    // The global offset of the first character of the line is exactly 6: taking the end of A on both sides would make the Range span
+    // the blank-line block in between, and WebKit returns a full-width rect for the whole blank line.
     expect(textPointAt(entries, 6, "start")).toEqual({ node: "B", offset: 0 });
     expect(textPointAt(entries, 6, "end")).toEqual({ node: "A", offset: 6 });
   });
@@ -90,7 +90,7 @@ describe("网页批注数据", () => {
     ]);
     expect(out.map((a) => a.id)).toEqual(["a", "b"]);
     expect(out[1].quote.length).toBe(2000);
-    // 旧数据没有 kind/text:按高亮读,文字为空。
+    // Old data has no kind/text: it is read as a highlight with empty text.
     expect(out[0].kind).toBe("highlight");
     expect(out[0].text).toBe("");
   });
@@ -103,7 +103,7 @@ describe("网页批注数据", () => {
     ]);
     expect(out[0]).toMatchObject({ kind: "note", text: "这是一条批注" });
     expect(out[1].text.length).toBe(2000);
-    // 未知 kind 退回高亮,非字符串 text 归空。
+    // An unknown kind falls back to a highlight, a non-string text becomes empty.
     expect(out[2]).toMatchObject({ kind: "highlight", text: "" });
   });
 
@@ -155,38 +155,38 @@ describe("注入脚本", () => {
     expect(script).toContain("bnote-anno:");
     expect(script).toContain("setMode");
     expect(script).toContain("merge");
-    // 选中翻译:总开关/结果回填/请求通道都要在注入运行时里。
+    // Selection translation: the master switch / the result fill-in / the request channel all have to be in the injected runtime.
     expect(script).toContain("setTranslate");
     expect(script).toContain("showTranslation");
     expect(script).toContain("bnote-translate:");
     expect(script).toContain("doc: TRANSLATE_DOC");
     expect(script).toContain("bnote-web-translate-host");
-    // 翻页入口与主窗口推送步长/键位的通道。
+    // The page-turn entry point and the channels the main window pushes the step and the keys through.
     expect(script).toContain("__bnoteReader");
     expect(script).toContain("setStep");
     expect(script).toContain("setKeys");
     expect(script).toContain("bnote-read-shade-host");
     expect(script).toContain("snapScrollTopToLine");
-    // 页内键位匹配与主窗口共用同一套主键规范化(⌘⌥A 在 macOS 上是 "å")。
+    // The in-page key matching shares the main window's modifier normalization (⌘⌥A is "å" on macOS).
     expect(script).toContain("eventKeyName");
-    // 文字批注(页内批注卡)与阅读位置。
+    // Text annotations (the in-page annotation card) and the reading position.
     expect(script).toContain("bnote:web-position:v1:");
     expect(script).toContain("scheduleRestore");
-    // 光标:全页固定笔形,但笔由原生层替换(WKWebView 里图片光标每移动一次
-    // 就重建 NSCursor 并重设,指针会闪)。CSS 只留原生关键字。
+    // Cursor: a fixed pen shape over the whole page, but the pen is substituted by the native layer (in WKWebView an image cursor is
+    // rebuilt and reset on every mouse move, so the pointer flickers). The CSS only keeps a native keyword.
     expect(script).toContain("installCursorSheet");
     expect(script).toContain("cursor: crosshair !important");
     expect(script).toContain("cursor: inherit !important");
     expect(script).not.toContain("cursorPen");
     expect(script).not.toContain("bnote-annotating");
-    // 阅读分区(只有压暗,不画分界线)常驻:打开网页就有,不靠翻页触发。
-    // 边界靠阴影渐隐收尾,两端保留径向补出的圆角尖(去掉线后那是唯一形状)。
+    // The reading split (only a dimming, no dividing line) is always there: it exists as soon as the page is opened, it is not triggered by a page turn.
+    // The boundary ends with the shade fading out, and both ends keep the rounded tip added by the radial gradient (without a line that is the only shape).
     expect(script).toContain("paintShade");
     expect(script).not.toContain("shadeVisible");
     expect(script).toContain("radial-gradient(circle at 100% 100%");
     expect(script).not.toContain("borderTopLeftRadius");
     expect(script).not.toContain("230, 155, 60");
-    // 纯函数被序列化进页面,不能残留模块级常量名。
+    // The pure functions are serialized into the page, so no module-level constant names may remain.
     expect(script).not.toContain("MAX_WEB_QUOTE");
   });
 

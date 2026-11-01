@@ -2,18 +2,20 @@ import { LanguageDescription } from "@codemirror/language";
 import { languages as dataLanguages } from "@codemirror/language-data";
 
 /**
- * languageId → CodeMirror 语法包。
+ * languageId → CodeMirror syntax package.
  *
- * languageId 由后端按扩展名判定(Rust 侧 `code/lang.rs` 是唯一来源),这里
- * 只负责把它变成一套语法支持。四种主力语言(ts / rust / go / python)用
- * 专门的 lezer 语法包——tree-sitter 级的解析质量,增量解析,大文件不卡;
- * 其余语言退回 `@codemirror/language-data` 的通用集合。
+ * The languageId is decided by the backend from the file extension (the Rust
+ * side `code/lang.rs` is the only source); this module only turns it into a
+ * set of syntax support. The four main languages (ts / rust / go / python)
+ * get dedicated lezer packages — tree-sitter grade parsing quality,
+ * incremental parsing, no stutter on large files; every other language falls
+ * back to the generic set of `@codemirror/language-data`.
  *
- * 语法包都是**动态载入**的:打开一个 Go 文件才拉 Go 的解析器,首屏不必
- * 为四种语言都付钱。
+ * All packages are **loaded dynamically**: the Go parser is fetched only when
+ * a Go file is opened, so the first screen does not pay for four languages.
  */
 
-/** 核心四种语言的描述(languageId → 描述)。 */
+/** Descriptions of the core languages (languageId → description). */
 const CORE: Record<string, LanguageDescription> = {
   typescript: LanguageDescription.of({
     name: "TypeScript",
@@ -60,7 +62,7 @@ const CORE: Record<string, LanguageDescription> = {
   }),
 };
 
-/** language-data 里的通用集合按别名建的索引(找不到就当没这门语言)。 */
+/** Index of the generic set of language-data, keyed by alias (a miss means the language is unknown). */
 const DATA_BY_ALIAS = new Map<string, LanguageDescription>();
 for (const desc of dataLanguages) {
   for (const alias of desc.alias) {
@@ -68,12 +70,12 @@ for (const desc of dataLanguages) {
   }
 }
 
-/** 这个 languageId 有没有语法包。 */
+/** Whether this languageId has a syntax package. */
 export function hasLanguage(languageId: string): boolean {
   return findLanguage(languageId) !== null;
 }
 
-/** 找 languageId 对应的描述;没有就 null(纯文本)。 */
+/** Find the description of a languageId; null when there is none (plain text). */
 export function findLanguage(languageId: string): LanguageDescription | null {
   if (!languageId || languageId === "plaintext") return null;
   const core = CORE[languageId];

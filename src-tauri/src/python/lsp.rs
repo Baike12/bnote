@@ -1,12 +1,19 @@
-//! ty 语言服务器:markdown 里内嵌的 python 走这条链。
+//! The ty language server: the Python embedded in markdown goes through this
+//! chain.
 //!
-//! 文档模型:前端把 markdown 里所有 python 围栏拼成「行对齐虚拟文件」(与
-//! markdown 逐行等长,非代码行是空行),以笔记真实路径的 file:// URI 打开。
-//! 虚拟文件的行列号与 markdown 完全一致,诊断原样转发给前端,零换算。
+//! Document model: the front end joins all the Python fences of the markdown
+//! into a "line-aligned virtual file" (as long as the markdown line by line,
+//! the non-code lines being empty) and opens it under the file:// URI of the
+//! real path of the note. The line and column numbers of the virtual file are
+//! exactly those of the markdown, so the diagnostics are forwarded as they are
+//! with zero conversion.
 //!
-//! 传输层(帧、请求配对、超时、停服)复用 [`crate::lsp::client`],这里只补
-//! ty 特有的三件事:工作区配置(ty 的 activeEnvironment)、pull 诊断(ty 只
-//! 认 pull,不会 push)、以及诊断事件的前端载荷形状。
+//! The transport layer (framing, request pairing, timeouts, stopping the
+//! server) is reused from [`crate::lsp::client`]; this module only adds the
+//! three things specific to ty: the workspace configuration (the
+//! activeEnvironment of ty), the pulled diagnostics (ty only speaks pull and
+//! never pushes), and the payload shape of the diagnostic events in the front
+//! end.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,20 +27,24 @@ use crate::lsp::{decode_uri_path, path_to_uri, BoxFuture};
 
 use super::{ProjectConfig, ProjectRef};
 
-/// ty 这一侧的消息处理:转发诊断、应答配置请求。
+/// The message handling on the ty side: forwards diagnostics, answers the
+/// configuration requests.
 ///
-/// sink 持有 `AppHandle`:诊断事件要从这里发回前端。
+/// The sink holds the `AppHandle`: the diagnostic events are emitted from here
+/// back to the front end.
 struct TySink {
     app: tauri::AppHandle,
-    /// ty 关心的 workspace 配置(activeEnvironment)。
+    /// The workspace configuration ty cares about (activeEnvironment).
     settings: Value,
-    /// pull 诊断请求 id → 笔记 md 路径(应答到达时知道往哪发事件)。
+    /// The pull diagnostic request id → the md path of the note (so the event
+    /// knows where to go when the reply arrives).
     pending_pulls: Mutex<HashMap<u64, String>>,
 }
 
 impl TySink {
-    /// ty 的工作区配置:把项目 venv 作为 activeEnvironment 交给它(对齐 zed 的
-    /// 形状);没有 venv 就给空配置,ty 自己按 rootUri 探测。
+    /// The workspace configuration of ty: the project venv is handed over as
+    /// the activeEnvironment (matching the shape of Zed); without a venv an
+    /// empty configuration is given and ty probes by rootUri itself.
     fn settings_for(project_root: &Path) -> Value {
         match super::runner::venv_python(project_root) {
             Some(py) => {
@@ -53,7 +64,8 @@ impl TySink {
         }
     }
 
-    /// workspace/configuration 应答:ty 关心的配置(activeEnvironment)。
+    /// The reply to workspace/configuration: the configuration ty cares about
+    /// (activeEnvironment).
     fn server_configuration(&self, msg: &Value) -> Value {
         let items = msg
             .pointer("/params/items")
@@ -75,7 +87,8 @@ impl TySink {
         )
     }
 
-    /// 把诊断(推的数组或拉的 `{items:[...]}`)转成前端事件发出去。
+    /// Turns the diagnostics (a pushed array or a pulled `{items:[...]}`) into
+    /// the event for the front end.
     fn emit_diagnostics(&self, md_path: &str, result: Option<&Value>) {
         let items = match result {
             Some(Value::Array(a)) => a.clone(),
@@ -102,8 +115,9 @@ impl LspSink for TySink {
             let id = msg.get("id").cloned();
             let method = msg.get("method").and_then(Value::as_str).map(|s| s.to_string());
             match (id, method) {
-                // 服务器 → 客户端的请求:配置请求回 ty 的配置,其余回 null,
-                // 避免服务器干等。
+                // A server → client request: the configuration request gets
+                // ty's configuration, the others get null, so the server never
+                // waits for nothing.
                 (Some(id), Some(method)) => {
                     let result = if method == "workspace/configuration" {
                         self.server_configuration(&msg)
@@ -114,7 +128,8 @@ impl LspSink for TySink {
                         .send(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
                         .await;
                 }
-                // 应答:只有 pull 诊断的会走到这里(我们自己的请求已在传输层配对)。
+                // A reply: only the pulled diagnostics end up here (the replies
+                // to our own requests were paired in the transport layer).
                 (Some(id), None) => {
                     let id_num = match id.as_u64() {
                         Some(n) => n,
@@ -131,7 +146,7 @@ impl LspSink for TySink {
                         self.emit_diagnostics(&md, msg.get("result"));
                     }
                 }
-                // 通知。
+                // A notification.
                 (None, Some(method)) => {
                     if method == "textDocument/publishDiagnostics" {
                         let uri = msg
@@ -153,10 +168,12 @@ impl LspSink for TySink {
     }
 }
 
-/// ty 的服务器:包住通用客户端,补上 python 这一侧特有的东西。
+/// The ty server: it wraps the generic client and adds what is specific to the
+/// Python side.
 ///
-/// 方法名与旧的实现保持一致(`sync_doc` / `close_doc` / `interaction_request`),
-/// 调用方(`commands/python.rs`)改动最小。
+/// The method names stay the same as in the old implementation (`sync_doc` /
+/// `close_doc` / `interaction_request`), so the caller (`commands/python.rs`)
+/// changes as little as possible.
 pub struct LspServer {
     inner: Arc<LspClient>,
     sink: Arc<TySink>,
@@ -164,8 +181,9 @@ pub struct LspServer {
 }
 
 impl LspServer {
-    /// spawn `ty server` 并启动读循环;握手由调用方在拿到实例后立即 await,
-    /// 失败时进程随 kill_on_drop 一并回收。
+    /// Spawns `ty server` and starts the read loop; the caller awaits the
+    /// handshake right after it gets the instance; on failure the process is
+    /// reclaimed together with kill_on_drop.
     pub async fn spawn(
         project: &ProjectRef,
         program: String,
@@ -193,12 +211,13 @@ impl LspServer {
         }))
     }
 
-    /// 进程还活着吗。
+    /// Whether the process is still alive.
     pub fn alive(&self) -> bool {
         self.inner.alive.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// initialize 握手 + initialized 通知 + ty 的初始配置。
+    /// The initialize handshake + the initialized notification + the initial
+    /// configuration of ty.
     pub async fn initialize(&self) -> Result<Value, String> {
         let spec = ServerSpec {
             command: String::new(),
@@ -211,8 +230,9 @@ impl LspServer {
         self.inner.initialize(&spec).await
     }
 
-    /// 打开或更新一个文档:已开过就 didChange,否则 didOpen。
-    /// 版本号由客户端单调递增,调用方不必自己记账。
+    /// Opens or updates a document: didChange when it was opened before,
+    /// didOpen otherwise. The version number is incremented monotonically by the
+    /// client, so the caller need not keep its own counter.
     pub async fn sync_doc(&self, md_path: &str, text: &str) -> Result<(), String> {
         let uri = doc_uri(md_path);
         let known = self
@@ -223,7 +243,8 @@ impl LspServer {
             .contains_key(&uri);
         if known {
             self.inner.did_change(&uri, text).await?;
-            // pull 诊断:ty 只认 pull,发完不等结果(应答由 sink 处理)。
+            // Pulled diagnostics: ty only speaks pull, so the request is sent
+            // without waiting for the result (the sink handles the reply).
             let id = self
                 .inner
                 .request_detached(
@@ -240,8 +261,9 @@ impl LspServer {
         Ok(())
     }
 
-    /// 交互内请求(completion / hover):转发给 ty 并等应答。
-    /// textDocument.uri 由这里按 md 路径统一注入,前端只给 position。
+    /// An interactive request (completion / hover): forwarded to ty and awaited.
+    /// The textDocument.uri is injected here from the md path, and the front end
+    /// only supplies the position.
     pub async fn interaction_request(
         &self,
         method: &str,
@@ -259,18 +281,21 @@ impl LspServer {
         self.inner.did_close(&doc_uri(md_path)).await
     }
 
-    /// 停服务器:先 exit 通知,300ms 后强杀(不掉等待优雅退出,ty 无状态)。
+    /// Stops the server: an exit notification first, then a hard kill after
+    /// 300ms (the graceful exit is never waited for; ty is stateless).
     pub fn stop(self: &Arc<Self>) {
         self.inner.stop();
     }
 }
 
-/// 文档 URI:md 真实路径。ty 只在 didOpen/didChange 收内容,不回读磁盘。
+/// The document URI: the real path of the md file. ty only receives the
+/// content in didOpen/didChange and never reads it back from disk.
 fn doc_uri(md_path: &str) -> String {
     path_to_uri(Path::new(md_path))
 }
 
-/// 发现 ty:项目配置的 tyPath > 项目 venv 里的 ty > PATH 上的 ty。
+/// Finds ty: the tyPath of the project configuration > the ty in the project
+/// venv > the ty on the PATH.
 pub fn find_ty(project_root: &Path, cfg: &ProjectConfig) -> Result<String, String> {
     if let Some(t) = cfg.ty_path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         return Ok(t.to_string());

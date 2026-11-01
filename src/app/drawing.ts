@@ -14,20 +14,24 @@ import { setDocPath, documentPath } from "@/editor/docPath";
 import { fileName, joinPath } from "@/lib/path";
 
 /**
- * 画布会话的编排与保存调度(模块级状态,画布组件只是薄 UI)。
+ * Orchestration and save scheduling of the canvas session (module-level
+ * state; the canvas component is only thin UI).
  *
- * 会话语义对齐 Obsidian:画图也是一个「文件」,⌘D 相当于在这个文件上打开
- * 画布;通过快速跳转(或 ⌘↩)回到来源笔记时,刚画的图才作为普通图片嵌入
- * 插回到来源笔记记住的光标位置——插入动作发生在「回来」那一刻,而不是
- * 打开画布时。
+ * The session semantics follow Obsidian: a drawing is also "a file" and ⌘D
+ * opens the canvas on that file; only when returning to the source note via
+ * the quick switcher (or ⌘↩) is the drawing inserted as a plain image embed
+ * at the cursor position remembered for the source note — the insert happens
+ * at the moment of coming back, not when the canvas is opened.
  *
- * 保存是唯一写入者:串行化调度(in-flight 时只记「还要再存」,完成后补),
- * 不并发写盘;内容没变(序列化相等)直接跳过。
+ * Saving is the single writer: the writes are serialized (while one is in
+ * flight only "there is more to save" is noted and a follow-up run is
+ * scheduled afterwards), never concurrent; unchanged content (identical
+ * serialization) is skipped.
  */
 
 const SAVE_DEBOUNCE_MS = 600;
 
-// ---- 模块级保存调度(单一写入者) ------------------------------------------
+// ---- Module-level save scheduling (single writer) --------------------------
 
 interface SceneSnapshot {
   elements: readonly unknown[];
@@ -47,7 +51,7 @@ function notifySave(busy: boolean) {
   for (const cb of saveListeners) cb(busy);
 }
 
-/** 画布 onChange 入口:只写状态 + 重置防抖,拖拽路径零渲染开销。 */
+/** The canvas onChange entry point: it only writes the state and resets the debounce, so the drag path costs no rendering. */
 export function beginDrawingSave(snap: SceneSnapshot): void {
   latest.current = snap;
   if (saveTimer) clearTimeout(saveTimer);
@@ -62,7 +66,7 @@ async function runDrawingSave(): Promise<void> {
   const snap = latest.current;
   if (!session || !snap) return;
   if (inFlight) {
-    rerunAfter = true; // 正在写盘:完成后补一轮,绝不并发写
+    rerunAfter = true; // a write is in flight: run one more round afterwards, never write concurrently
     return;
   }
   const json = serializeDrawingFile(
@@ -81,7 +85,7 @@ async function runDrawingSave(): Promise<void> {
     ).length;
     if (count > 0) await exportPng(snap, session.path);
   } catch (e) {
-    lastWritten.current = null; // 写失败:下次必须重写
+    lastWritten.current = null; // the write failed: the next one must rewrite
     useAppStore.getState().showToast(`画布保存失败: ${String(e)}`);
   } finally {
     inFlight = false;
@@ -93,7 +97,7 @@ async function runDrawingSave(): Promise<void> {
   }
 }
 
-/** 把未落盘的改动立刻写掉(⌘S / 页面隐藏 / 会话收尾前)。 */
+/** Write the changes that have not been persisted yet, right away (⌘S / page hidden / before the session is finalized). */
 export async function flushDrawingSave(): Promise<void> {
   if (saveTimer) {
     clearTimeout(saveTimer);
@@ -102,7 +106,7 @@ export async function flushDrawingSave(): Promise<void> {
   if (latest.current) await runDrawingSave();
 }
 
-/** 画布打开时读入场景,并接管 md 包裹头(写回时原样保留)。 */
+/** Read the scene when the canvas opens and take over the md wrapper head (kept verbatim on write-back). */
 export async function loadDrawingScene(path: string): Promise<DrawingScene> {
   const text = await api.readFile(path);
   const parsed = parseDrawingFile(text, fileName(path));
@@ -141,9 +145,9 @@ async function exportPng(snap: SceneSnapshot, drawingPath: string): Promise<void
   await api.writeFileBase64(drawingPngPath(drawingPath), dataUrl.slice(dataUrl.indexOf(",") + 1));
 }
 
-// ---- 会话编排 --------------------------------------------------------------
+// ---- Session orchestration -------------------------------------------------
 
-/** ⌘D:新建画图并打开画布。嵌入要等「回到笔记」那一刻才插入(见模块注释)。 */
+/** ⌘D: create a new drawing and open the canvas. The embed is inserted only at the moment of "coming back to the note" (see the module comment). */
 export async function openNewDrawing(): Promise<void> {
   const store = useAppStore.getState();
   const view = getView();
@@ -151,7 +155,7 @@ export async function openNewDrawing(): Promise<void> {
     store.showToast("先打开一篇笔记,再新建画图");
     return;
   }
-  if (store.drawingSession) return; // 画布已开着:⌘D 是 excalidraw 的复制,忽略
+  if (store.drawingSession) return; // the canvas is already open: ⌘D is excalidraw's duplicate, ignore it
   try {
     await api.ensureDir(DRAWING_FOLDER);
     const created = await api.createFile(DRAWING_FOLDER, newDrawingFileName());
@@ -167,7 +171,7 @@ export async function openNewDrawing(): Promise<void> {
   }
 }
 
-/** 点击笔记里渲染出的画图嵌入:打开画布编辑那个文件(嵌入已存在,无需回填)。 */
+/** Click a drawing embed rendered in a note: open the canvas to edit that file (the embed already exists, nothing to fill back). */
 export function openDrawingFile(path: string): void {
   const store = useAppStore.getState();
   if (store.drawingSession) return;
@@ -180,9 +184,12 @@ export function openDrawingFile(path: string): void {
 }
 
 /**
- * 收尾一次画布会话(切换文件 / ⌘↩ / 完成画图命令都会走到这里):
- * 冲盘 → 画过的图按来源笔记记住的光标位置回填嵌入并落盘 → 空图删文件 →
- * 刷新资产索引。画布组件先于本函数卸载(会话先关,组件随之消失)。
+ * Finalize a canvas session (switching files / ⌘↩ / the "finish drawing"
+ * command all end up here): flush the disk → fill the drawn image back in
+ * as an embed at the cursor position remembered for the source note and save
+ * it → delete the file of an empty drawing → refresh the asset index. The
+ * canvas component unmounts before this function runs (the session is closed
+ * first and the component disappears with it).
  */
 export async function finalizeDrawingSession(): Promise<void> {
   const store = useAppStore.getState();
@@ -199,19 +206,22 @@ export async function finalizeDrawingSession(): Promise<void> {
       await api.trashPath(session.path).catch(() => {});
     } else if (session.isNew && !empty) {
       insertEmbedAt(session);
-      // 立刻落盘:紧随其后的切换(比如快速跳转回来源笔记)会从磁盘重读,
-      // 不落盘的话刚插入的嵌入会被旧内容覆盖掉。
+      // Write to disk right away: the switch that follows (for example the
+      // quick switcher back to the source note) re-reads from disk, and
+      // without this write the freshly inserted embed would be overwritten by
+      // the old content.
       const { saveNote } = await import("@/app/actions");
       await saveNote();
     }
   } finally {
-    // 新导出的 PNG 要进资产索引;watcher 也会触发刷新,这里主动刷是为了让
-    // 装饰立刻能解析到,不等 watcher 的 300ms 批处理。
+    // The newly exported PNG has to enter the asset index; the watcher also
+    // triggers a refresh, but refreshing here lets the decoration resolve it
+    // immediately instead of waiting for the watcher's 300ms batch.
     await refreshAssetsAndDecos(session);
   }
 }
 
-/** 来源笔记还开着且位置有效才回填;文档被换过就放弃(不盲写)。 */
+/** The embed is only filled back when the source note is still open and the position is still valid; if the document was replaced the fill is dropped (no blind write). */
 function insertEmbedAt(session: DrawingSession): void {
   const view = getView();
   const store = useAppStore.getState();
@@ -225,8 +235,9 @@ function insertEmbedAt(session: DrawingSession): void {
   const embed = `![[${fileName(session.path)}]]`;
   view.dispatch({
     changes: { from: pos, insert: `${prefix}${embed}\n` },
-    // 光标落到嵌入的下一行:live preview 对光标所在行保持源码,不挪开的话
-    // 看到的是原文而不是渲染出的图。
+    // The cursor lands on the line after the embed: the live preview keeps
+    // the source text on the cursor's line, and without moving away you
+    // would see the raw text instead of the rendered image.
     selection: { anchor: pos + prefix.length + embed.length + 1 },
   });
 }
@@ -237,14 +248,16 @@ async function refreshAssetsAndDecos(session: DrawingSession): Promise<void> {
   const view = getView();
   const store = useAppStore.getState();
   if (view && session.originNote && session.originNote === store.currentFile) {
-    // 同值 effect 事务不改文档,只让 livePreview 重建装饰——
-    // PNG 是画布保存后才出现的,嵌入行的 <img> 需要这次机会重新解析。
+    // The same-value effect transaction does not change the document, it
+    // only makes the live preview rebuild its decorations — the PNG appears
+    // only after the canvas is saved, so the <img> of the embed line needs
+    // this chance to resolve again.
     view.dispatch({ effects: setDocPath.of(documentPath(view.state)) });
   }
   view?.focus();
 }
 
-/** 画图文件旁边那张预览 PNG 的绝对路径。 */
+/** The absolute path of the preview PNG next to the drawing file. */
 export function drawingPngPath(drawingPath: string): string {
   const dir = drawingPath.includes("/") ? drawingPath.slice(0, drawingPath.lastIndexOf("/")) : "";
   const png = drawingPngName(fileName(drawingPath));

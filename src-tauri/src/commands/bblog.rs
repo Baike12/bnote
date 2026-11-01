@@ -1,14 +1,17 @@
-//! bblog 客户端命令:发布对话框拉栏目树、上传 HTML/Markdown 文章。
+//! bblog client commands: fetch the section tree for the publish dialog and
+//! upload HTML/Markdown articles.
 //!
-//! 认证信息(vault 的 `.bnote/bblog/auth.json`)由前端读取后作为参数传入,
-//! 这里不落任何秘密;上传走 `Authorization: Bearer <token>`,对应 bblog
-//! `/api/upload` 的机器令牌通道。
+//! Credentials (the vault's `.bnote/bblog/auth.json`) are read by the frontend
+//! and passed in as arguments, so no secret is stored here; the upload uses
+//! `Authorization: Bearer <token>`, i.e. bblog's machine-token channel at
+//! `/api/upload`.
 
 use super::CmdResult;
 use serde_json::Value;
 
-/// 规范化服务器地址:去空白、去末尾斜杠;没有 scheme 时默认 http://
-/// (bblog 部署在无域名的 IP 上,https 需用户显式写明)。
+/// Normalizes the server address: trims whitespace and trailing slashes;
+/// defaults to http:// when no scheme is given (bblog is often deployed on a
+/// bare IP address, so https has to be spelled out by the user).
 fn normalize_server(server: &str) -> Result<String, String> {
     let mut s = server.trim().trim_end_matches('/').to_string();
     if s.is_empty() {

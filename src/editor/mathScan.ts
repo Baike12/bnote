@@ -5,8 +5,10 @@ export interface MathRegion {
   to: number;
   display: boolean;
   content: string;
-  /** 只有开标记、还没等到闭合标记(打字中的公式)。这类区域的 `to` 是段落
-   *  末尾而不是闭合符之后——打字位置在 `to` 时字符仍写进公式正文。 */
+  /** Only the opening marker is present and no closing marker has arrived yet
+   *  (a formula being typed). For such a region `to` is the end of the
+   *  paragraph rather than after a closing delimiter — with the caret at `to`
+   *  the typed character still goes into the math body. */
   unclosed?: true;
 }
 
@@ -16,21 +18,31 @@ export interface MathRegion {
  * start/end with whitespace or contain a newline, and a closing `$` may not
  * be followed by a digit (so "$5 and $10" stays plain text).
  *
- * 块级配对模型(第一性原理):
- * - 配对永不跨"内部空行"——LaTeX 数学容不下空行。但打字流会产生**单侧**空行
- *   (`$$` 后连按两次回车再写公式,或写完补空行再闭合),这类块必须照常渲染;
- *   只有**两侧同时**留空(正文段落被两个落单 $$ 夹住,即删错 $$ 后的错位产物)
- *   才拒绝配对。
- * - **例外:空行落在配对完整的 `\begin{…}…\end{…}` 内部时不是段落边界**。
- *   多行环境里的空行是排版留白(`#@` 片段展开成 `$$\n\begin{align}\n$0\n\end{align}\n$$`
- *   后,在 `$0` 处回车就直接产生它),整块照常渲染;而"未闭合的 `\begin` 之后的
- *   空行"不给豁免,否则"打了个 \begin 还没 \end 就空行"会重新打开吞正文的口子。
- * - 配对栈式前进:一对被拒绝时,两个标记都不发区域(可见可删),闭候选继续
- *   向后找——删掉一个 $$ 后,下方完好的公式仍按原样配对渲染,不会整体移位
- *   ("公式怪追着跑")。
- * - 奇数个标记时的最终落单 $$ 是"打字中未闭合"形态,发实时区域封顶到本段
- *   (第一个空行);其余落单一律保持普通文本——错位产物里的正文永远不会被
- *   吞进任何区域,每个 $$ 始终可见可删。
+ * The block-level pairing model (from first principles):
+ * - A pairing never crosses an "interior blank line" — LaTeX math cannot hold
+ *   a blank line. But a typing flow produces **one-sided** blank lines (two
+ *   Enters after `$$` and then the formula, or a blank line added before
+ *   closing); such blocks must still render. Only when **both** sides are
+ *   blank (a body paragraph sandwiched between two stray $$, i.e. the
+ *   misaligned product of deleting the wrong $$) is the pairing refused.
+ * - **Exception: a blank line inside a properly paired `\begin{…}…\end{…}` is
+ *   not a paragraph boundary.** A blank line in a multi-line environment is
+ *   typographic whitespace (expanding the `#@` snippet into
+ *   `$$\n\begin{align}\n$0\n\end{align}\n$$` and pressing Enter at `$0`
+ *   produces exactly that), and the whole block still renders; a blank line
+ *   after an *unclosed* `\begin` gets no exemption, otherwise "typed a
+ *   \begin, no \end yet, then a blank line" would reopen the hole that
+ *   swallows body text.
+ * - Pairing advances like a stack: when a pair is refused, neither marker
+ *   produces a region (both stay visible and deletable) and the closing
+ *   candidate keeps looking further back — after deleting one $$, the intact
+ *   formulas below still pair and render as before instead of shifting as a
+ *   whole (the "formula monster chasing along").
+ * - With an odd number of markers, the final stray $$ is the "still being
+ *   typed, not closed" shape and gets a live region capped at the current
+ *   paragraph (the first blank line); every other stray stays plain text —
+ *   body text inside a misaligned product is never swallowed into any
+ *   region, and every $$ stays visible and deletable.
  */
 export function scanMath(doc: Text): MathRegion[] {
   const out: MathRegion[] = [];
@@ -47,7 +59,7 @@ export function scanMath(doc: Text): MathRegion[] {
     }
   }
 
-  // 行 [start,end) 是否只含空白。
+  // Whether the line [start,end) contains only whitespace.
   const lineIsBlank = (start: number, end: number) => {
     for (let i = start; i < end; i++) {
       const ch = text.charCodeAt(i);
@@ -56,10 +68,11 @@ export function scanMath(doc: Text): MathRegion[] {
     return true;
   };
 
-  // `\begin{name}` / `\end{name}`:环境名不跨行(`\begin{` 后换行不算环境)。
+  // `\begin{name}` / `\end{name}`: the environment name does not span lines
+  // (a newline after `\begin{` does not open an environment).
   const ENV_TOKEN = /\\(begin|end)\s*\{([^}\n]*)\}/g;
 
-  /** [from,to) 之间还有该环境的 `\end` 吗——没有就说明环境没闭合。 */
+  /** Is there an `\end` for that environment between [from,to)? Without one the environment is not closed. */
   const hasClosingEnd = (from: number, to: number, envName: string): boolean => {
     ENV_TOKEN.lastIndex = from;
     let m: RegExpExecArray | null;
@@ -69,7 +82,7 @@ export function scanMath(doc: Text): MathRegion[] {
     return false;
   };
 
-  /** 把行 [from,to) 里的 `\begin`/`\end` 反映到环境栈上(只弹最近的同名环境)。 */
+  /** Reflects the `\begin`/`\end` of the line [from,to) onto the environment stack (only the nearest same-named environment is popped). */
   const scanEnvTokens = (from: number, to: number, stack: string[]): void => {
     if (text.indexOf("\\", from) < 0 || text.indexOf("\\", from) >= to) return;
     ENV_TOKEN.lastIndex = from;
@@ -80,13 +93,17 @@ export function scanMath(doc: Text): MathRegion[] {
     }
   };
 
-  /** 开闭标记之间的内容能否构成一个公式块。单行配对(`$$x$$`)天然合法;
-   *  多行时数内部行:开头连续空行(lead)与结尾连续空行(trail)剥掉之后,
-   *  中间不容空行,且两侧不得同时留空(那是正文被夹的错位产物);
-   *  落在配对完整环境内部的空行不算空行(见文件头)。 */
+  /** Can the content between the opening and closing markers form a math
+   *  block? A single-line pair (`$$x$$`) is valid by nature; for multi-line
+   *  pairs the interior lines are counted: after peeling off the leading run
+   *  of blank lines (lead) and the trailing run (trail), there must be no
+   *  blank line in the middle, and both sides must not be blank at once (that
+   *  is a misaligned product with body text sandwiched in);
+   *  a blank line inside a properly paired environment does not count as a
+   *  blank line (see the file header). */
   const pairValid = (open: number, close: number): boolean => {
     const openNl = text.indexOf("\n", open);
-    if (openNl === -1 || openNl + 1 > close) return true; // 同行配对
+    if (openNl === -1 || openNl + 1 > close) return true; // same-line pair
     let lead = 0;
     let trail = 0;
     let pendingTrail = 0;
@@ -96,9 +113,10 @@ export function scanMath(doc: Text): MathRegion[] {
     let pos = openNl + 1;
     while (pos < close) {
       let nl = text.indexOf("\n", pos);
-      if (nl === -1 || nl >= close) nl = close; // 闭标记所在行的行首片段
+      if (nl === -1 || nl >= close) nl = close; // the line-start fragment of the closing marker's line
       const blank = lineIsBlank(pos, nl);
-      // 空行是不是"环境内部的留白":栈顶环境在本块之内还有配对的 \end。
+      // Is the blank line "whitespace inside an environment": the environment
+      // on top of the stack still has its matching \end inside this block.
       const envTop = envStack[envStack.length - 1];
       const envBlank = blank && envTop !== undefined && hasClosingEnd(nl, close, envTop);
       if (blank && !envBlank) {
@@ -129,14 +147,19 @@ export function scanMath(doc: Text): MathRegion[] {
       out.push({ from: open, to: m + 2, display: true, content: text.slice(open + 2, m) });
       open = -1;
     } else {
-      // 错位配对:两个标记都不发区域(保持可见可删),当前标记成为新的开候选
-      // ——下方完好的公式因此仍能按原样配对(公式怪不再整体移位)。
+      // Misaligned pair: neither marker produces a region (both stay visible
+      // and deletable) and the current marker becomes the new opening
+      // candidate — the intact formulas below therefore still pair as before
+      // (the formula monster no longer shifts as a whole).
       open = m;
     }
   }
-  // 只有奇数个标记时的最终落单 $$ 是"打字中未闭合"形态,发实时区域(封顶到
-  // 本段);偶数个标记还剩落单,说明它是错位产物里被挤掉的闭合标记,其下方
-  // 是无关正文——保持普通文本,不吞进任何区域。
+  // With an odd number of markers the final stray $$ is the "still being
+  // typed, not closed" shape and gets a live region (capped at the current
+  // paragraph); with an even number of markers a stray remains, which means it
+  // is the closing marker squeezed out of a misaligned product and what
+  // follows it is unrelated body text — it stays plain text and is never
+  // swallowed into any region.
   if (open !== -1 && marks.length % 2 === 1) {
     pushStrayRegion(out, text, open);
   }
@@ -168,17 +191,22 @@ export function scanMath(doc: Text): MathRegion[] {
 }
 
 /**
- * 落单 $$ 的实时区域:`$$` 起到本段(第一个空行)末尾——打字中的公式保持
- * 实时渲染,又绝不吞进后续段落。区域止于段落最后一个字符(不含末尾换行),
- * 否则单行区域会越过行尾,行内替换装饰跨行抛
- * "Decorations that replace line breaks may not be specified via plugins"。
+ * The live region of a stray $$: from the `$$` to the end of the current
+ * paragraph (the first blank line) — a formula being typed keeps rendering
+ * live and yet never swallows the following paragraph. The region ends at the
+ * last character of the paragraph (without the trailing newline), otherwise a
+ * single-line region would pass the line end and the inline replace
+ * decoration would throw across lines:
+ * "Decorations that replace line breaks may not be specified via plugins".
  */
 function pushStrayRegion(out: MathRegion[], text: string, from: number): void {
   if (text.length - from > 10_000) return;
   const rest = text.slice(from + 2, Math.min(text.length, from + 2 + 10_000));
   const blank = /\n[ \t]*\n/.exec(rest);
-  // 区域止于段落最后一个字符(不含末尾换行)——区域跨行与否由换行决定,
-  // 把换行算进来会让单行区域越过了行尾,行内替换装饰会跨行抛错。
+  // The region ends at the last character of the paragraph (without the
+  // trailing newline) — whether the region spans lines is decided by the
+  // newline, and counting it in would push a single-line region past the line
+  // end, making the inline replace decoration throw across lines.
   const paraEnd = blank ? blank.index : rest.length;
   out.push({
     from,

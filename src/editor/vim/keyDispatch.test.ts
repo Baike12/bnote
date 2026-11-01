@@ -7,21 +7,29 @@ import { parseReplacement } from "@/editor/snippets/engine";
 import { useAppStore } from "@/state/appStore";
 
 /**
- * 「普通模式 Enter/Backspace 被改写、活会话吃掉第一下 Esc」的根因回归。
+ * Root-cause regression for "normal-mode Enter/Backspace get rewritten and a
+ * live session swallows the first Esc".
  *
- * CM6 把所有 keyBindings 汇进一个共享 keydown 处理器，flatten 在第一个
- * keymap.of 声明的位置（baseExtensions 里 snippetsExtension() 最靠前），排在
- * vim 引擎之前；而引擎自己的链入口从不返回 true（以副作用动作、从不认领
- * 事件）。于是凡是被任何 keymap 绑过的键，引擎永远轮不到：普通模式 Enter
- * 落到 defaultKeymap 的 insertNewlineAndIndent（凭空插行）、Backspace 落到
- * deleteCharBackward（删字）；活片段会话把第一下 Esc 吃掉（退出要按两下）。
+ * CM6 funnels all keyBindings into one shared keydown handler, flattened at
+ * the position of the first keymap.of declaration (in baseExtensions that is
+ * snippetsExtension(), the earliest one), so it runs before the vim engine.
+ * The engine's own chain entry never returns true (it acts through side
+ * effects and never claims the event), so any key bound by some keymap never
+ * reaches the engine: in normal mode Enter lands on defaultKeymap's
+ * insertNewlineAndIndent (inserting a line out of nowhere) and Backspace on
+ * deleteCharBackward (deleting a character); a live snippet session swallows
+ * the first Esc (so leaving takes two presses).
  *
- * 修复的两条契约在这里锁死（分发顺序本身要 DOM，浏览器协议验证）：
- * 1. vimCapturesKey：捕获分发器只接管 normal/visual，insert 让路给
- *    snippet/latex 的编辑增强，IME 组合/死键/上游已认领一律不碰；
- * 2. 命令映射注册表：`nmap <C-b> :Bnote…` 与引擎原生 <C-b>（翻页）冲突，
- *    捕获分发要在引擎之前查它；vimrc 删掉的映射不残留。
- * 3. snippet 的 Esc 门控：vim 开启时让引擎先退插入态。
+ * The two contracts of the fix are locked here (the dispatch order itself
+ * needs a DOM and is verified in the browser):
+ * 1. vimCapturesKey: the capture dispatcher only takes over in normal/visual
+ *    mode; insert mode yields to the snippet/latex editing enhancements, and
+ *    IME composition, dead keys and already-claimed events are never touched;
+ * 2. the command mapping registry: `nmap <C-b> :Bnote…` collides with the
+ *    engine's native <C-b> (page down), so the capture dispatch must consult
+ *    it before the engine; mappings deleted from the vimrc do not linger.
+ * 3. the snippet Esc gate: with vim enabled the engine leaves insert mode
+ *    first.
  */
 
 const capturesBase = {
@@ -59,7 +67,8 @@ describe("lookupVimCommand：命令映射注册表（捕获分发先于引擎查
       commandId: "nav.toggle-sidebar",
       noremap: false,
     },
-    // 多键 lhs：keymap 兜不住（normalizeVimKey 返回 null），不进注册表
+    // Multi-key lhs: the keymap cannot catch it (normalizeVimKey returns
+    // null), so it stays out of the registry
     { lhs: "gs", rhs: ":Bnote x.y<CR>", mode: "normal" as const, commandId: "x.y", noremap: false },
   ];
 
@@ -83,7 +92,7 @@ describe("lookupVimCommand：命令映射注册表（捕获分发先于引擎查
   });
 });
 
-/* ---- escapeForSnippet：活会话不得吃掉 vim 的第一下 Esc ---- */
+/* ---- escapeForSnippet: a live session must not swallow vim's first Esc ---- */
 
 function withSession(doc: string, session: SnippetSession | null): EditorState {
   const base = EditorState.create({ doc, extensions: [snippetField] });

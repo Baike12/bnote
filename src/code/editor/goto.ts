@@ -9,13 +9,15 @@ import { applyTextEdits } from "./textEdits";
 import { workspaceEditsOf } from "./workspaceEdit";
 
 /**
- * 跳转类动作:跳到定义、跳到引用、重命名。
+ * The jump actions: go to definition, go to references, rename.
  *
- * 它们的共同形状是「向语言服务器要一批位置 → 把位置变成项目里的文件与
- * 行」,所以定位与换算都收在这一层,UI 只负责「跳过去 / 列出来」。
+ * They share the same shape — "ask the language server for a batch of
+ * positions → turn the positions into files and lines inside the project" —
+ * so the locating and the conversion are collected here and the UI only
+ * handles "jump there / list them".
  */
 
-/** 语言服务器回的一个位置(可能是 Location 或 LocationLink)。 */
+/** One location returned by the language server (a Location or a LocationLink). */
 interface RawLocation {
   uri?: string;
   range?: LspRange;
@@ -24,16 +26,16 @@ interface RawLocation {
   targetSelectionRange?: LspRange;
 }
 
-/** 归一成「项目相对路径 + 位置」。 */
+/** Normalized into "project-relative path + position". */
 export interface CodeTarget {
-  /** 项目相对路径;不在项目内时是绝对路径(带 `!` 前缀标记)。 */
+  /** Project-relative path; an absolute path when it is outside the project (marked with a `!` prefix). */
   path: string;
   position: LspPosition;
-  /** 这个位置在项目外吗(外部依赖、库源码)。 */
+  /** Is this location outside the project (external dependency, library source)? */
   external: boolean;
 }
 
-/** 把服务器的 uri 变成项目相对路径。 */
+/** Turn the uri of the server into a project-relative path. */
 function toTarget(uri: string, range: LspRange | undefined, root: string): CodeTarget | null {
   const abs = decodeFileUri(uri);
   if (!abs) return null;
@@ -45,7 +47,7 @@ function toTarget(uri: string, range: LspRange | undefined, root: string): CodeT
   return { path: abs, position, external: true };
 }
 
-/** 归一服务器的返回(数组 / 单个 / LocationLink 混合)。 */
+/** Normalize the answer of the server (array / single / mixed with LocationLink). */
 function normalizeLocations(raw: unknown): RawLocation[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw as RawLocation[];
@@ -53,7 +55,7 @@ function normalizeLocations(raw: unknown): RawLocation[] {
   return [];
 }
 
-/** 发一个「要位置」的请求,归一成项目内的目标列表。 */
+/** Send a "give me positions" request and normalize it into a list of targets inside the project. */
 async function requestTargets(method: string): Promise<CodeTarget[]> {
   const handle = activeCodeEditor();
   if (!handle) return [];
@@ -77,14 +79,18 @@ async function requestTargets(method: string): Promise<CodeTarget[]> {
 }
 
 /**
- * 跳到定义(也用于类型定义、实现):要一个就跳第一个,要多个就列出来。
+ * Go to definition (also used for type definition and implementation): with
+ * one target jump to the first, with several list them.
  *
- * 跳转会切标签页——所以先让 store 把文件打开,再由编辑器把光标落到位。
+ * A jump switches tabs — so the store opens the file first and the editor
+ * then places the caret.
  */
 export async function gotoDefinition(method = "textDocument/definition"): Promise<void> {
   const targets = await requestTargets(method);
-  // 项目外的位置(标准库、node_modules、Rust 源码)打不开:后端只放行项目根
-  // 内的路径。如实告诉用户,别去撞一个必然失败的 openFile。
+  // Locations outside the project (the standard library, node_modules, the
+  // Rust sources) cannot be opened: the backend only lets paths inside the
+  // project root through. Tell the user honestly instead of running into an
+  // openFile that is bound to fail.
   const first = targets.find((t) => !t.external);
   if (!first) {
     if (targets.length > 0) {
@@ -97,7 +103,7 @@ export async function gotoDefinition(method = "textDocument/definition"): Promis
   store.requestJump(first.path, first.position);
 }
 
-/** 找出所有引用,填进引用面板。 */
+/** Find all references and put them into the references panel. */
 export async function findReferences(): Promise<void> {
   const handle = activeCodeEditor();
   if (!handle) return;
@@ -124,17 +130,22 @@ export async function findReferences(): Promise<void> {
 }
 
 /**
- * 重命名符号。
+ * Rename a symbol.
  *
- * 流程:先 `prepareRename` 拿到可改的区间(有的服务器不给,那就跳过这步),
- * 再 `rename` 拿 WorkspaceEdit,最后把 edit 落到磁盘上改动的那些文件。
+ * The flow: `prepareRename` first to get the range that may be renamed (some
+ * servers do not provide it, then this step is skipped), then `rename` to get
+ * the WorkspaceEdit, and finally apply the edit to the changed files on disk.
  *
- * 两条纪律:
- * 1. **以缓冲区为底**:打开着的文件可能带着未保存的改动,必须拿 buffer 的
- *    内容算新文本(不是盘上的旧文本),否则用户没保存的编辑会被 rename 的
- *    结果整篇覆盖掉;
- * 2. **先算完再写**:所有文件的新文本都算好才动盘——读盘或解析中途失败时
- *    一个文件都没改。写盘本身没法跨文件原子,写到一半失败只能如实报错。
+ * Two rules:
+ * 1. **the buffer is the base**: an open file may carry unsaved changes, so
+ *    the new text has to be computed from the buffer content (not the old
+ *    text on disk), otherwise the user's unsaved edits would be overwritten
+ *    wholesale by the result of the rename;
+ * 2. **compute everything before writing**: the new text of all files is
+ *    computed before anything touches the disk — if reading a file or parsing
+ *    fails halfway, not a single file has changed. Writing to disk cannot be
+ *    atomic across files, so a failure halfway through can only be reported
+ *    honestly.
  */
 export async function renameSymbol(newName: string): Promise<boolean> {
   const handle = activeCodeEditor();
@@ -148,7 +159,7 @@ export async function renameSymbol(newName: string): Promise<boolean> {
       position,
     })
     .catch(() => null);
-  // prepareRename 不同意改名(返回 null)就别硬来。
+  // When prepareRename refuses the rename (returns null), do not force it.
   if (prepared === null) return false;
 
   const edit = await codeApi
@@ -157,7 +168,8 @@ export async function renameSymbol(newName: string): Promise<boolean> {
       newName,
     })
     .catch(() => null);
-  // WorkspaceEdit 有两种形状,两种都要认(见 workspaceEdit.ts)。
+  // A WorkspaceEdit has two shapes, both have to be recognized (see
+  // workspaceEdit.ts).
   const fileEdits = workspaceEditsOf(edit);
   if (fileEdits.length === 0) return false;
 
@@ -167,7 +179,7 @@ export async function renameSymbol(newName: string): Promise<boolean> {
 
   for (const { uri, edits } of fileEdits) {
     const abs = decodeFileUri(uri);
-    if (!abs || !abs.startsWith(prefix)) continue; // 项目外的文件不改
+    if (!abs || !abs.startsWith(prefix)) continue; // files outside the project are not modified
     const rel = abs.slice(prefix.length);
     const open = useCodeStore.getState().files[rel];
     let base = open?.content;
@@ -183,8 +195,9 @@ export async function renameSymbol(newName: string): Promise<boolean> {
   try {
     for (const [rel, text] of next) {
       await codeApi.writeFile(root, rel, text);
-      // 打开着的文件:缓冲区换成刚落盘的内容(标记为已保存)。不刷的话,
-      // 那个标签还是旧文本,下次保存又把重命名覆盖回去了。
+      // For an open file: replace the buffer with the text just written to
+      // disk (marked as saved). Without this the tab still holds the old text
+      // and the next save would overwrite the rename again.
       if (useCodeStore.getState().files[rel]) {
         useCodeStore.getState().replaceContent(rel, text);
       }

@@ -1,9 +1,13 @@
-//! Markdown 内嵌 Python:项目解析、配置、解释器解析。
+//! Python embedded in markdown: project resolution, configuration, interpreter
+//! resolution.
 //!
-//! 项目模型:笔记在 vault 根下的第一层文件夹就是一个 python 项目(笔记直接
-//! 躺在 vault 根时,vault 根本身即项目)。项目根下的 `.venv`、`pyproject.toml`
-//! 与 PATH 上的 `uv` 共同决定运行环境(见 [`runner::resolve_env`])。
-//! 每项目配置持久化在 `<vault>/.bnote/python.json`,按一级目录名索引。
+//! Project model: the first-level folder under the vault root that holds a
+//! note is a Python project (when the note lies directly in the vault root,
+//! the vault root itself is the project). The `.venv` and `pyproject.toml` under
+//! the project root together with `uv` on the PATH determine the runtime
+//! environment (see [`runner::resolve_env`]). The per-project configuration is
+//! persisted in `<vault>/.bnote/python.json`, indexed by the first-level
+//! directory name.
 
 pub mod lsp;
 pub mod runner;
@@ -13,26 +17,28 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 单个项目的 python 设置。缺省字段 = 用自动探测。
+/// The Python settings of one project. A missing field means the value is
+/// auto-detected.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProjectConfig {
-    /// 语言服务器:"off"(默认)或 "ty"。
+    /// The language server: "off" (the default) or "ty".
     #[serde(rename = "lsp", skip_serializing_if = "Option::is_none")]
     pub lsp: Option<String>,
-    /// 显式解释器覆盖(绝对路径)。
+    /// An explicit interpreter override (an absolute path).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python: Option<String>,
-    /// 显式 ty 可执行文件覆盖(路径或 PATH 上的命令名)。
+    /// An explicit override of the ty executable (a path or a command name on
+    /// the PATH).
     #[serde(rename = "tyPath", skip_serializing_if = "Option::is_none")]
     pub ty_path: Option<String>,
 }
 
-/// `<vault>/.bnote/python.json` 的整体结构。
+/// The overall structure of `<vault>/.bnote/python.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PythonConfig {
-    /// key = vault 一级目录名。
+    /// key = the first-level directory name in the vault.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub projects: std::collections::BTreeMap<String, ProjectConfig>,
 }
@@ -43,16 +49,19 @@ impl PythonConfig {
     }
 }
 
-/// 项目定位结果。
+/// The result of locating the project.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectRef {
     pub root: PathBuf,
-    /// vault 一级目录名;笔记直接在 vault 根(或隐藏目录)时为空串。
+    /// The first-level directory name in the vault; empty when the note lies
+    /// directly in the vault root (or in a hidden directory).
     pub name: String,
 }
 
-/// 笔记所在的一级目录即项目根;隐藏目录(.bnote/.trash…)与 vault 根直属的
-/// 笔记都归到 vault 根,避免把配置目录当项目。
+/// The first-level directory holding the note is the project root; hidden
+/// directories (.bnote/.trash…) and notes directly in the vault root both
+/// belong to the vault root, so a configuration directory is never mistaken
+/// for a project.
 pub fn resolve_project(vault: &Path, md_path: &Path) -> Result<ProjectRef, String> {
     let vault_c = vault
         .canonicalize()
@@ -68,7 +77,8 @@ pub fn resolve_project(vault: &Path, md_path: &Path) -> Result<ProjectRef, Strin
         )
     })?;
     let comps: Vec<_> = rel.components().collect();
-    // 笔记直接躺在 vault 根(rel 只有笔记自己一个分量)→ 项目 = vault。
+    // The note lies directly in the vault root (rel has only the note itself)
+    // → the project is the vault.
     if comps.len() <= 1 {
         return Ok(ProjectRef { root: vault_c, name: String::new() });
     }
@@ -118,8 +128,9 @@ mod tests {
         std::fs::create_dir_all(note.parent().unwrap()).unwrap();
         std::fs::write(&note, "").unwrap();
         let p = resolve_project(&vault, &note).unwrap();
-        // resolve_project 返回 canonicalize 后的路径(macOS 上 /tmp 是
-        // /private/tmp 的软链),期望值同样 canonicalize。
+        // resolve_project returns the canonicalized path (on macOS /tmp is a
+        // symlink to /private/tmp), so the expected value is canonicalized
+        // too.
         let expect_root = vault.canonicalize().unwrap().join("ml-notes");
         assert_eq!(p.root, expect_root);
         assert_eq!(p.name, "ml-notes");

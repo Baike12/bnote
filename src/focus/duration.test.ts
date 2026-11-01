@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { parseMinutesDraft } from "./duration";
 
 /**
- * 回归:输入框里那个数字删不掉,根因是"清空 → Number('') === 0 → 归一化夹成 1"。
- * 草稿解析必须把空串当成"无效",而不是"0 分钟"。
+ * Regression: the digit in the input could not be deleted; the root cause is
+ * "cleared → Number('') === 0 → normalized to 1". Draft parsing must treat an
+ * empty string as "invalid", not as "0 minutes".
  */
 describe("分钟输入的草稿解析", () => {
   it("空串/空白不是时长:保留原值,不能被夹成 1", () => {

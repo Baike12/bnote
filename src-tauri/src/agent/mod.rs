@@ -19,7 +19,8 @@ pub struct AgentConfig {
     pub base_url: String,
     pub api_key: String,
     pub max_tokens: u32,
-    /// 模型的上下文窗口(tokens),用于显示占用率。按用户实际模型填写。
+    /// Model context window (in tokens), used to display the occupancy ratio.
+    /// Fill in the window of the user's actual model.
     #[serde(default = "default_context_window")]
     pub context_window: u64,
     /// MCP servers: name → {command,args,env} or {url,headers}.
@@ -66,12 +67,14 @@ impl AgentConfig {
         cfg
     }
 
-    /// 收敛协议字段的取值契约:只允许 "anthropic" | "openai"。
+    /// Narrows the protocol field to its value contract: only "anthropic" | "openai".
     ///
-    /// 旧配置/手改数据里 provider 可能是空串;Provider 按字面量判
-    /// `== "anthropic"`,空串会静默走 OpenAI 分支,请求路径与用户填的
-    /// 协议对不上(表现为网关 404,和鉴权/模型错误难区分)。在加载边界
-    /// 归一成 UI 默认显示的 anthropic,此后所有读取方都不必再防这个值。
+    /// Legacy configs and hand-edited data may hold an empty provider; `Provider`
+    /// compares the literal `== "anthropic"`, so an empty string silently takes the
+    /// OpenAI branch and the request path disagrees with the protocol the user
+    /// picked (surfacing as a gateway 404, hard to tell apart from auth and model
+    /// errors). Normalizing at the load boundary to the anthropic value the UI
+    /// shows by default means no reader has to defend against this case again.
     fn normalize(&mut self) {
         if self.provider != "anthropic" && self.provider != "openai" {
             self.provider = "anthropic".into();

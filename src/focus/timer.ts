@@ -1,37 +1,41 @@
 /**
- * 番茄钟的纯逻辑:状态机 + 时间计算。
+ * Pure logic of the pomodoro timer: state machine plus time computation.
  *
- * 一次番茄钟 = **一段连续的专注**:没有休息段,到点就停,不会自动接下一段。
- * 也**没有暂停**:开始之后这一段必须走完——暂停等于把锁和计时拆开,而锁是
- * 这段承诺的一部分(见 focus/store.ts)。所以状态只有 idle / focus 两个。
+ * One pomodoro = **one continuous stretch of focus**: there is no break phase, it
+ * stops when the time is up and never continues into the next stretch by itself.
+ * There is **no pause** either: once it started, the stretch has to run to the end -
+ * pausing would split the lock from the timing, and the lock is part of that promise
+ * (see focus/store.ts). So there are only two states, idle and focus.
  *
- * 时间是**时间戳**,不是"每秒减一"的累加器:剩余时间一律由
- * `endsAt - now` 现算。累加器会把每次 tick 的误差攒起来(系统繁忙、标签页
- * 被节流、休眠唤醒),攒到最后显示的时间和真实时间对不上;而且改系统时钟
- * 之后没法自证。这里只存"这一段到几点结束",显示、判超时、跨重启恢复
- * 都从它推。
+ * The time is a **timestamp**, not a "minus one every second" accumulator: the
+ * remaining time is always computed as `endsAt - now`. An accumulator piles up the
+ * error of every tick (busy system, throttled tab, wake from sleep) and the
+ * displayed time no longer matches the real time; it also cannot prove itself
+ * after the system clock was changed. Here we only store "when this stretch ends",
+ * and the display, the timeout check and the restore across a restart are all
+ * derived from it.
  *
- * 纯函数,没有 Date.now 藏在里面——`now` 一律由调用方传进来,测试才能钉住
- * 时间(见 timer.test.ts)。
+ * Pure functions, no Date.now hidden inside - `now` is always passed in by the
+ * caller, so tests can pin the time (see timer.test.ts).
  */
 
 export type TimerPhase = "idle" | "focus";
 
 export interface TimerConfig {
-  /** 一次专注有多长(分钟)。 */
+  /** How long one focus stretch lasts (minutes). */
   focusMinutes: number;
 }
 
 export interface TimerState {
   phase: TimerPhase;
-  /** 这一段的结束时间戳(epoch ms);空闲时为 null。 */
+  /** End timestamp of this stretch (epoch ms); null while idle. */
   endsAt: number | null;
   config: TimerConfig;
 }
 
 export const DEFAULT_TIMER_CONFIG: TimerConfig = { focusMinutes: 25 };
 
-/** 时长下限:0 分钟会让这一段瞬间结束,计时器变成闪一下就没。 */
+/** Lower bound of the duration: 0 minutes would end the stretch instantly, the timer would only flash once. */
 const MIN_MINUTES = 1;
 
 export function createTimerState(config?: Partial<TimerConfig> | null): TimerState {
@@ -43,22 +47,26 @@ export function createTimerState(config?: Partial<TimerConfig> | null): TimerSta
 }
 
 /**
- * 时长取整并夹进合法范围(0 / 负数 / NaN 一律当 1 分钟)。
+ * Round the duration and clamp it into the legal range (0, a negative number and
+ * NaN all count as 1 minute).
  *
- * 入参允许缺字段:旧版本配置里还有 `breakMinutes`、`cycle`,读回来时多出来的
- * 键直接忽略,不能因为字段变了就把人家的时长清零。
+ * A missing field is allowed: older configs still carry `breakMinutes` and
+ * `cycle`, the extra keys are simply ignored when they are read back, and the
+ * duration of the user must not be zeroed because the fields changed.
  */
 export function normalizeConfig(config?: Partial<TimerConfig> | null): TimerConfig {
   const raw = config?.focusMinutes;
-  // 缺字段/NaN(比如输入框被清空):用默认值,别把用户的设置清零。
+  // Missing field or NaN (the input box was cleared): use the default, do not
+  // zero out the setting of the user.
   if (typeof raw !== "number" || !Number.isFinite(raw)) {
     return { focusMinutes: DEFAULT_TIMER_CONFIG.focusMinutes };
   }
-  // 明确输入的小值(0、负数)夹到 1 分钟:至少能看出计时在走。
+  // A small value the user entered on purpose (0, a negative number) is clamped to
+  // 1 minute: at least the timing is visibly running.
   return { focusMinutes: Math.max(MIN_MINUTES, Math.floor(raw)) };
 }
 
-/** 一段专注的长度(毫秒)。 */
+/** Length of one focus stretch (milliseconds). */
 export function focusDurationMs(state: TimerState): number {
   return state.config.focusMinutes * 60_000;
 }
@@ -67,14 +75,14 @@ export function isRunning(state: TimerState): boolean {
   return state.endsAt !== null;
 }
 
-/** 有没有一段专注正在进行。 */
+/** Whether a focus stretch is running. */
 export function isActive(state: TimerState): boolean {
   return state.phase === "focus";
 }
 
 /**
- * 开始计时。已经在跑就是空操作(幂等):重复按开始不会把已走的进度重置成
- * 满格。
+ * Start the timer. Starting while it already runs is a no-op (idempotent): pressing
+ * start again does not reset the elapsed progress to full.
  */
 export function startTimer(state: TimerState, now: number): TimerState {
   if (state.endsAt !== null) return state;
@@ -85,23 +93,23 @@ export function startTimer(state: TimerState, now: number): TimerState {
   };
 }
 
-/** 结束/重置:回到 idle。一段番茄钟只有"走完"这一种收尾。 */
+/** Stop and reset: back to idle. A pomodoro has only one ending, "it ran out". */
 export function stopTimer(state: TimerState): TimerState {
   return { ...state, phase: "idle", endsAt: null };
 }
 
-/** 剩余毫秒;空闲时是 0。 */
+/** Remaining milliseconds; 0 while idle. */
 export function remainingMs(state: TimerState, now: number): number {
   if (state.endsAt === null) return 0;
   return Math.max(0, state.endsAt - now);
 }
 
-/** 这一段是否已经到点。 */
+/** Whether this stretch has reached its end. */
 export function isExpired(state: TimerState, now: number): boolean {
   return state.endsAt !== null && now >= state.endsAt;
 }
 
-/** mm:ss(超过一小时按 h:mm:ss)。 */
+/** mm:ss (h:mm:ss beyond one hour). */
 export function formatClock(ms: number): string {
   const total = Math.max(0, Math.ceil(ms / 1000));
   const h = Math.floor(total / 3600);

@@ -5,7 +5,7 @@ import { anchorRegionAt, collectAnchors, findTitleMatches } from "./calloutAncho
 
 const docOf = (text: string) => EditorState.create({ doc: text }).doc;
 
-/** 匹配结果转成可直接断言的文本切片（含跨行区间）。 */
+/** Turns match results into text slices that can be asserted on directly (including multi-line ranges). */
 const slices = (doc: ReturnType<typeof docOf>, title: string, from = 0) =>
   findTitleMatches(doc, from, doc.length, title).map((m) => doc.sliceString(m.from, m.to));
 
@@ -20,7 +20,7 @@ describe("findTitleMatches:标题与正文文本的空白弹性匹配", () => {
 
   it("标题里的空格匹配正文里的换行:跨行选中的原文仍能命中", () => {
     const doc = docOf("前\n甲\n乙\n后");
-    // 跨行选区建块时标题被压成「甲 乙」
+    // a multi-line selection is squeezed into the title "甲 乙" when the block is created
     expect(slices(doc, "甲 乙")).toEqual(["甲\n乙"]);
   });
 
@@ -69,7 +69,7 @@ describe("anchorRegionAt:光标位置 → 关联 callout", () => {
   it("跨行锚点:光标在锚点后段(与起点不同行)也算", () => {
     const state = EditorState.create({ doc: "甲\n乙\n\n::: 甲 乙\n\n:::\n" });
     const regions = calloutRegions(state);
-    // 锚点区间 [0, 3)（「甲\n乙」），光标在「乙」上
+    // anchor range [0, 3) ("甲\n乙"), caret on "乙"
     expect(anchorRegionAt(state.doc, regions, 2)?.title).toBe("甲 乙");
   });
 
@@ -94,9 +94,9 @@ describe("collectAnchors:视口锚点收集（渲染层）", () => {
     const doc = docOf("斜率矩阵\n\n```\n斜率矩阵\n```\n\n::: 斜率矩阵\n\n:::\n");
     const state = EditorState.create({ doc });
     const hits = collectAnchors(doc, calloutRegions(state), 0, doc.length, [
-      { from: doc.line(3).from, to: doc.line(5).to }, // 围栏代码整块
+      { from: doc.line(3).from, to: doc.line(5).to }, // the whole fenced code block
     ]);
-    // 只有正文行 1 的命中留下:代码块内的被 exclude 跳过,块内/标题行的被 callout 区域跳过
+    // only the hit on body line 1 survives: hits inside the code block are skipped by exclude, and hits on the title line / inside the block are skipped by the callout region
     expect(hits.map((h) => h.from)).toEqual([0]);
   });
 

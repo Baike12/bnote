@@ -1,14 +1,18 @@
-//! 代码项目的语言服务器:按语言起进程、按需转发请求、把诊断送回前端。
+//! Language servers for code projects: spawn one process per language, forward
+//! requests on demand, push diagnostics back to the front end.
 //!
-//! ## 配置从哪来
+//! ## Where the configuration comes from
 //!
-//! 三层,后者盖前者:
+//! Three layers, each overriding the previous one:
 //!
-//! 1. **内置默认**——常见语言用哪个服务器、怎么起(见 [`builtin_server`]);
-//! 2. **全局覆盖**——用户在设置里配的(前端把这一层传进来);
-//! 3. **项目内覆盖**——`<项目根>/.bnote/lsp.json`,跟着仓库走,团队共享。
+//! 1. **built-in defaults** — which server to use for a common language and how
+//!    to start it (see [`builtin_server`]);
+//! 2. **global overrides** — what the user configured in the settings (the
+//!    front end passes this layer in);
+//! 3. **project overrides** — `<project root>/.bnote/lsp.json`, which travels
+//!    with the repository and is shared by the team.
 //!
-//! 项目内那份的形状:
+//! The shape of the project file:
 //!
 //! ```json
 //! {
@@ -20,15 +24,18 @@
 //! }
 //! ```
 //!
-//! ## 一项目一 manager,一语言一进程
+//! ## One manager per project, one process per language
 //!
-//! 每个项目一个 [`LspManager`],里面按语言各挂一个客户端。同一语言不会起
-//! 两个进程(并发首次请求时各自 spawn,插入前复查,只留一个活的)。
+//! Every project owns an [`LspManager`] that holds one client per language. The
+//! same language never spawns two processes (concurrent first requests each
+//! spawn one, the map is re-checked before insertion and only the live one
+//! survives).
 //!
-//! ## 文档是真实文件
+//! ## The documents are real files
 //!
-//! 与 markdown 里内嵌 python 那条链不同:这里的 `didOpen` 送的是磁盘上真实
-//! 文件的内容,URI 就是它的 file:// URI。服务器可以直接回读磁盘。
+//! Unlike the Python chain embedded in markdown, the `didOpen` here carries the
+//! content of a real file on disk and its URI is that file's file:// URI, so the
+//! server can read it back from disk.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,34 +48,34 @@ use tauri::Emitter;
 use crate::lsp::client::{LspClient, LspSink, ServerSpec};
 use crate::lsp::{decode_uri_path, path_to_uri, BoxFuture};
 
-/// 语言服务器怎么起。
+/// How to start a language server.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ServerConfig {
-    /// 可执行文件名或绝对路径。
+    /// The executable name or an absolute path.
     pub command: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
-    /// initialize 的 `initializationOptions`。
+    /// The `initializationOptions` of the initialize request.
     pub init_options: Value,
 }
 
-/// `<项目根>/.bnote/lsp.json` 的形状。
+/// The shape of `<project root>/.bnote/lsp.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProjectLspConfig {
-    /// 语言 → 服务器配置。
+    /// Language → server configuration.
     pub languages: HashMap<String, ServerConfig>,
-    /// 明确关掉的语言(即便有默认配置)。
+    /// Languages explicitly turned off (even when a default configuration exists).
     pub disabled: Vec<String>,
 }
 
-/// 内置默认:常见语言用哪个语言服务器。
+/// Built-in defaults: which language server a common language uses.
 ///
-/// 参数是**实测过的启动方式**,不是猜的:
-/// - `typescript-language-server` 要 `--stdio`;
-/// - `ty` 的子命令是 `server`(不是 `--stdio`);
-/// - `rust-analyzer` 直接跑就是 stdio 模式。
+/// The arguments are **measured startup invocations**, not guesses:
+/// - `typescript-language-server` needs `--stdio`;
+/// - the subcommand of `ty` is `server` (not `--stdio`);
+/// - `rust-analyzer` speaks stdio when run directly.
 pub fn builtin_server(language: &str) -> Option<ServerConfig> {
     let (command, args): (&str, &[&str]) = match language {
         "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => {
@@ -94,8 +101,8 @@ pub fn builtin_server(language: &str) -> Option<ServerConfig> {
     })
 }
 
-/// 读项目内的 `.bnote/lsp.json`;没有或坏了就当没有(不因为一个配置文件
-/// 让整个项目打不开)。
+/// Reads the project's `.bnote/lsp.json`; a missing or broken file counts as
+/// absent (one config file must not keep the whole project from opening).
 pub fn load_project_config(root: &Path) -> ProjectLspConfig {
     let path = root.join(".bnote").join("lsp.json");
     match std::fs::read_to_string(&path) {
@@ -104,19 +111,20 @@ pub fn load_project_config(root: &Path) -> ProjectLspConfig {
     }
 }
 
-/// 三层配置合并后的结果。
+/// The result of merging the three configuration layers.
 #[derive(Debug, Clone)]
 pub struct ResolvedServer {
     pub config: ServerConfig,
-    /// 被项目配置明确关掉了。
+    /// Turned off by the project configuration.
     pub disabled: bool,
 }
 
-/// 合并:内置默认 < 全局覆盖 < 项目内覆盖。
+/// Merge: built-in defaults < global overrides < project overrides.
 ///
-/// `global` 是前端从设置里取的那一层(按语言给的);项目内那份由本函数
-/// 自己读。返回 `None` 表示这个语言没有可用的服务器(前端据此不显示 LSP
-/// 相关入口)。
+/// `global` is the layer the front end reads from the settings (given per
+/// language); the project file is read by this function itself. `None` means
+/// the language has no usable server (the front end then shows no LSP entry
+/// points for it).
 pub fn resolve_server(
     root: &Path,
     language: &str,
@@ -145,10 +153,13 @@ pub fn resolve_server(
     })
 }
 
-/// Python 项目的虚拟环境:根目录下的 `.venv` / `venv`(有 `bin/python` 才算)。
+/// The virtual environment of a Python project: `.venv` / `venv` under the root
+/// (only counted when it holds `bin/python`).
 ///
-/// 与 Zed 的 Python 扩展同一判定:venv 只在工作区根上找,不递归(子项目用
-/// 自己的根打开);`bin/python` 必须存在,否则那只是个同名目录。
+/// The same rule as the Python extension of Zed: the venv is looked up only at
+/// the workspace root and not recursively (a subproject is opened with its own
+/// root); `bin/python` has to exist, otherwise it is just a directory with the
+/// same name.
 pub fn find_python_venv(root: &Path) -> Option<PathBuf> {
     for name in [".venv", "venv"] {
         let dir = root.join(name);
@@ -159,11 +170,14 @@ pub fn find_python_venv(root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// 把 venv 交给语言服务器:**`VIRTUAL_ENV` + `PATH` 前置 bin**。
+/// Hand the venv to the language server: **`VIRTUAL_ENV` + `PATH` with bin
+/// prepended**.
 ///
-/// ty / pyright / pylsp 都按这两个变量选解释器(而不是项目根里有没有
-/// `.venv` 目录),所以必须注入到子进程环境里;用户显式配的 env 优先
-/// (`entry` 不覆盖已有键,`PATH` 那条也先看配置里有没有)。
+/// ty / pyright / pylsp all pick the interpreter from these two variables
+/// (not from the presence of a `.venv` directory in the project root), so they
+/// have to be injected into the child process environment. The env the user
+/// configured explicitly wins (`entry` does not overwrite an existing key, and
+/// the `PATH` entry is only added when the configuration has none).
 fn apply_python_venv(root: &Path, config: &mut ServerConfig) {
     let Some(venv) = find_python_venv(root) else {
         return;
@@ -185,7 +199,8 @@ fn apply_python_venv(root: &Path, config: &mut ServerConfig) {
     }
 }
 
-/// 两份配置合并:后者的非空字段盖前者。
+/// Merges two configurations: the non-empty fields of the second override the
+/// first.
 fn merge(mut base: ServerConfig, over: &ServerConfig) -> ServerConfig {
     if !over.command.trim().is_empty() {
         base.command = over.command.clone();
@@ -202,10 +217,10 @@ fn merge(mut base: ServerConfig, over: &ServerConfig) -> ServerConfig {
     base
 }
 
-/// 一个项目的语言服务器集合。
+/// The set of language servers of one project.
 pub struct LspManager {
     pub root: PathBuf,
-    /// 语言 → 客户端。
+    /// Language → client.
     clients: Mutex<HashMap<String, Arc<LspClient>>>,
 }
 
@@ -217,7 +232,7 @@ impl LspManager {
         }
     }
 
-    /// 取某个语言的客户端(没起过就是 None)。
+    /// Gets the client of a language (None when it was never started).
     pub fn get(&self, language: &str) -> Option<Arc<LspClient>> {
         self.clients
             .lock()
@@ -225,17 +240,19 @@ impl LspManager {
             .and_then(|m| m.get(language).cloned())
     }
 
-    /// 某个语言是否已经有活着的客户端。
+    /// Whether the language already has a live client.
     pub fn has(&self, language: &str) -> bool {
         self.get(language)
             .map(|c| c.alive.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(false)
     }
 
-    /// 保证某个语言的服务器起着;已经活着就直接给。
+    /// Makes sure the server of a language is running; returns the live one
+    /// right away if it already is.
     ///
-    /// 并发的首次请求会各自 spawn 一个,插入前复查 map:只留一个活的,其余
-    /// 立刻停掉(不留僵尸进程)。
+    /// Concurrent first requests each spawn one process, so the map is
+    /// re-checked before insertion: only the live one is kept, the others are
+    /// stopped immediately (no zombie processes left behind).
     pub async fn ensure(
         &self,
         language: &str,
@@ -266,7 +283,8 @@ impl LspManager {
         let mut map = self.clients.lock().map_err(|_| "lock poisoned")?;
         match map.get(language) {
             Some(existing) if existing.alive.load(std::sync::atomic::Ordering::Relaxed) => {
-                // 别人先起来了:停掉自己起的这个,用它那份。
+                // Somebody else won the race: stop the one we started and use
+                // theirs.
                 client.stop();
                 Ok(existing.clone())
             }
@@ -281,7 +299,7 @@ impl LspManager {
         }
     }
 
-    /// 停掉所有服务器(关项目/切换项目时)。
+    /// Stops every server (when a project is closed or switched).
     pub fn stop_all(&self) {
         if let Ok(mut map) = self.clients.lock() {
             for (_, client) in map.drain() {
@@ -291,14 +309,16 @@ impl LspManager {
     }
 }
 
-/// 代码项目的消息处理:转发诊断、转发日志、应答服务器的主动请求。
+/// Message handling for a code project: forwards diagnostics, forwards logs,
+/// answers the requests the server initiates.
 struct CodeSink {
     app: tauri::AppHandle,
     root: PathBuf,
 }
 
 impl CodeSink {
-    /// 绝对路径 → 项目相对路径(posix)。项目外的文件返回 None(不显示)。
+    /// Absolute path → path relative to the project (posix). Files outside the
+    /// project return None (they are not shown).
     fn relative(&self, abs: &str) -> Option<String> {
         let p = Path::new(abs);
         let rel = p.strip_prefix(&self.root).ok()?;
@@ -313,8 +333,9 @@ impl CodeSink {
         )
     }
 
-    /// `workspace/configuration` 的应答:按 items 的条数回等长的 null 数组
-    /// (少一条会让服务器按下标取值时越界)。
+    /// Reply to `workspace/configuration`: an array of nulls with as many
+    /// entries as there are items (one entry less would let the server read out
+    /// of bounds by index).
     fn configuration_reply(msg: &Value) -> Value {
         let count = msg
             .pointer("/params/items")
@@ -324,7 +345,7 @@ impl CodeSink {
         Value::Array(vec![Value::Null; count])
     }
 
-    /// `workspace/workspaceFolders` 的应答。
+    /// Reply to `workspace/workspaceFolders`.
     fn workspace_folders(&self) -> Value {
         json!([{
             "uri": path_to_uri(&self.root),
@@ -346,7 +367,7 @@ impl LspSink for CodeSink {
             let id = msg.get("id").cloned();
             let method = msg.get("method").and_then(Value::as_str).map(|s| s.to_string());
             match (id, method) {
-                // 服务器 → 客户端的请求:挨个回它该回的东西。
+                // A server → client request: answer each with what it expects.
                 (Some(id), Some(method)) => {
                     let result = match method.as_str() {
                         "workspace/configuration" => Self::configuration_reply(&msg),
@@ -358,9 +379,10 @@ impl LspSink for CodeSink {
                         .send(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
                         .await;
                 }
-                // 通知。
+                // A notification.
                 (None, Some(method)) => match method.as_str() {
-                    // 服务器进程退出了:把状态报回去,前端才不会以为它还活着。
+                    // The server process exited: report the state back, otherwise
+                    // the front end keeps believing it is alive.
                     "$bnote/serverExit" => {
                         let _ = self.app.emit(
                             "code-lsp-status",
@@ -380,7 +402,7 @@ impl LspSink for CodeSink {
                             return;
                         };
                         let Some(path) = self.relative(&abs) else {
-                            return; // 项目外的诊断(依赖目录)不显示
+                            return; // a diagnostic outside the project is not shown
                         };
                         let items = msg
                             .pointer("/params/diagnostics")
@@ -477,10 +499,10 @@ mod tests {
             command: "global-go".to_string(),
             ..Default::default()
         };
-        // 项目内那层最高。
+        // The project layer wins.
         let r = resolve_server(&root, "go", Some(&global)).unwrap();
         assert_eq!(r.config.command, "project-go");
-        // 没被项目覆盖的语言吃全局那层。
+        // A language the project does not override takes the global layer.
         let r = resolve_server(&root, "rust", Some(&global)).unwrap();
         assert_eq!(r.config.command, "global-go");
         let _ = std::fs::remove_dir_all(&root);
@@ -525,7 +547,7 @@ mod tests {
     #[test]
     fn python_falls_back_to_venv_dir_and_ignores_empty_dirs() {
         let root = tmpdir("venv2");
-        // 没有 bin/python 的 .venv 不算虚拟环境。
+        // A .venv without bin/python is not a virtual environment.
         std::fs::create_dir_all(root.join(".venv")).unwrap();
         std::fs::create_dir_all(root.join("venv/bin")).unwrap();
         std::fs::write(root.join("venv/bin/python3"), "").unwrap();
@@ -542,7 +564,8 @@ mod tests {
         let root = tmpdir("novenv");
         let r = resolve_server(&root, "python", None).unwrap();
         assert!(r.config.env.is_empty());
-        // 别的语言不碰 venv(venv 目录存在也不注入)。
+        // Other languages never touch the venv (it is not injected even when the
+        // venv directory exists).
         std::fs::create_dir_all(root.join(".venv/bin")).unwrap();
         std::fs::write(root.join(".venv/bin/python"), "").unwrap();
         let r = resolve_server(&root, "rust", None).unwrap();

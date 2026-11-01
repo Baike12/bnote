@@ -45,8 +45,9 @@ export function fuzzyMatch(query: string, text: string): FuzzyResult | null {
 
 /**
  * Obsidian-style AND match: every whitespace-separated term must fuzzy-match
- * somewhere in `text` (order-free), so "文件夹 文件名" finds a note by its
- * folder and name together. Score is the sum of the per-term scores.
+ * somewhere in `text` (order-free), so a query like "folder filename" finds a
+ * note by its folder and name together. Score is the sum of the per-term
+ * scores.
  */
 export function fuzzyMatchTerms(query: string, text: string): FuzzyResult | null {
   const terms = query.split(/\s+/).filter(Boolean);

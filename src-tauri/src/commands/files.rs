@@ -62,8 +62,9 @@ pub async fn write_file(state: State<'_, AppState>, path: String, contents: Stri
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-/// 追加写入(会话记录 jsonl):一次调用只追加一行,文件不存在则创建。
-/// 与 `write_file` 分开是因为整文件重写在流式对话里会覆盖已写轮次。
+/// Appends one line per call (agent session jsonl), creating the file when it
+/// does not exist. Kept separate from `write_file` because a whole-file
+/// rewrite would drop the turns already written in a streaming conversation.
 #[tauri::command]
 pub async fn append_file(
     state: State<'_, AppState>,

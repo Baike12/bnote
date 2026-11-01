@@ -4,22 +4,28 @@ import { findMatchingBracket, withinEnv } from "./brackets";
 import { parseReplacement, type ParsedReplacement } from "./engine";
 
 /**
- * latex-suite 的 auto-fraction:数学态内键入 `/` 时,把光标前的表达式扩成
- * `\frac{分子}{}`。移植自用户 Obsidian 插件(latex-suite 魔改版)捆绑的
- * src/features/autofraction.ts,语义逐条对应:
+ * latex-suite's auto-fraction: typing `/` in math mode expands the expression
+ * before the caret into `\frac{numerator}{}`. Ported from the
+ * src/features/autofraction.ts bundled with the user's modified Obsidian plugin
+ * (latex-suite); each rule maps one-to-one onto the original:
  *
- * - 分子起点反向扫描:停在空格/括号开符/换行/断字符(`+-=` 及 Tab)上;
- *   `) ] }` 先跳到配对开符再看是否停止——`\frac{a}{b}/` 的分子是整个
- *   `\frac{a}{b}`;
- * - 断字符在表达式里截断:`a+b/c` → `a+\frac{b}{c}`;
- * - 希腊字母命令后的空格不是边界:`\alpha x/` → `\frac{\alpha x}{}`;
- * - 分子整体是圆括号组时剥掉外层括号:`(a+b)/` → `\frac{a+b}{}`;
- * - `^{…}`、`\pu{…}` 内不展开(指数里的分数保持字面);
- * - `\text{…}` 内不展开,光标不在数学态也不展开。
+ * - The numerator start is found by scanning backwards and stops at a space,
+ *   an opening bracket, a newline, or a breaking character (`+-=` and Tab);
+ *   `) ] }` first jump to their matching opener and only then decide to stop,
+ *   so the numerator of `\frac{a}{b}/` is the whole `\frac{a}{b}`.
+ * - A breaking character truncates the expression: `a+b/c` → `a+\frac{b}{c}`.
+ * - A space after a Greek letter command is not a boundary:
+ *   `\alpha x/` → `\frac{\alpha x}{}`.
+ * - When the numerator is entirely a parenthesis group, the outer pair is
+ *   stripped: `(a+b)/` → `\frac{a+b}{}`.
+ * - No expansion inside `^{…}` or `\pu{…}` (fractions in an exponent stay
+ *   literal).
+ * - No expansion inside `\text{…}`, and none when the caret is not in math mode.
  *
- * bnote 的时序与 latex-suite 不同:latex-suite 在按键上拦截 `/`(文档里没有
- * 它),这里 `/` 已由输入路径插入、光标停在其后——所以扫描从 cursor-2 开始,
- * 展开区间连同这个 `/` 一起被替换。
+ * bnote's timing differs from latex-suite: there the plugin intercepts `/` on
+ * keypress and never inserts it, while here the input path has already
+ * inserted `/` and left the caret after it — so the scan starts at cursor-2 and
+ * the replaced range includes that `/`.
  */
 
 const BREAKING_CHARS = "+-=\t";
@@ -29,20 +35,23 @@ const EXCLUDED_ENVS: [string, string][] = [
   ["\\pu{", "}"],
 ];
 
-// 与 latex-suite 相同的希腊字母表(缺 Yi/Psi 等罕见项,以原表为准)。
+// The same Greek letter table as latex-suite (rare entries such as Yi/Psi are
+// missing there; the original table is authoritative).
 const GREEK =
   "alpha|beta|gamma|Gamma|delta|Delta|epsilon|varepsilon|zeta|eta|theta|Theta|iota|kappa|lambda|Lambda|mu|nu|omicron|xi|Xi|pi|Pi|rho|sigma|Sigma|tau|upsilon|Upsilon|varphi|phi|Phi|chi|psi|Psi|omega|Omega";
-/** 希腊字母命令后的空格临时换成 #(等长替换),扫描就不会在命令中间停下。 */
+/** The space after a Greek letter command is temporarily swapped for `#` (a
+ * same-length replacement) so the scan does not stop inside the command. */
 const GREEK_SPACE = new RegExp(`(${GREEK}) ([^ ])`, "g");
 
 export interface AutoFractionResult {
-  /** 替换区间(含光标前的 `/`)。 */
+  /** The replaced range (includes the `/` before the caret). */
   start: number;
   end: number;
   replacement: ParsedReplacement;
 }
 
-/** 判定 `/` 是否应扩成分数;返回 null 表示不适用,`/` 保持字面。 */
+/** Decides whether `/` should expand into a fraction; null means the rule does
+ * not apply and `/` stays literal. */
 export function autoFraction(
   state: EditorState,
   cursor: number,
@@ -56,14 +65,16 @@ export function autoFraction(
   const contentStart = region.from + (region.display ? 2 : 1);
   const to = cursor;
 
-  // 排除环境:^{…}、\pu{…} 内的 / 保持字面(指数里扩分数会破坏语义)。
+  // Excluded environments: a `/` inside `^{…}` or `\pu{…}` stays literal
+  // (expanding a fraction in an exponent would break the meaning).
   const content = state.sliceDoc(contentStart, region.to);
   const relCursor = to - contentStart;
   for (const [open, close] of EXCLUDED_ENVS) {
     if (withinEnv(content, relCursor, open, close)) return null;
   }
 
-  // 选中文本即分子:"/" 刚替换了选区,占位在 cursor-1。
+  // The selection is the numerator: the `/` just replaced it, so the text
+  // starts at cursor-1.
   if (visualText !== null) {
     return build(to - 1, to, visualText);
   }
@@ -71,7 +82,7 @@ export function autoFraction(
   const scanned = state
     .sliceDoc(contentStart, to - 1)
     .replace(GREEK_SPACE, "$1#$2");
-  let start = 0; // 相对 contentStart
+  let start = 0; // relative to contentStart
   for (let i = scanned.length - 1; i >= 0; i--) {
     const ch = scanned[i];
     if (ch === ")" || ch === "]" || ch === "}") {
@@ -79,14 +90,15 @@ export function autoFraction(
       const j = findMatchingBracket(scanned, i, open, ch, true);
       if (j === -1) return null;
       i = j;
-      if (i < 0) break; // 组开在区域之外:分子从区域头算
+      if (i < 0) break; // The group opens outside the region: the numerator
+                        // starts at the region head.
     }
     if (STOP_CHARS.includes(ch)) {
       start = i + 1;
       break;
     }
   }
-  if (start >= scanned.length) return null; // 空分子
+  if (start >= scanned.length) return null; // Empty numerator
   const numeratorStart = contentStart + start;
   const numerator = state.sliceDoc(numeratorStart, to - 1);
   return build(numeratorStart, to, numerator);

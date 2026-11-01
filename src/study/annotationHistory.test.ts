@@ -11,7 +11,7 @@ describe("批注撤销栈", () => {
   it("撤销回到改动前,重做回到改动后", () => {
     const history = createAnnotationHistory<string[]>();
     recordAnnotationHistory(history, ["a"]);
-    // 当前状态是 ["a","b"];撤销返回 ["a"],重做返回 ["a","b"]。
+    // The current state is ["a","b"]; undo returns ["a"], redo returns ["a","b"].
     expect(undoAnnotationHistory(history, ["a", "b"])).toEqual(["a"]);
     expect(redoAnnotationHistory(history, ["a"])).toEqual(["a", "b"]);
     expect(undoAnnotationHistory(history, ["a", "b"])).toEqual(["a"]);

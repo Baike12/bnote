@@ -21,7 +21,8 @@ beforeEach(() => {
   resetLatexConfig();
 });
 
-/** 只依赖 view 的 {state, dispatch} 面(与 session.test.ts / ops.test.ts 同款)。 */
+/** Only relies on the {state, dispatch} face of the view (the same fake view
+ *  as in session.test.ts / ops.test.ts). */
 function makeView(
   doc: string,
   cursors: number[] = [doc.length],
@@ -58,15 +59,16 @@ describe("planTabout:向后扫到一个闭合符就跨过去(一次一层)", () 
   });
 
   it("多个括号叠在一起:一次 Tab 只出一层,逐层走完", () => {
-    // 光标在 \frac{a}{x} 的 x 之后:`}` → `)` → 闭合 `$`,三次 Tab 才彻底出去
+    // The caret is after the x of \frac{a}{x}: `}` → `)` → the closing `$`,
+    // three Tabs are needed to get all the way out.
     const doc = "$\\frac{a}{x}(y)$";
     const step1 = at(doc, doc.indexOf("x") + 1)!;
-    expect(step1.pos).toBe(doc.indexOf("}(y)") + 1); // 分母的右花括号
+    expect(step1.pos).toBe(doc.indexOf("}(y)") + 1); // The denominator's closing brace
     const step2 = at(doc, step1.pos)!;
-    expect(step2.pos).toBe(doc.indexOf(")") + 1); // (y) 的右圆括号
+    expect(step2.pos).toBe(doc.indexOf(")") + 1); // The closing round bracket of (y)
     const step3 = at(doc, step2.pos)!;
-    expect(step3.pos).toBe(doc.length); // 越过闭合 $,落到公式外
-    expect(at(doc, step3.pos)).toBeNull(); // 已经在公式外:不再接管 Tab
+    expect(step3.pos).toBe(doc.length); // Past the closing $, outside the formula
+    expect(at(doc, step3.pos)).toBeNull(); // Already outside the formula: Tab is no longer taken over
   });
 
   it("\\rangle 整体跨过去(它不以可扫单字符收尾)", () => {
@@ -76,13 +78,13 @@ describe("planTabout:向后扫到一个闭合符就跨过去(一次一层)", () 
   });
 
   it("`|` 与 `>` 也在扫描表里(插件原表)", () => {
-    expect(at("$a|b$", 1)).toEqual({ pos: 3, changes: [] }); // 跳过 a,落在 | 之后
+    expect(at("$a|b$", 1)).toEqual({ pos: 3, changes: [] }); // Skips the a and lands after the |
     expect(at("$a>b$", 1)).toEqual({ pos: 3, changes: [] });
   });
 
   it("光标后面还有普通字符:不接管(只跳闭合符,不跳内容)", () => {
     const doc = "$a)b$";
-    expect(at(doc, 3)).toBeNull(); // `)` 在光标**之前**,扫描只向后看
+    expect(at(doc, 3)).toBeNull(); // The `)` is **before** the caret, and the scan only looks forward
   });
 
   it("正文里的 Tab 不动(只在公式里生效)", () => {
@@ -93,11 +95,11 @@ describe("planTabout:向后扫到一个闭合符就跨过去(一次一层)", () 
 
   it("光标压在定界符上(公式首尾那两三个 $):不是跳出场景", () => {
     const inline = "$(x)$";
-    expect(at(inline, 0)).toBeNull(); // 压在开 $ 上
-    expect(at(inline, inline.length)).toBeNull(); // 压在闭 $ 上
+    expect(at(inline, 0)).toBeNull(); // On the opening $
+    expect(at(inline, inline.length)).toBeNull(); // On the closing $
     const block = "$$\n(x)\n$$";
-    expect(at(block, 1)).toBeNull(); // 压在开 $$ 的第二个 $ 上
-    expect(at(block, block.length - 1)).toBeNull(); // 压在闭 $$ 的第一个 $ 上
+    expect(at(block, 1)).toBeNull(); // On the second $ of the opening $$
+    expect(at(block, block.length - 1)).toBeNull(); // On the first $ of the closing $$
   });
 });
 
@@ -114,7 +116,8 @@ describe("planTabout:公式尾巴上的整块跳出", () => {
   it("块级公式:落到底部 $$ 的下一行行首,并清掉光标行的行尾空白", () => {
     const doc = "$$\nE[q]   \n$$\n下一段";
     const plan = at(doc, doc.indexOf("E[q]") + 4)!;
-    // 行尾三个空格被吃掉,落点跟着左移:下一段的首字符从 14 变到 11
+    // The three trailing spaces are eaten, so the landing point shifts left:
+    // the first character of the next paragraph moves from 14 to 11.
     expect(plan.changes).toEqual([
       { from: doc.indexOf("E[q]"), to: doc.indexOf("E[q]") + 7, insert: "E[q]" },
     ]);
@@ -174,13 +177,14 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     const session = buildSession(1, parseReplacement("\\mathbf{$0}$1", [], null))!;
     const view = makeView(doc, [doc.indexOf("}")], session);
     expect(runTab(view)).toBe(true);
-    expect(head(view)).toBe(doc.indexOf("}$") + 1); // 走到 $1(右括号之后)
-    expect(text(view)).toBe(doc); // 只移光标,不改文档
-    expect(view.state.field(snippetField)).not.toBeNull(); // 会话还在
+    expect(head(view)).toBe(doc.indexOf("}$") + 1); // Advances to $1 (after the closing bracket)
+    expect(text(view)).toBe(doc); // Only the caret moves, the document is unchanged
+    expect(view.state.field(snippetField)).not.toBeNull(); // The session is still alive
   });
 
   it("会话走完后的那次 Tab 才轮到 tabout:光标从括号里出来", () => {
-    // sum 片段展开 + autoEnlarge 之后的真实形状:光标停在 \sum… 之后,外面还有 \right)
+    // The real shape after the sum snippet expanded and autoEnlarge ran: the
+    // caret rests after \sum…, with a \right) still outside.
     const doc = "$\\left( \\sum_{i=1}^{N} \\right)$";
     const pos = doc.indexOf("\\sum");
     const session = buildSession(
@@ -188,10 +192,11 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
       parseReplacement("\\sum_{${0:i}=${1:1}}^{${2:N}} $3", [], null),
     )!;
     const view = makeView(doc, [doc.indexOf("\\right)")], session);
-    // 会话还没走完:Tab 只推进制表位
+    // The session is not finished yet: Tab only advances the tab stop.
     runTab(view);
     expect(view.state.field(snippetField, false)).not.toBeNull();
-    // 会话结束后再按 Tab:这一下才是"跳出括号"——一次一层,直到出了右括号
+    // Tab after the session ended: only this press is the "leave the
+    // bracket" — one level per press, until the closing bracket is behind.
     for (let i = 0; i < 6; i++) runTab(view);
     expect(head(view)).toBeGreaterThan(doc.indexOf(")"));
   });
@@ -201,18 +206,20 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     const view = makeView(doc, [doc.indexOf("\\right)")]);
     expect(runTab(view)).toBe(true);
     expect(head(view)).toBe(doc.indexOf(")") + 1);
-    expect(text(view)).toBe(doc); // 只是移光标,不改文档
+    expect(text(view)).toBe(doc); // Only the caret moves, the document is unchanged
   });
 
   it("光标停在完整命令 \\theta 之后:Tab 只跳出括号,不再把尾巴展开成 \\th\\eta", () => {
-    // 回归(实机复现):`tt` 自动展开出 `\theta` 之后按 Tab,「给希腊字母补反斜杠」
-    // 那条自动正则 `([^\\])(${GREEK})` 命中行尾的 `h`+`eta`,把 `eta` 改写成
-    // `\eta`。插件的自动片段要求"真的敲了一个字符"(key.length === 1),Tab 不认。
+    // Regression (reproduced on a real machine): after `tt` auto-expanded to
+    // `\theta`, pressing Tab let the "add a backslash to Greek letters" auto
+    // regex `([^\\])(${GREEK})` match the `h`+`eta` at the end of the line and
+    // rewrite `eta` into `\eta`. The plugin's auto snippets require "a
+    // character really typed" (key.length === 1), so Tab is not one.
     const doc = "$J(\\theta)$";
     const view = makeView(doc, [doc.indexOf("\\theta") + "\\theta".length]);
     expect(runTab(view)).toBe(true);
     expect(text(view)).toBe(doc);
-    expect(head(view)).toBe(doc.indexOf(")") + 1); // 跨过右括号
+    expect(head(view)).toBe(doc.indexOf(")") + 1); // Steps over the closing bracket
   });
 
   it("矩阵里普通 Tab 不再插 ` & `(留给 tabout),Shift+Tab 才是列分隔", () => {
@@ -222,7 +229,7 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
 
     const tabbed = makeView(DM, [DM.indexOf("Q")]);
     expect(runTab(tabbed)).toBe(true);
-    expect(text(tabbed)).toBe(DM); // 没往公式里插 ` & `
+    expect(text(tabbed)).toBe(DM); // No ` & ` was inserted into the formula
 
     const shifted = makeView(DM, [DM.indexOf("Q")]);
     expect(runShiftTab(shifted)).toBe(true);
@@ -232,9 +239,11 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
   it("矩阵里连按 Tab:一次一层地把光标送到 \\end{pmatrix} 之后", () => {
     const view = makeView(DM, [DM.indexOf("Q")]);
     expect(runTab(view)).toBe(true);
-    // 行尾之后只剩 `}`(环境收尾)与空白:第一下就跨过 \end{pmatrix}
+    // After the line end only the `}` (the environment's closing) and
+    // whitespace are left: the first press already steps over \end{pmatrix}
     expect(head(view)).toBe(DM.indexOf("\\end{pmatrix}") + "\\end{pmatrix}".length);
-    // 再一下:光标后面只剩空白 → 落到底部 $$ 的下一行(文档末行之后)
+    // One more: only whitespace is left behind the caret → it lands on the
+    // line after the bottom $$ (past the last line of the document).
     expect(runTab(view)).toBe(true);
     expect(text(view).slice(head(view)).trim()).toBe("");
   });
@@ -245,7 +254,7 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     const view = makeView(doc, [doc.indexOf("}$")], { ...session, active: 1 });
     expect(runShiftTab(view)).toBe(true);
     expect(text(view)).toBe(doc);
-    expect(head(view)).toBe(doc.indexOf("}")); // 回到 $0
+    expect(head(view)).toBe(doc.indexOf("}")); // Back to $0
   });
 });
 
@@ -256,16 +265,17 @@ describe("闭括号跳越:敲下光标前那个右括号 = 一次 Tab", () => {
     const view = makeView("()", [1], session());
     expect(view.state.field(snippetField)!.order).toEqual([0, 1]);
     const before = view.state;
-    // 默认插入事务(vim 与非 vim 的打字路径在这里汇合)
+    // The default insertion transaction (where the vim and non-vim typing
+    // paths meet)
     view.dispatch({
       changes: { from: 1, insert: ")" },
       selection: { anchor: 2 },
       userEvent: "input.type",
     });
-    expect(text(view)).toBe("())"); // 多出来的那一个(事后判定要处理的中间态)
+    expect(text(view)).toBe("())"); // The extra one (the intermediate state the after-the-fact decision has to handle)
     expect(closeBracketSkip(view, before, { from: 1, to: 1, insert: ")" }, 2)).toBe(true);
-    expect(text(view)).toBe("()"); // 撤掉刚插进去的那个,原位那个留着
-    expect(head(view)).toBe(2); // 光标跳出到 $1
+    expect(text(view)).toBe("()"); // The one just inserted is withdrawn, the one already there stays
+    expect(head(view)).toBe(2); // The caret jumps out to $1
   });
 
   it("最后一个制表位:按插件原样放行(字符照插)", () => {

@@ -1,16 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * IME 切换的发起时机与在途合并（latest-wins）。
+ * When an IME switch is initiated and how in-flight calls merge (latest-wins).
  *
- * 两条纪律:
- * 1. **不在按键那一帧里发起**——切换请求推迟到当前任务之后（scheduleLaunch），
- *    模式切换自己的 DOM 同步 + measure 先落位；同一任务里的连续翻转合并成
- *    一次，只有最新意图会发出去。
- * 2. **同一时刻至多一个在途调用**。每次切换在 Rust 侧要占主线程 TIS 往返
- *    （macOS 26 竞态还可能升级成 macism 子进程），overlapping 的风暴会直接卡
- *    UI 主线程——所以爆发式翻转合并成「首发 + 收尾一次」，收尾永远是最新意图；
- *    失焦挂起后不再补发，且没真切过就不去动系统输入法。
+ * Two disciplines:
+ * 1. **Never initiate in the keystroke's own frame** — the switch request is
+ *    deferred until after the current task (scheduleLaunch), so the mode
+ *    switch's own DOM sync + measure lands first; consecutive flips in the
+ *    same task collapse into one, and only the latest intent goes out.
+ * 2. **At most one in-flight call at a time**. Each switch occupies a
+ *    main-thread TIS round trip on the Rust side (the macOS 26 race may even
+ *    escalate into a macism subprocess), and an overlapping storm stalls the
+ *    UI main thread outright — so a burst of flips collapses into "one first
+ *    call + one trailing call", and the trailing call always carries the
+ *    latest intent; nothing is re-sent after a blur suspend, and the system
+ *    IME is not touched at all when nothing was really switched.
  */
 
 const setInputSource = vi.hoisted(() => vi.fn());
@@ -39,7 +43,7 @@ import {
 import { EditorState } from "@codemirror/state";
 import { useAppStore } from "@/state/appStore";
 
-/** 可控的 in-flight：setInputSource 的 promise 直到 drain() 才落定。 */
+/** Controllable in-flight: the setInputSource promise only settles at drain(). */
 const pending: (() => void)[] = [];
 
 beforeEach(() => {
@@ -68,13 +72,14 @@ beforeEach(() => {
 
 afterEach(async () => {
   imeYield();
-  // 把归还调用与它的收尾链都落定:留下一条未落定的 setInputSource 会让
-  // switching 卡在 true,下一个用例的切换就只会排队、永远发不出去。
+  // Settle both the hand-back call and its trailing chain: one unsettled
+  // setInputSource leaves `switching` stuck at true, so the next test's switch
+  // only queues and never goes out.
   await drain();
   await drain();
 });
 
-/** 放行推迟到任务末尾的发起，落定在途调用，并把微任务刷干净。 */
+/** Releases the launch deferred to the end of the task, settles the in-flight call, and flushes the microtasks. */
 const drain = async () => {
   await new Promise((r) => setTimeout(r, 0));
   while (pending.length) pending.shift()!();
@@ -93,7 +98,7 @@ describe("imeApply 发起时机与在途合并", () => {
     imeApply("A");
     imeApply("B");
     imeApply("C");
-    imeApply("C"); // 重复目标不再排队
+    imeApply("C"); // a repeated target is not queued again
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(1);
     expect(setInputSource).toHaveBeenNthCalledWith(1, "C");
@@ -105,7 +110,7 @@ describe("imeApply 发起时机与在途合并", () => {
     imeApply("A");
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(1);
-    imeApply("B"); // A 已落定，B 自己发一次
+    imeApply("B"); // A has settled, so B sends one itself
     imeApply("C");
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(2);
@@ -127,15 +132,15 @@ describe("imeApply 发起时机与在途合并", () => {
 
   it("失焦挂起后,排队中的意图不再补发,也不去动系统输入法", async () => {
     imeApply("A");
-    imeApply("B"); // 排队
-    imeOnWindowBlur(); // 挂起（此时还没有任何强制切换真的发出去）
+    imeApply("B"); // queued
+    imeOnWindowBlur(); // suspended (no forced switch has really gone out yet)
     await drain();
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
   it("已经强制切过:失焦时归还用户的原始输入源", async () => {
     imeApply("A");
-    await drain(); // A 真的发出去了
+    await drain(); // A really went out
     expect(setInputSource).toHaveBeenCalledTimes(1);
     imeOnWindowBlur();
     await drain();
@@ -148,7 +153,7 @@ describe("imeApply 发起时机与在途合并", () => {
     await drain();
     imeOnWindowBlur();
     await drain();
-    imeApply("A"); // 挂起态下同一目标也必须重新发（用户输入法刚被还回去）
+    imeApply("A"); // in the suspended state the same target must be sent again (the user's IME was just handed back)
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(3);
     expect(setInputSource).toHaveBeenLastCalledWith("A");
@@ -185,11 +190,13 @@ describe("批注输入框聚焦", () => {
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(1);
     expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
-    // 用户在框里 Ctrl+Space 切回英文:前端 desired 仍是中文,普通去重吞掉。
+    // The user switched back to English with Ctrl+Space inside the field: the
+    // frontend's `desired` is still Chinese, and the ordinary dedup swallows it.
     imeOnChineseFocus();
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(1);
-    // 再点进来/再按快捷键 = 显式进入中文框,强制重发。
+    // Clicking back in / pressing the shortcut again = explicitly entering the
+    // Chinese field, so the Chinese source is force-resent.
     imeOnChineseFocus(true);
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(2);
@@ -198,15 +205,15 @@ describe("批注输入框聚焦", () => {
 
   it("force 在途时切着英文:落定后补发中文(收尾意图不被丢)", async () => {
     imeApply("com.apple.keylayout.ABC");
-    await new Promise((r) => setTimeout(r, 0)); // 英文切换已发出、在途
+    await new Promise((r) => setTimeout(r, 0)); // the English switch is out and in flight
     expect(pending.length).toBe(1);
     imeOnChineseFocus(true);
-    await new Promise((r) => setTimeout(r, 0)); // 强制意图到期:排进收尾
-    pending.shift()!(); // 英文落定 → 收尾发中文
+    await new Promise((r) => setTimeout(r, 0)); // the forced intent expires and queues into the trailing step
+    pending.shift()!(); // English settles → the trailing step sends Chinese
     await new Promise((r) => setTimeout(r, 0));
     expect(setInputSource).toHaveBeenCalledTimes(2);
     expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
-    pending.shift()!(); // 中文落定,别让 switching 卡住
+    pending.shift()!(); // Chinese settles, so `switching` does not stay stuck
     await new Promise((r) => setTimeout(r, 0));
   });
 
@@ -227,8 +234,9 @@ describe("批注输入框聚焦", () => {
   });
 
   it("焦点落定后系统把源恢复回英文时,核对补发一次中文", async () => {
-    // 「按上下文记忆输入源」开着:焦点切换完成后 AppKit 会把源恢复成该
-    // 上下文记住的英文,表现为 Sogou 图标闪一下就没了。
+    // "Remember input source per context" is on: once the focus switch
+    // completes, AppKit restores the source remembered for that context,
+    // which shows up as the Sogou icon flashing and disappearing.
     vi.stubGlobal("document", {
       activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
     });
@@ -236,7 +244,7 @@ describe("批注输入框聚焦", () => {
       imeOnChineseFocus(true);
       await drain();
       expect(setInputSource).toHaveBeenCalledTimes(1);
-      // 核对定时器(120ms)到期:系统源是 ABC → 与意图不一致 → 补发
+      // the check timer (120ms) expires: the system source is ABC → it disagrees with the intent → re-send
       await new Promise((r) => setTimeout(r, 160));
       await drain();
       expect(setInputSource).toHaveBeenCalledTimes(2);
@@ -330,7 +338,7 @@ describe("批注输入框聚焦", () => {
     vi.stubGlobal("document", { activeElement: null });
     try {
       imeOnChineseFocus();
-      await drain(); // baseline 记下 ABC,切到中文
+      await drain(); // baseline records ABC, then switches to Chinese
       imeSyncToEditor();
       await drain();
       expect(setInputSource).toHaveBeenLastCalledWith("com.apple.keylayout.ABC");
@@ -347,7 +355,7 @@ describe("批注输入框聚焦", () => {
       imeOnChineseFocus();
       await drain();
       imeOnWindowBlur();
-      await drain(); // 归还 ABC
+      await drain(); // hands ABC back
       expect(setInputSource).toHaveBeenLastCalledWith("com.apple.keylayout.ABC");
       imeOnWindowFocus();
       await drain();
@@ -395,13 +403,17 @@ describe("imeOnWindowFocus", () => {
 });
 
 /**
- * 公式边界处的输入源意图。用户报告:Tab 跳出 / 切 normal 移出公式后,光标
- * 停在闭合 `$` 之后仍是英文源,接着打字把中文原码当公式敲进正文;块级公式
- * 移到末尾 `$$` 再进 insert 也一样。
+ * The input source intent at math boundaries. User report: after tabbing out
+ * / switching to normal and leaving the formula, the caret still sat on the
+ * English source after the closing `$`, and typing then pushed raw Chinese
+ * text into the body as if it were a formula; the same happened with a
+ * block-level formula moved to the trailing `$$` and re-entering insert.
  *
- * 判定看「下一个字符落在哪儿」:只有公式正文里才是英文源,边界之后是正文,
- * 该回到 insert 源(中文)。未闭合块(打字中)的 `to` 仍是正文——那里每敲一个
- * 字符光标都落在 `to`。
+ * The decision looks at "where does the next character land": only inside
+ * the math body is it the English source; after the boundary it is body text
+ * and the insert source (Chinese) applies. For an unclosed block (still being
+ * typed) `to` is still body — there the caret lands on `to` after every
+ * keystroke.
  */
 describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", () => {
   const wantsEnglish = (doc: string, pos: number) =>
@@ -416,7 +428,7 @@ describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", ()
     expect(wantsEnglish(doc, 4)).toBe(true);
     expect(wantsEnglish(doc, 6)).toBe(true);
     expect(wantsEnglish(doc, 8)).toBe(true);
-    // 开符之前(3)与闭合符之后(9):下一个字符落在公式外面。
+    // before the opening delimiter (3) and after the closing one (9): the next character lands outside the formula.
     expect(wantsEnglish(doc, 3)).toBe(false);
     expect(wantsEnglish(doc, 9)).toBe(false);
     expect(wantsEnglish(doc, 10)).toBe(false);
@@ -454,16 +466,16 @@ describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", ()
   });
 });
 
-/** 快速待办这类弹窗:打开切中文,关闭把打开前的输入源原样还回去。 */
+/** Popups like the quick todo: opening switches to Chinese, closing hands back exactly the source that was active before opening. */
 describe("临时中文输入作用域(快速待办弹窗)", () => {
   const ZH = "com.apple.inputmethod.SCIM";
   const EN = "com.apple.keylayout.ABC";
 
-  /** 每拍 setTimeout(0):read 源 → 排切换 → 真的发出去,三拍足够收敛。 */
+  /** One setTimeout(0) tick each: read the source → queue the switch → actually send it; three ticks converge. */
   const settle = async () => {
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
   };
-  /** 等在途调用出现(不让断言依赖定时器的相对顺序)。 */
+  /** Waits for the in-flight call to appear (so the assertions do not depend on the timers' relative order). */
   const waitInFlight = async () => {
     for (let i = 0; i < 20 && pending.length === 0; i++) {
       await new Promise((r) => setTimeout(r, 0));
@@ -485,11 +497,11 @@ describe("临时中文输入作用域(快速待办弹窗)", () => {
 
   it("中文切换在途时关闭:收尾那次是原源,不会晚到把用户打回中文", async () => {
     imeBeginTransientChinese();
-    await waitInFlight(); // 中文切换已发出、尚未落定
+    await waitInFlight(); // the Chinese switch is out but not settled yet
     expect(setInputSource).toHaveBeenLastCalledWith(ZH);
 
     imeEndTransientChinese();
-    await drain(); // 在途落定 → 收尾发原源
+    await drain(); // the in-flight call settles → the trailing step sends the original source
     expect(setInputSource).toHaveBeenCalledTimes(2);
     expect(setInputSource).toHaveBeenLastCalledWith(EN);
   });
@@ -509,7 +521,7 @@ describe("临时中文输入作用域(快速待办弹窗)", () => {
   it("重复进入不覆盖「原来的源」", async () => {
     imeBeginTransientChinese();
     await waitInFlight();
-    imeBeginTransientChinese(); // 重渲染/再次聚焦
+    imeBeginTransientChinese(); // re-render / focus again
     await settle();
     expect(getCurrentInputSource).toHaveBeenCalledTimes(1);
     expect(setInputSource).toHaveBeenCalledTimes(1);
@@ -518,9 +530,9 @@ describe("临时中文输入作用域(快速待办弹窗)", () => {
   it("还回原源后,同一个目标不再重复切(意图与真实源保持一致)", async () => {
     imeBeginTransientChinese();
     await waitInFlight();
-    await drain(); // 中文切换落定
+    await drain(); // the Chinese switch settles
     imeEndTransientChinese();
-    await drain(); // 原源还回去
+    await drain(); // the original source goes back
     const calls = setInputSource.mock.calls.length;
     imeApply(EN);
     await settle();

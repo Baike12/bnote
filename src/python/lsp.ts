@@ -1,15 +1,15 @@
 /**
- * ty LSP 的前端侧:防抖把「行对齐虚拟文件」同步给后端,收到的诊断映射成
- * CM lint 诊断贴回当前文档;补全与 hover 走同一条路 —— 光标位置换算成虚拟
- * 文件的 LSP position,转发 ty,结果映射回 markdown 偏移。
+ * The frontend half of the ty LSP: a debounce syncs the "line-aligned virtual file" to the backend, and the diagnostics that
+ * come back are mapped to CM lint diagnostics and pasted onto the current document; completion and hover take the same route --
+ * the caret position is converted into an LSP position in the virtual file, forwarded to ty, and the result is mapped back to markdown offsets.
  *
- * 纪律(见 AGENTS.md「不许竞争」):
- * - 每个 500ms tick 拿到的是 tick 当刻的 view 状态,异步回来后先自证
- *   (mdPath 没变)才贴诊断,过期结果直接丢弃 —— ty 随后一次 didChange 会
- *   重新发布,不需要旧结果的续命。
- * - 虚拟文件没变(只在散文里打字)时不打扰服务器;补全/hover 的请求前先
- *   把当前虚拟文本推上去(没变就跳过),保证 ty 看到的文档与请求位置一致。
- * - spawn/同步失败进入 30s 退避,不每 tick 打错误。
+ * Discipline (see "no races" in AGENTS.md):
+ * - Each 500ms tick takes the view state as of that tick; when the async result comes back it must prove it is still current
+ *   (mdPath unchanged) before the diagnostics are pasted, and stale results are dropped -- ty republishes on the next didChange,
+ *   so an old result needs no lifetime.
+ * - When the virtual file is unchanged (typing only in prose) the server is not disturbed; before a completion/hover request the
+ *   current virtual text is pushed first (skipped when unchanged), so the document ty sees always matches the position the request is about.
+ * - A spawn/sync failure enters a 30s backoff, so errors are not logged on every tick.
  */
 import { setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import {
@@ -41,13 +41,13 @@ import {
 const SYNC_DEBOUNCE_MS = 500;
 const SYNC_FAILURE_BACKOFF_MS = 30_000;
 
-/** mdPath → 已发送给服务器的虚拟文件文本(去重:没变就不发)。 */
+/** mdPath -> the virtual file text already sent to the server (dedupe: unchanged text is not sent again). */
 const lastSentText = new Map<string, string>();
-/** mdPath → ty 最近一次发布的原始诊断(贴回文档时按当前文档现映射)。 */
+/** mdPath -> the raw diagnostics ty published last (mapped against the current document when pasted back). */
 const rawDiags = new Map<string, RawLspDiagnostic[]>();
-/** mdPath → 最近一次提取结果(同步 tick / 补全 / hover 共享,同一文档版本只扫一遍)。 */
+/** mdPath -> the most recent extraction (shared by the sync tick, completion and hover, so one document version is scanned only once). */
 const extractCache = new Map<string, { text: string; eff: PythonExtract }>();
-/** 项目 LSP 被关掉(或从未打开)的笔记路径,不再每 tick 白调后端。 */
+/** Note paths whose project LSP is off (or was never opened), so the backend is not called for nothing on every tick. */
 const lspOffPaths = new Set<string>();
 let lastAppliedPath: string | null = null;
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -67,7 +67,7 @@ function cachedExtract(mdPath: string, text: string): PythonExtract {
   return eff;
 }
 
-/** 安装后端事件监听(模块级一次);失败静默 —— 无 Tauri 环境的测试壳里没有事件。 */
+/** Install the backend event listeners (once per module); failures are silent -- a test shell without Tauri has no events. */
 async function installListeners() {
   if (listenersInstalled) return;
   listenersInstalled = true;
@@ -86,7 +86,7 @@ async function installListeners() {
   }
 }
 
-/** 补全/悬浮卡与编辑器同主题:应用变量直接盖掉 CM 亮色 baseTheme。 */
+/** The completion and hover cards share the editor theme: the app variables override CM's light baseTheme directly. */
 const lspTooltipTheme = EditorView.theme({
   ".cm-tooltip.cm-tooltip-autocomplete": {
     background: "var(--bg2, #17171a)",
@@ -130,8 +130,8 @@ const lspTooltipTheme = EditorView.theme({
 });
 
 /**
- * 编辑器扩展:文档变更后防抖同步虚拟文件;python 围栏内的补全与 hover。
- * 只在有绝对路径的笔记编辑器里干活(学习模式中栏编辑器没有 docPath,自动跳过)。
+ * The editor extension: after a document change the virtual file is synced on a debounce; completion and hover work inside python
+ * fences. It only acts in note editors that have an absolute path (the study mode middle editor has no docPath and is skipped).
  */
 export function pythonLspExtension(): Extension {
   void installListeners();
@@ -142,8 +142,8 @@ export function pythonLspExtension(): Extension {
     autocompletion({ override: [pythonCompletionSource] }),
     hoverTooltip(pythonHoverSource, { hoverTime: 450 }),
     lspTooltipTheme,
-    // 只在有补全面板/显式触发时消费按键,否则全部放行(snippet Tab、vim Esc
-    // 都在这之上按原语义走)。
+    // Only consume a key when a completion panel is open or the request was explicit; everything else falls
+    // through (snippet Tab and vim Esc keep their own semantics on top of this).
     Prec.high(
       keymap.of([
         { key: "Tab", run: acceptCompletion },
@@ -165,12 +165,12 @@ function scheduleSync(view: EditorView, ms: number) {
   }, ms);
 }
 
-/** 立即同步一次(开 LSP、文件切换后的快速反馈)。 */
+/** Sync once immediately (quick feedback after the LSP is enabled or the file changes). */
 export function syncNow(view: EditorView) {
   void syncFromView(view);
 }
 
-/** 配置切换后清掉该笔记的同步缓存,并立即清空文档上已贴的诊断。 */
+/** After a config switch, drop that note's sync cache and immediately clear the diagnostics already pasted on the document. */
 export function resetLspStateForPath(mdPath: string) {
   lspOffPaths.delete(mdPath);
   lastSentText.delete(mdPath);
@@ -179,15 +179,15 @@ export function resetLspStateForPath(mdPath: string) {
   rawDiags.delete(mdPath);
   applyDiagnosticsToView(mdPath);
   void api.pythonLspClose(mdPath).catch(() => {
-    // 项目 LSP 本来就没开时是无害 no-op。
+    // A harmless no-op when the project LSP was never on.
   });
 }
 
 type SyncOutcome = "ok" | "disabled" | "error";
 
 /**
- * 把虚拟文本推给 ty(去重纪律:发之前先记账,并发的后来者看到相同文本
- * 直接跳过;失败把账撤掉)。退避与提示在这里统一管。
+ * Push the virtual text to ty (dedupe discipline: the send is recorded first, a concurrent later caller that sees the same
+ * text skips it; on failure the record is rolled back). The backoff and the user-facing hint are handled here.
  */
 async function pushVirtualText(mdPath: string, eff: PythonExtract): Promise<SyncOutcome> {
   lastSentText.set(mdPath, eff.effectiveText);
@@ -197,7 +197,7 @@ async function pushVirtualText(mdPath: string, eff: PythonExtract): Promise<Sync
       backoffUntil = 0;
       return "ok";
     }
-    // 项目 LSP 没开:加入免打扰名单,等 toggle 时 resetLspStateForPath。
+    // The project LSP is off: add the path to the do-not-disturb list until a toggle calls resetLspStateForPath.
     lspOffPaths.add(mdPath);
     lastSentText.delete(mdPath);
     return "disabled";
@@ -216,7 +216,7 @@ async function syncFromView(view: EditorView) {
   const mdPath = documentPath(view.state);
   if (!mdPath || !isNotePath(mdPath)) return;
 
-  // 换了文件:把存着的诊断贴上新文档(有则贴,无则清)。
+  // The file changed: paste the stored diagnostics onto the new document (paste them if there are any, clear them if not).
   if (mdPath !== lastAppliedPath) {
     lastAppliedPath = mdPath;
     applyDiagnosticsToView(mdPath);
@@ -252,17 +252,17 @@ async function clearPath(mdPath: string) {
   try {
     await api.pythonLspClose(mdPath);
   } catch {
-    // 没开 LSP 时 close 是无害 no-op。
+    // Closing is a harmless no-op when the LSP was never on.
   }
 }
 
 // ---------------------------------------------------------------------------
-// 补全 / hover:光标位置 → LSP position → ty → 结果映射回 markdown 偏移
+// Completion / hover: caret position -> LSP position -> ty -> the result mapped back to markdown offsets
 // ---------------------------------------------------------------------------
 
 /**
- * 交互请求的公共前置:文档提取(带缓存)+ 必要时先推虚拟文本。返回发出
- * 请求时应依据的文档快照;推文本期间文档又变了(或服务器不可用)则 null。
+ * The shared preamble of an interactive request: document extraction (cached) plus pushing the virtual text first when needed.
+ * Returns the document snapshot the request must be based on; if the document changed while the text was being pushed (or the server is unavailable) it returns null.
  */
 async function prepareLsp(
   view: EditorView,
@@ -288,8 +288,8 @@ async function pythonCompletionSource(
   const mdPath = view ? documentPath(view.state) : null;
   if (!view || !mdPath || !isNotePath(mdPath) || lspOffPaths.has(mdPath)) return null;
 
-  // 三种入口:词中续打、点号后补属性、显式 Ctrl-Space。散文里的 CJK 击键
-  // 在第一个门就出去,不做全文提取。
+  // Three entry points: continuing a word, completing a property after a dot, and an explicit Ctrl-Space. A CJK keystroke
+  // in prose leaves at the first gate, without any full-text extraction.
   const word = context.matchBefore(/[A-Za-z0-9_]+/);
   const dot = word ? null : context.matchBefore(/\./);
   if (!word && !dot && !context.explicit) return null;
@@ -300,7 +300,7 @@ async function pythonCompletionSource(
   const position = mdPosToLspPosition(doc, context.pos, eff);
   if (!position) return null;
 
-  // 过期自证:等待期间换了文档/文件,补全对当前状态无意义。
+  // Staleness proof: the document or file changed while waiting, so the completion is meaningless for the current state.
   if (view.state.doc !== doc || documentPath(view.state) !== mdPath) return null;
 
   let raw: unknown;
@@ -316,7 +316,7 @@ async function pythonCompletionSource(
   return {
     from: word ? word.from : context.pos,
     options,
-    // 纯词字符续打直接在现有结果里过滤,不打扰服务器;点号会打破它。
+    // Continuing with word characters filters the existing results locally, without disturbing the server; a dot breaks that.
     validFor: /^[A-Za-z0-9_]*$/,
   };
 }
@@ -328,7 +328,7 @@ async function pythonHoverSource(view: EditorView, pos: number, side: -1 | 1) {
   const prepared = await prepareLsp(view, mdPath);
   if (!prepared) return null;
   const { doc, eff } = prepared;
-  // 指针停在字符左缘(side=-1)时,查它前面的那个字符。
+  // When the pointer rests on the left edge of a character (side=-1), look up the character before it.
   const anchor = side < 0 && pos > 0 ? pos - 1 : pos;
   const position = mdPosToLspPosition(doc, anchor, eff);
   if (!position) return null;
@@ -343,9 +343,9 @@ async function pythonHoverSource(view: EditorView, pos: number, side: -1 | 1) {
   if (view.state.doc !== doc || documentPath(view.state) !== mdPath) return null;
   const info = lspHoverText(raw);
   if (!info) return null;
-  // 注意:hoverTooltip 会把多个来源合成 cm-tooltip-hover 宿主,来源的
-  // class 字段不透传 —— 主题样式只能选中宿主(.cm-tooltip.cm-tooltip-hover)
-  // 和这个内层 dom,不能指望容器上出现自定义 class。
+  // Note: hoverTooltip merges several sources into a cm-tooltip-hover host and the class field of a source is not
+  // passed through -- a theme can only select the host (.cm-tooltip.cm-tooltip-hover) and this inner dom, so do not
+  // expect a custom class on the container.
   return { pos, create: () => ({ dom: hoverDom(info) }) };
 }
 
@@ -356,11 +356,11 @@ function hoverDom(text: string): HTMLElement {
   return dom;
 }
 
-/** 把某路径的诊断贴到当前视图;只在视图还显示这篇笔记时动文档。 */
+/** Paste the diagnostics of a path onto the current view; the document is only touched while the view still shows that note. */
 function applyDiagnosticsToView(mdPath: string) {
   const view = editorApi.view;
   if (!view) return;
-  if (documentPath(view.state) !== mdPath) return; // 过期结果,丢弃
+  if (documentPath(view.state) !== mdPath) return; // stale result, dropped
   const doc = view.state.doc;
   const mapped: Diagnostic[] = mapLspDiagnostics(doc, rawDiags.get(mdPath) ?? []);
   view.dispatch(setDiagnostics(view.state, mapped));

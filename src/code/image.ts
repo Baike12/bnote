@@ -1,16 +1,18 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 /**
- * 代码区里的图片。
+ * Images in the code area.
  *
- * 图片**不走编辑器**:后端按二进制处理(内容为空串),这里用 Tauri 的
- * asset 协议直接把磁盘上的字节交给 `<img>`——不经过 IPC 的 base64,
- * 大图也不会在 JS 里多存一份。
+ * An image **does not go through the editor**: the backend treats it as
+ * binary (the content is an empty string), and here the bytes on disk are
+ * handed to an `<img>` directly through the Tauri asset protocol — no base64
+ * over IPC, and a large image is not kept twice in JS.
  *
- * 只认**位图**:svg 是文本(xml),要继续能在编辑器里改,不当图片。
+ * Only **bitmaps** are recognized: svg is text (xml) and has to stay editable
+ * in the editor, so it is not an image.
  */
 
-/** 扩展名 → 当图片渲染(都是 WKWebView 能直接解的属性)。 */
+/** Extension → rendered as an image (all of them are formats WKWebView decodes natively). */
 const RASTER_EXT = new Set([
   "png",
   "jpg",
@@ -25,7 +27,7 @@ const RASTER_EXT = new Set([
   "heic",
 ]);
 
-/** 这个文件是不是该按图片渲染(svg 不算:它是可编辑的文本)。 */
+/** Whether this file should be rendered as an image (svg does not count: it is editable text). */
 export function isRasterImage(path: string): boolean {
   const slash = path.lastIndexOf("/");
   const name = slash < 0 ? path : path.slice(slash + 1);
@@ -35,20 +37,22 @@ export function isRasterImage(path: string): boolean {
 }
 
 /**
- * 项目根 + 项目相对路径 → 绝对路径。
+ * Project root + project-relative path → absolute path.
  *
- * 根的末尾斜杠先去掉:接上相对路径后不会出现 `//`(asset 协议会把双斜杠
- * 当成协议后的空主机名,路径解析失败)。
+ * The trailing slash of the root is removed first: appending the relative
+ * path then cannot produce a `//` (the asset protocol reads a double slash
+ * as an empty host name after the scheme, and the path fails to resolve).
  */
 export function absoluteInProject(root: string, path: string): string {
   return `${root.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
 
 /**
- * 图片的 asset URL。
+ * The asset URL of an image.
  *
- * 非 Tauri 环境(纯浏览器 harness 的 `convertFileSrc` 缺失)返回空串,
- * 由调用方显示加载失败——不抛异常把整个面板炸掉。
+ * Outside Tauri (the pure browser harness has no `convertFileSrc`) it returns
+ * an empty string and the caller shows the load failure — it does not throw
+ * and blow up the whole panel.
  */
 export function imageSrc(root: string, path: string): string {
   try {
@@ -58,7 +62,7 @@ export function imageSrc(root: string, path: string): string {
   }
 }
 
-/** 人读的文件大小(图片角注用)。 */
+/** A human readable file size (used by the image caption). */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "";
   if (bytes < 1024) return `${Math.round(bytes)} B`;

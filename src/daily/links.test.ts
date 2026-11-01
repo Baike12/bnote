@@ -45,7 +45,7 @@ describe("forFile / findByText", () => {
   it("findByText 限文件参与、按行号提示就近", () => {
     expect(s.findByText("/vault/proj/a.md", "任务甲", 10)?.id).toBe("a");
     expect(s.findByText("/vault/Daily/2026-09-23.md", "任务乙", 5)?.id).toBe("b");
-    expect(s.findByText("/vault/proj/b.md", "任务甲", 3)).toBe(null); // 文件不参与
+    expect(s.findByText("/vault/proj/b.md", "任务甲", 3)).toBe(null); // the file does not take part
     expect(s.findByText("/vault/proj/a.md", "不存在", 3)).toBe(null);
   });
 

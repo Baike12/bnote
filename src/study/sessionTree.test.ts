@@ -35,7 +35,7 @@ describe("会话家族:根与成员", () => {
 
   it("parent 成环时停住而不是无限递归", () => {
     const nodes = [node("a", "b", 1), node("b", "a", 2)];
-    // 环里挑哪条当根无所谓,关键是终止且两条都在家族里。
+    // Which node of the cycle becomes the root does not matter; what matters is that it terminates and that both nodes are in the family.
     const root = sessionRoot("a", nodes);
     expect(["a", "b"]).toContain(root);
     expect(sessionFamily(root, nodes).map((n) => n.id)).toEqual(["a", "b"]);

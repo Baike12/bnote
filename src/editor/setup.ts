@@ -43,23 +43,26 @@ export interface EditorCallbacks {
 }
 
 /**
- * vim 的 normal/visual 模式里 Backspace/Enter 是"移动"而不是"编辑",这些
- * LaTeX Suite 的按键增强必须原样放行。闸门放在绑定点(setup)而不是特性模块
- * 里,是为了不让 snippets 反向依赖 vim 引擎。
+ * In vim's normal/visual modes Backspace/Enter *move* instead of editing, so
+ * the LaTeX Suite key enhancements must pass through untouched. The gate lives
+ * at the binding site (setup) rather than in the feature module, so snippets
+ * never depend on the vim engine.
  */
 function vimAllowsEdit(view: EditorView): boolean {
   return !useAppStore.getState().settings.vim || currentVimMode(view) === "insert";
 }
 
-/** Backspace:LaTeX Suite 的 autoDelete$ 先手(公式里光标夹在两个 `$` 之间时
- *  一次删掉两个),bnote 追加的上下标空花括号同理(`_{|}`/`^{|}` 连 `_`/`^`
- *  一起删);其余情况交回下面的 markdown 删除逻辑。 */
+/** Backspace: LaTeX Suite's autoDelete$ goes first (it drops both `$` when
+ *  the caret sits between them in a formula); the same applies to the empty
+ *  braces bnote appends for sub/superscripts (`_{|}`/`^{|}` deletes `_`/`^`
+ *  with them). Everything else falls back to the markdown delete logic below. */
 function backspace(view: EditorView): boolean {
   if (!vimAllowsEdit(view)) return false;
   return deleteDollarPair(view) || deleteScriptBraces(view);
 }
 
-/** 矩阵环境里的 Enter 补 ` \\` 换行(Shift+Enter 只移动光标)。 */
+/** Enter inside a matrix environment inserts a ` \\` line break (Shift+Enter
+ *  only moves the caret). */
 function enterInMatrix(view: EditorView, shift: boolean): boolean {
   if (!vimAllowsEdit(view)) return false;
   return matrixEnter(view, shift);
@@ -72,11 +75,14 @@ const vimCommandMapCompartment = new Compartment();
 
 export interface EditorCreateOptions {
   /**
-   * 待办同步里的「自动发送」开关:普通笔记保持开启(输入待办就进今日日记),
-   * 项目卡片关掉——项目待办只有拖进日记或按发送快捷键才过去。
+   * The "auto send" switch of todo sync: on for normal notes (typing a todo
+   * sends it into today's daily note), off for project cards — project todos
+   * only travel when dragged into the daily note or sent with the send
+   * shortcut.
    */
   allowAutoSend?: boolean;
-  /** 实例额外的扩展(项目卡片的拖拽手柄等),与基础扩展同批注册。 */
+  /** Extra extensions for this instance (the project card's drag handles, etc.),
+   *  registered in the same batch as the base extensions. */
   extraExtensions?: Extension[];
 }
 
@@ -88,12 +94,15 @@ export function baseExtensions(
     // Snippet Tab handling takes precedence over everything else.
     snippetsExtension(),
 
-    // 多段选区：vim 的 blockwise（Ctrl-V）在引擎里就是"每行一段"——y/d/c/p 逐段
-    // 执行（Vim.forEachSelection → cm.listSelections()），块选逐行增删也靠它。
-    // CM6 默认关闭该 facet，任何多段选区在事务落库时都被
-    // tr.newSelection.asSingle() 压成主段，于是块选只剩光标那一行生效：选中三行
-    // 按 y 只复制一行（而绘制是完整的块，两边各说各话）。打开后引擎的逐行段原样
-    // 进入 state，绘制与复制/删除看到同一份几何。
+    // Multi-range selections: vim's blockwise mode (Ctrl-V) is "one range per
+    // line" inside the engine — y/d/c/p run per range (Vim.forEachSelection →
+    // cm.listSelections()), and per-line edits inside a block rely on it too.
+    // CM6 disables that facet by default, so any multi-range selection is
+    // squashed into the main range by tr.newSelection.asSingle() when the
+    // transaction lands: selecting three lines and pressing y copies only one
+    // line (while the drawing shows the full block — the two disagree). With
+    // it enabled the engine's per-line ranges reach the state unchanged, so
+    // drawing and copy/delete see the same geometry.
     EditorState.allowMultipleSelections.of(true),
 
     // lang-markdown ships its own Enter/Backspace in a Prec.high keymap
@@ -103,8 +112,10 @@ export function baseExtensions(
     // nested item grows a blank line instead of moving up a level. Prec.highest
     // keeps the list Enter in charge; every non-list line still falls through
     // to lang-markdown below.
-    // 矩阵环境里的 Enter 排在列表续行之前:在 \begin{pmatrix}…\end{pmatrix}
-    // 里回车补 ` \\` 换行才是想要的(Tab 补 ` & ` 同理,snippet 键位表里)。
+    // Enter inside a matrix environment is bound before list continuation: in
+    // \begin{pmatrix}…\end{pmatrix} the Enter that inserts a ` \\` line
+    // break is the wanted one (Tab inserting ` & ` works the same way, see
+    // the snippet key table).
     Prec.highest(
       keymap.of([
         { key: "Enter", run: (view) => enterInMatrix(view, false) },
@@ -115,15 +126,17 @@ export function baseExtensions(
 
     markdownExtensions(),
     codeHighlighting(),
-    // 强调文本(斜体/加粗/删除线)的样式:语法高亮的 tag 按节点范围染色,
-    // 公式里的 `_` 下标被 lezer 误配成 Emphasis 时会把中间整段正文一起染,
-    // 只能由这条数学感知的装饰统一画(见 emphasisMarks.ts)。
+    // Styling for emphasis (italic/bold/strikethrough): the syntax highlight
+    // tags color by node range, and when lezer misreads a `_` subscript in a
+    // formula as Emphasis it paints the whole prose in between, so this
+    // math-aware decoration has to draw it (see emphasisMarks.ts).
     emphasisMarksExtension(),
 
     docPathField,
-    // 焦点进入哪个实例,命令层就作用于哪个实例(getView)。项目视图里同时
-    // 有项目卡片与日记两个编辑器,只靠「最后挂载的那个」会在用户来回点击
-    // 之后指错目标。
+    // The focused instance is the one the command layer acts on (getView). The
+    // project view holds both a project card and a daily note editor, so
+    // "the last one mounted" points at the wrong target after the user clicks
+    // back and forth.
     EditorView.domEventHandlers({
       focusin: (_event, view) => {
         setActiveEditor(view);
@@ -137,16 +150,24 @@ export function baseExtensions(
     // IME follow (self-gates on settings.vim + settings.ime.enabled).
     imeSwitchExtension(),
 
-    // ty LSP:文档变更防抖同步行对齐虚拟 python 文件,诊断贴回文档。
-    // 自带门槛(无 docPath 的编辑器、无 python 围栏、项目 LSP 关闭都直通)。
+    // ty LSP: debounced document changes are synced into a line-aligned
+    // virtual python file, and diagnostics are attached back to the document.
+    // It gates itself (no docPath, no python fence, project LSP off all pass
+    // straight through).
     pythonLspExtension(),
 
-    // 跨文件待办同步:勾选/子待办/改名镜像到日记(自带链接库未加载直通门槛)。
+    // Cross-file todo sync: checks, subtodos and renames are mirrored into
+    // the daily note (it passes straight through until the link index is
+    // loaded).
     dailySyncExtension({ allowAutoSend: options.allowAutoSend }),
-    // 已链接待办的可视标识(视口内行装饰,只占标记槽的绝对定位伪元素)。
+    // Visual marker for linked todos (an in-viewport line decoration, an
+    // absolutely positioned pseudo-element that occupies only the marker
+    // slot).
     dailyMarksExtension(),
-    // 今日足迹:今天的日记末尾聚合其他文件今日记录的块(引用式,只读);
-    // 源文件侧收录行打 pip。自带门槛:非今日日记、索引为空都直通。
+    // Today's footprint: the end of today's daily note aggregates the blocks
+    // other files recorded today (referenced, read-only); the collected lines
+    // on the source side get a pip. It gates itself: not today's daily note
+    // or an empty index passes straight through.
     footprintZoneExtension(),
     footprintMarksExtension(),
 
@@ -157,10 +178,13 @@ export function baseExtensions(
     highlightSelectionMatches(),
 
     keymap.of([
-      // ⌘C/⌘X/⌘V 必须在这里显式实现：wry 的 WKWebView 在视图层认领 ⌘ 和弦、
-      // 作为普通 keydown 送进页面，AppKit Edit 菜单角色收不到事件，WebKit 也
-      // 不会对 keydown 代行剪贴板动作（⌘A 之所以能用，是因为 defaultKeymap
-      // 里有 Mod-a → selectAll 的 JS 绑定）。剪贴板本体走 lib/clipboard。
+      // Mod-c/Mod-x/Mod-v must be implemented explicitly here: wry's
+      // WKWebView claims Mod chords at the view layer and delivers them to
+      // the page as plain keydown events, so the AppKit Edit menu roles never
+      // receive the events and WebKit does not perform the clipboard action on
+      // keydown either (Mod-a only works because defaultKeymap has a
+      // Mod-a → selectAll JS binding). The clipboard payload itself goes
+      // through lib/clipboard.
       { key: "Mod-c", run: copySelection },
       { key: "Mod-x", run: cutSelection },
       { key: "Mod-v", run: pasteClipboard },
@@ -169,8 +193,9 @@ export function baseExtensions(
       // closable). List lines never get here — the Prec.highest binding above
       // takes them.
       { key: "Enter", run: insertNewlineContinueMarkup },
-      // LaTeX Suite 的 autoDelete$ 排在 markdown 的删除逻辑之前;vim 的
-      // normal/visual 模式里 Backspace 是"左移",必须原样交回引擎。
+      // LaTeX Suite's autoDelete$ runs before the markdown delete logic; in
+      // vim's normal/visual modes Backspace is "move left", so it has to be
+      // handed back to the engine untouched.
       { key: "Backspace", run: backspace },
       { key: "Backspace", run: deleteMarkupBackward },
       ...searchKeymap,
@@ -180,15 +205,20 @@ export function baseExtensions(
     ]),
 
     EditorView.lineWrapping,
-    // 光标几何的唯一写入者：原生 caret 的绘制时序由 WebKit 内部决定——列表
-    // 标记槽/缩进导致的 DOM 重构期间，它会按旧的内联偏移画出一帧（用户看到的
-    // “光标闪到行首”），JS 侧选区状态再正确也约束不了它。drawSelection 把
-    // caret 换成 CM6 测量绘制的 .cm-cursor，位置来自当帧 measure（下面的
-    // updateListener 会在 vim 开启时把它冲刷到同帧），DOM 重构不再有可见窗口。
-    // 普通/可视模式不受影响：shim 的 .cm-vimMode 规则照常隐藏 CM6 光标层、
-    // 只显示引擎的块状光标。
-    // 光标常亮：闪烁动画由 global.css 的 `.cm-cursorLayer { animation: none }`
-    // 统一关闭（普通光标层与 vim 块光标层共用该 class），不在这里配 blink 节奏。
+    // The single writer of cursor geometry: the timing of the native caret's
+    // painting is decided inside WebKit — during the DOM rebuild caused by a
+    // list marker slot / indent it paints one frame with the old inline offset
+    // (the user sees the "caret flash to the line start"), and correct
+    // JS-side selection state cannot constrain it. drawSelection replaces the
+    // caret with CM6's measured .cm-cursor, positioned from that frame's
+    // measure (the updateListener below flushes it into the same frame when
+    // vim is on), so the DOM rebuild has no visible window.
+    // Normal/visual modes are unaffected: the shim's .cm-vimMode rule keeps
+    // hiding the CM6 cursor layer and shows only the engine's block cursor.
+    // Steady cursor: the blink animation is turned off globally by
+    // `.cm-cursorLayer { animation: none }` in global.css (the normal cursor
+    // layer and the vim block cursor layer share that class), so the blink
+    // rhythm is not configured here.
     drawSelection(),
     EditorView.theme({
       "&": { height: "100%" },
@@ -198,9 +228,11 @@ export function baseExtensions(
           "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
       },
       "&.cm-focused": { outline: "none" },
-      // CM6 的 baseTheme 给 gutter 配了浅灰底(为 light 场景),深色主题下会
-      // 变成编辑器里插进一条白柱。gutter 只出现在项目看板(拖拽手柄),统一
-      // 还给主题色,将来再加别的 gutter 也不会踩同一处。
+      // CM6's baseTheme gives the gutter a light gray background (for the
+      // light scenario), which under a dark theme becomes a white column
+      // inserted into the editor. The gutter only appears on the project board
+      // (drag handles); theming it uniformly also keeps future gutters from
+      // hitting the same spot.
       ".cm-gutters": {
         backgroundColor: "transparent",
         color: "var(--text-faint, #67676d)",
@@ -220,10 +252,13 @@ export function baseExtensions(
     EditorView.updateListener.of((u) => {
       if (u.docChanged) callbacks.onDocChanged();
       if (u.selectionSet || u.docChanged) callbacks.onCursorMoved();
-      // 标题自动编号：文档变更后补一次重编号（input.bnote-renumber 事务
-      // 不再触发，防循环）。updateListener 里禁止直接 dispatch，放微任务——
-      // 仍在本次绘制前完成，撤销时与原编辑同组。
-      // 撤销/重做绝不触发：否则编号被撤掉后立刻又被补回，撤销永远撤不净。
+      // Auto heading numbering: renumber once after a document change (an
+      // input.bnote-renumber transaction no longer triggers, which prevents a
+      // loop). Dispatching directly inside updateListener is forbidden, so it
+      // goes into a microtask — it still completes before this frame paints,
+      // and undo groups it with the original edit.
+      // Undo/redo never triggers it: otherwise the numbering would be undone
+      // and immediately restored, so undo could never fully revert it.
       if (
         u.docChanged &&
         !u.transactions.some(
@@ -236,7 +271,8 @@ export function baseExtensions(
       ) {
         const view = u.view;
         queueMicrotask(() => {
-          // isConnected：微任务执行前视图可能已被销毁（文件切换/关窗）。
+          // isConnected: the view may already be destroyed before the
+          // microtask runs (file switch / window closed).
           if (
             useAppStore.getState().settings.autoNumberHeadings &&
             view.dom.isConnected
@@ -246,34 +282,50 @@ export function baseExtensions(
         });
       }
     }),
-    // vim 的块光标不是原生光标：插件自己画在 .cm-vimCursorLayer 里，位置经
-    // view.requestMeasure 推迟到下一帧才写入（@replit/codemirror-vim 的
-    // BlockCursorPlugin.update → requestMeasure → rAF），而行与装饰的 DOM 更新
-    // 是同步的。列表缩进让整行右移 28px，缩进后的那一帧里光标还停在旧 x——正好
-    // 压在新项目符号上，下一帧才跳到符号后面。这里读一次光标坐标，把挂起的
-    // measure 冲刷掉，让光标与文本同帧落位。纯光标移动（vim 的 j/k、h/l）同样
-    // 慢一帧，一并冲刷。
+    // The vim block cursor is not the native cursor: the plugin draws it into
+    // .cm-vimCursorLayer itself, and its position is written one frame later
+    // through view.requestMeasure (@replit/codemirror-vim's
+    // BlockCursorPlugin.update → requestMeasure → rAF), while the DOM
+    // updates of lines and decorations are synchronous. A list indent shifts
+    // the whole line 28px to the right, and in the frame right after the
+    // indent the cursor still sits at the old x — exactly on top of the new
+    // bullet, and only on the next frame does it jump behind the bullet.
+    // Reading the cursor coordinates once here flushes the pending measure so
+    // the cursor lands in the same frame as the text. Pure cursor moves
+    // (vim's j/k, h/l) are one frame late too, so they are flushed as well.
     //
-    // 冲刷的时序契约：排进**微任务**，而不是 updateListener 里同步执行。引擎的
-    // 模式类翻转（vim-mode-change → updateClass 翻 scrollDOM 上的 .cm-vimMode）
-    // 发生在 dispatch 返回之后、同一按键任务内——同步读坐标会按「翻转前」的
-    // 样式算一轮布局，随后的类翻转把成果作废，rAF 的 measure 再算一轮：一次
-    // Esc 两轮布局。微任务仍在本次按键任务内、渲染（rAF/绘制）之前，块光标
-    // 照旧同帧落位；但它排在任务内全部同步变更（含类翻转）之后，一轮 measure
-    // 看到的就是最终样式，双轮归一。后续同任务的微任务事务（如标题重编号）
-    // 也被这一冲刷顺带覆盖，不再各付一轮。
+    // Timing contract of the flush: it is queued as a **microtask** instead
+    // of running synchronously inside updateListener. The engine's mode class
+    // flip (vim-mode-change → updateClass flips .cm-vimMode on the
+    // scrollDOM) happens after dispatch returns, within the same key task —
+    // reading the coordinates synchronously computes a layout round with the
+    // "pre-flip" styles, the class flip that follows invalidates that
+    // result, and the rAF measure computes another round: one Esc, two
+    // layout rounds. The microtask still runs inside this key task, before
+    // rendering (rAF / paint), so the block cursor still lands in the same
+    // frame; but it comes after every synchronous change of the task
+    // (including the class flip), so a single measure round sees the final
+    // styles — two rounds collapse into one. Later microtask transactions of
+    // the same task (such as the heading renumbering) are covered by this
+    // flush as well and no longer pay a round each.
     //
-    // 代价与闸门：coordsAtPos 会**同步**跑完整轮 measure（块光标 + 选区层 +
-    // 打字机居中）并强制一次样式重算 + 布局，实测每次 doc/selection 事务
-    // 2.0ms、公式块里 4.3ms（真实 app）。而它换来的只有「光标层同帧落位」，所以
-    // 只在**真有层会动**时付：
-    //   - 文档变了：行/装饰的 DOM 可能重构，插入态的锚点会按旧偏移画一帧；
-    //   - 否则要引擎在画块光标（normal/visual/replace）——measureCursor 的
-    //     判据下 insert 态块光标层是空的，冲刷没有对象；
-    //   - 或者这次选择变化能改到装饰（跨标记槽、命中行内触发符），行盒可能
-    //     移位（selectionAffectsDecos 就是这条上界）。
-    // 三者都不成立时（normal→insert 这类空转、正文里的插入态光标移动）冲刷
-    // 换不到任何同帧收益，只剩整轮强制布局。
+    // Cost and gate: coordsAtPos **synchronously** runs a full measure round
+    // (block cursor + selection layer + typewriter centering) and forces a
+    // style recalculation + layout. Measured: 2.0ms per doc/selection
+    // transaction, 4.3ms inside a formula block (real app). What it buys is
+    // only the "cursor layer lands in the same frame", so it is paid only
+    // when **a layer really moves**:
+    //   - the document changed: the DOM of lines/decorations may be rebuilt
+    //     and the insert-mode anchor paints one frame with the old offset;
+    //   - or the engine is drawing the block cursor (normal/visual/replace) —
+    //     under measureCursor's criterion the block cursor layer is empty in
+    //     insert mode, so the flush has no target;
+    //   - or this selection change can affect decorations (crossing a marker
+    //     slot, hitting an inline trigger), so the line box may shift
+    //     (selectionAffectsDecos is that upper bound).
+    // When none of the three holds (idle transitions such as normal→insert,
+    // an insert-mode cursor move inside the text) the flush buys no
+    // same-frame gain and only costs a full forced layout.
     EditorView.updateListener.of((u) => {
       if (!useAppStore.getState().settings.vim) return;
       if (!u.docChanged && !u.selectionSet) return;
@@ -283,14 +335,16 @@ export function baseExtensions(
       scheduleVimCursorFlush(u.view);
     }),
 
-    // 实例自己的扩展(项目卡片的拖拽手柄),放在基础扩展之后:它们不改变
-    // 既有优先级,只是多挂一层装饰/gutter。
+    // This instance's own extensions (the project card's drag handles) come
+    // after the base extensions: they do not change the existing precedence,
+    // they only add another layer of decorations/gutters.
     ...(options.extraExtensions ?? []),
   ];
 }
 
-/** 冲刷的最小视图面：导出纯结构是为了在无 DOM 门禁里锁「微任务内执行、视图
- *  已销毁则放弃」的时序契约。 */
+/** The minimal view surface of the flush: it is exported as a pure structure
+ *  so the timing contract ("runs inside a microtask, gives up when the view
+ *  is gone") can be locked in a DOM-free gate. */
 export interface FlushableView {
   dom: { isConnected: boolean };
   state: { selection: { main: { head: number } } };
@@ -298,8 +352,10 @@ export interface FlushableView {
 }
 
 /**
- * 把光标冲刷排进微任务（理由见 updateListener 上方的时序契约）。视图在微任务
- * 执行前被销毁（文件切换/关窗）则放弃——异步回调自证时效，不许盲写。
+ * Queues the cursor flush into a microtask (reason: see the timing contract
+ * above the updateListener). If the view is destroyed before the microtask
+ * runs (file switch / window closed) the flush is abandoned — an async
+ * callback must prove it is still current instead of writing blindly.
  */
 export function scheduleVimCursorFlush(view: FlushableView): void {
   queueMicrotask(() => {
@@ -309,12 +365,18 @@ export function scheduleVimCursorFlush(view: FlushableView): void {
 }
 
 /**
- * 光标冲刷的判据（理由见上面那段注释）。三条「真有层会动」的来源：
- *   - 文档变了：行/装饰的 DOM 可能重构，插入态的原生锚点会按旧偏移画一帧；
- *   - 引擎在画块光标（normal/visual/replace）：块光标层的几何只有 measure 后才有；
- *   - 这次选择变化能改到装饰（跨标记槽、命中行内触发符）：行盒可能移位。
- * 都不成立（normal→insert 这类空转、正文里的插入态光标移动）时冲刷换不到任何
- * 同帧收益，只剩整轮强制布局——导出供门禁锁这条模型，它是模式切换卡顿的根因。
+ * The criterion for the cursor flush (reason: see the comment block above).
+ * The three sources of "a layer really moves":
+ *   - the document changed: the DOM of lines/decorations may be rebuilt and
+ *     the native anchor in insert mode paints one frame with the old offset;
+ *   - the engine is drawing the block cursor (normal/visual/replace): the
+ *     block cursor layer only has geometry after a measure;
+ *   - this selection change can affect decorations (crossing a marker slot,
+ *     hitting an inline trigger): the line box may shift.
+ * When none holds (idle transitions such as normal→insert, an insert-mode
+ * cursor move inside the text) the flush buys no same-frame gain and only
+ * costs a full forced layout — it is exported so the gate can lock this
+ * model, which is the root cause of the mode-switch stutter.
  */
 export function vimCursorNeedsFlush(
   start: EditorState,
@@ -329,15 +391,19 @@ export function vimCursorNeedsFlush(
 }
 
 /**
- * 每个编辑器实例自己的基础扩展。刻意按 view 记，而不是一份全局变量：学习模式
- * 的中栏内容编辑器与右栏笔记编辑器各建一个实例，而 loadDocument 是整份替换
- * state 的 extensions —— 全局变量会让后建的实例把自己的扩展（含它的
- * updateListener 回调）塞进先建的那个的 state，于是在中栏敲字会触发笔记编辑器
- * 的自动保存，把笔记文件覆盖成笔记栏当时的内容。
+ * The base extensions of each editor instance. Deliberately kept per view
+ * instead of in one global variable: study mode's middle content editor and
+ * the right-hand notes editor each build an instance, and loadDocument
+ * replaces the whole state's extensions — a global would let the later
+ * instance push its own extensions (including its updateListener callback)
+ * into the earlier instance's state, so typing in the middle column would
+ * trigger the notes editor's autosave and overwrite the notes file with what
+ * the notes pane held at that moment.
  */
 const extensionsByView = new WeakMap<EditorView, Extension[]>();
 
-/** 实例自己的扩展；不是 createEditor 建的实例返回 null，loadDocument 不动它。 */
+/** This instance's own extensions; returns null for instances not created by
+ *  createEditor, and loadDocument leaves them untouched. */
 function ownExtensions(view: EditorView): Extension[] | null {
   return extensionsByView.get(view) ?? null;
 }
@@ -359,10 +425,14 @@ export function createEditor(
 }
 
 /**
- * setState 之后语法树是空壳（后台解析尚未开始），装饰会按空树绘制——切换
- * 文件后"不动光标就不渲染"的根因。预算内同步把解析推到位，再用一个空事务
- * 触发装饰 field/plugin 按新树重建，保证首帧即为渲染态。大文档没推完的
- * 部分由后台解析完成后按树推进继续重建。
+ * After setState the syntax tree is an empty shell (the background parse has
+ * not started yet), so decorations are drawn against the empty tree — the
+ * root cause of "switching files renders nothing until the cursor moves".
+ * Push the parse synchronously within the budget, then dispatch an empty
+ * transaction so the decoration field/plugin rebuild against the new tree,
+ * guaranteeing the first frame is already the rendered state. For big
+ * documents the part that did not finish keeps rebuilding as the background
+ * parse advances the tree.
  */
 function primeSyntaxTree(view: EditorView) {
   ensureSyntaxTree(view.state, view.state.doc.length, 50);
@@ -370,10 +440,12 @@ function primeSyntaxTree(view: EditorView) {
 }
 
 /**
- * setState 会把全部 compartment 清零（vim/typewriter/livePreview 一并失效），
- * 而恢复它们的 applySettingsToEditor 是异步的（vimrc 走 IPC）——这个窗口期里
- * vim 不存在，normal 模式下的 gg/G 会被当作普通输入打进文档。这里用缓存的
- * mappings 同步恢复，窗口期归零；异步路径随后仍会用最新 vimrc 再对齐一次。
+ * setState clears every compartment (vim/typewriter/livePreview all stop
+ * working), while the applySettingsToEditor that restores them is async
+ * (vimrc arrives over IPC) — during that window vim does not exist, so gg/G
+ * in normal mode would be typed into the document as ordinary input. The
+ * cached mappings restore it synchronously, so the window stays zero-width;
+ * the async path then aligns once more with the latest vimrc.
  */
 function restoreCompartments(view: EditorView) {
   const { settings } = useAppStore.getState();
@@ -425,11 +497,14 @@ export function reconfigureVim(view: EditorView, enabled: boolean, mappings: Vim
   lastVimMappings = mappings;
   view.dispatch({
     effects: [
-      // 当前行底 shade 跟 vim 一起挂：vimActiveLine 以装饰模型画
-      // cm-activeLine,可见性判据与引擎的 cm-vimMode 类(块光标判据)逐字
-      // 一致——不依赖祖先类选择器,样式失效圈不随 Esc/i 罩住整个视口。
-      // vimKeyCaptureExtension:normal/visual 模式下引擎先于整条 keymap 链
-      // 见键(根因与契约见 vim.ts 捕获分发注释块)。
+      // The current-line shade is mounted together with vim: vimActiveLine
+      // draws cm-activeLine with the decoration model, and its visibility
+      // criterion is literally the engine's cm-vimMode class (the block cursor
+      // criterion) — so it does not rely on an ancestor class selector and a
+      // stale style cannot cover the whole viewport on Esc/i.
+      // vimKeyCaptureExtension: in normal/visual mode the engine sees the key
+      // before the whole keymap chain (root cause and contract: see the
+      // capture dispatch comment block in vim.ts).
       vimCompartment.reconfigure(
         enabled
           ? [vimModeExtension(), vimKeyCaptureExtension(), vimActiveLine(), vimVisualHighlight()]
@@ -441,8 +516,11 @@ export function reconfigureVim(view: EditorView, enabled: boolean, mappings: Vim
 }
 
 export function reconfigureTypewriter(view: EditorView, enabled: boolean) {
-  // 位置和开关都走同一份设置：插件按比例算上下留白，位置变了必须重建
-  // （compartment 重建会重新铺留白并立刻把光标推回新高度，拖动滑杆即预览）。
+  // Position and toggle come from the same setting: the plugin computes the
+  // top/bottom whitespace proportionally, so a position change must rebuild
+  // the extension (the compartment rebuild re-lays the whitespace and pushes
+  // the caret back to the new height at once, so dragging the slider previews
+  // it live).
   const position = useAppStore.getState().settings.typewriterPosition;
   view.dispatch({
     effects: typewriterCompartment.reconfigure(

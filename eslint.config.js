@@ -16,7 +16,8 @@ export default tseslint.config(
     rules: {
       "react-hooks/rules-of-hooks": "error",
       "react-hooks/exhaustive-deps": "warn",
-      // 编辑器热路径与引擎适配层大量使用 any 断言；列为告警，不拦门禁。
+      // The editor hot path and the engine adapter layer use many `any` assertions;
+      // warn only, so they never block the gate.
       "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/no-unused-vars": [
         "error",

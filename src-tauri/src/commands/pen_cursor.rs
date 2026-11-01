@@ -1,22 +1,29 @@
-//! 学习模式网页里的笔形光标(macOS)。
+//! Pen-shaped cursor for the study mode web view (macOS).
 //!
-//! 为什么不在页面里用 `cursor: url(...)`:
+//! Why not `cursor: url(...)` in the page:
 //!
-//! Web 进程每次鼠标移动都会经 IPC 把整条 Cursor 发给 UI 进程
-//! (`WebChromeClient::setCursor` → `PageClientImplMac::setCursor`),后者只在
-//! 「新建的平台光标 == 当前光标」时才跳过 `[NSCursor set]`。原生关键字
-//! (`crosshair`/`arrow`/`text`…) 返回 AppKit 单例,比较恒等;图片光标每次都由
-//! `createCustomCursor` 新建 NSCursor,比较恒不等 → 每移动一次就重设一次,
-//! 指针一直闪。这与选择器写在哪一级、是否 `cursor: inherit` 都无关。
+//! On every mouse move the web process sends the whole Cursor to the UI process
+//! over IPC (`WebChromeClient::setCursor` -> `PageClientImplMac::setCursor`),
+//! and the latter skips `[NSCursor set]` only when the newly created platform
+//! cursor compares identical to the current one. Native keywords
+//! (`crosshair`/`arrow`/`text`...) return AppKit singletons, so the comparison
+//! is always equal; an image cursor builds a new NSCursor via
+//! `createCustomCursor` every time, so the comparison is never equal -> the
+//! cursor is reset on every move and the pointer flickers constantly. That is
+//! independent of the level the selector is written at, and of
+//! `cursor: inherit`.
 //!
-//! 所以笔由原生层给:页面 CSS 只写原生关键字(见 study/webAnnotations.ts 的
-//! installCursorSheet),这里把这块 webview 区域内的光标请求统一换成**同一支**
-//! pen NSCursor(与 PDF 阅读器同一张 PNG、同一热点 12 22)。WebKit 之后发来的
-//! 请求全部变成空操作,指针由窗口服务器直接绘制,零滞后、不闪。
+//! So the pen comes from the native layer: the page CSS only uses native
+//! keywords (see installCursorSheet in study/webAnnotations.ts), and here every
+//! cursor request inside this webview's area is replaced with **the same** pen
+//! NSCursor (the same PNG and the same hotspot 12 22 as the PDF reader). All
+//! requests WebKit sends afterwards become no-ops, the window server draws the
+//! pointer directly, and there is zero lag and no flicker.
 //!
-//! 拦截点是进程内的 `-[NSCursor set]`(UI 进程就是本进程)。它是进程级的,
-//! 因此必须用「指针在子 webview 矩形内」+「webview 可见」双重门控,主窗口与
-//! PDF 阅读区完全不受影响。
+//! The interception point is the in-process `-[NSCursor set]` (the UI process is
+//! this process). It is process-wide, so it needs double gating on "the
+//! pointer is inside the child webview rect" plus "the webview is visible";
+//! the main window and the PDF reading area are completely unaffected.
 
 #[cfg(target_os = "macos")]
 mod mac {
@@ -33,29 +40,34 @@ mod mac {
     };
     use objc2_foundation::{NSData, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSSize};
 
-    /// 与 PDF 阅读器同一张图(`?inline` 那份是给页面用的,这里是原生用)。
+    /// The same image as the PDF reader (the `?inline` variant is for the page;
+    /// this one is for the native side).
     const PEN_HIGHLIGHT_PNG: &[u8] =
         include_bytes!("../../../src/assets/cursors/pdf-highlight.png");
     const PEN_NOTE_PNG: &[u8] = include_bytes!("../../../src/assets/cursors/pdf-note.png");
     const PEN_SIZE: f64 = 24.0;
-    /// 笔尖在图片里的位置(左上角为原点),与 CSS 里的 `12 22` 一致。
+    /// Tip position inside the image (origin at the top left), matching the
+    /// `12 22` in the CSS.
     const HOTSPOT_X: f64 = 12.0;
     const HOTSPOT_Y: f64 = 22.0;
 
-    /// `-[NSCursor set]` 的原始实现;0 = 还没装好。
+    /// The original `-[NSCursor set]` implementation; 0 = not installed yet.
     static ORIGINAL_SET: AtomicUsize = AtomicUsize::new(0);
     static INSTALLED: AtomicBool = AtomicBool::new(false);
-    /// 学习模式网页的 NSView(WKWebView),只在主线程解引用。
+    /// The study mode web view (WKWebView), dereferenced only on the main thread.
     static WEBVIEW: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
     static PEN_HIGHLIGHT: AtomicPtr<NSCursor> = AtomicPtr::new(std::ptr::null_mut());
     static PEN_NOTE: AtomicPtr<NSCursor> = AtomicPtr::new(std::ptr::null_mut());
-    /// 当前批注工具是否为文字批注(蓝笔);其余情况用高亮笔(黄笔)。
+    /// Whether the current annotation tool is a text annotation (blue pen);
+    /// everything else uses the highlighter (yellow pen).
     static NOTE_MODE: AtomicBool = AtomicBool::new(false);
     static OBSERVING: AtomicBool = AtomicBool::new(false);
-    /// 网页视图在屏幕坐标里的矩形。热路径(每次 `-[NSCursor set]`)只读这份
-    /// 缓存做算术判断;窗口移动/缩放、视图重新布局时由通知或 refresh 重算。
-    /// 在这里绝不做 WindowServer 查询:`windowNumberAtPoint` 实测 27.7µs/次,
-    /// 而光标 set 在鼠标移动、每次布局后的光标复算里都会发生。
+    /// The web view's rect in screen coordinates. The hot path (every
+    /// `-[NSCursor set]`) only reads this cache and does arithmetic; window
+    /// move/resize and view re-layout recompute it through notifications or
+    /// refresh(). Never query the WindowServer here: `windowNumberAtPoint`
+    /// measured 27.7 us per call, and the cursor set happens on every mouse
+    /// move and in every post-layout cursor recomputation.
     static RECT: [AtomicU64; 4] = [
         AtomicU64::new(0),
         AtomicU64::new(0),
@@ -66,7 +78,7 @@ mod mac {
 
     type SetFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel);
 
-    /// 重算网页视图的屏幕矩形(主线程)。
+    /// Recompute the web view's screen rect (main thread).
     fn refresh_rect() {
         let view = WEBVIEW.load(Ordering::Relaxed) as *const NSView;
         if view.is_null() || MainThreadMarker::new().is_none() {
@@ -99,15 +111,19 @@ mod mac {
         mouse.x >= x && mouse.x <= x + w && mouse.y >= y && mouse.y <= y + h
     }
 
-    // 激活/成为 key 窗口时重新落一次笔。
+    // Re-apply the pen when the app becomes active or the window becomes key.
     //
-    // 切到别的应用时 macOS 会把我们的光标换成箭头,而这一步不经过
-    // `-[NSCursor set]`,拦截器看不到;切回来时如果没有鼠标移动,WebKit 也
-    // 不会再发光标。所以在这两个通知上主动把笔重新设一次。
+    // Switching to another app makes macOS replace our cursor with an arrow,
+    // and that step does not go through `-[NSCursor set]`, so the interceptor
+    // never sees it; when the user switches back without moving the mouse,
+    // WebKit does not set the cursor again either. So re-set the pen
+    // proactively on these two notifications.
     //
-    // 窗口移动/缩放同理会改变缓存的矩形,一并重算。
+    // A window move/resize changes the cached rect for the same reason, so it
+    // is recomputed at the same time.
     define_class!(
-        // SAFETY: 观察者只调用 apply_now()/refresh_rect(),不持有其它 UI 状态。
+        // SAFETY: the observer only calls apply_now()/refresh_rect() and holds
+        // no other UI state.
         #[unsafe(super(NSObject))]
         #[name = "BNotePenCursorKeeper"]
         #[ivars = ()]
@@ -133,8 +149,10 @@ mod mac {
         }
     }
 
-    /// 装到 `-[NSCursor set]` 上的实现:在网页区域里把任何光标换成那支笔。
-    /// 已经是同一支笔就直接返回 —— WebKit 每次鼠标移动都会来一次。
+    /// The implementation installed on `-[NSCursor set]`: inside the web area
+    /// it replaces any cursor with that pen. It returns right away when the
+    /// cursor already is that same pen -- WebKit calls this on every mouse
+    /// move.
     unsafe extern "C-unwind" fn bnote_cursor_set(receiver: *mut AnyObject, cmd: Sel) {
         let raw = ORIGINAL_SET.load(Ordering::Relaxed);
         if raw == 0 {
@@ -151,11 +169,13 @@ mod mac {
         unsafe { original(receiver, cmd) };
     }
 
-    /// 指针此刻应该显示哪支笔;None = 不接管,交回原来的光标。
+    /// Which pen the pointer should show right now; None = do not take over,
+    /// hand the cursor back unchanged.
     ///
-    /// 这段会在**每次** `-[NSCursor set]` 上跑(鼠标移动、布局后的光标复算),
-    /// 所以先用缓存矩形做一次纯算术判断:指针不在网页上就直接返回,一次
-    /// AppKit 调用都不做。
+    /// This runs on **every** `-[NSCursor set]` (mouse moves, post-layout cursor
+    /// recomputation), so it starts with a pure arithmetic check against the
+    /// cached rect: if the pointer is not over the web view it returns without
+    /// making a single AppKit call.
     fn wanted_pen() -> Option<*mut NSCursor> {
         let mtm = MainThreadMarker::new()?;
         let view = WEBVIEW.load(Ordering::Relaxed) as *const NSView;
@@ -169,8 +189,9 @@ mod mac {
         unsafe {
             let view = &*view;
             let window = view.window()?;
-            // 应用不在前台、视图被藏起(弹窗盖住)、窗口不是 key(别的 bnote
-            // 窗口盖在上面)时都不接管。
+            // Do not take over when the app is not in the foreground, the view
+            // is hidden (a popup covers it), or the window is not key (another
+            // bnote window is on top).
             if !NSApplication::sharedApplication(mtm).isActive()
                 || view.isHiddenOrHasHiddenAncestor()
                 || !window.isKeyWindow()
@@ -230,8 +251,10 @@ mod mac {
         ORIGINAL_SET.store(original as usize, Ordering::SeqCst);
     }
 
-    /// 立刻把当前光标刷成应当显示的那一支(鼠标可能正停着不动)。
-    /// 调用点都是低频事件(激活、换工具、视图显示/移动),这里顺带刷新矩形缓存。
+    /// Immediately paints the current cursor with the pen it should show (the
+    /// mouse may be sitting still). Every call site is a low-frequency event
+    /// (activation, tool switch, view shown/moved), so the rect cache is
+    /// refreshed here as well.
     fn apply_now() {
         let raw = ORIGINAL_SET.load(Ordering::SeqCst);
         if raw == 0 {
@@ -248,8 +271,10 @@ mod mac {
         }
     }
 
-    /// 应用激活 / 窗口成为 key 时补一次笔:这两个时刻 macOS 会把光标换成
-    /// 箭头,而这一步不走 `-[NSCursor set]`,拦截器看不到。
+    /// Re-applies the pen when the app becomes active or the window becomes
+    /// key: at those moments macOS replaces the cursor with an arrow, and that
+    /// step does not go through `-[NSCursor set]`, so the interceptor never
+    /// sees it.
     fn install_observers() {
         if OBSERVING.swap(true, Ordering::SeqCst) {
             return;
@@ -257,7 +282,8 @@ mod mac {
         if MainThreadMarker::new().is_none() {
             return;
         }
-        // selector 观察者不被通知中心持有:泄漏一份,让它活到进程结束。
+        // A selector-based observer is not retained by the notification center:
+        // leak one so it lives until the process ends.
         let observer = Retained::into_raw(PenCursorKeeper::new()) as *const AnyObject;
         let center = NSNotificationCenter::defaultCenter();
         unsafe {
@@ -274,7 +300,7 @@ mod mac {
                 Some(NSWindowDidBecomeKeyNotification),
                 None,
             );
-            // 窗口几何变了,缓存矩形跟着重算。
+            // The window geometry changed, so the cached rect is recomputed.
             for name in [
                 NSWindowDidMoveNotification,
                 NSWindowDidResizeNotification,
@@ -290,7 +316,8 @@ mod mac {
         }
     }
 
-    /// 网页视图创建/重建后调用;重复调用是幂等的。
+    /// Call after the web view is created or rebuilt; calling it again is
+    /// idempotent.
     pub fn attach(view: *mut c_void) {
         if view.is_null() {
             return;
@@ -302,7 +329,8 @@ mod mac {
         apply_now();
     }
 
-    /// 网页视图关掉后调用:交还系统光标(下一次鼠标移动由主窗口自己接管)。
+    /// Call after the web view is closed: hand the system cursor back (the next
+    /// mouse move is taken over by the main window itself).
     pub fn detach() {
         WEBVIEW.store(std::ptr::null_mut(), Ordering::SeqCst);
         RECT_VALID.store(false, Ordering::SeqCst);
@@ -311,13 +339,15 @@ mod mac {
         }
     }
 
-    /// 批注工具切换:true = 文字批注(蓝笔),false = 高亮(黄笔)。
+    /// Annotation tool switch: true = text annotation (blue pen), false =
+    /// highlighter (yellow pen).
     pub fn set_mode(note: bool) {
         NOTE_MODE.store(note, Ordering::SeqCst);
         apply_now();
     }
 
-    /// 视图重新显示/重新布局后刷新一次(弹窗关掉、set_bounds 改了位置)。
+    /// Refreshes once after the view is shown again or re-laid out (a popup was
+    /// closed, set_bounds moved it).
     pub fn refresh() {
         apply_now();
     }

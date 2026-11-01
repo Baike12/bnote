@@ -48,22 +48,30 @@ export function vimModeExtension(): Extension {
   return vim();
 }
 
-/* ---- 底部消息：屏蔽 yank 提示，其余消息改成"按任意键收掉"。
-   引擎的消息都走 showConfirm → openNotification（适配器独有的出口）：
-   - yank 每次都会弹一条 1.5s 的红色 "N lines yanked"。vim 里这条归 report 选项管，
-     引擎没实现该开关，也没有任何 option 能关掉它，所以在这一层按内容丢掉；
-   - 其余消息（报错、:set 回显等）引擎只挂了个 15s 定时器：关不掉、只能干等。
-     vim 的手感是"下一条命令/按键就清掉"，所以这里把 close 挂到
-     state.closeVimNotification 上——引擎自己的按键路径（multiSelectHandleKey）
-     下一次按键就会调用它。长消息（需要回车确认的 :reg）引擎自己会挂，行为不变。 ---- */
+/* ---- Bottom messages: suppress the yank notice, turn every other message
+   into "dismissed by any key".
+   All engine messages go through showConfirm → openNotification (the only
+   exit the adapter has):
+   - every yank pops a 1.5s red "N lines yanked". In vim that line is governed
+     by the report option; the engine implements no such switch and no option
+     can turn it off, so it is dropped by content at this layer;
+   - every other message (errors, :set echoes) only gets a 15s timer from the
+     engine: it cannot be closed and you can only wait it out. Vim's feel is
+     "the next command or key clears it", so close is hooked onto
+     state.closeVimNotification — the engine's own key path
+     (multiSelectHandleKey) calls it on the next keystroke. Long messages
+     (the :reg output that needs Enter) are the engine's own business, and
+     their behavior is unchanged. ---- */
 
 let noticePatched = false;
 
-/** showConfirm 拼出的 yank 消息：`N lines yanked`，带寄存器时尾部是 `into "a`
-    （引擎少拼了一个右引号，别按正常引号对写）。两个调用点都是这个形状。 */
+/** The yank message showConfirm builds: `N lines yanked`, with a register
+ *  suffix `into "a` (the engine misses the closing quote — do not write it as
+ *  a normal quoted pair). Both call sites have this shape. */
 const YANK_NOTICE = /^\d+ lines yanked(?: into ".+)?$/;
 
-/** 非阻塞消息的停留时长；引擎默认 15s，按 vim 的手感调短（按键仍可立刻收掉）。 */
+/** How long a non-blocking message stays; the engine defaults to 15s, shortened
+ *  to vim's feel (a keystroke still dismisses it immediately). */
 const NOTICE_MS = 4000;
 
 function patchVimNotice() {
@@ -80,7 +88,7 @@ function patchVimNotice() {
     const open = proto.openNotification;
     proto.openNotification = function (template, options) {
       if (YANK_NOTICE.test(template.textContent?.trim() ?? "")) return undefined;
-      // duration 0 = 需要回车确认的长消息，保持原样。
+      // duration 0 = a long message that needs Enter to confirm; keep it as is.
       const duration = Math.min(options?.duration ?? NOTICE_MS, NOTICE_MS);
       const close = open.call(this, template, { ...options, duration });
       if (typeof close === "function") this.state.closeVimNotification = close;
@@ -160,8 +168,9 @@ function patchVimNewlineIndent() {
   }
 }
 
-/* ---- 视觉锚定的垂直移动：把引擎的 moveByLines 换成像素锚定实现。
-   设计与证据见 ./verticalMotion.ts 顶部的注释块。 ---- */
+/* ---- Visually anchored vertical motion: swap the engine's moveByLines for
+   the pixel-anchored implementation. The design and its evidence are in the
+   comment block at the top of ./verticalMotion.ts. ---- */
 
 let verticalMotionPatched = false;
 
@@ -174,40 +183,55 @@ function patchVimVerticalMotion() {
   VimAny.defineMotion("moveByLines", moveByLinesVisual);
 }
 
-/* ---- 跨文档跳转标记：Marker.find() 对"不在此文档里的偏移"必须报告不存在，
-   不能抛。引擎（@replit/codemirror-vim 6.4 / -core 0.1.0）的 Marker 持有裸
-   文档偏移，find() = posFromIndex(offset)，偏移超出当前文档长度时
-   Text.lineAt 直接抛 RangeError；CM5 原版的 TextMarker 随文档走，文档不在了
-   find() 返回 undefined，jumpList.add/move（vim-core vim.js:578/603）都按
-   「标记不存在」优雅跳过——CM6 port 丢了这个语义。
-   触发链：jumpList 挂在引擎的模块级单例 vimGlobalState 上，跨文档、跨
-   view.setState 存活；bnote 每次切文件走 loadDocument/reloadDocument 的
-   setState 整体替换（setup.ts），不是事务，标记不会被 mapPos。于是在长文档
-   里按过 G/gg/n//…（toJumplist，marker=大偏移）再切到更短的文档，gg/G 在
-   recordJumpPosition → jumpList.add → curMark.find() 处必抛——异常发生在
-   setSelection 之前，光标永远落不下去；引擎 catch 重置 vim 态（状态条仍是
-   NORMAL），j/k 等非 jumplist 键照常——用户看到「normal 模式 gg/G 没反应」，
-   且每次按键都命中同一个死标记（add 在写槽位前就抛，pointer 不前进），本
-   会话内永久失效，直到重启或打开更长的文档把毒标记冲掉。
-   修法=恢复 CM5 语义：offset 越界（<0 或 >doc.length）find() 返回 null，
-   add() 走下一槽位续写、move() 把死标记当不存在跳过。Marker 类不导出，只能
-   从实例原型拿：包一层 setBookmark（全引擎唯一 new Marker 的构造点），首个
-   书签落地的瞬间 patch 其原型并拆掉包装。越界是唯一可靠的「跨文档残留」
-   信号——不追文档身份（同文档编辑后 Text 引用必然变化，身份判等无从建立）；
-   「偏移合法但语义错位」的残余（换到长度相近的文档）与上游一致：记一次怪
-   跳转后自愈。回归测试 ./jumpList.test.ts（真实引擎 + 真 shim Marker）。 ---- */
+/* ---- Cross-document jump markers: Marker.find() must report "does not
+   exist" for an offset that is not in this document instead of throwing. The
+   engine's (@replit/codemirror-vim 6.4 / -core 0.1.0) Marker holds a bare
+   document offset and find() = posFromIndex(offset); when the offset exceeds
+   the current document length Text.lineAt throws RangeError directly. The
+   original CM5 TextMarker travels with the document, and once the document is
+   gone find() returns undefined, so jumpList.add/move (vim-core
+   vim.js:578/603) gracefully skip it as "marker does not exist" — the CM6 port
+   dropped that semantics.
+   Trigger chain: the jumpList hangs off the engine's module-level singleton
+   vimGlobalState and survives across documents and across view.setState; bnote
+   switches files through the wholesale setState replacement in
+   loadDocument/reloadDocument (setup.ts), not a transaction, so markers are
+   never mapPos-ed. So after pressing G/gg/n//… (toJumplist, marker = a large
+   offset) in a long document and then switching to a shorter one, gg/G always
+   throws at recordJumpPosition → jumpList.add → curMark.find() — the throw
+   happens before setSelection, so the caret never lands; the engine's catch
+   resets the vim state (the status line still reads NORMAL) and non-jumplist
+   keys such as j/k keep working — users see "gg/G does nothing in normal
+   mode", and every keystroke hits the same dead marker (add throws before it
+   writes the slot, so the pointer does not advance), so it stays broken for
+   the whole session, until a restart or opening a longer document flushes the
+   poison marker.
+   Fix = restore the CM5 semantics: for an out-of-range offset (<0 or
+   >doc.length) find() returns null, add() continues in the next slot, and
+   move() skips the dead marker as nonexistent. The Marker class is not
+   exported, so it can only be reached through an instance's prototype: wrap
+   setBookmark (the only place the whole engine constructs a new Marker) and,
+   at the moment the first bookmark lands, patch its prototype and tear the
+   wrapper down. An out-of-range offset is the only reliable "cross-document
+   leftover" signal — document identity is not tracked (after an edit inside
+   the same document the Text reference necessarily changes, so identity
+   comparison cannot be established); the residue of "the offset is legal but
+   semantically wrong" (switching to a document of similar length) matches
+   upstream: one odd jump is recorded and then heals. The regression test is
+   in ./jumpList.test.ts (real engine + real shim Marker). ---- */
 
 let markerFindPatched = false;
 let markerProtoHooked = false;
 
-/** 首个书签落地时执行：从实例拿到 Marker.prototype，包一层 find()。
- *  做完即撤掉 setBookmark 包装（钩子只用一次）。 */
+/** Runs when the first bookmark lands: take Marker.prototype from the
+ *  instance and wrap find(). The setBookmark wrapper is torn down right after
+ *  (the hook runs once). */
 function hookMarkerPrototype(marker: object, restoreSetBookmark: () => void) {
   if (markerProtoHooked) return;
   const proto = Object.getPrototypeOf(marker) as
     | ({ offset: number | null; cm: { cm6: EditorView }; find(): unknown })
     | null;
-  if (!proto || typeof proto.find !== "function") return; // 不是认识的形状：留着包装，下个书签再试
+  if (!proto || typeof proto.find !== "function") return; // Not the shape we recognize: keep the wrapper and try again on the next bookmark
   markerProtoHooked = true;
   restoreSetBookmark();
   const origFind = proto.find;
@@ -215,15 +239,16 @@ function hookMarkerPrototype(marker: object, restoreSetBookmark: () => void) {
     const offset = this.offset;
     if (offset != null) {
       const doc = this.cm.cm6.state.doc;
-      // 当前文档装不下的偏移 = 别的文档留下的标记；报告不存在，别抛。
+      // An offset the current document cannot hold comes from a marker left by another document; report "does not exist" instead of throwing.
       if (offset < 0 || offset > doc.length) return null;
     }
     return origFind.call(this);
   };
 }
 
-/** 恢复 Marker.find() 的 CM5 语义（见上方注释块）；导出仅供门禁
- *  （jumpList.test.ts 要在无 DOM 的 node 里先装上 patch）。 */
+/** Restores the CM5 semantics of Marker.find() (see the comment block above);
+ *  exported only for the gate (jumpList.test.ts has to install the patch first
+ *  in a DOM-less node). */
 export function patchVimMarkerFind() {
   if (markerFindPatched) return;
   markerFindPatched = true;
@@ -278,8 +303,9 @@ export function setVimClipboardUnnamed(on: boolean) {
     // Redefine the paste action: when clipboard=unnamed and no explicit
     // register was given, read the system clipboard first. `this` inside a
     // vim action is the engine's actions object (continuePaste lives there).
-    // 读走 lib/clipboard（WKWebView 里 navigator.clipboard.readText 不可用，
-    // 这条路径此前一直静默失败）；失败时回退寄存器内容。
+    // Read through lib/clipboard (navigator.clipboard.readText is unavailable
+    // in WKWebView and this path used to fail silently); fall back to the
+    // register content on failure.
     VimAny.defineAction("paste", function (
       this: Record<string, any>,
       cm: unknown,
@@ -313,24 +339,34 @@ export function setVimClipboardUnnamed(on: boolean) {
 
 /* ---- visual-mode selection paint: the decoration layer is the ONLY painter
    while vim visual mode is on.
-   CM 自己的选区（.cm-selectionBackground 矩形 + 浏览器原生 ::selection）几何是
-   坐标推导出来的，有两处必然对不上：横向边界按 .cm-line 的 padding 算（本应用
-   的留白在 .cm-content 上，于是矩形比行盒宽、左边压到引用条），纵向末端要向
-   coordsAtPos(to, -2) 取值（位置紧邻块级 widget——公式块、公式预览——时坐标落
-   进 widget 内部，长出跨行/高几百像素的窄灰带）。装饰的几何来自 DOM 行盒与文档
-   坐标，两条路都不会走样，所以 visual 选区只由这一层画：
-   - cm-vimVisualLine / cm-vimVisualLineHint：行带（linewise 行带即选区；charwise/
-     blockwise 的行带只是"这些行被卷入"的提示色）；
-   - cm-vimVisualRange：精确范围（charwise 的字符区间、blockwise 的逐行块）。
-   CM 的矩形在 cm-vimSelPaint 下被置透明（见 global.css）。 ---- */
+   The geometry of CM's own selection (the .cm-selectionBackground rectangle
+   plus the browser's native ::selection) is derived from coordinates, and two
+   parts of it can never line up: the horizontal boundary comes from the
+   padding of .cm-line (this app puts its padding on .cm-content, so the
+   rectangle is wider than the line box and presses on the left over the quote
+   bar), and the vertical end is taken from coordsAtPos(to, -2) (right next to
+   a block-level widget — a formula block, a formula preview — the coordinate
+   falls inside the widget and grows a narrow gray band that spans rows and
+   is hundreds of pixels tall). The decoration geometry comes from the DOM line
+   boxes and the document coordinates, neither path distorts, so the visual
+   selection is painted only by this layer:
+   - cm-vimVisualLine / cm-vimVisualLineHint: the line band (for linewise the
+     line band is the selection itself; for charwise/blockwise the line band
+     is only the hint color "these lines are involved");
+   - cm-vimVisualRange: the exact range (the character interval for charwise,
+     the per-line block for blockwise).
+   The CM rectangle is made transparent under cm-vimSelPaint (see global.css).
+   ---- */
 
 const visualLineDeco = Decoration.line({ class: "cm-vimVisualLine" });
-/* charwise/blockwise 的行带只是"这些行被卷入"的提示色：精确范围那层已经用了选区
-   本色，两处同色会让选中范围糊成一片。 */
+/* The line band of charwise/blockwise is only the hint color "these lines are
+   involved": the exact-range layer already uses the selection's own color,
+   and the same color in both places blurs the selected range into one patch. */
 const visualLineHintDeco = Decoration.line({ class: "cm-vimVisualLineHint" });
 const visualRangeDeco = Decoration.mark({ class: "cm-vimVisualRange" });
 
-/** 绘制层接管选区时挂在 .cm-editor 上的类（CSS 据此关掉 CM 的选区矩形）。 */
+/** The class put on .cm-editor while the paint layer owns the selection (CSS
+ *  turns CM's selection rectangle off by it). */
 const OWN_PAINT_CLASS = "cm-vimSelPaint";
 
 interface Pos {
@@ -353,9 +389,11 @@ interface VisualVimState {
   sel?: { anchor?: Pos; head?: Pos };
 }
 
-/** Visual 模式高亮行集合的纯函数体：vim 引擎的 sel（CodeMirror 5 风格
- *  0 基 line/ch）优先——linewise visual 常常保持 CM 选区为空；引擎没维护
- *  sel 时退回 CM 选区。导出供门禁锁几何（前向/反向/linewise/空选区）。 */
+/** Pure body of the highlighted-line set in visual mode: the vim engine's sel
+ *  (CodeMirror 5 style, 0-based line/ch) wins — linewise visual often keeps the
+ *  CM selection empty; the CM selection is the fallback only when the engine
+ *  keeps no sel. Exported for the gate that locks the geometry (forward /
+ *  backward / linewise / empty selection). */
 export function visualLineNumbers(
   doc: VisualDoc,
   vimState: VisualVimState | null,
@@ -390,13 +428,19 @@ export function visualLineNumbers(
   return [...lines].sort((a, b) => a - b);
 }
 
-/** Visual 模式「精确范围」的纯函数体（文档偏移），与行带互补：
- *  - linewise：整行由行带表达，这里返回空（再叠一层字符底色只是同色加深）；
- *  - blockwise：引擎只把光标所在那一段同步进 CM 选区，块形状必须按 anchor/head
- *    的列区间逐行切出来（列越界的行钳到行尾——vim 的块选就是这样）；
- *  - charwise：直接用引擎同步到 CM 的选区（含头字符由引擎保证）。
- *  只给绘制用：几何来自文档坐标，不经过 coordsAtPos，所以块级 widget 边界不会
- *  让它变形。导出供门禁锁几何。 */
+/** Pure body of the "exact range" in visual mode (document offsets),
+ *  complementary to the line band:
+ *  - linewise: the whole line is expressed by the line band, so this returns
+ *    empty (another character-colored layer would just deepen the same color);
+ *  - blockwise: the engine syncs only the segment the caret is in into the CM
+ *    selection, so the block shape must be sliced per line from the
+ *    anchor/head column interval (lines whose columns run past the end are
+ *    clamped to the line end — that is how vim's block selection behaves);
+ *  - charwise: the selection the engine synced into CM is used as is (the
+ *    engine guarantees the head character is included).
+ *  Only used for painting: the geometry comes from document coordinates and
+ *  never goes through coordsAtPos, so block-level widget boundaries cannot
+ *  distort it. Exported for the gate that locks the geometry. */
 export function visualRangeSpans(
   doc: VisualDoc,
   vimState: VisualVimState | null,
@@ -412,7 +456,7 @@ export function visualRangeSpans(
     const first = Math.max(1, Math.min(a.line, h.line) + 1);
     const last = Math.min(doc.lines, Math.max(a.line, h.line) + 1);
     const startCh = Math.min(a.ch, h.ch);
-    const endCh = Math.max(a.ch, h.ch) + 1; // vim 的选区含头字符
+    const endCh = Math.max(a.ch, h.ch) + 1; // vim's selection includes the head character
     for (let n = first; n <= last; n++) {
       const line = doc.line(n);
       const width = line.to - line.from;
@@ -428,8 +472,11 @@ export function visualRangeSpans(
   return out;
 }
 
-/** Visual 选区要画的全部装饰：行带 + 精确范围。空集 = 当前没有绘制者（刚按 v
- *  还没动的折叠选区），此时独占绘制也一并放开。导出供门禁锁几何与绘制所有权。 */
+/** All decorations to paint for the visual selection: line band + exact
+ *  range. An empty set means there is currently no painter (a collapsed
+ *  selection right after pressing v), and exclusive painting is released
+ *  accordingly. Exported for the gate that locks the geometry and the
+ *  painting ownership. */
 export function visualSelectionDecos(
   doc: VisualDoc,
   vimState: VisualVimState | null,
@@ -438,11 +485,12 @@ export function visualSelectionDecos(
   if (!vimState?.visualMode) return Decoration.set([]);
   const lines = visualLineNumbers(doc, vimState, ranges);
   const spans = visualRangeSpans(doc, vimState, ranges);
-  // linewise 的行带就是选区本身（选区本色）；charwise/blockwise 上面还压着精确
-  // 范围那层，行带退成提示色。
+  // For linewise the line band is the selection itself (the selection's own
+  // color); for charwise/blockwise the exact-range layer sits on top of it, so
+  // the line band falls back to the hint color.
   const lineDeco = vimState.visualLine ? visualLineDeco : visualLineHintDeco;
   if (spans.length === 0) {
-    // 行带本身有序：走 O(n) 的 builder（大范围 linewise 选区的每击重建）。
+    // The line band is ordered by itself: use the O(n) builder (rebuilt on every keystroke of a large linewise selection).
     const builder = new RangeSetBuilder<Decoration>();
     for (const n of lines) {
       const line = doc.line(n);
@@ -484,8 +532,10 @@ export function vimVisualHighlight(): Extension {
         this.view.dom.classList.remove(OWN_PAINT_CLASS);
       }
 
-      /** 装饰层一旦画了选区，CM 的选区矩形必须让位——同一个状态两个绘制者正是
-       *  错位的来源（见文件上方注释）。没有绘制者时也别拦着 CM 画自己的矩形。 */
+      /** Once the decoration layer paints a selection, CM's selection rectangle
+       *  must yield — two painters for one state are exactly the source of the
+       *  misalignment (see the comment at the top of the file). When there is no
+       *  painter, CM must still be free to paint its own rectangle. */
       private syncOwnership() {
         const owns = this.decorations.size > 0;
         if (owns === this.ownsPaint) return;
@@ -505,17 +555,23 @@ export function vimVisualHighlight(): Extension {
 	);
 }
 
-/* ---- 当前行底 shade:自有装饰模型,替代 highlightActiveLine + 祖先类门控 CSS。
-   引擎在 Esc/i 时翻动 scrollDOM 上的 .cm-vimMode 类,任何以它为祖先条件的
-   选择器都会让样式失效圈罩住整个视口子树(每行及其 KaTeX/markdown 子树全部
-   重查规则)。底 shade 改成一个 line decoration:可见性直接跟 vimDrawsBlockCursor
-   走(normal/visual/replace 画块光标 ⇔ 引擎给 scroller 挂 cm-vimMode 的同一
-   判据,updateClass 逐字对照过),insert 态不发装饰;一次切换只动光标行一行
-   的类,失效圈收进单行,宽域失效少一个消费方。 ---- */
+/* ---- Active line shade: an own decoration model that replaces
+   highlightActiveLine + the ancestor-class gated CSS.
+   The engine toggles the .cm-vimMode class on scrollDOM on Esc/i, and any
+   selector that uses it as an ancestor condition makes the invalidation scope
+   cover the whole viewport subtree (every row and its KaTeX/markdown subtree
+   has to re-check the rules). The shade becomes a single line decoration:
+   its visibility follows vimDrawsBlockCursor directly (the same criterion the
+   engine uses to put cm-vimMode on the scroller for the normal/visual/replace
+   block cursor, compared verbatim against updateClass), and insert mode emits
+   no decoration. A toggle touches only the caret's row, so the invalidation
+   scope shrinks to one row and the wide scope loses one consumer. ---- */
 
-/** activeLine 行装饰的纯构建:不画块光标(insert 态、无引擎)返回空集,否则给
- *  每个 range 的 head 行挂 cm-activeLine(多 range 同行去重)。导出供门禁锁
- *  可见性判据与装饰几何。 */
+/** Pure construction of the activeLine line decoration: when no block cursor
+ *  is painted (insert mode, no engine) it returns an empty set, otherwise it
+ *  puts cm-activeLine on the head line of every range (multiple ranges on the
+ *  same line are deduplicated). Exported for the gate that locks the
+ *  visibility criterion and the decoration geometry. */
 export function activeLineDecos(
   state: EditorState,
   drawsBlockCursor: boolean,
@@ -557,21 +613,28 @@ function vimStateOf(view: EditorView): { insertMode?: boolean; visualMode?: bool
   return cm?.state?.vim ?? null;
 }
 
-/** Visual 选区:文本 + 覆盖的 doc 范围(⌘⇧B 选中插入的标题与落点都从这里取)。 */
+/** Visual selection: the text plus the covered doc range (⌘⇧B takes both the
+ *  inserted heading and the landing point from here). */
 export interface VisualSelection {
-  /** 选区文本(linewise 整行含行尾;blockwise 逐行切片;charwise 精确区间)。 */
+  /** The selection text (for linewise the whole line including the line
+   *  break; for blockwise a per-line slice; for charwise the exact interval). */
   text: string;
-  /** 选区覆盖的 doc 位置范围。 */
+  /** The doc position range covered by the selection. */
   from: number;
   to: number;
 }
 
 /**
- * 引擎 sel(0 基 line/ch,CM5 风格) → visual 模式的选区:linewise 取整行
- * (含行尾)、blockwise 逐行取列区间(列越界钳到行尾,vim 的块选就是这样)、
- * charwise 取锚点到光标的字符区间(含头字符)。三类都从引擎 sel 算,不读 CM
- * 选区——linewise/blockwise 下引擎只把部分区间同步进 CM(实测 ⌃V 块选 CM 只有
- * 光标那一段),引擎 sel 才是权威。导出供门禁锁坐标模型。
+ * The engine's sel (0-based line/ch, CM5 style) → the selection in visual
+ * mode: linewise takes the whole line (including the line break), blockwise
+ * takes the column interval per line (columns past the end are clamped to the
+ * line end, that is how vim's block selection behaves), charwise takes the
+ * character interval from the anchor to the caret (including the head
+ * character). All three are computed from the engine's sel and never read the
+ * CM selection — under linewise/blockwise the engine syncs only part of the
+ * range into CM (measured: for a ⌃V block selection CM holds only the caret's
+ * segment), so the engine's sel is authoritative. Exported for the gate that
+ * locks the coordinate model.
  */
 export function visualSelection(
   doc: VisualDoc,
@@ -591,7 +654,7 @@ export function visualSelection(
   }
   if (vimState.visualBlock) {
     const startCh = Math.min(sel.anchor.ch, sel.head.ch);
-    const endCh = Math.max(sel.anchor.ch, sel.head.ch) + 1; // vim 的选区含头字符
+    const endCh = Math.max(sel.anchor.ch, sel.head.ch) + 1; // vim's selection includes the head character
     const rows: string[] = [];
     for (let n = first; n <= last; n++) {
       const lineText = doc.line(n).text;
@@ -601,7 +664,7 @@ export function visualSelection(
     }
     return { text: rows.join("\n"), from, to };
   }
-  // charwise:锚点与光标各自的字符位置,两端排序后取 [小, 大+1)——含头字符。
+  // charwise: the character positions of the anchor and the caret, sorted, then [smaller, larger+1) — including the head character.
   const posOf = (p: { line: number; ch: number }) => {
     const line = doc.line(lineNo(p.line));
     return Math.min(line.from + Math.max(0, p.ch), line.to);
@@ -614,11 +677,13 @@ export function visualSelection(
 }
 
 /**
- * ⌘⇧B「选中插入」在 vim visual 模式下的选区来源:取引擎维护的选区
- * (visualSelection),并退出 visual 模式。返回 null = 不在 visual 模式
- * (调用方直接用 CM 选区)。退出放在这里:命令已消费掉这次选择,光标随后的
- * dispatch 落进新块;留着 visual 状态会让引擎的下一次按键把光标拽回旧选区
- * (选中态还亮着)。
+ * The selection source for ⌘⇧B "select and insert" in vim visual mode: take
+ * the engine-maintained selection (visualSelection) and leave visual mode.
+ * Returning null means "not in visual mode" (the caller uses the CM selection
+ * directly). Leaving happens here: the command has already consumed this
+ * selection and the caret's later dispatch lands in the new block; keeping the
+ * visual state would let the engine's next keystroke drag the caret back to
+ * the old selection (which would still be highlighted).
  */
 export function takeVimVisual(view: EditorView): VisualSelection | null {
   const cm = getCM(view) as unknown as { state?: { vim?: VisualVimState } } | null;
@@ -631,10 +696,13 @@ export function takeVimVisual(view: EditorView): VisualSelection | null {
   return selection;
 }
 
-/** 引擎此刻是否在画块光标。判据照抄 @replit/codemirror-vim 的 measureCursor
- *  （`vim && (!vim.insertMode || overwrite)`）：insert 态（非 replace）下块光标
- *  层按空渲染，为它做的 measure 冲刷没有对象。overwrite 是引擎挂在自己的 CM5
- *  兼容 state 上的标志（getCM 里那个普通对象，不是 CM6 的 field），只能这么读。 */
+/** Whether the engine is drawing a block cursor right now. The criterion is
+ *  copied verbatim from @replit/codemirror-vim's measureCursor
+ *  (`vim && (!vim.insertMode || overwrite)`): in insert mode (non-replace) the
+ *  block cursor layer renders empty, so the measure flush done for it has no
+ *  object. overwrite is the flag the engine hangs on its own CM5-compatible
+ *  state (the plain object inside getCM, not a CM6 field) and can only be
+ *  read that way. */
 export function vimDrawsBlockCursor(view: EditorView): boolean {
   const cm = getCM(view) as unknown as {
     state?: { vim?: { insertMode?: boolean }; overwrite?: boolean };
@@ -700,7 +768,7 @@ export function commandMappingKeymap(mappings: VimMapping[]): Extension {
   // a stray duplicate); vim lets the LAST definition win, while a keymap picks
   // the first binding it finds — so collapse duplicates back-to-front.
   const byKey = new Map<string, KeyBinding>();
-  vimCommandBindings.clear(); // 每次重建=全量替换，vimrc 删掉的映射不残留
+  vimCommandBindings.clear(); // Each rebuild replaces everything, so mappings deleted from the vimrc do not linger
   for (const m of mappings) {
     if (!m.commandId) continue;
     const key = normalizeVimKey(m.lhs);
@@ -719,49 +787,63 @@ export function commandMappingKeymap(mappings: VimMapping[]): Extension {
       },
     });
   }
-  // 命令映射同时进捕获注册表（lhs 原样 = 引擎键词表，后定义覆盖）：捕获分发
-  // 要在引擎之前查它——`nmap <C-b> :Bnote…` 与引擎原生 <C-b>（翻页）冲突，若
-  // 让引擎先拿，侧栏开关会被翻页吃掉。keymap 本体保留：insert 模式捕获让路，
-  // 仍由链上的它兜住。
+  // Command mappings also enter the capture registry (the lhs verbatim is the
+  // engine's key vocabulary, a later definition overrides an earlier one): the
+  // capture dispatch must consult it before the engine — `nmap <C-b> :Bnote…`
+  // collides with the engine's native <C-b> (page down), and if the engine got
+  // it first the sidebar toggle would be eaten by the page down. The keymap
+  // itself is kept: insert mode lets the capture pass, and the keymap on the
+  // chain still catches it.
   for (const m of mappings) {
     if (!m.commandId) continue;
-    if (!normalizeVimKey(m.lhs)) continue; // 与 keymap 同口径：单键或带修饰键
+    if (!normalizeVimKey(m.lhs)) continue; // Same criterion as the keymap: a single key or a key with modifiers
     vimCommandBindings.set(`${m.mode}\u0000${m.lhs}`, m.commandId);
   }
   const bindings = [...byKey.values()];
   return bindings.length > 0 ? keymap.of(bindings) : [];
 }
 
-/** nmap … :Bnote 命令映射（mode\0引擎键词 → 命令 id）；捕获分发专用。 */
+/** The nmap … :Bnote command mappings (mode\0engine key vocabulary → command id); used only by the capture dispatch. */
 const vimCommandBindings = new Map<string, string>();
 
-/** 按当前模式和引擎键词查命令映射；无绑定返回 undefined。导出供门禁。 */
+/** Look up a command mapping by the current mode and the engine key vocabulary; returns undefined when unbound. Exported for the gate. */
 export function lookupVimCommand(engineKey: string, mode: VimMode): string | undefined {
   return vimCommandBindings.get(`${mode}\u0000${engineKey}`);
 }
 
-/* ---- 捕获阶段键分发：normal/visual 模式下，引擎先于整条 CM keymap 链见键 ----
+/* ---- Capture-phase key dispatch: in normal/visual mode the engine sees the
+   key before the whole CM keymap chain ----
 
-   CM6 把所有 keyBindings 汇进**一个**共享 keydown 处理器（keymap facet 的
-   enables），它 flatten 在第一个 keymap.of 声明的位置——baseExtensions 里
-   snippetsExtension() 最靠前，于是这条处理器排在 vim 引擎（compartment 在
-   其后声明）之前。而引擎自己的 keydown 链入口从不返回 true（以副作用方式
-   动作、从不"认领"事件），于是凡是被任何 keymap 绑过的键，引擎永远轮不到：
-   普通模式的 Enter 落到 defaultKeymap 的 insertNewlineAndIndent（凭空插行）、
-   Backspace 落到 deleteCharBackward（删字）；j/k/gg 这些没人绑的键才轮得到
-   引擎——所以手感大体正常，只有"撞了绑定的键"坏。
-   修复=在 view.dom 捕获阶段（contentDOM 目标阶段整条 CM 链之前）把键交给
-   引擎：normal/visual 引擎接管，认领即 preventDefault + stopPropagation
-   （捕获阶段在父节点上拦下，事件到不了 contentDOM，keymap 整条不再跑）；
-   insert 模式让路——snippet 的 Tab/Escape、latex 的 Backspace 这些编辑增强
-   在插入态本来就合法地先跑，引擎仍经它链尾的入口拿到 Esc/jj 等键。
-   守卫：目标不是 contentDOM（vim 面板输入框等）不碰；IME 组合中/死键不碰
-   （引擎的 keydown 入口有 useNextTextInput 状态机，别截胡）；事件已被上游
-   认领不碰。 */
+   CM6 funnels all keyBindings into **one** shared keydown handler (the
+   enables of the keymap facet), flattened at the position of the first
+   keymap.of declaration — in baseExtensions that is snippetsExtension(), the
+   earliest one, so this handler runs before the vim engine (whose compartment
+   is declared later). The engine's own keydown chain entry never returns true
+   (it acts through side effects and never "claims" the event), so any key
+   bound by some keymap never reaches the engine: in normal mode Enter lands on
+   defaultKeymap's insertNewlineAndIndent (inserting a line out of nowhere)
+   and Backspace on deleteCharBackward (deleting a character); only unbound
+   keys such as j/k/gg reach the engine — so the feel is mostly right and only
+   the keys that collide with a binding break.
+   Fix = hand the key to the engine in the capture phase on view.dom (before
+   the whole CM chain at the contentDOM target phase): in normal/visual mode
+   the engine takes over, and a claimed key means preventDefault +
+   stopPropagation (the capture phase intercepts it on the parent, so the
+   event never reaches contentDOM and the keymap chain no longer runs at
+   all); in insert mode the way is given — the snippet's Tab/Escape and
+   latex's Backspace editing enhancements legitimately run first in insert
+   mode, and the engine still receives keys like Esc/jj through the entry at
+   the tail of its chain.
+   Guards: the target is not contentDOM (the vim panel's input box and the
+   like) → do not touch; IME composition or a dead key → do not touch (the
+   engine's keydown entry has a useNextTextInput state machine, do not
+   intercept it); the event was already claimed upstream → do not touch. */
 
-/** 捕获分发的决策核（导出供门禁锁契约）：true = 键交给引擎（normal/visual）；
- *  false = 放行给 CM keymap 链（insert 模式、IME 组合中、死键、已被上游
- *  处理、目标不在编辑内容上）。 */
+/** The decision core of the capture dispatch (exported for the gate to lock the
+ *  contract): true = the key goes to the engine (normal/visual);
+ *  false = the key is released to the CM keymap chain (insert mode, IME
+ *  composition, dead key, already handled upstream, target not on the edited
+ *  content). */
 export function vimCapturesKey(input: {
   insertMode: boolean;
   composing: boolean;
@@ -806,9 +888,12 @@ export function vimKeyCaptureExtension(): Extension {
           runCommandRef(commandId);
           return;
         }
-        // 引擎认领时内部 preventDefault + stopPropagation（wrapper handleKey
-        // 的原语义），事件到不了 contentDOM，keymap 链整条不再跑；不认领时
-        // （未知键/修饰和弦）放行给 keymap 链，与无 vim 时同路。
+        // When the engine claims the key it calls preventDefault +
+        // stopPropagation internally (the original semantics of the wrapper's
+        // handleKey), so the event never reaches contentDOM and the keymap
+        // chain no longer runs; when it does not claim it (unknown key or
+        // modifier chord) the key is released to the keymap chain, the same
+        // route as without vim.
         const plugin = (
           cm.state as { vimPlugin?: { handleKey(e: KeyboardEvent, view: EditorView): unknown } }
         ).vimPlugin;
@@ -838,12 +923,15 @@ export function applyNativeMappings(mappings: VimMapping[]) {
     if (m.commandId) continue; // handled by the CM6 keymap
     const ctx =
       m.mode === "insert" ? "insert" : m.mode === "visual" ? "visual" : "normal";
-    // rhs 必须原样传：引擎展开 keyToKey 映射时按尖括号 token 切分
-    // （doKeyToKey 的 vimToCmKeyMap 分支），<Esc>/<CR>/<Tab>/<Space> 是它
-    // 原生认识的形状。早期版本把 <Esc> 改写成裸 "Esc"——展开器把它按
-    // E·s·c 三个单字符逐个 replaceSelection 进文档，`imap jj <Esc>` 从此
-    // 退不出插入模式，用户"在 normal 模式按 gg/G 没反应"实际都发生在
-    // insert 态。回归测试见 ./nativeMappings.test.ts。
+    // The rhs must be passed verbatim: when the engine expands a keyToKey
+    // mapping it splits on angle-bracket tokens (the vimToCmKeyMap branch of
+    // doKeyToKey), and <Esc>/<CR>/<Tab>/<Space> are shapes it knows natively.
+    // An early version rewrote <Esc> to a bare "Esc" — the expander then
+    // replaceSelection-ed the three single characters E·s·c into the document
+    // one by one, and `imap jj <Esc>` could never leave insert mode again;
+    // the user reports of "gg/G does nothing in normal mode" actually
+    // happened in insert state. The regression test is in
+    // ./nativeMappings.test.ts.
     const rhs = m.rhs;
     try {
       if (m.noremap) Vim.noremap(m.lhs, rhs, ctx);

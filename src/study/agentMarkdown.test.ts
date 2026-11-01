@@ -21,7 +21,7 @@ describe("renderInline", () => {
   });
 
   it("行内数学走 katex,\\(…\\) 定界符同样支持", () => {
-    // katex 输出的稳定特征:分数 → .mfrac,上标 → .msupsub
+    // Stable features of the katex output: a fraction -> .mfrac, a superscript -> .msupsub
     expect(renderInline("$\\frac{a}{b}$")).toContain("mfrac");
     expect(renderInline("\\(x^2\\)")).toContain("msupsub");
   });
@@ -29,7 +29,7 @@ describe("renderInline", () => {
   it("数学里的 < 在 katex 内还原并转义输出(不破坏 HTML 结构)", () => {
     const html = renderInline("$a<b$");
     expect(html).toContain("katex");
-    expect(html).toContain("&lt;"); // katex 处理过原始的 <
+    expect(html).toContain("&lt;"); // katex has processed the original <
   });
 
   it("成对的 $ 才是公式,孤立美元符留作字面量", () => {
@@ -63,11 +63,11 @@ describe("renderAgentMarkdown", () => {
   });
 
   it("空行分隔的有序列表是一个列表,编号连续(回归:曾经拆成各自从 1 起的 <ol>,屏幕上是 1. 1. 1. 1.)", () => {
-    // 模型的典型输出:每项都写成「1.」,项与项之间夹空行。
+    // The typical output of a model: every item is written as "1.", with a blank line between the items.
     const html = renderAgentMarkdown("1. 甲\n\n1. 乙\n\n1. 丙\n\n1. 丁");
     expect(html.match(/<ol/g)).toHaveLength(1);
     expect(html).toBe('<ol class="is-loose"><li>甲</li><li>乙</li><li>丙</li><li>丁</li></ol>');
-    // 显式编号同理:连续编号由浏览器自增,源码里的 2./3. 不另开列表
+    // The same holds for explicit numbering: the consecutive numbers are incremented by the browser, the 2./3. in the source do not open another list
     expect(renderAgentMarkdown("1. 甲\n\n2. 乙\n\n3. 丙").match(/<ol/g)).toHaveLength(1);
   });
 
@@ -81,7 +81,7 @@ describe("renderAgentMarkdown", () => {
 
   it("起始编号取首项(真从 3. 起的列表上屏也从 3 开始)", () => {
     expect(renderAgentMarkdown("3. 丙\n4. 丁")).toBe('<ol start="3"><li>丙</li><li>丁</li></ol>');
-    // 从 1. 起的列表不带 start(不和浏览器默认编号重复声明)
+    // A list starting at 1. carries no start (it would repeat the browser's default numbering)
     expect(renderAgentMarkdown("1. 甲")).toBe("<ol><li>甲</li></ol>");
   });
 
@@ -126,7 +126,7 @@ describe("renderAgentMarkdown", () => {
   });
 
   it("列表项内容里的块级数学走 KaTeX(回归:模型把 $$ 块缩进在列表项下,曾经整段原样漏出)", () => {
-    // 用户报告的形态:有序列表项续行里跟一个多行 $$…$$ 块
+    // The shape reported by the user: a multi-line $$…$$ block in the continuation line of an ordered list item
     const html = renderAgentMarkdown(
       "1. 全局 Softmax 分母\n   $$\n   s_p=\\sum_{j\\in C_p}e^{x_j-x_{\\max}}\n   $$\n   再 all-reduce。",
     );
@@ -134,10 +134,10 @@ describe("renderAgentMarkdown", () => {
     expect(html).toContain("katex-display");
     expect(html).toContain("∑");
     expect(html).not.toContain("$$");
-    // \[…\] 块同样支持
+    // The \[…\] block is supported the same way
     const bracket = renderAgentMarkdown("- 要点\n  \\[\n  E = mc^2\n  \\]");
     expect(bracket).toContain("katex-display");
-    // 数学块前后的文本行照常 inline 渲染、<br> 分隔
+    // The text lines around the math block are still rendered inline and separated by <br>
     const mixed = renderAgentMarkdown("- 文本行\n  $$\n  x^2\n  $$\n  **尾行**");
     expect(mixed).toContain("<strong>尾行</strong>");
     expect(mixed.indexOf("katex-display")).toBeGreaterThan(-1);

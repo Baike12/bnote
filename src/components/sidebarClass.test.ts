@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * 侧栏顶层类名不能叫 .sidebar。
+ * The top level class of the sidebar must not be called .sidebar.
  *
- * Excalidraw(DrawingCanvas)的 CSS 里有一条未加作用域的
- * `.sidebar{padding:0; position:absolute; top:0; ...}`;打开过画布之后那份 CSS
- * 常驻页面并覆盖这里,侧栏会顶到 macOS 红绿灯上(实测现象)。这条门禁锁住
- * 「组件用专属类名 + global.css 不再定义裸 .sidebar + :has 选择器跟随」。
+ * The CSS of Excalidraw (DrawingCanvas) contains an unscoped
+ * `.sidebar{padding:0; position:absolute; top:0; ...}`; after the canvas has
+ * been opened once that CSS stays in the page and overrides this one, the
+ * sidebar ends up on top of the macOS traffic lights (observed). This gate
+ * locks in "the component uses its own class name + global.css does not
+ * define a bare .sidebar anymore + the :has selector follows".
  */
 const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const sidebarTsx = readFileSync("src/components/Sidebar.tsx", "utf8");

@@ -6,9 +6,10 @@ import { GFM } from "@lezer/markdown";
 import { buildInlineDecorations } from "./livePreview";
 import { MathInlinePreviewWidget, MathWidget } from "./widgets";
 
-/** 一行两个行内公式:`a xxxx b`。编辑 a 时渲染副本必须**排在 a 之后**,
- *  把 xxxx 和 b 的渲染整体往后推——不许为了避开"看起来重合"就干脆不渲染
- *  (那是 57a9d40 的做法,用户明确否掉了)。 */
+/** Two inline formulas on one line: `a xxxx b`. While editing a the rendered
+ *  copy must come **after a**, pushing the rendering of xxxx and b back as a
+ *  whole — it must not simply not render to avoid "looking overlapped" (that
+ *  was what 57a9d40 did, and the user explicitly rejected it). */
 const DOC = "前缀 $a+b$ 中间 $c-d$ 结尾";
 
 function makeState(col: number): EditorState {
@@ -38,7 +39,7 @@ function entriesOf(state: EditorState): Entry[] {
 }
 
 const firstOpen = DOC.indexOf("$");
-const firstClose = DOC.indexOf("$", firstOpen + 1) + 1; // 闭合 $ 之后
+const firstClose = DOC.indexOf("$", firstOpen + 1) + 1; // after the closing $
 const secondOpen = DOC.indexOf("$", firstClose);
 
 describe("编辑行内公式时的渲染副本", () => {
@@ -46,7 +47,7 @@ describe("编辑行内公式时的渲染副本", () => {
     const entries = entriesOf(makeState(firstOpen + 3));
     const preview = entries.filter((e) => e.widget instanceof MathInlinePreviewWidget);
     expect(preview).toHaveLength(1);
-    // 锚在闭合定界符之后(= 源码之后),不是区域起点
+    // anchored after the closing delimiter (= after the source), not at the region start
     expect(preview[0].from).toBe(firstClose);
     expect((preview[0].widget as MathInlinePreviewWidget).src).toBe("a+b");
   });
@@ -67,7 +68,7 @@ describe("编辑行内公式时的渲染副本", () => {
     const previews = entries.filter((e) => e.widget instanceof MathInlinePreviewWidget);
     expect(previews).toHaveLength(1);
     expect((previews[0].widget as MathInlinePreviewWidget).src).toBe("c-d");
-    expect(previews[0].from).toBe(secondOpen + "$c-d$".length); // b 的闭合 $ 之后
+    expect(previews[0].from).toBe(secondOpen + "$c-d$".length); // after b's closing $
     const rendered = entries.filter(
       (e) => e.widget instanceof MathWidget && !(e.widget as MathWidget).display,
     );

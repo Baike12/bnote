@@ -1,31 +1,37 @@
 /**
- * 会话家族:一份材料下的会话记录是一棵树——主会话没有 parent,辅助会话
- * 的 `parent` 指向它的来源会话文件 id(链式分叉时父也是辅助会话)。
+ * Session family: the session records of one material form a tree — the main
+ * session has no parent, an auxiliary session's `parent` points at the file id
+ * of the session it was forked from (in a chained fork the parent is itself an
+ * auxiliary session).
  *
- * 恢复时不能只看「最近更新的那一条」:那往往正是刚分叉出来的辅助会话,
- * 于是重启后面板只挂着一个子会话、也没有回去的路。这里按 parent 链把整
- * 个家族还原出来,根(主会话)永远是恢复的落点。
+ * On restore it is not enough to take "the most recently updated one": that is
+ * often exactly the auxiliary session that was just forked, so after a
+ * restart the panel only holds one sub-session and has no way back. The whole
+ * family is rebuilt along the parent chain, and the root (the main session) is
+ * always the landing point of the restore.
  */
 
-/** 会话列表里的一条:只取恢复父子关系需要的字段。 */
+/** One entry of the session list: only the fields needed to rebuild the parent/child relation. */
 export interface SessionNode {
   id: string;
   title: string;
-  /** 来源会话的文件 id;主会话为 null。 */
+  /** The file id of the source session; null for the main session. */
   parent: string | null;
-  /** 辅助会话的来源消息摘要(空白 = 老记录没存)。 */
+  /** A summary of the source message of an auxiliary session (empty = an old record did not store it). */
   basedOn: string;
-  /** 分叉时复制过来的前缀条数;0 = 主会话。 */
+  /** The number of entries copied over when forking; 0 = the main session. */
   forkAt: number;
   createdAt: number;
   updatedAt: number;
 }
 
 /**
- * 从一条会话向上找到家族根。
+ * Walk up from a session to the root of its family.
  *
- * 父记录已删(单独删过文件)、parent 指向不存在的 id、或手工改出了环时,
- * 就近停住——根一定存在,恢复不会因为一条坏记录整体失败。
+ * When the parent record is gone (the file was deleted on its own), when the
+ * parent points at a nonexistent id, or when a hand edit created a cycle, it
+ * stops at the closest existing node — the root always exists, so a bad
+ * record never fails the whole restore.
  */
 export function sessionRoot(anchorId: string, nodes: SessionNode[]): string {
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -42,10 +48,13 @@ export function sessionRoot(anchorId: string, nodes: SessionNode[]): string {
 }
 
 /**
- * 根 + 它的全部后代(含根),按创建时间升序——主会话在前,分叉按产生先后。
+ * The root plus all of its descendants (including the root), in ascending
+ * creation order — the main session first, the forks in the order they were
+ * made.
  *
- * 同一家族里允许「一个父挂多个子」(多次从不同消息分叉);不属于这棵树
- * 的其它会话(别的家族、孤立的老记录)不返回。
+ * Within one family "one parent with several children" is allowed (forking
+ * from different messages several times); sessions outside this tree (other
+ * families, orphaned old records) are not returned.
  */
 export function sessionFamily(rootId: string, nodes: SessionNode[]): SessionNode[] {
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -73,8 +82,10 @@ export function sessionFamily(rootId: string, nodes: SessionNode[]): SessionNode
 }
 
 /**
- * 恢复入口:锚点会话 + 全部同家族会话。锚点本身已不在列表里(刚被删)
- * 时返回 null,调用方按「没有可恢复的会话」处理。
+ * Restore entry point: the anchor session plus all sessions of the same
+ * family. Returns null when the anchor itself is no longer in the list (it
+ * was just deleted); the caller then treats it as "there is no session to
+ * restore".
  */
 export function resolveFamily(
   anchorId: string,

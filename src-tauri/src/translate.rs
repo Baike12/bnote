@@ -35,11 +35,12 @@ pub struct TranslateConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    /// 默认关闭。开启后按协议发 think=true / thinking.enabled /
-    /// enable_thinking=true。
+    /// Disabled by default. When enabled, sends `think=true` /
+    /// `thinking.enabled` / `enable_thinking=true` depending on the protocol.
     pub thinking: bool,
     pub timeout_ms: u64,
-    /// 额外请求体（JSON 对象），用于自定义网关。不能覆盖 messages/model/stream。
+    /// Extra request body (a JSON object) for custom gateways. Must not
+    /// override messages/model/stream.
     pub extra_body: Value,
 }
 
@@ -626,8 +627,9 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        // 把 API 指向一个必然拒绝连接的端口:如果单词路径错误地降级到
-        // 模型,这里会得到 Err 而不是 Miss。
+        // Point the API at a port that always refuses the connection: if the
+        // single-word path wrongly fell back to the model, this would yield
+        // Err instead of Miss.
         let mut cfg = TranslateConfig {
             protocol: "custom".into(),
             base_url: "http://127.0.0.1:9".into(),

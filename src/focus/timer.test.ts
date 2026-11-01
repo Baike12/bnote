@@ -12,8 +12,9 @@ import {
 } from "./timer";
 
 /**
- * 一次番茄钟 = 一段连续的专注:没有休息段、没有自动接下一段。
- * 这些用例锁的就是这条模型——以后谁再把 "break" 加回来会直接红。
+ * One pomodoro = one continuous stretch of focus: no break phase, no automatic
+ * continuation into the next stretch. These cases lock exactly that model - anyone
+ * who brings a "break" back later gets a red test.
  */
 const T0 = 1_700_000_000_000;
 
@@ -49,7 +50,8 @@ describe("番茄钟:一段连续的专注", () => {
 
   it("没有暂停:计时一旦开始,endAt 就不会被改掉", () => {
     const started = startTimer(session(25), T0);
-    // 再调用 start 是幂等的空操作——不存在"冻结剩余时间再续上"的路径。
+    // Calling start again is an idempotent no-op - there is no path that freezes
+    // the remaining time and resumes it later.
     expect(startTimer(started, T0 + 5 * 60_000)).toBe(started);
     expect(started.endsAt).toBe(T0 + 25 * 60_000);
   });
@@ -65,7 +67,8 @@ describe("番茄钟:一段连续的专注", () => {
     const started = startTimer(session(25), T0);
     expect(remainingMs(started, T0)).toBe(25 * 60_000);
     expect(remainingMs(started, T0 + 90_500)).toBe(25 * 60_000 - 90_500);
-    // 挂起一小时后再看:剩多少就是多少,不会因为"少跑了多少拍"而偏。
+    // Look again after an hour of suspension: what is left is what is left, it
+    // does not drift because of "how many ticks were missed".
     expect(remainingMs(started, T0 + 3_600_000)).toBe(0);
   });
 });

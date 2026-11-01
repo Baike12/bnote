@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import tauriConf from "../../src-tauri/tauri.conf.json";
 
 /**
- * 打包 CSP 门禁：用户公式片段（`.bnote/snippets.js`）靠 Blob URL 动态
- * import 装载。tauri.conf.json 的 CSP 若没有 `script-src blob:`，script-src
- * 会回退到 `default-src 'self'`，打包后的 WKWebView 拒绝 blob 导入——
- * 用户片段永远静默加载失败（浏览器实证：旧 CSP IMPORT_FAIL，加
- * `script-src 'self' blob:` 后 IMPORT_OK）。这里锁住打包配置不再回退。
+ * Packaged-CSP gate: the user's formula snippets (`.bnote/snippets.js`) load
+ * through a dynamic import of a Blob URL. If the CSP in tauri.conf.json has no
+ * `script-src blob:`, script-src falls back to `default-src 'self'` and the
+ * packaged WKWebView refuses blob imports — the user snippets then fail to
+ * load, silently and forever (proven in the browser: the old CSP gave
+ * IMPORT_FAIL, `script-src 'self' blob:` gives IMPORT_OK). This gate locks
+ * the packaged configuration against that fallback.
  */
 
 interface TauriConf {

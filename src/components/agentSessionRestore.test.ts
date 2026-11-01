@@ -3,16 +3,23 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * 会话恢复/分叉/标题的接线门禁。
+ * Gate for the wiring of session restore / fork / titles.
  *
- * 这里锁的是「谁来调用谁」这类编译期看不见的约束:
- * - 重启恢复必须走会话家族(根=主会话),不能退回「只挂最近更新那一条」;
- * - 切到家族里未启动的会话要懒启动,而不是裸 setActiveKey;
- * - 分叉必须把父子关系写进记录文件(重启后唯一的还原依据);
- * - 标题必须来自会话自己的第一句话,且只请求一次、写回文件。
+ * What is locked here are the "who calls whom" constraints that the compiler
+ * cannot see:
+ * - The restore after a restart must go through the session family (root =
+ *   main session), it must not fall back to "mount only the most recently
+ *   updated one".
+ * - Switching to a session of the family that has not been started yet must
+ *   lazy-start it instead of a bare setActiveKey.
+ * - A fork must write the parent/child relation into the record file (the
+ *   only way to restore it after a restart).
+ * - The title must come from the session's own first message, and is
+ *   requested once and written back to the file.
  *
- * 纯逻辑(sessionTree / sessionTitle / transcript)另有单测;这里只保证
- * AgentPanel 确实按那条路径接线。
+ * The pure logic (sessionTree / sessionTitle / transcript) has its own unit
+ * tests; this file only guarantees that AgentPanel is really wired along
+ * that path.
  */
 
 const raw = readFileSync("src/components/AgentPanel.tsx", "utf8");
@@ -29,7 +36,7 @@ describe("重启恢复:会话家族而不是最近一条", () => {
     expect(code).not.toMatch(/openSavedSession/);
     const fn = code.slice(code.indexOf("const restoreFamily = useCallback"));
     const body = fn.slice(0, fn.indexOf("const activateConv"));
-    // 家族恢复必须整表替换;单条 setConvs([conv]) 只允许出现在「新建主会话」。
+    // A family restore must replace the whole table; a single setConvs([conv]) is only allowed in "create a new main session".
     expect(body).toMatch(/setConvs\(convs\)/);
     expect(body).not.toMatch(/setConvs\(\[conv\]\)/);
   });
@@ -39,7 +46,7 @@ describe("重启恢复:会话家族而不是最近一条", () => {
     const fn = body.slice(0, body.indexOf("const activateConv"));
     expect(fn).toMatch(/const focusKey = activate === "anchor"/);
     expect(fn).toMatch(/launchRestored\(focus, token\)/);
-    // 只允许一次 launchRestored 调用(根与落点不各开一条)。
+    // Only one launchRestored call is allowed (the root and the anchor do not each start one).
     expect(fn.match(/launchRestored\(/g)?.length ?? 0).toBe(1);
   });
 
@@ -130,7 +137,7 @@ describe("标题:会话自己的第一句话,模型生成一次并落盘", () =>
     expect(body).toMatch(/cleanGeneratedTitle\(raw\)/);
     expect(body).toMatch(/displayTitle\(clean, conv\.parent !== null\)/);
     expect(body).toMatch(/setSessionTitle\(relDir, conv\.sessionFileId, label\)/);
-    // 标题与对话共用会话自己的模型快照。
+    // The title uses the session's own model snapshot, the same one the conversation uses.
     expect(body).toMatch(/generateTitle\(seed, conv\.model \?\? undefined\)/);
   });
 

@@ -25,7 +25,7 @@ describe("翻页步长设置", () => {
 
 describe("按步长滚动", () => {
   it("50% 视口：上一屏的下半部分停在屏幕中央", () => {
-    // 700px 视口、刚在顶部：下一页后新内容从 350px 开始。
+    // 700px viewport, just at the top: after the next page the new content starts at 350px.
     expect(steppedScrollTop(0, 700, 5000, 1, 0.5)).toBe(350);
     expect(steppedScrollTop(350, 700, 5000, 1, 0.5)).toBe(700);
   });
@@ -50,7 +50,7 @@ describe("按步长滚动", () => {
 describe("翻页落点对齐文字行", () => {
   const viewport = 700;
   const content = 5000;
-  // 边界在视口 350px 处，容差 2% = 14px。
+  // The boundary is at 350px of the viewport, the tolerance 2% = 14px.
   const tolerance = viewport * 0.02;
 
   it("边界落在行间：不动", () => {
@@ -61,29 +61,29 @@ describe("翻页落点对齐文字行", () => {
   });
 
   it("切在行内：把最近的行边对齐到边界", () => {
-    // 行 335–357，边界 350：下边更近（7px），滚到 357，整行留在分界线上方。
+    // Line 335-357, boundary 350: the bottom edge is closer (7px), scroll to 357, the whole line stays above the split line.
     expect(
       snapScrollTopToLine(350, viewport, content, 350, [{ top: 335, bottom: 357 }], tolerance),
     ).toBe(357);
-    // 行 345–365，边界 350：上边更近（5px），滚到 345，整行落到分界线下方。
+    // Line 345-365, boundary 350: the top edge is closer (5px), scroll to 345, the whole line ends up below the split line.
     expect(
       snapScrollTopToLine(350, viewport, content, 350, [{ top: 345, bottom: 365 }], tolerance),
     ).toBe(345);
   });
 
   it("需要的位移超过 2% 视口：保持原位", () => {
-    // 行高 42px，两边距离 20/22px，都超过 14px。
+    // Line height 42px, distances 20/22px on both sides, both over 14px.
     expect(
       snapScrollTopToLine(350, viewport, content, 350, [{ top: 330, bottom: 372 }], tolerance),
     ).toBe(350);
   });
 
   it("不越过文档首尾：贴边候选不算对齐", () => {
-    // 顶部：上边对齐会滚到 -10，只能接受下边对齐。
+    // Top: aligning the top edge would scroll to -10, so only the bottom edge alignment is accepted.
     expect(
       snapScrollTopToLine(0, viewport, content, 5, [{ top: -5, bottom: 10 }], tolerance),
     ).toBe(5);
-    // 底部：下边对齐会超过 max，只能接受上边对齐。
+    // Bottom: aligning the bottom edge would exceed max, so only the top edge alignment is accepted.
     expect(
       snapScrollTopToLine(4300, viewport, content, 693, [{ top: 688, bottom: 702 }], tolerance),
     ).toBe(4295);
@@ -98,11 +98,11 @@ describe("翻页落点对齐文字行", () => {
   });
 
   it("落点按整像素取整，且清掉亚像素残余切割", () => {
-    // 上边更近：向下取整，行整体落到分界线下方。
+    // The top edge is closer: round down, the whole line ends up below the split line.
     expect(
       snapScrollTopToLine(350, viewport, content, 350, [{ top: 347.2, bottom: 358.9 }], tolerance),
     ).toBe(347);
-    // 下边更近：向上取整，行整体留在分界线上方。
+    // The bottom edge is closer: round up, the whole line stays above the split line.
     expect(
       snapScrollTopToLine(350, viewport, content, 350, [{ top: 340, bottom: 359.2 }], tolerance),
     ).toBe(360);

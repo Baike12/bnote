@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { renumberChanges } from "./numbering";
 
-/** 跑一遍重编号并应用所有替换,返回结果文本。 */
+/** Runs one renumbering pass, applies all replacements and returns the resulting text. */
 function renumber(text: string): string {
   const state = EditorState.create({ doc: text });
   return state.update({ changes: renumberChanges(state) }).state.doc.toString();

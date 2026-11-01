@@ -4,7 +4,7 @@ import { fenceStateScan } from "./context";
 import { scanMath } from "./mathScan";
 import { calloutRegions, computeCalloutRegions } from "./callout";
 
-/** 纯行扫描入口:围栏状态与公式区域按同一份文档现算。 */
+/** Pure line-scan entry point: fence state and math regions are computed from the same document on the fly. */
 function scan(text: string) {
   const state = EditorState.create({ doc: text });
   const doc = state.doc;
@@ -40,7 +40,7 @@ describe("callout 区域扫描", () => {
     expect(regions[0].openLine).toBe(1);
     expect(regions[0].closeLine).toBe(3);
     expect(regions[1].openLine).toBe(5);
-    expect(regions[1].closed).toBe(false); // 最后一个 ::: 开块未闭合
+    expect(regions[1].closed).toBe(false); // the last ::: block is never closed
   });
 
   it("嵌套:带文字的标记必开,裸 ::: 关内层;输出按 from 升序(外层在前)", () => {
@@ -63,7 +63,7 @@ describe("callout 区域扫描", () => {
 
   it("公式块内的 ::: 忽略:$$ 配对优先", () => {
     expect(scan("$$\n:::\n$$")).toHaveLength(0);
-    // 公式块之后正文里的 ::: 照常生效
+    // a ::: in the body after the math block still opens a block
     const r = regionOf("$$\n:::\n$$\n:::\n内容\n:::");
     expect(r.openLine).toBe(4);
   });

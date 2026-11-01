@@ -1,17 +1,20 @@
-//! 扩展名 → LSP languageId。
+//! Extension → LSP languageId.
 //!
-//! 这是**唯一**的扩展名→语言映射来源:前端拿后端回的 languageId 去挑
-//! CodeMirror 的语法包,两边不必各维护一张表。
+//! This is the **only** source of the extension→language mapping: the front end
+//! takes the languageId returned by the backend and picks the matching
+//! CodeMirror syntax package, so both sides need no table of their own.
 //!
-//! languageId 用 LSP 约定的名字(`typescript` / `rust` / `go` / `python` …),
-//! 与语言服务器 `didOpen` 里要填的 languageId 是同一个词。
+//! The languageIds use the names the LSP convention defines (`typescript` /
+//! `rust` / `go` / `python` …), the same word that goes into the `didOpen` of
+//! the language server.
 
 use std::path::Path;
 
-/// 由文件扩展名推断 LSP languageId;不认识的后缀返回 "plaintext"。
+/// Infers the LSP languageId from the file extension; an unknown suffix returns
+/// "plaintext".
 ///
-/// 复合后缀优先(`d.ts` → typescript、`tar.gz` → 不认识)。同名文件
-/// (`Dockerfile`、`Makefile`)按整个文件名认。
+/// Compound suffixes win (`d.ts` → typescript, `tar.gz` → unknown). Well-known
+/// file names (`Dockerfile`, `Makefile`) are recognized by the whole name.
 pub fn language_for_path(path: &Path) -> &'static str {
     let name = path
         .file_name()

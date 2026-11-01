@@ -1,8 +1,10 @@
-//! 代码项目:文件树、语言识别、语言服务器、git。
+//! Code projects: file tree, language detection, language servers, git.
 //!
-//! 这一层的边界是**用户显式打开的那个目录**:项目根就是沙箱边界,根内可
-//! 读写、根外拒绝(见 [`project::resolve_in`])。代码项目通常不在 vault 里,
-//! 所以不能套 vault 那套约束。
+//! The boundary of this layer is **the directory the user explicitly opened**:
+//! the project root is the sandbox boundary — reads and writes inside it are
+//! allowed, anything outside is rejected (see [`project::resolve_in`]). Code
+//! projects usually live outside the vault, so the vault's constraints do not
+//! apply here.
 
 pub mod git;
 pub mod lang;

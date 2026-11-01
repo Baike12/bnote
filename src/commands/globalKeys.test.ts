@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import { pickKeyRegion, type FocusRegion } from "./globalKeys";
 
 /**
- * 区域归属的根因门禁。
+ * Root-cause gate for region ownership.
  *
- * 归属只认「用户最近一次在哪个区域动手」,不是 `document.activeElement`:
- * 阅读区(PDF)故意不取得 DOM 焦点(给阅读器加 tabindex/focus 会让 WebKit
- * 的文字选区锚点跳变),所以滚页面、点正文都不改 activeElement——焦点还停在
- * Agent 输入框 / 笔记编辑器上,阅读区的快捷键(截图、区域切换)就会静默落到
- * 别的命令上或什么也不做。反过来,不在场的区域(三栏里被临时隐藏/收起、
- * 或不在学习模式时没有 Agent/阅读区)同样不能占着键盘。
+ * Ownership only follows "where the user last acted", not
+ * `document.activeElement`: the reading region (PDF) deliberately does not
+ * take DOM focus (giving the reader a tabindex/focus makes WebKit's text
+ * selection anchor jump), so scrolling the page or clicking the body never
+ * changes activeElement — with the focus still in the Agent input / note
+ * editor, the reading region's bindings (screenshot, region switch) would
+ * silently fall through to another command or do nothing. Conversely, a
+ * region that is not on screen (temporarily hidden/collapsed inside the
+ * three columns, or no Agent/reading region outside study mode) must not
+ * hold the keyboard either.
  */
 const ALL: FocusRegion[] = ["reading", "notes", "agent", "project"];
 const onScreenAll = () => true;
@@ -19,7 +23,7 @@ describe("pickKeyRegion", () => {
     expect(
       pickKeyRegion({
         owner: "reading",
-        focus: "agent", // 焦点还停在 Agent 输入框里
+        focus: "agent", // the focus is still in the Agent input
         onScreen: onScreenAll,
       }),
     ).toBe("reading");
@@ -50,8 +54,10 @@ describe("pickKeyRegion", () => {
         onScreen: () => true,
       }),
     ).toBe("reading");
-    // 阅读区不在场:项目管理排在笔记区之前——项目视图刚切进来时还没有
-    // 「最近动手」,键盘该落在中间的卡片,而不是右栏日记。
+    // The reading region is absent: project management comes before the notes
+    // region — right after switching into the project view there is no
+    // "recent activity" yet, so the keyboard belongs to the cards in the
+    // middle, not to the journal on the right.
     expect(
       pickKeyRegion({
         owner: null,

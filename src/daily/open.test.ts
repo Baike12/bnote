@@ -3,11 +3,14 @@ import { dailyScaffold } from "./model";
 import { openDailyNote, type OpenDailyDeps } from "./open";
 
 /**
- * 「打开今日日记」的契约:
- *  1. 盘上没有这份日记 → 按同步引擎同一份初始内容建出来(dailyScaffold),刷新
- *     文件树,再打开;
- *  2. 盘上已有 → 一个字节都不写(绝不覆盖用户已有的日记);
- *  3. 当前文件就是今日日记 → 消费跳回槽跳回来源;每次非日记内的跳转都覆盖槽。
+ * The contract of "open today's daily note":
+ *  1. The daily note is not on disk -> create it with the same initial content as
+ *     the sync engine (dailyScaffold), refresh the file tree, then open it;
+ *  2. It is already on disk -> not a single byte is written (a daily note the user
+ *     already has is never overwritten);
+ *  3. The current file already is today's daily note -> consume the jump-back
+ *     slot and jump to the source; every jump from outside a daily note
+ *     overwrites the slot.
  */
 
 const DAY = "2026-09-27";
@@ -197,10 +200,12 @@ describe("日记内再按 ⌘⇧O:跳回跳转前的文件", () => {
     expect(h.opened).toEqual([DAILY]);
     expect(h.back()).toBe(note);
 
-    await openDailyNote(h.deps); // 已在日记:toggle
+    await openDailyNote(h.deps); // already in the daily note: toggle
     expect(h.opened).toEqual([DAILY, note]);
-    expect(h.back()).toBeNull(); // 消费即清空
-    // 跳回走的是 open:全部写盘只有第一跳建日记那一次,toggle 自己不落任何字节。
+    expect(h.back()).toBeNull(); // consuming clears the slot
+    // Jumping back goes through open: of all the writes to disk only the first
+    // jump, the one that creates the daily note, writes; the toggle itself puts
+    // no byte on disk.
     expect(h.written).toEqual([{ path: DAILY, content: dailyScaffold(DAY) }]);
     expect(h.disk.get(note)).toBe("草稿\n");
   });
@@ -210,9 +215,9 @@ describe("日记内再按 ⌘⇧O:跳回跳转前的文件", () => {
     const h = harness({ [note]: "x\n", [DAILY]: "# d\n" });
     h.setCurrent(note);
     await openDailyNote(h.deps);
-    await openDailyNote(h.deps); // 回 note
-    await openDailyNote(h.deps); // 再进日记
-    await openDailyNote(h.deps); // 再回 note
+    await openDailyNote(h.deps); // back to the note
+    await openDailyNote(h.deps); // into the daily note again
+    await openDailyNote(h.deps); // back to the note again
     expect(h.opened).toEqual([DAILY, note, DAILY, note]);
   });
 

@@ -6,16 +6,19 @@ import { imeApply, imeSyncToEditor } from "@/editor/imeSwitch";
 import { insertPickedLink, restoreEditorFocus } from "@/app/actions";
 import { useAppStore, type LinkAnchor } from "@/state/appStore";
 
-/** 视口边缘留白（面板与光标行到边界的距离）。 */
+/** Margin kept from the viewport edge (distance from the panel and the caret line to the border). */
 const MARGIN = 8;
-/** 面板与光标行之间的间隙。 */
+/** Gap between the panel and the caret line. */
 const GAP = 4;
 
 /**
- * 插入链接的补全面板：贴在光标行下方（下方放不下就翻到上方），列出最近打开的
- * 笔记，输入即按快速跳转同一套排序过滤，回车插入 `[[链接]]`。
+ * Completion panel for inserting a link: it sticks under the caret line (and
+ * flips above when there is no room below), lists the recently opened notes
+ * and filters them with the same ordering as the quick switcher; Enter
+ * inserts `[[link]]`.
  *
- * 只在 store 里有锚点时挂载——关闭即卸载，所以查询与选中状态天然随每次打开重置。
+ * It is mounted only while the store holds an anchor, so closing unmounts it
+ * and the query and selection state reset with every open.
  */
 export function LinkSuggest() {
   const anchor = useAppStore((s) => s.linkSuggest);
@@ -40,7 +43,7 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
     [flatFiles, recentFiles, vaultPath, query, currentFile],
   );
 
-  // 面板高度只随结果条数变：量一次，下方放不下就整体翻到上方，左右夹进视口。
+  // The panel height only depends on the number of results: measure once, flip the whole panel above when it does not fit below, and clamp it into the viewport horizontally.
   useLayoutEffect(() => {
     const el = boxRef.current;
     if (!el) return;
@@ -57,7 +60,7 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
     });
   }, [anchor, results.length]);
 
-  // 结果比面板高时，键盘选择要跟着滚动——否则选中的行看不见。
+  // When the results are taller than the panel, the keyboard selection has to scroll along, otherwise the selected row is out of sight.
   useLayoutEffect(() => {
     const list = listRef.current;
     const row = list?.children[index] as HTMLElement | undefined;
@@ -66,8 +69,9 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
     list.scrollTop = Math.max(0, Math.min(top, list.scrollHeight - list.clientHeight));
   }, [index]);
 
-  // 面板拿走键盘焦点后编辑器收不到按键，IME 跟着切英文（与快速跳转同一套作用域，
-  // 卸载时交还编辑器当前该有的输入法）。
+  // Once the panel takes the keyboard focus the editor receives no keystrokes
+  // and the IME switches to English (the same scope as the quick switcher);
+  // on unmount the editor gets the input source it should have.
   useEffect(() => {
     const { settings } = useAppStore.getState();
     inputRef.current?.focus();
@@ -78,7 +82,7 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
 
   const close = () => useAppStore.getState().closeLinkSuggest();
 
-  // 锚点是打开那一刻量的：编辑器一滚、窗口一变尺寸就失效，先收起来，别挂在错位的地方。
+  // The anchor is measured when the panel opens: it goes stale as soon as the editor scrolls or the window resizes, so close the panel instead of hanging it in the wrong place.
   useEffect(() => {
     const scroller = editorApi.view?.scrollDOM;
     window.addEventListener("resize", close);
@@ -90,8 +94,10 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
      
   }, []);
 
-  // 点到面板外面 = 放弃插入（编辑器那一下点击照常生效）。捕获阶段：让面板先关，
-  // 免得编辑器先处理完点击再被面板的关闭逻辑打断。
+  // A click outside the panel means the insertion is abandoned (the click
+  // itself still reaches the editor). Capture phase: let the panel close
+  // first, so the editor does not finish handling the click before the
+  // panel's close logic interrupts it.
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (!boxRef.current?.contains(e.target as Node)) close();
@@ -101,14 +107,15 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
      
   }, []);
 
-  // 别的覆盖层（命令面板 / 设置 / 快速跳转）打开就给它让位。
+  // Another overlay (palette / settings / quick switcher) opening yields to it.
   useEffect(() => {
     if (modal) close();
      
   }, [modal]);
 
-  // 关闭（选中 / Esc / 点外面）后把焦点还给编辑器；用户在别处操作时 restoreEditorFocus
-  // 自己会放手。
+  // After closing (picked / Esc / click outside) the focus goes back to the
+  // editor; restoreEditorFocus lets go on its own when the user acted
+  // somewhere else.
   useEffect(() => () => restoreEditorFocus(), []);
 
   const choose = (i: number) => {

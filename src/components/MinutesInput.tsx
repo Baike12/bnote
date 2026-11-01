@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { parseMinutesDraft } from "@/focus/duration";
 
 /**
- * 分钟输入框:草稿式编辑,回车/失焦才提交。
+ * Minutes input: draft-style editing, committed on Enter or blur.
  *
- * 受控输入直接写回 store 会让"清空"变成"0 → 夹到 1",用户删不掉原来的数字。
- * 这里输入过程中只改草稿,合法才提交;Esc 还原,空/非法输入还原成当前值。
+ * Writing a controlled input straight back into the store would turn
+ * "clear the field" into "0 -> clamped to 1", so the user can never delete
+ * the existing number. Here typing only changes the draft and only a legal
+ * value is committed; Escape restores, an empty or illegal input restores
+ * the current value.
  */
 export function MinutesInput({
   value,
@@ -23,7 +26,7 @@ export function MinutesInput({
   const [draft, setDraft] = useState(String(value));
   const [editing, setEditing] = useState(false);
 
-  // 别的地方改了时长(芯片/另一处输入框)时跟上;正在编辑就别抢用户的光标。
+  // Follow a duration changed elsewhere (the chip, another input); while the user is editing, do not steal the caret.
   useEffect(() => {
     if (!editing) setDraft(String(value));
   }, [value, editing]);

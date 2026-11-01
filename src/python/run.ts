@@ -1,6 +1,6 @@
 /**
- * 运行面板的状态与动作:一篇笔记的全部 python 块按「一个 py 文件」运行,
- * stdout/stderr 经后端事件流式进面板;uv 环境创建的日志也复用这个面板展示。
+ * State and actions of the run panel: all python blocks of a note are run as "one py file", and stdout/stderr stream into
+ * the panel through backend events; the log of a uv environment creation reuses the same panel.
  */
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
@@ -19,13 +19,13 @@ export interface RunLine {
   text: string;
 }
 
-/** 单面板输出上限:超限从头部截断,防 print 死循环把内存吃满。 */
+/** Output cap of a single panel: past the cap the head is trimmed, so a runaway print loop cannot eat all the memory. */
 const MAX_LINES = 4000;
 const TRIM_TO = 2000;
 
 interface PythonRunState {
   open: boolean;
-  /** 当前面板展示的运行;面板只认这个 runId 的事件。 */
+  /** The run the panel currently shows; the panel only accepts the events of this runId. */
   runId: number | null;
   mdPath: string | null;
   command: string;
@@ -110,7 +110,7 @@ function toast(msg: string) {
   useAppStore.getState().showToast(msg);
 }
 
-/** python.run-note:把当前笔记当做一个 py 文件运行。 */
+/** python.run-note: run the current note as one py file. */
 export async function runCurrentNote() {
   const view = editorApi.view;
   const mdPath = useAppStore.getState().currentFile;
@@ -142,7 +142,7 @@ export async function stopRun() {
   }
 }
 
-/** python.create-uv-env:当前笔记所在一级目录创建 uv 环境,日志进运行面板。 */
+/** python.create-uv-env: create a uv environment in the directory of the current note, with the log going to the run panel. */
 export async function createUvEnvForCurrentProject() {
   const mdPath = useAppStore.getState().currentFile;
   if (!mdPath) {
@@ -166,11 +166,11 @@ export async function createUvEnvForCurrentProject() {
 }
 
 // ---------------------------------------------------------------------------
-// 后端事件 → 面板
+// Backend events -> the panel
 // ---------------------------------------------------------------------------
-// 注意:不能在模块求值期 listen —— 静态导入先于 main.tsx 的
-// installBrowserMode() 执行,浏览器调试模式下 mock IPC 还没装上,注册会
-// 静默失败。挂到运行时入口上惰性安装。
+// Note: listen must not run while the module is evaluated -- the static import happens before main.tsx calls
+// installBrowserMode(), so in browser debug mode the mock IPC is not installed yet and the registration would fail
+// silently. Install it lazily from the runtime entry points.
 let installed = false;
 async function installListeners() {
   if (installed) return;
@@ -178,7 +178,7 @@ async function installListeners() {
   try {
     await listen<PythonRunOutputEvent>("python-run-output", (e) => {
       const s = usePythonRun.getState();
-      if (!s.running || e.payload?.runId !== s.runId) return; // 不是当前这次运行的输出
+      if (!s.running || e.payload?.runId !== s.runId) return; // not the output of the current run
       s.append(e.payload.stream === "stderr" ? "stderr" : "stdout", e.payload.text);
     });
     await listen<PythonRunExitEvent>("python-run-exit", (e) => {

@@ -7,18 +7,18 @@ import { blockDecorationsField } from "./livePreview";
 import { visibleVerticalTarget } from "./motionClamp";
 
 /**
- * 行号（1 起）：
+ * Line numbers (starting at 1):
  *  1 above
  *  2 $$
  *  3 x = 1
  *  4 y = 2
  *  5 $$
  *  6 mid
- *  7 （空行）
+ *  7 (blank line)
  *  8 ---
- *  9 （空行）
+ *  9 (blank line)
  * 10 after hr
- * 11 （空行）
+ * 11 (blank line)
  * 12 ```js
  * 13 code
  * 14 ```
@@ -42,20 +42,20 @@ const DOC = [
   "after fence",
 ].join("\n");
 
-/** 建一个带完整语法树 + 块装饰 field 的 state（与真实编辑器同一套装饰来源）。 */
+/** Builds a state with a complete syntax tree and the block decoration field (the same source of decorations as the real editor). */
 function makeState(doc: string): EditorState {
   const created = EditorState.create({
     doc,
     extensions: [markdown({ base: markdownLanguage, extensions: [GFM] }), blockDecorationsField],
   });
   ensureSyntaxTree(created, created.doc.length);
-  // 空事务触发 field 按完整语法树重建（与 setup.ts 的 primeSyntaxTree 同理）。
+  // An empty transaction makes the field rebuild from the complete syntax tree (same as primeSyntaxTree in setup.ts).
   return created.update({}).state;
 }
 
 describe("visibleVerticalTarget（可见行步进——j/k 的垂直维度模型）", () => {
   const state = makeState(DOC);
-  // 围栏的可见性由 field 按选区重建决定：把选区放进代码块内部模拟"块活动"。
+  // The visibility of the fences is decided by the field rebuilding from the selection: putting the selection inside the code block simulates an "active block".
   const stateInsideFence = state
     .update({ selection: { anchor: state.doc.line(13).from } })
     .state;
@@ -67,27 +67,27 @@ describe("visibleVerticalTarget（可见行步进——j/k 的垂直维度模型
   });
 
   it("跨折叠公式块：近端边缘是落点，块内源码在展开后是普通步", () => {
-    // 光标在 1（块外）：第一步落在 $$ 开行（边缘，停上去即展开）。
+    // the caret is at 1 (outside the block): the first step lands on the $$ opening line (the edge, stopping there expands it).
     expect(visibleVerticalTarget(state, 1, true, 1)).toBe(2);
-    // 第二步在源码内：活动区域不是隐藏步。
+    // the second step is inside the source: the active region is not a hidden step.
     expect(visibleVerticalTarget(state, 1, true, 2)).toBe(3);
-    // 走完整个块需要 5 步：开行、源1、源2、闭行、下一行。
+    // walking the whole block takes 5 steps: opening line, source 1, source 2, closing line, next line.
     expect(visibleVerticalTarget(state, 1, true, 5)).toBe(6);
-    // 自下而上：闭行是近端边缘。
+    // bottom-up: the closing line is the near edge.
     expect(visibleVerticalTarget(state, 6, false, 1)).toBe(5);
   });
 
   it("hr 渲染态是隐藏步，被跳过", () => {
-    // 光标在 7（空行）：8 的 `---` 是 hr（前有空行，不是 setext 下划线）。
+    // the caret is at 7 (blank line): the `---` on 8 is an hr (there is a blank line before it, so it is not a setext underline).
     expect(visibleVerticalTarget(state, 7, true, 1)).toBe(9);
   });
 
   it("折叠围栏行是隐藏步，代码内容行是普通步", () => {
-    // 光标在 11（块外）：12 的 ``` 隐藏，落到内容行 13。
+    // the caret is at 11 (outside the block): the ``` on 12 is hidden, so it lands on the content line 13.
     expect(visibleVerticalTarget(state, 11, true, 1)).toBe(13);
-    // 选区在块内：围栏行保持源码可见，14 是普通步。
+    // the selection is inside the block: the fence lines stay visible as source, and 14 is a normal step.
     expect(visibleVerticalTarget(stateInsideFence, 13, true, 1)).toBe(14);
-    // 自下而上：14 隐藏被跳过，落 13。
+    // bottom-up: 14 is hidden and skipped, so it lands on 13.
     expect(visibleVerticalTarget(state, 15, false, 1)).toBe(13);
   });
 

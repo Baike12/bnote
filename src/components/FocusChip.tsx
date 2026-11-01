@@ -4,11 +4,14 @@ import { useFocusStore } from "@/focus/store";
 import { formatClock, isActive, remainingMs } from "@/focus/timer";
 
 /**
- * 状态栏左端的专注芯片。
+ * Focus chip at the left end of the status bar.
  *
- * 只有一件事:**点一下开始一段专注**。开始后芯片就变成纯状态显示并禁用
- * ——这一段没有暂停、没有提前结束、没有退出独占的入口(唯一释放锁的路径
- * 是计时走完)。锁的配置也不在这里:长度在设置页,两把锁固定全开。
+ * It does exactly one thing: **one click starts a focus session**. Once
+ * started, the chip becomes a pure status display and is disabled: there is
+ * no pause, no early end, no way out of the screen lock (the only path that
+ * releases the lock is letting the timer run out). The lock configuration is
+ * not here either: the length lives in the settings page, both locks are
+ * always fully on.
  */
 export function FocusChip() {
   const timer = useFocusStore((s) => s.timer);
@@ -22,15 +25,18 @@ export function FocusChip() {
     ? formatClock(remainingMs(timer, now))
     : formatClock(timer.config.focusMinutes * 60_000);
 
-  // 窗口标题跟着倒计时走:标题栏是 overlay + hiddenTitle,平时看不见,但调度
-  // 中心、窗口菜单读的是 NSWindow.title——专注时一眼能看见剩多久。顺带它也是
-  // 一个外部可观测点:倒计时到底在不在走,不用盯着状态栏猜。
+  // The window title follows the countdown: the title bar is overlay +
+  // hiddenTitle and invisible most of the time, but the scheduler center and
+  // the window menu read NSWindow.title, so during a focus session the
+  // remaining time is visible at a glance. It doubles as an external
+  // observation point: whether the countdown is really running, without
+  // guessing from the status bar.
   useEffect(() => {
     const title = active ? `bnote · 专注 ${clock}` : "bnote";
     try {
       void getCurrentWindow().setTitle(title).catch(() => {});
     } catch {
-      // 浏览器 harness 里没有 Tauri 窗口。
+      // The browser harness has no Tauri window.
     }
   }, [active, clock]);
 

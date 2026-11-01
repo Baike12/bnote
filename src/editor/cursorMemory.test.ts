@@ -20,7 +20,7 @@ import {
 
 type Listener = (event: { type: string }) => void;
 
-/** 最小 view 桩:saveNow 只读 state.doc / selection / scrollDOM.scrollTop。 */
+/** Minimal view stub: saveNow only reads state.doc / selection / scrollDOM.scrollTop. */
 function fakeView(doc: object) {
   const listeners = new Map<string, Set<Listener>>();
   const scrollDOM = {
@@ -70,7 +70,7 @@ describe("restoreSavedCursor", () => {
   it("scrollTop 走 requestMeasure 的 write 阶段写(根因回归:直写落在估算高度坐标系,随后被 CM 滚动锚定补偿挪走)", () => {
     const { view, runMeasures } = fakeView({});
     restoreSavedCursor(view, "/v/restored.md");
-    expect(view.scrollDOM.scrollTop).toBe(0); // 同步未写
+    expect(view.scrollDOM.scrollTop).toBe(0); // not written synchronously
     runMeasures();
     expect(view.scrollDOM.scrollTop).toBe(1234);
   });
@@ -105,7 +105,7 @@ describe("cursorMemory 滚动位置保存", () => {
     const dispose = observeScrollSave(view, () => "/v/a.md");
 
     emitScroll();
-    // 滚动事件本身不落盘,300ms 防抖尾随落一次
+    // the scroll event itself does not write; the 300ms debounce trailing edge writes once
     expect(rememberCursorPosition).not.toHaveBeenCalled();
     vi.advanceTimersByTime(300);
 
@@ -120,7 +120,7 @@ describe("cursorMemory 滚动位置保存", () => {
     const dispose = observeScrollSave(view, () => "/v/a.md");
 
     emitScroll();
-    // 模拟 loadDocument 换文档(同一 view,doc 引用替换)
+    // simulate loadDocument swapping the document (same view, doc reference replaced)
     (view.state as { doc: object }).doc = docB;
     vi.advanceTimersByTime(1000);
 

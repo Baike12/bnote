@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MAX_MATCHES, findMatches } from "./codeSearch";
 
-/** 断言/调试都看命中文本,不手写偏移。 */
+/** Both assertions and debugging read the matched text, never hand-written offsets. */
 const hits = (text: string, query: string): string[] =>
   findMatches(text, query).map((m) => text.slice(m.from, m.to));
 
@@ -19,9 +19,9 @@ describe("findMatches", () => {
     const text = "Snippet {snipSnippet} snippet";
     const found = findMatches(text, "snippet");
     expect(found).toHaveLength(3);
-    // 命中保留原文大小写,偏移指向原文。
+    // Matches keep the original casing, and the offsets point into the original text.
     for (const m of found) expect(text.slice(m.from, m.to).toLowerCase()).toBe("snippet");
-    // 首尾命中位置精确:第 3 处是末尾那个。
+    // The first and last match positions are exact: the third one is the one at the end.
     expect(found[2]).toEqual({ from: text.length - 7, to: text.length });
   });
 

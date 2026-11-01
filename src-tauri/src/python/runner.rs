@@ -1,6 +1,8 @@
-//! 运行器:把前端拼好的虚拟 python 文件写进 `<data_dir>/py-run/` 并执行,
-//! stdout/stderr 经节流后以 `python-run-output` 事件流回,退出以
-//! `python-run-exit` 事件收尾。同一笔记同时只允许一个运行,新运行杀掉旧的。
+//! The runner: it writes the virtual Python file assembled by the front end
+//! into `<data_dir>/py-run/` and executes it, streams stdout/stderr back
+//! throttled as `python-run-output` events and ends with a `python-run-exit`
+//! event. Only one run per note is allowed at a time; a new run kills the old
+//! one.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,19 +17,20 @@ use tokio::io::AsyncReadExt;
 
 use super::ProjectConfig;
 
-/// 单次运行的超时:超时杀进程,exit 事件带 timedOut 标记。
+/// The timeout of one run: on timeout the process is killed and the exit event
+/// carries the timedOut flag.
 pub const RUN_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvKind {
-    /// 项目配置里显式指定的解释器。
+    /// The interpreter explicitly named in the project configuration.
     Config,
-    /// 项目根下的 .venv。
+    /// The .venv under the project root.
     Venv,
-    /// pyproject.toml + uv → `uv run python`。
+    /// pyproject.toml + uv → `uv run python`.
     Uv,
-    /// 系统 python3。
+    /// The system python3.
     System,
 }
 
@@ -38,7 +41,8 @@ pub struct ResolvedEnv {
     pub program: String,
     #[serde(skip)]
     pub prefix_args: Vec<String>,
-    /// 实际的 python 解释器;uv 时可能尚未落盘(首次 `uv run` 才建环境)。
+    /// The actual Python interpreter; with uv it may not exist on disk yet (the
+    /// environment is created by the first `uv run`).
     pub python: Option<PathBuf>,
     pub venv_dir: Option<PathBuf>,
     pub detail: String,
@@ -58,7 +62,8 @@ fn is_executable(p: &Path) -> bool {
     }
 }
 
-/// 在给定 PATH 串里找可执行文件(独立成函数以便测试注入 PATH)。
+/// Finds an executable in the given PATH string (a separate function so that
+/// tests can inject a PATH).
 pub fn find_on_path_in(path_var: &str, prog: &str) -> Option<PathBuf> {
     for dir in path_var.split(':') {
         if dir.is_empty() {
@@ -77,7 +82,8 @@ pub fn find_on_path(prog: &str) -> Option<PathBuf> {
     find_on_path_in(&path_var, prog)
 }
 
-/// 项目根下的 .venv 解释器(unix: .venv/bin/python;win: .venv/Scripts/python.exe)。
+/// The interpreter of the .venv under the project root (unix:
+/// .venv/bin/python; win: .venv/Scripts/python.exe).
 pub fn venv_python(root: &Path) -> Option<PathBuf> {
     let p = venv_bin(&venv_dir(root)).join(venv_bin_name());
     p.exists().then_some(p)
@@ -96,7 +102,7 @@ fn venv_bin_name() -> &'static str {
     "python"
 }
 
-/// venv 的 bin 目录(装 ty 这类工具的地方)。
+/// The bin directory of the venv (where tools like ty are installed).
 pub fn venv_bin(venv: &Path) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -108,7 +114,8 @@ pub fn venv_bin(venv: &Path) -> PathBuf {
     }
 }
 
-/// 解释器解析顺序:项目配置 > .venv > pyproject+uv > 系统 python3。
+/// The interpreter resolution order: project configuration > .venv >
+/// pyproject+uv > the system python3.
 pub fn resolve_env(root: &Path, cfg: &ProjectConfig) -> ResolvedEnv {
     if let Some(py) = cfg.python.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let p = PathBuf::from(py);
@@ -158,17 +165,19 @@ pub fn resolve_env(root: &Path, cfg: &ProjectConfig) -> ResolvedEnv {
     }
 }
 
-/// 一次活跃的运行。child 由收尾任务独占(等待退出需要跨 await 持有),取消
-/// 通过 watch channel 传信号 —— 若把 child 放进 Mutex,收尾任务持锁 wait 时
-/// cancel 再去拿锁 kill 就互相等死锁(实测踩过)。
+/// One active run. The child is owned by the cleanup task (waiting for the
+/// exit has to hold it across an await), and the cancellation travels through a
+/// watch channel — putting the child into a Mutex instead deadlocks: the
+/// cleanup task holds the lock while waiting and cancel then waits for the
+/// same lock to kill (hit this in practice).
 pub struct RunHandle {
     pub md_path: String,
     pub kill_tx: tokio::sync::watch::Sender<bool>,
     pub cancelled: Arc<AtomicBool>,
 }
 
-/// 全局运行注册表:key = md_path,同一笔记串行。包在 Arc 里,收尾任务也要
-/// 摘除自己。
+/// The global run registry: key = md_path, one run per note at a time. The
+/// entries are wrapped in an Arc because the cleanup task removes its own.
 pub struct RunRegistry {
     pub next_id: AtomicU64,
     pub runs: Mutex<HashMap<String, Arc<RunHandle>>>,
@@ -179,8 +188,9 @@ impl RunRegistry {
         Self { next_id: AtomicU64::new(1), runs: Mutex::new(HashMap::new()) }
     }
 
-    /// 请求杀掉该笔记当前的运行(收尾任务收到信号后 kill)。进程真退出由
-    /// 收尾任务负责;这里只发信号。
+    /// Asks for the current run of that note to be killed (the cleanup task
+    /// kills the process once it receives the signal). The actual exit is the
+    /// cleanup task's job; this only sends the signal.
     pub fn cancel(&self, md_path: &str) -> bool {
         let handle = self
             .runs
@@ -197,7 +207,8 @@ impl RunRegistry {
         }
     }
 
-    /// 运行收尾后摘除自己;仅当注册表里还是这个句柄(新运行可能已顶掉它)。
+    /// Removes itself after the run is over, but only when the registry still
+    /// holds this handle (a new run may have replaced it).
     pub fn remove_if_current(&self, md_path: &str, handle: &Arc<RunHandle>) {
         if let Ok(mut runs) = self.runs.lock() {
             if let Some(cur) = runs.get(md_path) {
@@ -219,8 +230,9 @@ pub struct RunStarted {
     pub cwd: String,
 }
 
-/// 临时脚本:<data_dir>/py-run/<md_path 哈希>.py。用 data_dir 而不是 vault,
-/// 避免每次运行惊动 watcher。
+/// The temporary script: `<data_dir>/py-run/<hash of md_path>.py`. It lives in
+/// the data_dir and not in the vault, so that every run does not disturb the
+/// watcher.
 fn temp_script(data_dir: &Path, md_path: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -241,8 +253,10 @@ fn prune_old_scripts(dir: &Path) {
     }
 }
 
-/// 运行一篇笔记的虚拟 python 文本。前端保证 text 已经是行对齐 + main 守卫
-/// 处理后的最终文本;这里只负责进程、环境变量与事件。
+/// Runs the virtual Python text of a note. The front end guarantees that the
+/// text is already the final one after the line alignment and the main guard
+/// handling; this function only owns the process, the environment variables and
+/// the events.
 pub async fn run_note(
     app: tauri::AppHandle,
     state: &crate::state::AppState,
@@ -255,7 +269,8 @@ pub async fn run_note(
     let env = resolve_env(&project.root, &config);
 
     let run_id = state.python_runs.next_id.fetch_add(1, Ordering::Relaxed);
-    // 新运行顶掉旧运行(先发 kill 信号,避免两份输出交错)。
+    // A new run replaces the old one (the kill signal comes first, so the two
+    // outputs never interleave).
     state.python_runs.cancel(&md_path);
 
     let script = temp_script(&state.data_dir(), &md_path);
@@ -280,8 +295,10 @@ pub async fn run_note(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    // 环境:本地 import 与真实项目一致 —— 项目根进 PYTHONPATH;venv 时把
-    // VIRTUAL_ENV 与 venv bin 给上(子进程里的 pip/uv 等工具都能看到)。
+    // The environment makes a local import behave like in a real project — the
+    // project root goes into PYTHONPATH; with a venv, VIRTUAL_ENV and the venv
+    // bin are passed on (so the tools in the child process, pip/uv and the
+    // like, see them too).
     let mut path_var = std::env::var("PATH").unwrap_or_default();
     if let Some(venv) = &env.venv_dir {
         cmd.env("VIRTUAL_ENV", venv);
@@ -349,7 +366,8 @@ pub async fn run_note(
     let registry = state.python_runs.clone();
     tauri::async_runtime::spawn(async move {
         let started_at = Instant::now();
-        // child 被这个任务 move 进来独占;kill_on_drop 兜底(运行时关闭时杀掉)。
+        // The child is moved into this task and owned by it; kill_on_drop is
+        // the backstop (it kills the process when the runtime shuts down).
         let exit = tokio::select! {
             status = child.wait() => {
                 let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
@@ -393,8 +411,9 @@ pub async fn run_note(
     Ok(started_info)
 }
 
-/// stdout/stderr 读取:≤16KB 或 40ms 节流 flush 一次,UTF-8 断行残片留在
-/// 缓冲里等下一个 chunk,不会把多字节字符拆成乱码。
+/// Reading stdout/stderr: a flush is throttled to ≤16KB or 40ms, and a UTF-8
+/// fragment split across chunks stays in the buffer until the next chunk, so a
+/// multi-byte character is never torn into garbage.
 fn spawn_reader(
     app: tauri::AppHandle,
     run_id: u64,
@@ -494,17 +513,18 @@ mod tests {
     #[test]
     fn resolve_env_prefers_config_then_venv() {
         let root = tmpdir("env");
-        // 系统兜底:没有 pyproject → System(与机器上有没有 uv 无关)。
+        // The system fallback: without a pyproject → System (independent of
+        // whether the machine has uv).
         let env = resolve_env(&root, &ProjectConfig::default());
         assert_eq!(env.kind, EnvKind::System);
 
-        // .venv 优先于 uv/pyproject。
+        // The .venv wins over uv/pyproject.
         let py = venv_python_for_test(&root);
         let env = resolve_env(&root, &ProjectConfig::default());
         assert_eq!(env.kind, EnvKind::Venv);
         assert_eq!(env.program, py.to_string_lossy().to_string());
 
-        // 配置解释器最高优先。
+        // The interpreter from the configuration has the highest priority.
         let custom = root.join("custom-python");
         std::fs::write(&custom, "").unwrap();
         let env = resolve_env(

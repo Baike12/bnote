@@ -22,20 +22,24 @@ export function setHotkeyRecording(v: boolean) {
 }
 
 /**
- * 画布打开时进入「画布模式」:画布内部有一整套自己的键位(1-9 工具、
- * Alt+S 吸附、⌘D 复制、⌘Z 撤销…),窗口级命令分发必须让路——但画图本身
- * 也是「一个文件」,Obsidian 式的文件切换要照常可用,所以只放行快速跳转、
- * 命令面板和打开今日日记(切走时会先收尾画布,见 actions.openNote /
- * finalizeDrawingSession)。
+ * When the canvas is open the app enters "canvas mode": the canvas carries a
+ * whole set of its own bindings (tools 1-9, Alt+S to snap, ⌘D to duplicate,
+ * ⌘Z to undo, ...), so window-level command dispatch must yield. A drawing is
+ * still "a file" though, so Obsidian-style file switching must keep working:
+ * only the quick switcher, the command palette and "open today's daily note"
+ * are let through (switching away finalizes the canvas first, see
+ * actions.openNote / finalizeDrawingSession).
  */
 export type CommandKeyContext = "drawing" | null;
 
 let keyContext: CommandKeyContext = null;
 
 /**
- * 弹窗(设置 / 命令面板 / 快速跳转…)打开时,焦点在浮层输入框里,不属于三个
- * 区域中的任何一个:这时只放行通用命令,区域键位一律让路(否则在设置页里
- * 按 ⌘⇧N 会在背后给 Agent 新建会话)。
+ * While a modal (settings / command palette / quick switcher, ...) is open the
+ * focus sits in the overlay's input, which belongs to none of the three
+ * regions: only global commands are let through and every region binding
+ * yields (otherwise ⌘⇧N inside the settings page would create an Agent
+ * session behind the overlay).
  */
 let modalOpen = false;
 
@@ -50,30 +54,41 @@ export function setCommandKeyContext(ctx: CommandKeyContext) {
 }
 
 /**
- * 焦点区域。各可聚焦区域在 DOM 上各带 `data-key-region`:
- * 阅读区(ContentPane)、笔记区(EditorPane)、Agent 面板。
+ * Focus regions. Each focusable region carries `data-key-region` in the DOM:
+ * the reading region (ContentPane), the notes region (EditorPane) and the
+ * Agent panel.
  *
- * 归属只认「用户最近一次在哪个区域里动手」:指针按下、焦点进入、滚轮/触摸
- * 滚动都算,谁后发生听谁的(单一写入者 = 下面四个输入事件)。
+ * Ownership only follows "where the user last acted": pointer down, focus
+ * entry, wheel/touch scrolling all count, and the last one wins (single
+ * writer = the four input events below).
  *
- * 不能只看 `document.activeElement`:阅读区(PDF / 网页占位)故意不取得焦点
- * ——给阅读器加 tabindex/focus 会让 WebKit 的文字选区锚点跳变(见
- * PdfViewer 的键盘归属注释),所以滚页面、点正文都不改 activeElement。焦点
- * 停在 Agent 输入框或笔记编辑器上时就照它算区域,阅读区的快捷键(截图、
- * 区域切换)会静默落到别的命令上或什么也不做。滚轮算「动手」也是这个道理:
- * 阅读一篇 PDF 的主要动作就是滚,不点也在读。
+ * `document.activeElement` alone is not enough: the reading region (PDF /
+ * web placeholder) deliberately does not take focus — giving the reader a
+ * tabindex/focus makes WebKit's text selection anchor jump (see the keyboard
+ * ownership comment in PdfViewer), so scrolling the page or clicking the body
+ * never changes activeElement. When the focus sits in the Agent input or the
+ * note editor the region is computed from that instead, and the reading
+ * region's bindings (screenshot, region switch) would silently fall through
+ * to another command or do nothing. Counting the wheel as "acting" follows
+ * the same reasoning: scrolling a PDF is the main way of reading it, and
+ * reading does not require clicking.
  */
 const REGION_ATTR = "data-key-region";
 export type FocusRegion = Exclude<KeyRegion, "global">;
-/** 兜底顺序:阅读区最优先(它不取得焦点,「无主」时最安全);项目管理排在
- *  笔记区之前——项目视图里刚切进来还没有「最近动手」,右栏日记虽然在屏上,
- *  键盘该归中间的卡片。学习模式里 project 不在场,直接跳过,顺序不变。 */
 /**
- * 兜底顺序:阅读区 → 项目卡片 → 笔记区 → Agent。
+ * Fallback order: reading → project cards → notes → Agent.
  *
- * 代码区排在最后:它**长在阅读区那一栏里**(中栏),阅读区不在场时它也不在
- * 场,兜底永远轮不到它。它能拿到键盘靠的是「用户在里面动手过」(owner)或
- * 「焦点在里面」(focus),不是这个兜底列表。
+ * The reading region has top priority (it never takes focus, so it is the
+ * safest pick when nothing owns the keyboard), and project comes before
+ * notes: right after switching into the project view there is no "recent
+ * activity" yet — the journal on the right is on screen, but the keyboard
+ * belongs to the cards in the middle. In study mode the project region is
+ * absent and is simply skipped; the order itself is unchanged.
+ *
+ * The code region is last: it grows inside the reading column (middle pane),
+ * so when the reading region is absent it is absent too and the fallback
+ * never reaches it. It gets the keyboard through "the user acted inside it"
+ * (owner) or "focus is inside it" (focus), not through this fallback list.
  */
 const FOCUS_REGIONS: FocusRegion[] = ["reading", "project", "notes", "agent", "code"];
 const FOCUS_REGION_SET = new Set<string>(FOCUS_REGIONS);
@@ -88,8 +103,10 @@ export function regionFromTarget(target: EventTarget | null): FocusRegion | null
 }
 
 /**
- * 区域此刻是否在场。三栏(助手 / 内容 / 笔记)都常驻挂载;不在学习模式时
- * 只有笔记区存在。看不见的区域不能占着键盘——不可见的东西不该接收按键。
+ * Whether the region is on screen right now. The three columns (assistant /
+ * content / notes) are always mounted; outside study mode only the notes
+ * region exists. An invisible region must not hold the keyboard — things that
+ * cannot be seen should not receive keys.
  */
 export function regionOnScreen(region: FocusRegion): boolean {
   const el = document.querySelector(`[${REGION_ATTR}="${region}"]`);
@@ -99,8 +116,10 @@ export function regionOnScreen(region: FocusRegion): boolean {
 }
 
 /**
- * 键盘此刻归哪个区域(纯函数,门禁在 globalKeys.test.ts)。
- * 顺序:最近一次输入落在的区域 → 焦点所在 → 任一在场区域(阅读区优先)。
+ * Which region owns the keyboard right now (pure function; the gate lives in
+ * globalKeys.test.ts).
+ * Order: the region of the most recent input → the focused region → any
+ * region on screen (reading first).
  */
 export function pickKeyRegion(input: {
   owner: FocusRegion | null;
@@ -127,7 +146,7 @@ export function activeKeyRegion(): FocusRegion {
   });
 }
 
-/** 挑一条现在能执行的命令(前一条的 `when` 为 false 就试下一条)。 */
+/** Pick a command that can run right now (if the previous one's `when` is false, try the next). */
 function pickCommand(ids: string[]): string | null {
   for (const id of ids) {
     const cmd = getCommand(id);
@@ -139,10 +158,12 @@ function pickCommand(ids: string[]): string | null {
 }
 
 /**
- * 当前区域里这个键最终会执行的命令(已过 `when` 筛选)。
+ * The command this key will finally run in the current region (already
+ * filtered by `when`).
  *
- * 网页转发通道要在「抢焦点 → 执行」之前知道目标命令是不是需要主窗口焦点
- * (见 CommandDef.keepsPageFocus),所以这里把解析结果暴露出来。
+ * The web forwarding channel has to know whether the target command needs
+ * the main window's focus before it takes the focus and runs (see
+ * CommandDef.keepsPageFocus), so the resolved result is exposed here.
  */
 export function resolveBoundCommand(
   key: string,
@@ -153,8 +174,9 @@ export function resolveBoundCommand(
 }
 
 /**
- * 按已解析的按键执行命令。窗口级分发与网页阅读器的转发通道共用这一条路径,
- * 保证「页内按的键」和「主窗口按的键」走同一套区域规则。
+ * Run the command for an already resolved key. Window-level dispatch and the
+ * web reader's forwarding channel share this one path, so "a key pressed in
+ * the page" and "a key pressed in the main window" obey the same region rules.
  */
 export function runBoundKey(key: string, region: FocusRegion): boolean {
   const cmd = resolveBoundCommand(key, region);
@@ -165,8 +187,10 @@ export function runBoundKey(key: string, region: FocusRegion): boolean {
 }
 
 export function installGlobalKeybindings() {
-  // 区域归属的四个写入点:都是「用户主动动手」的事件,合成事件(tooltip、
-  // 程序 focus)不算。滚动用 passive,滚动是热路径,监听不能拖慢它。
+  // The four writers of region ownership: all of them are "the user acted"
+  // events; synthetic events (tooltips, programmatic focus) do not count.
+  // Scrolling is registered passive: scrolling is a hot path and the listener
+  // must not slow it down.
   const claimRegion = (event: Event) => {
     const region = regionFromTarget(event.target);
     if (region) ownerRegion = region;
@@ -182,14 +206,17 @@ export function installGlobalKeybindings() {
       if (recordingHotkey || e.defaultPrevented) return;
       const key = eventToKey(e);
       if (!key) return;
-      // 文本输入控件自己的编辑和弦(⌘A/C/X/V/⌘Z)不参与区域分发:同区域内
-      // 绑了这些键,输入框里按下去仍要是全选/复制/粘贴(见 editingChords)。
+      // A text input's own editing chords (⌘A/C/X/V/⌘Z) take no part in
+      // region dispatch: even when the same region binds those keys, pressing
+      // them inside an input must still select/copy/paste (see editingChords).
       const chordTarget = e.target instanceof Element ? e.target : document.activeElement;
       if (chordTarget instanceof Element && formOwnsEditChord(key, chordTarget.tagName)) {
         return;
       }
-      // 裸导航键(翻页/方向键)在编辑器、输入框里有原生含义,必须原样放行;
-      // 带修饰键的绑定(如 ⌃J)则在任何焦点下都生效——用户显式按了组合键。
+      // Bare navigation keys (paging/arrows) have native meanings in the
+      // editor and in inputs, so they must be passed through untouched;
+      // modified bindings (such as ⌃J) take effect under any focus — the user
+      // explicitly pressed a chord.
       if (
         isPlainFocusOwnedKey(e) &&
         (isEditableTarget(e.target) || isEditableTarget(document.activeElement))
@@ -207,9 +234,10 @@ export function installGlobalKeybindings() {
         return;
       }
 
-      // 固定翻页键:PageUp/PageDown 永远翻阅读区的内容页(PDF 或网页),
-      // 即使用户把 study.pdf-* 改绑到别处。只在阅读区生效——笔记编辑器
-      // 里的 PageUp 归编辑器自己。
+      // Fixed paging keys: PageUp/PageDown always page the reading region's
+      // content (PDF or web), even if the user rebound study.pdf-* elsewhere.
+      // They only apply in the reading region — PageUp inside the note editor
+      // belongs to the editor itself.
       if (keyContext === "drawing" || region !== "reading") return;
       const fixed = fixedPageCommandFor(e);
       if (!fixed) return;

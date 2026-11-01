@@ -1,10 +1,12 @@
 /* ===== bnote — Obsidian-like theme =====
 
-   主题的唯一来源是这里的 CSS 变量：:root 是 dark（无属性即 dark），
-   [data-theme="light"] 整套覆盖。应用侧只写
-   documentElement.dataset.theme（见 applySettingsToEditor），不做别的。
-   纪律（theme.test.ts 门禁拦）：规则体内不许出现 hex/rgba 字面量，
-   颜色一律走变量——新增颜色时两套值必须同时给。 */
+   The only source of theme colors is the CSS variables here: :root is the dark
+   theme (no attribute means dark), [data-theme="light"] overrides the whole
+   set. The app side only writes documentElement.dataset.theme (see
+   applySettingsToEditor) and does nothing else.
+   Discipline (enforced by the theme.test.ts gate): no hex/rgba literals in
+   rule bodies, all colors go through variables - a new color must ship values
+   for both themes at once. */
 
 :root {
   color-scheme: dark;
@@ -19,10 +21,10 @@
   --text-faint: #67676d;
   --accent: #f5a83c;
   --accent-dim: #c07d24;
-  --accent-soft: #3a2c16; /* 琥珀的弱底：当前文件行、热键录制行 */
+  --accent-soft: #3a2c16; /* weak amber base: current file row, keybinding recording row */
   --danger: #e06c75;
-  --danger-soft: #4a2a2e; /* 危险项 hover 底 */
-  --ok: #7ec97e; /* python 运行成功 */
+  --danger-soft: #4a2a2e; /* hover base for danger items */
+  --ok: #7ec97e; /* python run succeeded */
   --string: #98c379;
   --keyword: #c678dd;
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
@@ -37,22 +39,25 @@
   --h5-color: #e83e3e;
   --h6-color: #98a2ad;
   --strong-color: #ff82b2;
-  /* Callout 标题的薄荷绿：调色板里原本没有这个色相（最近的 --ok 鼠尾草绿
-     #7ec97e 差 33°、--h2-color 青差 32°），清新且与块面的青底压得住。 */
+  /* Mint green for callout titles: a hue the palette did not have (the nearest
+     --ok sage green #7ec97e is 33 degrees away, --h2-color cyan 32 degrees),
+     fresh and still readable on the cyan callout body. */
   --callout-title-color: #3ecf8e;
-  /* Callout 块左竖线 / 锚点下划虚线共用的重音色（两主题各自求值）。 */
+  /* Heavy tint shared by the callout left rule and the anchor underline
+     dashed line (evaluated separately per theme). */
   --callout-accent: color-mix(in srgb, var(--h2-color) 50%, transparent);
-  /* 代码 token（HighlightStyle 在 markdown.ts 里按 var() 引用；其余 token
-     直接复用上面的 --string/--keyword/--link/--strong-color/--danger）。 */
+  /* Code tokens (HighlightStyle in markdown.ts references them via var(); the
+     other tokens reuse --string/--keyword/--link/--strong-color/--danger
+     above). */
   --tok-comment: #7f848e;
-  --tok-number: #d19a66; /* 数字/行内代码/公式花括号共用的橙 */
+  --tok-number: #d19a66; /* orange shared by numbers, inline code and formula braces */
   --tok-func: #61afef;
   --tok-type: #e5c07b;
   --tok-var: #e06c75;
   --tok-operator: #56b6c2;
   --tok-punct: #abb2bf;
   --tok-invalid: #f66;
-  /* 选区/视觉模式的白色叠加（light 下翻成黑色低透明） */
+  /* White overlay for selection / visual mode (inverted to low-alpha black in light theme) */
   --sel: rgba(255, 255, 255, 0.22);
   --sel-hint: rgba(255, 255, 255, 0.1);
   --search-match: #5a4a2f80;
@@ -60,28 +65,30 @@
   --code-inline-bg: #26262c;
   --code-block-bg: #1a1a1f;
   --scrollbar-thumb: #34343a;
-  --hover-strong: #444; /* .btn:hover，比 --bg3 更强一档 */
+  --hover-strong: #444; /* .btn:hover, one step stronger than --bg3 */
   --toggle-knob: #eee;
-  --on-accent: #fff; /* accent-dim 底上的前景（按钮字/勾/旋钮…） */
+  --on-accent: #fff; /* foreground on accent-dim (button label, check mark, knob, ...) */
   --on-accent-muted: #ffffffbb;
-  --scrim: #00000088; /* 弹层背后的遮罩 */
-  --shadow: #000000aa; /* 浮层投影 */
-  --image-bg: #fff; /* PDF 截图白底，两主题一致 */
-  --pdf-paper: #fff; /* PDF 页纸 */
-  --pdf-gutter: #dcebd6; /* PDF 护眼模式的桌面底色 */
-  --pdf-tint: #cfe4c4; /* PDF 护眼染色（multiply，只压白底不压黑字） */
-  --pdf-anno: rgb(255 224 0 / 42%); /* PDF 批注高亮（multiply） */
-  --pdf-note: rgb(0 140 255 / 42%); /* 旧文字批注条目(已停止上屏;截图拼图仍按它上色) */
-  /* 学习模式翻页后的阅读分区:上方旧内容压暗(渐变收束,不收边、不画线)。 */
+  --scrim: #00000088; /* scrim behind overlays */
+  --shadow: #000000aa; /* overlay drop shadow */
+  --image-bg: #fff; /* white base for PDF screenshots, same in both themes */
+  --pdf-paper: #fff; /* PDF page sheet */
+  --pdf-gutter: #dcebd6; /* desktop base color in the PDF eye-care mode */
+  --pdf-tint: #cfe4c4; /* PDF eye-care tint (multiply: darkens the white page, not the black text) */
+  --pdf-anno: rgb(255 224 0 / 42%); /* PDF annotation highlight (multiply) */
+  --pdf-note: rgb(0 140 255 / 42%); /* legacy text annotation entries (no longer drawn on screen; screenshot mosaics still color them with it) */
+  /* Reading split after a study mode page turn: the older content above is
+     shaded down (a gradient taper, no edge, no line). */
   --read-shade: rgb(0 0 0 / 24%);
   --read-shade-edge: rgb(0 0 0 / 12%);
   --editor-font-size: 16px;
-  /* 代码编辑器:等宽字体、字号、当前行底色、选区底色。 */
+  /* Code editor: monospace font, font size, active line base, selection base. */
   --code-font: var(--font-mono);
   --code-font-size: 12.5px;
   --code-active-line: rgb(255 255 255 / 4%);
   --code-selection: var(--sel);
-  /* 文件树图标:按语言/类型分的图标色(与语法高亮同色系)。 */
+  /* File tree icons: icon colors per language/type (same family as the syntax
+     highlighting). */
   --file-icon-ts: #4f9cf9;
   --file-icon-js: #e5c07b;
   --file-icon-py: #5b9dd9;
@@ -94,20 +101,24 @@
   --file-icon-markup: #e08a5a;
   --file-icon-image: #5abf7c;
   --file-icon-shell: #66c2a5;
-  /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
-     编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
+  /* Max width of the body text column (Obsidian's "readable line length"
+     default) and its horizontal padding: when the editor area is wider the
+     column is centered, when narrower it fills naturally, with no horizontal
+     scrolling. */
   --content-line-width: 700px;
   --content-pad-x: 48px;
 }
 
-/* Light：同名的每一项都必须在这里给出（theme.test.ts 门禁拦遗漏）。
-   面板色向 One Light/GitHub Light 靠，accent 深化为可在白底阅读的琥珀，
-   语法/标题各色整体加深到白底对比达标的同色系。 */
+/* Light: every variable of the same name must be given here (the
+   theme.test.ts gate catches omissions). Panel colors lean towards One
+   Light/GitHub Light, the accent deepens into an amber that reads well on
+   white, and every syntax/heading color is darkened into the same hue family
+   until it meets the contrast requirement on white. */
 [data-theme="light"] {
   color-scheme: light;
   --bg0: #ffffff; /* editor */
   --bg1: #f7f7f8; /* sidebar */
-  --bg2: #ffffff; /* elevated（靠边框+投影与 bg0 区分） */
+  --bg2: #ffffff; /* elevated (told apart from bg0 by border + shadow) */
   --bg3: #ececee; /* hover */
   --border: #e3e3e7;
   --text: #23262b;
@@ -129,7 +140,7 @@
   --h5-color: #cc2f2f;
   --h6-color: #6b7683;
   --strong-color: #c94f8c;
-  --callout-title-color: #0a7f55; /* 同色相加深，白底对比 5.0:1 */
+  --callout-title-color: #0a7f55; /* same hue darkened, 5.0:1 contrast on white */
   --callout-accent: color-mix(in srgb, var(--h2-color) 50%, transparent);
   --tok-comment: #a0a1a7;
   --tok-number: #b76b01;
@@ -144,7 +155,8 @@
   --code-font-size: 12.5px;
   --code-active-line: rgb(0 0 0 / 4%);
   --code-selection: var(--sel);
-  /* 文件树图标:同色相压深,白底对比达标。 */
+  /* File tree icons: the same hues pushed darker until they meet the contrast
+     requirement on white. */
   --file-icon-ts: #2f7fd1;
   --file-icon-js: #a8741a;
   --file-icon-py: #2f6fa8;
@@ -177,7 +189,8 @@
   --pdf-note: rgb(0 140 255 / 42%);
   --read-shade: rgb(0 0 0 / 24%);
   --read-shade-edge: rgb(0 0 0 / 12%);
-  /* 括号三色本就取自 latex-suite 的浅色套，白底原样可用 */
+  /* The three bracket colors come from the latex-suite light set and work as
+     they are on a white background */
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
   --latex-bracket-2: #69ba00;
@@ -250,7 +263,8 @@ button {
   padding: 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg0);
-  /* 绝对定位的路径文字以整条标题栏为参照居中（Obsidian 的页签标题那样）。 */
+  /* The absolutely positioned path text is centered against the whole title bar
+     (like Obsidian's tab title). */
   position: relative;
 }
 
@@ -270,8 +284,9 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* 居中：左右各留 100px 给侧边栏开关按钮 / 窗口红绿灯，超长路径省略号截断，
-     不会盖到按钮上。 */
+  /* Centered: 100px are reserved on each side for the sidebar toggle button and
+     the window traffic lights, an overlong path is truncated with an ellipsis
+     and never covers the buttons. */
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
@@ -280,9 +295,10 @@ button {
 
 /* ===== sidebar ===== */
 
-/* 类名不能叫 .sidebar:Excalidraw(DrawingCanvas)的 CSS 里有一条未加作用域的
-   .sidebar{padding:0;position:absolute;top:0;...},打开过画布后它常驻页面,
-   会把这里的顶栏留白(红绿灯)与布局一起覆盖掉。 */
+/* The class must not be .sidebar: the CSS of Excalidraw (DrawingCanvas) has an
+   unscoped .sidebar{padding:0;position:absolute;top:0;...} rule that stays on
+   the page once the canvas has been opened, and it would override the top bar
+   padding (traffic lights) and the layout here. */
 .app-sidebar {
   width: 220px;
   min-width: 220px;
@@ -315,7 +331,8 @@ button {
 .icon-btn {
   width: 26px;
   height: 26px;
-  /* 清掉 UA 给 button 的 1px 6px 内边距：内容盒只剩 14px 时图标会被 flex 压扁。 */
+  /* Drop the UA's 1px 6px button padding: with only 14px left in the content box
+     flex would squash the icon. */
   padding: 0;
   border-radius: 6px;
   color: var(--text-dim);
@@ -426,15 +443,19 @@ button {
 }
 
 .cm-content {
-  /* 正文列按 --content-line-width 收窄并在编辑区内居中（Obsidian 可读行宽那
-     样的排版）；auto 外边距吃掉 flex 剩余空间，窗格变窄时自动回到铺满。
+  /* The body column is narrowed by --content-line-width and centered in the
+     editor area (Obsidian's readable line length typography); the auto
+     margins eat the leftover flex space, and when the pane narrows the
+     column returns to filling it.
      --typewriter-top / --typewriter-bottom are set inline by the typewriter
      plugin from its position setting (p and 1-p of the viewport), so the first
      and last lines can reach that height; off-mode falls back to normal
      padding + 45vh scroll-past-end. */
   max-width: calc(var(--content-line-width) + 2 * var(--content-pad-x));
-  /* !important：CM 运行时注入的 baseTheme 里有 `.cm-content { margin: 0 }`，
-     同权重且后插入，必须提权才能让 auto 外边距吃掉两侧剩余空间。 */
+  /* !important: the baseTheme CM injects at runtime contains
+     `.cm-content { margin: 0 }`, same specificity but inserted later, so the
+     auto margins need higher priority to eat the leftover space on both
+     sides. */
   margin: 0 auto !important;
   padding: var(--typewriter-top, 24px) var(--content-pad-x) var(--typewriter-bottom, 45vh) !important;
   font-size: var(--editor-font-size) !important;
@@ -447,10 +468,12 @@ button {
   border-left: 2px solid var(--accent) !important;
 }
 
-/* 光标常亮，不闪。CM6 的普通光标层和 vim 引擎的块光标层都带 .cm-cursorLayer
-   （后者额外带 .cm-vimCursorLayer），闪烁由 cm-blink 关键帧驱动；插件在每次
-   选区变化时把 animation-name/duration 写成内联样式重启节奏，因此必须
-   !important 才能压过内联写入。 */
+/* The cursor stays on, it never blinks. Both CM6's normal cursor layer and
+   the vim engine's block cursor layer carry .cm-cursorLayer (the latter also
+   carries .cm-vimCursorLayer); the blink is driven by the cm-blink keyframes,
+   and the plugin rewrites animation-name/duration as an inline style on every
+   selection change to restart the rhythm, so !important is required to beat
+   the inline value. */
 .cm-cursorLayer {
   animation: none !important;
 }
@@ -610,12 +633,17 @@ button {
   color: var(--text-dim);
 }
 
-/* ── Callout 块(::: 容器,src/editor/callout.ts)─────────────────────────
-   块面按行拼装:每行一条 border-left(竖线)+ background(底色),相邻行连成
-   整块;顶/底留白与圆角落在开/合边界行(光标进块露出 `:::` 源码时块面不断)。
-   padding-left 故意用单类低特异性:列表行(.cm-line.md-list-line 两类)的悬挂
-   缩进规则优先,callout 内列表几何与块外逐像素一致;代码行的底色规则也排在本
-   段之后,块内代码块保有自己的更深底色,竖线仍在。 */
+/* ── Callout blocks (::: container, src/editor/callout.ts)────────────────
+   The block body is assembled line by line: each line gets one border-left
+   (the rule) + background (the fill), and adjacent lines join into one
+   block; the top/bottom padding and the radii sit on the opening/closing
+   edge lines (the block body stays unbroken when the caret enters the block
+   and reveals the `:::` source).
+   padding-left deliberately uses a single low-specificity class: the hanging
+   indent rule for list lines (.cm-line.md-list-line, two classes) wins, so
+   the list geometry inside a callout is pixel-identical to the outside; the
+   background rule for code lines also comes after this block, so code blocks
+   inside a callout keep their own darker fill and the rule stays. */
 .md-callout-line {
   border-left: 3px solid var(--callout-accent);
   background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
@@ -635,8 +663,9 @@ button {
   padding-bottom: 8px;
   border-radius: 0 0 4px 4px;
 }
-/* 边界行被整行 block replace 隐藏后行元素移出 DOM,顶/底帽由渲染态 widget
-   自带(与上行两套 .md-callout-open/-close 同一视觉令牌)。 */
+/* After the edge lines are hidden by a full-line block replace they leave the
+   DOM, so the top/bottom caps come from the render-state widgets themselves
+   (same visual tokens as the two .md-callout-open/-close rules above). */
 .cw-callout-title,
 .cw-callout-edge {
   display: block;
@@ -644,9 +673,11 @@ button {
   background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
   padding-left: 11px;
 }
-/* 标题：字号/字重按三级标题(1.2em / 700,与 .md-h3 同源),颜色用专属薄荷绿
-   --callout-title-color(出块后它是块的重音,不是一行正文;改标题层级字号表时
-   这里的 em 要一起看)。 */
+/* Title: font size and weight follow the level-three heading (1.2em / 700,
+   same source as .md-h3), the color uses the dedicated mint green
+   --callout-title-color (out of the block it is the block's accent, not a
+   line of body text; when the heading size table changes, check the em here
+   too). */
 .cw-callout-title {
   color: var(--callout-title-color);
   font-weight: 700;
@@ -672,12 +703,16 @@ button {
 .cw-callout-edge.d2 {
   padding-left: 39px;
 }
-/* Callout 锚点：正文里与某个 callout 标题同一段文字的入口（⌘⇧B 选中插入留
-   在原文处的那一段）。下划虚线与块左竖线同一重音色；文本本身不动，光标停
-   在其中按 ⌘⇧B 跳到关联块（见 ops.planCalloutShortcut）。
-   写法必须拆成 text-decoration-* 长属性：WKWebView 丢弃「text-decoration
-   简写里含 var()」的整条声明（Chromium 正常、真应用没有下划线——2026-10-08
-   用系统 WKWebView 离屏渲染实拍四种写法取证），长属性 + var() 在两端都成立。 */
+/* Callout anchor: the entry point in the body text for a callout title, on
+   the same paragraph (the segment left in place by the ⌘⇧B insert). The
+   dashed underline uses the same heavy tint as the block's left rule; the text
+   itself is untouched, and with the caret inside it ⌘⇧B jumps to the linked
+   block (see ops.planCalloutShortcut).
+   The declaration must be split into text-decoration-* longhands: WKWebView
+   drops the whole declaration when the text-decoration shorthand contains a
+   var() (Chromium is fine, the real app has no underline - proven on
+   2026-10-08 by rendering four variants offscreen in the system WKWebView),
+   while longhand + var() holds on both engines. */
 .md-callout-anchor {
   text-decoration-line: underline;
   text-decoration-style: dashed;
@@ -685,10 +720,13 @@ button {
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
-/* 块级 widget(公式块/公式实时预览/HR)自带的块外排版留白在 callout 内会把
-   块面切开——margin 区域露出正文底色,callout 视觉上被切成数块。归零:块内
-   垂直节奏由 md-callout-line 的行拼装(空行自带背景)负责;不带 md-callout-line
-   的块外场景留白不受影响。 */
+/* The block-level widgets (math block / live math preview / HR) carry their own
+   outer spacing, which would cut the callout body apart inside a callout -
+   the margin area shows the body background and the callout visually breaks
+   into several pieces. Zero it out: the vertical rhythm inside the block is
+   the job of the md-callout-line assembly (blank lines carry their own
+   background); outside a block without md-callout-line the spacing is
+   unaffected. */
 .cw-math-block.md-callout-line,
 .cw-math-preview.md-callout-line,
 .cw-hr.md-callout-line {
@@ -738,21 +776,26 @@ button {
   color: var(--text-faint);
 }
 
-/* 列表几何的唯一来源（全部 em，随 --editor-font-size 缩放）：
-   --li-px   当前层级标记左沿
-   --li-hang 标记左沿 → 正文起点（= 标记槽宽）
-   两者必须成对使用：padding-left 决定折行文本的起点，text-indent 把首行拉回
-   --li-px，所以 --li-hang 只要和"标记 + 间隙"的真实宽度一致，折行文本就与首行
-   正文严格对齐。标记槽宽按种类定（见 .li-b / .li-t / .li-o）。 */
+/* The single source of list geometry (all in em, scaling with
+   --editor-font-size):
+   --li-px   left edge of the marker at the current level
+   --li-hang marker left edge -> body text start (= the marker slot width)
+   The two must be used together: padding-left sets where wrapped text starts,
+   text-indent pulls the first line back to --li-px, so as long as --li-hang
+   matches the real width of "marker + gap", wrapped text aligns strictly with
+   the first line of body text. The slot width is set per kind (see .li-b /
+   .li-t / .li-o). */
 :root {
-  --li-base: 0.8125em; /* 13px @16px，实测自用户的 Obsidian */
-  --li-step: 1.75em;   /* 28px @16px，每层缩进 */
-  --li-gap: 0.5em;     /* 标记右沿 → 正文的视觉间隙 */
+  --li-base: 0.8125em; /* 13px @16px, measured in the user's Obsidian */
+  --li-step: 1.75em;   /* 28px @16px, indent per level */
+  --li-gap: 0.5em;     /* visual gap from the marker right edge to the text */
 }
 
-/* Bullet dot replacing `- ` markers (Obsidian 同款)：CSS 画的实心圆，右对齐
-   在标记槽内（紧贴正文，留一个小间隙），直径随字号缩放。槽宽不变——折行
-   对齐几何（--li-hang）与文字起点不受圆点样式影响。 */
+/* Bullet dot replacing `- ` markers (the Obsidian look): a solid circle drawn
+   in CSS, right aligned inside the marker slot (hugging the text, leaving a
+   small gap), its diameter scales with the font size. The slot width does not
+   change - the wrap alignment geometry (--li-hang) and the text start are
+   unaffected by the dot style. */
 .md-bullet {
   color: var(--text-faint);
   display: inline-block;
@@ -772,7 +815,8 @@ button {
 
 /* Obsidian-style list indent: literal source spaces are hidden and replaced
    with padding + hanging indent, so wrapped lines align under the item text.
-   足迹块(render.ts)复用同一套 li-i 系列/li-b・li-t・li-o 几何类,行内布局逐像素同款。 */
+   The footprint blocks (render.ts) reuse the same li-i series / li-b, li-t,
+   li-o geometry classes, so the inline layout is pixel-identical. */
 .cm-line.md-list-line,
 .footprint-line.md-list-line {
   padding-left: calc(var(--li-px, 0px) + var(--li-hang, 1.65em));
@@ -796,9 +840,12 @@ button {
 .li-i30 { --li-px: calc(var(--li-base) + 15 * var(--li-step)); }
 .li-i32 { --li-px: calc(var(--li-base) + 16 * var(--li-step)); }
 
-/* 标记槽宽：• 的字宽约 0.45em、复选框盒宽 0.9em，各加一个 --li-gap。有序列表
-   的数字宽度随位数变化（CSS 预知不了），槽宽只能取实测的固定值：数字保持原位
-   左对齐，1–2 位数都能贴合，位数更多时正文会略微右移。 */
+/* Marker slot width: the bullet glyph is about 0.45em wide, the checkbox box
+   0.9em, each plus one --li-gap. The width of an ordered list number varies
+   with the digit count (CSS cannot know it in advance), so the slot can only
+   take a fixed measured value: the number stays in place, left aligned, and
+   one or two digits both fit; with more digits the body text shifts slightly
+   to the right. */
 .li-b { --li-hang: calc(0.45em + var(--li-gap)); }
 .li-t { --li-hang: calc(0.9em + var(--li-gap)); }
 .li-o { --li-hang: 26px; }
@@ -836,10 +883,14 @@ button {
   transform: rotate(40deg);
 }
 
-/* 与今日日记链接的待办(src/daily/marks.ts 挂行装饰)。几何纪律:标记是绝对
-   定位的伪元素,不参与行内布局——列表缩进与折行位置与无标记时逐像素一致。
-   pip 落在标记槽左侧(随 --li-px 跟着层级走,正好停在该层 checkbox 左边),
-   垂直居中按行高 1.5em 折算:.75em 中线 - .15em 半径 = .6em。 */
+/* Todos linked from today's daily note (a line decoration mounted by
+   src/daily/marks.ts). Geometric discipline: the marker is an absolutely
+   positioned pseudo element and takes no part in the inline layout - the list
+   indent and the wrap position stay pixel-identical to the unmarked case.
+   The pip lands left of the marker slot (it follows --li-px with the level,
+   so it stops exactly left of that level's checkbox), and it is centered
+   vertically from the 1.5em line height: .75em midline - .15em radius =
+   .6em. */
 .cm-line.md-daily-link {
   position: relative;
 }
@@ -854,9 +905,12 @@ button {
   background: var(--accent);
   opacity: 0.85;
 }
-/* 日记侧:行尾挂源笔记名——「这条是同步来的、从哪来」的唯一线索。
-   列宽右缘对齐(与正文列同宽),像一列边注;text-indent 必须归零:列表行的
-   悬挂缩进会继承下来,把标签文字推出自己的盒子(实测 -22.4px)。 */
+/* Daily note side: the source note name is hung at the end of the line - the
+   only clue for "this one was synced over, where from".
+   Its right edge aligns with the column (same width as the body column), like
+   a column of marginalia; text-indent must be zeroed: the hanging indent of
+   a list line would otherwise be inherited and push the label text out of its
+   own box (measured -22.4px). */
 .cm-line.md-daily-link[data-daily-src]::after {
   content: "⇄ " attr(data-daily-src);
   position: absolute;
@@ -876,11 +930,14 @@ button {
   font-size: 0.9em;
 }
 
-/* ── 今日足迹(src/footprint/*) ──────────────────────────────────────────
-   日记末尾的块级聚合区:其他文件今日记录的块按源文件分组展示(引用式,
-   只读,点击跳源文件)。块体按 markdown 渲染(render.ts),复用编辑器类名
-   (md-heading、md-h 系列、md-bullet、md-quote、md-code-line)——样式在这里只补
-   足迹自己的间距与容器,不复制编辑器规则。折叠是会话内状态,默认全展开。 */
+/* ── Today's footprint (src/footprint/*) ─────────────────────────────────
+   The block-level aggregation area at the end of the daily note: the blocks
+   recorded today in other files are shown grouped by source file (as
+   references, read only, a click jumps to the source file). The block bodies
+   are rendered as markdown (render.ts) and reuse the editor class names
+   (md-heading, the md-h series, md-bullet, md-quote, md-code-line) - the
+   styles here only add the footprint's own spacing and container, they do not
+   copy the editor rules. Collapsing is session state, expanded by default. */
 .footprint-zone {
   margin: 6px 0 2px;
   padding: 2px 0 4px;
@@ -906,7 +963,8 @@ button {
 .footprint-group-title:hover {
   text-decoration: underline;
 }
-/* 块体 = 一次「回到原文」的点击目标:左缘竖线定界,悬停点亮提示可点。 */
+/* A block body is the click target for one "back to the source" jump: the
+   left rule delimits it, hovering lights it up to show it is clickable. */
 .footprint-block {
   margin: 0 0 8px;
   padding: 1px 0 1px 10px;
@@ -926,8 +984,10 @@ button {
 .footprint-gap {
   height: 0.5em;
 }
-/* 标题字号/颜色走 .md-h{n}(cm-content 作用域自动命中),这里只补紧凑间距
-   ——编辑器的 md-hline 大留白是正文的节奏,聚合视图里按块内层级收紧。 */
+/* Heading size and color go through .md-h{n} (the cm-content scope picks them
+   up automatically); here only the compact spacing is added - the generous
+   md-hline whitespace is the rhythm of body text, in the aggregation view it
+   is tightened per level inside a block. */
 .footprint-line.fp-h {
   margin: 0.35em 0 0.1em;
   line-height: 1.4;
@@ -943,8 +1003,10 @@ button {
   border-top: 1px solid var(--border);
   margin: 0;
 }
-/* 源文件侧:今日被收录的块首行打空心 pip(与待办同步的实心 pip 同位不同形,
-   同样是绝对定位伪元素,不参与行内布局)。 */
+/* Source file side: the first line of a block collected today gets a hollow
+   pip (same spot, different shape than the solid pip of a synced todo, and
+   also an absolutely positioned pseudo element that takes no part in the
+   inline layout). */
 .cm-line.md-footprint {
   position: relative;
 }
@@ -960,9 +1022,11 @@ button {
   opacity: 0.8;
 }
 
-/* ── LaTeX Suite:括号彩色配对 + 光标括号高亮 ──────────────────────────────
-   颜色取自 obsidian-latex-suite 的 styles.css(浅色/深色各一套,这里折成
-   跟随主题的变量)。三色即插件的 Ncolors = 3,按嵌套深度轮转,最外层 0 号。 */
+/* ── LaTeX Suite: colored bracket pairs + bracket highlight at the cursor ──
+   The colors come from obsidian-latex-suite's styles.css (one set for light
+   and one for dark, folded here into theme-following variables). Three
+   colors are the plugin's Ncolors = 3, rotating by nesting depth with the
+   outermost at index 0. */
 :root {
   --latex-bracket-0: #527aff;
   --latex-bracket-1: #ff50b7;
@@ -973,7 +1037,8 @@ button {
 .cw-bracket-1 { color: var(--latex-bracket-1); }
 .cw-bracket-2 { color: var(--latex-bracket-2); }
 
-/* 光标处括号与它的配对括号:同色底衬,一眼看出配到哪儿去了。 */
+/* The bracket at the cursor and its partner: the same colored backing makes
+   it obvious at a glance where the pair ends. */
 .cw-bracket-match {
   background: color-mix(in srgb, var(--accent, #f5a83c) 30%, transparent);
   border-radius: 2px;
@@ -1008,10 +1073,13 @@ button {
   display: none;
 }
 
-/* 编辑中的行内公式:源码留在左边,渲染预览紧随闭合定界符、把后面的文字
-   往后推(块公式的预览在源码下方)。必须是 inline 盒:inline-block 的基线
-   会把整行撑高,光标进出公式时下方内容跟着抖 1-2px;inline 的上下 padding
-   只画不占位,行高与渲染态完全一致。 */
+/* Inline formula while editing: the source stays on the left, the rendered
+   preview follows right after the closing delimiter and pushes the following
+   text back (the preview of a block formula sits below the source). It must
+   be an inline box: the baseline of an inline-block stretches the whole line,
+   so the content below jitters by 1-2px when the caret enters and leaves the
+   formula; the vertical padding of an inline box is painted but takes no
+   space, so the line height matches the rendered state exactly. */
 .cw-math-preview-inline {
   display: inline;
   margin-left: 0.4em;
@@ -1074,7 +1142,8 @@ button {
   color: var(--string);
 }
 
-/* 开关那一行:文字本身也能点(和右边的小开关同一个动作)。 */
+/* The row of a switch: the label itself is clickable too (the same action as
+   the small switch on the right). */
 .toggle-label {
   padding: 0;
   border: none;
@@ -1087,7 +1156,8 @@ button {
 .toggle-label:hover {
   color: var(--text);
 }
-/* 封存态:开关点不动,文字也不给 hover 反馈——别让人以为"再点一下就生效"。 */
+/* Disabled state: the switch cannot be clicked and the label gives no hover
+   feedback - do not let anyone think "one more click and it takes effect". */
 .toggle-label:disabled {
   cursor: default;
   opacity: 0.55;
@@ -1104,8 +1174,10 @@ button {
   color: var(--accent);
 }
 
-/* 专注芯片(状态栏左端):点一下开始一段专注,开始后变成纯状态显示。
-   没有弹层——时长在设置页,两把锁固定全开。 */
+/* Focus chip (left end of the status bar): one click starts a focus session,
+   afterwards it becomes a pure status display.
+   No popover - the duration lives in the settings page and both locks are
+   always fully on. */
 .focus-chip-wrap {
   position: relative;
   display: flex;
@@ -1140,7 +1212,8 @@ button {
 .focus-chip .focus-time {
   font-variant-numeric: tabular-nums;
 }
-/* 专注中芯片是纯状态:按钮禁用,但别让它看起来像可点的灰色控件。 */
+/* While a session runs the chip is pure status: the button is disabled, but
+   it must not look like a clickable grey control. */
 .focus-chip:disabled {
   cursor: default;
 }
@@ -1358,7 +1431,8 @@ button {
   color: var(--text-faint);
 }
 
-/* 插入链接的补全面板：贴光标行的浮层（锚点坐标由编辑器给出） */
+/* Completion panel for inserting a link: an overlay hugging the caret line
+   (the anchor coordinates come from the editor) */
 .link-suggest {
   position: fixed;
   z-index: 90;
@@ -1431,8 +1505,10 @@ button {
 
 /* ===== settings ===== */
 
-/* ===== 设置页:卡片分组 + 行式布局(参考 ZCode 的 SettingsGroupCard/SettingsRow)
-   左侧分组导航;右侧窄列居中,每组一张卡片,卡片内行用 1px 分隔线。 ===== */
+/* ===== Settings page: card groups + row layout (after ZCode's
+   SettingsGroupCard/SettingsRow). A group navigation on the left; a narrow
+   centered column on the right, one card per group, rows inside a card
+   separated by 1px lines. ===== */
 
 .settings {
   display: flex;
@@ -1440,7 +1516,8 @@ button {
   max-height: 72vh;
 }
 
-/* 左侧导航:分组标签 + 项。active 不再用大色块,改成弱底 + 加重字重。 */
+/* Left navigation: group labels + items. The active item no longer uses a
+   large color block, it is a weak base plus a heavier font weight. */
 .settings-nav {
   width: 196px;
   background: var(--bg1);
@@ -1496,7 +1573,8 @@ button {
   font-weight: 500;
 }
 
-/* 右侧内容:窄列居中(参考 max-w-4xl),卡片之间留呼吸。 */
+/* Right content: a narrow centered column (after max-w-4xl), with breathing
+   room between the cards. */
 .settings-content {
   flex: 1;
   overflow-y: auto;
@@ -1512,7 +1590,7 @@ button {
   gap: 14px;
 }
 
-/* 卡片:标题行(可带描述与动作)+ 内容行。 */
+/* Card: a title row (may carry a description and actions) + content rows. */
 .settings-card {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1540,12 +1618,13 @@ button {
 .settings-card-body {
   padding: 3px 0;
 }
-/* 卡片内的兄弟块之间画分隔线:行与行、行与整块内容都适用。 */
+/* A separator between sibling blocks inside a card: it applies to row after
+   row and to a row followed by a whole content block. */
 .settings-card-body > * + * {
   border-top: 1px solid var(--border);
 }
 
-/* 行:左侧标签+描述,右侧控件。 */
+/* Row: label + description on the left, control on the right. */
 .setting-row {
   display: flex;
   align-items: center;
@@ -1584,7 +1663,7 @@ button {
   color: var(--text-dim);
 }
 
-/* 卡片内的整块内容(文本域、错误列表、动作行)。 */
+/* A whole content block inside a card (textarea, error list, action row). */
 .settings-block {
   padding: 12px 16px;
   display: flex;
@@ -1601,7 +1680,7 @@ button {
   justify-content: flex-end;
 }
 
-/* 卡片之间的说明文字。 */
+/* Explanatory text between cards. */
 .setting-hint {
   color: var(--text-faint);
   font-size: 12.5px;
@@ -1619,7 +1698,8 @@ button {
   font-size: 0.92em;
 }
 
-/* vimrc 解析失败的行：静默失效最难排查，这里直接列出来。 */
+/* The lines that failed to parse in the vimrc: a silent failure is the
+   hardest to debug, so they are listed here outright. */
 .setting-errors {
   color: var(--danger);
   font-size: 12.5px;
@@ -1757,7 +1837,7 @@ button {
 .settings-textarea:focus {
   border-color: var(--accent-dim);
 }
-/* 设置项里的就地报错(JSON 解析失败之类)。 */
+/* Inline error of a settings item (a JSON parse failure and the like). */
 .settings-error {
   margin-top: 6px;
   color: var(--danger);
@@ -1765,12 +1845,15 @@ button {
   line-height: 1.5;
 }
 
-/* 设置里的代码框(公式片段):常驻搜索栏 + 行号 + 等宽正文。
+/* The code box in the settings (formula snippets): a permanent search bar +
+   line numbers + monospace body.
 
-   CodeMirror 的通用规则(global.css 前段)是按正文编辑器标的——收窄行宽、
-   超大上下内边距、正文衬线字体、100% 高度——在这个紧凑的小框里全部要改回
-   来;规则都挂在 .code-area 下,不影响笔记编辑器。gutter 的浅色底来自 CM
-   baseTheme(light/dark 各一套),必须 !important 才能压过。 */
+   The generic CodeMirror rules (earlier in global.css) are tuned for the body
+   editor - narrowed line width, huge vertical padding, the body serif font,
+   100% height - all of them have to be undone in this small tight box; the
+   rules hang under .code-area, so the note editor is unaffected. The light
+   gutter background comes from the CM baseTheme (one set for light and one
+   for dark), so !important is needed to beat it. */
 .code-area {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1837,11 +1920,14 @@ button {
 .code-area .cm-editor.cm-focused {
   outline: none;
 }
-/* 代码编辑器(学习模式中栏)与设置里的代码框共用这套「紧凑代码正文」:
-   不要笔记正文那套居中行宽/48px 内边距/正文字体(前面 `.cm-content` 的
-   规则带 !important,会把代码挤到行号右边一百多像素、换成比例字体)。
-   打字机模式的上下留白变量由 typewriter.ts 写在 scrollDOM 上,这里读它,
-   关闭时回落到普通内边距。 */
+/* The code editor (study mode middle column) and the code box in the settings
+   share this "compact code body": do not apply the note body typography
+   (centered line width / 48px padding / body font) - the `.cm-content` rules
+   above carry !important and would squeeze the code a hundred pixels to the
+   right of the line numbers and switch it to a proportional font.
+   The vertical whitespace variables of typewriter mode are written by
+   typewriter.ts onto the scrollDOM and read here; when typewriter mode is
+   off they fall back to the normal padding. */
 .code-area .cm-content,
 .code-editor-host .cm-content {
   max-width: none;
@@ -1864,9 +1950,12 @@ button {
   padding: 0 8px 0 10px;
 }
 
-/* 下拉:WKWebView 的原生 select 会画系统渐变 + 步进箭头,与扁平的输入框不搭。
-   appearance: none 剥掉原生外观,箭头由 wrapper 的 ::after 画(data URL 里的
-   SVG 取不到主题变量,换主题会掉色)。点击后弹出的仍是系统菜单。 */
+/* Dropdown: the native select of WKWebView paints a system gradient plus a
+   stepper arrow, which does not go with the flat input boxes.
+   appearance: none strips the native look and the arrow is drawn by the
+   wrapper's ::after (an SVG in a data URL cannot read a theme variable, so it
+   would lose its color when the theme changes). The menu that pops up on
+   click is still the system one. */
 .settings-select-wrap {
   position: relative;
   display: inline-flex;
@@ -1925,7 +2014,7 @@ button {
   font-family: var(--font-mono);
 }
 
-/* 滑杆 + 右对齐数值(对齐 ZCode 的 SettingsRangeControl)。 */
+/* Slider + right-aligned value (after ZCode's SettingsRangeControl). */
 .range-control {
   display: flex;
   align-items: center;
@@ -1946,7 +2035,7 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-/* ===== 快速添加 ===== */
+/* ===== Quick add ===== */
 
 .qa-row {
   display: flex;
@@ -1954,8 +2043,9 @@ button {
   gap: 8px;
   margin-bottom: 8px;
 }
-/* 一条命令 = 名称/文件夹一行 + 模板一行。两条命令之间用卡片分开,避免
-   「模板」看起来属于下一条命令。 */
+/* One command = a row for name/folder + a row for the template. The commands
+   are separated by cards, so that the "template" does not look like it
+   belongs to the next command. */
 .qa-item {
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -1994,7 +2084,7 @@ button {
   padding: 8px 12px 12px;
 }
 
-/* ===== 文件夹选择 ===== */
+/* ===== Folder picker ===== */
 
 .folder-suggest {
   position: relative;
@@ -2056,7 +2146,8 @@ button {
   border-top: 1px solid var(--border);
 }
 
-/* 快速待办:标题行 + 输入框(复用 switcher 骨架)+ 操作行。 */
+/* Quick todo: a title row + an input box (reusing the switcher skeleton) + an
+   action row. */
 .quick-todo-head {
   display: flex;
   align-items: baseline;
@@ -2125,8 +2216,10 @@ input[type="range"] {
   background: var(--danger-soft);
 }
 
-/* 学习模式正文选中翻译卡(PDF 用 React 渲染;网页用同一套视觉在页面 shadow
-   DOM 里画)。fixed 定位 + 视口夹取由组件负责,这里只管外观。 */
+/* Translation card for a selection in study mode body text (the PDF is
+   rendered by React; for web pages the same look is painted inside the page's
+   shadow DOM). The fixed positioning and the viewport clamping are the
+   component's job, here only the appearance. */
 .translate-card {
   position: fixed;
   z-index: 120;
@@ -2221,7 +2314,8 @@ input[type="range"] {
 }
 
 /* ---------------------------------------------------------------------------
- * 学习模式:三栏布局(左 学习助手 / 中 内容 / 右 笔记)
+ * Study mode: three column layout (left study assistant / middle content /
+ * right notes)
  * ------------------------------------------------------------------------- */
 
 .study-layout {
@@ -2230,23 +2324,34 @@ input[type="range"] {
   min-height: 0;
   background: var(--bg0);
   color: var(--text);
-  /* 三栏宽度由 StudyLayout 写入:--agent-src / --content-src 是用户偏好
-     (像素),--agent-w / --content-w 再按当前窗口夹一次。助手栏与中栏都是
-     固定像素,笔记栏吃剩余宽度——拖窗口边缘只改笔记栏,PDF 页面尺寸和纵向
-     可见内容都不会跟着窗口抖。窗口窄到放不下时,CSS 压缩前两栏的显示宽度,
-     不回写偏好。1px = 每根分栏线。
-     每栏最小宽度是布局宽度的 10%(与 layoutModel 的 MIN_COLUMN_RATIO 一致):
-     助手栏的上界给中栏与笔记栏各留 10%,中栏的上界给笔记栏留 10%。 */
+  /* The three column widths are written by StudyLayout: --agent-src /
+     --content-src are the user preference (in pixels), --agent-w /
+     --content-w clamp them once more against the current window. The
+     assistant column and the content column are fixed pixels, the notes
+     column takes the remaining width - dragging the window edge only
+     changes the notes column, so the PDF page size and the visible vertical
+     content never jitter with the window. When the window is too narrow to
+     fit them, CSS shrinks the display width of the first two columns without
+     writing back the preference. 1px = each split line.
+     The minimum width of every column is 10% of the layout width (matching
+     MIN_COLUMN_RATIO in layoutModel): the assistant column's upper bound
+     leaves 10% each to the content and notes columns, the content column's
+     upper bound leaves 10% to the notes column. */
   --agent-src: 320px;
   --content-src: 620px;
   --agent-w: clamp(10%, var(--agent-src), calc(100% - 2px - 20%));
   --content-w: clamp(10%, var(--content-src), calc(100% - 2px - 10% - var(--agent-w)));
-  /* 窗口红绿灯(overlay 标题栏)占住窗口左上角约 78px。最左是助手栏,它
-     的头部要让开;侧栏在时红绿灯压在侧栏自己的 36px 预留带上,不用让。
-     与 .titlebar 的 paddingLeft 是同一套判断,只是这里由 DOM 推出来。 */
+  /* The window traffic lights (overlay title bar) take about 78px of the
+     top left corner. The assistant column is leftmost here, so its header
+     has to yield; when the sidebar is open the traffic lights sit on the
+     sidebar's own 36px reserved strip and nothing has to yield.
+     This is the same decision as the paddingLeft of .titlebar, only here it
+     is derived from the DOM. */
   --study-lead: 78px;
-  /* 三栏头部同高:它们的下边框在窗口顶部连成一条线,差 1px 就是一个台阶。
-     43 = 8px 上下内边距 ×2 + 26px 图标按钮 + 1px 下边框。 */
+  /* All three column headers have the same height: their bottom borders form
+     one line at the top of the window, and one pixel off would show as a
+     step. 43 = 8px vertical padding x2 + 26px icon button + 1px bottom
+     border. */
   --study-head-h: 43px;
 }
 
@@ -2254,7 +2359,7 @@ input[type="range"] {
   --study-lead: 12px;
 }
 
-/* 左栏:学习助手常驻。 */
+/* Left column: the study assistant is always present. */
 .study-left {
   flex: 0 0 var(--agent-w);
   width: var(--agent-w);
@@ -2263,7 +2368,7 @@ input[type="range"] {
   flex-direction: column;
 }
 
-/* 右栏:笔记。 */
+/* Right column: the notes. */
 .study-right {
   flex: 1 1 0;
   min-width: 0;
@@ -2271,10 +2376,14 @@ input[type="range"] {
   flex-direction: column;
 }
 
-/* 拖动条:视觉上一条 1px 分栏线,命中区 9px(col-resize 手感)。线画在条自身
-   的左缘:拖动时列的边界就是指针的位置(见 splitDrag),线与边界才是同一条。
-   命中区用 ::after 向两侧各扩 4px——布局只占 1px,两栏之间因此没有可见空隙,
-   指针仍能稳稳抓住分栏线。学习模式三栏有两根,项目视图三栏也有两根。 */
+/* Resizer: visually a 1px split line, with a 9px hit area (col-resize feel).
+   The line is drawn on the resizer's own left edge: while dragging, the
+   column boundary is the pointer position (see splitDrag), so line and
+   boundary are the same thing. The hit area uses ::after to extend 4px to
+   each side - the layout still occupies only 1px, so there is no visible gap
+   between the two columns, yet the pointer can still grab the split line
+   reliably. The three column study mode has two of them, and so does the
+   three column projects view. */
 .study-resizer,
 .projects-resizer {
   flex: 0 0 1px;
@@ -2311,12 +2420,14 @@ input[type="range"] {
   background: var(--accent);
 }
 
-/* 分栏线归拖动条画。面板自带的 border-right 会与它并排成两条线(拖起来亮
-   的是拖动条那条,静息时看到的是边框那条)。 */
+/* The split line belongs to the resizer. The panel's own border-right would
+   sit next to it as a second line (while dragging the lit one is the
+   resizer's, at rest you see the border's). */
 .study-layout .content-pane {
   border-right: none;
 }
-/* 拖动时锁住选中与指针,鼠标滑出面板也不会选中文字。 */
+/* While dragging, selection and the pointer are locked, so moving the mouse
+   out of the panel does not select text. */
 .study-resizer.dragging,
 .projects-resizer.dragging {
   user-select: none;
@@ -2328,18 +2439,22 @@ input[type="range"] {
 }
 
 .agent-panel {
-  position: relative; /* 历史会话抽屉贴着面板右边展开 */
+  position: relative; /* the history session drawer unfolds along the panel's right edge */
   flex: 1;
   min-width: 0;
-  /* column flex 子项:auto 会解析成内容最小高度,面板被整段对话撑高后
-     .agent-scroll 永远和内容一样高,滚不动,输入框也被顶出窗口。 */
+  /* auto on a column flex item resolves to the content's min height: once the
+     panel is stretched by a long conversation, .agent-scroll is always as tall
+     as the content, cannot scroll, and the input box is pushed out of the
+     window. */
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg0);
-  /* 对话字号:正文基准 15px(2026-10-30 由 13.5px 上调——助手栏只有几百
-     像素宽,13.5 读长答案发虚);头部「Aa」写 --agent-fs(85%–160%),其余
-     文字按 --agent-text 的比例派生。头部 / 辅助条是外框,不跟着缩放。 */
+  /* Conversation font size: the body baseline is 15px (raised from 13.5px on
+     2026-10-30 - the assistant column is only a few hundred pixels wide, and
+     13.5px reads long answers as blurry); the header's "Aa" writes --agent-fs
+     (85%-160%), the rest of the text derives from the --agent-text ratio. The
+     header / assistant bar are the outer frame and do not scale. */
   --agent-body: 15px;
   --agent-fs: 1;
   --agent-text: calc(var(--agent-body) * var(--agent-fs));
@@ -2352,18 +2467,23 @@ input[type="range"] {
   padding: 8px 12px;
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
-  /* 与中栏 PDF 顶部工具栏同色:整条顶栏连成一片白,不再是灰色缺口。 */
+  /* Same color as the top toolbar of the PDF in the middle column: the whole
+     top bar becomes one white strip instead of a gray gap. */
   background: var(--bg0);
 }
 
-/* 会话切换:标题本身就是入口,点开是会话列表 popover——与中栏「文件名 =
-   材料下拉」同一套语言(透明底、hover 才出底色、▾ 提示可点),不再是原生
-   <select>(系统控件在各平台长得完全不一样,和这里的 UI 最不搭)。 */
+/* Session switching: the title itself is the entry point, clicking it opens a
+   session list popover - the same visual language as the "file name =
+   material" dropdown in the middle column (transparent base, a base color
+   only on hover, a hinting triangle), no longer a native <select> (system
+   controls look completely different on every platform and clash with this
+   UI the most). */
 .agent-conv {
   position: relative;
   min-width: 0;
-  /* 标题可以吃满剩余宽度,但给右侧四个图标按钮(4 × 26 + 3 × 8 = 128)留位:
-     少留一点,窄窗口下被压扁的就是图标本身。 */
+  /* The title may take all the remaining width, but room is left for the four
+     icon buttons on the right (4 x 26 + 3 x 8 = 128): leave less and in a
+     narrow window it is the icons themselves that get squashed. */
   max-width: calc(100% - 144px);
   display: flex;
 }
@@ -2392,7 +2512,8 @@ input[type="range"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 只有一条会话:静态标题,与可点的按钮同字体同高度,只是没有 hover 底。 */
+/* A single session: a static title with the same font and height as the
+   clickable button, only without the hover base. */
 .agent-conv-static {
   display: flex;
   align-items: center;
@@ -2458,8 +2579,10 @@ input[type="range"] {
   white-space: nowrap;
 }
 
-/* 对话字号:按钮常驻头部,−/读数/+ 收在 popover 里。读数与中栏网页缩放
-   同一套语言(等宽数字、点一下回到 100%),只是改的是面板文字而不是页面。 */
+/* Conversation font size: the button stays in the header, the -/value/+ are
+   folded into a popover. The reading uses the same visual language as the web
+   zoom of the middle column (tabular numerals, one click back to 100%), it
+   only changes the panel text instead of the page. */
 .agent-font {
   position: relative;
   display: flex;
@@ -2525,9 +2648,11 @@ input[type="range"] {
   color: var(--text);
 }
 
-/* 辅助会话条:标明当前这条是分叉会话、基于哪条消息,一键回上一条。
-   与头部同底色,整块只画一条下边框(见下面的 :has)——两行属于同一个
-   头部,不是两条彩色带。 */
+/* Auxiliary session bar: it marks that this one is a forked session, based
+   on which message, and returns to the parent in one click.
+   Same base color as the header, the whole block draws only one bottom
+   border (see the :has below) - the two rows belong to the same header, they
+   are not two colored bands. */
 .agent-aux-bar {
   display: flex;
   align-items: center;
@@ -2571,12 +2696,14 @@ input[type="range"] {
   color: var(--text);
 }
 
-/* 头部与辅助会话条连成一块:两条之间不画线,只有整块底部一条。 */
+/* The header and the auxiliary session bar form one block: no line between
+   the two, only one at the bottom of the whole block. */
 .agent-header:has(+ .agent-aux-bar) {
   border-bottom: none;
 }
 
-/* 头部按钮不参与收缩:窄窗口里被压扁的必须是会话名,不是图标。 */
+/* The header buttons do not shrink: in a narrow window what must get
+   squashed is the session name, not the icons. */
 .agent-header .icon-btn {
   flex: 0 0 auto;
 }
@@ -2590,11 +2717,14 @@ input[type="range"] {
   cursor: default;
 }
 
-/* 历史会话抽屉:从面板右缘展开,覆盖对话区(不挤压消息宽度)。
-   一份材料的会话都是同一批文件,列表按最近更新时间排序。 */
+/* History session drawer: it unfolds from the right edge of the panel and
+   covers the conversation area (without squeezing the message width).
+   The sessions of one material all work on the same set of files, the list is
+   sorted by most recent update time. */
 .agent-history {
   position: absolute;
-  /* 让出头部:抽屉开着时头部(会话下拉/历史/新会话)仍然可点。 */
+  /* Yield the header: while the drawer is open the header (session dropdown /
+     history / new session) stays clickable. */
   top: var(--study-head-h);
   right: 0;
   bottom: 0;
@@ -2609,7 +2739,9 @@ input[type="range"] {
   background: var(--bg1);
   box-shadow: -8px 0 24px var(--shadow);
 }
-/* 辅助会话时头部多一行(辅助条 30px):抽屉从它下面展开,不盖住来源与返回。 */
+/* In an auxiliary session the header has one more row (the 30px auxiliary
+   bar): the drawer unfolds below it and covers neither the source nor the
+   back button. */
 .agent-panel:has(.agent-aux-bar) .agent-history {
   top: calc(var(--study-head-h) + 30px);
 }
@@ -2716,8 +2848,9 @@ input[type="range"] {
   color: var(--text-faint);
 }
 
-/* 会话状态条:连接中 / 启动失败(带重试)——失败必须常驻可见,
-   否则发送按钮看起来可用但点了没反应。 */
+/* Session status bar: connecting / startup failed (with a retry) - the failure
+   must stay visible, otherwise the send button looks usable but does nothing
+   when clicked. */
 .agent-status {
   display: flex;
   align-items: center;
@@ -2771,7 +2904,8 @@ input[type="range"] {
   gap: 12px;
 }
 
-/* 欢迎页:居中 hero + 可点击的示例 chip(点击填入输入框)。 */
+/* Welcome page: a centered hero + clickable example chips (a click fills the
+   input box). */
 .agent-welcome {
   margin: auto 0;
   display: flex;
@@ -2824,8 +2958,10 @@ input[type="range"] {
   color: var(--text-faint);
 }
 
-/* 消息行:悬停时露出「⤷ 分叉辅助会话」按钮。按钮 absolute 落在行两端的
-   留白里(assistant 行右留白 / user 行左留白),不占布局也不遮文字。 */
+/* Message row: hovering reveals the "fork into an auxiliary session" button.
+   The button is absolutely positioned in the whitespace at the end of the row
+   (the right whitespace of an assistant row, the left whitespace of a user
+   row), so it takes no layout space and covers no text. */
 .agent-msg-row {
   position: relative;
   display: flex;
@@ -2836,7 +2972,8 @@ input[type="range"] {
 .agent-msg-row.is-user { padding-left: 24px; }
 
 .agent-fork {
-  /* 占住固定位置,悬停才显形:不hover布局也不抖。 */
+  /* It holds a fixed position and only appears on hover: no layout shift and
+   no jitter without hover. */
   position: absolute;
   top: 4px;
   width: 18px;
@@ -2860,8 +2997,10 @@ input[type="range"] {
   background: var(--bg2);
 }
 
-/* 用户消息:右对齐气泡(右下角收小,指向来源一侧);助手消息:无盒子
-   裸排版——参考 b-desktop,通栏 markdown 比每条都套卡片安静得多。 */
+/* User message: a right aligned bubble (the bottom right corner shrinks,
+   pointing at the source side); assistant message: no box, bare typography -
+   after b-desktop, full width markdown is far calmer than wrapping every
+   message in a card. */
 .agent-msg {
   font-size: var(--agent-text);
   line-height: 1.55;
@@ -2876,8 +3015,11 @@ input[type="range"] {
   white-space: pre-wrap;
 }
 
-/* 思考过程折叠块(照 ZCode Reasoning):流式收起+末行摘要滚动,完成显示
-   耗时;内容纯文本限高内滚、吸底跟随。左导线标出这是过程性内容。 */
+/* Collapsible reasoning block (after ZCode Reasoning): it collapses while
+   streaming and the last line shows a scrolling summary, on completion the
+   elapsed time appears; the content is plain text with a height limit and
+   internal scrolling, sticking to the bottom. The left rule marks it as
+   process content. */
 .agent-thinking {
   margin: 0 0 8px;
   border-left: 2px solid var(--border);
@@ -2905,7 +3047,8 @@ input[type="range"] {
   flex-shrink: 0;
   font-weight: 500;
 }
-/* 流式「正在思考」:accent 渐变在文字上扫光(旋转 loader 会长期占渲染)。 */
+/* Streaming "thinking": an accent gradient sweeps across the text (a rotating
+   loader would occupy the renderer for a long time). */
 .agent-thinking-live {
   background: linear-gradient(
     90deg,
@@ -2923,14 +3066,16 @@ input[type="range"] {
   from { background-position: 120% 0; }
   to { background-position: -80% 0; }
 }
-/* 流式摘要:单行向末尾滚动,两侧渐隐(见 thinkingSummaryLine + JS 滚动)。 */
+/* Streaming summary: a single line scrolling towards the end, fading out on
+   both sides (see thinkingSummaryLine + the JS scrolling). */
 .agent-thinking-tail {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   color: var(--text-faint);
-  /* mask 只取 alpha 通道:currentColor 与纯黑等价,且不引入裸颜色。 */
+  /* The mask takes only the alpha channel: currentColor is equivalent to pure
+   black, and it introduces no bare color. */
   mask-image: linear-gradient(to right, transparent 0, currentColor 16px, currentColor calc(100% - 16px), transparent 100%);
   -webkit-mask-image: linear-gradient(to right, transparent 0, currentColor 16px, currentColor calc(100% - 16px), transparent 100%);
   mask-repeat: no-repeat;
@@ -2954,7 +3099,8 @@ input[type="range"] {
   word-break: break-word;
 }
 
-/* 用户消息里随发的图片:气泡内等宽小图,圆角贴气泡内缘。 */
+/* An image sent along with a user message: a small monospace thumbnail
+   inside the bubble, its rounded corners hugging the inner edge. */
 .agent-msg-images {
   display: flex;
   flex-wrap: wrap;
@@ -2976,9 +3122,12 @@ input[type="range"] {
   min-width: 0;
 }
 
-/* Agent 回复的 markdown:标题 / 列表 / 表格 / 引用 / 行内样式。
-   字号在容器上取一次 --agent-text:正文、列表、段落的继承都从这里来,
-   KaTeX(em 记尺寸)也因此跟着缩放;下面只有标题 / 表格 / 代码另行派生。 */
+/* The markdown of an agent reply: headings / lists / tables / quotes /
+   inline styles.
+   The font size is taken once on the container as --agent-text: the body,
+   the lists and the paragraphs inherit from there, and KaTeX (which measures
+   in em) scales with it as well; only headings, tables and code below are
+   derived separately. */
 .agent-md {
   font-size: var(--agent-text);
 }
@@ -2994,8 +3143,10 @@ input[type="range"] {
 .agent-md p:last-child { margin-bottom: 0; }
 .agent-md ul, .agent-md ol { margin: 4px 0 6px; padding-left: 20px; }
 .agent-md li { margin: 2px 0; }
-/* 松散列表(源码里项与项之间夹着空行):每一项本来是独立段落,合并成一个
-   列表后靠间距保住这个边界,不然四段长文字会糊成一坨。 */
+/* Loose lists (blank lines between the items in the source): every item is
+   originally its own paragraph, and after merging them into one list the
+   spacing has to preserve that boundary, otherwise four long paragraphs blur
+   into one lump. */
 .agent-md .is-loose { margin: 6px 0; }
 .agent-md .is-loose > li { margin: 6px 0; }
 .agent-md .is-loose > li:first-child { margin-top: 0; }
@@ -3042,12 +3193,15 @@ input[type="range"] {
   margin: 6px 0;
 }
 .agent-md pre.agent-code code { background: transparent; padding: 0; }
-/* 公式块:横向可滚(宽公式能拖到),但绝不裁切竖直方向。
-   KaTeX 的盒子高度只按自己的字体度量算 —— \text{中文} 走的是系统 CJK 回退
-   字体,字形盒比它算出来的 depth 更深,下花括号标签(\underbrace{…}_{…})
-   会探出盒子底部几个像素;overflow-y:hidden 会把探出的那截直接切掉(标签
-   底边被削平)。所以把竖直的裁切盒往下撑开 0.2em,再从下边距里扣回来:
-   视觉节奏不变,标签完整。 */
+/* Math block: scrollable horizontally (a wide formula can be dragged into
+   view), but never cropped vertically.
+   KaTeX computes its box height from its own font metrics only - \text{CJK}
+   goes through the system CJK fallback font, whose glyph box is deeper than
+   the depth KaTeX calculated, so a subscript label (\underbrace{...}_{...})
+   pokes a few pixels below the box; overflow-y:hidden would cut off exactly
+   that part (the bottom edge of the label is shaved flat). So the vertical
+   crop box is stretched down by 0.2em and the bottom margin takes it back:
+   the visual rhythm stays, the label stays whole. */
 .agent-md .katex-display {
   margin: 6px 0;
   padding-bottom: 0.3em;
@@ -3056,8 +3210,9 @@ input[type="range"] {
   overflow-y: hidden;
 }
 
-/* 工具调用:单行摘要行(状态点 + mono 工具名 + 失败标记 + 折叠箭头),
-   hover 抬起为浅底;展开后 IO 落在深底圆角卡里。 */
+/* Tool call: a one line summary row (status dot + mono tool name + failure
+   mark + collapse arrow), lifted onto a light base on hover; expanded, the IO
+   lands in a dark rounded card. */
 .agent-tool {
   margin: 2px 0 6px;
   font-size: calc(var(--agent-text) * 0.8);
@@ -3125,8 +3280,9 @@ input[type="range"] {
   color: var(--text-dim, var(--text));
 }
 
-/* 工具结果里随附的截图(如预览渲染图):与用户消息图片同一套小图样式,
-   只是间距接在 io 块下方。 */
+/* A screenshot attached to a tool result (a preview render): the same small
+   image style as the images of a user message, only the spacing hooks onto
+   the io block below. */
 .agent-tool .agent-msg-images {
   margin: 8px 0 0;
 }
@@ -3144,15 +3300,18 @@ input[type="range"] {
   word-break: break-word;
 }
 
-/* 流式回复的光标:只在最后一条助手消息、本轮仍在生成时渲染。 */
+/* The cursor of a streaming reply: rendered only on the last assistant
+   message, while this turn is still generating. */
 .agent-caret::before {
   content: "▍";
   color: var(--accent);
   animation: agent-pulse 1s steps(2) infinite;
 }
 
-/* 输入区:一张圆角卡片(textarea 透明内嵌),底部工具行放着提示与发送。
-   聚焦时整卡亮起 accent 描边 + 光晕,不再只亮 textarea 自己的边。 */
+/* Input area: a rounded card (the textarea is embedded transparently), with
+   the hints and the send button in the tool row at the bottom.
+   On focus the whole card lights up with an accent outline and a glow, not
+   just the border of the textarea itself. */
 .agent-composer {
   flex-shrink: 0;
   margin: 0 10px 10px;
@@ -3191,7 +3350,7 @@ input[type="range"] {
   border-top: 1px solid var(--border);
 }
 
-/* 附件按钮 + 待发送缩略图行。 */
+/* Attachment button + row of pending thumbnails. */
 .agent-attach-btn {
   flex-shrink: 0;
   display: inline-flex;
@@ -3248,8 +3407,10 @@ input[type="range"] {
   cursor: pointer;
 }
 .agent-attach-remove:hover { background: var(--danger); color: var(--on-accent); }
-/* 输入区脚注:模型名 + 上下文占用(已用/上限 + 百分比 + ↑输入 ↓输出)。
-   信息靠右贴住发送键,模型名可截断,数字列不缩。 */
+/* Footnote of the input area: the model name + the context usage (used/limit
+   + percentage + input/output).
+   The information sits on the right, hugging the send button, the model name
+   may be truncated, the numeric column does not shrink. */
 .agent-meta {
   flex: 1;
   min-width: 0;
@@ -3302,7 +3463,7 @@ input[type="range"] {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
-/* 中栏:内容 */
+/* Middle column: the content */
 .content-pane {
   width: var(--content-w);
   flex: 0 0 auto;
@@ -3316,13 +3477,14 @@ input[type="range"] {
 .content-pane.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
 
 .content-toolbar {
-  /* 左(助手)/ 中(文件名)/ 右(网址 + PDF)三列,两侧等宽 → 文件名真居中。 */
+  /* Three columns - left (assistant), middle (file name), right (URL + PDF) -
+     with equal side columns, so the file name is truly centered. */
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  /* 与左/右栏头部同高(见 --study-head-h)。 */
+  /* Same height as the headers of the left/right columns (see --study-head-h). */
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
 }
@@ -3359,7 +3521,8 @@ input[type="range"] {
   font-size: 12.5px;
   color: var(--text);
 }
-/* 学习模式顶栏里的网址框常驻,给可见边界,平时就是"可输入"的样子。 */
+/* The URL box in the study mode top bar is always there, it gives a visible
+   boundary and looks "typeable" the rest of the time. */
 .content-tool-right .content-url {
   max-width: 220px;
   height: 26px;
@@ -3408,8 +3571,10 @@ input[type="range"] {
 
 .content-pick { cursor: pointer; }
 
-/* 中栏的网页态:地址条 + 一块占位区。真正的网页是主窗口的子 webview,
-   原生视图盖在占位区上(见 commands/agent.rs),这里只负责给它让出位置。 */
+/* The web state of the middle column: an address bar + a placeholder area.
+   The real web page is a child webview of the main window, and the native
+   view covers the placeholder (see commands/agent.rs); here we only make room
+   for it. */
 .content-web {
   position: absolute;
   inset: 0;
@@ -3435,7 +3600,8 @@ input[type="range"] {
   opacity: 0.8;
   margin: 0;
 }
-/* 网页缩放:−/读数/+ 贴在一起;读数本身是「回到 100%」按钮。 */
+/* Web zoom: -/reading/+ sit together; the reading itself is the "back to
+   100%" button. */
 .content-web-zoom {
   flex: 0 0 auto;
   display: flex;
@@ -3485,7 +3651,7 @@ input[type="range"] {
   margin: 0;
 }
 
-/* 右栏:笔记(吃剩余宽度) */
+/* Right column: the notes (they take the remaining width) */
 .study-notes {
   flex: 1 1 0;
   min-width: 0;
@@ -3493,8 +3659,10 @@ input[type="range"] {
   flex-direction: column;
 }
 
-/* 笔记栏头部:学习模式没有 .titlebar,整窗顶部只剩三栏各自的头部——它们就是
-   唯一能拖窗口的地方(见 StudyLayout 的 data-tauri-drag-region)。 */
+/* Header of the notes column: study mode has no .titlebar, the top of the
+   window only has the three column headers - and they are the only place
+   where the window can be dragged (see data-tauri-drag-region in
+   StudyLayout). */
 .study-notes-head {
   flex: 0 0 auto;
   display: flex;
@@ -3516,13 +3684,15 @@ input[type="range"] {
   border-left: none;
 }
 
-/* 渲染的 markdown 图片(学习模式 PDF 图表) */
+/* A rendered markdown image (a figure extracted from a PDF in study mode) */
 .cw-image { display: inline-block; max-width: 100%; }
 .cw-image img {
   max-width: 100%;
-  /* PDF 里抠出来的图表按页面点数存尺寸(p11-fig2.svg 只有 85×76),照原样显示
-     在 700px 宽的一栏里小到看不清。给个下限,让图表至少占住一栏的大部分宽度;
-     PDF 图表是矢量、截图本来就宽,放大不失真。 */
+  /* Figures extracted from a PDF store their size in page points (p11-fig2.svg
+     is only 85x76), and at that size they are unreadable in a 700px wide
+     column. Give them a lower bound so that a figure occupies most of the
+     column width; PDF figures are vector and screenshots are wide anyway, so
+     enlarging them does not distort. */
   min-width: min(100%, 420px);
   height: auto;
   border-radius: 6px;
@@ -3541,8 +3711,10 @@ input[type="range"] {
   border-radius: 6px;
 }
 .cw-image-broken img { display: none; }
-/* 加载不出来时把文件名写进框里:可疑的引用(路径拼错、附件不在 vault 里)
-   一眼能看出是哪一个,不用把光标挪上去看源码。 */
+/* When it cannot be loaded, the file name is written into the box: a
+   suspicious reference (a mistyped path, an attachment missing from the vault)
+   is then obvious at a glance, without moving the pointer over it to read the
+   source. */
 .cw-image-broken::after {
   content: attr(data-hint);
   font-size: 12px;
@@ -3552,10 +3724,11 @@ input[type="range"] {
   white-space: nowrap;
 }
 
-/* ===== 画布(Excalidraw 画图)===== */
+/* ===== Canvas (Excalidraw drawing) ===== */
 
-/* 全屏浮层:盖过主界面,但在快速跳转/命令面板(100)之下——画布模式里
-   ⌘O 切换文件是核心路径;toast(300) 仍在最上。 */
+/* Full screen overlay: it covers the main UI but stays below the quick
+   switcher / command palette (100) - switching files with ⌘O is a core path
+   in canvas mode; the toast (300) is still on top. */
 .drawing-overlay {
   position: fixed;
   inset: 0;
@@ -3576,7 +3749,8 @@ input[type="range"] {
   position: relative;
 }
 
-/* 文件名绝对居中:左侧给 macOS 红绿灯留位,右侧给提示文字留位。 */
+/* The file name is absolutely centered: room is left on the left for the
+   macOS traffic lights and on the right for the hint text. */
 .drawing-title {
   position: absolute;
   left: 50%;
@@ -3650,7 +3824,7 @@ input[type="range"] {
   padding: 10px 14px;
 }
 
-/* ===== python 运行面板 ===== */
+/* ===== python run panel ===== */
 
 .python-run-panel {
   display: flex;
@@ -3743,17 +3917,20 @@ input[type="range"] {
 }
 
 /* ---------------------------------------------------------------------------
- * 学习模式:历史下拉 / PDF 阅读器
+ * Study mode: history dropdown / PDF reader
  * ------------------------------------------------------------------------- */
 
-/* 窗口红绿灯压在整窗左上角,现在最左是助手栏:让位由它的头部承担,中栏
-   工具栏不再额外缩进(否则居中文件名会偏离整栏中心)。 */
+/* The window traffic lights sit on the top left corner of the whole window,
+   and the assistant column is leftmost now: its header yields the space, the
+   toolbar of the middle column is not indented any further (otherwise the
+   centered file name would drift away from the center of the column). */
 .study-layout .agent-header {
   padding-left: var(--study-lead, 12px);
 }
 
-/* 中栏头部的文字按钮(打开 / ＋PDF):icon-btn 是 26px 定宽,装不下文字,
-   这里统一放开。 */
+/* The text buttons in the middle column header (open / +PDF): icon-btn is
+   26px wide by definition and cannot hold a label, so they are widened here
+   for all of them. */
 .pdf-tool-btn,
 .text-tool-btn {
   width: auto;
@@ -3763,7 +3940,8 @@ input[type="range"] {
   white-space: nowrap;
 }
 
-/* 文件名本身就是「材料」下拉的入口——不再单独占一个按钮。 */
+/* The file name itself is the entry point of the "material" dropdown - it no
+   longer occupies a button of its own. */
 .content-title-btn {
   display: inline-flex;
   align-items: center;
@@ -3898,7 +4076,7 @@ input[type="range"] {
   background: var(--bg3);
 }
 
-/* ---------------- PDF 阅读器 ---------------- */
+/* ---------------- PDF reader ---------------- */
 
 .pdf-viewer {
   position: absolute;
@@ -3968,7 +4146,8 @@ input[type="range"] {
 }
 
 .pdf-outline {
-  /* 宽度由拖动条写入的 CSS 变量控制(见 PdfViewer.startOutlineDrag)。 */
+  /* The width is controlled by the CSS variable written by the resizer (see
+     PdfViewer.startOutlineDrag). */
   flex: 0 0 auto;
   width: var(--pdf-outline-w, 210px);
   min-width: 0;
@@ -3976,7 +4155,8 @@ input[type="range"] {
   flex-direction: column;
   background: var(--bg1);
 }
-/* 分栏线由拖动条画(与三栏布局同一套手感),面板不再自带 border。 */
+/* The split line is drawn by the resizer (the same feel as the three column
+   layout), the panel no longer carries its own border. */
 .pdf-outline-resizer {
   flex: 0 0 6px;
   position: relative;
@@ -4084,9 +4264,11 @@ input[type="range"] {
 .pdf-viewer.eye-care .pdf-scroll {
   background: var(--pdf-gutter);
 }
-/* 翻页后的视觉分区:上方是刚读过、正在被顶出去的旧内容(占 1−步长),
-   压暗逐渐收束;不画分界线,新内容只靠阴影的消失区隔。
-   阴影横贯整个 PDF 组件,不接鼠标事件。 */
+/* Visual split after a page turn: above it is the content that was just read
+   and is being pushed out (it takes 1 - step), shaded down with a gradient
+   that tapers; no divider line is drawn, the new content is separated only
+   by the disappearance of the shadow.
+   The shadow spans the whole PDF component and takes no mouse events. */
 .pdf-read-guide {
   position: absolute;
   inset: 0;
@@ -4100,14 +4282,19 @@ input[type="range"] {
   right: 0;
   top: 0;
   height: var(--read-old, 50%);
-  /* 压暗在边界处收到最浅一档：没有描边，靠阴影变浅收尾；这一档也是
-     两端圆角尖的颜色（见下面的径向补角）。 */
+  /* The shading tapers to its lightest tone at the boundary: there is no
+     stroke, the shadow simply fades out; this tone is also the color of the
+     rounded tips at both ends (see the radial corner patches below). */
   background: linear-gradient(to bottom, var(--read-shade), var(--read-shade-edge));
 }
-/* 阴影在两端向下弯出圆角尖；弯出去的那一小块仍在分界线上方，必须继续
-   压暗，否则角落会出现「阴影到头、两端却是直角」的缺口。径向渐变正好补
-   出圆角外侧的两个小三角：圆内（阴影结束处下方）透明，圆外（阴影一侧）
-   用边界同色。去掉分界线后，这两个尖角就是边界的唯一形状。 */
+/* The shadow bends down at both ends into rounded tips; the small piece that
+   bends out is still above the boundary and has to stay shaded, otherwise the
+   corner shows a gap where "the shadow ends but the ends are square". The
+   radial gradient patches exactly the two small triangles outside the
+   rounded corner: transparent inside the circle (below where the shadow
+   ends), the boundary color outside it (on the shadow side). With the
+   divider line removed, these two tips are the only shape of the
+   boundary. */
 .pdf-read-shade::before,
 .pdf-read-shade::after {
   content: "";
@@ -4132,7 +4319,9 @@ input[type="range"] {
     var(--read-shade-edge) 12px
   );
 }
-/* 滚动内容 = 左侧批注留白 + 页面区。留白随页面一起滚,批注卡才会一直对齐行。 */
+/* The scrolling content = the annotation margin on the left + the page area.
+   The margin scrolls with the page, only then do the annotation cards stay
+   aligned with their lines. */
 .pdf-stage {
   position: relative;
   display: flex;
@@ -4150,7 +4339,8 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* 横向不留白:页面宽度直接等于中间栏宽度(贴边),纵向保留页间距。 */
+  /* No horizontal margin: the page width equals the width of the middle column
+     (flush to the edges), the vertical page gap is kept. */
   padding: 14px 0;
 }
 .pdf-page {
@@ -4159,20 +4349,28 @@ input[type="range"] {
   margin-bottom: 14px;
   background: var(--pdf-paper);
   box-shadow: 0 1px 5px var(--shadow);
-  /* 正文始终是可选中的 I 形光标;批注工具各自换成笔形光标(见下)。 */
+  /* The body text always keeps the selectable I-beam cursor; the annotation
+     tools each switch to a pen cursor (see below). */
   cursor: text;
-  /* 裁剪:窗口只留框内的部分,整页在 .pdf-page-full 里用负偏移推出去。 */
+  /* Cropping: the window only keeps the part inside the frame, the whole page
+     is pushed out with a negative offset in .pdf-page-full. */
   overflow: hidden;
 }
 .pdf-page-full {
   position: absolute;
 }
-/* 批注工具的光标:高亮=荧光笔,文字批注=蓝笔尖;热点都在笔尖(12 22)。
-   用 24px PNG:WKWebView/Chromium 都认,不依赖 SVG 光标支持。
-   文本层的 span 自带 cursor:text(pdf.js 的规则),这里必须显式压过去。
-   整块页面区(不只是页框)都换成笔形:页间空白/上下留白也属于阅读区,
-   否则鼠标一离开文字就退回箭头,"画笔"时有时无。
-   PNG 加载失败时回落到 crosshair——不要回落到 text,那看起来就是普通指针。 */
+/* The cursors of the annotation tools: highlight = highlighter, text
+   annotation = blue pen tip; the hotspot is at the tip in both cases (12 22).
+   A 24px PNG is used: WKWebView and Chromium both accept it and it does not
+   depend on SVG cursor support.
+   The spans of the text layer carry cursor:text themselves (a rule of
+   pdf.js), so this has to override them explicitly.
+   The whole page area (not just the page frame) switches to the pen: the
+   whitespace between pages and the top/bottom padding belong to the reading
+   area as well, otherwise the mouse falls back to an arrow as soon as it
+   leaves the text, and the "pen" appears only now and then.
+   If the PNG fails to load, fall back to crosshair - never to text, that
+   would look like an ordinary pointer. */
 .pdf-viewer.tool-highlight .pdf-page-area,
 .pdf-viewer.tool-highlight .pdf-page-area *,
 .pdf-viewer.tool-highlight .pdf-page,
@@ -4190,7 +4388,9 @@ input[type="range"] {
 .pdf-page .textLayer {
   z-index: 2;
 }
-/* 批注:画布之上、文本层之下。multiply 只染纸面不挡字,与护眼叠色同一套。 */
+/* Annotations: above the canvas, below the text layer. multiply only stains
+   the paper and never covers the text, the same mechanism as the eye-care
+   tint. */
 .pdf-anno-layer {
   position: absolute;
   inset: 0;
@@ -4204,7 +4404,8 @@ input[type="range"] {
   border-radius: 2px;
   pointer-events: none;
 }
-/* 护眼:白纸压成浅绿。multiply 保留黑字(黑 × 绿 = 黑),只染底色。 */
+/* Eye care: the white paper is pressed into a pale green. multiply keeps the
+   black text (black x green = black), it only tints the base. */
 .pdf-page-tint {
   position: absolute;
   inset: 0;
@@ -4217,7 +4418,8 @@ input[type="range"] {
   box-shadow: 0 1px 2px var(--shadow);
 }
 
-/* 框选层:盖住整个阅读视口,只在页面内取框。 */
+/* The crop layer: it covers the whole reading viewport, but the box is only
+   taken inside the page. */
 .pdf-crop-layer {
   position: absolute;
   inset: 0;
@@ -4266,7 +4468,8 @@ input[type="range"] {
   word-break: break-word;
 }
 
-/* PDF 阅读器整块失败(兼容性问题/损坏文件):留在中栏里报错，不能连累整窗。 */
+/* The whole PDF reader failed (a compatibility problem, a corrupted file): the
+   error stays in the middle column, it must not take down the whole window. */
 .pdf-fail {
   position: absolute;
   inset: 0;
@@ -4283,9 +4486,10 @@ input[type="range"] {
   color: var(--text-dim);
 }
 
-/* ---------- 创作模式:/ @ 补全、中栏 HTML 预览、发布对话框 ---------- */
+/* ---------- Creation mode: / @ completion, HTML preview in the middle
+   column, publish dialog ---------- */
 
-/* 输入框上方的补全弹层 */
+/* The completion popover above the input box */
 .agent-suggest {
   position: absolute;
   left: 8px;
@@ -4339,7 +4543,7 @@ input[type="range"] {
   white-space: nowrap;
 }
 
-/* 中栏:创作预览 */
+/* Middle column: the creation preview */
 .creative-pane {
   display: flex;
   flex-direction: column;
@@ -4394,7 +4598,8 @@ input[type="range"] {
   color: var(--text-3);
 }
 
-/* 发布对话框(HTML 浮层,打开时原生预览被藏起) */
+/* The publish dialog (an HTML overlay; the native preview is hidden while it
+   is open) */
 .publish-overlay {
   position: fixed;
   inset: 0;
@@ -4519,7 +4724,7 @@ input[type="range"] {
   color: var(--accent-contrast, #fff);
 }
 
-/* 设置页:MCP / 技能清单 */
+/* Settings page: the MCP / skill lists */
 .mcp-summary,
 .skill-summary {
   list-style: none;
@@ -4578,11 +4783,14 @@ input[type="range"] {
   color: var(--text-3);
   line-height: 1.7;
 }
-/* ========================== 项目管理视图 ==========================
-   项目导航 | 项目看板(横向多列,当前列居中可编辑) | 日记。
-   两侧栏宽度由 ProjectsLayout 写入(--side-src / --daily-src 是用户偏好,
-   看板吃剩余);窗口窄到放不下时由 --side-w / --daily-w 的 clamp 压缩显示,
-   不回写偏好。颜色全部走主题变量(见 theme.test.ts 的门禁)。 */
+/* ========================== Projects view ==========================
+   Project navigation | project board (several columns side by side, the
+   current one centered and editable) | daily note.
+   The two side column widths are written by ProjectsLayout (--side-src /
+   --daily-src are the user preference, the board takes the rest); when the
+   window is too narrow to fit them, the clamp of --side-w / --daily-w
+   shrinks the display without writing back the preference. All colors go
+   through theme variables (see the gate in theme.test.ts). */
 .projects-layout {
   flex: 1;
   display: flex;
@@ -4592,12 +4800,14 @@ input[type="range"] {
   --projects-head-h: 44px;
   --side-src: 232px;
   --daily-src: 420px;
-  /* 日记栏先夹(给看板留 300px + 导航 10%),导航栏再按实际日记宽度夹。 */
+  /* The daily note column is clamped first (leaving 300px for the board plus 10%
+     for the navigation), the navigation column is clamped afterwards by the
+     actual daily note width. */
   --daily-w: clamp(12%, var(--daily-src), calc(100% - 300px - 10%));
   --side-w: clamp(10%, var(--side-src), calc(100% - var(--daily-w) - 2px - 300px));
 }
 
-/* 左栏:项目导航 */
+/* Left column: the project navigation */
 .projects-side {
   flex: 0 0 var(--side-w);
   width: var(--side-w);
@@ -4612,7 +4822,9 @@ input[type="range"] {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* 侧栏收起时红绿灯覆盖主区左上角,头部内容让开(与 titlebar 同一约定)。 */
+  /* When the sidebar is collapsed the traffic lights cover the top left corner
+     of the main area, so the header content yields (the same convention as
+     the titlebar). */
   padding: 0 10px 0 var(--projects-lead, 78px);
   border-bottom: 1px solid var(--border);
 }
@@ -4715,7 +4927,8 @@ input[type="range"] {
   background: var(--accent-soft);
   color: var(--text);
 }
-/* 选中项的左竖条:与学习模式的分栏线同一套视觉语言。 */
+/* The left rule of the selected item: the same visual language as the split
+   lines of study mode. */
 .projects-side-item.active::before {
   content: "";
   position: absolute;
@@ -4741,7 +4954,9 @@ input[type="range"] {
   font-weight: 600;
 }
 .projects-side-item.active .projects-side-dot {
-  /* 底色当前景色:dark 下是橙底黑字、light 下是深琥珀底白字,两主题都够对比。 */
+  /* The base color shows the current hue: in the dark theme an orange base
+     with black text, in the light theme a deep amber base with white text;
+     both themes have enough contrast. */
   background: var(--accent);
   color: var(--bg0);
 }
@@ -4759,7 +4974,7 @@ input[type="range"] {
   line-height: 1.8;
 }
 
-/* 中栏:项目看板 */
+/* Middle column: the project board */
 .projects-deck {
   flex: 1 1 0;
   min-width: 0;
@@ -4801,7 +5016,8 @@ input[type="range"] {
   text-overflow: ellipsis;
 }
 
-/* 窄窗口里先截断提示文字,「⋯」(删项目等操作)永远留在头部内。 */
+/* In a narrow window the hint text is truncated first, the "..." (delete
+   project and other actions) always stays inside the header. */
 .projects-deck-actions {
   display: flex;
   align-items: center;
@@ -4826,10 +5042,12 @@ input[type="range"] {
   min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  /* 横向滚动必然把邻列裁掉一截:左右边缘渐隐,让裁切线消失在「视野之外」,
-     而不是一刀切在文字中间。渐隐宽度 = min(64px, 轨道留白),由布局写进
-     --board-fade——留白很小时(窄窗口)不会把当前列也淡掉。mask 的颜色只表示
-     不透明度,不是主题色。 */
+  /* Horizontal scrolling necessarily crops a part of the neighbouring column:
+     the edges fade out, so that the cut line disappears "out of sight"
+     instead of slicing through the text. The fade width = min(64px, the
+     padding of the track), written into --board-fade by the layout - with
+     little padding (narrow window) the current column is not faded out too.
+     The color of the mask only expresses opacity, it is not a theme color. */
   -webkit-mask-image: linear-gradient(
     to right,
     transparent,
@@ -4846,11 +5064,15 @@ input[type="range"] {
   );
 }
 
-/* 看板轨道:列宽固定(看板语义:拖宽中栏只改变「能放下几列」,不拉伸列)。
-   左右留白 = (看板宽 − 列宽) / 2,由 ProjectsLayout 写进 --board-edge-pad:
-   当前列因此能停在正中间(首个/末个项目也一样),不会贴边。 */
+/* The board track: the column width is fixed (the semantics of a board:
+   widening the middle column only changes "how many columns fit", it does not
+   stretch them).
+   The left/right padding = (board width - column width) / 2, written into
+   --board-edge-pad by ProjectsLayout: the current column can therefore stop
+   exactly in the middle (the first and last project alike) instead of
+   hugging the edge. */
 .projects-board-track {
-  position: relative; /* 列的 offsetLeft 因此相对轨道(居中计算按它算) */
+  position: relative; /* the offsetLeft of a column is therefore relative to the track (the centering calculation uses it) */
   display: flex;
   align-items: stretch;
   gap: 12px;
@@ -4931,7 +5153,8 @@ input[type="range"] {
   color: var(--accent);
 }
 
-/* 当前项目的完成度:列头下面一条 2px 的细线。 */
+/* The completion of the current project: a 2px thin line below the column
+   head. */
 .project-col-progress {
   flex: 0 0 auto;
   height: 2px;
@@ -4948,9 +5171,12 @@ input[type="range"] {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  /* 看板列窄:正文的「可读行宽」那套留白(48px 侧边 + 16px 字号 + 45vh 底部)
-     在这里会把一行待办挤成两行。只改这两处变量,不碰 .cm-content 规则本身
-     (变量是唯一来源,普通笔记的排版不受影响)。 */
+  /* A narrow board column: the whitespace of the body's "readable line
+     length" (48px on the sides + 16px font size + 45vh at the bottom) would
+     squeeze one row of todos into two lines here. Only these two variables
+     are changed, the .cm-content rules themselves are untouched (the
+     variables are the single source, so the typography of ordinary notes is
+     unaffected). */
   --content-pad-x: 10px;
   --editor-font-size: 13.5px;
   --typewriter-bottom: 28px;
@@ -4962,7 +5188,8 @@ input[type="range"] {
   padding: 6px 14px 24px;
 }
 
-/* 非当前列:纯 DOM 待办(可拖到日记,点击聚焦)。 */
+/* Columns other than the current one: plain DOM todos (draggable to the
+   daily note, click to focus). */
 .project-col-list {
   flex: 1;
   min-height: 0;
@@ -5028,13 +5255,16 @@ input[type="range"] {
   color: var(--text-dim);
 }
 
-/* 项目卡片里已发送到今日日记的待办:置灰(编辑权在日记那份)。 */
+/* A todo that has already been sent to today's daily note inside a project
+   card: greyed out (the editing right belongs to the copy in the daily
+   note). */
 .projects-deck .cm-line.md-daily-link[data-daily-sent] {
   opacity: 0.42;
 }
 
-/* 待办行的拖拽手柄(CodeMirror gutter)。平时几乎透明,悬停才显形;
-   不在行内插 widget,不改变列表几何。 */
+/* The drag handle of a todo row (a CodeMirror gutter). It is nearly
+   transparent at rest and only shows on hover; no widget is inserted into the
+   line, so the list geometry does not change. */
 .cm-project-drag-gutter {
   width: 14px;
   padding-right: 2px;
@@ -5065,7 +5295,7 @@ input[type="range"] {
   color: var(--accent);
 }
 
-/* 右栏:日记 */
+/* Right column: the daily note */
 .projects-daily {
   flex: 0 0 var(--daily-w);
   width: var(--daily-w);
@@ -5110,7 +5340,8 @@ input[type="range"] {
   cursor: default;
 }
 
-/* 日期就是下拉:原生 select 透明铺满,外观(悬停底、省略号)由这里决定。 */
+/* The date is the dropdown: a native select stretched transparently over the
+   area, its look (hover base, ellipsis) is decided here. */
 .daily-nav.prev {
   justify-self: end;
 }
@@ -5120,7 +5351,8 @@ input[type="range"] {
 
 .daily-date {
   position: relative;
-  /* 日期组([‹][日期][›])在头部正中,两个箭头紧贴日期两侧。 */
+  /* The date group ([<][date][>]) sits in the middle of the header, the two
+   arrows hug the date on both sides. */
   min-width: 0;
   padding: 0 8px;
   height: 26px;
@@ -5192,7 +5424,7 @@ input[type="range"] {
   line-height: 1.9;
 }
 
-/* 拖拽悬停:整块日记区给一个明确的落点提示。 */
+/* Drag hover: the whole daily note area gives a clear drop target hint. */
 .projects-daily.drop-target::after {
   content: "松手 → 发到今日待办最前";
   position: absolute;
@@ -5209,20 +5441,26 @@ input[type="range"] {
 }
 
 /* ==========================================================================
-   代码项目(学习模式中栏)
+   Code projects (middle column of study mode)
    ==========================================================================
 
-   中栏就那么宽,代码面板的所有尺寸都按「塞得下」来:工具条 30px、状态条
-   22px、文件树一栏 190px(并排,把编辑器挤到右边)。
+   The middle column is only that wide, so every size of the code panel is
+   chosen to "fit": a 30px toolbar, a 22px status bar, a 190px file tree
+   column (side by side, squeezing the editor to the right).
 
-   颜色全部走主题变量:代码编辑器的高亮用的是编辑器同一套 token(--tok-*),
-   所以深浅色主题下代码区与笔记里的代码块是一个观感。 */
+   All colors go through theme variables: the code editor uses the same
+   tokens (--tok-*) as the editor, so in both the dark and the light theme
+   the code area looks like the code blocks inside a note. */
 
-/* 代码面板是 `.content-body` 的子元素,自己铺满整栏。
-   **不要给它挂 `.content-pane` 类**:那个类带 `width: var(--content-w)`,而
-   --content-w 是「相对学习模式整栏」算的 clamp(含百分比)。套在内容栏里面
-   再算一次,百分比对着内容栏重新解析、又减一遍 --agent-w,面板会被压成
-   236px——代码只看得到一截(2026-11 实测:内容栏 620px,代码面板 236px)。 */
+/* The code panel is a child of `.content-body` and fills the whole column
+   itself.
+   **Do not give it the `.content-pane` class**: that class carries
+   `width: var(--content-w)`, and --content-w is a clamp computed "relative to
+   the whole study mode column" (it contains a percentage). Nested inside the
+   content column it is computed a second time: the percentage resolves
+   against the content column and --agent-w is subtracted again, so the panel
+   is squeezed to 236px and only a fragment of the code is visible (measured
+   in 2026-11: content column 620px, code panel 236px). */
 .code-pane {
   flex: 1 1 auto;
   width: 100%;
@@ -5234,7 +5472,7 @@ input[type="range"] {
   position: relative;
 }
 
-/* --- 工具条 --- */
+/* --- Toolbar --- */
 .code-toolbar {
   display: flex;
   align-items: center;
@@ -5310,7 +5548,8 @@ input[type="range"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 未保存标记:标签上一个小圆点(与笔记的未保存提示同一套语言)。 */
+/* Unsaved marker: a small dot on the tab (the same visual language as the
+   unsaved hint of a note). */
 .code-tab-dirty {
   flex: none;
   width: 6px;
@@ -5327,7 +5566,7 @@ input[type="range"] {
   opacity: 1;
 }
 
-/* --- 主体 --- */
+/* --- Body --- */
 .code-body {
   position: relative;
   display: flex;
@@ -5335,13 +5574,17 @@ input[type="range"] {
   min-height: 0;
 }
 
-/* 文件树是**并排**的一栏,不是浮在编辑器上的浮层:浮层会把代码从中间切断,
-   看起来像渲染坏了(半行字压在树下面)。并排时两边各占各的,代码被完整地
-   挤到右边,中栏总宽度不变。
+/* The file tree is a column **side by side**, not an overlay floating over
+   the editor: an overlay would cut the code in the middle and look like a
+   rendering bug (half a line of text pressed under the tree). Side by side
+   each side keeps its own space, the code is squeezed to the right in one
+   piece, and the total width of the middle column does not change.
 
-   宽度由设置 `codeTreeWidth` 写进 `--code-tree-w`;clamp 的下限/默认值必须
-   与 `src/code/treeWidth.ts` 一致(120 / 190)。中栏太窄时显示被压到 60%,
-   偏好值不动(与学习模式三栏同一套纪律)。 */
+   The width comes from the `codeTreeWidth` setting, written into
+   `--code-tree-w`; the lower bound / default of the clamp must match
+   `src/code/treeWidth.ts` (120 / 190). When the middle column is too narrow
+   the display is squeezed to 60%, the preference stays untouched (the same
+   discipline as the three column study mode). */
 .code-tree-drawer {
   flex: 0 0 clamp(120px, var(--code-tree-w, 190px), 60%);
   width: auto;
@@ -5351,8 +5594,10 @@ input[type="range"] {
   overflow: hidden;
 }
 
-/* 文件树右缘的分栏线:1px 线 + 两侧各 4px 的命中区(不占布局)。
-   样式与 .study-resizer 同一套,只是颜色挂在代码面板里。 */
+/* The split line at the right edge of the file tree: a 1px line + a 4px hit
+   area on each side (taking no layout space).
+   The styles are the same set as .study-resizer, only the colors hang in the
+   code panel. */
 .code-resizer {
   flex: 0 0 1px;
   position: relative;
@@ -5411,9 +5656,12 @@ input[type="range"] {
   font-size: 13px;
 }
 
-/* --- 图片预览 ---
-   位图不走编辑器:整块区域按面板大小等比缩放,底部一条角注写尺寸/大小。
-   上限用 max-width/max-height 而不是写死宽高,窗口拖动时跟着缩放。 */
+/* --- Image preview ---
+   Bitmaps do not go through the editor: the whole area is scaled
+   proportionally to the panel size, and a footnote at the bottom writes the
+   dimensions / file size.
+   The limits use max-width/max-height instead of fixed width and height, so
+   it scales along when the window is dragged. */
 .code-image-view {
   flex: 1 1 auto;
   min-height: 0;
@@ -5463,9 +5711,11 @@ input[type="range"] {
   font-family: var(--font-mono);
 }
 
-/* --- 文件树 --- */
-/* 滚动归 .code-tree 自己(虚拟滚动要读它的 scrollTop 与高度):
-   树行按固定 22px 排,窗口只渲染视口附近的行(见 FileTree.tsx)。 */
+/* --- File tree --- */
+/* The scrolling belongs to .code-tree itself (the virtual scrolling reads its
+   scrollTop and its height):
+   the tree rows are laid out at a fixed 22px, and only the rows near the
+   viewport are rendered (see FileTree.tsx). */
 .code-tree {
   position: relative;
   flex: 1 1 auto;
@@ -5516,10 +5766,13 @@ input[type="range"] {
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* 键盘焦点(⌘⇧E 聚焦文件树后整棵树用方向键走):画一圈内描边,与「当前
-   打开的文件」的底色区分开——一个是键盘停在哪,一个是编辑器里开着谁。
-   焦点可以在容器上(虚拟滚动不卸载它),也可以在某一行按钮上(鼠标点过
-   或 Tab 进来),所以用 :focus-within 一并覆盖;行自己的原生描边让位。 */
+/* The keyboard focus (after ⌘⇧E focuses the file tree the whole tree is
+   walked with the arrow keys): an inset outline, kept apart from the base
+   color of the "currently open file" - one is where the keyboard is, the
+   other is which file the editor has open.
+   The focus may sit on the container (the virtual scrolling does not unmount
+   it) or on the button of a row (clicked with the mouse or reached by Tab),
+   so :focus-within covers both; the row's own native outline gives way. */
 .code-tree:focus,
 .code-tree:focus-within,
 .code-tree-row:focus {
@@ -5529,9 +5782,11 @@ input[type="range"] {
   outline: 1px solid var(--accent-dim);
   outline-offset: -1px;
 }
-/* 文件树不画展开箭头:文件夹图标本身就是开/合两态(见 FolderTypeIcon),
-   目录行点一下切换折叠。 */
-/* 文件图标:14px 描边 SVG,颜色按分类(变量在主题块里成对定义)。 */
+/* The file tree draws no expand arrow: the folder icon itself carries the
+   open/closed state (see FolderTypeIcon), clicking a directory row toggles
+   the folding. */
+/* File icons: 14px stroked SVG, colored per category (the variables are
+   defined in pairs in the theme block). */
 .code-tree-icon {
   flex: none;
   width: 14px;
@@ -5598,7 +5853,7 @@ input[type="range"] {
   color: var(--ok);
 }
 
-/* --- 底部面板(问题 / 引用) --- */
+/* --- Bottom panel (problems / references) --- */
 .code-panel-host {
   flex: none;
   max-height: 32%;
@@ -5685,7 +5940,7 @@ input[type="range"] {
   color: var(--text);
 }
 
-/* --- 状态条 --- */
+/* --- Status bar --- */
 .code-status {
   display: flex;
   align-items: center;
@@ -5709,7 +5964,7 @@ input[type="range"] {
   font-weight: 600;
 }
 
-/* --- 差异视图 --- */
+/* --- Diff view --- */
 .code-diff {
   display: flex;
   flex-direction: column;
@@ -5840,7 +6095,7 @@ input[type="range"] {
   background: var(--bg1);
 }
 
-/* --- 浮层(快速打开 / 查找 / 重命名) --- */
+/* --- Overlays (quick open / find / rename) --- */
 .code-overlay {
   position: absolute;
   inset: 0;
@@ -5958,7 +6213,7 @@ input[type="range"] {
   cursor: default;
 }
 
-/* --- 空态 --- */
+/* --- Empty states --- */
 .code-empty-page {
   display: flex;
   flex-direction: column;
@@ -6012,7 +6267,7 @@ input[type="range"] {
   color: var(--accent);
 }
 
-/* --- 悬停提示 --- */
+/* --- Hover tooltips --- */
 .cm-code-hover {
   max-width: 460px;
   max-height: 260px;

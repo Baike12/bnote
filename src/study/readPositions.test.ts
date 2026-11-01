@@ -58,7 +58,7 @@ describe("PDF 位置换算", () => {
   });
 
   it("页间空隙算上一页的末尾,偏移夹在 0..1", () => {
-    // 第 1 页底部 1014,第 2 页顶 1028;滚动到 1020(空隙)仍属于第 1 页。
+    // The bottom of page 1 is 1014, the top of page 2 is 1028; scrolling to 1020 (the gap) still belongs to page 1.
     expect(pdfPositionAt(pages, 1020)).toMatchObject({ page: 1, offset: 1 });
     expect(pdfPositionAt(pages, 99999)).toMatchObject({ page: 3, offset: 1 });
   });
@@ -68,10 +68,12 @@ describe("PDF 位置换算", () => {
     expect(scrollTopForPdfPosition(pages, { page: 9, offset: 0 })).toBeNull();
   });
 
-  // 栏宽拖动/缩放会把页面等比放大缩小:页高变了,同一个 scrollTop 就指向
-  // 完全不同的内容(实测 981px 宽 scrollTop=2900 在第 3 页 53%,拖窄到 390px
-  // 后同一个 scrollTop 落到第 6 页 632%)。重排前后必须按「页码 + 页内比例」
-  // 换算,而不是沿用像素值。
+  // Dragging the column width / zooming scales the pages proportionally: the
+  // page height changes, so the same scrollTop points at completely different
+  // content (measured: at 981px wide scrollTop=2900 is on page 3 at 53%,
+  // after narrowing to 390px the same scrollTop lands on page 6 at 632%).
+  // Before and after a reflow the position must be converted by "page number
+  // + in-page ratio", not by reusing the pixel value.
   it("重排前后按页码+比例换算:同一处内容仍停在视口顶部", () => {
     const GAP = 58;
     const build = (height: number, count: number): PageMetric[] =>
@@ -82,16 +84,16 @@ describe("PDF 位置换算", () => {
       }));
     const wide = build(1244, 9);
     const narrow = build(531, 9);
-    // 宽布局:视口顶部停在 第 3 页、页内 80%。
+    // Wide layout: the viewport top rests on page 3, 80% into the page.
     const top = wide[2].top + 0.8 * wide[2].height;
     const anchor = pdfPositionAt(wide, top);
     expect(anchor).toMatchObject({ page: 3 });
     expect(anchor?.offset).toBeCloseTo(0.8, 4);
-    // 换成窄布局:同一条锚点还落在第 3 页,页内还是 80%。
+    // Narrow layout: the same anchor still lands on page 3, still 80% into the page.
     const restored = scrollTopForPdfPosition(narrow, anchor!)!;
     expect(pdfPositionAt(narrow, restored)).toMatchObject({ page: 3 });
     expect(pdfPositionAt(narrow, restored)?.offset).toBeCloseTo(0.8, 4);
-    // 对照:沿用旧像素值会跑到第 7 页(用户要重新滚动的原因)。
+    // Control: reusing the old pixel value jumps to page 7 (which is why the user had to scroll again).
     expect(pdfPositionAt(narrow, top)?.page).toBe(7);
   });
 

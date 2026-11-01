@@ -1,13 +1,16 @@
 /**
- * Agent 面板的 markdown 渲染器。
+ * The markdown renderer of the agent panel.
  *
- * 纯函数、先整体转义再按规则放行:模型输出直接进 innerHTML,任何没被规则
- * 认出的字符都必须保持字面量。支持:标题 / 有序无序列表(嵌套)/ 引用 /
- * 分隔线 / 表格 / 围栏代码块 / 行内代码 / 粗斜删除体 / 链接,以及
- * KaTeX 数学($…$、$$…$$、\(…\)、\[…\])。
+ * A pure function that escapes everything first and then lets the rules
+ * through one by one: the model output goes straight into innerHTML, so every
+ * character that no rule recognizes has to stay literal. Supported: headings
+ * / ordered and unordered lists (nested) / quotes / horizontal rules /
+ * tables / fenced code blocks / inline code / bold, italic and strikethrough /
+ * links, plus KaTeX math ($…$, $$…$$, \(…\), \[…\]).
  *
- * 不引入 markdown 依赖——答案通常是短结构化文本,这份实现的行为全部由
- * agentMarkdown.test.ts 锁定。
+ * No markdown dependency is pulled in — the answers are usually short
+ * structured text, and the behavior of this implementation is locked down
+ * entirely by agentMarkdown.test.ts.
  */
 import katex from "katex";
 
@@ -40,19 +43,19 @@ export function renderMath(tex: string, display: boolean): string {
 }
 
 // ---------------------------------------------------------------------------
-// 行内规则
+// Inline rules
 // ---------------------------------------------------------------------------
 
-/** 行内渲染:先转义,再依次放行 code / 数学 / 粗斜删 / 链接。 */
+/** Inline rendering: escape first, then let code / math / bold-italic-strike / links through in turn. */
 export function renderInline(src: string): string {
   const stash: string[] = [];
   const keep = (html: string) => `\x00${stash.push(html) - 1}\x00`;
 
   let out = escapeHtml(src);
-  // 行内代码最先处理:代码内容原样保留,不参与后续规则。
+  // Inline code is handled first: the code content is kept verbatim and takes no part in the later rules.
   out = out.replace(/`([^`\n]+)`/g, (_, code: string) => keep(`<code>${code}</code>`));
-  // 行内数学:占位保护,katex 要吃未经 HTML 转义的原文。两侧必须紧贴非空白,
-  // 「价格 $5 和 $6」这类孤立美元符才不会被当成公式。
+  // Inline math: protected by a placeholder, katex needs the raw text without HTML escaping. Both sides must hug a non-space,
+  // so that a lone dollar sign such as in "price $5 and $6" is not taken for a formula.
   out = out.replace(/\$([^\s$][^$\n]*?[^\s$]|[^\s$])\$/g, (_, tex: string) =>
     keep(renderMath(tex, false)),
   );
@@ -70,7 +73,7 @@ export function renderInline(src: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 块级规则
+// Block rules
 // ---------------------------------------------------------------------------
 
 const FENCE_RE = /^\s{0,3}```\s*(\S*)\s*$/;
@@ -78,7 +81,7 @@ const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const HR_RE = /^\s{0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const QUOTE_RE = /^\s{0,3}>/;
 const ITEM_RE = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
-/** 列表嵌套层级:每 2 个空格(或 1 个 tab)一层。 */
+/** The nesting level of a list: one level per 2 spaces (or 1 tab). */
 const LIST_INDENT = 2;
 const MAX_LIST_DEPTH = 6;
 
@@ -104,15 +107,16 @@ function renderTable(header: string[], rows: string[][]): string {
 interface ListItem {
   indent: number;
   ordered: boolean;
-  /** 标记里的数字(有序列表);`<ol start>` 取列表首项的。 */
+  /** The number in the marker (ordered list); `<ol start>` takes the one of the first item. */
   number: number;
   text: string[];
   children: ListItem[];
 }
 
 /**
- * 空行之后这个列表是否还在继续:下一个非空行是**同类型**标记(有序↔无序
- * 换了就是另一个列表),或者是属于上一项的缩进续段。
+ * Whether the list continues after a blank line: the next non-empty line is
+ * a marker of the **same kind** (switching between ordered and unordered
+ * means another list), or an indented continuation of the previous item.
  */
 function listContinues(lines: string[], from: number, ordered: boolean): boolean {
   let i = from;
@@ -123,18 +127,18 @@ function listContinues(lines: string[], from: number, ordered: boolean): boolean
   return /^\s{2,}\S/.test(lines[i]);
 }
 
-/** 收集从 `start` 开始的列表项(含缩进续行),按缩进建树,渲染成 HTML。 */
+/** Collect the list items starting at `start` (including the indented continuation lines), build the tree by the indentation and render it as HTML. */
 function renderList(lines: string[], start: number): [string, number] {
   const items: ListItem[] = [];
-  /** 项之间出现过空行 = 松散列表:项与项之间要留出段落级的间距。 */
+  /** A blank line between the items = a loose list: the items keep paragraph-level spacing between them. */
   let loose = false;
   let i = start;
   while (i < lines.length) {
     const line = lines[i];
     if (!line.trim()) {
-      // 松散列表:项之间夹空行仍然是同一个列表(CommonMark 的 loose list)。
-      // 漏了这条,模型常见的「1. …/空行/1. …」会变成一串各自从 1 起算的
-      // <ol>,屏幕上就是 1. 1. 1. 1.
+      // A loose list: a blank line between the items is still the same list (a loose list in CommonMark).
+      // Without this rule the model's common "1. …/blank line/1. …" becomes a run of <ol> that each start at 1,
+      // and the screen shows 1. 1. 1. 1.
       if (items.length === 0 || !listContinues(lines, i + 1, items[0].ordered)) break;
       loose = true;
       i += 1;
@@ -143,7 +147,7 @@ function renderList(lines: string[], start: number): [string, number] {
     const m = ITEM_RE.exec(line);
     if (m) {
       const ordered = /\d/.test(m[2]);
-      // 有序 ↔ 无序换了标记:另一个列表,交给外层重新开始。
+      // The marker switched between ordered and unordered: that is another list, the outer level starts over.
       if (items.length > 0 && ordered !== items[0].ordered) break;
       items.push({
         indent: Math.floor(m[1].replace(/\t/g, "  ").length / LIST_INDENT),
@@ -155,7 +159,7 @@ function renderList(lines: string[], start: number): [string, number] {
       i += 1;
       continue;
     }
-    // 缩进的续行属于上一个列表项(空行后的非列表行结束列表)。
+    // An indented continuation line belongs to the previous list item (a non-list line after a blank line ends the list).
     if (items.length && /^\s{2,}\S/.test(line)) {
       items[items.length - 1].text.push(line.trim());
       i += 1;
@@ -163,8 +167,8 @@ function renderList(lines: string[], start: number): [string, number] {
     }
     break;
   }
-  // 按缩进深度挂树:栈[i] = 第 i 层当前的最后一个节点;更深的缩进挂到
-  // 当前最深层之下(迷你实现不追求完美嵌套)。
+  // The tree is hung by the indentation depth: stack[i] = the last node of the i-th level; a deeper indentation hangs under
+  // the current deepest level (this mini implementation does not chase perfect nesting).
   const root: ListItem[] = [];
   const stack: ListItem[] = [];
   for (const item of items) {
@@ -182,12 +186,12 @@ function renderList(lines: string[], start: number): [string, number] {
   function renderItems(list: ListItem[]): string {
     const ordered = list[0]?.ordered ?? false;
     const tag = ordered ? "ol" : "ul";
-    // 起始编号取首项的标记数字(模型常把每项都写成「1.」:自增正好给出
-    // 1/2/3/4;真从「3.」起排的列表也照样对齐)。
+    // The start number comes from the marker of the first item (models often write every item as "1.": the auto-increment then gives
+    // exactly 1/2/3/4; a list that really starts at "3." still lines up).
     const startAttr =
       ordered && list[0].number > 1 ? ` start="${list[0].number}"` : "";
-    // 松散列表的每一项在源码里是独立段落,合并成一个列表后靠间距保住这个
-    // 边界(仅根层:嵌套列表的松散程度不值得再多一套记账)。
+    // Every item of a loose list is a separate paragraph in the source; once they are merged into one list, the spacing keeps that
+    // boundary (root level only: the looseness of a nested list does not deserve a second bookkeeping).
     const looseAttr = list === root && loose ? ' class="is-loose"' : "";
     const inner = list
       .map((item) => {
@@ -212,7 +216,7 @@ function startsBlock(line: string): boolean {
   );
 }
 
-/** 段落:连续非空行合并(聊天里单个换行是有意的,渲染成 <br>)。 */
+/** A paragraph: consecutive non-empty lines are merged (a single newline is intentional in a chat and is rendered as <br>). */
 function renderParagraph(lines: string[], start: number): [string, number] {
   const buf: string[] = [];
   let i = start;
@@ -223,7 +227,7 @@ function renderParagraph(lines: string[], start: number): [string, number] {
   return [`<p>${buf.map(renderInline).join("<br>")}</p>`, i];
 }
 
-/** 数学块 $$…$$ 或 \[…\]:收集到闭合定界符(或文末)。 */
+/** A math block $$…$$ or \[…\]: collected up to the closing delimiter (or the end of the text). */
 function collectMath(
   lines: string[],
   start: number,
@@ -249,9 +253,11 @@ function collectMath(
 }
 
 /**
- * 富文本行组(列表项内容):文本行与块级数学混排。模型常把 $$…$$ 块缩进
- * 在列表项下,只走 renderInline 的话块级公式整段原样漏出——这里先扫块级
- * 数学定界符,数学段进 KaTeX,其余文本行按 inline 渲染 join <br>。
+ * A group of rich text lines (the content of a list item): text lines mixed
+ * with block math. Models often indent a $$…$$ block under a list item, and
+ * with renderInline alone the whole display formula leaks out verbatim — so
+ * the block math delimiters are scanned first, the math part goes into KaTeX
+ * and the remaining text lines are rendered inline and joined with <br>.
  */
 function renderTextLines(lines: string[]): string {
   const parts: string[] = [];
@@ -305,7 +311,7 @@ export function renderAgentMarkdown(src: string): string {
         code.push(lines[i]);
         i += 1;
       }
-      i += 1; // 闭合围栏(或文末)
+      i += 1; // the closing fence (or the end of the text)
       const cls = lang ? ` agent-code language-${escapeHtml(lang)}` : " agent-code";
       out.push(`<pre class="${cls.trim()}"><code>${escapeHtml(code.join("\n"))}</code></pre>`);
       continue;

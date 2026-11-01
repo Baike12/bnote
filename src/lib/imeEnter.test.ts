@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { isImeEnter } from "./imeEnter";
 
 /**
- * 根因回归(2026-10-26):AgentPanel 输入框只查 nativeEvent.isComposing,
- * 而 WKWebView 在输入法确认键(搜狗中文模式下敲英文字母后回车)上报
- * isComposing=false、keyCode=229,于是确认候选被当成「发送」。这里锁住
- * 判定:任一信号为真都算输入法回车。
+ * Root-cause regression (2026-10-26): the AgentPanel input only checked
+ * nativeEvent.isComposing, but WKWebView reports the IME confirmation key
+ * (Enter after typing latin letters in Sogou Chinese mode) with
+ * isComposing=false and keyCode=229, so confirming a candidate was treated
+ * as "send". This gate locks the rule: any single signal being true makes
+ * the Enter an IME Enter.
  */
 describe("isImeEnter", () => {
   it("普通回车是发送", () => {

@@ -1,20 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * 项目删除的磁盘契约。
+ * The disk contract of deleting a project.
  *
- * 删除不是「调一次 trash 命令」那么简单:编辑器还挂着一笔 800ms 防抖写、
- * 卸载时还会冲刷一次,任何排在删除之后的写入都会把文件重新落回来。这条测试
- * 锁的就是真实的失败形状——删完之后文件仍然不在盘上。
+ * Deleting is not just "call the trash command once": the editor still holds an
+ * 800ms debounced write and flushes once more on unmount, and every write that
+ * comes after the deletion puts the file back on disk. This test locks exactly
+ * that real failure shape - after the deletion the file is still not on the disk.
  */
 
 const fs = vi.hoisted(() => ({
   files: new Map<string, string>(),
-  /** write / trash 的完成顺序。 */
+  /** The completion order of the write and the trash calls. */
   events: [] as string[],
-  /** writeFile 的人为延迟:让一次保存在删除时还悬着。 */
+  /** Artificial delay of writeFile: keeps one save hanging while the deletion runs. */
   delayMs: 0,
-  /** trashPath 的人为延迟:模拟 watcher 在删除进行中读到旧目录。 */
+  /** Artificial delay of trashPath: simulates the watcher reading the old directory while the deletion is running. */
   trashDelayMs: 0,
 }));
 
@@ -75,7 +76,7 @@ beforeEach(async () => {
 describe("删除项目", () => {
   it("文件进废纸篓,列表与文档缓存同步清掉", async () => {
     expect(store.projectEntries().map((e) => e.name)).toEqual(["读书", "写作"]);
-    await store.readProjectDoc(PROJECT); // 先占一条缓存
+    await store.readProjectDoc(PROJECT); // occupy a cache entry first
 
     await store.deleteProject(VAULT, PROJECT);
 
@@ -89,7 +90,8 @@ describe("删除项目", () => {
     await store.deleteProject(VAULT, PROJECT);
     fs.events.length = 0;
 
-    // 编辑器卸载/防抖定时器在删除之后才跑到这里。
+    // The unmount or the debounce timer of the editor only gets here after the
+    // deletion.
     await store.writeProjectDoc(PROJECT, "- [ ] 复活");
 
     expect(fs.files.has(PROJECT)).toBe(false);
@@ -118,8 +120,10 @@ describe("删除项目", () => {
   });
 
   it("删除进行中,watcher 读到「文件还在」的旧目录也不会撤墓碑", async () => {
-    // 真实时序:删盘是异步的,这段时间里 vault watcher 会把删除前的目录
-    // 快照送回来。若据此撤墓碑,删除完成后到达的自动保存就会把文件写回来。
+    // The real timing: deleting from the disk is asynchronous and during that
+    // time the vault watcher sends back the directory snapshot from before the
+    // deletion. If the tombstone were withdrawn on that basis, the autosave that
+    // arrives after the deletion would write the file back.
     fs.trashDelayMs = 30;
     const del = store.deleteProject(VAULT, PROJECT);
     await new Promise((r) => setTimeout(r, 5));
@@ -138,7 +142,8 @@ describe("删除项目", () => {
   });
 
   it("废纸篓失败时撤掉墓碑,项目仍能正常保存", async () => {
-    // 这一条防的是「删除失败 → 项目从此写不进任何东西」的静默数据丢失。
+    // This case guards against the silent data loss of "the deletion failed ->
+    // nothing can be written to the project anymore".
     const api = (await import("@/lib/tauri")).api as unknown as { trashPath: () => Promise<void> };
     const original = api.trashPath;
     api.trashPath = async () => {

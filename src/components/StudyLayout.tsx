@@ -12,30 +12,45 @@ import { startSplitDrag } from "./splitDrag";
  * Study-mode three-column layout: agent (left) + content (middle) + notes
  * (right), with a draggable divider on each edge of the content column.
  *
- * 助手栏与中栏的宽度按像素存进 settings(`studyAgentWidth` /
- * `studyContentWidth`),笔记栏吃剩余宽度:拖窗口边缘只改笔记栏,前两栏不动
- * ——笔记/助手的内容宽度、PDF 页面尺寸因此稳定。窗口窄到放不下时,CSS 的
- * clamp 压缩前两栏(见 global.css 的 --agent-w / --content-w),不改用户偏好。
+ * The widths of the agent and content columns are stored in pixels in the
+ * settings (`studyAgentWidth` / `studyContentWidth`), the notes column takes
+ * the rest: dragging the window edge only changes the notes column, the
+ * first two stay, so the content width of the notes and agent panes and the
+ * PDF page size remain stable. When the window gets too narrow, the CSS clamp
+ * shrinks the first two columns (see --agent-w / --content-w in global.css)
+ * without touching the stored preference.
  *
- * 拖分栏线只动相邻的两栏:宽度在相邻两栏之间转移,不相邻的那栏原地不动
- * (拖 助手|内容 不牵动笔记栏;拖 内容|笔记 不牵动助手栏)。每栏最小宽度是
- * 布局宽度的 10%,相邻栏到界时把线顶住(见 layoutModel)。
+ * Dragging a divider only moves the two adjacent columns: the width is
+ * transferred between them, the column that is not adjacent stays put
+ * (dragging agent|content does not move the notes column, dragging
+ * content|notes does not move the agent column). The minimum width of a
+ * column is 10% of the layout width and the divider is stopped at the limit
+ * (see layoutModel).
  *
- * 拖动期间把像素直接写进 CSS 变量(不 setState):面板里有 CodeMirror,
- * 60Hz 重渲染代价太大;指针抬起时一次性提交。拖动按**位移**算:起点是线
- * 当前的位置,握线偏了 4px 也不会跳一下。
+ * During the drag the pixels go straight into CSS variables (no setState):
+ * the panes hold CodeMirror instances and a 60 Hz re-render is far too
+ * expensive; the value is committed once, on pointerup. The drag is computed
+ * from the **offset**: the origin is where the divider currently sits, so
+ * grabbing it 4 px off does not make it jump.
  *
- * 三栏**都常驻挂载**:助手面板与笔记编辑器一直在树里,切内容/翻页零重挂、
- * 零重测——CodeMirror 的装饰和滚动位置原样保留,这是手感要求。
+ * All three columns stay **mounted permanently**: the agent panel and the
+ * notes editor live in the tree the whole time, so switching content or
+ * turning a page causes zero remounts and zero re-measures, and CodeMirror's
+ * decorations and scroll position survive untouched. That is a feel
+ * requirement, not an optimization.
  *
- * 三栏头部都带 `data-tauri-drag-region="deep"`(AgentPanel 头部 / notes head):
- * 标题栏(Overlay 样式)在学习模式下整条不渲染,没有它就一处都拖不动窗口。
- * `deep` 而不是裸属性——裸属性只认直接点在带属性的那个元素上,点在标题文字
- * (子 span)上不算;`deep` 走进整棵子树,而 Tauri 的 drag.js 遇到可点元素
- * (button/input/…)本身就截断,所以头部里的按钮照常可点。
+ * All three column headers carry `data-tauri-drag-region="deep"` (the
+ * AgentPanel header / notes head): the title bar (Overlay style) is not
+ * rendered at all in study mode, without it not a single spot of the window
+ * could be dragged. `deep` rather than the bare attribute, because the bare
+ * attribute only counts a direct press on the element that carries it, not
+ * on the title text (a child span); `deep` walks the whole subtree, while
+ * Tauri's drag.js stops at clickable elements (button/input/...) on its own,
+ * so the buttons in the header stay clickable.
  *
- * 窗口红绿灯压在左栏头部:最左是助手栏,让位由 `.study-layout .agent-header`
- * 的 --study-lead 负责。
+ * The macOS traffic lights sit on top of the leftmost header: that is the
+ * agent column, and the clearance is handled by --study-lead of
+ * `.study-layout .agent-header`.
  */
 export function StudyLayout() {
   const agentWidth = useAppStore((s) => s.settings.studyAgentWidth);
@@ -49,8 +64,10 @@ export function StudyLayout() {
     : "笔记";
 
   /**
-   * 一根分栏线的公共拖动骨架:`compute(dx)` 把「指针相对按下点的位移」换算
-   * 成这次要写的几个变量;抬起时提交一次(见 splitDrag)。项目视图共用同一套。
+   * Shared drag skeleton for one divider: `compute(dx)` turns the "pointer
+   * offset from the press point" into the variables to write; the value is
+   * committed once on pointerup (see splitDrag). The project view uses the
+   * same one.
    */
   function startDrag(
     event: React.PointerEvent<HTMLDivElement>,
@@ -66,16 +83,21 @@ export function StudyLayout() {
       stored,
       compute,
       commit,
-      // 原生网页预览是挂在 DOM 之上的子 webview,只会按尺寸变化自己跟着挪;
-      // 拖助手栏只平移内容栏、尺寸不变,需要这个信号让它重报矩形(见
-      // ContentPane 的 previewSyncRef)。
+      // The native web preview is a child webview mounted above the DOM and
+      // only follows size changes by itself; dragging the agent column only
+      // translates the content column without resizing it, so this signal is
+      // needed to make it re-report its bounds (see ContentPane's
+      // previewSyncRef).
       onMove: () => window.dispatchEvent(new Event("bnote:study-layout-resize")),
     });
   }
 
   /**
-   * 助手|内容:宽度在助手栏与中栏之间转移,笔记栏不动。
-   * 起点量的是**屏幕上真实的两栏宽度**(CSS 可能夹过),位移从线的当前位置起算。
+   * agent|content: the width is transferred between the agent column and the
+   * middle column, the notes column stays.
+   * The origin measures the **real column widths on screen** (CSS may have
+   * clamped them), and the offset is taken from the divider's current
+   * position.
    */
   function startAgentDrag(event: React.PointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
@@ -103,12 +125,12 @@ export function StudyLayout() {
     );
   }
 
-  /** 内容|笔记:宽度在中栏与笔记栏之间转移,助手栏不动。 */
+  /** content|notes: the width is transferred between the middle column and the notes column, the agent column stays. */
   function startContentDrag(event: React.PointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
     if (!host) return;
     const hostRect = host.getBoundingClientRect();
-    // 内容栏左缘在拖动中不动(线只在中栏与笔记栏之间),量一次即可。
+    // The left edge of the content column does not move during the drag (the divider sits between the middle and the notes column), so measuring once is enough.
     const content = host.querySelector(".content-pane");
     if (!content) return;
     const contentRect = content.getBoundingClientRect();
@@ -172,7 +194,7 @@ export function StudyLayout() {
         onDoubleClick={resetContentSplit}
       />
       <div className="study-right">
-        {/* 学习模式没有 .titlebar,窗口的拖动区只剩各栏头部。 */}
+        {/* Study mode has no .titlebar, so the only drag regions of the window are the column headers. */}
         <div className="study-notes-head" data-tauri-drag-region="deep">
           <span className="study-notes-title">{noteTitle}</span>
         </div>

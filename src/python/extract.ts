@@ -1,43 +1,43 @@
 /**
- * markdown 里 python 围栏代码块的提取与「行对齐虚拟文件」合成。
+ * Extraction of python fenced code blocks from markdown and the composition of a "line-aligned virtual file".
  *
- * 核心模型:一篇 markdown 的所有 ```python 围栏内容,按行号原位拼成一个
- * 虚拟 .py 文件 —— 非 python 行一律置空。虚拟文件与 markdown 逐行等长,
- * 所以 LSP 诊断、traceback 的行列号与 markdown 完全一致,零换算。
+ * Core model: the contents of every ```python fence in a markdown file are stitched into one virtual .py file in place, by line
+ * number -- every non-python line is blanked out. The virtual file has exactly as many lines as the markdown, so LSP diagnostics
+ * and traceback line/column numbers match the markdown exactly, with zero conversion.
  *
- * 「把所有代码片段当一个 py 文件」的语义由空行保证:python 里空行不会闭合
- * 缩进块,原位拼接与直接顺序拼接在语法上等价,但行号对齐让错误定位免费。
+ * The "run every snippet as one py file" semantics is guaranteed by the blank lines: in python a blank line never closes an indented
+ * block, so pasting in place is syntactically equivalent to concatenating in order, but the line alignment makes error locations free.
  */
 
 export interface PythonBlock {
-  /** 围栏内容首行(0 基,不含 ``` 开栏行)。 */
+  /** First line of the fence content (0-based, excludes the ``` opening fence). */
   startLine: number;
-  /** 围栏内容末行(0 基,不含闭栏行;未闭合围栏到文档末尾)。 */
+  /** Last line of the fence content (0-based, excludes the closing fence; an unclosed fence runs to the end of the document). */
   endLine: number;
-  /** 剥掉围栏公共缩进后的代码文本。 */
+  /** The code text with the fence's common indent stripped. */
   text: string;
-  /** 开栏行的缩进数;虚拟文件每行剥掉 min(indent, 行首空格) 列。 */
+  /** Indent of the opening fence; every virtual line is stripped of min(indent, leading spaces) columns. */
   indent: number;
 }
 
 export interface PythonExtract {
   blocks: PythonBlock[];
-  /** 与原文档逐行等长的虚拟文件(非 python 行为空行)。 */
+  /** The virtual file, line-for-line as long as the original document (non-python lines are empty). */
   virtualText: string;
-  /** 虚拟文件里识别到的模块级 main。 */
+  /** A module-level main found in the virtual file. */
   hasMain: boolean;
-  /** 原文里已有 __name__ 守卫(用户自己管调用,不再追加)。 */
+  /** The source already has a __name__ guard (the user drives the call, so nothing is appended). */
   hasMainGuard: boolean;
-  /** 为「有 main 无守卫」追加的行数(0 或 3)。 */
+  /** Number of lines appended for the "has main, no guard" case (0 or 3). */
   appendedLines: number;
-  /** 实际交给 python / LSP 的文本 = virtualText + 可能的 main 守卫。 */
+  /** The text actually handed to python / the LSP = virtualText + a possible main guard. */
   effectiveText: string;
 }
 
-/** 识别为 python 的 info string 首词。 */
+/** The first word of an info string that identifies python. */
 const PYTHON_LANGS = new Set(["python", "py", "python3"]);
 
-/** 快速判负:文档里连围栏标记都没有就无需解析(每次同步 tick 的省路)。 */
+/** Cheap negative check: a document without any fence marker needs no parsing (the shortcut on every sync tick). */
 export function hasPythonFenceHint(doc: string): boolean {
   return doc.includes("```") || doc.includes("~~~");
 }
@@ -54,7 +54,7 @@ export function extractPython(doc: string): PythonExtract {
       i += 1;
       continue;
     }
-    // 围栏内容区:从开栏下一行到闭栏前一行(或文档末尾)。
+    // The fence content region: from the line after the opening fence to the line before the closing fence (or the end of the document).
     const startLine = i + 1;
     let j = startLine;
     while (j < lines.length && !isCloseFence(lines[j], open)) {
@@ -77,8 +77,8 @@ export function extractPython(doc: string): PythonExtract {
   const virtualText = virtual.join("\n");
   const hasMain = virtual.some((l) => /^def\s+main\s*\(/.test(l));
   const hasMainGuard = virtual.some((l) => /if\s+__name__\s*==\s*['"]__main__['"]/.test(l));
-  // 运行语义与跑一个 .py 文件一致:模块顶层 def main 存在且没人调它时,
-  // 追加标准守卫;用户已写 __name__ 守卫就尊重原文。
+  // Same run semantics as executing a .py file: when a module-level def main exists and nothing calls it,
+  // the standard guard is appended; a __name__ guard written by the user is respected as-is.
   const appendGuard = hasMain && !hasMainGuard;
   const guard = appendGuard ? '\n\nif __name__ == "__main__":\n    main()' : "";
   return {
@@ -94,14 +94,14 @@ export function extractPython(doc: string): PythonExtract {
 interface OpenFence {
   char: "`" | "~";
   length: number;
-  /** 开栏行前导空格数(≤3),内容行剥掉不超过这个数的缩进。 */
+  /** Number of leading spaces on the opening fence (<=3); content lines are stripped of at most that many columns. */
   indent: number;
   lang: string;
 }
 
 /**
- * CommonMark 围栏开栏:≤3 空格缩进 + ≥3 个相同字符。反引号围栏的 info
- * string 里不许再出现反引号(出现即不是围栏);波浪号无此限制。
+ * CommonMark fence opening: <=3 spaces of indent plus >=3 identical chars. The info string of a backtick fence
+ * may not contain a backtick (if it does, it is not a fence); tilde fences have no such restriction.
  */
 function openFenceOf(line: string): OpenFence | null {
   const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
@@ -129,7 +129,7 @@ function stripIndent(line: string, indent: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// LSP 行列(CM6 偏移都是 UTF-16 code unit,LSP position 也是,可直接相加)
+// LSP line/column (CM6 offsets are UTF-16 code units, LSP positions too, so they add up directly)
 // ---------------------------------------------------------------------------
 
 import type { Text } from "@codemirror/state";
@@ -144,7 +144,7 @@ export interface LspRange {
   end: LspPoint;
 }
 
-/** LSP position(0 基行 + UTF-16 列)→ CM 偏移;行越界返回 -1(调用方丢弃)。 */
+/** LSP position (0-based line + UTF-16 column) -> CM offset; returns -1 for an out-of-range line (the caller drops it). */
 export function lspPointToOffset(doc: Text, line0: number, character: number): number {
   if (!Number.isInteger(line0) || line0 < 0 || line0 >= doc.lines) return -1;
   const line = doc.line(line0 + 1);
@@ -153,7 +153,7 @@ export function lspPointToOffset(doc: Text, line0: number, character: number): n
 
 export type UiSeverity = "error" | "warning" | "info" | "hint";
 
-/** LSP Diagnostic 里前端要用的最小切片(后端原样转发 ty 的 JSON)。 */
+/** The minimal slice of an LSP Diagnostic the frontend needs (the backend forwards ty's JSON as-is). */
 export interface RawLspDiagnostic {
   range: LspRange;
   severity?: number;
@@ -172,8 +172,8 @@ export interface UiDiagnostic {
 }
 
 /**
- * LSP 诊断 → CM lint 诊断。虚拟文件与 markdown 行对齐,行列直接用;
- * 落在追加的 main 守卫区(超出文档行数)或无法映射的条目丢弃。
+ * LSP diagnostics -> CM lint diagnostics. The virtual file is line-aligned with the markdown, so line and column are used directly;
+ * entries that land in the appended main guard (past the document's line count) or cannot be mapped are dropped.
  */
 export function mapLspDiagnostics(doc: Text, raw: RawLspDiagnostic[]): UiDiagnostic[] {
   const out: UiDiagnostic[] = [];
@@ -205,21 +205,21 @@ function severityOf(n: number | undefined): UiSeverity {
 }
 
 // ---------------------------------------------------------------------------
-// 补全 / hover:LSP 应答 → 前端结构(纯映射,无 DOM,node 环境可测)
+// Completion / hover: LSP replies -> frontend structures (pure mapping, no DOM, testable in the node environment)
 // ---------------------------------------------------------------------------
 
 export interface UiCompletion {
   label: string;
-  /** 插入文本;undefined = 用 label(snippet 格式不解析占位符,退回 label)。 */
+  /** Text to insert; undefined means use the label (snippet format is not parsed for placeholders, it falls back to the label). */
   apply?: string;
   detail?: string;
-  /** CM 的 completion type(class/function/variable/…),决定列表图标。 */
+  /** CM completion type (class/function/variable/...), it decides the icon in the list. */
   type?: string;
-  /** documentation 字段的纯文本。 */
+  /** The documentation field as plain text. */
   info?: string;
 }
 
-/** LSP CompletionItemKind(1-25)→ CM completion type 的常用子集。 */
+/** The common subset of LSP CompletionItemKind (1-25) -> CM completion type. */
 const COMPLETION_KINDS: Record<number, string> = {
   2: "method",
   3: "function",
@@ -238,7 +238,7 @@ const COMPLETION_KINDS: Record<number, string> = {
   25: "type",
 };
 
-/** MarkupContent / plain string → 纯文本;markdown 内容剥掉 ``` 围栏行。 */
+/** MarkupContent / plain string -> plain text; markdown content is stripped of its ``` fence lines. */
 function markupText(v: unknown): string | undefined {
   if (typeof v === "string") return v;
   if (v && typeof v === "object") {
@@ -256,7 +256,7 @@ function markupText(v: unknown): string | undefined {
   return undefined;
 }
 
-/** LSP CompletionList / CompletionItem[] → 前端补全项;畸形条目丢弃。 */
+/** LSP CompletionList / CompletionItem[] -> frontend completion items; malformed entries are dropped. */
 export function mapLspCompletions(raw: unknown): UiCompletion[] {
   let items: readonly unknown[] | null = null;
   if (Array.isArray(raw)) {
@@ -295,7 +295,7 @@ export function mapLspCompletions(raw: unknown): UiCompletion[] {
   return out;
 }
 
-/** LSP hover 应答 → 纯文本(contents 可为 string / MarkupContent / 数组)。 */
+/** An LSP hover reply -> plain text (contents may be a string, a MarkupContent or an array). */
 export function lspHoverText(raw: unknown): string | null {
   if (!raw || typeof raw !== "object") return null;
   const contents = (raw as { contents?: unknown }).contents;
@@ -314,9 +314,9 @@ export function lspHoverText(raw: unknown): string | null {
 }
 
 /**
- * markdown 光标偏移 → 虚拟文件 LSP position。行号天生对齐;列要剥掉围栏
- * 公共缩进(虚拟行 = markdown 行 slice 掉前缀),光标落在被剥的前缀里时
- * 贴到列 0。不在 python 围栏内容行时返回 null(补全/hover 的门)。
+ * A markdown caret offset -> an LSP position in the virtual file. Line numbers align by construction; the column has to strip the
+ * fence's common indent (the virtual line is the markdown line sliced off that prefix), and a caret inside the stripped prefix sticks
+ * to column 0. Returns null when the caret is not on a python fence content line (the gate for completion and hover).
  */
 export function mdPosToLspPosition(
   doc: Text,

@@ -40,23 +40,28 @@ import { lspCompletion, lspDiagnosticsLinter, lspHoverTooltip } from "./lsp";
 import { registerCodeEditor, setActiveCodeEditor, unregisterCodeEditor } from "./registry";
 
 /**
- * 代码编辑器本体(CodeMirror 6)。
+ * The code editor itself (CodeMirror 6).
  *
- * 与笔记编辑器**完全分开**:自己的扩展、自己的键位、自己的 vim 开关
- * (`settings.codeVim`)。笔记区与代码区是两个编辑上下文,笔记的键位不会
- * 渗进代码里,代码的键位也不会渗进笔记里。
+ * **Completely separate** from the notes editor: its own extensions, its own
+ * keybindings, its own vim switch (`settings.codeVim`). The notes area and
+ * the code area are two editing contexts; the keybindings of the notes never
+ * leak into the code and vice versa.
  *
- * ## 状态归属
+ * ## Where the state lives
  *
- * 文档内容在 store 里(不在编辑器里):编辑器实例会随标签切换重建/换文档,
- * 内容放进去就丢了。每个文件的 `EditorState` 缓存在组件里,切回来时
- * `setState` 换回去——撤销栈因此也留在各自的文件上。
+ * The document content lives in the store (not in the editor): the editor
+ * instance is rebuilt / swapped per tab, so content put in there would be
+ * lost. The `EditorState` of each file is cached in the component and swapped
+ * back with `setState` — which keeps the undo stack with its own file.
  *
- * ## 单一写入者
+ * ## Single writer
  *
- * 文档内容只由编辑器往 store 写(`updateContent`),store 往编辑器写只有
- * 一处:外部改动(重命名后重读盘)时的整篇替换。两边都先比一次当前内容,
- * 相同就不动——不比较就会出现「写回自己触发自己」的循环。
+ * The document content is written to the store by the editor only
+ * (`updateContent`); the store writes to the editor in exactly one place: the
+ * wholesale replacement on an external change (re-reading from disk after a
+ * rename). Both sides compare the current content first and do nothing when
+ * it is equal — without the comparison there would be a "write it back, which
+ * triggers itself" loop.
  */
 
 const languageCompartment = new Compartment();
@@ -66,26 +71,30 @@ const typewriterCompartment = new Compartment();
 
 export interface CodeEditorProps {
   file: OpenFile;
-  /** 光标位置变化(状态栏用)。 */
+  /** The caret position changed (used by the status bar). */
   onCursor?: (line: number, column: number) => void;
-  /** vim 模式变化(状态栏显示 NORMAL / INSERT)。 */
+  /** The vim mode changed (the status bar shows NORMAL / INSERT). */
   onMode?: (mode: string) => void;
 }
 
 export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
-  /** 每个文件的 EditorState:切标签时换回去,撤销栈不丢。 */
+  /** The EditorState of each file: swapped back on a tab switch, so the undo stack is kept. */
   const statesRef = useRef(new Map<string, EditorState>());
   const handleRef = useRef<{ root: string; path: string; language: string; view: EditorView } | null>(
     null,
   );
   /**
-   * 往语言服务器推内容的防抖句柄(按文件分桶):打字的每一击都推会把服务器
-   * 淹掉。按文件分是因为切文件时旧文件的待推内容不能被新文件的取消掉。
+   * The debounced handles that push content to the language server (bucketed
+   * per file): pushing every keystroke would flood the server. Bucketing per
+   * file is needed because switching files must not cancel the pending push of
+   * the old file.
    *
-   * 同时记下待推的 root 与文本:卸载(切去 PDF / 关项目)时要**先推完再走**,
-   * 否则最后 300ms 里敲的内容服务器永远看不到,诊断停在旧文本上。
+   * The pending root and text are recorded as well: on unmount (switching to a
+   * PDF / closing the project) the pending content has to be **pushed before
+   * leaving**, otherwise the server never sees what was typed in the last
+   * 300ms and the diagnostics stay on the old text.
    */
   const syncTimersRef = useRef(
     new Map<string, { timer: ReturnType<typeof setTimeout>; root: string; text: string }>(),
@@ -93,29 +102,31 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
 
   const codeVim = useAppStore((s) => s.settings.codeVim);
   const codeWrap = useAppStore((s) => s.settings.codeWrap);
-  // 打字机模式与笔记共用一份设置(含光标纵向位置):同一套模型,不为代码区
-  // 再开一套开关。
+  // The typewriter mode shares one setting with the notes (including the
+  // vertical caret position): the same model, no second set of switches for
+  // the code area.
   const typewriter = useAppStore((s) => s.settings.typewriter);
   const typewriterPosition = useAppStore((s) => s.settings.typewriterPosition);
   const jump = useCodeStore((s) => s.jump);
   const content = file.content;
 
   /**
-   * 缩进:打开文件时猜一次,之后不变。
+   * Indentation: guessed once when the file is opened, then fixed.
    *
-   * `indentUnit` 是**回车/ Tab 真的写进去的东西**(2 空格、4 空格或一个制表
-   * 符);`tabSize` 只决定 Tab 画出来多宽。两个都要给:只设 tabSize 的话
-   * 自动缩进仍旧是 CodeMirror 默认的 2 空格,4 空格缩进的项目会被敲成混排。
+   * `indentUnit` is **what Enter / Tab really write** (2 spaces, 4 spaces or
+   * one tab); `tabSize` only decides how wide a tab draws. Both are needed:
+   * with only tabSize, the auto-indent stays at CodeMirror's default of 2
+   * spaces and a 4-space project ends up with a mix.
    */
   const indentUnitText = file.indentUnit || "  ";
   const tabSize = file.tabSize || indentUnitText.length;
 
-  // ---- 建视图(只建一次) ----
+  // ---- build the view (only once) ----
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    // 抓住这一份 Map:cleanup 里要用它,不能读 ref.current(那时的 ref 可能
-    // 已经换过)。
+    // Hold on to this Map: the cleanup needs it, and ref.current may already
+    // have been replaced by then.
     const timers = syncTimersRef.current;
     const view = new EditorView({
       parent: host,
@@ -126,7 +137,8 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     });
     viewRef.current = view;
     return () => {
-      // 待推的内容先推完:clearTimeout 掉就等于最后几次输入永远不给服务器。
+      // Push the pending content before leaving: clearing the timer would
+      // mean the last few keystrokes never reach the server.
       for (const [path, pending] of timers) {
         clearTimeout(pending.timer);
         void codeApi.lspSync(pending.root, path, pending.text).catch(() => {});
@@ -138,7 +150,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 把光标位置与 vim 模式报给状态条(切文件、换状态时用)。 */
+  /** Report the caret position and the vim mode to the status bar (used on file switch and state change). */
   function reportCursor(view: EditorView): void {
     const pos = view.state.selection.main.head;
     const line = view.state.doc.lineAt(pos);
@@ -146,7 +158,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     onMode?.(vimModeOf(view) ?? "");
   }
 
-  /** 构造扩展集(建视图与换文件时共用)。 */
+  /** Build the extension set (shared by building the view and swapping the file). */
   function buildExtensions(): Extension[] {
     return [
       lineNumbers(),
@@ -180,8 +192,10 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       languageCompartment.of([]),
       vimCompartment.of([]),
       wrapCompartment.of(codeWrap ? EditorView.lineWrapping : []),
-      // 代码区第一行钉在顶部:光标行在上面几屏时不为居中把首行拉下来,
-      // 而是光标自己在屏幕上往上走(笔记正文仍留上白,见 typewriter.ts)。
+      // The first line of the code area is pinned to the top: when the caret
+      // line is a few screens up, the first line is not dragged down to center
+      // it — the caret walks up the screen instead (the notes body still keeps
+      // its top margin, see typewriter.ts).
       typewriterCompartment.of(
         typewriter ? typewriterExtension(typewriterPosition, { reserveTop: false }) : [],
       ),
@@ -220,8 +234,10 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
             const text = u.state.doc.toString();
             useCodeStore.getState().updateContent(handle.path, text);
             statesRef.current.set(handle.path, u.state);
-            // 语言服务器只认自己手上那份内容:改了就得推给它,否则补全与
-            // 跳转用的还是旧文本。防抖 300ms——每击都推会把服务器淹掉。
+            // The language server only knows the content it holds: after a
+            // change it has to be pushed to it, otherwise completion and
+            // jumps still use the old text. Debounced by 300ms — pushing on
+            // every keystroke would flood the server.
             const state = useCodeStore.getState();
             if (state.lspStates[handle.language] === "running") {
               const timers = syncTimersRef.current;
@@ -239,8 +255,10 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
           }
         }
         if (u.selectionSet || u.docChanged) {
-          // 光标也算「这份文件的状态」:只存 docChanged 的版本,切走再切回来
-          // 会回到上次敲字那一刻的光标(甚至文首),「我上次读到哪」就丢了。
+          // The caret is part of "the state of this file" as well: storing
+          // only the docChanged version would send the caret back to the
+          // position of the last keystroke (or even the start of the document)
+          // after a switch away and back, losing "where I left off".
           if (handle) statesRef.current.set(handle.path, u.state);
           const pos = u.state.selection.main.head;
           const line = u.state.doc.lineAt(pos);
@@ -252,7 +270,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     ];
   }
 
-  // ---- 换文件:把该文件的 state 换进视图 ----
+  // ---- swap files: put the state of that file into the view ----
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -271,9 +289,11 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       statesRef.current.set(file.path, state);
     }
     view.setState(state);
-    // setState 已经把该文件上次的光标与选区一起换回来了。不要再 dispatch
-    // `anchor: 0`——那样每切一次标签光标都跳回文首,缓存的 EditorState 只
-    // 保住了撤销栈,却把「我上次读到哪」丢了。状态条也跟着刷一次。
+    // setState already swapped back the caret and the selection of that file.
+    // Do not dispatch `anchor: 0` again — that would send the caret back to
+    // the start of the document on every tab switch, so the cached
+    // EditorState would keep the undo stack but lose "where I left off". The
+    // status bar is refreshed along with it.
     reportCursor(view);
 
     return () => {
@@ -283,15 +303,19 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.path]);
 
-  // ---- 关掉的标签:把它的 EditorState 从缓存里删掉 ----
+  // ---- closed tabs: drop their EditorState from the cache ----
   //
-  // 不删的话,一个长会话开过的每个文件都留一份完整文档 + 撤销栈。缓存只在
-  // 标签还开着时有用(关掉的标签下次打开就是重新读盘)。
+  // Without this, every file opened during a long session keeps a full
+  // document plus an undo stack. The cache is only useful while the tab is
+  // open (a closed tab is read from disk again next time).
   //
-  // 待推给语言服务器的内容也要一起丢掉:关标签时 store 已经发了 didClose,
-  // 一个 300ms 后才到的 didChange 会在服务器那边把文档又「打开」一次。
+  // The content pending a push to the language server has to be dropped as
+  // well: closing the tab already sent a didClose from the store, and a
+  // didChange arriving 300ms later would "open" the document again on the
+  // server side.
   //
-  // 订阅里先比 tabs 的引用:store 每敲一个键都会通知,不能每个键都建一次 Set。
+  // The subscription compares the reference of tabs first: the store notifies
+  // on every keystroke, and a Set must not be built per keystroke.
   useEffect(() => {
     let lastTabs = useCodeStore.getState().tabs;
     return useCodeStore.subscribe((s) => {
@@ -309,12 +333,14 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     });
   }, []);
 
-  // ---- 语法包:按 languageId 动态载入 ----
+  // ---- syntax package: loaded dynamically per languageId ----
   //
-  // 依赖里带 file.path:两个文件是**同一种语言**时(两个 .rs),只盯
-  // languageId 不会重跑,新文件的状态就停在「没有语法包」——高亮整个不见。
-  // 依赖 path 保证每次换文件都重新配一次;已经载入过的语言是同步可用的,
-  // 不会闪一下无色。
+  // The dependency list includes file.path: when two files are **the same
+  // language** (two .rs), watching only the languageId does not re-run and the
+  // state of the new file stays "without a syntax package" — the highlighting
+  // is gone entirely. Depending on path guarantees a reconfigure per file
+  // switch; an already loaded language is available synchronously, so there is
+  // no flash of unhighlighted text.
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -344,10 +370,12 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     };
   }, [file.path, file.languageId]);
 
-  // ---- vim 开关 ----
+  // ---- vim switch ----
   //
-  // 依赖里带 file.path:换文件会换一份新的 EditorState,新状态的 vim 隔层
-  // 是空的(见 buildExtensions)。不跟着重配一次,vim 就在换文件后悄悄失效。
+  // The dependency list includes file.path: switching files swaps in a new
+  // EditorState whose vim compartment is empty (see buildExtensions). Without
+  // a reconfigure along with it, vim silently stops working after a file
+  // switch.
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -361,10 +389,12 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     if (!codeVim) onMode?.("");
   }, [codeVim, file.path, onMode]);
 
-  // ---- 折行开关 ----
+  // ---- line wrapping switch ----
   //
-  // 同样依赖 file.path:换文件换一份新 state,折行是每个 state 自己的扩展。
-  // 用隔层重配而不是重建视图——切折行不该把撤销栈和光标一起丢掉。
+  // Likewise dependent on file.path: switching files swaps in a new state and
+  // line wrapping is an extension of each state. Reconfigure the compartment
+  // instead of rebuilding the view — toggling wrapping must not throw away
+  // the undo stack and the caret along with it.
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -373,12 +403,15 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     });
   }, [codeWrap, file.path]);
 
-  // ---- 打字机模式 ----
+  // ---- typewriter mode ----
   //
-  // 与笔记区同一个模型(编辑器/typewriter.ts):光标行停在视口固定比例处,
-  // 上下留白由同一个比例推出(--typewriter-top / --typewriter-bottom 写在
-  // scrollDOM 上,正文内边距在 CSS 里读它)。位置改了要重建插件,所以位置
-  // 也在依赖里;换文件后同样要重配一次——隔层跟着 EditorState 走。
+  // The same model as the notes area (editor/typewriter.ts): the caret line
+  // rests at a fixed ratio of the viewport and the top / bottom margins are
+  // derived from that same ratio (--typewriter-top / --typewriter-bottom are
+  // written on the scrollDOM and the body padding in CSS reads them).
+  // Changing the position rebuilds the plugin, so the position is a
+  // dependency as well; after a file switch it has to be reconfigured too —
+  // the compartment travels with the EditorState.
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -389,7 +422,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     });
   }, [typewriter, typewriterPosition, file.path]);
 
-  // ---- 外部改动:整篇换掉(重命名后重读盘) ----
+  // ---- external change: replace the whole document (re-read from disk after a rename) ----
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -402,7 +435,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     statesRef.current.set(file.path, view.state);
   }, [content, file.path]);
 
-  // ---- 跳转请求:把光标落到目标位置 ----
+  // ---- jump request: place the caret at the target position ----
   useEffect(() => {
     const view = viewRef.current;
     if (!view || !jump || jump.path !== file.path) return;
@@ -421,7 +454,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     useCodeStore.getState().clearJump();
   }, [file.path, jump]);
 
-  // ---- 焦点:进入编辑器就把命令目标切到它 ----
+  // ---- focus: entering the editor switches the command target to it ----
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -435,7 +468,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
   return <div className="code-editor-host" ref={hostRef} />;
 }
 
-/** vim 模式名(NORMAL / INSERT / VISUAL);vim 没开时返回 null。 */
+/** The vim mode name (NORMAL / INSERT / VISUAL); null when vim is off. */
 function vimModeOf(view: EditorView): string | null {
   const cm = getCM(view);
   const vim = cm?.state?.vim as

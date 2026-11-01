@@ -23,22 +23,25 @@ import { ensureLinks, scheduleLinksPersist } from "@/daily/links";
 import { runtimeDeps } from "@/daily/runtime";
 
 /**
- * 项目待办 → 今日日记待办区**最前面**。
+ * Project todo -> the **front** of the todo region of today's daily note.
  *
- * 与 ⌘⇧J(加到末尾、按时间顺序)是两条不同的意图:项目卡片的发送/拖拽是
- * 「今天先干这条」,所以插在最前。落地形状与快速待办相同(prependEntrySpec),
- * 建立的是 copied 映射——两侧从此双向镜像,项目侧据此显示「已发送」。
+ * This is a different intent from ⌘⇧J (which appends at the end, in chronological
+ * order): sending or dragging from a project card means "do this one first
+ * today", so the entry goes to the front. The shape on disk is the same as for the
+ * quick capture (prependEntrySpec) and a `copied` link is created - from then on
+ * the two sides mirror each other, and the project side shows "sent" because of it.
  *
- * 日记正被某个编辑器打开时就地改内存(交给自动保存),与 captureTodo 同一纪律:
- * 写盘会让编辑器里的旧内容在下一次保存时把那一条覆盖掉。
+ * When the daily note is open in an editor the in-memory document is patched (and
+ * autosave writes it), the same discipline as in captureTodo: writing to disk
+ * would let the stale content of the editor overwrite that entry on the next save.
  */
 
 export type SendTodoResult = "sent" | "already" | "not-todo" | "no-vault" | "no-source";
 
 export interface SendTodoTarget {
-  /** 源项目文件绝对路径。 */
+  /** Absolute path of the source project file. */
   srcPath: string;
-  /** 1 基行号。 */
+  /** 1-based line number. */
   line: number;
 }
 
@@ -53,7 +56,7 @@ export interface SendTodoDeps {
   vaultRoot: () => string | null;
   today: () => string;
   toast: (msg: string) => void;
-  /** 新建日记用的模板文件(仓库相对路径);空 = 默认 `# 日期` 开篇。 */
+  /** Template file used to scaffold a new daily note (vault-relative path); empty = the default `# YYYY-MM-DD` opening. */
   templatePath: () => string | null;
 }
 
@@ -67,7 +70,8 @@ export async function sendTodoToTodayFront(
   const today = deps.today();
   const dailyPath = dailyPathFor(vaultRoot, today);
 
-  // 源文档:编辑器正装着这份项目文件时用内存(最新的那几笔还没落盘)。
+  // Source document: when an editor holds this project file the in-memory document
+  // is used (the latest edits are not on disk yet).
   const srcView = findEditorFor(target.srcPath);
   const srcText = srcView ? srcView.state.doc.toString() : await deps.io.readFile(target.srcPath);
   if (srcText === null) return "no-source";
@@ -117,8 +121,9 @@ export async function sendTodoToTodayFront(
     });
   }
 
-  // 当天已映射就只更新锚点行号;否则建一条 copied 映射。按日归属与 ⌘⇧J 一致:
-  // 昨天发出去的那条不算今天已同步。
+  // When it is already mapped for today only the anchor line numbers are updated,
+  // otherwise a `copied` link is created. The per-day ownership is the same as for
+  // ⌘⇧J: the entry sent yesterday does not count as synced today.
   const own = store
     .forFile(dailyPath)
     .find((l) => l.srcPath === target.srcPath && l.text === text);
@@ -139,13 +144,14 @@ export async function sendTodoToTodayFront(
   scheduleLinksPersist();
 
   if (createdDaily) {
-    // 第一次创建今日日记:侧栏/快速跳转要能看到这份文件。
+    // The first creation of today's daily note: the sidebar and the quick jump
+    // have to see this file.
     void import("@/app/actions").then((m) => m.refreshTree()).catch(() => undefined);
   }
   return inserted ? "sent" : "already";
 }
 
-/** 发送并给出用户可见的结果提示(命令与拖拽共用)。 */
+/** Send and give a user visible result hint (shared by the command and the drag). */
 export async function sendTodoWithToast(target: SendTodoTarget): Promise<void> {
   const result = await sendTodoToTodayFront(target);
   const toast = useAppStore.getState().showToast;

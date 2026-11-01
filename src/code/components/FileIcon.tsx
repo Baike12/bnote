@@ -1,18 +1,20 @@
 import { fileIconKind, type FileIconKind } from "../fileIcon";
 
 /**
- * 文件树图标:文件夹(开/合两态)+ 按分类画内芯的文件图标。
+ * File tree icons: folders (open / closed) plus file icons whose inner mark
+ * is drawn per category.
  *
- * 全部是 16×16 的描边 SVG(描边跟随 currentColor,颜色由 `.code-icon--*`
- * 类决定),与 bnote 其余图示同一套线性语言;不引图标库——只用得到十来个
- * 形状,多一个依赖不划算。
+ * All of them are 16×16 stroked SVGs (the stroke follows currentColor, the
+ * color is decided by the `.code-icon--*` class), the same linear language as
+ * the other bnote icons; no icon library — only a dozen shapes are needed and
+ * one more dependency is not worth it.
  */
 
-/** 文件外框:四角折一下,右上角留出折页。 */
+/** The outline of a file: the corners are clipped and the top right leaves room for the folded corner. */
 const FILE_PATH =
   "M4.5 1.6h4.1l3.9 3.8v9.1a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V2.6a1 1 0 0 1 1-1Z";
 
-/** 每个分类在内芯画什么(共享外框)。 */
+/** What each category draws in the inner mark (sharing the outline). */
 function Mark({ kind }: { kind: FileIconKind }) {
   switch (kind) {
     case "ts":
@@ -46,7 +48,7 @@ function Mark({ kind }: { kind: FileIconKind }) {
   }
 }
 
-/** 文件图标;颜色取分类色(`.code-icon--<kind>`),默认走文件中性色。 */
+/** The file icon; the color comes from the category (`.code-icon--<kind>`), the neutral file color by default. */
 export function FileTypeIcon({ name }: { name: string }) {
   const kind = fileIconKind(name);
   return (
@@ -67,7 +69,7 @@ export function FileTypeIcon({ name }: { name: string }) {
   );
 }
 
-/** 文件夹图标:开着的是「掀开的盖」,颜色也重一档。 */
+/** The folder icon: when open the "lid" is lifted and the color is one step stronger. */
 export function FolderTypeIcon({ open }: { open: boolean }) {
   return (
     <svg

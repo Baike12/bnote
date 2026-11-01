@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 use super::types::InlineImage;
 
-/// 工具执行结果。文本工具只有 `text`;富输出工具(目前仅 preview_html)可附
-/// 渲染截图,由 session 写进 ToolResult.images,模型据此自检页面渲染。
+/// Tool execution result. Text tools only carry `text`; a rich-output tool
+/// (currently only preview_html) may attach a rendered screenshot, which the
+/// session writes into ToolResult.images so the model can check the page
+/// rendering itself.
 pub struct ToolOutput {
     pub ok: bool,
     pub text: String,
@@ -27,11 +29,13 @@ pub struct ToolContext {
     /// The study-mode content the session was opened with.
     pub study_content: Arc<std::sync::RwLock<Option<StudyContent>>>,
     pub abort: Arc<std::sync::atomic::AtomicBool>,
-    /// 创作模式的 preview_html 需要向前端推「预览已更新」事件;测试环境
-    /// 没有 AppHandle,置 None 时预览退化为只落盘。
+    /// In creation mode preview_html has to push a "preview updated" event to the
+    /// front end; the test environment has no AppHandle, and with None the
+    /// preview degrades to writing the file only.
     pub app: Option<tauri::AppHandle>,
-    /// preview_html 的落盘版本号(文件名带版本,子 webview 直接换 URL,
-    /// 绕开浏览器对同名 file:// 的缓存)。
+    /// Version counter of the preview_html snapshot on disk (the file name carries
+    /// the version, so the child webview swaps the URL and bypasses the browser
+    /// cache for a same-named file://).
     pub preview_seq: std::sync::atomic::AtomicU64,
 }
 
@@ -40,11 +44,11 @@ pub struct ToolContext {
 pub enum StudyContent {
     Pdf { path: String, title: String },
     Url { url: String, title: String },
-    /// 代码项目:`path` 是项目根的绝对路径。
+    /// Code project: `path` is the absolute path of the project root.
     Code { path: String, title: String },
 }
 
-/// 列一个代码项目的文件清单(给 Agent 看仓库里有什么)。
+/// Lists the files of a code project (so the agent sees what the repository holds).
 fn list_code_project(root: &str) -> Result<String, String> {
     let tree = crate::code::project::scan(std::path::Path::new(root));
     let mut out = String::new();
@@ -216,7 +220,8 @@ pub async fn execute(
     name: &str,
     input: &Value,
 ) -> ToolOutput {
-    // 富输出工具:除文本外还回渲染截图(见 preview_html)。
+    // Rich-output tool: besides the text it returns a rendered screenshot
+    // (see preview_html).
     if name == "preview_html" {
         let path = input["path"].as_str().unwrap_or_default();
         return preview_html(ctx, path).await;
@@ -384,9 +389,10 @@ async fn execute_text(
                     }
                 }
                 Some(StudyContent::Code { path, title }) => {
-                    // 代码项目:给助手一份文件清单(路径 + 大小),让它知道
-                    // 这个仓库里有什么。不读文件内容——真正要看某个文件时
-                    // 助手用 read_file 工具自己读。
+                    // Code project: give the assistant a file listing (paths +
+                    // sizes) so it knows what the repository holds. The file
+                    // contents are not read here — when it actually needs a file,
+                    // the assistant reads it with the read_file tool.
                     match tokio::task::spawn_blocking(move || {
                         list_code_project(&path)
                     })
@@ -545,14 +551,16 @@ fn walk_html(node: ego_tree::NodeRef<scraper::Node>, out: &mut String) {
     }
 }
 
-/// preview_html:把 vault 内的 HTML 文件复制一份带版本的快照到应用数据
-/// 目录,再把 `creative-preview-updated` 事件(带快照的 file:// URL)推给
-/// 前端。前端据此驱动中栏的原生子 webview。
+/// preview_html: copies a versioned snapshot of the vault HTML file into the
+/// app data directory, then pushes a `creative-preview-updated` event (with the
+/// snapshot's file:// URL) to the front end, which drives the native child
+/// webview in the center column.
 ///
-/// 为什么复制而不是直接预览源文件:子 webview 换 URL 才会重载,而 file://
-/// 同名 URL 的重载在 WKWebView/WebView2 上缓存行为不可靠;带版本号的独立
-/// 文件让「换 URL」变成可靠的重载信号。快照留在磁盘上无害(下一次预览会
-/// 覆盖),也便于排查。
+/// Why copy instead of previewing the source file: the child webview only
+/// reloads when its URL changes, and reloading a same-named file:// URL has
+/// unreliable cache behaviour on WKWebView/WebView2. A separate versioned file
+/// turns "change the URL" into a reliable reload signal. Leaving the snapshot
+/// on disk is harmless (the next preview overwrites it) and helps debugging.
 async fn preview_html(ctx: &ToolContext, path: &str) -> ToolOutput {
     if !path.to_ascii_lowercase().ends_with(".html") {
         return ToolOutput::text(false, "preview_html 只接受 .html 文件");
@@ -587,8 +595,10 @@ async fn preview_html(ctx: &ToolContext, path: &str) -> ToolOutput {
             serde_json::json!({ "url": file_url, "source": path, "version": version }),
         );
     }
-    // 渲染截图:预览 webview 加载完这一版快照后由原生层拍下(PNG),这里按
-    // 版本号取回。截不到(平台不支持/超时)只降级为纯文本,预览本身不受影响。
+    // Rendered screenshot: the native layer takes the PNG once the preview
+    // webview has loaded this snapshot, and it is fetched back by version here.
+    // A missing screenshot (unsupported platform / timeout) only degrades to
+    // plain text; the preview itself is unaffected.
     let mut images = Vec::new();
     if ctx.app.is_some() && cfg!(target_os = "macos") {
         if let Some(png) = crate::commands::agent::wait_preview_shot(
@@ -710,10 +720,11 @@ mod tests {
         assert!(out.ok, "{}", out.text);
         let snapshot = data.join("creative-preview").join("preview-0.html");
         assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "<p>hi</p>");
-        // 测试环境没有 AppHandle:不等待截图,纯文本降级并如实说明
+        // The test environment has no AppHandle: no screenshot is awaited, the
+        // result degrades to plain text and says so.
         assert!(out.images.is_empty(), "无 app 时不应有图");
         assert!(out.text.contains("no screenshot"), "{}", out.text);
-        // 非 .html 拒绝
+        // A non-.html file is rejected
         let out = execute(&c, &skills, "preview_html", &json!({"path": "page.md"})).await;
         assert!(!out.ok && out.text.contains(".html"), "{}", out.text);
     }

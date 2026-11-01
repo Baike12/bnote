@@ -3,15 +3,18 @@ import { getConfigSnapshot, persistConfig, type WindowState } from "@/state/appS
 import { useFocusStore } from "@/focus/store";
 
 /**
- * 主窗口的大小/位置记忆。
+ * Size/position memory for the main window.
  *
- * 写入走 `persistConfig` 这一条唯一通道(和设置、上次文件同一个 config.json
- * 快照),不另开第二个写入者,避免两边读改写互相覆盖。恢复在 Rust 侧
- * (`config.rs::restore_window_bounds`)于窗口首次绘制前完成,启动时不会看到
- * 窗口先按默认尺寸出现再跳一下。
+ * Writes go through `persistConfig`, the single channel shared with settings
+ * and the last-opened file (the same config.json snapshot), so there is no
+ * second writer whose read-modify-write could clobber the other. Restoration
+ * happens on the Rust side (`config.rs::restore_window_bounds`) before the
+ * window is first painted, so startup never shows the window at its default
+ * size and then jump.
  *
- * 最大化时窗口报告的是全屏尺寸,不能当成「用户想要的普通尺寸」存下来:
- * 这种情况只把 maximized 置 true,尺寸保留上一次的普通窗口大小。
+ * A maximized window reports the full-screen size, which must not be stored as
+ * the "normal size the user wants": in that case only `maximized` is set and
+ * the size keeps the last normal window size.
  */
 export const MIN_WINDOW_W = 216;
 export const MIN_WINDOW_H = 480;
@@ -23,7 +26,7 @@ export interface WindowBounds {
   height: number;
 }
 
-/** 磁盘上的值可能是旧版/手改的:坏值整条丢弃,尺寸夹进合法范围。 */
+/** The value on disk may be from an older version or hand-edited: a bad record is dropped whole, and the size is clamped into the legal range. */
 export function normalizeWindowState(raw: unknown): WindowState | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -43,7 +46,7 @@ export function normalizeWindowState(raw: unknown): WindowState | null {
   };
 }
 
-/** 最大化的窗口:只记 maximized,普通尺寸沿用上一次(没有就记当前值)。 */
+/** Maximized window: only `maximized` is recorded, the normal size carries over from the previous value (or the current one if there is none). */
 export function mergeWindowState(
   prev: WindowState | null,
   bounds: WindowBounds,
@@ -51,7 +54,8 @@ export function mergeWindowState(
 ): WindowState {
   const base = maximized && prev ? prev : bounds;
   const merged = normalizeWindowState({ ...base, maximized });
-  // normalize 只在字段非法时返回 null;这里传入的都是有限数,兜底给默认值。
+  // normalize only returns null when a field is invalid; everything passed here
+  // is finite, so this is just a fallback to the raw bounds.
   return merged ?? { ...bounds, maximized };
 }
 
@@ -72,8 +76,9 @@ function readState(win: ReturnType<typeof getCurrentWindow>): Promise<WindowStat
 }
 
 /**
- * 监听移动/缩放并落盘,返回取消函数。非 Tauri 环境(浏览器 harness)直接
- * 返回空函数:窗口 API 在那儿不存在。
+ * Watch for moves/resizes and persist them; returns a cancel function. In a
+ * non-Tauri environment (the browser harness) it returns a no-op: the window
+ * API does not exist there.
  */
 export function trackWindowState(): () => void {
   let win: ReturnType<typeof getCurrentWindow>;
@@ -88,10 +93,13 @@ export function trackWindowState(): () => void {
     timer = null;
     void readState(win)
       .then((state) => {
-        // 读盘/查询期间窗口可能已经关了:放弃这次写入。
+        // The window may have been closed while the state was being read:
+        // drop this write.
         if (disposed || !state) return;
-        // 独占锁期间窗口是铺满屏幕的,那不是用户想要的窗口大小,存下去下次
-        // 启动就变成全屏窗口了。锁退掉后会有一次正常的 resize,那时再存。
+        // While the exclusive lock is held the window fills the screen, which
+        // is not the window size the user wants; storing it would make the
+        // next launch open full-screen. Releasing the lock produces a normal
+        // resize, and the size is stored then.
         if (useFocusStore.getState().locked) return;
         persistConfig({ ...getConfigSnapshot(), window: state });
       })
@@ -110,8 +118,9 @@ export function trackWindowState(): () => void {
     if (disposed) off();
     else offs.push(off);
   });
-  // 首次启动(还没有 window 字段)也记一次:之后不再需要用户先动一下窗口
-  // 才有可恢复的几何。
+  // Record once on first launch too (there is no `window` field yet), so the
+  // user no longer has to move the window once before there is geometry to
+  // restore.
   if (!getConfigSnapshot().window) schedule();
   return () => {
     disposed = true;

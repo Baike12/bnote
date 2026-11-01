@@ -5,7 +5,8 @@ import { LATEX_SUITE_WORD_DELIMITERS } from "./config";
 import { DEFAULT_SNIPPETS } from "./default-snippets";
 import type { RawSnippet } from "./default-snippets";
 
-/** 测试用最小片段集,避免依赖内置全集的具体内容。 */
+/** The minimal snippet set used by the tests, so they do not depend on the
+ *  exact content of the full built-in set. */
 const FIXTURE: RawSnippet[] = [
   { trigger: "dm", replacement: "$$\n$0\n$$", options: "tAw" },
   { trigger: "(", replacement: "($0)$1", options: "mA" },
@@ -22,7 +23,8 @@ const state = (doc: string, cursor?: number) =>
 
 describe("findSnippet:w 片段的词边界", () => {
   it("行首输入 dm 是词边界——必须展开(回归:换行曾是边界集合外的字符)", () => {
-    // 用户真实场景:上一行是正文,新行行首打 dm 起公式块
+    // The user's real scenario: the previous line is prose, and dm at the
+    // start of the new line opens a formula block.
     const m = findSnippet(state("正文\n\ndm"), 6, "m", { auto: true, visualText: null });
     expect(m?.snippet.trigger).toBe("dm");
   });
@@ -50,7 +52,8 @@ describe("findSnippet:w 片段的词边界", () => {
 
 describe("findSnippet:模式上下文", () => {
   it("数学态内 ( 自动展开为配对括号", () => {
-    // 行内公式 $x()$:光标在刚键入的 ( 之后(位置 3),区域完整(闭 $ 在后)
+    // Inline formula $x()$: the caret is right after the just-typed ( (position
+    // 3) and the region is complete (the closing $ comes later).
     const m = findSnippet(state("$x()$", 3), 3, "(", { auto: true, visualText: null });
     expect(m?.snippet.trigger).toBe("(");
     expect(m?.start).toBe(2);
@@ -63,17 +66,19 @@ describe("findSnippet:模式上下文", () => {
   });
 
   it("正则触发器锚定在光标前:数学态内字母+hat 展开重音", () => {
-    // rmA 的 m = 数学态:行内公式里的 x|hat 触发
+    // The m of rmA means math mode: x|hat inside an inline formula triggers.
     const m = findSnippet(state("$xhat$", 5), 5, "t", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("\\hat{x}");
     expect(m?.start).toBe(1);
   });
 
   it("手动展开(Tab 路径)不认自动片段:插件里自动片段要求真的敲了一个字符", () => {
-    // dm 是 tAw(自动):插件 runSnippetCursor 对自动片段要求 `key.length === 1`,
-    // Tab 的 key 是 "Tab"(长度 3)一律跳过。让 Tab 认自动片段,光标停在已经完整
-    // 的 `\theta` 这类尾巴上时会被「补反斜杠」正则再展开一次(Tab → `\th\eta`,
-    // 端到端回归见 tabout.test.ts)。
+    // dm is tAw (auto): the plugin's runSnippetCursor requires
+    // `key.length === 1` for an auto snippet, and Tab's key is "Tab" (length
+    // 3), so it is always skipped. If Tab accepted auto snippets, a caret
+    // resting on an already complete tail like `\theta` would be expanded a
+    // second time by the "add a backslash to Greek letters" regex (Tab ->
+    // `\th\eta`); the end-to-end regression lives in tabout.test.ts.
     const m = findSnippet(state("dm", 2), 2, null, { auto: false, visualText: null });
     expect(m).toBeNull();
   });
@@ -87,7 +92,8 @@ describe("findSnippet:模式上下文", () => {
 
 describe("同级触发词竞争:正则按 source 长度参与排序(latex-suite getTriggerLength)", () => {
   const load = (s: RawSnippet[]) => reloadSnippets(s, true);
-  // 真实片段集里这两条同时存在:xhat 该走前者,\hat 该走后者。
+  // In the real snippet set both of these exist: xhat must take the former,
+  // \hat the latter.
   const ACCENT: RawSnippet[] = [
     { trigger: /([a-zA-Z])hat/, replacement: "\\hat{[[0]]}", options: "rmA" },
     { trigger: "hat", replacement: "\\hat{$0}$1", options: "mA" },

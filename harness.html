@@ -8,7 +8,8 @@
       #editor-host { height: 100vh; }
     </style>
     <script>
-      // 启动期错误捕获:harness 模块图执行失败时页面只会白屏,错误只能从这里接住。
+      // Boot-time error capture: when the harness module graph fails to evaluate the
+      // page just goes blank, so this is the only place the errors can be caught.
       window.__bootErrors = [];
       window.addEventListener("error", (e) =>
         window.__bootErrors.push(String((e.error && e.error.stack) || e.message)),

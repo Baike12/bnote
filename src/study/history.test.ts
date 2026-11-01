@@ -61,7 +61,7 @@ describe("study history: 微信读书独立列表", () => {
   });
 
   it("同一本书去重置顶,后到的书名覆盖先到的", () => {
-    // 首报书名还没提取到(兜底标题),提取到后补报正确书名。
+    // The first report has no extracted title yet (fallback title); the correct one is reported once extraction finishes.
     let h = emptyStudyHistory();
     h = pushWereadBook(h, { url: reader("abc"), title: "微信读书 abc", at: 1 });
     h = pushWereadBook(h, { url: reader("def"), title: "算法导论", at: 2 });

@@ -5,34 +5,38 @@ import { dailyPathFor } from "./model";
 import { runtimeDeps } from "./runtime";
 
 /**
- * 「打开今日日记」。日记文件名沿用现有约定(`<vault>/Daily/YYYY-MM-DD.md`),
- * 不存在就建出来——初始内容是裸 scaffold 加上一篇日记的未完成待办(待办
- * 跟随,见 engine.dailyScaffoldWithRollover),⌘⇧O、⌘⇧J、勾选记录三个入口
- * 建出的文件因此逐字节一致。
+ * "Open today's daily note". The file name follows the existing convention
+ * (`<vault>/Daily/YYYY-MM-DD.md`) and the file is created when it does not exist -
+ * the initial content is the bare scaffold plus the unfinished todos of the previous
+ * note (todo rollover, see engine.dailyScaffoldWithRollover), so the files created
+ * by the three entry points ⌘⇧O, ⌘⇧J and check-and-record are byte-identical.
  *
- * Toggle 语义:当前文件已是今日日记时,不再打开自己,而是消费跳回槽
- * (`dailyBackFrom`)回到跳进日记之前的那个文件;非日记文件按 ⌘⇧O 则先记录
- * 来源再跳。槽每次跳转都覆盖,所以落点永远是「最近一次 ⌘⇧O 跳转前」的文件。
+ * Toggle semantics: when the current file already is today's daily note, it does
+ * not open itself but consumes the jump-back slot (`dailyBackFrom`) to return to
+ * the file it came from; pressing ⌘⇧O in a non-daily file records the source
+ * first and then jumps. The slot is overwritten on every jump, so the landing
+ * point is always the file that was open before the most recent ⌘⇧O jump.
  *
- * 依赖注入的理由与 engine 相同:磁盘与「打开文件」都是外部世界,测试注入假的
- * 就能断言「建了什么内容、开了哪个路径」。
+ * The reason for dependency injection is the same as in the engine: the disk and
+ * "open a file" are the outside world, and injecting fakes in tests lets them
+ * assert what content was created and which path was opened.
  */
 export interface OpenDailyDeps {
   vaultRoot: () => string | null;
   today: () => string;
   io: DailyIO;
   open: (path: string) => Promise<void>;
-  /** 新建日记后刷新文件树,否则侧栏要等下一次 watcher 事件才认这份文件。 */
+  /** Refresh the file tree after creating a daily note, otherwise the sidebar only picks the file up on the next watcher event. */
   refresh: () => Promise<void>;
   toast: (msg: string) => void;
   currentFile: () => string | null;
   getDailyBack: () => string | null;
   setDailyBack: (path: string | null) => void;
-  /** 新建日记用的模板文件(仓库相对路径);空 = 默认 `# 日期` 开篇。 */
+  /** Template file used to scaffold a new daily note (vault-relative path); empty = the default `# YYYY-MM-DD` opening. */
   templatePath: () => string | null;
 }
 
-/** 返回打开的日记路径;没有仓库时返回 null。 */
+/** Returns the path of the daily note that was opened; null when no vault is open. */
 export async function openDailyNote(deps: OpenDailyDeps): Promise<string | null> {
   const vaultRoot = deps.vaultRoot();
   if (!vaultRoot) {
@@ -41,7 +45,8 @@ export async function openDailyNote(deps: OpenDailyDeps): Promise<string | null>
   }
   const day = deps.today();
   const path = dailyPathFor(vaultRoot, day);
-  // 日记内再按 ⌘⇧O = 跳回,不打开自己、也不重记来源。
+  // Pressing ⌘⇧O inside a daily note means jump back: do not open itself and do
+  // not record the source again.
   if (deps.currentFile() === path) {
     const back = deps.getDailyBack();
     deps.setDailyBack(null);
@@ -49,7 +54,8 @@ export async function openDailyNote(deps: OpenDailyDeps): Promise<string | null>
       deps.toast("没有可跳回的文件");
       return path;
     }
-    // 来源文件可能已被删/移走:读不到就不跳,toast 说清原因。
+    // The source file may have been deleted or moved away: when it cannot be read
+    // do not jump, and let the toast say why.
     if ((await deps.io.readFile(back)) === null) {
       deps.toast("跳回的文件已不存在");
       return path;
@@ -59,7 +65,8 @@ export async function openDailyNote(deps: OpenDailyDeps): Promise<string | null>
   }
   const current = deps.currentFile();
   if (current) deps.setDailyBack(current);
-  // 读失败(不存在)才算缺文件:盘上已有内容一律不动,只打开。
+  // Only a failed read (file missing) means the file is absent: content already on
+  // disk is never touched, we just open it.
   if ((await deps.io.readFile(path)) === null) {
     await deps.io.writeFile(
       path,

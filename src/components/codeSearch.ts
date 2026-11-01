@@ -1,15 +1,17 @@
 /**
- * 设置里代码框的搜索:字面量、忽略大小写,返回文档偏移。
+ * Search for the code panes in the settings page: literal, case-insensitive,
+ * returning document offsets.
  *
- * 用正则的 `i` 标志而不是把两边先 toLowerCase —— 某些 Unicode 大小写折叠
- * 会改变长度(`İ` → `i̇`),先折叠再找位置会让偏移整体错位。
+ * Uses the regex `i` flag instead of lowercasing both sides first: some
+ * Unicode case folds change the length (`İ` -> `i̇`), so folding before
+ * locating would shift every offset.
  */
 export interface TextMatch {
   from: number;
   to: number;
 }
 
-/** 一个字符的查询能命中上万处:计数与装饰都没必要跟到底。 */
+/** A single-character query can match tens of thousands of places: counting and decorating that far is pointless. */
 export const MAX_MATCHES = 2000;
 
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

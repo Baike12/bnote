@@ -267,10 +267,11 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "read_vimrc" => json_ok!(config::read_vimrc(app.state()).await),
         "save_vimrc" => json_ok!(config::save_vimrc(app.state(), arg_str(args, "contents")?).await),
 
-        // ---- 专注模式 ----
-        // 进/退锁真的会动窗口(铺屏、抬层级),所以这里不做浏览器端的假实现:
-        // 让它走同一个 #[tauri::command],行为与真应用一致。调试时注意——进锁
-        // 会把开发者的屏幕占满。
+        // ---- focus mode ----
+        // Locking and unlocking really move the window (full screen, window
+        // level), so there is no browser-side fake: they go through the same
+        // #[tauri::command] and behave exactly like the real app. Mind this
+        // while debugging — locking takes over the developer's whole screen.
         "focus_status" => json_ok!(focus::focus_status()),
         "focus_lock" => json_ok!(focus::focus_lock(app.clone())),
         "focus_unlock" => json_ok!(focus::focus_unlock(app.clone())),
@@ -427,7 +428,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             json_ok!(materials::study_import_pdf(app.state(), arg_str(args, "pdfPath")?, title).await)
         }
 
-        // ---- python:嵌入代码块运行 / LSP / uv ----
+        // ---- python: embedded code block run / LSP / uv ----
         "python_run" => json_ok!(
             python::python_run(
                 app.clone(),
@@ -606,7 +607,7 @@ fn arg_opt_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
 }
 
-/// 语言服务器的覆盖配置(前端从设置里来的那一层)。
+/// Language-server override config (the layer the frontend sends from settings).
 fn arg_opt_server_config(
     args: &Value,
     key: &str,
@@ -619,7 +620,7 @@ fn arg_opt_server_config(
     }
 }
 
-/// 可选值(缺省与 null 都算「没有」)。
+/// Optional value (both a missing key and null count as "absent").
 fn arg_opt_value(args: &Value, key: &str) -> Option<Value> {
     match args.get(key) {
         Some(Value::Null) | None => None,

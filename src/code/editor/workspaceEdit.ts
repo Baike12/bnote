@@ -1,25 +1,26 @@
 import type { LspRange } from "../types";
 
 /**
- * LSP 的 WorkspaceEdit → 「文件 → 一组文本编辑」。
+ * An LSP WorkspaceEdit → "file → a set of text edits".
  *
- * 服务器给两种形状,而且**只给其中一种**:
- * - `changes`: `{ [uri]: TextEdit[] }` —— 早期形状;
- * - `documentChanges`: `TextDocumentEdit[]` —— 现在多数服务器(包括各语言
- *   rename 的标准实现)只给这个。
+ * Servers use two shapes, and **only one of them at a time**:
+ * - `changes`: `{ [uri]: TextEdit[] }` — the older shape;
+ * - `documentChanges`: `TextDocumentEdit[]` — what most servers today (and
+ *   the standard rename implementation of every language) send.
  *
- * 旧实现只读 `changes`,于是「重命名」对着现代服务器直接静默返回 false。
- * 规范允许两者同时出现,按 uri 合并。
+ * The old implementation only read `changes`, so "rename" silently returned
+ * false against a modern server. The specification allows both to appear, so
+ * they are merged by uri.
  */
 
-/** 一个文件上要做的编辑(位置是 LSP 坐标)。 */
+/** The edits to apply to one file (positions are LSP coordinates). */
 export interface WorkspaceFileEdit {
-  /** 文件 URI(`file://…`)。 */
+  /** The file URI (`file://…`). */
   uri: string;
   edits: { range: LspRange; newText: string }[];
 }
 
-/** 一条 TextEdit(顺手挡掉形状不对的:annotations、缺失字段)。 */
+/** One TextEdit (shapes that do not fit are dropped on the way: annotations, missing fields). */
 function textEditsOf(raw: unknown): { range: LspRange; newText: string }[] {
   if (!Array.isArray(raw)) return [];
   const out: { range: LspRange; newText: string }[] = [];
@@ -36,7 +37,7 @@ function textEditsOf(raw: unknown): { range: LspRange; newText: string }[] {
   return out;
 }
 
-/** 把服务器的 WorkspaceEdit 摊平成按文件分组的编辑列表。 */
+/** Flatten the WorkspaceEdit of the server into a list of edits grouped by file. */
 export function workspaceEditsOf(edit: unknown): WorkspaceFileEdit[] {
   if (!edit || typeof edit !== "object") return [];
   const merged = new Map<string, { range: LspRange; newText: string }[]>();
@@ -58,8 +59,9 @@ export function workspaceEditsOf(edit: unknown): WorkspaceFileEdit[] {
   if (Array.isArray(documentChanges)) {
     for (const item of documentChanges) {
       if (!item || typeof item !== "object") continue;
-      // 这里还可能混着 CreateFile / RenameFile / DeleteFile(带 `kind`):
-      // 它们没有 textDocument.edits,add() 会当空编辑跳过。
+      // CreateFile / RenameFile / DeleteFile (which carry a `kind`) can be
+      // mixed in here: they have no textDocument.edits, so add() skips them
+      // as an empty edit.
       const doc = item as { textDocument?: { uri?: unknown }; edits?: unknown };
       add(doc.textDocument?.uri, doc.edits);
     }

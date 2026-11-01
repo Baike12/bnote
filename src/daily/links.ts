@@ -2,30 +2,33 @@ import { api } from "@/lib/tauri";
 import { linksFilePath } from "./model";
 
 /**
- * 跨文件待办映射的持久化存储。一条链接把一个源待办块(项目笔记里)和一个
- * 日记条目绑在一起,两侧通过「待办身份文本」互认(剥 checkbox/✅戳后的行
- * 内容),行号只是就近提示。
+ * Persistent storage for cross-file todo links. A link binds one source todo
+ * block (in a project note) to one daily note entry; the two sides recognize each
+ * other through the todo identity text (the line content with the checkbox and
+ * the done stamp stripped), the line numbers are only a proximity hint.
  *
- * 持久化在 vault 内 `<vault>/.bnote/daily-links.json`——随仓库走、重启不丢;
- * 写盘 300ms 防抖,退出/隐藏时由 App.tsx 冲刷(与 config 持久化同一套约定)。
- * 多实例同仓并发写是 last-write-wins,与编辑器本身的并发语义一致。
+ * Persisted inside the vault at `<vault>/.bnote/daily-links.json` - it travels with
+ * the repo and survives a restart. Writes are debounced by 300ms and flushed by
+ * App.tsx on quit/hide (the same convention as the config persistence). Concurrent
+ * writes from several instances of the same vault are last-write-wins, matching the
+ * concurrency semantics of the editor itself.
  */
 
 export interface DailyLink {
   id: string;
-  /** copied = 快捷键主动发送;recorded = 勾选完成时自动记录;auto = 存在即自动聚合 */
+  /** copied = sent explicitly via the shortcut; recorded = recorded automatically when a todo is checked; auto = aggregated automatically as soon as it exists */
   kind: "copied" | "recorded" | "auto";
-  /** 日记归属日(YYYY-MM-DD),记录创建时间 */
+  /** Day the link belongs to (YYYY-MM-DD), the creation timestamp of the record */
   day: string;
-  /** 源文件绝对路径(项目笔记) */
+  /** Absolute path of the source file (the project note) */
   srcPath: string;
-  /** 日记文件绝对路径 */
+  /** Absolute path of the daily note file */
   dailyPath: string;
-  /** 两侧共用的待办身份文本(镜像保证两侧文本一致) */
+  /** Todo identity text shared by both sides (mirroring keeps the text identical) */
   text: string;
-  /** 上次同步时源根行号(就近提示) */
+  /** Source root line number at the last sync (a proximity hint) */
   srcLine: number;
-  /** 上次同步时日记条目起始行号(就近提示) */
+  /** Start line of the daily note entry at the last sync (a proximity hint) */
   dailyLine: number;
 }
 
@@ -34,17 +37,17 @@ interface StoredLinks {
   links: DailyLink[];
 }
 
-// ------------------------------------------------------- 变更通知(库 → 视图)
+// ------------------------------------------------------- change notification (store -> view)
 
 let revision = 0;
 const listeners = new Set<() => void>();
 
-/** 库的版本号,每次增删改 +1。 */
+/** Version counter of the store, incremented on every add, update or removal. */
 export function linksRevision(): number {
   return revision;
 }
 
-/** 订阅库变更(编辑器装饰据此重算);返回退订。 */
+/** Subscribe to store changes (editor decorations recompute on them); returns the unsubscribe function. */
 export function onLinksChanged(fn: () => void): () => void {
   listeners.add(fn);
   return () => {
@@ -52,8 +55,8 @@ export function onLinksChanged(fn: () => void): () => void {
   };
 }
 
-/** 唯一的变更出口:所有写入者(添加/更新/删除/换库)都从这里过,
- *  订阅者不会漏事件。 */
+/** The single exit for changes: every writer (add, update, remove, vault swap)
+ *  goes through here, so no subscriber misses an event. */
 function markLinksChanged(): void {
   revision++;
   for (const fn of [...listeners]) fn();
@@ -73,7 +76,8 @@ export class LinkStore {
         store.links.set(l.id, l as DailyLink);
       }
     } catch {
-      // 损坏的元数据当空库用:同步功能从零重建,不影响笔记本体
+      // Corrupted metadata is treated as an empty store: the sync feature rebuilds
+      // from scratch, the notes themselves are unaffected
     }
     return store;
   }
@@ -94,14 +98,15 @@ export class LinkStore {
     return this.links.get(id) ?? null;
   }
 
-  /** 某个文件(源或日记任一侧)参与的所有链接。 */
+  /** All links a file takes part in (either as the source or as the daily note). */
   forFile(path: string): DailyLink[] {
     return this.all().filter((l) => l.srcPath === path || l.dailyPath === path);
   }
 
   /**
-   * 按身份文本找链接:限定 `path` 参与(源或日记侧),同文多条时取行号提示
-   * 离 `nearLine` 最近者。找不到返回 null。
+   * Find a link by identity text: only links where `path` takes part (source or
+   * daily side). With several links of the same text take the one whose line
+   * hint is closest to `nearLine`. Returns null when nothing matches.
    */
   findByText(path: string, text: string, nearLine: number): DailyLink | null {
     let best: DailyLink | null = null;
@@ -139,27 +144,27 @@ export class LinkStore {
   }
 }
 
-// -------------------------------------------------------- 运行期单例 + 持久化
+// -------------------------------------------------------- runtime singleton + persistence
 
 let cache: { vault: string; store: LinkStore } | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** 读取(或换仓后重读)链接库;失败当空库。 */
+/** Read the link store (or re-read it after a vault swap); a failure yields an empty store. */
 export async function ensureLinks(vaultRoot: string): Promise<LinkStore> {
   if (cache && cache.vault === vaultRoot) return cache.store;
   let raw: string | null = null;
   try {
     raw = await api.readFile(linksFilePath(vaultRoot));
   } catch {
-    raw = null; // 不存在 = 还没有任何映射
+    raw = null; // missing file = no mapping exists yet
   }
   const store = LinkStore.fromJSON(raw);
   cache = { vault: vaultRoot, store };
-  markLinksChanged(); // 库(换仓后)换了内容:已渲染的标记据此重算
+  markLinksChanged(); // the store holds new content (after a vault swap): rendered marks recompute from it
   return store;
 }
 
-/** 同步取已加载的链接库;尚未加载或换了仓库返回 null(调用方跳过本轮同步)。 */
+/** Synchronously return the loaded link store; null when it is not loaded yet or the vault changed (the caller skips this sync round). */
 export function peekLinks(vaultRoot: string): LinkStore | null {
   return cache && cache.vault === vaultRoot ? cache.store : null;
 }
@@ -168,7 +173,7 @@ export function hasPendingLinksPersist(): boolean {
   return persistTimer !== null;
 }
 
-/** 立即写出挂起的链接元数据(退出/隐藏前冲刷)。 */
+/** Write the pending link metadata right away (flushed before quit/hide). */
 export function flushLinksPersist(): void {
   if (!persistTimer) return;
   clearTimeout(persistTimer);
@@ -183,7 +188,7 @@ function writeNow(): void {
   );
 }
 
-/** 链接库有变更后排程写盘(300ms 防抖)。 */
+/** Schedule a write after the link store changed (300ms debounce). */
 export function scheduleLinksPersist(): void {
   if (!cache) return;
   if (persistTimer) clearTimeout(persistTimer);

@@ -67,31 +67,31 @@ export function installBrowserMode(): void {
 }
 
 /**
- * 浏览器里的调试钩子。
+ * Debug hooks for browser mode.
  *
- * 浏览器没有原生目录选择框,所以「打开代码项目」那条路走不通——这里挂几个
- * 钩子,让浏览器能直接打开一个项目并读到它的状态。生产构建里 `import.meta.env.DEV`
- * 是 false,整段不执行。
+ * The browser has no native folder picker, so the "open code project" path
+ * cannot work -- these hooks let the browser open a project directly and read its
+ * state. In a production build `import.meta.env.DEV` is false, so the whole block never runs.
  */
 function installDevHooks(): void {
   const hooks = window as unknown as Record<string, unknown>;
   hooks.__bnoteDev = {
-    /** 打开一个代码项目(路径 → 中栏切到代码视图)。 */
+    /** Open a code project (path -> the middle column switches to the code view). */
     openCodeProject: async (root: string) => {
       const { openProjectAt } = await import("@/code/commands");
       await openProjectAt(root);
     },
-    /** 代码项目的当前状态。 */
+    /** The current state of the code project. */
     codeState: () => {
-      // 动态导入:browserMode 是入口模块,静态引入会把整个代码模块拖进首屏。
+      // Dynamic import: browserMode is an entry module, so a static import would drag the whole code module into the first paint.
       return import("@/code/store").then((m) => m.useCodeStore.getState());
     },
-    /** 执行一条命令(快捷键链路的直接入口)。 */
+    /** Run one command (the direct entry point of the keybinding chain). */
     runCommand: async (id: string) => {
       const { runCommand } = await import("@/commands/registry");
       runCommand(id);
     },
-    /** 代码编辑器里放光标(1 基行、0 基列)。 */
+    /** Put the caret in the code editor (1-based line, 0-based column). */
     setCodeCursor: async (line: number, column: number) => {
       const { activeCodeEditor } = await import("@/code/editor/registry");
       const handle = activeCodeEditor();
@@ -103,7 +103,7 @@ function installDevHooks(): void {
       handle.view.focus();
       return true;
     },
-    /** 在代码编辑器里插入一段文本(模拟输入)。 */
+    /** Insert a piece of text into the code editor (simulates typing). */
     insertCodeText: async (text: string) => {
       const { activeCodeEditor } = await import("@/code/editor/registry");
       const handle = activeCodeEditor();
@@ -116,7 +116,7 @@ function installDevHooks(): void {
       });
       return true;
     },
-    /** 代码编辑器里的文本。 */
+    /** The text of the code editor. */
     codeText: async () => {
       const { activeCodeEditor } = await import("@/code/editor/registry");
       const handle = activeCodeEditor();

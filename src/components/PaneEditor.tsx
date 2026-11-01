@@ -8,29 +8,32 @@ import { applySettingsToEditor } from "@/app/actions";
 const AUTOSAVE_DELAY = 800;
 
 export interface PaneEditorProps {
-  /** 当前装的文件(null = 空文档)。 */
+  /** The file currently loaded (null = empty document). */
   path: string | null;
-  /** 切换文件时读文档。 */
+  /** Reads the document when the file changes. */
   load: (path: string) => Promise<string>;
-  /** 自动保存/切换前冲刷时写文档。 */
+  /** Writes the document on autosave and on the flush before a switch. */
   save: (path: string, text: string) => Promise<void>;
-  /** 每次文档变化立即通知(项目卡片用来更新内存缓存)。 */
+  /** Notified on every document change (the project card uses it to update its in-memory cache). */
   onSnapshot?: (path: string, text: string) => void;
-  /** 建实例时固定的额外扩展(拖拽手柄等)。 */
+  /** Extra extensions fixed at instance creation (drag handles and the like). */
   extraExtensions?: Extension[];
-  /** 是否允许「输入待办自动发送到今日日记」;项目卡片传 false。 */
+  /** Whether typing a todo may auto-send it to today's daily note; the project card passes false. */
   allowAutoSend?: boolean;
   className?: string;
-  /** 实例创建/销毁时回调(命令层要直接 focus 它)。 */
+  /** Called when the instance is created and destroyed (the command layer focuses it directly). */
   onViewChange?: (view: EditorView | null) => void;
 }
 
 /**
- * 项目视图里的一块编辑器(项目卡片 / 右栏日记共用)。
+ * An editor inside the project view (shared by the project cards and the
+ * daily note in the right column).
  *
- * 与 `EditorPane` 的区别:整份文件的生命周期由 props 驱动(路径一变就换文档),
- * 自动保存写自己那一份,不碰全局 currentFile / dirty。切文件前先把没落盘的
- * 内容冲刷出去——项目卡片之间靠切换聚焦来轮转,漏一次就是丢一笔输入。
+ * The difference to `EditorPane`: the whole file lifecycle is driven by props
+ * (a changed path swaps the document), the autosave writes its own copy and
+ * touches neither the global currentFile nor the global dirty flag. Before
+ * switching files the unsaved content is flushed out, because the project
+ * cards rotate by switching focus and missing one flush loses a keystroke.
  */
 export function PaneEditor(props: PaneEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -38,7 +41,7 @@ export function PaneEditor(props: PaneEditorProps) {
   const pathRef = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** 最近一次挂载的 props:创建编辑器的 effect 只跑一次,其余读取走这里。 */
+  /** The most recent props: the effect that creates the editor runs only once, every other read goes through here. */
   const propsRef = useRef(props);
   propsRef.current = props;
   const flushRef = useRef<() => void>(() => {});
@@ -114,14 +117,14 @@ export function PaneEditor(props: PaneEditorProps) {
     }
     let cancelled = false;
     void props.load(next).then((text) => {
-      // 读盘回来时目标可能又换了(快速连点切换):只认当前路径。
+      // The target may have changed again while the read was in flight (rapid clicking through files): only the current path counts.
       if (cancelled || pathRef.current !== next) return;
       loadDocument(view, text, next);
     });
     return () => {
       cancelled = true;
     };
-    // props.load 走 ref 读取,这里只跟随路径变化。
+    // props.load is read through the ref, so only the path change is tracked here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.path]);
 

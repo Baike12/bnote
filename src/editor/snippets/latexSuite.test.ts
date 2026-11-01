@@ -25,7 +25,8 @@ beforeEach(() => {
   resetLatexConfig();
 });
 
-/** 只依赖 view 的 {state, dispatch} 面(与 ops.test.ts 同款假视图)。 */
+/** Only relies on the {state, dispatch} face of the view (the same fake view
+ *  as in ops.test.ts). */
 function makeView(doc: string, cursors: number[] = [doc.length]): EditorView {
   let state = EditorState.create({
     doc,
@@ -130,7 +131,9 @@ describe("矩阵环境判定与快捷", () => {
 
   it("cases / align 等环境名都在设置表里", () => {
     for (const env of ["cases", "align", "bmatrix", "array"]) {
-      // 正文用 Q:环境名里可能含 x/a(bmatrix、matrix),拿它们当光标标记会插进环境名里
+      // Q is used as the body text: an environment name may contain x/a
+      // (bmatrix, matrix), and using those as the caret marker would land
+      // inside the environment name.
       const doc = `$$\n\\begin{${env}}\nQ\n\\end{${env}}\n$$`;
       const state = EditorState.create({ doc });
       expect(matrixEnvAt(state, doc.indexOf("Q") + 1)).toBe(env);
@@ -173,7 +176,8 @@ describe("矩阵环境判定与快捷", () => {
     const before = text(view);
     expect(matrixEnter(view, true)).toBe(true);
     expect(text(view)).toBe(before);
-    // 光标原本在第 3 行(Q & b),shift+Enter 送到第 4 行(= \end{pmatrix} 那行)的行尾
+    // The caret starts on line 3 (Q & b); shift+Enter sends it to the end of
+    // line 4 (the line with \end{pmatrix}).
     expect(view.state.doc.lineAt(head(view)).number).toBe(4);
     expect(head(view)).toBe(view.state.doc.line(4).to);
   });
@@ -191,7 +195,8 @@ describe("align 续行:Enter 补关系符 & 与行尾 \\\\", () => {
   const inAlign = (line: string) => ALIGN.replace("LINE", line);
   const enterAt = (line: string, ch: number) => {
     const doc = inAlign(line);
-    // 空行/重复行不能靠 indexOf 定位:按(第一次出现的)行号取行首
+    // An empty or repeated line cannot be located with indexOf: take the
+    // start of the line by its (first) line number.
     const lines = doc.split("\n");
     const lineNo = lines.indexOf(line) + 1;
     const at = view0.state.doc.line(lineNo).from + ch;
@@ -204,14 +209,15 @@ describe("align 续行:Enter 补关系符 & 与行尾 \\\\", () => {
   it("纯函数:等号前无空格的关系符补 &,行尾补 \\\\ 再换行", () => {
     expect(alignEnterPlan("c=d")).toBe("c&=d \\\\\n");
     expect(alignEnterPlan("a = b")).toBe("a &= b \\\\\n");
-    // <= / >= 的对齐点在关系符起点(&<= 而不是 <&=)
+    // For <= and >= the alignment point is the start of the relation operator
+    // (&<= and not <&=).
     expect(alignEnterPlan("a <= b")).toBe("a &<= b \\\\\n");
     expect(alignEnterPlan("x >= y")).toBe("x &>= y \\\\\n");
-    // 无关系符的行只补行尾
+    // A line without a relation operator only gets the row separator.
     expect(alignEnterPlan("\\alpha")).toBe("\\alpha \\\\\n");
-    // 已有 &:尊重用户自己的对齐点,不再插
+    // An existing & is the user's own alignment point; nothing is inserted.
     expect(alignEnterPlan("a &= b")).toBe("a &= b \\\\\n");
-    // 转义关系符(\=)不是对齐点
+    // An escaped relation operator (\=) is not an alignment point.
     expect(alignEnterPlan("a \\=b")).toBe("a \\=b \\\\\n");
   });
 
@@ -225,19 +231,24 @@ describe("align 续行:Enter 补关系符 & 与行尾 \\\\", () => {
   });
 
   it("Enter 补全光标前半行,光标落新行行首,后半自然下移", () => {
-    // 光标在行尾(c=d 的 d 之后):整行补全 + 换行;行尾断点与普通 Enter 同义
-    // (\end 下移,中间留出光标新行)
+    // The caret is at the end of the line (after the d of c=d): the whole line
+    // is completed and broken; a break at the line end means the same as a
+    // plain Enter (\end moves down, a caret line is left in between).
     const { handled, view } = enterAt("c=d", 3);
     expect(handled).toBe(true);
-    // 行尾断点 = 普通换行语义:补全行、光标空新行、\end 下移
+    // A break at the line end has the semantics of a plain line break: the
+    // line is completed, the caret sits on an empty new line, \end moves down.
     expect(text(view)).toBe(inAlign("c&=d \\\\\n"));
     const newLine = view.state.doc.lineAt(head(view));
     expect(head(view)).toBe(newLine.from);
-    expect(newLine.text).toBe(""); // 光标停在空新行上
-    // 光标在行中断开(且断点前没有关系符):前半只补行尾,后半成为新行
+    expect(newLine.text).toBe(""); // The caret rests on the empty new line.
+    // The caret breaks in the middle of the line (and there is no relation
+    // operator before the break): only the first half gets the row
+    // separator, the second half becomes the new line.
     const mid = enterAt("c=d", 1);
     expect(mid.handled).toBe(true);
-    // 第三行是 `c \`(行尾双反斜杠),第四行是 `=d`
+    // The third line is `c \` (a double backslash at the end of the line), the
+    // fourth is `=d`.
     const lines = text(mid.view).split("\n");
     expect(lines[2]).toBe("c \\\\");
     expect(lines[3]).toBe("=d");
@@ -249,7 +260,8 @@ describe("align 续行:Enter 补关系符 & 与行尾 \\\\", () => {
       expect(handled).toBe(false);
       expect(text(view)).toBe(inAlign(line));
     }
-    // 光标在行首(前半为空)也不接管
+    // A caret at the start of the line (empty first half) is not taken over
+    // either.
     const atStart = enterAt("c=d", 0);
     expect(atStart.handled).toBe(false);
   });
@@ -396,7 +408,9 @@ describe("deleteScriptBraces:上下标空花括号连标记一起删", () => {
   });
 });
 
-/** 假视图包一层带 snippetField 的 state:删的正是 sj 展开出的活动区,验证会话映射。 */
+/** A fake view wrapping a state that carries the snippetField: the deleted
+ *  range is exactly the active region sj expanded, which verifies the session
+ *  mapping. */
 function viewWithState(initial: EditorState) {
   let state = initial;
   const view = {
@@ -413,7 +427,8 @@ function viewWithState(initial: EditorState) {
 describe("deleteScriptBraces:sj/sk 会话存在时删掉整对", () => {
   it("会话被映射成删除点上的一个点,没有指向文档外的坐标", () => {
     const doc = "$x_{}$";
-    // sj 的替换文本 `_{$0}` 展开在位置 2:base=2、活动区就是 `{}` 之间(位置 4)
+    // sj's replacement text `_{$0}` expands at position 2: base=2 and the
+    // active region is between the `{}` (position 4).
     const session = buildSession(2, parseReplacement("_{$0}", [], null))!;
     const initial = EditorState.create({
       doc,
@@ -431,13 +446,15 @@ describe("deleteScriptBraces:sj/sk 会话存在时删掉整对", () => {
     expect(field.end).toBe(2);
     expect(field.finalPos).toBe(2);
     expect(field.stops.get(0)![0]).toEqual({ from: 2, to: 2 });
-    // 光标仍在这一层的点上:保留;再动一格就按既有规则正常弹掉,不留残层。
+    // The caret is still on this level's point: it is kept; moving one more
+    // character pops it by the existing rule, leaving no leftover level.
     expect(exitChain(field, 2)).toBe(field);
     expect(exitChain(field, 3)).toBeNull();
   });
 
   it("有外层会话时,删掉的只是内层那一层", () => {
-    // 外层 \frac 占 [1,13)(分母 $1 是 active stop,内层 sj 就长在它里面)
+    // The outer \frac occupies [1,13) (the denominator $1 is the active stop
+    // and the inner sj grows inside it).
     const outer: SnippetSession = {
       base: 1,
       end: 13,
@@ -464,7 +481,9 @@ describe("deleteScriptBraces:sj/sk 会话存在时删掉整对", () => {
     const field = state().field(snippetField)!;
     expect(field.base).toBe(9);
     expect(field.parent).not.toBeNull();
-    // 父链仍在,且整条随事务映射到新文档坐标(分母的 { } 收在删除点上)
+    // The parent chain is still there and the whole chain is mapped to the new
+    // document coordinates (the denominator's { } collapses onto the
+    // deletion point).
     expect(field.parent!.base).toBe(1);
     expect(field.parent!.end).toBe(10);
     expect(field.parent!.stops.get(1)![0]).toEqual({ from: 9, to: 9 });
@@ -487,7 +506,7 @@ describe("括号几何", () => {
     const text2 = "\\pu{a \\pu{b} c}";
     const inner = text2.indexOf("b");
     expect(withinEnv(text2, inner, "\\pu{", "}")).toBe(true);
-    const after = text2.length; // 环境之外
+    const after = text2.length; // Outside the environment
     expect(withinEnv(text2, after, "\\pu{", "}")).toBe(false);
   });
 
@@ -498,14 +517,19 @@ describe("括号几何", () => {
 });
 
 /**
- * 门禁：两个括号装饰构建器的**几何来源**。它们每次选区变化都会跑（光标高亮）
- * 或曾经每次都跑（彩色配对），所以谁读全文、谁跟选区无关，必须锁住：
- *   - 彩色配对只依赖文档 + 视口——插件因此不在 selectionSet 上重建；
- *   - 光标高亮只看光标处两个字符 + 它所在的那一个公式区域，不许把整篇文档
- *     字符串化（曾经的 `state.doc.toString()` 就是每次选区变化一次全文拷贝）。
+ * The gate for the **geometric source** of the two bracket decoration
+ * builders. They run on every selection change (the caret highlight) or used
+ * to (the colored pairs), so who reads the full text and who is independent
+ * of the selection must be locked down:
+ *   - The colored pairs depend only on the document + viewport — that is why
+ *     the plugin does not rebuild on selectionSet;
+ *   - The caret highlight looks only at the two characters at the caret plus
+ *     the one formula region it sits in; it must not stringify the whole
+ *     document (the former `state.doc.toString()` copied the full text on
+ *     every selection change).
  */
 describe("括号装饰的几何来源", () => {
-  /** 只用到 {state, visibleRanges} 的假视图。 */
+  /** A fake view that only needs {state, visibleRanges}. */
   function decoView(doc: string, cursor: number, visible?: { from: number; to: number }) {
     const state = EditorState.create({ doc, selection: EditorSelection.cursor(cursor) });
     return { state, visibleRanges: [visible ?? { from: 0, to: doc.length }] };
@@ -532,19 +556,21 @@ describe("括号装饰的几何来源", () => {
     const marks = decos(buildBracketColors(decoView(doc, 0, first)));
     const open = doc.indexOf("(");
     const close = doc.indexOf(")");
-    // 第一段公式的一对括号（最外层 → 0 号色）
+    // The one bracket pair of the first formula (outermost → color 0)
     expect(marks).toEqual([
       `cw-bracket-0@${open}-${open + 1}`,
       `cw-bracket-0@${close}-${close + 1}`,
     ]);
-    // 视口外的第二段公式（c+[d]）一个都不画
+    // Not a single decoration is drawn for the second formula (c+[d]) outside
+    // the viewport.
     expect(marks.every((m) => Number(m.split("@")[1].split("-")[0]) <= first.to)).toBe(true);
   });
 
   it("光标高亮:光标紧邻括号时给出配对的两个字符", () => {
     const doc = "$$a+(b+c)+d$$\n";
     const open = doc.indexOf("(");
-    // 光标停在 `(` 之后（vim 的 i 态就是这种紧邻位置）
+    // The caret rests right after `(` (vim's insert mode is exactly this
+    // adjacent position)
     const marks = decos(buildCursorBrackets(decoView(doc, open + 1)));
     expect(marks).toEqual([
       `cw-bracket-match@${open}-${open + 1}`,
@@ -559,7 +585,7 @@ describe("括号装饰的几何来源", () => {
   });
 
   it("光标高亮:长公式里也只按位置取字符（几何不依赖全文文本）", () => {
-    const filler = "x_{1}+".repeat(400); // ~2000 字符
+    const filler = "x_{1}+".repeat(400); // ~2000 characters
     const doc = `$$${filler}\\left(a+(b)\\right)$$\n`;
     const open = doc.indexOf("(b)");
     const marks = decos(buildCursorBrackets(decoView(doc, open + 1)));

@@ -23,10 +23,11 @@ pub fn require_vault(state: &crate::state::AppState) -> Result<PathBuf, String> 
         .ok_or_else(|| "NO_VAULT: no vault is open".to_string())
 }
 
-/// 解析成可比较的绝对路径:存在的部分走 canonicalize(符号链接被解析),
-/// 不存在的尾段用最近的已存在祖先解析后按词法接上——这样 `/var/...`
-/// (指向 `/private/var/...`)这类 vault 路径与它下面还没建出来的文件
-/// 能落在同一个前缀下比较。
+/// Resolves to a comparable absolute path: the part that exists goes through
+/// canonicalize (symlinks resolved), and a nonexistent tail is resolved via its
+/// nearest existing ancestor and then appended lexically -- so a vault path like
+/// `/var/...` (which points at `/private/var/...`) and files below it that do
+/// not exist yet land under the same prefix and can be compared.
 fn resolve_for_compare(path: &Path) -> PathBuf {
     if let Ok(p) = path.canonicalize() {
         return p;
@@ -35,7 +36,8 @@ fn resolve_for_compare(path: &Path) -> PathBuf {
     let mut cur = path;
     while let Some(parent) = cur.parent() {
         let Some(name) = cur.file_name() else {
-            // 含 `..` / `.` 的词法片段:交给 normalize,不做符号链接解析。
+            // Lexical components such as `..` / `.`: hand them to normalize,
+            // without resolving symlinks.
             return normalize(path);
         };
         suffix.push(name.to_os_string());

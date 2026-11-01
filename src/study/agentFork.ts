@@ -1,20 +1,22 @@
 /**
- * 辅助会话(从某条消息分叉)的前端纯逻辑。
+ * Front-end pure logic for a forked sub-session.
  *
- * 分叉点携带的 `items`(后端历史前缀条数)来自 turn_end / error 事件携带的
- * 后端权威计数,所以这里只负责:消息 → 截断点(取自己或最近前一条的计数)、
- * 会话标签(消息首行摘要)。
+ * The `items` count carried by a fork point (the backend history prefix
+ * length) comes from the authoritative count in the turn_end / error events,
+ * so this module only does two things: message -> cutoff point (its own count
+ * or the nearest previous one) and session label (first-line summary).
  */
 
 export interface ConversationEntryLike {
   role: "user" | "assistant";
-  /** 本条消息对应的会话历史前缀条数(含本条);null = 后端还没给出。 */
+  /** Number of session-history entries this message covers (including itself); null = the backend has not reported it yet. */
   items: number | null;
 }
 
 /**
- * 第 `index` 条消息的分叉截断点:优先用它自己的计数;出错的消息后端没有
- * 给出计数时,退到最近一条有计数的消息(丢弃这段不确定的尾部)。
+ * Fork cutoff point for message `index`: prefer its own count; when the backend
+ * reported no count for a failed message, fall back to the nearest message
+ * that has one (dropping that uncertain tail).
  */
 export function forkCutoff(entries: ConversationEntryLike[], index: number): number {
   for (let i = Math.min(index, entries.length - 1); i >= 0; i -= 1) {
@@ -24,7 +26,7 @@ export function forkCutoff(entries: ConversationEntryLike[], index: number): num
   return 0;
 }
 
-/** 会话标签:首行截断。空文本回退到占位符。 */
+/** Session label: first line, truncated. Empty text falls back to the placeholder. */
 export function forkLabel(text: string, max = 18): string {
   const line = (text.trim().split("\n")[0] ?? "").trim();
   if (!line) return "空消息";

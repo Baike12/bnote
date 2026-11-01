@@ -25,7 +25,7 @@ describe("parseDataUrl", () => {
   });
 
   it("非 base64 dataURL / 任意文本返回 null", () => {
-    expect(parseDataUrl("data:image/png;base64,")).toBeNull(); // 空数据
+    expect(parseDataUrl("data:image/png;base64,")).toBeNull(); // empty payload
     expect(parseDataUrl("data:text/plain,hello")).toBeNull();
     expect(parseDataUrl("hello")).toBeNull();
     expect(parseDataUrl("")).toBeNull();
@@ -37,7 +37,7 @@ describe("base64Bytes", () => {
     expect(base64Bytes("")).toBe(0);
     expect(base64Bytes("aGk=")).toBe(2); // "hi"
     expect(base64Bytes("aGVsbG8=")).toBe(5); // "hello"
-    expect(base64Bytes("aGVsbG8")).toBe(5); // 无 padding 的截断段
+    expect(base64Bytes("aGVsbG8")).toBe(5); // truncated run without padding
   });
 
   it("5MB 硬限的判等用的就是它", () => {

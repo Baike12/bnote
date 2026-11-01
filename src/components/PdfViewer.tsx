@@ -103,9 +103,9 @@ const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.1;
 /** Page width in CSS px is clamped to this range (column can be very narrow). */
 const MIN_PAGE_WIDTH = 220;
-/** 框选后完整页面会被放大(见 basePageWidth),上限比栏宽宽松。 */
+/** After a crop the full page is scaled up (see basePageWidth), the upper limit is more generous than the column width. */
 const MAX_PAGE_WIDTH = 3200;
-/** 画布后备存储的最大宽度(物理像素)。页面再大也只降 DPR,不按比例涨内存。 */
+/** Maximum width of the canvas backing store (physical pixels). A bigger page only lowers the DPR, it does not grow the memory proportionally. */
 const MAX_CANVAS_WIDTH = 3200;
 /** How far outside the viewport a page keeps its canvas (px). */
 const RENDER_MARGIN = 1000;
@@ -113,13 +113,15 @@ const RENDER_MARGIN = 1000;
 const RESIZE_DEBOUNCE_MS = 140;
 
 /**
- * PDF 批注只剩高亮一种(文字批注已移除:标注内容写到右栏笔记里更直接,
- * 页面也不需要再为批注卡留一条竖向空白)。旧文件里的 note 条目原样保留在
- * 磁盘上,只是不再新建、不再渲染。
+ * PDF annotations only kept the highlight kind (the text annotation was
+ * removed: writing the annotation into the notes column on the right is more
+ * direct, and the page no longer needs a vertical gutter for annotation
+ * cards). The note entries of old files stay on disk untouched, they are
+ * simply no longer created and no longer rendered.
  */
 export type PdfTool = "highlight";
 
-/** 批注提交方式:结构改动记一步;加载/撤销不记。 */
+/** How an annotation change is committed: a structural change counts as one step, loading and undo do not. */
 type AnnotationCommit = "none" | "structure";
 
 
@@ -129,7 +131,7 @@ interface PdfViewerProps {
   /** Eye-care tint (pale green paper), persisted in settings. */
   eyeCare: boolean;
   onToggleEyeCare: () => void;
-  /** 每次翻页滚动的可见高度比例（0.1–1，默认 0.5）。 */
+  /** Fraction of the visible height scrolled per page turn (0.1-1, default 0.5). */
   pageStep: number;
 }
 
@@ -141,54 +143,57 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [zoom, setZoom] = useState(1);
-  /** 滚动区视口宽度(clientWidth,不含纵向滚动条)。 */
+  /** Width of the scroll viewport (clientWidth, without the vertical scrollbar). */
   const [scrollWidth, setScrollWidth] = useState(0);
   const [outline, setOutline] = useState<PdfOutlineNode[]>([]);
-  /** 目录解析完(哪怕没有目录)才量一次中栏宽度:书签栏占的横向空间要算进
-   *  「一页正好放下」的目标宽度里。 */
+  /** The middle column width is measured once, after the outline is parsed (even when there is none): the horizontal space taken by the bookmarks bar has to be counted into the target width for "exactly one page fits". */
   const [outlineLoaded, setOutlineLoaded] = useState(false);
-  /** 书签栏默认收起:打开 PDF 先看正文,要看目录再点工具栏的「书签」。 */
+  /** The bookmarks bar starts collapsed: opening a PDF shows the body first, the outline is opened with the "Bookmarks" button in the toolbar. */
   const [outlineOpen, setOutlineOpen] = useState(false);
-  /** 用户偏好宽度(持久化);实际显示宽度按当前栏宽再夹一次,见下面的 effect。 */
+  /** The preferred width (persisted); the actually displayed width is clamped once more against the current column width, see the effect below. */
   const preferredOutlineWidth = useRef(loadOutlineWidth());
   const [outlineWidth, setOutlineWidth] = useState(() => preferredOutlineWidth.current);
   const [outlineQuery, setOutlineQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
-  /** 滚动区是否已到首/尾：翻页改为按步长滚动后，按钮的可用性由滚动位置决定，
-   *  不再由「当前页是不是第一/最后一页」决定（最后一页可能还有半屏没看）。 */
+  /** Whether the scroll area is already at the top or the bottom: since paging scrolls by a step, the availability of the buttons is decided by the scroll position and no longer by "is the current page the first or the last one" (the last page may still have half a screen left). */
   const [atScrollTop, setAtScrollTop] = useState(true);
   const [atScrollBottom, setAtScrollBottom] = useState(false);
   const [activePages, setActivePages] = useState<Set<number>>(() => new Set());
-  /** 只显示每页的这一块(归一化比例);null = 整页。 */
+  /** The block of each page that is shown (normalized ratios); null = the whole page. */
   const [crop, setCrop] = useState<PdfCrop | null>(() => loadPdfCrop(path));
-  /** 框选进行中:页面临时铺回整页,才能框到被裁掉的留白。 */
+  /** While cropping, the page temporarily spreads back to the full page, so the cropped away margin can be framed. */
   const [cropping, setCropping] = useState(false);
   const cropShown = cropping ? null : crop;
-  /** 当前批注工具:只剩高亮;null = 普通阅读。 */
+  /** The current annotation tool: only the highlight is left; null = plain reading. */
   const [tool, setTool] = useState<PdfTool | null>(null);
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
-  /** 初始批注文件读完之前不允许进入批注模式:否则第一次提交会覆盖掉还没读进来的旧批注。 */
+  /** The annotation mode is not allowed before the initial annotation file was read: otherwise the first commit would overwrite the old annotations that were not read in yet. */
   const [annotationsLoaded, setAnnotationsLoaded] = useState(false);
   const annotationsRef = useRef<PdfAnnotation[]>([]);
-  /** 异步读盘回来时用它自证「还是当前文档/没有被本地编辑抢先」。 */
+  /** Lets an async read prove that it is still the current document and that no local edit got in first. */
   const annotationsEpoch = useRef(0);
-  /** Ctrl+Z/Ctrl+Shift+Z 的批注快照栈(每份 PDF 独立,换文档清空)。 */
+  /** The annotation snapshot stack for Ctrl+Z / Ctrl+Shift+Z (one per PDF, cleared when the document changes). */
   const historyRef = useRef<AnnotationHistory<PdfAnnotation[]> | null>(null);
   if (historyRef.current === null) historyRef.current = createAnnotationHistory(100);
   const history = historyRef.current;
-  /** 最近一次 pointerdown 是否落在 PDF 阅读器里(Ctrl+Z 的归属判断)。 */
+  /** Whether the last pointerdown landed inside the PDF reader (decides who owns Ctrl+Z). */
   const pdfActiveRef = useRef(false);
   /**
-   * 正文选中翻译卡片。`translateSeq` 是唯一的写入者令牌:换选区、关卡片、
-   * 切批注工具、关开关都会 +1,迟到的 IPC 结果自证不过就丢弃。
+   * The translation card for a selection in the body text. `translateSeq` is
+   * the only writer token: changing the selection, closing the card,
+   * switching the annotation tool and turning the switch off all increment
+   * it, and a late IPC result that cannot prove its token is dropped.
    */
   const translateEnabled = useAppStore((s) => s.settings.studyTranslate.enabled);
   const [translateCard, setTranslateCard] = useState<TranslateCardState | null>(null);
   const translateSeq = useRef(0);
   /**
-   * mouseup 到 setTimeout 之间用户可能已经点中批注工具。setTimeout 闭包里的
-   * `tool` 是旧值,所以用 ref 读当前值:批注工具一旦生效,翻译请求连创建都
-   * 不做,避免「工具已选但翻译卡还弹出来」的竞争。
+   * Between the mouseup and the setTimeout the user may already have hit the
+   * annotation tool. The `tool` inside the setTimeout closure is a stale
+   * value, so the current value is read through a ref: as soon as an
+   * annotation tool is active the translation request is not even created,
+   * which avoids the race of "a tool is selected but the translation card
+   * still pops up".
    */
   const toolRef = useRef<PdfTool | null>(tool);
   useLayoutEffect(() => {
@@ -199,8 +204,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const docKey = vaultRelPath(path, vaultPath ?? "");
 
   /**
-   * 一次选中翻译。Rust 决定单词/句子:单词只查内置词典(未收录返回 miss,
-   * 不联网);两个及以上单词才走模型 API。迟到的结果用 translateSeq 丢弃。
+   * One selection translation. Rust decides word vs. sentence: a single word
+   * only queries the built-in dictionary (a miss is returned without
+   * network access), two or more words go to the model API. A late result is
+   * dropped with translateSeq.
    */
   const requestTranslation = useCallback(
     async (text: string, x: number, y: number) => {
@@ -254,8 +261,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     [],
   );
 
-  // 关开关/换文档/进入批注工具:立即作废未返回的请求并收卡片。批注工具
-  // 优先是硬规则——页面在 tool 非空时根本不挂翻译 mouseup。
+  // Turning the switch off, changing the document or picking an annotation
+  // tool invalidates the pending requests immediately and takes the card
+  // away. The annotation tool wins as a hard rule: the page does not even
+  // attach the translation mouseup while tool is not null.
   useEffect(() => {
     if (!translateEnabled) {
       translateSeq.current++;
@@ -273,8 +282,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     }
   }, [tool]);
 
-  // 卡片是 fixed 定位:滚动后选区位置不再对应,直接收掉;点卡片外或 Esc
-  // 同样收掉。点正文开始新选区时会先收旧卡,新卡在 mouseup 后重开。
+  // The card is positioned fixed: after a scroll the selection position no
+  // longer matches, so it is taken away directly; a click outside the card or
+  // Esc does the same. Starting a new selection in the body first closes the
+  // old card, the new one opens again after the mouseup.
   useEffect(() => {
     if (!translateCard) return;
     const close = () => {
@@ -301,12 +312,14 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     };
   }, [translateCard]);
   /**
-   * 这份 PDF 的材料目录(`materials/pdfs/<拼音目录>`):批注和 agent 会话
-   * 记录都落在那里。解析完成前不读批注,避免先读到旧路径又被迁移覆盖。
+   * The material directory of this PDF (`materials/pdfs/<pinyin dir>`): the
+   * annotations and the agent session records are stored there. The
+   * annotations are not read before it is resolved, so nothing is read from
+   * an old path first and then overwritten by a migration.
    */
   const [materialDir, setMaterialDir] = useState<string | null>(null);
   const [materialReady, setMaterialReady] = useState(false);
-  /** 页面列 = 整个滚动视口:没有批注留白,PDF 从栏左缘贴边排。 */
+  /** The page column is the whole scroll viewport: there is no annotation gutter, the PDF is laid out flush with the left edge of the column. */
   const containerWidth = Math.max(0, scrollWidth);
 
   const pageEls = useRef(new Map<number, HTMLDivElement>());
@@ -315,35 +328,39 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const currentPageRef = useRef(1);
   const outlineRef = useRef<HTMLElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
-  /** 每个 PDF 只自动适配一次,之后窗口/栏宽变化都不再改中栏宽度。
-   *  分几趟量:改宽会让滚动条出现/消失,页面实际宽度随之变化,一趟量不准;
-   *  最多三趟,收敛即停。 */
+  /** Every PDF is auto-fitted only once, later window or column width changes do not change the middle column width again.
+   *  It is measured in several passes: changing the width makes the scrollbar appear or disappear, the real page width changes with it, so a single pass is not accurate; at most three passes, and it stops as soon as it converged. */
   const autoFitPass = useRef(0);
   const autoFitFrom = useRef(0);
-  /** 最近一趟写进设置的中栏宽度;下一趟前比对,被手动改过就不再动。 */
+  /** The middle column width written to the settings in the last pass; it is compared before the next pass and left alone once it was changed by hand. */
   const autoFitTarget = useRef<number | null>(null);
 
-  // --- 阅读位置 -------------------------------------------------------------
-  /** 打开文档时的落点(页码 + 页内偏移);用户一动手就清掉。 */
+  // --- reading position ----------------------------------------------------
+  /** The landing spot when the document is opened (page number plus the offset inside the page); it is cleared as soon as the user does something. */
   const positionAnchor = useRef<{ page: number; offset: number } | null>(null);
-  /** 位置文件读完之前不许存盘,否则初始的 scrollTop=0 会覆盖上次的锚点。 */
+  /** Saving is not allowed before the position file was read, otherwise the initial scrollTop=0 would overwrite the anchor of the last session. */
   const positionLoaded = useRef(false);
-  /** 至少落过一次位才允许存盘(或本来就没有锚点)。 */
+  /** Saving is only allowed after the position was applied at least once (or when there was no anchor anyway). */
   const positionApplied = useRef(false);
-  /** 用户已经主动滚动/翻页/跳转,之后的布局变化不再把位置拉回去。 */
+  /** The user has scrolled, turned a page or jumped by themselves, so later layout changes no longer pull the position back. */
   const userScrolled = useRef(false);
   /**
-   * 重排前的视口锚点(栏宽拖动 / 窗口变宽 / 缩放 / 自动适配)。与
-   * `positionAnchor` 的区别:那个是「上次读到哪」,用户滚一下就不该再管;
-   * 这个是「此刻屏幕顶上是什么」,重排后必须还是它,否则页面一变小,同一个
-   * scrollTop 就落到后面好几页去了。
+   * The viewport anchor before a reflow (dragging the column width, a wider
+   * window, a zoom, the auto fit). The difference to `positionAnchor`: that
+   * one is "where the user left off last time" and should not matter anymore
+   * after a single scroll, this one is "what is at the top of the screen
+   * right now" and has to stay the same after a reflow, otherwise the same
+   * scrollTop lands several pages further down once the page gets smaller.
    */
   const reflowAnchor = useRef<{ page: number; offset: number } | null>(null);
   const [positionEpoch, setPositionEpoch] = useState(0);
 
-  // 页面宽度 = 中间栏可用宽度,贴边(不再留 14px 横向内边距)。
-  // 框选后只剩裁出来的那一块:100% 要让可见部分贴边,所以完整页面按裁剪宽度
-  // 等比放大,而不是让裁剪窗口缩在栏中间留两条灰边。
+  // The page width is the usable width of the middle column, flush to the
+  // edge (no 14 px horizontal padding anymore).
+  // After a crop only the cropped block is left: at 100% the visible part
+  // has to be flush with the edge, so the full page is scaled up by the crop
+  // width instead of letting the crop window shrink in the middle of the
+  // column with two grey bars.
   const fitWidth = Math.max(containerWidth, MIN_PAGE_WIDTH);
   const baseWidth = basePageWidth(fitWidth, cropShown?.w ?? 1);
   const minZoom = Math.max(MIN_ZOOM, MIN_PAGE_WIDTH / baseWidth);
@@ -422,8 +439,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   }, [path, history]);
 
   // --- annotations ---------------------------------------------------------
-  // 换文档先清空,再读这一份的批注;读盘回来时比对 epoch,期间用户已经
-  // 开始批注(本地编辑推进了 epoch)就丢弃这份旧结果。
+  // Changing the document clears the annotations first and then reads the
+  // annotations of this one; when the read comes back the epoch is
+  // compared, and a result that got stale because the user already started
+  // annotating (a local edit advanced the epoch) is dropped.
   useEffect(() => {
     const epoch = ++annotationsEpoch.current;
     annotationsRef.current = [];
@@ -443,14 +462,14 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         setAnnotations(list);
       })
       .catch(() => {
-        // 读不到批注文件(尚无批注/权限问题)不影响阅读。
+        // Not being able to read the annotation file (no annotations yet, a permission problem) does not affect reading.
       })
       .finally(() => {
         if (annotationsEpoch.current === epoch) setAnnotationsLoaded(true);
       });
   }, [vaultPath, docKey, history, materialReady, materialDir]);
 
-  // 材料目录:换 PDF 就重新解析(后端按「仓库相对路径」登记,同一份永远同一个目录)。
+  // Material directory: it is resolved again for every new PDF (the backend registers it by the vault relative path, so the same file always lands in the same directory).
   useEffect(() => {
     setMaterialDir(null);
     setMaterialReady(false);
@@ -470,9 +489,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     };
   }, [vaultPath, path]);
 
-  // --- 阅读位置 -------------------------------------------------------------
-  // 换文档先作废旧锚点,再读这份 PDF 上次停下的位置。异步读盘回来时比对
-  // docKey(闭包里的 key),过期结果丢弃。
+  // --- reading position ----------------------------------------------------
+  // Changing the document voids the old anchor first, then reads where this
+  // PDF was left off last time. When the async read comes back the docKey
+  // (the key in the closure) is compared and a stale result is dropped.
   useEffect(() => {
     positionAnchor.current = null;
     positionLoaded.current = false;
@@ -485,8 +505,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       return;
     }
     let cancelled = false;
-    // 页码对不上(文件被替换、裁页)时不能让存盘一直被锁住:2 秒后无论是否
-    // 落位成功都允许记录新位置。
+    // When the page number does not match (the file was replaced, the pages
+    // were cropped) saving must not stay locked forever: after 2 seconds
+    // recording a new position is allowed whether the landing worked or
+    // not.
     const fallback = setTimeout(() => {
       positionApplied.current = true;
     }, 2000);
@@ -494,14 +516,14 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       .then((data) => {
         if (cancelled) return;
         const saved = data.pdfs[key];
-        // 读盘期间用户已经开始滚动:位置归用户,不再还原。
+        // The user already started scrolling while the file was read: the position belongs to the user and is not restored.
         positionAnchor.current =
           saved && !userScrolled.current
             ? { page: saved.page, offset: saved.offset }
             : null;
         positionLoaded.current = true;
         if (!positionAnchor.current) positionApplied.current = true;
-        // 读盘可能晚于文档/页面就绪:epoch 变化让恢复 effect 再跑一次。
+        // The read may come back after the document and the pages are ready: the epoch change lets the restore effect run once more.
         setPositionEpoch((n) => n + 1);
       })
       .catch(() => {
@@ -515,7 +537,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     };
   }, [vaultPath, docKey]);
 
-  /** 把锚点落到当前布局上;页面还没挂载/宽度变化后都可以反复调用。 */
+  /** Lands the anchor on the current layout; it can be called again while the pages are not mounted yet or after a width change. */
   const applyAnchor = useCallback((anchor: { page: number; offset: number } | null) => {
     if (!anchor || !scrollRef.current) return;
     const el = pageEls.current.get(anchor.page);
@@ -532,18 +554,21 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     positionApplied.current = true;
   }, []);
 
-  /** 打开文档时的落点:只在用户还没动过手时生效(锚点是「上次读到哪」)。 */
+  /** The landing spot when the document is opened: it only applies while the user has not acted yet (the anchor is "where the user left off last time"). */
   const applyReadPosition = useCallback(() => {
     if (userScrolled.current) return;
     applyAnchor(positionAnchor.current);
   }, [applyAnchor]);
 
   /**
-   * 记录「重排前视口顶部是哪一页的百分之几」。页面宽度随中栏/窗口宽度与缩放
-   * 变化,页面高度跟着变——同一个 `scrollTop` 这个像素值就会指向完全不同的
-   * 内容(实测 981px 宽时 scrollTop=2900 停在第 3 页 53%,拖窄到 390px 后
-   * 同一个 scrollTop 落到第 6 页 632%)。所以凡是会让页面尺寸变化的状态更新
-   * 之前,先把内容锚点记下来,提交后用 applyReflowAnchor 落回去。
+   * Records "which page and which percent of it is at the top of the viewport
+   * before the reflow". The page width follows the middle column, the window
+   * width and the zoom, and the page height follows it, so the same
+   * `scrollTop` in pixels points at completely different content (measured:
+   * at 981 px wide, scrollTop=2900 rests at 53% of page 3; narrowed to
+   * 390 px, the same scrollTop lands at 632% of page 6). So before every
+   * state update that changes the page size the content anchor is captured,
+   * and after the commit applyReflowAnchor lands it again.
    */
   const captureReflowAnchor = useCallback(() => {
     const scroll = scrollRef.current;
@@ -552,7 +577,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     if (position) reflowAnchor.current = { page: position.page, offset: position.offset };
   }, []);
 
-  /** 重排后落回同一处:只做一次,落了就清,免得跟用户的后续滚动抢。 */
+  /** Lands on the same spot after a reflow: only once, and it is cleared afterwards so it does not fight the user's later scrolling. */
   const applyReflowAnchor = useCallback(() => {
     const anchor = reflowAnchor.current;
     if (!anchor) return false;
@@ -561,13 +586,18 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     return true;
   }, [applyAnchor]);
 
-  // 文档/页面挂载、自动适配改宽、裁剪重排后都重新落一次:锚点是「第几页的
-  // 百分之几」,布局怎么变都还能回到同一处。用户一动手下面的监听就清掉
-  // 锚点,不会把用户拽回旧位置。
+  // The landing happens again after the document or the pages are mounted,
+  // after the auto fit changed the width and after a crop reflow: the anchor
+  // is "which page and which percent of it", so no matter how the layout
+  // changes it lands in the same place. As soon as the user acts, the
+  // listener below clears the anchor and never drags the user back to the
+  // old position.
   //
-  // 栏宽/缩放这类**重排**优先用 reflow 锚点(它就是用户此刻看的那一行),
-  // 而且必须在提交里同步落位:layoutEffect 里写完 scrollTop,浏览器才画这一
-  // 帧——晚一帧就是肉眼可见的一次跳动。
+  // A **reflow** like a column width or zoom change prefers the reflow
+  // anchor (it is the line the user is looking at right now), and it has to
+  // land inside the commit: the browser only paints that frame after the
+  // layout effect wrote the scrollTop, and one frame late is a jump the user
+  // can see.
   useLayoutEffect(() => {
     if (applyReflowAnchor()) return;
     if (!positionAnchor.current || userScrolled.current) return;
@@ -575,7 +605,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     return () => cancelAnimationFrame(raf);
   }, [positionEpoch, doc, targetWidth, cropShown, applyReadPosition, applyReflowAnchor]);
 
-  // 用户主动滚动/翻页/跳转后,位置归用户所有:之后只存不还原。
+  // After the user scrolled, turned a page or jumped by themselves, the position belongs to the user: from then on it is only stored, never restored.
   useEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
@@ -600,7 +630,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     };
   }, [doc]);
 
-  // 离开阅读器/退出学习模式时把挂起的写盘冲刷掉。
+  // The pending write is flushed when the reader is left or study mode is exited.
   useEffect(() => () => flushReadPositions(), []);
 
   const commitAnnotations = useCallback(
@@ -631,9 +661,11 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     if (next !== null) applyHistory(next);
   }, [applyHistory, history]);
 
-  // 键盘归属只看「最近一次鼠标按在哪儿」,不给阅读器加 tabindex / focus()。
-  // 在 mousedown 里 focus 可聚焦容器会让 WebKit 的文字选区锚点跳变,小小的
-  // 拖选会变成一大片;选择行为必须保持浏览器原生。
+  // Keyboard ownership only looks at "where the mouse was pressed last", the
+  // reader gets neither a tabindex nor a focus(). Focusing a focusable
+  // container in mousedown makes the WebKit text selection anchor jump, a
+  // small drag becomes a huge area; the selection behaviour has to stay
+  // native to the browser.
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
       pdfActiveRef.current = !!viewerRef.current?.contains(event.target as Node);
@@ -642,8 +674,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
   }, []);
 
-  // 批注撤销:只在这个 PDF 阅读器是当前活动面时接管 Ctrl/Cmd+Z。
-  // 输入框(书签搜索)保留原生撤销。
+  // Annotation undo: Ctrl/Cmd+Z is only taken over when this PDF reader is the active surface.
+  // Input fields (the bookmark search) keep the native undo.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
@@ -701,10 +733,12 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   );
 
   /**
-   * 每页一份数组;对象身份没变的页复用上一份数组,避免整篇重渲染。
+   * One array per page; a page whose object identities did not change reuses
+   * the previous array, which avoids a re-render of the whole document.
    *
-   * 只放高亮:旧文件里的文字批注条目不再上屏(数据仍在磁盘上,保存时原样
-   * 带回去,不会丢)。
+   * Only the highlights are shown: the text annotation entries of old files
+   * no longer appear on screen (the data is still on disk and is written
+   * back unchanged when saving, so nothing is lost).
    */
   const pageCacheRef = useRef(
     new Map<number, { items: PdfAnnotation[]; list: PdfAnnotation[] }>(),
@@ -736,10 +770,13 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     return out;
   }, [annotations]);
 
-  // --- 阅读区截图(⌘⇧E → 学习助手) ---------------------------------------
-  // 把可见页面拼成一张 PNG:只取「滚动视口 ∩ 当前内容区 ∩ 页面列」,压暗的
-  // 旧内容/目录栏/批注留白/页框阴影都不进图。页面 canvas 还没画完时等下一帧,
-  // 最多 12 帧(≈200ms);仍不齐返回 null,由命令提示「还没渲染完」。
+  // --- screenshot of the reading area (⌘⇧E -> study assistant) ---------------
+  // The visible pages are stitched into one PNG: only "scroll viewport ∩
+  // current content area ∩ page column" is taken, the dimmed old content,
+  // the outline bar, the annotation gutter and the page frame shadows stay
+  // out of the image. While the page canvas is not painted yet it waits for
+  // the next frame, at most 12 frames (~200 ms); if it is still incomplete
+  // it returns null and the command reports "not rendered yet".
   useEffect(
     () =>
       registerPdfSnapshotSource(async () => {
@@ -772,9 +809,11 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
             });
             canvases.push(canvas);
           }
-          // 阅读分区:压暗遮罩的下沿就是「刚读完的旧内容」与「当前内容」的分界,
-          // 截图只取分界以下的当前内容区。遮罩是 DOM 覆盖层,量它的下沿即可,
-          // 不必再把步长换算一遍。
+          // Reading split: the lower edge of the dimming overlay is the
+          // boundary between "the old content just read" and "the current
+          // content", and the screenshot only takes the current content area
+          // below it. The overlay is a DOM layer, so measuring its lower edge
+          // is enough and the step does not have to be converted again.
           const shade = scroll.parentElement?.querySelector<HTMLElement>(
             ".pdf-read-shade",
           );
@@ -802,7 +841,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     [annotationsByPage, eyeCare],
   );
 
-  // Esc 退出批注模式(与框选的 Esc 不冲突:进入框选会先退出批注)。
+  // Esc leaves the annotation mode (it does not collide with the Esc of the crop: entering the crop leaves the annotation mode first).
   useEffect(() => {
     if (!tool) return;
     const onKey = (event: KeyboardEvent) => {
@@ -812,7 +851,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     return () => window.removeEventListener("keydown", onKey);
   }, [tool]);
 
-  // 离页前把 300ms 防抖里的改动冲刷掉。
+  // The changes in the 300 ms debounce are flushed before leaving the page.
   useEffect(() => {
     const flush = () => flushPdfAnnotations();
     window.addEventListener("beforeunload", flush);
@@ -833,10 +872,14 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       timer = null;
       const width = el.clientWidth;
       const apply = (capture: boolean) => {
-        // 宽度没变就不动:ResizeObserver 会重复报同尺寸,反复落锚点会跟滚动抢。
+        // Nothing happens when the width did not change: the ResizeObserver
+        // reports the same size again and again, and landing the anchor
+        // repeatedly would fight the scrolling.
         if (width === appliedWidthRef.current) return;
         appliedWidthRef.current = width;
-        // 先记住视口顶部(此刻页面还是旧尺寸),再让页面按新宽度重排。
+        // The top of the viewport is remembered first (the pages still have
+        // the old size at this moment), then the pages reflow to the new
+        // width.
         if (capture) captureReflowAnchor();
         setScrollWidth((prev) => (prev === width ? prev : width));
       };
@@ -878,8 +921,9 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         if (set.size > 0) {
           const top = Math.min(...set);
           setCurrentPage(top);
-          // 滚动式翻页不再经过 goToPage；裁剪等重排要用「当前可见的顶页」
-          // 做落点，ref 必须跟着可见页一起走。
+          // The scrolling paging no longer goes through goToPage; a reflow
+          // such as a crop has to land on "the topmost visible page", so the
+          // ref has to follow the visible page.
           currentPageRef.current = top;
         }
       },
@@ -917,8 +961,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     (n: number, el: HTMLDivElement | null) => {
       if (el) {
         pageEls.current.set(n, el);
-        // 锚点页挂载的那一刻就落位:所有页的占位框已经在同一批提交里,
-        // scrollHeight 是完整的,不必等首帧画完再跳一下。
+        // The landing happens the moment the anchor page is mounted: the
+        // placeholder boxes of all pages are already in the same commit, so
+        // the scrollHeight is complete and there is no need to wait for the
+        // first frame and jump afterwards.
         applyReadPosition();
       } else {
         pageEls.current.delete(n);
@@ -927,11 +973,15 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     [applyReadPosition],
   );
 
-  // 首/尾状态只用于翻页按钮的 disabled：按步长翻页后，页号不再是边界
-  // （最后一页也可能还有半屏）。滚动的每帧只读已缓存的 scrollTop/Height，
-  // 状态只在跨过边界时变一次；内容高度由 stage 的 ResizeObserver 补触发。
-  // 阅读位置也在这里存：滚动停止 350ms 后量一次所有页（一次批量布局读取），
-  // 不在每帧做几何计算。
+  // The top/bottom state only drives the disabled state of the paging
+  // buttons: after paging by a step the page number is no longer the border
+  // (the last page may still have half a screen left). Every frame of the
+  // scrolling only reads the cached scrollTop/Height and the state changes
+  // once when a border is crossed; the content height is triggered by the
+  // ResizeObserver of the stage.
+  // The reading position is stored here as well: 350 ms after the scrolling
+  // stopped all pages are measured once (one batched layout read), no
+  // geometry is computed per frame.
   useEffect(() => {
     const scroll = scrollRef.current;
     const stage = stageRef.current;
@@ -991,16 +1041,19 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   }
 
   /**
-   * 翻页 = 以「可见高度 × step」滚动，而不是跳到下一页页首。
-   * 默认 50% 时上一屏的下半部分刚好留在屏幕上半区，新内容从下半屏进入；
-   * 眼睛不必每次都回到屏幕顶部。首尾由 steppedScrollTop 夹紧。
-   * 落点若切在文字行内，在 2% 视口内把最近的行边对齐到分界线。
+   * Paging scrolls by "visible height x step" instead of jumping to the top
+   * of the next page. With the default 50% the lower half of the previous
+   * screen stays in the upper half of the viewport and the new content
+   * enters from the lower half; the eye does not have to travel back to the
+   * top of the screen every time. The ends are clamped by steppedScrollTop.
+   * When the landing point cuts a text line, the nearest line edge is
+   * aligned to the boundary within 2% of the viewport.
    */
   const flipPage = useCallback(
     (delta: 1 | -1) => {
       const scroll = scrollRef.current;
       if (!scroll) return;
-      // 主动翻页 = 阅读位置归用户,不再按打开时的锚点还原。
+      // Paging by hand means the reading position belongs to the user, it is not restored from the anchor of the open anymore.
       userScrolled.current = true;
       positionAnchor.current = null;
       reflowAnchor.current = null;
@@ -1015,7 +1068,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         pageStep,
       );
       scroll.scrollTop = nominal;
-      // 已经在首尾时不微调：PageUp 在顶部就该停在顶部。
+      // No fine adjustment at the ends: PageUp at the top has to stay at the top.
       if (nominal <= 0 || nominal >= max) return;
       const snapped = snapFlipToLine(scroll, nominal, pageStep);
       if (snapped !== nominal) scroll.scrollTop = snapped;
@@ -1031,9 +1084,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     [path],
   );
 
-  /** 缩放 = 页面尺寸重排:与栏宽拖动同一条路,先记视口顶部再换尺寸。
-   *  值用函数式更新:连点两下(同一 tick 里两次点击)必须累积两步,不能都从
-   *  渲染时的旧值起算。 */
+  /** Zooming is a reflow of the page size: it takes the same path as dragging the column width, the top of the viewport is remembered before the size changes.
+   *  The value uses a functional update: two quick clicks (two clicks in the same tick) have to accumulate two steps and must not both start from the stale value of the render. */
   function zoomStep(step: (z: number) => number) {
     captureReflowAnchor();
     setZoom((z) => {
@@ -1042,9 +1094,12 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     });
   }
 
-  // 书签栏宽度:拖动只改这一栏,中栏的 PDF 区域吃剩余宽度,左右两栏不受影响。
-  // 拖动期间写 CSS 变量(不 setState):书签可能有几百项,60Hz 重渲染整棵树不划算,
-  // 而且 ResizeObserver 在拖动中途触发的重渲染会把内联宽度弹回旧值。
+  // Width of the bookmarks bar: dragging only changes this column, the PDF area of the middle column takes the remaining width and the two outer columns are unaffected.
+  // During the drag the value goes into a CSS variable (no setState): the
+  // bookmarks may number in the hundreds and re-rendering the whole tree at
+  // 60 Hz is not worth it, and a re-render triggered by the ResizeObserver in
+  // the middle of the drag would spring the inline width back to its old
+  // value.
   function startOutlineDrag(event: React.PointerEvent<HTMLDivElement>) {
     const aside = outlineRef.current;
     const body = aside?.parentElement;
@@ -1060,7 +1115,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     try {
       handle.setPointerCapture(event.pointerId);
     } catch {
-      // 合成事件/没有活动指针
+      // Synthetic event / no active pointer
     }
     const onMove = (move: PointerEvent) => {
       latest = clampOutlineWidth(startWidth + move.clientX - startX, bodyWidth);
@@ -1080,8 +1135,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     window.addEventListener("pointercancel", onUp);
   }
 
-  // 窗口/中栏变窄时,把显示宽度夹回"给页面留出最小宽度"的范围;只夹显示,
-  // 不回写偏好——栏恢复宽了还能回到用户拖出来的宽度。
+  // When the window or the middle column narrows, the displayed width is clamped back into the range that "leaves a minimum width for the pages"; only the display is clamped, the preference is not written back, so a column that gets wide again returns to the width the user dragged.
   useLayoutEffect(() => {
     const body = outlineRef.current?.parentElement;
     if (!body) return;
@@ -1090,25 +1144,32 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       body.getBoundingClientRect().width,
     );
     if (clamped !== outlineWidth) setOutlineWidth(clamped);
-    // 书签栏刚展开/目录刚加载出来时也要按当前栏宽夹一次。
+    // The bookmarks bar has to be clamped once against the current column width right after it expanded or the outline was loaded.
   }, [outlineWidth, containerWidth, outlineOpen, outline.length]);
 
-  // 打开 PDF 时把中栏调成「一页刚好完整显示」的宽度。只在文档与目录都就绪
-  // 后跑一次:之后拖窗口不改中栏宽度(那样会连带改变纵向能看到的内容),用户
-  // 手动拖分隔线也以手动值为准。
+  // When a PDF is opened, the middle column is set to the width where "one
+  // page fits completely". It runs once, after the document and the outline
+  // are ready: later window resizes do not change the middle column width
+  // (that would also change how much can be seen vertically), and a divider
+  // the user dragged by hand wins over the fitted value.
   useLayoutEffect(() => {
-    // 三趟足够收敛:第一趟按页面高度差折算,后两趟用重排后的真实页面高度校正
-    // (滚动条出现/消失改变页面实际宽度;一次量不准)。
+    // Three passes are enough to converge: the first pass converts the page
+    // height difference, the two later ones correct it with the real page
+    // height after the reflow (the scrollbar appearing or disappearing
+    // changes the real page width, so one measurement is not accurate).
     const MAX_FIT_PASSES = 3;
     if (!doc || !outlineLoaded || autoFitPass.current >= MAX_FIT_PASSES) return;
-    // 上一趟之后只在页面宽度真的重排过才量下一趟,免得被无关的依赖重跑。
+    // After the previous pass the next one is only measured when the page
+    // width really reflowed, so an unrelated dependency cannot rerun it.
     if (autoFitPass.current > 0 && targetWidth === autoFitFrom.current) return;
     const scroll = scrollRef.current;
     const viewer = viewerRef.current;
     const page = pageEls.current.get(1);
     if (!scroll || !viewer || !page) return;
-    // 用已经渲染出来的页面反推:差多少高度就折算成多少宽度,滚动条占多少
-    // 像素都不影响(量的是真实布局)。
+    // The target is derived backwards from the page that was already
+    // rendered: the height difference is converted into a width difference,
+    // and how many pixels the scrollbar takes does not matter (the real
+    // layout is measured).
     const target = contentWidthForRenderedPage({
       contentWidth: viewer.getBoundingClientRect().width,
       pageWidth: targetWidth,
@@ -1124,7 +1185,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     const store = useAppStore.getState();
     const currentContent = store.settings.studyContentWidth;
     if (autoFitPass.current > 0 && currentContent !== autoFitTarget.current) {
-      // 上一趟之后用户已经手动拖过中栏:手动值优先,放弃校正。
+      // The user dragged the middle column by hand after the previous pass: the manual value wins, the correction is dropped.
       autoFitPass.current = MAX_FIT_PASSES;
       return;
     }
@@ -1134,12 +1195,12 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       autoFitTarget.current = target;
       store.patchSettings({ studyContentWidth: target });
     } else {
-      // 已经收敛(页面高度差不到 1px),收工。
+      // It converged (the page height differs by less than 1 px), done.
       autoFitPass.current = MAX_FIT_PASSES;
     }
   }, [doc, outlineLoaded, ratio, crop, targetWidth]);
 
-  // 裁剪框改变每页高度:重排后把当前页重新顶到视口顶部,阅读位置不丢。
+  // The crop box changes the height of every page: after the reflow the current page is pushed to the top of the viewport again, so the reading position is not lost.
   useEffect(() => {
     if (cropping) return;
     const raf = requestAnimationFrame(() => goToPage(currentPageRef.current));
@@ -1147,9 +1208,12 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crop, cropping]);
 
-  // 翻页快捷键走命令系统(默认 PageUp/PageDown/方向键,可在设置里改):这里只
-  // 把「能不能翻、翻哪一页」登记给命令层。焦点归属由分发层处理——裸导航键在
-  // 编辑器/输入框里归它们自己,带修饰键的绑定(如 ⌃J)在哪儿都生效。
+  // The paging shortcuts go through the command system (PageUp/PageDown/arrow
+  // keys by default, rebindable in the settings): here only "can it flip and
+  // which page" is registered with the command layer. Focus ownership is
+  // handled by the dispatch layer: a bare navigation key belongs to the
+  // editor or the input field it is in, a binding with a modifier (such as
+  // ⌃J) works everywhere.
   useEffect(() => {
     setPdfNavHandlers({
       canFlip: () => cropping === false && useAppStore.getState().modal === null,
@@ -1164,7 +1228,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
   const prevKeys = bindingsForCommand("study.pdf-prev-page").map(formatBinding).join(" / ");
   const nextKeys = bindingsForCommand("study.pdf-next-page").map(formatBinding).join(" / ");
 
-  /** 框选与批注互斥:框选层盖住页面,批注的点击/拖选交给谁必须唯一。 */
+  /** The crop and the annotation are mutually exclusive: the crop layer covers the page, so who owns the click and the drag selection of the annotation has to be unique. */
   function toggleCropping() {
     const next = !cropping;
     setCropping(next);
@@ -1183,7 +1247,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       style={
         {
           "--pdf-outline-w": `${outlineWidth}px`,
-          // 翻页后旧内容占视口上方 1-step，新内容从下方 step 处开始。
+          // After a page turn the old content takes the top 1-step of the viewport and the new content starts at the step from below.
           "--read-old": `${Math.round((1 - pageStep) * 100)}%`,
         } as React.CSSProperties
       }
@@ -1357,8 +1421,11 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
               </div>
             </div>
           </div>
-          {/* 翻页后的阅读分区：上方旧内容压暗、到边界渐隐（不画分界线，
-              两端靠阴影的圆角尖收尾）。整层不接鼠标事件，选中/批注/链接照常。 */}
+          {/* The reading split after a page turn: the old content above is
+              dimmed and fades out towards the boundary (no separator line is
+              drawn, both ends close with the rounded tip of the shadow).
+              The whole layer does not take mouse events, so selecting,
+              annotating and links keep working as usual. */}
           <div className="pdf-read-guide" aria-hidden>
             <div className="pdf-read-shade" />
           </div>
@@ -1368,7 +1435,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
               scrollRef={scrollRef}
               onApply={(next) => {
                 setCropping(false);
-                // 框太小(单击/手抖)当取消,保留原来的范围。
+                // A box that is too small (a single click, a shaky hand) counts as a cancel and keeps the previous range.
                 if (next) applyCrop(next);
               }}
               onCancel={() => setCropping(false)}
@@ -1393,7 +1460,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
 // Crop selection
 // ---------------------------------------------------------------------------
 
-/** 所有页在滚动内容里的位置;一次批量读布局,只在滚动停止/落位时调用。 */
+/** The position of every page inside the scroll content; one batched layout read, called when the scrolling stopped or when landing. */
 function pageMetrics(
   scroll: HTMLElement,
   pages: Map<number, HTMLDivElement>,
@@ -1409,9 +1476,9 @@ function pageMetrics(
 
 interface CropLayerProps {
   pageEls: React.RefObject<Map<number, HTMLDivElement>>;
-  /** 框选层盖住了滚动容器:滚轮事件在这里转交给它,否则框选模式下翻不动页。 */
+  /** The crop layer covers the scroll container, so the wheel events are handed over to it here, otherwise the pages cannot be turned while cropping. */
   scrollRef: React.RefObject<HTMLDivElement | null>;
-  /** 只按页比例给出结果;单击/手抖为 null(调用方当取消)。 */
+  /** The result is given as page ratios only; a single click or a shaky hand yields null (the caller treats it as a cancel). */
   onApply: (crop: PdfCrop | null) => void;
   onCancel: () => void;
 }
@@ -1424,11 +1491,14 @@ interface Box {
 }
 
 /**
- * 框选层:盖住 PDF 视口,在一个页面内拖出矩形。
+ * The crop layer: it covers the PDF viewport and drags out a rectangle
+ * inside one page.
  *
- * 坐标一律现算(`getBoundingClientRect`),不用缓存的布局——拖动期间页面
- * 不滚动,但列宽/缩放可能刚好在变,缓存会框错位置。框是相对页面的比例,
- * 所以同一块范围会原样套到每一页。
+ * The coordinates are always computed fresh (`getBoundingClientRect`), a
+ * cached layout is not used: the page does not scroll during the drag, but
+ * the column width or the zoom may change at that very moment and a cached
+ * rectangle would frame the wrong spot. The rectangle is a ratio relative to
+ * the page, so the same area is applied to every page unchanged.
  */
 function CropLayer({ pageEls, scrollRef, onApply, onCancel }: CropLayerProps) {
   const layerRef = useRef<HTMLDivElement>(null);
@@ -1470,11 +1540,11 @@ function CropLayer({ pageEls, scrollRef, onApply, onCancel }: CropLayerProps) {
     const rect = pageAt(event.clientX, event.clientY);
     if (!rect) return;
     event.preventDefault();
-    // 合成事件/没有活动指针时 setPointerCapture 会抛(同 StudyLayout 的拖拽)。
+    // setPointerCapture throws for a synthetic event or without an active pointer (same as the drag in StudyLayout).
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
     } catch {
-      // 捕获失败不影响拖拽:move/up 仍从元素上冒泡过来。
+      // A failed capture does not affect the drag: move/up still bubble up from the element.
     }
     const x = clampPx(event.clientX - rect.left, rect.width);
     const y = clampPx(event.clientY - rect.top, rect.height);
@@ -1529,7 +1599,7 @@ function CropLayer({ pageEls, scrollRef, onApply, onCancel }: CropLayerProps) {
         onCancel();
       }}
       onWheel={(event) => {
-        // 拖动期间页面矩形是缓存的,滚动会让框错位——只在没拖的时候放行。
+        // The page rectangle is cached during the drag, a scroll would put the box in the wrong spot, so the scroll is only let through while no drag is running.
         const scroll = scrollRef.current;
         if (!scroll || dragRef.current) return;
         scroll.scrollTop += event.deltaY;
@@ -1557,13 +1627,13 @@ interface PdfPageProps {
   width: number;
   /** Free-standing estimate used until the page itself is measured. */
   ratio: number;
-  /** 显示范围(比例);null = 整页。 */
+  /** The displayed range (ratios); null = the whole page. */
   crop: PdfCrop | null;
   active: boolean;
   eyeCare: boolean;
-  /** 当前批注工具;null = 普通阅读,页面不接管点击。 */
+  /** The current annotation tool; null = plain reading, the page does not take the clicks. */
   tool: PdfTool | null;
-  /** 选中翻译开关;tool 非空时父层不会挂翻译 handler。 */
+  /** The selection translation switch; while tool is not null the parent does not attach the translation handler. */
   translateEnabled: boolean;
   annotations: PdfAnnotation[] | undefined;
   onAddHighlight: (page: number, rects: NormRect[]) => void;
@@ -1671,7 +1741,7 @@ const PdfPage = memo(function PdfPage({
   }, [active, doc, pageNumber, width]);
 
   const height = Math.round(width * (pageRatio ?? ratio));
-  // 裁剪后页面只占这块:整页仍在里面,靠负偏移把框外的部分推出裁剪窗口。
+  // After a crop the page only occupies this block: the whole page is still inside it and a negative offset pushes the part outside the box out of the crop window.
   const shownWidth = crop ? Math.max(1, Math.round(width * crop.w)) : width;
   const shownHeight = crop ? Math.max(1, Math.round(height * crop.h)) : height;
   const offsetX = crop ? Math.round(width * crop.x) : 0;
@@ -1679,11 +1749,15 @@ const PdfPage = memo(function PdfPage({
   const pageAnnotations = annotations ?? EMPTY_PDF_ANNOTATIONS;
 
   /**
-   * 普通阅读模式的选中翻译。只在 tool 为空时挂载(见下面的 onMouseUp),
-   * 批注工具一旦选中,这个 handler 连挂都不挂——两种手势不共享任何状态。
+   * The selection translation in plain reading mode. It is only mounted
+   * while tool is null (see onMouseUp below); as soon as an annotation tool
+   * is selected this handler is not even attached, the two gestures do not
+   * share any state.
    *
-   * 延迟到宏任务再读选区(mouseup 默认行为之后选区才落定);起止节点都
-   * 必须落在 pdf.js 的 .textLayer 里,排除右侧批注留白等非正文选中。
+   * The selection is read in a macro task (only after the default action of
+   * the mouseup is the selection final); the start and the end node must
+   * both lie inside the .textLayer of pdf.js, which excludes selections in
+   * the annotation gutter on the right and other non-body text.
    */
   function handleTranslateMouseUp(event: React.MouseEvent<HTMLDivElement>) {
     if (event.button !== 0 || tool) return;
@@ -1709,16 +1783,24 @@ const PdfPage = memo(function PdfPage({
   }
 
   /**
-   * 批注模式的鼠标落点:
-   *  - 拖选/双击 → 选区矩形(按行切分后合并):高亮模式标黄,文字模式标蓝并
-   *    在建卡后把光标送进右侧留白;
-   *  - 高亮模式单击 → 点在已有高亮上就取消它,否则取光标所在那一行;
-   *  - 文字模式单击 → 点中蓝色批注就聚焦它的输入框,不新建。
-   * 延迟到宏任务再读选区:mouseup 默认行为之后选区才是最终状态。
+   * The mouse landing points of the annotation mode:
+   *  - drag selection / double click -> the selection rectangle (split by
+   *    line and merged): the highlight mode marks it yellow, the text mode
+   *    marks it blue and moves the caret into the gutter on the right once
+   *    the card was created;
+   *  - a single click in the highlight mode -> it removes an existing
+   *    highlight that was clicked, otherwise it takes the line the caret is
+   *    on;
+   *  - a single click in the text mode -> clicking a blue annotation focuses
+   *    its input field instead of creating a new one.
+   * The selection is read in a macro task: only after the default action of
+   * the mouseup is the selection in its final state.
    */
   function handleMouseUp(event: React.MouseEvent<HTMLDivElement>) {
-    // 只认左键:右键用于切换批注工具,它的 mouseup 若当成「拖选结束」,
-    // 会拿右键顺手挪出来的那点选区去建批注(或误删点中的高亮)。
+    // Only the left button counts: the right button switches the annotation
+    // tool, and treating its mouseup as "the end of a drag selection" would
+    // create an annotation from the selection the right button happened to
+    // move out (or remove the highlight that was clicked).
     if (event.button !== 0) return;
     const full = fullRef.current;
     const textDiv = textRef.current;
@@ -1798,7 +1880,7 @@ const PdfPage = memo(function PdfPage({
   );
 });
 
-/** 选区落在本页的部分(正常化矩形)。跨页拖选时只取本页那段。 */
+/** The part of the selection that falls on this page (normalized rectangles). A drag selection across pages only takes the piece of this page. */
 function selectionRects(
   sel: Selection | null,
   textDiv: HTMLElement,
@@ -1821,7 +1903,7 @@ function selectionRects(
   return normalizeRects(boxes, pageRect);
 }
 
-/** 文本层所有 span 的客户区矩形;单击取行用。 */
+/** The client rectangles of all spans of the text layer; used to take the line of a single click. */
 function spanRects(textDiv: HTMLElement): BoxLike[] {
   const out: BoxLike[] = [];
   for (const span of textDiv.querySelectorAll("span")) {
@@ -1834,8 +1916,7 @@ function spanRects(textDiv: HTMLElement): BoxLike[] {
 }
 
 /**
- * 分界线所在的文字行：只量当前页文本层里与分界线相交的 span。
- * 分界线落在页缝/页边距时没有相交行，返回空数组（保持原落点）。
+ * The text lines at the boundary: only the spans of the text layer of the current page that intersect the boundary are measured. When the boundary falls into a page gap or the margin there is no intersecting line and an empty array is returned (the original landing spot is kept).
  */
 function lineBandsAtY(
   scroll: HTMLElement,
@@ -1859,13 +1940,13 @@ function lineBandsAtY(
   return [];
 }
 
-/** 按分界线的实际 DOM 位置量文字行，算出微调后的落点。 */
+/** Measures the text lines at the real DOM position of the boundary and computes the fine tuned landing spot. */
 function snapFlipToLine(scroll: HTMLElement, nominal: number, step: number): number {
   const wrap = scroll.parentElement;
   const guide = wrap?.querySelector<HTMLElement>(".pdf-read-guide") ?? null;
   const height = (guide ?? scroll).clientHeight;
   const top = (guide ?? scroll).getBoundingClientRect().top;
-  // 与 --read-old 的取整保持一致：阴影收尾与量出来的分界线是同一条。
+  // The rounding matches --read-old: the end of the shadow and the measured boundary are the same line.
   const old = Math.round((1 - step) * 100);
   const boundary = top + (height * old) / 100;
   const viewport = scroll.clientHeight;

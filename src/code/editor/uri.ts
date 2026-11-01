@@ -1,18 +1,20 @@
 /**
- * file:// URI 的编解码(前端侧)。
+ * Encoding and decoding of file:// URIs (frontend side).
  *
- * 与 Rust 侧 `src-tauri/src/lsp/mod.rs` 的 `encode_uri_path` /
- * `decode_uri_path` 是同一套规则:保留 RFC 3986 unreserved 与 '/',其余按
- * UTF-8 字节转 %XX。语言服务器回的 Location 带的是 file:// URI,前端要
- * 反解成路径才能定位到项目里的文件。
+ * The rules are the same as the Rust side `encode_uri_path` /
+ * `decode_uri_path` in `src-tauri/src/lsp/mod.rs`: keep the RFC 3986
+ * unreserved characters and '/', turn everything else into %XX over its
+ * UTF-8 bytes. The Location a language server returns carries a file:// URI,
+ * so the frontend has to decode it into a path to locate a file in the
+ * project.
  */
 
-/** 绝对路径 → file:// URI。 */
+/** Absolute path → file:// URI. */
 export function encodeFileUri(path: string): string {
   return `file://${encodeUriPath(path)}`;
 }
 
-/** file:// URI 的路径部分编码。 */
+/** Encode the path part of a file:// URI. */
 export function encodeUriPath(path: string): string {
   let out = "";
   for (const byte of new TextEncoder().encode(path)) {
@@ -35,7 +37,7 @@ export function encodeUriPath(path: string): string {
   return out;
 }
 
-/** file:// URI → 绝对路径;不是 file:// 就返回 null。 */
+/** file:// URI → absolute path; null when it is not a file:// URI. */
 export function decodeFileUri(uri: string): string | null {
   if (!uri.startsWith("file://")) return null;
   const rest = uri.slice("file://".length);
@@ -56,8 +58,9 @@ export function decodeFileUri(uri: string): string | null {
         continue;
       }
     }
-    // 字面部分通常是 ASCII(非 ASCII 都被编码成了 %XX);真出现非 ASCII
-    // 时按 UTF-8 补进去,别把码元当字节。
+    // The literal part is usually ASCII (everything non-ASCII was encoded as
+    // %XX); when a non-ASCII character does show up, add it as UTF-8 bytes
+    // instead of treating the code unit as a byte.
     const code = path.charCodeAt(i);
     if (code < 0x80) {
       bytes.push(code);

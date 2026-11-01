@@ -1,11 +1,14 @@
-/** 矩阵行分隔符(空格 + LaTeX 的 `\\` + 换行)定义在 matrix.ts——矩阵快捷
- *  与 iden 片段共用同一份,免得两处各写一份、改一处漏一处。 */
+/** The matrix row separator (space + LaTeX's `\\` + newline) is defined in
+ *  matrix.ts — the matrix shortcuts and the iden snippet share that single
+ *  definition, so there is no second copy that can drift. */
 import { MATRIX_ROW_BREAK } from "./matrix";
 
-/** latex-suite 的函数型 replacement。入参随片段类型而定:
- *  正则触发 → `exec` 结果数组(`match[1]` 是第 1 个捕获组);
- *  字符串触发 → trigger 字符串本身;可视片段 → 选中的文本。
- *  返回值必须是字符串(仍按 `$n`/`${n:x}` 语法解析制表位),返回别的视为不匹配。 */
+/** latex-suite's function-shaped replacement. The argument depends on the
+ *  snippet type: a regex trigger gets the `exec` result array (`match[1]` is
+ *  the first capture group); a string trigger gets the trigger string itself;
+ *  a visual snippet gets the selected text.
+ *  The return value must be a string (the tab stops are still parsed with the
+ *  `$n`/`${n:x}` syntax); anything else counts as no match. */
 export type SnippetReplacement = (match: string[] | RegExpExecArray | string) => string;
 
 /** Raw snippet format, compatible with obsidian-latex-suite snippet files. */
@@ -207,7 +210,8 @@ export const DEFAULT_SNIPPETS: RawSnippet[] = [
   { trigger: "cases", replacement: "\\begin{cases}\n$0\n\\end{cases}", options: "mA" },
   { trigger: "ali", replacement: "\\begin{align}\n$0\n\\end{align}", options: "mA" },
   { trigger: "arr", replacement: "\\begin{array} \\ \n$0\n\\end{array}", options: "mA" },
-  // 函数型 replacement:iden3 → 3×3 单位阵(插件里就带这一条,形状逐字对齐)。
+  // A function-shaped replacement: iden3 → the 3×3 identity matrix (the plugin
+  // ships this very entry; the shape matches verbatim).
   {
     trigger: /iden(\d)/,
     replacement: (match) => {

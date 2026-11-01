@@ -1,18 +1,23 @@
-//! 每份学习材料的落盘目录:批注 + agent 会话记录放在一起。
+//! On-disk layout for one study material: annotations and agent session
+//! records live side by side.
 //!
 //! ```text
 //! <vault>/.bnote/materials/
-//!   index.json                    材料身份 → 目录名(只写一次,之后永远复用)
+//!   index.json                    material identity -> dir name
+//!                                 (written once, reused forever)
 //!   pdfs/<slug>/annotations.json
-//!   pdfs/<slug>/sessions/<会话>.jsonl
+//!   pdfs/<slug>/sessions/<session>.jsonl
 //!   webpages/<slug>/...
 //!   wxreads/<slug>/...
 //! ```
 //!
-//! 目录名由材料名生成:中文走 `pinyin_pro`(词级多音字、无声调),文件名里
-//! 的小数点等非字母数字统一变成下划线;网页按「域名_末段前 6 个字符」。
-//! 一旦写进 `index.json` 就不再重算——书名后补、标题改名、同名材料都不会
-//! 把已有批注/会话分到两个目录去。
+//! Directory names are generated from the material name: Chinese text goes
+//! through `pinyin_pro` (word-level polyphonic handling, no tones), and every
+//! non-alphanumeric character of a file name (dots included) becomes an
+//! underscore; web pages use "<domain>_<first 6 chars of the last segment>".
+//! Once a name is written into `index.json` it is never recomputed - a title
+//! that only arrives later, a renamed title, or two materials sharing a title
+//! can never split existing annotations or sessions across two directories.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,9 +37,10 @@ const REGISTRY_FILE: &str = "index.json";
 const KIND_PDF: &str = "pdfs";
 const KIND_WEB: &str = "webpages";
 const KIND_WEREAD: &str = "wxreads";
-/// 代码项目:会话与批注按项目归档。
+/// Code projects: sessions and annotations are archived per project.
 const KIND_CODE: &str = "codes";
-/// 目录名上限:APFS 单段 255 字节,留足 `annotations.json` 等文件名的余量。
+/// Directory name cap: an APFS path component holds 255 bytes, and the file
+/// name nested inside the directory (e.g. `annotations.json`) has to fit too.
 const MAX_SLUG_CHARS: usize = 60;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -42,11 +48,11 @@ const MAX_SLUG_CHARS: usize = 60;
 pub struct MaterialInfo {
     /// `pdfs` / `webpages` / `wxreads`
     pub kind: String,
-    /// 材料目录名(已 pinyin 化)
+    /// Material directory name (already converted to pinyin).
     pub dir: String,
-    /// 相对 `.bnote/` 的目录:`materials/pdfs/<dir>`
+    /// Directory relative to `.bnote/`: `materials/pdfs/<dir>`.
     pub rel_dir: String,
-    /// 材料标题(写入 registry,仅用于展示)
+    /// Material title (stored in the registry, for display only).
     pub title: String,
 }
 
@@ -56,8 +62,9 @@ struct RegistryEntry {
     dir: String,
     #[serde(default)]
     title: String,
-    /// 材料目录里那份 PDF 的文件名(空 = 这份材料指向仓库里别处的 PDF,
-    /// 例如迁移前收在 `<vault>/pdfs/` 的旧文件)。
+    /// File name of the PDF inside the material directory (empty = this material
+    /// points at a PDF stored elsewhere in the vault, e.g. an old file kept in
+    /// `<vault>/pdfs/` before the migration).
     #[serde(default)]
     file: String,
 }
@@ -85,8 +92,9 @@ impl Registry {
     }
 }
 
-/// 材料在仓库内的稳定身份。PDF 用仓库相对路径(搬库不受影响),网页/微信
-/// 读书用网址。
+/// Stable identity of a material inside the vault. A PDF is identified by its
+/// vault-relative path (moving the vault does not change it); web pages and
+/// WeRead books by their URL.
 fn identity(study: &StudyContent, vault: &Path) -> String {
     match study {
         StudyContent::Pdf { path, .. } => {
@@ -95,7 +103,8 @@ fn identity(study: &StudyContent, vault: &Path) -> String {
             format!("pdf:{}", rel.to_string_lossy().replace('\\', "/"))
         }
         StudyContent::Url { url, .. } => format!("url:{}", url.trim_end_matches('/')),
-        // 代码项目在 vault 外(那才是常态),身份就是它的绝对路径。
+        // Code projects live outside the vault (that is the normal case), so
+        // the identity is the absolute path.
         StudyContent::Code { path, .. } => format!("code:{}", path.trim_end_matches('/')),
     }
 }
@@ -107,7 +116,8 @@ fn is_weread(url: &str) -> bool {
     }
 }
 
-/// 文件系统友好的 slug:小写、只留 `[a-z0-9_-]`,连续分隔符合成一个。
+/// Filesystem-friendly slug: lower case, only `[a-z0-9_-]` kept, runs of
+/// separators collapsed into one.
 fn sanitize_slug(raw: &str) -> String {
     let mut out = String::new();
     let mut last_sep = false;
@@ -129,8 +139,9 @@ fn sanitize_slug(raw: &str) -> String {
     }
 }
 
-/// 中文 → 无声调拼音(词级多音字);非中文原样保留,再由 `sanitize_slug`
-/// 把小数点等换成下划线。
+/// Chinese -> toneless pinyin (word-level polyphonic handling); non-Chinese
+/// text is kept as is, then `sanitize_slug` turns dots and the like into
+/// underscores.
 pub fn pinyin_slug(text: &str) -> String {
     let opts = PinyinOptions {
         tone_type: ToneType::None,
@@ -144,8 +155,9 @@ pub fn pinyin_slug(text: &str) -> String {
     sanitize_slug(&converted)
 }
 
-/// 网页目录名:域名(去 www,点/横线变下划线)+ 末段前 6 个字符。
-/// `https://x.com/thedankoe/status/2010751592346030461` → `x_com_201075`。
+/// Web page directory name: domain (without www, dots and dashes turned into
+/// underscores) plus the first 6 characters of the last path segment.
+/// `https://x.com/thedankoe/status/2010751592346030461` -> `x_com_201075`.
 pub fn url_slug(url: &str) -> String {
     let Ok(parsed) = tauri::Url::parse(url) else {
         return sanitize_slug(url);
@@ -176,14 +188,16 @@ fn desired_slug(study: &StudyContent) -> String {
             pinyin_slug(&name)
         }
         StudyContent::Url { url, title } => {
-            // 微信读书的书名才是材料身份;缺书名(书架/商城页)时退回网址规则。
+            // Only a WeRead book title identifies the material; without one
+            // (shelf or store pages) fall back to the URL rule.
             if is_weread(url) && !title.trim().is_empty() && title != "微信读书" {
                 pinyin_slug(title)
             } else {
                 url_slug(url)
             }
         }
-        // 代码项目:项目目录名(没有就用路径末段)。
+        // Code projects: the project directory name, or the last path segment
+        // when there is none.
         StudyContent::Code { path, title } => {
             let stem = Path::new(path)
                 .file_name()
@@ -195,7 +209,8 @@ fn desired_slug(study: &StudyContent) -> String {
     }
 }
 
-/// 同一 kind 下目录名去重:已被别的材料占用就追加 `-2`、`-3`。
+/// Make the directory name unique within one kind: append `-2`, `-3`, ...
+/// when another material already took the base name.
 fn unique_dir(registry: &Registry, kind: &str, key: &str, base: &str) -> String {
     let taken: Vec<&str> = registry
         .materials
@@ -215,17 +230,18 @@ fn unique_dir(registry: &Registry, kind: &str, key: &str, base: &str) -> String 
     format!("{}-{}", base, std::process::id())
 }
 
-/// 导入后的 PDF 位置(学习阅读器与 agent 都用这份副本)。
+/// Location of the imported PDF (both the study reader and the agent use this copy).
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedPdf {
     pub pdf_path: String,
-    /// 仓库相对路径(展示用;历史记录也只存这个)。
+    /// Vault-relative path (for display; history records only store this).
     pub rel_path: String,
     pub title: String,
 }
 
-/// 文件名里只去掉路径分隔符等无法落盘的东西;中文/空格保留(目录名才转拼音)。
+/// Only strips what cannot be written to disk (path separators and friends);
+/// Chinese characters and spaces are kept (only directory names become pinyin).
 fn safe_file_name(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
@@ -279,7 +295,8 @@ fn import_pdf_sync(
             .unwrap_or_else(|| "paper.pdf".into()),
     );
 
-    // 已经躺在材料目录里(拖进来 / 从历史打开):就地使用,不复制。
+    // Already inside the materials directory (dragged in or opened from
+    // history): use it in place, do not copy.
     if let Ok(rel) = canonical.strip_prefix(&pdfs_root) {
         let parts: Vec<String> = rel
             .components()
@@ -318,7 +335,9 @@ fn import_pdf_sync(
 
     let mut registry = Registry::load(&registry_path);
 
-    // 同一个标题、同样大小的文件已经导入过:打开已有副本(重复拖同一份不产副本)。
+    // A file with the same title and the same size was already imported: open
+    // the existing copy (dragging the same file twice must not produce a second
+    // copy).
     let existing = registry
         .materials
         .iter()
@@ -341,7 +360,8 @@ fn import_pdf_sync(
         }
     }
 
-    // 新导入:目录名 = 标题的拼音(同名被占则 -2、-3;不覆盖别人的材料)。
+    // Fresh import: directory name = pinyin of the title (-2, -3 when the name
+    // is taken; never overwrite another material).
     let base = pinyin_slug(&title);
     let mut candidate = base.clone();
     let mut n = 2;
@@ -358,13 +378,15 @@ fn import_pdf_sync(
     }
     let dir = pdfs_root.join(&candidate);
     let dest = dir.join(&file_name);
-    // 目标还不存在:词法归一的越界检查(存在后再 canonicalize 会被
-    // /var → /private/var 这类符号链接坑到,和未解析的 vault 前缀对不上)。
+    // The target does not exist yet: the containment check is lexical, because
+    // canonicalizing an existing path resolves symlinks (/var -> /private/var),
+    // which would no longer match the unresolved vault prefix.
     ensure_within(vault, &dest)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("MKDIR_FAILED: {}", e))?;
     std::fs::copy(&canonical, &dest).map_err(|e| format!("COPY_FAILED: {}", e))?;
 
-    // 与 identity() 同形(仓库相对路径):下次打开这份副本时 ensure 能命中同一目录。
+    // Shaped like `identity()` (vault-relative path) so that opening this copy
+    // later resolves to the same directory through `ensure_material_sync`.
     let key = format!(
         "pdf:.bnote/{}/{}/{}/{}",
         MATERIALS_DIR, KIND_PDF, candidate, file_name
@@ -387,8 +409,10 @@ fn import_pdf_sync(
     })
 }
 
-/// 把一份 PDF 收进材料目录(`.bnote/materials/pdfs/<拼音目录>/<原文件名>`)。
-/// 材料目录与会话/批注同处一地,关掉应用后仍然在。
+/// Files a PDF into the materials directory
+/// (`.bnote/materials/pdfs/<pinyin dir>/<original file name>`).
+/// Materials, sessions and annotations share one place on disk, so they survive
+/// closing the app.
 #[tauri::command]
 pub async fn study_import_pdf(
     state: State<'_, AppState>,
@@ -404,7 +428,8 @@ pub async fn study_import_pdf(
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-/// 并发保护:同一时刻只有一个材料在「查/改/写 registry + 建目录」。
+/// Concurrency guard: only one material at a time may look up / modify / write
+/// the registry and create directories.
 static MATERIAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialInfo, String> {
@@ -427,7 +452,9 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
     let existing = registry.materials.get(&key).cloned();
     let entry = match existing {
         Some(mut e) => {
-            // 书名/标题后续才拿到时补进 registry(目录名不动)。
+            // The book or page title often arrives after the directory was
+            // created, so backfill it into the registry (the directory name
+            // never changes).
             let title = match study {
                 StudyContent::Pdf { title, .. }
                 | StudyContent::Url { title, .. }
@@ -457,8 +484,10 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
 
     let rel_dir = format!("{}/{}/{}", MATERIALS_DIR, entry.kind, entry.dir);
     let abs = vault.join(".bnote").join(&rel_dir);
-    // 只登记、不建空目录:批注/会话第一次真正写盘时由 write_file/append_file
-    // 建父目录。否则随手翻过的每个网页、每本书都会留下一个空文件夹。
+    // Register only, never create an empty directory: write_file/append_file
+    // create the parent directory when an annotation or session is first
+    // actually written. Otherwise every page and book the user merely browses
+    // would leave an empty folder behind.
     ensure_within(vault, &abs)?;
 
     Ok(MaterialInfo {
@@ -469,7 +498,8 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
     })
 }
 
-/// 解析/创建一份材料的存储目录(同身份永远返回同一个目录)。
+/// Resolve or create the storage directory of a material (the same identity
+/// always resolves to the same directory).
 #[tauri::command]
 pub async fn study_material_ensure(
     state: State<'_, AppState>,
@@ -485,15 +515,19 @@ pub async fn study_material_ensure(
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
     pub id: String,
-    /// 会话标题:元数据行的 title(新记录),没有就取第一条用户消息,
-    /// 再退回助手首句/「(空会话)」。
+    /// Session title: the `title` of the metadata line (newer records); without
+    /// it the first user message, then the assistant's first sentence, then
+    /// "(empty session)".
     pub title: String,
-    /// 分叉来源会话的文件 id(主会话没有)。重启恢复靠它把辅助会话挂回
-    /// 主会话——否则只恢复「最近更新的一条」,主会话就没入口了。
+    /// File id of the session this one was forked from (absent for a root
+    /// session). Restart recovery uses it to reattach auxiliary sessions to
+    /// their root session - otherwise only "the most recently updated one" is
+    /// restored and the root session has no entry point.
     pub parent: Option<String>,
-    /// 辅助会话的来源消息摘要。
+    /// Summary of the message an auxiliary session was forked from.
     pub based_on: Option<String>,
-    /// 分叉时复制过来的前缀条数(自有消息从这一条起算)。
+    /// Number of prefix messages copied at fork time (the session's own
+    /// messages count from that one on).
     pub fork_at: Option<u32>,
     pub created_at: u64,
     pub updated_at: u64,
@@ -507,23 +541,25 @@ fn line_type_title(line: &str) -> Option<(String, u64, String)> {
         let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
         return Some((ty.to_string(), at, text));
     }
-    // 头部只读文件前 16KB:首条用户消息带着几 MB 的 base64 截图时,这一行
-    // 必然被截断。记录由前端按 type→at→text→images 的顺序序列化,截断只
-    // 会打断后面的图片数据,前面三个字段本身是完整的——按前缀取即可。
+    // The head window is only 16KB: when the first user message carries a few
+    // MB of base64 screenshot, this line is always cut. Records are serialized
+    // by the frontend in the order type -> at -> text -> images, so truncation
+    // only breaks the image data that follows; the first three fields are
+    // intact and can be read from the prefix.
     let ty = prefix_string_field(line, "type")?;
     let at = prefix_u64_field(line, "at").unwrap_or(0);
     let text = prefix_string_field(line, "text").unwrap_or_default();
     Some((ty, at, text))
 }
 
-/// `"key"` 之后的值起点(跳过冒号与空白)。
+/// Start of the value after `"key"` (skipping the colon and whitespace).
 fn prefix_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let needle = format!("\"{}\"", key);
     let start = line.find(&needle)? + needle.len();
     line[start..].trim_start().strip_prefix(':').map(|r| r.trim_start())
 }
 
-/** 取 `"key":"..."` 的值;字符串被截断(没有收尾引号)时返回 None。 */
+/** Reads the value of `"key":"..."`; None when truncated (no closing quote). */
 fn prefix_string_field(line: &str, key: &str) -> Option<String> {
     let rest = prefix_field(line, key)?.strip_prefix('"')?;
     let mut escaped = false;
@@ -547,7 +583,8 @@ fn prefix_u64_field(line: &str, key: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// 会话元数据行(`{"type":"meta","title":...}`)里列表需要的字段。
+/// The fields the session list needs from the metadata line
+/// (`{"type":"meta","title":...}`).
 #[derive(Default, Clone)]
 struct MetaLine {
     title: String,
@@ -579,8 +616,9 @@ fn meta_line(line: &str) -> Option<MetaLine> {
 }
 
 
-/// 读文件首尾各一段(会话大到几十 MB 时也不整份读):标题/创建时间在头部,
-/// 最后一条时间戳在尾部。中间行不参与列表。
+/// Read a slice of the head and one of the tail (sessions reach tens of MB and
+/// are never read whole): the title and creation time live in the head, the
+/// last timestamp in the tail. Middle lines never take part in the list.
 fn read_head_tail(path: &Path, head_len: usize, tail_len: usize) -> Option<(String, String)> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
@@ -614,7 +652,8 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
     for line in head.lines() {
         if meta.title.is_empty() {
             if let Some(m) = meta_line(line) {
-                // 标题为空时继续扫下一行(坏记录),父子字段仍保留。
+                // Keep scanning the next line while the title is empty (a
+                // broken record); the parent/child fields are still kept.
                 if meta.parent.is_none() {
                     meta.parent = m.parent.clone();
                 }
@@ -641,20 +680,24 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
             first_assistant = text;
         }
         if !title.is_empty() && !first_assistant.is_empty() && first_at > 0 {
-            // 头部只需扫到标题;时间戳继续从尾部取。
+            // The head only needs scanning until the title; the timestamp
+            // comes from the tail.
             break;
         }
     }
-    // 尾部可能从半行开始:逐行解析,取最后一个能读出时间戳的。
+    // The tail may start mid-line: parse line by line and take the last one
+    // that yields a timestamp.
     let mut last_at = 0u64;
     for line in tail.lines().skip(1) {
         if let Some((_, at, _)) = line_type_title(line) {
             last_at = last_at.max(at);
         }
     }
-    // 标题优先用元数据行(会话创建时写的首条用户消息),其次用户首句,
-    // 再退回助手首句。元数据行很小、永远在文件最前面,不受首条大图消息
-    // 被头部窗口截断的影响。
+    // The title prefers the metadata line (the first user message, written when
+    // the session was created), then the user's first sentence, then the
+    // assistant's first sentence. The metadata line is tiny and always at the
+    // very front of the file, so it is unaffected by the head window cutting
+    // into a first message that carries a large image.
     let title = if !meta.title.is_empty() {
         meta.title.clone()
     } else if title.is_empty() {
@@ -681,8 +724,8 @@ fn summarize_session(path: &Path) -> Option<SessionMeta> {
     })
 }
 
-/// 列出某份材料下保存过的会话(新的在前)。目录由 `study_material_ensure`
-/// 给出,只接受 `.bnote/materials/...`。
+/// List the sessions saved under one material (newest first). The directory
+/// comes from `study_material_ensure`; only `.bnote/materials/...` is accepted.
 #[tauri::command]
 pub async fn study_sessions_list(
     state: State<'_, AppState>,
@@ -716,10 +759,13 @@ pub async fn study_sessions_list(
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-/// 把记录原文第一行的元数据标题换成新标题(模型生成标题后落盘)。
+/// Replace the metadata title on the first line of a transcript (after the
+/// model generated a title).
 ///
-/// 元数据行必须留在第一行:列表侧只读文件头部 16KB,标题挪到后面就看不
-/// 见了。首行不是 meta 的旧记录(没有元数据行)则补一行到最前面。
+/// The metadata line must stay on the first line: the list only reads the first
+/// 16KB of the file, so a title moved further down would be invisible. For
+/// legacy records whose first line is not a meta line (no metadata line at
+/// all), one is prepended.
 fn retitle_transcript(raw: &str, title: &str) -> String {
     let (first, rest) = match raw.split_once('\n') {
         Some((head, tail)) => (head, tail),
@@ -734,7 +780,8 @@ fn retitle_transcript(raw: &str, title: &str) -> String {
             v["titleSource"] = serde_json::Value::String("llm".to_string());
             (v, rest)
         }
-        // 旧记录没有元数据行:新 meta 放最前,原文整体接在后面。
+        // Legacy record without a metadata line: the new meta goes first, the
+        // original text follows unchanged.
         None => (
             serde_json::json!({"type": "meta", "at": 0, "title": title, "titleSource": "llm"}),
             raw,
@@ -747,10 +794,12 @@ fn retitle_transcript(raw: &str, title: &str) -> String {
     out
 }
 
-/// 把一条会话的标题写回记录文件(模型生成标题后调用)。
+/// Write a session title back into the transcript file (called after the model
+/// generated a title).
 ///
-/// 只改第一行元数据,其余字节原样保留;写临时文件再 rename,写一半崩溃
-/// 不会留下截断的记录。
+/// Only the first-line metadata changes, every other byte is kept as is; the
+/// new content goes to a temp file and is renamed, so a crash mid-write never
+/// leaves a truncated record behind.
 #[tauri::command]
 pub async fn study_session_set_title(
     state: State<'_, AppState>,
@@ -768,8 +817,9 @@ pub async fn study_session_set_title(
     }
     tauri::async_runtime::spawn_blocking(move || {
         let parts: Vec<&str> = rel_dir.split('/').filter(|p| !p.is_empty()).collect();
-        // 学习材料与会话统一落在 .bnote 下;creative 的会话进不了列表,但
-        // 标题照样写回文件,将来支持时数据是对的。
+        // Study materials and sessions live under .bnote; creative sessions
+        // never show up in the list, but the title is still written back to the
+        // file so the data is correct once that is supported.
         let allowed_root =
             parts.first() == Some(&MATERIALS_DIR) || parts.first() == Some(&"creative");
         if !allowed_root || parts.iter().any(|p| *p == ".." || *p == ".") {
@@ -811,7 +861,7 @@ mod tests {
 
     #[test]
     fn 多音字按词判定() {
-        // pinyin-pro 的词级词典:银行读 yin hang,不是 yin xing。
+        // pinyin-pro's word-level dictionary: "yin hang", not "yin xing".
         assert_eq!(pinyin_slug("银行"), "yin_hang");
     }
 
@@ -838,9 +888,9 @@ mod tests {
             },
         );
         assert_eq!(unique_dir(&r, "pdfs", "pdf:b.pdf", "lun_wen"), "lun_wen-2");
-        // 不同 kind 各自独立,不算冲突。
+        // Different kinds are independent, so this is not a conflict.
         assert_eq!(unique_dir(&r, "webpages", "url:x", "lun_wen"), "lun_wen");
-        // 自己复用自己。
+        // Reusing its own name is not a conflict.
         assert_eq!(unique_dir(&r, "pdfs", "pdf:a.pdf", "lun_wen"), "lun_wen");
     }
 
@@ -865,27 +915,31 @@ mod tests {
         );
         assert!(Path::new(&a.pdf_path).is_file());
 
-        // 同一份再导一次:打开已有副本,不产生 -2。
+        // Importing the same file again opens the existing copy instead of
+        // creating a -2.
         let b = import_pdf_sync(&vault, &src, None).unwrap();
         assert_eq!(a.pdf_path, b.pdf_path);
 
-        // 中文标题走拼音目录。
+        // A Chinese title becomes a pinyin directory.
         let src2 = src_dir.join("论文.pdf");
         std::fs::write(&src2, b"%PDF-1.4 other").unwrap();
         let c = import_pdf_sync(&vault, &src2, Some("论 文")).unwrap();
         assert!(c.rel_path.starts_with(".bnote/materials/pdfs/lun_wen/"));
 
-        // 已经在材料目录里的 PDF:就地返回,不再复制。
+        // A PDF already inside the materials directory is returned in place,
+        // not copied again.
         let d = import_pdf_sync(&vault, Path::new(&a.pdf_path), None).unwrap();
         assert_eq!(d.pdf_path, a.pdf_path);
 
-        // 注册表键与 identity() 同形:ensureMaterial(打开副本)命中同一目录。
+        // The registry key is shaped like `identity()`, so ensureMaterial on the
+        // copy hits the same directory.
         let reg = Registry::load(&vault.join(".bnote/materials/index.json"));
         let key = "pdf:.bnote/materials/pdfs/llm_tap_v2/LLM-TAP-v2.pdf";
         let entry = reg.materials.get(key).expect("registry 应记录导入的 PDF");
         assert_eq!(entry.dir, "llm_tap_v2");
         assert_eq!(entry.file, "LLM-TAP-v2.pdf");
-        // 用 ensure 的同一套身份规则再解析一次,目录不变。
+        // Resolve once more with the same identity rules `ensure` uses; the
+        // directory is unchanged.
         let study = StudyContent::Pdf {
             path: a.pdf_path.clone(),
             title: a.title.clone(),
@@ -924,8 +978,10 @@ mod tests {
         path
     }
 
-    /// 首条用户消息带几 MB 截图时,列表读不到标题会被显示成「(空会话)」——
-    /// 头部 16KB 落在 base64 图片中间,整行 JSON 解析失败。按前缀取文本即可。
+    /// When the first user message carries a few MB of screenshot, the list
+    /// cannot read the title and shows "(empty session)": the 16KB head window
+    /// lands inside the base64 image, so parsing the whole line as JSON fails.
+    /// Reading the text from the prefix is enough.
     #[test]
     fn 首条消息带大图也能读出标题() {
         let image = "A".repeat(64 * 1024);
@@ -940,7 +996,8 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
-    /// 元数据行永远在文件最前面且很小:标题直接取它,不必再解析用户消息。
+    /// The metadata line is always at the very front and very small: take the
+    /// title from it directly instead of parsing the user message.
     #[test]
     fn 元数据行标题优先于用户首句() {
         let body = concat!(
@@ -958,7 +1015,8 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
-    /// 没有元数据行的旧记录:退回用户首句;空文件不出现在列表里。
+    /// Legacy records without a metadata line fall back to the user's first
+    /// sentence; empty files never show up in the list.
     #[test]
     fn 旧记录退回用户首句_空文件跳过() {
         let body = concat!(
@@ -976,7 +1034,8 @@ mod tests {
         std::fs::remove_dir_all(empty.parent().unwrap()).ok();
     }
 
-    /// 父子关系从元数据行读出来:重启恢复靠它把辅助会话挂回主会话。
+    /// The parent/child relation comes from the metadata line: restart
+    /// recovery uses it to reattach auxiliary sessions to their root session.
     #[test]
     fn 元数据行带出父子关系与分叉前缀() {
         let body = concat!(
@@ -992,7 +1051,8 @@ mod tests {
         assert_eq!(meta.fork_at, Some(4));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
 
-        // 主会话没有这三项 → None(前端据此判定为根)。
+        // A root session has none of these three -> None (the frontend treats
+        // that as the root).
         let main = tmp_session("main", "{\"type\":\"meta\",\"at\":1,\"title\":\"主会话\"}\n");
         let meta = summarize_session(&main).unwrap();
         assert_eq!(meta.parent, None);
@@ -1000,7 +1060,8 @@ mod tests {
         std::fs::remove_dir_all(main.parent().unwrap()).ok();
     }
 
-    /// 模型生成的标题只改第一行元数据,正文与其余元数据字段原样保留。
+    /// A model-generated title only changes the first-line metadata; the body
+    /// and the remaining metadata fields are kept as is.
     #[test]
     fn 改标题只动第一行元数据() {
         let raw = concat!(
@@ -1015,12 +1076,13 @@ mod tests {
         let meta: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(meta["title"], "特征值与矩阵对角化");
         assert_eq!(meta["titleSource"], "llm");
-        // 父链与分叉点不因改标题丢失。
+        // Retitling must not lose the parent link or the fork point.
         assert_eq!(meta["parent"], "s1-0");
         assert_eq!(meta["forkAt"], 2);
         assert_eq!(lines[1], r#"{"type":"user","at":2,"text":"问题"}"#);
 
-        // 旧记录(没有元数据行):补一行到最前面,原文一字不改。
+        // Legacy record (no metadata line): one is prepended, the original
+        // text is not touched.
         let legacy = "{\"type\":\"user\",\"at\":2,\"text\":\"问题\"}\n";
         let next = retitle_transcript(legacy, "新标题");
         let mut lines = next.lines();

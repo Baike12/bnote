@@ -6,9 +6,10 @@ set -euo pipefail
 APP_ID="com.bnote.app"
 APP_DST="/Applications/bnote.app"
 APP_BIN="$APP_DST/Contents/MacOS/bnote"
-# 本地代码签名身份(scripts/setup-dev-signing.sh 创建)。**必须**签:不签的话
-# 应用的 designated requirement 就是 cdhash,每次重建都把 macOS 的辅助功能
-# 授权作废——"授权过了还要再授权一次"那个循环就是这么来的。
+# Local code signing identity (created by scripts/setup-dev-signing.sh). Signing is
+# mandatory: without it the app's designated requirement is the cdhash, so every
+# rebuild invalidates the macOS accessibility grant - that is where the
+# "granted, then asked again" loop comes from.
 SIGN_KC="$HOME/Library/Keychains/bnote-dev.keychain-db"
 SIGN_ID="bnote-dev"
 SIGN_PASS="${BNOTE_SIGN_PASSWORD:-bnote-dev-sign}"
@@ -17,11 +18,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 BUNDLE_SRC="$ROOT/src-tauri/target/release/bundle/macos/bnote.app"
 DMG_DIR="$ROOT/src-tauri/target/release/bundle/dmg"
 
-# 本机可能同时在跑的 bnote 实例：/Applications 的包、本地构建的包、pnpm tauri dev
-# 的 debug 二进制、直接跑的 release 二进制。只按"可执行文件路径"识别（ps 的 comm），
-# 不能按命令行匹配——仓库路径里就带 bnote，pgrep -f 会连编辑器的语言服务器一起杀。
-# 用 awk 而不是 shell 的 while 循环：pipefail 下后者会把"最后一轮没匹配上"的失败
-# 状态带出来，命令替换失败 → set -e 静默中止脚本。
+# bnote instances that may be running at the same time: the /Applications bundle,
+# a locally built bundle, the pnpm tauri dev debug binary, a release binary run
+# directly. Identify them only by executable path (ps comm), never by command
+# line: the repo path itself contains "bnote", so pgrep -f would also kill the
+# editor's language server.
+# awk instead of a shell while loop: under pipefail the loop would carry the
+# "no match on the last round" failure status out, and the failed command
+# substitution would abort the script silently under set -e.
 instance_pids() {
   ps -Ao pid=,comm= | awk -v root="$ROOT" '
     { pid = $1; sub(/^[^[:space:]]+[[:space:]]+/, "", $0)
@@ -30,7 +34,7 @@ instance_pids() {
                $0 == root "/src-tauri/target/release/bnote") print pid }'
 }
 
-# 只有替换后的那个包自己的进程（用于启动验证）。
+# Only the processes of the freshly replaced bundle (used for launch verification).
 app_bin_pids() {
   ps -Ao pid=,comm= | awk -v app="$APP_BIN" '
     { pid = $1; sub(/^[^[:space:]]+[[:space:]]+/, "", $0); if ($0 == app) print pid }'
@@ -73,18 +77,24 @@ else
 fi
 
 echo "==> 2/6 构建 (tauri build)"
-# 部署只需要 .app:DMG 由 create-dmg 走 Finder AppleScript 排版,单次约半分钟,
-# 还会偶发失败(留下挂载卷)——替换运行实例用不到它,只有 --build-only 才打。
-# cargo 的 release 重编译(资产嵌入,前端改动也触发)是真正的大头,省不掉。
+# Deployment only needs the .app: the DMG is laid out by create-dmg through a
+# Finder AppleScript, takes about half a minute and fails occasionally (leaving
+# a mounted volume) - replacing the running instance does not need it, only
+# --build-only builds it.
+# The cargo release rebuild (asset embedding, also triggered by front-end
+# changes) is the real time sink and cannot be skipped.
 if [ "$BUILD_ONLY" = 1 ]; then
   BUILD_ARGS=()
 else
   BUILD_ARGS=(--bundles app)
 fi
-# .app 才是部署产物;若构建未正常结束但 .app 已比 marker 新(上一轮 DMG 故障的
-# 兜底,--bundles app 下几乎不会再走到),只要它是这一轮重新产出的就继续。
+# The .app is the deployment artifact; if the build did not finish cleanly but the
+# .app is newer than the marker (a fallback for a previous DMG failure, almost
+# never reached with --bundles app), continue as long as it was produced by this
+# round.
 marker="$(mktemp -t bnote-build)"
-# bash 3.2 + set -u 下，展开空数组("${[@]}")会报 unbound variable；用 ${[@]+...} 守卫
+# Under bash 3.2 + set -u expanding an empty array ("${[@]}") raises
+# unbound variable; guard it with ${[@]+...}
 if pnpm tauri build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} >/tmp/bnote-build.log 2>&1; then
   tail -4 /tmp/bnote-build.log
 elif [ -d "$BUNDLE_SRC" ] && [ -n "$(find "$BUNDLE_SRC" -newer "$marker" -print -quit)" ]; then
@@ -107,11 +117,13 @@ if [ "$BUILD_ONLY" = 1 ]; then
 fi
 
 echo "==> 3/6 关闭正在运行的实例"
-# 先礼后兵：AppleScript 优雅退出让自动保存落盘，再用 SIGTERM / SIGKILL 兜底，每一步
-# 都确认进程真的消失。本地实例（dev 二进制、本地构建的包）不注册 bundle id，
-# AppleScript 找不到它们，只能靠信号——它们能和 /Applications 的副本同时开着，
-# 不关掉就会出现"新包已就位、屏幕上还是旧窗口"。
-# 最多等 10s（20 × 0.5s）
+# Ask nicely first: an AppleScript quit lets autosave flush to disk, then SIGTERM
+# / SIGKILL as the fallback, and every step confirms the process is really gone.
+# Local instances (the dev binary, a locally built bundle) register no bundle id,
+# so AppleScript cannot find them and only signals reach them - they can run at
+# the same time as the /Applications copy, and leaving them open means "the new
+# bundle is in place, the screen still shows the old window".
+# At most 10s (20 x 0.5s)
 wait_gone() {
   for _ in $(seq 1 20); do
     [ -z "$(instance_pids)" ] && return 0
@@ -128,7 +140,7 @@ stop_instances() {
   osascript -e "tell application id \"$APP_ID\" to quit" >/dev/null 2>&1 || true
   wait_gone && return 0
   echo "    优雅退出超时，发送 SIGTERM"
-  # shellcheck disable=SC2086 — pids 需要按空白拆分成多个参数
+  # shellcheck disable=SC2086 - pids must be split on whitespace into several arguments
   kill $pids 2>/dev/null || true
   wait_gone && return 0
   echo "    SIGTERM 无效，强制 SIGKILL"
@@ -150,8 +162,9 @@ ditto "$BUNDLE_SRC" "$APP_DST"
 [ -x "$APP_BIN" ] || { echo "错误: 替换后未找到可执行文件 $APP_BIN"; exit 1; }
 
 echo "==> 5/6 签名（稳定代码身份）"
-# 没有稳定身份,TCC 授权每次重建都作废。宁可这里失败,也不要悄悄部署一个
-# 「下次打开又没权限」的包。
+# Without a stable identity the TCC grant is invalidated on every rebuild. Fail
+# here rather than silently deploying a bundle that "has no permissions again"
+# on the next launch.
 if [ ! -f "$SIGN_KC" ]; then
   echo "错误: 找不到签名身份 $SIGN_KC"
   echo "      先跑: scripts/setup-dev-signing.sh（只需一次）"
@@ -169,7 +182,8 @@ echo "    辅助功能授权从此跨重建有效"
 
 echo "==> 6/6 启动并验证"
 open "$APP_DST"
-# 等到新包自己的进程出现：新包首次启动要走一遍系统校验，可能慢于 open 返回。
+# Wait for the new bundle's own process to appear: the first launch of a new
+# bundle runs through system verification and can be slower than open returns.
 pids=""
 for _ in $(seq 1 40); do
   pids="$(app_bin_pids | tr '\n' ' ')"

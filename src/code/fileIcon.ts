@@ -1,12 +1,16 @@
 /**
- * 文件树图标分类:按文件名决定用哪个图标与哪种语言色。
+ * File tree icon categories: the file name decides which icon and which
+ * language color is used.
  *
- * 纯函数(不碰 DOM):图标组件按这里的结果挑形状,门禁直接锁映射——
- * 加一种语言只需要在这里加一行,不用改组件。
+ * A pure function (it touches no DOM): the icon component picks the shape
+ * from the result, and the gate test locks the mapping directly — adding a
+ * language only needs one more line here, no change to the component.
  *
- * 分类比语言粗一档是故意的:14px 的图标画不出 20 种语言的差异,真正可辨
- * 的是「文件夹 / 代码 / 配置 / 文档 / 样式 / 标记 / 图片 / 脚本」这几种形状,
- * 再叠上语言色(TS 蓝、JS 琥珀、Python 蓝、Rust 橙…)。
+ * The categories are deliberately one step coarser than the languages: a 14px
+ * icon cannot show the difference between 20 languages, what is really
+ * distinguishable are the shapes "folder / code / config / document / style /
+ * markup / image / script", each with a language color on top (TS blue, JS
+ * amber, Python blue, Rust orange, …).
  */
 
 export type FileIconKind =
@@ -24,7 +28,7 @@ export type FileIconKind =
   | "shell"
   | "file";
 
-/** 没有扩展名也要认的文件名(小写比较)。 */
+/** File names that are recognized without an extension (compared in lower case). */
 const NAMED: Record<string, FileIconKind> = {
   dockerfile: "code",
   makefile: "code",
@@ -53,8 +57,10 @@ const NAMED: Record<string, FileIconKind> = {
 };
 
 /**
- * 扩展名 → 分类。同名语言共用一种形状,颜色由语言决定:
- * 代码类只有 TS/JS/Python/Rust/Go 有专属色,其余统一走 `code`(中性色)。
+ * Extension → category. Languages that share a name share one shape, the
+ * color is decided by the language: among the code categories only
+ * TS/JS/Python/Rust/Go have a color of their own, the rest all use `code`
+ * (the neutral color).
  */
 const EXT: Record<string, FileIconKind> = {
   ts: "ts",
@@ -173,7 +179,7 @@ const EXT: Record<string, FileIconKind> = {
   ksh: "shell",
 };
 
-/** 文件名 → 图标分类。目录由调用方先判掉(它不看这里)。 */
+/** File name → icon category. Directories are filtered out by the caller (it does not look here). */
 export function fileIconKind(name: string): FileIconKind {
   const lower = name.toLowerCase();
   const named = NAMED[lower];

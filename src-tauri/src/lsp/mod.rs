@@ -1,22 +1,26 @@
-//! LSP 传输层:Content-Length 帧 JSON-RPC、file:// URI 编解码。
+//! LSP transport layer: `Content-Length` framed JSON-RPC, file:// URI
+//! encoding and decoding.
 //!
-//! 这一层只回答「怎么说话」:标准 LSP 走 stdio 上的 `Content-Length` 帧
-//! (不是 MCP 的换行分隔 JSON),URI 用 RFC 3986 百分号编码。「说什么」由
-//! 各自的调用方决定:
+//! This layer only answers "how to talk": standard LSP uses `Content-Length`
+//! frames over stdio (not the newline-delimited JSON of MCP), and URIs use the
+//! RFC 3986 percent-encoding. What is said is up to each caller:
 //!
-//! - [`python::lsp`](crate::python::lsp)——markdown 里内嵌的 python。文档是
-//!   **虚拟**的:URI 指向笔记真实路径,内容却是拼出来的 python 源码,行列号
-//!   与 markdown 逐行对齐。
-//! - [`code::lsp`](crate::code::lsp)——代码项目里的**真实**文件。
+//! - [`python::lsp`](crate::python::lsp) — the Python embedded in markdown.
+//!   The document is **virtual**: its URI points at the real path of the note,
+//!   while its content is assembled Python source whose line and column numbers
+//!   align line by line with the markdown.
+//! - [`code::lsp`](crate::code::lsp) — the **real** files of a code project.
 //!
-//! 两者共用帧与 URI,免得同一套协议写两遍、改一处漏一处。
+//! Both share the frames and the URIs, so the same protocol is not written
+//! twice and a change cannot miss one of them.
 
 pub mod client;
 
 use std::path::Path;
 
-/// file:// URI 的路径部分编码:保留 RFC 3986 unreserved 与 '/',其余按 UTF-8
-/// 字节转 %XX(空格、中文都会被编码)。
+/// Encoding of the path part of a file:// URI: the RFC 3986 unreserved
+/// characters and '/' are kept, everything else becomes %XX per UTF-8 byte
+/// (spaces and Chinese characters are encoded as well).
 pub fn encode_uri_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for byte in path.as_bytes() {
@@ -30,10 +34,12 @@ pub fn encode_uri_path(path: &str) -> String {
     out
 }
 
-/// [`encode_uri_path`] 的逆运算;非 file:// 或解析失败返回 None。
+/// The inverse of [`encode_uri_path`]; a non-file:// URI or a parse failure
+/// returns None.
 pub fn decode_uri_path(uri: &str) -> Option<String> {
     let rest = uri.strip_prefix("file://")?;
-    // file://host/path 只支持空 host(localhost/空串)。
+    // file://host/path only supports an empty host (localhost or the empty
+    // string).
     let path = match rest.split_once('/') {
         Some((host, p)) if host.is_empty() || host == "localhost" => format!("/{}", p),
         None if rest.starts_with('/') => rest.to_string(),
@@ -59,18 +65,20 @@ pub fn decode_uri_path(uri: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// 绝对路径 → file:// URI。
+/// Absolute path → file:// URI.
 pub fn path_to_uri(path: &Path) -> String {
     format!("file://{}", encode_uri_path(&path.to_string_lossy()))
 }
 
-/// 把一条 JSON-RPC 消息编成 LSP 帧(`Content-Length` 头 + 空行 + body)。
+/// Encodes one JSON-RPC message as an LSP frame (a `Content-Length` header +
+/// an empty line + the body).
 pub fn frame_message(msg: &serde_json::Value) -> Result<Vec<u8>, String> {
     let body = serde_json::to_string(msg).map_err(|e| format!("SERIALIZE_FAILED: {}", e))?;
     Ok(format!("Content-Length: {}\r\n\r\n{}", body.len(), body).into_bytes())
 }
 
-/// 从响应头行里取 Content-Length(大小写不敏感,容忍多余头)。
+/// Reads the Content-Length out of a header line (case insensitive, tolerates
+/// extra headers).
 pub fn content_length_of(header_line: &str) -> Option<usize> {
     let (key, value) = header_line.split_once(':')?;
     if key.trim().eq_ignore_ascii_case("content-length") {
@@ -80,10 +88,12 @@ pub fn content_length_of(header_line: &str) -> Option<usize> {
     }
 }
 
-/// 盒装 future:只为给 trait 的异步方法用,不为此引入 async-trait 依赖。
+/// A boxed future, only there to give the trait an async method without pulling
+/// in an async-trait dependency.
 ///
-/// 生命周期跟着借用走(`'a`):trait 方法拿 `&self` / `&LspClient`,返回的
-/// future 借用它们。调用方(读循环)立刻 await,不跨 await 持有。
+/// The lifetime follows the borrow (`'a`): the trait methods take `&self` /
+/// `&LspClient` and the returned future borrows them. The caller (the read
+/// loop) awaits it immediately and never holds it across an await.
 pub type BoxFuture<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
@@ -96,7 +106,8 @@ mod tests {
     fn uri_roundtrip_with_cjk_and_spaces() {
         let p = "/Users/张三/my vault/笔记 01.md";
         let uri = path_to_uri(Path::new(p));
-        // 空␣格 → %20;「张」UTF-8 = E5 BC A0。
+        // A space → %20; the first CJK character of the path is E5 BC A0 in
+        // UTF-8.
         assert!(uri.starts_with("file:///Users/%E5%BC%A0"));
         assert!(uri.contains("my%20vault"));
         assert_eq!(decode_uri_path(&uri).as_deref(), Some(p));

@@ -50,8 +50,10 @@ import { StudyHistoryMenu } from "./StudyHistoryMenu";
  */
 
 /**
- * 网页/微信读书的材料目录:标题取「当前在读的书 → 历史里的书名」里最好的
- * 那个(目录名只在首次登记时用到,之后由后端 registry 固定)。
+ * Material directory for a web page / weread book: the title is the best of
+ * "the book currently being read -> the title known from the history"
+ * (the directory name is only used when the entry is registered the first
+ * time, after that the backend registry fixes it).
  */
 async function urlMaterialDir(vaultRoot: string, url: string): Promise<string | null> {
   const state = useAppStore.getState();
@@ -64,7 +66,7 @@ async function urlMaterialDir(vaultRoot: string, url: string): Promise<string | 
   return info?.relDir ?? null;
 }
 
-/** 命令层当前的翻页绑定；网页获得焦点时由页内运行时按这套键匹配。 */
+/** The paging bindings of the command layer; the in-page runtime matches these keys when the web page has the focus. */
 function readPageKeyBindings() {
   return {
     prev: bindingsForCommand("study.pdf-prev-page"),
@@ -72,15 +74,17 @@ function readPageKeyBindings() {
   };
 }
 
-/** 工具栏提示里的快捷键跟着当前绑定走(设置里改键后提示不会说谎)。 */
+/** The shortcut in a toolbar tooltip follows the current binding (after a rebinding in the settings the tooltip does not lie). */
 function bindingLabel(id: string): string {
   const [first] = bindingsForCommand(id, "reading");
   return first ? formatBinding(first) : "未绑定";
 }
 
 /**
- * 初始化脚本 = 批注运行时 + 首屏就生效的步长/翻页键/转发键 + 微信读书运行时
- * (每次导航都会重装;微信读书运行时开头按 hostname 自门控,其他网站零开销)。
+ * The init script = the annotation runtime + the step / paging keys /
+ * forwarded keys that take effect on the first paint + the weread runtime
+ * (it is reinstalled on every navigation; the weread runtime gates itself by
+ * hostname at its start, so other sites pay nothing).
  */
 function previewInitScript(step: number, translate: boolean): string {
   const keys = readPageKeyBindings();
@@ -98,7 +102,7 @@ function previewInitScript(step: number, translate: boolean): string {
   ].join("\n");
 }
 
-/** pdf.js(+worker) 只在真正打开 PDF 时下载，不拖慢应用启动。 */
+/** pdf.js (+worker) is downloaded only when a PDF is really opened, so the app start is not slowed down. */
 const PdfViewer = lazy(() =>
   import("./PdfViewer").then((m) => ({ default: m.PdfViewer })),
 );
@@ -117,41 +121,50 @@ export function ContentPane() {
   const showToast = useAppStore((s) => s.showToast);
   const modal = useAppStore((s) => s.modal);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
-  // 快捷键覆盖表变化时要把新的转发键推给页内运行时。
+  // When the keybinding override table changes, the new forwarded keys have to be pushed to the in-page runtime.
   const keymapRev = useSyncExternalStore(subscribeKeymap, getKeymapRevision, getKeymapRevision);
   const previewRef = useRef<HTMLDivElement>(null);
-  /** 挂载期间的重测入口;没有原生预览时为 null。 */
+  /** The re-measure entry point while mounted; null when there is no native preview. */
   const previewSyncRef = useRef<(() => void) | null>(null);
   const [importing, setImporting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  /** 网页批注工具:高亮 / 文字批注;null = 普通阅读。 */
+  /** The web annotation tool: highlight / text annotation; null = plain reading. */
   const [webTool, setWebTool] = useState<WebAnnotationKind | null>(null);
   const webToolRef = useRef<WebAnnotationKind | null>(null);
   /**
-   * webview 实际所在的微信读书路由。从书架点开一本书只改变 webview 内部的
-   * SPA 路由,content.url 仍是书架——顶栏书名与历史记录都跟着这条走。
+   * The weread route the webview is actually on. Opening a book from the
+   * shelf only changes the SPA route inside the webview, content.url stays
+   * the shelf, and the book title in the top bar as well as the history
+   * follow this route.
    */
   const [activeWeread, setActiveWeread] = useState<WereadRoutePayload | null>(null);
   const previewUrl = content?.kind === "url" ? content.url : null;
   const pdfs = pdfHistoryForVault(studyHistory, vaultPath);
 
-  // 内容一换,「webview 当前所在的书」就作废;下一条路由事件到来前,顶栏
-  // 退回 content 自己的标题。
+  // When the content changes, "the book the webview is on" is void; until
+  // the next route event arrives the top bar falls back to the title of the
+  // content itself.
   useEffect(() => {
     setActiveWeread(null);
     useAppStore.getState().setStudyWereadBook(null);
   }, [content]);
 
-  // 中栏内嵌网页:把占位元素的矩形报给后端,并在它变化时同步过去。
-  // 尺寸变化靠 ResizeObserver(拖内容栏的分隔条、窗口变窄到压缩中栏、书签栏
-  // 开关;Tauri 里挂的是原生子 webview,布局一变就得跟着挪)。只挪位置不改
-  // 尺寸的变化 ResizeObserver 收不到(拖助手栏的分隔条):那条路径由
-  // StudyLayout 在拖动中派发 `bnote:study-layout-resize`,这里顺手补报。
-  // 依赖整个 content 而不是 previewUrl:同一个网址再输一次是「重新加载」,
-  // 靠的就是新对象让这个 effect 重跑(旧的一轮先关掉预览)。
+  // The web page embedded in the middle column: report the rectangle of the
+  // placeholder element to the backend and keep it in sync when it changes.
+  // Size changes are caught by a ResizeObserver (dragging the content
+  // divider, the window narrowing until the middle column shrinks, the
+  // bookmarks bar toggling; in Tauri a native child webview is mounted and
+  // has to move along with the layout). A change that only moves without
+  // resizing is not seen by the ResizeObserver (dragging the agent
+  // divider): that path is covered by StudyLayout dispatching
+  // `bnote:study-layout-resize` during the drag, and it is reported here on
+  // the way.
+  // It depends on the whole content and not on previewUrl: typing the same
+  // URL again means "reload", and it is exactly the new object that makes
+  // this effect run again (the previous round closes the preview first).
   useEffect(() => {
     const el = previewRef.current;
     if (content?.kind !== "url" || !el) return;
@@ -176,8 +189,9 @@ export function ContentPane() {
       void call.then(
         () => {
           if (create && !closed) setPreviewError(null);
-          // 新建的 webview 缩放是 100%:把设置里的值补推一次(已存在的
-          // webview 导航不会被清零,重复推也是幂等的)。
+          // A newly created webview starts at 100%: push the value from the
+          // settings once more (the zoom of an existing webview is not
+          // reset by a navigation, and pushing it again is idempotent).
           if (create && !closed) {
             void agentApi
               .setStudyPreviewZoom(
@@ -208,28 +222,37 @@ export function ContentPane() {
     };
   }, [content]);
 
-  // 侧栏开关只让中栏平移,尺寸不变,ResizeObserver 收不到——布局提交
-  // 后补报一次坐标,原生 webview 才不会停在旧位置。(三栏宽度提交后同理:
-  // 内容栏左缘跟着助手栏宽度走。)
+  // Toggling the sidebar only translates the middle column, its size is
+  // unchanged and the ResizeObserver does not see it, so the coordinates are
+  // reported once after the layout is committed, otherwise the native
+  // webview stays at the old position. (The same holds for the three column
+  // widths: the left edge of the content column follows the agent column
+  // width.)
   useLayoutEffect(() => {
     previewSyncRef.current?.();
   }, [sidebarOpen, settings.studyAgentWidth]);
 
-  // 原生视图永远画在 DOM 之上,所以设置/命令面板这类 HTML 浮层打开时要把它
-  // 藏起来,关掉再放出来。画布也一样:全屏浮层,开着时不能被原生视图盖住。
+  // The native view always paints above the DOM, so it has to be hidden while
+  // an HTML overlay like the settings or the palette is open, and shown again
+  // when it closes. The canvas is the same: a fullscreen overlay that must
+  // not be covered by the native view while it is open.
   const canvasOpen = useAppStore((s) => s.drawingSession !== null);
   useEffect(() => {
     if (!previewUrl) return;
-    // 历史下拉也要藏:它是 DOM 浮层,而原生网页视图永远画在 DOM 之上,
-    // 不藏的话下拉的下半截会被网页盖住。
+    // The history dropdown has to be hidden as well: it is a DOM overlay and
+    // the native web view always paints above the DOM, so the lower half of
+    // the dropdown would be covered by the page.
     void agentApi
       .setStudyPreviewVisible(modal === null && !canvasOpen && !historyOpen)
       .catch(() => {});
   }, [previewUrl, modal, canvasOpen, historyOpen]);
 
-  // 步长/翻页键推给页内运行时(键盘翻页与上半屏渐变都用它)。设置弹窗开着时
-  // 原生视图被藏起来,关掉后再推一次——包含刚改过的快捷键绑定。
-  // 首次创建时命令可能早于 webview 就绪,加载完成事件里会再推一次。
+  // The step and the paging keys are pushed to the in-page runtime (both
+  // the keyboard paging and the dimming of the upper half use it). While the
+  // settings modal is open the native view is hidden, so they are pushed
+  // again after it closed, including the just changed keybindings.
+  // On the first creation a command may arrive before the webview is ready;
+  // the load event pushes them once more.
   useEffect(() => {
     if (!previewUrl || modal !== null) return;
     const keys = readPageKeyBindings();
@@ -239,24 +262,29 @@ export function ContentPane() {
     void agentApi.setStudyPreviewReadKeys(keys.prev, keys.next).catch(() => {});
   }, [previewUrl, settings.studyPageStep, modal]);
 
-  // 转发键跟着配置走:设置里改了「阅读区 → Agent/笔记区」的键,页内运行时
-  // 立刻换新键,不用重新加载网页。
+  // The forwarded keys follow the configuration: when the "reading area ->
+  // Agent / notes area" key is changed in the settings, the in-page runtime
+  // switches to the new key right away, without reloading the page.
   useEffect(() => {
     if (!previewUrl || modal !== null) return;
     void agentApi.setStudyPreviewShortcuts(pageForwardKeys()).catch(() => {});
   }, [previewUrl, modal, keymapRev]);
 
-  // 网页缩放:设置是唯一写入者(工具栏按钮与命令都只写设置),这里把它推给
-  // 原生视图。新建 webview 与每次导航完成时各补推一次。
+  // Web zoom: the settings are the only writer (the toolbar button and the
+  // command only write the settings), here the value is pushed to the native
+  // view. It is pushed once more when a webview is created and after every
+  // navigation.
   const webZoom = normalizeWebZoom(settings.studyWebZoom);
   useEffect(() => {
     if (!previewUrl) return;
     void agentApi.setStudyPreviewZoom(webZoom).catch(() => {});
   }, [previewUrl, webZoom]);
 
-  // 网页阅读器的翻页落点:焦点在主窗口时(点过工具栏/记笔记之后),命令层
-  // 通过这里把 PageUp/PageDown 转给原生子 webview;焦点在网页里时由页内
-  // 运行时自己接管(原生子 webview 的按键不会冒泡到主窗口)。
+  // Where the paging of the web reader lands: when the focus is in the main
+  // window (after clicking the toolbar or taking a note), the command layer
+  // forwards PageUp/PageDown to the native child webview through here; when
+  // the focus is inside the page, the in-page runtime takes over (the keys of
+  // a native child webview do not bubble up to the main window).
   useEffect(() => {
     if (content?.kind !== "url") return;
     setWebNavHandlers({
@@ -271,9 +299,12 @@ export function ContentPane() {
     return () => setWebNavHandlers(null);
   }, [content]);
 
-  // 网页批注:页面运行时把改动写进 document.title,Rust 转成 Tauri 事件送回来
-  // (不开远程 IPC)。页面每加载完一次,重新套用批注模式,并把仓库里的锚点
-  // 推回页面——页面按 id 合并,不会覆盖它自己更新的数据。
+  // Web annotations: the page runtime writes its changes into document.title,
+  // Rust turns them into Tauri events and sends them back (no remote IPC).
+  // Every time the page finished loading, the annotation mode is applied
+  // again and the anchors from the vault are pushed back into the page; the
+  // page merges them by id and does not overwrite the data it updated
+  // itself.
   useEffect(() => {
     let cancelled = false;
     const offs: Array<() => void> = [];
@@ -284,7 +315,7 @@ export function ContentPane() {
           else offs.push(off);
         })
         .catch(() => {
-          // 浏览器模式没有原生网页预览,这些事件不会来。
+          // Browser mode has no native web preview, so these events never arrive.
         });
     };
 
@@ -297,8 +328,10 @@ export function ContentPane() {
           )
           .catch(() => {});
         await agentApi.setStudyPreviewAnnotationMode(webToolRef.current);
-        // 每次导航页面都会重新安装运行时:步长(以及页内上半屏遮罩)要重新推一次。
-        // 推步长失败(正在导航)不能让后面的批注合并跟着中断。
+        // Every navigation reinstalls the runtime in the page: the step (and
+        // the upper half dimming of the page) has to be pushed again.
+        // A failing step push (a navigation is in flight) must not abort the
+        // annotation merge that follows.
         await agentApi
           .setStudyPreviewReadStep(
             normalizePageStep(useAppStore.getState().settings.studyPageStep),
@@ -309,7 +342,7 @@ export function ContentPane() {
           .setStudyPreviewReadKeys(keys.prev, keys.next)
           .catch(() => {});
         await agentApi.setStudyPreviewShortcuts(pageForwardKeys()).catch(() => {});
-        // 导航完成后补推缩放:设置才是唯一事实,页面自己不用记比例。
+        // The zoom is pushed again after the navigation: the settings are the single source of truth, the page does not keep a ratio itself.
         await agentApi
           .setStudyPreviewZoom(
             normalizeWebZoom(useAppStore.getState().settings.studyWebZoom),
@@ -332,17 +365,20 @@ export function ContentPane() {
         if (!vault || !payload || typeof payload.url !== "string") return;
         const url = payload.url;
         const list = normalizeWebAnnotations(payload.annotations);
-        // 材料目录要先解析(可能是第一次写这份网页):解析失败退回旧路径。
+        // The material directory has to be resolved first (this may be the first write of this web page): a failed resolution falls back to the old path.
         void urlMaterialDir(vault, url).then((dir) => {
           saveWebAnnotations(vault, url, list, dir);
         });
       },
     );
 
-    // 微信读书路由:页内运行时把「正在读的书」写进 title 通道(study/weread.ts),
-    // Rust 按前缀分发到这里。只有当前内容确实是微信读书站点才处理——换了
-    // 内容之后迟到的旧事件不许写进历史。书名取「事件书名 → 历史里已有的
-    // 书名 → URL 兜底」中最优的一个:空书名的首报不许把已知书名冲掉。
+    // The weread route: the in-page runtime writes "the book currently being
+    // read" into the title channel (study/weread.ts) and Rust dispatches it
+    // here by prefix. It is only handled when the current content really is
+    // a weread site: a late event from before the content changed must not
+    // be written into the history. The book title is the best of "title of
+    // the event -> title already known from the history -> URL fallback"; the
+    // first report with an empty title must not overwrite a known title.
     subscribe<unknown>("study-weread-route", (payload) => {
       const state = useAppStore.getState();
       const current = state.studyContent;
@@ -360,15 +396,19 @@ export function ContentPane() {
       const key = typeof payload?.key === "string" ? payload.key : null;
       if (!key) return;
       const target = resolveBoundCommand(key, "reading");
-      // 网页缩放只在 Rust 侧改页面属性,不需要主窗口焦点。抢焦点会让用户按完
-      // ⌘= 之后滚不动、页面里的输入框也打不进字——这类命令原地执行即可。
+      // The web zoom only changes a page attribute on the Rust side and
+      // needs no focus in the main window. Stealing the focus would leave
+      // the user unable to scroll after pressing ⌘= and unable to type into
+      // an input field of the page, so such commands run in place.
       if (!needsMainWebviewFocus(target)) {
         if (target) runBoundKey(key, "reading");
         return;
       }
-      // 按键来自原生子 webview:先把键盘收回主窗口 webview(`Webview.setFocus`
-      // → makeFirstResponder 主 WKWebView),再按 reading 区域执行——目标命令
-      // 自己会把焦点交给输入框 / 编辑器。
+      // The key comes from the native child webview: first pull the keyboard
+      // back into the main window webview (`Webview.setFocus` ->
+      // makeFirstResponder on the main WKWebView), then run it in the reading
+      // region; the target command hands the focus to the input field or the
+      // editor itself.
       void getCurrentWebview()
         .setFocus()
         .then(() => runBoundKey(key, "reading"))
@@ -381,9 +421,11 @@ export function ContentPane() {
     };
   }, []);
 
-  // 打开网页:翻译开着时默认普通阅读(否则选中会被批注吃掉,翻译永远用
-  // 不上);翻译关着时保持原有默认——直接进高亮批注。工具切换仍是主窗口
-  // 说了算。
+  // Opening a web page: with the translation on the default is plain reading
+  // (otherwise the selection is eaten by the annotations and the
+  // translation is never usable); with the translation off the previous
+  // default stays, which is the highlight annotation directly. Switching
+  // the tool is still up to the main window.
   useEffect(() => {
     if (content?.kind === "url") {
       const initial = useAppStore.getState().settings.studyTranslate.enabled
@@ -398,8 +440,10 @@ export function ContentPane() {
     setWebTool(null);
   }, [content]);
 
-  // 翻译开关变化:把标志推给页内运行时;开启时退出当前批注工具,让翻译
-  // 立即可用。关闭时保留当前工具,不强行切回高亮。
+  // When the translation switch changes, the flag is pushed to the in-page
+  // runtime; when it is turned on the current annotation tool is left, so
+  // the translation is immediately usable. When it is turned off the current
+  // tool is kept and not forced back to the highlight.
   const translateEnabled = settings.studyTranslate.enabled;
   useEffect(() => {
     if (!previewUrl) return;
@@ -411,7 +455,7 @@ export function ContentPane() {
     }
   }, [previewUrl, translateEnabled]);
 
-  // 离页前把批注文件的防抖写盘冲刷掉(页面自己仍有 localStorage 兜底)。
+  // Before leaving the page the debounced write of the annotation file is flushed (the page still has localStorage as a fallback).
   useEffect(() => {
     const flush = () => flushWebAnnotations();
     window.addEventListener("beforeunload", flush);
@@ -468,7 +512,7 @@ export function ContentPane() {
   async function importAndOpen(pdfPath: string) {
     setImporting(true);
     try {
-      // 原文收进它自己的材料目录(与批注/会话同处一地)。
+      // The original file goes into its own material directory (next to the annotations and the sessions).
       const result = await agentApi.importPdf(pdfPath);
       openPdf({ path: result.pdfPath, relPath: result.relPath, title: result.title });
       showToast(`已收进 vault/${result.relPath}`);
@@ -501,10 +545,13 @@ export function ContentPane() {
       return;
     }
     setUrlInput("");
-    // 内容一换,上面的 effect 就把中栏的网页预览切到这个地址(同一个网址
-    // 再输一次也会重新加载,因为 content 是新对象)。
-    // 微信读书的网址不进「网页」历史:读书记录由页内路由事件产生,那时
-    // 才有书名;这里记的只有域名,没有信息量。
+    // When the content changes, the effect above switches the web preview of
+    // the middle column to this address (typing the same URL again reloads
+    // it, because the content is a new object).
+    // A weread URL does not enter the "web page" history: the reading record
+    // comes from the in-page route event, which is where the book title is
+    // known; here only the domain would be recorded, which carries no
+    // information.
     const title = isWereadUrl(url)
       ? "微信读书"
       : url.replace(/^https?:\/\//, "").split("/")[0] || url;
@@ -512,7 +559,7 @@ export function ContentPane() {
     if (!isWereadUrl(url)) recordStudyUrl({ url, title });
   }
 
-  /** 网页批注工具切换:状态在主窗口,页面只是执行者(单一写入者)。 */
+  /** Switching the web annotation tool: the state lives in the main window, the page only executes it (single writer). */
   function toggleWebTool(tool: WebAnnotationKind) {
     const next = webToolRef.current === tool ? null : tool;
     webToolRef.current = next;
@@ -528,27 +575,28 @@ export function ContentPane() {
   function openHistoryUrl(entry: StudyUrlEntry) {
     setHistoryOpen(false);
     setStudyContent({ kind: "url", url: entry.url, title: entry.title });
-    // 微信读书网址属于「微信读书」页签(旧配置里可能残留):不再进网页历史。
+    // A weread URL belongs to the "weread" tab (there may be leftovers in an old configuration): it no longer enters the web page history.
     if (!isWereadUrl(entry.url)) recordStudyUrl({ url: entry.url, title: entry.title });
   }
 
   function openHistoryBook(entry: WereadBookEntry) {
     setHistoryOpen(false);
     setStudyContent({ kind: "url", url: entry.url, title: entry.title });
-    // 重开一本旧书也要置顶;页内路由事件稍后会再记一次,按 url 去重。
+    // Reopening an old book has to move it to the top as well; the in-page
+    // route event records it once more later, deduplicated by url.
     recordWereadBook({ url: entry.url, title: entry.title });
   }
 
-  /** 从历史菜单重开一个代码项目。 */
+  /** Reopens a code project from the history menu. */
   function openHistoryCode(entry: StudyCodeEntry) {
     setHistoryOpen(false);
     setStudyContent({ kind: "code", path: entry.path, title: entry.title });
     recordStudyCode({ path: entry.path, title: entry.title });
-    // 项目本身也要真的打开(文件树、语言服务器都靠这一步)。
+    // The project itself has to be opened for real (the file tree and the language server both depend on this step).
     void import("@/code/commands").then((m) => m.openProjectAt(entry.path));
   }
 
-  /** 书架 / 商城 / 阅读都在这一个入口里,由微信读书自己的导航完成。 */
+  /** The shelf, the store and the reading all live behind this one entry, completed by weread's own navigation. */
   function openWereadShelf() {
     setHistoryOpen(false);
     setStudyContent({ kind: "url", url: WEREAD_HOME_URL, title: "微信读书" });
@@ -571,9 +619,11 @@ export function ContentPane() {
   }
 
   /**
-   * 打开代码项目:原生目录选择框 → 切中栏到代码视图。
+   * Opens a code project: native directory picker -> switch the middle
+   * column to the code view.
    *
-   * 命令模块按需载入(代码模块带着编辑器,不该拖进首屏)。
+   * The command module is loaded on demand (the code module carries the
+   * editor and must not slow down the first screen).
    */
   async function pickCodeProject() {
     try {
@@ -591,10 +641,16 @@ export function ContentPane() {
       tabIndex={-1}
       onDragOver={(e) => e.preventDefault()}
     >
-      {/* 学习模式没有标题栏,这行是窗口拖动区(按钮、输入框不受影响)。
-          三列:左 = 红绿灯让位;中 = 文件名(即材料下拉);右 = 网址输入 + PDF。
-          文件名只占中间列,两侧等宽,所以它在整栏里是真正居中的。左侧这一格
-          现在是空的(助手栏已独立在最左),留空只为保住文件名在整栏居中。 */}
+      {/* Study mode has no titlebar, so this row is the window drag region
+          (buttons and input fields are unaffected).
+          Three columns: left = clearance for the traffic lights; middle = the
+          file name (which is the materials dropdown); right = the URL input
+          and the PDF.
+          The file name only occupies the middle column and the two outer
+          columns have the same width, so it is truly centered in the whole
+          bar. The left cell is empty for now (the agent column already sits
+          at the far left); it stays empty only to keep the file name
+          centered in the whole bar. */}
       <div className="content-toolbar" data-tauri-drag-region="deep">
         <div className="content-tool-left" />
         <StudyHistoryMenu
@@ -717,8 +773,9 @@ export function ContentPane() {
               <span className="content-web-url" title={content.url}>
                 {content.url}
               </span>
-              {/* 页面缩放:原生子 webview 里没有浏览器自己的缩放控件,这里给
-                  一套最小的 −/读数/+;点读数回到 100%。 */}
+              {/* Page zoom: a native child webview has no zoom control of
+                  its own, so here is a minimal -/readout/+ set; clicking the
+                  readout returns to 100%. */}
               <div className="content-web-zoom" role="group" aria-label="网页缩放">
                 <button
                   className="icon-btn content-web-zoom-btn"
@@ -778,7 +835,7 @@ export function ContentPane() {
                 ↗
               </button>
             </div>
-            {/* 原生子 webview 会盖住这块占位区,页面的滚动/点击都归它。 */}
+            {/* The native child webview covers this placeholder area, the scrolling and the clicks of the page belong to it. */}
             <div className="content-web-view" ref={previewRef}>
               {previewError && (
                 <div className="content-web-fail">
@@ -802,10 +859,13 @@ export function ContentPane() {
 }
 
 /**
- * 占位元素的矩形,转成后端要的逻辑像素坐标。
+ * The rectangle of the placeholder element, converted into the logical pixel
+ * coordinates the backend expects.
  *
- * 窗口内容区左上角就是 DOM 视口原点(标题栏是 overlay 样式,内容区铺满整窗),
- * 所以 `getBoundingClientRect()` 的视口坐标可以直接当窗口坐标用。
+ * The top left of the window content area is the origin of the DOM viewport
+ * (the title bar is an overlay style and the content area fills the whole
+ * window), so the viewport coordinates of `getBoundingClientRect()` can be
+ * used as window coordinates directly.
  */
 export function previewBounds(el: HTMLElement): PreviewBounds {
   const rect = el.getBoundingClientRect();

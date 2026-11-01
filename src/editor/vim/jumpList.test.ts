@@ -3,32 +3,40 @@ import { EditorState, type Text } from "@codemirror/state";
 import { CodeMirror, Vim } from "@replit/codemirror-vim";
 import { patchVimMarkerFind } from "./vim";
 
-// 引擎的 insert 模式超时计时器挂在 window 上；node 测试环境用全局别名补上。
+// The engine's insert-mode timeout timer hangs off `window`; the node test
+// environment supplies it through a global alias.
 (globalThis as Record<string, unknown>).window = globalThis;
 
 /**
- * 「换文件后 gg/G 失效」的根因回归：
+ * Root-cause regression for "gg/G stop working after switching files":
  *
- * 引擎的 jumpList 挂在模块级单例 vimGlobalState 上，跨文档、跨
- * view.setState 存活；bnote 切文件走 loadDocument/reloadDocument 的
- * setState 整体替换——不是事务，标记不会被 mapPos。引擎 Marker.find() 用
- * posFromIndex 把旧文档的裸偏移投影到当前文档，越界直接抛 RangeError；
- * gg/G(toJumplist) 在 recordJumpPosition → jumpList.add → curMark.find()
- * 处必抛，且异常发生在 setSelection 之前——光标永远落不下去，引擎 catch
- * 重置 vim 态（状态条仍是 NORMAL），j/k 照常。patch 恢复 CM5 语义：越界
- * find() 返回 null（报告"标记不存在"），add() 走下一槽位续写。
+ * The engine's jumpList lives on the module-level singleton vimGlobalState,
+ * so it survives across documents and across view.setState; bnote switches
+ * files through the setState wholesale replacement in loadDocument/
+ * reloadDocument — not a transaction, so markers are never mapPos-ed. The
+ * engine's Marker.find() projects the old document's bare offset onto the
+ * current one with posFromIndex and throws RangeError when it is out of
+ * range; gg/G (toJumplist) always throws at recordJumpPosition → jumpList.add
+ * → curMark.find(), and the throw happens before setSelection — the caret
+ * never lands, the engine's catch resets the vim state (the status line
+ * still reads NORMAL), and j/k keep working. The patch restores CM5
+ * semantics: an out-of-range find() returns null (reporting "marker does
+ * not exist"), and add() continues in the next slot.
  *
- * 这里用真实引擎 + 真 shim CodeMirror（真 Marker、真 Text，无 DOM）走完
- * 整条链：不 patch 时第一个 gg 就抛 RangeError；patch 后 gg/G 照常跳。
+ * Here the real engine plus a real shim CodeMirror (real Marker, real Text,
+ * no DOM) walks the whole chain: without the patch the first gg throws
+ * RangeError; with the patch gg/G still jump.
  */
 
-/** 2000 行文档，末尾偏移 ≈20.9k——毒标记的来源（长文档里按过 G）。 */
+/** 2000-line document, last offset ≈20.9k — the source of the poison marker
+ *  (G was pressed in a long document). */
 const LONG_DOC = Array.from({ length: 2000 }, (_, i) => `第 ${i + 1} 行内容`).join("\n");
 const SHORT_DOC = "# 2026-10-02\n短日记\n";
 
 interface FakeCm {
   state: { vim?: unknown };
-  // 引擎实际触碰的方法面（normal 模式 motion + jumpList 路径）
+  // The method surface the engine actually touches (normal-mode motion +
+  // jumpList path)
   curOp: Record<string, unknown>;
   operation(f: () => void): void;
   getOption(name: string): unknown;
@@ -50,8 +58,9 @@ interface FakeCm {
   inVirtualSelectionMode: boolean;
 }
 
-/** 真 shim + 真 Text 的最小宿主：shim 经 cm6.state.doc 读到 fake cm 的
- *  同一份文档；swapDoc 整份替换 EditorState（setState 语义，非事务）。 */
+/** Minimal host with a real shim and real Text: the shim reads the fake cm's
+ *  document through cm6.state.doc; swapDoc replaces the whole EditorState
+ *  (setState semantics, not a transaction). */
 function makeCm(docText: string) {
   let state = EditorState.create({ doc: docText });
   const view = {
@@ -102,7 +111,8 @@ function makeCm(docText: string) {
       const ch = typeof lineOrPos === "number" ? (chArg ?? 0) : (lineOrPos?.ch ?? p.ch);
       state = state.update({ selection: { anchor: indexFromPos({ line, ch }) } }).state;
     },
-    // 真书签：真 Marker（裸偏移 + find()），由 patched 原型背书
+    // A real bookmark: a real Marker (bare offset + find()), backed by the
+    // patched prototype
     setBookmark: (cursor, options) => shim.setBookmark(cursor as never, options as never),
     on: () => {},
     off: () => {},
@@ -132,11 +142,12 @@ describe("跨文档 jump marker（换文件后 gg/G 失效回归）", () => {
     const marker = shim.setBookmark({ line: long.lines - 1, ch: 0 } as never);
     expect(marker).not.toBeNull();
     expect((marker as { find(): unknown }).find()).toEqual({ line: 1999, ch: 0 });
-    // 整份换短文档（setState 语义）后：同一书签的偏移越界
+    // After the wholesale switch to a short document (setState semantics):
+    // the same bookmark's offset is out of range
     (view.state as { doc: Text }).doc = EditorState.create({ doc: SHORT_DOC }).doc as Text;
     expect(() => (marker as { find(): unknown }).find()).not.toThrow();
     expect((marker as { find(): unknown }).find()).toBeNull();
-    // 当前文档内的书签不受影响
+    // Bookmarks inside the current document are unaffected
     const live = shim.setBookmark({ line: 1, ch: 2 } as never);
     expect((live as { find(): unknown }).find()).toEqual({ line: 1, ch: 2 });
   });
@@ -146,15 +157,17 @@ describe("跨文档 jump marker（换文件后 gg/G 失效回归）", () => {
     const { cm, cursor, swapDoc } = makeCm(LONG_DOC);
     typeKeys(cm, ["G"]);
     expect(cursor().line).toBe(1999);
-    // setState 换文件：全局 jumpList 里留下偏移 ≈20.9k 的死标记
+    // setState file switch: the global jumpList keeps a dead marker with an
+    // offset ≈20.9k
     swapDoc(SHORT_DOC);
-    // 此前在这里抛 RangeError: Invalid position … in document of length 15
+    // This used to throw RangeError: Invalid position … in document of length 15
     expect(() => typeKeys(cm, ["g", "g"])).not.toThrow();
     expect(cursor().line).toBe(0);
-    // SHORT_DOC 以 \n 结尾：末尾空行也算一行，G 落在末行（index 2）
+    // SHORT_DOC ends with \n: the trailing empty line counts as a line, so G
+    // lands on the last line (index 2)
     expect(() => typeKeys(cm, ["G"])).not.toThrow();
     expect(cursor().line).toBe(2);
-    // 非 jumplist 键不受影响（对照组）
+    // Keys outside the jump list are unaffected (control group)
     typeKeys(cm, ["g", "g"]);
     expect(cursor().line).toBe(0);
   });

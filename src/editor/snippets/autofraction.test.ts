@@ -14,8 +14,8 @@ describe("auto-fraction(latex-suite 语义移植)", () => {
     const r = frac("$$silu(x)=1/", 12);
     expect(r).not.toBeNull();
     expect(r!.replacement.text).toBe("\\frac{1}{}");
-    expect(r!.start).toBe(10); // "=" 之后
-    expect(r!.end).toBe(12); // 连同刚键入的 / 一起替换
+    expect(r!.start).toBe(10); // After "="
+    expect(r!.end).toBe(12); // The freshly typed `/` is replaced too.
   });
 
   it("a+b/ → a+\\frac{b}{}(+ 是断字符)", () => {
@@ -87,8 +87,9 @@ describe("auto-fraction(latex-suite 语义移植)", () => {
   });
 });
 
-/** tryAutoExpand 是两条输入路径(inputHandler / vim listener)的汇合点:
- *  用假视图锁住 "/" 的端到端展开与光标落点($0 = 分母)。 */
+/** tryAutoExpand is where the two input paths (inputHandler / vim listener)
+ *  meet: the fake view locks the end-to-end expansion of "/" and the caret
+ *  landing point ($0 = the denominator). */
 function makeView(doc: string, cursor: number): EditorView {
   let state = EditorState.create({ doc, selection: EditorSelection.cursor(cursor) });
   const view = {
@@ -108,7 +109,7 @@ describe("tryAutoExpand 汇合 auto-fraction", () => {
     const view = makeView("$$silu(x)=1/", 12);
     expect(tryAutoExpand(view, "/", null)).toBe(true);
     expect(view.state.doc.toString()).toBe("$$silu(x)=\\frac{1}{}");
-    expect(view.state.selection.main.head).toBe(19); // "{" 与 "}" 之间
+    expect(view.state.selection.main.head).toBe(19); // Between "{" and "}"
   });
 
   it("非数学态的 / 原样插入,不吞不扩", () => {
@@ -117,7 +118,8 @@ describe("tryAutoExpand 汇合 auto-fraction", () => {
     expect(view.state.doc.toString()).toBe("x/");
   });
 
-  /** 带完整片段扩展的假视图:会话字段真实存在,用于锁"会话期间 / 仍展开"。 */
+  /** A fake view with the full snippet extension: the session field really
+   *  exists, so this locks "while a session is active, `/` still expands". */
   function makeSessionView(doc: string, cursor: number): EditorView {
     let state = EditorState.create({
       doc,
@@ -138,24 +140,28 @@ describe("tryAutoExpand 汇合 auto-fraction", () => {
 
   it("括号片段会话活跃时键入 / 仍展开(latex-suite 击键级语义)", () => {
     const view = makeSessionView("$$f(", 4);
-    // "(" 自动片段 → 会话开启,光标在括号内
+    // The "(" auto snippet opens a session with the caret inside the bracket.
     expect(tryAutoExpand(view, "(", null)).toBe(true);
     expect(view.state.doc.toString()).toBe("$$f()");
     expect(getSession(view)).not.toBeNull();
-    // 继续逐键键入(真实键入路径中会话横跨整行持续存活)
+    // Keep typing key by key (on the real typing path the session stays alive
+    // across the whole line).
     for (const c of ["x", ")", "=", "1"]) {
       const at = view.state.selection.main.head;
       view.dispatch({ changes: { from: at, insert: c }, selection: { anchor: at + 1 } });
     }
     expect(getSession(view)).not.toBeNull();
-    // / 已由输入路径插入;修复前被会话压制,这里必须照常展开
+    // The input path has already inserted the "/"; before the fix the session
+    // suppressed it, here it must expand as usual.
     const at = view.state.selection.main.head;
     view.dispatch({ changes: { from: at, insert: "/" }, selection: { anchor: at + 1 } });
     expect(tryAutoExpand(view, "/", null)).toBe(true);
     expect(view.state.doc.toString()).toBe("$$f(x)=\\frac{1}{})");
   });
 
-  // 多字符提交(IME 整串上屏以 / 结尾)与 composition 延迟展开走的是
-  // autoExpandVimListener / 轮询路径,需要真实 EditorView 的更新监听器,
-  // 无 DOM 的 vitest 模拟不了——由浏览器 harness 协议验证(docC/docD 场景)。
+  // A multi-character commit (the IME pushes the whole string ending in "/")
+  // and the deferred expansion after composition go through the
+  // autoExpandVimListener / polling path, which needs a real EditorView
+  // update listener; vitest without DOM cannot fake that — the browser
+  // harness protocol covers it (docC/docD scenarios).
 });

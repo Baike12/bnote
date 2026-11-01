@@ -9,7 +9,7 @@ describe("parseSuggestTrigger", () => {
   });
 
   it("行首的 / 触发 skill,行中间空白后的路径斜杠不触发", () => {
-    // 聊天惯例:斜杠命令只在行首;/数据/2026 是绝对路径,不能吃掉。
+    // Chat convention: slash commands only live at the start of a line; /data/2026 is an absolute path and must not be swallowed.
     const text = "用这个排版 ";
     expect(parseSuggestTrigger(text + "/", text.length + 1)).toBeNull();
     expect(parseSuggestTrigger("read /data/2026", 15)).toBeNull();

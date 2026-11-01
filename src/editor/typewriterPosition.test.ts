@@ -9,10 +9,13 @@ import {
 } from "./typewriterPosition";
 
 /**
- * 打字机位置的门禁：留白与滚动增量必须由同一个比例推出。
+ * Gate for the typewriter position: the padding and the scroll delta must both
+ * be derived from the same ratio.
  *
- * 只改上留白或只改滚动目标，会让「首行能停到设定高度」和「末行能停到设定
- * 高度」只剩一个成立——那正是位置设置在文档头尾看不见的原因。
+ * Changing only the top padding, or only the scroll target, leaves one of
+ * "the first line can stop at the configured height" and "the last line can
+ * stop at the configured height" true — which is exactly why a configured
+ * position is invisible at the head and tail of a document.
  */
 describe("normalizeTypewriterPosition", () => {
   it("旧配置缺项/坏值回落到 50%", () => {
@@ -50,7 +53,9 @@ describe("typewriterReserve", () => {
     const { top, bottom } = typewriterReserve(H, LH, 0.3);
     expect(top).toBe(0.3 * H - LH / 2);
     expect(bottom).toBe(0.7 * H - LH / 2);
-    // 两段留白加一行 = 一屏：文档头尾可滚动的范围刚好把光标送到设定高度
+    // Both paddings plus one line = one screen: the scrollable range at the
+    // head and tail of the document is exactly what carries the caret to the
+    // configured height
     expect(top + bottom + LH).toBe(H);
   });
 

@@ -26,15 +26,21 @@ export function findNode(tree: FileNode[], relPath: string): FileNode | null {
 }
 
 /**
- * 把「relPath 这一行露出来」拆成可重复求值的施工计划——纯函数，只看树现在长
- * 什么样，不看异步过程，所以可以每次树变化都重算一遍而不怕重复。
+ * Turns "reveal this relPath" into a repeatable work plan — a pure function
+ * that only looks at the shape the tree has right now, never at the async
+ * progress, so it can be recomputed on every tree change without duplicating
+ * work.
  *
- * - `load`：已经进树、但子节点还没读的祖先目录，调用方去 loadDirChildren。
- * - `pending`：链上还有层没进树——树本身还没就绪（首帧、刚换库）。此时
- *   「树里没有这一行」不构成「条目不存在」的证据，不能据此放弃露出请求。
+ * - `load`: ancestor directories that are in the tree but whose children have
+ *   not been read yet; the caller hands them to loadDirChildren.
+ * - `pending`: some level of the chain is not in the tree yet — the tree itself
+ *   is not ready (first frame, vault just switched). "This row is not in the
+ *   tree" is then no evidence that the entry does not exist, so the reveal
+ *   request must not be dropped.
  *
- * 父层没进树时子层必然也找不到，所以一次遍历就够：父层读完后重算这一层
- * 自然会出现，收敛由树的更新驱动。
+ * A missing parent level implies its children are missing too, so one
+ * traversal is enough: once the parent has been read, recomputing this level
+ * picks it up naturally, and convergence is driven by the tree updates.
  */
 export function chainLoadPlan(
   tree: FileNode[],

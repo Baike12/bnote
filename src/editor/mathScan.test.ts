@@ -8,7 +8,7 @@ function regions(doc: string) {
 
 const display = (doc: string) => regions(doc).filter((r) => r.display);
 
-/** 正文片段是否被吞进任何公式区域(防"正文被吞"的核心断言)。 */
+/** Whether the body snippet is swallowed into any math region (the core assertion against "body text is swallowed"). */
 const insideAny = (doc: string, needle: string) => {
   const at = doc.indexOf(needle);
   return regions(doc).some((r) => at >= r.from && at + needle.length <= r.to);
@@ -48,7 +48,7 @@ describe("scanMath 块公式配对", () => {
   });
 
   it("删掉一个 $$ 后:错位产物不渲染,下方完好公式仍整体配对渲染(公式怪不再移位)", () => {
-    // 用户场景:四个 $$ 删掉一个,栈式配对让 m1-m2 被拒,m2-m3(完好公式)照常成对
+    // the user scenario: one of four $$ is deleted, the stack pairing refuses m1-m2, and m2-m3 (an intact formula) still pairs as usual
     const doc = "因为\n1\n$$\n\n后面段落A\n\n$$\n.x\n$$\n\n结尾";
     const rs = display(doc);
     expect(rs.map((r) => r.content)).toEqual(["\n.x\n"]);
@@ -61,7 +61,7 @@ describe("scanMath 块公式配对", () => {
     const rs = display(doc);
     expect(rs.map((r) => r.content)).toEqual(["\nF\n"]);
     expect(insideAny(doc, "正文")).toBe(false);
-    // 上方补上闭合 $$ 后,打字中的公式也整体配对渲染
+    // after adding the closing $$ above, the formula being typed also pairs and renders as a whole
     expect(display("$$\nE\n$$\n\n正文\n\n$$\nF\n$$").map((r) => r.content)).toEqual([
       "\nE\n",
       "\nF\n",
@@ -128,7 +128,7 @@ describe("scanMath 既有行为不回归", () => {
   });
 
   it("行内的公式不因块级防护丢失", () => {
-    // 错位配对被拒后,该行文本回归普通行,行内公式照常识别
+    // after the misaligned pair is refused, the text of that line goes back to being a plain line and inline math is still recognized
     const doc = "值 $a$ 与 $b$\n\n$$\n\n后面";
     const rs = regions(doc);
     expect(rs.some((r) => r.content === "a" && !r.display)).toBe(true);

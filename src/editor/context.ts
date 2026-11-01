@@ -3,14 +3,17 @@ import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import { scanMath, type MathRegion } from "./mathScan";
 
-/** CommonMark 围栏标记：行首最多 3 个空格 + 至少 3 个 ` 或 ~。 */
+/** CommonMark fence marker: at most 3 leading spaces plus at least 3 ` or ~. */
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 /**
- * 单遍扫描整篇文档，返回每行是否处于 ``` / ~~~ 围栏代码内（下标 = 行号-1；
- * 该行自身的围栏标记不影响它自己是否"在围栏内"）。语法树在文件刚载入时
- * 还是空的（后台解析未完成），树查询会把围栏/标题整体漏掉——凡是必须在
- * 那个窗口期内给出确定答案的逻辑（回车续行、标题重编号）都用这个兜底。
+ * Scans the whole document in one pass and returns whether each line is inside
+ * a ``` / ~~~ fenced code block (index = line number - 1; a line's own fence
+ * marker does not decide whether that line is "inside a fence"). The syntax
+ * tree is still empty right after a file loads (background parsing has not
+ * finished), and tree queries miss fences and headings entirely — so every
+ * logic that must answer deterministically during that window (list
+ * continuation on Enter, heading renumbering) falls back to this scan.
  */
 export function fenceStateScan(doc: Text): boolean[] {
   const inside = new Array<boolean>(doc.lines);
@@ -30,7 +33,7 @@ export function fenceStateScan(doc: Text): boolean[] {
   return inside;
 }
 
-/** 第 lineNo 行是否处于围栏代码内（按该行之前的行做围栏状态扫描）。 */
+/** Whether line `lineNo` is inside fenced code (scans the fence state over the lines before it). */
 export function insideFencedCodeByScan(doc: Text, lineNo: number): boolean {
   let open: string | null = null;
   let openLen = 0;
@@ -48,10 +51,14 @@ export function insideFencedCodeByScan(doc: Text, lineNo: number): boolean {
 }
 
 /**
- * 光标位置是否在围栏代码块内：树可用走树查询（FencedCode 节点，含围栏
- * 标记行自身），树还没就绪（文件刚载入，后台解析未完成）退回行扫描。
- * 所有「光标在不在代码块里」的判定都走这里，不许各处自建——围栏行自身
- * 两条路有已知差异（树算在内、扫描不算），只在 IME 这种低风险判定上可容忍。
+ * Whether the caret is inside a fenced code block: with the tree available it
+ * queries the tree (a FencedCode node, which includes the fence marker lines
+ * themselves); before the tree is ready (file just loaded, background parsing
+ * unfinished) it falls back to the line scan. Every "is the caret inside a
+ * code block" decision goes through here — nobody may roll their own, because
+ * the two paths differ on the fence marker lines themselves (the tree counts
+ * them, the scan does not), which is only tolerable for low-stakes checks
+ * like the IME one.
  */
 export function insideFencedCode(state: EditorState, pos: number): boolean {
   if (syntaxTreeAvailable(state, pos + 1)) {
@@ -86,8 +93,9 @@ export function mathRegions(state: EditorState): MathRegion[] {
   return mathRegionsForDoc(state.doc);
 }
 
-/** Doc 键版本:不持有 EditorState 的模块(callout 扫描)与装饰路径共享同一份
- *  备忘录,同一份文档的全文公式扫描每代只付一次。 */
+/** Doc-keyed variant: modules that hold no EditorState (the callout scan) share
+ *  the same memo as the decoration path, so a full-document math scan is paid
+ *  once per document generation. */
 export function mathRegionsForDoc(doc: Text): MathRegion[] {
   let regions = mathCache.get(doc);
   if (!regions) {
@@ -98,26 +106,33 @@ export function mathRegionsForDoc(doc: Text): MathRegion[] {
 }
 
 /**
- * 光标是否停在公式**正文**上——也就是「下一个键入的字符会不会写进公式源码」。
+ * Whether the caret rests on the math **body** — that is, "will the next typed
+ * character go into the math source".
  *
- * 位置语义(CM6 里 position 是字符之间):`from` 是开定界符之前、`to` 是闭合
- * 定界符之后,两点都落在**正文侧**——在那里打字,字符落在公式外面。所以闭合
- * 区域只认严格内部;未闭合区域(unclosed:只有一个 `$$`、还在打字)没有闭合
- * 符,`to` 就是正文末尾,那里打字仍写进公式。
+ * Position semantics (in CM6 a position sits between characters): `from` is
+ * before the opening delimiter and `to` after the closing one, so both lie on
+ * the **body side** — typing there lands outside the formula. Hence a closed
+ * region only accepts its strict interior; an unclosed region (unclosed: only
+ * one `$$`, still being typed) has no closing delimiter, so `to` is the end of
+ * the body and typing there still writes into the formula.
  *
- * 这是「打字意图」的唯一判定:输入法按它决定英文/中文源(公式是 ASCII),
- * 行内公式的源码展开也按它(光标在边界上=公式已渲染、光标在 widget 之外,
- * 再展源码就会把光标夹在源码与预览之间)。**块级**公式的活动规则是另一回事:
- * 整行 block widget 覆盖边界位置所在的行,收起时会把光标画到自己那一行之外,
- * 见 livePreview 的 active()。
+ * This is the single source of truth for "typing intent": the IME picks the
+ * English/Chinese source by it (math is ASCII), and inline math source
+ * expansion follows it too (caret on a boundary = the formula is rendered and
+ * the caret is outside the widget, so expanding the source again would trap
+ * the caret between source and preview). The **block-level** math activation
+ * rule is a different matter: a full-line block widget covers the line the
+ * boundary position sits on, and when collapsed it draws the caret outside
+ * its own line — see active() in livePreview.
  */
 export function caretInMathBody(region: MathRegion, pos: number): boolean {
   return pos > region.from && (pos < region.to || region.unclosed === true);
 }
 
 /**
- * 选区是否压在公式正文上:空选区按光标判定,非空选区与正文相交即算
- * (用户正在选中公式文本,要能看见自己选了什么)。
+ * Whether the selection rests on the math body: an empty selection follows the
+ * caret, a non-empty one counts as long as it intersects the body (the user is
+ * selecting math text and must be able to see what they selected).
  */
 export function selectionInMathBody(region: MathRegion, from: number, to: number): boolean {
   if (from === to) return caretInMathBody(region, from);
@@ -125,8 +140,9 @@ export function selectionInMathBody(region: MathRegion, from: number, to: number
   return from <= bodyEnd && to >= region.from + 1;
 }
 
-/** 公式正文的位置区间,夹进定界符之内(点击渲染态公式时落进正文用)。
- *  闭合区域去掉两侧定界符;未闭合区域的 `to` 本身就是正文末尾。 */
+/** The position range of the math body, clamped inside the delimiters (used to
+ *  land a click on a rendered formula inside its body). A closed region drops
+ *  both delimiters; an unclosed region's `to` already is the end of the body. */
 export function mathBodySpan(region: MathRegion): { from: number; to: number } {
   const open = region.display ? region.from + 2 : region.from + 1;
   const close = region.unclosed === true ? region.to : region.to - (region.display ? 2 : 1);
@@ -134,13 +150,18 @@ export function mathBodySpan(region: MathRegion): { from: number; to: number } {
 }
 
 /**
- * 行内节点的分隔符是否落在公式里——公式内容不是 markdown。
+ * Whether an inline node's delimiters fall inside math — math content is not
+ * markdown.
  *
- * lezer 不认识 `$$…$$` / `$…$`,公式里的 `_`(下标)会被当成斜体标记;两个
- * 不同公式里的 `_` 一旦配成一对 Emphasis,中间整段正文(哪怕跨十几行)都会
- * 被染成斜体。节点**首字符或末字符**落在公式区里,就说明这对分隔符至少有一
- * 端是 LaTeX 文本,节点应整体作废。只查两端是有意的:强调合法地包住一个行内
- * 公式(`_文字 $x$ 文字_`)时两端都在正文里,必须保留。
+ * lezer does not know `$$…$$` / `$…$`, so a `_` (subscript) inside math is
+ * taken for an italic marker; once two `_` from different formulas pair up
+ * into an Emphasis node, the whole span of body text between them (even
+ * across a dozen lines) gets italicized. If the node's **first or last
+ * character** lies inside a math region, then at least one end of that
+ * delimiter pair is LaTeX text and the node must be discarded wholesale.
+ * Checking only the ends is deliberate: when emphasis legitimately wraps an
+ * inline formula (`_text $x$ text_`) both ends are body text and the node
+ * must be kept.
  */
 export function mathOwnsEndpoints(
   regions: readonly MathRegion[],

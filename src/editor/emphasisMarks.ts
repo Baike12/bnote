@@ -11,22 +11,28 @@ import {
 import { mathOwnsEndpoints, mathRegions } from "./context";
 
 /**
- * 强调(斜体 / 加粗)的文本样式由这里画——不再交给语法高亮的 tag。
+ * The text styling of emphasis (italic / bold) is drawn here instead of by the
+ * syntax highlighting tags.
  *
- * 根因:`_` 在 LaTeX 里是下标,lezer 不认识公式,会把两个公式里的 `_` 配成一对
- * Emphasis,中间整段正文都落在节点范围内。HighlightStyle 按**节点范围**上色,
- * 装饰层再怎么过滤也挡不住它;所以 `t.emphasis` / `t.strong` 从 markdown.ts 的
- * 样式表里摘掉,改由这里按同一条「分隔符落在公式里 = 误配」的规则发光。
+ * Root cause: `_` is a subscript in LaTeX, lezer does not know about math, and
+ * pairs two `_` from different formulas into one Emphasis node — the whole
+ * span of body text between them then falls inside the node. A HighlightStyle
+ * colors by **node range**, so no amount of filtering in the decoration layer
+ * can stop that; hence `t.emphasis` / `t.strong` were removed from the style
+ * table in markdown.ts and the same "delimiter inside math = mispair" rule now
+ * decides the styling here.
  *
- * 顺带解决了另一件事:光标停在强调行上时(live preview 的标记隐藏让路),文本
- * 也依旧有颜色——以前靠 tag,现在两种模式同一套装饰。装饰只标**内容**
- * (首标记之后到末标记之前),标记字符保持源码色。
+ * This also settles another matter: when the caret rests on an emphasized
+ * line (live preview's marker hiding gives way), the text still has its
+ * color — previously it came from the tag, now both modes share one set of
+ * decorations. The decoration marks only the **content** (after the first
+ * marker, before the last one); the marker characters keep the source color.
  */
 const emphasisMark = Decoration.mark({ class: "md-em" });
 const strongMark = Decoration.mark({ class: "md-strong" });
 const strikeMark = Decoration.mark({ class: "md-strike" });
 
-/** 纯构建(无 DOM,可单测):只在可见区里走一遍语法树。 */
+/** Pure build (no DOM, unit-testable): walks the syntax tree over the visible ranges only. */
 export function buildEmphasisMarks(
   state: EditorState,
   ranges: readonly { from: number; to: number }[],
@@ -42,7 +48,8 @@ export function buildEmphasisMarks(
       if (name !== "Emphasis" && name !== "StrongEmphasis" && name !== "Strikethrough") {
         return true;
       }
-      // 公式里配出来的误配节点:整段作废,子节点各自再判。
+      // A node mispaired inside math: discard it wholesale, then judge its
+      // children on their own.
       if (mathOwnsEndpoints(maths, ref.from, ref.to)) return true;
       let first: SyntaxNode | null = null;
       let last: SyntaxNode | null = null;
@@ -56,13 +63,13 @@ export function buildEmphasisMarks(
       const deco =
         name === "StrongEmphasis" ? strongMark : name === "Strikethrough" ? strikeMark : emphasisMark;
       out.push(deco.range(first.to, last.from));
-      return true; // 继续下行:嵌套强调(***x***)各自标记
+      return true; // keep descending: nested emphasis (***x***) is marked separately
     },
   });
   return Decoration.set(out, true);
 }
 
-/** 始终启用(live preview 开关都生效):只管文本样式,不动标记显隐。 */
+/** Always enabled (the live preview toggle does not affect it): it only owns the text styling, never the marker visibility. */
 export function emphasisMarksExtension(): Extension {
   return ViewPlugin.fromClass(
     class {

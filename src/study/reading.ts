@@ -1,19 +1,22 @@
 /**
- * 学习模式翻页的几何模型。
+ * Geometry model for turning pages in study mode.
  *
- * PDF 与网页阅读器共用同一个步长：每次 PageUp/PageDown 移动「可见高度 ×
- * 步长」。默认 50% 时，翻页后上一屏的下半部分刚好停在屏幕中央——眼睛留在
- * 中下区域就能接上新内容，不必每次都抬头看屏幕顶部。
+ * The PDF and web readers share one step size: every PageUp/PageDown moves
+ * "visible height x step". At the default 50% the lower half of the previous
+ * screen ends up in the middle of the screen after a page turn — the eyes stay
+ * in the lower-middle area and pick up the new content there, without looking
+ * up to the top of the screen every time.
  */
 
 export const DEFAULT_PAGE_STEP = 0.5;
 export const MIN_PAGE_STEP = 0.1;
 export const MAX_PAGE_STEP = 1;
 
-/** 设置值可能是旧配置/手改 JSON：夹进 [10%, 100%]，按 1% 取整。
+/** The setting may come from an old config or a hand-edited JSON: clamp into [10%, 100%], rounded to 1%.
  *
- *  这个函数会被 `webAnnotations.ts` 序列化进网页运行时，所以函数体不能
- *  引用模块常量（页面里不存在）——范围与默认值写成字面量。 */
+ *  This function is serialized into the web runtime by `webAnnotations.ts`,
+ *  so its body must not reference module constants (they do not exist in the
+ *  page) — the range and the default are written as literals. */
 export function normalizePageStep(value: unknown): number {
   const raw = typeof value === "number" && Number.isFinite(value) ? value : 0.5;
   const rounded = Math.round(raw * 100) / 100;
@@ -21,8 +24,10 @@ export function normalizePageStep(value: unknown): number {
 }
 
 /**
- * 从当前位置走一步，端点夹紧（第一屏不越过顶部，最后一屏不越过底部）。
- * `viewport` 是可见高度，`content` 是滚动内容总高度。
+ * Take one step from the current position, with the endpoints clamped (the
+ * first screen never goes above the top, the last screen never past the
+ * bottom). `viewport` is the visible height, `content` the total height of
+ * the scrolled content.
  */
 export function steppedScrollTop(
   current: number,
@@ -36,19 +41,23 @@ export function steppedScrollTop(
   return Math.min(max, Math.max(0, current + delta * distance));
 }
 
-/** 一条文字行的客户区上下边（与视口同坐标系）。 */
+/** The top and bottom edge of one line of text in client coordinates (the same coordinate system as the viewport). */
 export interface TextLineBand {
   top: number;
   bottom: number;
 }
 
 /**
- * 翻页落点微调：分界线若切在文字行内，把最近的行边对齐到分界线。
+ * Fine-tune the page-turn landing point: if the split line cuts through a
+ * line of text, align the nearest line edge with the split line.
  *
- * `boundary` 是分界线在视口坐标系里的 y；`lines` 是**当前落点**下测到的
- * 文字行矩形；`tolerance` 是允许的最大调整距离（约视口高度的 2%）。
- * 只做位移，不改步长模型：调整后滚动距离最多偏离设定值 tolerance。
- * 行高大于 2×tolerance 时两边都可能超出容差，此时保持原位。
+ * `boundary` is the y of the split line in viewport coordinates; `lines` are
+ * the text line rects measured **at the current landing point**; `tolerance`
+ * is the maximum adjustment distance allowed (about 2% of the viewport
+ * height). It only shifts the position and does not change the step model:
+ * after the adjustment the scroll distance deviates from the configured value
+ * by at most the tolerance. When the line height exceeds 2x the tolerance
+ * both edges may fall outside it, and the position stays as it is.
  */
 export function snapScrollTopToLine(
   current: number,
@@ -75,7 +84,7 @@ export function snapScrollTopToLine(
       const delta = value - boundary;
       if (!Number.isFinite(delta) || Math.abs(delta) > tolerance) continue;
       const next = current + delta;
-      // 顶到首尾就贴边；此时行边并没有真正对齐，不接受这个候选。
+      // Hitting the top/bottom end means the position is flush against it; the line edge is not really aligned then, so this candidate is rejected.
       if (next < 0 || next > max) continue;
       const distance = Math.abs(delta);
       if (distance < bestDistance) {
@@ -86,8 +95,10 @@ export function snapScrollTopToLine(
     }
   }
   if (best === current) return current;
-  // 滚动位置按整像素生效：对齐上边时向下取整（行整体落在分界线下方），
-  // 对齐下边时向上取整（行整体留在分界线上方），避免 0.5px 的残余切割。
+  // The scroll position takes effect in whole pixels: when aligning the top
+  // edge round down (the line ends up entirely below the split line), when
+  // aligning the bottom edge round up (the line stays entirely above it), so
+  // no 0.5px sliver of a line is left cut.
   const rounded = bestEdge === "top" ? Math.floor(best) : Math.ceil(best);
   return Math.min(max, Math.max(0, rounded));
 }

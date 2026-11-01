@@ -5,15 +5,20 @@ import { refreshDiagnostics } from "./editor/lsp";
 import type { LspDiagnostic } from "./types";
 
 /**
- * 语言服务器的事件订阅。
+ * Event subscriptions for the language servers.
  *
- * 后端把诊断、服务器状态、日志推回来,这里落进 store:
- * - 诊断按文件路径存(编辑器从 store 读,画成行内的标记);
- * - 服务器状态按语言存(状态栏显示 LSP 是否活着);
- * - 日志留最近若干条(出问题时能看服务器说了什么)。
+ * The backend pushes diagnostics, server state and logs back; they land in the
+ * store:
+ * - diagnostics are keyed by file path (the editor reads them from the store
+ *   and draws the inline marks);
+ * - server state is keyed by language (the status bar shows whether the LSP is
+ *   alive);
+ * - logs keep the last few entries (to see what the server said when it
+ *   misbehaves).
  *
- * 订阅是**应用级**的,不是组件级:语言服务器在项目打开期间一直活着,面板
- * 换了几轮它也照旧推事件。
+ * The subscription is **application-scoped**, not component-scoped: language
+ * servers stay alive while the project is open, so they keep pushing events
+ * across panel remounts.
  */
 export async function installCodeEvents(): Promise<() => void> {
   const offs: Array<() => void> = [];
@@ -26,7 +31,7 @@ export async function installCodeEvents(): Promise<() => void> {
       const off = await listen(event, (e) => handler(e.payload));
       offs.push(off);
     } catch {
-      // 不在 Tauri 里(浏览器 harness):没有事件源,安静跳过。
+      // Outside Tauri (browser harness): no event source, skip silently.
     }
   };
 
@@ -37,7 +42,8 @@ export async function installCodeEvents(): Promise<() => void> {
       ? (data.diagnostics as LspDiagnostic[])
       : [];
     useCodeStore.getState().setDiagnostics(data.path, diagnostics);
-    // 诊断是推来的,编辑器不会自己知道它们变了——显式让它重画一遍。
+    // Diagnostics are pushed, so the editor never learns they changed on its
+    // own — tell it to redraw them.
     const handle = activeCodeEditor();
     if (handle && handle.path === data.path) refreshDiagnostics(handle.view);
   });

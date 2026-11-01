@@ -59,7 +59,7 @@ export function FolderSuggest({ value, onChange, className, placeholder }: Folde
           setOpen(true);
           setIndex(0);
         }}
-        // 点击已持有焦点的输入框时 focus 事件不会再来，单独处理以重新打开下拉。
+        // Clicking an input that already has the focus fires no focus event, so it is handled separately to reopen the dropdown.
         onClick={() => setOpen(true)}
         onKeyDown={(e) => {
           if (!open || matches.length === 0) return;

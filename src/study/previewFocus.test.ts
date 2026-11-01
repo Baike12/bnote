@@ -7,9 +7,11 @@ function cmd(patch: Partial<CommandDef> = {}): CommandDef {
 }
 
 /**
- * 网页转发键的焦点规则。原生子 webview 抢到第一响应者后,只有让主 webview
- * 自己当第一响应者才能把键盘拿回来——否则每个后续按键都还在网页里转一圈,
- * 主窗口命令(区域切换、快速待办)看起来全部失灵。
+ * Focus rules for forwarded keys from the web page. Once a native child
+ * webview has taken the first responder, only the main webview taking it back
+ * returns the keyboard — otherwise every later key still goes around in the
+ * page and the main window commands (region switch, quick todo) look entirely
+ * dead.
  */
 describe("网页转发键的主窗口焦点", () => {
   it("普通命令先抢回主窗口键盘", () => {

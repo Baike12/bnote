@@ -4,22 +4,27 @@ import { findMatchingBracket } from "./brackets";
 import { latexConfig } from "./config";
 
 /**
- * latex-suite 的 autoEnlargeBrackets:括号里出现 `\sum`/`\frac` 这类"大个子"时,
- * 把 `( … )` 升级成 `\left( … \right)`,免去手写。语义逐条对齐插件:
+ * latex-suite's autoEnlargeBrackets: when a "big operator" such as `\sum` or
+ * `\frac` appears inside brackets, `( … )` is upgraded to `\left( … \right)`
+ * so the user does not have to type it. Each rule maps onto the plugin:
  *
- * - 触发时机不是"打括号",而是**一次片段展开或自动分数之后**:插入的文本里
- *   出现某个触发词(子串匹配 `\` + 词)就整段方程扫一遍。自动分数必然含
- *   `\frac`,所以它总是触发。
- * - 写进方程的是 `\left(` + 空格 与 空格 + `\right)`,两侧各留一个空格。
- * - 括号内容里没有触发词时整对跳过(不深入内层);**有触发词时只前进一格**,
- *   于是嵌套的内层括号也会被各自放大。
- * - 已经是 `\left…\right` 的跳过,不重复加。
+ * - The trigger is not "typing a bracket" but **a snippet expansion or an
+ *   auto-fraction**: if the inserted text contains a trigger word (substring
+ *   match on `\` + word), the whole equation is scanned. An auto-fraction
+ *   always contains `\frac`, so it always triggers.
+ * - What is written into the equation is `\left(` + space and space +
+ *   `\right)`, one space on each side.
+ * - A pair whose content holds no trigger word is skipped as a whole (the
+ *   scan does not descend into it); **with a trigger word it advances only one
+ *   level**, so nested inner brackets are enlarged on their own.
+ * - A pair that is already `\left…\right` is skipped, never doubled.
  */
 
 const LEFT = "\\left";
 const RIGHT = "\\right";
 
-/** 插件的八种开括号(键序照抄:先匹配者胜)。 */
+/** The plugin's eight opening brackets (the key order is copied verbatim:
+ *  the first match wins). */
 const BRACKET_PAIRS: [string, string][] = [
   ["(", ")"],
   ["[", "]"],
@@ -37,8 +42,9 @@ export interface BracketEdit {
   insert: string;
 }
 
-/** 纯函数:在 `[start, end)` 这段方程文本里找出该放大的括号对,返回插入编辑
- *  (绝对坐标,已排序)。找不到返回空数组。 */
+/** A pure function: finds the bracket pairs to enlarge in the equation text
+ *  `[start, end)` and returns the insertion edits (absolute coordinates,
+ *  sorted). An empty array means nothing matched. */
 export function enlargeBracketEdits(
   text: string,
   start: number,
@@ -57,7 +63,8 @@ export function enlargeBracketEdits(
     if (alreadyEnlarged) continue;
     const contents = text.slice(i + 1, j);
     if (!triggers.some((word) => contents.includes("\\" + word))) {
-      i = j; // 这对里没有大个子:整对跳过,不看内层
+      i = j; // No big operator inside this pair: skip the pair, do not look
+             // inside it
       continue;
     }
     out.push({ from: i, to: i + open.length, insert: LEFT + open + " " });
@@ -66,7 +73,8 @@ export function enlargeBracketEdits(
   return out;
 }
 
-/** 片段展开后按需放大括号;返回是否真的改了文档。 */
+/** Enlarges brackets after a snippet expansion when needed; returns whether the
+ *  document was really changed. */
 export function autoEnlargeBrackets(view: EditorView, inserted: string): boolean {
   const cfg = latexConfig();
   if (!cfg.autoEnlargeBrackets) return false;

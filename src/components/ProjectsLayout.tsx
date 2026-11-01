@@ -34,27 +34,36 @@ import { DailyNotePane } from "./DailyNotePane";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 /**
- * 项目管理视图(与学习模式同级、互斥)。
+ * Project management view (on the same level as study mode, mutually
+ * exclusive with it).
  *
- *   项目导航 | 项目看板(横向多列,当前列居中且可编辑) | 日记
+ *   project navigation | project board (several horizontal columns, the
+ *   current one centered and editable) | daily note
  *
- * 看板是**真的多列**:每个项目一列,列头是项目名 + 未完成数,列里是待办。
- * 当前列用 CodeMirror(可 vim 编辑、可拖出待办),其余列是纯 DOM 预览(点击
- * 即聚焦过去)。只有当前列装编辑器——为每个项目各建一个实例在项目多时不可
- * 接受;当前列在 track 里靠 CSS `order` 排到对应位置,切换项目只换它装的
- * 文档(PaneEditor 的 path 变化),不重建实例、不移动 DOM 子树。
+ * The board is **really multi-column**: one column per project, the column
+ * header holds the project name and the number of open todos, the column
+ * holds the todos. The current column uses CodeMirror (vim editable, todos
+ * can be dragged out), the other columns are a pure DOM preview (clicking
+ * one focuses it). Only the current column holds an editor, building one
+ * instance per project is unacceptable once there are many projects; the
+ * current column is placed in the track by CSS `order`, switching projects
+ * only swaps the document it holds (a path change in PaneEditor), it does
+ * not rebuild the instance and does not move the DOM subtree.
  *
- * 两侧栏宽度可拖:导航与日记按像素存进 settings,看板吃剩余;拖分隔线只动
- * 相邻的两栏(见 projects/layoutModel)。
+ * The two sidebars have a draggable width: navigation and daily note are
+ * stored in pixels in the settings, the board takes the rest; dragging a
+ * divider only moves the two adjacent columns (see projects/layoutModel).
  */
 
 const PROJECT_EXTENSIONS = [projectTodoDragExtension()];
 
 /**
- * 删除一个项目(菜单与 ⌘⌫ 共用)。
+ * Deletes a project (shared by the menu and ⌘⌫).
  *
- * 全从 store 取(vault 与聚焦):命令层的事件监听只注册一次,闭包里的
- * 渲染值会是过期的。删除本身由 projects/store 保证「迟到写入不复活文件」。
+ * Everything is read from the store (vault and focus): the command layer
+ * registers its event listener only once, so the rendered values captured
+ * in the closure would be stale. The deletion itself is guarded by
+ * projects/store, which makes sure a late write does not resurrect the file.
  */
 async function trashProject(project: ProjectEntry): Promise<void> {
   const root = useAppStore.getState().vaultPath;
@@ -67,7 +76,7 @@ async function trashProject(project: ProjectEntry): Promise<void> {
   }
 }
 
-/** ⌘⌫:删当前聚焦的项目。 */
+/** ⌘⌫: deletes the currently focused project. */
 function trashFocusedProject(): Promise<void> | void {
   const path = focusedProjectPath();
   const entry = path ? projectEntries().find((e) => e.path === path) : null;
@@ -102,7 +111,7 @@ export function ProjectsLayout() {
   const focusPath = focused?.path ?? null;
   const idx = focused ? list.findIndex((e) => e.path === focused.path) : -1;
 
-  // 列表/搜索变化后把「当前聚焦」校正到仍然存在的项目上。
+  // After the list or the search changed, correct the "current focus" onto a project that still exists.
   useEffect(() => {
     const target = focused?.path ?? null;
     if (target !== focusedPath) setFocusedProject(target);
@@ -112,7 +121,7 @@ export function ProjectsLayout() {
     if (vaultRoot) void loadProjects(vaultRoot);
   }, [vaultRoot]);
 
-  // 命令层只发信号(它拿不到卡片里的编辑器实例与新建输入框)。
+  // The command layer only emits a signal (it cannot reach the editor instance inside the card or the new-project input).
   useEffect(() => {
     const focusCard = () => {
       setActiveKeyRegion("project");
@@ -133,7 +142,7 @@ export function ProjectsLayout() {
     };
   }, []);
 
-  // 切换项目 = 把焦点交给当前列编辑器(点击列、按快捷键走同一条落点)。
+  // Switching projects means handing the focus to the editor of the current column (clicking a column and the shortcut take the same path).
   useEffect(() => {
     const view = projectViewRef.current;
     if (!view || !focusPath) return;
@@ -143,8 +152,11 @@ export function ProjectsLayout() {
     return () => cancelAnimationFrame(id);
   }, [focusPath]);
 
-  // 当前列始终居中:轨道两端留出 (看板宽 − 列宽) / 2 的空白,首个/末个项目
-  // 才滚得到正中间;列换位置或看板宽度变化(拖分栏线、改窗口)时重算。
+  // The current column is always centered: the track leaves (board width -
+  // column width) / 2 of padding at both ends, so the first and the last
+  // project can scroll into the exact middle. It is recomputed when a
+  // column changes position or the board width changes (divider drag,
+  // window resize).
   useEffect(() => {
     const board = boardRef.current;
     const track = board?.querySelector<HTMLElement>(".projects-board-track");
@@ -155,7 +167,7 @@ export function ProjectsLayout() {
       const colWidth = col?.offsetWidth ?? 320;
       const pad = Math.max(18, Math.round((board.clientWidth - colWidth) / 2));
       track.style.setProperty("--board-edge-pad", `${pad}px`);
-      // 边缘渐隐不超过留白:窄窗口里留白只有 18px 时,不能把当前列也淡掉。
+      // The edge fade never exceeds the padding: with only 18 px of padding in a narrow window, the current column must not be faded out too.
       board.style.setProperty("--board-fade", `${Math.min(64, pad)}px`);
       if (!col) return;
       const target = Math.max(0, col.offsetLeft - (board.clientWidth - col.offsetWidth) / 2);
@@ -163,7 +175,7 @@ export function ProjectsLayout() {
     };
 
     const id = requestAnimationFrame(() => place(true));
-    // 拖分栏线/改窗口时看板宽度每帧都在变:跟着调边距,保持当前列不漂。
+    // While a divider is dragged or the window is resized the board width changes on every frame: adjust the padding along with it so the current column does not drift.
     const observer = new ResizeObserver(() => place(false));
     observer.observe(board);
     return () => {
@@ -172,7 +184,7 @@ export function ProjectsLayout() {
     };
   }, [focusPath, list.length]);
 
-  /** 拖 导航|看板:改导航宽度,日记栏不动(量屏幕上的实测宽度,CSS 可能夹过)。 */
+  /** Drag navigation|board: changes the navigation width, the daily note column stays (measures the real width on screen, CSS may have clamped it). */
   function startSideDrag(event: ReactPointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
     if (!host) return;
@@ -195,7 +207,7 @@ export function ProjectsLayout() {
     });
   }
 
-  /** 拖 看板|日记:改日记宽度,导航栏不动。 */
+  /** Drag board|daily note: changes the daily note width, the navigation column stays. */
   function startDailyDrag(event: ReactPointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
     if (!host) return;
@@ -230,7 +242,7 @@ export function ProjectsLayout() {
 
   const removeProject = (project: ProjectEntry) => void trashProject(project);
 
-  /** 项目操作菜单:列表项/列头的右键与顶部「⋯」共用同一份条目。 */
+  /** The project action menu: the right click of a list item or a column header and the "..." at the top share the same entries. */
   const openProjectMenu = (project: ProjectEntry, x: number, y: number) => {
     setMenu({
       x,
@@ -245,7 +257,7 @@ export function ProjectsLayout() {
       ref={hostRef}
       style={
         {
-          // 侧栏收起时 macOS 红绿灯压在主区左上角,左栏头部内容让开(与 titlebar 同约定)。
+          // With the sidebar collapsed the macOS traffic lights sit on the top left of the main area, so the header of the left column steps aside (same rule as the titlebar).
           "--projects-lead": sidebarOpen ? "12px" : "78px",
           "--side-src": `${sideWidth}px`,
           "--daily-src": `${dailyWidth}px`,
@@ -414,7 +426,7 @@ function initialOf(name: string): string {
   return /[a-z]/i.test(ch) ? ch.toUpperCase() : ch;
 }
 
-/** 当前项目列:列头 + 完成度 + 编辑器(整个视图里唯一的 CodeMirror)。 */
+/** The current project column: header + progress + editor (the only CodeMirror in the whole view). */
 function CurrentColumn({
   project,
   order,
@@ -431,7 +443,7 @@ function CurrentColumn({
     return hit === undefined ? { total: 0, done: 0 } : projectCounts(projectTodos(hit));
   });
 
-  // 换项目时列头计数跟着换(缓存命中就同步显示,不必等编辑器读盘)。
+  // The header counts follow when the project changes (a cache hit shows them right away, no need to wait for the editor to read the file).
   useEffect(() => {
     const hit = cachedProjectDoc(project.path);
     if (hit !== undefined) {
@@ -476,8 +488,9 @@ function CurrentColumn({
         save={(path, text) => writeProjectDoc(path, text)}
         onSnapshot={(path, text) => {
           setCachedProjectDoc(path, text);
-          // 每击输入重算一遍计数(项目文档小:1000 行解析 ~0.15ms,见
-          // perf.gate)。同值时 setState 不触发重渲染。
+          // The counts are recomputed on every keystroke (the project
+          // document is small: parsing 1000 lines takes ~0.15 ms, see
+          // perf.gate). With an unchanged value setState does not re-render.
           const next = projectCounts(projectTodos(text));
           setCounts((prev) =>
             prev.total === next.total && prev.done === next.done ? prev : next,
@@ -491,7 +504,7 @@ function CurrentColumn({
   );
 }
 
-/** 非当前项目列:纯 DOM 预览(点击聚焦、待办可拖到日记)。 */
+/** A project column that is not the current one: a pure DOM preview (click to focus, todos can be dragged to the daily note). */
 function ProjectColumn({
   project,
   order,

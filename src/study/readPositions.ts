@@ -1,22 +1,26 @@
 import { createVaultJsonStore, vaultDotPath, type JsonIO } from "./vaultJson";
 
 /**
- * 学习模式的阅读位置:PDF 记「第几页 + 页内偏移」,网页记「滚动比例」。
+ * Reading positions in study mode: PDFs record "which page + the offset
+ * within it", web pages record "the scroll ratio".
  *
- * PDF 的页码/页内比例在缩放、栏宽变化、裁剪下都成立:重排后同一页仍从
- * 同一处继续读。网页拿不到自己的滚动容器(DOM 在主窗口之外),而且广告/
- * 懒加载会让像素位置失效,所以用「可滚高度里的比例」。
+ * A PDF's page number / in-page ratio holds under zoom, column width changes
+ * and cropping: after a reflow the same page still continues from the same
+ * spot. A web page cannot reach its own scroll container (its DOM lives
+ * outside the main window), and ads / lazy loading invalidate pixel
+ * positions, so it uses "the ratio of the scrollable height" instead.
  *
- * 全部落在一个 `<vault>/.bnote/read-positions.json` 里:这条数据是易变的
- * 阅读痕迹,不是用户内容,不需要按 PDF/网址各占一个文件;写入仍由
- * `createVaultJsonStore` 串行化,同一时刻只有一个写入者。
+ * Everything lands in a single `<vault>/.bnote/read-positions.json`: this
+ * data is volatile reading traces, not user content, and does not need one
+ * file per PDF / URL; the writes are still serialized by
+ * `createVaultJsonStore`, so there is only one writer at a time.
  */
 export interface PdfReadPosition {
-  /** 1-based 页码。 */
+  /** 1-based page number. */
   page: number;
-  /** 页内偏移(0..1,页面高度的比例)。 */
+  /** Offset within the page (0..1, a ratio of the page height). */
   offset: number;
-  /** Unix ms,只用于裁剪旧条目。 */
+  /** Unix ms, only used to prune old entries. */
   at: number;
 }
 
@@ -32,7 +36,7 @@ export interface ReadPositions {
   urls: Record<string, WebReadPosition>;
 }
 
-/** 位置会随阅读不断新增;只保留最近的一批,文件不会无限长。 */
+/** Positions keep being added while reading; only the most recent batch is kept so the file does not grow without bound. */
 export const MAX_TRACKED_POSITIONS = 500;
 
 export function emptyReadPositions(): ReadPositions {
@@ -59,7 +63,7 @@ function prune<T extends { at: number }>(record: Record<string, T>): Record<stri
   return Object.fromEntries(entries.slice(0, MAX_TRACKED_POSITIONS));
 }
 
-/** 手改/旧版本留下的坏字段一律丢掉,绝不让配置在启动时把阅读器打挂。 */
+/** Bad fields from a hand edit or an older version are dropped; the config must never take the reader down at startup. */
 export function normalizeReadPositions(raw: unknown): ReadPositions {
   const out = emptyReadPositions();
   if (!isRecord(raw)) return out;
@@ -95,7 +99,7 @@ export function parseReadPositions(raw: string | null): ReadPositions {
   }
 }
 
-/** 页面在滚动内容里的位置(像素)。 */
+/** The position of a page in the scrolled content (pixels). */
 export interface PageMetric {
   page: number;
   top: number;
@@ -103,8 +107,10 @@ export interface PageMetric {
 }
 
 /**
- * 滚动位置 → 页码 + 页内偏移。取「顶边已经越过视口顶部的最后一页」:
- * 页面之间有间隙时,视口顶部落在间隙里仍算上一页(偏移 > 1 会被夹到 1)。
+ * Scroll position -> page number + in-page offset. Takes "the last page whose
+ * top edge has passed the viewport top": when there are gaps between pages, a
+ * viewport top landing in a gap still counts as the previous page (an offset
+ * > 1 is clamped to 1).
  */
 export function pdfPositionAt(pages: PageMetric[], scrollTop: number): PdfReadPosition | null {
   if (pages.length === 0) return null;
@@ -118,7 +124,7 @@ export function pdfPositionAt(pages: PageMetric[], scrollTop: number): PdfReadPo
   return { page: chosen.page, offset: clamp01(offset), at: 0 };
 }
 
-/** 页码 + 页内偏移 → 绝对 scrollTop;页码已不存在(换了文件)时返回 null。 */
+/** Page number + in-page offset -> absolute scrollTop; null when the page no longer exists (the file was swapped). */
 export function scrollTopForPdfPosition(
   pages: PageMetric[],
   position: Pick<PdfReadPosition, "page" | "offset">,
@@ -138,10 +144,10 @@ function createReadPositionStore(io?: JsonIO) {
   });
 }
 
-/** 单例:同一份文件只有一个缓存/写入者。 */
+/** Singleton: one cache and one writer for this file. */
 export const readPositionStore = createReadPositionStore();
 
-/** 测试用:注入假 IO 的独立存储。 */
+/** For tests: a standalone store with an injected fake IO. */
 export { createReadPositionStore };
 
 const KEY = "positions";

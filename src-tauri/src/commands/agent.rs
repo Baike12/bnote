@@ -14,9 +14,11 @@ use std::time::{Duration, Instant};
 use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, State};
 
-/// 网页选中翻译的总开关。页面通过 document.title 发请求,任意页面脚本也能
-/// 伪造同一条 title——这里先按开关硬门控,再对句子请求做 600ms 限频;单词
-/// 只查本地词典,不占 API。
+/// Global switch for selection translation in web pages. The page sends
+/// requests through `document.title`, and any page script can forge the same
+/// title -- so gate hard on this switch first, then rate-limit sentence
+/// requests to one per 600ms; single words only hit the built-in dictionary
+/// and cost no API quota.
 static PREVIEW_TRANSLATE_ENABLED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_TRANSLATE_LAST: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -24,8 +26,9 @@ fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
     state.mcp_manager.lock().ok().and_then(|g| g.clone())
 }
 
-/// 辅助会话的分叉点:从 `from` 会话的历史里取前 `items` 条(前缀,含分叉
-/// 那条消息)作为新会话的初始历史。原会话不动。
+/// Fork point for a helper session: take the first `items` entries of the
+/// `from` session's history (a prefix that includes the forking message) as
+/// the new session's initial history. The source session is left untouched.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentForkSpec {
@@ -33,11 +36,14 @@ pub struct AgentForkSpec {
     pub items: usize,
 }
 
-/// 恢复会话时沿用它自己的模型配置(会话记录第一行的快照)。
+/// A restored session keeps its own model configuration (the snapshot in the
+/// first line of the session record).
 ///
-/// 设置里改了模型/上下文长度后,已保存的会话仍按创建时的配置继续——这是
-/// 用户的明确选择:一个会话的模型不该被之后的设置悄悄换掉。密钥不在快照
-/// 里,始终用当前保存的 api_key(换供应商时用户本来就要改密钥)。
+/// After the model/context length changes in settings, a saved session still
+/// continues with the configuration it was created with -- that is an explicit
+/// user choice: a session's model must not be silently swapped by later
+/// settings. The API key is not part of the snapshot; it always uses the
+/// currently saved `api_key` (switching provider requires a new key anyway).
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentModelChoice {
@@ -54,7 +60,8 @@ pub struct AgentModelChoice {
 }
 
 impl AgentModelChoice {
-    /// 只覆盖快照里真正有值的字段:旧记录缺字段时沿用当前配置。
+    /// Overrides only the fields that actually carry a value in the snapshot:
+    /// older records missing a field fall back to the current configuration.
     fn apply(self, cfg: &mut crate::agent::AgentConfig) {
         if !self.provider.is_empty() {
             cfg.provider = self.provider;
@@ -74,11 +81,13 @@ impl AgentModelChoice {
     }
 }
 
-/// vault 里的自定义指令,类比 ZCode 的 AGENTS.md / Claude Code 的 CLAUDE.md。
+/// Custom instructions stored in the vault, analogous to ZCode's AGENTS.md or
+/// Claude Code's CLAUDE.md.
 ///
-/// 读 `.bnote/AGENTS.md`;旧版文件名 `.bnote/agent.md` 作为回退(不自动改名,
-/// 用户在设置页保存时才会落成 AGENTS.md)。文件不存在 = 空串,提示词里就不
-/// 出现这一节。
+/// Reads `.bnote/AGENTS.md`; the legacy file name `.bnote/agent.md` is the
+/// fallback (no automatic rename -- it only becomes AGENTS.md when the user
+/// saves from the settings page). A missing file yields an empty string, and
+/// the section is then omitted from the prompt.
 fn load_user_instructions(state: &AppState) -> String {
     let dot = state
         .vault()
@@ -94,7 +103,8 @@ fn load_user_instructions(state: &AppState) -> String {
 
 #[tauri::command]
 pub async fn agent_get_config(state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
-    // 与 config.rs 同理：同步命令跑在主线程，IO 一律丢进 worker 池。
+    // Same reasoning as config.rs: a sync command runs on the main thread, so
+    // every IO call goes to the worker pool.
     let dir = state.data_dir();
     tauri::async_runtime::spawn_blocking(move || Ok(crate::agent::AgentConfig::load(&dir)))
         .await
@@ -131,12 +141,15 @@ pub async fn agent_start_session(
     state: State<'_, AppState>,
     study: Option<StudyContent>,
     fork: Option<AgentForkSpec>,
-    // 恢复一条已保存的会话:前端从会话记录 jsonl 还原出的模型侧历史。
-    // 与 `fork` 互斥(恢复/分叉不会同时发生)。
+    // Restore a saved session: the model-side history the frontend rebuilt
+    // from the session record's jsonl.
+    // Mutually exclusive with `fork` (restore and fork never happen together).
     history: Option<Vec<crate::agent::types::ChatItem>>,
-    // 恢复/分叉时沿用源会话的模型配置(见 AgentModelChoice)。
+    // On restore/fork, reuse the source session's model configuration
+    // (see AgentModelChoice).
     model: Option<AgentModelChoice>,
-    // 会话形态:省略 = 学习模式(纯问答);"creative" = 创作模式(工具+skill)。
+    // Session shape: omitted = study mode (plain Q&A); "creative" = creative
+    // mode (tools + skills).
     mode: Option<String>,
 ) -> CmdResult<serde_json::Value> {
     let session_mode = match mode.as_deref() {
@@ -165,9 +178,12 @@ pub async fn agent_start_session(
         cfg.max_tokens,
     ));
 
-    // 分叉:从源会话复制历史前缀(条数以后端在结束事件里给的权威计数为准,
-    // 多了截断,少了就用现有的)。源会话不存在是前端状态过期,如实报错。
-    // 恢复:前端把会话记录还原成 ChatItem,直接作为初始历史。
+    // Fork: copy a history prefix from the source session (the count is
+    // authoritative in the backend's end event -- truncate if too long, use
+    // what exists if too short). A missing source session means the frontend
+    // state is stale, so report it honestly.
+    // Restore: the frontend turns the session record back into ChatItems and
+    // uses them directly as the initial history.
     let seed_items: Vec<crate::agent::types::ChatItem> = match (history, &fork) {
         (Some(items), _) => items,
         (None, None) => Vec::new(),
@@ -223,7 +239,8 @@ pub async fn agent_start_session(
         preview_seq: std::sync::atomic::AtomicU64::new(0),
     });
 
-    // 时间戳 + 递增序号:同一毫秒内开主会话再分叉辅助会话也不会撞 id。
+    // Timestamp + increasing sequence number: opening the main session and
+    // forking a helper session within the same millisecond cannot collide.
     static SESSION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SESSION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let id = format!(
@@ -258,8 +275,10 @@ pub async fn agent_start_session(
         "skills": session.skills.skills,
         "mcpTools": mcp.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
         "mcpErrors": mcp.errors.clone(),
-        // 本会话实际使用的模型配置:前端脚注显示它、会话记录也把它写进
-        // 元数据行,恢复时按快照继续(与设置里的当前配置解耦)。
+        // The model configuration this session actually uses: the frontend
+        // footnote shows it, and the session record writes it into its
+        // metadata line so a restore continues from the snapshot (decoupled
+        // from the current settings).
         "model": {
             "provider": cfg.provider,
             "model": cfg.model,
@@ -270,13 +289,17 @@ pub async fn agent_start_session(
     }))
 }
 
-/// 起标题用的系统提示:只要标题本身,别复述整句、别加符号。
+/// System prompt for titling: only the title itself, no restating the whole
+/// sentence and no extra punctuation.
 const TITLE_SYSTEM_PROMPT: &str = "你在给一段对话起标题。根据用户的第一条消息，给出一个能概括主题的短标题：不超过 14 个汉字（英文不超过 8 个词），不要引号、不要书名号、不要句末标点、不要「标题：」这类前缀，只输出标题本身。";
 
-/// 给会话起标题:用这条会话**自己的**第一句话,让模型起一个短标题。
+/// Titles a session from **its own** first message by asking the model for a
+/// short title.
 ///
-/// 与对话共用模型配置(恢复的会话传它自己的快照);只发一次短请求,不注册
-/// 会话、不进任何会话历史。失败时调用方保留本地截断标题。
+/// Shares the model configuration with the conversation (a restored session
+/// passes its own snapshot); sends one short request only, registers no
+/// session and enters no session history. On failure the caller keeps its
+/// locally truncated title.
 #[tauri::command]
 pub async fn agent_generate_title(
     state: State<'_, AppState>,
@@ -315,7 +338,8 @@ pub async fn agent_generate_title(
     collected.into_inner().map_err(|e| e.to_string())
 }
 
-/// 设置页与输入框 `/` 补全用的技能清单(每次即时发现,反映磁盘现状)。
+/// Skill inventory for the settings page and the input box's `/` completion
+/// (discovered on every call, so it reflects what is actually on disk).
 #[tauri::command]
 pub async fn agent_list_skills(state: State<'_, AppState>) -> CmdResult<Vec<crate::agent::skills::SkillInfo>> {
     let cfg = crate::agent::AgentConfig::load(&state.data_dir());
@@ -333,7 +357,8 @@ pub async fn agent_send(
     state: State<'_, AppState>,
     session_id: String,
     text: String,
-    // 旧调用方(浏览器 harness)不带 images:Option 缺省成空,行为同纯文本。
+    // Older callers (the browser harness) send no images: the absent Option
+    // defaults to empty and behaves like plain text.
     images: Option<Vec<crate::agent::types::InlineImage>>,
 ) -> CmdResult<()> {
     let session = {
@@ -343,9 +368,11 @@ pub async fn agent_send(
             .cloned()
             .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?
     };
-    // 检查与占位必须是一个原子操作:先 load 再在 spawned 任务里置位,中间
-    // 存在窗口,两次发送都能挤进来并发跑同一份会话历史。CAS 之后谁先到谁
-    // 占用,占用由 Session 的 RunningGuard 在结束时释放。
+    // Check and claim must be atomic: loading first and setting the flag
+    // later, inside the spawned task, leaves a window in which two sends
+    // both slip in and run the same session history concurrently. With CAS,
+    // whoever arrives first takes the slot; the slot is released by the
+    // session's RunningGuard when the turn ends.
     if session
         .running
         .compare_exchange(
@@ -362,8 +389,9 @@ pub async fn agent_send(
     tauri::async_runtime::spawn(async move {
         use futures::FutureExt;
         let turn = std::panic::AssertUnwindSafe(session.send(&text, images.unwrap_or_default()));
-        // panic 也必须有终止事件:否则前端永远停在「生成中」,而且后续发送
-        // 会被 SESSION_BUSY 挡掉却只有一个几秒消失的 toast。
+        // A panic must still produce a terminal event: otherwise the frontend
+        // stays stuck on "generating", and later sends are rejected by
+        // SESSION_BUSY with only a toast that disappears after seconds.
         if turn.catch_unwind().await.is_err() {
             session.emit(crate::agent::types::AgentEvent::Error {
                 message: "会话内部错误,本轮已中止(可重试)".into(),
@@ -473,12 +501,14 @@ pub async fn show_study_preview(
         existing
             .show()
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
-        // 脚本已随 webview 创建时注册;这里再装一次,保证当前文档里已经有运行时
-        // (热更新后旧 webview 里的脚本可能是老版本)。
+        // The script was registered when the webview was created; install it
+        // once more so the current document really has the runtime (after a
+        // hot update the script in the old webview may be a stale version).
         if !annotation_script.trim().is_empty() {
             let _ = existing.eval(annotation_script);
         }
-        // 笔形光标:同一个 webview 可能被复用,重新挂一次(幂等)。
+        // Pen cursor: the same webview may be reused, so attach it again
+        // (idempotent).
         let _ = existing.with_webview(|platform| pen_cursor::attach(platform.inner()));
         return Ok(());
     }
@@ -486,8 +516,10 @@ pub async fn show_study_preview(
     let window = app
         .get_window("main")
         .ok_or_else(|| "WEBVIEW_FAILED: 找不到主窗口".to_string())?;
-    // add_child 内部会把构建排到主线程再等结果,所以只能在异步命令里调用
-    // (同步命令/事件回调里调用会死锁,见 tauri 的 WebviewBuilder 文档)。
+    // add_child schedules the build on the main thread and waits for the
+    // result, so it may only be called from an async command (calling it
+    // from a sync command or an event callback deadlocks; see tauri's
+    // WebviewBuilder docs).
     let webview = window
         .add_child(
             tauri::webview::WebviewBuilder::new(
@@ -495,7 +527,8 @@ pub async fn show_study_preview(
                 tauri::WebviewUrl::External(parsed),
             )
             .initialization_script(annotation_script)
-            // 页面加载完通知主窗口:重新套用批注模式,并把仓库里的锚点推回页面。
+            // After the page loads, tell the main window: re-apply the
+            // annotation mode and push the vault's anchors back into the page.
             .on_page_load(|webview, payload| {
                 if payload.event() == PageLoadEvent::Finished {
                     let _ = webview.emit_to(
@@ -505,20 +538,28 @@ pub async fn show_study_preview(
                     );
                 }
             })
-            // 页面里的批注变化写在 document.title 的 `bnote-anno:` 前缀后面。
-            // 不开远程 IPC:任意网页都拿不到应用命令,这条 title 通道只传数据。
-            // 微信读书的路由追踪(`src/study/weread.ts`)复用同一条通道,前缀
-            // `bnote-weread:`,分发成 study-weread-route;不带前缀的 title
-            // (微信读书自己设置的页面标题)一律忽略。
+            // Annotation changes in the page are written behind the
+            // `bnote-anno:` prefix of document.title.
+            // No remote IPC: no web page can reach app commands; this title
+            // channel only carries data.
+            // WeRead's route tracking (`src/study/weread.ts`) reuses the
+            // same channel with the `bnote-weread:` prefix and is dispatched
+            // as study-weread-route; titles without a prefix (the page title
+            // WeRead sets itself) are ignored.
             .on_document_title_changed(|webview, title| {
                 const ANNO_PREFIX: &str = "bnote-anno:";
                 const WEREAD_PREFIX: &str = "bnote-weread:";
-                // 页内按下的阅读区快捷键(切到 Agent / 笔记区)。子 webview 的
-                // 按键不冒泡到主窗口,只能借这条已有的 title 通道转回去。
+                // Reading-region shortcuts pressed inside the page (switch to
+                // the Agent panel / notes region). Keys in a child webview do
+                // not bubble to the main window, so they are forwarded through
+                // this existing title channel.
                 const KEY_PREFIX: &str = "bnote-key:";
-                // 选中翻译:页面只送文本和请求号,翻译在 Rust 里做(单词查内置
-                // 词典,句子走配置的 API),结果再 eval 回页面的卡片。这样网页
-                // 拿不到 API key,也不需要在主窗口和子 webview 之间多绕一圈。
+                // Selection translation: the page only sends the text and a
+                // request id; the translation happens in Rust (single words hit
+                // the built-in dictionary, sentences go through the configured
+                // API) and the result is eval'd back into the page's card. That
+                // way the page never sees the API key and does not need a
+                // detour through the main window and the child webview.
                 const TRANSLATE_PREFIX: &str = "bnote-translate:";
                 if let Some(raw) = title.strip_prefix(TRANSLATE_PREFIX) {
                     let Ok(payload) = serde_json::from_str::<serde_json::Value>(raw) else {
@@ -533,8 +574,10 @@ pub async fn show_study_preview(
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    // 页面每次加载生成一个文档令牌;结果回传时原样带回,导航后
-                    // 旧请求的迟到结果不会画到新页面上。
+                    // The page generates a document token on every load and
+                    // sends it back verbatim with the result, so a late reply
+                    // from before a navigation cannot be painted onto the new
+                    // page.
                     let doc = payload
                         .get("doc")
                         .and_then(serde_json::Value::as_str)
@@ -545,12 +588,15 @@ pub async fn show_study_preview(
                     }
                     let doc_lit =
                         serde_json::to_string(&doc).unwrap_or_else(|_| "\"\"".to_string());
-                    // 开关关着:页面脚本伪造 title 也不能触发查词/翻译。
+                    // Switch off: even a page script forging the title cannot
+                    // trigger a lookup or translation.
                     if !PREVIEW_TRANSLATE_ENABLED.load(Ordering::Relaxed) {
                         return;
                     }
-                    // 句子会走付费 API:600ms 内最多一次;单词只查内置词典,
-                    // 不占额度,快速连续选词照常。
+                    // Sentences go through a paid API: at most one per 600ms;
+                    // single words only hit the built-in dictionary, cost no
+                    // quota, and work normally when selected in quick
+                    // succession.
                     if matches!(
                         crate::translate::classify(&text),
                         crate::translate::SelectionKind::Sentence
@@ -636,7 +682,8 @@ pub async fn show_study_preview(
             bounds.size(),
         )
         .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
-    // 笔形光标挂在原生视图上:页面 CSS 只留原生关键字,真正的笔由这里替换。
+    // The pen cursor lives on the native view: the page CSS only keeps the
+    // native cursor keyword, the real pen is swapped in here.
     let _ = webview.with_webview(|platform| pen_cursor::attach(platform.inner()));
     Ok(())
 }
@@ -661,7 +708,8 @@ pub fn set_study_preview_annotation_mode(
                 arg
             ))
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
-        // 原生笔形跟着工具换图(高亮=黄笔、文字批注=蓝笔);退出批注仍用黄笔。
+        // The native pen follows the tool (highlight = yellow pen, text note =
+        // blue pen); leaving annotation mode still uses the yellow pen.
         pen_cursor::set_mode(mode.as_deref() == Some("note"));
     }
     Ok(())
@@ -691,8 +739,9 @@ pub fn set_study_preview_translate(app: tauri::AppHandle, enabled: bool) -> CmdR
     Ok(())
 }
 
-/// 学习模式翻页：焦点在主窗口时，命令层通过这里把 PageUp/PageDown 转给
-/// 内嵌网页。页内运行时自己探测主滚动容器，并按设置步长滚动。
+/// Study-mode paging: while focus is in the main window, the command layer
+/// forwards PageUp/PageDown to the embedded web page here. The in-page runtime
+/// detects the main scroll container itself and scrolls by the configured step.
 #[tauri::command]
 pub fn scroll_study_preview(app: tauri::AppHandle, delta: i32) -> CmdResult<()> {
     use tauri::Manager;
@@ -710,7 +759,8 @@ pub fn scroll_study_preview(app: tauri::AppHandle, delta: i32) -> CmdResult<()> 
     Ok(())
 }
 
-/// 把翻页步长推给页内运行时（键盘翻页与上半屏渐变共用）。
+/// Pushes the paging step to the in-page runtime (shared by keyboard paging
+/// and the top-half gradient).
 #[tauri::command]
 pub fn set_study_preview_read_step(app: tauri::AppHandle, step: f64) -> CmdResult<()> {
     use tauri::Manager;
@@ -730,10 +780,13 @@ pub fn set_study_preview_read_step(app: tauri::AppHandle, step: f64) -> CmdResul
     Ok(())
 }
 
-/// 把键盘焦点交给内嵌网页(区域切换快捷键「切到阅读区」用)。
+/// Hands keyboard focus to the embedded web page (used by the region-switch
+/// command "switch to reading region").
 ///
-/// 原生子 webview 的焦点不在主窗口的 DOM 里:只 focus 主窗口的占位 div,
-/// 按键仍然进不了网页。这里把原生视图设为焦点,之后按键由页内运行时接管。
+/// The native child webview's focus is not part of the main window's DOM:
+/// focusing only the main window's placeholder div still keeps the keys from
+/// reaching the page. Focusing the native view here hands the keys to the
+/// in-page runtime.
 #[tauri::command]
 pub fn focus_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
     use tauri::Manager;
@@ -745,7 +798,8 @@ pub fn focus_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
     Ok(())
 }
 
-/// 把命令层的翻页绑定推给页内运行时（自定义快捷键在网页里同样生效）。
+/// Pushes the command layer's paging bindings to the in-page runtime (custom
+/// shortcuts work inside the web page too).
 #[tauri::command]
 pub fn set_study_preview_read_keys(
     app: tauri::AppHandle,
@@ -765,10 +819,13 @@ pub fn set_study_preview_read_keys(
     Ok(())
 }
 
-/// 把「转发给主窗口」的阅读区快捷键推给页内运行时。
+/// Pushes the reading-region shortcuts that are "forwarded to the main window"
+/// to the in-page runtime.
 ///
-/// 网页/微信读书跑在原生子 webview 里,按键不会冒泡到主窗口;页内运行时匹配
-/// 这些键后写 document.title,由上面的 title 通道转成 `study-preview-key`。
+/// Web pages and WeRead run in a native child webview, so their keys never
+/// bubble to the main window; the in-page runtime matches these keys, writes
+/// document.title, and the title channel above turns it into
+/// `study-preview-key`.
 #[tauri::command]
 pub fn set_study_preview_shortcuts(
     app: tauri::AppHandle,
@@ -787,12 +844,14 @@ pub fn set_study_preview_shortcuts(
     Ok(())
 }
 
-/// 内嵌网页的页面缩放(浏览器级:文字重排、整页一起放大)。
+/// Page zoom of the embedded web page (browser-level: text reflows and the
+/// whole page scales).
 ///
-/// 缩放值只在主窗口的设置里持有(单一写入者);这里把它转成原生视图的页面
-/// 缩放:macOS 是 `WKWebView.pageZoom`,Windows 是 WebView2 的
-/// `SetZoomFactor`——两者都挂在视图上,同一次 webview 里导航不会清零。
-/// 范围在前端夹过,这里再兜一次底。
+/// The zoom value is owned only by the main window's settings (single
+/// writer); here it is translated into the native view's page zoom: on macOS
+/// `WKWebView.pageZoom`, on Windows WebView2's `SetZoomFactor` -- both live
+/// on the view, so navigating within the same webview does not reset it.
+/// The frontend already clamps the range; this clamps it again as a backstop.
 #[tauri::command]
 pub fn set_study_preview_zoom(app: tauri::AppHandle, zoom: f64) -> CmdResult<()> {
     use tauri::Manager;
@@ -838,7 +897,8 @@ pub fn set_study_preview_bounds(app: tauri::AppHandle, bounds: PreviewBounds) ->
         webview
             .set_bounds(bounds.rect())
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
-        // 原生视图换位置了:笔形光标缓存的屏幕矩形跟着重算。
+        // The native view moved: the pen cursor's cached screen rectangle
+        // has to be recomputed.
         pen_cursor::refresh();
     }
     Ok(())
@@ -852,7 +912,8 @@ pub fn set_study_preview_visible(app: tauri::AppHandle, visible: bool) -> CmdRes
     if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
         let result = if visible { webview.show() } else { webview.hide() };
         result.map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
-        // 刚显示回来时鼠标可能正停着不动:立刻补一次笔形,不等下一次移动。
+        // Right after showing it again the mouse may not be moving, so draw
+        // the pen once immediately instead of waiting for the next move.
         if visible {
             pen_cursor::refresh();
         }
@@ -864,7 +925,8 @@ pub fn set_study_preview_visible(app: tauri::AppHandle, visible: bool) -> CmdRes
 #[tauri::command]
 pub fn close_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
     use tauri::Manager;
-    // 预览没了,网页侧的翻译通道也随之关闭;残留的 title 不再触发请求。
+    // With the preview gone, the page-side translation channel closes too;
+    // leftover titles no longer trigger requests.
     PREVIEW_TRANSLATE_ENABLED.store(false, Ordering::Relaxed);
     if let Ok(mut slot) = PREVIEW_TRANSLATE_LAST.lock() {
         *slot = None;
@@ -874,14 +936,16 @@ pub fn close_study_preview(app: tauri::AppHandle) -> CmdResult<()> {
             .close()
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
     }
-    // 视图没了:撤掉笔形接管,主窗口自己的光标规则立刻生效。
+    // With the view gone: drop the pen takeover, so the main window's own
+    // cursor rules take effect immediately.
     pen_cursor::detach();
     Ok(())
 }
 
-/// Label of the creation-mode live preview (agent-generated HTML) embedded
-/// in the middle column. 与 study-preview 同一套「占位矩形 + 原生子 webview」
-/// 协作模型;二者互斥出现(创作模式与学习模式是面板的不同状态)。
+/// Label of the creative-mode live preview (agent-generated HTML) embedded
+/// in the middle column. Same cooperation model as study-preview ("placeholder
+/// rectangle + native child webview"); the two are mutually exclusive
+/// (creative mode and study mode are different states of the panel).
 const CREATIVE_PREVIEW_LABEL: &str = "creative-preview";
 
 fn parse_preview_file_url(url: &str) -> Result<tauri::Url, String> {
@@ -892,9 +956,9 @@ fn parse_preview_file_url(url: &str) -> Result<tauri::Url, String> {
     Ok(parsed)
 }
 
-/// Shows (creating if needed) the creation-mode preview on the middle column.
-/// 由 `creative-preview-updated` 事件驱动:每次 preview_html 落一个新的带版本
-/// 快照,前端换 URL 触发重载。
+/// Shows (creating if needed) the creative-mode preview on the middle column.
+/// Driven by the `creative-preview-updated` event: every preview_html write
+/// lands a new versioned snapshot, and the frontend swaps the URL to reload.
 #[tauri::command]
 pub async fn show_creative_preview(
     app: tauri::AppHandle,
@@ -917,16 +981,19 @@ pub async fn show_creative_preview(
     let window = app
         .get_window("main")
         .ok_or_else(|| "WEBVIEW_FAILED: 找不到主窗口".to_string())?;
-    // add_child 必须在异步命令里调用(内部会排到主线程并等待,同步命令里
-    // 调用会死锁,与 show_study_preview 同一约束)。
+    // add_child must be called from an async command (it schedules onto the
+    // main thread and waits; calling it from a sync command deadlocks --
+    // same constraint as show_study_preview).
     window
         .add_child(
             tauri::webview::WebviewBuilder::new(
                 CREATIVE_PREVIEW_LABEL,
                 tauri::WebviewUrl::External(parsed),
             )
-            // 每一版快照加载完就截一张图给 agent 的 preview_html(按版本号
-            // 取回,见下面截图注册表);不是快照页的导航(重定向等)不截。
+            // Once a snapshot finishes loading, take a screenshot for the
+            // agent's preview_html (fetched by version number, see the
+            // screenshot registry below); navigations that are not snapshot
+            // pages (redirects and the like) are not captured.
             .on_page_load(|webview, payload| {
                 if payload.event() != PageLoadEvent::Finished {
                     return;
@@ -978,11 +1045,12 @@ pub fn close_creative_preview(app: tauri::AppHandle) -> CmdResult<()> {
     Ok(())
 }
 
-// ---------- 创作预览截图:preview_html 把渲染图回给模型 ----------
+// ---------- Creative-mode preview screenshots: preview_html returns the render ----------
 
-/// 已拍好的预览截图,按快照版本号索引。写入方只有预览 webview 的
-/// on_page_load(主线程),读取方只有 preview_html(等自己那一版)。
-/// 上限 8 张:旧版本不会再有等待方,挤掉最老的防内存增长。
+/// Captured preview screenshots, indexed by snapshot version. The only writer
+/// is the preview webview's on_page_load (main thread); the only reader is
+/// preview_html (waiting for its own version). Capped at 8: an older version
+/// has no waiter left, so evicting the oldest keeps memory from growing.
 static PREVIEW_SHOTS: std::sync::LazyLock<
     Mutex<std::collections::HashMap<u64, Vec<u8>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
@@ -999,8 +1067,10 @@ fn store_preview_shot(version: u64, png: Vec<u8>) {
     PREVIEW_SHOT_NOTIFY.notify_one();
 }
 
-/// preview_html 落盘后等自己那个版本的截图。先注册 notified 再查表:
-/// notify_one 在无等待者时会存许可,查表与等待之间没有竞态窗口。
+/// Waits for its own version's screenshot after preview_html has been written.
+/// Registers the waiter before checking the table: notify_one stores a permit
+/// when there is no waiter, so there is no race window between the table
+/// lookup and the wait.
 pub(crate) async fn wait_preview_shot(version: u64, timeout: Duration) -> Option<Vec<u8>> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
@@ -1014,8 +1084,8 @@ pub(crate) async fn wait_preview_shot(version: u64, timeout: Duration) -> Option
     }
 }
 
-/// 快照文件名 `preview-{version}.html` → 版本号;其他 URL(用户自己的页面、
-/// 重定向)返回 None,不截图。
+/// Snapshot file name `preview-{version}.html` -> version number; any other
+/// URL (the user's own pages, redirects) returns None and is not captured.
 fn preview_version_from_url(url: &str) -> Option<u64> {
     let path = url.split(['?', '#']).next()?;
     let name = path.rsplit('/').next()?;
@@ -1026,11 +1096,15 @@ fn preview_version_from_url(url: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// on_page_load(主线程)里发起截图。macOS:延后 250ms 等首帧样式与图片
-/// 铺完,再回主线程对 WKWebView takeSnapshot,编码成 PNG 交给等待方。
-/// 延时用「线程 sleep + run_on_main_thread」而不是 dispatch_after:后者
-/// 的闭包要跨线程携带 WKWebView 指针(非 Send);这里指针只在主线程闭包
-/// 内取出和使用。其他平台暂无实现,preview_html 得到「无截图」的纯文本降级。
+/// Starts the capture from on_page_load (main thread). On macOS: delay 250ms
+/// for the first frame's styles and images to settle, then return to the main
+/// thread and takeSnapshot the WKWebView, encoding it as PNG for the waiter.
+/// The delay uses "thread sleep + run_on_main_thread" instead of
+/// dispatch_after: the latter's closure would have to carry the WKWebView
+/// pointer across threads (not Send), whereas here the pointer is only
+/// obtained and used inside the main-thread closure. Other platforms have no
+/// implementation yet, so preview_html falls back to plain text without a
+/// screenshot.
 fn capture_preview_shot<R: tauri::Runtime>(webview: &tauri::Webview<R>, version: u64) {
     #[cfg(target_os = "macos")]
     {
@@ -1041,7 +1115,8 @@ fn capture_preview_shot<R: tauri::Runtime>(webview: &tauri::Webview<R>, version:
             let app2 = app.clone();
             let on_main = move || {
                 use tauri::Manager;
-                // 预览已关:这一版不截图,等待方按超时降级为纯文本。
+                // The preview is closed: no screenshot for this version, and
+                // the waiter falls back to plain text on timeout.
                 let Some(webview) = app2.get_webview(CREATIVE_PREVIEW_LABEL) else {
                     return;
                 };
@@ -1059,8 +1134,10 @@ fn capture_preview_shot<R: tauri::Runtime>(webview: &tauri::Webview<R>, version:
     }
 }
 
-/// takeSnapshot:可见视口按 1x(逻辑点)输出,模型侧 token 开销减半且够读。
-/// 只在主线程调用;指针由原 webview 持有,这里只借。
+/// takeSnapshot: the visible viewport is output at 1x (logical points),
+/// halving the token cost on the model side while staying readable.
+/// Main-thread only; the pointer is owned by the original webview and only
+/// borrowed here.
 #[cfg(target_os = "macos")]
 unsafe fn capture_wkwebview_png(wk: *mut objc2_web_kit::WKWebView, version: u64) {
     use objc2::rc::{autoreleasepool, Retained};
@@ -1076,15 +1153,17 @@ unsafe fn capture_wkwebview_png(wk: *mut objc2_web_kit::WKWebView, version: u64)
         return;
     };
     let config = unsafe { WKSnapshotConfiguration::new(mtm) };
-    // snapshotWidth 是逻辑点宽度:设成视图宽度即 1x 输出(不设则是 Retina 2x)。
+    // snapshotWidth is the logical point width: setting it to the view width
+    // yields a 1x output (unset would give a Retina 2x).
     unsafe { config.setSnapshotWidth(Some(&NSNumber::new_f64(webview.bounds().size.width))) };
     let block = block2::RcBlock::new(move |image: *mut objc2_app_kit::NSImage, _error: *mut NSError| {
         let Some(image) = (unsafe { Retained::retain(image) }) else {
             return;
         };
         autoreleasepool(|_| {
-            // NSImage → TIFF → 位图表示 → PNG 数据。三步都是 Option:任何
-            // 一步拿不到就放弃这一版截图,preview_html 按超时降级。
+            // NSImage -> TIFF -> bitmap representation -> PNG data. All three
+            // steps are Options: if any step fails, this version's screenshot
+            // is dropped and preview_html falls back on timeout.
             let Some(tiff) = image.TIFFRepresentation() else { return };
             let Some(rep) = NSBitmapImageRep::imageRepWithData(&tiff) else { return };
             let Some(png) = (unsafe {
@@ -1146,8 +1225,9 @@ mod tests {
     use super::*;
     use crate::agent::AgentConfig;
 
-    /// 恢复会话时按快照覆盖:有值的字段才覆盖,空字段沿用当前设置
-    /// (旧记录缺字段时不能让模型变成空串)。
+    /// Restoring a session overrides from the snapshot: only fields with a
+    /// value are overridden, empty fields keep the current settings (an old
+    /// record missing a field must not leave the model as an empty string).
     #[test]
     fn 会话模型快照只覆盖有值的字段() {
         let mut cfg = AgentConfig {
@@ -1173,7 +1253,8 @@ mod tests {
         assert_eq!(cfg.base_url, "https://old.example");
         assert_eq!(cfg.max_tokens, 8192);
         assert_eq!(cfg.context_window, 200_000);
-        // 密钥永远用当前保存的,不写进会话记录。
+        // The key always comes from the current config and is never written
+        // into the session record.
         assert_eq!(cfg.api_key, "sk-current");
 
         AgentModelChoice::default().apply(&mut cfg);
@@ -1190,7 +1271,8 @@ mod tests {
             preview_version_from_url("file:///tmp/creative-preview/preview-12.html?a=1#f"),
             Some(12)
         );
-        // 用户自己的页面、目录、非数字版本、相邻命名都不截
+        // The user's own pages, directories, non-numeric versions and
+        // neighbouring names are not captured
         assert_eq!(preview_version_from_url("file:///tmp/page.html"), None);
         assert_eq!(
             preview_version_from_url("file:///tmp/preview-x.html"),
@@ -1208,12 +1290,13 @@ mod tests {
 
     #[tokio::test]
     async fn 预览截图按版本号存取_等待先注册再查表() {
-        // 没有截图时按超时返回 None(用短超时,不让测试拖 4 秒)
+        // With no screenshot stored, the timeout returns None (a short timeout
+        // keeps the test from dragging on for 4 seconds)
         assert!(
             wait_preview_shot(987_654, Duration::from_millis(50)).await.is_none(),
             "未存的版本必须等不到"
         );
-        // 存进去之后,等待方立刻拿到该版本
+        // Once stored, the waiter gets that version immediately
         store_preview_shot(987_655, b"fake-png".to_vec());
         let shot = wait_preview_shot(987_655, Duration::from_secs(1)).await;
         assert_eq!(shot.as_deref(), Some(b"fake-png".as_slice()));

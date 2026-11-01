@@ -4,15 +4,16 @@ import { buildSwitcherResults } from "@/lib/switcher";
 import type { SkillInfo } from "@/lib/tauri";
 
 export interface SuggestItem {
-  /** 插入文本(触发词的完整形态,如 /html-blog 或 @notes/a.md)。 */
+  /** Text inserted on pick (the full form of the trigger, e.g. /html-blog or @notes/a.md). */
   insert: string;
   title: string;
   subtitle?: string;
 }
 
 /**
- * 输入框补全候选:/ 按名称与描述匹配技能,@ 复用快速切换器的搜索
- * (最近打开优先 + 文件名/路径模糊,见 buildSwitcherResults)。
+ * Completion candidates for the input box: "/" matches skills by name and
+ * description, "@" reuses the quick switcher's search (recently opened first,
+ * fuzzy on file name / path, see buildSwitcherResults).
  */
 export function buildSuggestItems(input: {
   trigger: { kind: "skill" | "file"; query: string } | null;
@@ -32,7 +33,7 @@ export function buildSuggestItems(input: {
         s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
       );
     });
-    // 前缀命中的排前面,其余按名称稳定排序
+    // Prefix matches first, the rest sorted stably by name
     matched.sort((a, b) => {
       const ap = a.name.toLowerCase().startsWith(q) ? 0 : 1;
       const bp = b.name.toLowerCase().startsWith(q) ? 0 : 1;
@@ -59,7 +60,7 @@ export function buildSuggestItems(input: {
   }));
 }
 
-/** 补全弹层:展示候选,键盘导航在 textarea 的 onKeyDown 里处理。 */
+/** Completion overlay: shows the candidates, keyboard navigation is handled in the textarea's onKeyDown. */
 export function AgentSuggest({
   kind,
   items,
@@ -88,7 +89,7 @@ export function AgentSuggest({
           className={`agent-suggest-item${i === activeIndex ? " is-active" : ""}`}
           onMouseEnter={() => onHover(i)}
           onMouseDown={(e) => {
-            // mousedown 而不是 click:先于 textarea 的 blur,否则弹层先消失。
+            // mousedown instead of click: it fires before the textarea's blur, otherwise the overlay is already gone.
             e.preventDefault();
             onPick(item);
           }}

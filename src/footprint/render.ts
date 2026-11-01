@@ -5,18 +5,25 @@ import { scanMath } from "@/editor/mathScan";
 import { renderMathHtml } from "@/editor/widgets";
 
 /**
- * 足迹块的 markdown 渲染:目标是在日记里看到的和原文一样——同一棵 lezer
- * 解析树、同一套编辑器类名(md-heading、md-h 系列、md-list-line、li-i 系列、
- * md-bullet、md-quote、md-code-line、md-strong)、同一个公式扫描器(scanMath)
- * 与 KaTeX 入口。足迹块挂在 .cm-content 里,这些类名的样式自动生效,不需要复制。
+ * Markdown rendering of a footprint block: the goal is that what you see in the
+ * daily note looks exactly like the source - the same lezer parse tree, the same
+ * set of editor class names (md-heading, the md-h series, md-list-line, the li-i
+ * series, md-bullet, md-quote, md-code-line, md-strong), the same formula scanner
+ * (scanMath) and the same KaTeX entry point. The footprint blocks live inside
+ * .cm-content, so the styles of these class names apply automatically and nothing
+ * has to be copied.
  *
- * 结构逐行产出(每行一个 .footprint-line),与编辑器的行装饰模型对齐:列表
- * 悬挂缩进靠 li-i 系列 + li-b/li-t/li-o 几何类复现,折行对齐和原文一致。
- * 块内是只读引用——待办、图片、外链这些「点了会走编辑语义」的东西只做
- * 静态展示(待办块在 diff 层已整块排除,走不到这里,Task 分支只是兜底),
- * 点击整块跳源文件。
+ * The structure is produced line by line (one .footprint-line per line), aligned
+ * with the line decoration model of the editor: the hanging indent of a list is
+ * reproduced by the li-i series plus the li-b/li-t/li-o geometry classes, so the
+ * wrapping aligns with the source.
+ * Inside the block it is a read only quote - todos, images and external links,
+ * the things that would trigger editing semantics on a click, are only shown
+ * statically (blocks with todos are already excluded as a whole at the diff layer
+ * and never reach here, the Task branch is only a fallback), clicking the block
+ * jumps to the source file.
  *
- * 纯函数,零 IO;结构契约在 render.test.ts 锁死。
+ * Pure function, zero IO; the structural contract is locked down in render.test.ts.
  */
 
 function escapeHtml(s: string): string {
@@ -27,7 +34,7 @@ function escapeHtml(s: string): string {
     .replaceAll('"', "&quot;");
 }
 
-/** 行内不可再拆的 span(公式/wikilink):整段替换,lezer 子树不进。 */
+/** A span that cannot be split further inline (formula / wikilink): it replaces the whole range, the lezer subtree does not enter it. */
 interface AtomicSpan {
   from: number;
   to: number;
@@ -36,7 +43,7 @@ interface AtomicSpan {
 
 const WIKI_LINK_RE = /\[\[([^\[\]\n]+?)\]\]/g;
 
-/** 递归渲染时跳过的 mark 节点(不产输出,位置照常推进)。 */
+/** Mark nodes that the recursive rendering skips (they produce no output, the position still advances). */
 const MARK_NODES = new Set([
   "HeaderMark",
   "QuoteMark",
@@ -52,8 +59,9 @@ export function renderBlockHtml(text: string): string {
   const lines = text.split("\n");
   if (lines.every((l) => l.trim() === "")) return "";
 
-  // 公式区域用编辑器同一个扫描器:块级配对、`\$` 转义、「$5 和 $10」不当公式,
-  // 判定和原文完全一致。
+  // The formula regions use the same scanner as the editor: block level pairing,
+  // the `\$` escape and "$5 and $10" not being a formula, so the decision is
+  // exactly the same as in the source.
   const regions = scanMath(Text.of(lines));
   const lineStarts: number[] = [];
   for (let i = 0, off = 0; i < lines.length; i++) {
@@ -67,20 +75,23 @@ export function renderBlockHtml(text: string): string {
   };
   const lineBounds = (n: number) => ({ from: lineStarts[n], to: lineStarts[n] + lines[n].length });
 
-  // 多行 $$ 块:整段行从 markdown 流里摘出来,渲染成一个居中公式块;
-  // 后续行在最终拼装时跳过(不是空行,是已并入公式)。
+  // Multi line $$ block: the whole range of lines is taken out of the markdown
+  // stream and rendered as one centered formula block; the later lines are skipped
+  // during the final assembly (they are not blank lines, they are already part of
+  // the formula).
   const mathBlockAt = new Map<number, string>();
   const claimed = new Set<number>();
   for (const r of regions) {
     if (!r.display) continue;
     const a = lineOf(r.from);
     const b = lineOf(Math.max(r.from, r.to - 1));
-    if (b <= a) continue; // 单行 $$…$$ 走行内
+    if (b <= a) continue; // a single line $$...$$ stays inline
     mathBlockAt.set(a, `<div class="cw-math cw-math-block">${renderMathHtml(r.content, true)}</div>`);
     for (let n = a; n <= b; n++) claimed.add(n);
   }
 
-  // 行内原子:行内公式 + 单行 $$…$$ + wikilink(wikilink 编辑器同样不靠语法树认)。
+  // Inline atomics: inline formulas, single line $$...$$ and wikilinks (the editor
+  // recognizes wikilinks without the syntax tree as well).
   const atomics: AtomicSpan[] = [];
   for (const r of regions) {
     if (r.display && lineOf(Math.max(r.from, r.to - 1)) > lineOf(r.from)) continue;
@@ -104,9 +115,9 @@ export function renderBlockHtml(text: string): string {
   }
   atomics.sort((a, b) => a.from - b.from);
 
-  // ---------------- 行内:先按原子切片,片段内走 lezer 子树 ----------------
+  // ---------------- inline: slice by atomics first, walk the lezer subtree inside a slice ----------------
 
-  /** [from,to) = 原子切片 + markdown 子树,保证公式/wikilink 整段出现。 */
+  /** [from,to) = atomic slice plus markdown subtree, so a formula or wikilink appears as a whole. */
   function emitRange(node: SyntaxNode, from: number, to: number): string {
     let html = "";
     let pos = from;
@@ -115,7 +126,8 @@ export function renderBlockHtml(text: string): string {
       if (a.from >= to) break;
       if (a.from > pos) html += emitMd(node, pos, Math.min(a.from, to));
       if (a.from < pos) {
-        // 与已 emission 相交(嵌套在 emphasis 里等):原样保真不再拆。
+        // It intersects an already emitted range (nested in an emphasis and the
+        // like): keep it verbatim instead of splitting it further.
         const end = Math.min(a.to, to);
         if (end > pos) html += escapeHtml(text.slice(pos, end));
         pos = end;
@@ -135,7 +147,8 @@ export function renderBlockHtml(text: string): string {
       if (child.to <= from || child.from >= to) continue;
       if (child.from > pos) html += escapeHtml(text.slice(pos, Math.min(child.from, to)));
       if (child.to > to) {
-        // 被切片边界切开的孩子(原子邻座):原样保真。
+        // The child is cut by the slice boundary (next to an atomic): keep it
+        // verbatim.
         html += escapeHtml(text.slice(Math.max(child.from, pos), to));
         pos = to;
         break;
@@ -172,8 +185,9 @@ export function renderBlockHtml(text: string): string {
     if (name === "URL" || name === "Autolink")
       return `<span class="md-url">${escapeHtml(text.slice(node.from, node.to))}</span>`;
     if (name === "Link") {
-      // 编辑器同款:标签蓝色下划线,URL 淡色;括号(LinkMark)不出现。
-      // 标签文本不是 lezer 节点,取首对 LinkMark 之间的原文。
+      // Same as in the editor: the label is blue and underlined, the URL is faint,
+      // the parentheses (LinkMark) do not appear. The label text is no lezer node,
+      // so the source between the first pair of LinkMark is taken.
       const marks: SyntaxNode[] = [];
       let url = "";
       for (let c = node.firstChild; c; c = c.nextSibling) {
@@ -188,7 +202,8 @@ export function renderBlockHtml(text: string): string {
       return `<span class="md-link">${label}</span><span class="md-url">${url}</span>`;
     }
     if (name === "Image") {
-      // 只读引用不嵌图:alt 淡色示意,点击整块回源文件看原图。
+      // A read only quote embeds no image: the alt text is shown in a faint style,
+      // clicking the block goes back to the source file to see the image.
       const marks: SyntaxNode[] = [];
       for (let c = node.firstChild; c; c = c.nextSibling) {
         if (c.name === "LinkMark") marks.push(c);
@@ -196,13 +211,15 @@ export function renderBlockHtml(text: string): string {
       const alt = marks.length >= 2 ? text.slice(marks[0].to, marks[1].from).trim() : "";
       return `<span class="md-url">${escapeHtml(alt || "图")}</span>`;
     }
-    // 未知节点:原样保真(宁可显示源码,不吞内容)。
+    // Unknown node: keep it verbatim (showing the source is better than dropping
+    // content).
     return escapeHtml(text.slice(node.from, node.to));
   }
 
-  // ---------------- 块级:树行走,每行 html 落到 out[行号] ----------------
-  // out 值:null = 空行(渲染成小间隔);"" = 该行不产输出(围栏行等);
-  // 其余为该行的 div html。
+  // ---------------- block level: walk the tree, the html of every line lands in out[line number] ----------------
+  // The values of out: null = a blank line (rendered as a small gap); "" = the line
+  // produces no output (fence lines and the like); anything else is the div html of
+  // that line.
 
   const out: (string | null)[] = new Array(lines.length).fill(null);
 
@@ -273,16 +290,18 @@ export function renderBlockHtml(text: string): string {
       out[lineOf(node.from)] = `<div class="fp-hr"><hr></div>`;
       return;
     }
-    // Paragraph / SetextHeading / 其他未知块:逐行段落渲染(未知块保真为源码)。
+    // Paragraph / SetextHeading / other unknown blocks: render them line by line as
+    // paragraphs (an unknown block is kept verbatim as source).
     const a = lineOf(node.from);
     const b = lineOf(Math.max(node.from, node.to - 1));
     for (let n = a; n <= b; n++) {
-      if (claimed.has(n)) continue; // 该行已并入块级公式
+      if (claimed.has(n)) continue; // the line is already part of a block level formula
       const bounds = lineBounds(n);
-      // 行范围裁到节点内:引用首行的 `>` 是 Blockquote 的孩子,不在段落里。
+      // The line range is clipped to the node: the `>` of the first line of a quote
+      // is a child of the Blockquote and not part of the paragraph.
       const from = Math.max(bounds.from, node.from);
       const to = Math.min(bounds.to, node.to);
-      if (lines[n].trim() === "") continue; // 空行保持 gap
+      if (lines[n].trim() === "") continue; // a blank line keeps the gap
       if (to <= from) continue;
       paragraphLine(quoteCls, emitRange(node, from, to), n);
     }
@@ -311,7 +330,8 @@ export function renderBlockHtml(text: string): string {
         emitBlock(c, false);
         continue;
       }
-      // Paragraph / Task / 其他:该内容的每一行都是列表行,几何同款。
+      // Paragraph / Task / others: every line of that content is a list line, with
+      // the same geometry.
       const a = lineOf(c.from);
       const b = lineOf(Math.max(c.from, c.to - 1));
       for (let n = a; n <= b; n++) {
@@ -323,7 +343,7 @@ export function renderBlockHtml(text: string): string {
         if (n === markLine) {
           if (kind === "li-b") {
             marker = `<span class="md-bullet"></span>`;
-            contentFrom = mark.to; // 编辑器同款:吞掉标记后的空白
+            contentFrom = mark.to; // same as the editor: the whitespace after the marker is swallowed
             while (contentFrom < lineTo && text[contentFrom] === " ") contentFrom++;
           } else if (kind === "li-t" && taskMarker) {
             marker = `<span class="md-task${text[taskMarker.from + 1] === "x" || text[taskMarker.from + 1] === "X" ? " checked" : ""}"></span>`;
@@ -331,7 +351,7 @@ export function renderBlockHtml(text: string): string {
             while (contentFrom < lineTo && text[contentFrom] === " ") contentFrom++;
           } else {
             marker = `<span class="md-listmark">${escapeHtml(markText)}</span>`;
-            contentFrom = mark.to; // 有序列表:保留标记后的原文间隙
+            contentFrom = mark.to; // ordered list: the original gap after the marker is kept
           }
         }
         emitListLine(cls, marker, c, contentFrom, lineTo, n);
@@ -343,7 +363,7 @@ export function renderBlockHtml(text: string): string {
     emitBlock(c, false);
   }
 
-  // ---------------- 拼装 ----------------
+  // ---------------- assembly ----------------
   let html = "";
   for (let n = 0; n < lines.length; n++) {
     if (claimed.has(n)) {

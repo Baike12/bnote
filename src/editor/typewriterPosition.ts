@@ -1,17 +1,21 @@
 /**
- * 打字机模式的光标纵向位置模型。
+ * Vertical position model of the caret in typewriter mode.
  *
- * `position` 是光标行中心落在视口高度的比例：0.5 = 垂直居中，小于 0.5 靠上
- * （下方留出更多还没读的内容），大于 0.5 靠下。滚动容器的上下留白由同一个
- * 比例推出来（上 p、下 1-p），首行与末行才都能停在这个高度——只留上边距的话，
- * 末行永远停在底部，「靠上」就只在文档中段可见。
+ * `position` is the ratio of the viewport height where the caret line's centre
+ * sits: 0.5 = vertically centred, below 0.5 sits higher (leaving more unread
+ * content below), above 0.5 sits lower. The scroll container's top and bottom
+ * padding are derived from that same ratio (top p, bottom 1-p), so that both
+ * the first and the last line can stop at that height — with top padding only,
+ * the last line always rests at the bottom and "sitting high" is only visible
+ * in the middle of a document.
  */
 
 export const DEFAULT_TYPEWRITER_POSITION = 0.5;
 export const MIN_TYPEWRITER_POSITION = 0.2;
 export const MAX_TYPEWRITER_POSITION = 0.8;
 
-/** 设置值可能是旧配置 / 手改 JSON：夹进 [20%, 80%]，按 1% 取整。 */
+/** The setting may come from an old config or a hand-edited JSON file: clamp it
+ *  into [20%, 80%] and round to 1%. */
 export function normalizeTypewriterPosition(value: unknown): number {
   const raw =
     typeof value === "number" && Number.isFinite(value)
@@ -24,13 +28,18 @@ export function normalizeTypewriterPosition(value: unknown): number {
 }
 
 /**
- * 滚动容器的上下留白（px）。光标行中心要落在 `position` 高度上，留白就要
- * 扣掉半行行高：首行中心 = 上留白 + 半行；末行中心 = 视口高 - 下留白 - 半行，
- * 两处都恰好等于 `position × 视口高`。
+ * Top and bottom padding of the scroll container (px). For the caret line's
+ * centre to land at `position` of the height, the padding has to subtract half
+ * a line height: first line centre = top padding + half a line; last line
+ * centre = viewport height - bottom padding - half a line; both then equal
+ * `position × viewport height` exactly.
  *
- * `reserveTop = false` 时上留白为 0：**第一行始终钉在顶部**，光标行在上面
- * 几屏时不再为了居中把首行拉下来，而是让光标自己在屏幕上往上走（代码区用；
- * 笔记正文仍留上白，首行也能停在设定高度）。下留白照旧，末行仍能停到目标高度。
+ * With `reserveTop = false` the top padding is 0: **the first line stays pinned
+ * to the top**, so when the caret line is a few screens up it no longer drags
+ * the first line down to centre it — the caret instead walks up the screen on
+ * its own (used by the code pane; note bodies keep the top padding, so their
+ * first line can still stop at the configured height). The bottom padding is
+ * unchanged, so the last line still reaches the target height.
  */
 export function typewriterReserve(
   clientHeight: number,
@@ -47,7 +56,8 @@ export function typewriterReserve(
   };
 }
 
-/** 把光标行中心推到目标高度所需的 scrollTop 增量（正值向下滚）。 */
+/** scrollTop delta needed to push the caret line's centre to the target height
+ *  (positive scrolls down). */
 export function typewriterScrollDelta(
   caretCenter: number,
   clientHeight: number,

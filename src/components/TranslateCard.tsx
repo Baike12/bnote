@@ -2,11 +2,13 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { DictEntry } from "@/lib/tauri";
 
 /**
- * 选中翻译的浮层卡片(PDF 正文用)。
+ * Overlay card for the selection translation (used in the PDF body).
  *
- * 单词/句子的分流在 Rust 完成,这里只渲染四种结果。卡片用 fixed 定位在
- * 选区附近,并夹在视口内;不抢焦点、不改变原生选区。网页正文的同款卡片由
- * 注入运行时在页面自己的 shadow DOM 里画(见 webAnnotations.ts)。
+ * The word/sentence split happens in Rust, this component only renders the
+ * four outcomes. The card is positioned fixed near the selection and clamped
+ * into the viewport; it takes no focus and does not change the native
+ * selection. The same card for web page bodies is drawn by the injected
+ * runtime in the page's own shadow DOM (see webAnnotations.ts).
  */
 export type TranslateCardState =
   | { id: number; status: "loading"; text: string; x: number; y: number }
@@ -41,9 +43,12 @@ export function TranslateCard({
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: state.x, top: state.y });
 
-  // 量一次实际高度/宽度再夹进视口:下方放不下就翻到选区上方,窄栏时用
-  // 量出来的实际宽度(不是常量)算左右边界。选区坐标是 mouseup 的 client
-  // 坐标,不随滚动变化——滚动时父组件直接关卡片。
+  // Measure the real height/width once and clamp it into the viewport: flip
+  // above the selection when it does not fit below, and compute the
+  // horizontal bounds from the measured width (not a constant) in a narrow
+  // column. The selection coordinates are the client coordinates of the
+  // mouseup and do not follow a scroll, so the parent closes the card when
+  // the page scrolls.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -66,7 +71,7 @@ export function TranslateCard({
       ref={ref}
       style={{ left: pos.left, top: pos.top }}
       onMouseDown={(e) => {
-        // 不让卡片的点击冒泡成新的正文手势;卡片里的译文仍可正常选中复制。
+        // Do not let a click on the card bubble up as a new gesture on the body text; the translation inside the card can still be selected and copied as usual.
         e.stopPropagation();
       }}
       onMouseUp={(e) => e.stopPropagation()}

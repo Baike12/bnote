@@ -3,16 +3,21 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * 主题体系门禁：bnote 的颜色唯一来源是 global.css 的 CSS 变量（:root = dark，
- * [data-theme="light"] 整套覆盖）。这里锁四件事：
+ * Theme gate: the only source of color in bnote is the CSS variables in
+ * global.css (:root = dark theme, [data-theme="light"] overrides the whole
+ * set). Four rules are locked here:
  *
- * 1. light 必须覆盖 dark 的每一个主题变量——新增颜色只给 dark 一套会挂；
- * 2. 规则体内不许出现裸 hex/rgba——颜色字面量只许活在变量定义里，否则
- *    light 模式下那一处永远停在 dark 配色（回归过：搜索高亮、行内代码）；
- * 3. HighlightStyle（markdown.ts）的每个 color 都走 var()——语法高亮跟随主题
- *    靠它，写死 hex 会静默退回单主题；
- * 4. 应用接线：applySettingsToEditor 是 data-theme 的唯一写入者并镜像
- *    localStorage（theme-boot.js 启动防闪读同一个 key）。
+ * 1. The light theme must override every dark theme variable - a new color
+ *    that only exists for the dark theme fails the gate;
+ * 2. No bare hex/rgba in rule bodies - color literals may only live in
+ *    variable definitions, otherwise that one spot stays on the dark palette
+ *    in light mode (regressed before: search highlight, inline code);
+ * 3. Every HighlightStyle (markdown.ts) color goes through var() - that is
+ *    how syntax highlighting follows the theme, a hardcoded hex silently
+ *    falls back to a single theme;
+ * 4. Application wiring: applySettingsToEditor is the only writer of
+ *    data-theme and mirrors localStorage (theme-boot.js reads the same key
+ *    to prevent the startup flash).
  */
 
 const readSrc = (rel: string): string => readFileSync(rel, "utf8");
@@ -23,7 +28,7 @@ const actionsTs = readSrc("src/app/actions.ts");
 const indexHtml = readSrc("index.html");
 const themeBootJs = readSrc("public/theme-boot.js");
 
-/** 纯几何/字体变量，两主题共享，light 无需覆盖。 */
+/** Pure geometry/font variables, shared by both themes; light need not override them. */
 const GEOMETRIC_VARS = new Set([
   "--font-ui",
   "--font-text",
@@ -36,10 +41,12 @@ const GEOMETRIC_VARS = new Set([
   "--li-gap",
 ]);
 
-/** 剥掉块注释再解析——注释文本里提到变量名/颜色不该影响判断。 */
+/** Strip block comments before parsing - variable names or colors mentioned in
+ *  comment text must not influence the verdict. */
 const css = globalCss.replace(/\/\*[\s\S]*?\*\//g, "");
 
-/** 取出选择器全部块的完整花括号体（文件里有多个 :root 块；CSS 无嵌套，数括号即可）。 */
+/** Extract the full brace body of every block matching a selector (the file has
+ *  several :root blocks; CSS has no nesting, so counting braces is enough). */
 function blockBodies(cssText: string, header: string): string[] {
   const bodies: string[] = [];
   let from = 0;
@@ -64,17 +71,19 @@ function blockBodies(cssText: string, header: string): string[] {
 }
 
 /**
- * 删掉每一段 `var(...)`（连同 fallback,含嵌套括号的 fallback,如
- * `var(--x, rgba(0,0,0,.2))`）。历史缺陷:用 `var\([^()]*\)` 正则循环剥除,
- * fallback 里出现函数括号时每轮 replace 都匹配不到、no-op 自旋,
- * 门禁测试直接挂死——换成括号配对扫描,单遍完成、未闭合也不会死循环。
+ * Remove every `var(...)` call (including its fallback, fallbacks with nested
+ * parens such as `var(--x, rgba(0,0,0,.2))`). Historical defect: stripping them
+ * with a `var\([^()]*\)` regex in a loop matched nothing on every pass once the
+ * fallback contained function parens, so the replace was a no-op that spun
+ * forever and hung the gate test. Bracket-pair scanning replaces it: a single
+ * pass, and an unclosed call cannot loop either.
  */
 function stripVarCalls(s: string): string {
   let out = "";
   for (let i = 0; i < s.length; ) {
     if (s.startsWith("var(", i)) {
       let depth = 0;
-      let j = i + 3; // 指向 var( 的 `(`,起点自身计入深度
+      let j = i + 3; // points at the `(` of var(; the start itself counts toward depth
       for (; j < s.length; j++) {
         if (s[j] === "(") depth++;
         else if (s[j] === ")") {
@@ -82,7 +91,7 @@ function stripVarCalls(s: string): string {
           if (depth === 0) break;
         }
       }
-      if (j >= s.length) break; // 未闭合的 var(:其余不再可能是合法规则体
+      if (j >= s.length) break; // unclosed var(: the rest cannot be a valid rule body either
       i = j + 1;
       continue;
     }
@@ -112,14 +121,16 @@ describe("主题变量体系", () => {
     const light = customProps(lightBlock);
     const missing = dark.filter((v) => !light.has(v));
     expect(missing, `light 主题缺这些变量: ${missing.join(", ")}`).toEqual([]);
-    // 反向也不许多：light 里冒出来的名字必然对应 dark 的一个变量
+    // Nor may it have extra names: a name that shows up only in light must
+    // correspond to a dark theme variable.
     const extra = [...light].filter((v) => !dark.includes(v));
     expect(extra, `light 主题多出 dark 没有的变量: ${extra.join(", ")}`).toEqual([]);
   });
 
   it("规则体不含裸颜色字面量（颜色只从变量来）", () => {
-    // 规则体 = 非 :root / 非 light 块之外的全部内容。变量定义行豁免；
-    // var(…, fallback) 里的字面量豁免（变量缺失时才生效，常态死分支）。
+    // Rule body = everything outside the :root / light blocks. Variable definition
+    // lines are exempt; literals inside var(..., fallback) are exempt too (they
+    // only take effect when the variable is missing, i.e. a dead branch).
     const rules = css
       .split("\n")
       .filter((line) => !/^\s*--/.test(line))
@@ -130,11 +141,12 @@ describe("主题变量体系", () => {
   });
 
   it("stripVarCalls 剥掉嵌套括号的 fallback 且永不定环", () => {
-    // 历史缺陷回归:正则循环遇 var(--x, rgba(...)) 自旋挂死。
+    // Regression for the historical defect: the regex loop spun forever on
+    // var(--x, rgba(...)).
     expect(stripVarCalls("a var(--x, rgba(0, 0, 0, 0.2)) b")).toBe("a  b");
     expect(stripVarCalls("var(--a, var(--b, #fff)) c")).toBe(" c");
     expect(stripVarCalls("color: var(--accent);")).toBe("color: ;");
-    // 未闭合:剩余全部丢弃,不再尝试匹配(防自旋)
+    // Unclosed: drop the rest instead of trying to match again (prevents spinning)
     expect(stripVarCalls("x var(--unclosed tail")).toBe("x ");
     expect(stripVarCalls("no vars here")).toBe("no vars here");
   });
@@ -142,8 +154,9 @@ describe("主题变量体系", () => {
 
 describe("光标常亮", () => {
   it("global.css 关掉普通与 vim 共用的 .cm-cursorLayer 闪烁动画", () => {
-    // CM6 的普通光标层和 vim 的块光标层都带这个 class，插件会用内联
-    // animation-name/duration 重启闪烁，所以规则必须带 !important。
+    // CM6's normal cursor layer and vim's block cursor layer both carry this class,
+    // and the plugin restarts the blink with inline animation-name/duration
+    // values, so the rule must carry !important.
     expect(css).toMatch(/\.cm-cursorLayer\s*\{[^}]*animation:\s*none\s*!important;/);
   });
 });

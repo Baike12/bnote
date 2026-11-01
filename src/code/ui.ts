@@ -1,13 +1,14 @@
 /**
- * 代码面板的「一次性请求」通道。
+ * One-shot request channel for the code panel.
  *
- * 命令层要能请面板做几件事(打开快速跳转框、打开文件内搜索、问一个重命名
- * 的新名字),但命令层不该直接持有面板的 DOM。做法与 bnote 其它地方一致:
- * 命令发一个请求,面板订阅并消费——**只消费一次**,不然后来者会看到上一次
- * 的残留请求。
+ * The command layer needs the panel to do a few things (open the quick-open
+ * box, open find-in-file, ask for a new name on rename), but the command
+ * layer must not hold the panel's DOM. Same pattern as elsewhere in bnote:
+ * a command emits a request and the panel subscribes and consumes it —
+ * **exactly once**, otherwise a later subscriber would see a stale request.
  */
 
-/** 面板要处理的请求。 */
+/** A request the panel has to handle. */
 export type CodeUiRequest =
   | { kind: "quick-open" }
   | { kind: "find-in-files" }
@@ -17,12 +18,12 @@ type Listener = (request: CodeUiRequest) => void;
 
 const listeners = new Set<Listener>();
 
-/** 请面板做一件事。 */
+/** Ask the panel to do something. */
 export function requestCodeUi(request: CodeUiRequest): void {
   for (const listener of [...listeners]) listener(request);
 }
 
-/** 订阅面板请求;返回退订函数。 */
+/** Subscribe to panel requests; returns the unsubscribe function. */
 export function onCodeUiRequest(listener: Listener): () => void {
   listeners.add(listener);
   return () => {

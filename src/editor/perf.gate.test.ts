@@ -28,16 +28,21 @@ import { buildFootprintMarks } from "@/footprint/extension";
 import { renderBlockHtml } from "@/footprint/render";
 
 /**
- * 性能门禁（bnote 的生命线）：编辑管线的每击成本必须保持量级。预算按本机
- * 实测中位数放大 ~6 倍标定——量级回归（意外的全文扫描、装饰失稳、解析歧义
- * 翻转）从 10 倍起必被拦下，而 CI/机器抖动不会误报。改性能敏感路径后先在
- * 浏览器里实测（AGENTS.md：性能问题用确定性测量），再用这里锁量级。
+ * Perf gate (bnote's lifeline): the per-keystroke cost of the editing pipeline
+ * must stay within an order of magnitude. Budgets are calibrated at ~6x the
+ * locally measured median — order-of-magnitude regressions (an accidental
+ * full-document scan, unstable decorations, a parser-ambiguity flip) are caught
+ * from 10x on, while CI/machine jitter does not cause false positives. After
+ * touching a perf-sensitive path, measure it in the browser first (AGENTS.md:
+ * performance work uses deterministic measurement), then lock the order of
+ * magnitude here.
  *
- * 测的是无 DOM 的状态管线（state.update + 装饰重建），即每击真实 CPU 的
- * 决定项；视图层 DOM 更新另有浏览器验证，不在这里模拟。
+ * What is measured is the DOM-free state pipeline (state.update + decoration
+ * rebuild), i.e. the deciding part of the real per-keystroke CPU cost; view-layer
+ * DOM updates are verified in the browser instead, not simulated here.
  */
 
-/** 与浏览器测量同款的大文档生成器：标题/段落/公式块/三类列表交错。 */
+/** Big-document generator of the same shape as the browser measurement: interleaved headings/paragraphs/math blocks/three list kinds. */
 function bigDoc(sections: number): string {
   const parts: string[] = [];
   for (let i = 1; i <= sections; i++) {
@@ -60,7 +65,7 @@ function bigDoc(sections: number): string {
   return parts.join("\n");
 }
 
-const DOC = bigDoc(60); // ~900 行
+const DOC = bigDoc(60); // ~900 lines
 
 function makeState(doc: string, cursorAt?: number): EditorState {
   const created = EditorState.create({
@@ -104,9 +109,11 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
     expect(median).toBeLessThan(4);
   });
 
-  // 强调样式从语法高亮 tag 挪到装饰后(见 emphasisMarks.ts),它在每次文档
-  // 变化时走一遍可见区的语法树。全文档(上界)构建必须保持量级,否则每击会
-  // 多出一份全文树遍历。
+  // Emphasis styling moved from syntax-highlight tags to decorations (see
+  // emphasisMarks.ts): it walks the visible range's syntax tree on every
+  // document change. Building over the whole document (the upper bound) must
+  // stay within an order of magnitude, otherwise every keystroke pays an extra
+  // full-document tree traversal.
   it("强调标记构建(全文档=上界,每击重建)中位数 < 2ms", () => {
     const emphState = makeState(
       bigDoc(60).replace(/这是段落文字/g, "这是 _斜体_ 与 **加粗** 段落文字"),
@@ -143,11 +150,13 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
   it("光标移动判定:槽外同行纯移动恒 false(快路径),跨行/跨标记槽 true", () => {
     const line = firstListLine(state);
     const base = makeState(DOC, line.from + 4);
-    // 同行移动:标记槽(行首 "- ")之外,列表行同样走快路径。
+    // Same-line move: outside the marker slot (the leading "- "), list lines
+    // take the fast path too.
     const sameLine = base.update({ selection: EditorSelection.cursor(line.from + 10) }).state;
     expect(selectionAffectsDecos(base, sameLine)).toBe(false);
-    // 跨行移动:活动行规则让装饰可以随行变,返回 true 走重建——
-    // 其成本由下面的移动预算测试锁定(实测 ~0.7ms/次)。
+    // Cross-line move: the active-line rule lets decorations follow the line,
+    // so it returns true and takes the rebuild path — its cost is locked by the
+    // motion budget test below (measured ~0.7ms/move).
     const crossLine = base
       .update({ selection: EditorSelection.cursor(state.doc.line(line.number + 1).from + 4) })
       .state;
@@ -155,9 +164,10 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
   });
 
   it("vim 模式切换(同行跨标记槽 0⇄A,每击重建)60 次总计 < 300ms", () => {
-    // 0/$/A/Esc 落点这类同行移动会跨过标记槽(活动规则随光标翻转),每次
-    // 都走重建路径——这是 normal⇄insert 往返的确定性成本下界。
-    const line = firstListLine(state); // "- 无序列表项一,内容若干",槽宽 2
+    // Same-line moves to 0/$/A/Esc targets cross the marker slot (the active
+    // rule flips with the cursor), so each one takes the rebuild path — this is
+    // the deterministic cost floor of a normal⇄insert round trip.
+    const line = firstListLine(state); // "- unordered list item one, some content", slot width 2
     let cur = state;
     const samples: number[] = [];
     for (let i = 0; i < 60; i++) {
@@ -185,8 +195,8 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
     for (let i = 0; i < 60; i++) {
       const target =
         i % 2 === 0
-          ? from + 10 // 同行:走快路径
-          : state.doc.line(line.number + (i % 4 === 1 ? 1 : -1)).from + 4; // 跨行:重建
+          ? from + 10 // same line: fast path
+          : state.doc.line(line.number + (i % 4 === 1 ? 1 : -1)).from + 4; // cross line: rebuild
       const t0 = performance.now();
       const next = cur.update({ selection: EditorSelection.cursor(target) }).state;
       if (selectionAffectsDecos(cur, next)) {
@@ -204,16 +214,16 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
     const view = makeTogglingView(state);
     const median = medianOf(() => {
       const t0 = performance.now();
-      toggleList(view, "bullet"); // 已是 bullet → 取消
+      toggleList(view, "bullet"); // already a bullet → toggles off
       return performance.now() - t0;
     }, 9);
-    toggleList(view, "bullet"); // 恢复
+    toggleList(view, "bullet"); // restore
     console.warn(`[perf] toggleList 中位数 ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(6);
   });
 });
 
-/** 命令计时用假视图:携带完整 markdown 扩展(真实树查询路径),focus 为空操作。 */
+/** Fake view for command timing: carries the full markdown extensions (the real tree-query path), focus is a no-op. */
 function makeTogglingView(base: EditorState): EditorView {
   let state = base;
   const view = {
@@ -228,9 +238,11 @@ function makeTogglingView(base: EditorState): EditorView {
   return view as unknown as EditorView;
 }
 
-// ---- vim 移动 j/k:真实运动模型的 node 可测部分 ----
-// moveByLinesVisual(像素锚定+隐藏行步进,假几何)+ selection 事务 + 跨行重建,
-// 即真实 j/k 每击在主线程上的全部状态管线(DOM 测量由浏览器验证协议锁定)。
+// ---- vim motion j/k: the node-testable part of the real motion model ----
+// moveByLinesVisual (pixel anchoring + hidden-line stepping, fake geometry) +
+// selection transaction + cross-line rebuild, i.e. the entire state pipeline a
+// real j/k keystroke runs on the main thread (DOM measurement is locked by the
+// browser verification protocol).
 
 const CHAR_W = 8;
 const ROW_H = 24;
@@ -241,7 +253,8 @@ describe("性能门禁：vim j/k 移动(900行,跨公式块隐藏行步进)", ()
     let cur = makeState(DOC, 0);
     const at = Math.floor(cur.doc.length / 2);
     cur = cur.update({ selection: EditorSelection.cursor(at) }).state;
-    // 假几何视图:state 跟随 cur,j/k 不改文档,几何确定。
+    // Fake geometry view: state follows cur, j/k does not change the document,
+    // geometry is deterministic.
     const view = {
       get state() {
         return cur;
@@ -298,10 +311,11 @@ describe("性能门禁：vim j/k 移动(900行,跨公式块隐藏行步进)", ()
   });
 });
 
-// ---- visual 选区绘制:visualSelectionDecos 的每击重建 ----
-// visual 模式下每次 j/k/l 都是 selection 变更 → vimVisualHighlight 重建装饰集。
-// linewise 全选(900 行行带,走有序 builder)与 blockwise 块(逐行切块 + 排序)是
-// 两条成本上界;预算按本机实测中位数放大标定。
+// ---- visual selection painting: the per-keystroke rebuild of visualSelectionDecos ----
+// In visual mode every j/k/l is a selection change → vimVisualHighlight
+// rebuilds the decoration set. Linewise select-all (900 line bands, via the
+// ordered builder) and the blockwise block (per-line slicing + sorting) are the
+// two cost upper bounds; budgets are calibrated from locally measured medians.
 
 describe("性能门禁：visual 选区绘制重建(900 行)", () => {
   it("linewise 全选(900 行行带)60 次重建总计 < 150ms", () => {
@@ -349,9 +363,10 @@ describe("性能门禁：visual 选区绘制重建(900 行)", () => {
   });
 });
 
-// ---- 列表换行:enterContinueListItem 的 split 主路径 ----
-// 每个条目 = Enter(建新项)+ 补一个字符(保持非空,让下一次 Enter 继续分裂),
-// 每次文档变化都走真实的 update + 装饰重建。
+// ---- list continuation on Enter: the split main path of enterContinueListItem ----
+// Each item = Enter (create a new item) + one filler character (keeps it
+// non-empty so the next Enter keeps splitting), and every document change goes
+// through a real update + decoration rebuild.
 
 describe("性能门禁：列表换行(bullet/ordered/todo 各20项)", () => {
   const kinds: { name: string; seed: string }[] = [
@@ -364,7 +379,7 @@ describe("性能门禁：列表换行(bullet/ordered/todo 各20项)", () => {
       const view = makeTogglingView(makeState(`${seed}\n`, 0));
       const samples: number[] = [];
       for (let i = 0; i < 20; i++) {
-        // 光标到当前行尾 → Enter → 新项行尾补字符
+        // caret to end of current line → Enter → append a character at the end of the new item
         const t0 = performance.now();
         const line = view.state.doc.lineAt(view.state.selection.main.head);
         view.dispatch({ selection: EditorSelection.cursor(line.to) });
@@ -375,7 +390,8 @@ describe("性能门禁：列表换行(bullet/ordered/todo 各20项)", () => {
         samples.push(performance.now() - t0);
       }
       const total = samples.reduce((a, b) => a + b, 0);
-      // 断言条目确实持续分裂(防止命令没生效导致测了个空循环)。
+      // Assert the items really keep splitting (guards against measuring an
+      // empty loop because the command did not fire).
       expect(view.state.doc.toString().split("\n").filter((l) => l.length > 2).length).toBeGreaterThan(15);
       console.warn(`[perf] ${name} 换行 总计 ${total.toFixed(0)}ms`);
       expect(total).toBeLessThan(50);
@@ -383,13 +399,15 @@ describe("性能门禁：列表换行(bullet/ordered/todo 各20项)", () => {
   }
 });
 
-// ---- 公式块:插入 + 输入 ----
-// 输入公式时每次击键源串都变,KaTeX 缓存必 miss——每击一次完整渲染是
-// 公式输入的真实成本大头,和 state 管线一起锁量级。
+// ---- math blocks: insertion + typing ----
+// Every keystroke inside a formula changes the source string, so the KaTeX
+// cache always misses — one full render per keystroke is the dominant cost of
+// formula input, and is locked together with the state pipeline.
 
 describe("性能门禁：公式块插入与输入", () => {
-  // 实测中位数 0.5ms;按 6-10× 标定带应为 3-5ms,2ms 的旧预算本身低于带宽,
-  // 机器负载下(浏览器/dev server 并行)会误报。
+  // Measured median 0.5ms; at a 6-10x calibration band it should be 3-5ms, so
+  // the old 2ms budget sat below the band and fired false positives under
+  // machine load (browser/dev server running in parallel).
   it("10 次块插入 dispatch 中位数 < 6ms", () => {
     const cur = makeState(DOC, 0);
     const view = makeTogglingView(cur);
@@ -410,7 +428,7 @@ describe("性能门禁：公式块插入与输入", () => {
     const end = view.state.doc.length;
     view.dispatch({ selection: EditorSelection.cursor(end) });
     insertMathBlock(view);
-    // 光标落在 $$…$$ 内部;向其中追加公式源。
+    // The caret lands inside the $$…$$; append formula source to it.
     const samples: number[] = [];
     for (let i = 0; i < 20; i++) {
       const at = view.state.selection.main.head;
@@ -420,18 +438,20 @@ describe("性能门禁：公式块插入与输入", () => {
         (r) => view.state.selection.main.head >= r.from && view.state.selection.main.head <= r.to,
       );
       buildInlineDecorations({ state: view.state, visibleRanges: [{ from: 0, to: view.state.doc.length }] });
-      if (region) renderMathHtml(region.content, true); // MathPreviewWidget.toDOM 的真实调用
+      if (region) renderMathHtml(region.content, true); // the real call of MathPreviewWidget.toDOM
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);
     const doc = view.state.doc.toString();
-    expect(doc.includes("\\alpha_{x}")).toBe(true); // 输入确实进了公式区
+    expect(doc.includes("\\alpha_{x}")).toBe(true); // the input really entered the formula region
     console.warn(`[perf] 公式输入 总计 ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(320);
   });
 
-  // 行内公式编辑时只显示源码(不再插渲染副本),每击只剩 update + 装饰重建
-  // ——没有 KaTeX 那笔成本了。预算沿用同档,拦的是装饰重建退化。
+  // Inline formula editing shows only the source (no rendered copy is
+  // inserted), so each keystroke costs just update + decoration rebuild — the
+  // KaTeX cost is gone. The budget stays in the same band; what it guards is
+  // decoration-rebuild regression.
   it("行内公式内 20 击(update+装饰重建)总计 < 320ms", () => {
     const insert = "\\alpha_{x}+";
     let state = makeState("前文 $f(x)$ 后文\n", 6);
@@ -447,13 +467,13 @@ describe("性能门禁：公式块插入与输入", () => {
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);
-    expect(state.doc.toString().includes("\\alpha_{x}")).toBe(true); // 输入确实进了公式区
+    expect(state.doc.toString().includes("\\alpha_{x}")).toBe(true); // the input really entered the formula region
     console.warn(`[perf] 行内公式输入 总计 ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(320);
   });
 });
 
-// ---- 代码块:插入 + 输入 ----
+// ---- code blocks: insertion + typing ----
 
 describe("性能门禁：代码块插入与输入", () => {
   it("10 次块插入 dispatch 中位数 < 6ms", () => {
@@ -491,10 +511,12 @@ describe("性能门禁：代码块插入与输入", () => {
   });
 });
 
-// ---- 段落回车:insert 模式 Enter 的真实回退链 ----
-// 普通段落行上 Enter 走 enterContinueListItem(否)→ insertNewlineContinueMarkup(否)
-// → insertNewlineAndIndent,加上每次文档变化后的装饰重建——即真实每击主线程
-// 的全部状态管线。纯文本输入已有"每击输入"门禁,这里补的是回车这个高频键。
+// ---- paragraph Enter: the real fallback chain of Enter in insert mode ----
+// On a plain paragraph line Enter goes enterContinueListItem (no) →
+// insertNewlineContinueMarkup (no) → insertNewlineAndIndent, plus the
+// decoration rebuild after every document change — the entire real
+// per-keystroke main-thread state pipeline. Plain text typing already has the
+// "per-keystroke input" gate; this adds the high-frequency Enter key.
 
 const firstParagraphLine = (state: EditorState) => {
   for (let n = 1; n <= state.doc.lines; n++) {
@@ -520,22 +542,25 @@ describe("性能门禁：段落回车(900行,Enter 真实回退链)", () => {
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);
-    // Enter 确实生效(行数增长),防止回退链全没接住测了个空循环。
+    // Enter really fired (the line count grew), guarding against measuring an
+    // empty loop when the fallback chain caught nothing.
     expect(view.state.doc.lines).toBeGreaterThan(900);
     console.warn(`[perf] 段落回车 总计 ${total.toFixed(0)}ms`);
-    expect(total).toBeLessThan(340); // 静默中位 56ms,6× 标定带
+    expect(total).toBeLessThan(340); // silent median 56ms, 6x calibration band
   });
 });
 
-// ---- 进出公式块:active 翻转引发行内+块装饰整体重建 ----
-// 光标每跨越一次公式区边界,livePreview 的"活动区"语义都会把公式从渲染态
-// 翻回源码态(行内 replace 集合 + 块 widget 字段双双重算)。0/$ 行首尾移动
-// 反复跨过边界时这就是每次按键的真实成本。
+// ---- entering/leaving math blocks: the active flip forces a full rebuild of inline + block decorations ----
+// Every time the caret crosses a math region boundary, livePreview's "active
+// region" semantics flip the formula from rendered state back to source state
+// (inline replace set + block widget field, both recomputed). Repeated 0/$
+// line-start/end motion across the boundary is exactly the real per-keypress
+// cost.
 
 describe("性能门禁：进出公式块(active 翻转重建)", () => {
   it("40 次跨边界光标移动(update 含块装饰重算)总计 < 250ms", () => {
     const base = makeState(DOC, 0);
-    // 找到第一个公式块:围栏上一行 ↔ 内容行来回。
+    // Find the first math block: bounce between the fence line and the content line.
     let fence = -1;
     for (let n = 1; n <= base.doc.lines; n++) {
       if (base.doc.line(n).text === "$$") {
@@ -546,7 +571,8 @@ describe("性能门禁：进出公式块(active 翻转重建)", () => {
     expect(fence).toBeGreaterThan(0);
     const outside = base.doc.line(fence - 1).from + 2;
     const inside = base.doc.line(fence + 1).from + 2;
-    // 功能断言:两个位置的块装饰值确实不同(active 翻转真的发生)。
+    // Functional assertion: the block decoration values at the two positions
+    // really differ (the active flip really happened).
     const outState = makeState(DOC, outside);
     const inState = outState.update({ selection: EditorSelection.cursor(inside) }).state;
     expect(base.field(blockDecorationsField)).not.toBe(outState.field(blockDecorationsField));
@@ -566,8 +592,9 @@ describe("性能门禁：进出公式块(active 翻转重建)", () => {
   });
 });
 
-// ---- undo:大文档上的历史回退 ----
-// history 增量结构随文档规模增长,undo 在 900 行文档上不许退化成全文重算。
+// ---- undo: history rewind on a big document ----
+// The history incremental structure grows with document size, so undo on a
+// 900-line document must not degenerate into a full recomputation.
 
 describe("性能门禁：undo(900行)", () => {
   it("20 次连续 undo 总计 < 20ms", () => {
@@ -594,16 +621,18 @@ describe("性能门禁：undo(900行)", () => {
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);
-    expect(view.state.doc.length).toBe(withHistory.doc.length); // 20 次都真的回退了
+    expect(view.state.doc.length).toBe(withHistory.doc.length); // all 20 really rewound
     console.warn(`[perf] undo 总计 ${total.toFixed(0)}ms`);
-    // 静默 ~1ms;绝对量在 GC 抖动量级,预算取 20× 防负载误报——
-    // "退化成全文重算"级回归(60ms+)从这里必被拦下。
+    // Silent ~1ms; the absolute amount sits at the GC-jitter level, so the
+    // budget takes 20x to avoid load-induced false positives — a
+    // "degenerated into a full recompute" regression (60ms+) is caught here.
     expect(total).toBeLessThan(20);
   });
 });
 
-// ---- 整篇替换:openNote 装载大笔记的真实形态 ----
-// 全文替换 + 全量装饰构建 + 完整语法树,即切换笔记那一刻的主线程成本。
+// ---- whole-document replacement: the real shape of openNote loading a big note ----
+// Full-text replacement + full decoration build + complete syntax tree, i.e.
+// the main-thread cost of the moment a note is switched.
 
 describe("性能门禁：整篇文档装载(900行)", () => {
   it("全文替换+装饰构建+完整解析 中位数 < 30ms", () => {
@@ -622,16 +651,18 @@ describe("性能门禁：整篇文档装载(900行)", () => {
   });
 });
 
-// ---- mathRegions 缓存纪律 ----
-// 未变文档必须命中缓存(同一实例);文档变化后的重扫是每次击键的固定税,
-// 锁住量级防止有人删掉缓存让每击都全文扫描。
+// ---- mathRegions cache discipline ----
+// An unchanged document must hit the cache (the same instance); the rescan
+// after a document change is a fixed per-keystroke tax, so its order of
+// magnitude is locked to stop someone from deleting the cache and making
+// every keystroke scan the whole document.
 
 describe("性能门禁：mathRegions 缓存", () => {
   it("未变文档缓存命中(同实例),单击后重扫中位数 < 2ms", () => {
     const base = makeState(DOC, 0);
     const a = mathRegions(base);
     const b = mathRegions(base);
-    expect(a).toBe(b); // 同一 doc 上必须命中缓存,不能重扫
+    expect(a).toBe(b); // the same doc must hit the cache, no rescan
     const at = firstListLine(base).from + 4;
     let cur = base;
     const median = medianOf(() => {
@@ -645,13 +676,16 @@ describe("性能门禁：mathRegions 缓存", () => {
   });
 });
 
-// ---- 公式扫描:栈式配对 + 空行容错 ----
-// 配对从"两两顺序配对"改为栈式后,被拒的配对会让闭候选继续向后找。用
-// "完好公式 + 错位落单 $$ 交错"的文档锁住全文重扫量级,防止有人把配对
-// 写成对每个标记的全文查找。
+// ---- formula scanning: stack-based pairing + blank-line tolerance ----
+// After pairing switched from "pair up in sequence" to a stack, a rejected
+// pair makes the closing candidate keep searching forward. A document of
+// "intact formulas + misaligned stray $$ interleaved" locks the order of
+// magnitude of the full rescan, so nobody can rewrite the pairing as a
+// full-document search per marker.
 
 describe("性能门禁：公式扫描(栈式配对)", () => {
-  // 20 个完好公式与 20 个落单 $$ 交错,再加一个文档尾部错位产物
+  // 20 intact formulas interleaved with 20 stray $$, plus one misaligned
+  // artifact at the end of the document
   const mixedDoc = (() => {
     const parts: string[] = [];
     for (let i = 0; i < 20; i++) {
@@ -681,10 +715,12 @@ describe("性能门禁：公式扫描(栈式配对)", () => {
   });
 });
 
-// ---- Tab 跳出括号(tabout) ----
-// Tab 走完片段与制表位后的最后一层:向后扫到光标与公式内容末尾之间的第一个
-// 闭合符。锁住这条路径的量级——扫描必须只看那一段切片,不许把整篇文档拉成
-// 字符串(900 行文档上那样做是每次 Tab 一次 O(n) 分配)。
+// ---- Tab out of brackets (tabout) ----
+// The last layer after Tab has walked the snippet and the tab stops: scan
+// backward to the first closing bracket between the caret and the end of the
+// formula content. Lock the order of magnitude of this path — the scan must
+// only look at that slice, never pull the whole document into a string (on a
+// 900-line document that is an O(n) allocation per Tab).
 
 describe("性能门禁：Tab 跳出括号(tabout)", () => {
   const mathLine = (state: EditorState) => {
@@ -699,7 +735,8 @@ describe("性能门禁：Tab 跳出括号(tabout)", () => {
     const cursor = mathLine(base).to - 2;
     let cur = base;
     const median = medianOf(() => {
-      // 每击前都有一次文档变更(真实打字流):mathRegions 缓存必然落空
+      // Every iteration has a document change before it (a real typing
+      // stream): the mathRegions cache necessarily misses
       cur = cur.update({ changes: { from: cur.doc.length, insert: "字" } }).state;
       const at = Math.min(cursor, cur.doc.length);
       const t0 = performance.now();
@@ -711,11 +748,13 @@ describe("性能门禁：Tab 跳出括号(tabout)", () => {
   });
 
   it("长公式内容里的扫描只看切片:2000 字符后方才撞上闭合符,中位数 < 1ms", () => {
-    // 真扫一段长内容(而不是两三字符就命中):扫描长度按内容长度有界,
-    // 若有人改成"整篇文档 toString + 全文查找",这条会掉出预算。
+    // Really scan a long content run (instead of hitting a closer after two or
+    // three characters): the scan length is bounded by the content length, so
+    // if someone changes it to "toString the whole document + search it
+    // fully", this case drops out of budget.
     const doc = `$$\n${"x".repeat(2000)} \\right)\n$$\n下一段`;
     const state = makeState(doc, 0);
-    const cursor = 3; // 内容开头,闭合符在 2000+ 字符之后
+    const cursor = 3; // start of the content, the closer is 2000+ characters away
     const plan = planTabout(state, cursor);
     expect(plan?.pos).toBe(doc.indexOf("\\right)") + "\\right)".length);
     const median = medianOf(() => {
@@ -728,15 +767,18 @@ describe("性能门禁：Tab 跳出括号(tabout)", () => {
   });
 });
 
-// ---- 片段会话内的每击输入 ----
-// 会话期间自动补全不再被压制(嵌套会话栈):每击额外跑一次 findSnippet
-// (221 条编译片段的触发器匹配)+ 会话链字段映射。锁住这条新热路径的量级。
+// ---- per-keystroke input inside a snippet session ----
+// Auto-completion is no longer suppressed during a session (nested session
+// stack): each keystroke additionally runs findSnippet (trigger matching over
+// 221 compiled snippets) + session chain field mapping. Lock the order of
+// magnitude of this new hot path.
 
 describe("性能门禁：片段会话内输入", () => {
   it("会话内 20 击(dispatch+链映射+findSnippet)总计 < 90ms", () => {
     const view = makeTogglingView(makeState(DOC, 0));
     const end = view.state.doc.length;
-    // 起一个括号会话(insertMathBlock 的 $$…$$ 已在文档里,直接建会话)
+    // Start a bracket session (the $$…$$ of insertMathBlock is already in the
+    // document, so build the session directly)
     view.dispatch({ changes: { from: end, insert: "()" }, selection: { anchor: end + 1 } });
     const session = buildSession(end, parseReplacement("($0)$1", [], null));
     view.dispatch({ effects: setSession.of(session) });
@@ -745,7 +787,7 @@ describe("性能门禁：片段会话内输入", () => {
     for (let i = 0; i < 20; i++) {
       const at = view.state.selection.main.head;
       const t0 = performance.now();
-      // 真实每击管线:插入事务(会话链映射)+ 触发器匹配
+      // The real per-keystroke pipeline: insert transaction (session chain mapping) + trigger matching
       view.dispatch({ changes: { from: at, insert: "x" }, userEvent: "input.type" });
       findSnippet(view.state, view.state.selection.main.head, "x", {
         auto: true,
@@ -760,17 +802,23 @@ describe("性能门禁：片段会话内输入", () => {
   });
 });
 
-// ---- 换行 · 段落墙重解析锚定 ----
-// Enter 的真实成本里有一段不在上面任何状态管线测试里:markdown 按顶层
-// 开放块做增量解析,段落墙(无空行的连续段落)是「一个块节点」,块内
-// 任何编辑(换行、打字)都会让解析从块起点重新推进,成本线性于块大小。
-// 浏览器实测(2026-09-22):4000 行段落墙 Enter ~25ms(掉 2 帧,用户
-// 感知为换行卡顿),同规模每 50 行一空行的文档 1.6ms。ensureSyntaxTree
-// 把「解析推进到视口」这笔账锁进无 DOM 门禁:
-//  - chunked 锚定块边界感知:边界判定一旦退化(空行不再切块/全文重解析),
-//    它先涨到段落墙量级;
-//  - wall 两点锚定线性上界:解析器若出现按行数超线性退化(如每次全量
-//    重解析 N 块)会被 10× 拦下。
+// ---- Enter · paragraph wall reparse anchoring ----
+// One part of the real cost of Enter is covered by none of the state pipeline
+// tests above: markdown parses incrementally over top-level open blocks, and a
+// paragraph wall (consecutive paragraphs without blank lines) is "one block
+// node", so any edit inside the block (a newline, a keystroke) makes the
+// parser advance again from the block start, at a cost linear in the block
+// size.
+// Browser measurement (2026-09-22): Enter in a 4000-line paragraph wall ~25ms
+// (2 dropped frames, felt by the user as a newline hiccup), while a document of
+// the same size with a blank line every 50 lines takes 1.6ms. ensureSyntaxTree
+// locks this "parse advance to the viewport" bill into the DOM-free gate:
+//  - chunked anchoring is block-boundary aware: if boundary detection
+//    regresses (blank lines no longer split blocks / full reparse), it first
+//    grows to paragraph-wall magnitude;
+//  - wall two-point anchoring is a linear upper bound: a parser that degrades
+//    super-linearly in line count (e.g. fully reparsing N blocks every time)
+//    is caught at 10x.
 
 function wallDoc(lines: number): string {
   const parts: string[] = [];
@@ -787,8 +835,8 @@ function chunkedDoc(lines: number, every: number): string {
   return parts.join("\n");
 }
 
-/** 段落墙探针:光标固定在第 1000 行行尾,Enter 分裂 + 解析推进(计时),
- *  再把插入的换行删掉(不计入)回到同一起点。 */
+/** Paragraph-wall probe: the caret is fixed at the end of line 1000, Enter splits + parse advance (timed),
+ *  then the inserted newline is removed again (not counted) to return to the same starting point. */
 function wallEnterMedian(doc: string, times: number): number {
   const state = makeState(doc);
   ensureSyntaxTree(state, state.doc.length);
@@ -821,7 +869,7 @@ describe("性能门禁:换行 · 段落墙重解析(块粒度)", () => {
   it("每50行一空行的 4000 行文档:Enter+解析推进 中位 < 10ms", () => {
     const median = wallEnterMedian(chunkedDoc(4000, 50), 11);
     console.warn(`[perf] chunked-4000 换行重解析 中位 ${median.toFixed(2)}ms`);
-    expect(median).toBeLessThan(15); // 静默 ~1.3-1.7ms,5-6× 带
+    expect(median).toBeLessThan(15); // silent ~1.3-1.7ms, 5-6x band
   });
 
   it("1000 行段落墙:Enter+解析推进 中位 < 60ms(静默 ~8.5ms,6× 带)", () => {
@@ -837,11 +885,13 @@ describe("性能门禁:换行 · 段落墙重解析(块粒度)", () => {
   });
 });
 
-// ---- 换行 · 大文档列表续行 ----
-// 列表续行门禁原来只在 1 行的小文档上量,真实场景是「大文档里的列表」:
-// enterContinueListItem 的树查询 + O(文档) 装饰重建都在这里才显形。
-// 走真实回退链(enterContinueListItem 自己接住)+ 每次装饰重建,与
-// 「段落回车」门禁同协议。
+// ---- Enter · list continuation in a big document ----
+// The list-continuation gate used to measure only on a 1-line document, but
+// the real scenario is "lists inside a big document": the tree query of
+// enterContinueListItem and the O(document) decoration rebuild only show up
+// there. It runs the real fallback chain (enterContinueListItem catches it
+// itself) + a decoration rebuild on every iteration, same protocol as the
+// "paragraph Enter" gate.
 
 describe("性能门禁:换行 · 900行大文档列表续行(bullet/ordered/todo)", () => {
   const cases: { name: string; seed: RegExp }[] = [
@@ -872,7 +922,8 @@ describe("性能门禁:换行 · 900行大文档列表续行(bullet/ordered/todo
         samples.push(performance.now() - t0);
       }
       const total = samples.reduce((a, b) => a + b, 0);
-      // Enter 确实持续建项:种子行从初始 1 行长到 20+ 行。
+      // Enter really keeps creating items: the seed line grows from the
+      // initial 1 line to 20+ lines.
       const seedCount = view.state.doc
         .toString()
         .split("\n")
@@ -884,10 +935,12 @@ describe("性能门禁:换行 · 900行大文档列表续行(bullet/ordered/todo
   }
 });
 
-// ---- 换行 · 有序列表长顺延 ----
-// Enter 建项时 bumpFollowingOrdered 会把后续所有连号项改号(一次事务里
-// N 处编辑 + 全文档 changeSet 映射)。列表越长这条越贵,锁住量级防止
-// 顺延退化成逐项 dispatch 或全文重映射。
+// ---- Enter · long ordered-list renumbering ----
+// When Enter creates an item, bumpFollowingOrdered renumbers all following
+// consecutive items (N edits in one transaction + a whole-document changeSet
+// mapping). The longer the list, the more expensive this is, so the order of
+// magnitude is locked to prevent the renumbering from degenerating into
+// per-item dispatch or a full-document remap.
 
 describe("性能门禁:换行 · 有序列表 30 项长顺延", () => {
   it("20 次(第 1 项行尾 Enter,29 项顺延)总计 < 100ms", () => {
@@ -901,21 +954,24 @@ describe("性能门禁:换行 · 有序列表 30 项长顺延", () => {
       const t0 = performance.now();
       if (!enterContinueListItem(view)) throw new Error("有序列表续行没接住");
       samples.push(performance.now() - t0);
-      // 光标回到第 1 项行尾(新建的第 2 项),下一轮继续从最前面顺延
+      // Put the caret back at the end of item 1 (the newly created item 2), so
+      // the next round keeps renumbering from the front
       view.dispatch({ selection: EditorSelection.cursor(view.state.doc.line(1).to) });
     }
     const total = samples.reduce((a, b) => a + b, 0);
-    // 顺延确实发生:最后一项编号被推到 50(30 项 + 20 轮插入)。
+    // The renumbering really happened: the last item's number was pushed to 50
+    // (30 items + 20 inserted items).
     expect(view.state.doc.toString()).toContain("50. 有序列表第 30 项");
     console.warn(`[perf] 有序 30 项顺延 总计 ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(100);
   });
 });
 
-// ---- 换行 · 标题自动编号扫描(用户开启项的每击保险) ----
-// autoNumberHeadings 开启时每次文档变化后 renumberHeadings 全文档行扫
-// (fence 扫描 + 每行正则)。这是「每击 O(文档)」的固定支出,量级由
-// 这里看住;同时功能断言防扫描漏标题。
+// ---- Enter · automatic heading renumbering scan (per-keystroke insurance for an opt-in feature) ----
+// When autoNumberHeadings is on, renumberHeadings does a whole-document line
+// scan (fence scan + a regex per line) after every document change. This is a
+// fixed "O(document) per keystroke" cost, whose order of magnitude is watched
+// here; a functional assertion also guards against the scan missing headings.
 
 describe("性能门禁:标题自动编号全文档扫描(900行)", () => {
   it("20 次扫描(编号已对齐,纯扫描)总计 < 80ms", () => {
@@ -939,13 +995,16 @@ describe("性能门禁:标题自动编号全文档扫描(900行)", () => {
   });
 });
 
-// ---- Callout 块 · 每击固定支出 ----
-// calloutRegions 每代文档一次 O(行数) 行扫(公式区域走共享备忘录,围栏扫描
-// 与 renumber 同款);块密集时行装饰按块 × 行线性拼装。这里锁两条:纯扫描
-// 常数,与块内打字的端到端每击管线(状态场 collectBlockStatics 首建 + inline
-// 全视口重建)。
+// ---- Callout blocks · fixed per-keystroke cost ----
+// calloutRegions does one O(lines) line scan per document generation (math
+// regions go through the shared memo, the fence scan is the same as
+// renumber's); with dense blocks the line decorations are assembled linearly
+// per block × line. Two things are locked here: the constant of the pure scan,
+// and the end-to-end per-keystroke pipeline of typing inside a block (the
+// collectBlockStatics state field on first build + a full inline viewport
+// rebuild).
 
-/** callout 密集文档:每个小节一个带标题块(内含标题/段落/公式块)+ 一节正文。 */
+/** Callout-dense document: one titled block per section (containing a heading/paragraph/math block) + one section of body text. */
 function calloutDoc(sections: number): string {
   const parts: string[] = [];
   for (let i = 1; i <= sections; i++) {
@@ -982,7 +1041,7 @@ describe("性能门禁:callout 扫描(60块 ~500行)", () => {
   });
 
   it("块内打字 20 击(状态场+inline 全重建)总计 < 100ms,单击中位数 < 4ms", () => {
-    const line = state.doc.line(3); // 第一个块的内容段落行
+    const line = state.doc.line(3); // the content paragraph line of the first block
     const at = line.from + 4;
     let cur = makeState(CALLOUT_DOC, at);
     const perKey: number[] = [];
@@ -1001,12 +1060,14 @@ describe("性能门禁:callout 扫描(60块 ~500行)", () => {
   });
 });
 
-// ---- callout 锚点扫描(⌘⇧B 选中插入的锚点:标题 × 视口的弹性匹配) ----
-// 每个带标题的 callout 都要在视口文本里找「同一段文字」的出现——成本 = 标题
-// 数 × 视口文本,命中还要过一次 callout 区域/排除区过滤。这里用「正文反复
-// 出现标题文本」的压力形态(命中拉满)锁量级;视口=全文档是上界。
+// ---- callout anchor scanning (the anchor inserted by the ⌘⇧B select-insert: elastic matching of heading × viewport) ----
+// Every titled callout has to find an occurrence of "the same text" in the
+// viewport text — cost = number of headings × viewport text, and a hit still
+// has to pass the callout region/exclusion filter. Here the stress shape is
+// "the body text repeats the heading text" (hits maximized) to lock the
+// order of magnitude; viewport = whole document is the upper bound.
 
-/** 锚点密集文档:每节一个带标题块;正文段落里反复出现标题文本。 */
+/** Anchor-dense document: one titled block per section; the heading text repeats in the body paragraphs. */
 function anchorDoc(sections: number): string {
   const parts: string[] = [];
   for (let i = 1; i <= sections; i++) {
@@ -1038,7 +1099,7 @@ describe("性能门禁:callout 锚点扫描(60 块带标题,正文反复命中)"
   });
 
   it("每击输入(update+装饰重建)20 击总计 < 150ms,单击中位数 < 6ms", () => {
-    const line = state.doc.line(8); // 第一处正文命中的那一行
+    const line = state.doc.line(8); // the first body-text hit line
     const at = line.from + 6;
     let cur = makeState(ANCHOR_DOC, at);
     const perKey: number[] = [];
@@ -1057,10 +1118,12 @@ describe("性能门禁:callout 锚点扫描(60 块带标题,正文反复命中)"
   });
 });
 
-// ---- 跨文件待办同步 · 每键意图提取(dailySyncExtension 的固定支出) ----
-// updateListener 里的行级 diff:无意图时只付「变更行解析 + 身份文本比对」,
-// 链接命中时加一次块根上溯(步数有界)。这里测 intentsForRange 本身——监听器
-// 相对既有管线的增量成本;功能锚定防「测了个空转」。
+// ---- cross-file todo sync · per-key intent extraction (the fixed cost of dailySyncExtension) ----
+// The line-level diff in the updateListener: with no intent it only pays
+// "parse the changed line + compare the identity text", and a link hit adds
+// one block-root walk-up (bounded step count). What is measured here is
+// intentsForRange itself — the incremental cost of the listener over the
+// existing pipeline; a functional anchor guards against "measuring a no-op".
 
 describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
   const linksFor = (texts: string[]): DailyLink[] =>
@@ -1075,7 +1138,7 @@ describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
       dailyLine: 1,
     }));
 
-  /** 模拟一次敲键:返回「提取」这一步的耗时(update 成本不在测量内)。 */
+  /** Simulate one keystroke: return the time of the "extraction" step (the update cost is not measured). */
   function keystrokeExtract(state: EditorState, links: DailyLink[], allowRecord: boolean): number {
     const tr = state.update({ changes: { from: state.selection.main.head, insert: "字" } });
     const ranges: [number, number, number, number][] = [];
@@ -1087,15 +1150,15 @@ describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
     return performance.now() - t0;
   }
 
-  const todoPos = DOC.indexOf("待办项 60") + 7; // 待办行内容中间
-  const nestedPos = DOC.indexOf("嵌套项 60") + 4; // 缩进子行(触发块根上溯)
+  const todoPos = DOC.indexOf("待办项 60") + 7; // middle of the todo line content
+  const nestedPos = DOC.indexOf("嵌套项 60") + 4; // the indented child line (triggers the block-root walk-up)
 
   it("无链接时每键提取(正文/待办行/缩进子行)中位 < 2.5ms(静默 ~0.5ms,含 GC 压力,6× 带)", () => {
     for (const pos of [todoPos, nestedPos]) {
       const state = makeState(DOC, pos);
       const median = medianOf(() => keystrokeExtract(state, [], true), 200);
       console.warn(`[perf] daily 提取(无链接) 中位 ${median.toFixed(4)}ms`);
-      expect(median).toBeLessThan(2.5); // 静默 ~0.45ms(含每轮新事务的 GC 压力),~6× 标定带
+      expect(median).toBeLessThan(2.5); // silent ~0.45ms (including the GC pressure of a fresh transaction per round), ~6x calibration band
     }
   });
 
@@ -1105,7 +1168,7 @@ describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
       const state = makeState(DOC, pos);
       const median = medianOf(() => keystrokeExtract(state, links, true), 200);
       console.warn(`[perf] daily 提取(3链接) 中位 ${median.toFixed(4)}ms`);
-      expect(median).toBeLessThan(2.5); // 与无链接同量级:文本比对是主成本
+      expect(median).toBeLessThan(2.5); // same magnitude as with no links: the text comparison is the main cost
     }
   });
 
@@ -1126,9 +1189,11 @@ describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
   });
 });
 
-// ---- 跨文件待办同步 · 已链接待办的可视标识(dailyMarksExtension 的固定支出) ----
-// 装饰只在两个信号下重建(文档/视口变化、链接库变更),每次扫一遍视口并逐行解析。
-// 门禁按上界标定:视口=全文档(~900 行),链接数 120(真实 vault 是 6 条)。
+// ---- cross-file todo sync · visual markers for linked todos (the fixed cost of dailyMarksExtension) ----
+// The decorations are rebuilt only on two signals (document/viewport change,
+// link store change), and each rebuild scans the viewport line by line. The
+// gate is calibrated at the upper bound: viewport = whole document (~900
+// lines), 120 links (the real vault has 6).
 
 describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () => {
   const DAILY = "/vault/Daily/2026-09-21.md";
@@ -1153,8 +1218,10 @@ describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () 
       return performance.now() - t0;
     }, 30);
     console.warn(`[perf] daily 标记构建 中位 ${median.toFixed(3)}ms`);
-    // 静默 ~0.15ms,预算按 ~10× 标定。逐行文本比对是全部成本——若哪天退化成
-    // 「每条链接全文找根」(resolveRootLine 那种 O(行数) 扫描),量级必被拦下。
+    // Silent ~0.15ms, the budget is calibrated at ~10x. The per-line text
+    // comparison is the entire cost — if it ever degenerates into "search
+    // the whole document for each link's root" (an O(lines) scan like
+    // resolveRootLine), the order of magnitude is caught here.
     expect(median).toBeLessThan(1.5);
   });
 
@@ -1168,14 +1235,17 @@ describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () 
   });
 });
 
-// ---- 今日足迹 · 块 diff 与收录标识(footprint 的固定支出) ----
-// diffBlocks 每次脏刷新对整个文件做「切块 + 身份集合比对」;buildFootprintMarks
-// 与 dailyMarks 同构(视口逐行 + 集合命中)。预算按同款 ~10× 标定。
+// ---- today's footprint · block diff and inclusion markers (the fixed cost of footprint) ----
+// diffBlocks does a "split into blocks + compare identity sets" pass over the
+// whole file on every dirty refresh; buildFootprintMarks is isomorphic to
+// dailyMarks (viewport line by line + set hits). The budget is calibrated the
+// same way at ~10x.
 
 describe("性能门禁:今日足迹块 diff(900行)", () => {
   it("全文件 diff(基线=半数块已存在的旧版)中位数 < 3ms", () => {
     const lines = DOC.split("\n");
-    // 基线:每隔一个段落抽走(制造 ~300 个"今日新增"块的真实工作面)
+    // Baseline: every other paragraph is removed (creating the real work
+    // surface of ~300 "added today" blocks)
     const baselineLines = lines.filter((l, i) => i % 2 === 0 || l === "");
     const baseline = baselineLines.join("\n");
     const median = medianOf(() => {
@@ -1184,15 +1254,19 @@ describe("性能门禁:今日足迹块 diff(900行)", () => {
       return performance.now() - t0;
     }, 30);
     console.warn(`[perf] footprint diff 中位 ${median.toFixed(3)}ms`);
-    // 静默 ~0.5ms,预算 ~6× 标定。切块是 O(行数)、身份是 Map 命中——若哪天
-    // 退化成「每块对全基线线性找」,量级必被拦下。
+    // Silent ~0.5ms, the budget is calibrated at ~6x. Block splitting is O(lines)
+    // and the identity is a Map hit — if it ever degenerates into "a linear
+    // search of the whole baseline per block", the order of magnitude is
+    // caught here.
     expect(median).toBeLessThan(3);
   });
 
   it("功能锚定:抽走的块确实被 diff 出来(待办块不算)", () => {
     const baselineLines = DOC.split("\n").filter((l, i) => i % 2 === 0 || l === "");
     const added = diffBlocks(baselineLines.join("\n"), DOC);
-    // 每节 4 块,列表簇(含待办)被排除,单行块半数与基线同键——~90 块是本底。
+    // 4 blocks per section, the list cluster (with todos) is excluded, and half
+    // of the single-line blocks share a key with the baseline — ~90 blocks are
+    // the baseline.
     expect(added.length).toBeGreaterThan(60);
   });
 });
@@ -1200,7 +1274,7 @@ describe("性能门禁:今日足迹块 diff(900行)", () => {
 describe("性能门禁:今日足迹收录标识构建(900行,~180块)", () => {
   const state = makeState(DOC, 0);
   const view = { state, visibleRanges: [{ from: 0, to: state.doc.length }] };
-  const blocks = diffBlocks("", DOC); // 全文档块当"今日收录"
+  const blocks = diffBlocks("", DOC); // all document blocks as "added today"
 
   it("全文档视口重建中位数 < 1.5ms", () => {
     const median = medianOf(() => {
@@ -1223,9 +1297,11 @@ describe("性能门禁:今日足迹收录标识构建(900行,~180块)", () => {
 });
 
 describe("性能门禁:今日足迹块 markdown 渲染(块级 widget 重建面)", () => {
-  // 足迹区每次 revision/折叠变化整区重画(render.ts lezer 解析 + KaTeX),
-  // 频率 = watcher 防抖级(秒),不是每击;这里锁「整区全量渲染」的量级,
-  // 防渲染器退化成每行重建解析器之类的意外。
+  // The footprint region repaints completely on every revision/collapse change
+  // (lezer parsing + KaTeX in render.ts); the frequency is at the watcher
+  // debounce level (seconds), not per keystroke. What is locked here is the
+  // order of magnitude of a full-region render, to prevent the renderer from
+  // degenerating into something like rebuilding a parser per line.
   it("全文档块全量渲染(含 KaTeX)中位数 < 12ms", () => {
     const blocks = diffBlocks("", DOC);
     const median = medianOf(() => {
@@ -1244,12 +1320,14 @@ describe("性能门禁:今日足迹块 markdown 渲染(块级 widget 重建面)"
   });
 });
 
-// ---- 项目卡片:待办解析(卡片预览每次渲染都要跑) ----
+// ---- project cards: todo parsing (runs on every card preview render) ----
 
 describe("性能门禁:项目卡片待办解析", () => {
   it("1000 行项目文档解析中位 < 1.5ms", () => {
-    // 左右预览卡片每次渲染都把整份项目文档扫一遍;项目文件按 1000 行上限
-    // 标定(实际通常几十行),量级回归(逐字符正则、二次遍历)会被拦下。
+    // The left and right preview cards scan the whole project document on
+    // every render; project files are calibrated at a 1000-line cap (in
+    // practice only a few dozen lines), so order-of-magnitude regressions
+    // (per-character regexes, a second traversal) are caught.
     const lines: string[] = [];
     for (let i = 0; i < 500; i++) lines.push(`- [ ] 任务 ${i}`, "普通正文行");
     const text = lines.join("\n");

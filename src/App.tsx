@@ -64,7 +64,8 @@ import { normalizeDailyWidth, normalizeSideWidth } from "@/projects/layoutModel"
 import { normalizeTreeWidth } from "@/code/treeWidth";
 import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
 
-/** 画布是独立 chunk(含 excalidraw 及其字体加载逻辑),只在打开时下载。 */
+/** The canvas is a separate chunk (excalidraw plus its font loading); it is
+ *  only downloaded when it is opened. */
 const DrawingCanvas = lazy(() => import("@/components/DrawingCanvas"));
 
 export default function App() {
@@ -90,14 +91,18 @@ export default function App() {
 
     void (async () => {
       const cfg = (await api.loadAppConfig().catch(() => null)) as PersistedConfig | null;
-      // 快捷键配置跟着仓库走:有上次的仓库就等 openVault 里开好仓再读
-      // `<vault>/.bnote/keybindings.json`;还没开仓时先读旧版应用配置。
+      // Keybindings live with the vault: when there is a last vault, wait for
+      // openVault to open it and then read `<vault>/.bnote/keybindings.json`;
+      // without a vault yet, fall back to the legacy app config.
       if (!cfg?.lastVault) await loadKeymap(null).catch(() => {});
-      // 窗口几何的恢复在 Rust 首帧前做完(见 config.rs);这里只负责之后的
-      // 移动/缩放落盘,写盘走同一个 config 快照。
+      // Window geometry is restored on the Rust side before the first frame (see
+      // config.rs); here we only persist later moves and resizes, writing
+      // through the same config snapshot.
       unlistenWindow = trackWindowState();
-      // 一次性迁移:旧版「上次文件」是全局单值,它必然属于上次打开的那个仓,
-      // 按 lastVault 落进 per-vault 映射。幂等:落盘失败也只会在下次启动重算。
+      // One-time migration: the legacy "last file" is a single global value, so it
+      // necessarily belongs to the vault that was open last; move it into the
+      // per-vault map under lastVault. Idempotent: if the write fails it is
+      // simply recomputed on the next startup.
       if (cfg?.lastFile && cfg?.lastVault && !cfg.lastFileByVault?.[cfg.lastVault]) {
         cfg.lastFileByVault = { ...(cfg.lastFileByVault ?? {}), [cfg.lastVault]: cfg.lastFile };
       }
@@ -105,7 +110,7 @@ export default function App() {
       if (cfg?.recentFiles?.length) {
         useAppStore.setState({ recentFiles: cfg.recentFiles });
       }
-      // 旧配置没有 studyHistory → 空历史，不是错误。
+      // A legacy config without studyHistory means an empty history, not an error.
       useAppStore.setState({ studyHistory: normalizeStudyHistory(cfg?.studyHistory) });
       const saved = cfg?.settings ?? {};
       const settings = {
@@ -119,9 +124,10 @@ export default function App() {
         },
         daily: { ...DEFAULT_SETTINGS.daily, ...(saved.daily ?? {}) },
       };
-      // 旧版把三栏宽度存成 studySplit:[agent, content](更早是比例);迁移成
-      // 助手栏 / 中栏各自单值像素宽度后落盘一次,之后窗口怎么缩放都不会再改
-      // 这两栏宽度。
+      // The legacy version stored the three column widths as studySplit:[agent,
+      // content] (earlier still as ratios); migrate them to single pixel widths
+      // for the assistant column and the content column, write them once, and
+      // from then on no window resize changes those two widths.
       const legacySplit = studySplitToContentWidth(
         (saved as Record<string, unknown>).studySplit,
       );
@@ -133,30 +139,43 @@ export default function App() {
         settings.studyAgentWidth,
         window.innerWidth,
       );
-      // 项目视图的两栏宽度同理:旧配置没有这两项 → 默认值,手改坏的值回落默认。
+      // Same for the two column widths of the projects view: a legacy config has
+      // neither of them, so the defaults apply and hand-edited broken values
+      // fall back to the defaults.
       settings.projectsSideWidth = normalizeSideWidth(settings.projectsSideWidth);
       settings.projectsDailyWidth = normalizeDailyWidth(settings.projectsDailyWidth);
-      // 代码项目文件树宽度:旧配置没有这一项 → 190px,坏值回落默认。
+      // Code project file tree width: a legacy config has no such key, so 190px
+      // applies and a broken value falls back to the default.
       settings.codeTreeWidth = normalizeTreeWidth(settings.codeTreeWidth);
-      // 旧键不再使用,剥掉免得一直躺在配置文件里。右栏页签模型已由三栏布局
-      // 取代(助手栏常驻在最左),这个键只可能是旧配置留下的。
+      // These legacy keys are unused now; drop them so they do not linger in the
+      // config file. The right column tab model was replaced by the three column
+      // layout (the assistant column is pinned left), so this key can only be
+      // a leftover of an old config.
       delete (settings as Record<string, unknown>).studySplit;
       delete (settings as Record<string, unknown>).studyAgentOpen;
       delete (settings as Record<string, unknown>).studyRightTab;
-      // 旧配置没有 studyPageStep → 默认 50%;手改坏的值也在这里夹回范围内。
+      // A legacy config has no studyPageStep, so it defaults to 50%; a hand-edited
+      // broken value is clamped back into range here too.
       settings.studyPageStep = normalizePageStep(settings.studyPageStep);
-      // 打字机位置同理:旧配置没有这一项 → 50%(垂直居中),越界值夹回 20%–80%。
+      // Same for the typewriter position: a legacy config has no such key, so 50%
+      // (vertically centered) applies and out-of-range values are clamped back
+      // to 20%-80%.
       settings.typewriterPosition = normalizeTypewriterPosition(
         settings.typewriterPosition,
       );
-      // 网页缩放同理:旧配置没有这一项 → 100%,手改越界的夹回 50%–300%。
+      // Same for the web zoom: a legacy config has no such key, so 100% applies and
+      // hand-edited out-of-range values are clamped back to 50%-300%.
       settings.studyWebZoom = normalizeWebZoom(settings.studyWebZoom);
-      // 助手对话字号同理:没有这一项 → 100%,坏值夹回 85%–160%。
+      // Same for the agent conversation font scale: without that key it is 100%, and
+      // a broken value is clamped back to 85%-160%.
       settings.agentFontScale = normalizeAgentFont(settings.agentFontScale);
       useAppStore.getState().replaceSettings(settings);
-      // 番茄钟:恢复上次的计时状态(endsAt 是绝对时间,重启后照样判超时)。
-      // 一段专注还在跑时 restore 会把独占屏幕与硬锁一起接回来——退出应用
-      // 不等于结束这一段;恢复完再对一次原生状态(崩溃残留的锁在这里放开)。
+      // Pomodoro: restore the previous timer state (endsAt is an absolute time, so
+      // it is still judged as overtime after a restart).
+      // While a focus session is running, restore brings back the exclusive
+      // screen and the hard lock together - quitting the app does not end that
+      // session; after restoring, re-sync the native state once more (a lock
+      // left behind by a crash is released here).
       await useFocusStore.getState().restore(cfg?.focusTimer);
       await useFocusStore.getState().refreshStatus();
       unlisten = await listen<string[]>("vault-changed", (event) => {
@@ -167,8 +186,10 @@ export default function App() {
       }).then((off) => {
         imeUnlisten = off;
       });
-      // TIS 预热（见 imeWarmUp）：首次 TIS 调用要去联系输入法服务（本机实测
-      // ~90ms）且必须走苹果主线程，不能留到用户第一次切 vim 模式那一刻才付。
+      // TIS warmup (see imeWarmUp): the first TIS call has to reach out to the input
+      // method service (~90ms measured on this machine) and must run on the
+      // Apple main thread, so the cost cannot be deferred to the moment the
+      // user first switches to vim mode.
       imeWarmUp();
       if (cfg?.lastVault) {
         await openVault(cfg.lastVault);
@@ -186,7 +207,8 @@ export default function App() {
   useEffect(() => {
     const unsub = useAppStore.subscribe((s, prev) => {
       if (s.settings !== prev.settings) void applySettingsToEditor();
-      // 标题自动编号刚开启：当前文件立即重排一次，给即时反馈。
+      // Heading auto-numbering was just enabled: renumber the current file once
+      // right away so the feedback is immediate.
       if (s.settings.autoNumberHeadings && !prev.settings.autoNumberHeadings) {
         if (editorApi.view) renumberHeadings(editorApi.view);
       }
@@ -197,7 +219,9 @@ export default function App() {
       if (s.modal === null && prev.modal !== null) {
         setTimeout(restoreEditorFocus, 0);
       }
-      // 弹窗打开时焦点在浮层里,不属于三个区域:区域键位让路,只留通用命令。
+      // While a modal is open the focus is in the overlay, which belongs to none of
+      // the three regions: the region keybindings yield, only the global
+      // commands remain.
       if (s.modal !== prev.modal) setKeyModalOpen(s.modal !== null);
     });
     return unsub;
@@ -244,7 +268,8 @@ export default function App() {
     // layer), so the native terminate path is gone. The menu hands the request
     // here instead, where the same flush-then-destroy as the close button
     // applies — quitting never costs the debounced cursor/config write.
-    // 语言服务器的事件(诊断 / 状态 / 日志):应用级订阅,与面板生命周期无关。
+    // Language server events (diagnostics / status / log): an app-level
+    // subscription, independent of the panel lifecycle.
     let unlistenCodeEvents: (() => void) | undefined;
     void installCodeEvents().then((off) => {
       unlistenCodeEvents = off;
@@ -284,25 +309,31 @@ export default function App() {
     const onFocus = () => {
       imeOnWindowFocus();
       restoreEditorFocus();
-      // 辅助功能权限是用户在**系统设置**里授的,app 收不到任何通知——
-      // 从系统设置切回 bnote 时重读一次,否则界面还停在"没权限"的老状态,
-      // 用户会以为授权没生效(而实际上早就生效了)。
+      // The accessibility permission is granted by the user in **System
+      // Settings**, and the app receives no notification of it - re-read it
+      // once when the user comes back from System Settings, otherwise the UI
+      // keeps showing the stale "no permission" state and the user thinks the
+      // grant did not take effect (while it actually did).
       void useFocusStore.getState().refreshStatus();
-      // 窗口回来时对一次表:窗口在后台被系统节流/机器睡过之后,番茄钟的显示
-      // 必须按真实时钟重算,而不是等着"补拍子"。
+      // Reconcile the timer when the window comes back: after the window was
+      // throttled in the background or the machine slept, the pomodoro display
+      // must be recomputed against the real clock instead of waiting to
+      // "catch up on beats".
       useFocusStore.getState().syncNow();
     };
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
-    // 切 Space / 最小化再回来不一定伴随窗口 focus 变化,但一定会翻可见性。
+    // Switching Spaces or minimizing and coming back does not always come with a
+    // window focus change, but it always flips the visibility state.
     const onVisible = () => {
       if (document.visibilityState === "visible") useFocusStore.getState().syncNow();
     };
     document.addEventListener("visibilitychange", onVisible);
     let unlisten: (() => void) | undefined;
     try {
-      // getCurrentWindow() 在非 Tauri 环境（浏览器 harness）会同步抛错，
-      // 此时只有 DOM focus/blur 生效，窗口事件订阅直接跳过。
+      // getCurrentWindow() throws synchronously outside a Tauri environment (the
+      // browser harness); there only the DOM focus/blur handlers work and the
+      // window event subscription is skipped.
       void getCurrentWindow()
         .onFocusChanged(({ payload }) => (payload ? onFocus() : onBlur()))
         .then((off) => {
@@ -386,22 +417,27 @@ export default function App() {
 
 async function handleVaultChanged(paths: string[]) {
   const store = useAppStore.getState();
-  // 外部变更只可能落到「装着 currentFile 的那个实例」——项目视图里活动
-  // 视图可能是项目卡片编辑器,拿它跟笔记的磁盘内容比会把笔记塞进项目文档。
+  // An external change can only land on "the instance that holds currentFile":
+  // in the projects view the active view may be a project card editor, and
+  // comparing it against the note on disk would push the note into the project
+  // document.
   const view = store.currentFile ? findEditorFor(store.currentFile) : null;
 
-  // 今日足迹:任何来源的文件变更都先喂给足迹库(自带过滤与防抖)。必须在
-  // 下面的 self-write echo 早退之前——「编辑器打字 → 自动保存 → watcher」
-  // 正是足迹的主数据链路。
+  // Today's footprint: file changes from any source are fed to the footprint
+  // library first (it does its own filtering and debouncing). This must run
+  // before the self-write echo early return below - "typing in the editor ->
+  // autosave -> watcher" is the main data path for the footprint.
   noteDirtyPaths(paths);
 
-  // 快捷键配置是仓库里的普通文件:外部编辑器改完保存,watcher 触发这里重读。
+  // The keybindings config is a plain file in the vault: an external editor
+  // saves it and the watcher triggers a re-read here.
   if (paths.some((p) => p.replace(/\\/g, "/").endsWith("/.bnote/keybindings.json"))) {
     void reloadKeymap();
   }
 
-  // 项目文件(新建/删除/外部改名)只影响左栏列表;文档内容归卡片编辑器,
-  // 这里不碰正在编辑的文档,避免把用户没保存的输入冲掉。
+  // Project files (created / deleted / renamed externally) only affect the left
+  // sidebar list; the document content belongs to the card editor, so do not
+  // touch the document being edited here - that would wipe unsaved input.
   if (paths.some((p) => p.replace(/\\/g, "/").includes(`/${PROJECTS_DIR}/`))) {
     const vaultRoot = useAppStore.getState().vaultPath;
     if (vaultRoot) void refreshProjects(vaultRoot);
@@ -440,8 +476,10 @@ async function handleVaultChanged(paths: string[]) {
           await applySettingsToEditor(view);
         }
       } catch {
-        // 重命名刚打开的新路径与旧路径的 watcher 事件交错时，可能读到已被
-        // 改名的旧文件——只在它仍是当前文件时才关闭，避免误清新打开的笔记。
+        // When the watcher events of the new and the old path of a just-opened file
+        // interleave, the old, already renamed file may be read - close it only
+        // while it is still the current file, so a freshly opened note is never
+        // closed by mistake.
         if (useAppStore.getState().currentFile === store.currentFile) {
           store.closeFile();
         }
@@ -453,8 +491,10 @@ async function handleVaultChanged(paths: string[]) {
     await applySettingsToEditor();
   }
 
-  // 仓库片段文件自身变化：装载结果要反馈出来——成功报条数确认，失败报原因
-  //（blob 导入被 CSP 拦、用户 JS 语法错误，这些曾经全被静默吞掉，改了没反应）。
+  // The vault snippet file itself changed: surface the load result - report the
+  // count on success, the reason on failure (the blob import was blocked by the
+  // CSP, the user JS has a syntax error; these used to be swallowed silently,
+  // so the change appeared to have no effect).
   if (snippetOutcome && paths.some((p) => p.includes(".bnote/snippets"))) {
     if (snippetOutcome.status === "user") {
       store.showToast(`公式片段已更新，共 ${snippetOutcome.count} 条`);

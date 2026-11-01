@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { applyTextEdits } from "./textEdits";
 
 /**
- * 重命名落盘的门禁。
+ * Gate for renames written back to disk.
  *
- * LSP 的 TextEdit 是按位置给的:同一文件里多处修改必须**从后往前**应用,
- * 否则前面那处的偏移会被前面的改动顶掉,改出来的内容错位。这条最容易
- * 出的是「两处都在改」的情况,所以门禁里必须有它。
+ * LSP TextEdits are given by position: several edits in the same file must be
+ * applied **from back to front**, otherwise an earlier edit shifts the offsets
+ * of the later ones and the written content ends up misaligned. The case that
+ * breaks most easily is "two places change at once", so the gate has to cover
+ * it.
  */
 describe("applyTextEdits", () => {
   it("单处替换", () => {

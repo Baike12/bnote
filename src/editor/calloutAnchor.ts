@@ -2,18 +2,26 @@ import type { Text } from "@codemirror/state";
 import type { CalloutRegion } from "./callout";
 
 /**
- * Callout 锚点:正文里与某个 callout 标题「同一段文字」的文本片段。
+ * Callout anchors: text spans in the body that are "the same run of text" as
+ * some callout title.
  *
- * 选中一段文字按 ⌘⇧B 在文末建一个以它为标题的 callout(选中的原文留在原处),
- * 原文那一段从此是「有解释的入口」:渲染成下划虚线,光标停在其中再按 ⌘⇧B 跳到
- * 关联的 callout。关联不靠文档里的额外标记——标题本身就是身份,任何一次需要
- * 答案时按「标题与正文文本相等」现算:文件关掉重开、手工改标题都自然跟上,
- * 正文一个字节都不为这个功能改动。
+ * Selecting a passage and pressing ⌘⇧B creates a callout titled with it at the
+ * end of the document (the selected original stays in place); that passage then
+ * becomes an "entry with an explanation": it renders as an underline dashed
+ * line, and putting the caret inside it and pressing ⌘⇧B jumps to the linked
+ * callout. The link relies on no extra marker in the document — the title is
+ * the identity, and whenever an answer is needed it is computed from "title
+ * text equals body text": reopening the file or editing the title by hand
+ * keeps working, and not a single byte of the body changes for this feature.
  *
- * 匹配是空白弹性的:标题里的空白(建块时选区里的换行/过多空白压成的单空格)
- * 匹配正文里的任意空白序列(含换行)——跨行选中的原文因此仍能命中;非空白
- * 字符必须逐字符相等。不设词边界规则:用户选中的那段原文必须能命中,是这条
- * 匹配的最低要求,加边界规则反而会让「选中词 + 后随汉字」的常见形态失配。
+ * Matching is whitespace-flexible: whitespace in the title (the newlines or
+ * extra whitespace of the original selection, squeezed into single spaces when
+ * the block was created) matches any whitespace run in the body (newlines
+ * included), so a multi-line selection still hits; non-whitespace characters
+ * must be equal character by character. No word-boundary rule: the passage the
+ * user selected must hit, and that is the minimum requirement of this match —
+ * a boundary rule would instead break the common shape of "selected word +
+ * following Chinese text".
  */
 
 export interface Interval {
@@ -21,7 +29,7 @@ export interface Interval {
   to: number;
 }
 
-/** 一处命中:匹配区间 + 它指向的 callout 区域。 */
+/** One hit: the matched range plus the callout region it points at. */
 export interface AnchorHit extends Interval {
   region: CalloutRegion;
 }
@@ -29,7 +37,7 @@ export interface AnchorHit extends Interval {
 const isWsCode = (code: number) =>
   code === 32 || code === 9 || code === 10 || code === 13;
 
-/** 标题(trim 过)在 doc[from, to) 内的全部匹配区间,按出现顺序。 */
+/** Every range in doc[from, to) matching the trimmed title, in order of appearance. */
 export function findTitleMatches(
   doc: Text,
   from: number,
@@ -40,7 +48,8 @@ export function findTitleMatches(
   if (to <= from || title === "") return out;
   const parts = title.split(/\s+/).filter((p) => p.length > 0);
   if (parts.length === 0) return out;
-  // 一次取整个窗口文本,indexOf 循环不再逐次切片(窗口是视口量级,复制廉价)。
+  // Slice the whole window text once; the indexOf loop no longer re-slices per
+  // hit (the window is viewport-sized, so copying is cheap).
   const text = doc.sliceString(from, to);
   const first = parts[0];
   let search = 0;
@@ -52,8 +61,10 @@ export function findTitleMatches(
     for (let i = 1; i < parts.length; i++) {
       const ws = p;
       while (p < text.length && isWsCode(text.charCodeAt(p))) p++;
-      // 段与段之间必须有空白(标题的空格对应原文的换行/空白串),且下一段
-      // 紧接着空白——正文里多出的任何非空白字符都算不同文本。
+      // Segments must be separated by whitespace (a space in the title stands
+      // for a newline / whitespace run in the original), and the next segment
+      // must follow it immediately — any extra non-whitespace character in the
+      // body means it is different text.
       if (p === ws || !text.startsWith(parts[i], p)) {
         ok = false;
         break;
@@ -66,7 +77,7 @@ export function findTitleMatches(
   return out;
 }
 
-/** 位置 `pos` 落在哪个锚点里;不在任何锚点内返回 null。 */
+/** Which anchor the position `pos` falls into; null when it is in no anchor. */
 export function anchorRegionAt(
   doc: Text,
   callouts: CalloutRegion[],
@@ -75,8 +86,9 @@ export function anchorRegionAt(
   const lineEnd = doc.lineAt(pos).to;
   for (const c of callouts) {
     if (c.title === "") continue;
-    // 匹配可能从光标前若干字符开始、也可能延伸到光标后:按标题长度给一个
-    // 保守的双向窗口(标题里的空白在原文里可以翻倍膨胀,取 4 倍余量)。
+    // The match may start a few characters before the caret and may also run
+    // past it: derive a conservative two-sided window from the title length
+    // (whitespace in the title can double in the original, so use 4x margin).
     const window = c.title.length * 4 + 64;
     const from = Math.max(0, pos - window);
     const to = Math.min(doc.length, Math.max(lineEnd, pos + window));
@@ -88,9 +100,12 @@ export function anchorRegionAt(
 }
 
 /**
- * 文档 [from, to)(视口)内所有锚点。排除 callout 区域自身(标题行与块内文——
- * 块内的重复文本不是入口)与调用方给的排除区(围栏代码/行内代码:那里的
- * 文字是示例或字面量)。同一区间被多个同标题 callout 命中时只留一处。
+ * Every anchor in the document range [from, to) (the viewport). The callout
+ * regions themselves are excluded (title line and block content — repeated
+ * text inside a block is not an entry), as are the caller-provided exclusion
+ * ranges (fenced code / inline code: the text there is an example or a
+ * literal). When several callouts with the same title match the same range,
+ * only one is kept.
  */
 export function collectAnchors(
   doc: Text,

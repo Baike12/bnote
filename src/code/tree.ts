@@ -1,31 +1,32 @@
 import type { CodeEntry, GitFileState } from "./types";
 
 /**
- * 文件树:把后端拍平的条目列表折成目录树。
+ * File tree: fold the backend's flat entry list into a directory tree.
  *
- * 后端只扫一遍磁盘、给一份「相对路径 → 条目」的列表;树形在前端折出来,
- * 展开目录不再碰磁盘(学习模式的中栏就那么宽,来回读盘会卡)。
+ * The backend scans the disk once and returns a "relative path → entry" list;
+ * the tree shape is folded on the frontend, so expanding a directory never
+ * touches the disk again (the study mode middle column is narrow, and
+ * round-tripping to disk would stutter).
  */
 
-/** 树上的一个节点。 */
 export interface TreeNode {
   name: string;
-  /** 项目根相对路径(目录节点是它自己的路径)。 */
+  /** Path relative to the project root (a directory node carries its own path). */
   path: string;
   isDir: boolean;
   size: number;
   children: TreeNode[];
-  /** 该文件在 git 里的状态(只有文件有)。 */
+  /** The git status of this file (files only). */
   git?: GitFileState;
 }
 
-/** 目录在前、文件在后,同类按名字排(自然序:数字按数值比)。 */
+/** Directories first, then files; within a group by name (natural order: digits compare numerically). */
 export function compareNodes(a: TreeNode, b: TreeNode): number {
   if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
   return naturalCompare(a.name, b.name);
 }
 
-/** 自然序比较:`file10` 排在 `file9` 后面(字典序会反过来)。 */
+/** Natural order comparison: `file10` sorts after `file9` (lexicographic order reverses that). */
 export function naturalCompare(a: string, b: string): number {
   const re = /(\d+)|(\D+)/g;
   const ax = a.match(re) ?? [];
@@ -47,15 +48,18 @@ export function naturalCompare(a: string, b: string): number {
 }
 
 /**
- * 把拍平的条目折成树。
+ * Fold the flat entries into a tree.
  *
- * 条目里的目录节点可能缺失(后端按 gitignore 扫,空目录不会出现在结果里),
- * 所以这里**按路径补出中间目录**:只要有 `a/b/c.rs`,`a` 与 `a/b` 就必须
- * 在树上,否则 `c.rs` 无处安放。
+ * Directory nodes may be missing from the entries (the backend scans with
+ * gitignore, so empty directories never show up), so the missing intermediate
+ * directories are **synthesized from the path**: given `a/b/c.rs`, both `a`
+ * and `a/b` must exist on the tree or `c.rs` has nowhere to go.
  *
- * **一个路径只有一个节点**:目录节点既可能来自条目(后端扫到了这个目录),
- * 也可能是按路径补出来的。两者必须落进同一个节点——各建一个的话,同一个
- * 目录会在树上出现两次(一次空的,一次带文件),而且点开还是空的。
+ * **One path, one node**: a directory node can come from an entry (the
+ * backend scanned that directory) or be synthesized from a path. Both must
+ * land in the same node — creating one each would show the same directory
+ * twice on the tree (once empty, once with files) and the empty one would
+ * still open empty.
  */
 export function buildTree(
   entries: CodeEntry[],
@@ -70,7 +74,7 @@ export function buildTree(
   };
   const dirs = new Map<string, TreeNode>([["", root]]);
 
-  /** 取(或造)某个目录节点。 */
+  /** Get (or create) the node of a directory. */
   function dirOf(path: string): TreeNode {
     const hit = dirs.get(path);
     if (hit) return hit;
@@ -92,8 +96,8 @@ export function buildTree(
 
   for (const entry of entries) {
     if (entry.isDir) {
-      // 目录条目就是树上那个目录节点本身:登记成规范节点即可,不再额外
-      // push 一个副本。
+      // The directory entry *is* that directory's node on the tree: register it
+      // as the canonical node instead of pushing a duplicate.
       dirOf(entry.path);
       continue;
     }
@@ -114,7 +118,7 @@ export function buildTree(
   return root.children;
 }
 
-/** 递归排序(目录在前)。 */
+/** Sort recursively (directories first). */
 export function sortTree(node: TreeNode): void {
   node.children.sort(compareNodes);
   for (const child of node.children) {
@@ -122,7 +126,7 @@ export function sortTree(node: TreeNode): void {
   }
 }
 
-/** 深度优先遍历树,按展示顺序产出文件节点。 */
+/** Walk the tree depth-first, yielding file nodes in display order. */
 export function walkFiles(node: TreeNode, out: TreeNode[] = []): TreeNode[] {
   for (const child of node.children) {
     if (child.isDir) walkFiles(child, out);
@@ -131,24 +135,28 @@ export function walkFiles(node: TreeNode, out: TreeNode[] = []): TreeNode[] {
   return out;
 }
 
-/** 文件树里的一行(拍平后的可视行)。 */
+/** One row of the file tree (a flattened visible row). */
 export interface VisibleRow {
   node: TreeNode;
-  /** 缩进层级(根为 0)。 */
+  /** Indent level (0 for the root). */
   depth: number;
 }
 
 /**
- * 把树拍成「当前看得见的行」,给虚拟滚动用。
+ * Flatten the tree into the rows that are currently visible, for virtual
+ * scrolling.
  *
- * 文件树是唯一会随仓库规模膨胀的列表(node_modules 被 gitignore 挡掉,但
- * 一个像样的仓库也有 1–2 万个文件)。全量渲染成 DOM 是几百毫秒到几秒的
- * 一次性开销,滚起来还要一直养着上万个节点;拍平成行之后只有视口附近那
- * 几十行真的进 DOM。
+ * The file tree is the only list that grows with the size of the repository
+ * (node_modules is kept out by gitignore, but a decent repository still holds
+ * 10k-20k files). Rendering all of them as DOM costs hundreds of milliseconds
+ * to seconds up front and keeps ten thousand nodes alive while scrolling;
+ * flattened into rows, only the few dozen rows near the viewport reach the
+ * DOM.
  *
- * `expanded` 是**展开的目录路径集合**:不在里面的目录只留自己一行,子节点
- * 不进列表——默认空集 = 只显示顶层(不默认展开所有文件夹)。返回新数组,
- * 不改树。
+ * `expanded` is the **set of expanded directory paths**: a directory outside
+ * it contributes only its own row, its children stay out of the list — an
+ * empty set by default means top level only (no folder is expanded by
+ * default). Returns a new array and leaves the tree untouched.
  */
 export function visibleRows(
   roots: readonly TreeNode[],
@@ -166,10 +174,12 @@ export function visibleRows(
 }
 
 /**
- * 一个路径的所有祖先目录(不含自身,顶层项给空数组)。
+ * All ancestor directories of a path (excluding itself; a top-level item gets
+ * an empty array).
  *
- * 用来把某个文件「露出来」:聚焦文件树时要把它所在的每一层目录都展开,
- * 否则虚拟滚动的行数组里根本没有这一行。
+ * Used to "expose" a file: focusing the file tree has to expand every
+ * directory on the way to it, otherwise the virtual-scroll row array does not
+ * even contain that row.
  */
 export function ancestorDirs(path: string): string[] {
   const out: string[] = [];
@@ -182,14 +192,16 @@ export function ancestorDirs(path: string): string[] {
 }
 
 /**
- * 快速打开:在已扫出的条目里按**文件名**模糊搜。
+ * Quick open: fuzzy-search the already scanned entries by **file name**.
  *
- * 在本地索引里搜,不走 IPC:打开项目时后端已经把文件树扫全了,每敲一个键
- * 都让 Rust 重走一遍仓库(gitignore 规则、每个目录一次 stat)纯属浪费,
- * 结果还是同一份。只有文件树被截断(`truncated`)时索引才不完整,那种情况
- * 由调用方回退到后端补扫。
+ * The search runs against the local index and skips IPC: opening the project
+ * already scanned the whole file tree, so making Rust walk the repository
+ * again on every keystroke (gitignore rules, one stat per directory) is pure
+ * waste for the same result. Only a truncated file tree (`truncated`) leaves
+ * the index incomplete; in that case the caller falls back to a backend scan.
  *
- * 排序:完全相等 > 前缀 > 包含 > 子序列;同档按路径字典序。
+ * Ranking: exact match > prefix > substring > subsequence; ties break by
+ * path in lexicographic order.
  */
 export function searchFilesByName(
   entries: readonly CodeEntry[],
@@ -218,7 +230,7 @@ export function searchFilesByName(
   return hits.slice(0, limit).map((hit) => hit.entry);
 }
 
-/** `abc` 是不是 `a_b_c` 的子序列(与后端 code_search_files 同一套匹配)。 */
+/** Whether `abc` is a subsequence of `a_b_c` (same matching as the backend `code_search_files`). */
 function isSubsequence(text: string, query: string): boolean {
   let i = 0;
   for (let k = 0; k < text.length && i < query.length; k++) {
@@ -228,10 +240,11 @@ function isSubsequence(text: string, query: string): boolean {
 }
 
 /**
- * 按名字过滤树(快速打开文件用)。
+ * Filter the tree by name (used by quick open).
  *
- * 目录只要**有**命中的后代就保留;文件按名字模糊匹配。返回一棵新树,
- * 不改原树。
+ * A directory is kept as soon as it **has** a matching descendant; files
+ * match by a fuzzy name test. Returns a new tree and leaves the original
+ * untouched.
  */
 export function filterTree(
   nodes: TreeNode[],

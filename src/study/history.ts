@@ -26,8 +26,9 @@ export interface StudyUrlEntry {
 }
 
 /**
- * 微信读书里打开过的一本书。url 是阅读器路由(origin + pathname,不带
- * query),微信读书的阅读进度在它自己的账号里,这里只记「打开过哪里」。
+ * A book opened in WeRead. The url is the reader route (origin + pathname,
+ * no query); the reading progress lives in the WeRead account, so this only
+ * records "where it was opened".
  */
 export interface WereadBookEntry {
   url: string;
@@ -35,7 +36,7 @@ export interface WereadBookEntry {
   at: number;
 }
 
-/** 打开过的代码项目。`path` 是项目根的绝对路径(通常在 vault 之外)。 */
+/** A code project that was opened. `path` is the absolute path of the project root (usually outside the vault). */
 export interface StudyCodeEntry {
   path: string;
   title: string;

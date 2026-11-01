@@ -1,19 +1,23 @@
 /**
- * 分区域的快捷键模型。
+ * Region-aware keybinding model.
  *
- * 同一个按键在四个焦点区域里可以绑到不同命令(参考 zed 的 context 键位):
- *   global  —— 任何焦点都生效(工作区/导航/视图这类全局动作)
- *   notes   —— 焦点在笔记编辑器时生效
- *   reading —— 焦点在阅读区(PDF / 网页 / 微信读书)时生效
- *   agent   —— 焦点在学习助手面板时生效
- *   project —— 焦点在项目管理视图时生效(项目列表 / 项目卡片)
+ * The same key can be bound to different commands in the four focus regions
+ * (modelled on zed's context keybindings):
+ *   global  —— active under any focus (workspace/navigation/view actions)
+ *   notes   —— active when the note editor has focus
+ *   reading —— active when the reading region (PDF / web / WeChat Reading) has focus
+ *   agent   —— active when the study assistant panel has focus
+ *   project —— active when the project view has focus (project list / project cards)
  *
- * 区域分发:先查当前区域,再退回 global;区域绑定因此可以「盖住」同一个键的
- * 全局含义(例如 Agent 面板里 ⌘[ 是「返回上一条会话」,不是笔记的回退链接)。
- * project 额外继承 notes 的绑定(见 commandsForKey):项目卡片里同样要能加粗、
- * 切待办、用编辑命令,只是项目专属动作优先。
+ * Region dispatch: the current region is looked up first, then global. A region
+ * binding can therefore "override" the global meaning of the same key (in the
+ * Agent panel ⌘[ is "back to the previous session", not the note's back-link).
+ * project additionally inherits the notes bindings (see commandsForKey): the
+ * project cards edit markdown too, so bold / toggle-todo / edit commands must
+ * keep working there — only project-specific actions take precedence.
  *
- * 配置在候选键的归属区域里覆盖,文件是 `<vault>/.bnote/keybindings.json`:
+ * Overrides are configured in the region that owns the candidate key; the file
+ * is `<vault>/.bnote/keybindings.json`:
  *   {
  *     "_hint": "…",
  *     "global":  { "nav.command-palette": "Mod-p" },
@@ -21,8 +25,10 @@
  *     "reading": { "study.pdf-next-page": ["PageDown", "ArrowRight"] },
  *     "agent":   { "agent.new-session": "Mod-Shift-n" }
  *   }
- * 省略的命令用内置默认;null = 解绑;一条命令写进别的区域 = 挪到该区域。
- * 旧版扁平表(命令 → 键位,没有区域)仍能读,按命令的默认归属自动分区。
+ * Omitted commands use the built-in default; null = unbound; a command
+ * written under another region = moved to that region. The legacy flat table
+ * (command → binding, without regions) is still readable and is split by each
+ * command's default region.
  */
 
 export type KeyRegion = "global" | "notes" | "reading" | "agent" | "project" | "code";
@@ -41,17 +47,22 @@ export const KEY_REGION_IDS: KeyRegion[] = KEY_REGIONS.map((r) => r.id);
 export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "workspace.new-note": "Mod-n",
   "workspace.quick-add": "Mod-Shift-a",
-  // 随手记一条待办:与「发送待办到日记」(⌘⇧J)同族,但入口是弹窗而不是光标行。
+  // Capture a todo on the fly: same family as "send todo to the daily note"
+  // (⌘⇧J), but the entry point is a dialog instead of the cursor line.
   "workspace.capture-todo": "Mod-Shift-k",
-  // ⌘⇧O 归「打开今日日记」。原占位者 workspace.open-vault 让出该键位——它仍可
-  // 从命令面板(⌘P)与欢迎页调用;要键位就在 keybindings.json 里自行指派。
+  // ⌘⇧O belongs to "open today's daily note". The former holder
+  // workspace.open-vault yields that key — it is still reachable from the
+  // command palette (⌘P) and the welcome screen; assign it a key yourself in
+  // keybindings.json if you want one.
   "workspace.open-daily": "Mod-Shift-o",
   "workspace.save-note": "Mod-s",
-  // 画图默认不占键位:⌘O 归快速跳转(与 Obsidian 一致),⌘D 在不少个人
-  // 配置里已被占用。需要键位就在 keybindings.json 里自行指派。
+  // Drawings take no keybinding by default: ⌘O belongs to the quick switcher
+  // (as in Obsidian) and ⌘D is already taken in many personal configs. Assign
+  // a key yourself in keybindings.json if you need one.
   "workspace.open-settings": "Mod-,",
-  // 快速切仓,对齐 zed 的 recent projects(R = Recent)。不用 zed 的 ⌃R——
-  // 那是 vim normal 模式的 redo,窗口级 capture 分发没有 vim 守卫,会吞键。
+  // Quick vault switch, aligned with zed's recent projects (R = Recent). Zed's
+  // ⌃R is not reused — that is vim normal mode's redo, and the window-level
+  // capture dispatch has no vim guard, so it would swallow the key.
   "workspace.switch-recent-vault": "Mod-Shift-r",
 
   "nav.quick-switcher": "Mod-o",
@@ -65,8 +76,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "edit.insert-inline-math": "Mod-Shift-m",
   "edit.insert-code-block": "Mod-Shift-c",
   "edit.insert-inline-code": "Mod-`",
-  // 与 Mod-b(加粗)同族区分:Shift 位给块级容器,callout 承接「块注」——
-  // 有选区时在文末建带标题的块,无选区时跳转/回跳/就地开空块(ops.insertCallout)。
+  // Distinguished from the Mod-b (bold) family: the Shift slot goes to the
+  // block-level container, the callout carries the "block annotation" — with
+  // a selection it creates a titled block at the end of the note, without one
+  // it jumps / goes back / opens an empty block in place (ops.insertCallout).
   "edit.insert-callout": "Mod-Shift-b",
   "edit.insert-wikilink": "Mod-k",
   "edit.insert-horizontal-rule": "Mod-Shift-h",
@@ -85,7 +98,7 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "edit.heading-5": "Mod-5",
   "edit.heading-6": "Mod-6",
 
-  // Jupyter/Colab 同款手感:⌘↩ 运行当前笔记的全部 python 块。
+  // Same feel as Jupyter/Colab: ⌘↩ runs every python block of the current note.
   "python.run-note": "Mod-Enter",
 
   "editor.toggle-live-preview": "Mod-e",
@@ -99,62 +112,78 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",
 
-  // 专注模式:⌘⌥T 开始一段专注(幂等:正在跑时再按不重开)。开始后没有
-  // 暂停/结束/退锁的快捷键——这一段必须走完,所以不需要第二个键。
+  // Focus mode: ⌘⌥T starts one focus session (idempotent: pressing it again
+  // while running does not restart it). There is no pause/end/unlock
+  // keybinding afterwards — the session has to run to the end, so a second
+  // key is not needed.
   "focus.pomodoro-start": "Mod-Alt-t",
 
-  // 项目管理视图(project 区域)。⌘⇧↑/↓ 轮转卡片;⌘⇧J 与笔记区的「发送到
-  // 今日日记末尾」同一个键,但项目里的语义是「插到今天待办区最前」——区域
-  // 覆盖让同键按语境表达两种意图。⌘⌥N 在项目区被覆盖成「去右侧日记」。
+  // Project management view (project region). ⌘⇧↑/↓ rotate the cards; ⌘⇧J is
+  // the same key as the notes region's "send to the end of today's daily note",
+  // but inside a project it means "insert at the top of today's todo area" —
+  // the region override lets one key carry two intents by context. In the
+  // project region ⌘⌥N is overridden to "go to the journal on the right".
   "project.prev": "Mod-Shift-ArrowUp",
   "project.next": "Mod-Shift-ArrowDown",
   "project.send-todo": "Mod-Shift-j",
   "project.new": "Mod-Shift-n",
-  // ⌘⌫ 与访达同义(删到废纸篓)。只管「当前项目」,且只在项目区生效:
-  // 笔记区的 ⌘⌫ 不占用,正文编辑时不会误删项目。
+  // ⌘⌫ means the same as in Finder (move to trash). It only covers the
+  // "current project" and only applies inside the project region: the notes
+  // region does not claim ⌘⌫, so editing the body never deletes a project.
   "project.delete": "Mod-Backspace",
   "project.focus-daily": "Mod-Alt-n",
   "region.focus-project": "Mod-Alt-p",
 
-  // 学习模式网页预览的页面缩放(浏览器级缩放:文字重排、整页一起放大)。
-  // 与 Chrome 同键:⌘= / ⌘- / ⌘0。配置归属阅读区;焦点在原生子 webview
-  // 里时由页内运行时经 title 通道转回主窗口执行(见 ContentPane)。
-  // ⌘⇧= 是 "+" 键的物理形式,与 ⌘= 同义。
+  // Page zoom of the study mode web preview (browser-level zoom: text
+  // reflows, the whole page grows). Same keys as Chrome: ⌘= / ⌘- / ⌘0.
+  // Configured in the reading region; while the focus is in the native child
+  // webview the in-page runtime forwards them back to the main window over the
+  // title channel (see ContentPane). ⌘⇧= is the physical form of the "+"
+  // key and means the same as ⌘=.
   "study.web-zoom-in": ["Mod-=", "Mod-Shift-="],
   "study.web-zoom-out": "Mod--",
   "study.web-zoom-reset": "Mod-0",
 
-  // 学习模式翻页(PDF 与网页阅读器共用,按设置里的步长滚动)。只有焦点在
-  // 阅读区时才按这套键翻页(见 globalKeys 的区域分发)。
+  // Study mode paging (shared by the PDF and web readers, scrolling by the
+  // step from settings). These keys only page while the focus is in the
+  // reading region (see the region dispatch in globalKeys).
   "study.pdf-prev-page": ["PageUp", "ArrowLeft"],
   "study.pdf-next-page": ["PageDown", "ArrowRight"],
-  // 阅读区截图送到学习助手(S = screenshot)。按键解析走 event.key:macOS
-  // 上 Option+字母会变成 å/ß/® 这类字符,所以不能用 ⌥⌘S;⌘⇧E 在这个
-  // 区域没有占用(⌘⇧S 是全局的「切换学习模式」,不能抢)。动作见
-  // builtin.ts + study/pdfSnapshot.ts。
+  // Screenshot of the reading region sent to the study assistant (S =
+  // screenshot). Key resolution goes through event.key: on macOS Option+letter
+  // turns into characters like å/ß/®, so ⌥⌘S cannot be used; ⌘⇧E is free in
+  // this region (⌘⇧S is the global "toggle study mode" and must not be
+  // taken). The action lives in builtin.ts + study/pdfSnapshot.ts.
   "study.pdf-snap-to-agent": "Mod-Shift-e",
-  // 学习助手里主会话与辅助会话来回切(会话列表在面板内部,命令只发信号)。
+  // Switch between the main and the auxiliary session of the study assistant
+  // (the session list lives inside the panel; the command only signals).
   "study.agent-switch-session": "Mod-Shift-y",
 
-  // 三个可聚焦区域之间互相切换:⌘⌥A / ⌘⌥N / ⌘⌥R = 聚焦 Agent / 笔记区 /
-  // 阅读区。同一条命令在三个区域各有一份默认键位(区域之间互不影响),所以
-  // 从任意区域都能去任意区域;在同一个区域里按下也有用——把焦点交回它的
-  // 输入框 / 编辑器(例如 Agent 面板里 ⌘⌥A)。焦点在 PDF/网页里时,网页里的
-  // 按键由页内运行时经 title 通道转回主窗口(见 study/webAnnotations.ts)。
+  // Switching between the three focusable regions: ⌘⌥A / ⌘⌥N / ⌘⌥R =
+  // focus Agent / notes / reading. The same command has one default binding
+  // per region (regions do not affect each other), so every region can reach
+  // every other one; pressing it inside its own region is useful too — it
+  // hands the focus back to that region's input / editor (e.g. ⌘⌥A inside the
+  // Agent panel). When the focus is in a PDF/web page, the in-page runtime
+  // forwards the keys back to the main window over the title channel (see
+  // study/webAnnotations.ts).
   "region.focus-agent": "Mod-Alt-a",
   "region.focus-notes": "Mod-Alt-n",
   "region.focus-reading": "Mod-Alt-r",
 
-  // 学习助手面板内的会话操作。⌘[ 在这里盖住全局的「回退链接」。
+  // Session actions inside the study assistant panel. ⌘[ overrides the
+  // global "back-link" here.
   "agent.toggle-creative": "Mod-Shift-g",
   "agent.new-session": "Mod-Shift-n",
   "agent.fork-session": "Mod-Shift-f",
   "agent.back-from-fork": "Mod-[",
   "agent.focus-history": "Mod-Shift-h",
 
-  // 代码区(code 区域)。这一套键位只在这里生效——笔记区/阅读区/Agent
-  // 面板不受影响,反之亦然(⌘S 在笔记区保存笔记,在代码区保存代码文件)。
-  // 键位大体对齐 VSCode:F12 定义、⇧F12 引用、F2 重命名、⌘Space 提示。
+  // Code region (code region). These bindings only apply here — the notes /
+  // reading regions and the Agent panel are unaffected, and vice versa (⌘S
+  // saves the note in the notes region, the code file in the code region).
+  // The bindings largely follow VSCode: F12 go to definition, ⇧F12 find
+  // references, F2 rename, ⌘Space trigger completion.
   "code.save-file": "Mod-s",
   "code.quick-open": "Mod-Shift-o",
   "code.find-in-files": "Mod-Shift-f",
@@ -164,9 +193,11 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.rename-symbol": "F2",
   "code.trigger-completion": "Mod-Space",
   "code.toggle-tree": "Mod-b",
-  // 聚焦文件树(VSCode/Zed 的 Explorer 键位)。只在代码区生效;阅读区的
-  // 截图键 ⌘⇧E 是跨区域和弦,但「区域自己的绑定优先」——代码区内按 ⌘⇧E
-  // 聚焦的是树,不会顺带截阅读区一张。
+  // Focus the file tree (VSCode/Zed's Explorer binding). Only active in the
+  // code region; the reading region's screenshot key ⌘⇧E is a cross-region
+  // chord, but "the region's own binding wins" — pressing ⌘⇧E inside the
+  // code region focuses the tree and does not also screenshot the reading
+  // region.
   "code.focus-tree": "Mod-Shift-e",
   "code.toggle-problems": "Mod-Shift-m",
   "code.next-tab": "Mod-Alt-ArrowRight",
@@ -177,10 +208,11 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.toggle-wrap": "Alt-z",
 };
 
-/** 无显式归属表的命令按前缀分;少数例外写在下面。 */
+/** Commands without an explicit placement table are assigned by prefix; the few exceptions are listed below. */
 const REGION_EXACT: Record<string, KeyRegion> = {
   "nav.header-todos": "notes",
-  // 「学习助手切换会话」是面板内动作:焦点在面板里才该响应。
+  // "Switch assistant session" is an in-panel action: it should only respond
+  // while the focus is in the panel.
   "study.agent-switch-session": "agent",
 };
 
@@ -197,26 +229,32 @@ const REGION_PREFIXES: [string, KeyRegion][] = [
 ];
 
 /**
- * 同一条命令可以同时属于多个区域(区域各自独立)。区域切换命令三个区域都有
- * 一份:从任意区域都能去任意区域,而且「把焦点交回自己所在区域」同样有意义
- * ——Agent 面板里 ⌘⌥A 就是把焦点送回输入框(在消息列表/历史里时尤其需要)。
+ * The same command can belong to several regions at once (each region is
+ * independent). The region-switch commands have a copy in every region: from
+ * any region you can reach any other, and "hand the focus back to my own
+ * region" is meaningful too — ⌘⌥A inside the Agent panel sends the focus
+ * back to its input (especially needed from the message list / history).
  */
 const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
   "region.focus-agent": ["reading", "notes", "agent", "code"],
   "region.focus-notes": ["reading", "notes", "agent", "code"],
   "region.focus-reading": ["reading", "notes", "agent"],
-  // 项目视图里两栏都是可聚焦的:卡片区与右栏日记。⌘⌥P 在项目区把焦点送回
-  // 卡片,在日记区也成立(不用先回卡片再跳)。
+  // Both columns of the project view are focusable: the cards and the
+  // journal on the right. ⌘⌥P sends the focus back to the cards in the
+  // project region and holds in the journal column too (no need to go back
+  // to the cards first).
   "region.focus-project": ["project", "notes"],
 };
 
 /**
- * 代码区继承的全局命令(白名单)。
+ * The global commands the code region inherits (whitelist).
  *
- * 代码编辑器是**独立的一界**:⌘S 在这里是「保存代码文件」,不是「保存笔记」。
- * 所以代码区不继承整个 global 层,只继承这几条真正应用级的——命令面板、
- * 快速跳转、切学习模式、设置。别的全局键位(⌘⇧P 切项目管理视图、⌘⇧O 开
- * 今日日记)在代码区让位给代码自己的动作。
+ * The code editor is **a separate world**: ⌘S here means "save the code
+ * file", not "save the note". So the code region does not inherit the whole
+ * global layer, only these truly application-level commands — command
+ * palette, quick switcher, toggle study mode, settings. Other global
+ * bindings (⌘⇧P toggle project view, ⌘⇧O open today's daily note) yield to
+ * the code region's own actions.
  */
 const CODE_INHERITED_GLOBALS = new Set([
   "nav.command-palette",
@@ -226,22 +264,29 @@ const CODE_INHERITED_GLOBALS = new Set([
 ]);
 
 /**
- * 不随焦点变化的两类命令:键位**不按焦点区域设限**,在哪个区域按下都执行。
+ * Two kinds of commands that do not depend on the focus: their bindings are
+ * **not restricted to a focus region** and run wherever they are pressed.
  *
- *   - 对阅读区动手:翻页(只滚内容,焦点留在原处)、截图(把当前这页附进
- *     助手输入框)。它们只跟阅读区里是什么有关,跟光标停在哪无关。
- *   - 区域导航:⌘⌥A/N/R 去 Agent / 笔记区 / 阅读区。导航的意思就是「从哪儿
- *     都能过去」,按下的位置不该有区别(在 Agent 面板里 ⌘⌥A 把焦点送回输入框
- *     同样成立)。
+ *   - Acting on the reading region: paging (scrolls the content only, the
+ *     focus stays put) and screenshot (attaches the current page to the
+ *     assistant's input). They depend on what is in the reading region, not
+ *     on where the cursor sits.
+ *   - Region navigation: ⌘⌥A/N/R go to Agent / notes / reading. Navigation
+ *     means "reachable from anywhere", so where it was pressed makes no
+ *     difference (⌘⌥A inside the Agent panel sending the focus back to its
+ *     input holds too).
  *
- * 两条纪律:
- *   1. 区域自己的绑定优先(见 commandsForKey):笔记区把同一个键绑给别的命令,
- *      笔记区按下去执行的是笔记区的意思。
- *   2. 显式解绑只在该区域生效:某个区域把命令写 null,就在这个区域里彻底不
- *      响应(不因为别处还有一份绑定而复活)。
+ * Two disciplines:
+ *   1. The region's own binding wins (see commandsForKey): when the notes
+ *      region binds the same key to another command, pressing it there runs
+ *      the notes region's meaning.
+ *   2. An explicit unbind only takes effect in its own region: a region that
+ *      writes the command as null does not respond to it there at all (it
+ *      does not come back to life because a binding exists elsewhere).
  *
- * 只对和弦生效:PageUp/PageDown/方向键这类裸键在编辑器与普通页面里有原生
- * 含义,必须继续只在阅读区生效(见 globalKeys 的裸键让路)。
+ * Chords only: bare keys like PageUp/PageDown/arrows have native meanings in
+ * the editor and in ordinary pages, so they must keep working in the reading
+ * region alone (see the bare-key pass-through in globalKeys).
  */
 const REGION_FREE_COMMANDS = new Set([
   "study.pdf-prev-page",
@@ -253,13 +298,13 @@ const REGION_FREE_COMMANDS = new Set([
   "region.focus-project",
 ]);
 
-/** 键位规格(如 "Mod-Shift-a")是否带占用性强、不会和文本输入撞车的修饰键。 */
+/** Whether a binding spec (such as "Mod-Shift-a") carries a modifier that claims the key without colliding with text input. */
 function isChord(key: string): boolean {
   const head = key.split("-")[0];
   return head === "Mod" || head === "Ctrl" || head === "Alt";
 }
 
-/** 命令的默认归属区域(主归属,用于没有显式区域参数时的兜底)。 */
+/** The command's default region (primary region, used as the fallback when no explicit region is given). */
 export function defaultRegionOf(id: string): KeyRegion {
   const placement = REGION_PLACEMENT[id];
   if (placement) return placement[0];
@@ -271,7 +316,7 @@ export function defaultRegionOf(id: string): KeyRegion {
   return "global";
 }
 
-/** 命令默认出现在哪些区域(大多数命令只有一个)。 */
+/** The regions a command appears in by default (most commands have exactly one). */
 export function defaultRegionsOf(id: string): KeyRegion[] {
   return REGION_PLACEMENT[id] ?? [defaultRegionOf(id)];
 }
@@ -297,9 +342,9 @@ function defaultKeymap(): Keymap {
 
 let current: Keymap = defaultKeymap();
 let revision = 0;
-/** 每个区域的「按键 → 命令」索引:每次按键只查两次 Map,不遍历绑定表。 */
+/** Per-region "key → command" index: each keystroke looks up two Maps instead of scanning the binding table. */
 let keyIndex: Record<KeyRegion, Map<string, string[]>> = indexShell();
-/** REGION_FREE_COMMANDS 的和弦:哪个区域都命中(键位来自配置它的区域)。 */
+/** The chords of REGION_FREE_COMMANDS: they hit in every region (the binding comes from the region it was configured in). */
 let regionFreeIndex = new Map<string, string[]>();
 
 function indexShell(): Record<KeyRegion, Map<string, string[]>> {
@@ -354,31 +399,33 @@ export function keymapRevision(): number {
   return revision;
 }
 
-/** 命令在这个区域里有没有条目(含「显式解绑」的 null)。 */
+/** Whether the command has an entry in this region (including the null of an "explicitly unbound" command). */
 export function commandInRegion(id: string, region: KeyRegion): boolean {
   return Object.prototype.hasOwnProperty.call(current[region], id);
 }
 
-/** 命令当前出现在哪些区域(默认 + 用户覆盖后)。 */
+/** The regions the command currently appears in (defaults plus user overrides). */
 export function commandRegions(id: string): KeyRegion[] {
   return KEY_REGION_IDS.filter((region) => commandInRegion(id, region));
 }
 
 /**
- * 设置页的一行该出现在哪个区域页签:区域里有条目(含 null)就出现;从没配过
- * 键位的命令按默认归属展示一次,免得从列表里消失。
+ * Which region tab a row of the settings page belongs to: it appears when
+ * the region holds an entry (including null); a command that was never
+ * configured is shown once under its default region so it does not vanish
+ * from the list.
  */
 export function commandBelongs(id: string, region: KeyRegion): boolean {
   if (commandInRegion(id, region)) return true;
   return commandRegions(id).length === 0 && defaultRegionOf(id) === region;
 }
 
-/** 命令的默认归属(没有多区域放置时就是它唯一的区域)。 */
+/** The command's default region (without multi-region placement it is its only region). */
 export function regionOfCommand(id: string): KeyRegion {
   return defaultRegionOf(id);
 }
 
-/** 这个区域的内置默认键位(与默认一致时不必写覆盖项)。 */
+/** The built-in default bindings of this region (an override identical to the default need not be written). */
 export function defaultBindingsFor(id: string, region: KeyRegion): string[] {
   if (!defaultRegionsOf(id).includes(region)) return [];
   return keysOf(DEFAULT_BINDINGS[id]);
@@ -391,8 +438,10 @@ export function keysOf(value: BindingValue | undefined): string[] {
 }
 
 /**
- * Resolved bindings for a command. 传 region = 只看该区域(设置页按区域编辑);
- * 不传 = 所有区域合并去重(命令面板/提示条展示「按哪些键能触发它」)。
+ * Resolved bindings for a command. Passing region = only that region (the
+ * settings page edits per region); omitting it = all regions merged and
+ * de-duplicated (the command palette / hint bar show "which keys trigger
+ * it").
  */
 export function bindingsForCommand(id: string, region?: KeyRegion): string[] {
   if (region) return keysOf(current[region]?.[id]);
@@ -406,9 +455,11 @@ export function bindingsForCommand(id: string, region?: KeyRegion): string[] {
 }
 
 /**
- * 当前区域里这个键可能触发的命令:先区域绑定,再通用绑定,最后是跨区域
- * 生效的命令(REGION_FREE_COMMANDS)。返回列表而不是单个 id——前一条命令的
- * `when` 为 false 时,分发层会继续试下一条。
+ * The commands this key may trigger in the current region: the region
+ * bindings first, then the global bindings, and finally the cross-region
+ * commands (REGION_FREE_COMMANDS). A list is returned instead of a single id
+ * — when the previous command's `when` is false, the dispatch layer tries
+ * the next one.
  */
 export function commandsForKey(key: string, region: KeyRegion): string[] {
   const own = keyIndex[region].get(key);
@@ -417,31 +468,37 @@ export function commandsForKey(key: string, region: KeyRegion): string[] {
     if (!ids) return;
     for (const id of ids) if (!out.includes(id)) out.push(id);
   };
-  // 项目区是「笔记区 + 项目专属动作」:卡片里同样在编辑 markdown,加粗/切待办/
-  // 保存这些 edit.* 不该因为换了区域就失灵。项目自己的绑定排在最前面;在项目区
-  // 显式解绑(null)的命令也不再从笔记区继承回来。
+  // The project region is "the notes region + project-specific actions": the
+  // cards edit markdown too, so edit.* commands like bold / toggle-todo /
+  // save must not stop working because the region changed. The project's own
+  // bindings come first; a command explicitly unbound (null) in the project
+  // region is no longer inherited from the notes region.
   if (region === "project") {
     add(keyIndex.notes.get(key)?.filter((id) => !unboundHere(id, "project")));
   }
   if (region === "code") {
-    // 代码区只继承白名单里的全局命令(见 CODE_INHERITED_GLOBALS)。
+    // The code region only inherits the whitelisted global commands (see
+    // CODE_INHERITED_GLOBALS).
     add((keyIndex.global.get(key) ?? []).filter((id) => CODE_INHERITED_GLOBALS.has(id)));
   } else if (region !== "global") {
     add(keyIndex.global.get(key));
   }
-  // own 里已经有一份时 add 去重。显式解绑(null / 空数组)只在本区域生效:
-  // 在 notes 里把 ⌘⌥A 写成 null,就不能靠阅读区那份绑定在 notes 里复活。
+  // add() de-duplicates when `own` already holds the command. An explicit
+  // unbind (null / empty array) only takes effect in its own region: writing
+  // ⌘⌥A as null in notes must not let it come back to life in notes through
+  // the reading region's binding.
   //
-  // 弹窗打开时 region 传的是 "global"(焦点不属于任何区域,只放行通用命令):
-  // 跨区域命令也不放行——它们会把焦点从弹窗里抢走(翻页同理,别去滚背后
-  // 被盖住的阅读区)。
+  // While a modal is open the region passed is "global" (the focus belongs to
+  // no region, only global commands are let through): cross-region commands
+  // are not let through either — they would steal the focus from the modal
+  // (paging likewise; do not scroll the reading region hidden behind it).
   if (region !== "global") {
     add(regionFreeIndex.get(key)?.filter((id) => !unboundHere(id, region)));
   }
   return out;
 }
 
-/** 这条命令在这个区域里被显式解绑了吗(有键名条目但一个键都没有)。 */
+/** Whether the command is explicitly unbound in this region (it has an entry but not a single key). */
 function unboundHere(id: string, region: KeyRegion): boolean {
   const map = current[region];
   if (!Object.prototype.hasOwnProperty.call(map, id)) return false;
@@ -449,16 +506,21 @@ function unboundHere(id: string, region: KeyRegion): boolean {
 }
 
 /**
- * 焦点在原生网页子 webview 里时要转回主窗口执行的键。
+ * The keys that must be forwarded back to the main window while the focus is
+ * in the native web child webview.
  *
- * 子 webview 的 keydown 不冒泡到主窗口,页内运行时只认这份列表(匹配后写
- * document.title 经 title 通道转回来)。列表直接从键位表推导,而不是手写
- * 枚举——通用命令按定义「任何焦点都生效」(快速待办、命令面板…),阅读区的
- * 绑定也归主窗口执行,跨区域生效的区域导航同理;漏一条就是网页里一条静默
- * 失效的快捷键。
+ * The child webview's keydown does not bubble to the main window, so the
+ * in-page runtime only honors this list (on a match it writes document.title
+ * and comes back over the title channel). The list is derived from the
+ * binding table instead of being hand-enumerated — global commands are
+ * "active under any focus" by definition (quick todo, command palette, ...),
+ * the reading region's bindings are executed by the main window too, and the
+ * same holds for the cross-region navigation commands; missing one means one
+ * keybinding silently dies inside a web page.
  *
- * 例外是页内自己消化的命令:翻页在页内本地滚动(不绕 IPC),PDF 截图对网页
- * 没有意义。它们在页内处理,不转发。
+ * The exceptions are the commands the page consumes itself: paging scrolls
+ * locally (no IPC round trip) and a PDF screenshot is meaningless for a web
+ * page. They are handled in the page and not forwarded.
  */
 const PAGE_OWNED_COMMANDS = new Set([
   "study.pdf-prev-page",
@@ -476,8 +538,10 @@ export function pageForwardKeys(): string[] {
     if (PAGE_OWNED_COMMANDS.has(id)) continue;
     add(keysOf(value));
   }
-  // 跨区域生效的命令(区域导航)不管配在哪个区域,都算「在任何地方都能用」:
-  // 网页里按下去也要转回主窗口,否则绑在笔记区/Agent 区的那份在网页里静默失效。
+  // A cross-region command (region navigation) counts as "usable anywhere"
+  // no matter which region it was configured in: pressing it inside a web
+  // page must forward to the main window too, otherwise the copy bound in the
+  // notes / Agent region silently dies inside the page.
   for (const region of KEY_REGION_IDS) {
     if (region === "reading") continue;
     for (const [id, value] of Object.entries(current[region])) {
@@ -489,8 +553,10 @@ export function pageForwardKeys(): string[] {
 }
 
 /**
- * 应用用户覆盖:先铺默认,再按区域放覆盖项。区域之间**互不影响**——同一条
- * 命令可以在多个区域各有一份绑定(区域切换命令就是如此);null 只解绑该区域。
+ * Apply the user overrides: lay down the defaults first, then place the
+ * overrides per region. The regions **do not affect each other** — the same
+ * command may have one binding in several regions (as the region-switch
+ * commands do); null only unbinds that region.
  */
 export function applyOverrides(overrides: OverrideMap): void {
   const km = defaultKeymap();
@@ -521,8 +587,9 @@ function normalizeValue(value: unknown): BindingValue | undefined {
 }
 
 /**
- * 读配置文件:新格式按区域分组;旧版扁平表(命令 → 键位)照旧能读,
- * 每条按命令的默认归属自动分区——升级时用户的既有键位一条不丢。
+ * Read the config file: the new format is grouped by region; the legacy flat
+ * table (command → binding) is still readable and every entry is split by the
+ * command's default region — no existing keybinding is lost on upgrade.
  */
 export function normalizeOverrides(raw: unknown): OverrideMap {
   if (!isPlainObject(raw)) return {};
@@ -554,7 +621,7 @@ export function normalizeOverrides(raw: unknown): OverrideMap {
 const FILE_HINT =
   "按焦点区域覆盖快捷键。global 在所有区域生效;notes/reading/agent 只在焦点位于该区域时生效,并可盖住同一个键的通用绑定。同一条命令可以在多个区域各有一份,区域互不影响;省略的命令用默认键位,null 只解绑该区域(跨区域生效的命令也一样)。翻页、截图、区域切换这类跨区域命令带修饰键的键位在哪个区域按下都生效。保存即生效。";
 
-/** 写配置文件:只落覆盖项(与默认相同的项不必写),空区域省略。 */
+/** Write the config file: only the overrides are written (an entry identical to the default need not be written), empty regions are omitted. */
 export function serializeOverrides(overrides: OverrideMap): string {
   const doc: Record<string, unknown> = { _hint: FILE_HINT };
   for (const region of KEY_REGION_IDS) {
@@ -565,7 +632,7 @@ export function serializeOverrides(overrides: OverrideMap): string {
   return `${JSON.stringify(doc, null, 2)}\n`;
 }
 
-/** 旧版(无区域)写盘用:所有区域拍成一张命令 → 键位的表。 */
+/** For the legacy (regionless) write path: all regions flattened into one command → binding table. */
 export function flattenOverrides(overrides: OverrideMap): BindingMap {
   const flat: BindingMap = {};
   for (const region of KEY_REGION_IDS) {
@@ -583,27 +650,30 @@ export function bindingEquals(a: BindingValue | undefined, b: BindingValue | und
 }
 
 /**
- * 固定翻页键:PageUp/PageDown **永远**翻学习模式的内容页(PDF 或网页),
- * 不受 keybindings.json 影响。只有焦点在阅读区时才生效(见 globalKeys),
- * 不会把笔记编辑器/侧栏里的 PageUp 抢走。
+ * Fixed paging keys: PageUp/PageDown **always** page the study mode content
+ * (PDF or web), unaffected by keybindings.json. They only apply while the
+ * focus is in the reading region (see globalKeys), so they never take
+ * PageUp away from the note editor or the sidebar.
  */
 export const FIXED_PAGE_COMMANDS: Record<string, string> = {
   PageUp: "study.pdf-prev-page",
   PageDown: "study.pdf-next-page",
 };
 
-/** 无修饰键的 PageUp/PageDown → 固定翻页命令;其余按键返回 null。 */
+/** Unmodified PageUp/PageDown → the fixed paging command; every other key returns null. */
 export function fixedPageCommandFor(event: KeyboardEvent): string | null {
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
   return FIXED_PAGE_COMMANDS[event.key] ?? null;
 }
 
 /**
- * 事件主键的规范化:Shift+符号与 macOS Option+字母都还原成**物理键**。
+ * Normalization of the event's main key: Shift+symbol and macOS Option+letter
+ * are both restored to the **physical key**.
  *
- * macOS 上 Option+字母产出的 event.key 是 å/ß/®,Option+N 甚至是 "Dead"——
- * 绑定表里写的是 "Mod-Alt-a",直接拿 event.key 永远匹配不上。函数体必须
- * 自包含:它会被序列化进网页运行时(见 study/webAnnotations.ts)。
+ * On macOS Option+letter produces an event.key of å/ß/®, and Option+N even
+ * produces "Dead" — while the binding table says "Mod-Alt-a", so event.key
+ * never matches on its own. The body must be self-contained: it is
+ * serialized into the web runtime (see study/webAnnotations.ts).
  */
 export function eventKeyName(event: {
   key: string;
@@ -639,8 +709,9 @@ export function eventKeyName(event: {
 }
 
 /**
- * 不带修饰键也能成为快捷键的键。只收导航/功能键:字母数字若允许裸绑,
- * 窗口级分发会把正常输入吞掉。
+ * The keys that may become a keybinding even without a modifier. Only
+ * navigation/function keys are accepted: if bare letters and digits were
+ * allowed, the window-level dispatch would swallow normal typing.
  */
 const PLAIN_KEYS = new Set([
   "PageUp",
@@ -666,8 +737,10 @@ const PLAIN_KEYS = new Set([
 ]);
 
 /**
- * 裸导航键在编辑器/输入框里有原生含义(移动光标、翻页滚动)。窗口级命令分发
- * 不能抢它们——带修饰键的绑定不在此列:用户显式按 ⌃J,就是要命令生效。
+ * Bare navigation keys have native meanings in the editor and in inputs
+ * (moving the cursor, scrolling). The window-level command dispatch must not
+ * take them — modified bindings are not in this set: the user explicitly
+ * pressed ⌃J and wants the command to run.
  */
 const FOCUS_OWNED_PLAIN_KEYS = new Set([
   "PageUp",
@@ -680,7 +753,7 @@ const FOCUS_OWNED_PLAIN_KEYS = new Set([
   "ArrowRight",
 ]);
 
-/** 不带修饰键、且归编辑器所有的按键。 */
+/** Keys that carry no modifier and belong to the editor. */
 export function isPlainFocusOwnedKey(event: KeyboardEvent): boolean {
   return (
     !event.metaKey &&
@@ -692,21 +765,24 @@ export function isPlainFocusOwnedKey(event: KeyboardEvent): boolean {
 }
 
 /**
- * 平台文本编辑和弦:文本输入控件(input/textarea)自己拥有它们。
+ * The platform's text editing chords: the text input controls
+ * (input/textarea) own them.
  *
- * 区域里绑了同一个键之后,窗口级分发不能再抢——否则在笔记区把 ⌘A 绑成某个
- * 命令后,编辑器内的搜索框、链接补全输入框里按 ⌘A 就不再是全选。编辑器本体
- * 是 contenteditable,不在此列(那里的 ⌘A 归编辑器/命令)。
+ * Once a region binds the same key, the window-level dispatch may not take
+ * it — otherwise, after binding ⌘A to some command in the notes region, ⌘A
+ * inside the editor's search box or the link-suggest input would no longer
+ * select all. The editor itself is contenteditable and is not in this set
+ * (there ⌘A belongs to the editor/command).
  */
 const FORM_EDIT_CHORDS = new Set(["Mod-a", "Mod-c", "Mod-x", "Mod-v", "Mod-z", "Mod-Shift-z"]);
 
-/** 这个按键是否应该留在文本输入控件里(tagName 来自按键目标元素)。 */
+/** Whether the key should stay inside the text input control (tagName comes from the event target element). */
 export function formOwnsEditChord(key: string, tagName: string | null | undefined): boolean {
   if (tagName !== "INPUT" && tagName !== "TEXTAREA") return false;
   return FORM_EDIT_CHORDS.has(key);
 }
 
-/** 焦点是否落在会自己消费按键的编辑器/输入框里。 */
+/** Whether the focus sits in an editor/input that consumes keys itself. */
 export function isEditableTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
   if (el.isContentEditable) return true;
@@ -745,14 +821,17 @@ const KEY_GLYPH: Record<string, string> = {
 };
 
 /**
- * 把绑定串拆成「修饰键 + 主键」。
+ * Split a binding string into "modifiers + main key".
  *
- * 不能简单 `split("-")`:减号键自己就是 "-"(⌘− 写作 "Mod--"),按分隔符
- * 切开只会剩下一串空串。改成从头逐个剥修饰键,剩下的整段都是主键——"Mod--"
- * 剥掉 "Mod-" 后主键是 "-","Mod-Shift-=" 剥两次后主键是 "="。
+ * A plain `split("-")` does not work: the minus key is itself "-"
+ * (⌘− is written "Mod--"), so splitting on the separator only leaves a row
+ * of empty strings. Instead the modifiers are peeled off one by one from the
+ * front and the rest is the main key — "Mod--" loses "Mod-" and leaves "-",
+ * "Mod-Shift-=" loses two and leaves "=".
  *
- * 这个函数会被序列化进网页运行时(注入原生 webview),函数体必须自包含:
- * 修饰键表写在函数内部,不引用模块常量。
+ * This function is serialized into the web runtime (injected into the native
+ * webview), so its body must be self-contained: the modifier table lives
+ * inside the function and no module constant is referenced.
  */
 export function parseBinding(binding: string): { mods: string[]; key: string } {
   const MODIFIERS = ["Mod", "Shift", "Alt", "Ctrl", "Meta"];

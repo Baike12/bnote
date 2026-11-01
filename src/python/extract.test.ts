@@ -46,8 +46,8 @@ describe("extractPython 基础提取", () => {
     expect(eff.blocks.map((b) => b.text)).toEqual(["a = 1", "c = a + 1\nprint(c)"]);
     const vLines = eff.virtualText.split("\n");
     expect(vLines[1]).toBe("a = 1");
-    expect(vLines[3]).toBe(""); // 中间文字
-    expect(vLines[5]).toBe(""); // ts 内容
+    expect(vLines[3]).toBe(""); // the prose in between
+    expect(vLines[5]).toBe(""); // the ts block
     expect(vLines[8]).toBe("c = a + 1");
   });
 
@@ -112,7 +112,7 @@ describe("main 守卫", () => {
     expect(eff.hasMainGuard).toBe(false);
     expect(eff.appendedLines).toBe(3);
     expect(eff.effectiveText.endsWith('if __name__ == "__main__":\n    main()')).toBe(true);
-    // 追加不改变已有行的行号映射。
+    // Appending does not change the line mapping of the existing lines.
     expect(eff.effectiveText.split("\n")[1]).toBe("def main():");
   });
 
@@ -142,14 +142,14 @@ describe("LSP 行列映射(UTF-16 code unit 与 CM 偏移同单位)", () => {
     const doc = docOf("ab\n中文cd\nx\n");
     expect(lspPointToOffset(doc, 0, 1)).toBe(1);
     expect(lspPointToOffset(doc, 1, 0)).toBe(3);
-    // 超出行长钳到行尾(「中文cd」是 4 个 BMP 字符 = 4 个 UTF-16 单元)。
+    // A column past the end of the line is clamped to the line end (the CJK line is 4 BMP characters = 4 UTF-16 units).
     expect(lspPointToOffset(doc, 1, 100)).toBe(3 + 4);
     expect(lspPointToOffset(doc, 99, 0)).toBe(-1);
   });
 
   it("代理对(emoji)按 UTF-16 计数,与 LSP 一致", () => {
     const doc = docOf("a🎉b\n");
-    // 🎉 是 1 个码点 = 2 个 UTF-16 单元;a(1)+🎉(2)=3。
+    // The emoji is 1 code point = 2 UTF-16 units; a(1)+emoji(2)=3.
     expect(lspPointToOffset(doc, 0, 3)).toBe(3);
     expect(doc.sliceString(3, 4)).toBe("b");
   });
@@ -164,9 +164,9 @@ describe("LSP 行列映射(UTF-16 code unit 与 CM 偏移同单位)", () => {
         code: "invalid-assignment",
         source: "ty",
       },
-      // 追加守卫区 / 越界行 → 丢
+      // The appended guard region / an out-of-range line -> dropped
       { range: { start: { line: 99, character: 0 }, end: { line: 99, character: 1 } }, message: "ghost" },
-      // 缺 range → 丢
+      // Missing range -> dropped
       { range: undefined as never, message: "broken" },
     ];
     const mapped = mapLspDiagnostics(doc, raw);
@@ -200,7 +200,7 @@ describe("LSP 行列映射(UTF-16 code unit 与 CM 偏移同单位)", () => {
 describe("性能护栏", () => {
   it("大文档提取是线性开销(10k 行 < 50ms,防意外 O(n²))", () => {
     const chunk = "文字段落,some prose。\n```python\nx1 = 1\n```\n```ts\nconst a = 1\n```\n";
-    const doc = chunk.repeat(1250); // ~10k 行
+    const doc = chunk.repeat(1250); // ~10k lines
     const t0 = performance.now();
     const eff = extractPython(doc);
     const ms = performance.now() - t0;
@@ -276,7 +276,7 @@ describe("mdPosToLspPosition(光标 → 虚拟文件 position)", () => {
   it("顶格围栏:行列直读", () => {
     const doc = docOf("```python\nx = 1\nprint(x)\n```");
     const eff = extractPython(doc.toString());
-    // 光标在 "x = 1" 末尾(偏移 10 + 5 = 行内 5)。
+    // The caret is at the end of "x = 1" (offset 10 + 5 = column 5 in the line).
     expect(mdPosToLspPosition(doc, 10 + 5, eff)).toEqual({ line: 1, character: 5 });
     expect(mdPosToLspPosition(doc, 10 + 2, eff)).toEqual({ line: 1, character: 2 });
   });
@@ -284,22 +284,22 @@ describe("mdPosToLspPosition(光标 → 虚拟文件 position)", () => {
   it("列表内缩进围栏:剥掉公共缩进,光标在被剥前缀里贴列 0", () => {
     const doc = docOf("- item\n\n  ```python\n  for i in r\n  ```\n");
     const eff = extractPython(doc.toString());
-    // 围栏开栏缩进 2,内容行 "  for i in r" → 虚拟行 "for i in r"。
+    // The opening fence is indented by 2, so the content line "  for i in r" becomes the virtual line "for i in r".
     const line = doc.line(4); // "  for i in r"
     expect(line.text).toBe("  for i in r");
-    const cursorAfterIn = line.from + 9; // "for i in" 之后,虚拟列 = 9 - 2
+    const cursorAfterIn = line.from + 9; // after "for i in", the virtual column = 9 - 2
     expect(mdPosToLspPosition(doc, cursorAfterIn, eff)).toEqual({ line: 3, character: 7 });
-    // 光标落在被剥掉的 2 列缩进里 → 贴列 0。
+    // The caret sits inside the 2 stripped indent columns -> it sticks to column 0.
     expect(mdPosToLspPosition(doc, line.from + 1, eff)).toEqual({ line: 3, character: 0 });
   });
 
   it("围栏标记行 / 散文行返回 null(补全与 hover 的门)", () => {
     const doc = docOf("# 标题\n\n```python\nx = 1\n```\n\n正文\n");
     const eff = extractPython(doc.toString());
-    expect(mdPosToLspPosition(doc, 0, eff)).toBeNull(); // 标题行
-    expect(mdPosToLspPosition(doc, doc.line(3).to, eff)).toBeNull(); // ``` 开栏行
-    expect(mdPosToLspPosition(doc, doc.line(5).to, eff)).toBeNull(); // ``` 闭栏行
-    expect(mdPosToLspPosition(doc, doc.line(6).to, eff)).toBeNull(); // 闭栏后的空行
+    expect(mdPosToLspPosition(doc, 0, eff)).toBeNull(); // the heading line
+    expect(mdPosToLspPosition(doc, doc.line(3).to, eff)).toBeNull(); // the ``` opening fence line
+    expect(mdPosToLspPosition(doc, doc.line(5).to, eff)).toBeNull(); // the ``` closing fence line
+    expect(mdPosToLspPosition(doc, doc.line(6).to, eff)).toBeNull(); // the blank line after the closing fence
   });
 
   it("偏移越界夹到文档长度内(未闭合围栏到文档末尾都是代码行)", () => {

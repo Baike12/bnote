@@ -7,12 +7,15 @@ import { vimCursorNeedsFlush, scheduleVimCursorFlush } from "./setup";
 import { currentVimMode, vimDrawsBlockCursor } from "./vim/vim";
 
 /**
- * 门禁：vim 光标冲刷（setup.ts 的 updateListener）只在「真有层会动」时付那一次
- * 同步 coordsAtPos。这条判据是模式切换卡顿的根因所在——回归的样子是「又开始
- * 每次事务都冲刷」，那会把整轮 measure（块光标 + 选区层 + 打字机）和一次强制
- * 样式重算塞回按键那一帧（实测 plain 2.0ms / 公式块 4.3ms，浏览器里量过）。
+ * Gate: the vim cursor flush (setup.ts's updateListener) only pays for that one
+ * synchronous coordsAtPos when a layer will really move. This predicate is the
+ * root of the mode-switch jank — the regression looks like "flushing on every
+ * transaction again", which pushes a full measure round (block cursor + selection
+ * layer + typewriter) and one forced style recalc back into the keystroke frame
+ * (measured in the browser: plain 2.0ms / formula block 4.3ms).
  *
- * 这里锁的是模型本身（纯函数），DOM 侧的收益另有浏览器测量。
+ * What this locks is the model itself (pure functions); the DOM-side gain is
+ * measured separately in the browser.
  */
 
 function state(doc: string, cursor: number): EditorState {
@@ -37,7 +40,8 @@ function moved(doc: string, from: number, to: number): boolean {
 
 describe("vim 光标冲刷判据", () => {
   it("normal→insert 那种空转（选区没动）不冲刷", () => {
-    // `i` 走的是 selectForInsert：事务里带了 selection，但位置没变。
+    // `i` goes through selectForInsert: the transaction carries a selection, but
+    // the position did not change.
     const start = state(PLAIN, 3);
     const next = start.update({ selection: EditorSelection.cursor(3) }).state;
     expect(vimCursorNeedsFlush(start, next, false, false)).toBe(false);
@@ -45,7 +49,8 @@ describe("vim 光标冲刷判据", () => {
 
   it("插入态在正文里横向移动不冲刷（没有任何 DOM 会重构）", () => {
     expect(moved(PLAIN, 2, 6)).toBe(false);
-    // 第三行内部横向移动（16..22 是同一行：跨行移动会命中 selectionAffectsDecos 的上界）
+    // Horizontal movement inside the third line (16..22 are the same line:
+    // crossing a line boundary would hit the upper bound of selectionAffectsDecos)
     expect(moved(PLAIN, 16, 21)).toBe(false);
   });
 
@@ -60,7 +65,8 @@ describe("vim 光标冲刷判据", () => {
   });
 
   it("跨标记槽的同行移动要冲刷（裸 `-`/任务括号的渲染会翻）", () => {
-    // "- 列表项"：槽结束在 col 2，光标从 2 走到 3 跨过槽边界。
+    // In "- 列表项": the slot ends at col 2, so moving the caret from 2 to 3
+    // crosses the slot boundary.
     const start = state(LIST, 2);
     const next = start.update({ selection: EditorSelection.cursor(3) }).state;
     expect(vimCursorNeedsFlush(start, next, false, false)).toBe(true);
@@ -70,7 +76,7 @@ describe("vim 光标冲刷判据", () => {
     const start = state(INLINE_TRIGGER, 1);
     const next = start.update({ selection: EditorSelection.cursor(5) }).state;
     expect(vimCursorNeedsFlush(start, next, false, false)).toBe(true);
-    // 公式行同理（$ 在触发符集合里）
+    // Same for a formula line ($ is part of the trigger set)
     const ms = state(MATH, 1);
     const mn = ms.update({ selection: EditorSelection.cursor(4) }).state;
     expect(vimCursorNeedsFlush(ms, mn, false, false)).toBe(true);
@@ -78,9 +84,11 @@ describe("vim 光标冲刷判据", () => {
 });
 
 /**
- * 块光标判据必须与引擎自己的 measureCursor 对齐（`vim && (!vim.insertMode ||
- * overwrite)`）——判错的两个方向都出问题：说 true 是白付一次整轮 measure，
- * 说 false 是块光标慢一帧落位。引擎实例就是视图上的 `cm`（getCM 读它）。
+ * The block cursor predicate must match the engine's own measureCursor
+ * (`vim && (!vim.insertMode || overwrite)`) — being wrong in either direction
+ * breaks: saying true pays for a full measure round for nothing, saying false
+ * lands the block cursor one frame late. The engine instance is the view's `cm`
+ * (getCM reads it).
  */
 describe("块光标判据与引擎一致", () => {  const fakeView = (vim: unknown, overwrite = false) =>
     ({ cm: { state: { vim, overwrite } } }) as unknown as Parameters<typeof vimDrawsBlockCursor>[0];
@@ -103,11 +111,14 @@ describe("块光标判据与引擎一致", () => {  const fakeView = (vim: unkno
 });
 
 /**
- * 冲刷的时序契约（setup.ts updateListener 上方的注释）：冲刷排进微任务——它
- * 仍在按键任务内、渲染之前（块光标同帧落位不变），但排在同任务全部同步变更
- * （含引擎的 .cm-vimMode 类翻转）之后，一轮 measure 看到最终样式，Esc 的
- * 「翻转前布局 + 翻转作废 + rAF 重算」双轮归一。回归的样子是回到 updateListener
- * 里同步读坐标：那样每次 Esc 都按旧样式白算一轮布局。
+ * Timing contract of the flush (the comment above setup.ts's updateListener): the
+ * flush is queued as a microtask — it still runs inside the keystroke task and
+ * before rendering (the block cursor still lands in the same frame), but after
+ * every synchronous change of that task (including the engine's .cm-vimMode
+ * class flip), so one measure round sees the final styles and Esc's "layout
+ * before the flip + invalidated flip + rAF recompute" two rounds collapse into
+ * one. The regression looks like going back to reading coordinates synchronously
+ * in updateListener: every Esc would then compute a layout for the stale styles.
  */
 describe("冲刷微任务时序契约", () => {
   const fakeView = (connected: boolean) => {

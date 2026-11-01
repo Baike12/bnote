@@ -2,18 +2,25 @@ import { api } from "@/lib/tauri";
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 
 /**
- * PDF 批注:目前只有亮黄色高亮。数据模型仍保留 `kind: "note"`(旧文件里
- * 的文字批注条目原样读写,不清洗),只是界面上不再新建、不再上屏。
+ * PDF annotations: for now only bright yellow highlights. The data model still
+ * keeps `kind: "note"` (text annotation entries in old files are read and
+ * written as-is, not cleaned up), but the UI no longer creates them and no
+ * longer shows them.
  *
- * 高亮矩形以「整页比例」(0..1) 存盘——缩放、裁剪、DPR 变化都不影响批注
- * 位置;页面重排(渲染宽度变了)时只需按当前页面像素重算样式。裁剪窗口
- * 只是把同一份整页坐标平移/裁掉,批注跟着页面走。
+ * Highlight rectangles are stored as "full page ratios" (0..1), so zoom, crop
+ * and DPR changes never move an annotation; when the page reflows (the
+ * rendered width changed) only the styling has to be recomputed from the
+ * current page pixels. The crop window just shifts/clips the same full-page
+ * coordinates, so annotations travel with the page.
  *
- * 存盘按材料一一对应:`<vault>/.bnote/materials/pdfs/<目录>/annotations.json`
- * (材料目录见 study/materials.ts,与 agent 会话记录同目录)。旧位置
- * `.bnote/pdf-annotations/<PDF 相对路径>.json` 会在首次读取时迁移过来。
- * 一份 PDF 一个文件,打开哪份只读哪份,不会因为批注了很多 PDF 而让读写量
- * 随库增长。
+ * Storage is one-to-one with the material:
+ * `<vault>/.bnote/materials/pdfs/<dir>/annotations.json` (the material
+ * directory is described in study/materials.ts, the same directory the agent
+ * session transcripts use). The old location
+ * `.bnote/pdf-annotations/<pdf relative path>.json` is migrated on the first
+ * read. One file per PDF, and opening a PDF only reads that file, so the
+ * read/write volume does not grow with the library just because many PDFs
+ * carry annotations.
  */
 export interface NormRect {
   x: number;
@@ -28,9 +35,9 @@ export interface PdfAnnotation {
   id: string;
   page: number;
   rects: NormRect[];
-  /** 亮黄 = highlight,亮蓝 + 右侧文字 = note。旧数据没有这个字段,按高亮读。 */
+  /** Bright yellow = highlight, bright blue + text on the right = note. Old data has no such field and is read as a highlight. */
   kind: PdfAnnotationKind;
-  /** 文字批注内容;高亮批注为空。 */
+  /** Text annotation content; empty for highlights. */
   text: string;
   createdAt: number;
 }
@@ -47,12 +54,12 @@ export interface BoxLike {
   bottom: number;
 }
 
-/** 旧文字批注内容的读取上限(只用于解析旧数据,界面不再编辑它)。 */
+/** Read limit for legacy text annotation content (only used when parsing old data; the UI no longer edits it). */
 export const MAX_NOTE_TEXT = 5000;
 
 export const EMPTY_PDF_ANNOTATIONS: PdfAnnotation[] = [];
 
-/** 归一化到页面比例;完全在页外/退化的矩形丢掉。 */
+/** Normalize to page ratios; rectangles fully outside the page or degenerate are dropped. */
 export function normalizeRects(
   boxes: Iterable<BoxLike>,
   page: BoxLike,
@@ -79,14 +86,16 @@ export function normalizeRects(
 }
 
 /**
- * 同一行的相邻矩形合成一条(高亮才像一笔画过去的荧光笔)。
+ * Merge adjacent rectangles on the same line (only then does a highlight look
+ * like a highlighter stroke drawn in one pass).
  *
- * 判据:垂直重叠超过较矮矩形的一半 = 同一行;水平间距 ≤ maxGap = 同一段。
- * 多栏排版的两栏之间间距大,不会被并成一条。
+ * Criterion: vertical overlap beyond half of the shorter rectangle = same
+ * line; horizontal gap <= maxGap = same run. In a multi-column layout the gap
+ * between the columns is large, so they are not merged.
  */
 export function mergeLineRects(rects: NormRect[], maxGap = 0.02): NormRect[] {
-  // 自包含:这个函数会被序列化进网页批注运行时(toString),不能引用模块
-  // 里的其它符号。
+  // Self-contained: this function is serialized into the web annotation
+  // runtime (toString), so it must not reference other module symbols.
   const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
   const out: NormRect[] = [];
   for (const r of rects) {
@@ -114,7 +123,7 @@ export function mergeLineRects(rects: NormRect[], maxGap = 0.02): NormRect[] {
   return out;
 }
 
-/** 点中的批注(后加的在上层);带一点容差,点在行边也算命中。 */
+/** The annotation under the click (later ones are on top); a small tolerance means clicking the line edge also hits. */
 export function annotationAt(
   annotations: PdfAnnotation[],
   page: number,
@@ -140,11 +149,14 @@ export function annotationAt(
 }
 
 /**
- * 单击落在一行文字上:取那一行(与点击处同一水平段)的矩形。
+ * A click that lands on a line of text: take the rectangles of that line (the
+ * same horizontal run as the click).
  *
- * `boxes` 是文本层所有 span 的客户区矩形;先找点击处的 span,取与它垂直
- * 重叠的同一行矩形,合并成段后取包含点击横坐标的那一段——这样单击高亮的
- * 是「这一行」,而不是整页同高度的多栏内容。
+ * `boxes` holds the client rects of every span in the text layer; first find
+ * the span under the click, then take the rectangles of the same line that
+ * overlap it vertically, merge them into runs and pick the run containing the
+ * click's x coordinate — so a single click highlights "this line" instead of
+ * every column of the page that happens to be at the same height.
  */
 export function lineRectsAtPoint(
   boxes: BoxLike[],
@@ -160,7 +172,7 @@ export function lineRectsAtPoint(
     (b) => x >= b.left - 2 && x <= b.right + 2 && y >= b.top - 2 && y <= b.bottom + 2,
   );
   if (hit.length === 0) return [];
-  // 点在行间空隙时,取垂直距离最近的那个文字矩形。
+  // When the click lands in the gap between lines, take the text rectangle with the smallest vertical distance.
   const line = hit.reduce((a, b) => (lineDistance(b, y) < lineDistance(a, y) ? b : a));
   const band = boxes.filter(
     (b) =>
@@ -209,7 +221,7 @@ export function newPdfAnnotationId(): string {
 // Persistence: one file per PDF
 // ---------------------------------------------------------------------------
 
-/** 一份 PDF 对应的批注文件(相对 `.bnote/`)。目录结构镜像仓库,便于人工查找。 */
+/** The annotation file of one PDF (relative to `.bnote/`). The directory structure mirrors the vault so it is easy to find by hand. */
 export function pdfAnnotationRelPath(docKey: string): string {
   const parts = docKey
     .split("/")
@@ -218,7 +230,7 @@ export function pdfAnnotationRelPath(docKey: string): string {
   if (parts.length === 0) parts.push("document.pdf");
   const last = parts[parts.length - 1];
   const name = `${last}.json`;
-  // APFS 文件名上限 255 字节;超长时用路径哈希兜底,仍保持一份 PDF 一个文件。
+  // APFS file names are limited to 255 bytes; when too long, fall back to a path hash, still keeping one file per PDF.
   parts[parts.length - 1] =
     name.length <= 200 ? name : `${last.slice(0, 120)}-${fnv1a(docKey)}.json`;
   return `pdf-annotations/${parts.join("/")}`;
@@ -295,8 +307,9 @@ function fnv1a(text: string): string {
 }
 
 /**
- * 材料目录(pdfAnnotations 在 `<vault>/.bnote/<materialDir>/annotations.json`)。
- * 传了 materialDir 就用新位置,没传(浏览器/harness)保持旧的按路径镜像。
+ * Material directory (pdfAnnotations live in `<vault>/.bnote/<materialDir>/annotations.json`).
+ * With a materialDir the new location is used; without one (browser/harness)
+ * the old path mirror is kept.
  */
 const MATERIAL_PREFIX = "materials/";
 
@@ -318,7 +331,7 @@ const store = createVaultJsonStore<PdfAnnotation[]>({
   serialize: (list) => JSON.stringify({ version: 1, annotations: list } satisfies PdfAnnotationFile),
 });
 
-/** 旧位置(`.bnote/pdf-annotations/<pdf 相对路径>.json`)的批注。 */
+/** Annotations at the old location (`.bnote/pdf-annotations/<pdf relative path>.json`). */
 async function readLegacyAnnotations(
   vaultRoot: string,
   docKey: string,
@@ -332,8 +345,10 @@ async function readLegacyAnnotations(
 }
 
 /**
- * 读一份 PDF 的批注。首次在新位置找不到文件时把旧位置的批注迁过来
- * (读一次、写新路径;旧文件保留不动),用户已有的批注不会因为换目录消失。
+ * Read the annotations of one PDF. When the new location has no file yet, the
+ * annotations at the old location are migrated over (read once, write to the
+ * new path; the old file is left untouched), so existing annotations do not
+ * disappear because the directory changed.
  */
 export async function loadPdfAnnotations(
   vaultRoot: string,

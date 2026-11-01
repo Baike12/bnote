@@ -4,10 +4,12 @@ import { cmToLspPosition, lspRangeToCm, lspToCmOffset } from "./positions";
 import { decodeFileUri, encodeFileUri, encodeUriPath } from "./uri";
 
 /**
- * 位置与 URI 换算的门禁。
+ * The gate of the position and URI conversion.
  *
- * 两边都用 UTF-16 码元计字符(LSP 规范如此,CodeMirror 的偏移也是 JS 字符串
- * 下标)。所以列号直接相减就对——按码点算反而会在 emoji 与代理对上错位。
+ * Both sides count characters in UTF-16 code units (the LSP specification
+ * says so, and a CodeMirror offset is a JS string index as well). So the
+ * column numbers can be subtracted directly — counting by code point would
+ * misalign on emoji and surrogate pairs.
  */
 
 const DOC = Text.of(["fn main() {", "    println!(\"你好\");", "}"]);
@@ -45,7 +47,7 @@ describe("位置换算", () => {
   });
 
   it("非 ASCII 按 UTF-16 码元计数", () => {
-    // 「你好」是 2 个码元。
+    // The two CJK characters are 2 code units.
     const doc = Text.of(["你好"]);
     expect(cmToLspPosition(doc, 2)).toEqual({ line: 0, character: 2 });
     expect(lspToCmOffset(doc, { line: 0, character: 2 })).toBe(2);

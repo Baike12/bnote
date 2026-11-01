@@ -1,41 +1,43 @@
 import { isTodo, parseListLine, todoText } from "@/daily/model";
 
 /**
- * 项目视图的数据模型。
+ * Data model of the project view.
  *
- * 一个项目 = `<vault>/.bnote/projects/<项目名>.md` 里的一份待办列表。
- * 用 markdown 而不是自定义 JSON 是刻意的:项目待办要能用 vim 编辑、能勾选、
- * 能被跨文件待办同步(mirror/send)识别——那条链路只认 markdown 的列表行。
- * 项目名就是文件名,所以日记里「⇄ 项目名」的来源标签不需要额外映射。
+ * A project = one todo list in `<vault>/.bnote/projects/<project name>.md`.
+ * Using markdown instead of a custom JSON format is deliberate: a project todo has
+ * to be editable with vim, has to be checkable and has to be recognized by the
+ * cross-file todo sync (mirror/send) - that chain only understands markdown list
+ * lines. The project name is the file name, so the "⇄ project name" source label
+ * in the daily note needs no extra mapping.
  */
 
-/** 项目文件所在目录(vault 相对)。 */
+/** Directory the project files live in (vault relative). */
 export const PROJECTS_DIR = ".bnote/projects";
 
 export function projectsDirAbs(vaultRoot: string): string {
   return `${vaultRoot.replace(/\/+$/, "")}/${PROJECTS_DIR}`;
 }
 
-/** 某项目文件的绝对路径。 */
+/** Absolute path of a project file. */
 export function projectPathFor(vaultRoot: string, name: string): string {
   return `${projectsDirAbs(vaultRoot)}/${name}.md`;
 }
 
-/** 项目文件 → 项目名(去掉目录与 .md 扩展名)。 */
+/** Project file -> project name (directory and .md extension stripped). */
 export function projectNameOf(path: string): string {
   const base = path.slice(path.lastIndexOf("/") + 1);
   return base.replace(/\.md$/i, "");
 }
 
-/** 绝对路径是否指向项目文件。 */
+/** Whether the absolute path points at a project file. */
 export function isProjectPath(path: string): boolean {
   return path.startsWith("/") && path.includes(`/${PROJECTS_DIR}/`);
 }
 
-/** 文件名里不能出现的字符;同时把连续空白压成一个,避免菜单里出现怪名字。 */
+/** Characters that may not appear in a file name; runs of whitespace are also collapsed into one, so no weird names show up in the menu. */
 const ILLEGAL_NAME = /[/\\:*?"<>|\0]/g;
 
-/** 用户输入 → 可用的项目文件名(不含 .md);全被过滤掉时返回空串。 */
+/** User input -> a usable project file name (without .md); an empty string when everything was filtered out. */
 export function sanitizeProjectName(raw: string): string {
   return raw
     .replace(ILLEGAL_NAME, " ")
@@ -47,18 +49,18 @@ export function sanitizeProjectName(raw: string): string {
 }
 
 export interface ProjectTodo {
-  /** 1 基行号。 */
+  /** 1-based line number. */
   line: number;
-  /** 缩进宽度(字符数),用于卡片里的层级缩进。 */
+  /** Indent width (in characters), used for the hierarchy indent in the card. */
   indent: number;
-  /** 身份文本(剥掉 checkbox 与 ✅ 戳)。 */
+  /** Identity text (checkbox and done stamp stripped). */
   text: string;
   done: boolean;
-  /** 整行原文(拖拽时原样带上子项外的这一行)。 */
+  /** The raw line (on a drag this line is carried over as it is, apart from its children). */
   raw: string;
 }
 
-/** 文档里的全部待办行(保持出现顺序)。 */
+/** All todo lines of the document (in the order they appear). */
 export function projectTodos(text: string): ProjectTodo[] {
   const out: ProjectTodo[] = [];
   const lines = text.split("\n");

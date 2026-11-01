@@ -55,18 +55,18 @@ interface ToolRecord {
   input?: unknown;
   output?: string;
   ok?: boolean;
-  /** 工具随结果回给模型的截图(如预览渲染图);只用于展示。 */
+  /** The screenshots the tool returns to the model with the result (a rendered preview for instance); they are only displayed. */
   images?: AgentImage[];
 }
 
 interface Turn {
   /** Streaming text buffer for the current assistant reply. */
   text: string;
-  /** 流式思考过程(纯文本;不进会话历史,只用于展示)。 */
+  /** The streamed thinking process (plain text; it does not enter the session history, it is only displayed). */
   thinking: string;
-  /** 首个 thinking delta 的时间戳(计时用)。 */
+  /** Timestamp of the first thinking delta (used for the timer). */
   thinkingStart: number | null;
-  /** 思考耗时(秒,turn 结束时算好冻结)。 */
+  /** How long the thinking took (in seconds, computed and frozen when the turn ends). */
   thinkSeconds: number | null;
   tools: ToolRecord[];
   error?: string;
@@ -75,56 +75,64 @@ interface Turn {
 interface ChatEntry {
   role: "user" | "assistant";
   text: string;
-  /** 写入会话记录用的时间戳。 */
+  /** The timestamp written into the session record. */
   at: number;
-  /** 用户消息带的截图/图片(仅展示;模型侧以后端会话历史为准)。 */
+  /** The screenshots and images attached to a user message (display only; on the model side the backend session history is the truth). */
   images?: AgentImage[];
   turn?: Turn;
   /**
-   * 后端会话历史里「到本条为止」的前缀条数(含本条)。user = 前一条 + 1;
-   * assistant = turn_end / error 事件携带的后端权威计数(见 agentFork.ts)。
-   * null = 还未知(出错且拿不到计数)。
+   * The number of entries of the backend session history "up to and including
+   * this one". user = the previous one + 1; assistant = the authoritative
+   * count the backend reports with the turn_end / error events (see
+   * agentFork.ts). null = still unknown (it errored and no count could be
+   * obtained).
    */
   items: number | null;
 }
 
-/** 面板内的一条会话:主会话,或从某条消息分叉出的辅助会话。 */
+/** One session inside the panel: the main session, or an auxiliary session forked from some message. */
 interface Conv {
   key: string;
   sessionId: string | null;
   entries: ChatEntry[];
   label: string;
-  /** 分叉来源会话;主会话为 null。 */
+  /** The session this one was forked from; null for the main session. */
   parent: string | null;
-  /** 辅助会话的摘要(来源消息首行)。 */
+  /** The summary of an auxiliary session (the first line of the source message). */
   basedOn: string;
   /**
-   * 分叉时复制过来的前缀条数:`entries[forkAt]` 才是这条会话自己的第一条
-   * 消息。起标题必须用它,不能拿父会话的提问顶替。
+   * The number of copied prefix entries at the time of the fork:
+   * `entries[forkAt]` is the first message that belongs to this session
+   * itself. The title has to use it, the question of the parent session
+   * must not stand in for it.
    */
   forkAt: number;
-  /** 标题来源:llm = 模型生成过(重启后不再重复生成)。 */
+  /** Where the title comes from: llm = the model generated it (it is not generated again after a restart). */
   titleSource: "llm" | "first-message";
   /**
-   * 会话级错误(启动失败 / 发送失败)。持久显示在对话区顶部(照 ZCode 的
-   * ChatErrorBanner),直到用户重试或关闭——不再只弹几秒消失的 toast:
-   * 用户看到的「发送没有回应」绝大多数就是这种被 toast 吞掉的失败。
+   * A session level error (start failed / send failed). It is displayed
+   * persistently at the top of the conversation (following ZCode's
+   * ChatErrorBanner) until the user retries or closes it, instead of only a
+   * toast that disappears after a few seconds: most of the "sending got no
+   * answer" cases the user sees are exactly such failures swallowed by a
+   * toast.
    */
   error?: string;
-  /** 错误来源:决定「重试」按钮做什么。 */
+  /** Where the error came from, it decides what the "retry" button does. */
   errorKind?: "start" | "send";
-  /** 启动时后端报告的 MCP 连接失败(空数组 = 全部正常)。 */
+  /** The MCP connection failures the backend reported at startup (an empty array = everything is fine). */
   mcpErrors: string[];
   /**
-   * 会话记录文件(`<材料目录>/sessions/<id>.jsonl`)。null = 还没有 id
-   * (刚启动/启动失败)或浏览器里没有落盘能力。
+   * The session record file (`<material dir>/sessions/<id>.jsonl`). null =
+   * there is no id yet (just started / the start failed) or the browser
+   * cannot write to disk.
    */
   transcriptPath: string | null;
-  /** 文件名里的会话 id(历史抽屉里高亮当前项)。 */
+  /** The session id in the file name (the history drawer highlights the current entry with it). */
   sessionFileId: string | null;
-  /** 这条会话启动时的模型配置快照:之后改设置不影响它,恢复也按它继续。 */
+  /** The model config snapshot of this session at the moment it started: later setting changes do not affect it, and the restore continues with it. */
   model: SessionModelConfig | null;
-  /** 最近一次模型请求的 token 用量(上下文占用 = input + output)。 */
+  /** The token usage of the last model request (the context usage = input + output). */
   usage: AgentUsage | null;
 }
 
@@ -136,7 +144,7 @@ function studyContentKey(content: StudyContent | null): string {
   return `url:${content.url}`;
 }
 
-/** 列表项 → 家族解析用的节点(缺字段按主会话/空前缀处理)。 */
+/** A list entry turned into the node used to resolve the family (missing fields mean the main session / an empty prefix). */
 function toSessionNode(meta: SavedSessionMeta): SessionNode {
   return {
     id: meta.id,
@@ -159,10 +167,10 @@ function nextConvKey(): string {
   return `c${convSeq}`;
 }
 
-/** 思考摘要吸底判定距离(ZCode reasoning 同值:离底 2px 内算贴底)。 */
+/** The distance within which the thinking summary counts as pinned to the bottom (same value as ZCode's reasoning: within 2 px of the bottom). */
 const THINKING_BOTTOM_LOCK_PX = 2;
 
-/** 摘要行:最后一行非空文本(ZCode resolveReasoningStreamingSummary 同逻辑)。 */
+/** The summary line: the last line of non-empty text (the same logic as ZCode's resolveReasoningStreamingSummary). */
 export function thinkingSummaryLine(thinking: string): string {
   const lines = thinking.replace(/\r\n?/g, "\n").split("\n");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -173,11 +181,15 @@ export function thinkingSummaryLine(thinking: string): string {
 }
 
 /**
- * 思考过程折叠块,行为照搬 ZCode 的 Reasoning(vercel/ai-elements 改造版):
- * 流式时收起,摘要行显示最后一行思考文本并向末尾滚动;完成后标签变
- * 「思考 · 持续了 N 秒」。内容按纯文本展示(不做 markdown 渲染——思考
- * 流式追加,每个 delta 重跑 markdown 解析在长思考下会卡),展开态限高内
- * 滚、默认吸底跟随,用户滚离底部后暂停、滚回底部恢复。
+ * The collapsible block of the thinking process, modelled after ZCode's
+ * Reasoning (the modified vercel/ai-elements): while streaming it is
+ * collapsed, the summary line shows the last line of the thinking text and
+ * scrolls to the end; when it is done the label becomes "thinking, lasted N
+ * seconds". The content is shown as plain text (no markdown rendering: the
+ * thinking is appended while streaming and rerunning the markdown parser on
+ * every delta stutters on a long thinking). The open state scrolls inside a
+ * limited height, sticks to the bottom by default, pauses when the user
+ * scrolls away from the bottom and resumes when they scroll back.
  */
 function ThinkingBlock({
   thinking,
@@ -194,7 +206,7 @@ function ThinkingBlock({
   const interactedRef = useRef(false);
   const [open, setOpen] = useState(false);
 
-  // 流式追加:展开时吸底;收起时把单行摘要视口推到末尾(旧内容左移)。
+  // Streaming append: it sticks to the bottom while open; while collapsed the viewport of the single summary line is pushed to the end (the old content moves left).
   useEffect(() => {
     if (!streaming) return;
     if (open) {
@@ -208,8 +220,7 @@ function ThinkingBlock({
     }
   }, [thinking, open, streaming]);
 
-  // 输出边界收起(ZCode autoCollapseKey):turn 结束时若用户没手动展开过,
-  // 折叠块回到收起态。用户点开过(interacted)则尊重选择。
+  // Collapse at the end of the output (ZCode autoCollapseKey): when the turn ends and the user has not opened the block manually, it returns to the collapsed state. Once the user has opened it (interacted) their choice is respected.
   useEffect(() => {
     if (!streaming && !interactedRef.current) setOpen(false);
   }, [streaming]);
@@ -260,7 +271,7 @@ function ThinkingBlock({
   );
 }
 
-/** 会话记录行 → 界面消息(恢复会话时用)。 */
+/** A session record line turned into a UI message (used when a session is restored). */
 function entryFromLine(line: TranscriptLine): ChatEntry {
   if (line.type === "user") {
     return {
@@ -287,7 +298,7 @@ function entryFromLine(line: TranscriptLine): ChatEntry {
   };
 }
 
-/** 界面消息 → 会话记录行(分叉时把父会话前缀写进新文件)。 */
+/** A UI message turned into a session record line (when forking, the prefix of the parent session is written into the new file). */
 function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
   return entries.map((e): TranscriptLine =>
     e.role === "user"
@@ -312,7 +323,7 @@ function cloneEntry(e: ChatEntry): ChatEntry {
   };
 }
 
-/** 历史会话列表里的时间:今天显示时分,更早显示月/日。 */
+/** The time in the history session list: today shows hours and minutes, older entries show month and day. */
 function formatSessionTime(ms: number): string {
   if (!ms) return "";
   const d = new Date(ms);
@@ -324,17 +335,23 @@ function formatSessionTime(ms: number): string {
 }
 
 /**
- * 学习模式左栏:围绕当前内容问答。
+ * The left column of study mode: asking questions about the current content.
  *
- * 会话模型:主会话(跟随当前 PDF/网页,内容或配置一变就重开)+ 若干辅助
- * 会话(从任意一条消息「⤷」分叉,后端复制历史前缀,原会话不动)。头部的
- * 下拉与 ⌘⇧Y 在会话间切换。
+ * The session model: a main session (follows the current PDF or web page,
+ * it is reopened when the content or the config changes) plus a few
+ * auxiliary sessions (forked from any message with the "fork" button, the
+ * backend copies the history prefix and the original session stays
+ * untouched). The dropdown in the header and ⌘⇧Y switch between the
+ * sessions.
  *
- * 事件按 sessionId 路由:后台会话(非当前显示)的流式回复照常写入各自的
- * entries,切回去时是完整的。
+ * The events are routed by sessionId: a streaming reply of a background
+ * session (one that is not displayed) is still written into its own entries
+ * and is complete when the user switches back to it.
  *
- * 面板在三栏布局里常驻(学习模式一进来就在场),所以主会话随内容就绪而建:
- * 打开材料即连接一次,换材料再重开。
+ * The panel stays mounted in the three column layout (it is there as soon as
+ * study mode is entered), so the main session is created as soon as the
+ * content is ready: opening a material connects once, switching the material
+ * opens it again.
  */
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
@@ -349,41 +366,41 @@ export function AgentPanel() {
   const agentPanelCommand = useAppStore((s) => s.agentPanelCommand);
   const showToast = useAppStore((s) => s.showToast);
   const patchSettings = useAppStore((s) => s.patchSettings);
-  /** 对话字号缩放:写在面板根元素的 --agent-fs 上,CSS 里正文与派生字号都乘它。 */
+  /** The conversation font scale: it is written to the --agent-fs of the panel root, and both the body text and the derived sizes in the CSS multiply it. */
   const agentFontScale = useAppStore((s) => s.settings.agentFontScale);
   const [convs, setConvs] = useState<Conv[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  /** 待发送的图片(粘贴截图 / 文件选择),随消息一起进后端会话历史。 */
+  /** The images waiting to be sent (pasted screenshots / picked files), they enter the backend session history together with the message. */
   const [pendingImages, setPendingImages] = useState<AgentImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  /** 输入法组词会话(compositionstart/end 记账):Enter 确认候选时不能发送。 */
+  /** The IME composition session (bookkeeping via compositionstart/end): Enter must not send while a candidate is confirmed. */
   const composingRef = useRef(false);
   const [starting, setStarting] = useState(false);
   const [busySession, setBusySession] = useState<string | null>(null);
-  /** 已保存的 Agent 配置(模型 / 上下文窗口);会话没建好时脚注也能显示。 */
+  /** The saved Agent config (model / context window); the footnote can show it even before a session exists. */
   const [agentConfig, setAgentConfig] = useState<{ model: string; contextWindow: number } | null>(
     null,
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const convsRef = useRef<Conv[]>([]);
-  /** 恢复代:换材料/新会话/重新恢复家族后,旧的读盘结果一律作废。 */
+  /** The restore generation: after switching the material, starting a new session or restoring the family again, the old read results are all void. */
   const restoreTokenRef = useRef(0);
-  /** 已经发起过懒启动的会话(切换时只启动一次,不等第一次回来)。 */
+  /** The sessions whose lazy start was already kicked off (it is started only once per switch, it does not wait for the first one to come back). */
   const lazyStartingRef = useRef<Set<string>>(new Set());
-  /** convKey → 该会话自己的第一句话:首轮成功后用它让模型起标题。 */
+  /** convKey -> the first message of that session itself: after the first turn succeeded it is used to let the model name the session. */
   const titleSeedRef = useRef<Map<string, string>>(new Map());
-  /** 已经请求过标题的会话(失败不重试,保持本地兜底标题)。 */
+  /** The sessions whose title was already requested (a failure is not retried, the local fallback title stays). */
   const titleAskedRef = useRef<Set<string>>(new Set());
   const turnsRef = useRef<Map<string, Turn>>(new Map());
   const busyRef = useRef<string | null>(null);
-  /** 已为哪份内容+配置建过主会话。 */
+  /** The content plus config a main session was already created for. */
   const startedKeyRef = useRef<string | null>(null);
-  /** 会话启动请求序号:过期回调(内容/配置已变)直接放弃,不盲写。 */
+  /** The request sequence number of the session start: an expired callback (the content or the config changed) is dropped instead of writing blindly. */
   const startTokenRef = useRef(0);
-  /** ⌘⇧Y 的「重新开始主会话」按钮共用同一条启动路径。 */
+  /** The "restart the main session" button of ⌘⇧Y shares the same start path. */
   const [restartNonce, setRestartNonce] = useState(0);
-  /** 本材料的落盘目录(批注 + 会话记录)与保存过的会话列表。 */
+  /** The output directory of this material (annotations + session records) and the list of the saved sessions. */
   const studyWereadBook = useAppStore((s) => s.studyWereadBook);
   const [materialInfo, setMaterialInfo] = useState<MaterialInfo | null>(null);
   const [savedSessions, setSavedSessions] = useState<SavedSessionMeta[]>([]);
@@ -391,29 +408,29 @@ export function AgentPanel() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const historyFocusPending = useRef(false);
-  /** agentPanelCommand 是递增计数:只执行比上次新的那条。 */
+  /** agentPanelCommand is an increasing counter: only the entry that is newer than the last one is executed. */
   const lastAgentCommandSeq = useRef(0);
   const materialRef = useRef<{ identity: string; info: MaterialInfo | null } | null>(null);
-  /** convKey → 会话记录文件。启动成功/恢复时写入,每轮结束追加。 */
+  /** convKey -> the session record file. It is written when the start succeeded or the session was restored and appended after every turn. */
   const transcriptRef = useRef<Map<string, string>>(new Map());
-  /** sessionId → { convKey, 记录文件 }:会话切走后(换材料)收尾事件仍要落盘。 */
+  /** sessionId -> { convKey, record file }: the closing events of a session that was switched away still have to be written to disk. */
   const sessionIndexRef = useRef<Map<string, { convKey: string; path: string | null }>>(
     new Map(),
   );
-  /** convKey → 已写过元数据行(标题 + 模型快照)。一个会话只写一次,永远在文件最前面。 */
+  /** convKey -> whether the metadata line (title + model snapshot) was already written. It is written once per session and always at the very front of the file. */
   const metaWrittenRef = useRef<Map<string, boolean>>(new Map());
-  /** convKey → 会话模型配置快照(写元数据行用;会话切走后收尾那轮也要能取到)。 */
+  /** convKey -> the model config snapshot of the session (used to write the metadata line; it also has to be available for the closing turn of a session that was switched away). */
   const modelByConvRef = useRef<Map<string, SessionModelConfig | null>>(new Map());
-  /** 每轮用户消息先记在这里,和助手回复一起落盘(发送失败就不落)。 */
+  /** The user message of a turn is recorded here first and written to disk together with the assistant reply (nothing is written when the send failed). */
   const pendingUserRef = useRef<Map<string, TranscriptUserLine>>(new Map());
-  /** 重启计数(⟳ / ＋新会话):变了就开新会话,而不是恢复最近一条。 */
+  /** The restart counter (the reload / the plus for a new session): when it changes a new session is opened instead of restoring the most recent one. */
   const restartKeyRef = useRef<number | null>(null);
-  /** 创作模式的最新值(startSession 的 useCallback 闭包里经 ref 读取)。 */
+  /** The latest value of creativeMode (read through the ref inside the useCallback closure of startSession). */
   const creativeModeRef = useRef(creativeMode);
   useEffect(() => {
     creativeModeRef.current = creativeMode;
   }, [creativeMode]);
-  /** 输入框 / 技能 与 @ 文件补全。 */
+  /** The completion state of the input box: the skills, the @ file trigger and the selected index. */
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [suggestTrigger, setSuggestTrigger] = useState<SuggestTrigger | null>(null);
   const [suggestIndex, setSuggestIndex] = useState(0);
@@ -421,14 +438,13 @@ export function AgentPanel() {
   useEffect(() => {
     convsRef.current = convs;
   }, [convs]);
-  /** 当前会话 key 的即时副本(快捷键 effect 不该因为换会话重跑)。 */
+  /** A live copy of the key of the current session (the shortcut effect must not rerun when the session changes). */
   const activeKeyRef = useRef<string | null>(null);
   useEffect(() => {
     activeKeyRef.current = activeKey;
   }, [activeKey]);
 
-  // 技能清单:输入框 / 补全与创作模式欢迎页用;配置保存(可能改了 skill
-  // 目录)后刷新。失败静默为空(浏览器 harness 无后端)。
+  // The skill list: the input box / the completion and the creative mode welcome page use it; it is refreshed after the config is saved (the skill directory may have changed). A failure silently leaves it empty (the browser harness has no backend).
   useEffect(() => {
     let cancelled = false;
     void agentApi
@@ -444,8 +460,7 @@ export function AgentPanel() {
     };
   }, [agentConfigVersion]);
 
-  // 脚注的模型名与上下文窗口来自已保存配置(会话用的就是它)。读取期间配置
-  // 又变了一次(保存设置会 bump version)时,旧结果直接丢弃。
+  // The model name and the context window of the footnote come from the saved config (the same one the session uses). If the config changed again while it was being read (saving the settings bumps the version), the stale result is dropped.
   useEffect(() => {
     let cancelled = false;
     void agentApi
@@ -463,8 +478,10 @@ export function AgentPanel() {
   }, [agentConfigVersion]);
 
   /**
-   * 归属用的材料内容:微信读书的 studyContent 停在中栏入口(书架),真正
-   * 在读的书只有页内路由知道——按书归属,不要把所有书的会话混在书架上。
+   * The material content the sessions belong to: for WeRead the studyContent
+   * stops at the entry of the middle column (the bookshelf), only the in-page
+   * router knows the book that is really being read — the sessions belong to
+   * the book, the sessions of all books must not be mixed on the bookshelf.
    */
   const materialContent = useMemo<StudyContent | null>(() => {
     if (!studyContent) return null;
@@ -488,8 +505,7 @@ export function AgentPanel() {
   );
 
   const activeConv = convs.find((c) => c.key === activeKey) ?? null;
-  // sessionId 必须非空才算「生成中」:会话还没建好(或启动失败)时 sessionId
-  // 与 busySession 都是 null,相等但不能当成正在流式回复。
+  // Only a non-empty sessionId counts as "generating": while the session is not up yet (or the start failed) both sessionId and busySession are null, they are equal but that is not a streaming reply.
   const activeBusy =
     activeConv?.sessionId != null && busySession === activeConv.sessionId;
 
@@ -497,7 +513,7 @@ export function AgentPanel() {
     setConvs((prev) => prev.map((c) => (c.key === key ? patch(c) : c)));
   }, []);
 
-  /** 重新拉一遍本材料的会话列表(历史抽屉 + 恢复最近一条)。 */
+  /** Fetch the session list of this material again (the history drawer + the restore of the most recent one). */
   const refreshSessions = useCallback(async (): Promise<SavedSessionMeta[]> => {
     const material = materialRef.current;
     if (!material?.info) {
@@ -505,7 +521,7 @@ export function AgentPanel() {
       return [];
     }
     const list = await agentApi.sessionsList(material.info.relDir).catch(() => []);
-    // 读盘期间换了材料:结果属于上一份材料,不能写进当前列表。
+    // The material changed while the disk was read: the result belongs to the previous material and must not be written into the current list.
     if (materialRef.current !== material) return list;
     setSavedSessions(list);
     return list;
@@ -516,21 +532,21 @@ export function AgentPanel() {
       convKey: string,
       content: StudyContent | null,
       opts?: {
-        /** 恢复:还原出的模型侧历史。 */
+        /** Restore: the model side history that was restored. */
         history?: AgentChatItem[];
-        /** 恢复:继续写这个文件;不传则按新会话建文件。 */
+        /** Restore: keep writing to this file; without it a new file is created for a new session. */
         transcriptPath?: string | null;
-        /** 分叉:先把父会话的前缀写进新文件。 */
+        /** Fork: the prefix of the parent session is written into the new file first. */
         seedLines?: TranscriptLine[];
-        /** 分叉:写进元数据行的父子关系(重启恢复靠它还原会话家族)。 */
+        /** Fork: the parent relation written into the metadata line (the restore after a restart rebuilds the session family from it). */
         forkMeta?: {
           parent: string | null;
           basedOn: string;
           forkAt: number;
-          /** 与内存 label 一致的分叉标题(缺省才退回前缀首句)。 */
+          /** The fork title, the same as the in-memory label (only when it is missing does it fall back to the first line of the prefix). */
           title?: string;
         };
-        /** 恢复/分叉:沿用源会话的模型配置;不传则用设置里的当前配置。 */
+        /** Restore/fork: reuse the model config of the source session; without it the current config of the settings is used. */
         model?: SessionModelConfig;
       },
     ) => {
@@ -545,10 +561,9 @@ export function AgentPanel() {
           opts?.model,
           creativeModeRef.current ? "creative" : undefined,
         );
-        // 过期就放弃:期间内容又变了(换材料/新会话),新一轮启动已经接管。
+        // Dropped when it expired: the content changed in the meantime (a new material / a new session), a new start has taken over.
         if (startTokenRef.current !== token) return;
-        // 会话记录路径:恢复用旧文件,新会话用「材料目录 + 后端会话 id」;
-        // 创作模式固定 .bnote/creative/sessions/,与材料的会话互不混放。
+        // The path of the session record: a restore keeps the old file, a new session uses "the material directory + the session id of the backend"; creative mode is fixed at .bnote/creative/sessions/, so it never mixes with the sessions of a material.
         const vault = useAppStore.getState().vaultPath;
         const relDir = creativeModeRef.current
           ? "creative"
@@ -563,11 +578,10 @@ export function AgentPanel() {
         const model = info.model ?? opts?.model ?? null;
         modelByConvRef.current.set(convKey, model);
         if (transcriptPath && opts?.seedLines && opts.seedLines.length > 0) {
-          // 分叉:新文件(新会话 id)不存在旧内容,元数据行 + 前缀一次写入。
-          // 元数据必须在第一行——列表侧只读文件头部就能拿到标题与模型快照。
+          // Fork: the new file (the new session id) holds no old content, the metadata line and the prefix are written in one go. The metadata has to be the first line — the list side only reads the head of the file to get the title and the model snapshot.
           const meta = buildSessionMeta({
             at: Date.now(),
-            // 与内存 label 一致(分叉点摘要):重启后列表与头部显示同一个标题。
+            // The same as the in-memory label (the summary of the fork point): after a restart the list and the header show the same title.
             title: opts.forkMeta?.title ?? sessionTitleFromLines(opts.seedLines),
             model,
             parent: opts.forkMeta?.parent ?? null,
@@ -579,8 +593,7 @@ export function AgentPanel() {
             .catch((e) => console.warn("[agent] 写分叉前缀失败", e));
           metaWrittenRef.current.set(convKey, true);
         } else {
-          // 恢复:文件里已有元数据(旧记录没有,标题走列表侧的兜底解析);
-          // 新会话:第一条消息落盘时再把元数据行一起写进去,避免空会话进列表。
+          // Restore: the file already has the metadata (old records have none, the title falls back to the parsing on the list side); a new session: the metadata line is written together with the first message when it reaches the disk, so that an empty session never enters the list.
           metaWrittenRef.current.set(convKey, Boolean(opts?.transcriptPath));
         }
         if (startTokenRef.current !== token) return;
@@ -612,11 +625,14 @@ export function AgentPanel() {
   );
 
   /**
-   * 恢复一条已保存的会话:读回记录 → 还原界面消息与模型历史 → 继续对话。
-   * 会话记录是唯一来源,后端只是带着历史重新开一条 live 会话。
+   * Restore a saved session: read the record back → rebuild the messages of
+   * the UI and the model history → continue the conversation.
+   * The session record is the only source, the backend only opens a new live
+   * session with that history.
    *
-   * token 是恢复代:读盘期间换了材料/新会话,结果直接作废,不往已经不在
-   * 列表里的 conv 上写。
+   * The token is the restore generation: if the material / a new session
+   * changed while the disk was read, the result is void and nothing is
+   * written to a conv that is no longer in the list.
    */
   const launchRestored = useCallback(
     async (conv: Conv, token: number) => {
@@ -629,7 +645,7 @@ export function AgentPanel() {
         showToast("这条会话记录是空的");
         return;
       }
-      // 会话自己的模型配置快照:之后改设置不影响这条会话,恢复也按它继续。
+      // The model config snapshot of the session itself: later setting changes do not affect this session, and a restore continues with it.
       const sessionMeta = sessionMetaFromRaw(raw);
       updateConv(conv.key, (c) => ({
         ...c,
@@ -641,8 +657,7 @@ export function AgentPanel() {
         model: sessionMeta?.model ?? c.model,
       }));
       transcriptRef.current.set(conv.key, path);
-      // 记录文件里已有元数据(旧记录没有,标题走列表侧兜底);不重复写,
-      // 也不清别的会话的记账——还在流的那一轮收尾时还要用。
+      // The record file already has the metadata (old records have none, the title falls back to the list side); it is not written twice, and the bookkeeping of the other sessions is not cleared either — the round that is still streaming needs it when it closes.
       metaWrittenRef.current.set(conv.key, true);
       void startSession(conv.key, materialContent, {
         history: historyFromTranscript(lines),
@@ -654,11 +669,15 @@ export function AgentPanel() {
   );
 
   /**
-   * 恢复一个会话家族:按 parent 链把主会话与它分叉出的辅助会话一起还原。
+   * Restore a session family: along the parent chain the main session and
+   * the auxiliary sessions forked from it are restored together.
    *
-   * 以前只挂「最近更新的那一条」——那往往正是刚分叉出来的辅助会话,重启
-   * 后面板就停在子会话上,主会话没有任何入口。现在根(主会话)是默认落点,
-   * 辅助会话先在列表里立着,切过去时才读盘 + 启动后端会话。
+   * Earlier only the "most recently updated one" was hung up, and that is
+   * often exactly the auxiliary session that was just forked, so after a
+   * restart the panel stayed on the child session and the main session had
+   * no entry at all. Now the root (the main session) is the default landing
+   * spot, the auxiliary sessions first stand in the list and only read the
+   * disk + start the backend session when they are switched to.
    */
   const restoreFamily = useCallback(
     async (anchorId: string, sessions: SavedSessionMeta[], activate: "root" | "anchor") => {
@@ -693,8 +712,7 @@ export function AgentPanel() {
       const rootKey = keyByFile.get(family.rootId)!;
       const focusKey = activate === "anchor" ? (keyByFile.get(anchorId) ?? rootKey) : rootKey;
       setActiveKey(focusKey);
-      // 只启动落点那条:后端会话是全局单飞的(startSession 的 token),
-      // 同时开两条会让先到的那条作废。其余切换时懒启动。
+      // Only the landing one is started: a backend session is globally single flight (the token of startSession), starting two at once voids the one that arrives first. The others start lazily when they are switched to.
       const focus = convs.find((c) => c.key === focusKey);
       if (focus) {
         lazyStartingRef.current.add(focusKey);
@@ -707,8 +725,10 @@ export function AgentPanel() {
   );
 
   /**
-   * 切到某条会话。家族里只有落点那条在恢复时启动过,其它会话第一次切过去
-   * 才读盘 + 起后端会话(不切就永不付这次成本)。
+   * Switch to a session. In a family only the landing one was started during
+   * the restore, the other sessions read the disk + start the backend session
+   * the first time they are switched to (a session that is never switched to
+   * never pays that cost).
    */
   const activateConv = useCallback(
     (key: string) => {
@@ -725,11 +745,14 @@ export function AgentPanel() {
   );
 
   /**
-   * 首轮回复结束后让模型给会话起标题(用会话**自己的**第一句话)。
+   * After the first reply the model names the session (from the **own** first
+   * message of that session).
    *
-   * 本地兜底标题(首句截断 / ↳ 分叉点)已经在 label 里,这里只把它换成更
-   * 像标题的说法;失败就保持原样。标题同时写回记录文件第一行,历史列表与
-   * 重启恢复都读它。
+   * The local fallback title (the truncated first message / the ↳ fork point)
+   * is already in the label, here it is only replaced by something that
+   * reads more like a title; on a failure it stays as it is. The title is
+   * also written back into the first line of the record file, the history
+   * list and the restore after a restart both read it.
    */
   const generateTitle = useCallback(
     (convKey: string, seed: string) => {
@@ -753,15 +776,15 @@ export function AgentPanel() {
           }
         })
         .catch(() => {
-          // 没配 key / 网络失败 / 模型拒绝:保持本地兜底标题,不打扰用户。
+          // No key / network failure / the model refused: keep the local fallback title and do not bother the user.
         });
     },
     [refreshSessions, updateConv],
   );
-  // - 换材料:恢复这份材料最近一条会话(没有才开新的);
-  // - 点 ⟳ / ＋新会话:强制开一条新会话(旧会话留在历史里,配置用当前设置);
-  // - 保存设置:什么都不发生——已开的会话继续用它自己的模型配置快照。
-  // - 离开再进学习模式:面板重挂,按材料重新恢复。
+  // - Switching the material: restore the most recent session of this material (only when there is none a new one is opened);
+  // - Clicking ⟳ / ＋ new session: force a new session (the old one stays in the history, the config is the current one from the settings);
+  // - Saving the settings: nothing happens — the sessions that are already open keep using their own model config snapshot.
+  // - Leaving and re-entering study mode: the panel is mounted again and restores per material.
   useEffect(() => {
     const identity = creativeMode
       ? `creative|${restartNonce}`
@@ -779,7 +802,7 @@ export function AgentPanel() {
       const vault = useAppStore.getState().vaultPath;
       let info: MaterialInfo | null = null;
       if (creativeMode) {
-        // 创作模式没有材料目录:会话统一落在 .bnote/creative/sessions/。
+        // Creative mode has no material directory: its sessions all land in .bnote/creative/sessions/.
         info = { kind: "pdfs", dir: "creative", relDir: "creative", title: "创作模式" };
       } else {
         info = vault && materialContent ? await ensureMaterial(vault, materialContent) : null;
@@ -794,7 +817,7 @@ export function AgentPanel() {
       setSavedSessions(sessions);
 
       if (!forcedNew && sessions.length > 0) {
-        // 最新一条所在的家族:根(主会话)是落点,辅助会话挂在会话切换里。
+        // The family of the most recent one: the root (the main session) is the landing spot, the auxiliary sessions hang off the session switcher.
         await restoreFamily(sessions[0].id, sessions, "root");
         return;
       }
@@ -820,7 +843,7 @@ export function AgentPanel() {
     })();
   }, [materialContent, creativeMode, restartNonce, startSession, restoreFamily]);
 
-  // ⌘⇧Y / 命令:主会话 ↔ 最近一条辅助会话 来回切换。
+  // ⌘⇧Y / the command: switch back and forth between the main session and the most recent auxiliary session.
   useEffect(() => {
     if (agentSwitchSignal === 0) return;
     const list = convsRef.current;
@@ -837,7 +860,7 @@ export function AgentPanel() {
     activateConv(next);
   }, [agentSwitchSignal, showToast, activateConv]);
 
-  // 切换会话后滚到底(每条会话都从最新消息看起)。
+  // Scroll to the bottom after switching the session (every session is looked at from its newest message).
   useEffect(() => {
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -853,7 +876,7 @@ export function AgentPanel() {
     return turn;
   }
 
-  /** 把流式草稿(final 与否同形)写进会话;draft 复用同一个 turn 引用。 */
+  /** Write the streaming draft into the session (the same shape whether it is final or not); the draft reuses the same turn reference. */
   function writeEntries(
     convKey: string,
     turn: Turn,
@@ -896,16 +919,18 @@ export function AgentPanel() {
   }
 
   /**
-   * 把这一轮写进会话记录:用户消息 + 助手回复一起追加(同一条 append,
-   * 顺序固定;发送失败时用户消息根本没进过文件)。写失败只记日志,不影响
-   * 对话——落盘是记录,不是发送的前置条件。
+   * Write this round into the session record: the user message and the
+   * assistant reply are appended together (one append, the order is fixed;
+   * when the send failed the user message never entered the file). A failed
+   * write is only logged, it does not affect the conversation — the disk is
+   * a record, not a precondition of sending.
    */
   function persistTurn(convKey: string, turn: Turn, pathOverride?: string) {
     const path = pathOverride ?? transcriptRef.current.get(convKey);
     if (!path) return;
     const user = pendingUserRef.current.get(convKey) ?? null;
     pendingUserRef.current.delete(convKey);
-    // 第一轮会把元数据行(标题 + 模型快照)插在最前面,见 turnLines。
+    // The first round inserts the metadata line (title + model snapshot) at the very front, see turnLines.
     const firstWrite = !metaWrittenRef.current.get(convKey);
     if (firstWrite) metaWrittenRef.current.set(convKey, true);
     const lines = turnLines({
@@ -931,10 +956,7 @@ export function AgentPanel() {
   function handleAgentEvent(sessionId: string, event: AgentEvent) {
     const conv = findConvBySession(convsRef.current, sessionId);
     if (!conv) {
-      // 会话已经不在列表里(换材料/重启后旧会话作废):流式增量无害丢弃,
-      // 但**终止事件必须清忙碌标记**——否则面板永远停在「生成中」,下一次
-      // 发送会被 busyRef 静默吃掉。这一轮已经生成的内容仍然写进它自己的
-      // 会话记录:用户只是切走了材料,答案不该丢。
+      // The session is no longer in the list (a new material / the old sessions are void after a restart): the streaming deltas are dropped harmlessly, but the **terminating event must clear the busy flag** — otherwise the panel stays on "generating" forever and the next send is silently swallowed by busyRef. The content that this round has already produced is still written into its own session record: the user only switched away from the material, the answer must not be lost.
       if (event.type === "turn_end" || event.type === "error") {
         const entry = sessionIndexRef.current.get(sessionId);
         if (entry) {
@@ -999,7 +1021,7 @@ export function AgentPanel() {
       }
       case "turn_end": {
         commitTurn(conv.key, event.items);
-        // 首轮成功:用会话自己的第一句话起标题(本地兜底标题先顶着)。
+        // The first round succeeded: name the session after its own first message (the local fallback title holds the line until then).
         const seed = titleSeedRef.current.get(conv.key);
         if (seed) {
           titleSeedRef.current.delete(conv.key);
@@ -1070,7 +1092,7 @@ export function AgentPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 附件进队(粘贴与文件选择共用):超限拒绝并说明,失败 toast 不中断。 */
+  /** Queue the attachments (pasting and the file picker share this path): over the limit it refuses and says so, a failure only toasts and does not interrupt. */
   async function addImages(files: File[]) {
     if (files.length === 0) return;
     const room = MAX_IMAGES_PER_MESSAGE - pendingImages.length;
@@ -1089,7 +1111,7 @@ export function AgentPanel() {
     if (ok.length > 0) setPendingImages((prev) => [...prev, ...ok]);
   }
 
-  /** 选中补全候选:替换触发词、光标落到插入内容之后。 */
+  /** Pick a completion candidate: the trigger word is replaced and the caret lands after the inserted text. */
   const pickSuggestion = (item: SuggestItem) => {
     if (!suggestTrigger) return;
     const next = applySuggestion(input, suggestTrigger, item.insert);
@@ -1110,7 +1132,7 @@ export function AgentPanel() {
     if (!conv || (!text && pendingImages.length === 0)) return;
     const info = conv.sessionId;
     if (!info) {
-      // 会话还没建好:同样写进持久错误横幅,不只是一闪而过的 toast。
+      // The session is not up yet: it goes into the persistent error banner as well, not only into a toast that flashes by.
       updateConv(conv.key, (c) => ({
         ...c,
         error: c.error ?? `会话未就绪:${c.error ?? "请稍候重试或重新开始会话"}`,
@@ -1127,15 +1149,14 @@ export function AgentPanel() {
     const last = conv.entries[conv.entries.length - 1];
     const items = last?.items != null ? last.items + 1 : null;
     const at = Date.now();
-    // 用户消息先挂在这轮上,和助手回复一起落盘;发送失败直接丢掉。
+    // The user message hangs on this round first and reaches the disk together with the assistant reply; a failed send drops it.
     pendingUserRef.current.set(conv.key, {
       type: "user",
       at,
       text,
       images: images.length > 0 ? images : undefined,
     });
-    // 会话自己的第一次请求:记下这句话。这一轮成功后用它让模型起标题——
-    // 辅助会话的标题必须来自它自己的提问,不能拿父会话的消息顶替。
+    // The first request of the session itself: remember this message. After this round succeeded it is used to let the model name the session — the title of an auxiliary session must come from its own question, the message of the parent session must not stand in for it.
     if (conv.titleSource !== "llm" && !titleSeedRef.current.has(conv.key)) {
       titleSeedRef.current.set(conv.key, text || "[图片]");
     }
@@ -1156,8 +1177,7 @@ export function AgentPanel() {
       setBusySession(null);
       pendingUserRef.current.delete(conv.key);
       const message = String(e).replace(/^[A-Z_]+:\s*/, "");
-      // 后端没收到这一轮:把刚插进 UI 的幽灵消息撤回,内容放回输入框,并把
-      // 原因留在会话错误横幅上。否则界面里挂着一条永远不会被回答的消息。
+      // The backend did not receive this round: the ghost message that was just inserted into the UI is taken back, the content goes back into the input box and the reason stays on the error banner of the session. Otherwise the UI hangs on a message that will never be answered.
       updateConv(conv.key, (c) => ({
         ...c,
         error: message,
@@ -1175,8 +1195,10 @@ export function AgentPanel() {
   }
 
   /**
-   * 从第 index 条消息分叉一条辅助会话:复制前缀历史,原会话不动。
-   * 分叉出来的会话有自己的记录文件(前缀先写进去),关掉再开也能继续。
+   * Fork an auxiliary session from the message at index: the prefix of the
+   * history is copied, the original session stays untouched. The forked
+   * session has its own record file (the prefix is written into it first),
+   * so it can be continued after a close and a reopen.
    */
   const forkFrom = useCallback(
     (index: number) => {
@@ -1203,7 +1225,7 @@ export function AgentPanel() {
         mcpErrors: [],
         transcriptPath: null,
         sessionFileId: null,
-        // 辅助会话沿用源会话的模型配置:分叉不该换模型。
+        // The auxiliary session reuses the model config of the source session: a fork must not change the model.
         model: src.model,
         usage: null,
       };
@@ -1213,7 +1235,7 @@ export function AgentPanel() {
         history: historyFromTranscript(seedLines),
         seedLines,
         model: src.model ?? undefined,
-        // 父子关系写进新文件:重启后靠它把这条辅助会话挂回主会话。
+        // The parent relation goes into the new file: after a restart it hangs this auxiliary session back onto the main session.
         forkMeta: {
           parent: src.sessionFileId,
           basedOn: conv.basedOn,
@@ -1229,19 +1251,18 @@ export function AgentPanel() {
     ? (convs.find((c) => c.key === activeConv.parent) ?? null)
     : null;
 
-  /** 把焦点交给历史列表:第一条会话,没有会话就交给抽屉本身。 */
+  /** Hand the focus to the history list: the first session, without a session the drawer itself. */
   const focusHistory = useCallback(() => {
     const first = historyRef.current?.querySelector<HTMLButtonElement>(".agent-history-item");
     (first ?? historyRef.current)?.focus();
   }, []);
 
-  // 快捷键/命令 → 面板动作。信号里只有 kind;具体会话、输入框都是面板私有状态。
+  // Shortcut / command → panel action. The signal carries only the kind; the concrete session and the input box are private state of the panel.
   useEffect(() => {
     const cmd = agentPanelCommand;
     if (!cmd || cmd.seq === lastAgentCommandSeq.current) return;
     lastAgentCommandSeq.current = cmd.seq;
-    // 聚焦输入框 = 显式进入中文写作框:即使它本来就是焦点(快捷键反复按、
-    // 框里手动切回过英文),也要把输入法重新拉回中文。
+    // Focusing the input box = explicitly entering the Chinese writing box: even when it already has the focus (the shortcut pressed again and again, the user switched back to English inside the box) the IME is pulled back to Chinese.
     const focusInput = () => {
       inputRef.current?.focus();
       imeOnChineseFocus(true);
@@ -1294,22 +1315,21 @@ export function AgentPanel() {
         break;
       case "history":
         historyFocusPending.current = true;
-        // 抽屉已经开着时再按一次,直接把焦点送进去。
+        // Pressing it again while the drawer is already open hands the focus into it right away.
         if (historyOpen) focusHistory();
         else setHistoryOpen(true);
         break;
     }
   }, [agentPanelCommand, activeConv, parentConv, forkFrom, historyOpen, focusHistory, showToast, pendingImages, activateConv, setCreativeMode]);
 
-  // 历史抽屉打开后把焦点交给列表,接着就能 Tab / 回车操作。
+  // Once the history drawer is open the focus goes to the list, Tab / Enter work right away.
   useEffect(() => {
     if (!historyOpen || !historyFocusPending.current) return;
     historyFocusPending.current = false;
     focusHistory();
   }, [historyOpen, focusHistory]);
 
-  // 脚注显示**本会话**的模型配置:设置改了不影响已开会话,显示当前设置
-  // 会骗人。会话还没起来时退回当前配置。
+  // The footnote shows the model config of **this session**: a setting change does not affect a session that is already open, showing the current settings would lie. While the session is not up yet it falls back to the current config.
   const configuredModel = agentConfig?.model.trim() ?? "";
   const modelName = activeConv?.model?.model.trim() || configuredModel;
   const contextLimit = activeConv?.model?.contextWindow ?? agentConfig?.contextWindow ?? 0;
@@ -1323,8 +1343,8 @@ export function AgentPanel() {
       data-key-region="agent"
       style={{ "--agent-fs": String(agentFontScale) } as React.CSSProperties}
     >
-      {/* 学习模式没有标题栏,头部即窗口拖动区;deep 让文字也能拖,
-          头部里的按钮由 Tauri 的 drag.js 自行放行(见 AgentHeader)。 */}
+      {/* Study mode has no title bar, the header is the drag area of the window; deep lets the text be dragged too,
+          the buttons inside the header are let through by the drag.js of Tauri itself (see AgentHeader). */}
       <AgentHeader
         convs={convs.map((c) => ({
           key: c.key,
@@ -1563,8 +1583,7 @@ export function AgentPanel() {
           rows={2}
           data-ime-chinese="true"
           onFocus={() => imeOnChineseFocus(true)}
-          // 点击也强制:已经聚焦时 focus 事件不会再触发(用户在框里用
-          // Ctrl+Space 切回英文后点回来,这里必须把中文再要一次)。
+          // The click forces it too: the focus event does not fire again when it already has the focus (the user switched back to English with Ctrl+Space inside the box and clicks back in, Chinese has to be asked for again here).
           onPointerDown={() => imeOnChineseFocus(true)}
           onBlur={() => {
             imeSyncToEditor();
@@ -1583,8 +1602,7 @@ export function AgentPanel() {
             composingRef.current = false;
           }}
           onPaste={(e) => {
-            // 剪贴板里只有图片(截图)才接管:同时有文本时按普通粘贴走,
-            // 不抢用户复制网页文字的场景。
+            // Only a clipboard that holds images (screenshots) is taken over: when there is text as well the normal paste wins, so copying text from a web page is never hijacked.
             const files = Array.from(e.clipboardData?.items ?? [])
               .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
               .map((it) => it.getAsFile())
@@ -1595,7 +1613,7 @@ export function AgentPanel() {
             void addImages(files);
           }}
           onKeyDown={(e) => {
-            // 补全弹层开着时,方向键/回车/Tab/Esc 归弹层;输入法确认键不抢。
+            // While the completion popup is open the arrow keys / Enter / Tab / Esc belong to the popup; the confirmation key of the IME is never taken.
             if (suggestTrigger && suggestItems.length > 0) {
               const ime = isImeEnter(e.nativeEvent, composingRef.current);
               if (e.key === "ArrowDown" && !ime) {
@@ -1620,8 +1638,7 @@ export function AgentPanel() {
               }
             }
             if (e.key !== "Enter" || e.shiftKey) return;
-            // 输入法的确认键(中文模式下敲英文字母后回车)不能当发送:
-            // 放行给 IME 把字母填进输入框。
+            // The confirmation key of the IME (Enter after typing latin letters in the Chinese mode) must not be a send: it is let through so that the IME fills the letters into the input box.
             if (isImeEnter(e.nativeEvent, composingRef.current)) return;
             e.preventDefault();
             void send();
@@ -1693,7 +1710,7 @@ export function AgentPanel() {
           )}
         </div>
       </div>
-      {/* 历史会话抽屉:这份材料下保存过的对话,点一条即恢复并继续。 */}
+      {/* The history drawer: the conversations saved under this material, clicking one restores it and continues. */}
       {historyOpen && (
         <div className="agent-history" role="dialog" aria-label="历史会话" ref={historyRef} tabIndex={-1}>
           <div className="agent-history-head">
@@ -1735,8 +1752,7 @@ export function AgentPanel() {
                     onClick={() => {
                       setHistoryOpen(false);
                       if (s.id === activeConv?.sessionFileId) return;
-                      // 已在这份家族里(内存里有)→ 直接切;否则按它重建家族,
-                      // 主会话照样挂回来,只是落点在这条。
+                      // Already in this family (it is in memory) → switch directly; otherwise the family is rebuilt from it, the main session hangs back as well, only the landing spot is this one.
                       const existing = convs.find((c) => c.sessionFileId === s.id);
                       if (existing) activateConv(existing.key);
                       else void restoreFamily(s.id, savedSessions, "anchor");

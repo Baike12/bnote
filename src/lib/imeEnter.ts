@@ -1,13 +1,17 @@
 /**
- * 这次 Enter 是否属于输入法会话(组词中 / 确认候选字母),而不是「发送」。
+ * Whether this Enter belongs to an IME session (composing, or confirming a
+ * candidate) rather than "send".
  *
- * 三个信号都要看:
- * - composing:组件自己用 compositionstart/end 记的会话状态,不依赖引擎;
- * - isComposing:标准字段,组词期间为 true;
- * - keyCode === 229:WKWebView 在输入法确认键上报 229、isComposing 却是 false
- *   (vim 引擎的 composing 判定同样靠这一对,见 src/editor/vim/vim.ts)。
+ * All three signals have to be checked:
+ * - composing: the session state the component records itself via
+ *   compositionstart/end, independent of the engine;
+ * - isComposing: the standard field, true while a composition is active;
+ * - keyCode === 229: WKWebView reports 229 on the IME confirmation key while
+ *   isComposing is still false (the vim engine's composing check relies on the
+ *   same pair, see src/editor/vim/vim.ts).
  *
- * 只看 isComposing 会让「中文模式下敲英文、回车确认」直接触发发送。
+ * Watching isComposing alone makes "type latin letters in Chinese mode and
+ * confirm with Enter" send the message straight away.
  */
 export function isImeEnter(
   event: { isComposing?: boolean; keyCode?: number },

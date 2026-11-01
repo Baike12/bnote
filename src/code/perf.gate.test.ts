@@ -5,17 +5,21 @@ import { alignHunk, parseUnifiedDiff } from "./diff";
 import type { CodeEntry } from "./types";
 
 /**
- * 代码模块的性能门禁。
+ * The performance gate of the code module.
  *
- * 预算按本机实测中位数放大 ~6–10 倍标定:量级回归(意外的全文扫描、排序
- * 退化)从 10 倍起必被拦下,而机器抖动不会误报。
+ * The budgets are calibrated at ~6-10x the measured median on this machine:
+ * an order-of-magnitude regression (an accidental full-text scan, a degraded
+ * sort) is caught from 10x on, while the jitter of the machine does not
+ * produce a false positive.
  *
- * 测的是纯逻辑(无 DOM):这些是**打开项目**与**每次按键**路上的决定项——
- * 文件树折一次、diff 解析一次、缩进猜一次。视图层的 DOM 更新另有浏览器
- * 验证,不在这里模拟。
+ * What is measured is pure logic (no DOM): the decision points on the way of
+ * **opening a project** and of **every keystroke** — folding the file tree
+ * once, parsing the diff once, guessing the indent once. The DOM updates of
+ * the view layer are verified in the browser instead and are not simulated
+ * here.
  */
 
-/** 一个像样的仓库规模:若干层目录、上千个文件。 */
+/** The size of a decent repository: a few levels of directories, thousands of files. */
 function repoEntries(files: number): CodeEntry[] {
   const out: CodeEntry[] = [];
   for (let i = 0; i < files; i++) {
@@ -35,7 +39,7 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)];
 }
 
-/** 把条目里出现的每一级目录都算作「展开」(量最大的拍平)。 */
+/** Count every directory level that appears in the entries as "expanded" (the largest possible flattening). */
 function allDirPaths(entries: readonly CodeEntry[]): Set<string> {
   const dirs = new Set<string>();
   for (const entry of entries) {

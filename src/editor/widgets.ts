@@ -63,8 +63,9 @@ export class MathWidget extends WidgetType {
     readonly display: boolean,
     /** Doc position of the region start; lets click handlers find the region. */
     readonly from?: number,
-    /** 嵌套在 callout 块内时的深度(≥0):跨行 block replace 会把行元素移出
-     *  DOM,块面(底色/竖线/缩进)由 widget 自带——复用 md-callout-line 系列类。 */
+    /** Depth inside a callout block (≥0): a cross-line block replace removes the
+     *  line element from the DOM, so the widget has to carry the block face
+     *  itself (background/bar/indent) — reusing the md-callout-line classes. */
     readonly calloutDepth?: number,
   ) {
     super();
@@ -101,7 +102,8 @@ export class MathPreviewWidget extends WidgetType {
   constructor(
     readonly src: string,
     readonly display: boolean,
-    /** callout 块内深度(≥0):预览是插入的块 widget,块面与所在 callout 对齐。 */
+    /** Depth inside a callout block (≥0): the preview is an inserted block
+     *  widget, so its block face aligns with the callout that holds it. */
     readonly calloutDepth?: number,
   ) {
     super();
@@ -169,18 +171,21 @@ export class HiddenLineWidget extends WidgetType {
 }
 
 /**
- * Callout 块开标记行(`::: 标题`)的渲染态:光标不在块内时整行源码被本
- * widget 顶替。CM6 的整行 block replace 会把行元素整个移出 DOM——块面的
- * 顶帽(底色/竖线/上留白/圆角)必须由 widget 自带,与边界行可见时的行类
- * (.md-callout-line.md-callout-open)同一套视觉令牌;depth 对齐内层缩进。
- * dataset.calloutFrom 记开标记行位置:点击标题要能回到源码那一行。
+ * Rendered state of a callout's opening marker line (`::: Title`): while the
+ * cursor is outside the block, this widget replaces the whole source line. A
+ * full-line block replace in CM6 removes the line element from the DOM — so the
+ * block face's top cap (background/bar/top padding/rounding) has to be carried
+ * by the widget, using the same visual tokens as the line classes seen while the
+ * boundary line is visible (.md-callout-line.md-callout-open); depth aligns the
+ * inner indentation. dataset.calloutFrom records the opening marker's position
+ * so clicking the title can jump back to that source line.
  */
 export class CalloutTitleWidget extends WidgetType {
   constructor(
     readonly title: string,
-    /** 开标记行行首(doc 位置),供点击回源。 */
+    /** Start of the opening marker line (doc position), for click-to-source. */
     readonly from: number,
-    /** 嵌套深度,定缩进类 d1/d2。 */
+    /** Nesting depth; picks the d1/d2 indent class. */
     readonly depth: number,
   ) {
     super();
@@ -204,14 +209,17 @@ export class CalloutTitleWidget extends WidgetType {
 }
 
 /**
- * Callout 块无标题开标记行与合标记行(`:::`)的渲染态:零文字但保留块面
- * 底帽/顶帽——行元素已被 block replace 移出 DOM,帽只能落在这里(同上)。
+ * Rendered state of a titleless callout's opening and closing marker lines
+ * (`:::`): no text, but the block face's caps are kept — the line element has
+ * been removed from the DOM by the block replace, so the caps can only live
+ * here (same reason as above).
  */
 export class CalloutEdgeWidget extends WidgetType {
   constructor(
-    /** 开帽(true,补上留白与顶圆角)还是合帽(false)。 */
+    /** Opening cap (true: adds the padding and the top rounding) or closing cap
+     *  (false). */
     readonly open: boolean,
-    /** 开标记行行首,供点击回源。 */
+    /** Start of the opening marker line, for click-to-source. */
     readonly from: number,
     readonly depth: number,
   ) {
@@ -235,7 +243,8 @@ export class CalloutEdgeWidget extends WidgetType {
 }
 
 export class HrWidget extends WidgetType {
-  /** callout 块内深度(≥0):整行 block replace 移除行元素,块面由 widget 自带。 */
+  /** Depth inside a callout block (≥0): the full-line block replace removes the
+   *  line element from the DOM, so the widget carries the block face itself. */
   constructor(readonly calloutDepth: number = -1) {
     super();
   }
@@ -325,7 +334,8 @@ export class ImageWidget extends WidgetType {
     readonly srcs: string[],
     readonly alt: string,
     readonly hint: string,
-    /** 画图嵌入(.excalidraw)的绝对路径:点击预览图打开画布再编辑。 */
+    /** Absolute path of an Excalidraw embed (.excalidraw): clicking the preview
+     *  opens the canvas so the drawing can be edited further. */
     readonly excalidrawPath?: string,
   ) {
     super();

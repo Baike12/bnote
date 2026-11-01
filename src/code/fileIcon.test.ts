@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { fileIconKind } from "./fileIcon";
 
 /**
- * 文件树图标的分类门禁:加语言/配置类型时先在这里落一行,
- * 组件只负责画(见 components/FileIcon.tsx)。
+ * The category gate of the file tree icons: add a line here first when adding
+ * a language / config type, the component only draws (see
+ * components/FileIcon.tsx).
  */
 describe("fileIconKind", () => {
   it("脚本语言按语言分类", () => {
@@ -13,7 +14,8 @@ describe("fileIconKind", () => {
     expect(fileIconKind("tool.py")).toBe("py");
     expect(fileIconKind("lib.rs")).toBe("rs");
     expect(fileIconKind("server.go")).toBe("go");
-    // 其余编译型/脚本语言归中性 code,不各配一个图标
+    // The remaining compiled / script languages fall into the neutral code
+    // category, they do not each get an icon
     expect(fileIconKind("main.c")).toBe("code");
     expect(fileIconKind("Main.java")).toBe("code");
     expect(fileIconKind("Rakefile")).toBe("code");

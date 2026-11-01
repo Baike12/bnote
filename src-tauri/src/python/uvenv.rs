@@ -1,6 +1,7 @@
-//! uv 环境创建:项目没有 pyproject.toml 就先 `uv init --bare`(只生成
-//! pyproject.toml,不塞示例文件),然后 `uv sync`(生成 uv.lock + .venv)。
-//! 完整日志返回给前端,显示在运行面板里。
+//! Creating a uv environment: when the project has no pyproject.toml it first
+//! runs `uv init --bare` (which only creates pyproject.toml, without any
+//! sample files), then `uv sync` (which produces uv.lock + .venv). The full
+//! log is returned to the front end and shown in the run panel.
 
 use std::path::Path;
 use std::time::Duration;
@@ -41,8 +42,9 @@ pub async fn create_uv_env(project_root: &Path) -> Result<UvOutcome, String> {
     Ok(UvOutcome { log, ran_init })
 }
 
-/// 跑一条 uv 命令,把「命令行 + stdout + stderr + 退出码」拼成日志,
-/// 尾部标 OK(退出码 0)或 FAIL,调用方据此判断成败。
+/// Runs one uv command and assembles "command line + stdout + stderr + exit
+/// code" into a log; the tail says OK (exit code 0) or FAIL, and the caller
+/// judges success by it.
 async fn run_capture(
     program: &str,
     args: &[&str],
@@ -88,10 +90,12 @@ mod tests {
 
     #[tokio::test]
     async fn missing_uv_is_a_clear_error() {
-        // 真机上 uv 在 PATH;为了不依赖它,用一个不存在的 PATH 找不到时的
-        // 报错路径覆盖不了 —— 这里直接验证:目录为空 + uv 存在时的行为由
-        // 集成验证覆盖,这里只锁「没 uv 时的报错文案」通过 find_on_path
-        // 的行为不炸。
+        // On a real machine uv is on the PATH; to stay independent of it, the
+        // error path of "uv not found" cannot be covered with a fake binary
+        // — here it is verified directly: the behaviour with an empty
+        // directory and uv present is covered by the integration test, and
+        // this test only locks the error message of "no uv" and that
+        // find_on_path does not panic.
         let dir = std::env::temp_dir().join(format!("bnote-uv-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

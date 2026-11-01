@@ -9,20 +9,23 @@ import { activeCodeEditor, handleForView } from "./registry";
 import { cmToLspPosition, lspRangeToCm } from "./positions";
 
 /**
- * 语言服务器 ↔ CodeMirror 的桥。
+ * Bridge between the language server and CodeMirror.
  *
- * 三件事:
- * - 补全(completion source):把 LSP 的 CompletionItem 翻成 CM 的 Completion;
- * - 悬停(hover tooltip):把 LSP 的 MarkupContent 显示出来;
- * - 诊断(linter):把后端推来的诊断变成 CM 的 Diagnostic 标在行上。
+ * Three jobs:
+ * - completion (completion source): turn the LSP CompletionItem into a CM
+ *   Completion;
+ * - hover (hover tooltip): display the LSP MarkupContent;
+ * - diagnostics (linter): turn the diagnostics pushed by the backend into CM
+ *   Diagnostics marked on the lines.
  *
- * 跳转类动作(定义 / 引用 / 重命名)在 `goto.ts`——它们要开文件、切标签,
- * 不只是改光标。
+ * The jump actions (definition / references / rename) live in `goto.ts` — they
+ * have to open a file and switch tabs, not just move the caret.
  *
- * 位置换算在 `positions.ts`;URI 编解码在 `uri.ts`。
+ * The position conversion lives in `positions.ts`; the URI encoding in
+ * `uri.ts`.
  */
 
-/** LSP 的 CompletionItemKind → CM 的 completion type。 */
+/** LSP CompletionItemKind → CM completion type. */
 const KIND_TO_TYPE: Record<number, string> = {
   1: "text",
   2: "method",
@@ -51,7 +54,7 @@ const KIND_TO_TYPE: Record<number, string> = {
   25: "type",
 };
 
-/** 诊断严重度(LSP)→ CM 的 severity。 */
+/** Diagnostic severity (LSP) → CM severity. */
 const SEVERITY_TO_CM: Record<number, CmDiagnostic["severity"]> = {
   1: "error",
   2: "warning",
@@ -59,7 +62,7 @@ const SEVERITY_TO_CM: Record<number, CmDiagnostic["severity"]> = {
   4: "hint",
 };
 
-/** LSP 的 documentation 字段 → 纯文本。 */
+/** The LSP documentation field → plain text. */
 export function documentationToText(doc: unknown): string {
   if (doc == null) return "";
   if (typeof doc === "string") return doc;
@@ -73,7 +76,7 @@ export function documentationToText(doc: unknown): string {
   return "";
 }
 
-/** 把一条 LSP 诊断变成 CM 的 Diagnostic。 */
+/** Turn one LSP diagnostic into a CM Diagnostic. */
 export function toCmDiagnostic(d: LspDiagnostic, doc: Text): CmDiagnostic {
   const range = d.range ?? { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
   const { from, to } = lspRangeToCm(doc, range as LspRange);
@@ -87,18 +90,21 @@ export function toCmDiagnostic(d: LspDiagnostic, doc: Text): CmDiagnostic {
 }
 
 /**
- * 补全源:把光标位置交给语言服务器,回来的候选直接用。
+ * Completion source: hand the caret position to the language server and use
+ * the candidates it returns.
  *
- * 没有服务器 / 服务器回 null / 出错,都安静地不给候选(不弹错误)。
+ * No server / a null answer / an error all quietly yield no candidates (no
+ * error popup).
  */
 export async function lspCompletion(
   context: CompletionContext,
 ): Promise<CompletionResult | null> {
   const handle = activeCodeEditor();
   if (!handle) return null;
-  // `matchBefore(/[\w$]*/)` 永远有结果(空匹配也是匹配),所以「词没开始」要
-  // 看 text 是不是空——只看返回值的话这段守卫是死的,每敲一个标点都会问一次
-  // 服务器。
+  // `matchBefore(/[\w$]*/)` always matches (an empty match is a match too),
+  // so "no word started yet" has to be decided by whether the text is empty —
+  // looking at the return value alone makes this guard dead code and would ask
+  // the server on every punctuation keystroke.
   const word = context.matchBefore(/[\w$]*/);
   const typed = word?.text ?? "";
   if (!typed && !context.explicit) return null;
@@ -126,7 +132,7 @@ export async function lspCompletion(
   return { from: word ? word.from : context.pos, options, validFor: /^[\w$]*$/ };
 }
 
-/** LSP 的 completion 结果有两种形状:数组,或 `{items:[...]}`。 */
+/** The LSP completion result has two shapes: an array, or `{items:[...]}`. */
 function completionItemsOf(raw: unknown): Record<string, unknown>[] {
   if (Array.isArray(raw)) return raw as Record<string, unknown>[];
   if (raw && typeof raw === "object") {
@@ -136,7 +142,7 @@ function completionItemsOf(raw: unknown): Record<string, unknown>[] {
   return [];
 }
 
-/** 一条 LSP CompletionItem → CM Completion。 */
+/** One LSP CompletionItem → CM Completion. */
 export function toCompletion(item: Record<string, unknown>): Completion | null {
   const label = typeof item.label === "string" ? item.label : null;
   if (!label) return null;
@@ -172,13 +178,16 @@ export function toCompletion(item: Record<string, unknown>): Completion | null {
 }
 
 /**
- * 悬停提示。
+ * Hover tooltip.
  *
- * 内容按纯文本渲染(不注入 HTML):语言服务器的 hover 常带 markdown,但把它
- * 当 HTML 插进页面就是注入面。转义后按行排版,代码感还在,风险没有。
+ * The content is rendered as plain text (no HTML injection): the hover of a
+ * language server often carries markdown, but injecting it into the page as
+ * HTML is an injection surface. Escaped and laid out line by line, the code
+ * look survives while the risk does not.
  */
 export const lspHoverTooltip = hoverTooltip(async (view, pos) => {
-  // 按**这个视图**找文件,不按「当前聚焦的」:鼠标悬停不改变焦点。
+  // Find the file by **this view**, not by "the focused one": hovering with
+  // the mouse does not change the focus.
   const handle = handleForView(view);
   if (!handle) return null;
   const raw = await codeApi
@@ -211,21 +220,24 @@ export const lspHoverTooltip = hoverTooltip(async (view, pos) => {
 });
 
 /**
- * 诊断:读 store 里后端推来的诊断,标到行上。
+ * Diagnostics: read the diagnostics the backend pushed into the store and mark
+ * them on the lines.
  *
- * 诊断是**推**来的(publishDiagnostics 事件),不是拉的,所以这里读缓存;
- * 缓存变了要 `forceLinting` 才会重跑(见 `refreshDiagnostics`)。
+ * The diagnostics are **pushed** (a publishDiagnostics event), not pulled, so
+ * this reads the cache; `forceLinting` has to be called for the linter to run
+ * again when the cache changes (see `refreshDiagnostics`).
  */
 export const lspDiagnosticsLinter = linter((view) => {
-  // 按**这个视图**找文件,不按「当前聚焦的」:焦点不在编辑器上时,后者会
-  // 取到别的文件,诊断就贴错地方了。
+  // Find the file by **this view**, not by "the focused one": when the focus
+  // is not on the editor the latter would pick a different file and the
+  // diagnostics would land in the wrong place.
   const handle = handleForView(view);
   if (!handle) return [];
   const list = useCodeStore.getState().diagnostics[handle.path] ?? [];
   return list.map((d) => toCmDiagnostic(d, view.state.doc));
 }, { delay: 120 });
 
-/** 诊断缓存变了,让编辑器重画一遍诊断标记。 */
+/** The diagnostic cache changed, make the editor redraw the diagnostic marks. */
 export function refreshDiagnostics(view: EditorView | null): void {
   if (!view) return;
   forceLinting(view);

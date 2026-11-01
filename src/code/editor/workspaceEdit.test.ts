@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { workspaceEditsOf } from "./workspaceEdit";
 
 /**
- * 重命名 / 代码动作的 WorkspaceEdit 解析门禁。
+ * The gate of the WorkspaceEdit parsing for rename / code actions.
  *
- * 现代语言服务器(typescript-language-server、rust-analyzer、gopls)的
- * rename 回的是 `documentChanges`,不是 `changes`。只认 `changes` 的实现
- * 对着它们一律「重命名失败」,且不报错——这条门禁把这个形状钉住。
+ * The rename of a modern language server (typescript-language-server,
+ * rust-analyzer, gopls) answers with `documentChanges`, not `changes`. An
+ * implementation that only knows `changes` reports "rename failed" against
+ * all of them without any error — this gate pins that shape down.
  */
 
 const range = (line: number, character: number, endCharacter: number) => ({
@@ -75,7 +76,7 @@ describe("WorkspaceEdit 解析", () => {
         "file:///p/a.ts": [
           { range: range(0, 0, 1), newText: "ok" },
           { range: { start: { line: 1, character: 0 } }, newText: "缺 end" },
-          { range: range(2, 0, 1) }, // 缺 newText
+          { range: range(2, 0, 1) }, // missing newText
           null,
         ],
       },

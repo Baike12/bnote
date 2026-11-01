@@ -1,12 +1,16 @@
-//! 通用 LSP 客户端:一个语言服务器进程 + 一份文档表。
+//! Generic LSP client: one language server process + one document table.
 //!
-//! 与 python 内嵌那条链的唯一差别是**文档模型**:这里的文档是真实文件
-//! (URI 指向磁盘上的路径),不是 markdown 里拼出来的虚拟文档。除此之外
-//! (帧、请求配对、超时、停服)都一样,所以只有这一份实现。
+//! The only difference from the Python chain embedded in markdown is the
+//! **document model**: here a document is a real file (its URI points at a path
+//! on disk), not a virtual document assembled inside markdown. Everything else
+//! (framing, request pairing, timeouts, stopping the server) is the same, so
+//! there is only this one implementation.
 //!
-//! 「服务器发来的消息怎么处理」交给实现方([`LspSink`]):python 的诊断事件
-//! 带 `mdPath`,代码项目的带项目相对路径;对 `workspace/configuration` 的
-//! 应答内容也不同。传输层不认识这些差异,也不该认识。
+//! "How a message coming from the server is handled" is left to the implementor
+//! ([`LspSink`]): the Python diagnostic event carries an `mdPath`, the code
+//! project one carries a project-relative path; the reply to
+//! `workspace/configuration` differs as well. The transport layer knows none of
+//! these differences, and should not.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,32 +24,34 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::{frame_message, BoxFuture};
 
-/// 握手超时:服务器起不来(路径错、缺依赖)时不能把 UI 吊死。
+/// Handshake timeout: when the server cannot start (wrong path, missing
+/// dependency) the UI must not hang.
 pub const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
-/// completion / hover 这类交互内请求的等待上限;超时直接放弃,不让 UI 干等。
+/// Upper bound for an interactive request such as completion / hover; on
+/// timeout it is given up on, so the UI never waits for nothing.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// 启动一个语言服务器需要什么。
+/// What it takes to start a language server.
 #[derive(Clone, Debug, Default)]
 pub struct ServerSpec {
-    /// 语言 id(typescript / rust / go / python …):进 didOpen 的 languageId,
-    /// 也用作日志前缀。
+    /// The language id (typescript / rust / go / python …): it becomes the
+    /// languageId in didOpen and doubles as the log prefix.
     pub language_id: String,
-    /// 可执行文件名或绝对路径。
+    /// The executable name or an absolute path.
     pub command: String,
-    /// 启动参数(多数服务器要 `--stdio`)。
+    /// The startup arguments (most servers need `--stdio`).
     pub args: Vec<String>,
-    /// 追加的环境变量(不覆盖继承来的同名变量之外的语义)。
+    /// Extra environment variables (they only add to the inherited ones).
     pub env: Vec<(String, String)>,
-    /// 工作目录;默认用项目根。
+    /// The working directory; defaults to the project root.
     pub cwd: Option<PathBuf>,
-    /// initialize 的 `initializationOptions`。
+    /// The `initializationOptions` of the initialize request.
     pub initialization_options: Value,
-    /// initialize 之后发的 `workspace/didChangeConfiguration`:`(section, value)`。
-    /// section 为空表示整个 settings 就是 value。
+    /// The `workspace/didChangeConfiguration` sent after initialize:
+    /// `(section, value)`. An empty section means the whole settings is value.
     pub settings: Option<(String, Value)>,
-    /// didChange 之后是否主动 `textDocument/diagnostic`(pull)。
-    /// 会 push 诊断的服务器不需要;ty 只认 pull。
+    /// Whether to pull `textDocument/diagnostic` after a didChange. Servers
+    /// that push diagnostics do not need it; ty only speaks pull.
     pub pull_diagnostics: bool,
 }
 
@@ -63,9 +69,10 @@ impl ServerSpec {
     }
 }
 
-/// 服务器发来的消息怎么处理。
+/// How a message coming from the server is handled.
 pub trait LspSink: Send + Sync + 'static {
-    /// 处理一条来自服务器的消息。返回的 future 由读循环 await。
+    /// Handles one message from the server. The read loop awaits the returned
+    /// future.
     fn on_message<'a>(
         &'a self,
         client: &'a LspClient,
@@ -73,27 +80,30 @@ pub trait LspSink: Send + Sync + 'static {
     ) -> BoxFuture<'a, ()>;
 }
 
-/// 一个语言服务器进程。
+/// One language server process.
 pub struct LspClient {
-    /// 语言 id(typescript / rust / go / python …),也用作日志前缀。
+    /// The language id (typescript / rust / go / python …), also the log prefix.
     pub language_id: String,
-    /// 项目根:initialize 的 rootUri 与工作目录。
+    /// The project root: the rootUri of initialize and the working directory.
     pub project_root: PathBuf,
     child: AsyncMutex<tokio::process::Child>,
     stdin: AsyncMutex<tokio::process::ChildStdin>,
     next_id: AtomicU64,
-    /// uri → 已推送的文档版本(didOpen 后从 0 递增)。
+    /// uri → the version of the document already pushed (counted up from 0 after
+    /// didOpen).
     pub docs: Mutex<HashMap<String, u32>>,
-    /// 文档操作串行化:避免并发的 open/change 交错。
+    /// Serializes the document operations so that concurrent open/change calls
+    /// cannot interleave.
     doc_ops: AsyncMutex<()>,
     pub alive: AtomicBool,
-    /// 未应答请求:request id → oneshot。
+    /// The unanswered requests: request id → oneshot.
     pending: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>,
 }
 
 impl LspClient {
-    /// 拉起进程并启动读循环。握手由调用方在拿到实例后立即 await,
-    /// 失败时进程随 kill_on_drop 一并回收。
+    /// Starts the process and the read loop. The caller awaits the handshake
+    /// right after it gets the instance; on failure the process is reclaimed
+    /// together with kill_on_drop.
     pub async fn spawn(
         spec: &ServerSpec,
         project_root: PathBuf,
@@ -128,7 +138,7 @@ impl LspClient {
             pending: Mutex::new(HashMap::new()),
         });
 
-        // stderr 排水:不排会把服务器阻死在写满的管道上。
+        // Drain stderr: not draining it blocks the server on a full pipe.
         let language_id = spec.language_id.clone();
         tauri::async_runtime::spawn(async move {
             let mut reader = BufReader::new(stderr);
@@ -142,8 +152,8 @@ impl LspClient {
             }
         });
 
-        // 读循环:解析帧 → 分发。
-        // 循环用的是自己那份 clone,`client` 本身留给调用方。
+        // The read loop: parse frames → dispatch. The loop works on its own
+        // clone, `client` itself stays with the caller.
         let loop_client = client.clone();
         tauri::async_runtime::spawn(async move {
             let client = loop_client;
@@ -165,7 +175,7 @@ impl LspClient {
                         Ok(_) => {
                             let trimmed = line.trim_end();
                             if trimmed.is_empty() {
-                                break; // 空行 = 头结束
+                                break; // an empty line ends the header
                             }
                             if let Some(v) = super::content_length_of(trimmed) {
                                 length = Some(v);
@@ -175,7 +185,7 @@ impl LspClient {
                 }
                 let len = match length {
                     Some(l) => l,
-                    None => continue, // 没有 Content-Length 的帧只能丢弃
+                    None => continue, // a frame without Content-Length can only be dropped
                 };
                 let mut buf = vec![0u8; len];
                 if reader.read_exact(&mut buf).await.is_err() {
@@ -196,7 +206,7 @@ impl LspClient {
         Ok(client)
     }
 
-    /// 写一条消息(stdio 上的 LSP 帧)。
+    /// Writes one message (an LSP frame on stdio).
     pub async fn send(&self, msg: Value) -> Result<(), String> {
         let bytes = frame_message(&msg)?;
         let mut stdin = self.stdin.lock().await;
@@ -210,7 +220,7 @@ impl LspClient {
             .map_err(|e| format!("LSP_WRITE: {}", e))
     }
 
-    /// 发一条通知(无 id)。
+    /// Sends a notification (no id).
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
         self.send(json!({
             "jsonrpc": "2.0",
@@ -234,8 +244,10 @@ impl LspClient {
         .await
     }
 
-    /// 发请求并等应答。时序契约:先在 pending 占位再发送 —— 读循环是独立
-    /// 任务,应答可能先于本任务恢复执行到达,发送后再注册会漏收。
+    /// Sends a request and waits for the reply. Ordering contract: reserve the
+    /// slot in `pending` before sending — the read loop is an independent task
+    /// and the reply may arrive before this task is scheduled again, so
+    /// registering after the send would lose it.
     pub async fn request_await(
         &self,
         method: &str,
@@ -258,7 +270,8 @@ impl LspClient {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err("LSP_DIED: 服务器在请求期间退出".to_string()),
             Err(_) => {
-                // 超时把占位摘掉,否则每超时一次泄漏一条。
+                // A timeout drops the slot, otherwise every timeout leaks one
+                // entry.
                 if let Ok(mut pending) = self.pending.lock() {
                     pending.remove(&id);
                 }
@@ -267,16 +280,19 @@ impl LspClient {
         }
     }
 
-    /// 发一条**不等结果**的请求:返回请求 id,由调用方自己把 id 映射到
-    /// 应答的去处(pull 诊断就是这种——应答要走通知通道给前端)。
+    /// Sends a request **without waiting for the result**: returns the request
+    /// id, and the caller maps that id to where the reply belongs (a pulled
+    /// diagnostic is exactly that — its reply goes to the front end through
+    /// the notification channel).
     pub async fn request_detached(&self, method: &str, params: Value) -> Result<u64, String> {
         let id = self.alloc_id();
         self.send_request(id, method, params).await?;
         Ok(id)
     }
 
-    /// 交互内请求(completion / hover / definition):白名单在命令层,
-    /// `textDocument.uri` 由调用方注入,前端只给 position。
+    /// An interactive request (completion / hover / definition): the whitelist
+    /// lives in the command layer, `textDocument.uri` is injected by the
+    /// caller, and the front end only supplies the position.
     pub async fn interaction_request(
         &self,
         method: &str,
@@ -288,8 +304,9 @@ impl LspClient {
         self.request_await(method, params, REQUEST_TIMEOUT).await
     }
 
-    /// initialize 握手 + initialized 通知 + 可选的初始配置。
-    /// 返回服务器的 capabilities(留作特性探测)。
+    /// The initialize handshake + the initialized notification + the optional
+    /// initial configuration. Returns the server capabilities (kept for feature
+    /// detection).
     pub async fn initialize(&self, spec: &ServerSpec) -> Result<Value, String> {
         let result = self
             .request_await(
@@ -333,7 +350,8 @@ impl LspClient {
         Ok(result)
     }
 
-    /// 打开一个文档(真实文件或虚拟文档都一样:URI + 语言 + 内容)。
+    /// Opens a document (a real file and a virtual document are the same here:
+    /// URI + language + content).
     pub async fn did_open(&self, uri: &str, language_id: &str, text: &str) -> Result<(), String> {
         let _guard = self.doc_ops.lock().await;
         self.docs
@@ -354,7 +372,8 @@ impl LspClient {
         .await
     }
 
-    /// 全量 didChange;版本号由本模块单调递增,调用方不必自己记账。
+    /// A full didChange; the version number is incremented monotonically here,
+    /// so the caller need not keep its own counter.
     pub async fn did_change(&self, uri: &str, text: &str) -> Result<(), String> {
         let _guard = self.doc_ops.lock().await;
         let version = {
@@ -386,7 +405,8 @@ impl LspClient {
         .await
     }
 
-    /// 停服务器:先 exit 通知,300ms 后强杀(不掉等待优雅退出)。
+    /// Stops the server: an exit notification first, then a hard kill after
+    /// 300ms (the graceful exit is never waited for).
     pub fn stop(self: &Arc<Self>) {
         if !self.alive.swap(false, Ordering::Relaxed) {
             return;
@@ -400,10 +420,12 @@ impl LspClient {
     }
 }
 
-/// 读循环的分发。
+/// The dispatch of the read loop.
 ///
-/// 我们自己发起的请求(在 `pending` 里等着)的应答在这里配对;其余消息
-/// (通知、服务器的主动请求、以及我们自己发的裸请求的应答)一律交给 sink。
+/// The replies to the requests we initiated ourselves (the ones waiting in
+/// `pending`) are paired here; every other message (notifications, requests
+/// the server initiates, and the replies to our own detached requests) goes to
+/// the sink.
 async fn dispatch<'a>(
     client: &'a Arc<LspClient>,
     sink: &'a Arc<dyn LspSink>,
@@ -412,10 +434,11 @@ async fn dispatch<'a>(
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).map(|s| s.to_string());
     match (id, method) {
-        // 服务器 → 客户端的请求:应答内容因服务器而异,交给 sink。
+        // A server → client request: the reply content depends on the server,
+        // so it goes to the sink.
         (Some(_), Some(_)) => sink.on_message(client, msg).await,
-        // 我们请求的应答:配对 oneshot。没配上的(如 python 的 pull 诊断)
-        // 落到 sink。
+        // A reply to one of our requests: pair the oneshot. An unmatched one
+        // (e.g. the pull diagnostic of Python) falls through to the sink.
         (Some(id), None) => {
             let mut handled = false;
             if let Some(id_num) = id.as_u64() {
@@ -430,17 +453,19 @@ async fn dispatch<'a>(
                 sink.on_message(client, msg).await;
             }
         }
-        // 通知。
+        // A notification.
         (None, Some(_)) => sink.on_message(client, msg).await,
         _ => {}
     }
 }
 
-/// 把一条诊断(标准 LSP 的 Diagnostic)翻成前端要的形状。
+/// Turns one diagnostic (a standard LSP Diagnostic) into the shape the front
+/// end wants.
 ///
-/// LSP 的 range 用 UTF-16 码元计数,前端的 CodeMirror 用 UTF-16 码元也是
-/// 一致(CodeMirror 的位置以 UTF-16 计),所以行/字符原样传;行列都是
-/// 0-based,前端按需 +1。
+/// The LSP range counts UTF-16 code units, and CodeMirror in the front end
+/// counts UTF-16 code units as well (CodeMirror positions are UTF-16 based), so
+/// line/character are passed through unchanged; both are 0-based and the front
+/// end adds 1 where it needs 1-based values.
 pub fn diagnostic_to_json(d: &Value) -> Value {
     let severity = d.get("severity").and_then(Value::as_u64).unwrap_or(1);
     let range = d.get("range").cloned().unwrap_or(Value::Null);

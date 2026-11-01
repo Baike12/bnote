@@ -1,22 +1,25 @@
 import type { EditorView } from "@codemirror/view";
 
 /**
- * 代码编辑器的实例登记处。
+ * Registry of the code editor instances.
  *
- * 命令层(跳转到定义、跳转到引用、保存…)永远只该作用于**用户正在用的那个**
- * 代码编辑器,所以这里记一份「当前聚焦的实例 + 它对应的文件」。
+ * The command layer (go to definition, go to reference, save, …) must always
+ * act on **the code editor the user is currently using**, so this keeps a
+ * record of "the focused instance + the file it belongs to".
  *
- * 与笔记编辑器的登记处(`src/editor/api.ts`)是分开的两个:笔记区与代码区
- * 是两个独立的编辑上下文,各自的命令各自找各自的目标。
+ * It is a separate registry from the one of the notes editor
+ * (`src/editor/api.ts`): the notes area and the code area are two
+ * independent editing contexts, and each set of commands finds its own
+ * target.
  */
 
-/** 一个代码编辑器实例的上下文。 */
+/** The context of one code editor instance. */
 export interface CodeEditorHandle {
-  /** 项目根绝对路径。 */
+  /** Absolute path of the project root. */
   root: string;
-  /** 项目相对路径。 */
+  /** Project-relative path. */
   path: string;
-  /** languageId(后端按扩展名判定)。 */
+  /** The languageId (decided by the backend from the extension). */
   language: string;
   view: EditorView;
 }
@@ -25,7 +28,7 @@ const live = new Set<CodeEditorHandle>();
 
 let active: CodeEditorHandle | null = null;
 
-/** 新实例挂上;同时成为活动编辑器。 */
+/** Register a new instance; it also becomes the active editor. */
 export function registerCodeEditor(handle: CodeEditorHandle): void {
   live.add(handle);
   active = handle;
@@ -35,7 +38,8 @@ export function unregisterCodeEditor(handle: CodeEditorHandle): void {
   live.delete(handle);
   if (active === handle) {
     active = null;
-    // 退到还活着的那个(多标签时关掉当前页,焦点不该整个丢掉)。
+    // Fall back to one that is still alive (closing the current tab of a
+    // multi-tab session must not lose the focus entirely).
     for (const h of live) {
       if (h.view.dom.isConnected) {
         active = h;
@@ -45,14 +49,13 @@ export function unregisterCodeEditor(handle: CodeEditorHandle): void {
   }
 }
 
-/** 焦点进入某个实例时调用,把命令目标切到它。 */
+/** Called when the focus enters an instance, to switch the command target to it. */
 export function setActiveCodeEditor(handle: CodeEditorHandle | null): void {
   if (!handle) return;
   if (live.has(handle)) active = handle;
 }
 
-/** 某个视图对应的句柄(诊断这类按视图跑的逻辑用它,别用「当前聚焦的」——
- *  那依赖焦点,焦点不在编辑器上时会取错文件)。 */
+/** The handle of a given view (used by logic that runs per view, such as diagnostics — do not use "the focused one": that depends on the focus and picks the wrong file when the focus is not on the editor). */
 export function handleForView(view: EditorView): CodeEditorHandle | null {
   for (const h of live) {
     if (h.view === view) return h;
@@ -60,7 +63,7 @@ export function handleForView(view: EditorView): CodeEditorHandle | null {
   return null;
 }
 
-/** 当前聚焦的代码编辑器;没有就 null。 */
+/** The focused code editor; null if there is none. */
 export function activeCodeEditor(): CodeEditorHandle | null {
   if (active && live.has(active) && active.view.dom.isConnected) return active;
   for (const h of live) {
@@ -69,7 +72,7 @@ export function activeCodeEditor(): CodeEditorHandle | null {
   return null;
 }
 
-/** 全部活着的实例。 */
+/** All live instances. */
 export function activeCodeEditors(): CodeEditorHandle[] {
   return [...live].filter((h) => h.view.dom.isConnected);
 }

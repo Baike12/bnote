@@ -4,17 +4,23 @@ import type { AgentImage } from "./agentImages";
 export type { SessionModelConfig } from "@/lib/tauri";
 
 /**
- * Agent 会话记录:一份会话一个 JSONL 文件(照 Claude Code 的 transcript
- * 形状:`<会话>.jsonl` 一行一条消息),落在材料的 `sessions/` 目录下。
+ * Agent session transcripts: one JSONL file per session (following Claude
+ * Code's transcript shape: `<session>.jsonl` with one message per line),
+ * stored in the material's `sessions/` directory.
  *
- * 每一行要么是一条用户消息,要么是**一整轮**助手回复(文本 + 思考 + 工具
- * 调用 + 错误),所以一轮只追加一次、不随流式增量重写文件。整个文件的
- * 第一行是元数据行(标题 + 模型配置快照,见 `TranscriptMetaLine`)。用
- * `at` 记时间戳;会话标题从元数据行取,排序由 mtime 推出,不需要额外索引。
+ * Each line is either one user message or a **whole turn** of the assistant's
+ * reply (text + thinking + tool calls + error), so a turn is appended once and
+ * the file is never rewritten while the stream is still coming in. The first
+ * line of the file is the metadata line (title + model config snapshot, see
+ * `TranscriptMetaLine`). Timestamps use `at`; the session title comes from the
+ * metadata line and the ordering is derived from the mtime, so no extra index
+ * is needed.
  *
- * 行结构是「展示用」的,模型侧历史由 `historyFromTranscript` 还原。学习
- * 助手不注册工具(纯问答,见后端 session.rs 的 tool_defs),因此这里的
- * 还原与后端真实历史一致;将来恢复工具时再引入逐轮的 tool 分组。
+ * The line structure is for display; the model-side history is rebuilt by
+ * `historyFromTranscript`. The study assistant registers no tools (plain
+ * Q&A, see the backend's session.rs tool_defs), so the rebuild matches the
+ * real backend history; per-turn tool grouping only comes back if tools are
+ * restored later.
  */
 export interface StoredTool {
   id: string;
@@ -44,38 +50,45 @@ export interface TranscriptAssistantLine {
 export type TranscriptLine = TranscriptUserLine | TranscriptAssistantLine;
 
 /**
- * 会话级元数据(模型配置快照 + 标题),作为记录文件的**第一行**。
+ * Session-level metadata (model config snapshot + title), stored as the
+ * **first line** of the transcript file.
  *
- * 会话一旦开始就用当时保存的模型配置跑到底:之后改了设置(哪怕只改上下文
- * 长度),这条会话恢复时仍按自己的快照继续,不会被新配置悄悄换掉模型。
+ * Once a session has started it runs to the end with the model config that
+ * was saved at that moment: changing a setting later (even just the context
+ * length) does not swap the model out from under it — on restore the session
+ * continues with its own snapshot.
  *
- * 单独成行还有第二个作用:首条用户消息可能带着几 MB 的 base64 截图,列表
- * 侧只读文件头部一小段;元数据行很小,永远能完整读到,标题不再依赖那条
- * 巨型消息行。
+ * Being a line of its own has a second purpose: the first user message may
+ * carry several MB of base64 screenshots and the list side only reads a small
+ * window at the head of the file; the metadata line is tiny and always read
+ * completely, so the title no longer depends on that huge message line.
  */
 export interface TranscriptMetaLine {
   type: "meta";
   at: number;
-  /** 首条用户消息(单行、截断);没有就留空,由展示侧兜底。 */
+  /** The first user message (single line, truncated); empty when there is none, the display side falls back. */
   title?: string;
   model?: SessionModelConfig;
   /**
-   * 分叉来源会话的记录文件 id(主会话没有这一项)。重启恢复靠它把辅助
-   * 会话挂回主会话——只存内存里的 convKey 活不过一次重启。
+   * The transcript file id of the session this one was forked from (the main
+   * session has no such field). The restart restore relies on it to hang the
+   * auxiliary session back under the main one — a convKey kept only in memory
+   * does not survive a restart.
    */
   parent?: string;
-  /** 辅助会话的来源消息摘要(头部辅助条与切换列表的第二行)。 */
+  /** A summary of the source message of an auxiliary session (the auxiliary bar in the header and the second line of the switcher list). */
   basedOn?: string;
   /**
-   * 分叉时复制过来的前缀条数:`entries[forkAt]` 才是这条会话自己的第一条
-   * 消息(生成自己的标题时要从这里起算,不能拿父会话的提问顶替)。
+   * The number of entries copied over when forking: `entries[forkAt]` is the
+   * first message this session owns (generating its own title has to start
+   * there, the parent's question must not stand in for it).
    */
   forkAt?: number;
-  /** 标题来源:llm = 模型生成过;缺省按首条消息截断(旧记录同此)。 */
+  /** Where the title comes from: llm = the model generated one; by default the first message, truncated (old records do the same). */
   titleSource?: "llm" | "first-message";
 }
 
-/** 会话记录里可能出现的一行(元数据行不参与对话还原)。 */
+/** A line that can appear in a session transcript (the metadata line does not take part in the conversation rebuild). */
 export type TranscriptRecord = TranscriptLine | TranscriptMetaLine;
 
 function isImage(value: unknown): value is AgentImage {
@@ -102,7 +115,7 @@ function tools(value: unknown): StoredTool[] {
   return out;
 }
 
-/** 一行 JSON + 换行;调用方按批传给 `appendFile`,一次追加多行也安全。 */
+/** One line of JSON plus a newline; the caller passes them in batches to `appendFile`, appending several lines at once is safe. */
 export function serializeTranscript(lines: TranscriptRecord[]): string {
   return lines.map((line) => JSON.stringify(line)).join("\n") + (lines.length > 0 ? "\n" : "");
 }
@@ -120,10 +133,12 @@ function isModelConfig(value: unknown): value is SessionModelConfig {
 }
 
 /**
- * 从记录原文里取会话元数据(第一处 meta 行)。
+ * Read the session metadata out of the raw transcript (the first meta line).
  *
- * meta 行是会话创建时写下的,故意放在最前面:它很小,列表侧只读文件头也
- * 能完整拿到;标题与模型配置都不依赖后面那条可能带大图的用户消息。
+ * The meta line is written when the session is created and deliberately sits
+ * first: it is small, so the list side gets it completely even though it only
+ * reads the head of the file; neither the title nor the model config depends
+ * on the later user message that may carry a large image.
  */
 export function sessionMetaFromRaw(raw: string | null): TranscriptMetaLine | null {
   if (!raw) return null;
@@ -159,12 +174,12 @@ export function sessionMetaFromRaw(raw: string | null): TranscriptMetaLine | nul
   return null;
 }
 
-/** meta 行:标题取首条用户消息(与列表侧同一规则),模型配置由调用方给。 */
+/** meta line: the title comes from the first user message (the same rule as the list side), the model config is given by the caller. */
 export function buildSessionMeta(input: {
   at: number;
   title: string;
   model: SessionModelConfig | null;
-  /** 分叉:来源会话的文件 id(主会话不传)。 */
+  /** Fork: the file id of the source session (not passed for the main session). */
   parent?: string | null;
   basedOn?: string;
   forkAt?: number;
@@ -178,18 +193,21 @@ export function buildSessionMeta(input: {
 }
 
 /**
- * 一轮落盘要追加的行。
+ * The lines a turn appends to the transcript.
  *
- * 第一轮(会话的第一次写盘)最前面插元数据行:标题 + 模型配置快照。它必须
- * 在文件第一行——列表侧只读文件头部;**首条用户消息可能带着几 MB 的
- * base64 截图,整行远超头部窗口**,标题不能依赖那一行还能被完整解析。
- * 模型快照也靠它:之后改设置,这条会话恢复时仍按自己的配置继续。
+ * The first turn (the session's first write) puts the metadata line in front:
+ * title + model config snapshot. It has to be the first line of the file —
+ * the list side only reads the head of the file, and **the first user message
+ * may carry several MB of base64 screenshots, so the whole line is far beyond
+ * the head window**; the title cannot depend on that line still parsing
+ * completely. The model snapshot relies on it too: after a setting change the
+ * session still continues with its own config on restore.
  */
 export function turnLines(input: {
-  /** 这一轮的用户消息;发送失败时它根本没进来,传 null。 */
+  /** The user message of this turn; it never arrived when sending failed, pass null then. */
   user: TranscriptUserLine | null;
   assistant: TranscriptAssistantLine;
-  /** 是否第一轮(还没写过元数据行)。 */
+  /** Whether this is the first turn (no metadata line written yet). */
   first: boolean;
   model: SessionModelConfig | null;
 }): TranscriptRecord[] {
@@ -208,7 +226,7 @@ export function turnLines(input: {
   return [meta, ...lines];
 }
 
-/** 容错解析:坏行逐条丢弃(手工编辑/写盘中断都不该让整段历史打不开)。 */
+/** Fault-tolerant parsing: bad lines are dropped one by one (a manual edit or an interrupted write must not make the whole history unopenable). */
 export function parseTranscript(raw: string | null): TranscriptLine[] {
   if (!raw) return [];
   const out: TranscriptLine[] = [];
@@ -250,13 +268,16 @@ export function parseTranscript(raw: string | null): TranscriptLine[] {
 }
 
 /**
- * 展示用记录 → 模型侧历史。
+ * Display-oriented records -> the model-side history.
  *
- * - 用户行:文本 + 图片,与后端 `ChatItem::user_message` 同序。
- * - 助手行:文本 + 每个工具调用的 `tool_use`;工具的 `tool_result` 按后端
- *   run_loop 的写法放进紧随其后的一条 user 消息。
- * - 出错的一轮:后端在 provider 返回错误前不会 push 助手消息,所以不还原
- *   (否则模型会看到一条根本不存在于历史的半截回复)。
+ * - User line: text + images, in the same order as the backend's
+ *   `ChatItem::user_message`.
+ * - Assistant line: text plus a `tool_use` per tool call; the tools'
+ *   `tool_result` goes into a user message right after, the way the backend's
+ *   run_loop writes it.
+ * - A turn that errored: the backend pushes no assistant message before the
+ *   provider returns an error, so nothing is rebuilt here (otherwise the
+ *   model would see a half reply that never existed in the history).
  */
 export function historyFromTranscript(lines: TranscriptLine[]): AgentChatItem[] {
   const out: AgentChatItem[] = [];
@@ -288,13 +309,13 @@ export function historyFromTranscript(lines: TranscriptLine[]): AgentChatItem[] 
   return out;
 }
 
-/** 标题规则:空白压成单行、按字符截断;空文本返回空串(调用方决定兜底)。 */
+/** Title rule: collapse whitespace into a single line, truncate by character; empty text returns an empty string (the caller decides the fallback). */
 export function transcriptTitle(text: string, limit = 60): string {
   const compact = text.replace(/\s+/g, " ").trim();
   return compact ? Array.from(compact).slice(0, limit).join("") : "";
 }
 
-/** 会话标题:第一条非空用户消息,单行、截断;没有就问号兜底。 */
+/** Session title: the first non-empty user message, single line and truncated; a question mark is the fallback. */
 export function sessionTitleFromLines(lines: TranscriptLine[], limit = 60): string {
   for (const line of lines) {
     if (line.type !== "user") continue;

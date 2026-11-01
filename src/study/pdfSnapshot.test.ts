@@ -14,7 +14,7 @@ const rect = (
   height: number,
 ): SnapshotRect => ({ left, top, width, height });
 
-/** 一页:显示窗口与整页相同(没设显示范围),canvas 2× DPR。 */
+/** One page: the display window equals the whole page (no display range), canvas 2x DPR. */
 function page(over: Partial<SnapshotPage> = {}): SnapshotPage {
   return {
     box: rect(0, 0, 500, 750),
@@ -27,7 +27,7 @@ function page(over: Partial<SnapshotPage> = {}): SnapshotPage {
 
 describe("planSnapshot 取景几何", () => {
   it("横向只取页面列:左侧目录/批注留白不进图", () => {
-    // 视口 0..1000,页面列 300..800;留白 0..300 必须被切掉。
+    // Viewport 0..1000, page column 300..800; the 0..300 margin must be cut away.
     const plan = planSnapshot(rect(0, 0, 1000, 800), [
       page({ box: rect(300, 0, 500, 900), full: rect(300, 0, 500, 900) }),
     ]);
@@ -39,7 +39,7 @@ describe("planSnapshot 取景几何", () => {
   });
 
   it("纵向裁掉视口上方/下方的页面外留白", () => {
-    // 页面从 y=50 开始;视口顶部 50px 是底色,不进图。
+    // The page starts at y=50; the top 50px of the viewport is background and is not captured.
     const plan = planSnapshot(rect(0, 0, 500, 800), [
       page({ box: rect(0, 50, 500, 900), full: rect(0, 50, 500, 900) }),
     ]);
@@ -55,10 +55,10 @@ describe("planSnapshot 取景几何", () => {
       page({ box: rect(0, 414, 500, 800), full: rect(0, 414, 500, 800) }),
     ]);
     expect(plan!.pages).toHaveLength(2);
-    // 第一页:视口顶部切掉页内 100px(y = -100 → 源 y 200)
+    // First page: the viewport top cuts 100px off the page (y = -100 -> source y 200)
     expect(plan!.pages[0].src).toEqual(rect(0, 200, 1000, 800));
     expect(plan!.pages[0].dest).toEqual(rect(0, 0, 1000, 800));
-    // 第二页:从 y=414 开始,页间 14px 空隙 = 28 输出像素
+    // Second page: starts at y=414, the 14px gap between pages = 28 output pixels
     expect(plan!.pages[1].dest.top).toBe(828);
     expect(plan!.pages[1].src.top).toBe(0);
   });
@@ -74,7 +74,7 @@ describe("planSnapshot 取景几何", () => {
     expect(plan!.origin).toEqual({ left: 40, top: 70 });
     expect(p.src).toEqual(rect(80, 140, 800, 1200));
     expect(p.dest).toEqual(rect(0, 0, 800, 1200));
-    // 整页在输出里的位置:原点被裁到左上角外侧,批注靠 clip 掉出框的部分。
+    // Position of the whole page in the output: the origin is cropped off to the top-left, the clip drops the part outside the box.
     expect(p.sheet).toEqual(rect(-80, -140, 1000, 1500));
   });
 
@@ -129,7 +129,7 @@ describe("阅读分区:压暗的旧内容不进图", () => {
   });
 
   it("取景从阴影下沿开始:上半屏的旧内容不进图", () => {
-    // 视口 0..800,阴影盖住 0..400(旧内容),当前内容区 400..800。
+    // Viewport 0..800, the shade covers 0..400 (old content), the current content region is 400..800.
     const plan = planSnapshot(
       rect(0, 0, 500, 800),
       [page({ box: rect(0, -100, 500, 900), full: rect(0, -100, 500, 900) })],
@@ -138,7 +138,7 @@ describe("阅读分区:压暗的旧内容不进图", () => {
     expect(plan).not.toBeNull();
     expect(plan!.origin).toEqual({ left: 0, top: 400 });
     expect(plan!.height).toBe(800); // 400 CSS × 2(Dpr)
-    // 源矩形同步上移:旧内容那 500px 不进图。
+    // The source rect moves up in step: those 500px of old content are not captured.
     expect(plan!.pages[0].src).toEqual(rect(0, 1000, 1000, 800));
     expect(plan!.pages[0].dest).toEqual(rect(0, 0, 1000, 800));
   });
@@ -159,7 +159,7 @@ describe("阅读分区:压暗的旧内容不进图", () => {
   });
 
   it("完全落在阴影里的页面不进图", () => {
-    // 页面 0..300 全在阴影里(0..400),当前区里没有这一页。
+    // The page 0..300 lies entirely in the shade (0..400), so it is not in the current region.
     const plan = planSnapshot(
       rect(0, 0, 500, 800),
       [page({ box: rect(0, 0, 500, 300), full: rect(0, 0, 500, 300) })],

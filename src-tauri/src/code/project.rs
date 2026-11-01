@@ -1,93 +1,112 @@
-//! 代码项目:打开仓库、扫描文件树、读写文件、全文搜。
+//! Code projects: open a repository, scan the file tree, read/write files,
+//! full-text search.
 //!
-//! ## 边界
+//! ## Boundary
 //!
-//! 代码项目通常**不在 vault 里**(那才是它的常态:~/Code/xxx),所以不能套用
-//! vault 那套「路径必须在 vault 内」的约束。边界改由**用户显式打开的那一个
-//! 目录**来定:项目根就是沙箱边界,根内的一切可读写,根外的一切拒绝。
+//! Code projects usually live **outside the vault** (that is the norm:
+//! ~/Code/xxx), so the vault's "the path must be inside the vault" constraint
+//! does not apply. The boundary is instead set by **the one directory the user
+//! explicitly opened**: the project root is the sandbox boundary — everything
+//! inside it may be read and written, everything outside is rejected.
 //!
-//! 拒绝靠 [`resolve_in`]:相对路径先做词法规范化(消掉 `.`/`..`),再把
-//! 已存在的部分 canonicalize(解符号链接),最后用 `starts_with` 复查是否
-//! 仍在根内。**符号链接指向根外也要挡住**——只做词法规范化会漏掉它。
+//! The rejection is done by [`resolve_in`]: a relative path is first
+//! normalized lexically (removing `.`/`..`), then the part that exists is
+//! canonicalized (resolving symlinks), and finally `starts_with` re-checks that
+//! the result is still inside the root. **A symlink pointing outside the root
+//! has to be blocked too** — lexical normalization alone would miss it.
 //!
-//! ## 扫描
+//! ## Scan
 //!
-//! 文件树用 `ignore` crate 扫一遍(尊重 .gitignore / .ignore / git 全局排除),
-//! 结果拍平成「相对路径 → 条目」的列表,前端自己折叠成树。这样:
-//! - 只扫一次,展开目录不再碰磁盘;
-//! - 搜索文件名/内容不用再遍历;
-//! - .git / node_modules / target 这些大目录由 gitignore 天然挡掉。
+//! The file tree is scanned once with the `ignore` crate (respecting
+//! .gitignore / .ignore / the global git excludes), and the result is flattened
+//! into a "relative path → entry" list that the front end folds into a tree.
+//! That way:
+//! - the disk is touched once, expanding a directory costs nothing;
+//! - searching file names and contents needs no second traversal;
+//! - the big directories .git / node_modules / target are filtered away by
+//!   gitignore on their own.
 //!
-//! 扫描有上限(条目数与深度),超了标 `truncated` 并如实告诉前端——不假装
-//! 扫全了。
+//! The scan has limits (entry count and depth); when one is hit `truncated` is
+//! set and the front end is told honestly — it never pretends to have scanned
+//! everything.
 
 use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
-/// 扫描条目数上限:超过就停,并把 `truncated` 置真。
+/// Upper bound on the number of scanned entries: the scan stops here and sets
+/// `truncated`.
 pub const MAX_ENTRIES: usize = 50_000;
-/// 扫描深度上限。
+/// Upper bound on the scan depth.
 pub const MAX_DEPTH: usize = 32;
-/// 单个文件读入的大小上限(2 MiB):再大的当二进制,不进编辑器。
+/// Upper bound on the size of a single file read in (2 MiB): anything larger is
+/// treated as binary and never enters the editor.
 pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 
-/// 文件树里的一个条目。
+/// One entry of the file tree.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeEntry {
-    /// 项目根相对路径(posix 分隔符)。
+    /// Path relative to the project root (posix separators).
     pub path: String,
-    /// 文件/目录名。
+    /// The file or directory name.
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
 }
 
-/// 扫描结果。
+/// The scan result.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeTree {
     pub entries: Vec<CodeEntry>,
-    /// 命中上限被截断(前端要如实告诉用户「文件树不完整」)。
+    /// The entry limit was hit and the tree is truncated (the front end has to
+    /// tell the user "the file tree is incomplete").
     pub truncated: bool,
 }
 
-/// 一个文件的内容。
+/// The content of one file.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeFile {
-    /// 项目根相对路径。
+    /// Path relative to the project root.
     pub path: String,
-    /// LSP languageId(见 [`super::lang`]);前端据此挑语法包。
+    /// LSP languageId (see [`super::lang`]); the front end picks the syntax
+    /// package by it.
     pub language_id: String,
-    /// 文本内容(二进制文件为空串)。
+    /// The text content (empty for a binary file).
     pub content: String,
-    /// 是不是二进制(二进制不进编辑器,只提示)。
+    /// Whether the file is binary (a binary file never enters the editor, it is
+    /// only reported).
     pub binary: bool,
     pub size: u64,
 }
 
-/// 搜索命中。
+/// A search hit.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeSearchHit {
-    /// 项目根相对路径。
+    /// Path relative to the project root.
     pub path: String,
-    /// 命中的行号(0-based)。
+    /// The line number of the hit (0-based).
     pub line: u32,
-    /// 命中行的文本(整行,前端自己高亮片段)。
+    /// The text of the matching line (the whole line; the front end highlights
+    /// the fragment itself).
     pub text: String,
 }
 
-/// 把「项目根 + 相对路径」解析成绝对路径,并保证结果落在项目根内。
+/// Resolves "project root + relative path" into an absolute path and guarantees
+/// the result stays inside the project root.
 ///
-/// 相对路径可能带 `..`,也可能经过符号链接指向根外 —— 两种都要挡住:
-/// 1. 词法规范化:消掉 `.` 与 `..`(不碰磁盘,文件不存在也能算);
-/// 2. canonicalize 已存在的部分:解掉符号链接;
-/// 3. `starts_with(root)`:最终复查。
+/// A relative path may carry `..` or pass through a symlink pointing outside
+/// the root — both have to be blocked:
+/// 1. lexical normalization: removes `.` and `..` (no disk access, so it also
+///    works for a file that does not exist);
+/// 2. canonicalize the part that exists: resolves the symlinks;
+/// 3. `starts_with(root)`: the final re-check.
 ///
-/// 文件还不存在时(canonicalize 失败)退回「父目录 canonicalize + 文件名」。
+/// When the file does not exist yet (canonicalize fails) it falls back to
+/// "canonicalize the parent directory + the file name".
 pub fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let root_c = root
         .canonicalize()
@@ -120,7 +139,7 @@ pub fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(final_path)
 }
 
-/// 词法规范化:消掉 `.` 与 `..`,不碰磁盘。
+/// Lexical normalization: removes `.` and `..` without touching the disk.
 fn normalize_lexically(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in p.components() {
@@ -135,21 +154,24 @@ fn normalize_lexically(p: &Path) -> PathBuf {
     out
 }
 
-/// 扫一遍项目根,产出拍平的条目列表。
+/// Scans the project root once and produces the flattened entry list.
 ///
-/// 尊重 .gitignore / .ignore / git 全局排除;`.git` 与 `.DS_Store` 单独排除
-/// (前者是仓库内部结构,后者是系统噪音)。不跟随符号链接(避免环)。
+/// Respects .gitignore / .ignore / the global git excludes; `.git` and
+/// `.DS_Store` are excluded separately (the former is the repository's internal
+/// structure, the latter system noise). Symlinks are not followed (they could
+/// form cycles).
 pub fn scan(root: &Path) -> CodeTree {
     let mut tree = CodeTree::default();
     let mut builder = ignore::WalkBuilder::new(root);
     builder
-        // 隐藏文件要(`.github`、`.vscode` 有用),`.git` 单独排除。
+        // Hidden files are wanted (`.github`, `.vscode` are useful); `.git` is
+        // excluded separately.
         .hidden(false)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
         .parents(true)
-        // 只在真的 git 仓库里才尊重 gitignore 规则。
+        // The gitignore rules only apply inside a real git repository.
         .require_git(true)
         .follow_links(false)
         .max_depth(Some(MAX_DEPTH));
@@ -164,7 +186,7 @@ pub fn scan(root: &Path) -> CodeTree {
             Err(_) => continue,
         };
         if entry.depth() == 0 {
-            continue; // 根目录本身不进列表
+            continue; // the root itself is not an entry
         }
         let rel = match entry.path().strip_prefix(root) {
             Ok(r) => r,
@@ -190,7 +212,8 @@ pub fn scan(root: &Path) -> CodeTree {
     tree
 }
 
-/// 相对路径 → posix 分隔符(Windows 上是反斜杠,前端要的是 `/`)。
+/// Relative path → posix separators (Windows uses backslashes, the front end
+/// expects `/`).
 fn to_posix(p: &Path) -> String {
     p.components()
         .filter_map(|c| match c {
@@ -201,7 +224,8 @@ fn to_posix(p: &Path) -> String {
         .join("/")
 }
 
-/// 读一个文本文件。二进制(有 NUL 字节)不返回内容,只标 binary。
+/// Reads a text file. A binary file (with NUL bytes) returns no content, only
+/// the binary flag.
 pub fn read_text(path: &Path) -> Result<(String, bool, u64), String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("READ_FAILED: {}", e))?;
     if meta.is_dir() {
@@ -211,9 +235,11 @@ pub fn read_text(path: &Path) -> Result<(String, bool, u64), String> {
     if size > MAX_TEXT_BYTES {
         return Ok((String::new(), true, size));
     }
-    // 已知的二进制后缀直接按二进制处理,不做内容嗅探:位图/字体/压缩包即便
-    // 前 8 KiB 恰好没有 NUL,解出来也是乱码——当成文本开进编辑器,一保存就
-    // 把原文件写坏(图片预览走 asset 协议读原文件,不经过这里)。
+    // A known binary suffix is handled as binary without sniffing the content:
+    // a bitmap/font/archive is garbage even when its first 8 KiB happen to hold
+    // no NUL — opened as text in the editor, the first save would corrupt the
+    // original file (the image preview reads the original through the asset
+    // protocol and never comes here).
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
@@ -222,7 +248,7 @@ pub fn read_text(path: &Path) -> Result<(String, bool, u64), String> {
         return Ok((String::new(), true, size));
     }
     let bytes = std::fs::read(path).map_err(|e| format!("READ_FAILED: {}", e))?;
-    // 前 8 KiB 里有 NUL 就是二进制(和 git 判二进制一个思路)。
+    // A NUL byte in the first 8 KiB means binary (the same idea git uses).
     let head = &bytes[..bytes.len().min(8192)];
     if head.contains(&0) {
         return Ok((String::new(), true, size));
@@ -231,7 +257,7 @@ pub fn read_text(path: &Path) -> Result<(String, bool, u64), String> {
     Ok((text, false, size))
 }
 
-/// 写一个文件(父目录不存在就建)。
+/// Writes a file (creates the parent directory when it is missing).
 pub fn write_text(path: &Path, content: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
@@ -239,10 +265,12 @@ pub fn write_text(path: &Path, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("WRITE_FAILED: {}", e))
 }
 
-/// 在已扫描出的文件里搜内容(字面量,忽略大小写)。
+/// Searches the contents of the already scanned files (literal, case
+/// insensitive).
 ///
-/// 只搜已知是文本的后缀,免得把二进制拖进来翻半天。命中数有上限——
-/// 一次搜索把整个仓库吐出来没有意义。
+/// Only suffixes known to be text are searched, so a binary never drags the
+/// search through garbage. The number of hits is capped — a single search
+/// dumping the whole repository is meaningless.
 pub fn search_contents(
     root: &Path,
     entries: &[CodeEntry],
@@ -292,7 +320,7 @@ pub fn search_contents(
     hits
 }
 
-/// 按扩展名直接排除的二进制/大文件后缀。
+/// Binary/large-file suffixes excluded by extension.
 fn is_binary_ext(ext: &str) -> bool {
     matches!(
         ext,
@@ -339,7 +367,7 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn main(){}").unwrap();
         let p = resolve_in(&root, "src/a.rs").unwrap();
         assert!(p.ends_with("src/a.rs"));
-        // 文件还不存在(新建)也要能算出来。
+        // A file that does not exist yet (a new one) must be resolvable too.
         let p = resolve_in(&root, "src/new.rs").unwrap();
         assert!(p.ends_with("src/new.rs"));
         let _ = std::fs::remove_dir_all(&root);
@@ -383,7 +411,8 @@ mod tests {
         std::fs::write(root.join(".git/config"), "x").unwrap();
         std::fs::write(root.join("node_modules/pkg.js"), "x").unwrap();
         std::fs::write(root.join("keep.js"), "x").unwrap();
-        // 没有 git 仓库时 gitignore 不生效(require_git),但 .git 一定要挡掉。
+        // Without a git repository the gitignore rules do not apply
+        // (require_git), but `.git` still has to be blocked.
         let tree = scan(&root);
         let paths: Vec<&str> = tree.entries.iter().map(|e| e.path.as_str()).collect();
         assert!(!paths.iter().any(|p| p.starts_with(".git/")), "{:?}", paths);
@@ -405,8 +434,9 @@ mod tests {
 
     #[test]
     fn read_text_treats_image_extension_as_binary_even_if_utf8() {
-        // 「前 8 KiB 里没有 NUL 的 png」:按内容嗅探会当成文本,保存就把图
-        // 写坏。后缀在已知二进制表里就必须走二进制通道。
+        // A "png whose first 8 KiB hold no NUL": content sniffing would treat
+        // it as text and the first save would corrupt the image. A suffix in
+        // the known-binary table must take the binary path.
         let root = tmpdir("imgext");
         let p = root.join("fake.png");
         std::fs::write(&p, b"plain utf8 text, no nul").unwrap();

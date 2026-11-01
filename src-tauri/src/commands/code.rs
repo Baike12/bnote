@@ -1,14 +1,17 @@
-//! 代码项目的 Tauri 命令:打开仓库、读写文件、搜索、git、语言服务器。
+//! Tauri commands for code projects: open a repository, read/write files,
+//! search, git, and the language server.
 //!
-//! ## 路径边界
+//! ## Path boundary
 //!
-//! 命令都收一个「项目根」,所有文件操作都在根内做(见
-//! [`crate::code::project::resolve_in`])。根由用户显式打开(对话框选目录),
-//! 所以它就是沙箱边界——不像 vault 那样由应用管理。
+//! Every command takes a "project root" and does all file operations inside
+//! it (see [`crate::code::project::resolve_in`]). The root is opened explicitly
+//! by the user (a directory picker), so it is the sandbox boundary - unlike
+//! the vault, which the app manages itself.
 //!
-//! 项目根统一 canonicalize 之后当键用:同一个目录用不同写法打开
-//! (`/tmp/x` 与 `/private/tmp/x`、带尾斜杠)要算成同一个项目,否则会起
-//! 两套语言服务器、两份文件树。
+//! The project root is canonicalized once and then used as the key: the same
+//! directory opened through different spellings (`/tmp/x` vs
+//! `/private/tmp/x`, a trailing slash) must count as one project, otherwise
+//! two language servers and two file trees would be started.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,25 +27,25 @@ use crate::code::project::{self, CodeEntry, CodeFile, CodeSearchHit, CodeTree};
 use crate::code::lang;
 use crate::state::AppState;
 
-/// 打开的项目的信息。
+/// Information about the opened project.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeProjectInfo {
-    /// 项目根绝对路径。
+    /// Absolute path of the project root.
     pub root: String,
-    /// 目录名(项目名)。
+    /// Directory name (the project name).
     pub name: String,
-    /// 是不是 git 仓库。
+    /// Whether it is a git repository.
     pub is_git: bool,
-    /// 仓库根(可能是项目根的祖先)。
+    /// Repository root (may be an ancestor of the project root).
     pub git_root: Option<String>,
-    /// 当前分支。
+    /// Current branch.
     pub branch: Option<String>,
-    /// 文件树。
+    /// File tree.
     pub tree: CodeTree,
 }
 
-/// 某个语言的语言服务器状态。
+/// Language server state for one language.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeLspState {
@@ -51,7 +54,7 @@ pub struct CodeLspState {
     pub state: String,
 }
 
-/// 把项目根 canonicalize,并确认它是个目录。
+/// Canonicalize the project root and make sure it is a directory.
 fn canonical_root(root: &str) -> Result<PathBuf, String> {
     let trimmed = root.trim();
     if trimmed.is_empty() {
@@ -67,20 +70,24 @@ fn canonical_root(root: &str) -> Result<PathBuf, String> {
     Ok(c)
 }
 
-/// 项目根的键(canonicalize 后的字符串)。
+/// Key of the project root (the canonicalized string).
 fn root_key(root: &Path) -> String {
     root.to_string_lossy().to_string()
 }
 
-/// 取这个项目**已经扫出的**文件树;没有就扫一遍并记下。
+/// Return the **already scanned** file tree of this project; if there is none,
+/// scan once and remember it.
 ///
-/// 文件树只有两个写入者:打开项目与「重扫」。搜索读这份缓存,不再自己走
-/// 一遍仓库——`ignore` 遍历在每个目录上都要 stat、读 .gitignore,而搜索是
-/// 每次按键(防抖 200ms)都会来的,大仓库上这份钱不该每击都付。
+/// The file tree has exactly two writers: opening the project and "rescan".
+/// Search reads this cache instead of walking the repository again - an
+/// `ignore` traversal stats every directory and reads .gitignore, and search
+/// arrives on every keystroke (200ms debounce), so on a large repository that
+/// cost must not be paid per keystroke.
 ///
-/// 代价:搜索范围 = 左栏看到的那棵树。在外部新建/删除文件后要「重扫」,
-/// 两边才一起更新——它们的来源因此始终是同一份,不会出现「树里有、搜不到」
-/// 这种自相矛盾。
+/// The price: the search scope is exactly the tree shown in the left pane.
+/// After creating or deleting files outside the app you have to "rescan" for
+/// both sides to update - they therefore always come from the same source and
+/// can never contradict each other ("in the tree but not searchable").
 fn tree_for(state: &AppState, root: &Path) -> Result<CodeTree, String> {
     let key = root_key(root);
     if let Ok(map) = state.code_trees.lock() {
@@ -94,7 +101,7 @@ fn tree_for(state: &AppState, root: &Path) -> Result<CodeTree, String> {
     Ok(tree)
 }
 
-/// 扫一遍并把结果写进缓存(打开项目 / 重扫用)。
+/// Scan once and write the result into the cache (used by open project / rescan).
 fn scan_into_cache(state: &AppState, root: &Path) -> CodeTree {
     let tree = project::scan(root);
     if let Ok(mut map) = state.code_trees.lock() {
@@ -103,7 +110,7 @@ fn scan_into_cache(state: &AppState, root: &Path) -> CodeTree {
     tree
 }
 
-/// 取(或建)这个项目的语言服务器管理器。
+/// Get (or create) the language server manager for this project.
 fn manager_for(state: &AppState, root: &PathBuf) -> Result<Arc<LspManager>, String> {
     let key = root_key(root);
     if let Ok(map) = state.code_lsp.lock() {
@@ -113,7 +120,8 @@ fn manager_for(state: &AppState, root: &PathBuf) -> Result<Arc<LspManager>, Stri
     }
     let manager = Arc::new(LspManager::new(root.clone()));
     let mut map = state.code_lsp.lock().map_err(|_| "lock poisoned")?;
-    // 插入前复查:并发的首次请求只留一个 manager(否则会起两套进程)。
+    // Re-check before inserting: concurrent first requests keep only one
+    // manager (otherwise two server processes would start).
     Ok(match map.get(&key) {
         Some(existing) => existing.clone(),
         None => {
@@ -123,7 +131,7 @@ fn manager_for(state: &AppState, root: &PathBuf) -> Result<Arc<LspManager>, Stri
     })
 }
 
-/// 打开一个代码项目:扫文件树 + 看 git 状态。
+/// Open a code project: scan the file tree and read the git status.
 #[tauri::command]
 pub async fn code_open_project(
     state: State<'_, AppState>,
@@ -146,14 +154,15 @@ pub async fn code_open_project(
     })
 }
 
-/// 重扫文件树(用户改了 .gitignore、或在外部新建了文件之后)。
+/// Rescan the file tree (after the user edited .gitignore or created files
+/// outside the app).
 #[tauri::command]
 pub async fn code_rescan(state: State<'_, AppState>, root: String) -> CmdResult<CodeTree> {
     let root = canonical_root(&root)?;
     Ok(scan_into_cache(&state, &root))
 }
 
-/// 读一个文件(连同它的语言 id)。
+/// Read a file (together with its language id).
 #[tauri::command]
 pub async fn code_read_file(root: String, path: String) -> CmdResult<CodeFile> {
     let root = canonical_root(&root)?;
@@ -169,7 +178,7 @@ pub async fn code_read_file(root: String, path: String) -> CmdResult<CodeFile> {
     })
 }
 
-/// 写一个文件。
+/// Write a file.
 #[tauri::command]
 pub async fn code_write_file(root: String, path: String, content: String) -> CmdResult<()> {
     let root = canonical_root(&root)?;
@@ -177,7 +186,7 @@ pub async fn code_write_file(root: String, path: String, content: String) -> Cmd
     project::write_text(&abs, &content)
 }
 
-/// 在项目里搜文件内容(字面量,忽略大小写)。
+/// Search file contents in the project (literal, case-insensitive).
 #[tauri::command]
 pub async fn code_search(
     state: State<'_, AppState>,
@@ -195,7 +204,7 @@ pub async fn code_search(
     ))
 }
 
-/// 文件名模糊搜索(快速打开文件用):按子序列匹配,返回相对路径。
+/// Fuzzy file name search (for quick open): subsequence match, returns relative paths.
 #[tauri::command]
 pub async fn code_search_files(
     state: State<'_, AppState>,
@@ -210,7 +219,7 @@ pub async fn code_search_files(
         .into_iter()
         .filter(|e| !e.is_dir && fuzzy_match(&e.name.to_lowercase(), &q))
         .collect();
-    // 命中的排前面,目录顺序兜底。
+    // Matches first, directory order as the tie-breaker.
     hits.sort_by(|a, b| {
         let ra = rank(&a.name.to_lowercase(), &q);
         let rb = rank(&b.name.to_lowercase(), &q);
@@ -220,7 +229,7 @@ pub async fn code_search_files(
     Ok(hits)
 }
 
-/// 子序列匹配:`abc` 能命中 `a_b_c`。
+/// Subsequence match: `abc` hits `a_b_c`.
 fn fuzzy_match(text: &str, query: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -229,7 +238,7 @@ fn fuzzy_match(text: &str, query: &str) -> bool {
     query.chars().all(|q| chars.any(|c| c == q))
 }
 
-/// 命中质量:完全相等 > 前缀 > 包含 > 子序列。
+/// Match quality: exact > prefix > contains > subsequence.
 fn rank(text: &str, query: &str) -> u8 {
     if text == query {
         0
@@ -242,21 +251,21 @@ fn rank(text: &str, query: &str) -> u8 {
     }
 }
 
-/// 读 git 状态。
+/// Read the git status.
 #[tauri::command]
 pub async fn code_git_status(root: String) -> CmdResult<GitStatus> {
     let root = canonical_root(&root)?;
     git::status(&root)
 }
 
-/// 取一个文件的差异(unified diff 文本)。
+/// Get the diff of one file (unified diff text).
 #[tauri::command]
 pub async fn code_git_diff(root: String, path: String, staged: bool) -> CmdResult<String> {
     let root = canonical_root(&root)?;
     git::diff(&root, &path, staged)
 }
 
-/// 暂存一个文件的改动,并回新的状态。
+/// Stage the changes of one file and return the new status.
 #[tauri::command]
 pub async fn code_git_stage(root: String, path: String) -> CmdResult<GitStatus> {
     let root = canonical_root(&root)?;
@@ -265,7 +274,7 @@ pub async fn code_git_stage(root: String, path: String) -> CmdResult<GitStatus> 
     git::status(&root)
 }
 
-/// 把改动从暂存区撤回,并回新的状态。
+/// Unstage the changes of one file and return the new status.
 #[tauri::command]
 pub async fn code_git_unstage(root: String, path: String) -> CmdResult<GitStatus> {
     let root = canonical_root(&root)?;
@@ -274,7 +283,8 @@ pub async fn code_git_unstage(root: String, path: String) -> CmdResult<GitStatus
     git::status(&root)
 }
 
-/// 解析这个语言该用哪个语言服务器(前端据此决定要不要显示 LSP 入口)。
+/// Resolve which language server this language should use (the frontend
+/// decides from this whether to show the LSP entry).
 #[tauri::command]
 pub async fn code_lsp_resolve(
     root: String,
@@ -290,7 +300,7 @@ pub async fn code_lsp_resolve(
     }))
 }
 
-/// 解析结果给前端的形状。
+/// Shape of the resolve result handed to the frontend.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedServerInfo {
@@ -299,7 +309,7 @@ pub struct ResolvedServerInfo {
     pub disabled: bool,
 }
 
-/// 确保某个语言的服务器起着。
+/// Make sure the server for a language is running.
 #[tauri::command]
 pub async fn code_lsp_start(
     app: AppHandle,
@@ -326,7 +336,7 @@ pub async fn code_lsp_start(
         })
 }
 
-/// 停掉这个项目的所有语言服务器。
+/// Stop all language servers of this project.
 #[tauri::command]
 pub async fn code_lsp_stop(state: State<'_, AppState>, root: String) -> CmdResult<()> {
     let root = canonical_root(&root)?;
@@ -336,7 +346,8 @@ pub async fn code_lsp_stop(state: State<'_, AppState>, root: String) -> CmdResul
         map.remove(&key)
     };
     if let Ok(mut trees) = state.code_trees.lock() {
-        // 这个根被拆掉了:文件树缓存也跟着走,别让关掉的项目一直挂在内存里。
+        // This root was torn down: the file tree cache goes with it, so a
+        // closed project does not stay in memory forever.
         trees.remove(&key);
     }
     if let Some(m) = manager {
@@ -345,7 +356,7 @@ pub async fn code_lsp_stop(state: State<'_, AppState>, root: String) -> CmdResul
     Ok(())
 }
 
-/// 当前有哪些语言的服务器活着。
+/// Which language servers are alive right now.
 #[tauri::command]
 pub async fn code_lsp_status(state: State<'_, AppState>, root: String) -> CmdResult<Vec<CodeLspState>> {
     let root = canonical_root(&root)?;
@@ -370,7 +381,7 @@ pub async fn code_lsp_status(state: State<'_, AppState>, root: String) -> CmdRes
     Ok(out)
 }
 
-/// 把文件内容同步给语言服务器(didOpen / didChange)。
+/// Sync the file content to the language server (didOpen / didChange).
 #[tauri::command]
 pub async fn code_lsp_sync(
     app: AppHandle,
@@ -384,7 +395,7 @@ pub async fn code_lsp_sync(
     let language = lang::language_for_path(&abs).to_string();
     let manager = manager_for(&state, &root)?;
     if !manager.has(&language) {
-        return Ok(false); // 没起服务器:前端会先 code_lsp_start
+        return Ok(false); // No server running: the frontend calls code_lsp_start first
     }
     let Some(client) = manager.get(&language) else {
         return Ok(false);
@@ -404,7 +415,7 @@ pub async fn code_lsp_sync(
     Ok(true)
 }
 
-/// 关掉一个文档(didClose)。
+/// Close a document (didClose).
 #[tauri::command]
 pub async fn code_lsp_close(state: State<'_, AppState>, root: String, path: String) -> CmdResult<()> {
     let root = canonical_root(&root)?;
@@ -418,11 +429,13 @@ pub async fn code_lsp_close(state: State<'_, AppState>, root: String, path: Stri
     Ok(())
 }
 
-/// 转发一个语言服务器请求。
+/// Forward a language server request.
 ///
-/// - `method` 走白名单,杜绝别的请求从这条路溜进来;
-/// - `textDocument.uri` 由后端按 `path` 注入,前端给不了假文档;
-/// - 服务器没起来就回 null(前端据此降级,不当错误弹)。
+/// - `method` goes through an allowlist, so no other request can slip in here;
+/// - `textDocument.uri` is injected by the backend from `path`, so the frontend
+///   cannot forge a document;
+/// - when the server is not running, reply with null (the frontend degrades
+///   instead of raising an error).
 #[tauri::command]
 pub async fn code_lsp_request(
     state: State<'_, AppState>,
@@ -462,7 +475,7 @@ pub async fn code_lsp_request(
     }
     match client.interaction_request(&method, params).await {
         Ok(v) => Ok(v),
-        // 服务器中途没了不算错误:前端降级即可。
+        // A server that dies mid-request is not an error: the frontend just degrades.
         Err(e) if e.starts_with("LSP_DIED") || e.starts_with("LSP_TIMEOUT") => Ok(Value::Null),
         Err(e) => Err(e),
     }

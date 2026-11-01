@@ -8,7 +8,7 @@ const file = (relPath: string): FileNode => ({
   kind: "file",
   children: null,
 });
-/** 目录：children === null 表示「还没读」，数组（可为空）表示已读。 */
+/** Directory: children === null means "not read yet", an array (possibly empty) means read. */
 const dir = (relPath: string, children: FileNode[] | null = []): FileNode => ({
   name: relPath.slice(relPath.lastIndexOf("/") + 1),
   relPath,
@@ -58,14 +58,17 @@ describe("chainLoadPlan：露出请求的施工计划", () => {
   });
 
   it("已进树但子节点没读：交给调用方去读；更深的层此刻还找不到，一并算 pending", () => {
-    // pending 的含义是「这一层还没进树，所以现在不能判定它不存在」；父层没读时
-    // 子层必然找不到，可它正是这次要读出来的东西 —— 结论是继续等，不是放弃。
+    // pending means "this level is not in the tree yet, so its absence cannot
+    // be concluded right now". While the parent is unread the child is
+    // necessarily not found — but that child is exactly what this call is
+    // supposed to read, so the answer is to keep waiting, not to give up.
     expect(chainLoadPlan([dir("a", null)], "a/b/2.md")).toEqual({ load: ["a"], pending: true });
   });
 
   it("树还没就绪（首帧/刚换库）：祖先不在树里 → pending，不许下「条目不存在」的结论", () => {
     expect(chainLoadPlan([], "a/b/2.md")).toEqual({ load: [], pending: true });
-    // 父层读完了，中间层还没进树：继续等，不是「文件没了」
+    // The parent is read but the middle level is not in the tree yet: keep
+    // waiting, the file is not gone
     const tree = [dir("a", [file("a/1.md")])];
     expect(chainLoadPlan(tree, "a/b/2.md")).toEqual({ load: [], pending: true });
   });

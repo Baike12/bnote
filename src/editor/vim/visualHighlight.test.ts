@@ -9,14 +9,20 @@ import {
 } from "./vim";
 
 /**
- * Visual 模式高亮的几何门禁（vimVisualHighlight 的纯函数体）：
- * - 行集合：vim 引擎的 sel（0 基 line/ch）优先——linewise visual 常保持 CM 选区
- *   为空，引擎没维护 sel 时才退回 CM 选区；行尾起点的选区收缩到上一行。
- * - 精确范围：charwise 用引擎同步进 CM 的选区，blockwise 按列逐行切块。
- * - 绘制所有权：画了选区就必须让 CM 的选区矩形让位（见下方 describe）。
+ * Geometry gate for the visual-mode highlight (the pure functions behind
+ * vimVisualHighlight):
+ * - Line set: the vim engine's sel (0-based line/ch) wins — linewise visual
+ *   often keeps the CM selection empty, so the CM selection is the fallback
+ *   only when the engine keeps no sel; a selection ending at a line start
+ *   shrinks to the previous line.
+ * - Exact range: charwise uses the selection the engine syncs into CM,
+ *   blockwise slices the block per line by column.
+ * - Painting ownership: once the selection is painted, CM's selection
+ *   rectangle must yield (see the describe block below).
  */
 
-// 不带尾随换行:CM 的 Text 对 "…\n" 会多出一个幻影空行,与这里的几何无关。
+// No trailing newline: CM's Text grows an extra phantom empty line for
+// "…\n", which is unrelated to the geometry here.
 const doc = EditorState.create({ doc: "第一行\n第二行\n第三行\n第四行" }).doc;
 
 interface Pos {
@@ -63,12 +69,12 @@ describe("visualLineNumbers:引擎 sel 路径", () => {
 
 describe("visualLineNumbers:CM 选区回退路径(引擎没维护 sel)", () => {
   it("非空 CM 选区覆盖的行全亮", () => {
-    // 选区 [0, 7):行 1 与行 2
+    // Selection [0, 7): lines 1 and 2
     expect(visualLineNumbers(doc, { visualMode: true }, range(0, 7))).toEqual([1, 2]);
   });
 
   it("选区终点恰好落在某行行首:收缩到上一行(不算占据那一行)", () => {
-    // [0, 12):12 是第 4 行行首 → 只亮行 1-3
+    // [0, 12): 12 is the start of line 4 → only lines 1-3 are highlighted
     expect(visualLineNumbers(doc, { visualMode: true }, range(0, 12))).toEqual([1, 2, 3]);
   });
 
@@ -85,12 +91,18 @@ describe("visualLineNumbers:非 visual 模式", () => {
 });
 
 /**
- * 精确范围（visualRangeSpans）与绘制所有权（visualSelectionDecos）。
- * 缺陷根因是"同一个状态两个绘制者"：CM 自己的选区矩形是坐标推导的，横向按
- * .cm-line 的 padding 算（本应用留白在 .cm-content 上）、纵向末端向
- * coordsAtPos(to, -2) 取值（紧邻块级 widget 时落进 widget 内部 → 悬在选区下方
- * 的窄长灰带）。装饰层接管后这些几何都由文档坐标给出。这里的门禁锁两件事：
- * 每种 visual 子模式都画得出正确的范围；以及"画了 ⇔ 独占绘制"（CM 矩形让位）。
+ * The exact range (visualRangeSpans) and painting ownership
+ * (visualSelectionDecos).
+ * The root cause of the defect is "two painters for one state": CM's own
+ * selection rectangle is derived from coordinates — horizontally from the
+ * padding of .cm-line (this app puts its padding on .cm-content, so the
+ * rectangle is wider than the line box and presses against the quote bar),
+ * vertically from coordsAtPos(to, -2) (right next to a block-level widget the
+ * coordinate falls inside the widget, growing a narrow tall gray band that
+ * hangs below the selection). Once the decoration layer takes over, that
+ * geometry comes from document coordinates. This gate locks two things: every
+ * visual sub-mode can paint a correct range, and "painted ⇔ exclusively
+ * painting" (the CM rectangle yields).
  */
 
 const spanDoc = EditorState.create({ doc: "第一行\n第二行\n第三行\n第四行\n第五行" }).doc;
@@ -131,7 +143,8 @@ describe("visualRangeSpans:blockwise 逐行切块", () => {
   });
 
   it("块形状按列区间逐行切出(不是整行,也不是只有光标那一行)", () => {
-    // 五行文档:行 1 = [0,3),行 2 = [4,7)…;列 [1,4) 切出 [1,3) 与 [5,7)
+    // Five-line document: line 1 = [0,3), line 2 = [4,7)…; columns [1,4) cut
+    // out [1,3) and [5,7)
     expect(visualRangeSpans(spanDoc, block({ line: 0, ch: 1 }, { line: 1, ch: 3 }), [])).toEqual([
       span(1, 3),
       span(5, 7),
@@ -146,7 +159,8 @@ describe("visualRangeSpans:blockwise 逐行切块", () => {
 
   it("列越界的行钳到行尾,整行落在块外的行不产出零宽范围", () => {
     const blockDoc = EditorState.create({ doc: "abcdef\n\nxyz" }).doc;
-    // 行 2 只有两列,块的两个边界都在行尾之后 → 该行无范围
+    // Line 2 has only two columns and both block boundaries are past the line
+    // end → that line has no range
     expect(visualRangeSpans(blockDoc, block({ line: 0, ch: 2 }, { line: 2, ch: 9 }), [])).toEqual([
       span(2, 6),
       span(10, 11),

@@ -42,24 +42,28 @@ import { WEREAD_HOME_URL } from "@/study/weread";
 import { setActiveKeyRegion } from "./globalKeys";
 import { codeCommandDefs } from "@/code/commands";
 
-/** 中栏是否开着网页(缩放键只在这种时候接管 ⌘= / ⌘- / ⌘0)。 */
+/** Whether the middle column has a web page open (only then do the zoom keys take over ⌘= / ⌘- / ⌘0). */
 function hasWebPreview(): boolean {
   return useAppStore.getState().studyContent?.kind === "url";
 }
 
-/** 写入者是设置:ContentPane 订阅它,再推给原生子 webview(见 setStudyPreviewZoom)。 */
+/** The writer is the settings: ContentPane subscribes to it and pushes it into the native child webview (see setStudyPreviewZoom). */
 function applyWebZoom(direction: 1 | -1): void {
   const { settings, patchSettings } = useAppStore.getState();
   patchSettings({ studyWebZoom: stepWebZoom(settings.studyWebZoom, direction) });
 }
 
 /**
- * 把焦点交回阅读区;网页在原生子 webview 里时交给它。
+ * Hand the focus back to the reading region; when the web page lives in the
+ * native child webview, hand it over to that.
  *
- * 同时直接写入键盘归属:网页分支的焦点落在原生子 webview 上,主窗口的
- * pointerdown/focusin 永远收不到,区域归属会一直停在笔记区 / Agent——之后
- * 主窗口接到的按键就按错的区域解析(⌘E 会被笔记区自带的实时预览开关吃掉)。
- * 命令是用户按键的直接结果,它本身就是「最近一次动手」。
+ * The keyboard ownership is written directly at the same time: in the web
+ * branch the focus sits on the native child webview, so the main window's
+ * pointerdown/focusin never fire and the region ownership would stay on the
+ * notes / Agent region — the keys the main window then receives would be
+ * resolved against the wrong region (⌘E would be eaten by the notes region's
+ * own live-preview toggle). The command is the direct result of a user
+ * keystroke, so it *is* the "most recent action".
  */
 function focusReadingPane() {
   const focusPane = () => {
@@ -69,12 +73,16 @@ function focusReadingPane() {
   };
   setActiveKeyRegion("reading");
   if (useAppStore.getState().studyContent?.kind === "url") {
-    // 先结束主窗口的编辑态:编辑器(contenteditable)在编辑时,窗口的第一响应者
-    // 是它内部的字段编辑器;不 resign 就直接把第一响应者换成原生子 webview 会
-    // 被挡下,键盘留在主窗口——之后的按键全部按旧区域解析。
+    // End the main window's editing state first: while the editor
+    // (contenteditable) is being edited the window's first responder is the
+    // field editor inside it; without resigning, swapping the first responder
+    // for the native child webview is rejected, the keyboard stays in the
+    // main window — and every following key is resolved against the old
+    // region.
     const active = document.activeElement;
     if (active instanceof HTMLElement && active !== document.body) active.blur();
-    // 浏览器模式没有原生视图,命令不存在 → 退回 DOM 占位区(区域判定仍成立)。
+    // Browser mode has no native view, so the command does not exist → fall
+    // back to the DOM placeholder (the region decision still holds).
     void agentApi.focusStudyPreview().catch(focusPane);
     return;
   }
@@ -93,7 +101,7 @@ function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
   };
 }
 
-/** 标题改动后的自动编号收尾：主光标行的标题被摘掉时清掉残留编号，再全文重排。 */
+/** Finishing the auto-numbering after a heading change: when the heading on the main cursor line was removed, drop the leftover number, then renumber the whole document. */
 function settleHeadingNumbering(
   view: NonNullable<ReturnType<typeof getView>>,
   lineFrom: number,
@@ -108,7 +116,7 @@ function settleHeadingNumbering(
   renumberHeadings(view);
 }
 
-/** 学习助手面板是否在场:三栏布局里常驻,进入学习模式即可用。 */
+/** Whether the study assistant panel is present: it is always mounted in the three-column layout, so entering study mode is enough. */
 function agentPanelActive(): boolean {
   return useAppStore.getState().studyMode;
 }
@@ -209,19 +217,23 @@ const defs: CommandDef[] = [
       toggleProjectsMode();
     },
   },
-  // ---- 专注模式(番茄钟 + 独占锁) ----
-  // 命令只是转发:计时状态只有 focus/store.ts 一处写(见那里的"单一写入者")。
-  // 一次番茄钟是一段连续的专注:没有休息段、没有暂停、没有中途结束——
-  // 唯一的中途操作是"开始"。所以这里只有一条命令,没有任何退出/改锁入口。
+  // ---- Focus mode (pomodoro + exclusive lock) ----
+  // The command only forwards: the timer state has exactly one writer in
+  // focus/store.ts (see the "single writer" note there). One pomodoro is one
+  // continuous stretch of focus: no break segment, no pause, no ending early
+  // — the only mid-session operation is "start". So there is exactly one
+  // command here and no entry point for exiting or changing the lock.
   {
     id: "focus.pomodoro-start",
     title: "专注:开始番茄钟(独占屏幕 + 硬锁,结束前不能退出)",
     category: "专注",
     run: () => void useFocusStore.getState().start(),
   },
-  // ---- 项目管理(project 区域) ----
-  // 组件私有状态通过窗口事件交给视图:命令层不持有卡片轮播的 DOM 与编辑器
-  // 实例,只发「把焦点交给谁」的信号(与 agentPanelCommand 同一分工)。
+  // ---- Project management (project region) ----
+  // The component's private state reaches the view through a window event:
+  // the command layer holds neither the card carousel's DOM nor the editor
+  // instance, it only emits the "who gets the focus" signal (the same split
+  // of duties as agentPanelCommand).
   {
     id: "region.focus-project",
     title: "聚焦项目卡片",
@@ -294,13 +306,18 @@ const defs: CommandDef[] = [
       store.setStudyContent({ kind: "url", url: WEREAD_HOME_URL, title: "微信读书" });
     },
   },
-  // 学习模式翻页(按设置里的步长滚动,默认半屏)。默认 PageUp/PageDown(含
-  // 方向键),可在设置里改键;动作由阅读器注册(study/pdfNav.ts),没开
-  // PDF/网页或焦点不该被抢时 when 为 false,键原样交给页面。
+  // Study mode paging (scrolls by the step from settings, half a screen by
+  // default). The default is PageUp/PageDown (including the arrow keys) and
+  // can be rebound in the settings; the action is registered by the reader
+  // (study/pdfNav.ts), and when no PDF/web page is open or the focus should
+  // not be taken, `when` is false and the key is passed through to the page.
   //
-  // 键位配在阅读区,带修饰键的和弦跨区域生效(keys.ts 的 REGION_FREE_COMMANDS):
-  // 在笔记区或 Agent 面板按它同样滚动。翻页**不动焦点**:焦点在哪就留在哪,
-  // 笔记区里连按 ⌃J 仍然是继续翻页,打完字也不用再点回编辑器。
+  // The binding is configured in the reading region and a modified chord
+  // takes effect across regions (REGION_FREE_COMMANDS in keys.ts): pressing
+  // it in the notes region or the Agent panel scrolls just the same. Paging
+  // **does not move the focus**: the focus stays wherever it is, so pressing
+  // ⌃J repeatedly inside the notes region keeps paging, and after typing you
+  // do not have to click back into the editor.
   {
     id: "study.pdf-prev-page",
     title: "学习模式上一页(按步长滚动)",
@@ -327,9 +344,12 @@ const defs: CommandDef[] = [
       useAppStore.getState().studyMode &&
       useAppStore.getState().studyContent?.kind === "pdf" &&
       hasPdfSnapshotSource(),
-    // 截图与投递都走前端:页面本来就是 canvas,不需要系统截图权限,也不经过
-    // 剪贴板——直接变成附件排进输入框,和手动粘贴截图同一条管道。助手面板
-    // 在三栏布局里常驻,不需要先切页签。
+    // Both the capture and the delivery go through the front end: the page
+    // is a canvas anyway, so no system screenshot permission is needed and
+    // the clipboard is bypassed — the result becomes an attachment queued in
+    // the input, the very same pipeline as a manually pasted screenshot. The
+    // assistant panel is always mounted in the three-column layout, so there
+    // is no need to switch tabs first.
     run: async () => {
       const store = useAppStore.getState();
       try {
@@ -375,10 +395,12 @@ const defs: CommandDef[] = [
     category: "学习",
     run: () => useAppStore.getState().bumpAgentSwitchSessionSignal(),
   },
-  // ---- 三个可聚焦区域之间互相切换 ----
-  // 同一组命令在多个区域各有一份默认键位(见 commands/keys.ts 的
-  // REGION_PLACEMENT):⌘⌥A/N/R = Agent / 笔记区 / 阅读区。网页/微信读书里的
-  // 按键由页内运行时经 title 通道转回主窗口(见 study/webAnnotations.ts)。
+  // ---- Switching between the three focusable regions ----
+  // The same group of commands has one default binding per region (see
+  // REGION_PLACEMENT in commands/keys.ts): ⌘⌥A/N/R = Agent / notes /
+  // reading. Keys pressed inside a web page / WeChat Reading are forwarded
+  // back to the main window by the in-page runtime over the title channel
+  // (see study/webAnnotations.ts).
   {
     id: "region.focus-agent",
     title: "聚焦学习助手输入框",
@@ -391,7 +413,9 @@ const defs: CommandDef[] = [
     title: "聚焦笔记区编辑器",
     category: "区域切换",
     run: () => {
-      // 编辑器一直可见(三栏常驻),聚焦后焦点事件会把键盘归属带过来。
+      // The editor is always visible (the three columns are permanently
+      // mounted); after focusing, the focus event carries the keyboard
+      // ownership over.
       requestAnimationFrame(() => getView()?.focus());
     },
   },
@@ -400,10 +424,12 @@ const defs: CommandDef[] = [
     title: "切换到阅读区(PDF / 网页)",
     category: "区域切换",
     when: () => useAppStore.getState().studyMode,
-    // 中栏一直可见,不需要切页签;只要把焦点从编辑器/输入框交还给阅读区。
+    // The middle column is always visible, so there is no need to switch
+    // tabs; it only has to hand the focus from the editor / input back to the
+    // reading region.
     run: focusReadingPane,
   },
-  // ---- 学习助手面板内的会话操作 ----
+  // ---- Session actions inside the study assistant panel ----
   {
     id: "agent.toggle-creative",
     title: "学习助手:切换创作模式(生成 HTML 实时预览)",
@@ -474,9 +500,11 @@ const defs: CommandDef[] = [
     id: "nav.toggle-sidebar",
     title: "显示/隐藏侧边栏",
     category: "导航",
-    // ⌘\ 从收起态展开 = 打开 + 把焦点落到当前打开的文件行(走 focusSidebar 的
-    // 一次性票据,落到文件行的露出逻辑与 ⌘I 同一条路径);再按就是收起。
-    // 顶栏按钮仍用 store.toggleSidebar——鼠标瞄一眼树,不该抢走编辑器焦点。
+    // ⌘\ expanding from the collapsed state = open + drop the focus onto the
+    // currently open file row (through focusSidebar's one-shot ticket; the
+    // reveal logic for the file row is the same path as ⌘I); pressing it
+    // again collapses. The top bar button still uses store.toggleSidebar —
+    // glancing at the tree with the mouse must not steal the editor's focus.
     run: () => {
       const s = useAppStore.getState();
       if (s.sidebarOpen) s.toggleSidebar();
@@ -505,15 +533,20 @@ const defs: CommandDef[] = [
     id: "edit.insert-callout",
     title: "插入 Callout 块 / 跳到关联块",
     category: "编辑",
-    // 三种行止:有选区 = 文末开一个以选中文字为标题的块(原文成锚点,渲染成
-    // 下划虚线);光标在锚点上或在块内(有来处)= 跳转/回跳;其余 = 就地开空块。
+    // Three end positions: with a selection = open a block at the end of the
+    // note whose title is the selected text (the original text becomes the
+    // anchor, rendered as a dashed underline); the cursor on the anchor or
+    // inside the block (it has an origin) = jump / go back; otherwise = open
+    // an empty block in place.
     run: withView(insertCallout),
   },
   {
     id: "edit.insert-wikilink",
     title: "插入内部链接 / 跳到本行链接",
     category: "编辑",
-    // 不走 withView：光标行有链接就跳转，没有就在光标处开补全面板——面板自己管焦点。
+    // Not going through withView: if the cursor's line has a link it jumps,
+    // otherwise it opens the suggest panel at the cursor — the panel manages
+    // the focus itself.
     run: () => {
       const view = getView();
       if (!view) {
@@ -568,7 +601,8 @@ const defs: CommandDef[] = [
     run: withView((v) => {
       const line = v.state.doc.lineAt(v.state.selection.main.head);
       const existing = line.text.match(/^(#{1,6})(\s+|$)/);
-      // 下一档落在正文（H4 及更深的既有标题）时才需要清残留编号。
+      // The leftover number only has to be cleared when the next level lands
+      // in the body text (an existing heading of H4 or deeper).
       const headingRemoved = !!existing && existing[1].length >= 4;
       cycleHeading(v);
       settleHeadingNumbering(v, line.from, headingRemoved);
@@ -637,7 +671,7 @@ const defs: CommandDef[] = [
     },
   },
 
-  // ---- python:markdown 内嵌代码块 ----
+  // ---- python: markdown embedded code blocks ----
   {
     id: "python.run-note",
     title: "Python: 把当前笔记当一个 py 文件运行(⌘↩)",
@@ -723,7 +757,8 @@ const defs: CommandDef[] = [
       useAppStore.getState().patchSettings({ fontSize: 16 });
     },
   },
-  // 代码项目的命令:归属 code 区域,只在代码编辑器里生效(见 commands/keys.ts)。
+  // The code project commands: they belong to the code region and only take
+  // effect inside the code editor (see commands/keys.ts).
   ...codeCommandDefs,
 ];
 
@@ -735,6 +770,7 @@ configureLivePreview({
   openExternalUrl: (url) => {
     void openUrl(url).catch((e) => console.warn("open url failed", e));
   },
-  // 点击画图嵌入的预览图:打开画布继续编辑。
+  // Clicking the preview image of a drawing embed: open the canvas to keep
+  // editing it.
   openDrawing: (path) => openDrawingFile(path),
 });

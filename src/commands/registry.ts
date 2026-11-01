@@ -4,17 +4,22 @@ export interface CommandDef {
   title: string;
   category: string;
   /**
-   * 现在能不能执行(可选)。窗口级分发必须在 preventDefault 之前问它——返回
-   * false 的键要原样放行,否则像方向键这种与编辑器共享的键会被静默吞掉。
+   * Whether the command may run right now (optional). The window-level
+   * dispatcher has to ask before preventDefault — a key whose guard returns
+   * false must pass through untouched, otherwise keys shared with the editor,
+   * such as the arrow keys, would be silently swallowed.
    */
   when?: () => boolean;
   /**
-   * 由原生网页转发执行时不要抢走页面的键盘焦点(可选)。
+   * Do not steal the keyboard focus from the page when a native web page
+   * forwards the command (optional).
    *
-   * 网页跑在子 webview 里:按键经 title 通道转回主窗口时,键盘(第一响应者)
-   * 仍在子 webview 上。区域切换这类命令必须先用 `Webview.setFocus` 把键盘
-   * 收回主窗口;而网页缩放只是在 Rust 侧改一个属性,抢焦点会让用户按完 ⌘=
-   * 就滚不动、打字也进不了页面。
+   * The page runs in a child webview: when a key comes back to the main
+   * window over the title channel, the keyboard (the first responder) is still
+   * on the child webview. Commands that switch regions must first pull the
+   * keyboard back with `Webview.setFocus`, while webpage zoom only flips a
+   * property on the Rust side — stealing focus there leaves the user unable to
+   * scroll or type into the page after pressing ⌘=.
    */
   keepsPageFocus?: boolean;
   run: () => void | Promise<void>;

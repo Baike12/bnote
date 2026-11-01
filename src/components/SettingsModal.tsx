@@ -66,7 +66,7 @@ type Tab =
   | "agent-skills"
   | "agent-instructions";
 
-/** 左侧导航按用途分组(参考 ZCode 设置页的分组侧栏),渲染见 SettingsModal。 */
+/** The navigation on the left is grouped by purpose (following the grouped sidebar of the ZCode settings page), rendered in SettingsModal. */
 const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
   {
     label: "常规",
@@ -127,7 +127,7 @@ export default [
 ]
 `;
 
-/** AGENTS.md 的输入框占位文案(仅 placeholder,不写入文件)。 */
+/** The placeholder text of the AGENTS.md input field (a placeholder only, it is not written into the file). */
 const AGENTS_MD_TEMPLATE = `<!-- .bnote/AGENTS.md — 学习助手与创作模式的自定义指令。
      保存在当前仓库,随会话启动加载;内置的通用要求(简洁、结论先行、
      组块化)始终生效,这里的指令在其后追加。留空 = 只用通用要求。
@@ -183,8 +183,9 @@ export function SettingsModal() {
 }
 
 // ---------------------------------------------------------------------------
-// 设置页的两个骨架件(参考 ZCode 的 SettingsGroupCard / SettingsRow):
-// 卡片分组 + 行式布局(左侧标签与描述,右侧控件)。
+// The two skeleton pieces of the settings page (following ZCode's
+// SettingsGroupCard / SettingsRow): grouping into cards plus a row layout
+// (label and description on the left, the control on the right).
 // ---------------------------------------------------------------------------
 
 function SettingsCard({
@@ -235,10 +236,12 @@ function Row({
 }
 
 /**
- * 设置页下拉。WKWebView 的原生 select 会画系统渐变和步进箭头,和页面里扁平的
- * 输入框不是一套外观;这里剥掉原生外观(-webkit-appearance: none)、用 CSS 画箭头,
- * 让闭合态和 .settings-input 完全一致。点击后弹出的仍是系统菜单(原生可用性
- * 更好,不另造一套列表)。
+ * The dropdown of the settings page. The native select of WKWebView paints a
+ * system gradient and the stepper arrows, which does not look like the flat
+ * inputs of the page; here the native appearance is stripped
+ * (-webkit-appearance: none) and the arrow is drawn in CSS, so the closed
+ * state looks exactly like a .settings-input. What pops up on a click is
+ * still the system menu (better native usability, no second list to build).
  */
 function SettingsSelect<T extends string>({
   value,
@@ -262,7 +265,7 @@ function SettingsSelect<T extends string>({
   );
 }
 
-/** 滑杆 + 右对齐数值(ZCode 的 SettingsRangeControl 版式)。 */
+/** A slider plus a right aligned value (the layout of ZCode's SettingsRangeControl). */
 function RangeControl({
   value,
   min,
@@ -308,8 +311,9 @@ function Toggle({
 }) {
   return (
     <Row
-      // 文字也能点:开关只有一颗小圆点,用户多半会去点那一行字——点了没反应
-      // 会被当成"坏了",而不是"点错地方"。
+      // The text is clickable too: a toggle is only a small dot, so users
+      // will most likely click the line of text, and a click that does
+      // nothing is taken for "broken" instead of "clicked the wrong spot".
       label={
         <button className="toggle-label" disabled={disabled} onClick={() => onChange(!checked)}>
           {label}
@@ -529,13 +533,17 @@ function ReadingTab() {
 }
 
 /**
- * 专注:一次专注多长 + 两把锁的说明与授权状态。
+ * Focus: how long one focus session lasts plus the explanation and the
+ * authorization state of the two locks.
  *
- * 时长住在 focus/store 的计时状态里(它是计时状态的一部分,一起落盘),
- * 不在 settings 里再存一份——两处都存,迟早对不上。
+ * The duration lives in the timer state of focus/store (it is part of the
+ * timer state and is persisted with it) and is not stored a second time in
+ * the settings: with two copies they will eventually disagree.
  *
- * 锁没有开关:开始一段专注 = 独占屏幕 + 硬锁 + 计时一起生效,中途没有
- * 退出入口。所以这里只显示状态,不提供任何能打断这一段的控制。
+ * The locks have no switch: starting a focus session means the screen
+ * takeover, the hard lock and the timer all take effect, and there is no way
+ * out in between. So only the state is shown here, and no control that
+ * could interrupt the session is offered.
  */
 function FocusTab() {
   const timer = useFocusStore((s) => s.timer);
@@ -548,7 +556,7 @@ function FocusTab() {
   const refreshStatus = useFocusStore((s) => s.refreshStatus);
   const active = isActive(timer);
 
-  // 打开这一页时重读一次原生状态:辅助功能权限可能刚刚在系统设置里被授予。
+  // The native state is read once again when this page is opened: the accessibility permission may have just been granted in the system settings.
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus]);
@@ -614,9 +622,11 @@ function HotkeysTab() {
   const commands = useMemo(() => allCommands(), []);
   const showToast = useAppStore((s) => s.showToast);
   const vaultPath = useAppStore((s) => s.vaultPath);
-  // 覆盖表是命令层和执行层共用的模块状态(不在 React state 里)。订阅它的
-  // 版本号:解绑/重置/外部改文件之后列表都会重画——之前读模块变量不重渲染,
-  // 「✕ 点了没反应」就是这么来的。
+  // The override table is module state shared by the command layer and the
+  // execution layer (it is not React state). Its revision is subscribed to:
+  // after unbinding, resetting or an external file change the list is
+  // redrawn; before, reading the module variable did not re-render and that
+  // is where the "the X does nothing" came from.
   useSyncExternalStore(subscribeKeymap, getKeymapRevision, getKeymapRevision);
 
   useEffect(() => {
@@ -631,8 +641,9 @@ function HotkeysTab() {
       }
       const key = eventToKey(e);
       if (!key) return; // lone modifier
-      // 只有同一区域里的冲突才需要处理:不同区域可以共用同一个键,区域绑定
-      // 会盖住通用的那条。
+      // Only a conflict inside the same region has to be handled: different
+      // regions may share the same key, a region binding overrides the
+      // generic one.
       const conflict = commands.find(
         (c) =>
           c.id !== capturing &&
@@ -669,7 +680,7 @@ function HotkeysTab() {
 
   return (
     <div className="settings-section">
-      {/* 区域选择放最上面:三块可聚焦区域各有一套键位。 */}
+      {/* The region picker comes first: the three focusable regions each have their own set of keybindings. */}
       <div className="chip-row">
         {KEY_REGIONS.map((r) => (
           <button
@@ -787,8 +798,10 @@ function VimTab() {
     });
   }, []);
 
-  // 实时校验，未识别的行立刻标出来——否则拼错命令只会静默失效（vim 里
-  // 会有 E492，这里只在 console 里 warn，用户在应用里看不到）。
+  // Validation runs live and an unrecognized line is marked right away,
+  // otherwise a mistyped command only fails silently (vim would report
+  // E492, here it is only a console warning the user never sees in the
+  // app).
   const vimrcErrors = useMemo(() => parseVimrc(vimrc).errors, [vimrc]);
 
   return (
@@ -916,8 +929,10 @@ function SnippetsTab() {
                   .then(() => reloadSnippetsFromVault())
                   .then((outcome) => {
                     setDirtyLocal(false);
-                    // 装载结果如实反馈：此前即使动态导入失败回退了内置，
-                    // 这里也永远提示"已保存并生效"。
+                    // The load result is reported faithfully: before, even
+                    // when the dynamic import failed and the built-in set
+                    // was used, this always claimed "saved and in
+                    // effect".
                     if (!outcome) {
                       showToast("片段已保存，但没有打开仓库，无法加载");
                     } else if (outcome.status === "error") {
@@ -1078,8 +1093,7 @@ function ImeTab() {
   );
 }
 
-/** 模板下拉:模板目录里的文件 + 无模板。已选模板不在当前目录时也保留这一项,
- *  否则换目录会把已有命令指向的模板悄悄清掉。 */
+/** The template dropdown: the files of the template directory plus "no template". The selected template is kept as an entry even when it is not in the current directory, otherwise switching the directory would silently clear the template an existing command points at. */
 function TemplateSelect({
   value,
   files,
@@ -1106,7 +1120,7 @@ function TemplateSelect({
   );
 }
 
-/** 模板正文的规则说明(日记页与模板页共用同一份措辞)。 */
+/** The rules of the template body (the daily note page and the template page share the same wording). */
 function TemplateHint() {
   return (
     <p className="setting-hint">
@@ -1581,9 +1595,11 @@ const TRANSLATE_PROTOCOLS: Record<
 };
 
 /**
- * Agent 四个子页共享的配置装载/保存:一份 agent.json,各自保存自己关心的
- * 字段(整包写出,后端 normalize 兜底)。已开的会话按启动快照跑到底,
- * 保存只影响之后的新会话。
+ * The config loading and saving shared by the four Agent sub-pages: one
+ * agent.json, each page saves the fields it cares about (the whole package
+ * is written, the backend normalize is the fallback). An already open
+ * session runs with the snapshot it started with, so saving only affects
+ * the sessions started afterwards.
  */
 function useAgentSettings() {
   const [cfg, setCfg] = useState<AgentConfig | null>(null);
@@ -1611,8 +1627,10 @@ function useAgentSettings() {
     if (!cfg) return;
     try {
       await agentApi.saveConfig({ ...cfg, ...patch });
-      // 已开的会话不受影响:它按启动时的模型配置快照跑到底,这里只让面板
-      // 重新读一次「当前配置」(脚注与技能清单会刷新)。
+      // The already open sessions are not affected: they run with the model
+      // config snapshot they started with, here the panel only reads the
+      // "current config" once again (the footnote and the skill list
+      // refresh).
       useAppStore.getState().bumpAgentConfigVersion();
       showToast(note);
     } catch (e) {
@@ -1631,7 +1649,7 @@ function AgentLoading({ loadError }: { loadError: string | null }) {
   );
 }
 
-/** Agent / 模型:协议、模型、上下文窗口、Base URL、API Key。 */
+/** Agent / model: protocol, model, context window, Base URL, API key. */
 function AgentModelTab() {
   const showToast = useAppStore((s) => s.showToast);
   const { cfg, loadError, update, save } = useAgentSettings();
@@ -1717,7 +1735,7 @@ function AgentModelTab() {
   );
 }
 
-/** MCP 服务器的当前清单(JSON 里能安全解析出来的部分)。 */
+/** The current list of the MCP servers (the part of the JSON that can be parsed safely). */
 function McpSummary({ servers }: { servers: Record<string, unknown> }) {
   const rows = Object.entries(servers);
   if (rows.length === 0) {
@@ -1745,7 +1763,7 @@ function McpSummary({ servers }: { servers: Record<string, unknown> }) {
   );
 }
 
-/** Agent / MCP:服务器清单一览 + JSON 编辑。 */
+/** Agent / MCP: an overview of the server list plus the JSON editing. */
 function AgentMcpTab() {
   const showToast = useAppStore((s) => s.showToast);
   const { cfg, loadError, save } = useAgentSettings();
@@ -1797,7 +1815,7 @@ function AgentMcpTab() {
   );
 }
 
-/** Agent / 技能:磁盘上发现的 SKILL.md 清单 + 额外扫描目录。 */
+/** Agent / skills: the list of the SKILL.md files found on disk plus the extra scan directories. */
 function AgentSkillsTab() {
   const showToast = useAppStore((s) => s.showToast);
   const { cfg, loadError, update, save } = useAgentSettings();
@@ -1873,7 +1891,7 @@ function AgentSkillsTab() {
   );
 }
 
-/** Agent / AGENTS.md:仓库自定义指令(旧版 .bnote/agent.md 兼容读取)。 */
+/** Agent / AGENTS.md: the custom instructions of the vault (the legacy .bnote/agent.md is read for compatibility). */
 function AgentInstructionsTab() {
   const showToast = useAppStore((s) => s.showToast);
   const vaultName = useAppStore((s) => s.vaultName);
@@ -1891,7 +1909,7 @@ function AgentInstructionsTab() {
         if (v !== null) {
           setInstructions(v);
         } else {
-          // 旧版文件名:读出来方便迁移,保存时才写 AGENTS.md。
+          // The legacy file name is read to make the migration easy, only AGENTS.md is written when saving.
           void api.readVaultFile("agent.md").then((old) => {
             if (cancelled) return;
             if (old !== null && old.trim()) {
@@ -1947,7 +1965,7 @@ function AgentInstructionsTab() {
                   .then(() => {
                     setDirty(false);
                     setLegacy(false);
-                    // 会话固化了系统提示词,重启会话才吃到新指令。
+                    // A session has frozen the system prompt, only a restarted session picks up the new instructions.
                     useAppStore.getState().bumpAgentConfigVersion();
                     showToast("AGENTS.md 已保存;新会话生效");
                   })
@@ -1965,13 +1983,16 @@ function AgentInstructionsTab() {
 
 
 /**
- * 语言服务器的全局配置。
+ * The global configuration of the language servers.
  *
- * 内置默认已经覆盖 ts / rust / go / python 等常见语言(开箱即用,前提是本机
- * 装了对应的服务器)。这里改的是「用哪个可执行文件、传什么参数」——
- * 比如 TypeScript 用 tsserver 还是 typescript-language-server。
+ * The built-in defaults already cover the common languages (ts / rust / go
+ * / python), so it works out of the box as long as the matching server is
+ * installed on this machine. What is changed here is "which executable is
+ * used and which arguments it gets", for example whether TypeScript uses
+ * tsserver or typescript-language-server.
  *
- * 项目内还可以放 `.bnote/lsp.json` 再盖一层(跟着仓库走,团队共享):
+ * A project can also put a `.bnote/lsp.json` on top of it (it travels with
+ * the vault and is shared by the team):
  *
  * ```json
  * { "languages": { "go": { "command": "/opt/homebrew/bin/gopls" } },
@@ -2006,9 +2027,10 @@ function CodeLspSettingsCard() {
   };
 
   /**
-   * 失焦即生效,但**只在焦点离开这张卡片时**生效:CodeArea 自带搜索框,
-   * 在编辑器与搜索框之间点一下也算 blur——那次不该把用户正在写的半截
-   * JSON 提交上去、报一个假错。
+   * It takes effect on blur, but **only when the focus leaves this card**:
+   * the CodeArea has its own search field, and clicking between the editor
+   * and the search field is a blur as well; that one must not commit the
+   * half written JSON and report a bogus error.
    */
   const handleBlur = (e: ReactFocusEvent<HTMLDivElement>) => {
     const next = e.relatedTarget as Node | null;
@@ -2028,8 +2050,10 @@ function CodeLspSettingsCard() {
       }
     >
       <div className="settings-block" ref={hostRef} onBlur={handleBlur}>
-        {/* JSON 也是代码:与「公式片段」用同一个 CodeArea(行号、折行、搜索),
-            而不是一个能写错括号还看不见行号的 textarea。 */}
+        {/* JSON is code too: it uses the same CodeArea as the "formula
+            snippets" (line numbers, line wrapping, search) and not a
+            textarea where a bracket can be wrong and the line number is
+            invisible. */}
         <CodeArea
           value={text}
           onChange={(value) => {

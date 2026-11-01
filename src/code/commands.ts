@@ -10,35 +10,38 @@ import { nextProblemTarget, type ProblemTarget } from "./problems";
 import { requestCodeUi } from "./ui";
 
 /**
- * 代码项目的命令。
+ * Commands of the code project.
  *
- * 全部归 **code 区域**(见 `src/commands/keys.ts` 的区域模型):焦点在代码
- * 编辑器里时生效,笔记区 / 阅读区 / Agent 面板的键位不会渗进来,反之亦然。
- * 这就是「代码编辑器中的快捷键要和其他的分开」的那条分界线。
+ * They all belong to the **code region** (see the region model in
+ * `src/commands/keys.ts`): they apply while the focus is in the code editor,
+ * and the keybindings of the notes / reading / agent panels do not leak in,
+ * and vice versa. That is the dividing line behind "the shortcuts of the code
+ * editor stay separate from the others".
  *
- * 命令本身可以在 `<vault>/.bnote/keybindings.json` 的 `code` 段里改绑:
+ * The commands themselves can be rebound in the `code` section of
+ * `<vault>/.bnote/keybindings.json`:
  *
  * ```json
  * { "code": { "code.go-to-definition": "F12" } }
  * ```
  */
 
-/** 项目开着没(命令的 when 用)。 */
+/** Whether a project is open (used by the `when` of the commands). */
 function hasProject(): boolean {
   return useCodeStore.getState().project !== null;
 }
 
-/** 有打开的代码编辑器没。 */
+/** Whether a code editor is open. */
 function hasEditor(): boolean {
   return activeCodeEditor() !== null;
 }
 
-/** 当前文件路径(没有就 null)。 */
+/** The current file path (null if there is none). */
 function activePath(): string | null {
   return useCodeStore.getState().activePath;
 }
 
-/** 触发补全面板。 */
+/** Trigger the completion panel. */
 function triggerCompletion(): void {
   const handle = activeCodeEditor();
   if (!handle) return;
@@ -46,7 +49,7 @@ function triggerCompletion(): void {
   handle.view.focus();
 }
 
-/** 选下一个/上一个标签页。 */
+/** Select the next / previous tab. */
 function cycleTab(dir: 1 | -1): void {
   const store = useCodeStore.getState();
   const { tabs, activePath: current } = store;
@@ -56,14 +59,15 @@ function cycleTab(dir: 1 | -1): void {
   store.setActiveTab(next);
 }
 
-/** 跳到下一个/上一个问题(诊断)。 */
+/** Jump to the next / previous problem (diagnostic). */
 function cycleProblem(direction: 1 | -1): void {
   const store = useCodeStore.getState();
   const problems: ProblemTarget[] = Object.entries(store.diagnostics).flatMap(([path, list]) =>
     list.map((d) => ({ path, position: d.range.start })),
   );
-  // 游标是**光标**的位置,不是「当前文件的第 0 条诊断」:后者会让同一文件
-  // 里的第二条问题永远轮不到(见 problems.ts 的说明)。
+  // The cursor is the position of the **caret**, not "the first diagnostic of
+  // the current file": the latter would make the second problem of a file
+  // unreachable forever (see the note in problems.ts).
   const handle = activeCodeEditor();
   const target = nextProblemTarget(
     problems,
@@ -80,7 +84,7 @@ function cycleProblem(direction: 1 | -1): void {
   store.requestJump(target.path, target.position);
 }
 
-/** 打开一个项目(原生目录选择框)。 */
+/** Open a project (native directory picker). */
 export async function openProjectDialog(): Promise<void> {
   const selection = await openFileDialog({
     directory: true,
@@ -90,14 +94,15 @@ export async function openProjectDialog(): Promise<void> {
   await openProjectAt(selection);
 }
 
-/** 打开指定路径的项目,并记进「最近项目」。 */
+/** Open the project at the given path and record it in the recent projects. */
 export async function openProjectAt(root: string): Promise<void> {
   const store = useCodeStore.getState();
   await store.openProject(root);
   const app = useAppStore.getState();
   const recent = [root, ...app.recentCodeProjects.filter((p) => p !== root)].slice(0, 10);
   app.setRecentCodeProjects(recent);
-  // 项目是学习模式的中栏内容:切过去,中栏就显示它(不在学习模式就先进去)。
+  // The project is the middle column of the study mode: switching to it makes
+  // the middle column show it (and enters study mode if it is not open).
   const title = root.split("/").pop() ?? root;
   app.setStudyMode(true);
   app.setStudyContent({ kind: "code", path: root, title });
@@ -125,7 +130,8 @@ export const codeCommandDefs: CommandDef[] = [
       void import("./api")
         .then(({ codeApi }) => codeApi.lspStop(root))
         .then(() => {
-          // 清掉「起过没起来」的记账,下一次打开文件会重新试。
+          // Clear the "tried and failed" bookkeeping so the next file open
+          // tries again.
           for (const language of Object.keys(useCodeStore.getState().lspStates)) {
             useCodeStore.getState().setLspState(language, "");
           }
@@ -158,10 +164,12 @@ export const codeCommandDefs: CommandDef[] = [
     when: hasProject,
     run: () => {
       const store = useCodeStore.getState();
-      // 抽屉关着就先打开:聚焦的目标在树里,不在虚空里。
+      // Open the drawer first if it is closed: the focus target lives in the
+      // tree, not in the void.
       store.setTreeOpen(true);
-      // 有打开的文件就展开到它(虚拟滚动里那行得先成为可见行,才能聚焦);
-      // 没有就落在第一行。
+      // With an open file, expand to it (in a virtual scroll that row has to
+      // become a visible row before it can be focused); without one, land on
+      // the first row.
       const path = store.activePath;
       if (path) store.expandTo(path);
       store.requestTreeFocus(path);
@@ -351,7 +359,7 @@ export const codeCommandDefs: CommandDef[] = [
   },
 ];
 
-/** 重命名对话框的确认动作(由面板调用)。 */
+/** The confirm action of the rename dialog (called by the panel). */
 export async function confirmRename(newName: string): Promise<boolean> {
   return renameSymbol(newName);
 }

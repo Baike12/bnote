@@ -12,7 +12,7 @@ import { useCodeStore } from "../store";
 import { activeCodeEditor } from "../editor/registry";
 import { FileTypeIcon, FolderTypeIcon } from "./FileIcon";
 
-/** git 状态 → 展示用的字母。 */
+/** git status → the letter to display. */
 const STATUS_LABEL: Record<string, string> = {
   M: "M",
   A: "A",
@@ -24,34 +24,42 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 /**
- * 行高(px)。虚拟滚动的窗口按它算——**必须与 CSS 的 `.code-tree-row` 一致**,
- * 差 1px 就会越滚越偏。
+ * The row height in px. The virtual scroll window is computed from it — it
+ * **must match the CSS of `.code-tree-row`**, a difference of 1px makes the
+ * scroll drift more and more.
  */
 const ROW_HEIGHT = 22;
-/** 视口上下各多渲染几行:快速滚动时不会看到空白。 */
+/** How many extra rows to render above and below the viewport, so a fast scroll never shows blanks. */
 const OVERSCAN = 12;
-/** 列表上下留白(px),与 `.code-tree-window` 的 top 对应。 */
+/** The padding above and below the list in px, matching the top of `.code-tree-window`. */
 const PAD = 4;
 
 /**
- * 文件树。
+ * The file tree.
  *
- * **虚拟滚动**:文件树是唯一随仓库规模膨胀的列表(大仓库上万行),全量渲染
- * 成 DOM 是几百毫秒到几秒的开销,还会一直养着上万个按钮。这里把树拍平成
- * `visibleRows`,只渲染视口附近那几十行——滚动时换行不换节点结构。
+ * **Virtual scrolling**: the file tree is the only list that grows with the
+ * size of the repository (tens of thousands of rows in a big one), rendering
+ * all of it as DOM costs hundreds of milliseconds to seconds and keeps tens
+ * of thousands of buttons alive. Here the tree is flattened into
+ * `visibleRows` and only the few dozen rows near the viewport are rendered —
+ * scrolling swaps rows, not the node structure.
  *
- * **键盘可达**:⌘⇧E(命令 `code.focus-tree`)把焦点交给整棵树,有打开的
- * 文件就展开到它并停在那一行;之后 ↑↓ 走行、→← 展开/收起、Enter 打开、
- * Esc 把焦点还给编辑器。
+ * **Keyboard reachable**: ⌘⇧E (the command `code.focus-tree`) hands the
+ * focus to the whole tree; with an open file it expands to it and stops on
+ * that row; afterwards ↑↓ walk the rows, →← expand / collapse, Enter opens,
+ * Esc gives the focus back to the editor.
  *
- * 焦点落在**容器**上而不是行按钮上:虚拟滚动会随滚动卸载行元素,焦点挂在
- * 行上时用户滚一下(那一行移出窗口)键盘就断了;容器不参与窗口计算,始终
- * 在。行只画一圈 `is-focus` 表示键盘停在哪(与 `.is-active`「编辑器里开着
- * 谁」是两件事)。
+ * The focus sits on the **container** and not on a row button: the virtual
+ * scroll unmounts row elements while scrolling, so a focus on a row would be
+ * lost as soon as the user scrolls that row out of the window; the container
+ * takes no part in the window computation and is always there. A row only
+ * draws an `is-focus` ring to show where the keyboard is (a different thing
+ * from `.is-active`, "which file is open in the editor").
  *
- * 用 `memo` 包起来:代码编辑器每敲一个字,面板都会重渲染一次(内容在 store
- * 里),文件树不该跟着重画——它只依赖文件列表与 git 状态,那两份引用在打字
- * 时是不变的。
+ * Wrapped in `memo`: the code editor re-renders the panel on every keystroke
+ * (the content lives in the store), and the file tree must not repaint with
+ * it — it only depends on the file list and the git status, and those two
+ * references do not change while typing.
  */
 export const FileTree = memo(function FileTree({
   activePath,
@@ -63,8 +71,10 @@ export const FileTree = memo(function FileTree({
   const entries = useCodeStore((s) => s.project?.tree.entries ?? []);
   const git = useCodeStore((s) => s.git);
   const truncated = useCodeStore((s) => s.project?.tree.truncated ?? false);
-  // 展开态放 store:默认空集(只显示顶层,不默认展开所有文件夹),关掉抽屉
-  // 再打开、重扫之后都保留;换项目由 openProject 清空。
+  // The expanded state lives in the store: an empty set by default (top level
+  // only, no folder is expanded by default); it survives closing and
+  // reopening the drawer and a rescan, and openProject clears it when the
+  // project changes.
   const expandedDirs = useCodeStore((s) => s.expandedDirs);
   const toggleDir = useCodeStore((s) => s.toggleDir);
   const focusRequest = useCodeStore((s) => s.treeFocus);
@@ -72,12 +82,14 @@ export const FileTree = memo(function FileTree({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
-  /** 键盘停在哪一行(与「编辑器里开着谁」是两件事)。 */
+  /** The row the keyboard is on (a different thing from "which file is open in the editor"). */
   const [focusPath, setFocusPath] = useState<string | null>(null);
-  /** 每次「请求定位」自增:同一行连按快捷键也要重新滚到可见处。 */
+  /** Increments on every "reveal" request: pressing the shortcut on the same row has to scroll it into view again. */
   const [revealTick, setRevealTick] = useState(0);
 
-  // 视口高度随中栏拖动/窗口缩放变化:量不到高度就只能渲染十几行(空列表)。
+  // The viewport height changes with the middle column drag / the window
+  // resize: without measuring it only a dozen rows could be rendered (an
+  // almost empty list).
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -105,8 +117,10 @@ export const FileTree = memo(function FileTree({
     return map;
   }, [rows]);
 
-  // 视口窗口。滚动位置会被浏览器夹回内容高度内,但夹回是异步的(下一帧),
-  // 折叠后同一帧里 scrollTop 可能已经越界——这里自己再夹一次。
+  // The viewport window. The browser clamps the scroll position back into
+  // the content height, but that clamping is asynchronous (next frame), so
+  // right after a collapse the scrollTop may already be out of range — clamp
+  // it once more here.
   const first =
     rows.length === 0
       ? 0
@@ -122,15 +136,17 @@ export const FileTree = memo(function FileTree({
           Math.max(0, Math.ceil((scrollTop - PAD + viewportHeight) / ROW_HEIGHT) + OVERSCAN),
         );
 
-  /** 把键盘焦点移到某一行,并保证它滚进视口。 */
+  /** Move the keyboard focus to a row and make sure it is scrolled into the viewport. */
   const revealTo = useCallback((path: string) => {
     setFocusPath(path);
     setRevealTick((tick) => tick + 1);
   }, []);
 
-  // 消费一次「聚焦文件树」请求。目标行必须是可见行的一部分:调用方
-  // (code.focus-tree)已经展开过祖先目录,这里按实际行数组兜底(路径不在
-  // 树上就落第一行,不把焦点留在虚空里)。
+  // Consume one "focus the file tree" request. The target row has to be part
+  // of the visible rows: the caller (code.focus-tree) has already expanded the
+  // ancestor directories, and here the actual row array is the fallback (a
+  // path that is not on the tree lands on the first row instead of leaving
+  // the focus in the void).
   useEffect(() => {
     if (!focusRequest) return;
     clearTreeFocus();
@@ -138,14 +154,18 @@ export const FileTree = memo(function FileTree({
     const target =
       wanted && rowIndex.has(wanted) ? wanted : (rows[0]?.node.path ?? null);
     if (!target) return;
-    // 焦点归容器(行会随滚动卸载,容器不会);坐标由 reveal effect 自己算,
-    // preventScroll 防止浏览器再滚一次把结果顶歪。
+    // The focus belongs to the container (rows are unmounted while scrolling,
+    // the container is not); the coordinates are computed by the reveal effect
+    // itself, and preventScroll keeps the browser from scrolling a second
+    // time and skewing the result.
     hostRef.current?.focus({ preventScroll: true });
     revealTo(target);
   }, [focusRequest, clearTreeFocus, rowIndex, rows, revealTo]);
 
-  // 让 focusPath 滚进视口。只滚 DOM,不搬焦点(焦点一直在容器上),所以
-  // 不需要等窗口渲染出元素,也就没有「滚一次、聚焦一次」的两趟时序。
+  // Scroll focusPath into the viewport. Only the DOM is scrolled, the focus
+  // is not moved (it stays on the container), so there is no need to wait for
+  // the window to render the element — and therefore no "scroll once, focus
+  // once" two-pass timing.
   useEffect(() => {
     if (!focusPath) return;
     const host = hostRef.current;
@@ -167,14 +187,15 @@ export const FileTree = memo(function FileTree({
     return <div className="code-tree-empty">这个项目里没有文件</div>;
   }
 
-  // 折叠会把 focusPath 指向的行收走:这时退到「编辑器里开着的文件」或
-  // 第一行,键盘不会卡在一个已经看不见的路径上。
+  // Collapsing removes the row focusPath points at: fall back to "the file
+  // open in the editor" or the first row, so the keyboard never gets stuck on
+  // a path that is no longer visible.
   const currentPath =
     (focusPath && rowIndex.has(focusPath) ? focusPath : null) ??
     (activePath && rowIndex.has(activePath) ? activePath : null) ??
     (rows[0]?.node.path ?? null);
 
-  /** 焦点在相邻行之间移动(越界就停在原处)。 */
+  /** Move the focus between neighbouring rows (out of range stays where it is). */
   const moveFocus = (delta: number) => {
     if (rows.length === 0 || !currentPath) return;
     const index = rowIndex.get(currentPath) ?? -1;
@@ -184,8 +205,10 @@ export const FileTree = memo(function FileTree({
   };
 
   /**
-   * 树里的键位。焦点在容器上,按键从容器冒泡到这里(窗口级命令分发之前
-   * 收到);处理过的键 preventDefault,不再触发按钮的原生行为。
+   * The keybindings of the tree. The focus is on the container, so the keys
+   * bubble from the container up to here (before the window level command
+   * dispatch sees them); a handled key calls preventDefault and no longer
+   * triggers the native behavior of the button.
    */
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (rows.length === 0 || !currentPath) return;
@@ -209,7 +232,8 @@ export const FileTree = memo(function FileTree({
         revealTo(rows[rows.length - 1].node.path);
         break;
       case "ArrowRight":
-        // 收起状态先展开;已经展开就走进第一个子节点(与文件管理器一致)。
+        // Expand when collapsed; when already expanded, move into the first
+        // child (the same as a file manager).
         if (isDir && !open) toggleDir(row.node.path);
         else moveFocus(1);
         break;
@@ -226,8 +250,9 @@ export const FileTree = memo(function FileTree({
         else onOpen(row.node.path);
         break;
       case "Escape":
-        // 把键盘还给代码:浏览完文件不该再需要点一下编辑器。没有编辑器
-        // (图片/二进制/差异视图)就只是放开焦点。
+        // Give the keyboard back to the code: after browsing through files
+        // the user should not have to click the editor again. Without an
+        // editor (image / binary / diff view) it just releases the focus.
         {
           const handle = activeCodeEditor();
           if (handle) handle.view.focus();

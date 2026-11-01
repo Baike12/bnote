@@ -10,8 +10,8 @@ use tauri::Emitter;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// 会话形态：学习（纯问答，围绕中栏材料）或创作（带工具 + skill + MCP，
-/// 围绕仓库内容与 HTML 产物）。
+/// Session shape: study (pure Q&A around the material in the center column) or
+/// creative (tools + skill + MCP, around repository content and HTML output).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {
@@ -33,12 +33,13 @@ pub struct Session {
     pub app: tauri::AppHandle,
 }
 
-/// `running` 的守卫:进入 `send` 时建,离开作用域(正常结束 / 出错 / panic)
-/// 时自动把会话放回可发送状态。
+/// Guard for `running`: created on entry to `send`, and it puts the session back
+/// into a sendable state when the scope ends (normal return / error / panic).
 ///
-/// 没有它,一次挂起或 panic 会让 `running` 永远为 true:之后每次 `agent_send`
-/// 都被 SESSION_BUSY 拒掉,而前端只弹一个几秒消失的 toast——用户看到的就是
-/// 「再次发送没有回应」。
+/// Without it, one hang or panic leaves `running` true forever: every later
+/// `agent_send` is rejected with SESSION_BUSY, and the front end only raises a
+/// toast that vanishes after a few seconds — the user just sees "sending again
+/// does nothing".
 struct RunningGuard(Arc<AtomicBool>);
 
 impl Drop for RunningGuard {
@@ -53,15 +54,17 @@ impl Session {
     }
 
     /// Runs one user turn: stream → tool calls → results → repeat.
-    /// `images` 是随消息发送的截图/图片(可为空)。
+    /// `images` are the screenshots/images sent along with the message (may be empty).
     ///
-    /// 契约:**每次 send 都以恰好一个终止事件(turn_end / error)结束**。
-    /// 前端靠它清「生成中」状态;少发一次,面板就永远停在忙碌态。
+    /// Contract: **every send ends with exactly one terminal event
+    /// (turn_end / error)**. The front end relies on it to clear the "generating"
+    /// state; miss it once and the panel stays busy forever.
     pub async fn send(&self, text: &str, images: Vec<InlineImage>) {
         let _guard = RunningGuard(self.running.clone());
         if text.trim().is_empty() && images.is_empty() {
-            // provider 会因空 content 弹 400,这里直接报错结束——但不能静默
-            // return,否则前端等不到终止事件。
+            // The provider would answer an empty content with a 400, so fail here
+            // instead — but never return silently, or the front end waits forever
+            // for a terminal event.
             self.emit(AgentEvent::Error {
                 message: "消息为空:请先输入内容或添加图片".into(),
                 items: self.history().len(),
@@ -72,7 +75,8 @@ impl Session {
             items.push(ChatItem::user_message(text, &images));
         }
         let result = self.run_loop().await;
-        // 条数随结束事件一起给前端:分叉辅助会话时按它截断,不用猜。
+        // The item count travels with the terminal event: forking a helper session
+        // truncates by it instead of guessing.
         let count = self.history().len();
         let event = match result {
             Ok(()) => AgentEvent::TurnEnd {
@@ -84,7 +88,8 @@ impl Session {
         self.emit(event);
     }
 
-    /// 把事件推给前端(命令层在 panic 兜底时也要用)。
+    /// Pushes an event to the front end (the command layer also needs this for
+    /// its panic fallback).
     pub fn emit(&self, event: AgentEvent) {
         let payload = serde_json::json!({
             "sessionId": self.id,
@@ -108,7 +113,8 @@ impl Session {
                 .stream_turn(&self.system_prompt, &snapshot, &tools, sink_ref)
                 .await?;
             if let Some(usage) = turn.usage {
-                // 只保留最新一条就是当前上下文占用;input 已含系统提示词与全部历史。
+                // Only the latest one matters: it is the current context occupancy;
+                // input already includes the system prompt and the whole history.
                 self.emit(AgentEvent::Usage {
                     input: usage.input,
                     output: usage.output,
@@ -170,11 +176,13 @@ impl Session {
 
     fn tool_defs(&self) -> Vec<ToolDef> {
         match self.mode {
-            // 学习助手是纯问答:不注册任何工具,提示词也不引导(见
-            // build_study_prompt),模型只凭自身知识直接回答。
+            // The study assistant is pure Q&A: it registers no tools and the prompt
+            // does not steer toward them (see build_study_prompt); the model answers
+            // from its own knowledge.
             SessionMode::Study => Vec::new(),
-            // 创作助手带完整工具面:内置工具(文件/URL/bash/skill/预览)+
-            // MCP 工具;提示词与工具注册必须同步(两边都开或都关)。
+            // The creative assistant carries the full tool surface: built-in tools
+            // (file/URL/bash/skill/preview) plus the MCP tools; the prompt and the
+            // tool registration have to stay in sync (both on, or both off).
             SessionMode::Creative => {
                 let mut defs: Vec<ToolDef> = super::tools::tool_schemas()
                     .iter()
@@ -224,15 +232,17 @@ pub struct SessionRegistry {
 /// Builds the system prompt for a study session (pure Q&A around the
 /// material open in the middle column).
 ///
-/// 三层结构,从固定到可变:
-/// 1. 固定的通用要求(代码写死):简洁、直击本质、符合认知科学——这是学习
-///    场景的底线,用户配置不能把它顶掉;
-/// 2. `user_instructions`:vault 的 `.bnote/AGENTS.md`(旧版 `.bnote/agent.md`),
-///    设置里可编辑;
-/// 3. 运行时上下文(仓库、当前笔记、学习材料)。
+/// Three layers, from fixed to variable:
+/// 1. the fixed general requirements (hard-coded): concise, to the point,
+///    grounded in cognitive science — the baseline of the study scenario that no
+///    user configuration may override;
+/// 2. `user_instructions`: the vault's `.bnote/AGENTS.md` (the older
+///    `.bnote/agent.md`), editable in the settings;
+/// 3. the runtime context (repository, current note, study material).
 ///
-/// 学习助手是纯问答:不注册任何工具,提示词也不引导调用工具——两边只要
-/// 有一边漏掉,模型就会去调不存在的工具或绕路读文件。
+/// The study assistant is pure Q&A: it registers no tools and the prompt does not
+/// steer toward tool calls — if either side is missed, the model calls tools that
+/// do not exist or detours into reading files.
 pub fn build_study_prompt(
     vault_name: &str,
     current_note: Option<&str>,
@@ -281,10 +291,12 @@ own knowledge.\n\n\
 
 /// Builds the system prompt for a creation session.
 ///
-/// 与学习 prompt 同样分层,但面向**通用创作**:结构、叙事、忠实于用户素材;
-/// HTML 的具体形态(结构/样式/产物路径)不由这份 prompt 规定——那由用户
-/// 通过 `/skill-name` 调用的 skill 决定。工具使用规则、/ 与 @ 约定、技能
-/// 清单、MCP 说明都在这里给齐,与 `tool_defs()` 注册的工具面严格同步。
+/// Layered like the study prompt, but aimed at **general creation**: structure,
+/// narrative, fidelity to the user's material. The concrete shape of the HTML
+/// (structure/style/output path) is not fixed by this prompt — the skill the user
+/// invokes through `/skill-name` decides that. The tool usage rules, the `/` and
+/// `@` conventions, the skill list and the MCP notes are all given here, and are
+/// kept strictly in sync with the tool surface registered in `tool_defs()`.
 pub fn build_creative_prompt(
     vault_name: &str,
     current_note: Option<&str>,
@@ -354,8 +366,9 @@ mod tests {
 
     #[test]
     fn running_guard_离开作用域一定复位_含_panic_展开() {
-        // 历史缺陷:running 只在 send 末尾手动复位,panic 或任务被丢弃
-        // (请求挂起)时永远为 true → 之后每次 agent_send 都被拒绝。
+        // Historical defect: running was only reset manually at the end of send,
+        // so a panic or a dropped task (a hanging request) left it true forever →
+        // every later agent_send was rejected.
         let flag = Arc::new(AtomicBool::new(true));
         {
             let _g = RunningGuard(flag.clone());
@@ -388,9 +401,11 @@ mod tests {
 
     #[test]
     fn 纯问答_提示词不出现任何工具引导() {
-        // 历史缺陷:提示词要求"答前先调 read_study_content",叠加把内置 +
-        // MCP 工具全量注册进请求,导致每个问题都触发工具调用。学习助手是
-        // 纯问答,这条不变量锁住:提示词里不得出现任何工具名或加载引导。
+        // Historical defect: the prompt demanded "call read_study_content before
+        // answering" and, on top of that, registered all built-in and MCP tools
+        // in the request, so every question triggered a tool call. The study
+        // assistant is pure Q&A; this invariant locks that in: no tool name and
+        // no loading instruction may appear in the prompt.
         let study = StudyContent::Pdf {
             path: "/tmp/paper.pdf".into(),
             title: "paper".into(),
@@ -406,7 +421,8 @@ mod tests {
     #[test]
     fn 创作提示词_约定技能与指令节齐全_空列表也有兜底() {
         let p = build_creative_prompt("vault", Some("notes/a.md"), "", &[], &[]);
-        // / 与 @ 约定必须在场:前端补全只负责插入文本,语义全靠提示词解释。
+        // The / and @ conventions must be present: the front end completion only
+        // inserts text, the semantics live entirely in the prompt.
         assert!(p.contains("/skill-name"));
         assert!(p.contains("@path/to/file"));
         assert!(p.contains("preview_html"));

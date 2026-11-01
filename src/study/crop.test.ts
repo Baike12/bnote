@@ -27,7 +27,7 @@ describe("cropFromDrag", () => {
   });
 
   it("起点终点越出页面时先夹回页内", () => {
-    // 夹回后盖满整页 = 没裁
+    // After clamping it covers the whole page = no crop
     expect(cropFromDrag(-0.5, -0.2, 1.5, 1.4)).toBeNull();
     expect(cropFromDrag(-0.2, 0.2, 0.6, 1.4)).toEqual({
       x: 0,

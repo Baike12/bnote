@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { footprintsFilePath, type StoredFootprints, type StoredFootprintsV1 } from "./model";
 import { FootprintCore, type FootprintIO } from "./store";
 
-/** 内存假 IO:files 以绝对路径为键;listFiles 与真后端一样返回 vault 相对路径。 */
+/** In-memory fake IO: files is keyed by absolute path; listFiles returns the vault relative paths like the real backend. */
 function fakeIO(files: Map<string, string>): FootprintIO {
   return {
     readFile: async (p) => (files.has(p) ? files.get(p)! : null),
@@ -48,10 +48,10 @@ describe("FootprintCore 轮转", () => {
     const stored = JSON.parse(raw) as StoredFootprints;
     expect(stored.version).toBe(2);
     expect(stored.day).toBe("2026-09-30");
-    // 只有可聚合文件进基线:日记与资产被排除
+    // Only aggregateable files go into the baseline: daily notes and assets are excluded
     expect(Object.keys(stored.baselines)).toEqual([NOTE]);
     expect(stored.baselines[NOTE]).toBe("旧内容 A\n\n旧内容 B");
-    // 首次使用没有「那一天」,历史档为空
+    // On first use there is no "that day", the archive is empty
     expect(stored.history).toEqual({});
   });
 
@@ -63,7 +63,7 @@ describe("FootprintCore 轮转", () => {
     ]);
     const core = coreOf(files, "2026-09-30");
     await core.init();
-    // 当天基线是「基线文本」,盘上内容 diff 出今天的记录
+    // The baseline of the day is the stored baseline text, the content on disk diffs into the record of today
     await core.refreshAll(true);
     expect(core.footprintsFor(NOTE)).toEqual([{ text: "盘上已经改过的内容", start: 1, end: 1 }]);
   });
@@ -118,7 +118,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     const core = await seededCore(files);
     files.set(NOTE, "基线段落\n\n今天写的新段");
     core.noteDirty([NOTE]);
-    expect(core.footprintsFor(NOTE)).toEqual([]); // 防抖期内不动
+    expect(core.footprintsFor(NOTE)).toEqual([]); // nothing moves during the debounce
     await vi.advanceTimersByTimeAsync(1100);
     expect(core.footprintsFor(NOTE)).toEqual([{ text: "今天写的新段", start: 3, end: 3 }]);
   });
@@ -168,11 +168,11 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     };
     files.set(footprintsFilePath(VAULT), JSON.stringify(stored));
     const core = coreOf(files, "2026-09-29");
-    await core.init(); // day=09-29,基线沿用存储值
+    await core.init(); // day=09-29, the baseline keeps the stored value
     files.set(NOTE, "基线\n\n昨天写下的段\n\n今天写的段");
     core.noteDirty([NOTE]);
     await vi.advanceTimersByTimeAsync(1100);
-    // 09-29 的基线视角:「昨天写下的段」在基线里,不算新增
+    // From the point of view of the 09-29 baseline: the segment written yesterday is in the baseline, it does not count as an addition
     expect(core.footprintsFor(NOTE)).toEqual([{ text: "今天写的段", start: 5, end: 5 }]);
   });
 
@@ -188,7 +188,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
 
   it("未轮转的 core(day 为空串:注入/init 空窗)任何日期都走实时索引", async () => {
     const { todayStamp } = await import("@/editor/ops");
-    const core = coreOf(new Map(), "2026-09-30"); // 不调 init,day = ""
+    const core = coreOf(new Map(), "2026-09-30"); // init is not called, day = ""
     core.installIndexForTest(new Map([[NOTE, [{ text: "注入块", start: 1, end: 1 }]]]));
     expect(core.entriesFor(todayStamp())).toEqual([
       { path: NOTE, blocks: [{ text: "注入块", start: 1, end: 1 }] },
@@ -201,7 +201,8 @@ describe("FootprintCore 全量兜底(refreshAll)", () => {
     const files = new Map<string, string>([[NOTE, "基线段落"]]);
     const core = coreOf(files, "2026-09-30");
     await core.init();
-    // 应用没开着时的改动:盘面直接变,没有 watcher 事件
+    // A change made while the app was not running: the state on disk changed
+    // directly, there is no watcher event
     files.set(NOTE, "基线段落\n\n离线写的新段");
     files.set(OTHER, "另一篇今天改的");
     await core.refreshAll();
@@ -215,7 +216,7 @@ describe("FootprintCore 全量兜底(refreshAll)", () => {
     await core.init();
     await core.refreshAll();
     files.set(NOTE, "基线段落\n\n新段");
-    await core.refreshAll(); // 被节流吞掉
+    await core.refreshAll(); // swallowed by the throttle
     expect(core.footprintsFor(NOTE)).toEqual([]);
     await vi.advanceTimersByTimeAsync(5001);
     await core.refreshAll();
@@ -249,9 +250,11 @@ describe("FootprintCore 历史档:跨天轮转固化,历史日记按日聚合", 
     ]);
     const core = coreOf(files, "2026-09-30");
     await core.init();
-    // 09-29 的足迹被固化;当日(09-30)从零开始。
-    // 条目按 localeCompare 排序,顺序随宿主 locale 变(zh-CN 汉字排 Latin 前),
-    // 断言只锁内容,用码点序把两边归一后再比。
+    // The footprint of 09-29 is frozen; the current day (09-30) starts from zero.
+    // The entries are sorted with localeCompare, so the order depends on the locale
+    // of the host (in zh-CN the Chinese characters come before the Latin ones), the
+    // assertion only locks the content and normalizes both sides by code point
+    // order before comparing.
     const sorted = <T extends { path: string }>(es: T[]): T[] =>
       [...es].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     expect(sorted(core.entriesFor("2026-09-29"))).toEqual(

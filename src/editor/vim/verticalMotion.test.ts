@@ -5,7 +5,7 @@ import { blockDecorationsField } from "../livePreview";
 import { moveByLinesVisual, type VimCoreState } from "./verticalMotion";
 
 /**
- * 行号（1 起）：
+ * Line numbers (1-based):
  *  1 plain one
  *  2 - [ ] task item
  *  3 $$
@@ -22,9 +22,10 @@ const CHAR_W = 8;
 const ROW_H = 24;
 const CONTENT_LEFT = 100;
 
-/** 确定性几何：字符等宽 8px、行高 24px、content 左缘 100px。
- *  真实浏览器里的像素解析行为（隐藏前缀零宽、widget 命中偏向）由浏览器
- *  测量锁定；这里锁的是运动模型的控制流与记账。 */
+/** Deterministic geometry: 8px per character, 24px line height, content left
+ *  edge at 100px. The pixel resolution of a real browser (zero-width hidden
+ *  prefixes, widget hit bias) is locked by browser measurements; what is locked
+ *  here is the control flow and bookkeeping of the motion model. */
 function makeFakeView(state: EditorState): EditorView {
   const view = {
     state,
@@ -69,8 +70,9 @@ interface Harness {
   motions: Record<string, unknown>;
 }
 
-/** `this`（引擎 motions 表）用最小替身：家族判定需要的成员按需注入，
- *  run/motions 返回给测试，用于模拟引擎的 lastMotion 记账。 */
+/** `this` (the engine's motions table) uses a minimal stand-in: the members the
+ *  family check needs are injected on demand; run/motions are handed back to
+ *  the test to simulate the engine's lastMotion bookkeeping. */
 function makeHarness(familyKeys: string[] = [], doc = DOC, anchor = 0): Harness {
   const state = makeState(doc, anchor);
   const view = makeFakeView(state);
@@ -93,7 +95,7 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
   it("第一步从当前光标取视觉锚，落在保留 x 上并记入 lastHSPos", () => {
     const { run, vim } = makeHarness();
     const out = run({ line: 0, ch: 5 }, { forward: true, repeat: 1 }, vim);
-    // 锚 = line 1 col 5 的 x = 40px；目标行落 col 5。
+    // The anchor is the x of line 1 col 5 = 40px; the target line lands on col 5.
     expect(out).toEqual({ line: 1, ch: 5 });
     expect(vim.lastHSPos).toBe(5 * CHAR_W);
     expect(vim.lastHPos).toBe(5);
@@ -101,21 +103,23 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
 
   it("连续 j 沿用同一视觉锚，不吸收落点量化误差", () => {
     const { run, vim, motions } = makeHarness(["moveByLines"]);
-    // 模拟引擎：lastMotion 已指向本 motion，锚在上一步更新为 40。
+    // Simulate the engine: lastMotion already points at this motion, and the
+    // anchor was updated to 40 in the previous step.
     vim.lastMotion = motions.moveByLines;
     vim.lastHSPos = 5 * CHAR_W;
     const out = run({ line: 1, ch: 5 }, { forward: true, repeat: 1 }, vim);
-    // 目标行 3 是折叠公式的开行（边缘），落点列按锚估算并被行尾钳制。
+    // Target line 3 is the opening line of the folded formula (the edge); the
+    // landing column is estimated from the anchor and clamped to the line end.
     expect(out.line).toBe(2);
     expect(out.ch).toBe(2); // "$$".length
-    expect(vim.lastHSPos).toBe(5 * CHAR_W); // 锚不变：量化误差不反馈
+    expect(vim.lastHSPos).toBe(5 * CHAR_W); // the anchor is unchanged: quantization error does not feed back
   });
 
   it("隐藏行不是步：跨过公式块按可见步计数", () => {
     const { run, vim, motions } = makeHarness(["moveByLines"]);
     vim.lastMotion = motions.moveByLines;
     vim.lastHSPos = 5 * CHAR_W;
-    // 4j：task(2) → $$开(3) → 源(4) → $$闭(5) → bullet(6)。
+    // 4j: task(2) → $$open(3) → source(4) → $$close(5) → bullet(6).
     const out = run({ line: 1, ch: 5 }, { forward: true, repeat: 4 }, vim);
     expect(out.line).toBe(5);
   });
@@ -126,11 +130,13 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
     vim.lastHPos = Infinity;
     const eolX = 40;
     vim.lastHSPos = eolX;
-    // 光标在待办行（1）行尾（$ 之后），j 到 `$$` 开行：行尾意图落在该行行尾。
+    // The caret sits at the end of the todo line (1) (after `$`); j to the
+    // `$$` opening line: the end-of-line intent lands at that line's end.
     const out = run({ line: 1, ch: 15 }, { forward: true, repeat: 1 }, vim);
     expect(out).toEqual({ line: 2, ch: "$$".length });
     expect(vim.lastHPos).toBe(Infinity);
-    // eolIntent 分支不回写锚：moveToEol 设的行尾 x 保持原样。
+    // The eolIntent branch does not write the anchor back: the end-of-line x
+    // set by moveToEol stays as it is.
     expect(vim.lastHSPos).toBe(eolX);
   });
 
@@ -171,22 +177,24 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
   });
 });
 
-/** 行号（1 起）：
+/** Line numbers (1-based):
  *  1 plain above
- *  2 ::: 只有标题
+ *  2 ::: title only
  *  3 :::
  *  4 plain below
  *
- * 标题-only callout 的块内没有任何可见正文行；两条 `:::` 边界都是 block
- * replace。不把边界当落点，j 会把整个 callout 跳过（正是缺陷）。HR 的隐藏
- * 判定依赖 markdown 语法树，单元测试不铺语言扩展，故这里不放 `---`；含 HR
- * 的真实结构由浏览器 harness 验证。
+ * The title-only callout has no visible body line inside its block; both `:::`
+ * boundaries are block replaces. Without treating the boundaries as landing
+ * points, j would skip the whole callout (that is the defect). The hidden
+ * detection of an HR depends on the markdown syntax tree, which this unit test
+ * does not set up, so no `---` is placed here; the real structure with an HR
+ * is verified in the browser harness.
  */
 const CALLOUT_ONLY_TITLE = ["plain above", "::: 只有标题", ":::", "plain below"].join("\n");
 
-/** 行号（1 起）：
+/** Line numbers (1-based):
  *  1 plain above
- *  2 ::: 标题
+ *  2 ::: title
  *  3 body
  *  4 :::
  *  5 plain below
@@ -197,7 +205,7 @@ describe("moveByLinesVisual：callout 边界是落点", () => {
   it("标题-only callout：j 落在开标记行（进入块），不再整体跳过", () => {
     const { run, vim } = makeHarness([], CALLOUT_ONLY_TITLE);
     const out = run({ line: 0, ch: 0 }, { forward: true, repeat: 1 }, vim);
-    expect(out.line).toBe(1); // 0-based → `::: 只有标题`
+    expect(out.line).toBe(1); // 0-based → the `::: title only` line
   });
 
   it("标题-only callout：k 从下方落在合标记行（进入块）", () => {
@@ -207,7 +215,7 @@ describe("moveByLinesVisual：callout 边界是落点", () => {
       CALLOUT_ONLY_TITLE.indexOf("plain below"),
     );
     const out = run({ line: 3, ch: 0 }, { forward: false, repeat: 1 }, vim);
-    expect(out.line).toBe(2); // 0-based → 合标记 `:::`
+    expect(out.line).toBe(2); // 0-based → the closing `:::` marker
   });
 
   it("进入块后边界行变成普通步：可继续 j 穿过整个块", () => {
@@ -223,7 +231,7 @@ describe("moveByLinesVisual：callout 边界是落点", () => {
   it("计数 j：2j 从块外穿过开、合两条标记行（多步共享同一帧装饰）", () => {
     const { run, vim } = makeHarness([], CALLOUT_ONLY_TITLE);
     const out = run({ line: 0, ch: 0 }, { forward: true, repeat: 2 }, vim);
-    expect(out.line).toBe(2); // 0-based → 合标记 `:::`
+    expect(out.line).toBe(2); // 0-based → the closing `:::` marker
   });
 
   it("有正文的 callout：j 从上方先落在开标记行，再进正文", () => {

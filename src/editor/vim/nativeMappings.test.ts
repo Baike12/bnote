@@ -3,17 +3,21 @@ import { EditorState } from "@codemirror/state";
 import { applyNativeMappings } from "./vim";
 import { Vim } from "@replit/codemirror-vim";
 
-// 引擎 insert 模式的映射超时计时器挂在 window 上(vim.js 的
-// insertModeEscKeysTimeout);node 测试环境用全局别名补上。
+// The engine's insert-mode mapping timeout timer hangs off `window` (vim.js's
+// insertModeEscKeysTimeout); the node test environment supplies it through a
+// global alias.
 (globalThis as Record<string, unknown>).window = globalThis;
 
 /**
- * 键序列映射(`imap jj <Esc>` 这类)必须把 rhs **原样**交给引擎。引擎展开
- * keyToKey 映射时按尖括号 token 切分(doKeyToKey),对 `<Esc>` 走"退出插入
- * 模式"的原生分支;一旦被改写成裸 "Esc",展开器按 E·s·c 三个单字符逐个
- * replaceSelection——插入模式退不出去,字面 "Esc" 被打进文档。用户报告的
- * 「normal 模式按 gg/G 不跳转」实际都发生在 insert 态(jj 退出失败)。
- * 这里用真实引擎 + 最小 CM5 shim 行为级锁死(纯逻辑,无 DOM)。
+ * Key-sequence mappings (`imap jj <Esc>` and friends) must hand the rhs to
+ * the engine **verbatim**. When the engine expands a keyToKey mapping it
+ * splits on angle-bracket tokens (doKeyToKey) and takes its native
+ * "leave insert mode" branch for `<Esc>`; once rewritten to a bare "Esc", the
+ * expander replaces the selection with the three single characters E·s·c one
+ * by one — insert mode can no longer be left and the literal "Esc" lands in
+ * the document. The "gg/G does not jump in normal mode" reports actually
+ * happened in insert state (jj failed to leave). Here the real engine plus a
+ * minimal CM5 shim locks this down at the behavior level (pure logic, no DOM).
  */
 
 function indexFromPos(doc: { lines: number; line(n: number): { from: number; to: number } }, pos: { line: number; ch: number }): number {
@@ -22,8 +26,9 @@ function indexFromPos(doc: { lines: number; line(n: number): { from: number; to:
   return line.from + Math.min(Math.max(pos.ch, 0), line.to - line.from);
 }
 
-/** 最小 CM5 风格 shim:引擎 insert 路径(i / jj→<Esc>)触碰的方法面。
- *  文档状态由真 EditorState 承载,Pos(line, ch) 0 基与引擎一致。 */
+/** Minimal CM5-style shim: the method surface the engine's insert path
+ *  (i / jj→<Esc>) touches. The document state is carried by a real
+ *  EditorState; Pos(line, ch) is 0-based, as in the engine. */
 function makeCm(docText: string) {
   let state = EditorState.create({ doc: docText });
   const opts: Record<string, unknown> = {};
@@ -44,7 +49,7 @@ function makeCm(docText: string) {
   const posToOffset = (pos: { line: number; ch: number }) => indexFromPos(state.doc, pos);
 
   const cm = {
-    // 引擎把 per-editor vim 状态挂在 cm.state.vim 上
+    // The engine hangs the per-editor vim state off cm.state.vim
     state: {} as { vim?: unknown },
     curOp: {} as Record<string, unknown>,
     operation(f: () => void) {
@@ -100,7 +105,8 @@ function makeCm(docText: string) {
       const ch = typeof pos === "object" && pos.ch !== undefined ? pos.ch : p.ch;
       setCur({ line, ch: ch ?? 0 });
     },
-    // 宽面兜底:测试只走 insert 模式进出,引擎的其余探测一律温和失败
+    // Wide catch-all: the test only enters and leaves insert mode, so every
+    // other engine probe fails harmlessly
     isInMultiSelectMode: () => false,
     inVirtualSelectionMode: false,
     toggleOverwrite: () => {},
@@ -119,7 +125,8 @@ function makeCm(docText: string) {
   };
 }
 
-/** 按键序列进引擎(wrapper 的真实路径就是 multiSelectHandleKey)。 */
+/** Feed a key sequence into the engine (the wrapper's real path is
+ *  multiSelectHandleKey). */
 function typeKeys(cm: Record<string, unknown>, keys: string[]) {
   for (const k of keys) {
     Vim.multiSelectHandleKey(cm as never, k, "user");
@@ -139,10 +146,13 @@ describe("applyNativeMappings: rhs 原样进引擎(键名改写回归)", () => {
     expect(modeOf(cm as never)).toBe("insert");
     typeKeys(cm, ["j", "j"]);
     expect(modeOf(cm as never)).toBe("normal");
-    // 引擎的 changeQueue 按"partial 期间已插入 2 字符"记账撤销;shim 无浏览器
-    // 默认输入,首键未真插入,文档因此少 2 个既有字符——这是 shim 的记账
-    // artifact,真实键盘下撤销的正是刚输入的 "jj"。这里只锁两件事:模式回到
-    // normal + 没有字面 "Esc" 被插进文档。
+    // The engine's changeQueue books the undo as "2 characters inserted
+    // during the partial"; the shim has no browser default input, so the
+    // first key never really inserted and the document ends up 2 characters
+    // short — that is the shim's bookkeeping artifact; under a real keyboard
+    // the undo removes exactly the "jj" just typed. Only two things are
+    // locked here: the mode returns to normal, and no literal "Esc" was
+    // inserted into the document.
     expect(docText()).not.toContain("Esc");
   });
 
@@ -151,15 +161,16 @@ describe("applyNativeMappings: rhs 原样进引擎(键名改写回归)", () => {
     const { cm, docText } = makeCm("abc");
     typeKeys(cm, ["i"]);
     typeKeys(cm, [">", ">"]);
-    expect(modeOf(cm as never)).toBe("insert"); // <Esc> 退出后又 A 进插入
+    expect(modeOf(cm as never)).toBe("insert"); // A re-enters insert after <Esc> left
     typeKeys(cm, ["<Esc>"]);
     expect(modeOf(cm as never)).toBe("normal");
     expect(docText()).toBe("abc;");
   });
 
   it("裸 Esc 字符串作为 rhs 时被逐字符插入(锁住改写错误的历史症状)", () => {
-    // 防回归方向:如果将来有人再把 <Esc> 改写成裸 Esc,这个用例会看到
-    // 模式仍为 insert 且文档多出 "Esc" 字样——正是用户遇到的死法。
+    // Regression guard: if someone ever rewrites <Esc> back to a bare Esc
+    // again, this case will see the mode still insert and the document
+    // carrying an extra "Esc" — exactly the dead end users hit.
     applyNativeMappings([{ lhs: ";;", rhs: "Esc", mode: "insert", noremap: true }]);
     const { cm, docText } = makeCm("x");
     typeKeys(cm, ["i"]);

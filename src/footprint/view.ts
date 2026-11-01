@@ -2,9 +2,11 @@ import { sourceLabel } from "@/daily/marks";
 import type { FootprintBlock } from "./model";
 
 /**
- * 今日足迹区的纯视图模型:把索引条目组装成「区 → 组(源文件) → 块」的渲染
- * 数据,外加折叠状态的纯数据运算。无 DOM,view.test.ts 锁死组序、计数与
- * 折叠切换;widget.ts 只负责把这份不可变数据画出来。
+ * Pure view model of today's footprint zone: it assembles the index entries into
+ * the rendering data of "zone -> group (source file) -> block" and adds the pure
+ * data operations of the fold state. No DOM; view.test.ts locks down the group
+ * order, the counts and the fold toggles; widget.ts only draws this immutable
+ * data.
  */
 
 export interface FootprintEntry {
@@ -13,9 +15,9 @@ export interface FootprintEntry {
 }
 
 export interface FootprintGroupView {
-  /** 源文件绝对路径(点击跳转用)。 */
+  /** Absolute path of the source file (used when jumping on a click). */
   path: string;
-  /** 源笔记名(去目录与 .md),组头显示。 */
+  /** Name of the source note (directory and .md stripped), shown in the group header. */
   label: string;
   blocks: FootprintBlock[];
 }
@@ -39,13 +41,13 @@ export function buildFootprintView(entries: FootprintEntry[]): FootprintView {
   };
 }
 
-// ---------------------------------------------------------------- 折叠状态
+// ---------------------------------------------------------------- fold state
 
-/** 折叠是会话内的 UI 状态:不持久化——每次打开日记默认全部展开。 */
+/** Folding is UI state of the session: it is not persisted - every daily note opens fully expanded. */
 export interface FoldState {
-  /** 整个足迹区收起(只剩区头)。 */
+  /** The whole footprint zone is collapsed (only the zone header is left). */
   zoneCollapsed: boolean;
-  /** 收起的组(源文件绝对路径)。 */
+  /** The collapsed groups (absolute path of the source file). */
   groups: ReadonlySet<string>;
 }
 
@@ -64,7 +66,7 @@ export function toggleGroup(state: FoldState, path: string): FoldState {
   return { ...state, groups };
 }
 
-/** 折叠状态的签名:widget eq 与 zone 重建判据用它比对。 */
+/** Signature of the fold state: the widget equality check and the zone rebuild use it to compare. */
 export function foldSig(state: FoldState): string {
   return state.zoneCollapsed
     ? "z"

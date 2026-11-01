@@ -3,15 +3,19 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * 学习助手的滚动链条门禁。
+ * Gate for the scroll chain of the study assistant.
  *
- * 根因(2026-10-26):`.agent-panel` 是 column flex 的子项(`.study-left`),
- * `min-height: auto` 解析成内容最小高度——对话一长,面板长到内容高度、
- * 溢出页面,`.agent-scroll` 的 clientHeight 恒等于 scrollHeight,`overflow-y:
- * auto` 无可滚动余量,于是滚轮不动、输入框被顶出窗口。
+ * Root cause (2026-10-26): `.agent-panel` is a child of a column flex
+ * (`.study-left`), where `min-height: auto` resolves to the content's
+ * minimum height. As soon as the conversation got long the panel grew to the
+ * content height and overflowed the page, `.agent-scroll`'s clientHeight was
+ * permanently equal to its scrollHeight, `overflow-y: auto` had nothing to
+ * scroll, and the wheel did nothing while the input box was pushed out of
+ * the window.
  *
- * 没有 DOM 的 node 测试量不到像素,这里锁链条的两端:面板必须允许收缩
- * (min-height: 0),消息区必须是唯一的纵向滚动容器。
+ * A node test without DOM cannot measure pixels, so both ends of the chain
+ * are locked here: the panel must be allowed to shrink (min-height: 0) and
+ * the message area must be the only vertical scroll container.
  */
 const css = readFileSync("src/styles/global.css", "utf8").replace(
   /\/\*[\s\S]*?\*\//g,
@@ -19,8 +23,9 @@ const css = readFileSync("src/styles/global.css", "utf8").replace(
 );
 
 const rule = (selector: string): string => {
-  // 按规则块解析而不是按行首正则:分栏线是共用样式,选择器列表写成
-  // `.study-resizer,\n.projects-resizer {` 时行首正则取不到。
+  // Parse by rule block instead of by a line-anchored regex: the dividers
+  // share one style, and with a selector list written as
+  // `.study-resizer,\n.projects-resizer {` the line-anchored regex misses it.
   for (const block of css.split("}")) {
     const at = block.lastIndexOf("{");
     if (at < 0) continue;
@@ -64,18 +69,21 @@ describe("agent 面板滚动布局", () => {
 });
 
 /**
- * 学习助手头部(会话切换 + 辅助会话条)的门禁。
+ * Gate for the study assistant header (session switch and auxiliary session bar).
  *
- * 根因(2026-10-30):会话切换用的是原生 `<select>`,在 WKWebView 里是系统
- * 灰胶囊 + 系统字体,和中栏「文件名 = 材料下拉」不是一套语言;辅助会话条把
- * 父会话的整段摘要塞进「返回」按钮(flex-shrink: 0),一条彩色带占满整行,
- * 来源文字被挤到只剩几字。这里锁住新形状:自定义按钮 + popover、与头部同
- * 底色的窄条、定宽的返回按钮。
+ * Root cause (2026-10-30): the session switch used a native `<select>`,
+ * which in WKWebView is the system grey pill in the system font and not the
+ * same language as the middle column's "file name = materials dropdown"; the
+ * auxiliary session bar pushed the whole summary of the parent session into
+ * the "back" button (flex-shrink: 0), a colored band filled the entire row
+ * and the source text was squeezed to a few characters. The new shape is
+ * locked here: a custom button plus popover, a narrow bar with the same
+ * background as the header, and a fixed-width back button.
  */
 describe("学习助手头部:会话切换与辅助会话条", () => {
   const panelSrc = readFileSync("src/components/AgentPanel.tsx", "utf8");
   const headerSrc = readFileSync("src/components/AgentHeader.tsx", "utf8");
-  // 只查代码:注释里写着「不用原生 <select>」是说明,不是违规。
+  // Only the code is searched: a comment saying "no native <select>" is documentation, not a violation.
   const code = (src: string) =>
     src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
@@ -98,8 +106,9 @@ describe("学习助手头部:会话切换与辅助会话条", () => {
     const title = rule(".agent-conv-title");
     expect(title).toMatch(/text-overflow:\s*ellipsis/);
     expect(title).toMatch(/white-space:\s*nowrap/);
-    // 头部四个按钮(4 × 26 + 3 × 8 = 128)必须留够:少留一点,窄窗口下被
-    // 压扁的就是图标本身。
+    // The four header buttons (4 x 26 + 3 x 8 = 128) need that much room:
+    // reserve less and in a narrow window it is the icon itself that gets
+    // squeezed.
     expect(rule(".agent-conv")).toMatch(/max-width:\s*calc\(100% - 144px\)/);
     expect(rule(".agent-header .icon-btn")).toMatch(/flex:\s*0 0 auto/);
   });
@@ -113,7 +122,7 @@ describe("学习助手头部:会话切换与辅助会话条", () => {
   it("返回按钮定宽,来源摘要是唯一可省略的那一段", () => {
     expect(rule(".agent-aux-back")).toMatch(/flex:\s*0 0 auto/);
     const based = rule(".agent-aux-based");
-    // min-width: 0 是 ellipsis 生效的前提(flex 子项默认按内容最小宽度撑开)。
+    // min-width: 0 is the precondition for ellipsis (a flex item is stretched by its content's minimum width by default).
     expect(based).toMatch(/min-width:\s*0/);
     expect(based).toMatch(/text-overflow:\s*ellipsis/);
   });
@@ -126,12 +135,15 @@ describe("学习助手头部:会话切换与辅助会话条", () => {
 });
 
 /**
- * 对话字号门禁。
+ * Gate for the conversation font size.
  *
- * 根因(2026-10-30):面板正文写死 13.5px,助手栏只有几百像素宽,长答案
- * 读起来发虚,而中栏能缩放、助手栏不能。现在正文由 `--agent-text`
- * (基准 15px × 头部「Aa」写入的 `--agent-fs`)派生,所有正文级文字都乘它;
- * 头部/辅助条是外框,保持固定像素。
+ * Root cause (2026-10-30): the panel body was hard-coded to 13.5px, the
+ * assistant column is only a few hundred pixels wide and a long answer read
+ * blurry, while the middle column could be zoomed and the assistant column
+ * could not. The body text is now derived from `--agent-text` (a 15px base
+ * times the `--agent-fs` written by the "Aa" button in the header), and all
+ * body-level text multiplies it; the header and the auxiliary bar are the
+ * outer frame and keep fixed pixels.
  */
 describe("学习助手:对话字号可调", () => {
   const panelSrc = readFileSync("src/components/AgentPanel.tsx", "utf8");
@@ -155,9 +167,11 @@ describe("学习助手:对话字号可调", () => {
         /font-size:\s*(var\(--agent-text\)|calc\(var\(--agent-text\) \* [\d.]+\))/,
       );
     }
-    // 多行选择器(标题组)与单行 h1 覆盖:规则块解析拿不到多行首行,直接查源码。
+    // Multi-line selector (the heading group) and the single-line h1
+    // override: the rule block parser cannot get the first line of a
+    // multi-line selector, so the source is queried directly.
     expect(css).toMatch(/\.agent-md h6 \{\n[^}]*font-size: var\(--agent-text\)/);
-    // 一级标题比正文大一档,仍由正文派生
+    // The top level heading is one step larger than the body, still derived from it
     expect(css).toMatch(/\.agent-md h1 \{ font-size: calc\(var\(--agent-text\) \* 1\.1\); \}/);
   });
 

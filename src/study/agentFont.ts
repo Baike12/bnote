@@ -1,29 +1,33 @@
 /**
- * 学习助手面板的对话字号缩放。
+ * Conversation font-size zoom for the study assistant panel.
  *
- * 与中栏网页缩放同一套交互(档位步进 + 读数点击回到 100%),但改的是面板
- * 里的文字:正文基准 15px 乘以缩放,标题 / 代码 / 工具行按同一比例派生
- * (见 global.css 的 `--agent-text`)。头部读数就是这个百分比。
+ * Same interaction as the content column's web zoom (step through the scale
+ * table + click the readout to return to 100%), but it scales the text inside
+ * the panel: the 15px body base multiplied by the zoom, with headings / code /
+ * tool rows derived at the same ratio (see `--agent-text` in global.css). The
+ * header readout is that percentage.
  *
- * 档位:100% 两侧各留三档(85%–160%)。助手栏宽度只有几百像素,再往上
- * 正文就要一行放不下几个字;再往下已经不可读。设置里手改坏的值在这里夹回。
+ * Steps: three steps on each side of 100% (85%-160%). The assistant column is
+ * only a few hundred pixels wide, so above that a line of body text no longer
+ * fits a few characters; below it the text is already unreadable. A value
+ * hand-mangled in the settings is clamped back here.
  */
 
-/** 缩放档位(升序)。 */
+/** Zoom steps (ascending). */
 const AGENT_FONT_STEPS = [0.85, 1, 1.1, 1.25, 1.4, 1.6];
 
 export const MIN_AGENT_FONT = 0.85;
 export const MAX_AGENT_FONT = 1.6;
 export const DEFAULT_AGENT_FONT = 1;
 
-/** 设置值可能是旧配置(没有这项)/手改 JSON:夹进 [85%, 160%]。 */
+/** The setting may come from an old config (no such key) or a hand-edited JSON: clamp into [85%, 160%]. */
 export function normalizeAgentFont(value: unknown): number {
   const raw =
     typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_AGENT_FONT;
   return Math.min(MAX_AGENT_FONT, Math.max(MIN_AGENT_FONT, raw));
 }
 
-/** 在档位表里走一步;当前值不在档位上时落到相邻档(不按固定倍数累乘)。 */
+/** Step one entry in the step table; a value that is not on a step lands on the nearest one (never a fixed-ratio multiply). */
 export function stepAgentFont(current: unknown, direction: 1 | -1): number {
   const value = normalizeAgentFont(current);
   if (direction > 0) {
@@ -38,7 +42,7 @@ export function stepAgentFont(current: unknown, direction: 1 | -1): number {
   return MIN_AGENT_FONT;
 }
 
-/** 读数,如 "110%"。 */
+/** Readout, e.g. "110%". */
 export function formatAgentFont(value: unknown): string {
   return `${Math.round(normalizeAgentFont(value) * 100)}%`;
 }

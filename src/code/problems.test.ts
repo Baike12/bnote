@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import { nextProblemTarget, type ProblemTarget } from "./problems";
 
 /**
- * F8 / ⇧F8 的根因门禁。
+ * Root-cause gate for F8 / ⇧F8.
  *
- * 旧实现的游标是「当前文件的第 0 条诊断」,不是光标位置:同一文件连按 F8
- * 永远回到第 0 条 → 实际表现是在两个文件之间来回跳。这里把「以光标为游标、
- * 组内按位置排、跨文件绕回」这三条规则钉死。
+ * The old implementation used "the 0th diagnostic of the current file" as its
+ * cursor instead of the caret position: pressing F8 repeatedly in one file
+ * always returned to the 0th entry, so in practice it jumped back and forth
+ * between two files. This gate pins down the three rules that replace it: the
+ * caret is the cursor, entries are ordered by position within a group, and the
+ * walk wraps around across files.
  */
 
 const at = (path: string, line: number, character = 0): ProblemTarget => ({

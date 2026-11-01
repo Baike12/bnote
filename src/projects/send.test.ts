@@ -3,8 +3,10 @@ import type { DailyIO } from "@/daily/engine";
 import type { LinkStore } from "@/daily/links";
 
 /**
- * 项目待办的发送链:唯一位移契约是「插到今天待办区最前面」,以及同一天
- * 重复发送只认领、不重复插入。落盘字节与链接元数据都是断言对象。
+ * The send chain for project todos: the single placement contract is
+ * "insert at the very front of today's todo section", and sending the same
+ * item twice in one day claims it again without inserting it twice. The bytes
+ * written to disk and the link metadata are both assertion targets.
  */
 
 const linksMock = vi.hoisted(() => ({ store: null as unknown as LinkStore }));

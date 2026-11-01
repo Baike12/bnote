@@ -10,8 +10,8 @@ use crate::state::AppState;
 /// the MAIN thread, and `save_app_config` fires on a debounce while the user is
 /// typing/moving the cursor (cursor-memory persists through it). A sync disk
 /// write there stalls the UI thread right under the next keystroke — the
-/// "按一下卡一下" class of jank. The async runtime's worker pool is the same
-/// home the vault file IO already uses (see files.rs).
+/// "stutter on every press" class of jank. The async runtime's worker pool is
+/// the same home the vault file IO already uses (see files.rs).
 #[tauri::command]
 pub async fn load_app_config(state: State<'_, AppState>) -> CmdResult<Value> {
     let path = state.data_dir().join("config.json");
@@ -51,7 +51,8 @@ pub fn persist_last_vault(state: &State<'_, AppState>, vault: &str) -> CmdResult
     std::fs::write(&path, json).map_err(|e| format!("WRITE_FAILED: {}", e))
 }
 
-/// 主窗口几何(逻辑像素),由前端 `lib/windowState.ts` 写进 config.json。
+/// Main window geometry (logical pixels), written into config.json by the
+/// frontend `lib/windowState.ts`.
 #[derive(serde::Deserialize)]
 struct SavedWindow {
     x: f64,
@@ -62,10 +63,13 @@ struct SavedWindow {
     maximized: bool,
 }
 
-/// 启动时按 config.json 的 `window` 恢复主窗口大小与位置。
+/// Restores the main window size and position from the `window` entry of
+/// config.json at startup.
 ///
-/// 在 setup 里调用:窗口已创建、事件循环还没开始跑,所以第一帧就是最终
-/// 尺寸和位置,用户看不到「先按默认 1280×820 画一次再跳」。
+/// Called from setup: the window already exists and the event loop has not
+/// started yet, so the very first frame already has the final size and
+/// position -- the user never sees it "drawn once at the default 1280x820 and
+/// then jumped".
 pub fn restore_window_bounds(app: &tauri::AppHandle) {
     use tauri::Manager;
     let Some(window) = app.get_webview_window("main") else {
@@ -75,7 +79,7 @@ pub fn restore_window_bounds(app: &tauri::AppHandle) {
         return;
     };
     let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
-        return; // 首次启动:没有配置文件,保持默认几何
+        return; // First launch: no config file, keep the default geometry.
     };
     let Ok(config) = serde_json::from_str::<Value>(&raw) else {
         return;
@@ -84,7 +88,7 @@ pub fn restore_window_bounds(app: &tauri::AppHandle) {
         return;
     };
     let Ok(saved) = serde_json::from_value::<SavedWindow>(value) else {
-        return; // 旧版/坏值:按默认几何启动
+        return; // Legacy or malformed value: start with the default geometry.
     };
     if !(saved.width.is_finite()
         && saved.height.is_finite()
@@ -97,8 +101,9 @@ pub fn restore_window_bounds(app: &tauri::AppHandle) {
         saved.width.max(216.0),
         saved.height.max(480.0),
     ));
-    // 显示器布局变了(比如拔掉外接屏)时旧坐标可能落在所有屏幕之外:这时只
-    // 恢复尺寸,位置留默认,窗口不会开到看不见的地方。
+    // The display layout may have changed (an external monitor was unplugged),
+    // leaving the saved coordinates outside every screen: restore the size only
+    // and keep the default position, so the window never opens out of sight.
     if on_screen(&window, saved.x, saved.y) {
         let _ = window.set_position(tauri::LogicalPosition::new(saved.x, saved.y));
     }
@@ -107,7 +112,8 @@ pub fn restore_window_bounds(app: &tauri::AppHandle) {
     }
 }
 
-/// 左上角是否落在某块屏幕里(留 80pt 余量,避免只剩一条缝)。
+/// Whether the top-left corner lands on some screen (an 80pt margin is kept
+/// so the window never shows up as just a thin sliver).
 fn on_screen(window: &tauri::WebviewWindow, x: f64, y: f64) -> bool {
     let scale = window.scale_factor().unwrap_or(1.0);
     let (px, py) = (x * scale, y * scale);

@@ -1,32 +1,49 @@
 import type { EditorView } from "@codemirror/view";
 import { columnOnLine, pixelGoalOf, visibleVerticalTarget } from "@/editor/motionClamp";
 
-/* ---- 视觉锚定的垂直移动：j/k/+/-/_ 的落点跟随眼睛 ----
+/* ---- Visually anchored vertical motion: the landing point of j/k/+/-/_ follows the eye ----
 
-   引擎的 moveByLines 用「文档字符列」（vim.lastHPos）决定水平落点。这个坐标
-   在 live preview 里没有视觉意义：列表缩进空格、`- `、`[ ]`、标题 `#`、强调
-   标记等前缀字符被装饰隐藏（零宽），同一字符列在不同行落在不同视觉位置——
-   固定列意图下光标逐行横跳（实测 ±25~63px），还会踩进列表标记槽把该 token
-   的渲染态翻成源码，行文本随之位移。引擎自己维护的 vim.lastHSPos（落点像素
-   x，content 相对坐标）才是用户眼睛跟随的坐标，原始实现算出它却只投喂给
-   折行钳制（hasMarkedText），寻常落点一概弃用。
+   The engine's moveByLines decides the horizontal landing point from the
+   "document character column" (vim.lastHPos). That coordinate has no visual
+   meaning in live preview: list indentation spaces, `- `, `[ ]`, the heading
+   `#` and emphasis markers are hidden by decorations (zero width), so the same
+   character column lands at a different visual position on each line — with a
+   fixed column intent the caret jumps sideways line by line (measured ±25-63px)
+   and it can also step into a list marker slot, flipping that token back to
+   its source rendering and displacing the line text. The engine's own
+   vim.lastHSPos (the landing pixel x, relative to the content box) is the
+   coordinate the user's eye follows; the original implementation computes it
+   but only feeds it to the soft-wrap clamp (hasMarkedText), discarding it for
+   ordinary landing points.
 
-   这里的落点改为像素锚定：
-   - 目标行仍是文档行（cur.line ± repeat）：dd/dj 等行算子语义不变，软折行
-     段仍整段跨越（与既有行为一致）；
-   - 隐藏行（围栏/公式块/hr）不是步、公式近端边缘是落点——与 motionClamp
-     共享同一套判定（visibleVerticalTarget），单一隐藏行模型；
-   - 水平落点 = 目标行上离保留视觉 x 最近的可见字符边界，经 posAtCoords 解析
-     （与渲染同一几何模型，永不落在隐藏内容里）；行未画出时退化为平均字宽
-     估算（motionClamp 同一契约，行即将滚入视口，下一步按键重新锚定）；
-   - `$` 的行尾意图（lastHPos=Infinity）自动保留：保留 x 超出目标行尾即落在
-     行尾；`+`/`-`/`_` 的首个非空白意图解析到第一个可见字符（列表行上的首个
-     可见字符就是正文，而不是被隐藏的标记）；
-   - 连续垂直移动不回写视觉锚：落点吸附到字符边界的量化偏差若反馈进 goal，
-     会逐键累积（实测 8 键右漂 47px）。视觉锚在一次连续移动里保持不变，正是
-     vim curswant 的语义；水平动作会脱离家族并重新取锚；
-   - 每次取锚都来自可见位置，隐藏坐标读出 x≈0 的垃圾值再传播给后续按键的
-     旧路径不复存在。 ---- */
+   The landing point is pixel-anchored here:
+   - the target line is still a document line (cur.line ± repeat): the
+     semantics of line operators such as dd/dj are unchanged and soft-wrapped
+     segments are still crossed as a whole (same as the existing behavior);
+   - hidden lines (fences/formula blocks/hr) are not steps, and the near edge
+     of a formula is a landing point — the same detection as motionClamp
+     (visibleVerticalTarget), one single hidden-line model;
+   - the horizontal landing point is the visible character boundary on the
+     target line closest to the retained visual x, resolved through
+     posAtCoords (the same geometry model as rendering, so it never lands
+     inside hidden content); when the line is not painted it degrades to an
+     average character width estimate (the same motionClamp contract — the
+     line is about to scroll into the viewport and the next keystroke
+     re-anchors);
+   - the end-of-line intent of `$` (lastHPos=Infinity) is preserved
+     automatically: a retained x past the target line's end lands at the line
+     end; the first-non-blank intent of `+`/`-`/`_` resolves to the first
+     visible character (on a list line the first visible character is the
+     body text, not the hidden marker);
+   - consecutive vertical motions do not write the visual anchor back: the
+     quantization error of snapping the landing point to a character boundary
+     would accumulate key by key if it fed back into the goal (measured: 8
+     keys drift 47px to the right). The visual anchor stays fixed within one
+     continuous motion, which is exactly vim's curswant semantics; a
+     horizontal motion leaves the family and re-anchors;
+   - every anchor is taken from a visible position — the old path that read a
+     hidden coordinate, got a garbage x≈0 and propagated it to later
+     keystrokes no longer exists. ---- */
 
 export interface VimCorePos {
   line: number;
@@ -52,7 +69,8 @@ export interface CmShim {
   lastLine(): number;
 }
 
-/** `this` 是引擎的 motions 表（moveToStartOfLine 等在其上，家族判定用）。 */
+/** `this` is the engine's motions table (moveToStartOfLine and friends live
+ *  on it, for the family check). */
 export function moveByLinesVisual(
   this: Record<string, any>,
   cm: CmShim,
@@ -64,8 +82,9 @@ export function moveByLinesVisual(
   const state = view.state;
   const doc = state.doc;
 
-  // 连续垂直移动家族沿用保留的视觉锚；其他动作（插入退出、0、w…）之后
-  // 的第一步从当前光标的真实位置重新取锚。
+  // A consecutive vertical motion in the family reuses the retained visual
+  // anchor; after any other action (leaving insert mode, 0, w...) the first
+  // step re-anchors from the caret's real position.
   const family =
     vim.lastMotion === this.moveByLines ||
     vim.lastMotion === this.moveByDisplayLines ||
@@ -81,7 +100,8 @@ export function moveByLinesVisual(
     return this.moveToStartOfLine(cm, head, motionArgs, vim);
   }
   if (line > cm.lastLine() && head.line === cm.lastLine()) {
-    // 引擎私有 moveToEol(keepHPos=true) 的忠实复刻：原力行尾，不动记账。
+    // Faithful port of the engine's private moveToEol(keepHPos=true): stay
+    // put at the line end, leave the bookkeeping alone.
     return { line: head.line + motionArgs.repeat - 1, ch: Infinity };
   }
 
@@ -103,23 +123,27 @@ export function moveByLinesVisual(
   if (motionArgs.toFirstChar) {
     const m = /\S/.exec(target.text);
     const firstNonWhite = m ? m.index : 0;
-    // 首个非空白字符可能是被隐藏的标记（列表行）：像素解析会落在第一个
-    // 可见字符上；隐藏位置读出的 x≈0 同样解析到第一个可见字符。
+    // The first non-blank character may be a hidden marker (list line): the
+    // pixel resolution lands on the first visible character, and the x≈0 read
+    // at the hidden position resolves to that same first visible character.
     ch = columnOnLine(
       view,
       target,
       pixelGoalOf(view, target.from + firstNonWhite, contentLeft),
       contentLeft,
     );
-    // 新意图，锚随落点重置（vim 的 `+` 重置 curswant 语义）。
+    // A new intent: the anchor is reset to the landing point (vim's `+`
+    // resets the curswant semantics).
     vim.lastHSPos = pixelGoalOf(view, target.from + ch, contentLeft);
   } else if (eolIntent) {
-    // 行尾意图：lastHSPos 已由 $（moveToEol）设为行尾 x，保持不变。
+    // End-of-line intent: lastHSPos was already set to the line end x by `$`
+    // (moveToEol) and stays unchanged.
     ch = target.length;
   } else {
     ch = columnOnLine(view, target, goal, contentLeft);
     if (!family) {
-      // 新动作（插入退出、0、w…）之后的第一步：取的锚就是新锚。
+      // The first step after a new action (leaving insert mode, 0, w...):
+      // the anchor taken here is the new anchor.
       vim.lastHSPos = goal;
     }
   }

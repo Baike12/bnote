@@ -1,24 +1,24 @@
 /**
- * 最近仓库的 MRU 模型(参考 zed 的 recent projects,要点两收:身份键去重、
- * 当前项在读取时过滤)。身份键就是后端 set_vault canonicalize 之后的路径
- * 字符串——文件夹选择器、启动恢复、本模块的切换拿到的都是同一份规范化
- * 产物,不需要第二套归一化。
+ * MRU model for recently opened vaults (modelled on zed's recent projects, with two decisions: dedupe by identity key,
+ * and filter the current entry on read). The identity key is the canonicalized path string the backend produces in
+ * set_vault -- the folder picker, startup restore and the switch in this module all get the same canonical form,
+ * so a second normalization pass is not needed.
  */
 
-/** 硬上限:config.json 是单个 JSON,超出就丢最旧的(zed 无上限、靠 GC;这里列表小,cap 足够)。 */
+/** Hard cap: config.json is a single JSON file, so the oldest entries are dropped once it overflows (zed has no cap and relies on GC; the list here is small, so a cap is enough). */
 export const RECENT_VAULTS_CAP = 10;
 
-/** 打开/切换到某个仓库:提到队首,同路径去重,超出上限丢尾部。纯函数,不改入参。 */
+/** Open/switch to a vault: move it to the front, dedupe by path, drop the tail past the cap. Pure function, does not mutate its input. */
 export function touchRecentVault(list: string[], path: string): string[] {
   if (!path) return list.slice();
   return [path, ...list.filter((p) => p !== path)].slice(0, RECENT_VAULTS_CAP);
 }
 
 /**
- * 切换目标:MRU 里第一个非当前仓的路径。当前仓不写入时剔除而是读取时过滤
- * (zed 同款),列表里始终保留它——两仓来回 toggle 才成立。空列表、或只有
- * 当前仓时返回 null;未开仓(current 为 null)时返回最近一个,从欢迎页一键
- * 回到上次仓库。
+ * Switch target: the first non-current path in the MRU. The current vault is filtered on read instead of removed on
+ * write (same as zed), so it always stays in the list -- that is what makes toggling between two vaults work.
+ * Returns null for an empty list or one that only holds the current vault; with no vault open (current is null) it
+ * returns the most recent one, so the welcome page can jump back to the last vault in one click.
  */
 export function recentVaultTarget(list: string[], current: string | null): string | null {
   return list.find((p) => p !== current && p !== "") ?? null;

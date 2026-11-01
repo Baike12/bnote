@@ -1,16 +1,24 @@
-//! 转换质量门禁:用 `tests/data/pdf/` 下的真实论文夹具锁住结构性质量。
+//! Conversion quality gate: locks structural quality against the real paper
+//! fixtures under `tests/data/pdf/`.
 //!
-//! 对应学习模式导入 PDF 的三类高价值内容(用户验收标准:准确优先,其次对齐、工整):
-//! - 公式:产出的 `$$` 块与行内公式数量不低于实测基线的一半,`$$` 定界符成对;
-//! - 图片:markdown 里每个图片引用都解析到 `assets/<stem>/` 下存在的非 0 字节文件;
-//! - 目录:Contents 渲染成缩进一致的列表,条目完整,页码要么全有要么全无。
+//! It covers the three high-value content classes of a PDF imported into study
+//! mode (acceptance order: accuracy first, then alignment, then tidiness):
+//! - Formulas: the number of `$$` blocks and inline formulas must not fall below
+//!   half of the measured baseline, and the `$$` delimiters must be balanced;
+//! - Images: every image reference in the markdown must resolve to an existing
+//!   non-empty file under `assets/<stem>/`;
+//! - Table of contents: Contents renders as a list with consistent indentation
+//!   and complete entries, and page numbers that are either all present or all
+//!   absent.
 //!
-//! 阈值按 2026-09 本机实测值取半标定(计数坍塌即公式/图片提取整体失效)。
-//! 夹具缺失时测试失败并指明缺哪个文件——夹具随仓库留存,转换在临时目录进行。
+//! The thresholds are calibrated at half of the values measured on this machine
+//! in 2026-09 (a collapsed count means formula/image extraction broke wholesale).
+//! A missing fixture fails the test naming the missing file: the fixtures live
+//! with the repository while conversion runs in a temp directory.
 
 use std::path::{Path, PathBuf};
 
-/// 相对 `CARGO_MANIFEST_DIR`(src-tauri/crates/pdf2md)的夹具目录。
+/// Fixture directory relative to `CARGO_MANIFEST_DIR` (src-tauri/crates/pdf2md).
 const FIXTURES_REL: &str = "../../../tests/data/pdf";
 
 fn fixtures_dir() -> PathBuf {
@@ -40,7 +48,7 @@ fn convert_fixture(file: &str) -> Converted {
     }
 }
 
-/// 非空 `$$` 块的数量。
+/// Number of non-empty `$$` blocks.
 fn display_block_count(md: &str) -> usize {
     let mut blocks = 0;
     let mut current: Vec<&str> = Vec::new();
@@ -63,12 +71,12 @@ fn display_block_count(md: &str) -> usize {
     blocks
 }
 
-/// `$$` 定界符必须成对(奇数说明有块被截断)。
+/// The `$$` delimiters must be balanced (an odd count means a block was truncated).
 fn display_delimiters_balanced(md: &str) -> bool {
     md.lines().filter(|l| l.trim() == "$$").count() % 2 == 0
 }
 
-/// 形如 `$...$` 的行内公式数量(`$$` 定界符不计入)。
+/// Number of inline formulas of the form `$...$` (`$$` delimiters excluded).
 fn inline_math_count(md: &str) -> usize {
     let chars: Vec<char> = md.chars().collect();
     let mut count = 0;
@@ -107,7 +115,7 @@ fn inline_math_count(md: &str) -> usize {
     count
 }
 
-/// 抽出所有 markdown 图片引用的目标路径。
+/// Extracts the target path of every markdown image reference.
 fn image_refs(md: &str) -> Vec<String> {
     let mut refs = Vec::new();
     let mut rest = md;
@@ -122,7 +130,7 @@ fn image_refs(md: &str) -> Vec<String> {
     refs
 }
 
-/// `## Contents` 之后的列表条目:(缩进空格数, 文本)。
+/// List entries after `## Contents`: (indent in spaces, text).
 fn toc_entries(md: &str) -> Vec<(usize, String)> {
     let mut entries = Vec::new();
     let mut in_toc = false;
@@ -142,14 +150,14 @@ fn toc_entries(md: &str) -> Vec<(usize, String)> {
         if let Some(text) = body.strip_prefix("- ").or_else(|| body.strip_prefix("* ")) {
             entries.push((indent, text.to_string()));
         } else if !entries.is_empty() {
-            // 目录列表结束后遇到正文/标题:停止收集。
+            // Body text or a heading after the toc list ends: stop collecting.
             break;
         }
     }
     entries
 }
 
-/// 条目尾部是否带页码(`... 12`)。
+/// Whether the entry ends with a page number (`... 12`).
 fn ends_with_page_number(text: &str) -> bool {
     let tail = text.trim_end();
     let digits: String = tail
@@ -193,7 +201,7 @@ fn assert_image_refs_resolve(c: &Converted, min_refs: usize) {
 
 #[test]
 fn formula_fixtures_keep_display_and_inline_math() {
-    // attention:公式密集的正文;ricci:全篇行内公式极多。
+    // attention: formula-dense body text; ricci: inline formulas throughout.
     for (file, min_blocks, min_inline) in [
         ("1706.03762-attention.pdf", 6, 60),
         ("math0211159-ricci.pdf", 30, 900),
@@ -225,7 +233,7 @@ fn formula_fixtures_keep_display_and_inline_math() {
 
 #[test]
 fn image_fixtures_resolve_every_reference() {
-    // attention/gan:插图为主的论文,每个引用都必须落到真实文件。
+    // attention/gan: illustration-heavy papers, every reference must land on a real file.
     for (file, min_refs) in [
         ("1706.03762-attention.pdf", 4),
         ("1406.2661-gan.pdf", 6),
@@ -256,7 +264,7 @@ fn toc_fixture_renders_consistent_nested_list() {
             indent
         );
     }
-    // 页码要么全有要么全无,不允许一篇里混着来。
+    // Page numbers must be all present or all absent; a mixed document is not allowed.
     let with_pages = entries.iter().filter(|(_, t)| ends_with_page_number(t)).count();
     assert!(
         with_pages == 0 || with_pages == entries.len(),

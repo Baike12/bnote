@@ -5,24 +5,32 @@ import { mergeLineRects } from "./pdfAnnotations";
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
 
 /**
- * 网页批注:高亮(亮黄)与文字批注(亮蓝 + 页内批注卡)。
+ * Web annotations: highlights (bright yellow) and text annotations (bright
+ * blue + an annotation card inside the page).
  *
- * 网页在中栏是**原生子 webview**(不是 iframe,见 commands/agent.rs),主应用
- * 拿不到它的 DOM。所以批注逻辑以初始化脚本的形式注入页面:
+ * The web page in the content column is a **native sub-webview** (not an
+ * iframe, see commands/agent.rs), so the main app cannot reach its DOM. The
+ * annotation logic is therefore injected into the page as an init script:
  *
- *  1. 页面里的运行时负责选区、锚点、高亮层与批注卡(自己开 shadow root,不吃
- *     页面 CSS;CSP 下也能用,样式全部走 CSSOM)。
- *  2. 批注变化时把 `{url, annotations}` 写进 `document.title` 的
- *     `bnote-anno:` 前缀;Rust 的 title 回调把它转成 Tauri 事件发给主窗口,
- *     主窗口落盘到 `<vault>/.bnote/web-annotations/<host>-<hash>.json`
- *     (一个网址一个文件)。不开远程 IPC——任意网页都拿不到应用命令。
- *  3. 打开网页时主窗口把仓库里的锚点推回页面(`__bnoteAnno.merge`),页面
- *     按「原文片段 + 前后文 + 偏移」重新定位,并把数据也存一份在 localStorage
- *     (页面自己刷新时立即可用)。
+ *  1. The runtime inside the page owns the selection, the anchors, the
+ *     highlight layer and the annotation cards (it opens its own shadow root,
+ *     so page CSS does not touch it; it works under CSP too, all styling goes
+ *     through the CSSOM).
+ *  2. When the annotations change it writes `{url, annotations}` into
+ *     `document.title` behind the `bnote-anno:` prefix; Rust's title callback
+ *     turns that into a Tauri event for the main window, which persists it to
+ *     `<vault>/.bnote/web-annotations/<host>-<hash>.json` (one file per URL).
+ *     No remote IPC is opened — an arbitrary web page must not get access to
+ *     the app's commands.
+ *  3. When a page is opened the main window pushes the stored anchors back
+ *     into the page (`__bnoteAnno.merge`), and the page relocates them by
+ *     "quoted text + surrounding context + offset"; it also keeps a copy in
+ *     localStorage so it is available immediately after a page reload.
  *
- * 锚点不用像素:广告/懒加载会让元素位移,重启后像素必然失效。文本片段
- * (±40 字上下文 + 偏移提示)才是稳定的定位依据。阅读位置也一样存比例,
- * 见 `POS_PREFIX`。
+ * The anchors do not use pixels: ads / lazy loading move the elements, so
+ * pixels are guaranteed to fail after a restart. The text fragment (+-40
+ * characters of context plus an offset hint) is the stable basis. The reading
+ * position is stored as a ratio for the same reason, see `POS_PREFIX`.
  */
 export type WebAnnotationKind = "highlight" | "note";
 
@@ -31,18 +39,18 @@ export interface WebAnnotation {
   quote: string;
   prefix: string;
   suffix: string;
-  /** 创建时在正文文本流里的起始偏移,重建锚点时的消歧提示。 */
+  /** The starting offset in the body text stream at creation time, a disambiguation hint when the anchor is rebuilt. */
   offset: number;
-  /** 亮黄高亮 / 亮蓝文字批注。旧数据没有这个字段,按高亮读。 */
+  /** Bright yellow highlight / bright blue text annotation. Old data has no such field and is read as a highlight. */
   kind: WebAnnotationKind;
-  /** 文字批注内容;高亮批注为空。 */
+  /** Text annotation content; empty for highlights. */
   text: string;
   createdAt: number;
 }
 
 export interface WebAnnotationFile {
   version: 1;
-  /** 文件里带上原网址,便于人工辨认(文件名只有域名 + 哈希)。 */
+  /** The original URL is kept in the file so it can be recognized by hand (the file name only has the host + hash). */
   url: string;
   annotations: WebAnnotation[];
 }
@@ -53,8 +61,9 @@ export const MAX_WEB_NOTE_TEXT = 2000;
 export const MAX_WEB_PER_URL = 800;
 
 /**
- * 校验/裁剪页面送来的批注。必须自包含(不引用模块常量):它会被序列化进
- * 页面运行时。
+ * Validate / trim the annotations the page sends. It has to be
+ * self-contained (no module constants): it is serialized into the page
+ * runtime.
  */
 export function normalizeWebAnnotations(value: unknown): WebAnnotation[] {
   if (!Array.isArray(value)) return [];
@@ -82,8 +91,10 @@ export function normalizeWebAnnotations(value: unknown): WebAnnotation[] {
 }
 
 /**
- * 在重建后的正文里找引用的起始偏移:候选里优先前后文吻合的,平手取离
- * 原偏移最近的。找不到返回 -1(锚点保留,只是这一轮画不出来)。
+ * Find the starting offset of a quote in the rebuilt body text: among the
+ * candidates prefer the one whose surrounding context matches, and break a
+ * tie by taking the one closest to the original offset. Returns -1 when it is
+ * not found (the anchor is kept, it just cannot be drawn in this round).
  */
 export function locateQuote(
   text: string,
@@ -106,7 +117,7 @@ export function locateQuote(
     if (suffix && text.slice(i + quote.length, i + quote.length + suffix.length) === suffix) {
       score += 2;
     }
-    // 距离只做最后一级平手判定,不压过上下文。
+    // The distance only serves as the last tie-breaker, it never outranks the context.
     score -= Math.min(0.9, Math.abs(i - offset) / 100000);
     if (score > bestScore) {
       bestScore = score;
@@ -118,13 +129,17 @@ export function locateQuote(
 }
 
 /**
- * 文本偏移 → DOM 点。偏移正好落在两段文本的交界时,起点归后一段的开头
- * (offset 0)、终点归前一段的末尾——半开区间 `[start, end)`。
+ * Text offset -> DOM point. When the offset falls exactly on the boundary
+ * between two text runs, the start belongs to the beginning of the later run
+ * (offset 0) and the end to the end of the earlier one — the half-open
+ * interval `[start, end)`.
  *
- * 不能两边都取前一段末尾:两段文本之间可能隔着空行/其它块(行首第一个字
- * 就是新文本节点的常态),Range 一跨过去,WebKit 会把中间整块空行算成选中,
- * 返回一个满宽矩形——高亮上凭空多出一条压在空行上的黄条。
- * 自包含:会被序列化进网页运行时。
+ * Both ends must not take the end of the earlier run: a blank line or another
+ * block may sit between the two runs (the first character of a line starting
+ * a new text node is the common case), and as soon as the Range spans it
+ * WebKit counts the whole blank line as selected and returns a full-width
+ * rectangle — a yellow bar appears out of nowhere on top of the blank line.
+ * Self-contained: it is serialized into the web runtime.
  */
 export function textPointAt<T>(
   entries: Array<{ node: T; start: number; end: number }>,
@@ -138,14 +153,14 @@ export function textPointAt<T>(
       return { node: e.node, offset: offset - e.start };
     }
   }
-  // 只在全文末尾越界:起点永远 < 全文长度,这里只是兜底。
+  // Only out of range at the very end of the text: a start is always < the text length, this is just a fallback.
   const last = entries[entries.length - 1];
   if (last && offset === last.end) return { node: last.node, offset: last.end - last.start };
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// 持久化(<vault>/.bnote/web-annotations/<host>-<hash>.json,一个网址一个文件)
+// Persistence (<vault>/.bnote/web-annotations/<host>-<hash>.json, one file per URL)
 // ---------------------------------------------------------------------------
 
 export function parseWebAnnotationFile(raw: string | null): WebAnnotationFile {
@@ -170,13 +185,13 @@ export function parseWebAnnotations(raw: string | null): WebAnnotation[] {
   return parseWebAnnotationFile(raw).annotations;
 }
 
-/** 网址 → 批注文件名:可读域名 + 稳定哈希,同一网址永远落到同一文件。 */
+/** URL -> annotation file name: a readable host plus a stable hash, so the same URL always lands in the same file. */
 export function webAnnotationFileName(url: string): string {
   let host = "page";
   try {
     host = new URL(url).hostname || "page";
   } catch {
-    // 非标准 URL(about:blank 等)也给它一个稳定名字。
+    // A non-standard URL (about:blank and the like) still gets a stable name.
   }
   const slug =
     host
@@ -196,7 +211,7 @@ export function webAnnotationPath(vaultRoot: string, url: string): string {
   return vaultDotPath(vaultRoot, webAnnotationRelPath(url));
 }
 
-/** 两组批注按 id 合并(仓库里的 + 页面里的),页面里较新的覆盖。 */
+/** Merge two sets of annotations by id (the stored ones + the page ones); the newer one in the page wins. */
 export function mergeUrlAnnotations(
   base: WebAnnotation[],
   incoming: WebAnnotation[],
@@ -223,7 +238,7 @@ const store = createVaultJsonStore<WebAnnotationFile>({
   serialize: (file) => JSON.stringify(file),
 });
 
-/** 旧位置(`.bnote/web-annotations/<域名-哈希>.json`)的批注。 */
+/** Annotations at the old location (`.bnote/web-annotations/<host-hash>.json`). */
 async function readLegacyAnnotations(
   vaultRoot: string,
   url: string,
@@ -236,8 +251,9 @@ async function readLegacyAnnotations(
 }
 
 /**
- * 读一份网页/微信读书的批注。给了 `materialDir` 就落到材料的
- * `annotations.json`;首次找不到文件时从旧位置迁移(读一次、写新路径)。
+ * Read the annotations of a web page / WeRead. With a `materialDir` they land
+ * in the material's `annotations.json`; when no file is found the first time,
+ * they are migrated from the old location (read once, write to the new path).
  */
 export async function loadWebAnnotations(
   vaultRoot: string,
@@ -289,7 +305,7 @@ function hash53(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 注入页面的运行时
+// The runtime injected into the page
 // ---------------------------------------------------------------------------
 
 interface RuntimeHelpers {
@@ -317,9 +333,11 @@ interface DocRect {
 }
 
 /**
- * 页面内运行时。必须自包含:脚本用 `Function.prototype.toString` 序列化后
- * 注入到原生 webview(见 `buildWebAnnotationScript`),闭包里的模块变量在
- * 页面里并不存在——需要的纯函数一律通过 `helpers` 参数传进去。
+ * The in-page runtime. It has to be self-contained: the script is serialized
+ * with `Function.prototype.toString` and injected into the native webview
+ * (see `buildWebAnnotationScript`), and the module variables of the closure
+ * do not exist in the page — every pure function it needs is passed in
+ * through the `helpers` argument.
  */
 function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   const w = window as unknown as { __bnoteAnno?: Record<string, unknown> };
@@ -332,7 +350,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   const CONTEXT = 40;
   const MAX_QUOTE = 2000;
   const MAX_NOTE_TEXT = 2000;
-  /** 批注卡宽度(px);放不下时贴到视口右侧。 */
+  /** Width of the annotation card in px; when it does not fit, it sticks to the right edge of the viewport. */
   const NOTE_CARD_W = 240;
 
   let mode: WebAnnotationKind | null = null;
@@ -341,15 +359,20 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let host: HTMLElement | null = null;
   let layer: HTMLElement | null = null;
   /**
-   * 选中翻译:总开关由主窗口推入;批注模式(mode 非空)永远优先。请求号
-   * translateSeq 是页面侧唯一的写入者令牌——新选区/关卡片/切模式都会 +1,
-   * Rust 迟到的结果自证不过就丢弃,不会出现两张卡片抢同一个位置。
+   * Selection translation: the master switch is pushed in by the main window;
+   * annotation mode (a non-null mode) always wins. The request number
+   * translateSeq is the page's only writer token — a new selection, closing
+   * the card or switching mode all bump it by 1, and a late result from Rust
+   * that cannot prove it is current is dropped, so two cards never fight over
+   * the same spot.
    */
   let translateEnabled = false;
   let translateSeq = 0;
   /**
-   * 本次页面加载的标识。Rust 回传结果时原样带回,页面只认当前文档的令牌:
-   * 导航后旧页面的翻译请求才返回时,新页面的运行时不会把它画出来。
+   * The identifier of this page load. Rust carries it back verbatim with the
+   * result, and the page only accepts the token of the current document: when
+   * a translation request of the old page returns after a navigation, the new
+   * page's runtime does not draw it.
    */
   const TRANSLATE_DOC = `${Date.now().toString(36)}-${Math.random()
     .toString(36)
@@ -365,27 +388,27 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   let observer: MutationObserver | null = null;
   let scrollPending = false;
   let suppressClickUntil = 0;
-  /** 刚创建/点中的文字批注:重建后把输入框聚焦并把光标放到末尾。 */
+  /** The text annotation just created / clicked: after the rebuild, focus its input and put the caret at the end. */
   let focusNoteId: string | null = null;
-  /** 每张批注卡里的输入框(按批注 id),重建/聚焦都走这张表。 */
+  /** The input of every annotation card (keyed by annotation id); both the rebuild and the focus go through this table. */
   let noteInputs: Map<string, HTMLTextAreaElement> = new Map();
-  /** 打开页面时待恢复的滚动比例;null = 没有记录或用户已接管。 */
+  /** The scroll ratio to restore when the page is opened; null = there is no record or the user has taken over. */
   let restoreRatio: number | null = location.hash ? null : loadPosition(url);
-  /** 用户主动滚动/点击/按键后,之后的定时恢复都不再抢位置。 */
+  /** After the user scrolls, clicks or presses a key, the later timed restores no longer fight for the position. */
   let userScrolled = false;
-  /** 程序化恢复滚动的瞬间,别把它当成用户的阅读进度再存一遍。 */
+  /** While the scroll is restored programmatically, do not store it again as the user's reading progress. */
   let applyingScroll = false;
   let savePositionTimer: ReturnType<typeof setTimeout> | null = null;
   let emitAnnotationsTimer: ReturnType<typeof setTimeout> | null = null;
-  /** 翻页步长(可见高度的比例),由主窗口推入;默认 50%。 */
+  /** The page-turn step (a ratio of the visible height), pushed in by the main window; 50% by default. */
   let pageStep = helpers.normalizePageStep(0.5);
-  /** 可配置的翻页键(命令层解析后的绑定字符串),由主窗口推入。 */
+  /** The configurable page-turn keys (the binding strings parsed by the command layer), pushed in by the main window. */
   let prevKeys: string[] = ["PageUp", "ArrowLeft"];
   let nextKeys: string[] = ["PageDown", "ArrowRight"];
   /**
-   * 要转回主窗口的快捷键(通用命令 + 阅读区的区域切换/网页缩放)。原生子
-   * webview 的按键不冒泡到主窗口,这里匹配到就写 document.title,Rust 侧
-   * 转成 Tauri 事件。
+   * The shortcuts to forward back to the main window (the general commands plus the region switch / web zoom of the reading area).
+   * The keys of a native sub-webview do not bubble to the main window, so a match here is written into document.title and turned into a
+   * Tauri event on the Rust side.
    */
   let hostKeys: string[] = [];
   let hostKeySeq = 0;
@@ -412,7 +435,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       if (list.length > 0) localStorage.setItem(storageKey(target), JSON.stringify(list));
       else localStorage.removeItem(storageKey(target));
     } catch {
-      // 隐私模式/配额满:页面里的高亮仍可用,只是不落 localStorage。
+      // Private mode / quota full: the highlights in the page still work, they just are not persisted to localStorage.
     }
   }
 
@@ -420,9 +443,9 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     saveToStorage(url, items);
   }
 
-  // ---- 阅读位置:每个网址在 localStorage 里记一个滚动比例 --------------------
-  // 网页的 DOM 不在主窗口,页面自己存最省事;比例而不是像素,窗口宽度变了
-  // 也还能回到同一段文字。URL 带 #锚点时让链接锚点优先,不做恢复。
+  // ---- Reading position: one scroll ratio per URL in localStorage --------------------
+  // The web page's DOM is not in the main window, so letting the page store it itself is the simplest option; a ratio rather than pixels,
+  // so a changed window width still returns to the same passage. When the URL carries a #anchor the link anchor wins and nothing is restored.
 
   function loadPosition(target: string): number | null {
     try {
@@ -438,7 +461,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }
   }
 
-  /** 当前主滚动容器的阅读比例;没有可滚内容时返回 null。 */
+  /** The reading ratio of the current main scroll container; null when there is nothing scrollable. */
   function scrollRatioNow(): number | null {
     const target = pageTarget();
     if (!target) return null;
@@ -455,7 +478,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     try {
       localStorage.setItem(POS_PREFIX + url, JSON.stringify({ r: ratio, at: Date.now() }));
     } catch {
-      // 隐私模式/配额满:位置记不住,但阅读不受影响。
+      // Private mode / quota full: the position cannot be remembered, but reading is unaffected.
     }
   }
 
@@ -475,15 +498,17 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (Math.abs(target.scrollTop - y) <= 2) return;
     applyingScroll = true;
     target.scrollTop = y;
-    // scroll 事件的派发时机在各引擎间不一致;给一整拍再允许存盘。
+    // The dispatch timing of the scroll event differs between engines; wait a full beat before allowing the save.
     setTimeout(() => {
       applyingScroll = false;
     }, 150);
   }
 
   /**
-   * 多次尝试:页面脚本/图片/懒加载会在 load 之后继续长高,一次落位往往
-   * 还量不到最终高度。用户一动手(见 userTookOver)所有尝试立即失效。
+   * Several attempts: page scripts, images and lazy loading keep growing the
+   * page after load, so a single placement usually cannot measure the final
+   * height yet. As soon as the user acts (see userTookOver) all attempts are
+   * void immediately.
    */
   function scheduleRestore(): void {
     if (restoreRatio === null) return;
@@ -499,10 +524,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   function emit(): void {
     try {
-      // Rust 侧 on_document_title_changed 读这个前缀,转成 Tauri 事件给主窗口。
+      // Rust's on_document_title_changed reads this prefix and turns it into a Tauri event for the main window.
       document.title = TITLE_PREFIX + JSON.stringify({ url, annotations: items });
     } catch {
-      // title 被页面写保护时忽略:数据仍在 localStorage,主窗口下次合并会补上。
+      // Ignore a title the page made read-only: the data is still in localStorage, the main window picks it up on the next merge.
     }
   }
 
@@ -511,12 +536,12 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       const c = globalThis.crypto;
       if (c && typeof c.randomUUID === "function") return `web-${c.randomUUID()}`;
     } catch {
-      // secure context 之外没有 randomUUID
+      // No randomUUID outside a secure context
     }
     return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
-  // ---- 正文文本流与锚点 ----
+  // ---- The body text stream and the anchors ----
 
   function collectText(): { text: string; entries: TextEntry[] } {
     const parts: string[] = [];
@@ -542,7 +567,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       }
       const value = node.nodeValue ?? "";
       if (!value) continue;
-      // 隐藏文字(display:none、折叠菜单)不进文本流,否则重建后偏移会漂。
+      // Hidden text (display:none, collapsed menus) does not enter the text stream, otherwise the offsets drift after the rebuild.
       const probe = document.createRange();
       probe.selectNodeContents(node);
       if (probe.getClientRects().length === 0) continue;
@@ -600,7 +625,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }
   }
 
-  // ---- 高亮层 ----
+  // ---- The highlight layer ----
 
   function ensureLayer(): HTMLElement | null {
     if (layer && host && host.isConnected) return layer;
@@ -636,12 +661,15 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return layer;
   }
 
-  // ---- 翻页与上半屏遮罩 ----
+  // ---- Page turning and the upper-half shade ----
 
   /**
-   * 翻页后的阅读分区：上方旧内容压暗、到边界渐隐，不画分界线；两端用
-   * 阴影的圆角尖收尾。都在 shadow root 里，不吃页面 CSS；不接鼠标事件。
-   * 打开网页就画出来，翻页、滚动都保持同一个分区（位置只跟步长有关）。
+   * The reading split after a page turn: the old content above is dimmed and
+   * fades out at the boundary, no dividing line is drawn; both ends are
+   * finished with the rounded tip of the shade. All of it lives in the shadow
+   * root, so page CSS does not touch it, and it takes no mouse events. It is
+   * drawn as soon as the page is opened and the split stays the same while
+   * turning pages and scrolling (the position only depends on the step).
    */
   function ensureShade(): void {
     if (
@@ -684,8 +712,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     ss.top = "0";
     ss.width = "100%";
     ss.pointerEvents = "none";
-    // 阴影在两端向下弯出圆角尖；圆角外侧（阴影一侧）补同色压暗，圆内透明。
-    // 没有分界线，这两个尖角就是边界的唯一形状。
+    // The shade bends downward into a rounded tip at both ends; outside the rounded tip (on the shade side) a same-colored dimming is added, inside the circle it stays transparent.
+    // Without a dividing line, these two tips are the only shape the boundary has.
     const corner = (el: HTMLElement, at: "left" | "right"): void => {
       const s = el.style;
       s.position = "fixed";
@@ -710,7 +738,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   }
 
   function paintShade(): void {
-    // 旧内容占上方 1-step，压暗到边界收到最浅一档（无描边）。
+    // The old content takes the top 1-step, dimmed so that it fades out at the boundary (no stroke).
     const old = ((1 - pageStep) * 100).toFixed(2);
     if (shadeLayer) {
       shadeLayer.style.height = `${old}%`;
@@ -735,7 +763,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return out;
   }
 
-  /** 主窗口把命令层的绑定原样推过来（空数组 = 用户解绑）。 */
+  /** The main window pushes the command layer's bindings over as-is (an empty array = the user unbound them). */
   function setKeys(prev: unknown, next: unknown): void {
     const prevList = keyList(prev);
     const nextList = keyList(next);
@@ -743,7 +771,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (nextList) nextKeys = nextList;
   }
 
-  /** 主窗口推来的「转发给主窗口」的键(通用命令 + 区域切换/网页缩放)。 */
+  /** The "forward to the main window" keys pushed in by the main window (the general commands plus the region switch / web zoom). */
   function setHostKeys(value: unknown): void {
     const list = keyList(value);
     if (list) hostKeys = list;
@@ -752,8 +780,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
   /**
-   * 与 commands/keys.ts 共用同一套绑定解析(含 ⌘− 这种主键本身就是 "-" 的
-   * 写法)与主键规范化(Shift+符号、macOS Option+字母都按物理键认)。
+   * Shares one binding parser with commands/keys.ts (including the ⌘− form
+   * where the modifier key itself is "-") and the same modifier
+   * normalization (Shift+symbol and macOS Option+letter are both matched by
+   * the physical key).
    */
   function bindingMatches(event: KeyboardEvent, binding: string): boolean {
     const parsed = helpers.parseBinding(binding);
@@ -768,7 +798,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return helpers.eventKeyName(event) === key;
   }
 
-  /** 页面的主滚动容器：窗口可滚时就是文档，否则找视口中心下最近的可滚祖先。 */
+  /** The main scroll container of the page: the document when the window scrolls, otherwise the closest scrollable ancestor below the viewport center. */
   function pageTarget(): HTMLElement | null {
     const docEl = (document.scrollingElement || document.documentElement) as HTMLElement | null;
     if (docEl && docEl.scrollHeight > window.innerHeight + 1) return docEl;
@@ -790,7 +820,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return null;
   }
 
-  /** 视口分界线上、文字节点的行矩形（客户区坐标）。 */
+  /** The line rects of the text nodes on the viewport split line (client coordinates). */
   function lineBandsAtViewportY(y: number): Array<{ top: number; bottom: number }> {
     const out: Array<{ top: number; bottom: number }> = [];
     if (typeof document.caretRangeFromPoint !== "function") return out;
@@ -814,12 +844,12 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return out;
   }
 
-  /** 按步长滚一页；返回是否由本运行时接管（接管了才 preventDefault）。 */
+  /** Scroll one page by the step; returns whether this runtime took it over (only then is preventDefault called). */
   function scrollPage(delta: number): boolean {
     if (!delta) return false;
     const target = pageTarget();
     if (!target) return false;
-    // 主动翻页后不再按打开时的位置还原。
+    // After an explicit page turn the position of the initial open is no longer restored.
     userTookOver();
     const documentScroller =
       target === document.scrollingElement ||
@@ -829,7 +859,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     const max = Math.max(0, target.scrollHeight - target.clientHeight);
     const nominal = Math.min(max, Math.max(0, target.scrollTop + delta * view * pageStep));
     target.scrollTop = nominal;
-    // 已在首尾就停住；否则在 2% 视口内把分界线对齐到文字行边。
+    // Already at the first or last page, so it stops there; otherwise the split line is aligned with a text line edge within 2% of the viewport.
     if (nominal <= 0 || nominal >= max) return true;
     const boundary = window.innerHeight * (1 - pageStep);
     const snapped = helpers.snapScrollTopToLine(
@@ -846,8 +876,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
 
   function onPageKey(event: KeyboardEvent): void {
     if (event.defaultPrevented) return;
-    // 主窗口的阅读区快捷键(切到 Agent / 笔记区):页内先匹配,命中就转给
-    // 主窗口执行——两边走同一套区域键位,改键后主窗口会重新推入。
+    // The reading-area shortcuts of the main window (switch to the agent / notes column): the page matches first, and a hit is forwarded to the
+    // main window — both sides use the same region keybindings, and the main window pushes them again after a rebinding.
     if (hostKeys.length > 0) {
       const forwarded = hostKeys.find((binding) => bindingMatches(event, binding));
       if (forwarded) {
@@ -859,8 +889,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
         return;
       }
     }
-    // PageUp/PageDown 是固定翻页键（与主窗口的命令分发一致）：即使被解绑，
-    // 无修饰按时也仍然翻页；带修饰时交给绑定表/页面自己。
+    // PageUp/PageDown are fixed page-turn keys (consistent with the main window's command dispatch): even when they are unbound, a press
+    // without modifiers still turns the page; with modifiers the binding table / the page itself decides.
     const plain = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
     let delta = 0;
     if (plain && event.key === "PageDown") delta = 1;
@@ -868,7 +898,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     else if (nextKeys.some((key) => bindingMatches(event, key))) delta = 1;
     else if (prevKeys.some((key) => bindingMatches(event, key))) delta = -1;
     if (!delta) return;
-    // 输入框/可编辑区里的翻页与方向键归控件自己（光标移动、文本滚动）。
+    // The page turn and the arrow keys inside an input / editable area belong to the control itself (caret movement, text scrolling).
     if (isEditable(event.target as Element | null)) return;
     if (scrollPage(delta)) {
       event.preventDefault();
@@ -892,7 +922,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }px)`;
   }
 
-  /** 文字批注卡的输入写回:只在停顿/失焦时落盘和上报,不打断打字。 */
+  /** Write the text annotation card's input back: only on a pause or on blur is it persisted and reported, so typing is never interrupted. */
   function scheduleAnnotationSave(): void {
     if (emitAnnotationsTimer) clearTimeout(emitAnnotationsTimer);
     emitAnnotationsTimer = setTimeout(() => {
@@ -919,8 +949,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   }
 
   /**
-   * 文字批注卡:贴在选区右侧(放不下就放左侧),跟着正文一起滚动。
-   * 卡片在 shadow root 里,页面 CSS 影响不到;输入框是普通 textarea。
+   * The text annotation card: it sticks to the right of the selection (to the
+   * left when it does not fit) and scrolls along with the body text. The card
+   * lives in a shadow root, so page CSS cannot reach it; the input is a
+   * plain textarea.
    */
   function buildNoteCard(
     annotation: WebAnnotation,
@@ -946,7 +978,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     s.zIndex = "1";
     s.font =
       "12px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif";
-    // 横向夹在视口内:右边放不下就翻到选区左侧,再不行贴右缘。
+    // Keep it inside the viewport horizontally: when it does not fit on the right, flip it to the left of the selection, and if that fails stick to the right edge.
     const limit = Math.max(8, window.innerWidth - NOTE_CARD_W - 8);
     const rightEdge = bbox ? bbox.x + bbox.w - sx : window.innerWidth;
     let left = rightEdge + 10;
@@ -1018,7 +1050,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       saveCurrent();
       emit();
     });
-    // 不让页面的拖拽/点击/快捷键处理把批注输入搅乱。
+    // Keep the page's drag / click / shortcut handling from messing with the annotation input.
     for (const type of ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "keydown"]) {
       card.addEventListener(type, (event) => event.stopPropagation());
     }
@@ -1034,7 +1066,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
           input.focus();
           input.setSelectionRange(input.value.length, input.value.length);
         } catch {
-          // 输入框已经不在文档里
+          // The input is no longer in the document
         }
       }, 0);
     }
@@ -1082,8 +1114,8 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (rebuildTimer) clearTimeout(rebuildTimer);
     rebuildTimer = setTimeout(() => {
       rebuildTimer = null;
-      // 正在批注卡里打字:这次页面变动先不重建(否则输入框被替换、焦点丢失),
-      // 下一次内容变动/交互会再排一次。
+      // While typing in an annotation card: do not rebuild for this DOM change (that would replace the input and lose the focus),
+      // the next content change / interaction schedules one again.
       if (host && document.activeElement === host) return;
       rebuild();
     }, delay);
@@ -1103,7 +1135,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     observer = null;
   }
 
-  // ---- 交互 ----
+  // ---- Interaction ----
 
   function isEditable(el: Element | null): boolean {
     if (!el) return false;
@@ -1131,7 +1163,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     emit();
   }
 
-  /** 聚焦已有批注卡;卡片还没画出来就先记下 id,重建后自动聚焦。 */
+  /** Focus an existing annotation card; when the card is not drawn yet, remember its id and focus it after the rebuild. */
   function focusNote(id: string): void {
     const input = noteInputs.get(id);
     if (input) {
@@ -1139,7 +1171,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
         input.focus();
         input.setSelectionRange(input.value.length, input.value.length);
       } catch {
-        // 输入框已经不在文档里
+        // The input is no longer in the document
       }
       return;
     }
@@ -1162,10 +1194,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (end - start > MAX_QUOTE) end = start + MAX_QUOTE;
     const quote = info.text.slice(start, end);
     if (!quote.trim()) return;
-    // 同一位置重复 mouseup(双击/拖选结束)不重复建批注。
+    // A repeated mouseup at the same spot (a double click / the end of a drag selection) does not create a second annotation.
     const existing = items.find((a) => a.offset === start && a.quote === quote);
     if (existing) {
-      // 已经高亮过的句子改用文字批注:原地升级,不再叠一条。
+      // A sentence that was already highlighted is switched to a text annotation: it is upgraded in place instead of stacking another one.
       if (kind === "note" && existing.kind !== "note") {
         existing.kind = "note";
         focusNoteId = existing.id;
@@ -1192,9 +1224,9 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     emit();
   }
 
-  // ---- 选中翻译 ----
-  // 单词/句子分流在 Rust:单词只查内置词典(未收录返回 miss,不联网),
-  // 两个及以上单词才调模型。页面这里只负责收选区、发请求、画结果卡片。
+  // ---- Selection translation ----
+  // The word/sentence split happens in Rust: a single word only queries the built-in dictionary (a miss is returned, no network),
+  // two or more words call the model. The page here only collects the selection, sends the request and draws the result card.
   const TRANSLATE_W = 340;
   const MAX_TRANSLATE_TEXT = 4000;
 
@@ -1221,7 +1253,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return el;
   }
 
-  /** 关卡片并把请求号 +1:之后迟到的翻译结果一律作废。 */
+  /** Close the card and bump the request number by 1: every translation result that arrives later is void. */
   function hideTranslation(): void {
     translateSeq++;
     if (translateCard) {
@@ -1233,8 +1265,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   type TranslateRow = { text: string; tone?: "phonetic" | "dim" | "error" };
 
   /**
-   * 卡片画在自己的 shadow root 里,固定浅色外观(网页可能是深色;卡片要能读)。
-   * fixed 定位 + 视口夹取;卡片外的 pointerdown 会关掉它。
+   * The card is drawn in its own shadow root with a fixed light appearance
+   * (the page may be dark; the card has to be readable). It is positioned
+   * fixed and clamped to the viewport; a pointerdown outside the card closes
+   * it.
    */
   function renderTranslationCard(
     title: string,
@@ -1333,7 +1367,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     footEl.style.fontSize = "11px";
     card.appendChild(footEl);
 
-    // 卡片上的点击/拖选归卡片自己,不要再落回页面的选中/链接处理。
+    // Clicks and drag selections on the card belong to the card itself and must not fall back to the page's selection / link handling.
     for (const type of ["pointerdown", "mousedown", "mouseup", "click", "dblclick"]) {
       card.addEventListener(type, (event) => event.stopPropagation());
     }
@@ -1353,9 +1387,9 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     translateCard = card;
   }
 
-  /** 发一次翻译请求。页面只送文本/请求号/鼠标位置,不接触 API key。 */
+  /** Send one translation request. The page only sends the text / request number / mouse position and never touches an API key. */
   function requestTranslation(text: string, x: number, y: number): void {
-    // 批注模式优先:即使调用点漏了状态判断,这里也不发请求。
+    // Annotation mode wins: even if a call site forgot the state check, no request is sent here.
     if (!translateEnabled || mode) return;
     translateX = x;
     translateY = y;
@@ -1382,7 +1416,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }
   }
 
-  /** Rust 把翻译结果 eval 回来;只认当前请求号,迟到结果直接丢。 */
+  /** Rust evals the translation result back in; only the current request number is accepted, a late result is dropped. */
   function showTranslation(id: unknown, doc: unknown, payload: unknown): void {
     if (doc !== TRANSLATE_DOC) return;
     if (!translateEnabled || mode) return;
@@ -1442,18 +1476,18 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     }
   }
 
-  /** 主窗口推入总开关。关闭时立即收卡;批注模式仍由 setMode 优先。 */
+  /** The master switch pushed in by the main window. When it is off the card is closed at once; annotation mode still wins through setMode. */
   function setTranslate(value: unknown): void {
     translateEnabled = value === true;
     if (!translateEnabled) hideTranslation();
   }
 
   function onMouseUp(event: MouseEvent): void {
-    // 翻译卡上的操作归卡片自己(shadow 内事件重定向到 host)。
+    // Operations on the translation card belong to the card itself (events inside the shadow are redirected to the host).
     if (translateHost && translateHost.contains(event.target as Node)) return;
     if (!mode) {
-      // 普通阅读:只做选中翻译;开关关着就什么都不接。批注模式在下面,
-      // 两种手势互斥——mode 非空时这个分支根本进不来。
+      // Ordinary reading: only the selection translation; with the switch off nothing is handled. Annotation mode is below,
+      // the two gestures are mutually exclusive — this branch is never reached when mode is non-null.
       if (!translateEnabled) return;
       if (host && event.target === host) return;
       if (isEditable(event.target as Element | null)) return;
@@ -1471,10 +1505,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       }, 0);
       return;
     }
-    // 落在批注卡(经 shadow 重定向到 host)上:输入/删卡归卡片自己。
+    // Landing on an annotation card (redirected to the host through the shadow): the input and the card removal belong to the card itself.
     if (host && event.target === host) return;
     if (isEditable(event.target as Element | null)) return;
-    // 等浏览器把这次 mouseup 的选区落定(拖选结束/双击)。
+    // Wait for the browser to settle the selection of this mouseup (end of a drag selection / a double click).
     setTimeout(() => {
       if (!mode) return;
       const sel = window.getSelection();
@@ -1486,12 +1520,12 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
         suppressClickUntil = Date.now() + 500;
         return;
       }
-      // 单选/双击后有些环境会清空选区(rangeCount 0);取消高亮不能依赖它。
+      // Some environments clear the selection after a single or double click (rangeCount 0); removing a highlight must not depend on it.
       const hit = hitAt(event.clientX, event.clientY);
       const annotation = hit ? items.find((a) => a.id === hit) : undefined;
       if (!annotation) return;
-      // 与 PDF 一致:高亮工具只取消高亮,文字工具只聚焦文字批注,
-      // 不会误删另一种批注。
+      // Same as in the PDF: the highlight tool only removes a highlight, the text tool only focuses a text annotation,
+      // neither deletes the other kind of annotation by accident.
       if (mode === "note" && annotation.kind === "note") {
         focusNote(annotation.id);
         suppressClickUntil = Date.now() + 500;
@@ -1505,7 +1539,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   function onClickCapture(event: MouseEvent): void {
     if (!mode) return;
     if (Date.now() > suppressClickUntil) return;
-    // 刚在该点完成批注/取消:别让同一次点击接着触发页面链接。
+    // An annotation was just created or removed at that spot: do not let the same click also trigger a page link.
     if (hitAt(event.clientX, event.clientY) === null) {
       const target = event.target as Element | null;
       if (target && target.closest("a[href],button,[role='button']")) {
@@ -1549,28 +1583,33 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
         onUrlChange();
       };
     } catch {
-      // 页面冻结了 history(极少见):仍可靠 popstate/hashchange 跟踪。
+      // The page froze history (very rare): the popstate/hashchange tracking still works.
     }
   }
 
   /**
-   * 网页里的光标固定为笔形,但**笔不在 CSS 里**:WKWebView 每次鼠标移动都会把
-   * 整条 cursor 经 IPC 发到 UI 进程,`PageClientImpl::setCursor` 只在「新建的
-   * 平台光标就是当前光标」时才跳过 set。原生关键字返回 AppKit 单例,恒等;
-   * `url(...)` 图片光标每次都由 `createCustomCursor` 新建 NSCursor,恒不等 →
-   * 鼠标每动一下就重设一次,指针一直闪(源码见 src-tauri/src/commands/
-   * pen_cursor.rs 的说明)。
+   * The cursor in the web page is fixed to a pen shape, but **the pen is not in
+   * the CSS**: every mouse move makes WKWebView send the whole cursor to the
+   * UI process over IPC, and `PageClientImpl::setCursor` only skips the set
+   * when "the newly created platform cursor is the current cursor". A native
+   * keyword returns the AppKit singleton, always identical; a `url(...)` image
+   * cursor creates a new NSCursor through `createCustomCursor` every time,
+   * never identical -> the cursor is reset on every mouse move and the pointer
+   * flickers (see the note in src-tauri/src/commands/pen_cursor.rs).
    *
-   * 所以这里只写原生关键字,让 WebKit 每次拿到的都是同一个系统光标;真正的笔
-   * 由原生层在这块 webview 的区域里替换成同一张 PNG 的 NSCursor。crosshair 是
-   * 原生层没生效时(调试页/非 macOS)的退路:至少是十字准星,不会退回箭头。
+   * So only a native keyword is written here, which makes WebKit always get
+   * the same system cursor; the real pen is substituted by the native layer
+   * with an NSCursor of the same PNG over the area of this webview. crosshair
+   * is the fallback when the native layer does not kick in (debug pages /
+   * non-macOS): at least a crosshair, never back to an arrow.
    *
-   * 样式表在运行时启动时装好,之后不再改动(批注模式切换不碰它)。权重用
-   * `:not(#…)` 抬到 id 级,页面自己写的 `a:hover{cursor:pointer!important}`
-   * 也压不过它。
+   * The style sheet is installed when the runtime starts and never changed
+   * afterwards (switching the annotation mode does not touch it). Its
+   * specificity is lifted to id level with `:not(#…)`, so even a
+   * page-authored `a:hover{cursor:pointer!important}` cannot override it.
    */
   function installCursorSheet(): void {
-    // :not(#bnote-cursor) 不提选择器语义,只借用 id 的权重(两次 = (2,1,0))。
+    // :not(#bnote-cursor) adds no selector semantics, it only borrows the weight of an id (twice = (2,1,0)).
     const guard = ":not(#bnote-cursor):not(#bnote-cursor)";
     const css = [
       `html${guard} { cursor: crosshair !important; }`,
@@ -1581,12 +1620,12 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       sheet.replaceSync(css);
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
     } catch {
-      // 老 WebKit 没有构造样式表:退回 <html> 上的内联光标(后代里页面
-      // 自己写的 cursor 仍会盖掉它,但大半页仍是十字准星)。
+      // Old WebKit has no constructable style sheet: fall back to an inline cursor on <html> (a cursor the page writes itself in a
+      // descendant still overrides it, but most of the page stays a crosshair).
       try {
         document.documentElement.style.setProperty("cursor", "crosshair", "important");
       } catch {
-        // 页面拒绝样式修改:光标不好看,但不影响批注。
+        // The page refuses style changes: the cursor looks bad, but the annotations still work.
       }
     }
   }
@@ -1597,7 +1636,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     if (mode === next) return;
     mode = next;
     if (mode) {
-      // 批注模式优先:进入批注立即收掉翻译卡,并作废在途请求。
+      // Annotation mode wins: entering the annotation mode closes the translation card at once and voids the requests in flight.
       hideTranslation();
       watchDom();
       rebuild();
@@ -1626,7 +1665,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     saveToStorage(target, base);
     if (target === url) {
       items = base;
-      rebuild(); // 合并不回写 title,避免主窗口 ↔ 页面来回同步。
+      rebuild(); // The merge does not write the title back, avoiding a main window <-> page ping-pong.
     }
   }
 
@@ -1646,7 +1685,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     setKeys,
     setHostKeys,
   };
-  // Rust 的翻页命令只认这个入口：与批注开关解耦，普通阅读也能按步长翻页。
+  // Rust's page-turn command only knows this entry point: it is decoupled from the annotation switch, so ordinary reading can turn pages by step too.
   (w as { __bnoteReader?: Record<string, unknown> }).__bnoteReader = {
     page: scrollPage,
     setStep: setPageStep,
@@ -1654,7 +1693,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     setHostKeys,
   };
 
-  /** 卡片自己的滚动(长译文)不算页面滚动:只收页面滚动。 */
+  /** A scroll of the card itself (a long translation) is not a page scroll: only page scrolls are taken. */
   function onTranslateScroll(event: Event): void {
     if (translateHost && event.target instanceof Node && translateHost.contains(event.target)) {
       return;
@@ -1662,10 +1701,10 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     hideTranslation();
   }
 
-  // ---- 启动 ----
+  // ---- Startup ----
   window.addEventListener("mouseup", onMouseUp, true);
-  // 选中翻译:点卡片外、滚动、Esc 都收卡。捕获阶段先于页面自己的处理;
-  // 卡片自己的事件已重定向到 translateHost,不会被这里误关。
+  // Selection translation: a click outside the card, a scroll or Esc all close the card. The capture phase runs before the page's own handling;
+  // the card's own events are already redirected to translateHost, so they are not closed by accident here.
   window.addEventListener(
     "pointerdown",
     (event: PointerEvent) => {
@@ -1685,9 +1724,9 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   window.addEventListener("click", onClickCapture, true);
   window.addEventListener("keydown", onPageKey, true);
   window.addEventListener("scroll", onScroll, { passive: true });
-  // 阅读位置:滚动停止后存比例;捕获阶段才能收到内层滚动容器的 scroll。
+  // Reading position: the ratio is stored once the scroll stops; only the capture phase receives the scroll of an inner scroll container.
   window.addEventListener("scroll", scheduleSavePosition, { passive: true, capture: true });
-  // 用户一动手就放弃「打开时的落点」,之后的布局变化不再抢滚动位置。
+  // As soon as the user acts, the "landing spot of the initial open" is given up, and the later layout changes no longer fight for the scroll position.
   window.addEventListener("wheel", userTookOver, { passive: true, capture: true });
   window.addEventListener("touchstart", userTookOver, { passive: true, capture: true });
   window.addEventListener("pointerdown", userTookOver, true);
@@ -1714,7 +1753,7 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       clearTimeout(savePositionTimer);
       savePositionTimer = null;
     }
-    // 正在输入的批注文字也要在离页前落盘(页面内 localStorage + 主窗口)。
+    // The annotation text being typed must also be persisted before leaving the page (localStorage in the page + the main window).
     if (emitAnnotationsTimer) {
       clearTimeout(emitAnnotationsTimer);
       emitAnnotationsTimer = null;
@@ -1745,11 +1784,11 @@ function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       });
     }
   } catch {
-    // 老 WebKit 没有 FontFaceSet
+    // Old WebKit has no FontFaceSet
   }
 }
 
-/** 注入原生 webview 的完整脚本(运行时 + 它依赖的纯函数)。 */
+/** The complete script injected into the native webview (the runtime + the pure functions it depends on). */
 export function buildWebAnnotationScript(): string {
   const helpers = [
     `locateQuote:${locateQuote.toString()}`,
@@ -1764,5 +1803,5 @@ export function buildWebAnnotationScript(): string {
   return `(${webAnnotationRuntime.toString()})({${helpers}});`;
 }
 
-/** 只算一次:主窗口每次打开网页都把它交给 Rust 注册成初始化脚本。 */
+/** Computed only once: every time the main window opens a web page it hands this to Rust to register as an init script. */
 export const WEB_ANNOTATION_SCRIPT = buildWebAnnotationScript();

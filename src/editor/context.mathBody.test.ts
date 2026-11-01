@@ -4,16 +4,21 @@ import { caretInMathBody, mathBodySpan, selectionInMathBody } from "./context";
 import { scanMath, type MathRegion } from "./mathScan";
 
 /**
- * 公式的**正文位置**模型：下一个键入的字符会不会写进公式源码。
+ * Model of a formula's **body position**: whether the next typed character
+ * goes into the formula source.
  *
- * CM6 的 position 是字符之间:`$f(x)$` 占 3..9 时,3 在开定界符之前、9 在
- * 闭合定界符之后——两点都属于正文侧,在那里打字字符落在公式外面。输入法
- * 按这条决定英文/中文源,行内公式的源码展开也按这条(光标压在边界上时公式
- * 已渲染、光标在 widget 之外)。
+ * A CM6 position sits between characters: when `$f(x)$` occupies 3..9, 3 is
+ * before the opening delimiter and 9 after the closing one — both count as the
+ * body side, so typing there lands outside the formula. The IME picks its
+ * English/Chinese source by this rule, and the inline-formula source expansion
+ * follows it too (with the caret on a boundary the formula is already
+ * rendered and the caret sits outside the widget).
  *
- * 未闭合区域(打字中的 `$$…`)是唯一例外:它没有闭合符,`to` 就是正文末尾,
- * 那里打字仍写进公式——否则每敲一个字符光标都落在 `to`,公式会当场折成
- * widget,源码再也看不见。
+ * An unclosed region (a `$$…` being typed) is the only exception: it has no
+ * closing delimiter, so `to` is the end of the body and typing there still
+ * goes into the formula — otherwise every keystroke would leave the caret on
+ * `to`, the formula would collapse into a widget on the spot and the source
+ * would never be visible again.
  */
 function regionsOf(doc: string): MathRegion[] {
   return scanMath(EditorState.create({ doc }).doc);

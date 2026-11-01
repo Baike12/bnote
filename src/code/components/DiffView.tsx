@@ -4,13 +4,15 @@ import { alignHunk, diffStats, parseUnifiedDiff } from "../diff";
 import { useCodeStore } from "../store";
 
 /**
- * git 差异视图。
+ * Git diff view.
  *
- * 后端给的是原始的 unified diff 文本(`git diff --no-color`),解析在
- * 前端(`src/code/diff.ts`):渲染要按行号、配色、并排对齐,这些都在前端做。
+ * The backend hands over the raw unified diff text (`git diff --no-color`) and
+ * the parsing happens on the frontend (`src/code/diff.ts`): line numbers,
+ * colouring and side-by-side alignment are all frontend concerns.
  *
- * 两种看法:统一(unified)与并排(side by side)。并排靠最长公共子序列把
- * 改动过的行配对——改了同一个词的两行会并排显示,而不是各自飘着。
+ * Two views: unified and side by side. The side-by-side view pairs the
+ * changed lines with a longest common subsequence, so two lines that changed
+ * the same word end up next to each other instead of drifting apart.
  */
 export function DiffView({ path }: { path: string }) {
   const root = useCodeStore((s) => s.project?.root ?? "");

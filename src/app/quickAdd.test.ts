@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * 快速添加的创建链:命令配了模板 → 新文件的内容是模板渲染后的文本;
- * 模板读不到时照常建空文件并说明原因。store 的 toast 也是断言对象。
+ * The creation chain of quick add: the command has a template → the new
+ * file's content is the rendered template text; when the template cannot be
+ * read, an empty file is created anyway and the reason is reported. The
+ * store's toast is an assertion target too.
  */
 
 const disk = vi.hoisted(() => new Map<string, string>());

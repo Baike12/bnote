@@ -6,19 +6,23 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// 建连超时:连不上要尽快报错,而不是挂着。
+/// Connect timeout: fail fast when the endpoint is unreachable instead of hanging.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-/// 流空闲超时:模型流超过这么久没有一个字节就按失败结束。
+/// Stream idle timeout: the model stream is treated as failed when not a single
+/// byte arrives within this window.
 ///
-/// 没有它,网关/网络半开时 `stream.next().await` 永远不返回 → 会话的
-/// running 一直为 true → 之后每次发送都被 SESSION_BUSY 拒掉;前端只弹
-/// 一个几秒消失的 toast,用户看到的现象就是「再次发送没有回应」。推理
-/// 模型思考期间会持续发 thinking_delta,真静默 180s 只剩网关挂死一种解释。
+/// Without it, a half-open gateway/network makes `stream.next().await` never
+/// return → the session stays `running` → every later send is rejected with
+/// SESSION_BUSY; the front end only raises a toast that vanishes after a few
+/// seconds, so the user just sees "sending again does nothing". Reasoning
+/// models keep emitting thinking_delta while they think, so 180s of real
+/// silence leaves exactly one explanation: a hung gateway.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// 取下一块流数据,带空闲超时(测试可注入更短的超时)。
+/// Fetches the next stream chunk under the idle timeout (tests inject a shorter one).
 ///
-/// `None` = 流正常结束;`Err` = 空闲超时(网关无响应)或连接错误。
+/// `None` = the stream ended normally; `Err` = idle timeout (no gateway response)
+/// or a connection error.
 async fn next_chunk_with<S, E>(stream: &mut S, idle: Duration) -> Result<Option<bytes::Bytes>, String>
 where
     S: futures::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
@@ -41,11 +45,11 @@ where
     next_chunk_with(stream, STREAM_IDLE_TIMEOUT).await
 }
 
-/// Anthropic content block:Text/Image/ToolUse/ToolResult 各自的线上形态。
+/// Anthropic content block: the wire shape of each Text/Image/ToolUse/ToolResult variant.
 fn anthropic_block(c: &Content) -> Value {
     match c {
         Content::Text { text } => json!({"type": "text", "text": text}),
-        // 图片只出现在用户消息里(见 ChatItem::user_message)。
+        // Images only occur in user messages (see ChatItem::user_message).
         Content::Image { media_type, data } => json!({
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": data},
@@ -53,9 +57,10 @@ fn anthropic_block(c: &Content) -> Value {
         Content::ToolUse { id, name, input } => {
             json!({"type": "tool_use", "id": id, "name": name, "input": input})
         }
-        // 无图时保持纯字符串形态(与既有会话记录/兼容端点的最小公倍数);
-        // 有图时 content 换 blocks 数组(text + image),这是 Anthropic 官方
-        // 协议里 tool_result 的标准形态。
+        // Without images keep the plain string shape (the least common multiple of
+        // the existing session records and the compatibility endpoint); with images
+        // the content switches to a blocks array (text + image), the standard
+        // shape for tool_result in the official Anthropic protocol.
         Content::ToolResult { tool_use_id, content, is_error, images } if images.is_empty() => {
             json!({
                 "type": "tool_result",
@@ -85,8 +90,9 @@ fn anthropic_block(c: &Content) -> Value {
     }
 }
 
-/// OpenAI 用户消息的 content:无图片保持纯字符串(既有形态,兼容旧端点),
-/// 有图片时换多部件数组(text + image_url data URL)。
+/// OpenAI user message content: without images stay a plain string (the existing
+/// shape, compatible with older endpoints), with images switch to a multi-part
+/// array (text + image_url data URL).
 fn openai_user_content(text_parts: &[String], images: &[Content]) -> Value {
     if images.is_empty() {
         return json!(text_parts.join("\n\n"));
@@ -107,19 +113,22 @@ fn openai_user_content(text_parts: &[String], images: &[Content]) -> Value {
     json!(parts)
 }
 
-/// ChatItem[] → OpenAI messages 数组。system 非空时放首位;assistant 文本 +
-/// tool_calls;用户消息走 openai_user_content;工具结果逐条 tool 消息——
-/// OpenAI 协议的 tool 消息只接受文本部件,ToolResult 里随附的截图带不上
-/// (与 assistant 分支丢 image 同一约定);文本里的说明仍在,模型不至于
-/// 以为看到了图。
+/// ChatItem[] → OpenAI messages array. A non-empty system prompt goes first;
+/// assistant text + tool_calls; user messages go through openai_user_content;
+/// tool results become one tool message each — the OpenAI protocol only
+/// accepts text parts in tool messages, so the screenshots attached to a
+/// ToolResult cannot be carried (the same convention as dropping images in the
+/// assistant branch); the text explanation survives, so the model does not
+/// believe it saw the image.
 fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
     let mut messages: Vec<Value> = Vec::new();
     if !system.is_empty() {
         messages.push(json!({"role": "system", "content": system}));
     }
     for item in items {
-        // ChatItem 目前只有 Message 一种;将来加变体时这里会编译报错,
-        // 正好逼着把新变体接进消息组装。
+        // ChatItem currently has only the Message variant; adding a variant later
+        // fails to compile here, which forces wiring the new variant into message
+        // assembly.
         let ChatItem::Message { role, content } = item;
         if role == "assistant" {
             let mut text = String::new();
@@ -128,8 +137,9 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
                 match c {
                     Content::Text { text: t } => text.push_str(t),
                     Content::ToolUse { .. } => tool_calls.push(c),
-                    // 图片按构造只会出现在用户消息里;真出现也带不上
-                    // (OpenAI assistant content 不接受 image 部件),丢弃。
+                    // Images only occur in user messages by construction; should one
+                    // appear here it could not be carried anyway (OpenAI assistant
+                    // content rejects image parts), so drop it.
                     Content::Image { .. } => {}
                     Content::ToolResult { .. } => {}
                 }
@@ -194,7 +204,8 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
     messages
 }
 
-/// Anthropic `message_start` 的 usage:input_tokens 不含缓存读写,占用要三项相加。
+/// Anthropic `message_start` usage: input_tokens excludes cache reads and writes,
+/// so the occupancy has to sum all three.
 fn anthropic_start_usage(message: &Value) -> Option<TokenUsage> {
     let usage = message.get("usage")?;
     let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
@@ -203,7 +214,8 @@ fn anthropic_start_usage(message: &Value) -> Option<TokenUsage> {
     (input > 0 || output > 0).then_some(TokenUsage { input, output })
 }
 
-/// Anthropic `message_delta` 只携带累计 output_tokens;input 沿用 message_start。
+/// Anthropic `message_delta` carries only the cumulative output_tokens; the input
+/// side is inherited from message_start.
 fn anthropic_output_usage(current: Option<TokenUsage>, usage: &Value) -> Option<TokenUsage> {
     let output = usage.get("output_tokens").and_then(|v| v.as_u64())?;
     let mut next = current.unwrap_or_default();
@@ -211,8 +223,9 @@ fn anthropic_output_usage(current: Option<TokenUsage>, usage: &Value) -> Option<
     Some(next)
 }
 
-/// OpenAI 兼容流末尾的 usage(需要请求里带 stream_options.include_usage)。
-/// 有的网关用 input/output_tokens 命名,一并认。
+/// Usage at the end of an OpenAI-compatible stream (the request has to carry
+/// stream_options.include_usage).
+/// Some gateways name the fields input/output_tokens; accept those too.
 fn openai_usage(v: &Value) -> Option<TokenUsage> {
     let usage = v.get("usage")?;
     if usage.is_null() {
@@ -311,7 +324,8 @@ impl Provider {
             "stream": true,
             "messages": messages,
         });
-        // 纯问答会话没有任何工具:整个不发 tools 字段,而不是发空数组。
+        // A pure Q&A session has no tools: omit the tools field entirely instead of
+        // sending an empty array.
         if !tools_json.is_empty() {
             body["tools"] = json!(tools_json);
         }
@@ -371,8 +385,10 @@ impl Provider {
                                 turn.text.push_str(text);
                                 sink(AgentEvent::TextDelta { text: text.to_string() });
                             }
-                            // thinking 块的流式文本(不进历史,见 AgentEvent::ThinkingDelta);
-                            // signature_delta 是块签名,只在回传时有意义,这里丢弃。
+                            // Streaming text of a thinking block (never enters the
+                            // history, see AgentEvent::ThinkingDelta); signature_delta
+                            // is the block signature, only meaningful when sent back,
+                            // so it is dropped here.
                             Some("thinking_delta") => {
                                 let text = delta["thinking"].as_str().unwrap_or_default();
                                 if !text.is_empty() {
@@ -445,11 +461,13 @@ impl Provider {
         let mut body = json!({
             "model": self.model,
             "stream": true,
-            // 请求流末尾附 usage(OpenAI 规范):前端据此显示上下文占用。
+            // Attach usage at the end of the request stream (OpenAI spec): the front
+            // end uses it to show the context occupancy.
             "stream_options": {"include_usage": true},
             "messages": messages,
         });
-        // 纯问答会话没有任何工具:整个不发 tools 字段,而不是发空数组。
+        // A pure Q&A session has no tools: omit the tools field entirely instead of
+        // sending an empty array.
         if !tools_json.is_empty() {
             body["tools"] = json!(tools_json);
         }
@@ -492,8 +510,9 @@ impl Provider {
                     turn.usage = Some(usage);
                 }
                 let delta = &v["choices"][0]["delta"];
-                // 推理模型(DeepSeek R1 / GLM / Qwen 等)在 openai 兼容流上的
-                // 思考字段:主流是 reasoning_content,GLM 某些网关用 reasoning。
+                // Reasoning models (DeepSeek R1 / GLM / Qwen and friends) expose
+                // their thinking field on the OpenAI-compatible stream: the common
+                // name is reasoning_content, some GLM gateways use reasoning.
                 if let Some(text) = delta["reasoning_content"]
                     .as_str()
                     .or_else(|| delta["reasoning"].as_str())
@@ -622,8 +641,9 @@ mod tests {
 
     #[tokio::test]
     async fn 流空闲超时报错而不是永久挂起() {
-        // 网关半开时 SSE 流不会自己结束:没有这层超时,一轮对话会永远挂着,
-        // 会话的 running 也永远不复位(之后每次发送都被 SESSION_BUSY 拒掉)。
+        // With a half-open gateway the SSE stream never ends on its own: without
+        // this timeout a turn hangs forever and the session's running flag never
+        // resets (every later send is rejected with SESSION_BUSY).
         let mut stream =
             futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
         let err = next_chunk_with(&mut stream, Duration::from_millis(30))
@@ -694,8 +714,9 @@ mod tests {
 
     #[test]
     fn openai_消息组装_tool_result_只出文本_图片不进_tool_消息() {
-        // OpenAI 协议 tool 消息只接受文本:带图的结果序列化后 content 仍是
-        // 纯文本,tool_call_id 对得上,不带任何 image_url 部件。
+        // The OpenAI protocol only accepts text in tool messages: a result that
+        // carries images serializes with content still plain text, the
+        // tool_call_id matches, and no image_url part is included.
         let items = vec![ChatItem::Message {
             role: "user".into(),
             content: vec![Content::ToolResult {
@@ -736,7 +757,8 @@ mod tests {
             anthropic_output_usage(start, &json!({"output_tokens": 88})),
             Some(TokenUsage { input: 420, output: 88 })
         );
-        // 没有 start 时也不能丢:输出仍要给出来。
+        // Without a start event it must not be lost either: the output still has to
+        // be reported.
         assert_eq!(
             anthropic_output_usage(None, &json!({"output_tokens": 5})),
             Some(TokenUsage { input: 0, output: 5 })

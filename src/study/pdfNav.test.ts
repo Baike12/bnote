@@ -7,8 +7,10 @@ import {
 } from "./pdfNav";
 
 /**
- * 翻页快捷键是「可配置命令」:命令层不认识具体阅读器,只问这里注册的处理器。
- * PDF 与网页各占一个槽位——切换内容时各自的清理不能误伤对方。
+ * The page-turn shortcut is a "configurable command": the command layer does
+ * not know the concrete reader, it only asks the handlers registered here.
+ * PDF and web each occupy one slot — when the content switches, each one's
+ * cleanup must not clobber the other.
  */
 describe("学习模式翻页命令的落点", () => {
   beforeEach(() => {
@@ -36,7 +38,7 @@ describe("学习模式翻页命令的落点", () => {
     expect(flipPdfPage(-1)).toBe(true);
     expect(calls).toEqual(["next", "prev"]);
 
-    // 焦点在输入框、弹窗打开或正在框选时,阅读器把 canFlip 置 false。
+    // With the focus in an input, a dialog open or a selection in progress, the reader sets canFlip to false.
     allowed = false;
     expect(canFlipPdfPage()).toBe(false);
     expect(flipPdfPage(1)).toBe(false);
@@ -75,7 +77,7 @@ describe("学习模式翻页命令的落点", () => {
       next: () => calls.push("web-next"),
     });
     setPdfNavHandlers(pdf);
-    // 模拟「网页卸载」的清理在 PDF 挂载之后才跑：只清 web 槽。
+    // Simulate the "web page unload" cleanup running after the PDF mounted: it only clears the web slot.
     setWebNavHandlers(null);
     expect(flipPdfPage(1)).toBe(true);
     expect(calls).toEqual(["pdf-next"]);

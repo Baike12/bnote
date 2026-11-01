@@ -5,10 +5,13 @@ vi.mock("@/lib/tauri", () => ({ api: {} }));
 import { useAppStore } from "./appStore";
 
 /**
- * 「聚焦侧边栏」(⌘I) 的请求语义：一次性票据，不是历史计数器。
+ * Request semantics of "focus sidebar" (⌘I): a one-shot ticket, not a history
+ * counter.
  *
- * 计数器写法（tick++）在侧栏重新挂载时会被读成「刚收到的新请求」——⌘\ 收起
- * 再展开就会去抢编辑器焦点。票据被消费即归零，重新挂载看到的只会是「没有请求」。
+ * A counter (tick++) would be read as "a freshly arrived request" whenever the
+ * sidebar remounts — collapsing with ⌘\ and expanding again would steal the
+ * editor's focus. A ticket resets to zero once consumed, so a remounted
+ * sidebar only ever sees "no request".
  */
 
 const request = () => useAppStore.getState().sidebarFocusRequest;
@@ -41,7 +44,8 @@ describe("focusSidebar 请求", () => {
     useAppStore.getState().clearSidebarFocus();
     useAppStore.getState().focusSidebar();
     expect(request()).not.toBe(null);
-    // 票据只是「有没有待处理请求」的载体，序号本身不参与判断
+    // The ticket only carries "is there a pending request"; the number itself
+    // takes no part in the decision
     expect(typeof request()).toBe("number");
   });
 

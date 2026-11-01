@@ -1,19 +1,22 @@
 import type { LspPosition, LspRange } from "../types";
 
 /**
- * 把一组 LSP TextEdit 应用到一段文本上。
+ * Apply a set of LSP TextEdits to a piece of text.
  *
- * LSP 的编辑是**按位置**给的:同一文件里多处修改要**从后往前**应用——
- * 否则前面那处的偏移会因为前面的改动而失效,改出来的内容就错位了。
+ * LSP edits are given **by position**: several changes in the same file have
+ * to be applied **from the back to the front** — otherwise the offsets of the
+ * earlier ones go stale after the preceding change and the result is
+ * misaligned.
  *
- * 位置按 UTF-16 码元计(与 LSP、与 CodeMirror 一致),所以列号直接当
- * 字符串下标用。
+ * Positions are counted in UTF-16 code units (same as LSP and CodeMirror), so
+ * the column number can be used as a string index directly.
  */
 export function applyTextEdits(text: string, edits: unknown): string {
   if (!Array.isArray(edits)) return text;
   const lines = text.split("\n");
-  // 每行起点先算一次:一条编辑一次 slice+reduce 的话,大文件 × 多处编辑
-  // 会退成 O(编辑数 × 行数)(重命名一个热门符号能到上千处)。
+  // Compute the line starts once: one slice+reduce per edit would degrade to
+  // O(edits × lines) on a large file with many edits (renaming a popular
+  // symbol can reach a thousand occurrences).
   const starts = new Array<number>(lines.length);
   let acc = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -21,7 +24,9 @@ export function applyTextEdits(text: string, edits: unknown): string {
     acc += lines[i].length + 1;
   }
   const offsetOf = (position: LspPosition): number => {
-    // 行号越界(服务器给了文档外的位置)= 文本末尾;列号越界 = 行尾。
+    // A line number outside the document (the server gave a position beyond
+    // the document) = end of the text; a column number out of range = end of
+    // the line.
     if (position.line >= lines.length) return text.length;
     const index = Math.max(0, position.line);
     return starts[index] + Math.min(Math.max(0, position.character), lines[index].length);
@@ -37,7 +42,7 @@ export function applyTextEdits(text: string, edits: unknown): string {
       };
     })
     .filter((e): e is { from: number; to: number; newText: string } => e !== null)
-    .sort((a, b) => b.from - a.from); // 从后往前
+    .sort((a, b) => b.from - a.from); // from the back to the front
   let out = text;
   for (const edit of items) {
     out = out.slice(0, edit.from) + edit.newText + out.slice(edit.to);

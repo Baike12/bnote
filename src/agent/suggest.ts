@@ -1,21 +1,21 @@
 /**
- * 创作模式输入框的两种补全触发:
- * - `/skill-name`:选择技能(仅当 / 出现在文本开头或空白之后,避免吃掉路径与代码);
- * - `@path/to/file`:引用仓库文件(任意位置触发)。
+ * Two completion triggers in the creative-mode input:
+ * - `/skill-name`: pick a skill (only when / appears at the start of the text or after whitespace, so paths and code are not swallowed);
+ * - `@path/to/file`: reference a vault file (triggers anywhere).
  *
- * 触发词会原样发给模型;语义(/ 调 skill 工具、@ 读文件)由创作模式的
- * system prompt 解释,前端只负责把词补全得省力。
+ * The trigger is sent to the model verbatim; the semantics (/ invokes the skill
+ * tool, @ reads the file) are explained by the creative-mode system prompt.
  */
 
 export interface SuggestTrigger {
   kind: "skill" | "file";
-  /** 触发词起点(含 / 或 @)在文本中的下标。 */
+  /** Index of the trigger start (including the / or @) in the text. */
   start: number;
-  /** / 或 @ 之后的查询串(触发点到光标之间,不含空白)。 */
+  /** The query after / or @ (trigger start to caret, no whitespace). */
   query: string;
 }
 
-/** 光标前最近的空白/词边界。 */
+/** Nearest whitespace/word boundary before the caret. */
 function lastWordStart(text: string, caret: number): number {
   let i = caret;
   while (i > 0) {
@@ -27,18 +27,18 @@ function lastWordStart(text: string, caret: number): number {
 }
 
 /**
- * 解析光标处的补全触发。返回 null 表示没有触发。
+ * Parse the completion trigger at the caret. null means no trigger.
  *
- * skill(`/`)只在词首触发(文本开头或前面是空白),`/数据/2026` 这类路径、
- * 行中间的斜杠都不会误触发;file(`@`)在任意位置触发(引用文件常紧跟正文)。
+ * skill(`/`) fires only at the start of a line; file(`@`) fires anywhere,
+ * because a file reference usually follows prose directly.
  */
 export function parseSuggestTrigger(text: string, caret: number): SuggestTrigger | null {
   if (caret < 0 || caret > text.length) return null;
   const wordStart = lastWordStart(text, caret);
   const word = text.slice(wordStart, caret);
   if (word.startsWith("/")) {
-    // 只在行首触发(文本开头或换行之后):`/数据/2026`、行中路径里的斜杠
-    // 都不误触发;@ 不受此限,引用文件常紧跟正文。
+    // Line-anchored: only the start of the text or a line break counts, so
+    // `/data/2026` and a slash in a mid-line path never trigger it; @ has no such limit, a file reference usually follows prose.
     if (wordStart !== 0 && text[wordStart - 1] !== "\n") return null;
     return { kind: "skill", start: wordStart, query: word.slice(1) };
   }
@@ -48,7 +48,7 @@ export function parseSuggestTrigger(text: string, caret: number): SuggestTrigger
   return null;
 }
 
-/** 把触发词替换为完整引用;返回新文本与新光标位置。 */
+/** Replace the trigger with the full reference; returns the new text and caret. */
 export function applySuggestion(
   text: string,
   trigger: SuggestTrigger,

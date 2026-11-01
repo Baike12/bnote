@@ -3,50 +3,62 @@ import { fenceStateScan, mathRegionsForDoc } from "./context";
 import type { MathRegion } from "./mathScan";
 
 /**
- * Callout 块(`:::` 容器):笔记里承接「与正文不那么一体的外部内容」的块——
- * 独立底色 + 左侧竖线,内容照常按 markdown 渲染(标题/公式/代码块全部走既有
- * 装饰路径),块内标题编号独立于外部(numbering.ts 按这里的区域重置计数器)。
+ * Callout blocks (`:::` containers): they carry content that is "less one with
+ * the body" — their own background + left rule, while the content still renders
+ * as plain markdown (headings/math/code blocks all go through the existing
+ * decoration paths); heading numbering inside a block is independent of the
+ * outside (numbering.ts resets its counters per the regions produced here).
  *
- * 语法(只认栏 0,3 个及以上冒号):
- *   ::: 可选标题   → 开。有非空文字 = 标题,渲染成块顶的小标签;无文字 = 无
- *                    标题的裸块(不需要 Obsidian 的 [!note] 类型名)。
- *   :::           → 栈式语义:在块外 = 开一个无标题块,在块内 = 关最内层。
- *                    与代码围栏「同一标记开关」的手感一致;带文字的标记必开,
- *                    嵌套内层因此用 `::: 标题` 开。
- * 选择 `:::` 容器而不是 Obsidian 的 `> [!note]`:blockquote 方案的内容行全部
- * 带 `>` 前缀——bnote 不隐藏 `>` 标记(截图里那种干净块面做不出来),且
- * mathScan 按纯文本配对 `$$`,不认 `>` 前缀,块内公式渲染会坏。`:::` 容器的
- * 内容行是干净 markdown,lezer/mathScan/既有装饰原样生效,一行接入成本为零。
+ * Syntax (column 0 only, three or more colons):
+ *   ::: optional title → opens. Non-empty text = title, rendered as a small
+ *                       label on top of the block; no text = a bare block with
+ *                       no title (no Obsidian-style [!note] type name needed).
+ *   :::              → stack semantics: outside a block = open a titleless
+ *                       block, inside a block = close the innermost one. Same
+ *                       "one marker toggles" feel as code fences; a marker with
+ *                       text always opens, so nested levels open with
+ *                       `::: title`.
+ * `:::` containers instead of Obsidian's `> [!note]`: every line of a blockquote
+ * carries a `>` prefix — bnote does not hide the `>` marker (the clean block
+ * surface from the screenshots is unattainable that way), and mathScan pairs
+ * `$$` on plain text without knowing about a `>` prefix, so math inside the
+ * block would break. `:::` content lines are clean markdown, so lezer/mathScan
+ * and the existing decorations work unchanged at zero integration cost.
  *
- * 扫描与 fenceStateScan 同一条模型:纯行扫描(不依赖语法树,文件刚载入树未
- * 解析时答案也完整确定),按行推进配对;围栏代码行与公式块内的 `:::` 一律
- * 忽略(代码围栏里它是字面量,`$$` 块里它属于公式源码);未闭合延伸到文末,
- * 与未闭合围栏同款。
+ * Scanning follows the same model as fenceStateScan: a pure line scan (no
+ * syntax tree needed, so the answer is already complete right after a file
+ * loads and the tree has not parsed yet), pairing as the scan advances line by
+ * line; `:::` inside fenced code lines and inside math blocks is ignored
+ * (in a code fence it is a literal, in a `$$` block it belongs to the math
+ * source); an unclosed block extends to the end of the document, just like an
+ * unclosed fence.
  */
 
 export interface CalloutRegion {
-  /** 开标记行行首。整块范围 [from, to] 含两行边界标记。 */
+  /** Start of the opening marker line. The whole-block range [from, to] includes both boundary marker lines. */
   from: number;
-  /** 关标记行行尾;未闭合时为文末行行尾。 */
+  /** End of the closing marker line; for an unclosed block, the end of the last line. */
   to: number;
-  /** 开标记行号(1-based)。 */
+  /** Line number of the opening marker (1-based). */
   openLine: number;
-  /** 关标记行号(1-based);未闭合 = 最后一行。 */
+  /** Line number of the closing marker (1-based); unclosed = last line. */
   closeLine: number;
-  /** 开标记 `:::` 之后的文字(trim 过;空串 = 无标题)。 */
+  /** The text after the opening `:::` (trimmed; empty string = no title). */
   title: string;
-  /** 嵌套深度,0 = 最外层。 */
+  /** Nesting depth, 0 = outermost. */
   depth: number;
-  /** false = 未闭合(延伸到文末)。 */
+  /** false = unclosed (extends to the end of the document). */
   closed: boolean;
 }
 
 const MARKER_RE = /^(:{3,})(.*)$/;
 
 /**
- * 纯函数版扫描:调用方已持有围栏状态/公式区域时直接传入(numbering 的重编号
- * 本来就算了一遍围栏扫描,不重复付)。返回按 from 升序——外层区域必在嵌套
- * 内层之前,依赖顺序的消费者(逐行深度标注)可安全覆盖。
+ * Pure-function scan: callers that already hold the fence state / math regions
+ * pass them in (numbering already scans the fences once for renumbering, so
+ * there is no reason to pay twice). The result is sorted by `from` — an outer
+ * region always precedes its nested ones, so order-dependent consumers (per-line
+ * depth annotation) can safely overwrite.
  */
 export function computeCalloutRegions(
   doc: Text,
@@ -55,8 +67,10 @@ export function computeCalloutRegions(
 ): CalloutRegion[] {
   const out: CalloutRegion[] = [];
   const stack: { openLine: number; from: number; title: string; depth: number }[] = [];
-  // 只有可能跨行的 display 公式区域容得下一个栏 0 的 `:::`(行内区域起点是
-  // `$`,起点在栏 0 的行首不可能是 `:::` 行);按 from 有序,随行推进一次扫过。
+  // Only a display math region, which may span lines, can hold a column-0
+  // `:::` (an inline region starts with `$`, and a `$` at column 0 can never
+  // start a `:::` line); the regions are ordered by `from`, so one pass over
+  // the lines covers them.
   const display = maths.filter((r) => r.display);
   let mi = 0;
   for (let n = 1; n <= doc.lines; n++) {
@@ -102,7 +116,7 @@ export function computeCalloutRegions(
 
 const cache = new WeakMap<Text, CalloutRegion[]>();
 
-/** Callout regions of the document, memoized per Text generation(装饰热路径)。 */
+/** Callout regions of the document, memoized per Text generation (decoration hot path). */
 export function calloutRegions(state: EditorState): CalloutRegion[] {
   let regions = cache.get(state.doc);
   if (!regions) {

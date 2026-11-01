@@ -29,7 +29,7 @@ export function Sidebar() {
   const [renaming, setRenaming] = useState<string | null>(null);
   /** Row highlighted for keyboard navigation (distinct from mouse selection). */
   const [cursor, setCursor] = useState<string | null>(null);
-  /** 待露出的行：祖先目录补齐、行渲染出来后再落光标；rename 请求还要挂输入框。 */
+  /** The row to reveal: the ancestor directories are filled in first and the caret lands once the row is rendered; a rename request also attaches the inline input. */
   const [reveal, setReveal] = useState<{ relPath: string; rename: boolean } | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
 
@@ -66,10 +66,13 @@ export function Sidebar() {
   };
 
   /**
-   * 请求把仓库里的一行「露出来」：先沿途展开祖先目录，剩下的交给下面的收敛
-   * 效应——哪一层还没读、树到没到齐，由 chainLoadPlan 在每次树变化时重算，
-   * 所以请求是幂等的声明，而不是一次性施工；一次性施工在树未就绪（首帧、
-   * 刚换库）时会自己把自己收掉，行就此再也露不出来。
+   * A request to reveal a row of the vault: the ancestor directories are
+   * expanded on the way first, the rest is left to the convergence effect
+   * below. Which layer is not read yet and whether the tree is complete is
+   * recomputed by chainLoadPlan on every tree change, so the request is an
+   * idempotent declaration and not a one-shot construction; a one-shot
+   * construction would cancel itself while the tree is not ready (first
+   * frame, just switched vault) and the row would never be revealed again.
    */
   const requestReveal = (relPath: string, opts: { rename: boolean }) => {
     setReveal({ relPath, rename: opts.rename });
@@ -81,9 +84,13 @@ export function Sidebar() {
     });
   };
 
-  // ⌘I (nav.focus-sidebar): 落到当前打开的笔记那一行——先把光标放在它最近的可见
-  // 祖先上（立刻有反馈、先能按 j/k），再把整行露出来，收敛后光标挪到文件本身。
-  // 请求取走即清空：重挂载（⌘\ 收起再展开）不会把历史请求当成新请求去抢焦点。
+  // ⌘I (nav.focus-sidebar): land on the row of the currently open note.
+  // The caret first goes to its closest visible ancestor (immediate feedback,
+  // j/k work right away), then the whole row is revealed and once the
+  // reveal converged the caret moves to the file itself. The request is
+  // cleared as soon as it is taken, so a remount (collapse the sidebar with
+  // ⌘\ and expand it again) does not treat a stale request as a new one and
+  // steal the focus.
   useEffect(() => {
     if (focusRequest === null) return;
     useAppStore.getState().clearSidebarFocus();
@@ -103,8 +110,7 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusRequest]);
 
-  // 新建文件夹后直接改名：同样先露出来，行就位后再挂内联输入框。
-  // 请求取走即清空，所以不会在侧栏重新挂载时复活。
+  // Rename right after creating a folder: reveal it first as well and attach the inline input once the row is in place. The request is cleared as soon as it is taken, so it does not come back to life when the sidebar remounts.
   useEffect(() => {
     if (!renameRequest) return;
     const relPath = renameRequest;
@@ -113,9 +119,7 @@ export function Sidebar() {
      
   }, [renameRequest]);
 
-  // reveal 收敛：行渲染出来就落光标（改名请求再挂输入框），然后清掉请求。
-  // 还没渲染出来就继续补祖先链——链上有层没进树时（首帧、刚换库）不下结论，
-  // 等树变化后重算；只有链齐了、这一行仍不在树里，才认定条目已被外部改名/删除。
+  // The reveal converges: once the row is rendered the caret lands on it (a rename request attaches the inline input), then the request is cleared. While it is not rendered yet the ancestor chain keeps being filled in; a level of the chain that is not in the tree (first frame, just switched vault) is no conclusion, it is recomputed when the tree changes. Only when the chain is complete and the row is still not in the tree is the entry considered renamed or deleted from the outside.
   useEffect(() => {
     if (!reveal) return;
     if (flattenVisible(tree, expanded).some((n) => n.relPath === reveal.relPath)) {
@@ -136,7 +140,7 @@ export function Sidebar() {
     if (rows.length === 0) return;
     const idx = cursor ? rows.findIndex((n) => n.relPath === cursor) : -1;
     const current = idx >= 0 ? rows[idx] : null;
-    // vim 键位（j/k/h/l）只在 Vim 模式下生效，与方向键等价
+    // The vim keys (j/k/h/l) only take effect in Vim mode and are equivalent to the arrow keys
     const { vim } = useAppStore.getState().settings;
     const key = vim ? { j: "ArrowDown", k: "ArrowUp", h: "ArrowLeft", l: "ArrowRight" }[e.key] ?? e.key : e.key;
     let nextPath: string | null = null;

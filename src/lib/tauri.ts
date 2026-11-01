@@ -12,7 +12,7 @@ export interface FileNode {
   name: string;
   relPath: string;
   kind: "file" | "dir";
-  /** null = 目录子层尚未加载（懒加载），调用 readDir 获取 */
+  /** null = the directory's children are not loaded yet (lazy), call readDir to get them */
   children: FileNode[] | null;
 }
 
@@ -24,7 +24,7 @@ export interface CreatedEntry {
 export interface VaultIndex {
   files: string[];
   dirs: string[];
-  /** 图片/PDF 等媒体文件(vault 相对路径),供 `![[x.png]]` 这类按文件名引用解析。 */
+  /** Media files such as images and PDFs (vault-relative path), used to resolve file-name references like `![[x.png]]`. */
   assets: string[];
 }
 
@@ -53,7 +53,7 @@ export interface SetImeOutcome {
 export type StudyContent =
   | { kind: "pdf"; path: string; title: string }
   | { kind: "url"; url: string; title: string }
-  /** 代码项目:`path` 是项目根的绝对路径(通常在 vault 之外)。 */
+  /** Code project: `path` is the absolute path of the project root (usually outside the vault). */
   | { kind: "code"; path: string; title: string };
 
 export interface AgentConfig {
@@ -62,13 +62,13 @@ export interface AgentConfig {
   base_url: string;
   api_key: string;
   max_tokens: number;
-  /** 模型上下文窗口(tokens),用于显示占用率。 */
+  /** The model's context window (tokens), used to show the occupancy. */
   context_window: number;
   mcp_servers: Record<string, unknown>;
   skill_dirs: string[];
 }
 
-/** 内置词典的一条词条(选中翻译 → 单词)。 */
+/** One entry of the built-in dictionary (select-to-translate → word). */
 export interface DictEntry {
   word: string;
   phonetic: string;
@@ -77,8 +77,9 @@ export interface DictEntry {
 }
 
 /**
- * 一次选中翻译的结果。单词只查内置词典;未收录是 `miss`,不会自动调用 API。
- * 句子/短语才走 `sentence`。
+ * The result of one select-to-translate. A word is only looked up in the
+ * built-in dictionary; a word that is not listed is a `miss` and never falls
+ * back to an API call. Only sentences/phrases go to `sentence`.
  */
 export type TranslateSelection =
   | { kind: "word"; entry: DictEntry }
@@ -86,13 +87,13 @@ export type TranslateSelection =
   | { kind: "sentence"; translation: string }
   | { kind: "none" };
 
-/** 句子翻译 API 配置(独立于学习助手,存在 translate.json)。 */
+/** Sentence translation API config (independent of the study assistant, stored in translate.json). */
 export interface TranslateConfig {
   protocol: string;
   base_url: string;
   api_key: string;
   model: string;
-  /** 默认 false;开启后按协议发 think/thinking/enable_thinking。 */
+  /** false by default; when enabled, think/thinking/enable_thinking is sent according to the protocol. */
   thinking: boolean;
   timeout_ms: number;
   extra_body: Record<string, unknown>;
@@ -109,11 +110,11 @@ export interface SessionInfo {
   skills: SkillInfo[];
   mcpTools: string[];
   mcpErrors: string[];
-  /** 本会话实际使用的模型配置(设置改了也不影响已开会话)。 */
+  /** The model config actually used by this session (changing the settings does not affect an open session). */
   model?: SessionModelConfig;
 }
 
-/** 会话级模型配置快照(写进会话记录第一行,恢复时按它继续)。 */
+/** The session-level model config snapshot (written into the first line of the session record; a restored session continues with it). */
 export interface SessionModelConfig {
   provider: string;
   model: string;
@@ -123,8 +124,10 @@ export interface SessionModelConfig {
 }
 
 /**
- * 辅助会话:从某个会话的第 `items` 条历史(前缀,含该条)分叉出一条新会话。
- * 原会话不动;`items` 来自 turn_end/error 事件携带的后端历史条数。
+ * Auxiliary session: forks a new session from the `items`-th history entry
+ * (a prefix, including that entry) of some session. The original session is
+ * left untouched; `items` comes from the backend history count carried by
+ * the turn_end/error events.
  */
 export interface AgentForkSpec {
   from: string;
@@ -136,21 +139,21 @@ export type AgentEvent =
   | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; id: string; name: string; input: unknown }
   | { type: "tool_end"; id: string; ok: boolean; output: string; images?: AgentImage[] }
-  /** 一次模型请求的 token 用量;保留最新一条 = 当前上下文占用。 */
+  /** The token usage of one model request; only the latest one is kept = the current context occupancy. */
   | { type: "usage"; input: number; output: number }
   | { type: "turn_end"; reason: string; items: number }
   | { type: "error"; message: string; items: number };
 
-/** 收进 vault 的 PDF(`<vault>/pdfs/<stem>.pdf`)。 */
+/** A PDF imported into the vault (`<vault>/pdfs/<stem>.pdf`). */
 export interface ImportedPdf {
   pdfPath: string;
-  /** vault 相对路径(历史记录展示/跨仓迁移用)。 */
+  /** Vault-relative path (for the history list / cross-vault migration). */
   relPath: string;
   title: string;
 }
 
 // ---------------------------------------------------------------------------
-// Python:markdown 内嵌代码块运行 / ty LSP / uv 环境
+// Python: markdown embedded code block runs / ty LSP / uv environments
 // ---------------------------------------------------------------------------
 
 export type PythonEnvKind = "config" | "venv" | "uv" | "system";
@@ -200,7 +203,7 @@ export interface PythonUvOutcome {
   ranInit: boolean;
 }
 
-/** 后端推流事件(python-run-output)。 */
+/** The backend's streaming event (python-run-output). */
 export interface PythonRunOutputEvent {
   runId: number;
   mdPath: string;
@@ -208,7 +211,7 @@ export interface PythonRunOutputEvent {
   text: string;
 }
 
-/** 后端收尾事件(python-run-exit)。 */
+/** The backend's finishing event (python-run-exit). */
 export interface PythonRunExitEvent {
   runId: number;
   mdPath: string;
@@ -218,13 +221,13 @@ export interface PythonRunExitEvent {
   timedOut: boolean;
 }
 
-/** ty 转发的原始 LSP 诊断(python-lsp-diagnostics),行列是 UTF-16 单位。 */
+/** The raw LSP diagnostics forwarded by ty (python-lsp-diagnostics); line and column are in UTF-16 units. */
 export interface PythonLspDiagnosticEvent {
   mdPath: string;
   diagnostics: unknown[];
 }
 
-/** 中栏内嵌网页预览的占位矩形(逻辑像素,相对窗口内容区左上角)。 */
+/** The placeholder rectangle of the embedded web preview in the middle column (logical pixels, relative to the top-left of the window's content area). */
 export interface PreviewBounds {
   x: number;
   y: number;
@@ -232,7 +235,7 @@ export interface PreviewBounds {
   height: number;
 }
 
-/** 一份学习材料的私有目录(`<vault>/.bnote/materials/...`)。 */
+/** The private directory of one study material (`<vault>/.bnote/materials/...`). */
 export interface MaterialInfo {
   kind: "pdfs" | "webpages" | "wxreads";
   dir: string;
@@ -240,22 +243,22 @@ export interface MaterialInfo {
   title: string;
 }
 
-/** 一份已保存的会话(文件元信息;正文按需读)。 */
+/** One saved session (file metadata; the body is read on demand). */
 export interface SavedSessionMeta {
   id: string;
   title: string;
-  /** 分叉来源会话的文件 id;主会话为 null(恢复时据此还原会话家族)。 */
+  /** The file id of the session this one was forked from; null for the main session (the session family is restored from it). */
   parent: string | null;
-  /** 辅助会话的来源消息摘要。 */
+  /** The summary of the source message of an auxiliary session. */
   basedOn: string | null;
-  /** 分叉时复制过来的前缀条数;自有消息从这一条起算。 */
+  /** The number of prefix entries copied over when forking; the session's own messages count from this one on. */
   forkAt: number | null;
   createdAt: number;
   updatedAt: number;
   bytes: number;
 }
 
-/** 模型侧历史条目,恢复会话时回传给后端(`agent_start_session.history`)。 */
+/** A model-side history entry; sent back to the backend when a session is restored (`agent_start_session.history`). */
 export interface AgentChatItem {
   type: "message";
   role: "user" | "assistant";
@@ -268,9 +271,9 @@ export type AgentContentBlock =
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean };
 
-/** bblog 博客服务(创作模式发布目标)。 */
+/** The bblog blog service (the publishing target of creative mode). */
 export const bblogApi = {
-  /** 栏目树(公开;手工目录与前端创建的栏目同权)。 */
+  /** The section tree (public; hand-made directories and front-end created sections have the same weight). */
   sections: (server: string) => invoke<BblogSections>("bblog_sections", { server }),
   publish: (input: {
     server: string;
@@ -309,93 +312,98 @@ export const agentApi = {
     study: StudyContent | null,
     fork?: AgentForkSpec,
     history?: AgentChatItem[],
-    /** 恢复/分叉:沿用源会话的模型配置;不传则用当前保存的配置。 */
+    /** Restore/fork: keep the model config of the source session; when omitted, the currently saved config is used. */
     model?: SessionModelConfig,
-    /** "creative" = 创作模式(带工具/skill/MCP);省略 = 学习模式纯问答。 */
+    /** "creative" = creative mode (with tools/skill/MCP); omitted = study mode, plain question answering only. */
     mode?: "study" | "creative",
   ) =>
     invoke<SessionInfo>("agent_start_session", { study, fork, history, model, mode }),
-  /** 磁盘上当前可用的技能清单(设置页与输入框 / 补全)。 */
+  /** The list of skills currently available on disk (settings page and input field / completion). */
   listSkills: () => invoke<SkillInfo[]>("agent_list_skills"),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
   history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
-  /** 解析/创建一份材料的落盘目录(批注 + 会话记录)。 */
+  /** Resolve/create the on-disk directory of one material (annotations + session records). */
   materialEnsure: (study: StudyContent) =>
     invoke<MaterialInfo>("study_material_ensure", { study }),
-  /** 某材料下保存过的会话(新的在前)。 */
+  /** The sessions saved under one material (newest first). */
   sessionsList: (relDir: string) =>
     invoke<SavedSessionMeta[]>("study_sessions_list", { relDir }),
-  /** 把模型生成的标题写回会话记录第一行的元数据行。 */
+  /** Write the model-generated title back into the metadata line of the session record's first line. */
   setSessionTitle: (relDir: string, id: string, title: string) =>
     invoke<void>("study_session_set_title", { relDir, id, title }),
   /**
-   * 用某条会话自己的第一句话让模型起标题(一次短请求,不注册会话、不进
-   * 历史)。失败由调用方保留本地截断标题。
+   * Let the model name the session from its own first sentence (one short
+   * request; it registers no session and enters no history). On failure the
+   * caller keeps the locally truncated title.
    */
   generateTitle: (
     text: string,
-    /** 会话的模型配置快照(恢复的会话按它继续,标题也用它)。 */
+    /** The session's model config snapshot (a restored session continues with it, and the title uses it too). */
     model?: SessionModelConfig,
   ) => invoke<string>("agent_generate_title", { text, model }),
   setCurrentNote: (path: string | null) =>
     invoke<void>("agent_set_current_note", { path }),
   /**
-   * 把 PDF 收进材料目录(`.bnote/materials/pdfs/<拼音目录>/<原文件名>`),
-   * 与它的批注/会话放在一起;同一份文件重复导入直接打开已有副本。
+   * Import the PDF into the materials directory
+   * (`.bnote/materials/pdfs/<pinyin-dir>/<original-file-name>`), next to its
+   * annotations/sessions; importing the same file again opens the existing
+   * copy.
    */
   importPdf: (pdfPath: string, title?: string) =>
     invoke<ImportedPdf>("study_import_pdf", { pdfPath, title }),
   /**
-   * 中栏内嵌网页预览(主窗口的子 webview,原生视图盖在占位元素上)。
-   * 首次调用创建、之后调用只更新矩形并重新导航。`annotationScript` 是页面
-   * 内的批注运行时(注册成初始化脚本,每次导航都会重新安装)。
+   * The embedded web preview of the middle column (a child webview of the
+   * main window, with the native view covering the placeholder element).
+   * The first call creates it, later calls only update the rectangle and
+   * navigate again. `annotationScript` is the in-page annotation runtime
+   * (registered as an initialization script, so it is reinstalled on every
+   * navigation).
    */
   showStudyPreview: (url: string, bounds: PreviewBounds, annotationScript: string) =>
     invoke<void>("show_study_preview", { url, bounds, annotationScript }),
-  /** 只更新内嵌预览的位置/尺寸(窗口缩放、拖动分隔线时)。 */
+  /** Only update the position/size of the embedded preview (window resize, dragging the splitter). */
   setStudyPreviewBounds: (bounds: PreviewBounds) =>
     invoke<void>("set_study_preview_bounds", { bounds }),
-  /** 原生视图永远盖在 DOM 之上,HTML 浮层打开时要把它藏起来。 */
+  /** The native view always covers the DOM, so it has to be hidden while an HTML overlay is open. */
   setStudyPreviewVisible: (visible: boolean) =>
     invoke<void>("set_study_preview_visible", { visible }),
-  /** 网页批注工具:高亮 / 文字批注;null 退出(页面内切换光标与选中行为)。 */
+  /** The web annotation tool: highlight / text note; null exits (the page switches between cursor and selection behaviour). */
   setStudyPreviewAnnotationMode: (mode: "highlight" | "note" | null) =>
     invoke<void>("set_study_preview_annotation_mode", { mode }),
-  /** 网页选中翻译总开关(批注模式优先:进入批注后页面不再响应翻译)。 */
+  /** The master switch for select-to-translate in the web page (annotation mode wins: once annotating, the page no longer responds to translation). */
   setStudyPreviewTranslate: (enabled: boolean) =>
     invoke<void>("set_study_preview_translate", { enabled }),
-  /** 把翻页步长推给页内运行时(键盘翻页与上半屏渐变共用)。 */
+  /** Push the paging step to the in-page runtime (shared by keyboard paging and the top-half fade). */
   setStudyPreviewReadStep: (step: number) =>
     invoke<void>("set_study_preview_read_step", { step }),
-  /** 把命令层的翻页绑定推给页内运行时(网页获得焦点时也能用自定义快捷键)。 */
+  /** Push the command layer's paging bindings to the in-page runtime (so custom keybindings work while the web page has focus). */
   setStudyPreviewReadKeys: (prev: string[], next: string[]) =>
     invoke<void>("set_study_preview_read_keys", { prev, next }),
-  /** 把「要转回主窗口」的阅读区快捷键推给页内运行时(原生子 webview 的按键
-   *  不冒泡:页内匹配后经 title 通道上报)。 */
+  /** Push the reading region's keybindings that "have to go back to the main window" to the in-page runtime (the keys of the native child webview do not bubble: the page matches them and reports over the title channel). */
   setStudyPreviewShortcuts: (keys: string[]) =>
     invoke<void>("set_study_preview_shortcuts", { keys }),
-  /** 内嵌网页的页面缩放(1 = 100%;浏览器级缩放,文字重排)。 */
+  /** The page zoom of the embedded web page (1 = 100%; browser-level zoom, text reflows). */
   setStudyPreviewZoom: (zoom: number) =>
     invoke<void>("set_study_preview_zoom", { zoom }),
-  /** 把键盘焦点交给内嵌网页(切到阅读区用)。 */
+  /** Hand the keyboard focus to the embedded web page (used when switching to the reading region). */
   focusStudyPreview: () => invoke<void>("focus_study_preview"),
-  /** 焦点在主窗口时,把一次翻页转给内嵌网页。 */
+  /** Forward one page turn to the embedded web page while the focus is in the main window. */
   scrollStudyPreview: (delta: 1 | -1) =>
     invoke<void>("scroll_study_preview", { delta }),
-  /** 把仓库里的锚点推回页面(页面按 id 合并,不会覆盖新数据)。 */
+  /** Push the vault's anchors back into the page (the page merges them by id and does not overwrite new data). */
   mergeStudyPreviewAnnotations: (url: string, annotations: unknown[]) =>
     invoke<void>("merge_study_preview_annotations", { url, annotations }),
-  /** 关掉内嵌预览(离开学习模式 / 换内容)。 */
+  /** Close the embedded preview (leaving study mode / changing the content). */
   closeStudyPreview: () => invoke<void>("close_study_preview"),
-  /** 创作模式:中栏实时预览(原生子 webview 加载 preview_html 落的快照)。
-   *  首次调用创建、之后换 URL 重载并更新矩形。 */
+  /** Creative mode: the live preview of the middle column (the native child webview loads the snapshot written by preview_html).
+   *  The first call creates it, later calls reload on a new URL and update the rectangle. */
   showCreativePreview: (url: string, bounds: PreviewBounds) =>
     invoke<void>("show_creative_preview", { url, bounds }),
   setCreativePreviewBounds: (bounds: PreviewBounds) =>
     invoke<void>("set_creative_preview_bounds", { bounds }),
-  /** 原生视图盖在 DOM 之上:HTML 弹层(设置/发布对话框)打开时要藏起来。 */
+  /** The native view covers the DOM: it has to be hidden while an HTML overlay (settings / publish dialog) is open. */
   setCreativePreviewVisible: (visible: boolean) =>
     invoke<void>("set_creative_preview_visible", { visible }),
   closeCreativePreview: () => invoke<void>("close_creative_preview"),
@@ -405,8 +413,9 @@ export const agentApi = {
 };
 
 /**
- * 选中翻译。单词/句子的分流和"单词未收录不降级到 API"都由 Rust 决定,
- * 前端只送选中文本,拿回一个判别联合结果。
+ * Select-to-translate. The word/sentence split and the "an unlisted word
+ * never falls back to the API" rule are decided by Rust; the front end only
+ * sends the selected text and gets a discriminated union back.
  */
 export const translateApi = {
   selection: (text: string) =>
@@ -414,7 +423,7 @@ export const translateApi = {
   getConfig: () => invoke<TranslateConfig>("translate_get_config"),
   saveConfig: (config: TranslateConfig) =>
     invoke<void>("translate_save_config", { config }),
-  /** 用表单当前值测试连接(不落盘)。 */
+  /** Test the connection with the current form values (nothing is written to disk). */
   test: (config: TranslateConfig) =>
     invoke<string>("translate_test", { config }),
 };
@@ -427,14 +436,14 @@ export const api = {
   listFiles: () => invoke<VaultIndex>("list_files"),
 
   readFile: (path: string) => invoke<string>("read_file", { path }),
-  /** 二进制读(base64):PDF 阅读器用,`read_file` 会按 UTF-8 解码而损坏 PDF。 */
+  /** Binary read (base64): used by the PDF reader, because `read_file` decodes as UTF-8 and would corrupt the PDF. */
   readFileBase64: (path: string) => invoke<string>("read_file_base64", { path }),
   writeFile: (path: string, contents: string) =>
     invoke<void>("write_file", { path, contents }),
-  /** 追加写入(会话记录):不清空已有内容,文件不存在则创建。 */
+  /** Append to a file (session records): the existing content is not cleared, and the file is created when it does not exist. */
   appendFile: (path: string, contents: string) =>
     invoke<void>("append_file", { path, contents }),
-  /** 二进制写盘(画布导出的 PNG 预览);base64 编码走 JSON,UTF-8 文本请用 writeFile。 */
+  /** Binary write (the PNG preview exported by the canvas); the base64 payload travels as JSON, use writeFile for UTF-8 text. */
   writeFileBase64: (path: string, contentsBase64: string) =>
     invoke<void>("write_file_base64", { path, contentsBase64 }),
   createFile: (parent: string, name: string) =>
@@ -464,12 +473,12 @@ export const api = {
   setInputSource: (id: string) => invoke<SetImeOutcome>("set_input_source", { id }),
 
   // ---- python ----
-  /** 运行一篇笔记的虚拟 python 文本(行对齐 + main 守卫由前端合成)。 */
+  /** Run the virtual python text of a note (the line alignment and the main guard are synthesized by the front end). */
   pythonRun: (mdPath: string, code: string) =>
     invoke<PythonRunStarted>("python_run", { mdPath, code }),
   pythonRunCancel: (mdPath: string) => invoke<boolean>("python_run_cancel", { mdPath }),
   pythonGetInfo: (mdPath: string) => invoke<PythonInfo>("python_get_info", { mdPath }),
-  /** 合并单项目配置;传 null 的字段不动,空串清除。 */
+  /** Merge one project config; a field passed as null stays untouched, an empty string clears it. */
   pythonSetProjectConfig: (mdPath: string, patch: PythonProjectConfig) =>
     invoke<PythonProjectConfig>("python_set_project_config", {
       mdPath,
@@ -479,7 +488,7 @@ export const api = {
     }),
   pythonLspSync: (mdPath: string, text: string) =>
     invoke<PythonLspSyncResult>("python_lsp_sync", { mdPath, text }),
-  /** 转发补全/hover 等只读交互请求;uri 由后端注入。项目 LSP 关着或没起时回 null。 */
+  /** Forward read-only interaction requests such as completion/hover; the uri is injected by the backend. When the project LSP is off or not running, null comes back. */
   pythonLspRequest: (mdPath: string, method: string, params: unknown) =>
     invoke<unknown>("python_lsp_request", { mdPath, method, params }),
   pythonLspClose: (mdPath: string) => invoke<void>("python_lsp_close", { mdPath }),
@@ -487,32 +496,32 @@ export const api = {
   pythonUvCreate: (mdPath: string) => invoke<PythonUvOutcome>("python_uv_create", { mdPath }),
 };
 
-/** 专注模式(伪全屏锁 + 硬锁)的原生状态。字段名与 Rust 侧一致。 */
+/** The native state of focus mode (fake full-screen lock + hard lock). The field names match the Rust side. */
 export interface FocusStatus {
-  /** 伪全屏锁是否开着。 */
+  /** Whether the fake full-screen lock is on. */
   locked: boolean;
-  /** 硬锁是否武装(用户打开了开关,表示"专注期间吞系统级快捷键")。 */
+  /** Whether the hard lock is armed (the user turned the switch on, meaning "swallow system-level shortcuts during focus"). */
   hard_lock: boolean;
-  /** 硬锁是否正在拦截:只有一段番茄钟在跑的时候才为真。 */
+  /** Whether the hard lock is currently intercepting: only true while a pomodoro is running. */
   hard_active: boolean;
-  /** 辅助功能权限是否已授予——硬锁的前提。 */
+  /** Whether the accessibility permission has been granted — the prerequisite of the hard lock. */
   trusted: boolean;
-  /** 硬锁的 tap 见过的按键事件数(证明 tap 活着)。 */
+  /** The number of key events the hard lock's tap has seen (proof that the tap is alive). */
   seen: number;
-  /** 硬锁吞掉的按键事件数。 */
+  /** The number of key events swallowed by the hard lock. */
   swallowed: number;
 }
 
 export const focusApi = {
   status: () => invoke<FocusStatus>("focus_status"),
-  /** 进锁:伪全屏 + 层级独占 + 焦点抢回。 */
+  /** Enter the lock: fake full-screen + exclusive window level + focus taken back. */
   lock: () => invoke<FocusStatus>("focus_lock"),
-  /** 退锁:把窗口的层级/装饰/几何原样放回去。 */
+  /** Leave the lock: put the window's level / decorations / geometry back exactly as they were. */
   unlock: () => invoke<FocusStatus>("focus_unlock"),
-  /** 武装/解除硬锁。只是意向:真正的拦截发生在番茄钟期间。 */
+  /** Arm/disarm the hard lock. It is only an intention: the real interception happens while the pomodoro runs. */
   setHardLock: (enabled: boolean) =>
     invoke<FocusStatus>("focus_set_hard_lock", { enabled }),
-  /** 开始/停止真正拦截(番茄钟跑起来时开,停下来时关)。 */
+  /** Start/stop the real interception (on when the pomodoro starts, off when it stops). */
   setHardLockActive: (active: boolean) =>
     invoke<FocusStatus>("focus_set_hard_lock_active", { active }),
 };

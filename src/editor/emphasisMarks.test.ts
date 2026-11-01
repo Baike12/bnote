@@ -6,12 +6,15 @@ import { GFM } from "@lezer/markdown";
 import { buildEmphasisMarks } from "./emphasisMarks";
 
 /**
- * 锁住「公式里的 `_` 不影响外面」这条根因规则:
+ * Locks the root rule "a `_` inside a formula does not leak outside":
  *
- * lezer 不认识 `$$…$$`,会把公式里的下标 `_` 当成斜体标记;两个不同公式里的
- * `_` 一旦配成一对 Emphasis,中间的整段正文(跨十几行)都会被染色。文本样式
- * 因此从 HighlightStyle 的 tag 挪到 buildEmphasisMarks:节点两端只要有一端落在
- * 公式里就整段作废,而真正包住公式的强调(两端都在正文)不受影响。
+ * lezer does not know `$$…$$` and takes a subscript `_` inside a formula for an
+ * italic marker; once two `_` from two different formulas pair up into one
+ * Emphasis node, the whole body text between them (spanning a dozen lines)
+ * gets painted. The text styling therefore moved from the HighlightStyle tags
+ * into buildEmphasisMarks: if either end of a node falls inside a formula the
+ * whole node is dropped, while a genuine emphasis that wraps a formula (both
+ * ends in the body) is unaffected.
  */
 function stateOf(doc: string): EditorState {
   const state = EditorState.create({

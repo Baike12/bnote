@@ -1,11 +1,15 @@
 /**
- * 可配置翻页快捷键的落点:PDF 阅读器 / 网页阅读器把自己的翻页函数注册进来,
- * 命令层只管调用,不认识具体阅读器。两种内容共用同一组命令与键位,但各占
- * 一个槽位:切换内容时各自的清理只归还自己那一份,不会把对方刚注册的覆盖掉。
+ * Where the configurable page-turn shortcut lands: the PDF reader / web reader
+ * registers its own page-turn function here, and the command layer only
+ * calls it without knowing the concrete reader. Both content kinds share the
+ * same commands and keybindings but occupy one slot each: when the content
+ * switches, each one's cleanup only returns its own slot and never overwrites
+ * what the other just registered.
  */
 export interface PdfNavHandlers {
-  /** 上下文是否允许翻页(框选进行中、弹窗打开时不行)。焦点的归属由命令分发层
-   *  按按键是否带修饰键判断,这里不再重复。 */
+  /** Whether the context allows turning the page (not while a selection is
+   *  being made or a dialog is open). Which element owns the focus is decided
+   *  by the command dispatch layer from the modifier keys, not repeated here. */
   canFlip: () => boolean;
   prev: () => void;
   next: () => void;
@@ -23,11 +27,11 @@ export function setWebNavHandlers(next: PdfNavHandlers | null): void {
 }
 
 function activeHandlers(): PdfNavHandlers | null {
-  // 同一时刻只有一种学习内容;PDF 优先只是防御两个槽位短暂并存。
+  // Only one kind of study content is active at a time; preferring PDF only defends against the two slots briefly coexisting.
   return pdfHandlers ?? webHandlers;
 }
 
-/** 命令的 `when`:没有阅读器、或上下文不允许翻页时,按键原样放行。 */
+/** The command's `when`: with no reader, or when the context forbids turning the page, the key passes through unchanged. */
 export function canFlipPdfPage(): boolean {
   const handlers = activeHandlers();
   return handlers !== null && handlers.canFlip();

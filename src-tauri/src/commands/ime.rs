@@ -37,7 +37,8 @@ pub struct SetImeOutcome {
     pub fallback_used: bool,
 }
 
-/// 代数戳（见 set_impl）:verify_or_fallback 的后台链属于哪次切换。
+/// Generation stamp (see set_impl): which switch the verify_or_fallback
+/// background chain belongs to.
 #[cfg(target_os = "macos")]
 static SWITCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -77,21 +78,25 @@ mod tis {
             return Vec::new();
         }
         let arr = CFArray::<CFType>::wrap_under_get_rule(list);
-        // 迭代只借用数组里的元素（ItemRef）：逐个 clone 成自己持有的一份
-        // （CFType::clone 走 CFRetain），否则数组一释放这些引用就悬空了。
+        // Iteration only borrows the array's elements (ItemRef): clone each into
+        // an owned copy (CFType::clone retains), else they dangle with the array.
         arr.into_iter().map(|item| (*item).clone()).collect()
     }
 
-    /* ---- 输入源引用缓存 ----------------------------------------------------
-       TIS 里最贵的一步是「枚举全部输入源」：TISCreateInputSourceList + 每个源读
-       4 个属性（本机实测冷启动 ~33ms、热 ~1-2ms）。而 select 每次模式切换都要
-       走一次，且必须挂在苹果主线程上（见 on_main）——枚举一次就白占一次主线程。
-       输入源的集合在一次会话内基本不变，所以整份缓存下来：select 只在缓存未
-       命中、或选中失败（源的集合变了）时才重新枚举。 ------------------------ */
+    /* ---- input source reference cache -------------------------------------
+       The most expensive step in TIS is "enumerate every input source":
+       TISCreateInputSourceList plus reading 4 properties per source (measured
+       on this machine: ~33 ms cold, ~1-2 ms warm). select() runs on every mode
+       switch and must run on the Apple main thread (see on_main), so every
+       enumeration wastes a main thread slot. The set of input sources barely
+       changes within a session, so cache the whole thing: select() only
+       re-enumerates on a cache miss, or when the selection failed (the source
+       set changed). ---------------------------------------------------------- */
 
     struct Sources(Mutex<Option<HashMap<String, CFType>>>);
-    // CFType 是 +1 引用计数对象，retain/release 本身是线程安全的；这里只在
-    // 主线程（on_main）读写，加 Mutex 只是为了让静态类型成立。
+    // CFType is a +1 reference-counted object and retain/release are themselves
+    // thread safe; this is only read and written on the main thread (on_main),
+    // and the Mutex exists purely to satisfy the static types.
     unsafe impl Send for Sources {}
     unsafe impl Sync for Sources {}
 
@@ -100,17 +105,18 @@ mod tis {
         CACHE.get_or_init(|| Sources(Mutex::new(None)))
     }
 
-    /// 枚举次数。门禁用：切换一次模式不该引起枚举（见 tests::cache_avoids_reenumeration）。
+    /// Enumeration count. Gate use: one mode switch must not cause an
+    /// enumeration (see tests::cache_avoids_reenumeration).
     static ENUMERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-    /// 本进程以来枚举输入源的次数（测试用）。
+    /// Number of input source enumerations since the process started (tests).
     #[cfg(test)]
     pub fn enumeration_count() -> u64 {
         ENUMERATIONS.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// 单遍枚举全部可选键盘输入源，保持系统给出的顺序：
-    /// (id, 展示名, 是否 CJK, 持有的 CFType 引用)。
+    /// Enumerates every selectable keyboard input source in one pass, keeping
+    /// the order the system gives: (id, display name, is CJK, owned CFType).
     fn enumerate_sources() -> Vec<(String, String, bool, CFType)> {
         ENUMERATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut out = Vec::new();
@@ -141,7 +147,8 @@ mod tis {
         out
     }
 
-    /// 枚举一次并替换缓存；返回本次枚举的展示信息（顺序同系统枚举）。
+    /// Enumerates once and replaces the cache; returns the display info of this
+    /// enumeration (same order as the system enumeration).
     fn refresh_sources() -> Vec<(String, String, bool)> {
         let entries = enumerate_sources();
         let mut map = HashMap::with_capacity(entries.len());
@@ -156,7 +163,8 @@ mod tis {
         info
     }
 
-    /// 在持有的缓存里按 id 取引用并执行 `f`（锁内执行，引用在整个调用期间有效）。
+    /// Looks the reference up by id in the owned cache and runs `f` on it (under
+    /// the lock, so the reference stays valid for the whole call).
     fn with_source<F, R>(id: &str, f: F) -> Option<R>
     where
         F: FnOnce(CFTypeRef) -> R,
@@ -198,8 +206,9 @@ mod tis {
             .unwrap_or(false)
     }
 
-    /// Enumerates enabled, selectable keyboard input sources. 设置面板用；顺手把
-    /// select() 走的会话缓存一并刷成这次的结果。
+    /// Enumerates enabled, selectable keyboard input sources. Used by the
+    /// settings panel; also refreshes the session cache that select() reads to
+    /// this enumeration's result.
     pub fn selectable_sources() -> Vec<crate::commands::ime::InputSourceInfo> {
         refresh_sources()
             .into_iter()
@@ -221,9 +230,10 @@ mod tis {
 
     /// Selects a source by id. Ok(true) when it was already active.
     ///
-    /// 走会话缓存：命中时整条路径只有一次 TISCopyCurrentKeyboardInputSource +
-    /// 一次 TISSelectInputSource，不再枚举全部输入源。解析失败（源刚被禁用或
-    /// 新装上）才重新枚举一次并重试。
+    /// Goes through the session cache: on a hit the whole path is one
+    /// TISCopyCurrentKeyboardInputSource plus one TISSelectInputSource, with no
+    /// enumeration of all input sources. Only a lookup failure (the source was
+    /// just disabled, or newly installed) re-enumerates once and retries.
     pub fn select(id: &str) -> Result<bool, String> {
         if current_source_id().as_deref() == Some(id) {
             return Ok(true);
@@ -321,10 +331,13 @@ async fn current_impl(app: AppHandle) -> CmdResult<String> {
 #[cfg(target_os = "macos")]
 async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
     spawn_blocking(move || {
-        // 代数戳:每次真实切换请求推进一格。verify_or_fallback 的后台链
-        // (120ms 后复查 → 重选 → macism)拿到自己的代数,一旦有更新的切换
-        // 开始就全部作废——否则慢链会把用户已经切走的目标又重选回来,输入
-        // 源在 normal/insert 快速翻转时来回弹,读作"切模式卡顿"。
+        // Generation stamp: every real switch request advances it by one. The
+        // verify_or_fallback background chain (re-check after 120 ms -> reselect
+        // -> macism) captures its own generation; once a newer switch starts,
+        // the whole chain is void. Otherwise the slow chain reselects a target
+        // the user already moved away from, and the input source bounces back
+        // and forth on fast normal/insert flips, which reads as "mode switch
+        // lag".
         let seq = SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
         let id_for_select = id.clone();
         let already = on_main(&app, move || tis::select(&id_for_select));
@@ -385,7 +398,7 @@ fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
         }
     }
     let id_owned = id.to_string();
-    // is_cjk_source 返回裸 bool,on_main 只有一层 Result。
+    // is_cjk_source returns a bare bool, so on_main adds only one Result layer.
     let cjk = on_main(app, move || tis::is_cjk_source(&id_owned))?;
     if let Ok(mut map) = cache.lock() {
         map.insert(id.to_string(), cjk);
@@ -398,9 +411,11 @@ fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
 /// temporary-window workaround forces the switch. TIS reads here also go
 /// through the main thread (see `on_main`).
 ///
-/// `seq` 是发起本次切换时的代数:任何一步动作(重选/macism)之前都要确认没有
-/// 更新的切换开始——快速 normal↔insert 翻转时,慢链把旧目标重选回来会让输入
-/// 源来回弹,前端毫无感知(它以为切好了)。
+/// `seq` is the generation captured when this switch started: before every
+/// action (reselect/macism) confirm no newer switch has begun. On fast
+/// normal<->insert flips a slow chain that reselects the old target makes the
+/// input source bounce, and the front end cannot see it (it thinks the switch
+/// succeeded).
 #[cfg(target_os = "macos")]
 fn verify_or_fallback(app: AppHandle, target: String, seq: u64) {
     std::thread::spawn(move || {
@@ -411,7 +426,7 @@ fn verify_or_fallback(app: AppHandle, target: String, seq: u64) {
         for attempt in 0..2 {
             std::thread::sleep(Duration::from_millis(120));
             if SWITCH_SEQ.load(Ordering::SeqCst) != seq {
-                return; // 已有更新的切换:本次验证链整体作废
+                return; // A newer switch started: this verification chain is void
             }
             if current().as_deref() == Some(target.as_str()) {
                 return;
@@ -448,17 +463,21 @@ mod tests {
     use super::tis;
     use std::time::{Duration, Instant};
 
-    /// TIS 的缓存与枚举计数是进程级全局状态，两个测试必须串行跑。
+    /// The TIS cache and the enumeration count are process-wide global state,
+    /// so the two tests must run serially.
     static TIS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn lock() -> std::sync::MutexGuard<'static, ()> {
         TIS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 门禁：**切换一次模式不许重新枚举输入源**。枚举（TISCreateInputSourceList
-    /// + 每个源读 4 个属性）是 TIS 里最贵的一步，而它每次都挂在苹果主线程上
-    /// （见 on_main）——一次模式切换只该付「读当前源 + select」两次调用。枚举
-    /// 只允许发生在首次填充，以及缓存未命中/选失败（输入源集合变了）时重试。
+    /// Gate: **one mode switch must not re-enumerate the input sources**.
+    /// Enumeration (TISCreateInputSourceList plus reading 4 properties per
+    /// source) is the most expensive step in TIS, and it always lands on the
+    /// Apple main thread (see on_main), so a mode switch should only pay for
+    /// "read the current source + select". Enumeration is allowed only on the
+    /// first fill, and on a cache miss or a failed selection (the source set
+    /// changed).
     #[test]
     fn cache_avoids_reenumeration() {
         let _guard = lock();
@@ -520,8 +539,9 @@ mod tests {
         let r = tis::select(abc);
         println!("select ABC again: {r:?} (took {:?})", t3.elapsed());
 
-        // 稳态：每次模式切换都要付的就是这一段（缓存命中 → 只有
-        // TISCopyCurrentKeyboardInputSource + TISSelectInputSource，不枚举）。
+        // Steady state: this is what every mode switch costs (cache hit ->
+        // only TISCopyCurrentKeyboardInputSource + TISSelectInputSource, no
+        // enumeration).
         let mut warm = Vec::new();
         for i in 0..6 {
             let target = if i % 2 == 0 { sogou } else { abc };
@@ -536,7 +556,7 @@ mod tests {
             tis::enumeration_count()
         );
 
-        // 恢复测试前的输入法
+        // Restore the input source from before the test
         if let Some(orig) = current {
             let _ = tis::select(&orig);
         }

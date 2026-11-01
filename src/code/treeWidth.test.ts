@@ -6,7 +6,7 @@ import {
   TREE_MIN_WIDTH,
 } from "./treeWidth";
 
-/** 文件树宽度门禁:坏配置回落默认,拖动不会把编辑器挤没。 */
+/** The file tree width gate: a bad configuration falls back to the default, and dragging never squeezes the editor out. */
 describe("normalizeTreeWidth", () => {
   it("缺项/坏值回落默认宽度", () => {
     expect(normalizeTreeWidth(undefined)).toBe(TREE_DEFAULT_WIDTH);

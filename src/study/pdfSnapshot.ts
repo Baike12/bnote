@@ -1,17 +1,25 @@
 /**
- * 阅读区截图:把当前可见的 PDF 页面拼成一张图,直接送进学习助手输入框。
+ * Snapshot of the reading area: stitch the currently visible PDF pages into
+ * one image and hand it straight to the study assistant input box.
  *
- * 页面本来就是 pdf.js 画进 `<canvas>` 的(PdfViewer 每页一个),所以这里
- * 不需要系统截图权限,也不需要 html2canvas:新建一块画布,把可见的页面片段
- * 用 drawImage 搬过去。取景框 = 「滚动视口 ∩ 当前内容区 ∩ 页面列」:
- *   - 当前内容区 = 压暗遮罩(.pdf-read-shade)以下的部分:上方是刚读完的旧
- *     内容,截进去只会带偏模型;
- *   - 左侧目录栏(.pdf-outline)在页面列之外,自然不进图;
- *   - 页框阴影是 .pdf-page 的 CSS box-shadow,canvas 像素里根本不存在。
- * 护眼染色与高亮批注是 DOM 覆盖层(multiply),按同一坐标与颜色补画。
+ * The pages are drawn by pdf.js into `<canvas>` anyway (one per page in
+ * PdfViewer), so this needs neither system screen-recording permission nor
+ * html2canvas: create a canvas and move the visible page fragments into it
+ * with drawImage. The framing box = "scroll viewport ∩ current content region
+ * ∩ page column":
+ *   - the current content region is the part below the dimming shade
+ *     (.pdf-read-shade): above it is the content just read, and capturing it
+ *     would only mislead the model;
+ *   - the left outline column (.pdf-outline) lies outside the page column and
+ *     is left out for free;
+ *   - the page frame shadow is a CSS box-shadow on .pdf-page and does not
+ *     exist in canvas pixels at all.
+ * The eye-care tint and the highlight annotations are DOM overlays
+ * (multiply) and are repainted with the same coordinates and colors.
  *
- * 几何部分(planSnapshot)是纯函数,进 node 单测;DOM 采集与绘制在
- * PdfViewer 的注册回调里。
+ * The geometry part (planSnapshot) is a pure function and goes into the node
+ * unit tests; the DOM collection and painting live in PdfViewer's registered
+ * callback.
  */
 
 export interface SnapshotRect {
@@ -23,28 +31,28 @@ export interface SnapshotRect {
 
 export interface SnapshotAnnotation {
   kind: "highlight" | "note";
-  /** 整页比例坐标(见 pdfAnnotations.NormRect)。 */
+  /** Full page ratio coordinates (see pdfAnnotations.NormRect). */
   rects: { x: number; y: number; w: number; h: number }[];
 }
 
 export interface SnapshotPage {
-  /** 显示窗口(.pdf-page):设了「显示范围」时就是裁剪后的矩形。 */
+  /** The display window (.pdf-page): with a "display range" set it is the cropped rectangle. */
   box: SnapshotRect;
-  /** 整页(.pdf-page-full):canvas 与批注坐标的基准。 */
+  /** The whole page (.pdf-page-full): the reference for canvas and annotation coordinates. */
   full: SnapshotRect;
-  /** canvas 物理像素宽度;0 = 这一页还没渲染。 */
+  /** Canvas physical pixel width; 0 = this page has not been rendered yet. */
   pixels: number;
   annotations: SnapshotAnnotation[];
 }
 
 export interface PlannedPage {
-  /** SnapshotPage[] 的下标。 */
+  /** Index into SnapshotPage[]. */
   page: number;
-  /** 源矩形(canvas 物理像素)。 */
+  /** Source rectangle (canvas physical pixels). */
   src: SnapshotRect;
-  /** 目标矩形(输出画布像素)。 */
+  /** Destination rectangle (output canvas pixels). */
   dest: SnapshotRect;
-  /** 整页在输出画布里的像素矩形(批注按它换算)。 */
+  /** The whole page as a pixel rectangle in the output canvas (annotations are converted by it). */
   sheet: SnapshotRect;
   annotations: SnapshotAnnotation[];
 }
@@ -52,36 +60,38 @@ export interface PlannedPage {
 export interface SnapshotPlan {
   width: number;
   height: number;
-  /** 可见页共用的 DPR(canvas 像素 / CSS 像素)。 */
+  /** The DPR shared by the visible pages (canvas pixels / CSS pixels). */
   scale: number;
-  /** 输出左上角在视口坐标系里的位置。 */
+  /** Position of the output's top-left corner in viewport coordinates. */
   origin: { left: number; top: number };
   pages: PlannedPage[];
 }
 
 export interface SnapshotOptions {
   /**
-   * 「当前内容区」的上沿(视口坐标)。阅读区上半屏是压暗的旧内容
-   * (翻页分区用的阴影遮罩),那部分不进图;null = 整屏都是当前内容。
+   * Top edge of the "current content region" (viewport coordinates). The upper
+   * half of the reading area is dimmed old content (the shade mask used for
+   * the page-turn split) and is not captured; null = the whole screen is
+   * current content.
    */
   currentTop?: number | null;
 }
 
 export interface SnapshotColors {
-  /** 滚动区底色:页间空隙与页面外的视口底色。 */
+  /** Scroll area background: the gaps between pages and the viewport background outside the pages. */
   background: string;
-  /** 纸面底色;pdf.js 自己铺白,这层只盖住取整留下的缝。 */
+  /** Paper background; pdf.js paints white itself, this layer only covers the seams left by rounding. */
   paper: string;
-  /** 护眼染色;null = 没开护眼。 */
+  /** Eye-care tint; null = eye-care mode is off. */
   tint: string | null;
   highlight: string;
   note: string;
 }
 
-/** 比这更窄/更矮的可见碎片忽略(视口边缘的一两个像素不算内容)。 */
+/** Visible fragments narrower or shorter than this are ignored (one or two pixels at the viewport edge are not content). */
 export const MIN_VISIBLE_FRAGMENT = 2;
 
-/** DOM 元素的视口矩形 → SnapshotRect。 */
+/** The viewport rect of a DOM element -> SnapshotRect. */
 export function snapshotRect(el: Element): SnapshotRect {
   const r = el.getBoundingClientRect();
   return { left: r.left, top: r.top, width: r.width, height: r.height };
@@ -104,8 +114,9 @@ interface VisiblePage {
 }
 
 /**
- * 视口 → 取景用的区域:压暗层(旧内容)以上的部分切掉,只留当前内容区。
- * 切完空了就返回 null(没有可截的内容)。
+ * Viewport -> the region used for framing: everything above the dimming layer
+ * (the old content) is cut away, leaving only the current content region. An
+ * empty result returns null (nothing to capture).
  */
 export function currentRegion(
   viewport: SnapshotRect,
@@ -119,18 +130,22 @@ export function currentRegion(
 }
 
 /**
- * 视口 + 每页几何 → 取景与逐页搬运计划。返回 null 的三种情况:
- *   1. 没有任何页面与视口相交(没打开文档 / 全在视口外);
- *   2. 有页面可见但它的 canvas 还是 0 宽(刚跳页、刚缩放,渲染没完成);
- *   3. 压暗层盖住了整个视口,当前内容区是空的。
- * 调用方据此重试下一帧。
+ * Viewport + per-page geometry -> the framing and the per-page copy plan.
+ * There are three cases that return null:
+ *   1. no page intersects the viewport (no document open / all outside the
+ *      viewport);
+ *   2. a page is visible but its canvas is still 0 wide (just jumped to a
+ *      page, just zoomed, rendering not finished);
+ *   3. the dimming layer covers the whole viewport, so the current content
+ *      region is empty.
+ * The caller retries on the next frame in those cases.
  */
 export function planSnapshot(
   viewport: SnapshotRect,
   pages: SnapshotPage[],
   options: SnapshotOptions = {},
 ): SnapshotPlan | null {
-  // 取景只看当前内容区:阴影里是刚读完的旧内容,截进去只会带偏模型。
+  // Framing only looks at the current content region: the shade holds the content just read, capturing it would only mislead the model.
   const capture = currentRegion(viewport, options.currentTop);
   if (!capture) return null;
   const visible: VisiblePage[] = [];
@@ -150,7 +165,7 @@ export function planSnapshot(
   }
   if (visible.length === 0) return null;
 
-  // 横向只取页面列:目录栏在页面矩形之外。
+  // Horizontally only the page column is taken: the outline column lies outside the page rects.
   const left = Math.max(
     capture.left,
     Math.min(...visible.map((v) => v.page.box.left)),
@@ -159,7 +174,7 @@ export function planSnapshot(
     capture.left + capture.width,
     Math.max(...visible.map((v) => v.page.box.left + v.page.box.width)),
   );
-  // 纵向同时裁掉视口外的部分与页面外的底色(顶部/底部留白、短文档的空白)。
+  // Vertically both the part outside the viewport and the background outside the pages are cut away (top/bottom padding, the blank space of a short document).
   const top = Math.max(
     capture.top,
     Math.min(...visible.map((v) => v.page.box.top)),
@@ -210,7 +225,7 @@ export function planSnapshot(
   return { width, height, scale, origin: { left, top }, pages: planned };
 }
 
-/** 按计划把页面画布搬进输出画布;页面、批注、护眼染色的顺序与 DOM 一致。 */
+/** Move the page canvases into the output canvas following the plan; the order of pages, annotations and eye-care tint matches the DOM. */
 export function paintSnapshot(
   plan: SnapshotPlan,
   canvases: HTMLCanvasElement[],
@@ -276,8 +291,9 @@ export async function canvasToFile(canvas: HTMLCanvasElement): Promise<File> {
 }
 
 /**
- * 当前挂载的阅读器提供的截图入口。PdfViewer 在挂载/批注/护眼变化时注册,
- * 卸载时注销;命令层只调 capturePdfSnapshot。
+ * The snapshot entry point provided by the currently mounted reader. PdfViewer
+ * registers on mount and on annotation / eye-care changes and unregisters on
+ * unmount; the command layer only calls capturePdfSnapshot.
  */
 export type PdfSnapshotSource = () => Promise<File | null>;
 

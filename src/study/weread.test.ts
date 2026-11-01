@@ -13,7 +13,7 @@ describe("微信读书 URL 分类", () => {
     expect(isWereadUrl("https://weread.qq.com/")).toBe(true);
     expect(isWereadUrl("https://weread.qq.com/web/reader/abc#wechat_redirect")).toBe(true);
     expect(isWereadUrl("https://www.weread.qq.com/")).toBe(true);
-    // 伪装域名不是微信读书
+    // A look-alike domain is not WeRead
     expect(isWereadUrl("https://weread.qq.com.evil.com/")).toBe(false);
     expect(isWereadUrl("https://weread.qq.com.cn/")).toBe(false);
     expect(isWereadUrl("https://example.com/")).toBe(false);
@@ -25,13 +25,13 @@ describe("微信读书 URL 分类", () => {
     expect(isWereadReaderUrl("https://weread.qq.com/web/reader/ce032b305a9bc1ce0b0dd29")).toBe(
       true,
     );
-    // query 不影响路由判定
+    // The query does not affect the route decision
     expect(isWereadReaderUrl("https://weread.qq.com/web/reader/abc?kw=三体")).toBe(true);
-    // 书架 / 商城 / 详情页不算
+    // The shelf / the store / the detail page do not count
     expect(isWereadReaderUrl("https://weread.qq.com/")).toBe(false);
     expect(isWereadReaderUrl("https://weread.qq.com/#shelf")).toBe(false);
     expect(isWereadReaderUrl("https://weread.qq.com/web/bookDetail/abc")).toBe(false);
-    // 外站的同名路径也不算
+    // The same path on another site does not count either
     expect(isWereadReaderUrl("https://example.com/web/reader/abc")).toBe(false);
   });
 
@@ -49,7 +49,7 @@ describe("normalizeWereadRoute(title 通道负载)", () => {
     expect(
       normalizeWereadRoute({ url: "https://weread.qq.com/web/reader/abc", title: "三体" }),
     ).toEqual({ url: "https://weread.qq.com/web/reader/abc", title: "三体" });
-    // 书名允许为空(首报时书名还没提取到)
+    // The title may be empty (at the first report the title has not been extracted yet)
     expect(
       normalizeWereadRoute({ url: "https://weread.qq.com/web/reader/abc", title: "" }),
     ).toEqual({ url: "https://weread.qq.com/web/reader/abc", title: "" });
@@ -74,32 +74,32 @@ describe("注入脚本", () => {
     expect(WEREAD_SCRIPT).toContain("weread.qq.com");
     expect(WEREAD_SCRIPT).toContain(WEREAD_TITLE_PREFIX);
     expect(WEREAD_SCRIPT).toContain("/web/reader/");
-    // weread 的真实类名是下划线风格(2026-10 实站确认);驼峰的
-    // readerTopBarTitleLink 不存在,是初版的书名提取 bug。
+    // WeRead's real class names are underscore-style (confirmed on the live site in 2026-10); the camel-case
+    // readerTopBarTitleLink does not exist, it was the title extraction bug of the first version.
     expect(WEREAD_SCRIPT).toContain(".readerTopBar_title_link");
     expect(WEREAD_SCRIPT).not.toContain(".readerTopBarTitleLink");
   });
 
   it("排版适配锁住实站测得的三个关键点", () => {
-    // 宽度:滚动模式的留白根因是 .app_content 的 max-width:1000px
+    // Width: the root cause of the margin in the scrolling mode is the max-width:1000px of .app_content
     expect(WEREAD_SCRIPT).toContain(".app_content { max-width: none");
-    // 目录:左停靠 + 常驻 + 隐遮罩;fixed 才能在横排下也停靠视口左缘
-    // (横排下它的定位祖先是 position:relative 的正文容器)
+    // Catalog: docked left + permanent + hidden mask; only fixed can also dock at the left edge of the viewport in the horizontal mode
+    // (in the horizontal mode its positioning ancestor is the position:relative body container)
     expect(WEREAD_SCRIPT).toContain(".readerCatalog { display: block");
     expect(WEREAD_SCRIPT).toContain(".wr_mask:has(~ .readerCatalog)");
     expect(WEREAD_SCRIPT).toContain(".readerCatalog { position: fixed");
-    // 护眼绿 = PDF 护眼模式的 --pdf-gutter
+    // Eye-care green = the --pdf-gutter of the PDF eye-care mode
     expect(WEREAD_SCRIPT).toContain("#dcebd6");
-    // 可见字形是 canvas 防复制层:字色要靠 brightness(0) 压黑
+    // The visible glyphs are a canvas copy-protection layer: the text color has to be pressed to black with brightness(0)
     expect(WEREAD_SCRIPT).toContain(".wr_canvasContainer canvas { filter: brightness(0)");
-    // 横排的页面容器自身带深色底
+    // The page container of the horizontal mode carries a dark background of its own
     expect(WEREAD_SCRIPT).toContain(".readerChapterContent_container { background");
-    // 内层页面类直接设浅色,字色必须通配到后代
+    // The inner page classes set a light color directly, so the text color must be wildcarded to the descendants
     expect(WEREAD_SCRIPT).toContain(".readerChapterContent *:not(svg):not(canvas)");
-    // 侧边切换按钮:工具栏与翻页条整体隐藏
+    // The side switch buttons: the toolbar and the page bar are hidden entirely
     expect(WEREAD_SCRIPT).toContain(".readerControls { display: none");
     expect(WEREAD_SCRIPT).toContain(".renderTarget_pager { display: none");
-    // 样式注入标签(新版样式 id)
+    // The style injection tag (the new style id)
     expect(WEREAD_SCRIPT).toContain("bnote-weread-style");
   });
 

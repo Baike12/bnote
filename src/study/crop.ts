@@ -1,8 +1,9 @@
 /**
- * PDF 阅读器的「显示范围」。
+ * The PDF reader's "display range".
  *
- * 框选出来的是一块**归一化**矩形(0..1),不是像素:每页的尺寸不一定相同,
- * 只有比例才能让同一个框原样套到每一页上——翻页时看到的始终是同一段版面。
+ * A drag selects a **normalized** rectangle (0..1), not pixels: pages are not
+ * all the same size, and only a ratio lets the same box fit every page as-is
+ * — turning a page always shows the same stretch of layout.
  */
 export interface PdfCrop {
   x: number;
@@ -11,9 +12,9 @@ export interface PdfCrop {
   h: number;
 }
 
-/** 比这更小的框按误触处理(单击、手抖),不当作裁剪。 */
+/** A box smaller than this is treated as a misclick (a click, a shaky hand), not a crop. */
 export const MIN_CROP_SIZE = 0.04;
-/** 几乎盖满整页的框等于没裁——存下来只会让每页白掉一圈。 */
+/** A box that covers nearly the whole page is no crop at all — storing it would only leave a white margin on every page. */
 const FULL_CROP = 0.995;
 
 function clamp01(v: number): number {
@@ -21,8 +22,9 @@ function clamp01(v: number): number {
 }
 
 /**
- * 一次框选(起点/终点都在页内,归一化比例)→ 裁剪框。
- * 方向任意(从右下往左上拖也一样);太小的框返回 null。
+ * One drag (both endpoints inside the page, normalized ratios) -> crop box.
+ * Any direction (dragging from bottom-right to top-left works the same); a
+ * too-small box returns null.
  */
 export function cropFromDrag(
   startX: number,
@@ -40,7 +42,7 @@ export function cropFromDrag(
   return { x: x0, y: y0, w, h };
 }
 
-/** 从磁盘/旧版本读回来的值:形状不对、越界、太小都退回「整页」。 */
+/** A value read back from disk / an older version: wrong shape, out of bounds or too small all fall back to "whole page". */
 export function normalizeCrop(raw: unknown): PdfCrop | null {
   if (!raw || typeof raw !== "object") return null;
   const { x, y, w, h } = raw as Record<string, unknown>;
@@ -57,7 +59,7 @@ export function normalizeCrop(raw: unknown): PdfCrop | null {
   return { x: left, y: top, w: width, h: height };
 }
 
-/** 每份 PDF 各记一个裁剪框;键是 vault 内的绝对路径。 */
+/** One crop box per PDF; the key is the absolute path inside the vault. */
 const STORAGE_PREFIX = "bnote.pdfCrop:";
 
 export function loadPdfCrop(path: string): PdfCrop | null {
@@ -65,7 +67,7 @@ export function loadPdfCrop(path: string): PdfCrop | null {
     const raw = localStorage.getItem(STORAGE_PREFIX + path);
     return raw ? normalizeCrop(JSON.parse(raw)) : null;
   } catch {
-    // 没有 localStorage(测试/受限环境)或坏数据:退回整页。
+    // No localStorage (tests / restricted environment) or bad data: fall back to the whole page.
     return null;
   }
 }
@@ -75,6 +77,6 @@ export function savePdfCrop(path: string, crop: PdfCrop | null): void {
     if (crop) localStorage.setItem(STORAGE_PREFIX + path, JSON.stringify(crop));
     else localStorage.removeItem(STORAGE_PREFIX + path);
   } catch {
-    // 存不下只损失下次打开的还原,本次显示不受影响。
+    // Failing to store only costs the restore on the next open; the current display is unaffected.
   }
 }

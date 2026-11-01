@@ -13,23 +13,30 @@ import { FocusChip } from "@/components/FocusChip";
 const AUTOSAVE_DELAY = 800;
 
 /**
- * 切换学习模式会把这个组件卸载重挂：App 的主区从「标题栏 + 笔记编辑器」换成
- * 三栏布局（右栏仍是笔记编辑器），React 按元素类型替换整棵子树，笔记栏这一侧
- * 的 CodeMirror 实例是全新的。两个后果都必须在这里兜住：
+ * Switching into study mode unmounts and remounts this component: the App's
+ * main area changes from "titlebar + note editor" to the three-column layout
+ * (the right column is still the note editor), React replaces the whole
+ * subtree by element type, and the CodeMirror instance on the notes side is
+ * brand new. Two consequences have to be covered here:
  *
- * 1. 模块级的 loadedFile 记录的是「某个实例装过哪个文件」，卸载时不清空的话，
- *    新实例会拿旧实例的记录跳过读盘，从一个空文档起步——界面上笔记是空的，
- *    而只要发生一次文档变更（键入、撤销），自动保存就把整篇笔记覆盖成这个空
- *    文档。所以新实例一律从「未加载」起步，除非下面这份交接数据认领它。
- * 2. 卸载时挂在定时器上的自动保存不能一丢了之（那条路径正是切布局踩到的），
- *    要落盘；文档本身也交给下一个实例，重挂就不必再读一次盘。
+ * 1. The module-level loadedFile records "which file an instance has loaded".
+ *    If it is not cleared on unmount, the new instance takes the old record,
+ *    skips reading the file and starts from an empty document; the note looks
+ *    empty on screen, and as soon as the document changes (a keystroke, an
+ *    undo) the autosave overwrites the whole note with that empty document.
+ *    So a new instance always starts as "not loaded" unless the handoff data
+ *    below claims it.
+ * 2. The autosave pending on a timer at unmount must not be dropped (that is
+ *    exactly the path the layout switch hits): it has to be written out, and
+ *    the document itself is handed to the next instance, so the remount does
+ *    not have to read the file again.
  */
 interface EditorHandoff {
   path: string;
   doc: string;
 }
 
-/** 上一次卸载的笔记编辑器留下的文档；只被下一个笔记编辑器消费一次。 */
+/** The document left behind by the last unmounted note editor; consumed exactly once by the next note editor. */
 let handoff: EditorHandoff | null = null;
 
 export function EditorPane() {
@@ -41,7 +48,7 @@ export function EditorPane() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    // 交接只认领同一篇笔记；中途换过文件就当没有，照常从磁盘读。
+    // The handoff only claims the same note; if the file changed in between, treat it as no handoff and read from disk as usual.
     const carried = handoff;
     handoff = null;
     const reuse = carried?.path === useAppStore.getState().currentFile ? carried : null;
@@ -61,36 +68,36 @@ export function EditorPane() {
     });
     editorApi.view = view;
     registerEditorView(view);
-    // 滚轮阅读也是「读到哪了」:滚动位置与光标走同一条防抖保存。
+    // Scrolling with the wheel is reading progress too: the scroll position and the caret share one debounced save.
     const disposeScrollSave = observeScrollSave(view, () =>
       useAppStore.getState().currentFile,
     );
     if (reuse) {
-      // 文档已经在这个实例里了：标记成已加载，下面的 [currentFile] effect 便不再
-      // 读盘，光标照旧按记住的位置复位。
+      // The document is already in this instance: mark it as loaded so the
+      // [currentFile] effect below does not read the file again, and restore
+      // the caret to the remembered position as usual.
       loadedFile.current = reuse.path;
       restoreSavedCursor(view, reuse.path);
     } else {
-      // 新实例什么都没装：清掉标记，交给 [currentFile] effect 去 openNote。
+      // A fresh instance has loaded nothing: clear the marker and let the [currentFile] effect call openNote.
       loadedFile.current = null;
     }
     void applySettingsToEditor();
     return () => {
-      // 卸载路径也是「切布局」踩到的那条：待写的自动保存不能丢，先落盘。
+      // The unmount path is the one the layout switch hits too: the pending autosave must not be lost, write it out first.
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
         if (useAppStore.getState().dirty) void saveNote();
       }
-      // 光标位置也留着——重挂后靠它复位（不然回到上一篇的旧位置）。
+      // The caret position is kept too: the remount restores from it, otherwise the caret lands on the previous note's stale position.
       flushCursorSave();
       disposeScrollSave();
-      // 只交接真正装好的文档：读盘还没回来就切布局的话（刚打开就切），这里还是
-      // 空文档，交接出去等于把空内容冒充成笔记内容。
+      // Only hand over a document that really got loaded: if the layout was switched before the read came back (opened, then switched right away), this is still the empty document and handing it over would pass empty content off as the note.
       const path = loadedFile.current;
       handoff = path ? { path, doc: view.state.doc.toString() } : null;
       view.destroy();
-      // 只在活动视图就是它时才清空(项目视图里可能已经切到别的实例)。
+      // Only unregister when the active view is this one (in the project view another instance may already have taken over).
       unregisterEditorView(view);
     };
      
@@ -174,8 +181,9 @@ export function EditorPane() {
         </div>
       )}
       <div className="status-bar">
-        {/* 左侧:番茄钟芯片(专注计时 + 独占锁的入口)。
-            右侧:vim 模式 + 光标位置。文件路径不再重复——顶部标题栏已经有了。 */}
+        {/* Left: the pomodoro chip (entry point for the focus timer and the
+            exclusive lock). Right: vim mode and the caret position. The file
+            path is not repeated here, the title bar on top already has it. */}
         <FocusChip />
         <span className="spacer" />
         {dirty && <span className="dirty-dot" title="未保存">●</span>}

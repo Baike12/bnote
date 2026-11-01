@@ -1,11 +1,11 @@
 /**
- * 代码项目的数据形状。
+ * Data shapes of the code project.
  *
- * 与 Rust 侧 `src-tauri/src/code/` 一一对应(字段名走 camelCase,
- * Rust 那边是 `rename_all = "camelCase"`)。
+ * They mirror the Rust side `src-tauri/src/code/` one to one (field names are
+ * camelCase; Rust uses `rename_all = "camelCase"`).
  */
 
-/** 文件树里的一个条目(相对项目根,posix 分隔符)。 */
+/** One entry of the file tree (relative to the project root, posix separators). */
 export interface CodeEntry {
   path: string;
   name: string;
@@ -13,24 +13,24 @@ export interface CodeEntry {
   size: number;
 }
 
-/** 一次扫描的文件树。 */
+/** One scan of the file tree. */
 export interface CodeTree {
   entries: CodeEntry[];
-  /** 命中条目上限被截断——文件树不完整,要如实告诉用户。 */
+  /** The entry limit was hit — the file tree is incomplete and the user must be told. */
   truncated: boolean;
 }
 
-/** 一个文件的内容。 */
+/** The content of a file. */
 export interface CodeFile {
   path: string;
-  /** LSP languageId(后端按扩展名判定)。 */
+  /** LSP languageId (decided by the backend from the extension). */
   languageId: string;
   content: string;
   binary: boolean;
   size: number;
 }
 
-/** 打开的项目信息。 */
+/** Info about the open project. */
 export interface CodeProjectInfo {
   root: string;
   name: string;
@@ -40,26 +40,26 @@ export interface CodeProjectInfo {
   tree: CodeTree;
 }
 
-/** 搜索命中。 */
+/** A search hit. */
 export interface CodeSearchHit {
   path: string;
-  /** 0-based 行号。 */
+  /** 0-based line number. */
   line: number;
   text: string;
 }
 
-/** 一个文件在 git 眼里的状态。 */
+/** The git status of one file. */
 export interface GitFileState {
   path: string;
-  /** 重命名的原路径。 */
+  /** The original path of a rename. */
   origPath: string | null;
-  /** 暂存区状态:M/A/D/R/C/U/?/!。 */
+  /** Index status: M/A/D/R/C/U/?/!. */
   index: string;
-  /** 工作区状态:同上。 */
+  /** Worktree status: same set. */
   worktree: string;
 }
 
-/** 仓库状态。 */
+/** Repository status. */
 export interface GitStatus {
   isRepo: boolean;
   root: string | null;
@@ -70,7 +70,7 @@ export interface GitStatus {
   files: GitFileState[];
 }
 
-/** LSP 诊断的位置(0-based,字符按 UTF-16 码元计,与 CodeMirror 一致)。 */
+/** Position of an LSP diagnostic (0-based, characters counted in UTF-16 code units like CodeMirror). */
 export interface LspPosition {
   line: number;
   character: number;
@@ -81,7 +81,7 @@ export interface LspRange {
   end: LspPosition;
 }
 
-/** 一条诊断。severity:1=Error 2=Warning 3=Info 4=Hint。 */
+/** One diagnostic. severity: 1=Error 2=Warning 3=Info 4=Hint. */
 export interface LspDiagnostic {
   range: LspRange;
   severity: number;
@@ -90,7 +90,7 @@ export interface LspDiagnostic {
   message: string;
 }
 
-/** 语言服务器的启动配置(覆盖内置默认)。 */
+/** Startup configuration of a language server (overrides the built-in default). */
 export interface ServerConfig {
   command: string;
   args: string[];
@@ -98,14 +98,14 @@ export interface ServerConfig {
   initOptions?: unknown;
 }
 
-/** 解析出来的语言服务器信息。 */
+/** The resolved language server info. */
 export interface ResolvedServerInfo {
   command: string;
   args: string[];
   disabled: boolean;
 }
 
-/** LSP 的一个位置(跳转目标)。 */
+/** An LSP position (a jump target). */
 export interface LspLocation {
   uri: string;
   range: LspRange;

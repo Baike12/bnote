@@ -11,7 +11,7 @@ type Tab = "pdf" | "url" | "weread" | "code";
 interface StudyHistoryMenuProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 标题即下拉触发器:点文件名就展开材料列表。 */
+  /** The title is the dropdown trigger: clicking the file name expands the materials list. */
   title: string;
   /** Tab shown when the menu opens (follows the content currently open). */
   initialTab: Tab;
@@ -25,11 +25,11 @@ interface StudyHistoryMenuProps {
   onOpenShelf: () => void;
   onOpenCode: (entry: StudyCodeEntry) => void;
   onImportPdf: () => void;
-  /** 打开代码项目(原生目录选择框)——「代码」页签里的入口。 */
+  /** Opens a code project (native directory picker), the entry point of the "code" tab. */
   onOpenCodeProject: () => void;
 }
 
-/** 书籍副行只显示时间:阅读器 URL 尾段是哈希,对人没有信息量。 */
+/** The subtitle of a book shows only the time: the tail of a reader URL is a hash and carries no information for a human. */
 function formatWhen(at: number): string {
   if (!at) return "";
   const d = new Date(at);
@@ -44,7 +44,7 @@ function formatWhen(at: number): string {
 }
 
 /**
- * 中栏头部:文件名本身就是「材料」下拉。
+ * Middle column header: the file name itself is the "materials" dropdown.
  *
  * PDFs, web pages and weread books are separate *buttons* (tabs), not one
  * mixed list: a PDF is a file inside the vault, a page is a URL that may be

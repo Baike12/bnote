@@ -32,7 +32,7 @@ describe("forkCutoff", () => {
 describe("forkLabel", () => {
   it("取首行并截断", () => {
     expect(forkLabel("第一行\n第二行")).toBe("第一行");
-    // 20 个汉字,截到 18 个
+    // 20 Chinese characters, truncated to 18
     expect(forkLabel("一二三四五六七八九十一二三四五六七八九十继续")).toBe(
       "一二三四五六七八九十一二三四五六七八…",
     );

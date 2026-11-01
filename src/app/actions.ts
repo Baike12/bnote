@@ -41,17 +41,23 @@ export async function openVault(path: string): Promise<boolean> {
     const info = await api.setVault(path);
     const store = useAppStore.getState();
     store.setVault(info);
-    // 快捷键配置是 per-vault 的(和 vimrc / snippets 同目录),开仓即换一套。
-    // 配置读失败不能拖垮开仓:退回默认键位,下次保存会重写。
+    // The keybinding config is per-vault (same folder as vimrc / snippets),
+    // so opening a vault switches to another set. A failed config read must
+    // not take the whole open down: fall back to the default keybindings, the
+    // next save rewrites them.
     await loadKeymap(info.path).catch((e) => console.warn("load keybindings failed", e));
-    // 跨文件待办同步的链接库:开仓即加载。updateListener 里的同步路径靠
-    // peekLinks 同步读取,这里提前把 IPC 打出去,用户编辑前通常已就绪。
+    // The link table behind the cross-file todo sync: loaded when the vault
+    // opens. The sync path in the updateListener reads it synchronously via
+    // peekLinks, so the IPC is fired here early and is usually ready before
+    // the user starts editing.
     void ensureLinks(info.path).catch((e) => console.warn("load daily links failed", e));
-    // 今日足迹:开仓即读基线并按需轮转(后台完成,不阻塞开仓)。
+    // Today's footprint: the baseline is read on open and rotated on demand
+    // (done in the background, it does not block opening the vault).
     void ensureFootprints(info.path).catch((e) => console.warn("load footprints failed", e));
-    // 仓库 MRU:打开即记(打开动作就是 MRU 的写入时机,zed 同款),连同
-    // lastVault 一起走防抖写盘;persistConfig 会同步更新快照,后续的 partial
-    // save 不会回滚这条。
+    // The vault MRU: recorded on open (opening is the moment the MRU is
+    // written, same as zed). It goes to disk through the same debounced write
+    // as lastVault; persistConfig updates the snapshot in sync, so a later
+    // partial save does not roll this back.
     persistConfig({
       ...getConfigSnapshot(),
       lastVault: info.path,
@@ -59,8 +65,10 @@ export async function openVault(path: string): Promise<boolean> {
     });
     await refreshTree();
     await reloadSnippetsFromVault();
-    // /tmp 等 symlink 路径 canonicalize 后前缀可能变化，直接尝试打开。
-    // 「上次文件」按仓库各记各的:切仓再切回来,落点还是本仓那篇。
+    // The prefix of a symlinked path such as /tmp may change after
+    // canonicalization, so just try to open it.
+    // The "last file" is remembered per vault: switching away and back
+    // lands on that vault's own note.
     const lastFile = getConfigSnapshot().lastFileByVault?.[info.path];
     if (lastFile) {
       await openNote(lastFile).catch((e) => {
@@ -76,11 +84,16 @@ export async function openVault(path: string): Promise<boolean> {
 }
 
 /**
- * 切换到最近打开的仓库:MRU 里第一个非当前仓(当前仓读取时过滤,两仓来回
- * toggle 成立;未开仓时落回最近一个)。切换复用当前窗口——openVault 全链路
- * 就是换仓编排(后端 set_vault 幂等替换 + watcher 自回收,前端缓存带仓键失效)。
- * 离仓先收尾,对齐 zed prepare_to_close 的保存环节:脏文件落盘、防抖中的
- * 光标/配置立即写盘,这样切换失败时旧仓的状态无损。
+ * Switch to the most recently opened vault: the first non-current vault in
+ * the MRU (the current one is filtered out on read, so toggling between two
+ * vaults works; without an open vault it falls back to the most recent one).
+ * The switch reuses the current window — the whole openVault chain is the
+ * vault-switch orchestration (the backend's set_vault replaces idempotently +
+ * the watcher recycles itself, front-end caches keyed by vault are
+ * invalidated). Leaving the old vault is finalized first, matching zed's
+ * prepare_to_close save step: dirty files are written to disk and the
+ * debounced cursor/config writes are flushed immediately, so a failed switch
+ * leaves the old vault's state intact.
  */
 export async function switchRecentVault(): Promise<void> {
   const store = useAppStore.getState();
@@ -95,8 +108,9 @@ export async function switchRecentVault(): Promise<void> {
   }
   flushCursorSave();
   if (store.dirty && store.currentFile) await saveNote();
-  // 离仓的 lastFileByVault / recentFiles 先落盘:就算新仓打开失败,重启后
-  // 旧仓的恢复点也不丢。
+  // The lastFileByVault / recentFiles of the vault being left are written to
+  // disk first: even if opening the new vault fails, the old vault's restore
+  // point survives a restart.
   flushPersistConfig();
   await openVault(target);
 }
@@ -174,12 +188,14 @@ export async function loadDirChildren(relPath: string): Promise<void> {
 }
 
 export async function openNote(path: string, line?: number): Promise<void> {
-  // 画布开着时的文件切换(快速跳转/命令面板)先收尾画布:画过的图回填到
-  // 来源笔记的光标位置(Obsidian 式「画图也是文件」语义),再执行本次切换。
+  // A file switch while the canvas is open (quick switcher / command palette)
+  // finalizes the canvas first: the drawn image is filled back into the
+  // cursor position of the source note (Obsidian-style "a drawing is a file"
+  // semantics), and only then does the switch happen.
   if (useAppStore.getState().drawingSession) {
     const { finalizeDrawingSession } = await import("@/app/drawing");
     await finalizeDrawingSession();
-    if (useAppStore.getState().drawingSession) return; // 收尾被并发占用:放弃本次切换
+    if (useAppStore.getState().drawingSession) return; // the finalization is taken by a concurrent run: give up this switch
   }
   const view = getView();
   if (!view) {
@@ -189,17 +205,24 @@ export async function openNote(path: string, line?: number): Promise<void> {
   // The pending save still refers to the previously open doc — write it out
   // before the swap, then replay this note's remembered position.
   flushCursorSave();
-  // 离开这篇笔记前把它未保存的内容落盘：自动保存有 800ms 防抖，紧跟一次切换
-  // 会把它连人带定时器一起作废——而那时 currentFile 已经换了，补写也补不回这篇。
-  // 与读盘并行发出，所以只有真有改动时才多这一次 IPC，且总延迟取两者的大者。
-  // 只在「被离开的文件路径仍然有效」的前提下成立：写盘会 create_dir_all + create，
-  // 往已消失的路径写会把文件重新建出来——重命名场景见 renameEntry。
+  // Write this note's unsaved content to disk before leaving it: the
+  // autosave is debounced by 800ms, and a switch right after it cancels the
+  // timer along with its payload — by then currentFile has already changed,
+  // so a late write could not land on this note any more. The write is
+  // fired in parallel with the read, so it only costs one extra IPC when
+  // there really is a change, and the total latency is the larger of the
+  // two. This only holds while "the path of the file being left is still
+  // valid": the write does create_dir_all + create, so writing to a path that
+  // no longer exists would recreate the file — see renameEntry for the
+  // rename case.
   const pendingSave = useAppStore.getState().dirty ? saveNote() : Promise.resolve();
   const content = await api.readFile(path);
   await pendingSave;
-  // 读盘期间编辑器可能已经被换掉（切学习模式会重挂 EditorPane）。这时既不能把
-  // 内容塞进已销毁的 view，也不能把「已加载」标记写给新实例——新实例会因此
-  // 跳过读盘，从空文档起步。让它自己的 effect 去打开这篇笔记。
+  // The editor may have been replaced while the file was being read
+  // (entering study mode remounts EditorPane). Then the content must
+  // neither be pushed into the destroyed view nor mark "loaded" for the new
+  // instance — the new instance would skip the read and start from an empty
+  // document. Let its own effect open this note.
   if (getView() !== view) return;
   loadDocument(view, content, path);
   loadedFile.current = path;
@@ -208,12 +231,14 @@ export async function openNote(path: string, line?: number): Promise<void> {
   await applySettingsToEditor(view);
   restoreSavedCursor(view, path);
   if (line !== undefined) {
-    // 足迹/跳转带行号落点:光标记忆(restoreSavedCursor)先走,这里覆盖。
+    // The footprint / a jump landing on a line number: the cursor memory
+    // (restoreSavedCursor) runs first, this overrides it.
     const doc = view.state.doc;
     const l = doc.line(Math.min(Math.max(1, line), doc.lines));
     view.dispatch({ selection: { anchor: l.from } });
-    // 居中滚动:scrollTop 的写入必须走 requestMeasure(typewriter.ts 同一约定,
-    // 直接写会与 CM 的测量周期竞争)。
+    // Centering the scroll: writing scrollTop must go through requestMeasure
+    // (the same convention as typewriter.ts), a direct write would compete
+    // with CM's measurement cycle.
     view.requestMeasure({
       read: () => view.coordsAtPos(l.from),
       write: (coords) => {
@@ -228,12 +253,15 @@ export async function openNote(path: string, line?: number): Promise<void> {
 }
 
 /**
- * 保存聚焦编辑器里的那份文档。
+ * Save the document held by the focused editor.
  *
- * 目标文件按 `documentPath` 取,不再只看 `currentFile`:项目视图里聚焦的
- * 编辑装的是 `.bnote/projects/<项目>.md`,而 `currentFile` 还停在上一份笔记
- * ——按 currentFile 写会把项目文档覆盖进那篇笔记。只有保存的正好是当前
- * 笔记时才动全局 dirty 标记(项目/日记编辑器各有自己的自动保存)。
+ * The target file is taken from `documentPath`, no longer from `currentFile`
+ * alone: the editor focused in the project view holds
+ * `.bnote/projects/<project>.md` while `currentFile` still points at the
+ * previous note — writing by currentFile would overwrite the project
+ * document into that note. The global dirty flag is only touched when the
+ * saved file is exactly the current note (the project / journal editors have
+ * their own autosave).
  */
 export async function saveNote(): Promise<void> {
   const view = getView();
@@ -309,7 +337,8 @@ export async function newFolder(parent?: string): Promise<void> {
   const { vaultPath } = useAppStore.getState();
   if (!vaultPath) return;
   try {
-    // 后端可能改名去重（"New Folder 2"），重命名要盯住真正建出来的那个目录。
+    // The backend may dedup the name ("New Folder 2"), so the rename has to
+    // watch the directory that was really created.
     const created = await api.createDir(parent ?? "", "New Folder");
     await refreshTree();
     useAppStore.getState().requestRename(created.relPath);
@@ -322,15 +351,17 @@ export async function renameEntry(path: string, newName: string, isFile = false)
   const { currentFile } = useAppStore.getState();
   try {
     let name = newName.trim();
-    // 文件重命名没写扩展名时沿用原扩展名（否则 list_files 过滤后文件会从树里消失）。
+    // A file renamed without an extension keeps the original one (otherwise
+    // the file disappears from the tree after the list_files filter).
     if (isFile && !name.includes(".")) {
       const oldName = fileName(path);
       const dot = oldName.lastIndexOf(".");
       if (dot > 0) name += oldName.slice(dot);
     }
-    // 改名会让当前文件的路径失效。openNote 的「离开前落盘」用的是 currentFile
-    // （此时还是旧路径），而写盘会把不存在的文件重新建出来——所以趁路径还有效，
-    // 先把这篇笔记未保存的内容存了。
+    // A rename invalidates the current file's path. openNote's "write before
+    // leaving" uses currentFile (still the old path at that moment), and the
+    // write would recreate the now non-existent file — so while the path is
+    // still valid, save this note's unsaved content first.
     if (
       currentFile &&
       (currentFile === path || currentFile.startsWith(`${path}/`)) &&
@@ -343,7 +374,8 @@ export async function renameEntry(path: string, newName: string, isFile = false)
     if (currentFile === path) {
       await openNote(newPath);
     } else if (currentFile && currentFile.startsWith(`${path}/`)) {
-      // 重命名的是当前文件所在（父）目录：按新前缀重新打开。
+      // The renamed entry is the (parent) directory of the current file:
+      // reopen it under the new prefix.
       await openNote(`${newPath}/${currentFile.slice(path.length + 1)}`);
     }
   } catch (e) {
@@ -356,7 +388,8 @@ export async function trashEntry(path: string): Promise<void> {
   try {
     await api.trashPath(path);
     if (currentFile && (currentFile === path || currentFile.startsWith(`${path}/`))) {
-      // 删除的可能是当前文件的父目录——一并按前缀判断。
+      // The deleted entry may be the parent directory of the current file —
+      // the prefix check covers both cases.
       useAppStore.getState().closeFile();
       const view = getView();
       if (view) loadDocument(view, "");
@@ -380,8 +413,10 @@ export function wikiLinkTargetPath(target: string): string | null {
 }
 
 /**
- * 跟随一条内部链接（预览里点击 / ⌘K 跳到本行链接）：压一层回退链再打开目标。
- * 返回是否真的跳了——没找到目标时 toast，自链接时静默（交给调用方决定焦点）。
+ * Follow an internal link (a click in the live preview / ⌘K to the link on
+ * the current line): push one level onto the back chain and open the target.
+ * Returns whether it really jumped — a missing target shows a toast, a
+ * self-link stays silent (the caller decides about the focus).
  */
 export function openWikiLink(target: string, from = useAppStore.getState().currentFile): boolean {
   const path = wikiLinkTargetPath(target);
@@ -389,14 +424,15 @@ export function openWikiLink(target: string, from = useAppStore.getState().curre
     useAppStore.getState().showToast(`未找到笔记: ${target}`);
     return false;
   }
-  // 自链接不回读磁盘：openNote 会重载文档，未保存的改动会丢。
+  // A self-link does not re-read from disk: openNote reloads the document,
+  // which would lose the unsaved changes.
   if (path === from) return false;
   if (from) useAppStore.getState().pushLinkBack(from, path);
   void openNote(path);
   return true;
 }
 
-/** 「回退到链接跳转前的文件」：沿链接跳转链往回走一层，链外打开过就失效。 */
+/** "Go back to the file before the link jump": walk one level back along the link jump chain; opening something outside the chain invalidates it. */
 export function goBackLink(): void {
   const { currentFile, popLinkBack, showToast } = useAppStore.getState();
   const path = currentFile ? popLinkBack() : null;
@@ -409,19 +445,22 @@ export function goBackLink(): void {
   });
 }
 
-/** 打开链接补全面板时的文档状态；写回前比对，文档换过（切文件、外部重载）就放弃。 */
+/** The document state when the link suggest panel was opened; it is compared before writing back, and the write is dropped when the document changed (another file, an external reload). */
 let linkPickState: EditorState | null = null;
 
 /**
- * 「插入 / 跳转内部链接」快捷键：光标行已经有链接就跳到那篇笔记（一行一个链接，
- * 所以本行再插就是重复），否则在光标处开补全面板——空输入列出最近打开的笔记，
- * 输入即按快速跳转同一套排序过滤。
+ * The "insert / jump to internal link" shortcut: if the cursor's line
+ * already has a link, jump to that note (there is one link per line, so
+ * inserting another one on this line would be a duplicate); otherwise open
+ * the suggest panel at the cursor — an empty input lists the recently opened
+ * notes, and typing filters them with the same ordering as the quick
+ * switcher.
  */
 export function linkShortcut(view: EditorView): void {
   const { currentFile, linkSuggest, modal, showToast } = useAppStore.getState();
-  if (modal) return; // 命令面板 / 快速跳转 / 设置开着：不抢前台，什么也不做
+  if (modal) return; // the command palette / quick switcher / settings are open: do not steal the foreground, do nothing
   if (linkSuggest) {
-    useAppStore.getState().closeLinkSuggest(); // 再按一次 = 收起
+    useAppStore.getState().closeLinkSuggest(); // pressing again = collapse
     return;
   }
   if (!currentFile) {
@@ -430,7 +469,7 @@ export function linkShortcut(view: EditorView): void {
   }
   const target = wikilinkTargetOnLine(view);
   if (target) {
-    if (!openWikiLink(target)) view.focus(); // 没跳成（没找到 / 自链接）：焦点还给编辑器
+    if (!openWikiLink(target)) view.focus(); // the jump did not happen (not found / self-link): give the focus back to the editor
     return;
   }
   const coords = view.coordsAtPos(view.state.selection.main.head);
@@ -443,7 +482,7 @@ export function linkShortcut(view: EditorView): void {
   });
 }
 
-/** 补全面板选中一篇笔记：把 `[[链接]]` 写进光标处（会自证文档没被换过）。 */
+/** A note was picked in the suggest panel: write `[[link]]` at the cursor (it also proves the document was not replaced). */
 export function insertPickedLink(rel: string): void {
   const state = linkPickState;
   const view = getView();
@@ -473,9 +512,11 @@ export function restoreEditorFocus() {
 }
 
 /**
- * 主题应用的唯一写入者：documentElement 的 data-theme 属性（dark 不设属性，
- * :root 默认即 dark）。localStorage 同步写一份给 theme-boot.js 在 React 启动
- * 前抢先应用，light 用户启动不闪深色；持久真相仍是 config.json。
+ * The single writer of the applied theme: the data-theme attribute on
+ * documentElement (dark sets no attribute, :root defaults to dark). A copy is
+ * written to localStorage for theme-boot.js to apply before React starts, so
+ * light users do not see a dark flash on startup; the persistent truth is
+ * still config.json.
  */
 function applyTheme(theme: ThemeName): void {
   const root = document.documentElement;
@@ -484,16 +525,20 @@ function applyTheme(theme: ThemeName): void {
   try {
     localStorage.setItem("bnote.theme", theme);
   } catch {
-    // localStorage 不可用只损失下次启动的防闪，主题照常生效
+    // An unavailable localStorage only costs the anti-flash on the next
+    // startup; the theme still applies
   }
 }
 
 /**
  * Applies store settings (vim, typewriter, live preview, snippets) to the editors.
  *
- * 项目视图里有多个实例(项目卡片 / 右栏日记),设置变更必须逐个 reconfigure:
- * 只作用于 `getView()` 会让没聚焦的那个停留在旧开关上,重新聚焦时才「突然」
- * 变样。`target` 用于刚换过文档的单个实例(openNote 后只重建它那份)。
+ * The project view holds several instances (the project cards / the journal
+ * on the right), and a settings change has to reconfigure each of them:
+ * applying it only to `getView()` would leave the unfocused one on the old
+ * switches and make it "suddenly" change when it is focused again. `target`
+ * is for the single instance that just swapped documents (after openNote
+ * only that one is rebuilt).
  */
 export async function applySettingsToEditor(target?: EditorView): Promise<void> {
   const { settings } = useAppStore.getState();
@@ -505,8 +550,10 @@ export async function applySettingsToEditor(target?: EditorView): Promise<void> 
       : []
     : activeEditors();
   if (views.length === 0) return;
-  // 只翻开关、不动来源：若把来源重置为 null，每次打开文件/改设置都会把
-  // 仓库片段打回内置（真实回归，load.test.ts 有接线门禁）。
+  // Only flip the switch, never touch the source: resetting the source to
+  // null would push the vault snippets back to the built-in ones on every
+  // file open / settings change (a real regression, load.test.ts has a wiring
+  // gate for it).
   applySnippetsEnabled(settings.snippets);
   configureLatexSuite(settings.latex);
   configureLivePreview({ mathPreview: settings.mathPreview });
@@ -522,7 +569,8 @@ export async function applySettingsToEditor(target?: EditorView): Promise<void> 
 /**
  * Loads `<vault>/.bnote/snippets.js` when present, falling back to builtin.
  * Returns the outcome so callers can report honestly (settings save toast,
- * watcher toast) instead of lying "已生效" while the load actually failed.
+ * watcher toast) instead of claiming "it took effect" while the load actually
+ * failed.
  */
 export async function reloadSnippetsFromVault(): Promise<SnippetLoadOutcome | null> {
   const { vaultPath, settings } = useAppStore.getState();

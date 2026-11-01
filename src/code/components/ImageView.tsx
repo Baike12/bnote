@@ -3,19 +3,23 @@ import type { OpenFile } from "../store";
 import { formatBytes, imageSrc } from "../image";
 
 /**
- * 代码区里的图片预览。
+ * Image preview in the code area.
  *
- * 后端把位图当二进制(内容为空串),所以这里**不经过编辑器**:直接用
- * asset 协议把磁盘上的原文件交给 `<img>`,按面板大小等比缩放显示。
- * 保存命令对二进制文件是空操作,不会把图片写成空文本。
+ * The backend treats bitmaps as binary (the content is an empty string), so
+ * this **does not go through the editor**: the original file on disk is
+ * handed to an `<img>` directly through the asset protocol, scaled
+ * proportionally to the panel. The save command is a no-op for binary files,
+ * so an image is never written as empty text.
  */
 export function ImageView({ root, file }: { root: string; file: OpenFile }) {
   const src = useMemo(() => imageSrc(root, file.path), [root, file.path]);
   const [dimensions, setDimensions] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
-  // 换一个文件就把上一张的尺寸/失败态清掉:不然新图加载完之前会顶着旧图的
-  // 角注,加载失败也会错误地沿用上一张的「正常」状态。
+  // Switching to another file clears the dimensions / failed state of the
+  // previous one: otherwise the caption keeps the old dimensions until the
+  // new image has loaded, and a load failure wrongly inherits the "healthy"
+  // state of the previous one.
   useEffect(() => {
     setDimensions(null);
     setFailed(false);

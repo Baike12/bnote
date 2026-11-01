@@ -14,19 +14,25 @@ import { useAppStore } from "@/state/appStore";
 import { fileName } from "@/lib/path";
 
 /**
- * 全屏画布浮层(盖过所有模态和学习模式的原生子 webview)。
+ * Fullscreen canvas overlay (it covers every modal and the native child
+ * webviews of study mode).
  *
- * 性能契约:
- * - excalidraw 是独立 chunk,只在画布打开时下载;App 静态引用的只有本外壳。
- * - 画布 onChange 在拖拽时每帧都发:这里只写模块级调度(见 app/drawing.ts)
- *   和一个吸附开关,绝不 setState——保存与渲染都以 600ms 防抖节流。
+ * Performance contract:
+ * - excalidraw is a separate chunk, downloaded only when the canvas opens;
+ *   the App statically imports nothing but this shell.
+ * - The canvas fires onChange on every frame of a drag: here we only write
+ *   module-level scheduling (see app/drawing.ts) and one snap switch, never
+ *   setState; saving and rendering are both debounced to 600 ms.
  *
- * 对齐策略:吸附只在「移动/调整已有元素」时生效;正在拖出新元素(新建)
- * 时不吸附——否则新画的形状会被旁边的图形拉歪,画的时候无法对齐到纸面意图。
+ * Alignment policy: snapping only applies when moving or resizing an
+ * existing element; while a new element is being dragged out it is off,
+ * otherwise a freshly drawn shape gets pulled crooked by its neighbours and
+ * cannot be aligned to the intent of the paper.
  */
 
-// Excalidraw 按这个基准相对寻址字体(`fonts/<Family>/…`),由 vite 插件在
-// dev/build 两侧落到本地文件;必须在它的 chunk 执行前就位。
+// Excalidraw addresses its fonts relative to this base path
+// (`fonts/<Family>/...`); the vite plugin materializes them as local files on
+// both dev and build, so it must be in place before its chunk executes.
 (window as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH =
   "/excalidraw-assets/";
 
@@ -39,7 +45,7 @@ const exApi: { current: ExcalidrawImperativeAPI | null } = { current: null };
 export default function DrawingCanvas() {
   const session = useAppStore((s) => s.drawingSession);
   if (!session) return null;
-  // key = 路径:换文件必然重挂,画布内部状态绝不跨文件复用。
+  // key = path: switching file always remounts, the canvas state is never reused across files.
   return <CanvasInner key={session.path} session={session} />;
 }
 
@@ -48,7 +54,7 @@ function CanvasInner({ session }: { session: import("@/state/appStore").DrawingS
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // ---- 载入场景 ------------------------------------------------------------
+  // ---- load the scene ------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -63,12 +69,14 @@ function CanvasInner({ session }: { session: import("@/state/appStore").DrawingS
     return () => {
       cancelled = true;
       off();
-      exApi.current = null; // 不让卸载的实例被引用钉在内存里
+      exApi.current = null; // do not let the unmounted instance be pinned in memory by a reference
     };
   }, [session.path]);
 
-  // 画布打开期间命令快捷键只放行快速跳转/命令面板(见 globalKeys);
-  // 页面隐藏(切走/关窗)时立刻冲一次盘,减少丢尾。
+  // While the canvas is open the command shortcuts only let the quick
+  // switcher and the palette through (see globalKeys); when the page is
+  // hidden (switched away, window closed) flush the save at once to lose
+  // less of the tail.
   useEffect(() => {
     setCommandKeyContext("drawing");
     const onHidden = () => {
@@ -81,9 +89,9 @@ function CanvasInner({ session }: { session: import("@/state/appStore").DrawingS
     };
   }, []);
 
-  /** 用户的吸附偏好(Alt+S 可改);新建元素期间被临时压成 false。 */
+  /** The user's snapping preference (Alt+S toggles it); temporarily forced to false while a new element is created. */
   const userSnap = useRef(true);
-  /** 我们上次注入的值:区分「用户改了偏好」和「我们自己的临时关闭回声」。 */
+  /** The value we injected last: tells "the user changed the preference" apart from "our own temporary override echoing back". */
   const forcedSnap = useRef(true);
 
   const onChange = useCallback(
@@ -98,13 +106,15 @@ function CanvasInner({ session }: { session: import("@/state/appStore").DrawingS
         files: (files ?? null) as Record<string, unknown> | null,
       });
 
-      // 动态吸附:拖出新元素时关,其余时候回到用户偏好。
-      // 注意 userSnap 只在 stateSnap ≠ 我们注入值 时更新——手势结束时
-      // stateSnap 还是我们注的 false,不能当成用户偏好读回来。
+      // Dynamic snapping: off while a new element is dragged out, back to the
+      // user preference otherwise. Note that userSnap is only updated when
+      // stateSnap differs from the value we injected: at the end of a gesture
+      // stateSnap is still the false we injected and must not be read back as
+      // the user preference.
       const creating = as.newElement != null;
       const stateSnap = as.objectsSnapModeEnabled !== false;
       if (!creating && stateSnap !== forcedSnap.current) {
-        userSnap.current = stateSnap; // Alt+S 之类的用户操作
+        userSnap.current = stateSnap; // a user action such as Alt+S
       }
       const desired = creating ? false : userSnap.current;
       forcedSnap.current = desired;
@@ -168,10 +178,12 @@ function CanvasInner({ session }: { session: import("@/state/appStore").DrawingS
                     typeof scene.appState.viewBackgroundColor === "string"
                       ? scene.appState.viewBackgroundColor
                       : "#ffffff",
-                  // 对齐是 bnote 的默认体验:每次打开都回到吸附态(新建元素时
-                  // 自动临时关闭,见 onChange)。
+                  // Alignment is bnote's default experience: every open
+                  // starts in snapping mode (temporarily switched off while
+                  // creating an element, see onChange).
                   objectsSnapModeEnabled: true,
-                  // 飞书式简洁风:干净直线 + 等宽字体(不用 excalidraw 手绘风)。
+                  // Feishu-like minimal look: clean straight lines and a
+                  // monospace font (not excalidraw's hand-drawn style).
                   currentItemRoughness: 0,
                   currentItemFontFamily: 3,
                 },

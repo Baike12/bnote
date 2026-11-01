@@ -33,15 +33,17 @@ pub struct AppState {
     pub mcp_manager: Mutex<Option<Arc<McpManager>>>,
     /// Currently open note path (set by the frontend for agent context).
     pub current_note: Mutex<Option<String>>,
-    /// Python 运行注册表(key = md_path);Arc 化,收尾任务要摘除自己。
+    /// Registry of running Python jobs (key = md_path); the `Arc` handle identity
+    /// is what lets a finished job remove itself without evicting a newer run.
     pub python_runs: Arc<RunRegistry>,
-    /// 活跃的 python LSP 服务器(key = 项目根绝对路径)。
+    /// Live python LSP servers (key = absolute project root path).
     pub python_lsp: Mutex<HashMap<String, Arc<LspServer>>>,
-    /// 活跃的代码项目语言服务器(key = 项目根绝对路径)。
+    /// Live code-project language servers (key = absolute project root path).
     pub code_lsp: Mutex<HashMap<String, Arc<LspManager>>>,
-    /// 已扫出的代码项目文件树(key = 项目根绝对路径)。
+    /// Scanned code-project file trees (key = absolute project root path).
     ///
-    /// 打开项目与「重扫」写它,搜索读它——搜索不该自己再走一遍仓库。
+    /// Opening a project and `code_rescan` write it, search reads it — search
+    /// must not walk the repository again on its own.
     pub code_trees: Mutex<HashMap<String, CodeTree>>,
 }
 

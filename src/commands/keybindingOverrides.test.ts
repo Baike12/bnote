@@ -56,7 +56,8 @@ describe("快捷键配置存储", () => {
     expect(text).toContain("Ctrl-j");
     expect(text).toContain("Mod-b");
     expect(text).toContain("Mod-p");
-    // 迁移成功后旧表清空:从此只有仓库里这一份来源。
+    // The legacy table is cleared once the migration succeeded: from now on
+    // the vault file is the only source.
     expect(mocks.saveKeybindings).toHaveBeenCalledWith({});
     expect(bindingsForCommand("study.pdf-next-page")).toEqual(["Ctrl-j"]);
     expect(bindingsForCommand("edit.toggle-bold")).toEqual(["Mod-b"]);

@@ -34,33 +34,41 @@ import {
 } from "./model";
 
 /**
- * 跨文件待办同步引擎。
+ * Cross-file todo sync engine.
  *
- * 模型:一条链接把「源待办块(根 + 其子树)」和「日记头部待办区的一条一级
- * 条目」绑在一起,身份是待办文本(剥 checkbox/✅戳);镜像保证两侧文本一致,
- * 所以互认靠文本、行号只是就近提示。
+ * Model: a link binds a source todo block (the root plus its subtree) to one
+ * top-level entry of the todo region at the head of the daily note. The identity
+ * is the todo text (checkbox and done stamp stripped); mirroring keeps the text
+ * identical on both sides, so the two sides recognize each other by text and the
+ * line numbers are only a proximity hint.
  *
- * 事件模型(第一性:所有勾选/子待办/改名最终都是文档事务,在唯一入口做行级
- * diff,不追逐任何调用点):
- *  - 变更行所在块的身份文本命中某条链接(旧或新文本,改名即迁移锚) → 镜像:
- *    把变更侧当前块整段搬到对侧(重缩进、checkbox/✅戳随文本走)。
- *  - 触碰到的未链接待办块 → 自动发送:块(根 + 其子树)复制为今日日记的
- *    一级条目并建立 auto 映射——存在即同步,不需要快捷键也不需要先勾选;
- *    记录型根再取消 → 从日记清掉并解链。
- *  - 源侧根不再是待办 → 删日记条目并解链;日记侧根不再是待办 → 只解链
- *    (用户在整理今天的列表,不动项目里的待办)。
+ * Event model (first principles: every check, child todo and rename ends up as a
+ * document transaction, so we diff at line level in one single entry point instead
+ * of chasing call sites):
+ *  - The identity text of the block holding a changed line hits a link (old or
+ *    new text, a rename migrates the anchor) -> mirror: move the whole current
+ *    block of the changed side to the other side (re-indented, the checkbox and
+ *    the done stamp travel with the text).
+ *  - A touched todo block without a link -> auto send: copy the block (root plus
+ *    its subtree) as a top-level entry of today's daily note and create an `auto`
+ *    link - it syncs as soon as it exists, no shortcut and no prior check needed;
+ *    unchecking a recorded root then clears it from the daily note and unlinks it.
+ *  - The source root is no longer a todo -> delete the daily note entry and unlink
+ *    it; the daily note root is no longer a todo -> unlink only (the user is
+ *    tidying today's list, the project todos stay untouched).
  *
- * 写入纪律:每个 await 之后重新自证视图还装着这份文档(过期放弃);盘外文件
- * 的读改写在 per-path 串行锁里;写回打开中的编辑器用带标记的 dispatch,
- * 监听器据此跳过,防回环。
+ * Write discipline: after every await we re-prove that the view still holds this
+ * document (stale work is dropped); read-modify-write of files outside the editor
+ * runs under a per-path serial lock; writing back into an open editor uses a
+ * tagged dispatch, and the listener skips that tag to avoid a loop.
  */
 
-// ---------------------------------------------------------------- 依赖注入
+// ---------------------------------------------------------------- dependency injection
 
 export interface DailyIO {
   readFile(path: string): Promise<string | null>;
   writeFile(path: string, content: string): Promise<void>;
-  /** 列出 vault 相对目录 `relPath` 下的文件名(不含子目录);失败/不存在返回 null。 */
+  /** File names inside the vault-relative directory `relPath` (no subdirectories); null on failure or when it does not exist. */
   readDir(relPath: string): Promise<string[] | null>;
 }
 
@@ -69,11 +77,11 @@ export interface DailyDeps {
   vaultRoot: () => string | null;
   today: () => string;
   toast: (msg: string) => void;
-  /** 新建日记用的模板文件(仓库相对路径);null/空 = 默认 `# 日期` 开篇。 */
+  /** Template file used to scaffold a new daily note (vault-relative path); null/empty = the default `# YYYY-MM-DD` opening. */
   templatePath: () => string | null;
 }
 
-/** 引擎写回打开编辑器时给事务打的标记;监听器看到它直接跳过(防回环)。 */
+/** Tag the engine puts on a transaction when writing back into an open editor; a listener seeing it skips the transaction (loop guard). */
 export const SYNC_USER_EVENT = "input.bnote-daily-sync";
 
 function uuid(): string {
@@ -82,7 +90,7 @@ function uuid(): string {
     : `l-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** 同一份磁盘文件的读改写串行化(镜像/记录/发送可能来自不同源文件)。 */
+/** Serialize read-modify-write on the same file on disk (mirroring, recording and sending may originate from different source files). */
 const fileChains = new Map<string, Promise<void>>();
 export function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const prev = fileChains.get(path) ?? Promise.resolve();
@@ -91,13 +99,13 @@ export function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> 
   return next;
 }
 
-// ---------------------------------------------------------------- 意图提取
+// ---------------------------------------------------------------- intent extraction
 
 export type Intent =
   | { type: "mirror"; linkId: string; rootHint: number | null; renamedTo: string | null }
   | { type: "send"; rootHint: number; text: string };
 
-/** 切片内出现的块根身份文本 → 根行号(首个)。 */
+/** Identity text of a block root appearing in the slice -> its root line (the first one). */
 function rootTextsOfSlice(doc: Text, fromNo: number, toNo: number): Map<string, number> {
   const out = new Map<string, number>();
   for (let n = fromNo; n <= toNo; n++) {
@@ -108,7 +116,7 @@ function rootTextsOfSlice(doc: Text, fromNo: number, toNo: number): Map<string, 
   return out;
 }
 
-/** 该行自身或任一祖先的待办身份文本命中链接(即已随某个链接镜像)。 */
+/** The identity text of the line itself or of any ancestor hits a link (it is already mirrored by some link). */
 function lineLinked(doc: Text, lineNo: number, fileLinks: DailyLink[]): boolean {
   const self = todoTextAt(doc, lineNo);
   if (self !== null && fileLinks.some((l) => l.text === self)) return true;
@@ -128,8 +136,9 @@ function lineLinked(doc: Text, lineNo: number, fileLinks: DailyLink[]): boolean 
 }
 
 /**
- * 一次事务改动范围(旧/新文档坐标)→ 同步意图。行号都是提示,执行端会按
- * 文本重新定位;真正的判定只依赖身份文本。
+ * Changed range of one transaction (old and new document coordinates) -> sync
+ * intents. The line numbers are only hints, the execution side relocates by text;
+ * the real decision depends on the identity text alone.
  */
 export function intentsForRange(
   startDoc: Text,
@@ -151,7 +160,8 @@ export function intentsForRange(
 
   if (fileLinks.length > 0) {
     const oldRoots = rootTextsOfSlice(startDoc, oldFrom, oldTo);
-    // 新切片首个块根:根行提示 + 改名后的身份文本(根变纯文本时为 null → 视为消失)
+    // First block root of the new slice: root line hint plus the identity text after
+    // a rename (null when the root turned into plain text -> treated as gone)
     const newFirstRootNo = blockRootLine(endDoc, newFrom);
     const newFirstRootText = todoTextAt(endDoc, newFirstRootNo);
     for (const link of fileLinks) {
@@ -167,11 +177,13 @@ export function intentsForRange(
     }
   }
 
-  // 自动同步:事务触碰到的未链接待办块整块发送到今日日记——不需要按快捷键,
-  // 也不需要先勾选。判定只用身份文本;空文本(还在打字)不发送;已链接
-  // (自身或祖先)的块走镜像,不重复发;本轮镜像正在改名的目标文本也跳过
-  // (链接会迁移过去,apply 端 findByText 会兜住竞态)。粘贴/拖放由调用方
-  // 关掉 allowSend。
+  // Auto sync: a touched todo block without a link is sent as a whole block to
+  // today's daily note - no shortcut and no prior check needed. The decision uses
+  // the identity text alone; empty text (still typing) is not sent; a block that is
+  // already linked (through itself or an ancestor) goes through mirroring and is
+  // not sent twice; the target text of a rename in this round is skipped as well
+  // (the link migrates there, findByText on the apply side covers that race). The
+  // caller turns allowSend off for paste and drag and drop.
   if (allowSend) {
     const renamed = new Set(
       intents.flatMap((i) => (i.type === "mirror" && i.renamedTo ? [i.renamedTo] : [])),
@@ -187,7 +199,7 @@ export function intentsForRange(
   return intents;
 }
 
-/** 同一轮防抖里合并重复意图:镜像按链接取并集提示,发送按文本取首个。 */
+/** Merge duplicate intents within one debounce round: mirrors take the union of their hints per link, sends take the first per text. */
 export function dedupeIntents(intents: Intent[]): Intent[] {
   const mirrors = new Map<string, { rootHint: number | null; renamedTo: string | null }>();
   const sends = new Map<string, { rootHint: number; text: string }>();
@@ -208,7 +220,7 @@ export function dedupeIntents(intents: Intent[]): Intent[] {
   return out;
 }
 
-// ---------------------------------------------------------------- 执行
+// ---------------------------------------------------------------- execution
 
 function viewAlive(view: EditorView, path: string): boolean {
   return view.dom.isConnected && documentPath(view.state) === path;
@@ -235,7 +247,7 @@ function parseDoc(text: string): Text {
   return EditorState.create({ doc: text }).doc;
 }
 
-/** 待办行翻转 `[x]`→`[ ]` 并剥掉 ✅ 戳(与 toggleTodo/点击行为一致)。 */
+/** Flip a todo line from `[x]` to `[ ]` and strip the done stamp (same behaviour as toggleTodo and a click). */
 function uncheckSpecs(doc: Text, lineNo: number): { changes: { from: number; to?: number; insert: string }[] } | null {
   const line = doc.line(lineNo);
   const p = parseListLine(line.text);
@@ -249,12 +261,16 @@ function uncheckSpecs(doc: Text, lineNo: number): { changes: { from: number; to?
 }
 
 /**
- * 对侧文件的落点:正被编辑器打开时改内存,否则写盘。
+ * Where the change on the other side lands: patch the in-memory document when the
+ * file is open in an editor, otherwise write it to disk.
  *
- * 项目视图里项目卡片与右栏日记同时打开,镜像的两侧都可能「活着」。写盘会
- * 让编辑器里的旧内容在下一次保存时盖掉这次改动,所以有编辑器就 dispatch;
- * 位置必须按同一份基准算——有编辑器时基准就是它的内存文档(磁盘可能落后于
- * 未保存的输入),没有时是刚读出的磁盘文本。
+ * In the project view the project card and the daily note in the right column can
+ * both be open, so both sides of a mirror may be "alive". Writing to disk would let
+ * the stale content of the editor overwrite this change on the next save, so with
+ * an open editor we dispatch instead. The position must be computed against one
+ * and the same baseline: with an editor it is the editor's in-memory document (the
+ * file on disk may lag behind unsaved input), without one it is the disk text just
+ * read.
  */
 function commitSpecs(
   deps: DailyDeps,
@@ -270,7 +286,7 @@ function commitSpecs(
   return deps.io.writeFile(path, textAfterChanges(baseText, specs));
 }
 
-/** 对侧文件的当前内容与「基准编辑器」:有编辑器用内存(最新),否则读盘。 */
+/** Current content of the other side plus the "baseline editor": with an editor the in-memory document (newest), otherwise the file on disk. */
 async function readOther(
   deps: DailyDeps,
   path: string,
@@ -295,9 +311,9 @@ async function applyMirror(
   await withFileLock(otherPath, async () => {
     if (!viewAlive(view, path)) return;
     const other = await readOther(deps, otherPath);
-    if (!viewAlive(view, path)) return; // 读盘窗口期里文件被切走:过期放弃
+    if (!viewAlive(view, path)) return; // the file was switched away while we were reading: stale, drop it
     if (other.text === null) {
-      // 对侧文件没了(删除/改名):解链,不再镜像
+      // The other side is gone (deleted or renamed): unlink it, no more mirroring
       store.remove(link.id);
       scheduleLinksPersist();
       return;
@@ -309,15 +325,16 @@ async function applyMirror(
     const rootNo = resolveRootLine(doc, texts, rootHint);
     const root = rootNo !== null ? parseListLine(doc.line(rootNo).text) : null;
 
-    // 记录型链接:根被取消勾选 → 从日记清掉这条(两侧任一方向触发都成立)
+    // Recorded link: the root got unchecked -> clear this entry from the daily
+    // note (holds no matter which side triggered it)
     if (isTodo(root) && link.kind === "recorded" && root.box === " ") {
       if (side === "src") {
-        // 源侧已取消:删日记条目 + 解链
+        // The source side was unchecked: delete the daily note entry and unlink
         const region = parseDailyRegion(otherDoc);
         const entry = findEntryByText(otherDoc, region, link.text, link.dailyLine);
         if (entry) await commitSpecs(deps, otherPath, otherText, [removeEntrySpec(otherDoc, entry)], other.editor);
       } else {
-        // 日记侧取消:摘掉本地条目,并把源待办翻回未完成
+        // The daily side was unchecked: drop the local entry and flip the source todo back to unfinished
         removeLocalEntry(view, doc, link, store);
         const srcRootNo = resolveRootLine(otherDoc, [link.text], link.srcLine);
         const specs = srcRootNo !== null ? uncheckSpecs(otherDoc, srcRootNo)?.changes : null;
@@ -329,8 +346,10 @@ async function applyMirror(
     }
 
     if (!rootNo || !isTodo(root)) {
-      // 根不再是待办(被删/转正文)。源侧消失 → 删日记条目;日记侧消失 →
-      // 用户在整理今天的列表,只解链,不动项目里的待办。
+      // The root is no longer a todo (deleted or turned into prose). Gone on the
+      // source side -> delete the daily note entry; gone on the daily side -> the
+      // user is tidying today's list, so only unlink and leave the project todos
+      // alone.
       if (side === "src") {
         const region = parseDailyRegion(otherDoc);
         const entry = findEntryByText(otherDoc, region, link.text, link.dailyLine);
@@ -346,7 +365,8 @@ async function applyMirror(
       const region = parseDailyRegion(otherDoc);
       const entry = findEntryByText(otherDoc, region, link.text, link.dailyLine);
       if (!entry) {
-        // 日记条目被用户删了 = 解链,不复活(要再同步就重新按快捷键)
+        // The user deleted the daily note entry = unlink, do not resurrect it
+        // (to sync again, press the shortcut again)
         store.remove(link.id);
         scheduleLinksPersist();
         return;
@@ -358,7 +378,7 @@ async function applyMirror(
       const srcRootNo = resolveRootLine(otherDoc, [link.text], link.srcLine);
       const srcRoot = srcRootNo !== null ? parseListLine(otherDoc.line(srcRootNo).text) : null;
       if (!srcRootNo || !isTodo(srcRoot)) {
-        // 源待办没了:删日记条目 + 解链
+        // The source todo is gone: delete the daily note entry and unlink
         removeLocalEntry(view, doc, link, store);
         store.remove(link.id);
         scheduleLinksPersist();
@@ -384,7 +404,7 @@ async function applyMirror(
   });
 }
 
-/** 从打开的日记编辑器里摘掉链接对应的条目(找不到就只解链)。 */
+/** Remove the entry of a link from the open daily note editor (when it is not found, only unlink). */
 function removeLocalEntry(view: EditorView, doc: Text, link: DailyLink, store: LinkStore): void {
   const region = parseDailyRegion(doc);
   const entry = findEntryByText(doc, region, link.text, link.dailyLine);
@@ -394,10 +414,13 @@ function removeLocalEntry(view: EditorView, doc: Text, link: DailyLink, store: L
 }
 
 /**
- * 「自动同步」的执行端:触碰到的未链接待办块整块复制为今日日记的一级条目
- * (无需勾选,勾选状态随行),建立 kind=auto 的持久化映射后由镜像保持两侧
- * 同步。日记里已有同文条目时直接认领(rollover 带过来的、手工贴的都不重复
- * 追加)。发送命令(sendTodoToDaily)走同样的落盘路径,只是链接 kind 不同。
+ * Execution side of "auto sync": a touched todo block without a link is copied as
+ * a whole block to a top-level entry of today's daily note (no check needed, the
+ * checked state travels with the line), and a persistent link of kind `auto` is
+ * created so mirroring keeps both sides in sync. When the daily note already holds
+ * an entry with the same text it is claimed as is (an entry carried over by
+ * rollover or pasted by hand is never appended twice). The send command
+ * (sendTodoToDaily) takes the same write path, only the kind of the link differs.
  */
 async function applySend(
   view: EditorView,
@@ -417,9 +440,9 @@ async function applySend(
     const doc = view.state.doc;
     const rootNo = resolveRootLine(doc, [text], rootHint);
     const root = rootNo !== null ? parseListLine(doc.line(rootNo).text) : null;
-    if (!rootNo || !isTodo(root)) return; // 防抖窗口里块没了/转正文:不发
-    if (text === "") return; // 还在打字
-    if (store.findByText(path, text, rootNo)) return; // 已有链接(竞态):镜像会带上
+    if (!rootNo || !isTodo(root)) return; // the block vanished or turned into prose during the debounce window: do not send
+    if (text === "") return; // still typing
+    if (store.findByText(path, text, rootNo)) return; // a link exists already (race): mirroring will pick it up
     const block = blockLines(doc, rootNo);
     const reindented = reindentBlock(block, root.indent.length, "");
     const base = daily.text ?? (await dailyScaffoldWithRollover(deps.io, vaultRoot, deps.today(), deps.templatePath()));
@@ -428,7 +451,8 @@ async function applySend(
     const existing = findEntryByText(bdoc, region, text, 0);
     let dailyLine: number;
     if (existing) {
-      // 日记里已有同文条目(rollover 带过来的/手工贴的):直接认领为镜像根
+      // The daily note already holds an entry with the same text (carried over by
+      // rollover or pasted by hand): claim it as the mirror root
       dailyLine = existing.start;
     } else {
       const { change } = appendEntrySpec(bdoc, region, reindented);
@@ -451,15 +475,19 @@ async function applySend(
   });
 }
 
-// ---------------------------------------------------------------- 待办跟随
+// ---------------------------------------------------------------- todo rollover
 
 /**
- * 新一天日记的初始内容:模板(有则用,变量换成当天日期)+ 上一篇日记的
- * 未完成待办(待办跟随,规则见 model.rolloverBlocks)。「上一篇」= Daily/ 里
- * 早于今天的最近一篇。跟随与模板都是增强不是义务:目录列不到、上一篇读不到、
- * 模板读不到,任何一步出错都折叠为默认内容,绝不挡日记创建。所有创建入口
- * (⌘⇧O 打开、⌘⇧J 发送、勾选记录、项目发送、日记栏)都走这里,谁先创建,
- * 落下的字节都一致。
+ * Initial content of a new day's daily note: the template (used when configured,
+ * with the variables replaced by the day's date) plus the unfinished todos of the
+ * previous note (todo rollover, the rule lives in model.rolloverBlocks). The
+ * "previous note" is the most recent one in Daily/ that is older than today.
+ * Rollover and template are enhancements, not obligations: if the directory
+ * cannot be listed, the previous note cannot be read or the template cannot be
+ * read, every failure folds back to the default content and never blocks the
+ * creation of the daily note. All creation entry points (⌘⇧O open, ⌘⇧J send,
+ * check-and-record, project send, daily column) go through here, so whoever
+ * creates it first, the bytes on disk are identical.
  */
 export async function dailyScaffoldWithRollover(
   io: DailyIO,
@@ -482,9 +510,12 @@ export async function dailyScaffoldWithRollover(
 }
 
 /**
- * 新日记正文的起点:配了模板文件就读它,`{{date}}`/`{{title}}` 都换成当天
- * 日期;没配、读不到(文件被删/改名)时回落到默认的 `# 日期`。模板内容原样
- * 落入文件,待办区仍按 parseDailyRegion 的规则紧随首个 H1。
+ * Starting point of the body of a new daily note: when a template file is
+ * configured it is read and `{{date}}` / `{{title}}` are replaced by the day's
+ * date; when there is none or it cannot be read (file deleted or renamed) we fall
+ * back to the default `# YYYY-MM-DD`. The template content lands in the file
+ * verbatim, and the todo region still follows the first H1 by the rules of
+ * parseDailyRegion.
  */
 async function dailyBase(
   io: DailyIO,
@@ -503,11 +534,12 @@ async function dailyBase(
   }
 }
 
-// ---------------------------------------------------------------- 发送命令
+// ---------------------------------------------------------------- send command
 
 /**
- * 身份文本 `text` 在 `srcPath` 里指向 `dailyPath` 这一份日记的映射。映射按日
- * 归属:昨天建立的映射指向昨天的文件,不参与「今天是否已同步」的判断。
+ * The link whose identity text `text` in `srcPath` points at the daily note
+ * `dailyPath`. Links belong to a day: a link created yesterday points at
+ * yesterday's file and takes no part in the "is it already synced today" check.
  */
 function linkForDaily(store: LinkStore, srcPath: string, dailyPath: string, text: string): DailyLink | null {
   for (const l of store.all()) {
@@ -516,7 +548,7 @@ function linkForDaily(store: LinkStore, srcPath: string, dailyPath: string, text
   return null;
 }
 
-/** 该行任一**祖先**待办在 `dailyPath` 上的映射(自身由调用方单独判定)。 */
+/** The link of any **ancestor** todo of that line on `dailyPath` (the line itself is judged by the caller). */
 function ancestorLinkForDaily(
   doc: Text,
   lineNo: number,
@@ -543,23 +575,28 @@ function ancestorLinkForDaily(
 }
 
 /**
- * 「待办发送到今日日记」:光标(多光标逐行)所在待办行复制为今日日记的
- * 一级条目,按下行为准——在子待办上按下,子待办就是日记里的一级条目,
- * 它自己的子树保持层级;建立持久化映射后由镜像保持两侧同步。
+ * "Send todo to today's daily note": the todo line under the cursor (one per line
+ * for multiple cursors) is copied to a top-level entry of today's daily note, the
+ * pressed line decides - pressing on a child todo makes that child the top-level
+ * entry of the daily note while its own subtree keeps its hierarchy. After the
+ * persistent link is created, mirroring keeps both sides in sync.
  *
- * 「已同步」的判定不看映射记录本身,而看今天这份日记里是否真有那条目:映射
- * 只是缓存的锚,日记文件被删/条目被手工删掉后它就过期了。过期映射就地解除
- * 并重新发送——「要再同步就重新按快捷键」这句承诺靠这里兑现。项目里的待办
- * 长期存在、日记按天新建,所以只认指向今天这份文件的映射,昨天的不算数,也
- * 不会因为今天发送而被解除(昨天的列表该什么样还是什么样)。
+ * The "already synced" decision does not look at the link record itself but at
+ * whether today's daily note really holds that entry: the link is only a cached
+ * anchor and goes stale once the daily note is deleted or the entry is removed by
+ * hand. A stale link is unlinked in place and the entry is sent again - this is
+ * what keeps the promise "to sync again, press the shortcut again". Project todos
+ * live long while the daily note is created per day, so only links pointing at
+ * today's file count; yesterday's do not, and they are not removed by today's send
+ * either (yesterday's list stays as it is).
  *
- * 记录型链接在显式发送时升级为正式映射。
+ * A recorded link is promoted to a regular link when it is sent explicitly.
  */
 export async function sendTodoToDaily(
   view: EditorView,
   deps: DailyDeps,
   store: LinkStore,
-  /** append = 今天列表末尾(时间顺序);prepend = 待办区最前(项目视图的发送/拖拽)。 */
+  /** append = end of today's list (chronological); prepend = front of the todo region (send and drag in the project view). */
   position: "append" | "prepend" = "append",
 ): Promise<void> {
   const vaultRoot = deps.vaultRoot();
@@ -580,7 +617,7 @@ export async function sendTodoToDaily(
   const dailyPath = dailyPathFor(vaultRoot, today);
   await withFileLock(dailyPath, async () => {
     const daily = await readOther(deps, dailyPath);
-    /** 编辑器打开着今日日记时:改动就地 dispatch,末尾不再写盘。 */
+    /** When today's daily note is open in an editor the change is dispatched in place, nothing is written to disk afterwards. */
     const dailyEditor = daily.editor;
     let dailyText: string | null = daily.text;
     let mutated = false;
@@ -588,7 +625,7 @@ export async function sendTodoToDaily(
     let sent = 0;
     let already = 0;
     let notTodo = 0;
-    /** 今天这份日记(含本轮已追加的部分)里是否已有这条条目。 */
+    /** Whether today's daily note (including what this round appended) already holds this entry. */
     const dailyHas = (text: string): boolean => {
       if (dailyText === null) return false;
       const d = parseDoc(dailyText);
@@ -609,7 +646,7 @@ export async function sendTodoToDaily(
       const text = todoText(l);
       const own = linkForDaily(store, srcPath, dailyPath, text);
       if (own && dailyHas(text)) {
-        // 已映射;显式发送把「完成记录」升级为正式映射
+        // Already linked; an explicit send promotes a "recorded" link to a regular link
         if (own.kind === "recorded") {
           own.kind = "copied";
           linksDirty = true;
@@ -618,17 +655,17 @@ export async function sendTodoToDaily(
         continue;
       }
       if (own) {
-        // 映射过期(今日日记被删/条目被手工删掉):解链后按新条目重发
+        // Stale link (today's daily note was deleted or the entry removed by hand): unlink and resend as a new entry
         store.remove(own.id);
         linksDirty = true;
       } else {
         const anc = ancestorLinkForDaily(doc, lineNo, srcPath, dailyPath, store);
         if (anc) {
           if (dailyHas(anc.text)) {
-            already++; // 随父待办镜像,已在日记里
+            already++; // mirrored along with the parent todo, it is already in the daily note
             continue;
           }
-          store.remove(anc.id); // 父的条目也没了:父的映射同样过期
+          store.remove(anc.id); // the parent's entry is gone too, so the parent's link is stale as well
           linksDirty = true;
         }
       }
@@ -640,7 +677,7 @@ export async function sendTodoToDaily(
       const existing = findEntryByText(bdoc, region, text, 0);
       let dailyLine: number;
       if (existing) {
-        dailyLine = existing.start; // 已有同文条目:认领,不重复追加
+        dailyLine = existing.start; // an entry with the same text exists: claim it, do not append twice
       } else {
         const { change } =
           position === "prepend"
@@ -671,8 +708,9 @@ export async function sendTodoToDaily(
       linksDirty = true;
       sent++;
     }
-    // 日记开在编辑器里时改动已经在内存(自动保存会落盘),再写盘会把编辑器
-    // 里的旧内容留在内存,下一次保存又盖回去。
+    // When the daily note is open in an editor the change is already in memory
+    // (autosave will write it), writing to disk again would leave the stale
+    // content of the editor in memory and the next save would overwrite it.
     const useEditor =
       dailyEditor !== null &&
       dailyEditor.dom.isConnected &&

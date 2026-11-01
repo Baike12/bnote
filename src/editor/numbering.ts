@@ -19,11 +19,16 @@ import { calloutRegions } from "./callout";
  * items — are only recognized by the tree, which is fine since the scan is
  * only ever a fallback-grade approximation of the same rule).
  *
- * Callout 块(`:::` 容器)是独立的编号作用域:**每个区域**进栈时把外部计数器
- * 入栈并清零,出栈时原样恢复——块内标题从 1 重新数,块外序列像块内不存在一样
- * 继续。兄弟块(先后两个平级 callout)不共享计数器,各自从 1;嵌套块逐层
- * 入栈,内层再从头数。作用域按「区域身份路径」(外层→内层的区域链)对齐,
- * 不按深度数值——深度相同的两个兄弟块也是不同作用域。
+ * Callout blocks (`:::` containers) are independent numbering scopes: on
+ * **entering** a region the outer counters are pushed and zeroed, on leaving
+ * they are restored as they were — headings inside the block count from 1
+ * again while the outer sequence continues as if the block did not exist.
+ * Sibling blocks (two callouts at the same level, one after the other) share
+ * no counter and each starts at 1; nested blocks push layer by layer and the
+ * inner one counts from the start again. The scopes are aligned by the
+ * "region identity path" (the chain of regions from outer to inner), not by
+ * the depth number — two sibling blocks of the same depth are different
+ * scopes too.
  */
 
 const OLD_NUMBER_RE = /^\d+(\.\d+)*[ \t]+/;
@@ -31,13 +36,15 @@ const HEADING_RE = /^(#{1,6})([ \t]+.*)?$/;
 
 /** Renumber replacements for `state`, [] when the numbering is already up
  *  to date. Each change rewrites one heading's prefix up to the title text.
- *  导出供单测锁作用域语义(纯函数,无视图依赖)。 */
+ *  Exported so unit tests can lock the scope semantics (a pure function, no
+ *  view dependency). */
 export function renumberChanges(state: EditorState): { from: number; to: number; insert: string }[] {
   const doc = state.doc;
   const fences = fenceStateScan(doc);
   const regions = calloutRegions(state);
-  // 每个区域的最小包络父区域(区域按 from 升序且正确嵌套;从右往左找第一个
-  // 装住自己的,就是最内层父区域)。
+  // The smallest enclosing parent region of each region (the regions are
+  // sorted by `from` and properly nested; the first one found from right to
+  // left that contains the region is its innermost parent).
   const parent = new Array<number>(regions.length).fill(-1);
   for (let i = 0; i < regions.length; i++) {
     for (let j = i - 1; j >= 0; j--) {
@@ -50,7 +57,7 @@ export function renumberChanges(state: EditorState): { from: number; to: number;
       }
     }
   }
-  /** 标题所在的作用域路径:外层→内层的区域下标链。 */
+  /** The scope path of the heading: the chain of region indices from outer to inner. */
   const pathOf = (lineNo: number): number[] => {
     let idx = -1;
     for (let i = regions.length - 1; i >= 0; i--) {
@@ -81,8 +88,11 @@ export function renumberChanges(state: EditorState): { from: number; to: number;
   const changes: { from: number; to: number; insert: string }[] = [];
 
   for (const head of heads) {
-    // Callout 作用域进出:与上一个标题的作用域路径求公共前缀,弹出的层恢复
-    // 计数器,新进的层清零。深度可能一跳多层(嵌套块里第一个标题),循环补齐。
+    // Entering and leaving a callout scope: take the common prefix of this
+    // heading's scope path and the previous one, restore the counters of the
+    // popped layers and zero the newly entered ones. The depth may jump by
+    // several levels at once (the first heading inside a nested block), so
+    // the loop fills the gap.
     const path = pathOf(head.lineNo);
     let common = 0;
     while (

@@ -94,12 +94,12 @@ describe("PDF 批注几何", () => {
 });
 
 describe("单击取行", () => {
-  // 两栏、两行:点击左栏第一行只应高亮左栏那一段。
+  // Two columns, two lines: clicking the first line of the left column must only highlight that run.
   const boxes = [
-    { left: 100, top: 100, right: 400, bottom: 120 }, // 左栏第一行
-    { left: 402, top: 100, right: 460, bottom: 120 }, // 同行紧邻的一段
-    { left: 600, top: 100, right: 900, bottom: 120 }, // 右栏
-    { left: 100, top: 122, right: 400, bottom: 142 }, // 左栏第二行
+    { left: 100, top: 100, right: 400, bottom: 120 }, // first line of the left column
+    { left: 402, top: 100, right: 460, bottom: 120 }, // the run right next to it on the same line
+    { left: 600, top: 100, right: 900, bottom: 120 }, // right column
+    { left: 100, top: 122, right: 400, bottom: 142 }, // second line of the left column
   ];
   const pageRect = { left: 0, top: 0, right: 1000, bottom: 500 };
 
@@ -130,7 +130,7 @@ describe("PDF 批注存储", () => {
     expect(pdfAnnotationPath("/vault", "papers/deep/a.pdf")).toBe(
       "/vault/.bnote/pdf-annotations/papers/deep/a.pdf.json",
     );
-    // 越界片段被丢掉,不会逃出 .bnote。
+    // Out-of-bounds segments are dropped and never escape .bnote.
     expect(pdfAnnotationRelPath("../../etc/passwd")).toBe(
       "pdf-annotations/etc/passwd.json",
     );

@@ -1,58 +1,61 @@
 /**
- * unified diff 的解析与并排对齐。
+ * Parsing of a unified diff and the side-by-side alignment.
  *
- * 后端只给原始的 unified diff 文本(`git diff --no-color`),解析放在前端:
- * 渲染时需要按行号、颜色、并排对齐,这些都在这一层做,不必让后端再实现
- * 一遍 diff 模型。
+ * The backend only hands over the raw unified diff text (`git diff
+ * --no-color`); the parsing happens on the frontend because rendering needs
+ * line numbers, colors and a side-by-side alignment, and the backend would
+ * otherwise have to implement a second diff model.
  */
 
-/** 一行 diff。 */
+/** One diff line. */
 export interface DiffLine {
   type: "context" | "add" | "remove" | "meta";
   text: string;
-  /** 原文件行号(1-based);新增行没有。 */
+  /** Line number in the old file (1-based); absent for added lines. */
   oldLine: number | null;
-  /** 新文件行号(1-based);删除行没有。 */
+  /** Line number in the new file (1-based); absent for removed lines. */
   newLine: number | null;
 }
 
-/** 一个 hunk(`@@ -a,b +c,d @@`)。 */
+/** One hunk (`@@ -a,b +c,d @@`). */
 export interface DiffHunk {
   oldStart: number;
   oldLines: number;
   newStart: number;
   newLines: number;
-  /** `@@` 后面那段上下文标题(可选)。 */
+  /** The context heading after `@@` (optional). */
   section: string;
   lines: DiffLine[];
 }
 
-/** 一个文件的差异。 */
+/** The diff of one file. */
 export interface DiffFileDiff {
   oldPath: string | null;
   newPath: string | null;
   hunks: DiffHunk[];
 }
 
-/** 解析后的整个 diff。 */
+/** The whole parsed diff. */
 export interface ParsedDiff {
   files: DiffFileDiff[];
 }
 
-/** `@@ -1,4 +1,5 @@ foo` → hunk 头。 */
+/** `@@ -1,4 +1,5 @@ foo` → hunk header. */
 const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
 
 /**
- * 解析 unified diff 文本。
+ * Parse unified diff text.
  *
- * 支持多文件(`diff --git` 分段)、新增文件(`/dev/null` 旧路径)、删除文件
- * (新路径 `/dev/null`)。不认识的行按 context 处理——宁可多显示一行,别丢
- * 上下文。
+ * Supports multiple files (segmented by `diff --git`), added files (old path
+ * `/dev/null`) and deleted files (new path `/dev/null`). Unrecognized lines
+ * are treated as context — showing one line too much is better than losing
+ * context.
  */
 export function parseUnifiedDiff(text: string): ParsedDiff {
   const files: DiffFileDiff[] = [];
   const raw = text.split("\n");
-  // 结尾的换行会切出一个空段:它不是「一行空的上下文」,是切分产物。
+  // The trailing newline splits off an empty segment: it is not "an empty
+  // context line", it is an artifact of the split.
   if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
   const lines = raw;
   let file: DiffFileDiff | null = null;
@@ -102,7 +105,8 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
     }
     if (!hunk) continue;
     if (raw.startsWith("\\")) {
-      // "\ No newline at end of file" —— 附在上一行,不改行号。
+      // "\ No newline at end of file" — attached to the previous line, it does
+      // not change any line number.
       hunk.lines.push({ type: "meta", text: raw.slice(2), oldLine: null, newLine: null });
       continue;
     }
@@ -122,35 +126,39 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
       newLine += 1;
       continue;
     }
-    // 其余(diff --git 之外的元信息行)不显示。
+    // Everything else (meta lines other than `diff --git`) is not displayed.
   }
 
   return { files };
 }
 
-/** 去掉 diff 路径的 `a/` `b/` 前缀。 */
+/** Strip the `a/` / `b/` prefix of a diff path. */
 function stripPrefix(p: string): string {
   if (p.startsWith("a/") || p.startsWith("b/")) return p.slice(2);
   return p;
 }
 
-/** 并排视图的一行:左右各一格,缺的用 null 占位。 */
+/** One row of the side-by-side view: one cell per side, a missing one is null. */
 export interface DiffRow {
   left: DiffLine | null;
   right: DiffLine | null;
 }
 
 /**
- * 把一个 hunk 的行排成并排视图的行。
+ * Arrange the lines of a hunk into the rows of the side-by-side view.
  *
- * 配对分两层:
- * 1. **内容没变的行**(LCS 找出来的公共子序列)左右对齐——它们是「挪了位置」
- *    的行,不该飘到别处;
- * 2. 剩下没配上的删除/新增**按位置配对**——这就是「改过的同一行」:左边旧的、
- *    右新的。
+ * The pairing has two layers:
+ * 1. **Lines with unchanged content** (the common subsequence found by the
+ *    LCS) are aligned left to right — they are the lines that "moved" and
+ *    must not drift elsewhere;
+ * 2. the remaining unpaired removals/additions are **paired by position** —
+ *    that is the "same line, modified": the old one on the left, the new one
+ *    on the right.
  *
- * 只按内容配对是不够的:改一个词的那一行,新旧文本不同,LCS 配不上,会变成
- * 「左边一格删除、右边一格新增」两行,读起来像删了一行又加了一行。
+ * Pairing by content alone is not enough: the line where a single word
+ * changed has different text before and after, so the LCS cannot pair it and
+ * it would become two rows ("removed" on the left, "added" on the right),
+ * which reads as if a line was deleted and another one added.
  */
 export function alignHunk(hunk: DiffHunk): DiffRow[] {
   const rows: DiffRow[] = [];
@@ -163,7 +171,7 @@ export function alignHunk(hunk: DiffHunk): DiffRow[] {
       i += 1;
       continue;
     }
-    // 一段连续的增删(中间没有上下文行)。
+    // A run of consecutive removals/additions (no context line in between).
     const removed: DiffLine[] = [];
     const added: DiffLine[] = [];
     while (i < lines.length && (lines[i].type === "remove" || lines[i].type === "add")) {
@@ -176,7 +184,7 @@ export function alignHunk(hunk: DiffHunk): DiffRow[] {
   return rows;
 }
 
-/** 一段连续增删的对齐:先按 LCS 配上没变的行,剩下的按位置配对。 */
+/** Alignment of a run of consecutive removals/additions: pair the unchanged lines by LCS first, the rest by position. */
 function alignSegment(removed: DiffLine[], added: DiffLine[]): DiffRow[] {
   const pairs = lcsPairs(
     removed.map((l) => l.text),
@@ -195,7 +203,7 @@ function alignSegment(removed: DiffLine[], added: DiffLine[]): DiffRow[] {
   return rows;
 }
 
-/** 按位置配对:多的那边留空。 */
+/** Pair by position: the longer side leaves blanks. */
 function pairPositional(removed: DiffLine[], added: DiffLine[]): DiffRow[] {
   const n = Math.max(removed.length, added.length);
   const rows: DiffRow[] = [];
@@ -205,17 +213,20 @@ function pairPositional(removed: DiffLine[], added: DiffLine[]): DiffRow[] {
   return rows;
 }
 
-/** 配对结果:左边下标 → 右边下标。 */
+/** The pairing result: left index → right index. */
 interface LcsPair {
   left: number;
   right: number;
 }
 
 /**
- * 最长公共子序列的配对(只给下标,不给序列本身)。
+ * The pairing of the longest common subsequence (indices only, not the
+ * subsequence itself).
  *
- * 用动态规划的标准 LCS 长度表,再回溯出配对。O(n*m) —— hunk 通常几十行,
- * 够用;真要防超大 hunk,调用方可以先按行数截断。
+ * Uses the standard dynamic-programming LCS length table and then backtracks
+ * the pairs out of it. O(n*m) — a hunk is usually a few dozen lines, which is
+ * enough; to guard against a huge hunk the caller can truncate by line count
+ * first.
  */
 export function lcsPairs(a: string[], b: string[]): LcsPair[] {
   const n = a.length;
@@ -247,7 +258,7 @@ export function lcsPairs(a: string[], b: string[]): LcsPair[] {
   return pairs;
 }
 
-/** diff 的统计:新增/删除多少行。 */
+/** Diff statistics: how many lines were added / removed. */
 export function diffStats(diff: ParsedDiff): { added: number; removed: number } {
   let added = 0;
   let removed = 0;

@@ -4,10 +4,12 @@ import { useAppStore } from "@/state/appStore";
 import type { LspDiagnostic } from "../types";
 
 /**
- * 底部面板:问题(诊断)与引用。
+ * The bottom panels: problems (diagnostics) and references.
  *
- * 两个面板共用一条「点击 → 跳转」的通路:把目标文件打开,再让编辑器把光标
- * 落到目标位置(位置用 LSP 坐标传,目标文件的文档偏移此刻还不存在)。
+ * Both panels share one "click → jump" path: open the target file and let the
+ * editor place the caret at the target position (the position is passed in
+ * LSP coordinates, because the document offset of the target file does not
+ * exist yet).
  */
 
 const SEVERITY_LABEL: Record<number, string> = {
@@ -97,7 +99,9 @@ export function ReferencesPanel() {
           key={i}
           className="code-panel-row"
           onClick={() => {
-            // 项目外的引用(标准库、依赖)打不开:后端只放行项目根内的路径。
+            // A reference outside the project (the standard library, a
+            // dependency) cannot be opened: the backend only lets paths
+            // inside the project root through.
             if (ref.external) {
               showToast("这条引用在项目外,不在这个面板里打开");
               return;
@@ -119,7 +123,7 @@ export function ReferencesPanel() {
   );
 }
 
-/** 诊断条数(状态栏用)。 */
+/** The number of diagnostics (used by the status bar). */
 export function useProblemCount(): number {
   const diagnostics = useCodeStore((s) => s.diagnostics);
   return useMemo(
@@ -128,7 +132,7 @@ export function useProblemCount(): number {
   );
 }
 
-/** 某个文件的诊断(编辑器状态栏用)。 */
+/** The diagnostics of one file (used by the editor status bar). */
 export function useFileDiagnostics(path: string | null): LspDiagnostic[] {
   const diagnostics = useCodeStore((s) => s.diagnostics);
   return useMemo(() => (path ? (diagnostics[path] ?? []) : []), [diagnostics, path]);

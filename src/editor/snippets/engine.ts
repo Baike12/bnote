@@ -151,9 +151,11 @@ export function matchesContext(s: ParsedSnippet, ctx: EditContext): boolean {
   return false;
 }
 
-/** latex-suite 的 `w` 判定:trigger 前后**都**必须是分隔符;非 ASCII(CJK)
- *  也算边界——否则中文笔记里的「测试dm」永远不展开。`\n` 在设置串里写的是
- *  字面两字符,还原成真换行。 */
+/** latex-suite's `w` decision: the characters before **and** after the trigger
+ *  must both be delimiters; a non-ASCII character (CJK) counts as a boundary
+ *  too — otherwise an `dm` trigger in a CJK note would never expand. The `\n`
+ *  in the settings string is a literal two-character sequence and is turned
+ *  back into a real newline. */
 export function isWordBoundary(
   state: EditorState,
   triggerPos: number,
@@ -168,8 +170,8 @@ export function isWordBoundary(
 }
 
 export interface CompiledSnippetList {
-  /** Sorted: priority desc, then longer triggers first（正则按 source 长度参与，
-   *  与 latex-suite 的 getTriggerLength 一致）。 */
+  /** Sorted: priority desc, then longer triggers first (a regex takes part
+   *  through its source length, matching latex-suite's getTriggerLength). */
   list: ParsedSnippet[];
 }
 
@@ -179,9 +181,10 @@ export function compileSnippets(raws: RawSnippet[]): CompiledSnippetList {
     .filter((s): s is ParsedSnippet => s !== null)
     .sort((a, b) => {
       if (a.priority !== b.priority) return b.priority - a.priority;
-      // latex-suite 的 getTriggerLength:字符串 trigger 用本体长度,正则用
-      // source 长度。正则若一律按 0 排（旧行为），任何普通 trigger 都会抢先于
-      // 能匹配同一段文本的正则——"xhat" 便只命中 "hat" 而不是 ([a-zA-Z])hat。
+      // latex-suite's getTriggerLength: a string trigger uses its own length,
+      // a regex uses its source length. If regexes were all sorted as 0 (the
+      // old behavior), any plain trigger would win over a regex matching the
+      // same text — "xhat" would then only hit "hat" and not ([a-zA-Z])hat.
       return b.displayTrigger.length - a.displayTrigger.length;
     });
   return { list: parsed };
@@ -216,10 +219,13 @@ const ESCAPABLE = new Set(["$", "\\"]);
  *  references, `${VISUAL}` the visual selection, `\x` escapes for the chars
  *  in ESCAPABLE (anything else after `\` stays literal).
  *
- *  `raw: true` 是**函数型 replacement 的返回值**通道:latex-suite 里函数返回值
- *  原样入档,只做制表位扫描(`process` 直接采信返回值,`[[n]]`/`\$`/`\\` 的
- *  处理都在解析期对**字符串型** replacement 做)。少了这条通道,函数返回的
- *  `\\`(矩阵行分隔)会被当转义吃掉一层,矩阵直接渲染错。 */
+ *  `raw: true` is the channel for the **return value of a function-shaped
+ *  replacement**: in latex-suite a function's return value is filed as is and
+ *  only scanned for tab stops (`process` trusts the return value directly,
+ *  while the handling of `[[n]]`/`\$`/`\\` happens at parse time for
+ *  **string-shaped** replacements). Without this channel the `\\` returned by
+ *  a function (the matrix row separator) would lose one level of escaping as
+ *  an escape sequence and the matrix would render wrong. */
 export function parseReplacement(
   replacement: string,
   groups: string[],
@@ -309,10 +315,12 @@ export interface MatchResult {
   replacement: ParsedReplacement;
 }
 
-/** latex-suite 的 `removeSnippetWhitespace`:行内公式里展开后不留多余空格
- *  (`$ …$` 里结尾的空格会被 KaTeX 吃掉却让源码难看)。两种尾部形态:
- *  以空格结尾 → 去掉所有尾随空格;末三字符是 `" $" + 数字`(即 `${n}` 制表位
- *  前有空格) → 只去掉那个空格,制表位保留。其余形态原样。 */
+/** latex-suite's `removeSnippetWhitespace`: after an expansion inside inline
+ *  math, no extra whitespace is left behind (KaTeX eats a trailing space in
+ *  `$ …$` anyway, but the source looks bad). Two tail shapes:
+ *  ending in a space → drop all trailing spaces; last three characters are
+ *  `" $" + digit` (i.e. a space in front of a `${n}` tab stop) → drop only that
+ *  space and keep the tab stop. Any other shape is left as is. */
 export function trimSnippetWhitespace(replacement: string): string {
   if (replacement.endsWith(" ")) return replacement.trimEnd();
   const tail = replacement.slice(-3);
@@ -322,9 +330,11 @@ export function trimSnippetWhitespace(replacement: string): string {
   return replacement;
 }
 
-/** 展开文本:函数型 replacement 的入参随片段类型而定(正则 → exec 结果数组,
- *  字符串 → trigger,可视 → 选中文本);返回非字符串视为该片段不匹配。
- *  `raw` 标记"来自函数"——它的返回值不再过转义层(见 parseReplacement)。 */
+/** The expanded text: the argument of a function-shaped replacement depends
+ *  on the snippet type (regex → the exec result array, string → the trigger,
+ *  visual → the selected text); a non-string return means the snippet does
+ *  not match. `raw` marks "came from a function" — its return value no longer
+ *  goes through the escaping layer (see parseReplacement). */
 function resolveReplacement(
   snippet: ParsedSnippet,
   arg: string | RegExpExecArray,
@@ -339,9 +349,9 @@ function resolveReplacement(
 export interface MatchOptions {
   auto: boolean;
   visualText: string | null;
-  /** latex-suite `removeSnippetWhitespace`(默认开,与插件默认一致)。 */
+  /** latex-suite `removeSnippetWhitespace` (on by default, same as the plugin). */
   removeSnippetWhitespace?: boolean;
-  /** latex-suite `wordDelimiters`(缺省用插件默认集,见 config.ts)。 */
+  /** latex-suite `wordDelimiters` (defaults to the plugin's set, see config.ts). */
   wordDelimiters?: string;
 }
 
@@ -357,17 +367,23 @@ export function findSnippet(
   const prefix = state.sliceDoc(line.from, cursor);
   const ctx = getContextAt(state, cursor);
   const delimiters = opts.wordDelimiters ?? LATEX_SUITE_WORD_DELIMITERS;
-  // 只在行内公式里修剪(块级公式的换行前空格是排版的一部分)。
+  // Trim only inside inline math (the space before a line break in block math
+  // is part of the layout).
   const trim = (opts.removeSnippetWhitespace ?? true) && ctx.inlineMath;
 
   for (const snippet of compiled.list) {
     if (opts.auto && !snippet.auto) continue;
-    // 手动展开(Tab,typedKey === null)不认自动片段:插件的 runSnippetCursor
-    // 对自动片段要求 `key.length === 1`(真的敲下一个字符),Tab 永远轮不到它。
-    // 少了这条,光标停在行尾时任何撞上自动正则的尾巴都会被再展开一次——
-    // `\theta` 末尾的 `h`+`eta` 命中「给希腊字母补反斜杠」片段(`([^\\])(${GREEK})`),
-    // Tab 就把 `eta` 改写成 `\eta`(`$\theta$` + Tab → `$\th\eta$`)。
-    // 视觉片段不在此列:选区 + 触发键是它唯一的入口(bnote 允许它走 Tab 路径)。
+    // A manual expansion (Tab, typedKey === null) does not accept auto
+    // snippets: the plugin's runSnippetCursor requires `key.length === 1` for
+    // an auto snippet (a character really typed), so Tab never reaches it.
+    // Without this rule, any tail that happens to match an auto regex would
+    // be expanded a second time when the caret sits at the end of the line —
+    // the `h`+`eta` at the end of `\theta` hits the "add a backslash to Greek
+    // letters" snippet (`([^\\])(${GREEK})`), and Tab rewrites `eta` into
+    // `\eta` (`$\theta$` + Tab → `$\th\eta$`).
+    // Visual snippets are not covered by this: a selection plus the trigger
+    // key is their only entry point (bnote lets them go through the Tab
+    // path).
     if (!opts.auto && snippet.auto && !snippet.visual) continue;
 
     // Visual snippets only fire when there is a selection to operate on.

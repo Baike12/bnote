@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { renderBlockHtml } from "./render";
 
 /**
- * 足迹块渲染的结构契约:复用编辑器的类名(md-heading、md-list-line、li-i 系列)
- * 和同一个公式扫描器,才能做到「日记里看到的和原文一样」。这里锁类名与
- * 内容的对应关系——渲染产物是 innerHTML 字符串,断言关键片段即可。
+ * Structural contract for the footprint block rendering: reusing the editor's
+ * class names (md-heading, md-list-line, the li-i family) and the same formula
+ * scanner is what makes "what you see in the daily note matches the source".
+ * This gate locks the mapping between class names and content — the rendering
+ * output is an innerHTML string, so asserting the key fragments is enough.
  */
 
 describe("足迹块渲染:块级结构", () => {

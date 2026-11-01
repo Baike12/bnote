@@ -84,9 +84,10 @@ function centerCursor(view: EditorView, position: number) {
  * its position. `scrollPastEnd` keeps the last lines reachable when the
  * position is above 50%, on top of the bottom reserve.
  *
- * `reserveTop: false` 让第一行钉在顶部(代码区):光标行在上面几屏时不再为
- * 居中把首行拉下来,而是光标自己在屏幕上往上走;笔记正文用默认的 true,
- * 首行也能停在设定高度。
+ * `reserveTop: false` pins the first line to the top (code pane): when the
+ * caret line is a few screens up it no longer drags the first line down to
+ * centre it, the caret instead walks up the screen on its own; note bodies use
+ * the default true, so their first line can still stop at the configured height.
  */
 export interface TypewriterOptions {
   reserveTop?: boolean;

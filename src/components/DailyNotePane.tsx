@@ -15,7 +15,9 @@ import { TODO_DRAG_MIME, decodeTodoDrag } from "@/projects/drag";
 import { sendTodoWithToast } from "@/projects/send";
 
 /**
- * 日期标签:今天明说,其余日子带星期(日记是按日子翻的,星期比「周几」好认)。
+ * Date label: today is spelled out, other days carry their weekday (daily
+ * notes are flipped through by day, and the weekday is easier to recognise
+ * than a bare number).
  */
 const WEEKDAY = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
@@ -27,13 +29,17 @@ function dayLabel(day: string, today: string): string {
 }
 
 /**
- * 项目视图右栏:只放日记(`<vault>/Daily/YYYY-MM-DD.md`)。
+ * Right column of the project view: daily notes only
+ * (`<vault>/Daily/YYYY-MM-DD.md`).
  *
- * 这里不经过全局 `currentFile` / `openNote`:项目视图里活动编辑器可能是项目
- * 卡片,把日记塞进它就会写错文件。日记的读写、自动保存都由这块自己负责。
+ * It does not go through the global `currentFile` / `openNote`: in the
+ * project view the active editor may be a project card, and pushing a daily
+ * note into it would write the wrong file. Reading, writing and autosaving
+ * the daily note are all handled here.
  *
- * 待办拖进来的落点就是「今天待办区的最前面」——与卡片上的发送快捷键同一条
- * 路径(sendTodoToTodayFront),拖到哪一行都不改变插入位置。
+ * A dropped todo always lands at the very top of today's todo list, the
+ * same path the card's send shortcut takes (sendTodoToTodayFront); the
+ * drop position does not change where it is inserted.
  */
 export function DailyNotePane() {
   const vaultRoot = useAppStore((s) => s.vaultPath);
@@ -58,7 +64,7 @@ export function DailyNotePane() {
 
   const todayPath = vaultRoot ? dailyPathFor(vaultRoot, today) : null;
 
-  // 默认落点:今天 → 最新一篇 → 空(等发送时创建)。用户选过之后不再自动改。
+  // Default landing spot: today -> the most recent one -> empty (created when something is sent). Once the user picked a day, it is never changed automatically again.
   useEffect(() => {
     if (!vaultRoot) {
       setCurrent(null);
@@ -71,7 +77,7 @@ export function DailyNotePane() {
     });
   }, [vaultRoot, todayPath, days]);
 
-  // 当前日记被外部删掉时回到今天的落点,别停在一份不存在的文件上。
+  // When the current daily note is deleted externally, fall back to today's landing spot instead of staying on a file that no longer exists.
   useEffect(() => {
     if (!vaultRoot || !current) return;
     if (days.some((d) => d.path === current)) return;
@@ -95,13 +101,13 @@ export function DailyNotePane() {
   const isTodoDrag = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes(TODO_DRAG_MIME);
 
   const idx = current ? days.findIndex((d) => d.path === current) : -1;
-  /** 更早的一篇(列表是降序,index 更大)。 */
+  /** An earlier day (the list is descending, so a larger index). */
   const older = idx >= 0 && idx + 1 < days.length ? days[idx + 1] : null;
-  /** 更晚的一篇。 */
+  /** A later day. */
   const newer = idx > 0 ? days[idx - 1] : null;
   const currentDay = idx >= 0 ? days[idx].day : null;
 
-  // 「聚焦日记区」命令只发信号:编辑器实例在组件里,命令层拿不到。
+  // The "focus the daily note area" command only emits a signal: the editor instance lives in this component and the command layer cannot reach it.
   useEffect(() => {
     const focusDaily = () => {
       setActiveKeyRegion("notes");
@@ -113,7 +119,7 @@ export function DailyNotePane() {
 
   const onDragOver = (e: DragEvent) => {
     if (!isTodoDrag(e)) return;
-    // 拖进来的是项目待办:接管落点,不让 CodeMirror 把它当文本插入。
+    // What is dragged in is a project todo: take over the drop so CodeMirror does not insert it as text.
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = "copy";
@@ -156,8 +162,9 @@ export function DailyNotePane() {
           <span className="daily-date-text">
             {currentDay ? dayLabel(currentDay, today) : "还没有日记"}
           </span>
-          {/* 原生下拉铺满日期文字(透明),点日期即选任意一天:外观由 CSS 决定,
-              交互仍是系统原生的翻找体验。 */}
+          {/* The native dropdown spreads over the date text (transparent), so
+              clicking a date selects any day: the look comes from CSS, the
+              interaction stays the system's native pick-and-scroll one. */}
           <select
             className="daily-date-select"
             value={current ?? ""}

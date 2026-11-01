@@ -25,7 +25,7 @@ describe("窗口几何", () => {
     const prev = { x: 100, y: 80, width: 1280, height: 820, maximized: false };
     const maximized = mergeWindowState(prev, { x: 0, y: 25, width: 3456, height: 1080 }, true);
     expect(maximized).toEqual({ ...prev, maximized: true });
-    // 取消最大化后回到真实窗口尺寸
+    // Un-maximizing returns to the real window size
     expect(mergeWindowState(maximized, { x: 120, y: 90, width: 1000, height: 700 }, false)).toEqual({
       x: 120,
       y: 90,

@@ -6,27 +6,35 @@ import { withinEnv } from "./brackets";
 import { latexConfig } from "./config";
 
 /**
- * latex-suite 的 matrixShortcuts:矩阵环境里 **Shift+Tab** 补 ` & `(对齐下一列)、
- * Enter 补 ` \\` 换行(Shift+Enter 只把光标送到下一行行尾,不动文档)。语义
- * 对齐插件 runmatrixshortcuts:
+ * latex-suite's matrixShortcuts: inside a matrix environment **Shift+Tab**
+ * completes ` & ` (aligning the next column) and Enter completes a ` \\` line
+ * break (Shift+Enter only moves the caret to the end of the next line and
+ * leaves the document alone). The semantics follow the plugin's
+ * runmatrixshortcuts:
  *
- * - 只在**块级公式**里生效(inline math 不触发);
- * - 环境靠 `\begin{名字}` 配对判定,名字取自设置(默认 pmatrix/cases/align/
+ * - They only apply in **block math** (inline math never triggers);
+ * - The environment is detected by pairing `\begin{name}` with its end; the
+ *   names come from the settings (by default pmatrix/cases/align/
  *   bmatrix/Bmatrix/vmatrix/Vmatrix/array/matrix);
- * - 插件里 `&`/`\\`/Backspace 没有独立处理,"空矩阵自动清理"和"列对齐重排"
- *   也都不存在(逐处 grep 确认过),所以这里同样不做。
+ * - The plugin has no separate handling for `&`/`\\`/Backspace, and neither
+ *   "auto-clean an empty matrix" nor "re-align the columns" exist (confirmed
+ *   by grepping it), so neither is done here.
  *
- * **分隔符挂在 Shift+Tab 上**是插件作者改的(handleKeydown 里那句
- * `// Shift+Tab 时输入 &，普通 Tab 让给 tabout`):普通 Tab 留给 tabout,
- * `&` 只能由 Shift+Tab 触发。照抄这个分工——否则矩阵里 Tab 永远走不到
- * "跳出括号"那一层,括号嵌套时 Tab 只会往公式里插 ` & `。
+ * **Hanging the separator on Shift+Tab** was the plugin author's change (the
+ * handleKeydown comment there reads "Shift+Tab inserts &, plain Tab is left to
+ * tabout"): plain Tab is left to tabout, so `&` can only be triggered by
+ * Shift+Tab. This division of labour is copied verbatim — otherwise Tab inside
+ * a matrix never reaches the "leave the bracket" layer, and with nested
+ * brackets Tab would only ever insert ` & ` into the formula.
  */
 
-/** 矩阵行分隔:空格 + LaTeX 的 `\\` + 换行。iden 片段与这里共用同一条
- *  常量——转义层数写错一处,矩阵就渲染错。 */
+/** The matrix row separator: space + LaTeX's `\\` + newline. The iden snippet
+ *  and this place share the same constant — one wrong level of escaping and
+ *  the matrix renders wrong. */
 export const MATRIX_ROW_BREAK = String.raw` \\` + "\n";
 
-/** 光标所在位置的矩阵环境名;不在任何矩阵环境里(或不在块级公式里)返回 null。 */
+/** The matrix environment name at the caret; null when the caret is not in a
+ *  matrix environment (or not in block math). */
 export function matrixEnvAt(state: EditorState, pos: number): string | null {
   const ctx = getContextAt(state, pos);
   if (!ctx.blockMath) return null;
@@ -40,7 +48,8 @@ export function matrixEnvAt(state: EditorState, pos: number): string | null {
   return null;
 }
 
-/** 矩阵列分隔:插入 ` & `(替换选区)。不在矩阵环境里返回 false,交回后续处理。 */
+/** The matrix column separator: inserts ` & ` (replacing the selection).
+ *  Returns false when not in a matrix environment, handing the key back. */
 export function matrixSeparator(view: EditorView): boolean {
   if (!latexConfig().matrixShortcuts) return false;
   const range = view.state.selection.main;
@@ -53,7 +62,8 @@ export function matrixSeparator(view: EditorView): boolean {
   return true;
 }
 
-/** Enter:插入 ` \\` 换行;Shift+Enter 移到下一行行尾(空文档末行则不动)。 */
+/** Enter: inserts a ` \\` line break; Shift+Enter moves to the end of the next
+ *  line (and does nothing on the last line of an empty document). */
 export function matrixEnter(view: EditorView, shift = false): boolean {
   if (!latexConfig().matrixShortcuts) return false;
   const range = view.state.selection.main;
@@ -69,9 +79,12 @@ export function matrixEnter(view: EditorView, shift = false): boolean {
     });
     return true;
   }
-  // align 是对齐环境,不是数据表格:行分隔还按矩阵插 ` \\` 会让等号永远对不齐
-  // (对齐点 `&` 要人手补)。对齐环境的 Enter 走 alignEnter——只接管"能接手的
-  // 行"(非空、非 begin/end、行尾尚无 `\\`),其余行交回默认换行。
+  // align is an alignment environment, not a data table: inserting the matrix
+  // row separator ` \\` there would leave the equals signs permanently
+  // misaligned (the alignment point `&` has to be added by hand). Enter in an
+  // align environment goes to alignEnter — it only takes over the lines it
+  // "can take over" (non-empty, not begin/end, no ` \\` at the end yet); every
+  // other line falls back to the default line break.
   if (env === "align") return alignEnter(view);
   view.dispatch({
     changes: { from: range.from, to: range.to, insert: MATRIX_ROW_BREAK },
@@ -82,17 +95,24 @@ export function matrixEnter(view: EditorView, shift = false): boolean {
 }
 
 /**
- * align 续行的纯决策(导出供门禁):光标前的行文本 → 该前半的替换文本
- * (行尾含 ` \\` 与换行),null = 不接管(光标在行首、`\begin`/`\end` 行、
- * 前半行尾已有 `\\`——这些情况按回车就是普通换行,补 ` \\` 反而弄脏渲染)。
+ * The pure decision for continuing an align line (exported for the gate): the
+ * line text before the caret → the replacement text for that half (with ` \\`
+ * and a newline at the end), null = do not take over (the caret is at the line
+ * start, the line is a `\begin`/`\end` line, or the half already ends with
+ * `\\` — in those cases Enter is just a normal line break and appending ` \\`
+ * would only dirty the rendering).
  *
- * 接管时的两处补全,对齐用户手写 align 的形状(`a &= b \\`):
- * - 前半没有 `&`:第一个裸关系符(`=` / `<=` / `>=`)前补 `&` 作对齐点;
- *   已有 `&` 时尊重用户自己选的对齐点,不再插。
- * - 前半行尾补 ` \\`(LaTeX 行分隔符)。
+ * When it takes over there are two completions, matching the shape of an
+ * align the user writes by hand (`a &= b \\`):
+ * - The half has no `&`: insert `&` before the first bare relation operator
+ *   (`=` / `<=` / `>=`) as the alignment point; when there already is an `&`,
+ *   respect the alignment point the user chose and insert nothing.
+ * - Append ` \\` (the LaTeX row separator) at the end of the half.
  *
- * 以光标为断点(与普通换行同语义):替换 [行首, 光标],光标后的文本自然
- * 成为新行——`\end{align}` 永远不会被吞进补全的行里。
+ * The caret is the break point (the same semantics as a normal line break):
+ * [line start, caret] is replaced and the text after the caret naturally
+ * becomes the new line — `\end{align}` can never be swallowed into the
+ * completed line.
  */
 export function alignEnterPlan(headText: string): string | null {
   if (headText.trim() === "") return null;
@@ -106,12 +126,15 @@ export function alignEnterPlan(headText: string): string | null {
       out = `${out.slice(0, at)}&${out.slice(at)}`;
     }
   }
-  // 行分隔与矩阵同源(MATRIX_ROW_BREAK = ` \\` + 换行),转义只写一处。
+  // The row separator has the same source as the matrix one
+  // (MATRIX_ROW_BREAK = ` \\` + newline); the escaping is written once only.
   return `${out}${MATRIX_ROW_BREAK}`;
 }
 
-/** align 环境内的 Enter(空选区):补全光标前半行并换行,光标落新行行首。
- *  仅由 matrixEnter 在已判定 align 环境后调用。 */
+/** Enter inside an align environment (empty selection): completes the half
+ *  line before the caret, breaks the line, and leaves the caret at the start
+ *  of the new line. Only called by matrixEnter once it has decided the
+ *  environment is align. */
 function alignEnter(view: EditorView): boolean {
   const range = view.state.selection.main;
   if (!range.empty) return false;

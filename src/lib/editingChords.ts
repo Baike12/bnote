@@ -2,13 +2,15 @@ import { editorApi } from "@/editor/api";
 import { readClipboardText, writeClipboardText } from "./clipboard";
 
 /**
- * ⌘C/⌘X/⌘V/⌘A 的表单元素兜底。
+ * Fallback for ⌘C/⌘X/⌘V/⌘A in plain form elements.
  *
- * wry 的 WKWebView 把 ⌘ 组合键在视图层认领、作为普通 keydown 送进页面：
- * AppKit 菜单角色（copy:/paste:）收不到，WebKit 也不对 keydown 代行剪贴板
- * 动作——纯 <input>/<textarea>（设置面板、搜索框、快速切换器）默认无法
- * 复制粘贴。编辑器内部由 CM 键位表处理（setup.ts，Mod-c/x/v 绑定），这里
- * 只兜文本表单元素，命中后 preventDefault 避免任何双重处理。
+ * wry's WKWebView claims ⌘ chords at the view level and delivers them to the
+ * page as ordinary keydown events: AppKit menu roles (copy:/paste:) never see
+ * them, and WebKit does not perform the clipboard action on behalf of keydown —
+ * so plain <input>/<textarea> (settings panel, search box, quick switcher)
+ * cannot copy or paste by default. Inside the editor the CM keymap handles it
+ * (setup.ts, Mod-c/x/v bindings); this only covers text form elements, and
+ * preventDefault keeps anything from being handled twice.
  */
 export function installEditingChords() {
   window.addEventListener(

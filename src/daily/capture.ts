@@ -8,11 +8,15 @@ import { dailyPathFor, parseDailyRegion, prependEntrySpec, textAfterChanges } fr
 import { runtimeDeps } from "./runtime";
 
 /**
- * 快速待办:输入一行文字,直接落进今日日记待办区的最前方。
+ * Quick todo: type one line and it lands at the front of today's daily note todo
+ * region.
  *
- * 日记不存在时走 dailyScaffoldWithRollover——与「打开今日日记 / 发送待办」
- * 同一个创建入口,上一篇的未完成待办会自动跟随过来。日记正开在编辑器里时
- * 不写盘,而是改内存文档交给自动保存:否则未落盘的编辑会覆盖掉刚写的内容。
+ * When the daily note does not exist yet we go through dailyScaffoldWithRollover -
+ * the same creation entry point as "open today's daily note" and "send todo" - so
+ * the unfinished todos of the previous note roll over. When the daily note is open
+ * in the editor we do not write to disk: we patch the in-memory document and let
+ * autosave flush it, otherwise the unsaved edits would overwrite what we just
+ * wrote.
  */
 
 export interface CaptureTodoDeps {
@@ -23,11 +27,11 @@ export interface CaptureTodoDeps {
   currentFile: () => string | null;
   refresh: () => Promise<void>;
   toast: (msg: string) => void;
-  /** 新建日记用的模板文件(仓库相对路径);空 = 默认 `# 日期` 开篇。 */
+  /** Template file used to scaffold a new daily note (vault-relative path); empty = the default `# YYYY-MM-DD` opening. */
   templatePath: () => string | null;
 }
 
-/** 输入 → 日记里的待办行:已是 checkbox 行就原样用,多行折成一行。 */
+/** Input -> the todo line for the daily note: a line that is already a checkbox is taken as is, multiple lines are folded into one. */
 export function formatTodoLine(raw: string): string | null {
   const text = raw
     .replace(/\r\n?/g, "\n")
@@ -39,14 +43,14 @@ export function formatTodoLine(raw: string): string | null {
   return /^[-*+]\s+\[[ xX]\]\s+/.test(text) ? text : `- [ ] ${text}`;
 }
 
-/** 纯文本插入:返回新文本与待办所在行号(1 基)。 */
+/** Plain text insertion: returns the new text and the line the todo landed on (1-based). */
 export function insertTodoAtFront(base: string, todoLine: string): { text: string; line: number } {
   const doc = EditorState.create({ doc: base }).doc;
   const spec = prependEntrySpec(doc, parseDailyRegion(doc), [todoLine]);
   return { text: textAfterChanges(base, [spec.change]), line: spec.entry.start };
 }
 
-/** 返回写入的日记路径;空输入或没有仓库时返回 null。 */
+/** Returns the path of the daily note that was written; null for empty input or when no vault is open. */
 export async function captureTodo(
   raw: string,
   deps: CaptureTodoDeps,
@@ -87,7 +91,7 @@ export async function captureTodo(
   });
 }
 
-/** 应用运行期的依赖:当前仓库 / 今天 / 单个编辑器实例 / toast。 */
+/** Runtime dependencies of the app: current vault / today / a single editor instance / toast. */
 export function captureTodoToToday(raw: string): Promise<string | null> {
   return captureTodo(raw, {
     ...runtimeDeps(),

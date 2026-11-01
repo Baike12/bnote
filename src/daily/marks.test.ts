@@ -6,10 +6,14 @@ import type { DailyLink } from "./links";
 import { buildDailyMarks, sourceLabel, type DailyMarkView } from "./marks";
 
 /**
- * 可视标识的判定规则(与发送命令同一套「按日归属」语义):
- *  - 源笔记:只标指向**今天这份日记**的链接(昨天发出去的不算同步中);
- *  - 日记文件:标指向**这份日记**的链接,并带出源笔记名;
- *  - 只有待办行有标记,且只用行装饰(不插入 widget)。
+ * The rules for the visual marks (the same per-day ownership semantics as the
+ * send command):
+ *  - Source note: only the links pointing at **today's** daily note are marked
+ *    (what was sent yesterday is not "syncing" anymore);
+ *  - Daily note file: the links pointing at **this** daily note are marked and
+ *    carry the name of the source note;
+ *  - Only todo lines get a mark, and only through line decorations (no widget
+ *    is inserted).
  */
 
 const TODAY = "/v/Daily/2026-09-27.md";
@@ -33,7 +37,7 @@ function viewOf(text: string, ranges?: { from: number; to: number }[]): DailyMar
   return { state, visibleRanges: ranges ?? [{ from: 0, to: text.length }] };
 }
 
-/** 行装饰摘录:行号(1 起) + class + attributes。 */
+/** Excerpt of the line decorations: line number (1 based) + class + attributes. */
 function marks(set: DecorationSet, doc: Text) {
   const out: { line: number; cls: string; attrs: Record<string, string> }[] = [];
   set.between(0, doc.length, (from, _to, value) => {
@@ -57,9 +61,9 @@ describe("待办链接的可视标识", () => {
     const got = marks(set, view.state.doc);
     expect(got.map((m) => m.line)).toEqual([1]);
     expect(got[0].cls).toBe("md-daily-link");
-    // 源侧不显示来源名(来源就是这篇笔记自己),只有 title 提示
+    // The source side shows no source name (the source is this very note), only the title tooltip
     expect(got[0].attrs["data-daily-src"]).toBeUndefined();
-    // 源侧带 data-daily-sent:项目卡片据此把已发送的待办画成阴影。
+    // The source side carries data-daily-sent: the project card draws a sent todo as a shadow with it.
     expect(got[0].attrs["data-daily-sent"]).toBe("1");
     expect(got[0].attrs.title).toContain("今日日记");
   });

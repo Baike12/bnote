@@ -8,12 +8,14 @@ use serde_json::Value;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Content {
     Text { text: String },
-    /// 用户消息里的图片附件(前端裁好的 base64)。模型侧由 provider 按
-    /// Anthropic(base64 source)/ OpenAI(data URL)各自的格式映射。
+    /// Image attachment in a user message (base64, cropped by the front end).
+    /// The provider maps it to the format of each protocol: Anthropic
+    /// (base64 source) / OpenAI (data URL).
     Image { media_type: String, data: String },
     ToolUse { id: String, name: String, input: Value },
-    /// 工具结果。`images` 是随结果回传给模型的渲染截图(目前仅
-    /// preview_html),旧会话记录没有该字段,反序列化时补空。
+    /// Tool result. `images` are the rendered screenshots sent back to the model
+    /// with the result (currently only preview_html); older session records have
+    /// no such field, so deserialization fills an empty one.
     ToolResult {
         tool_use_id: String,
         content: String,
@@ -30,7 +32,8 @@ pub enum ChatItem {
     Message { role: String, content: Vec<Content> },
 }
 
-/// 前端上传的一张图片(`agent_send` 的 images 参数,字段 camelCase)。
+/// One image uploaded by the front end (the images argument of `agent_send`,
+/// camelCase fields).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineImage {
@@ -46,8 +49,9 @@ impl ChatItem {
         }
     }
 
-    /// 用户消息 = 文本(可空) + 图片。文本为空且没有图片时得到空 content——
-    /// 调用方(agent_send / Session::send)必须先拦住这种消息。
+    /// A user message = text (may be empty) + images. With no text and no image
+    /// the content is empty — the callers (agent_send / Session::send) have to
+    /// reject such a message first.
     pub fn user_message(text: &str, images: &[InlineImage]) -> ChatItem {
         let mut content = Vec::new();
         if !text.is_empty() {
@@ -83,14 +87,16 @@ pub struct ToolDef {
 pub enum AgentEvent {
     /// Streaming text of the assistant reply.
     TextDelta { text: String },
-    /// Streaming thinking/reasoning(Anthropic thinking 块 / OpenAI 兼容的
-    /// reasoning_content)。只用于前端展示,不进会话历史——纯问答不带工具,
-    /// 回传 thinking 块要过签名校验,没有收益。
+    /// Streaming thinking/reasoning (an Anthropic thinking block / the
+    /// OpenAI-compatible reasoning_content). Shown in the front end only, never
+    /// enters the session history — a pure Q&A turn carries no tools, and echoing
+    /// the thinking block back would require a signature check for no gain.
     ThinkingDelta { text: String },
     /// A tool call begins.
     ToolStart { id: String, name: String, input: Value },
-    /// A tool finished. `images` 是随结果给模型的截图(如预览渲染图),
-    /// 前端只用于展示;没有时不带字段,避免每条工具事件的空开销。
+    /// A tool finished. `images` are the screenshots handed to the model with the
+    /// result (e.g. the preview render); the front end uses them for display
+    /// only. The field is omitted when empty to avoid per-tool-event overhead.
     ToolEnd {
         id: String,
         ok: bool,
@@ -98,14 +104,18 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<InlineImage>,
     },
-    /// 一次模型请求的 token 用量(上下文占用 = input + output)。Anthropic 在
-    /// message_start / message_delta 里给,OpenAI 兼容端点需要 stream_options
-    /// 才会在流末尾给 usage。前端只保留最新一条:它就是当前会话的上下文占用。
+    /// Token usage of one model request (context occupancy = input + output).
+    /// Anthropic reports it in message_start / message_delta; OpenAI-compatible
+    /// endpoints only report usage at the end of the stream when the request
+    /// carries stream_options. The front end keeps only the latest one: it is
+    /// the context occupancy of the current session.
     Usage { input: u64, output: u64 },
-    /// A full turn (model response + tool runs) completed. `items` = 会话历史
-    /// 此刻的条数(权威计数,前端分叉辅助会话时按它截断,免得各端猜测)。
+    /// A full turn (model response + tool runs) completed. `items` = the current
+    /// number of session history entries (the authoritative count; the front end
+    /// truncates by it when forking a helper session instead of guessing).
     TurnEnd { reason: String, items: usize },
-    /// The turn failed. `items` = 失败时已写入的历史条数。
+    /// The turn failed. `items` = the number of history entries written before
+    /// the failure.
     Error { message: String, items: usize },
 }
 
@@ -153,7 +163,8 @@ mod tests {
 
     #[test]
     fn user_message_纯图片消息_不带空文本块() {
-        // Anthropic 会拒绝空 text 块之外的畸形序列;纯图片消息只允许 image 块。
+        // Anthropic rejects malformed sequences other than an empty text block;
+        // an image-only message may only contain image blocks.
         let item = ChatItem::user_message(
             "",
             &[InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
@@ -175,8 +186,9 @@ mod tests {
 
     #[test]
     fn tool_result_旧会话记录缺_images_字段时补空() {
-        // 落盘的历史会话没有 images 字段:反序列化必须补空,不能报错,
-        // 否则升级后旧会话全部恢复失败。
+        // Persisted session history has no images field: deserialization must
+        // fill an empty one instead of failing, otherwise every old session
+        // fails to restore after the upgrade.
         let content: Content = serde_json::from_str(
             r#"{"type":"tool_result","tool_use_id":"t1","content":"ok","is_error":false}"#,
         )

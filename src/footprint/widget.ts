@@ -4,16 +4,20 @@ import { renderBlockHtml } from "./render";
 import { defaultFold, foldSig, toggleGroup, toggleZone, type FoldState, type FootprintView } from "./view";
 
 /**
- * 日记末尾的「今日足迹」块级 widget。数据是不可变的视图快照(FootprintView
- * + 折叠签名),索引或折叠变化时 extension 换新实例,DOM 整体重画——足迹区
- * 是低频更新的聚合视图,不做增量。
+ * The block level "today's footprint" widget at the end of a daily note. The data
+ * is an immutable view snapshot (FootprintView plus the fold signature); when the
+ * index or the fold changes the extension creates a new instance and the DOM is
+ * redrawn as a whole - the footprint zone is an aggregation view that updates
+ * rarely, so there is no incremental rendering.
  *
- * 折叠是会话内的 UI 状态(模块级持有,不持久化):区级一个开关、每组一个,
- * 默认全部展开。交互协议在 DOM 上用 data-footprint-* 标记,点击由 extension
- * 的全局 mousedown handler 路由(与 livePreview 的 data-math-from 同一套)。
+ * Folding is UI state of the session (held at module level, not persisted): one
+ * switch for the zone and one per group, everything expanded by default. The
+ * interaction protocol marks the DOM with data-footprint-* and the clicks are
+ * routed by the global mousedown handler of the extension (the same scheme as
+ * data-math-from in livePreview).
  */
 
-/** 会话内的折叠状态(所有编辑器实例共享同一份足迹)。 */
+/** Fold state of the session (all editor instances share the same footprint). */
 let fold: FoldState = defaultFold();
 
 export function currentFold(): FoldState {
@@ -43,7 +47,7 @@ const ARROW_CLOSED = "▸";
 
 export class FootprintWidget extends WidgetType {
   constructor(
-    /** 足迹归属日:今日日记显示「今日足迹」,历史日记显示该日期。 */
+    /** Day the footprint belongs to: today's daily note shows "today's footprint", a historical daily note shows that date. */
     readonly day: string,
     readonly viewData: FootprintView,
     readonly foldSnapshot: FoldState,
@@ -59,7 +63,7 @@ export class FootprintWidget extends WidgetType {
     );
   }
 
-  /** eq 里用的签名(构造后缓存,避免每次比较重算集合序列化)。 */
+  /** The signature used in eq (cached after construction, so the set is not serialized again on every comparison). */
   get foldSigStr(): string {
     return foldSig(this.foldSnapshot);
   }
@@ -116,6 +120,6 @@ export class FootprintWidget extends WidgetType {
   }
 
   ignoreEvent(): boolean {
-    return false; // 事件冒泡给 CM,点击路由在 extension 的 mousedown handler
+    return false; // the event bubbles up to CM, the click routing lives in the mousedown handler of the extension
   }
 }

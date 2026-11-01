@@ -2,17 +2,20 @@ import { agentApi, type MaterialInfo, type StudyContent } from "@/lib/tauri";
 import { vaultDotPath } from "./vaultJson";
 
 /**
- * 学习材料的落盘目录(`<vault>/.bnote/materials/<kind>/<dir>/`)。
+ * Where study materials are stored on disk (`<vault>/.bnote/materials/<kind>/<dir>/`).
  *
- * 目录名由后端用 `pinyin_pro` 生成并登记在 `.bnote/materials/index.json`,
- * 同一份材料永远落到同一个目录——标题后补、改名都不会把批注/会话分叉到
- * 两个地方。前端只缓存「材料身份 → 目录」的解析结果,不自己拼名字。
+ * The backend generates the directory name with `pinyin_pro` and registers it
+ * in `.bnote/materials/index.json`, so the same material always lands in the
+ * same directory — a title filled in later or a rename never forks the
+ * annotations / session into two places. The front end only caches the
+ * "material identity -> directory" resolution and never builds the name itself.
  *
- * 身份:PDF 用绝对路径(后端会转成仓库相对路径),网页/微信读书用网址。
+ * Identity: PDFs use the absolute path (the backend converts it to a
+ * vault-relative path), web pages / WeRead use the URL.
  */
 const inflight = new Map<string, Promise<MaterialInfo | null>>();
 
-/** 材料身份(与后端 `identity()` 的规则一致):网址忽略末尾斜杠。 */
+/** Material identity (same rules as the backend's `identity()`): a trailing slash is ignored in URLs. */
 export function studyIdentity(content: StudyContent): string {
   if (content.kind === "pdf") return `pdf:${content.path}`;
   if (content.kind === "code") return `code:${content.path.replace(/\/+$/, "")}`;
@@ -24,8 +27,9 @@ export function materialCacheKey(vaultRoot: string, content: StudyContent): stri
 }
 
 /**
- * 解析/创建材料目录。失败(浏览器 harness、无 vault、后端旧版)返回 null,
- * 调用方回退到「不落盘」的旧行为。
+ * Resolve / create the material directory. Returns null on failure (browser
+ * harness, no vault, an older backend); the caller then falls back to the old
+ * "do not persist" behaviour.
  */
 export function ensureMaterial(
   vaultRoot: string,
@@ -36,24 +40,24 @@ export function ensureMaterial(
   if (hit) return hit;
   const pending = agentApi.materialEnsure(content).catch(() => null);
   inflight.set(key, pending);
-  // 失败不缓存永久结果:下次打开还有机会建目录。
+  // A failure is not cached permanently: the next open still gets a chance to create the directory.
   void pending.then((info) => {
     if (!info && inflight.get(key) === pending) inflight.delete(key);
   });
   return pending;
 }
 
-/** 材料目录的绝对路径(`<vault>/.bnote/<relDir>`)。 */
+/** Absolute path of the material directory (`<vault>/.bnote/<relDir>`). */
 export function materialAbsDir(vaultRoot: string, relDir: string): string {
   return vaultDotPath(vaultRoot, relDir);
 }
 
-/** 一份会话记录的绝对路径。 */
+/** Absolute path of one session transcript. */
 export function sessionFilePath(vaultRoot: string, relDir: string, id: string): string {
   return `${materialAbsDir(vaultRoot, relDir)}/sessions/${id}.jsonl`;
 }
 
-/** 测试用:清空缓存。 */
+/** For tests: clear the cache. */
 export function resetMaterialCache(): void {
   inflight.clear();
 }

@@ -3,14 +3,18 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { baseExtensions } from "./setup";
 
 /**
- * 编辑器必须允许多段选区——这是 vim blockwise（Ctrl-V）的前提。
- * 引擎的块选模型就是"每行一段"：y/d/c/p 靠 Vim.forEachSelection 逐段执行
- * （读 cm.listSelections()），块选的逐行增删也建立在多段之上。CM6 默认关闭
- * allowMultipleSelections，任何多段选区在事务落库时被 tr.newSelection.asSingle()
- * 压成主段——于是块选画满三行、按 y 只复制光标那一行（绘制与复制各说各话）。
+ * The editor must allow multiple selections — that is the precondition for vim
+ * blockwise (Ctrl-V). The engine's block model is "one range per line": y/d/c/p
+ * run per range through Vim.forEachSelection (reading cm.listSelections()), and
+ * the per-line insert/delete of a block selection is built on multiple ranges
+ * too. CM6 disables allowMultipleSelections by default, so any multi-range
+ * selection is collapsed to the main range by tr.newSelection.asSingle() when
+ * the transaction lands — the block then paints three full lines while pressing
+ * y copies only the caret's line (the drawing and the copy disagree).
  *
- * 门禁锁的是**配置本身**：症状只在真按 y/d 时出现，几何/单测都看不出来，掉了
- * facet 也不会有别的测试变红。
+ * What this gate locks is the **configuration itself**: the symptom only shows
+ * up when y/d is really pressed, geometry and unit tests cannot see it, and
+ * dropping the facet does not turn any other test red.
  */
 
 const doc = ["abcdefghij", "klmno", "pqrstuvwxy"].join("\n");

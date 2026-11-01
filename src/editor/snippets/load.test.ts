@@ -11,16 +11,20 @@ import {
 } from "./load";
 
 /**
- * 片段装载门禁：仓库 snippets.js 的装载语义 + 来源所有权不变量。
- * 背景：打包 app 里 blob 动态导入曾被 CSP 拦掉且静默回退（用户改片段毫无
- * 反应），applySettingsToEditor 又会把来源重置回内置——两者都有对应门禁。
+ * The gate for the snippet loading: the loading semantics of the vault's
+ * snippets.js plus the source-ownership invariant.
+ * Background: in the packaged app the blob dynamic import used to be blocked
+ * by the CSP and fell back silently (the user changed a snippet and nothing
+ * happened), and applySettingsToEditor would reset the source back to the
+ * built-in ones — both have a gate of their own.
  */
 
 const USER: RawSnippet[] = [{ trigger: "uq", replacement: "USER$0", options: "A" }];
 const USER_SRC = "export default [{ trigger: 'uq', replacement: 'USER$0', options: 'A' }]";
 const USER_SRC_V2 = "export default [{ trigger: 'uq2', replacement: 'USER2$0', options: 'A' }]";
 
-/** 用户片段真的在编辑器侧生效 = findSnippet 把 "uq" 展开成 "USER"。 */
+/** The user snippets really take effect on the editor side = findSnippet
+ *  expands "uq" into "USER". */
 function expandsUser(doc = "xuq"): string | undefined {
   return findSnippet(EditorState.create({ doc }), doc.length, doc.slice(-1), {
     auto: true,
@@ -28,7 +32,8 @@ function expandsUser(doc = "xuq"): string | undefined {
   })?.replacement.text;
 }
 
-/** 可计数的假导入器：loader.load 的内容缓存必须拦住重复导入。 */
+/** A countable fake importer: the content cache of loader.load must block a
+ *  repeated import. */
 function fakeImporter() {
   const calls: string[] = [];
   return {
@@ -85,7 +90,8 @@ describe("SnippetLoader:装载语义", () => {
 });
 
 describe("函数型 replacement 过装载链路", () => {
-  /** 与仓库 .bnote/snippets.js 里那条 iden 同形:返回值直接入档,只解析制表位。 */
+  /** The same shape as the iden entry in the vault's .bnote/snippets.js: the
+   *  return value is filed as is and only the tab stops are parsed. */
   const IDEN: RawSnippet = {
     trigger: /iden(\d)/,
     replacement: (match) => {
@@ -108,14 +114,15 @@ describe("函数型 replacement 过装载链路", () => {
     const out =
       findSnippet(EditorState.create({ doc }), 6, "2", { auto: true, visualText: null })
         ?.replacement.text ?? "";
-    // 断言刻意不写反斜杠字面量:数转义层数太容易错,直接用码点比较。
-    const BS = String.fromCharCode(92); // 一个反斜杠
+    // The assertion deliberately avoids a backslash literal: counting the
+    // levels of escaping is too easy to get wrong, so compare code points.
+    const BS = String.fromCharCode(92); // One backslash
     const lines = out.split("\n");
-    expect(lines).toHaveLength(4); // \begin / 第一行 / 第二行 / \end
-    expect(lines[1].endsWith(BS + BS)).toBe(true); // 行分隔是 LaTeX 的两个反斜杠
-    expect([...out].filter((c) => c === BS)).toHaveLength(4); // 1(\begin) + 一处行分隔(2) + 1(\end)
+    expect(lines).toHaveLength(4); // \begin / first line / second line / \end
+    expect(lines[1].endsWith(BS + BS)).toBe(true); // The row separator is LaTeX's two backslashes
+    expect([...out].filter((c) => c === BS)).toHaveLength(4); // 1(\begin) + one row separator(2) + 1(\end)
 
-    // 3×3(用户配置里 iden3 的规模):两处行分隔
+    // 3×3 (the size of iden3 in the user's configuration): two row separators
     const out3 =
       findSnippet(EditorState.create({ doc: "$iden3$" }), 6, "3", { auto: true, visualText: null })
         ?.replacement.text ?? "";
@@ -175,8 +182,10 @@ describe("来源所有权:applySnippetsEnabled 只翻开关不动来源", () => 
 });
 
 describe("接线门禁:actions.ts 的设置应用不许再碰来源", () => {
-  // ?raw 拿源码文本：接线的正确性在 actions.ts 的运行时依赖里测不到(App 级
-  // 依赖图进不了无 DOM 测试)，用文本门禁锁住这个曾经真实翻车的形态。
+  // ?raw fetches the source text: the correctness of the wiring cannot be
+  // tested through actions.ts's runtime dependencies (the app-level
+  // dependency graph does not fit a DOM-less test), so a text gate locks this
+  // shape that really broke in production.
   const modules = import.meta.glob<string>("../../app/actions.ts", {
     query: "?raw",
     import: "default",
@@ -187,7 +196,9 @@ describe("接线门禁:actions.ts 的设置应用不许再碰来源", () => {
   it("applySettingsToEditor 走 applySnippetsEnabled(设置通道),不再出现 reloadSnippets(null,…)", () => {
     expect(actions).not.toBe("");
     expect(actions).toMatch(/applySnippetsEnabled\(settings\.snippets\)/);
-    // 来源重置曾让每次打开文件都把仓库片段打回内置——这个调用形态必须绝迹
+    // Resetting the source used to knock the vault snippets back to the
+    // built-in ones on every file open — this call shape must never come
+    // back.
     expect(actions).not.toMatch(/reloadSnippets\(null/);
   });
 });

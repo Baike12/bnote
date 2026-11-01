@@ -12,9 +12,12 @@ const SAVE_DELAY = 300;
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 /**
- * `doc` 是排队时的文档引用:saveNow 触发时用它自证「还是针对这份文档」。
- * openNote 换文档的窗口里,事件带着旧文件的路径排队、落笔时文档已经换成
- * 新的——不比对就把新文档的位置写进旧路径,等于污染另一个文件的记忆。
+ * `doc` is the document reference captured when the save was queued:
+ * saveNow uses it to prove "this is still about that document". In the window
+ * where openNote swaps the document, an event carrying the old file's path is
+ * queued and by the time it lands the document is already a new one — without
+ * the comparison the new document's position is written under the old path,
+ * polluting another file's memory.
  */
 let pending: { path: string; view: EditorView; doc: object } | null = null;
 
@@ -40,11 +43,14 @@ export function scheduleCursorSave(path: string, view: EditorView) {
 }
 
 /**
- * 纯滚动也计入「读到哪了」。滚轮/触摸板滚动只是 scrollDOM 的 DOM 滚动,
- * 不产生任何 CodeMirror 事务,只在 selectionSet/docChanged 上挂保存会把
- * 「只读不写」的整个阅读过程漏掉——这正是「阅读位置失效」的根因。
- * scroll 事件走同一条防抖保存:连续滚动的每帧只是重挂定时器(O(1),不读
- * 布局),滚动停下 300ms 后才真正读一次位置落盘。返回卸载函数。
+ * Pure scrolling counts as "how far I read". Wheel/trackpad scrolling is just
+ * a DOM scroll of scrollDOM and produces no CodeMirror transaction at all, so
+ * hooking the save only to selectionSet/docChanged would miss the entire
+ * read-only session — that is precisely the root cause of "the reading
+ * position is lost". The scroll event goes through the same debounced save:
+ * every frame of continuous scrolling merely re-arms the timer (O(1), no
+ * layout read), and only 300ms after the scrolling stops is the position read
+ * once and written. Returns the teardown function.
  */
 export function observeScrollSave(
   view: EditorView,
@@ -74,13 +80,18 @@ export function restoreSavedCursor(view: EditorView, path: string) {
   if (!saved) return;
   const pos = Math.min(saved.pos, view.state.doc.length);
   view.dispatch({ selection: { anchor: pos } });
-  // scrollTop 必须在 CM 测量周期的 write 阶段写(typewriter.ts / openNote
-  // 的行号跳转同一约定)。loadDocument 的 setState 之后高度表还是估算值,
-  // 直写落在估算坐标系里;紧随的第一次 measure 把高度修正成真实值时,CM
-  // 的滚动锚定补偿会把位置再挪一段估算误差(恢复点越深误差越大)。滚动
-  // 保存(scroll 事件)会把这段补偿当成阅读位置记下,每重开一次就往下漂
-  // 一段(实测棘轮:1000→1369→1921→…)。requestMeasure 的 write 在真实
-  // 几何确立之后执行,补偿项≈0,恢复落点即保存值。
+  // scrollTop must be written in the write phase of the CM measurement cycle
+  // (same convention as typewriter.ts and the line jump in openNote). Right
+  // after loadDocument's setState the height table is still estimated, so a
+  // direct write lands in the estimated coordinate system; when the first
+  // measure right after it corrects the heights to real values, CM's scroll
+  // anchoring compensation shifts the position by the estimation error again
+  // (the deeper the restore point, the larger the error). The scroll save
+  // (the scroll event) then records that compensation as the reading
+  // position, so every reopen drifts further down (measured ratchet:
+  // 1000 -> 1369 -> 1921 -> ...). requestMeasure's write runs after the real
+  // geometry is established, so the compensation term is ~0 and the restore
+  // lands exactly on the saved value.
   view.requestMeasure({
     read: () => null,
     write: () => {

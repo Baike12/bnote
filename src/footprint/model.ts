@@ -1,23 +1,31 @@
 /**
- * 今日足迹的纯文本模型:块切分、块身份、今日增量 diff。全部函数只吃字符串,
- * 不做任何 IO——store 负责读盘与轮转编排,这里负责「今天记了什么」的唯一事实,
- * 所有规则都在 model.test.ts 里锁死。
+ * Pure text model of today's footprint: block splitting, block identity and the
+ * diff of today's additions. Every function takes only strings and does no IO -
+ * store owns reading the disk and the rotation orchestration, this module owns the
+ * single source of truth for "what was written today". All rules are locked down
+ * in model.test.ts.
  *
- * 语义:一个文件今天的足迹 = 「当前文本里有、今日基线里没有」的块。块是空行
- * 分隔的连续行;身份是块文本(每行去尾随空白、整块 trim)——行尾空格抖动与
- * 整体缩进调整不产生假新增,内容变了就是新块(显示新版本),删掉的块不显示
- * (引用式聚合只显示现存内容)。
+ * Semantics: the footprint of a file today = the blocks that are in the current
+ * text but not in today's baseline. A block is a run of consecutive lines
+ * separated by blank lines; its identity is the block text (trailing whitespace
+ * stripped per line, the whole block trimmed) - trailing space jitter and a
+ * wholesale re-indent do not create a false new block, changed content is a new
+ * block (the new version is shown), and a deleted block is not shown (a
+ * quote-style aggregation only shows content that still exists).
  *
- * 待办块不进足迹:待办已有自己的日记通道(跨文件同步,镜像到日记头部)。
- * 同一份内容走两条通道会在日记里出现两份(同步一份 + 足迹一份),所以含
- * 待办行的块整块归同步管,-footprint 判定在 diff 的出口统一过滤。
+ * Todo blocks never enter the footprint: todos already have their own channel
+ * into the daily note (the cross-file sync mirrors them into the head of the
+ * note). The same content on two channels would show up twice in the daily note
+ * (one from the sync, one from the footprint), so a block that contains a todo
+ * line belongs entirely to the sync, and the footprint check filters those blocks
+ * at the exit of the diff.
  */
 
 import { isTodo, parseListLine } from "@/daily/model";
 
-/** 一个块:空行分隔的连续行。start/end 为 1-based 行号,指向它所在的文本。 */
+/** A block: a run of consecutive lines separated by blank lines. start/end are 1-based line numbers into the text it belongs to. */
 export interface FootprintBlock {
-  /** 块的行文本(不含结尾换行)。 */
+  /** Line texts of the block (without the trailing newline). */
   text: string;
   start: number;
   end: number;
@@ -25,16 +33,16 @@ export interface FootprintBlock {
 
 const BLANK_RE = /^\s*$/;
 
-/** 块内是否含待办行(判定与待办同步引擎同源:parseListLine + isTodo)。 */
+/** Whether the block contains a todo line (the check comes from the same source as the todo sync engine: parseListLine + isTodo). */
 export function blockHasTodo(text: string): boolean {
   return text.split("\n").some((l) => isTodo(parseListLine(l)));
 }
 
-/** 把文档切成空行分隔的块(1-based 行区间)。首尾空行、连续空行都不成块。 */
+/** Split the document into blank-line separated blocks (1-based line ranges). Leading and trailing blank lines as well as runs of blank lines never form a block. */
 export function blocksOf(text: string): FootprintBlock[] {
   const lines = text.split("\n");
   const out: FootprintBlock[] = [];
-  let start = -1; // 当前块 0-based 起始;-1 = 不在块中
+  let start = -1; // 0-based start of the current block; -1 = not inside a block
   for (let i = 0; i <= lines.length; i++) {
     const blank = i === lines.length || BLANK_RE.test(lines[i]);
     if (!blank && start < 0) start = i;
@@ -47,9 +55,11 @@ export function blocksOf(text: string): FootprintBlock[] {
 }
 
 /**
- * 块的身份文本:每行去尾随空白、剥首尾空行、剥所有非空行的公共前导空白。
- * 「把列表整体再缩进一格」「删行尾空格」不产生假的新块;部分缩进变化
- * (公共前缀之外)仍算内容变化。
+ * Identity text of a block: trailing whitespace stripped per line, leading and
+ * trailing blank lines removed, and the common leading whitespace of all non-blank
+ * lines removed. "Indent the whole list by one more step" and "delete the trailing
+ * spaces" do not create a false new block; a partial indent change (beyond the
+ * common prefix) still counts as a content change.
  */
 export function blockKey(text: string): string {
   const lines = text.split("\n").map((l) => l.replace(/[ \t]+$/, ""));
@@ -68,7 +78,7 @@ export function blockKey(text: string): string {
   return lines.join("\n");
 }
 
-/** 两个前导空白串的公共前缀(逐字符:tab 与空格各自算)。 */
+/** Common prefix of two leading whitespace strings (character by character: a tab and a space count separately). */
 function commonWhitespace(a: string, b: string): string {
   let n = 0;
   while (n < a.length && n < b.length && a[n] === b[n]) n++;
@@ -76,9 +86,11 @@ function commonWhitespace(a: string, b: string): string {
 }
 
 /**
- * 今日增量:当前文本里身份不在基线中的块(带当前文本中的行号,供跳转)。
- * `baseline` 为 null(基线缺失 = 今日新建的文件)时全部块都算今日记录。
- * 含待办的块在出口统一排除(见模块注释)。
+ * Today's additions: the blocks of the current text whose identity is not in the
+ * baseline (with the line numbers of the current text, for jumping). When
+ * `baseline` is null (a missing baseline means the file was created today) every
+ * block counts as written today. Blocks with todos are excluded at the exit (see
+ * the module comment).
  */
 export function diffBlocks(baseline: string | null, current: string): FootprintBlock[] {
   const blocks = blocksOf(current).filter((b) => !blockHasTodo(b.text));
@@ -89,12 +101,13 @@ export function diffBlocks(baseline: string | null, current: string): FootprintB
   return blocks.filter((b) => !known.has(blockKey(b.text)));
 }
 
-// ---------------------------------------------------------------- 路径与归属
+// ---------------------------------------------------------------- paths and ownership
 
 const NOTE_FILE_RE = /\.(md|markdown|txt)$/i;
 
-/** 可聚合的笔记文件:`.md`/`.markdown`/`.txt`,且不在仓库的 Daily/ 目录下
- *  (日记互不聚合,避免自我嵌套)。 */
+/** Aggregateable note files: `.md` / `.markdown` / `.txt` that are not inside the
+ *  Daily/ directory of the vault (daily notes never aggregate each other, that
+ *  would nest them into themselves). */
 export function isAggregatePath(path: string, vaultRoot: string): boolean {
   if (!NOTE_FILE_RE.test(path)) return false;
   const root = vaultRoot.replace(/\/+$/, "");
@@ -102,9 +115,9 @@ export function isAggregatePath(path: string, vaultRoot: string): boolean {
   return !path.startsWith(`${root}/Daily/`);
 }
 
-// ---------------------------------------------------------------- 持久化形状
+// ---------------------------------------------------------------- persisted shape
 
-/** v1(旧):只有一份「今日基线」,跨天轮转即作废——历史日记无从聚合。 */
+/** v1 (old): only one "today's baseline", it is void after the day rotates - a historical daily note cannot aggregate anything. */
 export interface StoredFootprintsV1 {
   version: 1;
   day: string;
@@ -112,22 +125,25 @@ export interface StoredFootprintsV1 {
 }
 
 /**
- * v2:基线之外保留历史足迹档。`history[日期][路径]` = 那一天新增块的固化
- * 快照——轮转时由旧基线 diff 出来写死,之后只读不重算,打开历史日记据此
- * 聚合当天的足迹。日记文件零污染的语义不变:映射关系只存在这一个元数据
- * 文件里,不写进任何日记。
+ * v2: besides the baseline a historical footprint archive is kept.
+ * `history[day][path]` = a frozen snapshot of the blocks added on that day - it
+ * is diffed out of the old baseline during the rotation and then only read, never
+ * recomputed, so opening a historical daily note aggregates the footprint of
+ * that day from it. The semantics of zero pollution of the daily note files stay
+ * the same: the mapping only exists in this one metadata file and is never
+ * written into a daily note.
  */
 export interface StoredFootprints {
   version: 2;
-  /** 基线归属日(YYYY-MM-DD);与今天不同 = 需要轮转。 */
+  /** Day the baseline belongs to (YYYY-MM-DD); different from today = a rotation is due. */
   day: string;
-  /** 今日基线:绝对路径 → 天切换时刻的全文。 */
+  /** Today's baseline: absolute path -> the full text at the moment the day switched. */
   baselines: Record<string, string>;
-  /** 历史足迹档:日期 → 绝对路径 → 当日足迹块(带当时行号,供跳转)。 */
+  /** Historical footprint archive: day -> absolute path -> the footprint blocks of that day (with the line numbers of the time, for jumping). */
   history: Record<string, Record<string, FootprintBlock[]>>;
 }
 
-/** 基线元数据文件路径(vault 内,随仓库走)。 */
+/** Path of the baseline metadata file (inside the vault, travels with the repo). */
 export function footprintsFilePath(vaultRoot: string): string {
   return `${vaultRoot.replace(/\/+$/, "")}/.bnote/daily-footprints.json`;
 }

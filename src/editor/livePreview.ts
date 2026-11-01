@@ -59,7 +59,7 @@ const wikiLinksPerView = new WeakMap<object, WikiLinkEntry[]>();
 export interface LivePreviewHooks {
   openWikiLink?: (target: string) => void;
   openExternalUrl?: (url: string) => void;
-  /** 点击画图嵌入的预览图:用画布打开那个 .excalidraw 文件。 */
+  /** Click the preview image of a drawing embed: open that .excalidraw file in the canvas. */
   openDrawing?: (path: string) => void;
   /** Live-rendered preview below a math region while the cursor edits it. */
   mathPreview?: boolean;
@@ -83,10 +83,14 @@ function overlaps(a: Interval, b: Interval) {
  */
 const INLINE_TRIGGER_RE = /[*_~`$[\]\\:<>]/;
 
-/** 行首「标记槽」的宽度：缩进 + 列表标记 + 后随空白 + 可选任务括号及其空白。
- *  非标记形态（含 `*emphasis*` 这种行内强调开头——标记后必须跟空白或行尾）
- *  返回 null。光标跨过这个槽会翻转标记的活动规则（源码 ⇄ widget），槽边界
- *  与各渲染分支的 active() 判定对齐（触点算活动，因此判定用 <=）。 */
+/** The width of the "marker slot" at the start of a line: indent + list marker
+ *  + the whitespace after it + an optional task bracket and its whitespace.
+ *  Non-marker shapes (including a line starting with inline emphasis such as
+ *  `*emphasis*` — the marker must be followed by whitespace or the line end)
+ *  return null. A caret crossing this slot flips the marker's activity rule
+ *  (source ⇄ widget), so the slot boundary is aligned with the active()
+ *  decision of each rendering branch (the touching point counts as active,
+ *  hence the <= comparison). */
 function markerSlotEnd(text: string): number | null {
   let i = 0;
   while (i < text.length && (text[i] === " " || text[i] === "\t")) i++;
@@ -100,7 +104,7 @@ function markerSlotEnd(text: string): number | null {
     markerLen = ordered[0].length;
   }
   let j = i + markerLen;
-  if (j >= text.length) return j; // 行以标记结尾（裸 "-"）
+  if (j >= text.length) return j; // the line ends with the marker (a bare "-")
   if (text[j] !== " " && text[j] !== "\t") return null;
   while (j < text.length && (text[j] === " " || text[j] === "\t")) j++;
   const task = /^\[[ xX]\]/.exec(text.slice(j));
@@ -113,7 +117,8 @@ function markerSlotEnd(text: string): number | null {
 
 /** False when a selection-only change provably leaves every decoration as it
  *  was — letting plain-text cursor moves (vim h/j/k/l, arrows) skip rebuilds.
- *  导出供性能门禁锁快路径:标记槽之外的同行纯移动必须返回 false。 */
+ *  Exported so the perf gate can lock the fast path: a pure same-line move
+ *  outside the marker slot must return false. */
 export function selectionAffectsDecos(oldState: EditorState, newState: EditorState): boolean {
   const oldRanges = oldState.selection.ranges;
   const newRanges = newState.selection.ranges;
@@ -136,9 +141,11 @@ export function selectionAffectsDecos(oldState: EditorState, newState: EditorSta
       if (INLINE_TRIGGER_RE.test(doc.line(n).text)) return true;
     }
   }
-  // 同行内跨「标记槽」移动：ListMark/TaskMarker 的活动规则、空项的尾随
-  // 空白保留（keepMarkerTrailingSpace）都依赖同行内的光标位置——vim 的
-  // 0/$/A 这类同行移动曾把裸 `-`/裸 `[ ]` 永久留在屏上（渲染回归）。
+  // A same-line move across the "marker slot": the activity rules of
+  // ListMark/TaskMarker and the trailing-space retention of empty items
+  // (keepMarkerTrailingSpace) both depend on the caret position within the
+  // line — vim's same-line moves such as 0/$/A used to leave a bare `-` / a
+  // bare `[ ]` permanently on screen (a rendering regression).
   for (let i = 0; i < newRanges.length; i++) {
     const o = oldRanges[i];
     const n = newRanges[i];
@@ -146,7 +153,7 @@ export function selectionAffectsDecos(oldState: EditorState, newState: EditorSta
     const line = doc.lineAt(n.from);
     const slotEnd = markerSlotEnd(line.text);
     if (slotEnd === null) continue;
-    if (slotEnd >= line.to - line.from) return true; // 空列表项:任何同行移动都可能翻转空白保留
+    if (slotEnd >= line.to - line.from) return true; // empty list item: any same-line move may flip the whitespace retention
     const base = line.from;
     if ((o.from - base <= slotEnd) !== (n.from - base <= slotEnd)) return true;
   }
@@ -162,7 +169,7 @@ interface BlockStatics {
    *  hidden only while the cursor is outside the whole block — inside, the
    *  block shows as editable source (same rule as math blocks). */
   fences: { line: Interval; block: Interval }[];
-  /** Callout 边界标记行(`:::`),同样的隐藏规则(光标进块才露出源码)。 */
+  /** Callout boundary marker lines (`:::`), same hiding rule (the source shows only while the cursor is inside the block). */
   calloutEdges: { line: Interval; block: Interval; kind: "open" | "close"; title: string; depth: number }[];
   codeRanges: Interval[];
   inlineCodeRanges: Interval[];
@@ -243,8 +250,10 @@ function buildBlockDecos(
   const sig: string[] = [];
   const active = (from: number, to: number) =>
     ranges.some((r) => r.from <= to && r.to >= from);
-  // pos 所在 callout 的嵌套深度,-1 = 不在任何块内。跨行 replace 的块成员
-  // (公式块/HR)行元素会被移出 DOM,块面由 widget 自带(见 widgets.ts)。
+  // The nesting depth of the callout containing pos, -1 = not inside any block.
+  // The line elements of block members replaced across lines (math blocks /
+  // HR) are moved out of the DOM, so the block surface is carried by the
+  // widget itself (see widgets.ts).
   const calloutDepthAt = (pos: number): number => {
     for (const c of callouts) if (pos >= c.from && pos <= c.to) return c.depth;
     return -1;
@@ -255,8 +264,10 @@ function buildBlockDecos(
     exclude.some((r) => from < r.to && to > r.from);
 
   for (const f of statics.fences) {
-    // 块级判定（与公式块同一条规则）：光标在块内任何一行，两行围栏都保持
-    // 源码可编辑；光标离开整块才隐藏围栏进入渲染态。
+    // Block-level decision (the same rule as for math blocks): while the
+    // cursor is on any line of the block, both fence lines stay editable
+    // source; only when the cursor leaves the whole block are the fences
+    // hidden and the rendered state entered.
     if (!active(f.block.from, f.block.to)) {
       out.push(
         Decoration.replace({ widget: new HiddenLineWidget(), block: true }).range(
@@ -268,10 +279,13 @@ function buildBlockDecos(
     }
   }
   for (const e of statics.calloutEdges) {
-    // 与围栏同一条块级规则:光标在 callout 内(含边界行)时 `:::` 源码可编辑,
-    // 离开整块才隐藏。渲染态由 widget 自带块面顶/底帽(整行 block replace 会
-    // 把行元素移出 DOM,行装饰管不到)——带标题 = 标题按三级标题字号渲染,
-    // 否则零文字帽。
+    // The same block-level rule as for fences: while the cursor is inside the
+    // callout (boundary lines included) the `:::` source stays editable, and
+    // only leaving the whole block hides it. The rendered state is provided
+    // by the widget's own top/bottom caps (a whole-line block replace moves
+    // the line element out of the DOM where line decorations cannot reach
+    // it) — with a title the title is rendered at heading-3 font size,
+    // otherwise the cap has no text at all.
     if (active(e.block.from, e.block.to)) continue;
     if (e.kind === "open" && e.title) {
       out.push(
@@ -308,24 +322,35 @@ function buildBlockDecos(
 
     if (active(region.from, region.to)) {
       // Editing this formula: live-rendered preview right below the source.
-      // 空内容没有可预览的东西，不占位——插入公式块后下方立刻多出一段空白。
+      // Empty content has nothing to preview, so it takes no space — inserting
+      // a math block would otherwise leave a blank stretch right below it.
       if (hooks.mathPreview !== false && region.content.trim()) {
         const anchorLine = doc.lineAt(Math.max(region.from, region.to - 1));
-        // 锚在本块闭合行的**行尾**（区域末行行尾，文档末尾即 doc.length）。
-        // 锚到下一行行首有两个问题(浏览器实测,@codemirror/view 6.43):
-        //   1. 下一行若是另一个 display 公式块,它的整块替换正好从行首开始,
-        //      落在替换范围内的块 widget 会被 CM 丢弃——紧挨着的第二个公式块
-        //      会让预览凭空消失(用户 2026-10-31 报的"即时渲染没了");
-        //   2. 块 widget 独占下一行行首会在 DOM 里多出一个空 cm-line
-        //      (7 行文档渲染出 8 个行盒),预览与下文之间凭空多 ~24px。
-        // 行尾锚点让预览接在本块之后,与相邻块无关。
+        // Anchor at the **end of the line** of this block's closing line (the
+        // end of the region's last line, doc.length at the end of the
+        // document). Anchoring at the start of the next line has two problems
+        // (measured in the browser, @codemirror/view 6.43):
+        //   1. If the next line is another display math block, its whole-block
+        //      replace starts exactly at the line start, and a block widget
+        //      inside the replaced range is dropped by CM — a directly
+        //      adjacent second math block makes the preview vanish for no
+        //      reason (the "the live rendering disappeared" the user reported
+        //      on 2026-10-31);
+        //   2. A block widget that owns the start of the next line adds an
+        //      empty cm-line to the DOM (a 7-line document renders 8 line
+        //      boxes), so ~24px appear out of nowhere between the preview
+        //      and the text below.
+        // The line-end anchor lets the preview follow this block, independent
+        // of its neighbours.
         const anchor = anchorLine.to;
         out.push(
           Decoration.widget({
             widget: new MathPreviewWidget(region.content, true, calloutDepthAt(region.from)),
             block: true,
-            // 预览在源码**之后**:区域压到文档末尾时锚点就是光标所在位置,
-            // side<0 会把光标画到预览下方(看起来像"跳到了下一行")。
+            // The preview comes **after** the source: when the region reaches
+            // the end of the document the anchor is where the caret sits, and
+            // side<0 would draw the caret below the preview (which looks like
+            // "it jumped to the next line").
             side: 1,
           }).range(anchor),
         );
@@ -353,8 +378,9 @@ interface BlockFieldValue {
   decos: DecorationSet;
   /** Signature of `decos`; equal signature ⇒ identical decoration set. */
   sig: string;
-  /** syntaxTree 引用：装饰依赖语法树，而树是后台逐步解析出来的
-   *  （文件切换后首帧是空树）——树推进后必须据此重建。 */
+  /** The syntaxTree reference: the decorations depend on the syntax tree, and
+   *  the tree is parsed in the background (the first frame after a file switch
+   *  sees an empty tree) — once the tree advances, they must be rebuilt. */
   tree: Tree;
 }
 
@@ -370,7 +396,9 @@ function makeBlockValue(
 
   const { decos, sig } = buildBlockDecos(state, statics, state.selection.ranges);
   if (prev && !docChanged && sig === prev.sig) {
-    // 装饰没变：保留原 DecorationSet，但记下新树，避免后续每次树推进都重算。
+    // The decorations did not change: keep the original DecorationSet but
+    // record the new tree, so that every later tree advance does not trigger
+    // a recompute.
     return tree === prev.tree ? prev : { ...prev, tree };
   }
   return { statics, decos, sig, tree };
@@ -385,8 +413,9 @@ export const blockDecorationsField = StateField.define<BlockFieldValue>({
     const treeChanged = tree !== value.tree;
     if (!tr.docChanged && !tr.selection && !treeChanged) return value;
     if (treeChanged && !tr.docChanged && !tr.selection) {
-      // 后台解析按片推进，中间片也会派发更新：只认完成的那一次，
-      // 避免大文档解析期间每片都全文重算。
+      // The background parse advances in slices and the intermediate slices
+      // dispatch updates too: only the completed one counts, so that a large
+      // document is not fully recomputed for every slice while it parses.
       if (!syntaxTreeAvailable(tr.state, tr.state.doc.length)) return value;
       return makeBlockValue(tr.state, value, tr, tree);
     }
@@ -404,15 +433,17 @@ interface DecorationSink {
   inline: Range<Decoration>[];
 }
 
-/** 包内唯一需要的视图面：装饰构建只读 state 与视口范围。测试用它构造
- *  无 DOM 的假视图，锁住「标记 token 活动规则」等几何模型。 */
+/** The only view surface the package needs: building decorations reads only
+ *  the state and the viewport ranges. Tests use it to build a DOM-less fake
+ *  view and lock geometric models such as the "marker token activity rule". */
 export interface DecorationBuildView {
   state: EditorState;
   visibleRanges: readonly { from: number; to: number }[];
 }
 
-/** Viewport-scoped inline decorations（斜体、列表标记、行内公式、wikilink…）。
- *  导出是为了测试能在无 DOM 的假视图上锁住 token 活动规则。 */
+/** Viewport-scoped inline decorations (italic, list markers, inline math,
+ *  wikilink...). Exported so tests can lock the token activity rules on a
+ *  DOM-less fake view. */
 export function buildInlineDecorations(view: DecorationBuildView): DecorationSet {
   const state = view.state;
   const doc = state.doc;
@@ -488,8 +519,9 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         return false;
       }
       if (name === "Emphasis" || name === "StrongEmphasis") {
-        // 公式里配出来的误配节点(见 mathOwnsEndpoints):文本样式由
-        // emphasisMarksExtension 统一过滤,这里连标记隐藏都不做。
+        // A node mispaired inside math (see mathOwnsEndpoints): the text
+        // styling is filtered centrally by emphasisMarksExtension, so here not
+        // even the marker hiding is done.
         if (mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to)) return true;
         if (!active(nodeRef.from, nodeRef.to)) {
           hideEmphasisMarks(nodeRef.node, out, claim);
@@ -594,11 +626,15 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
     },
   });
 
-  // ---- Callout 块(`:::` 容器):底色 + 左竖线按行拼装 ----
-  // 内容行与边界行都上块面类(光标进块时边界行露出源码,块面不断);顶/底
-  // 留白与圆角由开/合边界行承担。行装饰不依赖光标位置——纯光标移动经
-  // selectionAffectsDecos 快路径时整段不重建。嵌套区域各刷一层,深度类
-  // d1/d2 让内层右移(见 global.css)。
+  // ---- Callout blocks (`:::` containers): background + left rule assembled per line ----
+  // Both content lines and boundary lines get the block surface class (the
+  // boundary lines show their source when the cursor enters the block, but the
+  // surface never breaks); the top/bottom padding and the rounded corners
+  // are carried by the opening/closing boundary lines. The line decorations
+  // do not depend on the cursor position — a pure cursor move that takes the
+  // selectionAffectsDecos fast path rebuilds none of this. Nested regions
+  // each paint a layer, and the depth classes d1/d2 shift the inner ones
+  // right (see global.css).
   const callouts = calloutRegions(state);
   for (const c of callouts) {
     if (c.to < visibleFrom || c.from > visibleTo) continue;
@@ -622,10 +658,13 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
 
   const exclude: Interval[] = [...codeRanges, ...inlineCodeRanges];
 
-  // ---- Callout 锚点:与某个 callout 标题同一段文字的正文文本 ----
-  // 「选中插入」留在原文处的入口,渲染成下划虚线(与块左竖线同色)。匹配是
-  // 纯文本相等(空白弹性,见 calloutAnchor.ts),不依赖语法树,文件刚载入
-  // 树未解析时也完整;范围排除 callout 区域与代码区域(那里不是入口)。
+  // ---- Callout anchors: body text that is the same run of text as some callout title ----
+  // The entry point left in the original text by "insert with selection",
+  // rendered as an underline dashed line (in the same color as the block's
+  // left rule). The match is plain text equality (whitespace-flexible, see
+  // calloutAnchor.ts), independent of the syntax tree, so it is already
+  // complete right after a file loads and the tree has not parsed; the range
+  // excludes callout regions and code regions (those are not entries).
   for (const a of collectAnchors(doc, callouts, visibleFrom, visibleTo, exclude)) {
     out.inline.push(Decoration.mark({ class: "md-callout-anchor" }).range(a.from, a.to));
   }
@@ -642,13 +681,19 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
       !region.display ||
       doc.lineAt(region.from).number === doc.lineAt(Math.max(region.from, region.to - 1)).number;
 
-    // 行内公式按「正文」判定,不用 active():边界位置(from/to)在 widget 之外,
-    // 收起源码后光标正好落在渲染结果之后(Tab 跳出/打完闭合 $ 的自然位置)。
-    // 块级公式仍用 active()——整行 widget 的边界位置属于块自己的行。
+    // Inline math is decided by the "body", not by active(): the boundary
+    // positions (from/to) lie outside the widget, and after collapsing the
+    // source the caret rests right after the rendered result (the natural spot
+    // after tabbing out or after typing the closing $). Block-level math still
+    // uses active() — the boundary positions of a whole-line widget belong to
+    // the block's own line.
     //
-    // 编辑时源码 + **紧随闭合定界符的渲染副本**:副本是行内盒,后面的文字
-    // (含同行的下一个公式,`a xxxx b` 里编辑 a 时)整体往后推,不覆盖任何
-    // 东西。块公式由块层在源码下方补预览,行内区域没有那一层,只能在这里补。
+    // While editing, source + **a rendered copy right after the closing
+    // delimiter**: the copy is an inline box, so the text behind it (including
+    // the next formula on the same line, when editing a in `a xxxx b`) is
+    // pushed back as a whole and nothing is covered. Block formulas get their
+    // preview from the block layer below the source; inline regions have no
+    // such layer, so it has to be added here.
     if (selections.some((r) => selectionInMathBody(region, r.from, r.to))) {
       highlightMathSource(doc, region, out);
       if (singleLine && hooks.mathPreview !== false && region.content.trim()) {
@@ -665,12 +710,15 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
     if (!singleLine) continue; // rendered by the block-decorations field
 
     if (claim(region.from, region.to)) {
-      // 单行区域的 to 必须不越过行尾:replace 一旦跨过换行符,CM6 直接抛
-      // "Decorations that replace line breaks may not be specified via plugins"。
+      // The `to` of a single-line region must not pass the line end: once a
+      // replace crosses the newline, CM6 throws "Decorations that replace
+      // line breaks may not be specified via plugins".
       const to = Math.min(region.to, doc.lineAt(region.from).to);
       out.inline.push(
-        // from 一并交给 widget:渲染态点击要按 dataset.mathFrom 找回区域、
-        // 落进正文(边界位置不再展开源码,见 selectionInMathBody)。
+        // `from` goes to the widget as well: a click on the rendered formula
+        // must find the region back via dataset.mathFrom and land inside the
+        // body (the boundary positions no longer expand the source, see
+        // selectionInMathBody).
         Decoration.replace({ widget: new MathWidget(region.content, false, region.from) }).range(
           region.from,
           to,
@@ -748,12 +796,17 @@ function whitespaceEnd(
 }
 
 /**
- * 空列表项（标记后的空白直达行尾）且光标停在项首时，marker 的替换装饰不能
- * 把行尾空白一起吞掉：那会让整行没有任何文本节点，光标落在 widget 边界的
- * 元素位置上，WebKit 算不出光标矩形（getClientRects 为空），绘制退化到行
- * 内容边缘——Enter 续行后光标“闪到行首”，下一次布局变化才落回正确位置。
- * 保留这个空格作文本锚点；光标的文档位置（项文本起点）本身是对的，缺的
- * 只是可见锚点。
+ * For an empty list item (the whitespace after the marker runs to the end of
+ * the line) with the caret resting at the start of the item, the marker's
+ * replace decoration must not swallow the trailing whitespace: that would
+ * leave the line without any text node, and the caret — sitting on the
+ * element position at the widget's boundary — gets no caret rectangle from
+ * WebKit (getClientRects is empty), so the drawing degenerates to the edge
+ * of the line content: after continuing a list with Enter the caret "flashes
+ * to the line start" and only the next layout change puts it back where it
+ * belongs. Keep that space as the text anchor; the caret's document position
+ * (the start of the item text) is correct, what is missing is only a
+ * visible anchor.
  */
 function keepMarkerTrailingSpace(
   selections: readonly { from: number; to: number }[],
@@ -768,15 +821,22 @@ function keepMarkerTrailingSpace(
 }
 
 /**
- * 空列表项的解析歧义:段落后的裸 `-` 行(可带尾随空白)在 CommonMark 里与
- * setext 二级标题的下划线歧义,且解析器取 setext——树里没有 ListMark,
- * bullet widget 永远建不出来。Cmd+; 在段落后切出的空项因此看起来“没生效”,
- * 输入第一个字符时解析才翻转成列表、整行重排,读作卡顿。
+ * The parsing ambiguity of an empty list item: a bare `-` line after a
+ * paragraph (optionally with trailing whitespace) is ambiguous with the
+ * underline of a setext level-2 heading in CommonMark, and the parser picks
+ * setext — there is no ListMark in the tree, so the bullet widget can never
+ * be built. The empty item cut out after a paragraph with Cmd+; therefore
+ * looks like "it did not work", and only when the first character is typed
+ * does the parse flip into a list and the whole line reflows, which reads as
+ * a stutter.
  *
- * 渲染层把这种形态按空列表项处理:零缩进、单个 `-`、行内余下全是空白。
- * 装饰与真 ListMark 完全同形(li-i0 li-b 行装饰 + ListBulletWidget),正文
- * 键入后解析翻转成 ListMark 时视觉无缝。真 setext 用法(下划线多于一个
- * `-`、或行内还有正文)不命中,维持原样。
+ * The rendering layer treats that shape as an empty list item: zero indent,
+ * a single `-`, and nothing but whitespace left on the line. The decoration
+ * is exactly the same shape as a real ListMark (li-i0 li-b line decoration +
+ * ListBulletWidget), so when body text is typed and the parse flips into a
+ * ListMark the result is visually seamless. A real setext usage (more than
+ * one `-` in the underline, or body text still on the line) does not match
+ * and stays as it is.
  */
 function decorateSetextDash(
   doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { from: number; to: number } },
@@ -798,9 +858,12 @@ function decorateSetextDash(
   if (doc.sliceString(mark.from, mark.to) !== "-") return;
   const wsTo = whitespaceEnd(doc, mark.to);
   if (wsTo !== markLine.to) return;
-  // 行装饰与 ListMark 分支同规矩:活动行也推,布局不随光标进出位移。
+  // The line decoration follows the same rule as the ListMark branch: it is
+  // pushed on the active line too, so the layout does not shift as the caret
+  // enters and leaves.
   out.inline.push(Decoration.line({ class: "md-list-line li-i0 li-b" }).range(markLine.from));
-  // 光标压进标记字符时翻回源码可编辑(与 ListMark 同一条活动规则)。
+  // When the caret presses into the marker characters it flips back to
+  // editable source (the same activity rule as for ListMark).
   if (selections.some((r) => r.from <= mark.to && r.to >= mark.from)) return;
   const to = keepMarkerTrailingSpace(selections, markLine.from, markLine.to, wsTo)
     ? mark.to
@@ -879,8 +942,9 @@ function decorateHeading(
   );
 }
 
-/** 只隐藏强调/加粗/删除线的分隔符;文本样式(斜体、加粗、颜色)由
- *  emphasisMarksExtension 画——那条规则要能识别公式里配出来的误配节点。 */
+/** Only hides the delimiters of emphasis / bold / strikethrough; the text
+ *  styling (italic, bold, color) is drawn by emphasisMarksExtension — that
+ *  rule must be able to recognize nodes mispaired inside math. */
 function hideEmphasisMarks(
   node: SyntaxNode,
   out: DecorationSink,
@@ -959,17 +1023,17 @@ function decorateBlockquote(
   }
 }
 
-/** 图片类扩展名:决定 `![[…]]` 是图片嵌入还是普通 wikilink。 */
+/** Image file extensions: they decide whether `![[…]]` is an image embed or a plain wikilink. */
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico|tiff?|heic)$/i;
 
-/** 目录部分(去掉最后一段);没有目录时返回 null。 */
+/** The directory part (the last path segment removed); null when there is no directory. */
 function dirOf(path: string | null): string | null {
   if (!path) return null;
   const i = path.lastIndexOf("/");
   return i > 0 ? path.slice(0, i) : null;
 }
 
-/** `%20` 之类的转义还原(笔记里手写的引用可能是转义过的)。 */
+/** Decodes escapes such as `%20` (a reference written by hand in a note may be escaped). */
 function decodeRef(raw: string): string {
   if (!raw.includes("%")) return raw;
   try {
@@ -979,8 +1043,9 @@ function decodeRef(raw: string): string {
   }
 }
 
-/** 绝对路径 → Tauri asset 协议的 URL;非 Tauri 环境(harness)原样返回,
- *  这样装饰本身在浏览器里也能建出来(只是图片必然加载失败)。 */
+/** Absolute path -> a URL of the Tauri asset protocol; outside Tauri (the
+ *  harness) the path is returned unchanged, so the decoration itself can still
+ *  be built in the browser (the image just fails to load). */
 function assetSrc(absPath: string): string {
   const normalized = absPath.replace(/\/{2,}/g, "/");
   try {
@@ -990,8 +1055,9 @@ function assetSrc(absPath: string): string {
   }
 }
 
-/** vault 里按文件名找媒体文件(Obsidian 的附件引用就是只写文件名)。
- *  同名多个时取路径最短的那个,与 Obsidian 的「shortest path」一致。 */
+/** Finds a media file in the vault by file name (Obsidian's attachment
+ *  references carry only the file name). With several same-named files the
+ *  shortest path wins, matching Obsidian's "shortest path" rule. */
 function findAssetByName(name: string): string | null {
   let best: string | null = null;
   for (const rel of useAppStore.getState().flatAssets) {
@@ -1002,17 +1068,20 @@ function findAssetByName(name: string): string | null {
 }
 
 /**
- * 一条图片引用的候选 URL,按尝试顺序排列。
+ * The candidate URLs of one image reference, in the order they are tried.
  *
- * 同一个 vault 里同时存在几种互不相同的解析约定,而且**都没法事先判断**
- * (查文件是否存在是异步 IPC,装饰是同步构建的),所以把候选排成一列交给
- * widget:加载失败就试下一个。
+ * Several different resolution conventions coexist in the same vault, and
+ * **none of them can be decided in advance** (checking whether a file exists
+ * is asynchronous IPC while the decorations are built synchronously), so the
+ * candidates are handed to the widget as a list: on a load failure it tries
+ * the next one.
  *
- * 1. 相对笔记所在目录 —— 标准 markdown 写法,也是 PDF 转换器写出来的形式
- *    (`<stem>.md` 旁边的 `assets/<stem>/p1-fig1.svg`);
- * 2. 相对 vault 根 —— Obsidian 对 `![](…)` 的约定;
- * 3. 按文件名在整个 vault 里找 —— `![[Pasted image 1.png]]`,以及 Obsidian
- *    的「shortest path」引用。
+ * 1. Relative to the directory of the note — the standard markdown form and
+ *    also what the PDF converter writes (`assets/<stem>/p1-fig1.svg` next to
+ *    `<stem>.md`);
+ * 2. Relative to the vault root — Obsidian's convention for `![](…)`;
+ * 3. By file name across the whole vault — `![[Pasted image 1.png]]` and
+ *    Obsidian's "shortest path" references.
  */
 function imageCandidates(raw: string, state: EditorState): string[] {
   const ref = raw.trim();
@@ -1029,7 +1098,7 @@ function imageCandidates(raw: string, state: EditorState): string[] {
   const { vaultPath } = useAppStore.getState();
   const decoded = decodeRef(ref);
   if (decoded.startsWith("/")) {
-    // 既可能是绝对路径,也可能是 Obsidian 的 vault 根写法,两个都试。
+    // It may be an absolute path, or Obsidian's vault-root form — try both.
     add(decoded);
     if (vaultPath) add(`${vaultPath}${decoded}`);
     return out;
@@ -1037,7 +1106,8 @@ function imageCandidates(raw: string, state: EditorState): string[] {
   const docDir = dirOf(documentPath(state));
   if (docDir) add(`${docDir}/${decoded}`);
   if (vaultPath) add(`${vaultPath}/${decoded}`);
-  // 只对纯文件名做全库查找:带路径的引用不该被"随便一个同名文件"顶掉。
+  // The whole-vault lookup applies to bare file names only: a reference that
+  // carries a path must not be shadowed by "some file with the same name".
   if (vaultPath && !decoded.includes("/")) {
     const hit = findAssetByName(decoded);
     if (hit) add(`${vaultPath}/${hit}`);
@@ -1045,7 +1115,7 @@ function imageCandidates(raw: string, state: EditorState): string[] {
   return out;
 }
 
-/** `![alt](url)` 的 alt 文本(第一个和第二个 LinkMark 之间)。 */
+/** The alt text of `![alt](url)` (between the first and the second LinkMark). */
 function imageAlt(node: SyntaxNode, state: EditorState): string {
   const marks: SyntaxNode[] = [];
   for (let child = node.firstChild; child; child = child.nextSibling) {
@@ -1080,10 +1150,13 @@ function decorateImage(
 }
 
 /**
- * 画图嵌入的预览图候选:画图文件按文件名在资产清单里定位,预览 PNG 就是
- * 同目录同名 `.png`(画布每次保存自动导出)。清单里没有画图文件、或 PNG
- * 还没导出过时,依次落到「全库找同名 png」——widget 对空候选直接不渲染,
- * 源码保持可见,不吞内容。
+ * The preview image candidates of a drawing embed: the drawing file is
+ * located by name in the asset list, and the preview PNG is the `.png` with
+ * the same stem in the same directory (the canvas exports it automatically on
+ * every save). When the asset list holds no drawing file, or the PNG has not
+ * been exported yet, the candidates fall back to "find a same-named png
+ * across the vault" — the widget renders nothing for an empty candidate
+ * list, so the source stays visible and nothing is swallowed.
  */
 function drawingEmbedCandidates(target: string): { srcs: string[]; path: string | null } {
   const { vaultPath } = useAppStore.getState();
@@ -1153,7 +1226,8 @@ function decorateWikiLinks(
         const alias = pipe === -1 ? null : raw.slice(pipe + 1);
         if (!target) continue;
 
-        // `![[x.png]]` 是嵌入,不是链接:整段(含开头的 `!`)渲染成图片。
+        // `![[x.png]]` is an embed, not a link: the whole span (including the
+        // leading `!`) renders as an image.
         const embedFrom = m.index > 0 && lineText[m.index - 1] === "!" ? from - 1 : -1;
         if (embedFrom >= 0 && IMAGE_EXT_RE.test(target)) {
           const srcs = imageCandidates(target, state);
@@ -1167,8 +1241,9 @@ function decorateWikiLinks(
           }
         }
 
-        // `![[x.excalidraw]]` 画图嵌入:渲染旁边那张自动导出的预览 PNG,
-        // 点开可回画布编辑。老库里的 `.excalidraw.md` 同样认。
+        // `![[x.excalidraw]]` drawing embed: render the automatically exported
+        // preview PNG next to it; clicking it returns to the canvas to edit.
+        // The `.excalidraw.md` of older vaults is recognized as well.
         if (embedFrom >= 0 && isDrawingFileName(target)) {
           const { srcs, path } = drawingEmbedCandidates(target);
           if (srcs.length > 0 && claim(embedFrom, to)) {
@@ -1209,8 +1284,10 @@ function decorateWikiLinks(
 const livePreviewPlugin = ViewPlugin.fromClass(
   class {
     inline: DecorationSet = Decoration.none;
-    /** 上次构建装饰所用的语法树；后台解析推进（Language.setState 派发）
-     *  后据此重建——否则刚载入的文件要等光标移动才会渲染。 */
+    /** The syntax tree used for the last decoration build; once the background
+     *  parse advances (dispatched by Language.setState) the decorations are
+     *  rebuilt from it — otherwise a freshly loaded file would not render
+     *  until the caret moved. */
     tree: Tree;
 
     constructor(view: EditorView) {
@@ -1221,8 +1298,10 @@ const livePreviewPlugin = ViewPlugin.fromClass(
     update(u: ViewUpdate) {
       const tree = syntaxTree(u.view.state);
       const treeChanged = tree !== this.tree;
-      // 换了文件(图片的相对路径基准跟着变)必须重建:docPath 是 effect
-      // 事务,本身不改文档也不动光标,不特判就一条装饰都不会更新。
+      // Switching files must rebuild (the base for relative image paths
+      // changes with them): docPath is an effect transaction that changes
+      // neither the document nor the caret, so without a special case not a
+      // single decoration would update.
       const pathChanged = u.transactions.some((t) =>
         t.effects.some((e) => e.is(setDocPath)),
       );
@@ -1247,8 +1326,10 @@ const linkHandlers = EditorView.domEventHandlers({
     const target = event.target as HTMLElement | null;
     if (!target) return false;
 
-    // Callout 渲染态边界(标题/帽):点回它的源码行——光标落在开标记行行首,
-    // 边界随之露出源码(与点击渲染态公式块回到源码同一条交互)。
+    // The rendered boundary of a callout (title / cap): clicking it goes
+    // back to its source line — the caret lands at the start of the opening
+    // marker line and the boundary then reveals its source (the same
+    // interaction as clicking a rendered math block to return to the source).
     const calloutEdge = target.closest?.(".cw-callout-title, .cw-callout-edge") as
       | (HTMLElement & { dataset: { calloutFrom?: string } })
       | null;
@@ -1258,9 +1339,12 @@ const linkHandlers = EditorView.domEventHandlers({
       return true;
     }
 
-    // 渲染态的行内公式:点它就是进正文。边界位置(from/to)不再展开源码
-    // (见 selectionInMathBody),点上去会落在公式外侧、看起来像点空了。
-    // 落点按水平位置取正文首/尾,与"点哪儿改哪儿"的直觉一致。
+    // A rendered inline formula: clicking it means entering the body. The
+    // boundary positions (from/to) no longer expand the source (see
+    // selectionInMathBody), so clicking there would land outside the formula
+    // and look like the click missed. The landing point is the body start or
+    // end depending on the horizontal position, matching the "edit where you
+    // click" intuition.
     const mathInline = target.closest?.(".cw-math-inline") as HTMLElement | null;
     if (mathInline?.dataset?.mathFrom) {
       const region = mathRegions(view.state).find(
@@ -1334,7 +1418,8 @@ const linkHandlers = EditorView.domEventHandlers({
     const isWiki = target.closest?.(".md-wikilink");
     const isLink = target.closest?.(".md-link, .md-url");
 
-    // 画图嵌入的预览图:打开画布编辑那个文件(先于普通图片路径判断)。
+    // The preview image of a drawing embed: open the canvas to edit that file
+    // (checked before the plain image path).
     const image = target.closest?.(".cw-image") as HTMLElement | null;
     if (image?.dataset?.excalidrawPath && hooks.openDrawing) {
       event.preventDefault();

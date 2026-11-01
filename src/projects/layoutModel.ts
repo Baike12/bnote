@@ -1,42 +1,52 @@
 /**
- * 项目视图三栏宽度模型。
+ * Width model of the three columns of the project view.
  *
- * 三栏 = 项目导航 | 项目看板 | 日记。左栏与日记栏的宽度按**像素**存进
- * settings(`projectsSideWidth` / `projectsDailyWidth`),看板吃剩余宽度:
- * 拖窗口边缘只改看板,导航与日记不变——日记的换行宽度、看板里能放下几列
- * 都不会跟着窗口抖。窗口窄到放不下时由 CSS 的 clamp 压缩显示,不回写偏好。
+ * The three columns are project navigation | project kanban | daily note. The
+ * widths of the left column and the daily note column are stored in **pixels** in
+ * the settings (`projectsSideWidth` / `projectsDailyWidth`), the kanban takes the
+ * remaining width: dragging the window edge only changes the kanban, navigation
+ * and the daily note stay put - the wrapping width of the daily note and the
+ * number of columns that fit into the kanban do not jitter with the window. When
+ * the window gets too narrow the CSS clamp shrinks the display and the preference
+ * is not written back.
  *
- * 拖分栏线只动**相邻的两栏**:宽度在相邻两栏之间转移,不相邻的那栏原地不动
- * (拖 导航|看板 不牵动日记;拖 看板|日记 不牵动导航)。每栏最小宽度是布局
- * 宽度的 10%;看板另有像素下限——低于它连一行待办都排不下。
+ * Dragging a divider only moves the **two adjacent columns**: the width is
+ * transferred between them, the column that is not adjacent stays where it is
+ * (dragging navigation|kanban does not move the daily note, dragging
+ * kanban|daily note does not move navigation). The minimum width of every column
+ * is 10% of the layout width; the kanban has an additional pixel lower bound -
+ * below it not even a single line of todos fits.
  */
 
-/** 项目导航默认宽度。 */
+/** Default width of the project navigation. */
 export const DEFAULT_SIDE_WIDTH = 232;
-/** 日记栏默认宽度。 */
+/** Default width of the daily note column. */
 export const DEFAULT_DAILY_WIDTH = 420;
-/** 每栏最小宽度占布局宽度的比例(与学习模式三栏一致)。 */
+/** Ratio of the layout width that a column must keep at least (same as the three columns of study mode). */
 export const MIN_COLUMN_RATIO = 0.1;
-/** 看板(中栏)最小像素宽度:低于它一列待办都排不下。 */
+/** Minimum pixel width of the kanban (the middle column): below it a single column of todos does not fit. */
 export const MIN_CENTER_WIDTH = 300;
-/** 分栏线宽度(布局宽度),与 global.css 的 .projects-resizer 一致。 */
+/** Width of the divider (in layout width), matching .projects-resizer in global.css. */
 export const RESIZER_WIDTH = 1;
 
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(Math.max(value, lo), Math.max(lo, hi));
 }
 
-/** 每栏最小宽度(像素):布局宽度的 10%。 */
+/** Minimum width of a column (pixels): 10% of the layout width. */
 export function minColumnWidth(hostWidth: number): number {
   if (!Number.isFinite(hostWidth) || hostWidth <= 0) return 0;
   return Math.round(hostWidth * MIN_COLUMN_RATIO);
 }
 
 /**
- * 拖动 导航|看板 分隔线:改导航宽度,日记不动。
+ * Dragging the navigation|kanban divider: it changes the width of the navigation,
+ * the daily note stays put.
  *
- * `edgeX` 是分隔线右缘相对布局左缘的坐标(= 看板左缘 = 导航栏右缘 + 线宽);
- * 左栏到 10% 时线最靠左,看板到 `MIN_CENTER_WIDTH` 时线最靠右。
+ * `edgeX` is the coordinate of the right edge of the divider relative to the left
+ * edge of the layout (= the left edge of the kanban = the right edge of the
+ * navigation plus the width of the line); when the left column is at 10% the line
+ * is leftmost, when the kanban is at `MIN_CENTER_WIDTH` the line is rightmost.
  */
 export function dragSideEdge(edgeX: number, hostWidth: number, dailyWidth: number): number {
   const min = minColumnWidth(hostWidth);
@@ -47,10 +57,13 @@ export function dragSideEdge(edgeX: number, hostWidth: number, dailyWidth: numbe
 }
 
 /**
- * 拖动 看板|日记 分隔线:改日记宽度,导航不动。
+ * Dragging the kanban|daily note divider: it changes the width of the daily note,
+ * the navigation stays put.
  *
- * `edgeX` 是分隔线右缘相对布局左缘的坐标(= 日记栏左缘);日记栏到 10% 时线
- * 最靠右,看板到 `MIN_CENTER_WIDTH` 时线最靠左。
+ * `edgeX` is the coordinate of the right edge of the divider relative to the left
+ * edge of the layout (= the left edge of the daily note column); when the daily
+ * note column is at 10% the line is rightmost, when the kanban is at
+ * `MIN_CENTER_WIDTH` the line is leftmost.
  */
 export function dragDailyEdge(edgeX: number, hostWidth: number, sideWidth: number): number {
   const min = minColumnWidth(hostWidth);
@@ -60,10 +73,12 @@ export function dragDailyEdge(edgeX: number, hostWidth: number, sideWidth: numbe
 }
 
 /**
- * 持久化宽度归一:坏数据(非数、负数、NaN)回落默认值。
+ * Normalizing a persisted width: bad data (not a number, negative, NaN) falls back
+ * to the default.
  *
- * 上下界交给拖动时的 `dragSideEdge` / `dragDailyEdge` 与 CSS 的 clamp——
- * 加载时量不到布局宽度,在这里猜一个只会把用户的偏好改坏。
+ * The bounds are left to `dragSideEdge` / `dragDailyEdge` at drag time and to the
+ * CSS clamp - the layout width cannot be measured while loading, guessing one here
+ * would only corrupt the preference of the user.
  */
 export function normalizeSideWidth(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0

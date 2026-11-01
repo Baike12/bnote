@@ -1,51 +1,55 @@
-//! git 支持:状态、差异、暂存。
+//! git support: status, diff, staging.
 //!
-//! 不引 git 库,直接调 `git` 二进制——用户本机装的 git 就是权威,行为与
-//! 终端里一致(配置、credential helper、worktree 都不用自己复刻)。
+//! No git library is pulled in — the `git` binary is called directly, so the
+//! git installed on the user's machine stays authoritative and behaves exactly
+//! like it does in a terminal (config, credential helper and worktree need no
+//! reimplementation here).
 //!
-//! 状态解析用 **porcelain v2**:`-z` 分隔,所以路径里的空格、换行、非 ASCII
-//! 都不用转义。v2 比 v1 强的地方:分支信息与上游差异在同一次调用里给出,
-//! 重命名有专门的记录类型(带原路径与相似度)。
+//! Status parsing uses **porcelain v2**: the records are separated with `-z`,
+//! so spaces, newlines and non-ASCII characters in paths need no escaping.
+//! Where v2 beats v1: branch info and the upstream difference come from a
+//! single call, and renames have their own record type (with the original path
+//! and a similarity score).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
 
-/// 一个文件在 git 眼里的状态。
+/// The state of one file as git sees it.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GitFileState {
-    /// 仓库相对路径。
+    /// Path relative to the repository root.
     pub path: String,
-    /// 重命名的原路径(v2 的 `2` 记录才有)。
+    /// The original path of a rename (only present in the v2 `2` record).
     pub orig_path: Option<String>,
-    /// 暂存区状态:`M`/`A`/`D`/`R`/`C`/`U`/`?`/`!`,无则空串。
+    /// Index state: `M`/`A`/`D`/`R`/`C`/`U`/`?`/`!`, empty when there is none.
     pub index: String,
-    /// 工作区状态:同上。
+    /// Worktree state: same set.
     pub worktree: String,
 }
 
-/// 仓库状态总览。
+/// Overview of the repository state.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStatus {
-    /// 当前目录是否在 git 仓库里。
+    /// Whether the current directory is inside a git repository.
     pub is_repo: bool,
-    /// 仓库根(可能是打开目录的祖先)。
+    /// The repository root (may be an ancestor of the opened directory).
     pub root: Option<String>,
-    /// 当前分支;detached 时是提交短哈希。
+    /// The current branch; on a detached HEAD it is the short commit hash.
     pub branch: Option<String>,
-    /// 上游分支名。
+    /// The name of the upstream branch.
     pub upstream: Option<String>,
-    /// 领先上游的提交数。
+    /// Number of commits ahead of the upstream.
     pub ahead: u32,
-    /// 落后上游的提交数。
+    /// Number of commits behind the upstream.
     pub behind: u32,
     pub files: Vec<GitFileState>,
 }
 
-/// porcelain v2 的解析结果。
+/// The parse result of porcelain v2.
 #[derive(Debug, Clone, Default)]
 pub struct ParsedStatus {
     pub branch: Option<String>,
@@ -55,13 +59,16 @@ pub struct ParsedStatus {
     pub files: Vec<GitFileState>,
 }
 
-/// 从 `git status --porcelain=v2 --branch -z` 的字节流里解析状态。
+/// Parses the status out of the byte stream of
+/// `git status --porcelain=v2 --branch -z`.
 ///
-/// 记录之间用 NUL 分隔,所以路径里的空格与换行都是安全的。v2 的记录类型:
-/// - `1` 普通改动:`1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`
-/// - `2` 重命名:`2 <XY> … <X><score> <path>`,**紧跟一个 NUL 段是原路径**
-/// - `u` 未合并:`u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
-/// - `?` 未跟踪、`!` 已忽略(忽略的条目不进 UI,直接丢)
+/// Records are separated by NUL, so spaces and newlines in paths are safe.
+/// The v2 record types:
+/// - `1` ordinary change: `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`
+/// - `2` rename: `2 <XY> … <X><score> <path>`, **immediately followed by a NUL
+///   segment holding the original path**
+/// - `u` unmerged: `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
+/// - `?` untracked, `!` ignored (ignored entries never reach the UI, drop them)
 pub fn parse_status_v2(stdout: &[u8]) -> ParsedStatus {
     let mut out = ParsedStatus::default();
     let mut iter = stdout.split(|b| *b == 0).filter(|t| !t.is_empty());
@@ -90,7 +97,7 @@ pub fn parse_status_v2(stdout: &[u8]) -> ParsedStatus {
                     continue;
                 }
                 let (index, worktree) = split_xy(f[1]);
-                // 重命名的原路径是紧随其后的一个 NUL 段。
+                // The original path of a rename is the NUL segment right after it.
                 let orig = iter.next().map(|o| String::from_utf8_lossy(o).to_string());
                 out.files.push(GitFileState {
                     path: String::from_utf8_lossy(f[9]).to_string(),
@@ -120,14 +127,15 @@ pub fn parse_status_v2(stdout: &[u8]) -> ParsedStatus {
                     worktree: "?".to_string(),
                 });
             }
-            // `!` 是已忽略:不进 UI。
+            // `!` means ignored: it never reaches the UI.
             _ => {}
         }
     }
     out
 }
 
-/// 头部行:`# branch.oid …` / `# branch.head …` / `# branch.upstream …` / `# branch.ab +N -M`。
+/// Header lines: `# branch.oid …` / `# branch.head …` / `# branch.upstream …` /
+/// `# branch.ab +N -M`.
 fn parse_header(tok: &[u8], out: &mut ParsedStatus) {
     let text = String::from_utf8_lossy(tok);
     let rest = text.trim_start_matches("# ").trim();
@@ -136,7 +144,7 @@ fn parse_header(tok: &[u8], out: &mut ParsedStatus) {
     } else if let Some(v) = rest.strip_prefix("branch.upstream ") {
         out.upstream = Some(v.trim().to_string());
     } else if let Some(v) = rest.strip_prefix("branch.ab ") {
-        // 形如 `+3 -1`。
+        // Shaped like `+3 -1`.
         for part in v.split_whitespace() {
             if let Some(n) = part.strip_prefix('+') {
                 out.ahead = n.parse().unwrap_or(0);
@@ -147,7 +155,7 @@ fn parse_header(tok: &[u8], out: &mut ParsedStatus) {
     }
 }
 
-/// `XY` 两字符:第一位是暂存区,第二位是工作区。
+/// The two `XY` characters: the first is the index, the second the worktree.
 fn split_xy(xy: &[u8]) -> (String, String) {
     let s = String::from_utf8_lossy(xy);
     let mut chars = s.chars();
@@ -156,7 +164,8 @@ fn split_xy(xy: &[u8]) -> (String, String) {
     (index, worktree)
 }
 
-/// 按前 n-1 个空格切,最后一段原样保留(路径里可以有空格)。
+/// Splits on the first n-1 spaces and keeps the last segment verbatim (a path
+/// may contain spaces).
 fn split_n(tok: &[u8], n: usize) -> Vec<&[u8]> {
     let mut out = Vec::with_capacity(n);
     let mut rest = tok;
@@ -173,7 +182,8 @@ fn split_n(tok: &[u8], n: usize) -> Vec<&[u8]> {
     out
 }
 
-/// 跑一次 git,返回 stdout。允许 exit code 1(`--no-index` 有差异时就是 1)。
+/// Runs git once and returns stdout. Exit code 1 is allowed (`--no-index` exits
+/// with 1 when there is a difference).
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let out = Command::new("git")
         .args(args)
@@ -187,7 +197,7 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
-/// 目录是否在 git 仓库里,以及仓库根。
+/// Whether the directory is inside a git repository, and the repository root.
 pub fn repo_root(root: &Path) -> Option<PathBuf> {
     let out = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
@@ -205,7 +215,7 @@ pub fn repo_root(root: &Path) -> Option<PathBuf> {
     }
 }
 
-/// 读仓库状态。
+/// Reads the repository status.
 pub fn status(root: &Path) -> Result<GitStatus, String> {
     let repo = repo_root(root);
     let Some(repo) = repo else {
@@ -236,12 +246,12 @@ pub fn status(root: &Path) -> Result<GitStatus, String> {
     })
 }
 
-/// 取一个文件的差异(unified diff 文本)。
+/// Gets the diff of one file (unified diff text).
 ///
-/// - `staged = true`:暂存区 vs HEAD;
-/// - `staged = false`:工作区 vs 暂存区;
-/// - 文件是未跟踪的:`git diff` 什么都不给,改用 `--no-index` 与空文件比,
-///   出来的就是「整文件新增」。
+/// - `staged = true`: index vs HEAD;
+/// - `staged = false`: worktree vs index;
+/// - the file is untracked: `git diff` yields nothing, so `--no-index` compares
+///   it against the empty file, which reads as "the whole file is new".
 pub fn diff(root: &Path, path: &str, staged: bool) -> Result<String, String> {
     let Some(repo) = repo_root(root) else {
         return Ok(String::new());
@@ -265,7 +275,8 @@ pub fn diff(root: &Path, path: &str, staged: bool) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&stdout).to_string())
 }
 
-/// 文件是否被 git 跟踪(未跟踪的文件在 diff 里要另走 `--no-index`)。
+/// Whether the file is tracked by git (an untracked file has to take the
+/// `--no-index` path in a diff).
 fn is_tracked(repo: &Path, path: &str) -> bool {
     Command::new("git")
         .args(["ls-files", "--error-unmatch", "--", path])
@@ -275,13 +286,14 @@ fn is_tracked(repo: &Path, path: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 把改动暂存(`git add`)。
+/// Stages the change (`git add`).
 pub fn stage(repo: &Path, path: &str) -> Result<(), String> {
     git(repo, &["add", "--", path])?;
     Ok(())
 }
 
-/// 把改动从暂存区撤回(`git restore --staged`;没暂存过就退回 `git rm --cached`)。
+/// Unstages the change (`git restore --staged`; when it was never staged it
+/// falls back to `git rm --cached`).
 pub fn unstage(repo: &Path, path: &str) -> Result<(), String> {
     let out = Command::new("git")
         .args(["restore", "--staged", "--", path])
@@ -291,7 +303,7 @@ pub fn unstage(repo: &Path, path: &str) -> Result<(), String> {
     if out.status.success() {
         return Ok(());
     }
-    // 老版本 git 没有 restore,退回 rm --cached。
+    // Older git has no restore, fall back to rm --cached.
     git(repo, &["rm", "--cached", "--", path])?;
     Ok(())
 }
@@ -325,7 +337,8 @@ mod tests {
 
     #[test]
     fn parses_ordinary_untracked_and_rename_records() {
-        // 实测形态:头部与记录都用 NUL 分隔;重命名的原路径是紧随的一段。
+        // Measured shape: header and records are separated by NUL; the original
+        // path of a rename is the segment right after it.
         let raw = b"# branch.oid abc\0# branch.head main\0\
 2 RM N... 100644 100644 100644 h1 h2 R100 renamed.txt\0a.txt\0\
 ? new.txt\0";

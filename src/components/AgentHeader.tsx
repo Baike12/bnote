@@ -6,28 +6,34 @@ import {
 } from "@/study/agentFont";
 
 /**
- * 学习助手面板的头部:会话标题(点开是会话列表)+ 右侧动作按钮,以及辅助
- * 会话的「分叉来源 / 返回」窄条。
+ * Header of the assistant panel: the session title (clicking it opens the
+ * session list), action buttons on the right, and the narrow "fork source /
+ * back" bar for auxiliary sessions.
  *
- * 为什么不用 `<select>`:原生下拉在各平台长得完全不一样(WKWebView 里是
- * 系统的灰胶囊 + 系统字体),和 bnote 的标题按钮、材料下拉差得最远。这里
- * 换成标题按钮 + popover,与中栏「文件名 = 材料下拉」同一套几何和配色
- * (`.content-title-btn` / `.study-history-pop` 的语言)。
+ * Why not a `<select>`: native dropdowns look completely different on every
+ * platform (in WKWebView it is the system grey pill in the system font),
+ * which is the furthest possible match for bnote's title button and
+ * materials dropdown. A title button plus a popover shares the geometry and
+ * colors of the middle column's "file name = materials dropdown" (the
+ * language of `.content-title-btn` / `.study-history-pop`).
  *
- * 字号:「Aa」按钮展开与中栏网页缩放同一套 −/读数/+ 控件(读数点击回到
- * 100%):助手栏只有几百像素宽,常驻三个按钮 + 读数会把会话名挤没,所以
- * 控件收在 popover 里,按钮本身留在头部。
+ * Font size: the "Aa" button opens the same -/readout/+ control as the
+ * middle column's web zoom (clicking the readout returns to 100%). The
+ * assistant column is only a few hundred pixels wide, so keeping three
+ * buttons plus the readout on screen would squeeze out the session name;
+ * the controls live in the popover, the button itself stays in the header.
  *
- * 头部是窗口拖动区(`data-tauri-drag-region="deep"`),所以弹层里的每一行
- * 都必须是 button:Tauri 的 drag.js 在可点元素上截断,div 会被当成拖动
- * 把手,点一下就把窗口拖起来。
+ * The header is the window drag region (`data-tauri-drag-region="deep"`), so
+ * every row in the popover must be a button: Tauri's drag.js intercepts on
+ * clickable elements, a div would be treated as a drag handle and one click
+ * would drag the window.
  */
 export interface AgentHeaderConv {
   key: string;
   label: string;
-  /** 分叉来源会话 key;主会话为 null。 */
+  /** Session key this one was forked from; null for the main session. */
   parent: string | null;
-  /** 分叉所基于的消息摘要(辅助会话才有意义)。 */
+  /** Summary of the message the fork is based on (only meaningful for auxiliary sessions). */
   basedOn: string;
 }
 
@@ -40,10 +46,10 @@ interface AgentHeaderProps {
   historyOpen: boolean;
   onToggleHistory: () => void;
   onNewSession: () => void;
-  /** 当前是辅助会话时退回的父会话;主会话 / 空会话为 null。 */
+  /** Parent session to fall back to when this is an auxiliary session; null for the main session or when there is none. */
   parent: AgentHeaderConv | null;
   onBack: () => void;
-  /** 对话字号缩放(1 = 100%),读数就是这个百分比。 */
+  /** Conversation font scale (1 = 100%); the readout is that percentage. */
   fontScale: number;
   onFontStep: (direction: 1 | -1) => void;
   onFontReset: () => void;
@@ -64,15 +70,16 @@ export function AgentHeader({
   onFontStep,
   onFontReset,
 }: AgentHeaderProps) {
-  // 一次只开一个弹层:会话列表 / 字号。
+  // Only one overlay at a time: the session list or the font scale.
   const [open, setOpen] = useState<null | "conv" | "font">(null);
   const convRef = useRef<HTMLDivElement>(null);
   const fontRef = useRef<HTMLDivElement>(null);
   const active = convs.find((c) => c.key === activeKey) ?? null;
   const switchable = convs.length > 1;
 
-  // 点外面 / Esc 收起。pointerdown(不是 click):菜单在下面的点击落下去
-  // 之前就已经没了(与材料下拉同一套)。
+  // Dismiss on outside click or Escape. `pointerdown` (not `click`): the
+  // menu must be gone before the click behind it lands (same as the
+  // materials dropdown).
   useEffect(() => {
     if (!open) return;
     const onDown = (event: PointerEvent) => {
@@ -92,7 +99,7 @@ export function AgentHeader({
     };
   }, [open]);
 
-  // 换材料 / 重开会话后可能只剩一条:菜单已经没有可选项,自己收起。
+  // Switching materials or reopening the session may leave a single conversation: the menu has nothing left to switch to, so it closes itself.
   useEffect(() => {
     if (!switchable) setOpen((v) => (v === "conv" ? null : v));
   }, [switchable]);
@@ -119,7 +126,7 @@ export function AgentHeader({
               </span>
             </button>
           ) : (
-            // 只有一条会话时没有可切换的东西:静态标题,别做成点了没反应的按钮。
+            // With a single conversation there is nothing to switch to: a static title, not a button that does nothing when clicked.
             <span className="agent-conv-static" title={title}>
               {title}
             </span>
@@ -153,7 +160,7 @@ export function AgentHeader({
           )}
         </div>
         <span className="spacer" />
-        {/* 对话字号:按钮常驻,−/读数/+ 收在 popover 里(读数点击回到 100%)。 */}
+        {/* Conversation font: the button stays in the header, the -/readout/+ controls live in the popover (clicking the readout returns to 100%). */}
         <div className="agent-font" ref={fontRef}>
           <button
             className={`icon-btn agent-font-btn${fontOpen ? " is-active" : ""}`}

@@ -89,24 +89,24 @@ declare global {
       line: number,
       col: number,
     ) => { which: string; after: string };
-    /** 连续 Enter（`__enterAt` 的多次版），用于观察逐级回退。 */
+    /** Repeated Enter (the multi-press version of `__enterAt`), to observe the step-by-step fallback. */
     __enterTimes: (
       text: string,
       line: number,
       col: number,
       times: number,
     ) => { which: string[]; steps: string[]; cursors: { line: number; col: number }[] };
-    /** 真实文件切换路径（setState，语法树清零），复现/验证首帧渲染。 */
+    /** The real file-switch path (setState, the syntax tree is reset), to reproduce/verify the first-frame render. */
     __loadFileDoc: (text: string, path?: string | null) => void;
-    /** 设置 currentFile(往返记忆等按文件为 key 的命令需要显式设)。 */
+    /** Set currentFile (commands keyed by file, such as the round-trip memory, need it set explicitly). */
     __setCurrentFile: (path: string | null) => void;
-    /** loadDocument 后立即走 Enter 键序——空树窗口期的确定性复现。 */
+    /** Run the Enter key sequence right after loadDocument -- a deterministic reproduction of the empty-tree window. */
     __enterAfterLoad: (
       text: string,
       line: number,
       col: number,
     ) => { which: string; after: string; cursor: { line: number; col: number } };
-    /** 空树窗口期探针：isActiveAt / 树覆盖情况。 */
+    /** Probe for the empty-tree window: isActiveAt / tree coverage. */
     __freshProbe: (text: string, pos: number) => {
       activeNeg: boolean;
       activePos: boolean;
@@ -118,36 +118,36 @@ declare global {
     __renumber: () => void;
     __undo: () => boolean;
     __redo: () => boolean;
-    /** 头部疑问待办往返跳转。 */
+    /** Round-trip jump between the header question and the todo. */
     __jumpHeaderTodos: () => void;
-    /** 插入代码块（语言取设置 codeBlockLang；有选区时包裹所选行）。 */
+    /** Insert a code block (the language comes from the codeBlockLang setting; a selection wraps the selected lines). */
     __insertCodeBlock: () => void;
-    /** 插入公式块（与代码块共用独占整行块的插入几何）。 */
+    /** Insert a math block (shares the whole-line block insertion geometry with the code block). */
     __insertMathBlock: () => void;
-    /** 插入 Callout 块（光标落在开栏 `::: ` 之后，紧接标题槽；有选区时包裹所选行）。 */
+    /** Insert a Callout block (the caret lands right after the `::: ` opening fence, next to the title slot; a selection wraps the selected lines). */
     __insertCallout: () => void;
-    /** 修改代码块语言设置（走真实 patchSettings 路径）。 */
+    /** Change the code block language setting (through the real patchSettings path). */
     __setCodeBlockLang: (lang: string) => void;
-    /** 当前 vim 模式；vim 未安装（compartment 清空）时为 null。 */
+    /** The current vim mode; null when vim is not installed (the compartment is empty). */
     __vimMode: () => string | null;
-    /** 按设置开启/关闭 vim（与真实设置路径一致）。 */
+    /** Turn vim on/off according to the setting (same path as the real setting). */
     __setVim: (on: boolean) => void;
-    /** 把按键序列喂给 vim 引擎（真实 handleKey 路径）。 */
+    /** Feed a key sequence to the vim engine (the real handleKey path). */
     __vimKeys: (keys: string[]) => { mode: string | null; doc: string; panel: string | null };
-    /** 真实 Tab / Shift+Tab：走 CM keymap（会话 → 矩阵 → tabout）。 */
+    /** A real Tab / Shift+Tab: goes through the CM keymap (snippet session -> matrix -> tabout). */
     __tab: (shift?: boolean, times?: number) => { heads: number[]; docs: string[] };
-    /** 真实打字（input.type 事务）；闭括号跳越走的就是它。 */
+    /** Real typing (an input.type transaction); the closing-bracket jump-over goes through exactly this. */
     __typeChar: (ch: string) => { doc: string; head: number };
-    /** 挂载设置弹窗（真实组件 + 页面自身的 store 实例），返回可见文本。 */
+    /** Mount the settings modal (the real component plus the page's own store instance), returns the visible text. */
     __mountSettings: () => Promise<string>;
-    /** 挂载专注芯片（真实组件 + 状态栏外壳），返回卸载函数。 */
+    /** Mount the focus chip (the real component plus the status bar shell), returns the unmount function. */
     __mountFocusChip: () => () => void;
-    /** 挂载笔记栏（真实组件），返回状态栏文字（布局核对用）。 */
+    /** Mount the note pane (the real component), returns the status bar text (for layout checks). */
     __mountEditorPane: () => Promise<string>;
     __unmountSettings: () => void;
-    /** 直接走引擎的 openNotification，返回底部面板内容（没有面板则 null）。 */
+    /** Call the engine's openNotification directly, returns the bottom panel content (null when there is no panel). */
     __vimNotify: (text: string, durationMs?: number) => string | null;
-    /** 性能剖析口：页面自身已加载的模块实例（注入脚本动态 import 拿到的是分裂实例）。 */
+    /** Profiling entry point: the module instances the page itself loaded (an injected script that uses a dynamic import gets a split instance). */
     __perfHooks: () => {
       getCM: typeof getCM;
       Vim: typeof Vim;
@@ -160,39 +160,39 @@ declare global {
       tryAutoExpand: typeof tryAutoExpand;
       snippetStore: { enabled: boolean };
     };
-    /** 假仓库（内存目录树）+ 挂载真实 Sidebar（等索引就绪）。 */
+    /** A fake vault (in-memory directory tree) plus the real Sidebar (waits for the index to be ready). */
     __mountSidebar: (entries: string[]) => Promise<string[]>;
-    /** 真卸载侧栏（⌘\ 收起就是这个形状：组件连同它的 store 订阅一起消失）。 */
+    /** Really unmount the sidebar (this is the shape of collapsing it with Cmd-\: the component disappears together with its store subscription). */
     __unmountSidebar: () => void;
-    /** 假仓库（内存目录树），不挂侧栏——编辑器侧的链路只需要它。 */
+    /** A fake vault (in-memory directory tree) without the sidebar -- the editor-side chain only needs the vault. */
     __fakeVault: (entries: string[]) => Promise<string[]>;
-    /** 挂载真实 <LinkSuggest/>，返回卸载函数（A/B 测量用）。 */
+    /** Mount the real <LinkSuggest/>, returns the unmount function (for A/B measurement). */
     __mountLinkSuggest: () => () => void;
-    /** 面板当前渲染状态（没挂载时为 null）。 */
+    /** The panel's current render state (null when it is not mounted). */
     __linkPanel: () => LinkPanelState | null;
-    /** 安装真实快捷键分发（走 globalKeys → runCommand）。 */
+    /** Install the real keybinding dispatch (globalKeys -> runCommand). */
     __installGlobalKeys: () => void;
-    /** 快捷键覆盖表（不写盘）：验证同一按键在各区域的归属。 */
+    /** The keybinding override table (not written to disk): to verify which region owns a given key. */
     __applyKeyOverrides: (overrides: unknown) => void;
-    /** 当前树行（含内联重命名状态）。 */
+    /** The current tree rows (including the inline rename state). */
     __treeRows: () => TreeRow[];
-    /** 跑真实 newFolder 并等链路收敛。 */
+    /** Run the real newFolder and wait for the chain to settle. */
     __newFolder: (parent?: string, timeoutMs?: number) => Promise<TreeRow[]>;
-    /** 在重命名输入框里敲入 name 并回车。 */
+    /** Type name into the rename input and press Enter. */
     __renameCommit: (name: string) => boolean;
-    /** 内存剪贴板：注入内容（编辑器/表单的 ⌘C/⌘X/⌘V 断言用）。 */
+    /** In-memory clipboard: inject content (for the Cmd-C/Cmd-X/Cmd-V assertions of the editor and forms). */
     __setClipboard: (text: string) => void;
-    /** 读回内存剪贴板（⌘C/⌘X 后断言写入内容）。 */
+    /** Read back the in-memory clipboard (assert the written content after Cmd-C/Cmd-X). */
     __readClipboard: () => string;
-    /** 应用 store（读取/驱动侧栏相关状态）。 */
+    /** The application store (read/drive the sidebar-related state). */
     __store: typeof useAppStore;
-    /** 应用层动作（openNote / openWikiLink / goBackLink…）。 */
+    /** The application-level actions (openNote / openWikiLink / goBackLink...). */
     __actions: typeof actions;
-    /** IPC 层（假仓库替换的对象）。 */
+    /** The IPC layer (the object the fake vault replaces). */
     __api: typeof api;
-    /** 挂载真实学习模式组件（AgentPanel + ContentPane），返回卸载函数。 */
+    /** Mount the real study mode components (AgentPanel + ContentPane), returns the unmount function. */
     __mountStudyLayout: () => () => void;
-    /** 挂载学习助手头部（纯展示组件，假会话数据），验证下拉/辅助条几何。 */
+    /** Mount the study assistant header (a pure presentational component with fake session data), to verify the dropdown/auxiliary bar geometry. */
     __mountAgentHeader: (spec: {
       convs: {
         key: string;
@@ -202,52 +202,52 @@ declare global {
       }[];
       activeKey?: string;
       width?: number;
-      /** 对话字号缩放(--agent-fs,默认 1)。 */
+      /** Conversation font scale (--agent-fs, 1 by default). */
       fontScale?: number;
     }) => () => void;
-    /** 挂载真实项目管理视图（项目列表 / 卡片带 / 日记），返回卸载函数。
-     *  contents 预置假仓库里的文件内容(vault 相对路径 → 文本)。 */
+    /** Mount the real project management view (project list / card lane / daily notes), returns the unmount function.
+     *  contents preloads the file contents of the fake vault (vault-relative path -> text). */
     __mountProjects: (
       entries: string[],
       contents?: Record<string, string>,
     ) => Promise<() => void>;
-    /** 执行一条命令（快捷键链路的直接入口，绕过 keydown 合成）。 */
+    /** Run one command (the direct entry point of the keybinding chain, bypassing the synthesized keydown). */
     __runCommand: (id: string) => void;
-    /** 读聚焦编辑器（项目卡片/日记）的文档文本。 */
+    /** Read the document text of the focused editor (project card / daily note). */
     __paneDoc: () => string | null;
-    /** 聚焦编辑器里某一行(1 基)的文本。 */
+    /** The text of a line (1-based) in the focused editor. */
     __paneLine: (line: number) => string | null;
-    /** 把聚焦编辑器设到某行某列(1 基行,0 基列)。 */
+    /** Put the focused editor at a line and column (1-based line, 0-based column). */
     __paneCursor: (line: number, col?: number) => void;
-    /** 当前聚焦编辑器的文件路径。 */
+    /** The file path of the currently focused editor. */
     __panePath: () => string | null;
-    /** 聚焦编辑器实例(项目视图里有两个:项目卡片 / 日记)。 */
+    /** The focused editor instance (the project view has two: the project card / the daily note). */
     __editorApi: typeof editorApi;
-    /** 替换聚焦编辑器的某一行(1 基),用来模拟「在日记里改待办」。 */
+    /** Replace a line (1-based) of the focused editor, to simulate "editing a todo in the daily note". */
     __paneReplaceLine: (line: number, text: string) => void;
-    /** 学习模式 PDF 验证：塞入一份 PDF 字节并打开阅读器（需先挂载学习布局）。 */
+    /** Study mode PDF verification: inject a PDF's bytes and open the reader (mount the study layout first). */
     __openStudyPdf: (
       base64: string,
       relPath?: string,
       annotationsJson?: string,
     ) => Promise<string>;
-    /** 读假仓库里的文件内容(批注落盘断言用);不存在返回 null。 */
+    /** Read the content of a file in the fake vault (for the annotation persistence assertions); null when it does not exist. */
     __readFakeFile: (path: string) => string | null;
-    /** 学习模式 Agent 回复的迷你 markdown 渲染器（返回 HTML）。 */
+    /** The mini markdown renderer for study mode agent replies (returns HTML). */
     __renderAgentMd: (text: string) => string;
-    /** 当前文档语法树节点名（调试用）。 */
+    /** The syntax tree node names of the current document (for debugging). */
     __treeNames: () => string[];
-    /** 指定行（1 基）的语法树节点名@range（调试渲染链路用）。 */
+    /** The syntax tree node names@range of a given line (1-based) (for debugging the render chain). */
     __treeAt: (line: number) => string[];
-    /** 当前视图全部装饰（widget 类名/line class + 范围），按来源分组（调试渲染链路用）。 */
+    /** Every decoration of the current view (widget class name/line class + range), grouped by source (for debugging the render chain). */
     __decos: () => Record<string, string[]>;
-    /** 注入假足迹索引(绕过基线/轮转,直接建模块单例并广播)。
-     *  带 day 时注入的是该历史日的固化档案。 */
+    /** Inject a fake footprint index (bypassing the baseline/rotation by building the module singleton directly and broadcasting).
+     *  With a day, the injected index is that historical day's frozen archive. */
     __setFootprints: (
       entries: { path: string; blocks: FootprintBlock[] }[],
       day?: string,
     ) => void;
-    /** 足迹调试口:app 同源实例的内部状态。 */
+    /** Footprint debugging entry point: the internal state of the same-origin instance in the app. */
     __fpDebug: () => {
       vault: string | null;
       entries: { path: string; blocks: FootprintBlock[] }[];
@@ -271,11 +271,11 @@ interface TreeRow {
 }
 
 interface LinkPanelState {
-  /** 面板外框的视口坐标（断言贴光标行 / 翻到上方 / 夹进视口）。 */
+  /** The viewport coordinates of the panel's outer box (to assert it sticks to the caret line / flips above / is clamped into the viewport). */
   rect: { left: number; top: number; right: number; bottom: number };
   query: string | null;
   rows: { name: string; path: string; active: boolean }[];
-  /** 光标行（视口坐标）——与面板位置对照用。 */
+  /** The caret line (viewport coordinates) -- used to compare against the panel position. */
   caretRect: { left: number; top: number; bottom: number } | null;
 }
 
@@ -284,7 +284,7 @@ const view = createEditor(document.getElementById("editor-host")!, DOC, {
   onCursorMoved: () => {},
 });
 reconfigureVim(view, true, []);
-editorApi.view = view; // 与 App 保持一致：钩子和守卫按单编辑器实例工作
+editorApi.view = view; // Same as in App: the hooks and the guards work on a single editor instance
 view.focus();
 
 window.__view = view;
@@ -309,12 +309,12 @@ window.__setTypewriter = (on) => {
   useAppStore.getState().patchSettings({ typewriter: on });
   reconfigureTypewriter(view, on);
 };
-// 位置设置走同一条 reconfigure:插件按新比例重铺上下留白并立刻回中。
+// The position setting goes through the same reconfigure: the plugin re-lays the top and bottom padding for the new ratio and re-centers immediately.
 window.__setTypewriterPosition = (position) => {
   useAppStore.getState().patchSettings({ typewriterPosition: position });
   reconfigureTypewriter(view, useAppStore.getState().settings.typewriter);
 };
-// Enter 键真实键序（bnote 列表续行 → lang-markdown 续行 → defaultKeymap），用于调试续行行为。
+// The real Enter key order (bnote list continuation -> lang-markdown continuation -> defaultKeymap), used to debug the continuation behavior.
 const runEnterChain = () =>
   enterContinueListItem(view)
     ? "bnote"
@@ -328,8 +328,8 @@ window.__enterAt = (text, line, col) => {
   const which = runEnterChain();
   return { which, after: view.state.doc.toString() };
 };
-// 连续 Enter：逐级回退行为（同级 → 上一级 → … → 顶级取消标记）靠重复按键
-// 才能观察，单次 __enterAt 看不到。steps 是每次按键后的完整文档。
+// Repeated Enter: the step-by-step fallback (same level -> parent -> ... -> the top level drops the marker) is only
+// observable with repeated presses, a single __enterAt does not show it. steps holds the full document after each press.
 window.__enterTimes = (text, line, col, times) => {
   window.__loadDoc(text);
   const l = view.state.doc.line(line);
@@ -346,10 +346,10 @@ window.__enterTimes = (text, line, col, times) => {
   return { which, steps, cursors };
 };
 window.__loadFileDoc = (text, path = null) => {
-  // path 决定图片相对引用的基准目录(见 editor/docPath.ts)。
+  // path decides the base directory of relative image references (see editor/docPath.ts).
   loadDocument(view, text, path);
 };
-/** 设置 currentFile(往返记忆等按文件为 key 的命令在 harness 里需要显式设)。 */
+/** Set currentFile (commands keyed by file, such as the round-trip memory, need it set explicitly in the harness). */
 window.__setCurrentFile = (path: string | null) => {
   useAppStore.setState({ currentFile: path });
 };
@@ -390,8 +390,8 @@ window.__setVim = (on) => {
   useAppStore.getState().patchSettings({ vim: on });
   reconfigureVim(view, on, []);
 };
-/** 真实 Tab / Shift+Tab 键：走 CM keymap（片段会话 → 矩阵 → tabout 三层），
-    返回每次按键后的光标位置与文档，用来在浏览器里核对"跳出括号"的落点。 */
+/** A real Tab / Shift+Tab key: goes through the CM keymap (snippet session -> matrix -> tabout, three layers),
+    returns the caret position and the document after each press, to check in the browser where the "jump out of the bracket" lands. */
 window.__tab = (shift = false, times = 1) => {
   const heads: number[] = [];
   const docs: string[] = [];
@@ -404,8 +404,8 @@ window.__tab = (shift = false, times = 1) => {
   }
   return { heads, docs };
 };
-/** 真实打字（input.type 事务，vim 与非 vim 的输入入口都汇到这里）：
-    闭括号跳越的监听器走的就是它。返回文档与光标。 */
+/** Real typing (an input.type transaction, where the vim and non-vim input entries both converge):
+    the closing-bracket jump-over listener goes through exactly this. Returns the document and the caret. */
 window.__typeChar = (ch: string) => {
   const r = view.state.selection.main;
   view.dispatch({
@@ -416,8 +416,8 @@ window.__typeChar = (ch: string) => {
   });
   return { doc: view.state.doc.toString(), head: view.state.selection.main.head };
 };
-/** 把按键序列喂给 vim 引擎，走的就是真实 keydown 用的那条路
-    （wrapper 的 handleKey → Vim.multiSelectHandleKey），返回文档/模式/底部面板内容。 */
+/** Feed a key sequence to the vim engine, exactly the path a real keydown takes
+    (the wrapper's handleKey -> Vim.multiSelectHandleKey), returns the document/mode/bottom panel content. */
 window.__vimKeys = (keys: string[]) => {
   const cm = getCM(view);
   if (!cm) throw new Error("vim engine not attached");
@@ -429,7 +429,7 @@ window.__vimKeys = (keys: string[]) => {
   };
 };
 
-/** 直接走引擎的 openNotification（showConfirm 的唯一出口），复刻它的元素形状。 */
+/** Call the engine's openNotification directly (the only exit of showConfirm), reproducing its element shape. */
 window.__vimNotify = (text: string, durationMs = 1500) => {
   const cm = getCM(view);
   if (!cm) throw new Error("vim engine not attached");
@@ -440,8 +440,8 @@ window.__vimNotify = (text: string, durationMs = 1500) => {
   return document.querySelector(".cm-vim-panel")?.textContent ?? null;
 };
 
-/** 性能剖析口：返回页面自身已加载的模块实例。注入脚本走动态 import 会拿到
- *  vite 分裂出的另一份实例（getCM 的 WeakMap 是空的），必须从这里取。 */
+/** Profiling entry point: returns the module instances the page itself loaded. An injected script that uses a
+ *  dynamic import gets a different instance split out by vite (the getCM WeakMap is empty), so it must be taken from here. */
 window.__perfHooks = () => ({
   getCM,
   Vim,
@@ -454,21 +454,21 @@ window.__perfHooks = () => ({
   tryAutoExpand,
   snippetStore,
 });
-/** 直接读/改应用状态（侧栏流程调试用）。 */
+/** Read/modify the application state directly (for debugging the sidebar flow). */
 window.__store = useAppStore;
-/** 应用层动作（openNote / openWikiLink / goBackLink…）——按真实链路驱动。 */
+/** The application-level actions (openNote / openWikiLink / goBackLink...), driven along the real chain. */
 window.__actions = actions;
-/** IPC 层（假仓库拦的就是它）——测量/计次用。 */
+/** The IPC layer (the fake vault intercepts exactly this) -- used for measurement/counting. */
 window.__api = api;
 
-// ---- 侧栏文件树：浏览器里没有 Tauri（也没有 vault），用内存假仓库顶替 IPC，
-// 挂载真实的 <Sidebar/> 跑真实 actions，验证「新建文件夹 → 自动重命名」链路。
+// ---- Sidebar file tree: there is no Tauri (and no vault) in the browser, so an in-memory fake vault stands in for
+// the IPC; the real <Sidebar/> is mounted and the real actions run, to verify the "new folder -> auto rename" chain.
 const FAKE_ROOT = "/fake-vault";
-/** 假 createDir 最终落地的 relPath——重命名要盯住的正是它（不是请求里的名字）。 */
+/** The relPath the fake createDir finally lands on -- that is what the rename has to be watched on (not the name in the request). */
 let lastCreatedDir: string | null = null;
-/** 学习模式 PDF 验证用的字节（真后端会按路径读盘，浏览器里只能塞进来）。 */
+/** The bytes used for the study mode PDF verification (the real backend reads them from disk by path, in the browser they can only be injected). */
 let pdfBase64: string | null = null;
-/** 当前假仓库的文件内容表（批注落盘断言用）。 */
+/** The file content table of the current fake vault (for the annotation persistence assertions). */
 let fakeContents: Map<string, string> | null = null;
 
 function installFakeVault(entries: string[]) {
@@ -529,15 +529,15 @@ function installFakeVault(entries: string[]) {
         for (const p of set) if (p === rel || p.startsWith(`${rel}/`)) set.delete(p);
       }
     },
-    // 链接跳转要真的换文件：readFile/writeFile 走同一个内存内容表；文件不存在
-    // 就抛错——真后端也是这样，别用默认内容把"已删除"糊过去。
+    // A link jump has to really change the file: readFile/writeFile go through the same in-memory content table; a
+    // missing file throws -- the real backend does the same, do not paper over a "deleted" file with default content.
     readFile: async (path: string) => {
       const rel = path.startsWith(FAKE_ROOT) ? path.slice(FAKE_ROOT.length + 1) : path;
       if (!files.has(rel)) throw new Error(`文件不存在: ${rel}`);
       return contents.get(rel) ?? `# ${rel}\n`;
     },
-    // PDF 阅读器走 base64 读盘(JSON IPC 塞不下原始字节);浏览器里用
-    // __openStudyPdf 预先塞进来。
+    // The PDF reader reads from disk as base64 (JSON IPC cannot carry the raw bytes); in the browser they are
+    // pre-injected with __openStudyPdf.
     readFileBase64: async (path: string) => {
       if (pdfBase64) return pdfBase64;
       throw new Error(`没有 PDF 字节: ${path}`);
@@ -545,7 +545,7 @@ function installFakeVault(entries: string[]) {
     writeFile: async (path: string, text: string) => {
       const rel = path.startsWith(FAKE_ROOT) ? path.slice(FAKE_ROOT.length + 1) : path;
       contents.set(rel, text);
-      files.add(rel); // 写过的文件要能被 readFile 读回(批注落盘验证)
+      files.add(rel); // a written file must be readable back by readFile (annotation persistence verification)
     },
     ensureDir: async (relPath: string) => {
       const parts = relPath.split("/").filter(Boolean);
@@ -559,8 +559,8 @@ function installFakeVault(entries: string[]) {
 }
 
 /**
- * 假仓库 + 挂载真实 Sidebar；等索引就绪后返回初始目录列表。
- * setVault 会清空 tree，不 refresh 的话树里一行都没有（要 refreshTree 才有根层级）。
+ * A fake vault plus the real Sidebar; returns the initial directory list once the index is ready.
+ * setVault clears the tree, so without a refresh the tree holds not a single row (refreshTree is what produces the root level).
  */
 let sidebarRoot: ReturnType<typeof createRoot> | null = null;
 let settingsRoot: ReturnType<typeof createRoot> | null = null;
@@ -569,7 +569,7 @@ window.__mountSidebar = async (entries: string[]) => {
   const dirs = installFakeVault(entries);
   const host = document.createElement("div");
   host.id = "sidebar-host";
-  // display:flex 是照真实 .app 抄的：侧栏被拉伸成固定高度，.sidebar-tree 才会滚。
+  // display:flex is copied from the real .app: the sidebar is stretched to a fixed height, only then does .sidebar-tree scroll.
   host.style.cssText = "position:fixed;left:0;top:0;width:280px;height:100vh;z-index:99;display:flex";
   document.body.appendChild(host);
   sidebarRoot = createRoot(host);
@@ -578,10 +578,10 @@ window.__mountSidebar = async (entries: string[]) => {
   return dirs;
 };
 
-/** 真卸载：只摘 DOM 不卸载的话，旧实例仍订阅 store（⌘\ 收起再展开就测不出来）。 */
+/** A real unmount: only removing the DOM would leave the old instance subscribed to the store (collapsing with Cmd-\ and reopening it would not show that). */
 /**
- * 挂载真实 <EditorPane/>:状态栏(番茄钟芯片 + vim 模式 + 光标位置)的布局
- * 就住在这儿,返回状态栏文字便于断言"路径没了、芯片在左、vim 在右"。
+ * Mount the real <EditorPane/>: the layout of the status bar (pomodoro chip + vim mode + caret position)
+ * lives here, the returned status bar text makes it easy to assert "the path is gone, the chip is on the left, vim on the right".
  */
 window.__mountEditorPane = async () => {
   const host = document.createElement("div");
@@ -596,10 +596,10 @@ window.__mountEditorPane = async () => {
 };
 
 /**
- * 挂载专注芯片(真实组件 + 状态栏外壳)。
+ * Mount the focus chip (the real component plus the status bar shell).
  *
- * 原生侧(铺屏 / 层级 / 事件 tap)在浏览器里没有——这里给 focusApi 装一份假
- * 实现,芯片的渲染、面板、倒计时都能验;真窗口行为只能等部署后实测。
+ * The native side (full screen / window level / event tap) does not exist in the browser -- a fake implementation
+ * is installed on focusApi here, so the chip's rendering, panel and countdown can all be verified; the real window behavior can only be measured after a deployment.
  */
 let focusChipRoot: ReturnType<typeof createRoot> | null = null;
 window.__mountFocusChip = () => {
@@ -638,8 +638,8 @@ window.__mountFocusChip = () => {
   };
 };
 
-/** 挂载设置弹窗（真实组件 + 页面自身的 store 实例），用来核对设置项接线。
-    返回渲染后容器里的可见文本，便于断言某一节是否出现。 */
+/** Mount the settings modal (the real component plus the page's own store instance), to check the wiring of the settings.
+    Returns the visible text of the rendered container, so it is easy to assert whether a section shows up. */
 window.__mountSettings = async () => {
   const host = document.createElement("div");
   host.id = "settings-host";
@@ -663,14 +663,14 @@ window.__unmountSidebar = () => {
   document.querySelectorAll("#sidebar-host").forEach((el) => el.remove());
 };
 
-/** 假仓库（不挂侧栏）+ 索引就绪：链接补全面板吃的是 flatFiles/recentFiles。 */
+/** A fake vault (without the sidebar) plus a ready index: the link completion panel reads flatFiles/recentFiles. */
 window.__fakeVault = async (entries: string[]) => {
   const dirs = installFakeVault(entries);
   await actions.refreshTree();
   return dirs;
 };
 
-/** 挂载真实 <LinkSuggest/>：面板挂不挂载由 store 的 linkSuggest 锚点决定。返回卸载函数。 */
+/** Mount the real <LinkSuggest/>: whether the panel is mounted is decided by the store's linkSuggest anchor. Returns the unmount function. */
 window.__mountLinkSuggest = () => {
   const host = document.createElement("div");
   host.id = "link-suggest-host";
@@ -700,15 +700,15 @@ window.__linkPanel = () => {
   };
 };
 
-/** 安装真实快捷键分发（globalKeys → runCommand），用于验证 Cmd-K 全链路。 */
+/** Install the real keybinding dispatch (globalKeys -> runCommand), to verify the whole Cmd-K chain. */
 window.__installGlobalKeys = () => installGlobalKeybindings();
 
-/** 快捷键覆盖（不写盘）：验证区域分发（同一按键在不同区域绑不同命令）。 */
+/** Keybinding overrides (not written to disk): to verify the regional dispatch (the same key binds different commands in different regions). */
 window.__applyKeyOverrides = (overrides) => {
   applyOverrides(normalizeOverrides(overrides));
 };
 
-/** 当前渲染出来的树行（含内联重命名输入框状态）。 */
+/** The currently rendered tree rows (including the inline rename input state). */
 window.__treeRows = () =>
   [...document.querySelectorAll(".sidebar-tree .tree-row")].map((row) => {
     const input = row.querySelector<HTMLInputElement>(".rename-input");
@@ -724,9 +724,9 @@ window.__treeRows = () =>
   });
 
 /**
- * 跑真实 newFolder，等链路收敛后返回树行：具体等的是「刚建出来的那个 relPath 的行挂上
- * 输入框且拿到焦点」——其它重命名输入框（比如上一次遗留的）不算数。超时也返回当前行，
- * 由调用方断言，避免把等待变成断言。
+ * Run the real newFolder and return the tree rows once the chain settled: what is waited for is exactly "the row of the just-created
+ * relPath has an input box and holds the focus" -- other rename inputs (a leftover from a previous run) do not count. On a timeout
+ * the current rows are returned as well and the caller asserts, so the wait does not turn into an assertion.
  */
 window.__newFolder = async (parent?: string, timeoutMs = 1000) => {
   lastCreatedDir = null;
@@ -754,7 +754,7 @@ window.__renameCommit = (name: string) => {
   return true;
 };
 
-// 内存剪贴板（无 Tauri IPC，navigator.clipboard 在受控环境不可靠）+ 全局 ⌘ 和弦兜底
+// In-memory clipboard (no Tauri IPC, navigator.clipboard is unreliable in a controlled environment) plus a global Cmd chord fallback
 let clipboardStub = "";
 setClipboardOverrides({
   read: async () => clipboardStub,
@@ -769,7 +769,7 @@ window.__setClipboard = (text) => {
 window.__readClipboard = () => clipboardStub;
 installEditingChords();
 
-// 学习模式调试钩子：挂载真实三栏布局（浏览器里 invoke 不可用，组件需自愈）。
+// Study mode debug hook: mounts the real three-column layout (invoke is unavailable in the browser, the components have to heal themselves).
 window.__mountStudyLayout = () => {
   const host = document.createElement("div");
   host.id = "study-layout-host";
@@ -788,20 +788,20 @@ window.__mountStudyLayout = () => {
 };
 
 /**
- * 学习助手头部(纯展示组件,不连后端):验证会话下拉 / 辅助会话条的几何与
- * 交互。真实面板的 convs 来自后端会话,harness 造不出来,所以单独挂这一层。
- * 交互结果写在 host 的 dataset.lastAction 上(select:<key> / back / …)。
+ * The study assistant header (a pure presentational component, it does not talk to the backend): to verify the geometry and the
+ * interaction of the session dropdown / the auxiliary session bar. The convs of the real panel come from backend sessions, which
+ * the harness cannot produce, so this layer is mounted on its own. The interaction result is written to the host's dataset.lastAction (select:<key> / back / ...).
  */
 window.__mountAgentHeader = (spec) => {
-  // 只保留一份:重复挂载时旧的 host 会抢走同一个 id(量到的是上一份的几何)。
+  // Keep only one: on a repeated mount the old host would grab the same id (what gets measured would be the geometry of the previous one).
   for (const stale of document.querySelectorAll("#agent-header-host")) stale.remove();
   const host = document.createElement("div");
   host.id = "agent-header-host";
   host.style.cssText = `position:fixed;left:0;top:0;width:${spec.width ?? 360}px;height:100vh;z-index:9999;display:flex;background:var(--bg1)`;
   document.body.appendChild(host);
   const panel = document.createElement("aside");
-  // 头部几何依赖 .study-layout 上的变量(--study-head-h / --study-lead):
-  // 挂进这个类,量的才是真应用里的那套像素。
+  // The header geometry depends on the variables on .study-layout (--study-head-h / --study-lead):
+  // only when mounted under that class do the measured pixels match the ones in the real app.
   host.className = "study-layout";
   panel.className = "agent-panel";
   panel.style.flex = "1";
@@ -817,7 +817,7 @@ window.__mountAgentHeader = (spec) => {
     host.dataset.lastAction = action;
   };
   const fontScale = spec.fontScale ?? 1;
-  // 字号面板量的是真像素:--agent-fs 与真面板一样写在面板根元素上。
+  // The font size panel measures real pixels: --agent-fs is written on the panel root element, just like in the real panel.
   panel.style.setProperty("--agent-fs", String(fontScale));
   root.render(
     createElement(AgentHeader, {
@@ -843,15 +843,15 @@ window.__mountAgentHeader = (spec) => {
 };
 
 /**
- * 项目管理视图:假仓库 + 真实 ProjectsLayout(项目导航 / 看板 / 日记)。
- * entries 是 vault 相对路径(文件或目录)。返回卸载函数。
+ * The project management view: a fake vault plus the real ProjectsLayout (project navigation / kanban / daily notes).
+ * entries are vault-relative paths (files or directories). Returns the unmount function.
  */
 window.__mountProjects = async (entries: string[], contents: Record<string, string> = {}) => {
   installFakeVault(entries);
   for (const [rel, text] of Object.entries(contents)) {
     await api.writeFile(`${FAKE_ROOT}/${rel}`, text);
   }
-  // flatFiles 是日记下拉的数据源(listFiles 的索引由 refreshTree 写进 store)。
+  // flatFiles is the data source of the daily note dropdown (the index of listFiles is written into the store by refreshTree).
   await actions.refreshTree();
   const host = document.createElement("div");
   host.id = "projects-layout-host";
@@ -912,14 +912,14 @@ window.__paneReplaceLine = (line: number, text: string) => {
 window.__renderAgentMd = renderAgentMarkdown;
 
 /**
- * 学习模式 PDF:假仓库里放一份 PDF 字节并打开阅读器。
- * 需先 __mountStudyLayout();批注落盘走同一套假 readFile/writeFile。
+ * Study mode PDF: put a PDF's bytes into the fake vault and open the reader.
+ * __mountStudyLayout() must be called first; the annotation persistence goes through the same fake readFile/writeFile.
  */
 window.__openStudyPdf = async (base64: string, relPath = "pdfs/harness.pdf", annotationsJson?: string) => {
   pdfBase64 = base64;
   installFakeVault(["pdfs/", relPath]);
-  // 先落盘批注文件,再打开阅读器:组件挂载时读到的是恢复后的数据。
-  // 一份 PDF 一个文件,路径与 pdfAnnotationRelPath 一致。
+  // Write the annotation file to disk first, then open the reader: what the component reads on mount is the restored data.
+  // One file per PDF, the path matches pdfAnnotationRelPath.
   if (annotationsJson) {
     await api.writeFile(
       `${FAKE_ROOT}/.bnote/pdf-annotations/${relPath}.json`,
@@ -931,7 +931,7 @@ window.__openStudyPdf = async (base64: string, relPath = "pdfs/harness.pdf", ann
   return path;
 };
 
-/** 读假仓库里的文件内容(批注落盘断言用);不存在返回 null。 */
+/** Read the content of a file in the fake vault (for the annotation persistence assertions); null when it does not exist. */
 window.__readFakeFile = (path: string) => {
   const rel = path.startsWith(FAKE_ROOT) ? path.slice(FAKE_ROOT.length + 1) : path;
   return fakeContents?.get(rel) ?? null;
@@ -986,8 +986,8 @@ window.__decos = () => {
   return grouped;
 };
 
-/** 注入假足迹索引(配合 __loadFileDoc 打开今日日记路径,验证足迹区渲染/折叠/跳转);
- *  带 day 时注入历史日档案(配合打开那天的日记验证历史聚合)。 */
+/** Inject a fake footprint index (use it with __loadFileDoc to open today's daily note path, to verify the footprint area rendering/folding/jumping);
+ *  with a day, a historical day's archive is injected (open that day's daily note to verify the historical aggregation). */
 window.__setFootprints = (entries, day) => {
   const vault = useAppStore.getState().vaultPath;
   if (!vault) throw new Error("no vault: 先 __fakeVault([...])");
@@ -996,7 +996,7 @@ window.__setFootprints = (entries, day) => {
   else setFootprintIndexForTest(vault, index);
 };
 
-/** 足迹调试口:app 同源实例的内部状态(docPath/索引/判定输入)。 */
+/** Footprint debugging entry point: the internal state of the same-origin instance in the app (docPath/index/decision inputs). */
 window.__fpDebug = () => {
   const vault = useAppStore.getState().vaultPath;
   return {

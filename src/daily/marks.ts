@@ -13,43 +13,52 @@ import { onLinksChanged, peekLinks, type DailyLink } from "./links";
 import { dailyPathFor, isDailyPath, isTodo, parseListLine, todoText } from "./model";
 
 /**
- * 与日记链接的待办行的可视标识。
+ * Visual marks on todo lines that are linked to a daily note.
  *
- * 语义分两侧,各自都是「当下最该知道的那一件事」:
- *  - 源笔记(项目里的待办):标出**指向今天这份日记**的链接——就是 ⌘⇧J 眼中
- *    「已同步」的那批。昨天发出去的条目今天不再算数,与发送命令的按日归属
- *    判定一致;否则同一行会同时挂上多天的映射标记。auto 链接(存在即聚合)
- *    不标源侧:自动同步下每个待办都有链接,标记铺满全库就不再是信息。
- *  - 日记文件(任意一天):标出**指向这份日记**的链接,并带上源笔记名——它是
- *    「这条是同步来的,不是手写的」的唯一线索。
+ * The semantics differ per side, and each side shows the one thing that matters
+ * right now:
+ *  - Source note (a todo in a project): mark the links that point at **today's**
+ *    daily note - the ones ⌘⇧J sees as "already synced". An entry sent yesterday
+ *    does not count today, which matches the per-day ownership rule of the send
+ *    command; otherwise the same line would carry the marks of several days. The
+ *    `auto` links (aggregated as soon as they exist) are not marked on the source
+ *    side: under auto sync every todo has a link, and marks all over the vault are
+ *    no longer information.
+ *  - Daily note file (any day): mark the links that point at **this** daily note
+ *    and carry the name of the source note - it is the only hint that the entry
+ *    came from a sync instead of being written by hand.
  *
- * 渲染只用**行装饰 + 绝对定位的伪元素**(CSS 在 global.css):不插入 widget、
- * 不参与行内布局,所以列表缩进/折行几何与无标记时逐像素一致。
+ * Rendering uses **line decorations plus absolutely positioned pseudo elements**
+ * (the CSS lives in global.css): no widget is inserted and the inline layout is
+ * untouched, so the indentation and wrapping geometry of a list stays
+ * pixel-identical to the unmarked case.
  *
- * 链接库在编辑器之外(发送/镜像/解链都在引擎里改),所以库的写入者通过
- * links.ts 的订阅通知到这里,这里再派发一个带标记的空事务唤醒 CM 重算
- * (`onLinksChanged` 可能在别的 dispatch 之内触发,故延到微任务里)。
+ * The link store lives outside the editor (sending, mirroring and unlinking all
+ * happen in the engine), so the writers of the store notify this module through
+ * the subscription in links.ts, and this module dispatches a tagged empty
+ * transaction to wake CM up for a recompute (`onLinksChanged` may fire inside
+ * another dispatch, hence the microtask).
  */
 
-/** 空事务上的标记:链接库变了,装饰要重算。 */
+/** Tag on the empty transaction: the link store changed, the decorations have to be recomputed. */
 export const dailyLinksChanged = StateEffect.define<null>();
 
-/** 构建只需要的视图面(与 livePreview.DecorationBuildView 同构,便于无 DOM 测试)。 */
+/** The slice of the view the marks need (isomorphic to livePreview.DecorationBuildView, so tests need no DOM). */
 export interface DailyMarkView {
   state: EditorState;
   visibleRanges: readonly { from: number; to: number }[];
 }
 
 export interface DailyMarkContext {
-  /** 当前打开的文件路径。 */
+  /** Path of the currently open file. */
   path: string;
-  /** 该文件参与的全部链接(store.forFile(path))。 */
+  /** All links this file takes part in (store.forFile(path)). */
   links: DailyLink[];
-  /** 今天这份日记的路径。 */
+  /** Path of today's daily note. */
   todayDailyPath: string;
 }
 
-/** 源笔记名(去掉目录与 .md),用在日记侧标签与提示里。 */
+/** Name of the source note (directory and .md stripped), used in the label and the tooltip on the daily side. */
 export function sourceLabel(srcPath: string): string {
   return srcPath.slice(srcPath.lastIndexOf("/") + 1).replace(/\.md$/, "");
 }
@@ -61,8 +70,9 @@ function markFor(link: DailyLink, dailySide: boolean): Decoration {
         title: `与《${sourceLabel(link.srcPath)}》的待办同步中`,
       }
     : {
-        // 源侧「已发送」:项目卡片把这一行画成阴影(编辑权在日记那份)。
-        // 普通笔记里没有对应样式,属性本身无害。
+        // "Sent" on the source side: the project card draws this line as a shadow
+        // (the editing right belongs to the copy in the daily note). A normal note
+        // has no style for it, the attribute itself is harmless.
         "data-daily-sent": "1",
         title:
           link.kind === "recorded"
@@ -72,7 +82,7 @@ function markFor(link: DailyLink, dailySide: boolean): Decoration {
   return Decoration.line({ class: "md-daily-link", attributes: attrs });
 }
 
-/** 视口内与日记链接的待办行 → 行装饰。纯函数:只读 state 与传入的链接表。 */
+/** Todo lines inside the viewport that are linked to a daily note -> line decorations. Pure function: it only reads the state and the passed link table. */
 export function buildDailyMarks(view: DailyMarkView, ctx: DailyMarkContext): DecorationSet {
   const dailySide = isDailyPath(ctx.path);
   const byText = new Map<string, DailyLink>();
@@ -100,7 +110,7 @@ export function buildDailyMarks(view: DailyMarkView, ctx: DailyMarkContext): Dec
   return Decoration.set(out, true);
 }
 
-/** 链接库变更 → 派发唤醒事务(等本轮更新结束,避免嵌套 dispatch)。 */
+/** A change of the link store -> dispatch a waking transaction (after the current update finished, to avoid a nested dispatch). */
 function wake(view: EditorView): void {
   queueMicrotask(() => {
     if (!view.dom.isConnected) return;
@@ -128,7 +138,7 @@ const dailyMarksPlugin = ViewPlugin.fromClass(
       const vaultRoot = useAppStore.getState().vaultPath;
       if (!path || !vaultRoot) return Decoration.none;
       const store = peekLinks(vaultRoot);
-      if (!store) return Decoration.none; // 链接库未加载:先不标,加载后订阅会唤醒
+      if (!store) return Decoration.none; // the link store is not loaded: mark nothing yet, the subscription wakes us once it is
       return buildDailyMarks(this.view, {
         path,
         links: store.forFile(path),

@@ -1,28 +1,31 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 export interface SplitDragOptions {
-  /** 分栏线上的 pointerdown(取位移起点与手柄元素)。 */
+  /** pointerdown on the divider (the drag origin and the handle element). */
   event: ReactPointerEvent<HTMLElement>;
-  /** 布局容器(宽度基准 + CSS 变量落点)。 */
+  /** Layout container (width reference and the CSS variable target). */
   host: HTMLElement | null;
-  /** 本次拖动允许改写的 CSS 变量。 */
+  /** CSS variables this drag is allowed to write. */
   variables: string[];
-  /** 抬起时的比较基准(存进设置的偏好值)。 */
+  /** Comparison base at pointerup (the preference value stored in settings). */
   stored: Record<string, number>;
-  /** 把「指针相对按下点的位移」换算成这次要写的变量值。 */
+  /** Turns "pointer offset from the press point" into the variable values to write. */
   compute: (dx: number) => Record<string, number>;
-  /** 指针抬起且值有变化时提交偏好。 */
+  /** Commit the preference once the pointer is up and a value actually changed. */
   commit: (values: Record<string, number>) => void;
-  /** 每帧位移后调用(子 webview 之类需要跟着重报矩形的消费方)。 */
+  /** Called after each pointer move (consumers such as a child webview that must re-report its bounds). */
   onMove?: () => void;
 }
 
 /**
- * 分栏线拖动的公共骨架:学习模式三栏与项目视图三栏共用。
+ * Shared skeleton for divider drags: used by the three study mode columns and
+ * the three project view columns.
  *
- * 指针移动时只写 CSS 变量、不 setState——面板里有 CodeMirror,60Hz 重渲染
- * 代价太大;指针抬起时一次性提交。拖动按**位移**算:起点是线当前的位置,
- * 握线偏了 4px 也不会跳一下。
+ * While the pointer moves we only write CSS variables, never setState: the
+ * panes hold CodeMirror instances and a 60 Hz re-render is far too expensive;
+ * the preference is committed once, on pointerup. The drag is computed from the
+ * **offset**: the origin is where the divider currently sits, so grabbing it
+ * 4 px off does not make it jump.
  */
 export function startSplitDrag({
   event,
@@ -40,11 +43,11 @@ export function startSplitDrag({
 
   const handle = event.currentTarget;
   handle.classList.add("dragging");
-  // 指针事件挂在 window(不是 8px 的手柄)上,快速移动/移出窗口也不丢。
+  // The pointer listeners live on window (not the 8 px handle), so a fast move or leaving the window does not lose the drag.
   try {
     handle.setPointerCapture(event.pointerId);
   } catch {
-    // 没有活动指针(合成事件 / 无悬停输入)
+    // No active pointer (synthetic event / pointerless input)
   }
 
   const startX = event.clientX;
@@ -66,7 +69,7 @@ export function startSplitDrag({
     handle.classList.remove("dragging");
     const done = latest;
     if (done && variables.some((name) => done[name] !== stored[name])) commit(done);
-    // 显示宽度(窗口窄时被 CSS 夹过)不能当成新偏好写回变量:还原成存值。
+    // The displayed width (clamped by CSS in a narrow window) is not a new preference and must not be written back into the variables: restore the stored values.
     for (const name of variables) {
       host.style.setProperty(name, `${latest?.[name] ?? stored[name]}px`);
     }

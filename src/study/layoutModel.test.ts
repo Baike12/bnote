@@ -74,14 +74,14 @@ describe("minColumnWidth", () => {
 
 describe("dragAgentEdge(助手|内容:只动相邻两栏)", () => {
   const host = 1400;
-  const sum = 320 + 620; // 助手 + 中栏
+  const sum = 320 + 620; // assistant + content
   const min = minColumnWidth(host);
 
   it("宽度在助手与中栏之间转移,笔记栏原地不动", () => {
     const widths = dragAgentEdge(RESIZER_WIDTH + 400, host, sum);
     expect(widths.agent).toBe(400);
     expect(widths.content).toBe(sum - 400);
-    // 两栏总宽不变 → 笔记栏的宽度不变。
+    // The total width of the two columns is unchanged -> the notes column width is unchanged.
     expect(widths.agent + widths.content).toBe(sum);
     expect(widths.right).toBe(host - RESIZER_WIDTH * 2 - sum);
   });
@@ -174,7 +174,7 @@ describe("contentWidthForRenderedPage", () => {
   it("按真实页面高度差折算宽度,一页刚好完整显示", () => {
     const width = contentWidthForRenderedPage(base) as number;
     const fittedPage = base.pageWidth + (width - base.contentWidth);
-    // 宽度取整,高度误差不超过 1px。
+    // The width is rounded, so the height error stays within 1px.
     expect(Math.abs(fittedPage * base.pageRatio - base.availableHeight)).toBeLessThanOrEqual(1);
   });
 
@@ -187,7 +187,7 @@ describe("contentWidthForRenderedPage", () => {
   });
 
   it("裁掉左右留白时,中栏只承担可见宽度那一份", () => {
-    // 页面按 1/0.8 放大,完整页面宽度变化 1px 只对应中栏 0.8px。
+    // The page is scaled by 1/0.8, so a 1px change of the full page width is only 0.8px of the content column.
     const pageWidth = base.pageWidth / 0.8;
     const pageHeight = pageWidth * base.pageRatio;
     const target = contentWidthForRenderedPage({

@@ -7,9 +7,10 @@ import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 /**
- * Excalidraw 的字体按 `window.EXCALIDRAW_ASSET_PATH` 相对寻址
- * (`fonts/<Family>/…`,见 DrawingCanvas),缺省会落到它的 CDN——离线不可用,
- * 所以 dev 由中间件直接服务 node_modules 里的文件,build 时拷进 dist。
+ * Excalidraw resolves its fonts relative to `window.EXCALIDRAW_ASSET_PATH`
+ * (`fonts/<Family>/…`, see DrawingCanvas); without it they fall back to their
+ * CDN, which is unusable offline. So dev serves the files straight out of
+ * node_modules through middleware, and build copies them into dist.
  */
 function excalidrawAssets(): Plugin {
   const pkgProd = path.resolve(
@@ -62,9 +63,11 @@ function excalidrawAssets(): Plugin {
 }
 
 /**
- * pdf.js 的 CMap(中日韩字体映射)和标准字体是运行时按 URL 取的,不走打包。
- * 与上面 Excalidraw 资产同一套路:dev 由中间件服务 node_modules,build 时
- * 拷进 dist。缺了 cmaps,没内嵌字体的中文 PDF 会整页丢字。
+ * pdf.js fetches its CMaps (CJK font mappings) and standard fonts at runtime
+ * by URL, so they never go through the bundler. Same trick as the Excalidraw
+ * assets above: dev serves them from node_modules through middleware, build
+ * copies them into dist. Without the cmaps, a Chinese PDF without embedded
+ * fonts loses every glyph on the page.
  */
 function pdfjsAssets(): Plugin {
   const pkgProd = path.resolve(__dirname, "node_modules/pdfjs-dist");

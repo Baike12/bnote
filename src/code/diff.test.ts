@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { alignHunk, diffStats, parseUnifiedDiff } from "./diff";
 
 /**
- * unified diff 解析与并排对齐的门禁。
+ * Gate for unified diff parsing and side-by-side alignment.
  *
- * 后端给的是 `git diff --no-color` 的原始文本,解析在前端做:行号要准
- * (增删各走各的行号计数器)、并排视图要把改动过的行配对(靠最长公共子序列,
- * 不是按顺序硬凑)。
+ * The backend provides the raw `git diff --no-color` text and the parsing
+ * happens on the frontend: the line numbers have to be right (additions and
+ * deletions each run their own counter) and the side-by-side view has to pair
+ * the changed lines (via a longest common subsequence, not by matching them up
+ * in order).
  */
 
 const SAMPLE = `diff --git a/src/main.rs b/src/main.rs

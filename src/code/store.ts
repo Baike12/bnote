@@ -13,83 +13,92 @@ import type {
 } from "./types";
 
 /**
- * 代码项目的状态。
+ * State of the code project.
  *
- * **唯一写入者**:所有改动都经这个 store 的 action;组件只读。这样
- * 「文件树 / 标签页 / 编辑器内容 / git 状态」不会各持一份,不会出现
- * 「树里改了、编辑器里没改」这种分叉。
+ * **Single writer**: every change goes through an action of this store and
+ * components only read. That keeps "file tree / tabs / editor content / git
+ * status" from each holding a copy, which would allow a split state where the
+ * tree changed but the editor did not.
  *
- * 缓冲区(tabs + buffers)在这里,不在 CodeMirror 里:CodeMirror 的实例随
- * 组件挂载卸载,状态不能放那儿(切走再切回来内容就没了)。
+ * The buffers (tabs + contents) live here, not in CodeMirror: the CodeMirror
+ * instance comes and goes with the component, so state cannot live there (the
+ * content would be gone after switching away and back).
  */
 
-/** 一个打开的文件。 */
 export interface OpenFile {
   path: string;
-  /** 打开时的内容(用于算「有没有改动」)。 */
+  /** Content as opened (used to compute "is it modified"). */
   saved: string;
-  /** 当前内容(有未保存改动时与 `saved` 不同)。 */
+  /** Current content (differs from `saved` while there are unsaved changes). */
   content: string;
   languageId: string;
   binary: boolean;
   size: number;
   /**
-   * 缩进单位(打开时从内容里猜一次,之后不变):`"  "` / `"\t"` 之类。
+   * Indentation unit (guessed once from the content on open, then fixed):
+   * `"  "` / `"\t"` and the like.
    *
-   * 打开后再猜会让「内容变一次 → 缩进变一次 → 重建编辑器 → 撤销栈没了」
-   * 这种连锁反应;猜一次定死更稳。
+   * Guessing again after opening would chain "content changes → indent
+   * changes → editor rebuilt → undo stack gone"; guessing once and pinning it
+   * is more stable.
    */
   indentUnit: string;
-  /** Tab 的显示宽度(空格缩进时就是缩进宽度,制表符按 4 显示)。 */
+  /** Display width of a tab (the indent width for space indentation, tabs count as 4). */
   tabSize: number;
 }
 
 export interface CodeState {
-  /** 当前打开的项目(null = 没开项目)。 */
+  /** The currently open project (null = no project open). */
   project: CodeProjectInfo | null;
-  /** 打开的标签(项目相对路径)。 */
+  /** Open tabs (project-relative paths). */
   tabs: string[];
-  /** 当前标签。 */
+  /** The current tab. */
   activePath: string | null;
-  /** 路径 → 打开的文件。 */
+  /** Path → open file. */
   files: Record<string, OpenFile>;
-  /** 路径 → 诊断。 */
+  /** Path → diagnostics. */
   diagnostics: Record<string, LspDiagnostic[]>;
-  /** git 状态。 */
+  /** Git status. */
   git: GitStatus | null;
-  /** 语言 → "running"。 */
+  /** Language → "running". */
   lspStates: Record<string, string>;
-  /** 语言服务器日志(最近若干条)。 */
+  /** Language server log (the most recent entries). */
   lspLog: { language: string; level: number; message: string }[];
-  /** 文件树抽屉是否展开。 */
+  /** Whether the file tree drawer is open. */
   treeOpen: boolean;
   /**
-   * 文件树里展开的目录路径集合。**空集 = 只显示顶层**(默认不展开所有
-   * 文件夹);关掉抽屉再打开、重扫之后都保留,换项目才清空。
+   * The set of expanded directory paths in the file tree. **An empty set
+   * means top level only** (no folder is expanded by default); it survives
+   * closing and reopening the drawer and a rescan, and is only cleared when
+   * the project changes.
    */
   expandedDirs: Set<string>;
   /**
-   * 「把焦点交给文件树」的请求(路径为 null = 落在第一行)。
+   * A "hand the focus to the file tree" request (a null path means the first
+   * row).
    *
-   * 走请求而不是命令层直接摸 DOM:抽屉可能还没挂载,而且文件树是虚拟滚动
-   * 的——目标行要先展开、滚动进窗口,才有元素可以聚焦。FileTree 消费一次
-   * 就清掉,关掉抽屉再打开不会又抢一次焦点。
+   * A request instead of the command layer touching the DOM directly: the
+   * drawer may not be mounted yet, and the file tree is virtual-scrolled — the
+   * target row has to be expanded and scrolled into the window before there is
+   * an element to focus. FileTree clears it after consuming it once, so
+   * closing and reopening the drawer does not steal focus again.
    */
   treeFocus: { path: string | null; seq: number } | null;
-  /** 问题面板是否展开。 */
+  /** Whether the problems panel is open. */
   problemsOpen: boolean;
-  /** 正在看 diff 的文件(null = 不看)。 */
+  /** The file whose diff is being viewed (null = none). */
   diffPath: string | null;
-  /** diff 的暂存区视角。 */
+  /** Whether the diff view shows the staged side. */
   diffStaged: boolean;
   /**
-   * 待处理的跳转请求:目标文件 + 目标位置(LSP 坐标)。
+   * A pending jump request: target file + target position (LSP coordinates).
    *
-   * 用 LSP 坐标而不是文档偏移:目标文件可能还没打开,它的文档偏移此刻还
-   * 不存在。编辑器把这份坐标换算成偏移再落光标。
+   * LSP coordinates rather than a document offset: the target file may not be
+   * open yet, so its document offset does not exist at this point. The editor
+   * converts the coordinates into an offset before placing the caret.
    */
   jump: { path: string; position: LspPosition } | null;
-  /** 引用列表(跳转到引用的结果)。 */
+  /** The reference list (the result of a "jump to references" query). */
   references: {
     path: string;
     position: LspPosition;
@@ -110,53 +119,60 @@ export interface CodeState {
   appendLspLog: (language: string, level: number, message: string) => void;
   ensureLsp: (language: string, overrides?: ServerConfig) => Promise<boolean>;
   setTreeOpen: (open: boolean) => void;
-  /** 切换一个目录的展开态。 */
+  /** Toggle the expanded state of a directory. */
   toggleDir: (path: string) => void;
-  /** 请求把焦点交给文件树(null = 第一行)。 */
+  /** Ask for the focus to move to the file tree (null = the first row). */
   requestTreeFocus: (path: string | null) => void;
-  /** 消费掉焦点请求(只消费一次)。 */
+  /** Consume the focus request (exactly once). */
   clearTreeFocus: () => void;
-  /** 展开到某个文件:把它的每一层祖先目录都打开。 */
+  /** Expand to a file: open every one of its ancestor directories. */
   expandTo: (path: string) => void;
   setProblemsOpen: (open: boolean) => void;
   setDiff: (path: string | null, staged?: boolean) => void;
   toggleDiffStaged: () => void;
-  /** 请求把光标落到某个位置(跳转/引用面板点击)。 */
+  /** Ask for the caret to land on a position (jump / click in the references panel). */
   requestJump: (path: string, position: LspPosition) => void;
-  /** 消费掉跳转请求(只消费一次)。 */
+  /** Consume the jump request (exactly once). */
   clearJump: () => void;
-  /** 设置引用列表。 */
+  /** Set the reference list. */
   setReferences: (refs: { path: string; position: LspPosition; external: boolean }[] | null) => void;
-  /** 直接替换文件内容(重命名后从盘上重读)。 */
+  /** Replace the file content directly (re-read from disk after a rename). */
   replaceContent: (path: string, content: string) => void;
 }
 
-/** 语言服务器日志最多留多少条(免得长会话把内存吃满)。 */
+/** How many language server log entries to keep (so a long session cannot eat all the memory). */
 const LOG_LIMIT = 200;
 
-/** 制表符按几列显示(缩进单位是 "\t" 时的 tabSize)。 */
+/** How many columns a tab occupies (the tabSize when the indent unit is "\t"). */
 const TAB_DISPLAY_WIDTH = 4;
 
 /**
- * `openFile` 的请求序号:连点两个文件时只认最后一次。
+ * Request sequence number of `openFile`: when two files are clicked in a row,
+ * only the last one counts.
  *
- * 模块级而不是 state:它不驱动渲染,只是个丢弃过期读盘结果的闸门。
+ * Module-level rather than state: it does not drive rendering, it is only a
+ * gate that discards a stale disk read.
  */
 let openSeq = 0;
 
 /**
- * 文件树聚焦请求的序号。同一路径连按快捷键也要重新定位(用户可能已经把
- * 焦点挪走),所以每次请求都自增,消费方按对象/序号触发。
+ * Sequence number of the file tree focus request. Pressing the shortcut again
+ * for the same path has to relocate it (the user may have moved the focus
+ * away), so every request increments the counter and consumers trigger on the
+ * object/sequence number.
  */
 let treeFocusSeq = 0;
 
 /**
- * 从内容里猜缩进单位(取前若干行里第一条缩进行)。
+ * Guess the indent unit from the content (the first indented line among the
+ * first few lines).
  *
- * 返回**真要写进文本的东西**:制表符文件返回 `"\t"`,空格文件返回对应个数
- * 的空格。它同时供两处用:`indentUnit`(回车 / Tab 真的插什么)与 `tabSize`
- * (一个 Tab 画多宽)。只给宽度不给单位的话,4 空格缩进的项目会被回车敲成
- * 2 空格,一座文件里混进两种缩进。
+ * Returns **what actually gets written into the text**: a tab-indented file
+ * returns `"\t"`, a space-indented file returns the matching number of
+ * spaces. It feeds two places: `indentUnit` (what Enter / Tab really insert)
+ * and `tabSize` (how wide one tab draws). A width without a unit would make
+ * Enter insert 2 spaces in a 4-space project, mixing two indent styles in one
+ * file.
  */
 export function detectIndent(content: string): string {
   const lines = content.split("\n").slice(0, 200);
@@ -164,7 +180,7 @@ export function detectIndent(content: string): string {
     if (!line.trim()) continue;
     const indent = /^[ \t]*/.exec(line)?.[0] ?? "";
     if (indent.length === 0) continue;
-    if (indent.includes("\t")) return "\t"; // Tab 缩进:一个 Tab 一级
+    if (indent.includes("\t")) return "\t"; // Tab indentation: one tab per level
     return " ".repeat(Math.min(indent.length, 8));
   }
   return "  ";
@@ -191,16 +207,22 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   async openProject(root) {
     const info = await codeApi.openProject(root);
     const previous = get().project;
-    // 同一个项目重开(点了历史菜单里的当前项目):只换一份新文件树,**不动
-    // 标签与缓冲区**。走下面那条清空路的话,未保存的改动与撤销栈一起没了。
+    // Reopening the same project (picked the current project from the history
+    // menu): swap in a fresh file tree and **leave the tabs and buffers
+    // alone**. Taking the reset path below would throw away the unsaved
+    // changes and the undo stacks with them.
     if (previous && previous.root === info.root) {
       set({ project: info });
       return;
     }
-    // 换项目 = 换沙箱边界。旧项目起的语言服务器必须停掉:它们按根路径存活,
-    // 不停就是一组孤儿进程(还各自攥着一份文件树)。
+    // Switching project = switching the sandbox boundary. Language servers
+    // started for the old project have to be stopped: they live by their root
+    // path, and leaving them running is a set of orphan processes (each
+    // holding its own file tree).
     if (previous) await codeApi.lspStop(previous.root).catch(() => {});
-    // 缓冲区随项目一起清空:先把有改动的文件落盘,不存就丢了(与关项目同一条纪律)。
+    // The buffers are cleared together with the project: flush the modified
+    // files to disk first, otherwise they are lost (the same discipline as
+    // closing the project).
     for (const path of Object.keys(get().files)) {
       if (isDirty(get(), path)) await get().saveFile(path);
     }
@@ -226,13 +248,15 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   },
 
   async closeProject() {
-    // 关项目前把所有有改动的文件落盘(缓冲区会随项目一起清空)。
+    // Flush every modified file to disk before closing the project (the
+    // buffers are cleared together with the project).
     for (const path of Object.keys(get().files)) {
       if (isDirty(get(), path)) await get().saveFile(path);
     }
     const root = get().project?.root;
     if (root) {
-      // 语言服务器是按项目起的:关项目就把它们都停掉,不留孤儿进程。
+      // Language servers are started per project: closing the project stops
+      // them, leaving no orphan processes.
       await codeApi.lspStop(root).catch(() => {});
     }
     set({
@@ -261,7 +285,8 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     const project = get().project;
     if (!project) return;
     set({ project: { ...project, tree } });
-    // 外部新建/删除文件同样会改 git 状态(新增未跟踪、删除),顺手刷一次。
+    // Files created or deleted outside also change the git status (new
+    // untracked, deleted), so refresh it while we are here.
     await get().refreshGit();
   },
 
@@ -270,15 +295,17 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     if (!root) return;
     const existing = get().files[path];
     if (existing) {
-      // 已经开着:只切过去,别重读盘(会把未保存的改动冲掉)。
+      // Already open: just switch to it, do not re-read from disk (that would
+      // wipe the unsaved changes).
       set((s) => ({
         tabs: s.tabs.includes(path) ? s.tabs : [...s.tabs, path],
         activePath: path,
       }));
       return;
     }
-    // 连点两个文件时,读盘有先后:只认最后一次请求的结果。不认序的话,
-    // 先点的那份晚到一步就会把光标夺回旧文件。
+    // Two files clicked in a row race on the disk read: only the result of the
+    // last request counts. Without the sequence check, the earlier read that
+    // arrives a moment later would pull the caret back to the old file.
     const seq = ++openSeq;
     let file: CodeFile;
     try {
@@ -306,12 +333,14 @@ export const useCodeStore = create<CodeState>((set, get) => ({
         },
       },
     }));
-    // 语言服务器起来了就顺手把文档推上去,补全/跳转立刻可用。
+    // Once the language server is up, push the document to it so completion
+    // and jumps work right away.
     if (!file.binary) void get().ensureLsp(file.languageId);
   },
 
   closeTab(path) {
-    // 有未保存的改动就先落盘:缓冲区随标签一起消失,不存就丢了。
+    // Flush unsaved changes to disk first: the buffer disappears together
+    // with the tab, so not saving loses them.
     if (isDirty(get(), path)) void get().saveFile(path);
     const root = get().project?.root;
     set((s) => {
@@ -322,8 +351,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
         s.activePath === path ? (tabs[tabs.length - 1] ?? null) : s.activePath;
       return { tabs, files, activePath };
     });
-    // 服务器那边的文档也要关:不关它会把已关闭文件的诊断继续推回来
-    // (问题面板里挂着一个「幽灵文件」),还一直攥着那份文本。
+    // The document has to be closed on the server too: otherwise it keeps
+    // pushing diagnostics for the closed file (a "ghost file" hanging in the
+    // problems panel) and keeps holding that text.
     if (root) void codeApi.lspClose(root, path).catch(() => {});
   },
 
@@ -344,8 +374,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     const root = get().project?.root;
     const file = get().files[path];
     if (!root || !file) return;
-    // 二进制 / 超大文件的内容根本没读进来(content 是空串)。放过去就等于
-    // 把整篇文件写成空——宁可什么都不做。
+    // The content of a binary or oversized file was never read (the content is
+    // an empty string). Writing it back would blank the whole file — better
+    // to do nothing at all.
     if (file.binary) return;
     try {
       await codeApi.writeFile(root, path, file.content);
@@ -390,18 +421,22 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     const root = get().project?.root;
     if (!root || !language || language === "plaintext") return false;
     if (get().lspStates[language] === "running") return true;
-    // 起过一次没起来(本机没装这个服务器)就不再反复试:每开一个文件
-    // 就拉一次进程、等一次握手超时,体验很差。要重试就重开项目(或者在
-    // 设置里改好服务器路径后重新打开)。
+    // A server that failed to start once (not installed on this machine) is
+    // not retried: every file open would spawn a process and wait out a
+    // handshake timeout, which feels terrible. To retry, reopen the project
+    // (or fix the server path in the settings and reopen it).
     if (get().lspStates[language] === "off") return false;
-    // 覆盖来源:调用方显式给的优先,否则用设置里的全局那层(项目内
-    // `.bnote/lsp.json` 由后端再盖一层,优先级最高)。
+    // Where the override comes from: an explicit one from the caller wins,
+    // otherwise the global layer from the settings (a project-local
+    // `.bnote/lsp.json` overrides that again on the backend, with the
+    // highest priority).
     const global = useAppStore.getState().settings.codeLspServers?.[language];
     const override = overrides ?? (global ? { command: global.command, args: global.args ?? [] } : undefined);
     try {
       await codeApi.lspStart(root, language, override);
       get().setLspState(language, "running");
-      // 已经在编辑区的文件要补一次 didOpen,服务器才知道有这个文档。
+      // Files already in the editor need a didOpen to make the server aware of
+      // the document.
       const s = get();
       for (const file of Object.values(s.files)) {
         if (file.languageId === language) {
@@ -491,13 +526,13 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   },
 }));
 
-/** 这个文件有没有未保存的改动。 */
+/** Whether this file has unsaved changes. */
 export function isDirty(state: CodeState, path: string): boolean {
   const file = state.files[path];
   return !!file && file.content !== file.saved;
 }
 
-/** 全部诊断(跨文件),按文件分组。 */
+/** All diagnostics (across files), grouped by file. */
 export function allDiagnostics(state: CodeState): {
   path: string;
   diagnostics: LspDiagnostic[];
@@ -507,7 +542,7 @@ export function allDiagnostics(state: CodeState): {
     .map(([path, diagnostics]) => ({ path, diagnostics }));
 }
 
-/** 文件树条目(拍平的)。 */
+/** The file tree entries (flattened). */
 export function treeEntries(state: CodeState): CodeEntry[] {
   return state.project?.tree.entries ?? [];
 }

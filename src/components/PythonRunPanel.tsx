@@ -2,8 +2,9 @@ import { useEffect, useRef } from "react";
 import { stopRun, usePythonRun } from "@/python/run";
 
 /**
- * 底部运行面板:python 运行输出与 uv 环境创建日志都流到这里。
- * 挂在 EditorPane 的编辑器与状态栏之间,只在 open 时占高度。
+ * Bottom run panel: python run output and uv environment creation logs both
+ * stream here. It sits between the editor and the status bar of EditorPane and
+ * only takes height while open.
  */
 export function PythonRunPanel() {
   const open = usePythonRun((s) => s.open);
@@ -20,7 +21,7 @@ export function PythonRunPanel() {
   const preRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
-    // 跟随滚动:用户停在上方看历史时不打扰,贴底时自动跟新输出。
+    // Follow the scroll: when the user is parked higher up reading the history, leave it alone; when pinned to the bottom, follow new output.
     const el = preRef.current;
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;

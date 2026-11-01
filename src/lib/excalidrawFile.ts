@@ -1,17 +1,21 @@
 import { decompressFromBase64 } from "lz-string";
 
 /**
- * Excalidraw 画图文件的格式层(纯函数,不依赖 @excalidraw/excalidraw——
- * 那是大模块,笔记渲染路径只允许碰这一个文件)。
+ * Format layer for Excalidraw drawing files (pure functions, no dependency on
+ * @excalidraw/excalidraw — that is a large module and the note rendering path
+ * is only allowed to touch this one file).
  *
- * 支持两种磁盘格式,与 Obsidian Excalidraw 插件互通:
- * - `<name>.excalidraw` —— 纯 JSON(excalidraw 官方场景文件,bnote 新建用这个);
- * - `<name>.excalidraw.md` —— Obsidian 插件的 markdown 包裹:frontmatter
- *   (`excalidraw-plugin: parsed`)+ ```json / ```compressed-json 代码块。
- *   读写都支持,这样用户已有的 Obsidian 画图库可以直接在 bnote 里编辑。
+ * Two on-disk formats are supported, interoperable with the Obsidian Excalidraw
+ * plugin:
+ * - `<name>.excalidraw` — plain JSON (the official Excalidraw scene file; this
+ *   is what bnote creates);
+ * - `<name>.excalidraw.md` — the Obsidian plugin's markdown wrapper: frontmatter
+ *   (`excalidraw-plugin: parsed`) plus a ```json / ```compressed-json code block.
+ *   Both are read and written, so a user's existing Obsidian drawing library
+ *   can be edited directly in bnote.
  */
 
-/** 新建画图落在这个 vault 目录(与用户 Obsidian Excalidraw 插件的配置一致)。 */
+/** New drawings land in this vault folder (matching the user's Obsidian Excalidraw plugin config). */
 export const DRAWING_FOLDER = "Excalidraw";
 
 const DRAWING_RE = /\.excalidraw(\.md)?$/i;
@@ -21,12 +25,12 @@ export function isDrawingFileName(name: string): boolean {
   return DRAWING_RE.test(name);
 }
 
-/** `foo.excalidraw` / `foo.excalidraw.md` → `foo`;其他名字原样返回。 */
+/** `foo.excalidraw` / `foo.excalidraw.md` → `foo`; any other name is returned unchanged. */
 export function drawingStem(name: string): string {
   return name.replace(DRAWING_RE, "");
 }
 
-/** 画图旁边导出的预览图文件名(与画图同目录同名,只换扩展名)。 */
+/** File name of the preview PNG exported next to a drawing (same stem, same folder). */
 export function drawingPngName(name: string): string {
   return `${drawingStem(name)}.png`;
 }
@@ -37,7 +41,7 @@ export interface DrawingScene {
   files: Record<string, unknown> | null;
 }
 
-/** 官方 serializeAsJSON 的稳定形状;字段顺序与官方一致,方便 diff 工具。 */
+/** The stable shape of the official serializeAsJSON; field order matches upstream so diff tools stay useful. */
 export function serializeSceneJson(scene: DrawingScene): string {
   const appState: Record<string, unknown> = {};
   const bg = scene.appState.viewBackgroundColor;
@@ -57,7 +61,8 @@ export function emptySceneJson(): string {
   return serializeSceneJson({ elements: [], appState: {}, files: null });
 }
 
-/** 新建画图的默认文件名,如 `画图 2026-09-20 20.47.06.excalidraw`。 */
+/** Default file name for a new drawing: a fixed CJK prefix plus a YYYY-MM-DD
+ *  HH.MM.SS stamp, e.g. `2026-09-20 20.47.06.excalidraw`. */
 export function newDrawingFileName(now = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   const stamp =
@@ -67,12 +72,13 @@ export function newDrawingFileName(now = new Date()): string {
 }
 
 // ---------------------------------------------------------------------------
-// 解析
+// Parsing
 // ---------------------------------------------------------------------------
 
 /**
- * 解析画图文件文本。`.excalidraw.md` 的包裹头(frontmatter 与说明文字)在
- * 写回时要原样保留,所以一并返回;纯 JSON 格式返回 null。
+ * Parse drawing file text. The wrapper head of an `.excalidraw.md` file
+ * (frontmatter and prose) must be preserved verbatim on write-back, so it is
+ * returned alongside the scene; plain JSON files return null.
  */
 export function parseDrawingFile(
   text: string,
@@ -113,7 +119,7 @@ function parseSceneJson(text: string): DrawingScene {
   };
 }
 
-/** Obsidian 插件数据块的围栏标记(压缩/明文两种都认)。 */
+/** Fence markers of the Obsidian plugin's data block (both compressed and plain). */
 const FENCE_RE = /```(compressed-json|json)[ \t]*\r?\n([\s\S]*?)\r?\n?```/;
 
 function extractMdWrapper(
@@ -132,12 +138,14 @@ function extractMdWrapper(
 }
 
 // ---------------------------------------------------------------------------
-// 写盘
+// Writing
 // ---------------------------------------------------------------------------
 
 /**
- * 序列化为写盘文本。`.excalidraw.md` 用打开时保留的 frontmatter 重建包裹
- * (代码块始终写明文 json —— 插件两种都读,明文让文件可 diff、可手修)。
+ * Serialize to the text written to disk. `.excalidraw.md` rebuilds its wrapper
+ * from the frontmatter kept at open time (the code block is always written as
+ * plain json — the plugin reads both, and plain text keeps the file diffable
+ * and hand-editable).
  */
 export function serializeDrawingFile(
   scene: DrawingScene,

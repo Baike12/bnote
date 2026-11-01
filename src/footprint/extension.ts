@@ -32,31 +32,38 @@ import {
 } from "./widget";
 
 /**
- * 足迹的两个编辑器面:
- *  - 日记侧 footprintZoneExtension:任意一天的日记文档末尾挂一个块级 widget
- *    (块装饰只能出自 StateField,与 livePreview.blockDecorationsField 同一
- *    约束)——今日读实时索引,历史日读轮转固化的档案。当天无足迹时不挂。
- *  - 源文件侧 footprintMarksExtension:今日被收录的块首行打 pip 行装饰
- *    (与 daily/marks.ts 同一套「不参与行内布局」的几何纪律;档案日不做 pip,
- *    pip 的语义始终是「今日足迹已收录到今日日记」)。
+ * The two editor faces of the footprint:
+ *  - Daily side, footprintZoneExtension: a block level widget is attached to the
+ *    end of the document of a daily note of any day (block decorations can only
+ *    come out of a StateField, the same constraint as
+ *    livePreview.blockDecorationsField) - today reads the live index, a
+ *    historical day reads the archive frozen during the rotation. Nothing is
+ *    attached when the day has no footprint.
+ *  - Source side, footprintMarksExtension: the first line of every block that was
+ *    collected today gets a pip line decoration (the same geometry discipline as
+ *    in daily/marks.ts, "it takes no part in the inline layout"; a day from the
+ *    archive gets no pip, the semantics of a pip is always "today's footprint was
+ *    collected into today's daily note").
  *
- * 索引在编辑器之外(noteDirty/refreshAll/轮转在 store 里写),广播经
- * onFootprintsChanged 到这里,派发一个带 footprintChanged 的空事务唤醒重算
- * (可能嵌在别的 dispatch 之内,故延到微任务——与 dailyMarks 同款)。
+ * The index lives outside the editor (noteDirty, refreshAll and the rotation write
+ * it in the store), the broadcast arrives here through onFootprintsChanged and
+ * dispatches an empty transaction tagged with footprintChanged to wake the
+ * recompute (it may be nested in another dispatch, hence the microtask - same as
+ * dailyMarks).
  */
 
-/** 空事务上的标记:足迹索引或折叠状态变了,装饰要重算。 */
+/** Tag on the empty transaction: the footprint index or the fold state changed, the decorations have to be recomputed. */
 export const footprintChanged = StateEffect.define<null>();
 
-// ---------------------------------------------------------------- 日记侧:区 widget
+// ---------------------------------------------------------------- daily side: the zone widget
 
 interface ZoneValue {
   decos: DecorationSet;
-  /** revision + 折叠签名 + 激活判定:不变则复用旧 DecorationSet,widget DOM 不重画。 */
+  /** Revision plus fold signature plus the activation decision: when it does not change the old DecorationSet is reused and the widget DOM is not redrawn. */
   sig: string;
 }
 
-/** 当前文档是哪一天的日记;非日记文件返回 null。 */
+/** Which day's daily note the current document is; null for a file that is not a daily note. */
 function activeDailyDay(state: EditorState): string | null {
   const path = documentPath(state);
   return path !== null ? dailyDayOf(path) : null;
@@ -71,10 +78,13 @@ function buildZoneValue(state: EditorState): ZoneValue {
   const widget = new FootprintWidget(day, viewData, currentFold());
   return {
     decos: Decoration.set([
-      // 锚在文档末尾(公式块同款约束:块 widget 锚行首;文档末尾即 doc.length)。
+      // Anchored at the end of the document (the same constraint as a formula
+      // block: a block widget anchors at the start of a line; the end of the
+      // document is doc.length).
       Decoration.widget({ widget, block: true }).range(state.doc.length),
     ]),
-    // 今日跟着实时索引走;历史档是固化快照,revision 抖动不触发重画。
+    // Today follows the live index; the historical archive is a frozen snapshot,
+    // so a jittering revision does not trigger a repaint.
     sig: `${day}|${day === todayStamp() ? footprintRevision() : "h"}|${foldSignature()}|${state.doc.length}`,
   };
 }
@@ -91,10 +101,11 @@ export const footprintZoneField = StateField.define<ZoneValue>({
   provide: (field) => EditorView.decorations.from(field, (v) => v.decos),
 });
 
-// ---------------------------------------------------------------- 点击路由
+// ---------------------------------------------------------------- click routing
 
-/** widget DOM 上的 data-footprint-* 点击路由(与 livePreview 的 mousedown
- *  handler 同一套模式):区/组箭头折叠,组名与块体跳源文件。 */
+/** Click routing for the data-footprint-* attributes on the widget DOM (the same
+ *  pattern as the mousedown handler of livePreview): the zone and group arrows
+ *  fold, the group name and the block body jump to the source file. */
 function footprintMousedown(): Extension {
   return EditorView.domEventHandlers({
     mousedown(event, view) {
@@ -127,7 +138,7 @@ function footprintMousedown(): Extension {
   });
 }
 
-// ---------------------------------------------------------------- 唤醒
+// ---------------------------------------------------------------- wake up
 
 function wakeView(view: EditorView): void {
   queueMicrotask(() => {
@@ -135,10 +146,15 @@ function wakeView(view: EditorView): void {
   });
 }
 
-/** store 广播 → 唤醒事务;顺带值守「文档变成日记」:跨天后首次访问在这里
- *  完成轮转(旧日足迹固化成档案,历史日记立即能显示);今日日记额外全量
- *  兜底重建索引(覆盖应用未运行期间的改动——watcher 只报运行期变更,重启后
- *  无脏路径可喂)。refreshFootprints 自带节流,快速来回切文件不重复全库读。 */
+/** The broadcast of the store -> waking transaction; it also keeps watch over "the
+ *  document became a daily note": after the day switched, the first access
+ *  finishes the rotation here (the footprint of the old day is frozen into the
+ *  archive, a historical daily note can show it right away); today's daily note
+ *  additionally rebuilds the whole index as a fallback (it covers the changes made
+ *  while the app was not running - the watcher only reports changes of the running
+ *  session, so after a restart there is no dirty path to feed it).
+ *  refreshFootprints has a throttle of its own, switching between files quickly
+ *  does not read the whole vault again. */
 function footprintWakeExtension(): Extension {
   return ViewPlugin.fromClass(
     class {
@@ -173,15 +189,15 @@ function footprintWakeExtension(): Extension {
   );
 }
 
-// ---------------------------------------------------------------- 源文件侧:pip
+// ---------------------------------------------------------------- source side: the pip
 
-/** 构建只需要的视图面(与 dailyMarks 的 DailyMarkView 同构,便于无 DOM 测试)。 */
+/** The slice of the view that is built (isomorphic to DailyMarkView of dailyMarks, so tests need no DOM). */
 export interface FootprintMarkView {
   state: EditorState;
   visibleRanges: readonly { from: number; to: number }[];
 }
 
-/** 视口内、今日收录块的首行 → 行装饰。纯函数。 */
+/** The first line of the blocks collected today inside the viewport -> line decorations. Pure function. */
 export function buildFootprintMarks(view: FootprintMarkView, blocks: readonly { start: number }[]): DecorationSet {
   if (blocks.length === 0 || view.visibleRanges.length === 0) return Decoration.none;
   const doc = view.state.doc;
@@ -218,7 +234,8 @@ const footprintMarksPlugin = ViewPlugin.fromClass(
     private build(): DecorationSet {
       const state = this.view.state;
       const path = documentPath(state);
-      // 源侧才打标;日记文件(自己就是聚合页)不打
+      // Only the source side gets a mark; a daily note file (it is the aggregation
+      // page itself) does not
       if (!path || isDailyPath(path)) return Decoration.none;
       return buildFootprintMarks(this.view, footprintsFor(path));
     }
@@ -234,7 +251,7 @@ const footprintMarksPlugin = ViewPlugin.fromClass(
   { decorations: (v) => v.marks },
 );
 
-// ---------------------------------------------------------------- 组装
+// ---------------------------------------------------------------- assembly
 
 export function footprintZoneExtension(): Extension {
   return [footprintZoneField, footprintMousedown(), footprintWakeExtension()];

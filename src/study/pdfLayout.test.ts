@@ -18,7 +18,7 @@ describe("书签栏宽度", () => {
   it("栏很窄时给 PDF 页面留出最小宽度,而不是压到 MIN 以下", () => {
     const body = 700;
     expect(clampOutlineWidth(600, body)).toBe(body - MIN_PAGE_AREA);
-    // 连 MIN_PAGE_AREA 都给不出时,保住书签栏自己的下限。
+    // When even MIN_PAGE_AREA cannot be given, the outline column keeps its own lower bound.
     expect(clampOutlineWidth(600, 300)).toBe(MIN_OUTLINE_WIDTH);
   });
 

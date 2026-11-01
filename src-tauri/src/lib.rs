@@ -179,14 +179,17 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             install_menu(app.handle())?;
 
-            // 词典的冷解压(~5–20ms)放到后台线程,第一次选词时已经是热态。
+            // Warm the dictionary on a background thread: the cold decompression
+            // (~5-20ms) is paid there, so the first word lookup finds it hot.
             dict::warm_up();
 
-            // 主窗口几何:在事件循环启动前恢复,首帧就是用户上次的大小和位置。
+            // Main window geometry: restored before the event loop starts, so the
+            // first frame already has the size and position the user left.
             commands::config::restore_window_bounds(app.handle());
 
-            // 专注模式的"失焦抢回"监听:装一次,之后由 focus.rs 自己判断要不要
-            // 拉回(没进锁就不动)。
+            // Focus mode's "steal back on blur" listener: installed once, from
+            // then on focus.rs decides for itself whether to pull the window
+            // back (it does nothing while focus mode is not locked).
             commands::focus::install_focus_guard(app.handle());
 
             // Debug builds also answer on a loopback port so the same UI can be

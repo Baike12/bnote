@@ -17,7 +17,7 @@ const iconProps: SVGProps<SVGSVGElement> = {
   "aria-hidden": true,
 };
 
-/** 新建笔记：一页纸 + 加号。 */
+/** New note: a sheet of paper plus a plus sign. */
 export function IconNewNote() {
   return (
     <svg {...iconProps}>
@@ -29,7 +29,7 @@ export function IconNewNote() {
   );
 }
 
-/** 新建文件夹：文件夹 + 加号。 */
+/** New folder: a folder plus a plus sign. */
 export function IconNewFolder() {
   return (
     <svg {...iconProps}>
@@ -40,7 +40,7 @@ export function IconNewFolder() {
   );
 }
 
-/** 学习助手：一大一小两颗火花，比文字「助手」省出文件名的地方。 */
+/** Study assistant: one big and one small sparkle, which saves the room the word "assistant" would take. */
 export function IconSparkles() {
   return (
     <svg {...iconProps}>
