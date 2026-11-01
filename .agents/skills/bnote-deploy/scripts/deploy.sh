@@ -57,7 +57,7 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "3. [stop]        关闭所有实例（/Applications 包 + 本地 dev/release 二进制）:"
   echo "                 osascript quit → SIGTERM → SIGKILL，并验证进程真的消失"
   echo "4. [replace]     rm -rf $APP_DST && ditto $BUNDLE_SRC $APP_DST"
-  echo "5. [sign]        codesign -s $SIGN_ID（稳定身份；不签则辅助功能授权每次重建都作废）"
+  echo "5. [sign]        codesign -s ${SIGN_ID}（稳定身份；不签则辅助功能授权每次重建都作废）"
   echo "6. [launch]      open ${APP_DST}，等新包进程出现并用 ps 校验"
   echo "root=$ROOT"
   echo

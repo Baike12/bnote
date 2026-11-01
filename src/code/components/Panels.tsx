@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useCodeStore } from "../store";
+import { useAppStore } from "@/state/appStore";
 import type { LspDiagnostic } from "../types";
 
 /**
@@ -68,6 +69,7 @@ export function ReferencesPanel() {
   const openFile = useCodeStore((s) => s.openFile);
   const requestJump = useCodeStore((s) => s.requestJump);
   const setReferences = useCodeStore((s) => s.setReferences);
+  const showToast = useAppStore((s) => s.showToast);
 
   if (!references) return null;
   if (references.length === 0) {
@@ -95,6 +97,11 @@ export function ReferencesPanel() {
           key={i}
           className="code-panel-row"
           onClick={() => {
+            // 项目外的引用(标准库、依赖)打不开:后端只放行项目根内的路径。
+            if (ref.external) {
+              showToast("这条引用在项目外,不在这个面板里打开");
+              return;
+            }
             void openFile(ref.path);
             requestJump(ref.path, ref.position);
           }}

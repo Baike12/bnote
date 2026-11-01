@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildTree, filterTree, naturalCompare, walkFiles } from "./tree";
+import {
+  buildTree,
+  filterTree,
+  naturalCompare,
+  searchFilesByName,
+  visibleRows,
+  walkFiles,
+} from "./tree";
 import type { CodeEntry, GitFileState } from "./types";
 
 /**
@@ -36,6 +43,29 @@ describe("buildTree", () => {
     expect(a.name).toBe("a");
     expect(a.children[0].name).toBe("b");
     expect(a.children[0].children[0].path).toBe("a/b/c.rs");
+  });
+
+  it("目录条目与按路径补出的中间目录是同一个节点", () => {
+    // 后端既会给目录条目(.github),又会给目录里的文件;按路径补出来的
+    // 中间目录必须落进同一个节点,否则同一个目录在树上出现两次
+    // (一次是空的目录条目,一次是带文件的补出来的目录)。
+    const roots = buildTree([
+      entry(".github", true),
+      entry(".github/ISSUE_TEMPLATE", true),
+      entry(".github/ISSUE_TEMPLATE/bug_report.yml"),
+      entry(".github/workflows", true),
+      entry(".github/workflows/ci.yml"),
+    ]);
+    expect(roots.map((n) => n.name)).toEqual([".github"]);
+    const gh = roots[0];
+    expect(gh.children.map((n) => n.name)).toEqual(["ISSUE_TEMPLATE", "workflows"]);
+    expect(gh.children[0].children.map((n) => n.name)).toEqual(["bug_report.yml"]);
+  });
+
+  it("空目录条目照样出现(不靠文件补出来)", () => {
+    const roots = buildTree([entry("empty", true), entry("a.ts")]);
+    expect(roots.map((n) => n.name)).toEqual(["empty", "a.ts"]);
+    expect(roots[0].children).toEqual([]);
   });
 
   it("目录排在文件前面,同类按自然序", () => {
@@ -77,6 +107,42 @@ describe("naturalCompare", () => {
   });
 });
 
+describe("visibleRows(虚拟滚动的拍平)", () => {
+  const roots = buildTree([
+    entry("src/a.ts"),
+    entry("src/nested/b.ts"),
+    entry("docs/c.md"),
+    entry("d.ts"),
+  ]);
+
+  it("按展示顺序拍平,并记下层级", () => {
+    const rows = visibleRows(roots, new Set());
+    expect(rows.map((r) => `${r.depth}:${r.node.name}`)).toEqual([
+      "0:docs",
+      "1:c.md",
+      "0:src",
+      "1:nested",
+      "2:b.ts",
+      "1:a.ts",
+      "0:d.ts",
+    ]);
+  });
+
+  it("折叠的目录只留它自己,子节点不进列表", () => {
+    const rows = visibleRows(roots, new Set(["src"]));
+    expect(rows.map((r) => r.node.name)).toEqual(["docs", "c.md", "src", "d.ts"]);
+  });
+
+  it("全折叠时行数 = 顶层节点数", () => {
+    const all = new Set(["docs", "src", "src/nested"]);
+    expect(visibleRows(roots, all)).toHaveLength(3);
+  });
+
+  it("空树给空列表", () => {
+    expect(visibleRows([], new Set())).toEqual([]);
+  });
+});
+
 describe("filterTree", () => {
   it("文件按名字过滤,目录只要有命中后代就留下", () => {
     const roots = buildTree([entry("src/app.ts"), entry("src/util.ts"), entry("docs/readme.md")]);
@@ -88,5 +154,48 @@ describe("filterTree", () => {
   it("空查询返回原树", () => {
     const roots = buildTree([entry("a.ts")]);
     expect(filterTree(roots, "  ")).toBe(roots);
+  });
+});
+
+describe("searchFilesByName(快速打开)", () => {
+  const entries = [
+    entry("src/app.ts"),
+    entry("src/app-router.ts"),
+    entry("src/my-app.tsx"),
+    entry("docs/apple.md"),
+    entry("src/helper.ts"),
+    entry("src", true),
+  ];
+
+  it("完全相等排最前,包含其次,子序列最后", () => {
+    // my-app.tsx 里 "app.ts" 是**连续**子串(rank 2);app-router.ts 只是
+    // 子序列(rank 3)。
+    const hits = searchFilesByName(entries, "app.ts");
+    expect(hits.map((h) => h.path)).toEqual(["src/app.ts", "src/my-app.tsx", "src/app-router.ts"]);
+  });
+
+  it("只按文件名匹配,目录不参与", () => {
+    // 目录 "src" 自己不是候选;没有哪个**文件名**含 src。
+    expect(searchFilesByName(entries, "src")).toEqual([]);
+    expect(searchFilesByName(entries, "helper").map((h) => h.path)).toEqual(["src/helper.ts"]);
+  });
+
+  it("子序列也能命中(abc → a_b_c)", () => {
+    const hits = searchFilesByName(entries, "aprt");
+    expect(hits.map((h) => h.path)).toEqual(["src/app-router.ts"]);
+  });
+
+  it("忽略大小写", () => {
+    expect(searchFilesByName(entries, "APP").length).toBe(4);
+  });
+
+  it("空查询/纯空白不给结果", () => {
+    expect(searchFilesByName(entries, "")).toEqual([]);
+    expect(searchFilesByName(entries, "   ")).toEqual([]);
+  });
+
+  it("有上限", () => {
+    const many = Array.from({ length: 80 }, (_, i) => entry(`f${i}.ts`));
+    expect(searchFilesByName(many, "f").length).toBe(50);
   });
 });

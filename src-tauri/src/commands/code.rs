@@ -10,7 +10,7 @@
 //! (`/tmp/x` 与 `/private/tmp/x`、带尾斜杠)要算成同一个项目,否则会起
 //! 两套语言服务器、两份文件树。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -19,7 +19,7 @@ use tauri::{AppHandle, State};
 
 use super::CmdResult;
 use crate::code::git::{self, GitStatus};
-use crate::code::lsp::{LspManager, ResolvedServer, ServerConfig};
+use crate::code::lsp::{LspManager, ServerConfig};
 use crate::code::project::{self, CodeEntry, CodeFile, CodeSearchHit, CodeTree};
 use crate::code::lang;
 use crate::state::AppState;
@@ -68,8 +68,39 @@ fn canonical_root(root: &str) -> Result<PathBuf, String> {
 }
 
 /// 项目根的键(canonicalize 后的字符串)。
-fn root_key(root: &PathBuf) -> String {
+fn root_key(root: &Path) -> String {
     root.to_string_lossy().to_string()
+}
+
+/// 取这个项目**已经扫出的**文件树;没有就扫一遍并记下。
+///
+/// 文件树只有两个写入者:打开项目与「重扫」。搜索读这份缓存,不再自己走
+/// 一遍仓库——`ignore` 遍历在每个目录上都要 stat、读 .gitignore,而搜索是
+/// 每次按键(防抖 200ms)都会来的,大仓库上这份钱不该每击都付。
+///
+/// 代价:搜索范围 = 左栏看到的那棵树。在外部新建/删除文件后要「重扫」,
+/// 两边才一起更新——它们的来源因此始终是同一份,不会出现「树里有、搜不到」
+/// 这种自相矛盾。
+fn tree_for(state: &AppState, root: &Path) -> Result<CodeTree, String> {
+    let key = root_key(root);
+    if let Ok(map) = state.code_trees.lock() {
+        if let Some(tree) = map.get(&key) {
+            return Ok(tree.clone());
+        }
+    }
+    let tree = project::scan(root);
+    let mut map = state.code_trees.lock().map_err(|_| "lock poisoned")?;
+    map.insert(key, tree.clone());
+    Ok(tree)
+}
+
+/// 扫一遍并把结果写进缓存(打开项目 / 重扫用)。
+fn scan_into_cache(state: &AppState, root: &Path) -> CodeTree {
+    let tree = project::scan(root);
+    if let Ok(mut map) = state.code_trees.lock() {
+        map.insert(root_key(root), tree.clone());
+    }
+    tree
 }
 
 /// 取(或建)这个项目的语言服务器管理器。
@@ -94,9 +125,12 @@ fn manager_for(state: &AppState, root: &PathBuf) -> Result<Arc<LspManager>, Stri
 
 /// 打开一个代码项目:扫文件树 + 看 git 状态。
 #[tauri::command]
-pub async fn code_open_project(root: String) -> CmdResult<CodeProjectInfo> {
+pub async fn code_open_project(
+    state: State<'_, AppState>,
+    root: String,
+) -> CmdResult<CodeProjectInfo> {
     let root = canonical_root(&root)?;
-    let tree = project::scan(&root);
+    let tree = scan_into_cache(&state, &root);
     let status = git::status(&root).unwrap_or_default();
     let name = root
         .file_name()
@@ -114,9 +148,9 @@ pub async fn code_open_project(root: String) -> CmdResult<CodeProjectInfo> {
 
 /// 重扫文件树(用户改了 .gitignore、或在外部新建了文件之后)。
 #[tauri::command]
-pub async fn code_rescan(root: String) -> CmdResult<CodeTree> {
+pub async fn code_rescan(state: State<'_, AppState>, root: String) -> CmdResult<CodeTree> {
     let root = canonical_root(&root)?;
-    Ok(project::scan(&root))
+    Ok(scan_into_cache(&state, &root))
 }
 
 /// 读一个文件(连同它的语言 id)。
@@ -146,12 +180,13 @@ pub async fn code_write_file(root: String, path: String, content: String) -> Cmd
 /// 在项目里搜文件内容(字面量,忽略大小写)。
 #[tauri::command]
 pub async fn code_search(
+    state: State<'_, AppState>,
     root: String,
     query: String,
     limit: Option<usize>,
 ) -> CmdResult<Vec<CodeSearchHit>> {
     let root = canonical_root(&root)?;
-    let tree = project::scan(&root);
+    let tree = tree_for(&state, &root)?;
     Ok(project::search_contents(
         &root,
         &tree.entries,
@@ -162,9 +197,13 @@ pub async fn code_search(
 
 /// 文件名模糊搜索(快速打开文件用):按子序列匹配,返回相对路径。
 #[tauri::command]
-pub async fn code_search_files(root: String, query: String) -> CmdResult<Vec<CodeEntry>> {
+pub async fn code_search_files(
+    state: State<'_, AppState>,
+    root: String,
+    query: String,
+) -> CmdResult<Vec<CodeEntry>> {
     let root = canonical_root(&root)?;
-    let tree = project::scan(&root);
+    let tree = tree_for(&state, &root)?;
     let q = query.to_lowercase();
     let mut hits: Vec<CodeEntry> = tree
         .entries
@@ -296,6 +335,10 @@ pub async fn code_lsp_stop(state: State<'_, AppState>, root: String) -> CmdResul
         let mut map = state.code_lsp.lock().map_err(|_| "lock poisoned")?;
         map.remove(&key)
     };
+    if let Ok(mut trees) = state.code_trees.lock() {
+        // 这个根被拆掉了:文件树缓存也跟着走,别让关掉的项目一直挂在内存里。
+        trees.remove(&key);
+    }
     if let Some(m) = manager {
         m.stop_all();
     }

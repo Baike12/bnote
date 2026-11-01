@@ -5,6 +5,8 @@ import { useAppStore } from "@/state/appStore";
 import { useCodeStore } from "./store";
 import { activeCodeEditor } from "./editor/registry";
 import { findReferences, gotoDefinition, renameSymbol } from "./editor/goto";
+import { cmToLspPosition } from "./editor/positions";
+import { nextProblemTarget, type ProblemTarget } from "./problems";
 import { requestCodeUi } from "./ui";
 
 /**
@@ -55,23 +57,31 @@ function cycleTab(dir: 1 | -1): void {
 }
 
 /** 跳到下一个/上一个问题(诊断)。 */
-function cycleProblem(dir: 1 | -1): void {
+function cycleProblem(direction: 1 | -1): void {
   const store = useCodeStore.getState();
-  const entries = Object.entries(store.diagnostics).flatMap(([path, list]) =>
+  const problems: ProblemTarget[] = Object.entries(store.diagnostics).flatMap(([path, list]) =>
     list.map((d) => ({ path, position: d.range.start })),
   );
-  if (entries.length === 0) return;
-  const current = store.activePath;
-  const currentIndex = entries.findIndex(
-    (e) => e.path === current && e.position.line === (store.diagnostics[current!]?.[0]?.range.start.line ?? -1),
+  // 游标是**光标**的位置,不是「当前文件的第 0 条诊断」:后者会让同一文件
+  // 里的第二条问题永远轮不到(见 problems.ts 的说明)。
+  const handle = activeCodeEditor();
+  const target = nextProblemTarget(
+    problems,
+    {
+      path: handle?.path ?? store.activePath,
+      position: handle
+        ? cmToLspPosition(handle.view.state.doc, handle.view.state.selection.main.head)
+        : null,
+    },
+    direction,
   );
-  const next = entries[(currentIndex + dir + entries.length) % entries.length];
-  void store.openFile(next.path);
-  store.requestJump(next.path, next.position);
+  if (!target) return;
+  void store.openFile(target.path);
+  store.requestJump(target.path, target.position);
 }
 
 /** 打开一个项目(原生目录选择框)。 */
-async function openProjectDialog(): Promise<void> {
+export async function openProjectDialog(): Promise<void> {
   const selection = await openFileDialog({
     directory: true,
     title: "选择代码项目文件夹",
@@ -312,6 +322,15 @@ export const codeCommandDefs: CommandDef[] = [
     run: () => {
       const { settings, patchSettings } = useAppStore.getState();
       patchSettings({ codeVim: !settings.codeVim });
+    },
+  },
+  {
+    id: "code.toggle-wrap",
+    title: "切换代码折行",
+    category: "代码",
+    run: () => {
+      const { settings, patchSettings } = useAppStore.getState();
+      patchSettings({ codeWrap: !settings.codeWrap });
     },
   },
 ];

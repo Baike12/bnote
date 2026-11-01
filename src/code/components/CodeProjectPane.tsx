@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useState } from "react";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/state/appStore";
 import { useCodeStore } from "../store";
 import { FileTree } from "./FileTree";
@@ -7,7 +6,7 @@ import { DiffView } from "./DiffView";
 import { ProblemsPanel, ReferencesPanel } from "./Panels";
 import { CodeEditor } from "../editor/CodeEditor";
 import { CodeOverlays } from "./CodeOverlays";
-import { openProjectAt } from "../commands";
+import { openProjectAt, openProjectDialog } from "../commands";
 
 /**
  * 学习模式中栏的「代码项目」视图。
@@ -18,7 +17,7 @@ import { openProjectAt } from "../commands";
  * ┌──────────────────────────────────────────┐
  * │ [文件树] │ 标签页…            │ 差异 问题 │  ← 工具条
  * ├──────────┴───────────────────┴──────────┤
- * │ 文件树(抽屉)│ 编辑器 / 差异视图            │
+ * │ 文件树      │ 编辑器 / 差异视图            │
  * ├──────────────────────────────────────────┤
  * │ 问题 / 引用(可折叠)                       │
  * ├──────────────────────────────────────────┤
@@ -26,8 +25,8 @@ import { openProjectAt } from "../commands";
  * └──────────────────────────────────────────┘
  * ```
  *
- * 文件树是**抽屉**:展开时盖在编辑器左边而不是把它挤窄——中栏宽度是用户拖
- * 出来的,不该被一个临时面板改掉。
+ * 文件树是**并排的一栏**:展开时把编辑器挤到右边,而不是盖在编辑器上面。
+ * 盖着会把代码从中间切断(半行字压在树底下),看着像渲染坏了。
  */
 export function CodeProjectPane() {
   const project = useCodeStore((s) => s.project);
@@ -49,6 +48,8 @@ export function CodeProjectPane() {
   const setProblemsOpen = useCodeStore((s) => s.setProblemsOpen);
   const setDiff = useCodeStore((s) => s.setDiff);
   const rescan = useCodeStore((s) => s.rescan);
+  const codeWrap = useAppStore((s) => s.settings.codeWrap);
+  const patchSettings = useAppStore((s) => s.patchSettings);
 
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
   const [vimMode, setVimMode] = useState("");
@@ -63,14 +64,14 @@ export function CodeProjectPane() {
 
   if (!project) {
     return (
-      <div className="content-pane code-pane" data-key-region="code">
+      <div className="code-pane" data-key-region="code">
         <CodeEmptyState />
       </div>
     );
   }
 
   return (
-    <div className="content-pane code-pane" data-key-region="code">
+    <div className="code-pane" data-key-region="code">
       <div className="code-toolbar">
         <button
           type="button"
@@ -82,26 +83,31 @@ export function CodeProjectPane() {
           文件树
         </button>
         <div className="code-tabs">
-          {tabs.map((path) => (
-            <button
-              type="button"
-              key={path}
-              className={`code-tab${path === activePath ? " is-active" : ""}`}
-              onClick={() => setActiveTab(path)}
-              title={path}
-            >
-              <span className="code-tab-name">{baseName(path)}</span>
-              <span
-                className="code-tab-close"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(path);
-                }}
+          {tabs.map((path) => {
+            const open = files[path];
+            const dirty = !!open && open.content !== open.saved;
+            return (
+              <button
+                type="button"
+                key={path}
+                className={`code-tab${path === activePath ? " is-active" : ""}`}
+                onClick={() => setActiveTab(path)}
+                title={path}
               >
-                ×
-              </span>
-            </button>
-          ))}
+                <span className="code-tab-name">{baseName(path)}</span>
+                {dirty && <span className="code-tab-dirty" title="有未保存的改动" />}
+                <span
+                  className="code-tab-close"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(path);
+                  }}
+                >
+                  ×
+                </span>
+              </button>
+            );
+          })}
         </div>
         <button
           type="button"
@@ -131,6 +137,15 @@ export function CodeProjectPane() {
         >
           问题{problemCount > 0 ? ` ${problemCount}` : ""}
         </button>
+        <button
+          type="button"
+          className={`code-tool-btn${codeWrap ? " is-on" : ""}`}
+          title="长行折行(⌥Z)"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => patchSettings({ codeWrap: !codeWrap })}
+        >
+          折行
+        </button>
       </div>
 
       <div className="code-body">
@@ -142,9 +157,16 @@ export function CodeProjectPane() {
         <div className="code-main">
           {diffPath ? (
             <DiffView path={diffPath} />
+          ) : activeFile?.binary ? (
+            // 二进制 / 超过 2 MiB 的文件后端只回空串:绝不能把空编辑器摆出来
+            // ——一敲键再保存就把原文件整篇清空了。
+            <div className="code-empty">
+              二进制文件(或超过 2 MiB),不在这里编辑
+            </div>
           ) : activeFile ? (
+            // 不挂 key:切标签时复用同一个 CodeEditor 实例,句柄里的
+            // EditorState 缓存才留得住(撤销栈与光标不会随切换丢掉)。
             <CodeEditor
-              key={activeFile.path}
               file={activeFile}
               onCursor={(line, column) => setCursor({ line, column })}
               onMode={setVimMode}
@@ -188,13 +210,8 @@ function CodeEmptyState() {
       <button
         type="button"
         className="code-empty-btn"
-        onClick={async () => {
-          const selection = await openFileDialog({
-            directory: true,
-            title: "选择代码项目文件夹",
-          });
-          if (typeof selection === "string") await openProjectAt(selection);
-        }}
+        // 与工具栏 / 命令走同一条路(含「最近项目」与学习历史记账)。
+        onClick={() => void openProjectDialog()}
       >
         选择文件夹…
       </button>

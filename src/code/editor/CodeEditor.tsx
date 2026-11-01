@@ -20,7 +20,7 @@ import {
   closeBracketsKeymap,
   completionKeymap,
 } from "@codemirror/autocomplete";
-import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
+import { bracketMatching, foldGutter, foldKeymap, indentOnInput, indentUnit } from "@codemirror/language";
 import { lintKeymap } from "@codemirror/lint";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { codeHighlighting } from "@/editor/markdown";
@@ -32,6 +32,7 @@ import {
 } from "@/editor/vim/vim";
 import { getCM } from "@replit/codemirror-vim";
 import { useAppStore } from "@/state/appStore";
+import { typewriterExtension } from "@/editor/typewriter";
 import { useCodeStore, type OpenFile } from "../store";
 import { codeApi } from "../api";
 import { findLanguage } from "./language";
@@ -60,6 +61,8 @@ import { registerCodeEditor, setActiveCodeEditor, unregisterCodeEditor } from ".
 
 const languageCompartment = new Compartment();
 const vimCompartment = new Compartment();
+const wrapCompartment = new Compartment();
+const typewriterCompartment = new Compartment();
 
 export interface CodeEditorProps {
   file: OpenFile;
@@ -80,15 +83,32 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
   /**
    * 往语言服务器推内容的防抖句柄(按文件分桶):打字的每一击都推会把服务器
    * 淹掉。按文件分是因为切文件时旧文件的待推内容不能被新文件的取消掉。
+   *
+   * 同时记下待推的 root 与文本:卸载(切去 PDF / 关项目)时要**先推完再走**,
+   * 否则最后 300ms 里敲的内容服务器永远看不到,诊断停在旧文本上。
    */
-  const syncTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const syncTimersRef = useRef(
+    new Map<string, { timer: ReturnType<typeof setTimeout>; root: string; text: string }>(),
+  );
 
   const codeVim = useAppStore((s) => s.settings.codeVim);
+  const codeWrap = useAppStore((s) => s.settings.codeWrap);
+  // 打字机模式与笔记共用一份设置(含光标纵向位置):同一套模型,不为代码区
+  // 再开一套开关。
+  const typewriter = useAppStore((s) => s.settings.typewriter);
+  const typewriterPosition = useAppStore((s) => s.settings.typewriterPosition);
   const jump = useCodeStore((s) => s.jump);
   const content = file.content;
 
-  /** 缩进宽度:打开文件时猜一次,之后不变。 */
-  const tabSize = file.tabSize || 2;
+  /**
+   * 缩进:打开文件时猜一次,之后不变。
+   *
+   * `indentUnit` 是**回车/ Tab 真的写进去的东西**(2 空格、4 空格或一个制表
+   * 符);`tabSize` 只决定 Tab 画出来多宽。两个都要给:只设 tabSize 的话
+   * 自动缩进仍旧是 CodeMirror 默认的 2 空格,4 空格缩进的项目会被敲成混排。
+   */
+  const indentUnitText = file.indentUnit || "  ";
+  const tabSize = file.tabSize || indentUnitText.length;
 
   // ---- 建视图(只建一次) ----
   useEffect(() => {
@@ -106,13 +126,25 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     });
     viewRef.current = view;
     return () => {
-      for (const timer of timers.values()) clearTimeout(timer);
+      // 待推的内容先推完:clearTimeout 掉就等于最后几次输入永远不给服务器。
+      for (const [path, pending] of timers) {
+        clearTimeout(pending.timer);
+        void codeApi.lspSync(pending.root, path, pending.text).catch(() => {});
+      }
       timers.clear();
       view.destroy();
       viewRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** 把光标位置与 vim 模式报给状态条(切文件、换状态时用)。 */
+  function reportCursor(view: EditorView): void {
+    const pos = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(pos);
+    onCursor?.(line.number, pos - line.from + 1);
+    onMode?.(vimModeOf(view) ?? "");
+  }
 
   /** 构造扩展集(建视图与换文件时共用)。 */
   function buildExtensions(): Extension[] {
@@ -126,6 +158,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       highlightSelectionMatches(),
       EditorState.allowMultipleSelections.of(true),
       EditorState.tabSize.of(tabSize),
+      indentUnit.of(indentUnitText),
       indentOnInput(),
       bracketMatching(),
       closeBrackets(),
@@ -146,6 +179,8 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       ]),
       languageCompartment.of([]),
       vimCompartment.of([]),
+      wrapCompartment.of(codeWrap ? EditorView.lineWrapping : []),
+      typewriterCompartment.of(typewriter ? typewriterExtension(typewriterPosition) : []),
       EditorView.theme({
         "&": { height: "100%" },
         ".cm-scroller": {
@@ -175,8 +210,8 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
         autocomplete: "off",
       }),
       EditorView.updateListener.of((u) => {
+        const handle = handleRef.current;
         if (u.docChanged) {
-          const handle = handleRef.current;
           if (handle) {
             const text = u.state.doc.toString();
             useCodeStore.getState().updateContent(handle.path, text);
@@ -187,18 +222,22 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
             if (state.lspStates[handle.language] === "running") {
               const timers = syncTimersRef.current;
               const pending = timers.get(handle.path);
-              if (pending) clearTimeout(pending);
-              timers.set(
-                handle.path,
-                setTimeout(() => {
+              if (pending) clearTimeout(pending.timer);
+              timers.set(handle.path, {
+                root: handle.root,
+                text,
+                timer: setTimeout(() => {
                   timers.delete(handle.path);
                   void codeApi.lspSync(handle.root, handle.path, text).catch(() => {});
                 }, 300),
-              );
+              });
             }
           }
         }
         if (u.selectionSet || u.docChanged) {
+          // 光标也算「这份文件的状态」:只存 docChanged 的版本,切走再切回来
+          // 会回到上次敲字那一刻的光标(甚至文首),「我上次读到哪」就丢了。
+          if (handle) statesRef.current.set(handle.path, u.state);
           const pos = u.state.selection.main.head;
           const line = u.state.doc.lineAt(pos);
           onCursor?.(line.number, pos - line.from + 1);
@@ -228,7 +267,10 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       statesRef.current.set(file.path, state);
     }
     view.setState(state);
-    view.dispatch({ selection: { anchor: 0 } });
+    // setState 已经把该文件上次的光标与选区一起换回来了。不要再 dispatch
+    // `anchor: 0`——那样每切一次标签光标都跳回文首,缓存的 EditorState 只
+    // 保住了撤销栈,却把「我上次读到哪」丢了。状态条也跟着刷一次。
+    reportCursor(view);
 
     return () => {
       if (handleRef.current === handle) handleRef.current = null;
@@ -236,6 +278,32 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.path]);
+
+  // ---- 关掉的标签:把它的 EditorState 从缓存里删掉 ----
+  //
+  // 不删的话,一个长会话开过的每个文件都留一份完整文档 + 撤销栈。缓存只在
+  // 标签还开着时有用(关掉的标签下次打开就是重新读盘)。
+  //
+  // 待推给语言服务器的内容也要一起丢掉:关标签时 store 已经发了 didClose,
+  // 一个 300ms 后才到的 didChange 会在服务器那边把文档又「打开」一次。
+  //
+  // 订阅里先比 tabs 的引用:store 每敲一个键都会通知,不能每个键都建一次 Set。
+  useEffect(() => {
+    let lastTabs = useCodeStore.getState().tabs;
+    return useCodeStore.subscribe((s) => {
+      if (s.tabs === lastTabs) return;
+      lastTabs = s.tabs;
+      const open = new Set(s.tabs);
+      for (const path of [...statesRef.current.keys()]) {
+        if (!open.has(path)) statesRef.current.delete(path);
+      }
+      for (const [path, pending] of [...syncTimersRef.current]) {
+        if (open.has(path)) continue;
+        clearTimeout(pending.timer);
+        syncTimersRef.current.delete(path);
+      }
+    });
+  }, []);
 
   // ---- 语法包:按 languageId 动态载入 ----
   //
@@ -288,6 +356,34 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     });
     if (!codeVim) onMode?.("");
   }, [codeVim, file.path, onMode]);
+
+  // ---- 折行开关 ----
+  //
+  // 同样依赖 file.path:换文件换一份新 state,折行是每个 state 自己的扩展。
+  // 用隔层重配而不是重建视图——切折行不该把撤销栈和光标一起丢掉。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: wrapCompartment.reconfigure(codeWrap ? EditorView.lineWrapping : []),
+    });
+  }, [codeWrap, file.path]);
+
+  // ---- 打字机模式 ----
+  //
+  // 与笔记区同一个模型(编辑器/typewriter.ts):光标行停在视口固定比例处,
+  // 上下留白由同一个比例推出(--typewriter-top / --typewriter-bottom 写在
+  // scrollDOM 上,正文内边距在 CSS 里读它)。位置改了要重建插件,所以位置
+  // 也在依赖里;换文件后同样要重配一次——隔层跟着 EditorState 走。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: typewriterCompartment.reconfigure(
+        typewriter ? typewriterExtension(typewriterPosition) : [],
+      ),
+    });
+  }, [typewriter, typewriterPosition, file.path]);
 
   // ---- 外部改动:整篇换掉(重命名后重读盘) ----
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type FocusEvent as ReactFocusEvent } from "react";
 import {
   agentApi,
   translateApi,
@@ -436,6 +436,12 @@ function EditorTab() {
           desc="代码编辑器里单独开 vim。与笔记的开关分开：两边的手感常常不同，各开各的更贴近真实工作流。快捷键也各归各的代码区/笔记区，互不干扰。"
           checked={settings.codeVim}
           onChange={(v) => patch({ codeVim: v })}
+        />
+        <Toggle
+          label="代码编辑器折行"
+          desc="中栏不宽（展开文件树后更窄），长行默认折着看。要按列对齐的文件可以关掉；代码区里按 ⌥Z 或点工具条的「折行」临时切换。"
+          checked={settings.codeWrap}
+          onChange={(v) => patch({ codeWrap: v })}
         />
         <Row
           label="代码块语言"
@@ -1989,6 +1995,7 @@ function CodeLspSettingsCard() {
   const patch = useAppStore((s) => s.patchSettings);
   const [text, setText] = useState(() => JSON.stringify(settings.codeLspServers ?? {}, null, 2));
   const [error, setError] = useState<string | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
 
   const apply = () => {
     const trimmed = text.trim();
@@ -2010,6 +2017,17 @@ function CodeLspSettingsCard() {
     }
   };
 
+  /**
+   * 失焦即生效,但**只在焦点离开这张卡片时**生效:CodeArea 自带搜索框,
+   * 在编辑器与搜索框之间点一下也算 blur——那次不该把用户正在写的半截
+   * JSON 提交上去、报一个假错。
+   */
+  const handleBlur = (e: ReactFocusEvent<HTMLDivElement>) => {
+    const next = e.relatedTarget as Node | null;
+    if (next && hostRef.current?.contains(next)) return;
+    apply();
+  };
+
   return (
     <SettingsCard
       title="代码项目"
@@ -2021,15 +2039,17 @@ function CodeLspSettingsCard() {
         </>
       }
     >
-      <div className="settings-block">
-        <textarea
-          className="settings-textarea"
-          spellCheck={false}
-          rows={6}
+      <div className="settings-block" ref={hostRef} onBlur={handleBlur}>
+        {/* JSON 也是代码:与「公式片段」用同一个 CodeArea(行号、折行、搜索),
+            而不是一个能写错括号还看不见行号的 textarea。 */}
+        <CodeArea
           value={text}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={apply}
-          placeholder={'{\n  "typescript": { "command": "typescript-language-server", "args": ["--stdio"] }\n}'}
+          onChange={(value) => {
+            setText(value);
+            setError(null);
+          }}
+          height="22vh"
+          searchPlaceholder="搜索语言 id 或命令"
         />
         {error ? (
           <div className="settings-error">{error}</div>

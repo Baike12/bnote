@@ -136,10 +136,53 @@ pub fn resolve_server(
     if let Some(p) = project.languages.get(language) {
         config = merge(config, p);
     }
+    if language == "python" {
+        apply_python_venv(root, &mut config);
+    }
     Some(ResolvedServer {
         config,
         disabled: false,
     })
+}
+
+/// Python 项目的虚拟环境:根目录下的 `.venv` / `venv`(有 `bin/python` 才算)。
+///
+/// 与 Zed 的 Python 扩展同一判定:venv 只在工作区根上找,不递归(子项目用
+/// 自己的根打开);`bin/python` 必须存在,否则那只是个同名目录。
+pub fn find_python_venv(root: &Path) -> Option<PathBuf> {
+    for name in [".venv", "venv"] {
+        let dir = root.join(name);
+        if dir.join("bin/python").is_file() || dir.join("bin/python3").is_file() {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// 把 venv 交给语言服务器:**`VIRTUAL_ENV` + `PATH` 前置 bin**。
+///
+/// ty / pyright / pylsp 都按这两个变量选解释器(而不是项目根里有没有
+/// `.venv` 目录),所以必须注入到子进程环境里;用户显式配的 env 优先
+/// (`entry` 不覆盖已有键,`PATH` 那条也先看配置里有没有)。
+fn apply_python_venv(root: &Path, config: &mut ServerConfig) {
+    let Some(venv) = find_python_venv(root) else {
+        return;
+    };
+    let bin = venv.join("bin");
+    config
+        .env
+        .entry("VIRTUAL_ENV".to_string())
+        .or_insert_with(|| venv.to_string_lossy().to_string());
+    if !config.env.contains_key("PATH") {
+        let base = std::env::var("PATH").unwrap_or_default();
+        let mut paths = vec![bin];
+        paths.extend(std::env::split_paths(&base));
+        if let Ok(joined) = std::env::join_paths(paths) {
+            config
+                .env
+                .insert("PATH".to_string(), joined.to_string_lossy().to_string());
+        }
+    }
 }
 
 /// 两份配置合并:后者的非空字段盖前者。
@@ -460,6 +503,66 @@ mod tests {
         std::fs::write(root.join(".bnote/lsp.json"), "{ not json").unwrap();
         let r = resolve_server(&root, "rust", None).unwrap();
         assert_eq!(r.config.command, "rust-analyzer");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_uses_root_venv_when_present() {
+        let root = tmpdir("venv");
+        std::fs::create_dir_all(root.join(".venv/bin")).unwrap();
+        std::fs::write(root.join(".venv/bin/python"), "").unwrap();
+        let r = resolve_server(&root, "python", None).unwrap();
+        let venv = root.join(".venv").to_string_lossy().to_string();
+        assert_eq!(r.config.env.get("VIRTUAL_ENV"), Some(&venv));
+        let path = r.config.env.get("PATH").expect("PATH 会被前置 venv 的 bin");
+        assert_eq!(
+            std::env::split_paths(path).next(),
+            Some(root.join(".venv/bin"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_falls_back_to_venv_dir_and_ignores_empty_dirs() {
+        let root = tmpdir("venv2");
+        // 没有 bin/python 的 .venv 不算虚拟环境。
+        std::fs::create_dir_all(root.join(".venv")).unwrap();
+        std::fs::create_dir_all(root.join("venv/bin")).unwrap();
+        std::fs::write(root.join("venv/bin/python3"), "").unwrap();
+        let r = resolve_server(&root, "python", None).unwrap();
+        assert_eq!(
+            r.config.env.get("VIRTUAL_ENV"),
+            Some(&root.join("venv").to_string_lossy().to_string())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_without_venv_gets_no_env_override() {
+        let root = tmpdir("novenv");
+        let r = resolve_server(&root, "python", None).unwrap();
+        assert!(r.config.env.is_empty());
+        // 别的语言不碰 venv(venv 目录存在也不注入)。
+        std::fs::create_dir_all(root.join(".venv/bin")).unwrap();
+        std::fs::write(root.join(".venv/bin/python"), "").unwrap();
+        let r = resolve_server(&root, "rust", None).unwrap();
+        assert!(r.config.env.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn user_env_wins_over_detected_venv() {
+        let root = tmpdir("venvuser");
+        std::fs::create_dir_all(root.join(".venv/bin")).unwrap();
+        std::fs::write(root.join(".venv/bin/python"), "").unwrap();
+        std::fs::create_dir_all(root.join(".bnote")).unwrap();
+        std::fs::write(
+            root.join(".bnote/lsp.json"),
+            r#"{"languages":{"python":{"env":{"VIRTUAL_ENV":"/opt/py"}}}}"#,
+        )
+        .unwrap();
+        let r = resolve_server(&root, "python", None).unwrap();
+        assert_eq!(r.config.env.get("VIRTUAL_ENV").map(String::as_str), Some("/opt/py"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

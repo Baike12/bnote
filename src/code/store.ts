@@ -3,6 +3,7 @@ import { codeApi } from "./api";
 import { useAppStore } from "@/state/appStore";
 import type {
   CodeEntry,
+  CodeFile,
   CodeProjectInfo,
   GitStatus,
   LspDiagnostic,
@@ -32,11 +33,13 @@ export interface OpenFile {
   binary: boolean;
   size: number;
   /**
-   * 缩进宽度(打开时从内容里猜一次,之后不变)。
+   * 缩进单位(打开时从内容里猜一次,之后不变):`"  "` / `"\t"` 之类。
    *
    * 打开后再猜会让「内容变一次 → 缩进变一次 → 重建编辑器 → 撤销栈没了」
    * 这种连锁反应;猜一次定死更稳。
    */
+  indentUnit: string;
+  /** Tab 的显示宽度(空格缩进时就是缩进宽度,制表符按 4 显示)。 */
   tabSize: number;
 }
 
@@ -109,17 +112,34 @@ export interface CodeState {
 /** 语言服务器日志最多留多少条(免得长会话把内存吃满)。 */
 const LOG_LIMIT = 200;
 
-/** 从内容里猜缩进宽度(取前若干行里最小的缩进)。 */
-export function detectIndent(content: string): number {
+/** 制表符按几列显示(缩进单位是 "\t" 时的 tabSize)。 */
+const TAB_DISPLAY_WIDTH = 4;
+
+/**
+ * `openFile` 的请求序号:连点两个文件时只认最后一次。
+ *
+ * 模块级而不是 state:它不驱动渲染,只是个丢弃过期读盘结果的闸门。
+ */
+let openSeq = 0;
+
+/**
+ * 从内容里猜缩进单位(取前若干行里第一条缩进行)。
+ *
+ * 返回**真要写进文本的东西**:制表符文件返回 `"\t"`,空格文件返回对应个数
+ * 的空格。它同时供两处用:`indentUnit`(回车 / Tab 真的插什么)与 `tabSize`
+ * (一个 Tab 画多宽)。只给宽度不给单位的话,4 空格缩进的项目会被回车敲成
+ * 2 空格,一座文件里混进两种缩进。
+ */
+export function detectIndent(content: string): string {
   const lines = content.split("\n").slice(0, 200);
   for (const line of lines) {
     if (!line.trim()) continue;
     const indent = /^[ \t]*/.exec(line)?.[0] ?? "";
     if (indent.length === 0) continue;
-    if (indent.includes("\t")) return 1; // Tab 缩进:一个 Tab 一级
-    return Math.min(indent.length, 8);
+    if (indent.includes("\t")) return "\t"; // Tab 缩进:一个 Tab 一级
+    return " ".repeat(Math.min(indent.length, 8));
   }
-  return 2;
+  return "  ";
 }
 
 export const useCodeStore = create<CodeState>((set, get) => ({
@@ -140,6 +160,20 @@ export const useCodeStore = create<CodeState>((set, get) => ({
 
   async openProject(root) {
     const info = await codeApi.openProject(root);
+    const previous = get().project;
+    // 同一个项目重开(点了历史菜单里的当前项目):只换一份新文件树,**不动
+    // 标签与缓冲区**。走下面那条清空路的话,未保存的改动与撤销栈一起没了。
+    if (previous && previous.root === info.root) {
+      set({ project: info });
+      return;
+    }
+    // 换项目 = 换沙箱边界。旧项目起的语言服务器必须停掉:它们按根路径存活,
+    // 不停就是一组孤儿进程(还各自攥着一份文件树)。
+    if (previous) await codeApi.lspStop(previous.root).catch(() => {});
+    // 缓冲区随项目一起清空:先把有改动的文件落盘,不存就丢了(与关项目同一条纪律)。
+    for (const path of Object.keys(get().files)) {
+      if (isDirty(get(), path)) await get().saveFile(path);
+    }
     set({
       project: info,
       tabs: [],
@@ -152,6 +186,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       treeOpen: false,
       problemsOpen: false,
       diffPath: null,
+      diffStaged: false,
       jump: null,
       references: null,
     });
@@ -192,6 +227,8 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     const project = get().project;
     if (!project) return;
     set({ project: { ...project, tree } });
+    // 外部新建/删除文件同样会改 git 状态(新增未跟踪、删除),顺手刷一次。
+    await get().refreshGit();
   },
 
   async openFile(path) {
@@ -206,7 +243,18 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       }));
       return;
     }
-    const file = await codeApi.readFile(root, path);
+    // 连点两个文件时,读盘有先后:只认最后一次请求的结果。不认序的话,
+    // 先点的那份晚到一步就会把光标夺回旧文件。
+    const seq = ++openSeq;
+    let file: CodeFile;
+    try {
+      file = await codeApi.readFile(root, path);
+    } catch (e) {
+      useAppStore.getState().showToast(`打开 ${path} 失败: ${String(e)}`);
+      return;
+    }
+    if (seq !== openSeq) return;
+    const indentUnit = detectIndent(file.content);
     set((s) => ({
       tabs: s.tabs.includes(path) ? s.tabs : [...s.tabs, path],
       activePath: path,
@@ -219,17 +267,19 @@ export const useCodeStore = create<CodeState>((set, get) => ({
           languageId: file.languageId,
           binary: file.binary,
           size: file.size,
-          tabSize: detectIndent(file.content),
+          indentUnit,
+          tabSize: indentUnit === "\t" ? TAB_DISPLAY_WIDTH : indentUnit.length,
         },
       },
     }));
     // 语言服务器起来了就顺手把文档推上去,补全/跳转立刻可用。
-    void get().ensureLsp(file.languageId);
+    if (!file.binary) void get().ensureLsp(file.languageId);
   },
 
   closeTab(path) {
     // 有未保存的改动就先落盘:缓冲区随标签一起消失,不存就丢了。
     if (isDirty(get(), path)) void get().saveFile(path);
+    const root = get().project?.root;
     set((s) => {
       const tabs = s.tabs.filter((p) => p !== path);
       const files = { ...s.files };
@@ -238,6 +288,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
         s.activePath === path ? (tabs[tabs.length - 1] ?? null) : s.activePath;
       return { tabs, files, activePath };
     });
+    // 服务器那边的文档也要关:不关它会把已关闭文件的诊断继续推回来
+    // (问题面板里挂着一个「幽灵文件」),还一直攥着那份文本。
+    if (root) void codeApi.lspClose(root, path).catch(() => {});
   },
 
   setActiveTab(path) {
@@ -257,7 +310,15 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     const root = get().project?.root;
     const file = get().files[path];
     if (!root || !file) return;
-    await codeApi.writeFile(root, path, file.content);
+    // 二进制 / 超大文件的内容根本没读进来(content 是空串)。放过去就等于
+    // 把整篇文件写成空——宁可什么都不做。
+    if (file.binary) return;
+    try {
+      await codeApi.writeFile(root, path, file.content);
+    } catch (e) {
+      useAppStore.getState().showToast(`保存 ${path} 失败: ${String(e)}`);
+      return;
+    }
     set((s) => {
       const current = s.files[path];
       if (!current) return s;

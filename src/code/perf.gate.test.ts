@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTree, naturalCompare } from "./tree";
+import { buildTree, naturalCompare, searchFilesByName, visibleRows } from "./tree";
 import { detectIndent } from "./store";
 import { alignHunk, parseUnifiedDiff } from "./diff";
 import type { CodeEntry } from "./types";
@@ -108,5 +108,31 @@ describe("代码模块量级门禁", () => {
     }
     const med = median(samples);
     expect(med, `猜缩进中位数 ${med.toFixed(1)}ms`).toBeLessThan(2.5);
+  });
+
+  it("拍平文件树(2 万个文件) < 6ms(虚拟滚动每次都拍一次)", () => {
+    const roots = buildTree(repoEntries(20000));
+    const samples: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      const t0 = performance.now();
+      visibleRows(roots, new Set());
+      samples.push(performance.now() - t0);
+    }
+    const med = median(samples);
+    console.warn(`[perf] 拍平文件树 中位 ${med.toFixed(2)}ms`);
+    expect(med, `拍平文件树中位数 ${med.toFixed(2)}ms`).toBeLessThan(6);
+  });
+
+  it("快速打开:2 万个文件里过滤 < 8ms(每键一次,不许走 IPC 重扫仓库)", () => {
+    const entries = repoEntries(20000);
+    const samples: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      const t0 = performance.now();
+      searchFilesByName(entries, "file199");
+      samples.push(performance.now() - t0);
+    }
+    const med = median(samples);
+    console.warn(`[perf] 快速打开过滤 中位 ${med.toFixed(2)}ms`);
+    expect(med, `快速打开过滤中位数 ${med.toFixed(2)}ms`).toBeLessThan(8);
   });
 });

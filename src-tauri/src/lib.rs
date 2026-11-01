@@ -173,6 +173,7 @@ pub fn run() {
                 python_runs: std::sync::Arc::new(python::runner::RunRegistry::new()),
                 python_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
                 code_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
+                code_trees: std::sync::Mutex::new(std::collections::HashMap::new()),
             });
 
             #[cfg(target_os = "macos")]

@@ -570,6 +570,20 @@ export function ContentPane() {
     }
   }
 
+  /**
+   * 打开代码项目:原生目录选择框 → 切中栏到代码视图。
+   *
+   * 命令模块按需载入(代码模块带着编辑器,不该拖进首屏)。
+   */
+  async function pickCodeProject() {
+    try {
+      const { openProjectDialog } = await import("@/code/commands");
+      await openProjectDialog();
+    } catch (e) {
+      showToast(`打开代码项目失败: ${String(e)}`);
+    }
+  }
+
   return (
     <div
       className={`content-pane${dragging ? " dragging" : ""}`}
@@ -617,6 +631,10 @@ export function ContentPane() {
             setHistoryOpen(false);
             void pickPdf();
           }}
+          onOpenCodeProject={() => {
+            setHistoryOpen(false);
+            void pickCodeProject();
+          }}
         />
         <div className="content-tool-right">
           <input
@@ -636,6 +654,13 @@ export function ContentPane() {
             disabled={importing}
           >
             ＋ PDF
+          </button>
+          <button
+            className="icon-btn text-tool-btn"
+            title="打开代码项目(选择文件夹)"
+            onClick={() => void pickCodeProject()}
+          >
+            ＋ 代码
           </button>
           {content && (
             <button
@@ -657,6 +682,9 @@ export function ContentPane() {
             </p>
             <button className="btn content-pick" onClick={() => void pickPdf()}>
               选择 PDF 文件
+            </button>
+            <button className="btn btn-ghost content-pick" onClick={() => void pickCodeProject()}>
+              打开代码项目…
             </button>
           </div>
         )}

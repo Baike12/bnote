@@ -12,12 +12,19 @@ import type { LspPosition, LspRange } from "../types";
 export function applyTextEdits(text: string, edits: unknown): string {
   if (!Array.isArray(edits)) return text;
   const lines = text.split("\n");
+  // 每行起点先算一次:一条编辑一次 slice+reduce 的话,大文件 × 多处编辑
+  // 会退成 O(编辑数 × 行数)(重命名一个热门符号能到上千处)。
+  const starts = new Array<number>(lines.length);
+  let acc = 0;
+  for (let i = 0; i < lines.length; i++) {
+    starts[i] = acc;
+    acc += lines[i].length + 1;
+  }
   const offsetOf = (position: LspPosition): number => {
-    const line = lines[position.line] ?? "";
-    const head = lines
-      .slice(0, Math.max(0, position.line))
-      .reduce((sum, l) => sum + l.length + 1, 0);
-    return head + Math.min(Math.max(0, position.character), line.length);
+    // 行号越界(服务器给了文档外的位置)= 文本末尾;列号越界 = 行尾。
+    if (position.line >= lines.length) return text.length;
+    const index = Math.max(0, position.line);
+    return starts[index] + Math.min(Math.max(0, position.character), lines[index].length);
   };
   const items = edits
     .map((edit) => {

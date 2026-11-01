@@ -7,6 +7,7 @@ use notify::RecommendedWatcher;
 
 use crate::agent::mcp::McpManager;
 use crate::code::lsp::LspManager;
+use crate::code::project::CodeTree;
 use crate::agent::session::Session;
 use crate::python::lsp::LspServer;
 use crate::python::runner::RunRegistry;
@@ -38,6 +39,10 @@ pub struct AppState {
     pub python_lsp: Mutex<HashMap<String, Arc<LspServer>>>,
     /// 活跃的代码项目语言服务器(key = 项目根绝对路径)。
     pub code_lsp: Mutex<HashMap<String, Arc<LspManager>>>,
+    /// 已扫出的代码项目文件树(key = 项目根绝对路径)。
+    ///
+    /// 打开项目与「重扫」写它,搜索读它——搜索不该自己再走一遍仓库。
+    pub code_trees: Mutex<HashMap<String, CodeTree>>,
 }
 
 impl AppState {

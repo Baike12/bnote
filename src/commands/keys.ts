@@ -175,6 +175,7 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.next-problem": "F8",
   "code.prev-problem": "Shift-F8",
   "code.git-diff": "Mod-Shift-d",
+  "code.toggle-wrap": "Alt-z",
 };
 
 /** 无显式归属表的命令按前缀分;少数例外写在下面。 */

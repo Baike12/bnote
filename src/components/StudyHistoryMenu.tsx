@@ -25,6 +25,8 @@ interface StudyHistoryMenuProps {
   onOpenShelf: () => void;
   onOpenCode: (entry: StudyCodeEntry) => void;
   onImportPdf: () => void;
+  /** 打开代码项目(原生目录选择框)——「代码」页签里的入口。 */
+  onOpenCodeProject: () => void;
 }
 
 /** 书籍副行只显示时间:阅读器 URL 尾段是哈希,对人没有信息量。 */
@@ -64,6 +66,7 @@ export function StudyHistoryMenu({
   onOpenShelf,
   onOpenCode,
   onImportPdf,
+  onOpenCodeProject,
 }: StudyHistoryMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -194,6 +197,11 @@ export function StudyHistoryMenu({
             {tab === "pdf" && (
               <button className="study-history-action" onClick={onImportPdf}>
                 ＋ 导入 PDF 到 vault/pdfs
+              </button>
+            )}
+            {tab === "code" && (
+              <button className="study-history-action" onClick={onOpenCodeProject}>
+                ＋ 打开代码项目…
               </button>
             )}
             {tab === "weread" && (

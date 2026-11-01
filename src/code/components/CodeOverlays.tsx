@@ -3,6 +3,7 @@ import { codeApi } from "../api";
 import { useCodeStore } from "../store";
 import { onCodeUiRequest, type CodeUiRequest } from "../ui";
 import { confirmRename } from "../commands";
+import { searchFilesByName } from "../tree";
 import type { CodeEntry, CodeSearchHit } from "../types";
 
 /**
@@ -29,6 +30,8 @@ export function CodeOverlays() {
 /** 快速打开:按文件名模糊搜,回车打开。 */
 function QuickOpen({ onClose }: { onClose: () => void }) {
   const root = useCodeStore((s) => s.project?.root ?? "");
+  const entries = useCodeStore((s) => s.project?.tree.entries);
+  const truncated = useCodeStore((s) => s.project?.tree.truncated ?? false);
   const openFile = useCodeStore((s) => s.openFile);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CodeEntry[]>([]);
@@ -40,11 +43,20 @@ function QuickOpen({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
     if (!query.trim()) {
       setResults([]);
+      setIndex(0);
       return;
     }
+    // 打开项目时文件树已经扫全了:在本地索引里过滤,每敲一个键都不用
+    // 走 IPC(让 Rust 每条输入重走一遍仓库太贵,结果还一样)。
+    if (!truncated) {
+      setResults(searchFilesByName(entries ?? [], query));
+      setIndex(0);
+      return;
+    }
+    // 索引被截断(超大仓库):只能回后端补扫,结果以最后一次输入为准。
+    let cancelled = false;
     codeApi
       .searchFiles(root, query)
       .then((hits) => {
@@ -58,7 +70,7 @@ function QuickOpen({ onClose }: { onClose: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, [root, query]);
+  }, [entries, query, root, truncated]);
 
   const pick = (path: string) => {
     void openFile(path);
@@ -202,6 +214,7 @@ function FindInFiles({ onClose }: { onClose: () => void }) {
 function RenamePrompt({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -212,9 +225,15 @@ function RenamePrompt({ onClose }: { onClose: () => void }) {
     const trimmed = name.trim();
     if (!trimmed || busy) return;
     setBusy(true);
+    setError(null);
     const ok = await confirmRename(trimmed);
     setBusy(false);
-    if (ok) onClose();
+    if (ok) {
+      onClose();
+      return;
+    }
+    // 改名失败原来什么都不说:框还开着,用户只会以为没按上。
+    setError("这个位置不能重命名(或语言服务器没在运行)");
   };
 
   return (
@@ -241,7 +260,7 @@ function RenamePrompt({ onClose }: { onClose: () => void }) {
         />
         <div className="code-overlay-actions">
           <span className="code-overlay-hint">
-            {busy ? "重命名中…" : "回车确认,Esc 取消"}
+            {busy ? "重命名中…" : error ?? "回车确认,Esc 取消"}
           </span>
           <button type="button" className="code-overlay-btn" onClick={onClose}>
             取消

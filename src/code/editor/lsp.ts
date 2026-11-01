@@ -96,9 +96,12 @@ export async function lspCompletion(
 ): Promise<CompletionResult | null> {
   const handle = activeCodeEditor();
   if (!handle) return null;
-  // 词没开始(光标前面是标点)且不是手动触发 → 不问服务器。
+  // `matchBefore(/[\w$]*/)` 永远有结果(空匹配也是匹配),所以「词没开始」要
+  // 看 text 是不是空——只看返回值的话这段守卫是死的,每敲一个标点都会问一次
+  // 服务器。
   const word = context.matchBefore(/[\w$]*/);
-  if (!word && !context.explicit) return null;
+  const typed = word?.text ?? "";
+  if (!typed && !context.explicit) return null;
 
   const raw = await codeApi
     .lspRequest(
@@ -175,7 +178,8 @@ export function toCompletion(item: Record<string, unknown>): Completion | null {
  * 当 HTML 插进页面就是注入面。转义后按行排版,代码感还在,风险没有。
  */
 export const lspHoverTooltip = hoverTooltip(async (view, pos) => {
-  const handle = activeCodeEditor();
+  // 按**这个视图**找文件,不按「当前聚焦的」:鼠标悬停不改变焦点。
+  const handle = handleForView(view);
   if (!handle) return null;
   const raw = await codeApi
     .lspRequest(

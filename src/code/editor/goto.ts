@@ -1,10 +1,12 @@
 import { codeApi } from "../api";
 import { useCodeStore } from "../store";
+import { useAppStore } from "@/state/appStore";
 import type { LspPosition, LspRange } from "../types";
 import { activeCodeEditor } from "./registry";
 import { cmToLspPosition } from "./positions";
 import { decodeFileUri } from "./uri";
 import { applyTextEdits } from "./textEdits";
+import { workspaceEditsOf } from "./workspaceEdit";
 
 /**
  * 跳转类动作:跳到定义、跳到引用、重命名。
@@ -81,8 +83,15 @@ async function requestTargets(method: string): Promise<CodeTarget[]> {
  */
 export async function gotoDefinition(method = "textDocument/definition"): Promise<void> {
   const targets = await requestTargets(method);
-  const first = targets[0];
-  if (!first) return;
+  // 项目外的位置(标准库、node_modules、Rust 源码)打不开:后端只放行项目根
+  // 内的路径。如实告诉用户,别去撞一个必然失败的 openFile。
+  const first = targets.find((t) => !t.external);
+  if (!first) {
+    if (targets.length > 0) {
+      useAppStore.getState().showToast("定义在项目外(依赖或标准库),不在这个面板里打开");
+    }
+    return;
+  }
   const store = useCodeStore.getState();
   await store.openFile(first.path);
   store.requestJump(first.path, first.position);
@@ -120,8 +129,12 @@ export async function findReferences(): Promise<void> {
  * 流程:先 `prepareRename` 拿到可改的区间(有的服务器不给,那就跳过这步),
  * 再 `rename` 拿 WorkspaceEdit,最后把 edit 落到磁盘上改动的那些文件。
  *
- * WorkspaceEdit 的文本编辑是按位置给的:同一文件里多处修改要**从后往前**
- * 应用,前面的偏移才不会因为前面的改动而失效。
+ * 两条纪律:
+ * 1. **以缓冲区为底**:打开着的文件可能带着未保存的改动,必须拿 buffer 的
+ *    内容算新文本(不是盘上的旧文本),否则用户没保存的编辑会被 rename 的
+ *    结果整篇覆盖掉;
+ * 2. **先算完再写**:所有文件的新文本都算好才动盘——读盘或解析中途失败时
+ *    一个文件都没改。写盘本身没法跨文件原子,写到一半失败只能如实报错。
  */
 export async function renameSymbol(newName: string): Promise<boolean> {
   const handle = activeCodeEditor();
@@ -144,30 +157,43 @@ export async function renameSymbol(newName: string): Promise<boolean> {
       newName,
     })
     .catch(() => null);
-  if (!edit || typeof edit !== "object") return false;
+  // WorkspaceEdit 有两种形状,两种都要认(见 workspaceEdit.ts)。
+  const fileEdits = workspaceEditsOf(edit);
+  if (fileEdits.length === 0) return false;
 
-  const changes = (edit as { changes?: Record<string, unknown> }).changes;
-  if (!changes) return false;
   const root = handle.root;
   const prefix = root.endsWith("/") ? root : `${root}/`;
+  const next = new Map<string, string>();
 
-  for (const [uri, edits] of Object.entries(changes)) {
+  for (const { uri, edits } of fileEdits) {
     const abs = decodeFileUri(uri);
-    if (!abs) continue;
-    if (!abs.startsWith(prefix)) continue; // 项目外的文件不改
+    if (!abs || !abs.startsWith(prefix)) continue; // 项目外的文件不改
     const rel = abs.slice(prefix.length);
-    const file = await codeApi.readFile(root, rel);
-    if (file.binary) continue;
-    const text = applyTextEdits(file.content, edits);
-    await codeApi.writeFile(root, rel, text);
+    const open = useCodeStore.getState().files[rel];
+    let base = open?.content;
+    if (base === undefined) {
+      const file = await codeApi.readFile(root, rel).catch(() => null);
+      if (!file || file.binary) continue;
+      base = file.content;
+    }
+    next.set(rel, applyTextEdits(base, edits));
   }
-  // 本地编辑器里的内容也要刷新:重读当前文件。
-  const store = useCodeStore.getState();
-  if (store.files[handle.path]) {
-    const fresh = await codeApi.readFile(root, handle.path);
-    store.replaceContent(handle.path, fresh.content);
+  if (next.size === 0) return false;
+
+  try {
+    for (const [rel, text] of next) {
+      await codeApi.writeFile(root, rel, text);
+      // 打开着的文件:缓冲区换成刚落盘的内容(标记为已保存)。不刷的话,
+      // 那个标签还是旧文本,下次保存又把重命名覆盖回去了。
+      if (useCodeStore.getState().files[rel]) {
+        useCodeStore.getState().replaceContent(rel, text);
+      }
+    }
+  } catch (e) {
+    useAppStore.getState().showToast(`重命名失败: ${String(e)}`);
+    return false;
   }
-  await store.refreshGit();
+  await useCodeStore.getState().refreshGit();
   return true;
 }
 

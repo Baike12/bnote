@@ -62,6 +62,13 @@ export interface Settings {
    */
   codeVim: boolean;
   /**
+   * 代码编辑器是否折行。
+   *
+   * 中栏就那么宽(默认 620px,展开文件树后只剩 430px),不折行时长行只能
+   * 横向拖着看。默认折行;要按列对齐的文件可以临时关掉(⌥Z / 工具条)。
+   */
+  codeWrap: boolean;
+  /**
    * 语言服务器的全局覆盖:languageId → 启动命令。
    *
    * 内置默认覆盖 ts / rust / go / python 等常见语言;这里改的是「用哪个
@@ -140,6 +147,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   vim: false,
   codeVim: false,
+  codeWrap: true,
   codeLspServers: {},
   typewriter: false,
   typewriterPosition: DEFAULT_TYPEWRITER_POSITION,

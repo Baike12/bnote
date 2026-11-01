@@ -81,6 +81,19 @@
   --code-font-size: 12.5px;
   --code-active-line: rgb(255 255 255 / 4%);
   --code-selection: var(--sel);
+  /* 文件树图标:按语言/类型分的图标色(与语法高亮同色系)。 */
+  --file-icon-ts: #4f9cf9;
+  --file-icon-js: #e5c07b;
+  --file-icon-py: #5b9dd9;
+  --file-icon-rs: #e0824a;
+  --file-icon-go: #4ec9d4;
+  --file-icon-code: #9aa4b2;
+  --file-icon-data: #e0b84c;
+  --file-icon-doc: #b98ade;
+  --file-icon-style: #e06c8b;
+  --file-icon-markup: #e08a5a;
+  --file-icon-image: #5abf7c;
+  --file-icon-shell: #66c2a5;
   /* 正文文字列的最大宽度（Obsidian「可读行宽」默认值）与它的左右内边距：
      编辑区更宽时整列居中，更窄时自然铺满，不出现横向滚动。 */
   --content-line-width: 700px;
@@ -131,6 +144,19 @@
   --code-font-size: 12.5px;
   --code-active-line: rgb(0 0 0 / 4%);
   --code-selection: var(--sel);
+  /* 文件树图标:同色相压深,白底对比达标。 */
+  --file-icon-ts: #2f7fd1;
+  --file-icon-js: #a8741a;
+  --file-icon-py: #2f6fa8;
+  --file-icon-rs: #b04f16;
+  --file-icon-go: #0f8b99;
+  --file-icon-code: #5c6470;
+  --file-icon-data: #a17508;
+  --file-icon-doc: #7a4fb3;
+  --file-icon-style: #b23a5c;
+  --file-icon-markup: #b05a24;
+  --file-icon-image: #2f8a51;
+  --file-icon-shell: #2c8a6f;
   --sel-hint: rgba(0, 0, 0, 0.07);
   --search-match: #e8c66a80;
   --search-match-active: #d9a83f90;
@@ -1930,22 +1956,30 @@ button {
 .code-area .cm-editor.cm-focused {
   outline: none;
 }
-.code-area .cm-content {
+/* 代码编辑器(学习模式中栏)与设置里的代码框共用这套「紧凑代码正文」:
+   不要笔记正文那套居中行宽/48px 内边距/正文字体(前面 `.cm-content` 的
+   规则带 !important,会把代码挤到行号右边一百多像素、换成比例字体)。
+   打字机模式的上下留白变量由 typewriter.ts 写在 scrollDOM 上,这里读它,
+   关闭时回落到普通内边距。 */
+.code-area .cm-content,
+.code-editor-host .cm-content {
   max-width: none;
   margin: 0 !important;
-  padding: 10px 12px !important;
-  font-family: var(--font-mono) !important;
-  font-size: 12.5px !important;
+  padding: var(--typewriter-top, 10px) 12px var(--typewriter-bottom, 10px) !important;
+  font-family: var(--code-font) !important;
+  font-size: var(--code-font-size) !important;
   line-height: 1.6;
 }
-.code-area .cm-gutters {
+.code-area .cm-gutters,
+.code-editor-host .cm-gutters {
   background: transparent !important;
   color: var(--text-faint) !important;
   border-right: 1px solid var(--border) !important;
   font-family: var(--font-mono);
   font-size: 11.5px;
 }
-.code-area .cm-lineNumbers .cm-gutterElement {
+.code-area .cm-lineNumbers .cm-gutterElement,
+.code-editor-host .cm-lineNumbers .cm-gutterElement {
   padding: 0 8px 0 10px;
 }
 
@@ -3839,7 +3873,8 @@ input[type="range"] {
 
 /* 中栏头部的文字按钮(打开 / ＋PDF):icon-btn 是 26px 定宽,装不下文字,
    这里统一放开。 */
-.pdf-tool-btn {
+.pdf-tool-btn,
+.text-tool-btn {
   width: auto;
   padding: 0 8px;
   flex: 0 0 auto;
@@ -4002,7 +4037,8 @@ input[type="range"] {
   border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
-.pdf-tool-btn {
+.pdf-tool-btn,
+.text-tool-btn {
   height: 24px;
   color: var(--text-dim);
 }
@@ -5295,13 +5331,20 @@ input[type="range"] {
    代码项目(学习模式中栏)
    ==========================================================================
 
-   中栏就那么宽,代码面板的所有尺寸都按「塞得下」来:工具条 28px、状态条
-   22px、文件树抽屉 190px(展开时盖在编辑器左边,不把编辑器挤窄)。
+   中栏就那么宽,代码面板的所有尺寸都按「塞得下」来:工具条 30px、状态条
+   22px、文件树一栏 190px(并排,把编辑器挤到右边)。
 
    颜色全部走主题变量:代码编辑器的高亮用的是编辑器同一套 token(--tok-*),
    所以深浅色主题下代码区与笔记里的代码块是一个观感。 */
 
+/* 代码面板是 `.content-body` 的子元素,自己铺满整栏。
+   **不要给它挂 `.content-pane` 类**:那个类带 `width: var(--content-w)`,而
+   --content-w 是「相对学习模式整栏」算的 clamp(含百分比)。套在内容栏里面
+   再算一次,百分比对着内容栏重新解析、又减一遍 --agent-w,面板会被压成
+   236px——代码只看得到一截(2026-11 实测:内容栏 620px,代码面板 236px)。 */
 .code-pane {
+  flex: 1 1 auto;
+  width: 100%;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -5386,6 +5429,14 @@ input[type="range"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 未保存标记:标签上一个小圆点(与笔记的未保存提示同一套语言)。 */
+.code-tab-dirty {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 .code-tab-close {
   opacity: 0.5;
   font-size: 13px;
@@ -5403,15 +5454,17 @@ input[type="range"] {
   min-height: 0;
 }
 
+/* 文件树是**并排**的一栏,不是浮在编辑器上的浮层:浮层会把代码从中间切断,
+   看起来像渲染坏了(半行字压在树下面)。并排时两边各占各的,代码被完整地
+   挤到右边,中栏总宽度不变。 */
 .code-tree-drawer {
-  position: absolute;
-  inset: 0 auto 0 0;
+  flex: 0 0 190px;
   width: 190px;
+  min-width: 0;
+  display: flex;
   border-right: 1px solid var(--border);
   background: var(--bg1);
-  overflow-y: auto;
-  z-index: 3;
-  box-shadow: 2px 0 8px var(--shadow);
+  overflow: hidden;
 }
 
 .code-main {
@@ -5442,9 +5495,24 @@ input[type="range"] {
 }
 
 /* --- 文件树 --- */
+/* 滚动归 .code-tree 自己(虚拟滚动要读它的 scrollTop 与高度):
+   树行按固定 22px 排,窗口只渲染视口附近的行(见 FileTree.tsx)。 */
 .code-tree {
-  padding: 4px 0;
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   font-size: 12.5px;
+}
+.code-tree-spacer {
+  position: relative;
+}
+.code-tree-window {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  right: 0;
 }
 .code-tree-empty {
   padding: 16px 12px;
@@ -5484,6 +5552,57 @@ input[type="range"] {
   width: 10px;
   color: var(--text-faint);
   font-size: 9px;
+}
+/* 文件图标:14px 描边 SVG,颜色按分类(变量在主题块里成对定义)。 */
+.code-tree-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.code-icon--folder {
+  color: var(--text-dim);
+}
+.code-icon--folder-open {
+  color: var(--accent);
+}
+.code-icon--file {
+  color: var(--text-faint);
+}
+.code-icon--ts {
+  color: var(--file-icon-ts);
+}
+.code-icon--js {
+  color: var(--file-icon-js);
+}
+.code-icon--py {
+  color: var(--file-icon-py);
+}
+.code-icon--rs {
+  color: var(--file-icon-rs);
+}
+.code-icon--go {
+  color: var(--file-icon-go);
+}
+.code-icon--code {
+  color: var(--file-icon-code);
+}
+.code-icon--data {
+  color: var(--file-icon-data);
+}
+.code-icon--doc {
+  color: var(--file-icon-doc);
+}
+.code-icon--style {
+  color: var(--file-icon-style);
+}
+.code-icon--markup {
+  color: var(--file-icon-markup);
+}
+.code-icon--image {
+  color: var(--file-icon-image);
+}
+.code-icon--shell {
+  color: var(--file-icon-shell);
 }
 .code-tree-name {
   flex: 1 1 auto;
