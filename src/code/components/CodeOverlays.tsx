@@ -1,0 +1,280 @@
+import { useEffect, useRef, useState } from "react";
+import { codeApi } from "../api";
+import { useCodeStore } from "../store";
+import { onCodeUiRequest, type CodeUiRequest } from "../ui";
+import { confirmRename } from "../commands";
+import { searchFilesByName } from "../tree";
+import type { CodeEntry, CodeSearchHit } from "../types";
+
+/**
+ * 代码面板的浮层:快速打开文件、项目内查找、重命名。
+ *
+ * 浮层由命令层请起来(`requestCodeUi`),不是常驻的——用完即走,面板上
+ * 永远只留当前需要的那一个。
+ */
+export function CodeOverlays() {
+  const [request, setRequest] = useState<CodeUiRequest | null>(null);
+
+  useEffect(() => onCodeUiRequest((r) => setRequest(r)), []);
+
+  if (!request) return null;
+  if (request.kind === "quick-open") {
+    return <QuickOpen onClose={() => setRequest(null)} />;
+  }
+  if (request.kind === "find-in-files") {
+    return <FindInFiles onClose={() => setRequest(null)} />;
+  }
+  return <RenamePrompt onClose={() => setRequest(null)} />;
+}
+
+/** 快速打开:按文件名模糊搜,回车打开。 */
+function QuickOpen({ onClose }: { onClose: () => void }) {
+  const root = useCodeStore((s) => s.project?.root ?? "");
+  const entries = useCodeStore((s) => s.project?.tree.entries);
+  const truncated = useCodeStore((s) => s.project?.tree.truncated ?? false);
+  const openFile = useCodeStore((s) => s.openFile);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<CodeEntry[]>([]);
+  const [index, setIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults([]);
+      setIndex(0);
+      return;
+    }
+    // 打开项目时文件树已经扫全了:在本地索引里过滤,每敲一个键都不用
+    // 走 IPC(让 Rust 每条输入重走一遍仓库太贵,结果还一样)。
+    if (!truncated) {
+      setResults(searchFilesByName(entries ?? [], query));
+      setIndex(0);
+      return;
+    }
+    // 索引被截断(超大仓库):只能回后端补扫,结果以最后一次输入为准。
+    let cancelled = false;
+    codeApi
+      .searchFiles(root, query)
+      .then((hits) => {
+        if (cancelled) return;
+        setResults(hits);
+        setIndex(0);
+      })
+      .catch(() => {
+        if (!cancelled) setResults([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entries, query, root, truncated]);
+
+  const pick = (path: string) => {
+    void openFile(path);
+    onClose();
+  };
+
+  return (
+    <div className="code-overlay" onMouseDown={onClose}>
+      <div className="code-overlay-box" onMouseDown={(e) => e.stopPropagation()}>
+        <input
+          ref={inputRef}
+          className="code-overlay-input"
+          placeholder="按文件名打开…"
+          value={query}
+          spellCheck={false}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+              return;
+            }
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setIndex((i) => Math.min(i + 1, results.length - 1));
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setIndex((i) => Math.max(i - 1, 0));
+              return;
+            }
+            if (e.key === "Enter") {
+              e.preventDefault();
+              const hit = results[index];
+              if (hit) pick(hit.path);
+            }
+          }}
+        />
+        <div className="code-overlay-list">
+          {results.map((hit, i) => (
+            <button
+              type="button"
+              key={hit.path}
+              className={`code-overlay-row${i === index ? " is-active" : ""}`}
+              onMouseEnter={() => setIndex(i)}
+              onClick={() => pick(hit.path)}
+            >
+              {hit.path}
+            </button>
+          ))}
+          {query.trim() && results.length === 0 && (
+            <div className="code-overlay-empty">没有匹配的文件</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 项目内查找:搜文件内容,点结果跳到那一行。 */
+function FindInFiles({ onClose }: { onClose: () => void }) {
+  const root = useCodeStore((s) => s.project?.root ?? "");
+  const openFile = useCodeStore((s) => s.openFile);
+  const requestJump = useCodeStore((s) => s.requestJump);
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<CodeSearchHit[]>([]);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!query.trim()) {
+      setHits([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      codeApi
+        .search(root, query, 200)
+        .then((found) => {
+          if (!cancelled) setHits(found);
+        })
+        .catch(() => {
+          if (!cancelled) setHits([]);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [root, query]);
+
+  return (
+    <div className="code-overlay" onMouseDown={onClose}>
+      <div className="code-overlay-box" onMouseDown={(e) => e.stopPropagation()}>
+        <input
+          ref={inputRef}
+          className="code-overlay-input"
+          placeholder="在项目中查找…"
+          value={query}
+          spellCheck={false}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+        />
+        <div className="code-overlay-list">
+          {hits.map((hit, i) => (
+            <button
+              type="button"
+              key={`${hit.path}:${hit.line}:${i}`}
+              className="code-overlay-row is-hit"
+              onClick={() => {
+                void openFile(hit.path);
+                requestJump(hit.path, { line: hit.line, character: 0 });
+                onClose();
+              }}
+            >
+              <span className="code-overlay-hit-path">
+                {hit.path}:{hit.line + 1}
+              </span>
+              <span className="code-overlay-hit-text">{hit.text.trim()}</span>
+            </button>
+          ))}
+          {query.trim() && hits.length === 0 && (
+            <div className="code-overlay-empty">没有匹配的内容</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 重命名:问一个新名字,交给语言服务器去改(它知道该改哪些地方)。 */
+function RenamePrompt({ onClose }: { onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const submit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    setError(null);
+    const ok = await confirmRename(trimmed);
+    setBusy(false);
+    if (ok) {
+      onClose();
+      return;
+    }
+    // 改名失败原来什么都不说:框还开着,用户只会以为没按上。
+    setError("这个位置不能重命名(或语言服务器没在运行)");
+  };
+
+  return (
+    <div className="code-overlay" onMouseDown={onClose}>
+      <div className="code-overlay-box is-narrow" onMouseDown={(e) => e.stopPropagation()}>
+        <input
+          ref={inputRef}
+          className="code-overlay-input"
+          placeholder="新的名字…"
+          value={name}
+          spellCheck={false}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+              return;
+            }
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void submit();
+            }
+          }}
+        />
+        <div className="code-overlay-actions">
+          <span className="code-overlay-hint">
+            {busy ? "重命名中…" : error ?? "回车确认,Esc 取消"}
+          </span>
+          <button type="button" className="code-overlay-btn" onClick={onClose}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="code-overlay-btn is-primary"
+            disabled={busy || !name.trim()}
+            onClick={() => void submit()}
+          >
+            重命名
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -41,6 +41,7 @@ import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
 import { fileToAgentImage } from "@/study/agentImages";
 import { WEREAD_HOME_URL } from "@/study/weread";
 import { setActiveKeyRegion } from "./globalKeys";
+import { codeCommandDefs } from "@/code/commands";
 
 /** 中栏是否开着网页(缩放键只在这种时候接管 ⌘= / ⌘- / ⌘0)。 */
 function hasWebPreview(): boolean {
@@ -759,6 +760,8 @@ const defs: CommandDef[] = [
       useAppStore.getState().patchSettings({ fontSize: 16 });
     },
   },
+  // 代码项目的命令:归属 code 区域,只在代码编辑器里生效(见 commands/keys.ts)。
+  ...codeCommandDefs,
 ];
 
 registerCommands(defs);

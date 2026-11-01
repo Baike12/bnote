@@ -7,7 +7,13 @@ import { bindingsForCommand, formatBinding, pageForwardKeys } from "@/commands/k
 import { getKeymapRevision, subscribeKeymap } from "@/commands/keybindingOverrides";
 import { resolveBoundCommand, runBoundKey } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
-import { pdfHistoryForVault, type StudyPdfEntry, type StudyUrlEntry, type WereadBookEntry } from "@/study/history";
+import {
+  pdfHistoryForVault,
+  type StudyCodeEntry,
+  type StudyPdfEntry,
+  type StudyUrlEntry,
+  type WereadBookEntry,
+} from "@/study/history";
 import { setWebNavHandlers } from "@/study/pdfNav";
 import { needsMainWebviewFocus } from "@/study/previewFocus";
 import { ensureMaterial } from "@/study/materials";
@@ -30,6 +36,7 @@ import {
   type WereadRoutePayload,
 } from "@/study/weread";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { CodeProjectPane } from "@/code/components/CodeProjectPane";
 import { StudyHistoryMenu } from "./StudyHistoryMenu";
 
 /**
@@ -102,6 +109,7 @@ export function ContentPane() {
   const studyHistory = useAppStore((s) => s.studyHistory);
   const recordStudyPdf = useAppStore((s) => s.recordStudyPdf);
   const recordStudyUrl = useAppStore((s) => s.recordStudyUrl);
+  const recordStudyCode = useAppStore((s) => s.recordStudyCode);
   const recordWereadBook = useAppStore((s) => s.recordWereadBook);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const settings = useAppStore((s) => s.settings);
@@ -531,6 +539,15 @@ export function ContentPane() {
     recordWereadBook({ url: entry.url, title: entry.title });
   }
 
+  /** 从历史菜单重开一个代码项目。 */
+  function openHistoryCode(entry: StudyCodeEntry) {
+    setHistoryOpen(false);
+    setStudyContent({ kind: "code", path: entry.path, title: entry.title });
+    recordStudyCode({ path: entry.path, title: entry.title });
+    // 项目本身也要真的打开(文件树、语言服务器都靠这一步)。
+    void import("@/code/commands").then((m) => m.openProjectAt(entry.path));
+  }
+
   /** 书架 / 商城 / 阅读都在这一个入口里,由微信读书自己的导航完成。 */
   function openWereadShelf() {
     setHistoryOpen(false);
@@ -550,6 +567,20 @@ export function ContentPane() {
       if (path) await importAndOpen(path);
     } catch (e) {
       showToast(`选择文件失败: ${String(e)}`);
+    }
+  }
+
+  /**
+   * 打开代码项目:原生目录选择框 → 切中栏到代码视图。
+   *
+   * 命令模块按需载入(代码模块带着编辑器,不该拖进首屏)。
+   */
+  async function pickCodeProject() {
+    try {
+      const { openProjectDialog } = await import("@/code/commands");
+      await openProjectDialog();
+    } catch (e) {
+      showToast(`打开代码项目失败: ${String(e)}`);
     }
   }
 
@@ -579,18 +610,30 @@ export function ContentPane() {
                 : "学习模式"
           }
           initialTab={
-            content?.kind === "url" ? (isWereadUrl(content.url) ? "weread" : "url") : "pdf"
+            content?.kind === "url"
+              ? isWereadUrl(content.url)
+                ? "weread"
+                : "url"
+              : content?.kind === "code"
+                ? "code"
+                : "pdf"
           }
           pdfs={pdfs}
           urls={studyHistory.urls}
           books={studyHistory.weread}
+          codes={studyHistory.codes}
           onOpenPdf={openHistoryPdf}
           onOpenUrl={openHistoryUrl}
           onOpenBook={openHistoryBook}
+          onOpenCode={openHistoryCode}
           onOpenShelf={openWereadShelf}
           onImportPdf={() => {
             setHistoryOpen(false);
             void pickPdf();
+          }}
+          onOpenCodeProject={() => {
+            setHistoryOpen(false);
+            void pickCodeProject();
           }}
         />
         <div className="content-tool-right">
@@ -612,6 +655,13 @@ export function ContentPane() {
           >
             ＋ PDF
           </button>
+          <button
+            className="icon-btn text-tool-btn"
+            title="打开代码项目(选择文件夹)"
+            onClick={() => void pickCodeProject()}
+          >
+            ＋ 代码
+          </button>
           {content && (
             <button
               className="icon-btn"
@@ -632,6 +682,9 @@ export function ContentPane() {
             </p>
             <button className="btn content-pick" onClick={() => void pickPdf()}>
               选择 PDF 文件
+            </button>
+            <button className="btn btn-ghost content-pick" onClick={() => void pickCodeProject()}>
+              打开代码项目…
             </button>
           </div>
         )}
@@ -742,6 +795,7 @@ export function ContentPane() {
             </div>
           </div>
         )}
+        {content?.kind === "code" && <CodeProjectPane />}
       </div>
     </div>
   );

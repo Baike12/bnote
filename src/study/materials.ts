@@ -14,9 +14,9 @@ const inflight = new Map<string, Promise<MaterialInfo | null>>();
 
 /** 材料身份(与后端 `identity()` 的规则一致):网址忽略末尾斜杠。 */
 export function studyIdentity(content: StudyContent): string {
-  return content.kind === "pdf"
-    ? `pdf:${content.path}`
-    : `url:${content.url.replace(/\/+$/, "")}`;
+  if (content.kind === "pdf") return `pdf:${content.path}`;
+  if (content.kind === "code") return `code:${content.path.replace(/\/+$/, "")}`;
+  return `url:${content.url.replace(/\/+$/, "")}`;
 }
 
 export function materialCacheKey(vaultRoot: string, content: StudyContent): string {

@@ -1,9 +1,11 @@
 pub mod agent;
+mod code;
 mod commands;
 /// Browser-preview bridge; debug builds only (see the module docs).
 #[cfg(debug_assertions)]
 mod devbridge;
 pub mod dict;
+pub mod lsp;
 mod state;
 pub mod translate;
 
@@ -170,6 +172,8 @@ pub fn run() {
                 current_note: std::sync::Mutex::new(None),
                 python_runs: std::sync::Arc::new(python::runner::RunRegistry::new()),
                 python_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
+                code_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
+                code_trees: std::sync::Mutex::new(std::collections::HashMap::new()),
             });
 
             #[cfg(target_os = "macos")]
@@ -269,6 +273,23 @@ pub fn run() {
             commands::python::python_lsp_close,
             commands::python::python_lsp_stop_all,
             commands::python::python_uv_create,
+            commands::code::code_open_project,
+            commands::code::code_rescan,
+            commands::code::code_read_file,
+            commands::code::code_write_file,
+            commands::code::code_search,
+            commands::code::code_search_files,
+            commands::code::code_git_status,
+            commands::code::code_git_diff,
+            commands::code::code_git_stage,
+            commands::code::code_git_unstage,
+            commands::code::code_lsp_resolve,
+            commands::code::code_lsp_start,
+            commands::code::code_lsp_stop,
+            commands::code::code_lsp_status,
+            commands::code::code_lsp_sync,
+            commands::code::code_lsp_close,
+            commands::code::code_lsp_request,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

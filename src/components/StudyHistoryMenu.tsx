@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import type { StudyPdfEntry, StudyUrlEntry, WereadBookEntry } from "@/study/history";
+import type {
+  StudyCodeEntry,
+  StudyPdfEntry,
+  StudyUrlEntry,
+  WereadBookEntry,
+} from "@/study/history";
 
-type Tab = "pdf" | "url" | "weread";
+type Tab = "pdf" | "url" | "weread" | "code";
 
 interface StudyHistoryMenuProps {
   open: boolean;
@@ -13,11 +18,15 @@ interface StudyHistoryMenuProps {
   pdfs: StudyPdfEntry[];
   urls: StudyUrlEntry[];
   books: WereadBookEntry[];
+  codes: StudyCodeEntry[];
   onOpenPdf: (entry: StudyPdfEntry) => void;
   onOpenUrl: (entry: StudyUrlEntry) => void;
   onOpenBook: (entry: WereadBookEntry) => void;
   onOpenShelf: () => void;
+  onOpenCode: (entry: StudyCodeEntry) => void;
   onImportPdf: () => void;
+  /** 打开代码项目(原生目录选择框)——「代码」页签里的入口。 */
+  onOpenCodeProject: () => void;
 }
 
 /** 书籍副行只显示时间:阅读器 URL 尾段是哈希,对人没有信息量。 */
@@ -50,11 +59,14 @@ export function StudyHistoryMenu({
   pdfs,
   urls,
   books,
+  codes,
   onOpenPdf,
   onOpenUrl,
   onOpenBook,
   onOpenShelf,
+  onOpenCode,
   onImportPdf,
+  onOpenCodeProject,
 }: StudyHistoryMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -82,9 +94,16 @@ export function StudyHistoryMenu({
     };
   }, [open, onOpenChange]);
 
-  const list = tab === "pdf" ? pdfs : tab === "url" ? urls : books;
+  const list =
+    tab === "pdf" ? pdfs : tab === "url" ? urls : tab === "code" ? codes : books;
   const emptyHint =
-    tab === "pdf" ? "还没有打开过 PDF" : tab === "url" ? "还没有打开过网页" : "还没有读过微信读书的书";
+    tab === "pdf"
+      ? "还没有打开过 PDF"
+      : tab === "url"
+        ? "还没有打开过网页"
+        : tab === "code"
+          ? "还没有打开过代码项目"
+          : "还没有读过微信读书的书";
 
   return (
     <div className="study-history" ref={rootRef}>
@@ -118,6 +137,12 @@ export function StudyHistoryMenu({
             >
               微信读书 <span className="study-history-count">{books.length}</span>
             </button>
+            <button
+              className={`study-history-tab${tab === "code" ? " active" : ""}`}
+              onClick={() => setTab("code")}
+            >
+              代码 <span className="study-history-count">{codes.length}</span>
+            </button>
           </div>
           <div className="study-history-list">
             {list.length === 0 && <p className="study-history-empty">{emptyHint}</p>}
@@ -145,6 +170,18 @@ export function StudyHistoryMenu({
                   <span className="study-history-sub">{entry.url}</span>
                 </button>
               ))}
+            {tab === "code" &&
+              codes.map((entry) => (
+                <button
+                  key={entry.path}
+                  className="study-history-item"
+                  onClick={() => onOpenCode(entry)}
+                  title={entry.path}
+                >
+                  <span className="study-history-title">{entry.title}</span>
+                  <span className="study-history-sub">{entry.path}</span>
+                </button>
+              ))}
             {tab === "weread" &&
               books.map((entry) => (
                 <button
@@ -160,6 +197,11 @@ export function StudyHistoryMenu({
             {tab === "pdf" && (
               <button className="study-history-action" onClick={onImportPdf}>
                 ＋ 导入 PDF 到 vault/pdfs
+              </button>
+            )}
+            {tab === "code" && (
+              <button className="study-history-action" onClick={onOpenCodeProject}>
+                ＋ 打开代码项目…
               </button>
             )}
             {tab === "weread" && (

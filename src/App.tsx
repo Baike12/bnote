@@ -45,6 +45,7 @@ import { ProjectsLayout } from "@/components/ProjectsLayout";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { LinkSuggest } from "@/components/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
+import { installCodeEvents } from "@/code/events";
 import { QuickAddModal } from "@/components/QuickAddModal";
 import { QuickTodoModal } from "@/components/QuickTodoModal";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -245,6 +246,12 @@ export default function App() {
     // layer), so the native terminate path is gone. The menu hands the request
     // here instead, where the same flush-then-destroy as the close button
     // applies — quitting never costs the debounced cursor/config write.
+    // 语言服务器的事件(诊断 / 状态 / 日志):应用级订阅,与面板生命周期无关。
+    let unlistenCodeEvents: (() => void) | undefined;
+    void installCodeEvents().then((off) => {
+      unlistenCodeEvents = off;
+    });
+
     let unlistenMenuQuit: (() => void) | undefined;
     void listen("bnote:menu-quit", () => {
       flushCursorSave();
@@ -263,6 +270,7 @@ export default function App() {
       document.removeEventListener("visibilitychange", onHidden);
       unlisten?.();
       unlistenMenuQuit?.();
+      unlistenCodeEvents?.();
     };
   }, []);
 

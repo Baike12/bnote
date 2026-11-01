@@ -53,10 +53,16 @@ describe("默认键位", () => {
     }
   });
 
-  it("Mod-Shift-o 归 workspace.open-daily,且无人与之重复", () => {
+  it("Mod-Shift-o 归 workspace.open-daily,通用区里无人与之重复", () => {
     expect(bindingsForCommand("workspace.open-daily")).toEqual(["Mod-Shift-o"]);
+    // 同一个键可以出现在别的区域——区域化之后各自生效(上面那条门禁守的
+    // 是「同一区域内不许重复」)。代码区把 ⌘⇧O 用作「快速打开文件」;
+    // 这里守的是**通用区**不许有第二个命令抢这个键。
     const others = Object.entries(DEFAULT_BINDINGS).filter(
-      ([id, key]) => id !== "workspace.open-daily" && key === "Mod-Shift-o",
+      ([id, key]) =>
+        id !== "workspace.open-daily" &&
+        defaultRegionsOf(id).includes("global") &&
+        keysOf(key).includes("Mod-Shift-o"),
     );
     expect(others).toEqual([]);
   });
@@ -120,10 +126,17 @@ describe("区域分发", () => {
 
   it("三个区域切换命令三个区域都有(任意区域都能去任意区域,含回自己)", () => {
     for (const id of ["region.focus-agent", "region.focus-notes", "region.focus-reading"]) {
-      expect(defaultRegionsOf(id)).toEqual(["reading", "notes", "agent"]);
       for (const region of ["reading", "notes", "agent"] as const) {
         expect(commandBelongs(id, region)).toBe(true);
       }
+    }
+    // 「聚焦阅读区」没有代码区的份——代码区就长在阅读区那一栏里,没有
+    // 第四个地方可去。「聚焦笔记区 / 聚焦 Agent」有:代码编辑器能直接跳
+    // 回笔记区与助手面板。
+    expect(defaultRegionsOf("region.focus-reading")).toEqual(["reading", "notes", "agent"]);
+    for (const id of ["region.focus-agent", "region.focus-notes"]) {
+      expect(defaultRegionsOf(id)).toEqual(["reading", "notes", "agent", "code"]);
+      expect(commandBelongs(id, "code")).toBe(true);
     }
     expect(defaultRegionOf("region.focus-agent")).toBe("reading");
     expect(commandsForKey("Mod-Alt-a", "reading")).toContain("region.focus-agent");
