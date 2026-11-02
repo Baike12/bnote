@@ -7,6 +7,7 @@ import { useCodeStore } from "../store";
 import type { LspDiagnostic, LspRange } from "../types";
 import { activeCodeEditor, handleForView } from "./registry";
 import { cmToLspPosition, lspRangeToCm } from "./positions";
+import { completionRequestContext, triggerCharacterFor } from "./completionTrigger";
 
 /**
  * Bridge between the language server and CodeMirror.
@@ -107,7 +108,15 @@ export async function lspCompletion(
   // the server on every punctuation keystroke.
   const word = context.matchBefore(/[\w$]*/);
   const typed = word?.text ?? "";
-  if (!typed && !context.explicit) return null;
+  // No word yet, but the caret may sit right after a trigger character: `np.`
+  // is exactly where the members are wanted (see completionTrigger.ts). Without
+  // this branch the request was never sent and the panel stayed empty.
+  const trigger = typed
+    ? null
+    : triggerCharacterFor(
+        context.pos > 0 ? context.state.sliceDoc(context.pos - 1, context.pos) : "",
+      );
+  if (!typed && !trigger && !context.explicit) return null;
 
   const raw = await codeApi
     .lspRequest(
@@ -117,7 +126,7 @@ export async function lspCompletion(
       handle.path,
       {
         position: cmToLspPosition(handle.view.state.doc, context.pos),
-        context: { triggerKind: context.explicit ? 1 : 2 },
+        context: completionRequestContext(trigger),
       },
     )
     .catch(() => null);

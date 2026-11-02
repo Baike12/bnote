@@ -7,6 +7,7 @@ import { cmToLspPosition } from "./positions";
 import { decodeFileUri } from "./uri";
 import { applyTextEdits } from "./textEdits";
 import { workspaceEditsOf } from "./workspaceEdit";
+import { planGoto, shortPath, unavailableReasonOf } from "./gotoPlan";
 
 /**
  * The jump actions: go to definition, go to references, rename.
@@ -55,27 +56,62 @@ function normalizeLocations(raw: unknown): RawLocation[] {
   return [];
 }
 
-/** Send a "give me positions" request and normalize it into a list of targets inside the project. */
-async function requestTargets(method: string): Promise<CodeTarget[]> {
+/**
+ * The answer of a "give me positions" request.
+ *
+ * Three different things used to collapse into one empty list: no server,
+ * a server that never answered, and a server that answered "nothing here".
+ * The UI then said nothing at all, so a dead LSP looked exactly like a
+ * keybinding that was never bound.
+ */
+type TargetReply =
+  | { kind: "targets"; targets: CodeTarget[] }
+  /** No code editor is live (the command's `when` guard should have stopped it). */
+  | { kind: "no-editor" }
+  /** The request never reached a server: it is not running, or it died / timed out. */
+  | { kind: "server-down"; reason: "not-running" | "unreachable" }
+  | { kind: "failed"; message: string };
+
+/** Send a "give me positions" request and normalize it into a reply. */
+async function requestTargets(
+  method: string,
+  extra: Record<string, unknown> = {},
+): Promise<TargetReply> {
   const handle = activeCodeEditor();
-  if (!handle) return [];
-  const raw = await codeApi
-    .lspRequest(
-      handle.root,
-      handle.language,
-      method,
-      handle.path,
-      { position: cmToLspPosition(handle.view.state.doc, handle.view.state.selection.main.head) },
-    )
-    .catch(() => null);
-  if (!raw) return [];
-  return normalizeLocations(raw)
+  if (!handle) return { kind: "no-editor" };
+  let raw: unknown;
+  try {
+    raw = await codeApi.lspRequest(handle.root, handle.language, method, handle.path, {
+      position: cmToLspPosition(handle.view.state.doc, handle.view.state.selection.main.head),
+      ...extra,
+    });
+  } catch (e) {
+    // The backend reports "cannot ask" as an error (see commands/code.rs): a
+    // null answer means the server really found nothing, so it is not one.
+    const message = String(e);
+    const reason = unavailableReasonOf(message);
+    return reason ? { kind: "server-down", reason } : { kind: "failed", message };
+  }
+  // A null answer is the server's own verdict: nothing at this position.
+  const targets = (raw == null ? [] : normalizeLocations(raw))
     .map((loc) => {
       const uri = loc.uri ?? loc.targetUri;
       const range = loc.range ?? loc.targetSelectionRange ?? loc.targetRange;
       return uri ? toTarget(uri, range, handle.root) : null;
     })
     .filter((t): t is CodeTarget => t !== null);
+  return { kind: "targets", targets };
+}
+
+/** Say why a jump / references request got no answer at all. */
+function reportUnavailable(reply: TargetReply): void {
+  const toast = useAppStore.getState().showToast;
+  if (reply.kind === "server-down") {
+    const why = reply.reason === "not-running" ? "没在运行" : "没有响应";
+    toast(`语言服务器${why},无法跳转(命令面板里执行「重启语言服务器」后再试)`);
+  } else if (reply.kind === "failed") {
+    toast(`语言服务器请求失败:${reply.message}`);
+  }
 }
 
 /**
@@ -84,49 +120,49 @@ async function requestTargets(method: string): Promise<CodeTarget[]> {
  *
  * A jump switches tabs — so the store opens the file first and the editor
  * then places the caret.
+ *
+ * Every outcome is reported. A silent return is indistinguishable from a dead
+ * keybinding, which is exactly how "⌘J does nothing" felt: the request was
+ * fine, the answer was a stub outside the project.
  */
 export async function gotoDefinition(method = "textDocument/definition"): Promise<void> {
-  const targets = await requestTargets(method);
+  const reply = await requestTargets(method);
+  if (reply.kind !== "targets") {
+    reportUnavailable(reply);
+    return;
+  }
+  const plan = planGoto(reply.targets);
+  if (plan.kind === "none") {
+    useAppStore.getState().showToast("当前位置没有可跳转的定义");
+    return;
+  }
   // Locations outside the project (the standard library, node_modules, the
   // Rust sources) cannot be opened: the backend only lets paths inside the
-  // project root through. Tell the user honestly instead of running into an
-  // openFile that is bound to fail.
-  const first = targets.find((t) => !t.external);
-  if (!first) {
-    if (targets.length > 0) {
-      useAppStore.getState().showToast("定义在项目外(依赖或标准库),不在这个面板里打开");
-    }
+  // project root through. Name the place instead of running into an openFile
+  // that is bound to fail.
+  if (plan.kind === "outside") {
+    useAppStore
+      .getState()
+      .showToast(`定义在项目外:${shortPath(plan.target.path)}(项目外的文件不在这个面板打开)`);
     return;
   }
   const store = useCodeStore.getState();
-  await store.openFile(first.path);
-  store.requestJump(first.path, first.position);
+  await store.openFile(plan.target.path);
+  store.requestJump(plan.target.path, plan.target.position);
 }
 
 /** Find all references and put them into the references panel. */
 export async function findReferences(): Promise<void> {
-  const handle = activeCodeEditor();
-  if (!handle) return;
-  const raw = await codeApi
-    .lspRequest(
-      handle.root,
-      handle.language,
-      "textDocument/references",
-      handle.path,
-      {
-        position: cmToLspPosition(handle.view.state.doc, handle.view.state.selection.main.head),
-        context: { includeDeclaration: true },
-      },
-    )
-    .catch(() => null);
-  const targets = normalizeLocations(raw)
-    .map((loc) => {
-      const uri = loc.uri ?? loc.targetUri;
-      const range = loc.range ?? loc.targetSelectionRange ?? loc.targetRange;
-      return uri ? toTarget(uri, range, handle.root) : null;
-    })
-    .filter((t): t is CodeTarget => t !== null);
-  useCodeStore.getState().setReferences(targets);
+  const reply = await requestTargets("textDocument/references", {
+    context: { includeDeclaration: true },
+  });
+  if (reply.kind !== "targets") {
+    reportUnavailable(reply);
+    return;
+  }
+  // An empty list is visible feedback on its own: the panel says "no
+  // references" (see Panels.tsx).
+  useCodeStore.getState().setReferences(reply.targets);
 }
 
 /**

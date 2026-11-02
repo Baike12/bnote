@@ -183,7 +183,8 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   // reading regions and the Agent panel are unaffected, and vice versa (⌘S
   // saves the note in the notes region, the code file in the code region).
   // The bindings largely follow VSCode: F12 go to definition, ⇧F12 find
-  // references, F2 rename, ⌘Space trigger completion.
+  // references, F2 rename, ⌃Space trigger completion. Not ⌘Space: on macOS
+  // that belongs to Spotlight, which swallows the key before the app sees it.
   "code.save-file": "Mod-s",
   "code.quick-open": "Mod-Shift-o",
   "code.find-in-files": "Mod-Shift-f",
@@ -191,7 +192,7 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.go-to-type-definition": "Mod-F12",
   "code.find-references": "Shift-F12",
   "code.rename-symbol": "F2",
-  "code.trigger-completion": "Mod-Space",
+  "code.trigger-completion": "Ctrl-Space",
   "code.toggle-tree": "Mod-b",
   // Focus the file tree (VSCode/Zed's Explorer binding). Only active in the
   // code region; the reading region's screenshot key ⌘⇧E is a cross-region
