@@ -46,6 +46,10 @@ pinyin_pro = "3.29.4"
 ego-tree = "0.6"
 ignore = "0.4"
 
+# 代码面板底部的集成终端(src/term):需要真 PTY,管道式的 tokio::process 给不了
+# 作业控制、行编辑和光标控制。仿真在前端的 xterm.js,Rust 只负责会话与字节流。
+portable-pty = "0.9"
+
 # 学习模式网页的笔形光标(commands/pen_cursor.rs):浏览器里 CSS 图片光标在
 # WKWebView 下每次鼠标移动都会被重建重设,只能由原生层给同一支 NSCursor。
 # 版本与 tauri 自身的依赖一致,不新增第二份 objc2。

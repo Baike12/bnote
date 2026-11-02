@@ -9,6 +9,8 @@ import { useAppStore } from "@/state/appStore";
 import { startSplitDrag } from "@/components/splitDrag";
 import { useCodeStore } from "../store";
 import { clampTreeWidth, TREE_DEFAULT_WIDTH } from "../treeWidth";
+import { clampTermHeight, TERM_DEFAULT_HEIGHT } from "../term/tabs";
+import { TerminalDrawer } from "../term/TerminalDrawer";
 import { FileTree } from "./FileTree";
 import { DiffView } from "./DiffView";
 import { ProblemsPanel, ReferencesPanel } from "./Panels";
@@ -29,6 +31,8 @@ import { ImageView } from "./ImageView";
  * ├──────────┬───────────────────┴──────────┤
  * │ file tree ┃ editor / diff view            │
  * ├──────────┴──────────────────────────────┤
+ * │ terminal drawer (multi-tab, ⌃`)           │
+ * ├──────────────────────────────────────────┤
  * │ problems / references (collapsible)       │
  * ├──────────────────────────────────────────┤
  * │ branch · language · LSP · caret · vim     │  ← status bar
@@ -61,7 +65,10 @@ export function CodeProjectPane() {
   const setProblemsOpen = useCodeStore((s) => s.setProblemsOpen);
   const setDiff = useCodeStore((s) => s.setDiff);
   const rescan = useCodeStore((s) => s.rescan);
+  const termOpen = useCodeStore((s) => s.termOpen);
+  const setTermOpen = useCodeStore((s) => s.setTermOpen);
   const codeTreeWidth = useAppStore((s) => s.settings.codeTreeWidth);
+  const codeTermHeight = useAppStore((s) => s.settings.codeTermHeight);
   const patchSettings = useAppStore((s) => s.patchSettings);
   const paneRef = useRef<HTMLDivElement | null>(null);
 
@@ -103,6 +110,30 @@ export function CodeProjectPane() {
 
   const resetTreeWidth = () => patchSettings({ codeTreeWidth: TREE_DEFAULT_WIDTH });
 
+  /**
+   * Drag the terminal drawer's top edge. Same discipline as the tree width:
+   * only the CSS variable moves during the drag, the preference is committed on
+   * release. Dragging upwards (negative delta) grows the drawer.
+   */
+  const startTermDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const paneHeight = pane.getBoundingClientRect().height;
+    const drawer = pane.querySelector(".code-term");
+    const startHeight = drawer?.getBoundingClientRect().height ?? codeTermHeight;
+    startSplitDrag({
+      event,
+      host: pane,
+      axis: "y",
+      variables: ["--code-term-h"],
+      stored: { "--code-term-h": codeTermHeight },
+      compute: (dy) => ({ "--code-term-h": clampTermHeight(startHeight - dy, paneHeight) }),
+      commit: (values) => patchSettings({ codeTermHeight: values["--code-term-h"] }),
+    });
+  };
+
+  const resetTermHeight = () => patchSettings({ codeTermHeight: TERM_DEFAULT_HEIGHT });
+
   if (!project) {
     return (
       <div className="code-pane" data-key-region="code">
@@ -116,7 +147,12 @@ export function CodeProjectPane() {
       className="code-pane"
       data-key-region="code"
       ref={paneRef}
-      style={{ "--code-tree-w": `${codeTreeWidth}px` } as React.CSSProperties}
+      style={
+        {
+          "--code-tree-w": `${codeTreeWidth}px`,
+          "--code-term-h": `${codeTermHeight}px`,
+        } as React.CSSProperties
+      }
     >
       <div className="code-toolbar">
         <button
@@ -137,6 +173,15 @@ export function CodeProjectPane() {
           onClick={() => activePath && setDiff(activePath)}
         >
           差异
+        </button>
+        <button
+          type="button"
+          className={`code-tool-btn${termOpen ? " is-on" : ""}`}
+          title="终端(⌃`)"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setTermOpen(!termOpen)}
+        >
+          终端
         </button>
         <div className="code-tabs">
           {tabs.map((path) => {
@@ -235,6 +280,24 @@ export function CodeProjectPane() {
           )}
         </div>
       </div>
+
+      {/* The terminal spans the whole pane (tree included), like VSCode's
+          bottom panel: it is a workspace-wide tool, not a property of the
+          file on the right. */}
+      {termOpen && (
+        <>
+          <div
+            className="code-resizer code-resizer-row"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="调整终端高度"
+            title="拖动调整终端高度,双击恢复默认"
+            onPointerDown={startTermDrag}
+            onDoubleClick={resetTermHeight}
+          />
+          <TerminalDrawer />
+        </>
+      )}
 
       {(problemsOpen || references) && (
         <div className="code-panel-host">

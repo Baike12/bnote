@@ -39,7 +39,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
-use crate::commands::{agent, code, config, files, focus, materials, python, translate, vault};
+use crate::commands::{agent, code, config, files, focus, materials, python, term, translate, vault};
 use crate::state::AppState;
 
 /// Fixed port; `vite.config.ts` proxies `/__dev` here.
@@ -82,6 +82,8 @@ fn subscribe_events(app: &AppHandle) {
         "code-lsp-diagnostics",
         "code-lsp-status",
         "code-lsp-log",
+        "term-output",
+        "term-exit",
     ] {
         let label = name.to_string();
         app.listen(name, move |event| {
@@ -573,6 +575,28 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             .await
         ),
 
+        // ---- integrated terminal (the PTY lives in this same process) ----
+        "term_open" => json_ok!(term::term_open(
+            app.clone(),
+            app.state(),
+            arg_str(args, "root")?,
+            arg_u16(args, "cols")?,
+            arg_u16(args, "rows")?,
+        )),
+        "term_write" => json_ok!(term::term_write(
+            app.state(),
+            arg_u64(args, "termId")?,
+            arg_str(args, "data")?,
+        )),
+        "term_resize" => json_ok!(term::term_resize(
+            app.state(),
+            arg_u64(args, "termId")?,
+            arg_u16(args, "cols")?,
+            arg_u16(args, "rows")?,
+        )),
+        "term_close" => json_ok!(term::term_close(app.state(), arg_u64(args, "termId")?)),
+        "term_close_all" => json_ok!(term::term_close_all(app.state())),
+
         // ---- native views: no browser equivalent ----
         "show_study_preview" | "set_study_preview_bounds" | "set_study_preview_visible"
         | "close_study_preview" | "open_study_url" | "set_study_preview_annotation_mode"
@@ -601,6 +625,18 @@ fn arg_str(args: &Value, key: &str) -> Result<String, String> {
 
 fn arg_opt_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
+}
+
+/// A required unsigned integer argument (session ids).
+fn arg_u64(args: &Value, key: &str) -> Result<u64, String> {
+    args.get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("BAD_ARGS: `{}` is not an integer", key))
+}
+
+/// A terminal grid dimension: JSON numbers arrive as u64, the PTY wants u16.
+fn arg_u16(args: &Value, key: &str) -> Result<u16, String> {
+    u16::try_from(arg_u64(args, key)?).map_err(|_| format!("BAD_ARGS: `{}` is out of range", key))
 }
 
 fn arg_opt_bool(args: &Value, key: &str) -> Option<bool> {

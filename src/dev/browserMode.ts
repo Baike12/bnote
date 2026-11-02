@@ -41,6 +41,8 @@ const EVENTS = [
   "code-lsp-diagnostics",
   "code-lsp-status",
   "code-lsp-log",
+  "term-output",
+  "term-exit",
 ] as const;
 
 type Internals = {

@@ -17,6 +17,7 @@ use tauri::Manager;
 use state::AppState;
 
 mod python;
+mod term;
 
 /// Menu ids for the items whose key equivalents are deliberately left unset.
 #[cfg(target_os = "macos")]
@@ -174,6 +175,7 @@ pub fn run() {
                 python_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
                 code_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
                 code_trees: std::sync::Mutex::new(std::collections::HashMap::new()),
+                terminals: term::TermManager::new(),
             });
 
             #[cfg(target_os = "macos")]
@@ -293,7 +295,22 @@ pub fn run() {
             commands::code::code_lsp_sync,
             commands::code::code_lsp_close,
             commands::code::code_lsp_request,
+            commands::term::term_open,
+            commands::term::term_write,
+            commands::term::term_resize,
+            commands::term::term_close,
+            commands::term::term_close_all,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Shells are not killed by the OS when this process exits: without
+            // this, every closed window would leave its terminals running.
+            if let tauri::RunEvent::Exit = event {
+                use tauri::Manager;
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.terminals.close_all();
+                }
+            }
+        });
 }

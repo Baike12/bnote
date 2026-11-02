@@ -62,6 +62,7 @@ import { normalizeWebZoom } from "@/study/webZoom";
 import { normalizeAgentFont } from "@/study/agentFont";
 import { normalizeDailyWidth, normalizeSideWidth } from "@/projects/layoutModel";
 import { normalizeTreeWidth } from "@/code/treeWidth";
+import { normalizeTermHeight } from "@/code/term/tabs";
 import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
 
 /** The canvas is a separate chunk (excalidraw plus its font loading); it is
@@ -147,6 +148,8 @@ export default function App() {
       // Code project file tree width: a legacy config has no such key, so 190px
       // applies and a broken value falls back to the default.
       settings.codeTreeWidth = normalizeTreeWidth(settings.codeTreeWidth);
+      // The terminal drawer height: same discipline as the tree width.
+      settings.codeTermHeight = normalizeTermHeight(settings.codeTermHeight);
       // These legacy keys are unused now; drop them so they do not linger in the
       // config file. The right column tab model was replaced by the three column
       // layout (the assistant column is pinned left), so this key can only be

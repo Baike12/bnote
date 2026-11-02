@@ -186,6 +186,25 @@ export const codeCommandDefs: CommandDef[] = [
     },
   },
   {
+    id: "code.toggle-terminal",
+    title: "显示/隐藏终端",
+    category: "代码",
+    when: hasProject,
+    run: () => {
+      const store = useCodeStore.getState();
+      store.setTermOpen(!store.termOpen);
+    },
+  },
+  {
+    id: "code.new-terminal",
+    title: "新建终端",
+    category: "代码",
+    when: hasProject,
+    run: () => {
+      void useCodeStore.getState().spawnTerminal();
+    },
+  },
+  {
     id: "code.go-to-definition",
     title: "跳转到定义",
     category: "代码",

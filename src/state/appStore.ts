@@ -15,6 +15,7 @@ import {
 import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config";
 import { DEFAULT_TYPEWRITER_POSITION } from "@/editor/typewriterPosition";
 import { TREE_DEFAULT_WIDTH } from "@/code/treeWidth";
+import { TERM_DEFAULT_HEIGHT } from "@/code/term/tabs";
 import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
 import type { AgentImage } from "@/study/agentImages";
@@ -80,6 +81,12 @@ export interface Settings {
    * to resize, double-click to reset.
    */
   codeTreeWidth: number;
+  /**
+   * The height of the terminal drawer at the bottom of the code pane (px).
+   * The editor takes the rest; CSS clamps the display when the pane is short.
+   * Drag the drawer's top edge to resize, double-click to reset.
+   */
+  codeTermHeight: number;
   /**
    * Global overrides for the language servers: languageId → launch command.
    *
@@ -164,6 +171,7 @@ export const DEFAULT_SETTINGS: Settings = {
   codeVim: false,
   codeWrap: true,
   codeTreeWidth: TREE_DEFAULT_WIDTH,
+  codeTermHeight: TERM_DEFAULT_HEIGHT,
   codeLspServers: {},
   typewriter: false,
   typewriterPosition: DEFAULT_TYPEWRITER_POSITION,

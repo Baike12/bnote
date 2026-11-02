@@ -8,6 +8,7 @@ pub mod ime;
 pub mod materials;
 pub mod pen_cursor;
 pub mod python;
+pub mod term;
 pub mod translate;
 pub mod vault;
 

@@ -11,6 +11,7 @@ use crate::code::project::CodeTree;
 use crate::agent::session::Session;
 use crate::python::lsp::LspServer;
 use crate::python::runner::RunRegistry;
+use crate::term::TermManager;
 
 /// Handle keeping a vault watcher alive; dropping it unregisters the watch
 /// and signals the debounce thread to exit.
@@ -45,6 +46,8 @@ pub struct AppState {
     /// Opening a project and `code_rescan` write it, search reads it — search
     /// must not walk the repository again on its own.
     pub code_trees: Mutex<HashMap<String, CodeTree>>,
+    /// Live integrated-terminal shells (the code pane's bottom drawer).
+    pub terminals: TermManager,
 }
 
 impl AppState {

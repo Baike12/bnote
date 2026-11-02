@@ -1,6 +1,9 @@
 import { create } from "zustand";
-import { codeApi } from "./api";
+import { listen } from "@tauri-apps/api/event";
+import { codeApi, termApi, type TermExitEvent } from "./api";
 import { ancestorDirs } from "./tree";
+import { disposeAllTerminals, disposeTerminal, ensureTerminalOutputListener } from "./term/session";
+import { closeTab as closeTermTab, nextTitle, type TermTab } from "./term/tabs";
 import { useAppStore } from "@/state/appStore";
 import type {
   CodeEntry,
@@ -104,6 +107,12 @@ export interface CodeState {
     position: LspPosition;
     external: boolean;
   }[] | null;
+  /** Whether the terminal drawer (bottom of the code pane) is open. */
+  termOpen: boolean;
+  /** One tab per live shell; the PTY itself lives in Rust. */
+  terminals: TermTab[];
+  /** The tab whose emulator is mounted in the drawer body. */
+  activeTermId: number | null;
 
   openProject: (root: string) => Promise<void>;
   closeProject: () => Promise<void>;
@@ -138,6 +147,23 @@ export interface CodeState {
   setReferences: (refs: { path: string; position: LspPosition; external: boolean }[] | null) => void;
   /** Replace the file content directly (re-read from disk after a rename). */
   replaceContent: (path: string, content: string) => void;
+  /**
+   * Open the drawer, spawning a shell when it has no live tab left.
+   *
+   * One action for the shortcut and the toolbar button: "show the terminal"
+   * and "give me a shell" are the same request from the user's side.
+   */
+  openTerminal: () => Promise<void>;
+  /** Spawn an additional shell and make it the active tab (the `+`). */
+  spawnTerminal: () => Promise<void>;
+  /** Kill one shell and drop its tab (the panel closes when the last one goes). */
+  closeTerminal: (id: number) => Promise<void>;
+  setActiveTerminal: (id: number) => void;
+  setTermOpen: (open: boolean) => void;
+  /** The shell process ended on its own (`term-exit`). */
+  markTermExited: (id: number) => void;
+  /** Replace the active shell with a fresh one at the project root. */
+  restartTerminal: () => Promise<void>;
 }
 
 /** How many language server log entries to keep (so a long session cannot eat all the memory). */
@@ -162,6 +188,33 @@ let openSeq = 0;
  * object/sequence number.
  */
 let treeFocusSeq = 0;
+
+/**
+ * The `term-exit` subscription is app-wide, so it is installed once on the
+ * first shell instead of per terminal tab.
+ */
+let termExitListening = false;
+
+function ensureTermExitListener(): void {
+  if (termExitListening) return;
+  termExitListening = true;
+  void listen<TermExitEvent>("term-exit", (event) => {
+    useCodeStore.getState().markTermExited(event.payload.termId);
+  }).catch((e) => {
+    termExitListening = false;
+    console.warn("[term] cannot subscribe to term-exit", e);
+  });
+}
+
+/**
+ * Kill every shell and drop the emulators: a shell is scoped to the project
+ * root, so switching or closing the project ends them (the same rule as the
+ * language servers).
+ */
+async function closeAllTerminals(): Promise<void> {
+  disposeAllTerminals();
+  await termApi.closeAll().catch((e) => console.warn("[term] close_all failed", e));
+}
 
 /**
  * Guess the indent unit from the content (the first indented line among the
@@ -203,6 +256,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   diffStaged: false,
   jump: null,
   references: null,
+  termOpen: false,
+  terminals: [],
+  activeTermId: null,
 
   async openProject(root) {
     const info = await codeApi.openProject(root);
@@ -220,6 +276,8 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     // path, and leaving them running is a set of orphan processes (each
     // holding its own file tree).
     if (previous) await codeApi.lspStop(previous.root).catch(() => {});
+    // Shells are scoped to the project root for the same reason.
+    if (previous) await closeAllTerminals();
     // The buffers are cleared together with the project: flush the modified
     // files to disk first, otherwise they are lost (the same discipline as
     // closing the project).
@@ -243,6 +301,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       diffStaged: false,
       jump: null,
       references: null,
+      termOpen: false,
+      terminals: [],
+      activeTermId: null,
     });
     await get().refreshGit();
   },
@@ -259,6 +320,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       // them, leaving no orphan processes.
       await codeApi.lspStop(root).catch(() => {});
     }
+    await closeAllTerminals();
     set({
       project: null,
       tabs: [],
@@ -275,6 +337,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       diffPath: null,
       jump: null,
       references: null,
+      termOpen: false,
+      terminals: [],
+      activeTermId: null,
     });
   },
 
@@ -523,6 +588,94 @@ export const useCodeStore = create<CodeState>((set, get) => ({
         files: { ...s.files, [path]: { ...file, content, saved: content } },
       };
     });
+  },
+
+  async openTerminal() {
+    const { project, terminals, activeTermId } = get();
+    if (!project) return;
+    // A live shell exists: "open the terminal" only reveals the drawer, it
+    // does not spawn another one.
+    const live = terminals.find((tab) => !tab.exited);
+    if (live) {
+      set({
+        termOpen: true,
+        activeTermId: terminals.some((tab) => tab.id === activeTermId && !tab.exited)
+          ? activeTermId
+          : live.id,
+      });
+      return;
+    }
+    await get().spawnTerminal();
+  },
+
+  async spawnTerminal() {
+    const { project } = get();
+    if (!project) return;
+    ensureTermExitListener();
+    // Subscribe before spawning: the shell prints its prompt immediately and a
+    // listener installed after `term_open` would swallow it.
+    await ensureTerminalOutputListener();
+    // The initial grid is a guess; the drawer fits the real one right after
+    // mounting and sends `term_resize`.
+    const reply = await termApi.open(project.root, 80, 24).catch((e) => {
+      useAppStore.getState().showToast(`打开终端失败: ${String(e)}`);
+      return null;
+    });
+    if (!reply) return;
+    set((s) => ({
+      termOpen: true,
+      terminals: [
+        ...s.terminals,
+        { id: reply.termId, title: nextTitle(s.terminals, reply.title), exited: false },
+      ],
+      activeTermId: reply.termId,
+    }));
+  },
+
+  async closeTerminal(id) {
+    const { terminals } = get();
+    if (!terminals.some((tab) => tab.id === id)) return;
+    const next = closeTermTab(terminals, get().activeTermId, id);
+    set({
+      terminals: next.tabs,
+      activeTermId: next.activeId,
+      // Closing the last shell closes the drawer: an empty drawer with no way
+      // to get a shell back is a dead end (the toolbar button reopens it).
+      ...(next.tabs.length === 0 ? { termOpen: false } : {}),
+    });
+    disposeTerminal(id);
+    await termApi.close(id).catch((e) => console.warn("[term] close failed", e));
+  },
+
+  setActiveTerminal(id) {
+    set({ activeTermId: id, termOpen: true });
+  },
+
+  setTermOpen(open) {
+    const { terminals, activeTermId } = get();
+    if (open) {
+      // Opening an empty drawer must produce a shell, not an empty box.
+      if (terminals.length === 0) {
+        void get().openTerminal();
+        return;
+      }
+      set({ termOpen: true, activeTermId: activeTermId ?? terminals[0].id });
+      return;
+    }
+    set({ termOpen: false });
+  },
+
+  markTermExited(id) {
+    set((s) => ({
+      terminals: s.terminals.map((tab) => (tab.id === id ? { ...tab, exited: true } : tab)),
+    }));
+  },
+
+  async restartTerminal() {
+    const { activeTermId, terminals } = get();
+    const current = terminals.find((tab) => tab.id === activeTermId);
+    if (current) await get().closeTerminal(current.id);
+    await get().spawnTerminal();
   },
 }));
 

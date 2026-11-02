@@ -200,6 +200,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   // region.
   "code.focus-tree": "Mod-Shift-e",
   "code.toggle-problems": "Mod-Shift-m",
+  // VSCode / Zed's integrated terminal key. Ctrl (not Mod): ⌘` is free on
+  // macOS, but the habit comes from both references and the chord must not
+  // collide with a future ⌘ binding.
+  "code.toggle-terminal": "Ctrl-`",
   "code.next-tab": "Mod-Alt-ArrowRight",
   "code.prev-tab": "Mod-Alt-ArrowLeft",
   "code.next-problem": "F8",

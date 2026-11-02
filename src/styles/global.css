@@ -87,6 +87,32 @@
   --code-font-size: 12.5px;
   --code-active-line: rgb(255 255 255 / 4%);
   --code-selection: var(--sel);
+  /* Integrated terminal (xterm.js): the ANSI palette stays in the same One
+     Dark family as the code tokens above, and the surface is the editor
+     background so the drawer reads as part of the pane instead of an iframe.
+     xterm reads these at runtime (src/code/term/session.ts) — this is the only
+     source of terminal color. */
+  --term-bg: var(--bg0);
+  --term-fg: #c8ccd4;
+  --term-cursor: #f5a83c;
+  --term-cursor-accent: #16161b;
+  --term-selection: rgb(255 255 255 / 22%);
+  --term-black: #3b4048;
+  --term-red: #e06c75;
+  --term-green: #98c379;
+  --term-yellow: #e5c07b;
+  --term-blue: #61afef;
+  --term-magenta: #c678dd;
+  --term-cyan: #56b6c2;
+  --term-white: #abb2bf;
+  --term-bright-black: #5c6370;
+  --term-bright-red: #e06c75;
+  --term-bright-green: #98c379;
+  --term-bright-yellow: #e5c07b;
+  --term-bright-blue: #61afef;
+  --term-bright-magenta: #c678dd;
+  --term-bright-cyan: #56b6c2;
+  --term-bright-white: #ffffff;
   /* File tree icons: icon colors per language/type (same family as the syntax
      highlighting). */
   --file-icon-ts: #4f9cf9;
@@ -155,6 +181,29 @@
   --code-font-size: 12.5px;
   --code-active-line: rgb(0 0 0 / 4%);
   --code-selection: var(--sel);
+  /* Integrated terminal, One Light family: every hue darkened to read on the
+     white page; the surface stays the editor background. */
+  --term-bg: var(--bg0);
+  --term-fg: #383a42;
+  --term-cursor: #c07d24;
+  --term-cursor-accent: #ffffff;
+  --term-selection: rgb(0 0 0 / 16%);
+  --term-black: #383a42;
+  --term-red: #e45649;
+  --term-green: #50a14f;
+  --term-yellow: #c18401;
+  --term-blue: #4078f2;
+  --term-magenta: #a626a4;
+  --term-cyan: #0184bc;
+  --term-white: #a0a1a7;
+  --term-bright-black: #4f525e;
+  --term-bright-red: #e45649;
+  --term-bright-green: #50a14f;
+  --term-bright-yellow: #c18401;
+  --term-bright-blue: #4078f2;
+  --term-bright-magenta: #a626a4;
+  --term-bright-cyan: #0184bc;
+  --term-bright-white: #000000;
   /* File tree icons: the same hues pushed darker until they meet the contrast
      requirement on white. */
   --file-icon-ts: #2f7fd1;
@@ -5857,6 +5906,125 @@ input[type="range"] {
 }
 
 /* --- Bottom panel (problems / references) --- */
+/* --- Terminal drawer (multi-tab, bottom of the pane) ---
+   The height is a stored pixel preference, clamped for the display: in a short
+   pane the drawer must not eat the editor. Colors come from --term-* (xterm
+   reads the same variables at runtime).
+   No border-top: the top edge belongs to the resizer row above (see
+   .code-resizer-row), one edge has exactly one owner. */
+.code-term {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  height: clamp(90px, var(--code-term-h, 220px), 70%);
+  min-height: 0;
+  background: var(--term-bg);
+}
+
+.code-term-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+}
+
+.code-term-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.code-term-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.code-term-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  max-width: 150px;
+  height: 20px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+.code-term-tab:hover {
+  background: var(--bg3);
+}
+.code-term-tab.is-active {
+  background: var(--bg2);
+  color: var(--text);
+}
+/* A shell that exited on its own: the tab stays readable but is clearly dead. */
+.code-term-tab.is-exited {
+  color: var(--text-faint);
+  text-decoration-line: line-through;
+}
+.code-term-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.code-term-tab-close {
+  opacity: 0.5;
+  font-size: 13px;
+  line-height: 1;
+}
+.code-term-tab-close:hover {
+  opacity: 1;
+}
+
+.code-term-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.code-term-btn:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--text);
+}
+.code-term-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The emulator fills the body; xterm's own viewport scrolls. The left padding
+   keeps the first column off the pane edge, like the editor's gutter gap. */
+.code-term-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px 0 2px 8px;
+  overflow: hidden;
+}
+.code-term-host .xterm {
+  height: 100%;
+}
+.code-term-host .xterm-viewport {
+  background: transparent !important;
+}
+
 .code-panel-host {
   flex: none;
   max-height: 32%;

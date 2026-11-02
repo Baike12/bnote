@@ -84,3 +84,43 @@ export const codeApi = {
     params: unknown,
   ) => invoke<unknown>("code_lsp_request", { root, language, method, path, params }),
 };
+
+/** What `term_open` returns: the backend session id plus the shell name. */
+export interface TermOpenReply {
+  termId: number;
+  title: string;
+}
+
+/** One batched chunk of PTY output (base64: the stream may split a UTF-8 sequence). */
+export interface TermOutputEvent {
+  termId: number;
+  data: string;
+}
+
+/** The shell process ended. */
+export interface TermExitEvent {
+  termId: number;
+  exitCode: number;
+}
+
+/**
+ * IPC surface of the integrated terminal.
+ *
+ * The PTY lives in Rust (`src-tauri/src/term/`); the frontend only renders with
+ * xterm and forwards keys. Output arrives as events (see `TermOutputEvent`),
+ * never as a command result.
+ */
+export const termApi = {
+  /** Spawn a login shell in the project root. */
+  open: (root: string, cols: number, rows: number) =>
+    invoke<TermOpenReply>("term_open", { root, cols, rows }),
+  /** Keystrokes / paste, base64-encoded. */
+  write: (termId: number, data: string) =>
+    invoke<void>("term_write", { termId, data }),
+  resize: (termId: number, cols: number, rows: number) =>
+    invoke<void>("term_resize", { termId, cols, rows }),
+  /** Kill one shell (a repeated close is not an error). */
+  close: (termId: number) => invoke<boolean>("term_close", { termId }),
+  /** Kill every shell (closing the project). */
+  closeAll: () => invoke<void>("term_close_all"),
+};

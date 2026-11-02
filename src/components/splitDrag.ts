@@ -3,23 +3,28 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 export interface SplitDragOptions {
   /** pointerdown on the divider (the drag origin and the handle element). */
   event: ReactPointerEvent<HTMLElement>;
-  /** Layout container (width reference and the CSS variable target). */
+  /** Layout container (size reference and the CSS variable target). */
   host: HTMLElement | null;
   /** CSS variables this drag is allowed to write. */
   variables: string[];
   /** Comparison base at pointerup (the preference value stored in settings). */
   stored: Record<string, number>;
   /** Turns "pointer offset from the press point" into the variable values to write. */
-  compute: (dx: number) => Record<string, number>;
+  compute: (delta: number) => Record<string, number>;
   /** Commit the preference once the pointer is up and a value actually changed. */
   commit: (values: Record<string, number>) => void;
   /** Called after each pointer move (consumers such as a child webview that must re-report its bounds). */
   onMove?: () => void;
+  /**
+   * Drag axis: `"x"` (default) for column widths, `"y"` for row heights such
+   * as the terminal drawer. `compute` receives the offset along that axis.
+   */
+  axis?: "x" | "y";
 }
 
 /**
- * Shared skeleton for divider drags: used by the three study mode columns and
- * the three project view columns.
+ * Shared skeleton for divider drags: the study mode columns, the project view
+ * columns (widths) and the code pane's terminal drawer (height).
  *
  * While the pointer moves we only write CSS variables, never setState: the
  * panes hold CodeMirror instances and a 60 Hz re-render is far too expensive;
@@ -35,10 +40,12 @@ export function startSplitDrag({
   compute,
   commit,
   onMove,
+  axis = "x",
 }: SplitDragOptions): void {
   if (!host) return;
   const hostRect = host.getBoundingClientRect();
-  if (hostRect.width <= 0) return;
+  // A collapsed host cannot be measured: the drag would divide by nothing.
+  if ((axis === "y" ? hostRect.height : hostRect.width) <= 0) return;
   event.preventDefault();
 
   const handle = event.currentTarget;
@@ -50,11 +57,12 @@ export function startSplitDrag({
     // No active pointer (synthetic event / pointerless input)
   }
 
-  const startX = event.clientX;
+  const startPos = axis === "y" ? event.clientY : event.clientX;
   let latest: Record<string, number> | null = null;
 
   const onPointerMove = (move: PointerEvent) => {
-    const values = compute(move.clientX - startX);
+    const delta = (axis === "y" ? move.clientY : move.clientX) - startPos;
+    const values = compute(delta);
     latest = values;
     for (const [name, value] of Object.entries(values)) {
       host.style.setProperty(name, `${value}px`);
