@@ -335,6 +335,18 @@ function formatSessionTime(ms: number): string {
 }
 
 /**
+ * Size the composer to its content: one line at rest, up to twelve visible
+ * lines (the cap is in CSS, which then scrolls).
+ *
+ * `auto` first, then the content height: without the reset the element keeps
+ * its previous height and `scrollHeight` cannot shrink after a deletion.
+ */
+function fitInputHeight(el: HTMLTextAreaElement): void {
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+}
+
+/**
  * The left column of study mode: asking questions about the current content.
  *
  * The session model: a main session (follows the current PDF or web page,
@@ -406,6 +418,29 @@ export function AgentPanel() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // The composer grows with the text and rests at one line: a fixed two-row
+  // field left an empty second line under every short question.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (el) fitInputHeight(el);
+  }, [input, agentFontScale]);
+
+  // A width change re-wraps the same text, so the needed height changes
+  // without any input event (the study column can be dragged narrower). Only
+  // the width is watched: reacting to our own height write would loop.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    let width = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fitInputHeight(el);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const historyRef = useRef<HTMLDivElement>(null);
   const historyFocusPending = useRef(false);
   /** agentPanelCommand is an increasing counter: only the entry that is newer than the last one is executed. */
@@ -1439,16 +1474,6 @@ export function AgentPanel() {
             <p className="agent-welcome-title">
               {creativeMode ? "创作模式:生成 HTML 会在中栏实时预览" : "问我关于当前 PDF / 网页的问题"}
             </p>
-            <div className="agent-chips">
-              {(creativeMode
-                ? ["把当前笔记改写成一篇博客文章", "输入 / 选择技能,按它的规范生成 HTML", "帮我梳理这篇文档的结构与要点"]
-                : ["总结这篇材料的核心方法", "这篇在解决什么问题?", "帮我梳理知识框架"]
-              ).map((q) => (
-                <button key={q} className="agent-chip" onClick={() => setInput(q)}>
-                  {q}
-                </button>
-              ))}
-            </div>
             <p className="agent-hint">
               {creativeMode
                 ? "输入 / 调用技能、@ 引用仓库文件;满意后点中栏的「发布」推到 bblog"
@@ -1580,7 +1605,7 @@ export function AgentPanel() {
               : "询问当前内容…(可直接粘贴截图)"
           }
           value={input}
-          rows={2}
+          rows={1}
           data-ime-chinese="true"
           onFocus={() => imeOnChineseFocus(true)}
           // The click forces it too: the focus event does not fire again when it already has the focus (the user switched back to English with Ctrl+Space inside the box and clicks back in, Chinese has to be asked for again here).

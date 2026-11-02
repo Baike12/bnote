@@ -2942,8 +2942,8 @@ input[type="range"] {
   gap: 12px;
 }
 
-/* Welcome page: a centered hero + clickable example chips (a click fills the
-   input box). */
+/* Welcome page: a centered hero. No example chips: a fresh session shows the
+   title and one line of usage, nothing to read through. */
 .agent-welcome {
   margin: auto 0;
   display: flex;
@@ -2969,28 +2969,6 @@ input[type="range"] {
   font-weight: 600;
   color: var(--text);
 }
-.agent-chips {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-}
-.agent-chip {
-  border: 1px solid var(--border);
-  background: var(--bg2);
-  color: var(--text-dim);
-  font: inherit;
-  font-size: calc(var(--agent-text) * 0.87);
-  padding: 4px 10px;
-  border-radius: 999px;
-  cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
-}
-.agent-chip:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
 .agent-hint {
   font-size: calc(var(--agent-text) * 0.8);
   color: var(--text-faint);
@@ -3347,7 +3325,9 @@ input[type="range"] {
 }
 
 /* Input area: a rounded card (the textarea is embedded transparently), with
-   the hints and the send button in the tool row at the bottom.
+   the attachment and send buttons in the tool row at the bottom.
+   The row carries **no divider**: the border inside the card read as a second
+   input box and cost a whole line of height. Spacing alone separates the two.
    On focus the whole card lights up with an accent outline and a glow, not
    just the border of the textarea itself. */
 .agent-composer {
@@ -3369,7 +3349,12 @@ input[type="range"] {
   resize: none;
   border: none;
   background: transparent;
-  padding: 9px 12px 2px;
+  padding: 8px 12px 0;
+  /* One line at rest; the component grows it with the text (wrapped lines
+     included) and up to **12 lines are always fully visible**. Only past that
+     does the box scroll — a long prompt must stay readable while writing it. */
+  max-height: calc(var(--agent-text) * 1.5 * 12 + 8px);
+  overflow-y: auto;
   font: inherit;
   font-size: var(--agent-text);
   line-height: 1.5;
@@ -3383,9 +3368,7 @@ input[type="range"] {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 5px;
-  padding: 5px 6px 5px 12px;
-  border-top: 1px solid var(--border);
+  padding: 1px 6px 4px 12px;
 }
 
 /* Attachment button + row of pending thumbnails. */
