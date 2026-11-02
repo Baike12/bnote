@@ -105,18 +105,18 @@ function customProps(body: string): Set<string> {
   return new Set([...body.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)].map((m) => m[1]));
 }
 
-describe("主题变量体系", () => {
+describe("theme variable system", () => {
   const darkBlock = [...blockBodies(css, ":root {"), ...blockBodies(css, ":root{")].join(
     "\n",
   );
   const lightBlock = blockBodies(css, '[data-theme="light"] {').join("\n");
 
-  it("global.css 里两个主题块都存在", () => {
+  it("both theme blocks exist in global.css", () => {
     expect(darkBlock).not.toBe("");
     expect(lightBlock).not.toBe("");
   });
 
-  it("light 覆盖 dark 的全部主题变量（几何/字体豁免）", () => {
+  it("light overrides every dark theme variable (geometry/font are exempt)", () => {
     const dark = [...customProps(darkBlock)].filter((v) => !GEOMETRIC_VARS.has(v));
     const light = customProps(lightBlock);
     const missing = dark.filter((v) => !light.has(v));
@@ -127,7 +127,7 @@ describe("主题变量体系", () => {
     expect(extra, `light 主题多出 dark 没有的变量: ${extra.join(", ")}`).toEqual([]);
   });
 
-  it("规则体不含裸颜色字面量（颜色只从变量来）", () => {
+  it("rule bodies contain no bare color literals (colors only come from variables)", () => {
     // Rule body = everything outside the :root / light blocks. Variable definition
     // lines are exempt; literals inside var(..., fallback) are exempt too (they
     // only take effect when the variable is missing, i.e. a dead branch).
@@ -140,7 +140,7 @@ describe("主题变量体系", () => {
     expect(bare, `规则体里出现裸颜色: ${bare.join(", ")}`).toEqual([]);
   });
 
-  it("stripVarCalls 剥掉嵌套括号的 fallback 且永不定环", () => {
+  it("stripVarCalls strips a fallback with nested parens and never loops", () => {
     // Regression for the historical defect: the regex loop spun forever on
     // var(--x, rgba(...)).
     expect(stripVarCalls("a var(--x, rgba(0, 0, 0, 0.2)) b")).toBe("a  b");
@@ -152,8 +152,8 @@ describe("主题变量体系", () => {
   });
 });
 
-describe("光标常亮", () => {
-  it("global.css 关掉普通与 vim 共用的 .cm-cursorLayer 闪烁动画", () => {
+describe("always-on cursor", () => {
+  it("global.css turns off the blink animation of the .cm-cursorLayer shared by the normal and vim cursors", () => {
     // CM6's normal cursor layer and vim's block cursor layer both carry this class,
     // and the plugin restarts the blink with inline animation-name/duration
     // values, so the rule must carry !important.
@@ -161,8 +161,8 @@ describe("光标常亮", () => {
   });
 });
 
-describe("语法高亮跟随主题", () => {
-  it("HighlightStyle 的每个 color 都走 var()", () => {
+describe("syntax highlighting follows the theme", () => {
+  it("every color of the HighlightStyle goes through var()", () => {
     const colors = [...markdownTs.matchAll(/color:\s*"([^"]+)"/g)].map((m) => m[1]);
     expect(colors.length).toBeGreaterThan(10);
     const bad = colors.filter((c) => !c.startsWith("var("));
@@ -170,14 +170,14 @@ describe("语法高亮跟随主题", () => {
   });
 });
 
-describe("主题应用接线", () => {
-  it("applySettingsToEditor 是 data-theme 唯一写入者，并镜像 localStorage", () => {
+describe("theme application wiring", () => {
+  it("applySettingsToEditor is the only writer of data-theme and mirrors localStorage", () => {
     expect(actionsTs).toMatch(/applyTheme\(settings\.theme\)/);
     expect(actionsTs).toMatch(/dataset\.theme/);
     expect(actionsTs).toMatch(/localStorage\.setItem\("bnote\.theme"/);
   });
 
-  it("theme-boot.js 被 index.html 引用且读同一个 key（启动防闪）", () => {
+  it("theme-boot.js is referenced by index.html and reads the same key (no flash on startup)", () => {
     expect(indexHtml).toMatch(/theme-boot\.js/);
     expect(themeBootJs).toMatch(/localStorage\.getItem\("bnote\.theme"/);
   });

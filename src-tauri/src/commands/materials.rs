@@ -848,25 +848,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 中文文件名转无声调拼音() {
+    fn chinese_file_names_become_pinyin_without_tones() {
         assert_eq!(pinyin_slug("机器学习"), "ji_qi_xue_xi");
         assert_eq!(pinyin_slug("深度学习 第2版"), "shen_du_xue_xi_di_2_ban");
     }
 
     #[test]
-    fn 小数点与符号变下划线() {
+    fn dots_and_symbols_become_underscores() {
         assert_eq!(pinyin_slug("LLM-TAP-v2.0"), "llm_tap_v2_0");
         assert_eq!(pinyin_slug("  《论文》  "), "lun_wen");
     }
 
     #[test]
-    fn 多音字按词判定() {
+    fn polyphonic_characters_are_resolved_by_word() {
         // pinyin-pro's word-level dictionary: "yin hang", not "yin xing".
         assert_eq!(pinyin_slug("银行"), "yin_hang");
     }
 
     #[test]
-    fn 网页取域名加末段前六位() {
+    fn a_web_url_slug_is_the_domain_plus_the_first_six_characters_of_the_last_segment() {
         assert_eq!(
             url_slug("https://x.com/thedankoe/status/2010751592346030461"),
             "x_com_201075"
@@ -876,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn 目录名冲突时追加序号() {
+    fn a_conflicting_directory_name_gets_a_numeric_suffix() {
         let mut r = Registry { version: 1, materials: BTreeMap::new() };
         r.materials.insert(
             "pdf:a.pdf".into(),
@@ -895,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn 导入pdf落在材料目录_同标题复用_已在材料目录就地返回() {
+    fn importing_a_pdf_lands_in_the_materials_dir_reuses_the_title_and_returns_it_in_place() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -935,7 +935,7 @@ mod tests {
         // copy hits the same directory.
         let reg = Registry::load(&vault.join(".bnote/materials/index.json"));
         let key = "pdf:.bnote/materials/pdfs/llm_tap_v2/LLM-TAP-v2.pdf";
-        let entry = reg.materials.get(key).expect("registry 应记录导入的 PDF");
+        let entry = reg.materials.get(key).expect("the registry must record the imported PDF");
         assert_eq!(entry.dir, "llm_tap_v2");
         assert_eq!(entry.file, "LLM-TAP-v2.pdf");
         // Resolve once more with the same identity rules `ensure` uses; the
@@ -951,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn 微信读书用书名_网页用网址规则() {
+    fn weread_uses_the_book_title_while_web_pages_use_the_url_rule() {
         let book = StudyContent::Url {
             url: "https://weread.qq.com/web/reader/abc123".into(),
             title: "三体".into(),
@@ -983,7 +983,7 @@ mod tests {
     /// lands inside the base64 image, so parsing the whole line as JSON fails.
     /// Reading the text from the prefix is enough.
     #[test]
-    fn 首条消息带大图也能读出标题() {
+    fn the_title_is_read_even_when_the_first_message_carries_a_large_image() {
         let image = "A".repeat(64 * 1024);
         let body = format!(
             "{{\"type\":\"user\",\"at\":1793000793461,\"text\":\"这里为什么是4倍\",\"images\":[{{\"mediaType\":\"image/png\",\"data\":\"{}\"}}]}}\n",
@@ -999,7 +999,7 @@ mod tests {
     /// The metadata line is always at the very front and very small: take the
     /// title from it directly instead of parsing the user message.
     #[test]
-    fn 元数据行标题优先于用户首句() {
+    fn the_metadata_line_title_wins_over_the_first_user_message() {
         let body = concat!(
             r#"{"type":"meta","at":100,"title":"会话标题","model":{"provider":"anthropic","model":"m","baseUrl":"","maxTokens":1,"contextWindow":2}}"#,
             "\n",
@@ -1018,7 +1018,7 @@ mod tests {
     /// Legacy records without a metadata line fall back to the user's first
     /// sentence; empty files never show up in the list.
     #[test]
-    fn 旧记录退回用户首句_空文件跳过() {
+    fn old_records_fall_back_to_the_first_user_message_and_empty_files_are_skipped() {
         let body = concat!(
             r#"{"type":"user","at":1,"text":"  第一行\n第二行  "}"#,
             "\n",
@@ -1037,7 +1037,7 @@ mod tests {
     /// The parent/child relation comes from the metadata line: restart
     /// recovery uses it to reattach auxiliary sessions to their root session.
     #[test]
-    fn 元数据行带出父子关系与分叉前缀() {
+    fn the_metadata_line_carries_the_parent_relation_and_the_fork_prefix() {
         let body = concat!(
             r#"{"type":"meta","at":100,"title":"↳ 父会话的提问","parent":"s1-0","basedOn":"父会话的提问","forkAt":4}"#,
             "\n",
@@ -1063,7 +1063,7 @@ mod tests {
     /// A model-generated title only changes the first-line metadata; the body
     /// and the remaining metadata fields are kept as is.
     #[test]
-    fn 改标题只动第一行元数据() {
+    fn retitling_only_touches_the_first_metadata_line() {
         let raw = concat!(
             r#"{"type":"meta","at":1,"title":"旧标题","parent":"s1-0","forkAt":2}"#,
             "\n",

@@ -186,7 +186,7 @@ async function installListeners() {
     });
   } catch (e) {
     installed = false;
-    console.warn("[python-run] 事件监听不可用", e);
+    console.warn("[python-run] the event listener is unavailable", e);
   }
 }
 async function ensureListeners() {

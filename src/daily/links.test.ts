@@ -13,8 +13,8 @@ const link = (patch: Partial<DailyLink>): DailyLink => ({
   ...patch,
 });
 
-describe("LinkStore 序列化往返", () => {
-  it("upsert → toJSON → fromJSON 保留全部字段", () => {
+describe("LinkStore serialization round trip", () => {
+  it("upsert → toJSON → fromJSON keeps every field", () => {
     const s = new LinkStore();
     s.upsert(link({ id: "l1" }));
     s.upsert(link({ id: "l2", kind: "recorded", text: "任务乙" }));
@@ -23,7 +23,7 @@ describe("LinkStore 序列化往返", () => {
     expect(back.getById("l2")).toMatchObject({ kind: "recorded", text: "任务乙", srcLine: 3 });
   });
 
-  it("null / 损坏 JSON / 错误版本 都得到空库", () => {
+  it("null / broken JSON / wrong version all give an empty store", () => {
     expect(LinkStore.fromJSON(null).all()).toEqual([]);
     expect(LinkStore.fromJSON("{broken").all()).toEqual([]);
     expect(LinkStore.fromJSON(JSON.stringify({ version: 99, links: [] })).all()).toEqual([]);
@@ -36,13 +36,13 @@ describe("forFile / findByText", () => {
   s.upsert(link({ id: "b", srcPath: "/vault/proj/b.md", text: "任务乙" }));
   s.upsert(link({ id: "c", srcPath: "/vault/proj/c.md", dailyPath: "/vault/Daily/2026-09-22.md", text: "昨天的" }));
 
-  it("forFile 命中源侧或日记侧", () => {
+  it("forFile matches on the source side or the daily note side", () => {
     expect(s.forFile("/vault/proj/a.md").map((l) => l.id)).toEqual(["a"]);
     expect(s.forFile("/vault/Daily/2026-09-23.md").map((l) => l.id).sort()).toEqual(["a", "b"]);
     expect(s.forFile("/vault/none.md")).toEqual([]);
   });
 
-  it("findByText 限文件参与、按行号提示就近", () => {
+  it("findByText restricts to the files that take part and uses the line hint to pick the nearest", () => {
     expect(s.findByText("/vault/proj/a.md", "任务甲", 10)?.id).toBe("a");
     expect(s.findByText("/vault/Daily/2026-09-23.md", "任务乙", 5)?.id).toBe("b");
     expect(s.findByText("/vault/proj/b.md", "任务甲", 3)).toBe(null); // the file does not take part

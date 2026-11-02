@@ -50,8 +50,8 @@ function marks(set: DecorationSet, doc: Text) {
   return out;
 }
 
-describe("待办链接的可视标识", () => {
-  it("源笔记:标出链接的根待办行,子项与无关项不打标", () => {
+describe("visual marks for todo links", () => {
+  it("source note: the root todo line of the link is marked, children and unrelated items are not marked", () => {
     const view = viewOf("- [ ] cs336\n  - [ ] 第一个作业\n- [ ] bm25\n正文一行\n");
     const set = buildDailyMarks(view, {
       path: SRC,
@@ -68,7 +68,7 @@ describe("待办链接的可视标识", () => {
     expect(got[0].attrs.title).toContain("今日日记");
   });
 
-  it("源笔记:昨天发出去的链接今天不再打标(与发送命令的按日归属一致)", () => {
+  it("source note: a link sent yesterday is no longer marked today (the same per-day ownership as the send command)", () => {
     const view = viewOf("- [ ] cs336\n");
     const set = buildDailyMarks(view, {
       path: SRC,
@@ -78,7 +78,7 @@ describe("待办链接的可视标识", () => {
     expect(marks(set, view.state.doc)).toEqual([]);
   });
 
-  it("源笔记:auto 链接(存在即聚合)不打标——标记铺满全库就不再是信息", () => {
+  it("source note: auto links (aggregated on sight) are not marked — a mark spread over the whole vault is no longer information", () => {
     const view = viewOf("- [ ] cs336\n");
     const set = buildDailyMarks(view, {
       path: SRC,
@@ -88,7 +88,7 @@ describe("待办链接的可视标识", () => {
     expect(marks(set, view.state.doc)).toEqual([]);
   });
 
-  it("源笔记:别的文件参与的链接不打标", () => {
+  it("source note: links that other files take part in are not marked", () => {
     const view = viewOf("- [ ] cs336\n");
     const set = buildDailyMarks(view, {
       path: SRC,
@@ -98,7 +98,7 @@ describe("待办链接的可视标识", () => {
     expect(marks(set, view.state.doc)).toEqual([]);
   });
 
-  it("日记侧:标出同步来的条目并带源笔记名,手写条目不打标", () => {
+  it("daily note side: the synced entry is marked and carries the source note name, hand-written entries are not marked", () => {
     const view = viewOf("# 2026-09-27\n- [ ] bm25\n- [ ] 自己记的一件事\n");
     const set = buildDailyMarks(view, {
       path: TODAY,
@@ -111,7 +111,7 @@ describe("待办链接的可视标识", () => {
     expect(got[0].attrs.title).toContain("job todo");
   });
 
-  it("日记侧:打开的不是今天那份也按「指向这份日记」打标", () => {
+  it("daily note side: a daily note that is not today's is still marked as pointing at this daily note", () => {
     const past = "/v/Daily/2026-09-23.md";
     const view = viewOf("# 2026-09-23\n- [ ] anc-ke\n");
     const set = buildDailyMarks(view, {
@@ -122,7 +122,7 @@ describe("待办链接的可视标识", () => {
     expect(marks(set, view.state.doc)).toHaveLength(1);
   });
 
-  it("记录型链接的提示语区分「勾选时记录」", () => {
+  it("the tooltip of a recorded link distinguishes the recorded-when-checked case", () => {
     const view = viewOf("- [x] cs336 ✅ 2026-09-27\n");
     const set = buildDailyMarks(view, {
       path: SRC,
@@ -132,7 +132,7 @@ describe("待办链接的可视标识", () => {
     expect(marks(set, view.state.doc)[0].attrs.title).toContain("勾选完成");
   });
 
-  it("只标记视口内的行;空视口不产出", () => {
+  it("only the lines inside the viewport are marked; an empty viewport produces nothing", () => {
     const doc = `${Array.from({ length: 40 }, (_, i) => `- [ ] t${i}`).join("\n")}\n`;
     const view = viewOf(doc);
     const links = [link({ text: "t0" }), link({ id: "l2", text: "t30" })];
@@ -155,7 +155,7 @@ describe("待办链接的可视标识", () => {
     expect(empty.size).toBe(0);
   });
 
-  it("链接文本取自剥掉 checkbox 与 ✅ 戳后的身份文本", () => {
+  it("the link text comes from the identity text after the checkbox and the ✅ stamp are stripped", () => {
     const view = viewOf("- [x] 接入4a登录 ✅ 2026-09-23\n");
     const set = buildDailyMarks(view, {
       path: SRC,
@@ -165,7 +165,7 @@ describe("待办链接的可视标识", () => {
     expect(marks(set, view.state.doc)).toHaveLength(1);
   });
 
-  it("源笔记名:去掉目录与扩展名", () => {
+  it("source note name: the directory and the extension are removed", () => {
     expect(sourceLabel("/v/Job/job todo.md")).toBe("job todo");
     expect(sourceLabel("/v/a/b/c.md")).toBe("c");
   });

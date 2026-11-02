@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest";
 import { renderAgentMarkdown, renderInline } from "./agentMarkdown";
 
 describe("renderInline", () => {
-  it("HTML 一律转义,规则之外没有放行通道", () => {
+  it("HTML is always escaped, with no pass-through outside the rules", () => {
     expect(renderInline("<script>alert(1)</script>")).not.toContain("<script");
     expect(renderInline('<img src=x onerror="a">')).not.toContain("<img");
   });
 
-  it("行内代码原样保留,不参与其他规则", () => {
+  it("inline code is kept verbatim and does not take part in the other rules", () => {
     expect(renderInline("写 `**a**` 看字面量")).toContain("<code>**a**</code>");
   });
 
-  it("粗体、斜体、删除线、链接", () => {
+  it("bold, italic, strikethrough and links", () => {
     expect(renderInline("**重点**")).toContain("<strong>重点</strong>");
     expect(renderInline("a *斜* b")).toContain("<em>斜</em>");
     expect(renderInline("~~删~~")).toContain("<del>删</del>");
@@ -20,35 +20,35 @@ describe("renderInline", () => {
     );
   });
 
-  it("行内数学走 katex,\\(…\\) 定界符同样支持", () => {
+  it("inline math goes through katex, and the \\(…\\) delimiters are supported too", () => {
     // Stable features of the katex output: a fraction -> .mfrac, a superscript -> .msupsub
     expect(renderInline("$\\frac{a}{b}$")).toContain("mfrac");
     expect(renderInline("\\(x^2\\)")).toContain("msupsub");
   });
 
-  it("数学里的 < 在 katex 内还原并转义输出(不破坏 HTML 结构)", () => {
+  it("a < inside math is restored within katex and emitted escaped (without breaking the HTML structure)", () => {
     const html = renderInline("$a<b$");
     expect(html).toContain("katex");
     expect(html).toContain("&lt;"); // katex has processed the original <
   });
 
-  it("成对的 $ 才是公式,孤立美元符留作字面量", () => {
+  it("only a paired $ is a formula, a lone dollar sign stays literal", () => {
     expect(renderInline("价格 $5 和 $6")).not.toContain("katex");
     expect(renderInline("价格 $5 和 $6")).toContain("$5 和 $6");
   });
 });
 
 describe("renderAgentMarkdown", () => {
-  it("标题层级", () => {
+  it("heading levels", () => {
     expect(renderAgentMarkdown("## 小节")).toContain("<h2>小节</h2>");
     expect(renderAgentMarkdown("### 深")).toContain("<h3>深</h3>");
   });
 
-  it("段落内单个换行渲染为 <br>(聊天里的换行是有意的)", () => {
+  it("a single newline inside a paragraph renders as <br> (line breaks in chat are intentional)", () => {
     expect(renderAgentMarkdown("第一行\n第二行")).toBe("<p>第一行<br>第二行</p>");
   });
 
-  it("无序与有序列表,两级嵌套", () => {
+  it("unordered and ordered lists with two levels of nesting", () => {
     const ul = renderAgentMarkdown("- a\n- b\n  - b1\n- c");
     expect(ul).toContain("<ul>");
     expect(ul).toContain("<li>a</li>");
@@ -58,11 +58,11 @@ describe("renderAgentMarkdown", () => {
     expect(ol).toContain("<li>后</li>");
   });
 
-  it("列表项支持行内规则", () => {
+  it("list items support the inline rules", () => {
     expect(renderAgentMarkdown("- **重点**项")).toContain("<li><strong>重点</strong>项</li>");
   });
 
-  it("空行分隔的有序列表是一个列表,编号连续(回归:曾经拆成各自从 1 起的 <ol>,屏幕上是 1. 1. 1. 1.)", () => {
+  it("an ordered list separated by blank lines is one list with continuous numbering (regression: it used to split into separate <ol> blocks each starting at 1, showing 1. 1. 1. 1. on screen)", () => {
     // The typical output of a model: every item is written as "1.", with a blank line between the items.
     const html = renderAgentMarkdown("1. 甲\n\n1. 乙\n\n1. 丙\n\n1. 丁");
     expect(html.match(/<ol/g)).toHaveLength(1);
@@ -71,51 +71,51 @@ describe("renderAgentMarkdown", () => {
     expect(renderAgentMarkdown("1. 甲\n\n2. 乙\n\n3. 丙").match(/<ol/g)).toHaveLength(1);
   });
 
-  it("空行分隔的无序列表同属一个 <ul>", () => {
+  it("an unordered list separated by blank lines belongs to one <ul>", () => {
     expect(renderAgentMarkdown("- 甲\n\n- 乙")).toBe('<ul class="is-loose"><li>甲</li><li>乙</li></ul>');
   });
 
-  it("紧密列表不带 is-loose(项之间没有空行就不用加间距)", () => {
+  it("a tight list carries no is-loose (no blank lines between the items means no extra spacing)", () => {
     expect(renderAgentMarkdown("- 甲\n- 乙")).toBe("<ul><li>甲</li><li>乙</li></ul>");
   });
 
-  it("起始编号取首项(真从 3. 起的列表上屏也从 3 开始)", () => {
+  it("the start number comes from the first item (a list really starting at 3. also starts at 3 on screen)", () => {
     expect(renderAgentMarkdown("3. 丙\n4. 丁")).toBe('<ol start="3"><li>丙</li><li>丁</li></ol>');
     // A list starting at 1. carries no start (it would repeat the browser's default numbering)
     expect(renderAgentMarkdown("1. 甲")).toBe("<ol><li>甲</li></ol>");
   });
 
-  it("空行后换了标记类型就是另一个列表", () => {
+  it("a different marker type after a blank line starts another list", () => {
     expect(renderAgentMarkdown("1. 有序\n\n- 无序")).toBe(
       "<ol><li>有序</li></ol><ul><li>无序</li></ul>",
     );
   });
 
-  it("松散列表项的续段(缩进)仍属于该项", () => {
+  it("the continuation paragraph of a loose list item (indented) still belongs to that item", () => {
     expect(renderAgentMarkdown("1. 第一段\n\n   第二段")).toBe(
       '<ol class="is-loose"><li>第一段<br>第二段</li></ol>',
     );
   });
 
-  it("列表后的普通段落不被吞进最后一项", () => {
+  it("a plain paragraph after a list is not swallowed into the last item", () => {
     expect(renderAgentMarkdown("- 甲\n\n这是一段正文。")).toBe(
       "<ul><li>甲</li></ul><p>这是一段正文。</p>",
     );
   });
 
-  it("围栏代码块整体转义,带语言类名", () => {
+  it("a fenced code block is escaped as a whole and carries the language class name", () => {
     const html = renderAgentMarkdown('```ts\nconst a = "<b>";\n```');
     expect(html).toContain('<pre class="agent-code language-ts"><code>');
     expect(html).toContain("&lt;b&gt;");
     expect(html).not.toContain("<b>");
   });
 
-  it("未闭合的围栏代码块到文末为止", () => {
+  it("an unclosed fenced code block runs to the end of the document", () => {
     const html = renderAgentMarkdown("```\nabc");
     expect(html).toContain("abc");
   });
 
-  it("块级数学 $$…$$ 与 \\[…\\],可跨行", () => {
+  it("block math with $$…$$ and \\[…\\], which may span lines", () => {
     const block = renderAgentMarkdown("$$\n\\int_0^1 x\\,dx\n$$");
     expect(block).toContain("katex-display");
     expect(block).toContain("∫");
@@ -125,7 +125,7 @@ describe("renderAgentMarkdown", () => {
     expect(bracket).toContain("msupsub");
   });
 
-  it("列表项内容里的块级数学走 KaTeX(回归:模型把 $$ 块缩进在列表项下,曾经整段原样漏出)", () => {
+  it("block math inside a list item goes through KaTeX (regression: the model indents the $$ block under a list item, and it used to leak out verbatim)", () => {
     // The shape reported by the user: a multi-line $$…$$ block in the continuation line of an ordered list item
     const html = renderAgentMarkdown(
       "1. 全局 Softmax 分母\n   $$\n   s_p=\\sum_{j\\in C_p}e^{x_j-x_{\\max}}\n   $$\n   再 all-reduce。",
@@ -143,17 +143,17 @@ describe("renderAgentMarkdown", () => {
     expect(mixed.indexOf("katex-display")).toBeGreaterThan(-1);
   });
 
-  it("引用块递归渲染内部 markdown", () => {
+  it("a blockquote recursively renders the markdown inside it", () => {
     const html = renderAgentMarkdown("> 引用 **重点**");
     expect(html).toContain("<blockquote>");
     expect(html).toContain("<strong>重点</strong>");
   });
 
-  it("分隔线", () => {
+  it("a horizontal rule", () => {
     expect(renderAgentMarkdown("---")).toContain("<hr>");
   });
 
-  it("表格:表头 + 行,单元格走行内规则", () => {
+  it("tables: header + rows, with cells using the inline rules", () => {
     const html = renderAgentMarkdown(
       "| 概念 | 区别 |\n| --- | --- |\n| **A** | 快 |\n| B | 慢 |",
     );
@@ -163,7 +163,7 @@ describe("renderAgentMarkdown", () => {
     expect(html).toContain("<td>慢</td>");
   });
 
-  it("混合文档按块依序输出", () => {
+  it("a mixed document is emitted block by block in order", () => {
     const html = renderAgentMarkdown("## 结论\n\n先说答案:是的。\n\n- 要点一\n- 要点二");
     expect(html.indexOf("<h2>")).toBe(0);
     expect(html).toContain("<p>先说答案:是的。</p>");

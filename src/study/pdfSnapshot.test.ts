@@ -25,8 +25,8 @@ function page(over: Partial<SnapshotPage> = {}): SnapshotPage {
   };
 }
 
-describe("planSnapshot 取景几何", () => {
-  it("横向只取页面列:左侧目录/批注留白不进图", () => {
+describe("the planSnapshot framing geometry", () => {
+  it("horizontally only the page column is taken: the outline/annotation margin on the left is not captured", () => {
     // Viewport 0..1000, page column 300..800; the 0..300 margin must be cut away.
     const plan = planSnapshot(rect(0, 0, 1000, 800), [
       page({ box: rect(300, 0, 500, 900), full: rect(300, 0, 500, 900) }),
@@ -38,7 +38,7 @@ describe("planSnapshot 取景几何", () => {
     expect(plan!.pages[0].src.left).toBe(0);
   });
 
-  it("纵向裁掉视口上方/下方的页面外留白", () => {
+  it("vertically the whitespace above and below the page is cut off from the viewport", () => {
     // The page starts at y=50; the top 50px of the viewport is background and is not captured.
     const plan = planSnapshot(rect(0, 0, 500, 800), [
       page({ box: rect(0, 50, 500, 900), full: rect(0, 50, 500, 900) }),
@@ -48,7 +48,7 @@ describe("planSnapshot 取景几何", () => {
     expect(plan!.pages[0].src.top).toBe(0);
   });
 
-  it("跨页:两页各自搬运,页间空隙保留为底色", () => {
+  it("spanning pages: each page is carried over separately, the gap between pages stays as background", () => {
     const viewport = rect(0, 0, 500, 800);
     const plan = planSnapshot(viewport, [
       page({ box: rect(0, -100, 500, 500), full: rect(0, -100, 500, 500) }),
@@ -63,7 +63,7 @@ describe("planSnapshot 取景几何", () => {
     expect(plan!.pages[1].src.top).toBe(0);
   });
 
-  it("显示范围(裁剪)按整页坐标换算源矩形与批注基准", () => {
+  it("the display range (crop) is converted to the source rectangle and the annotation base in whole-page coordinates", () => {
     const plan = planSnapshot(rect(0, 0, 1000, 1000), [
       page({
         box: rect(40, 70, 400, 600),
@@ -78,26 +78,26 @@ describe("planSnapshot 取景几何", () => {
     expect(p.sheet).toEqual(rect(-80, -140, 1000, 1500));
   });
 
-  it("可见页 canvas 还没渲染完 → null(调用方下一帧重试)", () => {
+  it("the visible page canvas has not finished rendering → null (the caller retries on the next frame)", () => {
     const plan = planSnapshot(rect(0, 0, 500, 750), [page({ pixels: 0 })]);
     expect(plan).toBeNull();
   });
 
-  it("没有页面与视口相交 → null", () => {
+  it("no page intersects the viewport → null", () => {
     const plan = planSnapshot(rect(0, 0, 500, 750), [
       page({ box: rect(0, 2000, 500, 750), full: rect(0, 2000, 500, 750) }),
     ]);
     expect(plan).toBeNull();
   });
 
-  it("视口边缘不足 2px 的碎片不算内容", () => {
+  it("a fragment smaller than 2px at the viewport edge does not count as content", () => {
     const plan = planSnapshot(rect(0, 0, 500, 750), [
       page({ box: rect(0, 749, 500, 750), full: rect(0, 749, 500, 750) }),
     ]);
     expect(plan).toBeNull();
   });
 
-  it("intersectRect 只返回真正重叠的部分", () => {
+  it("intersectRect returns only the part that truly overlaps", () => {
     expect(intersectRect(rect(0, 0, 10, 10), rect(5, 5, 10, 10))).toEqual(
       rect(5, 5, 5, 5),
     );
@@ -105,30 +105,30 @@ describe("planSnapshot 取景几何", () => {
   });
 });
 
-describe("阅读分区:压暗的旧内容不进图", () => {
-  it("currentRegion 只保留当前内容区(阴影下沿以下)", () => {
+describe("reading regions: the dimmed old content is not captured", () => {
+  it("currentRegion keeps only the current content region (below the lower edge of the shade)", () => {
     expect(currentRegion(rect(0, 100, 500, 800), 500)).toEqual(
       rect(0, 500, 500, 400),
     );
   });
 
-  it("没有压暗层 → 整屏都是当前内容", () => {
+  it("no shade layer → the whole screen is current content", () => {
     expect(currentRegion(rect(0, 100, 500, 800), null)).toEqual(
       rect(0, 100, 500, 800),
     );
   });
 
-  it("压暗层下沿在视口之上 → 不裁(整屏都在当前区)", () => {
+  it("the lower edge of the shade is above the viewport → no crop (the whole screen is in the current region)", () => {
     expect(currentRegion(rect(0, 100, 500, 800), 20)).toEqual(
       rect(0, 100, 500, 800),
     );
   });
 
-  it("压暗层盖住整个视口 → 没有可截的内容", () => {
+  it("the shade covers the whole viewport → there is nothing to capture", () => {
     expect(currentRegion(rect(0, 100, 500, 800), 900)).toBeNull();
   });
 
-  it("取景从阴影下沿开始:上半屏的旧内容不进图", () => {
+  it("the framing starts at the lower edge of the shade: the old content in the upper half is not captured", () => {
     // Viewport 0..800, the shade covers 0..400 (old content), the current content region is 400..800.
     const plan = planSnapshot(
       rect(0, 0, 500, 800),
@@ -143,7 +143,7 @@ describe("阅读分区:压暗的旧内容不进图", () => {
     expect(plan!.pages[0].dest).toEqual(rect(0, 0, 1000, 800));
   });
 
-  it("不传阴影边界 → 旧行为不变(整屏取景)", () => {
+  it("no shade boundary passed → the old behaviour is unchanged (the whole screen is framed)", () => {
     const plan = planSnapshot(rect(0, 0, 500, 800), [
       page({ box: rect(0, -100, 500, 900), full: rect(0, -100, 500, 900) }),
     ]);
@@ -151,14 +151,14 @@ describe("阅读分区:压暗的旧内容不进图", () => {
     expect(plan!.height).toBe(1600);
   });
 
-  it("阴影盖住整屏 → null(调用方提示没有当前内容)", () => {
+  it("the shade covers the whole screen → null (the caller reports that there is no current content)", () => {
     const plan = planSnapshot(rect(0, 0, 500, 800), [
       page({ box: rect(0, -100, 500, 900), full: rect(0, -100, 500, 900) }),
     ], { currentTop: 900 });
     expect(plan).toBeNull();
   });
 
-  it("完全落在阴影里的页面不进图", () => {
+  it("a page that lies entirely in the shade is not captured", () => {
     // The page 0..300 lies entirely in the shade (0..400), so it is not in the current region.
     const plan = planSnapshot(
       rect(0, 0, 500, 800),

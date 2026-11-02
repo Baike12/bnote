@@ -13,17 +13,17 @@ function cmd(patch: Partial<CommandDef> = {}): CommandDef {
  * page and the main window commands (region switch, quick todo) look entirely
  * dead.
  */
-describe("网页转发键的主窗口焦点", () => {
-  it("普通命令先抢回主窗口键盘", () => {
+describe("the main window focus of forwarded web page keys", () => {
+  it("an ordinary command takes the keyboard back to the main window first", () => {
     expect(needsMainWebviewFocus(cmd())).toBe(true);
     expect(needsMainWebviewFocus(cmd({ keepsPageFocus: false }))).toBe(true);
   });
 
-  it("原地生效的命令保持页面焦点", () => {
+  it("a command that acts in place keeps the page focus", () => {
     expect(needsMainWebviewFocus(cmd({ keepsPageFocus: true }))).toBe(false);
   });
 
-  it("解析不到命令时不动焦点", () => {
+  it("when the command cannot be resolved the focus does not move", () => {
     expect(needsMainWebviewFocus(null)).toBe(false);
   });
 });

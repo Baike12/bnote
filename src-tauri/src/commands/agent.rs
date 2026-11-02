@@ -1229,7 +1229,7 @@ mod tests {
     /// value are overridden, empty fields keep the current settings (an old
     /// record missing a field must not leave the model as an empty string).
     #[test]
-    fn 会话模型快照只覆盖有值的字段() {
+    fn the_session_model_snapshot_only_overrides_the_fields_that_have_a_value() {
         let mut cfg = AgentConfig {
             provider: "openai".into(),
             model: "current".into(),
@@ -1262,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn 预览版本号只从快照文件名解析() {
+    fn the_preview_version_is_parsed_only_from_the_snapshot_file_name() {
         assert_eq!(
             preview_version_from_url("file:///tmp/creative-preview/preview-7.html"),
             Some(7)
@@ -1289,12 +1289,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 预览截图按版本号存取_等待先注册再查表() {
+    async fn preview_screenshots_are_fetched_by_version_and_the_waiter_registers_first() {
         // With no screenshot stored, the timeout returns None (a short timeout
         // keeps the test from dragging on for 4 seconds)
         assert!(
             wait_preview_shot(987_654, Duration::from_millis(50)).await.is_none(),
-            "未存的版本必须等不到"
+            "an unknown version must never resolve"
         );
         // Once stored, the waiter gets that version immediately
         store_preview_shot(987_655, b"fake-png".to_vec());

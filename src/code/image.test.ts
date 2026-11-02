@@ -11,7 +11,7 @@ import { absoluteInProject, formatBytes, isRasterImage } from "./image";
  */
 
 describe("isRasterImage", () => {
-  it("常见位图按图片渲染", () => {
+  it("common bitmaps are rendered as images", () => {
     for (const p of [
       "a.png",
       "docs/b.JPG",
@@ -27,22 +27,22 @@ describe("isRasterImage", () => {
     }
   });
 
-  it("svg 不算:它是文本,要在编辑器里改", () => {
+  it("svg does not count: it is text and has to be edited in the editor", () => {
     expect(isRasterImage("logo.svg")).toBe(false);
   });
 
-  it("没有扩展名 / 其它文本后缀不算", () => {
+  it("no extension or another text suffix does not count", () => {
     expect(isRasterImage("README")).toBe(false);
     expect(isRasterImage("src/main.ts")).toBe(false);
   });
 
-  it("只看最后一段文件名,目录名里的点不参与", () => {
+  it("only the last path segment is looked at, dots in directory names do not count", () => {
     expect(isRasterImage("v1.2/README.md")).toBe(false);
   });
 });
 
 describe("absoluteInProject", () => {
-  it("拼出绝对路径,双斜杠收成一个", () => {
+  it("the absolute path is joined and a double slash collapses into one", () => {
     expect(absoluteInProject("/Users/me/proj", "assets/a.png")).toBe(
       "/Users/me/proj/assets/a.png",
     );
@@ -53,7 +53,7 @@ describe("absoluteInProject", () => {
 });
 
 describe("formatBytes", () => {
-  it("按 B / KB / MB 给一眼能读懂的大小", () => {
+  it("the size is formatted as B / KB / MB, readable at a glance", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(999)).toBe("999 B");
     expect(formatBytes(1024)).toBe("1.0 KB");

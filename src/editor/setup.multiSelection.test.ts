@@ -25,8 +25,8 @@ const newState = () =>
     extensions: baseExtensions({ onDocChanged() {}, onCursorMoved() {} }),
   });
 
-describe("编辑器配置：多段选区（vim blockwise 的前提）", () => {
-  it("逐行三段选区原样落库（不被 asSingle 压成主段，主段下标保持）", () => {
+describe("editor configuration: multiple ranges (the precondition for vim blockwise)", () => {
+  it("a three-range selection over three lines lands as is (not collapsed to the main range by asSingle, the main index is kept)", () => {
     const next = newState().update({
       selection: EditorSelection.create(
         [
@@ -45,7 +45,7 @@ describe("编辑器配置：多段选区（vim blockwise 的前提）", () => {
     expect(next.selection.mainIndex).toBe(2);
   });
 
-  it("单段选区不受影响（普通编辑/鼠标选择的路径照旧）", () => {
+  it("a single range selection is unaffected (the ordinary editing / mouse selection path stays as before)", () => {
     const next = newState().update({ selection: { anchor: 3, head: 6 } }).state;
     expect(next.selection.ranges.length).toBe(1);
     expect(next.selection.main.from).toBe(3);

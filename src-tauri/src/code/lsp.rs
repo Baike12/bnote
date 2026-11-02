@@ -536,7 +536,7 @@ mod tests {
         let r = resolve_server(&root, "python", None).unwrap();
         let venv = root.join(".venv").to_string_lossy().to_string();
         assert_eq!(r.config.env.get("VIRTUAL_ENV"), Some(&venv));
-        let path = r.config.env.get("PATH").expect("PATH 会被前置 venv 的 bin");
+        let path = r.config.env.get("PATH").expect("PATH must be prefixed with the venv bin");
         assert_eq!(
             std::env::split_paths(path).next(),
             Some(root.join(".venv/bin"))

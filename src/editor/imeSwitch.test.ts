@@ -88,13 +88,13 @@ const drain = async () => {
   await new Promise((r) => setTimeout(r, 0));
 };
 
-describe("imeApply 发起时机与在途合并", () => {
-  it("按键那一刻不发 IPC，推迟到任务末尾", () => {
+describe("imeApply launch timing and in-flight merging", () => {
+  it("no IPC is sent at the moment of the keystroke; it is deferred to the end of the task", () => {
     imeApply("A");
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("同步爆发翻转只发一次，且是最新意图（首发不浪费）", async () => {
+  it("a synchronous burst of flips sends only one call, and it is the latest intent (the first call is not wasted)", async () => {
     imeApply("A");
     imeApply("B");
     imeApply("C");
@@ -106,7 +106,7 @@ describe("imeApply 发起时机与在途合并", () => {
     expect(setInputSource).toHaveBeenCalledTimes(1);
   });
 
-  it("在途期间的翻转合并成收尾一次", async () => {
+  it("flips during an in-flight call merge into a single trailing call", async () => {
     imeApply("A");
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(1);
@@ -119,7 +119,7 @@ describe("imeApply 发起时机与在途合并", () => {
     expect(setInputSource).toHaveBeenCalledTimes(2);
   });
 
-  it("收尾落定后切回旧目标,正常再次发送(模式往返)", async () => {
+  it("after the trailing call settles, switching back to the old target is sent normally again (mode round trip)", async () => {
     imeApply("EN");
     await drain();
     imeApply("ZH");
@@ -130,7 +130,7 @@ describe("imeApply 发起时机与在途合并", () => {
     expect(setInputSource).toHaveBeenLastCalledWith("EN");
   });
 
-  it("失焦挂起后,排队中的意图不再补发,也不去动系统输入法", async () => {
+  it("after a blur suspends it, the queued intent is never sent later and the system IME is not touched", async () => {
     imeApply("A");
     imeApply("B"); // queued
     imeOnWindowBlur(); // suspended (no forced switch has really gone out yet)
@@ -138,7 +138,7 @@ describe("imeApply 发起时机与在途合并", () => {
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("已经强制切过:失焦时归还用户的原始输入源", async () => {
+  it("after a forced switch has gone out: the blur hands the user's original input source back", async () => {
     imeApply("A");
     await drain(); // A really went out
     expect(setInputSource).toHaveBeenCalledTimes(1);
@@ -148,7 +148,7 @@ describe("imeApply 发起时机与在途合并", () => {
     expect(setInputSource).toHaveBeenLastCalledWith("com.apple.keylayout.ABC");
   });
 
-  it("重新聚焦后按当前上下文再切一次", async () => {
+  it("after refocusing it switches once more according to the current context", async () => {
     imeApply("A");
     await drain();
     imeOnWindowBlur();
@@ -160,7 +160,7 @@ describe("imeApply 发起时机与在途合并", () => {
     imeYield();
   });
 
-  it("ime.enabled 关闭时不发任何调用", async () => {
+  it("when ime.enabled is off no call is sent at all", async () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: false,
@@ -177,15 +177,15 @@ describe("imeApply 发起时机与在途合并", () => {
   });
 });
 
-describe("批注输入框聚焦", () => {
-  it("切到设置里的 insert 源（给中文批注用）", async () => {
+describe("annotation input focus", () => {
+  it("focusing switches to the insert source from the settings (for Chinese annotations)", async () => {
     imeOnChineseFocus();
     expect(setInputSource).not.toHaveBeenCalled();
     await drain();
     expect(setInputSource).toHaveBeenCalledWith("com.apple.inputmethod.SCIM");
   });
 
-  it("force 绕过去重:已切过中文后再点进输入框仍重发中文源", async () => {
+  it("force bypasses the dedup: clicking into the input field again after Chinese was already switched still re-sends the Chinese source", async () => {
     imeOnChineseFocus();
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(1);
@@ -203,7 +203,7 @@ describe("批注输入框聚焦", () => {
     expect(setInputSource).toHaveBeenLastCalledWith("com.apple.inputmethod.SCIM");
   });
 
-  it("force 在途时切着英文:落定后补发中文(收尾意图不被丢)", async () => {
+  it("force while a switch to English is in flight: Chinese is sent again once it settles (the trailing intent is not lost)", async () => {
     imeApply("com.apple.keylayout.ABC");
     await new Promise((r) => setTimeout(r, 0)); // the English switch is out and in flight
     expect(pending.length).toBe(1);
@@ -217,7 +217,7 @@ describe("批注输入框聚焦", () => {
     await new Promise((r) => setTimeout(r, 0));
   });
 
-  it("force 同样受 enabled / chineseFields 开关约束", async () => {
+  it("force is bound by the enabled / chineseFields switches as well", async () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: true,
@@ -233,7 +233,7 @@ describe("批注输入框聚焦", () => {
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("焦点落定后系统把源恢复回英文时,核对补发一次中文", async () => {
+  it("when the system restores the source to English after the focus settles, the check re-sends Chinese once", async () => {
     // "Remember input source per context" is on: once the focus switch
     // completes, AppKit restores the source remembered for that context,
     // which shows up as the Sogou icon flashing and disappearing.
@@ -254,7 +254,7 @@ describe("批注输入框聚焦", () => {
     }
   });
 
-  it("核对时系统已是中文:不重复发送", async () => {
+  it("when the system is already Chinese at check time: nothing is sent again", async () => {
     vi.stubGlobal("document", {
       activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
     });
@@ -271,7 +271,7 @@ describe("批注输入框聚焦", () => {
     }
   });
 
-  it("核对前已离开输入框:不补发", async () => {
+  it("the input field was left before the check: nothing is sent", async () => {
     vi.stubGlobal("document", { activeElement: null });
     try {
       imeOnChineseFocus(true);
@@ -285,7 +285,7 @@ describe("批注输入框聚焦", () => {
     }
   });
 
-  it("ime.enabled 关闭时不动系统输入法", async () => {
+  it("when ime.enabled is off the system IME is not touched", async () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: false,
@@ -301,7 +301,7 @@ describe("批注输入框聚焦", () => {
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("chineseFields 关闭时聚焦不切(可独立关闭该行为)", async () => {
+  it("when chineseFields is off, focusing does not switch (the behavior can be disabled independently)", async () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: true,
@@ -317,7 +317,7 @@ describe("批注输入框聚焦", () => {
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("中文写作输入框持有焦点时,imeSyncToEditor 不按编辑器上下文覆盖(窗口 focus 回来不丢中文)", async () => {
+  it("while a Chinese writing input field holds focus, imeSyncToEditor does not override it with the editor context (Chinese is not lost when the window regains focus)", async () => {
     vi.stubGlobal("document", {
       activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
     });
@@ -334,7 +334,7 @@ describe("批注输入框聚焦", () => {
     }
   });
 
-  it("焦点不在中文写作输入框时,imeSyncToEditor 照常交还(归还 baseline)", async () => {
+  it("when the focus is not in a Chinese writing input field, imeSyncToEditor hands it back as usual (returns the baseline)", async () => {
     vi.stubGlobal("document", { activeElement: null });
     try {
       imeOnChineseFocus();
@@ -347,7 +347,7 @@ describe("批注输入框聚焦", () => {
     }
   });
 
-  it("失焦归还后,焦点还在中文输入框上时重新聚焦会重发中文源", async () => {
+  it("after the blur hands it back, refocusing while the focus is still on the Chinese input field re-sends the Chinese source", async () => {
     vi.stubGlobal("document", {
       activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
     });
@@ -367,7 +367,7 @@ describe("批注输入框聚焦", () => {
 });
 
 describe("imeWarmUp", () => {
-  it("开启时预热一次 TIS（把冷启动挪出按键路径），且不触发任何切换", async () => {
+  it("when enabled it warms up TIS once (moving the cold start out of the keystroke path) and triggers no switch", async () => {
     const { imeWarmUp } = await import("./imeSwitch");
     imeWarmUp();
     await drain();
@@ -375,7 +375,7 @@ describe("imeWarmUp", () => {
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("关闭 ime 时不预热", async () => {
+  it("no warm-up when ime is off", async () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: false,
@@ -394,7 +394,7 @@ describe("imeWarmUp", () => {
 });
 
 describe("imeOnWindowFocus", () => {
-  it("聚焦后按当前上下文重新对齐（不含 vim 时无动作）", async () => {
+  it("after focusing it realigns according to the current context (no action when vim is off)", async () => {
     useAppStore.getState().patchSettings({ vim: false });
     imeOnWindowFocus();
     await drain();
@@ -415,7 +415,7 @@ describe("imeOnWindowFocus", () => {
  * typed) `to` is still body — there the caret lands on `to` after every
  * keystroke.
  */
-describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", () => {
+describe("the input source decision at math boundaries (insertRegionWantsEnglishAt)", () => {
   const wantsEnglish = (doc: string, pos: number) =>
     insertRegionWantsEnglishAt(
       useAppStore.getState().settings,
@@ -423,7 +423,7 @@ describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", ()
       pos,
     );
 
-  it("行内公式：严格内部才是英文源，闭合 `$` 之后回到中文", () => {
+  it("inline formula: only the strict interior is the English source, after the closing `$` it goes back to Chinese", () => {
     const doc = "前文 $f(x)$ 后文"; // $f(x)$ = 3..9
     expect(wantsEnglish(doc, 4)).toBe(true);
     expect(wantsEnglish(doc, 6)).toBe(true);
@@ -434,7 +434,7 @@ describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", ()
     expect(wantsEnglish(doc, 10)).toBe(false);
   });
 
-  it("块级公式：末尾 `$$` 之后(区域 to)回到中文", () => {
+  it("block formula: after the trailing `$$` (the region's to) it goes back to Chinese", () => {
     const doc = "$$\nx=1\n$$"; // 0..9
     expect(wantsEnglish(doc, 1)).toBe(true);
     expect(wantsEnglish(doc, 8)).toBe(true);
@@ -442,16 +442,16 @@ describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", ()
     expect(wantsEnglish(doc, 9)).toBe(false);
   });
 
-  it("未闭合块：末尾仍是英文源（公式还在打字）", () => {
+  it("unclosed block: the end is still the English source (the formula is still being typed)", () => {
     const doc = "$$\nx=1"; // 0..6, unclosed
     expect(wantsEnglish(doc, 6)).toBe(true);
   });
 
-  it("单个 `$$` 后接着打字仍是英文源", () => {
+  it("typing right after a single `$$` is still the English source", () => {
     expect(wantsEnglish("$$", 2)).toBe(true);
   });
 
-  it("mathKeepsEnglish 关闭：公式里也用 insert 源", () => {
+  it("when mathKeepsEnglish is off: the insert source is used inside formulas too", () => {
     useAppStore.getState().patchSettings({
       ime: {
         enabled: true,
@@ -467,7 +467,7 @@ describe("公式边界处的输入源判定（insertRegionWantsEnglishAt）", ()
 });
 
 /** Popups like the quick todo: opening switches to Chinese, closing hands back exactly the source that was active before opening. */
-describe("临时中文输入作用域(快速待办弹窗)", () => {
+describe("transient Chinese input scope (quick todo popup)", () => {
   const ZH = "com.apple.inputmethod.SCIM";
   const EN = "com.apple.keylayout.ABC";
 
@@ -483,7 +483,7 @@ describe("临时中文输入作用域(快速待办弹窗)", () => {
     expect(pending.length).toBe(1);
   };
 
-  it("打开:先读此刻的源再切中文;关闭:还回那个源", async () => {
+  it("on open: read the current source first, then switch to Chinese; on close: hand that source back", async () => {
     imeBeginTransientChinese();
     await settle();
     expect(setInputSource).toHaveBeenCalledTimes(1);
@@ -495,7 +495,7 @@ describe("临时中文输入作用域(快速待办弹窗)", () => {
     expect(setInputSource).toHaveBeenLastCalledWith(EN);
   });
 
-  it("中文切换在途时关闭:收尾那次是原源,不会晚到把用户打回中文", async () => {
+  it("closing while the Chinese switch is in flight: the trailing call carries the original source and does not late-push the user back to Chinese", async () => {
     imeBeginTransientChinese();
     await waitInFlight(); // the Chinese switch is out but not settled yet
     expect(setInputSource).toHaveBeenLastCalledWith(ZH);
@@ -506,7 +506,7 @@ describe("临时中文输入作用域(快速待办弹窗)", () => {
     expect(setInputSource).toHaveBeenLastCalledWith(EN);
   });
 
-  it("读源还没返回就关闭:不切中文,也不多发一次切换", async () => {
+  it("closing before the source read returns: Chinese is not switched and no extra switch call is sent", async () => {
     let resolveCapture: (id: string) => void = () => {};
     getCurrentInputSource.mockImplementation(
       () => new Promise<string>((resolve) => (resolveCapture = resolve)),
@@ -518,7 +518,7 @@ describe("临时中文输入作用域(快速待办弹窗)", () => {
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("重复进入不覆盖「原来的源」", async () => {
+  it("re-entering does not overwrite 'the original source'", async () => {
     imeBeginTransientChinese();
     await waitInFlight();
     imeBeginTransientChinese(); // re-render / focus again
@@ -527,7 +527,7 @@ describe("临时中文输入作用域(快速待办弹窗)", () => {
     expect(setInputSource).toHaveBeenCalledTimes(1);
   });
 
-  it("还回原源后,同一个目标不再重复切(意图与真实源保持一致)", async () => {
+  it("after the original source is handed back, the same target is not switched again (the intent stays consistent with the real source)", async () => {
     imeBeginTransientChinese();
     await waitInFlight();
     await drain(); // the Chinese switch settles

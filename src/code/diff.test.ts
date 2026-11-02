@@ -23,7 +23,7 @@ index 1111111..2222222 100644
 `;
 
 describe("parseUnifiedDiff", () => {
-  it("解析出文件路径与 hunk", () => {
+  it("parses the file path and the hunk", () => {
     const parsed = parseUnifiedDiff(SAMPLE);
     expect(parsed.files).toHaveLength(1);
     const file = parsed.files[0];
@@ -34,7 +34,7 @@ describe("parseUnifiedDiff", () => {
     expect(file.hunks[0].newStart).toBe(1);
   });
 
-  it("行号按增删各自推进", () => {
+  it("line numbers advance separately for additions and deletions", () => {
     const hunk = parseUnifiedDiff(SAMPLE).files[0].hunks[0];
     const lines = hunk.lines;
     expect(lines[0]).toMatchObject({ type: "context", oldLine: 1, newLine: 1 });
@@ -43,7 +43,7 @@ describe("parseUnifiedDiff", () => {
     expect(lines[3]).toMatchObject({ type: "context", oldLine: 3, newLine: 3 });
   });
 
-  it("新增文件的新路径存在、旧路径是 /dev/null", () => {
+  it("an added file has a new path and /dev/null as its old path", () => {
     const diff = `diff --git a/new.txt b/new.txt
 new file mode 100644
 --- /dev/null
@@ -58,7 +58,7 @@ new file mode 100644
     expect(file.hunks[0].lines).toHaveLength(2);
   });
 
-  it("删除文件的新路径是 /dev/null", () => {
+  it("a deleted file has /dev/null as its new path", () => {
     const diff = `diff --git a/gone.txt b/gone.txt
 deleted file mode 100644
 --- a/gone.txt
@@ -71,7 +71,7 @@ deleted file mode 100644
     expect(file.newPath).toBeNull();
   });
 
-  it("多文件各自成段", () => {
+  it("multiple files become separate sections", () => {
     const diff = `diff --git a/a.txt b/a.txt
 --- a/a.txt
 +++ b/a.txt
@@ -89,13 +89,13 @@ diff --git a/b.txt b/b.txt
     expect(parsed.files.map((f) => f.newPath)).toEqual(["a.txt", "b.txt"]);
   });
 
-  it("空输入不炸", () => {
+  it("empty input does not throw", () => {
     expect(parseUnifiedDiff("").files).toEqual([]);
   });
 });
 
 describe("alignHunk", () => {
-  it("改动过的同一行左右配对", () => {
+  it("the changed line is paired on the left and the right", () => {
     const hunk = parseUnifiedDiff(SAMPLE).files[0].hunks[0];
     const rows = alignHunk(hunk);
     const removed = rows.find((r) => r.left?.type === "remove");
@@ -104,7 +104,7 @@ describe("alignHunk", () => {
     expect(removed?.right?.text).toBe('    println!("new");');
   });
 
-  it("纯新增的行左边留空", () => {
+  it("an added-only line leaves the left side empty", () => {
     const diff = `--- a/x
 +++ b/x
 @@ -1,1 +1,2 @@
@@ -118,7 +118,7 @@ describe("alignHunk", () => {
     expect(added?.right?.text).toBe("added");
   });
 
-  it("纯删除的行右边留空", () => {
+  it("a removed-only line leaves the right side empty", () => {
     const diff = `--- a/x
 +++ b/x
 @@ -1,2 +1,1 @@
@@ -133,7 +133,7 @@ describe("alignHunk", () => {
 });
 
 describe("diffStats", () => {
-  it("统计新增与删除行数", () => {
+  it("counts the added and removed lines", () => {
     expect(diffStats(parseUnifiedDiff(SAMPLE))).toEqual({ added: 1, removed: 1 });
   });
 });

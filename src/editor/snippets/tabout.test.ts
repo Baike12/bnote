@@ -51,14 +51,14 @@ const text = (view: EditorView) => view.state.doc.toString();
 const head = (view: EditorView) => view.state.selection.main.head;
 const at = (doc: string, cursor: number) => planTabout(EditorState.create({ doc }), cursor);
 
-describe("planTabout:向后扫到一个闭合符就跨过去(一次一层)", () => {
-  it("光标对着 \\right) 的 `)`:跨到它后面,一个字都不改", () => {
+describe("planTabout: it scans forward to a closing symbol and steps over it (one level per press)", () => {
+  it("the caret sits on the `)` of \\right): it steps over it without changing a single character", () => {
     const doc = "$\\left( x \\right)$";
     const closers = doc.indexOf(")");
     expect(at(doc, doc.indexOf("\\right)")!)).toEqual({ pos: closers + 1, changes: [] });
   });
 
-  it("多个括号叠在一起:一次 Tab 只出一层,逐层走完", () => {
+  it("with several brackets stacked: one Tab leaves only one level and repeated presses work through them all", () => {
     // The caret is after the x of \frac{a}{x}: `}` → `)` → the closing `$`,
     // three Tabs are needed to get all the way out.
     const doc = "$\\frac{a}{x}(y)$";
@@ -71,29 +71,29 @@ describe("planTabout:向后扫到一个闭合符就跨过去(一次一层)", () 
     expect(at(doc, step3.pos)).toBeNull(); // Already outside the formula: Tab is no longer taken over
   });
 
-  it("\\rangle 整体跨过去(它不以可扫单字符收尾)", () => {
+  it("\\rangle is stepped over as a whole (it does not end with a scannable single character)", () => {
     const doc = "$\\langle x \\rangle$";
     const pos = doc.indexOf("\\rangle");
     expect(at(doc, pos)).toEqual({ pos: pos + "\\rangle".length, changes: [] });
   });
 
-  it("`|` 与 `>` 也在扫描表里(插件原表)", () => {
+  it("`|` and `>` are in the scan table as well (the plugin\'s original table)", () => {
     expect(at("$a|b$", 1)).toEqual({ pos: 3, changes: [] }); // Skips the a and lands after the |
     expect(at("$a>b$", 1)).toEqual({ pos: 3, changes: [] });
   });
 
-  it("光标后面还有普通字符:不接管(只跳闭合符,不跳内容)", () => {
+  it("ordinary characters after the caret: it does not take over (it only jumps closing symbols, not content)", () => {
     const doc = "$a)b$";
     expect(at(doc, 3)).toBeNull(); // The `)` is **before** the caret, and the scan only looks forward
   });
 
-  it("正文里的 Tab 不动(只在公式里生效)", () => {
+  it("Tab in body text does nothing (it only applies inside a formula)", () => {
     expect(at("普通文本(说明)", 2)).toBeNull();
     const doc = "正文\n\n$(x)$";
     expect(at(doc, doc.indexOf("正文"))).toBeNull();
   });
 
-  it("光标压在定界符上(公式首尾那两三个 $):不是跳出场景", () => {
+  it("the caret rests on a delimiter (those two or three $ at the formula edges): that is not a jump-out case", () => {
     const inline = "$(x)$";
     expect(at(inline, 0)).toBeNull(); // On the opening $
     expect(at(inline, inline.length)).toBeNull(); // On the closing $
@@ -103,17 +103,17 @@ describe("planTabout:向后扫到一个闭合符就跨过去(一次一层)", () 
   });
 });
 
-describe("planTabout:公式尾巴上的整块跳出", () => {
-  it("行内公式:光标已在内容末尾 → 落到闭合 $ 之后(一次跳出公式)", () => {
+describe("planTabout: jumping out of a whole formula tail", () => {
+  it("an inline formula: the caret is already at the end of the content → it lands after the closing $ (one jump out of the formula)", () => {
     const doc = "$x$";
     expect(at(doc, 2)).toEqual({ pos: doc.length, changes: [] });
   });
 
-  it("内容以空白收尾的 `$x $` 压根不是公式(行内区域不允许这样收尾)", () => {
+  it("`$x $` ending with whitespace is not a formula at all (an inline region may not end that way)", () => {
     expect(at("$x $", 2)).toBeNull();
   });
 
-  it("块级公式:落到底部 $$ 的下一行行首,并清掉光标行的行尾空白", () => {
+  it("a block formula: it lands at the start of the line after the bottom $$ and the trailing whitespace on the caret line is removed", () => {
     const doc = "$$\nE[q]   \n$$\n下一段";
     const plan = at(doc, doc.indexOf("E[q]") + 4)!;
     // The three trailing spaces are eaten, so the landing point shifts left:
@@ -126,7 +126,7 @@ describe("planTabout:公式尾巴上的整块跳出", () => {
     expect(preview.slice(plan.pos)).toBe("下一段");
   });
 
-  it("块级公式:行首缩进保留(列表项里是 markdown 结构,不做 trim)", () => {
+  it("a block formula: the leading indentation is kept (in a list item it is markdown structure, so it is not trimmed)", () => {
     const doc = "$$\n  E[q]  \n$$\n下一段";
     const plan = at(doc, doc.indexOf("E[q]") + 4)!;
     expect(plan.changes).toEqual([
@@ -135,20 +135,20 @@ describe("planTabout:公式尾巴上的整块跳出", () => {
     expect(plan.pos).toBe(doc.indexOf("下一段") - 2);
   });
 
-  it("底部 $$ 已经是末行:先补一个换行才有下一行可落", () => {
+  it("the bottom $$ is already the last line: a newline is inserted first so there is a next line to land on", () => {
     const doc = "$$\nx\n$$";
     const plan = at(doc, doc.indexOf("x") + 1)!;
     expect(plan.changes).toEqual([{ from: doc.length, to: doc.length, insert: "\n" }]);
     expect(plan.pos).toBe(doc.length + 1);
   });
 
-  it("光标停在内容中间(后面还有字符):不整块跳出", () => {
+  it("the caret rests in the middle of the content (characters follow): it does not jump out of the whole block", () => {
     expect(at("$$\nx\ny\n$$", 4)).toBeNull();
   });
 });
 
-describe("tabout:派发与开关", () => {
-  it("按计划落光标,块级收尾改动一起派发", () => {
+describe("tabout: dispatch and the toggle", () => {
+  it("the caret lands as planned and the block-level trailing cleanup is dispatched together", () => {
     const doc = "$$\nx   \n$$\n下一段";
     const view = makeView(doc, [doc.indexOf("x") + 1]);
     expect(tabout(view)).toBe(true);
@@ -156,23 +156,23 @@ describe("tabout:派发与开关", () => {
     expect(text(view).slice(head(view))).toBe("下一段");
   });
 
-  it("没有可跳的位置:交回后续处理(false,不吞掉 Tab)", () => {
+  it("no jump target: it hands back to further handling (false, the Tab is not swallowed)", () => {
     const view = makeView("正文段落", [0]);
     expect(tabout(view)).toBe(false);
     expect(text(view)).toBe("正文段落");
   });
 
-  it("开关关掉后完全不接管(插件 taboutEnabled)", () => {
+  it("with the toggle off it does not take over at all (the plugin\'s taboutEnabled)", () => {
     configureLatexSuite({ tabout: false });
     const view = makeView("$(x)$", [2]);
     expect(tabout(view)).toBe(false);
   });
 });
 
-describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的顺序)", () => {
+describe("Tab chain order: session → expansion → tabout (the plugin\'s handleKeydown order)", () => {
   const DM = "$$\n\\begin{pmatrix}\nQ & b\n\\end{pmatrix}\n$$";
 
-  it("有会话:Tab 走制表位,不做 tabout", () => {
+  it("with a session: Tab walks the tabstops and does not do tabout", () => {
     const doc = "$\\mathbf{}$";
     const session = buildSession(1, parseReplacement("\\mathbf{$0}$1", [], null))!;
     const view = makeView(doc, [doc.indexOf("}")], session);
@@ -182,7 +182,7 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     expect(view.state.field(snippetField)).not.toBeNull(); // The session is still alive
   });
 
-  it("会话走完后的那次 Tab 才轮到 tabout:光标从括号里出来", () => {
+  it("only the Tab after the session has run out goes to tabout: the caret leaves the brackets", () => {
     // The real shape after the sum snippet expanded and autoEnlarge ran: the
     // caret rests after \sum…, with a \right) still outside.
     const doc = "$\\left( \\sum_{i=1}^{N} \\right)$";
@@ -201,7 +201,7 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     expect(head(view)).toBeGreaterThan(doc.indexOf(")"));
   });
 
-  it("无会话无片段可展开:Tab 落到 tabout(不再掉进 indentMore)", () => {
+  it("no session and nothing to expand: Tab falls through to tabout (it no longer ends up in indentMore)", () => {
     const doc = "$$\n\\left( x \\right)\n$$";
     const view = makeView(doc, [doc.indexOf("\\right)")]);
     expect(runTab(view)).toBe(true);
@@ -209,7 +209,7 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     expect(text(view)).toBe(doc); // Only the caret moves, the document is unchanged
   });
 
-  it("光标停在完整命令 \\theta 之后:Tab 只跳出括号,不再把尾巴展开成 \\th\\eta", () => {
+  it("the caret rests after the complete command \\theta: Tab only steps over the bracket and no longer expands the tail into \\th\\eta", () => {
     // Regression (reproduced on a real machine): after `tt` auto-expanded to
     // `\theta`, pressing Tab let the "add a backslash to Greek letters" auto
     // regex `([^\\])(${GREEK})` match the `h`+`eta` at the end of the line and
@@ -222,7 +222,7 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     expect(head(view)).toBe(doc.indexOf(")") + 1); // Steps over the closing bracket
   });
 
-  it("矩阵里普通 Tab 不再插 ` & `(留给 tabout),Shift+Tab 才是列分隔", () => {
+  it("a plain Tab in a matrix no longer inserts ` & ` (it is left to tabout); only Shift+Tab is the column separator", () => {
     const separator = makeView(DM, [DM.indexOf("Q")]);
     expect(matrixSeparator(separator)).toBe(true);
     expect(text(separator)).toBe(DM.replace("Q", " & Q"));
@@ -236,7 +236,7 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     expect(text(shifted)).toBe(DM.replace("Q", " & Q"));
   });
 
-  it("矩阵里连按 Tab:一次一层地把光标送到 \\end{pmatrix} 之后", () => {
+  it("pressing Tab repeatedly in a matrix: the caret is sent past \\end{pmatrix} one level at a time", () => {
     const view = makeView(DM, [DM.indexOf("Q")]);
     expect(runTab(view)).toBe(true);
     // After the line end only the `}` (the environment's closing) and
@@ -248,7 +248,7 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
     expect(text(view).slice(head(view)).trim()).toBe("");
   });
 
-  it("Shift+Tab 在非矩阵处退回上一个制表位(不吞键、不乱插 &)", () => {
+  it("outside a matrix Shift+Tab goes back to the previous tabstop (the key is not swallowed and no & is inserted)", () => {
     const doc = "$\\mathbf{}$";
     const session = buildSession(1, parseReplacement("\\mathbf{$0}$1", [], null))!;
     const view = makeView(doc, [doc.indexOf("}$")], { ...session, active: 1 });
@@ -258,10 +258,10 @@ describe("Tab 链路次序:会话 → 展开 → tabout(插件 handleKeydown 的
   });
 });
 
-describe("闭括号跳越:敲下光标前那个右括号 = 一次 Tab", () => {
+describe("closing bracket skip: typing the right bracket in front of the caret equals one Tab", () => {
   const session = () => buildSession(0, parseReplacement("($0)$1", [], null))!;
 
-  it("括号片段展开后敲 `)`:不重复插入,直接跳出这一层", () => {
+  it("typing `)` after a bracket snippet expands: it is not inserted twice but directly leaves this level", () => {
     const view = makeView("()", [1], session());
     expect(view.state.field(snippetField)!.order).toEqual([0, 1]);
     const before = view.state;
@@ -278,7 +278,7 @@ describe("闭括号跳越:敲下光标前那个右括号 = 一次 Tab", () => {
     expect(head(view)).toBe(2); // The caret jumps out to $1
   });
 
-  it("最后一个制表位:按插件原样放行(字符照插)", () => {
+  it("the last tabstop: it is passed through as the plugin does (the character is inserted as typed)", () => {
     const view = makeView("()", [1], { ...session(), active: 1 });
     const before = view.state;
     view.dispatch({
@@ -290,7 +290,7 @@ describe("闭括号跳越:敲下光标前那个右括号 = 一次 Tab", () => {
     expect(text(view)).toBe("())");
   });
 
-  it("光标前不是同一个右括号:不接管(正常输入)", () => {
+  it("the character in front of the caret is not the same right bracket: it does not take over (ordinary input)", () => {
     const view = makeView("(x", [2], session());
     const before = view.state;
     view.dispatch({
@@ -301,7 +301,7 @@ describe("闭括号跳越:敲下光标前那个右括号 = 一次 Tab", () => {
     expect(closeBracketSkip(view, before, { from: 2, to: 2, insert: ")" }, 3)).toBe(false);
   });
 
-  it("没有会话:不接管(插件在没有 tabstop 时也是照插)", () => {
+  it("no session: it does not take over (the plugin also inserts the character when there is no tabstop)", () => {
     const view = makeView("()", [1]);
     const before = view.state;
     view.dispatch({
@@ -312,7 +312,7 @@ describe("闭括号跳越:敲下光标前那个右括号 = 一次 Tab", () => {
     expect(closeBracketSkip(view, before, { from: 1, to: 1, insert: ")" }, 2)).toBe(false);
   });
 
-  it("`]` 同样跳越(插件表里只有三种右括号)", () => {
+  it("`]` is skipped the same way (the plugin table has only three right brackets)", () => {
     const view = makeView("[]", [1], session());
     const before = view.state;
     view.dispatch({
@@ -325,8 +325,8 @@ describe("闭括号跳越:敲下光标前那个右括号 = 一次 Tab", () => {
   });
 });
 
-describe("会话与 tabout 的接缝", () => {
-  it("tabout 把光标带出会话范围后,exitChain 收掉会话", () => {
+describe("the seam between a session and tabout", () => {
+  it("once tabout takes the caret out of the session range, exitChain closes the session", () => {
     const session = buildSession(0, parseReplacement("($0)$1", [], null))!;
     const doc = "$(x)$";
     const out = doc.indexOf(")") + 1;

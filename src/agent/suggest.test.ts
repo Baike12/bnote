@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { applySuggestion, parseSuggestTrigger } from "./suggest";
 
 describe("parseSuggestTrigger", () => {
-  it("文本开头的 / 触发 skill", () => {
+  it("a leading / triggers skill", () => {
     expect(parseSuggestTrigger("/", 1)).toEqual({ kind: "skill", start: 0, query: "" });
     expect(parseSuggestTrigger("/html", 5)).toEqual({ kind: "skill", start: 0, query: "html" });
   });
 
-  it("行首的 / 触发 skill,行中间空白后的路径斜杠不触发", () => {
+  it("a / at line start triggers skill, a path slash after whitespace mid-line does not", () => {
     // Chat convention: slash commands only live at the start of a line; /data/2026 is an absolute path and must not be swallowed.
     const text = "用这个排版 ";
     expect(parseSuggestTrigger(text + "/", text.length + 1)).toBeNull();
@@ -17,31 +17,31 @@ describe("parseSuggestTrigger", () => {
     expect(parseSuggestTrigger("\n/html", 6)).toEqual({ kind: "skill", start: 1, query: "html" });
   });
 
-  it("@ 任意位置触发 file,查询串到光标为止", () => {
+  it("@ triggers file anywhere, the query runs up to the cursor", () => {
     expect(parseSuggestTrigger("@", 1)).toEqual({ kind: "file", start: 0, query: "" });
     const text = "参考 @notes/dai";
     expect(parseSuggestTrigger(text, text.length)).toEqual({ kind: "file", start: 3, query: "notes/dai" });
   });
 
-  it("光标前的空白处没有触发", () => {
+  it("a space before the cursor triggers nothing", () => {
     expect(parseSuggestTrigger("hello ", 6)).toBeNull();
     expect(parseSuggestTrigger("", 0)).toBeNull();
   });
 
-  it("换行后的 / 仍然触发(新的一行)", () => {
+  it("a / after a newline still triggers (on the new line)", () => {
     const text = "第一行\n/";
     expect(parseSuggestTrigger(text, text.length)).toEqual({ kind: "skill", start: 4, query: "" });
   });
 });
 
 describe("applySuggestion", () => {
-  it("把 / 触发词替换为完整技能名并后置光标", () => {
+  it("the / trigger is replaced by the full skill name and the caret moves after it", () => {
     const result = applySuggestion("/htm", { kind: "skill", start: 0, query: "htm" }, "/html-blog");
     expect(result.text).toBe("/html-blog ");
     expect(result.caret).toBe(11);
   });
 
-  it("把 @ 触发词替换为完整路径,保留上下文", () => {
+  it("the @ trigger is replaced by the full path, keeping the surrounding context", () => {
     const text = "参考 @notes/dai 继续写";
     const result = applySuggestion(
       text,
@@ -52,7 +52,7 @@ describe("applySuggestion", () => {
     expect(result.caret).toBe(30);
   });
 
-  it("mid 文本替换只动触发词本身", () => {
+  it("a mid-text replacement touches only the trigger itself", () => {
     const text = "先读 @a.md 再写";
     const result = applySuggestion(text, { kind: "file", start: 3, query: "a.md" }, "@b.md");
     expect(result.text).toBe("先读 @b.md  再写");

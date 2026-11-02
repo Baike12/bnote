@@ -23,41 +23,41 @@ const tree: PdfOutlineNode[] = [
 ];
 
 describe("filterOutline", () => {
-  it("空查询原样返回（同一引用，不重建树）", () => {
+  it("an empty query returns the tree as is (the same reference, the tree is not rebuilt)", () => {
     expect(filterOutline(tree, "   ")).toBe(tree);
   });
 
-  it("保留命中项及其祖先，不把祖先的无关子树带出来", () => {
+  it("the matches and their ancestors are kept, unrelated subtrees of the ancestors are not pulled in", () => {
     const out = filterOutline(tree, "对比");
     expect(out).toHaveLength(1);
     expect(out[0].title).toBe("第 2 章 实验");
     expect(out[0].items.map((n) => n.title)).toEqual(["2.1 对比"]);
   });
 
-  it("命中父节点时只保留同样命中的子节点", () => {
+  it("when a parent node matches, only the child nodes that match as well are kept", () => {
     const out = filterOutline(tree, "第 1 章");
     expect(out).toHaveLength(1);
     expect(out[0].items).toEqual([]);
   });
 
-  it("大小写不敏感", () => {
+  it("case-insensitive", () => {
     const latin: PdfOutlineNode[] = [{ title: "Introduction", page: 1, items: [] }];
     expect(filterOutline(latin, "INTRO")).toHaveLength(1);
   });
 });
 
 describe("outlinePages / outlinePageFor", () => {
-  it("按深度优先收集页码", () => {
+  it("the page numbers are collected depth first", () => {
     expect(outlinePages(tree)).toEqual([1, 2, 5, 9, 10]);
   });
 
-  it("当前页归属最近的前一个书签", () => {
+  it("the current page belongs to the nearest preceding bookmark", () => {
     expect(outlinePageFor(tree, 4)).toBe(2);
     expect(outlinePageFor(tree, 9)).toBe(9);
     expect(outlinePageFor(tree, 1)).toBe(1);
   });
 
-  it("页在第一个书签之前 → null", () => {
+  it("a page before the first bookmark → null", () => {
     expect(outlinePageFor([{ title: "从第 2 页开始", page: 2, items: [] }], 1)).toBe(null);
   });
 });

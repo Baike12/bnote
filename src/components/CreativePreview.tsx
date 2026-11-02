@@ -75,7 +75,7 @@ export function CreativePreview() {
       void call.catch((e: unknown) => {
         // The browser harness has no webview commands; an unavailable preview is only reported, it must not interrupt the creative flow.
         if (create && !closed) {
-          console.warn("[creative] 预览不可用", e);
+          console.warn("[creative] the preview is unavailable", e);
           showToast("预览仅在桌面应用中可用");
         }
       });

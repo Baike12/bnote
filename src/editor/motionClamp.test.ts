@@ -53,20 +53,20 @@ function makeState(doc: string): EditorState {
   return created.update({}).state;
 }
 
-describe("visibleVerticalTarget（可见行步进——j/k 的垂直维度模型）", () => {
+describe("visibleVerticalTarget (the visible-line stepping model for the vertical dimension of j/k)", () => {
   const state = makeState(DOC);
   // The visibility of the fences is decided by the field rebuilding from the selection: putting the selection inside the code block simulates an "active block".
   const stateInsideFence = state
     .update({ selection: { anchor: state.doc.line(13).from } })
     .state;
 
-  it("普通行按文档行计数", () => {
+  it("ordinary lines are counted by document line", () => {
     expect(visibleVerticalTarget(state, 1, true, 1)).toBe(2);
     expect(visibleVerticalTarget(state, 1, true, 2)).toBe(3);
     expect(visibleVerticalTarget(state, 6, false, 2)).toBe(4);
   });
 
-  it("跨折叠公式块：近端边缘是落点，块内源码在展开后是普通步", () => {
+  it("crossing a collapsed formula block: the near edge is the landing point, the source inside the block is an ordinary step once expanded", () => {
     // the caret is at 1 (outside the block): the first step lands on the $$ opening line (the edge, stopping there expands it).
     expect(visibleVerticalTarget(state, 1, true, 1)).toBe(2);
     // the second step is inside the source: the active region is not a hidden step.
@@ -77,12 +77,12 @@ describe("visibleVerticalTarget（可见行步进——j/k 的垂直维度模型
     expect(visibleVerticalTarget(state, 6, false, 1)).toBe(5);
   });
 
-  it("hr 渲染态是隐藏步，被跳过", () => {
+  it("an hr in rendered form is a hidden step and is skipped", () => {
     // the caret is at 7 (blank line): the `---` on 8 is an hr (there is a blank line before it, so it is not a setext underline).
     expect(visibleVerticalTarget(state, 7, true, 1)).toBe(9);
   });
 
-  it("折叠围栏行是隐藏步，代码内容行是普通步", () => {
+  it("a collapsed fence line is a hidden step, the code content lines are ordinary steps", () => {
     // the caret is at 11 (outside the block): the ``` on 12 is hidden, so it lands on the content line 13.
     expect(visibleVerticalTarget(state, 11, true, 1)).toBe(13);
     // the selection is inside the block: the fence lines stay visible as source, and 14 is a normal step.
@@ -91,7 +91,7 @@ describe("visibleVerticalTarget（可见行步进——j/k 的垂直维度模型
     expect(visibleVerticalTarget(state, 15, false, 1)).toBe(13);
   });
 
-  it("步数超出文档端时停在边界", () => {
+  it("when the step count runs past the end of the document it stops at the boundary", () => {
     expect(visibleVerticalTarget(state, 14, true, 10)).toBe(15);
     expect(visibleVerticalTarget(state, 2, false, 10)).toBe(1);
   });

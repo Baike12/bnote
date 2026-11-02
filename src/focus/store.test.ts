@@ -149,8 +149,8 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-describe("开始就是承诺:硬锁 + 独占锁 + 计时一起生效", () => {
-  it("点开始会先武装硬锁,再起表并进锁", async () => {
+describe("start is a promise: hard lock + exclusive lock + timing all take effect together", () => {
+  it("pressing start arms the hard lock first, then starts the timer and takes the lock", async () => {
     await useFocusStore.getState().start();
 
     expect(focusMock.setHardLock).toHaveBeenCalledWith(true);
@@ -167,7 +167,7 @@ describe("开始就是承诺:硬锁 + 独占锁 + 计时一起生效", () => {
     expect(arm).toBeLessThan(lock);
   });
 
-  it("重复开始是空操作:不会重开,也不会再调一次原生锁", async () => {
+  it("starting again is a no-op: it does not restart and does not call the native lock a second time", async () => {
     await useFocusStore.getState().start();
     const endsAt = useFocusStore.getState().timer.endsAt;
     await useFocusStore.getState().start();
@@ -176,7 +176,7 @@ describe("开始就是承诺:硬锁 + 独占锁 + 计时一起生效", () => {
     expect(focusMock.setHardLock).toHaveBeenCalledTimes(1);
   });
 
-  it("硬锁没权限:这一段根本不开始(不骗自己)", async () => {
+  it("the hard lock has no permission: the stretch does not start at all (no self-deception)", async () => {
     focusMock.setHardLock.mockRejectedValueOnce(
       new Error("NEEDS_ACCESSIBILITY: 硬锁需要辅助功能权限"),
     );
@@ -189,7 +189,7 @@ describe("开始就是承诺:硬锁 + 独占锁 + 计时一起生效", () => {
     expect(useFocusStore.getState().hardActive).toBe(false);
   });
 
-  it("硬锁武装了但 tap 没起来:这一段也不开始", async () => {
+  it("the hard lock was armed but the tap did not come up: the stretch does not start either", async () => {
     focusMock.setHardLockActive.mockResolvedValueOnce({
       locked: false,
       hard_lock: true,
@@ -205,7 +205,7 @@ describe("开始就是承诺:硬锁 + 独占锁 + 计时一起生效", () => {
     expect(focusMock.lock).not.toHaveBeenCalled();
   });
 
-  it("进锁失败:收回这一段,硬锁也停手", async () => {
+  it("taking the lock fails: the stretch is taken back, the hard lock stops as well", async () => {
     focusMock.lock.mockRejectedValueOnce(new Error("LOCK_FAILED: 进不了锁"));
     await useFocusStore.getState().start();
 
@@ -216,14 +216,14 @@ describe("开始就是承诺:硬锁 + 独占锁 + 计时一起生效", () => {
     expect(focusMock.setHardLockActive).toHaveBeenLastCalledWith(false);
   });
 
-  it("没有任何中途出口:暂停/结束/退锁的动作都不存在了", () => {
+  it("there is no way out halfway: the actions pause / stop / exitLock no longer exist", () => {
     const api = useFocusStore.getState() as unknown as Record<string, unknown>;
     for (const gone of ["pause", "stop", "enterLock", "exitLock", "toggleLock", "setHardLock"]) {
       expect(api[gone], gone).toBeUndefined();
     }
   });
 
-  it("改时长只影响下一段:正在跑的 endsAt 不动", async () => {
+  it("changing the duration only affects the next stretch: the running endsAt does not move", async () => {
     await useFocusStore.getState().start();
     const endsAt = useFocusStore.getState().timer.endsAt;
     useFocusStore.getState().setDurations({ focusMinutes: 40 });
@@ -232,8 +232,8 @@ describe("开始就是承诺:硬锁 + 独占锁 + 计时一起生效", () => {
   });
 });
 
-describe("到点收尾:先撤硬锁,再退锁", () => {
-  it("走完 25 分钟 → 空闲 + 解锁 + 停止拦截", async () => {
+describe("wrapping up at the deadline: disarm the hard lock first, then release the lock", () => {
+  it("after 25 minutes → idle + unlock + stop intercepting", async () => {
     await useFocusStore.getState().start();
     await vi.advanceTimersByTimeAsync(25 * 60_000 + 1000);
 
@@ -252,7 +252,7 @@ describe("到点收尾:先撤硬锁,再退锁", () => {
     expect(disarm).toBeLessThan(unlock);
   });
 
-  it("不自动接下一段", async () => {
+  it("no automatic next stretch", async () => {
     await useFocusStore.getState().start();
     await vi.advanceTimersByTimeAsync(25 * 60_000 + 1000);
     expect(focusMock.lock).toHaveBeenCalledTimes(1);
@@ -260,8 +260,8 @@ describe("到点收尾:先撤硬锁,再退锁", () => {
   });
 });
 
-describe("倒计时在走", () => {
-  it("过了 3 秒:now 前进、剩余时间少 3 秒", async () => {
+describe("the countdown is running", () => {
+  it("after 3 seconds: now advances, the remaining time shrinks by 3 seconds", async () => {
     await useFocusStore.getState().start();
     const before = remainingMs(useFocusStore.getState().timer, useFocusStore.getState().now);
     expect(before).toBe(25 * 60_000);
@@ -272,7 +272,7 @@ describe("倒计时在走", () => {
     expect(before - after).toBe(3000);
   });
 
-  it("窗口挂起很久再回来(对表):按真实时钟走,不按 tick 次数", async () => {
+  it("the window is suspended for a long time and comes back (reconciliation): it follows the real clock, not the number of ticks", async () => {
     await useFocusStore.getState().start();
     vi.setSystemTime(T0 + 10 * 60_000);
     useFocusStore.getState().syncNow();
@@ -281,7 +281,7 @@ describe("倒计时在走", () => {
     expect(remainingMs(timer, now)).toBe(15 * 60_000);
   });
 
-  it("对表时发现已经过点:直接收尾", async () => {
+  it("the reconciliation finds the deadline already passed: it wraps up right away", async () => {
     await useFocusStore.getState().start();
     vi.setSystemTime(T0 + 30 * 60_000);
     useFocusStore.getState().syncNow();
@@ -291,8 +291,8 @@ describe("倒计时在走", () => {
   });
 });
 
-describe("跨重启:退出应用不等于结束这一段", () => {
-  it("恢复还在跑的段:计时接着走,两把锁重新接上", async () => {
+describe("across a restart: quitting the app does not end the stretch", () => {
+  it("restoring a still running stretch: the timing continues, both locks are attached again", async () => {
     const saved = { ...createTimerState(), phase: "focus" as const, endsAt: T0 + 10 * 60_000 };
     await useFocusStore.getState().restore(saved);
 
@@ -303,7 +303,7 @@ describe("跨重启:退出应用不等于结束这一段", () => {
     expect(useFocusStore.getState().hardActive).toBe(true);
   });
 
-  it("恢复时发现这一段已经到点:立刻收尾,不重开", async () => {
+  it("the restore finds the stretch already at the deadline: it wraps up immediately, it does not restart", async () => {
     const saved = { ...createTimerState(), phase: "focus" as const, endsAt: T0 - 1000 };
     await useFocusStore.getState().restore(saved);
     await vi.advanceTimersByTimeAsync(0);
@@ -312,7 +312,7 @@ describe("跨重启:退出应用不等于结束这一段", () => {
     expect(focusMock.lock).not.toHaveBeenCalled();
   });
 
-  it("旧版本的休息段状态读回来当空闲(没有休息段这个概念了)", async () => {
+  it("a break phase state from the old version is read back as idle (there is no break phase concept anymore)", async () => {
     const legacy = {
       phase: "break",
       endsAt: T0 + 5 * 60_000,
@@ -327,7 +327,7 @@ describe("跨重启:退出应用不等于结束这一段", () => {
     expect(useFocusStore.getState().timer.config.focusMinutes).toBe(30);
   });
 
-  it("旧版本的暂停段(没有 endsAt)当空闲:暂停已经没有意义", async () => {
+  it("a paused phase from the old version (without endsAt) is read back as idle: pausing has no meaning anymore", async () => {
     const legacy = {
       phase: "focus",
       endsAt: null,
@@ -340,8 +340,8 @@ describe("跨重启:退出应用不等于结束这一段", () => {
   });
 });
 
-describe("原生状态对账(崩溃残留)", () => {
-  it("空闲却还锁着:refreshStatus 把窗口放出来", async () => {
+describe("reconciliation with the native state (leftover from a crash)", () => {
+  it("idle but still locked: refreshStatus releases the window", async () => {
     useFocusStore.setState({ locked: true });
     focusMock.status.mockResolvedValueOnce({
       locked: true,
@@ -356,7 +356,7 @@ describe("原生状态对账(崩溃残留)", () => {
     expect(useFocusStore.getState().locked).toBe(false);
   });
 
-  it("有会话却掉了锁/硬锁:refreshStatus 补上", async () => {
+  it("a session is running but the lock / hard lock was lost: refreshStatus puts it back", async () => {
     useFocusStore.setState({
       timer: { ...createTimerState(), phase: "focus", endsAt: T0 + 60_000 },
       locked: false,
@@ -369,8 +369,8 @@ describe("原生状态对账(崩溃残留)", () => {
   });
 });
 
-describe("解锁以原生侧为准,不被前端标记挡住", () => {
-  it("到点时 locked 已经被过期对账清掉,仍然要调原生 unlock", async () => {
+describe("unlocking follows the native side, the front-end flag does not block it", () => {
+  it("at the deadline locked was already cleared by a stale reconciliation, the native unlock is still called", async () => {
     await useFocusStore.getState().start();
     // A stale reconciliation cleared the flag while the stretch was running.
     useFocusStore.setState({ locked: false });
@@ -384,12 +384,12 @@ describe("解锁以原生侧为准,不被前端标记挡住", () => {
     expect(useFocusStore.getState().timer.phase).toBe("idle");
   });
 
-  it("空闲对账无条件退锁:focused 解锁是幂等的,不能因为标记为 false 就跳过", async () => {
+  it("the idle reconciliation unlocks unconditionally: unlocking while focused is idempotent, it must not be skipped because the flag is false", async () => {
     await useFocusStore.getState().refreshStatus();
     expect(focusMock.unlock).toHaveBeenCalledTimes(1);
   });
 
-  it("对账结果过期就不写回:不再重复进锁/武装", async () => {
+  it("a stale reconciliation result is not written back: no repeated lock / arm", async () => {
     let release!: (status: FocusStatus) => void;
     const stale = new Promise<FocusStatus>((resolve) => {
       release = resolve;

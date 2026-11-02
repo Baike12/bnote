@@ -20,26 +20,26 @@ beforeEach(() => {
   useAppStore.setState({ sidebarOpen: false, sidebarFocusRequest: null });
 });
 
-describe("设置默认值", () => {
-  it("选中翻译默认关闭", () => {
+describe("settings defaults", () => {
+  it("select-to-translate is disabled by default", () => {
     expect(useAppStore.getState().settings.studyTranslate.enabled).toBe(false);
   });
 });
 
-describe("focusSidebar 请求", () => {
-  it("按下时展开侧栏并留下一张待消费的票据", () => {
+describe("focusSidebar request", () => {
+  it("on press it opens the sidebar and leaves a ticket to be consumed", () => {
     useAppStore.getState().focusSidebar();
     expect(useAppStore.getState().sidebarOpen).toBe(true);
     expect(request()).not.toBe(null);
   });
 
-  it("消费即归零：重新挂载的侧栏看不到历史请求", () => {
+  it("consuming resets it to zero: a remounted sidebar sees no historic request", () => {
     useAppStore.getState().focusSidebar();
     useAppStore.getState().clearSidebarFocus();
     expect(request()).toBe(null);
   });
 
-  it("消费后再按一次仍然得到一张新票据", () => {
+  it("pressing again after a consume still yields a fresh ticket", () => {
     useAppStore.getState().focusSidebar();
     useAppStore.getState().clearSidebarFocus();
     useAppStore.getState().focusSidebar();
@@ -49,7 +49,7 @@ describe("focusSidebar 请求", () => {
     expect(typeof request()).toBe("number");
   });
 
-  it("未消费时再按一次不会丢请求", () => {
+  it("pressing again without a consume does not lose the request", () => {
     useAppStore.getState().focusSidebar();
     const first = request();
     useAppStore.getState().focusSidebar();
@@ -57,7 +57,7 @@ describe("focusSidebar 请求", () => {
     expect(request()).not.toBe(first);
   });
 
-  it("没有请求时消费是空操作（不产生多余的状态写入）", () => {
+  it("consuming without a request is a no-op (no extra state write)", () => {
     let writes = 0;
     const unsub = useAppStore.subscribe(() => {
       writes++;
@@ -68,14 +68,14 @@ describe("focusSidebar 请求", () => {
   });
 });
 
-describe("toggleSidebar（顶栏按钮的鼠标路径）", () => {
-  it("收起→展开只是开合，不产生聚焦票据", () => {
+describe("toggleSidebar (the mouse path of the top bar button)", () => {
+  it("collapse→expand only opens and closes, it produces no focus ticket", () => {
     useAppStore.getState().toggleSidebar();
     expect(useAppStore.getState().sidebarOpen).toBe(true);
     expect(request()).toBe(null);
   });
 
-  it("展开→收起同样不碰票据；未消费的票据也不因此丢失", () => {
+  it("expand→collapse does not touch the ticket either; an unconsumed ticket is not lost because of it", () => {
     useAppStore.getState().focusSidebar();
     const first = request();
     useAppStore.getState().toggleSidebar();

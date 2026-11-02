@@ -12,19 +12,19 @@ import {
  * PDF and web each occupy one slot — when the content switches, each one's
  * cleanup must not clobber the other.
  */
-describe("学习模式翻页命令的落点", () => {
+describe("where the study mode page-turn commands land", () => {
   beforeEach(() => {
     setPdfNavHandlers(null);
     setWebNavHandlers(null);
   });
 
-  it("没有阅读器时不可翻页,调用无副作用", () => {
+  it("with no reader the page cannot turn and the call has no side effect", () => {
     expect(canFlipPdfPage()).toBe(false);
     expect(flipPdfPage(1)).toBe(false);
     expect(flipPdfPage(-1)).toBe(false);
   });
 
-  it("注册后由阅读器的 canFlip 决定是否翻页", () => {
+  it("after registration the reader's canFlip decides whether the page turns", () => {
     const calls: string[] = [];
     let allowed = true;
     setPdfNavHandlers({
@@ -45,13 +45,13 @@ describe("学习模式翻页命令的落点", () => {
     expect(calls).toEqual(["next", "prev"]);
   });
 
-  it("阅读器卸载后归还处理器", () => {
+  it("unloading the reader hands the handlers back", () => {
     setPdfNavHandlers({ canFlip: () => true, prev: () => {}, next: () => {} });
     setPdfNavHandlers(null);
     expect(canFlipPdfPage()).toBe(false);
   });
 
-  it("网页阅读器没有 PDF 阅读器时接管同一组命令", () => {
+  it("the web reader takes over the same command set when there is no PDF reader", () => {
     const calls: string[] = [];
     setWebNavHandlers({
       canFlip: () => true,
@@ -64,7 +64,7 @@ describe("学习模式翻页命令的落点", () => {
     expect(calls).toEqual(["web-next", "web-prev"]);
   });
 
-  it("切换内容时各清各的槽位：网页的清理不会清掉刚挂载的 PDF", () => {
+  it("when the content switches each clears its own slot: the web cleanup does not clear the just-mounted PDF", () => {
     const calls: string[] = [];
     const pdf = {
       canFlip: () => true,

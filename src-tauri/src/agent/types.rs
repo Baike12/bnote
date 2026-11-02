@@ -143,7 +143,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn user_message_文本在前_图片按传入顺序跟在后面() {
+    fn user_message_puts_the_text_first_and_the_images_after_it_in_the_given_order() {
         let item = ChatItem::user_message(
             "这张图里是什么公式?",
             &[
@@ -152,7 +152,7 @@ mod tests {
             ],
         );
         let ChatItem::Message { role, content } = item else {
-            panic!("应为 Message");
+            panic!("expected a Message");
         };
         assert_eq!(role, "user");
         assert_eq!(content.len(), 3);
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn user_message_纯图片消息_不带空文本块() {
+    fn user_message_with_only_images_has_no_empty_text_block() {
         // Anthropic rejects malformed sequences other than an empty text block;
         // an image-only message may only contain image blocks.
         let item = ChatItem::user_message(
@@ -170,14 +170,14 @@ mod tests {
             &[InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
         );
         let ChatItem::Message { content, .. } = item else {
-            panic!("应为 Message");
+            panic!("expected a Message");
         };
         assert_eq!(content.len(), 1);
         assert!(matches!(&content[0], Content::Image { .. }));
     }
 
     #[test]
-    fn inline_image_按_camelCase_反序列化_前端字段直进() {
+    fn inline_image_deserializes_the_camel_case_fields_sent_by_the_frontend() {
         let img: InlineImage =
             serde_json::from_str(r#"{"mediaType":"image/png","data":"AAAA"}"#).unwrap();
         assert_eq!(img.media_type, "image/png");
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_旧会话记录缺_images_字段时补空() {
+    fn tool_result_fills_an_empty_image_list_when_an_old_record_has_no_images_field() {
         // Persisted session history has no images field: deserialization must
         // fill an empty one instead of failing, otherwise every old session
         // fails to restore after the upgrade.
@@ -194,14 +194,14 @@ mod tests {
         )
         .unwrap();
         let Content::ToolResult { tool_use_id, images, .. } = content else {
-            panic!("应为 ToolResult");
+            panic!("expected a ToolResult");
         };
         assert_eq!(tool_use_id, "t1");
         assert!(images.is_empty());
     }
 
     #[test]
-    fn tool_result_带图序列化_camel_case_空图不写字段() {
+    fn tool_result_serializes_images_in_camel_case_and_omits_the_field_when_empty() {
         let with_img = Content::ToolResult {
             tool_use_id: "t1".into(),
             content: "preview updated".into(),
@@ -218,6 +218,6 @@ mod tests {
             images: vec![],
         };
         let v = serde_json::to_value(&plain).unwrap();
-        assert!(v.get("images").is_none(), "空 images 不该序列化出来");
+        assert!(v.get("images").is_none(), "an empty images list must not be serialized");
     }
 }

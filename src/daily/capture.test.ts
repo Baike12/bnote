@@ -37,26 +37,26 @@ function deps(io: DailyIO, overrides: Partial<Parameters<typeof captureTodo>[1]>
 }
 
 describe("formatTodoLine", () => {
-  it("空输入返回 null", () => {
+  it("an empty input returns null", () => {
     expect(formatTodoLine("   \n  ")).toBeNull();
   });
 
-  it("普通文字补标准 checkbox", () => {
+  it("plain text gets the standard checkbox prefix", () => {
     expect(formatTodoLine("买牛奶")).toBe("- [ ] 买牛奶");
   });
 
-  it("已是待办行则原样保留(不重复加 checkbox)", () => {
+  it("a line that is already a todo is kept as is (no second checkbox)", () => {
     expect(formatTodoLine("- [x] 已完成")).toBe("- [x] 已完成");
     expect(formatTodoLine("  * [ ] 子项")).toBe("* [ ] 子项");
   });
 
-  it("多行折成一行", () => {
+  it("multiple lines are folded into one line", () => {
     expect(formatTodoLine("第一行\n  第二行 ")).toBe("- [ ] 第一行 第二行");
   });
 });
 
 describe("insertTodoAtFront", () => {
-  it("插到待办区第一条之前", () => {
+  it("inserted before the first todo of the todo region", () => {
     expect(insertTodoAtFront("# d\n\n- [ ] 甲\n", "- [ ] 新")).toEqual({
       text: "# d\n\n- [ ] 新\n- [ ] 甲\n",
       line: 3,
@@ -65,7 +65,7 @@ describe("insertTodoAtFront", () => {
 });
 
 describe("captureTodo", () => {
-  it("日记已存在:待办落在最前方,不刷新文件树", async () => {
+  it("the daily note exists: the todo lands at the very front, the file tree is not refreshed", async () => {
     const { map, io } = fakeIO({ [DAILY]: "# d\n\n- [ ] 甲\n" });
     const toast = vi.fn();
     const refresh = vi.fn(async () => {});
@@ -76,7 +76,7 @@ describe("captureTodo", () => {
     expect(toast).toHaveBeenCalledWith("已加入今日日记");
   });
 
-  it("日记缺失:创建时复制上一篇未完成待办,新待办仍在最前", async () => {
+  it("the daily note is missing: the creation copies the unfinished todos of the previous note, the new todo is still at the front", async () => {
     const { map, io } = fakeIO(
       {
         [PREV]: "# 2026-10-25\n\n- [ ] 未完成\n  - [ ] 子项\n- [x] 已完成\n",
@@ -91,13 +91,13 @@ describe("captureTodo", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
-  it("没有上一篇日记:只写头部与新待办", async () => {
+  it("no previous daily note: only the header and the new todo are written", async () => {
     const { map, io } = fakeIO({}, []);
     await captureTodo("新任务", deps(io));
     expect(map.get(DAILY)).toBe("# 2026-10-26\n\n- [ ] 新任务\n");
   });
 
-  it("配了日记模板:模板开篇,新待办仍紧跟在头部之后", async () => {
+  it("a daily note template is configured: the template opens the file, the new todo still follows the header immediately", async () => {
     const { map, io } = fakeIO({
       [`${ROOT}/Templates/日记.md`]: "# {{date}} · 记录\n\n## 计划\n",
     });
@@ -110,7 +110,7 @@ describe("captureTodo", () => {
     );
   });
 
-  it("日记正开在编辑器里:改内存文档(交给自动保存),不直接写盘", async () => {
+  it("the daily note is open in the editor: the in-memory document is edited (autosave handles it), nothing is written to disk", async () => {
     const base = "# d\n\n- [ ] 甲\n";
     let state = EditorState.create({ doc: base, extensions: [docPathField] });
     state = state.update({ effects: setDocPath.of(DAILY) }).state;
@@ -138,7 +138,7 @@ describe("captureTodo", () => {
     expect(writeFile).not.toHaveBeenCalled();
   });
 
-  it("没有仓库时不落盘并提示", async () => {
+  it("no vault: nothing is written to disk and a toast is shown", async () => {
     const { io } = fakeIO({});
     const toast = vi.fn();
     const path = await captureTodo("新任务", deps(io, { vaultRoot: () => null, toast }));

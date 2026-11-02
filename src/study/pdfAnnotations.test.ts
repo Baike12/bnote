@@ -34,8 +34,8 @@ function ann(
   };
 }
 
-describe("PDF 批注几何", () => {
-  it("客户区矩形归一化到整页比例,越界部分裁掉", () => {
+describe("PDF annotation geometry", () => {
+  it("a client-area rectangle is normalized to the full-page ratio and the out-of-page part is cut off", () => {
     const out = normalizeRects(
       [
         { left: 100, top: 200, right: 600, bottom: 230 },
@@ -49,7 +49,7 @@ describe("PDF 批注几何", () => {
     ]);
   });
 
-  it("退化/页外矩形不产生高亮", () => {
+  it("a degenerate or off-page rectangle produces no highlight", () => {
     expect(
       normalizeRects([{ left: 1100, top: 0, right: 1200, bottom: 20 }], page),
     ).toEqual([]);
@@ -58,7 +58,7 @@ describe("PDF 批注几何", () => {
     ).toEqual([]);
   });
 
-  it("同一行的相邻段合并成一条,两栏之间不合并", () => {
+  it("adjacent runs on the same line merge into one, runs in different columns do not merge", () => {
     const merged = mergeLineRects([
       rect(0.1, 0.2, 0.1, 0.02),
       rect(0.205, 0.2, 0.1, 0.02),
@@ -67,7 +67,7 @@ describe("PDF 批注几何", () => {
     expect(merged).toEqual([rect(0.1, 0.2, 0.205, 0.02), rect(0.6, 0.2, 0.1, 0.02)]);
   });
 
-  it("不同行不合并", () => {
+  it("runs on different lines do not merge", () => {
     const merged = mergeLineRects([
       rect(0.1, 0.2, 0.3, 0.02),
       rect(0.1, 0.23, 0.3, 0.02),
@@ -75,14 +75,14 @@ describe("PDF 批注几何", () => {
     expect(merged).toEqual([rect(0.1, 0.2, 0.3, 0.02), rect(0.1, 0.23, 0.3, 0.02)]);
   });
 
-  it("函数可独立序列化(网页批注运行时靠 toString 注入,不能引用模块内符号)", () => {
+  it("the function can be serialized on its own (the web annotation runtime injects it through toString, it must not reference module symbols)", () => {
     const standalone = new Function(`return (${mergeLineRects.toString()});`)() as typeof mergeLineRects;
     expect(
       standalone([rect(0.1, 0.2, 0.1, 0.02), rect(0.205, 0.2, 0.1, 0.02)], 0.02),
     ).toEqual([rect(0.1, 0.2, 0.205, 0.02)]);
   });
 
-  it("点中批注:后加的在上层,带一点容差", () => {
+  it("hitting an annotation: the later one is on top, with a little tolerance", () => {
     const annotations: PdfAnnotation[] = [
       ann("a", 1, rect(0.1, 0.1, 0.2, 0.05), { createdAt: 1 }),
       ann("b", 1, rect(0.12, 0.1, 0.2, 0.05), { createdAt: 2 }),
@@ -93,7 +93,7 @@ describe("PDF 批注几何", () => {
   });
 });
 
-describe("单击取行", () => {
+describe("a single click takes a line", () => {
   // Two columns, two lines: clicking the first line of the left column must only highlight that run.
   const boxes = [
     { left: 100, top: 100, right: 400, bottom: 120 }, // first line of the left column
@@ -103,29 +103,29 @@ describe("单击取行", () => {
   ];
   const pageRect = { left: 0, top: 0, right: 1000, bottom: 500 };
 
-  it("点击处取同一段的整行,不跨栏", () => {
+  it("the click takes the whole line of the same run and does not cross columns", () => {
     const rects = lineRectsAtPoint(boxes, pageRect, 200, 110, 0.02);
     expect(rects).toEqual([rect(0.1, 0.2, 0.36, 0.04)]);
   });
 
-  it("点击右栏只高亮右栏", () => {
+  it("clicking the right column highlights only the right column", () => {
     const rects = lineRectsAtPoint(boxes, pageRect, 700, 110, 0.02);
     expect(rects).toEqual([rect(0.6, 0.2, 0.3, 0.04)]);
   });
 
-  it("点在行间空隙时取最近的一行", () => {
+  it("a click in the gap between lines takes the nearest line", () => {
     const rects = lineRectsAtPoint(boxes, pageRect, 200, 121, 0.02);
     expect(rects.length).toBe(1);
     expect(rects[0].y).toBeCloseTo(0.2, 5);
   });
 
-  it("点在空白处不产生高亮", () => {
+  it("a click on blank space produces no highlight", () => {
     expect(lineRectsAtPoint(boxes, pageRect, 500, 300, 0.02)).toEqual([]);
   });
 });
 
-describe("PDF 批注存储", () => {
-  it("一份 PDF 一个文件:目录结构镜像仓库", () => {
+describe("PDF annotation storage", () => {
+  it("one file per PDF: the directory structure mirrors the vault", () => {
     expect(pdfAnnotationRelPath("pdfs/a.pdf")).toBe("pdf-annotations/pdfs/a.pdf.json");
     expect(pdfAnnotationPath("/vault", "papers/deep/a.pdf")).toBe(
       "/vault/.bnote/pdf-annotations/papers/deep/a.pdf.json",
@@ -136,13 +136,13 @@ describe("PDF 批注存储", () => {
     );
   });
 
-  it("材料目录下的批注落在 <vault>/.bnote/materials/<kind>/<dir>/annotations.json", () => {
+  it("annotations under a materials directory land in <vault>/.bnote/materials/<kind>/<dir>/annotations.json", () => {
     expect(pdfAnnotationMaterialPath("/vault", "materials/pdfs/ji_qi_xue_xi")).toBe(
       "/vault/.bnote/materials/pdfs/ji_qi_xue_xi/annotations.json",
     );
   });
 
-  it("坏文件退回空库;旧数据(无 kind)按高亮读", () => {
+  it("a bad file falls back to an empty library; old data (without kind) is read as a highlight", () => {
     expect(parsePdfAnnotationFile("not json").annotations).toEqual([]);
     expect(parsePdfAnnotationFile(null).annotations).toEqual([]);
     const good = parsePdfAnnotationFile(

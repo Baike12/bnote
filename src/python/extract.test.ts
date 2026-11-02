@@ -16,15 +16,15 @@ function docOf(text: string): Text {
 }
 
 describe("hasPythonFenceHint", () => {
-  it("快速判负:没有围栏标记的文档不进解析", () => {
+  it("fast negative: a document without a fence marker is not parsed", () => {
     expect(hasPythonFenceHint("# 标题\n\n正文,没有代码块\n")).toBe(false);
     expect(hasPythonFenceHint("```python\nx = 1\n```")).toBe(true);
     expect(hasPythonFenceHint("~~~python\nx = 1\n~~~")).toBe(true);
   });
 });
 
-describe("extractPython 基础提取", () => {
-  it("提取单个 python 围栏,虚拟文件行对齐(非代码行置空)", () => {
+describe("extractPython basic extraction", () => {
+  it("extracts a single python fence with the virtual file lines aligned (non-code lines are blank)", () => {
     const doc = "# 标题\n\n```python\nx = 1\nprint(x)\n```\n\n正文\n";
     const eff = extractPython(doc);
     expect(eff.blocks).toHaveLength(1);
@@ -40,7 +40,7 @@ describe("extractPython 基础提取", () => {
     expect(eff.appendedLines).toBe(0);
   });
 
-  it("多块按序进入同一虚拟文件,ts 块被排除", () => {
+  it("multiple blocks enter the same virtual file in order, ts blocks are excluded", () => {
     const doc = "```python\na = 1\n```\n中间文字\n```ts\nconst b = 2\n```\n```python\nc = a + 1\nprint(c)\n```";
     const eff = extractPython(doc);
     expect(eff.blocks.map((b) => b.text)).toEqual(["a = 1", "c = a + 1\nprint(c)"]);
@@ -51,7 +51,7 @@ describe("extractPython 基础提取", () => {
     expect(vLines[8]).toBe("c = a + 1");
   });
 
-  it("py / python3 信息串也识别;其他语言不算", () => {
+  it("py and python3 info strings are recognized too; other languages do not count", () => {
     expect(extractPython("```py\nx = 1\n```").blocks).toHaveLength(1);
     expect(extractPython("```python3\nx = 1\n```").blocks).toHaveLength(1);
     expect(extractPython("```ruby\nx = 1\n```").blocks).toHaveLength(0);
@@ -59,54 +59,54 @@ describe("extractPython 基础提取", () => {
     expect(extractPython("```Python\nx = 1\n```").blocks).toHaveLength(1);
   });
 
-  it("带参数的 info string 取首词(如 ```python title=demo)", () => {
+  it("an info string with parameters takes the first word (like ```python title=demo)", () => {
     expect(extractPython("```python title=demo\nx = 1\n```").blocks).toHaveLength(1);
   });
 });
 
-describe("extractPython 围栏边界", () => {
-  it("波浪号围栏", () => {
+describe("extractPython fence boundaries", () => {
+  it("tilde fences", () => {
     const eff = extractPython("~~~python\nx = 1\n~~~\n");
     expect(eff.blocks[0].text).toBe("x = 1");
   });
 
-  it("开栏缩进 ≤3 空格时内容剥掉等量缩进(列表里的围栏)", () => {
+  it("with an opening fence indented by ≤3 spaces the content loses the same indentation (a fence inside a list)", () => {
     const doc = "- 项\n\n  ```python\n  for i in range(2):\n      print(i)\n  ```\n";
     const eff = extractPython(doc);
     expect(eff.blocks[0].text).toBe("for i in range(2):\n    print(i)");
     expect(eff.virtualText.split("\n")[3]).toBe("for i in range(2):");
   });
 
-  it("内容行缩进少于围栏缩进:剥到 0 为止,不产生负缩进", () => {
+  it("content lines indented less than the fence: stripped down to 0, never a negative indentation", () => {
     const doc = "  ```python\n  a = 1\nb = 2\n  ```\n";
     const eff = extractPython(doc);
     expect(eff.blocks[0].text).toBe("a = 1\nb = 2");
   });
 
-  it("围栏内出现更短的 ``` 是内容,不截断;更长围栏需要更长闭栏", () => {
+  it("a shorter ``` inside the fence is content and does not truncate; a longer fence needs a longer closing fence", () => {
     const doc = "````python\nx = \"```\nl = ```python```\n````\n";
     const eff = extractPython(doc);
     expect(eff.blocks[0].text).toBe('x = "```\nl = ```python```');
   });
 
-  it("反引号围栏的 info string 带反引号时不是围栏", () => {
+  it("a backtick fence whose info string contains a backtick is not a fence", () => {
     expect(extractPython("```py`thon\nx = 1\n```").blocks).toHaveLength(0);
   });
 
-  it("未闭合围栏到文档末尾(含末尾空行,行对齐优先)", () => {
+  it("an unclosed fence runs to the end of the document (including the trailing blank line, line alignment wins)", () => {
     const doc = "# 标题\n```python\nx = 1\ny = 2\n";
     const eff = extractPython(doc);
     expect(eff.blocks[0].startLine).toBe(2);
     expect(eff.blocks[0].text).toBe("x = 1\ny = 2\n");
   });
 
-  it("4 空格缩进的围栏不是顶层围栏(段落内缩进代码),不提取", () => {
+  it("a fence indented by 4 spaces is not a top-level fence (indented code inside a paragraph) and is not extracted", () => {
     expect(extractPython("    ```python\n    x = 1\n    ```").blocks).toHaveLength(0);
   });
 });
 
-describe("main 守卫", () => {
-  it("有模块级 def main 且无守卫:追加标准 __main__ 调用", () => {
+describe("main guard", () => {
+  it("a module-level def main without a guard: the standard __main__ call is appended", () => {
     const eff = extractPython("```python\ndef main():\n    print('hi')\n```");
     expect(eff.hasMain).toBe(true);
     expect(eff.hasMainGuard).toBe(false);
@@ -116,7 +116,7 @@ describe("main 守卫", () => {
     expect(eff.effectiveText.split("\n")[1]).toBe("def main():");
   });
 
-  it("已有 __name__ 守卫:尊重原文,不再追加", () => {
+  it("an existing __name__ guard: the original text is respected and nothing is appended", () => {
     const doc = '```python\ndef main():\n    pass\n\n\nif __name__ == "__main__":\n    main()\n```';
     const eff = extractPython(doc);
     expect(eff.hasMainGuard).toBe(true);
@@ -124,21 +124,21 @@ describe("main 守卫", () => {
     expect(eff.effectiveText).toBe(eff.virtualText);
   });
 
-  it("没有 main:原样运行(从头到尾)", () => {
+  it("no main: it runs as is (from start to end)", () => {
     const eff = extractPython("```python\nprint('top')\n```");
     expect(eff.hasMain).toBe(false);
     expect(eff.appendedLines).toBe(0);
   });
 
-  it("缩进的 def main(嵌套在类里)不触发追加", () => {
+  it("an indented def main (nested in a class) does not trigger the append", () => {
     const eff = extractPython("```python\nclass A:\n    def main(self):\n        pass\n```");
     expect(eff.hasMain).toBe(false);
     expect(eff.appendedLines).toBe(0);
   });
 });
 
-describe("LSP 行列映射(UTF-16 code unit 与 CM 偏移同单位)", () => {
-  it("行号 0 基、列钳制到行内;行越界返回 -1", () => {
+describe("LSP line/column mapping (UTF-16 code units are the same unit as CM offsets)", () => {
+  it("line numbers are 0-based, columns are clamped to the line; an out-of-range line returns -1", () => {
     const doc = docOf("ab\n中文cd\nx\n");
     expect(lspPointToOffset(doc, 0, 1)).toBe(1);
     expect(lspPointToOffset(doc, 1, 0)).toBe(3);
@@ -147,14 +147,14 @@ describe("LSP 行列映射(UTF-16 code unit 与 CM 偏移同单位)", () => {
     expect(lspPointToOffset(doc, 99, 0)).toBe(-1);
   });
 
-  it("代理对(emoji)按 UTF-16 计数,与 LSP 一致", () => {
+  it("surrogate pairs (emoji) count as UTF-16, consistent with LSP", () => {
     const doc = docOf("a🎉b\n");
     // The emoji is 1 code point = 2 UTF-16 units; a(1)+emoji(2)=3.
     expect(lspPointToOffset(doc, 0, 3)).toBe(3);
     expect(doc.sliceString(3, 4)).toBe("b");
   });
 
-  it("mapLspDiagnostics 映射 range/severity/message,越界条目丢弃", () => {
+  it("mapLspDiagnostics maps range/severity/message and drops out-of-range entries", () => {
     const doc = docOf("# 标题\n```python\nx: int = \"hello\"\n```\n");
     const raw: RawLspDiagnostic[] = [
       {
@@ -179,7 +179,7 @@ describe("LSP 行列映射(UTF-16 code unit 与 CM 偏移同单位)", () => {
     expect(mapped[0].code).toBe("invalid-assignment");
   });
 
-  it("code 为 LSP 3.17 对象形式({value})时也能取到", () => {
+  it("a code in the LSP 3.17 object form ({value}) is also read", () => {
     const doc = docOf("x = 1\n");
     const mapped = mapLspDiagnostics(doc, [
       { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, code: { value: "E1" }, message: "m" },
@@ -187,7 +187,7 @@ describe("LSP 行列映射(UTF-16 code unit 与 CM 偏移同单位)", () => {
     expect(mapped[0].code).toBe("E1");
   });
 
-  it("end 在 start 之前时交换,保证 from ≤ to", () => {
+  it("end before start is swapped so that from ≤ to holds", () => {
     const doc = docOf("abcdef\n");
     const mapped = mapLspDiagnostics(doc, [
       { range: { start: { line: 0, character: 4 }, end: { line: 0, character: 1 } }, message: "m" },
@@ -197,8 +197,8 @@ describe("LSP 行列映射(UTF-16 code unit 与 CM 偏移同单位)", () => {
   });
 });
 
-describe("性能护栏", () => {
-  it("大文档提取是线性开销(10k 行 < 50ms,防意外 O(n²))", () => {
+describe("performance guard", () => {
+  it("extraction of a large document is linear (10k lines < 50ms, guards against accidental O(n²))", () => {
     const chunk = "文字段落,some prose。\n```python\nx1 = 1\n```\n```ts\nconst a = 1\n```\n";
     const doc = chunk.repeat(1250); // ~10k lines
     const t0 = performance.now();
@@ -210,13 +210,13 @@ describe("性能护栏", () => {
 });
 
 describe("mapLspCompletions", () => {
-  it("CompletionList(items 包一层)与裸数组都能读", () => {
+  it("both a CompletionList (items wrapped in one layer) and a bare array are readable", () => {
     const list = { isIncomplete: false, items: [{ label: "print" }] };
     expect(mapLspCompletions(list).map((c) => c.label)).toEqual(["print"]);
     expect(mapLspCompletions([{ label: "input" }]).map((c) => c.label)).toEqual(["input"]);
   });
 
-  it("kind 数字映射成 CM 类型;insertText 优先于 label", () => {
+  it("the numeric kind maps to a CM type; insertText wins over label", () => {
     const items = [
       { label: "hello", kind: 3, insertText: "hello($1)", detail: "def hello()" },
       { label: "HttpError", kind: 7 },
@@ -232,12 +232,12 @@ describe("mapLspCompletions", () => {
     expect(out[3].type).toBeUndefined();
   });
 
-  it("snippet 格式不解析占位符,退回 label", () => {
+  it("the snippet format does not parse placeholders and falls back to label", () => {
     const out = mapLspCompletions([{ label: "with_open", insertText: "with open($1) as $2:", insertTextFormat: 2 }]);
     expect(out[0].apply).toBeUndefined();
   });
 
-  it("documentation 支持 MarkupContent 并剥掉 markdown 围栏行", () => {
+  it("documentation supports MarkupContent and strips the markdown fence lines", () => {
     const out = mapLspCompletions([
       {
         label: "print",
@@ -247,7 +247,7 @@ describe("mapLspCompletions", () => {
     expect(out[0].info).toBe("print(*values)\n输出到 stdout。");
   });
 
-  it("畸形条目丢弃,非列表输入返回空", () => {
+  it("malformed entries are dropped and a non-list input returns empty", () => {
     expect(mapLspCompletions([{ label: "" }, null, { noLabel: true }, { label: "ok" }]).map((c) => c.label)).toEqual(["ok"]);
     expect(mapLspCompletions(null)).toEqual([]);
     expect(mapLspCompletions("nope")).toEqual([]);
@@ -256,7 +256,7 @@ describe("mapLspCompletions", () => {
 });
 
 describe("lspHoverText", () => {
-  it("MarkupContent 剥围栏;纯字符串原样;数组按序拼接", () => {
+  it("MarkupContent loses its fence; a plain string stays as is; an array is joined in order", () => {
     expect(
       lspHoverText({ contents: { kind: "markdown", value: "```python\ndef f(x: int)\n```" } }),
     ).toBe("def f(x: int)");
@@ -264,7 +264,7 @@ describe("lspHoverText", () => {
     expect(lspHoverText({ contents: ["def f(x: int)", "说明文字"] })).toBe("def f(x: int)\n\n说明文字");
   });
 
-  it("没有内容 / 畸形输入返回 null", () => {
+  it("no content or malformed input returns null", () => {
     expect(lspHoverText(null)).toBeNull();
     expect(lspHoverText({ contents: null })).toBeNull();
     expect(lspHoverText({ contents: { kind: "markdown", value: "```python\n```" } })).toBeNull();
@@ -272,8 +272,8 @@ describe("lspHoverText", () => {
   });
 });
 
-describe("mdPosToLspPosition(光标 → 虚拟文件 position)", () => {
-  it("顶格围栏:行列直读", () => {
+describe("mdPosToLspPosition (cursor → virtual file position)", () => {
+  it("a flush-left fence: the line and column are read directly", () => {
     const doc = docOf("```python\nx = 1\nprint(x)\n```");
     const eff = extractPython(doc.toString());
     // The caret is at the end of "x = 1" (offset 10 + 5 = column 5 in the line).
@@ -281,7 +281,7 @@ describe("mdPosToLspPosition(光标 → 虚拟文件 position)", () => {
     expect(mdPosToLspPosition(doc, 10 + 2, eff)).toEqual({ line: 1, character: 2 });
   });
 
-  it("列表内缩进围栏:剥掉公共缩进,光标在被剥前缀里贴列 0", () => {
+  it("an indented fence inside a list: the common indentation is stripped and the caret inside the stripped prefix sticks to column 0", () => {
     const doc = docOf("- item\n\n  ```python\n  for i in r\n  ```\n");
     const eff = extractPython(doc.toString());
     // The opening fence is indented by 2, so the content line "  for i in r" becomes the virtual line "for i in r".
@@ -293,7 +293,7 @@ describe("mdPosToLspPosition(光标 → 虚拟文件 position)", () => {
     expect(mdPosToLspPosition(doc, line.from + 1, eff)).toEqual({ line: 3, character: 0 });
   });
 
-  it("围栏标记行 / 散文行返回 null(补全与 hover 的门)", () => {
+  it("a fence marker line or a prose line returns null (the gate for completion and hover)", () => {
     const doc = docOf("# 标题\n\n```python\nx = 1\n```\n\n正文\n");
     const eff = extractPython(doc.toString());
     expect(mdPosToLspPosition(doc, 0, eff)).toBeNull(); // the heading line
@@ -302,7 +302,7 @@ describe("mdPosToLspPosition(光标 → 虚拟文件 position)", () => {
     expect(mdPosToLspPosition(doc, doc.line(6).to, eff)).toBeNull(); // the blank line after the closing fence
   });
 
-  it("偏移越界夹到文档长度内(未闭合围栏到文档末尾都是代码行)", () => {
+  it("an out-of-range offset is clamped to the document length (with an unclosed fence every line up to the end is a code line)", () => {
     const doc = docOf("```python\nx = 1");
     const eff = extractPython(doc.toString());
     expect(mdPosToLspPosition(doc, doc.length + 999, eff)).toEqual({ line: 1, character: 5 });

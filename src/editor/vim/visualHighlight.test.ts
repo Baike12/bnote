@@ -36,55 +36,55 @@ const sel = (anchor: Pos, head: Pos, visualLine = false) => ({
 });
 const range = (from: number, to: number) => [{ from, to, empty: from === to }];
 
-describe("visualLineNumbers:引擎 sel 路径", () => {
-  it("linewise 正向 Vj:anchor/head 行区间全亮(即使 CM 选区为空)", () => {
+describe("visualLineNumbers: the engine sel path", () => {
+  it("a forward linewise Vj: the whole line range from anchor to head is highlighted (even when the CM selection is empty)", () => {
     const lines = visualLineNumbers(doc, sel({ line: 1, ch: 0 }, { line: 3, ch: 0 }), [
       { from: 0, to: 0, empty: true },
     ]);
     expect(lines).toEqual([2, 3, 4]);
   });
 
-  it("charwise 反向选择与正向同一集合", () => {
+  it("a backward charwise selection yields the same set as the forward one", () => {
     const forward = visualLineNumbers(doc, sel({ line: 2, ch: 1 }, { line: 3, ch: 2 }), []);
     const backward = visualLineNumbers(doc, sel({ line: 3, ch: 2 }, { line: 2, ch: 1 }), []);
     expect(forward).toEqual([3, 4]);
     expect(backward).toEqual(forward);
   });
 
-  it("charwise 折叠选区(vv 后光标没动):无高亮行", () => {
+  it("a collapsed charwise selection (the caret did not move after vv): no highlighted line", () => {
     expect(visualLineNumbers(doc, sel({ line: 1, ch: 0 }, { line: 1, ch: 0 }), [])).toEqual([]);
   });
 
-  it("visualLine(VV)折叠选区也是整行", () => {
+  it("a collapsed visualLine (VV) selection is a whole line as well", () => {
     expect(visualLineNumbers(doc, sel({ line: 1, ch: 0 }, { line: 1, ch: 0 }, true), [])).toEqual([
       2,
     ]);
   });
 
-  it("行号越界钳制到文档范围(引擎 sel 可能瞬时指向文档末行之后)", () => {
+  it("out-of-range line numbers are clamped to the document range (the engine sel may momentarily point past the last line)", () => {
     const lines = visualLineNumbers(doc, sel({ line: 2, ch: 0 }, { line: 99, ch: 0 }), []);
     expect(lines).toEqual([3, 4]);
   });
 });
 
-describe("visualLineNumbers:CM 选区回退路径(引擎没维护 sel)", () => {
-  it("非空 CM 选区覆盖的行全亮", () => {
+describe("visualLineNumbers: the CM selection fallback path (the engine keeps no sel)", () => {
+  it("every line covered by a non-empty CM selection is highlighted", () => {
     // Selection [0, 7): lines 1 and 2
     expect(visualLineNumbers(doc, { visualMode: true }, range(0, 7))).toEqual([1, 2]);
   });
 
-  it("选区终点恰好落在某行行首:收缩到上一行(不算占据那一行)", () => {
+  it("the selection end lands exactly on a line start: it shrinks to the previous line (that line does not count as occupied)", () => {
     // [0, 12): 12 is the start of line 4 → only lines 1-3 are highlighted
     expect(visualLineNumbers(doc, { visualMode: true }, range(0, 12))).toEqual([1, 2, 3]);
   });
 
-  it("空 CM 选区不产生高亮", () => {
+  it("an empty CM selection produces no highlight", () => {
     expect(visualLineNumbers(doc, { visualMode: true }, range(4, 4))).toEqual([]);
   });
 });
 
-describe("visualLineNumbers:非 visual 模式", () => {
-  it("visualMode 关闭时恒为空(normal/insert 模式翻转回高亮消失)", () => {
+describe("visualLineNumbers: outside visual mode", () => {
+  it("with visualMode off the result is always empty (flipping back from normal/insert mode removes the highlight)", () => {
     expect(visualLineNumbers(doc, null, range(0, 15))).toEqual([]);
     expect(visualLineNumbers(doc, { visualMode: false }, range(0, 15))).toEqual([]);
   });
@@ -108,24 +108,24 @@ describe("visualLineNumbers:非 visual 模式", () => {
 const spanDoc = EditorState.create({ doc: "第一行\n第二行\n第三行\n第四行\n第五行" }).doc;
 const span = (from: number, to: number) => ({ from, to });
 
-describe("visualRangeSpans:charwise 精确范围", () => {
-  it("引擎同步到 CM 的选区原样作为绘制范围(含头字符由引擎保证)", () => {
+describe("visualRangeSpans: the exact charwise range", () => {
+  it("the selection the engine syncs to CM is used verbatim as the painting range (the head character is guaranteed by the engine)", () => {
     expect(
       visualRangeSpans(spanDoc, sel({ line: 1, ch: 3 }, { line: 1, ch: 7 }), [span(7, 12)]),
     ).toEqual([span(7, 12)]);
   });
 
-  it("跨行 charwise 一个范围覆盖全文跨度", () => {
+  it("a multi-line charwise selection is one range covering the whole span", () => {
     expect(
       visualRangeSpans(spanDoc, sel({ line: 0, ch: 0 }, { line: 2, ch: 2 }), [span(0, 12)]),
     ).toEqual([span(0, 12)]);
   });
 
-  it("刚按 v 还没动的折叠选区不画(返回空)", () => {
+  it("the collapsed selection right after pressing v is not painted (it returns empty)", () => {
     expect(visualRangeSpans(spanDoc, sel({ line: 1, ch: 3 }, { line: 1, ch: 3 }), [])).toEqual([]);
   });
 
-  it("linewise 交给行带,这里返回空(避免同色叠加加深)", () => {
+  it("a linewise selection is left to the line band, so this returns empty (avoiding a darker overlap of the same color)", () => {
     const linewise = {
       visualMode: true,
       visualLine: true,
@@ -135,14 +135,14 @@ describe("visualRangeSpans:charwise 精确范围", () => {
   });
 });
 
-describe("visualRangeSpans:blockwise 逐行切块", () => {
+describe("visualRangeSpans: a blockwise selection is cut line by line", () => {
   const block = (anchor: Pos, head: Pos) => ({
     visualMode: true,
     visualBlock: true,
     sel: { anchor, head },
   });
 
-  it("块形状按列区间逐行切出(不是整行,也不是只有光标那一行)", () => {
+  it("the block shape is cut out line by line by column range (neither a whole line nor only the caret line)", () => {
     // Five-line document: line 1 = [0,3), line 2 = [4,7)…; columns [1,4) cut
     // out [1,3) and [5,7)
     expect(visualRangeSpans(spanDoc, block({ line: 0, ch: 1 }, { line: 1, ch: 3 }), [])).toEqual([
@@ -151,13 +151,13 @@ describe("visualRangeSpans:blockwise 逐行切块", () => {
     ]);
   });
 
-  it("反向块(head 在 anchor 上方)与正向同一集合", () => {
+  it("a backward block (head above the anchor) yields the same set as the forward one", () => {
     const forward = visualRangeSpans(spanDoc, block({ line: 0, ch: 1 }, { line: 1, ch: 3 }), []);
     const backward = visualRangeSpans(spanDoc, block({ line: 1, ch: 3 }, { line: 0, ch: 1 }), []);
     expect(backward).toEqual(forward);
   });
 
-  it("列越界的行钳到行尾,整行落在块外的行不产出零宽范围", () => {
+  it("a line whose columns run past the end is clamped to the line end and a line entirely outside the block produces no zero-width range", () => {
     const blockDoc = EditorState.create({ doc: "abcdef\n\nxyz" }).doc;
     // Line 2 has only two columns and both block boundaries are past the line
     // end → that line has no range
@@ -168,7 +168,7 @@ describe("visualRangeSpans:blockwise 逐行切块", () => {
   });
 });
 
-describe("visualSelectionDecos:绘制所有权", () => {
+describe("visualSelectionDecos: painting ownership", () => {
   const decoClasses = (set: DecorationSet, length: number) => {
     const out: string[] = [];
     set.between(0, length, (from, to, deco) => {
@@ -178,7 +178,7 @@ describe("visualSelectionDecos:绘制所有权", () => {
     return out;
   };
 
-  it("charwise:行带(提示色) + 一个精确范围 mark(尺寸 = 行数 + 1)", () => {
+  it("charwise: a line band (hint color) + one exact range mark (size = line count + 1)", () => {
     const set = visualSelectionDecos(spanDoc, sel({ line: 1, ch: 3 }, { line: 1, ch: 7 }), [
       span(7, 12),
     ]);
@@ -189,7 +189,7 @@ describe("visualSelectionDecos:绘制所有权", () => {
     ]);
   });
 
-  it("blockwise:每行一条带(提示色) + 每行一个范围", () => {
+  it("blockwise: one band per line (hint color) + one range per line", () => {
     const set = visualSelectionDecos(
       spanDoc,
       {
@@ -208,7 +208,7 @@ describe("visualSelectionDecos:绘制所有权", () => {
     ]);
   });
 
-  it("linewise:只有选区本色的行带(自己就是选区,不需要提示色)", () => {
+  it("linewise: only the line bands in the selection's own color (it is the selection itself and needs no hint color)", () => {
     const set = visualSelectionDecos(
       spanDoc,
       {
@@ -226,7 +226,7 @@ describe("visualSelectionDecos:绘制所有权", () => {
     ]);
   });
 
-  it("没有绘制者 ⇔ 空集(折叠选区/非 visual 模式都不得拦住 CM 自己的选区矩形)", () => {
+  it("no painter ⇔ empty set (a collapsed selection / non-visual mode must never block CM's own selection rectangle)", () => {
     expect(visualSelectionDecos(spanDoc, null, [span(0, 10)]).size).toBe(0);
     expect(visualSelectionDecos(spanDoc, { visualMode: false }, [span(0, 10)]).size).toBe(0);
     expect(
@@ -235,7 +235,7 @@ describe("visualSelectionDecos:绘制所有权", () => {
   });
 });
 
-describe("visualSelection:⌘⇧B 选中插入的选区(引擎 sel 坐标模型)", () => {
+describe("visualSelection: the selection inserted by ⌘⇧B (the engine sel coordinate model)", () => {
   const vstate = (a: Pos, h: Pos, opts: { line?: boolean; block?: boolean } = {}) => ({
     visualMode: true,
     visualLine: !!opts.line,
@@ -243,7 +243,7 @@ describe("visualSelection:⌘⇧B 选中插入的选区(引擎 sel 坐标模型)
     sel: { anchor: a, head: h },
   });
 
-  it("linewise:整行(含行尾换行),范围为整行区间", () => {
+  it("linewise: the whole line (including the trailing newline), the range is the whole-line interval", () => {
     expect(visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 2, ch: 0 }, { line: true }))).toEqual({
       text: "第二行\n第三行",
       from: 4,
@@ -251,7 +251,7 @@ describe("visualSelection:⌘⇧B 选中插入的选区(引擎 sel 坐标模型)
     });
   });
 
-  it("linewise 折叠(VV 不动):单行整行", () => {
+  it("a collapsed linewise selection (VV without moving): a single whole line", () => {
     expect(visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 1, ch: 0 }, { line: true }))).toEqual({
       text: "第二行",
       from: 4,
@@ -259,26 +259,26 @@ describe("visualSelection:⌘⇧B 选中插入的选区(引擎 sel 坐标模型)
     });
   });
 
-  it("linewise 反向(Jk 向上):与正向同一段文本与范围", () => {
+  it("a backward linewise selection (Jk upward): the same text and range as the forward one", () => {
     const forward = visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 3, ch: 0 }, { line: true }));
     const backward = visualSelection(doc, vstate({ line: 3, ch: 0 }, { line: 1, ch: 0 }, { line: true }));
     expect(backward).toEqual(forward);
     expect(forward).toEqual({ text: "第二行\n第三行\n第四行", from: 4, to: 15 });
   });
 
-  it("blockwise:逐行取列区间(含头字符),范围是整块的行区间", () => {
+  it("blockwise: the column range is taken line by line (including the head character) and the range is the line interval of the whole block", () => {
     expect(
       visualSelection(doc, vstate({ line: 0, ch: 1 }, { line: 2, ch: 2 }, { block: true })),
     ).toEqual({ text: "一行\n二行\n三行", from: 0, to: 11 });
   });
 
-  it("blockwise 列越界:钳到行尾(vim 的块选就是这样)", () => {
+  it("a blockwise column out of range: clamped to the line end (that is how vim's block selection works)", () => {
     expect(
       visualSelection(doc, vstate({ line: 0, ch: 2 }, { line: 1, ch: 9 }, { block: true })),
     ).toEqual({ text: "行\n行", from: 0, to: 7 });
   });
 
-  it("charwise:锚点到光标的字符区间(含头字符)", () => {
+  it("charwise: the character range from the anchor to the caret (including the head character)", () => {
     expect(visualSelection(doc, vstate({ line: 0, ch: 0 }, { line: 1, ch: 1 }))).toEqual({
       text: "第一行\n第二",
       from: 0,
@@ -286,20 +286,20 @@ describe("visualSelection:⌘⇧B 选中插入的选区(引擎 sel 坐标模型)
     });
   });
 
-  it("charwise 反向(v 后向上移动):与正向同一区间", () => {
+  it("a backward charwise selection (moving up after v): the same range as the forward one", () => {
     const forward = visualSelection(doc, vstate({ line: 0, ch: 1 }, { line: 1, ch: 2 }));
     const backward = visualSelection(doc, vstate({ line: 1, ch: 2 }, { line: 0, ch: 1 }));
     expect(backward).toEqual(forward);
     expect(forward).toEqual({ text: "一行\n第二行", from: 1, to: 7 });
   });
 
-  it("非 visual 模式 / 引擎没维护 sel:返回 null", () => {
+  it("outside visual mode / the engine keeps no sel: it returns null", () => {
     expect(visualSelection(doc, { visualMode: false, sel: { anchor: { line: 0, ch: 0 }, head: { line: 1, ch: 0 } } })).toBeNull();
     expect(visualSelection(doc, { visualMode: true })).toBeNull();
     expect(visualSelection(doc, null)).toBeNull();
   });
 
-  it("行号越界钳制到文档范围(引擎 sel 可能瞬时指向文末之后)", () => {
+  it("out-of-range line numbers are clamped to the document range (the engine sel may momentarily point past the end of the document)", () => {
     expect(visualSelection(doc, vstate({ line: 2, ch: 0 }, { line: 99, ch: 0 }, { line: true }))).toEqual({
       text: "第三行\n第四行",
       from: 8,

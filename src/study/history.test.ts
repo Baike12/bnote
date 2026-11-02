@@ -12,8 +12,8 @@ import {
 
 const pdf = (path: string, title = path) => ({ path, relPath: title, title });
 
-describe("study history: PDF 与网页分开", () => {
-  it("两类记录互不混入", () => {
+describe("study history: PDFs and web pages are kept apart", () => {
+  it("the two kinds of records never mix", () => {
     let h = emptyStudyHistory();
     h = pushPdfEntry(h, pdf("/v/pdfs/a.pdf", "A"));
     h = pushUrlEntry(h, { url: "https://example.com", title: "Example" });
@@ -21,7 +21,7 @@ describe("study history: PDF 与网页分开", () => {
     expect(h.urls.map((e) => e.url)).toEqual(["https://example.com"]);
   });
 
-  it("重复打开只保留一条并移到最前", () => {
+  it("opening the same item again keeps a single entry and moves it to the front", () => {
     let h = emptyStudyHistory();
     h = pushPdfEntry(h, { ...pdf("/v/pdfs/a.pdf", "A"), at: 1 });
     h = pushPdfEntry(h, { ...pdf("/v/pdfs/b.pdf", "B"), at: 2 });
@@ -30,7 +30,7 @@ describe("study history: PDF 与网页分开", () => {
     expect(h.pdfs[0].at).toBe(3);
   });
 
-  it("网页按 URL 去重", () => {
+  it("web pages are deduplicated by URL", () => {
     let h = emptyStudyHistory();
     h = pushUrlEntry(h, { url: "https://a.dev", title: "A" });
     h = pushUrlEntry(h, { url: "https://b.dev", title: "B" });
@@ -39,7 +39,7 @@ describe("study history: PDF 与网页分开", () => {
     expect(h.urls[0].title).toBe("A 新标题");
   });
 
-  it("上限之外的老记录被丢弃", () => {
+  it("entries beyond the limit are dropped", () => {
     let h = emptyStudyHistory();
     for (let i = 0; i < STUDY_HISTORY_LIMIT + 5; i++) {
       h = pushPdfEntry(h, pdf(`/v/pdfs/${i}.pdf`));
@@ -49,10 +49,10 @@ describe("study history: PDF 与网页分开", () => {
   });
 });
 
-describe("study history: 微信读书独立列表", () => {
+describe("study history: WeRead has its own list", () => {
   const reader = (hash: string) => `https://weread.qq.com/web/reader/${hash}`;
 
-  it("书籍与网页/PDF 互不混入", () => {
+  it("books never mix with web pages or PDFs", () => {
     let h = emptyStudyHistory();
     h = pushUrlEntry(h, { url: "https://example.com", title: "Example" });
     h = pushWereadBook(h, { url: reader("abc"), title: "三体" });
@@ -60,7 +60,7 @@ describe("study history: 微信读书独立列表", () => {
     expect(h.weread.map((e) => e.title)).toEqual(["三体"]);
   });
 
-  it("同一本书去重置顶,后到的书名覆盖先到的", () => {
+  it("the same book is deduplicated and moved to the top, and the later title overrides the earlier one", () => {
     // The first report has no extracted title yet (fallback title); the correct one is reported once extraction finishes.
     let h = emptyStudyHistory();
     h = pushWereadBook(h, { url: reader("abc"), title: "微信读书 abc", at: 1 });
@@ -70,7 +70,7 @@ describe("study history: 微信读书独立列表", () => {
     expect(h.weread[0].at).toBe(3);
   });
 
-  it("上限之外的老记录被丢弃", () => {
+  it("entries beyond the limit are dropped", () => {
     let h = emptyStudyHistory();
     for (let i = 0; i < STUDY_HISTORY_LIMIT + 3; i++) {
       h = pushWereadBook(h, { url: reader(String(i)), title: `书${i}` });
@@ -79,7 +79,7 @@ describe("study history: 微信读书独立列表", () => {
     expect(h.weread[0].url).toBe(reader(String(STUDY_HISTORY_LIMIT + 2)));
   });
 
-  it("旧配置没有 weread 字段也能归一(兼容升级)", () => {
+  it("an old config without a weread field still normalizes (compatible upgrade)", () => {
     const h = normalizeStudyHistory({
       pdfs: [],
       urls: [{ url: "https://a.dev", title: "A" }],
@@ -87,7 +87,7 @@ describe("study history: 微信读书独立列表", () => {
     expect(h.weread).toEqual([]);
   });
 
-  it("weread 里的坏条目逐条丢弃", () => {
+  it("bad entries in weread are dropped one by one", () => {
     const h = normalizeStudyHistory({
       weread: [
         { url: reader("abc"), title: "三体", at: 1 },
@@ -100,8 +100,8 @@ describe("study history: 微信读书独立列表", () => {
   });
 });
 
-describe("study history: 代码项目独立列表", () => {
-  it("代码项目与 PDF/网页/微信读书互不混入", () => {
+describe("study history: code projects have their own list", () => {
+  it("code projects never mix with PDFs, web pages or WeRead", () => {
     let h = emptyStudyHistory();
     h = pushCodeEntry(h, { path: "/Users/me/code/app", title: "app" });
     h = pushPdfEntry(h, pdf("/v/pdfs/a.pdf", "A"));
@@ -111,7 +111,7 @@ describe("study history: 代码项目独立列表", () => {
     expect(h.urls).toHaveLength(1);
   });
 
-  it("同一个项目按路径去重置顶", () => {
+  it("the same project is deduplicated by path and moved to the top", () => {
     let h = emptyStudyHistory();
     h = pushCodeEntry(h, { path: "/a", title: "a" });
     h = pushCodeEntry(h, { path: "/b", title: "b" });
@@ -120,12 +120,12 @@ describe("study history: 代码项目独立列表", () => {
     expect(h.codes[0].title).toBe("a2");
   });
 
-  it("旧配置没有 codes 字段也能归一(兼容升级)", () => {
+  it("an old config without a codes field still normalizes (compatible upgrade)", () => {
     const h = normalizeStudyHistory({ pdfs: [], urls: [] });
     expect(h.codes).toEqual([]);
   });
 
-  it("codes 里的坏条目逐条丢弃", () => {
+  it("bad entries in codes are dropped one by one", () => {
     const h = normalizeStudyHistory({
       codes: [
         { path: "/a", title: "A", at: 1 },
@@ -139,7 +139,7 @@ describe("study history: 代码项目独立列表", () => {
 });
 
 describe("normalizeStudyHistory", () => {
-  it("坏配置不抛错，逐条丢弃非法项", () => {
+  it("a bad config does not throw, illegal entries are dropped one by one", () => {
     const h = normalizeStudyHistory({
       pdfs: [
         { path: "/v/pdfs/a.pdf", relPath: "pdfs/a.pdf", title: "A", at: 1 },
@@ -153,14 +153,14 @@ describe("normalizeStudyHistory", () => {
     expect(h.urls.map((e) => e.title)).toEqual(["A"]);
   });
 
-  it("非对象返回空历史", () => {
+  it("a non-object returns an empty history", () => {
     expect(normalizeStudyHistory(null)).toEqual(emptyStudyHistory());
     expect(normalizeStudyHistory("nope")).toEqual(emptyStudyHistory());
   });
 });
 
 describe("pdfHistoryForVault", () => {
-  it("只列出当前 vault 里的 PDF（跨仓记录不能打开）", () => {
+  it("only lists the PDFs of the current vault (records from another vault cannot be opened)", () => {
     let h = emptyStudyHistory();
     h = pushPdfEntry(h, pdf("/v1/pdfs/a.pdf"));
     h = pushPdfEntry(h, pdf("/v2/pdfs/b.pdf"));
@@ -168,13 +168,13 @@ describe("pdfHistoryForVault", () => {
     expect(pdfHistoryForVault(h, "/v1").map((e) => e.path)).toEqual(["/v1/pdfs/a.pdf"]);
   });
 
-  it("没有 vault 时原样返回", () => {
+  it("returns the entries unchanged when there is no vault", () => {
     let h = emptyStudyHistory();
     h = pushPdfEntry(h, pdf("/v1/pdfs/a.pdf"));
     expect(pdfHistoryForVault(h, null)).toEqual(h.pdfs);
   });
 
-  it("运行时混进坏记录也不抛错（只丢弃那一行）", () => {
+  it("a bad record mixed in at runtime does not throw (only that row is dropped)", () => {
     const bad = {
       pdfs: [{ title: "坏", relPath: "x", at: 1 }],
       urls: [],

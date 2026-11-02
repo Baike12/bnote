@@ -27,7 +27,7 @@ import {
 const doc = (text: string) => EditorState.create({ doc: text }).doc;
 
 describe("parseListLine / todoText", () => {
-  it("识别 bullet / ordered / checkbox 与缩进保真", () => {
+  it("recognizes bullet / ordered / checkbox and keeps the indentation faithful", () => {
     expect(parseListLine("- [ ] 任务")).toEqual({ indent: "", marker: "-", gap: " ", box: " ", text: "任务" });
     expect(parseListLine("  * [x] 完成 ✅ 2026-09-23")).toEqual({
       indent: "  ",
@@ -43,7 +43,7 @@ describe("parseListLine / todoText", () => {
     expect(parseListLine("")).toBe(null);
   });
 
-  it("身份文本剥掉 ✅ 戳与两端空白", () => {
+  it("the identity text strips the ✅ stamp and the whitespace on both ends", () => {
     expect(todoText(parseListLine("- [ ] 任务")!)).toBe("任务");
     expect(todoText(parseListLine("- [x] 任务 ✅ 2026-09-23")!)).toBe("任务");
     expect(todoText(parseListLine("- [ ]  空格包围 ")!)).toBe("空格包围");
@@ -52,24 +52,24 @@ describe("parseListLine / todoText", () => {
 
 describe("blockRootLine / blockEnd / blockLines", () => {
   const nested = doc("- [ ] 根\n  - [ ] 子\n    - [ ] 孙\n- [ ] 兄弟\n");
-  it("沿祖先链走到最浅根,同级行跳过", () => {
+  it("walks the ancestor chain to the shallowest root, a line at the same level is skipped", () => {
     expect(blockRootLine(nested, 1)).toBe(1);
     expect(blockRootLine(nested, 2)).toBe(1);
     expect(blockRootLine(nested, 3)).toBe(1);
     expect(blockRootLine(nested, 4)).toBe(4);
   });
 
-  it("空行断链:链断处的行自己是根", () => {
+  it("a blank line breaks the chain: the line where the chain breaks is its own root", () => {
     const d = doc("- a\n\n  - b\n");
     expect(blockRootLine(d, 3)).toBe(3);
   });
 
-  it("普通 bullet 也可以是块根(深层待办的祖先)", () => {
+  it("a plain bullet can also be a block root (the ancestor of a deep todo)", () => {
     const d = doc("- 项目\n  - [ ] 待办\n");
     expect(blockRootLine(d, 2)).toBe(1);
   });
 
-  it("blockEnd 吃下所有更深行,空行/同深即止", () => {
+  it("blockEnd swallows all deeper lines, a blank line or the same depth ends it", () => {
     expect(blockEnd(nested, 1)).toBe(3);
     expect(blockEnd(nested, 4)).toBe(4);
     const withBlank = doc("- [ ] 根\n  - [ ] 子\n\n  - [ ] 不算\n");
@@ -79,20 +79,20 @@ describe("blockRootLine / blockEnd / blockLines", () => {
 });
 
 describe("reindentBlock", () => {
-  it("剥源根缩进后目标根缩进归零,子行相对缩进保真", () => {
+  it("after the source root indentation is stripped the target root indentation is zeroed, the relative indentation of the child lines is faithful", () => {
     expect(reindentBlock(["  - [ ] 子", "    - [ ] 孙"], 2, "")).toEqual(["- [ ] 子", "  - [ ] 孙"]);
   });
-  it("加目标缩进:整块右移", () => {
+  it("adding the target indentation: the whole block moves right", () => {
     expect(reindentBlock(["- [ ] 子", "  - [ ] 孙"], 0, "\t")).toEqual(["\t- [ ] 子", "\t  - [ ] 孙"]);
   });
-  it("只剥空白字符,不会啃进 marker(tab 子行)", () => {
+  it("only whitespace characters are stripped, it never bites into the marker (a tab-indented child line)", () => {
     expect(reindentBlock(["  \t- 混合"], 2, "")).toEqual(["\t- 混合"]);
     expect(reindentBlock(["\t- 混合"], 2, "")).toEqual(["- 混合"]);
   });
 });
 
 describe("parseDailyRegion", () => {
-  it("头部 H1 + 条目 + 空行分隔 + 正文截止", () => {
+  it("header H1 + entries + blank line separator + the body ends the region", () => {
     const d = doc("# 2026-09-23\n\n- [ ] 甲\n  - [ ] 甲1\n\n- [ ] 乙\n\n今天写了日记。\n");
     const r = parseDailyRegion(d);
     expect(r.headerEnd).toBe(1);
@@ -103,21 +103,21 @@ describe("parseDailyRegion", () => {
     expect(r.lastListLine).toBe(6);
   });
 
-  it("无头部/空文档/纯正文", () => {
+  it("no header / empty document / pure body", () => {
     expect(parseDailyRegion(doc("- [ ] 甲\n- [ ] 乙\n")).headerEnd).toBe(0);
     expect(parseDailyRegion(doc("")).entries).toEqual([]);
     const prose = doc("今天的事\n- 不是待办区开头\n");
     expect(parseDailyRegion(prose).entries).toEqual([]);
   });
 
-  it("顶层条目之前的深层行不算待办区", () => {
+  it("deep lines before the first top-level entry do not count as the todo region", () => {
     const d = doc("  - 深层开头\n- [ ] 甲\n");
     expect(parseDailyRegion(d).entries).toEqual([]);
   });
 });
 
 describe("appendEntrySpec / replaceEntrySpec / removeEntrySpec", () => {
-  it("空区域 + 头部:头后空一行插入", () => {
+  it("empty region + header: inserted after one blank line following the header", () => {
     const d = doc("# 2026-09-23\n");
     const r = parseDailyRegion(d);
     const { change, entry } = appendEntrySpec(d, r, ["- [ ] 甲"]);
@@ -125,14 +125,14 @@ describe("appendEntrySpec / replaceEntrySpec / removeEntrySpec", () => {
     expect(entry).toEqual({ start: 3, end: 3 });
   });
 
-  it("已有条目:紧接最后一个条目(时间顺序)", () => {
+  it("existing entries: inserted right after the last entry (chronological order)", () => {
     const text = "# d\n\n- [ ] 甲\n- [ ] 乙\n";
     const d = doc(text);
     const { change } = appendEntrySpec(d, parseDailyRegion(d), ["- [ ] 丙"]);
     expect(textAfterChanges(text, [change])).toBe("# d\n\n- [ ] 甲\n- [ ] 乙\n- [ ] 丙\n");
   });
 
-  it("无头部空文档 / 无头部的正文文档", () => {
+  it("an empty document without a header / a body document without a header", () => {
     const empty = doc("");
     const r0 = parseDailyRegion(empty);
     expect(textAfterChanges("", [appendEntrySpec(empty, r0, ["- [ ] 甲"]).change])).toBe("- [ ] 甲");
@@ -142,7 +142,7 @@ describe("appendEntrySpec / replaceEntrySpec / removeEntrySpec", () => {
     );
   });
 
-  it("replaceEntrySpec 整段替换;removeEntrySpec 吃掉条目间分隔空行", () => {
+  it("replaceEntrySpec replaces the whole segment; removeEntrySpec swallows the blank line between entries", () => {
     const text = "# d\n\n- [ ] 甲\n  - [ ] 甲1\n\n- [ ] 乙\n\n正文\n";
     const d = doc(text);
     const region = parseDailyRegion(d);
@@ -154,7 +154,7 @@ describe("appendEntrySpec / replaceEntrySpec / removeEntrySpec", () => {
     );
   });
 
-  it("区域尾条目删除时保留正文前的空行", () => {
+  it("deleting the entry at the end of the region keeps the blank line before the body", () => {
     const text = "# d\n\n- [ ] 甲\n\n正文\n";
     const d = doc(text);
     expect(textAfterChanges(text, [removeEntrySpec(d, parseDailyRegion(d).entries[0])])).toBe(
@@ -164,7 +164,7 @@ describe("appendEntrySpec / replaceEntrySpec / removeEntrySpec", () => {
 });
 
 describe("prependEntrySpec", () => {
-  it("有既有待办:插到第一条之前,原条目原样下移", () => {
+  it("with existing todos: inserted before the first one, the original entries move down unchanged", () => {
     const d = doc("# 2026-10-26\n\n- [ ] 甲\n- [ ] 乙\n");
     const { change, entry } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新"]);
     expect(textAfterChanges(d.toString(), [change])).toBe(
@@ -173,7 +173,7 @@ describe("prependEntrySpec", () => {
     expect(entry).toEqual({ start: 3, end: 3 });
   });
 
-  it("带子项的块整体前插,条目的行区间覆盖整块", () => {
+  it("a block with children is prepended as a whole, the line range of the entry covers the whole block", () => {
     const d = doc("# d\n\n- [ ] 甲\n  - [ ] 子\n");
     const { change, entry } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新", "  - [ ] 子新"]);
     expect(textAfterChanges(d.toString(), [change])).toBe(
@@ -182,13 +182,13 @@ describe("prependEntrySpec", () => {
     expect(entry).toEqual({ start: 3, end: 4 });
   });
 
-  it("空区域:与 appendEntrySpec 同形(头部后空一行)", () => {
+  it("empty region: the same shape as appendEntrySpec (one blank line after the header)", () => {
     const d = doc("# 2026-10-26\n");
     const { change } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新"]);
     expect(textAfterChanges(d.toString(), [change])).toBe("# 2026-10-26\n\n- [ ] 新\n");
   });
 
-  it("无头部的纯列表:顶到第一条之前", () => {
+  it("a plain list without a header: pushed to the very front, before the first entry", () => {
     const d = doc("- [ ] 甲\n- [ ] 乙\n");
     const { change } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新"]);
     expect(textAfterChanges(d.toString(), [change])).toBe("- [ ] 新\n- [ ] 甲\n- [ ] 乙\n");
@@ -196,7 +196,7 @@ describe("prependEntrySpec", () => {
 });
 
 describe("findEntryByText", () => {
-  it("同文条目按 nearLine 就近取", () => {
+  it("an entry with the same text is picked by nearLine, the closest one wins", () => {
     const text = "# d\n\n- [ ] 同名\n- [ ] 其他\n- [ ] 同名\n";
     const d = doc(text);
     const region = parseDailyRegion(d);
@@ -208,19 +208,19 @@ describe("findEntryByText", () => {
 
 describe("resolveRootLine", () => {
   const d = doc("前言\n- [ ] 甲\n- [ ] 乙\n- [ ] 丙\n");
-  it("hint 命中 / 窗口命中 / 全文命中 / 找不到", () => {
+  it("the hint hits / the window hits / the full text hits / not found", () => {
     expect(resolveRootLine(d, ["乙"], 3)).toBe(3);
     expect(resolveRootLine(d, ["乙"], 8)).toBe(3); // the +/-30 window
     expect(resolveRootLine(d, ["丙"], 2)).toBe(4); // the hint line is not it, the nearest one wins
     expect(resolveRootLine(d, ["丁"], 2)).toBe(null);
   });
-  it("非待办行永远不匹配", () => {
+  it("a non-todo line never matches", () => {
     expect(resolveRootLine(doc("甲\n- [ ] 乙\n"), ["甲"], 1)).toBe(null);
   });
 });
 
-describe("路径约定", () => {
-  it("日记文件与链接文件路径", () => {
+describe("path conventions", () => {
+  it("the daily note file path and the links file path", () => {
     expect(dailyPathFor("/vault", "2026-09-23")).toBe("/vault/Daily/2026-09-23.md");
     expect(dailyPathFor("/vault/", "2026-09-23")).toBe("/vault/Daily/2026-09-23.md");
     expect(isDailyPath("/vault/Daily/2026-09-23.md")).toBe(true);
@@ -230,7 +230,7 @@ describe("路径约定", () => {
     expect(linksFilePath("/vault")).toBe("/vault/.bnote/daily-links.json");
   });
 
-  it("dailyDayOf 从日记路径提取日期(与 isDailyPath 同一正则)", () => {
+  it("dailyDayOf extracts the date from a daily note path (the same regex as isDailyPath)", () => {
     expect(dailyDayOf("/vault/Daily/2026-09-23.md")).toBe("2026-09-23");
     expect(dailyDayOf("/vault/notes/Daily/2026-09-23.md")).toBe("2026-09-23");
     expect(dailyDayOf("/vault/Daily/2026-9-3.md")).toBe(null);
@@ -238,8 +238,8 @@ describe("路径约定", () => {
   });
 });
 
-describe("待办跟随:rolloverBlocks", () => {
-  it("格言行/正文不截断:整篇扫描一级列表块,已完成叶子被过滤(用户真实日记形状)", () => {
+describe("todo rollover: rolloverBlocks", () => {
+  it("quote lines / body text do not truncate: the whole file is scanned for top-level list blocks, completed leaves are filtered out (the shape of a real daily note)", () => {
     const prev = [
       "# 1 2026-10-02",
       "**没有规划的不做，专注**",
@@ -261,12 +261,12 @@ describe("待办跟随:rolloverBlocks", () => {
     ]);
   });
 
-  it("已完成中间节点是未完成后代的锚:保留,层级不断链", () => {
+  it("a completed middle node is the anchor of an unfinished descendant: it is kept, the hierarchy is not broken", () => {
     const prev = ["- [ ] 父", "  - [x] 中间 ✅ 2026-09-22", "    - [ ] 剩下的"].join("\n");
     expect(rolloverBlocks(prev)).toEqual([["- [ ] 父", "  - [x] 中间 ✅ 2026-09-22", "    - [ ] 剩下的"]]);
   });
 
-  it("已完成兄弟子树整块跳过,不越过缩进窗口误抓", () => {
+  it("a completed sibling subtree is skipped as a whole, it does not reach beyond the indentation window and grab the wrong block", () => {
     const prev = [
       "- [ ] 父",
       "  - [x] 完成的中间 ✅ 2026-09-22",
@@ -276,7 +276,7 @@ describe("待办跟随:rolloverBlocks", () => {
     expect(rolloverBlocks(prev)).toEqual([["- [ ] 父", "  - [ ] 活着的子项"]]);
   });
 
-  it("顶层已完成块:有未完成后代则整链跟随,没有则整块跳过", () => {
+  it("a completed top-level block: with an unfinished descendant the whole chain follows, without one the block is skipped", () => {
     const prev = [
       "- [x] 收尾完成 ✅ 2026-09-22",
       "- [x] 大盘还未完",
@@ -287,7 +287,7 @@ describe("待办跟随:rolloverBlocks", () => {
     expect(rolloverBlocks(prev)).toEqual([["- [x] 大盘还未完", "  - [ ] 还没做的子项"]]);
   });
 
-  it("纯 bullet 块:不含未完成跳过;含则作锚保留,其下普通叶子同样被过滤", () => {
+  it("a plain bullet block: without an unfinished todo it is skipped; with one it is kept as the anchor, its plain leaves are filtered out too", () => {
     const prev = [
       "- 普通分组",
       "  - 普通子项",
@@ -298,23 +298,23 @@ describe("待办跟随:rolloverBlocks", () => {
     expect(rolloverBlocks(prev)).toEqual([["- 有活的分组", "  - [ ] 真正的待办"]]);
   });
 
-  it("围栏代码块里的 `- [ ]` 是代码,不跟随", () => {
+  it("a `- [ ]` inside a fenced code block is code, it does not follow", () => {
     const prev = ["```", "- [ ] 代码里的假待办", "```", "", "- [ ] 真待办"].join("\n");
     expect(rolloverBlocks(prev)).toEqual([["- [ ] 真待办"]]);
   });
 
-  it("全已完成 / 空文档:没有可跟随的", () => {
+  it("all completed / empty document: there is nothing to follow", () => {
     expect(rolloverBlocks("# d\n\n- [x] 甲 ✅ 2026-09-22\n")).toEqual([]);
     expect(rolloverBlocks("")).toEqual([]);
   });
 
-  it("空文本未完成待办也跟随(统一规则,不特判)", () => {
+  it("an unfinished todo with empty text follows too (one uniform rule, no special case)", () => {
     expect(rolloverBlocks("- [ ] ")).toEqual([["- [ ] "]]);
   });
 });
 
-describe("待办跟随:previousDailyFile", () => {
-  it("取早于今天的最近一篇,忽略非日期文件与今天及未来的文件", () => {
+describe("todo rollover: previousDailyFile", () => {
+  it("picks the latest note before today, ignoring files that are not dated and today's or future files", () => {
     const names = ["2026-09-30.md", "notes.md", "2026-10-02.md", "2026-10-03.md", "2026-10-01.md"];
     expect(previousDailyFile(names, "2026-10-02")).toBe("2026-10-01");
     expect(previousDailyFile(["2026-10-02.md"], "2026-10-02")).toBe(null);
@@ -322,12 +322,12 @@ describe("待办跟随:previousDailyFile", () => {
   });
 });
 
-describe("待办跟随:composeDailyScaffold", () => {
-  it("无块 = 裸 scaffold(逐字节一致)", () => {
+describe("todo rollover: composeDailyScaffold", () => {
+  it("no blocks = the bare scaffold (byte for byte identical)", () => {
     expect(composeDailyScaffold("2026-10-03", [])).toBe("# 2026-10-03\n");
   });
 
-  it("有块 = 与引擎 appendEntrySpec 同形:条目单换行相邻,文件尾单换行", () => {
+  it("with blocks = the same shape as the engine's appendEntrySpec: the entries are adjacent with a single newline, the file ends with a single newline", () => {
     expect(composeDailyScaffold("2026-10-03", [["- [ ] 甲", "  - [ ] 乙"], ["- [ ] 丙"]])).toBe(
       "# 2026-10-03\n\n- [ ] 甲\n  - [ ] 乙\n- [ ] 丙\n",
     );

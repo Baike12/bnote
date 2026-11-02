@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { studyIdentity, sessionFilePath, materialAbsDir } from "./materials";
 
 describe("studyIdentity", () => {
-  it("PDF 用路径,网页用网址(忽略末尾斜杠)", () => {
+  it("a PDF uses its path, a web page uses its URL (trailing slashes are ignored)", () => {
     expect(studyIdentity({ kind: "pdf", path: "/v/a.pdf", title: "A" })).toBe("pdf:/v/a.pdf");
     expect(studyIdentity({ kind: "url", url: "https://x.com/a/", title: "x" })).toBe(
       "url:https://x.com/a",
@@ -13,8 +13,8 @@ describe("studyIdentity", () => {
   });
 });
 
-describe("材料目录路径", () => {
-  it("落到 <vault>/.bnote/materials/<kind>/<dir>", () => {
+describe("the materials directory path", () => {
+  it("it lands in <vault>/.bnote/materials/<kind>/<dir>", () => {
     expect(materialAbsDir("/v", "materials/pdfs/ji_qi_xue_xi")).toBe(
       "/v/.bnote/materials/pdfs/ji_qi_xue_xi",
     );
@@ -23,7 +23,7 @@ describe("材料目录路径", () => {
     );
   });
 
-  it("vault 路径末尾斜杠不产生双斜杠", () => {
+  it("a trailing slash on the vault path does not produce a double slash", () => {
     expect(materialAbsDir("/v/", "materials/pdfs/a")).toBe("/v/.bnote/materials/pdfs/a");
   });
 });

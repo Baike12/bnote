@@ -11,7 +11,7 @@ import { applyTextEdits } from "./textEdits";
  * it.
  */
 describe("applyTextEdits", () => {
-  it("单处替换", () => {
+  it("a single replacement", () => {
     const text = "fn main() {\n    old();\n}\n";
     const out = applyTextEdits(text, [
       {
@@ -25,7 +25,7 @@ describe("applyTextEdits", () => {
     expect(out).toBe("fn main() {\n    new();\n}\n");
   });
 
-  it("多处替换从后往前应用,前面的偏移不受影响", () => {
+  it("multiple replacements are applied back to front, so the earlier offsets stay valid", () => {
     const text = "aaa\nbbb\nccc\n";
     const out = applyTextEdits(text, [
       {
@@ -40,7 +40,7 @@ describe("applyTextEdits", () => {
     expect(out).toBe("AAA\nbbb\nCCC\n");
   });
 
-  it("插入(空区间)", () => {
+  it("insertion (empty range)", () => {
     const text = "ab\n";
     const out = applyTextEdits(text, [
       {
@@ -51,7 +51,7 @@ describe("applyTextEdits", () => {
     expect(out).toBe("aXb\n");
   });
 
-  it("删除(新区间为空)", () => {
+  it("deletion (empty new text)", () => {
     const text = "abc\n";
     const out = applyTextEdits(text, [
       {
@@ -62,12 +62,12 @@ describe("applyTextEdits", () => {
     expect(out).toBe("ac\n");
   });
 
-  it("非法的编辑数组原样返回", () => {
+  it("an invalid edit array is returned unchanged", () => {
     expect(applyTextEdits("abc", null)).toBe("abc");
     expect(applyTextEdits("abc", "nope")).toBe("abc");
   });
 
-  it("越界位置夹回文本内,不抛", () => {
+  it("an out-of-range position is clamped into the text instead of throwing", () => {
     const out = applyTextEdits("ab", [
       {
         range: { start: { line: 9, character: 0 }, end: { line: 9, character: 5 } },

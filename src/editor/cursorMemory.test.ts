@@ -67,7 +67,7 @@ describe("restoreSavedCursor", () => {
     vi.useRealTimers();
   });
 
-  it("scrollTop 走 requestMeasure 的 write 阶段写(根因回归:直写落在估算高度坐标系,随后被 CM 滚动锚定补偿挪走)", () => {
+  it("scrollTop is written in the write phase of requestMeasure (root-cause regression: writing it directly lands in the estimated-height coordinate system and is then moved away by CM's scroll anchoring compensation)", () => {
     const { view, runMeasures } = fakeView({});
     restoreSavedCursor(view, "/v/restored.md");
     expect(view.scrollDOM.scrollTop).toBe(0); // not written synchronously
@@ -75,14 +75,14 @@ describe("restoreSavedCursor", () => {
     expect(view.scrollDOM.scrollTop).toBe(1234);
   });
 
-  it("恢复值按真实 scrollHeight 夹紧", () => {
+  it("the restored value is clamped to the real scrollHeight", () => {
     const { view, runMeasures } = fakeView({});
     restoreSavedCursor(view, "/v/huge.md");
     runMeasures();
     expect(view.scrollDOM.scrollTop).toBe(5000);
   });
 
-  it("没有记忆的文件不写、不排队", () => {
+  it("a file with no remembered position is neither written nor queued", () => {
     const { view, runMeasures } = fakeView({});
     restoreSavedCursor(view, "/v/unknown.md");
     runMeasures();
@@ -90,7 +90,7 @@ describe("restoreSavedCursor", () => {
   });
 });
 
-describe("cursorMemory 滚动位置保存", () => {
+describe("cursorMemory scroll position saving", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(rememberCursorPosition).mockClear();
@@ -99,7 +99,7 @@ describe("cursorMemory 滚动位置保存", () => {
     vi.useRealTimers();
   });
 
-  it("纯滚动(无事务)也触发位置保存:根因回归——旧实现只挂 selectionSet/docChanged,滚轮阅读的位置永远不会被记下", () => {
+  it("a pure scroll (no transaction) also triggers a position save: root-cause regression — the old implementation only hooked selectionSet/docChanged, so a position reached by wheel scrolling was never recorded", () => {
     const { view, emitScroll } = fakeView({});
     view.scrollDOM.scrollTop = 1234;
     const dispose = observeScrollSave(view, () => "/v/a.md");
@@ -113,7 +113,7 @@ describe("cursorMemory 滚动位置保存", () => {
     dispose();
   });
 
-  it("换文档后排队中的待存作废:openNote 换文档窗口里,旧路径的定时器不能把新文档的位置写进旧路径", () => {
+  it("a queued pending save is voided after the document changes: inside the openNote document-switch window the old path's timer must not write the new document's position into the old path", () => {
     const docA = {};
     const docB = {};
     const { view, emitScroll } = fakeView(docA);
@@ -128,7 +128,7 @@ describe("cursorMemory 滚动位置保存", () => {
     dispose();
   });
 
-  it("flush 立即落盘,不等防抖;卸载后滚动不再触发保存", () => {
+  it("flush writes immediately without waiting for the debounce; after unloading, scrolling no longer triggers a save", () => {
     const { view, emitScroll } = fakeView({});
     scheduleCursorSave("/v/b.md", view);
     flushCursorSave();
@@ -141,7 +141,7 @@ describe("cursorMemory 滚动位置保存", () => {
     expect(rememberCursorPosition).toHaveBeenCalledTimes(1);
   });
 
-  it("无当前文件时滚动不保存", () => {
+  it("scrolling with no current file is not saved", () => {
     const { view, emitScroll } = fakeView({});
     const dispose = observeScrollSave(view, () => null);
 

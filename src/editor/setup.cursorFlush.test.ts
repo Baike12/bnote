@@ -38,8 +38,8 @@ function moved(doc: string, from: number, to: number): boolean {
   return vimCursorNeedsFlush(start, start.update({ selection: EditorSelection.cursor(to) }).state, false, false);
 }
 
-describe("vim 光标冲刷判据", () => {
-  it("normal→insert 那种空转（选区没动）不冲刷", () => {
+describe("vim cursor flush criterion", () => {
+  it("a no-op switch like normal→insert (the selection did not move) does not flush", () => {
     // `i` goes through selectForInsert: the transaction carries a selection, but
     // the position did not change.
     const start = state(PLAIN, 3);
@@ -47,24 +47,24 @@ describe("vim 光标冲刷判据", () => {
     expect(vimCursorNeedsFlush(start, next, false, false)).toBe(false);
   });
 
-  it("插入态在正文里横向移动不冲刷（没有任何 DOM 会重构）", () => {
+  it("horizontal movement in the body while in insert mode does not flush (no DOM is rebuilt)", () => {
     expect(moved(PLAIN, 2, 6)).toBe(false);
     // Horizontal movement inside the third line (16..22 are the same line:
     // crossing a line boundary would hit the upper bound of selectionAffectsDecos)
     expect(moved(PLAIN, 16, 21)).toBe(false);
   });
 
-  it("文档变了必须冲刷（行/装饰可能重构）", () => {
+  it("a document change must flush (lines and decorations may be rebuilt)", () => {
     const start = state(PLAIN, 3);
     const next = start.update({ changes: { from: 3, insert: "x" } }).state;
     expect(vimCursorNeedsFlush(start, next, false, true)).toBe(true);
   });
 
-  it("引擎在画块光标时冲刷（normal/visual 的 j/k/h/l 与 Esc）", () => {
+  it("flush while the engine draws a block cursor (j/k/h/l and Esc in normal/visual)", () => {
     expect(vimCursorNeedsFlush(state(PLAIN, 3), state(PLAIN, 3), true, false)).toBe(true);
   });
 
-  it("跨标记槽的同行移动要冲刷（裸 `-`/任务括号的渲染会翻）", () => {
+  it("movement on the same line across a marker slot must flush (a bare `-` / task bracket renders differently)", () => {
     // In "- 列表项": the slot ends at col 2, so moving the caret from 2 to 3
     // crosses the slot boundary.
     const start = state(LIST, 2);
@@ -72,7 +72,7 @@ describe("vim 光标冲刷判据", () => {
     expect(vimCursorNeedsFlush(start, next, false, false)).toBe(true);
   });
 
-  it("命中行内触发符的行上任何选区变化都冲刷（上界，宁可多付）", () => {
+  it("any selection change on a line that hits an inline trigger flushes (an upper bound, over-paying is fine)", () => {
     const start = state(INLINE_TRIGGER, 1);
     const next = start.update({ selection: EditorSelection.cursor(5) }).state;
     expect(vimCursorNeedsFlush(start, next, false, false)).toBe(true);
@@ -90,20 +90,20 @@ describe("vim 光标冲刷判据", () => {
  * lands the block cursor one frame late. The engine instance is the view's `cm`
  * (getCM reads it).
  */
-describe("块光标判据与引擎一致", () => {  const fakeView = (vim: unknown, overwrite = false) =>
+describe("the block cursor criterion matches the engine", () => {  const fakeView = (vim: unknown, overwrite = false) =>
     ({ cm: { state: { vim, overwrite } } }) as unknown as Parameters<typeof vimDrawsBlockCursor>[0];
 
-  it("insert（非 replace）不画块光标", () => {
+  it("insert (not replace) draws no block cursor", () => {
     expect(vimDrawsBlockCursor(fakeView({ insertMode: true, visualMode: false }))).toBe(false);
   });
 
-  it("normal / visual / replace 都画", () => {
+  it("normal / visual / replace all draw", () => {
     expect(vimDrawsBlockCursor(fakeView({ insertMode: false, visualMode: false }))).toBe(true);
     expect(vimDrawsBlockCursor(fakeView({ insertMode: false, visualMode: true }))).toBe(true);
     expect(vimDrawsBlockCursor(fakeView({ insertMode: true }, true))).toBe(true);
   });
 
-  it("没有 vim 引擎时既不画块光标，模式也读不出来", () => {
+  it("without a vim engine it draws no block cursor and the mode cannot be read either", () => {
     const noEngine = { cm: null } as unknown as Parameters<typeof vimDrawsBlockCursor>[0];
     expect(vimDrawsBlockCursor(noEngine)).toBe(false);
     expect(currentVimMode(noEngine)).toBe(null);
@@ -120,7 +120,7 @@ describe("块光标判据与引擎一致", () => {  const fakeView = (vim: unkno
  * one. The regression looks like going back to reading coordinates synchronously
  * in updateListener: every Esc would then compute a layout for the stale styles.
  */
-describe("冲刷微任务时序契约", () => {
+describe("flush microtask timing contract", () => {
   const fakeView = (connected: boolean) => {
     const calls: number[] = [];
     const view = {
@@ -133,7 +133,7 @@ describe("冲刷微任务时序契约", () => {
     return { view, calls };
   };
 
-  it("同步阶段不读布局，微任务里才冲刷", async () => {
+  it("no layout is read in the synchronous phase, the flush happens in the microtask", async () => {
     const { view, calls } = fakeView(true);
     scheduleVimCursorFlush(view);
     expect(calls).toEqual([]);
@@ -141,7 +141,7 @@ describe("冲刷微任务时序契约", () => {
     expect(calls).toEqual([7]);
   });
 
-  it("微任务执行前视图已销毁则放弃（异步回调自证时效）", async () => {
+  it("the flush is dropped when the view is destroyed before the microtask runs (the async callback proves it is still current)", async () => {
     const { view, calls } = fakeView(false);
     scheduleVimCursorFlush(view);
     await Promise.resolve();

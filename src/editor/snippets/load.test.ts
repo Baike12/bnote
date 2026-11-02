@@ -51,8 +51,8 @@ beforeEach(() => {
   applySnippetSource(null, true);
 });
 
-describe("SnippetLoader:装载语义", () => {
-  it("用户片段装载后立即生效(findSnippet 当 keystroke 实时读 snippetStore)", async () => {
+describe("SnippetLoader: loading semantics", () => {
+  it("user snippets take effect right after loading (findSnippet reads snippetStore live on every keystroke)", async () => {
     const { importer } = fakeImporter();
     const loader = new SnippetLoader(importer);
     const outcome = await loader.load(USER_SRC, true);
@@ -61,7 +61,7 @@ describe("SnippetLoader:装载语义", () => {
     expect(currentUserSnippets()).toBe(USER);
   });
 
-  it("空文件(null)回退内置", async () => {
+  it("an empty file (null) falls back to the built-in snippets", async () => {
     const loader = new SnippetLoader(fakeImporter().importer);
     const outcome = await loader.load(null, true);
     expect(outcome.status).toBe("builtin");
@@ -70,7 +70,7 @@ describe("SnippetLoader:装载语义", () => {
     expect(currentUserSnippets()).toBeNull();
   });
 
-  it("导入失败回退内置并把错误带给调用方,不留上一次的用户片段", async () => {
+  it("a failed import falls back to the built-in snippets and hands the error to the caller, keeping none of the previous user snippets", async () => {
     const loader = new SnippetLoader(fakeImporter().importer);
     await loader.load(USER_SRC, true);
     const outcome = await loader.load("broken source", true);
@@ -80,7 +80,7 @@ describe("SnippetLoader:装载语义", () => {
     expect(currentUserSnippets()).toBeNull();
   });
 
-  it("导出形状不对是显式错误,不是静默 0 条", () => {
+  it("a wrong export shape is an explicit error, not a silent 0 snippets", () => {
     expect(() => normalizeSnippetExport({ default: { nope: true } })).toThrow(
       /必须 default 导出片段数组/,
     );
@@ -89,7 +89,7 @@ describe("SnippetLoader:装载语义", () => {
   });
 });
 
-describe("函数型 replacement 过装载链路", () => {
+describe("a function-type replacement goes through the loading chain", () => {
   /** The same shape as the iden entry in the vault's .bnote/snippets.js: the
    *  return value is filed as is and only the tab stops are parsed. */
   const IDEN: RawSnippet = {
@@ -105,7 +105,7 @@ describe("函数型 replacement 过装载链路", () => {
     options: "mA",
   };
 
-  it("仓库文件里的函数被原样带进来,且返回值不过转义层(矩阵行分隔是两个反斜杠)", async () => {
+  it("a function from the vault file is carried over as is and its return value skips the escaping layer (the matrix row separator is two backslashes)", async () => {
     const loader = new SnippetLoader(async () => [IDEN]);
     const outcome = await loader.load("export default [/* iden */]", true);
     expect(outcome).toEqual({ status: "user", count: 1 });
@@ -135,8 +135,8 @@ describe("函数型 replacement 过装载链路", () => {
   });
 });
 
-describe("SnippetLoader:内容缓存", () => {
-  it("同内容不重复导入(仓库事件每次都触发 reload,重编译必须被拦掉)", async () => {
+describe("SnippetLoader: content cache", () => {
+  it("the same content is not imported twice (every vault event triggers a reload, so the recompile must be blocked)", async () => {
     const { calls, importer } = fakeImporter();
     const loader = new SnippetLoader(importer);
     await loader.load(USER_SRC, true);
@@ -145,7 +145,7 @@ describe("SnippetLoader:内容缓存", () => {
     expect(expandsUser()).toBe("USER");
   });
 
-  it("同内容只翻开关也不重新导入,且开关立即生效", async () => {
+  it("the same content with only the toggle flipped is not re-imported either, and the toggle takes effect immediately", async () => {
     const { calls, importer } = fakeImporter();
     const loader = new SnippetLoader(importer);
     await loader.load(USER_SRC, true);
@@ -158,7 +158,7 @@ describe("SnippetLoader:内容缓存", () => {
     expect(expandsUser()).toBe("USER");
   });
 
-  it("内容变化重新导入,新片段生效", async () => {
+  it("changed content is re-imported and the new snippet takes effect", async () => {
     const { calls, importer } = fakeImporter();
     const loader = new SnippetLoader(importer);
     await loader.load(USER_SRC, true);
@@ -169,8 +169,8 @@ describe("SnippetLoader:内容缓存", () => {
   });
 });
 
-describe("来源所有权:applySnippetsEnabled 只翻开关不动来源", () => {
-  it("设置应用(打开文件/改设置都会走)不清空已装载的用户片段", async () => {
+describe("source ownership: applySnippetsEnabled only flips the toggle and never touches the source", () => {
+  it("applying settings (opening a file and changing a setting both go through it) does not clear the loaded user snippets", async () => {
     const loader = new SnippetLoader(fakeImporter().importer);
     await loader.load(USER_SRC, true);
     applySnippetsEnabled(false);
@@ -181,7 +181,7 @@ describe("来源所有权:applySnippetsEnabled 只翻开关不动来源", () => 
   });
 });
 
-describe("接线门禁:actions.ts 的设置应用不许再碰来源", () => {
+describe("wiring gate: the settings application in actions.ts must not touch the source again", () => {
   // ?raw fetches the source text: the correctness of the wiring cannot be
   // tested through actions.ts's runtime dependencies (the app-level
   // dependency graph does not fit a DOM-less test), so a text gate locks this
@@ -193,7 +193,7 @@ describe("接线门禁:actions.ts 的设置应用不许再碰来源", () => {
   });
   const actions = modules["../../app/actions.ts"] ?? "";
 
-  it("applySettingsToEditor 走 applySnippetsEnabled(设置通道),不再出现 reloadSnippets(null,…)", () => {
+  it("applySettingsToEditor goes through applySnippetsEnabled (the settings channel) and reloadSnippets(null,…) never appears again", () => {
     expect(actions).not.toBe("");
     expect(actions).toMatch(/applySnippetsEnabled\(settings\.snippets\)/);
     // Resetting the source used to knock the vault snippets back to the

@@ -39,30 +39,30 @@ const rule = (selector: string): string => {
   return "";
 };
 
-describe("agent 面板滚动布局", () => {
-  it("面板在 column flex 里可收缩(min-height: 0)", () => {
+describe("agent panel scroll layout", () => {
+  it("the panel can shrink inside the column flex (min-height: 0)", () => {
     expect(rule(".agent-panel")).toMatch(/min-height:\s*0/);
   });
 
-  it("消息区是纵向滚动容器", () => {
+  it("the message area is the vertical scroll container", () => {
     const scroll = rule(".agent-scroll");
     expect(scroll).toMatch(/overflow-y:\s*auto/);
     expect(scroll).toMatch(/flex:\s*1/);
   });
 
-  it("两栏之间没有可见空隙:分栏线只占 1px,命中区靠伪元素外扩", () => {
+  it("no visible gap between the two columns: the divider occupies only 1px, the hit area is widened by a pseudo element", () => {
     expect(rule(".study-resizer")).toMatch(/flex:\s*0 0 1px/);
     expect(rule(".study-resizer::after")).toMatch(/left:\s*-4px/);
     expect(rule(".study-resizer::after")).toMatch(/right:\s*-4px/);
   });
 
-  it("项目视图的两根分栏线与学习模式共用同一套几何(只占 1px,不外扩布局)", () => {
+  it("both dividers of the projects view share the study mode geometry (only 1px, no layout widening)", () => {
     expect(rule(".projects-resizer")).toMatch(/flex:\s*0 0 1px/);
     expect(rule(".projects-resizer::after")).toMatch(/left:\s*-4px/);
     expect(rule(".projects-resizer::after")).toMatch(/right:\s*-4px/);
   });
 
-  it("agent 顶部与 PDF 顶栏同色(bg0),不是面板灰", () => {
+  it("the agent top and the PDF top bar share the same colour (bg0), not the panel grey", () => {
     expect(rule(".agent-panel")).toMatch(/background:\s*var\(--bg0\)/);
     expect(rule(".agent-header")).toMatch(/background:\s*var\(--bg0\)/);
   });
@@ -80,21 +80,21 @@ describe("agent 面板滚动布局", () => {
  * locked here: a custom button plus popover, a narrow bar with the same
  * background as the header, and a fixed-width back button.
  */
-describe("学习助手头部:会话切换与辅助会话条", () => {
+describe("study assistant header: session switch and auxiliary session bar", () => {
   const panelSrc = readFileSync("src/components/AgentPanel.tsx", "utf8");
   const headerSrc = readFileSync("src/components/AgentHeader.tsx", "utf8");
   // Only the code is searched: a comment saying "no native <select>" is documentation, not a violation.
   const code = (src: string) =>
     src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
-  it("会话切换不用原生 <select>(系统控件与项目 UI 不统一)", () => {
+  it("the session switch does not use a native <select> (the system control does not match the project UI)", () => {
     expect(code(panelSrc)).not.toMatch(/<select/);
     expect(code(headerSrc)).not.toMatch(/<select/);
     expect(panelSrc).toMatch(/<AgentHeader/);
     expect(headerSrc).toMatch(/agent-conv-pop/);
   });
 
-  it("标题按钮与中栏材料下拉同一套几何:26px 高、透明底、hover 才出底色", () => {
+  it("the title button and the middle column materials dropdown share the same geometry: 26px tall, transparent background, background only on hover", () => {
     const button = rule(".agent-conv-btn");
     expect(button).toMatch(/height:\s*26px/);
     expect(button).toMatch(/background:\s*transparent/);
@@ -102,7 +102,7 @@ describe("学习助手头部:会话切换与辅助会话条", () => {
     expect(rule(".content-title-btn.open")).toMatch(/background:\s*var\(--bg3\)/);
   });
 
-  it("会话标题过长时省略,不挤掉右侧按钮", () => {
+  it("an overlong session title is ellipsised and does not squeeze out the right buttons", () => {
     const title = rule(".agent-conv-title");
     expect(title).toMatch(/text-overflow:\s*ellipsis/);
     expect(title).toMatch(/white-space:\s*nowrap/);
@@ -113,13 +113,13 @@ describe("学习助手头部:会话切换与辅助会话条", () => {
     expect(rule(".agent-header .icon-btn")).toMatch(/flex:\s*0 0 auto/);
   });
 
-  it("辅助会话条与头部同底色,两块只画一条下边框", () => {
+  it("the auxiliary session bar shares the header background, the two blocks draw only one bottom border", () => {
     expect(rule(".agent-aux-bar")).toMatch(/background:\s*var\(--bg0\)/);
     expect(rule(".agent-aux-bar")).not.toMatch(/color-mix/);
     expect(rule(".agent-header:has(+ .agent-aux-bar)")).toMatch(/border-bottom:\s*none/);
   });
 
-  it("返回按钮定宽,来源摘要是唯一可省略的那一段", () => {
+  it("the back button has a fixed width, the source summary is the only elidable part", () => {
     expect(rule(".agent-aux-back")).toMatch(/flex:\s*0 0 auto/);
     const based = rule(".agent-aux-based");
     // min-width: 0 is the precondition for ellipsis (a flex item is stretched by its content's minimum width by default).
@@ -127,7 +127,7 @@ describe("学习助手头部:会话切换与辅助会话条", () => {
     expect(based).toMatch(/text-overflow:\s*ellipsis/);
   });
 
-  it("历史抽屉让开辅助条,不盖住来源与返回", () => {
+  it("the history drawer makes room for the auxiliary bar and does not cover the source or the back button", () => {
     expect(rule(".agent-panel:has(.agent-aux-bar) .agent-history")).toMatch(
       /top:\s*calc\(var\(--study-head-h\) \+ 30px\)/,
     );
@@ -145,17 +145,17 @@ describe("学习助手头部:会话切换与辅助会话条", () => {
  * body-level text multiplies it; the header and the auxiliary bar are the
  * outer frame and keep fixed pixels.
  */
-describe("学习助手:对话字号可调", () => {
+describe("study assistant: adjustable conversation font size", () => {
   const panelSrc = readFileSync("src/components/AgentPanel.tsx", "utf8");
 
-  it("正文基准不低于 14px(13.5px 就是这次要修的「太小」)", () => {
+  it("the body base is not below 14px (13.5px is the too small that this fixes)", () => {
     const panel = rule(".agent-panel");
     expect(panel).toMatch(/--agent-body:\s*15px/);
     expect(panel).toMatch(/--agent-fs:\s*1/);
     expect(panel).toMatch(/--agent-text:\s*calc\(var\(--agent-body\) \* var\(--agent-fs\)\)/);
   });
 
-  it("正文级文字都乘 --agent-text(改一处不会漏掉消息或输入框)", () => {
+  it("all body-level text multiplies --agent-text (one change cannot miss the messages or the input box)", () => {
     for (const selector of [
       ".agent-msg",
       ".agent-md",
@@ -175,7 +175,7 @@ describe("学习助手:对话字号可调", () => {
     expect(css).toMatch(/\.agent-md h1 \{ font-size: calc\(var\(--agent-text\) \* 1\.1\); \}/);
   });
 
-  it("缩放值由面板根元素写入(单一写入者),控件在头部", () => {
+  it("the scale value is written by the panel root element (single writer), the control lives in the header", () => {
     expect(panelSrc).toMatch(/--agent-fs/);
     expect(panelSrc).toMatch(/agentFontScale/);
     expect(rule(".agent-font-pop")).toMatch(/position:\s*absolute/);

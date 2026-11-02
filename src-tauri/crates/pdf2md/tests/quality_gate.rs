@@ -33,14 +33,14 @@ struct Converted {
 
 fn convert_fixture(file: &str) -> Converted {
     let pdf = fixtures_dir().join(file);
-    assert!(pdf.is_file(), "缺少测试夹具:{}", pdf.display());
+    assert!(pdf.is_file(), "missing test fixture:{}", pdf.display());
     let stem = file.trim_end_matches(".pdf").to_string();
     let out_dir = std::env::temp_dir().join("pdf2md-gate");
-    std::fs::create_dir_all(&out_dir).expect("创建临时输出目录");
+    std::fs::create_dir_all(&out_dir).expect("create the temporary output directory");
     let asset_dir = out_dir.join("assets").join(&stem);
     let opts = pdf2md::ConvertOptions::new(asset_dir.clone(), format!("assets/{}", stem));
-    let output = pdf2md::convert_file(pdf.to_str().expect("夹具路径为 UTF-8"), &opts)
-        .unwrap_or_else(|e| panic!("转换夹具 {file} 失败:{e}"));
+    let output = pdf2md::convert_file(pdf.to_str().expect("the fixture path is UTF-8"), &opts)
+        .unwrap_or_else(|e| panic!("converting the fixture {file} failed:{e}"));
     Converted {
         markdown: output.markdown,
         asset_dir,
@@ -172,7 +172,7 @@ fn assert_image_refs_resolve(c: &Converted, min_refs: usize) {
     let refs = image_refs(&c.markdown);
     assert!(
         refs.len() >= min_refs,
-        "{}:图片引用只有 {} 个,低于门禁下限 {}",
+        "{}:only {} image references, below the gate minimum {}",
         c.stem,
         refs.len(),
         min_refs
@@ -181,21 +181,21 @@ fn assert_image_refs_resolve(c: &Converted, min_refs: usize) {
     for r in &refs {
         assert!(
             r.starts_with(&prefix),
-            "{}:图片引用 `{}` 不在 {} 下(位置/路径写错)",
+            "{}:image reference `{}` is not under {} (wrong location or path)",
             c.stem,
             r,
             prefix
         );
         let path = c.asset_dir.join(r.trim_start_matches(&prefix));
         let meta = std::fs::metadata(&path)
-            .unwrap_or_else(|e| panic!("{}:引用 `{}` 指向的文件不存在:{e}", c.stem, r));
-        assert!(meta.len() > 0, "{}:引用 `{}` 是 0 字节文件", c.stem, r);
+            .unwrap_or_else(|e| panic!("{}:file `{}` does not exist:{e}", c.stem, r));
+        assert!(meta.len() > 0, "{}:the file referenced by `{}` is 0 bytes", c.stem, r);
         let ext_ok = path
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "svg"))
             .unwrap_or(false);
-        assert!(ext_ok, "{}:引用 `{}` 不是可渲染的图片格式", c.stem, r);
+        assert!(ext_ok, "{}:`{}` is not a renderable image format", c.stem, r);
     }
 }
 
@@ -209,13 +209,13 @@ fn formula_fixtures_keep_display_and_inline_math() {
         let c = convert_fixture(file);
         assert!(
             display_delimiters_balanced(&c.markdown),
-            "{}:`$$` 定界符不成对(有块被截断)",
+            "{}:the `$$` delimiters are unbalanced (a block was truncated)",
             c.stem
         );
         let blocks = display_block_count(&c.markdown);
         assert!(
             blocks >= min_blocks,
-            "{}:非空 `$$` 块只有 {},低于门禁下限 {}",
+            "{}:only {} non-empty `$$` blocks, below the gate minimum {}",
             c.stem,
             blocks,
             min_blocks
@@ -223,7 +223,7 @@ fn formula_fixtures_keep_display_and_inline_math() {
         let inline = inline_math_count(&c.markdown);
         assert!(
             inline >= min_inline,
-            "{}:行内公式只有 {},低于门禁下限 {}",
+            "{}:only {} inline formulas, below the gate minimum {}",
             c.stem,
             inline,
             min_inline
@@ -249,16 +249,16 @@ fn toc_fixture_renders_consistent_nested_list() {
     let entries = toc_entries(&c.markdown);
     assert!(
         entries.len() >= 9,
-        "{}:Contents 条目只有 {} 条,应为 9 条以上(目录被吞或截断)",
+        "{}:the Contents list has only {} entries, expected 9+ (swallowed or truncated)",
         c.stem,
         entries.len()
     );
     for (indent, text) in &entries {
-        assert!(!text.trim().is_empty(), "{}:目录有空条目", c.stem);
+        assert!(!text.trim().is_empty(), "{}:the table of contents has an empty entry", c.stem);
         assert_eq!(
             indent % 2,
             0,
-            "{}:目录条目 `{}` 缩进 {} 不是 2 的倍数(层级不齐)",
+            "{}:toc entry `{}` has indent {}, not a multiple of 2 (uneven levels)",
             c.stem,
             text,
             indent
@@ -268,7 +268,7 @@ fn toc_fixture_renders_consistent_nested_list() {
     let with_pages = entries.iter().filter(|(_, t)| ends_with_page_number(t)).count();
     assert!(
         with_pages == 0 || with_pages == entries.len(),
-        "{}:目录页码处理不一致({}/{} 条带页码)",
+        "{}:page numbers in the table of contents are inconsistent ({}/{} entries carry one)",
         c.stem,
         with_pages,
         entries.len()
@@ -283,7 +283,7 @@ fn image_fixture_extracts_assets_to_disk() {
         .unwrap_or(0);
     assert!(
         count >= 6,
-        "{}:assets 目录只有 {} 个文件,低于门禁下限 6",
+        "{}:the assets directory has only {} files, below the gate minimum 6",
         c.stem,
         count
     );

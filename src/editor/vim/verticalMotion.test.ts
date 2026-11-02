@@ -91,8 +91,8 @@ function makeHarness(familyKeys: string[] = [], doc = DOC, anchor = 0): Harness 
   return { run, vim, motions };
 }
 
-describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
-  it("第一步从当前光标取视觉锚，落在保留 x 上并记入 lastHSPos", () => {
+describe("moveByLinesVisual (the pixel-anchored j/k landing point)", () => {
+  it("the first step takes the visual anchor from the current caret, lands on the retained x and records it in lastHSPos", () => {
     const { run, vim } = makeHarness();
     const out = run({ line: 0, ch: 5 }, { forward: true, repeat: 1 }, vim);
     // The anchor is the x of line 1 col 5 = 40px; the target line lands on col 5.
@@ -101,7 +101,7 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
     expect(vim.lastHPos).toBe(5);
   });
 
-  it("连续 j 沿用同一视觉锚，不吸收落点量化误差", () => {
+  it("repeated j keeps the same visual anchor and does not absorb the quantization error of the landing point", () => {
     const { run, vim, motions } = makeHarness(["moveByLines"]);
     // Simulate the engine: lastMotion already points at this motion, and the
     // anchor was updated to 40 in the previous step.
@@ -115,7 +115,7 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
     expect(vim.lastHSPos).toBe(5 * CHAR_W); // the anchor is unchanged: quantization error does not feed back
   });
 
-  it("隐藏行不是步：跨过公式块按可见步计数", () => {
+  it("a hidden line is not a step: crossing a formula block counts visible steps", () => {
     const { run, vim, motions } = makeHarness(["moveByLines"]);
     vim.lastMotion = motions.moveByLines;
     vim.lastHSPos = 5 * CHAR_W;
@@ -124,7 +124,7 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
     expect(out.line).toBe(5);
   });
 
-  it("$ 之后 j 保持行尾意图（lastHPos=Infinity 贯穿，锚保持行尾 x）", () => {
+  it("j after $ keeps the end-of-line intent (lastHPos=Infinity carries through and the anchor stays at the end-of-line x)", () => {
     const { run, vim, motions } = makeHarness(["moveByLines", "moveToEol"]);
     vim.lastMotion = motions.moveToEol;
     vim.lastHPos = Infinity;
@@ -140,14 +140,14 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
     expect(vim.lastHSPos).toBe(eolX);
   });
 
-  it("toFirstChar 解析到第一个可见字符并重置锚", () => {
+  it("toFirstChar resolves to the first visible character and resets the anchor", () => {
     const { run, vim } = makeHarness();
     const out = run({ line: 0, ch: 0 }, { forward: true, repeat: 1, toFirstChar: true }, vim);
     expect(out).toEqual({ line: 1, ch: 0 });
     expect(vim.lastHSPos).toBe(0);
   });
 
-  it("k 到首行边界时沿用引擎的 moveToStartOfLine", () => {
+  it("when k hits the first line boundary it follows the engine's moveToStartOfLine", () => {
     const { run, vim, motions } = makeHarness(["moveByLines"]);
     vim.lastMotion = motions.moveByLines;
     vim.lastHSPos = 5 * CHAR_W;
@@ -155,7 +155,7 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
     expect(out).toEqual({ line: 0, ch: 0 });
   });
 
-  it("j 到末行边界时复刻引擎私有 moveToEol(keepHPos=true)：原力行尾且不动记账", () => {
+  it("when j hits the last line boundary it replicates the engine's private moveToEol(keepHPos=true): the caret stays at the line end and the bookkeeping is untouched", () => {
     const { run, vim, motions } = makeHarness(["moveByLines"]);
     vim.lastMotion = motions.moveByLines;
     vim.lastHSPos = 5 * CHAR_W;
@@ -166,7 +166,7 @@ describe("moveByLinesVisual（像素锚定的 j/k 落点）", () => {
     expect(vim.lastHSPos).toBe(5 * CHAR_W);
   });
 
-  it("repeatOffset 抵消后 count=0：原地 toFirstChar", () => {
+  it("after the repeatOffset cancels out count=0: toFirstChar in place", () => {
     const { run, vim } = makeHarness();
     const out = run(
       { line: 1, ch: 4 },
@@ -201,14 +201,14 @@ const CALLOUT_ONLY_TITLE = ["plain above", "::: 只有标题", ":::", "plain bel
  */
 const CALLOUT_WITH_BODY = ["plain above", "::: 标题", "body", ":::", "plain below"].join("\n");
 
-describe("moveByLinesVisual：callout 边界是落点", () => {
-  it("标题-only callout：j 落在开标记行（进入块），不再整体跳过", () => {
+describe("moveByLinesVisual: a callout boundary is a landing point", () => {
+  it("a title-only callout: j lands on the opening marker line (entering the block) instead of skipping it as a whole", () => {
     const { run, vim } = makeHarness([], CALLOUT_ONLY_TITLE);
     const out = run({ line: 0, ch: 0 }, { forward: true, repeat: 1 }, vim);
     expect(out.line).toBe(1); // 0-based → the `::: title only` line
   });
 
-  it("标题-only callout：k 从下方落在合标记行（进入块）", () => {
+  it("a title-only callout: k from below lands on the closing marker line (entering the block)", () => {
     const { run, vim } = makeHarness(
       [],
       CALLOUT_ONLY_TITLE,
@@ -218,7 +218,7 @@ describe("moveByLinesVisual：callout 边界是落点", () => {
     expect(out.line).toBe(2); // 0-based → the closing `:::` marker
   });
 
-  it("进入块后边界行变成普通步：可继续 j 穿过整个块", () => {
+  it("once inside the block the boundary line becomes an ordinary step: j can continue through the whole block", () => {
     const { run, vim } = makeHarness(
       [],
       CALLOUT_ONLY_TITLE,
@@ -228,13 +228,13 @@ describe("moveByLinesVisual：callout 边界是落点", () => {
     expect(run({ line: 2, ch: 0 }, { forward: true, repeat: 1 }, vim).line).toBe(3);
   });
 
-  it("计数 j：2j 从块外穿过开、合两条标记行（多步共享同一帧装饰）", () => {
+  it("a counted j: 2j passes both the opening and the closing marker lines from outside the block (the steps share one frame of decorations)", () => {
     const { run, vim } = makeHarness([], CALLOUT_ONLY_TITLE);
     const out = run({ line: 0, ch: 0 }, { forward: true, repeat: 2 }, vim);
     expect(out.line).toBe(2); // 0-based → the closing `:::` marker
   });
 
-  it("有正文的 callout：j 从上方先落在开标记行，再进正文", () => {
+  it("a callout with a body: j from above first lands on the opening marker line and then enters the body", () => {
     const outside = makeHarness([], CALLOUT_WITH_BODY, 0);
     expect(outside.run({ line: 0, ch: 0 }, { forward: true, repeat: 1 }, outside.vim).line).toBe(1);
     const inside = makeHarness(

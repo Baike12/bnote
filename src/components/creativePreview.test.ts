@@ -16,28 +16,28 @@ describe("readBblogAuth", () => {
     mockRead.mockReset();
   });
 
-  it("读取合法的 server+token", async () => {
+  it("reads a valid server+token", async () => {
     mockRead.mockResolvedValue('{"server":"http://10.1.1.1","token":"abc"}');
     const auth = await readBblogAuth("/vault");
     expect(auth).toEqual({ server: "http://10.1.1.1", token: "abc" });
     expect(mockRead).toHaveBeenCalledWith("/vault/.bnote/bblog/auth.json");
   });
 
-  it("文件缺失/坏 JSON 返回 null(发布对话框显示配置指引)", async () => {
+  it("a missing file or bad JSON returns null (the publish dialog shows the setup instructions)", async () => {
     mockRead.mockRejectedValue(new Error("NOT_FOUND"));
     await expect(readBblogAuth("/vault")).resolves.toBeNull();
     mockRead.mockResolvedValue("not json");
     await expect(readBblogAuth("/vault")).resolves.toBeNull();
   });
 
-  it("字段缺失或为空都判为未配置", async () => {
+  it("missing or empty fields are both treated as not configured", async () => {
     mockRead.mockResolvedValue('{"server":"http://x"}');
     await expect(readBblogAuth("/vault")).resolves.toBeNull();
     mockRead.mockResolvedValue('{"server":"","token":"t"}');
     await expect(readBblogAuth("/vault")).resolves.toBeNull();
   });
 
-  it("没有 vault 时直接返回 null,不读文件", async () => {
+  it("without a vault it returns null directly and reads no file", async () => {
     await expect(readBblogAuth(null)).resolves.toBeNull();
     expect(mockRead).not.toHaveBeenCalled();
   });

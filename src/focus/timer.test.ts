@@ -22,8 +22,8 @@ function session(focusMinutes = 25) {
   return createTimerState({ focusMinutes });
 }
 
-describe("番茄钟:一段连续的专注", () => {
-  it("开始后进入专注,结束时间是 now + 时长", () => {
+describe("pomodoro: one continuous stretch of focus", () => {
+  it("after the start it enters focus, the end time is now + duration", () => {
     const s = startTimer(session(25), T0);
     expect(s.phase).toBe("focus");
     expect(s.endsAt).toBe(T0 + 25 * 60_000);
@@ -31,13 +31,13 @@ describe("番茄钟:一段连续的专注", () => {
     expect(isActive(s)).toBe(true);
   });
 
-  it("重复开始是空操作,不会把进度重置成满格", () => {
+  it("starting again is a no-op, it does not reset the progress to full", () => {
     const once = startTimer(session(), T0);
     const twice = startTimer(once, T0 + 60_000);
     expect(twice.endsAt).toBe(once.endsAt);
   });
 
-  it("到点即结束:回到空闲,没有休息段、没有下一段", () => {
+  it("it ends at the deadline: back to idle, no break phase, no next stretch", () => {
     const started = startTimer(session(25), T0);
     const end = started.endsAt!;
     expect(isExpired(started, end - 1)).toBe(false);
@@ -48,7 +48,7 @@ describe("番茄钟:一段连续的专注", () => {
     expect(isRunning(stopped)).toBe(false);
   });
 
-  it("没有暂停:计时一旦开始,endAt 就不会被改掉", () => {
+  it("no pause: once the timer starts, endAt is never changed", () => {
     const started = startTimer(session(25), T0);
     // Calling start again is an idempotent no-op - there is no path that freezes
     // the remaining time and resumes it later.
@@ -56,14 +56,14 @@ describe("番茄钟:一段连续的专注", () => {
     expect(started.endsAt).toBe(T0 + 25 * 60_000);
   });
 
-  it("收尾回到空闲(没有「跳去休息段」这种事)", () => {
+  it("finishing returns to idle (there is no such thing as jumping to a rest segment)", () => {
     const started = startTimer(session(), T0);
     const stopped = stopTimer(started);
     expect(stopped.phase).toBe("idle");
     expect(remainingMs(stopped, T0)).toBe(0);
   });
 
-  it("剩余时间由 endsAt - now 现算,不攒 tick 误差", () => {
+  it("the remaining time is computed from endsAt - now, it accumulates no tick drift", () => {
     const started = startTimer(session(25), T0);
     expect(remainingMs(started, T0)).toBe(25 * 60_000);
     expect(remainingMs(started, T0 + 90_500)).toBe(25 * 60_000 - 90_500);
@@ -73,33 +73,33 @@ describe("番茄钟:一段连续的专注", () => {
   });
 });
 
-describe("时长配置", () => {
-  it("取整并夹到至少 1 分钟", () => {
+describe("duration configuration", () => {
+  it("rounded and clamped to at least 1 minute", () => {
     expect(normalizeConfig({ focusMinutes: 25.9 }).focusMinutes).toBe(25);
     expect(normalizeConfig({ focusMinutes: 0 }).focusMinutes).toBe(1);
     expect(normalizeConfig({ focusMinutes: -5 }).focusMinutes).toBe(1);
     expect(normalizeConfig({ focusMinutes: Number.NaN }).focusMinutes).toBe(25);
   });
 
-  it("旧配置里的 breakMinutes / cycle 不会把时长清掉", () => {
+  it("breakMinutes / cycle in the old config do not clear the duration", () => {
     const legacy = { focusMinutes: 40, breakMinutes: 5, cycle: 3 } as unknown as {
       focusMinutes: number;
     };
     expect(normalizeConfig(legacy).focusMinutes).toBe(40);
   });
 
-  it("没有配置时用默认 25 分钟", () => {
+  it("without a config the default is 25 minutes", () => {
     expect(createTimerState().config.focusMinutes).toBe(25);
     expect(createTimerState().phase).toBe("idle");
   });
 
-  it("空闲时剩余时间是 0", () => {
+  it("the remaining time is 0 while idle", () => {
     expect(remainingMs(session(), T0)).toBe(0);
   });
 });
 
-describe("时钟格式", () => {
-  it("mm:ss,超过一小时带小时", () => {
+describe("clock format", () => {
+  it("mm:ss, with hours once past one hour", () => {
     expect(formatClock(0)).toBe("00:00");
     expect(formatClock(65_000)).toBe("01:05");
     expect(formatClock(25 * 60_000)).toBe("25:00");

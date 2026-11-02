@@ -21,12 +21,12 @@ const state = (cursors: number[]) =>
     selection: EditorSelection.create(cursors.map((h) => EditorSelection.cursor(h))),
   });
 
-describe("activeLine 装饰", () => {
-  it("insert 态（不画块光标）不发装饰", () => {
+describe("activeLine decorations", () => {
+  it("insert mode (no block cursor) emits no decoration", () => {
     expect(activeLineDecos(state([4]), false).size).toBe(0);
   });
 
-  it("块光标态给 head 行挂 cm-activeLine（行首点装饰）", () => {
+  it("block cursor mode hangs cm-activeLine on the head line (a zero-width decoration at the line start)", () => {
     const decos = activeLineDecos(state([4]), true);
     expect(decos.size).toBe(1);
     const cursor = decos.iter();
@@ -36,7 +36,7 @@ describe("activeLine 装饰", () => {
     expect(spec?.class).toContain("cm-activeLine");
   });
 
-  it("多 range 同行去重、异行各一行", () => {
+  it("multiple ranges on one line are deduplicated, ranges on different lines get one each", () => {
     expect(activeLineDecos(state([1, 2]), true).size).toBe(1); // both on the first line
     expect(activeLineDecos(state([1, 5]), true).size).toBe(2); // first/second line
   });

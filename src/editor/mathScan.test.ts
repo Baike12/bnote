@@ -14,40 +14,40 @@ const insideAny = (doc: string, needle: string) => {
   return regions(doc).some((r) => at >= r.from && at + needle.length <= r.to);
 };
 
-describe("scanMath 块公式配对", () => {
-  it("正常块公式照常识别", () => {
+describe("scanMath block formula pairing", () => {
+  it("a normal block formula is still recognized", () => {
     const rs = display("$$\nx=1\n$$\n后面");
     expect(rs).toEqual([{ from: 0, to: 9, display: true, content: "\nx=1\n" }]);
   });
 
-  it("多段落文档里各自配对的公式互不干扰", () => {
+  it("separately paired formulas in a multi-paragraph document do not interfere", () => {
     const rs = display("$$\na\n$$\n\n文字\n\n$$\nb\n$$\n\n结尾");
     expect(rs.map((r) => r.content)).toEqual(["\na\n", "\nb\n"]);
   });
 
-  it("开头空行的块照常渲染(打字流:$$ 后连按两次回车再写公式)", () => {
+  it("a block with a leading blank line still renders (typing flow: two enters after $$ before writing the formula)", () => {
     const rs = display("$$\n\nE=mc^2\n$$\n\n正文");
     expect(rs).toEqual([{ from: 0, to: 13, display: true, content: "\n\nE=mc^2\n" }]);
   });
 
-  it("正文后补空行的块仍是公式:$$\\nx=1\\n\\n$$", () => {
+  it("a block with a blank line appended after the body is still a formula: $$\\nx=1\\n\\n$$", () => {
     const rs = display("$$\nx=1\n\n$$\n后面");
     expect(rs).toEqual([{ from: 0, to: 10, display: true, content: "\nx=1\n\n" }]);
   });
 
-  it("空块 $$\\n\\n$$ 仍是公式(IME 跟随与空块渲染依赖它)", () => {
+  it("an empty block $$\\n\\n$$ is still a formula (IME following and empty-block rendering depend on it)", () => {
     const rs = display("$$\n\n$$\n后面");
     expect(rs).toEqual([{ from: 0, to: 6, display: true, content: "\n\n" }]);
   });
 
-  it("两侧都留空 = 正文被夹的错位产物,拒绝配对且不吞正文(整体保持普通文本)", () => {
+  it("blank lines on both sides = a misaligned product with the body sandwiched: the pairing is refused and the body is not swallowed (the whole thing stays plain text)", () => {
     const doc = "$$\na\n\nb\n$$\n后面";
     expect(display(doc)).toHaveLength(0);
     expect(insideAny(doc, "a")).toBe(false);
     expect(insideAny(doc, "b")).toBe(false);
   });
 
-  it("删掉一个 $$ 后:错位产物不渲染,下方完好公式仍整体配对渲染(公式怪不再移位)", () => {
+  it("after deleting one $$: the misaligned product does not render and the intact formula below still pairs and renders as a whole (the formula monster no longer shifts)", () => {
     // the user scenario: one of four $$ is deleted, the stack pairing refuses m1-m2, and m2-m3 (an intact formula) still pairs as usual
     const doc = "因为\n1\n$$\n\n后面段落A\n\n$$\n.x\n$$\n\n结尾";
     const rs = display(doc);
@@ -56,7 +56,7 @@ describe("scanMath 块公式配对", () => {
     expect(insideAny(doc, "结尾")).toBe(false);
   });
 
-  it("在已有公式上方打字:下方完好公式不受影响,上方闭合后照常配对", () => {
+  it("typing above an existing formula: the intact formula below is unaffected and the upper one pairs as usual once it is closed", () => {
     const doc = "$$\nE\n\n正文\n\n$$\nF\n$$";
     const rs = display(doc);
     expect(rs.map((r) => r.content)).toEqual(["\nF\n"]);
@@ -68,66 +68,66 @@ describe("scanMath 块公式配对", () => {
     ]);
   });
 
-  it("落单 $$ 只渲染到段落末尾,不吞后续段落", () => {
+  it("an unpaired $$ only renders up to the end of the paragraph and does not swallow the following paragraph", () => {
     const doc = "$$\nx=1\n\n后面文字";
     const rs = display(doc);
     expect(rs).toEqual([{ from: 0, to: 6, display: true, content: "\nx=1", unclosed: true }]);
     expect(doc.indexOf("后面文字")).toBeGreaterThan(rs[0].to - 1);
   });
 
-  it("落单 $$ 后紧跟空行:区域只含 $$ 本身,不越过行尾(行内替换装饰不得跨行)", () => {
+  it("an unpaired $$ followed by a blank line: the region contains only $$ itself and does not cross the line end (inline replacement decorations must not span lines)", () => {
     const rs = display("a\n\n$$\n\n结尾");
     expect(rs).toEqual([{ from: 3, to: 5, display: true, content: "", unclosed: true }]);
     expect(insideAny("a\n\n$$\n\n结尾", "结尾")).toBe(false);
   });
 
-  it("未配对 $$ 且其后没有空行:维持到文档末尾(打字中的公式保持实时渲染)", () => {
+  it("an unpaired $$ with no blank line after it: it extends to the end of the document (the formula being typed keeps rendering live)", () => {
     const rs = display("前文\n\n$$\nx=1");
     expect(rs).toEqual([{ from: 4, to: 10, display: true, content: "\nx=1", unclosed: true }]);
   });
 });
 
-describe("scanMath 多行环境内的空行", () => {
-  it("\\begin{align} 内部的空行照常渲染(用户报告:$$\n\\begin{align}\n…\n\n\\end{align}\n$$ 整块变纯文本)", () => {
+describe("scanMath blank lines inside multi-line environments", () => {
+  it("\\begin{align} inside blank lines still render (user report: $$\n\\begin{align}\n…\n\n\\end{align}\n$$ turned the whole block into plain text)", () => {
     const doc = "$$\n\\begin{align}\nE[q_{i}^{2}]=Var(q_{i})\n\n\\end{align}\n$$";
     const rs = display(doc);
     expect(rs).toHaveLength(1);
     expect(rs[0].content).toBe("\n\\begin{align}\nE[q_{i}^{2}]=Var(q_{i})\n\n\\end{align}\n");
   });
 
-  it("环境里的空行在两侧(开栏后 / 闭栏前)同样放行", () => {
+  it("blank lines on both sides inside the environment (after the opening / before the closing) are allowed as well", () => {
     expect(display("$$\n\\begin{align}\n\nx\n\\end{align}\n$$")).toHaveLength(1);
     expect(display("$$\n\\begin{align}\nx\n\\end{align}\n\n$$")).toHaveLength(1);
   });
 
-  it("嵌套环境里的空行也放行", () => {
+  it("blank lines inside nested environments are allowed as well", () => {
     const doc = "$$\n\\begin{align}\n\\begin{cases}\n1\n\n2\n\\end{cases}\n\\end{align}\n$$";
     expect(display(doc)).toHaveLength(1);
   });
 
-  it("环境已闭合之后到闭栏之间的空行仍是段落边界(不错位配对吞正文)", () => {
+  it("a blank line after the environment is closed but before the closing $$ is still a paragraph boundary (no misaligned pairing that swallows the body)", () => {
     const doc = "$$\n\\begin{align}\nx\n\\end{align}\n\n后面段落A\n\n$$";
     expect(display(doc)).toHaveLength(0);
     expect(insideAny(doc, "后面段落A")).toBe(false);
   });
 
-  it("打了 \\begin 还没 \\end 就空行:不给豁免,正文仍不被吞(1914fc8 的性质不回退)", () => {
+  it("a \\begin without a matching \\end followed by a blank line: no exemption is granted and the body is still not swallowed (the property of 1914fc8 does not regress)", () => {
     const doc = "$$\n\\begin{align}\nx\n\n后面段落A\n$$";
     expect(insideAny(doc, "后面段落A")).toBe(false);
   });
 });
 
-describe("scanMath 既有行为不回归", () => {
-  it("转义的 \\$\\$ 不是定界符", () => {
+describe("scanMath existing behavior does not regress", () => {
+  it("an escaped \\$\\$ is not a delimiter", () => {
     expect(regions("\\$\\$ 不是公式")).toHaveLength(0);
   });
 
-  it("行内公式照常", () => {
+  it("inline formulas still work as usual", () => {
     const rs = regions("因为 $x_1$ 文字");
     expect(rs).toEqual([{ from: 3, to: 8, display: false, content: "x_1" }]);
   });
 
-  it("行内的公式不因块级防护丢失", () => {
+  it("inline formulas are not lost because of the block-level guard", () => {
     // after the misaligned pair is refused, the text of that line goes back to being a plain line and inline math is still recognized
     const doc = "值 $a$ 与 $b$\n\n$$\n\n后面";
     const rs = regions(doc);

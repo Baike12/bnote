@@ -29,8 +29,8 @@ function ann(id: string, quote: string, offset: number, extra: Partial<WebAnnota
   };
 }
 
-describe("网页批注锚点", () => {
-  it("优先匹配前后文吻合的候选,而不是第一次出现的位置", () => {
+describe("the web annotation anchor", () => {
+  it("a candidate whose prefix and suffix match is preferred over the first occurrence", () => {
     const text = "记忆系统很重要。另起一段,这里说的记忆系统是用户记忆系统。";
     const quote = "记忆系统";
     const offset = text.lastIndexOf("记忆系统");
@@ -39,47 +39,47 @@ describe("网页批注锚点", () => {
     expect(locateQuote(text, quote, 0, prefix, suffix)).toBe(offset);
   });
 
-  it("上下文相同或缺失时,取离原偏移最近的", () => {
+  it("when the context is the same or missing, the one nearest to the original offset is taken", () => {
     const text = "同一句话 中间隔开 同一句话";
     const second = text.lastIndexOf("同一句话");
     expect(locateQuote(text, "同一句话", second, "", "")).toBe(second);
     expect(locateQuote(text, "同一句话", 0, "", "")).toBe(0);
   });
 
-  it("文本被改动后找不到就返回 -1(批注不丢,只是这一轮不画)", () => {
+  it("when the text changed and it is not found it returns -1 (the annotation is not lost, it is just not drawn this round)", () => {
     expect(locateQuote("改革后的新正文", "记忆系统", 0, "", "")).toBe(-1);
     expect(locateQuote("anything", "", 0, "", "")).toBe(-1);
   });
 });
 
-describe("网页批注:偏移 → DOM 点", () => {
+describe("web annotations: offset → DOM point", () => {
   const a = { node: "A", start: 0, end: 6 }; // the last text node of the previous run
   const b = { node: "B", start: 6, end: 45 }; // the first text node of the next run (a blank-line block sits in between)
   const entries = [a, b];
 
-  it("交界偏移:起点归后一段开头,终点归前一段末尾", () => {
+  it("at a boundary offset: the start belongs to the beginning of the next run, the end to the end of the previous run", () => {
     // The global offset of the first character of the line is exactly 6: taking the end of A on both sides would make the Range span
     // the blank-line block in between, and WebKit returns a full-width rect for the whole blank line.
     expect(textPointAt(entries, 6, "start")).toEqual({ node: "B", offset: 0 });
     expect(textPointAt(entries, 6, "end")).toEqual({ node: "A", offset: 6 });
   });
 
-  it("段内偏移原样落到所属节点", () => {
+  it("an offset inside a run lands as is in the node it belongs to", () => {
     expect(textPointAt(entries, 2, "start")).toEqual({ node: "A", offset: 2 });
     expect(textPointAt(entries, 2, "end")).toEqual({ node: "A", offset: 2 });
     expect(textPointAt(entries, 10, "start")).toEqual({ node: "B", offset: 4 });
     expect(textPointAt(entries, 10, "end")).toEqual({ node: "B", offset: 4 });
   });
 
-  it("全文末尾:起点兜底到最后一段末尾", () => {
+  it("at the end of the text: the start falls back to the end of the last run", () => {
     expect(textPointAt(entries, 45, "start")).toEqual({ node: "B", offset: 39 });
     expect(textPointAt(entries, 45, "end")).toEqual({ node: "B", offset: 39 });
     expect(textPointAt([], 0, "start")).toBeNull();
   });
 });
 
-describe("网页批注数据", () => {
-  it("校验页面送来的字段,按 id 去重,裁剪超长引用", () => {
+describe("web annotation data", () => {
+  it("the fields sent by the page are validated, deduplicated by id and over-long quotes are trimmed", () => {
     const out = normalizeWebAnnotations([
       ann("a", "x", 3),
       ann("a", "重复", 4),
@@ -95,7 +95,7 @@ describe("网页批注数据", () => {
     expect(out[0].text).toBe("");
   });
 
-  it("文字批注的 kind/text 原样保留,超长文字裁剪", () => {
+  it("the kind/text of a text annotation is kept as is, over-long text is trimmed", () => {
     const out = normalizeWebAnnotations([
       ann("n", "q", 0, { kind: "note", text: "这是一条批注" }),
       { id: "long", quote: "q", offset: 0, kind: "note", text: "字".repeat(3000) },
@@ -107,7 +107,7 @@ describe("网页批注数据", () => {
     expect(out[2]).toMatchObject({ kind: "highlight", text: "" });
   });
 
-  it("一个网址一个文件:同一网址稳定,不同网址分开", () => {
+  it("one file per URL: the same URL is stable, different URLs stay apart", () => {
     const a = "https://example.com/a?x=1";
     const b = "https://example.com/b?x=1";
     expect(webAnnotationFileName(a)).toBe(webAnnotationFileName(a));
@@ -120,7 +120,7 @@ describe("网页批注数据", () => {
     expect(webAnnotationFileName("not a url")).toMatch(/^page-[a-z0-9]+\.json$/);
   });
 
-  it("坏文件退回空库;文件里的网址与批注都按字段校验", () => {
+  it("a bad file falls back to an empty library; the URL and the annotations in the file are validated field by field", () => {
     expect(parseWebAnnotationFile("{oops")).toEqual({
       version: 1,
       url: "",
@@ -138,7 +138,7 @@ describe("网页批注数据", () => {
     expect(parseWebAnnotations(JSON.stringify({ annotations: [ann("2", "x", 1)] }))).toHaveLength(1);
   });
 
-  it("合并按 id 取并集,页面里的覆盖仓库里的", () => {
+  it("the merge takes the union by id, the ones from the page override the ones from the vault", () => {
     const merged = mergeUrlAnnotations(
       [ann("a", "old", 0), ann("b", "keep", 1)],
       [ann("a", "new", 0), ann("c", "add", 2)],
@@ -147,8 +147,8 @@ describe("网页批注数据", () => {
   });
 });
 
-describe("注入脚本", () => {
-  it("可编译,且带齐运行时入口", () => {
+describe("the injected script", () => {
+  it("it compiles and carries every runtime entry point", () => {
     const script = buildWebAnnotationScript();
     expect(() => new Function(script)).not.toThrow();
     expect(script).toContain("__bnoteAnno");
@@ -190,7 +190,7 @@ describe("注入脚本", () => {
     expect(script).not.toContain("MAX_WEB_QUOTE");
   });
 
-  it("序列化后的纯函数在空作用域里可独立运行", () => {
+  it("the serialized pure functions run independently in an empty scope", () => {
     const isolatedLocate = new Function(`return (${locateQuote.toString()});`)() as typeof locateQuote;
     expect(isolatedLocate("abc记忆系统def", "记忆系统", 0, "", "")).toBe(3);
     const isolatedNormalize = new Function(

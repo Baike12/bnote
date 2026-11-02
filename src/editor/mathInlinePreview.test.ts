@@ -42,8 +42,8 @@ const firstOpen = DOC.indexOf("$");
 const firstClose = DOC.indexOf("$", firstOpen + 1) + 1; // after the closing $
 const secondOpen = DOC.indexOf("$", firstClose);
 
-describe("编辑行内公式时的渲染副本", () => {
-  it("光标在 a 的正文里:源码保留 + a 的渲染副本插在闭合 $ 之后", () => {
+describe("the rendered copy while editing an inline formula", () => {
+  it("caret inside the body of a: the source stays + a rendered copy of a is inserted after the closing $", () => {
     const entries = entriesOf(makeState(firstOpen + 3));
     const preview = entries.filter((e) => e.widget instanceof MathInlinePreviewWidget);
     expect(preview).toHaveLength(1);
@@ -52,7 +52,7 @@ describe("编辑行内公式时的渲染副本", () => {
     expect((preview[0].widget as MathInlinePreviewWidget).src).toBe("a+b");
   });
 
-  it("同行的 b 仍按渲染态出 widget,副本排在 b 前面(把 b 往后挤,不覆盖)", () => {
+  it("b on the same line still gets a widget in rendered form, the copy is ordered before b (pushing b back instead of covering it)", () => {
     const entries = entriesOf(makeState(firstOpen + 3));
     const previews = entries.filter((e) => e.widget instanceof MathInlinePreviewWidget);
     const rendered = entries.filter(
@@ -63,7 +63,7 @@ describe("编辑行内公式时的渲染副本", () => {
     expect(previews[0].from).toBeLessThan(rendered[0].from);
   });
 
-  it("编辑 b 时:副本跟着 b,a 恢复渲染态、只剩一个副本", () => {
+  it("when editing b: the copy follows b, a returns to rendered form, and only one copy remains", () => {
     const entries = entriesOf(makeState(secondOpen + 2));
     const previews = entries.filter((e) => e.widget instanceof MathInlinePreviewWidget);
     expect(previews).toHaveLength(1);
@@ -75,7 +75,7 @@ describe("编辑行内公式时的渲染副本", () => {
     expect(rendered.map((e) => e.from)).toEqual([firstOpen]);
   });
 
-  it("光标不在任何公式里:没有副本,两个公式都渲染", () => {
+  it("caret inside no formula: no copy, both formulas are rendered", () => {
     const entries = entriesOf(makeState(0));
     expect(entries.filter((e) => e.widget instanceof MathInlinePreviewWidget)).toHaveLength(0);
     const rendered = entries.filter(
@@ -84,7 +84,7 @@ describe("编辑行内公式时的渲染副本", () => {
     expect(rendered.map((e) => e.from)).toEqual([firstOpen, secondOpen]);
   });
 
-  it("边界位置(闭合 $ 之后)算正文侧:副本消失、公式渲染", () => {
+  it("a boundary position (after the closing $) counts as the body side: the copy disappears, the formula renders", () => {
     const entries = entriesOf(makeState(firstClose));
     expect(entries.filter((e) => e.widget instanceof MathInlinePreviewWidget)).toHaveLength(0);
     const rendered = entries.filter((e) => e.widget instanceof MathWidget);

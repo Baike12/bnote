@@ -18,8 +18,8 @@ import {
  * was originally — user messages first, one assistant reply per turn, and a
  * turn that errored never enters the history.
  */
-describe("transcript 行格式", () => {
-  it("序列化 = 一行一条 JSON,解析可往返", () => {
+describe("the transcript line format", () => {
+  it("serialization = one JSON per line, parsing round-trips", () => {
     const lines: TranscriptLine[] = [
       { type: "user", at: 1, text: "你好" },
       {
@@ -39,14 +39,14 @@ describe("transcript 行格式", () => {
     ]);
   });
 
-  it("坏行/空文件逐条丢弃,不影响其它条目", () => {
+  it("bad lines and empty files are dropped one by one, the other entries are unaffected", () => {
     expect(parseTranscript(null)).toEqual([]);
     expect(parseTranscript("")).toEqual([]);
     const raw = '{"type":"user","at":1,"text":"a"}\nnot json\n{"type":"wat"}\n\n';
     expect(parseTranscript(raw).map((l) => l.type)).toEqual(["user"]);
   });
 
-  it("图片字段必须是 {mediaType,data}", () => {
+  it("the image field must be {mediaType,data}", () => {
     const raw = JSON.stringify({
       type: "user",
       at: 1,
@@ -62,7 +62,7 @@ describe("transcript 行格式", () => {
 });
 
 describe("historyFromTranscript", () => {
-  it("用户文本 + 图片按后端的顺序还原", () => {
+  it("user text + images are restored in the backend order", () => {
     const history = historyFromTranscript([
       {
         type: "user",
@@ -83,14 +83,14 @@ describe("historyFromTranscript", () => {
     ]);
   });
 
-  it("纯图片消息不塞空文本块", () => {
+  it("an image-only message gets no empty text block", () => {
     const history = historyFromTranscript([
       { type: "user", at: 1, text: "", images: [{ mediaType: "image/jpeg", data: "B" }] },
     ]);
     expect(history[0].content).toEqual([{ type: "image", media_type: "image/jpeg", data: "B" }]);
   });
 
-  it("出错的一轮不还原(后端在 provider 报错前没有 push 助手消息)", () => {
+  it("a turn that errored is not restored (the backend pushes no assistant message before the provider fails)", () => {
     const history = historyFromTranscript([
       { type: "user", at: 1, text: "问" },
       { type: "assistant", at: 2, text: "", error: "网络错误" },
@@ -99,7 +99,7 @@ describe("historyFromTranscript", () => {
     expect(history[0].role).toBe("user");
   });
 
-  it("多轮对话保持一问一答的顺序", () => {
+  it("a multi-turn conversation keeps the one-question-one-answer order", () => {
     const history = historyFromTranscript([
       { type: "user", at: 1, text: "Q1" },
       { type: "assistant", at: 2, text: "A1" },
@@ -110,7 +110,7 @@ describe("historyFromTranscript", () => {
     expect(history[1].content).toEqual([{ type: "text", text: "A1" }]);
   });
 
-  it("工具调用:tool_use 进助手消息、tool_result 进紧随的 user 消息", () => {
+  it("tool calls: tool_use goes into the assistant message, tool_result into the immediately following user message", () => {
     const history = historyFromTranscript([
       { type: "user", at: 1, text: "读文件" },
       {
@@ -135,7 +135,7 @@ describe("historyFromTranscript", () => {
     });
   });
 
-  it("中止的工具补一条 is_error 结果,避免 tool_use 落单", () => {
+  it("an aborted tool gets an is_error result so that no tool_use is left unpaired", () => {
     const history = historyFromTranscript([
       { type: "user", at: 1, text: "q" },
       {
@@ -154,7 +154,7 @@ describe("historyFromTranscript", () => {
 });
 
 describe("sessionTitleFromLines", () => {
-  it("取第一条非空用户消息并压成单行", () => {
+  it("it takes the first non-empty user message and squeezes it into a single line", () => {
     expect(
       sessionTitleFromLines([
         { type: "assistant", at: 0, text: "先说话" },
@@ -163,19 +163,19 @@ describe("sessionTitleFromLines", () => {
     ).toBe("第一行 第二行");
   });
 
-  it("没有用户消息时退回助手首句,再退回占位", () => {
+  it("without a user message it falls back to the first assistant sentence, then to the placeholder", () => {
     expect(sessionTitleFromLines([{ type: "assistant", at: 0, text: "回答" }])).toBe("回答");
     expect(sessionTitleFromLines([])).toBe("(空会话)");
   });
 
-  it("transcriptTitle 空白压平、按字符截断、空串返回空", () => {
+  it("transcriptTitle flattens the whitespace, truncates by character and returns an empty string for empty input", () => {
     expect(transcriptTitle("  a\n\n b  ")).toBe("a b");
     expect(Array.from(transcriptTitle("字符".repeat(40), 10))).toHaveLength(10);
     expect(transcriptTitle("   ")).toBe("");
   });
 });
 
-describe("会话元数据行(标题 + 模型配置快照)", () => {
+describe("the session metadata line (title + model config snapshot)", () => {
   const model = {
     provider: "anthropic",
     model: "claude-sonnet-4-5",
@@ -184,7 +184,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     contextWindow: 200_000,
   };
 
-  it("元数据行不参与对话解析与模型历史还原", () => {
+  it("the metadata line takes part in neither the conversation parsing nor the model history rebuild", () => {
     const raw = serializeTranscript([
       buildSessionMeta({ at: 1, title: "会话标题", model }),
       { type: "user", at: 2, text: "问题" },
@@ -195,7 +195,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     expect(historyFromTranscript(lines).map((i) => i.role)).toEqual(["user", "assistant"]);
   });
 
-  it("从原文取回标题与模型快照(恢复时会话按自己的配置继续)", () => {
+  it("the title and the model snapshot are read back from the raw text (a restored session continues with its own config)", () => {
     const raw = serializeTranscript([
       buildSessionMeta({ at: 1, title: "会话标题", model }),
       { type: "user", at: 2, text: "问题" },
@@ -208,7 +208,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     });
   });
 
-  it("坏行/缺字段/没有 meta 时容错:返回 null 或丢弃不合法的模型配置", () => {
+  it("it is fault tolerant for a bad line, missing fields or no meta: it returns null or drops the invalid model config", () => {
     expect(sessionMetaFromRaw(null)).toBeNull();
     expect(sessionMetaFromRaw('{"type":"user","at":1,"text":"a"}\n')).toBeNull();
     const raw = '{"type":"meta","at":1,"title":"  ","model":{"provider":"x"}}\n';
@@ -220,7 +220,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     });
   });
 
-  it("序列化保持一行一条:meta 永远是第一行且不夹带换行", () => {
+  it("the serialization keeps one entry per line: meta is always the first line and carries no newline", () => {
     const raw = serializeTranscript([
       buildSessionMeta({ at: 1, title: "多行\n标题", model }),
       { type: "user", at: 2, text: "q" },
@@ -230,7 +230,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     expect(JSON.parse(first).title).toBe("多行\n标题");
   });
 
-  it("turnLines:第一轮带 meta(标题=首条用户消息,含模型快照),之后不再重复", () => {
+  it("turnLines: the first turn carries meta (title = the first user message, including the model snapshot), it is not repeated afterwards", () => {
     const assistant = { type: "assistant" as const, at: 3, text: "回答" };
     const first = turnLines({
       user: { type: "user", at: 2, text: " 第一句话 \n 继续 " },
@@ -250,7 +250,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     expect(later).toEqual([assistant]);
   });
 
-  it("turnLines:纯图片首条消息退到助手首句当标题", () => {
+  it("turnLines: an image-only first message falls back to the first assistant sentence as the title", () => {
     const [meta] = turnLines({
       user: { type: "user", at: 2, text: "", images: [{ mediaType: "image/png", data: "A" }] },
       assistant: { type: "assistant", at: 3, text: "图中是矩阵乘法" },
@@ -260,7 +260,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     expect(meta).toEqual({ type: "meta", at: 2, title: "图中是矩阵乘法" });
   });
 
-  it("辅助会话的 meta 带上父会话文件 id、来源摘要与前缀条数", () => {
+  it("the meta of an auxiliary session carries the parent session file id, the source summary and the prefix count", () => {
     const meta = buildSessionMeta({
       at: 5,
       title: "↳ 父会话的提问",
@@ -283,14 +283,14 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     expect(sessionMetaFromRaw(raw)).toEqual(meta);
   });
 
-  it("主会话的 meta 不带父子字段(缺省即主会话)", () => {
+  it("the meta of the main session carries no parent/child fields (the default means the main session)", () => {
     const meta = buildSessionMeta({ at: 1, title: "主会话", model });
     expect(meta.parent).toBeUndefined();
     expect(meta.basedOn).toBeUndefined();
     expect(meta.forkAt).toBeUndefined();
   });
 
-  it("标题来源标记往返:LLM 生成过的会话恢复时不再重复生成", () => {
+  it("the title source marker round-trips: a session whose title was generated by the LLM is not generated again on restore", () => {
     const raw =
       '{"type":"meta","at":1,"title":"特征值","titleSource":"llm"}\n' +
       '{"type":"user","at":2,"text":"q"}\n';
@@ -300,7 +300,7 @@ describe("会话元数据行(标题 + 模型配置快照)", () => {
     expect(sessionMetaFromRaw(dirty)?.titleSource).toBeUndefined();
   });
 
-  it("坏 forkAt(负数/小数/字符串)被丢弃,不影响恢复", () => {
+  it("a bad forkAt (negative/fractional/string) is dropped and does not affect the restore", () => {
     expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":-2}\n')?.forkAt).toBeUndefined();
     expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":1.5}\n')?.forkAt).toBeUndefined();
     expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":"3"}\n')?.forkAt).toBeUndefined();

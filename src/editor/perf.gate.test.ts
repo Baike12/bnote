@@ -96,16 +96,16 @@ const firstListLine = (state: EditorState) => {
   throw new Error("list line not found");
 };
 
-describe("性能门禁：大文档(~900行)每击管线预算", () => {
+describe("perf gate: big document (~900 lines) per-keystroke pipeline budget", () => {
   const state = makeState(DOC, 0);
 
-  it("inline 装饰构建(全视口=全文档,上界)中位数 < 4ms", () => {
+  it("inline decoration build (whole viewport = whole document, the upper bound) median < 4ms", () => {
     const median = medianOf(() => {
       const t0 = performance.now();
       buildInlineDecorations({ state, visibleRanges: [{ from: 0, to: state.doc.length }] });
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] inline 装饰构建中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] inline decoration build median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(4);
   });
 
@@ -114,7 +114,7 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
   // document change. Building over the whole document (the upper bound) must
   // stay within an order of magnitude, otherwise every keystroke pays an extra
   // full-document tree traversal.
-  it("强调标记构建(全文档=上界,每击重建)中位数 < 2ms", () => {
+  it("emphasis mark build (whole document = the upper bound, rebuilt per keystroke) median < 2ms", () => {
     const emphState = makeState(
       bigDoc(60).replace(/这是段落文字/g, "这是 _斜体_ 与 **加粗** 段落文字"),
       0,
@@ -124,11 +124,11 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
       buildEmphasisMarks(emphState, [{ from: 0, to: emphState.doc.length }]);
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] 强调标记构建中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] emphasis mark build median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(2);
   });
 
-  it("60 次每击输入(update+装饰重建)总计 < 640ms,单击中位数 < 10ms", () => {
+  it("60 per-keystroke inputs (update + decoration rebuild) total < 640ms, single keystroke median < 10ms", () => {
     const line = firstListLine(state);
     const at = line.from + 4;
     let cur = state;
@@ -142,12 +142,12 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
     const total = perKey.reduce((a, b) => a + b, 0);
     perKey.sort((a, b) => a - b);
     const median = perKey[Math.floor(perKey.length / 2)];
-    console.warn(`[perf] 每击输入 总计 ${total.toFixed(0)}ms, 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] per-keystroke input total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`);
     expect(total).toBeLessThan(640);
     expect(median).toBeLessThan(10);
   });
 
-  it("光标移动判定:槽外同行纯移动恒 false(快路径),跨行/跨标记槽 true", () => {
+  it("caret move decision: a same-line move outside the slot is always false (the fast path), a cross-line or cross-slot move is true", () => {
     const line = firstListLine(state);
     const base = makeState(DOC, line.from + 4);
     // Same-line move: outside the marker slot (the leading "- "), list lines
@@ -163,7 +163,7 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
     expect(selectionAffectsDecos(base, crossLine)).toBe(true);
   });
 
-  it("vim 模式切换(同行跨标记槽 0⇄A,每击重建)60 次总计 < 300ms", () => {
+  it("vim mode switch (same-line move across the marker slot 0⇄A, rebuild per keystroke) 60 times total < 300ms", () => {
     // Same-line moves to 0/$/A/Esc targets cross the marker slot (the active
     // rule flips with the cursor), so each one takes the rebuild path — this is
     // the deterministic cost floor of a normal⇄insert round trip.
@@ -183,11 +183,11 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
     const total = samples.reduce((a, b) => a + b, 0);
     samples.sort((a, b) => a - b);
     const median = samples[Math.floor(samples.length / 2)];
-    console.warn(`[perf] vim 切换(跨槽) 总计 ${total.toFixed(0)}ms, 中位 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] vim switch (across slots) total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`);
     expect(total).toBeLessThan(300);
   });
 
-  it("60 次光标移动(同行快路径+跨行重建混合)总计 < 250ms", () => {
+  it("60 caret moves (mixed same-line fast path + cross-line rebuild) total < 250ms", () => {
     const line = firstListLine(state);
     const from = line.from + 4;
     let cur = state;
@@ -206,11 +206,11 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
       cur = next;
     }
     const total = samples.reduce((a, b) => a + b, 0);
-    console.warn(`[perf] 光标移动 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] caret moves total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(250);
   });
 
-  it("toggleList 单行(树查询路径)中位数 < 6ms", () => {
+  it("toggleList on a single line (the tree query path) median < 6ms", () => {
     const view = makeTogglingView(state);
     const median = medianOf(() => {
       const t0 = performance.now();
@@ -218,7 +218,7 @@ describe("性能门禁：大文档(~900行)每击管线预算", () => {
       return performance.now() - t0;
     }, 9);
     toggleList(view, "bullet"); // restore
-    console.warn(`[perf] toggleList 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] toggleList median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(6);
   });
 });
@@ -248,8 +248,8 @@ const CHAR_W = 8;
 const ROW_H = 24;
 const CONTENT_LEFT = 100;
 
-describe("性能门禁：vim j/k 移动(900行,跨公式块隐藏行步进)", () => {
-  it("60 次 j/k(repeat 混合,运动+事务+重建)总计 < 500ms", () => {
+describe("perf gate: vim j/k motion (900 lines, hidden-line stepping across math blocks)", () => {
+  it("60 j/k moves (mixed repeat counts, motion + transaction + rebuild) total < 500ms", () => {
     let cur = makeState(DOC, 0);
     const at = Math.floor(cur.doc.length / 2);
     cur = cur.update({ selection: EditorSelection.cursor(at) }).state;
@@ -306,7 +306,7 @@ describe("性能门禁：vim j/k 移动(900行,跨公式块隐藏行步进)", ()
       cur = next;
     }
     const total = samples.reduce((a, b) => a + b, 0);
-    console.warn(`[perf] vim j/k 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] vim j/k total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(500);
   });
 });
@@ -317,8 +317,8 @@ describe("性能门禁：vim j/k 移动(900行,跨公式块隐藏行步进)", ()
 // ordered builder) and the blockwise block (per-line slicing + sorting) are the
 // two cost upper bounds; budgets are calibrated from locally measured medians.
 
-describe("性能门禁：visual 选区绘制重建(900 行)", () => {
-  it("linewise 全选(900 行行带)60 次重建总计 < 150ms", () => {
+describe("perf gate: visual selection paint rebuild (900 lines)", () => {
+  it("linewise select-all (900 line bands) 60 rebuilds total < 150ms", () => {
     const doc = makeState(DOC).doc;
     const vimState = {
       visualMode: true,
@@ -335,12 +335,12 @@ describe("性能门禁：visual 选区绘制重建(900 行)", () => {
     const total = samples.reduce((a, b) => a + b, 0);
     samples.sort((a, b) => a - b);
     console.warn(
-      `[perf] visual linewise 全选 总计 ${total.toFixed(0)}ms, 中位 ${samples[30].toFixed(2)}ms`,
+      `[perf] visual linewise select-all total ${total.toFixed(0)}ms, median ${samples[30].toFixed(2)}ms`,
     );
     expect(total).toBeLessThan(150);
   });
 
-  it("blockwise(60 行 × 20 列,逐行切块+排序)60 次重建总计 < 60ms", () => {
+  it("blockwise (60 lines × 20 columns, per-line slicing + sorting) 60 rebuilds total < 60ms", () => {
     const doc = makeState(DOC).doc;
     const vimState = {
       visualMode: true,
@@ -357,7 +357,7 @@ describe("性能门禁：visual 选区绘制重建(900 行)", () => {
     const total = samples.reduce((a, b) => a + b, 0);
     samples.sort((a, b) => a - b);
     console.warn(
-      `[perf] visual blockwise 60 行 总计 ${total.toFixed(0)}ms, 中位 ${samples[30].toFixed(2)}ms`,
+      `[perf] visual blockwise 60 lines total ${total.toFixed(0)}ms, median ${samples[30].toFixed(2)}ms`,
     );
     expect(total).toBeLessThan(60);
   });
@@ -368,14 +368,14 @@ describe("性能门禁：visual 选区绘制重建(900 行)", () => {
 // non-empty so the next Enter keeps splitting), and every document change goes
 // through a real update + decoration rebuild.
 
-describe("性能门禁：列表换行(bullet/ordered/todo 各20项)", () => {
+describe("perf gate: list continuation (bullet/ordered/todo, 20 items each)", () => {
   const kinds: { name: string; seed: string }[] = [
     { name: "bullet", seed: "- 无序列表项" },
     { name: "ordered", seed: "1. 有序列表项" },
     { name: "todo", seed: "- [ ] 待办项" },
   ];
   for (const { name, seed } of kinds) {
-    it(`${name}: 20 次(Enter 建项+补字符)总计 < 50ms`, () => {
+    it(`${name}: 20 times (Enter creates an item + filler char) total < 50ms`, () => {
       const view = makeTogglingView(makeState(`${seed}\n`, 0));
       const samples: number[] = [];
       for (let i = 0; i < 20; i++) {
@@ -393,7 +393,7 @@ describe("性能门禁：列表换行(bullet/ordered/todo 各20项)", () => {
       // Assert the items really keep splitting (guards against measuring an
       // empty loop because the command did not fire).
       expect(view.state.doc.toString().split("\n").filter((l) => l.length > 2).length).toBeGreaterThan(15);
-      console.warn(`[perf] ${name} 换行 总计 ${total.toFixed(0)}ms`);
+      console.warn(`[perf] ${name} newline total ${total.toFixed(0)}ms`);
       expect(total).toBeLessThan(50);
     });
   }
@@ -404,11 +404,11 @@ describe("性能门禁：列表换行(bullet/ordered/todo 各20项)", () => {
 // cache always misses — one full render per keystroke is the dominant cost of
 // formula input, and is locked together with the state pipeline.
 
-describe("性能门禁：公式块插入与输入", () => {
+describe("perf gate: math block insertion and typing", () => {
   // Measured median 0.5ms; at a 6-10x calibration band it should be 3-5ms, so
   // the old 2ms budget sat below the band and fired false positives under
   // machine load (browser/dev server running in parallel).
-  it("10 次块插入 dispatch 中位数 < 6ms", () => {
+  it("10 block insertions, dispatch median < 6ms", () => {
     const cur = makeState(DOC, 0);
     const view = makeTogglingView(cur);
     const median = medianOf(() => {
@@ -418,11 +418,11 @@ describe("性能门禁：公式块插入与输入", () => {
       insertMathBlock(view);
       return performance.now() - t0;
     }, 9);
-    console.warn(`[perf] insertMathBlock 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] insertMathBlock median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(6);
   });
 
-  it("公式内 20 击(update+重建+KaTeX渲染)总计 < 320ms", () => {
+  it("20 keystrokes inside a formula (update + rebuild + KaTeX render) total < 320ms", () => {
     const cur = makeState(DOC, 0);
     const view = makeTogglingView(cur);
     const end = view.state.doc.length;
@@ -444,7 +444,7 @@ describe("性能门禁：公式块插入与输入", () => {
     const total = samples.reduce((a, b) => a + b, 0);
     const doc = view.state.doc.toString();
     expect(doc.includes("\\alpha_{x}")).toBe(true); // the input really entered the formula region
-    console.warn(`[perf] 公式输入 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] formula input total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(320);
   });
 
@@ -452,7 +452,7 @@ describe("性能门禁：公式块插入与输入", () => {
   // inserted), so each keystroke costs just update + decoration rebuild — the
   // KaTeX cost is gone. The budget stays in the same band; what it guards is
   // decoration-rebuild regression.
-  it("行内公式内 20 击(update+装饰重建)总计 < 320ms", () => {
+  it("20 keystrokes inside an inline formula (update + decoration rebuild) total < 320ms", () => {
     const insert = "\\alpha_{x}+";
     let state = makeState("前文 $f(x)$ 后文\n", 6);
     const samples: number[] = [];
@@ -468,15 +468,15 @@ describe("性能门禁：公式块插入与输入", () => {
     }
     const total = samples.reduce((a, b) => a + b, 0);
     expect(state.doc.toString().includes("\\alpha_{x}")).toBe(true); // the input really entered the formula region
-    console.warn(`[perf] 行内公式输入 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] inline formula input total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(320);
   });
 });
 
 // ---- code blocks: insertion + typing ----
 
-describe("性能门禁：代码块插入与输入", () => {
-  it("10 次块插入 dispatch 中位数 < 6ms", () => {
+describe("perf gate: code block insertion and typing", () => {
+  it("10 block insertions, dispatch median < 6ms", () => {
     const cur = makeState(DOC, 0);
     const view = makeTogglingView(cur);
     const median = medianOf(() => {
@@ -486,11 +486,11 @@ describe("性能门禁：代码块插入与输入", () => {
       insertCodeBlock(view);
       return performance.now() - t0;
     }, 9);
-    console.warn(`[perf] insertCodeBlock 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] insertCodeBlock median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(6);
   });
 
-  it("代码块内 20 击(update+重建)总计 < 200ms", () => {
+  it("20 keystrokes inside a code block (update + rebuild) total < 200ms", () => {
     const cur = makeState(DOC, 0);
     const view = makeTogglingView(cur);
     const end = view.state.doc.length;
@@ -506,7 +506,7 @@ describe("性能门禁：代码块插入与输入", () => {
     }
     const total = samples.reduce((a, b) => a + b, 0);
     expect(view.state.doc.toString().includes("const x = 1;")).toBe(true);
-    console.warn(`[perf] 代码块输入 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] code block input total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(200);
   });
 });
@@ -526,8 +526,8 @@ const firstParagraphLine = (state: EditorState) => {
   throw new Error("paragraph line not found");
 };
 
-describe("性能门禁：段落回车(900行,Enter 真实回退链)", () => {
-  it("20 次(Enter+补字符)总计 < 340ms", () => {
+describe("perf gate: paragraph Enter (900 lines, the real fallback chain)", () => {
+  it("20 times (Enter + filler char) total < 340ms", () => {
     const probe = makeState(DOC, 0);
     const view = makeTogglingView(makeState(DOC, firstParagraphLine(probe).from + 8));
     const samples: number[] = [];
@@ -545,7 +545,7 @@ describe("性能门禁：段落回车(900行,Enter 真实回退链)", () => {
     // Enter really fired (the line count grew), guarding against measuring an
     // empty loop when the fallback chain caught nothing.
     expect(view.state.doc.lines).toBeGreaterThan(900);
-    console.warn(`[perf] 段落回车 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] paragraph enter total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(340); // silent median 56ms, 6x calibration band
   });
 });
@@ -557,8 +557,8 @@ describe("性能门禁：段落回车(900行,Enter 真实回退链)", () => {
 // line-start/end motion across the boundary is exactly the real per-keypress
 // cost.
 
-describe("性能门禁：进出公式块(active 翻转重建)", () => {
-  it("40 次跨边界光标移动(update 含块装饰重算)总计 < 250ms", () => {
+describe("perf gate: entering and leaving math blocks (active flip rebuild)", () => {
+  it("40 caret moves across the boundary (the update includes the block decoration recompute) total < 250ms", () => {
     const base = makeState(DOC, 0);
     // Find the first math block: bounce between the fence line and the content line.
     let fence = -1;
@@ -587,7 +587,7 @@ describe("性能门禁：进出公式块(active 翻转重建)", () => {
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);
-    console.warn(`[perf] 跨公式边界移动 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] movement across a formula boundary total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(250);
   });
 });
@@ -596,8 +596,8 @@ describe("性能门禁：进出公式块(active 翻转重建)", () => {
 // The history incremental structure grows with document size, so undo on a
 // 900-line document must not degenerate into a full recomputation.
 
-describe("性能门禁：undo(900行)", () => {
-  it("20 次连续 undo 总计 < 20ms", () => {
+describe("perf gate: undo (900 lines)", () => {
+  it("20 consecutive undos total < 20ms", () => {
     const withHistory = EditorState.create({
       doc: DOC,
       extensions: [
@@ -622,7 +622,7 @@ describe("性能门禁：undo(900行)", () => {
     }
     const total = samples.reduce((a, b) => a + b, 0);
     expect(view.state.doc.length).toBe(withHistory.doc.length); // all 20 really rewound
-    console.warn(`[perf] undo 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] undo total ${total.toFixed(0)}ms`);
     // Silent ~1ms; the absolute amount sits at the GC-jitter level, so the
     // budget takes 20x to avoid load-induced false positives — a
     // "degenerated into a full recompute" regression (60ms+) is caught here.
@@ -634,8 +634,8 @@ describe("性能门禁：undo(900行)", () => {
 // Full-text replacement + full decoration build + complete syntax tree, i.e.
 // the main-thread cost of the moment a note is switched.
 
-describe("性能门禁：整篇文档装载(900行)", () => {
-  it("全文替换+装饰构建+完整解析 中位数 < 30ms", () => {
+describe("perf gate: whole-document load (900 lines)", () => {
+  it("full-text replacement + decoration build + complete parse median < 30ms", () => {
     const base = makeState("空\n", 0);
     const samples: number[] = [];
     for (let i = 0; i < 5; i++) {
@@ -646,7 +646,7 @@ describe("性能门禁：整篇文档装载(900行)", () => {
       samples.push(performance.now() - t0);
     }
     const median = samples.sort((a, b) => a - b)[2];
-    console.warn(`[perf] 整篇装载 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] full document load median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(30);
   });
 });
@@ -657,8 +657,8 @@ describe("性能门禁：整篇文档装载(900行)", () => {
 // magnitude is locked to stop someone from deleting the cache and making
 // every keystroke scan the whole document.
 
-describe("性能门禁：mathRegions 缓存", () => {
-  it("未变文档缓存命中(同实例),单击后重扫中位数 < 2ms", () => {
+describe("perf gate: the mathRegions cache", () => {
+  it("an unchanged document hits the cache (the same instance), the rescan after one keystroke has median < 2ms", () => {
     const base = makeState(DOC, 0);
     const a = mathRegions(base);
     const b = mathRegions(base);
@@ -671,7 +671,7 @@ describe("性能门禁：mathRegions 缓存", () => {
       mathRegions(cur);
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] mathRegions 重扫 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] mathRegions rescan median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(2);
   });
 });
@@ -683,7 +683,7 @@ describe("性能门禁：mathRegions 缓存", () => {
 // magnitude of the full rescan, so nobody can rewrite the pairing as a
 // full-document search per marker.
 
-describe("性能门禁：公式扫描(栈式配对)", () => {
+describe("perf gate: formula scanning (stack-based pairing)", () => {
   // 20 intact formulas interleaved with 20 stray $$, plus one misaligned
   // artifact at the end of the document
   const mixedDoc = (() => {
@@ -703,14 +703,14 @@ describe("性能门禁：公式扫描(栈式配对)", () => {
     return parts.join("\n");
   })();
 
-  it("mathRegions 全文重扫(80+ $$ 标记,含错位与空行容错)中位数 < 1ms", () => {
+  it("mathRegions full rescan (80+ $$ markers, including misaligned ones and blank-line tolerance) median < 1ms", () => {
     const state = makeState(mixedDoc, 0);
     const median = medianOf(() => {
       const t0 = performance.now();
       scanMath(state.doc);
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] 公式扫描(80+标记) 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] formula scan (80+ markers) median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(1);
   });
 });
@@ -722,7 +722,7 @@ describe("性能门禁：公式扫描(栈式配对)", () => {
 // only look at that slice, never pull the whole document into a string (on a
 // 900-line document that is an O(n) allocation per Tab).
 
-describe("性能门禁：Tab 跳出括号(tabout)", () => {
+describe("perf gate: Tab out of brackets (tabout)", () => {
   const mathLine = (state: EditorState) => {
     for (let n = 1; n <= state.doc.lines; n++) {
       if (state.doc.line(n).text.startsWith("L_{1}")) return state.doc.line(n);
@@ -730,7 +730,7 @@ describe("性能门禁：Tab 跳出括号(tabout)", () => {
     throw new Error("block math line not found");
   };
 
-  it("900 行文档里每击 Tab(含 mathRegions 重扫)中位数 < 2ms", () => {
+  it("each Tab in a 900-line document (including the mathRegions rescan) has median < 2ms", () => {
     const base = makeState(DOC, 0);
     const cursor = mathLine(base).to - 2;
     let cur = base;
@@ -743,11 +743,11 @@ describe("性能门禁：Tab 跳出括号(tabout)", () => {
       planTabout(cur, at);
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] tabout(900行) 中位数 ${median.toFixed(3)}ms`);
+    console.warn(`[perf] tabout (900 lines) median ${median.toFixed(3)}ms`);
     expect(median).toBeLessThan(2);
   });
 
-  it("长公式内容里的扫描只看切片:2000 字符后方才撞上闭合符,中位数 < 1ms", () => {
+  it("the scan inside long formula content only looks at a slice: the closing delimiter is only met 2000+ characters later, median < 1ms", () => {
     // Really scan a long content run (instead of hitting a closer after two or
     // three characters): the scan length is bounded by the content length, so
     // if someone changes it to "toString the whole document + search it
@@ -762,7 +762,7 @@ describe("性能门禁：Tab 跳出括号(tabout)", () => {
       planTabout(state, cursor);
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] tabout(长内容切片) 中位数 ${median.toFixed(3)}ms`);
+    console.warn(`[perf] tabout (long-content slice) median ${median.toFixed(3)}ms`);
     expect(median).toBeLessThan(1);
   });
 });
@@ -773,8 +773,8 @@ describe("性能门禁：Tab 跳出括号(tabout)", () => {
 // 221 compiled snippets) + session chain field mapping. Lock the order of
 // magnitude of this new hot path.
 
-describe("性能门禁：片段会话内输入", () => {
-  it("会话内 20 击(dispatch+链映射+findSnippet)总计 < 90ms", () => {
+describe("perf gate: typing inside a snippet session", () => {
+  it("20 keystrokes inside the session (dispatch + chain mapping + findSnippet) total < 90ms", () => {
     const view = makeTogglingView(makeState(DOC, 0));
     const end = view.state.doc.length;
     // Start a bracket session (the $$…$$ of insertMathBlock is already in the
@@ -797,7 +797,7 @@ describe("性能门禁：片段会话内输入", () => {
     }
     const total = samples.reduce((a, b) => a + b, 0);
     expect(view.state.doc.sliceString(end, end + 22)).toContain("xxxxxxxxxxxxxxxxxxxx");
-    console.warn(`[perf] 会话内 20 击 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] 20 keystrokes in a session total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(90);
   });
 });
@@ -865,22 +865,22 @@ function wallEnterMedian(doc: string, times: number): number {
   return samples[Math.floor(times / 2)];
 }
 
-describe("性能门禁:换行 · 段落墙重解析(块粒度)", () => {
-  it("每50行一空行的 4000 行文档:Enter+解析推进 中位 < 10ms", () => {
+describe("perf gate: Enter · paragraph-wall reparse (block granularity)", () => {
+  it("4000-line document with a blank line every 50 lines: Enter + parse advance median < 10ms", () => {
     const median = wallEnterMedian(chunkedDoc(4000, 50), 11);
-    console.warn(`[perf] chunked-4000 换行重解析 中位 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] chunked-4000 newline reparse median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(15); // silent ~1.3-1.7ms, 5-6x band
   });
 
-  it("1000 行段落墙:Enter+解析推进 中位 < 60ms(静默 ~8.5ms,6× 带)", () => {
+  it("1000-line paragraph wall: Enter + parse advance median < 60ms (silent ~8.5ms, 6× band)", () => {
     const median = wallEnterMedian(wallDoc(1000), 11);
-    console.warn(`[perf] wall-1000 换行重解析 中位 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] wall-1000 newline reparse median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(60);
   });
 
-  it("2000 行段落墙:Enter+解析推进 中位 < 100ms(两点线性锚定,静默 ~16ms,6× 带)", () => {
+  it("2000-line paragraph wall: Enter + parse advance median < 100ms (two-point linear anchoring, silent ~16ms, 6× band)", () => {
     const median = wallEnterMedian(wallDoc(2000), 11);
-    console.warn(`[perf] wall-2000 换行重解析 中位 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] wall-2000 newline reparse median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(100);
   });
 });
@@ -893,14 +893,14 @@ describe("性能门禁:换行 · 段落墙重解析(块粒度)", () => {
 // itself) + a decoration rebuild on every iteration, same protocol as the
 // "paragraph Enter" gate.
 
-describe("性能门禁:换行 · 900行大文档列表续行(bullet/ordered/todo)", () => {
+describe("perf gate: Enter · list continuation in a 900-line big document (bullet/ordered/todo)", () => {
   const cases: { name: string; seed: RegExp }[] = [
     { name: "bullet", seed: /^- 无序列表项一/ },
     { name: "ordered", seed: /^1\. 有序项/ },
     { name: "todo", seed: /^- \[ \] 待办项/ },
   ];
   for (const { name, seed } of cases) {
-    it(`${name}: 20 次(Enter 建项+补字符+装饰重建)总计 < 350ms`, () => {
+    it(`${name}: 20 times (Enter creates an item + filler char + decoration rebuild) total < 350ms`, () => {
       const view = makeTogglingView(makeState(DOC, 0));
       const findSeed = () => {
         for (let n = 1; n <= view.state.doc.lines; n++) {
@@ -929,7 +929,7 @@ describe("性能门禁:换行 · 900行大文档列表续行(bullet/ordered/todo
         .split("\n")
         .filter((l) => seed.test(l)).length;
       expect(seedCount).toBeGreaterThan(15);
-      console.warn(`[perf] 900行 ${name} 续行 总计 ${total.toFixed(0)}ms`);
+      console.warn(`[perf] 900 lines ${name} continuation total ${total.toFixed(0)}ms`);
       expect(total).toBeLessThan(350);
     });
   }
@@ -942,8 +942,8 @@ describe("性能门禁:换行 · 900行大文档列表续行(bullet/ordered/todo
 // magnitude is locked to prevent the renumbering from degenerating into
 // per-item dispatch or a full-document remap.
 
-describe("性能门禁:换行 · 有序列表 30 项长顺延", () => {
-  it("20 次(第 1 项行尾 Enter,29 项顺延)总计 < 100ms", () => {
+describe("perf gate: Enter · long renumbering of a 30-item ordered list", () => {
+  it("20 times (Enter at the end of item 1, 29 items renumbered) total < 100ms", () => {
     const lines: string[] = [];
     for (let i = 1; i <= 30; i++) lines.push(`${i}. 有序列表第 ${i} 项,内容若干`);
     const view = makeTogglingView(makeState(lines.join("\n"), 0));
@@ -952,7 +952,7 @@ describe("性能门禁:换行 · 有序列表 30 项长顺延", () => {
       const line = view.state.doc.lineAt(view.state.selection.main.head);
       view.dispatch({ selection: EditorSelection.cursor(line.to) });
       const t0 = performance.now();
-      if (!enterContinueListItem(view)) throw new Error("有序列表续行没接住");
+      if (!enterContinueListItem(view)) throw new Error("the ordered list continuation was not picked up");
       samples.push(performance.now() - t0);
       // Put the caret back at the end of item 1 (the newly created item 2), so
       // the next round keeps renumbering from the front
@@ -962,7 +962,7 @@ describe("性能门禁:换行 · 有序列表 30 项长顺延", () => {
     // The renumbering really happened: the last item's number was pushed to 50
     // (30 items + 20 inserted items).
     expect(view.state.doc.toString()).toContain("50. 有序列表第 30 项");
-    console.warn(`[perf] 有序 30 项顺延 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] ordered list of 30 items renumbering total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(100);
   });
 });
@@ -973,8 +973,8 @@ describe("性能门禁:换行 · 有序列表 30 项长顺延", () => {
 // fixed "O(document) per keystroke" cost, whose order of magnitude is watched
 // here; a functional assertion also guards against the scan missing headings.
 
-describe("性能门禁:标题自动编号全文档扫描(900行)", () => {
-  it("20 次扫描(编号已对齐,纯扫描)总计 < 80ms", () => {
+describe("perf gate: whole-document scan for automatic heading numbering (900 lines)", () => {
+  it("20 scans (the numbering is already aligned, a pure scan) total < 80ms", () => {
     const view = makeTogglingView(makeState(DOC, 0));
     const samples: number[] = [];
     for (let i = 0; i < 20; i++) {
@@ -983,11 +983,11 @@ describe("性能门禁:标题自动编号全文档扫描(900行)", () => {
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);
-    console.warn(`[perf] 编号扫描(无变化) 总计 ${total.toFixed(0)}ms`);
+    console.warn(`[perf] numbering scan (no change) total ${total.toFixed(0)}ms`);
     expect(total).toBeLessThan(80);
   });
 
-  it("编号缺失时正好补上(功能锚定)", () => {
+  it("a missing number is filled in exactly (functional anchor)", () => {
     const stale = DOC.replace("## 3 章节", "## 章节");
     const view = makeTogglingView(makeState(stale, 0));
     renumberHeadings(view);
@@ -1024,11 +1024,11 @@ function calloutDoc(sections: number): string {
   return parts.join("\n");
 }
 
-describe("性能门禁:callout 扫描(60块 ~500行)", () => {
+describe("perf gate: callout scanning (60 blocks, ~500 lines)", () => {
   const CALLOUT_DOC = calloutDoc(60);
   const state = makeState(CALLOUT_DOC, 0);
 
-  it("区域扫描(纯行扫,复用现算围栏/公式)中位数 < 0.5ms", () => {
+  it("region scan (a pure line scan, reusing the already-computed fences/math) median < 0.5ms", () => {
     const fences = fenceStateScan(state.doc);
     const maths = mathRegions(state);
     const median = medianOf(() => {
@@ -1036,11 +1036,11 @@ describe("性能门禁:callout 扫描(60块 ~500行)", () => {
       computeCalloutRegions(state.doc, fences, maths);
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] callout 区域扫描中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] callout region scan median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(0.5);
   });
 
-  it("块内打字 20 击(状态场+inline 全重建)总计 < 100ms,单击中位数 < 4ms", () => {
+  it("20 keystrokes typing inside a block (state field + full inline rebuild) total < 100ms, single keystroke median < 4ms", () => {
     const line = state.doc.line(3); // the content paragraph line of the first block
     const at = line.from + 4;
     let cur = makeState(CALLOUT_DOC, at);
@@ -1054,7 +1054,7 @@ describe("性能门禁:callout 扫描(60块 ~500行)", () => {
     const total = perKey.reduce((a, b) => a + b, 0);
     perKey.sort((a, b) => a - b);
     const median = perKey[Math.floor(perKey.length / 2)];
-    console.warn(`[perf] callout 块内打字 总计 ${total.toFixed(0)}ms, 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] typing inside a callout block total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`);
     expect(total).toBeLessThan(100);
     expect(median).toBeLessThan(4);
   });
@@ -1084,21 +1084,21 @@ function anchorDoc(sections: number): string {
   return parts.join("\n");
 }
 
-describe("性能门禁:callout 锚点扫描(60 块带标题,正文反复命中)", () => {
+describe("perf gate: callout anchor scanning (60 titled blocks, the body text hits repeatedly)", () => {
   const ANCHOR_DOC = anchorDoc(60);
   const state = makeState(ANCHOR_DOC, 0);
 
-  it("全文档视口 inline 装饰重建(锚点扫描在内)中位数 < 5ms", () => {
+  it("whole-document viewport inline decoration rebuild (the anchor scan is included) median < 5ms", () => {
     const median = medianOf(() => {
       const t0 = performance.now();
       buildInlineDecorations({ state, visibleRanges: [{ from: 0, to: state.doc.length }] });
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] 锚点文档 inline 装饰中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] anchored document inline decoration median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(5);
   });
 
-  it("每击输入(update+装饰重建)20 击总计 < 150ms,单击中位数 < 6ms", () => {
+  it("20 per-keystroke inputs (update + decoration rebuild) total < 150ms, single keystroke median < 6ms", () => {
     const line = state.doc.line(8); // the first body-text hit line
     const at = line.from + 6;
     let cur = makeState(ANCHOR_DOC, at);
@@ -1112,7 +1112,7 @@ describe("性能门禁:callout 锚点扫描(60 块带标题,正文反复命中)"
     const total = perKey.reduce((a, b) => a + b, 0);
     perKey.sort((a, b) => a - b);
     const median = perKey[Math.floor(perKey.length / 2)];
-    console.warn(`[perf] 锚点文档每击 总计 ${total.toFixed(0)}ms, 中位数 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] anchored document per-keystroke total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`);
     expect(total).toBeLessThan(150);
     expect(median).toBeLessThan(6);
   });
@@ -1125,7 +1125,7 @@ describe("性能门禁:callout 锚点扫描(60 块带标题,正文反复命中)"
 // intentsForRange itself — the incremental cost of the listener over the
 // existing pipeline; a functional anchor guards against "measuring a no-op".
 
-describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
+describe("perf gate: cross-file todo sync intent extraction (900 lines)", () => {
   const linksFor = (texts: string[]): DailyLink[] =>
     texts.map((text, i) => ({
       id: `l${i}`,
@@ -1153,26 +1153,26 @@ describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
   const todoPos = DOC.indexOf("待办项 60") + 7; // middle of the todo line content
   const nestedPos = DOC.indexOf("嵌套项 60") + 4; // the indented child line (triggers the block-root walk-up)
 
-  it("无链接时每键提取(正文/待办行/缩进子行)中位 < 2.5ms(静默 ~0.5ms,含 GC 压力,6× 带)", () => {
+  it("per-key extraction without links (body / todo line / indented child line) median < 2.5ms (silent ~0.5ms, including GC pressure, 6× band)", () => {
     for (const pos of [todoPos, nestedPos]) {
       const state = makeState(DOC, pos);
       const median = medianOf(() => keystrokeExtract(state, [], true), 200);
-      console.warn(`[perf] daily 提取(无链接) 中位 ${median.toFixed(4)}ms`);
+      console.warn(`[perf] daily extraction (no links) median ${median.toFixed(4)}ms`);
       expect(median).toBeLessThan(2.5); // silent ~0.45ms (including the GC pressure of a fresh transaction per round), ~6x calibration band
     }
   });
 
-  it("3 条链接时每键提取中位 < 2.5ms(块根上溯+文本比对,与无链接同量级)", () => {
+  it("per-key extraction with 3 links median < 2.5ms (block-root walk-up + text comparison, the same magnitude as without links)", () => {
     const links = linksFor(["待办项 5", "已完成项 250", "待办项 499"]);
     for (const pos of [todoPos, nestedPos]) {
       const state = makeState(DOC, pos);
       const median = medianOf(() => keystrokeExtract(state, links, true), 200);
-      console.warn(`[perf] daily 提取(3链接) 中位 ${median.toFixed(4)}ms`);
+      console.warn(`[perf] daily extraction (3 links) median ${median.toFixed(4)}ms`);
       expect(median).toBeLessThan(2.5); // same magnitude as with no links: the text comparison is the main cost
     }
   });
 
-  it("功能锚定:900 行文档里的勾选翻转确实被捕获", () => {
+  it("functional anchor: a checkbox flip in the 900-line document is really captured", () => {
     const before = DOC.indexOf("- [ ] 待办项 60");
     const lineEnd = before + "- [ ] 待办项 60".length;
     const old = makeState(DOC, before);
@@ -1195,7 +1195,7 @@ describe("性能门禁:跨文件待办同步意图提取(900行)", () => {
 // gate is calibrated at the upper bound: viewport = whole document (~900
 // lines), 120 links (the real vault has 6).
 
-describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () => {
+describe("perf gate: visual marker build for todo links (900 lines, 120 links)", () => {
   const DAILY = "/vault/Daily/2026-09-21.md";
   const links: DailyLink[] = Array.from({ length: 120 }, (_, i) => ({
     id: `m${i}`,
@@ -1211,13 +1211,13 @@ describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () 
   const view = { state, visibleRanges: [{ from: 0, to: state.doc.length }] };
   const ctx = { path: "/vault/note.md", links, todayDailyPath: DAILY };
 
-  it("全文档视口重建中位数 < 1.5ms", () => {
+  it("whole-document viewport rebuild median < 1.5ms", () => {
     const median = medianOf(() => {
       const t0 = performance.now();
       buildDailyMarks(view, ctx);
       return performance.now() - t0;
     }, 30);
-    console.warn(`[perf] daily 标记构建 中位 ${median.toFixed(3)}ms`);
+    console.warn(`[perf] daily mark build median ${median.toFixed(3)}ms`);
     // Silent ~0.15ms, the budget is calibrated at ~10x. The per-line text
     // comparison is the entire cost — if it ever degenerates into "search
     // the whole document for each link's root" (an O(lines) scan like
@@ -1225,7 +1225,7 @@ describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () 
     expect(median).toBeLessThan(1.5);
   });
 
-  it("功能锚定:文档里 60 条命中待办行全部被标记", () => {
+  it("functional anchor: all 60 matching todo lines in the document are marked", () => {
     const set = buildDailyMarks(view, ctx);
     let marked = 0;
     set.between(0, state.doc.length, () => {
@@ -1241,8 +1241,8 @@ describe("性能门禁:待办链接可视标识构建(900行,120条链接)", () 
 // dailyMarks (viewport line by line + set hits). The budget is calibrated the
 // same way at ~10x.
 
-describe("性能门禁:今日足迹块 diff(900行)", () => {
-  it("全文件 diff(基线=半数块已存在的旧版)中位数 < 3ms", () => {
+describe("perf gate: today's footprint block diff (900 lines)", () => {
+  it("whole-file diff (the baseline = an old version in which half the blocks already exist) median < 3ms", () => {
     const lines = DOC.split("\n");
     // Baseline: every other paragraph is removed (creating the real work
     // surface of ~300 "added today" blocks)
@@ -1253,7 +1253,7 @@ describe("性能门禁:今日足迹块 diff(900行)", () => {
       diffBlocks(baseline, DOC);
       return performance.now() - t0;
     }, 30);
-    console.warn(`[perf] footprint diff 中位 ${median.toFixed(3)}ms`);
+    console.warn(`[perf] footprint diff median ${median.toFixed(3)}ms`);
     // Silent ~0.5ms, the budget is calibrated at ~6x. Block splitting is O(lines)
     // and the identity is a Map hit — if it ever degenerates into "a linear
     // search of the whole baseline per block", the order of magnitude is
@@ -1261,7 +1261,7 @@ describe("性能门禁:今日足迹块 diff(900行)", () => {
     expect(median).toBeLessThan(3);
   });
 
-  it("功能锚定:抽走的块确实被 diff 出来(待办块不算)", () => {
+  it("functional anchor: the removed blocks really come out of the diff (todo blocks do not count)", () => {
     const baselineLines = DOC.split("\n").filter((l, i) => i % 2 === 0 || l === "");
     const added = diffBlocks(baselineLines.join("\n"), DOC);
     // 4 blocks per section, the list cluster (with todos) is excluded, and half
@@ -1271,22 +1271,22 @@ describe("性能门禁:今日足迹块 diff(900行)", () => {
   });
 });
 
-describe("性能门禁:今日足迹收录标识构建(900行,~180块)", () => {
+describe("perf gate: today's footprint inclusion marker build (900 lines, ~180 blocks)", () => {
   const state = makeState(DOC, 0);
   const view = { state, visibleRanges: [{ from: 0, to: state.doc.length }] };
   const blocks = diffBlocks("", DOC); // all document blocks as "added today"
 
-  it("全文档视口重建中位数 < 1.5ms", () => {
+  it("whole-document viewport rebuild median < 1.5ms", () => {
     const median = medianOf(() => {
       const t0 = performance.now();
       buildFootprintMarks(view, blocks);
       return performance.now() - t0;
     }, 30);
-    console.warn(`[perf] footprint 标记构建 中位 ${median.toFixed(3)}ms`);
+    console.warn(`[perf] footprint mark build median ${median.toFixed(3)}ms`);
     expect(median).toBeLessThan(1.5);
   });
 
-  it("功能锚定:块首行全部被标记", () => {
+  it("functional anchor: every block's first line is marked", () => {
     const set = buildFootprintMarks(view, blocks);
     let marked = 0;
     set.between(0, state.doc.length, () => {
@@ -1296,24 +1296,24 @@ describe("性能门禁:今日足迹收录标识构建(900行,~180块)", () => {
   });
 });
 
-describe("性能门禁:今日足迹块 markdown 渲染(块级 widget 重建面)", () => {
+describe("perf gate: today's footprint block markdown rendering (the block-level widget rebuild surface)", () => {
   // The footprint region repaints completely on every revision/collapse change
   // (lezer parsing + KaTeX in render.ts); the frequency is at the watcher
   // debounce level (seconds), not per keystroke. What is locked here is the
   // order of magnitude of a full-region render, to prevent the renderer from
   // degenerating into something like rebuilding a parser per line.
-  it("全文档块全量渲染(含 KaTeX)中位数 < 12ms", () => {
+  it("a full render of every block in the document (including KaTeX) median < 12ms", () => {
     const blocks = diffBlocks("", DOC);
     const median = medianOf(() => {
       const t0 = performance.now();
       for (const b of blocks) renderBlockHtml(b.text);
       return performance.now() - t0;
     }, 15);
-    console.warn(`[perf] footprint markdown 渲染 中位 ${median.toFixed(2)}ms`);
+    console.warn(`[perf] footprint markdown render median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(12);
   });
 
-  it("功能锚定:标题与列表渲染出编辑器同款类名", () => {
+  it("functional anchor: headings and lists render with the editor's own class names", () => {
     const html = renderBlockHtml("## 章节\n\n- 列表项\n");
     expect(html).toContain("md-h2");
     expect(html).toContain("md-list-line");
@@ -1322,8 +1322,8 @@ describe("性能门禁:今日足迹块 markdown 渲染(块级 widget 重建面)"
 
 // ---- project cards: todo parsing (runs on every card preview render) ----
 
-describe("性能门禁:项目卡片待办解析", () => {
-  it("1000 行项目文档解析中位 < 1.5ms", () => {
+describe("perf gate: project card todo parsing", () => {
+  it("parsing a 1000-line project document median < 1.5ms", () => {
     // The left and right preview cards scan the whole project document on
     // every render; project files are calibrated at a 1000-line cap (in
     // practice only a few dozen lines), so order-of-magnitude regressions
@@ -1334,10 +1334,10 @@ describe("性能门禁:项目卡片待办解析", () => {
     const median = medianOf(() => {
       const t0 = performance.now();
       const todos = projectTodos(text);
-      if (todos.length !== 500) throw new Error("解析漏项");
+      if (todos.length !== 500) throw new Error("the parser missed an entry");
       return performance.now() - t0;
     }, 30);
-    console.warn(`[perf] 项目待办解析 中位 ${median.toFixed(3)}ms`);
+    console.warn(`[perf] project todo parsing median ${median.toFixed(3)}ms`);
     expect(median).toBeLessThan(1.5);
   });
 });

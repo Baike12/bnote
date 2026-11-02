@@ -10,19 +10,19 @@ import { isImeEnter } from "./imeEnter";
  * the Enter an IME Enter.
  */
 describe("isImeEnter", () => {
-  it("普通回车是发送", () => {
+  it("a plain Enter is a send", () => {
     expect(isImeEnter({ isComposing: false, keyCode: 13 }, false)).toBe(false);
   });
 
-  it("标准 isComposing 组词中是输入法回车", () => {
+  it("a standard isComposing composition makes it an IME Enter", () => {
     expect(isImeEnter({ isComposing: true, keyCode: 13 }, false)).toBe(true);
   });
 
-  it("WKWebView 确认候选:isComposing=false 但 keyCode=229", () => {
+  it("WKWebView candidate confirmation: isComposing=false but keyCode=229", () => {
     expect(isImeEnter({ isComposing: false, keyCode: 229 }, false)).toBe(true);
   });
 
-  it("组件自己记的组词会话(引擎不给 isComposing/229 时兜底)", () => {
+  it("the component's own composition session (the fallback when the engine gives no isComposing/229)", () => {
     expect(isImeEnter({ isComposing: false, keyCode: 13 }, true)).toBe(true);
   });
 });

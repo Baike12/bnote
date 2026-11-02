@@ -29,8 +29,8 @@ beforeEach(() => {
   mocks.loadKeybindings.mockResolvedValue(null);
 });
 
-describe("快捷键配置存储", () => {
-  it("仓库里有配置文件时直接读,不碰旧版应用配置", async () => {
+describe("keybinding config storage", () => {
+  it("when the vault has a config file it is read directly, the legacy app config is left alone", async () => {
     mocks.readVaultFile.mockResolvedValue(
       JSON.stringify({ reading: { "study.pdf-next-page": "Ctrl-j" } }),
     );
@@ -41,7 +41,7 @@ describe("快捷键配置存储", () => {
     expect(regionOfCommand("study.pdf-next-page")).toBe("reading");
   });
 
-  it("仓库还没有配置时把旧版扁平表分区迁进来,并清掉旧文件", async () => {
+  it("when the vault has no config yet the legacy flat table is migrated into regions and the old file is cleared", async () => {
     mocks.readVaultFile.mockResolvedValue(null);
     mocks.loadKeybindings.mockResolvedValue({
       "study.pdf-next-page": "Ctrl-j",
@@ -63,7 +63,7 @@ describe("快捷键配置存储", () => {
     expect(bindingsForCommand("edit.toggle-bold")).toEqual(["Mod-b"]);
   });
 
-  it("旧表为空时不创建配置文件", async () => {
+  it("an empty legacy table creates no config file", async () => {
     mocks.readVaultFile.mockResolvedValue(null);
     mocks.loadKeybindings.mockResolvedValue({});
     await loadKeymap(VAULT);
@@ -71,7 +71,7 @@ describe("快捷键配置存储", () => {
     expect(mocks.saveKeybindings).not.toHaveBeenCalled();
   });
 
-  it("改键写回仓库文件,并通知订阅者重渲染", async () => {
+  it("a rebind is written back to the vault file and the subscribers are notified to re-render", async () => {
     mocks.readVaultFile.mockResolvedValue(JSON.stringify({}));
     await loadKeymap(VAULT);
     let calls = 0;
@@ -91,7 +91,7 @@ describe("快捷键配置存储", () => {
     expect(getOverrides().notes?.["edit.toggle-bold"]).toBe("Mod-Shift-b");
   });
 
-  it("解绑写成 null,重置清空所有覆盖", async () => {
+  it("an unbinding is written as null, a reset clears all overrides", async () => {
     mocks.readVaultFile.mockResolvedValue(JSON.stringify({}));
     await loadKeymap(VAULT);
     await setOverride("edit.toggle-italic", null, "notes");

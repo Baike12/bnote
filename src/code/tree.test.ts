@@ -31,7 +31,7 @@ function entry(path: string, isDir = false, size = 0): CodeEntry {
 }
 
 describe("buildTree", () => {
-  it("按路径折出目录层级", () => {
+  it("folds the directory hierarchy out of the paths", () => {
     const roots = buildTree([entry("src/main.rs"), entry("README.md")]);
     expect(roots.map((n) => n.name)).toEqual(["src", "README.md"]);
     const src = roots[0];
@@ -39,7 +39,7 @@ describe("buildTree", () => {
     expect(src.children.map((n) => n.name)).toEqual(["main.rs"]);
   });
 
-  it("中间目录缺失时按路径补出来", () => {
+  it("missing intermediate directories are synthesized from the path", () => {
     // The backend may only give files (empty directories are not in the
     // list): a/b/c.rs still has to land on the tree.
     const roots = buildTree([entry("a/b/c.rs")]);
@@ -49,7 +49,7 @@ describe("buildTree", () => {
     expect(a.children[0].children[0].path).toBe("a/b/c.rs");
   });
 
-  it("目录条目与按路径补出的中间目录是同一个节点", () => {
+  it("a directory entry and the intermediate directory synthesized from the path are the same node", () => {
     // The backend gives both directory entries (.github) and the files inside
     // them; the intermediate directories synthesized from the path have to
     // land in the same node, otherwise the same directory appears twice on
@@ -68,13 +68,13 @@ describe("buildTree", () => {
     expect(gh.children[0].children.map((n) => n.name)).toEqual(["bug_report.yml"]);
   });
 
-  it("空目录条目照样出现(不靠文件补出来)", () => {
+  it("an empty directory entry still shows up (it is not synthesized from files)", () => {
     const roots = buildTree([entry("empty", true), entry("a.ts")]);
     expect(roots.map((n) => n.name)).toEqual(["empty", "a.ts"]);
     expect(roots[0].children).toEqual([]);
   });
 
-  it("目录排在文件前面,同类按自然序", () => {
+  it("directories come before files, and within one kind the order is natural", () => {
     const roots = buildTree([
       entry("file10.txt"),
       entry("file9.txt"),
@@ -84,7 +84,7 @@ describe("buildTree", () => {
     expect(roots.map((n) => n.name)).toEqual(["adir", "zdir", "file9.txt", "file10.txt"]);
   });
 
-  it("git 状态挂到文件节点上", () => {
+  it("the git state is attached to the file node", () => {
     const git = new Map<string, GitFileState>([
       ["a.rs", { path: "a.rs", origPath: null, index: "M", worktree: "M" }],
     ]);
@@ -92,7 +92,7 @@ describe("buildTree", () => {
     expect(roots[0].git?.worktree).toBe("M");
   });
 
-  it("walkFiles 按展示顺序产出文件", () => {
+  it("walkFiles yields the files in display order", () => {
     const roots = buildTree([entry("b/x.ts"), entry("a.ts"), entry("b/y.ts")]);
     expect(walkFiles({ ...roots[0], isDir: true, children: roots[0].children }).map((n) => n.path)).toEqual([
       "b/x.ts",
@@ -102,18 +102,18 @@ describe("buildTree", () => {
 });
 
 describe("naturalCompare", () => {
-  it("数字按数值比", () => {
+  it("numbers are compared by value", () => {
     expect(naturalCompare("file9", "file10")).toBeLessThan(0);
     expect(naturalCompare("a2", "a10")).toBeLessThan(0);
   });
 
-  it("纯字典序时按字符比", () => {
+  it("purely lexicographic names are compared by character", () => {
     expect(naturalCompare("abc", "abd")).toBeLessThan(0);
     expect(naturalCompare("abc", "abc")).toBe(0);
   });
 });
 
-describe("visibleRows(虚拟滚动的拍平)", () => {
+describe("visibleRows (the flattening for virtual scrolling)", () => {
   const roots = buildTree([
     entry("src/a.ts"),
     entry("src/nested/b.ts"),
@@ -121,7 +121,7 @@ describe("visibleRows(虚拟滚动的拍平)", () => {
     entry("d.ts"),
   ]);
 
-  it("默认一个目录都没展开:只留顶层(不默认展开所有文件夹)", () => {
+  it("by default no directory is expanded: only the top level stays (folders are not expanded by default)", () => {
     const rows = visibleRows(roots, new Set());
     expect(rows.map((r) => `${r.depth}:${r.node.name}`)).toEqual([
       "0:docs",
@@ -130,7 +130,7 @@ describe("visibleRows(虚拟滚动的拍平)", () => {
     ]);
   });
 
-  it("展开的目录才带出子节点,并记下层级", () => {
+  it("only expanded directories bring out their children, and the depth is recorded", () => {
     const rows = visibleRows(roots, new Set(["src"]));
     expect(rows.map((r) => `${r.depth}:${r.node.name}`)).toEqual([
       "0:docs",
@@ -141,41 +141,41 @@ describe("visibleRows(虚拟滚动的拍平)", () => {
     ]);
   });
 
-  it("全部展开时行数 = 所有节点数", () => {
+  it("with everything expanded the row count = the node count", () => {
     const all = new Set(["docs", "src", "src/nested"]);
     expect(visibleRows(roots, all)).toHaveLength(7);
   });
 
-  it("空树给空列表", () => {
+  it("an empty tree gives an empty list", () => {
     expect(visibleRows([], new Set())).toEqual([]);
   });
 });
 
-describe("ancestorDirs(聚焦文件时展开到它)", () => {
-  it("逐层给出祖先目录", () => {
+describe("ancestorDirs (expanding up to the focused file)", () => {
+  it("it lists the ancestor directories level by level", () => {
     expect(ancestorDirs("src/pkg/mod/a.ts")).toEqual(["src", "src/pkg", "src/pkg/mod"]);
   });
 
-  it("顶层文件没有祖先", () => {
+  it("a top-level file has no ancestors", () => {
     expect(ancestorDirs("README.md")).toEqual([]);
   });
 });
 
 describe("filterTree", () => {
-  it("文件按名字过滤,目录只要有命中后代就留下", () => {
+  it("files are filtered by name, and a directory stays as long as it has a matching descendant", () => {
     const roots = buildTree([entry("src/app.ts"), entry("src/util.ts"), entry("docs/readme.md")]);
     const filtered = filterTree(roots, "app");
     expect(filtered.map((n) => n.name)).toEqual(["src"]);
     expect(filtered[0].children.map((n) => n.name)).toEqual(["app.ts"]);
   });
 
-  it("空查询返回原树", () => {
+  it("an empty query returns the original tree", () => {
     const roots = buildTree([entry("a.ts")]);
     expect(filterTree(roots, "  ")).toBe(roots);
   });
 });
 
-describe("searchFilesByName(快速打开)", () => {
+describe("searchFilesByName (quick open)", () => {
   const entries = [
     entry("src/app.ts"),
     entry("src/app-router.ts"),
@@ -185,35 +185,35 @@ describe("searchFilesByName(快速打开)", () => {
     entry("src", true),
   ];
 
-  it("完全相等排最前,包含其次,子序列最后", () => {
+  it("an exact match comes first, a containment match second, a subsequence last", () => {
     // In my-app.tsx "app.ts" is a **contiguous** substring (rank 2);
     // app-router.ts is only a subsequence (rank 3).
     const hits = searchFilesByName(entries, "app.ts");
     expect(hits.map((h) => h.path)).toEqual(["src/app.ts", "src/my-app.tsx", "src/app-router.ts"]);
   });
 
-  it("只按文件名匹配,目录不参与", () => {
+  it("only file names are matched, directories do not take part", () => {
     // The directory "src" is not a candidate itself; no **file name** contains
     // src.
     expect(searchFilesByName(entries, "src")).toEqual([]);
     expect(searchFilesByName(entries, "helper").map((h) => h.path)).toEqual(["src/helper.ts"]);
   });
 
-  it("子序列也能命中(abc → a_b_c)", () => {
+  it("a subsequence matches too (abc → a_b_c)", () => {
     const hits = searchFilesByName(entries, "aprt");
     expect(hits.map((h) => h.path)).toEqual(["src/app-router.ts"]);
   });
 
-  it("忽略大小写", () => {
+  it("the match ignores case", () => {
     expect(searchFilesByName(entries, "APP").length).toBe(4);
   });
 
-  it("空查询/纯空白不给结果", () => {
+  it("an empty query or pure whitespace gives no results", () => {
     expect(searchFilesByName(entries, "")).toEqual([]);
     expect(searchFilesByName(entries, "   ")).toEqual([]);
   });
 
-  it("有上限", () => {
+  it("the result count is capped", () => {
     const many = Array.from({ length: 80 }, (_, i) => entry(`f${i}.ts`));
     expect(searchFilesByName(many, "f").length).toBe(50);
   });

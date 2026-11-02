@@ -15,8 +15,8 @@ const range = (line: number, character: number, endCharacter: number) => ({
   end: { line, character: endCharacter },
 });
 
-describe("WorkspaceEdit 解析", () => {
-  it("changes 形状", () => {
+describe("WorkspaceEdit parsing", () => {
+  it("the changes shape", () => {
     const out = workspaceEditsOf({
       changes: {
         "file:///p/a.ts": [{ range: range(0, 0, 3), newText: "foo" }],
@@ -27,7 +27,7 @@ describe("WorkspaceEdit 解析", () => {
     ]);
   });
 
-  it("documentChanges 形状(现代服务器的 rename)", () => {
+  it("the documentChanges shape (rename from a modern server)", () => {
     const out = workspaceEditsOf({
       documentChanges: [
         {
@@ -41,7 +41,7 @@ describe("WorkspaceEdit 解析", () => {
     ]);
   });
 
-  it("两种形状同时给时按 uri 合并", () => {
+  it("when both shapes are given they are merged by uri", () => {
     const out = workspaceEditsOf({
       changes: { "file:///p/a.ts": [{ range: range(0, 0, 1), newText: "x" }] },
       documentChanges: [
@@ -60,7 +60,7 @@ describe("WorkspaceEdit 解析", () => {
     expect(out.find((f) => f.uri === "file:///p/c.ts")?.edits).toHaveLength(1);
   });
 
-  it("文件级操作(CreateFile / RenameFile)没有编辑,跳过", () => {
+  it("file-level operations (CreateFile / RenameFile) carry no edits and are skipped", () => {
     const out = workspaceEditsOf({
       documentChanges: [
         { kind: "create", uri: "file:///p/d.ts" },
@@ -70,7 +70,7 @@ describe("WorkspaceEdit 解析", () => {
     expect(out).toEqual([]);
   });
 
-  it("形状不对的编辑逐条丢掉,不影响同文件里合法的那些", () => {
+  it("edits with a malformed shape are dropped one by one, leaving the valid ones in the same file", () => {
     const out = workspaceEditsOf({
       changes: {
         "file:///p/a.ts": [
@@ -84,7 +84,7 @@ describe("WorkspaceEdit 解析", () => {
     expect(out[0].edits).toEqual([{ range: range(0, 0, 1), newText: "ok" }]);
   });
 
-  it("不是对象的输入不炸", () => {
+  it("input that is not an object does not throw", () => {
     expect(workspaceEditsOf(null)).toEqual([]);
     expect(workspaceEditsOf("x")).toEqual([]);
     expect(workspaceEditsOf({})).toEqual([]);

@@ -19,7 +19,7 @@ const ALL: FocusRegion[] = ["reading", "notes", "agent", "project"];
 const onScreenAll = () => true;
 
 describe("pickKeyRegion", () => {
-  it("最近一次动手的区域优先于焦点所在(滚过 PDF 后键盘归阅读区)", () => {
+  it("the region the user last acted in wins over the focused one (after scrolling a PDF the keyboard belongs to the reading region)", () => {
     expect(
       pickKeyRegion({
         owner: "reading",
@@ -29,24 +29,24 @@ describe("pickKeyRegion", () => {
     ).toBe("reading");
   });
 
-  it("只有焦点时听焦点的", () => {
+  it("with only a focus, the focus decides", () => {
     expect(
       pickKeyRegion({ owner: null, focus: "agent", onScreen: onScreenAll }),
     ).toBe("agent");
   });
 
-  it("已不可见的区域不能占键(按键不许落到不在场的区域上)", () => {
+  it("a region that is not on screen must not own the key (a key must never land on an absent region)", () => {
     const onScreen = (region: FocusRegion) => region !== "notes";
     expect(pickKeyRegion({ owner: "notes", focus: "notes", onScreen })).toBe("reading");
     expect(pickKeyRegion({ owner: "notes", focus: null, onScreen })).toBe("reading");
   });
 
-  it("主区域被隐藏时,退到场上的焦点区域", () => {
+  it("when the owning region is hidden, it falls back to the focused region that is on screen", () => {
     const onScreen = (region: FocusRegion) => region !== "agent";
     expect(pickKeyRegion({ owner: "agent", focus: "notes", onScreen })).toBe("notes");
   });
 
-  it("无主也无焦点时按阅读区 → 项目卡片 → 笔记区 → Agent 兜底(阅读区不取焦点,最安全)", () => {
+  it("with neither owner nor focus it falls back through reading region → project cards → notes region → Agent (the reading region takes no focus, which is the safest)", () => {
     expect(
       pickKeyRegion({
         owner: null,
@@ -74,13 +74,13 @@ describe("pickKeyRegion", () => {
     ).toBe("notes");
   });
 
-  it("一个区域都不在场(普通布局)时退回笔记区", () => {
+  it("when no region is on screen (the normal layout) it falls back to the notes region", () => {
     expect(
       pickKeyRegion({ owner: "reading", focus: null, onScreen: () => false }),
     ).toBe("notes");
   });
 
-  it("从不在集合里的焦点区域(焦点在侧栏/标题栏)不改变归属", () => {
+  it("a focused region that is not in the set (focus in the sidebar / title bar) does not change the ownership", () => {
     for (const owner of ALL) {
       expect(
         pickKeyRegion({ owner, focus: null, onScreen: onScreenAll }),

@@ -39,8 +39,8 @@ function marksOf(doc: string): { from: number; to: number; cls: string }[] {
 const texts = (doc: string, marks: { from: number; to: number }[]) =>
   marks.map((m) => doc.slice(m.from, m.to));
 
-describe("emphasisMarks:公式分隔符不外溢", () => {
-  it("两个公式块里的下标 `_` 不再把中间正文染成斜体", () => {
+describe("emphasisMarks: formula delimiters do not leak out", () => {
+  it("a subscript `_` in two formula blocks no longer paints the body text between them italic", () => {
     const doc = [
       "$$",
       "\\nabla _{\\theta}J(\\theta)",
@@ -53,7 +53,7 @@ describe("emphasisMarks:公式分隔符不外溢", () => {
     expect(marksOf(doc)).toEqual([]);
   });
 
-  it("单侧落在公式里的配对同样作废(下面是用户报告的形状)", () => {
+  it("a pair with one end inside a formula is voided too (this is the shape the user reported)", () => {
     const doc = [
       "$$",
       "\\nabla _{\\theta}J(\\theta)",
@@ -68,22 +68,22 @@ describe("emphasisMarks:公式分隔符不外溢", () => {
   });
 });
 
-describe("emphasisMarks:合法强调不受影响", () => {
-  it("普通斜体/加粗/删除线只标内容,不含标记", () => {
+describe("emphasisMarks: valid emphasis is unaffected", () => {
+  it("plain italic / bold / strikethrough only mark the content, not the markers", () => {
     const doc = "前 _斜体_ 中 **加粗** 后 ~~删除~~ 尾";
     const marks = marksOf(doc);
     expect(marks.map((m) => m.cls)).toEqual(["md-em", "md-strong", "md-strike"]);
     expect(texts(doc, marks)).toEqual(["斜体", "加粗", "删除"]);
   });
 
-  it("强调包住一个行内公式时两端都在正文,照常标记", () => {
+  it("when emphasis wraps an inline formula both ends are in the body, so it is marked as usual", () => {
     const doc = "开始 _文字 $x_y$ 文字_ 结束";
     const marks = marksOf(doc);
     expect(marks).toHaveLength(1);
     expect(texts(doc, marks)).toEqual(["文字 $x_y$ 文字"]);
   });
 
-  it("嵌套强调各自标记", () => {
+  it("nested emphasis is marked separately", () => {
     const doc = "***both***";
     const marks = marksOf(doc);
     expect(marks.map((m) => m.cls).sort()).toEqual(["md-em", "md-strong"]);

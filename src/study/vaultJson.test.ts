@@ -56,15 +56,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("vault JSON 按文件存储", () => {
-  it("文件不存在时返回空数据;路径落在 .bnote 下", async () => {
+describe("vault JSON stored per file", () => {
+  it("a missing file returns empty data; the path lands under .bnote", async () => {
     const io = makeIO();
     const store = makeStore(io);
     await expect(store.load("/vault", "pdf-annotations/a.pdf")).resolves.toEqual(emptyDoc());
     expect(vaultDotPath("/vault/", "x.json")).toBe("/vault/.bnote/x.json");
   });
 
-  it("loadFile 区分「盘上没有」和「盘上是空文件」", async () => {
+  it("loadFile distinguishes \"not on disk\" from \"an empty file on disk\"", async () => {
     const io = makeIO({ "/vault/.bnote/empty.json": "" });
     const store = makeStore(io);
     await expect(store.loadFile("/vault", "missing")).resolves.toEqual({
@@ -77,7 +77,7 @@ describe("vault JSON 按文件存储", () => {
     });
   });
 
-  it("一份文件一个缓存:改 A 不碰 B,flush 各写各的", async () => {
+  it("one cache per file: changing A does not touch B, and flush writes each on its own", async () => {
     const io = makeIO({
       "/vault/.bnote/a.json": '{"version":1,"values":{"a":"1"}}',
       "/vault/.bnote/b.json": '{"version":1,"values":{"b":"1"}}',
@@ -92,7 +92,7 @@ describe("vault JSON 按文件存储", () => {
     expect(JSON.parse(io.files.get("/vault/.bnote/b.json")!).values).toEqual({ b: "1", b2: "2" });
   });
 
-  it("写盘防抖,flush 立即写出", async () => {
+  it("the disk write is debounced, flush writes immediately", async () => {
     vi.useFakeTimers();
     const io = makeIO({ "/vault/.bnote/a.json": '{"version":1,"values":{"a":"1"}}' });
     const store = makeStore(io);
@@ -104,7 +104,7 @@ describe("vault JSON 按文件存储", () => {
     expect(JSON.parse(io.files.get("/vault/.bnote/a.json")!).values).toEqual({ a: "1", b: "2" });
   });
 
-  it("update 在文件尚未加载时先读盘再改,不会丢已有条目", async () => {
+  it("update reads the file from disk before changing it when it is not loaded yet, so no existing entry is lost", async () => {
     const io = makeIO({ "/vault/.bnote/a.json": '{"version":1,"values":{"keep":"yes"}}' });
     const store = makeStore(io);
     store.update("/vault", "a", (d) => ({ ...d, values: { ...d.values, add: "x" } }));
@@ -112,7 +112,7 @@ describe("vault JSON 按文件存储", () => {
     expect(store.peek("/vault", "a")?.values).toEqual({ keep: "yes", add: "x" });
   });
 
-  it("读盘在途时排队的修改在结果落地后应用", async () => {
+  it("a change queued while the read is in flight is applied after the result lands", async () => {
     let release: (raw: string) => void = () => {};
     const files = new Map<string, string>();
     const io: FakeIO = {
@@ -139,7 +139,7 @@ describe("vault JSON 按文件存储", () => {
     expect(store.peek("/vault", "a")?.values).toEqual({ keep: "yes", add: "x" });
   });
 
-  it("不同仓库的同名 key 各自独立", async () => {
+  it("the same key in different vaults stays independent", async () => {
     const io = makeIO({
       "/a/.bnote/x.json": '{"version":1,"values":{"vault":"a"}}',
       "/b/.bnote/x.json": '{"version":1,"values":{"vault":"b"}}',

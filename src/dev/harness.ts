@@ -990,7 +990,7 @@ window.__decos = () => {
  *  with a day, a historical day's archive is injected (open that day's daily note to verify the historical aggregation). */
 window.__setFootprints = (entries, day) => {
   const vault = useAppStore.getState().vaultPath;
-  if (!vault) throw new Error("no vault: 先 __fakeVault([...])");
+  if (!vault) throw new Error("no vault: call __fakeVault([...]) first");
   const index = new Map(entries.map((e) => [e.path, e.blocks]));
   if (day) setFootprintHistoryForTest(vault, day, index);
   else setFootprintIndexForTest(vault, index);

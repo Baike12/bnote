@@ -8,26 +8,26 @@ import {
   sanitizeProjectName,
 } from "./model";
 
-describe("项目模型", () => {
-  it("项目文件固定在 <vault>/.bnote/projects 下", () => {
+describe("project model", () => {
+  it("project files always live under <vault>/.bnote/projects", () => {
     expect(PROJECTS_DIR).toBe(".bnote/projects");
     expect(projectPathFor("/v", "读书")).toBe("/v/.bnote/projects/读书.md");
     expect(projectPathFor("/v/", "读书")).toBe("/v/.bnote/projects/读书.md");
   });
 
-  it("项目名 = 文件名去掉 .md(日记侧的来源标签直接用它)", () => {
+  it("project name = file name without .md (the daily note side uses it directly as the source label)", () => {
     expect(projectNameOf("/v/.bnote/projects/读书.md")).toBe("读书");
     expect(projectNameOf("/v/.bnote/projects/项目 2.md")).toBe("项目 2");
   });
 
-  it("只有 projects 目录下的绝对路径算项目文件", () => {
+  it("only absolute paths under the projects directory count as project files", () => {
     expect(isProjectPath("/v/.bnote/projects/读书.md")).toBe(true);
     expect(isProjectPath("/v/notes/读书.md")).toBe(false);
     expect(isProjectPath("读书.md")).toBe(false);
     expect(isProjectPath(".bnote/projects/读书.md")).toBe(false);
   });
 
-  it("文件名过滤非法字符、压空白、去掉首部点", () => {
+  it("the file name filters illegal characters, collapses whitespace and drops leading dots", () => {
     expect(sanitizeProjectName("  读/书:计划  ")).toBe("读 书 计划");
     expect(sanitizeProjectName("a\\b*c?d")).toBe("a b c d");
     expect(sanitizeProjectName("...hidden")).toBe("hidden");
@@ -35,7 +35,7 @@ describe("项目模型", () => {
     expect(sanitizeProjectName("x".repeat(100))).toHaveLength(60);
   });
 
-  it("待办行解析保留行号/缩进/完成态/身份文本", () => {
+  it("todo line parsing keeps the line number, indentation, done state and identity text", () => {
     const text = [
       "# 标题",
       "- [ ] 甲",

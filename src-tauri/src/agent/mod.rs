@@ -96,7 +96,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 空协议归一为_anthropic_合法值原样保留() {
+    fn empty_provider_normalizes_to_anthropic_and_valid_values_pass_through() {
         let mut cfg = AgentConfig::default();
         assert_eq!(cfg.provider, "");
         cfg.normalize();
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn 旧配置没有上下文窗口时回落默认值() {
+    fn old_config_without_context_window_falls_back_to_the_default() {
         let cfg: AgentConfig = serde_json::from_str(
             r#"{"provider":"openai","model":"m","base_url":"","api_key":"","max_tokens":8192}"#,
         )
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn 上下文窗口为零时归一为默认值() {
+    fn zero_context_window_normalizes_to_the_default() {
         let mut cfg = AgentConfig::default();
         cfg.normalize();
         assert_eq!(cfg.context_window, default_context_window());

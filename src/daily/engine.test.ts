@@ -27,7 +27,7 @@ const tauriWrites = vi.hoisted(() => [] as [string, string][]);
 vi.mock("@/lib/tauri", () => ({
   api: {
     readFile: async () => {
-      throw new Error("测试环境无 IPC"); // ensureLinks falls back to an empty store
+      throw new Error("no IPC in the test environment"); // ensureLinks falls back to an empty store
     },
     writeFile: async (path: string, content: string) => {
       tauriWrites.push([path, content]);
@@ -160,8 +160,8 @@ async function sync(
   if (intents.length) await applyIntents(view, path, intents, deps(io), store);
 }
 
-describe("发送命令", () => {
-  it("发送一级待办与子树:日记文件自动创建,映射持久", async () => {
+describe("the send command", () => {
+  it("sending a top-level todo with its subtree: the daily note file is created automatically, the mapping persists", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
@@ -173,7 +173,7 @@ describe("发送命令", () => {
     expect(toasts).toEqual(["已发送到今日日记"]);
   });
 
-  it("发送时日记不存在:建出的文件先带上一篇的未完成待办,发送条目随后", async () => {
+  it("the daily note does not exist at send time: the created file first carries the unfinished todos of the previous note, the sent entry follows", async () => {
     const { files, io } = memIO();
     files.set("/vault/Daily/2026-09-22.md", "# 2026-09-22\n\n- [x] 昨天做完 ✅ 2026-09-22\n- [ ] 昨天没做完\n");
     const store = new LinkStore();
@@ -182,7 +182,7 @@ describe("发送命令", () => {
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 昨天没做完\n- [ ] 新任务\n");
   });
 
-  it("发送时日记不存在且配了模板:模板开篇,发送条目进入待办区", async () => {
+  it("the daily note does not exist at send time and a template is configured: the template opens the file, the sent entry goes into the todo region", async () => {
     const { files, io } = memIO();
     files.set("/vault/Templates/日记.md", "# {{date}}\n\n## 计划\n");
     const { view } = makeDocView("- [ ] 新任务\n", "/vault/p.md", [0]);
@@ -194,7 +194,7 @@ describe("发送命令", () => {
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 新任务\n\n## 计划\n");
   });
 
-  it("第二次发送按时间顺序追加在既有条目之后", async () => {
+  it("a second send is appended after the existing entries in chronological order", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const { view: v1 } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
@@ -204,7 +204,7 @@ describe("发送命令", () => {
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n- [ ] 乙\n");
   });
 
-  it("在子待办行按下:子待办成为一级条目,自己的子树保持层级", async () => {
+  it("pressed on a child todo line: the child todo becomes a top-level entry, its own subtree keeps the hierarchy", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const { view } = makeDocView("- [ ] 父\n  - [ ] 子\n    - [ ] 孙\n", "/vault/p.md", [8]);
@@ -213,7 +213,7 @@ describe("发送命令", () => {
     expect(store.all()[0]).toMatchObject({ text: "子", srcLine: 2 });
   });
 
-  it("重复按快捷键不重复发送", async () => {
+  it("pressing the shortcut again does not send twice", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
@@ -225,7 +225,7 @@ describe("发送命令", () => {
     expect(toasts[1]).toBe("已在今日日记中,自动保持同步");
   });
 
-  it("块根已链接时,在其子待办上按下也提示已同步", async () => {
+  it("when the block root is already linked, pressing on its child todo also reports that it is already synced", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
@@ -238,7 +238,7 @@ describe("发送命令", () => {
     expect(toasts[1]).toBe("已在今日日记中,自动保持同步");
   });
 
-  it("完成记录被显式发送时升级为正式映射", async () => {
+  it("an explicit send upgrades the recorded link into a real mapping", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     store.upsert(makeLink({ id: "r1", kind: "recorded" }));
@@ -251,7 +251,7 @@ describe("发送命令", () => {
     expect(toasts).toEqual(["已在今日日记中,自动保持同步"]);
   });
 
-  it("日记已有同文条目时认领而不重复追加", async () => {
+  it("when the daily note already has an entry with the same text, it is claimed instead of appended twice", async () => {
     const { files, io } = memIO();
     files.set(DAILY, "# 2026-09-23\n\n- [ ] 手写的\n\n正文\n");
     const store = new LinkStore();
@@ -261,7 +261,7 @@ describe("发送命令", () => {
     expect(store.all()[0]).toMatchObject({ text: "手写的", dailyLine: 3 });
   });
 
-  it("今日日记文件被删除后再次发送:重建文件", async () => {
+  it("after today's daily note file was deleted, sending again rebuilds the file", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
@@ -274,7 +274,7 @@ describe("发送命令", () => {
     expect(toasts[1]).toBe("已发送到今日日记");
   });
 
-  it("今日日记里的条目被手工删掉后再次发送:重新追加", async () => {
+  it("after an entry in today's daily note was deleted by hand, sending again appends it again", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
@@ -286,7 +286,7 @@ describe("发送命令", () => {
     expect(toasts[1]).toBe("已发送到今日日记");
   });
 
-  it("祖先映射的日记条目也没了:在子待办上按下重新发送", async () => {
+  it("the daily note entry of the ancestor mapping is gone too: pressing on the child todo sends it again", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
@@ -299,7 +299,7 @@ describe("发送命令", () => {
     expect(toasts[1]).toBe("已发送到今日日记");
   });
 
-  it("昨天的映射不阻止今天发送(按日归属)", async () => {
+  it("yesterday's mapping does not block today's send (per-day ownership)", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
@@ -314,7 +314,7 @@ describe("发送命令", () => {
     expect(toasts[0]).toBe("已发送到今日日记");
   });
 
-  it("非待办行 / 日记文件自身 提示且不写盘", async () => {
+  it("a non-todo line / the daily note file itself: a toast is shown and nothing is written to disk", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
@@ -328,8 +328,8 @@ describe("发送命令", () => {
   });
 });
 
-describe("自动同步(触碰即发)", () => {
-  it("勾选未映射待办 → 发送到今日日记(带 ✅ 戳,勾选状态随行)", async () => {
+describe("auto sync (touch sends)", () => {
+  it("checking an unmapped todo → sent to today's daily note (with a ✅ stamp, the checked state travels with the line)", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const { view, transactions } = makeDocView("- [ ] 任务甲\n- [ ] 任务乙\n", "/vault/p.md", [0]);
@@ -339,7 +339,7 @@ describe("自动同步(触碰即发)", () => {
     expect(store.all()[0]).toMatchObject({ kind: "auto", text: "任务甲", srcLine: 1 });
   });
 
-  it("未勾选待办被编辑也自动同步(存在即同步,不要求先勾选)", async () => {
+  it("editing an unchecked todo also syncs automatically (existence is enough, checking first is not required)", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const { view, transactions } = makeDocView("- [ ] 新任务\n", "/vault/p.md", [6]);
@@ -349,7 +349,7 @@ describe("自动同步(触碰即发)", () => {
     expect(store.all()[0]).toMatchObject({ kind: "auto", text: "新任务!" });
   });
 
-  it("发送追加在既有条目之后(时间顺序)", async () => {
+  it("the send is appended after the existing entries (chronological order)", async () => {
     const { files, io } = memIO();
     files.set(DAILY, "# 2026-09-23\n\n- [ ] 早上的事\n");
     const store = new LinkStore();
@@ -359,7 +359,7 @@ describe("自动同步(触碰即发)", () => {
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 早上的事\n- [x] 任务甲 ✅ 2026-09-23\n");
   });
 
-  it("发送建日记时也跟随:上一篇未完成在前,发送条目在后", async () => {
+  it("the send also follows when it creates the daily note: the unfinished todos of the previous note come first, the sent entry after them", async () => {
     const { files, io } = memIO();
     files.set("/vault/Daily/2026-09-22.md", "# 2026-09-22\n\n- [ ] 昨天没做完\n");
     const store = new LinkStore();
@@ -369,7 +369,7 @@ describe("自动同步(触碰即发)", () => {
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 昨天没做完\n- [x] 任务甲 ✅ 2026-09-23\n");
   });
 
-  it("记录型待办再取消完成:日记条目清掉、链接解除", async () => {
+  it("unchecking a recorded todo again: the daily note entry is removed, the link is dropped", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     store.upsert(makeLink({ id: "r1", kind: "recorded" }));
@@ -383,7 +383,7 @@ describe("自动同步(触碰即发)", () => {
     expect(store.all()).toHaveLength(0);
   });
 
-  it("子待办触碰(父未链接):整块随根发送,镜像语义保持原始层级", async () => {
+  it("touching a child todo (parent not linked): the whole block is sent with the root, the mirror semantics keep the original hierarchy", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const { view, transactions } = makeDocView("- [ ] 父\n  - [ ] 子\n    - [ ] 孙\n", "/vault/p.md", [8]);
@@ -393,7 +393,7 @@ describe("自动同步(触碰即发)", () => {
     expect(store.all()[0]).toMatchObject({ kind: "auto", text: "父" });
   });
 
-  it("子待办触碰(父已链接):随块镜像到日记,不重复发送", async () => {
+  it("touching a child todo (parent already linked): mirrored to the daily note with the block, not sent twice", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     store.upsert(makeLink({ id: "p1", text: "父", srcLine: 1, dailyLine: 3 }));
@@ -406,8 +406,8 @@ describe("自动同步(触碰即发)", () => {
   });
 });
 
-describe("双向镜像", () => {
-  it("源侧完成复制型待办:日记条目同步勾选,条目保留", async () => {
+describe("two-way mirroring", () => {
+  it("completing a copied todo on the source side: the daily note entry is checked in sync, the entry is kept", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const { view, transactions } = makeDocView("- [ ] 任务甲\n", "/vault/p.md", [0]);
@@ -419,7 +419,7 @@ describe("双向镜像", () => {
     expect(store.all()).toHaveLength(1);
   });
 
-  it("源侧取消复制型待办:两侧回到未勾选,条目保留", async () => {
+  it("uncompleting a copied todo on the source side: both sides go back to unchecked, the entry is kept", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     store.upsert(makeLink({ id: "c1" }));
@@ -432,7 +432,7 @@ describe("双向镜像", () => {
     expect(store.all()).toHaveLength(1); // kind "copied": the entry stays
   });
 
-  it("日记侧勾选:镜像回源文件并带 ✅ 戳", async () => {
+  it("checking on the daily note side: mirrored back to the source file with a ✅ stamp", async () => {
     const { files, io } = memIO();
     files.set("/vault/p.md", "- [ ] 任务甲\n");
     const store = new LinkStore();
@@ -444,7 +444,7 @@ describe("双向镜像", () => {
     expect(files.get("/vault/p.md")).toBe("- [x] 任务甲 ✅ 2026-09-23\n");
   });
 
-  it("日记侧加子待办:镜像回源并还原源根缩进", async () => {
+  it("adding a child todo on the daily note side: mirrored back to the source and the source root indentation is restored", async () => {
     const { files, io } = memIO();
     files.set("/vault/p.md", "  - [ ] 任务甲\n");
     const store = new LinkStore();
@@ -456,7 +456,7 @@ describe("双向镜像", () => {
     expect(files.get("/vault/p.md")).toBe("  - [ ] 任务甲\n    - [ ] 新子项\n");
   });
 
-  it("源侧改名:日记条目跟着改,链接锚迁移到新文本", async () => {
+  it("renaming on the source side: the daily note entry follows, the link anchor moves to the new text", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     store.upsert(makeLink({ id: "c1", text: "旧名" }));
@@ -469,7 +469,7 @@ describe("双向镜像", () => {
     expect(store.getById("c1")).toMatchObject({ text: "新名" });
   });
 
-  it("源侧根转纯文本(待办取消):删日记条目并解链", async () => {
+  it("the source root turns into plain text (the todo is cancelled): the daily note entry is deleted and the link is dropped", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     store.upsert(makeLink({ id: "c1" }));
@@ -482,7 +482,7 @@ describe("双向镜像", () => {
     expect(store.all()).toHaveLength(0);
   });
 
-  it("日记条目被用户删除:只解链,源待办保留", async () => {
+  it("the daily note entry was deleted by the user: only the link is dropped, the source todo is kept", async () => {
     const { files, io } = memIO();
     files.set("/vault/p.md", "- [ ] 任务甲\n");
     const store = new LinkStore();
@@ -495,7 +495,7 @@ describe("双向镜像", () => {
     expect(store.all()).toHaveLength(0);
   });
 
-  it("日记侧根转纯文本:只解链,源不动", async () => {
+  it("the daily note side root turns into plain text: only the link is dropped, the source is untouched", async () => {
     const { files, io } = memIO();
     files.set("/vault/p.md", "- [ ] 任务甲\n");
     const store = new LinkStore();
@@ -508,7 +508,7 @@ describe("双向镜像", () => {
     expect(store.all()).toHaveLength(0);
   });
 
-  it("对侧文件不可读(删除/改名):解链不崩溃", async () => {
+  it("the file on the other side is unreadable (deleted/renamed): the link is dropped without crashing", async () => {
     const { files, io } = memIO();
     files.set(DAILY, "# 2026-09-23\n\n- [ ] 任务甲\n"); // the source file p.md is not there
     const store = new LinkStore();
@@ -521,8 +521,8 @@ describe("双向镜像", () => {
   });
 });
 
-describe("链接映射持久化", () => {
-  it("发送建立的映射落盘;已同步的重复发送不再写元数据", async () => {
+describe("link map persistence", () => {
+  it("the mapping created by a send is written to disk; a repeated send of an already synced todo writes no metadata again", async () => {
     const { io } = memIO();
     const store = await ensureLinks(VAULT);
     const { view } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
@@ -541,11 +541,11 @@ describe("链接映射持久化", () => {
   });
 });
 
-describe("意图提取与合并", () => {
+describe("intent extraction and merging", () => {
   const start = (t: string) => EditorState.create({ doc: t }).doc;
   const link = makeLink({ id: "L", text: "甲" });
 
-  it("触碰未链接待办产生发送意图;已链接则改为镜像", () => {
+  it("touching an unlinked todo produces a send intent; an already linked one becomes a mirror", () => {
     const s = start("- [ ] 甲\n");
     const e = start("- [x] 甲 ✅ 2026-09-23\n");
     expect(intentsForRange(s, e, 0, s.length, 0, e.length, [], true)).toEqual([
@@ -556,7 +556,7 @@ describe("意图提取与合并", () => {
     ]);
   });
 
-  it("触碰嵌套待办:发送锚在块根,不是子行自己", () => {
+  it("touching a nested todo: the send anchor is the block root, not the child line itself", () => {
     const s = start("- [ ] 父\n  - [ ] 子\n");
     const e = start("- [ ] 父\n  - [x] 子\n");
     expect(intentsForRange(s, e, 0, s.length, 0, e.length, [], true)).toEqual([
@@ -564,7 +564,7 @@ describe("意图提取与合并", () => {
     ]);
   });
 
-  it("空文本待办不自动发送(还在打字);普通文本行不是待办也不发", () => {
+  it("an empty-text todo is not sent automatically (still typing); a plain text line is not a todo and is not sent either", () => {
     const s = start("");
     const e = start("- [ ] \n");
     expect(intentsForRange(s, e, 0, 0, 0, e.length, [], true)).toEqual([]);
@@ -573,7 +573,7 @@ describe("意图提取与合并", () => {
     expect(intentsForRange(s2, e2, 0, s2.length, 0, e2.length, [], true)).toEqual([]);
   });
 
-  it("改名携带新文本;根转纯文本时提示为空", () => {
+  it("a rename carries the new text; when the root turns into plain text the hint is empty", () => {
     const s = start("- [ ] 旧名\n");
     const e = start("- [ ] 新名\n");
     expect(intentsForRange(s, e, 0, s.length, 0, e.length, [makeLink({ id: "L", text: "旧名" })], true)).toEqual([
@@ -585,13 +585,13 @@ describe("意图提取与合并", () => {
     ]);
   });
 
-  it("粘贴/拖放事务不产生发送意图(allowSend=false)", () => {
+  it("paste/drop transactions produce no send intent (allowSend=false)", () => {
     const s = start("- [ ] 甲\n");
     const e = start("- [x] 甲 ✅ 2026-09-23\n");
     expect(intentsForRange(s, e, 0, s.length, 0, e.length, [], false)).toEqual([]);
   });
 
-  it("dedupeIntents:镜像按链接合并、发送按文本合并", () => {
+  it("dedupeIntents: mirrors merge by link, sends merge by text", () => {
     const out = dedupeIntents([
       { type: "mirror", linkId: "L", rootHint: null, renamedTo: null },
       { type: "mirror", linkId: "L", rootHint: 3, renamedTo: null },

@@ -6,8 +6,8 @@ import {
   templateLabel,
 } from "./template";
 
-describe("模板:变量替换", () => {
-  it("替换 date/title,允许花括号内外留白", () => {
+describe("template: variable substitution", () => {
+  it("replaces date/title and allows whitespace inside and outside the braces", () => {
     expect(
       renderTemplate("# {{date}}\n\n{{ title }} 的笔记\n", {
         date: "2026-11-01",
@@ -16,7 +16,7 @@ describe("模板:变量替换", () => {
     ).toBe("# 2026-11-01\n\n会议 的笔记\n");
   });
 
-  it("未知变量与普通花括号原样保留", () => {
+  it("unknown variables and plain braces are kept as is", () => {
     expect(
       renderTemplate("{{time}} {{date}} {{code}} {{ x }}", {
         date: "2026-11-01",
@@ -25,14 +25,14 @@ describe("模板:变量替换", () => {
     ).toBe("{{time}} 2026-11-01 {{code}} {{ x }}");
   });
 
-  it("变量值里的花括号不会被二次替换", () => {
+  it("braces inside a variable value are not substituted a second time", () => {
     expect(renderTemplate("{{title}}", { date: "d", title: "{{date}}" })).toBe(
       "{{date}}",
     );
   });
 });
 
-describe("模板:目录与文件列表", () => {
+describe("template: directory and file list", () => {
   const files = [
     "Templates/日记.md",
     "Templates/会议/周会.md",
@@ -41,7 +41,7 @@ describe("模板:目录与文件列表", () => {
     "Daily/2026-11-01.md",
   ];
 
-  it("目录规范化:去掉空白、首尾斜杠与 `.` 段,反斜杠转 `/`", () => {
+  it("directory normalization: whitespace, leading/trailing slashes and `.` segments are removed and backslashes become `/`", () => {
     expect(normalizeTemplateDir("  /Templates/  ")).toBe("Templates");
     expect(normalizeTemplateDir("./Templates//会议")).toBe("Templates/会议");
     expect(normalizeTemplateDir("Templates\\会议")).toBe("Templates/会议");
@@ -49,12 +49,12 @@ describe("模板:目录与文件列表", () => {
     expect(normalizeTemplateDir("  /  ")).toBe("");
   });
 
-  it("含 `..` 的目录视为未设置(不读仓库外文件)", () => {
+  it("a directory containing `..` counts as unset (no file outside the repo is read)", () => {
     expect(normalizeTemplateDir("../Templates")).toBe("");
     expect(normalizeTemplateDir("Templates/../x")).toBe("");
   });
 
-  it("只列目录内文件(含子目录),按路径排序", () => {
+  it("only files inside the directory are listed (including subdirectories), sorted by path", () => {
     expect(templateFiles(files, "Templates")).toEqual([
       "Templates/会议/周会.md",
       "Templates/日记.md",
@@ -68,7 +68,7 @@ describe("模板:目录与文件列表", () => {
     expect(templateFiles(files, "")).toEqual([]);
   });
 
-  it("选项显示名相对模板目录;目录外的路径原样显示", () => {
+  it("the option label is relative to the template directory; paths outside the directory are shown as is", () => {
     expect(templateLabel("Templates/会议/周会.md", "Templates")).toBe("会议/周会.md");
     expect(templateLabel("Other/x.md", "Templates")).toBe("Other/x.md");
     expect(templateLabel("Other/x.md", "")).toBe("Other/x.md");

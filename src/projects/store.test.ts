@@ -73,8 +73,8 @@ beforeEach(async () => {
   await store.loadProjects(VAULT);
 });
 
-describe("删除项目", () => {
-  it("文件进废纸篓,列表与文档缓存同步清掉", async () => {
+describe("deleting a project", () => {
+  it("the file goes to the trash, the list and the document cache are cleared together", async () => {
     expect(store.projectEntries().map((e) => e.name)).toEqual(["读书", "写作"]);
     await store.readProjectDoc(PROJECT); // occupy a cache entry first
 
@@ -86,7 +86,7 @@ describe("删除项目", () => {
     expect(store.cachedProjectDoc(PROJECT)).toBeUndefined();
   });
 
-  it("删除后迟到的自动保存被丢弃,文件不会复活", async () => {
+  it("a late autosave after the deletion is dropped, the file does not come back", async () => {
     await store.deleteProject(VAULT, PROJECT);
     fs.events.length = 0;
 
@@ -98,7 +98,7 @@ describe("删除项目", () => {
     expect(fs.events).toEqual([]);
   });
 
-  it("删除前已经排队的保存先落盘,再删(顺序契约)", async () => {
+  it("a save queued before the deletion is written to disk first, then the deletion runs (ordering contract)", async () => {
     fs.delayMs = 20;
     const save = store.writeProjectDoc(PROJECT, "- [ ] 最新一笔");
 
@@ -109,7 +109,7 @@ describe("删除项目", () => {
     expect(fs.files.has(PROJECT)).toBe(false);
   });
 
-  it("文件重新出现(废纸篓还原/外部新建同名)后墓碑失效,可以继续保存", async () => {
+  it("once the file reappears (restored from trash / created externally with the same name) the tombstone is void and saving works again", async () => {
     await store.deleteProject(VAULT, PROJECT);
     fs.files.set(PROJECT, "- [ ] 从废纸篓还原");
 
@@ -119,7 +119,7 @@ describe("删除项目", () => {
     expect(fs.files.get(PROJECT)).toBe("- [ ] 还原后编辑");
   });
 
-  it("删除进行中,watcher 读到「文件还在」的旧目录也不会撤墓碑", async () => {
+  it("while the deletion is in flight, a watcher reading the old directory that still shows the file does not withdraw the tombstone", async () => {
     // The real timing: deleting from the disk is asynchronous and during that
     // time the vault watcher sends back the directory snapshot from before the
     // deletion. If the tombstone were withdrawn on that basis, the autosave that
@@ -135,13 +135,13 @@ describe("删除项目", () => {
     expect(fs.files.has(PROJECT)).toBe(false);
   });
 
-  it("删的是当前聚焦项目时把聚焦交还给视图", async () => {
+  it("deleting the currently focused project hands the focus back to the view", async () => {
     store.setFocusedProject(PROJECT);
     await store.deleteProject(VAULT, PROJECT);
     expect(store.focusedProjectPath()).toBeNull();
   });
 
-  it("废纸篓失败时撤掉墓碑,项目仍能正常保存", async () => {
+  it("when the trash call fails the tombstone is withdrawn and the project can still be saved", async () => {
     // This case guards against the silent data loss of "the deletion failed ->
     // nothing can be written to the project anymore".
     const api = (await import("@/lib/tauri")).api as unknown as { trashPath: () => Promise<void> };

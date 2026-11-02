@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { forkCutoff, forkLabel } from "./agentFork";
 
 describe("forkCutoff", () => {
-  it("取该消息自己的计数(含本条的前缀条数)", () => {
+  it("takes the count of that message itself (including its own prefix count)", () => {
     const entries = [
       { role: "user" as const, items: 1 },
       { role: "assistant" as const, items: 3 },
@@ -12,7 +12,7 @@ describe("forkCutoff", () => {
     expect(forkCutoff(entries, 2)).toBe(4);
   });
 
-  it("计数缺失时退到最近一条有计数的消息", () => {
+  it("falls back to the nearest message that has a count when the count is missing", () => {
     const entries = [
       { role: "user" as const, items: 1 },
       { role: "assistant" as const, items: 3 },
@@ -23,14 +23,14 @@ describe("forkCutoff", () => {
     expect(forkCutoff(entries, 2)).toBe(3);
   });
 
-  it("全部未知 / 空会话时从零开始", () => {
+  it("starts from zero when every count is unknown or the session is empty", () => {
     expect(forkCutoff([{ role: "assistant", items: null }], 0)).toBe(0);
     expect(forkCutoff([], 0)).toBe(0);
   });
 });
 
 describe("forkLabel", () => {
-  it("取首行并截断", () => {
+  it("takes the first line and truncates it", () => {
     expect(forkLabel("第一行\n第二行")).toBe("第一行");
     // 20 Chinese characters, truncated to 18
     expect(forkLabel("一二三四五六七八九十一二三四五六七八九十继续")).toBe(
@@ -38,7 +38,7 @@ describe("forkLabel", () => {
     );
   });
 
-  it("空文本回退占位", () => {
+  it("empty text falls back to a placeholder", () => {
     expect(forkLabel("")).toBe("空消息");
     expect(forkLabel("  \n  ")).toBe("空消息");
   });

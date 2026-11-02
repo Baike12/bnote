@@ -7,8 +7,8 @@ import {
   undoAnnotationHistory,
 } from "./annotationHistory";
 
-describe("批注撤销栈", () => {
-  it("撤销回到改动前,重做回到改动后", () => {
+describe("the annotation undo stack", () => {
+  it("undo returns to the state before the change, redo returns to the state after it", () => {
     const history = createAnnotationHistory<string[]>();
     recordAnnotationHistory(history, ["a"]);
     // The current state is ["a","b"]; undo returns ["a"], redo returns ["a","b"].
@@ -18,7 +18,7 @@ describe("批注撤销栈", () => {
     expect(undoAnnotationHistory(history, ["a"])).toBeNull();
   });
 
-  it("新改动清空重做栈", () => {
+  it("a new change clears the redo stack", () => {
     const history = createAnnotationHistory<string[]>();
     recordAnnotationHistory(history, ["a"]);
     const undone = undoAnnotationHistory(history, ["a", "b"]);
@@ -28,7 +28,7 @@ describe("批注撤销栈", () => {
     expect(undoAnnotationHistory(history, ["c"])).toEqual(["a"]);
   });
 
-  it("上限丢弃最老快照,重置清空两栈", () => {
+  it("the cap drops the oldest snapshot, reset clears both stacks", () => {
     const history = createAnnotationHistory<number>(2);
     recordAnnotationHistory(history, 1);
     recordAnnotationHistory(history, 2);

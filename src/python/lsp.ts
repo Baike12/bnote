@@ -82,7 +82,7 @@ async function installListeners() {
       console.info("[python-lsp]", e.payload?.project, e.payload?.state);
     });
   } catch (e) {
-    console.warn("[python-lsp] 事件监听不可用", e);
+    console.warn("[python-lsp] the event listener is unavailable", e);
   }
 }
 
@@ -205,7 +205,7 @@ async function pushVirtualText(mdPath: string, eff: PythonExtract): Promise<Sync
     lastSentText.delete(mdPath);
     if (Date.now() > backoffUntil) {
       backoffUntil = Date.now() + SYNC_FAILURE_BACKOFF_MS;
-      console.warn("[python-lsp] 同步失败,30s 内不再重试:", e);
+      console.warn("[python-lsp] sync failed, no retry within 30s:", e);
       useAppStore.getState().showToast(`ty 类型检查启动失败: ${String(e)}`);
     }
     return "error";

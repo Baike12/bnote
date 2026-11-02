@@ -60,8 +60,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("快速添加:模板", () => {
-  it("命令配了模板:新文件内容是渲染后的模板", async () => {
+describe("quick add: templates", () => {
+  it("the command has a template: the new file content is the rendered template", async () => {
     disk.set(TPL, "# {{date}} 周会\n\n- [ ] 议题:{{title}}\n");
     await quickAddNote("Notes", "产品周会", "Templates/会议.md");
     expect(disk.get("/v/Notes/产品周会.md")).toBe(
@@ -69,12 +69,12 @@ describe("快速添加:模板", () => {
     );
   });
 
-  it("没配模板:保持空文件(原有行为)", async () => {
+  it("no template configured: the file stays empty (existing behaviour)", async () => {
     await quickAddNote("Notes", "随手记");
     expect(disk.get("/v/Notes/随手记.md")).toBe("");
   });
 
-  it("模板文件读不到:照常建文件,并提示原因", async () => {
+  it("the template file cannot be read: the file is still created and the reason is reported", async () => {
     const toasts: string[] = [];
     vi.spyOn(useAppStore.getState(), "showToast").mockImplementation((m) => {
       toasts.push(m);
@@ -84,7 +84,7 @@ describe("快速添加:模板", () => {
     expect(toasts).toContain("模板读取失败，已创建空文件");
   });
 
-  it("模板路径越出仓库(`..`):按未配置处理,不读任何文件", async () => {
+  it("a template path escaping the repo (`..`): treated as not configured, no file is read", async () => {
     disk.set("/secret.md", "# 不该读\n");
     await quickAddNote("Notes", "x", "../secret.md");
     expect(disk.get("/v/Notes/x.md")).toBe("");

@@ -365,7 +365,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn running_guard_离开作用域一定复位_含_panic_展开() {
+    fn running_guard_always_resets_on_scope_exit_including_a_panic_unwind() {
         // Historical defect: running was only reset manually at the end of send,
         // so a panic or a dropped task (a hanging request) left it true forever →
         // every later agent_send was rejected.
@@ -378,17 +378,17 @@ mod tests {
         flag.store(true, Ordering::SeqCst);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _g = RunningGuard(flag.clone());
-            panic!("模拟会话内部 panic");
+            panic!("simulated panic inside the session");
         }));
         assert!(result.is_err());
         assert!(
             !flag.load(Ordering::SeqCst),
-            "panic 展开时守卫必须复位 running"
+            "the guard must reset running while unwinding a panic"
         );
     }
 
     #[test]
-    fn 固定要求在自定义指令之前_且自定义指令为空时不出现该节() {
+    fn fixed_requirements_precede_the_custom_instructions_and_an_empty_section_is_omitted() {
         let base = build_study_prompt("vault", None, None, "");
         assert!(base.contains("结论先行"));
         assert!(!base.contains(".bnote/AGENTS.md"));
@@ -396,11 +396,11 @@ mod tests {
         let with_user = build_study_prompt("vault", None, None, "  多用表格回答。 \n");
         let custom = with_user.find("多用表格回答。").unwrap();
         let fixed = with_user.find("结论先行").unwrap();
-        assert!(fixed < custom, "用户指令应在固定要求之后追加");
+        assert!(fixed < custom, "custom instructions must follow the fixed requirements");
     }
 
     #[test]
-    fn 纯问答_提示词不出现任何工具引导() {
+    fn the_qa_only_prompt_contains_no_tool_instructions() {
         // Historical defect: the prompt demanded "call read_study_content before
         // answering" and, on top of that, registered all built-in and MCP tools
         // in the request, so every question triggered a tool call. The study
@@ -411,7 +411,7 @@ mod tests {
             title: "paper".into(),
         };
         let p = build_study_prompt("vault", Some("notes/a.md"), Some(&study), "");
-        assert!(!p.contains("tool"), "不得引导调用工具:\n{}", p);
+        assert!(!p.contains("tool"), "the prompt must not instruct tool calls:\n{}", p);
         assert!(!p.contains("read_study_content"));
         assert!(!p.contains("skill"));
         assert!(!p.contains("mcp__"));
@@ -419,14 +419,14 @@ mod tests {
     }
 
     #[test]
-    fn 创作提示词_约定技能与指令节齐全_空列表也有兜底() {
+    fn the_creative_prompt_has_the_skill_and_instruction_sections_with_a_fallback() {
         let p = build_creative_prompt("vault", Some("notes/a.md"), "", &[], &[]);
         // The / and @ conventions must be present: the front end completion only
         // inserts text, the semantics live entirely in the prompt.
         assert!(p.contains("/skill-name"));
         assert!(p.contains("@path/to/file"));
         assert!(p.contains("preview_html"));
-        assert!(!p.contains("## 用户自定义指令(.bnote/AGENTS.md)"), "空指令不出现该节");
+        assert!(!p.contains("## 用户自定义指令(.bnote/AGENTS.md)"), "absent for empty input");
         assert!(p.contains("仓库暂无技能"));
         assert!(p.contains("未连接 MCP 服务器"));
 
@@ -446,6 +446,6 @@ mod tests {
         assert!(p.contains("- mcp__volcano__shell"));
         let custom = p.find("多用表格").unwrap();
         let tools = p.find("## 工具").unwrap();
-        assert!(tools < custom, "用户指令应在工具规则之后追加");
+        assert!(tools < custom, "the custom instructions must be appended after the tool rules");
     }
 }

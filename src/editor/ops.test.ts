@@ -50,50 +50,50 @@ function makeRangeView(doc: string, from: number, to: number): EditorView {
   } as unknown as EditorView;
 }
 
-describe("toggleTodo 的光标落点（前缀区 → 新标记之后）", () => {
-  it("空行切换待办：光标落在 `- [ ] ` 之后，可直接输入", () => {
+describe("toggleTodo caret landing (prefix area → after the new marker)", () => {
+  it("empty line toggled to a todo: the caret lands after `- [ ] ` so typing can start right away", () => {
     const view = makeView("", [0]);
     toggleTodo(view);
     expect(text(view)).toBe("- [ ] ");
     expect(pos(view)).toBe(6);
   });
 
-  it("行首的普通文本行：光标落到标记与正文之间", () => {
+  it("plain text line at the line start: the caret lands between the marker and the body", () => {
     const view = makeView("hello", [0]);
     toggleTodo(view);
     expect(text(view)).toBe("- [ ] hello");
     expect(pos(view)).toBe(6);
   });
 
-  it("正文中间的光标：经映射留在原字符上，不吸附到标记后", () => {
+  it("caret inside the body: the mapping keeps it on the original character instead of snapping after the marker", () => {
     const view = makeView("hello", [3]);
     toggleTodo(view);
     expect(text(view)).toBe("- [ ] hello");
     expect(pos(view)).toBe(9); // the "l" that was at col 3
   });
 
-  it("行首的无序列表项：换成待办后光标同样落在标记后", () => {
+  it("bullet list item at the line start: after it becomes a todo the caret still lands after the marker", () => {
     const view = makeView("- item", [0]);
     toggleTodo(view);
     expect(text(view)).toBe("- [ ] item");
     expect(pos(view)).toBe(6);
   });
 
-  it("缩进行：光标在缩进内时落到缩进+标记之后", () => {
+  it("indented line: with the caret inside the indent it lands after the indent plus the marker", () => {
     const view = makeView("  text", [1]);
     toggleTodo(view);
     expect(text(view)).toBe("  - [ ] text");
     expect(pos(view)).toBe(8);
   });
 
-  it("完成待办（→ [x] + 戳记）：选区不动，文本正确", () => {
+  it("completing a todo (→ [x] + stamp): the selection stays put and the text is correct", () => {
     const view = makeView("- [ ] foo", [4]);
     toggleTodo(view);
     expect(text(view)).toBe(`- [x] foo ✅ ${todayStamp()}`);
     expect(pos(view)).toBe(4);
   });
 
-  it("多光标跨行：后一行的落点计入前一行的前缀增量", () => {
+  it("multiple cursors across lines: the later line's landing point counts the earlier line's prefix delta", () => {
     const view = makeView("\nabc", [0, 1]);
     toggleTodo(view);
     expect(text(view)).toBe("- [ ] \n- [ ] abc");
@@ -103,14 +103,14 @@ describe("toggleTodo 的光标落点（前缀区 → 新标记之后）", () => 
   });
 });
 
-describe("cycleHeading：重复按键在 正文→H1→H2→H3→H4→正文 间循环", () => {
-  it("正文行第一次按：加一级标题前缀", () => {
+describe("cycleHeading: repeated presses cycle body→H1→H2→H3→H4→body", () => {
+  it("body line pressed the first time: a one-level heading prefix is added", () => {
     const view = makeView("标题文字", [2]);
     cycleHeading(view);
     expect(text(view)).toBe("# 标题文字");
   });
 
-  it("逐级深入到 H4 后摘掉前缀，循环回正文再从 H1 重新开始", () => {
+  it("after descending to H4 the prefix is stripped, cycling back to body and starting again at H1", () => {
     const view = makeView("# 一", [0]);
     cycleHeading(view);
     expect(text(view)).toBe("## 一");
@@ -124,7 +124,7 @@ describe("cycleHeading：重复按键在 正文→H1→H2→H3→H4→正文 间
     expect(text(view)).toBe("# 一");
   });
 
-  it("H5/H6 不在循环里：下一档直接取消标题", () => {
+  it("H5/H6 are not in the cycle: the next step drops the heading entirely", () => {
     const view = makeView("##### 五", [3]);
     cycleHeading(view);
     expect(text(view)).toBe("五");
@@ -133,20 +133,20 @@ describe("cycleHeading：重复按键在 正文→H1→H2→H3→H4→正文 间
     expect(text(view6)).toBe("六");
   });
 
-  it("多光标跨行：每行各前进一步，正文行从 H1 起", () => {
+  it("multiple cursors across lines: each line advances one step, body lines start at H1", () => {
     const view = makeView("# a\nb\n## c", [0, 4, 9]);
     cycleHeading(view);
     expect(text(view)).toBe("## a\n# b\n### c");
   });
 
-  it("空行也参与循环：加一级标题前缀", () => {
+  it("empty lines take part in the cycle: a one-level heading prefix is added", () => {
     const view = makeView("", [0]);
     cycleHeading(view);
     expect(text(view)).toBe("# ");
   });
 });
 
-describe("planHeaderTodoJump:⌘T 的往返决策", () => {
+describe("planHeaderTodoJump: the round-trip decision of ⌘T", () => {
   const state = (doc: string) => EditorState.create({ doc }).doc;
   // The daily branch's insert string has no trailing newline, so the caret =
   // at + insert.length; the plain note branch's insert string carries a
@@ -159,81 +159,81 @@ describe("planHeaderTodoJump:⌘T 的往返决策", () => {
     cursor,
   });
 
-  it("头部有待办块:正文光标跳到块尾行行尾", () => {
+  it("header has a todo block: a body caret jumps to the end of the block's last line", () => {
     const doc = "- [ ] 甲\n- [x] 乙\n\n正文第一行\n";
     const p = planHeaderTodoJump(state(doc), 4, false, false);
     expect(p).toEqual({ action: "jump", anchor: doc.indexOf("乙") + 1 });
   });
 
-  it("日记形状:H1 之后的待办区就是头部块(跳到块尾行行尾)", () => {
+  it("daily-note shape: the todo area after H1 is the header block (jumps to the end of the block's last line)", () => {
     const doc = "# 1 2026-10-05\n- [ ] 甲\n- [x] 乙\n\n正文\n";
     const p = planHeaderTodoJump(state(doc), 6, false, true);
     expect(p).toEqual({ action: "jump", anchor: doc.indexOf("乙") + 1 });
   });
 
-  it("日记:第一行就是待办(H1 之前的待办区同样认)", () => {
+  it("daily note: the first line is a todo (a todo area before H1 counts too)", () => {
     const doc = "- [ ] 甲\n# 1 2026-10-05\n\n正文\n";
     const p = planHeaderTodoJump(state(doc), 4, false, true);
     expect(p).toEqual({ action: "jump", anchor: doc.indexOf("甲") + 1 });
   });
 
-  it("块内光标 + 有来处记忆 → 回跳;无记忆 → 静默", () => {
+  it("caret inside the block + a return memory → go back; without memory → stay", () => {
     const doc = "- [ ] 甲\n\n正文\n";
     expect(planHeaderTodoJump(state(doc), 1, true, false)).toEqual({ action: "back" });
     expect(planHeaderTodoJump(state(doc), 1, false, false)).toEqual({ action: "stay" });
   });
 
-  it("无块 + 正文光标:创建在文档顶,光标在待办符号后", () => {
+  it("no block + body caret: the todo is created at the top of the document with the caret after the marker", () => {
     const doc = "段落\n\n正文\n";
     expect(planHeaderTodoJump(state(doc), 3, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("无块 + 文档以空行开头:创建仍在文档顶", () => {
+  it("no block + document starts with a blank line: creation still happens at the top of the document", () => {
     const doc = "\n\n正文\n";
     expect(planHeaderTodoJump(state(doc), 3, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("普通笔记第一行是 H1 标题、无待办:创建在文件最顶,标题被顶到第二行", () => {
+  it("plain note whose first line is an H1 heading with no todo: created at the very top of the file, the heading is pushed to the second line", () => {
     const doc = "# 论 transformer\n\n正文\n";
     expect(planHeaderTodoJump(state(doc), 3, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("普通笔记:头部待办区就是文件最顶,H1 之后的待办不算(照旧创建在最顶)", () => {
+  it("plain note: the header todo area is the very top of the file, todos after H1 do not count (still created at the top)", () => {
     const doc = "# 论 transformer\n- [ ] 正文中的待办\n";
     expect(planHeaderTodoJump(state(doc), 2, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("无块 + 日记正文光标:创建在 H1 之后(日记待办区的位置)", () => {
+  it("no block + daily-note body caret: created after H1 (the daily note's todo area position)", () => {
     const doc = "# 1 2026-10-05\n\n正文\n";
     expect(planHeaderTodoJump(state(doc), 3, false, true)).toEqual(create(14, "\n- [ ] "));
   });
 
-  it("无块 + 光标在标题行:日记有记忆回跳,无记忆就地创建", () => {
+  it("no block + caret on the heading line: a daily note with memory jumps back, without memory creates in place", () => {
     const doc = "# 1 2026-10-05\n";
     expect(planHeaderTodoJump(state(doc), 1, true, true)).toEqual({ action: "back" });
     expect(planHeaderTodoJump(state(doc), 1, false, true)).toEqual(create(14, "\n- [ ] "));
   });
 
-  it("无块 + 光标在文档首行:有记忆回跳,无记忆创建", () => {
+  it("no block + caret on the document's first line: with memory it jumps back, without memory it creates", () => {
     const doc = "正文\n- [ ] 块外的待办不算头部\n";
     expect(planHeaderTodoJump(state(doc), 1, true, false)).toEqual({ action: "back" });
     expect(planHeaderTodoJump(state(doc), 1, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("头部扫描在首个非空非待办行截断:正文的待办不构成头部块(光标在正文→创建)", () => {
+  it("the header scan stops at the first line that is neither blank nor a todo: body todos do not form a header block (caret in the body → create)", () => {
     const doc = "段落\n- [ ] 不是头部\n";
     expect(planHeaderTodoJump(state(doc), 2, false, false)).toEqual(create(0, "- [ ] \n", 6));
   });
 
-  it("空文档:创建,不加尾换行", () => {
+  it("empty document: create without a trailing newline", () => {
     expect(planHeaderTodoJump(state(""), 1, false, false)).toEqual(create(0, "- [ ] "));
   });
 });
 
-describe("jumpHeaderTodos:⌘T 创建空待办端到端", () => {
+describe("jumpHeaderTodos: end-to-end creation of an empty todo with ⌘T", () => {
   const setFile = (path: string) => useAppStore.setState({ currentFile: path });
 
-  it("日记无待办:创建空待办光标落符号后;输入后再按 ⌘T 回到正文原位", () => {
+  it("daily note without todos: an empty todo is created with the caret after the marker; after typing, ⌘T again returns to the original body position", () => {
     resetHeaderTodoReturnForTest(); // the module-level round-trip memory would leak across test cases
     setFile("/v/Daily/2026-10-05.md");
     // press ⌘T at line 3 (the body line), column 2
@@ -252,7 +252,7 @@ describe("jumpHeaderTodos:⌘T 创建空待办端到端", () => {
     expect(pos(view) - cur.from).toBe(2); // column 2, same as before the creation
   });
 
-  it("普通笔记无待办:创建在文档顶,原内容被顶到下一行", () => {
+  it("plain note without todos: created at the top of the document, the original content is pushed to the next line", () => {
     resetHeaderTodoReturnForTest();
     setFile("/v/笔记.md");
     const view = makeView("笔记正文\n", [2]);
@@ -261,7 +261,7 @@ describe("jumpHeaderTodos:⌘T 创建空待办端到端", () => {
     expect(pos(view)).toBe("- [ ] ".length);
   });
 
-  it("普通笔记(H1 标题开头)无待办:待办成为第一行;再按 ⌘T 回到正文原位", () => {
+  it("plain note (starting with an H1 heading) without todos: the todo becomes the first line; ⌘T again returns to the original body position", () => {
     resetHeaderTodoReturnForTest();
     setFile("/v/笔记.md");
     const view = makeView("# 论 transformer\n\n正文\n", [17]); // start of the "正文" line
@@ -276,29 +276,29 @@ describe("jumpHeaderTodos:⌘T 创建空待办端到端", () => {
   });
 });
 
-describe("insertCallout:插入形状与光标落点", () => {
-  it("空行插入:开栏带标题槽、闭栏紧跟其后(两栏之间不预置空行)", () => {
+describe("insertCallout: the inserted shape and the caret landing point", () => {
+  it("insert on an empty line: the opening fence carries a title slot and the closing fence follows right after it (no blank line between the two fences)", () => {
     const view = makeView("", [0]);
     insertCallout(view);
     expect(text(view)).toBe("::: \n:::");
     expect(pos(view)).toBe(4); // after the title slot: the title can be typed right away
   });
 
-  it("非空行插入:插到本行尾之后,光标同在标题槽之后", () => {
+  it("insert on a non-empty line: the block goes after the end of this line, with the caret after the title slot too", () => {
     const view = makeView("hello", [3]);
     insertCallout(view);
     expect(text(view)).toBe("hello\n::: \n:::");
     expect(pos(view)).toBe(10);
   });
 
-  it("列表项内插入:两栏都落栏 0(缩进的闭栏永远关不上块)", () => {
+  it("insert inside a list item: both fences land at column 0 (an indented closing fence can never close the block)", () => {
     const view = makeView("  - 项", [5]);
     insertCallout(view);
     expect(text(view)).toBe("  - 项\n::: \n:::");
     expect(pos(view)).toBe(10);
   });
 
-  it("落点即标题槽:直接输入的文字成为 callout 标题,回车即正文行", () => {
+  it("the landing point is the title slot: typed text becomes the callout title, Enter becomes the body line", () => {
     const view = makeView("", [0]);
     insertCallout(view);
     const slot = pos(view);
@@ -317,7 +317,7 @@ describe("insertCallout:插入形状与光标落点", () => {
     expect(calloutRegions(view.state)[0].title).toBe("正则化");
   });
 
-  it("插入的块一定被扫描器闭合(空行/正文行/列表行三种来处)", () => {
+  it("the inserted block is always closed by the scanner (empty line / body line / list line origins)", () => {
     for (const doc of ["", "hello", "  - 项"]) {
       const view = makeView(doc, [doc.length]);
       insertCallout(view);
@@ -327,7 +327,7 @@ describe("insertCallout:插入形状与光标落点", () => {
     }
   });
 
-  it("选中插入:块建在选区行之后(空一行),原文留原处,光标落块内空行", () => {
+  it("insert with a selection: the block is created after the selection's line (one blank line apart), the original text stays in place, the caret lands on the blank line inside the block", () => {
     const view = makeRangeView("开头\n斜率矩阵\n结尾", 3, 7); // selecting "斜率矩阵"
     insertCallout(view);
     expect(text(view)).toBe("开头\n斜率矩阵\n\n::: 斜率矩阵\n\n:::\n结尾");
@@ -341,7 +341,7 @@ describe("insertCallout:插入形状与光标落点", () => {
     expect(regions[0].closed).toBe(true);
   });
 
-  it("选区行与开栏之间恰好空一行,块后的内容保留", () => {
+  it("exactly one blank line between the selection line and the opening fence, the content after the block is preserved", () => {
     const cases: [string, number, number, string][] = [
       // doc, selection, expected
       ["甲", 0, 1, "甲\n\n::: 甲\n\n:::"],
@@ -355,14 +355,14 @@ describe("insertCallout:插入形状与光标落点", () => {
     }
   });
 
-  it("跨行选区:标题压成单行(换行→空格),块建在选区末行之后", () => {
+  it("multi-line selection: the title is flattened to one line (newline→space), the block is created after the selection's last line", () => {
     const view = makeRangeView("甲\n乙丙", 0, 3); // selecting "甲\n乙"
     insertCallout(view);
     expect(text(view)).toBe("甲\n乙丙\n\n::: 甲 乙\n\n:::");
     expect(calloutRegions(view.state)[0].title).toBe("甲 乙");
   });
 
-  it("选中插入不吞公式/图片链接源码:标题原样保留", () => {
+  it("inserting with a selection does not swallow formula/image link source: the title is kept verbatim", () => {
     const doc = "前\n$$E=mc^2$$\n后";
     const view = makeRangeView(doc, 2, 12); // selecting $$E=mc^2$$
     insertCallout(view);
@@ -370,7 +370,7 @@ describe("insertCallout:插入形状与光标落点", () => {
     expect(calloutRegions(view.state)[0].title).toBe("$$E=mc^2$$");
   });
 
-  it("锚点往返:光标在原文上按 ⌘⇧B 跳到块,再按回到原文", () => {
+  it("anchor round trip: with the caret on the original text ⌘⇧B jumps to the block, pressing again returns to the original text", () => {
     resetCalloutReturnForTest();
     useAppStore.setState({ currentFile: "/v/笔记.md" });
     const doc = "开头\n斜率矩阵\n结尾\n\n::: 斜率矩阵\n\n:::\n";
@@ -385,7 +385,7 @@ describe("insertCallout:插入形状与光标落点", () => {
     expect(pos(view)).toBe(3);
   });
 
-  it("callout 内无来处记忆:照旧就地开新块(不跳转)", () => {
+  it("no return memory inside the callout: a new block is opened in place as usual (no jump)", () => {
     resetCalloutReturnForTest();
     useAppStore.setState({ currentFile: "/v/笔记.md" });
     const view = makeView("::: 甲\n内容\n:::\n", [8]);
@@ -393,7 +393,7 @@ describe("insertCallout:插入形状与光标落点", () => {
     expect(text(view)).toBe("::: 甲\n内容\n::: \n:::\n:::\n");
   });
 
-  it("选区是纯空白:不建空标题块,按无选区处理(就地开空块)", () => {
+  it("the selection is pure whitespace: no empty-title block is created, it is handled as no selection (an empty block opens in place)", () => {
     const view = makeRangeView("甲 乙", 1, 2); // selecting a single space
     insertCallout(view);
     expect(text(view)).toBe("甲 乙\n::: \n:::");
@@ -401,66 +401,66 @@ describe("insertCallout:插入形状与光标落点", () => {
   });
 });
 
-describe("calloutInsertAnchor:选中插入的落点", () => {
+describe("calloutInsertAnchor: the landing point when inserting with a selection", () => {
   const anchorOf = (doc: string, from: number, to: number) => {
     const state = EditorState.create({ doc });
     return calloutInsertAnchor(state, from, to);
   };
 
-  it("普通文本:选区末行的行尾(块之后原有的内容被推到块后)", () => {
+  it("plain text: the end of the selection's last line (the content originally after the block is pushed behind the block)", () => {
     const doc = "第一行\n第二行\n第三行";
     expect(anchorOf(doc, 0, 3)).toBe(3); // the selection is on line 1
     expect(anchorOf(doc, 4, 8)).toBe(7); // the selection carries the trailing newline and still counts as line 2
   });
 
-  it("围栏代码块内:延伸到闭栏行行尾(不切开代码块)", () => {
+  it("inside a fenced code block: it extends to the end of the closing fence line (the code block is not cut)", () => {
     expect(anchorOf("```py\ncode line\n```\n后文", 6, 15)).toBe(19);
   });
 
-  it("未闭合围栏内:延伸到文档末行行尾", () => {
+  it("inside an unclosed fence: it extends to the end of the document's last line", () => {
     expect(anchorOf("```py\ncode", 6, 10)).toBe(10);
   });
 
-  it("display 公式块内:延伸到闭 $$ 行行尾", () => {
+  it("inside a display formula block: it extends to the end of the closing $$ line", () => {
     expect(anchorOf("前\n$$\nE=mc^2\n$$\n后", 5, 11)).toBe(14);
   });
 
-  it("单行 display 公式:落点就是本行行尾", () => {
+  it("single-line display formula: the landing point is the end of that line", () => {
     expect(anchorOf("前\n$$E=mc^2$$\n后", 2, 12)).toBe(12);
   });
 });
 
-describe("planCalloutShortcut:无选区 ⌘⇧B 的决策", () => {
+describe("planCalloutShortcut: the decision for ⌘⇧B without a selection", () => {
   const mk = (doc: string) => {
     const state = EditorState.create({ doc });
     return { doc: state.doc, callouts: calloutRegions(state) };
   };
 
-  it("光标在锚点文本内:跳到关联 callout", () => {
+  it("caret inside the anchor text: jump to the related callout", () => {
     const { doc, callouts } = mk("斜率矩阵\n\n::: 斜率矩阵\n\n:::\n");
     const p = planCalloutShortcut(doc, callouts, 1, false);
     expect(p.action).toBe("anchor-jump");
     if (p.action === "anchor-jump") expect(p.region.title).toBe("斜率矩阵");
   });
 
-  it("光标恰在锚点末尾之外(区间右开):不跳,就地插入", () => {
+  it("caret just past the anchor's end (the range is right-open): no jump, insert in place", () => {
     const { doc, callouts } = mk("斜率矩阵\n\n::: 斜率矩阵\n\n:::\n");
     expect(planCalloutShortcut(doc, callouts, 4, false)).toEqual({ action: "insert" });
   });
 
-  it("光标在 callout 内(含边界行):有来处记忆回跳,无记忆就地插入", () => {
+  it("caret inside the callout (boundary lines included): with a return memory it jumps back, without memory it inserts in place", () => {
     const { doc, callouts } = mk("正文\n\n::: 甲\n\n:::\n");
     const inside = doc.line(3).from + 1; // inside the "::: 甲" line
     expect(planCalloutShortcut(doc, callouts, inside, true)).toEqual({ action: "back" });
     expect(planCalloutShortcut(doc, callouts, inside, false)).toEqual({ action: "insert" });
   });
 
-  it("光标在普通文本上:就地插入", () => {
+  it("caret on plain text: insert in place", () => {
     const { doc, callouts } = mk("正文\n\n::: 甲\n\n:::\n");
     expect(planCalloutShortcut(doc, callouts, 1, false)).toEqual({ action: "insert" });
   });
 
-  it("无标题裸块:块外文本不产生锚点", () => {
+  it("untitled bare block: text outside the block produces no anchor", () => {
     const { doc, callouts } = mk("内容\n\n:::\n甲\n:::\n");
     expect(planCalloutShortcut(doc, callouts, 1, false)).toEqual({ action: "insert" });
   });
@@ -474,10 +474,10 @@ describe("planCalloutShortcut:无选区 ⌘⇧B 的决策", () => {
  * locks the "skeleton shape" and the seam between the two modules at once: the
  * environment name the skeleton emits must be the one matrixEnvAt recognizes.
  */
-describe("insertMathBlock:公式块骨架(⌘M)", () => {
+describe("insertMathBlock: the formula block skeleton (⌘M)", () => {
   const SKELETON = "$$\n\\begin{align}\n\n\\end{align}\n$$";
 
-  it("空行:原位替换成 align 骨架,光标落环境内空行", () => {
+  it("empty line: replaced in place by the align skeleton, the caret lands on the blank line inside the environment", () => {
     const view = makeView("前\n\n后", [2]);
     insertMathBlock(view);
     expect(text(view)).toBe(`前\n${SKELETON}\n后`);
@@ -487,14 +487,14 @@ describe("insertMathBlock:公式块骨架(⌘M)", () => {
     expect(view.state.doc.line(3).text).toBe("\\begin{align}");
   });
 
-  it("非空行:骨架插到本行之后,定界行自己占行", () => {
+  it("non-empty line: the skeleton is inserted after this line, the delimiter lines each take a line of their own", () => {
     const view = makeView("正文", [1]);
     insertMathBlock(view);
     expect(text(view)).toBe(`正文\n${SKELETON}`);
     expect(view.state.doc.lineAt(pos(view)).number).toBe(4);
   });
 
-  it("插入后回车的接缝:走 align 续行——补对齐点 & 与行尾 \\,光标落新行", () => {
+  it("the Enter seam after insertion: it takes the align continuation path — adding the alignment point & and the trailing \\, the caret lands on the new line", () => {
     const view = makeView("", [0]);
     insertMathBlock(view);
     const line = view.state.doc.lineAt(pos(view));

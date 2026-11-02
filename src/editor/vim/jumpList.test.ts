@@ -133,8 +133,8 @@ function typeKeys(cm: Record<string, unknown>, keys: string[]) {
   for (const k of keys) Vim.multiSelectHandleKey(cm as never, k, "user");
 }
 
-describe("跨文档 jump marker（换文件后 gg/G 失效回归）", () => {
-  it("长文档末尾的书签，换短文档后 find() 报告不存在而不是抛 RangeError", () => {
+describe("cross-document jump markers (the gg/G regression after switching files)", () => {
+  it("a bookmark at the end of a long document reports not found through find() after switching to a short document instead of throwing a RangeError", () => {
     patchVimMarkerFind();
     const long = EditorState.create({ doc: LONG_DOC }).doc;
     const view = { state: { doc: long as Text } };
@@ -152,7 +152,7 @@ describe("跨文档 jump marker（换文件后 gg/G 失效回归）", () => {
     expect((live as { find(): unknown }).find()).toEqual({ line: 1, ch: 2 });
   });
 
-  it("长文档 G → 整份换短文档 → gg/G 照常跳（此前 gg 处必抛 RangeError）", () => {
+  it("long document G → switch wholesale to a short document → gg/G still jump (before, gg always threw a RangeError)", () => {
     patchVimMarkerFind();
     const { cm, cursor, swapDoc } = makeCm(LONG_DOC);
     typeKeys(cm, ["G"]);
@@ -172,7 +172,7 @@ describe("跨文档 jump marker（换文件后 gg/G 失效回归）", () => {
     expect(cursor().line).toBe(0);
   });
 
-  it("换短文档后 <C-o>/<C-i> 走过死标记不抛（jumpList.move 的跳过路径）", () => {
+  it("after switching to a short document <C-o>/<C-i> walk past the dead marker without throwing (the skip path of jumpList.move)", () => {
     patchVimMarkerFind();
     const { cm, cursor, swapDoc } = makeCm(LONG_DOC);
     typeKeys(cm, ["G"]);

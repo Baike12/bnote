@@ -24,16 +24,16 @@ const directives = (conf.app?.security?.csp ?? "")
 
 function scriptSrcTokens(): string[] {
   const scriptSrc = directives.find((d) => d.startsWith("script-src"));
-  if (!scriptSrc) throw new Error("CSP 缺少 script-src 指令");
+  if (!scriptSrc) throw new Error("CSP is missing the script-src directive");
   return scriptSrc.split(/\s+/).slice(1);
 }
 
-describe("打包 CSP 门禁：blob 动态导入(用户公式片段装载)", () => {
-  it("script-src 指令显式存在,不能只靠 default-src 兜底", () => {
+describe("packaged CSP gate: blob dynamic import (user formula snippet loading)", () => {
+  it("an explicit script-src directive exists, default-src alone must not cover it", () => {
     expect(() => scriptSrcTokens()).not.toThrow();
   });
 
-  it("script-src 同时放行 'self'(应用脚本)与 blob:(片段动态导入)", () => {
+  it("script-src allows both 'self' (app scripts) and blob: (snippet dynamic import)", () => {
     const tokens = scriptSrcTokens();
     expect(tokens).toContain("'self'");
     expect(tokens).toContain("blob:");

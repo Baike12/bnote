@@ -138,8 +138,8 @@ function modeOf(cm: { state: { vim?: { insertMode?: boolean } } }): string {
   return vim?.insertMode ? "insert" : "normal";
 }
 
-describe("applyNativeMappings: rhs 原样进引擎(键名改写回归)", () => {
-  it("`imap jj <Esc>`(rhs 含尖括号)两个 j 退出插入模式,文档原样", () => {
+describe("applyNativeMappings: the rhs goes into the engine verbatim (the key name rewriting regression)", () => {
+  it("`imap jj <Esc>` (the rhs contains angle brackets): the two j leave insert mode and the document stays as it is", () => {
     applyNativeMappings([{ lhs: "jj", rhs: "<Esc>", mode: "insert", noremap: true }]);
     const { cm, docText } = makeCm("line one\nline two");
     typeKeys(cm, ["i"]);
@@ -156,7 +156,7 @@ describe("applyNativeMappings: rhs 原样进引擎(键名改写回归)", () => {
     expect(docText()).not.toContain("Esc");
   });
 
-  it("rhs 含 <Esc> 与普通字符混合(jja)仍逐 token 展开", () => {
+  it("an rhs mixing <Esc> with ordinary characters (jja) is still expanded token by token", () => {
     applyNativeMappings([{ lhs: ">>", rhs: "<Esc>A;", mode: "insert", noremap: true }]);
     const { cm, docText } = makeCm("abc");
     typeKeys(cm, ["i"]);
@@ -167,7 +167,7 @@ describe("applyNativeMappings: rhs 原样进引擎(键名改写回归)", () => {
     expect(docText()).toBe("abc;");
   });
 
-  it("裸 Esc 字符串作为 rhs 时被逐字符插入(锁住改写错误的历史症状)", () => {
+  it("a bare Esc string as the rhs is inserted character by character (locking the historic symptom of the rewrite error)", () => {
     // Regression guard: if someone ever rewrites <Esc> back to a bare Esc
     // again, this case will see the mode still insert and the document
     // carrying an extra "Esc" — exactly the dead end users hit.

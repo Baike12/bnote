@@ -7,7 +7,7 @@ import { fileIconKind } from "./fileIcon";
  * components/FileIcon.tsx).
  */
 describe("fileIconKind", () => {
-  it("脚本语言按语言分类", () => {
+  it("script languages are categorized by their language", () => {
     expect(fileIconKind("main.ts")).toBe("ts");
     expect(fileIconKind("App.tsx")).toBe("ts");
     expect(fileIconKind("index.mjs")).toBe("js");
@@ -21,7 +21,7 @@ describe("fileIconKind", () => {
     expect(fileIconKind("Rakefile")).toBe("code");
   });
 
-  it("配置/文档/样式/标记/图片/脚本各归一类", () => {
+  it("config, doc, style, markup, image and script each get their own kind", () => {
     expect(fileIconKind("package.json")).toBe("data");
     expect(fileIconKind("ci.yml")).toBe("data");
     expect(fileIconKind("Cargo.lock")).toBe("data");
@@ -34,7 +34,7 @@ describe("fileIconKind", () => {
     expect(fileIconKind("deploy.sh")).toBe("shell");
   });
 
-  it("无扩展名/点文件按名字认,认不出就是普通文件", () => {
+  it("files without an extension and dotfiles are recognized by name, unknown ones are plain files", () => {
     expect(fileIconKind("Dockerfile")).toBe("code");
     expect(fileIconKind("Makefile")).toBe("code");
     expect(fileIconKind(".gitignore")).toBe("data");
@@ -44,7 +44,7 @@ describe("fileIconKind", () => {
     expect(fileIconKind("")).toBe("file");
   });
 
-  it("大小写不敏感", () => {
+  it("the extension match is case-insensitive", () => {
     expect(fileIconKind("MAIN.PY")).toBe("py");
     expect(fileIconKind("Config.YAML")).toBe("data");
   });

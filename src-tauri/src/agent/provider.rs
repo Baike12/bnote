@@ -640,7 +640,7 @@ mod tests {
     use crate::agent::types::InlineImage;
 
     #[tokio::test]
-    async fn 流空闲超时报错而不是永久挂起() {
+    async fn stream_idle_timeout_errors_instead_of_hanging_forever() {
         // With a half-open gateway the SSE stream never ends on its own: without
         // this timeout a turn hangs forever and the session's running flag never
         // resets (every later send is rejected with SESSION_BUSY).
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 流正常结束返回_none_不误报超时() {
+    async fn stream_ending_normally_returns_none_without_a_timeout_error() {
         let mut stream = futures::stream::iter(Vec::<Result<bytes::Bytes, std::io::Error>>::new());
         assert!(next_chunk_with(&mut stream, Duration::from_millis(30))
             .await
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 流错误原样上报() {
+    async fn stream_error_is_reported_unchanged() {
         let mut stream = futures::stream::iter(vec![Err::<bytes::Bytes, _>(
             std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset"),
         )]);
@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_block_图片映射为_base64_source() {
+    fn anthropic_block_maps_an_image_to_a_base64_source() {
         let v = anthropic_block(&Content::Image {
             media_type: "image/png".into(),
             data: "AAAA".into(),
@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_tool_result_无图保持字符串_有图换_blocks_数组() {
+    fn anthropic_tool_result_stays_a_string_without_images_and_becomes_a_blocks_array() {
         let plain = anthropic_block(&Content::ToolResult {
             tool_use_id: "t1".into(),
             content: "preview updated".into(),
@@ -703,7 +703,7 @@ mod tests {
             images: vec![InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
         });
         assert_eq!(with_img["type"], "tool_result");
-        let blocks = with_img["content"].as_array().expect("有图时 content 应为数组");
+        let blocks = with_img["content"].as_array().expect("content must be an array with images");
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["type"], "text");
         assert_eq!(blocks[0]["text"], "preview updated: page.html");
@@ -713,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_消息组装_tool_result_只出文本_图片不进_tool_消息() {
+    fn openai_tool_result_message_carries_text_only_and_keeps_images_out() {
         // The OpenAI protocol only accepts text in tool messages: a result that
         // carries images serializes with content still plain text, the
         // tool_call_id matches, and no image_url part is included.
@@ -735,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_message_start_usage_把缓存读写计入输入() {
+    fn anthropic_message_start_usage_counts_cache_reads_and_writes_as_input() {
         let message = json!({
             "usage": {
                 "input_tokens": 100,
@@ -751,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_message_delta_只更新输出_输入沿用_start() {
+    fn anthropic_message_delta_updates_only_the_output_and_keeps_the_input_from_start() {
         let start = Some(TokenUsage { input: 420, output: 1 });
         assert_eq!(
             anthropic_output_usage(start, &json!({"output_tokens": 88})),
@@ -766,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_usage_认_prompt_completion_也认_input_output() {
+    fn openai_usage_accepts_prompt_completion_and_input_output() {
         assert_eq!(
             openai_usage(&json!({"usage": {"prompt_tokens": 61_800, "completion_tokens": 10_000}})),
             Some(TokenUsage { input: 61_800, output: 10_000 })
@@ -778,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_缺失_null_或全零时返回_none() {
+    fn usage_returns_none_when_missing_null_or_all_zero() {
         assert_eq!(openai_usage(&json!({})), None);
         assert_eq!(openai_usage(&json!({"usage": null})), None);
         assert_eq!(openai_usage(&json!({"usage": {"prompt_tokens": 0, "completion_tokens": 0}})), None);
@@ -786,13 +786,13 @@ mod tests {
     }
 
     #[test]
-    fn openai_无图片保持纯字符串_兼容旧端点() {
+    fn openai_keeps_a_plain_string_without_images_for_older_endpoints() {
         let v = openai_user_content(&["问题".to_string()], &[]);
         assert_eq!(v, json!("问题"));
     }
 
     #[test]
-    fn openai_带图片换多部件数组_文本在前_data_url格式() {
+    fn openai_switches_to_a_multi_part_array_with_the_text_first_and_a_data_url() {
         let v = openai_user_content(
             &["这是什么".to_string()],
             vec![Content::Image {
@@ -812,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_纯图片消息_没有空文本部件() {
+    fn openai_image_only_message_has_no_empty_text_part() {
         let v = openai_user_content(
             &[],
             vec![Content::Image {

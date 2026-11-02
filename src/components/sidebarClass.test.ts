@@ -15,17 +15,17 @@ import { readFileSync } from "node:fs";
 const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const sidebarTsx = readFileSync("src/components/Sidebar.tsx", "utf8");
 
-describe("侧栏类名与第三方 CSS 隔离", () => {
-  it("组件用专属类名 app-sidebar", () => {
+describe("sidebar class name isolated from third-party CSS", () => {
+  it("the component uses its own class name app-sidebar", () => {
     expect(sidebarTsx).toMatch(/className="app-sidebar"/);
   });
 
-  it("global.css 不定义裸 .sidebar(会被 Excalidraw 覆盖)", () => {
+  it("global.css does not define a bare .sidebar (it would be overridden by Excalidraw)", () => {
     expect(css).not.toMatch(/(^|\n)\s*\.sidebar\s*\{/);
     expect(css).toMatch(/\.app-sidebar\s*\{[^}]*padding-top:\s*30px/);
   });
 
-  it(":has 选择器跟随新类名", () => {
+  it("the :has selector follows the new class name", () => {
     expect(css).toContain(".app:has(> .app-sidebar)");
   });
 });

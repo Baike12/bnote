@@ -70,8 +70,8 @@ function harness(files: Record<string, string> = {}, over: Partial<OpenDailyDeps
   };
 }
 
-describe("打开今日日记", () => {
-  it("缺文件时按引擎同款初始内容建出来,刷新文件树后打开", async () => {
+describe("opening today's daily note", () => {
+  it("when the file is missing it is created with the same initial content as the engine, the file tree is refreshed and then it is opened", async () => {
     const h = harness();
     expect(await openDailyNote(h.deps)).toBe(DAILY);
     expect(h.written).toEqual([{ path: DAILY, content: dailyScaffold(DAY) }]);
@@ -80,7 +80,7 @@ describe("打开今日日记", () => {
     expect(h.opened).toEqual([DAILY]);
   });
 
-  it("已有日记时不写盘、不刷新,只打开", async () => {
+  it("when the daily note already exists nothing is written and nothing is refreshed, it is only opened", async () => {
     const existing = `# ${DAY}\n- [ ] 已有一条\n`;
     const h = harness({ [DAILY]: existing });
     expect(await openDailyNote(h.deps)).toBe(DAILY);
@@ -90,24 +90,24 @@ describe("打开今日日记", () => {
     expect(h.opened).toEqual([DAILY]);
   });
 
-  it("没有打开的仓库:提示且不开文件", async () => {
+  it("no vault is open: a toast is shown and no file is opened", async () => {
     const h = harness({}, { vaultRoot: () => null });
     expect(await openDailyNote(h.deps)).toBeNull();
     expect(h.toasts).toEqual(["没有打开仓库"]);
     expect(h.opened).toEqual([]);
   });
 
-  it("日记路径沿用现有命名(Daily/YYYY-MM-DD.md)", async () => {
+  it("the daily note path keeps the existing naming (Daily/YYYY-MM-DD.md)", async () => {
     const h = harness();
     await openDailyNote(h.deps);
     expect(h.opened[0].endsWith("/Daily/2026-09-27.md")).toBe(true);
   });
 });
 
-describe("新建日记的待办跟随", () => {
+describe("todo rollover of a newly created daily note", () => {
   const PREV = "/v/Daily/2026-09-26.md";
 
-  it("上一篇的未完成待办(保层级)进新日记,已完成叶子不跟、锚链保留", async () => {
+  it("the unfinished todos of the previous note (with the hierarchy) go into the new note, completed leaves do not follow, the anchor chain is kept", async () => {
     const h = harness({
       [PREV]: [
         "# 1 2026-09-26",
@@ -123,13 +123,13 @@ describe("新建日记的待办跟随", () => {
     );
   });
 
-  it("取最近一篇而不是严格昨天:隔了几天也跟", async () => {
+  it("it takes the most recent note instead of strictly yesterday: it follows even after a gap of days", async () => {
     const h = harness({ "/v/Daily/2026-09-24.md": "# d\n- [ ] 前几天没做完\n" });
     await openDailyNote(h.deps);
     expect(h.written[0].content).toBe("# 2026-09-27\n\n- [ ] 前几天没做完\n");
   });
 
-  it("Daily 目录列不到:裸 scaffold,跟随失败不挡创建", async () => {
+  it("the Daily directory cannot be listed: the bare scaffold, a failed rollover does not block the creation", async () => {
     const h = harness();
     h.deps.io = { ...h.deps.io, readDir: async () => null };
     await openDailyNote(h.deps);
@@ -137,10 +137,10 @@ describe("新建日记的待办跟随", () => {
   });
 });
 
-describe("新建日记的模板", () => {
+describe("the template of a newly created daily note", () => {
   const TPL = "/v/Templates/日记.md";
 
-  it("模板内容开篇,{{date}}/{{title}} 换成当天日期", async () => {
+  it("the template content opens the file, {{date}}/{{title}} are replaced with the date of the day", async () => {
     const h = harness(
       { [TPL]: "# {{date}}\n\n## 计划\n- 早会\n" },
       { templatePath: () => "Templates/日记.md" },
@@ -149,7 +149,7 @@ describe("新建日记的模板", () => {
     expect(h.written[0].content).toBe("# 2026-09-27\n\n## 计划\n- 早会\n");
   });
 
-  it("模板与待办跟随叠加:待办区仍紧跟在首个 H1 之后", async () => {
+  it("template and todo rollover stack up: the todo region still follows the first H1 immediately", async () => {
     const h = harness(
       {
         "/v/Daily/2026-09-26.md": "# 前一天\n- [ ] 还没做完\n",
@@ -163,13 +163,13 @@ describe("新建日记的模板", () => {
     );
   });
 
-  it("模板文件读不到:回落到默认 `# 日期`,不挡创建", async () => {
+  it("the template file cannot be read: it falls back to the default `# <date>` heading, the creation is not blocked", async () => {
     const h = harness({}, { templatePath: () => "Templates/已删除.md" });
     await openDailyNote(h.deps);
     expect(h.written[0].content).toBe(dailyScaffold(DAY));
   });
 
-  it("模板没有 H1:待办按引擎既有规则顶到文件最前", async () => {
+  it("the template has no H1: the todos go to the very front of the file by the existing engine rule", async () => {
     const h = harness(
       {
         "/v/Daily/2026-09-26.md": "# 前一天\n- [ ] 还没做完\n",
@@ -181,7 +181,7 @@ describe("新建日记的模板", () => {
     expect(h.written[0].content).toBe("- [ ] 还没做完\n\n## 计划\n");
   });
 
-  it("模板路径越出仓库(`..`):按未设置处理", async () => {
+  it("the template path escapes the vault (`..`): it is treated as not set", async () => {
     const h = harness(
       { "/v/../secret.md": "# 不该读\n" },
       { templatePath: () => "../secret.md" },
@@ -191,8 +191,8 @@ describe("新建日记的模板", () => {
   });
 });
 
-describe("日记内再按 ⌘⇧O:跳回跳转前的文件", () => {
-  it("从笔记跳进日记会记录来源;日记内再按跳回来源,来源文件原样不动", async () => {
+describe("pressing ⌘⇧O again inside the daily note: jump back to the file from before the jump", () => {
+  it("jumping from a note into the daily note records the source; pressing again inside the daily note jumps back to the source, the source file stays unchanged", async () => {
     const note = "/v/Job/ideas.md";
     const h = harness({ [note]: "草稿\n" });
     h.setCurrent(note);
@@ -210,7 +210,7 @@ describe("日记内再按 ⌘⇧O:跳回跳转前的文件", () => {
     expect(h.disk.get(note)).toBe("草稿\n");
   });
 
-  it("toggle 来回反复:每次跳进都重记来源,toggle 语义可循环", async () => {
+  it("toggling back and forth: every jump into the daily note records the source again, the toggle semantics can cycle", async () => {
     const note = "/v/a.md";
     const h = harness({ [note]: "x\n", [DAILY]: "# d\n" });
     h.setCurrent(note);
@@ -221,7 +221,7 @@ describe("日记内再按 ⌘⇧O:跳回跳转前的文件", () => {
     expect(h.opened).toEqual([DAILY, note, DAILY, note]);
   });
 
-  it("无来源时在日记内再按:提示且不跳", async () => {
+  it("with no source, pressing again inside the daily note: a toast is shown and it does not jump", async () => {
     const h = harness({ [DAILY]: "# d\n" });
     h.setCurrent(DAILY);
     await openDailyNote(h.deps);
@@ -229,7 +229,7 @@ describe("日记内再按 ⌘⇧O:跳回跳转前的文件", () => {
     expect(h.toasts).toEqual(["没有可跳回的文件"]);
   });
 
-  it("来源文件已被删除:提示且不跳,槽照常清空", async () => {
+  it("the source file was deleted: a toast is shown and it does not jump, the slot is cleared as usual", async () => {
     const h = harness({ [DAILY]: "# d\n" });
     h.setCurrent("/v/gone.md");
     await openDailyNote(h.deps);
@@ -240,7 +240,7 @@ describe("日记内再按 ⌘⇧O:跳回跳转前的文件", () => {
     expect(h.back()).toBeNull();
   });
 
-  it("来源换成另一篇日记(昨天)也照记:跳回落点是它", async () => {
+  it("another daily note (yesterday) as the source is recorded too: jumping back lands on it", async () => {
     const yesterday = "/v/Daily/2026-09-26.md";
     const h = harness({ [DAILY]: "# d\n", [yesterday]: "# 前一天\n" });
     h.setCurrent(yesterday);
@@ -250,7 +250,7 @@ describe("日记内再按 ⌘⇧O:跳回跳转前的文件", () => {
     expect(h.opened).toEqual([DAILY, yesterday]);
   });
 
-  it("在日记内但来源槽为空时,不会把日记自己记成来源", async () => {
+  it("inside the daily note with an empty source slot, the daily note itself is not recorded as the source", async () => {
     const h = harness({ [DAILY]: "# d\n" });
     h.setCurrent(DAILY);
     await openDailyNote(h.deps);

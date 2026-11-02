@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { cropFromDrag, normalizeCrop, MIN_CROP_SIZE } from "./crop";
 
 describe("cropFromDrag", () => {
-  it("按任意方向拖出的矩形都归一成正框", () => {
+  it("a rectangle dragged in any direction is normalized to a positive box", () => {
     expect(cropFromDrag(0.2, 0.3, 0.8, 0.7)).toEqual({
       x: 0.2,
       y: 0.3,
@@ -17,7 +17,7 @@ describe("cropFromDrag", () => {
     });
   });
 
-  it("只裁上下留白(横向几乎全宽)是合法裁剪", () => {
+  it("cropping only the top and bottom whitespace (almost the full width) is a valid crop", () => {
     expect(cropFromDrag(0.01, 0.1, 0.99, 0.9)).toEqual({
       x: expect.closeTo(0.01, 10),
       y: 0.1,
@@ -26,7 +26,7 @@ describe("cropFromDrag", () => {
     });
   });
 
-  it("起点终点越出页面时先夹回页内", () => {
+  it("out-of-page start and end points are clamped back into the page first", () => {
     // After clamping it covers the whole page = no crop
     expect(cropFromDrag(-0.5, -0.2, 1.5, 1.4)).toBeNull();
     expect(cropFromDrag(-0.2, 0.2, 0.6, 1.4)).toEqual({
@@ -37,7 +37,7 @@ describe("cropFromDrag", () => {
     });
   });
 
-  it("单击/手抖/盖满整页都视为没框选", () => {
+  it("a single click, a shaky drag, and a full-page drag all count as no crop", () => {
     expect(cropFromDrag(0.5, 0.5, 0.5, 0.5)).toBeNull();
     expect(cropFromDrag(0.5, 0.5, 0.5 + MIN_CROP_SIZE / 2, 0.9)).toBeNull();
     expect(cropFromDrag(0, 0, 1, 1)).toBeNull();
@@ -46,7 +46,7 @@ describe("cropFromDrag", () => {
 });
 
 describe("normalizeCrop", () => {
-  it("原样接受合法值", () => {
+  it("valid values are accepted unchanged", () => {
     expect(normalizeCrop({ x: 0.1, y: 0.2, w: 0.5, h: 0.6 })).toEqual({
       x: 0.1,
       y: 0.2,
@@ -55,7 +55,7 @@ describe("normalizeCrop", () => {
     });
   });
 
-  it("越界宽高夹到页面边界以内", () => {
+  it("out-of-bounds width and height are clamped inside the page bounds", () => {
     expect(normalizeCrop({ x: 0.5, y: 0.5, w: 2, h: 2 })).toEqual({
       x: 0.5,
       y: 0.5,
@@ -64,7 +64,7 @@ describe("normalizeCrop", () => {
     });
   });
 
-  it("坏数据/过小/整页都退回 null", () => {
+  it("bad data, too small and full-page crops all fall back to null", () => {
     expect(normalizeCrop(null)).toBeNull();
     expect(normalizeCrop("{}")).toBeNull();
     expect(normalizeCrop({ x: 0, y: 0, w: "1", h: 1 })).toBeNull();

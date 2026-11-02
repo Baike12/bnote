@@ -22,7 +22,7 @@ describe("flattenVisible / findNode", () => {
     file("z.md"),
   ];
 
-  it("只有展开的目录才展开成行，顺序按深度优先", () => {
+  it("only expanded directories are flattened into rows, in depth-first order", () => {
     expect(flattenVisible(tree, new Set()).map((n) => n.relPath)).toEqual(["a", "z.md"]);
     expect(flattenVisible(tree, new Set(["a"])).map((n) => n.relPath)).toEqual(["a", "a/1.md", "a/b", "z.md"]);
     expect(flattenVisible(tree, new Set(["a", "a/b"])).map((n) => n.relPath)).toEqual([
@@ -34,30 +34,30 @@ describe("flattenVisible / findNode", () => {
     ]);
   });
 
-  it("未读目录（children === null）不展开，findNode 也穿不过去", () => {
+  it("an unread directory (children === null) is not flattened and findNode cannot reach through it", () => {
     const unread = [dir("a", null)];
     expect(flattenVisible(unread, new Set(["a"])).map((n) => n.relPath)).toEqual(["a"]);
     expect(findNode(unread, "a")).toMatchObject({ children: null });
     expect(findNode(unread, "a/b")).toBe(null);
   });
 
-  it("findNode 递归命中深层节点，找不到返回 null", () => {
+  it("findNode hits deep nodes recursively and returns null when nothing is found", () => {
     expect(findNode(tree, "a/b/2.md")?.kind).toBe("file");
     expect(findNode(tree, "a/b/3.md")).toBe(null);
   });
 });
 
-describe("chainLoadPlan：露出请求的施工计划", () => {
-  it("根级文件没有祖先：无需加载、也无从 pending", () => {
+describe("chainLoadPlan: the construction plan for a reveal request", () => {
+  it("a root-level file has no ancestors: nothing to load and nothing pending", () => {
     expect(chainLoadPlan([file("z.md")], "z.md")).toEqual({ load: [], pending: false });
   });
 
-  it("祖先目录都在且已读：链齐了（该行还不在树里 → 可以判定条目不存在）", () => {
+  it("all ancestor directories exist and are read: the chain is complete (the row is not in the tree → the entry can be judged missing)", () => {
     const tree = [dir("a", [dir("a/b", [])])];
     expect(chainLoadPlan(tree, "a/b/2.md")).toEqual({ load: [], pending: false });
   });
 
-  it("已进树但子节点没读：交给调用方去读；更深的层此刻还找不到，一并算 pending", () => {
+  it("in the tree but the children are not read: the caller must read it; the deeper level cannot be found yet and counts as pending too", () => {
     // pending means "this level is not in the tree yet, so its absence cannot
     // be concluded right now". While the parent is unread the child is
     // necessarily not found — but that child is exactly what this call is
@@ -65,7 +65,7 @@ describe("chainLoadPlan：露出请求的施工计划", () => {
     expect(chainLoadPlan([dir("a", null)], "a/b/2.md")).toEqual({ load: ["a"], pending: true });
   });
 
-  it("树还没就绪（首帧/刚换库）：祖先不在树里 → pending，不许下「条目不存在」的结论", () => {
+  it("the tree is not ready yet (first frame/just switched vault): the ancestor is not in the tree → pending, no 'entry does not exist' conclusion allowed", () => {
     expect(chainLoadPlan([], "a/b/2.md")).toEqual({ load: [], pending: true });
     // The parent is read but the middle level is not in the tree yet: keep
     // waiting, the file is not gone
@@ -73,7 +73,7 @@ describe("chainLoadPlan：露出请求的施工计划", () => {
     expect(chainLoadPlan(tree, "a/b/2.md")).toEqual({ load: [], pending: true });
   });
 
-  it("补层的次序由树驱动：父层读完前，子层既找不到也不该被读", () => {
+  it("the order of the extra levels is driven by the tree: before the parent is read the child is neither findable nor readable", () => {
     const before = [dir("a", null)];
     expect(chainLoadPlan(before, "a/b/2.md").load).toEqual(["a"]);
     const after = [dir("a", [dir("a/b", null)])];

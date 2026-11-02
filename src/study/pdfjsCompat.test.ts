@@ -20,41 +20,41 @@ afterEach(() => {
   }
 });
 
-describe("Math.sumPrecise 兼容实现", () => {
-  it("抵消项不丢精度:1e20 + 1 - 1e20 = 1(朴素求和给 0)", () => {
+describe("the Math.sumPrecise compatibility implementation", () => {
+  it("cancelling terms keep their precision: 1e20 + 1 - 1e20 = 1 (a naive sum gives 0)", () => {
     expect(sumPrecise([1e20, 1, -1e20])).toBe(1);
     expect([1e20, 1, -1e20].reduce((a, b) => a + b, 0)).toBe(0);
   });
 
-  it("十个 0.1 精确等于 1", () => {
+  it("ten 0.1 add up exactly to 1", () => {
     expect(sumPrecise(Array.from({ length: 10 }, () => 0.1))).toBe(1);
   });
 
-  it("按 spec 处理空输入与零:空 = -0,全 -0 = -0,含 +0 = +0", () => {
+  it("the empty input and zero follow the spec: empty = -0, all -0 = -0, with +0 = +0", () => {
     expect(Object.is(sumPrecise([]), -0)).toBe(true);
     expect(Object.is(sumPrecise([-0, -0]), -0)).toBe(true);
     expect(Object.is(sumPrecise([-0, 0]), 0)).toBe(true);
   });
 
-  it("NaN 与 ±Infinity 按 spec 传播", () => {
+  it("NaN and ±Infinity propagate as the spec says", () => {
     expect(Number.isNaN(sumPrecise([1, NaN]))).toBe(true);
     expect(sumPrecise([1, Infinity])).toBe(Infinity);
     expect(sumPrecise([1, -Infinity])).toBe(-Infinity);
     expect(Number.isNaN(sumPrecise([Infinity, -Infinity]))).toBe(true);
   });
 
-  it("接受任意可迭代对象,非数字抛 TypeError", () => {
+  it("any iterable is accepted, a non-number throws a TypeError", () => {
     expect(sumPrecise(new Set([2, 3]))).toBe(5);
     expect(sumPrecise((function* () { yield 4; yield 5; })())).toBe(9);
     expect(() => sumPrecise([1, "2" as unknown as number])).toThrow(TypeError);
   });
 
-  it("导入后补到 Math 上,pdf.js 的调用形式直接可用", () => {
+  it("after the import it is patched onto Math, so the way pdf.js calls it works directly", () => {
     expect(typeof math.sumPrecise).toBe("function");
     expect(math.sumPrecise?.([1e20, 1, -1e20])).toBe(1);
   });
 
-  it("引擎已有实现时不覆盖(未来 WebKit 补齐后自动让位)", () => {
+  it("an implementation already in the engine is not overwritten (it steps aside once WebKit catches up)", () => {
     const sentinel = () => 42;
     math.sumPrecise = sentinel;
     expect(installSumPrecise()).toBe(false);
@@ -62,7 +62,7 @@ describe("Math.sumPrecise 兼容实现", () => {
     delete math.sumPrecise;
   });
 
-  it("缺失时安装,并报告安装过", () => {
+  it("when it is missing it is installed and the install is reported", () => {
     delete math.sumPrecise;
     expect(installSumPrecise()).toBe(true);
     const installed = math.sumPrecise as unknown as (items: Iterable<number>) => number;

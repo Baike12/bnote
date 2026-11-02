@@ -590,7 +590,7 @@ export function AgentPanel() {
           });
           await api
             .writeFile(transcriptPath, serializeTranscript([meta, ...opts.seedLines]))
-            .catch((e) => console.warn("[agent] 写分叉前缀失败", e));
+            .catch((e) => console.warn("[agent] failed to write the fork prefix", e));
           metaWrittenRef.current.set(convKey, true);
         } else {
           // Restore: the file already has the metadata (old records have none, the title falls back to the parsing on the list side); a new session: the metadata line is written together with the first message when it reaches the disk, so that an empty session never enters the list.
@@ -950,7 +950,7 @@ export function AgentPanel() {
     void api
       .appendFile(path, serializeTranscript(lines))
       .then(() => refreshSessions())
-      .catch((e) => console.warn("[agent] 写会话记录失败", e));
+      .catch((e) => console.warn("[agent] failed to write the session record", e));
   }
 
   function handleAgentEvent(sessionId: string, event: AgentEvent) {

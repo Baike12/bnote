@@ -21,37 +21,37 @@ beforeEach(() => {
 const state = (doc: string, cursor?: number) =>
   EditorState.create({ doc, selection: { anchor: cursor ?? doc.length } });
 
-describe("findSnippet:w 片段的词边界", () => {
-  it("行首输入 dm 是词边界——必须展开(回归:换行曾是边界集合外的字符)", () => {
+describe("findSnippet: word boundaries of the w snippet", () => {
+  it("dm at the start of a line is a word boundary and must expand (regression: a newline used to be outside the boundary set)", () => {
     // The user's real scenario: the previous line is prose, and dm at the
     // start of the new line opens a formula block.
     const m = findSnippet(state("正文\n\ndm"), 6, "m", { auto: true, visualText: null });
     expect(m?.snippet.trigger).toBe("dm");
   });
 
-  it("dm 在文档开头同样展开", () => {
+  it("dm at the very start of the document expands as well", () => {
     const m = findSnippet(state("dm"), 2, "m", { auto: true, visualText: null });
     expect(m?.snippet.trigger).toBe("dm");
   });
 
-  it("dm 后面跟着换行(行尾输入)也是边界", () => {
+  it("dm followed by a newline (typed at the end of a line) is a boundary too", () => {
     const m = findSnippet(state("dm\n下一行"), 2, "m", { auto: true, visualText: null });
     expect(m?.snippet.trigger).toBe("dm");
   });
 
-  it("字母贴着字母(xdm)不是边界,不展开", () => {
+  it("a letter right next to a letter (xdm) is not a boundary, so it does not expand", () => {
     const m = findSnippet(state("xdm"), 3, "m", { auto: true, visualText: null });
     expect(m).toBeNull();
   });
 
-  it("CJK 邻接是边界(中文后打 dm 展开)", () => {
+  it("a CJK neighbour is a boundary (typing dm after Chinese expands)", () => {
     const m = findSnippet(state("公式dm"), 4, "m", { auto: true, visualText: null });
     expect(m?.snippet.trigger).toBe("dm");
   });
 });
 
-describe("findSnippet:模式上下文", () => {
-  it("数学态内 ( 自动展开为配对括号", () => {
+describe("findSnippet: mode context", () => {
+  it("a ( inside math mode auto-expands into a pair of brackets", () => {
     // Inline formula $x()$: the caret is right after the just-typed ( (position
     // 3) and the region is complete (the closing $ comes later).
     const m = findSnippet(state("$x()$", 3), 3, "(", { auto: true, visualText: null });
@@ -60,19 +60,19 @@ describe("findSnippet:模式上下文", () => {
     expect(m?.replacement.text).toBe("()");
   });
 
-  it("正文里的 ( 不展开(mA 只在数学态)", () => {
+  it("a ( in body text does not expand (mA only applies in math mode)", () => {
     const m = findSnippet(state("普通(x", 4), 4, "(", { auto: true, visualText: null });
     expect(m).toBeNull();
   });
 
-  it("正则触发器锚定在光标前:数学态内字母+hat 展开重音", () => {
+  it("a regex trigger is anchored before the caret: a letter + hat inside math mode expands to an accent", () => {
     // The m of rmA means math mode: x|hat inside an inline formula triggers.
     const m = findSnippet(state("$xhat$", 5), 5, "t", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("\\hat{x}");
     expect(m?.start).toBe(1);
   });
 
-  it("手动展开(Tab 路径)不认自动片段:插件里自动片段要求真的敲了一个字符", () => {
+  it("manual expansion (the Tab path) does not accept auto snippets: in the plugin an auto snippet requires a real single character to have been typed", () => {
     // dm is tAw (auto): the plugin's runSnippetCursor requires
     // `key.length === 1` for an auto snippet, and Tab's key is "Tab" (length
     // 3), so it is always skipped. If Tab accepted auto snippets, a caret
@@ -83,14 +83,14 @@ describe("findSnippet:模式上下文", () => {
     expect(m).toBeNull();
   });
 
-  it("手动展开仍认非自动片段(只写 m,没有 A)", () => {
+  it("manual expansion still accepts non-auto snippets (only m, no A)", () => {
     reloadSnippets([{ trigger: "sr", replacement: "^{2}", options: "m" }], true);
     const m = findSnippet(state("$xsr$", 4), 4, null, { auto: false, visualText: null });
     expect(m?.snippet.trigger).toBe("sr");
   });
 });
 
-describe("同级触发词竞争:正则按 source 长度参与排序(latex-suite getTriggerLength)", () => {
+describe("same-priority triggers compete: a regex takes part in the ordering by source length (latex-suite getTriggerLength)", () => {
   const load = (s: RawSnippet[]) => reloadSnippets(s, true);
   // In the real snippet set both of these exist: xhat must take the former,
   // \hat the latter.
@@ -99,7 +99,7 @@ describe("同级触发词竞争:正则按 source 长度参与排序(latex-suite 
     { trigger: "hat", replacement: "\\hat{$0}$1", options: "mA" },
   ];
 
-  it("字母在前(xhat)命中的是正则,而不是末尾的 hat 字符串片段", () => {
+  it("with a letter in front (xhat) the regex wins, not the trailing hat string snippet", () => {
     load(ACCENT);
     const m = findSnippet(state("$xhat$", 5), 5, "t", { auto: true, visualText: null });
     expect(m?.snippet.displayTrigger).toBe("([a-zA-Z])hat");
@@ -107,7 +107,7 @@ describe("同级触发词竞争:正则按 source 长度参与排序(latex-suite 
     expect(m?.replacement.text).toBe("\\hat{x}");
   });
 
-  it("正则匹配不上时回落到 hat 片段", () => {
+  it("when the regex does not match it falls back to the hat snippet", () => {
     load(ACCENT);
     const m = findSnippet(state("$hat$", 4), 4, "t", { auto: true, visualText: null });
     expect(m?.snippet.displayTrigger).toBe("hat");
@@ -115,8 +115,8 @@ describe("同级触发词竞争:正则按 source 长度参与排序(latex-suite 
   });
 });
 
-describe("parseReplacement:制表位与转义", () => {
-  it("$0/$1 产出空制表位", () => {
+describe("parseReplacement: tabstops and escapes", () => {
+  it("$0/$1 produce empty tabstops", () => {
     const r = parseReplacement("($0)$1", [], null);
     expect(r.text).toBe("()");
     expect(r.stops).toEqual([
@@ -125,7 +125,7 @@ describe("parseReplacement:制表位与转义", () => {
     ]);
   });
 
-  it("${0:默认值} 带占位文本", () => {
+  it("${0:default} carries placeholder text", () => {
     const r = parseReplacement("\\sum_{${0:i}=${1:1}}^{${2:N}} $3", [], null);
     expect(r.text).toBe("\\sum_{i=1}^{N} ");
     expect(r.stops).toEqual([
@@ -136,25 +136,25 @@ describe("parseReplacement:制表位与转义", () => {
     ]);
   });
 
-  it("[[n]] 引用正则捕获组,\\[[0]] 是字面反斜杠+组引用", () => {
+  it("[[n]] references a regex capture group, \\[[0]] is a literal backslash plus a group reference", () => {
     expect(parseReplacement("\\hat{[[0]]}", ["x"], null).text).toBe("\\hat{x}");
     expect(parseReplacement("\\[\\[0]]", ["x"], null).text).toBe("\\[\\[0]]");
   });
 
-  it("\\$ 与 \\\\ 是转义,其余 \\x 保留反斜杠", () => {
+  it("\\$ and \\\\ are escapes, every other \\x keeps its backslash", () => {
     expect(parseReplacement("\\$0", [], null).text).toBe("$0");
     expect(parseReplacement("\\\\", [], null).text).toBe("\\");
     expect(parseReplacement("\\vec{", [], null).text).toBe("\\vec{");
   });
 
-  it("${VISUAL} 取选中文本,无选区时空串", () => {
+  it("${VISUAL} takes the selected text and is an empty string without a selection", () => {
     expect(parseReplacement("(${VISUAL})", [], "a+b").text).toBe("(a+b)");
     expect(parseReplacement("(${VISUAL})", [], null).text).toBe("()");
   });
 });
 
-describe("compileSnippets:排序契约", () => {
-  it("priority 降序,同级长触发器优先(正则按 source 长度参与)", () => {
+describe("compileSnippets: ordering contract", () => {
+  it("priority descends and longer triggers win within one level (a regex takes part by source length)", () => {
     const { list } = compileSnippets([
       { trigger: "a", replacement: "1", options: "tA" },
       { trigger: "abc", replacement: "2", options: "tA" },
@@ -165,28 +165,28 @@ describe("compileSnippets:排序契约", () => {
   });
 });
 
-describe("函数型 replacement(latex-suite 语义)", () => {
+describe("function-type replacement (latex-suite semantics)", () => {
   const load = (s: RawSnippet[]) => reloadSnippets(s, true);
 
-  it("正则触发:入参是 exec 结果数组,match[1] 就是第 1 个捕获组", () => {
+  it("a regex trigger receives the exec result array, so match[1] is capture group 1", () => {
     load([{ trigger: /iden(\d)/, replacement: (m) => `n=${(m as RegExpExecArray)[1]}`, options: "mA" }]);
     const m = findSnippet(state("$iden3$", 6), 6, "3", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("n=3");
   });
 
-  it("字符串触发:入参是 trigger 本身", () => {
+  it("a string trigger receives the trigger itself", () => {
     load([{ trigger: "zz", replacement: (m) => `[${String(m)}]`, options: "mA" }]);
     const m = findSnippet(state("$zz$", 3), 3, "z", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("[zz]");
   });
 
-  it("可视片段:入参是选中的文本", () => {
+  it("a visual snippet receives the selected text", () => {
     load([{ trigger: "(", replacement: (m) => `(${String(m)})`, options: "mAv" }]);
     const m = findSnippet(state("$($"), 2, "(", { auto: false, visualText: "a+b" });
     expect(m?.replacement.text).toBe("(a+b)");
   });
 
-  it("返回值里的制表位照常解析($0 有落点)", () => {
+  it("tabstops in the returned value are parsed as usual ($0 has a landing spot)", () => {
     load([{ trigger: "hh", replacement: () => "\\hat{$0}$1", options: "mA" }]);
     const m = findSnippet(state("$hh$", 3), 3, "h", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("\\hat{}");
@@ -196,7 +196,7 @@ describe("函数型 replacement(latex-suite 语义)", () => {
     ]);
   });
 
-  it("返回非字符串=该片段不匹配(交回下一个候选)", () => {
+  it("returning a non-string means the snippet does not match (the next candidate gets its turn)", () => {
     load([
       { trigger: "kk", replacement: (() => undefined) as unknown as RawSnippet["replacement"], options: "mA" },
       { trigger: "kk", replacement: "fallback", options: "mA" },
@@ -205,7 +205,7 @@ describe("函数型 replacement(latex-suite 语义)", () => {
     expect(m?.replacement.text).toBe("fallback");
   });
 
-  it("内置 iden3 生成 3×3 单位阵(插件里唯一那条函数型片段)", () => {
+  it("the built-in iden3 generates a 3×3 identity matrix (the only function-type snippet in the plugin)", () => {
     load(DEFAULT_SNIPPETS);
     const m = findSnippet(state("$iden3$", 6), 6, "3", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe(
@@ -214,26 +214,26 @@ describe("函数型 replacement(latex-suite 语义)", () => {
   });
 });
 
-describe("removeSnippetWhitespace(仅行内公式)", () => {
-  it("行内公式里去掉尾部空格", () => {
+describe("removeSnippetWhitespace (inline formulas only)", () => {
+  it("trailing whitespace is removed inside an inline formula", () => {
     reloadSnippets([{ trigger: "sp", replacement: "a ", options: "mA" }], true);
     const m = findSnippet(state("$sp$", 3), 3, "p", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("a");
   });
 
-  it("行内公式里 `${n}` 制表位前的空格去掉、制表位保留", () => {
+  it("inside an inline formula the space before a `${n}` tabstop is removed while the tabstop stays", () => {
     reloadSnippets([{ trigger: "tu", replacement: "a x $2", options: "mA" }], true);
     const m = findSnippet(state("$tu$", 3), 3, "u", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("a x");
   });
 
-  it("块级公式里不动(换行前的空格是排版的一部分)", () => {
+  it("a block formula is left alone (the space before the newline is part of the layout)", () => {
     reloadSnippets([{ trigger: "sp", replacement: "a ", options: "MA" }], true);
     const m = findSnippet(state("$$\nsp\n$$"), 5, "p", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("a ");
   });
 
-  it("可关闭(设置关掉后原样展开)", () => {
+  it("it can be turned off (with the setting off the replacement expands verbatim)", () => {
     reloadSnippets([{ trigger: "sp", replacement: "a ", options: "mA" }], true);
     const m = findSnippet(state("$sp$", 3), 3, "p", {
       auto: true,
@@ -244,16 +244,16 @@ describe("removeSnippetWhitespace(仅行内公式)", () => {
   });
 });
 
-describe("wordDelimiters 可配", () => {
+describe("wordDelimiters is configurable", () => {
   const load = () => reloadSnippets([{ trigger: "dm", replacement: "x", options: "tAw" }], true);
 
-  it("默认用插件的分隔符集:* 不在其中 → *dm 不展开", () => {
+  it("the default uses the plugin delimiter set: * is not in it → *dm does not expand", () => {
     load();
     const m = findSnippet(state("*dm"), 3, "m", { auto: true, visualText: null });
     expect(m).toBeNull();
   });
 
-  it("把分隔符集放宽:* 也算边界 → 同一位置展开", () => {
+  it("widening the delimiter set makes * a boundary as well → it expands at the same position", () => {
     load();
     const m = findSnippet(state("*dm"), 3, "m", {
       auto: true,
@@ -263,7 +263,7 @@ describe("wordDelimiters 可配", () => {
     expect(m?.snippet.trigger).toBe("dm");
   });
 
-  it("设置串里的字面 \\n 还原成真换行(行首 dm 仍是边界)", () => {
+  it("a literal \\n in the setting string turns back into a real newline (dm at the line start is still a boundary)", () => {
     load();
     const m = findSnippet(state("正文\ndm"), 5, "m", {
       auto: true,
@@ -273,7 +273,7 @@ describe("wordDelimiters 可配", () => {
     expect(m?.snippet.trigger).toBe("dm");
   });
 
-  it("CJK 邻接始终是边界(与分隔符集无关,中文笔记必需)", () => {
+  it("a CJK neighbour is always a boundary (independent of the delimiter set, required for Chinese notes)", () => {
     load();
     const m = findSnippet(state("测试dm"), 4, "m", {
       auto: true,

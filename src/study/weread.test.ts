@@ -8,8 +8,8 @@ import {
   WEREAD_TITLE_PREFIX,
 } from "./weread";
 
-describe("微信读书 URL 分类", () => {
-  it("站点匹配按 hostname 精确判断", () => {
+describe("WeRead URL classification", () => {
+  it("the site match judges the hostname exactly", () => {
     expect(isWereadUrl("https://weread.qq.com/")).toBe(true);
     expect(isWereadUrl("https://weread.qq.com/web/reader/abc#wechat_redirect")).toBe(true);
     expect(isWereadUrl("https://www.weread.qq.com/")).toBe(true);
@@ -21,7 +21,7 @@ describe("微信读书 URL 分类", () => {
     expect(isWereadUrl("not a url")).toBe(false);
   });
 
-  it("只有 /web/reader/ 路由算「在读书」", () => {
+  it("only the /web/reader/ route counts as reading", () => {
     expect(isWereadReaderUrl("https://weread.qq.com/web/reader/ce032b305a9bc1ce0b0dd29")).toBe(
       true,
     );
@@ -35,7 +35,7 @@ describe("微信读书 URL 分类", () => {
     expect(isWereadReaderUrl("https://example.com/web/reader/abc")).toBe(false);
   });
 
-  it("兜底标题:reader 路由带哈希段,其他都是「微信读书」", () => {
+  it("fallback title: the reader route carries the hash segment, everything else is 「微信读书」", () => {
     expect(wereadFallbackTitle("https://weread.qq.com/web/reader/ce032b305a9bc1ce")).toBe(
       "微信读书 ce032b305a9b",
     );
@@ -44,8 +44,8 @@ describe("微信读书 URL 分类", () => {
   });
 });
 
-describe("normalizeWereadRoute(title 通道负载)", () => {
-  it("合法负载原样通过", () => {
+describe("normalizeWereadRoute(title channel payload)", () => {
+  it("a valid payload passes through unchanged", () => {
     expect(
       normalizeWereadRoute({ url: "https://weread.qq.com/web/reader/abc", title: "三体" }),
     ).toEqual({ url: "https://weread.qq.com/web/reader/abc", title: "三体" });
@@ -55,12 +55,12 @@ describe("normalizeWereadRoute(title 通道负载)", () => {
     ).toEqual({ url: "https://weread.qq.com/web/reader/abc", title: "" });
   });
 
-  it("非阅读器路由一律拒绝(书架/商城/外站不进历史)", () => {
+  it("every non-reader route is rejected (the shelf / the store / other sites do not enter the history)", () => {
     expect(normalizeWereadRoute({ url: "https://weread.qq.com/", title: "微信读书" })).toBeNull();
     expect(normalizeWereadRoute({ url: "https://example.com/x", title: "x" })).toBeNull();
   });
 
-  it("缺字段 / 错型 / 非对象返回 null", () => {
+  it("a missing field / a wrong type / a non-object returns null", () => {
     expect(normalizeWereadRoute(null)).toBeNull();
     expect(normalizeWereadRoute("junk")).toBeNull();
     expect(normalizeWereadRoute({})).toBeNull();
@@ -69,8 +69,8 @@ describe("normalizeWereadRoute(title 通道负载)", () => {
   });
 });
 
-describe("注入脚本", () => {
-  it("包含路由门控、title 前缀与书名选择器(序列化不丢关键内容)", () => {
+describe("the injected script", () => {
+  it("it contains the route gate, the title prefix and the book title selector (serialization loses no key content)", () => {
     expect(WEREAD_SCRIPT).toContain("weread.qq.com");
     expect(WEREAD_SCRIPT).toContain(WEREAD_TITLE_PREFIX);
     expect(WEREAD_SCRIPT).toContain("/web/reader/");
@@ -80,7 +80,7 @@ describe("注入脚本", () => {
     expect(WEREAD_SCRIPT).not.toContain(".readerTopBarTitleLink");
   });
 
-  it("排版适配锁住实站测得的三个关键点", () => {
+  it("the layout adaptation locks the three key points measured on the live site", () => {
     // Width: the root cause of the margin in the scrolling mode is the max-width:1000px of .app_content
     expect(WEREAD_SCRIPT).toContain(".app_content { max-width: none");
     // Catalog: docked left + permanent + hidden mask; only fixed can also dock at the left edge of the viewport in the horizontal mode
@@ -103,7 +103,7 @@ describe("注入脚本", () => {
     expect(WEREAD_SCRIPT).toContain("bnote-weread-style");
   });
 
-  it("是立即执行的单条表达式,常量经参数传入(不引用模块作用域)", () => {
+  it("it is a single immediately executed expression, the constants are passed in as arguments (no module scope is referenced)", () => {
     expect(WEREAD_SCRIPT.startsWith("(")).toBe(true);
     expect(WEREAD_SCRIPT.trimEnd().endsWith(");")).toBe(true);
     expect(
@@ -117,7 +117,7 @@ describe("注入脚本", () => {
     ).toBe(true);
   });
 
-  it("脚本能通过 JS 语法编译(拼接缺括号这类错误在这里拦下)", () => {
+  it("the script passes JS syntax compilation (errors like a missing parenthesis in the concatenation are caught here)", () => {
     expect(() => new Function(WEREAD_SCRIPT)).not.toThrow();
   });
 });

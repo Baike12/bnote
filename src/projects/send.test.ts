@@ -19,7 +19,7 @@ vi.mock("@/app/actions", () => ({ refreshTree: async () => {} }));
 vi.mock("@/lib/tauri", () => ({
   api: {
     readFile: async () => {
-      throw new Error("测试环境无 IPC");
+      throw new Error("no IPC in the test environment");
     },
     writeFile: async () => {},
   },
@@ -76,14 +76,14 @@ beforeEach(() => {
 });
 
 describe("sendTodoToTodayFront", () => {
-  it("今天还没有日记:建 scaffold 并把待办插在 H1 之后的最前面", async () => {
+  it("no daily note yet: build the scaffold and insert the todo at the very front after H1", async () => {
     const { files, io } = memIO({ [PROJECT]: "- [ ] 甲\n- [ ] 乙\n" });
     const result = await sendTodoToTodayFront({ srcPath: PROJECT, line: 2 }, makeDeps(io));
     expect(result).toBe("sent");
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 乙\n");
   });
 
-  it("已有条目:插在待办区最前(不是末尾)", async () => {
+  it("entries already exist: insert at the front of the todo section (not the end)", async () => {
     const { files, io } = memIO({
       [PROJECT]: "- [ ] 甲\n",
       [DAILY]: "# 2026-09-23\n\n- [ ] 旧\n",
@@ -92,7 +92,7 @@ describe("sendTodoToTodayFront", () => {
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n- [ ] 旧\n");
   });
 
-  it("同一天重复发送:认领既有条目,不重复插入", async () => {
+  it("sending twice on the same day: claims the existing entry instead of inserting it again", async () => {
     const { files, io } = memIO({
       [PROJECT]: "- [ ] 甲\n",
       [DAILY]: "# 2026-09-23\n\n- [ ] 甲\n",
@@ -101,7 +101,7 @@ describe("sendTodoToTodayFront", () => {
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n");
   });
 
-  it("子项随根整块搬运并重缩进到一级条目", async () => {
+  it("children travel with their root as one block and are re-indented to the top level", async () => {
     const { files, io } = memIO({
       [PROJECT]: "- [ ] 甲\n  - [ ] 甲子\n",
       [DAILY]: "# 2026-09-23\n",
@@ -110,7 +110,7 @@ describe("sendTodoToTodayFront", () => {
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n  - [ ] 甲子\n");
   });
 
-  it("建立 copied 映射:两侧路径、身份文本与行号", async () => {
+  it("a copied mapping is created: both paths, the identity text and the line numbers", async () => {
     const { io } = memIO({
       [PROJECT]: "- [ ] 甲\n",
       [DAILY]: "# 2026-09-23\n",
@@ -129,13 +129,13 @@ describe("sendTodoToTodayFront", () => {
     });
   });
 
-  it("非待办行不发送", async () => {
+  it("a non-todo line is not sent", async () => {
     const { files, io } = memIO({ [PROJECT]: "普通正文\n" });
     expect(await sendTodoToTodayFront({ srcPath: PROJECT, line: 1 }, makeDeps(io))).toBe("not-todo");
     expect(files.has(DAILY)).toBe(false);
   });
 
-  it("源文件读不到", async () => {
+  it("the source file cannot be read", async () => {
     const { io } = memIO();
     expect(await sendTodoToTodayFront({ srcPath: PROJECT, line: 1 }, makeDeps(io))).toBe(
       "no-source",

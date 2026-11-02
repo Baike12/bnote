@@ -26,12 +26,12 @@ const problems = [
   at("c.ts", 4),
 ];
 
-describe("下一个 / 上一个问题", () => {
-  it("没有诊断时不跳", () => {
+describe("next / previous problem", () => {
+  it("no diagnostics means no jump", () => {
     expect(nextProblemTarget([], { path: "a.ts", position: { line: 0, character: 0 } }, 1)).toBeNull();
   });
 
-  it("同一文件里按位置向下取,乱序的诊断先排好", () => {
+  it("inside one file the next one is taken by position, and out-of-order diagnostics are sorted first", () => {
     const hit = nextProblemTarget(
       problems,
       { path: "a.ts", position: { line: 0, character: 0 } },
@@ -40,7 +40,7 @@ describe("下一个 / 上一个问题", () => {
     expect(hit).toEqual(at("a.ts", 1));
   });
 
-  it("光标停在某条诊断上时跳过它,去下一条", () => {
+  it("when the caret sits on a diagnostic it is skipped and the next one is taken", () => {
     const hit = nextProblemTarget(
       problems,
       { path: "a.ts", position: { line: 5, character: 0 } },
@@ -49,7 +49,7 @@ describe("下一个 / 上一个问题", () => {
     expect(hit).toEqual(at("a.ts", 9));
   });
 
-  it("本文件到底了跨到下一个文件的第一条", () => {
+  it("at the end of the current file it crosses over to the first one of the next file", () => {
     const hit = nextProblemTarget(
       problems,
       { path: "a.ts", position: { line: 9, character: 0 } },
@@ -58,7 +58,7 @@ describe("下一个 / 上一个问题", () => {
     expect(hit).toEqual(at("b.ts", 2));
   });
 
-  it("最后一个文件到底了绕回第一个文件(循环)", () => {
+  it("at the end of the last file it wraps around to the first file (cyclic)", () => {
     const hit = nextProblemTarget(
       problems,
       { path: "c.ts", position: { line: 9, character: 0 } },
@@ -67,13 +67,13 @@ describe("下一个 / 上一个问题", () => {
     expect(hit).toEqual(at("a.ts", 1));
   });
 
-  it("单文件也要能循环:最后一条之后回到第一条", () => {
+  it("a single file cycles too: after the last entry it returns to the first", () => {
     const one = [at("a.ts", 1), at("a.ts", 3)];
     const hit = nextProblemTarget(one, { path: "a.ts", position: { line: 9, character: 0 } }, 1);
     expect(hit).toEqual(at("a.ts", 1));
   });
 
-  it("向上镜像:跳到光标之前最近的一条", () => {
+  it("mirrored upwards: it jumps to the nearest one before the caret", () => {
     const hit = nextProblemTarget(
       problems,
       { path: "b.ts", position: { line: 5, character: 0 } },
@@ -82,7 +82,7 @@ describe("下一个 / 上一个问题", () => {
     expect(hit).toEqual(at("b.ts", 2));
   });
 
-  it("向上到底:跨到上一个文件的最后一条", () => {
+  it("upwards at the end: it crosses over to the last one of the previous file", () => {
     const hit = nextProblemTarget(
       problems,
       { path: "b.ts", position: { line: 0, character: 0 } },
@@ -91,7 +91,7 @@ describe("下一个 / 上一个问题", () => {
     expect(hit).toEqual(at("a.ts", 9));
   });
 
-  it("当前文件没有诊断:向下从整个列表第一条开始,向上从最后一条开始", () => {
+  it("the current file has no diagnostics: downwards starts at the first entry of the whole list, upwards at the last one", () => {
     expect(nextProblemTarget(problems, { path: "z.ts", position: { line: 0, character: 0 } }, 1)).toEqual(
       at("a.ts", 1),
     );
@@ -100,12 +100,12 @@ describe("下一个 / 上一个问题", () => {
     );
   });
 
-  it("没有光标位置(没有编辑器)时给当前文件的头 / 尾", () => {
+  it("without a caret position (no editor) it gives the head / tail of the current file", () => {
     expect(nextProblemTarget(problems, { path: "b.ts", position: null }, 1)).toEqual(at("b.ts", 2));
     expect(nextProblemTarget(problems, { path: "b.ts", position: null }, -1)).toEqual(at("b.ts", 7));
   });
 
-  it("同一行不同列按列比较", () => {
+  it("entries on the same line are compared by column", () => {
     const cols = [at("a.ts", 3, 0), at("a.ts", 3, 8)];
     const hit = nextProblemTarget(cols, { path: "a.ts", position: { line: 3, character: 4 } }, 1);
     expect(hit).toEqual(at("a.ts", 3, 8));

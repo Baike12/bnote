@@ -15,8 +15,8 @@ const pages: PageMetric[] = [
   { page: 3, top: 2042, height: 800 },
 ];
 
-describe("阅读位置数据", () => {
-  it("坏文件/坏字段退回空位置,不崩", () => {
+describe("the read position data", () => {
+  it("a bad file or bad field falls back to an empty position without crashing", () => {
     expect(parseReadPositions(null)).toEqual(emptyReadPositions());
     expect(parseReadPositions("{oops")).toEqual(emptyReadPositions());
     expect(parseReadPositions("[]")).toEqual(emptyReadPositions());
@@ -36,7 +36,7 @@ describe("阅读位置数据", () => {
     });
   });
 
-  it("只保留最近的 500 条", () => {
+  it("only the most recent 500 entries are kept", () => {
     const pdfs: Record<string, { page: number; offset: number; at: number }> = {};
     for (let i = 0; i < 520; i++) {
       pdfs[`f${i}.pdf`] = { page: 1, offset: 0, at: i };
@@ -48,8 +48,8 @@ describe("阅读位置数据", () => {
   });
 });
 
-describe("PDF 位置换算", () => {
-  it("取顶边越过视口的最后一页,并按页高算页内偏移", () => {
+describe("PDF position conversion", () => {
+  it("it takes the last page whose top edge passed the viewport and computes the in-page offset from the page height", () => {
     expect(pdfPositionAt(pages, 14)).toMatchObject({ page: 1, offset: 0 });
     expect(pdfPositionAt(pages, 514)).toMatchObject({ page: 1, offset: 0.5 });
     expect(pdfPositionAt(pages, 1028)).toMatchObject({ page: 2, offset: 0 });
@@ -57,13 +57,13 @@ describe("PDF 位置换算", () => {
     expect(pdfPositionAt([], 100)).toBeNull();
   });
 
-  it("页间空隙算上一页的末尾,偏移夹在 0..1", () => {
+  it("the gap between pages counts as the end of the previous page, the offset is clamped to 0..1", () => {
     // The bottom of page 1 is 1014, the top of page 2 is 1028; scrolling to 1020 (the gap) still belongs to page 1.
     expect(pdfPositionAt(pages, 1020)).toMatchObject({ page: 1, offset: 1 });
     expect(pdfPositionAt(pages, 99999)).toMatchObject({ page: 3, offset: 1 });
   });
 
-  it("按页码+偏移反算 scrollTop;页码不存在返回 null", () => {
+  it("scrollTop is computed back from the page number and offset; a page number that does not exist returns null", () => {
     expect(scrollTopForPdfPosition(pages, { page: 2, offset: 0.25 })).toBe(1278);
     expect(scrollTopForPdfPosition(pages, { page: 9, offset: 0 })).toBeNull();
   });
@@ -74,7 +74,7 @@ describe("PDF 位置换算", () => {
   // after narrowing to 390px the same scrollTop lands on page 6 at 632%).
   // Before and after a reflow the position must be converted by "page number
   // + in-page ratio", not by reusing the pixel value.
-  it("重排前后按页码+比例换算:同一处内容仍停在视口顶部", () => {
+  it("before and after a reflow the position is converted by page number and ratio: the same content still rests at the top of the viewport", () => {
     const GAP = 58;
     const build = (height: number, count: number): PageMetric[] =>
       Array.from({ length: count }, (_, i) => ({
@@ -97,7 +97,7 @@ describe("PDF 位置换算", () => {
     expect(pdfPositionAt(narrow, top)?.page).toBe(7);
   });
 
-  it("存盘走同一份文件,payload 带页码/偏移", async () => {
+  it("saving goes through the same file, the payload carries the page number and offset", async () => {
     const files = new Map<string, string>();
     const writes: string[] = [];
     const store = createReadPositionStore({

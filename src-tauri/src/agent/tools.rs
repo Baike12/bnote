@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_file_精确替换一次() {
+    async fn edit_file_replaces_the_exact_match_once() {
         let vault = std::env::temp_dir().join("bnote-edit-test-1");
         let _ = std::fs::remove_dir_all(&vault);
         std::fs::create_dir_all(&vault).unwrap();
@@ -672,7 +672,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_file_old不存在与多次出现都拒绝() {
+    async fn edit_file_rejects_a_missing_old_string_and_a_repeated_one() {
         let vault = std::env::temp_dir().join("bnote-edit-test-2");
         let _ = std::fs::remove_dir_all(&vault);
         std::fs::create_dir_all(&vault).unwrap();
@@ -684,11 +684,11 @@ mod tests {
         assert!(!out.ok && out.text.contains("不存在"), "{}", out.text);
         let out = execute(&c, &skills, "edit_file", &json!({"path": "post.md", "old_string": "a", "new_string": "q"})).await;
         assert!(!out.ok && out.text.contains("2 次"), "{}", out.text);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "a b a", "失败的编辑不能改文件");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "a b a", "the file must be unchanged");
     }
 
     #[tokio::test]
-    async fn edit_file_拒绝写出仓库外() {
+    async fn edit_file_refuses_to_write_outside_the_repository() {
         let vault = std::env::temp_dir().join("bnote-edit-test-3");
         let _ = std::fs::remove_dir_all(&vault);
         std::fs::create_dir_all(&vault).unwrap();
@@ -707,7 +707,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_html_落盘带版本快照_非html拒绝() {
+    async fn preview_html_writes_a_versioned_snapshot_and_rejects_non_html_files() {
         let vault = std::env::temp_dir().join("bnote-preview-test");
         let data = std::env::temp_dir().join("bnote-preview-data");
         let _ = std::fs::remove_dir_all(&vault);
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "<p>hi</p>");
         // The test environment has no AppHandle: no screenshot is awaited, the
         // result degrades to plain text and says so.
-        assert!(out.images.is_empty(), "无 app 时不应有图");
+        assert!(out.images.is_empty(), "there must be no images without an app handle");
         assert!(out.text.contains("no screenshot"), "{}", out.text);
         // A non-.html file is rejected
         let out = execute(&c, &skills, "preview_html", &json!({"path": "page.md"})).await;

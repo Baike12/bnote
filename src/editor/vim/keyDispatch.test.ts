@@ -40,16 +40,16 @@ const capturesBase = {
   defaultPrevented: false,
 };
 
-describe("vimCapturesKey：捕获分发的决策核", () => {
-  it("normal/visual 模式交给引擎", () => {
+describe("vimCapturesKey: the decision core of the capture dispatch", () => {
+  it("normal/visual mode is handed to the engine", () => {
     expect(vimCapturesKey(capturesBase)).toBe(true);
   });
 
-  it("insert 让路：snippet 的 Tab/Escape、latex 的 Backspace 在插入态合法地先跑", () => {
+  it("insert mode yields: the snippet Tab/Escape and the latex Backspace legitimately run first in insert mode", () => {
     expect(vimCapturesKey({ ...capturesBase, insertMode: true })).toBe(false);
   });
 
-  it("IME 组合中/死键/上游已认领/目标不在编辑内容上 → 不碰", () => {
+  it("IME composition / dead key / already claimed upstream / the target is not on the editable content → it is not touched", () => {
     expect(vimCapturesKey({ ...capturesBase, composing: true })).toBe(false);
     expect(vimCapturesKey({ ...capturesBase, deadKey: true })).toBe(false);
     expect(vimCapturesKey({ ...capturesBase, defaultPrevented: true })).toBe(false);
@@ -57,7 +57,7 @@ describe("vimCapturesKey：捕获分发的决策核", () => {
   });
 });
 
-describe("lookupVimCommand：命令映射注册表（捕获分发先于引擎查它）", () => {
+describe("lookupVimCommand: the command mapping registry (the capture dispatch consults it before the engine)", () => {
   const mappings = [
     { lhs: "<C-s>", rhs: ":w<CR>", mode: "normal" as const, commandId: "workspace.save-note", noremap: false },
     {
@@ -72,7 +72,7 @@ describe("lookupVimCommand：命令映射注册表（捕获分发先于引擎查
     { lhs: "gs", rhs: ":Bnote x.y<CR>", mode: "normal" as const, commandId: "x.y", noremap: false },
   ];
 
-  it("按 模式\\0引擎键词 命中；模式不符/未绑定不命中", () => {
+  it("a hit is keyed by the mode\\0engine key; a mode mismatch or an unbound key does not hit", () => {
     commandMappingKeymap(mappings);
     expect(lookupVimCommand("<C-b>", "normal")).toBe("nav.toggle-sidebar");
     expect(lookupVimCommand("<C-s>", "normal")).toBe("workspace.save-note");
@@ -80,12 +80,12 @@ describe("lookupVimCommand：命令映射注册表（捕获分发先于引擎查
     expect(lookupVimCommand("<C-z>", "normal")).toBeUndefined();
   });
 
-  it("多键 lhs 不进注册表（与 keymap 同口径）", () => {
+  it("a multi-key lhs does not enter the registry (same criteria as the keymap)", () => {
     commandMappingKeymap(mappings);
     expect(lookupVimCommand("gs", "normal")).toBeUndefined();
   });
 
-  it("重建即全量替换：vimrc 删掉的映射不残留", () => {
+  it("a rebuild is a wholesale replacement: mappings deleted from the vimrc do not linger", () => {
     commandMappingKeymap(mappings.slice(0, 1));
     expect(lookupVimCommand("<C-b>", "normal")).toBeUndefined();
     expect(lookupVimCommand("<C-s>", "normal")).toBe("workspace.save-note");
@@ -113,15 +113,15 @@ function fakeView(initial: EditorState): EditorView {
 
 const dmSession = () => buildSession(0, parseReplacement("$$\n$0\n$$", [], null))!;
 
-describe("escapeForSnippet：活会话不得吃掉 vim 的第一下 Esc", () => {
-  it("vim 开启 → 返回 false（放行给引擎退插入态），会话原样保留", () => {
+describe("escapeForSnippet: a live session must not swallow vim's first Esc", () => {
+  it("vim enabled → it returns false (letting the engine leave insert mode) and the session is kept as is", () => {
     useAppStore.getState().patchSettings({ vim: true });
     const view = fakeView(withSession("$$\nx\n$$", dmSession()));
     expect(escapeForSnippet(view)).toBe(false);
     expect(view.state.field(snippetField, false)).not.toBeNull();
   });
 
-  it("vim 关闭 → 维持 latex-suite 语义：Esc 结束会话", () => {
+  it("vim disabled → the latex-suite semantics hold: Esc ends the session", () => {
     useAppStore.getState().patchSettings({ vim: false });
     const view = fakeView(withSession("$$\nx\n$$", dmSession()));
     expect(escapeForSnippet(view)).toBe(true);

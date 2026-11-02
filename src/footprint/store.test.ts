@@ -31,8 +31,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("FootprintCore 轮转", () => {
-  it("首次 init(无元数据):当天即全库快照进基线,足迹为空,写盘归属日", async () => {
+describe("FootprintCore rotation", () => {
+  it("the first init (no metadata): the whole vault is snapshotted into the baseline for that day, the footprint is empty, the day written to disk is the owner day", async () => {
     const files = new Map<string, string>([
       [NOTE, "旧内容 A\n\n旧内容 B"],
       [`${VAULT}/Daily/2026-01-01.md`, "日记不进基线"],
@@ -55,7 +55,7 @@ describe("FootprintCore 轮转", () => {
     expect(stored.history).toEqual({});
   });
 
-  it("已有当天元数据:不轮转,基线沿用存储值(refreshAll 兜底建索引)", async () => {
+  it("metadata for the day already exists: no rotation, the baseline keeps the stored value (refreshAll builds the index as a fallback)", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-30", baselines: { [NOTE]: "基线文本" } };
     const files = new Map<string, string>([
       [NOTE, "盘上已经改过的内容"],
@@ -68,7 +68,7 @@ describe("FootprintCore 轮转", () => {
     expect(core.footprintsFor(NOTE)).toEqual([{ text: "盘上已经改过的内容", start: 1, end: 1 }]);
   });
 
-  it("跨天 init:昨天基线作废,当天全库快照重轮转", async () => {
+  it("init across a day boundary: yesterday's baseline is void, the whole vault is snapshotted again for that day", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "昨天的" } };
     const files = new Map<string, string>([
       [NOTE, "今天的内容"],
@@ -82,7 +82,7 @@ describe("FootprintCore 轮转", () => {
     expect(core.footprintsFor(NOTE)).toEqual([]);
   });
 
-  it("v1 元数据(无历史档)照常载入:基线沿用,历史档为空", async () => {
+  it("v1 metadata (no history archive) loads as usual: the baseline is kept, the history archive is empty", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-30", baselines: { [NOTE]: "基线文本" } };
     const files = new Map<string, string>([
       [NOTE, "基线文本\n\n今天的段"],
@@ -95,7 +95,7 @@ describe("FootprintCore 轮转", () => {
     expect(core.entriesFor("2026-09-29")).toEqual([]);
   });
 
-  it("损坏的元数据按从未轮转处理(全库重建基线)", async () => {
+  it("corrupted metadata is treated as never rotated (the whole vault rebuilds the baseline)", async () => {
     const files = new Map<string, string>([
       [NOTE, "正文"],
       [footprintsFilePath(VAULT), "{{{not json"],
@@ -107,13 +107,13 @@ describe("FootprintCore 轮转", () => {
   });
 });
 
-describe("FootprintCore 增量刷新(noteDirty)", () => {
+describe("FootprintCore incremental refresh (noteDirty)", () => {
   function seededCore(files: Map<string, string>, today = "2026-09-30") {
     const core = coreOf(files, today);
     return core.init().then(() => core);
   }
 
-  it("脏路径防抖 1s 后 diff 出今日块", async () => {
+  it("a dirty path is debounced for 1s and then diffed into today's blocks", async () => {
     const files = new Map<string, string>([[NOTE, "基线段落"]]);
     const core = await seededCore(files);
     files.set(NOTE, "基线段落\n\n今天写的新段");
@@ -123,7 +123,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     expect(core.footprintsFor(NOTE)).toEqual([{ text: "今天写的新段", start: 3, end: 3 }]);
   });
 
-  it("防抖期内多次喂入合并成一次刷新(只 diff 最终盘面)", async () => {
+  it("several feeds within the debounce merge into one refresh (only the final state on disk is diffed)", async () => {
     const files = new Map<string, string>([[NOTE, "基线段落"]]);
     const core = await seededCore(files);
     files.set(NOTE, "基线段落\n\n第一段");
@@ -138,7 +138,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     ]);
   });
 
-  it("Daily 目录与非笔记文件被过滤,零开销", async () => {
+  it("the Daily directory and the non-note files are filtered out, at zero cost", async () => {
     const files = new Map<string, string>([[NOTE, "基线"]]);
     const core = await seededCore(files);
     core.noteDirty([`${VAULT}/Daily/2026-09-30.md`, `${VAULT}/x.png`, `${VAULT}/Daily/sub/a.md`]);
@@ -146,7 +146,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     expect(core.todayEntries()).toEqual([]);
   });
 
-  it("文件被删除(读不到)时从索引移除", async () => {
+  it("a deleted file (unreadable) is removed from the index", async () => {
     const files = new Map<string, string>([[NOTE, "基线段落"]]);
     const core = await seededCore(files);
     files.set(NOTE, "基线段落\n\n新段");
@@ -159,7 +159,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     expect(core.footprintsFor(NOTE)).toEqual([]);
   });
 
-  it("脏刷新用的基线在轮转后保持一致(昨日基线里的段不算新增)", async () => {
+  it("the baseline used by a dirty refresh stays consistent after the rotation (a segment in yesterday's baseline does not count as new)", async () => {
     const files = new Map<string, string>([[NOTE, "基线\n\n昨天写下的段"]]);
     const stored: StoredFootprintsV1 = {
       version: 1,
@@ -176,7 +176,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     expect(core.footprintsFor(NOTE)).toEqual([{ text: "今天写的段", start: 5, end: 5 }]);
   });
 
-  it("installIndexForTest 替换索引并递增广播版本号", async () => {
+  it("installIndexForTest replaces the index and increments the broadcast revision", async () => {
     const { footprintRevision } = await import("./store");
     const files = new Map<string, string>([[NOTE, "基线"]]);
     const core = await seededCore(files);
@@ -186,7 +186,7 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
     expect(footprintRevision()).toBeGreaterThan(before);
   });
 
-  it("未轮转的 core(day 为空串:注入/init 空窗)任何日期都走实时索引", async () => {
+  it("a core that has not rotated (day is an empty string: the injection / init gap) uses the live index for any date", async () => {
     const { todayStamp } = await import("@/editor/ops");
     const core = coreOf(new Map(), "2026-09-30"); // init is not called, day = ""
     core.installIndexForTest(new Map([[NOTE, [{ text: "注入块", start: 1, end: 1 }]]]));
@@ -196,8 +196,8 @@ describe("FootprintCore 增量刷新(noteDirty)", () => {
   });
 });
 
-describe("FootprintCore 全量兜底(refreshAll)", () => {
-  it("重建全部文件的索引,覆盖应用未运行期间的改动", async () => {
+describe("FootprintCore full fallback (refreshAll)", () => {
+  it("rebuilds the index of all the files, covering the changes made while the app was not running", async () => {
     const files = new Map<string, string>([[NOTE, "基线段落"]]);
     const core = coreOf(files, "2026-09-30");
     await core.init();
@@ -210,7 +210,7 @@ describe("FootprintCore 全量兜底(refreshAll)", () => {
     expect(core.footprintsFor(OTHER)).toEqual([{ text: "另一篇今天改的", start: 1, end: 1 }]);
   });
 
-  it("节流:5s 内重复调用不重扫(无变化也不广播)", async () => {
+  it("throttle: a repeated call within 5s does not rescan (no broadcast even without changes)", async () => {
     const files = new Map<string, string>([[NOTE, "基线段落"]]);
     const core = coreOf(files, "2026-09-30");
     await core.init();
@@ -224,8 +224,8 @@ describe("FootprintCore 全量兜底(refreshAll)", () => {
   });
 });
 
-describe("FootprintCore × 待办排除:端到端(用户可见行为)", () => {
-  it("纯待办文件刷新后不产生任何足迹;混合文件只留非待办块", async () => {
+describe("FootprintCore × todo exclusion: end to end (user visible behavior)", () => {
+  it("a pure todo file produces no footprint after the refresh; a mixed file keeps only the non-todo blocks", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-30", baselines: {} };
     const files = new Map<string, string>([
       [NOTE, "- [ ] 纯待办甲\n- [x] 纯待办乙\n\n普通段落\n\n- 普通列表项"],
@@ -240,8 +240,8 @@ describe("FootprintCore × 待办排除:端到端(用户可见行为)", () => {
   });
 });
 
-describe("FootprintCore 历史档:跨天轮转固化,历史日记按日聚合", () => {
-  it("跨天轮转把旧基线日的新增块固化成档案;今日仍是空实时索引", async () => {
+describe("FootprintCore history archive: frozen by the cross-day rotation, the historical daily notes aggregated by day", () => {
+  it("the cross-day rotation freezes the added blocks of the old baseline day into an archive; today is still an empty live index", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线段落" } };
     const files = new Map<string, string>([
       [NOTE, "基线段落\n\n09-29 写的段"],
@@ -270,7 +270,7 @@ describe("FootprintCore 历史档:跨天轮转固化,历史日记按日聚合", 
     expect(persisted.history["2026-09-29"][NOTE]).toEqual([{ text: "09-29 写的段", start: 3, end: 3 }]);
   });
 
-  it("档案是固化快照:轮转后盘面继续变化,旧日条目不变、今日走实时", async () => {
+  it("the archive is a frozen snapshot: the disk keeps changing after the rotation, the old day entries do not change, today goes live", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线段落" } };
     const files = new Map<string, string>([[NOTE, "基线段落\n\n09-29 写的段"], [footprintsFilePath(VAULT), JSON.stringify(stored)]]);
     const core = coreOf(files, "2026-09-30");
@@ -286,7 +286,7 @@ describe("FootprintCore 历史档:跨天轮转固化,历史日记按日聚合", 
     ]);
   });
 
-  it("待办排除对档案同样生效;当天无新增则档案为空条目", async () => {
+  it("the todo exclusion applies to the archive as well; with no additions that day the archive is empty", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线" } };
     const files = new Map<string, string>([
       [NOTE, "基线\n\n- [ ] 纯待办不进档案"],
@@ -300,7 +300,7 @@ describe("FootprintCore 历史档:跨天轮转固化,历史日记按日聚合", 
     expect(persisted.history["2026-09-29"]).toEqual({});
   });
 
-  it("多天没开应用:最后活跃日拿到全部累积,中间日子档案缺失", async () => {
+  it("the app was not opened for days: the last active day gets the whole accumulation, the days in between have no archive", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-27", baselines: { [NOTE]: "基线" } };
     const files = new Map<string, string>([
       [NOTE, "基线\n\n几天间写的段"],
@@ -315,7 +315,7 @@ describe("FootprintCore 历史档:跨天轮转固化,历史日记按日聚合", 
     expect(core.entriesFor("2026-09-29")).toEqual([]);
   });
 
-  it("ensureDay 幂等:同一天内重复调用不重复轮转、不重写档案", async () => {
+  it("ensureDay is idempotent: repeated calls within the same day do not rotate again and do not rewrite the archive", async () => {
     const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线" } };
     const files = new Map<string, string>([
       [NOTE, "基线\n\n昨天的段"],

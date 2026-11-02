@@ -5,19 +5,19 @@ function node(id: string, parent: string | null, createdAt: number): SessionNode
   return { id, parent, basedOn: "", forkAt: parent ? 2 : 0, title: id, createdAt, updatedAt: createdAt };
 }
 
-describe("会话家族:根与成员", () => {
-  it("从子会话向上找到主会话", () => {
+describe("the session family: root and members", () => {
+  it("the main session is found by walking up from a child session", () => {
     const nodes = [node("main", null, 1), node("aux", "main", 2)];
     expect(sessionRoot("aux", nodes)).toBe("main");
     expect(resolveFamily("aux", nodes)?.rootId).toBe("main");
   });
 
-  it("锚点本身是主会话时根就是它自己", () => {
+  it("when the anchor is the main session it is its own root", () => {
     const nodes = [node("main", null, 1), node("aux", "main", 2)];
     expect(sessionRoot("main", nodes)).toBe("main");
   });
 
-  it("链式分叉:孙会话也回到同一个主会话", () => {
+  it("chained forks: a grandchild session also comes back to the same main session", () => {
     const nodes = [
       node("main", null, 1),
       node("a", "main", 2),
@@ -27,13 +27,13 @@ describe("会话家族:根与成员", () => {
     expect(sessionFamily("main", nodes).map((n) => n.id)).toEqual(["main", "a", "b"]);
   });
 
-  it("父记录已删除时就近当根,不抛错", () => {
+  it("when the parent record is gone the nearest node becomes the root, without throwing", () => {
     const nodes = [node("orphan", "gone", 5)];
     expect(sessionRoot("orphan", nodes)).toBe("orphan");
     expect(sessionFamily("orphan", nodes).map((n) => n.id)).toEqual(["orphan"]);
   });
 
-  it("parent 成环时停住而不是无限递归", () => {
+  it("a cycle in parent stops instead of recursing forever", () => {
     const nodes = [node("a", "b", 1), node("b", "a", 2)];
     // Which node of the cycle becomes the root does not matter; what matters is that it terminates and that both nodes are in the family.
     const root = sessionRoot("a", nodes);
@@ -41,7 +41,7 @@ describe("会话家族:根与成员", () => {
     expect(sessionFamily(root, nodes).map((n) => n.id)).toEqual(["a", "b"]);
   });
 
-  it("一个父挂多个子:全部还原,按创建时间排序", () => {
+  it("one parent with several children: all of them are restored, sorted by creation time", () => {
     const nodes = [
       node("main", null, 1),
       node("x", "main", 3),
@@ -50,7 +50,7 @@ describe("会话家族:根与成员", () => {
     expect(sessionFamily("main", nodes).map((n) => n.id)).toEqual(["main", "y", "x"]);
   });
 
-  it("别的家族的会话不混进来", () => {
+  it("sessions of another family do not get mixed in", () => {
     const nodes = [
       node("main", null, 1),
       node("aux", "main", 2),
@@ -60,7 +60,7 @@ describe("会话家族:根与成员", () => {
     expect(sessionFamily("main", nodes).map((n) => n.id)).toEqual(["main", "aux"]);
   });
 
-  it("锚点不存在时返回 null(调用方按空处理)", () => {
+  it("null when the anchor does not exist (the caller treats it as empty)", () => {
     expect(resolveFamily("nope", [node("main", null, 1)])).toBeNull();
   });
 });

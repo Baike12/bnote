@@ -13,7 +13,7 @@ const entries = [
 ];
 
 describe("buildFootprintView", () => {
-  it("按源文件分组,带笔记名与计数", () => {
+  it("grouped by source file, with the note name and the counts", () => {
     const view = buildFootprintView(entries);
     expect(view.fileCount).toBe(2);
     expect(view.blockCount).toBe(3);
@@ -21,18 +21,18 @@ describe("buildFootprintView", () => {
     expect(view.groups[0].blocks).toHaveLength(2);
   });
 
-  it("空索引是零计数、无组", () => {
+  it("an empty index gives zero counts and no groups", () => {
     expect(buildFootprintView([])).toEqual({ groups: [], fileCount: 0, blockCount: 0 });
   });
 
-  it("文件名剥目录与 .md;无目录路径照常", () => {
+  it("the file name drops the directory and the .md; a path without a directory works as well", () => {
     const view = buildFootprintView([{ path: "/vault/readme.md", blocks: [] }]);
     expect(view.groups[0].label).toBe("readme");
   });
 });
 
-describe("折叠状态", () => {
-  it("默认全部展开,签名区分收起态", () => {
+describe("fold state", () => {
+  it("everything is expanded by default, the signature distinguishes the collapsed state", () => {
     const d = defaultFold();
     expect(d.zoneCollapsed).toBe(false);
     expect(d.groups.size).toBe(0);
@@ -40,7 +40,7 @@ describe("折叠状态", () => {
     expect(foldSig(toggleZone(d))).toBe("z");
   });
 
-  it("toggleZone 在区级翻转,组状态不动", () => {
+  it("toggleZone flips at the zone level, the group state is untouched", () => {
     let s = defaultFold();
     s = toggleGroup(s, "/vault/a.md");
     const z = toggleZone(s);
@@ -49,7 +49,7 @@ describe("折叠状态", () => {
     expect(toggleZone(z).zoneCollapsed).toBe(false);
   });
 
-  it("toggleGroup 翻转单个组,签名随收起集变化", () => {
+  it("toggleGroup flips a single group, the signature changes with the collapsed set", () => {
     let s = defaultFold();
     s = toggleGroup(s, "/vault/a.md");
     expect(s.groups.has("/vault/a.md")).toBe(true);
@@ -59,7 +59,7 @@ describe("折叠状态", () => {
     expect(foldSig(s)).toBe("Z");
   });
 
-  it("签名与组序无关(集合语义)", () => {
+  it("the signature does not depend on the group order (set semantics)", () => {
     const a = toggleGroup(toggleGroup(defaultFold(), "/x.md"), "/y.md");
     const b = toggleGroup(toggleGroup(defaultFold(), "/y.md"), "/x.md");
     expect(foldSig(a)).toBe(foldSig(b));

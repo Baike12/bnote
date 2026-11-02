@@ -14,16 +14,16 @@ import {
 } from "./layoutModel";
 
 describe("normalizeContentWidth", () => {
-  it("旧配置的比例按窗口宽度换算成像素", () => {
+  it("an old config ratio is converted to pixels by the window width", () => {
     expect(normalizeContentWidth(0.44, 1400)).toBe(616);
   });
 
-  it("像素宽度原样保留,只夹下限(布局宽度的 10%)", () => {
+  it("a pixel width is kept as is, only the lower bound is clamped (10% of the layout width)", () => {
     expect(normalizeContentWidth(900, 1400)).toBe(900);
     expect(normalizeContentWidth(20, 1400)).toBe(minColumnWidth(1400));
   });
 
-  it("坏数据回落默认值", () => {
+  it("bad data falls back to the default value", () => {
     expect(normalizeContentWidth(null, 1400)).toBe(DEFAULT_CONTENT_WIDTH);
     expect(normalizeContentWidth(NaN, 1400)).toBe(DEFAULT_CONTENT_WIDTH);
     expect(normalizeContentWidth(0, 1400)).toBe(DEFAULT_CONTENT_WIDTH);
@@ -31,16 +31,16 @@ describe("normalizeContentWidth", () => {
 });
 
 describe("studySplitToContentWidth", () => {
-  it("旧三栏数组取中栏宽度(第 2 个元素)", () => {
+  it("an old three-column array takes the middle column width (the 2nd element)", () => {
     expect(studySplitToContentWidth([320, 620])).toBe(620);
     expect(studySplitToContentWidth([0.24, 0.44])).toBeCloseTo(0.44, 10);
   });
 
-  it("单值(已是新配置)原样返回", () => {
+  it("a single value (already the new config) is returned unchanged", () => {
     expect(studySplitToContentWidth(620)).toBe(620);
   });
 
-  it("没有可迁移的值时返回 null", () => {
+  it("returns null when there is no migratable value", () => {
     expect(studySplitToContentWidth(undefined)).toBeNull();
     expect(studySplitToContentWidth([320])).toBeNull();
     expect(studySplitToContentWidth([320, "x"] as unknown)).toBeNull();
@@ -48,12 +48,12 @@ describe("studySplitToContentWidth", () => {
 });
 
 describe("normalizeAgentWidth", () => {
-  it("像素原样保留,只夹下限(布局宽度的 10%)", () => {
+  it("a pixel width is kept as is, only the lower bound is clamped (10% of the layout width)", () => {
     expect(normalizeAgentWidth(360, 1400)).toBe(360);
     expect(normalizeAgentWidth(20, 1400)).toBe(minColumnWidth(1400));
   });
 
-  it("坏数据回落默认值", () => {
+  it("bad data falls back to the default value", () => {
     expect(normalizeAgentWidth(undefined, 1400)).toBe(DEFAULT_AGENT_WIDTH);
     expect(normalizeAgentWidth(NaN, 1400)).toBe(DEFAULT_AGENT_WIDTH);
     expect(normalizeAgentWidth(0, 1400)).toBe(DEFAULT_AGENT_WIDTH);
@@ -61,23 +61,23 @@ describe("normalizeAgentWidth", () => {
 });
 
 describe("minColumnWidth", () => {
-  it("每栏最小宽度是布局宽度的 10%", () => {
+  it("the minimum width of each column is 10% of the layout width", () => {
     expect(minColumnWidth(1400)).toBe(140);
     expect(minColumnWidth(900)).toBe(90);
   });
 
-  it("宽度无效时返回 0", () => {
+  it("returns 0 when the width is invalid", () => {
     expect(minColumnWidth(0)).toBe(0);
     expect(minColumnWidth(NaN)).toBe(0);
   });
 });
 
-describe("dragAgentEdge(助手|内容:只动相邻两栏)", () => {
+describe("dragAgentEdge (agent | content: only the two adjacent columns move)", () => {
   const host = 1400;
   const sum = 320 + 620; // assistant + content
   const min = minColumnWidth(host);
 
-  it("宽度在助手与中栏之间转移,笔记栏原地不动", () => {
+  it("the width moves between the agent and middle columns, the notes column stays put", () => {
     const widths = dragAgentEdge(RESIZER_WIDTH + 400, host, sum);
     expect(widths.agent).toBe(400);
     expect(widths.content).toBe(sum - 400);
@@ -86,26 +86,26 @@ describe("dragAgentEdge(助手|内容:只动相邻两栏)", () => {
     expect(widths.right).toBe(host - RESIZER_WIDTH * 2 - sum);
   });
 
-  it("线往左拖:中栏变宽,助手栏收窄", () => {
+  it("dragging the line left: the middle column grows and the agent column shrinks", () => {
     const widths = dragAgentEdge(RESIZER_WIDTH + 200, host, sum);
     expect(widths.agent).toBe(200);
     expect(widths.content).toBe(sum - 200);
     expect(widths.right).toBe(host - RESIZER_WIDTH * 2 - sum);
   });
 
-  it("助手栏到 10% 就顶住", () => {
+  it("the agent column stops at 10%", () => {
     const widths = dragAgentEdge(0, host, sum);
     expect(widths.agent).toBe(min);
     expect(widths.content).toBe(sum - min);
   });
 
-  it("中栏到 10% 就顶住", () => {
+  it("the middle column stops at 10%", () => {
     const widths = dragAgentEdge(host, host, sum);
     expect(widths.content).toBe(min);
     expect(widths.agent).toBe(sum - min);
   });
 
-  it("两栏都到不了 10%(窗口太窄)时取折中", () => {
+  it("when neither column can reach 10% (the window is too narrow) a compromise is taken", () => {
     const narrow = 400;
     const widths = dragAgentEdge(0, narrow, 300);
     expect(widths.agent).toBeGreaterThan(0);
@@ -114,46 +114,46 @@ describe("dragAgentEdge(助手|内容:只动相邻两栏)", () => {
   });
 });
 
-describe("dragContentEdge(内容|笔记:只动相邻两栏)", () => {
+describe("dragContentEdge (content | notes: only the two adjacent columns move)", () => {
   const host = 1400;
   const contentLeft = 320 + RESIZER_WIDTH;
   const min = minColumnWidth(host);
 
-  it("中栏宽度 = 指针位置扣掉分隔条,右栏吃剩余", () => {
+  it("the middle column width = the pointer position minus the resizer, the right column takes the rest", () => {
     const widths = dragContentEdge(contentLeft + RESIZER_WIDTH + 500, host, contentLeft);
     expect(widths.content).toBe(500);
     expect(widths.right).toBe(host - contentLeft - RESIZER_WIDTH - 500);
   });
 
-  it("笔记栏到 10% 就顶住", () => {
+  it("the notes column stops at 10%", () => {
     const widths = dragContentEdge(host, host, contentLeft);
     expect(widths.right).toBe(min);
     expect(widths.content).toBe(host - contentLeft - RESIZER_WIDTH - min);
   });
 
-  it("中栏到 10% 就顶住", () => {
+  it("the middle column stops at 10%", () => {
     const widths = dragContentEdge(0, host, contentLeft);
     expect(widths.content).toBe(min);
   });
 
-  it("助手栏不受影响(只看得到中栏与笔记栏)", () => {
+  it("the agent column is unaffected (only the middle and notes columns are visible)", () => {
     const widths = dragContentEdge(contentLeft + RESIZER_WIDTH + 400, host, contentLeft);
     expect(widths.content + widths.right + contentLeft + RESIZER_WIDTH).toBe(host);
   });
 });
 
 describe("basePageWidth", () => {
-  it("没有裁剪时就是栏宽", () => {
+  it("without a crop it is the column width", () => {
     expect(basePageWidth(620, 1)).toBe(620);
     expect(basePageWidth(620, 0)).toBe(620);
   });
 
-  it("裁掉一半宽度时,完整页面放大一倍才能让可见部分贴边", () => {
+  it("when half the width is cropped, the full page must double in size for the visible part to reach the edge", () => {
     expect(basePageWidth(620, 0.5)).toBe(1240);
     expect(basePageWidth(620, 0.8)).toBeCloseTo(775, 5);
   });
 
-  it("栏宽无效时返回 0", () => {
+  it("returns 0 when the column width is invalid", () => {
     expect(basePageWidth(0, 0.5)).toBe(0);
   });
 });
@@ -171,14 +171,14 @@ describe("contentWidthForRenderedPage", () => {
     maxPageWidth: 1600,
   };
 
-  it("按真实页面高度差折算宽度,一页刚好完整显示", () => {
+  it("the width is derived from the real page height difference, so one page just fits", () => {
     const width = contentWidthForRenderedPage(base) as number;
     const fittedPage = base.pageWidth + (width - base.contentWidth);
     // The width is rounded, so the height error stays within 1px.
     expect(Math.abs(fittedPage * base.pageRatio - base.availableHeight)).toBeLessThanOrEqual(1);
   });
 
-  it("裁掉一半页面时,同样的高度差需要两倍宽度", () => {
+  it("when half the page is cropped, the same height difference needs twice the width", () => {
     const full = contentWidthForRenderedPage(base) as number;
     const cropped = contentWidthForRenderedPage({ ...base, cropHeight: 0.5 }) as number;
     const fullDelta = full - base.contentWidth;
@@ -186,7 +186,7 @@ describe("contentWidthForRenderedPage", () => {
     expect(Math.abs(cropDelta - fullDelta * 2)).toBeLessThanOrEqual(1);
   });
 
-  it("裁掉左右留白时,中栏只承担可见宽度那一份", () => {
+  it("when the side whitespace is cropped, the middle column only carries the visible width share", () => {
     // The page is scaled by 1/0.8, so a 1px change of the full page width is only 0.8px of the content column.
     const pageWidth = base.pageWidth / 0.8;
     const pageHeight = pageWidth * base.pageRatio;
@@ -200,7 +200,7 @@ describe("contentWidthForRenderedPage", () => {
     expect(Math.abs(fittedPage * base.pageRatio - base.availableHeight)).toBeLessThanOrEqual(1);
   });
 
-  it("页面宽度卡在上下限时,中栏不再继续变宽", () => {
+  it("when the page width hits the upper or lower limit, the middle column stops growing", () => {
     const maxed = contentWidthForRenderedPage({
       ...base,
       pageWidth: 1600,
@@ -217,7 +217,7 @@ describe("contentWidthForRenderedPage", () => {
     expect(mined).toBe(base.contentWidth);
   });
 
-  it("几何没准备好时返回 null", () => {
+  it("returns null when the geometry is not ready", () => {
     expect(contentWidthForRenderedPage({ ...base, pageHeight: 0 })).toBeNull();
     expect(contentWidthForRenderedPage({ ...base, availableHeight: 0 })).toBeNull();
     expect(contentWidthForRenderedPage({ ...base, pageRatio: 0 })).toBeNull();

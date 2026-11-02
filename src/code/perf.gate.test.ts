@@ -49,8 +49,8 @@ function allDirPaths(entries: readonly CodeEntry[]): Set<string> {
   return dirs;
 }
 
-describe("代码模块量级门禁", () => {
-  it("折 2000 个文件的项目树 < 10ms", () => {
+describe("code module order-of-magnitude gate", () => {
+  it("folding the project tree of 2000 files < 10ms", () => {
     const entries = repoEntries(2000);
     const samples: number[] = [];
     for (let i = 0; i < 7; i++) {
@@ -62,7 +62,7 @@ describe("代码模块量级门禁", () => {
     expect(med, `折树中位数 ${med.toFixed(1)}ms`).toBeLessThan(10);
   });
 
-  it("自然序比较 20000 次 < 45ms", () => {
+  it("20000 natural comparisons < 45ms", () => {
     const samples: number[] = [];
     for (let i = 0; i < 7; i++) {
       const t0 = performance.now();
@@ -75,7 +75,7 @@ describe("代码模块量级门禁", () => {
     expect(med, `比较中位数 ${med.toFixed(1)}ms`).toBeLessThan(45);
   });
 
-  it("解析 2000 行的 diff < 2.5ms", () => {
+  it("parsing a 2000-line diff < 2.5ms", () => {
     const hunk = Array.from({ length: 2000 }, (_, i) => ` line ${i}`).join("\n");
     const text = `--- a/x\n+++ b/x\n@@ -1,2000 +1,2000 @@\n${hunk}\n`;
     const samples: number[] = [];
@@ -88,7 +88,7 @@ describe("代码模块量级门禁", () => {
     expect(med, `diff 解析中位数 ${med.toFixed(1)}ms`).toBeLessThan(2.5);
   });
 
-  it("并排对齐 2000 行的 hunk < 1ms", () => {
+  it("side-by-side alignment of a 2000-line hunk < 1ms", () => {
     const hunk = {
       oldStart: 1,
       oldLines: 2000,
@@ -112,7 +112,7 @@ describe("代码模块量级门禁", () => {
     expect(med, `对齐中位数 ${med.toFixed(1)}ms`).toBeLessThan(1);
   });
 
-  it("猜缩进 < 2.5ms(每个文件一次,不该随文件长度线性涨)", () => {
+  it("detecting the indent < 2.5ms (once per file, it must not grow linearly with the file length)", () => {
     const big = Array.from({ length: 20000 }, (_, i) => `    line ${i}`).join("\n");
     const samples: number[] = [];
     for (let i = 0; i < 7; i++) {
@@ -124,7 +124,7 @@ describe("代码模块量级门禁", () => {
     expect(med, `猜缩进中位数 ${med.toFixed(1)}ms`).toBeLessThan(2.5);
   });
 
-  it("拍平文件树(2 万个文件) < 6ms(虚拟滚动每次都拍一次)", () => {
+  it("flattening the file tree (20000 files) < 6ms (virtual scrolling flattens it on every scroll)", () => {
     const entries = repoEntries(20000);
     const roots = buildTree(entries);
     const expanded = allDirPaths(entries);
@@ -135,11 +135,11 @@ describe("代码模块量级门禁", () => {
       samples.push(performance.now() - t0);
     }
     const med = median(samples);
-    console.warn(`[perf] 拍平文件树 中位 ${med.toFixed(2)}ms`);
+    console.warn(`[perf] flatten file tree median ${med.toFixed(2)}ms`);
     expect(med, `拍平文件树中位数 ${med.toFixed(2)}ms`).toBeLessThan(6);
   });
 
-  it("快速打开:2 万个文件里过滤 < 8ms(每键一次,不许走 IPC 重扫仓库)", () => {
+  it("quick open: filtering 20000 files < 8ms (once per keystroke, it must not rescan the repository over IPC)", () => {
     const entries = repoEntries(20000);
     const samples: number[] = [];
     for (let i = 0; i < 7; i++) {
@@ -148,7 +148,7 @@ describe("代码模块量级门禁", () => {
       samples.push(performance.now() - t0);
     }
     const med = median(samples);
-    console.warn(`[perf] 快速打开过滤 中位 ${med.toFixed(2)}ms`);
+    console.warn(`[perf] quick-open filtering median ${med.toFixed(2)}ms`);
     expect(med, `快速打开过滤中位数 ${med.toFixed(2)}ms`).toBeLessThan(8);
   });
 });
