@@ -124,7 +124,7 @@ bnote's core is **feel**: editing, scrolling, caret movement, and rendering must
 
 ## Git
 
-- **`git push` only when explicitly asked.** Local commits are the default; only push the branch the user names.
+- **`git commit` and `git push` only when explicitly asked.** Leave changes uncommitted so the user can review them first; only push the branch the user names.
 - Use Conventional Commits in English, imperative mood, subject at most 20 words: `feat:`, `fix:`, `refactor:`, `perf:`, `test:`, `docs:`, `build:`, `chore:`.
 - One logical change per commit; do not mix refactors with behavior changes.
 - Example: `fix: reflow math widgets after font load`.
