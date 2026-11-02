@@ -532,6 +532,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             code::code_lsp_resolve(
                 arg_str(args, "root")?,
                 arg_str(args, "language")?,
+                arg_opt_str(args, "path"),
                 arg_opt_server_config(args, "overrides")?,
             )
             .await
@@ -542,6 +543,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 app.state(),
                 arg_str(args, "root")?,
                 arg_str(args, "language")?,
+                arg_str(args, "path")?,
                 arg_opt_server_config(args, "overrides")?,
             )
             .await

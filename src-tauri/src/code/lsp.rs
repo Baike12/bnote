@@ -125,9 +125,14 @@ pub struct ResolvedServer {
 /// language); the project file is read by this function itself. `None` means
 /// the language has no usable server (the front end then shows no LSP entry
 /// points for it).
+///
+/// `rel_path` is the file the server is resolved for: a Python venv is taken
+/// from **that file's subproject**, not from the project root (see
+/// [`server_root`]). An empty path means "the project root itself".
 pub fn resolve_server(
     root: &Path,
     language: &str,
+    rel_path: &str,
     global: Option<&ServerConfig>,
 ) -> Option<ResolvedServer> {
     let project = load_project_config(root);
@@ -145,7 +150,7 @@ pub fn resolve_server(
         config = merge(config, p);
     }
     if language == "python" {
-        apply_python_venv(root, &mut config);
+        apply_python_venv(&server_root(root, language, rel_path), &mut config);
     }
     Some(ResolvedServer {
         config,
@@ -153,21 +158,66 @@ pub fn resolve_server(
     })
 }
 
-/// The virtual environment of a Python project: `.venv` / `venv` under the root
-/// (only counted when it holds `bin/python`).
+/// The workspace root the language server serving `rel_path` should use.
 ///
-/// The same rule as the Python extension of Zed: the venv is looked up only at
-/// the workspace root and not recursively (a subproject is opened with its own
-/// root); `bin/python` has to exist, otherwise it is just a directory with the
-/// same name.
-pub fn find_python_venv(root: &Path) -> Option<PathBuf> {
-    for name in [".venv", "venv"] {
-        let dir = root.join(name);
-        if dir.join("bin/python").is_file() || dir.join("bin/python3").is_file() {
-            return Some(dir);
-        }
+/// Every language except Python has one server per project: the project root is
+/// the workspace (`rootUri`, cwd) and the sandbox rule already bounds it.
+///
+/// Python is the exception, because **the environment belongs to the
+/// subproject, not to the folder the user opened**. A course repository holds
+/// several assignments, each with its own `.venv`; opening the repository has
+/// to serve all of them, and one `VIRTUAL_ENV` per process cannot. So
+/// `rel_path` resolves to the nearest ancestor of the file (its own directory
+/// first, the project root last) that holds a venv or a Python manifest, and
+/// the manager keeps one server per (language, workspace root) — the same
+/// shape Zed uses (manifest root per subproject + one server per toolchain).
+pub fn server_root(root: &Path, language: &str, rel_path: &str) -> PathBuf {
+    if language != "python" {
+        return root.to_path_buf();
     }
-    None
+    let rel = Path::new(rel_path);
+    let mut current = rel.parent();
+    while let Some(rel_dir) = current {
+        let abs = if rel_dir.as_os_str().is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(rel_dir)
+        };
+        if find_python_venv(&abs).is_some() || is_python_project(&abs) {
+            return abs;
+        }
+        current = rel_dir.parent();
+    }
+    root.to_path_buf()
+}
+
+/// Manifest files that mark the root of a Python (sub)project.
+const PYTHON_MANIFESTS: &[&str] = &["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"];
+
+fn is_python_project(dir: &Path) -> bool {
+    PYTHON_MANIFESTS.iter().any(|m| dir.join(m).is_file())
+}
+
+/// The interpreter inside a venv (`bin/python` / `bin/python3`).
+fn venv_interpreter(venv: &Path) -> Option<PathBuf> {
+    ["bin/python", "bin/python3"]
+        .iter()
+        .map(|p| venv.join(p))
+        .find(|p| p.is_file())
+}
+
+/// The virtual environment of a Python (sub)project: `.venv` / `venv` under
+/// the given directory (only counted when it holds an interpreter).
+///
+/// The caller passes the **subproject root** (see [`server_root`]), so the
+/// lookup itself stays one directory deep — the same rule as Zed's Python
+/// extension. `bin/python` has to exist, otherwise it is just a directory with
+/// the same name.
+pub fn find_python_venv(root: &Path) -> Option<PathBuf> {
+    [".venv", "venv"]
+        .iter()
+        .map(|name| root.join(name))
+        .find(|dir| venv_interpreter(dir).is_some())
 }
 
 /// Hand the venv to the language server: **`VIRTUAL_ENV` + `PATH` with bin
@@ -217,38 +267,61 @@ fn merge(mut base: ServerConfig, over: &ServerConfig) -> ServerConfig {
     base
 }
 
+/// One language server instance: its language plus the workspace root it was
+/// started in (the project root for every language but Python, the subproject
+/// for Python — see [`server_root`]).
+type ClientKey = (String, PathBuf);
+
 /// The set of language servers of one project.
 pub struct LspManager {
     pub root: PathBuf,
-    /// Language → client.
-    clients: Mutex<HashMap<String, Arc<LspClient>>>,
+    /// (language, workspace root) → client.
+    ///
+    /// One entry per language for everything but Python. Python gets one per
+    /// subproject, because each subproject has its own virtual environment and
+    /// a process can only carry one `VIRTUAL_ENV`. The map is shared with the
+    /// sinks (`Arc`), which use it to answer "is this language still served"
+    /// when one instance exits.
+    clients: Arc<Mutex<HashMap<ClientKey, Arc<LspClient>>>>,
 }
 
 impl LspManager {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            clients: Mutex::new(HashMap::new()),
+            clients: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Gets the client of a language (None when it was never started).
-    pub fn get(&self, language: &str) -> Option<Arc<LspClient>> {
+    /// Gets the client of (language, workspace root), if it was ever started.
+    pub fn get(&self, language: &str, workspace: &Path) -> Option<Arc<LspClient>> {
         self.clients
             .lock()
             .ok()
-            .and_then(|m| m.get(language).cloned())
+            .and_then(|m| m.get(&(language.to_string(), workspace.to_path_buf())).cloned())
     }
 
-    /// Whether the language already has a live client.
-    pub fn has(&self, language: &str) -> bool {
-        self.get(language)
-            .map(|c| c.alive.load(std::sync::atomic::Ordering::Relaxed))
-            .unwrap_or(false)
+    /// Any live client of this language.
+    ///
+    /// For requests that carry no document (`workspace/symbol`): with a server
+    /// per subproject there may be several, and any of them answers a
+    /// workspace-wide symbol search.
+    pub fn live_of(&self, language: &str) -> Option<Arc<LspClient>> {
+        let map = self.clients.lock().ok()?;
+        map.iter()
+            .find(|((lang, _), client)| {
+                lang == language && client.alive.load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .map(|(_, client)| client.clone())
     }
 
-    /// Makes sure the server of a language is running; returns the live one
-    /// right away if it already is.
+    /// Whether the language has at least one live client.
+    pub fn has_any(&self, language: &str) -> bool {
+        self.live_of(language).is_some()
+    }
+
+    /// Makes sure the server serving `workspace` is running; returns the live
+    /// one right away if it already is.
     ///
     /// Concurrent first requests each spawn one process, so the map is
     /// re-checked before insertion: only the live one is kept, the others are
@@ -256,32 +329,42 @@ impl LspManager {
     pub async fn ensure(
         &self,
         language: &str,
+        workspace: &Path,
         config: &ServerConfig,
         app: tauri::AppHandle,
     ) -> Result<Arc<LspClient>, String> {
-        if let Some(c) = self.get(language) {
+        let key: ClientKey = (language.to_string(), workspace.to_path_buf());
+        if let Some(c) = self.get(language, workspace) {
             if c.alive.load(std::sync::atomic::Ordering::Relaxed) {
                 return Ok(c);
             }
         }
         let sink = Arc::new(CodeSink {
             app: app.clone(),
+            // Diagnostics stay relative to the project: the front end keys
+            // them by project-relative path.
             root: self.root.clone(),
+            workspace: workspace.to_path_buf(),
+            settings: python_environment_settings(language, workspace),
+            clients: self.clients.clone(),
         });
         let spec = ServerSpec {
             command: config.command.clone(),
             args: config.args.clone(),
             env: config.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            cwd: Some(self.root.clone()),
+            cwd: Some(workspace.to_path_buf()),
             language_id: language.to_string(),
             initialization_options: config.init_options.clone(),
             settings: None,
             pull_diagnostics: false,
         };
-        let client = LspClient::spawn(&spec, self.root.clone(), sink).await?;
+        // The client's project_root is the workspace: rootUri and
+        // workspaceFolders decide where the server looks for first-party code,
+        // and ty searched the opened folder (not the subproject) before.
+        let client = LspClient::spawn(&spec, workspace.to_path_buf(), sink).await?;
         client.initialize(&spec).await?;
         let mut map = self.clients.lock().map_err(|_| "lock poisoned")?;
-        match map.get(language) {
+        match map.get(&key) {
             Some(existing) if existing.alive.load(std::sync::atomic::Ordering::Relaxed) => {
                 // Somebody else won the race: stop the one we started and use
                 // theirs.
@@ -289,10 +372,15 @@ impl LspManager {
                 Ok(existing.clone())
             }
             _ => {
-                map.insert(language.to_string(), client.clone());
+                map.insert(key, client.clone());
                 let _ = app.emit(
                     "code-lsp-status",
-                    json!({ "root": self.root.to_string_lossy(), "language": language, "state": "running" }),
+                    json!({
+                        "root": self.root.to_string_lossy(),
+                        "language": language,
+                        "workspace": workspace.to_string_lossy(),
+                        "state": "running",
+                    }),
                 );
                 Ok(client)
             }
@@ -309,12 +397,53 @@ impl LspManager {
     }
 }
 
+/// The workspace configuration handed to ty: the subproject's virtual
+/// environment as `pythonExtension.activeEnvironment` (the shape Zed uses, and
+/// the same one the markdown-embedded Python chain already sends).
+///
+/// `VIRTUAL_ENV` in the child environment says the same thing; this makes it
+/// explicit in the protocol and keeps working when the server is started from
+/// a workspace whose root is not the venv's parent.
+fn python_environment_settings(language: &str, workspace: &Path) -> Value {
+    if language != "python" {
+        return Value::Null;
+    }
+    let Some(venv) = find_python_venv(workspace) else {
+        return json!({});
+    };
+    let Some(python) = venv_interpreter(&venv) else {
+        return json!({});
+    };
+    let sys_prefix = python.parent().and_then(Path::parent).unwrap_or(&venv);
+    json!({
+        "pythonExtension": {
+            "activeEnvironment": {
+                "executable": {
+                    "uri": crate::lsp::path_to_uri(&python),
+                    "sysPrefix": sys_prefix.to_string_lossy(),
+                }
+            }
+        }
+    })
+}
+
 /// Message handling for a code project: forwards diagnostics, forwards logs,
 /// answers the requests the server initiates.
 struct CodeSink {
     app: tauri::AppHandle,
+    /// The project root (the sandbox): diagnostics are reported relative to it.
     root: PathBuf,
+    /// The workspace root this server was started in (Python: the subproject).
+    workspace: PathBuf,
+    /// The `workspace/configuration` payload this server needs (ty's
+    /// activeEnvironment); `Null` for every language that needs none.
+    settings: Value,
+    /// The live clients, shared with the manager: "stopped" may only be
+    /// reported once no other server of the same language is alive (Python
+    /// runs one per subproject).
+    clients: Arc<Mutex<HashMap<ClientKey, Arc<LspClient>>>>,
 }
+
 
 impl CodeSink {
     /// Absolute path → path relative to the project (posix). Files outside the
@@ -333,27 +462,59 @@ impl CodeSink {
         )
     }
 
-    /// Reply to `workspace/configuration`: an array of nulls with as many
-    /// entries as there are items (one entry less would let the server read out
-    /// of bounds by index).
-    fn configuration_reply(msg: &Value) -> Value {
-        let count = msg
+    /// Reply to `workspace/configuration`: one entry per requested item (one
+    /// entry less would let the server read out of bounds by index). Only the
+    /// `ty` section carries anything (the activeEnvironment); everything else
+    /// stays null, as before.
+    fn configuration_reply(&self, msg: &Value) -> Value {
+        let items = msg
             .pointer("/params/items")
             .and_then(Value::as_array)
-            .map(|a| a.len())
-            .unwrap_or(0);
-        Value::Array(vec![Value::Null; count])
+            .cloned()
+            .unwrap_or_default();
+        Value::Array(
+            items
+                .iter()
+                .map(|item| {
+                    let section = item.get("section").and_then(Value::as_str).unwrap_or("");
+                    if (section.is_empty() || section == "ty") && !self.settings.is_null() {
+                        self.settings.clone()
+                    } else {
+                        Value::Null
+                    }
+                })
+                .collect(),
+        )
     }
 
-    /// Reply to `workspace/workspaceFolders`.
+    /// Reply to `workspace/workspaceFolders`: the workspace this server was
+    /// started in (the subproject for Python).
     fn workspace_folders(&self) -> Value {
         json!([{
-            "uri": path_to_uri(&self.root),
-            "name": self.root
+            "uri": path_to_uri(&self.workspace),
+            "name": self.workspace
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default(),
         }])
+    }
+
+    /// The state the front end should show for this language after one of its
+    /// servers exited: "running" while another instance of the same language is
+    /// still alive (Python runs one per subproject), otherwise "stopped".
+    ///
+    /// Dead entries are dropped on the way: the map must not keep corpses that
+    /// `get` would hand out.
+    fn state_after_exit(&self, language: &str) -> &'static str {
+        let Ok(mut map) = self.clients.lock() else {
+            return "stopped";
+        };
+        map.retain(|_, client| client.alive.load(std::sync::atomic::Ordering::Relaxed));
+        if map.keys().any(|(lang, _)| lang == language) {
+            "running"
+        } else {
+            "stopped"
+        }
     }
 }
 
@@ -370,7 +531,7 @@ impl LspSink for CodeSink {
                 // A server → client request: answer each with what it expects.
                 (Some(id), Some(method)) => {
                     let result = match method.as_str() {
-                        "workspace/configuration" => Self::configuration_reply(&msg),
+                        "workspace/configuration" => self.configuration_reply(&msg),
                         "workspace/workspaceFolders" => self.workspace_folders(),
                         "workspace/applyEdit" => json!({ "applied": false }),
                         _ => Value::Null,
@@ -382,14 +543,17 @@ impl LspSink for CodeSink {
                 // A notification.
                 (None, Some(method)) => match method.as_str() {
                     // The server process exited: report the state back, otherwise
-                    // the front end keeps believing it is alive.
+                    // the front end keeps believing it is alive. With a server
+                    // per subproject the language may still be served by
+                    // another instance.
                     "$bnote/serverExit" => {
                         let _ = self.app.emit(
                             "code-lsp-status",
                             json!({
                                 "root": self.root.to_string_lossy(),
                                 "language": client.language_id,
-                                "state": "stopped",
+                                "workspace": self.workspace.to_string_lossy(),
+                                "state": self.state_after_exit(&client.language_id),
                             }),
                         );
                     }
@@ -480,7 +644,7 @@ mod tests {
             r#"{"languages":{"go":{"command":"/opt/gopls","args":["-x"]}}}"#,
         )
         .unwrap();
-        let r = resolve_server(&root, "go", None).unwrap();
+        let r = resolve_server(&root, "go", "", None).unwrap();
         assert_eq!(r.config.command, "/opt/gopls");
         assert_eq!(r.config.args, vec!["-x".to_string()]);
         let _ = std::fs::remove_dir_all(&root);
@@ -500,10 +664,10 @@ mod tests {
             ..Default::default()
         };
         // The project layer wins.
-        let r = resolve_server(&root, "go", Some(&global)).unwrap();
+        let r = resolve_server(&root, "go", "", Some(&global)).unwrap();
         assert_eq!(r.config.command, "project-go");
         // A language the project does not override takes the global layer.
-        let r = resolve_server(&root, "rust", Some(&global)).unwrap();
+        let r = resolve_server(&root, "rust", "", Some(&global)).unwrap();
         assert_eq!(r.config.command, "global-go");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -513,7 +677,7 @@ mod tests {
         let root = tmpdir("disabled");
         std::fs::create_dir_all(root.join(".bnote")).unwrap();
         std::fs::write(root.join(".bnote/lsp.json"), r#"{"disabled":["python"]}"#).unwrap();
-        let r = resolve_server(&root, "python", None).unwrap();
+        let r = resolve_server(&root, "python", "", None).unwrap();
         assert!(r.disabled);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -523,7 +687,7 @@ mod tests {
         let root = tmpdir("broken");
         std::fs::create_dir_all(root.join(".bnote")).unwrap();
         std::fs::write(root.join(".bnote/lsp.json"), "{ not json").unwrap();
-        let r = resolve_server(&root, "rust", None).unwrap();
+        let r = resolve_server(&root, "rust", "", None).unwrap();
         assert_eq!(r.config.command, "rust-analyzer");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -533,7 +697,7 @@ mod tests {
         let root = tmpdir("venv");
         std::fs::create_dir_all(root.join(".venv/bin")).unwrap();
         std::fs::write(root.join(".venv/bin/python"), "").unwrap();
-        let r = resolve_server(&root, "python", None).unwrap();
+        let r = resolve_server(&root, "python", "", None).unwrap();
         let venv = root.join(".venv").to_string_lossy().to_string();
         assert_eq!(r.config.env.get("VIRTUAL_ENV"), Some(&venv));
         let path = r.config.env.get("PATH").expect("PATH must be prefixed with the venv bin");
@@ -551,7 +715,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".venv")).unwrap();
         std::fs::create_dir_all(root.join("venv/bin")).unwrap();
         std::fs::write(root.join("venv/bin/python3"), "").unwrap();
-        let r = resolve_server(&root, "python", None).unwrap();
+        let r = resolve_server(&root, "python", "", None).unwrap();
         assert_eq!(
             r.config.env.get("VIRTUAL_ENV"),
             Some(&root.join("venv").to_string_lossy().to_string())
@@ -562,14 +726,96 @@ mod tests {
     #[test]
     fn python_without_venv_gets_no_env_override() {
         let root = tmpdir("novenv");
-        let r = resolve_server(&root, "python", None).unwrap();
+        let r = resolve_server(&root, "python", "", None).unwrap();
         assert!(r.config.env.is_empty());
         // Other languages never touch the venv (it is not injected even when the
         // venv directory exists).
         std::fs::create_dir_all(root.join(".venv/bin")).unwrap();
         std::fs::write(root.join(".venv/bin/python"), "").unwrap();
-        let r = resolve_server(&root, "rust", None).unwrap();
+        let r = resolve_server(&root, "rust", "", None).unwrap();
         assert!(r.config.env.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The repository of several assignments, each with its own venv: opening
+    /// the parent has to serve every subproject (the reported torch bug).
+    fn multi_project(name: &str) -> PathBuf {
+        let root = tmpdir(name);
+        for (dir, module) in [("assignment1", "torch"), ("assignment2", "einops")] {
+            let venv = root.join(dir).join(".venv/bin");
+            std::fs::create_dir_all(&venv).unwrap();
+            std::fs::write(venv.join("python"), "").unwrap();
+            std::fs::write(root.join(dir).join("pyproject.toml"), "").unwrap();
+            std::fs::create_dir_all(root.join(dir).join("pkg")).unwrap();
+            std::fs::write(root.join(dir).join("pkg").join(format!("{module}.py")), "").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn a_file_resolves_to_its_own_subproject() {
+        let root = multi_project("subproject");
+        // A file two levels down still resolves to the assignment that owns it.
+        assert_eq!(
+            server_root(&root, "python", "assignment1/pkg/torch.py"),
+            root.join("assignment1")
+        );
+        assert_eq!(
+            server_root(&root, "python", "assignment2/pkg/einops.py"),
+            root.join("assignment2")
+        );
+        // The venv handed to ty is that subproject's, not the project's.
+        let r = resolve_server(&root, "python", "assignment2/pkg/einops.py", None).unwrap();
+        assert_eq!(
+            r.config.env.get("VIRTUAL_ENV"),
+            Some(&root.join("assignment2/.venv").to_string_lossy().to_string())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_without_a_manifest_or_venv_above_falls_back_to_the_project() {
+        let root = multi_project("fallback");
+        std::fs::write(root.join("loose.py"), "").unwrap();
+        assert_eq!(server_root(&root, "python", "loose.py"), root);
+        // A directory that is neither a project nor holds a venv does not stop
+        // the walk: the nearest ancestor that qualifies wins.
+        std::fs::create_dir_all(root.join("scratch")).unwrap();
+        assert_eq!(server_root(&root, "python", "scratch/try.py"), root);
+        // Other languages never split: one server per project.
+        assert_eq!(server_root(&root, "typescript", "assignment1/pkg/a.ts"), root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_root_venv_still_wins_for_files_at_the_root() {
+        let root = multi_project("rootvenv");
+        let venv = root.join(".venv/bin");
+        std::fs::create_dir_all(&venv).unwrap();
+        std::fs::write(venv.join("python"), "").unwrap();
+        assert_eq!(server_root(&root, "python", "run.py"), root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ty_gets_the_subproject_environment_as_active_environment() {
+        let root = multi_project("activeenv");
+        let settings = python_environment_settings("python", &root.join("assignment1"));
+        let env = settings
+            .pointer("/pythonExtension/activeEnvironment/executable/uri")
+            .and_then(Value::as_str)
+            .expect("the activeEnvironment must name the interpreter");
+        assert!(env.ends_with("assignment1/.venv/bin/python"), "{}", env);
+        assert_eq!(
+            settings
+                .pointer("/pythonExtension/activeEnvironment/executable/sysPrefix")
+                .and_then(Value::as_str),
+            Some(root.join("assignment1/.venv").to_string_lossy().as_ref())
+        );
+        // No venv, no configuration: ty probes the workspace itself.
+        assert_eq!(python_environment_settings("python", &root), json!({}));
+        // Non-Python servers get nothing at all.
+        assert!(python_environment_settings("rust", &root.join("assignment1")).is_null());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -584,7 +830,7 @@ mod tests {
             r#"{"languages":{"python":{"env":{"VIRTUAL_ENV":"/opt/py"}}}}"#,
         )
         .unwrap();
-        let r = resolve_server(&root, "python", None).unwrap();
+        let r = resolve_server(&root, "python", "", None).unwrap();
         assert_eq!(r.config.env.get("VIRTUAL_ENV").map(String::as_str), Some("/opt/py"));
         let _ = std::fs::remove_dir_all(&root);
     }

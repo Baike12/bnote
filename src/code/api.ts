@@ -46,17 +46,25 @@ export const codeApi = {
 
   // ---- language servers ----
   /** Which server handles this language (null = no built-in default). */
-  lspResolve: (root: string, language: string, overrides?: ServerConfig) =>
+  lspResolve: (root: string, language: string, path: string, overrides?: ServerConfig) =>
     invoke<ResolvedServerInfo | null>("code_lsp_resolve", {
       root,
       language,
+      path,
       overrides: overrides ?? null,
     }),
-  /** Make sure the server is running. */
-  lspStart: (root: string, language: string, overrides?: ServerConfig) =>
+  /**
+   * Make sure the server serving `path` is running.
+   *
+   * `path` picks the workspace: Python keeps one server per subproject because
+   * each subproject has its own venv, so opening a file from another assignment
+   * starts (or reuses) a second instance.
+   */
+  lspStart: (root: string, language: string, path: string, overrides?: ServerConfig) =>
     invoke<{ language: string; state: string }>("code_lsp_start", {
       root,
       language,
+      path,
       overrides: overrides ?? null,
     }),
   /** Stop every language server of this project. */

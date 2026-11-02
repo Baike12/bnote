@@ -292,10 +292,12 @@ pub async fn code_git_unstage(root: String, path: String) -> CmdResult<GitStatus
 pub async fn code_lsp_resolve(
     root: String,
     language: String,
+    path: Option<String>,
     overrides: Option<ServerConfig>,
 ) -> CmdResult<Option<ResolvedServerInfo>> {
     let root = canonical_root(&root)?;
-    let resolved = crate::code::lsp::resolve_server(&root, &language, overrides.as_ref());
+    let resolved =
+        crate::code::lsp::resolve_server(&root, &language, path.as_deref().unwrap_or(""), overrides.as_ref());
     Ok(resolved.map(|r| ResolvedServerInfo {
         command: r.config.command,
         args: r.config.args,
@@ -312,26 +314,34 @@ pub struct ResolvedServerInfo {
     pub disabled: bool,
 }
 
-/// Make sure the server for a language is running.
+/// Make sure the server that serves `path` is running.
+///
+/// `path` decides the workspace: for Python the venv lives in the subproject,
+/// so a repository of several assignments gets one server per assignment (see
+/// `code::lsp::server_root`). The call is idempotent: an already running
+/// server for that workspace is returned, not restarted.
 #[tauri::command]
 pub async fn code_lsp_start(
     app: AppHandle,
     state: State<'_, AppState>,
     root: String,
     language: String,
+    path: String,
     overrides: Option<ServerConfig>,
 ) -> CmdResult<CodeLspState> {
     let root = canonical_root(&root)?;
-    let Some(resolved) = crate::code::lsp::resolve_server(&root, &language, overrides.as_ref())
+    let rel = path.replace('\\', "/");
+    let Some(resolved) = crate::code::lsp::resolve_server(&root, &language, &rel, overrides.as_ref())
     else {
         return Err(format!("LSP_UNSUPPORTED: {} 没有可用的语言服务器", language));
     };
     if resolved.disabled {
         return Err(format!("LSP_DISABLED: {} 已被项目配置关掉", language));
     }
+    let workspace = crate::code::lsp::server_root(&root, &language, &rel);
     let manager = manager_for(&state, &root)?;
     manager
-        .ensure(&language, &resolved.config, app)
+        .ensure(&language, &workspace, &resolved.config, app)
         .await
         .map(|_| CodeLspState {
             language,
@@ -374,7 +384,7 @@ pub async fn code_lsp_status(state: State<'_, AppState>, root: String) -> CmdRes
     };
     let mut out = Vec::new();
     for language in ["typescript", "typescriptreact", "javascript", "rust", "go", "python"] {
-        if manager.has(language) {
+        if manager.has_any(language) {
             out.push(CodeLspState {
                 language: language.to_string(),
                 state: "running".to_string(),
@@ -397,12 +407,16 @@ pub async fn code_lsp_sync(
     let abs = project::resolve_in(&root, &path)?;
     let language = lang::language_for_path(&abs).to_string();
     let manager = manager_for(&state, &root)?;
-    if !manager.has(&language) {
+    // The document belongs to the server of its own workspace (Python: its
+    // subproject); a document from another subproject must not be pushed into
+    // this instance.
+    let workspace = crate::code::lsp::server_root(&root, &language, &path);
+    let Some(client) = manager.get(&language, &workspace) else {
         return Ok(false); // No server running: the frontend calls code_lsp_start first
-    }
-    let Some(client) = manager.get(&language) else {
-        return Ok(false);
     };
+    if !client.alive.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(false);
+    }
     let uri = crate::lsp::path_to_uri(&abs);
     let known = client
         .docs
@@ -425,7 +439,8 @@ pub async fn code_lsp_close(state: State<'_, AppState>, root: String, path: Stri
     let abs = project::resolve_in(&root, &path)?;
     let language = lang::language_for_path(&abs).to_string();
     let manager = manager_for(&state, &root)?;
-    if let Some(client) = manager.get(&language) {
+    let workspace = crate::code::lsp::server_root(&root, &language, &path);
+    if let Some(client) = manager.get(&language, &workspace) {
         let uri = crate::lsp::path_to_uri(&abs);
         let _ = client.did_close(&uri).await;
     }
@@ -437,8 +452,10 @@ pub async fn code_lsp_close(state: State<'_, AppState>, root: String, path: Stri
 /// - `method` goes through an allowlist, so no other request can slip in here;
 /// - `textDocument.uri` is injected by the backend from `path`, so the frontend
 ///   cannot forge a document;
-/// - when the server is not running, reply with null (the frontend degrades
-///   instead of raising an error).
+/// - "the server cannot be asked" is an **error** (`LSP_NOT_RUNNING` /
+///   `LSP_UNREACHABLE`), never a null: null is the server's own answer "nothing
+///   at this position", and telling the two apart is what lets the UI say why
+///   a jump did not happen.
 #[tauri::command]
 pub async fn code_lsp_request(
     state: State<'_, AppState>,
@@ -466,8 +483,18 @@ pub async fn code_lsp_request(
     }
     let root = canonical_root(&root)?;
     let manager = manager_for(&state, &root)?;
-    let Some(client) = manager.get(&language) else {
-        return Ok(Value::Null);
+    // A request that names a document must reach the server of that document's
+    // workspace (Python: its subproject); a path-less one (`workspace/symbol`)
+    // can use any live server of the language.
+    let client = match &path {
+        Some(p) => {
+            let workspace = crate::code::lsp::server_root(&root, &language, p);
+            manager.get(&language, &workspace)
+        }
+        None => manager.live_of(&language),
+    };
+    let Some(client) = client else {
+        return Err(format!("LSP_NOT_RUNNING: {} 语言服务器没有启动", language));
     };
     if !params.is_object() {
         params = Value::Object(serde_json::Map::new());
@@ -478,8 +505,11 @@ pub async fn code_lsp_request(
     }
     match client.interaction_request(&method, params).await {
         Ok(v) => Ok(v),
-        // A server that dies mid-request is not an error: the frontend just degrades.
-        Err(e) if e.starts_with("LSP_DIED") || e.starts_with("LSP_TIMEOUT") => Ok(Value::Null),
+        // A server that dies mid-request never answers: say so instead of
+        // pretending it had nothing to say.
+        Err(e) if e.starts_with("LSP_DIED") || e.starts_with("LSP_TIMEOUT") => {
+            Err(format!("LSP_UNREACHABLE: {}", e))
+        }
         Err(e) => Err(e),
     }
 }

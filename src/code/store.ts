@@ -126,7 +126,7 @@ export interface CodeState {
   setDiagnostics: (path: string, diagnostics: LspDiagnostic[]) => void;
   setLspState: (language: string, state: string) => void;
   appendLspLog: (language: string, level: number, message: string) => void;
-  ensureLsp: (language: string, overrides?: ServerConfig) => Promise<boolean>;
+  ensureLsp: (language: string, path: string, overrides?: ServerConfig) => Promise<boolean>;
   setTreeOpen: (open: boolean) => void;
   /** Toggle the expanded state of a directory. */
   toggleDir: (path: string) => void;
@@ -403,7 +403,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     }));
     // Once the language server is up, push the document to it so completion
     // and jumps work right away.
-    if (!file.binary) void get().ensureLsp(file.languageId);
+    if (!file.binary) void get().ensureLsp(file.languageId, file.path);
   },
 
   closeTab(path) {
@@ -485,10 +485,14 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     }));
   },
 
-  async ensureLsp(language, overrides) {
+  async ensureLsp(language, path, overrides) {
     const root = get().project?.root;
     if (!root || !language || language === "plaintext") return false;
-    if (get().lspStates[language] === "running") return true;
+    // No "already running" shortcut: with one server per workspace (Python:
+    // per subproject) `path` decides which instance this file needs, and the
+    // backend's `ensure` returns the live one without spawning anything. The
+    // front end does not know the workspace rule, so it must not decide here.
+    //
     // A server that failed to start once (not installed on this machine) is
     // not retried: every file open would spawn a process and wait out a
     // handshake timeout, which feels terrible. To retry, reopen the project
@@ -501,10 +505,12 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     const global = useAppStore.getState().settings.codeLspServers?.[language];
     const override = overrides ?? (global ? { command: global.command, args: global.args ?? [] } : undefined);
     try {
-      await codeApi.lspStart(root, language, override);
+      await codeApi.lspStart(root, language, path, override);
       get().setLspState(language, "running");
       // Files already in the editor need a didOpen to make the server aware of
-      // the document.
+      // the document. The backend routes each one to the server of its own
+      // workspace and drops the ones that belong elsewhere (they get their
+      // didOpen when their own workspace starts).
       const s = get();
       for (const file of Object.values(s.files)) {
         if (file.languageId === language) {
