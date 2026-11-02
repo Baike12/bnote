@@ -293,7 +293,10 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       git: null,
       lspStates: {},
       lspLog: [],
-      treeOpen: false,
+      // Opening a project shows the file tree (it is where the work starts),
+      // with no folder expanded: the top level only, so a deep repository does
+      // not dump hundreds of rows the user has to scroll past.
+      treeOpen: true,
       expandedDirs: new Set<string>(),
       treeFocus: null,
       problemsOpen: false,

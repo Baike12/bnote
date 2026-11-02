@@ -198,7 +198,7 @@ pub async fn code_search(
     let tree = tree_for(&state, &root)?;
     Ok(project::search_contents(
         &root,
-        &tree.entries,
+        &tree,
         &query,
         limit.unwrap_or(200),
     ))
@@ -214,10 +214,13 @@ pub async fn code_search_files(
     let root = canonical_root(&root)?;
     let tree = tree_for(&state, &root)?;
     let q = query.to_lowercase();
+    // The ignore-hidden paths are in the tree but not searchable: node_modules
+    // would otherwise take every quick-open result (`code_search` reasons the
+    // same way, see `CodeTree::searchable`).
     let mut hits: Vec<CodeEntry> = tree
-        .entries
-        .into_iter()
+        .searchable()
         .filter(|e| !e.is_dir && fuzzy_match(&e.name.to_lowercase(), &q))
+        .cloned()
         .collect();
     // Matches first, directory order as the tie-breaker.
     hits.sort_by(|a, b| {

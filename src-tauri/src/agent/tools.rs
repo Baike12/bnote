@@ -49,10 +49,14 @@ pub enum StudyContent {
 }
 
 /// Lists the files of a code project (so the agent sees what the repository holds).
+///
+/// Only the searchable entries: the tree shows `.venv` / `node_modules` so the
+/// user can browse them, but handing their thousands of vendored files to the
+/// agent would bury the project's own sources.
 fn list_code_project(root: &str) -> Result<String, String> {
     let tree = crate::code::project::scan(std::path::Path::new(root));
     let mut out = String::new();
-    for entry in &tree.entries {
+    for entry in tree.searchable() {
         if entry.is_dir {
             continue;
         }

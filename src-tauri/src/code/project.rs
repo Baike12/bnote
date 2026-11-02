@@ -17,19 +17,19 @@
 //!
 //! ## Scan
 //!
-//! The file tree is scanned once with the `ignore` crate (respecting
-//! .gitignore / .ignore / the global git excludes), and the result is flattened
-//! into a "relative path → entry" list that the front end folds into a tree.
-//! That way:
+//! The file tree is scanned once and flattened into a "relative path → entry"
+//! list that the front end folds into a tree. That way:
 //! - the disk is touched once, expanding a directory costs nothing;
 //! - searching file names and contents needs no second traversal;
-//! - the big directories .git / node_modules / target are filtered away by
-//!   gitignore on their own.
+//! - the whole folder is shown, the paths the ignore rules hide (`.venv`,
+//!   `node_modules`, …) included — see [`scan`] for why they are shown but not
+//!   searched.
 //!
 //! The scan has limits (entry count and depth); when one is hit `truncated` is
 //! set and the front end is told honestly — it never pretends to have scanned
 //! everything.
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
@@ -63,6 +63,28 @@ pub struct CodeTree {
     /// The entry limit was hit and the tree is truncated (the front end has to
     /// tell the user "the file tree is incomplete").
     pub truncated: bool,
+    /// Paths the ignore rules hid (.gitignore / .ignore / the global git
+    /// excludes). They are **in** `entries` — the tree shows them — but search
+    /// skips them, see [`CodeTree::searchable`]. Not serialized to the front
+    /// end: the UI never filters on it.
+    #[serde(skip)]
+    pub ignored: HashSet<String>,
+}
+
+impl CodeTree {
+    /// The entries search may read.
+    ///
+    /// Everything except the ignore-hidden paths: the tree shows `.venv` /
+    /// `node_modules` so the user can open a file in them, but a dependency
+    /// directory must not push the project's own files out of the results (and
+    /// reading thousands of vendored files on every keystroke is not free).
+    /// The exception only ever narrows the scope, so "in the tree but not
+    /// searchable" stays out of sight — the opposite (searchable but not
+    /// visible) is impossible.
+    pub fn searchable(&self) -> impl Iterator<Item = &CodeEntry> {
+        let ignored = &self.ignored;
+        self.entries.iter().filter(move |e| !ignored.contains(&e.path))
+    }
 }
 
 /// The content of one file.
@@ -154,23 +176,68 @@ fn normalize_lexically(p: &Path) -> PathBuf {
     out
 }
 
-/// Scans the project root once and produces the flattened entry list.
+/// Scans the project root and produces the flattened entry list.
 ///
-/// Respects .gitignore / .ignore / the global git excludes; `.git` and
-/// `.DS_Store` are excluded separately (the former is the repository's internal
-/// structure, the latter system noise). Symlinks are not followed (they could
-/// form cycles).
+/// The tree shows **the whole folder**: dot files (`.gitignore`, `.github`),
+/// and the paths the ignore rules hide (`.venv`, `__pycache__`,
+/// `node_modules`). A Python project's `.venv` is part of what the user
+/// opened; leaving it out reads as "the app cannot see my project". Only
+/// `.git` (the repository's internal structure, never project content) and
+/// `.DS_Store` (system noise) are excluded.
+///
+/// Two walks keep that from wrecking search:
+/// 1. **with** the ignore rules — the project's own files, collected first, so
+///    a huge dependency directory can never eat the entry budget;
+/// 2. **without** them — what the rules hid, marked in `ignored` so
+///    [`CodeTree::searchable`] skips it.
+///
+/// Symlinks are not followed (they could form cycles).
 pub fn scan(root: &Path) -> CodeTree {
     let mut tree = CodeTree::default();
+    let mut own: HashSet<String> = HashSet::new();
+    for result in walk(root, true) {
+        let Some((entry, rel)) = entry_of(root, result) else {
+            continue;
+        };
+        if tree.entries.len() >= MAX_ENTRIES {
+            tree.truncated = true;
+            break;
+        }
+        tree.entries.push(entry);
+        own.insert(rel);
+    }
+    if !tree.truncated {
+        for result in walk(root, false) {
+            let Some((entry, rel)) = entry_of(root, result) else {
+                continue;
+            };
+            if own.contains(&rel) {
+                continue;
+            }
+            if tree.entries.len() >= MAX_ENTRIES {
+                tree.truncated = true;
+                break;
+            }
+            tree.ignored.insert(rel);
+            tree.entries.push(entry);
+        }
+    }
+    tree
+}
+
+/// One `ignore` traversal. `respect_ignore` is false for the pass that
+/// collects what the ignore rules hid.
+fn walk(root: &Path, respect_ignore: bool) -> ignore::Walk {
     let mut builder = ignore::WalkBuilder::new(root);
     builder
-        // Hidden files are wanted (`.github`, `.vscode` are useful); `.git` is
-        // excluded separately.
+        // Hidden files are wanted (`.github`, `.vscode`, `.venv` are all
+        // useful); `.git` is excluded separately.
         .hidden(false)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .parents(true)
+        .git_ignore(respect_ignore)
+        .ignore(respect_ignore)
+        .git_global(respect_ignore)
+        .git_exclude(respect_ignore)
+        .parents(respect_ignore)
         // The gitignore rules only apply inside a real git repository.
         .require_git(true)
         .follow_links(false)
@@ -179,37 +246,33 @@ pub fn scan(root: &Path) -> CodeTree {
         let name = entry.file_name().to_string_lossy();
         !(name == ".git" || name == ".DS_Store")
     });
+    builder.build()
+}
 
-    for result in builder.build() {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if entry.depth() == 0 {
-            continue; // the root itself is not an entry
-        }
-        let rel = match entry.path().strip_prefix(root) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        let size = if is_dir {
-            0
-        } else {
-            entry.metadata().map(|m| m.len()).unwrap_or(0)
-        };
-        tree.entries.push(CodeEntry {
-            path: to_posix(rel),
-            name: entry.file_name().to_string_lossy().to_string(),
+/// One walk result → (entry, relative posix path). The root itself and
+/// unreadable entries are skipped.
+fn entry_of(root: &Path, result: Result<ignore::DirEntry, ignore::Error>) -> Option<(CodeEntry, String)> {
+    let entry = result.ok()?;
+    if entry.depth() == 0 {
+        return None; // the root itself is not an entry
+    }
+    let rel = to_posix(entry.path().strip_prefix(root).ok()?);
+    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+    let size = if is_dir {
+        0
+    } else {
+        entry.metadata().map(|m| m.len()).unwrap_or(0)
+    };
+    let name = entry.file_name().to_string_lossy().to_string();
+    Some((
+        CodeEntry {
+            path: rel.clone(),
+            name,
             is_dir,
             size,
-        });
-        if tree.entries.len() >= MAX_ENTRIES {
-            tree.truncated = true;
-            break;
-        }
-    }
-    tree
+        },
+        rel,
+    ))
 }
 
 /// Relative path → posix separators (Windows uses backslashes, the front end
@@ -268,12 +331,14 @@ pub fn write_text(path: &Path, content: &str) -> Result<(), String> {
 /// Searches the contents of the already scanned files (literal, case
 /// insensitive).
 ///
-/// Only suffixes known to be text are searched, so a binary never drags the
+/// Only [`CodeTree::searchable`] entries are read: the ignore-hidden ones are
+/// in the tree but must not flood the results. Only suffixes known to be text
+/// are searched, so a binary never drags the
 /// search through garbage. The number of hits is capped — a single search
 /// dumping the whole repository is meaningless.
 pub fn search_contents(
     root: &Path,
-    entries: &[CodeEntry],
+    tree: &CodeTree,
     query: &str,
     limit: usize,
 ) -> Vec<CodeSearchHit> {
@@ -282,7 +347,7 @@ pub fn search_contents(
     }
     let needle = query.to_lowercase();
     let mut hits = Vec::new();
-    for entry in entries {
+    for entry in tree.searchable() {
         if entry.is_dir || hits.len() >= limit {
             continue;
         }
@@ -404,19 +469,44 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_gitignored_and_dot_git() {
+    fn scan_shows_the_whole_folder_but_searches_only_the_project() {
         let root = tmpdir("ignore");
         std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".venv/lib")).unwrap();
         std::fs::create_dir_all(root.join("node_modules")).unwrap();
         std::fs::write(root.join(".git/config"), "x").unwrap();
-        std::fs::write(root.join("node_modules/pkg.js"), "x").unwrap();
-        std::fs::write(root.join("keep.js"), "x").unwrap();
-        // Without a git repository the gitignore rules do not apply
-        // (require_git), but `.git` still has to be blocked.
+        std::fs::write(root.join(".gitignore"), ".venv/\nnode_modules/\n").unwrap();
+        std::fs::write(root.join(".venv/lib/needle.py"), "needle = 1").unwrap();
+        std::fs::write(root.join("node_modules/pkg.js"), "needle").unwrap();
+        std::fs::write(root.join("keep.js"), "needle").unwrap();
         let tree = scan(&root);
         let paths: Vec<&str> = tree.entries.iter().map(|e| e.path.as_str()).collect();
-        assert!(!paths.iter().any(|p| p.starts_with(".git/")), "{:?}", paths);
+
+        // Everything the folder holds is in the tree, dot files and the
+        // .gitignored paths included — a `.venv` that stays invisible reads as
+        // "the app cannot see my project".
+        assert!(paths.contains(&".gitignore"), "{:?}", paths);
+        assert!(paths.contains(&".venv"), "{:?}", paths);
+        assert!(paths.contains(&".venv/lib/needle.py"), "{:?}", paths);
+        assert!(paths.contains(&"node_modules/pkg.js"), "{:?}", paths);
         assert!(paths.contains(&"keep.js"), "{:?}", paths);
+        // The one exception: `.git` is the repository's internals, not content.
+        assert!(!paths.iter().any(|p| p.starts_with(".git/")), "{:?}", paths);
+
+        // Shown but not searchable: vendored files must not answer a search.
+        let searchable: Vec<&str> = tree.searchable().map(|e| e.path.as_str()).collect();
+        assert!(searchable.contains(&"keep.js"), "{:?}", searchable);
+        assert!(searchable.contains(&".gitignore"), "{:?}", searchable);
+        assert!(!searchable.iter().any(|p| p.starts_with(".venv/")), "{:?}", searchable);
+        assert!(
+            !searchable.iter().any(|p| p.starts_with("node_modules/")),
+            "{:?}",
+            searchable
+        );
+
+        let hits = search_contents(&root, &tree, "needle", 10);
+        assert_eq!(hits.len(), 1, "{:?}", hits);
+        assert_eq!(hits[0].path, "keep.js");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -452,10 +542,11 @@ mod tests {
         let root = tmpdir("search");
         std::fs::write(root.join("a.ts"), "const Foo = 1;\nfoo()\n").unwrap();
         let tree = scan(&root);
-        let hits = search_contents(&root, &tree.entries, "FOO", 10);
+        let hits = search_contents(&root, &tree, "FOO", 10);
         assert_eq!(hits.len(), 2, "{:?}", hits);
         assert_eq!(hits[0].path, "a.ts");
         assert_eq!(hits[0].line, 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
