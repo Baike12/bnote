@@ -59,7 +59,7 @@ export function FileTypeIcon({ name }: { name: string }) {
       strokeWidth="1.4"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={`code-tree-icon code-icon--${kind}`}
+      className={`tree-icon code-icon--${kind}`}
       aria-hidden="true"
     >
       <path d={FILE_PATH} />
@@ -79,7 +79,7 @@ export function FolderTypeIcon({ open }: { open: boolean }) {
       strokeWidth="1.4"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={`code-tree-icon ${open ? "code-icon--folder-open" : "code-icon--folder"}`}
+      className={`tree-icon ${open ? "code-icon--folder-open" : "code-icon--folder"}`}
       aria-hidden="true"
     >
       {open ? (

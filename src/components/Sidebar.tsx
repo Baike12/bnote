@@ -16,6 +16,12 @@ import { useAppStore } from "@/state/appStore";
 import type { FileNode } from "@/lib/tauri";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { IconNewFolder, IconNewNote } from "./icons";
+// The vault tree and the code-project tree share one icon family: the same
+// 16-viewBox strokes in the same 14px box, so a row's icon and its name are
+// centred on the same line by construction. A rotated "›" glyph cannot be:
+// the ink of a text glyph is not the centre of its box, so the closed and the
+// open state (and the name beside them) sat on different baselines.
+import { FileTypeIcon, FolderTypeIcon } from "../code/components/FileIcon";
 
 export function Sidebar() {
   const tree = useAppStore((s) => s.tree);
@@ -282,9 +288,9 @@ function TreeItem(props: TreeItemProps) {
         onDoubleClick={() => setRenaming(node.relPath)}
       >
         {node.kind === "dir" ? (
-          <span className={`chevron${isOpen ? " open" : ""}`}>›</span>
+          <FolderTypeIcon open={isOpen} />
         ) : (
-          <span className="doc-icon">≡</span>
+          <FileTypeIcon name={node.name} />
         )}
         {renaming === node.relPath ? (
           <RenameInput

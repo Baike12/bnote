@@ -432,22 +432,8 @@ button {
   color: var(--accent);
 }
 
-.chevron {
-  color: var(--text-faint);
-  font-size: 14px;
-  width: 14px;
-  transition: transform 0.12s ease;
-}
-.chevron.open {
-  transform: rotate(90deg);
-}
-.doc-icon {
-  color: var(--text-faint);
-  width: 14px;
-  text-align: center;
-  font-size: 12px;
-}
-
+/* The vault tree draws no expand arrow either: the folder icon carries the
+   open / closed state (see FolderTypeIcon in code/components/FileIcon). */
 .tree-name {
   font-size: 12.5px;
   white-space: nowrap;
@@ -5681,6 +5667,38 @@ input[type="range"] {
   background: var(--accent-dim);
 }
 
+/* Row variant: the terminal drawer's top edge. The row **is** the line, the
+   same shape as the vertical splitter above (1px of layout, the hit area comes
+   from ::after). Any extra layout height here is a strip of `.code-pane`
+   background between the panel above and the tab bar: with a 5px row the file
+   tree's `--bg1` ended 4px above the line and the white strip read as a seam.
+   The drawer draws no edge of its own (no border-top), one edge one owner. */
+.code-resizer-row {
+  flex: 0 0 1px;
+  cursor: row-resize;
+}
+.code-resizer-row::before {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: auto;
+}
+.code-resizer-row::after {
+  top: -4px;
+  bottom: -4px;
+  left: 0;
+  right: 0;
+}
+.code-resizer-row:hover::before,
+.code-resizer-row.dragging::before {
+  width: auto;
+  height: 2px;
+  bottom: auto;
+  background: var(--accent-dim);
+}
+
 .code-main {
   flex: 1 1 auto;
   min-width: 0;
@@ -5838,8 +5856,9 @@ input[type="range"] {
    open/closed state (see FolderTypeIcon), clicking a directory row toggles
    the folding. */
 /* File icons: 14px stroked SVG, colored per category (the variables are
-   defined in pairs in the theme block). */
-.code-tree-icon {
+   defined in pairs in the theme block). Shared by the code-project tree and
+   the vault tree in the sidebar. */
+.tree-icon {
   flex: none;
   width: 14px;
   height: 14px;
