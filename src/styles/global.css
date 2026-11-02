@@ -2300,8 +2300,11 @@ input[type="range"] {
 .toast {
   position: fixed;
   bottom: 44px;
-  left: 50%;
-  transform: translateX(-50%);
+  /* Anchored to the right edge instead of centered: in study mode the middle
+     column is a native sub-webview stacked on top of this DOM, and a
+     bottom-center toast would be invisible there. The right edge is always the
+     notes column (main webview), in every layout. */
+  right: 16px;
   background: var(--bg2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -2310,7 +2313,7 @@ input[type="range"] {
   font-size: 13px;
   box-shadow: 0 8px 30px var(--shadow);
   z-index: 300;
-  max-width: 70vw;
+  max-width: min(70vw, 560px);
 }
 
 /* ---------------------------------------------------------------------------
