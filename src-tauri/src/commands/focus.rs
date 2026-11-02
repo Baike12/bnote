@@ -547,15 +547,19 @@ mod mac {
                 .get_webview_window("main")
                 .ok_or("NO_WINDOW: 主窗口不在")?;
             let scale = win.scale_factor().unwrap_or(1.0);
+            // Every step's error carries the step name: the frontend shows the
+            // message verbatim, so a failed lock names the exact native call.
             let inner = win
                 .inner_size()
-                .map(|s| s.to_logical::<f64>(scale))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("inner_size: {e}"))?
+                .to_logical::<f64>(scale);
             let pos = win
                 .outer_position()
-                .map(|p| p.to_logical::<f64>(scale))
-                .map_err(|e| e.to_string())?;
-            let ns = win.ns_window().map_err(|e| e.to_string())? as *mut AnyObject;
+                .map_err(|e| format!("outer_position: {e}"))?
+                .to_logical::<f64>(scale);
+            let ns = win
+                .ns_window()
+                .map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
 
             // Snapshot: restored item by item on unlock; missing a single item
             // is an incident.
@@ -570,7 +574,9 @@ mod mac {
             // Strip the decorations first: once they are gone inner size ==
             // outer size, so filling the screen is exact (otherwise it would
             // fall short by a strip).
-            let view = win.ns_view().map_err(|e| e.to_string())? as *mut AnyObject;
+            let view = win
+                .ns_view()
+                .map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
             set_style_mask(ns, view, borderless_mask());
 
             // Fill the current screen (the whole thing, including the menu bar
@@ -578,16 +584,18 @@ mod mac {
             // only bnote). With a single display, the current one is it.
             let monitor = win
                 .current_monitor()
-                .map_err(|e| e.to_string())?
-                .or(win.primary_monitor().map_err(|e| e.to_string())?)
+                .map_err(|e| format!("current_monitor: {e}"))?
+                .or(win
+                    .primary_monitor()
+                    .map_err(|e| format!("primary_monitor: {e}"))?)
                 .ok_or("NO_MONITOR: 找不到屏幕")?;
             let m_scale = win.scale_factor().unwrap_or(1.0);
             let m_size = monitor.size().to_logical::<f64>(m_scale);
             let m_pos = monitor.position().to_logical::<f64>(m_scale);
             win.set_size(LogicalSize::new(m_size.width, m_size.height))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("set_size: {e}"))?;
             win.set_position(LogicalPosition::new(m_pos.x, m_pos.y))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("set_position: {e}"))?;
 
             // Level exclusivity: above the system menu bar (24); across Spaces
             // and accompanying fullscreen, so it stays on top wherever the user
@@ -613,7 +621,9 @@ mod mac {
             let Some(win) = inner_app.get_webview_window("main") else {
                 return Ok(());
             };
-            let ns = win.ns_window().map_err(|e| e.to_string())? as *mut AnyObject;
+            let ns = win
+                .ns_window()
+                .map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
 
             match snap {
                 Some(snap) => {
@@ -621,16 +631,18 @@ mod mac {
                     // (with the FullSizeContentView overlay title bar). Use our
                     // own synchronous path so tao's asynchronous change cannot
                     // overwrite it.
-                    let view = win.ns_view().map_err(|e| e.to_string())? as *mut AnyObject;
+                    let view = win
+                        .ns_view()
+                        .map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
                     set_style_mask(ns, view, snap.style_mask);
 
                     set_native_level(ns, snap.level);
                     set_native_behavior(ns, snap.behavior);
 
                     win.set_size(LogicalSize::new(snap.inner.0, snap.inner.1))
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| format!("set_size: {e}"))?;
                     win.set_position(LogicalPosition::new(snap.pos.0, snap.pos.1))
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| format!("set_position: {e}"))?;
                 }
                 None => {
                     // No snapshot to restore: the locked geometry is gone, but a

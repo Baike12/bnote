@@ -206,7 +206,10 @@ async function lockNow(): Promise<boolean> {
 async function unlockNow(): Promise<void> {
   try {
     const status = await focusApi.unlock();
-    useFocusStore.setState({ locked: status.locked, error: null });
+    // The release must not touch `error`: a failed start rolls the timer back
+    // and releases the lock right after lockNow failed - that release wiping
+    // the error would erase the only evidence of why the start did not happen.
+    useFocusStore.setState({ locked: status.locked });
   } catch (e) {
     useFocusStore.setState({ error: String(e) });
   }
@@ -232,9 +235,15 @@ async function syncHardActive(active: boolean): Promise<boolean> {
       seen: status.seen,
       swallowed: status.swallowed,
     });
+    if (want && status.hard_active !== want) {
+      useFocusStore.setState({ error: "硬锁拦截没有开启(状态与请求不符)" });
+    }
     return status.hard_active === want;
-  } catch {
+  } catch (e) {
     useFocusStore.setState({ hardActive: false });
+    // A failed start must leave its reason behind: the toast lives 2.6s, the
+    // chip tooltip keeps `error` until the next attempt.
+    if (want) useFocusStore.setState({ error: String(e) });
     return !want;
   }
 }
@@ -280,9 +289,11 @@ async function startFocus(): Promise<void> {
     // fail too): without interception the stretch does not start.
     if (!useFocusStore.getState().hardActive) {
       await applyTimer(stopTimer(useFocusStore.getState().timer));
-      useAppStore
-        .getState()
-        .showToast("硬锁没有真正生效:本次专注没有开始(检查辅助功能权限)");
+      // The native reason wins; the fallback covers the "IPC answered but the
+      // flag disagrees" case where the catch above did not run.
+      const reason = useFocusStore.getState().error ?? "硬锁没有真正生效(检查辅助功能权限)";
+      useFocusStore.setState({ error: reason });
+      useAppStore.getState().showToast(`本次专注没有开始:${reason}`);
       return;
     }
     if (!(await lockNow())) {
