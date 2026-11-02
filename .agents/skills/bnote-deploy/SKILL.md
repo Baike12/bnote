@@ -1,60 +1,75 @@
 ---
 name: bnote-deploy
-description: 构建 bnote（Tauri 应用）并替换正在运行/已安装的 /Applications/bnote.app。当用户要求"构建并替换"、"打包部署"、"更新一下应用"、"构建启动"、"发布一版试试"等，涉及 bnote 的构建、打包、部署、替换运行实例时使用；也支持只构建不部署。涉及前端改动是否要构建由用户决定时不要擅自运行（曾明确过"只调试不构建"）。
+description: Build bnote (the Tauri app) and replace the running / installed /Applications/bnote.app. Use this when the user asks to "构建并替换" (build and replace), "打包部署" (package and deploy), "更新一下应用" (update the app), "构建启动" (build and launch), "发布一版试试" (ship a release), or anything else that involves building, packaging, deploying or replacing the running bnote instance; it also supports building without deploying. Whether a front-end change should be built is the user's decision — do not run this on your own (the user has explicitly said "只调试不构建" / debug only, do not build).
 ---
 
-# bnote 构建与部署
+# Building and deploying bnote
 
-把当前代码构建成 release 包并替换系统里正在运行的 bnote。完整流程已封装在脚本里，
-直接运行即可，不要手工重打一遍命令。
+Build the current code into a release bundle and replace the bnote running on
+the system. The whole flow is wrapped in a script — run it, do not re-type the
+commands by hand.
 
-## 使用
+## Usage
 
 ```bash
-# 完整流程：类型检查 → 构建 → 删除运行实例 → 替换 /Applications/bnote.app → 启动验证
+# Full flow: type check → build → kill the running instances → replace /Applications/bnote.app → launch and verify
 .agents/skills/bnote-deploy/scripts/deploy.sh
 
-# 变体
-.agents/skills/bnote-deploy/scripts/deploy.sh --skip-typecheck  # 跳过 tsc（纯样式/文档改动）
-.agents/skills/bnote-deploy/scripts/deploy.sh --build-only      # 只构建不部署（产出 app + dmg）
-.agents/skills/bnote-deploy/scripts/deploy.sh --dry-run         # 只打印将执行的步骤
+# Variants
+.agents/skills/bnote-deploy/scripts/deploy.sh --skip-typecheck  # skip tsc (style/doc-only changes)
+.agents/skills/bnote-deploy/scripts/deploy.sh --build-only      # build without deploying (produces app + dmg)
+.agents/skills/bnote-deploy/scripts/deploy.sh --dry-run         # only print the steps that would run
 ```
 
-脚本做什么：
+What the script does:
 
-1. `pnpm exec tsc --noEmit`（除非 `--skip-typecheck`）
-2. `pnpm tauri build --bundles app`（部署只打 .app；完整日志在 /tmp/bnote-build.log，
-   失败时输出尾部）
-3. **关闭所有**运行中的 bnote 实例，并确认进程真的消失：AppleScript 优雅退出
-   （让自动保存落盘）→ 等不到就 SIGTERM → 再不行 SIGKILL；仍杀不掉则中止，
-   不进入替换
-4. `rm -rf /Applications/bnote.app && ditto <新包> /Applications/bnote.app`
-   （必须先删再 ditto；ditto 保留元数据与签名，不要用 cp -R），替换后确认可执行
-   文件就位
-5. `open` 启动，等新包自己的进程出现后报告 pid
+1. `pnpm exec tsc --noEmit` (unless `--skip-typecheck`)
+2. `pnpm tauri build --bundles app` (deployment only needs the .app; the full
+   log goes to /tmp/bnote-build.log, and the tail is printed on failure)
+3. **Kill every** running bnote instance and confirm the processes are really
+   gone: AppleScript graceful quit (so autosave flushes) → SIGTERM if it does
+   not exit → SIGKILL if that does not work either; if it still cannot be
+   killed, abort and do not enter the replacement step
+4. `rm -rf /Applications/bnote.app && ditto <new bundle> /Applications/bnote.app`
+   (delete first, then ditto; ditto preserves metadata and the signature, so do
+   not use cp -R), and confirm the executable is in place afterwards
+5. `open` to launch, and report the pid once the new bundle's own process
+   shows up
 
-构建在前、关闭实例在后是有意的：构建失败时不动正在运行的实例。
+Building first and killing the instances afterwards is deliberate: a failed
+build leaves the running instance untouched.
 
-耗时构成（为什么部署比想象久）：cargo release 重编译是大头（tauri 把前端资产
-嵌进二进制，前端改动也触发，增量约 1-1.5 分钟）；DMG 打包已从部署路径跳过
-（create-dmg 走 Finder AppleScript，约半分钟还偶发失败）——部署用不到它，
-要 DMG 就用 `--build-only`（打全量 app + dmg）。
+Where the time goes (why deploying takes longer than you expect): the cargo
+release rebuild is the bulk of it (tauri embeds the front-end assets into the
+binary, so front-end changes trigger it too — roughly 1–1.5 minutes
+incremental); DMG packaging was removed from the deploy path (create-dmg goes
+through a Finder AppleScript, takes about half a minute and fails
+intermittently) — deployment does not need it, use `--build-only` when you do
+want a DMG (it builds the full app + dmg).
 
-**"所有实例"包括本地跑的那些**：`/Applications/bnote.app`、本地构建的
-`bundle/macos/bnote.app`、`pnpm tauri dev` 的 `target/debug/bnote`、直接跑的
-`target/release/bnote`。本地实例不注册 bundle id，AppleScript 找不到它们，只能靠
-信号；它们能与 /Applications 的副本同时开着，不关掉就会出现"新包已就位、屏幕上
-还是旧窗口"。
+**"Every instance" includes the local ones**: `/Applications/bnote.app`, the
+locally built `bundle/macos/bnote.app`, the `target/debug/bnote` of
+`pnpm tauri dev`, and a directly run `target/release/bnote`. Local instances
+register no bundle id, so AppleScript cannot find them — only signals reach
+them. They can run side by side with the /Applications copy, and if they are
+not closed you end up with "the new bundle is in place, but the screen still
+shows the old window".
 
-识别实例只按**可执行文件路径**（`ps -Ao pid=,comm=`）匹配，不要用 `pgrep -f bnote`：
-仓库路径本身就带 bnote，按命令行匹配会连编辑器的语言服务器一起杀掉。
+Detect instances **only by executable path** (`ps -Ao pid=,comm=`), never with
+`pgrep -f bnote`: the repository path itself contains "bnote", so matching on
+the command line would also kill the editor's language server.
 
-## 注意
+## Notes
 
-- 构建通常 1–3 分钟（cargo 增量）；用 `run_in_background` 跑脚本避免超时。
-- 部署会退出用户正在使用的 bnote 实例（含自动保存，最多丢最后一秒输入），
-  这是流程的一部分，不需要额外确认；只有优雅退出确实卡死时才会走到 SIGKILL，
-  那时才可能丢掉未落盘的编辑。
-- 不要动 `/Volumes/bnote` 下挂载的 DMG 里的旧版（只读镜像，无法更新）。
-- 替换后若 Dock 图标没变，是系统图标缓存，`killall Dock` 或注销刷新。
-- 用户明确说"不用构建/只调试"时，禁止运行本 skill；在 dev server 里验证即可。
+- A build usually takes 1–3 minutes (cargo incremental); run the script with
+  `run_in_background` so it does not time out.
+- Deploying quits the bnote instance the user is working in (autosave included,
+  so at most the last second of typing is lost). That is part of the flow and
+  needs no extra confirmation; only a graceful quit that genuinely hangs
+  reaches SIGKILL, and only then can unsaved edits be lost.
+- Do not touch the old version inside the DMG mounted under `/Volumes/bnote`
+  (read-only image, cannot be updated).
+- If the Dock icon does not change after the replacement, that is the system
+  icon cache — `killall Dock` or log out and back in to refresh it.
+- When the user explicitly says "不用构建/只调试" (do not build / debug only),
+  running this skill is forbidden — verify in the dev server instead.
