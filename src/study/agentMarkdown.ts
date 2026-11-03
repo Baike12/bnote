@@ -291,10 +291,42 @@ function renderTextLines(lines: string[]): string {
   return parts.join("<br>");
 }
 
-export function renderAgentMarkdown(src: string): string {
-  if (!src) return "";
+/** One block of an agent reply: rendered markdown, or an html code block the
+ *  panel renders as a live preview (the code travels verbatim so the React
+ *  component can own the iframe, its toggle and its height messages). */
+export type AgentBlock =
+  | { kind: "markdown"; html: string }
+  | { kind: "html"; code: string };
+
+/** A fenced code block rendered like every other language's block. */
+function renderCodeBlock(code: string, lang: string): string {
+  const cls = lang ? ` agent-code language-${escapeHtml(lang)}` : " agent-code";
+  return `<pre class="${cls.trim()}"><code>${escapeHtml(code)}</code></pre>`;
+}
+
+/** The panel previews html fences live; `htm` is the same language. */
+function isHtmlLanguage(lang: string): boolean {
+  const name = lang.toLowerCase();
+  return name === "html" || name === "htm";
+}
+
+/**
+ * Splits a reply at top level, keeping closed `html` fences whole as preview
+ * blocks. Only top-level fences split: a fence nested in a list or quote is
+ * consumed by the recursive rendering and stays a plain code block, exactly
+ * as before.
+ */
+export function splitAgentMarkdown(src: string): AgentBlock[] {
+  if (!src) return [];
   const lines = src.replace(/\r\n?/g, "\n").split("\n");
-  const out: string[] = [];
+  const blocks: AgentBlock[] = [];
+  let out: string[] = [];
+  const flush = () => {
+    if (out.length) {
+      blocks.push({ kind: "markdown", html: out.join("") });
+      out = [];
+    }
+  };
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -311,9 +343,16 @@ export function renderAgentMarkdown(src: string): string {
         code.push(lines[i]);
         i += 1;
       }
-      i += 1; // the closing fence (or the end of the text)
-      const cls = lang ? ` agent-code language-${escapeHtml(lang)}` : " agent-code";
-      out.push(`<pre class="${cls.trim()}"><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+      // No closing fence means the reply is still streaming (or malformed):
+      // render code, never a half-preview.
+      const closed = i < lines.length;
+      if (closed) i += 1; // the closing fence (or the end of the text)
+      if (closed && isHtmlLanguage(lang) && code.length > 0) {
+        flush();
+        blocks.push({ kind: "html", code: code.join("\n") });
+        continue;
+      }
+      out.push(renderCodeBlock(code.join("\n"), lang));
       continue;
     }
     if (/^\s*\$\$/.test(line)) {
@@ -370,5 +409,14 @@ export function renderAgentMarkdown(src: string): string {
     out.push(html);
     i = next;
   }
-  return out.join("");
+  flush();
+  return blocks;
+}
+
+export function renderAgentMarkdown(src: string): string {
+  return splitAgentMarkdown(src)
+    .map((block) =>
+      block.kind === "html" ? renderCodeBlock(block.code, "html") : block.html,
+    )
+    .join("");
 }

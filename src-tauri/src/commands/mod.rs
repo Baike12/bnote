@@ -7,6 +7,7 @@ pub mod focus;
 pub mod ime;
 pub mod materials;
 pub mod pen_cursor;
+pub mod preview;
 pub mod python;
 pub mod term;
 pub mod translate;

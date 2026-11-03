@@ -35,7 +35,8 @@ import { isWereadUrl } from "@/study/weread";
 import { applySuggestion, parseSuggestTrigger, type SuggestTrigger } from "@/agent/suggest";
 import { AgentHeader } from "@/components/AgentHeader";
 import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/AgentSuggest";
-import { renderAgentMarkdown } from "@/study/agentMarkdown";
+import { HtmlPreview } from "@/components/HtmlPreview";
+import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import {
   contextLabel,
   formatPercent,
@@ -1611,10 +1612,15 @@ export function AgentPanel() {
                     {entry.turn?.error && (
                       <div className="agent-error">{entry.turn.error}</div>
                     )}
-                    <div
-                      className="agent-md"
-                      dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(entry.text) }}
-                    />
+                    <div className="agent-md">
+                      {splitAgentMarkdown(entry.text).map((block, bi) =>
+                        block.kind === "html" ? (
+                          <HtmlPreview key={bi} code={block.code} />
+                        ) : (
+                          <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />
+                        ),
+                      )}
+                    </div>
                     {streaming && <span className="agent-caret" aria-hidden="true" />}
                   </div>
                 )}

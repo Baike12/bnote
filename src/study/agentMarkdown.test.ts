@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderAgentMarkdown, renderInline } from "./agentMarkdown";
+import { renderAgentMarkdown, renderInline, splitAgentMarkdown } from "./agentMarkdown";
 
 describe("renderInline", () => {
   it("HTML is always escaped, with no pass-through outside the rules", () => {
@@ -168,5 +168,51 @@ describe("renderAgentMarkdown", () => {
     expect(html.indexOf("<h2>")).toBe(0);
     expect(html).toContain("<p>先说答案:是的。</p>");
     expect(html).toContain("<ul>");
+  });
+});
+
+describe("splitAgentMarkdown", () => {
+  it("a closed top-level html fence becomes a verbatim preview block", () => {
+    const code = "<p>hi</p><script>1+1</script>";
+    const blocks = splitAgentMarkdown(`前文\n\n\`\`\`html\n${code}\n\`\`\`\n\n后文`);
+    expect(blocks).toEqual([
+      { kind: "markdown", html: expect.stringContaining("前文") },
+      { kind: "html", code },
+      { kind: "markdown", html: expect.stringContaining("后文") },
+    ]);
+  });
+
+  it("renderAgentMarkdown keeps emitting html fences as code blocks", () => {
+    const html = renderAgentMarkdown("```html\n<p>hi</p>\n```");
+    expect(html).toContain("agent-code");
+    expect(html).toContain("&lt;p&gt;");
+    expect(html).not.toContain("<p>hi</p>");
+  });
+
+  it("htm is the same language; case does not matter", () => {
+    for (const lang of ["HTML", "htm", "Html"]) {
+      const blocks = splitAgentMarkdown("```" + lang + "\n<p>x</p>\n```");
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toEqual({ kind: "html", code: "<p>x</p>" });
+    }
+  });
+
+  it("an unclosed html fence (streaming tail) stays a code block", () => {
+    const blocks = splitAgentMarkdown("```html\n<p>x</p>");
+    expect(blocks).toEqual([
+      { kind: "markdown", html: expect.stringContaining("agent-code") },
+    ]);
+  });
+
+  it("an html fence nested in a list stays a plain code block", () => {
+    const src = "- 要点\n  ```html\n  <p>x</p>\n  ```";
+    const blocks = splitAgentMarkdown(src);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe("markdown");
+    expect(blocks[0].kind === "markdown" && blocks[0].html).toContain("<li>");
+  });
+
+  it("empty input yields no blocks", () => {
+    expect(splitAgentMarkdown("")).toEqual([]);
   });
 });

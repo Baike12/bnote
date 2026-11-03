@@ -156,6 +156,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // Inline agent HTML previews: the framed document must come from a
+        // non-local scheme, or the app CSP is inherited into it and its inline
+        // scripts are blocked (see commands/preview.rs).
+        .register_uri_scheme_protocol(commands::preview::SCHEME, |_ctx, request| {
+            commands::preview::serve(&request)
+        })
         .setup(|app| {
             let data_dir: PathBuf = app
                 .path()
@@ -246,6 +252,7 @@ pub fn run() {
             commands::agent::agent_delete_definition,
             commands::agent::agent_compact,
             commands::agent::agent_assemble_preview,
+            commands::preview::agent_preview_put,
             commands::bblog::bblog_sections,
             commands::bblog::bblog_publish,
             commands::materials::study_material_ensure,

@@ -391,6 +391,8 @@ export const agentApi = {
   /** Dry-runs the assembly pipeline for the definition editor's preview. */
   assemblePreview: (definition: AgentDefinition, workdir?: string) =>
     invoke<PromptSegment[]>("agent_assemble_preview", { definition, workdir }),
+  /** Stores one inline HTML preview document; returns the URL its iframe loads (see commands/preview.rs). */
+  putPreview: (html: string) => invoke<string>("agent_preview_put", { html }),
   /** Manual compaction (/compact): replaces the session history with a summary. */
   compact: (sessionId: string) => invoke<void>("agent_compact", { sessionId }),
   /** The list of skills currently available on disk (settings page and input field / completion). */

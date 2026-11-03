@@ -39,3 +39,20 @@ describe("packaged CSP gate: blob dynamic import (user formula snippet loading)"
     expect(tokens).toContain("blob:");
   });
 });
+
+/**
+ * Inline agent HTML previews load through the `agent-preview` custom scheme
+ * (commands/preview.rs): srcdoc/blob/data frames inherit the app CSP and their
+ * inline scripts get blocked, so the frame URL must be allowed by frame-src.
+ * If frame-src ever falls back to default-src 'self' alone, the iframe is
+ * refused and every preview renders empty.
+ */
+describe("packaged CSP gate: frame-src allows the agent preview scheme", () => {
+  it("frame-src is explicit and carries 'self' plus agent-preview:", () => {
+    const frameSrc = directives.find((d) => d.startsWith("frame-src"));
+    expect(frameSrc, "CSP is missing the frame-src directive").toBeTruthy();
+    const tokens = frameSrc!.split(/\s+/).slice(1);
+    expect(tokens).toContain("'self'");
+    expect(tokens).toContain("agent-preview:");
+  });
+});

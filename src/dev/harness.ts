@@ -32,6 +32,7 @@ import { setClipboardOverrides } from "@/lib/clipboard";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import { StudyLayout } from "@/components/StudyLayout";
 import { AgentHeader } from "@/components/AgentHeader";
+import { HtmlPreview } from "@/components/HtmlPreview";
 import { ProjectsLayout } from "@/components/ProjectsLayout";
 import { runCommand } from "@/commands/registry";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -235,6 +236,8 @@ declare global {
     __readFakeFile: (path: string) => string | null;
     /** The mini markdown renderer for study mode agent replies (returns HTML). */
     __renderAgentMd: (text: string) => string;
+    /** Mount one real HtmlPreview (the live render of an agent `html` code block); returns the unmount function. */
+    __mountHtmlPreview: (code: string) => () => void;
     /** The syntax tree node names of the current document (for debugging). */
     __treeNames: () => string[];
     /** The syntax tree node names@range of a given line (1-based) (for debugging the render chain). */
@@ -910,6 +913,27 @@ window.__paneReplaceLine = (line: number, text: string) => {
 };
 
 window.__renderAgentMd = renderAgentMarkdown;
+
+/**
+ * One real HtmlPreview (the live render of an agent `html` code block). The
+ * browser has no packaged CSP and no custom scheme, so this exercises the
+ * blob: fallback plus the height channel and the preview/code toggle; the
+ * agent-preview protocol path is native-only.
+ */
+window.__mountHtmlPreview = (code: string) => {
+  for (const stale of document.querySelectorAll("#html-preview-host")) stale.remove();
+  const host = document.createElement("div");
+  host.id = "html-preview-host";
+  host.style.cssText =
+    "position:fixed;left:0;top:0;width:420px;height:100vh;z-index:9999;background:var(--bg1)";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  root.render(createElement(HtmlPreview, { code }));
+  return () => {
+    root.unmount();
+    host.remove();
+  };
+};
 
 /**
  * Study mode PDF: put a PDF's bytes into the fake vault and open the reader.

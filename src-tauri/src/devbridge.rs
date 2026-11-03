@@ -40,7 +40,7 @@ use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
 use crate::commands::{
-    agent, code, config, files, focus, materials, python, term, translate, vault,
+    agent, code, config, files, focus, materials, preview, python, term, translate, vault,
 };
 use crate::state::AppState;
 
@@ -440,6 +440,9 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 ),
             };
             json_ok!(agent::agent_assemble_preview(app.state(), definition, workdir).await)
+        }
+        "agent_preview_put" => {
+            json_ok!(preview::agent_preview_put(arg_str(args, "html")?))
         }
 
         // ---- translate ----
