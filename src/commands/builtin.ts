@@ -22,6 +22,7 @@ import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
 import { useAppStore, toggleProjectsMode, toggleStudyMode } from "@/state/appStore";
+import { quitApp } from "@/app/quit";
 import { focusAdjacentProject } from "@/projects/store";
 import { isProjectPath } from "@/projects/model";
 import { sendTodoWithToast } from "@/projects/send";
@@ -200,6 +201,15 @@ const defs: CommandDef[] = [
     run: () => {
       import("@tauri-apps/api/window").then((m) => m.getCurrentWindow().close());
     },
+  },
+  {
+    // The macOS menu carries no ⌘Q key equivalent (see lib.rs::install_menu),
+    // so the quit chord lives here with every other binding. The native menu's
+    // Quit item goes through the same flush-then-destroy path.
+    id: "app.quit",
+    title: "退出应用",
+    category: "工作区",
+    run: quitApp,
   },
   {
     id: "view.toggle-study-mode",

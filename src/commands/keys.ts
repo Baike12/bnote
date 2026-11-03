@@ -45,6 +45,10 @@ export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
 export const KEY_REGION_IDS: KeyRegion[] = KEY_REGIONS.map((r) => r.id);
 
 export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
+  // app.quit is deliberately unbound by default (user decision 2026-11-03):
+  // an accidental ⌘Q must not quit the app. The command stays in the palette
+  // and keybindings.json can bind it (or anything else) to Mod-q. The hard
+  // lock still swallows ⌘Q while a pomodoro runs (focus.rs).
   "workspace.new-note": "Mod-n",
   "workspace.quick-add": "Mod-Shift-a",
   // Capture a todo on the fly: same family as "send todo to the daily note"

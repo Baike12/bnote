@@ -22,6 +22,7 @@ import {
   noteDirtyPaths,
 } from "@/footprint/store";
 import { flushPersistConfig, hasPendingPersist } from "@/state/appStore";
+import { quitApp } from "@/app/quit";
 import { trackWindowState } from "@/lib/windowState";
 import { useFocusStore } from "@/focus/store";
 import { imeOnWindowBlur, imeOnWindowFocus, imeWarmUp } from "@/editor/imeSwitch";
@@ -267,10 +268,12 @@ export default function App() {
     } catch {
       // not running under Tauri
     }
-    // Menu → Quit carries no key equivalent (⌘Q belongs to bnote's keybinding
-    // layer), so the native terminate path is gone. The menu hands the request
-    // here instead, where the same flush-then-destroy as the close button
-    // applies — quitting never costs the debounced cursor/config write.
+    // Menu → Quit carries no key equivalent (⌘Q is deliberately unbound in
+    // bnote's keybinding layer — an accidental quit must not happen; the
+    // app.quit command exists for keybindings.json), so the native terminate
+    // path is gone. The menu hands the request here instead, where the same
+    // flush-then-destroy as the close button applies — quitting never costs
+    // the debounced cursor/config write.
     // Language server events (diagnostics / status / log): an app-level
     // subscription, independent of the panel lifecycle.
     let unlistenCodeEvents: (() => void) | undefined;
@@ -279,13 +282,7 @@ export default function App() {
     });
 
     let unlistenMenuQuit: (() => void) | undefined;
-    void listen("bnote:menu-quit", () => {
-      flushCursorSave();
-      flushPersistConfig();
-      flushLinksPersist();
-      flushFootprintsPersist();
-      void getCurrentWindow().destroy();
-    })
+    void listen("bnote:menu-quit", quitApp)
       .then((off) => {
         unlistenMenuQuit = off;
       })

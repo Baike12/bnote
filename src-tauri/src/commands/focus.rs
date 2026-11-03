@@ -17,10 +17,11 @@
 //! 3. **Focus steal-back**: whenever the app loses focus it is pulled back, so
 //!    the app the user switched to never gets input.
 //!
-//! On top of that sits a **hard lock**: a CGEventTap swallows system-wide
-//! shortcuts such as ⌘Tab / ⌘Space / ⌘Q / ⌘W -- the only way to make "I pressed
-//! it and nothing happened" real; it needs Accessibility permission, and without
-//! it only the three layers above apply. During a focus session there is no way
+//! On top of that sits a **hard lock**: a CGEventTap swallows the chords macOS
+//! acts on before any app sees them (⌘Tab / ⌘Space / Mission Control / Spaces)
+//! plus the app's own quit chord (⌘Q) -- the only way to make "I pressed it and
+//! nothing happened" real; it needs Accessibility permission, and without it
+//! only the three layers above apply. During a focus session there is no way
 //! out of the app (⌘⌥Esc force quit cannot be blocked, and reopening the app
 //! resumes the same session).
 //!
@@ -715,24 +716,30 @@ mod mac {
     /// Combinations the hard lock swallows: key code (ANSI layout) -> the
     /// modifiers that must be held down at the same time.
     ///
-    /// Only the ones macOS handles itself and therefore never reaches the app:
-    /// ⌘Tab (switch app), ⌘Space (Spotlight), ⌘` (switch windows of the same
-    /// app), ⌃↑/⌃↓ (Mission Control), ⌃⌘←/→ (switch Space), ⌘H (hide),
-    /// ⌘M (minimize).
+    /// Two groups, nothing else:
     ///
-    /// **⌘Q / ⌘W are swallowed too**: "no leaving midway" includes quitting the
-    /// app -- otherwise one ⌘Q press would defeat the whole session. The
-    /// system-level force quit (⌘⌥Esc) cannot be blocked; it is the OS's last
-    /// exit -- and even after a kill the timer state and endsAt are on disk, so
-    /// reopening the app resumes the session and re-locks.
+    /// - **Chords macOS acts on before any app sees them**: ⌘Tab (switch app),
+    ///   ⌘Space (Spotlight), ⌘` (switch windows of the same app), ⌃↑/⌃↓ (Mission
+    ///   Control), ⌃⌘←/→ (switch Space). The HID-level tap is the only thing that
+    ///   can stop them: by the time an app could ignore the key, the system has
+    ///   already switched away.
+    /// - **⌘Q**, the app's own quit chord: "no leaving midway" includes quitting
+    ///   the app. The system-level force quit (⌘⌥Esc) cannot be blocked; it is
+    ///   the OS's last exit -- and even after a kill the timer state and endsAt
+    ///   are on disk, so reopening the app resumes the session and re-locks.
+    ///
+    /// ⌘H / ⌘M / ⌘W are deliberately **not** listed: `lib.rs::install_menu`
+    /// (f6b6b44) gives the menu no key equivalents for them, so they reach the
+    /// webview as ordinary app chords and belong to the keybinding layer -- ⌘M
+    /// is the default binding of `edit.insert-math-block`, ⌘W of
+    /// `region.focus-agent` in the notes region. Swallowing them here killed
+    /// those bindings during a session, and nothing needs blocking: a menu that
+    /// owns no chord cannot hide or close the window on its own.
     const BLOCKED: &[(u64, u64)] = &[
         (48, CGEventFlags::MaskCommand.0), // Tab
         (49, CGEventFlags::MaskCommand.0), // Space
         (50, CGEventFlags::MaskCommand.0), // `
-        (4, CGEventFlags::MaskCommand.0),  // H
-        (46, CGEventFlags::MaskCommand.0), // M
-        (12, CGEventFlags::MaskCommand.0), // Q (quits the app)
-        (13, CGEventFlags::MaskCommand.0), // W (closes the window: one window means a quit)
+        (12, CGEventFlags::MaskCommand.0), // Q (the app's quit chord)
         (126, CGEventFlags::MaskControl.0), // Up (Mission Control)
         (125, CGEventFlags::MaskControl.0), // Down
         (
@@ -749,6 +756,29 @@ mod mac {
         BLOCKED
             .iter()
             .any(|(key, need)| code == *key as i64 && flags & need == *need)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const CMD: u64 = CGEventFlags::MaskCommand.0;
+
+        #[test]
+        fn swallows_the_system_chords_and_quit_only() {
+            // System-handled chords: only the HID tap can stop them.
+            for code in [48i64, 49, 50, 12] {
+                assert!(should_swallow(code, CMD), "⌘ code {code} must be swallowed");
+            }
+            // App chords the menu no longer claims: swallowing these would kill
+            // the user's own bindings (⌘M math block, ⌘W region.focus-agent).
+            for code in [4i64, 46, 13] {
+                assert!(!should_swallow(code, CMD), "⌘ code {code} must not be swallowed");
+            }
+            // The control chords need Control; ⌘ alone must not match.
+            assert!(!should_swallow(126, CMD));
+            assert!(!should_swallow(123, 0));
+        }
     }
 
     /// The event tap's callback: a blocked combination returns null, which eats
