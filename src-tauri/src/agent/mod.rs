@@ -1,15 +1,37 @@
-//! Study-mode agent: LLM provider abstraction, tool execution, MCP, skills.
+//! Study-mode agent: LLM provider abstraction, tool execution, MCP, skills,
+//! agent definitions and the prompt assembly pipeline.
 
+pub mod defs;
 pub mod mcp;
+pub mod prompt;
 pub mod provider;
+pub mod search;
 pub mod session;
+pub mod shell;
 pub mod skills;
+pub mod todo;
 pub mod tools;
 pub mod types;
 
 pub use provider::Provider;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// Custom instructions stored in the vault, analogous to ZCode's AGENTS.md or
+/// Claude Code's CLAUDE.md. Reads `.bnote/AGENTS.md`; the legacy file name
+/// `.bnote/agent.md` is the fallback. A missing file yields an empty string,
+/// and the prompt segment is then omitted.
+pub fn load_user_instructions(vault: Option<&std::path::Path>) -> String {
+    let Some(vault) = vault else {
+        return String::new();
+    };
+    for name in ["AGENTS.md", "agent.md"] {
+        if let Ok(content) = std::fs::read_to_string(vault.join(".bnote").join(name)) {
+            return content;
+        }
+    }
+    String::new()
+}
 
 /// Agent configuration persisted at `<app_data>/agent.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

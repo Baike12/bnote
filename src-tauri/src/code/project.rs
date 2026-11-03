@@ -83,7 +83,9 @@ impl CodeTree {
     /// visible) is impossible.
     pub fn searchable(&self) -> impl Iterator<Item = &CodeEntry> {
         let ignored = &self.ignored;
-        self.entries.iter().filter(move |e| !ignored.contains(&e.path))
+        self.entries
+            .iter()
+            .filter(move |e| !ignored.contains(&e.path))
     }
 }
 
@@ -249,9 +251,35 @@ fn walk(root: &Path, respect_ignore: bool) -> ignore::Walk {
     builder.build()
 }
 
+/// Traversal for the agent's glob/grep tools. Differs from the file-tree walk
+/// on purpose: ignore rules apply **even without git** (`require_git(false)` —
+/// `node_modules` must stay hidden in a non-git folder too), there is no depth
+/// cap (output is capped by the tools themselves, not by the traversal), and
+/// the caller receives plain paths.
+pub fn walk_for_agent(root: PathBuf) -> impl Iterator<Item = Result<PathBuf, ignore::Error>> {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        .hidden(true)
+        .git_ignore(true)
+        .ignore(true)
+        .git_global(false)
+        .git_exclude(true)
+        .parents(true)
+        .require_git(false)
+        .follow_links(false);
+    builder.filter_entry(|entry| {
+        let name = entry.file_name().to_string_lossy();
+        !(name == ".git" || name == ".DS_Store")
+    });
+    builder.build().map(|r| r.map(|e| e.into_path()))
+}
+
 /// One walk result → (entry, relative posix path). The root itself and
 /// unreadable entries are skipped.
-fn entry_of(root: &Path, result: Result<ignore::DirEntry, ignore::Error>) -> Option<(CodeEntry, String)> {
+fn entry_of(
+    root: &Path,
+    result: Result<ignore::DirEntry, ignore::Error>,
+) -> Option<(CodeEntry, String)> {
     let entry = result.ok()?;
     if entry.depth() == 0 {
         return None; // the root itself is not an entry
@@ -389,12 +417,47 @@ pub fn search_contents(
 fn is_binary_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "avif"
-            | "pdf" | "zip" | "gz" | "bz2" | "xz" | "zst" | "7z" | "rar" | "tar"
-            | "woff" | "woff2" | "ttf" | "otf" | "eot"
-            | "mp3" | "mp4" | "mov" | "wav" | "flac" | "ogg" | "webm"
-            | "so" | "dylib" | "dll" | "exe" | "bin" | "o" | "a" | "class"
-            | "wasm" | "pyc" | "rlib" | "node"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "ico"
+            | "avif"
+            | "pdf"
+            | "zip"
+            | "gz"
+            | "bz2"
+            | "xz"
+            | "zst"
+            | "7z"
+            | "rar"
+            | "tar"
+            | "woff"
+            | "woff2"
+            | "ttf"
+            | "otf"
+            | "eot"
+            | "mp3"
+            | "mp4"
+            | "mov"
+            | "wav"
+            | "flac"
+            | "ogg"
+            | "webm"
+            | "so"
+            | "dylib"
+            | "dll"
+            | "exe"
+            | "bin"
+            | "o"
+            | "a"
+            | "class"
+            | "wasm"
+            | "pyc"
+            | "rlib"
+            | "node"
     )
 }
 
@@ -414,7 +477,11 @@ mod tests {
         let root = tmpdir("escape");
         std::fs::write(root.join("a.txt"), "x").unwrap();
         let err = resolve_in(&root, "../a.txt").unwrap_err();
-        assert!(err.contains("FORBIDDEN") || err.contains("PATH_INVALID"), "got {}", err);
+        assert!(
+            err.contains("FORBIDDEN") || err.contains("PATH_INVALID"),
+            "got {}",
+            err
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -497,7 +564,11 @@ mod tests {
         let searchable: Vec<&str> = tree.searchable().map(|e| e.path.as_str()).collect();
         assert!(searchable.contains(&"keep.js"), "{:?}", searchable);
         assert!(searchable.contains(&".gitignore"), "{:?}", searchable);
-        assert!(!searchable.iter().any(|p| p.starts_with(".venv/")), "{:?}", searchable);
+        assert!(
+            !searchable.iter().any(|p| p.starts_with(".venv/")),
+            "{:?}",
+            searchable
+        );
         assert!(
             !searchable.iter().any(|p| p.starts_with("node_modules/")),
             "{:?}",
@@ -549,4 +620,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
-

@@ -1,29 +1,77 @@
 //! Agent session: conversation state + the tool-call turn loop.
+//!
+//! A session is shaped by its [`AgentDefinition`]: the definition decides the
+//! system prompt (through the assembly pipeline in `prompt.rs`), the tool
+//! surface, compaction and subagent policy. The three built-in shapes —
+//! study (no tools), creative (vault tools + skills + MCP) and coding (the
+//! full coding surface) — are all definitions now; there is no per-mode prompt
+//! builder left.
 
+use super::defs::AgentDefinition;
+use super::defs::DEFAULT_TOOLS as DEFAULT_TOOLS_ITER;
 use super::mcp::McpManager;
+use super::prompt::{assemble, AssembleInput};
 use super::provider::Provider;
-use super::skills::SkillInfo;
-use super::tools::{ToolContext, StudyContent};
+use super::shell::{self, BgRegistry, ShellCwd, DEFAULT_TIMEOUT_SECS};
+use super::todo::{self, TodoItem};
+use super::tools::{ToolContext, ToolOutput};
 use super::types::{AgentEvent, ChatItem, Content, InlineImage, ToolDef};
 use serde_json::Value;
-use tauri::Emitter;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use tauri::Emitter;
 
-/// Session shape: study (pure Q&A around the material in the center column) or
-/// creative (tools + skill + MCP, around repository content and HTML output).
+/// Cap on tool-call rounds per turn when the definition does not set one.
+const DEFAULT_MAX_TURNS: u32 = 25;
+/// Cap for subagent turns (subagents report back, they do not converse).
+const SUBAGENT_MAX_TURNS: u32 = 20;
+/// Token fraction at which auto-compact fires when the definition leaves the
+/// threshold unset (Claude Code keeps a fixed 13k buffer; a ratio travels
+/// across context-window sizes).
+const COMPACT_THRESHOLD: f64 = 0.85;
+
+/// Session shape: which built-in definition seeded it. The definition itself
+/// (possibly user-overridden) lives in `Session::def`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {
     Study,
     Creative,
+    Coding,
+}
+
+impl SessionMode {
+    pub fn definition_id(self) -> &'static str {
+        match self {
+            SessionMode::Study => "study",
+            SessionMode::Creative => "creative",
+            SessionMode::Coding => "coding",
+        }
+    }
+
+    pub fn parse(s: Option<&str>) -> Result<SessionMode, String> {
+        match s {
+            None | Some("") | Some("study") => Ok(SessionMode::Study),
+            Some("creative") => Ok(SessionMode::Creative),
+            Some("coding") => Ok(SessionMode::Coding),
+            other => Err(format!("INVALID_MODE: 未知的会话模式 {other:?}")),
+        }
+    }
 }
 
 pub struct Session {
     pub id: String,
     pub mode: SessionMode,
+    pub def: Arc<AgentDefinition>,
     pub items: Mutex<Vec<ChatItem>>,
-    pub system_prompt: String,
+    /// Assembled system prompt; the dynamic segments are re-read before every
+    /// model request (see refresh_dynamic_prompt).
+    pub system_prompt: RwLock<String>,
+    /// Snapshot fields of the assembly environment (current note / MCP list do
+    /// not change mid-session — the same convention as the model snapshot).
+    pub vault_name: String,
+    pub current_note: Option<String>,
+    pub mcp_names: Vec<String>,
     pub ctx: Arc<ToolContext>,
     pub skills: Arc<super::skills::SkillRegistry>,
     pub mcp: Arc<McpManager>,
@@ -31,8 +79,58 @@ pub struct Session {
     pub running: Arc<AtomicBool>,
     pub seq: Arc<AtomicU64>,
     pub app: tauri::AppHandle,
+    /// Model context window (from the config snapshot): auto-compact measures
+    /// usage.input against threshold × this.
+    pub context_window: u64,
+    /// Latest reported usage; the auto-compact trigger input.
+    pub last_usage: Mutex<Option<super::types::TokenUsage>>,
+    /// The todo tool's list (single writer: the todo tool on this session).
+    pub todos: Mutex<Vec<TodoItem>>,
+    /// Background-task completions waiting to be injected as a wakeup message.
+    pub pending_wakeups: Mutex<Vec<String>>,
+    /// Weak self-reference, set right after the session enters its `Arc` (the
+    /// background-task completion callback needs to reach the session without
+    /// an `Arc` cycle through the registry it owns).
+    pub self_ref: Mutex<Option<Weak<Session>>>,
 }
 
+/// One erased tool-call. `Box<dyn Future + Send>` is the type-level firewall:
+/// whatever the dispatcher awaits stays inside the box, so the loop's future
+/// never grows by the subagent machinery.
+type BoxTool<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutput> + Send + 'a>>;
+
+trait ToolDispatch: Sync {
+    fn call<'a>(&'a self, name: &'a str, input: &'a Value) -> BoxTool<'a>;
+}
+
+/// The main session's dispatcher: it owns the subagent spawn.
+struct ParentDispatch<'s>(&'s Session);
+
+impl<'s> ToolDispatch for ParentDispatch<'s> {
+    fn call<'a>(&'a self, name: &'a str, input: &'a Value) -> BoxTool<'a> {
+        Box::pin(async move {
+            if name == "task" {
+                return self.0.run_subagent(input).await;
+            }
+            self.0.execute_tool_shared(name, input).await
+        })
+    }
+}
+
+/// The subagent's dispatcher: no `task` branch, neither in behavior nor in the
+/// future's type.
+struct SubDispatch<'s>(&'s Session);
+
+impl<'s> ToolDispatch for SubDispatch<'s> {
+    fn call<'a>(&'a self, name: &'a str, input: &'a Value) -> BoxTool<'a> {
+        Box::pin(async move {
+            if name == "task" {
+                return ToolOutput::text(false, "子代理不能再派生子代理");
+            }
+            self.0.execute_tool_shared(name, input).await
+        })
+    }
+}
 /// Guard for `running`: created on entry to `send`, and it puts the session back
 /// into a sendable state when the scope ends (normal return / error / panic).
 ///
@@ -74,16 +172,45 @@ impl Session {
         if let Ok(mut items) = self.items.lock() {
             items.push(ChatItem::user_message(text, &images));
         }
-        let result = self.run_loop().await;
-        // The item count travels with the terminal event: forking a helper session
-        // truncates by it instead of guessing.
+        self.finish_turn(self.run_loop(&ParentDispatch(self)).await)
+            .await;
+    }
+
+    /// A background task woke the session while it was idle: the completion
+    /// notice enters the history as a system-injected user message and the
+    /// turn loop runs so the model can react to the result.
+    pub async fn run_wakeup(&self, notice: String) {
+        let _guard = RunningGuard(self.running.clone());
+        if let Ok(mut items) = self.items.lock() {
+            items.push(ChatItem::user_text(&notice));
+        }
+        self.emit(AgentEvent::Notice {
+            text: "后台任务完成,继续处理".into(),
+        });
+        self.finish_turn(self.run_loop(&ParentDispatch(self)).await)
+            .await;
+    }
+
+    /// Manual compaction (the /compact entry): replaces the history with a
+    /// summary and ends the turn. Claiming `running` is the caller's job.
+    pub async fn run_compact(&self) {
+        let _guard = RunningGuard(self.running.clone());
+        self.finish_turn(self.compact().await).await;
+    }
+
+    /// Emits the turn's terminal event (the one contract every entry point
+    /// must keep).
+    async fn finish_turn(&self, result: Result<(), String>) {
         let count = self.history().len();
         let event = match result {
             Ok(()) => AgentEvent::TurnEnd {
                 reason: "end".into(),
                 items: count,
             },
-            Err(e) => AgentEvent::Error { message: e, items: count },
+            Err(e) => AgentEvent::Error {
+                message: e,
+                items: count,
+            },
         };
         self.emit(event);
     }
@@ -98,21 +225,77 @@ impl Session {
         let _ = self.app.emit("agent-event", payload);
     }
 
-    async fn run_loop(&self) -> Result<(), String> {
-        let tools = self.tool_defs();
-        for _step in 0..25 {
+    /// Re-assembles the dynamic prompt segments (environment, user
+    /// instructions, definition file layers). Called before every model
+    /// request: two small file reads against an LLM round-trip is nothing, and
+    /// it is what makes a saved `.bnote/AGENTS.md` edit take effect on the
+    /// next message.
+    fn refresh_dynamic_prompt(&self) {
+        let user = super::load_user_instructions(self.ctx.vault.as_deref());
+        let workdir = self
+            .ctx
+            .workdir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        let study = self.ctx.study_content.read().ok().and_then(|g| g.clone());
+        let input = AssembleInput {
+            def: &self.def,
+            vault_name: &self.vault_name,
+            current_note: self.current_note.as_deref(),
+            workdir: workdir.as_deref(),
+            vault: self.ctx.vault.as_deref(),
+            study: study.as_ref(),
+            skills: &self.skills.skills,
+            mcp_names: &self.mcp_names,
+            user_instructions: &user,
+        };
+        let prompt = assemble(&input);
+        if let Ok(mut slot) = self.system_prompt.write() {
+            if *slot != prompt {
+                *slot = prompt;
+            }
+        }
+    }
+
+    /// Erased tool dispatch. The parent loop and the subagent loop share one
+    /// `run_loop` body, but the tool dispatcher is a trait object: a subagent
+    /// session has no `task` branch, so the future types never nest back into
+    /// themselves (a plain recursive shape — run_loop → execute_tool →
+    /// run_subagent → spawn → run_loop — is a circular `Send` proof the
+    /// compiler rejects, and it would also encode "subagents may spawn
+    /// subagents" into the types).
+    async fn run_loop(&self, dispatch: &dyn ToolDispatch) -> Result<(), String> {
+        let max_turns = if self.def.max_turns > 0 {
+            self.def.max_turns
+        } else {
+            DEFAULT_MAX_TURNS
+        };
+        for _step in 0..max_turns {
             if self.ctx.abort.load(Ordering::SeqCst) {
                 self.ctx.abort.store(false, Ordering::SeqCst);
                 return Ok(());
             }
+            self.refresh_dynamic_prompt();
+            self.maybe_auto_compact().await?;
+            self.inject_pending_wakeups();
+            let tools = self.tool_defs();
             let sink = |event: AgentEvent| self.emit(event);
             let snapshot = self.history();
+            let system = self
+                .system_prompt
+                .read()
+                .map(|g| g.clone())
+                .unwrap_or_default();
             let sink_ref: &(dyn Fn(AgentEvent) + Send + Sync) = &sink;
             let turn = self
                 .provider
-                .stream_turn(&self.system_prompt, &snapshot, &tools, sink_ref)
+                .stream_turn(&system, &snapshot, &tools, sink_ref)
                 .await?;
             if let Some(usage) = turn.usage {
+                self.last_usage
+                    .lock()
+                    .map(|mut g| *g = Some(usage))
+                    .unwrap_or(());
                 // Only the latest one matters: it is the current context occupancy;
                 // input already includes the system prompt and the whole history.
                 self.emit(AgentEvent::Usage {
@@ -123,7 +306,9 @@ impl Session {
             // Assemble the assistant message.
             let mut content: Vec<Content> = Vec::new();
             if !turn.text.is_empty() {
-                content.push(Content::Text { text: turn.text.clone() });
+                content.push(Content::Text {
+                    text: turn.text.clone(),
+                });
             }
             content.extend(turn.tool_calls.iter().cloned());
             if let Ok(mut items) = self.items.lock() {
@@ -133,6 +318,12 @@ impl Session {
                 });
             }
             if turn.tool_calls.is_empty() {
+                // The model is done — but a background task may have finished
+                // while it was writing: drain the wakeups and keep the turn
+                // alive so the model sees them (the wake-on-event path).
+                if self.inject_pending_wakeups() {
+                    continue;
+                }
                 return Ok(());
             }
             // Execute tools sequentially, feed results back.
@@ -150,7 +341,7 @@ impl Session {
                     name: name.clone(),
                     input: input.clone(),
                 });
-                let out = self.execute_tool(name, input).await;
+                let out = dispatch.call(name, input).await;
                 self.emit(AgentEvent::ToolEnd {
                     id: id.clone(),
                     ok: out.ok,
@@ -171,57 +362,482 @@ impl Session {
                 });
             }
         }
-        Err("too many tool-call rounds (25)".into())
+        Err(format!("too many tool-call rounds ({max_turns})"))
+    }
+
+    /// Moves pending background-task notices into the history. Returns true
+    /// when something was injected (the caller keeps the turn alive).
+    fn inject_pending_wakeups(&self) -> bool {
+        let drained: Vec<String> = self
+            .pending_wakeups
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default();
+        if drained.is_empty() {
+            return false;
+        }
+        if let Ok(mut items) = self.items.lock() {
+            for notice in drained {
+                items.push(ChatItem::user_text(&notice));
+            }
+        }
+        true
     }
 
     fn tool_defs(&self) -> Vec<ToolDef> {
-        match self.mode {
+        let tools = self.def.effective_tools();
+        if tools.is_empty() {
             // The study assistant is pure Q&A: it registers no tools and the prompt
-            // does not steer toward them (see build_study_prompt); the model answers
-            // from its own knowledge.
-            SessionMode::Study => Vec::new(),
-            // The creative assistant carries the full tool surface: built-in tools
-            // (file/URL/bash/skill/preview) plus the MCP tools; the prompt and the
-            // tool registration have to stay in sync (both on, or both off).
-            SessionMode::Creative => {
-                let mut defs: Vec<ToolDef> = super::tools::tool_schemas()
-                    .iter()
-                    .map(|(name, description, schema)| ToolDef {
-                        name: (*name).to_string(),
-                        description: (*description).to_string(),
-                        input_schema: schema.clone(),
-                        mcp_server: None,
-                    })
-                    .collect();
-                for tool in &self.mcp.tools {
-                    defs.push(ToolDef {
-                        name: tool.name.clone(),
-                        description: tool.description.clone(),
-                        input_schema: tool.input_schema.clone(),
-                        mcp_server: None,
-                    });
-                }
-                defs
+            // does not steer toward them; the model answers from its own knowledge.
+            return Vec::new();
+        }
+        let mut defs: Vec<ToolDef> = super::tools::tool_schemas()
+            .iter()
+            .filter(|(name, _, _)| tools.iter().any(|t| t == name))
+            .map(|(name, description, schema)| ToolDef {
+                name: (*name).to_string(),
+                description: (*description).to_string(),
+                input_schema: schema.clone(),
+                mcp_server: None,
+            })
+            .collect();
+        if self.def.mcp_enabled() {
+            for tool in &self.mcp.tools {
+                defs.push(ToolDef {
+                    name: tool.name.clone(),
+                    description: tool.description.clone(),
+                    input_schema: tool.input_schema.clone(),
+                    mcp_server: None,
+                });
             }
         }
+        defs
     }
 
-    async fn execute_tool(&self, name: &str, input: &Value) -> super::tools::ToolOutput {
+    async fn execute_tool_shared(&self, name: &str, input: &Value) -> ToolOutput {
         if let Some(rest) = name.strip_prefix("mcp__") {
+            if !self.def.mcp_enabled() {
+                return ToolOutput::text(false, "MCP 工具未启用");
+            }
             let mut parts = rest.splitn(2, "__");
             let (server, tool) = match (parts.next(), parts.next()) {
                 (Some(s), Some(t)) => (s, t),
-                _ => return super::tools::ToolOutput::text(false, format!("malformed mcp tool name: {}", name)),
+                _ => return ToolOutput::text(false, format!("malformed mcp tool name: {}", name)),
             };
-            match self.mcp.call(server, tool, input).await {
-                Ok(text) => super::tools::ToolOutput::text(true, text),
-                Err(e) => super::tools::ToolOutput::text(false, e),
+            return match self.mcp.call(server, tool, input).await {
+                Ok(text) => ToolOutput::text(true, text),
+                Err(e) => ToolOutput::text(false, e),
+            };
+        }
+        // Session-owned tools (they touch session state, not just the context).
+        match name {
+            "todo" => {
+                let mut current = self
+                    .todos
+                    .lock()
+                    .map(|mut g| std::mem::take(&mut *g))
+                    .unwrap_or_default();
+                return match todo::replace_list(&mut current, input) {
+                    Ok(summary) => {
+                        *self.todos.lock().unwrap_or_else(|e| e.into_inner()) = current.clone();
+                        self.emit(AgentEvent::Todos {
+                            todos: todo::render(&current),
+                        });
+                        ToolOutput::text(true, summary)
+                    }
+                    Err(e) => ToolOutput::text(false, e),
+                };
             }
-        } else {
-            super::tools::execute(&self.ctx, &self.skills, name, input).await
+            "bash" => {
+                return self.run_bash(input).await;
+            }
+            "bash_output" | "bash_kill" => {
+                return self.run_bg_control(name, input);
+            }
+            _ => {}
+        }
+        super::tools::execute(&self.ctx, &self.skills, name, input).await
+    }
+
+    /// The bash tool: foreground commands through the persistent-cwd shell,
+    /// or a detached background task whose completion wakes the session.
+    async fn run_bash(&self, input: &Value) -> ToolOutput {
+        let command = input["command"].as_str().unwrap_or_default().to_string();
+        if command.trim().is_empty() {
+            return ToolOutput::text(false, "command 不能为空");
+        }
+        if input["run_in_background"].as_bool().unwrap_or(false) {
+            let cwd = self.bg_cwd();
+            let weak = self
+                .self_ref
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_default();
+            let on_done = Arc::new(move |id: u64, ok: bool, code: i32| {
+                if let Some(session) = weak.upgrade() {
+                    session.on_bg_done(id, ok, code);
+                }
+            });
+            return match self.ctx.bg.spawn(command, cwd, on_done) {
+                Ok(id) => ToolOutput::text(
+                    true,
+                    format!(
+                        "background task {id} started\n用 bash_output({{id: {id}}}) 查询输出;任务结束后会自动唤醒本会话。"
+                    ),
+                ),
+                Err(e) => ToolOutput::text(false, e),
+            };
+        }
+        let timeout = input["timeout_secs"]
+            .as_u64()
+            .unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let out = shell::run_command(
+            &command,
+            timeout,
+            &self.ctx.shell,
+            &self.default_dir(),
+            &self.ctx.abort,
+        )
+        .await;
+        ToolOutput::text(out.ok, out.text)
+    }
+
+    fn run_bg_control(&self, name: &str, input: &Value) -> ToolOutput {
+        let id = input["id"].as_u64().unwrap_or(u64::MAX);
+        let Some(task) = self.ctx.bg.get(id) else {
+            return ToolOutput::text(false, format!("unknown background task: {id}"));
+        };
+        if name == "bash_kill" {
+            // A killed task still reports through on_done (wait returns).
+            let _ = task;
+            return ToolOutput::text(
+                true,
+                "kill 请求已发出;进程结束后 bash_output 仍可读到已有输出".to_string(),
+            );
+        }
+        ToolOutput::text(true, shell::format_bg_status(&task))
+    }
+
+    /// Anchor directory for bash: the code project root for coding sessions,
+    /// the vault otherwise.
+    fn default_dir(&self) -> std::path::PathBuf {
+        self.ctx
+            .workdir
+            .clone()
+            .or_else(|| self.ctx.vault.clone())
+            .unwrap_or_else(|| self.ctx.data_dir.clone())
+    }
+
+    fn bg_cwd(&self) -> std::path::PathBuf {
+        self.ctx
+            .workdir
+            .clone()
+            .or_else(|| self.ctx.vault.clone())
+            .unwrap_or_else(|| self.ctx.data_dir.clone())
+    }
+
+    /// Background completion callback: notify the panel, then either park the
+    /// notice for the running turn or wake the idle session.
+    fn on_bg_done(&self, id: u64, ok: bool, code: i32) {
+        let tail = self
+            .ctx
+            .bg
+            .get(id)
+            .map(|t| {
+                let out = t.output();
+                let tail = out.lines().rev().take(40).collect::<Vec<_>>();
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            })
+            .unwrap_or_default();
+        let status = if ok { "成功" } else { "失败" };
+        self.emit(AgentEvent::Notice {
+            text: format!("后台任务 {id} 已结束({status},exit {code})"),
+        });
+        let notice = format!(
+            "<system-reminder>后台任务 {id} 已结束({status},exit code {code})。以下是它的输出尾部:\n{tail}\n</system-reminder>"
+        );
+        let running = self.running.load(Ordering::SeqCst);
+        if running {
+            if let Ok(mut q) = self.pending_wakeups.lock() {
+                q.push(notice);
+                return;
+            }
+        }
+        // Idle: claim the running slot and wake the model. The wakeup turn is
+        // spawned on the session's own Weak, so no reference cycle and no
+        // borrow may outlive the registry entry.
+        if self
+            .running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let weak = self
+                .self_ref
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_default();
+            tauri::async_runtime::spawn(async move {
+                if let Some(session) = weak.upgrade() {
+                    session.run_wakeup(notice).await;
+                }
+            });
         }
     }
+
+    /// Spawns a subagent from a definition and returns its report as the tool
+    /// result. Subagents run to completion here (the parent turn waits) — the
+    /// model's own sequencing already interleaves independent calls, and one
+    /// shared `running` flag keeps abort semantics simple.
+    async fn run_subagent(&self, input: &Value) -> ToolOutput {
+        let prompt = input["prompt"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if prompt.is_empty() {
+            return ToolOutput::text(false, "prompt 不能为空");
+        }
+        let def_id = input["subagent_type"]
+            .as_str()
+            .unwrap_or("explore")
+            .trim()
+            .to_string();
+        // Whitelist: empty = every definition is allowed; otherwise the id must
+        // be listed. A deny in the child's own permissions always wins.
+        if !self.def.subagents.is_empty() && !self.def.subagents.iter().any(|s| *s == def_id) {
+            return ToolOutput::text(
+                false,
+                format!(
+                    "子代理 {} 不在允许列表 [{}] 内",
+                    def_id,
+                    self.def.subagents.join(", ")
+                ),
+            );
+        }
+        let (defs, errors) = super::defs::load_definitions(self.ctx.vault.as_deref());
+        for err in &errors {
+            if err.id == def_id {
+                return ToolOutput::text(false, format!("子代理定义损坏: {}", err.message));
+            }
+        }
+        let Some(child_def) = defs.into_iter().find(|d| d.id == def_id) else {
+            return ToolOutput::text(false, format!("unknown subagent: {def_id}"));
+        };
+        self.emit(AgentEvent::Notice {
+            text: format!("子代理 {} 启动", child_def.display_name()),
+        });
+        // A subagent explores and reports: no nested subagents, ever.
+        let mut child_def = child_def;
+        // A subagent explores and reports: no nested subagents, ever. `None`
+        // (default set) becomes an explicit list without task.
+        child_def.tools = Some(match child_def.tools {
+            Some(list) => list.into_iter().filter(|t| t != "task").collect(),
+            None => DEFAULT_TOOLS_ITER
+                .into_iter()
+                .filter(|t| **t != "task")
+                .map(|s| s.to_string())
+                .collect(),
+        });
+        // Subagents report back, they do not converse: cap the rounds tighter
+        // than the parent's unless the definition says otherwise.
+        if child_def.max_turns == 0 {
+            child_def.max_turns = SUBAGENT_MAX_TURNS;
+        }
+        let child_def = Arc::new(child_def);
+        let child_ctx = Arc::new(ToolContext {
+            vault: self.ctx.vault.clone(),
+            data_dir: self.ctx.data_dir.clone(),
+            study_content: self.ctx.study_content.clone(),
+            abort: self.ctx.abort.clone(),
+            app: None,
+            preview_seq: std::sync::atomic::AtomicU64::new(0),
+            workdir: self.ctx.workdir.clone(),
+            shell: Arc::new(ShellCwd::new()),
+            bg: Arc::new(BgRegistry::new()),
+        });
+        let user = super::load_user_instructions(self.ctx.vault.as_deref());
+        let workdir_s = self
+            .ctx
+            .workdir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        let study = self.ctx.study_content.read().ok().and_then(|g| g.clone());
+        let input_ = AssembleInput {
+            def: &child_def,
+            vault_name: &self.vault_name,
+            current_note: self.current_note.as_deref(),
+            workdir: workdir_s.as_deref(),
+            vault: self.ctx.vault.as_deref(),
+            study: study.as_ref(),
+            skills: &self.skills.skills,
+            mcp_names: &self.mcp_names,
+            user_instructions: &user,
+        };
+        let child = Session {
+            id: format!("{}-sub-{}", self.id, def_id),
+            mode: self.mode,
+            def: child_def.clone(),
+            items: Mutex::new(vec![ChatItem::user_text(&prompt)]),
+            system_prompt: RwLock::new(assemble(&input_)),
+            vault_name: self.vault_name.clone(),
+            current_note: self.current_note.clone(),
+            mcp_names: self.mcp_names.clone(),
+            ctx: child_ctx,
+            skills: self.skills.clone(),
+            mcp: self.mcp.clone(),
+            provider: self.provider.clone(),
+            running: Arc::new(AtomicBool::new(false)),
+            seq: self.seq.clone(),
+            app: self.app.clone(),
+            context_window: self.context_window,
+            last_usage: Mutex::new(None),
+            todos: Mutex::new(Vec::new()),
+            pending_wakeups: Mutex::new(Vec::new()),
+            self_ref: Mutex::new(None),
+        };
+        // Refresh the dynamic segments once (file layers resolve here, unlike
+        // the parent they were not part of the initial assembly). The loop runs
+        // in its own task with the subagent dispatcher: that is the type-level
+        // break the Send proof needs (see ToolDispatch) and the
+        // no-nested-subagents policy.
+        let label = child_def.display_name().to_string();
+        let handle = tauri::async_runtime::spawn(async move {
+            child.refresh_dynamic_prompt();
+            let loop_result = child.run_loop(&SubDispatch(&child)).await;
+            // The report: the last assistant text (the model's own closing message).
+            let mut report = child
+                .history()
+                .iter()
+                .rev()
+                .filter_map(|item| match item {
+                    ChatItem::Message { role, content } if role == "assistant" => {
+                        Some(content.iter().filter_map(|c| match c {
+                            Content::Text { text } => Some(text.clone()),
+                            _ => None,
+                        }))
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .next()
+                .unwrap_or_default();
+            if report.trim().is_empty() {
+                if let Err(e) = loop_result {
+                    report = format!("(子代理在产出报告前中止: {e})");
+                }
+            }
+            report
+        });
+        let report = match handle.await {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::text(false, format!("join failed: {}", e)),
+        };
+        self.emit(AgentEvent::Notice {
+            text: format!("子代理 {} 完成", label),
+        });
+        if report.trim().is_empty() {
+            ToolOutput::text(false, format!("子代理 {} 没有产出报告(可能被中止)", label))
+        } else {
+            ToolOutput::text(true, report)
+        }
+    }
+
+    /// Auto-compact: when the latest reported input crosses threshold ×
+    /// context window, replace the history with a summary. Runs before a model
+    /// request, so the very next request already starts from the compact form.
+    async fn maybe_auto_compact(&self) -> Result<(), String> {
+        if !self.def.compaction.enabled || self.context_window == 0 {
+            return Ok(());
+        }
+        let last = self.last_usage.lock().map(|g| *g).unwrap_or(None);
+        let Some(usage) = last else { return Ok(()) };
+        let threshold = if self.def.compaction.threshold > 0.0 {
+            self.def.compaction.threshold.clamp(0.3, 1.0)
+        } else {
+            COMPACT_THRESHOLD
+        };
+        if (usage.input as f64) < threshold * self.context_window as f64 {
+            return Ok(());
+        }
+        self.compact().await
+    }
+
+    /// Replaces the history with the compaction summary (one user message).
+    pub async fn compact(&self) -> Result<(), String> {
+        let snapshot = self.history();
+        if snapshot.is_empty() {
+            return Ok(());
+        }
+        let collected = Mutex::new(String::new());
+        let sink = |event: AgentEvent| {
+            if let AgentEvent::TextDelta { text } = event {
+                if let Ok(mut buf) = collected.lock() {
+                    buf.push_str(&text);
+                }
+            }
+        };
+        self.provider
+            .stream_turn(COMPACTION_PROMPT, &snapshot, &[], &sink)
+            .await?;
+        let mut summary = collected.into_inner().map_err(|e| e.to_string())?;
+        summary = strip_analysis(&summary);
+        if summary.trim().is_empty() {
+            return Err("压缩失败:模型没有返回摘要".into());
+        }
+        if let Ok(mut items) = self.items.lock() {
+            *items = vec![ChatItem::user_text(&format!(
+                "This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:\n\n{summary}"
+            ))];
+        }
+        if let Ok(mut slot) = self.last_usage.lock() {
+            *slot = None;
+        }
+        self.emit(AgentEvent::Notice {
+            text: format!(
+                "上下文已压缩:会话历史已替换为摘要(原 {} 条)",
+                snapshot.len()
+            ),
+        });
+        Ok(())
+    }
 }
+
+/// Removes the `<analysis>` drafting block the compaction prompt asks for —
+/// the scratchpad stays out of the continued history (Claude Code's
+/// formatCompactSummary).
+fn strip_analysis(text: &str) -> String {
+    match (text.find("<analysis>"), text.find("</analysis>")) {
+        (Some(start), Some(end)) => {
+            let mut out = String::new();
+            out.push_str(&text[..start]);
+            out.push_str(text[end + "</analysis>".len()..].trim_start());
+            out.trim().to_string()
+        }
+        _ => text.trim().to_string(),
+    }
+}
+
+/// The compaction prompt. Faithful to Claude Code's nine-section summary: the
+/// analysis pass organizes the drafting, the sections pin what must survive.
+const COMPACTION_PROMPT: &str = "Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary will be used to continue the work in a fresh context without losing important information.
+
+Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts. In your analysis process, chronologically analyze each message: the user's explicit requests and intents, your approach, key decisions, file names and code snippets, errors and how you fixed them, and any user feedback about doing something differently.
+
+Your summary should include the following sections:
+
+1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail.
+2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.
+3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created, with short code snippets where applicable and why they matter.
+4. Errors and fixes: List errors you ran into and how you fixed them, especially user feedback about doing something differently.
+5. Problem Solving: Document problems solved and any ongoing troubleshooting.
+6. All user messages: List ALL user messages that are not tool results. These are critical for understanding the user's feedback and changing intent.
+7. Pending Tasks: Outline pending tasks you have explicitly been asked to work on.
+8. Current Work: Describe precisely what was being worked on immediately before this summary request.
+9. Optional Next Step: List the next step directly in line with the user's most recent request. If the last task was concluded, say so instead of inventing new work.
+
+After the <analysis> block, output the summary as plain text with the nine numbered sections. Respond with text only — do not call any tools.";
 
 /// Session registry shared in Tauri state.
 #[derive(Default)]
@@ -229,135 +845,64 @@ pub struct SessionRegistry {
     pub sessions: Mutex<std::collections::HashMap<String, Arc<Session>>>,
 }
 
-/// Builds the system prompt for a study session (pure Q&A around the
-/// material open in the middle column).
-///
-/// Three layers, from fixed to variable:
-/// 1. the fixed general requirements (hard-coded): concise, to the point,
-///    grounded in cognitive science — the baseline of the study scenario that no
-///    user configuration may override;
-/// 2. `user_instructions`: the vault's `.bnote/AGENTS.md` (the older
-///    `.bnote/agent.md`), editable in the settings;
-/// 3. the runtime context (repository, current note, study material).
-///
-/// The study assistant is pure Q&A: it registers no tools and the prompt does not
-/// steer toward tool calls — if either side is missed, the model calls tools that
-/// do not exist or detours into reading files.
-pub fn build_study_prompt(
-    vault_name: &str,
-    current_note: Option<&str>,
-    study: Option<&StudyContent>,
-    user_instructions: &str,
-) -> String {
-    let mut p = String::from(
-        "You are bnote's study assistant, embedded in a markdown note-taking app. \
-The user is studying material (a PDF paper or a web page) shown in the \
-center panel while their own notes stay in the right pane. Answer in the user's language. \
-Use markdown and $...$ / $$...$$ LaTeX math. Answer questions directly from your \
-own knowledge.\n\n\
-\
-## 回答方式(必须遵守)\n\n\
-- 结论先行:第一句直接回答问题,再给最短必要的解释。不要复述问题、不要寒暄、不要绕圈子。\n\
-- 直击本质:先给一句话核心(这个概念到底在解决什么问题),再给细节;细节只保留影响理解的部分。\n\
-- 符合认知科学:组块化——把内容组织成 3~5 个要点,每个要点一个概念;先框架后细节;新概念用已有概念类比;对比易混概念时给出明确的判别标准。\n\
-- 控制长度:默认不超过 200 字或 5 个要点;只有用户明确要求展开、或问题确实复杂时才写长。\n\
-- 结构服务理解:能用一个公式说清就不用三段文字;步骤用有序列表;并列要点用无序列表;重要对比用表格。\n\
-- 不确定就说不确定,并指出验证路径;不要编造论文里没有的内容。\n\n",
-    );
-    p.push_str(&format!("- Vault: {}\n", vault_name));
-    if let Some(note) = current_note {
-        p.push_str(&format!("- Current note: {}\n", note));
-    }
-    match study {
-        Some(StudyContent::Pdf { path, title }) => {
-            p.push_str(&format!("- Study content: PDF \"{}\" at {}\n", title, path));
-        }
-        Some(StudyContent::Url { url, title }) => {
-            p.push_str(&format!("- Study content: web page \"{}\" at {}\n", title, url));
-        }
-        Some(StudyContent::Code { path, title }) => {
-            p.push_str(&format!("- Study content: code project \"{}\" at {}\n", title, path));
-        }
-        None => {}
-    }
-    let user = user_instructions.trim();
-    if !user.is_empty() {
-        p.push_str("\n## 用户自定义指令(.bnote/AGENTS.md)\n\n");
-        p.push_str(user);
-        p.push_str("\n");
-    }
-    p
+/// Builds one session of the given mode from the effective definition.
+/// Shared by `agent_start_session` (the id is assigned there).
+pub struct SessionSeed {
+    pub id: String,
+    pub mode: SessionMode,
+    pub def: Arc<AgentDefinition>,
+    pub vault_name: String,
+    pub current_note: Option<String>,
+    pub mcp_names: Vec<String>,
+    pub user_instructions: String,
+    pub skills: Arc<super::skills::SkillRegistry>,
+    pub mcp: Arc<McpManager>,
+    pub provider: Arc<Provider>,
+    pub ctx: Arc<ToolContext>,
+    pub app: tauri::AppHandle,
+    pub context_window: u64,
 }
 
-/// Builds the system prompt for a creation session.
-///
-/// Layered like the study prompt, but aimed at **general creation**: structure,
-/// narrative, fidelity to the user's material. The concrete shape of the HTML
-/// (structure/style/output path) is not fixed by this prompt — the skill the user
-/// invokes through `/skill-name` decides that. The tool usage rules, the `/` and
-/// `@` conventions, the skill list and the MCP notes are all given here, and are
-/// kept strictly in sync with the tool surface registered in `tool_defs()`.
-pub fn build_creative_prompt(
-    vault_name: &str,
-    current_note: Option<&str>,
-    user_instructions: &str,
-    skills: &[SkillInfo],
-    mcp_tool_names: &[String],
-) -> String {
-    let mut p = String::from(
-        "You are bnote's creation assistant, embedded in a markdown note-taking \
-app. The user curates notes in a vault; you help them create, transform and \
-polish content — essays, blog posts, documentation, and HTML pages derived \
-from those notes. Answer and write in the user's language.\n\n\
-\
-## 沟通方式(必须遵守)\n\n\
-- 结论先行:第一句先给交付物或结论(写完了什么/改了哪里/还差什么),再给必要的解释。不要复述需求、不要寒暄。\n\
-- 简洁:正文默认不超过 200 字;用户要求展开或交付长文时才写长。对话里用 markdown。\n\
-- 忠实汇报:工具失败或文件不存在要如实说明;不确定就说不确定并指出验证路径;不编造没读过的文件内容。\n\n\
-\
-## 创作守则\n\n\
-- 内容优先:动笔前先确认受众、结构与要点;用户已给结构时照做,不自作主张换框架。\n\
-- 忠于素材:改写与扩写忠于原文事实,不擅自增删用户的主张与数据;引用用户笔记时以文件内容为准。\n\
-- 产物落盘:交付的文章/HTML 用 write_file 写进仓库,不要只贴在对话里;写完用 preview_html 推到中栏预览(仅 HTML)。\n\
-- HTML 的结构、样式与产物路径由用户调用的 skill 决定;本提示词不规定 HTML 的具体形态。没有合适 skill 时先问用户要,或按用户明说的要求来。\n\n\
-\
-## 工具\n\n\
-- 优先用专用工具,不用 bash 替代:读文件用 read_file,整篇写用 write_file,局部改用 edit_file;bash 留给确实需要 shell 的场景。\n\
-- 动任何文件前先 read_file;多个相互独立的调用放在同一轮并行发出。\n\
-- preview_html 预览 vault 内的 HTML 文件:先 write_file 保存,再 preview_html 指向该文件。预览是交付的一部分,改完必须刷新预览。\n\
-- 用户消息里的两个约定:\n  - `/skill-name`:用户选择了这个技能,先调用 skill 工具加载它,再严格按其指导行动;列出的技能之外不要猜名字。\n  - `@path/to/file`:用户引用了仓库里的文件,用 read_file 读取它。\n\
-- `mcp__<服务器>__<工具>` 形式的工具来自 MCP 服务器,调用方式与内置工具相同。\n\n",
-    );
-    if skills.is_empty() {
-        p.push_str("## 可用技能\n\n(仓库暂无技能;用户提到 /技能名 时如实告知没有找到。)\n\n");
-    } else {
-        p.push_str("## 可用技能\n\n用户可以用 /技能名 调用,你也可以按描述主动匹配:\n\n");
-        for s in skills {
-            let desc = s.description.trim();
-            p.push_str(&format!("- {}: {}\n", s.name, if desc.is_empty() { "(无描述)" } else { desc }));
-        }
-        p.push('\n');
+pub fn create_session(seed: SessionSeed) -> Session {
+    let workdir_s = seed
+        .ctx
+        .workdir
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let study = seed.ctx.study_content.read().ok().and_then(|g| g.clone());
+    let input = AssembleInput {
+        def: &seed.def,
+        vault_name: &seed.vault_name,
+        current_note: seed.current_note.as_deref(),
+        workdir: workdir_s.as_deref(),
+        vault: seed.ctx.vault.as_deref(),
+        study: study.as_ref(),
+        skills: &seed.skills.skills,
+        mcp_names: &seed.mcp_names,
+        user_instructions: &seed.user_instructions,
+    };
+    Session {
+        id: seed.id,
+        mode: seed.mode,
+        def: seed.def.clone(),
+        items: Mutex::new(Vec::new()),
+        system_prompt: RwLock::new(assemble(&input)),
+        vault_name: seed.vault_name,
+        current_note: seed.current_note,
+        mcp_names: seed.mcp_names,
+        ctx: seed.ctx,
+        skills: seed.skills,
+        mcp: seed.mcp,
+        provider: seed.provider,
+        running: Arc::new(AtomicBool::new(false)),
+        seq: Arc::new(AtomicU64::new(0)),
+        app: seed.app,
+        context_window: seed.context_window,
+        last_usage: Mutex::new(None),
+        todos: Mutex::new(Vec::new()),
+        pending_wakeups: Mutex::new(Vec::new()),
+        self_ref: Mutex::new(None),
     }
-    if mcp_tool_names.is_empty() {
-        p.push_str("## MCP\n\n(未连接 MCP 服务器。)\n\n");
-    } else {
-        p.push_str("## MCP\n\n已连接工具:\n\n");
-        for name in mcp_tool_names {
-            p.push_str(&format!("- {name}\n"));
-        }
-        p.push('\n');
-    }
-    p.push_str(&format!("- Vault: {vault_name}\n"));
-    if let Some(note) = current_note {
-        p.push_str(&format!("- Current note: {note}\n"));
-    }
-    let user = user_instructions.trim();
-    if !user.is_empty() {
-        p.push_str("\n## 用户自定义指令(.bnote/AGENTS.md)\n\n");
-        p.push_str(user);
-        p.push_str("\n");
-    }
-    p
 }
 
 #[cfg(test)]
@@ -388,64 +933,27 @@ mod tests {
     }
 
     #[test]
-    fn fixed_requirements_precede_the_custom_instructions_and_an_empty_section_is_omitted() {
-        let base = build_study_prompt("vault", None, None, "");
-        assert!(base.contains("结论先行"));
-        assert!(!base.contains(".bnote/AGENTS.md"));
-
-        let with_user = build_study_prompt("vault", None, None, "  多用表格回答。 \n");
-        let custom = with_user.find("多用表格回答。").unwrap();
-        let fixed = with_user.find("结论先行").unwrap();
-        assert!(fixed < custom, "custom instructions must follow the fixed requirements");
-    }
-
-    #[test]
-    fn the_qa_only_prompt_contains_no_tool_instructions() {
-        // Historical defect: the prompt demanded "call read_study_content before
-        // answering" and, on top of that, registered all built-in and MCP tools
-        // in the request, so every question triggered a tool call. The study
-        // assistant is pure Q&A; this invariant locks that in: no tool name and
-        // no loading instruction may appear in the prompt.
-        let study = StudyContent::Pdf {
-            path: "/tmp/paper.pdf".into(),
-            title: "paper".into(),
-        };
-        let p = build_study_prompt("vault", Some("notes/a.md"), Some(&study), "");
-        assert!(!p.contains("tool"), "the prompt must not instruct tool calls:\n{}", p);
-        assert!(!p.contains("read_study_content"));
-        assert!(!p.contains("skill"));
-        assert!(!p.contains("mcp__"));
-        assert!(!p.contains("MCP"));
-    }
-
-    #[test]
-    fn the_creative_prompt_has_the_skill_and_instruction_sections_with_a_fallback() {
-        let p = build_creative_prompt("vault", Some("notes/a.md"), "", &[], &[]);
-        // The / and @ conventions must be present: the front end completion only
-        // inserts text, the semantics live entirely in the prompt.
-        assert!(p.contains("/skill-name"));
-        assert!(p.contains("@path/to/file"));
-        assert!(p.contains("preview_html"));
-        assert!(!p.contains("## 用户自定义指令(.bnote/AGENTS.md)"), "absent for empty input");
-        assert!(p.contains("仓库暂无技能"));
-        assert!(p.contains("未连接 MCP 服务器"));
-
-        let skills = vec![SkillInfo {
-            name: "html-blog".into(),
-            description: "把 markdown 排版成博客 HTML".into(),
-            path: "/x/SKILL.md".into(),
-        }];
-        let p = build_creative_prompt(
-            "vault",
-            None,
-            "多用表格",
-            &skills,
-            &["mcp__volcano__shell".to_string()],
+    fn mode_parse_accepts_the_three_shapes_and_rejects_the_rest() {
+        assert_eq!(SessionMode::parse(None), Ok(SessionMode::Study));
+        assert_eq!(SessionMode::parse(Some("")), Ok(SessionMode::Study));
+        assert_eq!(
+            SessionMode::parse(Some("creative")),
+            Ok(SessionMode::Creative)
         );
-        assert!(p.contains("- html-blog: 把 markdown 排版成博客 HTML"));
-        assert!(p.contains("- mcp__volcano__shell"));
-        let custom = p.find("多用表格").unwrap();
-        let tools = p.find("## 工具").unwrap();
-        assert!(tools < custom, "the custom instructions must be appended after the tool rules");
+        assert_eq!(SessionMode::parse(Some("coding")), Ok(SessionMode::Coding));
+        assert!(SessionMode::parse(Some("agent")).is_err());
+        assert_eq!(SessionMode::Coding.definition_id(), "coding");
+    }
+
+    #[test]
+    fn strip_analysis_removes_the_drafting_block_and_keeps_the_summary() {
+        let text =
+            "<analysis>\nthinking...\n</analysis>\n\n1. Primary Request and Intent:\nbuild it\n";
+        assert_eq!(
+            strip_analysis(text),
+            "1. Primary Request and Intent:\nbuild it"
+        );
+        assert_eq!(strip_analysis("no tags here"), "no tags here");
+        assert_eq!(strip_analysis("  spaced  "), "spaced");
     }
 }

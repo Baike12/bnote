@@ -7,12 +7,21 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Content {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     /// Image attachment in a user message (base64, cropped by the front end).
     /// The provider maps it to the format of each protocol: Anthropic
     /// (base64 source) / OpenAI (data URL).
-    Image { media_type: String, data: String },
-    ToolUse { id: String, name: String, input: Value },
+    Image {
+        media_type: String,
+        data: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     /// Tool result. `images` are the rendered screenshots sent back to the model
     /// with the result (currently only preview_html); older session records have
     /// no such field, so deserialization fills an empty one.
@@ -45,7 +54,9 @@ impl ChatItem {
     pub fn user_text(text: &str) -> ChatItem {
         ChatItem::Message {
             role: "user".into(),
-            content: vec![Content::Text { text: text.to_string() }],
+            content: vec![Content::Text {
+                text: text.to_string(),
+            }],
         }
     }
 
@@ -55,7 +66,9 @@ impl ChatItem {
     pub fn user_message(text: &str, images: &[InlineImage]) -> ChatItem {
         let mut content = Vec::new();
         if !text.is_empty() {
-            content.push(Content::Text { text: text.to_string() });
+            content.push(Content::Text {
+                text: text.to_string(),
+            });
         }
         for img in images {
             content.push(Content::Image {
@@ -93,7 +106,11 @@ pub enum AgentEvent {
     /// the thinking block back would require a signature check for no gain.
     ThinkingDelta { text: String },
     /// A tool call begins.
-    ToolStart { id: String, name: String, input: Value },
+    ToolStart {
+        id: String,
+        name: String,
+        input: Value,
+    },
     /// A tool finished. `images` are the screenshots handed to the model with the
     /// result (e.g. the preview render); the front end uses them for display
     /// only. The field is omitted when empty to avoid per-tool-event overhead.
@@ -110,6 +127,13 @@ pub enum AgentEvent {
     /// carries stream_options. The front end keeps only the latest one: it is
     /// the context occupancy of the current session.
     Usage { input: u64, output: u64 },
+    /// A system-level notice the panel renders as a dim status line:
+    /// compaction happened, a subagent started/finished, a background task
+    /// completed. Never enters the session history.
+    Notice { text: String },
+    /// The todo tool's list after a `todo` call (the panel's rendering source;
+    /// the tool result text is only the one-line summary).
+    Todos { todos: Vec<super::todo::TodoItem> },
     /// A full turn (model response + tool runs) completed. `items` = the current
     /// number of session history entries (the authoritative count; the front end
     /// truncates by it when forking a helper session instead of guessing).
@@ -147,8 +171,14 @@ mod tests {
         let item = ChatItem::user_message(
             "这张图里是什么公式?",
             &[
-                InlineImage { media_type: "image/png".into(), data: "AAAA".into() },
-                InlineImage { media_type: "image/jpeg".into(), data: "BBBB".into() },
+                InlineImage {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                },
+                InlineImage {
+                    media_type: "image/jpeg".into(),
+                    data: "BBBB".into(),
+                },
             ],
         );
         let ChatItem::Message { role, content } = item else {
@@ -157,8 +187,12 @@ mod tests {
         assert_eq!(role, "user");
         assert_eq!(content.len(), 3);
         assert!(matches!(&content[0], Content::Text { text } if text.contains("公式")));
-        assert!(matches!(&content[1], Content::Image { media_type, .. } if media_type == "image/png"));
-        assert!(matches!(&content[2], Content::Image { media_type, .. } if media_type == "image/jpeg"));
+        assert!(
+            matches!(&content[1], Content::Image { media_type, .. } if media_type == "image/png")
+        );
+        assert!(
+            matches!(&content[2], Content::Image { media_type, .. } if media_type == "image/jpeg")
+        );
     }
 
     #[test]
@@ -167,7 +201,10 @@ mod tests {
         // an image-only message may only contain image blocks.
         let item = ChatItem::user_message(
             "",
-            &[InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
+            &[InlineImage {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
         );
         let ChatItem::Message { content, .. } = item else {
             panic!("expected a Message");
@@ -193,7 +230,12 @@ mod tests {
             r#"{"type":"tool_result","tool_use_id":"t1","content":"ok","is_error":false}"#,
         )
         .unwrap();
-        let Content::ToolResult { tool_use_id, images, .. } = content else {
+        let Content::ToolResult {
+            tool_use_id,
+            images,
+            ..
+        } = content
+        else {
             panic!("expected a ToolResult");
         };
         assert_eq!(tool_use_id, "t1");
@@ -206,7 +248,10 @@ mod tests {
             tool_use_id: "t1".into(),
             content: "preview updated".into(),
             is_error: false,
-            images: vec![InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
+            images: vec![InlineImage {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
         };
         let v = serde_json::to_value(&with_img).unwrap();
         assert_eq!(v["images"][0]["mediaType"], "image/png");
@@ -218,6 +263,9 @@ mod tests {
             images: vec![],
         };
         let v = serde_json::to_value(&plain).unwrap();
-        assert!(v.get("images").is_none(), "an empty images list must not be serialized");
+        assert!(
+            v.get("images").is_none(),
+            "an empty images list must not be serialized"
+        );
     }
 }

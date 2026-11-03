@@ -77,8 +77,7 @@ fn install_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     let quit = MenuItemBuilder::with_id(MENU_QUIT, format!("Quit {}", pkg.name)).build(app)?;
     let hide = MenuItemBuilder::with_id(MENU_HIDE, format!("Hide {}", pkg.name)).build(app)?;
     let minimize = MenuItemBuilder::with_id(MENU_MINIMIZE, "Minimize").build(app)?;
-    let fullscreen =
-        MenuItemBuilder::with_id(MENU_FULLSCREEN, "Toggle Full Screen").build(app)?;
+    let fullscreen = MenuItemBuilder::with_id(MENU_FULLSCREEN, "Toggle Full Screen").build(app)?;
 
     let app_menu = SubmenuBuilder::new(app, pkg.name.clone())
         .about(Some(about))
@@ -241,6 +240,12 @@ pub fn run() {
             commands::agent::agent_set_current_note,
             commands::agent::agent_list_skills,
             commands::agent::agent_generate_title,
+            commands::agent::agent_list_definitions,
+            commands::agent::agent_get_definition,
+            commands::agent::agent_save_definition,
+            commands::agent::agent_delete_definition,
+            commands::agent::agent_compact,
+            commands::agent::agent_assemble_preview,
             commands::bblog::bblog_sections,
             commands::bblog::bblog_publish,
             commands::materials::study_material_ensure,

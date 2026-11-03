@@ -39,7 +39,9 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
-use crate::commands::{agent, code, config, files, focus, materials, python, term, translate, vault};
+use crate::commands::{
+    agent, code, config, files, focus, materials, python, term, translate, vault,
+};
 use crate::state::AppState;
 
 /// Fixed port; `vite.config.ts` proxies `/__dev` here.
@@ -60,7 +62,10 @@ pub fn spawn(app: AppHandle) {
                 return;
             }
         };
-        eprintln!("[bnote] devbridge: http://127.0.0.1:{} (browser preview)", PORT);
+        eprintln!(
+            "[bnote] devbridge: http://127.0.0.1:{} (browser preview)",
+            PORT
+        );
         for conn in listener.incoming() {
             let Ok(stream) = conn else { continue };
             let app = app.clone();
@@ -188,7 +193,12 @@ fn invoke(app: &AppHandle, stream: &TcpStream, body: &[u8]) {
     let args = parsed.get("args").cloned().unwrap_or(Value::Null);
 
     match tauri::async_runtime::block_on(dispatch(app, cmd, &args)) {
-        Ok(value) => respond(stream, "200 OK", "application/json", value.to_string().as_bytes()),
+        Ok(value) => respond(
+            stream,
+            "200 OK",
+            "application/json",
+            value.to_string().as_bytes(),
+        ),
         Err(e) => respond(stream, "400 Bad Request", "text/plain", e.as_bytes()),
     }
 }
@@ -404,6 +414,33 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             app.state(),
             arg_opt_str(args, "path")
         )),
+        "agent_list_definitions" => json_ok!(agent::agent_list_definitions(app.state()).await),
+        "agent_get_definition" => {
+            json_ok!(agent::agent_get_definition(app.state(), arg_str(args, "id")?).await)
+        }
+        "agent_save_definition" => {
+            let definition = serde_json::from_value(arg_value(args, "definition")?)
+                .map_err(|e| format!("BAD_ARGS: definition: {}", e))?;
+            json_ok!(agent::agent_save_definition(app.state(), definition).await)
+        }
+        "agent_delete_definition" => {
+            json_ok!(agent::agent_delete_definition(app.state(), arg_str(args, "id")?).await)
+        }
+        "agent_compact" => {
+            json_ok!(agent::agent_compact(app.state(), arg_str(args, "sessionId")?).await)
+        }
+        "agent_assemble_preview" => {
+            let definition = serde_json::from_value(arg_value(args, "definition")?)
+                .map_err(|e| format!("BAD_ARGS: definition: {}", e))?;
+            let workdir: Option<String> = match args.get("workdir") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: workdir: {}", e))?,
+                ),
+            };
+            json_ok!(agent::agent_assemble_preview(app.state(), definition, workdir).await)
+        }
 
         // ---- translate ----
         "translate_get_config" => json_ok!(translate::translate_get_config(app.state()).await),
@@ -704,12 +741,14 @@ fn asset(app: &AppHandle, stream: &TcpStream, query: &str) {
         .code_trees
         .lock()
         .map(|trees| {
-            trees
-                .keys()
-                .any(|root| crate::commands::ensure_within(std::path::Path::new(root), &path).is_ok())
+            trees.keys().any(|root| {
+                crate::commands::ensure_within(std::path::Path::new(root), &path).is_ok()
+            })
         })
         .unwrap_or(false);
-    let allowed = state.vault().map(|v| crate::commands::ensure_within(&v, &path).is_ok())
+    let allowed = state
+        .vault()
+        .map(|v| crate::commands::ensure_within(&v, &path).is_ok())
         == Some(true)
         || crate::commands::ensure_within(&state.data_dir(), &path).is_ok()
         || in_code_project;

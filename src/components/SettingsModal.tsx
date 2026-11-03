@@ -34,6 +34,7 @@ import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
 import { inputGuards } from "@/lib/inputGuards";
 import { FolderSuggest } from "@/components/FolderSuggest";
 import { CodeArea } from "@/components/CodeArea";
+import { AgentDefinitionsTab } from "./AgentDefinitionsTab";
 import {
   normalizeTemplateDir,
   templateFiles,
@@ -62,6 +63,7 @@ type Tab =
   | "quickadd"
   | "translate"
   | "agent-model"
+  | "agent-agents"
   | "agent-mcp"
   | "agent-skills"
   | "agent-instructions";
@@ -102,6 +104,7 @@ const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
     label: "Agent",
     items: [
       { id: "agent-model", label: "模型" },
+      { id: "agent-agents", label: "Agent 定义" },
       { id: "agent-mcp", label: "MCP" },
       { id: "agent-skills", label: "技能" },
       { id: "agent-instructions", label: "AGENTS.md" },
@@ -173,6 +176,7 @@ export function SettingsModal() {
           {tab === "quickadd" && <QuickAddTab />}
           {tab === "translate" && <TranslateTab />}
           {tab === "agent-model" && <AgentModelTab />}
+          {tab === "agent-agents" && <AgentDefinitionsTab />}
           {tab === "agent-mcp" && <AgentMcpTab />}
           {tab === "agent-skills" && <AgentSkillsTab />}
           {tab === "agent-instructions" && <AgentInstructionsTab />}

@@ -45,6 +45,10 @@ scraper = "0.20"
 pinyin_pro = "3.29.4"
 ego-tree = "0.6"
 ignore = "0.4"
+# 编码 agent 的 glob / grep 工具。两者都已在依赖树里编译(ignore→globset、
+# scraper→regex),声明为直接依赖只是引用,不新增构建产物。
+globset = "0.4"
+regex = "1"
 
 # 代码面板底部的集成终端(src/term):需要真 PTY,管道式的 tokio::process 给不了
 # 作业控制、行编辑和光标控制。仿真在前端的 xterm.js,Rust 只负责会话与字节流。

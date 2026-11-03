@@ -112,6 +112,57 @@ export interface SessionInfo {
   mcpErrors: string[];
   /** The model config actually used by this session (changing the settings does not affect an open session). */
   model?: SessionModelConfig;
+  /** The agent definition the session runs with (id/name shown in the panel). */
+  definition?: { id: string; name: string; description: string; tools: string[] };
+  /** Definition files that failed to parse (shown once per session start). */
+  defErrors?: { id: string; message: string }[];
+}
+
+/** An agent definition (frontmatter + body, authored in `.bnote/agents/<id>.md`). */
+export interface AgentDefinition {
+  id: string;
+  name: string;
+  description: string;
+  body: string;
+  /** null = the key is absent in the file → the general default toolset. */
+  tools: string[] | null;
+  permissions: Record<string, "allow" | "deny">;
+  compaction: { enabled: boolean; threshold: number };
+  subagents: string[];
+  prompt_layers: { file: string; order: number }[];
+  model: string;
+  max_tokens: number;
+  max_turns: number;
+}
+
+export interface DefError {
+  id: string;
+  message: string;
+}
+
+export interface DefinitionListItem {
+  id: string;
+  name: string;
+  description: string;
+  source: "builtin" | "user";
+  tools: string[];
+}
+
+export interface DefinitionDetail {
+  source: "builtin" | "user";
+  file: string | null;
+  content: string;
+  definition: AgentDefinition;
+  parseError: string | null;
+}
+
+/** One assembled prompt segment (the definition editor's preview). */
+export interface PromptSegment {
+  order: number;
+  name: string;
+  content: string;
+  dynamic: boolean;
+  loaded: boolean;
 }
 
 /** The session-level model config snapshot (written into the first line of the session record; a restored session continues with it). */
@@ -141,8 +192,19 @@ export type AgentEvent =
   | { type: "tool_end"; id: string; ok: boolean; output: string; images?: AgentImage[] }
   /** The token usage of one model request; only the latest one is kept = the current context occupancy. */
   | { type: "usage"; input: number; output: number }
+  /** A dim status line: compaction, subagent start/finish, background task done. Never enters the history. */
+  | { type: "notice"; text: string }
+  /** The todo tool's list after a `todo` call (the rendering source). */
+  | { type: "todos"; todos: AgentTodoItem[] }
   | { type: "turn_end"; reason: string; items: number }
   | { type: "error"; message: string; items: number };
+
+/** One item of the todo tool's list (Claude Code's TodoWrite schema). */
+export interface AgentTodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  active_form: string;
+}
 
 /** A PDF imported into the vault (`<vault>/pdfs/<stem>.pdf`). */
 export interface ImportedPdf {
@@ -314,10 +376,23 @@ export const agentApi = {
     history?: AgentChatItem[],
     /** Restore/fork: keep the model config of the source session; when omitted, the currently saved config is used. */
     model?: SessionModelConfig,
-    /** "creative" = creative mode (with tools/skill/MCP); omitted = study mode, plain question answering only. */
-    mode?: "study" | "creative",
+    /** "creative" = creative mode (with tools/skill/MCP); "coding" = the code-project agent; omitted = study mode, plain question answering only. */
+    mode?: "study" | "creative" | "coding",
   ) =>
     invoke<SessionInfo>("agent_start_session", { study, fork, history, model, mode }),
+  /** Agent definitions: built-ins + `<vault>/.bnote/agents/*.md` (with parse errors). */
+  listDefinitions: () =>
+    invoke<{ definitions: DefinitionListItem[]; errors: DefError[] }>("agent_list_definitions"),
+  getDefinition: (id: string) => invoke<DefinitionDetail>("agent_get_definition", { id }),
+  /** Serializes the definition through the canonical writer into `.bnote/agents/<id>.md`. */
+  saveDefinition: (definition: AgentDefinition) =>
+    invoke<string>("agent_save_definition", { definition }),
+  deleteDefinition: (id: string) => invoke<void>("agent_delete_definition", { id }),
+  /** Dry-runs the assembly pipeline for the definition editor's preview. */
+  assemblePreview: (definition: AgentDefinition, workdir?: string) =>
+    invoke<PromptSegment[]>("agent_assemble_preview", { definition, workdir }),
+  /** Manual compaction (/compact): replaces the session history with a summary. */
+  compact: (sessionId: string) => invoke<void>("agent_compact", { sessionId }),
   /** The list of skills currently available on disk (settings page and input field / completion). */
   listSkills: () => invoke<SkillInfo[]>("agent_list_skills"),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>

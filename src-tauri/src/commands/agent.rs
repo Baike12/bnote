@@ -1,13 +1,17 @@
-//! Study-mode commands: agent sessions, config, and PDF→markdown conversion.
+//! Study-mode commands: agent sessions, definitions, config, and PDF→markdown
+//! conversion.
 
 use super::pen_cursor;
 use super::CmdResult;
+use crate::agent::defs::{self, AgentDefinition};
 use crate::agent::mcp::McpManager;
-use crate::agent::session::{build_study_prompt, Session, SessionRegistry};
+use crate::agent::session::{create_session, SessionMode, SessionSeed};
+use crate::agent::shell::{BgRegistry, ShellCwd};
 use crate::agent::skills::SkillRegistry;
 use crate::agent::tools::{StudyContent, ToolContext};
 use crate::agent::Provider;
 use crate::state::AppState;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -81,25 +85,9 @@ impl AgentModelChoice {
     }
 }
 
-/// Custom instructions stored in the vault, analogous to ZCode's AGENTS.md or
-/// Claude Code's CLAUDE.md.
-///
-/// Reads `.bnote/AGENTS.md`; the legacy file name `.bnote/agent.md` is the
-/// fallback (no automatic rename -- it only becomes AGENTS.md when the user
-/// saves from the settings page). A missing file yields an empty string, and
-/// the section is then omitted from the prompt.
-fn load_user_instructions(state: &AppState) -> String {
-    let dot = state
-        .vault()
-        .map(|v| v.join(".bnote"))
-        .unwrap_or_default();
-    for name in ["AGENTS.md", "agent.md"] {
-        if let Ok(content) = std::fs::read_to_string(dot.join(name)) {
-            return content;
-        }
-    }
-    String::new()
-}
+/// Custom instructions moved to `crate::agent::load_user_instructions` (the
+/// session refreshes them dynamically; the command layer only seeds the first
+/// assembly through the same helper).
 
 #[tauri::command]
 pub async fn agent_get_config(state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
@@ -149,14 +137,10 @@ pub async fn agent_start_session(
     // (see AgentModelChoice).
     model: Option<AgentModelChoice>,
     // Session shape: omitted = study mode (plain Q&A); "creative" = creative
-    // mode (tools + skills).
+    // mode (tools + skills); "coding" = the code-project agent.
     mode: Option<String>,
 ) -> CmdResult<serde_json::Value> {
-    let session_mode = match mode.as_deref() {
-        None | Some("") | Some("study") => crate::agent::session::SessionMode::Study,
-        Some("creative") => crate::agent::session::SessionMode::Creative,
-        other => return Err(format!("INVALID_MODE: 未知的会话模式 {other:?}")),
-    };
+    let session_mode = SessionMode::parse(mode.as_deref())?;
     let mut cfg = crate::agent::AgentConfig::load(&state.data_dir());
     if let Some(choice) = model {
         choice.apply(&mut cfg);
@@ -164,11 +148,31 @@ pub async fn agent_start_session(
     if cfg.api_key.is_empty() {
         return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
     }
-    let mcp = ensure_mcp(&state).await?;
-    let skills = {
-        let vault = state.vault();
-        SkillRegistry::discover(&state.data_dir(), vault.as_ref(), &cfg.skill_dirs)
+    // The effective definition: built-ins + user files, with the seed history
+    // (restore/fork) carried over unchanged.
+    let vault = state.vault();
+    let (defs, def_errors) = defs::load_definitions(vault.as_deref());
+    let def_id = session_mode.definition_id();
+    let def = Arc::new(
+        defs.into_iter()
+            .find(|d| d.id == def_id)
+            .ok_or_else(|| format!("DEF_MISSING: agent 定义 {} 不存在", def_id))?,
+    );
+    // Only MCP-enabled sessions pay for connecting servers.
+    let mcp = if def.mcp_enabled() {
+        ensure_mcp(&state).await?
+    } else {
+        Arc::new(McpManager {
+            connections: Default::default(),
+            tools: Vec::new(),
+            errors: Vec::new(),
+        })
     };
+    let skills = Arc::new(SkillRegistry::discover(
+        &state.data_dir(),
+        vault.as_ref(),
+        &cfg.skill_dirs,
+    ));
 
     let provider = Arc::new(Provider::new(
         &cfg.provider,
@@ -200,43 +204,28 @@ pub async fn agent_start_session(
         }
     };
 
-    // Read MCP errors for the UI; the system prompt stays tool-free.
-    let vault_name = state
-        .vault()
+    let vault_name = vault
+        .as_ref()
         .and_then(|v| v.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_default();
-    let current_note = state
-        .current_note
-        .lock()
-        .ok()
-        .and_then(|n| n.clone());
-    let user_instructions = load_user_instructions(&state);
-    let system_prompt = match session_mode {
-        crate::agent::session::SessionMode::Study => build_study_prompt(
-            &vault_name,
-            current_note.as_deref(),
-            study.as_ref(),
-            &user_instructions,
-        ),
-        crate::agent::session::SessionMode::Creative => {
-            let mcp_names: Vec<String> = mcp.tools.iter().map(|t| t.name.clone()).collect();
-            crate::agent::session::build_creative_prompt(
-                &vault_name,
-                current_note.as_deref(),
-                &user_instructions,
-                &skills.skills,
-                &mcp_names,
-            )
-        }
+    let current_note = state.current_note.lock().ok().and_then(|n| n.clone());
+    let mcp_names: Vec<String> = mcp.tools.iter().map(|t| t.name.clone()).collect();
+    // Coding sessions anchor at the opened code project: relative tool paths
+    // and bash start there, writes are confined to vault ∪ project.
+    let workdir = match (session_mode, study.as_ref()) {
+        (SessionMode::Coding, Some(StudyContent::Code { path, .. })) => Some(PathBuf::from(path)),
+        _ => None,
     };
-
     let ctx = Arc::new(ToolContext {
-        vault: state.vault(),
+        vault: vault.clone(),
         data_dir: state.data_dir(),
         study_content: Arc::new(std::sync::RwLock::new(study)),
         abort: Arc::new(AtomicBool::new(false)),
         app: Some(app.clone()),
         preview_seq: std::sync::atomic::AtomicU64::new(0),
+        workdir,
+        shell: Arc::new(ShellCwd::new()),
+        bg: Arc::new(BgRegistry::new()),
     });
 
     // Timestamp + increasing sequence number: opening the main session and
@@ -251,23 +240,34 @@ pub async fn agent_start_session(
             .unwrap_or(0),
         seq
     );
-    let session = Arc::new(Session {
+    let session = Arc::new(create_session(SessionSeed {
         id: id.clone(),
         mode: session_mode,
-        items: Mutex::new(seed_items),
-        system_prompt,
-        ctx,
-        skills: Arc::new(skills),
+        def: def.clone(),
+        vault_name,
+        current_note,
+        mcp_names,
+        user_instructions: crate::agent::load_user_instructions(vault.as_deref()),
+        skills,
         mcp: mcp.clone(),
         provider,
-        running: Arc::new(AtomicBool::new(false)),
-        seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        ctx,
         app: app.clone(),
-    });
-
+        context_window: cfg.context_window,
+    }));
     {
         let mut registry = state.sessions.lock().map_err(|e| e.to_string())?;
         registry.insert(id.clone(), session.clone());
+    }
+    // The self weak-reference powers the background-task wakeup path.
+    if let Ok(mut slot) = session.self_ref.lock() {
+        *slot = Some(Arc::downgrade(&session));
+    }
+    // Restore/fork seeds enter the history after construction.
+    if !seed_items.is_empty() {
+        if let Ok(mut items) = session.items.lock() {
+            *items = seed_items;
+        }
     }
 
     Ok(serde_json::json!({
@@ -275,6 +275,13 @@ pub async fn agent_start_session(
         "skills": session.skills.skills,
         "mcpTools": mcp.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
         "mcpErrors": mcp.errors.clone(),
+        "definition": {
+            "id": def.id,
+            "name": def.display_name(),
+            "description": def.description.clone(),
+            "tools": def.effective_tools(),
+        },
+        "defErrors": def_errors,
         // The model configuration this session actually uses: the frontend
         // footnote shows it, and the session record writes it into its
         // metadata line so a restore continues from the snapshot (decoupled
@@ -341,12 +348,231 @@ pub async fn agent_generate_title(
 /// Skill inventory for the settings page and the input box's `/` completion
 /// (discovered on every call, so it reflects what is actually on disk).
 #[tauri::command]
-pub async fn agent_list_skills(state: State<'_, AppState>) -> CmdResult<Vec<crate::agent::skills::SkillInfo>> {
+pub async fn agent_list_skills(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<crate::agent::skills::SkillInfo>> {
     let cfg = crate::agent::AgentConfig::load(&state.data_dir());
     let dir = state.data_dir();
     let vault = state.vault();
     tauri::async_runtime::spawn_blocking(move || {
         Ok(SkillRegistry::discover(&dir, vault.as_ref(), &cfg.skill_dirs).skills)
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+// ---------------------------------------------------------------------------
+// Agent definitions: the plugin surface (list / read / write / delete) plus
+// the compaction entry and the assembly preview.
+// ---------------------------------------------------------------------------
+
+/// Definition ids are file names: restrict them to the safe subset up front so
+/// `<vault>/.bnote/agents/<id>.md` can never traverse.
+fn valid_def_id(id: &str) -> Result<(), String> {
+    let ok = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if ok {
+        Ok(())
+    } else {
+        Err("INVALID_ID: id 只能包含字母/数字/-/_,且不超过 64 字符".into())
+    }
+}
+
+fn definitions_dir(vault: &Option<PathBuf>) -> Result<PathBuf, String> {
+    vault
+        .as_ref()
+        .map(|v| v.join(".bnote").join("agents"))
+        .ok_or_else(|| "NO_VAULT: agent 定义保存在仓库的 .bnote/agents/,请先打开仓库".to_string())
+}
+
+/// The definition inventory: built-ins + user files, each tagged with where it
+/// comes from and whether its file failed to parse (a broken file must be
+/// visible and editable, not silently skipped).
+#[tauri::command]
+pub async fn agent_list_definitions(state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (defs, errors) = defs::load_definitions(vault.as_deref());
+        let user_dir = vault.as_ref().map(|v| v.join(".bnote").join("agents"));
+        let list: Vec<serde_json::Value> = defs
+            .iter()
+            .map(|d| {
+                let is_user = user_dir
+                    .as_ref()
+                    .map(|dir| dir.join(format!("{}.md", d.id)).is_file())
+                    .unwrap_or(false);
+                serde_json::json!({
+                    "id": d.id,
+                    "name": d.display_name(),
+                    "description": d.description,
+                    "source": if is_user { "user" } else { "builtin" },
+                    "tools": d.effective_tools(),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "definitions": list, "errors": errors }))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// One definition with its file content. Built-ins serialize through the
+/// canonical writer so the settings page always shows a load-bearing form.
+#[tauri::command]
+pub async fn agent_get_definition(
+    state: State<'_, AppState>,
+    id: String,
+) -> CmdResult<serde_json::Value> {
+    valid_def_id(&id)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (defs, errors) = defs::load_definitions(vault.as_deref());
+        let def = defs
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| format!("DEF_NOT_FOUND: {}", id))?;
+        let user_file = vault
+            .as_ref()
+            .map(|v| v.join(".bnote").join("agents").join(format!("{}.md", id)));
+        let parse_error = errors
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.message.clone());
+        Ok(match user_file {
+            Some(path) if path.is_file() => {
+                let content =
+                    std::fs::read_to_string(&path).map_err(|e| format!("READ_FAILED: {}", e))?;
+                serde_json::json!({
+                    "source": "user",
+                    "file": path.display().to_string(),
+                    "content": content,
+                    "definition": def,
+                    "parseError": parse_error,
+                })
+            }
+            _ => serde_json::json!({
+                "source": "builtin",
+                "file": null,
+                "content": defs::serialize_definition(def),
+                "definition": def,
+                "parseError": parse_error,
+            }),
+        })
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Writes (creating if needed) `<vault>/.bnote/agents/<id>.md` from the
+/// definition. The canonical serializer runs here so the file on disk and the
+/// parser can never drift.
+#[tauri::command]
+pub async fn agent_save_definition(
+    state: State<'_, AppState>,
+    definition: AgentDefinition,
+) -> CmdResult<String> {
+    valid_def_id(&definition.id)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = definitions_dir(&vault)?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("WRITE_FAILED: {}", e))?;
+        let path = dir.join(format!("{}.md", definition.id));
+        std::fs::write(&path, defs::serialize_definition(&definition))
+            .map_err(|e| format!("WRITE_FAILED: {}", e))?;
+        Ok(path.display().to_string())
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Deletes a user definition file. Built-ins have no file: deleting one is a
+/// NO_VAULT/NOT_FOUND, not a silent success.
+#[tauri::command]
+pub async fn agent_delete_definition(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    valid_def_id(&id)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = definitions_dir(&vault)?;
+        let path = dir.join(format!("{}.md", id));
+        if !path.is_file() {
+            return Err(format!(
+                "DEF_NOT_FOUND: {} 没有用户定义文件(内置定义不可删除)",
+                id
+            ));
+        }
+        std::fs::remove_file(&path).map_err(|e| format!("DELETE_FAILED: {}", e))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Manual compaction (/compact). Same claim protocol as agent_send: the CAS
+/// keeps two compactions from racing a running turn.
+#[tauri::command]
+pub async fn agent_compact(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
+    let session = {
+        let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+        registry
+            .get(&session_id)
+            .cloned()
+            .ok_or("SESSION_NOT_FOUND".to_string())?
+    };
+    if session
+        .running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("SESSION_BUSY: 还有回复在生成".into());
+    }
+    tauri::async_runtime::spawn(async move {
+        use futures::FutureExt;
+        let turn = std::panic::AssertUnwindSafe(session.run_compact());
+        if turn.catch_unwind().await.is_err() {
+            session.emit(crate::agent::types::AgentEvent::Error {
+                message: "压缩失败,本轮已中止(可重试)".into(),
+                items: session.history().len(),
+            });
+        }
+    });
+    Ok(())
+}
+
+/// Dry-runs the assembly pipeline for the definition editor's preview: the
+/// ordered segments with their content, plus a flag per layer on whether its
+/// file actually loaded. No session is created.
+#[tauri::command]
+pub async fn agent_assemble_preview(
+    state: State<'_, AppState>,
+    definition: AgentDefinition,
+    workdir: Option<String>,
+) -> CmdResult<Vec<crate::agent::prompt::PromptSegment>> {
+    let vault = state.vault();
+    let data_dir = state.data_dir();
+    let cfg = crate::agent::AgentConfig::load(&data_dir);
+    let current_note = state.current_note.lock().ok().and_then(|n| n.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let skills = SkillRegistry::discover(&data_dir, vault.as_ref(), &cfg.skill_dirs);
+        let vault_name = vault
+            .as_ref()
+            .and_then(|v| v.file_name().map(|s| s.to_string_lossy().to_string()))
+            .unwrap_or_default();
+        let user = crate::agent::load_user_instructions(vault.as_deref());
+        let input = crate::agent::prompt::AssembleInput {
+            def: &definition,
+            vault_name: &vault_name,
+            current_note: current_note.as_deref(),
+            workdir: workdir.as_deref(),
+            vault: vault.as_deref(),
+            study: None,
+            skills: &skills.skills,
+            mcp_names: &[],
+            user_instructions: &user,
+        };
+        Ok(crate::agent::prompt::segments(&input))
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
@@ -406,7 +632,10 @@ pub async fn agent_send(
 pub fn agent_abort(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
     let registry = state.sessions.lock().map_err(|e| e.to_string())?;
     if let Some(session) = registry.get(&session_id) {
-        session.ctx.abort.store(true, std::sync::atomic::Ordering::SeqCst);
+        session
+            .ctx
+            .abort
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     Ok(())
 }
@@ -417,9 +646,7 @@ pub fn agent_get_history(
     session_id: String,
 ) -> CmdResult<Vec<crate::agent::types::ChatItem>> {
     let registry = state.sessions.lock().map_err(|e| e.to_string())?;
-    let session = registry
-        .get(&session_id)
-        .ok_or("SESSION_NOT_FOUND")?;
+    let session = registry.get(&session_id).ok_or("SESSION_NOT_FOUND")?;
     Ok(session.history())
 }
 
@@ -827,10 +1054,7 @@ pub fn set_study_preview_read_keys(
 /// document.title, and the title channel above turns it into
 /// `study-preview-key`.
 #[tauri::command]
-pub fn set_study_preview_shortcuts(
-    app: tauri::AppHandle,
-    keys: Vec<String>,
-) -> CmdResult<()> {
+pub fn set_study_preview_shortcuts(app: tauri::AppHandle, keys: Vec<String>) -> CmdResult<()> {
     use tauri::Manager;
     if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
         let list = serde_json::to_string(&keys).unwrap_or_else(|_| "[]".to_string());
@@ -910,7 +1134,11 @@ pub fn set_study_preview_bounds(app: tauri::AppHandle, bounds: PreviewBounds) ->
 pub fn set_study_preview_visible(app: tauri::AppHandle, visible: bool) -> CmdResult<()> {
     use tauri::Manager;
     if let Some(webview) = app.get_webview(STUDY_PREVIEW_LABEL) {
-        let result = if visible { webview.show() } else { webview.hide() };
+        let result = if visible {
+            webview.show()
+        } else {
+            webview.hide()
+        };
         result.map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
         // Right after showing it again the mouse may not be moving, so draw
         // the pen once immediately instead of waiting for the next move.
@@ -1011,10 +1239,7 @@ pub async fn show_creative_preview(
 }
 
 #[tauri::command]
-pub fn set_creative_preview_bounds(
-    app: tauri::AppHandle,
-    bounds: PreviewBounds,
-) -> CmdResult<()> {
+pub fn set_creative_preview_bounds(app: tauri::AppHandle, bounds: PreviewBounds) -> CmdResult<()> {
     use tauri::Manager;
     if let Some(webview) = app.get_webview(CREATIVE_PREVIEW_LABEL) {
         webview
@@ -1028,7 +1253,11 @@ pub fn set_creative_preview_bounds(
 pub fn set_creative_preview_visible(app: tauri::AppHandle, visible: bool) -> CmdResult<()> {
     use tauri::Manager;
     if let Some(webview) = app.get_webview(CREATIVE_PREVIEW_LABEL) {
-        let result = if visible { webview.show() } else { webview.hide() };
+        let result = if visible {
+            webview.show()
+        } else {
+            webview.hide()
+        };
         result.map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;
     }
     Ok(())
@@ -1051,16 +1280,17 @@ pub fn close_creative_preview(app: tauri::AppHandle) -> CmdResult<()> {
 /// is the preview webview's on_page_load (main thread); the only reader is
 /// preview_html (waiting for its own version). Capped at 8: an older version
 /// has no waiter left, so evicting the oldest keeps memory from growing.
-static PREVIEW_SHOTS: std::sync::LazyLock<
-    Mutex<std::collections::HashMap<u64, Vec<u8>>>,
-> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+static PREVIEW_SHOTS: std::sync::LazyLock<Mutex<std::collections::HashMap<u64, Vec<u8>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 static PREVIEW_SHOT_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 fn store_preview_shot(version: u64, png: Vec<u8>) {
     if let Ok(mut shots) = PREVIEW_SHOTS.lock() {
         shots.insert(version, png);
         while shots.len() > 8 {
-            let Some(oldest) = shots.keys().min().copied() else { break };
+            let Some(oldest) = shots.keys().min().copied() else {
+                break;
+            };
             shots.remove(&oldest);
         }
     }
@@ -1156,27 +1386,33 @@ unsafe fn capture_wkwebview_png(wk: *mut objc2_web_kit::WKWebView, version: u64)
     // snapshotWidth is the logical point width: setting it to the view width
     // yields a 1x output (unset would give a Retina 2x).
     unsafe { config.setSnapshotWidth(Some(&NSNumber::new_f64(webview.bounds().size.width))) };
-    let block = block2::RcBlock::new(move |image: *mut objc2_app_kit::NSImage, _error: *mut NSError| {
-        let Some(image) = (unsafe { Retained::retain(image) }) else {
-            return;
-        };
-        autoreleasepool(|_| {
-            // NSImage -> TIFF -> bitmap representation -> PNG data. All three
-            // steps are Options: if any step fails, this version's screenshot
-            // is dropped and preview_html falls back on timeout.
-            let Some(tiff) = image.TIFFRepresentation() else { return };
-            let Some(rep) = NSBitmapImageRep::imageRepWithData(&tiff) else { return };
-            let Some(png) = (unsafe {
-                rep.representationUsingType_properties(
-                    NSBitmapImageFileType::PNG,
-                    &NSDictionary::new(),
-                )
-            }) else {
+    let block = block2::RcBlock::new(
+        move |image: *mut objc2_app_kit::NSImage, _error: *mut NSError| {
+            let Some(image) = (unsafe { Retained::retain(image) }) else {
                 return;
             };
-            store_preview_shot(version, png.to_vec());
-        });
-    });
+            autoreleasepool(|_| {
+                // NSImage -> TIFF -> bitmap representation -> PNG data. All three
+                // steps are Options: if any step fails, this version's screenshot
+                // is dropped and preview_html falls back on timeout.
+                let Some(tiff) = image.TIFFRepresentation() else {
+                    return;
+                };
+                let Some(rep) = NSBitmapImageRep::imageRepWithData(&tiff) else {
+                    return;
+                };
+                let Some(png) = (unsafe {
+                    rep.representationUsingType_properties(
+                        NSBitmapImageFileType::PNG,
+                        &NSDictionary::new(),
+                    )
+                }) else {
+                    return;
+                };
+                store_preview_shot(version, png.to_vec());
+            });
+        },
+    );
     unsafe {
         webview.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block);
     }
@@ -1274,10 +1510,7 @@ mod tests {
         // The user's own pages, directories, non-numeric versions and
         // neighbouring names are not captured
         assert_eq!(preview_version_from_url("file:///tmp/page.html"), None);
-        assert_eq!(
-            preview_version_from_url("file:///tmp/preview-x.html"),
-            None
-        );
+        assert_eq!(preview_version_from_url("file:///tmp/preview-x.html"), None);
         assert_eq!(
             preview_version_from_url("file:///tmp/repreview-3.html"),
             None
@@ -1293,7 +1526,9 @@ mod tests {
         // With no screenshot stored, the timeout returns None (a short timeout
         // keeps the test from dragging on for 4 seconds)
         assert!(
-            wait_preview_shot(987_654, Duration::from_millis(50)).await.is_none(),
+            wait_preview_shot(987_654, Duration::from_millis(50))
+                .await
+                .is_none(),
             "an unknown version must never resolve"
         );
         // Once stored, the waiter gets that version immediately

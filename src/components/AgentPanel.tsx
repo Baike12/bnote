@@ -5,6 +5,7 @@ import {
   agentApi,
   type AgentChatItem,
   type AgentEvent,
+  type AgentTodoItem,
   type MaterialInfo,
   type SavedSessionMeta,
   type SessionModelConfig,
@@ -73,7 +74,7 @@ interface Turn {
 }
 
 interface ChatEntry {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "notice";
   text: string;
   /** The timestamp written into the session record. */
   at: number;
@@ -120,6 +121,8 @@ interface Conv {
   error?: string;
   /** Where the error came from, it decides what the "retry" button does. */
   errorKind?: "start" | "send";
+  /** The todo tool's latest list (rendered above the composer; transient). */
+  todos: AgentTodoItem[];
   /** The MCP connection failures the backend reported at startup (an empty array = everything is fine). */
   mcpErrors: string[];
   /**
@@ -300,7 +303,10 @@ function entryFromLine(line: TranscriptLine): ChatEntry {
 
 /** A UI message turned into a session record line (when forking, the prefix of the parent session is written into the new file). */
 function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
-  return entries.map((e): TranscriptLine =>
+  // Notice entries are display-only status lines, never transcript content.
+  return entries
+    .filter((e) => e.role !== "notice")
+    .map((e): TranscriptLine =>
     e.role === "user"
       ? { type: "user", at: e.at, text: e.text, images: e.images }
       : {
@@ -312,7 +318,7 @@ function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
           tools: e.turn?.tools ?? [],
           error: e.turn?.error,
         },
-  );
+    );
 }
 
 function cloneEntry(e: ChatEntry): ChatEntry {
@@ -465,6 +471,20 @@ export function AgentPanel() {
   useEffect(() => {
     creativeModeRef.current = creativeMode;
   }, [creativeMode]);
+  /**
+   * Which agent definition the session runs with: creative mode wins, a code
+   * project in the middle column gets the coding agent, everything else is
+   * the study assistant. Kept in a ref so startSession (a long-lived
+   * callback) sees the current shape without re-creating it.
+   */
+  const agentModeRef = useRef<"study" | "creative" | "coding">("study");
+  useEffect(() => {
+    agentModeRef.current = creativeMode
+      ? "creative"
+      : studyContent?.kind === "code"
+        ? "coding"
+        : "study";
+  }, [creativeMode, studyContent]);
   /** The completion state of the input box: the skills, the @ file trigger and the selected index. */
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [suggestTrigger, setSuggestTrigger] = useState<SuggestTrigger | null>(null);
@@ -594,7 +614,7 @@ export function AgentPanel() {
           undefined,
           opts?.history,
           opts?.model,
-          creativeModeRef.current ? "creative" : undefined,
+          agentModeRef.current === "study" ? undefined : agentModeRef.current,
         );
         // Dropped when it expired: the content changed in the meantime (a new material / a new session), a new start has taken over.
         if (startTokenRef.current !== token) return;
@@ -739,6 +759,7 @@ export function AgentPanel() {
         sessionFileId: member.id,
         model: null,
         usage: null,
+        todos: [],
       }));
       setConvs(convs);
       turnsRef.current.clear();
@@ -870,6 +891,7 @@ export function AgentPanel() {
         sessionFileId: null,
         model: null,
         usage: null,
+        todos: [],
       };
       setConvs([conv]);
       setActiveKey(conv.key);
@@ -1054,6 +1076,22 @@ export function AgentPanel() {
         }));
         break;
       }
+      case "notice": {
+        // A dim status line (compaction / subagent / background task). It is
+        // display-only: it never reaches the transcript and a restore drops it.
+        updateConv(conv.key, (c) => ({
+          ...c,
+          entries: [
+            ...c.entries,
+            { role: "notice", text: event.text, at: Date.now(), items: null },
+          ],
+        }));
+        break;
+      }
+      case "todos": {
+        updateConv(conv.key, (c) => ({ ...c, todos: event.todos }));
+        break;
+      }
       case "turn_end": {
         commitTurn(conv.key, event.items);
         // The first round succeeded: name the session after its own first message (the local fallback title holds the line until then).
@@ -1165,6 +1203,23 @@ export function AgentPanel() {
     const text = input.trim();
     const conv = activeConv;
     if (!conv || (!text && pendingImages.length === 0)) return;
+    // Manual compaction: a built-in panel command, not a message — the model
+    // never sees "/compact", it sees the summary replace its history.
+    if (text === "/compact") {
+      const sid = conv.sessionId;
+      if (!sid || busyRef.current === sid) return;
+      busyRef.current = sid;
+      setBusySession(sid);
+      setInput("");
+      try {
+        await agentApi.compact(sid);
+      } catch (e) {
+        busyRef.current = null;
+        setBusySession(null);
+        showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      }
+      return;
+    }
     const info = conv.sessionId;
     if (!info) {
       // The session is not up yet: it goes into the persistent error banner as well, not only into a toast that flashes by.
@@ -1263,6 +1318,7 @@ export function AgentPanel() {
         // The auxiliary session reuses the model config of the source session: a fork must not change the model.
         model: src.model,
         usage: null,
+        todos: [],
       };
       setConvs((prev) => [...prev, conv]);
       setActiveKey(conv.key);
@@ -1472,12 +1528,18 @@ export function AgentPanel() {
               </svg>
             </div>
             <p className="agent-welcome-title">
-              {creativeMode ? "创作模式:生成 HTML 会在中栏实时预览" : "问我关于当前 PDF / 网页的问题"}
+              {creativeMode
+                ? "创作模式:生成 HTML 会在中栏实时预览"
+                : studyContent?.kind === "code"
+                  ? "编码模式:我直接读写当前代码项目并运行命令"
+                  : "问我关于当前 PDF / 网页的问题"}
             </p>
             <p className="agent-hint">
               {creativeMode
                 ? "输入 / 调用技能、@ 引用仓库文件;满意后点中栏的「发布」推到 bblog"
-                : "悬停任意消息点「⤷」,可以从那里分叉一条辅助会话"}
+                : studyContent?.kind === "code"
+                  ? "开工前列 todo(/compact 可手动压缩上下文);悬停消息点「⤷」可分叉"
+                  : "悬停任意消息点「⤷」,可以从那里分叉一条辅助会话"}
             </p>
           </div>
         ) : (
@@ -1489,7 +1551,9 @@ export function AgentPanel() {
                 className={`agent-msg-row${entry.role === "user" ? " is-user" : ""}`}
                 key={i}
               >
-                {entry.role === "user" ? (
+                {entry.role === "notice" ? (
+                  <div className="agent-notice">{entry.text}</div>
+                ) : entry.role === "user" ? (
                   <div className="agent-msg agent-msg-user">
                     {entry.images && entry.images.length > 0 && (
                       <div className="agent-msg-images">
@@ -1568,6 +1632,20 @@ export function AgentPanel() {
           })
         )}
       </div>
+      {activeConv && activeConv.todos.length > 0 && (
+        <div className="agent-todos" aria-label="任务清单">
+          {activeConv.todos.map((t) => (
+            <div key={t.content} className={`agent-todo is-${t.status}`}>
+              <span className="agent-todo-mark" aria-hidden="true">
+                {t.status === "completed" ? "✓" : t.status === "in_progress" ? "●" : "○"}
+              </span>
+              <span className="agent-todo-text">
+                {t.status === "in_progress" ? t.active_form : t.content}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="agent-composer">
         {suggestTrigger && suggestItems.length > 0 && (
           <AgentSuggest
@@ -1602,7 +1680,9 @@ export function AgentPanel() {
           placeholder={
             creativeMode
               ? "描述要创作的内容…(输入 / 调技能、@ 引用文件,可粘贴截图)"
-              : "询问当前内容…(可直接粘贴截图)"
+              : studyContent?.kind === "code"
+                ? "描述要改什么…(bash/编辑/测试;/compact 压缩上下文)"
+                : "询问当前内容…(可直接粘贴截图)"
           }
           value={input}
           rows={1}
