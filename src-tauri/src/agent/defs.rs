@@ -14,13 +14,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// Per-tool execution policy. `deny` removes the tool from the session's tool
-/// list (and from the prompt's tool rules); `allow` is the default and only
-/// exists so a hand-written file can be explicit.
+/// Per-tool execution policy, the same three outcomes Claude Code's permission
+/// modes have: `allow` runs the tool, `ask` pauses the turn for the panel's
+/// approval, `deny` refuses without running anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
     Allow,
+    Ask,
     Deny,
 }
 
@@ -47,8 +48,10 @@ fn default_true() -> bool {
     true
 }
 
+/// 0 = use CC's fixed buffer (context window − 13k); a non-zero value is an
+/// explicit fraction of the window.
 fn default_threshold() -> f64 {
-    0.85
+    0.0
 }
 
 /// One markdown prompt file inside the agent's directory.
@@ -121,7 +124,14 @@ pub const DEFAULT_TOOLS: &[&str] = &[
     "glob",
     "grep",
     "bash",
+    "bash_output",
+    "bash_kill",
     "todo",
+    "task_create",
+    "task_update",
+    "task_list",
+    "task_get",
+    "ask_user_question",
     "skill",
 ];
 
@@ -183,6 +193,34 @@ const SEED_FILES: &[(&str, &str)] = &[
         include_str!("../../resources/agents/coding/SYSTEM_PROMPT.md"),
     ),
     (
+        "coding/SYSTEM.md",
+        include_str!("../../resources/agents/coding/SYSTEM.md"),
+    ),
+    (
+        "coding/DOING_TASKS.md",
+        include_str!("../../resources/agents/coding/DOING_TASKS.md"),
+    ),
+    (
+        "coding/EXECUTING_ACTIONS_WITH_CARE.md",
+        include_str!("../../resources/agents/coding/EXECUTING_ACTIONS_WITH_CARE.md"),
+    ),
+    (
+        "coding/USING_YOUR_TOOLS.md",
+        include_str!("../../resources/agents/coding/USING_YOUR_TOOLS.md"),
+    ),
+    (
+        "coding/TONE_AND_STYLE.md",
+        include_str!("../../resources/agents/coding/TONE_AND_STYLE.md"),
+    ),
+    (
+        "coding/OUTPUT_EFFICIENCY.md",
+        include_str!("../../resources/agents/coding/OUTPUT_EFFICIENCY.md"),
+    ),
+    (
+        "coding/SESSION_GUIDANCE.md",
+        include_str!("../../resources/agents/coding/SESSION_GUIDANCE.md"),
+    ),
+    (
         "creative/agent.json",
         include_str!("../../resources/agents/creative/agent.json"),
     ),
@@ -197,6 +235,14 @@ const SEED_FILES: &[(&str, &str)] = &[
     (
         "study/SYSTEM_PROMPT.md",
         include_str!("../../resources/agents/study/SYSTEM_PROMPT.md"),
+    ),
+    (
+        "general-purpose/agent.json",
+        include_str!("../../resources/agents/general-purpose/agent.json"),
+    ),
+    (
+        "general-purpose/SYSTEM_PROMPT.md",
+        include_str!("../../resources/agents/general-purpose/SYSTEM_PROMPT.md"),
     ),
     (
         "explore/agent.json",
@@ -540,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn seeding_writes_the_four_agents_and_never_overwrites_edits() {
+    fn seeding_writes_the_default_agents_and_never_overwrites_edits() {
         let vault = temp_dir("seed");
         seed_agents(&vault).unwrap();
         let dir = agents_dir(&vault);
@@ -550,7 +596,7 @@ mod tests {
         }
         let (defs, errors) = load_definitions(Some(&vault));
         assert!(errors.is_empty(), "{:?}", errors);
-        assert_eq!(defs.len(), 4);
+        assert_eq!(defs.len(), 5);
         assert_eq!(
             defs.iter().find(|d| d.id == "study").unwrap().tools,
             Some(Vec::new())

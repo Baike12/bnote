@@ -11,9 +11,17 @@
     "preview_html",
     "read_study_content",
     "skill",
-    "mcp"
+    "mcp",
+    "task_create",
+    "task_update",
+    "task_list",
+    "task_get",
+    "ask_user_question"
   ],
   "prompts": [
-    { "file": "SYSTEM_PROMPT.md", "order": 10 }
+    {
+      "file": "SYSTEM_PROMPT.md",
+      "order": 10
+    }
   ]
 }

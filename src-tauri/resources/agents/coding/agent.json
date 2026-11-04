@@ -12,9 +12,48 @@
     "todo",
     "task",
     "skill",
-    "mcp"
+    "mcp",
+    "bash_output",
+    "bash_kill",
+    "task_create",
+    "task_update",
+    "task_list",
+    "task_get",
+    "ask_user_question",
+    "send_message"
   ],
   "prompts": [
-    { "file": "SYSTEM_PROMPT.md", "order": 10 }
+    {
+      "file": "SYSTEM_PROMPT.md",
+      "order": 10
+    },
+    {
+      "file": "SYSTEM.md",
+      "order": 11
+    },
+    {
+      "file": "DOING_TASKS.md",
+      "order": 12
+    },
+    {
+      "file": "EXECUTING_ACTIONS_WITH_CARE.md",
+      "order": 13
+    },
+    {
+      "file": "USING_YOUR_TOOLS.md",
+      "order": 14
+    },
+    {
+      "file": "TONE_AND_STYLE.md",
+      "order": 15
+    },
+    {
+      "file": "OUTPUT_EFFICIENCY.md",
+      "order": 16
+    },
+    {
+      "file": "SESSION_GUIDANCE.md",
+      "order": 17
+    }
   ]
 }
