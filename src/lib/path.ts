@@ -66,3 +66,8 @@ export function wikilinkText(rel: string, allRels: string[]): string | null {
   const text = ambiguous ? stem(rel) : base;
   return !text || LINK_SYNTAX_RE.test(text) ? null : text;
 }
+
+/** The raw JSON editor owns `.json` files; everything else goes to the note editor. */
+export function isJsonPath(path: string | null | undefined): boolean {
+  return typeof path === "string" && path.toLowerCase().endsWith(".json");
+}

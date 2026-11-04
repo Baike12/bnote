@@ -10,8 +10,13 @@ use tauri::{AppHandle, Emitter, State};
 use super::{ensure_within, require_vault, validate_name, CmdResult};
 use crate::state::AppState;
 
-/// Directories never shown in the file tree or watched for content.
-const IGNORED_DIRS: &[&str] = &[
+/// Directories shown in the file tree: `.bnote` is browsable so the agent
+/// definitions can be edited as plain files.
+const IGNORED_DIRS: &[&str] = &[".git", ".obsidian", ".DS_Store", "node_modules", ".trash"];
+
+/// Directories excluded from the flat note index (quick switcher, wikilinks).
+/// `.bnote` holds app state and agent config, not notes.
+const INDEX_IGNORED_DIRS: &[&str] = &[
     ".git", ".bnote", ".obsidian", ".DS_Store", "node_modules", ".trash",
 ];
 
@@ -75,6 +80,13 @@ fn set_vault_blocking(app: &AppHandle, state: &State<'_, AppState>, path: String
     }
 
     *state.vault.write().map_err(|_| "lock poisoned")? = Some(root.clone());
+
+    // First run in a vault: write the default agent definitions as ordinary
+    // files. A failure must not block opening the vault; the missing agents
+    // show up as DEF_MISSING when a session starts.
+    if let Err(e) = crate::agent::defs::seed_agents(&root) {
+        eprintln!("[bnote] seed agents failed: {e}");
+    }
 
     // Remember the vault for the next launch.
     super::config::persist_last_vault(state, &root.to_string_lossy())?;
@@ -154,7 +166,7 @@ pub async fn list_files(state: State<'_, AppState>) -> CmdResult<VaultIndex> {
                 let name = entry.file_name().to_string_lossy().to_string();
                 let p = entry.path();
                 if ft.is_dir() {
-                    if !IGNORED_DIRS.contains(&name.as_str()) {
+                    if !INDEX_IGNORED_DIRS.contains(&name.as_str()) {
                         if let Ok(rel) = p.strip_prefix(&root) {
                             dirs.push(rel.to_string_lossy().replace('\\', "/"));
                         }
@@ -218,7 +230,7 @@ fn build_level(dir: &Path, rel_prefix: &str) -> Vec<FileNode> {
                     children: None,
                 },
             ));
-        } else if ft.is_file() && is_note_file(&name) {
+        } else if ft.is_file() && is_tree_file(&name) {
             nodes.push((
                 false,
                 FileNode {
@@ -248,6 +260,12 @@ fn build_level(dir: &Path, rel_prefix: &str) -> Vec<FileNode> {
 /// The Excalidraw plugin's markdown wrapper holds a drawing, not a note: were
 /// it listed as a note, quick switch would open it as a note (a screenful of
 /// JSON). They belong to the asset inventory instead, via is_asset_file.
+/// Files the sidebar tree shows: notes plus the JSON config files under
+/// `.bnote/agents`. The flat index stays notes-only (`is_note_file`).
+fn is_tree_file(name: &str) -> bool {
+    is_note_file(name) || name.to_lowercase().ends_with(".json")
+}
+
 fn is_note_file(name: &str) -> bool {
     let lower = name.to_lowercase();
     if lower.ends_with(".excalidraw.md") {

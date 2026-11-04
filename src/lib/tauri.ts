@@ -118,53 +118,6 @@ export interface SessionInfo {
   defErrors?: { id: string; message: string }[];
 }
 
-/** An agent definition (frontmatter + body, authored in `.bnote/agents/<id>.md`). */
-export interface AgentDefinition {
-  id: string;
-  name: string;
-  description: string;
-  body: string;
-  /** null = the key is absent in the file → the general default toolset. */
-  tools: string[] | null;
-  permissions: Record<string, "allow" | "deny">;
-  compaction: { enabled: boolean; threshold: number };
-  subagents: string[];
-  prompt_layers: { file: string; order: number }[];
-  model: string;
-  max_tokens: number;
-  max_turns: number;
-}
-
-export interface DefError {
-  id: string;
-  message: string;
-}
-
-export interface DefinitionListItem {
-  id: string;
-  name: string;
-  description: string;
-  source: "builtin" | "user";
-  tools: string[];
-}
-
-export interface DefinitionDetail {
-  source: "builtin" | "user";
-  file: string | null;
-  content: string;
-  definition: AgentDefinition;
-  parseError: string | null;
-}
-
-/** One assembled prompt segment (the definition editor's preview). */
-export interface PromptSegment {
-  order: number;
-  name: string;
-  content: string;
-  dynamic: boolean;
-  loaded: boolean;
-}
-
 /** The session-level model config snapshot (written into the first line of the session record; a restored session continues with it). */
 export interface SessionModelConfig {
   provider: string;
@@ -380,17 +333,6 @@ export const agentApi = {
     mode?: "study" | "creative" | "coding",
   ) =>
     invoke<SessionInfo>("agent_start_session", { study, fork, history, model, mode }),
-  /** Agent definitions: built-ins + `<vault>/.bnote/agents/*.md` (with parse errors). */
-  listDefinitions: () =>
-    invoke<{ definitions: DefinitionListItem[]; errors: DefError[] }>("agent_list_definitions"),
-  getDefinition: (id: string) => invoke<DefinitionDetail>("agent_get_definition", { id }),
-  /** Serializes the definition through the canonical writer into `.bnote/agents/<id>.md`. */
-  saveDefinition: (definition: AgentDefinition) =>
-    invoke<string>("agent_save_definition", { definition }),
-  deleteDefinition: (id: string) => invoke<void>("agent_delete_definition", { id }),
-  /** Dry-runs the assembly pipeline for the definition editor's preview. */
-  assemblePreview: (definition: AgentDefinition, workdir?: string) =>
-    invoke<PromptSegment[]>("agent_assemble_preview", { definition, workdir }),
   /** Stores one inline HTML preview document; returns the URL its iframe loads (see commands/preview.rs). */
   putPreview: (html: string) => invoke<string>("agent_preview_put", { html }),
   /** Manual compaction (/compact): replaces the session history with a summary. */

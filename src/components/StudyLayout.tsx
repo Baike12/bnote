@@ -3,8 +3,9 @@ import { AgentPanel } from "./AgentPanel";
 import { ContentPane } from "./ContentPane";
 import { CreativePreview } from "./CreativePreview";
 import { EditorPane } from "./EditorPane";
+import { JsonFilePane } from "./JsonFilePane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
-import { fileName } from "@/lib/path";
+import { fileName, isJsonPath } from "@/lib/path";
 import { dragAgentEdge, dragContentEdge, RESIZER_WIDTH } from "@/study/layoutModel";
 import { startSplitDrag } from "./splitDrag";
 
@@ -198,7 +199,7 @@ export function StudyLayout() {
         <div className="study-notes-head" data-tauri-drag-region="deep">
           <span className="study-notes-title">{noteTitle}</span>
         </div>
-        <EditorPane />
+        {isJsonPath(currentFile) ? <JsonFilePane /> : <EditorPane />}
       </div>
     </div>
   );

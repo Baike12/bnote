@@ -172,7 +172,17 @@ mod tests {
     use super::*;
 
     fn tree() -> PathBuf {
-        let dir = std::env::temp_dir().join("bnote-search");
+        // Unique per run: tests execute in parallel and a shared directory is
+        // torn down by one test while another is still writing to it.
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "bnote-search-{}-{}",
+            std::process::id(),
+            unique
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src/deep")).unwrap();
         std::fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();

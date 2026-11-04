@@ -2,10 +2,9 @@
 //!
 //! A session is shaped by its [`AgentDefinition`]: the definition decides the
 //! system prompt (through the assembly pipeline in `prompt.rs`), the tool
-//! surface, compaction and subagent policy. The three built-in shapes —
-//! study (no tools), creative (vault tools + skills + MCP) and coding (the
-//! full coding surface) — are all definitions now; there is no per-mode prompt
-//! builder left.
+//! surface, compaction and subagent policy. Study, creative and coding only
+//! choose an id from `<vault>/.bnote/agents/<id>/`; there is no per-mode
+//! prompt builder left.
 
 use super::defs::AgentDefinition;
 use super::defs::DEFAULT_TOOLS as DEFAULT_TOOLS_ITER;
@@ -30,8 +29,8 @@ const SUBAGENT_MAX_TURNS: u32 = 20;
 /// across context-window sizes).
 const COMPACT_THRESHOLD: f64 = 0.85;
 
-/// Session shape: which built-in definition seeded it. The definition itself
-/// (possibly user-overridden) lives in `Session::def`.
+/// Session shape: which definition id seeds it. The definition itself lives
+/// in `Session::def`, loaded from the vault's agent directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {
@@ -243,7 +242,6 @@ impl Session {
             vault_name: &self.vault_name,
             current_note: self.current_note.as_deref(),
             workdir: workdir.as_deref(),
-            vault: self.ctx.vault.as_deref(),
             study: study.as_ref(),
             skills: &self.skills.skills,
             mcp_names: &self.mcp_names,
@@ -669,7 +667,6 @@ impl Session {
             vault_name: &self.vault_name,
             current_note: self.current_note.as_deref(),
             workdir: workdir_s.as_deref(),
-            vault: self.ctx.vault.as_deref(),
             study: study.as_ref(),
             skills: &self.skills.skills,
             mcp_names: &self.mcp_names,
@@ -875,7 +872,6 @@ pub fn create_session(seed: SessionSeed) -> Session {
         vault_name: &seed.vault_name,
         current_note: seed.current_note.as_deref(),
         workdir: workdir_s.as_deref(),
-        vault: seed.ctx.vault.as_deref(),
         study: study.as_ref(),
         skills: &seed.skills.skills,
         mcp_names: &seed.mcp_names,

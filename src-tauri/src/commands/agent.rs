@@ -1,9 +1,8 @@
-//! Study-mode commands: agent sessions, definitions, config, and PDF→markdown
-//! conversion.
+//! Study-mode commands: agent sessions, config, and PDF→markdown conversion.
 
 use super::pen_cursor;
 use super::CmdResult;
-use crate::agent::defs::{self, AgentDefinition};
+use crate::agent::defs;
 use crate::agent::mcp::McpManager;
 use crate::agent::session::{create_session, SessionMode, SessionSeed};
 use crate::agent::shell::{BgRegistry, ShellCwd};
@@ -148,16 +147,20 @@ pub async fn agent_start_session(
     if cfg.api_key.is_empty() {
         return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
     }
-    // The effective definition: built-ins + user files, with the seed history
-    // (restore/fork) carried over unchanged.
+    // The effective definition: `.bnote/agents/<id>/agent.json`, with the
+    // seed history (restore/fork) carried over unchanged.
     let vault = state.vault();
     let (defs, def_errors) = defs::load_definitions(vault.as_deref());
     let def_id = session_mode.definition_id();
-    let def = Arc::new(
-        defs.into_iter()
-            .find(|d| d.id == def_id)
-            .ok_or_else(|| format!("DEF_MISSING: agent 定义 {} 不存在", def_id))?,
-    );
+    let def = Arc::new(defs.into_iter().find(|d| d.id == def_id).ok_or_else(|| {
+        match def_errors.iter().find(|e| e.id == def_id) {
+            Some(err) => format!("DEF_MISSING: {} 加载失败: {}", def_id, err.message),
+            None => format!(
+                "DEF_MISSING: {} 不存在(需要 .bnote/agents/{}/agent.json)",
+                def_id, def_id
+            ),
+        }
+    })?);
     // Only MCP-enabled sessions pay for connecting servers.
     let mcp = if def.mcp_enabled() {
         ensure_mcp(&state).await?
@@ -361,155 +364,6 @@ pub async fn agent_list_skills(
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-// ---------------------------------------------------------------------------
-// Agent definitions: the plugin surface (list / read / write / delete) plus
-// the compaction entry and the assembly preview.
-// ---------------------------------------------------------------------------
-
-/// Definition ids are file names: restrict them to the safe subset up front so
-/// `<vault>/.bnote/agents/<id>.md` can never traverse.
-fn valid_def_id(id: &str) -> Result<(), String> {
-    let ok = !id.is_empty()
-        && id.len() <= 64
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    if ok {
-        Ok(())
-    } else {
-        Err("INVALID_ID: id 只能包含字母/数字/-/_,且不超过 64 字符".into())
-    }
-}
-
-fn definitions_dir(vault: &Option<PathBuf>) -> Result<PathBuf, String> {
-    vault
-        .as_ref()
-        .map(|v| v.join(".bnote").join("agents"))
-        .ok_or_else(|| "NO_VAULT: agent 定义保存在仓库的 .bnote/agents/,请先打开仓库".to_string())
-}
-
-/// The definition inventory: built-ins + user files, each tagged with where it
-/// comes from and whether its file failed to parse (a broken file must be
-/// visible and editable, not silently skipped).
-#[tauri::command]
-pub async fn agent_list_definitions(state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
-    let vault = state.vault();
-    tauri::async_runtime::spawn_blocking(move || {
-        let (defs, errors) = defs::load_definitions(vault.as_deref());
-        let user_dir = vault.as_ref().map(|v| v.join(".bnote").join("agents"));
-        let list: Vec<serde_json::Value> = defs
-            .iter()
-            .map(|d| {
-                let is_user = user_dir
-                    .as_ref()
-                    .map(|dir| dir.join(format!("{}.md", d.id)).is_file())
-                    .unwrap_or(false);
-                serde_json::json!({
-                    "id": d.id,
-                    "name": d.display_name(),
-                    "description": d.description,
-                    "source": if is_user { "user" } else { "builtin" },
-                    "tools": d.effective_tools(),
-                })
-            })
-            .collect();
-        Ok(serde_json::json!({ "definitions": list, "errors": errors }))
-    })
-    .await
-    .map_err(|e| format!("JOIN_FAILED: {}", e))?
-}
-
-/// One definition with its file content. Built-ins serialize through the
-/// canonical writer so the settings page always shows a load-bearing form.
-#[tauri::command]
-pub async fn agent_get_definition(
-    state: State<'_, AppState>,
-    id: String,
-) -> CmdResult<serde_json::Value> {
-    valid_def_id(&id)?;
-    let vault = state.vault();
-    tauri::async_runtime::spawn_blocking(move || {
-        let (defs, errors) = defs::load_definitions(vault.as_deref());
-        let def = defs
-            .iter()
-            .find(|d| d.id == id)
-            .ok_or_else(|| format!("DEF_NOT_FOUND: {}", id))?;
-        let user_file = vault
-            .as_ref()
-            .map(|v| v.join(".bnote").join("agents").join(format!("{}.md", id)));
-        let parse_error = errors
-            .iter()
-            .find(|e| e.id == id)
-            .map(|e| e.message.clone());
-        Ok(match user_file {
-            Some(path) if path.is_file() => {
-                let content =
-                    std::fs::read_to_string(&path).map_err(|e| format!("READ_FAILED: {}", e))?;
-                serde_json::json!({
-                    "source": "user",
-                    "file": path.display().to_string(),
-                    "content": content,
-                    "definition": def,
-                    "parseError": parse_error,
-                })
-            }
-            _ => serde_json::json!({
-                "source": "builtin",
-                "file": null,
-                "content": defs::serialize_definition(def),
-                "definition": def,
-                "parseError": parse_error,
-            }),
-        })
-    })
-    .await
-    .map_err(|e| format!("JOIN_FAILED: {}", e))?
-}
-
-/// Writes (creating if needed) `<vault>/.bnote/agents/<id>.md` from the
-/// definition. The canonical serializer runs here so the file on disk and the
-/// parser can never drift.
-#[tauri::command]
-pub async fn agent_save_definition(
-    state: State<'_, AppState>,
-    definition: AgentDefinition,
-) -> CmdResult<String> {
-    valid_def_id(&definition.id)?;
-    let vault = state.vault();
-    tauri::async_runtime::spawn_blocking(move || {
-        let dir = definitions_dir(&vault)?;
-        std::fs::create_dir_all(&dir).map_err(|e| format!("WRITE_FAILED: {}", e))?;
-        let path = dir.join(format!("{}.md", definition.id));
-        std::fs::write(&path, defs::serialize_definition(&definition))
-            .map_err(|e| format!("WRITE_FAILED: {}", e))?;
-        Ok(path.display().to_string())
-    })
-    .await
-    .map_err(|e| format!("JOIN_FAILED: {}", e))?
-}
-
-/// Deletes a user definition file. Built-ins have no file: deleting one is a
-/// NO_VAULT/NOT_FOUND, not a silent success.
-#[tauri::command]
-pub async fn agent_delete_definition(state: State<'_, AppState>, id: String) -> CmdResult<()> {
-    valid_def_id(&id)?;
-    let vault = state.vault();
-    tauri::async_runtime::spawn_blocking(move || {
-        let dir = definitions_dir(&vault)?;
-        let path = dir.join(format!("{}.md", id));
-        if !path.is_file() {
-            return Err(format!(
-                "DEF_NOT_FOUND: {} 没有用户定义文件(内置定义不可删除)",
-                id
-            ));
-        }
-        std::fs::remove_file(&path).map_err(|e| format!("DELETE_FAILED: {}", e))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("JOIN_FAILED: {}", e))?
-}
-
 /// Manual compaction (/compact). Same claim protocol as agent_send: the CAS
 /// keeps two compactions from racing a running turn.
 #[tauri::command]
@@ -539,43 +393,6 @@ pub async fn agent_compact(state: State<'_, AppState>, session_id: String) -> Cm
         }
     });
     Ok(())
-}
-
-/// Dry-runs the assembly pipeline for the definition editor's preview: the
-/// ordered segments with their content, plus a flag per layer on whether its
-/// file actually loaded. No session is created.
-#[tauri::command]
-pub async fn agent_assemble_preview(
-    state: State<'_, AppState>,
-    definition: AgentDefinition,
-    workdir: Option<String>,
-) -> CmdResult<Vec<crate::agent::prompt::PromptSegment>> {
-    let vault = state.vault();
-    let data_dir = state.data_dir();
-    let cfg = crate::agent::AgentConfig::load(&data_dir);
-    let current_note = state.current_note.lock().ok().and_then(|n| n.clone());
-    tauri::async_runtime::spawn_blocking(move || {
-        let skills = SkillRegistry::discover(&data_dir, vault.as_ref(), &cfg.skill_dirs);
-        let vault_name = vault
-            .as_ref()
-            .and_then(|v| v.file_name().map(|s| s.to_string_lossy().to_string()))
-            .unwrap_or_default();
-        let user = crate::agent::load_user_instructions(vault.as_deref());
-        let input = crate::agent::prompt::AssembleInput {
-            def: &definition,
-            vault_name: &vault_name,
-            current_note: current_note.as_deref(),
-            workdir: workdir.as_deref(),
-            vault: vault.as_deref(),
-            study: None,
-            skills: &skills.skills,
-            mcp_names: &[],
-            user_instructions: &user,
-        };
-        Ok(crate::agent::prompt::segments(&input))
-    })
-    .await
-    .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
 #[tauri::command]

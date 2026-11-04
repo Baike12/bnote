@@ -1,0 +1,13 @@
+{
+  "name": "探索子代理",
+  "description": "只读探索子代理:找代码、读文件、报告位置与结构,不改动任何东西。",
+  "tools": [
+    "read_file",
+    "list_files",
+    "glob",
+    "grep"
+  ],
+  "prompts": [
+    { "file": "SYSTEM_PROMPT.md", "order": 10 }
+  ]
+}

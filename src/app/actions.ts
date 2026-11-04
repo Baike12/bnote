@@ -18,7 +18,8 @@ import {
   type SnippetLoadOutcome,
 } from "@/editor/snippets/load";
 import { configureLatexSuite } from "@/editor/snippets/config";
-import { dirname, fileName, joinPath, wikilinkText } from "@/lib/path";
+import { dirname, fileName, isJsonPath, joinPath, wikilinkText } from "@/lib/path";
+import { saveJsonFile } from "@/editor/jsonDocument";
 import { ensureLinks } from "@/daily/links";
 import { ensureFootprints } from "@/footprint/store";
 import { recentVaultTarget, touchRecentVault } from "@/vault/recent";
@@ -197,11 +198,22 @@ export async function openNote(path: string, line?: number): Promise<void> {
     await finalizeDrawingSession();
     if (useAppStore.getState().drawingSession) return; // the finalization is taken by a concurrent run: give up this switch
   }
-  const view = getView();
-  if (!view) {
-    useAppStore.getState().showToast("编辑器尚未就绪，无法打开文件");
+  const store = useAppStore.getState();
+  // JSON configuration files have their own editor. When the note editor is
+  // unmounted (a JSON file is open), setting currentFile lets React mount it;
+  // its own effect then calls openNote again with a live view. The project
+  // view has no note editor at all, so it keeps the honest toast.
+  if (isJsonPath(path) || !getView()) {
+    if (store.projectsMode) {
+      store.showToast("项目视图没有笔记编辑器，先退出项目视图");
+      return;
+    }
+    if (store.dirty) await saveNote();
+    store.openFile(path);
     return;
   }
+  const view = getView();
+  if (!view) return;
   // The pending save still refers to the previously open doc — write it out
   // before the swap, then replay this note's remembered position.
   flushCursorSave();
@@ -264,16 +276,24 @@ export async function openNote(path: string, line?: number): Promise<void> {
  * their own autosave).
  */
 export async function saveNote(): Promise<void> {
+  const store = useAppStore.getState();
+  const currentFile = store.currentFile;
+  // The JSON editor owns `.json` files; its view is the one on screen while
+  // the note editor is unmounted. Going through its save keeps ⌘S and the
+  // debounced autosave on one serialized writer.
+  if (currentFile && isJsonPath(currentFile)) {
+    await saveJsonFile();
+    return;
+  }
   const view = getView();
   if (!view) return;
-  const { currentFile, showToast } = useAppStore.getState();
   const path = documentPath(view.state) ?? currentFile;
   if (!path) return;
   try {
     await api.writeFile(path, view.state.doc.toString());
     if (currentFile === path) useAppStore.getState().markDirty(false);
   } catch (e) {
-    showToast(`保存失败: ${String(e)}`);
+    store.showToast(`保存失败: ${String(e)}`);
   }
 }
 

@@ -2,12 +2,11 @@
 //! builder per session kind.
 //!
 //! Segments carry an `order` (stable sort, ties keep insertion order) and a
-//! `dynamic` flag. Static segments (identity, tool rules, skill/MCP lists) are
-//! assembled once at session start; dynamic segments (environment, user
-//! instructions, definition prompt layers) are re-read before every turn so a
-//! saved `.bnote/AGENTS.md` edit takes effect on the next message without
-//! reopening the session. The segment list doubles as the assembly preview the
-//! agent-definitions settings page renders.
+//! `dynamic` flag. Static segments (tool rules, skill/MCP lists) are assembled
+//! once at session start; dynamic segments (the agent's prompt files,
+//! environment, user instructions) are re-read before every turn so a saved
+//! `SYSTEM_PROMPT.md` / `.bnote/AGENTS.md` edit takes effect on the next
+//! message without reopening the session.
 
 use super::defs::AgentDefinition;
 use super::skills::SkillInfo;
@@ -18,10 +17,9 @@ pub struct AssembleInput<'a> {
     pub def: &'a AgentDefinition,
     pub vault_name: &'a str,
     pub current_note: Option<&'a str>,
-    /// Code project root (coding sessions); extra prompt layers resolve here first.
+    /// Code project root (coding sessions); reported to the model as the
+    /// working directory.
     pub workdir: Option<&'a str>,
-    /// Open vault root; file layers fall back here when the workdir misses.
-    pub vault: Option<&'a Path>,
     pub study: Option<&'a StudyContent>,
     pub skills: &'a [SkillInfo],
     pub mcp_names: &'a [String],
@@ -29,11 +27,10 @@ pub struct AssembleInput<'a> {
     pub user_instructions: &'a str,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 pub struct PromptSegment {
     pub order: i32,
     pub name: String,
-    #[serde(skip_serializing)]
     pub content: String,
     /// Re-read before every turn.
     pub dynamic: bool,
@@ -65,15 +62,35 @@ pub fn assemble(input: &AssembleInput) -> String {
         .join("\n\n")
 }
 
-/// Builds the segment list (the assembly preview and the join source).
+/// Builds the segment list.
 pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
     let mut segs = Vec::new();
-    segs.push(PromptSegment::new(
-        10,
-        "identity",
-        input.def.body.clone(),
-        false,
-    ));
+    // The agent's prompt files are the identity layer; their order is chosen
+    // in agent.json. A file that vanished between two turns is reported as
+    // not loaded instead of taking the session down.
+    for prompt in &input.def.prompts {
+        let read = input
+            .def
+            .dir
+            .as_ref()
+            .and_then(|dir| std::fs::read_to_string(dir.join(&prompt.file)).ok());
+        match read {
+            Some(content) => segs.push(PromptSegment {
+                order: prompt.order,
+                name: format!("prompt:{}", prompt.file),
+                content,
+                dynamic: true,
+                loaded: true,
+            }),
+            None => segs.push(PromptSegment {
+                order: prompt.order,
+                name: format!("prompt:{}", prompt.file),
+                content: String::new(),
+                dynamic: true,
+                loaded: false,
+            }),
+        }
+    }
 
     let tools = input.def.effective_tools();
     if !tools.is_empty() {
@@ -115,39 +132,11 @@ pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
             true,
         ));
     }
-    // Definition file layers resolve against the working directory first, then
-    // the vault — AGENTS.md-style guides may live in the code project.
-    for layer in &input.def.prompt_layers {
-        let read = input
-            .workdir
-            .and_then(|wd| std::fs::read_to_string(Path::new(wd).join(&layer.file)).ok())
-            .or_else(|| {
-                input
-                    .vault
-                    .and_then(|v| std::fs::read_to_string(v.join(&layer.file)).ok())
-            });
-        match read {
-            Some(content) => segs.push(PromptSegment {
-                order: layer.order,
-                name: format!("layer:{}", layer.file),
-                content,
-                dynamic: true,
-                loaded: true,
-            }),
-            None => segs.push(PromptSegment {
-                order: layer.order,
-                name: format!("layer:{}", layer.file),
-                content: String::new(),
-                dynamic: true,
-                loaded: false,
-            }),
-        }
-    }
+    // Definition prompt files are resolved inside the agent directory and
+    // sorted together with the fixed segments above.
     segs.sort_by_key(|s| s.order);
     segs
 }
-
-use std::path::Path;
 
 fn tool_rules(tools: &[String]) -> String {
     let has = |n: &str| tools.iter().any(|t| t == n);
@@ -282,7 +271,36 @@ fn civil_from_days(z: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::defs::{builtins, AgentDefinition};
+    use crate::agent::defs as defs_mod;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_vault(tag: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "bnote-prompt-{}-{}-{}",
+            tag,
+            std::process::id(),
+            unique
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        defs_mod::seed_agents(&dir).unwrap();
+        dir
+    }
+
+    fn loaded(vault: &std::path::Path) -> Vec<AgentDefinition> {
+        let (defs, errors) = defs_mod::load_definitions(Some(vault));
+        assert!(errors.is_empty(), "{:?}", errors);
+        defs
+    }
+
+    fn find<'a>(defs: &'a [AgentDefinition], id: &str) -> &'a AgentDefinition {
+        defs.iter().find(|d| d.id == id).unwrap()
+    }
 
     fn input<'a>(
         def: &'a AgentDefinition,
@@ -295,7 +313,6 @@ mod tests {
             vault_name: "vault",
             current_note: None,
             workdir: None,
-            vault: None,
             study: None,
             skills,
             mcp_names: mcp,
@@ -305,8 +322,9 @@ mod tests {
 
     #[test]
     fn fixed_requirements_precede_the_custom_instructions_and_an_empty_section_is_omitted() {
-        let defs = builtins();
-        let study = defs.iter().find(|d| d.id == "study").unwrap();
+        let vault = temp_vault("fixed");
+        let defs = loaded(&vault);
+        let study = find(&defs, "study");
         let base = assemble(&input(study, "", &[], &[]));
         assert!(base.contains("结论先行"));
         assert!(!base.contains(".bnote/AGENTS.md"));
@@ -318,6 +336,7 @@ mod tests {
             fixed < custom,
             "custom instructions must follow the fixed requirements"
         );
+        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
@@ -325,20 +344,23 @@ mod tests {
         // The study assistant registers no tools; the assembled prompt must not
         // invite any (the historical defect this locks out: a prompt steering
         // toward tools that do not exist).
-        let defs = builtins();
-        let study = defs.iter().find(|d| d.id == "study").unwrap();
+        let vault = temp_vault("study");
+        let defs = loaded(&vault);
+        let study = find(&defs, "study");
         let p = assemble(&input(study, "", &[], &[]));
         assert!(!p.contains("tool"), "{}", p);
         assert!(!p.contains("read_study_content"));
         assert!(!p.contains("skill"));
         assert!(!p.contains("mcp__"));
         assert!(!p.contains("MCP"));
+        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
     fn the_creative_prompt_has_the_skill_and_instruction_sections_with_a_fallback() {
-        let defs = builtins();
-        let creative = defs.iter().find(|d| d.id == "creative").unwrap();
+        let vault = temp_vault("creative");
+        let defs = loaded(&vault);
+        let creative = find(&defs, "creative");
         let p = assemble(&input(creative, "", &[], &[]));
         assert!(p.contains("/skill-name"));
         assert!(p.contains("@path/to/file"));
@@ -369,12 +391,14 @@ mod tests {
             tools < custom,
             "the custom instructions must be appended after the tool rules"
         );
+        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
-    fn segments_are_ordered_and_dynamic_flags_split_the_reload_boundary() {
-        let defs = builtins();
-        let coding = defs.iter().find(|d| d.id == "coding").unwrap();
+    fn segments_are_ordered_and_prompt_files_reload_every_turn() {
+        let vault = temp_vault("segments");
+        let defs = loaded(&vault);
+        let coding = find(&defs, "coding");
         let inp = input(coding, "自定义", &[], &[]);
         let segs = segments(&inp);
         let orders: Vec<i32> = segs.iter().map(|s| s.order).collect();
@@ -383,17 +407,26 @@ mod tests {
         assert_eq!(orders, sorted, "segments must come out in order");
         let env = segs.iter().find(|s| s.name == "environment").unwrap();
         assert!(env.dynamic);
-        let identity = segs.iter().find(|s| s.name == "identity").unwrap();
-        assert!(!identity.dynamic);
-        let user = segs.iter().find(|s| s.name == "user-instructions").unwrap();
+        let identity = segs
+            .iter()
+            .find(|s| s.name == "prompt:SYSTEM_PROMPT.md")
+            .unwrap();
+        assert!(identity.dynamic, "a saved prompt applies on the next turn");
+        assert!(identity.content.contains("coding agent"));
+        let user = segs
+            .iter()
+            .find(|s| s.name == "user-instructions")
+            .unwrap();
         assert!(user.dynamic);
         assert!(segs.iter().any(|s| s.name == "tool-rules" && !s.dynamic));
+        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
     fn the_coding_prompt_names_the_new_tools_and_the_workdir() {
-        let defs = builtins();
-        let coding = defs.iter().find(|d| d.id == "coding").unwrap();
+        let vault = temp_vault("workdir");
+        let defs = loaded(&vault);
+        let coding = find(&defs, "coding");
         let mut inp = input(coding, "", &[], &[]);
         inp.workdir = Some("/tmp/proj");
         let p = assemble(&inp);
@@ -402,49 +435,57 @@ mod tests {
         assert!(p.contains("task 子代理"));
         assert!(p.contains("todo"));
         assert!(p.contains("- Today: "));
+        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
-    fn file_layers_load_relative_to_the_workdir_and_report_missing() {
-        let dir = std::env::temp_dir().join("bnote-prompt-layers");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("AGENTS.md"), "# 项目守则\n\n用 tab 缩进。").unwrap();
-        let defs = builtins();
-        let mut coding = defs.iter().find(|d| d.id == "coding").unwrap().clone();
-        coding.prompt_layers = vec![super::super::defs::PromptLayer {
-            file: "AGENTS.md".into(),
-            order: 45,
-        }];
-        let mut inp = input(&coding, "", &[], &[]);
-        inp.workdir = Some(dir.to_str().unwrap());
-        let segs = segments(&inp);
-        let layer = segs.iter().find(|s| s.name == "layer:AGENTS.md").unwrap();
-        assert!(layer.loaded && layer.content.contains("tab 缩进"));
-        assert_eq!(layer.order, 45);
-        assert!(layer.dynamic, "file layers reload every turn");
-
-        // A missing layer is reported as not loaded and contributes no text.
-        coding.prompt_layers.push(super::super::defs::PromptLayer {
-            file: "nope.md".into(),
-            order: 46,
+    fn prompt_files_are_read_from_the_agent_directory_in_order() {
+        let vault = temp_vault("files");
+        let coding_dir = vault.join(".bnote/agents/coding");
+        std::fs::write(
+            coding_dir.join("STYLE.md"),
+            "# 项目守则\n\n用 tab 缩进。",
+        )
+        .unwrap();
+        let config_path = coding_dir.join("agent.json");
+        let mut config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        config["prompts"] = serde_json::json!([
+            { "file": "SYSTEM_PROMPT.md", "order": 10 },
+            { "file": "STYLE.md", "order": 70 }
+        ]);
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        let (defs, errors) = defs_mod::load_definitions(Some(&vault));
+        assert!(errors.is_empty(), "{:?}", errors);
+        // A file deleted after session start is reported by the runtime
+        // segment (the loader already validated the files at load time).
+        let mut coding = find(&defs, "coding").clone();
+        coding.prompts.push(defs_mod::PromptFile {
+            file: "MISSING.md".into(),
+            order: 80,
         });
         let inp = input(&coding, "", &[], &[]);
         let segs = segments(&inp);
-        let missing = segs.iter().find(|s| s.name == "layer:nope.md").unwrap();
+        let style = segs.iter().find(|s| s.name == "prompt:STYLE.md").unwrap();
+        assert!(style.loaded && style.content.contains("tab 缩进"));
+        assert_eq!(style.order, 70);
+        let missing = segs
+            .iter()
+            .find(|s| s.name == "prompt:MISSING.md")
+            .unwrap();
         assert!(!missing.loaded);
-        assert!(!assemble(&inp).contains("layer:"));
+        let style_pos = segs.iter().position(|s| s.name == "prompt:STYLE.md").unwrap();
+        let identity_pos = segs
+            .iter()
+            .position(|s| s.name == "prompt:SYSTEM_PROMPT.md")
+            .unwrap();
+        assert!(identity_pos < style_pos);
 
-        // When the workdir misses, the vault is the fallback location.
-        std::fs::write(dir.join("vault-guide.md"), "来自仓库的层").unwrap();
-        coding.prompt_layers.push(super::super::defs::PromptLayer {
-            file: "vault-guide.md".into(),
-            order: 47,
-        });
-        let mut inp = input(&coding, "", &[], &[]);
-        inp.vault = Some(dir.as_path());
-        let p = assemble(&inp);
-        assert!(p.contains("来自仓库的层"), "{}", p);
+        // A prompt file edited on disk is picked up without a reload.
+        std::fs::write(coding_dir.join("STYLE.md"), "改过的守则").unwrap();
+        let p = assemble(&input(&coding, "", &[], &[]));
+        assert!(p.contains("改过的守则"));
+        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]

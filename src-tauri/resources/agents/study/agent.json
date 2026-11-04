@@ -1,0 +1,8 @@
+{
+  "name": "学习助手",
+  "description": "围绕当前 PDF / 网页 / 代码项目的纯问答助手,不注册任何工具。",
+  "tools": [],
+  "prompts": [
+    { "file": "SYSTEM_PROMPT.md", "order": 10 }
+  ]
+}

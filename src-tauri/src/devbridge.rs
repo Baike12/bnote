@@ -414,32 +414,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             app.state(),
             arg_opt_str(args, "path")
         )),
-        "agent_list_definitions" => json_ok!(agent::agent_list_definitions(app.state()).await),
-        "agent_get_definition" => {
-            json_ok!(agent::agent_get_definition(app.state(), arg_str(args, "id")?).await)
-        }
-        "agent_save_definition" => {
-            let definition = serde_json::from_value(arg_value(args, "definition")?)
-                .map_err(|e| format!("BAD_ARGS: definition: {}", e))?;
-            json_ok!(agent::agent_save_definition(app.state(), definition).await)
-        }
-        "agent_delete_definition" => {
-            json_ok!(agent::agent_delete_definition(app.state(), arg_str(args, "id")?).await)
-        }
         "agent_compact" => {
             json_ok!(agent::agent_compact(app.state(), arg_str(args, "sessionId")?).await)
-        }
-        "agent_assemble_preview" => {
-            let definition = serde_json::from_value(arg_value(args, "definition")?)
-                .map_err(|e| format!("BAD_ARGS: definition: {}", e))?;
-            let workdir: Option<String> = match args.get("workdir") {
-                None | Some(Value::Null) => None,
-                Some(v) => Some(
-                    serde_json::from_value(v.clone())
-                        .map_err(|e| format!("BAD_ARGS: workdir: {}", e))?,
-                ),
-            };
-            json_ok!(agent::agent_assemble_preview(app.state(), definition, workdir).await)
         }
         "agent_preview_put" => {
             json_ok!(preview::agent_preview_put(arg_str(args, "html")?))

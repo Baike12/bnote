@@ -41,6 +41,7 @@ import {
 } from "@/state/appStore";
 import { Sidebar } from "@/components/Sidebar";
 import { EditorPane } from "@/components/EditorPane";
+import { JsonFilePane } from "@/components/JsonFilePane";
 import { StudyLayout } from "@/components/StudyLayout";
 import { ProjectsLayout } from "@/components/ProjectsLayout";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
@@ -51,7 +52,7 @@ import { QuickAddModal } from "@/components/QuickAddModal";
 import { QuickTodoModal } from "@/components/QuickTodoModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
-import { fileName } from "@/lib/path";
+import { fileName, isJsonPath } from "@/lib/path";
 import { normalizeStudyHistory } from "@/study/history";
 import {
   normalizeAgentWidth,
@@ -388,7 +389,7 @@ export default function App() {
             </button>
             <div className="breadcrumb">{breadcrumb}</div>
           </div>
-          <EditorPane />
+          {isJsonPath(currentFile) ? <JsonFilePane /> : <EditorPane />}
         </>
       )}
     </main>
