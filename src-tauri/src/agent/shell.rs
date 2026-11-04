@@ -18,9 +18,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
+use tokio::sync::oneshot;
+
+use super::cancel::Abort;
 
 /// Default / max foreground timeout (seconds).
 pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -76,7 +79,7 @@ pub async fn run_command(
     timeout_secs: u64,
     cwd: &ShellCwd,
     default_dir: &Path,
-    abort: &AtomicBool,
+    abort: &Arc<Abort>,
 ) -> ShellOutput {
     let timeout = timeout_secs.clamp(1, MAX_TIMEOUT_SECS);
     // Per-call sentinel: a command that echoes a decoy cannot forge the cwd line.
@@ -168,7 +171,7 @@ pub async fn run_command(
                 text.push_str(&stderr_tail(&err_buf));
                 break (false, format!("timeout after {}s\n{}", timeout, truncate(&text, 5_000)));
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(50)), if abort.load(Ordering::Relaxed) => {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)), if abort.is_aborted() => {
                 let _ = child.kill().await;
                 let mut text = String::from_utf8_lossy(&out_buf).to_string();
                 text.push_str(&stderr_tail(&err_buf));
@@ -250,6 +253,9 @@ pub struct BgTask {
     /// Rolling buffer, capped to keep a runaway task from eating memory.
     output: Mutex<String>,
     status: Mutex<BgStatus>,
+    /// Asks the supervising task to kill the child. `None` once fired: a second
+    /// `bash_kill` must not look like a fresh signal that never arrives.
+    kill: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl BgTask {
@@ -276,6 +282,16 @@ impl BgTask {
 
     pub fn output(&self) -> String {
         self.output.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Signals the process to die. The supervising task kills the child and the
+    /// ordinary completion path reports the result.
+    pub fn kill(&self) {
+        if let Ok(mut slot) = self.kill.lock() {
+            if let Some(tx) = slot.take() {
+                let _ = tx.send(());
+            }
+        }
     }
 }
 
@@ -305,11 +321,13 @@ impl BgRegistry {
         on_done: Arc<dyn Fn(u64, bool, i32) + Send + Sync>,
     ) -> Result<u64, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (kill_tx, kill_rx) = oneshot::channel();
         let task = Arc::new(BgTask {
             id,
             command: command.clone(),
             output: Mutex::new(String::new()),
             status: Mutex::new(BgStatus::Running),
+            kill: Mutex::new(Some(kill_tx)),
         });
         let script = format!(
             "cd {} || exit 97\n{}\nexit $?\n",
@@ -343,8 +361,14 @@ impl BgRegistry {
             let mut err_buf = [0u8; 8192];
             let mut stdout_open = true;
             let mut stderr_open = true;
+            let mut kill_rx = kill_rx;
+            let mut killed = false;
             while stdout_open || stderr_open {
                 tokio::select! {
+                    _ = &mut kill_rx, if !killed => {
+                        killed = true;
+                        let _ = child.kill().await;
+                    }
                     n = stdout.read(&mut out_buf), if stdout_open => {
                         match n {
                             Ok(0) | Err(_) => stdout_open = false,
@@ -405,7 +429,7 @@ mod tests {
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
         let cwd = ShellCwd::new();
-        let abort = AtomicBool::new(false);
+        let abort = Abort::new();
         let out = run_command("cd ../b", 10, &cwd, &a, &abort).await;
         assert!(out.ok, "{}", out.text);
         assert_eq!(cwd.current(&a), b, "cd must be remembered");
@@ -431,7 +455,7 @@ mod tests {
         let cwd = ShellCwd::new();
         cwd.set(gone.clone());
         std::fs::remove_dir_all(&gone).unwrap();
-        let abort = AtomicBool::new(false);
+        let abort = Abort::new();
         let out = run_command("echo hi", 10, &cwd, &a, &abort).await;
         assert!(!out.ok, "the command must fail when the anchor is gone");
         assert_eq!(cwd.current(&a), a, "a failed cd resets the anchor");
@@ -443,7 +467,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let cwd = ShellCwd::new();
-        let abort = AtomicBool::new(false);
+        let abort = Abort::new();
         let out = run_command("sleep 5", 1, &cwd, &dir, &abort).await;
         assert!(!out.ok);
         assert!(out.text.contains("timeout after 1s"), "{}", out.text);
@@ -458,7 +482,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let cwd = ShellCwd::new();
-        let abort = AtomicBool::new(true);
+        let abort = Abort::new();
+        abort.abort();
         let out = run_command("sleep 5", 30, &cwd, &dir, &abort).await;
         assert!(!out.ok);
         assert!(out.text.contains("aborted"), "{}", out.text);
@@ -470,7 +495,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let cwd = ShellCwd::new();
-        let abort = AtomicBool::new(false);
+        let abort = Abort::new();
         let out = run_command("echo out; echo err >&2; exit 1", 10, &cwd, &dir, &abort).await;
         assert!(!out.ok);
         assert!(out.text.contains("out"), "{}", out.text);

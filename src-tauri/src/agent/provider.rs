@@ -1,9 +1,11 @@
 //! LLM providers: Anthropic Messages API + OpenAI-compatible chat completions,
 //! both streamed over SSE and normalized into AgentEvents.
 
+use super::cancel::Abort;
 use super::types::{AgentEvent, ChatItem, Content, TokenUsage, ToolDef, TurnResult};
 use futures::StreamExt;
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Connect timeout: fail fast when the endpoint is unreachable instead of hanging.
@@ -18,6 +20,48 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// models keep emitting thinking_delta while they think, so 180s of real
 /// silence leaves exactly one explanation: a hung gateway.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Retries for one request, matching Claude Code's `DEFAULT_MAX_RETRIES`.
+const MAX_RETRIES: usize = 10;
+/// The error string that means "the user stopped the turn" — the session turns
+/// it into a normal turn end, not an error bubble.
+pub const ABORTED: &str = "ABORTED";
+
+/// One streaming attempt failed in a way worth repeating: nothing has been shown
+/// to the user yet, so the request can be replayed from scratch.
+enum StreamFailure {
+    Aborted,
+    Retryable(String),
+    Fatal(String),
+}
+
+impl From<StreamFailure> for String {
+    fn from(f: StreamFailure) -> String {
+        match f {
+            StreamFailure::Aborted => ABORTED.to_string(),
+            StreamFailure::Retryable(m) | StreamFailure::Fatal(m) => m,
+        }
+    }
+}
+
+/// Exponential backoff with jitter: 0.5s, 1s, 2s … capped at 32s.
+fn backoff(attempt: usize) -> Duration {
+    let base = 500u64.saturating_mul(1u64 << attempt.min(6));
+    let capped = base.min(32_000);
+    // Deterministic-enough jitter without a rand dependency.
+    let jitter = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0))
+        % 250;
+    Duration::from_millis(capped + jitter)
+}
+
+/// Retry policy for an HTTP status: 429 and 5xx are transient, everything else
+/// is a real answer from the endpoint.
+fn retryable_status(status: reqwest::StatusCode) -> bool {
+    status.as_u16() == 429 || status.as_u16() == 529 || status.is_server_error()
+}
 
 /// Fetches the next stream chunk under the idle timeout (tests inject a shorter one).
 ///
@@ -45,6 +89,28 @@ where
     next_chunk_with(stream, STREAM_IDLE_TIMEOUT).await
 }
 
+/// The same read, but a stop from the user wins immediately instead of waiting
+/// for the idle timeout: an aborted turn must release the panel, not hang until
+/// the gateway gives up.
+async fn next_chunk_abort<S>(
+    stream: &mut S,
+    abort: &Arc<Abort>,
+) -> Result<Option<bytes::Bytes>, StreamFailure>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
+{
+    if abort.is_aborted() {
+        return Err(StreamFailure::Aborted);
+    }
+    tokio::select! {
+        _ = abort.wait() => Err(StreamFailure::Aborted),
+        chunk = next_chunk_with(stream, STREAM_IDLE_TIMEOUT) => match chunk {
+            Ok(v) => Ok(v),
+            Err(e) => Err(StreamFailure::Retryable(e)),
+        },
+    }
+}
+
 /// Anthropic content block: the wire shape of each Text/Image/ToolUse/ToolResult variant.
 fn anthropic_block(c: &Content) -> Value {
     match c {
@@ -54,7 +120,7 @@ fn anthropic_block(c: &Content) -> Value {
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": data},
         }),
-        Content::ToolUse { id, name, input } => {
+        Content::ToolUse { id, name, input, .. } => {
             json!({"type": "tool_use", "id": id, "name": name, "input": input})
         }
         // Without images keep the plain string shape (the least common multiple of
@@ -153,7 +219,7 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
                     .iter()
                     .enumerate()
                     .map(|(i, c)| match c {
-                        Content::ToolUse { id, name, input } => json!({
+                        Content::ToolUse { id, name, input, .. } => json!({
                             "id": id,
                             "type": "function",
                             "function": {
@@ -241,6 +307,13 @@ fn openai_usage(v: &Value) -> Option<TokenUsage> {
     (input > 0 || output > 0).then_some(TokenUsage { input, output })
 }
 
+/// Per-request options: the ceiling the loop may raise, and the turn's
+/// cancellation token.
+pub struct TurnOptions {
+    pub max_tokens: Option<u32>,
+    pub abort: Arc<Abort>,
+}
+
 pub struct Provider {
     pub kind: String, // "anthropic" | "openai"
     pub base_url: String,
@@ -275,7 +348,9 @@ impl Provider {
         }
     }
 
-    /// Streams one turn. Emits TextDelta events; returns the assembled turn.
+    /// Streams one turn with the default options (no token override, a fresh
+    /// cancellation token). Used by tests and by callers that cannot be
+    /// interrupted.
     pub async fn stream_turn(
         &self,
         system: &str,
@@ -283,10 +358,83 @@ impl Provider {
         tools: &[ToolDef],
         sink: &(dyn Fn(AgentEvent) + Send + Sync),
     ) -> Result<TurnResult, String> {
+        let opts = TurnOptions {
+            max_tokens: None,
+            abort: Abort::new(),
+        };
+        self.stream_turn_with(system, items, tools, sink, &opts).await
+    }
+
+    /// Streams one turn. Emits TextDelta events; returns the assembled turn.
+    ///
+    /// Retries the whole request (up to `MAX_RETRIES`, exponential backoff) when
+    /// the failure happened before anything reached the user: a connect error,
+    /// a 429/5xx, or a stream that died with no delta emitted. Once a delta is
+    /// out, replaying would duplicate text, so the error surfaces instead.
+    pub async fn stream_turn_with(
+        &self,
+        system: &str,
+        items: &[ChatItem],
+        tools: &[ToolDef],
+        sink: &(dyn Fn(AgentEvent) + Send + Sync),
+        opts: &TurnOptions,
+    ) -> Result<TurnResult, String> {
         if self.kind == "anthropic" {
-            self.stream_anthropic(system, items, tools, sink).await
+            self.stream_anthropic(system, items, tools, sink, opts).await
         } else {
-            self.stream_openai(system, items, tools, sink).await
+            self.stream_openai(system, items, tools, sink, opts).await
+        }
+    }
+
+    /// POSTs the request, retrying transport failures and 429/5xx with backoff.
+    /// A stop from the user cancels both the request and the wait.
+    async fn post_stream(
+        &self,
+        url: &str,
+        body: &str,
+        abort: &Arc<Abort>,
+        anthropic: bool,
+    ) -> Result<reqwest::Response, String> {
+        let mut attempt = 0usize;
+        loop {
+            let sent = tokio::select! {
+                _ = abort.wait() => return Err(ABORTED.to_string()),
+                r = {
+                    let mut req = self
+                        .client
+                        .post(url)
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {}", self.api_key));
+                    if anthropic {
+                        req = req
+                            .header("anthropic-version", "2023-06-01")
+                            .header("x-api-key", &self.api_key);
+                    }
+                    req.body(body.to_string()).send()
+                } => r,
+            };
+            let retry_msg = match sent {
+                Ok(resp) if resp.status().is_success() => return Ok(resp),
+                Ok(resp) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    let msg = format!("HTTP {}: {}", status, truncate(&text, 500));
+                    if !retryable_status(status) {
+                        return Err(msg);
+                    }
+                    msg
+                }
+                Err(e) => format!("request: {}", e),
+            };
+            if attempt >= MAX_RETRIES {
+                return Err(retry_msg);
+            }
+            let delay = backoff(attempt);
+            attempt += 1;
+            tokio::select! {
+                _ = abort.wait() => return Err(ABORTED.to_string()),
+                _ = tokio::time::sleep(delay) => {}
+            }
         }
     }
 
@@ -299,6 +447,7 @@ impl Provider {
         items: &[ChatItem],
         tools: &[ToolDef],
         sink: &(dyn Fn(AgentEvent) + Send + Sync),
+        opts: &TurnOptions,
     ) -> Result<TurnResult, String> {
         let mut messages: Vec<Value> = Vec::new();
         for item in items {
@@ -307,7 +456,16 @@ impl Provider {
                 messages.push(json!({"role": role, "content": blocks}));
             }
         }
-        let tools_json: Vec<Value> = tools
+        // Claude Code caches the conversation prefix: the newest message carries
+        // the breakpoint, so each turn re-reads only what it appended.
+        if let Some(last) = messages.last_mut() {
+            if let Some(blocks) = last.get_mut("content").and_then(|c| c.as_array_mut()) {
+                if let Some(block) = blocks.last_mut() {
+                    block["cache_control"] = json!({"type": "ephemeral"});
+                }
+            }
+        }
+        let mut tools_json: Vec<Value> = tools
             .iter()
             .map(|t| {
                 json!({
@@ -317,10 +475,13 @@ impl Provider {
                 })
             })
             .collect();
+        if let Some(last) = tools_json.last_mut() {
+            last["cache_control"] = json!({"type": "ephemeral"});
+        }
 
         let mut body = json!({
             "model": self.model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": opts.max_tokens.unwrap_or(self.max_tokens),
             "stream": true,
             "messages": messages,
         });
@@ -330,34 +491,68 @@ impl Provider {
             body["tools"] = json!(tools_json);
         }
         if !system.is_empty() {
-            body["system"] = json!(system);
+            // Block array (not a bare string) so the system prompt carries its own
+            // cache breakpoint.
+            body["system"] = json!([{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]);
         }
 
         let url = format!("{}/v1/messages", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("anthropic-version", "2023-06-01")
-            // Auth token style (proxy) or api key style, whichever applies.
-            .header("authorization", format!("Bearer {}", self.api_key))
-            .header("x-api-key", &self.api_key)
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(|e| format!("request: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("HTTP {}: {}", status, truncate(&text, 500)));
+        let body_text = body.to_string();
+        let mut attempt = 0usize;
+        loop {
+            let resp = self
+                .post_stream(&url, &body_text, &opts.abort, true)
+                .await?;
+            let mut turn = TurnResult::default();
+            let outcome = self
+                .read_anthropic_stream(resp, sink, &opts.abort, &mut turn)
+                .await;
+            match outcome {
+                Ok(()) => return Ok(turn),
+                Err(StreamFailure::Aborted) => return Err(ABORTED.to_string()),
+                Err(failure) => {
+                    let emitted = !turn.text.is_empty() || !turn.tool_calls.is_empty();
+                    if emitted || attempt >= MAX_RETRIES {
+                        return Err(failure.into());
+                    }
+                    let delay = backoff(attempt);
+                    attempt += 1;
+                    match &failure {
+                        StreamFailure::Retryable(msg) => sink(AgentEvent::Notice {
+                            text: format!(
+                                "请求失败({}),{}s 后重试 {}/{}",
+                                truncate(msg, 160),
+                                delay.as_secs_f32(),
+                                attempt,
+                                MAX_RETRIES
+                            ),
+                        }),
+                        _ => {}
+                    }
+                    tokio::select! {
+                        _ = opts.abort.wait() => return Err(ABORTED.to_string()),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
+                }
+            }
         }
+    }
 
-        let mut turn = TurnResult::default();
+    async fn read_anthropic_stream(
+        &self,
+        resp: reqwest::Response,
+        sink: &(dyn Fn(AgentEvent) + Send + Sync),
+        abort: &Arc<Abort>,
+        turn: &mut TurnResult,
+    ) -> Result<(), StreamFailure> {
         let mut current_tool: Option<(String, String, String)> = None; // (id, name, args)
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
-        while let Some(bytes) = next_chunk(&mut stream).await? {
+        while let Some(bytes) = next_chunk_abort(&mut stream, abort).await? {
             for event in sse.feed(&bytes) {
                 let v: Value = match serde_json::from_str(&event) {
                     Ok(v) => v,
@@ -405,12 +600,7 @@ impl Provider {
                     }
                     Some("content_block_stop") => {
                         if let Some((id, name, args)) = current_tool.take() {
-                            let input: Value = if args.is_empty() {
-                                json!({})
-                            } else {
-                                serde_json::from_str(&args).unwrap_or(json!({}))
-                            };
-                            turn.tool_calls.push(Content::ToolUse { id, name, input });
+                            push_tool_call(turn, id, name, &args);
                         }
                     }
                     Some("message_delta") => {
@@ -418,19 +608,22 @@ impl Provider {
                             .as_str()
                             .unwrap_or("end_turn")
                             .to_string();
+                        if turn.stop_reason == "max_tokens" {
+                            turn.hit_max_tokens = true;
+                        }
                         turn.usage = anthropic_output_usage(turn.usage, &v["usage"]);
                     }
                     Some("error") => {
-                        return Err(format!(
+                        return Err(StreamFailure::Fatal(format!(
                             "api error: {}",
                             v["error"]["message"].as_str().unwrap_or("unknown")
-                        ));
+                        )));
                     }
                     _ => {}
                 }
             }
         }
-        Ok(turn)
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -442,6 +635,7 @@ impl Provider {
         items: &[ChatItem],
         tools: &[ToolDef],
         sink: &(dyn Fn(AgentEvent) + Send + Sync),
+        opts: &TurnOptions,
     ) -> Result<TurnResult, String> {
         let messages: Vec<Value> = openai_messages(system, items);
         let tools_json: Vec<Value> = tools
@@ -466,41 +660,73 @@ impl Provider {
             "stream_options": {"include_usage": true},
             "messages": messages,
         });
+        if let Some(max_tokens) = opts.max_tokens {
+            body["max_tokens"] = json!(max_tokens);
+        }
         // A pure Q&A session has no tools: omit the tools field entirely instead of
         // sending an empty array.
         if !tools_json.is_empty() {
             body["tools"] = json!(tools_json);
         }
         let url = format!("{}/chat/completions", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {}", self.api_key))
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(|e| format!("request: {}", e))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("HTTP {}: {}", status, truncate(&text, 500)));
+        let body_text = body.to_string();
+        let mut attempt = 0usize;
+        loop {
+            let resp = self
+                .post_stream(&url, &body_text, &opts.abort, false)
+                .await?;
+            let mut turn = TurnResult::default();
+            let mut calls: Vec<(String, String, String)> = Vec::new();
+            let outcome = self
+                .read_openai_stream(resp, sink, &opts.abort, &mut turn, &mut calls)
+                .await;
+            match outcome {
+                Ok(()) => {
+                    finish_openai_turn(&mut turn, calls);
+                    return Ok(turn);
+                }
+                Err(StreamFailure::Aborted) => return Err(ABORTED.to_string()),
+                Err(failure) => {
+                    let emitted = !turn.text.is_empty();
+                    if emitted || attempt >= MAX_RETRIES {
+                        return Err(failure.into());
+                    }
+                    let delay = backoff(attempt);
+                    attempt += 1;
+                    if let StreamFailure::Retryable(msg) = &failure {
+                        sink(AgentEvent::Notice {
+                            text: format!(
+                                "请求失败({}),{}s 后重试 {}/{}",
+                                truncate(msg, 160),
+                                delay.as_secs_f32(),
+                                attempt,
+                                MAX_RETRIES
+                            ),
+                        });
+                    }
+                    tokio::select! {
+                        _ = opts.abort.wait() => return Err(ABORTED.to_string()),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
+                }
+            }
         }
+    }
 
-        let mut turn = TurnResult::default();
-        // tool call accumulation by index
-        let mut calls: Vec<(String, String, String)> = Vec::new();
+    async fn read_openai_stream(
+        &self,
+        resp: reqwest::Response,
+        sink: &(dyn Fn(AgentEvent) + Send + Sync),
+        abort: &Arc<Abort>,
+        turn: &mut TurnResult,
+        calls: &mut Vec<(String, String, String)>,
+    ) -> Result<(), StreamFailure> {
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
-        let mut done = false;
-        while !done {
-            let Some(bytes) = next_chunk(&mut stream).await? else {
-                break;
-            };
+        while let Some(bytes) = next_chunk_abort(&mut stream, abort).await? {
             for event in sse.feed(&bytes) {
                 if event == "[DONE]" {
-                    done = true;
-                    break;
+                    return Ok(());
                 }
                 let v: Value = match serde_json::from_str(&event) {
                     Ok(v) => v,
@@ -546,25 +772,58 @@ impl Provider {
                 }
                 if let Some(reason) = v["choices"][0]["finish_reason"].as_str() {
                     turn.stop_reason = reason.to_string();
+                    if reason == "length" {
+                        turn.hit_max_tokens = true;
+                    }
                 }
             }
         }
-        for (id, name, args) in calls {
-            if name.is_empty() {
-                continue;
-            }
-            let input: Value = if args.is_empty() {
-                json!({})
-            } else {
-                serde_json::from_str(&args).unwrap_or(json!({}))
-            };
-            let id = if id.is_empty() { format!("call_{}", uuid_like()) } else { id };
-            turn.tool_calls.push(Content::ToolUse { id, name, input });
+        Ok(())
+    }
+}
+
+/// A parsed tool call goes into the turn. A malformed `input_json` is recorded
+/// as `input_error` instead of silently becoming `{}`: the session answers that
+/// call with an InputValidationError and the model gets a chance to retry.
+fn push_tool_call(turn: &mut TurnResult, id: String, name: String, args: &str) {
+    match parse_tool_input(args) {
+        Ok(input) => turn.tool_calls.push(Content::ToolUse {
+            id,
+            name,
+            input,
+            input_error: None,
+        }),
+        Err(error) => turn.tool_calls.push(Content::ToolUse {
+            id,
+            name,
+            input: json!({}),
+            input_error: Some(error),
+        }),
+    }
+}
+
+fn parse_tool_input(args: &str) -> Result<Value, String> {
+    if args.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(args).map_err(|e| format!("invalid JSON in tool input: {}", e))
+}
+
+/// The OpenAI path accumulates calls by index; the same validation applies.
+fn finish_openai_turn(turn: &mut TurnResult, calls: Vec<(String, String, String)>) {
+    for (id, name, args) in calls {
+        if name.is_empty() {
+            continue;
         }
-        if turn.stop_reason.is_empty() {
-            turn.stop_reason = "stop".into();
-        }
-        Ok(turn)
+        let id = if id.is_empty() {
+            format!("call_{}", uuid_like())
+        } else {
+            id
+        };
+        push_tool_call(turn, id, name, &args);
+    }
+    if turn.stop_reason.is_empty() {
+        turn.stop_reason = "stop".into();
     }
 }
 

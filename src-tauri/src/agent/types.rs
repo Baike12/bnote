@@ -21,6 +21,13 @@ pub enum Content {
         id: String,
         name: String,
         input: Value,
+        /// Set when the streamed `input_json` could not be parsed. The call is
+        /// still recorded (so the transcript keeps the pairing), but dispatch
+        /// answers with an InputValidationError instead of running the tool on
+        /// an empty object — a silent `{}` used to read zero bytes and report
+        /// success.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_error: Option<String>,
     },
     /// Tool result. `images` are the rendered screenshots sent back to the model
     /// with the result (currently only preview_html); older session records have
@@ -134,6 +141,18 @@ pub enum AgentEvent {
     /// The todo tool's list after a `todo` call (the panel's rendering source;
     /// the tool result text is only the one-line summary).
     Todos { todos: Vec<super::todo::TodoItem> },
+    /// The v2 task list after any task tool call.
+    Tasks { tasks: Vec<super::tasks::TaskItem> },
+    /// A tool needs the user's approval (the definition marks it `ask`). The
+    /// turn is parked until `agent_permission_reply` answers this id.
+    PermissionRequest {
+        id: String,
+        tool: String,
+        input: Value,
+    },
+    /// The `ask_user_question` tool is waiting for an answer. The turn is parked
+    /// until `agent_question_reply` answers this id.
+    Question { id: String, questions: Value },
     /// A full turn (model response + tool runs) completed. `items` = the current
     /// number of session history entries (the authoritative count; the front end
     /// truncates by it when forking a helper session instead of guessing).
@@ -160,6 +179,9 @@ pub struct TurnResult {
     pub tool_calls: Vec<Content>,
     pub stop_reason: String,
     pub usage: Option<TokenUsage>,
+    /// The model's output hit the token ceiling: the loop may raise the ceiling
+    /// once, then hand the model a "resume" message (see session.rs).
+    pub hit_max_tokens: bool,
 }
 
 #[cfg(test)]

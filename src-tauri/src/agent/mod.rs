@@ -1,14 +1,19 @@
 //! Study-mode agent: LLM provider abstraction, tool execution, MCP, skills,
 //! agent definitions and the prompt assembly pipeline.
 
+pub mod cancel;
 pub mod defs;
 pub mod mcp;
+pub mod permissions;
 pub mod prompt;
 pub mod provider;
+pub mod results;
+pub mod schema;
 pub mod search;
 pub mod session;
 pub mod shell;
 pub mod skills;
+pub mod tasks;
 pub mod todo;
 pub mod tools;
 pub mod types;

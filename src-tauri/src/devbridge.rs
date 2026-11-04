@@ -417,6 +417,24 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_compact" => {
             json_ok!(agent::agent_compact(app.state(), arg_str(args, "sessionId")?).await)
         }
+        "agent_set_permission_mode" => json_ok!(agent::agent_set_permission_mode(
+            app.state(),
+            arg_str(args, "sessionId")?,
+            arg_str(args, "mode")?
+        )),
+        "agent_permission_reply" => json_ok!(agent::agent_permission_reply(
+            app.state(),
+            arg_str(args, "sessionId")?,
+            arg_str(args, "requestId")?,
+            arg_bool(args, "allow")?,
+            arg_opt_str(args, "feedback")
+        )),
+        "agent_question_reply" => json_ok!(agent::agent_question_reply(
+            app.state(),
+            arg_str(args, "sessionId")?,
+            arg_str(args, "requestId")?,
+            arg_str(args, "answer")?
+        )),
         "agent_preview_put" => {
             json_ok!(preview::agent_preview_put(arg_str(args, "html")?))
         }

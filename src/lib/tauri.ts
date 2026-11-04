@@ -149,8 +149,26 @@ export type AgentEvent =
   | { type: "notice"; text: string }
   /** The todo tool's list after a `todo` call (the rendering source). */
   | { type: "todos"; todos: AgentTodoItem[] }
+  /** The v2 task list after any task tool call. */
+  | { type: "tasks"; tasks: AgentTaskItem[] }
+  /** A tool marked `ask` needs the user's approval; answer with agentApi.permissionReply. */
+  | { type: "permission_request"; id: string; tool: string; input: unknown }
+  /** `ask_user_question` is waiting; answer with agentApi.questionReply. */
+  | { type: "question"; id: string; questions: unknown }
   | { type: "turn_end"; reason: string; items: number }
   | { type: "error"; message: string; items: number };
+
+/** One task of the v2 task list (CC's TaskCreate shape). */
+export interface AgentTaskItem {
+  id: string;
+  subject: string;
+  description: string;
+  active_form: string;
+  status: "pending" | "in_progress" | "completed";
+  owner?: string;
+  blocks: string[];
+  blocked_by: string[];
+}
 
 /** One item of the todo tool's list (Claude Code's TodoWrite schema). */
 export interface AgentTodoItem {
@@ -335,6 +353,20 @@ export const agentApi = {
     invoke<SessionInfo>("agent_start_session", { study, fork, history, model, mode }),
   /** Stores one inline HTML preview document; returns the URL its iframe loads (see commands/preview.rs). */
   putPreview: (html: string) => invoke<string>("agent_preview_put", { html }),
+  /** Sets the session's permission mode (confirm / auto / full). */
+  setPermissionMode: (sessionId: string, mode: "confirm" | "auto" | "full") =>
+    invoke<void>("agent_set_permission_mode", { sessionId, mode }),
+  /** Answers a pending tool-approval request (a definition marked the tool `ask`). */
+  permissionReply: (
+    sessionId: string,
+    requestId: string,
+    allow: boolean,
+    feedback?: string,
+  ) =>
+    invoke<void>("agent_permission_reply", { sessionId, requestId, allow, feedback }),
+  /** Answers a pending ask_user_question call. */
+  questionReply: (sessionId: string, requestId: string, answer: string) =>
+    invoke<void>("agent_question_reply", { sessionId, requestId, answer }),
   /** Manual compaction (/compact): replaces the session history with a summary. */
   compact: (sessionId: string) => invoke<void>("agent_compact", { sessionId }),
   /** The list of skills currently available on disk (settings page and input field / completion). */

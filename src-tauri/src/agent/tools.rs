@@ -37,7 +37,7 @@ pub struct ToolContext {
     pub data_dir: PathBuf,
     /// The study-mode content the session was opened with.
     pub study_content: Arc<std::sync::RwLock<Option<StudyContent>>>,
-    pub abort: Arc<std::sync::atomic::AtomicBool>,
+    pub abort: Arc<super::cancel::Abort>,
     /// In creation mode preview_html has to push a "preview updated" event to the
     /// front end; the test environment has no AppHandle, and with None the
     /// preview degrades to writing the file only.
@@ -320,14 +320,85 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "task",
-        "Launch a subagent from an agent definition (default: explore, a read-only explorer) and wait for its final report. Use it for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation — the subagent has its own context and only its report comes back.",
+        "Launch a new agent to handle complex, multi-step tasks autonomously. The agent has its own context window and returns a single final report, so it is the right tool for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation.\n\nWhen to use: research across many files, exploring a codebase for an answer, or independent work that can run while you continue. When NOT to use: a simple directed search (use glob/grep), or work that depends on what you are doing right now.\n\nUsage: launch several agents in one message when the tasks are independent. To continue an agent you already launched (including one that stopped on an error), use send_message with its agentId instead of spawning a new one. Trust the report and do not duplicate the agent's work yourself. `run_in_background: true` returns immediately; you are notified when it finishes. `fork: true` starts from this conversation's transcript instead of a fresh context.",
         json!({
             "type": "object",
             "properties": {
-                "subagent_type": {"type": "string", "description": "Subagent definition id (default explore)"},
-                "prompt": {"type": "string", "description": "Self-contained task description with all context the subagent needs"}
+                "description": {"type": "string", "description": "A short (3-5 word) description of the task"},
+                "prompt": {"type": "string", "description": "The task for the agent to perform; self-contained, with all the context it needs"},
+                "subagent_type": {"type": "string", "description": "Agent definition id to launch (default: general-purpose)"},
+                "model": {"type": "string", "description": "Optional model override for this agent"},
+                "run_in_background": {"type": "boolean", "description": "Run in the background and notify when done"},
+                "fork": {"type": "boolean", "description": "Inherit this conversation's transcript (a forked worker)"}
             },
             "required": ["prompt"]
+        }),
+    ),
+    (
+        "task_create",
+        "Create a task in the task list. Use it for work with 3+ steps: create the tasks first, then update them as you go. A task starts in status pending.",
+        super::tasks::create_schema(),
+    ),
+    (
+        "task_update",
+        "Update one task of the task list: set its status, subject, description, owner, or its dependency edges (add_blocks / add_blocked_by).",
+        super::tasks::update_schema(),
+    ),
+    (
+        "task_list",
+        "List every task with its id, status and blocking edges.",
+        super::tasks::list_schema(),
+    ),
+    (
+        "task_get",
+        "Read one task by id.",
+        super::tasks::get_schema(),
+    ),
+    (
+        "send_message",
+        "Send a message to a subagent you spawned earlier. A running agent receives it at its next turn; an agent that already finished (including one that stopped on an error or a rate limit) is resumed in the background with its full history intact, and you are notified when it reports back. Use the agentId from the task tool result.",
+        json!({
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "The agentId returned by the task tool"},
+                "summary": {"type": "string", "description": "A 5-10 word summary of the message"},
+                "message": {"type": "string", "description": "The message or follow-up task for the agent"}
+            },
+            "required": ["to", "message"]
+        }),
+    ),
+    (
+        "ask_user_question",
+        "Ask the user a question and wait for the answer. Use it when you genuinely need a decision only the user can make (a choice between approaches, missing requirements, an ambiguity that changes the implementation) — not as a first response to friction. Provide 2-4 concrete options per question; the user may also type a custom answer.",
+        json!({
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "description": "1-4 questions, asked together",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string", "description": "The full question, ending with a question mark"},
+                            "header": {"type": "string", "description": "Very short label (max 12 chars)"},
+                            "multiSelect": {"type": "boolean", "description": "Allow several answers"},
+                            "options": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string"},
+                                        "description": {"type": "string"}
+                                    },
+                                    "required": ["label"]
+                                }
+                            }
+                        },
+                        "required": ["question", "options"]
+                    }
+                }
+            },
+            "required": ["questions"]
         }),
     ),
     (
@@ -371,6 +442,24 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         }),
     ),
 ])
+}
+
+/// Tools that may run concurrently with their neighbours in one assistant
+/// message (CC's `isConcurrencySafe`). Everything else — anything that writes,
+/// spawns or mutates session state — runs alone and in call order.
+pub fn is_concurrency_safe(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file"
+            | "list_files"
+            | "glob"
+            | "grep"
+            | "read_url"
+            | "read_study_content"
+            | "skill"
+            | "task_list"
+            | "task_get"
+    )
 }
 
 /// Executes a built-in tool.
@@ -779,7 +868,7 @@ mod tests {
             vault: Some(vault.to_path_buf()),
             data_dir: data_dir.to_path_buf(),
             study_content: Arc::new(std::sync::RwLock::new(None)),
-            abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            abort: crate::agent::cancel::Abort::new(),
             app: None,
             preview_seq: std::sync::atomic::AtomicU64::new(0),
             workdir: None,

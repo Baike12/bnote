@@ -372,6 +372,79 @@ function fitInputHeight(el: HTMLTextAreaElement): void {
  * content is ready: opening a material connects once, switching the material
  * opens it again.
  */
+/** The three permission modes of the composer (ZCode's selector shape). */
+const PERMISSION_MODES: {
+  id: "confirm" | "auto" | "full";
+  label: string;
+  description: string;
+}[] = [
+  { id: "confirm", label: "变更前确认", description: "改文件、跑命令前先问我。" },
+  { id: "auto", label: "自主模式", description: "在有风险时询问。" },
+  { id: "full", label: "完全访问", description: "减少确认次数。" },
+];
+
+function ShieldIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3.5 5 6v5.2c0 4.2 2.9 7.6 7 9.3 4.1-1.7 7-5.1 7-9.3V6l-7-2.5Z" />
+    </svg>
+  );
+}
+
+interface AskQuestion {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: { label: string; description?: string }[];
+}
+
+/** `ask_user_question` arrives as unknown JSON: narrow it before rendering. */
+function parseQuestions(raw: unknown): AskQuestion[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AskQuestion[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const question = typeof record.question === "string" ? record.question : "";
+    if (!question) continue;
+    const options: { label: string; description?: string }[] = [];
+    if (Array.isArray(record.options)) {
+      for (const option of record.options) {
+        if (!option || typeof option !== "object") continue;
+        const entry = option as Record<string, unknown>;
+        if (typeof entry.label !== "string") continue;
+        options.push({
+          label: entry.label,
+          description: typeof entry.description === "string" ? entry.description : undefined,
+        });
+      }
+    }
+    out.push({
+      question,
+      header: typeof record.header === "string" ? record.header : undefined,
+      multiSelect: record.multiSelect === true,
+      options,
+    });
+  }
+  return out;
+}
+
+function prettyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
   const creativeMode = useAppStore((s) => s.creativeMode);
@@ -387,6 +460,9 @@ export function AgentPanel() {
   const patchSettings = useAppStore((s) => s.patchSettings);
   /** The conversation font scale: it is written to the --agent-fs of the panel root, and both the body text and the derived sizes in the CSS multiply it. */
   const agentFontScale = useAppStore((s) => s.settings.agentFontScale);
+  const permissionMode = useAppStore((s) => s.settings.agentPermissionMode);
+  const [modeOpen, setModeOpen] = useState(false);
+  const modeRef = useRef<HTMLDivElement | null>(null);
   const [convs, setConvs] = useState<Conv[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -424,6 +500,21 @@ export function AgentPanel() {
   const [materialInfo, setMaterialInfo] = useState<MaterialInfo | null>(null);
   const [savedSessions, setSavedSessions] = useState<SavedSessionMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** A tool marked `ask` is waiting for approval. */
+  const [approval, setApproval] = useState<{
+    sessionId: string;
+    id: string;
+    tool: string;
+    input: unknown;
+  } | null>(null);
+  const [approvalFeedback, setApprovalFeedback] = useState("");
+  /** `ask_user_question` is waiting for an answer. */
+  const [pendingQuestion, setPendingQuestion] = useState<{
+    sessionId: string;
+    id: string;
+    questions: AskQuestion[];
+  } | null>(null);
+  const [questionAnswers, setQuestionAnswers] = useState<Record<number, string[]>>({});
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // The composer grows with the text and rests at one line: a fixed two-row
@@ -1093,6 +1184,30 @@ export function AgentPanel() {
         updateConv(conv.key, (c) => ({ ...c, todos: event.todos }));
         break;
       }
+      case "permission_request": {
+        setApprovalFeedback("");
+        setApproval({
+          sessionId,
+          id: event.id,
+          tool: event.tool,
+          input: event.input,
+        });
+        break;
+      }
+      case "question": {
+        setQuestionAnswers({});
+        setPendingQuestion({
+          sessionId,
+          id: event.id,
+          questions: parseQuestions(event.questions),
+        });
+        break;
+      }
+      case "tasks": {
+        // The v2 task list has no dedicated panel: the tool cards already show
+        // every change, and the list itself lives in the model's context.
+        break;
+      }
       case "turn_end": {
         commitTurn(conv.key, event.items);
         // The first round succeeded: name the session after its own first message (the local fallback title holds the line until then).
@@ -1155,6 +1270,28 @@ export function AgentPanel() {
   }
 
   // Stream events; route by sessionId into the owning conversation.
+  // The composer mode is a settings value (new sessions inherit it) mirrored
+  // onto the live session, which is where the tool dispatch reads it.
+  const activeSessionId = activeConv?.sessionId ?? null;
+  useEffect(() => {
+    if (!activeSessionId) return;
+    void agentApi
+      .setPermissionMode(activeSessionId, permissionMode)
+      .catch((e) => console.warn("[agent] failed to set permission mode", e));
+  }, [activeSessionId, permissionMode]);
+
+  // The mode popover closes on any click outside it.
+  useEffect(() => {
+    if (!modeOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (modeRef.current && !modeRef.current.contains(event.target as Node)) {
+        setModeOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [modeOpen]);
+
   useEffect(() => {
     let off: (() => void) | undefined;
     void listen<{ sessionId: string; event: AgentEvent }>("agent-event", (event) => {
@@ -1778,6 +1915,38 @@ export function AgentPanel() {
               <path d="m5 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L16 17.5M14 15l2-2a1.5 1.5 0 0 1 2.1 0L21 15.9" />
             </svg>
           </button>
+          <div className="agent-mode" ref={modeRef}>
+            <button
+              className="agent-mode-btn"
+              onClick={() => setModeOpen((v) => !v)}
+              title={PERMISSION_MODES.find((m) => m.id === permissionMode)?.description}
+            >
+              <ShieldIcon />
+              {PERMISSION_MODES.find((m) => m.id === permissionMode)?.label}
+            </button>
+            {modeOpen && (
+              <div className="agent-mode-pop" role="menu">
+                {PERMISSION_MODES.map((mode) => (
+                  <button
+                    key={mode.id}
+                    className={`agent-mode-item${mode.id === permissionMode ? " is-active" : ""}`}
+                    role="menuitemradio"
+                    aria-checked={mode.id === permissionMode}
+                    onClick={() => {
+                      patchSettings({ agentPermissionMode: mode.id });
+                      setModeOpen(false);
+                    }}
+                  >
+                    <span className="agent-mode-item-label">
+                      {mode.label}
+                      {mode.id === permissionMode && <span className="agent-mode-check">✓</span>}
+                    </span>
+                    <span className="agent-mode-item-desc">{mode.description}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <span
             className="agent-meta"
             title={
@@ -1821,6 +1990,124 @@ export function AgentPanel() {
           )}
         </div>
       </div>
+      {/* Tool approval (the definition marked this tool `ask`): the turn is
+          parked until the user answers, so this must be a blocking overlay. */}
+      {approval && (
+        <div className="agent-approval" role="dialog" aria-label="工具授权">
+          <div className="agent-approval-card">
+            <div className="agent-approval-head">
+              <span className="agent-approval-title">需要授权</span>
+              <code className="agent-approval-tool">{approval.tool}</code>
+            </div>
+            <pre className="agent-approval-input">{prettyJson(approval.input)}</pre>
+            <input
+              className="agent-approval-feedback"
+              placeholder="拒绝原因(可选,会告诉模型)"
+              value={approvalFeedback}
+              onChange={(e) => setApprovalFeedback(e.target.value)}
+            />
+            <div className="agent-approval-actions">
+              <button
+                className="agent-approval-allow"
+                onClick={() => {
+                  const pending = approval;
+                  setApproval(null);
+                  void agentApi
+                    .permissionReply(pending.sessionId, pending.id, true)
+                    .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+                }}
+              >
+                允许
+              </button>
+              <button
+                className="agent-approval-deny"
+                onClick={() => {
+                  const pending = approval;
+                  const feedback = approvalFeedback;
+                  setApproval(null);
+                  void agentApi
+                    .permissionReply(pending.sessionId, pending.id, false, feedback || undefined)
+                    .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+                }}
+              >
+                拒绝
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ask_user_question: the model asked the user to decide something. */}
+      {pendingQuestion && (
+        <div className="agent-approval" role="dialog" aria-label="模型提问">
+          <div className="agent-approval-card">
+            {pendingQuestion.questions.map((q, index) => {
+              const picked = questionAnswers[index] ?? [];
+              const toggle = (label: string) => {
+                setQuestionAnswers((prev) => {
+                  const current = prev[index] ?? [];
+                  const next = q.multiSelect
+                    ? current.includes(label)
+                      ? current.filter((v) => v !== label)
+                      : [...current, label]
+                    : [label];
+                  return { ...prev, [index]: next };
+                });
+              };
+              return (
+                <div key={index} className="agent-question">
+                  <div className="agent-approval-head">
+                    <span className="agent-approval-title">
+                      {q.header || `问题 ${index + 1}`}
+                    </span>
+                  </div>
+                  <p className="agent-question-text">{q.question}</p>
+                  <div className="agent-question-options">
+                    {q.options.map((option) => (
+                      <button
+                        key={option.label}
+                        className={`agent-question-option${
+                          picked.includes(option.label) ? " is-picked" : ""
+                        }`}
+                        title={option.description}
+                        onClick={() => toggle(option.label)}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="agent-approval-actions">
+              <button
+                className="agent-approval-allow"
+                disabled={pendingQuestion.questions.some(
+                  (_, index) => (questionAnswers[index] ?? []).length === 0,
+                )}
+                onClick={() => {
+                  const pending = pendingQuestion;
+                  const answer = pending.questions
+                    .map((q, index) => {
+                      const picked = questionAnswers[index] ?? [];
+                      return picked.length > 0
+                        ? `${q.question}\n→ ${picked.join(", ")}`
+                        : null;
+                    })
+                    .filter((line): line is string => line !== null)
+                    .join("\n\n");
+                  setPendingQuestion(null);
+                  setQuestionAnswers({});
+                  void agentApi
+                    .questionReply(pending.sessionId, pending.id, answer)
+                    .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+                }}
+              >
+                提交
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* The history drawer: the conversations saved under this material, clicking one restores it and continues. */}
       {historyOpen && (
         <div className="agent-history" role="dialog" aria-label="历史会话" ref={historyRef} tabIndex={-1}>

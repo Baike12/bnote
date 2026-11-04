@@ -97,14 +97,20 @@ impl McpConnection {
         Ok(out)
     }
 
-    pub async fn call_tool(&mut self, tool: &str, args: &Value) -> Result<String, String> {
+    /// Returns `(text, is_error)`: the MCP `isError` flag is part of the
+    /// protocol and must reach the model as a failed tool result, not as a
+    /// success with an "error:" prefix.
+    pub async fn call_tool(&mut self, tool: &str, args: &Value) -> Result<(String, bool), String> {
         let resp = self
             .request("tools/call", json!({"name": tool, "arguments": args}))
             .await?;
         if let Some(err) = resp["error"].as_object() {
-            return Ok(format!(
-                "mcp error: {}",
-                err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+            return Ok((
+                format!(
+                    "mcp error: {}",
+                    err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+                ),
+                true,
             ));
         }
         let mut text = String::new();
@@ -118,10 +124,7 @@ impl McpConnection {
             }
         }
         let is_error = resp["isError"].as_bool().unwrap_or(false);
-        if is_error {
-            text.insert_str(0, "error: ");
-        }
-        Ok(text)
+        Ok((text, is_error))
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -297,7 +300,12 @@ impl McpManager {
         McpManager { connections, tools, errors }
     }
 
-    pub async fn call(&self, server: &str, tool: &str, args: &Value) -> Result<String, String> {
+    pub async fn call(
+        &self,
+        server: &str,
+        tool: &str,
+        args: &Value,
+    ) -> Result<(String, bool), String> {
         let conn = self
             .connections
             .get(server)

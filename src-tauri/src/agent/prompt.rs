@@ -23,8 +23,6 @@ pub struct AssembleInput<'a> {
     pub study: Option<&'a StudyContent>,
     pub skills: &'a [SkillInfo],
     pub mcp_names: &'a [String],
-    /// Content of the vault's `.bnote/AGENTS.md` (already loaded by the caller).
-    pub user_instructions: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -123,14 +121,10 @@ pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
         environment(input),
         true,
     ));
-    let user = input.user_instructions.trim();
-    if !user.is_empty() {
-        segs.push(PromptSegment::new(
-            60,
-            "user-instructions",
-            format!("## 用户自定义指令(.bnote/AGENTS.md)\n\n{user}\n"),
-            true,
-        ));
+    // Claude Code appends the git snapshot to the end of the system prompt; the
+    // model then knows the branch and the dirty files without a tool call.
+    if let Some(status) = input.workdir.and_then(git_status) {
+        segs.push(PromptSegment::new(70, "git-status", status, true));
     }
     // Definition prompt files are resolved inside the agent directory and
     // sorted together with the fixed segments above.
@@ -175,6 +169,21 @@ fn tool_rules(tools: &[String]) -> String {
     if has("skill") {
         r.push_str(
             "- 用户消息里的两个约定:\n  - `/skill-name`:用户选择了这个技能,先调用 skill 工具加载它,再严格按其指导行动;列出的技能之外不要猜名字。\n  - `@path/to/file`:用户引用了仓库里的文件,用 read_file 读取它。\n",
+        );
+    }
+    if has("task_create") || has("task_update") {
+        r.push_str(
+            "- 多步任务(3 步以上)用 task_create 建任务,推进时用 task_update 改状态;task_list / task_get 查看。todo 与任务列表二选一,不要混用。\n",
+        );
+    }
+    if has("send_message") {
+        r.push_str(
+            "- send_message:用 task 返回的 agentId 继续一个已有的子代理(包括因额度/错误停下的),它的历史会带回来;不要为同一个问题重新开一个新子代理。\n",
+        );
+    }
+    if has("ask_user_question") {
+        r.push_str(
+            "- ask_user_question:真正需要用户决策时才问(方案取舍、缺失需求、会改变实现的歧义),每问给 2-4 个具体选项。不要一遇到摩擦就提问,也不要把能自己查清的事情丢给用户。\n",
         );
     }
     if has("mcp") {
@@ -225,7 +234,6 @@ fn environment(input: &AssembleInput) -> String {
     if let Some(wd) = input.workdir {
         e.push_str(&format!("- Working directory: {wd}\n"));
     }
-    e.push_str(&format!("- Today: {}\n", today_string()));
     match input.study {
         Some(StudyContent::Pdf { path, title }) => {
             e.push_str(&format!("- Study content: PDF \"{title}\" at {path}\n"));
@@ -241,6 +249,44 @@ fn environment(input: &AssembleInput) -> String {
         None => {}
     }
     e
+}
+
+/// The git snapshot CC appends to the system prompt (context.ts): branch,
+/// short status (capped) and the last five commits. `None` outside a repo, so a
+/// non-git project simply gets no segment.
+fn git_status(workdir: &str) -> Option<String> {
+    let run = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(workdir)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let branch = run(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if branch.is_empty() {
+        return None;
+    }
+    let mut text = String::from("## Git status\n\n");
+    text.push_str(
+        "This is the git status at the start of the conversation. It does not update during the conversation; run `git status` yourself when you need the current state.\n\n",
+    );
+    text.push_str(&format!("Current branch: {}\n", branch));
+    if let Some(status) = run(&["status", "--short"]) {
+        let capped: String = status.chars().take(2_000).collect();
+        if !capped.trim().is_empty() {
+            text.push_str(&format!("\nStatus:\n{}\n", capped));
+        }
+    }
+    if let Some(log) = run(&["log", "--oneline", "-5"]) {
+        if !log.trim().is_empty() {
+            text.push_str(&format!("\nRecent commits:\n{}\n", log));
+        }
+    }
+    Some(text)
 }
 
 /// Local-date string (YYYY-MM-DD) without a chrono dependency: days since the
@@ -304,7 +350,6 @@ mod tests {
 
     fn input<'a>(
         def: &'a AgentDefinition,
-        user: &'a str,
         skills: &'a [SkillInfo],
         mcp: &'a [String],
     ) -> AssembleInput<'a> {
@@ -316,26 +361,22 @@ mod tests {
             study: None,
             skills,
             mcp_names: mcp,
-            user_instructions: user,
+
         }
     }
 
     #[test]
-    fn fixed_requirements_precede_the_custom_instructions_and_an_empty_section_is_omitted() {
+    fn the_user_instructions_are_not_a_system_segment() {
+        // CC carries CLAUDE.md as a `<system-reminder>` user message in front of
+        // the conversation (Session::request_items), so the cached system prefix
+        // never changes when the instructions file is edited.
         let vault = temp_vault("fixed");
         let defs = loaded(&vault);
         let study = find(&defs, "study");
-        let base = assemble(&input(study, "", &[], &[]));
+        let base = assemble(&input(study, &[], &[]));
         assert!(base.contains("结论先行"));
-        assert!(!base.contains(".bnote/AGENTS.md"));
-
-        let with_user = assemble(&input(study, "  多用表格回答。 \n", &[], &[]));
-        let custom = with_user.find("多用表格回答。").unwrap();
-        let fixed = with_user.find("结论先行").unwrap();
-        assert!(
-            fixed < custom,
-            "custom instructions must follow the fixed requirements"
-        );
+        assert!(!base.contains("AGENTS.md"));
+        assert!(!base.contains("今日"));
         std::fs::remove_dir_all(&vault).unwrap();
     }
 
@@ -347,7 +388,7 @@ mod tests {
         let vault = temp_vault("study");
         let defs = loaded(&vault);
         let study = find(&defs, "study");
-        let p = assemble(&input(study, "", &[], &[]));
+        let p = assemble(&input(study, &[], &[]));
         assert!(!p.contains("tool"), "{}", p);
         assert!(!p.contains("read_study_content"));
         assert!(!p.contains("skill"));
@@ -361,7 +402,7 @@ mod tests {
         let vault = temp_vault("creative");
         let defs = loaded(&vault);
         let creative = find(&defs, "creative");
-        let p = assemble(&input(creative, "", &[], &[]));
+        let p = assemble(&input(creative, &[], &[]));
         assert!(p.contains("/skill-name"));
         assert!(p.contains("@path/to/file"));
         assert!(p.contains("preview_html"));
@@ -377,20 +418,12 @@ mod tests {
             description: "把 markdown 排版成博客 HTML".into(),
             path: "/x/SKILL.md".into(),
         }];
-        let p = assemble(&input(
-            creative,
-            "多用表格",
-            &skills,
-            &["mcp__volcano__shell".to_string()],
-        ));
+        let p = assemble(&input(creative, &skills, &["mcp__volcano__shell".to_string()]));
         assert!(p.contains("- html-blog: 把 markdown 排版成博客 HTML"));
         assert!(p.contains("- mcp__volcano__shell"));
-        let custom = p.find("多用表格").unwrap();
         let tools = p.find("## 工具").unwrap();
-        assert!(
-            tools < custom,
-            "the custom instructions must be appended after the tool rules"
-        );
+        let skills_at = p.find("## 可用技能").unwrap();
+        assert!(tools < skills_at, "tool rules precede the skill list");
         std::fs::remove_dir_all(&vault).unwrap();
     }
 
@@ -399,7 +432,7 @@ mod tests {
         let vault = temp_vault("segments");
         let defs = loaded(&vault);
         let coding = find(&defs, "coding");
-        let inp = input(coding, "自定义", &[], &[]);
+        let inp = input(coding, &[], &[]);
         let segs = segments(&inp);
         let orders: Vec<i32> = segs.iter().map(|s| s.order).collect();
         let mut sorted = orders.clone();
@@ -413,11 +446,10 @@ mod tests {
             .unwrap();
         assert!(identity.dynamic, "a saved prompt applies on the next turn");
         assert!(identity.content.contains("coding agent"));
-        let user = segs
-            .iter()
-            .find(|s| s.name == "user-instructions")
-            .unwrap();
-        assert!(user.dynamic);
+        assert!(
+            !segs.iter().any(|s| s.name == "user-instructions"),
+            "the instructions file is a user message, not a segment"
+        );
         assert!(segs.iter().any(|s| s.name == "tool-rules" && !s.dynamic));
         std::fs::remove_dir_all(&vault).unwrap();
     }
@@ -427,14 +459,13 @@ mod tests {
         let vault = temp_vault("workdir");
         let defs = loaded(&vault);
         let coding = find(&defs, "coding");
-        let mut inp = input(coding, "", &[], &[]);
+        let mut inp = input(coding, &[], &[]);
         inp.workdir = Some("/tmp/proj");
         let p = assemble(&inp);
         assert!(p.contains("- Working directory: /tmp/proj"), "{}", p);
         assert!(p.contains("glob"));
         assert!(p.contains("task 子代理"));
         assert!(p.contains("todo"));
-        assert!(p.contains("- Today: "));
         std::fs::remove_dir_all(&vault).unwrap();
     }
 
@@ -464,7 +495,7 @@ mod tests {
             file: "MISSING.md".into(),
             order: 80,
         });
-        let inp = input(&coding, "", &[], &[]);
+        let inp = input(&coding, &[], &[]);
         let segs = segments(&inp);
         let style = segs.iter().find(|s| s.name == "prompt:STYLE.md").unwrap();
         assert!(style.loaded && style.content.contains("tab 缩进"));
@@ -483,7 +514,7 @@ mod tests {
 
         // A prompt file edited on disk is picked up without a reload.
         std::fs::write(coding_dir.join("STYLE.md"), "改过的守则").unwrap();
-        let p = assemble(&input(&coding, "", &[], &[]));
+        let p = assemble(&input(&coding, &[], &[]));
         assert!(p.contains("改过的守则"));
         std::fs::remove_dir_all(&vault).unwrap();
     }

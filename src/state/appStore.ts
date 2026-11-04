@@ -138,6 +138,13 @@ export interface Settings {
   /** The page zoom of the web preview in study mode (1 = 100%, 50%–300%). */
   studyWebZoom: number;
   /**
+   * The composer's permission mode for agent tool calls:
+   * `confirm` asks before every file change and shell command, `auto` runs
+   * autonomously and only asks for a recognized dangerous command, `full`
+   * never asks. Per-tool `permissions` in agent.json still win.
+   */
+  agentPermissionMode: "confirm" | "auto" | "full";
+  /**
    * The conversation font scale of the study assistant (1 = 100%, 85%–160%).
    * The body baseline is 15px × this factor, and headings / code / tool
    * rows are derived with the same ratio; the "Aa" in the header adjusts
@@ -190,6 +197,7 @@ export const DEFAULT_SETTINGS: Settings = {
   studyPageStep: 0.5,
   studyWebZoom: 1,
   agentFontScale: 1,
+  agentPermissionMode: "auto",
   studyTranslate: { enabled: false },
   fontSize: 16,
   ime: {

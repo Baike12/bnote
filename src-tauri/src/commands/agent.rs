@@ -223,7 +223,7 @@ pub async fn agent_start_session(
         vault: vault.clone(),
         data_dir: state.data_dir(),
         study_content: Arc::new(std::sync::RwLock::new(study)),
-        abort: Arc::new(AtomicBool::new(false)),
+        abort: crate::agent::cancel::Abort::new(),
         app: Some(app.clone()),
         preview_seq: std::sync::atomic::AtomicU64::new(0),
         workdir,
@@ -250,13 +250,13 @@ pub async fn agent_start_session(
         vault_name,
         current_note,
         mcp_names,
-        user_instructions: crate::agent::load_user_instructions(vault.as_deref()),
         skills,
         mcp: mcp.clone(),
         provider,
         ctx,
         app: app.clone(),
         context_window: cfg.context_window,
+        permission_mode: None,
     }));
     {
         let mut registry = state.sessions.lock().map_err(|e| e.to_string())?;
@@ -449,12 +449,66 @@ pub async fn agent_send(
 pub fn agent_abort(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
     let registry = state.sessions.lock().map_err(|e| e.to_string())?;
     if let Some(session) = registry.get(&session_id) {
-        session
-            .ctx
-            .abort
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        session.ctx.abort.abort();
     }
     Ok(())
+}
+
+/// The panel's answer to a tool approval request (`ask` permission).
+/// The composer's permission mode for this session (confirm / auto / full).
+#[tauri::command]
+pub fn agent_set_permission_mode(
+    state: State<'_, AppState>,
+    session_id: String,
+    mode: String,
+) -> CmdResult<()> {
+    let mode = crate::agent::permissions::Mode::parse(&mode)
+        .ok_or_else(|| format!("INVALID_MODE: 未知的权限模式 {mode:?}"))?;
+    let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = registry
+        .get(&session_id)
+        .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?;
+    session.set_permission_mode(mode);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn agent_permission_reply(
+    state: State<'_, AppState>,
+    session_id: String,
+    request_id: String,
+    allow: bool,
+    feedback: Option<String>,
+) -> CmdResult<()> {
+    let session = {
+        let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+        registry
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?
+    };
+    session.resolve_permission(
+        &request_id,
+        crate::agent::session::PermissionAnswer { allow, feedback },
+    )
+}
+
+/// The panel's answer to an `ask_user_question` call.
+#[tauri::command]
+pub fn agent_question_reply(
+    state: State<'_, AppState>,
+    session_id: String,
+    request_id: String,
+    answer: String,
+) -> CmdResult<()> {
+    let session = {
+        let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+        registry
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?
+    };
+    session.resolve_question(&request_id, answer)
 }
 
 #[tauri::command]
