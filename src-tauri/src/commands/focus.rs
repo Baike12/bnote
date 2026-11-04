@@ -43,6 +43,12 @@
 //! why), so the snapshot and the restore live in the same module and on the
 //! same code path.
 //!
+//! **The window level is the truth.** `locked` is read back from the native
+//! level instead of a store flag, a lock repairs a window it finds still raised
+//! before taking its own snapshot, and an unlock never reports success without
+//! restoring. Each of those three was a way the window used to stay at level 25
+//! above every other app while the frontend believed the session had ended.
+//!
 //! The stylesheet has a matching constraint: the styleMask carries
 //! `FullSizeContentView` (macOS's overlay title bar), so the restore must use
 //! the snapshot's **original** value and never `set_decorations(true)` -- tao's
@@ -57,6 +63,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 
 use super::CmdResult;
+use crate::main_window;
 
 /// Current focus mode state (read back by the frontend).
 #[derive(Serialize, Clone, Copy, Debug, Default)]
@@ -99,10 +106,18 @@ static HARD_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SNAPSHOT: Mutex<Option<WindowSnapshot>> = Mutex::new(None);
 
 /// Reports the current focus mode state.
+///
+/// `locked` is read from the window: a flag can disagree with the window (an
+/// unlock that did not reach it, a window restored outside this module), and a
+/// stale `false` makes the frontend save the locked full-screen geometry as the
+/// user's window size (`src/lib/windowState.ts`) and stop repairing the lock.
+/// The static below is only the cheap mirror used by the focus steal-back.
 #[tauri::command]
-pub fn focus_status() -> CmdResult<FocusStatus> {
+pub fn focus_status(app: AppHandle) -> CmdResult<FocusStatus> {
+    let locked = mac::is_locked(&app);
+    LOCKED.store(locked, Ordering::Relaxed);
     Ok(FocusStatus {
-        locked: LOCKED.load(Ordering::Relaxed),
+        locked,
         hard_lock: HARD_LOCK.load(Ordering::Relaxed),
         hard_active: HARD_ACTIVE.load(Ordering::Relaxed),
         trusted: mac::trusted(),
@@ -112,27 +127,22 @@ pub fn focus_status() -> CmdResult<FocusStatus> {
 }
 
 /// Enters the lock: fake fullscreen + level exclusivity + focus steal-back.
-/// Idempotent no-op when already locked.
+/// Idempotent no-op when the window is already locked.
 #[tauri::command]
 pub fn focus_lock(app: AppHandle) -> CmdResult<FocusStatus> {
-    if LOCKED.load(Ordering::Relaxed) {
-        return focus_status();
+    if !mac::is_locked(&app) {
+        mac::lock(&app)?;
     }
-    mac::lock(&app)?;
-    LOCKED.store(true, Ordering::Relaxed);
-    focus_status()
+    focus_status(app)
 }
 
 /// Leaves the lock: puts every snapshotted item back exactly as it was.
 ///
-/// Unconditional and idempotent: the native window is the truth. A front-end
-/// flag can be stale (a reconciliation may clear it), and that must never leave
-/// the window above every other app.
+/// Unconditional and idempotent: the native window is the truth.
 #[tauri::command]
 pub fn focus_unlock(app: AppHandle) -> CmdResult<FocusStatus> {
     mac::unlock(&app)?;
-    LOCKED.store(false, Ordering::Relaxed);
-    focus_status()
+    focus_status(app)
 }
 
 /// Arms or disarms the hard lock (swallowing system-wide shortcuts).
@@ -146,7 +156,7 @@ pub fn focus_unlock(app: AppHandle) -> CmdResult<FocusStatus> {
 /// silently: the user would think the app was locked while ⌘Tab still works,
 /// which is worse than being told up front that it cannot be locked.
 #[tauri::command]
-pub fn focus_set_hard_lock(enabled: bool) -> CmdResult<FocusStatus> {
+pub fn focus_set_hard_lock(app: AppHandle, enabled: bool) -> CmdResult<FocusStatus> {
     mac::set_hard_lock(enabled)?;
     HARD_LOCK.store(enabled, Ordering::Relaxed);
     if !enabled {
@@ -155,25 +165,24 @@ pub fn focus_set_hard_lock(enabled: bool) -> CmdResult<FocusStatus> {
         mac::set_hard_lock_active(false)?;
         HARD_ACTIVE.store(false, Ordering::Relaxed);
     }
-    focus_status()
+    focus_status(app)
 }
 
 /// Toggles real interception when a pomodoro starts or ends. The frontend
 /// passes true only while the timer runs.
 #[tauri::command]
-pub fn focus_set_hard_lock_active(active: bool) -> CmdResult<FocusStatus> {
+pub fn focus_set_hard_lock_active(app: AppHandle, active: bool) -> CmdResult<FocusStatus> {
     if active && !HARD_LOCK.load(Ordering::Relaxed) {
         return Err("NOT_ARMED: 硬锁没有武装,不需要拦截".into());
     }
     mac::set_hard_lock_active(active)?;
     HARD_ACTIVE.store(active, Ordering::Relaxed);
-    focus_status()
+    focus_status(app)
 }
 
 /// Installs the "steal focus back" listener. Call once from setup.
 pub fn install_focus_guard(app: &AppHandle) {
-    use tauri::Manager;
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = main_window(app) else {
         return;
     };
     let guard = window.clone();
@@ -198,14 +207,26 @@ mod mac {
     use objc2_app_kit::{NSApplication, NSStatusWindowLevel, NSWindowStyleMask};
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_core_graphics::CGEventFlags;
-    use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewWindow};
+    use tauri::{AppHandle, LogicalPosition, LogicalSize, Window};
 
-    use super::{HARD_ACTIVE, HARD_LOCK, LOCKED, SNAPSHOT, WindowSnapshot};
+    use super::{main_window, HARD_ACTIVE, HARD_LOCK, LOCKED, SNAPSHOT, WindowSnapshot};
 
     /// Collection behavior bits (canJoinAllSpaces / stationary / fullScreenAuxiliary).
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
     const STATIONARY: usize = 1 << 4;
     const FULLSCREEN_AUXILIARY: usize = 1 << 8;
+
+    /// `NSNormalWindowLevel`: the level of a window that is not locked.
+    const NORMAL_LEVEL: isize = 0;
+
+    /// Whether a window found at this level has to be repaired before a lock may
+    /// snapshot it. Anything but the normal level means an earlier stretch never
+    /// unlocked; snapshotting that state would record the locked window as the
+    /// normal one, and every later restore would faithfully reproduce "always on
+    /// top" -- the exact failure the snapshot exists to prevent.
+    fn needs_repair(level: isize) -> bool {
+        level != NORMAL_LEVEL
+    }
 
     // Accessibility permission (AXIsProcessTrusted). The hard lock has to
     // swallow system-wide key events, and without this permission the event tap
@@ -540,13 +561,45 @@ mod mac {
         }
     }
 
+    /// Reads the main window's current level, on the main thread.
+    ///
+    /// `None` when the window is gone or the native handle is unavailable; the
+    /// caller treats that as "not locked".
+    fn window_level(app: &AppHandle) -> Option<isize> {
+        let app = app.clone();
+        let inner_app = app.clone();
+        on_main_thread(&app, move || {
+            let win = main_window(&inner_app).ok_or("NO_WINDOW")?;
+            let ns = win.ns_window().map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
+            Ok(native_level(ns))
+        })
+        .ok()
+    }
+
+    /// Whether the window is currently at the locked level.
+    pub fn is_locked(app: &AppHandle) -> bool {
+        window_level(app) == Some(NSStatusWindowLevel)
+    }
+
     pub fn lock(app: &AppHandle) -> Result<(), String> {
         let app = app.clone();
         let inner_app = app.clone();
         on_main_thread(&app, move || {
-            let win = inner_app
-                .get_webview_window("main")
-                .ok_or("NO_WINDOW: 主窗口不在")?;
+            let win = main_window(&inner_app).ok_or("NO_WINDOW: 主窗口不在")?;
+            let ns = win
+                .ns_window()
+                .map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
+            let view = win
+                .ns_view()
+                .map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
+
+            // A raised level means the previous stretch never unlocked. Repair
+            // the window first, so the snapshot below records the normal state
+            // and not a locked one.
+            if needs_repair(native_level(ns)) {
+                restore(&win, ns, view)?;
+            }
+
             let scale = win.scale_factor().unwrap_or(1.0);
             // Every step's error carries the step name: the frontend shows the
             // message verbatim, so a failed lock names the exact native call.
@@ -558,9 +611,6 @@ mod mac {
                 .outer_position()
                 .map_err(|e| format!("outer_position: {e}"))?
                 .to_logical::<f64>(scale);
-            let ns = win
-                .ns_window()
-                .map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
 
             // Snapshot: restored item by item on unlock; missing a single item
             // is an incident.
@@ -575,9 +625,6 @@ mod mac {
             // Strip the decorations first: once they are gone inner size ==
             // outer size, so filling the screen is exact (otherwise it would
             // fall short by a strip).
-            let view = win
-                .ns_view()
-                .map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
             set_style_mask(ns, view, borderless_mask());
 
             // Fill the current screen (the whole thing, including the menu bar
@@ -612,49 +659,61 @@ mod mac {
         })
     }
 
+    /// Puts the window back into a normal state: the snapshot item by item when
+    /// there is one, and the bare minimum (normal level, our collection bits
+    /// removed) when there is not.
+    ///
+    /// Shared by unlock and by a lock that finds the window still raised, so
+    /// there is exactly one restore path. The snapshot is only cleared by the
+    /// caller when every step succeeded: a restore that failed must stay
+    /// retryable.
+    fn restore(win: &Window, ns: *mut AnyObject, view: *mut AnyObject) -> Result<(), String> {
+        let snap = *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
+        match snap {
+            Some(snap) => {
+                // Decorations: put the snapshotted styleMask back verbatim
+                // (with the FullSizeContentView overlay title bar). Use our own
+                // synchronous path so tao's asynchronous change cannot
+                // overwrite it.
+                set_style_mask(ns, view, snap.style_mask);
+
+                set_native_level(ns, snap.level);
+                set_native_behavior(ns, snap.behavior);
+
+                win.set_size(LogicalSize::new(snap.inner.0, snap.inner.1))
+                    .map_err(|e| format!("set_size: {e}"))?;
+                win.set_position(LogicalPosition::new(snap.pos.0, snap.pos.1))
+                    .map_err(|e| format!("set_position: {e}"))?;
+            }
+            None => {
+                // No snapshot to restore: the locked geometry is gone, but a
+                // window left above every other app is worse. Drop the level and
+                // remove exactly the collection bits we added.
+                set_native_level(ns, NORMAL_LEVEL);
+                let behavior =
+                    native_behavior(ns) & !(CAN_JOIN_ALL_SPACES | STATIONARY | FULLSCREEN_AUXILIARY);
+                set_native_behavior(ns, behavior);
+            }
+        }
+        Ok(())
+    }
+
     pub fn unlock(app: &AppHandle) -> Result<(), String> {
         let app = app.clone();
         let inner_app = app.clone();
         on_main_thread(&app, move || {
-            // Copy instead of taking: when a restore step fails, the snapshot
-            // must survive so the next attempt can still put the window back.
-            let snap = *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(win) = inner_app.get_webview_window("main") else {
-                return Ok(());
-            };
+            // A missing window is an error, never a success: reporting "ok" here
+            // is what left the window at level 25 above every other app while the
+            // frontend believed the session had ended.
+            let win = main_window(&inner_app).ok_or("NO_WINDOW: 主窗口不在")?;
             let ns = win
                 .ns_window()
                 .map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
+            let view = win
+                .ns_view()
+                .map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
 
-            match snap {
-                Some(snap) => {
-                    // Decorations: put the snapshotted styleMask back verbatim
-                    // (with the FullSizeContentView overlay title bar). Use our
-                    // own synchronous path so tao's asynchronous change cannot
-                    // overwrite it.
-                    let view = win
-                        .ns_view()
-                        .map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
-                    set_style_mask(ns, view, snap.style_mask);
-
-                    set_native_level(ns, snap.level);
-                    set_native_behavior(ns, snap.behavior);
-
-                    win.set_size(LogicalSize::new(snap.inner.0, snap.inner.1))
-                        .map_err(|e| format!("set_size: {e}"))?;
-                    win.set_position(LogicalPosition::new(snap.pos.0, snap.pos.1))
-                        .map_err(|e| format!("set_position: {e}"))?;
-                }
-                None => {
-                    // No snapshot to restore: the locked geometry is gone, but a
-                    // window left above every other app is worse. Drop the level
-                    // and remove exactly the collection bits we added.
-                    set_native_level(ns, 0);
-                    let behavior = native_behavior(ns)
-                        & !(CAN_JOIN_ALL_SPACES | STATIONARY | FULLSCREEN_AUXILIARY);
-                    set_native_behavior(ns, behavior);
-                }
-            }
+            restore(&win, ns, view)?;
             *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
             Ok(())
         })
@@ -668,7 +727,7 @@ mod mac {
     /// that case with `modalWindow`. When the window is minimized or hidden,
     /// tao's `set_focus` does nothing by itself, so a minimized window is never
     /// popped back up.
-    pub fn maybe_refocus(window: &WebviewWindow) {
+    pub fn maybe_refocus(window: &Window) {
         if !LOCKED.load(Ordering::Relaxed) {
             return;
         }
@@ -763,6 +822,17 @@ mod mac {
         use super::*;
 
         const CMD: u64 = CGEventFlags::MaskCommand.0;
+
+        #[test]
+        fn a_raised_window_is_repaired_before_it_is_snapshotted() {
+            // Normal level: nothing to repair.
+            assert!(!needs_repair(NORMAL_LEVEL));
+            // The locked level and any other raised level mean the previous
+            // stretch never unlocked; snapshotting it would store the locked
+            // state as the normal one (the "always on top" bug).
+            assert!(needs_repair(NSStatusWindowLevel));
+            assert!(needs_repair(3)); // NSFloatingWindowLevel
+        }
 
         #[test]
         fn swallows_the_system_chords_and_quit_only() {

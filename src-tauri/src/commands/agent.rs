@@ -1300,7 +1300,9 @@ pub async fn open_study_url(app: tauri::AppHandle, url: String) -> CmdResult<()>
     use tauri::Manager;
 
     let parsed = parse_study_url(&url)?;
-    if let Some(existing) = app.get_webview_window(STUDY_WINDOW_LABEL) {
+    // A plain webview lookup: `get_webview_window` answers only while the window
+    // owns no child webviews (see crate::main_window).
+    if let Some(existing) = app.get_webview(STUDY_WINDOW_LABEL) {
         existing
             .navigate(parsed)
             .map_err(|e| format!("WEBVIEW_FAILED: {}", e))?;

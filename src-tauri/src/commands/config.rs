@@ -72,7 +72,7 @@ struct SavedWindow {
 /// then jumped".
 pub fn restore_window_bounds(app: &tauri::AppHandle) {
     use tauri::Manager;
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = crate::main_window(app) else {
         return;
     };
     let Ok(dir) = app.path().app_data_dir() else {
@@ -114,7 +114,7 @@ pub fn restore_window_bounds(app: &tauri::AppHandle) {
 
 /// Whether the top-left corner lands on some screen (an 80pt margin is kept
 /// so the window never shows up as just a thin sliver).
-fn on_screen(window: &tauri::WebviewWindow, x: f64, y: f64) -> bool {
+fn on_screen(window: &tauri::Window, x: f64, y: f64) -> bool {
     let scale = window.scale_factor().unwrap_or(1.0);
     let (px, py) = (x * scale, y * scale);
     let Ok(monitors) = window.available_monitors() else {

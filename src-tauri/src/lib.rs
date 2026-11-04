@@ -19,6 +19,23 @@ use state::AppState;
 mod python;
 mod term;
 
+/// The app window, looked up by label.
+///
+/// Never use `get_webview_window` for this. Tauri answers that call only when
+/// every webview attached to the window carries the window's own label
+/// (`tauri-2.11.5/src/window/mod.rs:1160`, `is_webview_window`), and bnote
+/// attaches child webviews ("study-preview", "creative-preview") to this very
+/// window for study mode and the agent preview. The lookup therefore returned
+/// `None` for as long as a page was open, and focus mode broke on both sides:
+/// locking failed with `NO_WINDOW`, and unlocking silently skipped the restore
+/// and left the window at level 25 above every other app.
+///
+/// `get_window` is a plain label lookup on the window table, so child webviews
+/// cannot affect it.
+pub fn main_window(app: &tauri::AppHandle) -> Option<tauri::Window> {
+    app.get_window("main")
+}
+
 /// Menu ids for the items whose key equivalents are deliberately left unset.
 #[cfg(target_os = "macos")]
 const MENU_QUIT: &str = "menu.quit";
@@ -132,12 +149,12 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                 let _ = app.hide();
             }
             MENU_MINIMIZE => {
-                if let Some(win) = app.get_webview_window("main") {
+                if let Some(win) = main_window(app) {
                     let _ = win.minimize();
                 }
             }
             MENU_FULLSCREEN => {
-                if let Some(win) = app.get_webview_window("main") {
+                if let Some(win) = main_window(app) {
                     let _ = win.set_fullscreen(!win.is_fullscreen().unwrap_or(false));
                 }
             }

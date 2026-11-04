@@ -284,13 +284,15 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         // level), so there is no browser-side fake: they go through the same
         // #[tauri::command] and behave exactly like the real app. Mind this
         // while debugging — locking takes over the developer's whole screen.
-        "focus_status" => json_ok!(focus::focus_status()),
+        "focus_status" => json_ok!(focus::focus_status(app.clone())),
         "focus_lock" => json_ok!(focus::focus_lock(app.clone())),
         "focus_unlock" => json_ok!(focus::focus_unlock(app.clone())),
         "focus_set_hard_lock" => json_ok!(focus::focus_set_hard_lock(
+            app.clone(),
             arg_bool(args, "enabled")?
         )),
         "focus_set_hard_lock_active" => json_ok!(focus::focus_set_hard_lock_active(
+            app.clone(),
             arg_bool(args, "active")?
         )),
 

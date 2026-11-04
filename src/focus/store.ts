@@ -211,7 +211,12 @@ async function unlockNow(): Promise<void> {
     // the error would erase the only evidence of why the start did not happen.
     useFocusStore.setState({ locked: status.locked });
   } catch (e) {
-    useFocusStore.setState({ error: String(e) });
+    // A release that failed leaves the window at level 25 above every other app
+    // until it is retried, so it must reach the user instead of only sitting in
+    // the store.
+    const message = String(e);
+    useFocusStore.setState({ error: message });
+    useAppStore.getState().showToast(`独占屏幕没有解锁:${message}`);
   }
 }
 
