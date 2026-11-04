@@ -22,9 +22,18 @@
 export type TimerPhase = "idle" | "focus";
 
 export interface TimerConfig {
-  /** How long one focus stretch lasts (minutes). */
-  focusMinutes: number;
+  /**
+   * The durations the status bar offers, in minutes: one to three entries, in
+   * the user's order. A running stretch fixed its own length when it started
+   * (`endsAt`), so editing this list never touches it.
+   */
+  focusDurations: number[];
 }
+
+/** How many durations the status bar can offer. */
+export const MAX_FOCUS_DURATIONS = 3;
+
+const DEFAULT_MINUTES = 25;
 
 export interface TimerState {
   phase: TimerPhase;
@@ -33,7 +42,7 @@ export interface TimerState {
   config: TimerConfig;
 }
 
-export const DEFAULT_TIMER_CONFIG: TimerConfig = { focusMinutes: 25 };
+export const DEFAULT_TIMER_CONFIG: TimerConfig = { focusDurations: [DEFAULT_MINUTES] };
 
 /** Lower bound of the duration: 0 minutes would end the stretch instantly, the timer would only flash once. */
 const MIN_MINUTES = 1;
@@ -46,29 +55,36 @@ export function createTimerState(config?: Partial<TimerConfig> | null): TimerSta
   };
 }
 
-/**
- * Round the duration and clamp it into the legal range (0, a negative number and
- * NaN all count as 1 minute).
- *
- * A missing field is allowed: older configs still carry `breakMinutes` and
- * `cycle`, the extra keys are simply ignored when they are read back, and the
- * duration of the user must not be zeroed because the fields changed.
- */
-export function normalizeConfig(config?: Partial<TimerConfig> | null): TimerConfig {
-  const raw = config?.focusMinutes;
-  // Missing field or NaN (the input box was cleared): use the default, do not
-  // zero out the setting of the user.
-  if (typeof raw !== "number" || !Number.isFinite(raw)) {
-    return { focusMinutes: DEFAULT_TIMER_CONFIG.focusMinutes };
-  }
+/** One legal duration, or null when the value cannot be read as minutes. */
+function parseMinutes(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
   // A small value the user entered on purpose (0, a negative number) is clamped to
   // 1 minute: at least the timing is visibly running.
-  return { focusMinutes: Math.max(MIN_MINUTES, Math.floor(raw)) };
+  return Math.max(MIN_MINUTES, Math.floor(raw));
 }
 
-/** Length of one focus stretch (milliseconds). */
-export function focusDurationMs(state: TimerState): number {
-  return state.config.focusMinutes * 60_000;
+/**
+ * Normalize the duration list: unreadable entries and duplicates are dropped,
+ * the user's order is kept, the list is capped at [`MAX_FOCUS_DURATIONS`], and a
+ * config from before the list existed keeps its single `focusMinutes`
+ * (`breakMinutes` / `cycle` of a much older config are simply ignored).
+ */
+export function normalizeConfig(
+  config?: { focusDurations?: unknown; focusMinutes?: unknown } | null,
+): TimerConfig {
+  const list: number[] = [];
+  const raw = config?.focusDurations;
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      const minutes = parseMinutes(entry);
+      if (minutes === null || list.includes(minutes)) continue;
+      list.push(minutes);
+      if (list.length === MAX_FOCUS_DURATIONS) break;
+    }
+  }
+  // An empty list would leave the status bar without any way to start a stretch.
+  if (list.length > 0) return { focusDurations: list };
+  return { focusDurations: [parseMinutes(config?.focusMinutes) ?? DEFAULT_MINUTES] };
 }
 
 export function isRunning(state: TimerState): boolean {
@@ -81,15 +97,18 @@ export function isActive(state: TimerState): boolean {
 }
 
 /**
- * Start the timer. Starting while it already runs is a no-op (idempotent): pressing
- * start again does not reset the elapsed progress to full.
+ * Start the timer at one of the configured durations; without an explicit
+ * duration the first one is used (that is the keyboard command's path). Starting
+ * while it already runs is a no-op (idempotent): pressing start again does not
+ * reset the elapsed progress to full.
  */
-export function startTimer(state: TimerState, now: number): TimerState {
+export function startTimer(state: TimerState, now: number, minutes?: number): TimerState {
   if (state.endsAt !== null) return state;
+  const chosen = parseMinutes(minutes) ?? state.config.focusDurations[0] ?? DEFAULT_MINUTES;
   return {
     ...state,
     phase: "focus",
-    endsAt: now + focusDurationMs(state),
+    endsAt: now + chosen * 60_000,
   };
 }
 

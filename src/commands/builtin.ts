@@ -235,8 +235,10 @@ const defs: CommandDef[] = [
   // command here and no entry point for exiting or changing the lock.
   {
     id: "focus.pomodoro-start",
-    title: "专注:开始番茄钟(独占屏幕 + 硬锁,结束前不能退出)",
+    title: "专注:开始番茄钟(第一个时长;独占屏幕 + 硬锁,结束前不能退出)",
     category: "专注",
+    // The keyboard path has no chip to read a length from: it uses the first
+    // configured duration (see focus/timer.ts::startTimer).
     run: () => void useFocusStore.getState().start(),
   },
   // ---- Project management (project region) ----

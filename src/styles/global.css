@@ -1209,14 +1209,16 @@ button {
   color: var(--accent);
 }
 
-/* Focus chip (left end of the status bar): one click starts a focus session,
-   afterwards it becomes a pure status display.
-   No popover - the duration lives in the settings page and both locks are
+/* Focus chips (left end of the status bar): one chip per configured duration,
+   each showing only its length; one click starts a stretch that long, after
+   which the row becomes a single pure status display.
+   No popover - the durations live in the settings page and both locks are
    always fully on. */
 .focus-chip-wrap {
   position: relative;
   display: flex;
   align-items: center;
+  gap: 2px;
 }
 
 .focus-chip {
@@ -1696,6 +1698,40 @@ button {
 .setting-value {
   font-size: 13px;
   color: var(--text-dim);
+}
+
+/* The duration list of the pomodoro settings: compact inputs, one remove
+   button per row, the add button sitting after the last row. */
+.setting-durations {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.setting-durations .settings-input {
+  width: 62px;
+  flex: none;
+  padding: 6px 6px 6px 10px;
+}
+.setting-duration {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.setting-duration-remove {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.setting-duration-remove:hover {
+  background: var(--bg3);
+  color: var(--text);
 }
 
 /* A whole content block inside a card (textarea, error list, action row). */

@@ -28,7 +28,7 @@ import { setHotkeyRecording } from "@/commands/globalKeys";
 import { useAppStore, type ImeSettings, type QuickAddCommand } from "@/state/appStore";
 import { openAccessibilitySettings, useFocusStore } from "@/focus/store";
 import { MinutesInput } from "./MinutesInput";
-import { isActive } from "@/focus/timer";
+import { isActive, MAX_FOCUS_DURATIONS } from "@/focus/timer";
 import type { LatexConfig } from "@/editor/snippets/config";
 import { api, type InputSourceInfo, type VaultConfigFile } from "@/lib/tauri";
 import { inputGuards } from "@/lib/inputGuards";
@@ -533,12 +533,13 @@ function ReadingTab() {
 }
 
 /**
- * Focus: how long one focus session lasts plus the explanation and the
+ * Focus: the durations the status bar offers plus the explanation and the
  * authorization state of the two locks.
  *
- * The duration lives in the timer state of focus/store (it is part of the
- * timer state and is persisted with it) and is not stored a second time in
- * the settings: with two copies they will eventually disagree.
+ * The durations live in the timer state of focus/store (part of the timer state,
+ * persisted with it) and are not stored a second time in the settings: with two
+ * copies they will eventually disagree. Editing the list never touches a running
+ * stretch - its length was fixed into `endsAt` when it started.
  *
  * The locks have no switch: starting a focus session means the screen
  * takeover, the hard lock and the timer all take effect, and there is no way
@@ -575,19 +576,19 @@ function FocusTab() {
     <div className="settings-section">
       <SettingsCard title="番茄钟">
         <Row
-          label="一次专注多长"
+          label="可选时长"
+          desc="状态栏左下角按这里列出的时长各显示一个可点的按钮"
           control={
-            <MinutesInput
-              className="settings-input mono"
-              value={timer.config.focusMinutes}
-              onChange={(n) => setDurations({ focusMinutes: n })}
+            <DurationList
+              durations={timer.config.focusDurations}
+              onChange={(focusDurations) => setDurations({ focusDurations })}
             />
           }
         />
         <div className="setting-hint">
           {active
             ? "本次专注进行中:不能暂停、不能提前结束。改时长只影响下一段。"
-            : "点状态栏左侧的番茄钟开始。开始后独占屏幕与硬锁同时生效,到点才解锁;改时长只影响下一段。"}
+            : "点状态栏左下角的时间开始对应时长的专注。开始后独占屏幕与硬锁同时生效,到点才解锁;最多三个时长,相同的时间只保留一个。"}
         </div>
       </SettingsCard>
 
@@ -610,6 +611,64 @@ function FocusTab() {
       </SettingsCard>
     </div>
   );
+}
+
+/**
+ * The durations the status bar offers: one input per entry, one to three in
+ * total.
+ *
+ * Every edit commits the whole list: the timer state is the single owner, and
+ * `normalizeConfig` drops duplicates and caps the length, so this control cannot
+ * produce a list the status bar is unable to render.
+ */
+function DurationList({
+  durations,
+  onChange,
+}: {
+  durations: number[];
+  onChange: (durations: number[]) => void;
+}) {
+  return (
+    <div className="setting-durations">
+      {durations.map((minutes, index) => (
+        <span className="setting-duration" key={index}>
+          <MinutesInput
+            className="settings-input mono"
+            value={minutes}
+            onChange={(next) => onChange(durations.map((m, i) => (i === index ? next : m)))}
+          />
+          {durations.length > 1 && (
+            <button
+              type="button"
+              className="setting-duration-remove"
+              title="删除这个时长"
+              onClick={() => onChange(durations.filter((_, i) => i !== index))}
+            >
+              ×
+            </button>
+          )}
+        </span>
+      ))}
+      {durations.length < MAX_FOCUS_DURATIONS && (
+        <button
+          type="button"
+          className="link-btn"
+          title="再加一个可选时长"
+          onClick={() => onChange([...durations, suggestedDuration(durations)])}
+        >
+          + 添加
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A duration that is not in the list yet, so a new row always yields a new chip. */
+function suggestedDuration(durations: number[]): number {
+  for (const candidate of [25, 45, 50, 60, 90]) {
+    if (!durations.includes(candidate)) return candidate;
+  }
+  return Math.min(180, Math.max(...durations) + 30);
 }
 
 type HotkeyFilter = "all" | "assigned" | "unassigned";

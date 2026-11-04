@@ -176,6 +176,18 @@ describe("start is a promise: hard lock + exclusive lock + timing all take effec
     expect(focusMock.setHardLock).toHaveBeenCalledTimes(1);
   });
 
+  it("the clicked duration decides the length: start(90) runs 90 minutes, not the first configured one", async () => {
+    useFocusStore.setState({
+      timer: createTimerState({ focusDurations: [25, 50, 90] }),
+    });
+    await useFocusStore.getState().start(90);
+
+    expect(useFocusStore.getState().timer.endsAt).toBe(T0 + 90 * 60_000);
+    expect(remainingMs(useFocusStore.getState().timer, T0)).toBe(90 * 60_000);
+    // The offered list is untouched: it only describes what the chips show.
+    expect(useFocusStore.getState().timer.config.focusDurations).toEqual([25, 50, 90]);
+  });
+
   it("the hard lock has no permission: the stretch does not start at all (no self-deception)", async () => {
     focusMock.setHardLock.mockRejectedValueOnce(
       new Error("NEEDS_ACCESSIBILITY: 硬锁需要辅助功能权限"),
@@ -226,9 +238,9 @@ describe("start is a promise: hard lock + exclusive lock + timing all take effec
   it("changing the duration only affects the next stretch: the running endsAt does not move", async () => {
     await useFocusStore.getState().start();
     const endsAt = useFocusStore.getState().timer.endsAt;
-    useFocusStore.getState().setDurations({ focusMinutes: 40 });
+    useFocusStore.getState().setDurations({ focusDurations: [40] });
     expect(useFocusStore.getState().timer.endsAt).toBe(endsAt);
-    expect(useFocusStore.getState().timer.config.focusMinutes).toBe(40);
+    expect(useFocusStore.getState().timer.config.focusDurations).toEqual([40]);
   });
 });
 
@@ -324,7 +336,7 @@ describe("across a restart: quitting the app does not end the stretch", () => {
     expect(useFocusStore.getState().timer.phase).toBe("idle");
     expect(useFocusStore.getState().timer.endsAt).toBeNull();
     // The duration must not be thrown off by the old fields
-    expect(useFocusStore.getState().timer.config.focusMinutes).toBe(30);
+    expect(useFocusStore.getState().timer.config.focusDurations).toEqual([30]);
   });
 
   it("a paused phase from the old version (without endsAt) is read back as idle: pausing has no meaning anymore", async () => {

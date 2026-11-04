@@ -19,7 +19,7 @@ import {
 const T0 = 1_700_000_000_000;
 
 function session(focusMinutes = 25) {
-  return createTimerState({ focusMinutes });
+  return createTimerState({ focusDurations: [focusMinutes] });
 }
 
 describe("pomodoro: one continuous stretch of focus", () => {
@@ -74,27 +74,60 @@ describe("pomodoro: one continuous stretch of focus", () => {
 });
 
 describe("duration configuration", () => {
-  it("rounded and clamped to at least 1 minute", () => {
-    expect(normalizeConfig({ focusMinutes: 25.9 }).focusMinutes).toBe(25);
-    expect(normalizeConfig({ focusMinutes: 0 }).focusMinutes).toBe(1);
-    expect(normalizeConfig({ focusMinutes: -5 }).focusMinutes).toBe(1);
-    expect(normalizeConfig({ focusMinutes: Number.NaN }).focusMinutes).toBe(25);
+  it("each entry is rounded and clamped to at least 1 minute", () => {
+    expect(normalizeConfig({ focusDurations: [25.9] }).focusDurations).toEqual([25]);
+    expect(normalizeConfig({ focusDurations: [0, -5] }).focusDurations).toEqual([1]);
+    expect(normalizeConfig({ focusDurations: [Number.NaN] }).focusDurations).toEqual([25]);
   });
 
-  it("breakMinutes / cycle in the old config do not clear the duration", () => {
+  it("the list keeps the user's order, drops duplicates and caps at three", () => {
+    expect(normalizeConfig({ focusDurations: [50, 25] }).focusDurations).toEqual([50, 25]);
+    expect(normalizeConfig({ focusDurations: [25, 25, 50] }).focusDurations).toEqual([25, 50]);
+    expect(normalizeConfig({ focusDurations: [10, 20, 30, 40] }).focusDurations).toEqual([
+      10, 20, 30,
+    ]);
+  });
+
+  it("a config from before the list keeps its single duration", () => {
+    expect(normalizeConfig({ focusMinutes: 40 }).focusDurations).toEqual([40]);
+    // breakMinutes / cycle of a much older config do not clear the duration
     const legacy = { focusMinutes: 40, breakMinutes: 5, cycle: 3 } as unknown as {
-      focusMinutes: number;
+      focusMinutes?: unknown;
     };
-    expect(normalizeConfig(legacy).focusMinutes).toBe(40);
+    expect(normalizeConfig(legacy).focusDurations).toEqual([40]);
   });
 
-  it("without a config the default is 25 minutes", () => {
-    expect(createTimerState().config.focusMinutes).toBe(25);
+  it("an empty or unreadable list falls back on 25 minutes", () => {
+    expect(createTimerState().config.focusDurations).toEqual([25]);
+    expect(normalizeConfig({ focusDurations: [] }).focusDurations).toEqual([25]);
+    expect(normalizeConfig(null).focusDurations).toEqual([25]);
     expect(createTimerState().phase).toBe("idle");
   });
 
   it("the remaining time is 0 while idle", () => {
     expect(remainingMs(session(), T0)).toBe(0);
+  });
+});
+
+describe("the length of the stretch comes from the clicked duration", () => {
+  it("without an explicit duration the first configured one is used", () => {
+    const state = createTimerState({ focusDurations: [50, 25] });
+    expect(startTimer(state, T0).endsAt).toBe(T0 + 50 * 60_000);
+  });
+
+  it("a duration passed to start wins over the list", () => {
+    const state = createTimerState({ focusDurations: [50, 90] });
+    expect(startTimer(state, T0, 90).endsAt).toBe(T0 + 90 * 60_000);
+    // The list itself is untouched: it only describes what the chips offer.
+    expect(startTimer(state, T0, 90).config.focusDurations).toEqual([50, 90]);
+  });
+
+  it("editing the list does not move a running stretch", () => {
+    const running = startTimer(createTimerState({ focusDurations: [25] }), T0);
+    const renamed = normalizeConfig({ focusDurations: [90, 45] });
+    expect(running.endsAt).toBe(T0 + 25 * 60_000);
+    expect(remainingMs(running, T0 + 60_000)).toBe(24 * 60_000);
+    expect(renamed.focusDurations).toEqual([90, 45]);
   });
 });
 

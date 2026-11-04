@@ -17,6 +17,8 @@ import { snippetStore } from "@/editor/snippets/engine";
 import { useAppStore } from "@/state/appStore";
 import { api, focusApi, type FileNode } from "@/lib/tauri";
 import { FocusChip } from "@/components/FocusChip";
+import { createTimerState } from "@/focus/timer";
+import { useFocusStore } from "@/focus/store";
 import { EditorPane } from "@/components/EditorPane";
 import { relDirname } from "@/lib/path";
 import * as actions from "@/app/actions";
@@ -142,7 +144,7 @@ declare global {
     /** Mount the settings modal (the real component plus the page's own store instance), returns the visible text. */
     __mountSettings: () => Promise<string>;
     /** Mount the focus chip (the real component plus the status bar shell), returns the unmount function. */
-    __mountFocusChip: () => () => void;
+    __mountFocusChip: (durations?: number[]) => () => void;
     /** Mount the note pane (the real component), returns the status bar text (for layout checks). */
     __mountEditorPane: () => Promise<string>;
     __unmountSettings: () => void;
@@ -599,13 +601,24 @@ window.__mountEditorPane = async () => {
 };
 
 /**
- * Mount the focus chip (the real component plus the status bar shell).
+ * Mount the focus chips (the real component plus the status bar shell).
  *
  * The native side (full screen / window level / event tap) does not exist in the browser -- a fake implementation
  * is installed on focusApi here, so the chip's rendering, panel and countdown can all be verified; the real window behavior can only be measured after a deployment.
+ *
+ * `durations` sets the offered durations through the store this page actually
+ * renders (importing the store from outside the page graph yields a second
+ * instance, whose state the component never sees).
  */
 let focusChipRoot: ReturnType<typeof createRoot> | null = null;
-window.__mountFocusChip = () => {
+window.__mountFocusChip = (durations?: number[]) => {
+  if (durations) {
+    // Idle, so the chip row renders the whole list instead of the running chip.
+    useFocusStore.setState({
+      timer: createTimerState({ focusDurations: durations }),
+      now: Date.now(),
+    });
+  }
   Object.assign(focusApi, {
     status: async () => ({ locked: false, hard_lock: false, hard_active: false, trusted: true, seen: 0, swallowed: 0 }),
     lock: async () => ({ locked: true, hard_lock: false, hard_active: false, trusted: true, seen: 0, swallowed: 0 }),

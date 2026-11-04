@@ -68,8 +68,11 @@ export interface FocusStore {
    * take the screen lock. Without the permission or when the screen lock fails the
    * stretch does not start, so there is never a half state where the timer runs
    * but the lock is not on.
+   *
+   * `minutes` is the duration the user clicked in the status bar; omitting it
+   * takes the first configured one (the keyboard command).
    */
-  start: () => Promise<void>;
+  start: (minutes?: number) => Promise<void>;
   setDurations: (patch: Partial<TimerConfig>) => void;
   /** Reconcile the clock after the window came back to the foreground or the system woke up: finish the stretch when it is due, otherwise pull the display up to the present. */
   syncNow: () => void;
@@ -283,13 +286,13 @@ async function applyTimer(next: TimerState): Promise<void> {
  * immediately (this is the cleanup of a failed start, not an exit the user can
  * press).
  */
-async function startFocus(): Promise<void> {
+async function startFocus(minutes?: number): Promise<void> {
   const state = useFocusStore.getState();
   if (isActive(state.timer) || starting) return;
   starting = true;
   try {
     if (!(await armHardLock())) return;
-    await applyTimer(startTimer(useFocusStore.getState().timer, Date.now()));
+    await applyTimer(startTimer(useFocusStore.getState().timer, Date.now(), minutes));
     // Armed successfully does not mean it really intercepts (creating the tap can
     // fail too): without interception the stretch does not start.
     if (!useFocusStore.getState().hardActive) {
@@ -332,7 +335,7 @@ export const useFocusStore = create<FocusStore>((set, get) => ({
   swallowed: 0,
   error: null,
 
-  start: () => startFocus(),
+  start: (minutes) => startFocus(minutes),
 
   setDurations: (patch) => {
     const timer = get().timer;

@@ -4,14 +4,14 @@ import { useFocusStore } from "@/focus/store";
 import { formatClock, isActive, remainingMs } from "@/focus/timer";
 
 /**
- * Focus chip at the left end of the status bar.
+ * Focus chips at the left end of the status bar.
  *
- * It does exactly one thing: **one click starts a focus session**. Once
- * started, the chip becomes a pure status display and is disabled: there is
- * no pause, no early end, no way out of the screen lock (the only path that
- * releases the lock is letting the timer run out). The lock configuration is
- * not here either: the length lives in the settings page, both locks are
- * always fully on.
+ * One chip per configured duration, each showing nothing but that length: a
+ * click starts a stretch of exactly that length. Once started the chips are
+ * replaced by one pure status chip and every button is disabled: there is no
+ * pause, no early end, no way out of the screen lock (the only path that
+ * releases the lock is letting the timer run out). The durations themselves
+ * live in the settings page, both locks are always fully on.
  */
 export function FocusChip() {
   const timer = useFocusStore((s) => s.timer);
@@ -21,9 +21,7 @@ export function FocusChip() {
   const start = useFocusStore((s) => s.start);
 
   const active = isActive(timer);
-  const clock = active
-    ? formatClock(remainingMs(timer, now))
-    : formatClock(timer.config.focusMinutes * 60_000);
+  const clock = active ? formatClock(remainingMs(timer, now)) : "";
 
   // The window title follows the countdown: the title bar is overlay +
   // hiddenTitle and invisible most of the time, but the scheduler center and
@@ -42,23 +40,36 @@ export function FocusChip() {
 
   return (
     <div className="focus-chip-wrap">
-      <button
-        type="button"
-        className={`focus-chip${active ? " running" : ""}${locked ? " locked" : ""}`}
-        disabled={active}
-        title={
-          active
-            ? "专注进行中:这一段走完才会解锁"
-            : error
-              ? `上一次没有开始:${error}`
-              : "点一下开始专注:独占屏幕 + 硬锁,开始后不能中途退出"
-        }
-        onClick={() => void start()}
-      >
-        {active && <span className="focus-lock" aria-hidden="true">🔒</span>}
-        <span className="focus-label">{active ? "专注中" : "番茄钟"}</span>
-        <span className="focus-time">{clock}</span>
-      </button>
+      {active ? (
+        <button
+          type="button"
+          className={`focus-chip running${locked ? " locked" : ""}`}
+          disabled
+          title="专注进行中:这一段走完才会解锁"
+        >
+          <span className="focus-lock" aria-hidden="true">
+            🔒
+          </span>
+          <span className="focus-label">专注中</span>
+          <span className="focus-time">{clock}</span>
+        </button>
+      ) : (
+        timer.config.focusDurations.map((minutes) => (
+          <button
+            key={minutes}
+            type="button"
+            className={`focus-chip${locked ? " locked" : ""}`}
+            title={
+              error
+                ? `上一次没有开始:${error}`
+                : `开始 ${minutes} 分钟专注:独占屏幕 + 硬锁,开始后不能中途退出`
+            }
+            onClick={() => void start(minutes)}
+          >
+            <span className="focus-time">{formatClock(minutes * 60_000)}</span>
+          </button>
+        ))
+      )}
     </div>
   );
 }
