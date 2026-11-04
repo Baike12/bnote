@@ -293,7 +293,7 @@ export function JsonFilePane() {
 
   return (
     <div className="editor-pane" data-key-region="notes">
-      <div className="editor-host" ref={hostRef} />
+      <div className="json-editor-host" ref={hostRef} />
       <div className="status-bar">
         <span className={valid ? undefined : "json-file-invalid"}>
           {error ?? (valid ? "JSON" : "JSON 无效")}

@@ -285,7 +285,6 @@ function TreeItem(props: TreeItemProps) {
         data-path={node.relPath}
         onClick={() => (node.kind === "dir" ? toggleFolder(node) : void openNote(absPath))}
         onContextMenu={openMenu}
-        onDoubleClick={() => setRenaming(node.relPath)}
       >
         {node.kind === "dir" ? (
           <FolderTypeIcon open={isOpen} />
@@ -352,7 +351,6 @@ function RenameInput({
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onClick={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
         e.stopPropagation();
         if (e.key === "Enter") onCommit(value.trim());

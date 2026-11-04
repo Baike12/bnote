@@ -1955,16 +1955,19 @@ button {
 .code-area .cm-editor.cm-focused {
   outline: none;
 }
-/* The code editor (study mode middle column) and the code box in the settings
-   share this "compact code body": do not apply the note body typography
-   (centered line width / 48px padding / body font) - the `.cm-content` rules
-   above carry !important and would squeeze the code a hundred pixels to the
-   right of the line numbers and switch it to a proportional font.
+/* The code editor (study mode middle column), the code box in the settings and
+   the raw JSON editor share this "compact code body": do not apply the note
+   body typography (centered line width / 48px padding / body font) - the
+   `.cm-content` rules above carry !important and would squeeze the code a
+   hundred pixels to the right of the line numbers and switch it to a
+   proportional font. Every editor host that draws gutters must be in this list;
+   a host left out centers its text away from them.
    The vertical whitespace variables of typewriter mode are written by
    typewriter.ts onto the scrollDOM and read here; when typewriter mode is
    off they fall back to the normal padding. */
 .code-area .cm-content,
-.code-editor-host .cm-content {
+.code-editor-host .cm-content,
+.json-editor-host .cm-content {
   max-width: none;
   margin: 0 !important;
   padding: var(--typewriter-top, 10px) 12px var(--typewriter-bottom, 10px) !important;
@@ -1973,7 +1976,8 @@ button {
   line-height: 1.6;
 }
 .code-area .cm-gutters,
-.code-editor-host .cm-gutters {
+.code-editor-host .cm-gutters,
+.json-editor-host .cm-gutters {
   background: transparent !important;
   color: var(--text-faint) !important;
   border-right: 1px solid var(--border) !important;
@@ -1981,7 +1985,8 @@ button {
   font-size: 11.5px;
 }
 .code-area .cm-lineNumbers .cm-gutterElement,
-.code-editor-host .cm-lineNumbers .cm-gutterElement {
+.code-editor-host .cm-lineNumbers .cm-gutterElement,
+.json-editor-host .cm-lineNumbers .cm-gutterElement {
   padding: 0 8px 0 10px;
 }
 
@@ -5776,12 +5781,14 @@ input[type="range"] {
   flex-direction: column;
 }
 
-.code-editor-host {
+.code-editor-host,
+.json-editor-host {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
 }
-.code-editor-host .cm-editor {
+.code-editor-host .cm-editor,
+.json-editor-host .cm-editor {
   height: 100%;
 }
 
