@@ -77,9 +77,7 @@ export default function App() {
   const vaultName = useAppStore((s) => s.vaultName);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const currentFile = useAppStore((s) => s.currentFile);
-  const studyMode = useAppStore((s) => s.studyMode);
-  const codeMode = useAppStore((s) => s.codeMode);
-  const projectsMode = useAppStore((s) => s.projectsMode);
+  const mode = useAppStore((s) => s.mode);
   const drawingSession = useAppStore((s) => s.drawingSession);
   // Agent context: the backend reads the current note path for its system prompt.
   useEffect(() => {
@@ -386,11 +384,11 @@ export default function App() {
 
   const main = (
     <main className="main">
-      {projectsMode ? (
+      {mode === "projects" ? (
         <ProjectsLayout />
-      ) : codeMode ? (
+      ) : mode === "code" ? (
         <CodeLayout />
-      ) : studyMode ? (
+      ) : mode === "study" ? (
         <StudyLayout />
       ) : (
         <>
@@ -422,7 +420,7 @@ export default function App() {
       {main}
       {/* Code mode is independent of the vault: a repository can be worked on
           without a notebook open, so the welcome screen must not cover it. */}
-      {!vaultPath && !codeMode && <Welcome />}
+      {!vaultPath && mode !== "code" && <Welcome />}
       <LinkSuggest />
       <QuickSwitcher />
       <CommandPalette />

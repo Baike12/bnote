@@ -204,7 +204,7 @@ export async function openNote(path: string, line?: number): Promise<void> {
   // its own effect then calls openNote again with a live view. The project
   // view has no note editor at all, so it keeps the honest toast.
   if (isJsonPath(path) || !getView()) {
-    if (store.projectsMode) {
+    if (store.mode === "projects") {
       store.showToast("项目视图没有笔记编辑器，先退出项目视图");
       return;
     }

@@ -105,7 +105,7 @@ export async function openProjectAt(root: string): Promise<void> {
   // it and remembers the repository, so a restart lands where the user left.
   const title = root.split("/").pop() ?? root;
   app.setCodeProject({ path: root, title });
-  app.setCodeMode(true);
+  app.setMode("code");
 }
 
 /** Restore the remembered project on startup without switching modes. */

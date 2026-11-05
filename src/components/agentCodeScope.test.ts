@@ -21,7 +21,7 @@ const code = raw
 
 describe("which definition a session runs with", () => {
   it("code mode wins over creative mode", () => {
-    expect(code).toMatch(/agentModeRef\.current = codeMode \? "coding" : creativeMode \? "creative" : "study"/);
+    expect(code).toMatch(/agentModeRef\.current = mode === "code" \? "coding" : creativeMode \? "creative" : "study"/);
   });
 
   it("there is no study-content code variant left", () => {

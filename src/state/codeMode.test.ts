@@ -12,54 +12,56 @@ import { codeSessionIdentity, codeSessionPath } from "@/code/sessionScope";
  * Gate for "code mode is its own mode".
  *
  * A local vault and a code repository are unrelated: code mode may not be a
- * study material, so the three full-screen shapes (study / code / projects)
- * must stay mutually exclusive, the project must survive a restart, the mode
- * toggle must not steal ⌘⇧C (that key is "insert code block"), and a coding
- * transcript must live in the agent home, never in the vault.
+ * study material. The main area has exactly one shape at a time, which the
+ * store expresses as a single `mode` union — so these tests exercise the
+ * transitions rather than checking three booleans for disagreement. Creative
+ * mode is a different axis (the agent definition) and must not move the shape.
+ * The project must survive a restart, the mode toggle must not steal ⌘⇧C
+ * (that key is "insert code block"), and a coding transcript must live in the
+ * agent home, never in the vault.
  */
 
 const state = () => useAppStore.getState();
 
 afterEach(() => {
   applyOverrides({});
-  useAppStore.setState({
-    studyMode: false,
-    codeMode: false,
-    projectsMode: false,
-    sidebarOpen: true,
-  });
+  useAppStore.setState({ mode: "notes", creativeMode: false, sidebarOpen: true });
 });
 
 describe("the main area has exactly one shape", () => {
-  it("entering code mode leaves study and the project view", () => {
-    state().setStudyMode(true);
-    state().setCodeMode(true);
-    expect(state().codeMode).toBe(true);
-    expect(state().studyMode).toBe(false);
-    expect(state().projectsMode).toBe(false);
-    // The sidebar collapses like in the other two full-screen modes.
+  it("entering a shape replaces the previous one", () => {
+    state().setMode("study");
+    state().setMode("code");
+    expect(state().mode).toBe("code");
+    state().setMode("projects");
+    expect(state().mode).toBe("projects");
+  });
+
+  it("entering a full-screen shape collapses the sidebar, leaving does not expand it", () => {
+    expect(state().sidebarOpen).toBe(true);
+    state().setMode("code");
+    expect(state().sidebarOpen).toBe(false);
+    state().setMode("notes");
+    expect(state().mode).toBe("notes");
+    // The user can expand it inside the mode; leaving must not fight that.
     expect(state().sidebarOpen).toBe(false);
   });
 
-  it("entering study mode or the project view leaves code mode", () => {
-    state().setCodeMode(true);
-    state().setStudyMode(true);
-    expect(state().codeMode).toBe(false);
-    expect(state().studyMode).toBe(true);
-
-    state().setCodeMode(true);
-    state().setProjectsMode(true);
-    expect(state().codeMode).toBe(false);
-    expect(state().projectsMode).toBe(true);
+  it("the toggle command enters the target shape from any other shape", () => {
+    state().setMode("projects");
+    toggleCodeMode();
+    expect(state().mode).toBe("code");
+    toggleCodeMode();
+    expect(state().mode).toBe("notes");
   });
 
-  it("the toggle command enters code mode from any other shape", () => {
-    state().setProjectsMode(true);
-    toggleCodeMode();
-    expect(state().codeMode).toBe(true);
-    expect(state().projectsMode).toBe(false);
-    toggleCodeMode();
-    expect(state().codeMode).toBe(false);
+  it("creative mode is the agent definition, not a shape", () => {
+    state().setMode("study");
+    state().setCreativeMode(true);
+    expect(state().mode).toBe("study");
+    expect(state().creativeMode).toBe(true);
+    state().setCreativeMode(false);
+    expect(state().mode).toBe("study");
   });
 });
 

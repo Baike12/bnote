@@ -124,7 +124,7 @@ function settleHeadingNumbering(
 
 /** Whether the study assistant panel is present: it is always mounted in the three-column layout, so entering study mode is enough. */
 function agentPanelActive(): boolean {
-  return useAppStore.getState().studyMode;
+  return useAppStore.getState().mode === "study";
 }
 
 const defs: CommandDef[] = [
@@ -330,7 +330,7 @@ const defs: CommandDef[] = [
     category: "视图",
     run: () => {
       const store = useAppStore.getState();
-      if (!store.studyMode) store.setStudyMode(true);
+      if (store.mode !== "study") store.setMode("study");
       store.setStudyContent({ kind: "url", url: WEREAD_HOME_URL, title: "微信读书" });
     },
   },
@@ -369,7 +369,7 @@ const defs: CommandDef[] = [
     title: "学习模式:截取阅读区可见内容到学习助手(⌘⇧E)",
     category: "学习",
     when: () =>
-      useAppStore.getState().studyMode &&
+      useAppStore.getState().mode === "study" &&
       useAppStore.getState().studyContent?.kind === "pdf" &&
       hasPdfSnapshotSource(),
     // Both the capture and the delivery go through the front end: the page
@@ -433,7 +433,7 @@ const defs: CommandDef[] = [
     id: "region.focus-agent",
     title: "聚焦学习助手输入框",
     category: "区域切换",
-    when: () => useAppStore.getState().studyMode,
+    when: () => useAppStore.getState().mode === "study",
     run: () => useAppStore.getState().runAgentPanelCommand("focus-input"),
   },
   {
@@ -451,7 +451,7 @@ const defs: CommandDef[] = [
     id: "region.focus-reading",
     title: "切换到阅读区(PDF / 网页)",
     category: "区域切换",
-    when: () => useAppStore.getState().studyMode,
+    when: () => useAppStore.getState().mode === "study",
     // The middle column is always visible, so there is no need to switch
     // tabs; it only has to hand the focus from the editor / input back to the
     // reading region.

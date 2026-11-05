@@ -455,7 +455,7 @@ function prettyJson(value: unknown): string {
 
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
-  const codeMode = useAppStore((s) => s.codeMode);
+  const mode = useAppStore((s) => s.mode);
   const codeProject = useAppStore((s) => s.codeProject);
   const creativeMode = useAppStore((s) => s.creativeMode);
   const setCreativeMode = useAppStore((s) => s.setCreativeMode);
@@ -597,8 +597,8 @@ export function AgentPanel() {
    */
   const agentModeRef = useRef<"study" | "creative" | "coding">("study");
   useEffect(() => {
-    agentModeRef.current = codeMode ? "coding" : creativeMode ? "creative" : "study";
-  }, [codeMode, creativeMode]);
+    agentModeRef.current = mode === "code" ? "coding" : creativeMode ? "creative" : "study";
+  }, [mode, creativeMode]);
   /**
    * Prompt history (↑ / ↓ recall): the entries come from
    * `~/.bnote/history.jsonl`, filtered to the current project, and are fetched
@@ -999,12 +999,12 @@ export function AgentPanel() {
   // - Saving the settings: nothing happens — the sessions that are already open keep using their own model config snapshot.
   // - Leaving and re-entering study / code mode: the panel is mounted again and restores per scope.
   useEffect(() => {
-    const identity = codeMode
+    const identity = mode === "code"
       ? codeSessionIdentity(codeProject?.path ?? null)
       : creativeMode
         ? `creative|${restartNonce}`
         : studyContentKey(materialContent);
-    const key = `${codeMode ? "d" : creativeMode ? "c" : "s"}|${identity}|${restartNonce}`;
+    const key = `${mode === "code" ? "d" : creativeMode ? "c" : "s"}|${identity}|${restartNonce}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
     // A new scope starts outside plan mode (the plan belonged to the previous
@@ -1019,7 +1019,7 @@ export function AgentPanel() {
     void (async () => {
       const vault = useAppStore.getState().vaultPath;
       let info: MaterialInfo | null = null;
-      if (codeMode) {
+      if (mode === "code") {
         // A coding session belongs to the repository: its records live in the
         // agent home (`~/.bnote/projects/<project>/`), never in the vault.
         materialRef.current = null;
@@ -1110,7 +1110,7 @@ export function AgentPanel() {
       turnsRef.current.clear();
       void startSession(conv.key, materialContent);
     })();
-  }, [materialContent, creativeMode, codeMode, codeProject, restartNonce, startSession, restoreFamily]);
+  }, [materialContent, creativeMode, mode, codeProject, restartNonce, startSession, restoreFamily]);
 
   // ⌘⇧Y / the command: switch back and forth between the main session and the most recent auxiliary session.
   useEffect(() => {
@@ -1832,7 +1832,7 @@ export function AgentPanel() {
               </svg>
             </div>
             <p className="agent-welcome-title">
-              {codeMode
+              {mode === "code"
                 ? codeProject
                   ? "编码模式:我直接读写当前代码仓库并运行命令"
                   : "先在中栏打开一个代码项目"
@@ -1841,7 +1841,7 @@ export function AgentPanel() {
                   : "问我关于当前 PDF / 网页的问题"}
             </p>
             <p className="agent-hint">
-              {codeMode
+              {mode === "code"
                 ? codeProject
                   ? "开工前列 todo(/compact 可手动压缩上下文);悬停消息点「⤷」可分叉"
                   : "项目目录就是我的工作区,会话记录存放在 ~/.bnote"
@@ -1991,7 +1991,7 @@ export function AgentPanel() {
           ref={inputRef}
           className="agent-input"
           placeholder={
-            codeMode
+            mode === "code"
               ? "描述要改什么…(bash/编辑/测试;/compact 压缩上下文)"
               : creativeMode
                 ? "描述要创作的内容…(输入 / 调技能、@ 引用文件,可粘贴截图)"
@@ -2352,7 +2352,7 @@ export function AgentPanel() {
           </button>
           {savedSessions.length === 0 ? (
             <p className="agent-history-empty">
-              {codeMode ? "这个项目还没有保存过会话" : "这份材料还没有保存过会话"}
+              {mode === "code" ? "这个项目还没有保存过会话" : "这份材料还没有保存过会话"}
             </p>
           ) : (
             <ul className="agent-history-list">

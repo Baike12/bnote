@@ -255,6 +255,13 @@ export interface LinkHop {
   to: string;
 }
 
+/**
+ * The shape of the main area. Exactly one shape exists at a time: putting it in
+ * the type makes "study mode and code mode at once" unrepresentable, which the
+ * three separate booleans this replaces could not do.
+ */
+export type AppMode = "notes" | "study" | "code" | "projects";
+
 /** The code project open in code mode (the repository is independent of the vault). */
 export interface CodeProjectRef {
   path: string;
@@ -398,15 +405,18 @@ interface AppState {
    */
   dailyBackFrom: string | null;
   toast: string | null;
-  /** Study mode: when active, the main area becomes the agent | content | notes three columns */
-  studyMode: boolean;
-  /** Code mode: agent | code project | notes, independent of study mode (a local vault and a code repository are unrelated). */
-  codeMode: boolean;
+  /**
+   * The shape of the main area (see `AppMode`): the note editor, the study
+   * three columns, the code three columns, or the project board.
+   */
+  mode: AppMode;
   /** The code project that code mode shows (null = the project picker). Persisted with the config. */
   codeProject: CodeProjectRef | null;
-  /** The project management view: when active, the main area becomes the project list | project cards | journal three columns. */
-  projectsMode: boolean;
-  /** Creative mode: the shape switch of the agent panel and the middle-column preview inside study mode. */
+  /**
+   * Creative mode: which definition the agent panel runs (writing with tools and
+   * an HTML preview) instead of plain study Q&A. Independent of `mode` — the
+   * creative agent applies the next time the study layout is on screen.
+   */
   creativeMode: boolean;
   /** The current content of the middle column in study mode (null = empty state, waiting for a dragged-in PDF or a URL) */
   studyContent: StudyContent | null;
@@ -473,10 +483,11 @@ interface AppState {
   setDailyBackFrom: (path: string | null) => void;
   showToast: (msg: string) => void;
   clearToast: () => void;
-  setStudyMode: (active: boolean) => void;
-  setCodeMode: (active: boolean) => void;
+  /** The only writer of the main-area shape; entering a full-screen shape collapses the sidebar. */
+  setMode: (mode: AppMode) => void;
+  /** Command surface: leaves the target shape when it is already active, enters it otherwise. */
+  toggleMode: (target: Exclude<AppMode, "notes">) => void;
   setCodeProject: (project: CodeProjectRef | null) => void;
-  setProjectsMode: (active: boolean) => void;
   setCreativeMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
   /** The most recently opened code projects (MRU, newest first). */
@@ -546,10 +557,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   linkBack: [],
   dailyBackFrom: null,
   toast: null,
-  studyMode: false,
-  codeMode: false,
+  mode: "notes",
   codeProject: null,
-  projectsMode: false,
   creativeMode: false,
   studyContent: null,
   recentCodeProjects: [],
@@ -666,37 +675,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDailyBackFrom: (path) => set({ dailyBackFrom: path }),
   showToast: (msg) => set({ toast: msg }),
   clearToast: () => set({ toast: null }),
-  // Entering study mode collapses the vault directory first: the left side
-  // already holds three columns, and one more tree would be too crowded.
+  // Entering a full-screen shape collapses the vault directory first: the left
+  // side already holds three columns, and one more tree would be too crowded.
   // It is collapsed only at this moment; the user can expand it as usual
-  // inside the mode afterwards.
-  setStudyMode: (active) =>
+  // inside the mode afterwards. Leaving does not expand it back.
+  setMode: (mode) =>
+    set(mode === "notes" ? { mode } : { mode, sidebarOpen: false }),
+  toggleMode: (target) =>
     set(
-      active
-        ? { studyMode: true, codeMode: false, projectsMode: false, sidebarOpen: false }
-        : { studyMode: false },
-    ),
-  // Code mode is the fourth full-screen shape: exactly one of study / code /
-  // projects is active at a time (they all take the same main area).
-  setCodeMode: (active) =>
-    set(
-      active
-        ? { codeMode: true, studyMode: false, projectsMode: false, sidebarOpen: false }
-        : { codeMode: false },
+      get().mode === target
+        ? { mode: "notes" }
+        : { mode: target, sidebarOpen: false },
     ),
   setCodeProject: (codeProject) => {
     set({ codeProject });
     persistConfig({ ...getConfigSnapshot(), codeProject });
   },
-  // The two full-screen views are mutually exclusive: only one main-area
-  // shape exists at a time, otherwise the switch commands would stack two
-  // sets of three columns.
-  setProjectsMode: (active) =>
-    set(
-      active
-        ? { projectsMode: true, studyMode: false, codeMode: false, sidebarOpen: false }
-        : { projectsMode: false },
-    ),
   setCreativeMode: (active) => set({ creativeMode: active }),
   setStudyContent: (content) => set({ studyContent: content, studyWereadBook: null }),
   setRecentCodeProjects: (recentCodeProjects: string[]) => {
@@ -735,20 +729,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 }));
 
 export function toggleStudyMode() {
-  const store = useAppStore.getState();
-  store.setStudyMode(!store.studyMode);
+  useAppStore.getState().toggleMode("study");
 }
 
-/** The project management view switch (on the same level as study mode, mutually exclusive). */
+/** The project management view switch (the same main area as the other shapes). */
 export function toggleProjectsMode() {
-  const store = useAppStore.getState();
-  store.setProjectsMode(!store.projectsMode);
+  useAppStore.getState().toggleMode("projects");
 }
 
-/** The code mode switch (independent of study mode; the project is remembered across restarts). */
+/** The code mode switch (the project is remembered across restarts). */
 export function toggleCodeMode() {
-  const store = useAppStore.getState();
-  store.setCodeMode(!store.codeMode);
+  useAppStore.getState().toggleMode("code");
 }
 
 let configSnapshot: PersistedConfig = {};
