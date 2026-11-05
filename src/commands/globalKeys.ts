@@ -47,7 +47,11 @@ export function setKeyModalOpen(open: boolean): void {
   modalOpen = open;
 }
 
-const DRAWING_ALLOWED = new Set(["nav.quick-switcher", "nav.command-palette", "workspace.open-daily"]);
+const DRAWING_ALLOWED = new Set([
+  "nav.quick-switcher",
+  "nav.command-palette",
+  "workspace.open-daily",
+]);
 
 export function setCommandKeyContext(ctx: CommandKeyContext) {
   keyContext = ctx;
@@ -165,10 +169,7 @@ function pickCommand(ids: string[]): string | null {
  * the main window's focus before it takes the focus and runs (see
  * CommandDef.keepsPageFocus), so the resolved result is exposed here.
  */
-export function resolveBoundCommand(
-  key: string,
-  region: FocusRegion,
-): CommandDef | null {
+export function resolveBoundCommand(key: string, region: FocusRegion): CommandDef | null {
   const id = pickCommand(commandsForKey(key, region));
   return id ? (getCommand(id) ?? null) : null;
 }

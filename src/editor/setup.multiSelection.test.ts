@@ -29,11 +29,7 @@ describe("editor configuration: multiple ranges (the precondition for vim blockw
   it("a three-range selection over three lines lands as is (not collapsed to the main range by asSingle, the main index is kept)", () => {
     const next = newState().update({
       selection: EditorSelection.create(
-        [
-          EditorSelection.range(2, 7),
-          EditorSelection.range(13, 16),
-          EditorSelection.range(19, 24),
-        ],
+        [EditorSelection.range(2, 7), EditorSelection.range(13, 16), EditorSelection.range(19, 24)],
         2,
       ),
     }).state;

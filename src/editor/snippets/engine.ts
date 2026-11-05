@@ -401,7 +401,8 @@ export function findSnippet(
       snippet.anchored.lastIndex = 0;
       const m = snippet.anchored.exec(prefix);
       if (!m) continue;
-      if (snippet.word && !isWordBoundary(state, cursor - m[0].length, cursor, delimiters)) continue;
+      if (snippet.word && !isWordBoundary(state, cursor - m[0].length, cursor, delimiters))
+        continue;
       const res = resolveReplacement(snippet, m, opts.visualText);
       if (res === null) continue;
       // latex-suite semantics: [[0]] refers to the FIRST capture group,

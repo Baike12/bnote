@@ -48,9 +48,7 @@ export function HtmlPreview({ code }: { code: string }) {
     const document_ = wrapPreviewDocument(code, token);
     const upload = isTauriRuntime()
       ? agentApi.putPreview(document_)
-      : Promise.resolve(
-          URL.createObjectURL(new Blob([document_], { type: "text/html" })),
-        );
+      : Promise.resolve(URL.createObjectURL(new Blob([document_], { type: "text/html" })));
     upload
       .then((url) => {
         if (seq.current !== mine) return;

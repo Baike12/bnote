@@ -80,9 +80,7 @@ async function runDrawingSave(): Promise<void> {
   try {
     await api.writeFile(session.path, json);
     lastWritten.current = json;
-    const count = (snap.elements as { isDeleted?: boolean }[]).filter(
-      (el) => !el.isDeleted,
-    ).length;
+    const count = (snap.elements as { isDeleted?: boolean }[]).filter((el) => !el.isDeleted).length;
     if (count > 0) await exportPng(snap, session.path);
   } catch (e) {
     lastWritten.current = null; // the write failed: the next one must rewrite

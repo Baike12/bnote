@@ -19,7 +19,14 @@ export function AgentWelcome({
   return (
     <div className="agent-welcome">
       <div className="agent-welcome-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
         </svg>
       </div>
@@ -57,7 +64,16 @@ function ToolCard({ tool }: { tool: ToolRecord }) {
         />
         <span className="agent-tool-name">{tool.name}</span>
         {tool.ok === false && <span className="agent-tool-fail">失败</span>}
-        <svg className="agent-tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg
+          className="agent-tool-chevron"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
           <path d="m9 18 6-6-6-6" />
         </svg>
       </summary>

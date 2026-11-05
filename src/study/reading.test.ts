@@ -80,9 +80,9 @@ describe("the page landing point is aligned to the text lines", () => {
 
   it("the start and the end of the document are never passed: an edge-flush candidate does not count as aligned", () => {
     // Top: aligning the top edge would scroll to -10, so only the bottom edge alignment is accepted.
-    expect(
-      snapScrollTopToLine(0, viewport, content, 5, [{ top: -5, bottom: 10 }], tolerance),
-    ).toBe(5);
+    expect(snapScrollTopToLine(0, viewport, content, 5, [{ top: -5, bottom: 10 }], tolerance)).toBe(
+      5,
+    );
     // Bottom: aligning the bottom edge would exceed max, so only the top edge alignment is accepted.
     expect(
       snapScrollTopToLine(4300, viewport, content, 693, [{ top: 688, bottom: 702 }], tolerance),

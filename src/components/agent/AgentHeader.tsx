@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  MAX_AGENT_FONT,
-  MIN_AGENT_FONT,
-  formatAgentFont,
-} from "@/study/agentFont";
+import { MAX_AGENT_FONT, MIN_AGENT_FONT, formatAgentFont } from "@/study/agentFont";
 
 /**
  * Header of the assistant panel: the session title (clicking it opens the
@@ -84,8 +80,7 @@ export function AgentHeader({
     if (!open) return;
     const onDown = (event: PointerEvent) => {
       const target = event.target as Node;
-      const inside =
-        convRef.current?.contains(target) || fontRef.current?.contains(target);
+      const inside = convRef.current?.contains(target) || fontRef.current?.contains(target);
       if (!inside) setOpen(null);
     };
     const onKey = (event: KeyboardEvent) => {
@@ -185,11 +180,7 @@ export function AgentHeader({
                 >
                   −
                 </button>
-                <button
-                  className="agent-font-value"
-                  title="回到 100%"
-                  onClick={onFontReset}
-                >
+                <button className="agent-font-value" title="回到 100%" onClick={onFontReset}>
                   {formatAgentFont(fontScale)}
                 </button>
                 <button
@@ -214,7 +205,17 @@ export function AgentHeader({
           aria-pressed={creativeMode}
           onClick={onToggleCreative}
         >
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
             <path d="M12 19l7-7a2.4 2.4 0 0 0-3.4-3.4l-9.6 9.6L4 22l2.1-.5a10 10 0 0 0 2.4-1L12 19z" />
             <path d="M14.5 6.5l3 3" />
           </svg>

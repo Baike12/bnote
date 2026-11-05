@@ -32,8 +32,10 @@ export function TemplateSelect({
 export function TemplateHint() {
   return (
     <p className="setting-hint">
-      模板是普通笔记文件，内容会原样写进新文件：<code>{"{{date}}"}</code> 换成当天日期（YYYY-MM-DD），
-      <code>{"{{title}}"}</code> 换成新文件名（日记里是日期），其它文字照抄。改完模板文件，下次创建立即生效。
+      模板是普通笔记文件，内容会原样写进新文件：<code>{"{{date}}"}</code>{" "}
+      换成当天日期（YYYY-MM-DD），
+      <code>{"{{title}}"}</code>{" "}
+      换成新文件名（日记里是日期），其它文字照抄。改完模板文件，下次创建立即生效。
     </p>
   );
 }

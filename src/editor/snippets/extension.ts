@@ -565,8 +565,7 @@ const mirrorSyncListener = EditorView.updateListener.of((u) => {
     const valid = ranges.filter((r) => r.from <= r.to && r.from >= 0 && r.to <= doc.length);
     if (valid.length < 2) continue;
 
-    const source =
-      valid.find((r) => head >= r.from && head <= r.to) ?? valid[0];
+    const source = valid.find((r) => head >= r.from && head <= r.to) ?? valid[0];
     const content = doc.sliceString(source.from, source.to);
     if (valid.every((r) => doc.sliceString(r.from, r.to) === content)) continue;
     for (const r of valid) {

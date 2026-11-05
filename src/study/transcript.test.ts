@@ -35,7 +35,15 @@ describe("the transcript line format", () => {
     expect(raw.split("\n").filter(Boolean)).toHaveLength(2);
     expect(parseTranscript(raw)).toEqual([
       { type: "user", at: 1, text: "你好", images: undefined },
-      { type: "assistant", at: 2, text: "你好!", thinking: "思考", thinkSeconds: 3, tools: [], error: undefined },
+      {
+        type: "assistant",
+        at: 2,
+        text: "你好!",
+        thinking: "思考",
+        thinkSeconds: 3,
+        tools: [],
+        error: undefined,
+      },
     ]);
   });
 

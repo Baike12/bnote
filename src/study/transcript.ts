@@ -166,9 +166,7 @@ export function sessionMetaFromRaw(raw: string | null): TranscriptMetaLine | nul
           ? v.forkAt
           : undefined,
       titleSource:
-        v.titleSource === "llm" || v.titleSource === "first-message"
-          ? v.titleSource
-          : undefined,
+        v.titleSource === "llm" || v.titleSource === "first-message" ? v.titleSource : undefined,
     };
   }
   return null;

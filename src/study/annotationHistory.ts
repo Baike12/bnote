@@ -18,20 +18,14 @@ export function createAnnotationHistory<T>(limit = 100): AnnotationHistory<T> {
 }
 
 /** Record the state before a change; a new change invalidates the redo stack. */
-export function recordAnnotationHistory<T>(
-  history: AnnotationHistory<T>,
-  before: T,
-): void {
+export function recordAnnotationHistory<T>(history: AnnotationHistory<T>, before: T): void {
   history.undo.push(before);
   if (history.undo.length > history.limit) history.undo.shift();
   history.redo.length = 0;
 }
 
 /** Return the previous state (the current state goes onto the redo stack); null when there is nothing to undo. */
-export function undoAnnotationHistory<T>(
-  history: AnnotationHistory<T>,
-  current: T,
-): T | null {
+export function undoAnnotationHistory<T>(history: AnnotationHistory<T>, current: T): T | null {
   if (history.undo.length === 0) return null;
   const previous = history.undo.pop() as T;
   history.redo.push(current);
@@ -39,10 +33,7 @@ export function undoAnnotationHistory<T>(
 }
 
 /** Return the next state (the current state goes back onto the undo stack); null when there is nothing to redo. */
-export function redoAnnotationHistory<T>(
-  history: AnnotationHistory<T>,
-  current: T,
-): T | null {
+export function redoAnnotationHistory<T>(history: AnnotationHistory<T>, current: T): T | null {
   if (history.redo.length === 0) return null;
   const next = history.redo.pop() as T;
   history.undo.push(current);

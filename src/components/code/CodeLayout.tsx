@@ -121,9 +121,7 @@ export function CodeLayout() {
         aria-label="调整助手栏宽度"
         title="拖动调整助手栏宽度,双击恢复默认"
         onPointerDown={startAgentDrag}
-        onDoubleClick={() =>
-          patchSettings({ codeAgentWidth: DEFAULT_SETTINGS.codeAgentWidth })
-        }
+        onDoubleClick={() => patchSettings({ codeAgentWidth: DEFAULT_SETTINGS.codeAgentWidth })}
       />
       <div className="content-pane code-mode-content">
         <CodeProjectPane />
@@ -135,9 +133,7 @@ export function CodeLayout() {
         aria-label="调整代码栏宽度"
         title="拖动调整代码栏宽度,双击恢复默认"
         onPointerDown={startContentDrag}
-        onDoubleClick={() =>
-          patchSettings({ codeContentWidth: DEFAULT_SETTINGS.codeContentWidth })
-        }
+        onDoubleClick={() => patchSettings({ codeContentWidth: DEFAULT_SETTINGS.codeContentWidth })}
       />
       <div className="study-right">
         <div className="study-notes-head" data-tauri-drag-region="deep">

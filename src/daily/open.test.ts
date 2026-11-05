@@ -158,9 +158,7 @@ describe("the template of a newly created daily note", () => {
       { templatePath: () => "Templates/日记.md" },
     );
     await openDailyNote(h.deps);
-    expect(h.written[0].content).toBe(
-      "# 2026-09-27\n\n- [ ] 还没做完\n\n## 计划\n",
-    );
+    expect(h.written[0].content).toBe("# 2026-09-27\n\n- [ ] 还没做完\n\n## 计划\n");
   });
 
   it("the template file cannot be read: it falls back to the default `# <date>` heading, the creation is not blocked", async () => {
@@ -182,10 +180,7 @@ describe("the template of a newly created daily note", () => {
   });
 
   it("the template path escapes the vault (`..`): it is treated as not set", async () => {
-    const h = harness(
-      { "/v/../secret.md": "# 不该读\n" },
-      { templatePath: () => "../secret.md" },
-    );
+    const h = harness({ "/v/../secret.md": "# 不该读\n" }, { templatePath: () => "../secret.md" });
     await openDailyNote(h.deps);
     expect(h.written[0].content).toBe(dailyScaffold(DAY));
   });

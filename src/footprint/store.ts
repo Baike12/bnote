@@ -103,10 +103,7 @@ function sameBlocks(a: FootprintBlock[], b: FootprintBlock[]): boolean {
   );
 }
 
-function sameIndex(
-  a: Map<string, FootprintBlock[]>,
-  b: Map<string, FootprintBlock[]>,
-): boolean {
+function sameIndex(a: Map<string, FootprintBlock[]>, b: Map<string, FootprintBlock[]>): boolean {
   if (a.size !== b.size) return false;
   for (const [k, v] of a) {
     const w = b.get(k);
@@ -335,7 +332,9 @@ export class FootprintCore {
     return this.entriesOf(this.history.get(day) ?? new Map());
   }
 
-  private entriesOf(map: Map<string, FootprintBlock[]>): { path: string; blocks: FootprintBlock[] }[] {
+  private entriesOf(
+    map: Map<string, FootprintBlock[]>,
+  ): { path: string; blocks: FootprintBlock[] }[] {
     return [...map.entries()]
       .filter(([, blocks]) => blocks.length > 0)
       .map(([path, blocks]) => ({ path, blocks }))
@@ -409,10 +408,7 @@ let cache: FootprintCore | null = null;
 /** Read (or rebuild after a vault swap) the footprint store; the rotation finishes in the background and does not block opening the vault. */
 export async function ensureFootprints(vaultRoot: string): Promise<void> {
   if (cache && cache.vault === vaultRoot) return;
-  const core = new FootprintCore(
-    { io: tauriFootprintIO, today: () => todayStamp() },
-    vaultRoot,
-  );
+  const core = new FootprintCore({ io: tauriFootprintIO, today: () => todayStamp() }, vaultRoot);
   cache = core;
   try {
     await core.init();
@@ -467,7 +463,10 @@ export function flushFootprintsPersist(): void {
 }
 
 /** Harness debugging hook: inject a fake index (harness __setFootprints). */
-export function setFootprintIndexForTest(vaultRoot: string, index: Map<string, FootprintBlock[]>): void {
+export function setFootprintIndexForTest(
+  vaultRoot: string,
+  index: Map<string, FootprintBlock[]>,
+): void {
   if (cache && cache.vault === vaultRoot) {
     cache.installIndexForTest(index);
   } else {

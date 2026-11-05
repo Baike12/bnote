@@ -34,12 +34,32 @@
 export type KeyRegion = "global" | "notes" | "reading" | "agent" | "project" | "code";
 
 export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
-  { id: "global", label: "通用", hint: "焦点在任何地方都生效。命令面板、保存、切换学习模式/项目管理这类动作放这里。" },
+  {
+    id: "global",
+    label: "通用",
+    hint: "焦点在任何地方都生效。命令面板、保存、切换学习模式/项目管理这类动作放这里。",
+  },
   { id: "notes", label: "笔记区", hint: "焦点在笔记编辑器时生效(学习模式右栏的笔记也算笔记区)。" },
-  { id: "reading", label: "阅读区", hint: "焦点在阅读区时生效:PDF、网页、微信读书,以及中栏的工具栏。对阅读区动手的两条命令例外——翻页与截图,带修饰键的键位在笔记区 / Agent 面板按下也执行;翻页只滚内容,不改变焦点。滚轮/点击滚过阅读区后,键盘也归它(阅读区不取得 DOM 焦点)。" },
-  { id: "agent", label: "Agent 面板", hint: "焦点在学习助手面板时生效(输入框、消息区、历史会话)。" },
-  { id: "project", label: "项目管理", hint: "焦点在项目管理视图(项目列表、项目卡片)时生效。这里继承笔记区的编辑键位(加粗、切换待办、保存等),只是项目专属动作优先:⌘⇧↑/↓ 轮转项目、⌘⇧J 把待办发到今日待办区最前、⌘⌥N 跳到右侧日记。" },
-  { id: "code", label: "代码区", hint: "焦点在代码编辑器时生效。**这是独立的一界**:⌘S 在这里是「保存代码文件」,⌘⇧O 是「快速打开文件」,与笔记区各说各的。代码区只继承少数应用级命令(命令面板、快速跳转、切学习模式、设置),其余键位一律归代码区自己,可在 keybindings.json 的 code 段里改绑。" },
+  {
+    id: "reading",
+    label: "阅读区",
+    hint: "焦点在阅读区时生效:PDF、网页、微信读书,以及中栏的工具栏。对阅读区动手的两条命令例外——翻页与截图,带修饰键的键位在笔记区 / Agent 面板按下也执行;翻页只滚内容,不改变焦点。滚轮/点击滚过阅读区后,键盘也归它(阅读区不取得 DOM 焦点)。",
+  },
+  {
+    id: "agent",
+    label: "Agent 面板",
+    hint: "焦点在学习助手面板时生效(输入框、消息区、历史会话)。",
+  },
+  {
+    id: "project",
+    label: "项目管理",
+    hint: "焦点在项目管理视图(项目列表、项目卡片)时生效。这里继承笔记区的编辑键位(加粗、切换待办、保存等),只是项目专属动作优先:⌘⇧↑/↓ 轮转项目、⌘⇧J 把待办发到今日待办区最前、⌘⌥N 跳到右侧日记。",
+  },
+  {
+    id: "code",
+    label: "代码区",
+    hint: "焦点在代码编辑器时生效。**这是独立的一界**:⌘S 在这里是「保存代码文件」,⌘⇧O 是「快速打开文件」,与笔记区各说各的。代码区只继承少数应用级命令(命令面板、快速跳转、切学习模式、设置),其余键位一律归代码区自己,可在 keybindings.json 的 code 段里改绑。",
+  },
 ];
 
 export const KEY_REGION_IDS: KeyRegion[] = KEY_REGIONS.map((r) => r.id);
@@ -581,9 +601,7 @@ function normalizeValue(value: unknown): BindingValue | undefined {
   if (value === null) return null;
   if (typeof value === "string") return value.trim() === "" ? undefined : value;
   if (Array.isArray(value)) {
-    const keys = value.filter(
-      (k): k is string => typeof k === "string" && k.trim() !== "",
-    );
+    const keys = value.filter((k): k is string => typeof k === "string" && k.trim() !== "");
     return keys.length > 0 ? keys : null;
   }
   return undefined;
@@ -841,9 +859,7 @@ export function parseBinding(binding: string): { mods: string[]; key: string } {
   const mods: string[] = [];
   let rest = binding;
   for (;;) {
-    const name = MODIFIERS.find(
-      (m) => rest.length > m.length + 1 && rest.startsWith(`${m}-`),
-    );
+    const name = MODIFIERS.find((m) => rest.length > m.length + 1 && rest.startsWith(`${m}-`));
     if (!name) break;
     mods.push(name);
     rest = rest.slice(name.length + 1);

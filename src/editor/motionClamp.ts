@@ -54,7 +54,11 @@ function relineVerticalStep(
   const { isHiddenStep, isLandingEdge } = analyze(state, startLineNo, down);
 
   let target: Line | null = null;
-  for (let n = startLineNo + (down ? 1 : -1); down ? n <= endLineNo : n >= endLineNo; n += down ? 1 : -1) {
+  for (
+    let n = startLineNo + (down ? 1 : -1);
+    down ? n <= endLineNo : n >= endLineNo;
+    n += down ? 1 : -1
+  ) {
     const line = doc.line(n);
     if (isLandingEdge(n) || !isHiddenStep(line)) {
       target = line;
@@ -89,7 +93,12 @@ export function pixelGoalOf(view: EditorView, pos: number, contentLeft?: number)
  *  never rests inside hidden content), estimated from average character width
  *  when the line is off-screen (the motion is about to scroll it into view
  *  anyway). */
-export function columnOnLine(view: EditorView, line: Line, goal: number, contentLeft?: number): number {
+export function columnOnLine(
+  view: EditorView,
+  line: Line,
+  goal: number,
+  contentLeft?: number,
+): number {
   const rect = view.coordsAtPos(line.from);
   if (rect) {
     const x = (contentLeft ?? view.contentDOM.getBoundingClientRect().left) + goal;
@@ -102,7 +111,11 @@ export function columnOnLine(view: EditorView, line: Line, goal: number, content
   return Math.min(line.length, Math.max(0, Math.round(goal / view.defaultCharacterWidth)));
 }
 
-function analyze(state: EditorState, startLineNo: number, down: boolean): {
+function analyze(
+  state: EditorState,
+  startLineNo: number,
+  down: boolean,
+): {
   isHiddenStep: (line: Line) => boolean;
   isLandingEdge: (lineNo: number) => boolean;
 } {

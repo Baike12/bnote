@@ -2,7 +2,13 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { api, type FileNode } from "@/lib/tauri";
-import { useAppStore, getConfigSnapshot, persistConfig, flushPersistConfig, type ThemeName } from "@/state/appStore";
+import {
+  useAppStore,
+  getConfigSnapshot,
+  persistConfig,
+  flushPersistConfig,
+  type ThemeName,
+} from "@/state/appStore";
 import { loadDocument } from "@/editor/setup";
 import { getView, activeEditors } from "@/editor/api";
 import { documentPath } from "@/editor/docPath";
@@ -264,7 +270,10 @@ export async function openNote(path: string, line?: number): Promise<void> {
         if (!coords) return;
         const scroller = view.scrollDOM;
         const rect = scroller.getBoundingClientRect();
-        scroller.scrollTop = Math.max(0, scroller.scrollTop + (coords.top - rect.top) - scroller.clientHeight / 2);
+        scroller.scrollTop = Math.max(
+          0,
+          scroller.scrollTop + (coords.top - rect.top) - scroller.clientHeight / 2,
+        );
       },
     });
   }
@@ -434,7 +443,9 @@ export function wikiLinkTargetPath(target: string): string | null {
   const wanted = target.trim().toLowerCase().replace(/\.md$/, "");
   const hit = flatFiles.find((rel) => {
     const base = rel.replace(/\.md$/i, "").toLowerCase();
-    return base === wanted || base.split("/").pop() === wanted || rel.toLowerCase() === `${wanted}.md`;
+    return (
+      base === wanted || base.split("/").pop() === wanted || rel.toLowerCase() === `${wanted}.md`
+    );
   });
   return hit ? joinPath(vaultPath, hit) : null;
 }
@@ -571,11 +582,7 @@ export async function applySettingsToEditor(target?: EditorView): Promise<void> 
   const { settings } = useAppStore.getState();
   document.documentElement.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
   applyTheme(settings.theme);
-  const views = target
-    ? target.dom.isConnected
-      ? [target]
-      : []
-    : activeEditors();
+  const views = target ? (target.dom.isConnected ? [target] : []) : activeEditors();
   if (views.length === 0) return;
   // Only flip the switch, never touch the source: resetting the source to
   // null would push the vault snippets back to the built-in ones on every

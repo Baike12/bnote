@@ -106,8 +106,7 @@ export function ProjectsLayout() {
     return q ? entries.filter((e) => e.name.toLowerCase().includes(q)) : entries;
   }, [entries, query]);
 
-  const focused: ProjectEntry | null =
-    list.find((e) => e.path === focusedPath) ?? list[0] ?? null;
+  const focused: ProjectEntry | null = list.find((e) => e.path === focusedPath) ?? list[0] ?? null;
   const focusPath = focused?.path ?? null;
   const idx = focused ? list.findIndex((e) => e.path === focused.path) : -1;
 
@@ -349,7 +348,11 @@ export function ProjectsLayout() {
       <section className="projects-deck" data-key-region="project">
         <div className="projects-deck-head" data-tauri-drag-region="deep">
           <span className="projects-deck-pos">
-            {focused ? `第 ${idx + 1} / ${list.length} 个项目` : entries.length ? "没有匹配的项目" : "还没有项目"}
+            {focused
+              ? `第 ${idx + 1} / ${list.length} 个项目`
+              : entries.length
+                ? "没有匹配的项目"
+                : "还没有项目"}
           </span>
           <span className="projects-deck-actions">
             <span className="projects-deck-hint">⌘⇧J 发送到日记 · ⌘⇧↑↓ 切换 · ⌘⌫ 删除</span>
@@ -416,7 +419,9 @@ export function ProjectsLayout() {
       />
 
       <DailyNotePane />
-      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
+      )}
     </div>
   );
 }
@@ -492,9 +497,7 @@ function CurrentColumn({
           // document is small: parsing 1000 lines takes ~0.15 ms, see
           // perf.gate). With an unchanged value setState does not re-render.
           const next = projectCounts(projectTodos(text));
-          setCounts((prev) =>
-            prev.total === next.total && prev.done === next.done ? prev : next,
-          );
+          setCounts((prev) => (prev.total === next.total && prev.done === next.done ? prev : next));
         }}
         extraExtensions={PROJECT_EXTENSIONS}
         allowAutoSend={false}

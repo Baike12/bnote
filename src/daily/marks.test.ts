@@ -147,11 +147,14 @@ describe("visual marks for todo links", () => {
     });
     expect(marks(windowed, view.state.doc).map((m) => m.line)).toEqual([31]);
 
-    const empty = buildDailyMarks({ ...view, visibleRanges: [] }, {
-      path: SRC,
-      links,
-      todayDailyPath: TODAY,
-    });
+    const empty = buildDailyMarks(
+      { ...view, visibleRanges: [] },
+      {
+        path: SRC,
+        links,
+        todayDailyPath: TODAY,
+      },
+    );
     expect(empty.size).toBe(0);
   });
 

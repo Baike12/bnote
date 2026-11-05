@@ -20,7 +20,11 @@ describe("parseSuggestTrigger", () => {
   it("@ triggers file anywhere, the query runs up to the cursor", () => {
     expect(parseSuggestTrigger("@", 1)).toEqual({ kind: "file", start: 0, query: "" });
     const text = "参考 @notes/dai";
-    expect(parseSuggestTrigger(text, text.length)).toEqual({ kind: "file", start: 3, query: "notes/dai" });
+    expect(parseSuggestTrigger(text, text.length)).toEqual({
+      kind: "file",
+      start: 3,
+      query: "notes/dai",
+    });
   });
 
   it("a space before the cursor triggers nothing", () => {

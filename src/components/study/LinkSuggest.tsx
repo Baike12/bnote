@@ -51,9 +51,7 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
     const w = el.offsetWidth;
     const below = anchor.bottom + GAP;
     const top =
-      below + h + MARGIN > window.innerHeight
-        ? Math.max(MARGIN, anchor.top - h - GAP)
-        : below;
+      below + h + MARGIN > window.innerHeight ? Math.max(MARGIN, anchor.top - h - GAP) : below;
     setPos({
       left: Math.max(MARGIN, Math.min(anchor.left, window.innerWidth - w - MARGIN)),
       top,
@@ -91,7 +89,6 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
       window.removeEventListener("resize", close);
       scroller?.removeEventListener("scroll", close);
     };
-     
   }, []);
 
   // A click outside the panel means the insertion is abandoned (the click
@@ -104,13 +101,11 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
     };
     window.addEventListener("mousedown", onDown, true);
     return () => window.removeEventListener("mousedown", onDown, true);
-     
   }, []);
 
   // Another overlay (palette / settings / quick switcher) opening yields to it.
   useEffect(() => {
     if (modal) close();
-     
   }, [modal]);
 
   // After closing (picked / Esc / click outside) the focus goes back to the
@@ -125,11 +120,7 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
   };
 
   return (
-    <div
-      ref={boxRef}
-      className="link-suggest"
-      style={{ left: pos.left, top: pos.top }}
-    >
+    <div ref={boxRef} className="link-suggest" style={{ left: pos.left, top: pos.top }}>
       <input
         ref={inputRef}
         className="link-suggest-input"
@@ -169,7 +160,10 @@ function LinkSuggestPanel({ anchor }: { anchor: LinkAnchor }) {
             }}
           >
             <span className="link-suggest-name">
-              {rel.split("/").pop()?.replace(/\.(md|markdown|txt)$/i, "")}
+              {rel
+                .split("/")
+                .pop()
+                ?.replace(/\.(md|markdown|txt)$/i, "")}
             </span>
             <span className="link-suggest-path">
               {rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : ""}

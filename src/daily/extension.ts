@@ -61,11 +61,19 @@ export function dailySyncExtension(options: DailySyncOptions = {}): Extension {
     for (const tr of u.transactions) {
       if (!tr.docChanged) continue;
       if (tr.isUserEvent(SYNC_USER_EVENT)) continue; // a transaction the engine wrote back itself
-      const allowSendTr =
-        allowSend && !SEND_SUPPRESS_EVENTS.some((e) => tr.isUserEvent(e));
+      const allowSendTr = allowSend && !SEND_SUPPRESS_EVENTS.some((e) => tr.isUserEvent(e));
       tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
         intents.push(
-          ...intentsForRange(tr.startState.doc, tr.state.doc, fromA, toA, fromB, toB, fileLinks, allowSendTr),
+          ...intentsForRange(
+            tr.startState.doc,
+            tr.state.doc,
+            fromA,
+            toA,
+            fromB,
+            toB,
+            fileLinks,
+            allowSendTr,
+          ),
         );
       });
     }

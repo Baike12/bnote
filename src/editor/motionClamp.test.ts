@@ -56,9 +56,7 @@ function makeState(doc: string): EditorState {
 describe("visibleVerticalTarget (the visible-line stepping model for the vertical dimension of j/k)", () => {
   const state = makeState(DOC);
   // The visibility of the fences is decided by the field rebuilding from the selection: putting the selection inside the code block simulates an "active block".
-  const stateInsideFence = state
-    .update({ selection: { anchor: state.doc.line(13).from } })
-    .state;
+  const stateInsideFence = state.update({ selection: { anchor: state.doc.line(13).from } }).state;
 
   it("ordinary lines are counted by document line", () => {
     expect(visibleVerticalTarget(state, 1, true, 1)).toBe(2);

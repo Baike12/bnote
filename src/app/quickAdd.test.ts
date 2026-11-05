@@ -64,9 +64,7 @@ describe("quick add: templates", () => {
   it("the command has a template: the new file content is the rendered template", async () => {
     disk.set(TPL, "# {{date}} 周会\n\n- [ ] 议题:{{title}}\n");
     await quickAddNote("Notes", "产品周会", "Templates/会议.md");
-    expect(disk.get("/v/Notes/产品周会.md")).toBe(
-      "# 2026-11-01 周会\n\n- [ ] 议题:产品周会\n",
-    );
+    expect(disk.get("/v/Notes/产品周会.md")).toBe("# 2026-11-01 周会\n\n- [ ] 议题:产品周会\n");
   });
 
   it("no template configured: the file stays empty (existing behaviour)", async () => {

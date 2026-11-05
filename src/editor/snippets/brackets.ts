@@ -146,7 +146,10 @@ function markAt(pos: number, className: string) {
  *  **independent of the selection** — that is why the plugin does not rebuild
  *  on selectionSet (see bracketColorPlugin.update). Exported so the gate can
  *  lock this invariant. */
-export function buildBracketColors(view: { state: EditorState; visibleRanges: readonly { from: number; to: number }[] }): DecorationSet {
+export function buildBracketColors(view: {
+  state: EditorState;
+  visibleRanges: readonly { from: number; to: number }[];
+}): DecorationSet {
   const out: ReturnType<typeof markAt>[] = [];
   const doc = view.state.doc;
   for (const range of view.visibleRanges) {
@@ -186,7 +189,8 @@ export function buildCursorBrackets(view: { state: EditorState }): DecorationSet
   /** Only two characters can be at the caret (range.to and the one before it),
    *  so do not toString() the whole document for that — this function runs on
    *  **every selection change**, and copying the full text is pure waste. */
-  const charAt = (pos: number) => (pos < 0 || pos >= doc.length ? "" : doc.sliceString(pos, pos + 1));
+  const charAt = (pos: number) =>
+    pos < 0 || pos >= doc.length ? "" : doc.sliceString(pos, pos + 1);
   const out: ReturnType<typeof markAt>[] = [];
   let done = false;
   for (const range of selection.ranges) {

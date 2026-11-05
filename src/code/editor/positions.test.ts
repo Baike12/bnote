@@ -12,7 +12,7 @@ import { decodeFileUri, encodeFileUri, encodeUriPath } from "./uri";
  * misalign on emoji and surrogate pairs.
  */
 
-const DOC = Text.of(["fn main() {", "    println!(\"你好\");", "}"]);
+const DOC = Text.of(["fn main() {", '    println!("你好");', "}"]);
 
 describe("position conversion", () => {
   it("document offset → LSP position (0-based line)", () => {

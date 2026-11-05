@@ -1,4 +1,12 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -101,9 +109,7 @@ function previewInitScript(step: number, translate: boolean): string {
 }
 
 /** pdf.js (+worker) is downloaded only when a PDF is really opened, so the app start is not slowed down. */
-const PdfViewer = lazy(() =>
-  import("./PdfViewer").then((m) => ({ default: m.PdfViewer })),
-);
+const PdfViewer = lazy(() => import("./PdfViewer").then((m) => ({ default: m.PdfViewer })));
 
 export function ContentPane() {
   const content = useAppStore((s) => s.studyContent);
@@ -191,9 +197,7 @@ export function ContentPane() {
           // reset by a navigation, and pushing it again is idempotent).
           if (create && !closed) {
             void agentApi
-              .setStudyPreviewZoom(
-                normalizeWebZoom(useAppStore.getState().settings.studyWebZoom),
-              )
+              .setStudyPreviewZoom(normalizeWebZoom(useAppStore.getState().settings.studyWebZoom))
               .catch(() => {});
           }
         },
@@ -320,9 +324,7 @@ export function ContentPane() {
       if (useAppStore.getState().studyContent?.kind !== "url") return;
       void (async () => {
         await agentApi
-          .setStudyPreviewTranslate(
-            useAppStore.getState().settings.studyTranslate.enabled,
-          )
+          .setStudyPreviewTranslate(useAppStore.getState().settings.studyTranslate.enabled)
           .catch(() => {});
         await agentApi.setStudyPreviewAnnotationMode(webToolRef.current);
         // Every navigation reinstalls the runtime in the page: the step (and
@@ -330,20 +332,14 @@ export function ContentPane() {
         // A failing step push (a navigation is in flight) must not abort the
         // annotation merge that follows.
         await agentApi
-          .setStudyPreviewReadStep(
-            normalizePageStep(useAppStore.getState().settings.studyPageStep),
-          )
+          .setStudyPreviewReadStep(normalizePageStep(useAppStore.getState().settings.studyPageStep))
           .catch(() => {});
         const keys = readPageKeyBindings();
-        await agentApi
-          .setStudyPreviewReadKeys(keys.prev, keys.next)
-          .catch(() => {});
+        await agentApi.setStudyPreviewReadKeys(keys.prev, keys.next).catch(() => {});
         await agentApi.setStudyPreviewShortcuts(pageForwardKeys()).catch(() => {});
         // The zoom is pushed again after the navigation: the settings are the single source of truth, the page does not keep a ratio itself.
         await agentApi
-          .setStudyPreviewZoom(
-            normalizeWebZoom(useAppStore.getState().settings.studyWebZoom),
-          )
+          .setStudyPreviewZoom(normalizeWebZoom(useAppStore.getState().settings.studyWebZoom))
           .catch(() => {});
         const vault = useAppStore.getState().vaultPath;
         if (!vault || typeof url !== "string" || !url) return;
@@ -355,19 +351,16 @@ export function ContentPane() {
       })().catch(() => {});
     });
 
-    subscribe<{ url?: unknown; annotations?: unknown }>(
-      "study-web-annotations",
-      (payload) => {
-        const vault = useAppStore.getState().vaultPath;
-        if (!vault || !payload || typeof payload.url !== "string") return;
-        const url = payload.url;
-        const list = normalizeWebAnnotations(payload.annotations);
-        // The material directory has to be resolved first (this may be the first write of this web page): a failed resolution falls back to the old path.
-        void urlMaterialDir(vault, url).then((dir) => {
-          saveWebAnnotations(vault, url, list, dir);
-        });
-      },
-    );
+    subscribe<{ url?: unknown; annotations?: unknown }>("study-web-annotations", (payload) => {
+      const vault = useAppStore.getState().vaultPath;
+      if (!vault || !payload || typeof payload.url !== "string") return;
+      const url = payload.url;
+      const list = normalizeWebAnnotations(payload.annotations);
+      // The material directory has to be resolved first (this may be the first write of this web page): a failed resolution falls back to the old path.
+      void urlMaterialDir(vault, url).then((dir) => {
+        saveWebAnnotations(vault, url, list, dir);
+      });
+    });
 
     // The weread route: the in-page runtime writes "the book currently being
     // read" into the title channel (study/weread.ts) and Rust dispatches it
@@ -425,9 +418,7 @@ export function ContentPane() {
   // the tool is still up to the main window.
   useEffect(() => {
     if (content?.kind === "url") {
-      const initial = useAppStore.getState().settings.studyTranslate.enabled
-        ? null
-        : "highlight";
+      const initial = useAppStore.getState().settings.studyTranslate.enabled ? null : "highlight";
       webToolRef.current = initial;
       setWebTool(initial);
       void agentApi.setStudyPreviewAnnotationMode(initial).catch(() => {});
@@ -730,9 +721,7 @@ export function ContentPane() {
                 <button
                   className="icon-btn content-web-zoom-btn"
                   title={`缩小网页(${bindingLabel("study.web-zoom-out")})`}
-                  onClick={() =>
-                    patchSettings({ studyWebZoom: stepWebZoom(webZoom, -1) })
-                  }
+                  onClick={() => patchSettings({ studyWebZoom: stepWebZoom(webZoom, -1) })}
                 >
                   −
                 </button>
@@ -748,9 +737,7 @@ export function ContentPane() {
                 <button
                   className="icon-btn content-web-zoom-btn"
                   title={`放大网页(${bindingLabel("study.web-zoom-in")})`}
-                  onClick={() =>
-                    patchSettings({ studyWebZoom: stepWebZoom(webZoom, 1) })
-                  }
+                  onClick={() => patchSettings({ studyWebZoom: stepWebZoom(webZoom, 1) })}
                 >
                   +
                 </button>
@@ -791,10 +778,7 @@ export function ContentPane() {
                 <div className="content-web-fail">
                   <p className="content-empty-title">网页没能显示</p>
                   <p className="content-web-fail-msg">{previewError}</p>
-                  <button
-                    className="btn"
-                    onClick={() => void openPreview(content.url)}
-                  >
+                  <button className="btn" onClick={() => void openPreview(content.url)}>
                     在独立窗口中打开
                   </button>
                 </div>

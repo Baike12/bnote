@@ -17,14 +17,16 @@ const dir = (relPath: string, children: FileNode[] | null = []): FileNode => ({
 });
 
 describe("flattenVisible / findNode", () => {
-  const tree = [
-    dir("a", [file("a/1.md"), dir("a/b", [file("a/b/2.md")])]),
-    file("z.md"),
-  ];
+  const tree = [dir("a", [file("a/1.md"), dir("a/b", [file("a/b/2.md")])]), file("z.md")];
 
   it("only expanded directories are flattened into rows, in depth-first order", () => {
     expect(flattenVisible(tree, new Set()).map((n) => n.relPath)).toEqual(["a", "z.md"]);
-    expect(flattenVisible(tree, new Set(["a"])).map((n) => n.relPath)).toEqual(["a", "a/1.md", "a/b", "z.md"]);
+    expect(flattenVisible(tree, new Set(["a"])).map((n) => n.relPath)).toEqual([
+      "a",
+      "a/1.md",
+      "a/b",
+      "z.md",
+    ]);
     expect(flattenVisible(tree, new Set(["a", "a/b"])).map((n) => n.relPath)).toEqual([
       "a",
       "a/1.md",

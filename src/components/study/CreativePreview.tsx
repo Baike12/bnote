@@ -111,9 +111,7 @@ export function CreativePreview() {
   const refresh = useCallback(() => {
     const el = bodyRef.current;
     if (!preview || !el) return;
-    void agentApi
-      .showCreativePreview(preview.url, previewBounds(el))
-      .catch(() => {});
+    void agentApi.showCreativePreview(preview.url, previewBounds(el)).catch(() => {});
   }, [preview]);
 
   const sourceName = preview?.source.split("/").pop() ?? "";
@@ -128,11 +126,7 @@ export function CreativePreview() {
         <div className="content-tool-right">
           {preview && (
             <>
-              <button
-                className="icon-btn"
-                title="重新加载预览"
-                onClick={refresh}
-              >
+              <button className="icon-btn" title="重新加载预览" onClick={refresh}>
                 ⟳
               </button>
               <button
@@ -174,7 +168,12 @@ export async function readBblogAuth(vaultPath: string | null): Promise<BblogAuth
   try {
     const raw = await api.readFile(vaultDotPath(vaultPath, "bblog/auth.json"));
     const parsed = JSON.parse(raw) as Partial<BblogAuth>;
-    if (typeof parsed.server === "string" && typeof parsed.token === "string" && parsed.server && parsed.token) {
+    if (
+      typeof parsed.server === "string" &&
+      typeof parsed.token === "string" &&
+      parsed.server &&
+      parsed.token
+    ) {
       return { server: parsed.server, token: parsed.token };
     }
     return null;
@@ -268,12 +267,16 @@ export function PublishDialog({ source, onClose }: { source: string; onClose: ()
           <p className="publish-hint">读取认证信息…</p>
         ) : !auth ? (
           <div className="publish-hint">
-            <p>缺少认证信息。请在仓库里创建 <code>.bnote/bblog/auth.json</code>:</p>
+            <p>
+              缺少认证信息。请在仓库里创建 <code>.bnote/bblog/auth.json</code>:
+            </p>
             <pre>{`{
   "server": "http://101.96.243.197",
   "token": "<bblog 后台的上传令牌>"
 }`}</pre>
-            <p className="publish-hint-sub">令牌在 bblog 登录管理员后访问 /blog/api/admin/token 获取。</p>
+            <p className="publish-hint-sub">
+              令牌在 bblog 登录管理员后访问 /blog/api/admin/token 获取。
+            </p>
           </div>
         ) : (
           <>
@@ -315,7 +318,8 @@ export function PublishDialog({ source, onClose }: { source: string; onClose: ()
             {error && <p className="publish-error">{error}</p>}
             {publishedUrl ? (
               <p className="publish-ok">
-                已发布:<a href={publishedUrl} target="_blank" rel="noreferrer">
+                已发布:
+                <a href={publishedUrl} target="_blank" rel="noreferrer">
                   {publishedUrl}
                 </a>
               </p>

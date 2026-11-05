@@ -1,7 +1,14 @@
 import { WidgetType } from "@codemirror/view";
 import { todayStamp } from "@/lib/todoStamp";
 import { renderBlockHtml } from "./render";
-import { defaultFold, foldSig, toggleGroup, toggleZone, type FoldState, type FootprintView } from "./view";
+import {
+  defaultFold,
+  foldSig,
+  toggleGroup,
+  toggleZone,
+  type FoldState,
+  type FootprintView,
+} from "./view";
 
 /**
  * The block level "today's footprint" widget at the end of a daily note. The data

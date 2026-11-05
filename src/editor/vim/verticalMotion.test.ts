@@ -14,9 +14,15 @@ import { moveByLinesVisual, type VimCoreState } from "./verticalMotion";
  *  6 - bullet item
  *  7 plain two
  */
-const DOC = ["plain one", "- [ ] task item", "$$", "x = 1", "$$", "- bullet item", "plain two"].join(
-  "\n",
-);
+const DOC = [
+  "plain one",
+  "- [ ] task item",
+  "$$",
+  "x = 1",
+  "$$",
+  "- bullet item",
+  "plain two",
+].join("\n");
 
 const CHAR_W = 8;
 const ROW_H = 24;
@@ -86,8 +92,11 @@ function makeHarness(familyKeys: string[] = [], doc = DOC, anchor = 0): Harness 
   };
   for (const k of familyKeys) motions[k] = k === "moveByLines" ? moveByLinesVisual : Symbol(k);
   const fn = moveByLinesVisual as (...a: unknown[]) => { line: number; ch: number };
-  const run = (head: { line: number; ch: number }, motionArgs: Record<string, unknown>, v: VimCoreState) =>
-    fn.call(motions, cm, head, motionArgs, v);
+  const run = (
+    head: { line: number; ch: number },
+    motionArgs: Record<string, unknown>,
+    v: VimCoreState,
+  ) => fn.call(motions, cm, head, motionArgs, v);
   return { run, vim, motions };
 }
 
@@ -237,11 +246,7 @@ describe("moveByLinesVisual: a callout boundary is a landing point", () => {
   it("a callout with a body: j from above first lands on the opening marker line and then enters the body", () => {
     const outside = makeHarness([], CALLOUT_WITH_BODY, 0);
     expect(outside.run({ line: 0, ch: 0 }, { forward: true, repeat: 1 }, outside.vim).line).toBe(1);
-    const inside = makeHarness(
-      [],
-      CALLOUT_WITH_BODY,
-      CALLOUT_WITH_BODY.indexOf("::: 标题"),
-    );
+    const inside = makeHarness([], CALLOUT_WITH_BODY, CALLOUT_WITH_BODY.indexOf("::: 标题"));
     expect(inside.run({ line: 1, ch: 0 }, { forward: true, repeat: 1 }, inside.vim).line).toBe(2);
   });
 });

@@ -1,7 +1,21 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { allCommands } from "@/commands/registry";
-import { KEY_REGIONS, bindingsForCommand, commandBelongs, eventToKey, formatBinding, type KeyRegion } from "@/commands/keys";
-import { clearOverride, getKeymapRevision, keybindingsFilePath, resetAllOverrides, setOverride, subscribeKeymap } from "@/commands/keybindingOverrides";
+import {
+  KEY_REGIONS,
+  bindingsForCommand,
+  commandBelongs,
+  eventToKey,
+  formatBinding,
+  type KeyRegion,
+} from "@/commands/keys";
+import {
+  clearOverride,
+  getKeymapRevision,
+  keybindingsFilePath,
+  resetAllOverrides,
+  setOverride,
+  subscribeKeymap,
+} from "@/commands/keybindingOverrides";
 import { setHotkeyRecording } from "@/commands/globalKeys";
 import { useAppStore, type ImeSettings, type QuickAddCommand } from "@/state/appStore";
 import { LatexConfig } from "@/editor/snippets/config";
@@ -177,7 +191,9 @@ export function HotkeysTab() {
                     ↺
                   </button>
                 </span>
-                {isCapturing && <span className="hotkey-capture-hint">按下新快捷键…（Esc 取消）</span>}
+                {isCapturing && (
+                  <span className="hotkey-capture-hint">按下新快捷键…（Esc 取消）</span>
+                )}
               </div>
             );
           })}
@@ -232,8 +248,8 @@ export function VimTab() {
         title="全局 vimrc"
         desc={
           <>
-            另可在仓库内放置 <code>.bnote/vimrc</code>，其映射会叠加在全局配置之上。
-            裸 <code>map</code> / <code>noremap</code> 与 vim 一致，同时作用于 normal 和 visual 模式。
+            另可在仓库内放置 <code>.bnote/vimrc</code>，其映射会叠加在全局配置之上。 裸{" "}
+            <code>map</code> / <code>noremap</code> 与 vim 一致，同时作用于 normal 和 visual 模式。
           </>
         }
       >
@@ -296,8 +312,7 @@ export function SnippetsTab() {
   const patch = useAppStore((s) => s.patchSettings);
   const [content, setContent] = useState<string>(SNIPPETS_TEMPLATE);
   const [dirtyLocal, setDirtyLocal] = useState(false);
-  const patchLatex = (p: Partial<LatexConfig>) =>
-    patch({ latex: { ...settings.latex, ...p } });
+  const patchLatex = (p: Partial<LatexConfig>) => patch({ latex: { ...settings.latex, ...p } });
 
   useEffect(() => {
     void api.readVaultFile("snippets.js" as VaultConfigFile).then((v) => {
@@ -314,7 +329,8 @@ export function SnippetsTab() {
             片段格式与 <code>obsidian-latex-suite</code> 兼容：
             <code>{"{ trigger, replacement, options }"}</code>，占位符 <code>$0</code>
             <code>${"{n:默认文本}"}</code>，正则捕获组 <code>{"[[0]]"}</code>，选项
-            <code>m/n/M/t/T/c/C</code> + <code>A</code>自动 <code>r</code>正则 <code>w</code>词边界。
+            <code>m/n/M/t/T/c/C</code> + <code>A</code>自动 <code>r</code>正则 <code>w</code>
+            词边界。
           </>
         }
       >
@@ -453,18 +469,14 @@ export function ImeTab() {
   }, []);
 
   const ime = settings.ime;
-  const patchIme = (p: Partial<ImeSettings>) =>
-    patch({ ime: { ...ime, ...p } });
+  const patchIme = (p: Partial<ImeSettings>) => patch({ ime: { ...ime, ...p } });
 
   const renderPicker = (key: "insertSource" | "normalSource", label: string, desc: string) => (
     <Row
       label={label}
       desc={desc}
       control={
-        <SettingsSelect
-          value={ime[key]}
-          onChange={(v) => patchIme({ [key]: v })}
-        >
+        <SettingsSelect value={ime[key]} onChange={(v) => patchIme({ [key]: v })}>
           {sources === null && <option value={ime[key]}>{ime[key]}</option>}
           {(sources ?? []).map((s) => (
             <option key={s.id} value={s.id}>
@@ -495,8 +507,8 @@ export function ImeTab() {
         {renderPicker("normalSource", "normal / visual 模式输入法", "一般选英文键盘（ABC）")}
       </SettingsCard>
       <p className="setting-hint">
-        通过系统输入法框架（TIS）在应用内直接切换，无进程启动、不抢焦点，通常 1–5ms；
-        macOS 26 上偶发的切换竞态会自动重试，仍失败时回退到 macism 命令行并提示。
+        通过系统输入法框架（TIS）在应用内直接切换，无进程启动、不抢焦点，通常 1–5ms； macOS 26
+        上偶发的切换竞态会自动重试，仍失败时回退到 macism 命令行并提示。
       </p>
       <SettingsCard title="免切换场景" desc="这些场景内容是英文，切回中文反而添乱。">
         <Toggle
@@ -531,8 +543,7 @@ export function QuickAddTab() {
   const update = (i: number, p: Partial<QuickAddCommand>) =>
     patch({ quickAdd: quickAdd.map((c, j) => (j === i ? { ...c, ...p } : c)) });
   const remove = (i: number) => patch({ quickAdd: quickAdd.filter((_, j) => j !== i) });
-  const add = () =>
-    patch({ quickAdd: [...quickAdd, { name: "", folder: "", template: "" }] });
+  const add = () => patch({ quickAdd: [...quickAdd, { name: "", folder: "", template: "" }] });
 
   return (
     <div className="settings-section">
@@ -540,7 +551,8 @@ export function QuickAddTab() {
         title="快速添加命令"
         desc={
           <>
-            触发「快速添加文件」（默认 ⌘⇧A，可在快捷键页修改）后搜索命令，选中并输入文件名即可在目标文件夹创建笔记；
+            触发「快速添加文件」（默认
+            ⌘⇧A，可在快捷键页修改）后搜索命令，选中并输入文件名即可在目标文件夹创建笔记；
             文件夹不存在时会在仓库根目录自动创建，支持 <code>a/b</code> 子路径。改动即时保存。
           </>
         }
@@ -562,7 +574,11 @@ export function QuickAddTab() {
                   value={c.folder}
                   onChange={(folder) => update(i, { folder })}
                 />
-                <button className="btn btn-ghost qa-remove" title="删除命令" onClick={() => remove(i)}>
+                <button
+                  className="btn btn-ghost qa-remove"
+                  title="删除命令"
+                  onClick={() => remove(i)}
+                >
                   ✕
                 </button>
               </div>
@@ -578,7 +594,9 @@ export function QuickAddTab() {
             </div>
           ))}
           {quickAdd.length === 0 && (
-            <div className="qa-empty">还没有命令，点击下方按钮添加一个（如 add bnote file → bnote）。</div>
+            <div className="qa-empty">
+              还没有命令，点击下方按钮添加一个（如 add bnote file → bnote）。
+            </div>
           )}
           <div className="settings-actions">
             <button className="btn" onClick={add}>

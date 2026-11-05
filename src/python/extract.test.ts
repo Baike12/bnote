@@ -41,7 +41,8 @@ describe("extractPython basic extraction", () => {
   });
 
   it("multiple blocks enter the same virtual file in order, ts blocks are excluded", () => {
-    const doc = "```python\na = 1\n```\n中间文字\n```ts\nconst b = 2\n```\n```python\nc = a + 1\nprint(c)\n```";
+    const doc =
+      "```python\na = 1\n```\n中间文字\n```ts\nconst b = 2\n```\n```python\nc = a + 1\nprint(c)\n```";
     const eff = extractPython(doc);
     expect(eff.blocks.map((b) => b.text)).toEqual(["a = 1", "c = a + 1\nprint(c)"]);
     const vLines = eff.virtualText.split("\n");
@@ -84,7 +85,7 @@ describe("extractPython fence boundaries", () => {
   });
 
   it("a shorter ``` inside the fence is content and does not truncate; a longer fence needs a longer closing fence", () => {
-    const doc = "````python\nx = \"```\nl = ```python```\n````\n";
+    const doc = '````python\nx = "```\nl = ```python```\n````\n';
     const eff = extractPython(doc);
     expect(eff.blocks[0].text).toBe('x = "```\nl = ```python```');
   });
@@ -155,17 +156,20 @@ describe("LSP line/column mapping (UTF-16 code units are the same unit as CM off
   });
 
   it("mapLspDiagnostics maps range/severity/message and drops out-of-range entries", () => {
-    const doc = docOf("# 标题\n```python\nx: int = \"hello\"\n```\n");
+    const doc = docOf('# 标题\n```python\nx: int = "hello"\n```\n');
     const raw: RawLspDiagnostic[] = [
       {
         range: { start: { line: 2, character: 9 }, end: { line: 2, character: 16 } },
         severity: 2,
-        message: "Type \"str\" is not assignable to \"int\"",
+        message: 'Type "str" is not assignable to "int"',
         code: "invalid-assignment",
         source: "ty",
       },
       // The appended guard region / an out-of-range line -> dropped
-      { range: { start: { line: 99, character: 0 }, end: { line: 99, character: 1 } }, message: "ghost" },
+      {
+        range: { start: { line: 99, character: 0 }, end: { line: 99, character: 1 } },
+        message: "ghost",
+      },
       // Missing range -> dropped
       { range: undefined as never, message: "broken" },
     ];
@@ -182,7 +186,11 @@ describe("LSP line/column mapping (UTF-16 code units are the same unit as CM off
   it("a code in the LSP 3.17 object form ({value}) is also read", () => {
     const doc = docOf("x = 1\n");
     const mapped = mapLspDiagnostics(doc, [
-      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, code: { value: "E1" }, message: "m" },
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        code: { value: "E1" },
+        message: "m",
+      },
     ]);
     expect(mapped[0].code).toBe("E1");
   });
@@ -233,7 +241,9 @@ describe("mapLspCompletions", () => {
   });
 
   it("the snippet format does not parse placeholders and falls back to label", () => {
-    const out = mapLspCompletions([{ label: "with_open", insertText: "with open($1) as $2:", insertTextFormat: 2 }]);
+    const out = mapLspCompletions([
+      { label: "with_open", insertText: "with open($1) as $2:", insertTextFormat: 2 },
+    ]);
     expect(out[0].apply).toBeUndefined();
   });
 
@@ -241,14 +251,21 @@ describe("mapLspCompletions", () => {
     const out = mapLspCompletions([
       {
         label: "print",
-        documentation: { kind: "markdown", value: "```python\nprint(*values)\n```\n输出到 stdout。" },
+        documentation: {
+          kind: "markdown",
+          value: "```python\nprint(*values)\n```\n输出到 stdout。",
+        },
       },
     ]);
     expect(out[0].info).toBe("print(*values)\n输出到 stdout。");
   });
 
   it("malformed entries are dropped and a non-list input returns empty", () => {
-    expect(mapLspCompletions([{ label: "" }, null, { noLabel: true }, { label: "ok" }]).map((c) => c.label)).toEqual(["ok"]);
+    expect(
+      mapLspCompletions([{ label: "" }, null, { noLabel: true }, { label: "ok" }]).map(
+        (c) => c.label,
+      ),
+    ).toEqual(["ok"]);
     expect(mapLspCompletions(null)).toEqual([]);
     expect(mapLspCompletions("nope")).toEqual([]);
     expect(mapLspCompletions({ items: "not-array" })).toEqual([]);
@@ -261,7 +278,9 @@ describe("lspHoverText", () => {
       lspHoverText({ contents: { kind: "markdown", value: "```python\ndef f(x: int)\n```" } }),
     ).toBe("def f(x: int)");
     expect(lspHoverText({ contents: "int" })).toBe("int");
-    expect(lspHoverText({ contents: ["def f(x: int)", "说明文字"] })).toBe("def f(x: int)\n\n说明文字");
+    expect(lspHoverText({ contents: ["def f(x: int)", "说明文字"] })).toBe(
+      "def f(x: int)\n\n说明文字",
+    );
   });
 
   it("no content or malformed input returns null", () => {

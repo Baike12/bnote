@@ -18,13 +18,11 @@ import type {
  */
 export const codeApi = {
   /** Open a project: scan the file tree and read the git status. */
-  openProject: (root: string) =>
-    invoke<CodeProjectInfo>("code_open_project", { root }),
+  openProject: (root: string) => invoke<CodeProjectInfo>("code_open_project", { root }),
   /** Rescan the file tree. */
   rescan: (root: string) => invoke<CodeTree>("code_rescan", { root }),
   /** Read a file together with its languageId. */
-  readFile: (root: string, path: string) =>
-    invoke<CodeFile>("code_read_file", { root, path }),
+  readFile: (root: string, path: string) => invoke<CodeFile>("code_read_file", { root, path }),
   /** Write a file. */
   writeFile: (root: string, path: string, content: string) =>
     invoke<void>("code_write_file", { root, path, content }),
@@ -39,10 +37,8 @@ export const codeApi = {
   gitStatus: (root: string) => invoke<GitStatus>("code_git_status", { root }),
   gitDiff: (root: string, path: string, staged: boolean) =>
     invoke<string>("code_git_diff", { root, path, staged }),
-  gitStage: (root: string, path: string) =>
-    invoke<GitStatus>("code_git_stage", { root, path }),
-  gitUnstage: (root: string, path: string) =>
-    invoke<GitStatus>("code_git_unstage", { root, path }),
+  gitStage: (root: string, path: string) => invoke<GitStatus>("code_git_stage", { root, path }),
+  gitUnstage: (root: string, path: string) => invoke<GitStatus>("code_git_unstage", { root, path }),
 
   // ---- language servers ----
   /** Which server handles this language (null = no built-in default). */
@@ -76,8 +72,7 @@ export const codeApi = {
   lspSync: (root: string, path: string, content: string) =>
     invoke<boolean>("code_lsp_sync", { root, path, content }),
   /** Close a document. */
-  lspClose: (root: string, path: string) =>
-    invoke<void>("code_lsp_close", { root, path }),
+  lspClose: (root: string, path: string) => invoke<void>("code_lsp_close", { root, path }),
   /**
    * Forward a language server request.
    *
@@ -123,8 +118,7 @@ export const termApi = {
   open: (root: string, cols: number, rows: number) =>
     invoke<TermOpenReply>("term_open", { root, cols, rows }),
   /** Keystrokes / paste, base64-encoded. */
-  write: (termId: number, data: string) =>
-    invoke<void>("term_write", { termId, data }),
+  write: (termId: number, data: string) => invoke<void>("term_write", { termId, data }),
   resize: (termId: number, cols: number, rows: number) =>
     invoke<void>("term_resize", { termId, cols, rows }),
   /** Kill one shell (a repeated close is not an error). */

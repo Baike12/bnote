@@ -15,7 +15,12 @@ import {
 import { normalizePageStep, snapScrollTopToLine } from "./reading";
 import { eventKeyName } from "@/commands/keys";
 
-function ann(id: string, quote: string, offset: number, extra: Partial<WebAnnotation> = {}): WebAnnotation {
+function ann(
+  id: string,
+  quote: string,
+  offset: number,
+  extra: Partial<WebAnnotation> = {},
+): WebAnnotation {
   return {
     id,
     quote,
@@ -135,7 +140,9 @@ describe("web annotation data", () => {
     );
     expect(file.url).toBe("https://a");
     expect(file.annotations.map((a) => a.id)).toEqual(["1"]);
-    expect(parseWebAnnotations(JSON.stringify({ annotations: [ann("2", "x", 1)] }))).toHaveLength(1);
+    expect(parseWebAnnotations(JSON.stringify({ annotations: [ann("2", "x", 1)] }))).toHaveLength(
+      1,
+    );
   });
 
   it("the merge takes the union by id, the ones from the page override the ones from the vault", () => {
@@ -191,7 +198,9 @@ describe("the injected script", () => {
   });
 
   it("the serialized pure functions run independently in an empty scope", () => {
-    const isolatedLocate = new Function(`return (${locateQuote.toString()});`)() as typeof locateQuote;
+    const isolatedLocate = new Function(
+      `return (${locateQuote.toString()});`,
+    )() as typeof locateQuote;
     expect(isolatedLocate("abc记忆系统def", "记忆系统", 0, "", "")).toBe(3);
     const isolatedNormalize = new Function(
       `return (${normalizeWebAnnotations.toString()});`,
@@ -204,14 +213,10 @@ describe("the injected script", () => {
     const isolatedSnap = new Function(
       `return (${snapScrollTopToLine.toString()});`,
     )() as typeof snapScrollTopToLine;
-    expect(
-      isolatedSnap(350, 700, 5000, 350, [{ top: 335, bottom: 357 }], 14),
-    ).toBe(357);
+    expect(isolatedSnap(350, 700, 5000, 350, [{ top: 335, bottom: 357 }], 14)).toBe(357);
     const isolatedKey = new Function(
       `return (${eventKeyName.toString()});`,
     )() as typeof eventKeyName;
-    expect(
-      isolatedKey({ key: "å", code: "KeyA", shiftKey: false, altKey: true }),
-    ).toBe("a");
+    expect(isolatedKey({ key: "å", code: "KeyA", shiftKey: false, altKey: true })).toBe("a");
   });
 });

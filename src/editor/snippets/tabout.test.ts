@@ -122,7 +122,8 @@ describe("planTabout: jumping out of a whole formula tail", () => {
       { from: doc.indexOf("E[q]"), to: doc.indexOf("E[q]") + 7, insert: "E[q]" },
     ]);
     expect(plan.pos).toBe(11);
-    const preview = doc.slice(0, doc.indexOf("E[q]") + 4).trimEnd() + doc.slice(doc.indexOf("E[q]") + 7);
+    const preview =
+      doc.slice(0, doc.indexOf("E[q]") + 4).trimEnd() + doc.slice(doc.indexOf("E[q]") + 7);
     expect(preview.slice(plan.pos)).toBe("下一段");
   });
 

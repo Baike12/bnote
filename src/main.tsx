@@ -53,11 +53,9 @@ window.__bnote = {
     const v = editorApi.view;
     if (!v) return null;
     const iter: number[][] = [];
-    v.state
-      .field(blockDecorationsField)
-      .decos.between(0, 1e9, (from: number, to: number) => {
-        iter.push([from, to]);
-      });
+    v.state.field(blockDecorationsField).decos.between(0, 1e9, (from: number, to: number) => {
+      iter.push([from, to]);
+    });
     return iter;
   },
 };

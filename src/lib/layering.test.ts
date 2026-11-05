@@ -24,7 +24,17 @@ import { join } from "node:path";
 const SRC = "src";
 
 /** Feature domains: they own behaviour, never the app shell. */
-const DOMAINS = ["daily", "footprint", "study", "code", "projects", "focus", "python", "state", "lib"];
+const DOMAINS = [
+  "daily",
+  "footprint",
+  "study",
+  "code",
+  "projects",
+  "focus",
+  "python",
+  "state",
+  "lib",
+];
 /** The composition layer and the views: both may reach everything below them. */
 const SHELL = ["app", "components", "dev", "editor", "commands"];
 
@@ -89,7 +99,7 @@ describe("the matcher sees what it must", () => {
   it("a static import is caught and a lazy one is not", () => {
     const sample = [
       'import { openNote } from "@/app/actions";',
-      "const lazy = await import(\"@/app/actions\");",
+      'const lazy = await import("@/app/actions");',
     ].join("\n");
     expect(staticImports(sample)).toEqual(["@/app/actions"]);
   });

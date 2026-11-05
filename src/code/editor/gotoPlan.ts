@@ -17,9 +17,7 @@ export interface GotoTarget {
 }
 
 export type GotoPlan<T extends GotoTarget> =
-  | { kind: "jump"; target: T }
-  | { kind: "outside"; target: T }
-  | { kind: "none" };
+  { kind: "jump"; target: T } | { kind: "outside"; target: T } | { kind: "none" };
 
 /**
  * Pick what to do with the locations the server returned.

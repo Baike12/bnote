@@ -186,10 +186,7 @@ export async function findReferences(): Promise<void> {
 export async function renameSymbol(newName: string): Promise<boolean> {
   const handle = activeCodeEditor();
   if (!handle) return false;
-  const position = cmToLspPosition(
-    handle.view.state.doc,
-    handle.view.state.selection.main.head,
-  );
+  const position = cmToLspPosition(handle.view.state.doc, handle.view.state.selection.main.head);
   const prepared = await codeApi
     .lspRequest(handle.root, handle.language, "textDocument/prepareRename", handle.path, {
       position,
@@ -245,4 +242,3 @@ export async function renameSymbol(newName: string): Promise<boolean> {
   await useCodeStore.getState().refreshGit();
   return true;
 }
-

@@ -26,12 +26,12 @@ export function firstOwnUserText(
 /** A pair of characters that may wrap a model title (only stripped when both are present). */
 const WRAPPERS: Array<[string, string]> = [
   ['"', '"'],
-  ['“', '”'],
-  ['「', '」'],
-  ['《', '》'],
+  ["“", "”"],
+  ["「", "」"],
+  ["《", "》"],
   ["'", "'"],
-  ['`', '`'],
-  ['*', '*'],
+  ["`", "`"],
+  ["*", "*"],
 ];
 
 /** Prefixes models like to add: a CJK title label followed by a colon or dash, or "Title:". */
@@ -44,7 +44,11 @@ const PREFIX_RE = /^(?:会话)?标题\s*[:：\-–—]\s*|^title\s*[:：\-–—
  * title.
  */
 export function cleanGeneratedTitle(raw: string, limit = 24): string {
-  const firstLine = (raw ?? "").replace(/\r\n?/g, "\n").split("\n").find((l) => l.trim()) ?? "";
+  const firstLine =
+    (raw ?? "")
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .find((l) => l.trim()) ?? "";
   let text = firstLine.replace(/\s+/g, " ").trim();
   text = text.replace(PREFIX_RE, "").trim();
   for (const [open, close] of WRAPPERS) {

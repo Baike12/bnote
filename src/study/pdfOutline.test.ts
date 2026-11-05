@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  filterOutline,
-  outlinePageFor,
-  outlinePages,
-  type PdfOutlineNode,
-} from "./pdfOutline";
+import { filterOutline, outlinePageFor, outlinePages, type PdfOutlineNode } from "./pdfOutline";
 
 const tree: PdfOutlineNode[] = [
   {

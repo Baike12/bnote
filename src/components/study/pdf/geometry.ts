@@ -2,16 +2,12 @@ import { type PageMetric } from "@/study/readPositions";
 import { snapScrollTopToLine } from "@/study/reading";
 import type { BoxLike } from "@/study/pdfAnnotations";
 
-
 // ---------------------------------------------------------------------------
 // Crop selection
 // ---------------------------------------------------------------------------
 
 /** The position of every page inside the scroll content; one batched layout read, called when the scrolling stopped or when landing. */
-export function pageMetrics(
-  scroll: HTMLElement,
-  pages: Map<number, HTMLDivElement>,
-): PageMetric[] {
+export function pageMetrics(scroll: HTMLElement, pages: Map<number, HTMLDivElement>): PageMetric[] {
   const offset = scroll.scrollTop - scroll.getBoundingClientRect().top;
   const out: PageMetric[] = [];
   for (const [page, el] of pages) {
@@ -49,11 +45,7 @@ export function lineBandsAtY(
     if (!textDiv) return [];
     return spanRects(textDiv)
       .filter(
-        (r) =>
-          r.bottom > y &&
-          r.top < y &&
-          r.right > pageRect.left &&
-          r.left < pageRect.right,
+        (r) => r.bottom > y && r.top < y && r.right > pageRect.left && r.left < pageRect.right,
       )
       .map((r) => ({ top: r.top, bottom: r.bottom }));
   }

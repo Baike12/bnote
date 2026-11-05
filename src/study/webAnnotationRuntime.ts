@@ -88,9 +88,7 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
    * a translation request of the old page returns after a navigation, the new
    * page's runtime does not draw it.
    */
-  const TRANSLATE_DOC = `${Date.now().toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 10)}`;
+  const TRANSLATE_DOC = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   let translateHost: HTMLElement | null = null;
   let translateCard: HTMLElement | null = null;
   let translateX = 0;
@@ -320,10 +318,7 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return last ? last.end : first.start;
   }
 
-  function rangeOf(
-    a: WebAnnotation,
-    info: { text: string; entries: TextEntry[] },
-  ): Range | null {
+  function rangeOf(a: WebAnnotation, info: { text: string; entries: TextEntry[] }): Range | null {
     const start = helpers.locateQuote(info.text, a.quote, a.offset, a.prefix, a.suffix);
     if (start < 0) return null;
     const from = helpers.textPointAt(info.entries, start, "start");
@@ -386,13 +381,7 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
    * turning pages and scrolling (the position only depends on the step).
    */
   function ensureShade(): void {
-    if (
-      shadeHost &&
-      shadeHost.isConnected &&
-      shadeLayer &&
-      shadeCornerLeft &&
-      shadeCornerRight
-    ) {
+    if (shadeHost && shadeHost.isConnected && shadeLayer && shadeCornerLeft && shadeCornerRight) {
       return;
     }
     const doc = document;
@@ -538,9 +527,7 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   function lineBandsAtViewportY(y: number): Array<{ top: number; bottom: number }> {
     const out: Array<{ top: number; bottom: number }> = [];
     if (typeof document.caretRangeFromPoint !== "function") return out;
-    const xs = [0.15, 0.3, 0.5, 0.7, 0.85].map((f) =>
-      Math.round(window.innerWidth * f),
-    );
+    const xs = [0.15, 0.3, 0.5, 0.7, 0.85].map((f) => Math.round(window.innerWidth * f));
     for (const x of xs) {
       const caret = document.caretRangeFromPoint(x, y);
       const node = caret?.startContainer ?? null;
@@ -984,11 +971,7 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
    * fixed and clamped to the viewport; a pointerdown outside the card closes
    * it.
    */
-  function renderTranslationCard(
-    title: string,
-    rows: TranslateRow[],
-    foot: string,
-  ): void {
+  function renderTranslationCard(title: string, rows: TranslateRow[], foot: string): void {
     const hostEl = ensureTranslateHost();
     if (!hostEl) return;
     if (translateCard) translateCard.remove();
@@ -1116,15 +1099,9 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       );
       return;
     }
-    renderTranslationCard(
-      "查询中…",
-      [{ text: "正在查询内置词典或翻译模型…", tone: "dim" }],
-      "…",
-    );
+    renderTranslationCard("查询中…", [{ text: "正在查询内置词典或翻译模型…", tone: "dim" }], "…");
     try {
-      document.title =
-        "bnote-translate:" +
-        JSON.stringify({ id, doc: TRANSLATE_DOC, text, x, y });
+      document.title = "bnote-translate:" + JSON.stringify({ id, doc: TRANSLATE_DOC, text, x, y });
     } catch {
       hideTranslation();
     }
@@ -1146,10 +1123,8 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       const entry = p.entry as Record<string, unknown> | undefined;
       if (!entry) return;
       const word = typeof entry.word === "string" ? entry.word : "";
-      const phonetic =
-        typeof entry.phonetic === "string" ? entry.phonetic.trim() : "";
-      const translation =
-        typeof entry.translation === "string" ? entry.translation : "";
+      const phonetic = typeof entry.phonetic === "string" ? entry.phonetic.trim() : "";
+      const translation = typeof entry.translation === "string" ? entry.translation : "";
       const rows: TranslateRow[] = [];
       if (phonetic) rows.push({ text: `/${phonetic}/`, tone: "phonetic" });
       for (const line of translation.split("\n")) {
@@ -1171,22 +1146,13 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
       return;
     }
     if (kind === "sentence") {
-      const translation =
-        typeof p.translation === "string" ? p.translation : "";
-      renderTranslationCard(
-        "句子翻译",
-        [{ text: translation }],
-        "模型翻译",
-      );
+      const translation = typeof p.translation === "string" ? p.translation : "";
+      renderTranslationCard("句子翻译", [{ text: translation }], "模型翻译");
       return;
     }
     if (kind === "error") {
       const message = typeof p.message === "string" ? p.message : "翻译失败";
-      renderTranslationCard(
-        "翻译失败",
-        [{ text: message, tone: "error" }],
-        "未发送译文",
-      );
+      renderTranslationCard("翻译失败", [{ text: message, tone: "error" }], "未发送译文");
     }
   }
 

@@ -22,12 +22,10 @@ import { readFileSync } from "node:fs";
  */
 
 const raw = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
-const code = raw
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/^[ \t]*\/\/.*$/gm, "");
+const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
 describe("restart restore: the session family, not the most recent one", () => {
-  it("lifecycle restore calls restoreFamily(..., \"root\")", () => {
+  it('lifecycle restore calls restoreFamily(..., "root")', () => {
     expect(code).toMatch(/restoreFamily\(sessions\[0\]\.id,\s*sessions,\s*"root"\)/);
   });
 
@@ -50,7 +48,9 @@ describe("restart restore: the session family, not the most recent one", () => {
   });
 
   it("family members map from parent back to the in-memory key (after a restart parent is a file id)", () => {
-    expect(code).toMatch(/parent: member\.parent \? \(keyByFile\.get\(member\.parent\) \?\? null\)/);
+    expect(code).toMatch(
+      /parent: member\.parent \? \(keyByFile\.get\(member\.parent\) \?\? null\)/,
+    );
   });
 });
 
@@ -108,9 +108,7 @@ describe("fork: the parent/child relation is written to disk", () => {
 
 describe("title: the session's own first message, generated once by the model and written to disk", () => {
   it("the seed is recorded on the first send, and a session already named by the LLM is not recorded again", () => {
-    expect(code).toMatch(
-      /conv\.titleSource !== "llm" && !titleSeedRef\.current\.has\(conv\.key\)/,
-    );
+    expect(code).toMatch(/conv\.titleSource !== "llm" && !titleSeedRef\.current\.has\(conv\.key\)/);
     expect(code).toMatch(/titleSeedRef\.current\.set\(conv\.key,/);
   });
 
@@ -148,6 +146,8 @@ describe("title: the session's own first message, generated once by the model an
   it("a restored LLM title is not generated again", () => {
     const fn = code.slice(code.indexOf("const launchRestored = useCallback"));
     const body = fn.slice(0, fn.indexOf("const restoreFamily"));
-    expect(body).toMatch(/titleSource: sessionMeta\?\.titleSource === "llm" \? "llm" : "first-message"/);
+    expect(body).toMatch(
+      /titleSource: sessionMeta\?\.titleSource === "llm" \? "llm" : "first-message"/,
+    );
   });
 });

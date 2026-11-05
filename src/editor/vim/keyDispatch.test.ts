@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import { EditorState, type TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { commandMappingKeymap, lookupVimCommand, vimCapturesKey } from "./vim";
-import { buildSession, escapeForSnippet, setSession, snippetField, type SnippetSession } from "@/editor/snippets/extension";
+import {
+  buildSession,
+  escapeForSnippet,
+  setSession,
+  snippetField,
+  type SnippetSession,
+} from "@/editor/snippets/extension";
 import { parseReplacement } from "@/editor/snippets/engine";
 import { useAppStore } from "@/state/appStore";
 
@@ -59,7 +65,13 @@ describe("vimCapturesKey: the decision core of the capture dispatch", () => {
 
 describe("lookupVimCommand: the command mapping registry (the capture dispatch consults it before the engine)", () => {
   const mappings = [
-    { lhs: "<C-s>", rhs: ":w<CR>", mode: "normal" as const, commandId: "workspace.save-note", noremap: false },
+    {
+      lhs: "<C-s>",
+      rhs: ":w<CR>",
+      mode: "normal" as const,
+      commandId: "workspace.save-note",
+      noremap: false,
+    },
     {
       lhs: "<C-b>",
       rhs: ":Bnote nav.toggle-sidebar<CR>",

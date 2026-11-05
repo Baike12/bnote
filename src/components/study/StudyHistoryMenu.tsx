@@ -99,7 +99,9 @@ export function StudyHistoryMenu({
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
       >
-        <span className="content-title" title={title}>{title}</span>
+        <span className="content-title" title={title}>
+          {title}
+        </span>
         <span className="content-history-caret">▾</span>
       </button>
       {open && (

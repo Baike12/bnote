@@ -29,9 +29,7 @@ export function buildSuggestItems(input: {
     const q = trigger.query.trim().toLowerCase();
     const matched = skills.filter((s) => {
       if (!q) return true;
-      return (
-        s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
-      );
+      return s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q);
     });
     // Prefix matches first, the rest sorted stably by name
     matched.sort((a, b) => {
@@ -77,7 +75,11 @@ export function AgentSuggest({
   const empty = useMemo(() => items.length === 0, [items]);
   if (empty) return null;
   return (
-    <div className="agent-suggest" role="listbox" aria-label={kind === "skill" ? "技能补全" : "文件引用补全"}>
+    <div
+      className="agent-suggest"
+      role="listbox"
+      aria-label={kind === "skill" ? "技能补全" : "文件引用补全"}
+    >
       <div className="agent-suggest-head">
         {kind === "skill" ? "技能(/名称,模型会先加载它的指导)" : "引用文件(@路径,模型会读取它)"}
       </div>

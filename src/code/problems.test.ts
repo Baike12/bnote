@@ -28,7 +28,9 @@ const problems = [
 
 describe("next / previous problem", () => {
   it("no diagnostics means no jump", () => {
-    expect(nextProblemTarget([], { path: "a.ts", position: { line: 0, character: 0 } }, 1)).toBeNull();
+    expect(
+      nextProblemTarget([], { path: "a.ts", position: { line: 0, character: 0 } }, 1),
+    ).toBeNull();
   });
 
   it("inside one file the next one is taken by position, and out-of-order diagnostics are sorted first", () => {
@@ -92,17 +94,19 @@ describe("next / previous problem", () => {
   });
 
   it("the current file has no diagnostics: downwards starts at the first entry of the whole list, upwards at the last one", () => {
-    expect(nextProblemTarget(problems, { path: "z.ts", position: { line: 0, character: 0 } }, 1)).toEqual(
-      at("a.ts", 1),
-    );
-    expect(nextProblemTarget(problems, { path: "z.ts", position: { line: 0, character: 0 } }, -1)).toEqual(
-      at("c.ts", 4),
-    );
+    expect(
+      nextProblemTarget(problems, { path: "z.ts", position: { line: 0, character: 0 } }, 1),
+    ).toEqual(at("a.ts", 1));
+    expect(
+      nextProblemTarget(problems, { path: "z.ts", position: { line: 0, character: 0 } }, -1),
+    ).toEqual(at("c.ts", 4));
   });
 
   it("without a caret position (no editor) it gives the head / tail of the current file", () => {
     expect(nextProblemTarget(problems, { path: "b.ts", position: null }, 1)).toEqual(at("b.ts", 2));
-    expect(nextProblemTarget(problems, { path: "b.ts", position: null }, -1)).toEqual(at("b.ts", 7));
+    expect(nextProblemTarget(problems, { path: "b.ts", position: null }, -1)).toEqual(
+      at("b.ts", 7),
+    );
   });
 
   it("entries on the same line are compared by column", () => {

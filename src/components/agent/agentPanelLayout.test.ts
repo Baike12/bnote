@@ -16,10 +16,7 @@ import { readFileSync } from "node:fs";
  * are locked here: the panel must be allowed to shrink (min-height: 0) and
  * the message area must be the only vertical scroll container.
  */
-const css = readFileSync("src/styles/global.css", "utf8").replace(
-  /\/\*[\s\S]*?\*\//g,
-  "",
-);
+const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
 const rule = (selector: string): string => {
   // Parse by rule block instead of by a line-anchored regex: the dividers
@@ -83,8 +80,7 @@ describe("study assistant header: session switch and auxiliary session bar", () 
   const panelSrc = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
   const headerSrc = readFileSync("src/components/agent/AgentHeader.tsx", "utf8");
   // Only the code is searched: a comment saying "no native <select>" is documentation, not a violation.
-  const code = (src: string) =>
-    src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
   it("the session switch does not use a native <select> (the system control does not match the project UI)", () => {
     expect(code(panelSrc)).not.toMatch(/<select/);

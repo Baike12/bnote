@@ -3,7 +3,13 @@ import type { Extension } from "@codemirror/state";
 import { setDocPath, docPathField } from "./docPath";
 import { setActiveEditor } from "./api";
 import { EditorView, keymap, drawSelection } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentLess,
+  indentMore,
+} from "@codemirror/commands";
 import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdownExtensions, codeHighlighting } from "./markdown";
@@ -263,9 +269,7 @@ export function baseExtensions(
         u.docChanged &&
         !u.transactions.some(
           (t) =>
-            t.isUserEvent("input.bnote-renumber") ||
-            t.isUserEvent("undo") ||
-            t.isUserEvent("redo"),
+            t.isUserEvent("input.bnote-renumber") || t.isUserEvent("undo") || t.isUserEvent("redo"),
         ) &&
         useAppStore.getState().settings.autoNumberHeadings
       ) {
@@ -273,10 +277,7 @@ export function baseExtensions(
         queueMicrotask(() => {
           // isConnected: the view may already be destroyed before the
           // microtask runs (file switch / window closed).
-          if (
-            useAppStore.getState().settings.autoNumberHeadings &&
-            view.dom.isConnected
-          ) {
+          if (useAppStore.getState().settings.autoNumberHeadings && view.dom.isConnected) {
             renumberHeadings(view);
           }
         });
@@ -523,9 +524,7 @@ export function reconfigureTypewriter(view: EditorView, enabled: boolean) {
   // it live).
   const position = useAppStore.getState().settings.typewriterPosition;
   view.dispatch({
-    effects: typewriterCompartment.reconfigure(
-      enabled ? typewriterExtension(position) : [],
-    ),
+    effects: typewriterCompartment.reconfigure(enabled ? typewriterExtension(position) : []),
   });
 }
 

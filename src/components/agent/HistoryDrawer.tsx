@@ -58,9 +58,7 @@ export function AgentHistoryDrawer({
           {savedSessions.map((s) => (
             <li key={s.id}>
               <button
-                className={`agent-history-item${
-                  s.id === activeSessionFileId ? " is-active" : ""
-                }`}
+                className={`agent-history-item${s.id === activeSessionFileId ? " is-active" : ""}`}
                 title={s.title}
                 onClick={() => onPick(s.id)}
               >

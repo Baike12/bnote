@@ -38,7 +38,9 @@ const HEADING_RE = /^(#{1,6})([ \t]+.*)?$/;
  *  to date. Each change rewrites one heading's prefix up to the title text.
  *  Exported so unit tests can lock the scope semantics (a pure function, no
  *  view dependency). */
-export function renumberChanges(state: EditorState): { from: number; to: number; insert: string }[] {
+export function renumberChanges(
+  state: EditorState,
+): { from: number; to: number; insert: string }[] {
   const doc = state.doc;
   const fences = fenceStateScan(doc);
   const regions = calloutRegions(state);
@@ -95,11 +97,7 @@ export function renumberChanges(state: EditorState): { from: number; to: number;
     // the loop fills the gap.
     const path = pathOf(head.lineNo);
     let common = 0;
-    while (
-      common < path.length &&
-      common < prevPath.length &&
-      path[common] === prevPath[common]
-    ) {
+    while (common < path.length && common < prevPath.length && path[common] === prevPath[common]) {
       common++;
     }
     while (curDepth > common) {

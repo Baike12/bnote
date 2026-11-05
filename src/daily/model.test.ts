@@ -28,7 +28,13 @@ const doc = (text: string) => EditorState.create({ doc: text }).doc;
 
 describe("parseListLine / todoText", () => {
   it("recognizes bullet / ordered / checkbox and keeps the indentation faithful", () => {
-    expect(parseListLine("- [ ] 任务")).toEqual({ indent: "", marker: "-", gap: " ", box: " ", text: "任务" });
+    expect(parseListLine("- [ ] 任务")).toEqual({
+      indent: "",
+      marker: "-",
+      gap: " ",
+      box: " ",
+      text: "任务",
+    });
     expect(parseListLine("  * [x] 完成 ✅ 2026-09-23")).toEqual({
       indent: "  ",
       marker: "*",
@@ -36,9 +42,27 @@ describe("parseListLine / todoText", () => {
       box: "x",
       text: "完成 ✅ 2026-09-23",
     });
-    expect(parseListLine("\t1. [X] 大写")).toEqual({ indent: "\t", marker: "1.", gap: " ", box: "X", text: "大写" });
-    expect(parseListLine("- 普通列表项")).toEqual({ indent: "", marker: "-", gap: " ", box: null, text: "普通列表项" });
-    expect(parseListLine("2) 有序圆括号")).toEqual({ indent: "", marker: "2)", gap: " ", box: null, text: "有序圆括号" });
+    expect(parseListLine("\t1. [X] 大写")).toEqual({
+      indent: "\t",
+      marker: "1.",
+      gap: " ",
+      box: "X",
+      text: "大写",
+    });
+    expect(parseListLine("- 普通列表项")).toEqual({
+      indent: "",
+      marker: "-",
+      gap: " ",
+      box: null,
+      text: "普通列表项",
+    });
+    expect(parseListLine("2) 有序圆括号")).toEqual({
+      indent: "",
+      marker: "2)",
+      gap: " ",
+      box: null,
+      text: "有序圆括号",
+    });
     expect(parseListLine("正文行")).toBe(null);
     expect(parseListLine("")).toBe(null);
   });
@@ -80,10 +104,16 @@ describe("blockRootLine / blockEnd / blockLines", () => {
 
 describe("reindentBlock", () => {
   it("after the source root indentation is stripped the target root indentation is zeroed, the relative indentation of the child lines is faithful", () => {
-    expect(reindentBlock(["  - [ ] 子", "    - [ ] 孙"], 2, "")).toEqual(["- [ ] 子", "  - [ ] 孙"]);
+    expect(reindentBlock(["  - [ ] 子", "    - [ ] 孙"], 2, "")).toEqual([
+      "- [ ] 子",
+      "  - [ ] 孙",
+    ]);
   });
   it("adding the target indentation: the whole block moves right", () => {
-    expect(reindentBlock(["- [ ] 子", "  - [ ] 孙"], 0, "\t")).toEqual(["\t- [ ] 子", "\t  - [ ] 孙"]);
+    expect(reindentBlock(["- [ ] 子", "  - [ ] 孙"], 0, "\t")).toEqual([
+      "\t- [ ] 子",
+      "\t  - [ ] 孙",
+    ]);
   });
   it("only whitespace characters are stripped, it never bites into the marker (a tab-indented child line)", () => {
     expect(reindentBlock(["  \t- 混合"], 2, "")).toEqual(["\t- 混合"]);
@@ -135,11 +165,15 @@ describe("appendEntrySpec / replaceEntrySpec / removeEntrySpec", () => {
   it("an empty document without a header / a body document without a header", () => {
     const empty = doc("");
     const r0 = parseDailyRegion(empty);
-    expect(textAfterChanges("", [appendEntrySpec(empty, r0, ["- [ ] 甲"]).change])).toBe("- [ ] 甲");
-    const prose = doc("旧内容\n");
-    expect(textAfterChanges("旧内容\n", [appendEntrySpec(prose, parseDailyRegion(prose), ["- [ ] 甲"]).change])).toBe(
-      "- [ ] 甲\n\n旧内容\n",
+    expect(textAfterChanges("", [appendEntrySpec(empty, r0, ["- [ ] 甲"]).change])).toBe(
+      "- [ ] 甲",
     );
+    const prose = doc("旧内容\n");
+    expect(
+      textAfterChanges("旧内容\n", [
+        appendEntrySpec(prose, parseDailyRegion(prose), ["- [ ] 甲"]).change,
+      ]),
+    ).toBe("- [ ] 甲\n\n旧内容\n");
   });
 
   it("replaceEntrySpec replaces the whole segment; removeEntrySpec swallows the blank line between entries", () => {
@@ -147,7 +181,9 @@ describe("appendEntrySpec / replaceEntrySpec / removeEntrySpec", () => {
     const d = doc(text);
     const region = parseDailyRegion(d);
     expect(
-      textAfterChanges(text, [replaceEntrySpec(d, region.entries[0], ["- [ ] 甲改", "  - [ ] 新子项"])]),
+      textAfterChanges(text, [
+        replaceEntrySpec(d, region.entries[0], ["- [ ] 甲改", "  - [ ] 新子项"]),
+      ]),
     ).toBe("# d\n\n- [ ] 甲改\n  - [ ] 新子项\n\n- [ ] 乙\n\n正文\n");
     expect(textAfterChanges(text, [removeEntrySpec(d, region.entries[0])])).toBe(
       "# d\n\n- [ ] 乙\n\n正文\n",
@@ -175,7 +211,10 @@ describe("prependEntrySpec", () => {
 
   it("a block with children is prepended as a whole, the line range of the entry covers the whole block", () => {
     const d = doc("# d\n\n- [ ] 甲\n  - [ ] 子\n");
-    const { change, entry } = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新", "  - [ ] 子新"]);
+    const { change, entry } = prependEntrySpec(d, parseDailyRegion(d), [
+      "- [ ] 新",
+      "  - [ ] 子新",
+    ]);
     expect(textAfterChanges(d.toString(), [change])).toBe(
       "# d\n\n- [ ] 新\n  - [ ] 子新\n- [ ] 甲\n  - [ ] 子\n",
     );
@@ -263,7 +302,9 @@ describe("todo rollover: rolloverBlocks", () => {
 
   it("a completed middle node is the anchor of an unfinished descendant: it is kept, the hierarchy is not broken", () => {
     const prev = ["- [ ] 父", "  - [x] 中间 ✅ 2026-09-22", "    - [ ] 剩下的"].join("\n");
-    expect(rolloverBlocks(prev)).toEqual([["- [ ] 父", "  - [x] 中间 ✅ 2026-09-22", "    - [ ] 剩下的"]]);
+    expect(rolloverBlocks(prev)).toEqual([
+      ["- [ ] 父", "  - [x] 中间 ✅ 2026-09-22", "    - [ ] 剩下的"],
+    ]);
   });
 
   it("a completed sibling subtree is skipped as a whole, it does not reach beyond the indentation window and grab the wrong block", () => {

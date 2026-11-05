@@ -20,15 +20,10 @@ export function FolderSuggest({ value, onChange, className, placeholder }: Folde
   const [index, setIndex] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  const options = useMemo(
-    () => ["", ...folders].sort((a, b) => a.localeCompare(b)),
-    [folders],
-  );
+  const options = useMemo(() => ["", ...folders].sort((a, b) => a.localeCompare(b)), [folders]);
 
   const q = value.trim().toLowerCase();
-  const matches = open
-    ? options.filter((f) => !q || f.toLowerCase().includes(q)).slice(0, 30)
-    : [];
+  const matches = open ? options.filter((f) => !q || f.toLowerCase().includes(q)).slice(0, 30) : [];
 
   useEffect(() => {
     if (!open) return;
@@ -88,7 +83,9 @@ export function FolderSuggest({ value, onChange, className, placeholder }: Folde
                 choose(f);
               }}
             >
-              <span className="folder-suggest-name">{f === "" ? "仓库根目录" : f.split("/").pop()}</span>
+              <span className="folder-suggest-name">
+                {f === "" ? "仓库根目录" : f.split("/").pop()}
+              </span>
               <span className="folder-suggest-path">{f === "" ? "" : f}</span>
             </div>
           ))}

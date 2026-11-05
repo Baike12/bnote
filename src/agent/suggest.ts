@@ -55,7 +55,8 @@ export function applySuggestion(
   replacement: string,
 ): { text: string; caret: number } {
   const insert = `${replacement} `;
-  const next = text.slice(0, trigger.start) + insert + text.slice(trigger.start + 1 + trigger.query.length);
+  const next =
+    text.slice(0, trigger.start) + insert + text.slice(trigger.start + 1 + trigger.query.length);
   const caret = trigger.start + insert.length;
   return { text: next, caret };
 }

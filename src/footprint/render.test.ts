@@ -124,7 +124,7 @@ describe("footprint block rendering: list geometry same as the editor", () => {
 
 describe("footprint block rendering: safety and robustness (the renderer eats any user text)", () => {
   it("escaping gate: the HTML tags in the source text must be escaped, they must not enter the output", () => {
-    const html = renderBlockHtml('<img src=x onerror=alert(1)> <script>alert(2)</script>\n');
+    const html = renderBlockHtml("<img src=x onerror=alert(1)> <script>alert(2)</script>\n");
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<script");
     expect(html).toContain("&lt;img");

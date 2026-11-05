@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import type { DecorationSet } from "@codemirror/view";
-import {
-  visualLineNumbers,
-  visualRangeSpans,
-  visualSelection,
-  visualSelectionDecos,
-} from "./vim";
+import { visualLineNumbers, visualRangeSpans, visualSelection, visualSelectionDecos } from "./vim";
 
 /**
  * Geometry gate for the visual-mode highlight (the pure functions behind
@@ -244,7 +239,9 @@ describe("visualSelection: the selection inserted by ⌘⇧B (the engine sel coo
   });
 
   it("linewise: the whole line (including the trailing newline), the range is the whole-line interval", () => {
-    expect(visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 2, ch: 0 }, { line: true }))).toEqual({
+    expect(
+      visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 2, ch: 0 }, { line: true })),
+    ).toEqual({
       text: "第二行\n第三行",
       from: 4,
       to: 11,
@@ -252,7 +249,9 @@ describe("visualSelection: the selection inserted by ⌘⇧B (the engine sel coo
   });
 
   it("a collapsed linewise selection (VV without moving): a single whole line", () => {
-    expect(visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 1, ch: 0 }, { line: true }))).toEqual({
+    expect(
+      visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 1, ch: 0 }, { line: true })),
+    ).toEqual({
       text: "第二行",
       from: 4,
       to: 7,
@@ -260,8 +259,14 @@ describe("visualSelection: the selection inserted by ⌘⇧B (the engine sel coo
   });
 
   it("a backward linewise selection (Jk upward): the same text and range as the forward one", () => {
-    const forward = visualSelection(doc, vstate({ line: 1, ch: 0 }, { line: 3, ch: 0 }, { line: true }));
-    const backward = visualSelection(doc, vstate({ line: 3, ch: 0 }, { line: 1, ch: 0 }, { line: true }));
+    const forward = visualSelection(
+      doc,
+      vstate({ line: 1, ch: 0 }, { line: 3, ch: 0 }, { line: true }),
+    );
+    const backward = visualSelection(
+      doc,
+      vstate({ line: 3, ch: 0 }, { line: 1, ch: 0 }, { line: true }),
+    );
     expect(backward).toEqual(forward);
     expect(forward).toEqual({ text: "第二行\n第三行\n第四行", from: 4, to: 15 });
   });
@@ -294,13 +299,20 @@ describe("visualSelection: the selection inserted by ⌘⇧B (the engine sel coo
   });
 
   it("outside visual mode / the engine keeps no sel: it returns null", () => {
-    expect(visualSelection(doc, { visualMode: false, sel: { anchor: { line: 0, ch: 0 }, head: { line: 1, ch: 0 } } })).toBeNull();
+    expect(
+      visualSelection(doc, {
+        visualMode: false,
+        sel: { anchor: { line: 0, ch: 0 }, head: { line: 1, ch: 0 } },
+      }),
+    ).toBeNull();
     expect(visualSelection(doc, { visualMode: true })).toBeNull();
     expect(visualSelection(doc, null)).toBeNull();
   });
 
   it("out-of-range line numbers are clamped to the document range (the engine sel may momentarily point past the end of the document)", () => {
-    expect(visualSelection(doc, vstate({ line: 2, ch: 0 }, { line: 99, ch: 0 }, { line: true }))).toEqual({
+    expect(
+      visualSelection(doc, vstate({ line: 2, ch: 0 }, { line: 99, ch: 0 }, { line: true })),
+    ).toEqual({
       text: "第三行\n第四行",
       from: 8,
       to: 15,

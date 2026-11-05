@@ -64,7 +64,7 @@ describe("vault JSON stored per file", () => {
     expect(vaultDotPath("/vault/", "x.json")).toBe("/vault/.bnote/x.json");
   });
 
-  it("loadFile distinguishes \"not on disk\" from \"an empty file on disk\"", async () => {
+  it('loadFile distinguishes "not on disk" from "an empty file on disk"', async () => {
     const io = makeIO({ "/vault/.bnote/empty.json": "" });
     const store = makeStore(io);
     await expect(store.loadFile("/vault", "missing")).resolves.toEqual({

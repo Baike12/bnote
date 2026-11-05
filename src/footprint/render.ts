@@ -86,7 +86,10 @@ export function renderBlockHtml(text: string): string {
     const a = lineOf(r.from);
     const b = lineOf(Math.max(r.from, r.to - 1));
     if (b <= a) continue; // a single line $$...$$ stays inline
-    mathBlockAt.set(a, `<div class="cw-math cw-math-block">${renderMathHtml(r.content, true)}</div>`);
+    mathBlockAt.set(
+      a,
+      `<div class="cw-math cw-math-block">${renderMathHtml(r.content, true)}</div>`,
+    );
     for (let n = a; n <= b; n++) claimed.add(n);
   }
 
@@ -194,8 +197,7 @@ export function renderBlockHtml(text: string): string {
         if (c.name === "LinkMark") marks.push(c);
         if (c.name === "URL") url = escapeHtml(text.slice(c.from, c.to));
       }
-      const label =
-        marks.length >= 2 ? emitRange(node, marks[0].to, marks[1].from) : "";
+      const label = marks.length >= 2 ? emitRange(node, marks[0].to, marks[1].from) : "";
       if (!url && marks.length >= 4) {
         url = escapeHtml(text.slice(marks[2].to, marks[3].from));
       }
@@ -227,7 +229,14 @@ export function renderBlockHtml(text: string): string {
     out[n] = `<div class="footprint-line${cls}">${content}</div>`;
   };
 
-  function emitListLine(cls: string, marker: string, node: SyntaxNode, from: number, to: number, n: number) {
+  function emitListLine(
+    cls: string,
+    marker: string,
+    node: SyntaxNode,
+    from: number,
+    to: number,
+    n: number,
+  ) {
     out[n] = `<div class="footprint-line ${cls}">${marker}${emitRange(node, from, to)}</div>`;
   }
 

@@ -153,11 +153,7 @@ export function planSnapshot(
     const page = pages[i];
     if (page.full.width <= 0 || page.full.height <= 0) continue;
     const frag = intersectRect(page.box, capture);
-    if (
-      !frag ||
-      frag.width < MIN_VISIBLE_FRAGMENT ||
-      frag.height < MIN_VISIBLE_FRAGMENT
-    ) {
+    if (!frag || frag.width < MIN_VISIBLE_FRAGMENT || frag.height < MIN_VISIBLE_FRAGMENT) {
       continue;
     }
     if (page.pixels <= 0) return null;
@@ -166,19 +162,13 @@ export function planSnapshot(
   if (visible.length === 0) return null;
 
   // Horizontally only the page column is taken: the outline column lies outside the page rects.
-  const left = Math.max(
-    capture.left,
-    Math.min(...visible.map((v) => v.page.box.left)),
-  );
+  const left = Math.max(capture.left, Math.min(...visible.map((v) => v.page.box.left)));
   const right = Math.min(
     capture.left + capture.width,
     Math.max(...visible.map((v) => v.page.box.left + v.page.box.width)),
   );
   // Vertically both the part outside the viewport and the background outside the pages are cut away (top/bottom padding, the blank space of a short document).
-  const top = Math.max(
-    capture.top,
-    Math.min(...visible.map((v) => v.page.box.top)),
-  );
+  const top = Math.max(capture.top, Math.min(...visible.map((v) => v.page.box.top)));
   const bottom = Math.min(
     capture.top + capture.height,
     Math.max(...visible.map((v) => v.page.box.top + v.page.box.height)),

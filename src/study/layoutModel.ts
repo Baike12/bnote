@@ -115,11 +115,7 @@ export interface ColumnWidths {
  * adjacent column is 10% of the layout width; whichever hits its limit first
  * stops the divider.
  */
-export function dragAgentEdge(
-  x: number,
-  hostWidth: number,
-  sum: number,
-): ColumnWidths {
+export function dragAgentEdge(x: number, hostWidth: number, sum: number): ColumnWidths {
   const min = minColumnWidth(hostWidth);
   // Assistant column at 10% -> the divider's right edge is leftmost; content column at 10% -> rightmost.
   const lo = min + RESIZER_WIDTH;

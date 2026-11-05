@@ -43,12 +43,18 @@ export function PythonRunPanel() {
   return (
     <div className="python-run-panel">
       <div className="python-run-head">
-        <span className={`python-run-status ${running ? "running" : exitCode === 0 && !cancelled ? "ok" : "bad"}`}>
+        <span
+          className={`python-run-status ${running ? "running" : exitCode === 0 && !cancelled ? "ok" : "bad"}`}
+        >
           {running && <span className="python-run-spin" />}
           {status}
         </span>
-        {durationMs !== null && !running && <span className="python-run-dur">{(durationMs / 1000).toFixed(2)}s</span>}
-        <span className="python-run-cmd" title={command}>{command}</span>
+        {durationMs !== null && !running && (
+          <span className="python-run-dur">{(durationMs / 1000).toFixed(2)}s</span>
+        )}
+        <span className="python-run-cmd" title={command}>
+          {command}
+        </span>
         <span className="spacer" />
         {running && (
           <button className="btn btn-ghost" onClick={() => void stopRun()}>

@@ -46,9 +46,7 @@ function makeState(selectionCol: { line: number; col: number }): EditorState {
   });
   ensureSyntaxTree(created, created.doc.length);
   const line = created.doc.line(selectionCol.line);
-  return created
-    .update({ selection: EditorSelection.cursor(line.from + selectionCol.col) })
-    .state;
+  return created.update({ selection: EditorSelection.cursor(line.from + selectionCol.col) }).state;
 }
 
 /**
@@ -67,20 +65,14 @@ describe("livePreview token activity rule for list markers", () => {
     const widgets = entries.map(widgetOf);
     expect(widgets.some((w) => w instanceof TaskCheckboxWidget)).toBe(true);
     // `- ` is hidden by an empty replace (the li-t mark slot folds into the space before the checkbox).
-    expect(
-      entries.some(
-        (e) => e.from === 0 && widgetOf(e) === undefined && e.to === 2,
-      ),
-    ).toBe(true);
+    expect(entries.some((e) => e.from === 0 && widgetOf(e) === undefined && e.to === 2)).toBe(true);
   });
 
   it("caret inside `[ ]`: the checkbox flips back to source, `- ` stays hidden", () => {
     const state = makeState({ line: 1, col: 3 });
     const entries = decosAt(state, 0, line1().length + 1);
     expect(entries.map(widgetOf).some((w) => w instanceof TaskCheckboxWidget)).toBe(false);
-    expect(entries.some((e) => e.from === 0 && e.to === 2 && widgetOf(e) === undefined)).toBe(
-      true,
-    );
+    expect(entries.some((e) => e.from === 0 && e.to === 2 && widgetOf(e) === undefined)).toBe(true);
   });
 
   it("caret at the line start: `-` flips back to source, the checkbox stays in the rendered state", () => {
@@ -211,8 +203,7 @@ describe("the setext ambiguity of an empty bullet line after a paragraph (decora
     entries.some((e) => e.from !== e.to && e.from <= pos && e.to > pos);
   const listLineDeco = (entries: { deco: unknown }[]) =>
     entries.some(
-      (e) =>
-        (e.deco as { spec?: { class?: string } }).spec?.class?.includes("li-b") === true,
+      (e) => (e.deco as { spec?: { class?: string } }).spec?.class?.includes("li-b") === true,
     );
 
   it("when the tree holds SetextHeading2 the bullet + li-b line decoration still render (immediately visible)", () => {
@@ -250,11 +241,7 @@ describe("the setext ambiguity of an empty bullet line after a paragraph (decora
     // when there is body text, a gap of at most 1 space); what is locked here
     // is that in both tree states the bullet takes over from the dash start.
     const rendered = decosAt(makeDocState(doc, dashFrom + 2), dashFrom, dashFrom + 3);
-    const typed = decosAt(
-      makeDocState(`${PARAG}\n- 字\n`, dashFrom + 3),
-      dashFrom,
-      dashFrom + 4,
-    );
+    const typed = decosAt(makeDocState(`${PARAG}\n- 字\n`, dashFrom + 3), dashFrom, dashFrom + 4);
     const bulletFrom = (entries: ReturnType<typeof decosAt>) => {
       const hit = entries.find((e) => widgetOf(e) instanceof ListBulletWidget);
       return hit ? hit.from : null;
@@ -327,7 +314,10 @@ describe("selection trigger: a same-line move across the marker slot must rebuil
     const onDash = stateAt(1, 0);
     const atEnd = stateAt(1, 10);
     const bulletOf = (state: EditorState) => {
-      const set = buildInlineDecorations({ state, visibleRanges: [{ from: 0, to: state.doc.length }] });
+      const set = buildInlineDecorations({
+        state,
+        visibleRanges: [{ from: 0, to: state.doc.length }],
+      });
       let has = false;
       set.between(0, 2, (_f, _t, deco) => {
         if ((deco as { spec?: { widget?: unknown } }).spec?.widget instanceof ListBulletWidget) {
@@ -386,9 +376,7 @@ describe("the block-level anchor of the math preview (blockDecorationsField)", (
     const points = blockPoints(state);
     const previews = points.filter((p) => p.widget instanceof MathPreviewWidget);
     expect(previews).toEqual([{ from: 13, to: 13, widget: expect.any(MathPreviewWidget) }]);
-    const nextReplace = points.find(
-      (p) => p.widget instanceof MathWidget && p.from === 14,
-    );
+    const nextReplace = points.find((p) => p.widget instanceof MathWidget && p.from === 14);
     expect(nextReplace).toBeDefined();
     expect(previews[0].from).toBeLessThan(nextReplace!.from);
   });
@@ -485,17 +473,17 @@ describe("the rendering rules of inline formulas (buildInlineDecorations)", () =
   it("the caret sits on the boundary (3 before the opening delimiter / 9 after the closing one): the formula is already rendered", () => {
     for (const pos of [3, 9]) {
       const points = inlinePoints(DOC_MATH, pos);
-      expect(
-        points.some((p) => p.widget instanceof MathWidget && p.from === 3 && p.to === 9),
-      ).toBe(true);
+      expect(points.some((p) => p.widget instanceof MathWidget && p.from === 3 && p.to === 9)).toBe(
+        true,
+      );
     }
   });
 
   it("the caret leaves the region: it folds into a rendered widget", () => {
     const points = inlinePoints(DOC_MATH, 0);
-    expect(
-      points.some((p) => p.widget instanceof MathWidget && p.from === 3 && p.to === 9),
-    ).toBe(true);
+    expect(points.some((p) => p.widget instanceof MathWidget && p.from === 3 && p.to === 9)).toBe(
+      true,
+    );
   });
 
   it("two formulas on one line, editing the first one: the rendered copy of the first follows its closing $ right away, the second one still renders as usual", () => {
@@ -534,9 +522,7 @@ describe("livePreview callout anchor decorations", () => {
 
   const anchorMarks = (state: EditorState) =>
     decosAt(state, 0, state.doc.length)
-      .filter(
-        (e) => (e.deco as { spec?: { class?: string } }).spec?.class === "md-callout-anchor",
-      )
+      .filter((e) => (e.deco as { spec?: { class?: string } }).spec?.class === "md-callout-anchor")
       .map((e) => ({ from: e.from, to: e.to }));
 
   it("the position in the body whose text run equals the callout title gets an anchor; the title line and the text inside the block do not", () => {

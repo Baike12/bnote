@@ -363,7 +363,9 @@ export const codeCommandDefs: CommandDef[] = [
       const path = activePath();
       if (!path) return;
       void import("./api")
-        .then(({ codeApi }) => codeApi.gitUnstage(useCodeStore.getState().project?.root ?? "", path))
+        .then(({ codeApi }) =>
+          codeApi.gitUnstage(useCodeStore.getState().project?.root ?? "", path),
+        )
         .then(() => useCodeStore.getState().refreshGit());
     },
   },

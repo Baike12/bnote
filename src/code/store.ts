@@ -101,11 +101,13 @@ export interface CodeState {
    */
   jump: { path: string; position: LspPosition } | null;
   /** The reference list (the result of a "jump to references" query). */
-  references: {
-    path: string;
-    position: LspPosition;
-    external: boolean;
-  }[] | null;
+  references:
+    | {
+        path: string;
+        position: LspPosition;
+        external: boolean;
+      }[]
+    | null;
   /** Whether the terminal drawer (bottom of the code pane) is open. */
   termOpen: boolean;
   /** One tab per live shell; the PTY itself lives in Rust. */
@@ -143,7 +145,9 @@ export interface CodeState {
   /** Consume the jump request (exactly once). */
   clearJump: () => void;
   /** Set the reference list. */
-  setReferences: (refs: { path: string; position: LspPosition; external: boolean }[] | null) => void;
+  setReferences: (
+    refs: { path: string; position: LspPosition; external: boolean }[] | null,
+  ) => void;
   /** Replace the file content directly (re-read from disk after a rename). */
   replaceContent: (path: string, content: string) => void;
   /**
@@ -414,8 +418,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       const tabs = s.tabs.filter((p) => p !== path);
       const files = { ...s.files };
       delete files[path];
-      const activePath =
-        s.activePath === path ? (tabs[tabs.length - 1] ?? null) : s.activePath;
+      const activePath = s.activePath === path ? (tabs[tabs.length - 1] ?? null) : s.activePath;
       return { tabs, files, activePath };
     });
     // The document has to be closed on the server too: otherwise it keeps
@@ -502,7 +505,8 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     // `.bnote/lsp.json` overrides that again on the backend, with the
     // highest priority).
     const global = useAppStore.getState().settings.codeLspServers?.[language];
-    const override = overrides ?? (global ? { command: global.command, args: global.args ?? [] } : undefined);
+    const override =
+      overrides ?? (global ? { command: global.command, args: global.args ?? [] } : undefined);
     try {
       await codeApi.lspStart(root, language, path, override);
       get().setLspState(language, "running");

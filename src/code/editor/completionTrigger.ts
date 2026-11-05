@@ -16,7 +16,7 @@
  * every language we ship cares about (property access), ty adds the two quote
  * characters for Python string literals.
  */
-export const TRIGGER_CHARS: ReadonlySet<string> = new Set([".", "\"", "'"]);
+export const TRIGGER_CHARS: ReadonlySet<string> = new Set([".", '"', "'"]);
 
 /** The trigger character the caret sits right after, or null. */
 export function triggerCharacterFor(prevChar: string): string | null {
@@ -31,9 +31,10 @@ export function triggerCharacterFor(prevChar: string): string | null {
  * `Invoked` (1). Sending 2 without a character is what the old code did, which
  * no server should have to guess about.
  */
-export function completionRequestContext(
-  trigger: string | null,
-): { triggerKind: number; triggerCharacter?: string } {
+export function completionRequestContext(trigger: string | null): {
+  triggerKind: number;
+  triggerCharacter?: string;
+} {
   if (trigger) return { triggerKind: 2, triggerCharacter: trigger };
   return { triggerKind: 1 };
 }

@@ -26,13 +26,15 @@ describe("window geometry", () => {
     const maximized = mergeWindowState(prev, { x: 0, y: 25, width: 3456, height: 1080 }, true);
     expect(maximized).toEqual({ ...prev, maximized: true });
     // Un-maximizing returns to the real window size
-    expect(mergeWindowState(maximized, { x: 120, y: 90, width: 1000, height: 700 }, false)).toEqual({
-      x: 120,
-      y: 90,
-      width: 1000,
-      height: 700,
-      maximized: false,
-    });
+    expect(mergeWindowState(maximized, { x: 120, y: 90, width: 1000, height: 700 }, false)).toEqual(
+      {
+        x: 120,
+        y: 90,
+        width: 1000,
+        height: 700,
+        maximized: false,
+      },
+    );
   });
 
   it("without a previous value, maximizing still records a size as a fallback", () => {

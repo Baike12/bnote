@@ -265,7 +265,7 @@ function RenamePrompt({ onClose }: { onClose: () => void }) {
         />
         <div className="code-overlay-actions">
           <span className="code-overlay-hint">
-            {busy ? "重命名中…" : error ?? "回车确认,Esc 取消"}
+            {busy ? "重命名中…" : (error ?? "回车确认,Esc 取消")}
           </span>
           <button type="button" className="code-overlay-btn" onClick={onClose}>
             取消

@@ -90,12 +90,7 @@ export function TranslateCard({
                   ? "翻译失败"
                   : "查询中…"}
         </span>
-        <button
-          className="translate-card-close"
-          title="关闭"
-          onClick={onClose}
-          aria-label="关闭"
-        >
+        <button className="translate-card-close" title="关闭" onClick={onClose} aria-label="关闭">
           ×
         </button>
       </div>
@@ -106,9 +101,7 @@ export function TranslateCard({
         {state.status === "word" && (
           <>
             {state.entry.phonetic && (
-              <div className="translate-card-phonetic mono">
-                /{state.entry.phonetic}/
-              </div>
+              <div className="translate-card-phonetic mono">/{state.entry.phonetic}/</div>
             )}
             {state.entry.translation
               .split("\n")
@@ -124,17 +117,11 @@ export function TranslateCard({
         {state.status === "miss" && (
           <>
             <p className="translate-card-line">内置词典未收录这个词。</p>
-            <p className="translate-card-dim">
-              选中两个及以上单词可调用模型翻译。
-            </p>
+            <p className="translate-card-dim">选中两个及以上单词可调用模型翻译。</p>
           </>
         )}
-        {state.status === "sentence" && (
-          <p className="translate-card-line">{state.translation}</p>
-        )}
-        {state.status === "error" && (
-          <p className="translate-card-error">{state.message}</p>
-        )}
+        {state.status === "sentence" && <p className="translate-card-line">{state.translation}</p>}
+        {state.status === "error" && <p className="translate-card-error">{state.message}</p>}
       </div>
       <div className="translate-card-foot">
         {state.status === "word" && "内置词典"}

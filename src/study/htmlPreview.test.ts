@@ -28,9 +28,7 @@ describe("wrapPreviewDocument", () => {
     // The reporter itself carries no markup: the document ends with the
     // element's own closing tag, and nothing inside the script closes early.
     expect(doc.endsWith("</script>")).toBe(true);
-    expect(doc.slice(0, -1).lastIndexOf("<script>")).toBeLessThan(
-      doc.lastIndexOf("</script>"),
-    );
+    expect(doc.slice(0, -1).lastIndexOf("<script>")).toBeLessThan(doc.lastIndexOf("</script>"));
   });
 
   it("the height is the max of the two scrollHeights (either side may carry the content)", () => {

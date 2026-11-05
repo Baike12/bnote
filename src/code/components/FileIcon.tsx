@@ -11,8 +11,7 @@ import { fileIconKind, type FileIconKind } from "../fileIcon";
  */
 
 /** The outline of a file: the corners are clipped and the top right leaves room for the folded corner. */
-const FILE_PATH =
-  "M4.5 1.6h4.1l3.9 3.8v9.1a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V2.6a1 1 0 0 1 1-1Z";
+const FILE_PATH = "M4.5 1.6h4.1l3.9 3.8v9.1a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V2.6a1 1 0 0 1 1-1Z";
 
 /** What each category draws in the inner mark (sharing the outline). */
 function Mark({ kind }: { kind: FileIconKind }) {

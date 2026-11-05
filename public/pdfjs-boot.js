@@ -95,8 +95,8 @@
   }
 
   if (typeof Symbol.asyncIterator !== "undefined") {
-    var ReaderProto = globalThis.ReadableStreamDefaultReader &&
-      globalThis.ReadableStreamDefaultReader.prototype;
+    var ReaderProto =
+      globalThis.ReadableStreamDefaultReader && globalThis.ReadableStreamDefaultReader.prototype;
     var StreamProto = globalThis.ReadableStream && globalThis.ReadableStream.prototype;
     function readerIterator() {
       return {
@@ -108,10 +108,12 @@
           });
         },
         return: () => {
-          return this.cancel().catch(function () {}).then(() => {
-            this.releaseLock();
-            return { done: true, value: undefined };
-          });
+          return this.cancel()
+            .catch(function () {})
+            .then(() => {
+              this.releaseLock();
+              return { done: true, value: undefined };
+            });
         },
         [Symbol.asyncIterator]: function () {
           return this;

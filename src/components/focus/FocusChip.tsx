@@ -32,7 +32,9 @@ export function FocusChip() {
   useEffect(() => {
     const title = active ? `bnote · 专注 ${clock}` : "bnote";
     try {
-      void getCurrentWindow().setTitle(title).catch(() => {});
+      void getCurrentWindow()
+        .setTitle(title)
+        .catch(() => {});
     } catch {
       // The browser harness has no Tauri window.
     }

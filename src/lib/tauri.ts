@@ -29,7 +29,8 @@ export interface VaultIndex {
 }
 
 /** Whitelisted per-vault config files inside `<vault>/.bnote/`. */
-export type VaultConfigFile = "vimrc" | "snippets.js" | "keybindings.json" | "agent.md" | "AGENTS.md";
+export type VaultConfigFile =
+  "vimrc" | "snippets.js" | "keybindings.json" | "agent.md" | "AGENTS.md";
 
 export interface InputSourceInfo {
   id: string;
@@ -51,8 +52,7 @@ export interface SetImeOutcome {
  * with pdf.js) — no markdown conversion happens anywhere in this flow.
  */
 export type StudyContent =
-  | { kind: "pdf"; path: string; title: string }
-  | { kind: "url"; url: string; title: string };
+  { kind: "pdf"; path: string; title: string } | { kind: "url"; url: string; title: string };
 
 export interface AgentConfig {
   provider: string;
@@ -367,12 +367,7 @@ export const agentApi = {
   setPermissionMode: (sessionId: string, mode: "confirm" | "auto" | "full" | "plan") =>
     invoke<void>("agent_set_permission_mode", { sessionId, mode }),
   /** Answers a pending tool-approval request (a definition marked the tool `ask`). */
-  permissionReply: (
-    sessionId: string,
-    requestId: string,
-    allow: boolean,
-    feedback?: string,
-  ) =>
+  permissionReply: (sessionId: string, requestId: string, allow: boolean, feedback?: string) =>
     invoke<void>("agent_permission_reply", { sessionId, requestId, allow, feedback }),
   /** Answers a pending ask_user_question call. */
   questionReply: (sessionId: string, requestId: string, answer: string) =>
@@ -386,11 +381,9 @@ export const agentApi = {
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
   history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
   /** Resolve/create the on-disk directory of one material (annotations + session records). */
-  materialEnsure: (study: StudyContent) =>
-    invoke<MaterialInfo>("study_material_ensure", { study }),
+  materialEnsure: (study: StudyContent) => invoke<MaterialInfo>("study_material_ensure", { study }),
   /** The sessions saved under one material (newest first). */
-  sessionsList: (relDir: string) =>
-    invoke<SavedSessionMeta[]>("study_sessions_list", { relDir }),
+  sessionsList: (relDir: string) => invoke<SavedSessionMeta[]>("study_sessions_list", { relDir }),
   /** Write the model-generated title back into the metadata line of the session record's first line. */
   setSessionTitle: (relDir: string, id: string, title: string) =>
     invoke<void>("study_session_set_title", { relDir, id, title }),
@@ -404,8 +397,7 @@ export const agentApi = {
     /** The session's model config snapshot (a restored session continues with it, and the title uses it too). */
     model?: SessionModelConfig,
   ) => invoke<string>("agent_generate_title", { text, model }),
-  setCurrentNote: (path: string | null) =>
-    invoke<void>("agent_set_current_note", { path }),
+  setCurrentNote: (path: string | null) => invoke<void>("agent_set_current_note", { path }),
   /**
    * Import the PDF into the materials directory
    * (`.bnote/materials/pdfs/<pinyin-dir>/<original-file-name>`), next to its
@@ -437,8 +429,7 @@ export const agentApi = {
   setStudyPreviewTranslate: (enabled: boolean) =>
     invoke<void>("set_study_preview_translate", { enabled }),
   /** Push the paging step to the in-page runtime (shared by keyboard paging and the top-half fade). */
-  setStudyPreviewReadStep: (step: number) =>
-    invoke<void>("set_study_preview_read_step", { step }),
+  setStudyPreviewReadStep: (step: number) => invoke<void>("set_study_preview_read_step", { step }),
   /** Push the command layer's paging bindings to the in-page runtime (so custom keybindings work while the web page has focus). */
   setStudyPreviewReadKeys: (prev: string[], next: string[]) =>
     invoke<void>("set_study_preview_read_keys", { prev, next }),
@@ -446,13 +437,11 @@ export const agentApi = {
   setStudyPreviewShortcuts: (keys: string[]) =>
     invoke<void>("set_study_preview_shortcuts", { keys }),
   /** The page zoom of the embedded web page (1 = 100%; browser-level zoom, text reflows). */
-  setStudyPreviewZoom: (zoom: number) =>
-    invoke<void>("set_study_preview_zoom", { zoom }),
+  setStudyPreviewZoom: (zoom: number) => invoke<void>("set_study_preview_zoom", { zoom }),
   /** Hand the keyboard focus to the embedded web page (used when switching to the reading region). */
   focusStudyPreview: () => invoke<void>("focus_study_preview"),
   /** Forward one page turn to the embedded web page while the focus is in the main window. */
-  scrollStudyPreview: (delta: 1 | -1) =>
-    invoke<void>("scroll_study_preview", { delta }),
+  scrollStudyPreview: (delta: 1 | -1) => invoke<void>("scroll_study_preview", { delta }),
   /** Push the vault's anchors back into the page (the page merges them by id and does not overwrite new data). */
   mergeStudyPreviewAnnotations: (url: string, annotations: unknown[]) =>
     invoke<void>("merge_study_preview_annotations", { url, annotations }),
@@ -509,8 +498,7 @@ export interface AgentHistoryEntry {
 
 export const homeApi = {
   /** Resolve (and create) the record directory of a code project. */
-  workspace: (workdir: string) =>
-    invoke<{ dir: string }>("agent_home_workspace", { workdir }),
+  workspace: (workdir: string) => invoke<{ dir: string }>("agent_home_workspace", { workdir }),
   /** The sessions saved for a code project (newest first). */
   sessionsList: (workdir: string) =>
     invoke<SavedSessionMeta[]>("agent_home_sessions_list", { workdir }),
@@ -523,8 +511,7 @@ export const homeApi = {
   setSessionTitle: (workdir: string, id: string, title: string) =>
     invoke<void>("agent_home_set_session_title", { workdir, id, title }),
   readSettings: () => invoke<string | null>("agent_home_read_settings"),
-  writeSettings: (contents: string) =>
-    invoke<void>("agent_home_write_settings", { contents }),
+  writeSettings: (contents: string) => invoke<void>("agent_home_write_settings", { contents }),
   /** The three settings files with their parse state (`project` = repo or vault). */
   settingsPaths: (project: string | null) =>
     invoke<AgentSettingsPaths>("agent_settings_paths", { project }),
@@ -542,14 +529,11 @@ export const homeApi = {
  * sends the selected text and gets a discriminated union back.
  */
 export const translateApi = {
-  selection: (text: string) =>
-    invoke<TranslateSelection>("translate_selection", { text }),
+  selection: (text: string) => invoke<TranslateSelection>("translate_selection", { text }),
   getConfig: () => invoke<TranslateConfig>("translate_get_config"),
-  saveConfig: (config: TranslateConfig) =>
-    invoke<void>("translate_save_config", { config }),
+  saveConfig: (config: TranslateConfig) => invoke<void>("translate_save_config", { config }),
   /** Test the connection with the current form values (nothing is written to disk). */
-  test: (config: TranslateConfig) =>
-    invoke<string>("translate_test", { config }),
+  test: (config: TranslateConfig) => invoke<string>("translate_test", { config }),
 };
 
 export const api = {
@@ -562,33 +546,27 @@ export const api = {
   readFile: (path: string) => invoke<string>("read_file", { path }),
   /** Binary read (base64): used by the PDF reader, because `read_file` decodes as UTF-8 and would corrupt the PDF. */
   readFileBase64: (path: string) => invoke<string>("read_file_base64", { path }),
-  writeFile: (path: string, contents: string) =>
-    invoke<void>("write_file", { path, contents }),
+  writeFile: (path: string, contents: string) => invoke<void>("write_file", { path, contents }),
   /** Append to a file (session records): the existing content is not cleared, and the file is created when it does not exist. */
-  appendFile: (path: string, contents: string) =>
-    invoke<void>("append_file", { path, contents }),
+  appendFile: (path: string, contents: string) => invoke<void>("append_file", { path, contents }),
   /** Binary write (the PNG preview exported by the canvas); the base64 payload travels as JSON, use writeFile for UTF-8 text. */
   writeFileBase64: (path: string, contentsBase64: string) =>
     invoke<void>("write_file_base64", { path, contentsBase64 }),
   createFile: (parent: string, name: string) =>
     invoke<CreatedEntry>("create_file", { parent, name }),
-  createDir: (parent: string, name: string) =>
-    invoke<CreatedEntry>("create_dir", { parent, name }),
+  createDir: (parent: string, name: string) => invoke<CreatedEntry>("create_dir", { parent, name }),
   /** mkdir -p for a vault-relative path; missing directories only, no dedup. */
   ensureDir: (relPath: string) => invoke<void>("ensure_dir", { relPath }),
-  renamePath: (path: string, newName: string) =>
-    invoke<string>("rename_path", { path, newName }),
+  renamePath: (path: string, newName: string) => invoke<string>("rename_path", { path, newName }),
   trashPath: (path: string) => invoke<void>("trash_path", { path }),
-  readVaultFile: (name: VaultConfigFile) =>
-    invoke<string | null>("read_vault_file", { name }),
+  readVaultFile: (name: VaultConfigFile) => invoke<string | null>("read_vault_file", { name }),
   writeVaultFile: (name: VaultConfigFile, contents: string) =>
     invoke<void>("write_vault_file", { name, contents }),
 
   loadAppConfig: () => invoke<unknown>("load_app_config"),
   saveAppConfig: (config: unknown) => invoke<void>("save_app_config", { config }),
   loadKeybindings: () => invoke<unknown>("load_keybindings"),
-  saveKeybindings: (keybindings: unknown) =>
-    invoke<void>("save_keybindings", { keybindings }),
+  saveKeybindings: (keybindings: unknown) => invoke<void>("save_keybindings", { keybindings }),
   readVimrc: () => invoke<string | null>("read_vimrc"),
   saveVimrc: (contents: string) => invoke<void>("save_vimrc", { contents }),
 
@@ -643,8 +621,7 @@ export const focusApi = {
   /** Leave the lock: put the window's level / decorations / geometry back exactly as they were. */
   unlock: () => invoke<FocusStatus>("focus_unlock"),
   /** Arm/disarm the hard lock. It is only an intention: the real interception happens while the pomodoro runs. */
-  setHardLock: (enabled: boolean) =>
-    invoke<FocusStatus>("focus_set_hard_lock", { enabled }),
+  setHardLock: (enabled: boolean) => invoke<FocusStatus>("focus_set_hard_lock", { enabled }),
   /** Start/stop the real interception (on when the pomodoro starts, off when it stops). */
   setHardLockActive: (active: boolean) =>
     invoke<FocusStatus>("focus_set_hard_lock_active", { active }),

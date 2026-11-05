@@ -30,9 +30,7 @@ describe("pickKeyRegion", () => {
   });
 
   it("with only a focus, the focus decides", () => {
-    expect(
-      pickKeyRegion({ owner: null, focus: "agent", onScreen: onScreenAll }),
-    ).toBe("agent");
+    expect(pickKeyRegion({ owner: null, focus: "agent", onScreen: onScreenAll })).toBe("agent");
   });
 
   it("a region that is not on screen must not own the key (a key must never land on an absent region)", () => {
@@ -75,16 +73,12 @@ describe("pickKeyRegion", () => {
   });
 
   it("when no region is on screen (the normal layout) it falls back to the notes region", () => {
-    expect(
-      pickKeyRegion({ owner: "reading", focus: null, onScreen: () => false }),
-    ).toBe("notes");
+    expect(pickKeyRegion({ owner: "reading", focus: null, onScreen: () => false })).toBe("notes");
   });
 
   it("a focused region that is not in the set (focus in the sidebar / title bar) does not change the ownership", () => {
     for (const owner of ALL) {
-      expect(
-        pickKeyRegion({ owner, focus: null, onScreen: onScreenAll }),
-      ).toBe(owner);
+      expect(pickKeyRegion({ owner, focus: null, onScreen: onScreenAll })).toBe(owner);
     }
   });
 });

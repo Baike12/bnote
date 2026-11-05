@@ -60,8 +60,7 @@ export function installBrowserMode(): void {
   // load. The bridge serves the same bytes over HTTP; `convertFileSrc` is the
   // one hook `mockIPC` does not cover, so it is overridden here.
   mockConvertFileSrc("macos");
-  const internals = (window as unknown as { __TAURI_INTERNALS__: Internals })
-    .__TAURI_INTERNALS__;
+  const internals = (window as unknown as { __TAURI_INTERNALS__: Internals }).__TAURI_INTERNALS__;
   internals.convertFileSrc = (path: string) => `${BASE}/asset?p=${encodeURIComponent(path)}`;
 
   subscribeEvents();

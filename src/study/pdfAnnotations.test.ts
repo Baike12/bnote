@@ -43,19 +43,12 @@ describe("PDF annotation geometry", () => {
       ],
       page,
     );
-    expect(out).toEqual([
-      rect(0.1, 0.2, 0.5, 0.03),
-      rect(0, 0.99, 0.12, 0.01),
-    ]);
+    expect(out).toEqual([rect(0.1, 0.2, 0.5, 0.03), rect(0, 0.99, 0.12, 0.01)]);
   });
 
   it("a degenerate or off-page rectangle produces no highlight", () => {
-    expect(
-      normalizeRects([{ left: 1100, top: 0, right: 1200, bottom: 20 }], page),
-    ).toEqual([]);
-    expect(
-      normalizeRects([{ left: 0, top: 0, right: 0.2, bottom: 20 }], page),
-    ).toEqual([]);
+    expect(normalizeRects([{ left: 1100, top: 0, right: 1200, bottom: 20 }], page)).toEqual([]);
+    expect(normalizeRects([{ left: 0, top: 0, right: 0.2, bottom: 20 }], page)).toEqual([]);
   });
 
   it("adjacent runs on the same line merge into one, runs in different columns do not merge", () => {
@@ -68,18 +61,17 @@ describe("PDF annotation geometry", () => {
   });
 
   it("runs on different lines do not merge", () => {
-    const merged = mergeLineRects([
-      rect(0.1, 0.2, 0.3, 0.02),
-      rect(0.1, 0.23, 0.3, 0.02),
-    ]);
+    const merged = mergeLineRects([rect(0.1, 0.2, 0.3, 0.02), rect(0.1, 0.23, 0.3, 0.02)]);
     expect(merged).toEqual([rect(0.1, 0.2, 0.3, 0.02), rect(0.1, 0.23, 0.3, 0.02)]);
   });
 
   it("the function can be serialized on its own (the web annotation runtime injects it through toString, it must not reference module symbols)", () => {
-    const standalone = new Function(`return (${mergeLineRects.toString()});`)() as typeof mergeLineRects;
-    expect(
-      standalone([rect(0.1, 0.2, 0.1, 0.02), rect(0.205, 0.2, 0.1, 0.02)], 0.02),
-    ).toEqual([rect(0.1, 0.2, 0.205, 0.02)]);
+    const standalone = new Function(
+      `return (${mergeLineRects.toString()});`,
+    )() as typeof mergeLineRects;
+    expect(standalone([rect(0.1, 0.2, 0.1, 0.02), rect(0.205, 0.2, 0.1, 0.02)], 0.02)).toEqual([
+      rect(0.1, 0.2, 0.205, 0.02),
+    ]);
   });
 
   it("hitting an annotation: the later one is on top, with a little tolerance", () => {
@@ -131,9 +123,7 @@ describe("PDF annotation storage", () => {
       "/vault/.bnote/pdf-annotations/papers/deep/a.pdf.json",
     );
     // Out-of-bounds segments are dropped and never escape .bnote.
-    expect(pdfAnnotationRelPath("../../etc/passwd")).toBe(
-      "pdf-annotations/etc/passwd.json",
-    );
+    expect(pdfAnnotationRelPath("../../etc/passwd")).toBe("pdf-annotations/etc/passwd.json");
   });
 
   it("annotations under a materials directory land in <vault>/.bnote/materials/<kind>/<dir>/annotations.json", () => {

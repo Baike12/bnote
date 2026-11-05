@@ -2,7 +2,12 @@ import { useEffect, useRef } from "react";
 import { createEditor, loadDocument } from "@/editor/setup";
 import { editorApi, registerEditorView, unregisterEditorView } from "@/editor/api";
 import { loadedFile } from "@/editor/loadedFile";
-import { flushCursorSave, observeScrollSave, restoreSavedCursor, scheduleCursorSave } from "@/editor/cursorMemory";
+import {
+  flushCursorSave,
+  observeScrollSave,
+  restoreSavedCursor,
+  scheduleCursorSave,
+} from "@/editor/cursorMemory";
 import { applySettingsToEditor, newNote, openNote, saveNote } from "@/app/actions";
 import { useAppStore } from "@/state/appStore";
 import { currentVimMode } from "@/editor/vim/vim";
@@ -69,9 +74,7 @@ export function EditorPane() {
     editorApi.view = view;
     registerEditorView(view);
     // Scrolling with the wheel is reading progress too: the scroll position and the caret share one debounced save.
-    const disposeScrollSave = observeScrollSave(view, () =>
-      useAppStore.getState().currentFile,
-    );
+    const disposeScrollSave = observeScrollSave(view, () => useAppStore.getState().currentFile);
     if (reuse) {
       // The document is already in this instance: mark it as loaded so the
       // [currentFile] effect below does not read the file again, and restore
@@ -100,7 +103,6 @@ export function EditorPane() {
       // Only unregister when the active view is this one (in the project view another instance may already have taken over).
       unregisterEditorView(view);
     };
-     
   }, []);
 
   // React to settings changes that affect autosave scheduling.
@@ -153,7 +155,14 @@ export function EditorPane() {
     if (modeRef.current) {
       const vimOn = useAppStore.getState().settings.vim;
       const mode = vimOn ? currentVimMode(view) : null;
-      const text = mode === "insert" ? "INSERT" : mode === "visual" ? "VISUAL" : mode === "normal" ? "NORMAL" : "";
+      const text =
+        mode === "insert"
+          ? "INSERT"
+          : mode === "visual"
+            ? "VISUAL"
+            : mode === "normal"
+              ? "NORMAL"
+              : "";
       modeRef.current.textContent = text;
       modeRef.current.className = `vim-mode${text === "INSERT" ? " insert" : ""}`;
     }
@@ -186,7 +195,11 @@ export function EditorPane() {
             path is not repeated here, the title bar on top already has it. */}
         <FocusChip />
         <span className="spacer" />
-        {dirty && <span className="dirty-dot" title="未保存">●</span>}
+        {dirty && (
+          <span className="dirty-dot" title="未保存">
+            ●
+          </span>
+        )}
         <span ref={modeRef} className="vim-mode" />
         <span ref={statusRef} />
       </div>

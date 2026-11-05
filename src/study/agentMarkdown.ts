@@ -86,7 +86,9 @@ const LIST_INDENT = 2;
 const MAX_LIST_DEPTH = 6;
 
 function isTableSeparator(line: string): boolean {
-  return /^\s*\|?(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*:?-+:?[ \t]*\|?\s*$/.test(line) && line.includes("-");
+  return (
+    /^\s*\|?(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*:?-+:?[ \t]*\|?\s*$/.test(line) && line.includes("-")
+  );
 }
 
 function splitRow(line: string): string[] {
@@ -188,8 +190,7 @@ function renderList(lines: string[], start: number): [string, number] {
     const tag = ordered ? "ol" : "ul";
     // The start number comes from the marker of the first item (models often write every item as "1.": the auto-increment then gives
     // exactly 1/2/3/4; a list that really starts at "3." still lines up).
-    const startAttr =
-      ordered && list[0].number > 1 ? ` start="${list[0].number}"` : "";
+    const startAttr = ordered && list[0].number > 1 ? ` start="${list[0].number}"` : "";
     // Every item of a loose list is a separate paragraph in the source; once they are merged into one list, the spacing keeps that
     // boundary (root level only: the looseness of a nested list does not deserve a second bookkeeping).
     const looseAttr = list === root && loose ? ' class="is-loose"' : "";
@@ -294,9 +295,7 @@ function renderTextLines(lines: string[]): string {
 /** One block of an agent reply: rendered markdown, or an html code block the
  *  panel renders as a live preview (the code travels verbatim so the React
  *  component can own the iframe, its toggle and its height messages). */
-export type AgentBlock =
-  | { kind: "markdown"; html: string }
-  | { kind: "html"; code: string };
+export type AgentBlock = { kind: "markdown"; html: string } | { kind: "html"; code: string };
 
 /** A fenced code block rendered like every other language's block. */
 function renderCodeBlock(code: string, lang: string): string {
@@ -415,8 +414,6 @@ export function splitAgentMarkdown(src: string): AgentBlock[] {
 
 export function renderAgentMarkdown(src: string): string {
   return splitAgentMarkdown(src)
-    .map((block) =>
-      block.kind === "html" ? renderCodeBlock(block.code, "html") : block.html,
-    )
+    .map((block) => (block.kind === "html" ? renderCodeBlock(block.code, "html") : block.html))
     .join("");
 }

@@ -42,7 +42,9 @@ describe("transcript round trip", () => {
       { role: "notice", text: "连接中断", at: 1, items: null },
       { role: "user", text: "继续", at: 2, items: null },
     ];
-    expect(entriesToLines(entries)).toEqual([{ type: "user", at: 2, text: "继续", images: undefined }]);
+    expect(entriesToLines(entries)).toEqual([
+      { type: "user", at: 2, text: "继续", images: undefined },
+    ]);
   });
 
   it("a clone shares no tool record with its source (the fork prefixes diverge later)", () => {

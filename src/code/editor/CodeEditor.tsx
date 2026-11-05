@@ -8,19 +8,20 @@ import {
   keymap,
   lineNumbers,
 } from "@codemirror/view";
-import {
-  defaultKeymap,
-  history,
-  historyKeymap,
-  indentWithTab,
-} from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import {
   autocompletion,
   closeBrackets,
   closeBracketsKeymap,
   completionKeymap,
 } from "@codemirror/autocomplete";
-import { bracketMatching, foldGutter, foldKeymap, indentOnInput, indentUnit } from "@codemirror/language";
+import {
+  bracketMatching,
+  foldGutter,
+  foldKeymap,
+  indentOnInput,
+  indentUnit,
+} from "@codemirror/language";
 import { lintKeymap } from "@codemirror/lint";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { codeHighlighting } from "@/editor/markdown";
@@ -82,9 +83,12 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
   const viewRef = useRef<EditorView | null>(null);
   /** The EditorState of each file: swapped back on a tab switch, so the undo stack is kept. */
   const statesRef = useRef(new Map<string, EditorState>());
-  const handleRef = useRef<{ root: string; path: string; language: string; view: EditorView } | null>(
-    null,
-  );
+  const handleRef = useRef<{
+    root: string;
+    path: string;
+    language: string;
+    view: EditorView;
+  } | null>(null);
   /**
    * The debounced handles that push content to the language server (bucketed
    * per file): pushing every keystroke would flood the server. Bucketing per
@@ -471,9 +475,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
 /** The vim mode name (NORMAL / INSERT / VISUAL); null when vim is off. */
 function vimModeOf(view: EditorView): string | null {
   const cm = getCM(view);
-  const vim = cm?.state?.vim as
-    | { insertMode?: boolean; visualMode?: boolean }
-    | undefined;
+  const vim = cm?.state?.vim as { insertMode?: boolean; visualMode?: boolean } | undefined;
   if (!vim) return null;
   if (vim.visualMode) return "VISUAL";
   if (vim.insertMode) return "INSERT";

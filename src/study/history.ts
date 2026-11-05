@@ -172,7 +172,10 @@ const isUnder = (path: unknown, root: string) =>
  * PDFs of the currently open vault only: `read_file_base64` is vault-confined,
  * so listing an entry from another vault would only produce a dead row.
  */
-export function pdfHistoryForVault(history: StudyHistory, vaultPath: string | null): StudyPdfEntry[] {
+export function pdfHistoryForVault(
+  history: StudyHistory,
+  vaultPath: string | null,
+): StudyPdfEntry[] {
   if (!vaultPath) return history.pdfs;
   return history.pdfs.filter((e) => isUnder(e.path, vaultPath));
 }

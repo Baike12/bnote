@@ -64,7 +64,7 @@ export function enlargeBracketEdits(
     const contents = text.slice(i + 1, j);
     if (!triggers.some((word) => contents.includes("\\" + word))) {
       i = j; // No big operator inside this pair: skip the pair, do not look
-             // inside it
+      // inside it
       continue;
     }
     out.push({ from: i, to: i + open.length, insert: LEFT + open + " " });

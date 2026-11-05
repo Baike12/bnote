@@ -3,7 +3,13 @@ import { EditorSelection } from "@codemirror/state";
 import type { EditorState, Text } from "@codemirror/state";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit, syntaxTreeAvailable } from "@codemirror/language";
-import { fenceStateScan, getContextAt, insideFencedCode, insideFencedCodeByScan, mathRegions } from "./context";
+import {
+  fenceStateScan,
+  getContextAt,
+  insideFencedCode,
+  insideFencedCodeByScan,
+  mathRegions,
+} from "./context";
 import { calloutRegions, type CalloutRegion } from "./callout";
 import { anchorRegionAt } from "./calloutAnchor";
 import { takeVimVisual } from "./vim/vim";
@@ -397,9 +403,8 @@ export function toggleList(view: EditorView, kind: ListKind) {
 
       const bullet = BULLET_ITEM_RE.exec(line.text);
       const ordered = ORDERED_ITEM_RE.exec(line.text);
-      const indent = (
-        bullet ? bullet[1] : ordered ? ordered[1] : /^\s*/.exec(line.text)?.[0]
-      )?.length ?? 0;
+      const indent =
+        (bullet ? bullet[1] : ordered ? ordered[1] : /^\s*/.exec(line.text)?.[0])?.length ?? 0;
       const indentEnd = line.from + indent;
       let remLen = 0;
       let insLen = 0;
@@ -714,12 +719,7 @@ export function toggleWrap(view: EditorView, marker: string) {
  * always lands after the indent of the inner blank line (the first content
  * position inside the block, ready to type).
  */
-function insertOwnLineBlock(
-  view: EditorView,
-  open: string[],
-  close: string[],
-  userEvent: string,
-) {
+function insertOwnLineBlock(view: EditorView, open: string[], close: string[], userEvent: string) {
   const pos = view.state.selection.main.head;
   const line = view.state.doc.lineAt(pos);
   const blank = line.text.trim() === "";
@@ -794,7 +794,10 @@ export function insertCallout(view: EditorView) {
  * text still matches at its place.
  */
 function normalizeCalloutTitle(raw: string): string {
-  return raw.replace(/[\r\n]+/g, " ").replace(/[ \t]{2,}/g, " ").trim();
+  return raw
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 /**
@@ -862,9 +865,7 @@ function insertTitledCallout(view: EditorView, title: string, at: number) {
  *  back = already inside a callout with a return memory, jump back;
  *  insert = open an empty block in place. */
 export type CalloutPlan =
-  | { action: "anchor-jump"; region: CalloutRegion }
-  | { action: "back" }
-  | { action: "insert" };
+  { action: "anchor-jump"; region: CalloutRegion } | { action: "back" } | { action: "insert" };
 
 export function planCalloutShortcut(
   doc: Text,

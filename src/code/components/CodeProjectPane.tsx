@@ -263,9 +263,7 @@ export function CodeProjectPane() {
             // only returns an empty string: an empty editor must never be
             // shown — one keystroke followed by a save would blank the whole
             // original file.
-            <div className="code-empty">
-              二进制文件(或超过 2 MiB),不在这里编辑
-            </div>
+            <div className="code-empty">二进制文件(或超过 2 MiB),不在这里编辑</div>
           ) : activeFile ? (
             // No key: switching tabs reuses the same CodeEditor instance, so
             // the EditorState cache in the handle survives (the undo stack and

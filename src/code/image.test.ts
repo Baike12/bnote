@@ -43,9 +43,7 @@ describe("isRasterImage", () => {
 
 describe("absoluteInProject", () => {
   it("the absolute path is joined and a double slash collapses into one", () => {
-    expect(absoluteInProject("/Users/me/proj", "assets/a.png")).toBe(
-      "/Users/me/proj/assets/a.png",
-    );
+    expect(absoluteInProject("/Users/me/proj", "assets/a.png")).toBe("/Users/me/proj/assets/a.png");
     expect(absoluteInProject("/Users/me/proj/", "/assets/a.png")).toBe(
       "/Users/me/proj/assets/a.png",
     );

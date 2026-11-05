@@ -138,11 +138,7 @@ export function normalizeWereadRoute(value: unknown): WereadRoutePayload | null 
  * margin comes back / the catalog returns to the right / the theme returns
  * to its own colors — checking the class names is enough.
  */
-function wereadRuntime(args: {
-  marker: string;
-  readerPath: string;
-  styleId: string;
-}): void {
+function wereadRuntime(args: { marker: string; readerPath: string; styleId: string }): void {
   if (location.hostname !== "weread.qq.com" && location.hostname !== "www.weread.qq.com") {
     return;
   }
@@ -253,11 +249,7 @@ function wereadRuntime(args: {
   // SPA routing: hook pushState/replaceState, popstate goes through the event.
   const wrapHistory = (key: "pushState" | "replaceState") => {
     const original = history[key].bind(history);
-    history[key] = ((
-      data: unknown,
-      unused: string,
-      url?: string | URL | null,
-    ) => {
+    history[key] = ((data: unknown, unused: string, url?: string | URL | null) => {
       const result = original(data, unused, url);
       queueMicrotask(onRoute);
       return result;

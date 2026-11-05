@@ -1,14 +1,7 @@
 // Must be first: pdf.js 6 reads `Iterator.prototype.join` while its module is
 // evaluated, and WebKit on macOS 15 has no Iterator global yet.
 import "@/study/pdfjsCompat";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   getDocument,
   GlobalWorkerOptions,
@@ -41,16 +34,8 @@ import {
 } from "@/study/annotationHistory";
 import { vaultRelPath } from "@/lib/path";
 import { ensureMaterial } from "@/study/materials";
-import {
-  PAGE_TOP_PAD,
-  basePageWidth,
-  contentWidthForRenderedPage,
-} from "@/study/layoutModel";
-import {
-  clampOutlineWidth,
-  loadOutlineWidth,
-  saveOutlineWidth,
-} from "@/study/pdfLayout";
+import { PAGE_TOP_PAD, basePageWidth, contentWidthForRenderedPage } from "@/study/layoutModel";
+import { clampOutlineWidth, loadOutlineWidth, saveOutlineWidth } from "@/study/pdfLayout";
 import { setPdfNavHandlers } from "@/study/pdfNav";
 import {
   canvasToFile,
@@ -106,10 +91,8 @@ const RENDER_MARGIN = 1000;
 /** Width changes settle before re-rendering every visible page. */
 const RESIZE_DEBOUNCE_MS = 140;
 
-
 /** How an annotation change is committed: a structural change counts as one step, loading and undo do not. */
 type AnnotationCommit = "none" | "structure";
-
 
 interface PdfViewerProps {
   /** Absolute path inside the vault. */
@@ -195,57 +178,54 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
    * network access), two or more words go to the model API. A late result is
    * dropped with translateSeq.
    */
-  const requestTranslation = useCallback(
-    async (text: string, x: number, y: number) => {
-      if (!useAppStore.getState().settings.studyTranslate.enabled) return;
-      if (toolRef.current) return;
-      const id = ++translateSeq.current;
-      setTranslateCard({ id, status: "loading", text, x, y });
-      try {
-        const result = await translateApi.selection(text);
-        if (
-          !useAppStore.getState().settings.studyTranslate.enabled ||
-          translateSeq.current !== id ||
-          toolRef.current
-        ) {
-          return;
-        }
-        if (result.kind === "none") {
-          setTranslateCard(null);
-        } else if (result.kind === "word") {
-          setTranslateCard({ id, status: "word", text, x, y, entry: result.entry });
-        } else if (result.kind === "miss") {
-          setTranslateCard({ id, status: "miss", text, x, y, word: result.word });
-        } else {
-          setTranslateCard({
-            id,
-            status: "sentence",
-            text,
-            x,
-            y,
-            translation: result.translation,
-          });
-        }
-      } catch (e) {
-        if (
-          !useAppStore.getState().settings.studyTranslate.enabled ||
-          translateSeq.current !== id ||
-          toolRef.current
-        ) {
-          return;
-        }
+  const requestTranslation = useCallback(async (text: string, x: number, y: number) => {
+    if (!useAppStore.getState().settings.studyTranslate.enabled) return;
+    if (toolRef.current) return;
+    const id = ++translateSeq.current;
+    setTranslateCard({ id, status: "loading", text, x, y });
+    try {
+      const result = await translateApi.selection(text);
+      if (
+        !useAppStore.getState().settings.studyTranslate.enabled ||
+        translateSeq.current !== id ||
+        toolRef.current
+      ) {
+        return;
+      }
+      if (result.kind === "none") {
+        setTranslateCard(null);
+      } else if (result.kind === "word") {
+        setTranslateCard({ id, status: "word", text, x, y, entry: result.entry });
+      } else if (result.kind === "miss") {
+        setTranslateCard({ id, status: "miss", text, x, y, word: result.word });
+      } else {
         setTranslateCard({
           id,
-          status: "error",
+          status: "sentence",
           text,
           x,
           y,
-          message: String(e).replace(/^[A-Z_]+:\s*/, ""),
+          translation: result.translation,
         });
       }
-    },
-    [],
-  );
+    } catch (e) {
+      if (
+        !useAppStore.getState().settings.studyTranslate.enabled ||
+        translateSeq.current !== id ||
+        toolRef.current
+      ) {
+        return;
+      }
+      setTranslateCard({
+        id,
+        status: "error",
+        text,
+        x,
+        y,
+        message: String(e).replace(/^[A-Z_]+:\s*/, ""),
+      });
+    }
+  }, []);
 
   // Turning the switch off, changing the document or picking an annotation
   // tool invalidates the pending requests immediately and takes the card
@@ -464,7 +444,11 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       return;
     }
     let cancelled = false;
-    const title = path.split("/").pop()?.replace(/\.pdf$/i, "") ?? "";
+    const title =
+      path
+        .split("/")
+        .pop()
+        ?.replace(/\.pdf$/i, "") ?? "";
     void ensureMaterial(vaultPath, { kind: "pdf", path, title }).then((info) => {
       if (cancelled) return;
       setMaterialDir(info?.relDir ?? null);
@@ -504,9 +488,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         const saved = data.pdfs[key];
         // The user already started scrolling while the file was read: the position belongs to the user and is not restored.
         positionAnchor.current =
-          saved && !userScrolled.current
-            ? { page: saved.page, offset: saved.offset }
-            : null;
+          saved && !userScrolled.current ? { page: saved.page, offset: saved.offset } : null;
         positionLoaded.current = true;
         if (!positionAnchor.current) positionApplied.current = true;
         // The read may come back after the document and the pages are ready: the epoch change lets the restore effect run once more.
@@ -726,9 +708,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
    * no longer appear on screen (the data is still on disk and is written
    * back unchanged when saving, so nothing is lost).
    */
-  const pageCacheRef = useRef(
-    new Map<number, { items: PdfAnnotation[]; list: PdfAnnotation[] }>(),
-  );
+  const pageCacheRef = useRef(new Map<number, { items: PdfAnnotation[]; list: PdfAnnotation[] }>());
   const annotationsByPage = useMemo(() => {
     const grouped = new Map<number, PdfAnnotation[]>();
     for (const a of annotations) {
@@ -800,9 +780,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
           // content", and the screenshot only takes the current content area
           // below it. The overlay is a DOM layer, so measuring its lower edge
           // is enough and the step does not have to be converted again.
-          const shade = scroll.parentElement?.querySelector<HTMLElement>(
-            ".pdf-read-shade",
-          );
+          const shade = scroll.parentElement?.querySelector<HTMLElement>(".pdf-read-shade");
           const shadeBox = shade ? snapshotRect(shade) : null;
           const currentTop = shadeBox ? shadeBox.top + shadeBox.height : null;
           const plan = planSnapshot(viewport, pages, { currentTop });
@@ -977,10 +955,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     const saveNow = () => {
       saveTimer = null;
       if (!vaultPath || !positionLoaded.current || !positionApplied.current) return;
-      const position = pdfPositionAt(
-        pageMetrics(scroll, pageEls.current),
-        scroll.scrollTop,
-      );
+      const position = pdfPositionAt(pageMetrics(scroll, pageEls.current), scroll.scrollTop);
       if (position) savePdfReadPosition(vaultPath, docKey, position);
     };
     const scheduleSave = () => {
@@ -1020,7 +995,8 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     userScrolled.current = true;
     positionAnchor.current = null;
     reflowAnchor.current = null;
-    const top = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop - 10;
+    const top =
+      el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop - 10;
     scroll.scrollTo({ top: Math.max(0, top) });
     setCurrentPage(n);
     currentPageRef.current = n;
@@ -1046,13 +1022,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       const viewport = scroll.clientHeight;
       const content = scroll.scrollHeight;
       const max = Math.max(0, content - viewport);
-      const nominal = steppedScrollTop(
-        scroll.scrollTop,
-        viewport,
-        content,
-        delta,
-        pageStep,
-      );
+      const nominal = steppedScrollTop(scroll.scrollTop, viewport, content, delta, pageStep);
       scroll.scrollTop = nominal;
       // No fine adjustment at the ends: PageUp at the top has to stay at the top.
       if (nominal <= 0 || nominal >= max) return;
@@ -1315,9 +1285,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
         <button
           className={`icon-btn pdf-tool-btn${cropping ? " active" : ""}`}
           title={
-            cropping
-              ? "取消框选(Esc)"
-              : "框选显示范围:在页面上拖出一个矩形,所有页都只显示这一块"
+            cropping ? "取消框选(Esc)" : "框选显示范围:在页面上拖出一个矩形,所有页都只显示这一块"
           }
           onClick={toggleCropping}
         >
@@ -1441,5 +1409,3 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     </div>
   );
 }
-
-

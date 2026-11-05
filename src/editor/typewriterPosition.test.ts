@@ -60,9 +60,7 @@ describe("typewriterReserve", () => {
   });
 
   it("out-of-range and invalid values are computed from the normalized ratio", () => {
-    expect(typewriterReserve(H, LH, 10)).toEqual(
-      typewriterReserve(H, LH, MAX_TYPEWRITER_POSITION),
-    );
+    expect(typewriterReserve(H, LH, 10)).toEqual(typewriterReserve(H, LH, MAX_TYPEWRITER_POSITION));
     expect(typewriterReserve(H, LH, Number.NaN)).toEqual(
       typewriterReserve(H, LH, DEFAULT_TYPEWRITER_POSITION),
     );
@@ -98,8 +96,6 @@ describe("typewriterScrollDelta", () => {
     expect(typewriterScrollDelta(caret, H, 0.3)).toBeGreaterThan(
       typewriterScrollDelta(caret, H, 0.5),
     );
-    expect(typewriterScrollDelta(caret, H, 0.7)).toBeLessThan(
-      typewriterScrollDelta(caret, H, 0.5),
-    );
+    expect(typewriterScrollDelta(caret, H, 0.7)).toBeLessThan(typewriterScrollDelta(caret, H, 0.5));
   });
 });

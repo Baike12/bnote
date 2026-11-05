@@ -155,7 +155,7 @@ export function selectionAffectsDecos(oldState: EditorState, newState: EditorSta
     if (slotEnd === null) continue;
     if (slotEnd >= line.to - line.from) return true; // empty list item: any same-line move may flip the whitespace retention
     const base = line.from;
-    if ((o.from - base <= slotEnd) !== (n.from - base <= slotEnd)) return true;
+    if (o.from - base <= slotEnd !== n.from - base <= slotEnd) return true;
   }
   return false;
 }
@@ -170,7 +170,13 @@ interface BlockStatics {
    *  block shows as editable source (same rule as math blocks). */
   fences: { line: Interval; block: Interval }[];
   /** Callout boundary marker lines (`:::`), same hiding rule (the source shows only while the cursor is inside the block). */
-  calloutEdges: { line: Interval; block: Interval; kind: "open" | "close"; title: string; depth: number }[];
+  calloutEdges: {
+    line: Interval;
+    block: Interval;
+    kind: "open" | "close";
+    title: string;
+    depth: number;
+  }[];
   codeRanges: Interval[];
   inlineCodeRanges: Interval[];
   hrs: Interval[];
@@ -248,8 +254,7 @@ function buildBlockDecos(
   const callouts = calloutRegions(state);
   const out: Range<Decoration>[] = [];
   const sig: string[] = [];
-  const active = (from: number, to: number) =>
-    ranges.some((r) => r.from <= to && r.to >= from);
+  const active = (from: number, to: number) => ranges.some((r) => r.from <= to && r.to >= from);
   // The nesting depth of the callout containing pos, -1 = not inside any block.
   // The line elements of block members replaced across lines (math blocks /
   // HR) are moved out of the DOM, so the block surface is carried by the
@@ -260,8 +265,7 @@ function buildBlockDecos(
   };
 
   const exclude = [...statics.codeRanges, ...statics.inlineCodeRanges];
-  const excluded = (from: number, to: number) =>
-    exclude.some((r) => from < r.to && to > r.from);
+  const excluded = (from: number, to: number) => exclude.some((r) => from < r.to && to > r.from);
 
   for (const f of statics.fences) {
     // Block-level decision (the same rule as for math blocks): while the
@@ -453,8 +457,7 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   const out: DecorationSink = { inline: [] };
   const claimed: Interval[] = []; // replace-decorations must not overlap
 
-  const active = (from: number, to: number) =>
-    selections.some((r) => r.from <= to && r.to >= from);
+  const active = (from: number, to: number) => selections.some((r) => r.from <= to && r.to >= from);
 
   const activeLine = (lineFrom: number, lineTo: number) => active(lineFrom, lineTo);
 
@@ -467,8 +470,7 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   // Math regions must be known before the syntax-tree walk: nodes fully
   // inside a formula (\, \; { } * …) are LaTeX, not markdown escapes.
   const maths = mathRegions(state);
-  const inAnyMath = (from: number, to: number) =>
-    maths.some((r) => from >= r.from && to <= r.to);
+  const inAnyMath = (from: number, to: number) => maths.some((r) => from >= r.from && to <= r.to);
 
   // Ranges where rendering must never kick in (code blocks, inline code).
   const codeRanges: Interval[] = [];
@@ -550,19 +552,28 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, nodeRef.to)) {
           const char = doc.sliceString(nodeRef.from + 1, nodeRef.to);
           out.inline.push(
-            Decoration.replace({ widget: new EscapeCharWidget(char) }).range(nodeRef.from, nodeRef.to),
+            Decoration.replace({ widget: new EscapeCharWidget(char) }).range(
+              nodeRef.from,
+              nodeRef.to,
+            ),
           );
         }
         return false;
       }
       if (name === "Link") {
-        if (!mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to) && !active(nodeRef.from, nodeRef.to)) {
+        if (
+          !mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to) &&
+          !active(nodeRef.from, nodeRef.to)
+        ) {
           decorateLink(nodeRef.node, out);
         }
         return false;
       }
       if (name === "Image") {
-        if (!mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to) && !active(nodeRef.from, nodeRef.to)) {
+        if (
+          !mathOwnsEndpoints(maths, nodeRef.from, nodeRef.to) &&
+          !active(nodeRef.from, nodeRef.to)
+        ) {
           decorateImage(nodeRef.node, state, out, claim);
         }
         return false;
@@ -595,7 +606,12 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
             kind,
             out,
             claim,
-            keepMarkerTrailingSpace(selections, markLine.from, markLine.to, whitespaceEnd(doc, mark.to)),
+            keepMarkerTrailingSpace(
+              selections,
+              markLine.from,
+              markLine.to,
+              whitespaceEnd(doc, mark.to),
+            ),
           );
         }
         return false;
@@ -614,10 +630,7 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         }
         if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, to)) {
           out.inline.push(
-            Decoration.replace({ widget: new TaskCheckboxWidget(checked) }).range(
-              nodeRef.from,
-              to,
-            ),
+            Decoration.replace({ widget: new TaskCheckboxWidget(checked) }).range(nodeRef.from, to),
           );
         }
         return false;
@@ -729,16 +742,7 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
 
   // ---- Wikilinks ([[target|alias]]) ----
   const wikiLinks: WikiLinkEntry[] = [];
-  decorateWikiLinks(
-    state,
-    visibleFrom,
-    visibleTo,
-    exclude,
-    active,
-    claim,
-    out,
-    wikiLinks,
-  );
+  decorateWikiLinks(state, visibleFrom, visibleTo, exclude, active, claim, out, wikiLinks);
 
   wikiLinksPerView.set(view, wikiLinks);
   return Decoration.set(out.inline, true);
@@ -768,7 +772,6 @@ function highlightMathSource(
     out.inline.push(Decoration.mark({ class: cls }).range(from, from + m[0].length));
   }
 }
-
 
 /** Marker kind of a list item, which picks the line's marker slot width
  *  (`.li-b` / `.li-t` / `.li-o` in global.css). Standard GFM: only `- [ ]` is
@@ -839,7 +842,10 @@ function keepMarkerTrailingSpace(
  * and stays as it is.
  */
 function decorateSetextDash(
-  doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { from: number; to: number } },
+  doc: {
+    sliceString(from: number, to?: number): string;
+    lineAt(pos: number): { from: number; to: number };
+  },
   node: SyntaxNode,
   selections: readonly { from: number; to: number }[],
   out: DecorationSink,
@@ -865,9 +871,7 @@ function decorateSetextDash(
   // When the caret presses into the marker characters it flips back to
   // editable source (the same activity rule as for ListMark).
   if (selections.some((r) => r.from <= mark.to && r.to >= mark.from)) return;
-  const to = keepMarkerTrailingSpace(selections, markLine.from, markLine.to, wsTo)
-    ? mark.to
-    : wsTo;
+  const to = keepMarkerTrailingSpace(selections, markLine.from, markLine.to, wsTo) ? mark.to : wsTo;
   if (claim(mark.from, to)) {
     out.inline.push(Decoration.replace({ widget: new ListBulletWidget() }).range(mark.from, to));
   }
@@ -910,7 +914,10 @@ function decorateListMark(
 }
 
 function decorateHeading(
-  doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { from: number; to: number; number: number } },
+  doc: {
+    sliceString(from: number, to?: number): string;
+    lineAt(pos: number): { from: number; to: number; number: number };
+  },
   node: SyntaxNode,
   level: number,
   out: DecorationSink,
@@ -984,7 +991,10 @@ function decorateInlineCode(
 /** Content-line styling for fenced code; hiding the fence lines themselves is
  *  the block-decorations field's job. */
 function decorateFencedCodeLines(
-  doc: { lineAt(pos: number): { from: number; to: number; number: number }; line(n: number): { from: number; to: number } },
+  doc: {
+    lineAt(pos: number): { from: number; to: number; number: number };
+    line(n: number): { from: number; to: number };
+  },
   node: SyntaxNode,
   out: DecorationSink,
 ) {
@@ -1007,7 +1017,10 @@ function decorateFencedCodeLines(
 }
 
 function decorateBlockquote(
-  doc: { lineAt(pos: number): { from: number; to: number; number: number }; line(n: number): { from: number; to: number } },
+  doc: {
+    lineAt(pos: number): { from: number; to: number; number: number };
+    line(n: number): { from: number; to: number };
+  },
   node: SyntaxNode,
   selections: readonly { from: number; to: number }[],
   out: DecorationSink,
@@ -1302,9 +1315,7 @@ const livePreviewPlugin = ViewPlugin.fromClass(
       // changes with them): docPath is an effect transaction that changes
       // neither the document nor the caret, so without a special case not a
       // single decoration would update.
-      const pathChanged = u.transactions.some((t) =>
-        t.effects.some((e) => e.is(setDocPath)),
-      );
+      const pathChanged = u.transactions.some((t) => t.effects.some((e) => e.is(setDocPath)));
       if (!u.docChanged && !u.viewportChanged && !u.selectionSet && !treeChanged && !pathChanged)
         return;
       if (!u.docChanged && !u.viewportChanged && !treeChanged && !pathChanged) {
@@ -1331,8 +1342,7 @@ const linkHandlers = EditorView.domEventHandlers({
     // marker line and the boundary then reveals its source (the same
     // interaction as clicking a rendered math block to return to the source).
     const calloutEdge = target.closest?.(".cw-callout-title, .cw-callout-edge") as
-      | (HTMLElement & { dataset: { calloutFrom?: string } })
-      | null;
+      (HTMLElement & { dataset: { calloutFrom?: string } }) | null;
     if (calloutEdge?.dataset?.calloutFrom) {
       event.preventDefault();
       view.dispatch({ selection: { anchor: Number(calloutEdge.dataset.calloutFrom) } });
@@ -1373,9 +1383,7 @@ const linkHandlers = EditorView.domEventHandlers({
         const rect = mathBlock.getBoundingClientRect();
         const total = closeNo - openNo + 1;
         const frac = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
-        const line = doc.line(
-          openNo + Math.min(total - 1, Math.max(0, Math.floor(frac * total))),
-        );
+        const line = doc.line(openNo + Math.min(total - 1, Math.max(0, Math.floor(frac * total))));
         const mapped = view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
         const anchor = Math.min(line.to, Math.max(line.from, mapped ?? line.from));
         event.preventDefault();

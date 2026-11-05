@@ -22,9 +22,7 @@ export function TranslateTab() {
         setCfg(c);
         setExtraJson(JSON.stringify(c.extra_body ?? {}, null, 2));
       })
-      .catch((e) =>
-        setLoadError(String(e).replace(/^[A-Z_]+:\s*/, "")),
-      );
+      .catch((e) => setLoadError(String(e).replace(/^[A-Z_]+:\s*/, "")));
   }, []);
 
   if (!cfg) {
@@ -95,9 +93,7 @@ export function TranslateTab() {
       const result = await translateApi.selection("ubiquitous");
       if (result.kind === "word") {
         const first = result.entry.translation.split("\n")[0];
-        setDictResult(
-          `${result.entry.word} /${result.entry.phonetic}/ — ${first}`,
-        );
+        setDictResult(`${result.entry.word} /${result.entry.phonetic}/ — ${first}`);
       } else {
         setDictResult("未命中（内置词典未收录该词）");
       }
@@ -117,7 +113,9 @@ export function TranslateTab() {
           desc="关闭后 PDF 和网页都不响应选中。批注工具优先：进入高亮/文字批注后不会触发翻译。"
           checked={enabled}
           onChange={(v) =>
-            patch({ studyTranslate: { ...useAppStore.getState().settings.studyTranslate, enabled: v } })
+            patch({
+              studyTranslate: { ...useAppStore.getState().settings.studyTranslate, enabled: v },
+            })
           }
         />
       </SettingsCard>
@@ -131,9 +129,7 @@ export function TranslateTab() {
           </button>
         }
       >
-        {dictResult && (
-          <p className="setting-hint">{dictResult}</p>
-        )}
+        {dictResult && <p className="setting-hint">{dictResult}</p>}
         <p className="setting-hint">
           数据在编译期压缩进应用（约 1.5MB），首次使用时在内存中解压（约 4.3MB），
           不落盘、不依赖外部文件。
@@ -148,10 +144,7 @@ export function TranslateTab() {
           label="协议"
           desc={preset.thinking}
           control={
-            <SettingsSelect<string>
-              value={cfg.protocol}
-              onChange={changeProtocol}
-            >
+            <SettingsSelect<string> value={cfg.protocol} onChange={changeProtocol}>
               {Object.entries(TRANSLATE_PROTOCOLS).map(([id, p]) => (
                 <option key={id} value={id}>
                   {p.label}
@@ -213,9 +206,7 @@ export function TranslateTab() {
               value={Math.round(cfg.timeout_ms / 1000)}
               onChange={(e) =>
                 update({
-                  timeout_ms:
-                    Math.min(120, Math.max(1, Number(e.target.value) || 30)) *
-                    1000,
+                  timeout_ms: Math.min(120, Math.max(1, Number(e.target.value) || 30)) * 1000,
                 })
               }
             />
@@ -223,7 +214,7 @@ export function TranslateTab() {
         />
         <Row
           label="额外请求参数"
-          desc='可选，JSON 对象。用于自定义网关；不能覆盖 messages/model/stream。'
+          desc="可选，JSON 对象。用于自定义网关；不能覆盖 messages/model/stream。"
           control={<span />}
         />
         <div className="settings-block">
@@ -238,11 +229,7 @@ export function TranslateTab() {
           <button className="btn" disabled={testing} onClick={() => void test()}>
             {testing ? "测试中…" : "测试连接"}
           </button>
-          <button
-            className="btn primary"
-            disabled={saving}
-            onClick={() => void save()}
-          >
+          <button className="btn primary" disabled={saving} onClick={() => void save()}>
             {saving ? "保存中…" : "保存翻译 API 配置"}
           </button>
         </div>

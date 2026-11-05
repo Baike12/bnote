@@ -12,7 +12,9 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "gate": "pnpm lint && pnpm typecheck && pnpm test"
+    "gate": "pnpm lint && pnpm typecheck && pnpm format:check && pnpm test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -56,6 +58,7 @@
     "eslint": "^10.11.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.12.0",
+    "prettier": "^3.9.10",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.0",
     "vite": "^8.0.16",

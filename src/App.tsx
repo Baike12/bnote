@@ -131,27 +131,19 @@ export default function App() {
       // content] (earlier still as ratios); migrate them to single pixel widths
       // for the assistant column and the content column, write them once, and
       // from then on no window resize changes those two widths.
-      const legacySplit = studySplitToContentWidth(
-        (saved as Record<string, unknown>).studySplit,
-      );
+      const legacySplit = studySplitToContentWidth((saved as Record<string, unknown>).studySplit);
       settings.studyContentWidth = normalizeContentWidth(
         legacySplit ?? settings.studyContentWidth,
         window.innerWidth,
       );
-      settings.studyAgentWidth = normalizeAgentWidth(
-        settings.studyAgentWidth,
-        window.innerWidth,
-      );
+      settings.studyAgentWidth = normalizeAgentWidth(settings.studyAgentWidth, window.innerWidth);
       // Code mode has its own two column widths; a legacy config has neither
       // key, so the defaults apply and broken values fall back the same way.
       settings.codeContentWidth = normalizeContentWidth(
         settings.codeContentWidth,
         window.innerWidth,
       );
-      settings.codeAgentWidth = normalizeAgentWidth(
-        settings.codeAgentWidth,
-        window.innerWidth,
-      );
+      settings.codeAgentWidth = normalizeAgentWidth(settings.codeAgentWidth, window.innerWidth);
       // Same for the two column widths of the projects view: a legacy config has
       // neither of them, so the defaults apply and hand-edited broken values
       // fall back to the defaults.
@@ -175,9 +167,7 @@ export default function App() {
       // Same for the typewriter position: a legacy config has no such key, so 50%
       // (vertically centered) applies and out-of-range values are clamped back
       // to 20%-80%.
-      settings.typewriterPosition = normalizeTypewriterPosition(
-        settings.typewriterPosition,
-      );
+      settings.typewriterPosition = normalizeTypewriterPosition(settings.typewriterPosition);
       // Same for the web zoom: a legacy config has no such key, so 100% applies and
       // hand-edited out-of-range values are clamped back to 50%-300%.
       settings.studyWebZoom = normalizeWebZoom(settings.studyWebZoom);
@@ -370,9 +360,7 @@ export default function App() {
 
   const breadcrumb = (() => {
     if (!vaultPath) return "bnote";
-    const rel = currentFile?.startsWith(vaultPath)
-      ? currentFile.slice(vaultPath.length + 1)
-      : "";
+    const rel = currentFile?.startsWith(vaultPath) ? currentFile.slice(vaultPath.length + 1) : "";
     const parts = [vaultName];
     if (rel) {
       const segs = rel.split("/");

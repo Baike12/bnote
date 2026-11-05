@@ -3,7 +3,15 @@ import { TextLayer, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
 import { type PdfCrop } from "@/study/crop";
 import type { PdfTool } from "./types";
 import { spanRects } from "./geometry";
-import { annotationAt, EMPTY_PDF_ANNOTATIONS, lineRectsAtPoint, mergeLineRects, normalizeRects, type PdfAnnotation, type NormRect } from "@/study/pdfAnnotations";
+import {
+  annotationAt,
+  EMPTY_PDF_ANNOTATIONS,
+  lineRectsAtPoint,
+  mergeLineRects,
+  normalizeRects,
+  type PdfAnnotation,
+  type NormRect,
+} from "@/study/pdfAnnotations";
 
 // ---------------------------------------------------------------------------
 // One page
@@ -83,11 +91,7 @@ export const PdfPage = memo(function PdfPage({
       const viewport = page.getViewport({ scale });
 
       setPageRatio(viewport.height / viewport.width);
-      const dpr = Math.min(
-        window.devicePixelRatio || 1,
-        2,
-        MAX_CANVAS_WIDTH / viewport.width,
-      );
+      const dpr = Math.min(window.devicePixelRatio || 1, 2, MAX_CANVAS_WIDTH / viewport.width);
       canvas.width = Math.floor(viewport.width * dpr);
       canvas.height = Math.floor(viewport.height * dpr);
       canvas.style.width = `${viewport.width}px`;
@@ -239,13 +243,7 @@ export const PdfPage = memo(function PdfPage({
         className="pdf-page-full"
         ref={fullRef}
         style={{ width, height, left: -offsetX, top: -offsetY }}
-        onMouseUp={
-          tool
-            ? handleMouseUp
-            : translateEnabled
-              ? handleTranslateMouseUp
-              : undefined
-        }
+        onMouseUp={tool ? handleMouseUp : translateEnabled ? handleTranslateMouseUp : undefined}
       >
         <canvas ref={canvasRef} />
         <div className="pdf-anno-layer" aria-hidden>
@@ -294,7 +292,6 @@ function selectionRects(
   );
   return normalizeRects(boxes, pageRect);
 }
-
 
 /**
  * The text lines at the boundary: only the spans of the text layer of the current page that intersect the boundary are measured. When the boundary falls into a page gap or the margin there is no intersecting line and an empty array is returned (the original landing spot is kept).

@@ -34,16 +34,10 @@ export interface AnchorHit extends Interval {
   region: CalloutRegion;
 }
 
-const isWsCode = (code: number) =>
-  code === 32 || code === 9 || code === 10 || code === 13;
+const isWsCode = (code: number) => code === 32 || code === 9 || code === 10 || code === 13;
 
 /** Every range in doc[from, to) matching the trimmed title, in order of appearance. */
-export function findTitleMatches(
-  doc: Text,
-  from: number,
-  to: number,
-  title: string,
-): Interval[] {
+export function findTitleMatches(doc: Text, from: number, to: number, title: string): Interval[] {
   const out: Interval[] = [];
   if (to <= from || title === "") return out;
   const parts = title.split(/\s+/).filter((p) => p.length > 0);

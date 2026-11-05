@@ -6,7 +6,11 @@ import { ensureSyntaxTree } from "@codemirror/language";
 import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { insertNewlineAndIndent, history, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
-import { blockDecorationsField, buildInlineDecorations, selectionAffectsDecos } from "./livePreview";
+import {
+  blockDecorationsField,
+  buildInlineDecorations,
+  selectionAffectsDecos,
+} from "./livePreview";
 import { buildEmphasisMarks } from "./emphasisMarks";
 import { projectTodos } from "@/projects/model";
 import { fenceStateScan, mathRegions } from "./context";
@@ -142,7 +146,9 @@ describe("perf gate: big document (~900 lines) per-keystroke pipeline budget", (
     const total = perKey.reduce((a, b) => a + b, 0);
     perKey.sort((a, b) => a - b);
     const median = perKey[Math.floor(perKey.length / 2)];
-    console.warn(`[perf] per-keystroke input total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`);
+    console.warn(
+      `[perf] per-keystroke input total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`,
+    );
     expect(total).toBeLessThan(640);
     expect(median).toBeLessThan(10);
   });
@@ -157,9 +163,9 @@ describe("perf gate: big document (~900 lines) per-keystroke pipeline budget", (
     // Cross-line move: the active-line rule lets decorations follow the line,
     // so it returns true and takes the rebuild path — its cost is locked by the
     // motion budget test below (measured ~0.7ms/move).
-    const crossLine = base
-      .update({ selection: EditorSelection.cursor(state.doc.line(line.number + 1).from + 4) })
-      .state;
+    const crossLine = base.update({
+      selection: EditorSelection.cursor(state.doc.line(line.number + 1).from + 4),
+    }).state;
     expect(selectionAffectsDecos(base, crossLine)).toBe(true);
   });
 
@@ -183,7 +189,9 @@ describe("perf gate: big document (~900 lines) per-keystroke pipeline budget", (
     const total = samples.reduce((a, b) => a + b, 0);
     samples.sort((a, b) => a - b);
     const median = samples[Math.floor(samples.length / 2)];
-    console.warn(`[perf] vim switch (across slots) total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`);
+    console.warn(
+      `[perf] vim switch (across slots) total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`,
+    );
     expect(total).toBeLessThan(300);
   });
 
@@ -266,7 +274,11 @@ describe("perf gate: vim j/k motion (900 lines, hidden-line stepping across math
       coordsAtPos: (pos: number) => {
         const line = cur.doc.lineAt(pos);
         const top = (line.number - 1) * ROW_H;
-        return { left: CONTENT_LEFT + (pos - line.from) * CHAR_W, top: top + 2, bottom: top + ROW_H - 2 };
+        return {
+          left: CONTENT_LEFT + (pos - line.from) * CHAR_W,
+          top: top + 2,
+          bottom: top + ROW_H - 2,
+        };
       },
       posAtCoords: ({ x, y }: { x: number; y: number }) => {
         const n = Math.min(cur.doc.lines, Math.max(1, Math.floor(y / ROW_H) + 1));
@@ -283,7 +295,11 @@ describe("perf gate: vim j/k motion (900 lines, hidden-line stepping across math
         ch: 0,
       }),
     };
-    const vim: VimCoreState = { lastMotion: motions.moveByLines, lastHPos: 0, lastHSPos: Number.NaN };
+    const vim: VimCoreState = {
+      lastMotion: motions.moveByLines,
+      lastHPos: 0,
+      lastHSPos: Number.NaN,
+    };
     const fn = moveByLinesVisual as (...a: unknown[]) => { line: number; ch: number };
     const samples: number[] = [];
     for (let i = 0; i < 60; i++) {
@@ -299,7 +315,9 @@ describe("perf gate: vim j/k motion (900 lines, hidden-line stepping across math
       );
       const targetLine = cur.doc.line(Math.min(Math.max(1, out.line + 1), cur.doc.lines));
       const target =
-        out.ch === Infinity ? targetLine.to : Math.min(targetLine.from + Math.max(0, out.ch), targetLine.to);
+        out.ch === Infinity
+          ? targetLine.to
+          : Math.min(targetLine.from + Math.max(0, out.ch), targetLine.to);
       const next = cur.update({ selection: EditorSelection.cursor(target) }).state;
       buildInlineDecorations({ state: next, visibleRanges: [{ from: 0, to: next.doc.length }] });
       samples.push(performance.now() - t0);
@@ -386,13 +404,21 @@ describe("perf gate: list continuation (bullet/ordered/todo, 20 items each)", ()
         enterContinueListItem(view);
         const nl = view.state.doc.lineAt(view.state.selection.main.head);
         view.dispatch({ changes: { from: nl.to, insert: "字" } });
-        buildInlineDecorations({ state: view.state, visibleRanges: [{ from: 0, to: view.state.doc.length }] });
+        buildInlineDecorations({
+          state: view.state,
+          visibleRanges: [{ from: 0, to: view.state.doc.length }],
+        });
         samples.push(performance.now() - t0);
       }
       const total = samples.reduce((a, b) => a + b, 0);
       // Assert the items really keep splitting (guards against measuring an
       // empty loop because the command did not fire).
-      expect(view.state.doc.toString().split("\n").filter((l) => l.length > 2).length).toBeGreaterThan(15);
+      expect(
+        view.state.doc
+          .toString()
+          .split("\n")
+          .filter((l) => l.length > 2).length,
+      ).toBeGreaterThan(15);
       console.warn(`[perf] ${name} newline total ${total.toFixed(0)}ms`);
       expect(total).toBeLessThan(50);
     });
@@ -437,7 +463,10 @@ describe("perf gate: math block insertion and typing", () => {
       const region = mathRegions(view.state).find(
         (r) => view.state.selection.main.head >= r.from && view.state.selection.main.head <= r.to,
       );
-      buildInlineDecorations({ state: view.state, visibleRanges: [{ from: 0, to: view.state.doc.length }] });
+      buildInlineDecorations({
+        state: view.state,
+        visibleRanges: [{ from: 0, to: view.state.doc.length }],
+      });
       if (region) renderMathHtml(region.content, true); // the real call of MathPreviewWidget.toDOM
       samples.push(performance.now() - t0);
     }
@@ -501,7 +530,10 @@ describe("perf gate: code block insertion and typing", () => {
       const at = view.state.selection.main.head;
       const t0 = performance.now();
       view.dispatch({ changes: { from: at, insert: "const x = 1;\n" } });
-      buildInlineDecorations({ state: view.state, visibleRanges: [{ from: 0, to: view.state.doc.length }] });
+      buildInlineDecorations({
+        state: view.state,
+        visibleRanges: [{ from: 0, to: view.state.doc.length }],
+      });
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);
@@ -538,7 +570,10 @@ describe("perf gate: paragraph Enter (900 lines, the real fallback chain)", () =
       }
       const head = view.state.selection.main.head;
       view.dispatch({ changes: { from: head, insert: "字" } });
-      buildInlineDecorations({ state: view.state, visibleRanges: [{ from: 0, to: view.state.doc.length }] });
+      buildInlineDecorations({
+        state: view.state,
+        visibleRanges: [{ from: 0, to: view.state.doc.length }],
+      });
       samples.push(performance.now() - t0);
     }
     const total = samples.reduce((a, b) => a + b, 0);
@@ -822,7 +857,8 @@ describe("perf gate: typing inside a snippet session", () => {
 
 function wallDoc(lines: number): string {
   const parts: string[] = [];
-  for (let i = 0; i < lines; i++) parts.push(`段落行 ${i}:连续文字,中间没有任何空行,整篇是一个大段落块。`);
+  for (let i = 0; i < lines; i++)
+    parts.push(`段落行 ${i}:连续文字,中间没有任何空行,整篇是一个大段落块。`);
   return parts.join("\n");
 }
 
@@ -845,20 +881,16 @@ function wallEnterMedian(doc: string, times: number): number {
   for (let i = 0; i < times; i++) {
     const line = cur.doc.line(1000);
     const t0 = performance.now();
-    cur = cur
-      .update({
-        changes: { from: line.to, insert: "\n" },
-        selection: { anchor: line.to + 1 },
-        userEvent: "input.type",
-      })
-      .state;
+    cur = cur.update({
+      changes: { from: line.to, insert: "\n" },
+      selection: { anchor: line.to + 1 },
+      userEvent: "input.type",
+    }).state;
     ensureSyntaxTree(cur, cur.doc.length);
     samples.push(performance.now() - t0);
-    cur = cur
-      .update({
-        changes: { from: line.to + 1, to: Math.min(line.to + 2, cur.doc.length), insert: "" },
-      })
-      .state;
+    cur = cur.update({
+      changes: { from: line.to + 1, to: Math.min(line.to + 2, cur.doc.length), insert: "" },
+    }).state;
     ensureSyntaxTree(cur, cur.doc.length);
   }
   samples.sort((a, b) => a - b);
@@ -918,7 +950,10 @@ describe("perf gate: Enter · list continuation in a 900-line big document (bull
         const head = view.state.selection.main.head;
         view.dispatch({ changes: { from: head, insert: "字" } });
         ensureSyntaxTree(view.state, view.state.doc.length);
-        buildInlineDecorations({ state: view.state, visibleRanges: [{ from: 0, to: view.state.doc.length }] });
+        buildInlineDecorations({
+          state: view.state,
+          visibleRanges: [{ from: 0, to: view.state.doc.length }],
+        });
         samples.push(performance.now() - t0);
       }
       const total = samples.reduce((a, b) => a + b, 0);
@@ -952,7 +987,8 @@ describe("perf gate: Enter · long renumbering of a 30-item ordered list", () =>
       const line = view.state.doc.lineAt(view.state.selection.main.head);
       view.dispatch({ selection: EditorSelection.cursor(line.to) });
       const t0 = performance.now();
-      if (!enterContinueListItem(view)) throw new Error("the ordered list continuation was not picked up");
+      if (!enterContinueListItem(view))
+        throw new Error("the ordered list continuation was not picked up");
       samples.push(performance.now() - t0);
       // Put the caret back at the end of item 1 (the newly created item 2), so
       // the next round keeps renumbering from the front
@@ -1054,7 +1090,9 @@ describe("perf gate: callout scanning (60 blocks, ~500 lines)", () => {
     const total = perKey.reduce((a, b) => a + b, 0);
     perKey.sort((a, b) => a - b);
     const median = perKey[Math.floor(perKey.length / 2)];
-    console.warn(`[perf] typing inside a callout block total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`);
+    console.warn(
+      `[perf] typing inside a callout block total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`,
+    );
     expect(total).toBeLessThan(100);
     expect(median).toBeLessThan(4);
   });
@@ -1112,7 +1150,9 @@ describe("perf gate: callout anchor scanning (60 titled blocks, the body text hi
     const total = perKey.reduce((a, b) => a + b, 0);
     perKey.sort((a, b) => a - b);
     const median = perKey[Math.floor(perKey.length / 2)];
-    console.warn(`[perf] anchored document per-keystroke total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`);
+    console.warn(
+      `[perf] anchored document per-keystroke total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`,
+    );
     expect(total).toBeLessThan(150);
     expect(median).toBeLessThan(6);
   });
@@ -1182,9 +1222,25 @@ describe("perf gate: cross-file todo sync intent extraction (900 lines)", () => 
     });
     const intents: unknown[] = [];
     tr.changes.iterChangedRanges((a, b, c, d) =>
-      intents.push(...intentsForRange(tr.startState.doc, tr.state.doc, a, b, c, d, linksFor(["待办项 60"]), true)),
+      intents.push(
+        ...intentsForRange(
+          tr.startState.doc,
+          tr.state.doc,
+          a,
+          b,
+          c,
+          d,
+          linksFor(["待办项 60"]),
+          true,
+        ),
+      ),
     );
-    expect(intents).toContainEqual({ type: "mirror", linkId: "l0", rootHint: tr.startState.doc.lineAt(before).number, renamedTo: "待办项 60" });
+    expect(intents).toContainEqual({
+      type: "mirror",
+      linkId: "l0",
+      rootHint: tr.startState.doc.lineAt(before).number,
+      renamedTo: "待办项 60",
+    });
     expect(lineEnd).toBeGreaterThan(0);
   });
 });

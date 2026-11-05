@@ -4,7 +4,13 @@ import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { DecorationSet } from "@codemirror/view";
 import { autoEnlargeBrackets, enlargeBracketEdits } from "./enlarge";
-import { MATRIX_ROW_BREAK, alignEnterPlan, matrixEnter, matrixEnvAt, matrixSeparator } from "./matrix";
+import {
+  MATRIX_ROW_BREAK,
+  alignEnterPlan,
+  matrixEnter,
+  matrixEnvAt,
+  matrixSeparator,
+} from "./matrix";
 import {
   buildSession,
   deleteDollarPair,
@@ -18,7 +24,13 @@ import { parseReplacement } from "./engine";
 import { reloadSnippets } from "./engine";
 import { tryAutoExpand } from "./extension";
 import { DEFAULT_SNIPPETS } from "./default-snippets";
-import { buildBracketColors, buildCursorBrackets, enclosingBrackets, findMatchingBracket, withinEnv } from "./brackets";
+import {
+  buildBracketColors,
+  buildCursorBrackets,
+  enclosingBrackets,
+  findMatchingBracket,
+  withinEnv,
+} from "./brackets";
 import { configureLatexSuite, resetLatexConfig } from "./config";
 
 beforeEach(() => {
@@ -166,9 +178,7 @@ describe("matrix environment detection and shortcuts", () => {
     expect([...MATRIX_ROW_BREAK]).toEqual([" ", "\\", "\\", "\n"]);
     const view = makeView(BLOCK, [BLOCK.indexOf("Q")]);
     expect(matrixEnter(view)).toBe(true);
-    expect(text(view)).toBe(
-      "$$\n\\begin{pmatrix}\n \\\\\nQ & b\n\\end{pmatrix}\n$$",
-    );
+    expect(text(view)).toBe("$$\n\\begin{pmatrix}\n \\\\\nQ & b\n\\end{pmatrix}\n$$");
   });
 
   it("Shift+Enter only sends the caret to the end of the next line and does not touch the document", () => {
@@ -297,7 +307,10 @@ describe("no auto expansion inside an environment name (the root cause of the ca
   };
 
   beforeEach(() => {
-    reloadSnippets([{ trigger: "ali", replacement: "\\begin{align}\n$0\n\\end{align}", options: "mA" }], true);
+    reloadSnippets(
+      [{ trigger: "ali", replacement: "\\begin{align}\n$0\n\\end{align}", options: "mA" }],
+      true,
+    );
   });
 
   it("ali still expands as usual inside a formula body", () => {
@@ -545,7 +558,10 @@ describe("the geometric source of the bracket decorations", () => {
   it("the colored pairs do not depend on the selection (two different carets in one document → the same decorations)", () => {
     const doc = "前置\n\n$$a+(b)\\cdot[c]$$\n\n后置\n";
     const a = decoView(doc, 0);
-    const b = { state: a.state.update({ selection: EditorSelection.cursor(8) }).state, visibleRanges: a.visibleRanges };
+    const b = {
+      state: a.state.update({ selection: EditorSelection.cursor(8) }).state,
+      visibleRanges: a.visibleRanges,
+    };
     expect(decos(buildBracketColors(b))).toEqual(decos(buildBracketColors(a)));
     expect(decos(buildBracketColors(a)).length).toBeGreaterThan(0);
   });

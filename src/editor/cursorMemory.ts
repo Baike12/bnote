@@ -52,10 +52,7 @@ export function scheduleCursorSave(path: string, view: EditorView) {
  * layout read), and only 300ms after the scrolling stops is the position read
  * once and written. Returns the teardown function.
  */
-export function observeScrollSave(
-  view: EditorView,
-  getPath: () => string | null,
-): () => void {
+export function observeScrollSave(view: EditorView, getPath: () => string | null): () => void {
   const onScroll = () => {
     const path = getPath();
     if (path) scheduleCursorSave(path, view);

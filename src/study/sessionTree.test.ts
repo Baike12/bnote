@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 import { resolveFamily, sessionFamily, sessionRoot, type SessionNode } from "./sessionTree";
 
 function node(id: string, parent: string | null, createdAt: number): SessionNode {
-  return { id, parent, basedOn: "", forkAt: parent ? 2 : 0, title: id, createdAt, updatedAt: createdAt };
+  return {
+    id,
+    parent,
+    basedOn: "",
+    forkAt: parent ? 2 : 0,
+    title: id,
+    createdAt,
+    updatedAt: createdAt,
+  };
 }
 
 describe("the session family: root and members", () => {
@@ -18,11 +26,7 @@ describe("the session family: root and members", () => {
   });
 
   it("chained forks: a grandchild session also comes back to the same main session", () => {
-    const nodes = [
-      node("main", null, 1),
-      node("a", "main", 2),
-      node("b", "a", 3),
-    ];
+    const nodes = [node("main", null, 1), node("a", "main", 2), node("b", "a", 3)];
     expect(sessionRoot("b", nodes)).toBe("main");
     expect(sessionFamily("main", nodes).map((n) => n.id)).toEqual(["main", "a", "b"]);
   });
@@ -42,11 +46,7 @@ describe("the session family: root and members", () => {
   });
 
   it("one parent with several children: all of them are restored, sorted by creation time", () => {
-    const nodes = [
-      node("main", null, 1),
-      node("x", "main", 3),
-      node("y", "main", 2),
-    ];
+    const nodes = [node("main", null, 1), node("x", "main", 3), node("y", "main", 2)];
     expect(sessionFamily("main", nodes).map((n) => n.id)).toEqual(["main", "y", "x"]);
   });
 

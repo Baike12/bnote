@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  normalizeTemplateDir,
-  renderTemplate,
-  templateFiles,
-  templateLabel,
-} from "./template";
+import { normalizeTemplateDir, renderTemplate, templateFiles, templateLabel } from "./template";
 
 describe("template: variable substitution", () => {
   it("replaces date/title and allows whitespace inside and outside the braces", () => {
@@ -26,9 +21,7 @@ describe("template: variable substitution", () => {
   });
 
   it("braces inside a variable value are not substituted a second time", () => {
-    expect(renderTemplate("{{title}}", { date: "d", title: "{{date}}" })).toBe(
-      "{{date}}",
-    );
+    expect(renderTemplate("{{title}}", { date: "d", title: "{{date}}" })).toBe("{{date}}");
   });
 });
 

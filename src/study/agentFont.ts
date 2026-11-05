@@ -22,8 +22,7 @@ export const DEFAULT_AGENT_FONT = 1;
 
 /** The setting may come from an old config (no such key) or a hand-edited JSON: clamp into [85%, 160%]. */
 export function normalizeAgentFont(value: unknown): number {
-  const raw =
-    typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_AGENT_FONT;
+  const raw = typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_AGENT_FONT;
   return Math.min(MAX_AGENT_FONT, Math.max(MIN_AGENT_FONT, raw));
 }
 

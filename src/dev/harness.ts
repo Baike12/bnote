@@ -6,7 +6,16 @@ import "katex/dist/katex.min.css";
 import "@/styles/global.css";
 import { createEditor, loadDocument, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
 import { editorApi } from "@/editor/api";
-import { cycleHeading, enterContinueListItem, insertCallout, insertCodeBlock, insertMathBlock, jumpHeaderTodos, toggleList, toggleTodo } from "@/editor/ops";
+import {
+  cycleHeading,
+  enterContinueListItem,
+  insertCallout,
+  insertCodeBlock,
+  insertMathBlock,
+  jumpHeaderTodos,
+  toggleList,
+  toggleTodo,
+} from "@/editor/ops";
 import { renumberHeadings } from "@/editor/numbering";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { currentVimMode, getCM, Vim } from "@/editor/vim/vim";
@@ -89,11 +98,7 @@ declare global {
     __toggleList: (kind: "bullet" | "numbered") => void;
     __setTypewriter: (on: boolean) => void;
     __setTypewriterPosition: (position: number) => void;
-    __enterAt: (
-      text: string,
-      line: number,
-      col: number,
-    ) => { which: string; after: string };
+    __enterAt: (text: string, line: number, col: number) => { which: string; after: string };
     /** Repeated Enter (the multi-press version of `__enterAt`), to observe the step-by-step fallback. */
     __enterTimes: (
       text: string,
@@ -112,7 +117,10 @@ declare global {
       col: number,
     ) => { which: string; after: string; cursor: { line: number; col: number } };
     /** Probe for the empty-tree window: isActiveAt / tree coverage. */
-    __freshProbe: (text: string, pos: number) => {
+    __freshProbe: (
+      text: string,
+      pos: number,
+    ) => {
       activeNeg: boolean;
       activePos: boolean;
       treeLen: number;
@@ -216,10 +224,7 @@ declare global {
     }) => () => void;
     /** Mount the real project management view (project list / card lane / daily notes), returns the unmount function.
      *  contents preloads the file contents of the fake vault (vault-relative path -> text). */
-    __mountProjects: (
-      entries: string[],
-      contents?: Record<string, string>,
-    ) => Promise<() => void>;
+    __mountProjects: (entries: string[], contents?: Record<string, string>) => Promise<() => void>;
     /** Run one command (the direct entry point of the keybinding chain, bypassing the synthesized keydown). */
     __runCommand: (id: string) => void;
     /** Read the document text of the focused editor (project card / daily note). */
@@ -235,11 +240,7 @@ declare global {
     /** Replace a line (1-based) of the focused editor, to simulate "editing a todo in the daily note". */
     __paneReplaceLine: (line: number, text: string) => void;
     /** Study mode PDF verification: inject a PDF's bytes and open the reader (mount the study layout first). */
-    __openStudyPdf: (
-      base64: string,
-      relPath?: string,
-      annotationsJson?: string,
-    ) => Promise<string>;
+    __openStudyPdf: (base64: string, relPath?: string, annotationsJson?: string) => Promise<string>;
     /** Read the content of a file in the fake vault (for the annotation persistence assertions); null when it does not exist. */
     __readFakeFile: (path: string) => string | null;
     /** The mini markdown renderer for study mode agent replies (returns HTML). */
@@ -254,10 +255,7 @@ declare global {
     __decos: () => Record<string, string[]>;
     /** Inject a fake footprint index (bypassing the baseline/rotation by building the module singleton directly and broadcasting).
      *  With a day, the injected index is that historical day's frozen archive. */
-    __setFootprints: (
-      entries: { path: string; blocks: FootprintBlock[] }[],
-      day?: string,
-    ) => void;
+    __setFootprints: (entries: { path: string; blocks: FootprintBlock[] }[], day?: string) => void;
     /** Footprint debugging entry point: the internal state of the same-origin instance in the app. */
     __fpDebug: () => {
       vault: string | null;
@@ -408,7 +406,12 @@ window.__tab = (shift = false, times = 1) => {
   const docs: string[] = [];
   for (let i = 0; i < times; i++) {
     view.contentDOM.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Tab", shiftKey: shift, bubbles: true, cancelable: true }),
+      new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey: shift,
+        bubbles: true,
+        cancelable: true,
+      }),
     );
     heads.push(view.state.selection.main.head);
     docs.push(view.state.doc.toString());
@@ -497,8 +500,14 @@ function installFakeVault(entries: string[]) {
     children: null,
   });
   const childrenOf = (parent: string): FileNode[] => [
-    ...[...dirs].filter((d) => relDirname(d) === parent).sort().map((d) => nodeOf(d, "dir")),
-    ...[...files].filter((f) => relDirname(f) === parent).sort().map((f) => nodeOf(f, "file")),
+    ...[...dirs]
+      .filter((d) => relDirname(d) === parent)
+      .sort()
+      .map((d) => nodeOf(d, "dir")),
+    ...[...files]
+      .filter((f) => relDirname(f) === parent)
+      .sort()
+      .map((f) => nodeOf(f, "file")),
   ];
   const created = (rel: string) => ({ path: `${FAKE_ROOT}/${rel}`, relPath: rel });
 
@@ -510,7 +519,8 @@ function installFakeVault(entries: string[]) {
     createDir: async (parent: string, name: string) => {
       let rel = parent ? `${parent}/${name}` : name;
       let counter = 2;
-      while (dirs.has(rel) || files.has(rel)) rel = `${parent ? `${parent}/` : ""}${name} ${counter++}`;
+      while (dirs.has(rel) || files.has(rel))
+        rel = `${parent ? `${parent}/` : ""}${name} ${counter++}`;
       dirs.add(rel);
       lastCreatedDir = rel;
       return created(rel);
@@ -521,7 +531,8 @@ function installFakeVault(entries: string[]) {
       const ext = dot > 0 ? name.slice(dot) : "";
       let rel = parent ? `${parent}/${name}` : name;
       let counter = 2;
-      while (dirs.has(rel) || files.has(rel)) rel = `${parent ? `${parent}/` : ""}${stem} ${counter++}${ext}`;
+      while (dirs.has(rel) || files.has(rel))
+        rel = `${parent ? `${parent}/` : ""}${stem} ${counter++}${ext}`;
       files.add(rel);
       return created(rel);
     },
@@ -582,7 +593,8 @@ window.__mountSidebar = async (entries: string[]) => {
   const host = document.createElement("div");
   host.id = "sidebar-host";
   // display:flex is copied from the real .app: the sidebar is stretched to a fixed height, only then does .sidebar-tree scroll.
-  host.style.cssText = "position:fixed;left:0;top:0;width:280px;height:100vh;z-index:99;display:flex";
+  host.style.cssText =
+    "position:fixed;left:0;top:0;width:280px;height:100vh;z-index:99;display:flex";
   document.body.appendChild(host);
   sidebarRoot = createRoot(host);
   sidebarRoot.render(createElement(Sidebar));
@@ -627,9 +639,30 @@ window.__mountFocusChip = (durations?: number[]) => {
     });
   }
   Object.assign(focusApi, {
-    status: async () => ({ locked: false, hard_lock: false, hard_active: false, trusted: true, seen: 0, swallowed: 0 }),
-    lock: async () => ({ locked: true, hard_lock: false, hard_active: false, trusted: true, seen: 0, swallowed: 0 }),
-    unlock: async () => ({ locked: false, hard_lock: false, hard_active: false, trusted: true, seen: 0, swallowed: 0 }),
+    status: async () => ({
+      locked: false,
+      hard_lock: false,
+      hard_active: false,
+      trusted: true,
+      seen: 0,
+      swallowed: 0,
+    }),
+    lock: async () => ({
+      locked: true,
+      hard_lock: false,
+      hard_active: false,
+      trusted: true,
+      seen: 0,
+      swallowed: 0,
+    }),
+    unlock: async () => ({
+      locked: false,
+      hard_lock: false,
+      hard_active: false,
+      trusted: true,
+      seen: 0,
+      swallowed: 0,
+    }),
     setHardLock: async (enabled: boolean) => ({
       locked: false,
       hard_lock: enabled,
@@ -666,7 +699,8 @@ window.__mountFocusChip = (durations?: number[]) => {
 window.__mountSettings = async () => {
   const host = document.createElement("div");
   host.id = "settings-host";
-  host.style.cssText = "position:fixed;right:0;top:0;width:520px;height:100vh;overflow:auto;z-index:99;background:var(--bg)";
+  host.style.cssText =
+    "position:fixed;right:0;top:0;width:520px;height:100vh;overflow:auto;z-index:99;background:var(--bg)";
   document.body.appendChild(host);
   settingsRoot = createRoot(host);
   settingsRoot.render(createElement(SettingsModal));
@@ -850,9 +884,7 @@ window.__mountAgentHeader = (spec) => {
   const root = createRoot(panel);
   const activeKey = spec.activeKey ?? spec.convs[0]?.key ?? null;
   const active = spec.convs.find((c) => c.key === activeKey) ?? null;
-  const parent = active?.parent
-    ? (spec.convs.find((c) => c.key === active.parent) ?? null)
-    : null;
+  const parent = active?.parent ? (spec.convs.find((c) => c.key === active.parent) ?? null) : null;
   const record = (action: string) => {
     host.dataset.lastAction = action;
   };
@@ -976,16 +1008,17 @@ window.__mountHtmlPreview = (code: string) => {
  * Study mode PDF: put a PDF's bytes into the fake vault and open the reader.
  * __mountStudyLayout() must be called first; the annotation persistence goes through the same fake readFile/writeFile.
  */
-window.__openStudyPdf = async (base64: string, relPath = "pdfs/harness.pdf", annotationsJson?: string) => {
+window.__openStudyPdf = async (
+  base64: string,
+  relPath = "pdfs/harness.pdf",
+  annotationsJson?: string,
+) => {
   pdfBase64 = base64;
   installFakeVault(["pdfs/", relPath]);
   // Write the annotation file to disk first, then open the reader: what the component reads on mount is the restored data.
   // One file per PDF, the path matches pdfAnnotationRelPath.
   if (annotationsJson) {
-    await api.writeFile(
-      `${FAKE_ROOT}/.bnote/pdf-annotations/${relPath}.json`,
-      annotationsJson,
-    );
+    await api.writeFile(`${FAKE_ROOT}/.bnote/pdf-annotations/${relPath}.json`, annotationsJson);
   }
   const path = `${FAKE_ROOT}/${relPath}`;
   useAppStore.getState().setStudyContent({ kind: "pdf", path, title: "harness.pdf" });
@@ -1000,9 +1033,16 @@ window.__readFakeFile = (path: string) => {
 
 window.__treeNames = () => {
   const names: string[] = [];
-  const walk = (node: { name: string; from: number; to: number; firstChild: unknown; nextSibling: unknown }, depth: number) => {
+  const walk = (
+    node: { name: string; from: number; to: number; firstChild: unknown; nextSibling: unknown },
+    depth: number,
+  ) => {
     names.push("  ".repeat(depth) + node.name);
-    for (let child = node.firstChild as typeof node; child; child = child.nextSibling as typeof node) {
+    for (
+      let child = node.firstChild as typeof node;
+      child;
+      child = child.nextSibling as typeof node
+    ) {
       walk(child, depth + 1);
     }
   };
@@ -1032,9 +1072,14 @@ window.__decos = () => {
   const doc = view.state.doc;
   const grouped: Record<string, string[]> = {};
   for (const set of view.state.facet(EditorView.decorations)) {
-    if (typeof set !== "object" || set === null || typeof (set as { between?: unknown }).between !== "function")
+    if (
+      typeof set !== "object" ||
+      set === null ||
+      typeof (set as { between?: unknown }).between !== "function"
+    )
       continue;
-    const label = (set as { debugSource?: string }).debugSource ?? `set@${(set as object).constructor.name}`;
+    const label =
+      (set as { debugSource?: string }).debugSource ?? `set@${(set as object).constructor.name}`;
     const out = grouped[label] ?? (grouped[label] = []);
     set.between(0, doc.length, (from, to, deco) => {
       const kind =
@@ -1067,8 +1112,9 @@ window.__fpDebug = () => {
     revision: footprintRevision(),
     docPath: documentPath(editorApi.view!.state),
     wantDaily: vault ? dailyPathFor(vault, todayStamp()) : null,
-    isDaily: documentPath(editorApi.view!.state) !== null
-      ? isDailyPath(documentPath(editorApi.view!.state)!)
-      : null,
+    isDaily:
+      documentPath(editorApi.view!.state) !== null
+        ? isDailyPath(documentPath(editorApi.view!.state)!)
+        : null,
   };
 };

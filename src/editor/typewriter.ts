@@ -93,10 +93,7 @@ export interface TypewriterOptions {
   reserveTop?: boolean;
 }
 
-export function typewriterExtension(
-  position: number,
-  options: TypewriterOptions = {},
-): Extension {
+export function typewriterExtension(position: number, options: TypewriterOptions = {}): Extension {
   const reserveTop = options.reserveTop !== false;
   return [typewriterPlugin(position, reserveTop), scrollPastEnd()];
 }

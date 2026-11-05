@@ -77,7 +77,7 @@ describe("exitCursorPosition: the landing spot when a session ends (clamped to t
   it("a whole-block creation snippet (dm): finalPos lands exactly past the closing $$, so the session ends in place instead of leaving the formula block", () => {
     const s = dm(); // The replacement text "$$\n\n$$", finalPos = 6
     const doc = "$$\n\n$$"; // Same as the replacement text: the region includes the
-                          // delimiters, to = 6 = finalPos
+    // delimiters, to = 6 = finalPos
     const state = withSession(doc, s);
     const st = state.update({ selection: { anchor: 3 } }).state; // The caret is on the empty line (inside the block)
     expect(s.finalPos).toBe(6);
@@ -113,7 +113,7 @@ describe("exitChain: the session pops out as soon as the caret leaves", () => {
 
   it("leaving the inner region but still inside the parent: it pops back to the parent", () => {
     const outer = paren(); // [0,3): inside the brackets is the child session's
-                          // region, 0 belongs to the parent level alone
+    // region, 0 belongs to the parent level alone
     const inner = buildSession(1, parseReplacement("x$0", [], null), outer)!;
     expect(exitChain(inner, 0)).toBe(outer);
   });

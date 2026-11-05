@@ -183,7 +183,11 @@ export function mapLspDiagnostics(doc: Text, raw: RawLspDiagnostic[]): UiDiagnos
     const to = lspPointToOffset(doc, d.range.end.line, d.range.end.character);
     if (from < 0 || to < 0) continue;
     const code =
-      typeof d.code === "string" ? d.code : typeof d.code?.value === "string" ? d.code.value : undefined;
+      typeof d.code === "string"
+        ? d.code
+        : typeof d.code?.value === "string"
+          ? d.code.value
+          : undefined;
     out.push({
       from: Math.min(from, to),
       to: Math.max(from, to),
@@ -261,11 +265,7 @@ export function mapLspCompletions(raw: unknown): UiCompletion[] {
   let items: readonly unknown[] | null = null;
   if (Array.isArray(raw)) {
     items = raw;
-  } else if (
-    raw &&
-    typeof raw === "object" &&
-    Array.isArray((raw as { items?: unknown }).items)
-  ) {
+  } else if (raw && typeof raw === "object" && Array.isArray((raw as { items?: unknown }).items)) {
     items = (raw as { items: readonly unknown[] }).items;
   }
   if (!items) return [];
@@ -333,4 +333,3 @@ export function mdPosToLspPosition(
   const strip = Math.min(block.indent, spaces);
   return { line: line0, character: Math.max(p - lineObj.from - strip, 0) };
 }
-

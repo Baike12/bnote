@@ -1,10 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  canFlipPdfPage,
-  flipPdfPage,
-  setPdfNavHandlers,
-  setWebNavHandlers,
-} from "./pdfNav";
+import { canFlipPdfPage, flipPdfPage, setPdfNavHandlers, setWebNavHandlers } from "./pdfNav";
 
 /**
  * The page-turn shortcut is a "configurable command": the command layer does

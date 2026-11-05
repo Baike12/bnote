@@ -85,9 +85,7 @@ describe("captureTodo", () => {
     );
     const refresh = vi.fn(async () => {});
     await captureTodo("今天的新任务", deps(io, { refresh }));
-    expect(map.get(DAILY)).toBe(
-      "# 2026-10-26\n\n- [ ] 今天的新任务\n- [ ] 未完成\n  - [ ] 子项\n",
-    );
+    expect(map.get(DAILY)).toBe("# 2026-10-26\n\n- [ ] 今天的新任务\n- [ ] 未完成\n  - [ ] 子项\n");
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
@@ -101,13 +99,8 @@ describe("captureTodo", () => {
     const { map, io } = fakeIO({
       [`${ROOT}/Templates/日记.md`]: "# {{date}} · 记录\n\n## 计划\n",
     });
-    await captureTodo(
-      "新任务",
-      deps(io, { templatePath: () => "Templates/日记.md" }),
-    );
-    expect(map.get(DAILY)).toBe(
-      "# 2026-10-26 · 记录\n\n- [ ] 新任务\n\n## 计划\n",
-    );
+    await captureTodo("新任务", deps(io, { templatePath: () => "Templates/日记.md" }));
+    expect(map.get(DAILY)).toBe("# 2026-10-26 · 记录\n\n- [ ] 新任务\n\n## 计划\n");
   });
 
   it("the daily note is open in the editor: the in-memory document is edited (autosave handles it), nothing is written to disk", async () => {

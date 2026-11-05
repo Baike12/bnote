@@ -113,18 +113,14 @@ function parseSceneJson(text: string): DrawingScene {
         ? (obj.appState as Record<string, unknown>)
         : {},
     files:
-      obj.files && typeof obj.files === "object"
-        ? (obj.files as Record<string, unknown>)
-        : null,
+      obj.files && typeof obj.files === "object" ? (obj.files as Record<string, unknown>) : null,
   };
 }
 
 /** Fence markers of the Obsidian plugin's data block (both compressed and plain). */
 const FENCE_RE = /```(compressed-json|json)[ \t]*\r?\n([\s\S]*?)\r?\n?```/;
 
-function extractMdWrapper(
-  text: string,
-): { json: string; frontmatter: string } | null {
+function extractMdWrapper(text: string): { json: string; frontmatter: string } | null {
   const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   if (!fm || !/^excalidraw-plugin:/m.test(fm[1])) return null;
   const m = FENCE_RE.exec(text);

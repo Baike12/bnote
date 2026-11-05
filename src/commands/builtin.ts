@@ -21,12 +21,7 @@ import { configureLivePreview } from "@/editor/livePreview";
 import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
-import {
-  useAppStore,
-  toggleCodeMode,
-  toggleProjectsMode,
-  toggleStudyMode,
-} from "@/state/appStore";
+import { useAppStore, toggleCodeMode, toggleProjectsMode, toggleStudyMode } from "@/state/appStore";
 import { quitApp } from "@/app/quit";
 import { focusAdjacentProject } from "@/projects/store";
 import { isProjectPath } from "@/projects/model";
@@ -117,7 +112,8 @@ function settleHeadingNumbering(
   if (headingRemoved) {
     const after = view.state.doc.lineAt(Math.min(lineFrom, view.state.doc.length));
     const m = /^(\d+(?:\.\d+)*[ \t]+)/.exec(after.text);
-    if (m) view.dispatch({ changes: { from: after.from, to: after.from + m[1].length, insert: "" } });
+    if (m)
+      view.dispatch({ changes: { from: after.from, to: after.from + m[1].length, insert: "" } });
   }
   renumberHeadings(view);
 }
@@ -156,7 +152,12 @@ const defs: CommandDef[] = [
     category: "工作区",
     run: () => useAppStore.getState().setModal("quicktodo"),
   },
-  { id: "workspace.new-note", title: "新建笔记", category: "工作区", run: () => void actions.newNote() },
+  {
+    id: "workspace.new-note",
+    title: "新建笔记",
+    category: "工作区",
+    run: () => void actions.newNote(),
+  },
   {
     id: "workspace.quick-add",
     title: "快速添加文件",
@@ -553,10 +554,30 @@ const defs: CommandDef[] = [
   },
 
   // ---- editing ----
-  { id: "edit.insert-math-block", title: "插入公式块", category: "编辑", run: withView(insertMathBlock) },
-  { id: "edit.insert-inline-math", title: "插入行内公式", category: "编辑", run: withView(insertInlineMath) },
-  { id: "edit.insert-code-block", title: "插入代码块", category: "编辑", run: withView(insertCodeBlock) },
-  { id: "edit.insert-inline-code", title: "插入行内代码", category: "编辑", run: withView(insertInlineCode) },
+  {
+    id: "edit.insert-math-block",
+    title: "插入公式块",
+    category: "编辑",
+    run: withView(insertMathBlock),
+  },
+  {
+    id: "edit.insert-inline-math",
+    title: "插入行内公式",
+    category: "编辑",
+    run: withView(insertInlineMath),
+  },
+  {
+    id: "edit.insert-code-block",
+    title: "插入代码块",
+    category: "编辑",
+    run: withView(insertCodeBlock),
+  },
+  {
+    id: "edit.insert-inline-code",
+    title: "插入行内代码",
+    category: "编辑",
+    run: withView(insertInlineCode),
+  },
   {
     id: "edit.insert-callout",
     title: "插入 Callout 块 / 跳到关联块",
@@ -590,15 +611,30 @@ const defs: CommandDef[] = [
     category: "编辑",
     run: withView(insertHorizontalRule),
   },
-  { id: "edit.toggle-bold", title: "加粗", category: "编辑", run: withView((v) => toggleWrap(v, "**")) },
-  { id: "edit.toggle-italic", title: "斜体", category: "编辑", run: withView((v) => toggleWrap(v, "*")) },
+  {
+    id: "edit.toggle-bold",
+    title: "加粗",
+    category: "编辑",
+    run: withView((v) => toggleWrap(v, "**")),
+  },
+  {
+    id: "edit.toggle-italic",
+    title: "斜体",
+    category: "编辑",
+    run: withView((v) => toggleWrap(v, "*")),
+  },
   {
     id: "edit.toggle-strikethrough",
     title: "删除线",
     category: "编辑",
     run: withView((v) => toggleWrap(v, "~~")),
   },
-  { id: "edit.toggle-todo", title: "切换当前行待办状态", category: "编辑", run: withView(toggleTodo) },
+  {
+    id: "edit.toggle-todo",
+    title: "切换当前行待办状态",
+    category: "编辑",
+    run: withView(toggleTodo),
+  },
   {
     id: "edit.todo-to-daily",
     title: "待办发送到今日日记(此后两侧自动保持同步,⌘⇧J)",
@@ -615,7 +651,12 @@ const defs: CommandDef[] = [
       })().catch((e) => useAppStore.getState().showToast(`发送失败: ${String(e)}`));
     }),
   },
-  { id: "edit.toggle-bullet-list", title: "无序列表:切换当前行项目符号", category: "编辑", run: withView((v) => toggleList(v, "bullet")) },
+  {
+    id: "edit.toggle-bullet-list",
+    title: "无序列表:切换当前行项目符号",
+    category: "编辑",
+    run: withView((v) => toggleList(v, "bullet")),
+  },
   {
     id: "edit.toggle-numbered-list",
     title: "有序列表:切换当前行编号",
@@ -733,9 +774,7 @@ const defs: CommandDef[] = [
         useAppStore
           .getState()
           .showToast(
-            next === "ty"
-              ? `项目「${proj}」ty 类型检查已开启`
-              : `项目「${proj}」ty 类型检查已关闭`,
+            next === "ty" ? `项目「${proj}」ty 类型检查已开启` : `项目「${proj}」ty 类型检查已关闭`,
           );
       } catch (e) {
         useAppStore.getState().showToast(`切换失败: ${String(e)}`);

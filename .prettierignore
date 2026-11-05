@@ -1,0 +1,10 @@
+# Rust has its own formatter (cargo fmt); docs and data files are hand written.
+src-tauri/
+vendor/
+dist/
+node_modules/
+*.md
+*.json
+*.css
+*.html
+pnpm-lock.yaml

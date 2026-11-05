@@ -51,10 +51,7 @@ export function insertTodoAtFront(base: string, todoLine: string): { text: strin
 }
 
 /** Returns the path of the daily note that was written; null for empty input or when no vault is open. */
-export async function captureTodo(
-  raw: string,
-  deps: CaptureTodoDeps,
-): Promise<string | null> {
+export async function captureTodo(raw: string, deps: CaptureTodoDeps): Promise<string | null> {
   const todo = formatTodoLine(raw);
   if (!todo) return null;
   const vaultRoot = deps.vaultRoot();
@@ -79,9 +76,10 @@ export async function captureTodo(
   return withFileLock(path, async () => {
     const existing = await deps.io.readFile(path);
     const created = existing === null;
-    const base = existing === null
-      ? await dailyScaffoldWithRollover(deps.io, vaultRoot, day, deps.templatePath())
-      : existing;
+    const base =
+      existing === null
+        ? await dailyScaffoldWithRollover(deps.io, vaultRoot, day, deps.templatePath())
+        : existing;
     const doc = EditorState.create({ doc: base }).doc;
     const spec = prependEntrySpec(doc, parseDailyRegion(doc), [todo]);
     await deps.io.writeFile(path, textAfterChanges(base, [spec.change]));

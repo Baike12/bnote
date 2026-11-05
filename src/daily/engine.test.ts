@@ -143,7 +143,18 @@ function drainIntents(transactions: Transaction[], store: LinkStore, path: strin
     const allow =
       !isDailyPath(path) && !tr.isUserEvent("input.paste") && !tr.isUserEvent("input.drop");
     tr.changes.iterChangedRanges((fromA, toA, fromB, toB) =>
-      out.push(...intentsForRange(tr.startState.doc, tr.state.doc, fromA, toA, fromB, toB, fileLinks, allow)),
+      out.push(
+        ...intentsForRange(
+          tr.startState.doc,
+          tr.state.doc,
+          fromA,
+          toA,
+          fromB,
+          toB,
+          fileLinks,
+          allow,
+        ),
+      ),
     );
   }
   return out;
@@ -165,17 +176,29 @@ describe("the send command", () => {
     const { files, io } = memIO();
     const store = new LinkStore();
     const toasts: string[] = [];
-    const { view } = makeDocView("# 项目\n\n- [ ] 写章节\n  - [ ] 查资料\n", "/vault/proj.md", [13]);
+    const { view } = makeDocView(
+      "# 项目\n\n- [ ] 写章节\n  - [ ] 查资料\n",
+      "/vault/proj.md",
+      [13],
+    );
     await sendTodoToDaily(view, deps(io, toasts), store);
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 写章节\n  - [ ] 查资料\n");
     expect(store.all()).toHaveLength(1);
-    expect(store.all()[0]).toMatchObject({ kind: "copied", text: "写章节", srcLine: 3, dailyLine: 3 });
+    expect(store.all()[0]).toMatchObject({
+      kind: "copied",
+      text: "写章节",
+      srcLine: 3,
+      dailyLine: 3,
+    });
     expect(toasts).toEqual(["已发送到今日日记"]);
   });
 
   it("the daily note does not exist at send time: the created file first carries the unfinished todos of the previous note, the sent entry follows", async () => {
     const { files, io } = memIO();
-    files.set("/vault/Daily/2026-09-22.md", "# 2026-09-22\n\n- [x] 昨天做完 ✅ 2026-09-22\n- [ ] 昨天没做完\n");
+    files.set(
+      "/vault/Daily/2026-09-22.md",
+      "# 2026-09-22\n\n- [x] 昨天做完 ✅ 2026-09-22\n- [ ] 昨天没做完\n",
+    );
     const store = new LinkStore();
     const { view } = makeDocView("- [ ] 新任务\n", "/vault/p.md", [0]);
     await sendTodoToDaily(view, deps(io), store);
@@ -386,10 +409,16 @@ describe("auto sync (touch sends)", () => {
   it("touching a child todo (parent not linked): the whole block is sent with the root, the mirror semantics keep the original hierarchy", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
-    const { view, transactions } = makeDocView("- [ ] 父\n  - [ ] 子\n    - [ ] 孙\n", "/vault/p.md", [8]);
+    const { view, transactions } = makeDocView(
+      "- [ ] 父\n  - [ ] 子\n    - [ ] 孙\n",
+      "/vault/p.md",
+      [8],
+    );
     toggleTodo(view);
     await sync(view, "/vault/p.md", transactions, io, store);
-    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 父\n  - [x] 子 ✅ 2026-09-23\n    - [ ] 孙\n");
+    expect(files.get(DAILY)).toBe(
+      "# 2026-09-23\n\n- [ ] 父\n  - [x] 子 ✅ 2026-09-23\n    - [ ] 孙\n",
+    );
     expect(store.all()[0]).toMatchObject({ kind: "auto", text: "父" });
   });
 
@@ -398,10 +427,16 @@ describe("auto sync (touch sends)", () => {
     const store = new LinkStore();
     store.upsert(makeLink({ id: "p1", text: "父", srcLine: 1, dailyLine: 3 }));
     files.set(DAILY, "# 2026-09-23\n\n- [ ] 父\n  - [ ] 子\n    - [ ] 孙\n");
-    const { view, transactions } = makeDocView("- [ ] 父\n  - [ ] 子\n    - [ ] 孙\n", "/vault/p.md", [8]);
+    const { view, transactions } = makeDocView(
+      "- [ ] 父\n  - [ ] 子\n    - [ ] 孙\n",
+      "/vault/p.md",
+      [8],
+    );
     toggleTodo(view);
     await sync(view, "/vault/p.md", transactions, io, store);
-    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 父\n  - [x] 子 ✅ 2026-09-23\n    - [ ] 孙\n");
+    expect(files.get(DAILY)).toBe(
+      "# 2026-09-23\n\n- [ ] 父\n  - [x] 子 ✅ 2026-09-23\n    - [ ] 孙\n",
+    );
     expect(store.all()).toHaveLength(1); // no new link was created for the child
   });
 });
@@ -413,7 +448,9 @@ describe("two-way mirroring", () => {
     const { view, transactions } = makeDocView("- [ ] 任务甲\n", "/vault/p.md", [0]);
     await sendTodoToDaily(view, deps(io), store); // establish the link
     const line = view.state.doc.line(1);
-    view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" } });
+    view.dispatch({
+      changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" },
+    });
     await sync(view, "/vault/p.md", transactions, io, store);
     expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [x] 任务甲 ✅ 2026-09-23\n");
     expect(store.all()).toHaveLength(1);
@@ -439,7 +476,9 @@ describe("two-way mirroring", () => {
     store.upsert(makeLink({ id: "c1" }));
     const { view, transactions } = makeDocView("# 2026-09-23\n\n- [ ] 任务甲\n", DAILY, [14]);
     const line = view.state.doc.line(3);
-    view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" } });
+    view.dispatch({
+      changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" },
+    });
     await sync(view, DAILY, transactions, io, store);
     expect(files.get("/vault/p.md")).toBe("- [x] 任务甲 ✅ 2026-09-23\n");
   });
@@ -487,7 +526,11 @@ describe("two-way mirroring", () => {
     files.set("/vault/p.md", "- [ ] 任务甲\n");
     const store = new LinkStore();
     store.upsert(makeLink({ id: "c1" }));
-    const { view, transactions } = makeDocView("# 2026-09-23\n\n- [ ] 任务甲\n\n正文\n", DAILY, [0]);
+    const { view, transactions } = makeDocView(
+      "# 2026-09-23\n\n- [ ] 任务甲\n\n正文\n",
+      DAILY,
+      [0],
+    );
     const line = view.state.doc.line(3);
     view.dispatch({ changes: { from: line.from, to: line.to + 1, insert: "" } });
     await sync(view, DAILY, transactions, io, store);
@@ -515,7 +558,9 @@ describe("two-way mirroring", () => {
     store.upsert(makeLink({ id: "c1" }));
     const { view, transactions } = makeDocView("# 2026-09-23\n\n- [ ] 任务甲\n", DAILY, [14]);
     const line = view.state.doc.line(3);
-    view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" } });
+    view.dispatch({
+      changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" },
+    });
     await sync(view, DAILY, transactions, io, store);
     expect(store.all()).toHaveLength(0);
   });
@@ -576,13 +621,22 @@ describe("intent extraction and merging", () => {
   it("a rename carries the new text; when the root turns into plain text the hint is empty", () => {
     const s = start("- [ ] 旧名\n");
     const e = start("- [ ] 新名\n");
-    expect(intentsForRange(s, e, 0, s.length, 0, e.length, [makeLink({ id: "L", text: "旧名" })], true)).toEqual([
-      { type: "mirror", linkId: "L", rootHint: 1, renamedTo: "新名" },
-    ]);
+    expect(
+      intentsForRange(s, e, 0, s.length, 0, e.length, [makeLink({ id: "L", text: "旧名" })], true),
+    ).toEqual([{ type: "mirror", linkId: "L", rootHint: 1, renamedTo: "新名" }]);
     const e2 = start("旧名\n");
-    expect(intentsForRange(s, e2, 0, s.length, 0, e2.length, [makeLink({ id: "L", text: "旧名" })], true)).toEqual([
-      { type: "mirror", linkId: "L", rootHint: null, renamedTo: null },
-    ]);
+    expect(
+      intentsForRange(
+        s,
+        e2,
+        0,
+        s.length,
+        0,
+        e2.length,
+        [makeLink({ id: "L", text: "旧名" })],
+        true,
+      ),
+    ).toEqual([{ type: "mirror", linkId: "L", rootHint: null, renamedTo: null }]);
   });
 
   it("paste/drop transactions produce no send intent (allowSend=false)", () => {

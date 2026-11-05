@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  planGoto,
-  shortPath,
-  unavailableReasonOf,
-  type GotoTarget,
-} from "./gotoPlan";
+import { planGoto, shortPath, unavailableReasonOf, type GotoTarget } from "./gotoPlan";
 
 const inside = (path: string): GotoTarget => ({ path, external: false });
 const outside = (path: string): GotoTarget => ({ path, external: true });
@@ -54,9 +49,7 @@ describe("shortPath", () => {
 
 describe("unavailableReasonOf", () => {
   it("recognizes a server that was never started", () => {
-    expect(unavailableReasonOf("LSP_NOT_RUNNING: python 语言服务器没有启动")).toBe(
-      "not-running",
-    );
+    expect(unavailableReasonOf("LSP_NOT_RUNNING: python 语言服务器没有启动")).toBe("not-running");
   });
 
   it("recognizes a server that died or timed out", () => {

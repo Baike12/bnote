@@ -170,9 +170,7 @@ export function mathOwnsEndpoints(
 ): boolean {
   if (to <= from) return false;
   const last = to - 1;
-  return regions.some(
-    (r) => (from >= r.from && from < r.to) || (last >= r.from && last < r.to),
-  );
+  return regions.some((r) => (from >= r.from && from < r.to) || (last >= r.from && last < r.to));
 }
 
 /** Classifies the cursor position for snippet-mode matching, in the spirit of

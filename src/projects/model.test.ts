@@ -36,13 +36,9 @@ describe("project model", () => {
   });
 
   it("todo line parsing keeps the line number, indentation, done state and identity text", () => {
-    const text = [
-      "# 标题",
-      "- [ ] 甲",
-      "  - [x] 乙 ✅ 2026-10-29",
-      "- 普通项目",
-      "- [ ] ",
-    ].join("\n");
+    const text = ["# 标题", "- [ ] 甲", "  - [x] 乙 ✅ 2026-10-29", "- 普通项目", "- [ ] "].join(
+      "\n",
+    );
     expect(projectTodos(text).map((t) => [t.line, t.indent, t.done, t.text])).toEqual([
       [2, 0, false, "甲"],
       [3, 2, true, "乙"],

@@ -112,9 +112,11 @@ function patchVimNewlineIndent() {
   newlineIndentPatched = true;
   try {
     const VimAny = Vim as unknown as Record<string, any>;
-    const commands = (CodeMirror as unknown as {
-      commands: Record<string, ((cm: { cm6: EditorView }) => void) | undefined>;
-    }).commands;
+    const commands = (
+      CodeMirror as unknown as {
+        commands: Record<string, ((cm: { cm6: EditorView }) => void) | undefined>;
+      }
+    ).commands;
     // Safety net for other engine paths that newline-and-indent.
     commands.newlineAndIndent = (cm) => {
       const view = cm.cm6;
@@ -135,34 +137,37 @@ function patchVimNewlineIndent() {
     };
     // Faithful port of the engine's newLineAndEnterInsertMode with verbatim
     // indent (O uses the current line's indent, vim-style).
-    VimAny.defineAction("newLineAndEnterInsertMode", function (
-      this: Record<string, any>,
-      cm: { cm6: EditorView },
-      actionArgs: { after?: boolean; repeat?: number },
-      vimState: Record<string, unknown>,
-    ) {
-      vimState.insertMode = true;
-      const view = cm.cm6;
-      const state = view.state;
-      const line = state.doc.lineAt(state.selection.main.head);
-      const indent = /^[ \t]*/.exec(line.text)?.[0] ?? "";
-      const openAfter = actionArgs.after !== false;
-      if (!openAfter && line.number === 1) {
-        view.dispatch({
-          changes: { from: 0, insert: indent + state.lineBreak },
-          selection: { anchor: indent.length },
-          scrollIntoView: true,
-        });
-      } else {
-        const at = openAfter ? line.to : state.doc.line(line.number - 1).to;
-        view.dispatch({
-          changes: { from: at, insert: state.lineBreak + indent },
-          selection: { anchor: at + state.lineBreak.length + indent.length },
-          scrollIntoView: true,
-        });
-      }
-      this.enterInsertMode(cm, { repeat: actionArgs.repeat }, vimState);
-    });
+    VimAny.defineAction(
+      "newLineAndEnterInsertMode",
+      function (
+        this: Record<string, any>,
+        cm: { cm6: EditorView },
+        actionArgs: { after?: boolean; repeat?: number },
+        vimState: Record<string, unknown>,
+      ) {
+        vimState.insertMode = true;
+        const view = cm.cm6;
+        const state = view.state;
+        const line = state.doc.lineAt(state.selection.main.head);
+        const indent = /^[ \t]*/.exec(line.text)?.[0] ?? "";
+        const openAfter = actionArgs.after !== false;
+        if (!openAfter && line.number === 1) {
+          view.dispatch({
+            changes: { from: 0, insert: indent + state.lineBreak },
+            selection: { anchor: indent.length },
+            scrollIntoView: true,
+          });
+        } else {
+          const at = openAfter ? line.to : state.doc.line(line.number - 1).to;
+          view.dispatch({
+            changes: { from: at, insert: state.lineBreak + indent },
+            selection: { anchor: at + state.lineBreak.length + indent.length },
+            scrollIntoView: true,
+          });
+        }
+        this.enterInsertMode(cm, { repeat: actionArgs.repeat }, vimState);
+      },
+    );
   } catch (e) {
     console.warn("[bnote] vim o/O indent patch failed", e);
   }
@@ -228,9 +233,11 @@ let markerProtoHooked = false;
  *  (the hook runs once). */
 function hookMarkerPrototype(marker: object, restoreSetBookmark: () => void) {
   if (markerProtoHooked) return;
-  const proto = Object.getPrototypeOf(marker) as
-    | ({ offset: number | null; cm: { cm6: EditorView }; find(): unknown })
-    | null;
+  const proto = Object.getPrototypeOf(marker) as {
+    offset: number | null;
+    cm: { cm6: EditorView };
+    find(): unknown;
+  } | null;
   if (!proto || typeof proto.find !== "function") return; // Not the shape we recognize: keep the wrapper and try again on the next bookmark
   markerProtoHooked = true;
   restoreSetBookmark();
@@ -306,32 +313,35 @@ export function setVimClipboardUnnamed(on: boolean) {
     // Read through lib/clipboard (navigator.clipboard.readText is unavailable
     // in WKWebView and this path used to fail silently); fall back to the
     // register content on failure.
-    VimAny.defineAction("paste", function (
-      this: Record<string, any>,
-      cm: unknown,
-      actionArgs: { registerName?: string },
-      vimState: unknown,
-    ) {
-      const controller = VimAny.getRegisterController();
-      const name = actionArgs.registerName || "";
-      if (clipboardUnnamed && name === "") {
-        const register = controller.getRegister("");
-        readClipboardText().then((value) => {
-          if (value) register.setText(value, value.endsWith("\n"), false);
+    VimAny.defineAction(
+      "paste",
+      function (
+        this: Record<string, any>,
+        cm: unknown,
+        actionArgs: { registerName?: string },
+        vimState: unknown,
+      ) {
+        const controller = VimAny.getRegisterController();
+        const name = actionArgs.registerName || "";
+        if (clipboardUnnamed && name === "") {
+          const register = controller.getRegister("");
+          readClipboardText().then((value) => {
+            if (value) register.setText(value, value.endsWith("\n"), false);
+            this.continuePaste(cm, actionArgs, vimState, register.toString(), register);
+          });
+          return;
+        }
+        // Default engine behavior: "+" reads the clipboard, others read the register.
+        const register = controller.getRegister(name);
+        if (name === "+") {
+          void readClipboardText().then((value) => {
+            if (value !== null) this.continuePaste(cm, actionArgs, vimState, value, register);
+          });
+        } else {
           this.continuePaste(cm, actionArgs, vimState, register.toString(), register);
-        });
-        return;
-      }
-      // Default engine behavior: "+" reads the clipboard, others read the register.
-      const register = controller.getRegister(name);
-      if (name === "+") {
-        void readClipboardText().then((value) => {
-          if (value !== null) this.continuePaste(cm, actionArgs, vimState, value, register);
-        });
-      } else {
-        this.continuePaste(cm, actionArgs, vimState, register.toString(), register);
-      }
-    });
+        }
+      },
+    );
   } catch (e) {
     console.warn("[bnote] clipboard=unnamed patch failed", e);
   }
@@ -551,8 +561,8 @@ export function vimVisualHighlight(): Extension {
         );
       }
     },
-		{ decorations: (v) => v.decorations },
-	);
+    { decorations: (v) => v.decorations },
+  );
 }
 
 /* ---- Active line shade: an own decoration model that replaces
@@ -572,10 +582,7 @@ export function vimVisualHighlight(): Extension {
  *  puts cm-activeLine on the head line of every range (multiple ranges on the
  *  same line are deduplicated). Exported for the gate that locks the
  *  visibility criterion and the decoration geometry. */
-export function activeLineDecos(
-  state: EditorState,
-  drawsBlockCursor: boolean,
-): DecorationSet {
+export function activeLineDecos(state: EditorState, drawsBlockCursor: boolean): DecorationSet {
   if (!drawsBlockCursor) return Decoration.none;
   const builder = new RangeSetBuilder<Decoration>();
   const seen = new Set<number>();
@@ -609,7 +616,9 @@ export function vimActiveLine(): Extension {
 }
 
 function vimStateOf(view: EditorView): { insertMode?: boolean; visualMode?: boolean } | null {
-  const cm = getCM(view) as unknown as { state?: { vim?: { insertMode?: boolean; visualMode?: boolean } } } | null;
+  const cm = getCM(view) as unknown as {
+    state?: { vim?: { insertMode?: boolean; visualMode?: boolean } };
+  } | null;
   return cm?.state?.vim ?? null;
 }
 
@@ -690,9 +699,10 @@ export function takeVimVisual(view: EditorView): VisualSelection | null {
   const vim = cm?.state?.vim;
   if (!cm || !vim?.visualMode) return null;
   const selection = visualSelection(view.state.doc, vim);
-  (
-    Vim as unknown as { exitVisualMode: (cm: unknown, moveHead?: boolean) => void }
-  ).exitVisualMode(cm, false);
+  (Vim as unknown as { exitVisualMode: (cm: unknown, moveHead?: boolean) => void }).exitVisualMode(
+    cm,
+    false,
+  );
   return selection;
 }
 
@@ -755,7 +765,10 @@ export function normalizeVimKey(lhs: string): string | null {
   const lower = keyPart.toLowerCase();
   if (SPECIAL_KEYS[lower]) {
     keyPart = SPECIAL_KEYS[lower];
-  } else if (keyPart.length !== 1 && !/^(F\d+|Arrow.+|Home|End|PageUp|PageDown|Delete|Insert)$/.test(keyPart)) {
+  } else if (
+    keyPart.length !== 1 &&
+    !/^(F\d+|Arrow.+|Home|End|PageUp|PageDown|Delete|Insert)$/.test(keyPart)
+  ) {
     return null;
   }
   result = keyPart;
@@ -875,10 +888,7 @@ export function vimKeyCaptureExtension(): Extension {
         ) {
           return;
         }
-        const engineKey = Vim.vimKeyFromEvent(
-          e,
-          vim as Parameters<typeof Vim.vimKeyFromEvent>[1],
-        );
+        const engineKey = Vim.vimKeyFromEvent(e, vim as Parameters<typeof Vim.vimKeyFromEvent>[1]);
         if (!engineKey) return;
         const mode = currentVimMode(this.view);
         const commandId = mode ? lookupVimCommand(engineKey, mode) : undefined;
@@ -921,8 +931,7 @@ export function applyNativeMappings(mappings: VimMapping[]) {
   }
   for (const m of mappings) {
     if (m.commandId) continue; // handled by the CM6 keymap
-    const ctx =
-      m.mode === "insert" ? "insert" : m.mode === "visual" ? "visual" : "normal";
+    const ctx = m.mode === "insert" ? "insert" : m.mode === "visual" ? "visual" : "normal";
     // The rhs must be passed verbatim: when the engine expands a keyToKey
     // mapping it splits on angle-bracket tokens (the vimToCmKeyMap branch of
     // doKeyToKey), and <Esc>/<CR>/<Tab>/<Space> are shapes it knows natively.

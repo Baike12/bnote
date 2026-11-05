@@ -85,7 +85,13 @@ export function parseVimrc(source: string): VimrcResult {
       continue;
     }
 
-    if (cmd === "unmap" || cmd === "nunmap" || cmd === "iunmap" || cmd === "vunmap" || cmd === "xunmap") {
+    if (
+      cmd === "unmap" ||
+      cmd === "nunmap" ||
+      cmd === "iunmap" ||
+      cmd === "vunmap" ||
+      cmd === "xunmap"
+    ) {
       const lhs = parts.slice(1).join(" ");
       const modes: VimMode[] =
         cmd === "iunmap"

@@ -18,11 +18,7 @@ import { forkLabel } from "@/study/agentFork";
 import { DEFAULT_AGENT_FONT, stepAgentFont } from "@/study/agentFont";
 import { ensureMaterial, sessionFilePath } from "@/study/materials";
 import { transcriptIO } from "@/study/transcriptIO";
-import {
-  codeSessionIdentity,
-  codeSessionPath,
-  type CodeSessionScope,
-} from "@/code/sessionScope";
+import { codeSessionIdentity, codeSessionPath, type CodeSessionScope } from "@/code/sessionScope";
 import { cleanGeneratedTitle, displayTitle } from "@/study/sessionTitle";
 import { resolveFamily } from "@/study/sessionTree";
 import {
@@ -40,11 +36,7 @@ import { isWereadUrl } from "@/study/weread";
 import { applySuggestion, parseSuggestTrigger, type SuggestTrigger } from "@/agent/suggest";
 import { AgentHeader } from "@/components/agent/AgentHeader";
 import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/agent/AgentSuggest";
-import {
-  MAX_IMAGES_PER_MESSAGE,
-  fileToAgentImage,
-  type AgentImage,
-} from "@/study/agentImages";
+import { MAX_IMAGES_PER_MESSAGE, fileToAgentImage, type AgentImage } from "@/study/agentImages";
 import {
   cloneEntry,
   entriesToLines,
@@ -306,8 +298,7 @@ export function AgentPanel() {
 
   const activeConv = convs.find((c) => c.key === activeKey) ?? null;
   // Only a non-empty sessionId counts as "generating": while the session is not up yet (or the start failed) both sessionId and busySession are null, they are equal but that is not a streaming reply.
-  const activeBusy =
-    activeConv?.sessionId != null && busySession === activeConv.sessionId;
+  const activeBusy = activeConv?.sessionId != null && busySession === activeConv.sessionId;
 
   const updateConv = useCallback((key: string, patch: (c: Conv) => Conv) => {
     setConvs((prev) => prev.map((c) => (c.key === key ? patch(c) : c)));
@@ -549,9 +540,7 @@ export function AgentPanel() {
       const focus = convs.find((c) => c.key === focusKey);
       if (focus) {
         lazyStartingRef.current.add(focusKey);
-        void launchRestored(focus, token).finally(() =>
-          lazyStartingRef.current.delete(focusKey),
-        );
+        void launchRestored(focus, token).finally(() => lazyStartingRef.current.delete(focusKey));
       }
     },
     [launchRestored],
@@ -622,11 +611,12 @@ export function AgentPanel() {
   // - Saving the settings: nothing happens — the sessions that are already open keep using their own model config snapshot.
   // - Leaving and re-entering study / code mode: the panel is mounted again and restores per scope.
   useEffect(() => {
-    const identity = mode === "code"
-      ? codeSessionIdentity(codeProject?.path ?? null)
-      : creativeMode
-        ? `creative|${restartNonce}`
-        : studyContentKey(materialContent);
+    const identity =
+      mode === "code"
+        ? codeSessionIdentity(codeProject?.path ?? null)
+        : creativeMode
+          ? `creative|${restartNonce}`
+          : studyContentKey(materialContent);
     const key = `${mode === "code" ? "d" : creativeMode ? "c" : "s"}|${identity}|${restartNonce}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
@@ -634,8 +624,7 @@ export function AgentPanel() {
     // conversation's session).
     setPlanActive(false);
 
-    const forcedNew =
-      restartKeyRef.current !== null && restartKeyRef.current !== restartNonce;
+    const forcedNew = restartKeyRef.current !== null && restartKeyRef.current !== restartNonce;
     restartKeyRef.current = restartNonce;
 
     const token = ++startTokenRef.current;
@@ -701,9 +690,7 @@ export function AgentPanel() {
       if (startTokenRef.current !== token) return;
       materialRef.current = { identity, info };
       setScopeLabel(info ? { title: info.title, detail: info.relDir } : null);
-      const sessions = info
-        ? await agentApi.sessionsList(info.relDir).catch(() => [])
-        : [];
+      const sessions = info ? await agentApi.sessionsList(info.relDir).catch(() => []) : [];
       if (startTokenRef.current !== token) return;
       setSavedSessions(sessions);
 
@@ -787,12 +774,7 @@ export function AgentPanel() {
   }
 
   /** Write the streaming draft into the session (the same shape whether it is final or not); the draft reuses the same turn reference. */
-  function writeEntries(
-    convKey: string,
-    turn: Turn,
-    finalize: boolean,
-    items: number | null,
-  ) {
+  function writeEntries(convKey: string, turn: Turn, finalize: boolean, items: number | null) {
     setConvs((prev) =>
       prev.map((c) => {
         if (c.key !== convKey) return c;
@@ -874,10 +856,7 @@ export function AgentPanel() {
           if (turn) {
             if (event.type === "error") turn.error = event.message;
             if (turn.thinking && turn.thinkSeconds == null && turn.thinkingStart != null) {
-              turn.thinkSeconds = Math.max(
-                1,
-                Math.round((Date.now() - turn.thinkingStart) / 1000),
-              );
+              turn.thinkSeconds = Math.max(1, Math.round((Date.now() - turn.thinkingStart) / 1000));
             }
             turnsRef.current.delete(entry.convKey);
             persistTurn(entry.convKey, turn, entry.path ?? undefined);
@@ -1336,7 +1315,18 @@ export function AgentPanel() {
         else setHistoryOpen(true);
         break;
     }
-  }, [agentPanelCommand, activeConv, parentConv, forkFrom, historyOpen, focusHistory, showToast, pendingImages, activateConv, setCreativeMode]);
+  }, [
+    agentPanelCommand,
+    activeConv,
+    parentConv,
+    forkFrom,
+    historyOpen,
+    focusHistory,
+    showToast,
+    pendingImages,
+    activateConv,
+    setCreativeMode,
+  ]);
 
   // Once the history drawer is open the focus goes to the list, Tab / Enter work right away.
   useEffect(() => {
@@ -1447,9 +1437,7 @@ export function AgentPanel() {
         entries={activeConv?.entries ?? []}
         busy={activeBusy}
         onFork={forkFrom}
-        welcome={
-          <AgentWelcome mode={mode} creativeMode={creativeMode} codeProject={codeProject} />
-        }
+        welcome={<AgentWelcome mode={mode} creativeMode={creativeMode} codeProject={codeProject} />}
       />
       {activeConv && <AgentTodos todos={activeConv.todos} />}
 
@@ -1471,9 +1459,7 @@ export function AgentPanel() {
                 <button
                   className="agent-attach-remove"
                   title="移除这张图片"
-                  onClick={() =>
-                    setPendingImages((prev) => prev.filter((_, j) => j !== i))
-                  }
+                  onClick={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
                 >
                   ×
                 </button>
@@ -1576,11 +1562,7 @@ export function AgentPanel() {
                 });
               return;
             }
-            if (
-              e.key === "ArrowDown" &&
-              !suggestTrigger &&
-              historyIndexRef.current >= 0
-            ) {
+            if (e.key === "ArrowDown" && !suggestTrigger && historyIndexRef.current >= 0) {
               e.preventDefault();
               stepHistory(1);
               return;
@@ -1609,7 +1591,15 @@ export function AgentPanel() {
             title="插入图片(也可直接粘贴截图)"
             onClick={() => fileInputRef.current?.click()}
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <rect x="3" y="5" width="18" height="14" rx="2.5" />
               <circle cx="9" cy="10.5" r="1.6" />
               <path d="m5 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L16 17.5M14 15l2-2a1.5 1.5 0 0 1 2.1 0L21 15.9" />
@@ -1629,7 +1619,9 @@ export function AgentPanel() {
             canSend={Boolean(
               activeConv?.sessionId && (input.trim() !== "" || pendingImages.length > 0),
             )}
-            sendTitle={activeConv?.sessionId ? "发送(Enter)" : (activeConv?.error ?? "正在连接模型…")}
+            sendTitle={
+              activeConv?.sessionId ? "发送(Enter)" : (activeConv?.error ?? "正在连接模型…")
+            }
             onSend={() => void send()}
             onStop={abort}
           />
@@ -1688,7 +1680,6 @@ export function AgentPanel() {
           }}
         />
       )}
-
     </aside>
   );
 }

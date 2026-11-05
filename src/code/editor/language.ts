@@ -21,7 +21,8 @@ const CORE: Record<string, LanguageDescription> = {
     name: "TypeScript",
     alias: ["typescript", "ts"],
     extensions: ["ts", "mts", "cts"],
-    load: async () => (await import("@codemirror/lang-javascript")).javascript({ typescript: true }),
+    load: async () =>
+      (await import("@codemirror/lang-javascript")).javascript({ typescript: true }),
   }),
   typescriptreact: LanguageDescription.of({
     name: "TypeScript JSX",

@@ -95,7 +95,13 @@ const fileChains = new Map<string, Promise<void>>();
 export function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const prev = fileChains.get(path) ?? Promise.resolve();
   const next = prev.then(fn, fn);
-  fileChains.set(path, next.then(() => undefined, () => undefined));
+  fileChains.set(
+    path,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
   return next;
 }
 
@@ -171,7 +177,11 @@ export function intentsForRange(
       intents.push({
         type: "mirror",
         linkId: link.id,
-        rootHint: hitNew ? (newRoots.get(link.text) ?? null) : newFirstRootText !== null ? newFirstRootNo : null,
+        rootHint: hitNew
+          ? (newRoots.get(link.text) ?? null)
+          : newFirstRootText !== null
+            ? newFirstRootNo
+            : null,
         renamedTo: newFirstRootText,
       });
     }
@@ -215,7 +225,8 @@ export function dedupeIntents(intents: Intent[]): Intent[] {
     }
   }
   const out: Intent[] = [];
-  for (const [linkId, h] of mirrors) out.push({ type: "mirror", linkId, rootHint: h.rootHint, renamedTo: h.renamedTo });
+  for (const [linkId, h] of mirrors)
+    out.push({ type: "mirror", linkId, rootHint: h.rootHint, renamedTo: h.renamedTo });
   for (const s of sends.values()) out.push({ type: "send", rootHint: s.rootHint, text: s.text });
   return out;
 }
@@ -248,7 +259,10 @@ function parseDoc(text: string): Text {
 }
 
 /** Flip a todo line from `[x]` to `[ ]` and strip the done stamp (same behaviour as toggleTodo and a click). */
-function uncheckSpecs(doc: Text, lineNo: number): { changes: { from: number; to?: number; insert: string }[] } | null {
+function uncheckSpecs(
+  doc: Text,
+  lineNo: number,
+): { changes: { from: number; to?: number; insert: string }[] } | null {
   const line = doc.line(lineNo);
   const p = parseListLine(line.text);
   if (!isTodo(p) || p.box === " ") return null;
@@ -332,7 +346,14 @@ async function applyMirror(
         // The source side was unchecked: delete the daily note entry and unlink
         const region = parseDailyRegion(otherDoc);
         const entry = findEntryByText(otherDoc, region, link.text, link.dailyLine);
-        if (entry) await commitSpecs(deps, otherPath, otherText, [removeEntrySpec(otherDoc, entry)], other.editor);
+        if (entry)
+          await commitSpecs(
+            deps,
+            otherPath,
+            otherText,
+            [removeEntrySpec(otherDoc, entry)],
+            other.editor,
+          );
       } else {
         // The daily side was unchecked: drop the local entry and flip the source todo back to unfinished
         removeLocalEntry(view, doc, link, store);
@@ -353,7 +374,14 @@ async function applyMirror(
       if (side === "src") {
         const region = parseDailyRegion(otherDoc);
         const entry = findEntryByText(otherDoc, region, link.text, link.dailyLine);
-        if (entry) await commitSpecs(deps, otherPath, otherText, [removeEntrySpec(otherDoc, entry)], other.editor);
+        if (entry)
+          await commitSpecs(
+            deps,
+            otherPath,
+            otherText,
+            [removeEntrySpec(otherDoc, entry)],
+            other.editor,
+          );
       }
       store.remove(link.id);
       scheduleLinksPersist();
@@ -372,7 +400,13 @@ async function applyMirror(
         return;
       }
       const reindented = reindentBlock(block, root.indent.length, "");
-      await commitSpecs(deps, otherPath, otherText, [replaceEntrySpec(otherDoc, entry, reindented)], other.editor);
+      await commitSpecs(
+        deps,
+        otherPath,
+        otherText,
+        [replaceEntrySpec(otherDoc, entry, reindented)],
+        other.editor,
+      );
       store.update(link.id, { text: todoText(root), srcLine: rootNo, dailyLine: entry.start });
     } else {
       const srcRootNo = resolveRootLine(otherDoc, [link.text], link.srcLine);
@@ -445,7 +479,9 @@ async function applySend(
     if (store.findByText(path, text, rootNo)) return; // a link exists already (race): mirroring will pick it up
     const block = blockLines(doc, rootNo);
     const reindented = reindentBlock(block, root.indent.length, "");
-    const base = daily.text ?? (await dailyScaffoldWithRollover(deps.io, vaultRoot, deps.today(), deps.templatePath()));
+    const base =
+      daily.text ??
+      (await dailyScaffoldWithRollover(deps.io, vaultRoot, deps.today(), deps.templatePath()));
     const bdoc = parseDoc(base);
     const region = parseDailyRegion(bdoc);
     const existing = findEntryByText(bdoc, region, text, 0);
@@ -541,7 +577,12 @@ async function dailyBase(
  * `dailyPath`. Links belong to a day: a link created yesterday points at
  * yesterday's file and takes no part in the "is it already synced today" check.
  */
-function linkForDaily(store: LinkStore, srcPath: string, dailyPath: string, text: string): DailyLink | null {
+function linkForDaily(
+  store: LinkStore,
+  srcPath: string,
+  dailyPath: string,
+  text: string,
+): DailyLink | null {
   for (const l of store.all()) {
     if (l.srcPath === srcPath && l.dailyPath === dailyPath && l.text === text) return l;
   }
@@ -671,7 +712,8 @@ export async function sendTodoToDaily(
       }
       const block = blockLines(doc, lineNo);
       const reindented = reindentBlock(block, l.indent.length, "");
-      if (dailyText === null) dailyText = await dailyScaffoldWithRollover(deps.io, vaultRoot, today, deps.templatePath());
+      if (dailyText === null)
+        dailyText = await dailyScaffoldWithRollover(deps.io, vaultRoot, today, deps.templatePath());
       const bdoc = parseDoc(dailyText);
       const region = parseDailyRegion(bdoc);
       const existing = findEntryByText(bdoc, region, text, 0);
@@ -687,7 +729,11 @@ export async function sendTodoToDaily(
         const ndoc = parseDoc(newDaily);
         dailyLine =
           findEntryByText(ndoc, parseDailyRegion(ndoc), text, Number.MAX_SAFE_INTEGER)?.start ?? 1;
-        if (dailyEditor && dailyEditor.dom.isConnected && documentPath(dailyEditor.state) === dailyPath) {
+        if (
+          dailyEditor &&
+          dailyEditor.dom.isConnected &&
+          documentPath(dailyEditor.state) === dailyPath
+        ) {
           dailyEditor.dispatch({ changes: change, userEvent: SYNC_USER_EVENT });
           dailyText = dailyEditor.state.doc.toString();
         } else {

@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildFootprintView,
-  defaultFold,
-  foldSig,
-  toggleGroup,
-  toggleZone,
-} from "./view";
+import { buildFootprintView, defaultFold, foldSig, toggleGroup, toggleZone } from "./view";
 
 const entries = [
-  { path: "/vault/Job/job todo.md", blocks: [{ text: "甲", start: 1, end: 1 }, { text: "乙", start: 3, end: 3 }] },
+  {
+    path: "/vault/Job/job todo.md",
+    blocks: [
+      { text: "甲", start: 1, end: 1 },
+      { text: "乙", start: 3, end: 3 },
+    ],
+  },
   { path: "/vault/研究/文献笔记.md", blocks: [{ text: "丙", start: 2, end: 2 }] },
 ];
 

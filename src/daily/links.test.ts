@@ -34,11 +34,23 @@ describe("forFile / findByText", () => {
   const s = new LinkStore();
   s.upsert(link({ id: "a" }));
   s.upsert(link({ id: "b", srcPath: "/vault/proj/b.md", text: "任务乙" }));
-  s.upsert(link({ id: "c", srcPath: "/vault/proj/c.md", dailyPath: "/vault/Daily/2026-09-22.md", text: "昨天的" }));
+  s.upsert(
+    link({
+      id: "c",
+      srcPath: "/vault/proj/c.md",
+      dailyPath: "/vault/Daily/2026-09-22.md",
+      text: "昨天的",
+    }),
+  );
 
   it("forFile matches on the source side or the daily note side", () => {
     expect(s.forFile("/vault/proj/a.md").map((l) => l.id)).toEqual(["a"]);
-    expect(s.forFile("/vault/Daily/2026-09-23.md").map((l) => l.id).sort()).toEqual(["a", "b"]);
+    expect(
+      s
+        .forFile("/vault/Daily/2026-09-23.md")
+        .map((l) => l.id)
+        .sort(),
+    ).toEqual(["a", "b"]);
     expect(s.forFile("/vault/none.md")).toEqual([]);
   });
 

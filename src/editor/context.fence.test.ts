@@ -42,7 +42,19 @@ const atLineMid = (state: EditorState, lineNo: number, col: number) =>
 
 describe("insideFencedCode: tree ready (syntax tree path)", () => {
   const state = parsedState(
-    ["正文一段", "", "```python", "x = 1", "print(x)", "```", "", "~~~ts", "const a = 1;", "~~~", ""].join("\n"),
+    [
+      "正文一段",
+      "",
+      "```python",
+      "x = 1",
+      "print(x)",
+      "```",
+      "",
+      "~~~ts",
+      "const a = 1;",
+      "~~~",
+      "",
+    ].join("\n"),
   );
 
   it("fence content lines are inside, body lines are not", () => {

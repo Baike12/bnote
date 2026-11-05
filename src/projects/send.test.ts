@@ -131,7 +131,9 @@ describe("sendTodoToTodayFront", () => {
 
   it("a non-todo line is not sent", async () => {
     const { files, io } = memIO({ [PROJECT]: "普通正文\n" });
-    expect(await sendTodoToTodayFront({ srcPath: PROJECT, line: 1 }, makeDeps(io))).toBe("not-todo");
+    expect(await sendTodoToTodayFront({ srcPath: PROJECT, line: 1 }, makeDeps(io))).toBe(
+      "not-todo",
+    );
     expect(files.has(DAILY)).toBe(false);
   });
 

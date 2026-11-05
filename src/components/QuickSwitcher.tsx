@@ -145,7 +145,10 @@ export function QuickSwitcher() {
               }}
             >
               <span className="switcher-name">
-                {rel.split("/").pop()?.replace(/\.(md|markdown|txt)$/i, "")}
+                {rel
+                  .split("/")
+                  .pop()
+                  ?.replace(/\.(md|markdown|txt)$/i, "")}
               </span>
               <span className="switcher-path">
                 {rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : ""}

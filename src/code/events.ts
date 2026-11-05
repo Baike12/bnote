@@ -33,16 +33,15 @@ function fromThisProject(root: unknown): boolean {
 
 /** Whether an event of `payloadRoot` belongs to the project open as `currentRoot`. */
 export function sameProject(payloadRoot: unknown, currentRoot: string | undefined): boolean {
-  return typeof payloadRoot === "string" && currentRoot !== undefined && payloadRoot === currentRoot;
+  return (
+    typeof payloadRoot === "string" && currentRoot !== undefined && payloadRoot === currentRoot
+  );
 }
 
 export async function installCodeEvents(): Promise<() => void> {
   const offs: Array<() => void> = [];
 
-  const add = async (
-    event: string,
-    handler: (payload: unknown) => void,
-  ): Promise<void> => {
+  const add = async (event: string, handler: (payload: unknown) => void): Promise<void> => {
     try {
       const off = await listen(event, (e) => handler(e.payload));
       offs.push(off);

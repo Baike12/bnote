@@ -10,9 +10,9 @@ function renumber(text: string): string {
 
 describe("the callout scope of heading numbering", () => {
   it("headings inside a block are renumbered from 1, the sequence outside continues as if the block did not exist", () => {
-    expect(
-      renumber("# 一\n:::\n## 定理\n:::\n# 二\n## 节"),
-    ).toBe("# 1 一\n:::\n## 1 定理\n:::\n# 2 二\n## 2.1 节");
+    expect(renumber("# 一\n:::\n## 定理\n:::\n# 二\n## 节")).toBe(
+      "# 1 一\n:::\n## 1 定理\n:::\n# 2 二\n## 2.1 节",
+    );
   });
 
   it("two consecutive blocks each start from 1", () => {

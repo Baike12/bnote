@@ -56,7 +56,11 @@ describe("FootprintCore rotation", () => {
   });
 
   it("metadata for the day already exists: no rotation, the baseline keeps the stored value (refreshAll builds the index as a fallback)", async () => {
-    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-30", baselines: { [NOTE]: "基线文本" } };
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-30",
+      baselines: { [NOTE]: "基线文本" },
+    };
     const files = new Map<string, string>([
       [NOTE, "盘上已经改过的内容"],
       [footprintsFilePath(VAULT), JSON.stringify(stored)],
@@ -69,7 +73,11 @@ describe("FootprintCore rotation", () => {
   });
 
   it("init across a day boundary: yesterday's baseline is void, the whole vault is snapshotted again for that day", async () => {
-    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "昨天的" } };
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-29",
+      baselines: { [NOTE]: "昨天的" },
+    };
     const files = new Map<string, string>([
       [NOTE, "今天的内容"],
       [OTHER, "别的文件"],
@@ -83,7 +91,11 @@ describe("FootprintCore rotation", () => {
   });
 
   it("v1 metadata (no history archive) loads as usual: the baseline is kept, the history archive is empty", async () => {
-    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-30", baselines: { [NOTE]: "基线文本" } };
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-30",
+      baselines: { [NOTE]: "基线文本" },
+    };
     const files = new Map<string, string>([
       [NOTE, "基线文本\n\n今天的段"],
       [footprintsFilePath(VAULT), JSON.stringify(stored)],
@@ -91,7 +103,9 @@ describe("FootprintCore rotation", () => {
     const core = coreOf(files, "2026-09-30");
     await core.init();
     await core.refreshAll(true);
-    expect(core.todayEntries()).toEqual([{ path: NOTE, blocks: [{ text: "今天的段", start: 3, end: 3 }] }]);
+    expect(core.todayEntries()).toEqual([
+      { path: NOTE, blocks: [{ text: "今天的段", start: 3, end: 3 }] },
+    ]);
     expect(core.entriesFor("2026-09-29")).toEqual([]);
   });
 
@@ -235,14 +249,24 @@ describe("FootprintCore × todo exclusion: end to end (user visible behavior)", 
     await core.init();
     await core.refreshAll(true);
     expect(core.todayEntries()).toEqual([
-      { path: NOTE, blocks: [{ text: "普通段落", start: 4, end: 4 }, { text: "- 普通列表项", start: 6, end: 6 }] },
+      {
+        path: NOTE,
+        blocks: [
+          { text: "普通段落", start: 4, end: 4 },
+          { text: "- 普通列表项", start: 6, end: 6 },
+        ],
+      },
     ]);
   });
 });
 
 describe("FootprintCore history archive: frozen by the cross-day rotation, the historical daily notes aggregated by day", () => {
   it("the cross-day rotation freezes the added blocks of the old baseline day into an archive; today is still an empty live index", async () => {
-    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线段落" } };
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-29",
+      baselines: { [NOTE]: "基线段落" },
+    };
     const files = new Map<string, string>([
       [NOTE, "基线段落\n\n09-29 写的段"],
       [OTHER, "09-29 也写了"],
@@ -267,12 +291,21 @@ describe("FootprintCore history archive: frozen by the cross-day rotation, the h
     core.flushPersist();
     const persisted = JSON.parse(files.get(footprintsFilePath(VAULT))!) as StoredFootprints;
     expect(persisted.version).toBe(2);
-    expect(persisted.history["2026-09-29"][NOTE]).toEqual([{ text: "09-29 写的段", start: 3, end: 3 }]);
+    expect(persisted.history["2026-09-29"][NOTE]).toEqual([
+      { text: "09-29 写的段", start: 3, end: 3 },
+    ]);
   });
 
   it("the archive is a frozen snapshot: the disk keeps changing after the rotation, the old day entries do not change, today goes live", async () => {
-    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线段落" } };
-    const files = new Map<string, string>([[NOTE, "基线段落\n\n09-29 写的段"], [footprintsFilePath(VAULT), JSON.stringify(stored)]]);
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-29",
+      baselines: { [NOTE]: "基线段落" },
+    };
+    const files = new Map<string, string>([
+      [NOTE, "基线段落\n\n09-29 写的段"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
     const core = coreOf(files, "2026-09-30");
     await core.init();
     files.set(NOTE, "基线段落\n\n09-29 写的段\n\n09-30 写的段");
@@ -287,7 +320,11 @@ describe("FootprintCore history archive: frozen by the cross-day rotation, the h
   });
 
   it("the todo exclusion applies to the archive as well; with no additions that day the archive is empty", async () => {
-    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线" } };
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-29",
+      baselines: { [NOTE]: "基线" },
+    };
     const files = new Map<string, string>([
       [NOTE, "基线\n\n- [ ] 纯待办不进档案"],
       [footprintsFilePath(VAULT), JSON.stringify(stored)],
@@ -301,7 +338,11 @@ describe("FootprintCore history archive: frozen by the cross-day rotation, the h
   });
 
   it("the app was not opened for days: the last active day gets the whole accumulation, the days in between have no archive", async () => {
-    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-27", baselines: { [NOTE]: "基线" } };
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-27",
+      baselines: { [NOTE]: "基线" },
+    };
     const files = new Map<string, string>([
       [NOTE, "基线\n\n几天间写的段"],
       [footprintsFilePath(VAULT), JSON.stringify(stored)],
@@ -316,7 +357,11 @@ describe("FootprintCore history archive: frozen by the cross-day rotation, the h
   });
 
   it("ensureDay is idempotent: repeated calls within the same day do not rotate again and do not rewrite the archive", async () => {
-    const stored: StoredFootprintsV1 = { version: 1, day: "2026-09-29", baselines: { [NOTE]: "基线" } };
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-29",
+      baselines: { [NOTE]: "基线" },
+    };
     const files = new Map<string, string>([
       [NOTE, "基线\n\n昨天的段"],
       [footprintsFilePath(VAULT), JSON.stringify(stored)],

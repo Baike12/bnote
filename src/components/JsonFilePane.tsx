@@ -8,19 +8,10 @@ import {
   keymap,
   lineNumbers,
 } from "@codemirror/view";
-import {
-  defaultKeymap,
-  history,
-  historyKeymap,
-  indentWithTab,
-} from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { search, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
-import {
-  closeBrackets,
-  closeBracketsKeymap,
-  completionKeymap,
-} from "@codemirror/autocomplete";
+import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { json } from "@codemirror/lang-json";
 import { codeHighlighting } from "@/editor/markdown";
 import { typewriterExtension } from "@/editor/typewriter";

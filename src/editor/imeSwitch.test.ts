@@ -417,11 +417,7 @@ describe("imeOnWindowFocus", () => {
  */
 describe("the input source decision at math boundaries (insertRegionWantsEnglishAt)", () => {
   const wantsEnglish = (doc: string, pos: number) =>
-    insertRegionWantsEnglishAt(
-      useAppStore.getState().settings,
-      EditorState.create({ doc }),
-      pos,
-    );
+    insertRegionWantsEnglishAt(useAppStore.getState().settings, EditorState.create({ doc }), pos);
 
   it("inline formula: only the strict interior is the English source, after the closing `$` it goes back to Chinese", () => {
     const doc = "前文 $f(x)$ 后文"; // $f(x)$ = 3..9

@@ -61,10 +61,7 @@ export function naturalCompare(a: string, b: string): number {
  * twice on the tree (once empty, once with files) and the empty one would
  * still open empty.
  */
-export function buildTree(
-  entries: CodeEntry[],
-  git?: Map<string, GitFileState>,
-): TreeNode[] {
+export function buildTree(entries: CodeEntry[], git?: Map<string, GitFileState>): TreeNode[] {
   const root: TreeNode = {
     name: "",
     path: "",
@@ -214,19 +211,23 @@ export function searchFilesByName(
   for (const entry of entries) {
     if (entry.isDir) continue;
     const name = entry.name.toLowerCase();
-    const rank = name === q
-      ? 0
-      : name.startsWith(q)
-        ? 1
-        : name.includes(q)
-          ? 2
-          : isSubsequence(name, q)
-            ? 3
-            : -1;
+    const rank =
+      name === q
+        ? 0
+        : name.startsWith(q)
+          ? 1
+          : name.includes(q)
+            ? 2
+            : isSubsequence(name, q)
+              ? 3
+              : -1;
     if (rank < 0) continue;
     hits.push({ entry, rank });
   }
-  hits.sort((a, b) => a.rank - b.rank || (a.entry.path < b.entry.path ? -1 : a.entry.path > b.entry.path ? 1 : 0));
+  hits.sort(
+    (a, b) =>
+      a.rank - b.rank || (a.entry.path < b.entry.path ? -1 : a.entry.path > b.entry.path ? 1 : 0),
+  );
   return hits.slice(0, limit).map((hit) => hit.entry);
 }
 
@@ -246,10 +247,7 @@ function isSubsequence(text: string, query: string): boolean {
  * match by a fuzzy name test. Returns a new tree and leaves the original
  * untouched.
  */
-export function filterTree(
-  nodes: TreeNode[],
-  query: string,
-): TreeNode[] {
+export function filterTree(nodes: TreeNode[], query: string): TreeNode[] {
   const q = query.trim().toLowerCase();
   if (!q) return nodes;
   const out: TreeNode[] = [];

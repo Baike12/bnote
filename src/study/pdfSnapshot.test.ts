@@ -7,12 +7,12 @@ import {
   type SnapshotRect,
 } from "./pdfSnapshot";
 
-const rect = (
-  left: number,
-  top: number,
-  width: number,
-  height: number,
-): SnapshotRect => ({ left, top, width, height });
+const rect = (left: number, top: number, width: number, height: number): SnapshotRect => ({
+  left,
+  top,
+  width,
+  height,
+});
 
 /** One page: the display window equals the whole page (no display range), canvas 2x DPR. */
 function page(over: Partial<SnapshotPage> = {}): SnapshotPage {
@@ -98,30 +98,22 @@ describe("the planSnapshot framing geometry", () => {
   });
 
   it("intersectRect returns only the part that truly overlaps", () => {
-    expect(intersectRect(rect(0, 0, 10, 10), rect(5, 5, 10, 10))).toEqual(
-      rect(5, 5, 5, 5),
-    );
+    expect(intersectRect(rect(0, 0, 10, 10), rect(5, 5, 10, 10))).toEqual(rect(5, 5, 5, 5));
     expect(intersectRect(rect(0, 0, 10, 10), rect(20, 20, 5, 5))).toBeNull();
   });
 });
 
 describe("reading regions: the dimmed old content is not captured", () => {
   it("currentRegion keeps only the current content region (below the lower edge of the shade)", () => {
-    expect(currentRegion(rect(0, 100, 500, 800), 500)).toEqual(
-      rect(0, 500, 500, 400),
-    );
+    expect(currentRegion(rect(0, 100, 500, 800), 500)).toEqual(rect(0, 500, 500, 400));
   });
 
   it("no shade layer → the whole screen is current content", () => {
-    expect(currentRegion(rect(0, 100, 500, 800), null)).toEqual(
-      rect(0, 100, 500, 800),
-    );
+    expect(currentRegion(rect(0, 100, 500, 800), null)).toEqual(rect(0, 100, 500, 800));
   });
 
   it("the lower edge of the shade is above the viewport → no crop (the whole screen is in the current region)", () => {
-    expect(currentRegion(rect(0, 100, 500, 800), 20)).toEqual(
-      rect(0, 100, 500, 800),
-    );
+    expect(currentRegion(rect(0, 100, 500, 800), 20)).toEqual(rect(0, 100, 500, 800));
   });
 
   it("the shade covers the whole viewport → there is nothing to capture", () => {
@@ -152,9 +144,11 @@ describe("reading regions: the dimmed old content is not captured", () => {
   });
 
   it("the shade covers the whole screen → null (the caller reports that there is no current content)", () => {
-    const plan = planSnapshot(rect(0, 0, 500, 800), [
-      page({ box: rect(0, -100, 500, 900), full: rect(0, -100, 500, 900) }),
-    ], { currentTop: 900 });
+    const plan = planSnapshot(
+      rect(0, 0, 500, 800),
+      [page({ box: rect(0, -100, 500, 900), full: rect(0, -100, 500, 900) })],
+      { currentTop: 900 },
+    );
     expect(plan).toBeNull();
   });
 

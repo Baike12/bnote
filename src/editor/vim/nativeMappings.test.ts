@@ -20,7 +20,10 @@ import { Vim } from "@replit/codemirror-vim";
  * minimal CM5 shim locks this down at the behavior level (pure logic, no DOM).
  */
 
-function indexFromPos(doc: { lines: number; line(n: number): { from: number; to: number } }, pos: { line: number; ch: number }): number {
+function indexFromPos(
+  doc: { lines: number; line(n: number): { from: number; to: number } },
+  pos: { line: number; ch: number },
+): number {
   const lineNumber = Math.min(Math.max(pos.line + 1, 1), doc.lines);
   const line = doc.line(lineNumber);
   return line.from + Math.min(Math.max(pos.ch, 0), line.to - line.from);
@@ -44,7 +47,10 @@ function makeCm(docText: string) {
     state = state.update({ selection: { anchor: offset } }).state;
   };
   const dispatch = (changes: { from: number; to: number; insert: string }, selAnchor?: number) => {
-    state = state.update({ changes, selection: selAnchor !== undefined ? { anchor: selAnchor } : undefined }).state;
+    state = state.update({
+      changes,
+      selection: selAnchor !== undefined ? { anchor: selAnchor } : undefined,
+    }).state;
   };
   const posToOffset = (pos: { line: number; ch: number }) => indexFromPos(state.doc, pos);
 
@@ -74,25 +80,36 @@ function makeCm(docText: string) {
       const to = posToOffset(b);
       return from <= to ? state.doc.sliceString(from, to) : state.doc.sliceString(to, from);
     },
-    listSelections: () => [(() => {
-      const p = curPos();
-      return { anchor: { ...p }, head: { ...p } };
-    })()],
+    listSelections: () => [
+      (() => {
+        const p = curPos();
+        return { anchor: { ...p }, head: { ...p } };
+      })(),
+    ],
     somethingSelected: () => false,
     setSelection: (anchor: { line: number; ch: number }, head: { line: number; ch: number }) => {
       const a = posToOffset(anchor);
       const h = posToOffset(head);
       state = state.update({ selection: { anchor: a, head: h } }).state;
     },
-    setSelections: (ranges: { anchor: { line: number; ch: number }; head: { line: number; ch: number } }[]) => {
+    setSelections: (
+      ranges: { anchor: { line: number; ch: number }; head: { line: number; ch: number } }[],
+    ) => {
       const first = ranges[0];
       if (first) cm.setSelection(first.anchor, first.head);
     },
-    replaceRange: (text: string, from: { line: number; ch: number }, to?: { line: number; ch: number }) => {
+    replaceRange: (
+      text: string,
+      from: { line: number; ch: number },
+      to?: { line: number; ch: number },
+    ) => {
       const f = posToOffset(from);
       const t = to ? posToOffset(to) : f;
       const insert = text ?? "";
-      dispatch({ from: Math.min(f, t), to: Math.max(f, t), insert }, Math.min(f, t) + insert.length);
+      dispatch(
+        { from: Math.min(f, t), to: Math.max(f, t), insert },
+        Math.min(f, t) + insert.length,
+      );
     },
     replaceSelection: (text: string) => {
       const p = curPos();

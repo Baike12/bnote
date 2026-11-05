@@ -13,10 +13,7 @@ const host = process.env.TAURI_DEV_HOST;
  * node_modules through middleware, and build copies them into dist.
  */
 function excalidrawAssets(): Plugin {
-  const pkgProd = path.resolve(
-    __dirname,
-    "node_modules/@excalidraw/excalidraw/dist/prod",
-  );
+  const pkgProd = path.resolve(__dirname, "node_modules/@excalidraw/excalidraw/dist/prod");
   const MIME: Record<string, string> = {
     ".woff2": "font/woff2",
     ".woff": "font/woff",

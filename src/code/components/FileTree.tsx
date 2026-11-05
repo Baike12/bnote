@@ -107,10 +107,7 @@ export const FileTree = memo(function FileTree({
   }, [git]);
 
   const roots = useMemo(() => buildTree(entries, gitMap), [entries, gitMap]);
-  const rows = useMemo(
-    () => visibleRows(roots, expandedDirs),
-    [roots, expandedDirs],
-  );
+  const rows = useMemo(() => visibleRows(roots, expandedDirs), [roots, expandedDirs]);
   const rowIndex = useMemo(() => {
     const map = new Map<string, number>();
     rows.forEach((row, index) => map.set(row.node.path, index));
@@ -151,8 +148,7 @@ export const FileTree = memo(function FileTree({
     if (!focusRequest) return;
     clearTreeFocus();
     const wanted = focusRequest.path;
-    const target =
-      wanted && rowIndex.has(wanted) ? wanted : (rows[0]?.node.path ?? null);
+    const target = wanted && rowIndex.has(wanted) ? wanted : (rows[0]?.node.path ?? null);
     if (!target) return;
     // The focus belongs to the container (rows are unmounted while scrolling,
     // the container is not); the coordinates are computed by the reveal effect
@@ -175,10 +171,7 @@ export const FileTree = memo(function FileTree({
     const top = PAD + index * ROW_HEIGHT;
     const bottom = top + ROW_HEIGHT;
     if (top < host.scrollTop || bottom > host.scrollTop + host.clientHeight) {
-      host.scrollTop = Math.max(
-        0,
-        Math.round(top - (host.clientHeight - ROW_HEIGHT) / 2),
-      );
+      host.scrollTop = Math.max(0, Math.round(top - (host.clientHeight - ROW_HEIGHT) / 2));
       setScrollTop(host.scrollTop);
     }
   }, [focusPath, revealTick, rowIndex]);
@@ -193,7 +186,8 @@ export const FileTree = memo(function FileTree({
   const currentPath =
     (focusPath && rowIndex.has(focusPath) ? focusPath : null) ??
     (activePath && rowIndex.has(activePath) ? activePath : null) ??
-    (rows[0]?.node.path ?? null);
+    rows[0]?.node.path ??
+    null;
 
   /** Move the focus between neighbouring rows (out of range stays where it is). */
   const moveFocus = (delta: number) => {

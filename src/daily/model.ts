@@ -231,7 +231,13 @@ export function appendEntrySpec(
   }
   const lines = text === "" ? 0 : text.split("\n").length;
   const insert =
-    region.entries.length > 0 ? "\n" + text : region.headerEnd >= 1 ? "\n\n" + text : doc.length === 0 ? text : text + "\n\n";
+    region.entries.length > 0
+      ? "\n" + text
+      : region.headerEnd >= 1
+        ? "\n\n" + text
+        : doc.length === 0
+          ? text
+          : text + "\n\n";
   return { change: { from: at, insert }, entry: { start, end: start + Math.max(0, lines - 1) } };
 }
 
@@ -252,7 +258,10 @@ export function prependEntrySpec(
   const lines = text === "" ? 0 : text.split("\n").length;
   return {
     change: { from: at, insert: text + "\n" },
-    entry: { start: region.entries[0].start, end: region.entries[0].start + Math.max(0, lines - 1) },
+    entry: {
+      start: region.entries[0].start,
+      end: region.entries[0].start + Math.max(0, lines - 1),
+    },
   };
 }
 

@@ -98,7 +98,8 @@ export function DailyNotePane() {
     focusEditor(viewRef.current);
   };
 
-  const isTodoDrag = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes(TODO_DRAG_MIME);
+  const isTodoDrag = (e: DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes(TODO_DRAG_MIME);
 
   const idx = current ? days.findIndex((d) => d.path === current) : -1;
   /** An earlier day (the list is descending, so a larger index). */

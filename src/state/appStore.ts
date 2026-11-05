@@ -335,13 +335,7 @@ export function rememberCursorPosition(path: string, pos: number, scroll: number
 
 /** The commands the study assistant panel can execute (signalled by the keybinding/command layer; the panel runs them itself). */
 export type AgentPanelCommand =
-  | "new"
-  | "fork"
-  | "back"
-  | "history"
-  | "focus-input"
-  | "attach-images"
-  | "toggle-creative";
+  "new" | "fork" | "back" | "history" | "focus-input" | "attach-images" | "toggle-creative";
 export interface AgentPanelCommandRequest {
   seq: number;
   kind: AgentPanelCommand;
@@ -679,14 +673,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   // side already holds three columns, and one more tree would be too crowded.
   // It is collapsed only at this moment; the user can expand it as usual
   // inside the mode afterwards. Leaving does not expand it back.
-  setMode: (mode) =>
-    set(mode === "notes" ? { mode } : { mode, sidebarOpen: false }),
+  setMode: (mode) => set(mode === "notes" ? { mode } : { mode, sidebarOpen: false }),
   toggleMode: (target) =>
-    set(
-      get().mode === target
-        ? { mode: "notes" }
-        : { mode: target, sidebarOpen: false },
-    ),
+    set(get().mode === target ? { mode: "notes" } : { mode: target, sidebarOpen: false }),
   setCodeProject: (codeProject) => {
     set({ codeProject });
     persistConfig({ ...getConfigSnapshot(), codeProject });
@@ -718,8 +707,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeDrawingSession: () => {
     if (get().drawingSession !== null) set({ drawingSession: null });
   },
-  bumpAgentConfigVersion: () =>
-    set({ agentConfigVersion: get().agentConfigVersion + 1 }),
+  bumpAgentConfigVersion: () => set({ agentConfigVersion: get().agentConfigVersion + 1 }),
   bumpAgentSwitchSessionSignal: () =>
     set({ agentSwitchSessionSignal: get().agentSwitchSessionSignal + 1 }),
   runAgentPanelCommand: (kind, images) =>

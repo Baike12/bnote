@@ -2,7 +2,13 @@ import { useEffect, useRef } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { useAppStore } from "@/state/appStore";
 import { useCodeStore } from "../store";
-import { applyTermTheme, fitTerminal, focusTerminal, mountTerminal, unmountTerminal } from "./session";
+import {
+  applyTermTheme,
+  fitTerminal,
+  focusTerminal,
+  mountTerminal,
+  unmountTerminal,
+} from "./session";
 
 /**
  * The terminal drawer at the bottom of the code pane.

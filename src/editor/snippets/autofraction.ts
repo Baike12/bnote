@@ -79,9 +79,7 @@ export function autoFraction(
     return build(to - 1, to, visualText);
   }
 
-  const scanned = state
-    .sliceDoc(contentStart, to - 1)
-    .replace(GREEK_SPACE, "$1#$2");
+  const scanned = state.sliceDoc(contentStart, to - 1).replace(GREEK_SPACE, "$1#$2");
   let start = 0; // relative to contentStart
   for (let i = scanned.length - 1; i >= 0; i--) {
     const ch = scanned[i];
@@ -91,7 +89,7 @@ export function autoFraction(
       if (j === -1) return null;
       i = j;
       if (i < 0) break; // The group opens outside the region: the numerator
-                        // starts at the region head.
+      // starts at the region head.
     }
     if (STOP_CHARS.includes(ch)) {
       start = i + 1;

@@ -219,9 +219,7 @@ describe("region dispatch", () => {
   });
 
   it("an unbinding only affects the current region", () => {
-    applyOverrides(
-      normalizeOverrides({ notes: { "region.focus-agent": null } }),
-    );
+    applyOverrides(normalizeOverrides({ notes: { "region.focus-agent": null } }));
     expect(bindingsForCommand("region.focus-agent", "notes")).toEqual([]);
     expect(bindingsForCommand("region.focus-agent", "reading")).toEqual(["Mod-Alt-a"]);
     expect(commandsForKey("Mod-Alt-a", "notes")).not.toContain("region.focus-agent");
@@ -267,9 +265,7 @@ describe("region dispatch", () => {
   });
 
   it("the region navigation chord crosses regions: bound only in the reading region, pressing it in the Agent panel works too", () => {
-    applyOverrides(
-      normalizeOverrides({ reading: { "region.focus-agent": "Mod-Shift-w" } }),
-    );
+    applyOverrides(normalizeOverrides({ reading: { "region.focus-agent": "Mod-Shift-w" } }));
     expect(commandsForKey("Mod-Shift-w", "reading")).toContain("region.focus-agent");
     for (const region of ["notes", "agent"] as const) {
       expect(commandsForKey("Mod-Shift-w", region)).toContain("region.focus-agent");
@@ -372,7 +368,14 @@ describe("config file read and write", () => {
 /** Key ownership of the editor/inputs: bare navigation keys belong to them, modified bindings take effect under any focus. */
 describe("ownership of the bare navigation keys", () => {
   const ev = (key: string, mods: Partial<KeyboardEvent> = {}) =>
-    ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods }) as KeyboardEvent;
+    ({
+      key,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      ...mods,
+    }) as KeyboardEvent;
 
   it("unmodified paging / arrow keys belong to the editor, window-level commands must not take them", () => {
     expect(isPlainFocusOwnedKey(ev("PageDown"))).toBe(true);
@@ -412,7 +415,14 @@ describe("form editing chords", () => {
 /** PageUp/PageDown are the fixed paging keys that cannot be overridden: they still page after a rebind. */
 describe("fixed paging keys", () => {
   const ev = (key: string, mods: Partial<KeyboardEvent> = {}) =>
-    ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods }) as KeyboardEvent;
+    ({
+      key,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      ...mods,
+    }) as KeyboardEvent;
 
   it("PageUp/PageDown map to the previous page / the next page", () => {
     expect(FIXED_PAGE_COMMANDS).toEqual({
@@ -468,23 +478,14 @@ describe("web zoom bindings", () => {
   it("the default bindings live in the reading region", () => {
     expect(defaultRegionOf("study.web-zoom-in")).toBe("reading");
     expect(defaultRegionOf("study.web-zoom-out")).toBe("reading");
-    expect(bindingsForCommand("study.web-zoom-in", "reading")).toEqual([
-      "Mod-=",
-      "Mod-Shift-=",
-    ]);
+    expect(bindingsForCommand("study.web-zoom-in", "reading")).toEqual(["Mod-=", "Mod-Shift-="]);
     expect(bindingsForCommand("study.web-zoom-out", "reading")).toEqual(["Mod--"]);
     expect(bindingsForCommand("study.web-zoom-reset", "reading")).toEqual(["Mod-0"]);
   });
 
   it("in the reading region they come before the editor font-size zoom (which one runs is decided by the command's when clause while a web page is open)", () => {
-    expect(commandsForKey("Mod-=", "reading")).toEqual([
-      "study.web-zoom-in",
-      "view.zoom-in",
-    ]);
-    expect(commandsForKey("Mod--", "reading")).toEqual([
-      "study.web-zoom-out",
-      "view.zoom-out",
-    ]);
+    expect(commandsForKey("Mod-=", "reading")).toEqual(["study.web-zoom-in", "view.zoom-in"]);
+    expect(commandsForKey("Mod--", "reading")).toEqual(["study.web-zoom-out", "view.zoom-out"]);
     // The notes region has no web zoom binding, so it stays the editor
     // font-size zoom.
     expect(commandsForKey("Mod-=", "notes")).toEqual(["view.zoom-in"]);
@@ -515,9 +516,7 @@ describe("web forwarding keys", () => {
   });
 
   it("a binding the user moves into the reading region is forwarded too", () => {
-    applyOverrides(
-      normalizeOverrides({ reading: { "region.focus-agent": "Mod-Alt-z" } }),
-    );
+    applyOverrides(normalizeOverrides({ reading: { "region.focus-agent": "Mod-Alt-z" } }));
     expect(pageForwardKeys()).toContain("Mod-Alt-z");
   });
 
@@ -557,11 +556,12 @@ describe("web forwarding keys", () => {
  * restore the key from event.code, otherwise these keybindings never match.
  */
 describe("event key normalization", () => {
-  const ev = (
-    key: string,
-    code: string,
-    mods: { shiftKey?: boolean; altKey?: boolean } = {},
-  ) => ({ key, code, shiftKey: mods.shiftKey ?? false, altKey: mods.altKey ?? false });
+  const ev = (key: string, code: string, mods: { shiftKey?: boolean; altKey?: boolean } = {}) => ({
+    key,
+    code,
+    shiftKey: mods.shiftKey ?? false,
+    altKey: mods.altKey ?? false,
+  });
 
   it("Option+letter / digit is restored to the physical key", () => {
     expect(eventKeyName(ev("å", "KeyA", { altKey: true }))).toBe("a");
@@ -594,15 +594,9 @@ describe("event key normalization", () => {
           shiftKey: false,
           ...init,
         } as unknown as KeyboardEvent);
-      expect(chord({ key: "å", code: "KeyA", metaKey: true, altKey: true })).toBe(
-        "Mod-Alt-a",
-      );
-      expect(chord({ key: "Dead", code: "KeyN", metaKey: true, altKey: true })).toBe(
-        "Mod-Alt-n",
-      );
-      expect(chord({ key: "K", code: "KeyK", metaKey: true, shiftKey: true })).toBe(
-        "Mod-Shift-k",
-      );
+      expect(chord({ key: "å", code: "KeyA", metaKey: true, altKey: true })).toBe("Mod-Alt-a");
+      expect(chord({ key: "Dead", code: "KeyN", metaKey: true, altKey: true })).toBe("Mod-Alt-n");
+      expect(chord({ key: "K", code: "KeyK", metaKey: true, shiftKey: true })).toBe("Mod-Shift-k");
     } finally {
       vi.unstubAllGlobals();
     }

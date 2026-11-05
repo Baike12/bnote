@@ -124,9 +124,7 @@ export async function sendTodoToTodayFront(
   // When it is already mapped for today only the anchor line numbers are updated,
   // otherwise a `copied` link is created. The per-day ownership is the same as for
   // ⌘⇧J: the entry sent yesterday does not count as synced today.
-  const own = store
-    .forFile(dailyPath)
-    .find((l) => l.srcPath === target.srcPath && l.text === text);
+  const own = store.forFile(dailyPath).find((l) => l.srcPath === target.srcPath && l.text === text);
   if (own) {
     store.update(own.id, { dailyLine, srcLine: lineNo, day: today });
   } else {

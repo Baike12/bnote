@@ -136,9 +136,11 @@ export function writeProjectDoc(path: string, text: string): Promise<void> {
   if (removed.has(path)) return Promise.resolve();
   docs.set(path, text);
   const prev = writeChains.get(path) ?? Promise.resolve();
-  const next = prev.then(() => api.writeFile(path, text)).catch((e) => {
-    console.warn("project save failed", e);
-  });
+  const next = prev
+    .then(() => api.writeFile(path, text))
+    .catch((e) => {
+      console.warn("project save failed", e);
+    });
   writeChains.set(path, next);
   return next;
 }
@@ -221,4 +223,3 @@ export function focusAdjacentProject(delta: 1 | -1): void {
   const nextIdx = Math.max(0, Math.min(entries.length - 1, base + delta));
   setFocusedProject(entries[nextIdx]?.path ?? null);
 }
-

@@ -45,7 +45,14 @@ describe("the Math.sumPrecise compatibility implementation", () => {
 
   it("any iterable is accepted, a non-number throws a TypeError", () => {
     expect(sumPrecise(new Set([2, 3]))).toBe(5);
-    expect(sumPrecise((function* () { yield 4; yield 5; })())).toBe(9);
+    expect(
+      sumPrecise(
+        (function* () {
+          yield 4;
+          yield 5;
+        })(),
+      ),
+    ).toBe(9);
     expect(() => sumPrecise([1, "2" as unknown as number])).toThrow(TypeError);
   });
 

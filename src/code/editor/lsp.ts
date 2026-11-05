@@ -68,7 +68,10 @@ export function documentationToText(doc: unknown): string {
   if (doc == null) return "";
   if (typeof doc === "string") return doc;
   if (Array.isArray(doc)) {
-    return doc.map((d) => documentationToText(d)).filter(Boolean).join("\n\n");
+    return doc
+      .map((d) => documentationToText(d))
+      .filter(Boolean)
+      .join("\n\n");
   }
   if (typeof doc === "object") {
     const value = (doc as { value?: unknown }).value;
@@ -97,9 +100,7 @@ export function toCmDiagnostic(d: LspDiagnostic, doc: Text): CmDiagnostic {
  * No server / a null answer / an error all quietly yield no candidates (no
  * error popup).
  */
-export async function lspCompletion(
-  context: CompletionContext,
-): Promise<CompletionResult | null> {
+export async function lspCompletion(context: CompletionContext): Promise<CompletionResult | null> {
   const handle = activeCodeEditor();
   if (!handle) return null;
   // `matchBefore(/[\w$]*/)` always matches (an empty match is a match too),
@@ -119,16 +120,10 @@ export async function lspCompletion(
   if (!typed && !trigger && !context.explicit) return null;
 
   const raw = await codeApi
-    .lspRequest(
-      handle.root,
-      handle.language,
-      "textDocument/completion",
-      handle.path,
-      {
-        position: cmToLspPosition(handle.view.state.doc, context.pos),
-        context: completionRequestContext(trigger),
-      },
-    )
+    .lspRequest(handle.root, handle.language, "textDocument/completion", handle.path, {
+      position: cmToLspPosition(handle.view.state.doc, context.pos),
+      context: completionRequestContext(trigger),
+    })
     .catch(() => null);
   if (!raw) return null;
 
@@ -164,9 +159,7 @@ export function toCompletion(item: Record<string, unknown>): Completion | null {
   const info = documentationToText(item.documentation);
   if (info) completion.info = info;
 
-  const edit = item.textEdit as
-    | { range?: LspRange; newText?: string }
-    | undefined;
+  const edit = item.textEdit as { range?: LspRange; newText?: string } | undefined;
   if (edit?.range && typeof edit.newText === "string") {
     const range = edit.range;
     const newText = edit.newText;
@@ -200,13 +193,9 @@ export const lspHoverTooltip = hoverTooltip(async (view, pos) => {
   const handle = handleForView(view);
   if (!handle) return null;
   const raw = await codeApi
-    .lspRequest(
-      handle.root,
-      handle.language,
-      "textDocument/hover",
-      handle.path,
-      { position: cmToLspPosition(view.state.doc, pos) },
-    )
+    .lspRequest(handle.root, handle.language, "textDocument/hover", handle.path, {
+      position: cmToLspPosition(view.state.doc, pos),
+    })
     .catch(() => null);
   if (!raw) return null;
   const contents = (raw as { contents?: unknown }).contents;
@@ -236,15 +225,18 @@ export const lspHoverTooltip = hoverTooltip(async (view, pos) => {
  * this reads the cache; `forceLinting` has to be called for the linter to run
  * again when the cache changes (see `refreshDiagnostics`).
  */
-export const lspDiagnosticsLinter = linter((view) => {
-  // Find the file by **this view**, not by "the focused one": when the focus
-  // is not on the editor the latter would pick a different file and the
-  // diagnostics would land in the wrong place.
-  const handle = handleForView(view);
-  if (!handle) return [];
-  const list = useCodeStore.getState().diagnostics[handle.path] ?? [];
-  return list.map((d) => toCmDiagnostic(d, view.state.doc));
-}, { delay: 120 });
+export const lspDiagnosticsLinter = linter(
+  (view) => {
+    // Find the file by **this view**, not by "the focused one": when the focus
+    // is not on the editor the latter would pick a different file and the
+    // diagnostics would land in the wrong place.
+    const handle = handleForView(view);
+    if (!handle) return [];
+    const list = useCodeStore.getState().diagnostics[handle.path] ?? [];
+    return list.map((d) => toCmDiagnostic(d, view.state.doc));
+  },
+  { delay: 120 },
+);
 
 /** The diagnostic cache changed, make the editor redraw the diagnostic marks. */
 export function refreshDiagnostics(view: EditorView | null): void {

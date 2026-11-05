@@ -2,7 +2,18 @@ import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { calloutInsertAnchor, cycleHeading, insertCallout, insertMathBlock, jumpHeaderTodos, planCalloutShortcut, planHeaderTodoJump, resetCalloutReturnForTest, resetHeaderTodoReturnForTest, toggleTodo } from "./ops";
+import {
+  calloutInsertAnchor,
+  cycleHeading,
+  insertCallout,
+  insertMathBlock,
+  jumpHeaderTodos,
+  planCalloutShortcut,
+  planHeaderTodoJump,
+  resetCalloutReturnForTest,
+  resetHeaderTodoReturnForTest,
+  toggleTodo,
+} from "./ops";
 import { todayStamp } from "@/lib/todoStamp";
 import { matrixEnter } from "./snippets/matrix";
 import { calloutRegions } from "./callout";

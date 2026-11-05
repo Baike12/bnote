@@ -122,7 +122,6 @@ export function Sidebar() {
     const relPath = renameRequest;
     useAppStore.getState().clearRenameRequest();
     requestReveal(relPath, { rename: true });
-     
   }, [renameRequest]);
 
   // The reveal converges: once the row is rendered the caret lands on it (a rename request attaches the inline input), then the request is cleared. While it is not rendered yet the ancestor chain keeps being filled in; a level of the chain that is not in the tree (first frame, just switched vault) is no conclusion, it is recomputed when the tree changes. Only when the chain is complete and the row is still not in the tree is the entry considered renamed or deleted from the outside.
@@ -148,7 +147,9 @@ export function Sidebar() {
     const current = idx >= 0 ? rows[idx] : null;
     // The vim keys (j/k/h/l) only take effect in Vim mode and are equivalent to the arrow keys
     const { vim } = useAppStore.getState().settings;
-    const key = vim ? { j: "ArrowDown", k: "ArrowUp", h: "ArrowLeft", l: "ArrowRight" }[e.key] ?? e.key : e.key;
+    const key = vim
+      ? ({ j: "ArrowDown", k: "ArrowUp", h: "ArrowLeft", l: "ArrowRight" }[e.key] ?? e.key)
+      : e.key;
     let nextPath: string | null = null;
 
     switch (key) {
@@ -248,8 +249,17 @@ interface TreeItemProps {
 }
 
 function TreeItem(props: TreeItemProps) {
-  const { node, depth, expanded, toggleFolder, currentFile, kbdCursor, menu, renaming, setRenaming } =
-    props;
+  const {
+    node,
+    depth,
+    expanded,
+    toggleFolder,
+    currentFile,
+    kbdCursor,
+    menu,
+    renaming,
+    setRenaming,
+  } = props;
   const vaultPath = useAppStore((s) => s.vaultPath)!;
   const isOpen = node.kind === "dir" && expanded.has(node.relPath);
   const absPath = `${vaultPath}/${node.relPath}`;
@@ -286,11 +296,7 @@ function TreeItem(props: TreeItemProps) {
         onClick={() => (node.kind === "dir" ? toggleFolder(node) : void openNote(absPath))}
         onContextMenu={openMenu}
       >
-        {node.kind === "dir" ? (
-          <FolderTypeIcon open={isOpen} />
-        ) : (
-          <FileTypeIcon name={node.name} />
-        )}
+        {node.kind === "dir" ? <FolderTypeIcon open={isOpen} /> : <FileTypeIcon name={node.name} />}
         {renaming === node.relPath ? (
           <RenameInput
             initial={node.name}
@@ -331,13 +337,7 @@ function TreeItem(props: TreeItemProps) {
   );
 }
 
-function RenameInput({
-  initial,
-  onCommit,
-}: {
-  initial: string;
-  onCommit: (name: string) => void;
-}) {
+function RenameInput({ initial, onCommit }: { initial: string; onCommit: (name: string) => void }) {
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {

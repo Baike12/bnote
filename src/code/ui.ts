@@ -9,10 +9,7 @@
  */
 
 /** A request the panel has to handle. */
-export type CodeUiRequest =
-  | { kind: "quick-open" }
-  | { kind: "find-in-files" }
-  | { kind: "rename" };
+export type CodeUiRequest = { kind: "quick-open" } | { kind: "find-in-files" } | { kind: "rename" };
 
 type Listener = (request: CodeUiRequest) => void;
 

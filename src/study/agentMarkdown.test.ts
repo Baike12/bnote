@@ -72,7 +72,9 @@ describe("renderAgentMarkdown", () => {
   });
 
   it("an unordered list separated by blank lines belongs to one <ul>", () => {
-    expect(renderAgentMarkdown("- 甲\n\n- 乙")).toBe('<ul class="is-loose"><li>甲</li><li>乙</li></ul>');
+    expect(renderAgentMarkdown("- 甲\n\n- 乙")).toBe(
+      '<ul class="is-loose"><li>甲</li><li>乙</li></ul>',
+    );
   });
 
   it("a tight list carries no is-loose (no blank lines between the items means no extra spacing)", () => {
@@ -154,9 +156,7 @@ describe("renderAgentMarkdown", () => {
   });
 
   it("tables: header + rows, with cells using the inline rules", () => {
-    const html = renderAgentMarkdown(
-      "| 概念 | 区别 |\n| --- | --- |\n| **A** | 快 |\n| B | 慢 |",
-    );
+    const html = renderAgentMarkdown("| 概念 | 区别 |\n| --- | --- |\n| **A** | 快 |\n| B | 慢 |");
     expect(html).toContain("<table><thead>");
     expect(html).toContain("<th>概念</th>");
     expect(html).toContain("<td><strong>A</strong></td>");
@@ -199,9 +199,7 @@ describe("splitAgentMarkdown", () => {
 
   it("an unclosed html fence (streaming tail) stays a code block", () => {
     const blocks = splitAgentMarkdown("```html\n<p>x</p>");
-    expect(blocks).toEqual([
-      { kind: "markdown", html: expect.stringContaining("agent-code") },
-    ]);
+    expect(blocks).toEqual([{ kind: "markdown", html: expect.stringContaining("agent-code") }]);
   });
 
   it("an html fence nested in a list stays a plain code block", () => {

@@ -74,9 +74,7 @@ function emittedEvents(): string[] {
 function relayed(name: "devbridge" | "browserMode"): string[] {
   const src = name === "devbridge" ? devbridge : browserMode;
   const start =
-    name === "devbridge"
-      ? src.indexOf("fn subscribe_events")
-      : src.indexOf("const EVENTS = [");
+    name === "devbridge" ? src.indexOf("fn subscribe_events") : src.indexOf("const EVENTS = [");
   const block = src.slice(start, src.indexOf("]", start) + 1);
   return [...new Set([...block.matchAll(/"([a-z0-9:-]+)"/g)].map((m) => m[1]))].sort();
 }

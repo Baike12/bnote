@@ -5,7 +5,13 @@ import {
   type Extension,
   type Range,
 } from "@codemirror/state";
-import { Decoration, DecorationSet, EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import {
+  Decoration,
+  DecorationSet,
+  EditorView,
+  ViewPlugin,
+  type ViewUpdate,
+} from "@codemirror/view";
 import { documentPath, setDocPath } from "@/editor/docPath";
 import { todayStamp } from "@/lib/todoStamp";
 import { useAppStore } from "@/state/appStore";
@@ -19,17 +25,8 @@ import {
   onFootprintsChanged,
   refreshFootprints,
 } from "./store";
-import {
-  buildFootprintView,
-  type FootprintView,
-} from "./view";
-import {
-  FootprintWidget,
-  currentFold,
-  flipGroupFold,
-  flipZoneFold,
-  foldSignature,
-} from "./widget";
+import { buildFootprintView, type FootprintView } from "./view";
+import { FootprintWidget, currentFold, flipGroupFold, flipZoneFold, foldSignature } from "./widget";
 
 /**
  * The two editor faces of the footprint:
@@ -198,7 +195,10 @@ export interface FootprintMarkView {
 }
 
 /** The first line of the blocks collected today inside the viewport -> line decorations. Pure function. */
-export function buildFootprintMarks(view: FootprintMarkView, blocks: readonly { start: number }[]): DecorationSet {
+export function buildFootprintMarks(
+  view: FootprintMarkView,
+  blocks: readonly { start: number }[],
+): DecorationSet {
   if (blocks.length === 0 || view.visibleRanges.length === 0) return Decoration.none;
   const doc = view.state.doc;
   const starts = new Set(blocks.map((b) => b.start));

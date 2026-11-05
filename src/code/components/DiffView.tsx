@@ -97,7 +97,11 @@ export function DiffView({ path }: { path: string }) {
   );
 }
 
-function UnifiedHunk({ hunk }: { hunk: ReturnType<typeof parseUnifiedDiff>["files"][number]["hunks"][number] }) {
+function UnifiedHunk({
+  hunk,
+}: {
+  hunk: ReturnType<typeof parseUnifiedDiff>["files"][number]["hunks"][number];
+}) {
   return (
     <div className="code-hunk">
       <div className="code-hunk-head">
@@ -117,7 +121,11 @@ function UnifiedHunk({ hunk }: { hunk: ReturnType<typeof parseUnifiedDiff>["file
   );
 }
 
-function SideBySideHunk({ hunk }: { hunk: ReturnType<typeof parseUnifiedDiff>["files"][number]["hunks"][number] }) {
+function SideBySideHunk({
+  hunk,
+}: {
+  hunk: ReturnType<typeof parseUnifiedDiff>["files"][number]["hunks"][number];
+}) {
   const rows = useMemo(() => alignHunk(hunk), [hunk]);
   return (
     <div className="code-hunk is-side">

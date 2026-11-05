@@ -18,9 +18,7 @@ export const MAX_TYPEWRITER_POSITION = 0.8;
  *  into [20%, 80%] and round to 1%. */
 export function normalizeTypewriterPosition(value: unknown): number {
   const raw =
-    typeof value === "number" && Number.isFinite(value)
-      ? value
-      : DEFAULT_TYPEWRITER_POSITION;
+    typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_TYPEWRITER_POSITION;
   return Math.min(
     MAX_TYPEWRITER_POSITION,
     Math.max(MIN_TYPEWRITER_POSITION, Math.round(raw * 100) / 100),

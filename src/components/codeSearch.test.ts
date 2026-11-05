@@ -42,7 +42,7 @@ describe("findMatches", () => {
   });
 
   it("Chinese and mixed content are searchable too", () => {
-    const text = "// 自动分数\n{ \"//\", ({ }, 自动 }";
+    const text = '// 自动分数\n{ "//", ({ }, 自动 }';
     expect(hits(text, "自动")).toEqual(["自动", "自动"]);
     expect(hits(text, "自动分数")).toEqual(["自动分数"]);
   });

@@ -68,7 +68,5 @@ export function toggleGroup(state: FoldState, path: string): FoldState {
 
 /** Signature of the fold state: the widget equality check and the zone rebuild use it to compare. */
 export function foldSig(state: FoldState): string {
-  return state.zoneCollapsed
-    ? "z"
-    : `Z${[...state.groups].sort().join(";")}`;
+  return state.zoneCollapsed ? "z" : `Z${[...state.groups].sort().join(";")}`;
 }

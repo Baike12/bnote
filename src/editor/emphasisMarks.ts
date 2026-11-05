@@ -61,7 +61,11 @@ export function buildEmphasisMarks(
       }
       if (!first || !last || last.to <= first.to) return true;
       const deco =
-        name === "StrongEmphasis" ? strongMark : name === "Strikethrough" ? strikeMark : emphasisMark;
+        name === "StrongEmphasis"
+          ? strongMark
+          : name === "Strikethrough"
+            ? strikeMark
+            : emphasisMark;
       out.push(deco.range(first.to, last.from));
       return true; // keep descending: nested emphasis (***x***) is marked separately
     },
@@ -78,11 +82,7 @@ export function emphasisMarksExtension(): Extension {
         this.decorations = buildEmphasisMarks(view.state, view.visibleRanges);
       }
       update(u: ViewUpdate) {
-        if (
-          u.docChanged ||
-          u.viewportChanged ||
-          syntaxTree(u.startState) !== syntaxTree(u.state)
-        ) {
+        if (u.docChanged || u.viewportChanged || syntaxTree(u.startState) !== syntaxTree(u.state)) {
           this.decorations = buildEmphasisMarks(u.state, u.view.visibleRanges);
         }
       }

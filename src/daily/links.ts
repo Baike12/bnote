@@ -176,9 +176,9 @@ export function flushLinksPersist(): void {
 
 function writeNow(): void {
   if (!cache) return;
-  void api.writeFile(linksFilePath(cache.vault), cache.store.toJSON()).catch((e) =>
-    console.warn("daily links persist failed", e),
-  );
+  void api
+    .writeFile(linksFilePath(cache.vault), cache.store.toJSON())
+    .catch((e) => console.warn("daily links persist failed", e));
 }
 
 /** Schedule a write after the link store changed (300ms debounce). */

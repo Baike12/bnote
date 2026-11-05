@@ -177,9 +177,7 @@ async function armHardLock(): Promise<boolean> {
     useAppStore
       .getState()
       .showToast(
-        needsAccess
-          ? "硬锁需要辅助功能权限:允许后才能开始专注(设置 → 专注里有授权入口)"
-          : message,
+        needsAccess ? "硬锁需要辅助功能权限:允许后才能开始专注(设置 → 专注里有授权入口)" : message,
       );
     return false;
   }

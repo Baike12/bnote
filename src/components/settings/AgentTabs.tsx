@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { agentApi, homeApi, type AgentConfig, type AgentOutputStyle, type AgentSettingsPaths, type SkillInfo } from "@/lib/tauri";
+import {
+  agentApi,
+  homeApi,
+  type AgentConfig,
+  type AgentOutputStyle,
+  type AgentSettingsPaths,
+  type SkillInfo,
+} from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { api } from "@/lib/tauri";
 import { CodeArea } from "@/components/CodeArea";
@@ -27,7 +34,11 @@ function useAgentSettings() {
   const update = (patch: Partial<AgentConfig>) =>
     setCfg((prev) => (prev ? { ...prev, ...patch } : prev));
 
-  const save = async (patch: Partial<AgentConfig>, note: string, showToast: (m: string) => void) => {
+  const save = async (
+    patch: Partial<AgentConfig>,
+    note: string,
+    showToast: (m: string) => void,
+  ) => {
     if (!cfg) return;
     try {
       await agentApi.saveConfig({ ...cfg, ...patch });
@@ -68,10 +79,7 @@ export function AgentModelTab() {
         <Row
           label="协议"
           control={
-            <SettingsSelect
-              value={cfg.provider}
-              onChange={(v) => update({ provider: v })}
-            >
+            <SettingsSelect value={cfg.provider} onChange={(v) => update({ provider: v })}>
               <option value="anthropic">Anthropic(含兼容代理)</option>
               <option value="openai">OpenAI 兼容(OpenAI/DeepSeek/Grok/Ollama…)</option>
             </SettingsSelect>
@@ -98,9 +106,7 @@ export function AgentModelTab() {
               min={1024}
               step={1024}
               value={cfg.context_window}
-              onChange={(e) =>
-                update({ context_window: Math.max(0, Number(e.target.value) || 0) })
-              }
+              onChange={(e) => update({ context_window: Math.max(0, Number(e.target.value) || 0) })}
             />
           }
         />
@@ -131,7 +137,9 @@ export function AgentModelTab() {
       <div className="settings-footer">
         <button
           className="btn primary"
-          onClick={() => void save({}, "Agent 配置已保存;新会话生效(已开会话沿用原配置)", showToast)}
+          onClick={() =>
+            void save({}, "Agent 配置已保存;新会话生效(已开会话沿用原配置)", showToast)
+          }
         >
           保存模型配置
         </button>
@@ -212,7 +220,9 @@ export function AgentMcpTab() {
           <button
             className="btn primary"
             disabled={parseError !== null}
-            onClick={() => void save({ mcp_servers: parsed ?? {} }, "MCP 配置已保存;新会话生效", showToast)}
+            onClick={() =>
+              void save({ mcp_servers: parsed ?? {} }, "MCP 配置已保存;新会话生效", showToast)
+            }
           >
             保存 MCP 配置
           </button>
@@ -394,7 +404,6 @@ export function AgentInstructionsTab() {
     </div>
   );
 }
-
 
 /**
  * Agent settings: the layers Claude Code calls `settings.json`.
@@ -609,7 +618,10 @@ export function AgentSettingsTab() {
         </div>
       </SettingsCard>
 
-      <SettingsCard title="设置文件" desc="按顺序合并,后者覆盖前者;解析失败的文件会被跳过并在这里标出。">
+      <SettingsCard
+        title="设置文件"
+        desc="按顺序合并,后者覆盖前者;解析失败的文件会被跳过并在这里标出。"
+      >
         <div className="settings-block">
           {paths ? (
             <ul className="settings-path-list">
@@ -617,11 +629,7 @@ export function AgentSettingsTab() {
                 <li key={file.path} className="settings-path-item">
                   <code>{file.path}</code>
                   <span className="settings-path-state">
-                    {file.error
-                      ? `解析失败:${file.error}`
-                      : file.exists
-                        ? "已存在"
-                        : "未创建"}
+                    {file.error ? `解析失败:${file.error}` : file.exists ? "已存在" : "未创建"}
                   </span>
                 </li>
               ))}
@@ -630,7 +638,8 @@ export function AgentSettingsTab() {
             <div className="settings-desc">读取失败</div>
           )}
           <div className="settings-desc">
-            Agent 家目录:<code>{paths?.home ?? "~/.bnote"}</code>(会话记录、tasks、plans、记忆、技能与输出风格都在这里)
+            Agent 家目录:<code>{paths?.home ?? "~/.bnote"}</code>
+            (会话记录、tasks、plans、记忆、技能与输出风格都在这里)
           </div>
         </div>
       </SettingsCard>

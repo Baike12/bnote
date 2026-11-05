@@ -362,10 +362,7 @@ export function insertRegionWantsEnglishAt(
   state: EditorState,
   head: number,
 ): boolean {
-  if (
-    settings.ime.mathKeepsEnglish &&
-    mathRegions(state).some((r) => caretInMathBody(r, head))
-  ) {
+  if (settings.ime.mathKeepsEnglish && mathRegions(state).some((r) => caretInMathBody(r, head))) {
     return true;
   }
   if (settings.ime.codeKeepsEnglish && insideFencedCode(state, head)) {

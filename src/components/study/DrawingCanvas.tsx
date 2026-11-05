@@ -33,8 +33,7 @@ import { fileName } from "@/lib/path";
 // Excalidraw addresses its fonts relative to this base path
 // (`fonts/<Family>/...`); the vite plugin materializes them as local files on
 // both dev and build, so it must be in place before its chunk executes.
-(window as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH =
-  "/excalidraw-assets/";
+(window as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = "/excalidraw-assets/";
 
 const Excalidraw = lazy(() =>
   import("@excalidraw/excalidraw").then((m) => ({ default: m.Excalidraw })),
@@ -120,7 +119,8 @@ function CanvasInner({ session }: { session: import("@/state/appStore").DrawingS
       forcedSnap.current = desired;
       if (stateSnap !== desired) {
         const api = exApi.current;
-        if (api) queueMicrotask(() => api.updateScene({ appState: { objectsSnapModeEnabled: desired } }));
+        if (api)
+          queueMicrotask(() => api.updateScene({ appState: { objectsSnapModeEnabled: desired } }));
       }
     },
     [],
@@ -154,7 +154,8 @@ function CanvasInner({ session }: { session: import("@/state/appStore").DrawingS
           </span>
         </span>
         <span className="drawing-hint">
-          ⌘↩ 返回笔记 · {formatBinding(bindingsForCommand("nav.quick-switcher")[0] ?? "Mod-o")} 切换文件
+          ⌘↩ 返回笔记 · {formatBinding(bindingsForCommand("nav.quick-switcher")[0] ?? "Mod-o")}{" "}
+          切换文件
         </span>
       </div>
       <div className="drawing-body">

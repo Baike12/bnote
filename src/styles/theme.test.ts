@@ -79,7 +79,7 @@ function blockBodies(cssText: string, header: string): string[] {
  */
 function stripVarCalls(s: string): string {
   let out = "";
-  for (let i = 0; i < s.length; ) {
+  for (let i = 0; i < s.length;) {
     if (s.startsWith("var(", i)) {
       let depth = 0;
       let j = i + 3; // points at the `(` of var(; the start itself counts toward depth
@@ -105,9 +105,7 @@ function customProps(body: string): Set<string> {
 }
 
 describe("theme variable system", () => {
-  const darkBlock = [...blockBodies(css, ":root {"), ...blockBodies(css, ":root{")].join(
-    "\n",
-  );
+  const darkBlock = [...blockBodies(css, ":root {"), ...blockBodies(css, ":root{")].join("\n");
   const lightBlock = blockBodies(css, '[data-theme="light"] {').join("\n");
 
   it("both theme blocks exist in global.css", () => {

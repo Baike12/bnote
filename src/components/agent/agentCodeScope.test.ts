@@ -14,13 +14,13 @@ import { readFileSync } from "node:fs";
  *   home (`~/.bnote`), never into the vault.
  */
 const raw = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
-const code = raw
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/^[ \t]*\/\/.*$/gm, "");
+const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
 describe("which definition a session runs with", () => {
   it("code mode wins over creative mode", () => {
-    expect(code).toMatch(/agentModeRef\.current = mode === "code" \? "coding" : creativeMode \? "creative" : "study"/);
+    expect(code).toMatch(
+      /agentModeRef\.current = mode === "code" \? "coding" : creativeMode \? "creative" : "study"/,
+    );
   });
 
   it("there is no study-content code variant left", () => {

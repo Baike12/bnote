@@ -94,10 +94,9 @@ describe("buildTree", () => {
 
   it("walkFiles yields the files in display order", () => {
     const roots = buildTree([entry("b/x.ts"), entry("a.ts"), entry("b/y.ts")]);
-    expect(walkFiles({ ...roots[0], isDir: true, children: roots[0].children }).map((n) => n.path)).toEqual([
-      "b/x.ts",
-      "b/y.ts",
-    ]);
+    expect(
+      walkFiles({ ...roots[0], isDir: true, children: roots[0].children }).map((n) => n.path),
+    ).toEqual(["b/x.ts", "b/y.ts"]);
   });
 });
 
@@ -123,11 +122,7 @@ describe("visibleRows (the flattening for virtual scrolling)", () => {
 
   it("by default no directory is expanded: only the top level stays (folders are not expanded by default)", () => {
     const rows = visibleRows(roots, new Set());
-    expect(rows.map((r) => `${r.depth}:${r.node.name}`)).toEqual([
-      "0:docs",
-      "0:src",
-      "0:d.ts",
-    ]);
+    expect(rows.map((r) => `${r.depth}:${r.node.name}`)).toEqual(["0:docs", "0:src", "0:d.ts"]);
   });
 
   it("only expanded directories bring out their children, and the depth is recorded", () => {

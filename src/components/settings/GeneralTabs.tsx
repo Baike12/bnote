@@ -4,7 +4,11 @@ import { inputGuards } from "@/lib/inputGuards";
 import { CodeArea } from "@/components/CodeArea";
 import { openVault, pickVaultDialog } from "@/app/actions";
 import { MAX_PAGE_STEP, MIN_PAGE_STEP, normalizePageStep } from "@/study/reading";
-import { MAX_TYPEWRITER_POSITION, MIN_TYPEWRITER_POSITION, normalizeTypewriterPosition } from "@/editor/typewriterPosition";
+import {
+  MAX_TYPEWRITER_POSITION,
+  MIN_TYPEWRITER_POSITION,
+  normalizeTypewriterPosition,
+} from "@/editor/typewriterPosition";
 import { SettingsCard, Row, RangeControl, Toggle } from "./primitives";
 
 export function GeneralTab() {
@@ -23,10 +27,7 @@ export function GeneralTab() {
             </button>
           }
         />
-        <Row
-          label="仓库名"
-          control={<span className="setting-value">{vaultName}</span>}
-        />
+        <Row label="仓库名" control={<span className="setting-value">{vaultName}</span>} />
       </SettingsCard>
       <SettingsCard title="片段引擎">
         <Toggle
@@ -37,7 +38,8 @@ export function GeneralTab() {
         />
       </SettingsCard>
       <p className="setting-hint">
-        试试在公式里输入 <code>aa</code>、<code>sr</code>、<code>{"//"}</code>（自动展开），或 <code>dm</code>、<code>beg</code>、<code>al</code> + Tab。
+        试试在公式里输入 <code>aa</code>、<code>sr</code>、<code>{"//"}</code>（自动展开），或{" "}
+        <code>dm</code>、<code>beg</code>、<code>al</code> + Tab。
       </p>
     </div>
   );
@@ -195,10 +197,10 @@ export function ReadingTab() {
         />
       </SettingsCard>
       <p className="setting-hint">
-        屏幕下方是刚进入的新内容（占可见高度的 {percent}%）；上方是刚读过、
-        正在移出的内容（占 {100 - percent}%），压暗后向边界渐隐，不画分界线，
-        两端保留阴影的圆角尖。两层只做视觉分区，不影响选中、批注和点击；
-        翻页落点会在 2% 视口内微调，避免边界切在文字行中间。
+        屏幕下方是刚进入的新内容（占可见高度的 {percent}%）；上方是刚读过、 正在移出的内容（占{" "}
+        {100 - percent}%），压暗后向边界渐隐，不画分界线，
+        两端保留阴影的圆角尖。两层只做视觉分区，不影响选中、批注和点击； 翻页落点会在 2%
+        视口内微调，避免边界切在文字行中间。
       </p>
     </div>
   );
@@ -236,7 +238,7 @@ export function CodeLspSettingsCard() {
     try {
       const parsed = JSON.parse(trimmed);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        setError("要是一个对象：{ \"typescript\": { \"command\": \"...\" } }");
+        setError('要是一个对象：{ "typescript": { "command": "..." } }');
         return;
       }
       patch({ codeLspServers: parsed });
@@ -264,8 +266,8 @@ export function CodeLspSettingsCard() {
       desc={
         <>
           内置默认已经覆盖 TypeScript / Rust / Go / Python 等常见语言。这里改的是
-          <strong>用哪个可执行文件、传什么参数</strong>（本机装了对应服务器就能直接用）。
-          项目内再放 <code>.bnote/lsp.json</code> 可以再盖一层，跟着仓库走、团队共享。
+          <strong>用哪个可执行文件、传什么参数</strong>（本机装了对应服务器就能直接用）。 项目内再放{" "}
+          <code>.bnote/lsp.json</code> 可以再盖一层，跟着仓库走、团队共享。
         </>
       }
     >
@@ -286,7 +288,9 @@ export function CodeLspSettingsCard() {
         {error ? (
           <div className="settings-error">{error}</div>
         ) : (
-          <div className="settings-desc">失焦即生效。键名是语言 id（typescript / rust / go / python …）。</div>
+          <div className="settings-desc">
+            失焦即生效。键名是语言 id（typescript / rust / go / python …）。
+          </div>
         )}
       </div>
     </SettingsCard>

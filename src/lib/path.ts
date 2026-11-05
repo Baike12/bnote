@@ -40,9 +40,7 @@ export function vaultRelPath(absolutePath: string, vaultRoot: string): string {
   const root = vaultRoot.replace(/\/+$/, "");
   if (!root) return absolutePath;
   if (absolutePath === root) return "";
-  return absolutePath.startsWith(`${root}/`)
-    ? absolutePath.slice(root.length + 1)
-    : absolutePath;
+  return absolutePath.startsWith(`${root}/`) ? absolutePath.slice(root.length + 1) : absolutePath;
 }
 
 /** Note extensions dropped when building a wikilink target. */

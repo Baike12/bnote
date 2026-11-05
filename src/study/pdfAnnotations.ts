@@ -60,11 +60,7 @@ export const MAX_NOTE_TEXT = 5000;
 export const EMPTY_PDF_ANNOTATIONS: PdfAnnotation[] = [];
 
 /** Normalize to page ratios; rectangles fully outside the page or degenerate are dropped. */
-export function normalizeRects(
-  boxes: Iterable<BoxLike>,
-  page: BoxLike,
-  minSize = 0.5,
-): NormRect[] {
+export function normalizeRects(boxes: Iterable<BoxLike>, page: BoxLike, minSize = 0.5): NormRect[] {
   const width = page.right - page.left;
   const height = page.bottom - page.top;
   if (width <= 0 || height <= 0) return [];
@@ -102,8 +98,7 @@ export function mergeLineRects(rects: NormRect[], maxGap = 0.02): NormRect[] {
     if (r.w <= 0 || r.h <= 0) continue;
     let merged = false;
     for (const o of out) {
-      const vOverlap =
-        Math.min(o.y + o.h, r.y + r.h) - Math.max(o.y, r.y);
+      const vOverlap = Math.min(o.y + o.h, r.y + r.h) - Math.max(o.y, r.y);
       if (vOverlap <= 0.5 * Math.min(o.h, r.h)) continue;
       const gap = Math.max(o.x, r.x) - Math.min(o.x + o.w, r.x + r.w);
       if (gap > maxGap) continue;
@@ -135,12 +130,7 @@ export function annotationAt(
     const a = annotations[i];
     if (a.page !== page) continue;
     for (const r of a.rects) {
-      if (
-        x >= r.x - pad &&
-        x <= r.x + r.w + pad &&
-        y >= r.y - pad &&
-        y <= r.y + r.h + pad
-      ) {
+      if (x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad) {
         return a;
       }
     }
@@ -328,7 +318,8 @@ const store = createVaultJsonStore<PdfAnnotation[]>({
       : pdfAnnotationPath(vaultRoot, key),
   empty: () => [],
   parse: parsePdfAnnotations,
-  serialize: (list) => JSON.stringify({ version: 1, annotations: list } satisfies PdfAnnotationFile),
+  serialize: (list) =>
+    JSON.stringify({ version: 1, annotations: list } satisfies PdfAnnotationFile),
 });
 
 /** Annotations at the old location (`.bnote/pdf-annotations/<pdf relative path>.json`). */

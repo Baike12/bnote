@@ -35,7 +35,12 @@ const INLINE_TRIGGER = "带 *强调* 的一行\n";
 
 function moved(doc: string, from: number, to: number): boolean {
   const start = state(doc, from);
-  return vimCursorNeedsFlush(start, start.update({ selection: EditorSelection.cursor(to) }).state, false, false);
+  return vimCursorNeedsFlush(
+    start,
+    start.update({ selection: EditorSelection.cursor(to) }).state,
+    false,
+    false,
+  );
 }
 
 describe("vim cursor flush criterion", () => {
@@ -90,7 +95,8 @@ describe("vim cursor flush criterion", () => {
  * lands the block cursor one frame late. The engine instance is the view's `cm`
  * (getCM reads it).
  */
-describe("the block cursor criterion matches the engine", () => {  const fakeView = (vim: unknown, overwrite = false) =>
+describe("the block cursor criterion matches the engine", () => {
+  const fakeView = (vim: unknown, overwrite = false) =>
     ({ cm: { state: { vim, overwrite } } }) as unknown as Parameters<typeof vimDrawsBlockCursor>[0];
 
   it("insert (not replace) draws no block cursor", () => {

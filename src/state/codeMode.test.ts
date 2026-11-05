@@ -1,10 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  DEFAULT_BINDINGS,
-  applyOverrides,
-  commandsForKey,
-  defaultRegionOf,
-} from "@/commands/keys";
+import { DEFAULT_BINDINGS, applyOverrides, commandsForKey, defaultRegionOf } from "@/commands/keys";
 import { getConfigSnapshot, toggleCodeMode, useAppStore } from "@/state/appStore";
 import { codeSessionIdentity, codeSessionPath } from "@/code/sessionScope";
 
@@ -114,9 +109,7 @@ describe("a coding transcript lives in the agent home", () => {
 
   it("identity follows the project, and no project has its own identity", () => {
     expect(codeSessionIdentity("/Users/me/repo")).toBe("code|/Users/me/repo");
-    expect(codeSessionIdentity("/Users/me/other")).not.toBe(
-      codeSessionIdentity("/Users/me/repo"),
-    );
+    expect(codeSessionIdentity("/Users/me/other")).not.toBe(codeSessionIdentity("/Users/me/repo"));
     expect(codeSessionIdentity(null)).toBe("code|none");
   });
 });

@@ -69,9 +69,7 @@ export function CommandPalette() {
             >
               <span className="switcher-name">{item.title}</span>
               <span className="switcher-binding">
-                {bindingsForCommand(item.id)
-                  .map(formatBinding)
-                  .join(" / ")}
+                {bindingsForCommand(item.id).map(formatBinding).join(" / ")}
               </span>
             </div>
           ))}

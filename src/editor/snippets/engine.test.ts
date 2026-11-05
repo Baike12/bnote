@@ -169,7 +169,9 @@ describe("function-type replacement (latex-suite semantics)", () => {
   const load = (s: RawSnippet[]) => reloadSnippets(s, true);
 
   it("a regex trigger receives the exec result array, so match[1] is capture group 1", () => {
-    load([{ trigger: /iden(\d)/, replacement: (m) => `n=${(m as RegExpExecArray)[1]}`, options: "mA" }]);
+    load([
+      { trigger: /iden(\d)/, replacement: (m) => `n=${(m as RegExpExecArray)[1]}`, options: "mA" },
+    ]);
     const m = findSnippet(state("$iden3$", 6), 6, "3", { auto: true, visualText: null });
     expect(m?.replacement.text).toBe("n=3");
   });
@@ -198,7 +200,11 @@ describe("function-type replacement (latex-suite semantics)", () => {
 
   it("returning a non-string means the snippet does not match (the next candidate gets its turn)", () => {
     load([
-      { trigger: "kk", replacement: (() => undefined) as unknown as RawSnippet["replacement"], options: "mA" },
+      {
+        trigger: "kk",
+        replacement: (() => undefined) as unknown as RawSnippet["replacement"],
+        options: "mA",
+      },
       { trigger: "kk", replacement: "fallback", options: "mA" },
     ]);
     const m = findSnippet(state("$kk$", 3), 3, "k", { auto: true, visualText: null });
