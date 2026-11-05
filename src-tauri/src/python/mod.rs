@@ -63,9 +63,7 @@ pub struct ProjectRef {
 /// belong to the vault root, so a configuration directory is never mistaken
 /// for a project.
 pub fn resolve_project(vault: &Path, md_path: &Path) -> Result<ProjectRef, String> {
-    let vault_c = vault
-        .canonicalize()
-        .unwrap_or_else(|_| vault.to_path_buf());
+    let vault_c = vault.canonicalize().unwrap_or_else(|_| vault.to_path_buf());
     let file = md_path
         .canonicalize()
         .unwrap_or_else(|_| crate::commands::normalize(md_path));
@@ -80,13 +78,22 @@ pub fn resolve_project(vault: &Path, md_path: &Path) -> Result<ProjectRef, Strin
     // The note lies directly in the vault root (rel has only the note itself)
     // → the project is the vault.
     if comps.len() <= 1 {
-        return Ok(ProjectRef { root: vault_c, name: String::new() });
+        return Ok(ProjectRef {
+            root: vault_c,
+            name: String::new(),
+        });
     }
     let first = comps[0].as_os_str().to_string_lossy().to_string();
     if first.starts_with('.') {
-        return Ok(ProjectRef { root: vault_c, name: String::new() });
+        return Ok(ProjectRef {
+            root: vault_c,
+            name: String::new(),
+        });
     }
-    Ok(ProjectRef { root: vault_c.join(&first), name: first })
+    Ok(ProjectRef {
+        root: vault_c.join(&first),
+        name: first,
+    })
 }
 
 pub fn config_path(vault: &Path) -> PathBuf {
@@ -105,8 +112,8 @@ pub fn save_config(vault: &Path, config: &PythonConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
     }
-    let body = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("SERIALIZE_FAILED: {}", e))?;
+    let body =
+        serde_json::to_string_pretty(config).map_err(|e| format!("SERIALIZE_FAILED: {}", e))?;
     std::fs::write(&path, body + "\n").map_err(|e| format!("WRITE_FAILED: {}", e))
 }
 
@@ -115,7 +122,8 @@ mod tests {
     use super::*;
 
     fn tmpdir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bnote-py-test-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("bnote-py-test-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -173,7 +181,11 @@ mod tests {
         let mut cfg = PythonConfig::default();
         cfg.projects.insert(
             "ml-notes".into(),
-            ProjectConfig { lsp: Some("ty".into()), python: None, ty_path: None },
+            ProjectConfig {
+                lsp: Some("ty".into()),
+                python: None,
+                ty_path: None,
+            },
         );
         save_config(&vault, &cfg).unwrap();
         let loaded = load_config(&vault);

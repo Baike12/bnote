@@ -50,10 +50,9 @@ pub fn decode_uri_path(uri: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 out.push(byte);
                 i += 3;
                 continue;
@@ -94,8 +93,7 @@ pub fn content_length_of(header_line: &str) -> Option<usize> {
 /// The lifetime follows the borrow (`'a`): the trait methods take `&self` /
 /// `&LspClient` and the returned future borrows them. The caller (the read
 /// loop) awaits it immediately and never holds it across an await.
-pub type BoxFuture<'a, T> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 #[cfg(test)]
 mod tests {
@@ -139,6 +137,9 @@ mod tests {
         assert_eq!(content_length_of("Content-Length: 42"), Some(42));
         assert_eq!(content_length_of("content-length: 7"), Some(7));
         assert_eq!(content_length_of("CONTENT-LENGTH: 0"), Some(0));
-        assert_eq!(content_length_of("Content-Type: application/vscode-jsonrpc"), None);
+        assert_eq!(
+            content_length_of("Content-Type: application/vscode-jsonrpc"),
+            None
+        );
     }
 }

@@ -106,14 +106,13 @@ impl TySink {
 }
 
 impl LspSink for TySink {
-    fn on_message<'a>(
-        &'a self,
-        client: &'a LspClient,
-        msg: Value,
-    ) -> BoxFuture<'a, ()> {
+    fn on_message<'a>(&'a self, client: &'a LspClient, msg: Value) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let id = msg.get("id").cloned();
-            let method = msg.get("method").and_then(Value::as_str).map(|s| s.to_string());
+            let method = msg
+                .get("method")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
             match (id, method) {
                 // A server → client request: the configuration request gets
                 // ty's configuration, the others get null, so the server never
@@ -297,7 +296,12 @@ fn doc_uri(md_path: &str) -> String {
 /// Finds ty: the tyPath of the project configuration > the ty in the project
 /// venv > the ty on the PATH.
 pub fn find_ty(project_root: &Path, cfg: &ProjectConfig) -> Result<String, String> {
-    if let Some(t) = cfg.ty_path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(t) = cfg
+        .ty_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         return Ok(t.to_string());
     }
     if let Some(py) = super::runner::venv_python(project_root) {
@@ -311,9 +315,7 @@ pub fn find_ty(project_root: &Path, cfg: &ProjectConfig) -> Result<String, Strin
     if let Some(t) = super::runner::find_on_path("ty") {
         return Ok(t.to_string_lossy().to_string());
     }
-    Err(
-        "ty 未找到:先安装(uv tool install ty 或 pipx install ty),\
+    Err("ty 未找到:先安装(uv tool install ty 或 pipx install ty),\
          或在 <vault>/.bnote/python.json 的 projects.<目录>.tyPath 里指定路径"
-            .to_string(),
-    )
+        .to_string())
 }

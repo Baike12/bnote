@@ -261,7 +261,14 @@ pub fn diff(root: &Path, path: &str, staged: bool) -> Result<String, String> {
         let abs = crate::code::project::resolve_in(&repo, path)?;
         return git(
             &repo,
-            &["diff", "--no-index", "--no-color", "--", "/dev/null", &abs.to_string_lossy()],
+            &[
+                "diff",
+                "--no-index",
+                "--no-color",
+                "--",
+                "/dev/null",
+                &abs.to_string_lossy(),
+            ],
         )
         .map(|b| String::from_utf8_lossy(&b).to_string());
     }

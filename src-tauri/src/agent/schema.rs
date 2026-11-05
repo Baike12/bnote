@@ -184,14 +184,18 @@ mod tests {
                 }
             }
         });
-        let err = validate(&schema, &json!({"todos": [{"content": "a"}, {"status": "x"}]}))
-            .unwrap_err();
+        let err = validate(
+            &schema,
+            &json!({"todos": [{"content": "a"}, {"status": "x"}]}),
+        )
+        .unwrap_err();
         assert!(err.contains("todos[1]"), "{}", err);
     }
 
     #[test]
     fn enum_membership_is_enforced() {
-        let schema = json!({"type": "object", "properties": {"status": {"enum": ["pending", "completed"]}}});
+        let schema =
+            json!({"type": "object", "properties": {"status": {"enum": ["pending", "completed"]}}});
         assert!(validate(&schema, &json!({"status": "pending"})).is_ok());
         assert!(validate(&schema, &json!({"status": "done"})).is_err());
     }

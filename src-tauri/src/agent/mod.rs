@@ -153,7 +153,8 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {    use super::*;
+mod tests {
+    use super::*;
 
     #[test]
     fn empty_provider_normalizes_to_anthropic_and_valid_values_pass_through() {

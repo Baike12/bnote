@@ -196,20 +196,20 @@ pub fn install_focus_guard(app: &AppHandle) {
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ffi::{c_char, c_void};
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
+    use std::sync::Mutex;
     use std::time::Duration;
 
     use core_foundation::base::{CFRelease, TCFType};
     use core_foundation::string::CFString;
-    use objc2::{class, msg_send};
     use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
     use objc2_app_kit::{NSApplication, NSStatusWindowLevel, NSWindowStyleMask};
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_core_graphics::CGEventFlags;
     use tauri::{AppHandle, LogicalPosition, LogicalSize, Window};
 
-    use super::{main_window, HARD_ACTIVE, HARD_LOCK, LOCKED, SNAPSHOT, WindowSnapshot};
+    use super::{main_window, WindowSnapshot, HARD_ACTIVE, HARD_LOCK, LOCKED, SNAPSHOT};
 
     /// Collection behavior bits (canJoinAllSpaces / stationary / fullScreenAuxiliary).
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
@@ -287,11 +287,7 @@ mod mac {
 
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
-        fn CGGetActiveDisplayList(
-            max_displays: u32,
-            displays: *mut u32,
-            count: *mut u32,
-        ) -> i32;
+        fn CGGetActiveDisplayList(max_displays: u32, displays: *mut u32, count: *mut u32) -> i32;
         fn CGDisplayBounds(display: u32) -> CGRect;
     }
 
@@ -359,11 +355,8 @@ mod mac {
     unsafe fn ax_attr(element: *const c_void, name: &str) -> Option<*const c_void> {
         let attr = CFString::new(name);
         let mut value: *const c_void = std::ptr::null();
-        let err = AXUIElementCopyAttributeValue(
-            element,
-            attr.as_concrete_TypeRef().cast(),
-            &mut value,
-        );
+        let err =
+            AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef().cast(), &mut value);
         if err == 0 && !value.is_null() {
             Some(value)
         } else {
@@ -381,7 +374,10 @@ mod mac {
 
     unsafe fn ax_size(element: *const c_void, name: &str) -> Option<CGSize> {
         let value = ax_attr(element, name)?;
-        let mut out = CGSize { width: 0.0, height: 0.0 };
+        let mut out = CGSize {
+            width: 0.0,
+            height: 0.0,
+        };
         let ok = AXValueGetValue(value, AX_VALUE_CG_SIZE, (&mut out as *mut CGSize).cast());
         CFRelease(value);
         ok.then_some(out)
@@ -468,21 +464,18 @@ mod mac {
         let _ = std::thread::Builder::new()
             .name("bnote-dock-watch".into())
             .spawn(|| loop {
-                let strip = if HARD_LOCK.load(Ordering::Relaxed)
-                    && HARD_ACTIVE.load(Ordering::Relaxed)
-                {
-                    dock_strip()
-                } else {
-                    None
-                };
+                let strip =
+                    if HARD_LOCK.load(Ordering::Relaxed) && HARD_ACTIVE.load(Ordering::Relaxed) {
+                        dock_strip()
+                    } else {
+                        None
+                    };
                 if let Some(b) = strip {
                     if !on_screen(b) {
                         DOCK_AUTOHIDE.store(true, Ordering::Relaxed);
                     }
                 }
-                let band = strip.filter(|b| {
-                    on_screen(*b) && DOCK_AUTOHIDE.load(Ordering::Relaxed)
-                });
+                let band = strip.filter(|b| on_screen(*b) && DOCK_AUTOHIDE.load(Ordering::Relaxed));
                 let visible = band.is_some();
                 *DOCK_BAND.lock().unwrap_or_else(|e| e.into_inner()) = band;
                 std::thread::sleep(Duration::from_millis(if visible { 60 } else { 250 }));
@@ -586,12 +579,8 @@ mod mac {
         let inner_app = app.clone();
         on_main_thread(&app, move || {
             let win = main_window(&inner_app).ok_or("NO_WINDOW: 主窗口不在")?;
-            let ns = win
-                .ns_window()
-                .map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
-            let view = win
-                .ns_view()
-                .map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
+            let ns = win.ns_window().map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
+            let view = win.ns_view().map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
 
             // A raised level means the previous stretch never unlocked. Repair
             // the window first, so the snapshot below records the normal state
@@ -690,8 +679,8 @@ mod mac {
                 // window left above every other app is worse. Drop the level and
                 // remove exactly the collection bits we added.
                 set_native_level(ns, NORMAL_LEVEL);
-                let behavior =
-                    native_behavior(ns) & !(CAN_JOIN_ALL_SPACES | STATIONARY | FULLSCREEN_AUXILIARY);
+                let behavior = native_behavior(ns)
+                    & !(CAN_JOIN_ALL_SPACES | STATIONARY | FULLSCREEN_AUXILIARY);
                 set_native_behavior(ns, behavior);
             }
         }
@@ -706,12 +695,8 @@ mod mac {
             // is what left the window at level 25 above every other app while the
             // frontend believed the session had ended.
             let win = main_window(&inner_app).ok_or("NO_WINDOW: 主窗口不在")?;
-            let ns = win
-                .ns_window()
-                .map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
-            let view = win
-                .ns_view()
-                .map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
+            let ns = win.ns_window().map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
+            let view = win.ns_view().map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
 
             restore(&win, ns, view)?;
             *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -795,10 +780,10 @@ mod mac {
     /// those bindings during a session, and nothing needs blocking: a menu that
     /// owns no chord cannot hide or close the window on its own.
     const BLOCKED: &[(u64, u64)] = &[
-        (48, CGEventFlags::MaskCommand.0), // Tab
-        (49, CGEventFlags::MaskCommand.0), // Space
-        (50, CGEventFlags::MaskCommand.0), // `
-        (12, CGEventFlags::MaskCommand.0), // Q (the app's quit chord)
+        (48, CGEventFlags::MaskCommand.0),  // Tab
+        (49, CGEventFlags::MaskCommand.0),  // Space
+        (50, CGEventFlags::MaskCommand.0),  // `
+        (12, CGEventFlags::MaskCommand.0),  // Q (the app's quit chord)
         (126, CGEventFlags::MaskControl.0), // Up (Mission Control)
         (125, CGEventFlags::MaskControl.0), // Down
         (
@@ -843,7 +828,10 @@ mod mac {
             // App chords the menu no longer claims: swallowing these would kill
             // the user's own bindings (⌘M math block, ⌘W region.focus-agent).
             for code in [4i64, 46, 13] {
-                assert!(!should_swallow(code, CMD), "⌘ code {code} must not be swallowed");
+                assert!(
+                    !should_swallow(code, CMD),
+                    "⌘ code {code} must not be swallowed"
+                );
             }
             // The control chords need Control; ⌘ alone must not match.
             assert!(!should_swallow(126, CMD));
@@ -913,7 +901,8 @@ mod mac {
         }
         let event_ref = unsafe { event.as_ref() };
         let flags = CGEvent::flags(Some(event_ref)).0;
-        let code = CGEvent::integer_value_field(Some(event_ref), CGEventField::KeyboardEventKeycode);
+        let code =
+            CGEvent::integer_value_field(Some(event_ref), CGEventField::KeyboardEventKeycode);
         SEEN.fetch_add(1, Ordering::Relaxed);
         if should_swallow(code, flags) {
             SWALLOWED.fetch_add(1, Ordering::Relaxed);
@@ -1036,7 +1025,8 @@ mod mac {
                         )
                     }
                     .ok_or("TAP_FAILED: 事件 tap 建不起来(辅助功能权限没给?)")?;
-                    let port = objc2_core_foundation::CFRetained::as_ptr(&tap).as_ptr() as *mut c_void;
+                    let port =
+                        objc2_core_foundation::CFRetained::as_ptr(&tap).as_ptr() as *mut c_void;
                     TAP_PORT.store(port, Ordering::Release);
                     let Some(source) = objc2_core_foundation::CFMachPort::new_run_loop_source(
                         None,
@@ -1051,10 +1041,9 @@ mod mac {
                     // The mode must be kCFRunLoopDefaultMode: passing NULL makes
                     // CFRunLoopAddSource crash inside CoreFoundation
                     // (CFRunLoopCopyMode -> CFHash -> SIGTRAP, measured).
-                    loop_.add_source(
-                        Some(source.as_ref()),
-                        unsafe { objc2_core_foundation::kCFRunLoopDefaultMode },
-                    );
+                    loop_.add_source(Some(source.as_ref()), unsafe {
+                        objc2_core_foundation::kCFRunLoopDefaultMode
+                    });
                     Ok(())
                 })();
                 let _ = tx.send(created);

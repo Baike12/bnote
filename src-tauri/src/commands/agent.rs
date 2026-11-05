@@ -157,8 +157,7 @@ pub async fn agent_start_session(
     let vault = state.vault();
     let def_id = session_mode.definition_id();
     let def = Arc::new(
-        defs::definition(def_id)
-            .ok_or_else(|| format!("DEF_MISSING: {def_id} 不在内置定义里"))?,
+        defs::definition(def_id).ok_or_else(|| format!("DEF_MISSING: {def_id} 不在内置定义里"))?,
     );
     // Coding sessions anchor at the opened code project: relative tool paths
     // and bash start there, writes are confined to the project ∪ agent home.
@@ -228,9 +227,7 @@ pub async fn agent_start_session(
     let current_note = state.current_note.lock().ok().and_then(|n| n.clone());
     let mcp_names: Vec<String> = mcp.tools.iter().map(|t| t.name.clone()).collect();
     // `additionalDirectories` widens the writable roots for this session.
-    let layered = crate::agent::settings::load(
-        workdir.as_deref().or(vault.as_deref()),
-    );
+    let layered = crate::agent::settings::load(workdir.as_deref().or(vault.as_deref()));
     let extra_roots: Vec<PathBuf> = layered
         .settings
         .permissions

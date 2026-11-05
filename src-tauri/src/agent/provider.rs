@@ -67,7 +67,10 @@ fn retryable_status(status: reqwest::StatusCode) -> bool {
 ///
 /// `None` = the stream ended normally; `Err` = idle timeout (no gateway response)
 /// or a connection error.
-async fn next_chunk_with<S, E>(stream: &mut S, idle: Duration) -> Result<Option<bytes::Bytes>, String>
+async fn next_chunk_with<S, E>(
+    stream: &mut S,
+    idle: Duration,
+) -> Result<Option<bytes::Bytes>, String>
 where
     S: futures::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
     E: std::fmt::Display,
@@ -120,14 +123,21 @@ fn anthropic_block(c: &Content) -> Value {
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": data},
         }),
-        Content::ToolUse { id, name, input, .. } => {
+        Content::ToolUse {
+            id, name, input, ..
+        } => {
             json!({"type": "tool_use", "id": id, "name": name, "input": input})
         }
         // Without images keep the plain string shape (the least common multiple of
         // the existing session records and the compatibility endpoint); with images
         // the content switches to a blocks array (text + image), the standard
         // shape for tool_result in the official Anthropic protocol.
-        Content::ToolResult { tool_use_id, content, is_error, images } if images.is_empty() => {
+        Content::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            images,
+        } if images.is_empty() => {
             json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -135,7 +145,12 @@ fn anthropic_block(c: &Content) -> Value {
                 "is_error": is_error,
             })
         }
-        Content::ToolResult { tool_use_id, content, is_error, images } => {
+        Content::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            images,
+        } => {
             let mut blocks = Vec::with_capacity(1 + images.len());
             if !content.is_empty() {
                 blocks.push(json!({"type": "text", "text": content}));
@@ -219,7 +234,9 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
                     .iter()
                     .enumerate()
                     .map(|(i, c)| match c {
-                        Content::ToolUse { id, name, input, .. } => json!({
+                        Content::ToolUse {
+                            id, name, input, ..
+                        } => json!({
                             "id": id,
                             "type": "function",
                             "function": {
@@ -257,7 +274,12 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
                 }));
             }
             for r in results {
-                if let Content::ToolResult { tool_use_id, content, .. } = r {
+                if let Content::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } = r
+                {
                     messages.push(json!({
                         "role": "tool",
                         "tool_call_id": tool_use_id,
@@ -275,7 +297,9 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
 fn anthropic_start_usage(message: &Value) -> Option<TokenUsage> {
     let usage = message.get("usage")?;
     let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-    let input = count("input_tokens") + count("cache_creation_input_tokens") + count("cache_read_input_tokens");
+    let input = count("input_tokens")
+        + count("cache_creation_input_tokens")
+        + count("cache_read_input_tokens");
     let output = count("output_tokens");
     (input > 0 || output > 0).then_some(TokenUsage { input, output })
 }
@@ -324,7 +348,13 @@ pub struct Provider {
 }
 
 impl Provider {
-    pub fn new(kind: &str, base_url: &str, api_key: &str, model: &str, max_tokens: u32) -> Provider {
+    pub fn new(
+        kind: &str,
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        max_tokens: u32,
+    ) -> Provider {
         let kind = kind.to_string();
         let base = if base_url.is_empty() {
             if kind == "anthropic" {
@@ -362,7 +392,8 @@ impl Provider {
             max_tokens: None,
             abort: Abort::new(),
         };
-        self.stream_turn_with(system, items, tools, sink, &opts).await
+        self.stream_turn_with(system, items, tools, sink, &opts)
+            .await
     }
 
     /// Streams one turn. Emits TextDelta events; returns the assembled turn.
@@ -380,7 +411,8 @@ impl Provider {
         opts: &TurnOptions,
     ) -> Result<TurnResult, String> {
         if self.kind == "anthropic" {
-            self.stream_anthropic(system, items, tools, sink, opts).await
+            self.stream_anthropic(system, items, tools, sink, opts)
+                .await
         } else {
             self.stream_openai(system, items, tools, sink, opts).await
         }
@@ -591,7 +623,9 @@ impl Provider {
                             Some("text_delta") => {
                                 let text = delta["text"].as_str().unwrap_or_default();
                                 turn.text.push_str(text);
-                                sink(AgentEvent::TextDelta { text: text.to_string() });
+                                sink(AgentEvent::TextDelta {
+                                    text: text.to_string(),
+                                });
                             }
                             // Streaming text of a thinking block (never enters the
                             // history, see AgentEvent::ThinkingDelta); signature_delta
@@ -600,12 +634,16 @@ impl Provider {
                             Some("thinking_delta") => {
                                 let text = delta["thinking"].as_str().unwrap_or_default();
                                 if !text.is_empty() {
-                                    sink(AgentEvent::ThinkingDelta { text: text.to_string() });
+                                    sink(AgentEvent::ThinkingDelta {
+                                        text: text.to_string(),
+                                    });
                                 }
                             }
                             Some("input_json_delta") => {
                                 if let Some((_, _, args)) = current_tool.as_mut() {
-                                    args.push_str(delta["partial_json"].as_str().unwrap_or_default());
+                                    args.push_str(
+                                        delta["partial_json"].as_str().unwrap_or_default(),
+                                    );
                                 }
                             }
                             _ => {}
@@ -765,13 +803,17 @@ impl Provider {
                     .or_else(|| delta["reasoning"].as_str())
                 {
                     if !text.is_empty() {
-                        sink(AgentEvent::ThinkingDelta { text: text.to_string() });
+                        sink(AgentEvent::ThinkingDelta {
+                            text: text.to_string(),
+                        });
                     }
                 }
                 if let Some(text) = delta["content"].as_str() {
                     if !text.is_empty() {
                         turn.text.push_str(text);
-                        sink(AgentEvent::TextDelta { text: text.to_string() });
+                        sink(AgentEvent::TextDelta {
+                            text: text.to_string(),
+                        });
                     }
                 }
                 if let Some(tcs) = delta["tool_calls"].as_array() {
@@ -924,8 +966,7 @@ mod tests {
         // With a half-open gateway the SSE stream never ends on its own: without
         // this timeout a turn hangs forever and the session's running flag never
         // resets (every later send is rejected with SESSION_BUSY).
-        let mut stream =
-            futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
+        let mut stream = futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
         let err = next_chunk_with(&mut stream, Duration::from_millis(30))
             .await
             .unwrap_err();
@@ -943,9 +984,10 @@ mod tests {
 
     #[tokio::test]
     async fn stream_error_is_reported_unchanged() {
-        let mut stream = futures::stream::iter(vec![Err::<bytes::Bytes, _>(
-            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset"),
-        )]);
+        let mut stream = futures::stream::iter(vec![Err::<bytes::Bytes, _>(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "reset",
+        ))]);
         let err = next_chunk_with(&mut stream, Duration::from_secs(1))
             .await
             .unwrap_err();
@@ -980,10 +1022,15 @@ mod tests {
             tool_use_id: "t2".into(),
             content: "preview updated: page.html".into(),
             is_error: false,
-            images: vec![InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
+            images: vec![InlineImage {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
         });
         assert_eq!(with_img["type"], "tool_result");
-        let blocks = with_img["content"].as_array().expect("content must be an array with images");
+        let blocks = with_img["content"]
+            .as_array()
+            .expect("content must be an array with images");
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["type"], "text");
         assert_eq!(blocks[0]["text"], "preview updated: page.html");
@@ -1003,7 +1050,10 @@ mod tests {
                 tool_use_id: "t1".into(),
                 content: "preview updated".into(),
                 is_error: false,
-                images: vec![InlineImage { media_type: "image/png".into(), data: "AAAA".into() }],
+                images: vec![InlineImage {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                }],
             }],
         }];
         let messages = openai_messages("", &items);
@@ -1026,22 +1076,34 @@ mod tests {
         });
         assert_eq!(
             anthropic_start_usage(&message),
-            Some(TokenUsage { input: 420, output: 1 })
+            Some(TokenUsage {
+                input: 420,
+                output: 1
+            })
         );
     }
 
     #[test]
     fn anthropic_message_delta_updates_only_the_output_and_keeps_the_input_from_start() {
-        let start = Some(TokenUsage { input: 420, output: 1 });
+        let start = Some(TokenUsage {
+            input: 420,
+            output: 1,
+        });
         assert_eq!(
             anthropic_output_usage(start, &json!({"output_tokens": 88})),
-            Some(TokenUsage { input: 420, output: 88 })
+            Some(TokenUsage {
+                input: 420,
+                output: 88
+            })
         );
         // Without a start event it must not be lost either: the output still has to
         // be reported.
         assert_eq!(
             anthropic_output_usage(None, &json!({"output_tokens": 5})),
-            Some(TokenUsage { input: 0, output: 5 })
+            Some(TokenUsage {
+                input: 0,
+                output: 5
+            })
         );
     }
 
@@ -1049,11 +1111,17 @@ mod tests {
     fn openai_usage_accepts_prompt_completion_and_input_output() {
         assert_eq!(
             openai_usage(&json!({"usage": {"prompt_tokens": 61_800, "completion_tokens": 10_000}})),
-            Some(TokenUsage { input: 61_800, output: 10_000 })
+            Some(TokenUsage {
+                input: 61_800,
+                output: 10_000
+            })
         );
         assert_eq!(
             openai_usage(&json!({"usage": {"input_tokens": 7, "output_tokens": 3}})),
-            Some(TokenUsage { input: 7, output: 3 })
+            Some(TokenUsage {
+                input: 7,
+                output: 3
+            })
         );
     }
 
@@ -1061,7 +1129,10 @@ mod tests {
     fn usage_returns_none_when_missing_null_or_all_zero() {
         assert_eq!(openai_usage(&json!({})), None);
         assert_eq!(openai_usage(&json!({"usage": null})), None);
-        assert_eq!(openai_usage(&json!({"usage": {"prompt_tokens": 0, "completion_tokens": 0}})), None);
+        assert_eq!(
+            openai_usage(&json!({"usage": {"prompt_tokens": 0, "completion_tokens": 0}})),
+            None
+        );
         assert_eq!(anthropic_start_usage(&json!({})), None);
     }
 
@@ -1085,10 +1156,7 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["type"], "text");
         assert_eq!(parts[1]["type"], "image_url");
-        assert_eq!(
-            parts[1]["image_url"]["url"],
-            "data:image/jpeg;base64,BBBB"
-        );
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/jpeg;base64,BBBB");
     }
 
     #[test]

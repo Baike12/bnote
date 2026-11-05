@@ -79,7 +79,10 @@ async fn run_capture(
     if output.status.success() {
         log.push_str("OK\n");
     } else {
-        log.push_str(&format!("FAIL(退出码 {})\n", output.status.code().unwrap_or(-1)));
+        log.push_str(&format!(
+            "FAIL(退出码 {})\n",
+            output.status.code().unwrap_or(-1)
+        ));
     }
     Ok(log)
 }

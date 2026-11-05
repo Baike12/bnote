@@ -292,8 +292,9 @@ fn english_tokens(text: &str) -> Vec<&str> {
             let start = i;
             i += 1;
             while i < bytes.len()
-                && (bytes[i].is_ascii_alphanumeric()
-                    || matches!(bytes[i], b'\'' | b'-' | 0xE2) // ’ (UTF-8 lead)
+                && (
+                    bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'\'' | b'-' | 0xE2)
+                    // ’ (UTF-8 lead)
                 )
             {
                 // Skip the rest of the UTF-8 curly apostrophe.
@@ -358,9 +359,7 @@ pub async fn translate_sentence(cfg: &TranslateConfig, text: &str) -> Result<Str
         .build()
         .map_err(|e| format!("翻译请求初始化失败：{}", e))?;
 
-    let mut req = client
-        .post(&url)
-        .header("content-type", "application/json");
+    let mut req = client.post(&url).header("content-type", "application/json");
     match cfg.protocol() {
         Protocol::Anthropic => {
             if !cfg.api_key.is_empty() {
@@ -375,17 +374,13 @@ pub async fn translate_sentence(cfg: &TranslateConfig, text: &str) -> Result<Str
         }
     }
 
-    let resp = req
-        .body(body.to_string())
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                format!("翻译超时（{} 秒）。", cfg.timeout_ms / 1000)
-            } else {
-                format!("翻译请求失败：{}", e)
-            }
-        })?;
+    let resp = req.body(body.to_string()).send().await.map_err(|e| {
+        if e.is_timeout() {
+            format!("翻译超时（{} 秒）。", cfg.timeout_ms / 1000)
+        } else {
+            format!("翻译请求失败：{}", e)
+        }
+    })?;
     let status = resp.status();
     let raw = resp.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -456,10 +451,7 @@ fn clean_output(text: &str) -> String {
     let mut out = text.trim();
     for (open, close) in [('"', '"'), ('“', '”'), ('「', '」')] {
         if out.starts_with(open) && out.ends_with(close) && out.chars().count() >= 2 {
-            out = out
-                .trim_start_matches(open)
-                .trim_end_matches(close)
-                .trim();
+            out = out.trim_start_matches(open).trim_end_matches(close).trim();
             break;
         }
     }
@@ -569,10 +561,8 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let dir = std::env::temp_dir().join(format!(
-            "bnote-translate-word-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("bnote-translate-word-test-{}", std::process::id()));
         let word = rt
             .block_on(translate_selection(&dir, "ubiquitous"))
             .unwrap();
@@ -610,9 +600,7 @@ mod tests {
             std::process::id()
         ));
         let text = "a".repeat(MAX_TRANSLATE_CHARS + 1);
-        let err = rt
-            .block_on(translate_selection(&dir, &text))
-            .unwrap_err();
+        let err = rt.block_on(translate_selection(&dir, &text)).unwrap_err();
         assert!(err.contains("过长"), "{}", err);
     }
 

@@ -63,14 +63,8 @@ pub struct ToolContext {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StudyContent {
-    Pdf {
-        path: String,
-        title: String,
-    },
-    Url {
-        url: String,
-        title: String,
-    },
+    Pdf { path: String, title: String },
+    Url { url: String, title: String },
 }
 
 /// Extracts the markdown text of a PDF for the Agent.

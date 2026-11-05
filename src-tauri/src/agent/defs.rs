@@ -217,7 +217,9 @@ pub fn registry() -> Vec<AgentDefinition> {
             subagents: Vec::new(),
             // The study prompt runs inside the prompt pipeline; with no tools
             // it must stay free of tool guidance.
-            prompts: vec![include_str!("../../resources/agents/study/SYSTEM_PROMPT.md")],
+            prompts: vec![include_str!(
+                "../../resources/agents/study/SYSTEM_PROMPT.md"
+            )],
             model: String::new(),
             max_tokens: 0,
             max_turns: 0,
@@ -274,7 +276,8 @@ pub fn registry() -> Vec<AgentDefinition> {
         AgentDefinition {
             id: "plan".into(),
             name: "计划子代理".into(),
-            description: "只读计划子代理:调研后给出可执行的实施步骤与关键文件,不改动任何东西。".into(),
+            description: "只读计划子代理:调研后给出可执行的实施步骤与关键文件,不改动任何东西。"
+                .into(),
             tools: tools(&["read_file", "list_files", "glob", "grep"]),
             permissions: BTreeMap::new(),
             compaction: CompactionCfg::default(),
@@ -346,7 +349,10 @@ mod tests {
         }
         assert_eq!(coding.prompts.len(), 8);
         assert!(coding.prompts[0].contains("coding agent"));
-        assert!(coding.prompts.iter().any(|p| p.contains("Executing actions")));
+        assert!(coding
+            .prompts
+            .iter()
+            .any(|p| p.contains("Executing actions")));
     }
 
     #[test]
@@ -372,8 +378,7 @@ mod tests {
     #[test]
     fn a_deny_permission_removes_the_tool_from_the_effective_set() {
         let mut def = definition("coding").unwrap();
-        def.permissions
-            .insert("bash".into(), Permission::Deny);
+        def.permissions.insert("bash".into(), Permission::Deny);
         assert!(!def.tool_enabled("bash"));
         assert!(!def.effective_tools().iter().any(|t| t == "bash"));
     }

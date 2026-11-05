@@ -192,7 +192,12 @@ pub fn server_root(root: &Path, language: &str, rel_path: &str) -> PathBuf {
 }
 
 /// Manifest files that mark the root of a Python (sub)project.
-const PYTHON_MANIFESTS: &[&str] = &["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"];
+const PYTHON_MANIFESTS: &[&str] = &[
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+];
 
 fn is_python_project(dir: &Path) -> bool {
     PYTHON_MANIFESTS.iter().any(|m| dir.join(m).is_file())
@@ -295,10 +300,10 @@ impl LspManager {
 
     /// Gets the client of (language, workspace root), if it was ever started.
     pub fn get(&self, language: &str, workspace: &Path) -> Option<Arc<LspClient>> {
-        self.clients
-            .lock()
-            .ok()
-            .and_then(|m| m.get(&(language.to_string(), workspace.to_path_buf())).cloned())
+        self.clients.lock().ok().and_then(|m| {
+            m.get(&(language.to_string(), workspace.to_path_buf()))
+                .cloned()
+        })
     }
 
     /// Any live client of this language.
@@ -351,7 +356,11 @@ impl LspManager {
         let spec = ServerSpec {
             command: config.command.clone(),
             args: config.args.clone(),
-            env: config.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            env: config
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             cwd: Some(workspace.to_path_buf()),
             language_id: language.to_string(),
             initialization_options: config.init_options.clone(),
@@ -444,7 +453,6 @@ struct CodeSink {
     clients: Arc<Mutex<HashMap<ClientKey, Arc<LspClient>>>>,
 }
 
-
 impl CodeSink {
     /// Absolute path → path relative to the project (posix). Files outside the
     /// project return None (they are not shown).
@@ -519,14 +527,13 @@ impl CodeSink {
 }
 
 impl LspSink for CodeSink {
-    fn on_message<'a>(
-        &'a self,
-        client: &'a LspClient,
-        msg: Value,
-    ) -> BoxFuture<'a, ()> {
+    fn on_message<'a>(&'a self, client: &'a LspClient, msg: Value) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let id = msg.get("id").cloned();
-            let method = msg.get("method").and_then(Value::as_str).map(|s| s.to_string());
+            let method = msg
+                .get("method")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
             match (id, method) {
                 // A server → client request: answer each with what it expects.
                 (Some(id), Some(method)) => {
@@ -618,7 +625,8 @@ mod tests {
     use super::*;
 
     fn tmpdir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bnote-codelsp-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("bnote-codelsp-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -626,12 +634,21 @@ mod tests {
 
     #[test]
     fn builtin_covers_the_four_core_languages() {
-        assert_eq!(builtin_server("typescript").unwrap().command, "typescript-language-server");
-        assert_eq!(builtin_server("typescript").unwrap().args, vec!["--stdio".to_string()]);
+        assert_eq!(
+            builtin_server("typescript").unwrap().command,
+            "typescript-language-server"
+        );
+        assert_eq!(
+            builtin_server("typescript").unwrap().args,
+            vec!["--stdio".to_string()]
+        );
         assert_eq!(builtin_server("rust").unwrap().command, "rust-analyzer");
         assert_eq!(builtin_server("go").unwrap().command, "gopls");
         assert_eq!(builtin_server("python").unwrap().command, "ty");
-        assert_eq!(builtin_server("python").unwrap().args, vec!["server".to_string()]);
+        assert_eq!(
+            builtin_server("python").unwrap().args,
+            vec!["server".to_string()]
+        );
         assert!(builtin_server("cobol").is_none());
     }
 
@@ -700,7 +717,11 @@ mod tests {
         let r = resolve_server(&root, "python", "", None).unwrap();
         let venv = root.join(".venv").to_string_lossy().to_string();
         assert_eq!(r.config.env.get("VIRTUAL_ENV"), Some(&venv));
-        let path = r.config.env.get("PATH").expect("PATH must be prefixed with the venv bin");
+        let path = r
+            .config
+            .env
+            .get("PATH")
+            .expect("PATH must be prefixed with the venv bin");
         assert_eq!(
             std::env::split_paths(path).next(),
             Some(root.join(".venv/bin"))
@@ -783,7 +804,10 @@ mod tests {
         std::fs::create_dir_all(root.join("scratch")).unwrap();
         assert_eq!(server_root(&root, "python", "scratch/try.py"), root);
         // Other languages never split: one server per project.
-        assert_eq!(server_root(&root, "typescript", "assignment1/pkg/a.ts"), root);
+        assert_eq!(
+            server_root(&root, "typescript", "assignment1/pkg/a.ts"),
+            root
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -831,7 +855,10 @@ mod tests {
         )
         .unwrap();
         let r = resolve_server(&root, "python", "", None).unwrap();
-        assert_eq!(r.config.env.get("VIRTUAL_ENV").map(String::as_str), Some("/opt/py"));
+        assert_eq!(
+            r.config.env.get("VIRTUAL_ENV").map(String::as_str),
+            Some("/opt/py")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

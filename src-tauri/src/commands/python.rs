@@ -236,7 +236,8 @@ pub async fn python_lsp_request(
 }
 
 #[tauri::command]
-pub async fn python_lsp_close(state: State<'_, AppState>, md_path: String) -> CmdResult<()> {    let (_vault, project, config) = with_project(&state, &md_path)?;
+pub async fn python_lsp_close(state: State<'_, AppState>, md_path: String) -> CmdResult<()> {
+    let (_vault, project, config) = with_project(&state, &md_path)?;
     if config.lsp.as_deref() != Some("ty") {
         return Ok(());
     }

@@ -36,17 +36,33 @@ const RULE_DESC: &str = " (project rule)";
 /// Collects the effective instruction files. `include_user` is true for coding
 /// sessions (the agent's home is project-independent); the vault-scoped agents
 /// read only `<vault>/.bnote/AGENTS.md`.
-pub fn collect(project: Option<&Path>, include_user: bool, excludes: &[String]) -> Vec<InstructionFile> {
+pub fn collect(
+    project: Option<&Path>,
+    include_user: bool,
+    excludes: &[String],
+) -> Vec<InstructionFile> {
     let mut out = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let excluded = Excludes::new(excludes);
 
     if include_user {
         let home = crate::agent::home::home_dir();
-        push(&mut out, &mut seen, &excluded, &home.join("AGENTS.md"), USER_DESC);
+        push(
+            &mut out,
+            &mut seen,
+            &excluded,
+            &home.join("AGENTS.md"),
+            USER_DESC,
+        );
         // A memory index is part of the user's instructions, exactly like CC's
         // auto-memory entry.
-        push(&mut out, &mut seen, &excluded, &home.join("MEMORY.md"), USER_DESC);
+        push(
+            &mut out,
+            &mut seen,
+            &excluded,
+            &home.join("MEMORY.md"),
+            USER_DESC,
+        );
         for file in rules_in(&home.join("rules")) {
             push(&mut out, &mut seen, &excluded, &file, RULE_DESC);
         }
@@ -82,8 +98,20 @@ pub fn collect(project: Option<&Path>, include_user: bool, excludes: &[String]) 
     let mut dirs = ancestors_to_git_root(project);
     dirs.reverse();
     for dir in dirs {
-        push(&mut out, &mut seen, &excluded, &dir.join("AGENTS.md"), PROJECT_DESC);
-        push(&mut out, &mut seen, &excluded, &dir.join("CLAUDE.md"), PROJECT_DESC);
+        push(
+            &mut out,
+            &mut seen,
+            &excluded,
+            &dir.join("AGENTS.md"),
+            PROJECT_DESC,
+        );
+        push(
+            &mut out,
+            &mut seen,
+            &excluded,
+            &dir.join("CLAUDE.md"),
+            PROJECT_DESC,
+        );
         push(
             &mut out,
             &mut seen,
@@ -94,7 +122,13 @@ pub fn collect(project: Option<&Path>, include_user: bool, excludes: &[String]) 
         for file in rules_in(&dir.join(".bnote").join("rules")) {
             push(&mut out, &mut seen, &excluded, &file, RULE_DESC);
         }
-        push(&mut out, &mut seen, &excluded, &dir.join("AGENTS.local.md"), LOCAL_DESC);
+        push(
+            &mut out,
+            &mut seen,
+            &excluded,
+            &dir.join("AGENTS.local.md"),
+            LOCAL_DESC,
+        );
     }
     out
 }
@@ -227,8 +261,20 @@ fn is_text_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some(
-            "md" | "markdown" | "txt" | "json" | "yaml" | "yml" | "toml" | "xml" | "csv"
-                | "js" | "ts" | "tsx" | "jsx" | "css" | "html"
+            "md" | "markdown"
+                | "txt"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "xml"
+                | "csv"
+                | "js"
+                | "ts"
+                | "tsx"
+                | "jsx"
+                | "css"
+                | "html"
         )
     )
 }
@@ -305,9 +351,7 @@ impl Excludes {
     }
 
     fn matches(&self, path: &Path) -> bool {
-        self.set
-            .as_ref()
-            .is_some_and(|set| set.is_match(path))
+        self.set.as_ref().is_some_and(|set| set.is_match(path))
     }
 }
 
@@ -341,13 +385,11 @@ pub fn render_one(file: &InstructionFile) -> String {
 
 /// Instruction files between a read file and the project root that were not
 /// loaded yet (CC's `nested_memory` attachment).
-pub fn nested(
-    target: &Path,
-    project: &Path,
-    loaded: &HashSet<PathBuf>,
-) -> Vec<InstructionFile> {
+pub fn nested(target: &Path, project: &Path, loaded: &HashSet<PathBuf>) -> Vec<InstructionFile> {
     let mut out = Vec::new();
-    let root = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+    let root = project
+        .canonicalize()
+        .unwrap_or_else(|_| project.to_path_buf());
     let mut seen = loaded.clone();
     let excluded = Excludes::new(&[]);
     // Both sides go through canonicalize: `/var` is `/private/var` on macOS,
@@ -446,7 +488,11 @@ mod tests {
     #[test]
     fn imports_are_expanded_once_and_fenced_code_is_ignored() {
         let root = temp("imports");
-        std::fs::write(root.join("AGENTS.md"), "see @docs/a.md\n```\n@docs/ignored.md\n```").unwrap();
+        std::fs::write(
+            root.join("AGENTS.md"),
+            "see @docs/a.md\n```\n@docs/ignored.md\n```",
+        )
+        .unwrap();
         std::fs::create_dir_all(root.join("docs")).unwrap();
         std::fs::write(root.join("docs/a.md"), "imported @b.md").unwrap();
         std::fs::write(root.join("docs/b.md"), "second level").unwrap();

@@ -84,14 +84,14 @@ mod tis {
     }
 
     /* ---- input source reference cache -------------------------------------
-       The most expensive step in TIS is "enumerate every input source":
-       TISCreateInputSourceList plus reading 4 properties per source (measured
-       on this machine: ~33 ms cold, ~1-2 ms warm). select() runs on every mode
-       switch and must run on the Apple main thread (see on_main), so every
-       enumeration wastes a main thread slot. The set of input sources barely
-       changes within a session, so cache the whole thing: select() only
-       re-enumerates on a cache miss, or when the selection failed (the source
-       set changed). ---------------------------------------------------------- */
+    The most expensive step in TIS is "enumerate every input source":
+    TISCreateInputSourceList plus reading 4 properties per source (measured
+    on this machine: ~33 ms cold, ~1-2 ms warm). select() runs on every mode
+    switch and must run on the Apple main thread (see on_main), so every
+    enumeration wastes a main thread slot. The set of input sources barely
+    changes within a session, so cache the whole thing: select() only
+    re-enumerates on a cache miss, or when the selection failed (the source
+    set changed). ---------------------------------------------------------- */
 
     struct Sources(Mutex<Option<HashMap<String, CFType>>>);
     // CFType is a +1 reference-counted object and retain/release are themselves
@@ -120,9 +120,8 @@ mod tis {
     fn enumerate_sources() -> Vec<(String, String, bool, CFType)> {
         ENUMERATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut out = Vec::new();
-        let keyboard_category = unsafe {
-            CFString::wrap_under_get_rule(kTISCategoryKeyboardInputSource).to_string()
-        };
+        let keyboard_category =
+            unsafe { CFString::wrap_under_get_rule(kTISCategoryKeyboardInputSource).to_string() };
         for src in unsafe { live_sources() } {
             let raw = src.as_CFTypeRef();
             unsafe {
@@ -344,13 +343,19 @@ async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
         eprintln!("[bnote] set_input_source({id}) -> {already:?}");
         let already = already??;
         if already {
-            return Ok(SetImeOutcome { switched: false, fallback_used: false });
+            return Ok(SetImeOutcome {
+                switched: false,
+                fallback_used: false,
+            });
         }
         let cjk = cached_is_cjk(&app, &id)?;
         if cjk {
             verify_or_fallback(app, id, seq);
         }
-        Ok(SetImeOutcome { switched: true, fallback_used: false })
+        Ok(SetImeOutcome {
+            switched: true,
+            fallback_used: false,
+        })
     })
     .await
     .map_err(|e| format!("join error: {e}"))?
@@ -511,7 +516,11 @@ mod tests {
         println!("current: {current:?} (took {:?})", t0.elapsed());
 
         let sources = tis::selectable_sources();
-        println!("{} selectable sources (took {:?}):", sources.len(), t0.elapsed());
+        println!(
+            "{} selectable sources (took {:?}):",
+            sources.len(),
+            t0.elapsed()
+        );
         for s in &sources {
             println!("  {:<45} {} cjk={}", s.id, s.name, s.is_cjk);
         }

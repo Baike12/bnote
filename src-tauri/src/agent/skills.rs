@@ -51,7 +51,9 @@ impl SkillRegistry {
                 };
                 let (name, description) = parse_frontmatter(&content);
                 let name = name.unwrap_or_else(|| {
-                    path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+                    path.file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
                 });
                 skills.push(SkillInfo {
                     name,

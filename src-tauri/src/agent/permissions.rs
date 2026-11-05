@@ -100,7 +100,11 @@ pub fn decide_with_rules(
     if let Some(decision) = rule_decision(rules, tool, input) {
         return decision;
     }
-    let key = if tool.starts_with("mcp__") { "mcp" } else { tool };
+    let key = if tool.starts_with("mcp__") {
+        "mcp"
+    } else {
+        tool
+    };
     match def.permissions.get(key) {
         Some(Permission::Deny) => Decision::Deny,
         Some(Permission::Ask) => Decision::Ask,
@@ -115,7 +119,9 @@ pub fn decide_with_rules(
                 }
             }
             Mode::Auto => {
-                if tool == "bash" && dangerous_command(input["command"].as_str().unwrap_or("")).is_some() {
+                if tool == "bash"
+                    && dangerous_command(input["command"].as_str().unwrap_or("")).is_some()
+                {
                     Decision::Ask
                 } else {
                     Decision::Allow
@@ -146,7 +152,11 @@ pub struct Rules<'a> {
 
 /// `None` = no rule matched. Order matters: deny beats ask beats allow.
 pub fn rule_decision(rules: &Rules, tool: &str, input: &Value) -> Option<Decision> {
-    if rules.deny.iter().any(|rule| rule_matches(rule, tool, input)) {
+    if rules
+        .deny
+        .iter()
+        .any(|rule| rule_matches(rule, tool, input))
+    {
         return Some(Decision::Deny);
     }
     if rules.ask.iter().any(|rule| rule_matches(rule, tool, input)) {
@@ -296,13 +306,15 @@ pub fn read_only_command(command: &str) -> bool {
 
 fn read_only_segment(segment: &str) -> bool {
     let mut parts = segment.split_whitespace();
-    let Some(head) = parts.next() else { return true };
+    let Some(head) = parts.next() else {
+        return true;
+    };
     let head = head.trim_start_matches('(').trim();
     const READERS: &[&str] = &[
-        "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "stat", "file",
-        "tree", "rg", "grep", "find", "fd", "sort", "uniq", "cut", "tr", "diff", "cmp",
-        "sed", "awk", "jq", "basename", "dirname", "realpath", "which", "type",
-        "du", "df", "date", "uname", "env", "printenv", "cd", "test", "true", "false",
+        "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "stat", "file", "tree", "rg",
+        "grep", "find", "fd", "sort", "uniq", "cut", "tr", "diff", "cmp", "sed", "awk", "jq",
+        "basename", "dirname", "realpath", "which", "type", "du", "df", "date", "uname", "env",
+        "printenv", "cd", "test", "true", "false",
     ];
     if READERS.contains(&head) {
         // `sed -i` and `awk -i inplace` write; treat the in-place forms as writes.
@@ -323,13 +335,26 @@ fn read_only_segment(segment: &str) -> bool {
         }
         return matches!(
             sub,
-            "status" | "diff" | "log" | "show" | "branch" | "rev-parse" | "ls-files"
-                | "remote" | "describe" | "blame" | "grep" | "tag"
+            "status"
+                | "diff"
+                | "log"
+                | "show"
+                | "branch"
+                | "rev-parse"
+                | "ls-files"
+                | "remote"
+                | "describe"
+                | "blame"
+                | "grep"
+                | "tag"
         );
     }
     if head == "cargo" {
         // `cargo check` compiles into target/: not a reader.
-        return matches!(parts.next().unwrap_or_default(), "metadata" | "tree" | "search");
+        return matches!(
+            parts.next().unwrap_or_default(),
+            "metadata" | "tree" | "search"
+        );
     }
     false
 }
@@ -388,7 +413,10 @@ pub fn reject_message(feedback: Option<&str>) -> String {
                 (e.g. if it was a file edit, the new_string was NOT written to the file). \
                 STOP what you are doing and wait for the user to tell you how to proceed.";
     match feedback.map(str::trim).filter(|f| !f.is_empty()) {
-        Some(reason) => format!("{}\nTo tell you how to proceed, the user said:\n{}", base, reason),
+        Some(reason) => format!(
+            "{}\nTo tell you how to proceed, the user said:\n{}",
+            base, reason
+        ),
         None => base.to_string(),
     }
 }
@@ -449,7 +477,10 @@ mod tests {
     fn confirm_asks_before_writes_and_shell_but_not_reads() {
         let def = def_with(&[]);
         for tool in ["write_file", "edit_file", "bash"] {
-            assert_eq!(decide(Mode::Confirm, &def, tool, &no_input()), Decision::Ask);
+            assert_eq!(
+                decide(Mode::Confirm, &def, tool, &no_input()),
+                Decision::Ask
+            );
         }
         for tool in ["read_file", "grep", "todo", "task_list"] {
             assert_eq!(
@@ -467,11 +498,21 @@ mod tests {
             Decision::Allow
         );
         assert_eq!(
-            decide(Mode::Auto, &def, "bash", &serde_json::json!({"command": "ls -la"})),
+            decide(
+                Mode::Auto,
+                &def,
+                "bash",
+                &serde_json::json!({"command": "ls -la"})
+            ),
             Decision::Allow
         );
         assert_eq!(
-            decide(Mode::Auto, &def, "bash", &serde_json::json!({"command": "rm -rf build"})),
+            decide(
+                Mode::Auto,
+                &def,
+                "bash",
+                &serde_json::json!({"command": "rm -rf build"})
+            ),
             Decision::Ask
         );
     }
@@ -480,7 +521,12 @@ mod tests {
     fn full_never_asks_unless_the_definition_says_so() {
         let def = def_with(&[]);
         assert_eq!(
-            decide(Mode::Full, &def, "bash", &serde_json::json!({"command": "rm -rf /"})),
+            decide(
+                Mode::Full,
+                &def,
+                "bash",
+                &serde_json::json!({"command": "rm -rf /"})
+            ),
             Decision::Allow
         );
     }
@@ -489,10 +535,7 @@ mod tests {
     fn plan_mode_refuses_writes_and_allows_readers() {
         let def = def_with(&[]);
         for tool in ["write_file", "edit_file"] {
-            assert_eq!(
-                decide(Mode::Plan, &def, tool, &no_input()),
-                Decision::Deny
-            );
+            assert_eq!(decide(Mode::Plan, &def, tool, &no_input()), Decision::Deny);
         }
         assert_eq!(
             decide(Mode::Plan, &def, "read_file", &no_input()),
@@ -507,7 +550,12 @@ mod tests {
             ),
             Decision::Allow
         );
-        for command in ["touch x", "rm -rf build", "git commit -am x", "sed -i s/a/b/ f"] {
+        for command in [
+            "touch x",
+            "rm -rf build",
+            "git commit -am x",
+            "sed -i s/a/b/ f",
+        ] {
             assert_eq!(
                 decide(
                     Mode::Plan,

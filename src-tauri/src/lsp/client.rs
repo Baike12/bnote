@@ -68,11 +68,7 @@ impl ServerSpec {
 pub trait LspSink: Send + Sync + 'static {
     /// Handles one message from the server. The read loop awaits the returned
     /// future.
-    fn on_message<'a>(
-        &'a self,
-        client: &'a LspClient,
-        msg: Value,
-    ) -> BoxFuture<'a, ()>;
+    fn on_message<'a>(&'a self, client: &'a LspClient, msg: Value) -> BoxFuture<'a, ()>;
 }
 
 /// One language server process.
@@ -209,10 +205,7 @@ impl LspClient {
             .write_all(&bytes)
             .await
             .map_err(|e| format!("LSP_WRITE: {}", e))?;
-        stdin
-            .flush()
-            .await
-            .map_err(|e| format!("LSP_WRITE: {}", e))
+        stdin.flush().await.map_err(|e| format!("LSP_WRITE: {}", e))
     }
 
     /// Sends a notification (no id).
@@ -389,10 +382,7 @@ impl LspClient {
 
     pub async fn did_close(&self, uri: &str) -> Result<(), String> {
         let _guard = self.doc_ops.lock().await;
-        self.docs
-            .lock()
-            .map_err(|_| "lock poisoned")?
-            .remove(uri);
+        self.docs.lock().map_err(|_| "lock poisoned")?.remove(uri);
         self.notify(
             "textDocument/didClose",
             json!({ "textDocument": { "uri": uri } }),
@@ -421,13 +411,12 @@ impl LspClient {
 /// `pending`) are paired here; every other message (notifications, requests
 /// the server initiates, and the replies to our own detached requests) goes to
 /// the sink.
-async fn dispatch<'a>(
-    client: &'a Arc<LspClient>,
-    sink: &'a Arc<dyn LspSink>,
-    msg: Value,
-) {
+async fn dispatch<'a>(client: &'a Arc<LspClient>, sink: &'a Arc<dyn LspSink>, msg: Value) {
     let id = msg.get("id").cloned();
-    let method = msg.get("method").and_then(Value::as_str).map(|s| s.to_string());
+    let method = msg
+        .get("method")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
     match (id, method) {
         // A server → client request: the reply content depends on the server,
         // so it goes to the sink.

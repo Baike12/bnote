@@ -157,7 +157,10 @@ mod tests {
     fn the_home_override_changes_every_path() {
         std::env::set_var(HOME_ENV, "/tmp/bnote-home-test");
         assert_eq!(home_dir(), PathBuf::from("/tmp/bnote-home-test"));
-        assert_eq!(tasks_dir("s1"), PathBuf::from("/tmp/bnote-home-test/tasks/s1"));
+        assert_eq!(
+            tasks_dir("s1"),
+            PathBuf::from("/tmp/bnote-home-test/tasks/s1")
+        );
         std::env::remove_var(HOME_ENV);
     }
 }

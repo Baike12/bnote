@@ -80,7 +80,13 @@ impl ResultStore {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let safe_session: String = session
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
         let dir = self.dir.join(&safe_session);
         if let Err(e) = std::fs::create_dir_all(&dir) {

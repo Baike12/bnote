@@ -22,8 +22,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use pinyin_pro::options::{NonZh, PinyinOptions, ToneType};
 use pinyin_pro::options::PinyinOutput;
+use pinyin_pro::options::{NonZh, PinyinOptions, ToneType};
 use pinyin_pro::pinyin;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -76,9 +76,15 @@ struct Registry {
 impl Registry {
     fn load(path: &Path) -> Registry {
         let Ok(raw) = std::fs::read_to_string(path) else {
-            return Registry { version: 1, materials: BTreeMap::new() };
+            return Registry {
+                version: 1,
+                materials: BTreeMap::new(),
+            };
         };
-        serde_json::from_str(&raw).unwrap_or(Registry { version: 1, materials: BTreeMap::new() })
+        serde_json::from_str(&raw).unwrap_or(Registry {
+            version: 1,
+            materials: BTreeMap::new(),
+        })
     }
 
     fn save(&self, path: &Path) -> Result<(), String> {
@@ -106,7 +112,10 @@ fn identity(study: &StudyContent, vault: &Path) -> String {
 
 fn is_weread(url: &str) -> bool {
     match tauri::Url::parse(url) {
-        Ok(u) => matches!(u.host_str(), Some("weread.qq.com") | Some("www.weread.qq.com")),
+        Ok(u) => matches!(
+            u.host_str(),
+            Some("weread.qq.com") | Some("www.weread.qq.com")
+        ),
         Err(_) => false,
     }
 }
@@ -130,7 +139,12 @@ fn sanitize_slug(raw: &str) -> String {
     if trimmed.is_empty() {
         "material".to_string()
     } else {
-        trimmed.chars().take(MAX_SLUG_CHARS).collect::<String>().trim_end_matches('_').to_string()
+        trimmed
+            .chars()
+            .take(MAX_SLUG_CHARS)
+            .collect::<String>()
+            .trim_end_matches('_')
+            .to_string()
     }
 }
 
@@ -179,7 +193,11 @@ fn desired_slug(study: &StudyContent) -> String {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let name = if title.trim().is_empty() { stem } else { title.clone() };
+            let name = if title.trim().is_empty() {
+                stem
+            } else {
+                title.clone()
+            };
             pinyin_slug(&name)
         }
         StudyContent::Url { url, title } => {
@@ -230,7 +248,13 @@ pub struct ImportedPdf {
 fn safe_file_name(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == '\0' { '_' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == '\0' {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let trimmed = cleaned.trim().trim_start_matches('.').to_string();
     if trimmed.is_empty() {
@@ -290,7 +314,12 @@ fn import_pdf_sync(
         if parts.len() >= 2 {
             let dir = parts[0].clone();
             let mut registry = Registry::load(&registry_path);
-            let key = format!("pdf:.bnote/{}/{}/{}", MATERIALS_DIR, KIND_PDF, parts.join("/"));
+            let key = format!(
+                "pdf:.bnote/{}/{}/{}",
+                MATERIALS_DIR,
+                KIND_PDF,
+                parts.join("/")
+            );
             let entry = registry.materials.get(&key).cloned();
             if entry.is_none() {
                 registry.materials.insert(
@@ -304,12 +333,7 @@ fn import_pdf_sync(
                 );
                 registry.save(&registry_path)?;
             }
-            let rel_path = format!(
-                ".bnote/{}/{}/{}",
-                MATERIALS_DIR,
-                KIND_PDF,
-                parts.join("/")
-            );
+            let rel_path = format!(".bnote/{}/{}/{}", MATERIALS_DIR, KIND_PDF, parts.join("/"));
             return Ok(ImportedPdf {
                 pdf_path: canonical.to_string_lossy().to_string(),
                 rel_path,
@@ -389,7 +413,10 @@ fn import_pdf_sync(
 
     Ok(ImportedPdf {
         pdf_path: dest.to_string_lossy().to_string(),
-        rel_path: format!(".bnote/{}/{}/{}/{}", MATERIALS_DIR, KIND_PDF, candidate, file_name),
+        rel_path: format!(
+            ".bnote/{}/{}/{}/{}",
+            MATERIALS_DIR, KIND_PDF, candidate, file_name
+        ),
         title,
     })
 }
@@ -406,11 +433,9 @@ pub async fn study_import_pdf(
 ) -> CmdResult<ImportedPdf> {
     let vault = require_vault(&state)?;
     let source = PathBuf::from(&pdf_path);
-    tauri::async_runtime::spawn_blocking(move || {
-        import_pdf_sync(&vault, &source, title.as_deref())
-    })
-    .await
-    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+    tauri::async_runtime::spawn_blocking(move || import_pdf_sync(&vault, &source, title.as_deref()))
+        .await
+        .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
 /// Concurrency guard: only one material at a time may look up / modify / write
@@ -455,7 +480,12 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
             };
             let base = desired_slug(study);
             let dir = unique_dir(&registry, kind, &key, &base);
-            let entry = RegistryEntry { kind: kind.to_string(), dir, title, file: String::new() };
+            let entry = RegistryEntry {
+                kind: kind.to_string(),
+                dir,
+                title,
+                file: String::new(),
+            };
             registry.materials.insert(key.clone(), entry.clone());
             registry.save(&registry_path)?;
             entry
@@ -518,7 +548,12 @@ fn line_type_title(line: &str) -> Option<(String, u64, String)> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
         let at = v.get("at").and_then(|x| x.as_u64()).unwrap_or(0);
         let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-        let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        let text = v
+            .get("text")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         return Some((ty.to_string(), at, text));
     }
     // The head window is only 16KB: when the first user message carries a few
@@ -536,7 +571,10 @@ fn line_type_title(line: &str) -> Option<(String, u64, String)> {
 fn prefix_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let needle = format!("\"{}\"", key);
     let start = line.find(&needle)? + needle.len();
-    line[start..].trim_start().strip_prefix(':').map(|r| r.trim_start())
+    line[start..]
+        .trim_start()
+        .strip_prefix(':')
+        .map(|r| r.trim_start())
 }
 
 /** Reads the value of `"key":"..."`; None when truncated (no closing quote). */
@@ -595,7 +633,6 @@ fn meta_line(line: &str) -> Option<MetaLine> {
     })
 }
 
-
 /// Read a slice of the head and one of the tail (sessions reach tens of MB and
 /// are never read whole): the title and creation time live in the head, the
 /// last timestamp in the tail. Middle lines never take part in the list.
@@ -610,7 +647,8 @@ fn read_head_tail(path: &Path, head_len: usize, tail_len: usize) -> Option<(Stri
         return Some((String::new(), String::new()));
     }
     let tail_n = tail_len.min(len as usize);
-    file.seek(SeekFrom::Start(len.saturating_sub(tail_n as u64))).ok()?;
+    file.seek(SeekFrom::Start(len.saturating_sub(tail_n as u64)))
+        .ok()?;
     let mut tail = vec![0u8; tail_n];
     file.read_exact(&mut tail).ok()?;
     Some((
@@ -649,7 +687,9 @@ pub(crate) fn summarize_session(path: &Path) -> Option<SessionMeta> {
                 continue;
             }
         }
-        let Some((ty, at, text)) = line_type_title(line) else { continue };
+        let Some((ty, at, text)) = line_type_title(line) else {
+            continue;
+        };
         if first_at == 0 {
             first_at = at;
         }
@@ -694,7 +734,11 @@ pub(crate) fn summarize_session(path: &Path) -> Option<SessionMeta> {
         .unwrap_or(last_at);
     Some(SessionMeta {
         id: path.file_stem()?.to_string_lossy().to_string(),
-        title: if title.is_empty() { "(空会话)".to_string() } else { title },
+        title: if title.is_empty() {
+            "(空会话)".to_string()
+        } else {
+            title
+        },
         parent: meta.parent,
         based_on: meta.based_on,
         fork_at: meta.fork_at,
@@ -857,7 +901,10 @@ mod tests {
 
     #[test]
     fn a_conflicting_directory_name_gets_a_numeric_suffix() {
-        let mut r = Registry { version: 1, materials: BTreeMap::new() };
+        let mut r = Registry {
+            version: 1,
+            materials: BTreeMap::new(),
+        };
         r.materials.insert(
             "pdf:a.pdf".into(),
             RegistryEntry {
@@ -915,7 +962,10 @@ mod tests {
         // copy hits the same directory.
         let reg = Registry::load(&vault.join(".bnote/materials/index.json"));
         let key = "pdf:.bnote/materials/pdfs/llm_tap_v2/LLM-TAP-v2.pdf";
-        let entry = reg.materials.get(key).expect("the registry must record the imported PDF");
+        let entry = reg
+            .materials
+            .get(key)
+            .expect("the registry must record the imported PDF");
         assert_eq!(entry.dir, "llm_tap_v2");
         assert_eq!(entry.file, "LLM-TAP-v2.pdf");
         // Resolve once more with the same identity rules `ensure` uses; the
@@ -937,7 +987,10 @@ mod tests {
             title: "三体".into(),
         };
         assert_eq!(desired_slug(&book), "san_ti");
-        let shelf = StudyContent::Url { url: "https://weread.qq.com/".into(), title: "微信读书".into() };
+        let shelf = StudyContent::Url {
+            url: "https://weread.qq.com/".into(),
+            title: "微信读书".into(),
+        };
         assert_eq!(desired_slug(&shelf), "weread_qq_com");
         let page = StudyContent::Url {
             url: "https://x.com/thedankoe/status/2010751592346030461".into(),
@@ -1033,7 +1086,10 @@ mod tests {
 
         // A root session has none of these three -> None (the frontend treats
         // that as the root).
-        let main = tmp_session("main", "{\"type\":\"meta\",\"at\":1,\"title\":\"主会话\"}\n");
+        let main = tmp_session(
+            "main",
+            "{\"type\":\"meta\",\"at\":1,\"title\":\"主会话\"}\n",
+        );
         let meta = summarize_session(&main).unwrap();
         assert_eq!(meta.parent, None);
         assert_eq!(meta.fork_at, None);

@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use notify::{RecursiveMode, Watcher, recommended_watcher};
+use notify::{recommended_watcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -17,7 +17,12 @@ const IGNORED_DIRS: &[&str] = &[".git", ".obsidian", ".DS_Store", "node_modules"
 /// Directories excluded from the flat note index (quick switcher, wikilinks).
 /// `.bnote` holds app state and agent config, not notes.
 const INDEX_IGNORED_DIRS: &[&str] = &[
-    ".git", ".bnote", ".obsidian", ".DS_Store", "node_modules", ".trash",
+    ".git",
+    ".bnote",
+    ".obsidian",
+    ".DS_Store",
+    "node_modules",
+    ".trash",
 ];
 
 #[derive(Serialize, Clone)]
@@ -48,8 +53,21 @@ pub struct VaultIndex {
 fn is_asset_file(name: &str) -> bool {
     let lower = name.to_lowercase();
     [
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif", ".ico", ".tif", ".tiff",
-        ".heic", ".pdf", ".excalidraw", ".excalidraw.md",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".bmp",
+        ".avif",
+        ".ico",
+        ".tif",
+        ".tiff",
+        ".heic",
+        ".pdf",
+        ".excalidraw",
+        ".excalidraw.md",
     ]
     .iter()
     .any(|ext| lower.ends_with(ext))
@@ -71,10 +89,14 @@ pub fn set_vault(app: AppHandle, state: State<'_, AppState>, path: String) -> Cm
     set_vault_blocking(&app, &state, path)
 }
 
-fn set_vault_blocking(app: &AppHandle, state: &State<'_, AppState>, path: String) -> CmdResult<VaultInfo> {
+fn set_vault_blocking(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    path: String,
+) -> CmdResult<VaultInfo> {
     eprintln!("[bnote] set_vault: {path}");
-    let root = std::fs::canonicalize(&path)
-        .map_err(|e| format!("INVALID_VAULT: {} ({})", path, e))?;
+    let root =
+        std::fs::canonicalize(&path).map_err(|e| format!("INVALID_VAULT: {} ({})", path, e))?;
     if !root.is_dir() {
         return Err(format!("INVALID_VAULT: {} is not a directory", path));
     }
@@ -185,7 +207,11 @@ pub async fn list_files(state: State<'_, AppState>) -> CmdResult<VaultIndex> {
         files.sort();
         dirs.sort();
         assets.sort();
-        Ok(VaultIndex { files, dirs, assets })
+        Ok(VaultIndex {
+            files,
+            dirs,
+            assets,
+        })
     })
     .await
 }

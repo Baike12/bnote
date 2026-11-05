@@ -67,7 +67,11 @@ struct Dictionary {
 
 impl Dictionary {
     fn empty() -> Dictionary {
-        Dictionary { raw: Vec::new(), count: 0, records: 12 }
+        Dictionary {
+            raw: Vec::new(),
+            count: 0,
+            records: 12,
+        }
     }
 
     fn from_bytes(raw: Vec<u8>) -> Result<Dictionary, String> {
@@ -94,7 +98,11 @@ impl Dictionary {
             }
             prev = off;
         }
-        Ok(Dictionary { raw, count, records })
+        Ok(Dictionary {
+            raw,
+            count,
+            records,
+        })
     }
 
     fn record_offset(&self, i: usize) -> usize {
@@ -205,8 +213,28 @@ fn normalize(selected: &str) -> String {
             c.is_whitespace()
                 || matches!(
                     c,
-                    '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\'' | '(' | ')' | '[' | ']'
-                        | '{' | '}' | '<' | '>' | '“' | '”' | '‘' | '「' | '」' | '《' | '》'
+                    '.' | ','
+                        | ';'
+                        | ':'
+                        | '!'
+                        | '?'
+                        | '"'
+                        | '\''
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '<'
+                        | '>'
+                        | '“'
+                        | '”'
+                        | '‘'
+                        | '「'
+                        | '」'
+                        | '《'
+                        | '》'
                 )
         })
         .to_string();
@@ -280,7 +308,11 @@ mod tests {
     #[test]
     fn common_word_has_chinese_translation() {
         let entry = lookup("ubiquitous").expect("ubiquitous is in the dictionary");
-        assert!(entry.translation.contains("无所不在"), "{}", entry.translation);
+        assert!(
+            entry.translation.contains("无所不在"),
+            "{}",
+            entry.translation
+        );
     }
 
     #[test]

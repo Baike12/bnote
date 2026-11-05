@@ -38,7 +38,9 @@ mod mac {
         NSView, NSWindowDidBecomeKeyNotification, NSWindowDidChangeScreenNotification,
         NSWindowDidMoveNotification, NSWindowDidResizeNotification,
     };
-    use objc2_foundation::{NSData, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSSize};
+    use objc2_foundation::{
+        NSData, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSSize,
+    };
 
     /// The same image as the PDF reader (the `?inline` variant is for the page;
     /// this one is for the native side).

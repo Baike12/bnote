@@ -2,11 +2,17 @@ use serde::Serialize;
 use tauri::State;
 
 use super::{ensure_within, require_vault, validate_name, CmdResult};
-use crate::state::AppState;
 use crate::commands::vault::vault_join;
+use crate::state::AppState;
 
 /// Files inside `<vault>/.bnote/` that the app reads as configuration.
-const VAULT_CONFIG_FILES: &[&str] = &["vimrc", "snippets.js", "keybindings.json", "agent.md", "AGENTS.md"];
+const VAULT_CONFIG_FILES: &[&str] = &[
+    "vimrc",
+    "snippets.js",
+    "keybindings.json",
+    "agent.md",
+    "AGENTS.md",
+];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,7 +54,11 @@ pub async fn read_file_base64(state: State<'_, AppState>, path: String) -> CmdRe
 }
 
 #[tauri::command]
-pub async fn write_file(state: State<'_, AppState>, path: String, contents: String) -> CmdResult<()> {
+pub async fn write_file(
+    state: State<'_, AppState>,
+    path: String,
+    contents: String,
+) -> CmdResult<()> {
     let root = require_vault(&state)?;
     let full = std::path::PathBuf::from(&path);
     ensure_within(&root, &full)?;
@@ -240,7 +250,10 @@ pub async fn trash_path(state: State<'_, AppState>, path: String) -> CmdResult<(
 
 /// Reads `<vault>/.bnote/<name>` for name in the whitelist; None when absent.
 #[tauri::command]
-pub async fn read_vault_file(state: State<'_, AppState>, name: String) -> CmdResult<Option<String>> {
+pub async fn read_vault_file(
+    state: State<'_, AppState>,
+    name: String,
+) -> CmdResult<Option<String>> {
     if !VAULT_CONFIG_FILES.contains(&name.as_str()) {
         return Err(format!("INVALID_NAME: {}", name));
     }

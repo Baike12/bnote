@@ -34,7 +34,11 @@ fn the_app_window_is_never_looked_up_as_a_webview_window() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     rs_files(&src, &mut files);
-    assert!(!files.is_empty(), "no sources found under {}", src.display());
+    assert!(
+        !files.is_empty(),
+        "no sources found under {}",
+        src.display()
+    );
 
     let mut offenders = Vec::new();
     for file in files {

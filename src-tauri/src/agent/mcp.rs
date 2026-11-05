@@ -42,7 +42,10 @@ pub struct McpConnection {
 }
 
 impl McpConnection {
-    pub async fn connect(server_name: &str, cfg: &McpServerConfig) -> Result<McpConnection, String> {
+    pub async fn connect(
+        server_name: &str,
+        cfg: &McpServerConfig,
+    ) -> Result<McpConnection, String> {
         let transport = match cfg {
             McpServerConfig::Stdio { command, args, env } => {
                 let mut cmd = tokio::process::Command::new(command);
@@ -59,15 +62,19 @@ impl McpConnection {
                 let stdin = child.stdin.take().ok_or("no stdin")?;
                 let stdout = child.stdout.take().ok_or("no stdout")?;
                 let reader = BufReader::new(stdout);
-                Transport::Stdio { child, stdin, reader, next_id: 1, dead: false }
-            }
-            McpServerConfig::Http { url, headers } => {
-                Transport::Http {
-                    url: url.clone(),
-                    headers: headers.clone(),
+                Transport::Stdio {
+                    child,
+                    stdin,
+                    reader,
                     next_id: 1,
+                    dead: false,
                 }
             }
+            McpServerConfig::Http { url, headers } => Transport::Http {
+                url: url.clone(),
+                headers: headers.clone(),
+                next_id: 1,
+            },
         };
         let mut conn = McpConnection {
             server_name: server_name.to_string(),
@@ -117,7 +124,9 @@ impl McpConnection {
             return Ok((
                 format!(
                     "mcp error: {}",
-                    err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+                    err.get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown")
                 ),
                 true,
             ));
@@ -128,7 +137,10 @@ impl McpConnection {
                 if c["type"] == "text" {
                     text.push_str(c["text"].as_str().unwrap_or_default());
                 } else {
-                    text.push_str(&format!("[{} content]", c["type"].as_str().unwrap_or("other")));
+                    text.push_str(&format!(
+                        "[{} content]",
+                        c["type"].as_str().unwrap_or("other")
+                    ));
                 }
             }
         }
@@ -138,7 +150,13 @@ impl McpConnection {
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         match &mut self.transport {
-            Transport::Stdio { child, stdin, reader, next_id, dead } => {
+            Transport::Stdio {
+                child,
+                stdin,
+                reader,
+                next_id,
+                dead,
+            } => {
                 if *dead {
                     return Err("mcp stdio: connection is dead after a failed read".into());
                 }
@@ -201,7 +219,11 @@ impl McpConnection {
                     // notifications / requests from the server are ignored
                 }
             }
-            Transport::Http { url, headers, next_id } => {
+            Transport::Http {
+                url,
+                headers,
+                next_id,
+            } => {
                 let id = *next_id;
                 *next_id += 1;
                 let req = json!({
@@ -328,7 +350,11 @@ impl McpManager {
                 Err(e) => errors.push(format!("{}: {}", name, e)),
             }
         }
-        McpManager { connections, tools, errors }
+        McpManager {
+            connections,
+            tools,
+            errors,
+        }
     }
 
     pub async fn call(

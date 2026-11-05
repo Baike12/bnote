@@ -25,13 +25,19 @@ fn the_static_scope_does_not_allow_the_whole_filesystem() {
     let enabled = config["app"]["security"]["assetProtocol"]["enable"]
         .as_bool()
         .unwrap_or(false);
-    assert!(enabled, "the asset protocol must stay enabled: images render through it");
+    assert!(
+        enabled,
+        "the asset protocol must stay enabled: images render through it"
+    );
 
     let scope = config["app"]["security"]["assetProtocol"]["scope"]
         .as_array()
         .expect("assetProtocol.scope is an array");
     let patterns: Vec<&str> = scope.iter().filter_map(|v| v.as_str()).collect();
-    assert!(!patterns.is_empty(), "an empty scope would break every image");
+    assert!(
+        !patterns.is_empty(),
+        "an empty scope would break every image"
+    );
 
     for pattern in patterns {
         let wide = pattern == "**" || pattern == "/**" || pattern == "$HOME/**" || pattern == "*";

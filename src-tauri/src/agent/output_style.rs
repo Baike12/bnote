@@ -58,12 +58,7 @@ pub struct StyleInfo {
 }
 
 impl OutputStyle {
-    fn builtin(
-        id: &str,
-        name: &str,
-        description: &str,
-        content: &'static str,
-    ) -> OutputStyle {
+    fn builtin(id: &str, name: &str, description: &str, content: &'static str) -> OutputStyle {
         OutputStyle {
             id: id.into(),
             name: name.into(),
@@ -228,7 +223,10 @@ fn split_frontmatter(raw: &str) -> (Vec<(String, String)>, &str) {
         return (Vec::new(), trimmed);
     };
     // The opening fence must be alone on its line.
-    let Some(rest) = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n")) else {
+    let Some(rest) = rest
+        .strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"))
+    else {
         return (Vec::new(), trimmed);
     };
     let Some(end) = find_fence(rest) else {
@@ -325,7 +323,11 @@ mod tests {
     #[test]
     fn a_file_without_frontmatter_uses_its_stem_as_the_name() {
         let project = temp("plain");
-        std::fs::write(project.join(".bnote/output-styles/terse.md"), "Short answers.\n").unwrap();
+        std::fs::write(
+            project.join(".bnote/output-styles/terse.md"),
+            "Short answers.\n",
+        )
+        .unwrap();
         let style = resolve(Some(&project), Some("terse"));
         assert_eq!(style.name, "terse");
         assert!(style.keep_coding_instructions);
@@ -336,7 +338,11 @@ mod tests {
     #[test]
     fn an_empty_body_is_not_a_style() {
         let project = temp("empty");
-        std::fs::write(project.join(".bnote/output-styles/empty.md"), "---\nname: x\n---\n").unwrap();
+        std::fs::write(
+            project.join(".bnote/output-styles/empty.md"),
+            "---\nname: x\n---\n",
+        )
+        .unwrap();
         assert!(!discover(Some(&project)).iter().any(|s| s.id == "empty"));
         std::fs::remove_dir_all(&project).unwrap();
     }

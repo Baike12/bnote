@@ -178,11 +178,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "bnote-search-{}-{}",
-            std::process::id(),
-            unique
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("bnote-search-{}-{}", std::process::id(), unique));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src/deep")).unwrap();
         std::fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();

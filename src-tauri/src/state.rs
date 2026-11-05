@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use notify::RecommendedWatcher;
 
 use crate::agent::mcp::McpManager;
+use crate::agent::session::Session;
 use crate::code::lsp::LspManager;
 use crate::code::project::CodeTree;
-use crate::agent::session::Session;
 use crate::python::lsp::LspServer;
 use crate::python::runner::RunRegistry;
 use crate::term::TermManager;

@@ -139,7 +139,8 @@ fn on_screen(window: &tauri::Window, x: f64, y: f64) -> bool {
 
 /// User keybinding overrides; None means "use built-in defaults".
 #[tauri::command]
-pub async fn load_keybindings(state: State<'_, AppState>) -> CmdResult<Option<Value>> {    let path = state.data_dir().join("keybindings.json");
+pub async fn load_keybindings(state: State<'_, AppState>) -> CmdResult<Option<Value>> {
+    let path = state.data_dir().join("keybindings.json");
     tauri::async_runtime::spawn_blocking(move || match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).map_err(|e| format!("CORRUPT_CONFIG: {}", e)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

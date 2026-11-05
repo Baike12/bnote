@@ -99,7 +99,10 @@ mod tests {
         parent.abort();
         child.reset();
         assert!(parent.is_aborted(), "reset must not clear the parent");
-        assert!(child.is_aborted(), "the parent chain still aborts the child");
+        assert!(
+            child.is_aborted(),
+            "the parent chain still aborts the child"
+        );
     }
 
     #[tokio::test]

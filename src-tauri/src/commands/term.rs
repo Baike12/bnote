@@ -30,7 +30,12 @@ pub fn term_write(state: State<'_, AppState>, term_id: u64, data: String) -> Cmd
 
 /// The frontend's grid changed: propagate the new size to the kernel.
 #[tauri::command]
-pub fn term_resize(state: State<'_, AppState>, term_id: u64, cols: u16, rows: u16) -> CmdResult<()> {
+pub fn term_resize(
+    state: State<'_, AppState>,
+    term_id: u64,
+    cols: u16,
+    rows: u16,
+) -> CmdResult<()> {
     state.terminals.resize(term_id, cols, rows)
 }
 

@@ -431,9 +431,14 @@ mod tests {
         assert!(env.dynamic);
         let identity = segs.iter().find(|s| s.name == "prompt:1").unwrap();
         assert!(identity.content.contains("coding agent"));
-        assert!(!identity.dynamic, "compiled prompts never change at runtime");
+        assert!(
+            !identity.dynamic,
+            "compiled prompts never change at runtime"
+        );
         assert_eq!(
-            segs.iter().filter(|s| s.name.starts_with("prompt:")).count(),
+            segs.iter()
+                .filter(|s| s.name.starts_with("prompt:"))
+                .count(),
             8
         );
         assert!(

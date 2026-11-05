@@ -137,7 +137,10 @@ async fn run_one(
         return Ok(Some(HookOutcome {
             decision: Some(Decision::Deny),
             reason: Some(stderr.trim().to_string()).filter(|r| !r.is_empty()),
-            context: vec![stderr.trim().to_string()].into_iter().filter(|c| !c.is_empty()).collect(),
+            context: vec![stderr.trim().to_string()]
+                .into_iter()
+                .filter(|c| !c.is_empty())
+                .collect(),
             ..Default::default()
         }));
     }
@@ -344,7 +347,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_stop_hook_can_block() {
-        let settings = settings_with("Stop", "*", r#"printf '{"decision":"block","reason":"keep going"}'"#);
+        let settings = settings_with(
+            "Stop",
+            "*",
+            r#"printf '{"decision":"block","reason":"keep going"}'"#,
+        );
         let out = run_event(&settings, "Stop", "Stop").await;
         assert!(out.block);
         assert_eq!(out.reason.as_deref(), Some("keep going"));

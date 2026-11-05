@@ -41,17 +41,25 @@ async fn mcp_stdio_roundtrip() {
     std::fs::write(&script, PY_SERVER).unwrap();
 
     let cfg = bnote_lib::agent::AgentConfig {
-        mcp_servers: [("pytest".to_string(), serde_json::from_value(json!({
-            "type": "stdio",
-            "command": "python3",
-            "args": [script.to_string_lossy().to_string()],
-        })).unwrap())]
+        mcp_servers: [(
+            "pytest".to_string(),
+            serde_json::from_value(json!({
+                "type": "stdio",
+                "command": "python3",
+                "args": [script.to_string_lossy().to_string()],
+            }))
+            .unwrap(),
+        )]
         .into_iter()
         .collect(),
         ..Default::default()
     };
     let manager = bnote_lib::agent::mcp::McpManager::connect_all(&cfg).await;
-    assert!(manager.errors.is_empty(), "mcp errors: {:?}", manager.errors);
+    assert!(
+        manager.errors.is_empty(),
+        "mcp errors: {:?}",
+        manager.errors
+    );
     assert_eq!(manager.tools.len(), 1);
     assert_eq!(manager.tools[0].name, "mcp__pytest__echo");
 
@@ -71,7 +79,10 @@ fn claude_creds() -> Option<(String, String)> {
     let raw = std::fs::read_to_string(format!("{}/.claude/settings.json", home)).ok()?;
     let v: Value = serde_json::from_str(&raw).ok()?;
     let token = v["env"]["ANTHROPIC_AUTH_TOKEN"].as_str()?.to_string();
-    let base = v["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap_or("").to_string();
+    let base = v["env"]["ANTHROPIC_BASE_URL"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     Some((token, base))
 }
 
@@ -81,7 +92,8 @@ async fn live_provider_turn_with_tool() {
     let Some((token, base)) = claude_creds() else {
         panic!("no ~/.claude/settings.json credentials");
     };
-    let provider = bnote_lib::agent::Provider::new("anthropic", &base, &token, "claude-sonnet-4-5", 2048);
+    let provider =
+        bnote_lib::agent::Provider::new("anthropic", &base, &token, "claude-sonnet-4-5", 2048);
 
     let tools = vec![bnote_lib::agent::types::ToolDef {
         name: "read_file".into(),
@@ -110,15 +122,16 @@ async fn live_provider_turn_with_tool() {
             &items,
             &tools,
             &|e| {
-                events
-                    .lock()
-                    .unwrap()
-                    .push(format!("{:?}", e));
+                events.lock().unwrap().push(format!("{:?}", e));
             },
         )
         .await
         .expect("stream turn 1");
-    assert!(!turn.tool_calls.is_empty(), "expected a tool call, got: {}", turn.text);
+    assert!(
+        !turn.tool_calls.is_empty(),
+        "expected a tool call, got: {}",
+        turn.text
+    );
     let (id, name, input) = match &turn.tool_calls[0] {
         bnote_lib::agent::types::Content::ToolUse { id, name, input } => {
             (id.clone(), name.clone(), input.clone())
@@ -129,7 +142,11 @@ async fn live_provider_turn_with_tool() {
 
     // Execute the tool call ourselves and feed the result back.
     let path = input["path"].as_str().unwrap_or_default();
-    assert!(path.contains("bnote-e2e-note"), "model should read the temp file, got path: {}", path);
+    assert!(
+        path.contains("bnote-e2e-note"),
+        "model should read the temp file, got path: {}",
+        path
+    );
     let content = std::fs::read_to_string(path).expect("tool read should succeed");
     let items2 = vec![
         items[0].clone(),

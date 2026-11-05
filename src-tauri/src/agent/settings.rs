@@ -219,11 +219,7 @@ mod tests {
         let path = project.join(".bnote/settings.json");
         write(&path, "{ not json");
         let loaded = load(Some(&project));
-        let file = loaded
-            .files
-            .iter()
-            .find(|f| f.path == path)
-            .unwrap();
+        let file = loaded.files.iter().find(|f| f.path == path).unwrap();
         assert!(file.error.is_some());
         assert!(loaded.settings.permissions.deny.is_empty());
         std::fs::remove_dir_all(&project).unwrap();

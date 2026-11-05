@@ -8,9 +8,9 @@
 use super::materials::{summarize_session, SessionMeta};
 use super::CmdResult;
 use crate::agent::home;
+use crate::state::AppState;
 use std::path::{Path, PathBuf};
 use tauri::State;
-use crate::state::AppState;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,9 +181,7 @@ pub struct SettingsPaths {
 #[tauri::command]
 pub async fn agent_settings_paths(project: Option<String>) -> CmdResult<SettingsPaths> {
     tauri::async_runtime::spawn_blocking(move || {
-        let project = project
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.is_dir());
+        let project = project.map(std::path::PathBuf::from).filter(|p| p.is_dir());
         let loaded = crate::agent::settings::load(project.as_deref());
         Ok(SettingsPaths {
             home: home::home_dir().to_string_lossy().to_string(),
@@ -209,9 +207,7 @@ pub async fn agent_output_styles(
     project: Option<String>,
 ) -> CmdResult<Vec<crate::agent::output_style::StyleInfo>> {
     tauri::async_runtime::spawn_blocking(move || {
-        let project = project
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.is_dir());
+        let project = project.map(std::path::PathBuf::from).filter(|p| p.is_dir());
         Ok(crate::agent::output_style::discover(project.as_deref())
             .into_iter()
             .map(|style| style.info())

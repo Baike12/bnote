@@ -72,7 +72,10 @@ pub struct TermSession {
 
 impl TermSession {
     fn write(&self, data: &[u8]) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|_| "TERM_POISONED".to_string())?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| "TERM_POISONED".to_string())?;
         writer
             .write_all(data)
             .and_then(|_| writer.flush())
@@ -80,7 +83,10 @@ impl TermSession {
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
-        let master = self.master.lock().map_err(|_| "TERM_POISONED".to_string())?;
+        let master = self
+            .master
+            .lock()
+            .map_err(|_| "TERM_POISONED".to_string())?;
         master
             .resize(PtySize {
                 rows,
@@ -275,7 +281,10 @@ fn spawn_shell(shell: &str, root: &str, cols: u16, rows: u16) -> Result<ShellSpa
 /// Keep the PTY size sane: a bogus grid makes the kernel or the shell reject
 /// the ioctl, and 0×0 makes curses programs divide by zero.
 fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
-    (cols.clamp(MIN_COLS, MAX_COLS), rows.clamp(MIN_ROWS, MAX_ROWS))
+    (
+        cols.clamp(MIN_COLS, MAX_COLS),
+        rows.clamp(MIN_ROWS, MAX_ROWS),
+    )
 }
 
 /// Reader thread → channel → throttled flusher. The reader blocks on the PTY

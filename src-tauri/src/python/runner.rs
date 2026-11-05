@@ -117,7 +117,12 @@ pub fn venv_bin(venv: &Path) -> PathBuf {
 /// The interpreter resolution order: project configuration > .venv >
 /// pyproject+uv > the system python3.
 pub fn resolve_env(root: &Path, cfg: &ProjectConfig) -> ResolvedEnv {
-    if let Some(py) = cfg.python.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(py) = cfg
+        .python
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let p = PathBuf::from(py);
         if p.exists() {
             return ResolvedEnv {
@@ -185,18 +190,17 @@ pub struct RunRegistry {
 
 impl RunRegistry {
     pub fn new() -> Self {
-        Self { next_id: AtomicU64::new(1), runs: Mutex::new(HashMap::new()) }
+        Self {
+            next_id: AtomicU64::new(1),
+            runs: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Asks for the current run of that note to be killed (the cleanup task
     /// kills the process once it receives the signal). The actual exit is the
     /// cleanup task's job; this only sends the signal.
     pub fn cancel(&self, md_path: &str) -> bool {
-        let handle = self
-            .runs
-            .lock()
-            .ok()
-            .and_then(|m| m.get(md_path).cloned());
+        let handle = self.runs.lock().ok().and_then(|m| m.get(md_path).cloned());
         match handle {
             Some(h) => {
                 h.cancelled.store(true, Ordering::Relaxed);
@@ -237,7 +241,9 @@ fn temp_script(data_dir: &Path, md_path: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     md_path.hash(&mut h);
-    data_dir.join("py-run").join(format!("{:016x}.py", h.finish()))
+    data_dir
+        .join("py-run")
+        .join(format!("{:016x}.py", h.finish()))
 }
 
 fn prune_old_scripts(dir: &Path) {
@@ -441,7 +447,9 @@ fn spawn_reader(
                 }
                 Ok(Ok(n)) => {
                     pending.extend_from_slice(&buf[..n]);
-                    if pending.len() >= 16 * 1024 || last_flush.elapsed() >= Duration::from_millis(40) {
+                    if pending.len() >= 16 * 1024
+                        || last_flush.elapsed() >= Duration::from_millis(40)
+                    {
                         flush_chunk(&app, run_id, &md_path, stream, &mut pending);
                         last_flush = Instant::now();
                     }
@@ -529,7 +537,10 @@ mod tests {
         std::fs::write(&custom, "").unwrap();
         let env = resolve_env(
             &root,
-            &ProjectConfig { python: Some(custom.to_string_lossy().to_string()), ..Default::default() },
+            &ProjectConfig {
+                python: Some(custom.to_string_lossy().to_string()),
+                ..Default::default()
+            },
         );
         assert_eq!(env.kind, EnvKind::Config);
         let _ = std::fs::remove_dir_all(&root);

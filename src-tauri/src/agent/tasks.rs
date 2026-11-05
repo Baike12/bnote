@@ -102,7 +102,10 @@ impl TaskList {
 
     pub fn create(&mut self, input: &Value) -> Result<String, String> {
         let subject = required_str(input, "subject")?;
-        let description = input["description"].as_str().unwrap_or_default().to_string();
+        let description = input["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         if description.trim().is_empty() {
             return Err("description 不能为空".into());
         }
@@ -134,14 +137,11 @@ impl TaskList {
         };
         if let Some(status) = input.get("status").and_then(|v| v.as_str()) {
             if !STATUSES.contains(&status) {
-                return Err(format!(
-                    "status 必须是 {} 之一",
-                    STATUSES.join(" / ")
-                ));
+                return Err(format!("status 必须是 {} 之一", STATUSES.join(" / ")));
             }
         }
-        let blocks = string_list(input.get("add_blocks"))
-            .or_else(|| string_list(input.get("blocks")));
+        let blocks =
+            string_list(input.get("add_blocks")).or_else(|| string_list(input.get("blocks")));
         let blocked_by = string_list(input.get("add_blocked_by"))
             .or_else(|| string_list(input.get("blocked_by")));
         // All validation happens before the first mutation.
@@ -383,8 +383,12 @@ mod tests {
             .unwrap();
         let before = list.items().to_vec();
         assert!(list.update(&json!({"id": "1", "status": "done"})).is_err());
-        assert!(list.update(&json!({"id": "9", "status": "pending"})).is_err());
-        assert!(list.update(&json!({"id": "1", "add_blocks": ["9"]})).is_err());
+        assert!(list
+            .update(&json!({"id": "9", "status": "pending"}))
+            .is_err());
+        assert!(list
+            .update(&json!({"id": "1", "add_blocks": ["9"]}))
+            .is_err());
         assert_eq!(list.items(), before.as_slice());
     }
 

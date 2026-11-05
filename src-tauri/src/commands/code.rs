@@ -22,9 +22,9 @@ use tauri::{AppHandle, Manager, State};
 
 use super::CmdResult;
 use crate::code::git::{self, GitStatus};
+use crate::code::lang;
 use crate::code::lsp::{LspManager, ServerConfig};
 use crate::code::project::{self, CodeEntry, CodeFile, CodeSearchHit, CodeTree};
-use crate::code::lang;
 use crate::state::AppState;
 
 /// Information about the opened project.
@@ -352,8 +352,12 @@ pub async fn code_lsp_resolve(
     overrides: Option<ServerConfig>,
 ) -> CmdResult<Option<ResolvedServerInfo>> {
     let root = canonical_root(&root)?;
-    let resolved =
-        crate::code::lsp::resolve_server(&root, &language, path.as_deref().unwrap_or(""), overrides.as_ref());
+    let resolved = crate::code::lsp::resolve_server(
+        &root,
+        &language,
+        path.as_deref().unwrap_or(""),
+        overrides.as_ref(),
+    );
     Ok(resolved.map(|r| ResolvedServerInfo {
         command: r.config.command,
         args: r.config.args,
@@ -387,9 +391,13 @@ pub async fn code_lsp_start(
 ) -> CmdResult<CodeLspState> {
     let root = canonical_root(&root)?;
     let rel = path.replace('\\', "/");
-    let Some(resolved) = crate::code::lsp::resolve_server(&root, &language, &rel, overrides.as_ref())
+    let Some(resolved) =
+        crate::code::lsp::resolve_server(&root, &language, &rel, overrides.as_ref())
     else {
-        return Err(format!("LSP_UNSUPPORTED: {} 没有可用的语言服务器", language));
+        return Err(format!(
+            "LSP_UNSUPPORTED: {} 没有可用的语言服务器",
+            language
+        ));
     };
     if resolved.disabled {
         return Err(format!("LSP_DISABLED: {} 已被项目配置关掉", language));
@@ -427,7 +435,10 @@ pub async fn code_lsp_stop(state: State<'_, AppState>, root: String) -> CmdResul
 
 /// Which language servers are alive right now.
 #[tauri::command]
-pub async fn code_lsp_status(state: State<'_, AppState>, root: String) -> CmdResult<Vec<CodeLspState>> {
+pub async fn code_lsp_status(
+    state: State<'_, AppState>,
+    root: String,
+) -> CmdResult<Vec<CodeLspState>> {
     let root = canonical_root(&root)?;
     let key = root_key(&root);
     let manager = state
@@ -439,7 +450,14 @@ pub async fn code_lsp_status(state: State<'_, AppState>, root: String) -> CmdRes
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    for language in ["typescript", "typescriptreact", "javascript", "rust", "go", "python"] {
+    for language in [
+        "typescript",
+        "typescriptreact",
+        "javascript",
+        "rust",
+        "go",
+        "python",
+    ] {
         if manager.has_any(language) {
             out.push(CodeLspState {
                 language: language.to_string(),
@@ -490,7 +508,11 @@ pub async fn code_lsp_sync(
 
 /// Close a document (didClose).
 #[tauri::command]
-pub async fn code_lsp_close(state: State<'_, AppState>, root: String, path: String) -> CmdResult<()> {
+pub async fn code_lsp_close(
+    state: State<'_, AppState>,
+    root: String,
+    path: String,
+) -> CmdResult<()> {
     let root = canonical_root(&root)?;
     let abs = project::resolve_in(&root, &path)?;
     let language = lang::language_for_path(&abs).to_string();

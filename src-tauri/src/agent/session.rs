@@ -333,7 +333,11 @@ impl Session {
         })
         .to_string();
         use std::io::Write as _;
-        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             Ok(mut file) => {
                 if let Err(e) = writeln!(file, "{line}") {
                     eprintln!("[bnote] history write: {e}");
@@ -421,7 +425,10 @@ impl Session {
     /// EnterPlanMode: read-only exploration, then ExitPlanMode presents the plan.
     fn enter_plan_mode(&self) -> ToolOutput {
         if self.permission_mode() == permissions::Mode::Plan {
-            return ToolOutput::text(true, "Already in plan mode. Explore, then call ExitPlanMode with the plan.");
+            return ToolOutput::text(
+                true,
+                "Already in plan mode. Explore, then call ExitPlanMode with the plan.",
+            );
         }
         self.set_permission_mode(permissions::Mode::Plan);
         self.emit(AgentEvent::PlanMode { enabled: true });
@@ -438,14 +445,23 @@ impl Session {
     /// ExitPlanMode: writes the plan into the agent home, then parks the turn
     /// on the panel's approval card.
     async fn exit_plan_mode(&self, input: &Value) -> ToolOutput {
-        let plan = input["plan"].as_str().unwrap_or_default().trim().to_string();
+        let plan = input["plan"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if plan.is_empty() {
-            return ToolOutput::text(false, tool_use_error("ExitPlanMode needs a non-empty `plan`"));
+            return ToolOutput::text(
+                false,
+                tool_use_error("ExitPlanMode needs a non-empty `plan`"),
+            );
         }
         if self.permission_mode() != permissions::Mode::Plan {
             return ToolOutput::text(
                 false,
-                tool_use_error("ExitPlanMode is only valid in plan mode (call EnterPlanMode first)"),
+                tool_use_error(
+                    "ExitPlanMode is only valid in plan mode (call EnterPlanMode first)",
+                ),
             );
         }
         let path = match self.save_plan(&plan) {
@@ -502,7 +518,8 @@ impl Session {
             .map(|d| d.as_millis())
             .unwrap_or(0);
         let path = dir.join(format!("{}-{}.md", slug, stamp));
-        std::fs::write(&path, format!("{}\n", plan.trim())).map_err(|e| format!("WRITE_FAILED: {}", e))?;
+        std::fs::write(&path, format!("{}\n", plan.trim()))
+            .map_err(|e| format!("WRITE_FAILED: {}", e))?;
         Ok(path)
     }
 
@@ -676,11 +693,8 @@ impl Session {
         if !self.omit_user_instructions {
             let project = self.ctx.workdir.as_deref().or(self.ctx.vault.as_deref());
             let excludes = self.current_settings().instructions_excludes.clone();
-            let files = super::instructions::collect(
-                project,
-                self.mode == SessionMode::Coding,
-                &excludes,
-            );
+            let files =
+                super::instructions::collect(project, self.mode == SessionMode::Coding, &excludes);
             if let Ok(mut loaded) = self.loaded_instructions.lock() {
                 for file in &files {
                     if let Ok(path) = file.path.canonicalize() {
@@ -903,8 +917,7 @@ impl Session {
                 if stop.block && stop_blocks < 3 {
                     stop_blocks += 1;
                     let reason = stop.reason.unwrap_or_else(|| {
-                        "The stop hook blocked the end of the turn; continue the work."
-                            .to_string()
+                        "The stop hook blocked the end of the turn; continue the work.".to_string()
                     });
                     if let Ok(mut items) = self.items.lock() {
                         items.push(ChatItem::user_text(&format!(
@@ -1068,10 +1081,8 @@ impl Session {
         while cursor < ready.len() {
             if self.ctx.abort.is_aborted() {
                 for &index in &ready[cursor..] {
-                    outputs[index] = Some(ToolOutput::text(
-                        false,
-                        tool_use_error("aborted by user"),
-                    ));
+                    outputs[index] =
+                        Some(ToolOutput::text(false, tool_use_error("aborted by user")));
                 }
                 break;
             }
@@ -1137,7 +1148,10 @@ impl Session {
                 .await;
             if !post.context.is_empty() {
                 let extra = post.context.join("\n\n");
-                out.text.push_str(&format!("\n\n<hook-context>\n{}\n</hook-context>", extra.trim()));
+                out.text.push_str(&format!(
+                    "\n\n<hook-context>\n{}\n</hook-context>",
+                    extra.trim()
+                ));
             }
             // Never truncate in place: a huge result goes to a file with a
             // preview, so the model can read the rest itself.
@@ -1213,11 +1227,7 @@ impl Session {
 
     /// Pauses the turn until the panel answers an `ask_user_question` call.
     async fn ask_question(&self, questions: &Value) -> Result<String, String> {
-        let request_id = format!(
-            "{}-q-{}",
-            self.id,
-            self.seq.fetch_add(1, Ordering::Relaxed)
-        );
+        let request_id = format!("{}-q-{}", self.id, self.seq.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.pending_questions
             .lock()
@@ -1473,10 +1483,7 @@ impl Session {
         };
         if name == "bash_kill" {
             task.kill();
-            return ToolOutput::text(
-                true,
-                format!("kill signal sent to background task {id}"),
-            );
+            return ToolOutput::text(true, format!("kill signal sent to background task {id}"));
         }
         ToolOutput::text(true, shell::format_bg_status(&task))
     }
@@ -1568,7 +1575,10 @@ impl Session {
         if prompt.is_empty() {
             return ToolOutput::text(false, tool_use_error("prompt 不能为空"));
         }
-        let description = input["description"].as_str().unwrap_or_default().to_string();
+        let description = input["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         let fork = input["fork"].as_bool().unwrap_or(false);
         let background = input["run_in_background"].as_bool().unwrap_or(false);
         let def_id = input["subagent_type"]
@@ -1748,9 +1758,7 @@ impl Session {
             context_window: self.context_window,
             last_usage: Mutex::new(None),
             todos: Mutex::new(Vec::new()),
-            tasks: Mutex::new(TaskList::load(super::home::tasks_dir(
-                &self.task_list_id,
-            ))),
+            tasks: Mutex::new(TaskList::load(super::home::tasks_dir(&self.task_list_id))),
             task_list_id: self.task_list_id.clone(),
             pending_wakeups: Mutex::new(Vec::new()),
             pending_permissions: Mutex::new(HashMap::new()),
@@ -1833,7 +1841,11 @@ impl Session {
         let runner = tauri::async_runtime::spawn(async move {
             runner_child.refresh_dynamic_prompt();
             let loop_result = runner_child.run_loop(&SubDispatch(&runner_child)).await;
-            runner_child.persist_agent(if loop_result.is_ok() { "completed" } else { "failed" });
+            runner_child.persist_agent(if loop_result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            });
             let _ = runner_child
                 .run_hook(
                     "SubagentStop",
@@ -1851,11 +1863,7 @@ impl Session {
                     report = format!("(子代理在产出报告前中止: {e})");
                 }
             }
-            let usage = runner_child
-                .last_usage
-                .lock()
-                .map(|g| *g)
-                .unwrap_or(None);
+            let usage = runner_child.last_usage.lock().map(|g| *g).unwrap_or(None);
             (report, usage)
         });
         if background {
@@ -1896,7 +1904,9 @@ impl Session {
         }
         let (report, usage) = match runner.await {
             Ok(v) => v,
-            Err(e) => return ToolOutput::text(false, tool_use_error(format!("join failed: {}", e))),
+            Err(e) => {
+                return ToolOutput::text(false, tool_use_error(format!("join failed: {}", e)))
+            }
         };
         self.emit(AgentEvent::Notice {
             text: format!("子代理 {} 完成 ({})", label, child.id),
@@ -2003,7 +2013,9 @@ impl Session {
         {
             return ToolOutput::text(
                 true,
-                format!("Message queued for running agent {to}; it will be delivered at its next turn."),
+                format!(
+                    "Message queued for running agent {to}; it will be delivered at its next turn."
+                ),
             );
         }
         if let Ok(mut items) = child.items.lock() {
@@ -2023,13 +2035,13 @@ impl Session {
             let started = std::time::Instant::now();
             let result = child_for_task.run_loop(&SubDispatch(&child_for_task)).await;
             let report = last_assistant_text(&child_for_task.history());
-            let status = if result.is_ok() { "completed" } else { "failed" };
+            let status = if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            };
             child_for_task.persist_agent(status);
-            let usage = child_for_task
-                .last_usage
-                .lock()
-                .map(|g| *g)
-                .unwrap_or(None);
+            let usage = child_for_task.last_usage.lock().map(|g| *g).unwrap_or(None);
             let label = child_for_task.def.display_name().to_string();
             if let Some(parent) = parent.upgrade() {
                 parent.emit(AgentEvent::Notice {
@@ -2157,11 +2169,7 @@ impl Session {
             ),
         });
         let post = self
-            .run_hook(
-                "PostCompact",
-                None,
-                serde_json::json!({"summary": summary}),
-            )
+            .run_hook("PostCompact", None, serde_json::json!({"summary": summary}))
             .await;
         self.push_hook_context(&post.context);
         Ok(())
