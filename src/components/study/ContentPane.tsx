@@ -34,7 +34,7 @@ import {
   WEREAD_SCRIPT,
   type WereadRoutePayload,
 } from "@/study/weread";
-import { ErrorBoundary } from "./ErrorBoundary";
+import { ErrorBoundary } from "../ErrorBoundary";
 import { StudyHistoryMenu } from "./StudyHistoryMenu";
 
 /**

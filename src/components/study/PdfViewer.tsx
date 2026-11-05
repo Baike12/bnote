@@ -70,11 +70,11 @@ import {
   type PageMetric,
 } from "@/study/readPositions";
 import { steppedScrollTop } from "@/study/reading";
-import { pageMetrics, snapFlipToLine } from "@/components/pdf/geometry";
-import { CropLayer } from "@/components/pdf/CropLayer";
-import { PdfPage } from "@/components/pdf/page";
-import { OutlineNodeView, base64ToBytes, resolveOutline } from "@/components/pdf/Outline";
-import type { PdfTool } from "@/components/pdf/types";
+import { pageMetrics, snapFlipToLine } from "@/components/study/pdf/geometry";
+import { CropLayer } from "@/components/study/pdf/CropLayer";
+import { PdfPage } from "@/components/study/pdf/page";
+import { OutlineNodeView, base64ToBytes, resolveOutline } from "@/components/study/pdf/Outline";
+import type { PdfTool } from "@/components/study/pdf/types";
 
 /**
  * Study-mode PDF reader.

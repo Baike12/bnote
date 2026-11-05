@@ -10,7 +10,7 @@ import { todayStamp } from "@/lib/todoStamp";
 import { refreshTree } from "@/app/actions";
 import { focusEditor } from "@/editor/api";
 import { setActiveKeyRegion } from "@/commands/globalKeys";
-import { PaneEditor } from "./PaneEditor";
+import { PaneEditor } from "../PaneEditor";
 import { TODO_DRAG_MIME, decodeTodoDrag } from "@/projects/drag";
 import { sendTodoWithToast } from "@/projects/send";
 

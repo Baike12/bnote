@@ -28,7 +28,9 @@ src/                          frontend
 ├── focus/                    pomodoro timer and screen-lock state (native side: commands/focus.rs)
 ├── commands/                 command registry, key bindings, key regions
 ├── state/                    app store, settings, config persistence
-├── components/               app chrome: title bar, status bar, settings, palettes, toasts
+├── components/               views: app chrome (title bar, status bar, settings, palettes)
+│                             plus one folder per domain view (agent, study, code, daily,
+│                             projects, focus, python); views sit in the composition layer
 ├── vault/                    vault MRU and quick switch
 ├── lib/                      shared helpers and the typed IPC boundary (lib/tauri.ts)
 ├── dev/                      browser mode and harness hooks

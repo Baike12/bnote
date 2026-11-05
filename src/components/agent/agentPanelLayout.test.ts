@@ -81,8 +81,8 @@ describe("agent panel scroll layout", () => {
  * background as the header, and a fixed-width back button.
  */
 describe("study assistant header: session switch and auxiliary session bar", () => {
-  const panelSrc = readFileSync("src/components/AgentPanel.tsx", "utf8");
-  const headerSrc = readFileSync("src/components/AgentHeader.tsx", "utf8");
+  const panelSrc = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
+  const headerSrc = readFileSync("src/components/agent/AgentHeader.tsx", "utf8");
   // Only the code is searched: a comment saying "no native <select>" is documentation, not a violation.
   const code = (src: string) =>
     src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -146,7 +146,7 @@ describe("study assistant header: session switch and auxiliary session bar", () 
  * outer frame and keep fixed pixels.
  */
 describe("study assistant: adjustable conversation font size", () => {
-  const panelSrc = readFileSync("src/components/AgentPanel.tsx", "utf8");
+  const panelSrc = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
 
   it("the body base is not below 14px (13.5px is the too small that this fixes)", () => {
     const panel = rule(".agent-panel");

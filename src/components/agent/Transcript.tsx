@@ -1,7 +1,7 @@
 import type { ReactNode, Ref } from "react";
 import type { AgentTodoItem } from "@/lib/tauri";
 import type { CodeProjectRef } from "@/state/appStore";
-import { HtmlPreview } from "@/components/HtmlPreview";
+import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import type { ChatEntry, ToolRecord } from "./model";

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { openAccessibilitySettings, useFocusStore } from "@/focus/store";
-import { MinutesInput } from "@/components/MinutesInput";
+import { MinutesInput } from "@/components/focus/MinutesInput";
 import { isActive, MAX_FOCUS_DURATIONS } from "@/focus/timer";
 import { SettingsCard, Row } from "./primitives";
 

@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
  * that path.
  */
 
-const raw = readFileSync("src/components/AgentPanel.tsx", "utf8");
+const raw = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
 const code = raw
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/^[ \t]*\/\/.*$/gm, "");

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Modal } from "./Modal";
+import { Modal } from "../Modal";
 import { fuzzySort } from "@/lib/fuzzy";
 import { inputGuards } from "@/lib/inputGuards";
 import { useAppStore, type QuickAddCommand } from "@/state/appStore";

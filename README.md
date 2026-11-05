@@ -487,7 +487,8 @@ PDF 转换器的夹具与质量门禁在 `tests/data/pdfs/`（`src-tauri/crates/
 src/                        前端：React 19 + CodeMirror 6 + Zustand
   editor/                   实时渲染、KaTeX、LaTeX 片段、Vim、打字机、输入法跟随
   commands/                 命令注册中心、区域化键位、内置命令、键序
-  components/               应用外壳、四种模式布局、Agent 面板、PDF 阅读器、设置
+  components/               视图层：应用外壳与设置，以及按域分的视图目录
+                            （agent / study / code / daily / projects / focus / python）
   study/                    材料目录、PDF/网页批注、阅读位置、微信读书、网页运行时、缩放
   code/                     文件树、编辑器、LSP 客户端、git 差异、问题面板、终端
   projects/                 项目看板模型、拖动、发送到日记

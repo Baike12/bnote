@@ -28,10 +28,10 @@ import {
 } from "@/projects/layoutModel";
 import { focusEditor } from "@/editor/api";
 import { setActiveKeyRegion } from "@/commands/globalKeys";
-import { startSplitDrag } from "./splitDrag";
-import { PaneEditor } from "./PaneEditor";
-import { DailyNotePane } from "./DailyNotePane";
-import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { startSplitDrag } from "../splitDrag";
+import { PaneEditor } from "../PaneEditor";
+import { DailyNotePane } from "../daily/DailyNotePane";
+import { ContextMenu, type MenuItem } from "../ContextMenu";
 
 /**
  * Project management view (on the same level as study mode, mutually

@@ -42,15 +42,15 @@ import {
 import { Sidebar } from "@/components/Sidebar";
 import { EditorPane } from "@/components/EditorPane";
 import { JsonFilePane } from "@/components/JsonFilePane";
-import { StudyLayout } from "@/components/StudyLayout";
-import { CodeLayout } from "@/components/CodeLayout";
-import { ProjectsLayout } from "@/components/ProjectsLayout";
+import { StudyLayout } from "@/components/study/StudyLayout";
+import { CodeLayout } from "@/components/code/CodeLayout";
+import { ProjectsLayout } from "@/components/projects/ProjectsLayout";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
-import { LinkSuggest } from "@/components/LinkSuggest";
+import { LinkSuggest } from "@/components/study/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
 import { installCodeEvents } from "@/code/events";
-import { QuickAddModal } from "@/components/QuickAddModal";
-import { QuickTodoModal } from "@/components/QuickTodoModal";
+import { QuickAddModal } from "@/components/daily/QuickAddModal";
+import { QuickTodoModal } from "@/components/daily/QuickTodoModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { Toast, Welcome } from "@/components/Welcome";
 import { fileName, isJsonPath } from "@/lib/path";
@@ -70,7 +70,7 @@ import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
 
 /** The canvas is a separate chunk (excalidraw plus its font loading); it is
  *  only downloaded when it is opened. */
-const DrawingCanvas = lazy(() => import("@/components/DrawingCanvas"));
+const DrawingCanvas = lazy(() => import("@/components/study/DrawingCanvas"));
 
 export default function App() {
   const vaultPath = useAppStore((s) => s.vaultPath);

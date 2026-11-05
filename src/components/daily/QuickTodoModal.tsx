@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Modal } from "./Modal";
+import { Modal } from "../Modal";
 import { useAppStore } from "@/state/appStore";
 import { captureTodoToToday } from "@/daily/capture";
 import { imeBeginTransientChinese, imeEndTransientChinese } from "@/editor/imeSwitch";

@@ -38,8 +38,8 @@ import {
 } from "@/study/transcript";
 import { isWereadUrl } from "@/study/weread";
 import { applySuggestion, parseSuggestTrigger, type SuggestTrigger } from "@/agent/suggest";
-import { AgentHeader } from "@/components/AgentHeader";
-import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/AgentSuggest";
+import { AgentHeader } from "@/components/agent/AgentHeader";
+import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/agent/AgentSuggest";
 import {
   MAX_IMAGES_PER_MESSAGE,
   fileToAgentImage,

@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
  * - the session list, the transcript path and the title write go to the agent
  *   home (`~/.bnote`), never into the vault.
  */
-const raw = readFileSync("src/components/AgentPanel.tsx", "utf8");
+const raw = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
 const code = raw
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/^[ \t]*\/\/.*$/gm, "");

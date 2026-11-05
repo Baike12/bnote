@@ -1,13 +1,13 @@
 import { useRef } from "react";
-import { AgentPanel } from "./AgentPanel";
+import { AgentPanel } from "../agent/AgentPanel";
 import { ContentPane } from "./ContentPane";
 import { CreativePreview } from "./CreativePreview";
-import { EditorPane } from "./EditorPane";
-import { JsonFilePane } from "./JsonFilePane";
+import { EditorPane } from "../EditorPane";
+import { JsonFilePane } from "../JsonFilePane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName, isJsonPath } from "@/lib/path";
 import { dragAgentEdge, dragContentEdge, RESIZER_WIDTH } from "@/study/layoutModel";
-import { startSplitDrag } from "./splitDrag";
+import { startSplitDrag } from "../splitDrag";
 
 /**
  * Study-mode three-column layout: agent (left) + content (middle) + notes

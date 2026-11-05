@@ -7,8 +7,8 @@ import { applySettingsToEditor, newNote, openNote, saveNote } from "@/app/action
 import { useAppStore } from "@/state/appStore";
 import { currentVimMode } from "@/editor/vim/vim";
 import { fileName } from "@/lib/path";
-import { PythonRunPanel } from "@/components/PythonRunPanel";
-import { FocusChip } from "@/components/FocusChip";
+import { PythonRunPanel } from "@/components/python/PythonRunPanel";
+import { FocusChip } from "@/components/focus/FocusChip";
 
 const AUTOSAVE_DELAY = 800;
 

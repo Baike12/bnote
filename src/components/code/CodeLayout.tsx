@@ -1,12 +1,12 @@
 import { useRef } from "react";
-import { AgentPanel } from "./AgentPanel";
+import { AgentPanel } from "../agent/AgentPanel";
 import { CodeProjectPane } from "@/code/components/CodeProjectPane";
-import { EditorPane } from "./EditorPane";
-import { JsonFilePane } from "./JsonFilePane";
+import { EditorPane } from "../EditorPane";
+import { JsonFilePane } from "../JsonFilePane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName, isJsonPath } from "@/lib/path";
 import { dragAgentEdge, dragContentEdge, RESIZER_WIDTH } from "@/study/layoutModel";
-import { startSplitDrag } from "./splitDrag";
+import { startSplitDrag } from "../splitDrag";
 
 /**
  * Code mode: agent (left) | code project (middle) | notes (right).
