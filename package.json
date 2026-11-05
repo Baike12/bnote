@@ -14,7 +14,8 @@
     "test": "vitest run",
     "gate": "pnpm lint && pnpm typecheck && pnpm format:check && pnpm test",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "docs:keybindings": "UPDATE_DOCS=1 vitest run src/commands/keybindingsDoc.test.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
