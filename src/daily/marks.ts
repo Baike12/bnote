@@ -7,7 +7,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { documentPath, setDocPath } from "@/editor/docPath";
-import { todayStamp } from "@/editor/ops";
+import { todayStamp } from "@/lib/todoStamp";
 import { useAppStore } from "@/state/appStore";
 import { onLinksChanged, peekLinks, type DailyLink } from "./links";
 import { dailyPathFor, isDailyPath, isTodo, parseListLine, todoText } from "./model";

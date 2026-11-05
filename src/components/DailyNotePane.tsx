@@ -6,7 +6,7 @@ import { useAppStore } from "@/state/appStore";
 import { dailyDayOf, dailyPathFor } from "@/daily/model";
 import { dailyScaffoldWithRollover } from "@/daily/engine";
 import { dailyTemplatePath, tauriIO } from "@/daily/runtime";
-import { todayStamp } from "@/editor/ops";
+import { todayStamp } from "@/lib/todoStamp";
 import { refreshTree } from "@/app/actions";
 import { focusEditor } from "@/editor/api";
 import { setActiveKeyRegion } from "@/commands/globalKeys";

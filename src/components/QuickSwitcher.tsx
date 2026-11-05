@@ -6,15 +6,8 @@ import { useAppStore } from "@/state/appStore";
 import { openNote } from "@/app/actions";
 import { joinPath } from "@/lib/path";
 import { recentCommandChord } from "@/commands/lastChord";
+import { registerSwitcherCycle } from "@/lib/switcherSignal";
 import { imeApply, imeSyncToEditor } from "@/editor/imeSwitch";
-
-/** Active while the switcher is open — the chord-repeat path calls into it. */
-let cycleHandler: ((dir: 1 | -1) => boolean) | null = null;
-
-/** Chord repeat (⌘S ⌘S … while the switcher is open) moves the selection. */
-export function cycleQuickSwitcher(dir: 1 | -1): boolean {
-  return cycleHandler ? cycleHandler(dir) : false;
-}
 
 export function QuickSwitcher() {
   const open = useAppStore((s) => s.modal === "switcher");
@@ -75,13 +68,16 @@ export function QuickSwitcher() {
     if (!open) return;
     chordKeyRef.current = recentCommandChord()?.key ?? null;
 
-    cycleHandler = (dir) => {
+    const cycle = (dir: 1 | -1): boolean => {
       const n = resultsRef.current.length;
       if (n === 0) return false;
       cycledRef.current = true;
       setIndex((i) => (i + dir + n) % n);
       return true;
     };
+    // The command layer reaches this through the signal (see switcherSignal):
+    // ⌘S ⌘S repeats re-run the command, which cycles the selection.
+    registerSwitcherCycle(cycle);
 
     const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
     const modKey = isMac ? "Meta" : "Control";
@@ -91,7 +87,7 @@ export function QuickSwitcher() {
       if (e.key.toLowerCase() !== chord) return;
       e.preventDefault();
       e.stopPropagation();
-      cycleHandler?.(-1);
+      cycle(-1);
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key !== modKey && e.key !== "OS") return;
@@ -102,7 +98,7 @@ export function QuickSwitcher() {
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp);
     return () => {
-      cycleHandler = null;
+      registerSwitcherCycle(null);
       cycledRef.current = false;
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp);

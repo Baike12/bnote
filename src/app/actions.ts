@@ -6,7 +6,14 @@ import { useAppStore, getConfigSnapshot, persistConfig, flushPersistConfig, type
 import { loadDocument } from "@/editor/setup";
 import { getView, activeEditors } from "@/editor/api";
 import { documentPath } from "@/editor/docPath";
-import { insertWikilinkText, wikilinkTargetOnLine, todayStamp } from "@/editor/ops";
+import { insertWikilinkText, wikilinkTargetOnLine } from "@/editor/ops";
+import { todayStamp } from "@/lib/todoStamp";
+import { registerNoteOpener } from "@/lib/navigation";
+
+// The footprint decorations (a leaf module) open notes through this signal
+// instead of importing this file; a direct import made
+// footprint → app/actions → editor/setup → footprint circular.
+registerNoteOpener((path, line) => void openNote(path, line));
 import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, restoreSavedCursor } from "@/editor/cursorMemory";
 import { reconfigureLivePreview, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";

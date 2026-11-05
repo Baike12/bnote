@@ -1,6 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { registerCommands, runCommand, type CommandDef } from "./registry";
-import { cycleQuickSwitcher } from "@/components/QuickSwitcher";
+import { cycleQuickSwitcher } from "@/lib/switcherSignal";
 import { getView } from "@/editor/api";
 import {
   cycleHeading,

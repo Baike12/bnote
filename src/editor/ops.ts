@@ -9,6 +9,7 @@ import { anchorRegionAt } from "./calloutAnchor";
 import { takeVimVisual } from "./vim/vim";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 import { useAppStore } from "@/state/appStore";
+import { DONE_STAMP_RE, todayStamp } from "@/lib/todoStamp";
 
 /** Text-editing operations shared by commands and keybindings. */
 
@@ -264,17 +265,6 @@ export function cycleHeading(view: EditorView) {
     userEvent: "input.bnote-heading",
   });
 }
-
-/** Today as YYYY-MM-DD, the ✅ stamp appended when a todo is completed. */
-export function todayStamp(): string {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${mm}-${dd}`;
-}
-
-/** Trailing " ✅ YYYY-MM-DD" completion stamp, with surrounding whitespace. */
-export const DONE_STAMP_RE = /(\s*✅\s*\d{4}-\d{2}-\d{2})\s*$/;
 
 /** The todo prefix toggleTodo inserts; cursors in the prefix zone land behind it. */
 const TODO_PREFIX = "- [ ] ";

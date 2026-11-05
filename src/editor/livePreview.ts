@@ -9,7 +9,7 @@ import { collectAnchors } from "./calloutAnchor";
 import { documentPath, setDocPath } from "./docPath";
 import { useAppStore } from "@/state/appStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { DONE_STAMP_RE, todayStamp } from "./ops";
+import { DONE_STAMP_RE, todayStamp } from "@/lib/todoStamp";
 import {
   CalloutEdgeWidget,
   CalloutTitleWidget,

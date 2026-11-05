@@ -1,5 +1,5 @@
 import { WidgetType } from "@codemirror/view";
-import { todayStamp } from "@/editor/ops";
+import { todayStamp } from "@/lib/todoStamp";
 import { renderBlockHtml } from "./render";
 import { defaultFold, foldSig, toggleGroup, toggleZone, type FoldState, type FootprintView } from "./view";
 

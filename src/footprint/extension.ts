@@ -7,9 +7,9 @@ import {
 } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { documentPath, setDocPath } from "@/editor/docPath";
-import { todayStamp } from "@/editor/ops";
+import { todayStamp } from "@/lib/todoStamp";
 import { useAppStore } from "@/state/appStore";
-import { openNote } from "@/app/actions";
+import { openNoteByPath } from "@/lib/navigation";
 import { dailyDayOf, dailyPathFor, isDailyPath } from "@/daily/model";
 import {
   ensureFootprintDay,
@@ -130,7 +130,7 @@ function footprintMousedown(): Extension {
         const path = el.dataset.footprintPath;
         if (!path) return true;
         const line = Number(el.dataset.footprintLine);
-        void openNote(path, Number.isFinite(line) && line > 0 ? line : undefined);
+        openNoteByPath(path, Number.isFinite(line) && line > 0 ? line : undefined);
         return true;
       }
       return false;

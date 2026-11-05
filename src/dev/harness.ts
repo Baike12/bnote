@@ -50,7 +50,7 @@ import {
 import type { FootprintBlock } from "@/footprint/model";
 import { documentPath } from "@/editor/docPath";
 import { dailyPathFor, isDailyPath } from "@/daily/model";
-import { todayStamp } from "@/editor/ops";
+import { todayStamp } from "@/lib/todoStamp";
 
 const DOC = `# 公式与光标
 

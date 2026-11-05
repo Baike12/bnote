@@ -2,7 +2,7 @@ import { EditorState, type Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { documentPath } from "@/editor/docPath";
 import { findEditorFor } from "@/editor/api";
-import { DONE_STAMP_RE } from "@/editor/ops";
+import { DONE_STAMP_RE } from "@/lib/todoStamp";
 import { joinPath } from "@/lib/path";
 import { normalizeTemplateDir, renderTemplate } from "@/templates/template";
 import type { DailyLink, LinkStore } from "./links";

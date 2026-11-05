@@ -1,6 +1,6 @@
 import { api } from "@/lib/tauri";
 import { joinPath } from "@/lib/path";
-import { todayStamp } from "@/editor/ops";
+import { todayStamp } from "@/lib/todoStamp";
 import { useAppStore } from "@/state/appStore";
 import {
   diffBlocks,

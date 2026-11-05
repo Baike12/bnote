@@ -1,6 +1,6 @@
 import { EditorState, type Text } from "@codemirror/state";
 import { fenceStateScan } from "@/editor/context";
-import { DONE_STAMP_RE } from "@/editor/ops";
+import { DONE_STAMP_RE } from "@/lib/todoStamp";
 
 /**
  * Pure text model for cross-file todo sync: list line parsing, todo block

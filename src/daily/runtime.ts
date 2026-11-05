@@ -1,5 +1,5 @@
 import { api } from "@/lib/tauri";
-import { todayStamp } from "@/editor/ops";
+import { todayStamp } from "@/lib/todoStamp";
 import { useAppStore } from "@/state/appStore";
 import { normalizeTemplateDir } from "@/templates/template";
 import type { DailyDeps, DailyIO } from "./engine";

@@ -187,7 +187,7 @@ describe("FootprintCore incremental refresh (noteDirty)", () => {
   });
 
   it("a core that has not rotated (day is an empty string: the injection / init gap) uses the live index for any date", async () => {
-    const { todayStamp } = await import("@/editor/ops");
+    const { todayStamp } = await import("@/lib/todoStamp");
     const core = coreOf(new Map(), "2026-09-30"); // init is not called, day = ""
     core.installIndexForTest(new Map([[NOTE, [{ text: "注入块", start: 1, end: 1 }]]]));
     expect(core.entriesFor(todayStamp())).toEqual([
