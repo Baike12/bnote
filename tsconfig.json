@@ -13,8 +13,10 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    /* `import.meta.env` in src/dev/browserMode.ts. */
-    "types": ["vite/client"],
+    /* `import.meta.env` in src/dev/browserMode.ts; `node` for the *.test.ts files that
+       read source files (the structure gates). App code cannot import a node builtin at
+       runtime anyway — Vite has no polyfill for them. */
+    "types": ["vite/client", "node"],
     "paths": {
       "@/*": ["./src/*"]
     },

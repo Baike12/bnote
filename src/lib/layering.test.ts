@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-// @ts-expect-error type error without @types/node package
 import { readdirSync, readFileSync } from "node:fs";
-// @ts-expect-error type error without @types/node package
 import { join } from "node:path";
 
 /**
