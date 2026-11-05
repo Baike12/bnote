@@ -20,6 +20,22 @@ import type { LspDiagnostic } from "./types";
  * servers stay alive while the project is open, so they keep pushing events
  * across panel remounts.
  */
+/**
+ * The server of the previous project keeps running until it is stopped, so its
+ * events keep arriving after the switch. Every one of them carries `root`, and
+ * only the events of the project currently open may reach the store — a late
+ * diagnostic or log from the old project otherwise shows up under the new one
+ * (the paths are project-relative, so they can collide outright).
+ */
+function fromThisProject(root: unknown): boolean {
+  return sameProject(root, useCodeStore.getState().project?.root);
+}
+
+/** Whether an event of `payloadRoot` belongs to the project open as `currentRoot`. */
+export function sameProject(payloadRoot: unknown, currentRoot: string | undefined): boolean {
+  return typeof payloadRoot === "string" && currentRoot !== undefined && payloadRoot === currentRoot;
+}
+
 export async function installCodeEvents(): Promise<() => void> {
   const offs: Array<() => void> = [];
 
@@ -36,8 +52,8 @@ export async function installCodeEvents(): Promise<() => void> {
   };
 
   await add("code-lsp-diagnostics", (payload) => {
-    const data = payload as { path?: unknown; diagnostics?: unknown } | null;
-    if (!data || typeof data.path !== "string") return;
+    const data = payload as { root?: unknown; path?: unknown; diagnostics?: unknown } | null;
+    if (!data || !fromThisProject(data.root) || typeof data.path !== "string") return;
     const diagnostics = Array.isArray(data.diagnostics)
       ? (data.diagnostics as LspDiagnostic[])
       : [];
@@ -49,16 +65,21 @@ export async function installCodeEvents(): Promise<() => void> {
   });
 
   await add("code-lsp-status", (payload) => {
-    const data = payload as { language?: unknown; state?: unknown } | null;
-    if (!data || typeof data.language !== "string") return;
+    const data = payload as { root?: unknown; language?: unknown; state?: unknown } | null;
+    if (!data || !fromThisProject(data.root) || typeof data.language !== "string") return;
     useCodeStore
       .getState()
       .setLspState(data.language, typeof data.state === "string" ? data.state : "unknown");
   });
 
   await add("code-lsp-log", (payload) => {
-    const data = payload as { language?: unknown; level?: unknown; message?: unknown } | null;
-    if (!data) return;
+    const data = payload as {
+      root?: unknown;
+      language?: unknown;
+      level?: unknown;
+      message?: unknown;
+    } | null;
+    if (!data || !fromThisProject(data.root)) return;
     useCodeStore
       .getState()
       .appendLspLog(

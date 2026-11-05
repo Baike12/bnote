@@ -308,8 +308,6 @@ pub async fn agent_start_session(
             "description": def.description.clone(),
             "tools": def.effective_tools(),
         },
-        // The restored session's task list, so the panel shows it right away.
-        "tasks": session.tasks.lock().ok().map(|g| g.render()).unwrap_or_default(),
         // The model configuration this session actually uses: the frontend
         // footnote shows it, and the session record writes it into its
         // metadata line so a restore continues from the snapshot (decoupled

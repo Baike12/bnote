@@ -89,6 +89,7 @@ fn subscribe_events(app: &AppHandle) {
         "code-lsp-log",
         "term-output",
         "term-exit",
+        "creative-preview-updated",
     ] {
         let label = name.to_string();
         app.listen(name, move |event| {

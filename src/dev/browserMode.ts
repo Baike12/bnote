@@ -43,6 +43,7 @@ const EVENTS = [
   "code-lsp-log",
   "term-output",
   "term-exit",
+  "creative-preview-updated",
 ] as const;
 
 type Internals = {
