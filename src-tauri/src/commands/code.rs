@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use super::CmdResult;
 use crate::code::git::{self, GitStatus};
@@ -73,6 +73,24 @@ fn canonical_root(root: &str) -> Result<PathBuf, String> {
 /// Key of the project root (the canonicalized string).
 fn root_key(root: &Path) -> String {
     root.to_string_lossy().to_string()
+}
+
+/// Runs blocking work (tree scan, file IO, git subprocess) off the async
+/// worker.
+///
+/// The command surface is `async`, but a repository scan, a `git status` and a
+/// file read are synchronous syscalls. Running them inline occupies one of the
+/// runtime's worker threads and stalls every other command queued behind it, so
+/// opening a large repository would also freeze unrelated commands. The same
+/// discipline is already applied in `files.rs`, `home.rs` and `vault.rs`.
+async fn blocking<T, F>(work: F) -> CmdResult<T>
+where
+    F: FnOnce() -> CmdResult<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("JOIN: {e}"))?
 }
 
 /// Return the **already scanned** file tree of this project; if there is none,
@@ -133,13 +151,21 @@ fn manager_for(state: &AppState, root: &PathBuf) -> Result<Arc<LspManager>, Stri
 
 /// Open a code project: scan the file tree and read the git status.
 #[tauri::command]
-pub async fn code_open_project(
-    state: State<'_, AppState>,
-    root: String,
-) -> CmdResult<CodeProjectInfo> {
+pub async fn code_open_project(app: AppHandle, root: String) -> CmdResult<CodeProjectInfo> {
     let root = canonical_root(&root)?;
-    let tree = scan_into_cache(&state, &root);
-    let status = git::status(&root).unwrap_or_default();
+    // Images in the project are rendered through the asset protocol, scoped to
+    // this repository (see `paths::allow_asset_dir`).
+    crate::paths::allow_asset_dir(&app, &root);
+    let scan_app = app.clone();
+    let scan_root = root.clone();
+    let git_root = root.clone();
+    let (tree, status) = blocking(move || {
+        let state = scan_app.state::<AppState>();
+        let tree = scan_into_cache(&state, &scan_root);
+        let status = git::status(&git_root).unwrap_or_default();
+        Ok((tree, status))
+    })
+    .await?;
     let name = root
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -157,79 +183,97 @@ pub async fn code_open_project(
 /// Rescan the file tree (after the user edited .gitignore or created files
 /// outside the app).
 #[tauri::command]
-pub async fn code_rescan(state: State<'_, AppState>, root: String) -> CmdResult<CodeTree> {
+pub async fn code_rescan(app: AppHandle, root: String) -> CmdResult<CodeTree> {
     let root = canonical_root(&root)?;
-    Ok(scan_into_cache(&state, &root))
+    blocking(move || {
+        let state = app.state::<AppState>();
+        Ok(scan_into_cache(&state, &root))
+    })
+    .await
 }
 
 /// Read a file (together with its language id).
 #[tauri::command]
 pub async fn code_read_file(root: String, path: String) -> CmdResult<CodeFile> {
-    let root = canonical_root(&root)?;
-    let abs = project::resolve_in(&root, &path)?;
-    let (content, binary, size) = project::read_text(&abs)?;
-    let language_id = lang::language_for_path(&abs).to_string();
-    Ok(CodeFile {
-        path,
-        language_id,
-        content,
-        binary,
-        size,
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        let abs = project::resolve_in(&root, &path)?;
+        let (content, binary, size) = project::read_text(&abs)?;
+        let language_id = lang::language_for_path(&abs).to_string();
+        Ok(CodeFile {
+            path,
+            language_id,
+            content,
+            binary,
+            size,
+        })
     })
+    .await
 }
 
 /// Write a file.
 #[tauri::command]
 pub async fn code_write_file(root: String, path: String, content: String) -> CmdResult<()> {
-    let root = canonical_root(&root)?;
-    let abs = project::resolve_in(&root, &path)?;
-    project::write_text(&abs, &content)
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        let abs = project::resolve_in(&root, &path)?;
+        project::write_text(&abs, &content)
+    })
+    .await
 }
 
 /// Search file contents in the project (literal, case-insensitive).
 #[tauri::command]
 pub async fn code_search(
-    state: State<'_, AppState>,
+    app: AppHandle,
     root: String,
     query: String,
     limit: Option<usize>,
 ) -> CmdResult<Vec<CodeSearchHit>> {
     let root = canonical_root(&root)?;
-    let tree = tree_for(&state, &root)?;
-    Ok(project::search_contents(
-        &root,
-        &tree,
-        &query,
-        limit.unwrap_or(200),
-    ))
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let tree = tree_for(&state, &root)?;
+        Ok(project::search_contents(
+            &root,
+            &tree,
+            &query,
+            limit.unwrap_or(200),
+        ))
+    })
+    .await
 }
 
 /// Fuzzy file name search (for quick open): subsequence match, returns relative paths.
 #[tauri::command]
 pub async fn code_search_files(
-    state: State<'_, AppState>,
+    app: AppHandle,
     root: String,
     query: String,
 ) -> CmdResult<Vec<CodeEntry>> {
     let root = canonical_root(&root)?;
-    let tree = tree_for(&state, &root)?;
-    let q = query.to_lowercase();
-    // The ignore-hidden paths are in the tree but not searchable: node_modules
-    // would otherwise take every quick-open result (`code_search` reasons the
-    // same way, see `CodeTree::searchable`).
-    let mut hits: Vec<CodeEntry> = tree
-        .searchable()
-        .filter(|e| !e.is_dir && fuzzy_match(&e.name.to_lowercase(), &q))
-        .cloned()
-        .collect();
-    // Matches first, directory order as the tie-breaker.
-    hits.sort_by(|a, b| {
-        let ra = rank(&a.name.to_lowercase(), &q);
-        let rb = rank(&b.name.to_lowercase(), &q);
-        ra.cmp(&rb).then_with(|| a.path.cmp(&b.path))
-    });
-    hits.truncate(50);
-    Ok(hits)
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let tree = tree_for(&state, &root)?;
+        let q = query.to_lowercase();
+        // The ignore-hidden paths are in the tree but not searchable: node_modules
+        // would otherwise take every quick-open result (`code_search` reasons the
+        // same way, see `CodeTree::searchable`).
+        let mut hits: Vec<CodeEntry> = tree
+            .searchable()
+            .filter(|e| !e.is_dir && fuzzy_match(&e.name.to_lowercase(), &q))
+            .cloned()
+            .collect();
+        // Matches first, directory order as the tie-breaker.
+        hits.sort_by(|a, b| {
+            let ra = rank(&a.name.to_lowercase(), &q);
+            let rb = rank(&b.name.to_lowercase(), &q);
+            ra.cmp(&rb).then_with(|| a.path.cmp(&b.path))
+        });
+        hits.truncate(50);
+        Ok(hits)
+    })
+    .await
 }
 
 /// Subsequence match: `abc` hits `a_b_c`.
@@ -257,33 +301,45 @@ fn rank(text: &str, query: &str) -> u8 {
 /// Read the git status.
 #[tauri::command]
 pub async fn code_git_status(root: String) -> CmdResult<GitStatus> {
-    let root = canonical_root(&root)?;
-    git::status(&root)
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        git::status(&root)
+    })
+    .await
 }
 
 /// Get the diff of one file (unified diff text).
 #[tauri::command]
 pub async fn code_git_diff(root: String, path: String, staged: bool) -> CmdResult<String> {
-    let root = canonical_root(&root)?;
-    git::diff(&root, &path, staged)
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        git::diff(&root, &path, staged)
+    })
+    .await
 }
 
 /// Stage the changes of one file and return the new status.
 #[tauri::command]
 pub async fn code_git_stage(root: String, path: String) -> CmdResult<GitStatus> {
-    let root = canonical_root(&root)?;
-    let repo = git::repo_root(&root).ok_or("NOT_A_REPO: 不是 git 仓库")?;
-    git::stage(&repo, &path)?;
-    git::status(&root)
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        let repo = git::repo_root(&root).ok_or("NOT_A_REPO: 不是 git 仓库")?;
+        git::stage(&repo, &path)?;
+        git::status(&root)
+    })
+    .await
 }
 
 /// Unstage the changes of one file and return the new status.
 #[tauri::command]
 pub async fn code_git_unstage(root: String, path: String) -> CmdResult<GitStatus> {
-    let root = canonical_root(&root)?;
-    let repo = git::repo_root(&root).ok_or("NOT_A_REPO: 不是 git 仓库")?;
-    git::unstage(&repo, &path)?;
-    git::status(&root)
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        let repo = git::repo_root(&root).ok_or("NOT_A_REPO: 不是 git 仓库")?;
+        git::unstage(&repo, &path)?;
+        git::status(&root)
+    })
+    .await
 }
 
 /// Resolve which language server this language should use (the frontend

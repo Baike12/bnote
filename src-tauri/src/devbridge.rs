@@ -582,9 +582,11 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
 
         // ---- code project ----
         "code_open_project" => {
-            json_ok!(code::code_open_project(app.state(), arg_str(args, "root")?).await)
+            json_ok!(code::code_open_project(app.clone(), arg_str(args, "root")?).await)
         }
-        "code_rescan" => json_ok!(code::code_rescan(app.state(), arg_str(args, "root")?).await),
+        "code_rescan" => {
+            json_ok!(code::code_rescan(app.clone(), arg_str(args, "root")?).await)
+        }
         "code_read_file" => json_ok!(
             code::code_read_file(arg_str(args, "root")?, arg_str(args, "path")?).await
         ),
@@ -598,7 +600,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         ),
         "code_search" => json_ok!(
             code::code_search(
-                app.state(),
+                app.clone(),
                 arg_str(args, "root")?,
                 arg_str(args, "query")?,
                 arg_opt_u64(args, "limit").map(|v| v as usize),
@@ -606,7 +608,12 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             .await
         ),
         "code_search_files" => json_ok!(
-            code::code_search_files(app.state(), arg_str(args, "root")?, arg_str(args, "query")?).await
+            code::code_search_files(
+                app.clone(),
+                arg_str(args, "root")?,
+                arg_str(args, "query")?,
+            )
+            .await
         ),
         "code_git_status" => {
             json_ok!(code::code_git_status(arg_str(args, "root")?).await)
