@@ -46,7 +46,7 @@ src-tauri/src/                Rust backend
 ├── devbridge.rs              HTTP bridge for browser mode (same command implementations)
 └── dict.rs, translate.rs     offline dictionary and translation
 
-tests/data/pdf/               PDF conversion fixtures and quality gate
+tests/data/pdfs/              PDF conversion fixtures and quality gate
 vendor/                       vendored crates (anydoc, pdf-inspector)
 scripts/                      dev-signing setup
 ```

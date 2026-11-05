@@ -1,5 +1,5 @@
 //! Conversion quality gate: locks structural quality against the real paper
-//! fixtures under `tests/data/pdf/`.
+//! fixtures under `tests/data/pdfs/`.
 //!
 //! It covers the three high-value content classes of a PDF imported into study
 //! mode (acceptance order: accuracy first, then alignment, then tidiness):
@@ -19,7 +19,7 @@
 use std::path::{Path, PathBuf};
 
 /// Fixture directory relative to `CARGO_MANIFEST_DIR` (src-tauri/crates/pdf2md).
-const FIXTURES_REL: &str = "../../../tests/data/pdf";
+const FIXTURES_REL: &str = "../../../tests/data/pdfs";
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURES_REL)
