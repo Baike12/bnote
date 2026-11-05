@@ -2827,7 +2827,12 @@ input[type="range"] {
 }
 .agent-mode-pop {
   position: absolute;
-  right: 0;
+  /* The shield sits at the left of the composer footer (attach button before
+     it, ~57px from the column's left edge), so the menu hangs from the
+     trigger's left edge. Anchoring it by `right: 0` pushed 99 of its 236px
+     past the window's left edge: the labels were cut off and only the tail of
+     each description stayed visible. */
+  left: 0;
   bottom: calc(100% + 6px);
   z-index: 35;
   width: 236px;
