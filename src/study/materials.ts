@@ -55,8 +55,3 @@ export function materialAbsDir(vaultRoot: string, relDir: string): string {
 export function sessionFilePath(vaultRoot: string, relDir: string, id: string): string {
   return `${materialAbsDir(vaultRoot, relDir)}/sessions/${id}.jsonl`;
 }
-
-/** For tests: clear the cache. */
-export function resetMaterialCache(): void {
-  inflight.clear();
-}

@@ -71,8 +71,3 @@ export function activeCodeEditor(): CodeEditorHandle | null {
   }
   return null;
 }
-
-/** All live instances. */
-export function activeCodeEditors(): CodeEditorHandle[] {
-  return [...live].filter((h) => h.view.dom.isConnected);
-}

@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { useCodeStore } from "../store";
 import { useAppStore } from "@/state/appStore";
-import type { LspDiagnostic } from "../types";
 
 /**
  * The bottom panels: problems (diagnostics) and references.
@@ -121,19 +120,4 @@ export function ReferencesPanel() {
       ))}
     </div>
   );
-}
-
-/** The number of diagnostics (used by the status bar). */
-export function useProblemCount(): number {
-  const diagnostics = useCodeStore((s) => s.diagnostics);
-  return useMemo(
-    () => Object.values(diagnostics).reduce((sum, list) => sum + list.length, 0),
-    [diagnostics],
-  );
-}
-
-/** The diagnostics of one file (used by the editor status bar). */
-export function useFileDiagnostics(path: string | null): LspDiagnostic[] {
-  const diagnostics = useCodeStore((s) => s.diagnostics);
-  return useMemo(() => (path ? (diagnostics[path] ?? []) : []), [diagnostics, path]);
 }

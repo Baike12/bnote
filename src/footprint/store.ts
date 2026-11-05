@@ -421,10 +421,6 @@ export async function ensureFootprints(vaultRoot: string): Promise<void> {
   }
 }
 
-function peekCore(): FootprintCore | null {
-  return cache;
-}
-
 /** Entry point fed by the watcher; silent while the store is not loaded (the full fallback fills the gap once ensureFootprints is done). */
 export function noteDirtyPaths(paths: string[]): void {
   cache?.noteDirty(paths);
@@ -489,8 +485,4 @@ export function setFootprintHistoryForTest(
 ): void {
   if (!cache || cache.vault !== vaultRoot) setFootprintIndexForTest(vaultRoot, new Map());
   cache?.installHistoryForTest(day, entries);
-}
-
-export function peekFootprintCore(): FootprintCore | null {
-  return peekCore();
 }

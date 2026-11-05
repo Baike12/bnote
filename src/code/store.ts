@@ -6,7 +6,6 @@ import { disposeAllTerminals, disposeTerminal, ensureTerminalOutputListener } fr
 import { closeTab as closeTermTab, nextTitle, type TermTab } from "./term/tabs";
 import { useAppStore } from "@/state/appStore";
 import type {
-  CodeEntry,
   CodeFile,
   CodeProjectInfo,
   GitStatus,
@@ -692,19 +691,4 @@ export const useCodeStore = create<CodeState>((set, get) => ({
 export function isDirty(state: CodeState, path: string): boolean {
   const file = state.files[path];
   return !!file && file.content !== file.saved;
-}
-
-/** All diagnostics (across files), grouped by file. */
-export function allDiagnostics(state: CodeState): {
-  path: string;
-  diagnostics: LspDiagnostic[];
-}[] {
-  return Object.entries(state.diagnostics)
-    .filter(([, list]) => list.length > 0)
-    .map(([path, diagnostics]) => ({ path, diagnostics }));
-}
-
-/** The file tree entries (flattened). */
-export function treeEntries(state: CodeState): CodeEntry[] {
-  return state.project?.tree.entries ?? [];
 }

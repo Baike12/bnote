@@ -982,10 +982,6 @@ export function insertInlineCode(view: EditorView) {
   wrapOrPlace(view, "`");
 }
 
-export function insertWikilink(view: EditorView) {
-  wrapOrPlace(view, "[[", "]]");
-}
-
 /** The shape of `[[target]]` / `[[target|alias]]`, the same source as the rendering regex in livePreview. */
 const WIKILINK_RE = /\[\[([^\[\]\n]+?)\]\]/g;
 

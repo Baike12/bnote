@@ -39,14 +39,3 @@ export function IconNewFolder() {
     </svg>
   );
 }
-
-/** Study assistant: one big and one small sparkle, which saves the room the word "assistant" would take. */
-export function IconSparkles() {
-  return (
-    <svg {...iconProps}>
-      <path d="M11 3.5 12.6 8l4.4 1.6L12.6 11.2 11 15.7 9.4 11.2 5 9.6 9.4 8Z" />
-      <path d="M17.5 15v3.2" />
-      <path d="M15.9 16.6h3.2" />
-    </svg>
-  );
-}

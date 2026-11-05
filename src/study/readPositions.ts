@@ -170,20 +170,6 @@ export function savePdfReadPosition(
   }));
 }
 
-export function saveWebReadPosition(
-  vaultRoot: string,
-  url: string,
-  ratio: number,
-): void {
-  readPositionStore.update(vaultRoot, KEY, (data) => ({
-    ...data,
-    urls: prune({
-      ...data.urls,
-      [url]: { ratio: clamp01(ratio), at: Date.now() },
-    }),
-  }));
-}
-
 export function flushReadPositions(): void {
   readPositionStore.flush();
 }

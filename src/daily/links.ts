@@ -39,13 +39,7 @@ interface StoredLinks {
 
 // ------------------------------------------------------- change notification (store -> view)
 
-let revision = 0;
 const listeners = new Set<() => void>();
-
-/** Version counter of the store, incremented on every add, update or removal. */
-export function linksRevision(): number {
-  return revision;
-}
 
 /** Subscribe to store changes (editor decorations recompute on them); returns the unsubscribe function. */
 export function onLinksChanged(fn: () => void): () => void {
@@ -58,7 +52,6 @@ export function onLinksChanged(fn: () => void): () => void {
 /** The single exit for changes: every writer (add, update, remove, vault swap)
  *  goes through here, so no subscriber misses an event. */
 function markLinksChanged(): void {
-  revision++;
   for (const fn of [...listeners]) fn();
 }
 

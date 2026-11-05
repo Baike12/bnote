@@ -70,11 +70,6 @@ for (const desc of dataLanguages) {
   }
 }
 
-/** Whether this languageId has a syntax package. */
-export function hasLanguage(languageId: string): boolean {
-  return findLanguage(languageId) !== null;
-}
-
 /** Find the description of a languageId; null when there is none (plain text). */
 export function findLanguage(languageId: string): LanguageDescription | null {
   if (!languageId || languageId === "plaintext") return null;

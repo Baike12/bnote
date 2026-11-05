@@ -26,8 +26,3 @@ export function unregisterJsonView(view: EditorView): void {
 export function saveJsonFile(): Promise<void> {
   return active?.save() ?? Promise.resolve();
 }
-
-/** The mounted JSON view; null when the note editor owns the content pane. */
-export function getJsonView(): EditorView | null {
-  return active?.view ?? null;
-}

@@ -56,9 +56,6 @@ export interface WebAnnotationFile {
 }
 
 export const MAX_WEB_QUOTE = 2000;
-export const MAX_WEB_CONTEXT = 40;
-export const MAX_WEB_NOTE_TEXT = 2000;
-export const MAX_WEB_PER_URL = 800;
 
 /**
  * Validate / trim the annotations the page sends. It has to be

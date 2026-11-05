@@ -354,7 +354,6 @@ function defaultKeymap(): Keymap {
 }
 
 let current: Keymap = defaultKeymap();
-let revision = 0;
 /** Per-region "key → command" index: each keystroke looks up two Maps instead of scanning the binding table. */
 let keyIndex: Record<KeyRegion, Map<string, string[]>> = indexShell();
 /** The chords of REGION_FREE_COMMANDS: they hit in every region (the binding comes from the region it was configured in). */
@@ -400,16 +399,7 @@ reindex();
 
 export function setKeymap(km: Keymap): void {
   current = km;
-  revision += 1;
   reindex();
-}
-
-export function getKeymap(): Keymap {
-  return current;
-}
-
-export function keymapRevision(): number {
-  return revision;
 }
 
 /** Whether the command has an entry in this region (including the null of an "explicitly unbound" command). */

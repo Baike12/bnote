@@ -36,10 +36,6 @@ export function flipGroupFold(path: string): void {
   fold = toggleGroup(fold, path);
 }
 
-export function resetFoldForTest(): void {
-  fold = defaultFold();
-}
-
 // ---------------------------------------------------------------- widget
 
 const ARROW_OPEN = "▾";

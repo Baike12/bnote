@@ -42,8 +42,6 @@ export interface TimerState {
   config: TimerConfig;
 }
 
-export const DEFAULT_TIMER_CONFIG: TimerConfig = { focusDurations: [DEFAULT_MINUTES] };
-
 /** Lower bound of the duration: 0 minutes would end the stretch instantly, the timer would only flash once. */
 const MIN_MINUTES = 1;
 
