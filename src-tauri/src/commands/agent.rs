@@ -25,10 +25,6 @@ use tauri::{Emitter, State};
 static PREVIEW_TRANSLATE_ENABLED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_TRANSLATE_LAST: Mutex<Option<Instant>> = Mutex::new(None);
 
-fn get_mcp_manager(state: &State<'_, AppState>) -> Option<Arc<McpManager>> {
-    state.mcp_manager.lock().ok().and_then(|g| g.clone())
-}
-
 /// Fork point for a helper session: take the first `items` entries of the
 /// `from` session's history (a prefix that includes the forking message) as
 /// the new session's initial history. The source session is left untouched.
@@ -107,19 +103,6 @@ pub async fn agent_save_config(
         .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-/// Ensures an MCP manager for the current config (reconnects when missing).
-async fn ensure_mcp(state: &State<'_, AppState>) -> Result<Arc<McpManager>, String> {
-    if let Some(m) = get_mcp_manager(state) {
-        return Ok(m);
-    }
-    let cfg = crate::agent::AgentConfig::load();
-    let manager = Arc::new(McpManager::connect_all(&cfg).await);
-    if let Ok(mut cell) = state.mcp_manager.lock() {
-        *cell = Some(manager.clone());
-    }
-    Ok(manager)
-}
-
 #[tauri::command]
 pub async fn agent_start_session(
     app: tauri::AppHandle,
@@ -155,6 +138,8 @@ pub async fn agent_start_session(
     // user instructions. The seed history (restore/fork) is carried over
     // unchanged.
     let vault = state.vault();
+    let agent_mode = crate::agent::home::AgentMode::from(session_mode);
+    let mode_root = crate::agent::home::mode_root(agent_mode, vault.as_deref());
     let def_id = session_mode.definition_id();
     let def = Arc::new(
         defs::definition(def_id).ok_or_else(|| format!("DEF_MISSING: {def_id} 不在内置定义里"))?,
@@ -174,9 +159,24 @@ pub async fn agent_start_session(
     if session_mode == SessionMode::Coding && workdir.is_none() {
         return Err("INVALID_WORKDIR: 编码会话需要一个代码项目目录".into());
     }
+    // The mode's settings: its own file, plus the code project's two files for
+    // coding sessions. MCP servers, skill directories and the permission
+    // defaults all come from here, so the three modes never share them.
+    let settings_project = if session_mode.reads_project() {
+        workdir.as_deref()
+    } else {
+        None
+    };
+    let layered = crate::agent::settings::load(agent_mode, &mode_root, settings_project);
     // Only MCP-enabled sessions pay for connecting servers.
     let mcp = if def.mcp_enabled() {
-        ensure_mcp(&state).await?
+        Arc::new(
+            McpManager::connect_all(
+                &layered.settings.mcp_servers,
+                &layered.settings.disabled_mcp_servers,
+            )
+            .await,
+        )
     } else {
         Arc::new(McpManager {
             connections: Default::default(),
@@ -185,9 +185,11 @@ pub async fn agent_start_session(
         })
     };
     let skills = Arc::new(SkillRegistry::discover(
-        vault.as_ref(),
-        workdir.as_ref(),
-        &cfg.skill_dirs,
+        agent_mode,
+        &mode_root,
+        workdir.as_deref(),
+        &layered.settings.skill_dirs,
+        &layered.settings.disabled_skills,
     ));
 
     let provider = Arc::new(Provider::new(
@@ -227,7 +229,6 @@ pub async fn agent_start_session(
     let current_note = state.current_note.lock().ok().and_then(|n| n.clone());
     let mcp_names: Vec<String> = mcp.tools.iter().map(|t| t.name.clone()).collect();
     // `additionalDirectories` widens the writable roots for this session.
-    let layered = crate::agent::settings::load(workdir.as_deref().or(vault.as_deref()));
     let extra_roots: Vec<PathBuf> = layered
         .settings
         .permissions
@@ -276,6 +277,7 @@ pub async fn agent_start_session(
         context_window: cfg.context_window,
         permission_mode: None,
         task_list_id,
+        mode_root: Some(mode_root.clone()),
     }));
     {
         let mut registry = state.sessions.lock().map_err(|e| e.to_string())?;
@@ -332,7 +334,7 @@ const TITLE_SYSTEM_PROMPT: &str = "你在给一段对话起标题。根据用户
 /// locally truncated title.
 #[tauri::command]
 pub async fn agent_generate_title(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     text: String,
     model: Option<AgentModelChoice>,
 ) -> CmdResult<String> {
@@ -369,15 +371,35 @@ pub async fn agent_generate_title(
 }
 
 /// Skill inventory for the settings page and the input box's `/` completion
-/// (discovered on every call, so it reflects what is actually on disk).
+/// (discovered on every call, so it reflects what is actually on disk). The
+/// mode decides the roots; `workdir` adds the code project's `.agents/skills`
+/// for coding sessions.
 #[tauri::command]
 pub async fn agent_list_skills(
     state: State<'_, AppState>,
+    mode: Option<String>,
+    workdir: Option<String>,
 ) -> CmdResult<Vec<crate::agent::skills::SkillInfo>> {
-    let cfg = crate::agent::AgentConfig::load();
+    let agent_mode = crate::agent::home::AgentMode::parse(mode.as_deref().unwrap_or("study"))
+        .ok_or_else(|| "INVALID_MODE".to_string())?;
     let vault = state.vault();
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(SkillRegistry::discover(vault.as_ref(), None, &cfg.skill_dirs).skills)
+        let root = crate::agent::home::mode_root(agent_mode, vault.as_deref());
+        let project = workdir.map(PathBuf::from).filter(|path| path.is_dir());
+        let settings_project = if agent_mode.reads_project() {
+            project.as_deref()
+        } else {
+            None
+        };
+        let settings = crate::agent::settings::load(agent_mode, &root, settings_project).settings;
+        Ok(SkillRegistry::discover(
+            agent_mode,
+            &root,
+            project.as_deref(),
+            &settings.skill_dirs,
+            &settings.disabled_skills,
+        )
+        .skills)
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
@@ -1367,6 +1389,7 @@ mod tests {
             context_window: 128_000,
             mcp_servers: Default::default(),
             skill_dirs: Vec::new(),
+            agent_roots: Default::default(),
         };
         AgentModelChoice {
             provider: "anthropic".into(),

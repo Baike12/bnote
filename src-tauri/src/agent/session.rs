@@ -59,7 +59,21 @@ pub enum SessionMode {
     Coding,
 }
 
+impl From<SessionMode> for super::home::AgentMode {
+    fn from(mode: SessionMode) -> Self {
+        match mode {
+            SessionMode::Study => super::home::AgentMode::Study,
+            SessionMode::Creative => super::home::AgentMode::Creative,
+            SessionMode::Coding => super::home::AgentMode::Coding,
+        }
+    }
+}
+
 impl SessionMode {
+    pub fn reads_project(self) -> bool {
+        super::home::AgentMode::from(self).reads_project()
+    }
+
     pub fn definition_id(self) -> &'static str {
         match self {
             SessionMode::Study => "study",
@@ -109,6 +123,11 @@ struct AttachmentState {
 pub struct Session {
     pub id: String,
     pub mode: SessionMode,
+    /// The mode's configuration root (`<vault>/.bnote/agents/<mode>` or the
+    /// `agent_roots` override): settings, AGENTS.md, skills and output styles
+    /// are read from here. Fixed when the session starts, like the model
+    /// snapshot.
+    pub mode_root: Option<std::path::PathBuf>,
     pub def: Arc<AgentDefinition>,
     pub items: Mutex<Vec<ChatItem>>,
     /// Assembled system prompt; the dynamic segments are re-read before every
@@ -543,7 +562,18 @@ impl Session {
     /// before every request, so a permission/hook edit applies on the next
     /// message.
     fn refresh_settings(&self) {
-        let loaded = super::settings::load(self.project_root().as_deref());
+        // Only the coding agent reads the code project's settings; study and
+        // creative sessions are confined to their mode root.
+        let project = if self.mode.reads_project() {
+            self.project_root()
+        } else {
+            None
+        };
+        let mode = super::home::AgentMode::from(self.mode);
+        let loaded = match &self.mode_root {
+            Some(root) => super::settings::load(mode, root, project.as_deref()),
+            None => super::settings::LoadedSettings::default(),
+        };
         if let Ok(mut slot) = self.settings.lock() {
             *slot = Arc::new(loaded.settings);
         }
@@ -613,8 +643,14 @@ impl Session {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
         let study = self.ctx.study_content.read().ok().and_then(|g| g.clone());
+        let project = if self.mode.reads_project() {
+            self.project_root()
+        } else {
+            None
+        };
         let style = super::output_style::resolve(
-            self.project_root().as_deref(),
+            self.mode_root.as_deref(),
+            project.as_deref(),
             self.current_settings().output_style.as_deref(),
         );
         if let Ok(mut slot) = self.output_style.lock() {
@@ -693,8 +729,12 @@ impl Session {
         if !self.omit_user_instructions {
             let project = self.ctx.workdir.as_deref().or(self.ctx.vault.as_deref());
             let excludes = self.current_settings().instructions_excludes.clone();
-            let files =
-                super::instructions::collect(project, self.mode == SessionMode::Coding, &excludes);
+            let files = super::instructions::collect(
+                self.mode_root.as_deref(),
+                project,
+                self.mode == SessionMode::Coding,
+                &excludes,
+            );
             if let Ok(mut loaded) = self.loaded_instructions.lock() {
                 for file in &files {
                     if let Ok(path) = file.path.canonicalize() {
@@ -1741,6 +1781,7 @@ impl Session {
         let child = Arc::new(Session {
             id: child_session_id.clone(),
             mode: self.mode,
+            mode_root: self.mode_root.clone(),
             def: child_def.clone(),
             items: Mutex::new(items),
             system_prompt: RwLock::new(assemble(&assemble_input)),
@@ -2295,6 +2336,10 @@ pub struct SessionSeed {
     /// Which persisted task list this session owns (a restored session passes
     /// its record id so the tasks continue; a new session uses its own id).
     pub task_list_id: Option<String>,
+    /// The mode's configuration root. The command layer resolves it with the
+    /// vault and the `agent_roots` override; `None` falls back to the vault
+    /// default (tests and helper sessions).
+    pub mode_root: Option<std::path::PathBuf>,
 }
 
 pub fn create_session(seed: SessionSeed) -> Session {
@@ -2307,7 +2352,22 @@ pub fn create_session(seed: SessionSeed) -> Session {
     };
     let task_list_id = seed.task_list_id.clone().unwrap_or_else(|| seed.id.clone());
     let tasks = TaskList::load(super::home::tasks_dir(&task_list_id));
-    let loaded_settings = super::settings::load(project.as_deref());
+    let agent_mode = super::home::AgentMode::from(seed.mode);
+    let mode_root = seed.mode_root.clone().or_else(|| {
+        seed.ctx
+            .vault
+            .as_deref()
+            .map(|vault| super::home::mode_root(agent_mode, Some(vault)))
+    });
+    let settings_project = if seed.mode.reads_project() {
+        project.as_deref()
+    } else {
+        None
+    };
+    let loaded_settings = match &mode_root {
+        Some(root) => super::settings::load(agent_mode, root, settings_project),
+        None => super::settings::LoadedSettings::default(),
+    };
     let permission_mode = seed.permission_mode.unwrap_or_else(|| {
         permissions::Mode::from_settings(
             loaded_settings.settings.permissions.default_mode.as_deref(),
@@ -2320,7 +2380,8 @@ pub fn create_session(seed: SessionSeed) -> Session {
         .map(|p| p.to_string_lossy().to_string());
     let study = seed.ctx.study_content.read().ok().and_then(|g| g.clone());
     let style = super::output_style::resolve(
-        project.as_deref(),
+        mode_root.as_deref(),
+        settings_project,
         loaded_settings.settings.output_style.as_deref(),
     );
     let input = AssembleInput {
@@ -2335,6 +2396,7 @@ pub fn create_session(seed: SessionSeed) -> Session {
     Session {
         id: seed.id,
         mode: seed.mode,
+        mode_root,
         def: seed.def.clone(),
         items: Mutex::new(Vec::new()),
         system_prompt: RwLock::new(assemble(&input)),

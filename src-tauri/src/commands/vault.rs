@@ -103,6 +103,11 @@ fn set_vault_blocking(
 
     *state.vault.write().map_err(|_| "lock poisoned")? = Some(root.clone());
 
+    // The mode configuration used to live in `~/.bnote`; the default is the
+    // vault's `.bnote/agents/<mode>` now. Copy the legacy files into the
+    // coding root once (never overwriting, never deleting).
+    crate::agent::settings::migrate_legacy_home(&root);
+
     // Images in notes are rendered through the asset protocol. The vault is the
     // only directory this window may read, and the grant happens here rather
     // than in the static scope because a vault can live anywhere on disk.

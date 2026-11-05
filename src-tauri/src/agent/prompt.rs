@@ -406,6 +406,8 @@ mod tests {
         assert!(!p.contains("## 可用技能"), "{}", p);
 
         let skills = vec![SkillInfo {
+            source: "vault".into(),
+            root: "/tmp/skills".into(),
             name: "html-blog".into(),
             description: "把 markdown 排版成博客 HTML".into(),
             path: "/x/SKILL.md".into(),

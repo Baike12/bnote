@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use notify::RecommendedWatcher;
 
-use crate::agent::mcp::McpManager;
 use crate::agent::session::Session;
 use crate::code::lsp::LspManager;
 use crate::code::project::CodeTree;
@@ -31,7 +30,6 @@ pub struct AppState {
     /// Live agent sessions (study mode).
     pub sessions: Mutex<HashMap<String, Arc<Session>>>,
     /// MCP connections, (re)connected lazily per config.
-    pub mcp_manager: Mutex<Option<Arc<McpManager>>>,
     /// Currently open note path (set by the frontend for agent context).
     pub current_note: Mutex<Option<String>>,
     /// Registry of running Python jobs (key = md_path); the `Arc` handle identity

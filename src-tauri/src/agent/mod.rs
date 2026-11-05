@@ -39,12 +39,20 @@ pub struct AgentConfig {
     /// Fill in the window of the user's actual model.
     #[serde(default = "default_context_window")]
     pub context_window: u64,
-    /// MCP servers: name → {command,args,env} or {url,headers}.
+    /// MCP servers: name → {command,args,env} or {url,headers}. Deprecated:
+    /// MCP is per mode now and lives in `<mode root>/settings.json`'s
+    /// `mcpServers`. The field survives only so the one-time migration can read
+    /// what the user configured before the mode roots existed.
     #[serde(default)]
     pub mcp_servers: std::collections::BTreeMap<String, McpServerConfig>,
-    /// Extra skill directories to scan (in addition to built-ins).
+    /// Extra skill directories. Deprecated for the same reason (`skillDirs` in
+    /// the mode settings file).
     #[serde(default)]
     pub skill_dirs: Vec<String>,
+    /// Per-mode configuration roots (mode id → absolute path). Absent = the
+    /// vault default `<vault>/.bnote/agents/<mode>`.
+    #[serde(default)]
+    pub agent_roots: std::collections::BTreeMap<String, String>,
 }
 
 fn default_context_window() -> u64 {
@@ -127,6 +135,37 @@ impl AgentConfig {
         }
     }
 
+    /// The configured root of `mode`, when the user overrode the default.
+    /// An empty string is treated as "not set" (the settings input clears the
+    /// override by saving an empty value).
+    pub fn agent_root(&self, mode: home::AgentMode) -> Option<std::path::PathBuf> {
+        let raw = self.agent_roots.get(mode.id())?.trim();
+        if raw.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(raw))
+        }
+    }
+
+    /// Sets or clears the root of `mode`; returns whether the value changed.
+    pub fn set_agent_root(&mut self, mode: home::AgentMode, path: Option<&str>) -> bool {
+        let next = path.map(str::trim).filter(|p| !p.is_empty());
+        let current = self.agent_roots.get(mode.id()).map(String::as_str);
+        if current == next {
+            return false;
+        }
+        match next {
+            Some(path) => {
+                self.agent_roots
+                    .insert(mode.id().to_string(), path.to_string());
+            }
+            None => {
+                self.agent_roots.remove(mode.id());
+            }
+        }
+        true
+    }
+
     pub fn save(&self) -> Result<(), String> {
         let path = home::config_file();
         if let Some(parent) = path.parent() {
@@ -179,6 +218,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.context_window, default_context_window());
+    }
+
+    #[test]
+    fn an_agent_root_can_be_set_and_cleared() {
+        let mut cfg = AgentConfig::default();
+        assert!(cfg.agent_root(home::AgentMode::Coding).is_none());
+        assert!(cfg.set_agent_root(home::AgentMode::Coding, Some("/custom/coding")));
+        assert_eq!(
+            cfg.agent_root(home::AgentMode::Coding),
+            Some(std::path::PathBuf::from("/custom/coding"))
+        );
+        assert!(cfg.agent_root(home::AgentMode::Study).is_none());
+        assert!(!cfg.set_agent_root(home::AgentMode::Coding, Some("  /custom/coding  ")));
+        assert!(cfg.set_agent_root(home::AgentMode::Coding, Some("   ")));
+        assert!(cfg.agent_root(home::AgentMode::Coding).is_none());
+        assert!(cfg.agent_roots.is_empty());
     }
 
     #[test]

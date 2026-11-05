@@ -255,18 +255,29 @@ PDF 转换器的夹具与质量门禁在 `tests/data/pdfs/`（`src-tauri/crates/
 
 ## Agent
 
-编码 Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制，运行时状态全部落在 `~/.bnote`。
+Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。每种模式拥有自己的配置——默认在 `<仓库>/.bnote/agents/<模式>/{settings.json, AGENTS.md, skills/, output-styles/}`，跟着笔记仓库走；会话记录等运行状态仍在 `~/.bnote`。
+
+### 三种模式、三套范围
+
+| 模式 | 模型 | MCP | 技能 | 指令 |
+| --- | --- | --- | --- | --- |
+| 编码 | 共用 | 自己的 `mcpServers` | 模式目录 + 项目 `.agents/skills` + `~/.agents/skills` | 模式目录，再叠加代码仓库层级 |
+| 创作 | 共用 | 自己的 `mcpServers` | 只读模式目录 | 只读模式目录 |
+| 学习 | 共用 | 无（不注册工具） | 无 | 只读模式目录 |
+
+模型、端点与 API Key 是机器级配置（一台机器一把钥匙），存在 `~/.bnote/agent.json`；同一个文件还保存每种模式可选的 `agent_roots` 路径覆盖。
 
 ### 模型与协议
 
 - 支持 Anthropic Messages、OpenAI 兼容、DeepSeek、GLM、Qwen、Ollama 与自定义端点；SSE 流式输出
-- 配置在 `~/.bnote/agent.json`（协议、Base URL、模型、API Key、上下文窗口、MCP 服务器）；旧版应用数据目录里的 `agent.json` 首次启动时自动迁移
+- 模型配置在 `~/.bnote/agent.json`（协议、Base URL、模型、API Key、上下文窗口）；旧版应用数据目录里的 `agent.json` 首次启动时自动迁移
 - API Key 只在 Rust 侧使用，不进入任何网页上下文
 
 ### 指令文件（AGENTS.md）
 
-- **编码会话**：`~/.bnote/AGENTS.md` 与 `~/.bnote/rules/*.md`，再叠加项目从仓库根到工作目录的 `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md`
-- **学习 / 创作会话**：只读 Vault 的 `.bnote/AGENTS.md`（兼容 `.bnote/agent.md`）
+- **每种模式**读自己的 `<仓库>/.bnote/agents/<模式>/AGENTS.md` 与 `rules/*.md`（首次打开仓库时会从旧的 `~/.bnote` 与 `.bnote/AGENTS.md` 位置复制一次）
+- **编码会话**再读代码仓库从根到工作目录的 `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md`
+- **学习与创作会话**不读取任何代码仓库的指令文件
 - 支持 `@import`（最多 5 层，跳过代码块与注释），`settings.instructionsExcludes` 用 glob 排除
 - 读文件时，如果该文件目录到项目根之间还有没加载过的 `AGENTS.md`，会作为 system-reminder 补进下一轮对话
 
@@ -280,27 +291,23 @@ PDF 转换器的夹具与质量门禁在 `tests/data/pdfs/`（`src-tauri/crates/
 
 ### 设置分层、hooks 与输出风格
 
-- **三层合并**：`~/.bnote/settings.json` → `<项目>/.bnote/settings.json` → `<项目>/.bnote/settings.local.json`；数组拼接去重、对象深合并、标量后者覆盖。字段：`model`、`env`、`permissions`、`hooks`、`outputStyle`、`instructionsExcludes`、`cleanupPeriodDays`、`plansDirectory`、`autoMemoryEnabled`、`autoMemoryDirectory`
+- **逐层合并**：模式的 `settings.json`，再叠加（仅编码）`<代码项目>/.bnote/settings.json` 与 `settings.local.json`；数组拼接去重、对象深合并、标量后者覆盖。字段：`mcpServers`、`disabledMcpServers`、`skillDirs`、`disabledSkills`、`env`、`permissions`、`hooks`、`outputStyle`、`instructionsExcludes`、`cleanupPeriodDays`、`plansDirectory`、`autoMemoryEnabled`、`autoMemoryDirectory`
+- **MCP 按模式隔离**：服务器列表写在本模式的 `settings.json`；设置页的开关写进 `disabledMcpServers`，停用但不删除配置
 - **hooks**：`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`UserPromptSubmit`、`SessionStart`、`Stop`、`SubagentStart`、`SubagentStop`、`PreCompact`、`PostCompact`。`sh -c` 执行，stdin 收 JSON，默认 60 秒超时；可返回 `permissionDecision`、`additionalContext`、`updatedInput`，非零退出可以拦住工具
-- **输出风格**：内置 default / Explanatory / Learning，自定义文件放 `~/.bnote/output-styles/*.md` 与 `<项目>/.bnote/output-styles/*.md`（frontmatter：`name` / `description` / `keep-coding-instructions`）；`settings.outputStyle` 选中后注入动态段
-- **设置页**：`设置 → Agent` 下有模型、MCP、技能、AGENTS.md 与「Agent 设置」（输出风格、`~/.bnote/settings.json` 编辑器、三层设置文件路径与解析状态）
+- **输出风格**：内置 default / Explanatory / Learning，自定义文件放 `<模式目录>/output-styles/*.md` 与（编码）`<代码项目>/.bnote/output-styles/*.md`（frontmatter：`name` / `description` / `keep-coding-instructions`）；`settings.outputStyle` 选中后注入动态段
+- **设置页随模式变化**：`设置 → Agent` 在编码模式是 `模型 | MCP | 技能 | AGENTS.md | 高级`，创作模式是 `模型 | MCP | 技能 | AGENTS.md`，学习模式只有 `模型 | AGENTS.md`。每个页面直接读写真实文件（配置目录与路径覆盖、settings.json 编辑器与解析状态、逐个 MCP 开关）；弹窗高度固定，内容多了滚动而不是改变窗口大小
 
 ### 记忆、历史与技能
 
 - **自动记忆**：`~/.bnote/projects/<项目键>/memory/MEMORY.md` 是唯一索引，一条记忆一个文件，`[[name]]` 互链；编码会话每轮注入索引与记忆行为提示
 - **提示词历史**：每次发送追加 `~/.bnote/history.jsonl`；输入框为空时按 `↑` 召回本项目的历史提示词，`↓` 往回走，发送后清空
-- **技能**：`~/.bnote/skills/<name>/SKILL.md`、`<项目>/.bnote/skills/`、`~/.agents/skills/`（兼容 Agent Skills 约定）以及设置里的额外目录
+- **技能**：编码模式扫描 `<仓库>/.bnote/agents/coding/skills/`、`<代码项目>/.agents/skills/`、`~/.agents/skills/`（Agent Skills 约定）与 `skillDirs`；创作模式只扫描自己的目录；同名技能保留优先级最高的一份，设置页按来源分组展示
 
 ### `~/.bnote` 布局
 
 ```text
 ~/.bnote/
-├── agent.json            协议 / 模型 / API Key / MCP
-├── settings.json         用户级 agent 设置
-├── AGENTS.md             用户级指令（只进编码会话）
-├── rules/*.md            用户级分条指令
-├── skills/<name>/SKILL.md
-├── output-styles/*.md
+├── agent.json            协议 / 模型 / API Key / 各模式目录覆盖
 ├── history.jsonl         提示词历史
 ├── plans/<slug>.md       计划模式的产出
 ├── tasks/<list>/         待办的落盘状态
@@ -308,6 +315,13 @@ PDF 转换器的夹具与质量门禁在 `tests/data/pdfs/`（`src-tauri/crates/
     ├── memory/MEMORY.md  自动记忆索引
     ├── <会话>.jsonl      编码会话记录
     └── <会话>/           subagents/ 与 tool-results/
+
+<仓库>/.bnote/agents/<模式>/
+├── settings.json         MCP、技能目录、权限、hooks、输出风格
+├── AGENTS.md             该模式的指令
+├── rules/*.md
+├── skills/<name>/SKILL.md
+└── output-styles/*.md
 ```
 
 ## 专注模式
@@ -344,10 +358,7 @@ PDF 转换器的夹具与质量门禁在 `tests/data/pdfs/`（`src-tauri/crates/
 
 | 路径 | 用途 |
 | --- | --- |
-| `agent.json` | 协议、Base URL、模型、API Key、上下文窗口、MCP |
-| `settings.json` | 用户级 agent 设置（权限、hooks、输出风格、记忆开关等） |
-| `AGENTS.md`、`rules/*.md` | 用户级指令（只进编码会话） |
-| `skills/`、`output-styles/` | 用户级技能与输出风格 |
+| `agent.json` | 协议、Base URL、模型、API Key、上下文窗口，以及各模式可选的 `agent_roots` |
 | `history.jsonl` | 提示词历史（输入框 `↑` 召回） |
 | `plans/` | 计划模式的计划文件 |
 | `tasks/<list>/` | 后台任务列表的落盘状态 |
@@ -362,9 +373,9 @@ PDF 转换器的夹具与质量门禁在 `tests/data/pdfs/`（`src-tauri/crates/
 | `.bnote/keybindings.json` | 仓库级快捷键覆盖（按 `global` / `notes` / `reading` / `agent` / `project` / `code` 分区） |
 | `.bnote/vimrc` | 仓库级 Vim 映射（优先于全局） |
 | `.bnote/snippets.js` | 仓库级 LaTeX 片段；存在时取代内置片段 |
-| `.bnote/AGENTS.md` | 学习 / 创作助手的指令（兼容 `.bnote/agent.md`） |
-| `.bnote/settings.json`、`.bnote/settings.local.json` | 项目级 agent 设置（叠加在 `~/.bnote/settings.json` 之上） |
-| `.bnote/skills/`、`.bnote/output-styles/` | 项目级技能与输出风格 |
+| `.bnote/agents/<模式>/` | 该模式的配置目录：`settings.json`、`AGENTS.md`、`skills/`、`rules/`、`output-styles/` |
+| `.bnote/settings.json`、`.bnote/settings.local.json` | 代码项目的 agent 设置（叠加在编码模式目录之上） |
+| `.agents/skills/` | 代码项目的技能（Agent Skills 约定） |
 | `.bnote/lsp.json` | 语言服务器启动命令（跟着仓库走） |
 | `.bnote/projects/<项目名>.md` | 项目待办清单 |
 | `.bnote/materials/index.json` | 材料登记表：材料身份 → 目录名 |

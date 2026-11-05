@@ -255,18 +255,29 @@ Code mode is a **mode of its own**, unrelated to the vault: ask the agent on the
 
 ## Agent
 
-The coding agent follows Claude Code's structure: definitions and prompts are compiled into the binary, and all runtime state lives in `~/.bnote`.
+The agent follows Claude Code's structure: definitions and prompts are compiled into the binary. Each mode owns its configuration — `<vault>/.bnote/agents/<mode>/{settings.json, AGENTS.md, skills/, output-styles/}` by default, so it travels with the notebook — while session records and other runtime state stay in `~/.bnote`.
+
+### Three modes, three scopes
+
+| Mode | Model | MCP | Skills | Instructions |
+| --- | --- | --- | --- | --- |
+| Coding | shared | own `mcpServers` | mode root + project `.agents/skills` + `~/.agents/skills` | mode root, then the repository hierarchy |
+| Creative | shared | own `mcpServers` | mode root only | mode root only |
+| Study | shared | none (no tools) | none | mode root only |
+
+The model, endpoint and API key are machine-level (one key per machine) and stored in `~/.bnote/agent.json`; that file also holds the optional `agent_roots` override for each mode.
 
 ### Model and protocols
 
 - Anthropic Messages, OpenAI-compatible, DeepSeek, GLM, Qwen, Ollama, and custom endpoints, all with SSE streaming
-- Configuration in `~/.bnote/agent.json` (protocol, base URL, model, API key, context window, MCP servers); a legacy `agent.json` in the app data directory is migrated on first launch
+- Model configuration in `~/.bnote/agent.json` (protocol, base URL, model, API key, context window); a legacy `agent.json` in the app data directory is migrated on first launch
 - API keys are used only in Rust and never enter a page context
 
 ### Instruction files (AGENTS.md)
 
-- **Coding sessions**: `~/.bnote/AGENTS.md` and `~/.bnote/rules/*.md`, layered with `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md` from the repository root down to the working directory
-- **Study / creative sessions**: only the vault's `.bnote/AGENTS.md` (with `.bnote/agent.md` still supported)
+- **Every mode** reads its own `<vault>/.bnote/agents/<mode>/AGENTS.md` and `rules/*.md` (moved there once from the old `~/.bnote` and `.bnote/AGENTS.md` locations)
+- **Coding sessions** additionally read `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md` from the repository root down to the working directory
+- **Study and creative sessions** never read a repository's instruction files
 - `@import` is followed (up to 5 levels, skipping code fences and comments) and `settings.instructionsExcludes` filters files by glob
 - When a file is read, any not-yet-loaded `AGENTS.md` between its directory and the project root is injected as a system-reminder on the next turn
 
@@ -280,27 +291,23 @@ The coding agent follows Claude Code's structure: definitions and prompts are co
 
 ### Settings layers, hooks, and output styles
 
-- **Three layers merge**: `~/.bnote/settings.json` → `<project>/.bnote/settings.json` → `<project>/.bnote/settings.local.json`; arrays concatenate and deduplicate, objects deep-merge, scalars take the last value. Fields: `model`, `env`, `permissions`, `hooks`, `outputStyle`, `instructionsExcludes`, `cleanupPeriodDays`, `plansDirectory`, `autoMemoryEnabled`, `autoMemoryDirectory`
+- **Layers merge**: the mode's `settings.json`, then (coding only) `<project>/.bnote/settings.json` and `settings.local.json`; arrays concatenate and deduplicate, objects deep-merge, scalars take the last value. Fields: `mcpServers`, `disabledMcpServers`, `skillDirs`, `disabledSkills`, `env`, `permissions`, `hooks`, `outputStyle`, `instructionsExcludes`, `cleanupPeriodDays`, `plansDirectory`, `autoMemoryEnabled`, `autoMemoryDirectory`
+- **MCP is per mode**: a server list in the mode's `settings.json`; `disabledMcpServers` keeps a server configured while switching it off from the settings page
 - **Hooks**: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `SessionStart`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`. They run through `sh -c` with JSON on stdin and a 60-second default timeout, and can return `permissionDecision`, `additionalContext`, or `updatedInput`; a non-zero exit can block a tool
-- **Output styles**: built-in default / Explanatory / Learning, plus custom files in `~/.bnote/output-styles/*.md` and `<project>/.bnote/output-styles/*.md` (frontmatter: `name` / `description` / `keep-coding-instructions`); the selected `settings.outputStyle` is injected as a dynamic segment
-- **Settings UI**: `Settings → Agent` holds model, MCP, skills, AGENTS.md, and "Agent settings" (output style picker, a `~/.bnote/settings.json` editor, and the paths and parse state of the three layers)
+- **Output styles**: built-in default / Explanatory / Learning, plus custom files in `<mode root>/output-styles/*.md` and (coding) `<project>/.bnote/output-styles/*.md` (frontmatter: `name` / `description` / `keep-coding-instructions`); the selected `settings.outputStyle` is injected as a dynamic segment
+- **Settings UI follows the mode**: `Settings → Agent` shows `Model | MCP | Skills | AGENTS.md | Advanced` for coding, `Model | MCP | Skills | AGENTS.md` for creative, and `Model | AGENTS.md` for study. Every page reads and writes the real files (root path with an override, settings.json editor with parse state, per-server MCP switches); the window keeps one height and scrolls instead of resizing
 
 ### Memory, history, and skills
 
 - **Auto memory**: `~/.bnote/projects/<project key>/memory/MEMORY.md` is the only index, one file per memory, linked with `[[name]]`; coding sessions get the index plus the memory behavior prompt on every turn
 - **Prompt history**: every send appends to `~/.bnote/history.jsonl`. With an empty input, `↑` recalls this project's earlier prompts and `↓` walks forward; the walk resets after sending
-- **Skills**: `~/.bnote/skills/<name>/SKILL.md`, `<project>/.bnote/skills/`, `~/.agents/skills/` (the Agent Skills convention), and any extra directories from settings
+- **Skills**: coding scans `<vault>/.bnote/agents/coding/skills/`, `<code project>/.agents/skills/`, `~/.agents/skills/` (the Agent Skills convention) and `skillDirs`; creative scans only its own root; a duplicated name keeps the highest-precedence copy. The settings page groups the list by source
 
 ### The `~/.bnote` layout
 
 ```text
 ~/.bnote/
-├── agent.json            protocol / model / API key / MCP
-├── settings.json         user-level agent settings
-├── AGENTS.md             user-level instructions (coding sessions only)
-├── rules/*.md            user-level rule files
-├── skills/<name>/SKILL.md
-├── output-styles/*.md
+├── agent.json            protocol / model / API key / per-mode root overrides
 ├── history.jsonl         prompt history
 ├── plans/<slug>.md       plan-mode output
 ├── tasks/<list>/         persisted task list state
@@ -308,6 +315,13 @@ The coding agent follows Claude Code's structure: definitions and prompts are co
     ├── memory/MEMORY.md  auto-memory index
     ├── <session>.jsonl   coding session transcript
     └── <session>/        subagents/ and tool-results/
+
+<vault>/.bnote/agents/<mode>/
+├── settings.json         MCP, skill dirs, permissions, hooks, output style
+├── AGENTS.md             the mode's instructions
+├── rules/*.md
+├── skills/<name>/SKILL.md
+└── output-styles/*.md
 ```
 
 ## Focus mode
@@ -344,10 +358,7 @@ Every action is a command: reachable from the palette (`Cmd+P`), bound to a key,
 
 | Path | Purpose |
 | --- | --- |
-| `agent.json` | Protocol, base URL, model, API key, context window, MCP |
-| `settings.json` | User-level agent settings (permissions, hooks, output style, memory switches) |
-| `AGENTS.md`, `rules/*.md` | User-level instructions (coding sessions only) |
-| `skills/`, `output-styles/` | User-level skills and output styles |
+| `agent.json` | Protocol, base URL, model, API key, context window, and the optional per-mode `agent_roots` |
 | `history.jsonl` | Prompt history (recalled with `↑`) |
 | `plans/` | Plan-mode plan files |
 | `tasks/<list>/` | Persisted task list state |
@@ -362,9 +373,9 @@ Every action is a command: reachable from the palette (`Cmd+P`), bound to a key,
 | `.bnote/keybindings.json` | Vault-level keybinding overrides (`global` / `notes` / `reading` / `agent` / `project` / `code`) |
 | `.bnote/vimrc` | Vault-level Vim mappings (take precedence) |
 | `.bnote/snippets.js` | Vault-level LaTeX snippets; replaces the built-in set |
-| `.bnote/AGENTS.md` | Study / creative assistant instructions (`.bnote/agent.md` still supported) |
-| `.bnote/settings.json`, `.bnote/settings.local.json` | Project-level agent settings, layered over `~/.bnote/settings.json` |
-| `.bnote/skills/`, `.bnote/output-styles/` | Project-level skills and output styles |
+| `.bnote/agents/<mode>/` | The mode's configuration root: `settings.json`, `AGENTS.md`, `skills/`, `rules/`, `output-styles/` |
+| `.bnote/settings.json`, `.bnote/settings.local.json` | Code-project agent settings, layered over the coding mode root |
+| `.agents/skills/` | Code-project skills (the Agent Skills convention) |
 | `.bnote/lsp.json` | Language server launch commands (travels with the repository) |
 | `.bnote/projects/<name>.md` | One project todo list |
 | `.bnote/materials/index.json` | Material registry: identity → directory |

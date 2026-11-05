@@ -58,6 +58,7 @@ scripts/                      dev-signing setup
 
 - **Commands, not ad-hoc handlers.** User-visible actions are commands (`src/commands/builtin.ts`, registered in `registry.ts`, bound in `keys.ts`, scoped by key regions). A UI control and its keybinding call the same command, so the palette and rebinding stay honest.
 - **Extensions are assembled in one place.** `src/editor/setup.ts` composes the CodeMirror extension tree; settings change behavior through compartments (`wrapCompartment`, `typewriterCompartment`), never by rebuilding editor state.
+- **Agent modes have their own roots.** Coding, creative and study each read `<vault>/.bnote/agents/<mode>/` (`settings.json`, `AGENTS.md`, `skills/`); only coding also reads the code project (its `.bnote/settings.json` and instruction hierarchy, `.agents/skills`). Credentials stay in `~/.bnote/agent.json`; transcripts, tasks and plans stay in `~/.bnote`.
 - **Single writer.** Zustand stores (and the Rust `AppState`) own their data. Components subscribe with selectors and do not mirror store state locally; async results must prove they still belong to the current state before writing.
 - **Thin Rust surface.** Commands parse and validate input, then call feature modules. Long work (LSP, indexing, PDF conversion) runs off the command thread and reports through events.
 - **Two debugging loops.** Real backend on `localhost:1430`; deterministic harness at `/harness.html`. See DEBUG.md.

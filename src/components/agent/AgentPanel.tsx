@@ -236,11 +236,13 @@ export function AgentPanel() {
     activeKeyRef.current = activeKey;
   }, [activeKey]);
 
-  // The skill list: the input box / the completion and the creative mode welcome page use it; it is refreshed after the config is saved (the skill directory may have changed). A failure silently leaves it empty (the browser harness has no backend).
+  // The skill list: the input box / the completion and the creative mode welcome page use it; it is refreshed after the config is saved (the skill directory may have changed) and when the mode changes (each mode scans its own roots). A failure silently leaves it empty (the browser harness has no backend).
+  const agentMode = mode === "code" ? "coding" : creativeMode ? "creative" : "study";
+  const agentWorkdir = agentMode === "coding" ? (codeProject?.path ?? null) : null;
   useEffect(() => {
     let cancelled = false;
     void agentApi
-      .listSkills()
+      .listSkills(agentMode, agentWorkdir)
       .then((list) => {
         if (!cancelled) setSkills(list);
       })
@@ -250,7 +252,7 @@ export function AgentPanel() {
     return () => {
       cancelled = true;
     };
-  }, [agentConfigVersion]);
+  }, [agentConfigVersion, agentMode, agentWorkdir]);
 
   // The model name and the context window of the footnote come from the saved config (the same one the session uses). If the config changed again while it was being read (saving the settings bumps the version), the stale result is dropped.
   useEffect(() => {

@@ -116,11 +116,14 @@ pub fn builtin() -> Vec<OutputStyle> {
 }
 
 /// The style directories, in override order (later wins).
-fn style_dirs(project: Option<&Path>) -> Vec<(PathBuf, StyleSource)> {
-    let mut dirs = vec![(
-        crate::agent::home::home_dir().join("output-styles"),
-        StyleSource::User,
-    )];
+fn style_dirs(root: Option<&Path>, project: Option<&Path>) -> Vec<(PathBuf, StyleSource)> {
+    let mut dirs = Vec::new();
+    if let Some(root) = root {
+        dirs.push((
+            crate::agent::home::mode_output_styles_dir(root),
+            StyleSource::User,
+        ));
+    }
     if let Some(project) = project {
         dirs.push((
             project.join(".bnote").join("output-styles"),
@@ -130,11 +133,11 @@ fn style_dirs(project: Option<&Path>) -> Vec<(PathBuf, StyleSource)> {
     dirs
 }
 
-/// Every available style, built-ins first, then user, then project files
-/// (a later style with the same id replaces the earlier one).
-pub fn discover(project: Option<&Path>) -> Vec<OutputStyle> {
+/// Every available style, built-ins first, then the mode root's files, then
+/// the project's (a later style with the same id replaces the earlier one).
+pub fn discover(root: Option<&Path>, project: Option<&Path>) -> Vec<OutputStyle> {
     let mut styles = builtin();
-    for (dir, source) in style_dirs(project) {
+    for (dir, source) in style_dirs(root, project) {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -158,8 +161,8 @@ pub fn discover(project: Option<&Path>) -> Vec<OutputStyle> {
 }
 
 /// Resolves a style by id (case-insensitive), falling back to the default.
-pub fn resolve(project: Option<&Path>, name: Option<&str>) -> OutputStyle {
-    let styles = discover(project);
+pub fn resolve(root: Option<&Path>, project: Option<&Path>, name: Option<&str>) -> OutputStyle {
+    let styles = discover(root, project);
     let wanted = name.map(|n| n.trim().to_lowercase()).unwrap_or_default();
     if wanted.is_empty() {
         return styles
@@ -299,7 +302,7 @@ mod tests {
 
     #[test]
     fn an_unknown_style_falls_back_to_default() {
-        let style = resolve(None, Some("does-not-exist"));
+        let style = resolve(None, None, Some("does-not-exist"));
         assert_eq!(style.id, "default");
         assert!(style.content.is_empty());
     }
@@ -312,7 +315,7 @@ mod tests {
             "---\nname: 我的学习\ndescription: d\nkeep-coding-instructions: false\n---\nbody here\n",
         )
         .unwrap();
-        let style = resolve(Some(&project), Some("Learning"));
+        let style = resolve(None, Some(&project), Some("Learning"));
         assert_eq!(style.name, "我的学习");
         assert!(!style.keep_coding_instructions);
         assert_eq!(style.content, "body here");
@@ -328,7 +331,7 @@ mod tests {
             "Short answers.\n",
         )
         .unwrap();
-        let style = resolve(Some(&project), Some("terse"));
+        let style = resolve(None, Some(&project), Some("terse"));
         assert_eq!(style.name, "terse");
         assert!(style.keep_coding_instructions);
         assert_eq!(style.content, "Short answers.");
@@ -343,7 +346,9 @@ mod tests {
             "---\nname: x\n---\n",
         )
         .unwrap();
-        assert!(!discover(Some(&project)).iter().any(|s| s.id == "empty"));
+        assert!(!discover(None, Some(&project))
+            .iter()
+            .any(|s| s.id == "empty"));
         std::fs::remove_dir_all(&project).unwrap();
     }
 }

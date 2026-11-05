@@ -1549,8 +1549,10 @@ button {
 
 .settings {
   display: flex;
-  min-height: 520px;
-  max-height: 72vh;
+  /* One height for every tab (and every mode): the content column scrolls
+     instead of resizing the window when a tab is short or long. */
+  height: 72vh;
+  min-height: 0;
 }
 
 /* Left navigation: group labels + items. The active item no longer uses a
@@ -1617,6 +1619,7 @@ button {
   overflow-y: auto;
   padding: 22px 26px 26px;
   min-width: 0;
+  min-height: 0;
   background: var(--bg2);
 }
 .settings-section {
@@ -5103,32 +5106,55 @@ input[type="range"] {
   color: var(--accent-contrast, #fff);
 }
 
-/* Settings page: the MCP / skill lists */
-.mcp-summary,
-.skill-summary {
+/* Settings page: MCP servers and skills.
+
+   The two lists carry the same information per row (a name, a one-line
+   summary, a source/type tag) and clip the middle instead of wrapping, so a
+   long path never turns the list into a paragraph. */
+.mcp-list {
   list-style: none;
-  margin: 0 0 10px;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
-
-.mcp-summary li,
-.skill-summary li {
+.mcp-row {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 12px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
   min-width: 0;
 }
-
-.mcp-summary code,
-.skill-summary code {
-  flex-shrink: 0;
+/* A disabled server dims its text but keeps the switch at full contrast: the
+   control has to stay visible or it cannot be turned back on. */
+.mcp-row.off .mcp-row-text,
+.mcp-row.off .mcp-row-type {
+  opacity: 0.55;
 }
-
-.mcp-summary-type {
+.mcp-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.mcp-row-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.mcp-row-target {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-row-type {
   flex-shrink: 0;
   font-size: 10.5px;
   color: var(--text-3);
@@ -5136,24 +5162,166 @@ input[type="range"] {
   border-radius: 999px;
   padding: 0 6px;
 }
+.mcp-toggle {
+  flex-shrink: 0;
+  width: 30px;
+  height: 17px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg3);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.12s ease;
+}
+.mcp-toggle.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.mcp-toggle-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-3);
+  box-shadow: 0 1px 2px var(--shadow);
+  transition: transform 0.12s ease;
+}
+.mcp-toggle.on .mcp-toggle-knob {
+  transform: translateX(13px);
+  background: var(--accent-contrast, #fff);
+}
+.mcp-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 
-.mcp-summary-target,
-.skill-summary-desc {
+.skill-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.skill-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+  overflow: hidden;
+}
+.skill-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+  min-width: 0;
+}
+.skill-source {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.skill-source-vault {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.skill-source-project {
+  color: var(--text);
+}
+.skill-source-home {
+  color: var(--text-faint);
+}
+.skill-group-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-group-count {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.skill-group-empty {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.skill-list {
+  list-style: none;
+  margin: 0;
+  padding: 3px 0;
+}
+.skill-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 10px;
+  min-width: 0;
+}
+.skill-row + .skill-row {
+  border-top: 1px solid var(--border);
+}
+.skill-name {
+  flex-shrink: 0;
+  min-width: 110px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.skill-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
   color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.skill-summary-path {
-  margin-left: auto;
-  flex-shrink: 0;
-  font-size: 10.5px;
+.settings-block-label {
+  font-size: 11px;
+  font-family: var(--font-mono);
   color: var(--text-3);
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  margin-bottom: 6px;
+}
+.settings-path-current {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+  min-width: 0;
+}
+.settings-path-current code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.settings-root-edit {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.settings-root-edit .settings-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .settings-hint {

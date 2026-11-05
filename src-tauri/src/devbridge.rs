@@ -395,7 +395,12 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             };
             json_ok!(agent::agent_generate_title(app.state(), arg_str(args, "text")?, model).await)
         }
-        "agent_list_skills" => json_ok!(agent::agent_list_skills(app.state()).await),
+        "agent_list_skills" => json_ok!(agent::agent_list_skills(
+            app.state(),
+            optional_str(args, "mode"),
+            optional_str(args, "workdir")
+        )
+        .await),
         "bblog_sections" => json_ok!(crate::commands::bblog::bblog_sections(
             arg_str(args, "server")?
         )
@@ -481,25 +486,49 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             arg_str(args, "title")?
         )
         .await),
-        "agent_settings_paths" => json_ok!(home::agent_settings_paths(
-            optional_str(args, "project")
+        "agent_mode_paths" => json_ok!(home::agent_mode_paths(
+            app.state(),
+            arg_str(args, "mode")?,
+            optional_str(args, "workdir")
+        )
+        .await),
+        "agent_read_mode_settings" => json_ok!(home::agent_read_mode_settings(
+            app.state(),
+            arg_str(args, "mode")?
+        )
+        .await),
+        "agent_write_mode_settings" => json_ok!(home::agent_write_mode_settings(
+            app.state(),
+            arg_str(args, "mode")?,
+            arg_str(args, "contents")?
+        )
+        .await),
+        "agent_read_mode_instructions" => json_ok!(home::agent_read_mode_instructions(
+            app.state(),
+            arg_str(args, "mode")?
+        )
+        .await),
+        "agent_write_mode_instructions" => json_ok!(home::agent_write_mode_instructions(
+            app.state(),
+            arg_str(args, "mode")?,
+            arg_str(args, "contents")?
+        )
+        .await),
+        "agent_set_mode_root" => json_ok!(home::agent_set_mode_root(
+            app.state(),
+            arg_str(args, "mode")?,
+            optional_str(args, "path")
         )
         .await),
         "agent_output_styles" => json_ok!(home::agent_output_styles(
+            app.state(),
+            arg_str(args, "mode")?,
             optional_str(args, "project")
         )
         .await),
         "agent_history" => json_ok!(home::agent_history(
             optional_str(args, "project"),
             args.get("limit").and_then(|v| v.as_u64()).map(|v| v as u32)
-        )
-        .await),
-        "agent_home_read_settings" => {
-            json_ok!(home::agent_home_read_settings(app.state()).await)
-        }
-        "agent_home_write_settings" => json_ok!(home::agent_home_write_settings(
-            app.state(),
-            arg_str(args, "contents")?
         )
         .await),
 

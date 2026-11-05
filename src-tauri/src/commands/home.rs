@@ -157,61 +157,262 @@ pub async fn agent_home_set_session_title(
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-/// One settings layer as the settings UI shows it.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SettingsPathInfo {
+pub struct SettingsFileInfo {
     pub path: String,
     pub exists: bool,
     /// A parse error of that file (the UI surfaces it instead of pretending
     /// the file is fine).
     pub error: Option<String>,
+    /// `mode` | `project` | `local` (merge order, first wins for display).
+    pub kind: String,
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SettingsPaths {
-    pub home: String,
-    /// Merge order: user, project, project local.
-    pub files: Vec<SettingsPathInfo>,
+pub struct SkillRootInfo {
+    pub path: String,
+    pub source: String,
+    pub exists: bool,
 }
 
-/// The three settings files and their parse state. `project` is the code
-/// project when one is open, the vault otherwise.
-#[tauri::command]
-pub async fn agent_settings_paths(project: Option<String>) -> CmdResult<SettingsPaths> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let project = project.map(std::path::PathBuf::from).filter(|p| p.is_dir());
-        let loaded = crate::agent::settings::load(project.as_deref());
-        Ok(SettingsPaths {
-            home: home::home_dir().to_string_lossy().to_string(),
-            files: loaded
-                .files
-                .into_iter()
-                .map(|file| SettingsPathInfo {
-                    path: file.path.to_string_lossy().to_string(),
-                    exists: file.exists,
-                    error: file.error,
-                })
-                .collect(),
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModePaths {
+    pub mode: String,
+    /// The effective root the mode reads and writes.
+    pub root: String,
+    /// The vault default, so the UI can show what the override replaces.
+    pub default_root: String,
+    /// The `agent_roots` override; null = the vault default is in use.
+    pub override_path: Option<String>,
+    /// Settings files in merge order, with their parse state.
+    pub files: Vec<SettingsFileInfo>,
+    /// The `AGENTS.md` of the mode root.
+    pub instructions: String,
+    pub instructions_exists: bool,
+    /// The mode's own skills directory.
+    pub skills_dir: String,
+    /// Every scanned skills root with its source label (empty dirs included).
+    pub skill_roots: Vec<SkillRootInfo>,
+}
+
+fn mode_paths(
+    mode: home::AgentMode,
+    root: &std::path::Path,
+    default_root: &std::path::Path,
+    workdir: Option<&std::path::Path>,
+) -> AgentModePaths {
+    let project = workdir.filter(|p| p.is_dir());
+    let settings_project = if mode.reads_project() { project } else { None };
+    let loaded = crate::agent::settings::load(mode, root, settings_project);
+    let files = loaded
+        .files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| SettingsFileInfo {
+            path: file.path.to_string_lossy().to_string(),
+            exists: file.exists,
+            error: file.error.clone(),
+            kind: match index {
+                0 => "mode",
+                1 => "project",
+                _ => "local",
+            }
+            .to_string(),
         })
+        .collect();
+    let skill_roots =
+        crate::agent::skills::roots_for(mode, root, project, &loaded.settings.skill_dirs)
+            .into_iter()
+            .map(|r| SkillRootInfo {
+                exists: r.path.is_dir(),
+                path: r.path.to_string_lossy().to_string(),
+                source: r.source.to_string(),
+            })
+            .collect();
+    let instructions = home::mode_instructions_file(root);
+    AgentModePaths {
+        mode: mode.id().to_string(),
+        root: root.to_string_lossy().to_string(),
+        default_root: default_root.to_string_lossy().to_string(),
+        override_path: crate::agent::AgentConfig::load()
+            .agent_root(mode)
+            .map(|p| p.to_string_lossy().to_string()),
+        files,
+        instructions_exists: instructions.is_file(),
+        instructions: instructions.to_string_lossy().to_string(),
+        skills_dir: home::mode_skills_dir(root).to_string_lossy().to_string(),
+        skill_roots,
+    }
+}
+
+fn mode_from(value: &str) -> Result<home::AgentMode, String> {
+    home::AgentMode::parse(value).ok_or_else(|| format!("INVALID_MODE: {value}"))
+}
+
+/// The effective paths of one mode: root, settings files, AGENTS.md, skills
+/// roots. Everything the settings page shows about "where things live" comes
+/// from here, so the UI cannot disagree with the filesystem.
+#[tauri::command]
+pub async fn agent_mode_paths(
+    state: State<'_, AppState>,
+    mode: String,
+    workdir: Option<String>,
+) -> CmdResult<AgentModePaths> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = home::mode_root(mode, vault.as_deref());
+        let default_root = home::default_mode_root(mode, vault.as_deref());
+        let project = workdir.map(PathBuf::from);
+        Ok(mode_paths(mode, &root, &default_root, project.as_deref()))
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-/// Every output style available for a project (built-ins first, then user
-/// files, then project files).
+/// The raw text of the mode's `settings.json` (empty when it does not exist).
+#[tauri::command]
+pub async fn agent_read_mode_settings(
+    state: State<'_, AppState>,
+    mode: String,
+) -> CmdResult<String> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = home::mode_root(mode, vault.as_deref());
+        Ok(std::fs::read_to_string(home::mode_settings_file(&root)).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Writes the mode's `settings.json` after checking it is a JSON object: a
+/// broken file would silently disable permissions and hooks, so it is rejected
+/// before it reaches the disk.
+#[tauri::command]
+pub async fn agent_write_mode_settings(
+    state: State<'_, AppState>,
+    mode: String,
+    contents: String,
+) -> CmdResult<()> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = contents.trim();
+        let value: serde_json::Value = if trimmed.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(trimmed).map_err(|e| format!("INVALID_JSON: {}", e))?
+        };
+        if !value.is_object() {
+            return Err("INVALID_JSON: settings.json must be an object".to_string());
+        }
+        let root = home::mode_root(mode, vault.as_deref());
+        home::ensure_dir(&root)?;
+        let path = home::mode_settings_file(&root);
+        std::fs::write(&path, format!("{}\n", trimmed)).map_err(|e| format!("WRITE_FAILED: {}", e))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// The mode's `AGENTS.md` (null when absent).
+#[tauri::command]
+pub async fn agent_read_mode_instructions(
+    state: State<'_, AppState>,
+    mode: String,
+) -> CmdResult<Option<String>> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = home::mode_root(mode, vault.as_deref());
+        let path = home::mode_instructions_file(&root);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        std::fs::read_to_string(&path)
+            .map(Some)
+            .map_err(|e| format!("READ_FAILED: {}", e))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+#[tauri::command]
+pub async fn agent_write_mode_instructions(
+    state: State<'_, AppState>,
+    mode: String,
+    contents: String,
+) -> CmdResult<()> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = home::mode_root(mode, vault.as_deref());
+        home::ensure_dir(&root)?;
+        let path = home::mode_instructions_file(&root);
+        std::fs::write(&path, contents).map_err(|e| format!("WRITE_FAILED: {}", e))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Moves one mode's configuration root. `None` (or an empty string) restores
+/// the vault default. The directory is created so the settings page can write
+/// into it immediately.
+#[tauri::command]
+pub async fn agent_set_mode_root(
+    state: State<'_, AppState>,
+    mode: String,
+    path: Option<String>,
+) -> CmdResult<()> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cfg = crate::agent::AgentConfig::load();
+        let next = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+        if let Some(dir) = &next {
+            let dir = PathBuf::from(dir);
+            if !dir.is_absolute() {
+                return Err(format!("INVALID_PATH: {} is not absolute", dir.display()));
+            }
+            home::ensure_dir(&dir)?;
+        }
+        if !cfg.set_agent_root(mode, next.as_deref()) {
+            return Ok(());
+        }
+        cfg.save()?;
+        let root = home::mode_root(mode, vault.as_deref());
+        home::ensure_dir(&root)
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Every output style available for a mode (built-ins first, then the mode
+/// root's files, then the code project's files).
 #[tauri::command]
 pub async fn agent_output_styles(
+    state: State<'_, AppState>,
+    mode: String,
     project: Option<String>,
 ) -> CmdResult<Vec<crate::agent::output_style::StyleInfo>> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
     tauri::async_runtime::spawn_blocking(move || {
-        let project = project.map(std::path::PathBuf::from).filter(|p| p.is_dir());
-        Ok(crate::agent::output_style::discover(project.as_deref())
-            .into_iter()
-            .map(|style| style.info())
-            .collect())
+        let root = home::mode_root(mode, vault.as_deref());
+        let project = project
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .filter(|_| mode.reads_project());
+        Ok(
+            crate::agent::output_style::discover(Some(&root), project.as_deref())
+                .into_iter()
+                .map(|style| style.info())
+                .collect(),
+        )
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
@@ -272,45 +473,6 @@ pub async fn agent_history(
             }
         }
         Ok(out)
-    })
-    .await
-    .map_err(|e| format!("JOIN_FAILED: {}", e))?
-}
-
-/// The settings/preferences surface reads and writes the user-level settings
-/// file through the same confinement.
-#[tauri::command]
-pub async fn agent_home_read_settings(_state: State<'_, AppState>) -> CmdResult<Option<String>> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let path = home::settings_file();
-        home::ensure_within_home(&path)?;
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Ok(Some(text)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("READ_FAILED: {}", e)),
-        }
-    })
-    .await
-    .map_err(|e| format!("JOIN_FAILED: {}", e))?
-}
-
-#[tauri::command]
-pub async fn agent_home_write_settings(
-    _state: State<'_, AppState>,
-    contents: String,
-) -> CmdResult<()> {
-    tauri::async_runtime::spawn_blocking(move || {
-        // Valid JSON only: a hand-edited settings file that no longer parses
-        // would silently disable permissions/hooks, so the write is the place
-        // to reject it.
-        serde_json::from_str::<serde_json::Value>(&contents)
-            .map_err(|e| format!("INVALID_JSON: {}", e))?;
-        let path = home::settings_file();
-        home::ensure_within_home(&path)?;
-        if let Some(parent) = path.parent() {
-            home::ensure_dir(parent)?;
-        }
-        std::fs::write(&path, contents).map_err(|e| format!("WRITE_FAILED: {}", e))
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?

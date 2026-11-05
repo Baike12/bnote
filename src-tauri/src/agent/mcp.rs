@@ -319,12 +319,20 @@ pub struct McpManager {
 }
 
 impl McpManager {
-    /// Connects to every configured server and lists their tools.
-    pub async fn connect_all(cfg: &super::AgentConfig) -> McpManager {
+    /// Connects to every enabled server of one mode and lists their tools.
+    /// A server listed in `disabled` stays in the settings file (the toggle
+    /// keeps the entry) but is not started.
+    pub async fn connect_all(
+        servers: &std::collections::BTreeMap<String, super::McpServerConfig>,
+        disabled: &[String],
+    ) -> McpManager {
         let mut connections = HashMap::new();
         let mut tools = Vec::new();
         let mut errors = Vec::new();
-        for (name, server_cfg) in &cfg.mcp_servers {
+        for (name, server_cfg) in servers {
+            if disabled.iter().any(|d| d == name) {
+                continue;
+            }
             match McpConnection::connect(name, server_cfg).await {
                 Ok(conn) => {
                     let conn = Arc::new(tokio::sync::Mutex::new(conn));

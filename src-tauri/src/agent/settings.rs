@@ -1,14 +1,21 @@
-//! Layered settings, following Claude Code's `settings.json`:
+//! Layered, per-mode settings (Claude Code's `settings.json` shape):
 //!
-//!   `~/.bnote/settings.json`                 user
-//!   `<project>/.bnote/settings.json`         project
-//!   `<project>/.bnote/settings.local.json`   local (private, not checked in)
+//!   `<mode root>/settings.json`              the mode (and its vault)
+//!   `<project>/.bnote/settings.json`         coding only: the code project
+//!   `<project>/.bnote/settings.local.json`   coding only: local, not checked in
+//!
+//! The mode root is `<vault>/.bnote/agents/<mode>` unless `agent_roots`
+//! overrides it (see `home.rs`). The mode file holds what belongs to that
+//! agent: `mcpServers`, `skillDirs`, permissions, hooks, output style.
+//! Credentials and the model are machine-level and stay in `~/.bnote/agent.json`.
 //!
 //! Later files override earlier ones; arrays are concatenated and de-duplicated
 //! (CC's merge), objects are merged key by key, scalars take the last value. A
 //! malformed file is reported and skipped — it must never stop the app from
 //! starting or a session from running.
 
+use crate::agent::home::{self, AgentMode};
+use crate::agent::McpServerConfig;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -57,6 +64,18 @@ pub struct Settings {
     pub plans_directory: Option<String>,
     pub auto_memory_enabled: Option<bool>,
     pub auto_memory_directory: Option<String>,
+    /// MCP servers of this mode. A coding session never sees the creative
+    /// mode's servers (and vice versa): the file that defines them is
+    /// per-mode.
+    pub mcp_servers: BTreeMap<String, McpServerConfig>,
+    /// Extra skill directories for this mode, merged after the built-in roots.
+    pub skill_dirs: Vec<String>,
+    /// Servers that stay configured but are not connected (the settings page
+    /// toggles them off without deleting the entry).
+    pub disabled_mcp_servers: Vec<String>,
+    /// Skills that stay on disk but are hidden from the model and the `/`
+    /// completion.
+    pub disabled_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,10 +93,6 @@ pub struct LoadedSettings {
     pub files: Vec<SettingsFile>,
 }
 
-pub fn user_file() -> PathBuf {
-    crate::agent::home::settings_file()
-}
-
 pub fn project_files(project: Option<&Path>) -> Vec<PathBuf> {
     let Some(project) = project else {
         return Vec::new();
@@ -88,16 +103,20 @@ pub fn project_files(project: Option<&Path>) -> Vec<PathBuf> {
     ]
 }
 
-/// Every settings file for a project, in merge order.
-pub fn file_list(project: Option<&Path>) -> Vec<PathBuf> {
-    let mut files = vec![user_file()];
-    files.extend(project_files(project));
+/// Every settings file of a session, in merge order. Only coding sessions read
+/// the code project's own files; study and creative sessions are confined to
+/// their mode root.
+pub fn file_list(mode: AgentMode, root: &Path, project: Option<&Path>) -> Vec<PathBuf> {
+    let mut files = vec![home::mode_settings_file(root)];
+    if mode.reads_project() {
+        files.extend(project_files(project));
+    }
     files
 }
 
-pub fn load(project: Option<&Path>) -> LoadedSettings {
+pub fn load(mode: AgentMode, root: &Path, project: Option<&Path>) -> LoadedSettings {
     let mut loaded = LoadedSettings::default();
-    for path in file_list(project) {
+    for path in file_list(mode, root, project) {
         let exists = path.is_file();
         let mut file = SettingsFile {
             path: path.clone(),
@@ -155,6 +174,152 @@ fn merge(into: &mut Settings, from: Settings) {
     if from.auto_memory_directory.is_some() {
         into.auto_memory_directory = from.auto_memory_directory;
     }
+    for (name, server) in from.mcp_servers {
+        into.mcp_servers.insert(name, server);
+    }
+    merge_list(&mut into.skill_dirs, from.skill_dirs);
+    merge_list(&mut into.disabled_mcp_servers, from.disabled_mcp_servers);
+    merge_list(&mut into.disabled_skills, from.disabled_skills);
+}
+
+/// Copies the pre-mode-root configuration of the agent home into the coding
+/// root, once, without overwriting anything. Before the mode roots existed the
+/// user-level files were `~/.bnote/{settings.json,AGENTS.md,rules,skills,
+/// output-styles}` and the MCP/skill settings lived in `~/.bnote/agent.json`;
+/// a user who already configured them must not lose them when the default
+/// moves into the vault. Never deletes the source, so nothing is lost if the
+/// user switches back.
+pub fn migrate_legacy_home(vault: &Path) {
+    // Once per vault: a marker in the vault's agent directory means the
+    // migration already ran, so deleting a mode file is not undone by the next
+    // start.
+    let agents_dir = vault.join(".bnote").join("agents");
+    let marker = agents_dir.join(".mode-roots-v1");
+    if marker.exists() {
+        return;
+    }
+    let root = home::mode_root(AgentMode::Coding, Some(vault));
+    if let Err(e) = home::ensure_dir(&root) {
+        eprintln!("[bnote] agent root: {e}");
+        return;
+    }
+    copy_file_if_missing(
+        &home::legacy_settings_file(),
+        &home::mode_settings_file(&root),
+    );
+    copy_file_if_missing(
+        &home::home_dir().join("AGENTS.md"),
+        &home::mode_instructions_file(&root),
+    );
+    copy_dir_if_missing(
+        &home::home_dir().join("rules"),
+        &home::mode_rules_dir(&root),
+    );
+    copy_dir_if_missing(
+        &home::home_dir().join("skills"),
+        &home::mode_skills_dir(&root),
+    );
+    copy_dir_if_missing(
+        &home::home_dir().join("output-styles"),
+        &home::mode_output_styles_dir(&root),
+    );
+    // Study and creative used to read the vault's single `.bnote/AGENTS.md`
+    // (and creative also the vault's `.bnote/skills`). Those scopes are per
+    // mode now; copy the files into the mode roots so existing instructions
+    // keep working, without the two modes fighting over one file afterwards.
+    for mode in [AgentMode::Creative, AgentMode::Study] {
+        let mode_root = home::mode_root(mode, Some(vault));
+        copy_file_if_missing(
+            &vault.join(".bnote").join("AGENTS.md"),
+            &home::mode_instructions_file(&mode_root),
+        );
+    }
+    copy_dir_if_missing(
+        &vault.join(".bnote").join("skills"),
+        &home::mode_skills_dir(&home::mode_root(AgentMode::Creative, Some(vault))),
+    );
+    // MCP servers and extra skill directories were in agent.json. Fold them
+    // into the mode settings file when the user has no settings file yet (or
+    // when the copied one has no MCP block at all).
+    let cfg = crate::agent::AgentConfig::load();
+    if cfg.mcp_servers.is_empty() && cfg.skill_dirs.is_empty() {
+        return;
+    }
+    let path = home::mode_settings_file(&root);
+    let mut value: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut changed = false;
+    if value.get("mcpServers").is_none() && !cfg.mcp_servers.is_empty() {
+        if let Ok(servers) = serde_json::to_value(&cfg.mcp_servers) {
+            value["mcpServers"] = servers;
+            changed = true;
+        }
+    }
+    if value.get("skillDirs").is_none() && !cfg.skill_dirs.is_empty() {
+        value["skillDirs"] = serde_json::json!(cfg.skill_dirs);
+        changed = true;
+    }
+    if changed {
+        match serde_json::to_string_pretty(&value) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    eprintln!("[bnote] agent settings migration failed: {e}");
+                }
+            }
+            Err(e) => eprintln!("[bnote] agent settings migration failed: {e}"),
+        }
+    }
+    if let Err(e) = home::ensure_dir(&agents_dir) {
+        eprintln!("[bnote] agent migration marker: {e}");
+        return;
+    }
+    if let Err(e) = std::fs::write(
+        &marker,
+        "The per-mode roots were seeded from the old home layout.\n",
+    ) {
+        eprintln!("[bnote] agent migration marker: {e}");
+    }
+}
+
+fn copy_file_if_missing(from: &Path, to: &Path) {
+    if !from.is_file() || to.exists() {
+        return;
+    }
+    if let Some(parent) = to.parent() {
+        if let Err(e) = home::ensure_dir(parent) {
+            eprintln!("[bnote] agent migration: {e}");
+            return;
+        }
+    }
+    if let Err(e) = std::fs::copy(from, to) {
+        eprintln!("[bnote] agent migration {}: {e}", from.display());
+    }
+}
+
+fn copy_dir_if_missing(from: &Path, to: &Path) {
+    if !from.is_dir() || to.exists() {
+        return;
+    }
+    if let Err(e) = copy_tree(from, to) {
+        eprintln!("[bnote] agent migration {}: {e}", from.display());
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if !target.exists() {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 fn merge_list(into: &mut Vec<String>, from: Vec<String>) {
@@ -194,15 +359,16 @@ mod tests {
     #[test]
     fn project_settings_override_and_arrays_merge() {
         let project = temp("merge");
+        let root = project.join(".bnote/agents/coding");
         write(
-            &project.join(".bnote/settings.json"),
+            &root.join("settings.json"),
             r#"{"permissions":{"deny":["Bash(git push:*)"]},"outputStyle":"Learning"}"#,
         );
         write(
-            &project.join(".bnote/settings.local.json"),
+            &project.join(".bnote/settings.json"),
             r#"{"permissions":{"deny":["Bash(rm:*)"]},"model":"x"}"#,
         );
-        let loaded = load(Some(&project));
+        let loaded = load(AgentMode::Coding, &root, Some(&project));
         let s = &loaded.settings;
         assert_eq!(
             s.permissions.deny,
@@ -214,11 +380,57 @@ mod tests {
     }
 
     #[test]
+    fn only_the_coding_mode_reads_the_project_files() {
+        let project = temp("scope");
+        write(
+            &project.join(".bnote/settings.json"),
+            r#"{"permissions":{"deny":["Bash(rm:*)"]}}"#,
+        );
+        let root = project.join(".bnote/agents/creative");
+        let creative = load(AgentMode::Creative, &root, Some(&project));
+        assert_eq!(creative.files.len(), 1, "creative has only its own file");
+        assert!(creative.files[0]
+            .path
+            .ends_with("agents/creative/settings.json"));
+        assert!(creative.settings.permissions.deny.is_empty());
+        let coding = load(AgentMode::Coding, &root, Some(&project));
+        assert_eq!(coding.files.len(), 3);
+        assert_eq!(
+            coding.settings.permissions.deny,
+            vec!["Bash(rm:*)".to_string()]
+        );
+        std::fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn mcp_servers_merge_by_name_and_toggles_accumulate() {
+        let project = temp("mcp");
+        let root = project.join(".bnote/agents/coding");
+        write(
+            &root.join("settings.json"),
+            r#"{"mcpServers":{"a":{"type":"stdio","command":"a"},"b":{"type":"http","url":"http://b"}},"disabledMcpServers":["b"]}"#,
+        );
+        write(
+            &project.join(".bnote/settings.json"),
+            r#"{"mcpServers":{"b":{"type":"http","url":"http://b2"}}}"#,
+        );
+        let s = load(AgentMode::Coding, &root, Some(&project)).settings;
+        assert_eq!(s.mcp_servers.len(), 2);
+        match &s.mcp_servers["b"] {
+            McpServerConfig::Http { url, .. } => assert_eq!(url, "http://b2"),
+            other => panic!("unexpected server: {other:?}"),
+        }
+        assert_eq!(s.disabled_mcp_servers, vec!["b".to_string()]);
+        std::fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
     fn a_malformed_file_is_reported_and_skipped() {
         let project = temp("bad");
-        let path = project.join(".bnote/settings.json");
+        let root = project.join(".bnote/agents/coding");
+        let path = root.join("settings.json");
         write(&path, "{ not json");
-        let loaded = load(Some(&project));
+        let loaded = load(AgentMode::Coding, &root, None);
         let file = loaded.files.iter().find(|f| f.path == path).unwrap();
         assert!(file.error.is_some());
         assert!(loaded.settings.permissions.deny.is_empty());
@@ -228,15 +440,16 @@ mod tests {
     #[test]
     fn hook_matchers_accumulate_across_layers() {
         let project = temp("hooks");
+        let root = project.join(".bnote/agents/coding");
         write(
-            &project.join(".bnote/settings.json"),
+            &root.join("settings.json"),
             r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"a"}]}]}}"#,
         );
         write(
-            &project.join(".bnote/settings.local.json"),
+            &project.join(".bnote/settings.json"),
             r#"{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"command":"b"}]}]}}"#,
         );
-        let s = load(Some(&project)).settings;
+        let s = load(AgentMode::Coding, &root, Some(&project)).settings;
         assert_eq!(s.hooks["PreToolUse"].len(), 2);
         std::fs::remove_dir_all(&project).unwrap();
     }

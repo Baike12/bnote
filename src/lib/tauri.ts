@@ -54,6 +54,9 @@ export interface SetImeOutcome {
 export type StudyContent =
   { kind: "pdf"; path: string; title: string } | { kind: "url"; url: string; title: string };
 
+/** The three agent shapes; the id is also the mode folder name. */
+export type AgentMode = "coding" | "creative" | "study";
+
 export interface AgentConfig {
   provider: string;
   model: string;
@@ -62,8 +65,13 @@ export interface AgentConfig {
   max_tokens: number;
   /** The model's context window (tokens), used to show the occupancy. */
   context_window: number;
-  mcp_servers: Record<string, unknown>;
-  skill_dirs: string[];
+  /**
+   * Per-mode configuration root overrides (mode id → absolute path). The
+   * default is `<vault>/.bnote/agents/<mode>`; this is the only agent setting
+   * that stays in the home directory, because a path cannot be stored inside
+   * the directory it moves.
+   */
+  agent_roots: Record<string, string>;
 }
 
 /** One entry of the built-in dictionary (select-to-translate → word). */
@@ -97,10 +105,16 @@ export interface TranslateConfig {
   extra_body: Record<string, unknown>;
 }
 
+/** Where a skill was found: the mode root (vault), the code project, the shared `~/.agents`, or a configured extra directory. */
+export type SkillSource = "vault" | "project" | "home" | "custom";
+
 export interface SkillInfo {
   name: string;
   description: string;
   path: string;
+  source: SkillSource;
+  /** The scanned root the skill belongs to (the settings page groups by it). */
+  root: string;
 }
 
 export interface SessionInfo {
@@ -375,7 +389,8 @@ export const agentApi = {
   /** Manual compaction (/compact): replaces the session history with a summary. */
   compact: (sessionId: string) => invoke<void>("agent_compact", { sessionId }),
   /** The list of skills currently available on disk (settings page and input field / completion). */
-  listSkills: () => invoke<SkillInfo[]>("agent_list_skills"),
+  listSkills: (mode: AgentMode, workdir?: string | null) =>
+    invoke<SkillInfo[]>("agent_list_skills", { mode, workdir: workdir ?? null }),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
   abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
@@ -463,21 +478,36 @@ export const agentApi = {
 };
 
 /**
- * The agent home (`~/.bnote`): the agent's own files, the equivalent of Claude
- * Code's `~/.claude`. Every path is confined to that directory by the backend.
+ * The per-mode configuration roots (`<vault>/.bnote/agents/<mode>`) and the
+ * agent home (`~/.bnote`, session records and task lists). Mode file paths are
+ * reported by the backend so the UI never guesses where a file lives.
  */
-/** One settings layer (`~/.bnote/settings.json` and the project's two files). */
+/** One settings layer (the mode file and, for coding, the project's two files). */
 export interface AgentSettingsPathInfo {
   path: string;
   exists: boolean;
-  /** A parse error of that file; the UI shows it instead of pretending it is fine. */
   error: string | null;
+  /** `mode` | `project` | `local` — the layer of the merge. */
+  kind: string;
 }
 
-export interface AgentSettingsPaths {
-  home: string;
-  /** Merge order: user, project, project local. */
+export interface AgentSkillRootInfo {
+  path: string;
+  source: SkillSource;
+  exists: boolean;
+}
+
+/** Everything the settings page shows about where a mode's files live. */
+export interface AgentModePaths {
+  mode: AgentMode;
+  root: string;
+  defaultRoot: string;
+  overridePath: string | null;
   files: AgentSettingsPathInfo[];
+  instructions: string;
+  instructionsExists: boolean;
+  skillsDir: string;
+  skillRoots: AgentSkillRootInfo[];
 }
 
 export interface AgentOutputStyle {
@@ -510,14 +540,26 @@ export const homeApi = {
   /** Write the model-generated title back into the metadata line of a coding session record. */
   setSessionTitle: (workdir: string, id: string, title: string) =>
     invoke<void>("agent_home_set_session_title", { workdir, id, title }),
-  readSettings: () => invoke<string | null>("agent_home_read_settings"),
-  writeSettings: (contents: string) => invoke<void>("agent_home_write_settings", { contents }),
-  /** The three settings files with their parse state (`project` = repo or vault). */
-  settingsPaths: (project: string | null) =>
-    invoke<AgentSettingsPaths>("agent_settings_paths", { project }),
-  /** The output styles available for a project (built-ins, user files, project files). */
-  outputStyles: (project: string | null) =>
-    invoke<AgentOutputStyle[]>("agent_output_styles", { project }),
+  /**
+   * The effective paths of one mode: root (with its override), settings files
+   * and their parse state, AGENTS.md, every scanned skills root.
+   */
+  modePaths: (mode: AgentMode, workdir?: string | null) =>
+    invoke<AgentModePaths>("agent_mode_paths", { mode, workdir: workdir ?? null }),
+  /** The raw text of `<mode root>/settings.json`. */
+  readModeSettings: (mode: AgentMode) => invoke<string>("agent_read_mode_settings", { mode }),
+  writeModeSettings: (mode: AgentMode, contents: string) =>
+    invoke<void>("agent_write_mode_settings", { mode, contents }),
+  readModeInstructions: (mode: AgentMode) =>
+    invoke<string | null>("agent_read_mode_instructions", { mode }),
+  writeModeInstructions: (mode: AgentMode, contents: string) =>
+    invoke<void>("agent_write_mode_instructions", { mode, contents }),
+  /** Moves the mode root; null restores the vault default. */
+  setModeRoot: (mode: AgentMode, path: string | null) =>
+    invoke<void>("agent_set_mode_root", { mode, path }),
+  /** The output styles available for a mode (built-ins, mode root, code project). */
+  outputStyles: (mode: AgentMode, project: string | null) =>
+    invoke<AgentOutputStyle[]>("agent_output_styles", { mode, project }),
   /** Recent prompts from `~/.bnote/history.jsonl`, newest first. */
   history: (project: string | null, limit = 50) =>
     invoke<AgentHistoryEntry[]>("agent_history", { project, limit }),

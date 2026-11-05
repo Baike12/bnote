@@ -1,16 +1,59 @@
-//! The agent's user-level home: `~/.bnote`.
+//! The agent's runtime home (`~/.bnote`) and the per-mode configuration roots.
 //!
-//! This is bnote's equivalent of Claude Code's `~/.claude`: the agent's own
-//! files (configuration, instructions, skills, session records, task lists,
-//! plans, tool results) live here, **not** inside the vault. The vault is the
-//! user's notebook; a code project is an unrelated repository — neither is
-//! where the agent keeps its state.
+//! Two kinds of files, two owners:
 //!
-//! `BNOTE_HOME` overrides the location (tests and the browser harness use it).
-//! Every path helper creates nothing; callers call [`ensure_dir`] where a
+//! - **Runtime state** (session records, task lists, plans, memory, prompt
+//!   history) belongs to the machine and lives in `~/.bnote`: a session record
+//!   is not a note, and a code project is not the notebook.
+//! - **Per-mode configuration** (`settings.json`, `AGENTS.md`, `skills/`,
+//!   `rules/`, `output-styles/`) belongs to the mode and the vault:
+//!   `<vault>/.bnote/agents/<mode>/` by default, so it travels with the
+//!   notebook. `~/.bnote/agent.json` may override each mode root
+//!   (`agent_roots`), which is the only reason that file stays in the home
+//!   directory: a path cannot be stored inside the directory it moves.
+//!
+//! Credentials and the model are machine-level (one API key per machine), so
+//! they stay in `~/.bnote/agent.json` for every mode.
+//!
+//! `BNOTE_HOME` overrides the home directory (tests and the browser harness use
+//! it). Every path helper creates nothing; callers call [`ensure_dir`] where a
 //! directory must exist.
 
 use std::path::{Path, PathBuf};
+
+/// The three agent shapes. The id is also the definition id in
+/// `defs::registry()` and the folder name under `<vault>/.bnote/agents`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentMode {
+    Coding,
+    Creative,
+    Study,
+}
+
+impl AgentMode {
+    pub fn id(self) -> &'static str {
+        match self {
+            AgentMode::Coding => "coding",
+            AgentMode::Creative => "creative",
+            AgentMode::Study => "study",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<AgentMode> {
+        match value.trim() {
+            "coding" => Some(AgentMode::Coding),
+            "creative" => Some(AgentMode::Creative),
+            "study" => Some(AgentMode::Study),
+            _ => None,
+        }
+    }
+
+    /// Whether the mode reads the code project's own configuration on top of
+    /// its root (only the coding agent is projected onto a repository).
+    pub fn reads_project(self) -> bool {
+        self == AgentMode::Coding
+    }
+}
 
 /// Environment override for the home directory.
 pub const HOME_ENV: &str = "BNOTE_HOME";
@@ -29,6 +72,54 @@ pub fn home_dir() -> PathBuf {
 
 pub fn ensure_dir(path: &Path) -> Result<(), String> {
     std::fs::create_dir_all(path).map_err(|e| format!("WRITE_FAILED: {} ({})", path.display(), e))
+}
+
+/// `<vault>/.bnote/agents/<mode>`. Without a vault the mode root falls back to
+/// `~/.bnote/agents/<mode>` so the settings page still has a real path before
+/// a notebook is opened.
+pub fn default_mode_root(mode: AgentMode, vault: Option<&Path>) -> PathBuf {
+    match vault {
+        Some(vault) => vault.join(".bnote").join("agents").join(mode.id()),
+        None => home_dir().join("agents").join(mode.id()),
+    }
+}
+
+/// The effective mode root: the `agent_roots` override of `~/.bnote/agent.json`
+/// when set, the vault default otherwise.
+pub fn mode_root(mode: AgentMode, vault: Option<&Path>) -> PathBuf {
+    match crate::agent::AgentConfig::load().agent_root(mode) {
+        Some(path) => path,
+        None => default_mode_root(mode, vault),
+    }
+}
+
+pub fn mode_settings_file(root: &Path) -> PathBuf {
+    root.join("settings.json")
+}
+
+pub fn mode_instructions_file(root: &Path) -> PathBuf {
+    root.join("AGENTS.md")
+}
+
+pub fn mode_skills_dir(root: &Path) -> PathBuf {
+    root.join("skills")
+}
+
+pub fn mode_rules_dir(root: &Path) -> PathBuf {
+    root.join("rules")
+}
+
+pub fn mode_output_styles_dir(root: &Path) -> PathBuf {
+    root.join("output-styles")
+}
+
+/// `~/.agents/skills`: the Agent Skills convention shared by other tools.
+pub fn shared_agents_skills() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".agents")
+        .join("skills")
 }
 
 /// Claude Code's `sanitizePath` (sessionStoragePortable.ts): every character
@@ -96,11 +187,9 @@ pub fn memory_dir(root: &Path) -> PathBuf {
     project_dir(root).join("memory")
 }
 
-pub fn skills_dirs() -> Vec<PathBuf> {
-    vec![home_dir().join("skills")]
-}
-
-pub fn settings_file() -> PathBuf {
+/// The pre-mode-root settings file. Kept only as the one-time migration source
+/// for the coding root; nothing reads it at runtime any more.
+pub fn legacy_settings_file() -> PathBuf {
     home_dir().join("settings.json")
 }
 
@@ -151,6 +240,34 @@ mod tests {
             .ends_with("projects/-tmp-proj/s1.jsonl"));
         assert!(subagents_dir(Path::new("/tmp/proj"), "s1")
             .ends_with("projects/-tmp-proj/s1/subagents"));
+    }
+
+    #[test]
+    fn the_mode_root_defaults_to_the_vault_and_falls_back_to_home() {
+        let vault = Path::new("/notes/mine");
+        assert_eq!(
+            default_mode_root(AgentMode::Coding, Some(vault)),
+            PathBuf::from("/notes/mine/.bnote/agents/coding")
+        );
+        assert_eq!(
+            default_mode_root(AgentMode::Creative, Some(vault)),
+            PathBuf::from("/notes/mine/.bnote/agents/creative")
+        );
+        assert_eq!(
+            default_mode_root(AgentMode::Study, Some(vault)),
+            PathBuf::from("/notes/mine/.bnote/agents/study")
+        );
+        assert!(default_mode_root(AgentMode::Study, None).ends_with("agents/study"));
+    }
+
+    #[test]
+    fn mode_files_hang_off_the_root() {
+        let root = Path::new("/tmp/agents/coding");
+        assert_eq!(mode_settings_file(root), root.join("settings.json"));
+        assert_eq!(mode_instructions_file(root), root.join("AGENTS.md"));
+        assert_eq!(mode_skills_dir(root), root.join("skills"));
+        assert_eq!(mode_rules_dir(root), root.join("rules"));
+        assert_eq!(mode_output_styles_dir(root), root.join("output-styles"));
     }
 
     #[test]

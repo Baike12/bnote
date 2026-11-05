@@ -1,16 +1,17 @@
 //! Instruction files (`AGENTS.md`) discovery, following Claude Code's
-//! `claudemd.ts`: user level, then the project directory (walking up to the git
-//! root), then local overrides. Each file is expanded with `@import` and the
-//! result travels as a `<system-reminder>` user message — not inside the system
-//! prompt — so editing a file reaches the model on the very next request
-//! without invalidating the cached prefix.
+//! `claudemd.ts`. Each file is expanded with `@import` and the result travels
+//! as a `<system-reminder>` user message — not inside the system prompt — so
+//! editing a file reaches the model on the very next request without
+//! invalidating the cached prefix.
 //!
 //! Scope:
-//!   - coding sessions: `~/.bnote/AGENTS.md` + `~/.bnote/rules/*.md`, then the
-//!     project (AGENTS.md / CLAUDE.md / .bnote/AGENTS.md / .bnote/rules /
-//!     AGENTS.local.md) from the git root down to the project root;
-//!   - study/creative sessions: the vault's `.bnote/AGENTS.md` only (the vault
-//!     is the project; a repository's files have nothing to do with it).
+//!   - every mode reads its own root's `AGENTS.md` + `rules/*.md`
+//!     (`<vault>/.bnote/agents/<mode>/`);
+//!   - coding sessions additionally read the repository, walking from the git
+//!     root down to the project root (AGENTS.md / CLAUDE.md /
+//!     .bnote/AGENTS.md / .bnote/rules / AGENTS.local.md);
+//!   - study/creative sessions read nothing else (a repository's files have
+//!     nothing to do with the notebook).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -28,42 +29,42 @@ pub struct InstructionFile {
     pub description: &'static str,
 }
 
-const USER_DESC: &str = " (user's private global instructions for all projects)";
+const USER_DESC: &str = " (agent instructions for this mode)";
 const PROJECT_DESC: &str = " (project instructions, checked into the codebase)";
 const LOCAL_DESC: &str = " (user's private project instructions, not checked in)";
 const RULE_DESC: &str = " (project rule)";
 
-/// Collects the effective instruction files. `include_user` is true for coding
-/// sessions (the agent's home is project-independent); the vault-scoped agents
-/// read only `<vault>/.bnote/AGENTS.md`.
+/// Collects the effective instruction files.
+///
+/// `root` is the mode root (`<vault>/.bnote/agents/<mode>`): its `AGENTS.md`
+/// (plus `rules/*.md`) is the mode's own instructions for every mode, so the
+/// study agent reads `…/agents/study/AGENTS.md` and the creative agent reads
+/// `…/agents/creative/AGENTS.md`. Only coding sessions additionally walk the
+/// repository hierarchy; the other modes never read a repository's files.
 pub fn collect(
+    root: Option<&Path>,
     project: Option<&Path>,
-    include_user: bool,
+    include_project: bool,
     excludes: &[String],
 ) -> Vec<InstructionFile> {
     let mut out = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let excluded = Excludes::new(excludes);
 
-    if include_user {
-        let home = crate::agent::home::home_dir();
-        push(
-            &mut out,
-            &mut seen,
-            &excluded,
-            &home.join("AGENTS.md"),
-            USER_DESC,
-        );
-        // A memory index is part of the user's instructions, exactly like CC's
-        // auto-memory entry.
-        push(
-            &mut out,
-            &mut seen,
-            &excluded,
-            &home.join("MEMORY.md"),
-            USER_DESC,
-        );
-        for file in rules_in(&home.join("rules")) {
+    if let Some(root) = root {
+        let file = crate::agent::home::mode_instructions_file(root);
+        push(&mut out, &mut seen, &excluded, &file, USER_DESC);
+        if out.is_empty() {
+            // The pre-AGENTS.md name, read only while the new file does not exist.
+            push(
+                &mut out,
+                &mut seen,
+                &excluded,
+                &root.join("agent.md"),
+                USER_DESC,
+            );
+        }
+        for file in rules_in(&crate::agent::home::mode_rules_dir(root)) {
             push(&mut out, &mut seen, &excluded, &file, RULE_DESC);
         }
     }
@@ -71,25 +72,7 @@ pub fn collect(
     let Some(project) = project else {
         return out;
     };
-    if !include_user {
-        // Vault scope: only the vault's own instructions file (plus the legacy
-        // name), never the repository hierarchy.
-        push(
-            &mut out,
-            &mut seen,
-            &excluded,
-            &project.join(".bnote").join("AGENTS.md"),
-            PROJECT_DESC,
-        );
-        if out.is_empty() {
-            push(
-                &mut out,
-                &mut seen,
-                &excluded,
-                &project.join(".bnote").join("agent.md"),
-                PROJECT_DESC,
-            );
-        }
+    if !include_project {
         return out;
     }
 
@@ -448,14 +431,16 @@ mod tests {
     }
 
     #[test]
-    fn the_vault_scope_reads_only_the_bnote_instructions_file() {
+    fn a_mode_reads_its_own_root_and_never_the_repository() {
         let vault = temp("vault");
-        std::fs::create_dir_all(vault.join(".bnote")).unwrap();
-        std::fs::write(vault.join(".bnote/AGENTS.md"), "vault rules").unwrap();
+        let root = vault.join(".bnote/agents/creative");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "creative rules").unwrap();
         std::fs::write(vault.join("AGENTS.md"), "repo rules").unwrap();
-        let files = collect(Some(&vault), false, &[]);
+        let files = collect(Some(&root), Some(&vault), false, &[]);
         assert_eq!(files.len(), 1);
-        assert!(files[0].content.contains("vault rules"));
+        assert!(files[0].content.contains("creative rules"));
+        assert!(files[0].path.ends_with("agents/creative/AGENTS.md"));
         std::fs::remove_dir_all(&vault).unwrap();
     }
 
@@ -468,7 +453,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("AGENTS.md"), "nested rules").unwrap();
         std::fs::write(nested.join("AGENTS.local.md"), "local rules").unwrap();
-        let files = collect(Some(&nested), true, &[]);
+        let files = collect(None, Some(&nested), true, &[]);
         let project_files: Vec<&InstructionFile> = files
             .iter()
             .filter(|f| f.description == PROJECT_DESC || f.description == LOCAL_DESC)
@@ -497,9 +482,9 @@ mod tests {
         std::fs::write(root.join("docs/a.md"), "imported @b.md").unwrap();
         std::fs::write(root.join("docs/b.md"), "second level").unwrap();
         std::fs::write(root.join("docs/ignored.md"), "must not load").unwrap();
-        let files = collect(Some(&root), false, &[]);
-        // No .bnote dir: the vault scope finds nothing here, so use the nested
-        // helper to exercise the import walker.
+        let files = collect(None, Some(&root), false, &[]);
+        // The mode-root scope finds nothing here, so use the nested helper to
+        // exercise the import walker.
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         let excluded = Excludes::new(&[]);
@@ -520,9 +505,15 @@ mod tests {
     #[test]
     fn excludes_skip_a_file() {
         let root = temp("exclude");
-        std::fs::create_dir_all(root.join(".bnote")).unwrap();
-        std::fs::write(root.join(".bnote/AGENTS.md"), "keep").unwrap();
-        let files = collect(Some(&root), false, &[format!("{}**", root.display())]);
+        let mode_root = root.join(".bnote/agents/study");
+        std::fs::create_dir_all(&mode_root).unwrap();
+        std::fs::write(mode_root.join("AGENTS.md"), "keep").unwrap();
+        let files = collect(
+            Some(&mode_root),
+            None,
+            false,
+            &[format!("{}**", mode_root.display())],
+        );
         assert!(files.is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }

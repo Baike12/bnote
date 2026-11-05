@@ -1,17 +1,53 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   agentApi,
   homeApi,
   type AgentConfig,
+  type AgentMode,
+  type AgentModePaths,
   type AgentOutputStyle,
-  type AgentSettingsPaths,
   type SkillInfo,
+  type SkillSource,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
-import { api } from "@/lib/tauri";
 import { CodeArea } from "@/components/CodeArea";
 import { SettingsCard, Row, SettingsSelect } from "./primitives";
 
+/**
+ * The Agent section of the settings, one shape per mode:
+ *
+ *   coding    模型 | MCP | 技能 | AGENTS.md | 高级
+ *   creative  模型 | MCP | 技能 | AGENTS.md
+ *   study     模型 | AGENTS.md
+ *
+ * Every page reads and writes real files: the model and credentials live in
+ * `~/.bnote/agent.json` (one key per machine), while the mode's own files live
+ * under its root (`<vault>/.bnote/agents/<mode>` by default). Nothing here
+ * keeps a second copy of a setting, so what the page shows is what the agent
+ * reads.
+ */
+
+const MODE_LABEL: Record<AgentMode, string> = {
+  coding: "编码",
+  creative: "创作",
+  study: "学习",
+};
+
+const SOURCE_LABEL: Record<SkillSource, string> = {
+  vault: "仓库",
+  project: "项目",
+  home: "家目录",
+  custom: "自定义",
+};
+
+/** A path as the page shows it: vault-relative when inside the vault, `~` for home. */
+function displayPath(path: string, vaultPath: string | null): string {
+  if (!path) return "";
+  if (vaultPath && path.startsWith(`${vaultPath}/`)) return path.slice(vaultPath.length + 1);
+  return path.replace(/^\/Users\/[^/]+\//, "~/");
+}
+
+/** The shared model/credential configuration (`~/.bnote/agent.json`). */
 function useAgentSettings() {
   const [cfg, setCfg] = useState<AgentConfig | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -24,7 +60,7 @@ function useAgentSettings() {
         if (!cancelled) setCfg(c);
       })
       .catch((e) => {
-        if (!cancelled) setLoadError(String(e).replace(/^[A-Z_]+:\\s*/, ""));
+        if (!cancelled) setLoadError(String(e).replace(/^[A-Z_]+:\s*/, ""));
       });
     return () => {
       cancelled = true;
@@ -42,10 +78,8 @@ function useAgentSettings() {
     if (!cfg) return;
     try {
       await agentApi.saveConfig({ ...cfg, ...patch });
-      // The already open sessions are not affected: they run with the model
-      // config snapshot they started with, here the panel only reads the
-      // "current config" once again (the footnote and the skill list
-      // refresh).
+      // Open sessions keep the model snapshot they started with; the panel
+      // re-reads "current config" for the footnote and the skill list.
       useAppStore.getState().bumpAgentConfigVersion();
       showToast(note);
     } catch (e) {
@@ -54,6 +88,34 @@ function useAgentSettings() {
   };
 
   return { cfg, loadError, update, save };
+}
+
+/** The mode's resolved paths, re-read after every write (disk is the source of truth). */
+function useModePaths(mode: AgentMode, workdir: string | null) {
+  const [paths, setPaths] = useState<AgentModePaths | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void homeApi
+      .modePaths(mode, workdir)
+      .then((next) => {
+        if (cancelled) return;
+        setPaths(next);
+        setError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, workdir, nonce]);
+
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
+  return { paths, error, reload };
 }
 
 function AgentLoading({ loadError }: { loadError: string | null }) {
@@ -66,7 +128,7 @@ function AgentLoading({ loadError }: { loadError: string | null }) {
 
 /** Agent / model: protocol, model, context window, Base URL, API key. */
 
-export function AgentModelTab() {
+export function AgentModelTab({ mode }: { mode: AgentMode }) {
   const showToast = useAppStore((s) => s.showToast);
   const { cfg, loadError, update, save } = useAgentSettings();
   if (!cfg) return <AgentLoading loadError={loadError} />;
@@ -74,7 +136,7 @@ export function AgentModelTab() {
     <div className="settings-section">
       <SettingsCard
         title="模型"
-        desc="学习助手与创作模式共用;改动只影响之后新建的会话,已开的会话按创建时的配置继续(面板头部点 ⟳ 开新会话)。"
+        desc={`${MODE_LABEL[mode]}助手使用的协议、模型与密钥,保存在 ~/.bnote/agent.json,三种模式共用。改动只影响之后新建的会话,已开的会话按创建时的配置继续(面板头部点 ⟳ 开新会话)。`}
       >
         <Row
           label="协议"
@@ -148,255 +210,186 @@ export function AgentModelTab() {
   );
 }
 
-/** The current list of the MCP servers (the part of the JSON that can be parsed safely). */
+type McpEntry = Record<string, unknown>;
 
-function McpSummary({ servers }: { servers: Record<string, unknown> }) {
-  const rows = Object.entries(servers);
-  if (rows.length === 0) {
-    return <p className="settings-hint">还没有配置 MCP 服务器。</p>;
+function mcpTarget(value: McpEntry): string {
+  if (typeof value.command === "string") {
+    const args = Array.isArray(value.args) ? value.args.map(String) : [];
+    return [value.command, ...args].join(" ");
   }
-  return (
-    <ul className="mcp-summary">
-      {rows.map(([name, value]) => {
-        const v = (value ?? {}) as Record<string, unknown>;
-        const target =
-          typeof v.command === "string"
-            ? [v.command, ...(Array.isArray(v.args) ? v.args.map(String) : [])].join(" ")
-            : typeof v.url === "string"
-              ? v.url
-              : "(配置不完整)";
-        return (
-          <li key={name}>
-            <code>{name}</code>
-            <span className="mcp-summary-type">{v.type === "http" ? "http" : "stdio"}</span>
-            <span className="mcp-summary-target">{target}</span>
-          </li>
-        );
-      })}
-    </ul>
-  );
+  return typeof value.url === "string" ? value.url : "(配置不完整)";
 }
 
-/** Agent / MCP: an overview of the server list plus the JSON editing. */
-
-export function AgentMcpTab() {
+/**
+ * Agent / MCP: the mode's own servers, each with an on/off switch. The switch
+ * writes `disabledMcpServers` instead of deleting the entry, so disabling a
+ * server is reversible. The JSON box edits `mcpServers` only and is merged back
+ * into the whole file, so unrelated keys are never clobbered.
+ */
+export function AgentMcpTab({ mode, workdir }: { mode: AgentMode; workdir: string | null }) {
   const showToast = useAppStore((s) => s.showToast);
-  const { cfg, loadError, save } = useAgentSettings();
-  const [mcpJson, setMcpJson] = useState<string | null>(null);
-  if (!cfg) return <AgentLoading loadError={loadError} />;
-  const json = mcpJson ?? JSON.stringify(cfg.mcp_servers ?? {}, null, 2);
-  let parsed: Record<string, unknown> | null = null;
-  let parseError: string | null = null;
-  try {
-    parsed = JSON.parse(json || "{}") as Record<string, unknown>;
-  } catch {
-    parseError = "JSON 尚不合法(下方清单显示的是上一次合法内容)";
+  const vaultPath = useAppStore((s) => s.vaultPath);
+  const { paths, reload } = useModePaths(mode, workdir);
+  const [raw, setRaw] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void homeApi
+      .readModeSettings(mode)
+      .then((text) => {
+        if (cancelled) return;
+        setRaw(text);
+        setDraft(null);
+        setDirty(false);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
+
+  let file: Record<string, unknown> = {};
+  if (raw !== null && raw.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        file = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A hand-broken file is reported by the advanced page; the MCP list
+      // simply shows what can be parsed.
+    }
   }
+  const servers = (file.mcpServers ?? {}) as Record<string, McpEntry>;
+  const disabled = Array.isArray(file.disabledMcpServers)
+    ? (file.disabledMcpServers as unknown[]).map(String)
+    : [];
+  const names = Object.keys(servers).sort();
+  const editorText = draft ?? JSON.stringify(servers, null, 2);
+  let draftError: string | null = null;
+  let draftServers: Record<string, McpEntry> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(editorText || "{}");
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      draftServers = parsed as Record<string, McpEntry>;
+    } else {
+      draftError = "mcpServers 必须是一个对象";
+    }
+  } catch {
+    draftError = "JSON 尚不合法";
+  }
+
+  const write = async (next: Record<string, unknown>, note: string) => {
+    const text = `${JSON.stringify(next, null, 2)}\n`;
+    try {
+      await homeApi.writeModeSettings(mode, text);
+      setRaw(text);
+      setDraft(null);
+      setDirty(false);
+      setError(null);
+      reload();
+      useAppStore.getState().bumpAgentConfigVersion();
+      showToast(note);
+    } catch (e) {
+      setError(String(e).replace(/^[A-Z_]+:\s*/, ""));
+    }
+  };
+
+  const toggle = (name: string, enabled: boolean) => {
+    const nextDisabled = enabled ? disabled.filter((n) => n !== name) : [...disabled, name];
+    const next = { ...file };
+    if (nextDisabled.length > 0) next.disabledMcpServers = nextDisabled;
+    else delete next.disabledMcpServers;
+    void write(next, `MCP 服务器「${name}」已${enabled ? "启用" : "停用"};新会话生效`);
+  };
+
   return (
     <div className="settings-section">
       <SettingsCard
         title="MCP 服务器"
         desc={
           <>
-            会话启动时连接(创作模式把工具交给模型;学习模式不注册工具)。stdio 形如{" "}
-            <code>{`{ "server": { "type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"] } }`}</code>
-            ,HTTP 形如 <code>{`{ "server": { "type": "http", "url": "https://…" } }`}</code>。工具以
-            mcp__服务器__工具 命名,连接失败会在面板顶部提示。
-          </>
-        }
-      >
-        {parsed && <McpSummary servers={parsed} />}
-        {parseError && <p className="settings-hint">{parseError}</p>}
-        <div className="settings-block">
-          <textarea
-            className="settings-textarea mono"
-            rows={10}
-            spellCheck={false}
-            value={json}
-            onChange={(e) => setMcpJson(e.target.value)}
-          />
-        </div>
-        <div className="settings-actions">
-          <button
-            className="btn primary"
-            disabled={parseError !== null}
-            onClick={() =>
-              void save({ mcp_servers: parsed ?? {} }, "MCP 配置已保存;新会话生效", showToast)
-            }
-          >
-            保存 MCP 配置
-          </button>
-        </div>
-      </SettingsCard>
-    </div>
-  );
-}
-
-/** Agent / skills: the list of the SKILL.md files found on disk plus the extra scan directories. */
-
-export function AgentSkillsTab() {
-  const showToast = useAppStore((s) => s.showToast);
-  const { cfg, loadError, update, save } = useAgentSettings();
-  const [skills, setSkills] = useState<SkillInfo[] | null>(null);
-  const [dirsDirty, setDirsDirty] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void agentApi
-      .listSkills()
-      .then((list) => {
-        if (!cancelled) setSkills(list);
-      })
-      .catch(() => {
-        if (!cancelled) setSkills([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  if (!cfg) return <AgentLoading loadError={loadError} />;
-  return (
-    <div className="settings-section">
-      <SettingsCard
-        title="技能"
-        desc="每个技能是一个目录下的 SKILL.md(frontmatter 提供 name 与 description)。内置会扫描 应用数据/skills、仓库 .bnote/skills(推荐)与 ~/.agents/skills,外加下面配置的额外目录。创作模式里用 /技能名 调用。"
-      >
-        {skills === null ? (
-          <p className="settings-hint">加载中…</p>
-        ) : skills.length === 0 ? (
-          <p className="settings-hint">
-            还没有发现技能。在仓库里建 <code>.bnote/skills/&lt;技能名&gt;/SKILL.md</code> 即可。
-          </p>
-        ) : (
-          <ul className="skill-summary">
-            {skills.map((s) => (
-              <li key={s.path}>
-                <code>/{s.name}</code>
-                <span className="skill-summary-desc">{s.description || "(无描述)"}</span>
-                <span className="skill-summary-path" title={s.path}>
-                  {s.path}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </SettingsCard>
-      <SettingsCard title="额外扫描目录" desc="每行一个目录,与内置目录合并扫描。">
-        <div className="settings-block">
-          <textarea
-            className="settings-textarea mono"
-            rows={3}
-            value={cfg.skill_dirs.join("\n")}
-            onChange={(e) => {
-              update({ skill_dirs: e.target.value.split("\n").filter((x) => x.trim()) });
-              setDirsDirty(true);
-            }}
-          />
-        </div>
-        <div className="settings-actions">
-          <button
-            className="btn primary"
-            disabled={!dirsDirty}
-            onClick={() => {
-              void save({}, "技能目录已保存", showToast);
-              setDirsDirty(false);
-            }}
-          >
-            保存技能目录
-          </button>
-        </div>
-      </SettingsCard>
-    </div>
-  );
-}
-
-/** Agent / AGENTS.md: the custom instructions of the vault (the legacy .bnote/agent.md is read for compatibility). */
-
-const AGENTS_MD_TEMPLATE = `<!-- .bnote/AGENTS.md — 学习助手与创作模式的自定义指令。
-     保存在当前仓库,随会话启动加载;内置的通用要求(简洁、结论先行、
-     组块化)始终生效,这里的指令在其后追加。留空 = 只用通用要求。
-     例如:优先用表格对比易混概念;创作时先给提纲再动笔。 -->`;
-
-export function AgentInstructionsTab() {
-  const showToast = useAppStore((s) => s.showToast);
-  const vaultName = useAppStore((s) => s.vaultName);
-  const [instructions, setInstructions] = useState("");
-  const [dirty, setDirty] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const [legacy, setLegacy] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .readVaultFile("AGENTS.md")
-      .then((v) => {
-        if (cancelled) return;
-        if (v !== null) {
-          setInstructions(v);
-        } else {
-          // The legacy file name is read to make the migration easy, only AGENTS.md is written when saving.
-          void api.readVaultFile("agent.md").then((old) => {
-            if (cancelled) return;
-            if (old !== null && old.trim()) {
-              setInstructions(old);
-              setLegacy(true);
-            }
-            setLoaded(true);
-          });
-          return;
-        }
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (!cancelled) setLoaded(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return (
-    <div className="settings-section">
-      <SettingsCard
-        title="AGENTS.md(仓库自定义指令)"
-        desc={
-          <>
-            保存为仓库的 <code>.bnote/AGENTS.md</code>,学习助手与创作模式的会话启动时加载;
-            内置通用要求(结论先行、直击本质、组块化)始终生效,这里的指令追加在其后。
-            {legacy && " 检测到旧版 .bnote/agent.md,内容已载入;保存后运行时将优先读 AGENTS.md。"}
-            {vaultName ? "" : " (当前没有打开仓库,保存不可用)"}
+            {MODE_LABEL[mode]}模式连接的 MCP 服务器,定义在{" "}
+            <code>
+              {paths ? displayPath(`${paths.root}/settings.json`, vaultPath) : "settings.json"}
+            </code>{" "}
+            的 <code>mcpServers</code> 里;三种模式各自独立。开关只记录到{" "}
+            <code>disabledMcpServers</code>,不会删除配置。编码模式还会合并代码项目{" "}
+            <code>.bnote/settings.json</code> 的 <code>mcpServers</code>
+            (见「高级」),这里只编辑本模式的条目。工具以 mcp__服务器__工具
+            命名,连接失败会在面板顶部提示。
           </>
         }
       >
         <div className="settings-block">
+          {error && <div className="settings-error">{error}</div>}
+          {names.length === 0 ? (
+            <p className="settings-hint">还没有配置 MCP 服务器。在下方 JSON 里添加。</p>
+          ) : (
+            <ul className="mcp-list">
+              {names.map((name) => {
+                const value = servers[name] ?? {};
+                const on = !disabled.includes(name);
+                return (
+                  <li className={`mcp-row${on ? "" : " off"}`} key={name}>
+                    <div className="mcp-row-text">
+                      <code className="mcp-row-name">{name}</code>
+                      <span className="mcp-row-target" title={mcpTarget(value)}>
+                        {mcpTarget(value)}
+                      </span>
+                    </div>
+                    <span className="mcp-row-type">{value.type === "http" ? "http" : "stdio"}</span>
+                    <button
+                      className={`mcp-toggle${on ? " on" : ""}`}
+                      role="switch"
+                      aria-checked={on}
+                      aria-label={`${on ? "停用" : "启用"} ${name}`}
+                      title={on ? "停用" : "启用"}
+                      onClick={() => toggle(name, !on)}
+                    >
+                      <span className="mcp-toggle-knob" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        <div className="settings-block">
+          <div className="settings-block-label">mcpServers</div>
           <textarea
             className="settings-textarea mono"
-            rows={12}
+            rows={8}
             spellCheck={false}
-            placeholder={loaded ? AGENTS_MD_TEMPLATE : "加载中…"}
-            value={instructions}
+            value={editorText}
             onChange={(e) => {
-              setInstructions(e.target.value);
+              setDraft(e.target.value);
               setDirty(true);
             }}
           />
+          {draftError ? (
+            <div className="settings-error">{draftError}</div>
+          ) : (
+            <div className="settings-hint">
+              stdio 形如{" "}
+              <code>{'{"name":{"type":"stdio","command":"npx","args":["-y","…"]}}'}</code>
+              ,HTTP 形如 <code>{'{"name":{"type":"http","url":"https://…"}}'}</code>。
+            </div>
+          )}
           <div className="settings-actions">
             <button
               className="btn primary"
-              disabled={!dirty || !vaultName}
+              disabled={!dirty || draftError !== null || draftServers === null}
               onClick={() =>
-                void api
-                  .writeVaultFile("AGENTS.md", instructions)
-                  .then(() => {
-                    setDirty(false);
-                    setLegacy(false);
-                    // A session has frozen the system prompt, only a restarted session picks up the new instructions.
-                    useAppStore.getState().bumpAgentConfigVersion();
-                    showToast("AGENTS.md 已保存;新会话生效");
-                  })
-                  .catch((e) => showToast(`保存失败: ${String(e)}`))
+                void write({ ...file, mcpServers: draftServers ?? {} }, "MCP 配置已保存;新会话生效")
               }
             >
-              保存并应用到新会话
+              保存 MCP 配置
             </button>
           </div>
         </div>
@@ -406,23 +399,282 @@ export function AgentInstructionsTab() {
 }
 
 /**
- * Agent settings: the layers Claude Code calls `settings.json`.
- *
- * The output style is chosen here (a title button + popover, never a native
- * `<select>`), and the whole user-level file can be edited as JSON — that is
- * where permissions (allow / ask / deny), hooks, env and the extra
- * directories live. The three consulted files are listed with their parse
- * state so a broken file is visible instead of silently disabling rules.
+ * Agent / skills: grouped by where each skill comes from. Coding scans the
+ * vault's mode root, the code project's `.agents/skills` and the shared
+ * `~/.agents/skills`; creative reads only its own root (a creative agent must
+ * not inherit the coding agent's skills).
  */
+export function AgentSkillsTab({ mode, workdir }: { mode: AgentMode; workdir: string | null }) {
+  const vaultPath = useAppStore((s) => s.vaultPath);
+  const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
+  const { paths, error, reload } = useModePaths(mode, workdir);
+  const [skills, setSkills] = useState<SkillInfo[] | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
 
-export function AgentSettingsTab() {
+  useEffect(() => {
+    let cancelled = false;
+    void agentApi
+      .listSkills(mode, workdir)
+      .then((list) => {
+        if (cancelled) return;
+        setSkills(list);
+        setScanError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setSkills([]);
+        setScanError(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, workdir, agentConfigVersion]);
+
+  const desc =
+    mode === "coding"
+      ? "每个技能是一个目录下的 SKILL.md(frontmatter 提供 name 与 description)。按仓库、项目、家目录的顺序扫描,同名技能以仓库优先;额外目录写进 settings.json 的 skillDirs。"
+      : "每个技能是一个目录下的 SKILL.md(frontmatter 提供 name 与 description)。创作模式只读取本模式的 skills 目录。";
+
+  return (
+    <div className="settings-section">
+      <SettingsCard
+        title="技能"
+        desc={desc}
+        actions={
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              reload();
+              useAppStore.getState().bumpAgentConfigVersion();
+            }}
+          >
+            重新扫描
+          </button>
+        }
+      >
+        <div className="settings-block">
+          {(error ?? scanError) && <div className="settings-error">{error ?? scanError}</div>}
+          {!paths || skills === null ? (
+            <p className="settings-hint">加载中…</p>
+          ) : (
+            <div className="skill-groups">
+              {paths.skillRoots.map((root) => {
+                const list = skills.filter((skill) => skill.root === root.path);
+                return (
+                  <section className="skill-group" key={`${root.source}:${root.path}`}>
+                    <header className="skill-group-head">
+                      <span className={`skill-source skill-source-${root.source}`}>
+                        {SOURCE_LABEL[root.source]}
+                      </span>
+                      <code className="skill-group-path" title={root.path}>
+                        {displayPath(root.path, vaultPath)}
+                      </code>
+                      <span className="skill-group-count">{list.length}</span>
+                    </header>
+                    {list.length === 0 ? (
+                      <p className="skill-group-empty">未发现技能</p>
+                    ) : (
+                      <ul className="skill-list">
+                        {list.map((skill) => (
+                          <li className="skill-row" key={skill.path} title={skill.path}>
+                            <code className="skill-name">/{skill.name}</code>
+                            <span className="skill-desc">{skill.description || "(无描述)"}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </SettingsCard>
+    </div>
+  );
+}
+
+const AGENTS_MD_TEMPLATE: Record<AgentMode, string> = {
+  coding: `<!-- AGENTS.md — 编码助手的指令,保存在本模式的配置目录。
+     编码会话还会读取代码仓库里的 AGENTS.md / CLAUDE.md(从 git 根到项目根),
+     这里的指令始终先加载。留空 = 只用内置要求。 -->`,
+  creative: `<!-- AGENTS.md — 创作助手的指令,保存在本模式的配置目录。
+     创作会话只读取这个文件,不读取仓库里的其他指令。留空 = 只用内置要求。 -->`,
+  study: `<!-- AGENTS.md — 学习助手的指令,保存在本模式的配置目录。
+     学习会话只读取这个文件。留空 = 只用内置要求。 -->`,
+};
+
+/**
+ * Agent / AGENTS.md: the mode's instructions file plus its configuration root.
+ * The root card lives here because the file's path is the first thing the page
+ * has to show; changing the root moves every mode file at once.
+ */
+export function AgentInstructionsTab({
+  mode,
+  workdir,
+}: {
+  mode: AgentMode;
+  workdir: string | null;
+}) {
   const showToast = useAppStore((s) => s.showToast);
   const vaultPath = useAppStore((s) => s.vaultPath);
-  const codeProject = useAppStore((s) => s.codeProject);
-  // Coding settings belong to the repository; without one the vault is the
-  // project (study / creative sessions).
-  const project = codeProject?.path ?? vaultPath;
-  const [paths, setPaths] = useState<AgentSettingsPaths | null>(null);
+  const { paths, error: pathError, reload } = useModePaths(mode, workdir);
+  const [text, setText] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [rootDraft, setRootDraft] = useState<string | null>(null);
+
+  const root = paths?.root ?? null;
+  useEffect(() => {
+    if (!root) return;
+    let cancelled = false;
+    void homeApi
+      .readModeInstructions(mode)
+      .then((value) => {
+        if (cancelled) return;
+        setText(value ?? "");
+        setDirty(false);
+        setError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setText("");
+        setError(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, root]);
+
+  const applyRoot = () => {
+    const next = rootDraft?.trim() ?? "";
+    void homeApi
+      .setModeRoot(mode, next || null)
+      .then(() => {
+        setRootDraft(null);
+        reload();
+        showToast(next ? "配置目录已切换" : `已恢复默认目录(仓库内 .bnote/agents/${mode})`);
+      })
+      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+  };
+
+  return (
+    <div className="settings-section">
+      <SettingsCard
+        title="AGENTS.md"
+        desc={
+          mode === "coding"
+            ? "编码助手的指令,保存在配置目录的 AGENTS.md;仓库里的 AGENTS.md / CLAUDE.md 会在此之后追加。"
+            : mode === "creative"
+              ? "创作助手的指令,保存在配置目录的 AGENTS.md;创作模式只读取这个文件。"
+              : "学习助手的指令,保存在配置目录的 AGENTS.md;学习模式只读取这个文件。"
+        }
+      >
+        <div className="settings-block">
+          <div className="settings-path-current" title={paths?.instructions}>
+            <code>{paths ? displayPath(paths.instructions, vaultPath) : "加载中…"}</code>
+            <span className="settings-path-state">
+              {paths ? (paths.instructionsExists ? "已存在" : "未创建") : ""}
+            </span>
+          </div>
+          {(error ?? pathError) && <div className="settings-error">{error ?? pathError}</div>}
+          <textarea
+            className="settings-textarea mono"
+            rows={12}
+            spellCheck={false}
+            placeholder={text === null ? "加载中…" : AGENTS_MD_TEMPLATE[mode]}
+            value={text ?? ""}
+            onChange={(e) => {
+              setText(e.target.value);
+              setDirty(true);
+            }}
+          />
+          <div className="settings-actions">
+            <button
+              className="btn primary"
+              disabled={!dirty || text === null || !root}
+              onClick={() =>
+                void homeApi
+                  .writeModeInstructions(mode, text ?? "")
+                  .then(() => {
+                    setDirty(false);
+                    useAppStore.getState().bumpAgentConfigVersion();
+                    reload();
+                    showToast("AGENTS.md 已保存;新会话生效");
+                  })
+                  .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")))
+              }
+            >
+              保存并应用到新会话
+            </button>
+          </div>
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        title="配置目录"
+        desc="本模式的 settings.json、AGENTS.md、skills 与 output-styles 都放在这里;默认随仓库保存,改成任意绝对路径后该模式的文件整体迁到那里(会话记录仍在 ~/.bnote)。"
+      >
+        <div className="settings-block">
+          <div className="settings-path-list">
+            <div className="settings-path-item">
+              <code>{paths?.root ?? "加载中…"}</code>
+              <span className="settings-path-state">
+                {paths?.overridePath ? "自定义目录" : "默认目录(仓库内)"}
+              </span>
+            </div>
+            {paths?.overridePath && (
+              <div className="settings-path-item">
+                <code>{paths.defaultRoot}</code>
+                <span className="settings-path-state">默认目录</span>
+              </div>
+            )}
+          </div>
+          <div className="settings-root-edit">
+            <input
+              className="settings-input mono"
+              value={rootDraft ?? paths?.overridePath ?? ""}
+              placeholder={paths ? `留空用默认:${paths.defaultRoot}` : ""}
+              onChange={(e) => setRootDraft(e.target.value)}
+            />
+            <button className="btn primary" disabled={rootDraft === null} onClick={applyRoot}>
+              应用目录
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={!paths?.overridePath}
+              onClick={() => {
+                setRootDraft("");
+                void homeApi
+                  .setModeRoot(mode, null)
+                  .then(() => {
+                    setRootDraft(null);
+                    reload();
+                    showToast("已恢复默认配置目录");
+                  })
+                  .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+              }}
+            >
+              恢复默认
+            </button>
+          </div>
+          <div className="settings-hint">
+            切换目录只改变之后读取的位置,不会自动搬移已有文件;旧目录保留不动。
+          </div>
+        </div>
+      </SettingsCard>
+    </div>
+  );
+}
+
+/**
+ * Agent / advanced (coding only): the mode's whole settings.json, the output
+ * style, and the file list with each file's parse state. This is the page for
+ * permissions, hooks and env — the parts that do not deserve their own form.
+ */
+export function AgentAdvancedTab({ mode, workdir }: { mode: AgentMode; workdir: string | null }) {
+  const { paths, error: pathError, reload } = useModePaths(mode, workdir);
+  const showToast = useAppStore((s) => s.showToast);
   const [styles, setStyles] = useState<AgentOutputStyle[]>([]);
   const [text, setText] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -431,29 +683,27 @@ export function AgentSettingsTab() {
   const [styleOpen, setStyleOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
-  const load = () => {
+  const load = useCallback(() => {
     setError(null);
     void Promise.all([
-      homeApi.settingsPaths(project).catch(() => null),
-      homeApi.outputStyles(project).catch(() => []),
-      homeApi.readSettings().catch(() => null),
-    ]).then(([nextPaths, nextStyles, raw]) => {
-      setPaths(nextPaths);
+      homeApi.outputStyles(mode, workdir).catch(() => []),
+      homeApi.readModeSettings(mode).catch(() => ""),
+    ]).then(([nextStyles, raw]) => {
       setStyles(nextStyles);
-      setText(raw ?? "");
+      setText(raw);
       setDirty(false);
       setLoaded(true);
     });
-  };
-  useEffect(load, [project]);
+  }, [mode, workdir]);
+  useEffect(load, [load]);
 
   // Click outside / Escape closes the style popover (same discipline as the
   // materials menu).
   useEffect(() => {
     if (!styleOpen) return;
     const onDown = (event: PointerEvent) => {
-      const root = pickerRef.current;
-      if (root && !root.contains(event.target as Node)) setStyleOpen(false);
+      const picker = pickerRef.current;
+      if (picker && !picker.contains(event.target as Node)) setStyleOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setStyleOpen(false);
@@ -479,12 +729,27 @@ export function AgentSettingsTab() {
   const selectedStyle =
     styles.find((style) => style.id.toLowerCase() === selectedId.toLowerCase()) ?? null;
 
+  const write = (next: string, note: string) => {
+    void homeApi
+      .writeModeSettings(mode, next)
+      .then(() => {
+        setText(next);
+        setDirty(false);
+        setError(null);
+        reload();
+        load();
+        useAppStore.getState().bumpAgentConfigVersion();
+        showToast(note);
+      })
+      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+  };
+
   const applyStyle = (style: AgentOutputStyle) => {
     setStyleOpen(false);
     let parsed: Record<string, unknown> = {};
     if (text.trim()) {
       try {
-        const value = JSON.parse(text) as unknown;
+        const value: unknown = JSON.parse(text);
         if (typeof value !== "object" || value === null || Array.isArray(value)) {
           setError("settings.json 必须是一个对象");
           return;
@@ -496,23 +761,13 @@ export function AgentSettingsTab() {
       }
     }
     parsed.outputStyle = style.id;
-    const next = `${JSON.stringify(parsed, null, 2)}\n`;
-    void homeApi
-      .writeSettings(next)
-      .then(() => {
-        setText(next);
-        setDirty(false);
-        setError(null);
-        showToast(`输出风格已切换:${style.name}`);
-        load();
-      })
-      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+    write(`${JSON.stringify(parsed, null, 2)}\n`, `输出风格已切换:${style.name}`);
   };
 
   const save = () => {
     setError(null);
     try {
-      const parsed = JSON.parse(text || "{}") as unknown;
+      const parsed: unknown = JSON.parse(text || "{}");
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         setError("settings.json 必须是一个对象");
         return;
@@ -521,22 +776,14 @@ export function AgentSettingsTab() {
       setError(`JSON 解析失败:${(e as Error).message}`);
       return;
     }
-    void homeApi
-      .writeSettings(text)
-      .then(() => {
-        setDirty(false);
-        useAppStore.getState().bumpAgentConfigVersion();
-        showToast("Agent 设置已保存;下一轮请求生效");
-        load();
-      })
-      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+    write(text, "Agent 设置已保存;下一轮请求生效");
   };
 
   return (
     <div className="settings-section">
       <SettingsCard
         title="输出风格"
-        desc="写进 ~/.bnote/settings.json 的 outputStyle。风格只改变「怎么回答」,工作规则与权限不变;带 keep-coding-instructions: false 的自定义风格会替换编码指令层。"
+        desc="写进本模式 settings.json 的 outputStyle。风格只改变「怎么回答」,工作规则与权限不变;带 keep-coding-instructions: false 的自定义风格会替换编码指令层。"
       >
         <div className="settings-block">
           <div className="study-history" ref={pickerRef}>
@@ -567,7 +814,7 @@ export function AgentSettingsTab() {
                         {style.source === "builtin"
                           ? "内置"
                           : style.source === "user"
-                            ? "用户"
+                            ? "仓库"
                             : "项目"}
                         {style.description ? ` · ${style.description}` : ""}
                       </span>
@@ -577,16 +824,16 @@ export function AgentSettingsTab() {
               </div>
             )}
           </div>
-          <div className="settings-desc">
-            自定义风格放在 <code>~/.bnote/output-styles/&lt;id&gt;.md</code> 或{" "}
-            <code>&lt;项目&gt;/.bnote/output-styles/&lt;id&gt;.md</code>。
+          <div className="settings-hint">
+            自定义风格放在 <code>本模式目录/output-styles/&lt;id&gt;.md</code>,编码模式还会读取{" "}
+            <code>&lt;代码项目&gt;/.bnote/output-styles/&lt;id&gt;.md</code>。
           </div>
         </div>
       </SettingsCard>
 
       <SettingsCard
         title="settings.json(权限 / hooks / 环境)"
-        desc="用户级设置。项目级会用同目录的 settings.json 与 settings.local.json 覆盖;数组拼接去重,标量后者胜出。"
+        desc="本模式的设置文件。编码模式会用同代码项目下的 .bnote/settings.json 与 settings.local.json 覆盖;数组拼接去重,标量后者胜出。MCP 与技能目录也写在这里。"
       >
         <div className="settings-block">
           <CodeArea
@@ -602,7 +849,7 @@ export function AgentSettingsTab() {
           {error ? (
             <div className="settings-error">{error}</div>
           ) : (
-            <div className="settings-desc">
+            <div className="settings-hint">
               {loaded ? "保存前校验 JSON;权限示例:" : "加载中…"}{" "}
               <code>{'{"permissions":{"deny":["Bash(git push:*)"]}}'}</code>
             </div>
@@ -623,44 +870,29 @@ export function AgentSettingsTab() {
         desc="按顺序合并,后者覆盖前者;解析失败的文件会被跳过并在这里标出。"
       >
         <div className="settings-block">
+          {pathError && <div className="settings-error">{pathError}</div>}
           {paths ? (
             <ul className="settings-path-list">
               {paths.files.map((file) => (
-                <li key={file.path} className="settings-path-item">
+                <li className="settings-path-item" key={file.path}>
                   <code>{file.path}</code>
                   <span className="settings-path-state">
                     {file.error ? `解析失败:${file.error}` : file.exists ? "已存在" : "未创建"}
+                    {file.kind === "project" ? " · 项目" : ""}
+                    {file.kind === "local" ? " · 本地" : ""}
                   </span>
                 </li>
               ))}
             </ul>
           ) : (
-            <div className="settings-desc">读取失败</div>
+            <div className="settings-hint">读取失败</div>
           )}
-          <div className="settings-desc">
-            Agent 家目录:<code>{paths?.home ?? "~/.bnote"}</code>
-            (会话记录、tasks、plans、记忆、技能与输出风格都在这里)
+          <div className="settings-hint">
+            会话记录、tasks、plans 与记忆仍在 <code>~/.bnote</code>
+            (它们属于运行状态,不属于笔记)。
           </div>
         </div>
       </SettingsCard>
     </div>
   );
 }
-
-/**
- * The global configuration of the language servers.
- *
- * The built-in defaults already cover the common languages (ts / rust / go
- * / python), so it works out of the box as long as the matching server is
- * installed on this machine. What is changed here is "which executable is
- * used and which arguments it gets", for example whether TypeScript uses
- * tsserver or typescript-language-server.
- *
- * A project can also put a `.bnote/lsp.json` on top of it (it travels with
- * the vault and is shared by the team):
- *
- * ```json
- * { "languages": { "go": { "command": "/opt/homebrew/bin/gopls" } },
- *   "disabled": ["python"] }
- * ```
- */
