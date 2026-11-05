@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tauri::Manager;
+
 /// Resolves to a comparable absolute path: the part that exists goes through
 /// canonicalize (symlinks resolved), and a nonexistent tail is resolved via its
 /// nearest existing ancestor and then appended lexically.
@@ -45,6 +47,23 @@ pub fn ensure_within(root: &Path, path: &Path) -> Result<(), String> {
             "FORBIDDEN: path is outside the writable root: {}",
             path.display()
         ))
+    }
+}
+
+/// Grants the webview read access to one directory through the asset protocol.
+///
+/// The static scope in `tauri.conf.json` deliberately stays minimal: a vault or
+/// a code project can live anywhere on disk (an external volume included), so
+/// the directory is granted at the moment the user opens it. Widening the
+/// static scope to `**` would let the webview read every file on the machine,
+/// which is exactly what [`ensure_within`] and `code::project::resolve_in` exist
+/// to prevent.
+///
+/// A failed grant only breaks image previews, so it is logged instead of
+/// failing the open.
+pub fn allow_asset_dir(app: &tauri::AppHandle, dir: &Path) {
+    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
+        eprintln!("[bnote] asset scope {}: {e}", dir.display());
     }
 }
 

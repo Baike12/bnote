@@ -81,6 +81,11 @@ fn set_vault_blocking(app: &AppHandle, state: &State<'_, AppState>, path: String
 
     *state.vault.write().map_err(|_| "lock poisoned")? = Some(root.clone());
 
+    // Images in notes are rendered through the asset protocol. The vault is the
+    // only directory this window may read, and the grant happens here rather
+    // than in the static scope because a vault can live anywhere on disk.
+    crate::paths::allow_asset_dir(app, &root);
+
     // Remember the vault for the next launch.
     super::config::persist_last_vault(state, &root.to_string_lossy())?;
 
