@@ -154,7 +154,7 @@ export function CodeProjectPane() {
         } as React.CSSProperties
       }
     >
-      <div className="code-toolbar">
+      <div className="code-toolbar" data-tauri-drag-region="deep">
         <button
           type="button"
           className={`code-tool-btn${treeOpen ? " is-on" : ""}`}
@@ -327,7 +327,7 @@ export function CodeProjectPane() {
 function CodeEmptyState() {
   const recent = useAppStore((s) => s.recentCodeProjects);
   return (
-    <div className="code-empty-page">
+    <div className="code-empty-page" data-tauri-drag-region="deep">
       <div className="code-empty-title">打开一个代码项目</div>
       <button
         type="button"

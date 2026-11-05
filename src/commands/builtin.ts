@@ -21,7 +21,12 @@ import { configureLivePreview } from "@/editor/livePreview";
 import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
-import { useAppStore, toggleProjectsMode, toggleStudyMode } from "@/state/appStore";
+import {
+  useAppStore,
+  toggleCodeMode,
+  toggleProjectsMode,
+  toggleStudyMode,
+} from "@/state/appStore";
 import { quitApp } from "@/app/quit";
 import { focusAdjacentProject } from "@/projects/store";
 import { isProjectPath } from "@/projects/model";
@@ -217,6 +222,17 @@ const defs: CommandDef[] = [
     category: "视图",
     run: () => {
       toggleStudyMode();
+    },
+  },
+  {
+    // Code mode is its own mode (agent | code | notes), unrelated to the vault.
+    // Deliberately unbound by default: ⌘⇧C is "insert code block" in the notes
+    // region; bind this command yourself in keybindings.json if you want a key.
+    id: "view.toggle-code-mode",
+    title: "进入 / 退出代码模式(左问 agent、中写代码、右记笔记)",
+    category: "视图",
+    run: () => {
+      toggleCodeMode();
     },
   },
   {

@@ -101,12 +101,21 @@ export async function openProjectAt(root: string): Promise<void> {
   const app = useAppStore.getState();
   const recent = [root, ...app.recentCodeProjects.filter((p) => p !== root)].slice(0, 10);
   app.setRecentCodeProjects(recent);
-  // The project is the middle column of the study mode: switching to it makes
-  // the middle column show it (and enters study mode if it is not open).
+  // Code mode is its own mode (not a study material): opening a project enters
+  // it and remembers the repository, so a restart lands where the user left.
   const title = root.split("/").pop() ?? root;
-  app.setStudyMode(true);
-  app.setStudyContent({ kind: "code", path: root, title });
-  app.recordStudyCode({ path: root, title });
+  app.setCodeProject({ path: root, title });
+  app.setCodeMode(true);
+}
+
+/** Restore the remembered project on startup without switching modes. */
+export async function restoreCodeProject(root: string): Promise<void> {
+  try {
+    await useCodeStore.getState().openProject(root);
+  } catch {
+    // The repository moved or was deleted: the empty state offers "recent
+    // projects" so the user can pick another one.
+  }
 }
 
 export const codeCommandDefs: CommandDef[] = [

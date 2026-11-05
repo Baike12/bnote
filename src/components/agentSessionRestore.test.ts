@@ -136,7 +136,12 @@ describe("title: the session's own first message, generated once by the model an
     expect(body).toMatch(/titleAskedRef\.current\.add\(convKey\)/);
     expect(body).toMatch(/cleanGeneratedTitle\(raw\)/);
     expect(body).toMatch(/displayTitle\(clean, conv\.parent !== null\)/);
-    expect(body).toMatch(/setSessionTitle\(relDir, conv\.sessionFileId, label\)/);
+    // The title is written back into the session record: through the vault
+    // command for a material, through the agent-home command for a coding
+    // session (its record lives under ~/.bnote/projects/<project>/).
+    expect(body).toMatch(/agentApi\.setSessionTitle\(relDir, id, label\)/);
+    expect(body).toMatch(/homeApi\.setSessionTitle\(codeWorkdir, id, label\)/);
+    expect(body).toMatch(/const id = conv\.sessionFileId;/);
     // The title uses the session's own model snapshot, the same one the conversation uses.
     expect(body).toMatch(/generateTitle\(seed, conv\.model \?\? undefined\)/);
   });

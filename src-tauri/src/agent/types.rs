@@ -143,6 +143,9 @@ pub enum AgentEvent {
     Todos { todos: Vec<super::todo::TodoItem> },
     /// The v2 task list after any task tool call.
     Tasks { tasks: Vec<super::tasks::TaskItem> },
+    /// Plan mode was switched by EnterPlanMode / ExitPlanMode (the panel shows
+    /// a "计划中" chip and re-reads the shield's mode).
+    PlanMode { enabled: bool },
     /// A tool needs the user's approval (the definition marks it `ask`). The
     /// turn is parked until `agent_permission_reply` answers this id.
     PermissionRequest {

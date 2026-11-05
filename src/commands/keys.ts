@@ -269,6 +269,10 @@ const CODE_INHERITED_GLOBALS = new Set([
   "nav.command-palette",
   "nav.quick-switcher",
   "view.toggle-study-mode",
+  // From the code region the way back out is code mode itself; its default
+  // binding is empty (the user assigns one), but the command must be reachable
+  // here or the code region could only leave via the palette.
+  "view.toggle-code-mode",
   "workspace.open-settings",
 ]);
 

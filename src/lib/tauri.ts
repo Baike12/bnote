@@ -52,9 +52,7 @@ export interface SetImeOutcome {
  */
 export type StudyContent =
   | { kind: "pdf"; path: string; title: string }
-  | { kind: "url"; url: string; title: string }
-  /** Code project: `path` is the absolute path of the project root (usually outside the vault). */
-  | { kind: "code"; path: string; title: string };
+  | { kind: "url"; url: string; title: string };
 
 export interface AgentConfig {
   provider: string;
@@ -114,8 +112,6 @@ export interface SessionInfo {
   model?: SessionModelConfig;
   /** The agent definition the session runs with (id/name shown in the panel). */
   definition?: { id: string; name: string; description: string; tools: string[] };
-  /** Definition files that failed to parse (shown once per session start). */
-  defErrors?: { id: string; message: string }[];
 }
 
 /** The session-level model config snapshot (written into the first line of the session record; a restored session continues with it). */
@@ -151,6 +147,8 @@ export type AgentEvent =
   | { type: "todos"; todos: AgentTodoItem[] }
   /** The v2 task list after any task tool call. */
   | { type: "tasks"; tasks: AgentTaskItem[] }
+  /** EnterPlanMode / ExitPlanMode switched plan mode (the panel shows a chip). */
+  | { type: "plan_mode"; enabled: boolean }
   /** A tool marked `ask` needs the user's approval; answer with agentApi.permissionReply. */
   | { type: "permission_request"; id: string; tool: string; input: unknown }
   /** `ask_user_question` is waiting; answer with agentApi.questionReply. */
@@ -349,12 +347,24 @@ export const agentApi = {
     model?: SessionModelConfig,
     /** "creative" = creative mode (with tools/skill/MCP); "coding" = the code-project agent; omitted = study mode, plain question answering only. */
     mode?: "study" | "creative" | "coding",
+    /** Coding sessions: the project root (relative tool paths and bash anchor there). */
+    workdir?: string,
+    /** Restore: the transcript record id, so the persisted task list continues. */
+    taskListId?: string,
   ) =>
-    invoke<SessionInfo>("agent_start_session", { study, fork, history, model, mode }),
+    invoke<SessionInfo>("agent_start_session", {
+      study,
+      fork,
+      history,
+      model,
+      mode,
+      workdir,
+      taskListId,
+    }),
   /** Stores one inline HTML preview document; returns the URL its iframe loads (see commands/preview.rs). */
   putPreview: (html: string) => invoke<string>("agent_preview_put", { html }),
-  /** Sets the session's permission mode (confirm / auto / full). */
-  setPermissionMode: (sessionId: string, mode: "confirm" | "auto" | "full") =>
+  /** Sets the session's permission mode (confirm / auto / full / plan). */
+  setPermissionMode: (sessionId: string, mode: "confirm" | "auto" | "full" | "plan") =>
     invoke<void>("agent_set_permission_mode", { sessionId, mode }),
   /** Answers a pending tool-approval request (a definition marked the tool `ask`). */
   permissionReply: (
@@ -461,6 +471,69 @@ export const agentApi = {
   /** Opens/reuses the standalone study-mode preview window (backend-created so
    *  that failures come back as errors instead of a swallowed `tauri://error`). */
   openStudyUrl: (url: string) => invoke<void>("open_study_url", { url }),
+};
+
+/**
+ * The agent home (`~/.bnote`): the agent's own files, the equivalent of Claude
+ * Code's `~/.claude`. Every path is confined to that directory by the backend.
+ */
+/** One settings layer (`~/.bnote/settings.json` and the project's two files). */
+export interface AgentSettingsPathInfo {
+  path: string;
+  exists: boolean;
+  /** A parse error of that file; the UI shows it instead of pretending it is fine. */
+  error: string | null;
+}
+
+export interface AgentSettingsPaths {
+  home: string;
+  /** Merge order: user, project, project local. */
+  files: AgentSettingsPathInfo[];
+}
+
+export interface AgentOutputStyle {
+  id: string;
+  name: string;
+  description: string;
+  keepCodingInstructions: boolean;
+  source: "builtin" | "user" | "project";
+}
+
+/** One prompt of `~/.bnote/history.jsonl` (the ↑ recall). */
+export interface AgentHistoryEntry {
+  display: string;
+  project: string;
+  sessionId: string;
+  timestamp: number;
+}
+
+export const homeApi = {
+  /** Resolve (and create) the record directory of a code project. */
+  workspace: (workdir: string) =>
+    invoke<{ dir: string }>("agent_home_workspace", { workdir }),
+  /** The sessions saved for a code project (newest first). */
+  sessionsList: (workdir: string) =>
+    invoke<SavedSessionMeta[]>("agent_home_sessions_list", { workdir }),
+  readFile: (path: string) => invoke<string | null>("agent_home_read_file", { path }),
+  writeFile: (path: string, contents: string) =>
+    invoke<void>("agent_home_write_file", { path, contents }),
+  appendFile: (path: string, contents: string) =>
+    invoke<void>("agent_home_append_file", { path, contents }),
+  /** Write the model-generated title back into the metadata line of a coding session record. */
+  setSessionTitle: (workdir: string, id: string, title: string) =>
+    invoke<void>("agent_home_set_session_title", { workdir, id, title }),
+  readSettings: () => invoke<string | null>("agent_home_read_settings"),
+  writeSettings: (contents: string) =>
+    invoke<void>("agent_home_write_settings", { contents }),
+  /** The three settings files with their parse state (`project` = repo or vault). */
+  settingsPaths: (project: string | null) =>
+    invoke<AgentSettingsPaths>("agent_settings_paths", { project }),
+  /** The output styles available for a project (built-ins, user files, project files). */
+  outputStyles: (project: string | null) =>
+    invoke<AgentOutputStyle[]>("agent_output_styles", { project }),
+  /** Recent prompts from `~/.bnote/history.jsonl`, newest first. */
+  history: (project: string | null, limit = 50) =>
+    invoke<AgentHistoryEntry[]>("agent_history", { project, limit }),
 };
 
 /**

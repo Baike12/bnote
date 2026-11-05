@@ -1916,6 +1916,34 @@ button {
   line-height: 1.5;
 }
 
+/* The settings layers of the agent (user / project / project local). */
+.settings-path-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.settings-path-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+}
+.settings-path-item code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.settings-path-state {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
 /* The code box in the settings (formula snippets): a permanent search bar +
    line numbers + monospace body.
 
@@ -5833,6 +5861,14 @@ input[type="range"] {
   border-bottom: 1px solid var(--border);
   background: var(--bg1);
   flex: none;
+}
+
+/* In code mode the toolbar is the middle column's header: give it the same
+   height as the agent header and the notes head, so the three top borders
+   form one line (a 13px step reads as a rendering bug). */
+.code-mode-content .code-toolbar {
+  height: var(--study-head-h);
+  min-height: var(--study-head-h);
 }
 
 .code-tool-btn {

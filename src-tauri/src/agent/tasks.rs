@@ -7,6 +7,7 @@
 //! update must leave the previous state untouched.
 
 use serde_json::{json, Value};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TaskItem {
@@ -31,11 +32,68 @@ pub const STATUSES: &[&str] = &["pending", "in_progress", "completed"];
 pub struct TaskList {
     next_id: u64,
     items: Vec<TaskItem>,
+    /// `<agent home>/tasks/<task list id>` when the list is persisted. Claude
+    /// Code writes one JSON file per task plus a high-water mark; the session
+    /// that owns the list is the only writer (its `tasks` mutex serializes
+    /// mutations), so no cross-process lock file is needed.
+    dir: Option<PathBuf>,
 }
 
 impl TaskList {
     pub fn new() -> TaskList {
         TaskList::default()
+    }
+
+    /// Opens (or creates on first write) the list stored under `dir`.
+    pub fn load(dir: PathBuf) -> TaskList {
+        let mut items: Vec<TaskItem> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let Ok(raw) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                if let Ok(item) = serde_json::from_str::<TaskItem>(&raw) {
+                    items.push(item);
+                }
+            }
+        }
+        items.sort_by_key(|t| t.id.parse::<u64>().unwrap_or(0));
+        let next_id = items
+            .iter()
+            .filter_map(|t| t.id.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        TaskList {
+            next_id,
+            items,
+            dir: Some(dir),
+        }
+    }
+
+    fn persist(&self) {
+        let Some(dir) = &self.dir else { return };
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("[bnote] task dir: {e}");
+            return;
+        }
+        for item in &self.items {
+            let Ok(json) = serde_json::to_string_pretty(item) else {
+                continue;
+            };
+            // Write to a sibling temp file and rename: a crash mid-write must
+            // not leave a half task that the loader then reports as corrupt.
+            let path = dir.join(format!("{}.json", item.id));
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, json).is_err() {
+                continue;
+            }
+            let _ = std::fs::rename(&tmp, &path);
+        }
+        let _ = std::fs::write(dir.join(".highwatermark"), self.next_id.to_string());
     }
 
     pub fn items(&self) -> &[TaskItem] {
@@ -65,6 +123,7 @@ impl TaskList {
             blocks: Vec::new(),
             blocked_by: Vec::new(),
         });
+        self.persist();
         Ok(format!("Task #{} created successfully: {}", id, subject))
     }
 
@@ -159,6 +218,7 @@ impl TaskList {
                 }
             }
         }
+        self.persist();
         Ok(format!("Task #{} updated successfully", id))
     }
 
@@ -260,6 +320,42 @@ pub fn list_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "bnote-tasks-{}-{}-{}",
+            tag,
+            std::process::id(),
+            unique
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn tasks_persist_and_reload_with_a_continuing_id() {
+        let dir = temp_dir("persist");
+        {
+            let mut list = TaskList::load(dir.clone());
+            list.create(&json!({"subject": "A", "description": "first"}))
+                .unwrap();
+            list.update(&json!({"id": "1", "status": "in_progress"}))
+                .unwrap();
+        }
+        let mut list = TaskList::load(dir.clone());
+        assert_eq!(list.items().len(), 1);
+        assert_eq!(list.items()[0].status, "in_progress");
+        list.create(&json!({"subject": "B", "description": "second"}))
+            .unwrap();
+        assert_eq!(list.items()[1].id, "2", "ids continue after a reload");
+        assert!(dir.join(".highwatermark").is_file());
+        assert!(dir.join("2.json").is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn create_then_update_keeps_both_sides_of_a_dependency() {

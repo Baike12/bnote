@@ -9,6 +9,7 @@
 //! message without reopening the session.
 
 use super::defs::AgentDefinition;
+use super::output_style::OutputStyle;
 use super::skills::SkillInfo;
 use super::tools::StudyContent;
 
@@ -21,8 +22,10 @@ pub struct AssembleInput<'a> {
     /// working directory.
     pub workdir: Option<&'a str>,
     pub study: Option<&'a StudyContent>,
-    pub skills: &'a [SkillInfo],
     pub mcp_names: &'a [String],
+    /// The resolved output style (`settings.outputStyle`); None = the default
+    /// shape, which adds no segment.
+    pub output_style: Option<&'a OutputStyle>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,45 +52,70 @@ impl PromptSegment {
     }
 }
 
-/// Assembles the full system prompt (segments joined by blank lines).
+/// The boundary between the cacheable static prefix and the per-session
+/// dynamic tail (Claude Code's `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`). Anthropic
+/// turns it into two system blocks, the first carrying `cache_control`; a
+/// prompt without the marker stays one block.
+pub const CACHE_BOUNDARY: &str = "\u{0}bnote:dynamic\u{0}";
+
+/// Assembles the full system prompt (segments joined by blank lines). The
+/// marker between the static and dynamic parts is preserved for the provider.
 pub fn assemble(input: &AssembleInput) -> String {
     let segs = segments(input);
-    segs.iter()
-        .filter(|s| s.loaded)
-        .map(|s| s.content.trim())
-        .filter(|c| !c.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let mut out = String::new();
+    let mut crossed = false;
+    for seg in segs.iter().filter(|s| s.loaded) {
+        let content = seg.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        if seg.dynamic && !crossed {
+            out.push_str(CACHE_BOUNDARY);
+            crossed = true;
+        }
+        if !out.is_empty() && !out.ends_with(CACHE_BOUNDARY) {
+            out.push_str("\n\n");
+        }
+        out.push_str(content);
+    }
+    out
+}
+
+/// Splits an assembled prompt at [`CACHE_BOUNDARY`]. Prompts without the
+/// marker return `(whole, "")`.
+pub fn split_cache(system: &str) -> (&str, &str) {
+    match system.split_once(CACHE_BOUNDARY) {
+        Some((head, tail)) => (head, tail),
+        None => (system, ""),
+    }
 }
 
 /// Builds the segment list.
 pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
     let mut segs = Vec::new();
-    // The agent's prompt files are the identity layer; their order is chosen
-    // in agent.json. A file that vanished between two turns is reported as
-    // not loaded instead of taking the session down.
-    for prompt in &input.def.prompts {
-        let read = input
-            .def
-            .dir
-            .as_ref()
-            .and_then(|dir| std::fs::read_to_string(dir.join(&prompt.file)).ok());
-        match read {
-            Some(content) => segs.push(PromptSegment {
-                order: prompt.order,
-                name: format!("prompt:{}", prompt.file),
-                content,
-                dynamic: true,
-                loaded: true,
-            }),
-            None => segs.push(PromptSegment {
-                order: prompt.order,
-                name: format!("prompt:{}", prompt.file),
-                content: String::new(),
-                dynamic: true,
-                loaded: false,
-            }),
-        }
+    // The agent's prompt layers are compiled in; their order is the definition
+    // order. They are static: editing them requires a new build, and the
+    // cached prefix must not change between turns.
+    //
+    // A style with `keep-coding-instructions: false` replaces everything after
+    // the identity layer (Claude Code's rule): the style itself carries the
+    // working instructions it wants.
+    let replace_coding = input
+        .output_style
+        .map(|style| !style.is_default() && !style.keep_coding_instructions)
+        .unwrap_or(false);
+    let layers = if replace_coding {
+        input.def.prompts.get(..1).unwrap_or(&[])
+    } else {
+        &input.def.prompts[..]
+    };
+    for (index, content) in layers.iter().enumerate() {
+        segs.push(PromptSegment::new(
+            10 + index as i32,
+            &format!("prompt:{}", index + 1),
+            *content,
+            false,
+        ));
     }
 
     let tools = input.def.effective_tools();
@@ -99,20 +127,22 @@ pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
             false,
         ));
     }
-    if tools.iter().any(|t| t == "skill") {
-        segs.push(PromptSegment::new(
-            30,
-            "skills",
-            skills_section(input.skills),
-            false,
-        ));
-    }
     if tools.iter().any(|t| t == "mcp") {
         segs.push(PromptSegment::new(
             40,
             "mcp",
             mcp_section(input.mcp_names),
             false,
+        ));
+    }
+    if let Some(style) = input.output_style.filter(|s| !s.is_default()) {
+        segs.push(PromptSegment::new(
+            60,
+            "output-style",
+            format!("# Output Style: {}\n\n{}", style.name, style.content.trim()),
+            // The body of a user style is a file: editing it takes effect on
+            // the next turn, like an instruction file.
+            true,
         ));
     }
     segs.push(PromptSegment::new(
@@ -126,8 +156,6 @@ pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
     if let Some(status) = input.workdir.and_then(git_status) {
         segs.push(PromptSegment::new(70, "git-status", status, true));
     }
-    // Definition prompt files are resolved inside the agent directory and
-    // sorted together with the fixed segments above.
     segs.sort_by_key(|s| s.order);
     segs
 }
@@ -181,6 +209,11 @@ fn tool_rules(tools: &[String]) -> String {
             "- send_message:用 task 返回的 agentId 继续一个已有的子代理(包括因额度/错误停下的),它的历史会带回来;不要为同一个问题重新开一个新子代理。\n",
         );
     }
+    if has("EnterPlanMode") {
+        r.push_str(
+            "- EnterPlanMode / ExitPlanMode:改动会跨多个文件、或方案需要用户拍板时,先进入计划模式只读调研,再用 ExitPlanMode 提交完整计划;批准前不要写任何文件。\n",
+        );
+    }
     if has("ask_user_question") {
         r.push_str(
             "- ask_user_question:真正需要用户决策时才问(方案取舍、缺失需求、会改变实现的歧义),每问给 2-4 个具体选项。不要一遇到摩擦就提问,也不要把能自己查清的事情丢给用户。\n",
@@ -194,9 +227,11 @@ fn tool_rules(tools: &[String]) -> String {
     r
 }
 
-fn skills_section(skills: &[SkillInfo]) -> String {
+/// The skill inventory, sent in the conversation's first `<system-reminder>`
+/// (Claude Code sends it as an attachment too, never as a system segment).
+pub fn skills_section(skills: &[SkillInfo]) -> String {
     if skills.is_empty() {
-        return "## 可用技能\n\n(仓库暂无技能;用户提到 /技能名 时如实告知没有找到。)\n\n".into();
+        return "The following skills are available for use with the Skill tool:\n(none)".into();
     }
     let mut s = String::from("## 可用技能\n\n用户可以用 /技能名 调用,你也可以按描述主动匹配:\n\n");
     for skill in skills {
@@ -207,7 +242,6 @@ fn skills_section(skills: &[SkillInfo]) -> String {
             if desc.is_empty() { "(无描述)" } else { desc }
         ));
     }
-    s.push('\n');
     s
 }
 
@@ -225,11 +259,15 @@ fn mcp_section(names: &[String]) -> String {
 
 fn environment(input: &AssembleInput) -> String {
     let mut e = String::from("## 环境\n\n");
-    if !input.vault_name.is_empty() {
-        e.push_str(&format!("- Vault: {}\n", input.vault_name));
-    }
-    if let Some(note) = input.current_note {
-        e.push_str(&format!("- Current note: {note}\n"));
+    // A coding session works in a repository, not in the notebook: the vault
+    // name and the current note would only be noise there.
+    if input.workdir.is_none() {
+        if !input.vault_name.is_empty() {
+            e.push_str(&format!("- Vault: {}\n", input.vault_name));
+        }
+        if let Some(note) = input.current_note {
+            e.push_str(&format!("- Current note: {note}\n"));
+        }
     }
     if let Some(wd) = input.workdir {
         e.push_str(&format!("- Working directory: {wd}\n"));
@@ -240,11 +278,6 @@ fn environment(input: &AssembleInput) -> String {
         }
         Some(StudyContent::Url { url, title }) => {
             e.push_str(&format!("- Study content: web page \"{title}\" at {url}\n"));
-        }
-        Some(StudyContent::Code { path, title }) => {
-            e.push_str(&format!(
-                "- Study content: code project \"{title}\" at {path}\n"
-            ));
         }
         None => {}
     }
@@ -318,50 +351,20 @@ fn civil_from_days(z: i64) -> String {
 mod tests {
     use super::*;
     use crate::agent::defs as defs_mod;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_vault(tag: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "bnote-prompt-{}-{}-{}",
-            tag,
-            std::process::id(),
-            unique
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        defs_mod::seed_agents(&dir).unwrap();
-        dir
+    fn find(id: &str) -> AgentDefinition {
+        defs_mod::definition(id).unwrap()
     }
 
-    fn loaded(vault: &std::path::Path) -> Vec<AgentDefinition> {
-        let (defs, errors) = defs_mod::load_definitions(Some(vault));
-        assert!(errors.is_empty(), "{:?}", errors);
-        defs
-    }
-
-    fn find<'a>(defs: &'a [AgentDefinition], id: &str) -> &'a AgentDefinition {
-        defs.iter().find(|d| d.id == id).unwrap()
-    }
-
-    fn input<'a>(
-        def: &'a AgentDefinition,
-        skills: &'a [SkillInfo],
-        mcp: &'a [String],
-    ) -> AssembleInput<'a> {
+    fn input<'a>(def: &'a AgentDefinition, mcp: &'a [String]) -> AssembleInput<'a> {
         AssembleInput {
             def,
             vault_name: "vault",
             current_note: None,
             workdir: None,
             study: None,
-            skills,
             mcp_names: mcp,
-
+            output_style: None,
         }
     }
 
@@ -370,14 +373,11 @@ mod tests {
         // CC carries CLAUDE.md as a `<system-reminder>` user message in front of
         // the conversation (Session::request_items), so the cached system prefix
         // never changes when the instructions file is edited.
-        let vault = temp_vault("fixed");
-        let defs = loaded(&vault);
-        let study = find(&defs, "study");
-        let base = assemble(&input(study, &[], &[]));
+        let study = find("study");
+        let base = assemble(&input(&study, &[]));
         assert!(base.contains("结论先行"));
         assert!(!base.contains("AGENTS.md"));
         assert!(!base.contains("今日"));
-        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
@@ -385,54 +385,43 @@ mod tests {
         // The study assistant registers no tools; the assembled prompt must not
         // invite any (the historical defect this locks out: a prompt steering
         // toward tools that do not exist).
-        let vault = temp_vault("study");
-        let defs = loaded(&vault);
-        let study = find(&defs, "study");
-        let p = assemble(&input(study, &[], &[]));
+        let study = find("study");
+        let p = assemble(&input(&study, &[]));
         assert!(!p.contains("tool"), "{}", p);
         assert!(!p.contains("read_study_content"));
         assert!(!p.contains("skill"));
         assert!(!p.contains("mcp__"));
         assert!(!p.contains("MCP"));
-        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
-    fn the_creative_prompt_has_the_skill_and_instruction_sections_with_a_fallback() {
-        let vault = temp_vault("creative");
-        let defs = loaded(&vault);
-        let creative = find(&defs, "creative");
-        let p = assemble(&input(creative, &[], &[]));
+    fn the_skill_listing_is_not_a_system_segment() {
+        // CC sends the inventory as a `skill_listing` attachment in the
+        // conversation; the system prompt keeps only the generic instruction.
+        let creative = find("creative");
+        let p = assemble(&input(&creative, &[]));
         assert!(p.contains("/skill-name"));
         assert!(p.contains("@path/to/file"));
         assert!(p.contains("preview_html"));
-        assert!(
-            !p.contains("## 用户自定义指令(.bnote/AGENTS.md)"),
-            "absent for empty input"
-        );
-        assert!(p.contains("仓库暂无技能"));
-        assert!(p.contains("未连接 MCP 服务器"));
+        assert!(!p.contains("## 可用技能"), "{}", p);
 
         let skills = vec![SkillInfo {
             name: "html-blog".into(),
             description: "把 markdown 排版成博客 HTML".into(),
             path: "/x/SKILL.md".into(),
         }];
-        let p = assemble(&input(creative, &skills, &["mcp__volcano__shell".to_string()]));
-        assert!(p.contains("- html-blog: 把 markdown 排版成博客 HTML"));
+        let listing = skills_section(&skills);
+        assert!(listing.contains("- html-blog: 把 markdown 排版成博客 HTML"));
+
+        let p = assemble(&input(&creative, &["mcp__volcano__shell".to_string()]));
         assert!(p.contains("- mcp__volcano__shell"));
-        let tools = p.find("## 工具").unwrap();
-        let skills_at = p.find("## 可用技能").unwrap();
-        assert!(tools < skills_at, "tool rules precede the skill list");
-        std::fs::remove_dir_all(&vault).unwrap();
+        assert!(p.contains("## 工具"));
     }
 
     #[test]
-    fn segments_are_ordered_and_prompt_files_reload_every_turn() {
-        let vault = temp_vault("segments");
-        let defs = loaded(&vault);
-        let coding = find(&defs, "coding");
-        let inp = input(coding, &[], &[]);
+    fn segments_are_ordered_and_the_prompt_layers_are_static_code() {
+        let coding = find("coding");
+        let inp = input(&coding, &[]);
         let segs = segments(&inp);
         let orders: Vec<i32> = segs.iter().map(|s| s.order).collect();
         let mut sorted = orders.clone();
@@ -440,83 +429,58 @@ mod tests {
         assert_eq!(orders, sorted, "segments must come out in order");
         let env = segs.iter().find(|s| s.name == "environment").unwrap();
         assert!(env.dynamic);
-        let identity = segs
-            .iter()
-            .find(|s| s.name == "prompt:SYSTEM_PROMPT.md")
-            .unwrap();
-        assert!(identity.dynamic, "a saved prompt applies on the next turn");
+        let identity = segs.iter().find(|s| s.name == "prompt:1").unwrap();
         assert!(identity.content.contains("coding agent"));
+        assert!(!identity.dynamic, "compiled prompts never change at runtime");
+        assert_eq!(
+            segs.iter().filter(|s| s.name.starts_with("prompt:")).count(),
+            8
+        );
         assert!(
             !segs.iter().any(|s| s.name == "user-instructions"),
             "the instructions file is a user message, not a segment"
         );
         assert!(segs.iter().any(|s| s.name == "tool-rules" && !s.dynamic));
-        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
-    fn the_coding_prompt_names_the_new_tools_and_the_workdir() {
-        let vault = temp_vault("workdir");
-        let defs = loaded(&vault);
-        let coding = find(&defs, "coding");
-        let mut inp = input(coding, &[], &[]);
+    fn the_cache_boundary_separates_static_sections_from_the_environment() {
+        let coding = find("coding");
+        let mut inp = input(&coding, &[]);
+        inp.workdir = Some("/tmp/proj");
+        let p = assemble(&inp);
+        let (static_part, dynamic_part) = split_cache(&p);
+        assert!(static_part.contains("# Doing tasks"));
+        assert!(!static_part.contains("- Working directory"));
+        assert!(dynamic_part.contains("- Working directory: /tmp/proj"));
+        assert!(split_cache("plain").1.is_empty());
+    }
+
+    #[test]
+    fn the_coding_prompt_names_the_tools_and_the_workdir() {
+        let coding = find("coding");
+        let mut inp = input(&coding, &[]);
         inp.workdir = Some("/tmp/proj");
         let p = assemble(&inp);
         assert!(p.contains("- Working directory: /tmp/proj"), "{}", p);
         assert!(p.contains("glob"));
         assert!(p.contains("task 子代理"));
         assert!(p.contains("todo"));
-        std::fs::remove_dir_all(&vault).unwrap();
     }
 
     #[test]
-    fn prompt_files_are_read_from_the_agent_directory_in_order() {
-        let vault = temp_vault("files");
-        let coding_dir = vault.join(".bnote/agents/coding");
-        std::fs::write(
-            coding_dir.join("STYLE.md"),
-            "# 项目守则\n\n用 tab 缩进。",
-        )
-        .unwrap();
-        let config_path = coding_dir.join("agent.json");
-        let mut config: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        config["prompts"] = serde_json::json!([
-            { "file": "SYSTEM_PROMPT.md", "order": 10 },
-            { "file": "STYLE.md", "order": 70 }
-        ]);
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-        let (defs, errors) = defs_mod::load_definitions(Some(&vault));
-        assert!(errors.is_empty(), "{:?}", errors);
-        // A file deleted after session start is reported by the runtime
-        // segment (the loader already validated the files at load time).
-        let mut coding = find(&defs, "coding").clone();
-        coding.prompts.push(defs_mod::PromptFile {
-            file: "MISSING.md".into(),
-            order: 80,
-        });
-        let inp = input(&coding, &[], &[]);
-        let segs = segments(&inp);
-        let style = segs.iter().find(|s| s.name == "prompt:STYLE.md").unwrap();
-        assert!(style.loaded && style.content.contains("tab 缩进"));
-        assert_eq!(style.order, 70);
-        let missing = segs
-            .iter()
-            .find(|s| s.name == "prompt:MISSING.md")
-            .unwrap();
-        assert!(!missing.loaded);
-        let style_pos = segs.iter().position(|s| s.name == "prompt:STYLE.md").unwrap();
-        let identity_pos = segs
-            .iter()
-            .position(|s| s.name == "prompt:SYSTEM_PROMPT.md")
-            .unwrap();
-        assert!(identity_pos < style_pos);
-
-        // A prompt file edited on disk is picked up without a reload.
-        std::fs::write(coding_dir.join("STYLE.md"), "改过的守则").unwrap();
-        let p = assemble(&input(&coding, &[], &[]));
-        assert!(p.contains("改过的守则"));
-        std::fs::remove_dir_all(&vault).unwrap();
+    fn the_prompt_sections_keep_claude_code_order() {
+        let coding = find("coding");
+        let p = assemble(&input(&coding, &[]));
+        let system = p.find("# System").unwrap();
+        let doing = p.find("# Doing tasks").unwrap();
+        let care = p.find("# Executing actions with care").unwrap();
+        let tools = p.find("# Using your tools").unwrap();
+        let tone = p.find("# Tone and style").unwrap();
+        let output = p.find("# Output efficiency").unwrap();
+        let session = p.find("# Session-specific guidance").unwrap();
+        assert!(system < doing && doing < care && care < tools);
+        assert!(tools < tone && tone < output && output < session);
     }
 
     #[test]

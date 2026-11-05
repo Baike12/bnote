@@ -6,6 +6,7 @@ mod commands;
 mod devbridge;
 pub mod dict;
 pub mod lsp;
+mod paths;
 mod state;
 pub mod translate;
 
@@ -185,6 +186,13 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&data_dir)?;
+            // The agent's own files moved to `~/.bnote` (Claude Code's
+            // `~/.claude`); copy the legacy config once so the user keeps the
+            // provider/key/MCP setup.
+            agent::AgentConfig::migrate_from(&data_dir);
+            if let Err(e) = agent::home::ensure_dir(&agent::home::home_dir()) {
+                eprintln!("[bnote] agent home: {e}");
+            }
 
             app.manage(AppState {
                 vault: RwLock::new(None),
@@ -264,6 +272,17 @@ pub fn run() {
             commands::agent::agent_list_skills,
             commands::agent::agent_generate_title,
             commands::agent::agent_compact,
+            commands::home::agent_home_workspace,
+            commands::home::agent_home_sessions_list,
+            commands::home::agent_home_read_file,
+            commands::home::agent_home_write_file,
+            commands::home::agent_home_append_file,
+            commands::home::agent_home_set_session_title,
+            commands::home::agent_settings_paths,
+            commands::home::agent_output_styles,
+            commands::home::agent_history,
+            commands::home::agent_home_read_settings,
+            commands::home::agent_home_write_settings,
             commands::agent::agent_set_permission_mode,
             commands::agent::agent_permission_reply,
             commands::agent::agent_question_reply,

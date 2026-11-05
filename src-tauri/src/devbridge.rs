@@ -40,7 +40,7 @@ use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
 use crate::commands::{
-    agent, code, config, files, focus, materials, preview, python, term, translate, vault,
+    agent, code, config, files, focus, home, materials, preview, python, term, translate, vault,
 };
 use crate::state::AppState;
 
@@ -340,6 +340,20 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                         .map_err(|e| format!("BAD_ARGS: mode: {}", e))?,
                 ),
             };
+            let workdir: Option<String> = match args.get("workdir") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: workdir: {}", e))?,
+                ),
+            };
+            let task_list_id: Option<String> = match args.get("taskListId") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: taskListId: {}", e))?,
+                ),
+            };
             json_ok!(agent::agent_start_session(
                 app.clone(),
                 app.state(),
@@ -347,7 +361,9 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 fork,
                 history,
                 model,
-                mode
+                mode,
+                workdir,
+                task_list_id
             )
             .await)
         }
@@ -440,6 +456,51 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_preview_put" => {
             json_ok!(preview::agent_preview_put(arg_str(args, "html")?))
         }
+        // ---- agent home (~/.bnote) ----
+        "agent_home_workspace" => json_ok!(home::agent_home_workspace(arg_str(args, "workdir")?).await),
+        "agent_home_sessions_list" => {
+            json_ok!(home::agent_home_sessions_list(arg_str(args, "workdir")?).await)
+        }
+        "agent_home_read_file" => {
+            json_ok!(home::agent_home_read_file(arg_str(args, "path")?).await)
+        }
+        "agent_home_write_file" => json_ok!(home::agent_home_write_file(
+            arg_str(args, "path")?,
+            arg_str(args, "contents")?
+        )
+        .await),
+        "agent_home_append_file" => json_ok!(home::agent_home_append_file(
+            arg_str(args, "path")?,
+            arg_str(args, "contents")?
+        )
+        .await),
+        "agent_home_set_session_title" => json_ok!(home::agent_home_set_session_title(
+            arg_str(args, "workdir")?,
+            arg_str(args, "id")?,
+            arg_str(args, "title")?
+        )
+        .await),
+        "agent_settings_paths" => json_ok!(home::agent_settings_paths(
+            optional_str(args, "project")
+        )
+        .await),
+        "agent_output_styles" => json_ok!(home::agent_output_styles(
+            optional_str(args, "project")
+        )
+        .await),
+        "agent_history" => json_ok!(home::agent_history(
+            optional_str(args, "project"),
+            args.get("limit").and_then(|v| v.as_u64()).map(|v| v as u32)
+        )
+        .await),
+        "agent_home_read_settings" => {
+            json_ok!(home::agent_home_read_settings(app.state()).await)
+        }
+        "agent_home_write_settings" => json_ok!(home::agent_home_write_settings(
+            app.state(),
+            arg_str(args, "contents")?
+        )
+        .await),
 
         // ---- translate ----
         "translate_get_config" => json_ok!(translate::translate_get_config(app.state()).await),
@@ -659,6 +720,11 @@ fn arg_str(args: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("BAD_ARGS: `{}` is not a string", key))
+}
+
+/// An optional string argument (absent or null = None).
+fn optional_str(args: &Value, key: &str) -> Option<String> {
+    args.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
 fn arg_opt_u64(args: &Value, key: &str) -> Option<u64> {

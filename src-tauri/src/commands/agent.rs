@@ -89,22 +89,20 @@ impl AgentModelChoice {
 /// assembly through the same helper).
 
 #[tauri::command]
-pub async fn agent_get_config(state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
+pub async fn agent_get_config(_state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
     // Same reasoning as config.rs: a sync command runs on the main thread, so
     // every IO call goes to the worker pool.
-    let dir = state.data_dir();
-    tauri::async_runtime::spawn_blocking(move || Ok(crate::agent::AgentConfig::load(&dir)))
+    tauri::async_runtime::spawn_blocking(|| Ok(crate::agent::AgentConfig::load()))
         .await
         .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
 #[tauri::command]
 pub async fn agent_save_config(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     config: crate::agent::AgentConfig,
 ) -> CmdResult<()> {
-    let dir = state.data_dir();
-    tauri::async_runtime::spawn_blocking(move || config.save(&dir))
+    tauri::async_runtime::spawn_blocking(move || config.save())
         .await
         .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
@@ -114,7 +112,7 @@ async fn ensure_mcp(state: &State<'_, AppState>) -> Result<Arc<McpManager>, Stri
     if let Some(m) = get_mcp_manager(state) {
         return Ok(m);
     }
-    let cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    let cfg = crate::agent::AgentConfig::load();
     let manager = Arc::new(McpManager::connect_all(&cfg).await);
     if let Ok(mut cell) = state.mcp_manager.lock() {
         *cell = Some(manager.clone());
@@ -138,29 +136,45 @@ pub async fn agent_start_session(
     // Session shape: omitted = study mode (plain Q&A); "creative" = creative
     // mode (tools + skills); "coding" = the code-project agent.
     mode: Option<String>,
+    // Coding sessions anchor at the opened code project. It is passed
+    // explicitly: a code project is independent of the vault and no longer
+    // travels through the study content.
+    workdir: Option<String>,
+    // Restore: the transcript record id, so the persisted task list continues.
+    task_list_id: Option<String>,
 ) -> CmdResult<serde_json::Value> {
     let session_mode = SessionMode::parse(mode.as_deref())?;
-    let mut cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    let mut cfg = crate::agent::AgentConfig::load();
     if let Some(choice) = model {
         choice.apply(&mut cfg);
     }
     if cfg.api_key.is_empty() {
         return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
     }
-    // The effective definition: `.bnote/agents/<id>/agent.json`, with the
-    // seed history (restore/fork) carried over unchanged.
+    // The effective definition is built into the binary; the vault only holds
+    // user instructions. The seed history (restore/fork) is carried over
+    // unchanged.
     let vault = state.vault();
-    let (defs, def_errors) = defs::load_definitions(vault.as_deref());
     let def_id = session_mode.definition_id();
-    let def = Arc::new(defs.into_iter().find(|d| d.id == def_id).ok_or_else(|| {
-        match def_errors.iter().find(|e| e.id == def_id) {
-            Some(err) => format!("DEF_MISSING: {} 加载失败: {}", def_id, err.message),
-            None => format!(
-                "DEF_MISSING: {} 不存在(需要 .bnote/agents/{}/agent.json)",
-                def_id, def_id
-            ),
+    let def = Arc::new(
+        defs::definition(def_id)
+            .ok_or_else(|| format!("DEF_MISSING: {def_id} 不在内置定义里"))?,
+    );
+    // Coding sessions anchor at the opened code project: relative tool paths
+    // and bash start there, writes are confined to the project ∪ agent home.
+    let workdir = match workdir {
+        Some(path) if !path.trim().is_empty() => {
+            let root = PathBuf::from(&path);
+            if !root.is_dir() {
+                return Err(format!("INVALID_WORKDIR: {} 不是目录", path));
+            }
+            Some(root)
         }
-    })?);
+        _ => None,
+    };
+    if session_mode == SessionMode::Coding && workdir.is_none() {
+        return Err("INVALID_WORKDIR: 编码会话需要一个代码项目目录".into());
+    }
     // Only MCP-enabled sessions pay for connecting servers.
     let mcp = if def.mcp_enabled() {
         ensure_mcp(&state).await?
@@ -172,8 +186,8 @@ pub async fn agent_start_session(
         })
     };
     let skills = Arc::new(SkillRegistry::discover(
-        &state.data_dir(),
         vault.as_ref(),
+        workdir.as_ref(),
         &cfg.skill_dirs,
     ));
 
@@ -213,12 +227,17 @@ pub async fn agent_start_session(
         .unwrap_or_default();
     let current_note = state.current_note.lock().ok().and_then(|n| n.clone());
     let mcp_names: Vec<String> = mcp.tools.iter().map(|t| t.name.clone()).collect();
-    // Coding sessions anchor at the opened code project: relative tool paths
-    // and bash start there, writes are confined to vault ∪ project.
-    let workdir = match (session_mode, study.as_ref()) {
-        (SessionMode::Coding, Some(StudyContent::Code { path, .. })) => Some(PathBuf::from(path)),
-        _ => None,
-    };
+    // `additionalDirectories` widens the writable roots for this session.
+    let layered = crate::agent::settings::load(
+        workdir.as_deref().or(vault.as_deref()),
+    );
+    let extra_roots: Vec<PathBuf> = layered
+        .settings
+        .permissions
+        .additional_directories
+        .iter()
+        .map(PathBuf::from)
+        .collect();
     let ctx = Arc::new(ToolContext {
         vault: vault.clone(),
         data_dir: state.data_dir(),
@@ -229,6 +248,8 @@ pub async fn agent_start_session(
         workdir,
         shell: Arc::new(ShellCwd::new()),
         bg: Arc::new(BgRegistry::new()),
+        read_paths: std::sync::Mutex::new(Vec::new()),
+        extra_roots,
     });
 
     // Timestamp + increasing sequence number: opening the main session and
@@ -257,6 +278,7 @@ pub async fn agent_start_session(
         app: app.clone(),
         context_window: cfg.context_window,
         permission_mode: None,
+        task_list_id,
     }));
     {
         let mut registry = state.sessions.lock().map_err(|e| e.to_string())?;
@@ -272,6 +294,8 @@ pub async fn agent_start_session(
             *items = seed_items;
         }
     }
+    // SessionStart hooks run once, before the first request.
+    session.run_start_hook().await;
 
     Ok(serde_json::json!({
         "sessionId": id,
@@ -284,7 +308,8 @@ pub async fn agent_start_session(
             "description": def.description.clone(),
             "tools": def.effective_tools(),
         },
-        "defErrors": def_errors,
+        // The restored session's task list, so the panel shows it right away.
+        "tasks": session.tasks.lock().ok().map(|g| g.render()).unwrap_or_default(),
         // The model configuration this session actually uses: the frontend
         // footnote shows it, and the session record writes it into its
         // metadata line so a restore continues from the snapshot (decoupled
@@ -320,7 +345,7 @@ pub async fn agent_generate_title(
     if text.is_empty() {
         return Err("BAD_ARGS: text".into());
     }
-    let mut cfg = crate::agent::AgentConfig::load(&state.data_dir());
+    let mut cfg = crate::agent::AgentConfig::load();
     if let Some(choice) = model {
         choice.apply(&mut cfg);
     }
@@ -354,11 +379,10 @@ pub async fn agent_generate_title(
 pub async fn agent_list_skills(
     state: State<'_, AppState>,
 ) -> CmdResult<Vec<crate::agent::skills::SkillInfo>> {
-    let cfg = crate::agent::AgentConfig::load(&state.data_dir());
-    let dir = state.data_dir();
+    let cfg = crate::agent::AgentConfig::load();
     let vault = state.vault();
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(SkillRegistry::discover(&dir, vault.as_ref(), &cfg.skill_dirs).skills)
+        Ok(SkillRegistry::discover(vault.as_ref(), None, &cfg.skill_dirs).skills)
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?

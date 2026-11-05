@@ -43,6 +43,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { EditorPane } from "@/components/EditorPane";
 import { JsonFilePane } from "@/components/JsonFilePane";
 import { StudyLayout } from "@/components/StudyLayout";
+import { CodeLayout } from "@/components/CodeLayout";
 import { ProjectsLayout } from "@/components/ProjectsLayout";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { LinkSuggest } from "@/components/LinkSuggest";
@@ -77,6 +78,7 @@ export default function App() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const currentFile = useAppStore((s) => s.currentFile);
   const studyMode = useAppStore((s) => s.studyMode);
+  const codeMode = useAppStore((s) => s.codeMode);
   const projectsMode = useAppStore((s) => s.projectsMode);
   const drawingSession = useAppStore((s) => s.drawingSession);
   // Agent context: the backend reads the current note path for its system prompt.
@@ -142,6 +144,16 @@ export default function App() {
         settings.studyAgentWidth,
         window.innerWidth,
       );
+      // Code mode has its own two column widths; a legacy config has neither
+      // key, so the defaults apply and broken values fall back the same way.
+      settings.codeContentWidth = normalizeContentWidth(
+        settings.codeContentWidth,
+        window.innerWidth,
+      );
+      settings.codeAgentWidth = normalizeAgentWidth(
+        settings.codeAgentWidth,
+        window.innerWidth,
+      );
       // Same for the two column widths of the projects view: a legacy config has
       // neither of them, so the defaults apply and hand-edited broken values
       // fall back to the defaults.
@@ -198,6 +210,13 @@ export default function App() {
       imeWarmUp();
       if (cfg?.lastVault) {
         await openVault(cfg.lastVault);
+      }
+      // The remembered code project is reopened in the background: code mode
+      // stays where it is (the app always starts on the note), but entering
+      // code mode later finds the repository ready with its tabs' file tree.
+      if (cfg?.codeProject?.path) {
+        const project = cfg.codeProject;
+        void import("@/code/commands").then((m) => m.restoreCodeProject(project.path));
       }
     })();
 
@@ -369,6 +388,8 @@ export default function App() {
     <main className="main">
       {projectsMode ? (
         <ProjectsLayout />
+      ) : codeMode ? (
+        <CodeLayout />
       ) : studyMode ? (
         <StudyLayout />
       ) : (
@@ -399,7 +420,9 @@ export default function App() {
     <div className="app">
       {sidebarOpen && vaultPath && <Sidebar />}
       {main}
-      {!vaultPath && <Welcome />}
+      {/* Code mode is independent of the vault: a repository can be worked on
+          without a notebook open, so the welcome screen must not cover it. */}
+      {!vaultPath && !codeMode && <Welcome />}
       <LinkSuggest />
       <QuickSwitcher />
       <CommandPalette />

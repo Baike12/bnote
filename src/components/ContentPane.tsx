@@ -9,7 +9,6 @@ import { resolveBoundCommand, runBoundKey } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
 import {
   pdfHistoryForVault,
-  type StudyCodeEntry,
   type StudyPdfEntry,
   type StudyUrlEntry,
   type WereadBookEntry,
@@ -36,7 +35,6 @@ import {
   type WereadRoutePayload,
 } from "@/study/weread";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { CodeProjectPane } from "@/code/components/CodeProjectPane";
 import { StudyHistoryMenu } from "./StudyHistoryMenu";
 
 /**
@@ -113,7 +111,6 @@ export function ContentPane() {
   const studyHistory = useAppStore((s) => s.studyHistory);
   const recordStudyPdf = useAppStore((s) => s.recordStudyPdf);
   const recordStudyUrl = useAppStore((s) => s.recordStudyUrl);
-  const recordStudyCode = useAppStore((s) => s.recordStudyCode);
   const recordWereadBook = useAppStore((s) => s.recordWereadBook);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const settings = useAppStore((s) => s.settings);
@@ -587,15 +584,6 @@ export function ContentPane() {
     recordWereadBook({ url: entry.url, title: entry.title });
   }
 
-  /** Reopens a code project from the history menu. */
-  function openHistoryCode(entry: StudyCodeEntry) {
-    setHistoryOpen(false);
-    setStudyContent({ kind: "code", path: entry.path, title: entry.title });
-    recordStudyCode({ path: entry.path, title: entry.title });
-    // The project itself has to be opened for real (the file tree and the language server both depend on this step).
-    void import("@/code/commands").then((m) => m.openProjectAt(entry.path));
-  }
-
   /** The shelf, the store and the reading all live behind this one entry, completed by weread's own navigation. */
   function openWereadShelf() {
     setHistoryOpen(false);
@@ -615,22 +603,6 @@ export function ContentPane() {
       if (path) await importAndOpen(path);
     } catch (e) {
       showToast(`选择文件失败: ${String(e)}`);
-    }
-  }
-
-  /**
-   * Opens a code project: native directory picker -> switch the middle
-   * column to the code view.
-   *
-   * The command module is loaded on demand (the code module carries the
-   * editor and must not slow down the first screen).
-   */
-  async function pickCodeProject() {
-    try {
-      const { openProjectDialog } = await import("@/code/commands");
-      await openProjectDialog();
-    } catch (e) {
-      showToast(`打开代码项目失败: ${String(e)}`);
     }
   }
 
@@ -666,30 +638,18 @@ export function ContentPane() {
                 : "学习模式"
           }
           initialTab={
-            content?.kind === "url"
-              ? isWereadUrl(content.url)
-                ? "weread"
-                : "url"
-              : content?.kind === "code"
-                ? "code"
-                : "pdf"
+            content?.kind === "url" ? (isWereadUrl(content.url) ? "weread" : "url") : "pdf"
           }
           pdfs={pdfs}
           urls={studyHistory.urls}
           books={studyHistory.weread}
-          codes={studyHistory.codes}
           onOpenPdf={openHistoryPdf}
           onOpenUrl={openHistoryUrl}
           onOpenBook={openHistoryBook}
-          onOpenCode={openHistoryCode}
           onOpenShelf={openWereadShelf}
           onImportPdf={() => {
             setHistoryOpen(false);
             void pickPdf();
-          }}
-          onOpenCodeProject={() => {
-            setHistoryOpen(false);
-            void pickCodeProject();
           }}
         />
         <div className="content-tool-right">
@@ -711,13 +671,6 @@ export function ContentPane() {
           >
             ＋ PDF
           </button>
-          <button
-            className="icon-btn text-tool-btn"
-            title="打开代码项目(选择文件夹)"
-            onClick={() => void pickCodeProject()}
-          >
-            ＋ 代码
-          </button>
           {content && (
             <button
               className="icon-btn"
@@ -738,9 +691,6 @@ export function ContentPane() {
             </p>
             <button className="btn content-pick" onClick={() => void pickPdf()}>
               选择 PDF 文件
-            </button>
-            <button className="btn btn-ghost content-pick" onClick={() => void pickCodeProject()}>
-              打开代码项目…
             </button>
           </div>
         )}
@@ -852,7 +802,6 @@ export function ContentPane() {
             </div>
           </div>
         )}
-        {content?.kind === "code" && <CodeProjectPane />}
       </div>
     </div>
   );

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type FocusEvent as ReactFocusEvent } from "react";
 import {
   agentApi,
+  homeApi,
   translateApi,
   type AgentConfig,
+  type AgentOutputStyle,
+  type AgentSettingsPaths,
   type SkillInfo,
   type TranslateConfig,
 } from "@/lib/tauri";
@@ -64,7 +67,8 @@ type Tab =
   | "agent-model"
   | "agent-mcp"
   | "agent-skills"
-  | "agent-instructions";
+  | "agent-instructions"
+  | "agent-settings";
 
 /** The navigation on the left is grouped by purpose (following the grouped sidebar of the ZCode settings page), rendered in SettingsModal. */
 const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
@@ -105,6 +109,7 @@ const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
       { id: "agent-mcp", label: "MCP" },
       { id: "agent-skills", label: "技能" },
       { id: "agent-instructions", label: "AGENTS.md" },
+      { id: "agent-settings", label: "Agent 设置" },
     ],
   },
 ];
@@ -176,6 +181,7 @@ export function SettingsModal() {
           {tab === "agent-mcp" && <AgentMcpTab />}
           {tab === "agent-skills" && <AgentSkillsTab />}
           {tab === "agent-instructions" && <AgentInstructionsTab />}
+          {tab === "agent-settings" && <AgentSettingsTab />}
         </div>
       </div>
     </Modal>
@@ -2040,6 +2046,247 @@ function AgentInstructionsTab() {
   );
 }
 
+
+/**
+ * Agent settings: the layers Claude Code calls `settings.json`.
+ *
+ * The output style is chosen here (a title button + popover, never a native
+ * `<select>`), and the whole user-level file can be edited as JSON — that is
+ * where permissions (allow / ask / deny), hooks, env and the extra
+ * directories live. The three consulted files are listed with their parse
+ * state so a broken file is visible instead of silently disabling rules.
+ */
+function AgentSettingsTab() {
+  const showToast = useAppStore((s) => s.showToast);
+  const vaultPath = useAppStore((s) => s.vaultPath);
+  const codeProject = useAppStore((s) => s.codeProject);
+  // Coding settings belong to the repository; without one the vault is the
+  // project (study / creative sessions).
+  const project = codeProject?.path ?? vaultPath;
+  const [paths, setPaths] = useState<AgentSettingsPaths | null>(null);
+  const [styles, setStyles] = useState<AgentOutputStyle[]>([]);
+  const [text, setText] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [styleOpen, setStyleOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  const load = () => {
+    setError(null);
+    void Promise.all([
+      homeApi.settingsPaths(project).catch(() => null),
+      homeApi.outputStyles(project).catch(() => []),
+      homeApi.readSettings().catch(() => null),
+    ]).then(([nextPaths, nextStyles, raw]) => {
+      setPaths(nextPaths);
+      setStyles(nextStyles);
+      setText(raw ?? "");
+      setDirty(false);
+      setLoaded(true);
+    });
+  };
+  useEffect(load, [project]);
+
+  // Click outside / Escape closes the style popover (same discipline as the
+  // materials menu).
+  useEffect(() => {
+    if (!styleOpen) return;
+    const onDown = (event: PointerEvent) => {
+      const root = pickerRef.current;
+      if (root && !root.contains(event.target as Node)) setStyleOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setStyleOpen(false);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [styleOpen]);
+
+  const selectedId = (() => {
+    if (!text.trim()) return "default";
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const value = parsed.outputStyle;
+      return typeof value === "string" && value.trim() ? value : "default";
+    } catch {
+      return "default";
+    }
+  })();
+  const selectedStyle =
+    styles.find((style) => style.id.toLowerCase() === selectedId.toLowerCase()) ?? null;
+
+  const applyStyle = (style: AgentOutputStyle) => {
+    setStyleOpen(false);
+    let parsed: Record<string, unknown> = {};
+    if (text.trim()) {
+      try {
+        const value = JSON.parse(text) as unknown;
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          setError("settings.json 必须是一个对象");
+          return;
+        }
+        parsed = value as Record<string, unknown>;
+      } catch (e) {
+        setError(`settings.json 不是合法 JSON:${(e as Error).message}`);
+        return;
+      }
+    }
+    parsed.outputStyle = style.id;
+    const next = `${JSON.stringify(parsed, null, 2)}\n`;
+    void homeApi
+      .writeSettings(next)
+      .then(() => {
+        setText(next);
+        setDirty(false);
+        setError(null);
+        showToast(`输出风格已切换:${style.name}`);
+        load();
+      })
+      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+  };
+
+  const save = () => {
+    setError(null);
+    try {
+      const parsed = JSON.parse(text || "{}") as unknown;
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        setError("settings.json 必须是一个对象");
+        return;
+      }
+    } catch (e) {
+      setError(`JSON 解析失败:${(e as Error).message}`);
+      return;
+    }
+    void homeApi
+      .writeSettings(text)
+      .then(() => {
+        setDirty(false);
+        useAppStore.getState().bumpAgentConfigVersion();
+        showToast("Agent 设置已保存;下一轮请求生效");
+        load();
+      })
+      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+  };
+
+  return (
+    <div className="settings-section">
+      <SettingsCard
+        title="输出风格"
+        desc="写进 ~/.bnote/settings.json 的 outputStyle。风格只改变「怎么回答」,工作规则与权限不变;带 keep-coding-instructions: false 的自定义风格会替换编码指令层。"
+      >
+        <div className="settings-block">
+          <div className="study-history" ref={pickerRef}>
+            <button
+              className={`content-title-btn${styleOpen ? " open" : ""}`}
+              title="选择输出风格"
+              aria-expanded={styleOpen}
+              onClick={() => setStyleOpen(!styleOpen)}
+            >
+              <span className="content-title">{selectedStyle?.name ?? selectedId}</span>
+              <span className="content-history-caret">▾</span>
+            </button>
+            {styleOpen && (
+              <div className="study-history-pop" role="dialog" aria-label="输出风格">
+                <div className="study-history-list">
+                  {styles.map((style) => (
+                    <button
+                      key={style.id}
+                      className="study-history-item"
+                      onClick={() => applyStyle(style)}
+                      title={style.description || style.id}
+                    >
+                      <span className="study-history-title">
+                        {style.name}
+                        {style.id === selectedId ? "  ✓" : ""}
+                      </span>
+                      <span className="study-history-sub">
+                        {style.source === "builtin"
+                          ? "内置"
+                          : style.source === "user"
+                            ? "用户"
+                            : "项目"}
+                        {style.description ? ` · ${style.description}` : ""}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="settings-desc">
+            自定义风格放在 <code>~/.bnote/output-styles/&lt;id&gt;.md</code> 或{" "}
+            <code>&lt;项目&gt;/.bnote/output-styles/&lt;id&gt;.md</code>。
+          </div>
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        title="settings.json(权限 / hooks / 环境)"
+        desc="用户级设置。项目级会用同目录的 settings.json 与 settings.local.json 覆盖;数组拼接去重,标量后者胜出。"
+      >
+        <div className="settings-block">
+          <CodeArea
+            value={text}
+            onChange={(next) => {
+              setText(next);
+              setDirty(true);
+              setError(null);
+            }}
+            height="30vh"
+            searchPlaceholder="搜索键名"
+          />
+          {error ? (
+            <div className="settings-error">{error}</div>
+          ) : (
+            <div className="settings-desc">
+              {loaded ? "保存前校验 JSON;权限示例:" : "加载中…"}{" "}
+              <code>{'{"permissions":{"deny":["Bash(git push:*)"]}}'}</code>
+            </div>
+          )}
+          <div className="settings-actions">
+            <button className="btn primary" disabled={!dirty || !loaded} onClick={save}>
+              保存并应用
+            </button>
+            <button className="btn btn-ghost" disabled={!loaded} onClick={load}>
+              重新载入
+            </button>
+          </div>
+        </div>
+      </SettingsCard>
+
+      <SettingsCard title="设置文件" desc="按顺序合并,后者覆盖前者;解析失败的文件会被跳过并在这里标出。">
+        <div className="settings-block">
+          {paths ? (
+            <ul className="settings-path-list">
+              {paths.files.map((file) => (
+                <li key={file.path} className="settings-path-item">
+                  <code>{file.path}</code>
+                  <span className="settings-path-state">
+                    {file.error
+                      ? `解析失败:${file.error}`
+                      : file.exists
+                        ? "已存在"
+                        : "未创建"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="settings-desc">读取失败</div>
+          )}
+          <div className="settings-desc">
+            Agent 家目录:<code>{paths?.home ?? "~/.bnote"}</code>(会话记录、tasks、plans、记忆、技能与输出风格都在这里)
+          </div>
+        </div>
+      </SettingsCard>
+    </div>
+  );
+}
 
 /**
  * The global configuration of the language servers.

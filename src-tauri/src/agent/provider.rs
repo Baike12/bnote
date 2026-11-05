@@ -492,12 +492,25 @@ impl Provider {
         }
         if !system.is_empty() {
             // Block array (not a bare string) so the system prompt carries its own
-            // cache breakpoint.
-            body["system"] = json!([{
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }]);
+            // cache breakpoint. The static prefix and the per-session tail are
+            // separate blocks: editing the tail (environment, git status) must
+            // not invalidate the cached prefix (CC's dynamic boundary).
+            let (static_part, dynamic_part) = super::prompt::split_cache(system);
+            let mut blocks = Vec::new();
+            if !static_part.trim().is_empty() {
+                blocks.push(json!({
+                    "type": "text",
+                    "text": static_part.trim(),
+                    "cache_control": {"type": "ephemeral"},
+                }));
+            }
+            if !dynamic_part.trim().is_empty() {
+                blocks.push(json!({
+                    "type": "text",
+                    "text": dynamic_part.trim(),
+                }));
+            }
+            body["system"] = json!(blocks);
         }
 
         let url = format!("{}/v1/messages", self.base_url);
@@ -637,7 +650,15 @@ impl Provider {
         sink: &(dyn Fn(AgentEvent) + Send + Sync),
         opts: &TurnOptions,
     ) -> Result<TurnResult, String> {
-        let messages: Vec<Value> = openai_messages(system, items);
+        // OpenAI has a single system message: drop the cache boundary marker and
+        // join the two halves with a blank line.
+        let (static_part, dynamic_part) = super::prompt::split_cache(system);
+        let system = match (static_part.trim(), dynamic_part.trim()) {
+            (_, "") => static_part.to_string(),
+            ("", tail) => tail.to_string(),
+            (head, tail) => format!("{}\n\n{}", head, tail),
+        };
+        let messages: Vec<Value> = openai_messages(&system, items);
         let tools_json: Vec<Value> = tools
             .iter()
             .map(|t| {

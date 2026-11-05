@@ -37,8 +37,6 @@ const REGISTRY_FILE: &str = "index.json";
 const KIND_PDF: &str = "pdfs";
 const KIND_WEB: &str = "webpages";
 const KIND_WEREAD: &str = "wxreads";
-/// Code projects: sessions and annotations are archived per project.
-const KIND_CODE: &str = "codes";
 /// Directory name cap: an APFS path component holds 255 bytes, and the file
 /// name nested inside the directory (e.g. `annotations.json`) has to fit too.
 const MAX_SLUG_CHARS: usize = 60;
@@ -103,9 +101,6 @@ fn identity(study: &StudyContent, vault: &Path) -> String {
             format!("pdf:{}", rel.to_string_lossy().replace('\\', "/"))
         }
         StudyContent::Url { url, .. } => format!("url:{}", url.trim_end_matches('/')),
-        // Code projects live outside the vault (that is the normal case), so
-        // the identity is the absolute path.
-        StudyContent::Code { path, .. } => format!("code:{}", path.trim_end_matches('/')),
     }
 }
 
@@ -195,16 +190,6 @@ fn desired_slug(study: &StudyContent) -> String {
             } else {
                 url_slug(url)
             }
-        }
-        // Code projects: the project directory name, or the last path segment
-        // when there is none.
-        StudyContent::Code { path, title } => {
-            let stem = Path::new(path)
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let name = if title.trim().is_empty() { stem } else { title.clone() };
-            pinyin_slug(&name)
         }
     }
 }
@@ -443,7 +428,6 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
                 KIND_WEB
             }
         }
-        StudyContent::Code { .. } => KIND_CODE,
     };
     let key = identity(study, vault);
     let registry_path = vault.join(".bnote").join(MATERIALS_DIR).join(REGISTRY_FILE);
@@ -456,9 +440,7 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
             // created, so backfill it into the registry (the directory name
             // never changes).
             let title = match study {
-                StudyContent::Pdf { title, .. }
-                | StudyContent::Url { title, .. }
-                | StudyContent::Code { title, .. } => title.clone(),
+                StudyContent::Pdf { title, .. } | StudyContent::Url { title, .. } => title.clone(),
             };
             if !title.trim().is_empty() && e.title != title {
                 e.title = title;
@@ -469,9 +451,7 @@ fn ensure_material_sync(vault: &Path, study: &StudyContent) -> Result<MaterialIn
         }
         None => {
             let title = match study {
-                StudyContent::Pdf { title, .. }
-                | StudyContent::Url { title, .. }
-                | StudyContent::Code { title, .. } => title.clone(),
+                StudyContent::Pdf { title, .. } | StudyContent::Url { title, .. } => title.clone(),
             };
             let base = desired_slug(study);
             let dir = unique_dir(&registry, kind, &key, &base);
@@ -639,7 +619,7 @@ fn read_head_tail(path: &Path, head_len: usize, tail_len: usize) -> Option<(Stri
     ))
 }
 
-fn summarize_session(path: &Path) -> Option<SessionMeta> {
+pub(crate) fn summarize_session(path: &Path) -> Option<SessionMeta> {
     let bytes = std::fs::metadata(path).ok()?.len();
     if bytes == 0 {
         return None;
@@ -766,7 +746,7 @@ pub async fn study_sessions_list(
 /// 16KB of the file, so a title moved further down would be invisible. For
 /// legacy records whose first line is not a meta line (no metadata line at
 /// all), one is prepended.
-fn retitle_transcript(raw: &str, title: &str) -> String {
+pub(crate) fn retitle_transcript(raw: &str, title: &str) -> String {
     let (first, rest) = match raw.split_once('\n') {
         Some((head, tail)) => (head, tail),
         None => (raw, ""),

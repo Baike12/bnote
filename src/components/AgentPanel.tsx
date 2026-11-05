@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  api,
   agentApi,
+  homeApi,
   type AgentChatItem,
   type AgentEvent,
   type AgentTodoItem,
@@ -18,6 +18,12 @@ import { isImeEnter } from "@/lib/imeEnter";
 import { forkLabel } from "@/study/agentFork";
 import { DEFAULT_AGENT_FONT, stepAgentFont } from "@/study/agentFont";
 import { ensureMaterial, sessionFilePath } from "@/study/materials";
+import { transcriptIO } from "@/study/transcriptIO";
+import {
+  codeSessionIdentity,
+  codeSessionPath,
+  type CodeSessionScope,
+} from "@/code/sessionScope";
 import { cleanGeneratedTitle, displayTitle } from "@/study/sessionTitle";
 import { resolveFamily, type SessionNode } from "@/study/sessionTree";
 import {
@@ -134,6 +140,8 @@ interface Conv {
   transcriptPath: string | null;
   /** The session id in the file name (the history drawer highlights the current entry with it). */
   sessionFileId: string | null;
+  /** The transcript lives in the agent home (`~/.bnote`) instead of the vault (coding sessions). */
+  transcriptHome?: boolean;
   /** The model config snapshot of this session at the moment it started: later setting changes do not affect it, and the restore continues with it. */
   model: SessionModelConfig | null;
   /** The token usage of the last model request (the context usage = input + output). */
@@ -144,7 +152,6 @@ interface Conv {
 function studyContentKey(content: StudyContent | null): string {
   if (!content) return "none";
   if (content.kind === "pdf") return `pdf:${content.path}`;
-  if (content.kind === "code") return `code:${content.path}`;
   return `url:${content.url}`;
 }
 
@@ -374,13 +381,14 @@ function fitInputHeight(el: HTMLTextAreaElement): void {
  */
 /** The three permission modes of the composer (ZCode's selector shape). */
 const PERMISSION_MODES: {
-  id: "confirm" | "auto" | "full";
+  id: "confirm" | "auto" | "full" | "plan";
   label: string;
   description: string;
 }[] = [
   { id: "confirm", label: "变更前确认", description: "改文件、跑命令前先问我。" },
   { id: "auto", label: "自主模式", description: "在有风险时询问。" },
   { id: "full", label: "完全访问", description: "减少确认次数。" },
+  { id: "plan", label: "计划模式", description: "只读调研;计划经你批准后才开始改文件。" },
 ];
 
 function ShieldIcon() {
@@ -447,6 +455,8 @@ function prettyJson(value: unknown): string {
 
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
+  const codeMode = useAppStore((s) => s.codeMode);
+  const codeProject = useAppStore((s) => s.codeProject);
   const creativeMode = useAppStore((s) => s.creativeMode);
   const setCreativeMode = useAppStore((s) => s.setCreativeMode);
   const flatFiles = useAppStore((s) => s.flatFiles);
@@ -461,6 +471,12 @@ export function AgentPanel() {
   /** The conversation font scale: it is written to the --agent-fs of the panel root, and both the body text and the derived sizes in the CSS multiply it. */
   const agentFontScale = useAppStore((s) => s.settings.agentFontScale);
   const permissionMode = useAppStore((s) => s.settings.agentPermissionMode);
+  /**
+   * The session entered plan mode through EnterPlanMode. This is session
+   * state, not the composer preference: the composer mode is what the next
+   * session starts with, and the agent must not change the user's default.
+   */
+  const [planActive, setPlanActive] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
   const modeRef = useRef<HTMLDivElement | null>(null);
   const [convs, setConvs] = useState<Conv[]>([]);
@@ -497,7 +513,8 @@ export function AgentPanel() {
   const [restartNonce, setRestartNonce] = useState(0);
   /** The output directory of this material (annotations + session records) and the list of the saved sessions. */
   const studyWereadBook = useAppStore((s) => s.studyWereadBook);
-  const [materialInfo, setMaterialInfo] = useState<MaterialInfo | null>(null);
+  /** The heading of the history drawer: which material / project these sessions belong to. */
+  const [scopeLabel, setScopeLabel] = useState<{ title: string; detail: string } | null>(null);
   const [savedSessions, setSavedSessions] = useState<SavedSessionMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   /** A tool marked `ask` is waiting for approval. */
@@ -544,12 +561,21 @@ export function AgentPanel() {
   /** agentPanelCommand is an increasing counter: only the entry that is newer than the last one is executed. */
   const lastAgentCommandSeq = useRef(0);
   const materialRef = useRef<{ identity: string; info: MaterialInfo | null } | null>(null);
+  /**
+   * The coding session scope: its transcript lives in the agent home
+   * (`~/.bnote/projects/<project>/`), not in the vault. The identity is
+   * `code:<project root>` so switching projects switches the session family
+   * while a restart within one project restores the previous one.
+   */
+  const codeScopeRef = useRef<CodeSessionScope | null>(null);
   /** convKey -> the session record file. It is written when the start succeeded or the session was restored and appended after every turn. */
   const transcriptRef = useRef<Map<string, string>>(new Map());
   /** sessionId -> { convKey, record file }: the closing events of a session that was switched away still have to be written to disk. */
-  const sessionIndexRef = useRef<Map<string, { convKey: string; path: string | null }>>(
-    new Map(),
-  );
+  const sessionIndexRef = useRef<
+    Map<string, { convKey: string; path: string | null; home: boolean }>
+  >(new Map());
+  /** convKey -> whether the record lives in the agent home (coding sessions). Read by persistTurn, which may run after the conv left the list. */
+  const transcriptHomeRef = useRef<Map<string, boolean>>(new Map());
   /** convKey -> whether the metadata line (title + model snapshot) was already written. It is written once per session and always at the very front of the file. */
   const metaWrittenRef = useRef<Map<string, boolean>>(new Map());
   /** convKey -> the model config snapshot of the session (used to write the metadata line; it also has to be available for the closing turn of a session that was switched away). */
@@ -564,19 +590,23 @@ export function AgentPanel() {
     creativeModeRef.current = creativeMode;
   }, [creativeMode]);
   /**
-   * Which agent definition the session runs with: creative mode wins, a code
-   * project in the middle column gets the coding agent, everything else is
-   * the study assistant. Kept in a ref so startSession (a long-lived
-   * callback) sees the current shape without re-creating it.
+   * Which agent definition the session runs with: code mode gets the coding
+   * agent, creative mode wins inside study mode, everything else is the study
+   * assistant. Kept in a ref so startSession (a long-lived callback) sees the
+   * current shape without re-creating it.
    */
   const agentModeRef = useRef<"study" | "creative" | "coding">("study");
   useEffect(() => {
-    agentModeRef.current = creativeMode
-      ? "creative"
-      : studyContent?.kind === "code"
-        ? "coding"
-        : "study";
-  }, [creativeMode, studyContent]);
+    agentModeRef.current = codeMode ? "coding" : creativeMode ? "creative" : "study";
+  }, [codeMode, creativeMode]);
+  /**
+   * Prompt history (↑ / ↓ recall): the entries come from
+   * `~/.bnote/history.jsonl`, filtered to the current project, and are fetched
+   * lazily on the first ↑ inside an empty box.
+   */
+  const historyItemsRef = useRef<string[] | null>(null);
+  const historyIndexRef = useRef(-1);
+  const historyLoadingRef = useRef(false);
   /** The completion state of the input box: the skills, the @ file trigger and the selected index. */
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [suggestTrigger, setSuggestTrigger] = useState<SuggestTrigger | null>(null);
@@ -662,6 +692,13 @@ export function AgentPanel() {
 
   /** Fetch the session list of this material again (the history drawer + the restore of the most recent one). */
   const refreshSessions = useCallback(async (): Promise<SavedSessionMeta[]> => {
+    const code = codeScopeRef.current;
+    if (code) {
+      const list = await homeApi.sessionsList(code.workdir).catch(() => []);
+      if (codeScopeRef.current !== code) return list;
+      setSavedSessions(list);
+      return list;
+    }
     const material = materialRef.current;
     if (!material?.info) {
       setSavedSessions([]);
@@ -683,6 +720,8 @@ export function AgentPanel() {
         history?: AgentChatItem[];
         /** Restore: keep writing to this file; without it a new file is created for a new session. */
         transcriptPath?: string | null;
+        /** The record lives in the agent home (`~/.bnote`) instead of the vault. */
+        transcriptHome?: boolean;
         /** Fork: the prefix of the parent session is written into the new file first. */
         seedLines?: TranscriptLine[];
         /** Fork: the parent relation written into the metadata line (the restore after a restart rebuilds the session family from it). */
@@ -695,33 +734,46 @@ export function AgentPanel() {
         };
         /** Restore/fork: reuse the model config of the source session; without it the current config of the settings is used. */
         model?: SessionModelConfig;
+        /** Restore: the session record id, so the persisted task list continues. */
+        taskListId?: string;
       },
     ) => {
       const token = ++startTokenRef.current;
       setStarting(true);
       updateConv(convKey, (c) => ({ ...c, error: undefined, errorKind: undefined }));
       try {
+        const mode = agentModeRef.current;
         const info = await agentApi.startSession(
           content,
           undefined,
           opts?.history,
           opts?.model,
-          agentModeRef.current === "study" ? undefined : agentModeRef.current,
+          mode === "study" ? undefined : mode,
+          // A coding session anchors relative paths and bash in the repository.
+          mode === "coding" ? codeScopeRef.current?.workdir : undefined,
+          opts?.taskListId,
         );
         // Dropped when it expired: the content changed in the meantime (a new material / a new session), a new start has taken over.
         if (startTokenRef.current !== token) return;
-        // The path of the session record: a restore keeps the old file, a new session uses "the material directory + the session id of the backend"; creative mode is fixed at .bnote/creative/sessions/, so it never mixes with the sessions of a material.
+        // The path of the session record: a restore keeps the old file, a new session uses "the scope directory + the session id of the backend". Creative mode is fixed at .bnote/creative/sessions/, so it never mixes with the sessions of a material. A coding session writes into the agent home instead (the repository is not the notebook).
+        const home = opts?.transcriptHome ?? false;
         const vault = useAppStore.getState().vaultPath;
         const relDir = creativeModeRef.current
           ? "creative"
           : (materialRef.current?.info?.relDir ?? null);
+        const homeDir = codeScopeRef.current?.homeDir ?? null;
         const transcriptPath =
           opts?.transcriptPath ??
-          (vault && relDir ? sessionFilePath(vault, relDir, info.sessionId) : null);
+          (home
+            ? codeSessionPath(homeDir, info.sessionId)
+            : vault && relDir
+              ? sessionFilePath(vault, relDir, info.sessionId)
+              : null);
         const fileName = transcriptPath?.split("/").pop() ?? null;
         const sessionFileId = fileName ? fileName.replace(/\.jsonl$/, "") : null;
         if (transcriptPath) transcriptRef.current.set(convKey, transcriptPath);
-        sessionIndexRef.current.set(info.sessionId, { convKey, path: transcriptPath });
+        transcriptHomeRef.current.set(convKey, home);
+        sessionIndexRef.current.set(info.sessionId, { convKey, path: transcriptPath, home });
         const model = info.model ?? opts?.model ?? null;
         modelByConvRef.current.set(convKey, model);
         if (transcriptPath && opts?.seedLines && opts.seedLines.length > 0) {
@@ -735,8 +787,8 @@ export function AgentPanel() {
             basedOn: opts.forkMeta?.basedOn,
             forkAt: opts.forkMeta?.forkAt,
           });
-          await api
-            .writeFile(transcriptPath, serializeTranscript([meta, ...opts.seedLines]))
+          await transcriptIO(home)
+            .write(transcriptPath, serializeTranscript([meta, ...opts.seedLines]))
             .catch((e) => console.warn("[agent] failed to write the fork prefix", e));
           metaWrittenRef.current.set(convKey, true);
         } else {
@@ -753,6 +805,7 @@ export function AgentPanel() {
                   mcpErrors: info.mcpErrors,
                   transcriptPath,
                   sessionFileId,
+                  transcriptHome: home,
                   model,
                 }
               : c,
@@ -785,7 +838,9 @@ export function AgentPanel() {
     async (conv: Conv, token: number) => {
       const path = conv.transcriptPath;
       if (!path) return;
-      const raw = await api.readFile(path).catch(() => null);
+      const raw = await transcriptIO(conv.transcriptHome === true)
+        .read(path)
+        .catch(() => null);
       if (restoreTokenRef.current !== token) return;
       const lines = parseTranscript(raw);
       if (lines.length === 0) {
@@ -809,7 +864,9 @@ export function AgentPanel() {
       void startSession(conv.key, materialContent, {
         history: historyFromTranscript(lines),
         transcriptPath: path,
+        transcriptHome: conv.transcriptHome === true,
         model: sessionMeta?.model,
+        taskListId: conv.sessionFileId ?? undefined,
       });
     },
     [materialContent, showToast, startSession, updateConv],
@@ -829,8 +886,13 @@ export function AgentPanel() {
   const restoreFamily = useCallback(
     async (anchorId: string, sessions: SavedSessionMeta[], activate: "root" | "anchor") => {
       const info = materialRef.current?.info;
+      const code = codeScopeRef.current;
       const vault = useAppStore.getState().vaultPath;
-      if (!info || !vault) return;
+      const recordPath = (id: string): string | null => {
+        if (code) return codeSessionPath(code.homeDir, id);
+        return info && vault ? sessionFilePath(vault, info.relDir, id) : null;
+      };
+      if (!code && (!info || !vault)) return;
       const family = resolveFamily(anchorId, sessions.map(toSessionNode));
       if (!family) return;
       const token = ++restoreTokenRef.current;
@@ -847,7 +909,7 @@ export function AgentPanel() {
         forkAt: member.forkAt,
         titleSource: "first-message",
         mcpErrors: [],
-        transcriptPath: sessionFilePath(vault, info.relDir, member.id),
+        transcriptPath: recordPath(member.id),
         sessionFileId: member.id,
         model: null,
         usage: null,
@@ -909,6 +971,7 @@ export function AgentPanel() {
       if (!conv || conv.titleSource === "llm") return;
       titleAskedRef.current.add(convKey);
       const relDir = materialRef.current?.info?.relDir;
+      const codeWorkdir = codeScopeRef.current?.workdir;
       void agentApi
         .generateTitle(seed, conv.model ?? undefined)
         .then((raw) => {
@@ -916,12 +979,14 @@ export function AgentPanel() {
           if (!clean) return;
           const label = displayTitle(clean, conv.parent !== null);
           updateConv(convKey, (c) => ({ ...c, label, titleSource: "llm" }));
-          if (relDir && conv.sessionFileId) {
-            void agentApi
-              .setSessionTitle(relDir, conv.sessionFileId, label)
-              .then(() => refreshSessions())
-              .catch(() => {});
-          }
+          const id = conv.sessionFileId;
+          if (!id) return;
+          const write = codeWorkdir
+            ? homeApi.setSessionTitle(codeWorkdir, id, label)
+            : relDir
+              ? agentApi.setSessionTitle(relDir, id, label)
+              : null;
+          if (write) void write.then(() => refreshSessions()).catch(() => {});
         })
         .catch(() => {
           // No key / network failure / the model refused: keep the local fallback title and do not bother the user.
@@ -929,17 +994,22 @@ export function AgentPanel() {
     },
     [refreshSessions, updateConv],
   );
-  // - Switching the material: restore the most recent session of this material (only when there is none a new one is opened);
+  // - Switching the scope (material / code project): restore the most recent session of that scope (only when there is none a new one is opened);
   // - Clicking ⟳ / ＋ new session: force a new session (the old one stays in the history, the config is the current one from the settings);
   // - Saving the settings: nothing happens — the sessions that are already open keep using their own model config snapshot.
-  // - Leaving and re-entering study mode: the panel is mounted again and restores per material.
+  // - Leaving and re-entering study / code mode: the panel is mounted again and restores per scope.
   useEffect(() => {
-    const identity = creativeMode
-      ? `creative|${restartNonce}`
-      : studyContentKey(materialContent);
-    const key = `${creativeMode ? "c" : "s"}|${identity}|${restartNonce}`;
+    const identity = codeMode
+      ? codeSessionIdentity(codeProject?.path ?? null)
+      : creativeMode
+        ? `creative|${restartNonce}`
+        : studyContentKey(materialContent);
+    const key = `${codeMode ? "d" : creativeMode ? "c" : "s"}|${identity}|${restartNonce}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
+    // A new scope starts outside plan mode (the plan belonged to the previous
+    // conversation's session).
+    setPlanActive(false);
 
     const forcedNew =
       restartKeyRef.current !== null && restartKeyRef.current !== restartNonce;
@@ -949,6 +1019,56 @@ export function AgentPanel() {
     void (async () => {
       const vault = useAppStore.getState().vaultPath;
       let info: MaterialInfo | null = null;
+      if (codeMode) {
+        // A coding session belongs to the repository: its records live in the
+        // agent home (`~/.bnote/projects/<project>/`), never in the vault.
+        materialRef.current = null;
+        codeScopeRef.current = null;
+        setSavedSessions([]);
+        if (!codeProject) {
+          setScopeLabel(null);
+          setConvs([]);
+          setActiveKey(null);
+          return;
+        }
+        const workspace = await homeApi.workspace(codeProject.path).catch(() => null);
+        if (startTokenRef.current !== token) return;
+        codeScopeRef.current = workspace
+          ? { identity, workdir: codeProject.path, homeDir: workspace.dir }
+          : null;
+        setScopeLabel({ title: codeProject.title, detail: codeProject.path });
+        const sessions = workspace
+          ? await homeApi.sessionsList(codeProject.path).catch(() => [])
+          : [];
+        if (startTokenRef.current !== token) return;
+        setSavedSessions(sessions);
+        if (!forcedNew && sessions.length > 0) {
+          await restoreFamily(sessions[0].id, sessions, "root");
+          return;
+        }
+        const conv: Conv = {
+          key: nextConvKey(),
+          sessionId: null,
+          entries: [],
+          label: "主会话",
+          parent: null,
+          basedOn: "",
+          forkAt: 0,
+          titleSource: "first-message",
+          mcpErrors: [],
+          transcriptPath: null,
+          sessionFileId: null,
+          model: null,
+          usage: null,
+          todos: [],
+        };
+        setConvs([conv]);
+        setActiveKey(conv.key);
+        turnsRef.current.clear();
+        void startSession(conv.key, null);
+        return;
+      }
+      codeScopeRef.current = null;
       if (creativeMode) {
         // Creative mode has no material directory: its sessions all land in .bnote/creative/sessions/.
         info = { kind: "pdfs", dir: "creative", relDir: "creative", title: "创作模式" };
@@ -957,7 +1077,7 @@ export function AgentPanel() {
       }
       if (startTokenRef.current !== token) return;
       materialRef.current = { identity, info };
-      setMaterialInfo(info);
+      setScopeLabel(info ? { title: info.title, detail: info.relDir } : null);
       const sessions = info
         ? await agentApi.sessionsList(info.relDir).catch(() => [])
         : [];
@@ -990,7 +1110,7 @@ export function AgentPanel() {
       turnsRef.current.clear();
       void startSession(conv.key, materialContent);
     })();
-  }, [materialContent, creativeMode, restartNonce, startSession, restoreFamily]);
+  }, [materialContent, creativeMode, codeMode, codeProject, restartNonce, startSession, restoreFamily]);
 
   // ⌘⇧Y / the command: switch back and forth between the main session and the most recent auxiliary session.
   useEffect(() => {
@@ -1015,6 +1135,24 @@ export function AgentPanel() {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     });
   }, [activeKey]);
+
+  /** Moves through the fetched prompt history (index -1 = the empty box). */
+  function stepHistory(direction: 1 | -1) {
+    const items = historyItemsRef.current;
+    if (!items || items.length === 0) return;
+    const next = historyIndexRef.current + direction;
+    if (next < 0) {
+      historyIndexRef.current = -1;
+      setInput("");
+      return;
+    }
+    if (next >= items.length) {
+      historyIndexRef.current = items.length - 1;
+      return;
+    }
+    historyIndexRef.current = next;
+    setInput(items[next]);
+  }
 
   function ensureTurn(convKey: string): Turn {
     let turn = turnsRef.current.get(convKey);
@@ -1096,8 +1234,8 @@ export function AgentPanel() {
       first: firstWrite,
       model: modelByConvRef.current.get(convKey) ?? null,
     });
-    void api
-      .appendFile(path, serializeTranscript(lines))
+    void transcriptIO(transcriptHomeRef.current.get(convKey) === true)
+      .append(path, serializeTranscript(lines))
       .then(() => refreshSessions())
       .catch((e) => console.warn("[agent] failed to write the session record", e));
   }
@@ -1203,6 +1341,24 @@ export function AgentPanel() {
         });
         break;
       }
+      case "plan_mode": {
+        setPlanActive(event.enabled);
+        updateConv(conv.key, (c) => ({
+          ...c,
+          entries: [
+            ...c.entries,
+            {
+              role: "notice",
+              text: event.enabled
+                ? "已进入计划模式:先只读调研,计划批准后才改文件"
+                : "计划已批准,恢复编辑",
+              at: Date.now(),
+              items: null,
+            },
+          ],
+        }));
+        break;
+      }
       case "tasks": {
         // The v2 task list has no dedicated panel: the tool cards already show
         // every change, and the list itself lives in the model's context.
@@ -1294,11 +1450,18 @@ export function AgentPanel() {
 
   useEffect(() => {
     let off: (() => void) | undefined;
-    void listen<{ sessionId: string; event: AgentEvent }>("agent-event", (event) => {
-      handleAgentEvent(event.payload.sessionId, event.payload.event);
-    }).then((un) => {
-      off = un;
-    });
+    // Wrapped in try/catch: the browser harness has no Tauri event bridge and
+    // `listen` throws synchronously there (a rejected promise would not catch
+    // that), while the panel itself still renders.
+    void (async () => {
+      try {
+        off = await listen<{ sessionId: string; event: AgentEvent }>("agent-event", (event) => {
+          handleAgentEvent(event.payload.sessionId, event.payload.event);
+        });
+      } catch {
+        // No stream events in this environment.
+      }
+    })();
     return () => off?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1340,6 +1503,9 @@ export function AgentPanel() {
   async function send() {
     const text = input.trim();
     const conv = activeConv;
+    // The next ↑ refetches: this prompt is about to enter the history file.
+    historyIndexRef.current = -1;
+    historyItemsRef.current = null;
     if (!conv || (!text && pendingImages.length === 0)) return;
     // Manual compaction: a built-in panel command, not a message — the model
     // never sees "/compact", it sees the summary replace its history.
@@ -1666,17 +1832,21 @@ export function AgentPanel() {
               </svg>
             </div>
             <p className="agent-welcome-title">
-              {creativeMode
-                ? "创作模式:生成 HTML 会在中栏实时预览"
-                : studyContent?.kind === "code"
-                  ? "编码模式:我直接读写当前代码项目并运行命令"
+              {codeMode
+                ? codeProject
+                  ? "编码模式:我直接读写当前代码仓库并运行命令"
+                  : "先在中栏打开一个代码项目"
+                : creativeMode
+                  ? "创作模式:生成 HTML 会在中栏实时预览"
                   : "问我关于当前 PDF / 网页的问题"}
             </p>
             <p className="agent-hint">
-              {creativeMode
-                ? "输入 / 调用技能、@ 引用仓库文件;满意后点中栏的「发布」推到 bblog"
-                : studyContent?.kind === "code"
+              {codeMode
+                ? codeProject
                   ? "开工前列 todo(/compact 可手动压缩上下文);悬停消息点「⤷」可分叉"
+                  : "项目目录就是我的工作区,会话记录存放在 ~/.bnote"
+                : creativeMode
+                  ? "输入 / 调用技能、@ 引用仓库文件;满意后点中栏的「发布」推到 bblog"
                   : "悬停任意消息点「⤷」,可以从那里分叉一条辅助会话"}
             </p>
           </div>
@@ -1821,10 +1991,10 @@ export function AgentPanel() {
           ref={inputRef}
           className="agent-input"
           placeholder={
-            creativeMode
-              ? "描述要创作的内容…(输入 / 调技能、@ 引用文件,可粘贴截图)"
-              : studyContent?.kind === "code"
-                ? "描述要改什么…(bash/编辑/测试;/compact 压缩上下文)"
+            codeMode
+              ? "描述要改什么…(bash/编辑/测试;/compact 压缩上下文)"
+              : creativeMode
+                ? "描述要创作的内容…(输入 / 调技能、@ 引用文件,可粘贴截图)"
                 : "询问当前内容…(可直接粘贴截图)"
           }
           value={input}
@@ -1885,6 +2055,42 @@ export function AgentPanel() {
                 return;
               }
             }
+            // ↑ in an empty box (or at the very start) recalls the previous
+            // prompt; ↓ walks forward and past the newest one clears the box.
+            if (e.key === "ArrowUp" && !suggestTrigger && input === "") {
+              e.preventDefault();
+              if (historyItemsRef.current) {
+                stepHistory(-1);
+                return;
+              }
+              if (historyLoadingRef.current) return;
+              historyLoadingRef.current = true;
+              const project = codeScopeRef.current?.workdir ?? vaultPath ?? null;
+              void homeApi
+                .history(project, 50)
+                .then((list) => {
+                  historyItemsRef.current = list
+                    .map((entry) => entry.display)
+                    .filter((text) => text.trim() !== "");
+                  historyIndexRef.current = -1;
+                  historyLoadingRef.current = false;
+                  stepHistory(-1);
+                })
+                .catch(() => {
+                  // No backend (harness) or no history yet: the box stays empty.
+                  historyLoadingRef.current = false;
+                });
+              return;
+            }
+            if (
+              e.key === "ArrowDown" &&
+              !suggestTrigger &&
+              historyIndexRef.current >= 0
+            ) {
+              e.preventDefault();
+              stepHistory(1);
+              return;
+            }
             if (e.key !== "Enter" || e.shiftKey) return;
             // The confirmation key of the IME (Enter after typing latin letters in the Chinese mode) must not be a send: it is let through so that the IME fills the letters into the input box.
             if (isImeEnter(e.nativeEvent, composingRef.current)) return;
@@ -1922,7 +2128,9 @@ export function AgentPanel() {
               title={PERMISSION_MODES.find((m) => m.id === permissionMode)?.description}
             >
               <ShieldIcon />
-              {PERMISSION_MODES.find((m) => m.id === permissionMode)?.label}
+              {planActive
+                ? "计划模式"
+                : PERMISSION_MODES.find((m) => m.id === permissionMode)?.label}
             </button>
             {modeOpen && (
               <div className="agent-mode-pop" role="menu">
@@ -1996,10 +2204,16 @@ export function AgentPanel() {
         <div className="agent-approval" role="dialog" aria-label="工具授权">
           <div className="agent-approval-card">
             <div className="agent-approval-head">
-              <span className="agent-approval-title">需要授权</span>
+              <span className="agent-approval-title">
+                {approval.tool === "ExitPlanMode" ? "计划待批准" : "需要授权"}
+              </span>
               <code className="agent-approval-tool">{approval.tool}</code>
             </div>
-            <pre className="agent-approval-input">{prettyJson(approval.input)}</pre>
+            <pre className="agent-approval-input">
+              {approval.tool === "ExitPlanMode"
+                ? String((approval.input as { plan?: string } | null)?.plan ?? "")
+                : prettyJson(approval.input)}
+            </pre>
             <input
               className="agent-approval-feedback"
               placeholder="拒绝原因(可选,会告诉模型)"
@@ -2114,8 +2328,8 @@ export function AgentPanel() {
           <div className="agent-history-head">
             <div className="agent-history-heading">
               <span className="agent-history-heading-title">历史会话</span>
-              <span className="agent-history-heading-sub" title={materialInfo?.relDir}>
-                {materialInfo?.title || "本材料"}
+              <span className="agent-history-heading-sub" title={scopeLabel?.detail}>
+                {scopeLabel?.title || "本材料"}
               </span>
             </div>
             <button
@@ -2137,7 +2351,9 @@ export function AgentPanel() {
             ＋ 新会话
           </button>
           {savedSessions.length === 0 ? (
-            <p className="agent-history-empty">这份材料还没有保存过会话</p>
+            <p className="agent-history-empty">
+              {codeMode ? "这个项目还没有保存过会话" : "这份材料还没有保存过会话"}
+            </p>
           ) : (
             <ul className="agent-history-list">
               {savedSessions.map((s) => (

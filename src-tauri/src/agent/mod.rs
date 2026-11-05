@@ -3,7 +3,11 @@
 
 pub mod cancel;
 pub mod defs;
+pub mod home;
+pub mod hooks;
+pub mod instructions;
 pub mod mcp;
+pub mod output_style;
 pub mod permissions;
 pub mod prompt;
 pub mod provider;
@@ -11,6 +15,7 @@ pub mod results;
 pub mod schema;
 pub mod search;
 pub mod session;
+pub mod settings;
 pub mod shell;
 pub mod skills;
 pub mod tasks;
@@ -20,25 +25,9 @@ pub mod types;
 
 pub use provider::Provider;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Custom instructions stored in the vault, analogous to ZCode's AGENTS.md or
-/// Claude Code's CLAUDE.md. Reads `.bnote/AGENTS.md`; the legacy file name
-/// `.bnote/agent.md` is the fallback. A missing file yields an empty string,
-/// and the prompt segment is then omitted.
-pub fn load_user_instructions(vault: Option<&std::path::Path>) -> String {
-    let Some(vault) = vault else {
-        return String::new();
-    };
-    for name in ["AGENTS.md", "agent.md"] {
-        if let Ok(content) = std::fs::read_to_string(vault.join(".bnote").join(name)) {
-            return content;
-        }
-    }
-    String::new()
-}
-
-/// Agent configuration persisted at `<app_data>/agent.json`.
+/// Agent configuration persisted at `<agent home>/agent.json` (`~/.bnote`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     pub provider: String, // "anthropic" | "openai"
@@ -80,8 +69,8 @@ pub enum McpServerConfig {
 }
 
 impl AgentConfig {
-    pub fn load(data_dir: &PathBuf) -> AgentConfig {
-        let path = data_dir.join("agent.json");
+    pub fn load() -> AgentConfig {
+        let path = home::config_file();
         let mut cfg = match std::fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
             Err(_) => AgentConfig {
@@ -92,6 +81,33 @@ impl AgentConfig {
         };
         cfg.normalize();
         cfg
+    }
+
+    /// Copies the pre-home config (`<app_data>/agent.json`) into `~/.bnote`
+    /// once. The legacy file is left untouched, so downgrading loses nothing.
+    pub fn migrate_from(data_dir: &Path) {
+        let target = home::config_file();
+        if !target.exists() {
+            let legacy = data_dir.join("agent.json");
+            if legacy.is_file() {
+                if let Some(parent) = target.parent() {
+                    if home::ensure_dir(parent).is_ok() {
+                        if let Err(e) = std::fs::copy(&legacy, &target) {
+                            eprintln!("[bnote] agent config migration failed: {e}");
+                        }
+                    }
+                }
+            }
+        }
+        // Skills used to live under the app data directory; move a copy once so
+        // existing users do not lose them.
+        let skills_target = home::home_dir().join("skills");
+        let skills_legacy = data_dir.join("skills");
+        if !skills_target.exists() && skills_legacy.is_dir() {
+            if let Err(e) = copy_dir(&skills_legacy, &skills_target) {
+                eprintln!("[bnote] skills migration failed: {e}");
+            }
+        }
     }
 
     /// Narrows the protocol field to its value contract: only "anthropic" | "openai".
@@ -111,16 +127,33 @@ impl AgentConfig {
         }
     }
 
-    pub fn save(&self, data_dir: &PathBuf) -> Result<(), String> {
-        let path = data_dir.join("agent.json");
+    pub fn save(&self) -> Result<(), String> {
+        let path = home::config_file();
+        if let Some(parent) = path.parent() {
+            home::ensure_dir(parent)?;
+        }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(&path, json).map_err(|e| format!("WRITE_FAILED: {}", e))
     }
 }
 
+/// Recursive copy used only by the one-time skills migration.
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests {    use super::*;
 
     #[test]
     fn empty_provider_normalizes_to_anthropic_and_valid_values_pass_through() {

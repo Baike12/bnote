@@ -6,7 +6,6 @@ import {
   pushPdfEntry,
   pushUrlEntry,
   pushWereadBook,
-  pushCodeEntry,
   STUDY_HISTORY_LIMIT,
 } from "./history";
 
@@ -100,41 +99,19 @@ describe("study history: WeRead has its own list", () => {
   });
 });
 
-describe("study history: code projects have their own list", () => {
-  it("code projects never mix with PDFs, web pages or WeRead", () => {
-    let h = emptyStudyHistory();
-    h = pushCodeEntry(h, { path: "/Users/me/code/app", title: "app" });
-    h = pushPdfEntry(h, pdf("/v/pdfs/a.pdf", "A"));
-    h = pushUrlEntry(h, { url: "https://example.com", title: "Example" });
-    expect(h.codes.map((e) => e.path)).toEqual(["/Users/me/code/app"]);
-    expect(h.pdfs).toHaveLength(1);
-    expect(h.urls).toHaveLength(1);
-  });
-
-  it("the same project is deduplicated by path and moved to the top", () => {
-    let h = emptyStudyHistory();
-    h = pushCodeEntry(h, { path: "/a", title: "a" });
-    h = pushCodeEntry(h, { path: "/b", title: "b" });
-    h = pushCodeEntry(h, { path: "/a", title: "a2" });
-    expect(h.codes.map((e) => e.path)).toEqual(["/a", "/b"]);
-    expect(h.codes[0].title).toBe("a2");
-  });
-
-  it("an old config without a codes field still normalizes (compatible upgrade)", () => {
-    const h = normalizeStudyHistory({ pdfs: [], urls: [] });
-    expect(h.codes).toEqual([]);
-  });
-
-  it("bad entries in codes are dropped one by one", () => {
+describe("study history: code projects are no longer part of it", () => {
+  it("a legacy codes array is dropped during normalization (code mode owns its own list)", () => {
     const h = normalizeStudyHistory({
-      codes: [
-        { path: "/a", title: "A", at: 1 },
-        { path: "", title: "no path" },
-        { path: "/b" },
-        "junk",
-      ],
+      pdfs: [],
+      urls: [],
+      codes: [{ path: "/a", title: "A", at: 1 }],
     });
-    expect(h.codes.map((e) => e.title)).toEqual(["A"]);
+    expect(h).toEqual({ pdfs: [], urls: [], weread: [] });
+  });
+
+  it("a record produced without codes never regains the field", () => {
+    const h = emptyStudyHistory();
+    expect(Object.keys(h).sort()).toEqual(["pdfs", "urls", "weread"]);
   });
 });
 

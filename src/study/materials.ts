@@ -18,7 +18,6 @@ const inflight = new Map<string, Promise<MaterialInfo | null>>();
 /** Material identity (same rules as the backend's `identity()`): a trailing slash is ignored in URLs. */
 export function studyIdentity(content: StudyContent): string {
   if (content.kind === "pdf") return `pdf:${content.path}`;
-  if (content.kind === "code") return `code:${content.path.replace(/\/+$/, "")}`;
   return `url:${content.url.replace(/\/+$/, "")}`;
 }
 

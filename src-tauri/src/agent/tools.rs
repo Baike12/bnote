@@ -53,6 +53,11 @@ pub struct ToolContext {
     pub shell: Arc<ShellCwd>,
     /// Background tasks of this session (`run_in_background`).
     pub bg: Arc<BgRegistry>,
+    /// Files this session read since the last request. The session uses them to
+    /// load nested instruction files (`nested_memory`), the way CC does.
+    pub read_paths: std::sync::Mutex<Vec<PathBuf>>,
+    /// Extra writable roots from `settings.permissions.additionalDirectories`.
+    pub extra_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -66,35 +71,6 @@ pub enum StudyContent {
         url: String,
         title: String,
     },
-    /// Code project: `path` is the absolute path of the project root.
-    Code {
-        path: String,
-        title: String,
-    },
-}
-
-/// Lists the files of a code project (so the agent sees what the repository holds).
-///
-/// Only the searchable entries: the tree shows `.venv` / `node_modules` so the
-/// user can browse them, but handing their thousands of vendored files to the
-/// agent would bury the project's own sources.
-fn list_code_project(root: &str) -> Result<String, String> {
-    let tree = crate::code::project::scan(std::path::Path::new(root));
-    let mut out = String::new();
-    for entry in tree.searchable() {
-        if entry.is_dir {
-            continue;
-        }
-        out.push_str(&format!("{}\n", entry.path));
-        if out.len() > 60_000 {
-            out.push_str("…(清单已截断)\n");
-            break;
-        }
-    }
-    if out.is_empty() {
-        out.push_str("(空项目)");
-    }
-    Ok(out)
 }
 
 /// Extracts the markdown text of a PDF for the Agent.
@@ -114,6 +90,24 @@ fn read_pdf_text(path: &str) -> Result<String, String> {
 }
 
 impl ToolContext {
+    /// Records a successful read; the session turns these into nested
+    /// instruction-file attachments on the next request.
+    pub fn note_read(&self, path: &Path) {
+        if let Ok(mut paths) = self.read_paths.lock() {
+            if !paths.iter().any(|p| p == path) {
+                paths.push(path.to_path_buf());
+            }
+        }
+    }
+
+    /// Drains the read paths recorded since the last call.
+    pub fn take_read_paths(&self) -> Vec<PathBuf> {
+        self.read_paths
+            .lock()
+            .map(|mut paths| std::mem::take(&mut *paths))
+            .unwrap_or_default()
+    }
+
     /// Resolves a tool-supplied path: absolute paths pass through; relative
     /// paths anchor at the working directory (coding sessions: the project
     /// root) and fall back to the vault. Writing is confined to both roots
@@ -143,10 +137,10 @@ impl ToolContext {
             .ok_or_else(|| "NO_VAULT: no vault is open".to_string())
     }
 
-    /// Writes are confined to the union of the vault and the working
-    /// directory. A coding session's project root is the sandbox boundary for
-    /// it (the same model the code pane uses); without a workdir only the
-    /// vault is writable, as before.
+    /// Writes are confined to the working directory (the code project for a
+    /// coding session) or the vault, plus the agent home `~/.bnote` (memory,
+    /// skills, plans). The vault is *not* writable from a coding session: the
+    /// repository and the notebook are unrelated stores.
     fn ensure_confined(&self, path: &Path) -> Result<(), String> {
         // A path that does not exist yet (a new file) resolves through its
         // deepest existing ancestor: comparing the raw lexical form against
@@ -178,10 +172,19 @@ impl ToolContext {
                 }
             }
         };
-        let roots = self
-            .vault
+        let mut roots: Vec<PathBuf> = Vec::new();
+        match &self.workdir {
+            Some(workdir) => roots.push(workdir.clone()),
+            None => {
+                if let Some(vault) = &self.vault {
+                    roots.push(vault.clone());
+                }
+            }
+        }
+        roots.push(super::home::home_dir());
+        roots.extend(self.extra_roots.iter().cloned());
+        let roots = roots
             .iter()
-            .chain(self.workdir.iter())
             .map(|r| r.canonicalize().unwrap_or_else(|_| r.clone()));
         for root in roots {
             if checked.starts_with(root) {
@@ -402,6 +405,25 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         }),
     ),
     (
+        "EnterPlanMode",
+        "Switch this session into plan mode: explore the codebase freely (read_file / glob / grep / read-only shell) but do not change anything — write_file, edit_file and mutating shell commands are denied. Use it when a task needs an agreed approach before implementation. Finish by calling ExitPlanMode with the plan.",
+        json!({
+            "type": "object",
+            "properties": {}
+        }),
+    ),
+    (
+        "ExitPlanMode",
+        "Present the finished plan for the user's approval. Only valid in plan mode. The plan must be self-contained markdown: goal, the files to touch, the steps in order, and how it will be verified. On approval you leave plan mode and start implementing; on rejection you stay in plan mode and revise.",
+        json!({
+            "type": "object",
+            "properties": {
+                "plan": {"type": "string", "description": "The complete plan in markdown"}
+            },
+            "required": ["plan"]
+        }),
+    ),
+    (
         "edit_file",
         "Replace an exact string in an existing text file inside the vault. Read the file first with read_file. old_string must match exactly (including whitespace) and appear exactly once — for multiple occurrences call it repeatedly with larger context, or rewrite the whole file with write_file.",
         json!({
@@ -491,7 +513,10 @@ async fn execute_text(
             let path = input["path"].as_str().unwrap_or_default();
             match ctx.resolve(path) {
                 Ok(p) => match tokio::fs::read_to_string(&p).await {
-                    Ok(content) => (true, truncate(&content, 40_000)),
+                    Ok(content) => {
+                        ctx.note_read(&p);
+                        (true, truncate(&content, 40_000))
+                    }
                     Err(e) => (false, format!("read failed: {}", e)),
                 },
                 Err(e) => (false, e),
@@ -666,19 +691,6 @@ async fn execute_text(
                             )
                         }
                         Err(e) => (false, format!("fetch failed: {}", e)),
-                    }
-                }
-                Some(StudyContent::Code { path, title }) => {
-                    // Code project: give the assistant a file listing (paths +
-                    // sizes) so it knows what the repository holds. The file
-                    // contents are not read here — when it actually needs a file,
-                    // the assistant reads it with the read_file tool.
-                    match tokio::task::spawn_blocking(move || list_code_project(&path)).await {
-                        Ok(Ok(text)) => {
-                            (true, format!("# {}\n\n{}", title, truncate(&text, 60_000)))
-                        }
-                        Ok(Err(e)) => (false, format!("read failed: {}", e)),
-                        Err(e) => (false, format!("join failed: {}", e)),
                     }
                 }
                 None => (false, "no study content is open".into()),
@@ -874,6 +886,8 @@ mod tests {
             workdir: None,
             shell: Arc::new(crate::agent::shell::ShellCwd::new()),
             bg: Arc::new(crate::agent::shell::BgRegistry::new()),
+            read_paths: std::sync::Mutex::new(Vec::new()),
+            extra_roots: Vec::new(),
         }
     }
 
@@ -976,9 +990,9 @@ mod tests {
             project.join("src/lib.rs").is_file(),
             "relative paths anchor at the workdir"
         );
-        // Vault writes still work with an absolute path; a vault-relative one
-        // now anchors at the workdir, so it lands there instead — the model is
-        // told the roots in the prompt, absolute paths stay unambiguous.
+        // A vault write from a coding session is refused: the repository and
+        // the notebook are unrelated stores, so the project root alone is the
+        // boundary.
         let out = execute(
             &c,
             &skills,
@@ -986,7 +1000,8 @@ mod tests {
             &json!({"path": format!("{}/v.md", vault.display()), "content": "x"}),
         )
         .await;
-        assert!(out.ok, "{}", out.text);
+        assert!(!out.ok && out.text.contains("FORBIDDEN"), "{}", out.text);
+        assert!(!vault.join("v.md").exists());
         // Outside both roots stays forbidden.
         let outside = std::env::temp_dir().join("bnote-workdir-outside.md");
         std::fs::write(&outside, "keep").unwrap();

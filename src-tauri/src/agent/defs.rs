@@ -1,18 +1,14 @@
-//! Agent definitions loaded from the vault, following Claude Code's split:
-//! the definition (model, tool names, prompt files) is data on disk, while the
-//! tools themselves stay registered in Rust and are referenced by name.
+//! Built-in agent definitions.
 //!
-//! Layout: `<vault>/.bnote/agents/<id>/agent.json` plus the markdown prompt
-//! files it lists. `SYSTEM_PROMPT.md` is required; every other `*.md` file is a
-//! prompt layer whose position is chosen by `order` in `agent.json`.
+//! The definition (model policy, tool whitelist, prompt layers) is **code**:
+//! the prompt markdown files under `resources/agents/` are compiled into the
+//! binary with `include_str!`, so the running app never reads them from disk
+//! and the vault's `.bnote` holds nothing but user instructions (`AGENTS.md`).
 //!
-//! Prompt files are re-read before every turn (see `prompt.rs`), so editing
-//! them takes effect on the next message without reopening the session. The
-//! loader validates tool names against the code registry: a typo is a config
-//! error surfaced in the UI, never a silently missing capability.
+//! Claude Code splits the same way: its agent definitions are constants in the
+//! source, while only the user-editable memory files live on disk.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
 
 /// Per-tool execution policy, the same three outcomes Claude Code's permission
 /// modes have: `allow` runs the tool, `ask` pauses the turn for the panel's
@@ -25,13 +21,11 @@ pub enum Permission {
     Deny,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompactionCfg {
-    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Fraction of the model context window at which auto-compact fires
     /// (Claude Code keeps a fixed token buffer; a ratio travels across models).
-    #[serde(default = "default_threshold")]
     pub threshold: f64,
 }
 
@@ -39,79 +33,34 @@ impl Default for CompactionCfg {
     fn default() -> Self {
         CompactionCfg {
             enabled: true,
-            threshold: default_threshold(),
+            threshold: 0.0,
         }
     }
 }
 
-fn default_true() -> bool {
-    true
-}
-
-/// 0 = use CC's fixed buffer (context window − 13k); a non-zero value is an
-/// explicit fraction of the window.
-fn default_threshold() -> f64 {
-    0.0
-}
-
-/// One markdown prompt file inside the agent's directory.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PromptFile {
-    /// File name only — no directories, uppercase stem, `.md` suffix.
-    pub file: String,
-    /// Sort key in the assembled system prompt; ties keep insertion order.
-    #[serde(default = "default_prompt_order")]
-    pub order: i32,
-}
-
-fn default_prompt_order() -> i32 {
-    50
-}
-
-/// The system prompt file every agent must list.
-pub const SYSTEM_PROMPT: &str = "SYSTEM_PROMPT.md";
-
-/// The definition file inside every agent directory.
-pub const AGENT_FILE: &str = "agent.json";
-
 /// An agent definition. `tools` is a whitelist of code-registered tool names
 /// plus the pseudo-entry `mcp` (all MCP tools).
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentDefinition {
-    /// Stable id: the directory name. The loader assigns it, never the file.
-    #[serde(default)]
+    /// Stable id: the definition's name in `registry()`.
     pub id: String,
-    #[serde(default)]
     pub name: String,
-    #[serde(default)]
     pub description: String,
     /// Tool whitelist. `None` (key absent) = the general default set
     /// ([`DEFAULT_TOOLS`]); an **empty list is a deliberate "no tools"**
     /// (the study shape) — that distinction is the whole point of Option.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
-    #[serde(default)]
     pub permissions: BTreeMap<String, Permission>,
-    #[serde(default)]
     pub compaction: CompactionCfg,
     /// Subagent definition ids the `task` tool may spawn. Empty = all
     /// definitions are allowed.
-    #[serde(default)]
     pub subagents: Vec<String>,
-    /// Ordered prompt files, resolved inside the agent directory.
-    #[serde(default)]
-    pub prompts: Vec<PromptFile>,
-    #[serde(default)]
+    /// Ordered prompt layers, compiled into the binary.
+    pub prompts: Vec<&'static str>,
     pub model: String,
-    #[serde(default)]
     pub max_tokens: u32,
     /// Cap on tool-call rounds per turn; 0 = the session default (25).
-    #[serde(default)]
     pub max_turns: u32,
-    /// Absolute directory the prompt files are read from. Runtime state, set
-    /// by the loader; the JSON on disk never carries it.
-    #[serde(skip)]
-    pub dir: Option<PathBuf>,
 }
 
 /// Toolset for definitions that leave `tools` absent: the general coding
@@ -168,464 +117,264 @@ impl AgentDefinition {
     }
 }
 
-/// A definition that could not be loaded; surfaced at session start instead of
-/// being dropped silently.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DefError {
-    pub id: String,
-    pub message: String,
+fn tools(list: &[&str]) -> Option<Vec<String>> {
+    Some(list.iter().map(|s| s.to_string()).collect())
 }
 
-pub fn agents_dir(vault: &Path) -> PathBuf {
-    vault.join(".bnote").join("agents")
-}
-
-/// The first-run agents, embedded from `src-tauri/resources/agents/`. They are
-/// ordinary files on disk after seeding; the app never reads these strings
-/// again, so editing the vault's copy is the only source of truth.
-const SEED_FILES: &[(&str, &str)] = &[
-    (
-        "coding/agent.json",
-        include_str!("../../resources/agents/coding/agent.json"),
-    ),
-    (
-        "coding/SYSTEM_PROMPT.md",
+/// The coding agent's prompt layers, in system-prompt order (the same sections
+/// Claude Code's `getSystemPrompt` assembles).
+fn coding_prompts() -> Vec<&'static str> {
+    vec![
         include_str!("../../resources/agents/coding/SYSTEM_PROMPT.md"),
-    ),
-    (
-        "coding/SYSTEM.md",
         include_str!("../../resources/agents/coding/SYSTEM.md"),
-    ),
-    (
-        "coding/DOING_TASKS.md",
         include_str!("../../resources/agents/coding/DOING_TASKS.md"),
-    ),
-    (
-        "coding/EXECUTING_ACTIONS_WITH_CARE.md",
         include_str!("../../resources/agents/coding/EXECUTING_ACTIONS_WITH_CARE.md"),
-    ),
-    (
-        "coding/USING_YOUR_TOOLS.md",
         include_str!("../../resources/agents/coding/USING_YOUR_TOOLS.md"),
-    ),
-    (
-        "coding/TONE_AND_STYLE.md",
         include_str!("../../resources/agents/coding/TONE_AND_STYLE.md"),
-    ),
-    (
-        "coding/OUTPUT_EFFICIENCY.md",
         include_str!("../../resources/agents/coding/OUTPUT_EFFICIENCY.md"),
-    ),
-    (
-        "coding/SESSION_GUIDANCE.md",
         include_str!("../../resources/agents/coding/SESSION_GUIDANCE.md"),
-    ),
-    (
-        "creative/agent.json",
-        include_str!("../../resources/agents/creative/agent.json"),
-    ),
-    (
-        "creative/SYSTEM_PROMPT.md",
-        include_str!("../../resources/agents/creative/SYSTEM_PROMPT.md"),
-    ),
-    (
-        "study/agent.json",
-        include_str!("../../resources/agents/study/agent.json"),
-    ),
-    (
-        "study/SYSTEM_PROMPT.md",
-        include_str!("../../resources/agents/study/SYSTEM_PROMPT.md"),
-    ),
-    (
-        "general-purpose/agent.json",
-        include_str!("../../resources/agents/general-purpose/agent.json"),
-    ),
-    (
-        "general-purpose/SYSTEM_PROMPT.md",
-        include_str!("../../resources/agents/general-purpose/SYSTEM_PROMPT.md"),
-    ),
-    (
-        "explore/agent.json",
-        include_str!("../../resources/agents/explore/agent.json"),
-    ),
-    (
-        "explore/SYSTEM_PROMPT.md",
-        include_str!("../../resources/agents/explore/SYSTEM_PROMPT.md"),
-    ),
-];
-
-/// Writes the default agents when the directory holds no agent at all.
-///
-/// Only an empty (or missing) directory is seeded: deleting one agent does not
-/// resurrect it on the next launch, and a directory with legacy `<id>.md`
-/// files still gets the new defaults.
-pub fn seed_agents(vault: &Path) -> Result<(), String> {
-    let dir = agents_dir(vault);
-    let has_agent_dir = std::fs::read_dir(&dir)
-        .map(|rd| {
-            rd.flatten()
-                .any(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        })
-        .unwrap_or(false);
-    if has_agent_dir {
-        return Ok(());
-    }
-    for (relative, content) in SEED_FILES {
-        let target = dir.join(relative);
-        let parent = target
-            .parent()
-            .ok_or_else(|| format!("INVALID_SEED_PATH: {}", relative))?;
-        std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {}", e))?;
-        std::fs::write(&target, content).map_err(|e| format!("WRITE_FAILED: {}", e))?;
-    }
-    Ok(())
+    ]
 }
 
-/// Loads every `<vault>/.bnote/agents/<id>/agent.json`.
-pub fn load_definitions(vault: Option<&Path>) -> (Vec<AgentDefinition>, Vec<DefError>) {
-    let mut defs = Vec::new();
-    let mut errors = Vec::new();
-    let Some(vault) = vault else {
-        return (defs, errors);
-    };
-    let dir = agents_dir(vault);
-    let Ok(rd) = std::fs::read_dir(&dir) else {
-        return (defs, errors);
-    };
-    let mut entries: Vec<(String, PathBuf, bool)> = rd
-        .flatten()
-        .map(|entry| {
-            let path = entry.path();
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            (
-                entry.file_name().to_string_lossy().to_string(),
-                path,
-                is_dir,
-            )
-        })
+/// The registry: every definition the app can start. Ids are stable because
+/// the frontend names the mode by them.
+pub fn registry() -> Vec<AgentDefinition> {
+    vec![
+        AgentDefinition {
+            id: "coding".into(),
+            name: "编码助手".into(),
+            description: "代码项目的 coding agent:bash/glob/grep/todo/task/压缩全套能力。".into(),
+            tools: tools(&[
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_files",
+                "glob",
+                "grep",
+                "bash",
+                "todo",
+                "task",
+                "skill",
+                "mcp",
+                "bash_output",
+                "bash_kill",
+                "task_create",
+                "task_update",
+                "task_list",
+                "task_get",
+                "ask_user_question",
+                "send_message",
+                "EnterPlanMode",
+                "ExitPlanMode",
+            ]),
+            permissions: BTreeMap::new(),
+            compaction: CompactionCfg::default(),
+            subagents: Vec::new(),
+            prompts: coding_prompts(),
+            model: String::new(),
+            max_tokens: 0,
+            max_turns: 0,
+        },
+        AgentDefinition {
+            id: "creative".into(),
+            name: "创作助手".into(),
+            description: "创作模式:工具 + 技能 + MCP,产出文章与 HTML 并实时预览。".into(),
+            tools: tools(&[
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_files",
+                "read_url",
+                "bash",
+                "preview_html",
+                "read_study_content",
+                "skill",
+                "mcp",
+                "task_create",
+                "task_update",
+                "task_list",
+                "task_get",
+                "ask_user_question",
+            ]),
+            permissions: BTreeMap::new(),
+            compaction: CompactionCfg::default(),
+            subagents: Vec::new(),
+            prompts: vec![include_str!(
+                "../../resources/agents/creative/SYSTEM_PROMPT.md"
+            )],
+            model: String::new(),
+            max_tokens: 0,
+            max_turns: 0,
+        },
+        AgentDefinition {
+            id: "study".into(),
+            name: "学习助手".into(),
+            description: "围绕当前 PDF / 网页的纯问答助手,不注册任何工具。".into(),
+            // The empty list is deliberate: pure Q&A, no tool surface at all.
+            tools: Some(Vec::new()),
+            permissions: BTreeMap::new(),
+            compaction: CompactionCfg::default(),
+            subagents: Vec::new(),
+            // The study prompt runs inside the prompt pipeline; with no tools
+            // it must stay free of tool guidance.
+            prompts: vec![include_str!("../../resources/agents/study/SYSTEM_PROMPT.md")],
+            model: String::new(),
+            max_tokens: 0,
+            max_turns: 0,
+        },
+        AgentDefinition {
+            id: "general-purpose".into(),
+            name: "通用助手".into(),
+            description: "通用子代理:全工具(除子代理派发),独立上下文,只回报最终结论。".into(),
+            tools: tools(&[
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_files",
+                "glob",
+                "grep",
+                "bash",
+                "todo",
+                "skill",
+                "mcp",
+                "bash_output",
+                "bash_kill",
+                "task_create",
+                "task_update",
+                "task_list",
+                "task_get",
+                "ask_user_question",
+                "send_message",
+            ]),
+            permissions: BTreeMap::new(),
+            compaction: CompactionCfg::default(),
+            subagents: Vec::new(),
+            prompts: vec![include_str!(
+                "../../resources/agents/general-purpose/SYSTEM_PROMPT.md"
+            )],
+            model: String::new(),
+            max_tokens: 0,
+            max_turns: 0,
+        },
+        AgentDefinition {
+            id: "explore".into(),
+            name: "探索子代理".into(),
+            description: "只读探索子代理:找代码、读文件、报告位置与结构,不改动任何东西。".into(),
+            tools: tools(&["read_file", "list_files", "glob", "grep"]),
+            permissions: BTreeMap::new(),
+            compaction: CompactionCfg::default(),
+            subagents: Vec::new(),
+            prompts: vec![include_str!(
+                "../../resources/agents/explore/SYSTEM_PROMPT.md"
+            )],
+            model: String::new(),
+            max_tokens: 0,
+            max_turns: 0,
+        },
+        AgentDefinition {
+            id: "plan".into(),
+            name: "计划子代理".into(),
+            description: "只读计划子代理:调研后给出可执行的实施步骤与关键文件,不改动任何东西。".into(),
+            tools: tools(&["read_file", "list_files", "glob", "grep"]),
+            permissions: BTreeMap::new(),
+            compaction: CompactionCfg::default(),
+            subagents: Vec::new(),
+            prompts: vec![include_str!("../../resources/agents/plan/SYSTEM_PROMPT.md")],
+            model: String::new(),
+            max_tokens: 0,
+            max_turns: 0,
+        },
+    ]
+}
+
+/// Looks a definition up by id.
+pub fn definition(id: &str) -> Option<AgentDefinition> {
+    registry().into_iter().find(|d| d.id == id)
+}
+
+/// The definitions the `task` tool may spawn, for the tool description.
+/// `fork` is virtual (not in the registry) and is described separately.
+pub fn subagent_listing() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = registry()
+        .into_iter()
+        .filter(|d| d.id == "general-purpose" || d.id == "explore" || d.id == "plan")
+        .map(|d| (d.id, d.description))
         .collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    for (name, path, is_dir) in entries {
-        if !is_dir {
-            // The previous single-file format is no longer loaded; naming it
-            // keeps a silent disappearance out of the migration.
-            if name.to_lowercase().ends_with(".md") {
-                errors.push(DefError {
-                    id: name.trim_end_matches(".md").to_string(),
-                    message: "旧格式定义已不再加载:改为 <id>/agent.json + SYSTEM_PROMPT.md".into(),
-                });
-            }
-            continue;
-        }
-        if let Err(message) = valid_def_id(&name) {
-            errors.push(DefError { id: name, message });
-            continue;
-        }
-        match load_definition(&path, &name) {
-            Ok(def) => defs.push(def),
-            Err(message) => errors.push(DefError { id: name, message }),
-        }
-    }
-    (defs, errors)
-}
-
-/// Directory names double as ids and as path segments: the safe subset is
-/// enforced before any join.
-fn valid_def_id(id: &str) -> Result<(), String> {
-    let ok = !id.is_empty()
-        && id.len() <= 64
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    if ok {
-        Ok(())
-    } else {
-        Err("目录名只能包含字母/数字/-/_,且不超过 64 字符".into())
-    }
-}
-
-fn valid_prompt_file(name: &str) -> Result<(), String> {
-    if name.contains('/') || name.contains('\\') || name.contains('\0') {
-        return Err(format!("prompt 文件名不能包含路径分隔符: {}", name));
-    }
-    let stem = name
-        .strip_suffix(".md")
-        .ok_or_else(|| format!("prompt 文件必须是 .md: {}", name))?;
-    let upper = !stem.is_empty()
-        && stem
-            .bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
-    if !upper {
-        return Err(format!(
-            "prompt 文件名必须是大写字母/数字/下划线: {}",
-            name
-        ));
-    }
-    Ok(())
-}
-
-/// A tool name is valid only when the Rust registry can execute it. This is
-/// the boundary the file format must not cross: agent.json references tools,
-/// it never defines them.
-fn known_tool(name: &str) -> bool {
-    name == "mcp"
-        || crate::agent::tools::tool_schemas()
-            .iter()
-            .any(|(registered, _, _)| *registered == name)
-}
-
-fn load_definition(dir: &Path, id: &str) -> Result<AgentDefinition, String> {
-    let config_path = dir.join(AGENT_FILE);
-    let config = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("读取 {} 失败: {}", AGENT_FILE, e))?;
-    let mut def: AgentDefinition = serde_json::from_str(&config)
-        .map_err(|e| format!("{} 解析失败: {}", AGENT_FILE, e))?;
-    def.id = id.to_string();
-    if def.name.trim().is_empty() {
-        def.name = id.to_string();
-    }
-    def.dir = Some(dir.to_path_buf());
-    validate_prompts(&def, dir)?;
-    validate_tools(&def)?;
-    Ok(def)
-}
-
-fn validate_prompts(def: &AgentDefinition, dir: &Path) -> Result<(), String> {
-    if def.prompts.is_empty() {
-        return Err(format!(
-            "agent.json 缺少 prompts(至少包含 {})",
-            SYSTEM_PROMPT
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    for prompt in &def.prompts {
-        valid_prompt_file(&prompt.file)?;
-        if !seen.insert(prompt.file.clone()) {
-            return Err(format!("prompt 重复: {}", prompt.file));
-        }
-        if !dir.join(&prompt.file).is_file() {
-            return Err(format!("prompt 文件不存在: {}", prompt.file));
-        }
-    }
-    if !seen.contains(SYSTEM_PROMPT) {
-        return Err(format!("prompts 必须包含 {}", SYSTEM_PROMPT));
-    }
-    Ok(())
-}
-
-fn validate_tools(def: &AgentDefinition) -> Result<(), String> {
-    let Some(tools) = &def.tools else {
-        return Ok(());
-    };
-    let mut seen = BTreeSet::new();
-    for tool in tools {
-        if !known_tool(tool) {
-            return Err(format!(
-                "未知工具: {} (工具由代码注册,agent.json 只能引用)",
-                tool
-            ));
-        }
-        if !seen.insert(tool.as_str()) {
-            return Err(format!("工具重复: {}", tool));
-        }
-    }
-    Ok(())
+    out.push((
+        "fork".into(),
+        "Forked worker that inherits the parent conversation".into(),
+    ));
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "bnote-defs-{}-{}-{}",
-            tag,
-            std::process::id(),
-            unique
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn write_agent(root: &Path, id: &str, config: &str, prompts: &[(&str, &str)]) {
-        let dir = root.join(".bnote").join("agents").join(id);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(AGENT_FILE), config).unwrap();
-        for (name, content) in prompts {
-            std::fs::write(dir.join(name), content).unwrap();
+    #[test]
+    fn every_definition_is_unique_and_has_a_prompt() {
+        let defs = registry();
+        let mut ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
+        ids.sort();
+        let mut dedup = ids.clone();
+        dedup.dedup();
+        assert_eq!(ids, dedup, "duplicate definition id");
+        for def in &defs {
+            assert!(!def.prompts.is_empty(), "{} has no prompt", def.id);
+            assert!(
+                def.prompts.iter().all(|p| !p.trim().is_empty()),
+                "{} has an empty prompt layer",
+                def.id
+            );
         }
     }
 
     #[test]
-    fn loads_an_agent_directory_and_keeps_prompt_order() {
-        let vault = temp_dir("load");
-        write_agent(
-            &vault,
-            "reviewer",
-            r#"{
-                "name": "评审员",
-                "description": "代码评审",
-                "model": "gpt-5",
-                "max_tokens": 4096,
-                "max_turns": 12,
-                "tools": ["read_file", "grep", "mcp"],
-                "permissions": { "bash": "deny" },
-                "subagents": ["explore"],
-                "prompts": [
-                    { "file": "STYLE.md", "order": 70 },
-                    { "file": "SYSTEM_PROMPT.md", "order": 10 }
-                ]
-            }"#,
-            &[(SYSTEM_PROMPT, "正文提示词。"), ("STYLE.md", "风格。")],
-        );
-        let (defs, errors) = load_definitions(Some(&vault));
-        assert!(errors.is_empty(), "{:?}", errors);
-        assert_eq!(defs.len(), 1);
-        let def = &defs[0];
-        assert_eq!(def.id, "reviewer");
-        assert_eq!(def.name, "评审员");
-        assert_eq!(def.model, "gpt-5");
-        assert_eq!(def.max_tokens, 4096);
-        assert_eq!(def.max_turns, 12);
-        assert_eq!(
-            def.tools,
-            Some(vec!["read_file".into(), "grep".into(), "mcp".into()])
-        );
-        assert_eq!(def.permissions.get("bash"), Some(&Permission::Deny));
-        assert_eq!(def.prompts.len(), 2);
-        assert_eq!(def.prompts[0].file, "STYLE.md");
-        assert_eq!(
-            def.dir.as_deref(),
-            Some(vault.join(".bnote/agents/reviewer").as_path())
-        );
-        std::fs::remove_dir_all(&vault).unwrap();
+    fn the_study_agent_registers_no_tools() {
+        let study = definition("study").unwrap();
+        assert_eq!(study.tools, Some(Vec::new()));
+        assert!(study.effective_tools().is_empty());
     }
 
     #[test]
-    fn an_empty_tool_list_stays_explicit() {
-        let vault = temp_dir("tools");
-        write_agent(
-            &vault,
-            "study",
-            r#"{"name":"学习","tools":[],"prompts":[{"file":"SYSTEM_PROMPT.md","order":10}]}"#,
-            &[(SYSTEM_PROMPT, "问答。")],
-        );
-        let (defs, errors) = load_definitions(Some(&vault));
-        assert!(errors.is_empty(), "{:?}", errors);
-        assert_eq!(defs[0].tools, Some(Vec::new()));
-        assert!(defs[0].effective_tools().is_empty());
-        std::fs::remove_dir_all(&vault).unwrap();
-    }
-
-    #[test]
-    fn missing_system_prompt_is_a_config_error() {
-        let vault = temp_dir("no-system");
-        write_agent(
-            &vault,
-            "broken",
-            r#"{"prompts":[{"file":"STYLE.md","order":10}]}"#,
-            &[("STYLE.md", "x")],
-        );
-        let (defs, errors) = load_definitions(Some(&vault));
-        assert!(defs.is_empty());
-        assert!(
-            errors[0].message.contains("SYSTEM_PROMPT.md"),
-            "{:?}",
-            errors
-        );
-        std::fs::remove_dir_all(&vault).unwrap();
-    }
-
-    #[test]
-    fn unknown_tools_and_escaping_prompt_paths_are_rejected() {
-        let vault = temp_dir("invalid");
-        write_agent(
-            &vault,
-            "bad-tool",
-            r#"{"tools":["nope"],"prompts":[{"file":"SYSTEM_PROMPT.md","order":10}]}"#,
-            &[(SYSTEM_PROMPT, "x")],
-        );
-        write_agent(
-            &vault,
-            "bad-path",
-            r#"{"prompts":[{"file":"../SYSTEM_PROMPT.md","order":10}]}"#,
-            &[(SYSTEM_PROMPT, "x")],
-        );
-        write_agent(
-            &vault,
-            "lowercase",
-            r#"{"prompts":[{"file":"System.md","order":10},{"file":"SYSTEM_PROMPT.md","order":20}]}"#,
-            &[("System.md", "x"), (SYSTEM_PROMPT, "x")],
-        );
-        let (defs, errors) = load_definitions(Some(&vault));
-        assert!(defs.is_empty());
-        assert_eq!(errors.len(), 3, "{:?}", errors);
-        assert!(errors.iter().any(|e| e.message.contains("未知工具")));
-        assert!(errors.iter().any(|e| e.message.contains("路径分隔符")));
-        assert!(errors.iter().any(|e| e.message.contains("大写字母")));
-        std::fs::remove_dir_all(&vault).unwrap();
-    }
-
-    #[test]
-    fn legacy_markdown_definitions_are_reported_not_loaded() {
-        let vault = temp_dir("legacy");
-        let dir = vault.join(".bnote").join("agents");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("reviewer.md"), "---\nname: x\n---\n").unwrap();
-        let (defs, errors) = load_definitions(Some(&vault));
-        assert!(defs.is_empty());
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].message.contains("旧格式"));
-        std::fs::remove_dir_all(&vault).unwrap();
-    }
-
-    #[test]
-    fn seeding_writes_the_default_agents_and_never_overwrites_edits() {
-        let vault = temp_dir("seed");
-        seed_agents(&vault).unwrap();
-        let dir = agents_dir(&vault);
-        for id in ["coding", "creative", "study", "explore"] {
-            assert!(dir.join(id).join(AGENT_FILE).is_file(), "{}", id);
-            assert!(dir.join(id).join(SYSTEM_PROMPT).is_file(), "{}", id);
+    fn the_coding_agent_has_the_full_surface_and_ordered_layers() {
+        let coding = definition("coding").unwrap();
+        let tools = coding.effective_tools();
+        for name in ["read_file", "edit_file", "bash", "task", "mcp"] {
+            assert!(tools.iter().any(|t| t == name), "missing {name}");
         }
-        let (defs, errors) = load_definitions(Some(&vault));
-        assert!(errors.is_empty(), "{:?}", errors);
-        assert_eq!(defs.len(), 5);
-        assert_eq!(
-            defs.iter().find(|d| d.id == "study").unwrap().tools,
-            Some(Vec::new())
-        );
-
-        let coding = dir.join("coding").join(AGENT_FILE);
-        std::fs::write(
-            &coding,
-            r#"{"name":"改过的","tools":[],"prompts":[{"file":"SYSTEM_PROMPT.md","order":10}]}"#,
-        )
-        .unwrap();
-        seed_agents(&vault).unwrap();
-        let text = std::fs::read_to_string(&coding).unwrap();
-        assert!(text.contains("改过的"), "seeding must not overwrite edits");
-        std::fs::remove_dir_all(&vault).unwrap();
+        assert_eq!(coding.prompts.len(), 8);
+        assert!(coding.prompts[0].contains("coding agent"));
+        assert!(coding.prompts.iter().any(|p| p.contains("Executing actions")));
     }
 
     #[test]
-    fn invalid_directory_ids_are_skipped() {
-        let vault = temp_dir("id");
-        write_agent(
-            &vault,
-            "bad id",
-            r#"{"prompts":[{"file":"SYSTEM_PROMPT.md","order":10}]}"#,
-            &[(SYSTEM_PROMPT, "x")],
-        );
-        let (defs, errors) = load_definitions(Some(&vault));
-        assert!(defs.is_empty());
-        assert!(errors[0].message.contains("目录名"));
-        std::fs::remove_dir_all(&vault).unwrap();
+    fn explore_and_plan_are_read_only() {
+        for id in ["explore", "plan"] {
+            let def = definition(id).unwrap();
+            let tools = def.effective_tools();
+            assert!(!tools.iter().any(|t| t == "write_file" || t == "edit_file"));
+            assert!(!tools.iter().any(|t| t == "bash"));
+        }
+    }
+
+    #[test]
+    fn the_task_listing_names_the_spawnable_agents() {
+        let listing = subagent_listing();
+        let ids: Vec<&str> = listing.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(ids.contains(&"general-purpose"));
+        assert!(ids.contains(&"explore"));
+        assert!(ids.contains(&"fork"));
+        assert!(!ids.contains(&"coding"));
+    }
+
+    #[test]
+    fn a_deny_permission_removes_the_tool_from_the_effective_set() {
+        let mut def = definition("coding").unwrap();
+        def.permissions
+            .insert("bash".into(), Permission::Deny);
+        assert!(!def.tool_enabled("bash"));
+        assert!(!def.effective_tools().iter().any(|t| t == "bash"));
     }
 }

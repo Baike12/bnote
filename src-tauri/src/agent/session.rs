@@ -121,6 +121,9 @@ pub struct Session {
     pub mcp_names: Vec<String>,
     pub ctx: Arc<ToolContext>,
     pub skills: Arc<super::skills::SkillRegistry>,
+    /// The resolved output style; re-resolved on every request so editing a
+    /// style file or the setting takes effect on the next message.
+    pub output_style: Mutex<super::output_style::OutputStyle>,
     pub mcp: Arc<McpManager>,
     pub provider: Arc<Provider>,
     pub running: Arc<AtomicBool>,
@@ -135,6 +138,8 @@ pub struct Session {
     pub todos: Mutex<Vec<TodoItem>>,
     /// The v2 task list (task_create / task_update / …).
     pub tasks: Mutex<TaskList>,
+    /// The persisted task list this session owns (subagents share the parent's).
+    pub task_list_id: String,
     /// Background-task completions waiting to be injected as a wakeup message.
     pub pending_wakeups: Mutex<Vec<String>>,
     /// Closeable tool approvals: request id → channel back to the loop.
@@ -150,8 +155,21 @@ pub struct Session {
     /// Set for subagents whose definition is read-only: `.bnote/AGENTS.md` is
     /// omitted from their context (CC's `omitClaudeMd`).
     pub omit_user_instructions: bool,
-    /// The composer's permission mode (confirm / auto / full).
+    /// Layered settings, reloaded before every model request so an edit to
+    /// `settings.json` (permissions, hooks, excludes) applies without a new
+    /// session.
+    pub settings: Mutex<Arc<super::settings::Settings>>,
+    /// Instruction files already in the context; a nested read only adds new
+    /// ones, never duplicates.
+    loaded_instructions: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// Extra context returned by hooks; drained into the next request's
+    /// reminders (after the tool results, where the API allows a user message).
+    hook_context: Mutex<Vec<String>>,
+    /// The composer's permission mode (confirm / auto / full / plan).
     permission_mode: Mutex<permissions::Mode>,
+    /// The mode to return to when leaving plan mode (set by EnterPlanMode /
+    /// by the shield menu selecting "plan").
+    plan_previous: Mutex<Option<permissions::Mode>>,
     /// Subagents this session spawned, kept after they finish so
     /// `send_message` can continue them (CC/ZCode's agent registry).
     pub children: Mutex<HashMap<String, Arc<Session>>>,
@@ -258,11 +276,71 @@ impl Session {
             });
             return;
         }
+        // UserPromptSubmit hooks may block the prompt or add context.
+        let prompt_hook = self
+            .run_hook(
+                "UserPromptSubmit",
+                None,
+                serde_json::json!({"prompt": text}),
+            )
+            .await;
+        if prompt_hook.decision == Some(Decision::Deny) {
+            self.emit(AgentEvent::Error {
+                message: prompt_hook
+                    .reason
+                    .unwrap_or_else(|| "UserPromptSubmit hook rejected the prompt".into()),
+                items: self.history().len(),
+            });
+            return;
+        }
+        for context in &prompt_hook.context {
+            self.push_reminder(context);
+        }
         if let Ok(mut items) = self.items.lock() {
             items.push(ChatItem::user_message(text, &images));
         }
+        self.append_history(text);
         self.finish_turn(self.run_loop(&ParentDispatch(self)).await)
             .await;
+    }
+
+    /// Appends the prompt to `~/.bnote/history.jsonl` (Claude Code's prompt
+    /// history): one JSON line per user message, with the project so the ↑
+    /// recall of the panel can filter by where the work happened.
+    fn append_history(&self, text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let path = super::home::history_file();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = super::home::ensure_dir(parent) {
+                eprintln!("[bnote] history dir: {e}");
+                return;
+            }
+        }
+        let line = serde_json::json!({
+            "display": trimmed,
+            "project": self
+                .project_root()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            "sessionId": self.id,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        })
+        .to_string();
+        use std::io::Write as _;
+        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(mut file) => {
+                if let Err(e) = writeln!(file, "{line}") {
+                    eprintln!("[bnote] history write: {e}");
+                }
+            }
+            Err(e) => eprintln!("[bnote] history open: {e}"),
+        }
     }
 
     /// A background task woke the session while it was idle: the completion
@@ -325,8 +403,184 @@ impl Session {
     }
 
     pub fn set_permission_mode(&self, mode: permissions::Mode) {
+        let current = self.permission_mode();
+        if let Ok(mut previous) = self.plan_previous.lock() {
+            if mode == permissions::Mode::Plan {
+                if current != permissions::Mode::Plan {
+                    *previous = Some(current);
+                }
+            } else {
+                *previous = None;
+            }
+        }
         if let Ok(mut slot) = self.permission_mode.lock() {
             *slot = mode;
+        }
+    }
+
+    /// EnterPlanMode: read-only exploration, then ExitPlanMode presents the plan.
+    fn enter_plan_mode(&self) -> ToolOutput {
+        if self.permission_mode() == permissions::Mode::Plan {
+            return ToolOutput::text(true, "Already in plan mode. Explore, then call ExitPlanMode with the plan.");
+        }
+        self.set_permission_mode(permissions::Mode::Plan);
+        self.emit(AgentEvent::PlanMode { enabled: true });
+        ToolOutput::text(
+            true,
+            "Plan mode is on: read, search and inspect freely (read_file / glob / grep / read-only shell). \
+             write_file, edit_file and mutating shell commands are denied. Do not implement anything yet. \
+             When the plan is complete, call ExitPlanMode with the full plan in markdown (goal, files to \
+             touch, ordered steps, how it will be verified). The user approves it in the panel; only then \
+             do you leave plan mode and start editing.",
+        )
+    }
+
+    /// ExitPlanMode: writes the plan into the agent home, then parks the turn
+    /// on the panel's approval card.
+    async fn exit_plan_mode(&self, input: &Value) -> ToolOutput {
+        let plan = input["plan"].as_str().unwrap_or_default().trim().to_string();
+        if plan.is_empty() {
+            return ToolOutput::text(false, tool_use_error("ExitPlanMode needs a non-empty `plan`"));
+        }
+        if self.permission_mode() != permissions::Mode::Plan {
+            return ToolOutput::text(
+                false,
+                tool_use_error("ExitPlanMode is only valid in plan mode (call EnterPlanMode first)"),
+            );
+        }
+        let path = match self.save_plan(&plan) {
+            Ok(path) => path,
+            Err(e) => return ToolOutput::text(false, tool_use_error(e)),
+        };
+        let payload = serde_json::json!({"plan": plan, "file": path.to_string_lossy()});
+        let answer = self.ask_permission("ExitPlanMode", &payload).await;
+        if !answer.allow {
+            let feedback = answer
+                .feedback
+                .as_deref()
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .map(|f| format!("\nThe user said: {}", f))
+                .unwrap_or_default();
+            return ToolOutput::text(
+                false,
+                tool_use_error(format!(
+                    "The user rejected this plan; you are still in plan mode. Revise it and call ExitPlanMode again.{}",
+                    feedback
+                )),
+            );
+        }
+        let previous = self
+            .plan_previous
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+            .unwrap_or(permissions::Mode::Auto);
+        self.set_permission_mode(previous);
+        self.emit(AgentEvent::PlanMode { enabled: false });
+        ToolOutput::text(
+            true,
+            format!(
+                "The user approved the plan (saved to {}). You are out of plan mode — implement it now.",
+                path.to_string_lossy()
+            ),
+        )
+    }
+
+    /// Writes the plan into `~/.bnote/plans/` (or `settings.plansDirectory`)
+    /// and returns the path. The slug comes from the plan's first line.
+    fn save_plan(&self, plan: &str) -> Result<std::path::PathBuf, String> {
+        let settings = self.current_settings();
+        let dir = match &settings.plans_directory {
+            Some(raw) if !raw.trim().is_empty() => std::path::PathBuf::from(raw.trim()),
+            _ => super::home::plans_dir(),
+        };
+        super::home::ensure_dir(&dir)?;
+        let slug = plan_slug(plan);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = dir.join(format!("{}-{}.md", slug, stamp));
+        std::fs::write(&path, format!("{}\n", plan.trim())).map_err(|e| format!("WRITE_FAILED: {}", e))?;
+        Ok(path)
+    }
+
+    /// The project the session belongs to: the code project for coding, the
+    /// vault otherwise. Instruction discovery, settings and hooks all anchor
+    /// here.
+    pub fn project_root(&self) -> Option<std::path::PathBuf> {
+        self.ctx.workdir.clone().or_else(|| self.ctx.vault.clone())
+    }
+
+    /// The current layered settings (cloned `Arc`, so a reader never holds the
+    /// lock across work).
+    pub fn current_settings(&self) -> Arc<super::settings::Settings> {
+        self.settings
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| Arc::new(super::settings::Settings::default()))
+    }
+
+    /// Reloads `settings.json` from disk. Cheap (three small files) and called
+    /// before every request, so a permission/hook edit applies on the next
+    /// message.
+    fn refresh_settings(&self) {
+        let loaded = super::settings::load(self.project_root().as_deref());
+        if let Ok(mut slot) = self.settings.lock() {
+            *slot = Arc::new(loaded.settings);
+        }
+    }
+
+    /// Runs the hooks registered for `event` with the project as cwd.
+    async fn run_hook(
+        &self,
+        event: &str,
+        tool: Option<&str>,
+        extra: serde_json::Value,
+    ) -> super::hooks::HookOutcome {
+        let settings = self.current_settings();
+        let project = self.project_root();
+        let payload = super::hooks::payload(event, project.as_deref(), extra);
+        super::hooks::run(&settings, project.as_deref(), event, tool, payload).await
+    }
+
+    /// Pushes a one-off `<system-reminder>` user message (SessionStart context).
+    pub fn push_reminder(&self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Ok(mut items) = self.items.lock() {
+            items.push(ChatItem::user_text(&format!(
+                "<system-reminder>{}</system-reminder>",
+                text.trim()
+            )));
+        }
+    }
+
+    /// Runs the SessionStart hook and feeds its context into the first request.
+    pub async fn run_start_hook(&self) {
+        let outcome = self
+            .run_hook(
+                "SessionStart",
+                None,
+                serde_json::json!({"source": "startup", "session_id": self.id}),
+            )
+            .await;
+        self.push_reminder(&outcome.context.join("\n\n"));
+    }
+
+    /// Queues hook `additionalContext` for the next request's reminders.
+    fn push_hook_context(&self, context: &[String]) {
+        if context.is_empty() {
+            return;
+        }
+        if let Ok(mut pending) = self.hook_context.lock() {
+            for item in context {
+                if !item.trim().is_empty() {
+                    pending.push(item.trim().to_string());
+                }
+            }
         }
     }
 
@@ -335,20 +589,28 @@ impl Session {
     /// against an LLM round-trip is nothing, and it is what makes a saved
     /// prompt file edit take effect on the next message.
     fn refresh_dynamic_prompt(&self) {
+        self.refresh_settings();
         let workdir = self
             .ctx
             .workdir
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
         let study = self.ctx.study_content.read().ok().and_then(|g| g.clone());
+        let style = super::output_style::resolve(
+            self.project_root().as_deref(),
+            self.current_settings().output_style.as_deref(),
+        );
+        if let Ok(mut slot) = self.output_style.lock() {
+            *slot = style.clone();
+        }
         let input = AssembleInput {
             def: &self.def,
             vault_name: &self.vault_name,
             current_note: self.current_note.as_deref(),
             workdir: workdir.as_deref(),
             study: study.as_ref(),
-            skills: &self.skills.skills,
             mcp_names: &self.mcp_names,
+            output_style: Some(&style),
         };
         let prompt = assemble(&input);
         if let Ok(mut slot) = self.system_prompt.write() {
@@ -373,12 +635,77 @@ impl Session {
         items
     }
 
+    /// The auto-memory block for a coding session: the behavior prompt plus
+    /// the current `MEMORY.md` index (empty index still gets the prompt, so the
+    /// agent knows where to write memory the first time).
+    fn memory_section(&self) -> Option<String> {
+        if self.mode != SessionMode::Coding {
+            return None;
+        }
+        let settings = self.current_settings();
+        if settings.auto_memory_enabled == Some(false) {
+            return None;
+        }
+        let project = self.ctx.workdir.as_deref()?;
+        let dir = match &settings.auto_memory_directory {
+            Some(raw) if !raw.trim().is_empty() => std::path::PathBuf::from(raw.trim()),
+            _ => super::home::memory_dir(project),
+        };
+        let path = dir.join("MEMORY.md");
+        let index = std::fs::read_to_string(&path)
+            .map(|text| text.trim().to_string())
+            .unwrap_or_default();
+        let mut section = String::from("# memory\n\n");
+        section.push_str(
+            "这是你的长期记忆索引(MEMORY.md)。一条记忆一个文件,索引里一行一条,用 [[name]] 互链。\
+             当用户告诉了你偏好、项目约定、外部资源地址,或你总结出了可复用的经验,就用 write_file 在记忆目录里\
+             新建/更新那条记忆,并在 MEMORY.md 里加一行。只记代码库本身看不出来的事实:不要记录代码结构、\
+             既往修复、git 历史,也不要记录只对本次对话有用的临时状态。\n\n",
+        );
+        section.push_str(&format!("记忆目录:{}\n\n", dir.to_string_lossy()));
+        if index.is_empty() {
+            section.push_str("(MEMORY.md 目前为空)");
+        } else {
+            section.push_str(&index);
+        }
+        Some(section)
+    }
+
     fn user_context(&self) -> Option<String> {
         let mut sections = String::new();
         if !self.omit_user_instructions {
-            let user = super::load_user_instructions(self.ctx.vault.as_deref());
-            if !user.trim().is_empty() {
-                sections.push_str(&format!("# AGENTS.md\n{}\n\n", user.trim()));
+            let project = self.ctx.workdir.as_deref().or(self.ctx.vault.as_deref());
+            let excludes = self.current_settings().instructions_excludes.clone();
+            let files = super::instructions::collect(
+                project,
+                self.mode == SessionMode::Coding,
+                &excludes,
+            );
+            if let Ok(mut loaded) = self.loaded_instructions.lock() {
+                for file in &files {
+                    if let Ok(path) = file.path.canonicalize() {
+                        loaded.insert(path);
+                    }
+                }
+            }
+            let rendered = super::instructions::render(&files);
+            if !rendered.trim().is_empty() {
+                sections.push_str(&format!("# AGENTS.md\n{}\n\n", rendered.trim()));
+            }
+            // Auto memory: the project's MEMORY.md index plus how to keep it
+            // current. It is a user-editable file in the agent home, so it is
+            // read like an instruction file and can change between turns.
+            if let Some(memory) = self.memory_section() {
+                sections.push_str(&memory);
+                sections.push_str("\n\n");
+            }
+            // The skill inventory travels in the conversation (CC's
+            // `skill_listing` attachment), never as a system segment.
+            if self.def.tool_enabled("skill") {
+                sections.push_str(&format!(
+                    "# skills\n{}\n\n",
+                    super::prompt::skills_section(&self.skills.skills).trim()
+                ));
             }
         }
         let today = super::prompt::today_string();
@@ -418,6 +745,35 @@ impl Session {
                     .join("\n")
             ));
         }
+        drop(state);
+        // Hook context queued during the tool batch.
+        if let Ok(mut pending) = self.hook_context.lock() {
+            out.extend(std::mem::take(&mut *pending));
+        }
+        // Reading a file under a directory with its own AGENTS.md loads it
+        // (CC's nested_memory attachment): a subdirectory's rules reach the
+        // model as soon as it starts working there, not only at session start.
+        if !self.omit_user_instructions {
+            let project = self.ctx.workdir.clone().or_else(|| self.ctx.vault.clone());
+            if let Some(project) = project {
+                for target in self.ctx.take_read_paths() {
+                    let nested = {
+                        let Ok(loaded) = self.loaded_instructions.lock() else {
+                            break;
+                        };
+                        super::instructions::nested(&target, &project, &loaded)
+                    };
+                    for file in nested {
+                        if let Ok(path) = file.path.canonicalize() {
+                            if let Ok(mut loaded) = self.loaded_instructions.lock() {
+                                loaded.insert(path);
+                            }
+                        }
+                        out.push(super::instructions::render_one(&file));
+                    }
+                }
+            }
+        }
         out
     }
 
@@ -445,6 +801,9 @@ impl Session {
         let mut max_tokens_override: Option<u32> = None;
         let mut escalations = 0u32;
         let mut recoveries = 0u32;
+        // Stop hooks may force another turn; capped so a broken hook cannot
+        // loop forever.
+        let mut stop_blocks = 0u32;
         loop {
             if self.ctx.abort.is_aborted() {
                 return Ok(TurnOutcome::new("aborted"));
@@ -534,10 +893,31 @@ impl Session {
                 if self.inject_pending_wakeups() {
                     continue;
                 }
+                let stop = self
+                    .run_hook(
+                        "Stop",
+                        None,
+                        serde_json::json!({"stop_hook_active": stop_blocks > 0}),
+                    )
+                    .await;
+                if stop.block && stop_blocks < 3 {
+                    stop_blocks += 1;
+                    let reason = stop.reason.unwrap_or_else(|| {
+                        "The stop hook blocked the end of the turn; continue the work."
+                            .to_string()
+                    });
+                    if let Ok(mut items) = self.items.lock() {
+                        items.push(ChatItem::user_text(&format!(
+                            "<system-reminder>{}</system-reminder>",
+                            reason
+                        )));
+                    }
+                    continue;
+                }
                 return Ok(TurnOutcome::new("end"));
             }
             turn_count += 1;
-            let calls: Vec<ToolCall> = turn
+            let mut calls: Vec<ToolCall> = turn
                 .tool_calls
                 .iter()
                 .filter_map(|c| match c {
@@ -555,7 +935,7 @@ impl Session {
                     _ => None,
                 })
                 .collect();
-            let results = self.execute_calls(dispatch, &calls).await;
+            let results = self.execute_calls(dispatch, &mut calls).await;
             if !results.is_empty() {
                 if let Ok(mut items) = self.items.lock() {
                     items.push(ChatItem::Message {
@@ -594,11 +974,11 @@ impl Session {
     async fn execute_calls(
         &self,
         dispatch: &dyn ToolDispatch,
-        calls: &[ToolCall],
+        calls: &mut [ToolCall],
     ) -> Vec<Content> {
         let mut outputs: Vec<Option<ToolOutput>> = (0..calls.len()).map(|_| None).collect();
         let mut ready: Vec<usize> = Vec::new();
-        for (index, call) in calls.iter().enumerate() {
+        for (index, call) in calls.iter_mut().enumerate() {
             self.emit(AgentEvent::ToolStart {
                 id: call.id.clone(),
                 name: call.name.clone(),
@@ -620,8 +1000,50 @@ impl Session {
                 ));
                 continue;
             }
-            // 3. The definition's permission decides.
-            match permissions::decide(self.permission_mode(), &self.def, &call.name, &call.input) {
+            // 3. A PreToolUse hook can deny, ask, allow or rewrite the input.
+            //    Its `allow` never overrides the settings' deny/ask rules
+            //    (CC's toolHooks contract).
+            let pre = self
+                .run_hook(
+                    "PreToolUse",
+                    Some(&call.name),
+                    serde_json::json!({
+                        "tool_name": call.name,
+                        "tool_input": call.input,
+                    }),
+                )
+                .await;
+            self.push_hook_context(&pre.context);
+            if let Some(updated) = pre.updated_input {
+                call.input = updated;
+            }
+            if pre.decision == Some(Decision::Deny) {
+                outputs[index] = Some(ToolOutput::text(
+                    false,
+                    tool_use_error(permissions::denial_message(&call.name)),
+                ));
+                continue;
+            }
+            // 4. Settings rules, then the definition's permissions, then the mode.
+            let settings = self.current_settings();
+            let rules = permissions::Rules {
+                allow: &settings.permissions.allow,
+                ask: &settings.permissions.ask,
+                deny: &settings.permissions.deny,
+            };
+            let decision = match pre.decision {
+                // Hook `ask` forces the prompt; `allow` only skips the mode's
+                // default prompt, the rules still run.
+                Some(Decision::Ask) => Decision::Ask,
+                _ => permissions::decide_with_rules(
+                    self.permission_mode(),
+                    &self.def,
+                    &rules,
+                    &call.name,
+                    &call.input,
+                ),
+            };
+            match decision {
                 Decision::Deny => {
                     outputs[index] = Some(ToolOutput::text(
                         false,
@@ -695,6 +1117,28 @@ impl Session {
             let mut out = outputs[index]
                 .take()
                 .unwrap_or_else(|| ToolOutput::text(false, tool_use_error("tool did not run")));
+            // PostToolUse / PostToolUseFailure: the hook sees the result and can
+            // add context the model needs right after acting.
+            let post = self
+                .run_hook(
+                    if out.ok {
+                        "PostToolUse"
+                    } else {
+                        "PostToolUseFailure"
+                    },
+                    Some(&call.name),
+                    serde_json::json!({
+                        "tool_name": call.name,
+                        "tool_input": call.input,
+                        "tool_response": out.text,
+                        "is_error": !out.ok,
+                    }),
+                )
+                .await;
+            if !post.context.is_empty() {
+                let extra = post.context.join("\n\n");
+                out.text.push_str(&format!("\n\n<hook-context>\n{}\n</hook-context>", extra.trim()));
+            }
             // Never truncate in place: a huge result goes to a file with a
             // preview, so the model can read the rest itself.
             out.text = self.results.cap(&self.id, out.text);
@@ -869,6 +1313,18 @@ impl Session {
                 });
             }
         }
+        // The spawnable agent types belong in the tool description (CC's
+        // default), so the model knows what `subagent_type` accepts.
+        if let Some(task) = defs.iter_mut().find(|d| d.name == "task") {
+            let listing = super::defs::subagent_listing();
+            if !listing.is_empty() {
+                let mut lines = String::from("\n\nAvailable agent types for subagent_type:");
+                for (id, description) in listing {
+                    lines.push_str(&format!("\n- {}: {}", id, description));
+                }
+                task.description.push_str(&lines);
+            }
+        }
         defs
     }
 
@@ -923,6 +1379,8 @@ impl Session {
             "bash_output" | "bash_kill" => {
                 return self.run_bg_control(name, input);
             }
+            "EnterPlanMode" => return self.enter_plan_mode(),
+            "ExitPlanMode" => return self.exit_plan_mode(input).await,
             "ask_user_question" => {
                 return match self.ask_question(&input["questions"]).await {
                     Ok(answer) => ToolOutput::text(true, answer),
@@ -1143,27 +1601,17 @@ impl Session {
             );
         }
         let mut child_def = if fork {
-            // The fork child is not a definition on disk: it inherits the
+            // The fork child is not a registry definition: it inherits the
             // parent's surface (CC's FALLBACK descriptor).
             AgentDefinition {
                 id: "fork".into(),
                 name: "Fork".into(),
                 description: "Forked worker that inherits the parent conversation".into(),
                 tools: Some(self.def.effective_tools()),
-                dir: self.def.dir.clone(),
                 ..Default::default()
             }
         } else {
-            let (defs, errors) = super::defs::load_definitions(self.ctx.vault.as_deref());
-            for err in &errors {
-                if err.id == def_id {
-                    return ToolOutput::text(
-                        false,
-                        tool_use_error(format!("子代理定义损坏: {}", err.message)),
-                    );
-                }
-            }
-            match defs.into_iter().find(|d| d.id == def_id) {
+            match super::defs::definition(&def_id) {
                 Some(d) => d,
                 None => {
                     return ToolOutput::text(
@@ -1228,6 +1676,8 @@ impl Session {
             workdir: self.ctx.workdir.clone(),
             shell: Arc::new(ShellCwd::new()),
             bg: Arc::new(BgRegistry::new()),
+            read_paths: Mutex::new(Vec::new()),
+            extra_roots: Vec::new(),
         });
         let workdir_s = self
             .ctx
@@ -1235,14 +1685,21 @@ impl Session {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
         let study = self.ctx.study_content.read().ok().and_then(|g| g.clone());
+        // A subagent inherits the parent's output style (the user picked how
+        // answers should read; the subagent's report follows the same shape).
+        let style = self
+            .output_style
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| super::output_style::builtin_default());
         let assemble_input = AssembleInput {
             def: &child_def,
             vault_name: &self.vault_name,
             current_note: self.current_note.as_deref(),
             workdir: workdir_s.as_deref(),
             study: study.as_ref(),
-            skills: &self.skills.skills,
             mcp_names: &self.mcp_names,
+            output_style: Some(&style),
         };
         // The initial history: the fork inherits the parent transcript (minus
         // incomplete tool calls); a normal subagent starts from one user turn.
@@ -1269,8 +1726,10 @@ impl Session {
                 .unwrap_or(0),
             self.seq.fetch_add(1, Ordering::Relaxed)
         );
+        let child_session_id = format!("{}-sub-{}", self.id, child_def.id);
+        let project_root = self.ctx.workdir.clone().or_else(|| self.ctx.vault.clone());
         let child = Arc::new(Session {
-            id: format!("{}-sub-{}", self.id, child_def.id),
+            id: child_session_id.clone(),
             mode: self.mode,
             def: child_def.clone(),
             items: Mutex::new(items),
@@ -1280,6 +1739,7 @@ impl Session {
             mcp_names: self.mcp_names.clone(),
             ctx: child_ctx,
             skills: self.skills.clone(),
+            output_style: Mutex::new(style.clone()),
             mcp: self.mcp.clone(),
             provider: child_provider,
             running: Arc::new(AtomicBool::new(false)),
@@ -1288,29 +1748,64 @@ impl Session {
             context_window: self.context_window,
             last_usage: Mutex::new(None),
             todos: Mutex::new(Vec::new()),
-            tasks: Mutex::new(TaskList::new()),
+            tasks: Mutex::new(TaskList::load(super::home::tasks_dir(
+                &self.task_list_id,
+            ))),
+            task_list_id: self.task_list_id.clone(),
             pending_wakeups: Mutex::new(Vec::new()),
             pending_permissions: Mutex::new(HashMap::new()),
             pending_questions: Mutex::new(HashMap::new()),
-            results: ResultStore::new(self.ctx.data_dir.join("tool-results")),
+            results: ResultStore::new(match &project_root {
+                Some(root) => super::home::tool_results_dir(root, &child_session_id),
+                None => self.ctx.data_dir.join("tool-results"),
+            }),
             compact_failures: AtomicU32::new(0),
             attachments: Mutex::new(AttachmentState::default()),
             omit_user_instructions: read_only,
+            settings: Mutex::new(self.current_settings()),
+            loaded_instructions: Mutex::new(std::collections::HashSet::new()),
+            hook_context: Mutex::new(Vec::new()),
             permission_mode: Mutex::new(self.permission_mode()),
+            plan_previous: Mutex::new(self.plan_previous.lock().ok().and_then(|g| *g)),
             children: Mutex::new(HashMap::new()),
             parent_id: Some(self.id.clone()),
-            agent_dir: Some(
-                self.ctx
+            agent_dir: Some(match &project_root {
+                Some(root) => super::home::subagents_dir(root, &self.id).join(&child_id_for_dir),
+                None => self
+                    .ctx
                     .data_dir
                     .join("agents")
                     .join(&self.id)
                     .join(&child_id_for_dir),
-            ),
+            }),
             self_ref: Mutex::new(None),
         });
         if let Ok(mut slot) = child.self_ref.lock() {
             *slot = Some(Arc::downgrade(&child));
         }
+        // SubagentStart hooks may reject the launch or add context.
+        let sub_start = self
+            .run_hook(
+                "SubagentStart",
+                None,
+                serde_json::json!({
+                    "agent_id": child.id,
+                    "agent_type": child.def.id,
+                    "label": label,
+                }),
+            )
+            .await;
+        if sub_start.decision == Some(Decision::Deny) {
+            return ToolOutput::text(
+                false,
+                tool_use_error(
+                    sub_start
+                        .reason
+                        .unwrap_or_else(|| "SubagentStart hook rejected the launch".into()),
+                ),
+            );
+        }
+        child.push_reminder(&sub_start.context.join("\n\n"));
         // Register the child before it runs: once it is in the map, and its
         // transcript is on disk, `send_message` can continue it even after a
         // crash, a rate limit or a stop.
@@ -1339,6 +1834,17 @@ impl Session {
             runner_child.refresh_dynamic_prompt();
             let loop_result = runner_child.run_loop(&SubDispatch(&runner_child)).await;
             runner_child.persist_agent(if loop_result.is_ok() { "completed" } else { "failed" });
+            let _ = runner_child
+                .run_hook(
+                    "SubagentStop",
+                    None,
+                    serde_json::json!({
+                        "agent_id": runner_child.id,
+                        "agent_type": runner_child.def.id,
+                        "ok": loop_result.is_ok(),
+                    }),
+                )
+                .await;
             let mut report = last_assistant_text(&runner_child.history());
             if report.trim().is_empty() {
                 if let Err(e) = &loop_result {
@@ -1418,15 +1924,18 @@ impl Session {
     }
 
     /// Writes a subagent's transcript and metadata under
-    /// `<data_dir>/agents/<parentId>/<agentId>/`. The main session has no
-    /// `agent_dir`: its record belongs to the material.
+    /// `<agent home>/projects/<project>/<parentId>/subagents/<agent>/`. The main
+    /// session has no `agent_dir`: its record belongs to the panel's transcript.
     fn persist_agent(&self, status: &str) {
         let Some(dir) = &self.agent_dir else { return };
-        if std::fs::create_dir_all(dir).is_err() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("[bnote] subagent dir {}: {e}", dir.display());
             return;
         }
         if let Ok(json) = serde_json::to_string(&self.history()) {
-            let _ = std::fs::write(dir.join("transcript.json"), json);
+            if let Err(e) = std::fs::write(dir.join("transcript.json"), json) {
+                eprintln!("[bnote] subagent transcript: {e}");
+            }
         }
         let meta = json!({
             "agentId": self.id,
@@ -1440,7 +1949,9 @@ impl Session {
                 .map(|d| d.as_millis())
                 .unwrap_or(0),
         });
-        let _ = std::fs::write(dir.join("metadata.json"), meta.to_string());
+        if let Err(e) = std::fs::write(dir.join("metadata.json"), meta.to_string()) {
+            eprintln!("[bnote] subagent metadata: {e}");
+        }
     }
 
     /// `send_message`: deliver a message to a subagent this session spawned.
@@ -1598,6 +2109,19 @@ impl Session {
         if snapshot.is_empty() {
             return Ok(());
         }
+        let pre = self
+            .run_hook(
+                "PreCompact",
+                None,
+                serde_json::json!({"message_count": snapshot.len()}),
+            )
+            .await;
+        if pre.decision == Some(Decision::Deny) {
+            return Err(pre
+                .reason
+                .unwrap_or_else(|| "PreCompact hook rejected compaction".into()));
+        }
+        self.push_hook_context(&pre.context);
         let collected = Mutex::new(String::new());
         let sink = |event: AgentEvent| {
             if let AgentEvent::TextDelta { text } = event {
@@ -1632,6 +2156,14 @@ impl Session {
                 snapshot.len()
             ),
         });
+        let post = self
+            .run_hook(
+                "PostCompact",
+                None,
+                serde_json::json!({"summary": summary}),
+            )
+            .await;
+        self.push_hook_context(&post.context);
         Ok(())
     }
 }
@@ -1700,6 +2232,37 @@ fn strip_analysis(text: &str) -> String {
     }
 }
 
+/// A file-friendly plan name from the plan's first heading or line.
+fn plan_slug(plan: &str) -> String {
+    let first = plan
+        .lines()
+        .map(|line| line.trim_start_matches('#').trim())
+        .find(|line| !line.is_empty())
+        .unwrap_or("plan");
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in first.chars() {
+        if ch.is_alphanumeric() {
+            for lower in ch.to_lowercase() {
+                slug.push(lower);
+            }
+            last_dash = false;
+        } else if !last_dash && !slug.is_empty() {
+            slug.push('-');
+            last_dash = true;
+        }
+        if slug.chars().count() >= 40 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "plan".to_string()
+    } else {
+        slug
+    }
+}
+
 /// The compaction prompt. Faithful to Claude Code's nine-section summary: the
 /// analysis pass organizes the drafting, the sections pin what must survive.
 const COMPACTION_PROMPT: &str = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\nYour task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary will be used to continue the work in a fresh context without losing important information.\n\nBefore providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts. In your analysis process, chronologically analyze each message: the user's explicit requests and intents, your approach, key decisions, file names and code snippets, errors and how you fixed them, and any user feedback about doing something differently.\n\nYour summary should include the following sections:\n\n1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail.\n2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.\n3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created, with short code snippets where applicable and why they matter.\n4. Errors and fixes: List errors you ran into and how you fixed them, especially user feedback about doing something differently.\n5. Problem Solving: Document problems solved and any ongoing troubleshooting.\n6. All user messages: List ALL user messages that are not tool results. These are critical for understanding the user's feedback and changing intent.\n7. Pending Tasks: Outline pending tasks you have been explicitly asked to work on.\n8. Current Work: Describe precisely what was being worked on immediately before this summary request.\n9. Optional Next Step: List the next step directly in line with the user's most recent request. If the last task was concluded, say so instead of inventing new work. Include verbatim quotes from the most recent conversation so the next step is unambiguous.\n\nAfter the <analysis> block, output the summary as plain text with the nine numbered sections.\n\nREMINDER: Do NOT call any tools. Respond with plain text only — an <analysis> block followed by a <summary> block. Tool calls will be rejected and you will fail the task.";
@@ -1727,24 +2290,45 @@ pub struct SessionSeed {
     pub context_window: u64,
     /// The composer's mode when the session starts (default: auto).
     pub permission_mode: Option<permissions::Mode>,
+    /// Which persisted task list this session owns (a restored session passes
+    /// its record id so the tasks continue; a new session uses its own id).
+    pub task_list_id: Option<String>,
 }
 
 pub fn create_session(seed: SessionSeed) -> Session {
-    let results = ResultStore::new(seed.ctx.data_dir.join("tool-results"));
+    // The agent's runtime files live in `~/.bnote/projects/<project>/...`; the
+    // project is the code project for coding sessions and the vault otherwise.
+    let project = seed.ctx.workdir.clone().or_else(|| seed.ctx.vault.clone());
+    let results = match &project {
+        Some(root) => ResultStore::new(super::home::tool_results_dir(root, &seed.id)),
+        None => ResultStore::new(seed.ctx.data_dir.join("tool-results")),
+    };
+    let task_list_id = seed.task_list_id.clone().unwrap_or_else(|| seed.id.clone());
+    let tasks = TaskList::load(super::home::tasks_dir(&task_list_id));
+    let loaded_settings = super::settings::load(project.as_deref());
+    let permission_mode = seed.permission_mode.unwrap_or_else(|| {
+        permissions::Mode::from_settings(
+            loaded_settings.settings.permissions.default_mode.as_deref(),
+        )
+    });
     let workdir_s = seed
         .ctx
         .workdir
         .as_ref()
         .map(|p| p.to_string_lossy().to_string());
     let study = seed.ctx.study_content.read().ok().and_then(|g| g.clone());
+    let style = super::output_style::resolve(
+        project.as_deref(),
+        loaded_settings.settings.output_style.as_deref(),
+    );
     let input = AssembleInput {
         def: &seed.def,
         vault_name: &seed.vault_name,
         current_note: seed.current_note.as_deref(),
         workdir: workdir_s.as_deref(),
         study: study.as_ref(),
-        skills: &seed.skills.skills,
         mcp_names: &seed.mcp_names,
+        output_style: Some(&style),
     };
     Session {
         id: seed.id,
@@ -1757,6 +2341,7 @@ pub fn create_session(seed: SessionSeed) -> Session {
         mcp_names: seed.mcp_names,
         ctx: seed.ctx,
         skills: seed.skills,
+        output_style: Mutex::new(style),
         mcp: seed.mcp,
         provider: seed.provider,
         running: Arc::new(AtomicBool::new(false)),
@@ -1765,7 +2350,8 @@ pub fn create_session(seed: SessionSeed) -> Session {
         context_window: seed.context_window,
         last_usage: Mutex::new(None),
         todos: Mutex::new(Vec::new()),
-        tasks: Mutex::new(TaskList::new()),
+        tasks: Mutex::new(tasks),
+        task_list_id,
         pending_wakeups: Mutex::new(Vec::new()),
         pending_permissions: Mutex::new(HashMap::new()),
         pending_questions: Mutex::new(HashMap::new()),
@@ -1773,9 +2359,11 @@ pub fn create_session(seed: SessionSeed) -> Session {
         compact_failures: AtomicU32::new(0),
         attachments: Mutex::new(AttachmentState::default()),
         omit_user_instructions: false,
-        permission_mode: Mutex::new(
-            seed.permission_mode.unwrap_or_default(),
-        ),
+        settings: Mutex::new(Arc::new(loaded_settings.settings)),
+        loaded_instructions: Mutex::new(std::collections::HashSet::new()),
+        hook_context: Mutex::new(Vec::new()),
+        permission_mode: Mutex::new(permission_mode),
+        plan_previous: Mutex::new(None),
         children: Mutex::new(HashMap::new()),
         parent_id: None,
         agent_dir: None,

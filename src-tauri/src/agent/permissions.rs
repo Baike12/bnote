@@ -27,6 +27,9 @@ pub enum Mode {
     Confirm,
     Auto,
     Full,
+    /// Plan mode: the agent may explore and write the plan, but not change
+    /// the repository (write/edit denied, shell commands limited to readers).
+    Plan,
 }
 
 impl Mode {
@@ -35,6 +38,7 @@ impl Mode {
             "confirm" => Some(Mode::Confirm),
             "auto" => Some(Mode::Auto),
             "full" => Some(Mode::Full),
+            "plan" => Some(Mode::Plan),
             _ => None,
         }
     }
@@ -44,6 +48,20 @@ impl Mode {
             Mode::Confirm => "confirm",
             Mode::Auto => "auto",
             Mode::Full => "full",
+            Mode::Plan => "plan",
+        }
+    }
+
+    /// Maps a `settings.json` `permissions.defaultMode` value onto the
+    /// composer's mode. `plan` and `dontAsk` (CC-only modes) fall back to the
+    /// closest bnote posture until plan mode lands.
+    pub fn from_settings(value: Option<&str>) -> Mode {
+        match value.unwrap_or_default() {
+            "acceptEdits" | "auto" => Mode::Auto,
+            "bypassPermissions" | "full" => Mode::Full,
+            "default" | "dontAsk" | "confirm" => Mode::Confirm,
+            "plan" => Mode::Plan,
+            _ => Mode::Auto,
         }
     }
 }
@@ -63,10 +81,25 @@ pub fn needs_approval(tool: &str) -> bool {
     matches!(tool, "write_file" | "edit_file" | "bash")
 }
 
-/// Per-tool decision. The definition's `permissions` map wins (an explicit
-/// `allow` means "never ask me about this one", `ask` forces the prompt, `deny`
-/// blocks); absent entries fall through to the session mode.
+/// Per-tool decision. Settings rules run first (deny → ask → allow), then the
+/// definition's `permissions` map, then the session mode.
 pub fn decide(mode: Mode, def: &AgentDefinition, tool: &str, input: &Value) -> Decision {
+    decide_with_rules(mode, def, &Rules::default(), tool, input)
+}
+
+/// Settings-level allow/ask/deny rules (`settings.json`). They are evaluated
+/// before the session mode: an explicit rule expresses the user's intent and
+/// the modes are only the default posture.
+pub fn decide_with_rules(
+    mode: Mode,
+    def: &AgentDefinition,
+    rules: &Rules,
+    tool: &str,
+    input: &Value,
+) -> Decision {
+    if let Some(decision) = rule_decision(rules, tool, input) {
+        return decision;
+    }
     let key = if tool.starts_with("mcp__") { "mcp" } else { tool };
     match def.permissions.get(key) {
         Some(Permission::Deny) => Decision::Deny,
@@ -88,8 +121,217 @@ pub fn decide(mode: Mode, def: &AgentDefinition, tool: &str, input: &Value) -> D
                     Decision::Allow
                 }
             }
+            Mode::Plan => {
+                if matches!(tool, "write_file" | "edit_file") {
+                    Decision::Deny
+                } else if tool == "bash"
+                    && !read_only_command(input["command"].as_str().unwrap_or(""))
+                {
+                    Decision::Deny
+                } else {
+                    Decision::Allow
+                }
+            }
         },
     }
+}
+
+/// The permission rules from one or more settings files.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Rules<'a> {
+    pub allow: &'a [String],
+    pub ask: &'a [String],
+    pub deny: &'a [String],
+}
+
+/// `None` = no rule matched. Order matters: deny beats ask beats allow.
+pub fn rule_decision(rules: &Rules, tool: &str, input: &Value) -> Option<Decision> {
+    if rules.deny.iter().any(|rule| rule_matches(rule, tool, input)) {
+        return Some(Decision::Deny);
+    }
+    if rules.ask.iter().any(|rule| rule_matches(rule, tool, input)) {
+        return Some(Decision::Ask);
+    }
+    if rules
+        .allow
+        .iter()
+        .any(|rule| rule_matches(rule, tool, input))
+    {
+        return Some(Decision::Allow);
+    }
+    None
+}
+
+/// `Bash(npm run test:*)`, `Write(/tmp/**)`, `Read`, `mcp__server__tool`.
+fn rule_matches(rule: &str, tool: &str, input: &Value) -> bool {
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return false;
+    }
+    let (name, spec) = match rule.split_once('(') {
+        Some((name, rest)) => match rest.strip_suffix(')') {
+            Some(spec) => (name.trim(), Some(spec.trim())),
+            None => (name.trim(), None),
+        },
+        None => (rule, None),
+    };
+    if !(name == "*" || name == tool) {
+        return false;
+    }
+    let Some(spec) = spec else { return true };
+    if spec.is_empty() {
+        return true;
+    }
+    match tool {
+        "bash" => bash_matches(spec, input["command"].as_str().unwrap_or_default()),
+        "read_file" | "write_file" | "edit_file" | "glob" | "grep" | "list_files" => {
+            let path = input["path"].as_str().unwrap_or_default();
+            path_matches(spec, path)
+        }
+        "task" => input["subagent_type"]
+            .as_str()
+            .map(|value| glob_match(spec, value))
+            .unwrap_or(false),
+        "read_url" => input["url"]
+            .as_str()
+            .map(|value| glob_match(spec, value))
+            .unwrap_or(false),
+        _ => input
+            .as_object()
+            .map(|map| {
+                map.values().any(|value| {
+                    value
+                        .as_str()
+                        .map(|text| glob_match(spec, text))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false),
+    }
+}
+
+/// `prefix:*` is a command prefix; `*` anywhere else is a wildcard; without a
+/// wildcard the command must match exactly.
+fn bash_matches(spec: &str, command: &str) -> bool {
+    let command = command.trim();
+    if let Some(prefix) = spec.strip_suffix(":*") {
+        return command.starts_with(prefix.trim());
+    }
+    if spec.contains('*') {
+        return glob_match(spec, command);
+    }
+    command == spec.trim()
+}
+
+fn path_matches(spec: &str, path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    // CC writes absolute path rules as `//abs/path`; the doubled slash only
+    // escapes the rule syntax.
+    let spec = spec
+        .strip_prefix("//")
+        .map(|s| format!("/{}", s))
+        .unwrap_or_else(|| spec.to_string());
+    if spec.contains('*') {
+        return glob_match(&spec, path);
+    }
+    path == spec || path.starts_with(&format!("{}/", spec.trim_end_matches('/')))
+}
+
+/// Wildcard matcher: `*` matches any run of characters.
+fn glob_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if !pattern.contains('*') {
+        return pattern == value;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut rest = value;
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if index == 0 {
+            if !rest.starts_with(part) {
+                return false;
+            }
+            rest = &rest[part.len()..];
+        } else if index == parts.len() - 1 {
+            return rest.ends_with(part);
+        } else {
+            match rest.find(part) {
+                Some(at) => rest = &rest[at + part.len()..],
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
+/// Whether a shell command only reads. Plan mode allows these and denies
+/// everything else that could change the repository.
+///
+/// The check is conservative (whitespace-separated segments, every segment
+/// must be a reader): a command it does not recognize is denied, the agent
+/// can still read files with read_file / grep.
+pub fn read_only_command(command: &str) -> bool {
+    let command = command.trim();
+    if command.is_empty() {
+        return true;
+    }
+    // A pipe / chain is only as safe as its parts.
+    for segment in command.split(['|', ';', '&', '\n']) {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        if !read_only_segment(segment) {
+            return false;
+        }
+    }
+    true
+}
+
+fn read_only_segment(segment: &str) -> bool {
+    let mut parts = segment.split_whitespace();
+    let Some(head) = parts.next() else { return true };
+    let head = head.trim_start_matches('(').trim();
+    const READERS: &[&str] = &[
+        "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "stat", "file",
+        "tree", "rg", "grep", "find", "fd", "sort", "uniq", "cut", "tr", "diff", "cmp",
+        "sed", "awk", "jq", "basename", "dirname", "realpath", "which", "type",
+        "du", "df", "date", "uname", "env", "printenv", "cd", "test", "true", "false",
+    ];
+    if READERS.contains(&head) {
+        // `sed -i` and `awk -i inplace` write; treat the in-place forms as writes.
+        let rest: Vec<&str> = parts.collect();
+        if head == "sed" && rest.iter().any(|a| *a == "-i" || a.starts_with("-i")) {
+            return false;
+        }
+        if head == "awk" && rest.iter().any(|a| a.contains("inplace")) {
+            return false;
+        }
+        return true;
+    }
+    if head == "git" {
+        let sub = parts.next().unwrap_or_default();
+        // `git config` without a value only reads; the writing form needs one.
+        if sub == "config" {
+            return false;
+        }
+        return matches!(
+            sub,
+            "status" | "diff" | "log" | "show" | "branch" | "rev-parse" | "ls-files"
+                | "remote" | "describe" | "blame" | "grep" | "tag"
+        );
+    }
+    if head == "cargo" {
+        // `cargo check` compiles into target/: not a reader.
+        return matches!(parts.next().unwrap_or_default(), "metadata" | "tree" | "search");
+    }
+    false
 }
 
 /// Recognized destructive shell commands (ZCode's guarded matcher, trimmed to
@@ -250,6 +492,42 @@ mod tests {
             decide(Mode::Full, &def, "bash", &serde_json::json!({"command": "rm -rf /"})),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn plan_mode_refuses_writes_and_allows_readers() {
+        let def = def_with(&[]);
+        for tool in ["write_file", "edit_file"] {
+            assert_eq!(
+                decide(Mode::Plan, &def, tool, &no_input()),
+                Decision::Deny
+            );
+        }
+        assert_eq!(
+            decide(Mode::Plan, &def, "read_file", &no_input()),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(
+                Mode::Plan,
+                &def,
+                "bash",
+                &serde_json::json!({"command": "git status && grep -rn foo src"})
+            ),
+            Decision::Allow
+        );
+        for command in ["touch x", "rm -rf build", "git commit -am x", "sed -i s/a/b/ f"] {
+            assert_eq!(
+                decide(
+                    Mode::Plan,
+                    &def,
+                    "bash",
+                    &serde_json::json!({"command": command})
+                ),
+                Decision::Deny,
+                "{command}"
+            );
+        }
     }
 
     #[test]

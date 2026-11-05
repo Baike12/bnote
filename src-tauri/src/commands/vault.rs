@@ -81,13 +81,6 @@ fn set_vault_blocking(app: &AppHandle, state: &State<'_, AppState>, path: String
 
     *state.vault.write().map_err(|_| "lock poisoned")? = Some(root.clone());
 
-    // First run in a vault: write the default agent definitions as ordinary
-    // files. A failure must not block opening the vault; the missing agents
-    // show up as DEF_MISSING when a session starts.
-    if let Err(e) = crate::agent::defs::seed_agents(&root) {
-        eprintln!("[bnote] seed agents failed: {e}");
-    }
-
     // Remember the vault for the next launch.
     super::config::persist_last_vault(state, &root.to_string_lossy())?;
 
@@ -260,8 +253,8 @@ fn build_level(dir: &Path, rel_prefix: &str) -> Vec<FileNode> {
 /// The Excalidraw plugin's markdown wrapper holds a drawing, not a note: were
 /// it listed as a note, quick switch would open it as a note (a screenful of
 /// JSON). They belong to the asset inventory instead, via is_asset_file.
-/// Files the sidebar tree shows: notes plus the JSON config files under
-/// `.bnote/agents`. The flat index stays notes-only (`is_note_file`).
+/// Files the sidebar tree shows: notes plus JSON files under `.bnote` (project
+/// files, settings). The flat index stays notes-only (`is_note_file`).
 fn is_tree_file(name: &str) -> bool {
     is_note_file(name) || name.to_lowercase().ends_with(".json")
 }

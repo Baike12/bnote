@@ -15,14 +15,19 @@ pub struct SkillRegistry {
 }
 
 impl SkillRegistry {
-    /// Scans: <app_data>/skills, <vault>/.bnote/skills, ~/.agents/skills,
-    /// plus any user-configured dirs. Each direct subdirectory may hold a
-    /// SKILL.md (also accepted at the dir root itself).
-    pub fn discover(data_dir: &PathBuf, vault: Option<&PathBuf>, extra: &[String]) -> SkillRegistry {
-        let mut roots: Vec<PathBuf> = Vec::new();
-        roots.push(data_dir.join("skills"));
-        if let Some(v) = vault {
-            roots.push(v.join(".bnote").join("skills"));
+    /// Scans: `~/.bnote/skills`, the project's `.bnote/skills` (the vault for
+    /// study/creative sessions, the code project for coding sessions),
+    /// `~/.agents/skills` (the Agent Skills convention, kept for
+    /// compatibility), plus any user-configured dirs. Each direct
+    /// subdirectory may hold a `SKILL.md`.
+    pub fn discover(
+        vault: Option<&PathBuf>,
+        workdir: Option<&PathBuf>,
+        extra: &[String],
+    ) -> SkillRegistry {
+        let mut roots: Vec<PathBuf> = super::home::skills_dirs();
+        if let Some(project) = workdir.or(vault) {
+            roots.push(project.join(".bnote").join("skills"));
         }
         if let Some(home) = dirs_home() {
             roots.push(home.join(".agents").join("skills"));

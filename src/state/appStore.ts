@@ -5,8 +5,6 @@ import {
   pushPdfEntry,
   pushUrlEntry,
   pushWereadBook,
-  pushCodeEntry,
-  type StudyCodeEntry,
   type StudyHistory,
   type StudyPdfEntry,
   type StudyUrlEntry,
@@ -122,6 +120,13 @@ export interface Settings {
   studyAgentWidth: number;
   studyContentWidth: number;
   /**
+   * The code mode columns: agent (left) and code project (middle), in pixels.
+   * Same discipline as the study columns — the notes column takes the rest,
+   * and CSS clamps the display when the window is narrow.
+   */
+  codeAgentWidth: number;
+  codeContentWidth: number;
+  /**
    * The three columns of the project view: left "project navigation", middle
    * "project board", right "journal". The navigation and journal widths are
    * pixel values and the board takes the remaining width — dragging the
@@ -141,9 +146,9 @@ export interface Settings {
    * The composer's permission mode for agent tool calls:
    * `confirm` asks before every file change and shell command, `auto` runs
    * autonomously and only asks for a recognized dangerous command, `full`
-   * never asks. Per-tool `permissions` in agent.json still win.
+   * never asks, `plan` is read-only research until the plan is approved.
    */
-  agentPermissionMode: "confirm" | "auto" | "full";
+  agentPermissionMode: "confirm" | "auto" | "full" | "plan";
   /**
    * The conversation font scale of the study assistant (1 = 100%, 85%–160%).
    * The body baseline is 15px × this factor, and headings / code / tool
@@ -191,6 +196,8 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "dark",
   studyAgentWidth: DEFAULT_AGENT_WIDTH,
   studyContentWidth: DEFAULT_CONTENT_WIDTH,
+  codeAgentWidth: DEFAULT_AGENT_WIDTH,
+  codeContentWidth: DEFAULT_CONTENT_WIDTH,
   projectsSideWidth: DEFAULT_SIDE_WIDTH,
   projectsDailyWidth: DEFAULT_DAILY_WIDTH,
   studyEyeCare: false,
@@ -248,6 +255,12 @@ export interface LinkHop {
   to: string;
 }
 
+/** The code project open in code mode (the repository is independent of the vault). */
+export interface CodeProjectRef {
+  path: string;
+  title: string;
+}
+
 export interface PersistedConfig {
   lastVault?: string;
   /** The legacy single global value of "last file". Replaced by lastFileByVault, it is only read once as the seed of the startup migration. */
@@ -265,6 +278,8 @@ export interface PersistedConfig {
   studyHistory?: StudyHistory;
   /** The most recently opened code projects (MRU, newest first). */
   recentCodeProjects?: string[];
+  /** The project restored on startup when code mode was the last active mode. */
+  codeProject?: CodeProjectRef | null;
   /**
    * The size and position of the main window (logical pixels). Written by
    * `lib/windowState.ts` after a move/resize and restored by the Rust side
@@ -385,6 +400,10 @@ interface AppState {
   toast: string | null;
   /** Study mode: when active, the main area becomes the agent | content | notes three columns */
   studyMode: boolean;
+  /** Code mode: agent | code project | notes, independent of study mode (a local vault and a code repository are unrelated). */
+  codeMode: boolean;
+  /** The code project that code mode shows (null = the project picker). Persisted with the config. */
+  codeProject: CodeProjectRef | null;
   /** The project management view: when active, the main area becomes the project list | project cards | journal three columns. */
   projectsMode: boolean;
   /** Creative mode: the shape switch of the agent panel and the middle-column preview inside study mode. */
@@ -455,6 +474,8 @@ interface AppState {
   showToast: (msg: string) => void;
   clearToast: () => void;
   setStudyMode: (active: boolean) => void;
+  setCodeMode: (active: boolean) => void;
+  setCodeProject: (project: CodeProjectRef | null) => void;
   setProjectsMode: (active: boolean) => void;
   setCreativeMode: (active: boolean) => void;
   setStudyContent: (content: StudyContent | null) => void;
@@ -466,8 +487,6 @@ interface AppState {
   recordStudyPdf: (entry: Omit<StudyPdfEntry, "at">) => void;
   recordStudyUrl: (entry: Omit<StudyUrlEntry, "at">) => void;
   recordWereadBook: (entry: Omit<WereadBookEntry, "at">) => void;
-  /** Record "this code project was opened", so the history menu can list it. */
-  recordStudyCode: (entry: Omit<StudyCodeEntry, "at"> & { at?: number }) => void;
   openDrawingSession: (session: DrawingSession) => void;
   closeDrawingSession: () => void;
   /** The Agent config was saved: let study mode re-read the current config (no session rebuild, see agentConfigVersion). */
@@ -528,6 +547,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   dailyBackFrom: null,
   toast: null,
   studyMode: false,
+  codeMode: false,
+  codeProject: null,
   projectsMode: false,
   creativeMode: false,
   studyContent: null,
@@ -652,16 +673,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   setStudyMode: (active) =>
     set(
       active
-        ? { studyMode: true, projectsMode: false, sidebarOpen: false }
+        ? { studyMode: true, codeMode: false, projectsMode: false, sidebarOpen: false }
         : { studyMode: false },
     ),
+  // Code mode is the fourth full-screen shape: exactly one of study / code /
+  // projects is active at a time (they all take the same main area).
+  setCodeMode: (active) =>
+    set(
+      active
+        ? { codeMode: true, studyMode: false, projectsMode: false, sidebarOpen: false }
+        : { codeMode: false },
+    ),
+  setCodeProject: (codeProject) => {
+    set({ codeProject });
+    persistConfig({ ...getConfigSnapshot(), codeProject });
+  },
   // The two full-screen views are mutually exclusive: only one main-area
   // shape exists at a time, otherwise the switch commands would stack two
   // sets of three columns.
   setProjectsMode: (active) =>
     set(
       active
-        ? { projectsMode: true, studyMode: false, sidebarOpen: false }
+        ? { projectsMode: true, studyMode: false, codeMode: false, sidebarOpen: false }
         : { projectsMode: false },
     ),
   setCreativeMode: (active) => set({ creativeMode: active }),
@@ -679,11 +712,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   recordStudyUrl: (entry) => {
     const studyHistory = pushUrlEntry(get().studyHistory, entry);
-    set({ studyHistory });
-    persistConfig({ ...getConfigSnapshot(), studyHistory });
-  },
-  recordStudyCode: (entry: Omit<StudyCodeEntry, "at"> & { at?: number }) => {
-    const studyHistory = pushCodeEntry(get().studyHistory, entry);
     set({ studyHistory });
     persistConfig({ ...getConfigSnapshot(), studyHistory });
   },
@@ -715,6 +743,12 @@ export function toggleStudyMode() {
 export function toggleProjectsMode() {
   const store = useAppStore.getState();
   store.setProjectsMode(!store.projectsMode);
+}
+
+/** The code mode switch (independent of study mode; the project is remembered across restarts). */
+export function toggleCodeMode() {
+  const store = useAppStore.getState();
+  store.setCodeMode(!store.codeMode);
 }
 
 let configSnapshot: PersistedConfig = {};

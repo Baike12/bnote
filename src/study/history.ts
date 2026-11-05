@@ -36,24 +36,16 @@ export interface WereadBookEntry {
   at: number;
 }
 
-/** A code project that was opened. `path` is the absolute path of the project root (usually outside the vault). */
-export interface StudyCodeEntry {
-  path: string;
-  title: string;
-  at: number;
-}
-
 export interface StudyHistory {
   pdfs: StudyPdfEntry[];
   urls: StudyUrlEntry[];
   weread: WereadBookEntry[];
-  codes: StudyCodeEntry[];
 }
 
 export const STUDY_HISTORY_LIMIT = 30;
 
 export function emptyStudyHistory(): StudyHistory {
-  return { pdfs: [], urls: [], weread: [], codes: [] };
+  return { pdfs: [], urls: [], weread: [] };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -109,21 +101,12 @@ export function normalizeStudyHistory(raw: unknown): StudyHistory {
       weread.push({ url, title, at: num(item.at) });
     }
   }
-  const codes: StudyCodeEntry[] = [];
-  if (Array.isArray(raw.codes)) {
-    for (const item of raw.codes) {
-      if (!isRecord(item)) continue;
-      const path = str(item.path);
-      const title = str(item.title);
-      if (!path || !title) continue;
-      codes.push({ path, title, at: num(item.at) });
-    }
-  }
+  // Older configs also carried `codes` (code projects were a study material);
+  // code projects are their own mode now, so the list is simply dropped here.
   return {
     pdfs: pdfs.slice(0, STUDY_HISTORY_LIMIT),
     urls: urls.slice(0, STUDY_HISTORY_LIMIT),
     weread: weread.slice(0, STUDY_HISTORY_LIMIT),
-    codes: codes.slice(0, STUDY_HISTORY_LIMIT),
   };
 }
 
@@ -176,19 +159,6 @@ export function pushWereadBook(
   return {
     ...history,
     weread: cap([next, ...history.weread.filter((e) => e.url !== next.url)]),
-  };
-}
-
-/** Moves/reinserts the opened code project at the head of the list. */
-export function pushCodeEntry(
-  history: StudyHistory,
-  entry: Omit<StudyCodeEntry, "at"> & { at?: number },
-): StudyHistory {
-  const at = entry.at ?? Date.now();
-  const next: StudyCodeEntry = { path: entry.path, title: entry.title, at };
-  return {
-    ...history,
-    codes: cap([next, ...history.codes.filter((e) => e.path !== next.path)]),
   };
 }
 

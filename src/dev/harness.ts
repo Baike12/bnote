@@ -33,6 +33,8 @@ import { installEditingChords } from "@/lib/editingChords";
 import { setClipboardOverrides } from "@/lib/clipboard";
 import { renderAgentMarkdown } from "@/study/agentMarkdown";
 import { StudyLayout } from "@/components/StudyLayout";
+import { CodeLayout } from "@/components/CodeLayout";
+import { useCodeStore } from "@/code/store";
 import { AgentHeader } from "@/components/AgentHeader";
 import { HtmlPreview } from "@/components/HtmlPreview";
 import { ProjectsLayout } from "@/components/ProjectsLayout";
@@ -189,12 +191,16 @@ declare global {
     __readClipboard: () => string;
     /** The application store (read/drive the sidebar-related state). */
     __store: typeof useAppStore;
+    /** The code project store (a fake project can be injected for layout checks). */
+    __codeStore: typeof useCodeStore;
     /** The application-level actions (openNote / openWikiLink / goBackLink...). */
     __actions: typeof actions;
     /** The IPC layer (the object the fake vault replaces). */
     __api: typeof api;
     /** Mount the real study mode components (AgentPanel + ContentPane), returns the unmount function. */
     __mountStudyLayout: () => () => void;
+    /** Mount the code mode layout (agent | code project | notes), returns the unmount function. */
+    __mountCodeLayout: () => () => void;
     /** Mount the study assistant header (a pure presentational component with fake session data), to verify the dropdown/auxiliary bar geometry. */
     __mountAgentHeader: (spec: {
       convs: {
@@ -461,6 +467,7 @@ window.__perfHooks = () => ({
 });
 /** Read/modify the application state directly (for debugging the sidebar flow). */
 window.__store = useAppStore;
+window.__codeStore = useCodeStore;
 /** The application-level actions (openNote / openWikiLink / goBackLink...), driven along the real chain. */
 window.__actions = actions;
 /** The IPC layer (the fake vault intercepts exactly this) -- used for measurement/counting. */
@@ -797,6 +804,23 @@ window.__mountStudyLayout = () => {
   document.body.appendChild(host);
   const root = createRoot(host);
   root.render(createElement(StudyLayout));
+  return () => {
+    root.unmount();
+    host.remove();
+  };
+};
+
+window.__mountCodeLayout = () => {
+  const host = document.createElement("div");
+  host.id = "code-layout-host";
+  host.style.position = "fixed";
+  host.style.inset = "0";
+  host.style.zIndex = "9999";
+  host.style.display = "flex";
+  host.style.background = "var(--bg0)";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  root.render(createElement(CodeLayout));
   return () => {
     root.unmount();
     host.remove();
