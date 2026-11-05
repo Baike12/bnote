@@ -5,12 +5,12 @@
 <h1 align="center">bnote</h1>
 
 <p align="center">
-  面向 macOS 的本地优先 Markdown 笔记应用。<br />
+  A local-first Markdown notes app for macOS.<br />
   <strong>Tauri 2 · React 19 · CodeMirror 6 · Rust</strong>
 </p>
 
 <p align="center">
-  <strong>简体中文</strong> · <a href="README.en.md">English</a>
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
@@ -24,376 +24,31 @@
   <img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/Baike12/bnote?style=flat-square" />
 </p>
 
-> **bnote** 把「笔记 + 论文/网页阅读 + 代码仓库 + 编码 Agent」放进同一个窗口。仓库就是磁盘上的普通文件夹，笔记就是普通 Markdown：可以用 Git 管理、用任何编辑器打开、随时带走。常用能力原生内置，不依赖插件生态，也没有 Electron。
+> **bnote** puts notes, paper/web reading, code repositories, and a coding agent in one window. A vault is just a folder on disk and a note is just Markdown: version it with Git, open it in any editor, take it with you. The common workflows are built in — no plugin ecosystem required, and no Electron.
 
 ---
 
-## 目录
+## Highlights
 
-- [核心特性](#核心特性)
-- [四种模式](#四种模式)
-- [编辑器](#编辑器)
-- [学习模式](#学习模式)
-- [代码模式](#代码模式)
-- [项目管理](#项目管理)
-- [日记、待办与今日足迹](#日记待办与今日足迹)
-- [画布、附件与 Python](#画布附件与-python)
-- [Agent](#agent)
-- [专注模式](#专注模式)
-- [默认快捷键](#默认快捷键)
-- [快速开始](#快速开始)
-- [数据与配置](#数据与配置)
-- [架构与性能](#架构与性能)
-- [开发与门禁](#开发与门禁)
-- [Roadmap](#roadmap)
-- [License 与致谢](#license-与致谢)
-
-## 核心特性
-
-| 领域 | 能力 |
+| Area | Capability |
 | --- | --- |
-| **本地优先** | Vault 是普通文件夹，笔记是普通 Markdown；可被 Git、iCloud、Dropbox 或任意编辑器直接读写。 |
-| **四种模式** | 笔记 / 学习 / 代码 / 项目，互斥的全屏模式，各自有独立的布局、键位区域与宽度偏好。 |
-| **实时渲染** | 光标所在行保留源码，其余区域按 Obsidian 风格渲染；只处理可视区域，长文档仍然流畅。 |
-| **公式与片段** | KaTeX 行内/块级公式；220+ 内置 LaTeX 快捷片段，支持占位符、正则捕获、视觉模式包裹与仓库级自定义。 |
-| **Vim 与输入法** | 原生 Vim 模式与 vimrc 映射；macOS 下随 insert/normal 自动切换输入法，公式与代码块保持英文。 |
-| **区域化快捷键** | 同一个键在「通用 / 笔记区 / 阅读区 / Agent 面板 / 代码区 / 项目区」绑不同命令；全部命令可搜索、改键、解绑。 |
-| **学习模式** | 三栏：左问 agent、中读 PDF / 网页 / 微信读书、右记笔记；批注、阅读位置、历史按材料持久化。 |
-| **选中翻译** | 单词查内置 ECDICT（59k 条目，离线）；句子走可配置的模型 API（OpenAI 兼容 / DeepSeek / GLM / Qwen / Anthropic / Ollama）。 |
-| **代码模式** | 独立的三栏（agent \| 代码 \| 笔记）：文件树、tree-sitter 高亮、LSP 跳转与补全、git 差异、集成终端。 |
-| **编码 Agent** | 工具、权限、计划模式、hooks、输出风格、自动记忆、提示词历史按 Claude Code 的结构实现；运行时落在 `~/.bnote`。 |
-| **项目管理** | 每个项目是一份 Markdown 待办清单，看板横向排列，待办可拖动、可直接发送到今日日记。 |
-| **日记与待办** | 跨文件待办双向同步到今日日记；未发送的完成项自动记录；当天改动汇总为「今日足迹」。 |
-| **画布与附件** | Excalidraw 画布以文件保存并导出预览图，回到笔记自动插入；兼容 Obsidian `.excalidraw.md`。 |
-| **Python** | 一篇笔记的全部 python 块当作一个 `.py` 运行，流式输出、可中止；ty 类型检查与 uv 环境管理。 |
-| **专注模式** | 番茄钟 + 伪全屏 + 硬锁：时间未到不能退出、不能切应用，重启后继续计时。 |
-
-## 四种模式
-
-| 模式 | 布局 | 进入方式 |
-| --- | --- | --- |
-| **笔记** | 侧栏 + 编辑器 | 默认 |
-| **学习** | Agent \| 内容栏 \| 笔记 | `Cmd+Shift+S` |
-| **代码** | Agent \| 代码项目 \| 笔记 | 命令面板（默认不绑键，见下） |
-| **项目** | 项目列表 \| 看板 \| 日记 | `Cmd+Shift+P` |
-
-- 四种模式同时只有一种生效；切换模式不会重建 CodeMirror 实例，滚动位置、折叠状态、装饰都保留。
-- 学习模式和代码模式是三栏结构，两条分隔条可拖动，前两栏宽度按像素持久化（分别存在 `studyAgentWidth` / `studyContentWidth` 与 `codeAgentWidth` / `codeContentWidth`），第三栏吃掉剩余宽度；窗口变窄时 CSS 收窄前两栏，不改写你的偏好。
-- **代码模式默认没有快捷键**：`Cmd+Shift+C` 是「插入代码块」。需要快捷键的话，在 `keybindings.json` 的 `global` 段把 `view.toggle-code-mode` 绑到任意键上。
-
-## 编辑器
-
-### 实时渲染
-
-与 Obsidian 一致：光标所在行保持源码，其余区域直接渲染（`src/editor/livePreview.ts`）。
-
-- 标题、粗体、斜体、删除线、引用块、Callout、分割线、列表、转义符、行内代码与围栏代码块
-- 代码块按语言高亮，语言包按需加载
-- 行内公式 `$...$` 与公式块 `$$...$$` 用 KaTeX 渲染；编辑公式时保留源码，公式块还在下方实时预览（行内公式编辑时源码后面紧跟一份渲染副本，光标离开即只留渲染）
-- 任务列表 `- [ ]` / `- [x]` 可直接点击；完成后写入 `✅ 日期`，再次点击可取消
-- Callout 用 `:::` 围栏书写，标题栏出现在渲染块上；`Cmd+Shift+B` 无选区时插入空块 / 跳转 / 回跳，有选区时把选区放到标题块下，并以标题文本为锚点在原文与块之间跳转
-- `[[target|alias]]` 内部链接可点击跳转；外部链接交给系统浏览器
-- `![alt](path)` 与 `![[image.png]]` 按「相对路径 → Vault 根目录 → 文件名」逐级解析，只渲染视口内的行
-- Excalidraw 嵌入显示自动导出的 PNG，点击回到画布继续编辑
-- 重新打开笔记时恢复上次的光标与滚动位置
-
-### 公式与 LaTeX 片段
-
-- 内置 220+ 片段：`Tab` 展开、输入即展开、占位符镜像、正则捕获、Visual 模式包裹、正文/公式/代码上下文识别
-- 括号自动放大、矩阵快捷键、Tabout、括号配对高亮、双美元符删除、片段空白清理
-- Vault 中存在 `.bnote/snippets.js` 时**完全取代**内置片段；保存后热加载，加载失败会在界面里给出原因
-- 设置中可以逐项开关 LaTeX Suite 行为，无需重启
-
-### Vim 与输入法
-
-- `normal` / `insert` / `visual` 三种模式；支持 `map`、`noremap`、`nnoremap`、`imap`、`vmap` 等常见 vimrc 映射与 `jj` 键序列
-- `:w`、`:wq`、`:x`、`:q`、`:noh` 等命令可用；`:Bnote <命令 id>` 可把任意 bnote 命令映射成 Vim 键
-- `o` / `O` 新建行保留缩进；视觉模式、跳转列表、剪贴板与像素级垂直运动均为原生实现
-- macOS 下可配置 insert / normal 使用的输入法：进入 insert 切中文，回到 normal / visual 切英文；光标在公式或代码块内时保持英文
-- 输入法切换走进程内 Carbon TIS（毫秒级、后台线程，已是目标输入源时直接跳过），并限定在 bnote 内：窗口失焦恢复原输入源，重新聚焦再套用
-- 仓库级映射写在 `.bnote/vimrc`，全局映射写在应用数据目录的 `vimrc`
-
-### 命令、导航与工作区
-
-- **命令面板**：模糊搜索全部命令；新增功能只需注册一个 `CommandDef`（`src/commands/registry.ts`）
-- **快速跳转**：按文件名或文件夹名搜索，空格分隔多词按 AND 匹配；空输入显示最近打开列表
-- **插入链接**：光标处补全笔记；当前行已有链接时，同一个快捷键改为跳转；重名笔记自动写成 Vault 相对路径
-- **链接回跳**：沿内部链接的跳转历史逐层返回，不影响普通文件打开
-- **快速添加**：预设「名称 + 目标文件夹」命令，一键创建笔记；不存在的子目录与重名文件自动处理
-- **快速待办**：一个输入框，Enter 把待办放进今日日记待办区最前，不切换当前笔记
-- **标题操作**：循环正文 → H1 → H2 → H3 → H4；`Cmd+1..6` 直接设置层级，可自动生成 `1 / 1.1 / 1.1.2` 编号
-- **快捷键自定义**：按区域搜索、筛选、录入、解绑、恢复默认；冲突自动移除旧绑定，一个命令可绑定多个键
-- **文件管理**：一次平铺遍历建立文件/目录/资产索引（`list_files`），展开状态只影响可见行；支持新建、重命名、删除、右键菜单与最近仓库切换
-- **写作体验**：打字机模式、编辑区字号调节、停止输入后自动保存、深浅主题
-
-## 学习模式
-
-学习模式是**三栏**：**Agent（左）+ 内容（中）+ 笔记（右）**。两条分隔条都可拖动，宽度按像素持久化；三栏常驻挂载，切换材料、翻页都不重建编辑器。左栏默认是学习助手，`Cmd+Shift+G` 切到创作模式。
-
-### PDF
-
-- 导入的 PDF 复制进材料目录 `.bnote/materials/pdfs/<拼音目录>/`，与批注、会话放在一起；不做 Markdown 转换
-- pdf.js 渲染，支持书签大纲、缩放、文本选择、护眼底色
-- **批注**：亮黄色高亮 + 亮蓝色文字批注，整页比例坐标存盘 —— 缩放、裁剪、DPR 变化都不影响位置；右侧留白区展示批注内容
-- **阅读位置**：记录「第几页 + 页内偏移」，重排后仍从同一处继续读
-- **截图入助手**：截取当前可见页面（canvas 合成，无需系统截图权限），直接作为附件进入助手输入框
-- 历史下拉里所有打开过的 PDF 可一键回到
-
-### 网页与微信读书
-
-- 网页在**原生子 webview**中打开，不是 iframe：`X-Frame-Options` / CSP `frame-ancestors` 都拦不住；滚动、尺寸随内容栏同步
-- **批注**：高亮与文字批注按「原文片段 + 前后 40 字上下文 + 偏移」定位，广告和懒加载不会让批注错位；按网址存进 `.bnote/web-annotations/<host>-<hash>.json`，页面内另有 localStorage 兜底
-- **阅读位置**：网页记录可滚动高度的比例，重开回到同一段文字
-- **按步长翻页**：`PageUp` / `PageDown` 按设置的比例滚动，并对齐到文字行；页面上半屏有渐变提示
-- **页面缩放**：顶部 `− / 读数 / +` 控件，或 `Cmd+=` / `Cmd+-` / `Cmd+0`；浏览器级缩放，文字重排、整页一起放大（50%–300%）
-- **微信读书适配**：铺满阅读区、目录左停靠常驻；SPA 路由变化会被追踪，最近读的书进入历史
-
-### 选中翻译
-
-- **单词**（恰好一个英文 token）：只查内置 ECDICT 词典，59,137 条常用词，压缩后约 1.5 MB 编译进二进制，首次查询一次性解压到内存，不落盘
-- **句子/短语**（两个及以上 token）：走设置中配置的模型 API；单词未收录时**不会**回落到模型，而是提示选中更多词
-- 支持协议：OpenAI 兼容、DeepSeek、GLM、Qwen、Anthropic、Ollama（默认 `http://127.0.0.1:11434`，请求 `/api/chat`）
-- 思考模式按协议发送 `think` / `thinking.type` / `enable_thinking`；默认关闭，避免模型只返回思考内容
-- API Key 与请求都留在 Rust 侧（`translate.json`），网页拿不到密钥；网页预览里句子请求 600 ms 节流
-- 设置页有「测试连接」，用未保存的表单值发一条固定句子
-- Ollama 等本地服务由你自己启动，bnote 只做 HTTP 调用，不会拉起进程
-
-### 学习助手与创作模式
-
-- 学习助手是**纯问答**：不注册工具，围绕当前 PDF / 网页回答；支持 Anthropic Messages 与 OpenAI 兼容协议，SSE 流式回复
-- **按材料保存会话**：一份 PDF / 一个网址的会话落在该材料的 `sessions/<会话>.jsonl`，首行是元数据（标题 + 模型配置快照）；切换材料自动切回它的会话
-- 支持从任意一条消息**分叉**出辅助会话、主/辅会话来回切换、历史会话抽屉
-- 页脚显示上下文占用（最近一次请求的 input + output，对照设置的上下文窗口）
-- 支持粘贴截图、选择图片作为消息附件
-- **创作模式**（`Cmd+Shift+G`）：同一个面板换成创作助手定义，带读写文件、bash、技能、MCP 与 HTML 预览工具，产出文章或 HTML 并在面板里实时预览
-- 自定义指令写在 Vault 的 `.bnote/AGENTS.md`（旧的 `.bnote/agent.md` 仍会被读取）
-
-## 代码模式
-
-代码模式是**独立的一种模式**，与 vault 无关：左边问 agent、中间写代码、右边照旧记笔记，三栏宽度单独持久化。
-
-### 文件树与编辑器
-
-- **文件树**：后端扫一遍（尊重 `.gitignore`），前端折成树；展开目录不再碰磁盘。git 状态用字母标在文件右边（M/A/D/?/R），语言图标按扩展名给
-- **语法高亮**：TypeScript / Rust / Go / Python 用专门的 tree-sitter 语法包（增量解析），其余语言退回通用集合；语法包按需动态载入
-- **图片**：位图走 asset 协议直接渲染，SVG 仍按文本打开
-- **文件树操作**：`Cmd+Shift+E` 聚焦文件树（展开到当前文件，`↑↓` / `→←` / `Enter` / `Esc`），`Cmd+B` 显示 / 隐藏，宽度可拖
-
-### 语言服务器
-
-- 按语言起一个 LSP 进程，走标准 `Content-Length` 帧 JSON-RPC。内置默认覆盖 ts / rust / go / python；可在设置里改启动命令，也可在项目内放 `.bnote/lsp.json` 再盖一层（跟着仓库走，团队共享）
-- **跳转与提示**：跳转到定义（F12）/ 类型定义（`Cmd+F12`）/ 实现 / 引用（`Shift+F12`）/ 重命名（F2）、悬停签名、代码提示（`Ctrl+Space`）、工作区符号
-- 补全在 `.` / `::` 之后自动触发；`F8` / `Shift+F8` 在当前问题列表中前后跳
-- Python 项目自动注入 venv 的 `VIRTUAL_ENV` 与 `PATH`
-
-### git 与终端
-
-- **git**：状态、暂存/取消暂存、差异视图（统一 / 并排两种看法，并排按最长公共子序列配对，改过的那一行左右对齐）
-- **集成终端**：Rust 侧 `portable-pty` + 前端 xterm，全宽多标签抽屉，`Ctrl+\`` 开关；会话只重挂不重建，抽屉拖高只写 CSS 变量
-
-### 编码 Agent
-
-- 中栏打开仓库后，左栏 agent 自动切到 coding 定义：会话以仓库根为 workdir（相对路径与 bash 都锚在这里），tasks / 历史 / 记忆都记在这个项目名下
-- 工具全开：读写文件、glob / grep、bash（可后台、可 kill）、todo、子代理派发、技能、MCP、计划模式、向用户提问
-- 项目根就是沙箱边界：项目根内可读写、根外一律拒绝（相对路径会做词法规范化再 canonicalize，符号链接指向根外也挡得住）
-- 会话记录写在 `~/.bnote/projects/<项目键>/<会话>.jsonl`，Vault 里不会出现代码项目的材料目录
-
-## 项目管理
-
-- 布局：**项目列表 | 看板 | 日记**，两侧分隔条可拖
-- 一个项目 = `<vault>/.bnote/projects/<项目名>.md` 里的一份待办清单；用 Markdown 是为了能用 Vim 改、能被勾选、能被跨文件待办同步认领
-- 看板是真多列：当前列居中且可编辑（CodeMirror，支持 Vim），其余列是纯 DOM 预览，点一下切过去；切换项目只换文档，不重建编辑器
-- 待办可在列间拖动（带着子待办一起走）；列头显示项目名与未完成数量
-- 新建 / 删除：`Cmd+Shift+N` 新建，`Cmd+Backspace` 移到废纸篓（只在项目区生效），右键与列头 `⋯` 菜单同款操作
-- `Cmd+Shift+J` 把当前待办插到今日日记待办区**最前**（笔记区同一个键是加到末尾）
-
-## 日记、待办与今日足迹
-
-- 任意笔记里的待办可发送到今日日记（默认 `Daily/YYYY-MM-DD.md`，目录与文件自动创建）
-- 发送后两侧持续同步：完成状态、子待办增删改都会双向镜像；日记里已有同文条目会直接认领，避免重复
-- 未显式发送的待办在勾选后也会记录到当天日记，取消完成时自动清理
-- 日记末尾提供「今日足迹」：按源文件汇总当天新增或修改的非待办内容，点击可跳回原文
-- 新建日记时，上一篇日记里未完成的待办会跟随过来
-- 待办映射保存在 `.bnote/daily-links.json`，足迹基线保存在 `.bnote/daily-footprints.json`
-
-## 画布、附件与 Python
-
-### 画布与附件
-
-- 通过命令面板打开 Excalidraw 画布；画布有独立键位，切换文件时先保存收尾
-- 新建画布保存为 `<name>.excalidraw`，同时导出同名 PNG 供 Markdown 预览
-- 兼容 Obsidian Excalidraw 插件的 `.excalidraw.md`（含 `compressed-json`）
-- 回到来源笔记时，新画布以 `![[...]]` 插入原光标位置
-- 图片、PDF 等媒体文件进入 Vault 资产索引，供 Markdown 引用解析
-
-### Python
-
-- 一篇笔记中所有 `python` 围栏代码块按行号对齐，组合成一个虚拟 `.py` 文件运行
-- `Cmd+Enter` 运行当前笔记；stdout/stderr 流式进入底部面板，可停止，显示退出码与耗时；单次运行 300 秒超时
-- 基于 `ty` 的补全、Hover 与诊断，可在命令面板开关
-- 可为当前项目创建或同步 `uv` 环境（`uv init --bare` + `uv sync`），日志复用运行面板
-
-## Agent
-
-编码 Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制，运行时状态全部落在 `~/.bnote`。
-
-### 模型与协议
-
-- 支持 Anthropic Messages、OpenAI 兼容、DeepSeek、GLM、Qwen、Ollama 与自定义端点；SSE 流式输出
-- 配置在 `~/.bnote/agent.json`（协议、Base URL、模型、API Key、上下文窗口、MCP 服务器）；旧版应用数据目录里的 `agent.json` 首次启动时自动迁移
-- API Key 只在 Rust 侧使用，不进入任何网页上下文
-
-### 指令文件（AGENTS.md）
-
-- **编码会话**：`~/.bnote/AGENTS.md` 与 `~/.bnote/rules/*.md`，再叠加项目从仓库根到工作目录的 `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md`
-- **学习 / 创作会话**：只读 Vault 的 `.bnote/AGENTS.md`（兼容 `.bnote/agent.md`）
-- 支持 `@import`（最多 5 层，跳过代码块与注释），`settings.instructionsExcludes` 用 glob 排除
-- 读文件时，如果该文件目录到项目根之间还有没加载过的 `AGENTS.md`，会作为 system-reminder 补进下一轮对话
-
-### 工具、权限与计划模式
-
-- **工具**：`read_file` / `write_file` / `edit_file` / `list_files` / `glob` / `grep` / `bash`（含 `bash_output`、`bash_kill`）、`todo`、`task`、`skill`、`mcp`、`task_*`、`ask_user_question`、`send_message`、`EnterPlanMode` / `ExitPlanMode`
-- **子代理**：`general-purpose`（全工具）、`explore`（只读）、`plan`（只读计划）、`fork`（继承当前上下文），可并行、可后台，记录落在 `~/.bnote/projects/<项目键>/<会话>/subagents/`
-- **权限四档**（盾牌菜单）：变更前确认 / 自主模式 / 完全访问 / 计划模式；设置文件里的 `permissions.allow / ask / deny` 规则先于档位判定，支持 `Bash(git push:*)`、路径 glob 这类写法
-- **计划模式**：只读调研，写文件与有副作用的命令一律拒绝；`ExitPlanMode` 把计划写进 `~/.bnote/plans/<slug>.md` 并弹批准卡，批准后才恢复原档位
-- **上下文**：超长会话自动压缩（带熔断），大工具结果落盘只回一条引用，Anthropic 的系统提示分静态/动态两块并给静态块加 `cache_control`
-
-### 设置分层、hooks 与输出风格
-
-- **三层合并**：`~/.bnote/settings.json` → `<项目>/.bnote/settings.json` → `<项目>/.bnote/settings.local.json`；数组拼接去重、对象深合并、标量后者覆盖。字段：`model`、`env`、`permissions`、`hooks`、`outputStyle`、`instructionsExcludes`、`cleanupPeriodDays`、`plansDirectory`、`autoMemoryEnabled`、`autoMemoryDirectory`
-- **hooks**：`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`UserPromptSubmit`、`SessionStart`、`Stop`、`SubagentStart`、`SubagentStop`、`PreCompact`、`PostCompact`。`sh -c` 执行，stdin 收 JSON，默认 60 秒超时；可返回 `permissionDecision`、`additionalContext`、`updatedInput`，非零退出可以拦住工具
-- **输出风格**：内置 default / Explanatory / Learning，自定义文件放 `~/.bnote/output-styles/*.md` 与 `<项目>/.bnote/output-styles/*.md`（frontmatter：`name` / `description` / `keep-coding-instructions`）；`settings.outputStyle` 选中后注入动态段
-- **设置页**：`设置 → Agent` 下有模型、MCP、技能、AGENTS.md 与「Agent 设置」（输出风格、`~/.bnote/settings.json` 编辑器、三层设置文件路径与解析状态）
-
-### 记忆、历史与技能
-
-- **自动记忆**：`~/.bnote/projects/<项目键>/memory/MEMORY.md` 是唯一索引，一条记忆一个文件，`[[name]]` 互链；编码会话每轮注入索引与记忆行为提示
-- **提示词历史**：每次发送追加 `~/.bnote/history.jsonl`；输入框为空时按 `↑` 召回本项目的历史提示词，`↓` 往回走，发送后清空
-- **技能**：`~/.bnote/skills/<name>/SKILL.md`、`<项目>/.bnote/skills/`、`~/.agents/skills/`（兼容 Agent Skills 约定）以及设置里的额外目录
-
-### `~/.bnote` 布局
-
-```text
-~/.bnote/
-├── agent.json            协议 / 模型 / API Key / MCP
-├── settings.json         用户级 agent 设置
-├── AGENTS.md             用户级指令（只进编码会话）
-├── rules/*.md            用户级分条指令
-├── skills/<name>/SKILL.md
-├── output-styles/*.md
-├── history.jsonl         提示词历史
-├── plans/<slug>.md       计划模式的产出
-├── tasks/<list>/         待办的落盘状态
-└── projects/<项目键>/
-    ├── memory/MEMORY.md  自动记忆索引
-    ├── <会话>.jsonl      编码会话记录
-    └── <会话>/           subagents/ 与 tool-results/
-```
-
-## 专注模式
-
-- 状态栏芯片点一下即开始；命令面板里是 `focus.pomodoro-start`（`Cmd+Alt+T`，取第一个时长）
-- **一段专注就是一段连续时间**：没有休息段、没有暂停、不能提前结束，只有「开始」
-- 开始 = 伪全屏（层级 25，盖住菜单栏，跨越 Space）+ 硬锁 + 起表，三者同时成立；硬锁需要辅助功能权限，拿不到权限就不开始，并在提示里指向系统设置
-- 硬锁吞掉 `Cmd+Tab` / `Cmd+Space` / `Ctrl+↑` / `Cmd+Q`，应用菜单键（`Cmd+M` / `Cmd+H` / `Cmd+W`）仍然可用
-- 时长最多配置三个，运行中不能改；重启应用后计时与锁一起恢复
-- 时间到自动解锁、还原窗口层级；运行的实例在倒计时写进窗口标题
-
-## 默认快捷键
-
-> 以下为 macOS 默认值。所有命令都能在 `设置 → 快捷键` 中按区域改绑或解绑，以设置页实际显示为准。
-
-### 工作区与导航（通用）
-
-| 快捷键 | 功能 |
-| --- | --- |
-| `Cmd+P` | 命令面板 |
-| `Cmd+O` | 快速跳转到文件 |
-| `Cmd+N` / `Cmd+S` | 新建 / 保存笔记 |
-| `Cmd+Shift+A` | 快速添加文件 |
-| `Cmd+Shift+K` | 快速待办：添加到今日日记最前 |
-| `Cmd+Shift+O` | 打开今日日记；在日记内再次按下跳回 |
-| `Cmd+Shift+R` | 切换到最近打开的仓库 |
-| `Cmd+,` | 打开设置 |
-| `Cmd+\` | 显示 / 隐藏侧边栏 |
-| `Cmd+I` | 聚焦侧边栏 |
-| `Cmd+[` | 回退到上一次链接跳转 |
-| `Cmd+T` | 跳到文档头部疑问待办 / 返回原位置 |
-| `Cmd+Shift+S` / `Cmd+Shift+P` | 进入 / 退出学习模式 / 项目管理 |
-| `Cmd+Alt+T` | 开始一次专注 |
-
-> `view.toggle-code-mode` 默认不绑键；`app.quit` 也故意不绑（避免误按 `Cmd+Q` 退出）。
-
-### 笔记区（编辑）
-
-| 快捷键 | 功能 |
-| --- | --- |
-| `Cmd+M` / `Cmd+Shift+M` | 插入公式块 / 行内公式 |
-| `Cmd+Shift+C` / `` Cmd+` `` | 插入代码块 / 行内代码 |
-| `Cmd+Shift+B` | 插入 / 跳转 Callout |
-| `Cmd+Shift+H` | 插入分割线 |
-| `Cmd+K` | 插入内部链接；当前行已有链接时跳转 |
-| `Cmd+B` / `Cmd+Shift+I` / `Cmd+Shift+D` | 粗体 / 斜体 / 删除线 |
-| `Cmd+J` / `Cmd+1..6` | 循环标题层级 / 设置 N 级标题 |
-| `Cmd+L` | 切换当前行待办状态 |
-| `Cmd+Shift+J` | 待办发送到今日日记并建立同步 |
-| `Cmd+;` / `Cmd+Shift+;` | 无序 / 有序列表 |
-| `Cmd+Enter` | 运行当前笔记的 Python 代码 |
-| `Cmd+E` | 切换实时渲染 / 源码模式 |
-| `Cmd+Shift+V` / `Cmd+Shift+T` / `Cmd+Shift+L` | 切换 Vim / 打字机 / LaTeX 片段 |
-| `Cmd+=` / `Cmd+-` / `Cmd+0` | 放大 / 缩小 / 重置编辑区字号（全局；阅读区打开网页时让给网页缩放） |
-
-### 阅读区与学习助手
-
-| 快捷键 | 功能 |
-| --- | --- |
-| `PageUp` / `PageDown` 或 `←` / `→` | 上一页 / 下一页（只滚内容，不改变焦点） |
-| `Cmd+Shift+E` | 截取阅读区可见内容到助手 |
-| `Cmd+=` / `Cmd+-` / `Cmd+0` | 网页放大 / 缩小 / 回到 100% |
-| `Cmd+Shift+G` | 切换创作模式 |
-| `Cmd+Shift+N` | 新建会话 |
-| `Cmd+Shift+F` | 从当前会话分叉 |
-| `Cmd+Shift+Y` | 主会话 / 辅助会话切换 |
-| `Cmd+Shift+H` | 打开历史会话列表 |
-| `Cmd+[` | 从分叉会话返回上一条 |
-| `Cmd+Alt+A` / `Cmd+Alt+N` / `Cmd+Alt+R` | 聚焦 Agent / 笔记区 / 阅读区 |
-
-> 会话相关键只在焦点位于 Agent 面板时生效；`Cmd+[` 在笔记区是链接回跳。翻页与截图跨区域：在任何区域按下都作用于阅读区。
-
-### 代码区
-
-焦点在代码编辑器里时生效。**这是独立的一界**：同一把键在笔记区与代码区各说各的，代码区只继承命令面板、快速跳转、切学习模式、设置这几条应用级命令。可在 `<vault>/.bnote/keybindings.json` 的 `code` 段里改绑。
-
-| 快捷键 | 功能 |
-| --- | --- |
-| `Cmd+S` | 保存当前代码文件 |
-| `Cmd+Shift+O` | 快速打开文件（按文件名模糊搜） |
-| `Cmd+Shift+F` | 在项目中查找（搜文件内容） |
-| `F12` / `Cmd+F12` | 跳转到定义 / 类型定义 |
-| `Shift+F12` | 查找引用 |
-| `F2` | 重命名符号 |
-| `Ctrl+Space` | 触发代码提示 |
-| `Cmd+B` / `Cmd+Shift+M` | 显示文件树 / 问题面板 |
-| `Cmd+Shift+E` | 聚焦文件树 |
-| `Ctrl+\`` | 打开 / 关闭终端抽屉 |
-| `F8` / `Shift+F8` | 下一个 / 上一个问题 |
-| `Cmd+Alt+→` / `Cmd+Alt+←` | 下一个 / 上一个标签 |
-| `Cmd+Shift+D` | 查看当前文件的 git 差异 |
-| `Alt+Z` | 切换自动折行 |
-
-### 项目区
-
-| 快捷键 | 功能 |
-| --- | --- |
-| `Cmd+Shift+↑` / `Cmd+Shift+↓` | 上一个 / 下一个项目 |
-| `Cmd+Shift+N` | 新建项目 |
-| `Cmd+Shift+J` | 当前待办发送到今日日记最前 |
-| `Cmd+Backspace` | 删除当前项目（移到废纸篓） |
-| `Cmd+Alt+N` / `Cmd+Alt+P` | 跳到日记 / 回到项目卡片 |
-
-> 项目区继承笔记区的编辑键（加粗、切换待办、保存等），只有项目专属动作优先。
-
-## 快速开始
+| **Local-first** | A vault is a plain folder and a note is plain Markdown — usable from Git, iCloud, Dropbox, or any editor. |
+| **Four modes** | Notes / study / code / projects: mutually exclusive full-screen modes, each with its own layout, key region, and width preferences. |
+| **Live preview** | The cursor line keeps its source; everything else renders Obsidian-style. Only the viewport is processed, so long documents stay smooth. |
+| **Math and snippets** | KaTeX inline/block math; 220+ built-in LaTeX snippets with placeholders, regex captures, visual wrapping, and vault-level overrides. |
+| **Vim and IME** | Native Vim mode with vimrc mappings; on macOS the input source follows insert/normal mode while math and code blocks stay English. |
+| **Per-region keybindings** | The same chord can mean different things in global / notes / reading / agent / code / project regions; every command is searchable, rebindable, unbindable. |
+| **Study mode** | Three columns: ask the agent on the left, read a PDF / web page / WeRead in the middle, take notes on the right; annotations, reading positions, and sessions persist per material. |
+| **Selection translation** | Single words use the embedded offline ECDICT (59k entries); sentences go to a configurable model API (OpenAI-compatible / DeepSeek / GLM / Qwen / Anthropic / Ollama). |
+| **Code mode** | Its own three columns (agent \| code \| notes): file tree, tree-sitter highlighting, LSP navigation and completion, git diffs, integrated terminal. |
+| **Coding agent** | Tools, permissions, plan mode, hooks, output styles, auto memory, and prompt history follow Claude Code's structure; runtime state lives in `~/.bnote`. |
+| **Project management** | Each project is a Markdown todo list; the board is laid out horizontally, todos can be dragged and sent to today's daily note. |
+| **Daily notes and todos** | Cross-file todos sync bidirectionally into today's daily note; completed unsent todos are recorded automatically; the day's edits become a "footprint" summary. |
+| **Canvas and attachments** | Excalidraw drawings are saved as files with exported previews, re-inserted at the cursor on return; Obsidian `.excalidraw.md` is supported. |
+| **Python** | All python fences in a note run as one `.py` file with streaming output and cancellation; `ty` diagnostics and `uv` environment management. |
+| **Focus mode** | Pomodoro plus pseudo-fullscreen and a hard lock: you cannot quit or switch apps before the time is up, and a restart resumes the countdown. |
+
+## Getting started
 
 ```bash
 git clone https://github.com/Baike12/bnote.git
@@ -402,9 +57,9 @@ pnpm install
 pnpm tauri dev
 ```
 
-首次启动后选择一个 Vault 文件夹即可开始使用；代码模式不需要 vault，直接选一个仓库。
+Pick a vault folder on first launch; code mode needs no vault — point it at a repository.
 
-### 环境要求
+### Requirements
 
 - macOS
 - Node.js 20+
@@ -412,128 +67,366 @@ pnpm tauri dev
 - Rust stable
 - Xcode Command Line Tools
 
-可选：`uv`（Python 环境）、`ty`（Python 类型检查）、Ollama 或其他模型服务（句子翻译 / Agent）。
+Optional: `uv` (Python environments), `ty` (Python type checking), Ollama or another model service (sentence translation / agent).
 
-### 构建
+### Build
 
 ```bash
 pnpm tauri build
 ```
 
-产物为 `.app` / `.dmg`，由 Tauri 生成。
+Produces `.app` / `.dmg` bundles via Tauri.
 
-### 测试与检查
+### Tests and checks
 
 ```bash
-pnpm gate                                            # lint + typecheck + 单元测试
-cargo test --workspace --manifest-path src-tauri/Cargo.toml   # Rust 测试(应用 + pdf2md)
-cargo check --workspace --manifest-path src-tauri/Cargo.toml  # Rust 编译检查
-cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust 格式检查
+pnpm gate                                            # lint + typecheck + format check + unit tests
+cargo test --workspace --manifest-path src-tauri/Cargo.toml  # Rust tests (app + pdf2md)
+cargo check --workspace --manifest-path src-tauri/Cargo.toml # Rust compile check
+cargo fmt --manifest-path src-tauri/Cargo.toml --check       # Rust format check
 ```
 
-PDF 转换器的夹具与质量门禁在 `tests/data/pdfs/`（`src-tauri/crates/pdf2md/tests/quality_gate.rs`）。
+The PDF converter's fixtures and quality gate live in `tests/data/pdfs/` (`src-tauri/crates/pdf2md/tests/quality_gate.rs`).
 
-## 数据与配置
+## Four modes
 
-### 应用数据目录
+| Mode | Layout | How to enter |
+| --- | --- | --- |
+| **Notes** | Sidebar + editor | default |
+| **Study** | Agent \| content \| notes | `Cmd+Shift+S` |
+| **Code** | Agent \| code project \| notes | command palette (unbound by default, see below) |
+| **Projects** | project list \| board \| daily note | `Cmd+Shift+P` |
+
+- Exactly one mode is active at a time; switching modes does not rebuild CodeMirror instances, so scroll position, folds, and decorations survive.
+- Study and code mode both use three columns with two draggable dividers. The first two widths are stored in pixels (`studyAgentWidth` / `studyContentWidth` and `codeAgentWidth` / `codeContentWidth` separately) and the third column takes the rest; a narrow window clamps the first two with CSS without rewriting your preference.
+- **Code mode has no default shortcut**: `Cmd+Shift+C` is "insert code block". Bind `view.toggle-code-mode` in the `global` section of `keybindings.json` if you want one.
+
+## Editor
+
+### Live preview
+
+Obsidian-style: the cursor line keeps its source, everything else renders (`src/editor/livePreview.ts`).
+
+- Headings, bold, italic, strikethrough, blockquotes, callouts, horizontal rules, lists, escapes, inline code, fenced code
+- Fenced code is highlighted per language; language packs load on demand
+- Inline `$...$` and block `$$...$$` math render with KaTeX; while editing, the source stays visible, block math keeps a live preview below, and inline math renders a copy right after the source until the cursor leaves
+- Task list checkboxes are clickable; completing one appends `✅ date`, clicking again reverts it
+- Callouts use `:::` fences. `Cmd+Shift+B` inserts an empty block / jumps / jumps back without a selection, and with a selection moves it under a titled block anchored by the title text
+- `[[target|alias]]` wikilinks jump within the vault; external links open in the system browser
+- `![alt](path)` and `![[image.png]]` resolve via relative path → vault root → file name, and only visible lines are rendered
+- Embedded Excalidraw files show the exported PNG; clicking reopens the canvas
+- Cursor and scroll position are restored when a note is reopened
+
+### Math and LaTeX snippets
+
+- 220+ built-in snippets: `Tab` expansion, expansion-on-type, placeholder mirroring, regex captures, visual-mode wrapping, and context detection for text/math/code
+- Auto-sizing brackets, matrix shortcuts, Tabout, bracket-pair highlighting, double-dollar deletion, snippet whitespace cleanup
+- A vault-level `.bnote/snippets.js` **replaces** the built-in set; saving hot-reloads it and load errors are surfaced in the UI
+- LaTeX Suite behaviors can be toggled individually in Settings — no restart
+
+### Vim and input methods
+
+- `normal` / `insert` / `visual` modes; common vimrc mappings (`map`, `noremap`, `nnoremap`, `imap`, `vmap`) and key sequences such as `jj`
+- `:w`, `:wq`, `:x`, `:q`, `:noh`; `:Bnote <command id>` maps any bnote command to a Vim key
+- `o` / `O` preserve indentation; visual mode, jumplist, clipboard, and pixel-accurate vertical motion are native implementations
+- On macOS the input source can follow the mode: Chinese for insert, English for normal/visual, English while inside math or code blocks
+- Switching uses in-process Carbon TIS (millisecond-scale, background thread, skipped when already active) and is scoped to bnote: the previous source is restored when the window loses focus
+- Vault-level mappings live in `.bnote/vimrc`; global mappings live in `vimrc` under the app data directory
+
+### Commands, navigation, and workspace
+
+- **Command palette**: fuzzy search over every command; adding a feature means registering one `CommandDef` (`src/commands/registry.ts`)
+- **Quick switcher**: search by file or folder name, space-separated tokens match with AND; empty input shows recent files
+- **Insert link**: complete a note at the cursor; if the current line already has a link, the same shortcut jumps to it; duplicate names are written as vault-relative paths
+- **Back-links**: walk the wikilink jump history backwards without disturbing ordinary file opens
+- **Quick add**: "name + target folder" presets create notes in one shot, creating missing folders and de-duplicating names
+- **Quick todo**: a single input; Enter inserts the todo at the top of today's daily-note todo area without switching files
+- **Headings**: cycle body → H1 → H2 → H3 → H4; `Cmd+1..6` set a level directly, with optional automatic `1 / 1.1 / 1.1.2` numbering
+- **Keybinding editor**: search, filter, record, unbind, restore defaults per region; conflicts remove the old binding and one command can hold several keys
+- **Files**: one flat walk builds the file/directory/asset index (`list_files`); expansion only affects visible rows. Create, rename, delete, context menu, and recent-vault switching
+- **Writing**: typewriter mode, adjustable editor font size, save-after-idle, dark and light themes
+
+## Study mode
+
+Study mode is a **three-column** layout: **agent (left) + content (middle) + notes (right)**. Both dividers drag, widths are stored in pixels, and all three columns stay mounted permanently — switching materials or turning pages rebuilds nothing. The left column is the study assistant; `Cmd+Shift+G` switches it to creative mode.
+
+### PDF
+
+- Imported PDFs are copied into `.bnote/materials/pdfs/<pinyin-dir>/` next to their annotations and sessions; no Markdown conversion
+- Rendered with pdf.js, with an outline sidebar, zoom, text selection, and an eye-care tint
+- **Annotations**: yellow highlights and blue notes stored as whole-page ratios — zoom, cropping, and DPR changes do not move them; the right margin lists them
+- **Reading position**: page number + offset within the page, so re-layout resumes at the same place
+- **Snapshot to assistant**: the visible area is composited from the page canvases (no screen-recording permission) and attached to the assistant input
+- The history dropdown returns to any previously opened PDF
+
+### Web pages and WeRead
+
+- Web pages run in a **native child webview**, not an iframe, so `X-Frame-Options` and CSP `frame-ancestors` cannot block them; scrolling and geometry follow the content pane
+- **Annotations**: highlights and notes are anchored by quote + 40 characters of context + offset, so ads and lazy loading cannot shift them; stored per URL in `.bnote/web-annotations/<host>-<hash>.json` with a localStorage fallback inside the page
+- **Reading position** is a scroll ratio, so reopening returns to the same passage
+- **Paged reading**: `PageUp` / `PageDown` scroll by a configurable fraction and snap to text lines; the upper half of the page dims as a progress cue
+- **Page zoom**: `− / percentage / +` in the toolbar, or `Cmd=` / `Cmd-` / `Cmd0`; browser-level zoom that reflows text and scales the whole page (50%–300%)
+- **WeRead adaptation**: full-width reading area, catalog docked on the left; SPA route changes are tracked so the current book enters history
+
+### Selection translation
+
+- **Words** (exactly one English token): the embedded ECDICT dictionary, 59,137 common entries, ~1.5 MB compressed into the binary and decompressed into memory on first lookup
+- **Sentences and phrases** (two or more tokens): the configured model API. A missing word **never** falls back to the model; the card asks you to select more words instead
+- Protocols: OpenAI-compatible, DeepSeek, GLM, Qwen, Anthropic, Ollama (defaults to `http://127.0.0.1:11434`, `POST /api/chat`)
+- Thinking is sent per protocol (`think` / `thinking.type` / `enable_thinking`) and is off by default
+- API keys and requests stay in Rust (`translate.json`); the page never sees the key. Sentence requests from the web preview are throttled to one per 600 ms
+- Settings includes a "test connection" button that uses unsaved form values
+- Local services such as Ollama are yours to start; bnote is only an HTTP client and never spawns them
+
+### Study assistant and creative mode
+
+- The study assistant is **pure Q&A**: no tools are registered, and it answers about the current PDF or web page. It supports Anthropic Messages and OpenAI-compatible protocols with SSE streaming
+- **Per-material sessions**: each PDF or URL keeps its conversations in that material's `sessions/<session>.jsonl`, whose first line is metadata (title + model config snapshot); switching materials switches back to its session
+- Fork from any message into an auxiliary session, switch between the primary and auxiliary sessions, and browse history from a drawer
+- The footer shows context usage (input + output of the last request against the configured context window)
+- Paste screenshots or pick images as message attachments
+- **Creative mode** (`Cmd+Shift+G`): the same panel runs the creative definition with file read/write, bash, skills, MCP, and an HTML preview tool, producing articles or HTML rendered live in the panel
+- Custom instructions live in the vault's `.bnote/AGENTS.md` (the legacy `.bnote/agent.md` is still read)
+
+## Code mode
+
+Code mode is a **mode of its own**, unrelated to the vault: ask the agent on the left, write code in the middle, keep taking notes on the right. Its column widths are persisted separately.
+
+### File tree and editor
+
+- **File tree**: the backend walks once (respecting `.gitignore`) and the frontend folds it into a tree; expanding a folder never touches the disk again. Git status letters sit on the right (M/A/D/?/R), language icons come from the extension
+- **Syntax highlighting**: TypeScript / Rust / Go / Python use dedicated tree-sitter grammars (incremental); other languages fall back to a generic set. Grammars load on demand
+- **Images**: bitmaps render through the asset protocol; SVG still opens as text
+- **Tree actions**: `Cmd+Shift+E` focuses the tree (expands to the current file; `↑↓` / `→←` / `Enter` / `Esc`), `Cmd+B` toggles it, the width drags
+
+### Language servers
+
+- One LSP process per language over standard `Content-Length` framed JSON-RPC. Built-in defaults cover ts / rust / go / python; the launch command is configurable in Settings and a project-level `.bnote/lsp.json` adds another layer (it travels with the repository)
+- **Navigation and hints**: go to definition (F12) / type definition (`Cmd+F12`) / implementation / references (`Shift+F12`) / rename (F2), hover signatures, completion (`Ctrl+Space`), workspace symbols
+- Completion triggers automatically after `.` / `::`; `F8` / `Shift+F8` walk the problem list
+- Python projects get the venv's `VIRTUAL_ENV` and `PATH` injected
+
+### Git and terminal
+
+- **Git**: status, stage/unstage, and a diff view (unified or side-by-side, the side-by-side pairs lines by longest common subsequence and aligns the changed line)
+- **Integrated terminal**: `portable-pty` in Rust plus xterm in the frontend, a full-width multi-tab drawer toggled with `Ctrl+\``; sessions are re-attached rather than rebuilt, and resizing writes CSS variables only
+
+### Coding agent
+
+- Opening a repository in the middle column switches the left agent to the coding definition: the session uses the repository root as its workdir (relative paths and bash anchor there), and tasks, history, and memory are recorded under that project
+- Every tool is available: file read/write, glob / grep, bash (background and kill), todo, subagent dispatch, skills, MCP, plan mode, and asking the user
+- The project root is the sandbox: reads and writes inside are allowed, everything outside is refused (relative paths are lexically normalized and then canonicalized, and symlinks pointing outside are rejected too)
+- Transcripts live in `~/.bnote/projects/<project key>/<session>.jsonl`; no code material directory ever appears in the vault
+
+## Project management
+
+- Layout: **project list | board | daily note**, with draggable dividers on both sides
+- A project is one todo list in `<vault>/.bnote/projects/<name>.md`. Markdown is deliberate: a project todo has to be editable with Vim, checkable, and recognizable by the cross-file todo sync
+- The board is genuinely multi-column: the current column is centered and editable (CodeMirror with Vim), the others are DOM previews — clicking one focuses it. Switching projects only swaps the document, never rebuilds the editor
+- Todos drag between columns (children follow their parent); the column header shows the project name and open count
+- Create / delete: `Cmd+Shift+N` creates, `Cmd+Backspace` moves the current project to the trash (project region only); the context menu and the `⋯` header menu offer the same actions
+- `Cmd+Shift+J` inserts the current todo at the **top** of today's daily todo area (in the notes region the same key appends to the end)
+
+## Daily notes, todos, and footprints
+
+- A todo in any note can be sent to today's daily note (default `Daily/YYYY-MM-DD.md`, created automatically)
+- After sending, both sides stay in sync: completion state and subtask edits mirror in both directions; an existing identical entry in the daily note is adopted instead of duplicated
+- Todos that were never sent are still recorded in the daily note when checked, and cleaned up when unchecked
+- The daily note ends with a "footprint": non-todo additions and edits of the day grouped by source file, each jumping back to the original text
+- Creating a new daily note carries over the previous note's unfinished todos
+- Todo mappings live in `.bnote/daily-links.json`; footprint baselines in `.bnote/daily-footprints.json`
+
+## Canvas, attachments, and Python
+
+### Canvas and attachments
+
+- Open an Excalidraw canvas from the command palette; it has its own keymap and saves before switching files
+- New drawings are saved as `<name>.excalidraw` with a same-named PNG exported for Markdown previews
+- Compatible with the Obsidian Excalidraw plugin's `.excalidraw.md` (including `compressed-json`)
+- Returning to the source note inserts `![[...]]` at the original cursor position
+- Images, PDFs, and other media enter the vault asset index used for Markdown resolution
+
+### Python
+
+- All `python` fences in a note are aligned by line number and run as one virtual `.py` file
+- `Cmd+Enter` runs the note; stdout/stderr stream into a bottom panel with stop, exit code, duration, and a 300-second timeout
+- `ty`-based completion, hover, and diagnostics, toggled from the command palette
+- Create or sync a `uv` environment for the current project (`uv init --bare` + `uv sync`), with logs in the run panel
+
+## Agent
+
+The coding agent follows Claude Code's structure: definitions and prompts are compiled into the binary, and all runtime state lives in `~/.bnote`.
+
+### Model and protocols
+
+- Anthropic Messages, OpenAI-compatible, DeepSeek, GLM, Qwen, Ollama, and custom endpoints, all with SSE streaming
+- Configuration in `~/.bnote/agent.json` (protocol, base URL, model, API key, context window, MCP servers); a legacy `agent.json` in the app data directory is migrated on first launch
+- API keys are used only in Rust and never enter a page context
+
+### Instruction files (AGENTS.md)
+
+- **Coding sessions**: `~/.bnote/AGENTS.md` and `~/.bnote/rules/*.md`, layered with `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md` from the repository root down to the working directory
+- **Study / creative sessions**: only the vault's `.bnote/AGENTS.md` (with `.bnote/agent.md` still supported)
+- `@import` is followed (up to 5 levels, skipping code fences and comments) and `settings.instructionsExcludes` filters files by glob
+- When a file is read, any not-yet-loaded `AGENTS.md` between its directory and the project root is injected as a system-reminder on the next turn
+
+### Tools, permissions, and plan mode
+
+- **Tools**: `read_file` / `write_file` / `edit_file` / `list_files` / `glob` / `grep` / `bash` (with `bash_output`, `bash_kill`), `todo`, `task`, `skill`, `mcp`, `task_*`, `ask_user_question`, `send_message`, `EnterPlanMode` / `ExitPlanMode`
+- **Subagents**: `general-purpose` (all tools), `explore` (read-only), `plan` (read-only planning), and `fork` (inherits the current context); they run in parallel or in the background, and their transcripts land in `~/.bnote/projects/<project key>/<session>/subagents/`
+- **Four permission modes** (shield menu): confirm before changes / autonomous / full access / plan. Rules in `permissions.allow / ask / deny` are evaluated before the mode and accept forms such as `Bash(git push:*)` and path globs
+- **Plan mode**: read-only investigation; file writes and side-effecting commands are refused. `ExitPlanMode` writes the plan to `~/.bnote/plans/<slug>.md` and shows an approval card; the previous mode returns only after you approve
+- **Context**: long sessions are compacted automatically (with a circuit breaker), large tool results are persisted and referenced, and Anthropic system prompts are split into static/dynamic blocks with `cache_control` on the static one
+
+### Settings layers, hooks, and output styles
+
+- **Three layers merge**: `~/.bnote/settings.json` → `<project>/.bnote/settings.json` → `<project>/.bnote/settings.local.json`; arrays concatenate and deduplicate, objects deep-merge, scalars take the last value. Fields: `model`, `env`, `permissions`, `hooks`, `outputStyle`, `instructionsExcludes`, `cleanupPeriodDays`, `plansDirectory`, `autoMemoryEnabled`, `autoMemoryDirectory`
+- **Hooks**: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `SessionStart`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`. They run through `sh -c` with JSON on stdin and a 60-second default timeout, and can return `permissionDecision`, `additionalContext`, or `updatedInput`; a non-zero exit can block a tool
+- **Output styles**: built-in default / Explanatory / Learning, plus custom files in `~/.bnote/output-styles/*.md` and `<project>/.bnote/output-styles/*.md` (frontmatter: `name` / `description` / `keep-coding-instructions`); the selected `settings.outputStyle` is injected as a dynamic segment
+- **Settings UI**: `Settings → Agent` holds model, MCP, skills, AGENTS.md, and "Agent settings" (output style picker, a `~/.bnote/settings.json` editor, and the paths and parse state of the three layers)
+
+### Memory, history, and skills
+
+- **Auto memory**: `~/.bnote/projects/<project key>/memory/MEMORY.md` is the only index, one file per memory, linked with `[[name]]`; coding sessions get the index plus the memory behavior prompt on every turn
+- **Prompt history**: every send appends to `~/.bnote/history.jsonl`. With an empty input, `↑` recalls this project's earlier prompts and `↓` walks forward; the walk resets after sending
+- **Skills**: `~/.bnote/skills/<name>/SKILL.md`, `<project>/.bnote/skills/`, `~/.agents/skills/` (the Agent Skills convention), and any extra directories from settings
+
+### The `~/.bnote` layout
+
+```text
+~/.bnote/
+├── agent.json            protocol / model / API key / MCP
+├── settings.json         user-level agent settings
+├── AGENTS.md             user-level instructions (coding sessions only)
+├── rules/*.md            user-level rule files
+├── skills/<name>/SKILL.md
+├── output-styles/*.md
+├── history.jsonl         prompt history
+├── plans/<slug>.md       plan-mode output
+├── tasks/<list>/         persisted task list state
+└── projects/<project key>/
+    ├── memory/MEMORY.md  auto-memory index
+    ├── <session>.jsonl   coding session transcript
+    └── <session>/        subagents/ and tool-results/
+```
+
+## Focus mode
+
+- Click the status-bar chip to start; the command palette has `focus.pomodoro-start` (`Cmd+Alt+T`, using the first configured duration)
+- **One pomodoro is one continuous stretch**: no break phase, no pause, no ending early — only "start"
+- Starting means pseudo-fullscreen (level 25, covering the menu bar, spanning Spaces), the hard lock, and the timer all at once. The hard lock needs the accessibility permission; without it the stretch does not start and the notice points at System Settings
+- The hard lock swallows `Cmd+Tab` / `Cmd+Space` / `Ctrl+↑` / `Cmd+Q`; app menu keys (`Cmd+M` / `Cmd+H` / `Cmd+W`) keep working
+- Up to three durations can be configured and cannot change mid-session; a restart restores both the countdown and the locks
+- When time is up the locks release and the window level is restored; a running session writes the countdown into the window title
+
+## Keybindings
+
+Every action is a command: reachable from the palette (`Cmd+P`), bound to a key, and rebindable. The table of defaults is generated from the keymap, not written here: **[docs/keybindings.md](docs/keybindings.md)**.
+
+- **Per-region keymap**: the same chord means different things depending on what has focus — `global` / `notes` / `reading` / `agent` / `project` / `code`. In the assistant panel `Cmd+[` returns to the parent session; in the notes region it goes back to the previous link jump.
+- **Rebinding**: Settings → Hotkeys records a new chord, unbinds, and restores defaults per region. Overrides live in `<vault>/.bnote/keybindings.json`, which travels with the vault and is safe to hand-edit.
+- **Unbound by design**: `view.toggle-code-mode` has no default chord (`Cmd+Shift+C` inserts a code block), and `app.quit` is unbound so an accidental `Cmd+Q` cannot quit the app — focus mode's hard lock swallows it while a pomodoro runs anyway.
+
+## Data and configuration
+
+### Application data
 
 `~/Library/Application Support/com.bnote.app/`
 
-| 文件 | 用途 |
+| File | Purpose |
 | --- | --- |
-| `config.json` | 最近仓库、上次文件、设置、光标位置、窗口几何、代码项目 |
-| `keybindings.json` | 全局快捷键覆盖（按区域分组） |
-| `vimrc` | 全局 Vim 映射 |
-| `translate.json` | 句子翻译：协议、Base URL、模型、API Key、思考开关、超时 |
+| `config.json` | Recent vaults, last file, settings, cursor positions, window geometry, code project |
+| `keybindings.json` | Global keybinding overrides, grouped by region |
+| `vimrc` | Global Vim mappings |
+| `translate.json` | Sentence translation protocol, base URL, model, API key, thinking, timeout |
 
-### Agent 运行时（`~/.bnote`）
+### Agent runtime (`~/.bnote`)
 
-| 路径 | 用途 |
+| Path | Purpose |
 | --- | --- |
-| `agent.json` | 协议、Base URL、模型、API Key、上下文窗口、MCP |
-| `settings.json` | 用户级 agent 设置（权限、hooks、输出风格、记忆开关等） |
-| `AGENTS.md`、`rules/*.md` | 用户级指令（只进编码会话） |
-| `skills/`、`output-styles/` | 用户级技能与输出风格 |
-| `history.jsonl` | 提示词历史（输入框 `↑` 召回） |
-| `plans/` | 计划模式的计划文件 |
-| `tasks/<list>/` | 后台任务列表的落盘状态 |
-| `projects/<项目键>/` | 每个项目：`memory/`、会话 `.jsonl`、子代理与工具结果 |
+| `agent.json` | Protocol, base URL, model, API key, context window, MCP |
+| `settings.json` | User-level agent settings (permissions, hooks, output style, memory switches) |
+| `AGENTS.md`, `rules/*.md` | User-level instructions (coding sessions only) |
+| `skills/`, `output-styles/` | User-level skills and output styles |
+| `history.jsonl` | Prompt history (recalled with `↑`) |
+| `plans/` | Plan-mode plan files |
+| `tasks/<list>/` | Persisted task list state |
+| `projects/<project key>/` | Per project: `memory/`, session `.jsonl`, subagents, tool results |
 
-设置项 `BNOTE_HOME` 可以把整个目录挪到别处。
+`BNOTE_HOME` moves the whole directory elsewhere.
 
-### Vault 内配置
+### Vault-level configuration
 
-| 路径 | 用途 |
+| Path | Purpose |
 | --- | --- |
-| `.bnote/keybindings.json` | 仓库级快捷键覆盖（按 `global` / `notes` / `reading` / `agent` / `project` / `code` 分区） |
-| `.bnote/vimrc` | 仓库级 Vim 映射（优先于全局） |
-| `.bnote/snippets.js` | 仓库级 LaTeX 片段；存在时取代内置片段 |
-| `.bnote/AGENTS.md` | 学习 / 创作助手的指令（兼容 `.bnote/agent.md`） |
-| `.bnote/settings.json`、`.bnote/settings.local.json` | 项目级 agent 设置（叠加在 `~/.bnote/settings.json` 之上） |
-| `.bnote/skills/`、`.bnote/output-styles/` | 项目级技能与输出风格 |
-| `.bnote/lsp.json` | 语言服务器启动命令（跟着仓库走） |
-| `.bnote/projects/<项目名>.md` | 项目待办清单 |
-| `.bnote/materials/index.json` | 材料登记表：材料身份 → 目录名 |
-| `.bnote/materials/pdfs/<目录>/` | PDF 原文、`annotations.json`、`sessions/*.jsonl` |
-| `.bnote/materials/webpages/<目录>/` | 网页材料的会话记录 |
-| `.bnote/materials/wxreads/<目录>/` | 微信读书材料的会话记录 |
-| `.bnote/web-annotations/<host>-<hash>.json` | 按网址保存的网页批注 |
-| `.bnote/read-positions.json` | 阅读位置（PDF 页码 + 页内比例；网页滚动比例） |
-| `.bnote/daily-links.json` | 跨文件待办同步映射 |
-| `.bnote/daily-footprints.json` | 今日足迹基线 |
+| `.bnote/keybindings.json` | Vault-level keybinding overrides (`global` / `notes` / `reading` / `agent` / `project` / `code`) |
+| `.bnote/vimrc` | Vault-level Vim mappings (take precedence) |
+| `.bnote/snippets.js` | Vault-level LaTeX snippets; replaces the built-in set |
+| `.bnote/AGENTS.md` | Study / creative assistant instructions (`.bnote/agent.md` still supported) |
+| `.bnote/settings.json`, `.bnote/settings.local.json` | Project-level agent settings, layered over `~/.bnote/settings.json` |
+| `.bnote/skills/`, `.bnote/output-styles/` | Project-level skills and output styles |
+| `.bnote/lsp.json` | Language server launch commands (travels with the repository) |
+| `.bnote/projects/<name>.md` | One project todo list |
+| `.bnote/materials/index.json` | Material registry: identity → directory |
+| `.bnote/materials/pdfs/<dir>/` | PDF file, `annotations.json`, `sessions/*.jsonl` |
+| `.bnote/materials/webpages/<dir>/` | Web material sessions |
+| `.bnote/materials/wxreads/<dir>/` | WeRead material sessions |
+| `.bnote/web-annotations/<host>-<hash>.json` | Web annotations, one file per URL |
+| `.bnote/read-positions.json` | Reading positions (PDF page + offset; web scroll ratio) |
+| `.bnote/daily-links.json` | Cross-file todo mappings |
+| `.bnote/daily-footprints.json` | Daily footprint baselines |
 
-## 架构与性能
+## Architecture and performance
 
 ```text
-src/                        前端：React 19 + CodeMirror 6 + Zustand
-  editor/                   实时渲染、KaTeX、LaTeX 片段、Vim、打字机、输入法跟随
-  commands/                 命令注册中心、区域化键位、内置命令、键序
-  components/               视图层：应用外壳与设置，以及按域分的视图目录
-                            （agent / study / code / daily / projects / focus / python）
-  study/                    材料目录、PDF/网页批注、阅读位置、微信读书、网页运行时、缩放
-  code/                     文件树、编辑器、LSP 客户端、git 差异、问题面板、终端
-  projects/                 项目看板模型、拖动、发送到日记
-  focus/                    番茄钟状态机与专注锁
-  daily/  footprint/        跨文件待办模型与同步引擎、今日足迹 diff 与渲染
-  python/                   代码块提取、运行面板、类型检查客户端
-  dev/                      浏览器调试入口与 harness
+src/                        Frontend: React 19 + CodeMirror 6 + Zustand
+  editor/                   Live preview, KaTeX, LaTeX snippets, Vim, typewriter, IME follow
+  commands/                 Command registry, per-region keymap, built-in commands
+  components/               App chrome, the four mode layouts, agent panel, PDF viewer, settings
+  study/                    Materials, PDF/web annotations, reading positions, WeRead, web runtime, zoom
+  code/                     File tree, editor, LSP client, git diff, problems, terminal
+  projects/                 Project board model, dragging, sending to the daily note
+  focus/                    Pomodoro state machine and focus lock
+  daily/  footprint/        Cross-file todos and daily footprint diff/rendering
+  python/                   Code block extraction, run panel, type-check client
+  dev/                      Browser debug entry and harness
 
-src-tauri/src/              Rust 后端
+src-tauri/src/              Rust backend
   commands/                 vault/files/config/materials/agent/python/ime/translate/focus/term
-  agent/                    Provider、会话、工具、子代理、home、instructions、settings、hooks、output_style
-  code/ lsp/               项目树缓存、git、共享 LSP 传输
-  python/                   运行器、ty LSP 桥、uv 环境
-  dict.rs / translate.rs    ECDICT 词典与选词分类、翻译请求
-  devbridge.rs              浏览器模式的 IPC 桥（127.0.0.1:1439）
+  agent/                    Providers, sessions, tools, subagents, home, instructions, settings, hooks, output styles
+  code/ lsp/                Project tree cache, git, shared LSP transport
+  python/                   Runner, ty LSP bridge, uv environments
+  dict.rs / translate.rs    Embedded ECDICT and selection classification / translation requests
+  devbridge.rs              Browser-mode IPC bridge (127.0.0.1:1439)
 
-tests/data/pdfs/            PDF 转换夹具与质量门禁
-scripts/                    dev-signing setup
+tests/data/pdfs/            PDF conversion fixtures and quality gate
+scripts/                    Dev signing setup
 ```
 
-几条贯穿实现的原则：
+Design principles that cut across the codebase:
 
-- **文件系统是唯一事实**：笔记、批注、会话都落在磁盘（Vault 或 `~/.bnote`），Rust 侧文件操作走 `spawn_blocking`，不阻塞 UI
-- **单一写入者**：同一份状态只有一个写入者；异步回调（measure、watcher、流式事件）先自证仍对应当前状态，过期即丢弃
-- **Vault watcher**：基于 FSEvents 的朴素 watcher + 手写去抖，静默 300 ms 后发送 `vault-changed`，避免大仓库启动时的全树扫描
-- **只处理可视区域**：实时渲染仅遍历视口内的语法树；性能敏感路径由 [`src/editor/perf.gate.test.ts`](src/editor/perf.gate.test.ts) 与 [`src/code/perf.gate.test.ts`](src/code/perf.gate.test.ts) 锁定量级
-- **原生能力留在 Rust**：文件读写、网页预览（原生子 webview）、翻译与模型请求都由 Rust 发起；API 密钥不进入任何网页上下文
+- **The filesystem is the source of truth**: notes, annotations, and sessions live on disk (the vault or `~/.bnote`); Rust file I/O runs on `spawn_blocking` and never blocks the UI
+- **Single writer**: each piece of state has exactly one writer; asynchronous callbacks (measure, watcher, streaming events) prove they still belong to the current state and drop stale results
+- **Vault watcher**: a plain FSEvents-based watcher with a hand-rolled debouncer emits `vault-changed` after 300 ms of silence, avoiding a full-tree scan on startup
+- **Viewport-only work**: live preview walks only the visible syntax tree; performance-sensitive paths are guarded by [`src/editor/perf.gate.test.ts`](src/editor/perf.gate.test.ts) and [`src/code/perf.gate.test.ts`](src/code/perf.gate.test.ts)
+- **Native capabilities stay in Rust**: file I/O, the web preview (a native child webview), and translation/model requests all originate in Rust; API keys never enter a page context
 
-## 开发与门禁
+## Development and quality gates
 
-- **前端**：`pnpm dev` 启动 Vite；`pnpm tauri dev` 启动完整应用。`pnpm gate` = `eslint` + `tsc --noEmit` + `vitest`，是「改动完成」的定义
-- **真实后端调试**：`pnpm tauri dev` 运行时，浏览器打开 `http://localhost:1430/` 即为真应用（`devbridge` 补上 Tauri IPC，连真 vault、真文件树、真 watcher）
-- **纯前端 harness**：`http://localhost:1430/harness.html` 挂载带全部扩展的编辑器 + 内存假仓库，用于确定性 DOM 断言与几何测量
-- **设计约束与调试协议**：见 [`AGENTS.md`](AGENTS.md) 与 [`DEBUG.md`](DEBUG.md)
+- **Frontend**: `pnpm dev` starts Vite; `pnpm tauri dev` starts the full app. `pnpm gate` = `eslint` + `tsc --noEmit` + `prettier --check` + `vitest`, and is the definition of "done"
+- **Real backend in a browser**: with `pnpm tauri dev` running, `http://localhost:1430/` is the real app (devbridge supplies Tauri IPC, a real vault, a real file tree, and real watcher events)
+- **Pure frontend harness**: `http://localhost:1430/harness.html` mounts the editor with every extension plus an in-memory fake vault for deterministic DOM assertions and geometry measurements
+- **Design constraints and debugging protocol**: see [`AGENTS.md`](AGENTS.md) and [`DEBUG.md`](DEBUG.md)
 
 ## Roadmap
 
-- 多标签页
-- 全库全文搜索
-- 知识图谱 / 图形视图
-- 更完整的 vimrc：`<leader>` 前缀与更多 `:set` 选项
+- Multiple tabs
+- Full-text search across the vault
+- Knowledge graph / graph view
+- More complete vimrc support: `<leader>` prefixes and more `:set` options
 
-## License 与致谢
+## License and acknowledgements
 
-本项目采用 [MIT License](LICENSE)。
+Released under the [MIT License](LICENSE).
 
-内置词库来自 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT），生成参数与来源 commit 记录在 `src-tauri/resources/ecdict_common.json`。同时感谢 [Tauri](https://tauri.app/)、[CodeMirror](https://codemirror.net/)、[KaTeX](https://katex.org/)、[pdf.js](https://mozilla.github.io/pdf.js/)、[Excalidraw](https://excalidraw.com/)、[xterm.js](https://xtermjs.org/) 等开源项目。
+The embedded dictionary is derived from [ECDICT](https://github.com/skywind3000/ECDICT) (MIT); the source commit and build parameters are recorded in `src-tauri/resources/ecdict_common.json`. Thanks also to [Tauri](https://tauri.app/), [CodeMirror](https://codemirror.net/), [KaTeX](https://katex.org/), [pdf.js](https://mozilla.github.io/pdf.js/), [Excalidraw](https://excalidraw.com/), and [xterm.js](https://xtermjs.org/).
