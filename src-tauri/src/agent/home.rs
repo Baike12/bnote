@@ -100,18 +100,6 @@ pub fn skills_dirs() -> Vec<PathBuf> {
     vec![home_dir().join("skills")]
 }
 
-pub fn output_styles_dir() -> PathBuf {
-    home_dir().join("output-styles")
-}
-
-pub fn user_instructions() -> PathBuf {
-    home_dir().join("AGENTS.md")
-}
-
-pub fn user_rules_dir() -> PathBuf {
-    home_dir().join("rules")
-}
-
 pub fn settings_file() -> PathBuf {
     home_dir().join("settings.json")
 }

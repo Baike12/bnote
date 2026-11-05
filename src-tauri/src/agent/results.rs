@@ -9,8 +9,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde_json::Value;
-
 use super::types::Content;
 
 /// Per-result cap (characters). Matches CC's DEFAULT_MAX_RESULT_SIZE_CHARS.
@@ -131,11 +129,6 @@ fn preview(text: &str) -> String {
 /// no special path is needed; this helper exists for tests).
 pub fn is_persisted_notice(text: &str) -> bool {
     text.starts_with("<persisted-output>")
-}
-
-/// The JSON-safe form of a persisted notice (used by the panel's tool card).
-pub fn notice_value(text: &str) -> Value {
-    Value::String(text.to_string())
 }
 
 #[cfg(test)]

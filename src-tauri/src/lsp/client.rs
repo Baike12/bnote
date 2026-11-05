@@ -62,11 +62,6 @@ impl ServerSpec {
             ..Default::default()
         }
     }
-
-    pub fn with_args(mut self, args: &[&str]) -> Self {
-        self.args = args.iter().map(|s| s.to_string()).collect();
-        self
-    }
 }
 
 /// How a message coming from the server is handled.

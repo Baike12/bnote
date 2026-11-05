@@ -25,7 +25,7 @@ pub mod types;
 
 pub use provider::Provider;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Agent configuration persisted at `<agent home>/agent.json` (`~/.bnote`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

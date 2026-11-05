@@ -165,18 +165,6 @@ fn merge_list(into: &mut Vec<String>, from: Vec<String>) {
     }
 }
 
-/// `chmod 0o700` on the settings file is overkill here; the home directory is
-/// already private. Only the write path matters: the UI writes the user file.
-pub fn write_user(contents: &str) -> Result<(), String> {
-    serde_json::from_str::<serde_json::Value>(contents)
-        .map_err(|e| format!("INVALID_JSON: {}", e))?;
-    let path = user_file();
-    if let Some(parent) = path.parent() {
-        crate::agent::home::ensure_dir(parent)?;
-    }
-    std::fs::write(&path, contents).map_err(|e| format!("WRITE_FAILED: {}", e))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

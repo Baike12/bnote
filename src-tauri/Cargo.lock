@@ -374,7 +374,6 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "trash",
- "walkdir",
  "zstd",
 ]
 

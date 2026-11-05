@@ -367,15 +367,6 @@ pub fn dangerous_command(command: &str) -> Option<&'static str> {
         .map(|(_, label)| *label)
 }
 
-/// The approval card's headline for a dangerous command.
-pub fn danger_reason(command: &str) -> Option<String> {
-    dangerous_command(command).map(|label| {
-        format!(
-            "这条命令会执行高风险操作({label}),确认后才执行。",
-        )
-    })
-}
-
 /// What the model is told when a tool is refused. The guidance is the part that
 /// matters: a refusal is not a signal to route around the user's intent.
 pub const DENIAL_WORKAROUND_GUIDANCE: &str = "This tool use was rejected, so its effect did NOT happen (no file was written, no command ran). \
