@@ -603,11 +603,13 @@ async fn execute_text(
             if !url.starts_with("http://") && !url.starts_with("https://") {
                 return (false, "invalid url".into());
             }
-            let client = reqwest::Client::builder()
+            let client = match reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .map_err(|e| e.to_string())
-                .unwrap();
+            {
+                Ok(c) => c,
+                Err(e) => return (false, format!("http client init failed: {}", e)),
+            };
             match client.get(&url).send().await {
                 Ok(resp) => {
                     let mime = resp
@@ -674,10 +676,13 @@ async fn execute_text(
                     }
                 }
                 Some(StudyContent::Url { url, title }) => {
-                    let client = reqwest::Client::builder()
+                    let client = match reqwest::Client::builder()
                         .timeout(std::time::Duration::from_secs(30))
                         .build()
-                        .unwrap();
+                    {
+                        Ok(c) => c,
+                        Err(e) => return (false, format!("http client init failed: {}", e)),
+                    };
                     match client.get(&url).send().await {
                         Ok(resp) => {
                             let body = resp.text().await.unwrap_or_default();

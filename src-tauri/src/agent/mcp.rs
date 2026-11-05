@@ -7,6 +7,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+/// Upper bound for one stdio request round trip. A server that accepted the
+/// spawn but never answers (a wrong command, a missing runtime, a server that
+/// waits on a TTY) would otherwise hang `agent_start_session` forever with no
+/// way to cancel from the UI. The HTTP transport has its own timeout.
+const STDIO_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct McpTool {
     pub name: String, // fully qualified: mcp__<server>__<tool>
     pub description: String,
@@ -19,6 +25,9 @@ enum Transport {
         stdin: tokio::process::ChildStdin,
         reader: BufReader<tokio::process::ChildStdout>,
         next_id: u64,
+        /// Set once a read times out or fails: the stream may hold a partially
+        /// consumed line, so it can never be trusted again.
+        dead: bool,
     },
     Http {
         url: String,
@@ -50,7 +59,7 @@ impl McpConnection {
                 let stdin = child.stdin.take().ok_or("no stdin")?;
                 let stdout = child.stdout.take().ok_or("no stdout")?;
                 let reader = BufReader::new(stdout);
-                Transport::Stdio { child, stdin, reader, next_id: 1 }
+                Transport::Stdio { child, stdin, reader, next_id: 1, dead: false }
             }
             McpServerConfig::Http { url, headers } => {
                 Transport::Http {
@@ -129,7 +138,10 @@ impl McpConnection {
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         match &mut self.transport {
-            Transport::Stdio { stdin, reader, next_id, .. } => {
+            Transport::Stdio { child, stdin, reader, next_id, dead } => {
+                if *dead {
+                    return Err("mcp stdio: connection is dead after a failed read".into());
+                }
                 let id = *next_id;
                 *next_id += 1;
                 let req = json!({
@@ -146,10 +158,29 @@ impl McpConnection {
                 // read lines until a response with our id (skip notifications)
                 loop {
                     let mut line = String::new();
-                    let n = reader
-                        .read_line(&mut line)
-                        .await
-                        .map_err(|e| format!("read: {}", e))?;
+                    // A timed out `read_line` may have consumed part of a line,
+                    // so the connection is retired instead of being reused.
+                    let n = match tokio::time::timeout(
+                        STDIO_REQUEST_TIMEOUT,
+                        reader.read_line(&mut line),
+                    )
+                    .await
+                    {
+                        Ok(Ok(n)) => n,
+                        Ok(Err(e)) => {
+                            *dead = true;
+                            let _ = child.start_kill(); // best effort: the transport is already unusable
+                            return Err(format!("read: {}", e));
+                        }
+                        Err(_) => {
+                            *dead = true;
+                            let _ = child.start_kill();
+                            return Err(format!(
+                                "mcp stdio: no response within {}s",
+                                STDIO_REQUEST_TIMEOUT.as_secs()
+                            ));
+                        }
+                    };
                     if n == 0 {
                         return Err("server closed".into());
                     }
