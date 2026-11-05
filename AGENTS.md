@@ -149,7 +149,7 @@ Run **`pnpm gate`** (= `pnpm lint` + `pnpm typecheck` + `pnpm test`) and make it
 - **A feature is not done without tests and gates.** Hot paths also get an order-of-magnitude perf gate.
 - **Geometry and feel need browser measurement** in addition to unit tests: pure tests lock control flow, not pixels. Use the harness protocol in DEBUG.md and compare before/after.
 - **Lint errors block; warnings need a reason.** New warnings (engine `any` assertions, dev-bridge `console.log`) must be justified.
-- **Rust changes** run `cargo check` in `src-tauri` (and `cargo test --lib` for behavior changes). Rust is not part of `pnpm gate`.
+- **Rust changes** run `cargo check --workspace` in `src-tauri` (and `cargo test --workspace --lib` for behavior changes), plus `cargo fmt` (the repo is rustfmt-clean; `rustfmt.toml` at the repo root sets the width). `src-tauri` is the cargo workspace root: the app and `crates/pdf2md` share one lockfile. Rust is not part of `pnpm gate`.
 - If the gate fails under heavy machine load, check the load average and rerun the failing test alone; report the real result.
 
 ## Language

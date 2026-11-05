@@ -13,6 +13,3 @@ flate2 = "1"
 [[bin]]
 name = "pdf2md"
 path = "src/bin/pdf2md.rs"
-
-[profile.release]
-opt-level = 3

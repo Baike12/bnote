@@ -1,3 +1,10 @@
+[workspace]
+# One workspace for the app and the converter crate: one lockfile, one target
+# directory, and the release profile below applies to both (a `[profile]` in a
+# member crate is silently ignored, which is what the pdf2md crate used to do).
+members = ["crates/pdf2md"]
+resolver = "2"
+
 [package]
 name = "bnote"
 version = "0.1.0"
