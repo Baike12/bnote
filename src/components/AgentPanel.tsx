@@ -5,7 +5,6 @@ import {
   homeApi,
   type AgentChatItem,
   type AgentEvent,
-  type AgentTodoItem,
   type MaterialInfo,
   type SavedSessionMeta,
   type SessionModelConfig,
@@ -25,7 +24,7 @@ import {
   type CodeSessionScope,
 } from "@/code/sessionScope";
 import { cleanGeneratedTitle, displayTitle } from "@/study/sessionTitle";
-import { resolveFamily, type SessionNode } from "@/study/sessionTree";
+import { resolveFamily } from "@/study/sessionTree";
 import {
   buildSessionMeta,
   historyFromTranscript,
@@ -41,324 +40,33 @@ import { isWereadUrl } from "@/study/weread";
 import { applySuggestion, parseSuggestTrigger, type SuggestTrigger } from "@/agent/suggest";
 import { AgentHeader } from "@/components/AgentHeader";
 import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/AgentSuggest";
-import { HtmlPreview } from "@/components/HtmlPreview";
-import { splitAgentMarkdown } from "@/study/agentMarkdown";
-import {
-  contextLabel,
-  formatPercent,
-  formatTokenCount,
-  occupancyPercent,
-  usageTitle,
-  type AgentUsage,
-} from "@/study/agentUsage";
 import {
   MAX_IMAGES_PER_MESSAGE,
   fileToAgentImage,
   type AgentImage,
 } from "@/study/agentImages";
-
-interface ToolRecord {
-  id: string;
-  name: string;
-  input?: unknown;
-  output?: string;
-  ok?: boolean;
-  /** The screenshots the tool returns to the model with the result (a rendered preview for instance); they are only displayed. */
-  images?: AgentImage[];
-}
-
-interface Turn {
-  /** Streaming text buffer for the current assistant reply. */
-  text: string;
-  /** The streamed thinking process (plain text; it does not enter the session history, it is only displayed). */
-  thinking: string;
-  /** Timestamp of the first thinking delta (used for the timer). */
-  thinkingStart: number | null;
-  /** How long the thinking took (in seconds, computed and frozen when the turn ends). */
-  thinkSeconds: number | null;
-  tools: ToolRecord[];
-  error?: string;
-}
-
-interface ChatEntry {
-  role: "user" | "assistant" | "notice";
-  text: string;
-  /** The timestamp written into the session record. */
-  at: number;
-  /** The screenshots and images attached to a user message (display only; on the model side the backend session history is the truth). */
-  images?: AgentImage[];
-  turn?: Turn;
-  /**
-   * The number of entries of the backend session history "up to and including
-   * this one". user = the previous one + 1; assistant = the authoritative
-   * count the backend reports with the turn_end / error events (see
-   * agentFork.ts). null = still unknown (it errored and no count could be
-   * obtained).
-   */
-  items: number | null;
-}
-
-/** One session inside the panel: the main session, or an auxiliary session forked from some message. */
-interface Conv {
-  key: string;
-  sessionId: string | null;
-  entries: ChatEntry[];
-  label: string;
-  /** The session this one was forked from; null for the main session. */
-  parent: string | null;
-  /** The summary of an auxiliary session (the first line of the source message). */
-  basedOn: string;
-  /**
-   * The number of copied prefix entries at the time of the fork:
-   * `entries[forkAt]` is the first message that belongs to this session
-   * itself. The title has to use it, the question of the parent session
-   * must not stand in for it.
-   */
-  forkAt: number;
-  /** Where the title comes from: llm = the model generated it (it is not generated again after a restart). */
-  titleSource: "llm" | "first-message";
-  /**
-   * A session level error (start failed / send failed). It is displayed
-   * persistently at the top of the conversation (following ZCode's
-   * ChatErrorBanner) until the user retries or closes it, instead of only a
-   * toast that disappears after a few seconds: most of the "sending got no
-   * answer" cases the user sees are exactly such failures swallowed by a
-   * toast.
-   */
-  error?: string;
-  /** Where the error came from, it decides what the "retry" button does. */
-  errorKind?: "start" | "send";
-  /** The todo tool's latest list (rendered above the composer; transient). */
-  todos: AgentTodoItem[];
-  /** The MCP connection failures the backend reported at startup (an empty array = everything is fine). */
-  mcpErrors: string[];
-  /**
-   * The session record file (`<material dir>/sessions/<id>.jsonl`). null =
-   * there is no id yet (just started / the start failed) or the browser
-   * cannot write to disk.
-   */
-  transcriptPath: string | null;
-  /** The session id in the file name (the history drawer highlights the current entry with it). */
-  sessionFileId: string | null;
-  /** The transcript lives in the agent home (`~/.bnote`) instead of the vault (coding sessions). */
-  transcriptHome?: boolean;
-  /** The model config snapshot of this session at the moment it started: later setting changes do not affect it, and the restore continues with it. */
-  model: SessionModelConfig | null;
-  /** The token usage of the last model request (the context usage = input + output). */
-  usage: AgentUsage | null;
-}
-
-/** Identity of the material a session is pinned to (url re-open = same key). */
-function studyContentKey(content: StudyContent | null): string {
-  if (!content) return "none";
-  if (content.kind === "pdf") return `pdf:${content.path}`;
-  return `url:${content.url}`;
-}
-
-/** A list entry turned into the node used to resolve the family (missing fields mean the main session / an empty prefix). */
-function toSessionNode(meta: SavedSessionMeta): SessionNode {
-  return {
-    id: meta.id,
-    title: meta.title,
-    parent: meta.parent ?? null,
-    basedOn: meta.basedOn ?? "",
-    forkAt: meta.forkAt ?? 0,
-    createdAt: meta.createdAt,
-    updatedAt: meta.updatedAt,
-  };
-}
-
-function findConvBySession(convs: Conv[], sessionId: string): Conv | undefined {
-  return convs.find((c) => c.sessionId === sessionId);
-}
-
-let convSeq = 0;
-function nextConvKey(): string {
-  convSeq += 1;
-  return `c${convSeq}`;
-}
-
-/** The distance within which the thinking summary counts as pinned to the bottom (same value as ZCode's reasoning: within 2 px of the bottom). */
-const THINKING_BOTTOM_LOCK_PX = 2;
-
-/** The summary line: the last line of non-empty text (the same logic as ZCode's resolveReasoningStreamingSummary). */
-export function thinkingSummaryLine(thinking: string): string {
-  const lines = thinking.replace(/\r\n?/g, "\n").split("\n");
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const text = lines[i]?.trim() ?? "";
-    if (text) return text;
-  }
-  return "";
-}
-
-/**
- * The collapsible block of the thinking process, modelled after ZCode's
- * Reasoning (the modified vercel/ai-elements): while streaming it is
- * collapsed, the summary line shows the last line of the thinking text and
- * scrolls to the end; when it is done the label becomes "thinking, lasted N
- * seconds". The content is shown as plain text (no markdown rendering: the
- * thinking is appended while streaming and rerunning the markdown parser on
- * every delta stutters on a long thinking). The open state scrolls inside a
- * limited height, sticks to the bottom by default, pauses when the user
- * scrolls away from the bottom and resumes when they scroll back.
- */
-function ThinkingBlock({
-  thinking,
-  streaming,
-  seconds,
-}: {
-  thinking: string;
-  streaming: boolean;
-  seconds: number | null;
-}) {
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  const tailRef = useRef<HTMLSpanElement | null>(null);
-  const stickBottomRef = useRef(true);
-  const interactedRef = useRef(false);
-  const [open, setOpen] = useState(false);
-
-  // Streaming append: it sticks to the bottom while open; while collapsed the viewport of the single summary line is pushed to the end (the old content moves left).
-  useEffect(() => {
-    if (!streaming) return;
-    if (open) {
-      if (stickBottomRef.current) {
-        const el = bodyRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      }
-    } else {
-      const tail = tailRef.current;
-      if (tail) tail.scrollLeft = tail.scrollWidth;
-    }
-  }, [thinking, open, streaming]);
-
-  // Collapse at the end of the output (ZCode autoCollapseKey): when the turn ends and the user has not opened the block manually, it returns to the collapsed state. Once the user has opened it (interacted) their choice is respected.
-  useEffect(() => {
-    if (!streaming && !interactedRef.current) setOpen(false);
-  }, [streaming]);
-
-  if (!thinking) return null;
-  const tail = streaming && !open ? thinkingSummaryLine(thinking) : "";
-  return (
-    <details
-      className={`agent-thinking${streaming ? " is-streaming" : ""}`}
-      open={open}
-      onToggle={(e) => {
-        const next = (e.target as HTMLDetailsElement).open;
-        if (next) interactedRef.current = true;
-        setOpen(next);
-      }}
-    >
-      <summary>
-        <svg className="agent-thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 4.5a3 3 0 0 0-3 3v.5a3 3 0 0 0-1.5 5.6A3 3 0 0 0 9 18.5a2.6 2.6 0 0 0 3 0 2.6 2.6 0 0 0 3 0 3 3 0 0 0 1.5-4.9A3 3 0 0 0 15 8v-.5a3 3 0 0 0-3-3Z" />
-          <path d="M12 4.5V3M9.8 11.2c.7.5 1.6.5 2.2 0 .6.5 1.5.5 2.2 0M10 14.5h4" />
-        </svg>
-        {streaming ? (
-          <span className="agent-thinking-live">正在思考</span>
-        ) : (
-          <span className="agent-thinking-done">
-            思考
-            <span className="agent-thinking-sec"> · 持续了 {seconds ?? 0} 秒</span>
-          </span>
-        )}
-        {tail && (
-          <span className="agent-thinking-tail" ref={tailRef}>
-            <span className="agent-thinking-tail-text">{tail}</span>
-          </span>
-        )}
-      </summary>
-      <div
-        className="agent-thinking-body"
-        ref={bodyRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stickBottomRef.current =
-            el.scrollHeight - el.clientHeight - el.scrollTop <= THINKING_BOTTOM_LOCK_PX;
-        }}
-      >
-        {thinking}
-      </div>
-    </details>
-  );
-}
-
-/** A session record line turned into a UI message (used when a session is restored). */
-function entryFromLine(line: TranscriptLine): ChatEntry {
-  if (line.type === "user") {
-    return {
-      role: "user",
-      text: line.text,
-      at: line.at,
-      items: null,
-      images: line.images,
-    };
-  }
-  return {
-    role: "assistant",
-    text: line.text,
-    at: line.at,
-    items: null,
-    turn: {
-      text: line.text,
-      thinking: line.thinking ?? "",
-      thinkingStart: null,
-      thinkSeconds: line.thinkSeconds ?? null,
-      tools: line.tools ?? [],
-      error: line.error,
-    },
-  };
-}
-
-/** A UI message turned into a session record line (when forking, the prefix of the parent session is written into the new file). */
-function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
-  // Notice entries are display-only status lines, never transcript content.
-  return entries
-    .filter((e) => e.role !== "notice")
-    .map((e): TranscriptLine =>
-    e.role === "user"
-      ? { type: "user", at: e.at, text: e.text, images: e.images }
-      : {
-          type: "assistant",
-          at: e.at,
-          text: e.text,
-          thinking: e.turn?.thinking ?? "",
-          thinkSeconds: e.turn?.thinkSeconds ?? null,
-          tools: e.turn?.tools ?? [],
-          error: e.turn?.error,
-        },
-    );
-}
-
-function cloneEntry(e: ChatEntry): ChatEntry {
-  return {
-    ...e,
-    images: e.images?.map((img) => ({ ...img })),
-    turn: e.turn ? { ...e.turn, tools: e.turn.tools.map((t) => ({ ...t })) } : undefined,
-  };
-}
-
-/** The time in the history session list: today shows hours and minutes, older entries show month and day. */
-function formatSessionTime(ms: number): string {
-  if (!ms) return "";
-  const d = new Date(ms);
-  const now = new Date();
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`;
-  return `${d.getMonth() + 1}/${d.getDate()}`;
-}
-
-/**
- * Size the composer to its content: one line at rest, up to twelve visible
- * lines (the cap is in CSS, which then scrolls).
- *
- * `auto` first, then the content height: without the reset the element keeps
- * its previous height and `scrollHeight` cannot shrink after a deletion.
- */
-function fitInputHeight(el: HTMLTextAreaElement): void {
-  el.style.height = "auto";
-  el.style.height = `${el.scrollHeight}px`;
-}
+import {
+  cloneEntry,
+  entriesToLines,
+  entryFromLine,
+  findConvBySession,
+  fitInputHeight,
+  nextConvKey,
+  studyContentKey,
+  toSessionNode,
+  type ChatEntry,
+  type Conv,
+  type Turn,
+} from "@/components/agent/model";
+import { AgentTodos, AgentTranscript, AgentWelcome } from "@/components/agent/Transcript";
+import { AgentMeta, AgentPermissionMenu } from "@/components/agent/Composer";
+import { AgentHistoryDrawer } from "@/components/agent/HistoryDrawer";
+import { AgentApprovalCard, type ApprovalRequest } from "@/components/agent/ApprovalCard";
+import {
+  AgentQuestionCard,
+  parseQuestions,
+  type PendingQuestion,
+} from "@/components/agent/QuestionCard";
 
 /**
  * The left column of study mode: asking questions about the current content.
@@ -379,80 +87,6 @@ function fitInputHeight(el: HTMLTextAreaElement): void {
  * content is ready: opening a material connects once, switching the material
  * opens it again.
  */
-/** The three permission modes of the composer (ZCode's selector shape). */
-const PERMISSION_MODES: {
-  id: "confirm" | "auto" | "full" | "plan";
-  label: string;
-  description: string;
-}[] = [
-  { id: "confirm", label: "变更前确认", description: "改文件、跑命令前先问我。" },
-  { id: "auto", label: "自主模式", description: "在有风险时询问。" },
-  { id: "full", label: "完全访问", description: "减少确认次数。" },
-  { id: "plan", label: "计划模式", description: "只读调研;计划经你批准后才开始改文件。" },
-];
-
-function ShieldIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 3.5 5 6v5.2c0 4.2 2.9 7.6 7 9.3 4.1-1.7 7-5.1 7-9.3V6l-7-2.5Z" />
-    </svg>
-  );
-}
-
-interface AskQuestion {
-  question: string;
-  header?: string;
-  multiSelect?: boolean;
-  options: { label: string; description?: string }[];
-}
-
-/** `ask_user_question` arrives as unknown JSON: narrow it before rendering. */
-function parseQuestions(raw: unknown): AskQuestion[] {
-  if (!Array.isArray(raw)) return [];
-  const out: AskQuestion[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    const question = typeof record.question === "string" ? record.question : "";
-    if (!question) continue;
-    const options: { label: string; description?: string }[] = [];
-    if (Array.isArray(record.options)) {
-      for (const option of record.options) {
-        if (!option || typeof option !== "object") continue;
-        const entry = option as Record<string, unknown>;
-        if (typeof entry.label !== "string") continue;
-        options.push({
-          label: entry.label,
-          description: typeof entry.description === "string" ? entry.description : undefined,
-        });
-      }
-    }
-    out.push({
-      question,
-      header: typeof record.header === "string" ? record.header : undefined,
-      multiSelect: record.multiSelect === true,
-      options,
-    });
-  }
-  return out;
-}
-
-function prettyJson(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
   const mode = useAppStore((s) => s.mode);
@@ -518,20 +152,9 @@ export function AgentPanel() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   /** A tool marked `ask` is waiting for approval. */
-  const [approval, setApproval] = useState<{
-    sessionId: string;
-    id: string;
-    tool: string;
-    input: unknown;
-  } | null>(null);
-  const [approvalFeedback, setApprovalFeedback] = useState("");
+  const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   /** `ask_user_question` is waiting for an answer. */
-  const [pendingQuestion, setPendingQuestion] = useState<{
-    sessionId: string;
-    id: string;
-    questions: AskQuestion[];
-  } | null>(null);
-  const [questionAnswers, setQuestionAnswers] = useState<Record<number, string[]>>({});
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // The composer grows with the text and rests at one line: a fixed two-row
@@ -1323,7 +946,6 @@ export function AgentPanel() {
         break;
       }
       case "permission_request": {
-        setApprovalFeedback("");
         setApproval({
           sessionId,
           id: event.id,
@@ -1333,7 +955,6 @@ export function AgentPanel() {
         break;
       }
       case "question": {
-        setQuestionAnswers({});
         setPendingQuestion({
           sessionId,
           id: event.id,
@@ -1728,9 +1349,7 @@ export function AgentPanel() {
   const configuredModel = agentConfig?.model.trim() ?? "";
   const modelName = activeConv?.model?.model.trim() || configuredModel;
   const contextLimit = activeConv?.model?.contextWindow ?? agentConfig?.contextWindow ?? 0;
-  const modelStale = Boolean(modelName && configuredModel && modelName !== configuredModel);
   const activeUsage = activeConv?.usage ?? null;
-  const usagePct = occupancyPercent(activeUsage, contextLimit);
 
   return (
     <aside
@@ -1823,142 +1442,17 @@ export function AgentPanel() {
           </button>
         </div>
       )}
-      <div className="agent-scroll" ref={scrollRef}>
-        {!activeConv || activeConv.entries.length === 0 ? (
-          <div className="agent-welcome">
-            <div className="agent-welcome-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
-              </svg>
-            </div>
-            <p className="agent-welcome-title">
-              {mode === "code"
-                ? codeProject
-                  ? "编码模式:我直接读写当前代码仓库并运行命令"
-                  : "先在中栏打开一个代码项目"
-                : creativeMode
-                  ? "创作模式:生成 HTML 会在中栏实时预览"
-                  : "问我关于当前 PDF / 网页的问题"}
-            </p>
-            <p className="agent-hint">
-              {mode === "code"
-                ? codeProject
-                  ? "开工前列 todo(/compact 可手动压缩上下文);悬停消息点「⤷」可分叉"
-                  : "项目目录就是我的工作区,会话记录存放在 ~/.bnote"
-                : creativeMode
-                  ? "输入 / 调用技能、@ 引用仓库文件;满意后点中栏的「发布」推到 bblog"
-                  : "悬停任意消息点「⤷」,可以从那里分叉一条辅助会话"}
-            </p>
-          </div>
-        ) : (
-          activeConv.entries.map((entry, i) => {
-            const isLast = i === activeConv.entries.length - 1;
-            const streaming = isLast && activeBusy && entry.role === "assistant";
-            return (
-              <div
-                className={`agent-msg-row${entry.role === "user" ? " is-user" : ""}`}
-                key={i}
-              >
-                {entry.role === "notice" ? (
-                  <div className="agent-notice">{entry.text}</div>
-                ) : entry.role === "user" ? (
-                  <div className="agent-msg agent-msg-user">
-                    {entry.images && entry.images.length > 0 && (
-                      <div className="agent-msg-images">
-                        {entry.images.map((img, j) => (
-                          <img
-                            key={j}
-                            className="agent-msg-image"
-                            src={`data:${img.mediaType};base64,${img.data}`}
-                            alt="随消息发送的图片"
-                          />
-                        ))}
-                      </div>
-                    )}
-                    {entry.text}
-                  </div>
-                ) : (
-                  <div className="agent-msg agent-msg-assistant">
-                    <ThinkingBlock
-                      thinking={entry.turn?.thinking ?? ""}
-                      streaming={Boolean(streaming && (entry.turn?.thinking ?? ""))}
-                      seconds={entry.turn?.thinkSeconds ?? null}
-                    />
-                    {entry.turn?.tools.map((tool) => (
-                      <details className="agent-tool" key={tool.id}>
-                        <summary>
-                          <span
-                            className={`agent-tool-dot${
-                              tool.ok === false ? " fail" : tool.ok === undefined ? " running" : ""
-                            }`}
-                          />
-                          <span className="agent-tool-name">{tool.name}</span>
-                          {tool.ok === false && <span className="agent-tool-fail">失败</span>}
-                          <svg className="agent-tool-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                            <path d="m9 18 6-6-6-6" />
-                          </svg>
-                        </summary>
-                        <pre className="agent-tool-io">
-                          {JSON.stringify(tool.input, null, 2)}
-                          {tool.output !== undefined && `\n→ ${tool.output}`}
-                        </pre>
-                        {tool.images && tool.images.length > 0 && (
-                          <div className="agent-msg-images">
-                            {tool.images.map((img, j) => (
-                              <img
-                                key={j}
-                                className="agent-msg-image"
-                                src={`data:${img.mediaType};base64,${img.data}`}
-                                alt="工具返回的截图"
-                              />
-                            ))}
-                          </div>
-                        )}
-                      </details>
-                    ))}
-                    {entry.turn?.error && (
-                      <div className="agent-error">{entry.turn.error}</div>
-                    )}
-                    <div className="agent-md">
-                      {splitAgentMarkdown(entry.text).map((block, bi) =>
-                        block.kind === "html" ? (
-                          <HtmlPreview key={bi} code={block.code} />
-                        ) : (
-                          <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />
-                        ),
-                      )}
-                    </div>
-                    {streaming && <span className="agent-caret" aria-hidden="true" />}
-                  </div>
-                )}
-                {!activeBusy && (
-                  <button
-                    className="agent-fork"
-                    title="基于这条消息开启辅助会话"
-                    onClick={() => forkFrom(i)}
-                  >
-                    ⤷
-                  </button>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-      {activeConv && activeConv.todos.length > 0 && (
-        <div className="agent-todos" aria-label="任务清单">
-          {activeConv.todos.map((t) => (
-            <div key={t.content} className={`agent-todo is-${t.status}`}>
-              <span className="agent-todo-mark" aria-hidden="true">
-                {t.status === "completed" ? "✓" : t.status === "in_progress" ? "●" : "○"}
-              </span>
-              <span className="agent-todo-text">
-                {t.status === "in_progress" ? t.active_form : t.content}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      <AgentTranscript
+        scrollRef={scrollRef}
+        entries={activeConv?.entries ?? []}
+        busy={activeBusy}
+        onFork={forkFrom}
+        welcome={
+          <AgentWelcome mode={mode} creativeMode={creativeMode} codeProject={codeProject} />
+        }
+      />
+      {activeConv && <AgentTodos todos={activeConv.todos} />}
+
       <div className="agent-composer">
         {suggestTrigger && suggestItems.length > 0 && (
           <AgentSuggest
@@ -2121,268 +1615,80 @@ export function AgentPanel() {
               <path d="m5 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L16 17.5M14 15l2-2a1.5 1.5 0 0 1 2.1 0L21 15.9" />
             </svg>
           </button>
-          <div className="agent-mode" ref={modeRef}>
-            <button
-              className="agent-mode-btn"
-              onClick={() => setModeOpen((v) => !v)}
-              title={PERMISSION_MODES.find((m) => m.id === permissionMode)?.description}
-            >
-              <ShieldIcon />
-              {planActive
-                ? "计划模式"
-                : PERMISSION_MODES.find((m) => m.id === permissionMode)?.label}
-            </button>
-            {modeOpen && (
-              <div className="agent-mode-pop" role="menu">
-                {PERMISSION_MODES.map((mode) => (
-                  <button
-                    key={mode.id}
-                    className={`agent-mode-item${mode.id === permissionMode ? " is-active" : ""}`}
-                    role="menuitemradio"
-                    aria-checked={mode.id === permissionMode}
-                    onClick={() => {
-                      patchSettings({ agentPermissionMode: mode.id });
-                      setModeOpen(false);
-                    }}
-                  >
-                    <span className="agent-mode-item-label">
-                      {mode.label}
-                      {mode.id === permissionMode && <span className="agent-mode-check">✓</span>}
-                    </span>
-                    <span className="agent-mode-item-desc">{mode.description}</span>
-                  </button>
-                ))}
-              </div>
+          <AgentPermissionMenu
+            permissionMode={permissionMode}
+            planActive={planActive}
+            onChange={(id) => patchSettings({ agentPermissionMode: id })}
+          />
+          <AgentMeta
+            usage={activeUsage}
+            contextLimit={contextLimit}
+            modelName={modelName}
+            configuredModel={configuredModel}
+            busy={activeBusy}
+            canSend={Boolean(
+              activeConv?.sessionId && (input.trim() !== "" || pendingImages.length > 0),
             )}
-          </div>
-          <span
-            className="agent-meta"
-            title={
-              usageTitle(activeUsage, contextLimit, modelName) +
-              (modelStale
-                ? `\n本会话按自己的配置继续(设置里现在是 ${configuredModel});点 ⟳ 开始新会话才会用新配置。`
-                : "")
-            }
-          >
-            <span className="agent-meta-model">
-              {modelName || "未配置模型"}
-              {modelStale ? " · 会话配置" : ""}
-            </span>
-            <span className="agent-meta-ctx">{contextLabel(activeUsage, contextLimit)}</span>
-            {usagePct !== null && (
-              <span className="agent-meta-pct">{formatPercent(usagePct)}</span>
-            )}
-            {activeUsage && (
-              <span className="agent-meta-io">
-                ↑{formatTokenCount(activeUsage.input)} ↓{formatTokenCount(activeUsage.output)}
-              </span>
-            )}
-          </span>
-          {activeBusy ? (
-            <button className="agent-send stop" onClick={abort}>
-              停止
-            </button>
-          ) : (
-            <button
-              className="agent-send"
-              onClick={() => void send()}
-              disabled={!activeConv?.sessionId || (input.trim() === "" && pendingImages.length === 0)}
-              title={
-                activeConv?.sessionId
-                  ? "发送(Enter)"
-                  : (activeConv?.error ?? "正在连接模型…")
-              }
-            >
-              发送
-            </button>
-          )}
+            sendTitle={activeConv?.sessionId ? "发送(Enter)" : (activeConv?.error ?? "正在连接模型…")}
+            onSend={() => void send()}
+            onStop={abort}
+          />
         </div>
       </div>
       {/* Tool approval (the definition marked this tool `ask`): the turn is
           parked until the user answers, so this must be a blocking overlay. */}
       {approval && (
-        <div className="agent-approval" role="dialog" aria-label="工具授权">
-          <div className="agent-approval-card">
-            <div className="agent-approval-head">
-              <span className="agent-approval-title">
-                {approval.tool === "ExitPlanMode" ? "计划待批准" : "需要授权"}
-              </span>
-              <code className="agent-approval-tool">{approval.tool}</code>
-            </div>
-            <pre className="agent-approval-input">
-              {approval.tool === "ExitPlanMode"
-                ? String((approval.input as { plan?: string } | null)?.plan ?? "")
-                : prettyJson(approval.input)}
-            </pre>
-            <input
-              className="agent-approval-feedback"
-              placeholder="拒绝原因(可选,会告诉模型)"
-              value={approvalFeedback}
-              onChange={(e) => setApprovalFeedback(e.target.value)}
-            />
-            <div className="agent-approval-actions">
-              <button
-                className="agent-approval-allow"
-                onClick={() => {
-                  const pending = approval;
-                  setApproval(null);
-                  void agentApi
-                    .permissionReply(pending.sessionId, pending.id, true)
-                    .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
-                }}
-              >
-                允许
-              </button>
-              <button
-                className="agent-approval-deny"
-                onClick={() => {
-                  const pending = approval;
-                  const feedback = approvalFeedback;
-                  setApproval(null);
-                  void agentApi
-                    .permissionReply(pending.sessionId, pending.id, false, feedback || undefined)
-                    .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
-                }}
-              >
-                拒绝
-              </button>
-            </div>
-          </div>
-        </div>
+        <AgentApprovalCard
+          key={approval.id}
+          approval={approval}
+          onReply={(allow, feedback) => {
+            const pending = approval;
+            setApproval(null);
+            void agentApi
+              .permissionReply(pending.sessionId, pending.id, allow, feedback)
+              .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+          }}
+        />
       )}
       {/* ask_user_question: the model asked the user to decide something. */}
       {pendingQuestion && (
-        <div className="agent-approval" role="dialog" aria-label="模型提问">
-          <div className="agent-approval-card">
-            {pendingQuestion.questions.map((q, index) => {
-              const picked = questionAnswers[index] ?? [];
-              const toggle = (label: string) => {
-                setQuestionAnswers((prev) => {
-                  const current = prev[index] ?? [];
-                  const next = q.multiSelect
-                    ? current.includes(label)
-                      ? current.filter((v) => v !== label)
-                      : [...current, label]
-                    : [label];
-                  return { ...prev, [index]: next };
-                });
-              };
-              return (
-                <div key={index} className="agent-question">
-                  <div className="agent-approval-head">
-                    <span className="agent-approval-title">
-                      {q.header || `问题 ${index + 1}`}
-                    </span>
-                  </div>
-                  <p className="agent-question-text">{q.question}</p>
-                  <div className="agent-question-options">
-                    {q.options.map((option) => (
-                      <button
-                        key={option.label}
-                        className={`agent-question-option${
-                          picked.includes(option.label) ? " is-picked" : ""
-                        }`}
-                        title={option.description}
-                        onClick={() => toggle(option.label)}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-            <div className="agent-approval-actions">
-              <button
-                className="agent-approval-allow"
-                disabled={pendingQuestion.questions.some(
-                  (_, index) => (questionAnswers[index] ?? []).length === 0,
-                )}
-                onClick={() => {
-                  const pending = pendingQuestion;
-                  const answer = pending.questions
-                    .map((q, index) => {
-                      const picked = questionAnswers[index] ?? [];
-                      return picked.length > 0
-                        ? `${q.question}\n→ ${picked.join(", ")}`
-                        : null;
-                    })
-                    .filter((line): line is string => line !== null)
-                    .join("\n\n");
-                  setPendingQuestion(null);
-                  setQuestionAnswers({});
-                  void agentApi
-                    .questionReply(pending.sessionId, pending.id, answer)
-                    .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
-                }}
-              >
-                提交
-              </button>
-            </div>
-          </div>
-        </div>
+        <AgentQuestionCard
+          key={pendingQuestion.id}
+          pending={pendingQuestion}
+          onSubmit={(answer) => {
+            const pending = pendingQuestion;
+            setPendingQuestion(null);
+            void agentApi
+              .questionReply(pending.sessionId, pending.id, answer)
+              .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+          }}
+        />
       )}
+
       {/* The history drawer: the conversations saved under this material, clicking one restores it and continues. */}
       {historyOpen && (
-        <div className="agent-history" role="dialog" aria-label="历史会话" ref={historyRef} tabIndex={-1}>
-          <div className="agent-history-head">
-            <div className="agent-history-heading">
-              <span className="agent-history-heading-title">历史会话</span>
-              <span className="agent-history-heading-sub" title={scopeLabel?.detail}>
-                {scopeLabel?.title || "本材料"}
-              </span>
-            </div>
-            <button
-              className="agent-history-close"
-              title="关闭"
-              aria-label="关闭"
-              onClick={() => setHistoryOpen(false)}
-            >
-              ×
-            </button>
-          </div>
-          <button
-            className="agent-history-new"
-            onClick={() => {
-              setHistoryOpen(false);
-              setRestartNonce((n) => n + 1);
-            }}
-          >
-            ＋ 新会话
-          </button>
-          {savedSessions.length === 0 ? (
-            <p className="agent-history-empty">
-              {mode === "code" ? "这个项目还没有保存过会话" : "这份材料还没有保存过会话"}
-            </p>
-          ) : (
-            <ul className="agent-history-list">
-              {savedSessions.map((s) => (
-                <li key={s.id}>
-                  <button
-                    className={`agent-history-item${
-                      s.id === activeConv?.sessionFileId ? " is-active" : ""
-                    }`}
-                    title={s.title}
-                    onClick={() => {
-                      setHistoryOpen(false);
-                      if (s.id === activeConv?.sessionFileId) return;
-                      // Already in this family (it is in memory) → switch directly; otherwise the family is rebuilt from it, the main session hangs back as well, only the landing spot is this one.
-                      const existing = convs.find((c) => c.sessionFileId === s.id);
-                      if (existing) activateConv(existing.key);
-                      else void restoreFamily(s.id, savedSessions, "anchor");
-                    }}
-                  >
-                    <span className="agent-history-item-title">{s.title}</span>
-                    <span className="agent-history-item-time">
-                      {formatSessionTime(s.updatedAt)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        <AgentHistoryDrawer
+          containerRef={historyRef}
+          scopeLabel={scopeLabel}
+          savedSessions={savedSessions}
+          activeSessionFileId={activeConv?.sessionFileId ?? null}
+          isCode={mode === "code"}
+          onClose={() => setHistoryOpen(false)}
+          onNew={() => {
+            setHistoryOpen(false);
+            setRestartNonce((n) => n + 1);
+          }}
+          onPick={(id) => {
+            setHistoryOpen(false);
+            if (id === activeConv?.sessionFileId) return;
+            // Already in this family (it is in memory) → switch directly; otherwise the family is rebuilt from it, the main session hangs back as well, only the landing spot is this one.
+            const existing = convs.find((c) => c.sessionFileId === id);
+            if (existing) activateConv(existing.key);
+            else void restoreFamily(id, savedSessions, "anchor");
+          }}
+        />
       )}
+
     </aside>
   );
 }
