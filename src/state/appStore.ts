@@ -450,6 +450,15 @@ interface AppState {
    * state.
    */
   agentPanelCommand: AgentPanelCommandRequest | null;
+  /**
+   * Which column sits in the middle of the three-column layout: the content
+   * column by default, the assistant column once the user works in it. The
+   * swap is **sticky** — it follows explicit actions (a click inside a column
+   * or a focus-region command), never "where the focus happens to be", so
+   * switching to the notes column does not undo it. The page-turn command
+   * scrolls the column that sits in the middle.
+   */
+  mainColumn: "agent" | "content";
 
   setVault: (info: VaultInfo) => void;
   closeVault: () => void;
@@ -500,6 +509,8 @@ interface AppState {
   bumpAgentSwitchSessionSignal: () => void;
   /** The study assistant panel command (see agentPanelCommand). */
   runAgentPanelCommand: (kind: AgentPanelCommand, images?: AgentImage[]) => void;
+  /** Put one column in the middle (see mainColumn). */
+  setMainColumn: (column: "agent" | "content") => void;
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -562,6 +573,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   agentConfigVersion: 0,
   agentSwitchSessionSignal: 0,
   agentPanelCommand: null,
+  mainColumn: "content",
 
   setVault: (info) =>
     set({
@@ -714,6 +726,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       agentPanelCommand: { seq: (get().agentPanelCommand?.seq ?? 0) + 1, kind, images },
     }),
+  // A real transition is what the layouts react to; repeated clicks inside
+  // the same column must not re-render them.
+  setMainColumn: (column) => {
+    if (get().mainColumn !== column) set({ mainColumn: column });
+  },
 }));
 
 export function toggleStudyMode() {

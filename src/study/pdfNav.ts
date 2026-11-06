@@ -17,6 +17,7 @@ export interface PdfNavHandlers {
 
 let pdfHandlers: PdfNavHandlers | null = null;
 let webHandlers: PdfNavHandlers | null = null;
+let agentHandlers: PdfNavHandlers | null = null;
 
 export function setPdfNavHandlers(next: PdfNavHandlers | null): void {
   pdfHandlers = next;
@@ -26,9 +27,21 @@ export function setWebNavHandlers(next: PdfNavHandlers | null): void {
   webHandlers = next;
 }
 
+/**
+ * The assistant column's slot: while the panel holds the keyboard focus the
+ * page-turn key scrolls its conversation instead of the reader. The panel
+ * registers and withdraws it on focusin/focusout, so "whose page is this"
+ * follows the focus with no separate state to keep in sync.
+ */
+export function setAgentNavHandlers(next: PdfNavHandlers | null): void {
+  agentHandlers = next;
+}
+
 function activeHandlers(): PdfNavHandlers | null {
-  // Only one kind of study content is active at a time; preferring PDF only defends against the two slots briefly coexisting.
-  return pdfHandlers ?? webHandlers;
+  // The focused assistant wins: it is the focused column's content the user
+  // means. Otherwise only one kind of study content is active at a time;
+  // preferring PDF only defends against the two slots briefly coexisting.
+  return agentHandlers ?? pdfHandlers ?? webHandlers;
 }
 
 /** The command's `when`: with no reader, or when the context forbids turning the page, the key passes through unchanged. */

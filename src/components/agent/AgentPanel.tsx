@@ -33,6 +33,7 @@ import {
   type TranscriptUserLine,
 } from "@/study/transcript";
 import { isWereadUrl } from "@/study/weread";
+import { setAgentNavHandlers } from "@/study/pdfNav";
 import { applySuggestion, parseSuggestTrigger, type SuggestTrigger } from "@/agent/suggest";
 import { AgentHeader } from "@/components/agent/AgentHeader";
 import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/agent/AgentSuggest";
@@ -92,6 +93,7 @@ export function AgentPanel() {
   const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
   const agentSwitchSignal = useAppStore((s) => s.agentSwitchSessionSignal);
   const agentPanelCommand = useAppStore((s) => s.agentPanelCommand);
+  const mainColumn = useAppStore((s) => s.mainColumn);
   const showToast = useAppStore((s) => s.showToast);
   const patchSettings = useAppStore((s) => s.patchSettings);
   /** The conversation font scale: it is written to the --agent-fs of the panel root, and both the body text and the derived sizes in the CSS multiply it. */
@@ -120,6 +122,7 @@ export function AgentPanel() {
     null,
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const convsRef = useRef<Conv[]>([]);
   /** The restore generation: after switching the material, starting a new session or restoring the family again, the old read results are all void. */
   const restoreTokenRef = useRef(0);
@@ -741,6 +744,34 @@ export function AgentPanel() {
     activateConv(next);
   }, [agentSwitchSignal, showToast, activateConv]);
 
+  /**
+   * The assistant column owns its own placement. Working in it puts it in the
+   * middle (mainColumn); that swap is **sticky** — moving the focus to the
+   * notes column does not move it back, only a click in the content column or
+   * the focus-reading command does. The same state decides what the page-turn
+   * key scrolls, so the visible layout and the key target cannot disagree.
+   */
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const onFocusIn = () => useAppStore.getState().setMainColumn("agent");
+    el.addEventListener("focusin", onFocusIn);
+    return () => el.removeEventListener("focusin", onFocusIn);
+  }, []);
+
+  /** The page-turn command scrolls the column that sits in the middle. */
+  useEffect(() => {
+    if (mainColumn !== "agent") return;
+    const pageBy = (direction: 1 | -1) => {
+      const scroller = scrollRef.current;
+      if (!scroller) return;
+      const step = useAppStore.getState().settings.studyPageStep;
+      scroller.scrollBy({ top: direction * scroller.clientHeight * step, behavior: "smooth" });
+    };
+    setAgentNavHandlers({ canFlip: () => true, prev: () => pageBy(-1), next: () => pageBy(1) });
+    return () => setAgentNavHandlers(null);
+  }, [mainColumn]);
+
   // Scroll to the bottom after switching the session (every session is looked at from its newest message).
   useEffect(() => {
     requestAnimationFrame(() => {
@@ -1353,6 +1384,7 @@ export function AgentPanel() {
   return (
     <aside
       className="agent-panel"
+      ref={panelRef}
       data-key-region="agent"
       style={{ "--agent-fs": String(agentFontScale) } as React.CSSProperties}
     >

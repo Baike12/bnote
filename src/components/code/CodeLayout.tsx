@@ -26,6 +26,9 @@ export function CodeLayout() {
   const agentWidth = useAppStore((s) => s.settings.codeAgentWidth);
   const contentWidth = useAppStore((s) => s.settings.codeContentWidth);
   const patchSettings = useAppStore((s) => s.patchSettings);
+  const mainColumn = useAppStore((s) => s.mainColumn);
+  const setMainColumn = useAppStore((s) => s.setMainColumn);
+  const swapped = mainColumn === "agent";
   const currentFile = useAppStore((s) => s.currentFile);
   const hostRef = useRef<HTMLDivElement>(null);
   const noteTitle = currentFile
@@ -56,16 +59,21 @@ export function CodeLayout() {
     const left = host.querySelector(".study-left");
     const content = host.querySelector(".content-pane");
     if (!left || !content) return;
-    const agent0 = left.getBoundingClientRect().width;
-    const content0 = content.getBoundingClientRect().width;
-    const sum = agent0 + content0;
+    // In the focused (swapped) layout the divider's left neighbour is the
+    // content column: the math is the same, the roles of the widths swap.
+    const leftWidth = (swapped ? content : left).getBoundingClientRect().width;
+    const rightWidth = (swapped ? left : content).getBoundingClientRect().width;
+    const sum = leftWidth + rightWidth;
     startDrag(
       event,
       ["--agent-src", "--content-src"],
       { "--agent-src": agentWidth, "--content-src": contentWidth },
       (dx) => {
-        const widths = dragAgentEdge(agent0 + RESIZER_WIDTH + dx, hostRect.width, sum);
-        return { "--agent-src": widths.agent, "--content-src": widths.content };
+        const widths = dragAgentEdge(leftWidth + RESIZER_WIDTH + dx, hostRect.width, sum);
+        return {
+          "--agent-src": swapped ? widths.content : widths.agent,
+          "--content-src": swapped ? widths.agent : widths.content,
+        };
       },
       (values) =>
         patchSettings({
@@ -79,31 +87,43 @@ export function CodeLayout() {
     const host = hostRef.current;
     if (!host) return;
     const hostRect = host.getBoundingClientRect();
-    const content = host.querySelector(".content-pane");
-    if (!content) return;
-    const contentRect = content.getBoundingClientRect();
-    const contentLeft = contentRect.left - hostRect.left;
-    const content0 = contentRect.width;
+    const subject = host.querySelector(swapped ? ".study-left" : ".content-pane");
+    if (!subject) return;
+    const subjectRect = subject.getBoundingClientRect();
+    const subjectLeft = subjectRect.left - hostRect.left;
+    const subjectWidth = subjectRect.width;
     startDrag(
       event,
-      ["--content-src"],
-      { "--content-src": contentWidth },
+      [swapped ? "--agent-src" : "--content-src"],
+      {
+        [swapped ? "--agent-src" : "--content-src"]: swapped ? agentWidth : contentWidth,
+      },
       (dx) => {
         const widths = dragContentEdge(
-          contentLeft + content0 + RESIZER_WIDTH + dx,
+          subjectLeft + subjectWidth + RESIZER_WIDTH + dx,
           hostRect.width,
-          contentLeft,
+          subjectLeft,
         );
-        return { "--content-src": widths.content };
+        return { [swapped ? "--agent-src" : "--content-src"]: widths.content };
       },
-      (values) => patchSettings({ codeContentWidth: values["--content-src"] }),
+      (values) =>
+        patchSettings(
+          swapped
+            ? { codeAgentWidth: values["--agent-src"] }
+            : { codeContentWidth: values["--content-src"] },
+        ),
     );
   }
 
   return (
     <div
-      className="study-layout code-layout"
+      className={`study-layout code-layout${swapped ? " agent-focused" : ""}`}
       ref={hostRef}
+      onPointerDownCapture={(event) => {
+        const target = event.target as HTMLElement;
+        if (target.closest(".content-pane")) setMainColumn("content");
+        else if (target.closest(".agent-panel")) setMainColumn("agent");
+      }}
       style={
         {
           "--agent-src": `${agentWidth}px`,
@@ -115,7 +135,7 @@ export function CodeLayout() {
         <AgentPanel />
       </div>
       <div
-        className="study-resizer"
+        className="study-resizer resizer-agent"
         role="separator"
         aria-orientation="vertical"
         aria-label="调整助手栏宽度"
@@ -127,7 +147,7 @@ export function CodeLayout() {
         <CodeProjectPane />
       </div>
       <div
-        className="study-resizer"
+        className="study-resizer resizer-content"
         role="separator"
         aria-orientation="vertical"
         aria-label="调整代码栏宽度"

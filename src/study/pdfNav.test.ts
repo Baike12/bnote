@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { canFlipPdfPage, flipPdfPage, setPdfNavHandlers, setWebNavHandlers } from "./pdfNav";
+import {
+  canFlipPdfPage,
+  flipPdfPage,
+  setAgentNavHandlers,
+  setPdfNavHandlers,
+  setWebNavHandlers,
+} from "./pdfNav";
 
 /**
  * The page-turn shortcut is a "configurable command": the command layer does
@@ -11,6 +17,7 @@ describe("where the study mode page-turn commands land", () => {
   beforeEach(() => {
     setPdfNavHandlers(null);
     setWebNavHandlers(null);
+    setAgentNavHandlers(null);
   });
 
   it("with no reader the page cannot turn and the call has no side effect", () => {
@@ -76,5 +83,26 @@ describe("where the study mode page-turn commands land", () => {
     setWebNavHandlers(null);
     expect(flipPdfPage(1)).toBe(true);
     expect(calls).toEqual(["pdf-next"]);
+  });
+
+  it("the focused assistant owns the key: its slot wins over the reader's, and withdrawing it hands the key back", () => {
+    const calls: string[] = [];
+    setPdfNavHandlers({
+      canFlip: () => true,
+      prev: () => calls.push("pdf-prev"),
+      next: () => calls.push("pdf-next"),
+    });
+    setAgentNavHandlers({
+      canFlip: () => true,
+      prev: () => calls.push("agent-prev"),
+      next: () => calls.push("agent-next"),
+    });
+    // Study mode with a PDF open: the focused assistant column is what ⌃J scrolls.
+    expect(flipPdfPage(1)).toBe(true);
+    expect(calls).toEqual(["agent-next"]);
+    // Focus leaves the panel (focusout) -> the PDF reader takes the key back.
+    setAgentNavHandlers(null);
+    expect(flipPdfPage(-1)).toBe(true);
+    expect(calls).toEqual(["agent-next", "pdf-prev"]);
   });
 });

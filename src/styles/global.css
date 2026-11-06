@@ -2487,6 +2487,33 @@ input[type="range"] {
   flex-direction: column;
 }
 
+/* While the assistant column holds the keyboard focus it trades places with
+   the content column: the assistant takes the middle, the content moves left.
+   Only `order` changes — both columns stay mounted, each keeps its own width
+   preference (--agent-w / --content-w travel with the element) and its scroll
+   position. The shadow marks the column that owns the keyboard.
+   Same shadow as the reading area's page cards (.pdf-page): a tight 1px
+   offset, 5px blur, no halo — the column lifts off its neighbours the way a
+   page lifts off the PDF gutter, instead of glowing a wide band over them. */
+.study-layout.agent-focused .study-left {
+  order: 2;
+  position: relative;
+  z-index: 2;
+  box-shadow: 0 1px 5px var(--shadow);
+}
+.study-layout.agent-focused .content-pane {
+  order: 0;
+}
+.study-layout.agent-focused .resizer-agent {
+  order: 1;
+}
+.study-layout.agent-focused .resizer-content {
+  order: 3;
+}
+.study-layout.agent-focused .study-right {
+  order: 4;
+}
+
 /* Resizer: visually a 1px split line, with a 9px hit area (col-resize feel).
    The line is drawn on the resizer's own left edge: while dragging, the
    column boundary is the pointer position (see splitDrag), so line and

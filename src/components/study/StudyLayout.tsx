@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { AgentPanel } from "../agent/AgentPanel";
 import { ContentPane } from "./ContentPane";
 import { CreativePreview } from "./CreativePreview";
@@ -57,12 +57,23 @@ export function StudyLayout() {
   const agentWidth = useAppStore((s) => s.settings.studyAgentWidth);
   const contentWidth = useAppStore((s) => s.settings.studyContentWidth);
   const patchSettings = useAppStore((s) => s.patchSettings);
+  const mainColumn = useAppStore((s) => s.mainColumn);
+  const setMainColumn = useAppStore((s) => s.setMainColumn);
+  const swapped = mainColumn === "agent";
   const currentFile = useAppStore((s) => s.currentFile);
   const creativeMode = useAppStore((s) => s.creativeMode);
   const hostRef = useRef<HTMLDivElement>(null);
   const noteTitle = currentFile
     ? fileName(currentFile).replace(/\.(md|markdown|txt)$/i, "")
     : "笔记";
+
+  // The native web preview is a child webview mounted above the DOM: it only
+  // follows layout changes it is told about. The focused swap moves the
+  // content column without resizing it, so the signal is the only way it
+  // learns the new bounds (same channel as a split drag).
+  useEffect(() => {
+    window.dispatchEvent(new Event("bnote:study-layout-resize"));
+  }, [swapped]);
 
   /**
    * Shared drag skeleton for one divider: `compute(dx)` turns the "pointer
@@ -99,6 +110,11 @@ export function StudyLayout() {
    * The origin measures the **real column widths on screen** (CSS may have
    * clamped them), and the offset is taken from the divider's current
    * position.
+   *
+   * While the assistant column is focused the two columns trade places (see
+   * .agent-focused in global.css), so the divider's left neighbour is the
+   * content column: the drag math is unchanged, only the roles of the two
+   * widths swap.
    */
   function startAgentDrag(event: React.PointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
@@ -107,16 +123,20 @@ export function StudyLayout() {
     const left = host.querySelector(".study-left");
     const content = host.querySelector(".content-pane");
     if (!left || !content) return;
-    const agent0 = left.getBoundingClientRect().width;
-    const content0 = content.getBoundingClientRect().width;
-    const sum = agent0 + content0;
+    const leftWidth = (swapped ? content : left).getBoundingClientRect().width;
+    const rightWidth = (swapped ? left : content).getBoundingClientRect().width;
+    const sum = leftWidth + rightWidth;
     startDrag(
       event,
       ["--agent-src", "--content-src"],
       { "--agent-src": agentWidth, "--content-src": contentWidth },
       (dx) => {
-        const widths = dragAgentEdge(agent0 + RESIZER_WIDTH + dx, hostRect.width, sum);
-        return { "--agent-src": widths.agent, "--content-src": widths.content };
+        // dragAgentEdge speaks "left column | right column"; map back by role.
+        const widths = dragAgentEdge(leftWidth + RESIZER_WIDTH + dx, hostRect.width, sum);
+        return {
+          "--agent-src": swapped ? widths.content : widths.agent,
+          "--content-src": swapped ? widths.agent : widths.content,
+        };
       },
       (values) =>
         patchSettings({
@@ -131,25 +151,34 @@ export function StudyLayout() {
     const host = hostRef.current;
     if (!host) return;
     const hostRect = host.getBoundingClientRect();
-    // The left edge of the content column does not move during the drag (the divider sits between the middle and the notes column), so measuring once is enough.
-    const content = host.querySelector(".content-pane");
-    if (!content) return;
-    const contentRect = content.getBoundingClientRect();
-    const contentLeft = contentRect.left - hostRect.left;
-    const content0 = contentRect.width;
+    // The column left of this divider never moves while dragging, so
+    // measuring once is enough. In the focused (swapped) layout the neighbour
+    // is the assistant column instead of the content column.
+    const subject = host.querySelector(swapped ? ".study-left" : ".content-pane");
+    if (!subject) return;
+    const subjectRect = subject.getBoundingClientRect();
+    const subjectLeft = subjectRect.left - hostRect.left;
+    const subjectWidth = subjectRect.width;
     startDrag(
       event,
-      ["--content-src"],
-      { "--content-src": contentWidth },
+      [swapped ? "--agent-src" : "--content-src"],
+      {
+        [swapped ? "--agent-src" : "--content-src"]: swapped ? agentWidth : contentWidth,
+      },
       (dx) => {
         const widths = dragContentEdge(
-          contentLeft + content0 + RESIZER_WIDTH + dx,
+          subjectLeft + subjectWidth + RESIZER_WIDTH + dx,
           hostRect.width,
-          contentLeft,
+          subjectLeft,
         );
-        return { "--content-src": widths.content };
+        return { [swapped ? "--agent-src" : "--content-src"]: widths.content };
       },
-      (values) => patchSettings({ studyContentWidth: values["--content-src"] }),
+      (values) =>
+        patchSettings(
+          swapped
+            ? { studyAgentWidth: values["--agent-src"] }
+            : { studyContentWidth: values["--content-src"] },
+        ),
     );
   }
 
@@ -163,8 +192,15 @@ export function StudyLayout() {
 
   return (
     <div
-      className="study-layout"
+      className={`study-layout${swapped ? " agent-focused" : ""}`}
       ref={hostRef}
+      onPointerDownCapture={(event) => {
+        // A click is the explicit "I work here" signal: the middle column
+        // follows it and stays there (the notes column never moves it).
+        const target = event.target as HTMLElement;
+        if (target.closest(".content-pane")) setMainColumn("content");
+        else if (target.closest(".agent-panel")) setMainColumn("agent");
+      }}
       style={
         {
           "--agent-src": `${agentWidth}px`,
@@ -176,7 +212,7 @@ export function StudyLayout() {
         <AgentPanel />
       </div>
       <div
-        className="study-resizer"
+        className="study-resizer resizer-agent"
         role="separator"
         aria-orientation="vertical"
         aria-label="调整学习助手宽度"
@@ -186,7 +222,7 @@ export function StudyLayout() {
       />
       {creativeMode ? <CreativePreview /> : <ContentPane />}
       <div
-        className="study-resizer"
+        className="study-resizer resizer-content"
         role="separator"
         aria-orientation="vertical"
         aria-label="调整内容栏宽度"

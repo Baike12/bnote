@@ -67,6 +67,9 @@ function applyWebZoom(direction: 1 | -1): void {
  * keystroke, so it *is* the "most recent action".
  */
 function focusReadingPane() {
+  // The middle column follows the explicit switch: the reading column comes
+  // back to the middle even if the assistant was there.
+  useAppStore.getState().setMainColumn("content");
   const focusPane = () => {
     document
       .querySelector<HTMLElement>('[data-key-region="reading"]')
@@ -435,7 +438,12 @@ const defs: CommandDef[] = [
     title: "聚焦学习助手输入框",
     category: "区域切换",
     when: () => useAppStore.getState().mode === "study",
-    run: () => useAppStore.getState().runAgentPanelCommand("focus-input"),
+    run: () => {
+      const store = useAppStore.getState();
+      // The assistant takes the middle column and stays there.
+      store.setMainColumn("agent");
+      store.runAgentPanelCommand("focus-input");
+    },
   },
   {
     id: "region.focus-notes",
