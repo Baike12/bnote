@@ -1166,6 +1166,13 @@ export function AgentPanel() {
         { role: "user", text, at, images: images.length > 0 ? images : undefined, items },
       ],
     }));
+    // The user's own bubble must be visible the moment it is sent. In a long
+    // conversation it lands below the fold, and the only other scroll points
+    // are the session switch and a stream event — without this the bubble
+    // looks like it arrives together with the reply (the first token).
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    });
     try {
       await agentApi.send(info, text, images);
     } catch (e) {
