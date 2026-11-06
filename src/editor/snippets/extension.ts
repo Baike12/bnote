@@ -21,8 +21,10 @@ import { useAppStore } from "@/state/appStore";
  * A session is a **stack** (a parent chain): a snippet expanded during a
  * session (sq or bf inside brackets, a fraction expanded by / inside brackets)
  * is pushed as a child session, and Tab walks out from the innermost level —
- * latex-suite's nesting semantics. On every transaction the field maps the
- * stops of **every session on the whole chain**, so a parent session's
+ * latex-suite's nesting semantics, with bnote's one-level rule: a finished
+ * level is left through its own closing bracket first and the parent takes
+ * over on the next press (see planTab). On every transaction the field maps
+ * the stops of **every session on the whole chain**, so a parent session's
  * positions are already current when it is popped.
  */
 interface SnippetSession {
@@ -187,10 +189,16 @@ function selectStop(view: EditorView, session: SnippetSession, active: number) {
   });
 }
 
-/** The pure decision for Tab: when the current level is done, pop to the
- *  parent and keep advancing; when the root is done, the session ends. The
- *  landing point at the end is decided by exitCursorPosition (by default the
- *  end of the replacement text, clamped inside a formula block). */
+/** The pure decision for Tab: advance inside the current level; when this
+ *  level's tab stops are done, the level ends and its parent — if there is one
+ *  — takes over on later presses. The landing point is decided by
+ *  exitCursorPosition (one bracket level, clamped inside the formula block).
+ *
+ *  It deliberately stays on the **innermost** session instead of recursing
+ *  into the parent: jumping straight to the parent's next tab stop skipped the
+ *  closing bracket of the level that just finished, so one press crossed both
+ *  `}` and the `)` behind it (`(a_{t|})`, the shape of the regression). One
+ *  press leaves one level, the same rule as tabout. */
 export type TabPlan =
   | { kind: "select"; session: SnippetSession; index: number }
   | { kind: "end"; session: SnippetSession };
@@ -198,42 +206,52 @@ export type TabPlan =
 export function planTab(session: SnippetSession): TabPlan {
   const next = session.active + 1;
   if (next < session.order.length) return { kind: "select", session, index: next };
-  if (session.parent) return planTab(session.parent);
   return { kind: "end", session };
 }
 
 /**
- * Where the caret lands when the session ends: the end of the replacement text
- * (finalPos) — this is the source of "Tab leaves the closing bracket" for
- * bracket snippets (\mathbf{$0}, _{$0}). The only exception: the caret is
- * inside a formula region and finalPos is no longer strictly inside that
- * region (= finalPos has just passed the closing $$/$, as with the
- * whole-block snippets dm/mk/ma); then the session ends in place and the user
- * is not thrown out of the formula block (dc00d55's semantics, kept here by
- * clamping to the region).
- * A pure function (testable in node); null = end in place.
+ * Where the caret lands when a level is left: the **nearest** level boundary
+ * ahead of it, i.e. one bracket level out. Each session's finalPos is the end
+ * of its replacement text — the source of "Tab leaves the closing bracket" for
+ * bracket snippets (\mathbf{$0}, _{$0}); walking the parent chain keeps the
+ * landing one bracket away even when the levels are nested (the root's finalPos
+ * may be several brackets out).
+ *
+ * Two cases end in place (null): nothing is ahead of the caret, and the
+ * landing would cross the closing $$/$ — with the whole-block snippets
+ * dm/mk/ma the user must not be thrown out of the formula block (dc00d55's
+ * semantics, kept here by clamping to the region).
+ * A pure function (testable in node).
  */
 export function exitCursorPosition(state: EditorState, session: SnippetSession): number | null {
   const head = state.selection.main.head;
+  let target: number | null = null;
+  for (let s: SnippetSession | null = session; s; s = s.parent) {
+    if (s.finalPos <= head) continue;
+    if (target === null || s.finalPos < target) target = s.finalPos;
+  }
+  if (target === null) return null;
   const region = mathRegions(state).find((r) => head >= r.from && head <= r.to);
-  if (region && session.finalPos >= region.to) return null;
-  return session.finalPos;
+  if (region && target >= region.to) return null;
+  return target;
 }
 
 function nextStop(view: EditorView): boolean {
   const session = view.state.field(snippetField, false);
   if (!session) return false;
   const plan = planTab(session);
-  if (plan.kind === "end") {
-    const target = exitCursorPosition(view.state, plan.session);
-    view.dispatch({
-      ...(target === null ? {} : { selection: EditorSelection.cursor(target) }),
-      effects: setSession.of(null),
-      scrollIntoView: target !== null,
-    });
+  if (plan.kind === "select") {
+    selectStop(view, plan.session, plan.index);
     return true;
   }
-  selectStop(view, plan.session, plan.index);
+  // This level is done: leave its own bracket, and drop only this level so the
+  // parent's tab stops stay reachable on the next press.
+  const target = exitCursorPosition(view.state, plan.session);
+  view.dispatch({
+    ...(target === null ? {} : { selection: EditorSelection.cursor(target) }),
+    effects: setSession.of(plan.session.parent),
+    scrollIntoView: target !== null,
+  });
   return true;
 }
 

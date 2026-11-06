@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
+import type { TransactionSpec } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
 import {
   buildSession,
   exitChain,
   exitCursorPosition,
   planTab,
+  runTab,
   setSession,
   snippetField,
+  tryAutoExpand,
   type SnippetSession,
 } from "./extension";
 import { parseReplacement } from "./engine";
@@ -20,6 +24,36 @@ function withSession(doc: string, session: SnippetSession | null): EditorState {
 
 const dm = () => buildSession(0, parseReplacement("$$\n$0\n$$", [], null))!;
 const paren = () => buildSession(0, parseReplacement("($0)$1", [], null))!;
+
+/** A view with only the {state, dispatch} face, plus real typing through the
+ *  same entry the editor uses (an input.type transaction and then the auto
+ *  expansion check), so the sessions are the ones real typing produces. */
+function typedView(doc: string): EditorView {
+  let state = EditorState.create({ doc, extensions: [snippetField] });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch: (spec: TransactionSpec) => {
+      state = state.update(spec).state;
+    },
+    focus: () => {},
+    composing: false,
+  };
+  return view as unknown as EditorView;
+}
+
+function type(view: EditorView, ch: string): void {
+  const head = view.state.selection.main.head;
+  view.dispatch({
+    changes: { from: head, insert: ch },
+    selection: { anchor: head + ch.length },
+    userEvent: "input.type",
+  });
+  tryAutoExpand(view, ch, null);
+}
+
+const headOf = (view: EditorView) => view.state.selection.main.head;
 
 describe("planTab: Tab advances between tabstops and pops out", () => {
   it("a single-$0 snippet (dm): Tab ends the session and the landing spot is clamped by exitCursorPosition", () => {
@@ -36,28 +70,30 @@ describe("planTab: Tab advances between tabstops and pops out", () => {
     expect(planTab(s2)).toEqual({ kind: "end", session: s2 });
   });
 
-  it("nesting inside a session: the inner level finishes first, then it pops back to the outer level to continue, and the outer level finishing ends the session", () => {
+  it("nesting: the inner level finishes first and ends on its own session — the parent waits for the next press", () => {
     // A two-stop snippet expanded inside the dm session (e.g. bf →
     // \mathbf{$0}$1)
     const outer = dm();
     const inner = buildSession(3, parseReplacement("\\mathbf{$0}$1", [], null), outer)!;
-    // Inner $0 → inner $1 (after the brace) → pop back to the outer level and
-    // advance → the outer level only has $0, so it ends there.
+    // Inner $0 → inner $1 (after the brace); then the inner level ends — it
+    // must not be handed to the outer level's next tab stop in the same press.
     expect(planTab(inner)).toEqual({ kind: "select", session: inner, index: 1 });
     const afterInner = { ...inner, active: 1 };
-    expect(planTab(afterInner)).toEqual({ kind: "end", session: outer });
+    expect(planTab(afterInner)).toEqual({ kind: "end", session: afterInner });
   });
 
-  it("when the parent level finishes too it pops cleanly level by level", () => {
+  it("each level ends on its own session, one press per level (no recursion into the parent)", () => {
     const root = paren(); // [0,1]
     const mid = buildSession(1, parseReplacement("[$0]$1", [], null), { ...root, active: 0 })!;
     const leaf = buildSession(2, parseReplacement("<$0>", [], null), mid)!;
-    // The leaf has only one stop: Tab → mid's $1 → mid is done → root's $1 →
-    // end.
-    expect(planTab(leaf)).toEqual({ kind: "select", session: mid, index: 1 });
-    expect(planTab({ ...mid, active: 1 })).toEqual({ kind: "select", session: root, index: 1 });
-    const done = { ...root, active: 1 };
-    expect(planTab(done)).toEqual({ kind: "end", session: done });
+    // The leaf has only one stop: the first press ends the **leaf**; the
+    // mid and root levels still have their own stops and follow on later
+    // presses.
+    expect(planTab(leaf)).toEqual({ kind: "end", session: leaf });
+    const doneMid = { ...mid, active: 1 };
+    expect(planTab(doneMid)).toEqual({ kind: "end", session: doneMid });
+    const doneRoot = { ...root, active: 1 };
+    expect(planTab(doneRoot)).toEqual({ kind: "end", session: doneRoot });
   });
 });
 
@@ -199,5 +235,41 @@ describe("buildSession: tabstop order and mirroring", () => {
 
   it("a replacement without a stop builds no session", () => {
     expect(buildSession(0, parseReplacement("\\alpha", [], null))).toBeNull();
+  });
+});
+
+describe("Tab inside nested brackets: one level per press (regression: `(a_{t|})`)", () => {
+  it("typed from scratch: Tab leaves the subscript brace and does not reach the paren", () => {
+    const view = typedView("$$\n\n$$");
+    view.dispatch({ selection: { anchor: 3 } });
+    for (const ch of ["(", "a", "_", "t"]) type(view, ch);
+    const doc = view.state.doc.toString();
+    expect(doc).toBe("$$\n(a_{t})\n$$");
+    expect(headOf(view)).toBe(doc.indexOf("}")); // After the t, before the }
+    expect(runTab(view)).toBe(true);
+    expect(headOf(view)).toBe(doc.indexOf("}") + 1); // After } — the paren is still ahead
+    expect(runTab(view)).toBe(true);
+    expect(headOf(view)).toBe(doc.indexOf(")") + 1); // Now the paren's level
+  });
+
+  it("a finished inner snippet (\mathbf{$0}) inside a bracket session: the same one-level rule", () => {
+    const view = typedView("$$\n\n$$");
+    view.dispatch({ selection: { anchor: 3 } });
+    for (const ch of ["(", "b", "f"]) type(view, ch);
+    const doc = view.state.doc.toString();
+    expect(doc).toBe("$$\n(\\mathbf{})\n$$");
+    expect(runTab(view)).toBe(true);
+    expect(headOf(view)).toBe(doc.indexOf("}") + 1); // The brace's own level, not past the )
+  });
+
+  it("the caret moved back inside the finished brace: Tab still leaves only that brace", () => {
+    const view = typedView("$$\n\n$$");
+    view.dispatch({ selection: { anchor: 3 } });
+    for (const ch of ["(", "a", "_", "t"]) type(view, ch);
+    const doc = view.state.doc.toString();
+    runTab(view); // Drops the session onto its last stop (after })
+    view.dispatch({ selection: { anchor: doc.indexOf("}") } }); // The caret is back before the }
+    expect(runTab(view)).toBe(true);
+    expect(headOf(view)).toBe(doc.indexOf("}") + 1);
   });
 });
