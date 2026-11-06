@@ -443,6 +443,15 @@ describe("the input source decision at math boundaries (insertRegionWantsEnglish
     expect(wantsEnglish(doc, 6)).toBe(true);
   });
 
+  it("inline formula with a trailing space before the closing $ stays English (regression: `$s |$`)", () => {
+    // The state right after typing a space inside a fresh inline formula. A
+    // region that drops here switches the IME back to Chinese, and the next
+    // space is consumed by the IME instead of reaching the document (the
+    // report: `s` + space + `s` collapses to `ss` and expands to \sigma).
+    const doc = "$s $"; // 0..4
+    expect(wantsEnglish(doc, 3)).toBe(true);
+  });
+
   it("typing right after a single `$$` is still the English source", () => {
     expect(wantsEnglish("$$", 2)).toBe(true);
   });

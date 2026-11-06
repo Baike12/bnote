@@ -109,8 +109,10 @@ describe("planTabout: jumping out of a whole formula tail", () => {
     expect(at(doc, 2)).toEqual({ pos: doc.length, changes: [] });
   });
 
-  it("`$x $` ending with whitespace is not a formula at all (an inline region may not end that way)", () => {
-    expect(at("$x $", 2)).toBeNull();
+  it("`$x $` with a space before the closing $ is still a formula (typing a space inside it must not drop the region)", () => {
+    // The trailing space is the normal state while a formula is being typed:
+    // mathScan keeps the region, so jumping out lands after the closing $.
+    expect(at("$x $", 2)).toEqual({ pos: 4, changes: [] });
   });
 
   it("a block formula: it lands at the start of the line after the bottom $$ and the trailing whitespace on the caret line is removed", () => {

@@ -165,7 +165,15 @@ export function scanMath(doc: Text): MathRegion[] {
   }
 
   // --- Inline math, per line, outside block regions. ---
-  const inlineRe = /(?<![\\$])\$(?!\s)((?:[^$\n\\]|\\.)*?)(?<!\s)\$(?!\d)/g;
+  // The closing `$` may be preceded by whitespace: while a formula is being
+  // typed (`$s ` + the closing `$`) that trailing space is the normal state,
+  // and treating the line as plain text drops the region mid-keystroke — the
+  // IME switches back to Chinese (so the next space is eaten by the IME
+  // instead of reaching the document) and every inline-math-only snippet stops
+  // matching. The opening `$` still may not be followed by whitespace, and a
+  // closing `$` still may not be followed by a digit, which is what keeps
+  // "$5 and $10" from turning into a formula.
+  const inlineRe = /(?<![\\$])\$(?!\s)((?:[^$\n\\]|\\.)*?)\$(?!\d)/g;
   const lines = doc.iterLines();
   let pos = 0;
   for (let res = lines.next(); !res.done; res = lines.next()) {
@@ -177,7 +185,9 @@ export function scanMath(doc: Text): MathRegion[] {
       while ((m = inlineRe.exec(lineText))) {
         const from = pos + m.index;
         const to = from + m[0].length;
-        if (!inRanges(from, to, out) && m[1].length > 0) {
+        // Whitespace-only content (`$ $`) is not a formula: the relaxed
+        // trailing-space rule must not turn an empty pair into one.
+        if (!inRanges(from, to, out) && m[1].trim().length > 0) {
           out.push({ from, to, display: false, content: m[1] });
         }
       }

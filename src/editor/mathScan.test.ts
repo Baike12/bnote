@@ -134,4 +134,23 @@ describe("scanMath existing behavior does not regress", () => {
     expect(rs.some((r) => r.content === "a" && !r.display)).toBe(true);
     expect(rs.some((r) => r.content === "b" && !r.display)).toBe(true);
   });
+
+  it("a trailing space before the closing $ keeps the inline region (typing `$s ` mid-formula)", () => {
+    // `$s $` is the state after typing "s" and one space inside a new inline
+    // formula. It must stay a region: the IME picks the source by
+    // caretInMathBody (a lost region switches back to Chinese and eats the
+    // next space), and inline-math-only snippets match by it too.
+    expect(regions("$s $")).toEqual([{ from: 0, to: 4, display: false, content: "s " }]);
+    expect(regions("前文 $s $ 后文").map((r) => r.content)).toEqual(["s "]);
+  });
+
+  it("the trailing-space relaxation does not turn prices into formulas", () => {
+    expect(regions("$5 and $10")).toHaveLength(0);
+    expect(regions("cost $100 to $200")).toHaveLength(0);
+  });
+
+  it("a leading space after the opening $ is still not a formula, and neither is an empty pair", () => {
+    expect(regions("$ s$")).toHaveLength(0);
+    expect(regions("$ $")).toHaveLength(0);
+  });
 });
