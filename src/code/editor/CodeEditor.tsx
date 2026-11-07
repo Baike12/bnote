@@ -33,6 +33,7 @@ import {
 } from "@/editor/vim/vim";
 import { getCM } from "@replit/codemirror-vim";
 import { useAppStore } from "@/state/appStore";
+import { codeVimEnabled } from "@/state/codeVim";
 import { typewriterExtension } from "@/editor/typewriter";
 import { useCodeStore, type OpenFile } from "../store";
 import { codeApi } from "../api";
@@ -104,7 +105,7 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     new Map<string, { timer: ReturnType<typeof setTimeout>; root: string; text: string }>(),
   );
 
-  const codeVim = useAppStore((s) => s.settings.codeVim);
+  const codeVim = useAppStore((s) => codeVimEnabled(s.settings));
   const codeWrap = useAppStore((s) => s.settings.codeWrap);
   // The typewriter mode shares one setting with the notes (including the
   // vertical caret position): the same model, no second set of switches for

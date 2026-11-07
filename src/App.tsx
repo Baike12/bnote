@@ -67,6 +67,7 @@ import { normalizeDailyWidth, normalizeSideWidth } from "@/projects/layoutModel"
 import { normalizeTreeWidth } from "@/code/treeWidth";
 import { normalizeTermHeight } from "@/code/term/tabs";
 import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
+import { normalizeCodeVim } from "@/state/codeVim";
 
 /** The canvas is a separate chunk (excalidraw plus its font loading); it is
  *  only downloaded when it is opened. */
@@ -174,6 +175,9 @@ export default function App() {
       // Same for the agent conversation font scale: without that key it is 100%, and
       // a broken value is clamped back to 85%-160%.
       settings.agentFontScale = normalizeAgentFont(settings.agentFontScale);
+      // The code editor's vim switch: "inherit" (the new default) follows the
+      // notes switch; a legacy boolean is migrated once (see normalizeCodeVim).
+      settings.codeVim = normalizeCodeVim(settings.codeVim);
       useAppStore.getState().replaceSettings(settings);
       // Pomodoro: restore the previous timer state (endsAt is an absolute time, so
       // it is still judged as overtime after a restart).

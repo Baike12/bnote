@@ -2,6 +2,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { startCompletion } from "@codemirror/autocomplete";
 import type { CommandDef } from "@/commands/registry";
 import { useAppStore } from "@/state/appStore";
+import { codeVimEnabled } from "@/state/codeVim";
 import { useCodeStore } from "./store";
 import { activeCodeEditor } from "./editor/registry";
 import { findReferences, gotoDefinition, renameSymbol } from "./editor/goto";
@@ -383,7 +384,9 @@ export const codeCommandDefs: CommandDef[] = [
     category: "代码",
     run: () => {
       const { settings, patchSettings } = useAppStore.getState();
-      patchSettings({ codeVim: !settings.codeVim });
+      // Toggling pins the code side explicitly: the effective state flips,
+      // and it stops following the notes switch.
+      patchSettings({ codeVim: codeVimEnabled(settings) ? "off" : "on" });
     },
   },
   {

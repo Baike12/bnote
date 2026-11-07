@@ -18,6 +18,7 @@ import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel"
 import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
 import type { AgentImage } from "@/study/agentImages";
 import type { TimerState as FocusTimerState } from "@/focus/timer";
+import { DEFAULT_CODE_VIM, type CodeVimMode } from "./codeVim";
 
 export interface ImeSettings {
   /** The master switch of the automatic input source switching (follows the vim mode + Chinese input fields; macOS only) */
@@ -57,12 +58,11 @@ export type ThemeName = "dark" | "light";
 export interface Settings {
   vim: boolean;
   /**
-   * The vim switch of the code editor. It is **separate** from the note's
-   * `vim`: pressing j/k moves in code but formats in a note, and the habits
-   * on both sides often differ, so separate switches fit the real workflow
-   * better.
+   * The vim switch of the code editor: "inherit" follows the notes `vim`,
+   * "on" / "off" pin it. The two habits can differ, but the global switch is
+   * the one the user thinks in, so following is the default.
    */
-  codeVim: boolean;
+  codeVim: CodeVimMode;
   /**
    * Whether the code editor wraps lines.
    *
@@ -180,7 +180,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   vim: false,
-  codeVim: false,
+  codeVim: DEFAULT_CODE_VIM,
   codeWrap: true,
   codeTreeWidth: TREE_DEFAULT_WIDTH,
   codeTermHeight: TERM_DEFAULT_HEIGHT,

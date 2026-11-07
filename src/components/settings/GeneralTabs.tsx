@@ -9,7 +9,8 @@ import {
   MIN_TYPEWRITER_POSITION,
   normalizeTypewriterPosition,
 } from "@/editor/typewriterPosition";
-import { SettingsCard, Row, RangeControl, Toggle } from "./primitives";
+import { SettingsCard, Row, RangeControl, SettingsSelect, Toggle } from "./primitives";
+import type { CodeVimMode } from "@/state/codeVim";
 
 export function GeneralTab() {
   const vaultPath = useAppStore((s) => s.vaultPath);
@@ -109,11 +110,19 @@ export function EditorTab() {
           checked={settings.vim}
           onChange={(v) => patch({ vim: v })}
         />
-        <Toggle
+        <Row
           label="代码编辑器 Vim 模式"
-          desc="代码编辑器里单独开 vim。与笔记的开关分开：两边的手感常常不同，各开各的更贴近真实工作流。快捷键也各归各的代码区/笔记区，互不干扰。"
-          checked={settings.codeVim}
-          onChange={(v) => patch({ codeVim: v })}
+          desc="默认跟随上面的 Vim 开关：笔记和代码区共用一套 vim 习惯。两边手感不同时需要分开，选「开」或「关」把代码区钉住；快捷键也各归各的代码区/笔记区，互不干扰。"
+          control={
+            <SettingsSelect<CodeVimMode>
+              value={settings.codeVim}
+              onChange={(v) => patch({ codeVim: v })}
+            >
+              <option value="inherit">跟随笔记</option>
+              <option value="on">开</option>
+              <option value="off">关</option>
+            </SettingsSelect>
+          }
         />
         <Toggle
           label="代码编辑器折行"
