@@ -179,19 +179,28 @@ export function AgentTranscript({
   welcome: ReactNode;
   onFork: (index: number) => void;
 }) {
+  // The shade lives in a sibling overlay, not inside the scroller: an absolute
+  // child of a scroll container would scroll away with the content. It is the
+  // same "already read" veil as the PDF pane (.pdf-read-shade), fixed to the
+  // top half of the visible column.
   return (
-    <div className="agent-scroll" ref={scrollRef}>
-      {entries.length === 0
-        ? welcome
-        : entries.map((entry, i) => (
-            <EntryRow
-              key={i}
-              entry={entry}
-              streaming={i === entries.length - 1 && busy && entry.role === "assistant"}
-              forkable={!busy}
-              onFork={() => onFork(i)}
-            />
-          ))}
+    <div className="agent-transcript-wrap">
+      <div className="agent-scroll" ref={scrollRef}>
+        {entries.length === 0
+          ? welcome
+          : entries.map((entry, i) => (
+              <EntryRow
+                key={i}
+                entry={entry}
+                streaming={i === entries.length - 1 && busy && entry.role === "assistant"}
+                forkable={!busy}
+                onFork={() => onFork(i)}
+              />
+            ))}
+      </div>
+      <div className="agent-read-guide" aria-hidden="true">
+        <div className="agent-read-shade" />
+      </div>
     </div>
   );
 }

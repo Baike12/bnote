@@ -3239,6 +3239,14 @@ input[type="range"] {
   background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
+/* The transcript is wrapped so the read shade can be a fixed sibling overlay:
+   an absolute child of the scroller itself would scroll away with the content. */
+.agent-transcript-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 .agent-scroll {
   flex: 1;
   overflow-y: auto;
@@ -3246,6 +3254,50 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Half-screen read shade of the assistant column: the same veil as the PDF
+   pane (see .pdf-read-guide there) — the top half dims out with a gradient
+   that tapers to its lightest tone at the boundary, no divider line, rounded
+   tips at both ends. Fixed to the viewport of the column, takes no events. */
+.agent-read-guide {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+.agent-read-shade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 50%;
+  background: linear-gradient(to bottom, var(--read-shade), var(--read-shade-edge));
+}
+.agent-read-shade::before,
+.agent-read-shade::after {
+  content: "";
+  position: absolute;
+  bottom: -12px;
+  width: 12px;
+  height: 12px;
+}
+.agent-read-shade::before {
+  left: 0;
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent 11.5px,
+    var(--read-shade-edge) 12px
+  );
+}
+.agent-read-shade::after {
+  right: 0;
+  background: radial-gradient(
+    circle at 0 100%,
+    transparent 11.5px,
+    var(--read-shade-edge) 12px
+  );
 }
 
 /* Welcome page: a centered hero. No example chips: a fresh session shows the

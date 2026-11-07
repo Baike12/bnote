@@ -80,6 +80,46 @@ import {
  * content is ready: opening a material connects once, switching the material
  * opens it again.
  */
+/** The flex gap between transcript entries (`.agent-scroll`); the reply starts
+ *  this far below the newest user message. */
+const TRANSCRIPT_GAP = 12;
+
+/**
+ * The scroll cap for a streaming turn: the scrollTop that puts the reply start
+ * on the shade line. Measured once per turn from the live DOM — the shade line
+ * is the bottom edge of the read shade (50% of the column), the reply start is
+ * the bottom of the newest user row plus the entry gap.
+ */
+function measureTurnCap(scroller: HTMLDivElement): number | null {
+  const shade = scroller.parentElement?.querySelector<HTMLElement>(".agent-read-shade");
+  if (!shade) return null;
+  const top = scroller.getBoundingClientRect().top;
+  const lineY = shade.getBoundingClientRect().bottom - top;
+  const rows = scroller.querySelectorAll<HTMLElement>(".agent-msg-row.is-user");
+  const lastUser = rows[rows.length - 1];
+  if (!lastUser) return 0;
+  const replyStart =
+    lastUser.getBoundingClientRect().bottom - top + scroller.scrollTop + TRANSCRIPT_GAP;
+  return Math.max(0, replyStart - lineY);
+}
+
+/**
+ * One stream event's auto-scroll: keep the newest content visible, but never
+ * past the turn cap — at the cap the newest line sits on the shade line and
+ * the view freezes; what grows below is reached by scrolling manually.
+ * Never scrolls up, so a manual scroll down sticks. The position it leaves
+ * behind is recorded so the scroll listener can tell the user's upward
+ * scrolls (always a decrease from the last auto position) from its own.
+ */
+function followTranscript(scroller: HTMLDivElement, cap: number | null): number | null {
+  const target = Math.min(scroller.scrollHeight - scroller.clientHeight, cap ?? Infinity);
+  if (target > scroller.scrollTop) {
+    scroller.scrollTo({ top: target });
+    return target;
+  }
+  return null;
+}
+
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
   const mode = useAppStore((s) => s.mode);
@@ -229,6 +269,22 @@ export function AgentPanel() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [suggestTrigger, setSuggestTrigger] = useState<SuggestTrigger | null>(null);
   const [suggestIndex, setSuggestIndex] = useState(0);
+  /**
+   * Streaming auto-follow is on while a turn streams; an upward scroll by the
+   * user (wheel / trackpad / a page flip) turns it off for the rest of the
+   * turn — once they take the scroll, the view must not fight back.
+   */
+  const followRef = useRef(true);
+  /**
+   * The freeze cap of the running turn: the scrollTop at which the reply start
+   * (the line right below the newest user message) sits on the shade line. The
+   * follow never scrolls past it — reached it, the view stays put and the
+   * growing reply below is read by scrolling manually. Null = no shade, no cap.
+   */
+  const turnCapRef = useRef<number | null>(null);
+  /** The scrollTop the follow last left the view at: any decrease below it
+   *  while streaming is the user taking over (see the scroll listener). */
+  const lastFollowPosRef = useRef<number | null>(null);
 
   useEffect(() => {
     convsRef.current = convs;
@@ -759,14 +815,47 @@ export function AgentPanel() {
     return () => el.removeEventListener("focusin", onFocusIn);
   }, []);
 
+  // An upward scroll while a reply streams is the user taking over the view:
+  // stop following for the rest of the turn. The follow only ever moves the
+  // view DOWN (target > scrollTop), so any decrease from the last auto
+  // position is the user's — wheel, trackpad, scrollbar drag or a script.
+  // The wheel listener additionally catches an upward wheel at scrollTop 0,
+  // where no scroll event fires.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (followRef.current && el.scrollTop < (lastFollowPosRef.current ?? 0) - 1) {
+        followRef.current = false;
+      }
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) followRef.current = false;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+    };
+  }, []);
+
   /** The page-turn command scrolls the column that sits in the middle. */
   useEffect(() => {
     if (mainColumn !== "agent") return;
     const pageBy = (direction: 1 | -1) => {
       const scroller = scrollRef.current;
       if (!scroller) return;
-      const step = useAppStore.getState().settings.studyPageStep;
-      scroller.scrollBy({ top: direction * scroller.clientHeight * step, behavior: "smooth" });
+      // Flip around the shade line — the content at the boundary becomes the
+      // new top (the PDF flip's contract). The step is measured from the shade
+      // element itself, so the composer below the scroller can never leak into
+      // the distance: only the visible transcript part is scrolled.
+      const shade = scroller.parentElement?.querySelector(".agent-read-shade");
+      const lineY = shade
+        ? shade.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top
+        : scroller.clientHeight * useAppStore.getState().settings.studyPageStep;
+      if (direction === -1) followRef.current = false;
+      scroller.scrollBy({ top: direction * lineY, behavior: "smooth" });
     };
     setAgentNavHandlers({ canFlip: () => true, prev: () => pageBy(-1), next: () => pageBy(1) });
     return () => setAgentNavHandlers(null);
@@ -775,7 +864,13 @@ export function AgentPanel() {
   // Scroll to the bottom after switching the session (every session is looked at from its newest message).
   useEffect(() => {
     requestAnimationFrame(() => {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+      const scroller = scrollRef.current;
+      if (!scroller) return;
+      // Adopt the cap of a turn that may already be streaming: measured from
+      // the newest user row, so a switched-to session freezes at the same
+      // shade line a fresh send would have.
+      turnCapRef.current = measureTurnCap(scroller);
+      scroller.scrollTo({ top: scroller.scrollHeight });
     });
   }, [activeKey]);
 
@@ -1053,8 +1148,13 @@ export function AgentPanel() {
         break;
       }
     }
+    // Stream auto-scroll, only for the conversation that is on screen: a
+    // background session's reply must never move the view the user is reading.
     requestAnimationFrame(() => {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+      const scroller = scrollRef.current;
+      if (!scroller || !followRef.current || activeKeyRef.current !== conv.key) return;
+      lastFollowPosRef.current =
+        followTranscript(scroller, turnCapRef.current) ?? lastFollowPosRef.current;
     });
   }
 
@@ -1201,8 +1301,16 @@ export function AgentPanel() {
     // conversation it lands below the fold, and the only other scroll points
     // are the session switch and a stream event — without this the bubble
     // looks like it arrives together with the reply (the first token).
+    // The turn's freeze cap is measured now: the reply that starts streaming
+    // below this bubble may scroll the view only until that bubble's bottom
+    // line reaches the shade line.
     requestAnimationFrame(() => {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+      const scroller = scrollRef.current;
+      if (!scroller) return;
+      followRef.current = true;
+      lastFollowPosRef.current = null;
+      turnCapRef.current = measureTurnCap(scroller);
+      scroller.scrollTo({ top: scroller.scrollHeight });
     });
     try {
       await agentApi.send(info, text, images);
