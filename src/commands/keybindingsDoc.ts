@@ -54,8 +54,6 @@ const REGION_SCOPE: Record<KeyRegion, string> = {
 export const UNBOUND_BY_DESIGN: Record<string, string> = {
   "view.toggle-code-mode":
     "Code mode has no default shortcut (`Cmd+Shift+C` inserts a code block). Bind it in the `global` region.",
-  "app.quit":
-    "Quit is unbound on purpose: an accidental `Cmd+Q` must not quit the app. It stays in the palette.",
 };
 
 export function renderKeybindingsDoc(): string {

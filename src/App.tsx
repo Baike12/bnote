@@ -280,10 +280,9 @@ export default function App() {
     } catch {
       // not running under Tauri
     }
-    // Menu → Quit carries no key equivalent (⌘Q is deliberately unbound in
-    // bnote's keybinding layer — an accidental quit must not happen; the
-    // app.quit command exists for keybindings.json), so the native terminate
-    // path is gone. The menu hands the request here instead, where the same
+    // Menu → Quit carries no key equivalent (⌘Q is `app.quit` in bnote's
+    // keybinding layer, see commands/keys.ts), so the native terminate path is
+    // gone. The menu hands the request here instead, where the same
     // flush-then-destroy as the close button applies — quitting never costs
     // the debounced cursor/config write.
     // Language server events (diagnostics / status / log): an app-level

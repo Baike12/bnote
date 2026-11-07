@@ -65,10 +65,11 @@ export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
 export const KEY_REGION_IDS: KeyRegion[] = KEY_REGIONS.map((r) => r.id);
 
 export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
-  // app.quit is deliberately unbound by default (user decision 2026-11-03):
-  // an accidental ⌘Q must not quit the app. The command stays in the palette
-  // and keybindings.json can bind it (or anything else) to Mod-q. The hard
-  // lock still swallows ⌘Q while a pomodoro runs (focus.rs).
+  // ⌘Q runs `app.quit`, which flushes the debounced writes and then destroys
+  // the window (src/app/quit.ts) -- the menu's Quit item takes the same path.
+  // The focus hard lock no longer swallows it: it is an ordinary app chord like
+  // ⌘W, and a quit mid-stretch is recovered by the restore (endsAt on disk).
+  "app.quit": "Mod-q",
   "workspace.new-note": "Mod-n",
   "workspace.quick-add": "Mod-Shift-a",
   // Capture a todo on the fly: same family as "send todo to the daily note"
@@ -286,7 +287,7 @@ const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
  * The code editor is **a separate world**: ⌘S here means "save the code
  * file", not "save the note". So the code region does not inherit the whole
  * global layer, only these truly application-level commands — command
- * palette, quick switcher, toggle study mode, settings. Other global
+ * palette, quick switcher, toggle study mode, settings, quit. Other global
  * bindings (⌘⇧P toggle project view, ⌘⇧O open today's daily note) yield to
  * the code region's own actions.
  */
@@ -299,6 +300,9 @@ const CODE_INHERITED_GLOBALS = new Set([
   // here or the code region could only leave via the palette.
   "view.toggle-code-mode",
   "workspace.open-settings",
+  // Quitting is not a note action: a focus session can be running while the
+  // code editor owns the keyboard, and ⌘Q must keep working there.
+  "app.quit",
 ]);
 
 /**

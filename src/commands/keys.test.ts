@@ -272,6 +272,14 @@ describe("region dispatch", () => {
     }
   });
 
+  it("⌘Q quits from every region, including the code editor (which only inherits whitelisted globals)", () => {
+    applyOverrides({});
+    expect(DEFAULT_BINDINGS["app.quit"]).toBe("Mod-q");
+    for (const region of ["global", "notes", "reading", "agent", "project", "code"] as const) {
+      expect(commandsForKey("Mod-q", region), region).toContain("app.quit");
+    }
+  });
+
   it("the cross-region effect holds except for an explicit unbinding: once a region unbinds it, it no longer revives from elsewhere", () => {
     applyOverrides(
       normalizeOverrides({

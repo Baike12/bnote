@@ -34,7 +34,6 @@ describe("the keybindings doc is generated from the keymap", () => {
     const doc = renderKeybindingsDoc();
     const tables = doc.split("## Unbound on purpose")[0]!;
     expect(tables).not.toContain("`view.toggle-code-mode`");
-    expect(tables).not.toContain("`app.quit`");
     expect(doc).toContain("## Unbound on purpose");
   });
 });

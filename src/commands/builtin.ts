@@ -190,8 +190,8 @@ const defs: CommandDef[] = [
   },
   {
     // The macOS menu carries no ⌘Q key equivalent (see lib.rs::install_menu),
-    // so the quit chord lives here with every other binding. The native menu's
-    // Quit item goes through the same flush-then-destroy path.
+    // so the quit chord lives here with every other binding (⌘Q by default).
+    // The native menu's Quit item goes through the same flush-then-destroy path.
     id: "app.quit",
     title: "退出应用",
     category: "工作区",

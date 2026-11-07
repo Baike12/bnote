@@ -22,6 +22,7 @@ Active whatever has focus: palette, saving, switching modes.
 | `Cmd+N` | 新建笔记 — `workspace.new-note` |
 | `Cmd+O` | 快速跳转到文件 — `nav.quick-switcher` |
 | `Cmd+P` | 命令面板 — `nav.command-palette` |
+| `Cmd+Q` | 退出应用 — `app.quit` |
 | `Cmd+S` | 保存当前笔记 — `workspace.save-note` |
 | `Cmd+Shift+A` | 快速添加文件 — `workspace.quick-add` |
 | `Cmd+Shift+K` | 快速待办:添加到今日日记最前(⌘⇧K) — `workspace.capture-todo` |
@@ -145,4 +146,3 @@ Active while the code editor has focus. A separate world: `Cmd+S` saves the code
 ## Unbound on purpose
 
 - `view.toggle-code-mode`: Code mode has no default shortcut (`Cmd+Shift+C` inserts a code block). Bind it in the `global` region.
-- `app.quit`: Quit is unbound on purpose: an accidental `Cmd+Q` must not quit the app. It stays in the palette.

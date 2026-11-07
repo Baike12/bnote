@@ -18,12 +18,14 @@
 //!    the app the user switched to never gets input.
 //!
 //! On top of that sits a **hard lock**: a CGEventTap swallows the chords macOS
-//! acts on before any app sees them (⌘Tab / ⌘Space / Mission Control / Spaces)
-//! plus the app's own quit chord (⌘Q) -- the only way to make "I pressed it and
-//! nothing happened" real; it needs Accessibility permission, and without it
-//! only the three layers above apply. During a focus session there is no way
-//! out of the app (⌘⌥Esc force quit cannot be blocked, and reopening the app
-//! resumes the same session).
+//! acts on before any app sees them (⌘Tab / ⌘Space / Mission Control / Spaces),
+//! the only way to make "I pressed it and nothing happened" real; it needs
+//! Accessibility permission, and without it only the three layers above apply.
+//! App chords stay out of it: ⌘Q is `app.quit` in bnote's keybinding layer and
+//! quits through the flush-then-destroy path like the menu's Quit item. A quit
+//! does not break the promise -- the timer state and `endsAt` are on disk, so
+//! reopening the app resumes the session and re-locks the screen (⌘⌥Esc force
+//! quit cannot be blocked for the same reason).
 //!
 //! The hard lock covers the mouse too: when the Dock auto-hides, hovering the
 //! bottom edge of the screen raises the Dock **above** the fullscreen window
@@ -760,30 +762,25 @@ mod mac {
     /// Combinations the hard lock swallows: key code (ANSI layout) -> the
     /// modifiers that must be held down at the same time.
     ///
-    /// Two groups, nothing else:
+    /// One group, nothing else: the **chords macOS acts on before any app sees
+    /// them** -- ⌘Tab (switch app), ⌘Space (Spotlight), ⌘` (switch windows of
+    /// the same app), ⌃↑/⌃↓ (Mission Control), ⌃⌘←/→ (switch Space). The
+    /// HID-level tap is the only thing that can stop them: by the time an app
+    /// could ignore the key, the system has already switched away.
     ///
-    /// - **Chords macOS acts on before any app sees them**: ⌘Tab (switch app),
-    ///   ⌘Space (Spotlight), ⌘` (switch windows of the same app), ⌃↑/⌃↓ (Mission
-    ///   Control), ⌃⌘←/→ (switch Space). The HID-level tap is the only thing that
-    ///   can stop them: by the time an app could ignore the key, the system has
-    ///   already switched away.
-    /// - **⌘Q**, the app's own quit chord: "no leaving midway" includes quitting
-    ///   the app. The system-level force quit (⌘⌥Esc) cannot be blocked; it is
-    ///   the OS's last exit -- and even after a kill the timer state and endsAt
-    ///   are on disk, so reopening the app resumes the session and re-locks.
-    ///
-    /// ⌘H / ⌘M / ⌘W are deliberately **not** listed: `lib.rs::install_menu`
-    /// (f6b6b44) gives the menu no key equivalents for them, so they reach the
-    /// webview as ordinary app chords and belong to the keybinding layer -- ⌘M
-    /// is the default binding of `edit.insert-math-block`, ⌘W of
-    /// `region.focus-agent` in the notes region. Swallowing them here killed
-    /// those bindings during a session, and nothing needs blocking: a menu that
-    /// owns no chord cannot hide or close the window on its own.
+    /// App chords are deliberately **not** listed: `lib.rs::install_menu`
+    /// (f6b6b44) gives the menu no key equivalent for them, so ⌘H / ⌘M / ⌘W /
+    /// ⌘Q reach the webview as ordinary app chords and belong to the keybinding
+    /// layer -- ⌘M is `edit.insert-math-block`, ⌘W `region.focus-agent` in the
+    /// notes region, ⌘Q `app.quit`. Swallowing them here killed those bindings
+    /// during a session, and nothing needs blocking: a menu that owns no chord
+    /// cannot hide or close the window on its own. Quitting mid-stretch is not
+    /// an escape either -- the timer state and `endsAt` are on disk, so the
+    /// next launch resumes the session and re-locks.
     const BLOCKED: &[(u64, u64)] = &[
         (48, CGEventFlags::MaskCommand.0),  // Tab
         (49, CGEventFlags::MaskCommand.0),  // Space
         (50, CGEventFlags::MaskCommand.0),  // `
-        (12, CGEventFlags::MaskCommand.0),  // Q (the app's quit chord)
         (126, CGEventFlags::MaskControl.0), // Up (Mission Control)
         (125, CGEventFlags::MaskControl.0), // Down
         (
@@ -820,14 +817,15 @@ mod mac {
         }
 
         #[test]
-        fn swallows_the_system_chords_and_quit_only() {
+        fn swallows_only_the_chords_macos_handles_itself() {
             // System-handled chords: only the HID tap can stop them.
-            for code in [48i64, 49, 50, 12] {
+            for code in [48i64, 49, 50] {
                 assert!(should_swallow(code, CMD), "⌘ code {code} must be swallowed");
             }
             // App chords the menu no longer claims: swallowing these would kill
-            // the user's own bindings (⌘M math block, ⌘W region.focus-agent).
-            for code in [4i64, 46, 13] {
+            // the user's own bindings (⌘M math block, ⌘W region.focus-agent,
+            // ⌘Q app.quit).
+            for code in [4i64, 46, 13, 12] {
                 assert!(
                     !should_swallow(code, CMD),
                     "⌘ code {code} must not be swallowed"
