@@ -301,16 +301,35 @@ fn anthropic_start_usage(message: &Value) -> Option<TokenUsage> {
         + count("cache_creation_input_tokens")
         + count("cache_read_input_tokens");
     let output = count("output_tokens");
-    (input > 0 || output > 0).then_some(TokenUsage { input, output })
+    (input > 0 || output > 0).then_some(TokenUsage {
+        input,
+        output,
+        cache_read: count("cache_read_input_tokens"),
+    })
 }
 
-/// Anthropic `message_delta` carries only the cumulative output_tokens; the input
-/// side is inherited from message_start.
+/// Anthropic `message_delta` carries the cumulative output_tokens. Some
+/// gateways (MiniMax's Anthropic-compatible endpoint) skip the usage on
+/// `message_start` entirely and put the whole picture here instead
+/// (input_tokens + cache_read_input_tokens + output_tokens) — without picking
+/// the input side up, the reported context occupancy degenerates to the
+/// output alone. The official API keeps input on message_start only, so a
+/// zero here must not clear what message_start reported.
 fn anthropic_output_usage(current: Option<TokenUsage>, usage: &Value) -> Option<TokenUsage> {
-    let output = usage.get("output_tokens").and_then(|v| v.as_u64())?;
+    let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
     let mut next = current.unwrap_or_default();
-    next.output = output;
-    Some(next)
+    let input = count("input_tokens")
+        + count("cache_creation_input_tokens")
+        + count("cache_read_input_tokens");
+    if input > 0 {
+        next.input = input;
+        next.cache_read = count("cache_read_input_tokens");
+    }
+    let output = count("output_tokens");
+    if output > 0 {
+        next.output = output;
+    }
+    (next.input > 0 || next.output > 0).then_some(next)
 }
 
 /// Usage at the end of an OpenAI-compatible stream (the request has to carry
@@ -328,7 +347,15 @@ fn openai_usage(v: &Value) -> Option<TokenUsage> {
     };
     let input = count(["prompt_tokens", "input_tokens"]);
     let output = count(["completion_tokens", "output_tokens"]);
-    (input > 0 || output > 0).then_some(TokenUsage { input, output })
+    let cache_read = usage
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    (input > 0 || output > 0).then_some(TokenUsage {
+        input,
+        output,
+        cache_read,
+    })
 }
 
 /// Per-request options: the ceiling the loop may raise, and the turn's
@@ -1078,7 +1105,8 @@ mod tests {
             anthropic_start_usage(&message),
             Some(TokenUsage {
                 input: 420,
-                output: 1
+                output: 1,
+                cache_read: 300,
             })
         );
     }
@@ -1088,12 +1116,14 @@ mod tests {
         let start = Some(TokenUsage {
             input: 420,
             output: 1,
+            cache_read: 300,
         });
         assert_eq!(
             anthropic_output_usage(start, &json!({"output_tokens": 88})),
             Some(TokenUsage {
                 input: 420,
-                output: 88
+                output: 88,
+                cache_read: 300,
             })
         );
         // Without a start event it must not be lost either: the output still has to
@@ -1102,7 +1132,47 @@ mod tests {
             anthropic_output_usage(None, &json!({"output_tokens": 5})),
             Some(TokenUsage {
                 input: 0,
-                output: 5
+                output: 5,
+                cache_read: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn anthropic_message_delta_carries_the_input_when_the_gateway_skips_message_start() {
+        // MiniMax's Anthropic-compatible endpoint sends no usage on
+        // message_start and the whole picture only on message_delta: without
+        // picking the input up here, the context occupancy degenerates to the
+        // output alone.
+        let usage = anthropic_output_usage(
+            None,
+            &json!({
+                "input_tokens": 9,
+                "cache_read_input_tokens": 197,
+                "output_tokens": 32,
+            }),
+        );
+        assert_eq!(
+            usage,
+            Some(TokenUsage {
+                input: 206,
+                output: 32,
+                cache_read: 197,
+            })
+        );
+        // A gateway that reports the input on both events must not double count:
+        // the delta replaces, never adds.
+        let started = Some(TokenUsage {
+            input: 206,
+            output: 0,
+            cache_read: 197,
+        });
+        assert_eq!(
+            anthropic_output_usage(started, &json!({"input_tokens": 9, "output_tokens": 32})),
+            Some(TokenUsage {
+                input: 9,
+                output: 32,
+                cache_read: 0,
             })
         );
     }
@@ -1113,14 +1183,30 @@ mod tests {
             openai_usage(&json!({"usage": {"prompt_tokens": 61_800, "completion_tokens": 10_000}})),
             Some(TokenUsage {
                 input: 61_800,
-                output: 10_000
+                output: 10_000,
+                cache_read: 0,
             })
         );
         assert_eq!(
             openai_usage(&json!({"usage": {"input_tokens": 7, "output_tokens": 3}})),
             Some(TokenUsage {
                 input: 7,
-                output: 3
+                output: 3,
+                cache_read: 0,
+            })
+        );
+        assert_eq!(
+            openai_usage(&json!({
+                "usage": {
+                    "prompt_tokens": 500,
+                    "completion_tokens": 40,
+                    "prompt_tokens_details": {"cached_tokens": 384},
+                }
+            })),
+            Some(TokenUsage {
+                input: 500,
+                output: 40,
+                cache_read: 384,
             })
         );
     }

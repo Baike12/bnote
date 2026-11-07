@@ -154,7 +154,7 @@ export type AgentEvent =
   | { type: "tool_start"; id: string; name: string; input: unknown }
   | { type: "tool_end"; id: string; ok: boolean; output: string; images?: AgentImage[] }
   /** The token usage of one model request; only the latest one is kept = the current context occupancy. */
-  | { type: "usage"; input: number; output: number }
+  | { type: "usage"; input: number; output: number; cacheRead: number }
   /** A dim status line: compaction, subagent start/finish, background task done. Never enters the history. */
   | { type: "notice"; text: string }
   /** The todo tool's list after a `todo` call (the rendering source). */
@@ -396,6 +396,12 @@ export const agentApi = {
   /** Stops the running turn; resolves false when the session is gone (no terminal event can arrive — the caller must clear busy itself). */
   abort: (sessionId: string) => invoke<boolean>("agent_abort", { sessionId }),
   history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
+  /** Rough per-part context sizes for the composer's context card (estimated tokens; the real total comes from the usage event). */
+  contextBreakdown: (sessionId: string) =>
+    invoke<{ system: number; tools: number; mcpTools: number; messages: number }>(
+      "agent_context_breakdown",
+      { sessionId },
+    ),
   /** Resolve/create the on-disk directory of one material (annotations + session records). */
   materialEnsure: (study: StudyContent) => invoke<MaterialInfo>("study_material_ensure", { study }),
   /** The sessions saved under one material (newest first). */

@@ -152,8 +152,8 @@ export function AgentPanel() {
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // The composer grows with the text and rests at one line: a fixed two-row
-  // field left an empty second line under every short question.
+  // The composer grows with the text and rests at two lines (the CSS
+  // min-height): a taller resting field leaves room to draft before sending.
   useEffect(() => {
     const el = inputRef.current;
     if (el) fitInputHeight(el);
@@ -937,7 +937,7 @@ export function AgentPanel() {
       case "usage": {
         updateConv(conv.key, (c) => ({
           ...c,
-          usage: { input: event.input, output: event.output },
+          usage: { input: event.input, output: event.output, cacheRead: event.cacheRead },
         }));
         break;
       }
@@ -1657,9 +1657,7 @@ export function AgentPanel() {
               strokeLinejoin="round"
               aria-hidden="true"
             >
-              <rect x="3" y="5" width="18" height="14" rx="2.5" />
-              <circle cx="9" cy="10.5" r="1.6" />
-              <path d="m5 17 4.2-4.2a1.5 1.5 0 0 1 2.1 0L16 17.5M14 15l2-2a1.5 1.5 0 0 1 2.1 0L21 15.9" />
+              <path d="M12 5v14M5 12h14" />
             </svg>
           </button>
           <AgentPermissionMenu
@@ -1673,6 +1671,7 @@ export function AgentPanel() {
             modelName={modelName}
             configuredModel={configuredModel}
             busy={activeBusy}
+            sessionId={activeConv?.sessionId ?? null}
             canSend={Boolean(
               activeConv?.sessionId && (input.trim() !== "" || pendingImages.length > 0),
             )}

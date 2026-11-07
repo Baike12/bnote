@@ -502,6 +502,20 @@ pub fn agent_abort(state: State<'_, AppState>, session_id: String) -> CmdResult<
     Ok(false)
 }
 
+/// The composer's context card: rough per-part context sizes (estimated
+/// tokens) of the live session. The real total comes from the usage events.
+#[tauri::command]
+pub fn agent_context_breakdown(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> CmdResult<crate::agent::session::ContextBreakdown> {
+    let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = registry
+        .get(&session_id)
+        .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?;
+    Ok(session.context_breakdown())
+}
+
 /// The panel's answer to a tool approval request (`ask` permission).
 /// The composer's permission mode for this session (confirm / auto / full).
 #[tauri::command]

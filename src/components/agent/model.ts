@@ -205,8 +205,8 @@ export function formatSessionTime(ms: number): string {
 }
 
 /**
- * Size the composer to its content: one line at rest, up to twelve visible
- * lines (the cap is in CSS, which then scrolls).
+ * Size the composer to its content: two lines at rest (the CSS min-height),
+ * up to twelve visible lines (the cap is in CSS, which then scrolls).
  *
  * `auto` first, then the content height: without the reset the element keeps
  * its previous height and `scrollHeight` cannot shrink after a deletion.

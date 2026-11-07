@@ -267,6 +267,7 @@ pub fn run() {
             commands::agent::agent_send,
             commands::agent::agent_abort,
             commands::agent::agent_get_history,
+            commands::agent::agent_context_breakdown,
             commands::agent::agent_set_current_note,
             commands::agent::agent_list_skills,
             commands::agent::agent_generate_title,

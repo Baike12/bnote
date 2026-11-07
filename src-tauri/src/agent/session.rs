@@ -24,6 +24,7 @@ use super::tasks::TaskList;
 use super::todo::{self, TodoItem};
 use super::tools::{ToolContext, ToolOutput};
 use super::types::{AgentEvent, ChatItem, Content, InlineImage, ToolDef};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -48,6 +49,35 @@ const ESCALATED_MAX_TOKENS: u32 = 64_000;
 const MAX_OUTPUT_TOKENS_RECOVERY: u32 = 3;
 /// Concurrent tools per batch (CC's CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY).
 const MAX_TOOL_CONCURRENCY: usize = 10;
+
+/// The composer's context card data: rough per-part context sizes. Serialized
+/// camelCase to the front end.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdown {
+    pub system: u64,
+    pub tools: u64,
+    pub mcp_tools: u64,
+    pub messages: u64,
+}
+
+/// Rough token estimate for the context card: CJK characters tokenize at
+/// roughly one token per 1.5-2 chars, ASCII at one per ~4, so CJK counts
+/// double and the sum divides by 3. This is a proportional estimate, not a
+/// count — the authoritative occupancy is the provider's usage event.
+fn estimate_tokens(text: &str) -> u64 {
+    let mut cjk = 0u64;
+    let mut other = 0u64;
+    for ch in text.chars() {
+        let c = ch as u32;
+        if (0x3400..=0x9FFF).contains(&c) {
+            cjk += 1;
+        } else {
+            other += 1;
+        }
+    }
+    (cjk * 2 + other).div_ceil(3)
+}
 
 /// Session shape: which definition id seeds it. The definition itself lives
 /// in `Session::def`, loaded from the vault's agent directory.
@@ -415,6 +445,62 @@ impl Session {
             "event": event,
         });
         let _ = self.app.emit("agent-event", payload);
+    }
+
+    /// Splits the context into its parts for the composer's context card: the
+    /// system prompt, the tool schemas (built-in vs MCP) and the message
+    /// history. All sizes are estimates (see estimate_tokens) — the real total
+    /// comes from the provider's usage; these parts only proportion it.
+    pub fn context_breakdown(&self) -> ContextBreakdown {
+        let system = estimate_tokens(
+            &self
+                .system_prompt
+                .read()
+                .map(|g| g.clone())
+                .unwrap_or_default(),
+        );
+        let mut tools = 0u64;
+        let mut mcp_tools = 0u64;
+        for def in self.tool_defs() {
+            let schema = serde_json::to_string(&def.input_schema)
+                .map(|s| estimate_tokens(&s))
+                .unwrap_or(0);
+            let size = estimate_tokens(&def.description) + schema;
+            if def.mcp_server.is_some() {
+                mcp_tools += size;
+            } else {
+                tools += size;
+            }
+        }
+        let mut messages = 0u64;
+        if let Ok(items) = self.items.lock() {
+            for item in items.iter() {
+                if let ChatItem::Message { content, .. } = item {
+                    for c in content {
+                        messages += match c {
+                            Content::Text { text } => estimate_tokens(text),
+                            // An image's token cost comes from its pixel size,
+                            // not its base64 length; a screenshot lands around
+                            // this order. The card only needs the magnitude.
+                            Content::Image { .. } => 1500,
+                            Content::ToolUse { name, input, .. } => {
+                                estimate_tokens(name)
+                                    + serde_json::to_string(input)
+                                        .map(|s| estimate_tokens(&s))
+                                        .unwrap_or(0)
+                            }
+                            Content::ToolResult { content, .. } => estimate_tokens(content),
+                        };
+                    }
+                }
+            }
+        }
+        ContextBreakdown {
+            system,
+            tools,
+            mcp_tools,
+            messages,
+        }
     }
 
     /// The composer's permission mode.
@@ -902,6 +988,7 @@ impl Session {
                 self.emit(AgentEvent::Usage {
                     input: usage.input,
                     output: usage.output,
+                    cache_read: usage.cache_read,
                 });
             }
             // Assemble the assistant message.

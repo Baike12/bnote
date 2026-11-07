@@ -431,6 +431,10 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             )
         }
         "agent_abort" => json_ok!(agent::agent_abort(app.state(), arg_str(args, "sessionId")?)),
+        "agent_context_breakdown" => json_ok!(agent::agent_context_breakdown(
+            app.state(),
+            arg_str(args, "sessionId")?
+        )),
         "agent_get_history" => {
             json_ok!(agent::agent_get_history(app.state(), arg_str(args, "sessionId")?))
         }

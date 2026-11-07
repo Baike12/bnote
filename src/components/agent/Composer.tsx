@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { agentApi } from "@/lib/tauri";
 import {
+  cacheHitRate,
   contextLabel,
   formatPercent,
   formatTokenCount,
@@ -46,6 +48,18 @@ export function AgentPermissionMenu({
       >
         <ShieldIcon />
         {planActive ? "计划模式" : active?.label}
+        <svg
+          className="agent-mode-chevron"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
       </button>
       {open && (
         <div className="agent-mode-pop" role="menu">
@@ -73,11 +87,173 @@ export function AgentPermissionMenu({
   );
 }
 
+/** Rough per-part context sizes reported by the backend (estimated tokens). */
+interface ContextBreakdown {
+  system: number;
+  tools: number;
+  mcpTools: number;
+  messages: number;
+}
+
+/** The circular progress ring (ZCode's ContextIcon): a track plus an arc that
+ *  grows with the occupancy, rotating from 12 o'clock. */
+function ContextRing({ pct }: { pct: number | null }) {
+  const radius = 7;
+  const circumference = 2 * Math.PI * radius;
+  const used = pct == null ? 0 : Math.min(100, pct) / 100;
+  return (
+    <svg className="agent-ctx-ring" viewBox="0 0 16 16" aria-hidden="true">
+      <circle
+        cx="8"
+        cy="8"
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity="0.25"
+        strokeWidth="2"
+      />
+      <circle
+        cx="8"
+        cy="8"
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity="0.8"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray={`${circumference} ${circumference}`}
+        strokeDashoffset={circumference * (1 - used)}
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
+  );
+}
+
 /**
- * The session footnote: model, context occupancy and the send/stop button.
- *
- * The model line is the snapshot the session started with; when the setting
- * changed since, it says so and only a new session picks the new model up.
+ * The context indicator + its hover card (ZCode's composer): the ring shows
+ * the occupancy at a glance; hovering opens the breakdown — estimated
+ * per-part sizes (the real total comes from the provider's usage), a stacked
+ * bar and the cache hit rate when the provider reports cache reads.
+ */
+function AgentContextBadge({
+  usage,
+  contextLimit,
+  sessionId,
+}: {
+  usage: AgentUsage | null;
+  contextLimit: number;
+  sessionId: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const [breakdown, setBreakdown] = useState<ContextBreakdown | null>(null);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const pct = occupancyPercent(usage, contextLimit);
+
+  // The breakdown is estimated over the live session; fetched when the card
+  // opens so it is fresh without a fetch per turn. A failure leaves it empty
+  // (the card still shows the real total from the usage).
+  useEffect(() => {
+    if (!open || !sessionId) return;
+    let cancelled = false;
+    void agentApi
+      .contextBreakdown(sessionId)
+      .then((b) => {
+        if (!cancelled) setBreakdown(b);
+      })
+      .catch(() => {
+        if (!cancelled) setBreakdown(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, sessionId]);
+
+  const rate = cacheHitRate(usage);
+  const parts: { label: string; value: number; tone: string }[] = breakdown
+    ? [
+        { label: "系统提示词", value: breakdown.system, tone: "var(--ctx-tone-4)" },
+        { label: "系统工具", value: breakdown.tools, tone: "var(--ctx-tone-3)" },
+        { label: "MCP 工具", value: breakdown.mcpTools, tone: "var(--ctx-tone-2)" },
+        { label: "消息", value: breakdown.messages, tone: "var(--ctx-tone-1)" },
+      ].filter((p) => p.value > 0)
+    : [];
+  const partsTotal = parts.reduce((sum, p) => sum + p.value, 0);
+
+  return (
+    <div
+      className="agent-ctx"
+      ref={ref}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        className="agent-ctx-trigger"
+        title={
+          usage
+            ? `上下文 ${formatTokenCount(usage.input + usage.output)} / ${formatTokenCount(contextLimit)}${pct === null ? "" : ` (${formatPercent(pct)})`}`
+            : "上下文占用:本轮回复后显示"
+        }
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <ContextRing pct={pct} />
+      </button>
+      {open && (
+        <div className="agent-ctx-pop" role="dialog" aria-label="上下文容量">
+          <div className="agent-ctx-head">
+            <span>上下文容量</span>
+            <span className="agent-ctx-sum">
+              {usage ? formatTokenCount(usage.input + usage.output) : "—"}/
+              {contextLimit > 0 ? formatTokenCount(contextLimit) : "—"}
+              {pct !== null ? `(${formatPercent(pct)})` : ""}
+            </span>
+          </div>
+          <div className="agent-ctx-bar">
+            {usage &&
+              pct !== null &&
+              (partsTotal > 0
+                ? parts.map((p) => (
+                    <span
+                      key={p.label}
+                      className="agent-ctx-seg"
+                      style={{
+                        width: `${(p.value / partsTotal) * Math.min(100, pct)}%`,
+                        background: p.tone,
+                      }}
+                    />
+                  ))
+                : null)}
+          </div>
+          {parts.length > 0 && (
+            <ul className="agent-ctx-rows">
+              {parts.map((p) => (
+                <li key={p.label}>
+                  <span className="agent-ctx-dot" style={{ background: p.tone }} />
+                  <span className="agent-ctx-label">{p.label}</span>
+                  <span className="agent-ctx-val">
+                    {partsTotal > 0 ? formatPercent((p.value / partsTotal) * 100) : "—"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {rate !== null && (
+            <div className="agent-ctx-cache">
+              <span>平均缓存命中率</span>
+              <span className="agent-ctx-val">{formatPercent(rate * 100)}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The session footnote (ZCode's composer layout): on the left the context
+ * ring + model, on the right the send/stop circle. The model line is the
+ * snapshot the session started with; when the setting changed since, it says
+ * so and only a new session picks the new model up.
  */
 export function AgentMeta({
   usage,
@@ -85,6 +261,7 @@ export function AgentMeta({
   modelName,
   configuredModel,
   busy,
+  sessionId,
   canSend,
   sendTitle,
   onSend,
@@ -95,17 +272,24 @@ export function AgentMeta({
   modelName: string;
   configuredModel: string;
   busy: boolean;
+  sessionId: string | null;
   canSend: boolean;
   sendTitle: string;
   onSend: () => void;
   onStop: () => void;
 }) {
   const modelStale = Boolean(modelName && configuredModel && modelName !== configuredModel);
-  const usagePct = occupancyPercent(usage, contextLimit);
   return (
-    <>
+    <span className="agent-meta">
+      {/* Generating replaces the ring with a spinner: the ring would read as
+          "idle" while the usage is a turn behind anyway. */}
+      {busy ? (
+        <span className="agent-meta-spinner" aria-hidden="true" />
+      ) : (
+        <AgentContextBadge usage={usage} contextLimit={contextLimit} sessionId={sessionId} />
+      )}
       <span
-        className="agent-meta"
+        className="agent-meta-model"
         title={
           usageTitle(usage, contextLimit, modelName) +
           (modelStale
@@ -113,27 +297,31 @@ export function AgentMeta({
             : "")
         }
       >
-        <span className="agent-meta-model">
-          {modelName || "未配置模型"}
-          {modelStale ? " · 会话配置" : ""}
-        </span>
-        <span className="agent-meta-ctx">{contextLabel(usage, contextLimit)}</span>
-        {usagePct !== null && <span className="agent-meta-pct">{formatPercent(usagePct)}</span>}
-        {usage && (
-          <span className="agent-meta-io">
-            ↑{formatTokenCount(usage.input)} ↓{formatTokenCount(usage.output)}
-          </span>
-        )}
+        {modelName || "未配置模型"}
+        {modelStale ? " · 会话配置" : ""}
       </span>
+      <span className="agent-meta-ctx">{contextLabel(usage, contextLimit)}</span>
       {busy ? (
-        <button className="agent-send stop" onClick={onStop}>
-          停止
+        <button className="agent-send stop" onClick={onStop} title="停止生成">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="7" y="7" width="10" height="10" rx="2" />
+          </svg>
         </button>
       ) : (
         <button className="agent-send" onClick={onSend} disabled={!canSend} title={sendTitle}>
-          发送
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 19V5M5 12l7-7 7 7" />
+          </svg>
         </button>
       )}
-    </>
+    </span>
   );
 }

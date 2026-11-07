@@ -128,12 +128,18 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<InlineImage>,
     },
-    /// Token usage of one model request (context occupancy = input + output).
-    /// Anthropic reports it in message_start / message_delta; OpenAI-compatible
-    /// endpoints only report usage at the end of the stream when the request
-    /// carries stream_options. The front end keeps only the latest one: it is
-    /// the context occupancy of the current session.
-    Usage { input: u64, output: u64 },
+    /// Token usage of one model request (context occupancy = input + output;
+    /// input already includes cache reads). Anthropic reports it in
+    /// message_start / message_delta; OpenAI-compatible endpoints only report
+    /// usage at the end of the stream when the request carries stream_options.
+    /// The front end keeps only the latest one: it is the context occupancy of
+    /// the current session.
+    Usage {
+        input: u64,
+        output: u64,
+        #[serde(rename = "cacheRead")]
+        cache_read: u64,
+    },
     /// A system-level notice the panel renders as a dim status line:
     /// compaction happened, a subagent started/finished, a background task
     /// completed. Never enters the session history.
@@ -168,8 +174,15 @@ pub enum AgentEvent {
 /// Token usage of one model request.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TokenUsage {
+    /// Prompt side, **including** cache reads and cache writes (the whole
+    /// context the request carried); `output` is the completion.
     pub input: u64,
     pub output: u64,
+    /// The share of `input` the provider served from its prompt cache
+    /// (Anthropic cache_read_input_tokens, OpenAI cached_tokens). Reported so
+    /// the UI can show a cache hit rate; it is a subset of `input`, never
+    /// added on top of it.
+    pub cache_read: u64,
 }
 
 /// Provider-agnostic streaming callback.

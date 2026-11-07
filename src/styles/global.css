@@ -3740,9 +3740,11 @@ input[type="range"] {
   border: none;
   background: transparent;
   padding: 8px 12px 0;
-  /* One line at rest; the component grows it with the text (wrapped lines
-     included) and up to **12 lines are always fully visible**. Only past that
-     does the box scroll — a long prompt must stay readable while writing it. */
+  /* Two lines at rest (the composer keeps the status bar company below);
+     the component grows it with the text (wrapped lines included) and up to
+     **12 lines are always fully visible**. Only past that does the box
+     scroll — a long prompt must stay readable while writing it. */
+  min-height: calc(var(--agent-text) * 1.5 * 2 + 8px);
   max-height: calc(var(--agent-text) * 1.5 * 12 + 8px);
   overflow-y: auto;
   font: inherit;
@@ -3818,47 +3820,167 @@ input[type="range"] {
   cursor: pointer;
 }
 .agent-attach-remove:hover { background: var(--danger); color: var(--on-accent); }
-/* Footnote of the input area: the model name + the context usage (used/limit
-   + percentage + input/output).
-   The information sits on the right, hugging the send button, the model name
-   may be truncated, the numeric column does not shrink. */
+/* Footnote of the input area (ZCode's composer layout): the left side holds
+   the attach button and the permission menu, the right side the context ring,
+   the model name, the used/limit figures and the send/stop circle.
+   The model name may be truncated, the numeric column does not shrink. */
 .agent-meta {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  overflow: hidden;
+  gap: 7px;
+  overflow: visible;
   white-space: nowrap;
   font-size: calc(var(--agent-text) * 0.75);
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
 }
 .agent-meta-model {
+  min-width: 0;
   max-width: 46%;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-dim);
 }
-.agent-meta-ctx,
-.agent-meta-pct,
-.agent-meta-io {
+.agent-meta-ctx {
   flex-shrink: 0;
+}
+
+/* The context ring + its hover card (ZCode's composer context indicator). */
+.agent-ctx {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+.agent-ctx-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.agent-ctx-trigger:hover { color: var(--accent); background: var(--bg3); }
+.agent-ctx-ring { width: 15px; height: 15px; }
+
+.agent-ctx-pop {
+  --ctx-tone-1: var(--accent);
+  --ctx-tone-2: color-mix(in srgb, var(--accent) 72%, var(--bg1));
+  --ctx-tone-3: color-mix(in srgb, var(--accent) 48%, var(--bg1));
+  --ctx-tone-4: color-mix(in srgb, var(--accent) 28%, var(--bg1));
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  width: 264px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg1);
+  box-shadow: 0 12px 28px var(--shadow);
+  font-size: 12px;
+  color: var(--text);
+}
+.agent-ctx-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+.agent-ctx-sum {
+  font-weight: 400;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.agent-ctx-bar {
+  display: flex;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg3);
+}
+.agent-ctx-seg { height: 100%; }
+.agent-ctx-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-ctx-rows li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.agent-ctx-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.agent-ctx-label { color: var(--text-dim); }
+.agent-ctx-val {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.agent-ctx-cache {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+/* Small spinner standing in for the ring while a reply streams. */
+.agent-meta-spinner {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: agent-meta-spin 0.8s linear infinite;
+}
+@keyframes agent-meta-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Chevron of the permission pill. */
+.agent-mode-chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--text-faint);
 }
 
 .agent-send {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: 50%;
   cursor: pointer;
-  padding: 4px 14px;
-  font: inherit;
-  font-size: calc(var(--agent-text) * 0.8);
-  font-weight: 600;
   background: var(--accent-dim);
   color: var(--on-accent);
 }
+.agent-send svg { width: 15px; height: 15px; }
 .agent-send:hover { background: var(--accent); }
 .agent-send:disabled {
   background: var(--bg3);
