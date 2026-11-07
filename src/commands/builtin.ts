@@ -34,14 +34,13 @@ import { openTodayDailyNote } from "@/daily/open";
 import { runtimeDeps } from "@/daily/runtime";
 import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/run";
 import { resetLspStateForPath, syncNow } from "@/python/lsp";
-import { agentApi, api } from "@/lib/tauri";
+import { api } from "@/lib/tauri";
 import { canFlipPdfPage, flipPdfPage } from "@/study/pdfNav";
 import { useFocusStore } from "@/focus/store";
 import { capturePdfSnapshot, hasPdfSnapshotSource } from "@/study/pdfSnapshot";
 import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
 import { fileToAgentImage } from "@/study/agentImages";
 import { WEREAD_HOME_URL } from "@/study/weread";
-import { setActiveKeyRegion } from "./globalKeys";
 import { codeCommandDefs } from "@/code/commands";
 
 /** Whether the middle column has a web page open (only then do the zoom keys take over ⌘= / ⌘- / ⌘0). */
@@ -56,42 +55,19 @@ function applyWebZoom(direction: 1 | -1): void {
 }
 
 /**
- * Hand the focus back to the reading region; when the web page lives in the
- * native child webview, hand it over to that.
+ * Put the reading column back in the middle **without moving the keyboard**.
  *
- * The keyboard ownership is written directly at the same time: in the web
- * branch the focus sits on the native child webview, so the main window's
- * pointerdown/focusin never fire and the region ownership would stay on the
- * notes / Agent region — the keys the main window then receives would be
- * resolved against the wrong region (⌘E would be eaten by the notes region's
- * own live-preview toggle). The command is the direct result of a user
- * keystroke, so it *is* the "most recent action".
+ * The reader (PDF / web page) is looked at, not typed into, so it has no
+ * reason to take the focus: the notes editor / Agent input keep it exactly
+ * where the user left it, and only the column order follows the command.
+ * The native web preview does not need a focus hand-off either — StudyLayout
+ * re-reports its bounds on every swap (`bnote:study-layout-resize`), so the
+ * page follows the layout with the first responder untouched.
  */
-function focusReadingPane() {
+function showReadingInMiddle() {
   // The middle column follows the explicit switch: the reading column comes
   // back to the middle even if the assistant was there.
   useAppStore.getState().setMainColumn("content");
-  const focusPane = () => {
-    document
-      .querySelector<HTMLElement>('[data-key-region="reading"]')
-      ?.focus({ preventScroll: true });
-  };
-  setActiveKeyRegion("reading");
-  if (useAppStore.getState().studyContent?.kind === "url") {
-    // End the main window's editing state first: while the editor
-    // (contenteditable) is being edited the window's first responder is the
-    // field editor inside it; without resigning, swapping the first responder
-    // for the native child webview is rejected, the keyboard stays in the
-    // main window — and every following key is resolved against the old
-    // region.
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && active !== document.body) active.blur();
-    // Browser mode has no native view, so the command does not exist → fall
-    // back to the DOM placeholder (the region decision still holds).
-    void agentApi.focusStudyPreview().catch(focusPane);
-    return;
-  }
-  focusPane();
 }
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
@@ -462,10 +438,11 @@ const defs: CommandDef[] = [
     title: "切换到阅读区(PDF / 网页)",
     category: "区域切换",
     when: () => useAppStore.getState().mode === "study",
-    // The middle column is always visible, so there is no need to switch
-    // tabs; it only has to hand the focus from the editor / input back to the
-    // reading region.
-    run: focusReadingPane,
+    // A chord forwarded from the web page must not pull the first responder
+    // out of it: the command only re-orders columns and hands the focus to
+    // nobody.
+    keepsPageFocus: true,
+    run: showReadingInMiddle,
   },
   // ---- Session actions inside the study assistant panel ----
   {

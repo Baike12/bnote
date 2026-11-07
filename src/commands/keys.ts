@@ -183,14 +183,15 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   // (the session list lives inside the panel; the command only signals).
   "study.agent-switch-session": "Mod-Shift-y",
 
-  // Switching between the three focusable regions: ⌘⌥A / ⌘⌥N / ⌘⌥R =
-  // focus Agent / notes / reading. The same command has one default binding
-  // per region (regions do not affect each other), so every region can reach
-  // every other one; pressing it inside its own region is useful too — it
-  // hands the focus back to that region's input / editor (e.g. ⌘⌥A inside the
-  // Agent panel). When the focus is in a PDF/web page, the in-page runtime
-  // forwards the keys back to the main window over the title channel (see
-  // study/webAnnotations.ts).
+  // Region navigation: ⌘⌥A / ⌘⌥N focus the Agent / notes region, while ⌘⌥R
+  // only puts the reading column back in the middle — the reader is read, not
+  // typed into, so the keyboard stays where it is. The same command has one
+  // default binding per region (regions do not affect each other), so every
+  // region can reach every other one; pressing it inside its own region is
+  // useful too — it hands the focus back to that region's input / editor
+  // (e.g. ⌘⌥A inside the Agent panel). When the focus is in a PDF/web page,
+  // the in-page runtime forwards the keys back to the main window over the
+  // title channel (see study/webAnnotations.ts).
   "region.focus-agent": "Mod-Alt-a",
   "region.focus-notes": "Mod-Alt-n",
   "region.focus-reading": "Mod-Alt-r",
@@ -308,10 +309,10 @@ const CODE_INHERITED_GLOBALS = new Set([
  *     focus stays put) and screenshot (attaches the current page to the
  *     assistant's input). They depend on what is in the reading region, not
  *     on where the cursor sits.
- *   - Region navigation: ⌘⌥A/N/R go to Agent / notes / reading. Navigation
- *     means "reachable from anywhere", so where it was pressed makes no
- *     difference (⌘⌥A inside the Agent panel sending the focus back to its
- *     input holds too).
+ *   - Region navigation: ⌘⌥A/N reach Agent / notes, ⌘⌥R re-orders the reading
+ *     column (no focus move). Navigation means "reachable from anywhere", so
+ *     where it was pressed makes no difference (⌘⌥A inside the Agent panel
+ *     sending the focus back to its input holds too).
  *
  * Two disciplines:
  *   1. The region's own binding wins (see commandsForKey): when the notes
