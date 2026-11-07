@@ -103,8 +103,8 @@ export async function openProjectAt(root: string): Promise<void> {
   app.setRecentCodeProjects(recent);
   // Code mode is its own mode (not a study material): opening a project enters
   // it and remembers the repository, so a restart lands where the user left.
-  const title = root.split("/").pop() ?? root;
-  app.setCodeProject({ path: root, title });
+  // The appStore project ref itself is written by the code store's mutator
+  // (single writer); openProject already synced it above.
   app.setMode("code");
 }
 

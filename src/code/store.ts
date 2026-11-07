@@ -30,6 +30,18 @@ import type {
  * content would be gone after switching away and back).
  */
 
+/**
+ * The project ref the rest of the app reads (`appStore.codeProject`: the
+ * agent panel's scope, the persisted config). The code store is the single
+ * owner of "which project is open"; this projection is written only here,
+ * inside the mutators, so a startup restore or a close can never leave the
+ * two disagreeing (the bug class this closes: the agent panel saw no project
+ * and stayed empty while the pane clearly had one).
+ */
+function syncProjectRef(info: CodeProjectInfo | null): void {
+  useAppStore.getState().setCodeProject(info ? { path: info.root, title: info.name } : null);
+}
+
 export interface OpenFile {
   path: string;
   /** Content as opened (used to compute "is it modified"). */
@@ -288,6 +300,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     // changes and the undo stacks with them.
     if (previous && previous.root === info.root) {
       set({ project: info });
+      syncProjectRef(info);
       return;
     }
     // Switching project = switching the sandbox boundary. Language servers
@@ -328,6 +341,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       terminals: [],
       activeTermId: null,
     });
+    syncProjectRef(info);
     await get().refreshGit();
   },
 
@@ -365,6 +379,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       terminals: [],
       activeTermId: null,
     });
+    syncProjectRef(null);
   },
 
   async rescan() {
