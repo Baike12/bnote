@@ -606,14 +606,13 @@ export function ContentPane() {
     >
       {/* Study mode has no titlebar, so this row is the window drag region
           (buttons and input fields are unaffected).
-          Three columns: left = clearance for the traffic lights; middle = the
-          file name (which is the materials dropdown); right = the URL input
-          and the PDF.
+          Three columns: left = an empty spacer; middle = the file name (which
+          is the materials dropdown); right = the URL input and the PDF.
           The file name only occupies the middle column and the two outer
           columns have the same width, so it is truly centered in the whole
-          bar. The left cell is empty for now (the agent column already sits
-          at the far left); it stays empty only to keep the file name
-          centered in the whole bar. */}
+          bar. The left cell stays empty to keep the file name centered; the
+          traffic-light clearance is the toolbar's own padding-left while this
+          column is leftmost (see .study-layout.agent-focused .content-toolbar). */}
       <div className="content-toolbar" data-tauri-drag-region="deep">
         <div className="content-tool-left" />
         <StudyHistoryMenu

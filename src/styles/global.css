@@ -2453,9 +2453,11 @@ input[type="range"] {
   --agent-w: clamp(10%, var(--agent-src), calc(100% - 2px - 20%));
   --content-w: clamp(10%, var(--content-src), calc(100% - 2px - 10% - var(--agent-w)));
   /* The window traffic lights (overlay title bar) take about 78px of the
-     top left corner. The assistant column is leftmost here, so its header
-     has to yield; when the sidebar is open the traffic lights sit on the
-     sidebar's own 36px reserved strip and nothing has to yield.
+     top left corner, so whichever column is visually leftmost has to yield;
+     the focused swap moves that role between the assistant and the content
+     column (see the .agent-focused rules below). When the sidebar is open the
+     traffic lights sit on the sidebar's own 36px reserved strip and nothing
+     has to yield.
      This is the same decision as the paddingLeft of .titlebar, only here it
      is derived from the DOM. */
   --study-lead: 78px;
@@ -4329,11 +4331,19 @@ input[type="range"] {
  * Study mode: history dropdown / PDF reader
  * ------------------------------------------------------------------------- */
 
-/* The window traffic lights sit on the top left corner of the whole window,
-   and the assistant column is leftmost now: its header yields the space, the
-   toolbar of the middle column is not indented any further (otherwise the
-   centered file name would drift away from the center of the column). */
-.study-layout .agent-header {
+/* The window traffic lights sit on the top left corner of the whole window:
+   the clearance follows the **leftmost column**, not a fixed column. While the
+   content column sits in the middle (the default) the assistant header yields
+   it; the focused swap moves the content column to order 0, so its header
+   takes the clearance and the assistant header gets its normal 12px back.
+   Without the swap rule the traffic lights sit on top of the code toolbar's
+   first buttons (file tree / diff / terminal), which is the header of the
+   leftmost pane in code mode. */
+.study-layout:not(.agent-focused) .agent-header {
+  padding-left: var(--study-lead, 12px);
+}
+.study-layout.agent-focused .content-toolbar,
+.study-layout.agent-focused .code-toolbar {
   padding-left: var(--study-lead, 12px);
 }
 

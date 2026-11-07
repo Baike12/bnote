@@ -49,9 +49,11 @@ import { startSplitDrag } from "../splitDrag";
  * Tauri's drag.js stops at clickable elements (button/input/...) on its own,
  * so the buttons in the header stay clickable.
  *
- * The macOS traffic lights sit on top of the leftmost header: that is the
- * agent column, and the clearance is handled by --study-lead of
- * `.study-layout .agent-header`.
+ * The macOS traffic lights sit on top of the leftmost header, and the focused
+ * swap changes which column that is: the clearance is `--study-lead` and is
+ * applied to the agent header by default, to the content header (PDF toolbar
+ * or code toolbar) while `.agent-focused` moves the content column to the far
+ * left. It must travel with the order, never stay on a fixed column.
  */
 export function StudyLayout() {
   const agentWidth = useAppStore((s) => s.settings.studyAgentWidth);
