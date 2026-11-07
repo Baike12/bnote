@@ -486,13 +486,20 @@ pub async fn agent_send(
     Ok(())
 }
 
+/// Stops the running turn. Returns whether the session is still live: `false`
+/// means the backend can never produce a terminal event for it (the process
+/// restarted — a dev rebuild, a replaced binary), so the caller has to clear
+/// its busy state itself. A silent Ok here left the panel on "generating"
+/// forever with a stop button that did nothing — the one state where stop
+/// genuinely cannot work.
 #[tauri::command]
-pub fn agent_abort(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
+pub fn agent_abort(state: State<'_, AppState>, session_id: String) -> CmdResult<bool> {
     let registry = state.sessions.lock().map_err(|e| e.to_string())?;
     if let Some(session) = registry.get(&session_id) {
         session.ctx.abort.abort();
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// The panel's answer to a tool approval request (`ask` permission).

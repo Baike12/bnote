@@ -393,7 +393,8 @@ export const agentApi = {
     invoke<SkillInfo[]>("agent_list_skills", { mode, workdir: workdir ?? null }),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
-  abort: (sessionId: string) => invoke<void>("agent_abort", { sessionId }),
+  /** Stops the running turn; resolves false when the session is gone (no terminal event can arrive — the caller must clear busy itself). */
+  abort: (sessionId: string) => invoke<boolean>("agent_abort", { sessionId }),
   history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
   /** Resolve/create the on-disk directory of one material (annotations + session records). */
   materialEnsure: (study: StudyContent) => invoke<MaterialInfo>("study_material_ensure", { study }),

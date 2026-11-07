@@ -1225,7 +1225,23 @@ export function AgentPanel() {
 
   function abort() {
     const info = activeConv?.sessionId;
-    if (info) void agentApi.abort(info);
+    if (!info) return;
+    void agentApi
+      .abort(info)
+      .then((live) => {
+        if (live) return;
+        // The backend has no such session (the process restarted — a dev
+        // rebuild or a replaced binary): no terminal event can ever arrive,
+        // so the panel clears its own busy state. A silent no-op here kept
+        // the panel on "generating" forever with a stop button that did
+        // nothing — the one state where stop genuinely cannot work.
+        if (busyRef.current === info) {
+          busyRef.current = null;
+          setBusySession(null);
+        }
+        showToast("会话已失效,已停止等待(重新发送会开启新会话)");
+      })
+      .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
   }
 
   /**
