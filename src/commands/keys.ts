@@ -214,6 +214,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.find-in-files": "Mod-Shift-f",
   "code.go-to-definition": "F12",
   "code.go-to-type-definition": "Mod-F12",
+  // Back to where the last jump started (VSCode's ⌃−). Every jump — a
+  // definition, a reference, a problem, a find-in-files hit — records its
+  // origin, so this walks them backwards one press at a time.
+  "code.go-back": "Ctrl--",
   "code.find-references": "Shift-F12",
   "code.rename-symbol": "F2",
   "code.trigger-completion": "Ctrl-Space",

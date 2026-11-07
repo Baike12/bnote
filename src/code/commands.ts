@@ -80,8 +80,7 @@ function cycleProblem(direction: 1 | -1): void {
     direction,
   );
   if (!target) return;
-  void store.openFile(target.path);
-  store.requestJump(target.path, target.position);
+  void store.navigateTo(target.path, target.position);
 }
 
 /** Open a project (native directory picker). */
@@ -238,6 +237,15 @@ export const codeCommandDefs: CommandDef[] = [
     when: hasEditor,
     run: () => {
       void gotoDefinition("textDocument/implementation");
+    },
+  },
+  {
+    id: "code.go-back",
+    title: "返回上一个位置",
+    category: "代码",
+    when: hasProject,
+    run: () => {
+      void useCodeStore.getState().goBack();
     },
   },
   {

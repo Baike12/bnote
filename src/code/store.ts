@@ -5,6 +5,9 @@ import { ancestorDirs } from "./tree";
 import { disposeAllTerminals, disposeTerminal, ensureTerminalOutputListener } from "./term/session";
 import { closeTab as closeTermTab, nextTitle, type TermTab } from "./term/tabs";
 import { useAppStore } from "@/state/appStore";
+import { activeCodeEditor } from "./editor/registry";
+import { cmToLspPosition } from "./editor/positions";
+import { popNavBack, pushNavBack, sameLocation, type CodeLocation } from "./navHistory";
 import type {
   CodeFile,
   CodeProjectInfo,
@@ -108,6 +111,12 @@ export interface CodeState {
         external: boolean;
       }[]
     | null;
+  /**
+   * Where the recent jumps started (the most recent last). "Go back" pops it,
+   * so it is the only writer — a jump that bypassed `navigateTo` would leave a
+   * hole in the history.
+   */
+  navBack: CodeLocation[];
   /** Whether the terminal drawer (bottom of the code pane) is open. */
   termOpen: boolean;
   /** One tab per live shell; the PTY itself lives in Rust. */
@@ -140,8 +149,14 @@ export interface CodeState {
   setProblemsOpen: (open: boolean) => void;
   setDiff: (path: string | null, staged?: boolean) => void;
   toggleDiffStaged: () => void;
-  /** Ask for the caret to land on a position (jump / click in the references panel). */
-  requestJump: (path: string, position: LspPosition) => void;
+  /**
+   * The single entry point of a jump: record where the caret is now, open the
+   * target, then place the caret there. Every jump goes through it so "go back"
+   * can always return to the origin.
+   */
+  navigateTo: (path: string, position: LspPosition) => Promise<void>;
+  /** Jump back to the origin of the last jump (false when the history is empty or the target cannot be opened). */
+  goBack: () => Promise<boolean>;
   /** Consume the jump request (exactly once). */
   clearJump: () => void;
   /** Set the reference list. */
@@ -259,6 +274,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   diffStaged: false,
   jump: null,
   references: null,
+  navBack: [],
   termOpen: false,
   terminals: [],
   activeTermId: null,
@@ -307,6 +323,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       diffStaged: false,
       jump: null,
       references: null,
+      navBack: [],
       termOpen: false,
       terminals: [],
       activeTermId: null,
@@ -343,6 +360,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       diffPath: null,
       jump: null,
       references: null,
+      navBack: [],
       termOpen: false,
       terminals: [],
       activeTermId: null,
@@ -580,8 +598,40 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     set((s) => ({ diffStaged: !s.diffStaged }));
   },
 
-  requestJump(path, position) {
+  async navigateTo(path, position) {
+    // Read the origin before openFile: it changes activePath, and the editor
+    // handle only follows on the next render pass.
+    const handle = activeCodeEditor();
+    const origin: CodeLocation | null = handle
+      ? {
+          path: handle.path,
+          position: cmToLspPosition(handle.view.state.doc, handle.view.state.selection.main.head),
+        }
+      : null;
+    if (origin && origin.path === path && sameLocation(origin, { path, position })) return;
+    await get().openFile(path);
+    // openFile reports its own failure; activePath proves the target opened.
+    if (get().activePath !== path) return;
+    if (origin) set((s) => ({ navBack: pushNavBack(s.navBack, origin) }));
     set({ jump: { path, position } });
+  },
+
+  async goBack() {
+    const before = get().navBack;
+    const { target, rest } = popNavBack(before);
+    if (!target) {
+      useAppStore.getState().showToast("没有可返回的位置");
+      return false;
+    }
+    await get().openFile(target.path);
+    // The origin only leaves the history once it is reachable again; a failed
+    // open keeps it, so the next press retries instead of losing the place.
+    if (get().activePath !== target.path) return false;
+    // A jump that ran during the open owns the newer history: popping the old
+    // entry would drop a place the user can still reach.
+    if (get().navBack !== before) return false;
+    set({ navBack: rest, jump: target });
+    return true;
   },
 
   clearJump() {

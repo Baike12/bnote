@@ -20,8 +20,7 @@ const SEVERITY_LABEL: Record<number, string> = {
 
 export function ProblemsPanel() {
   const diagnostics = useCodeStore((s) => s.diagnostics);
-  const openFile = useCodeStore((s) => s.openFile);
-  const requestJump = useCodeStore((s) => s.requestJump);
+  const navigateTo = useCodeStore((s) => s.navigateTo);
 
   const groups = useMemo(
     () =>
@@ -48,8 +47,7 @@ export function ProblemsPanel() {
               key={i}
               className={`code-panel-row sev-${d.severity}`}
               onClick={() => {
-                void openFile(group.path);
-                requestJump(group.path, d.range.start);
+                void navigateTo(group.path, d.range.start);
               }}
             >
               <span className="code-panel-badge">{SEVERITY_LABEL[d.severity] ?? "问题"}</span>
@@ -67,8 +65,7 @@ export function ProblemsPanel() {
 
 export function ReferencesPanel() {
   const references = useCodeStore((s) => s.references);
-  const openFile = useCodeStore((s) => s.openFile);
-  const requestJump = useCodeStore((s) => s.requestJump);
+  const navigateTo = useCodeStore((s) => s.navigateTo);
   const setReferences = useCodeStore((s) => s.setReferences);
   const showToast = useAppStore((s) => s.showToast);
 
@@ -105,8 +102,7 @@ export function ReferencesPanel() {
               showToast("这条引用在项目外,不在这个面板里打开");
               return;
             }
-            void openFile(ref.path);
-            requestJump(ref.path, ref.position);
+            void navigateTo(ref.path, ref.position);
           }}
         >
           <span className="code-panel-msg">

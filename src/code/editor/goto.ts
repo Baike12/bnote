@@ -147,8 +147,7 @@ export async function gotoDefinition(method = "textDocument/definition"): Promis
     return;
   }
   const store = useCodeStore.getState();
-  await store.openFile(plan.target.path);
-  store.requestJump(plan.target.path, plan.target.position);
+  await store.navigateTo(plan.target.path, plan.target.position);
 }
 
 /** Find all references and put them into the references panel. */

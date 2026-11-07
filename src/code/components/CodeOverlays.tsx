@@ -138,8 +138,7 @@ function QuickOpen({ onClose }: { onClose: () => void }) {
 /** Find in files: search the file contents, click a result to jump to that line. */
 function FindInFiles({ onClose }: { onClose: () => void }) {
   const root = useCodeStore((s) => s.project?.root ?? "");
-  const openFile = useCodeStore((s) => s.openFile);
-  const requestJump = useCodeStore((s) => s.requestJump);
+  const navigateTo = useCodeStore((s) => s.navigateTo);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<CodeSearchHit[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -194,8 +193,7 @@ function FindInFiles({ onClose }: { onClose: () => void }) {
               key={`${hit.path}:${hit.line}:${i}`}
               className="code-overlay-row is-hit"
               onClick={() => {
-                void openFile(hit.path);
-                requestJump(hit.path, { line: hit.line, character: 0 });
+                void navigateTo(hit.path, { line: hit.line, character: 0 });
                 onClose();
               }}
             >

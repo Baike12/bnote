@@ -133,6 +133,7 @@ Active while the code editor has focus. A separate world: `Cmd+S` saves the code
 | `Cmd+Shift+F` | 在项目中查找 — `code.find-in-files` |
 | `Cmd+Shift+M` | 显示/隐藏问题面板 — `code.toggle-problems` |
 | `Cmd+Shift+O` | 快速打开文件 — `code.quick-open` |
+| `Ctrl+-` | 返回上一个位置 — `code.go-back` |
 | `Ctrl+`` | 显示/隐藏终端 — `code.toggle-terminal` |
 | `Ctrl+Space` | 触发代码提示 — `code.trigger-completion` |
 | `F12` | 跳转到定义 — `code.go-to-definition` |
