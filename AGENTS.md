@@ -78,6 +78,8 @@ scripts/                      dev-signing setup
 
 ## Code Quality
 
+Architecture and code must read like poetry — simple, clear, elegant — and be fast, lean, and secure by design.
+
 ### TypeScript — five rules
 
 1. **Types at the boundary, no `any`.** `strict`, `noUnusedLocals`, and `noUnusedParameters` are on. Narrow `unknown` at IPC/DOM edges instead of casting; `as` is a last resort and needs a one-line reason. Type exported APIs explicitly; local inference is fine.
