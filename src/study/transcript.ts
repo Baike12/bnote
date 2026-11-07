@@ -43,6 +43,8 @@ export interface TranscriptAssistantLine {
   text: string;
   thinking?: string;
   thinkSeconds?: number | null;
+  /** Wall-clock duration of the whole turn in ms (display: the "已工作 N 秒" summary). */
+  turnMs?: number | null;
   tools?: StoredTool[];
   error?: string;
 }
@@ -257,6 +259,7 @@ export function parseTranscript(raw: string | null): TranscriptLine[] {
           typeof v.thinkSeconds === "number" && Number.isFinite(v.thinkSeconds)
             ? v.thinkSeconds
             : null,
+        turnMs: typeof v.turnMs === "number" && Number.isFinite(v.turnMs) ? v.turnMs : undefined,
         tools: tools(v.tools),
         error: typeof v.error === "string" && v.error ? v.error : undefined,
       });

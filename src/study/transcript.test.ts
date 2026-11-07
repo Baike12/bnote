@@ -28,6 +28,7 @@ describe("the transcript line format", () => {
         text: "你好!",
         thinking: "思考",
         thinkSeconds: 3,
+        turnMs: 4500,
         tools: [],
       },
     ];
@@ -41,6 +42,7 @@ describe("the transcript line format", () => {
         text: "你好!",
         thinking: "思考",
         thinkSeconds: 3,
+        turnMs: 4500,
         tools: [],
         error: undefined,
       },

@@ -34,7 +34,12 @@ import {
 } from "@/study/transcript";
 import { isWereadUrl } from "@/study/weread";
 import { setAgentNavHandlers } from "@/study/pdfNav";
-import { applySuggestion, parseSuggestTrigger, type SuggestTrigger } from "@/agent/suggest";
+import {
+  applySuggestion,
+  buildSkillPrompt,
+  parseSuggestTrigger,
+  type SuggestTrigger,
+} from "@/agent/suggest";
 import { AgentHeader } from "@/components/agent/AgentHeader";
 import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/agent/AgentSuggest";
 import { MAX_IMAGES_PER_MESSAGE, fileToAgentImage, type AgentImage } from "@/study/agentImages";
@@ -270,6 +275,31 @@ export function AgentPanel() {
   const [suggestTrigger, setSuggestTrigger] = useState<SuggestTrigger | null>(null);
   const [suggestIndex, setSuggestIndex] = useState(0);
   /**
+   * The code project's file index for `@` completion (CC's ls-files snapshot).
+   * Loaded per workdir; a stale fetch is dropped by comparing the path before
+   * writing (the project can change while the walk runs).
+   */
+  const [projectFiles, setProjectFiles] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (mode !== "code" || !codeProject?.path) {
+      setProjectFiles(null);
+      return;
+    }
+    const workdir = codeProject.path;
+    let cancelled = false;
+    void agentApi
+      .listProjectFiles(workdir)
+      .then((files) => {
+        if (!cancelled) setProjectFiles(files);
+      })
+      .catch(() => {
+        if (!cancelled) setProjectFiles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, codeProject?.path]);
+  /**
    * Streaming auto-follow is on while a turn streams; an upward scroll by the
    * user (wheel / trackpad / a page flip) turns it off for the rest of the
    * turn — once they take the scroll, the view must not fight back.
@@ -353,8 +383,9 @@ export function AgentPanel() {
         recentFiles,
         vaultPath,
         currentFile,
+        projectFiles: mode === "code" ? (projectFiles ?? []) : null,
       }),
-    [suggestTrigger, skills, flatFiles, recentFiles, vaultPath, currentFile],
+    [suggestTrigger, skills, flatFiles, recentFiles, vaultPath, currentFile, mode, projectFiles],
   );
 
   const activeConv = convs.find((c) => c.key === activeKey) ?? null;
@@ -895,7 +926,15 @@ export function AgentPanel() {
   function ensureTurn(convKey: string): Turn {
     let turn = turnsRef.current.get(convKey);
     if (!turn) {
-      turn = { text: "", thinking: "", thinkingStart: null, thinkSeconds: null, tools: [] };
+      turn = {
+        text: "",
+        thinking: "",
+        thinkingStart: null,
+        thinkSeconds: null,
+        startedAt: Date.now(),
+        turnMs: null,
+        tools: [],
+      };
       turnsRef.current.set(convKey, turn);
     }
     return turn;
@@ -932,6 +971,9 @@ export function AgentPanel() {
     if (!turn) return;
     if (turn.thinking && turn.thinkSeconds == null && turn.thinkingStart != null) {
       turn.thinkSeconds = Math.max(1, Math.round((Date.now() - turn.thinkingStart) / 1000));
+    }
+    if (turn.turnMs == null && turn.startedAt != null) {
+      turn.turnMs = Date.now() - turn.startedAt;
     }
     turnsRef.current.delete(convKey);
     writeEntries(convKey, turn, true, items);
@@ -985,6 +1027,9 @@ export function AgentPanel() {
             if (event.type === "error") turn.error = event.message;
             if (turn.thinking && turn.thinkSeconds == null && turn.thinkingStart != null) {
               turn.thinkSeconds = Math.max(1, Math.round((Date.now() - turn.thinkingStart) / 1000));
+            }
+            if (turn.turnMs == null && turn.startedAt != null) {
+              turn.turnMs = Date.now() - turn.startedAt;
             }
             turnsRef.current.delete(entry.convKey);
             persistTurn(entry.convKey, turn, entry.path ?? undefined);
@@ -1126,6 +1171,8 @@ export function AgentPanel() {
                   thinking: "",
                   thinkingStart: null,
                   thinkSeconds: null,
+                  startedAt: null,
+                  turnMs: null,
                   tools: [],
                   error: event.message,
                 },
@@ -1137,6 +1184,8 @@ export function AgentPanel() {
             thinking: "",
             thinkingStart: null,
             thinkSeconds: null,
+            startedAt: null,
+            turnMs: null,
             tools: [],
             error: event.message,
           });
@@ -1221,6 +1270,9 @@ export function AgentPanel() {
   /** Pick a completion candidate: the trigger word is replaced and the caret lands after the inserted text. */
   const pickSuggestion = (item: SuggestItem) => {
     if (!suggestTrigger) return;
+    // Enter/Tab only fills the trigger ("/name " or "@path "), never submits —
+    // the user reviews or adds arguments first, then Enter on the textarea
+    // sends (the submit path routes the built-ins).
     const next = applySuggestion(input, suggestTrigger, item.insert);
     setInput(next.text);
     setSuggestTrigger(null);
@@ -1233,6 +1285,48 @@ export function AgentPanel() {
     });
   };
 
+  /** The built-in `/` commands (CC's LocalCommand subset): panel actions, never seen by the model. */
+  const runBuiltinCommand = useCallback(
+    async (name: string, conv: Conv | null) => {
+      switch (name) {
+        case "compact": {
+          const sid = conv?.sessionId;
+          if (!sid || busyRef.current === sid) return;
+          busyRef.current = sid;
+          setBusySession(sid);
+          try {
+            await agentApi.compact(sid);
+          } catch (e) {
+            busyRef.current = null;
+            setBusySession(null);
+            showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
+          }
+          return;
+        }
+        case "clear":
+          setRestartNonce((n) => n + 1);
+          return;
+        case "help": {
+          const lines = [
+            "可用命令:/compact 压缩上下文 · /clear 新会话 · /help 本说明",
+            "技能:输入 / 加名称加载其指导;文件引用:输入 @ 加路径,内容会随消息附上。",
+          ];
+          updateConv(conv?.key ?? "", (c) => ({
+            ...c,
+            entries: [
+              ...c.entries,
+              { role: "notice", text: lines.join("\n"), at: Date.now(), items: null },
+            ],
+          }));
+          return;
+        }
+        default:
+          return;
+      }
+    },
+    [showToast, updateConv],
+  );
+
   async function send() {
     const text = input.trim();
     const conv = activeConv;
@@ -1240,21 +1334,12 @@ export function AgentPanel() {
     historyIndexRef.current = -1;
     historyItemsRef.current = null;
     if (!conv || (!text && pendingImages.length === 0)) return;
-    // Manual compaction: a built-in panel command, not a message — the model
-    // never sees "/compact", it sees the summary replace its history.
-    if (text === "/compact") {
-      const sid = conv.sessionId;
-      if (!sid || busyRef.current === sid) return;
-      busyRef.current = sid;
-      setBusySession(sid);
+    // Built-in panel commands (/compact /clear /help): panel actions, never a
+    // message — the model never sees them.
+    const builtin = /^\/(compact|clear|help)$/.exec(text);
+    if (builtin) {
       setInput("");
-      try {
-        await agentApi.compact(sid);
-      } catch (e) {
-        busyRef.current = null;
-        setBusySession(null);
-        showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
-      }
+      await runBuiltinCommand(builtin[1], conv);
       return;
     }
     const info = conv.sessionId;
@@ -1268,6 +1353,25 @@ export function AgentPanel() {
       return;
     }
     if (busyRef.current === info) return;
+    // `/name args` for a known skill expands to the skill's body (CC's
+    // processPromptSlashCommand): the transcript keeps what the user typed,
+    // the model sees the command metadata plus the expanded instructions.
+    let modelText = text;
+    const slash = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(text);
+    const skillMatch = slash ? skills.find((s) => s.name === slash[1]) : undefined;
+    if (skillMatch) {
+      try {
+        const body = await agentApi.readSkill(
+          agentModeRef.current,
+          mode === "code" ? (codeProject?.path ?? null) : null,
+          skillMatch.name,
+        );
+        modelText = buildSkillPrompt(body, skillMatch.name, slash?.[2]?.trim() ?? "");
+      } catch {
+        // The skill body cannot be read (backend gone / removed meanwhile):
+        // the trigger text itself still explains the intent to the model.
+      }
+    }
     const images = pendingImages;
     setInput("");
     setPendingImages([]);
@@ -1313,7 +1417,7 @@ export function AgentPanel() {
       scroller.scrollTo({ top: scroller.scrollHeight });
     });
     try {
-      await agentApi.send(info, text, images);
+      await agentApi.send(info, modelText, images);
     } catch (e) {
       busyRef.current = null;
       setBusySession(null);

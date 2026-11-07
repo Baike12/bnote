@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { applySuggestion, parseSuggestTrigger } from "./suggest";
+import {
+  applySuggestion,
+  buildSkillPrompt,
+  expandSkillTemplate,
+  parseSuggestTrigger,
+} from "./suggest";
 
 describe("parseSuggestTrigger", () => {
   it("a leading / triggers skill", () => {
@@ -60,5 +65,39 @@ describe("applySuggestion", () => {
     const text = "先读 @a.md 再写";
     const result = applySuggestion(text, { kind: "file", start: 3, query: "a.md" }, "@b.md");
     expect(result.text).toBe("先读 @b.md  再写");
+  });
+});
+
+describe("expandSkillTemplate", () => {
+  it("$ARGUMENTS takes the whole argument string", () => {
+    expect(expandSkillTemplate("翻译 $ARGUMENTS 成英文", "hello world")).toBe(
+      "翻译 hello world 成英文",
+    );
+  });
+
+  it("$1/$2 take the positional parts; a missing position becomes empty", () => {
+    expect(expandSkillTemplate("把 $1 移到 $2", "a b")).toBe("把 a 移到 b");
+    expect(expandSkillTemplate("只取 $1", "a b")).toBe("只取 a");
+  });
+
+  it("a body without placeholders gets ARGUMENTS appended (CC's fallback)", () => {
+    expect(expandSkillTemplate("总结这个仓库", "")).toBe("总结这个仓库");
+    expect(expandSkillTemplate("总结这个仓库", "--all")).toBe("总结这个仓库\n\nARGUMENTS: --all");
+  });
+});
+
+describe("buildSkillPrompt", () => {
+  it("carries the command metadata and the expanded body", () => {
+    const prompt = buildSkillPrompt("把 $ARGUMENTS 排版成博客", "html-blog", "a.md");
+    expect(prompt).toContain("<command-message>html-blog</command-message>");
+    expect(prompt).toContain("<command-name>/html-blog</command-name>");
+    expect(prompt).toContain("<command-args>a.md</command-args>");
+    expect(prompt).toContain("把 a.md 排版成博客");
+  });
+
+  it("omits the args tag when no arguments were given", () => {
+    const prompt = buildSkillPrompt("总结仓库", "simplify", "");
+    expect(prompt).not.toContain("<command-args>");
+    expect(prompt).toContain("总结仓库");
   });
 });

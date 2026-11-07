@@ -391,6 +391,11 @@ export const agentApi = {
   /** The list of skills currently available on disk (settings page and input field / completion). */
   listSkills: (mode: AgentMode, workdir?: string | null) =>
     invoke<SkillInfo[]>("agent_list_skills", { mode, workdir: workdir ?? null }),
+  /** The SKILL.md body of one skill (the `/name` expansion, CC's processPromptSlashCommand). */
+  readSkill: (mode: AgentMode, workdir: string | null, name: string) =>
+    invoke<string>("agent_read_skill", { mode, workdir, name }),
+  /** The code project's file index for the `@` completion (gitignore respected, capped at 2000). */
+  listProjectFiles: (workdir: string) => invoke<string[]>("agent_list_project_files", { workdir }),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
   /** Stops the running turn; resolves false when the session is gone (no terminal event can arrive — the caller must clear busy itself). */

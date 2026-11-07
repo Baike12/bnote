@@ -60,3 +60,36 @@ export function applySuggestion(
   const caret = trigger.start + insert.length;
   return { text: next, caret };
 }
+
+/**
+ * CC's argumentSubstitution for a skill body: `$ARGUMENTS` is the whole
+ * argument string, `$1`–`$9` the positional parts. A body without any
+ * placeholder that still gets arguments gets them appended (CC's behavior),
+ * so a skill author opt into arguments by writing the placeholder.
+ */
+export function expandSkillTemplate(body: string, args: string): string {
+  const positional = args
+    .trim()
+    .split(/\s+/)
+    .filter((p) => p !== "");
+  let used = false;
+  let out = body.replace(/\$ARGUMENTS|\$(\d)/g, (_match, index: string | undefined) => {
+    used = true;
+    if (index != null) return positional[Number(index) - 1] ?? "";
+    return args;
+  });
+  if (!used && positional.length > 0) {
+    out = `${out}\n\nARGUMENTS: ${args}`;
+  }
+  return out;
+}
+
+/**
+ * The message the model receives for a `/name args` submit (CC's
+ * `getMessagesForPromptSlashCommand`, flattened into one message): command
+ * metadata first, then the expanded skill body.
+ */
+export function buildSkillPrompt(body: string, name: string, args: string): string {
+  const meta = `<command-message>${name}</command-message>\n<command-name>/${name}</command-name>`;
+  return `${meta}${args ? `\n<command-args>${args}</command-args>` : ""}\n\n${expandSkillTemplate(body, args)}`;
+}

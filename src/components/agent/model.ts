@@ -36,6 +36,10 @@ export interface Turn {
   thinkingStart: number | null;
   /** How long the thinking took (in seconds, computed and frozen when the turn ends). */
   thinkSeconds: number | null;
+  /** When the first event of the turn arrived (the "已工作 N 秒" duration starts here). */
+  startedAt: number | null;
+  /** The wall-clock duration of the whole turn, frozen when it ends. */
+  turnMs: number | null;
   tools: ToolRecord[];
   error?: string;
 }
@@ -159,6 +163,8 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
       thinking: line.thinking ?? "",
       thinkingStart: null,
       thinkSeconds: line.thinkSeconds ?? null,
+      startedAt: null,
+      turnMs: line.turnMs ?? null,
       tools: line.tools ?? [],
       error: line.error,
     },
@@ -179,6 +185,9 @@ export function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
             text: e.text,
             thinking: e.turn?.thinking ?? "",
             thinkSeconds: e.turn?.thinkSeconds ?? null,
+            // The key only exists when a real duration was measured: an absent
+            // field keeps the line format lean (the same rule as `images`).
+            ...(e.turn?.turnMs != null ? { turnMs: e.turn.turnMs } : {}),
             tools: e.turn?.tools ?? [],
             error: e.turn?.error,
           },
