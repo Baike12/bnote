@@ -51,7 +51,7 @@ Active while the note editor has focus (the notes column of study mode counts).
 | `Cmd+B` | 加粗 — `edit.toggle-bold` |
 | `Cmd+E` | 切换实时渲染/源码模式 — `editor.toggle-live-preview` |
 | `Cmd+Enter` | Python: 把当前笔记当一个 py 文件运行(⌘↩) — `python.run-note` |
-| `Cmd+J` | 标题层级循环：正文 → H1 → H2 → H3 → H4 → 正文 — `edit.toggle-heading` |
+| `Cmd+J` | 标题层级循环：正文(继承上一标题级别) → 更深一级 → … → 正文 — `edit.toggle-heading` |
 | `Cmd+K` | 插入内部链接 / 跳到本行链接 — `edit.insert-wikilink` |
 | `Cmd+L` | 切换当前行待办状态 — `edit.toggle-todo` |
 | `Cmd+M` | 插入公式块 — `edit.insert-math-block` |

@@ -238,11 +238,29 @@ export function toggleHeading(view: EditorView, level: number) {
 }
 
 /**
- * The heading level cycle (repeating the same shortcut): body -> H1 -> H2 ->
- * H3 -> H4 -> body. H5/H6 are only reachable through "set to N-level heading",
- * and the next step from them is also "unset". With multiple cursors or a
- * multi-line selection each line advances one step; the leftover automatic
- * numbering is cleaned up by the command layer.
+ * The level a new heading inherits: the nearest ATX heading above `lineNo`
+ * outside fenced code (a heading added under a `##` section is an H2, so the
+ * outline keeps its shape without re-picking the level). A document without
+ * any heading above starts at H1.
+ */
+export function previousHeadingLevel(state: EditorState, lineNo: number): number {
+  const doc = state.doc;
+  const fences = fenceStateScan(doc);
+  for (let n = lineNo - 1; n >= 1; n--) {
+    if (fences[n - 1]) continue;
+    const m = /^(#{1,6})(?:[ \t]+|$)/.exec(doc.line(n).text);
+    if (m) return m[1].length;
+  }
+  return 1;
+}
+
+/**
+ * The heading level cycle (repeating the same shortcut): body -> the previous
+ * heading's level -> one level deeper -> ... -> body. A body line inherits the
+ * level of the heading above it; H5/H6 are only reachable through "set to
+ * N-level heading", and the next step from them is also "unset". With multiple
+ * cursors or a multi-line selection each line advances one step; the leftover
+ * automatic numbering is cleaned up by the command layer.
  */
 export function cycleHeading(view: EditorView) {
   const state = view.state;
@@ -256,12 +274,44 @@ export function cycleHeading(view: EditorView) {
 
     const existing = line.text.match(/^(#{1,6})(\s+|$)/);
     if (!existing) {
-      changes.push({ from: line.from, insert: "# " });
+      const level = previousHeadingLevel(state, line.number);
+      changes.push({ from: line.from, insert: "#".repeat(level) + " " });
     } else if (existing[1].length < 4) {
       const level = existing[1].length;
       changes.push({ from: line.from, to: line.from + level, insert: "#".repeat(level + 1) });
     } else {
       changes.push({ from: line.from, to: line.from + existing[0].length, insert: "" });
+    }
+  }
+  if (changes.length === 0) return;
+
+  view.dispatch({
+    changes,
+    userEvent: "input.bnote-heading",
+  });
+}
+
+/**
+ * One level up: H(n) → H(n−1), H1 → body. Body lines are left untouched —
+ * there is no level to raise. The command layer precomputes whether the main
+ * line was an H1 (that is when the leftover auto number has to be dropped).
+ */
+export function promoteHeading(view: EditorView) {
+  const state = view.state;
+  const changes: { from: number; to: number; insert: string }[] = [];
+  const seenLines = new Set<number>();
+
+  for (const range of state.selection.ranges) {
+    const line = state.doc.lineAt(range.head);
+    if (seenLines.has(line.number)) continue;
+    seenLines.add(line.number);
+    const existing = /^(#{1,6})(\s+|$)/.exec(line.text);
+    if (!existing) continue;
+    const level = existing[1].length;
+    if (level === 1) {
+      changes.push({ from: line.from, to: line.from + existing[0].length, insert: "" });
+    } else {
+      changes.push({ from: line.from, to: line.from + level, insert: "#".repeat(level - 1) });
     }
   }
   if (changes.length === 0) return;

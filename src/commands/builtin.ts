@@ -11,6 +11,7 @@ import {
   insertInlineMath,
   insertMathBlock,
   jumpHeaderTodos,
+  promoteHeading,
   toggleHeading,
   toggleList,
   toggleTodo,
@@ -673,7 +674,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "edit.toggle-heading",
-    title: "标题层级循环：正文 → H1 → H2 → H3 → H4 → 正文",
+    title: "标题层级循环：正文(继承上一标题级别) → 更深一级 → … → 正文",
     category: "编辑",
     run: withView((v) => {
       const line = v.state.doc.lineAt(v.state.selection.main.head);
@@ -696,6 +697,20 @@ const defs: CommandDef[] = [
       settleHeadingNumbering(v, line.from, headingRemoved);
     }),
   })),
+  // No default key: the user pairs it with the cycle key plus Shift (the
+  // cycle demotes, this one promotes). Command id stays stable for the
+  // keybinding file.
+  {
+    id: "edit.heading-promote",
+    title: "标题升级:H2→H1,H1→正文",
+    category: "编辑",
+    run: withView((v) => {
+      const line = v.state.doc.lineAt(v.state.selection.main.head);
+      const headingRemoved = /^#(?:\s|$)/.test(line.text);
+      promoteHeading(v);
+      settleHeadingNumbering(v, line.from, headingRemoved);
+    }),
+  },
 
   // ---- editor toggles ----
   {

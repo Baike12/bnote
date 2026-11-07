@@ -10,6 +10,7 @@ import {
   jumpHeaderTodos,
   planCalloutShortcut,
   planHeaderTodoJump,
+  promoteHeading,
   resetCalloutReturnForTest,
   resetHeaderTodoReturnForTest,
   toggleTodo,
@@ -155,6 +156,61 @@ describe("cycleHeading: repeated presses cycle body→H1→H2→H3→H4→body",
     const view = makeView("", [0]);
     cycleHeading(view);
     expect(text(view)).toBe("# ");
+  });
+
+  it("a body line under an H2 heading inherits that level instead of starting at H1", () => {
+    const doc = "## 章节\n正文";
+    const view = makeView(doc, [doc.indexOf("正文")]);
+    cycleHeading(view);
+    expect(text(view)).toBe("## 章节\n## 正文");
+  });
+
+  it("a heading inside fenced code does not set the level of the new heading", () => {
+    const doc = "```\n## 代码里的注释\n```\n正文";
+    const view = makeView(doc, [doc.indexOf("正文")]);
+    cycleHeading(view);
+    expect(text(view)).toBe("```\n## 代码里的注释\n```\n# 正文");
+  });
+
+  it("the nearest heading above wins: after an H3 section a new heading is an H3, not the older H1", () => {
+    const doc = "# 一\n\n### 三\n\n正文";
+    const view = makeView(doc, [doc.indexOf("正文")]);
+    cycleHeading(view);
+    expect(text(view)).toBe("# 一\n\n### 三\n\n### 正文");
+  });
+});
+
+describe("promoteHeading: H(n) → H(n−1), H1 → body, body untouched", () => {
+  it("H2 → H1", () => {
+    const view = makeView("## 标题", [3]);
+    promoteHeading(view);
+    expect(text(view)).toBe("# 标题");
+  });
+
+  it("H1 → body: the prefix and the whitespace behind it are removed", () => {
+    const view = makeView("# 标题", [2]);
+    promoteHeading(view);
+    expect(text(view)).toBe("标题");
+  });
+
+  it("a body line is left alone", () => {
+    const view = makeView("正文", [1]);
+    promoteHeading(view);
+    expect(text(view)).toBe("正文");
+  });
+
+  it("multiple cursors promote every heading on their lines", () => {
+    const view = makeView("### a\nb\n## c", [0, 4, 9]);
+    promoteHeading(view);
+    expect(text(view)).toBe("## a\nb\n# c");
+  });
+
+  it("pressing it twice walks H2 → H1 → body", () => {
+    const view = makeView("## 深", [0]);
+    promoteHeading(view);
+    expect(text(view)).toBe("# 深");
+    promoteHeading(view);
+    expect(text(view)).toBe("深");
   });
 });
 
