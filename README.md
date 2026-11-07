@@ -81,12 +81,10 @@ Produces `.app` / `.dmg` bundles via Tauri.
 
 ```bash
 pnpm gate                                            # lint + typecheck + format check + unit tests
-cargo test --workspace --manifest-path src-tauri/Cargo.toml  # Rust tests (app + pdf2md)
-cargo check --workspace --manifest-path src-tauri/Cargo.toml # Rust compile check
+cargo test --manifest-path src-tauri/Cargo.toml   # Rust tests
+cargo check --manifest-path src-tauri/Cargo.toml  # Rust compile check
 cargo fmt --manifest-path src-tauri/Cargo.toml --check       # Rust format check
 ```
-
-The PDF converter's fixtures and quality gate live in `tests/data/pdfs/` (`src-tauri/crates/pdf2md/tests/quality_gate.rs`).
 
 ## Four modes
 
@@ -410,7 +408,6 @@ src-tauri/src/              Rust backend
   dict.rs / translate.rs    Embedded ECDICT and selection classification / translation requests
   devbridge.rs              Browser-mode IPC bridge (127.0.0.1:1439)
 
-tests/data/pdfs/            PDF conversion fixtures and quality gate
 scripts/                    Dev signing setup
 ```
 

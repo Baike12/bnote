@@ -81,12 +81,10 @@ pnpm tauri build
 
 ```bash
 pnpm gate                                            # lint + typecheck + 格式检查 + 单元测试
-cargo test --workspace --manifest-path src-tauri/Cargo.toml   # Rust 测试(应用 + pdf2md)
-cargo check --workspace --manifest-path src-tauri/Cargo.toml  # Rust 编译检查
+cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
+cargo check --manifest-path src-tauri/Cargo.toml  # Rust 编译检查
 cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust 格式检查
 ```
-
-PDF 转换器的夹具与质量门禁在 `tests/data/pdfs/`（`src-tauri/crates/pdf2md/tests/quality_gate.rs`）。
 
 ## 四种模式
 
@@ -411,7 +409,6 @@ src-tauri/src/              Rust 后端
   dict.rs / translate.rs    ECDICT 词典与选词分类、翻译请求
   devbridge.rs              浏览器模式的 IPC 桥（127.0.0.1:1439）
 
-tests/data/pdfs/            PDF 转换夹具与质量门禁
 scripts/                    dev-signing setup
 ```
 

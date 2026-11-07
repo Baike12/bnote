@@ -67,22 +67,6 @@ pub enum StudyContent {
     Url { url: String, title: String },
 }
 
-/// Extracts the markdown text of a PDF for the Agent.
-///
-/// This is a *read*: the study reader shows the PDF itself, and nothing is
-/// written into the vault. pdf2md still writes figure assets into its output
-/// directory, so it gets a scratch dir under the OS temp folder.
-fn read_pdf_text(path: &str) -> Result<String, String> {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    let scratch = std::env::temp_dir()
-        .join("bnote-pdf-text")
-        .join(format!("{:x}", hasher.finish()));
-    let opts = pdf2md::ConvertOptions::new(scratch, String::new());
-    Ok(pdf2md::convert_file(path, &opts)?.markdown)
-}
-
 impl ToolContext {
     /// Records a successful read; the session turns these into nested
     /// instruction-file attachments on the next request.
@@ -443,7 +427,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "read_study_content",
-        "Read the full content currently open in the study panel (the extracted text of the PDF, or the text of the open web page).",
+        "Read the text of the web page currently open in the study panel. PDFs are not extracted into text: the user captures the reading area as a screenshot (⌘⇧E) instead.",
         json!({"type": "object", "properties": {}}),
     ),
     (
@@ -660,15 +644,10 @@ async fn execute_text(
         "read_study_content" => {
             let content = ctx.study_content.read().ok().and_then(|g| g.clone());
             match content {
-                Some(StudyContent::Pdf { path, title }) => {
-                    match tokio::task::spawn_blocking(move || read_pdf_text(&path)).await {
-                        Ok(Ok(text)) => {
-                            (true, format!("# {}\n\n{}", title, truncate(&text, 60_000)))
-                        }
-                        Ok(Err(e)) => (false, format!("read failed: {}", e)),
-                        Err(e) => (false, format!("join failed: {}", e)),
-                    }
-                }
+                Some(StudyContent::Pdf { .. }) => (
+                    false,
+                    "PDF 文本不再提取:请用阅读区截图(⌘⇧E)把页面发给助手".into(),
+                ),
                 Some(StudyContent::Url { url, title }) => {
                     let client = match reqwest::Client::builder()
                         .timeout(std::time::Duration::from_secs(30))
@@ -1039,5 +1018,22 @@ mod tests {
         // A non-.html file is rejected
         let out = execute(&c, &skills, "preview_html", &json!({"path": "page.md"})).await;
         assert!(!out.ok && out.text.contains(".html"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn read_study_content_sends_pdfs_to_the_screenshot_workflow() {
+        let vault = std::env::temp_dir().join("bnote-study-content-test");
+        let c = ctx(&vault, &vault);
+        *c.study_content.write().unwrap() = Some(StudyContent::Pdf {
+            path: "/tmp/paper.pdf".into(),
+            title: "paper".into(),
+        });
+        let skills = super::super::skills::SkillRegistry { skills: vec![] };
+        let out = execute(&c, &skills, "read_study_content", &json!({})).await;
+        // PDF text extraction was removed together with pdf2md: the tool must
+        // point at the reading-area screenshot instead of failing silently.
+        assert!(!out.ok, "{}", out.text);
+        assert!(out.text.contains("⌘⇧E"), "{}", out.text);
+        assert!(out.text.contains("截图"), "{}", out.text);
     }
 }

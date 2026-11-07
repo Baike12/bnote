@@ -49,7 +49,6 @@ src-tauri/src/                Rust backend
 └── dict.rs, translate.rs     offline dictionary and translation
 
 docs/                       generated keybinding table (`pnpm docs:keybindings`)
-tests/data/pdfs/            PDF conversion fixtures and quality gate
 vendor/                     vendored crates (anydoc, pdf-inspector)
 scripts/                      dev-signing setup
 ```
@@ -60,7 +59,7 @@ scripts/                      dev-signing setup
 - **Extensions are assembled in one place.** `src/editor/setup.ts` composes the CodeMirror extension tree; settings change behavior through compartments (`wrapCompartment`, `typewriterCompartment`), never by rebuilding editor state.
 - **Agent modes have their own roots.** Coding, creative and study each read `<vault>/.bnote/agents/<mode>/` (`settings.json`, `AGENTS.md`, `skills/`); only coding also reads the code project (its `.bnote/settings.json` and instruction hierarchy, `.agents/skills`). Credentials stay in `~/.bnote/agent.json`; transcripts, tasks and plans stay in `~/.bnote`.
 - **Single writer.** Zustand stores (and the Rust `AppState`) own their data. Components subscribe with selectors and do not mirror store state locally; async results must prove they still belong to the current state before writing.
-- **Thin Rust surface.** Commands parse and validate input, then call feature modules. Long work (LSP, indexing, PDF conversion) runs off the command thread and reports through events.
+- **Thin Rust surface.** Commands parse and validate input, then call feature modules. Long work (LSP, indexing) runs off the command thread and reports through events.
 - **Two debugging loops.** Real backend on `localhost:1430`; deterministic harness at `/harness.html`. See DEBUG.md.
 
 ### Important Files
@@ -151,7 +150,7 @@ Run **`pnpm gate`** (= `pnpm lint` + `pnpm typecheck` + `pnpm test`) and make it
 - **A feature is not done without tests and gates.** Hot paths also get an order-of-magnitude perf gate.
 - **Geometry and feel need browser measurement** in addition to unit tests: pure tests lock control flow, not pixels. Use the harness protocol in DEBUG.md and compare before/after.
 - **Lint errors block; warnings need a reason.** New warnings (engine `any` assertions, dev-bridge `console.log`) must be justified.
-- **Rust changes** run `cargo check --workspace` in `src-tauri` (and `cargo test --workspace --lib` for behavior changes), plus `cargo fmt` (the repo is rustfmt-clean; `rustfmt.toml` at the repo root sets the width). `src-tauri` is the cargo workspace root: the app and `crates/pdf2md` share one lockfile. Rust is not part of `pnpm gate`.
+- **Rust changes** run `cargo check` in `src-tauri` (and `cargo test --lib` for behavior changes), plus `cargo fmt` (the repo is rustfmt-clean; `rustfmt.toml` at the repo root sets the width). `src-tauri` is a single package: one lockfile and one target directory. Rust is not part of `pnpm gate`.
 - If the gate fails under heavy machine load, check the load average and rerun the failing test alone; report the real result.
 
 ## Language
