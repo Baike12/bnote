@@ -405,6 +405,76 @@ pub async fn agent_list_skills(
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
+/// The code project's file index for the composer's `@` completion (CC's
+/// `git ls-files` snapshot): relative paths, `.gitignore` respected, capped.
+#[tauri::command]
+pub async fn agent_list_project_files(
+    state: State<'_, AppState>,
+    workdir: String,
+) -> CmdResult<Vec<String>> {
+    let root = PathBuf::from(&workdir);
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        const MAX_FILES: usize = 2000;
+        let mut out: Vec<String> = Vec::new();
+        for entry in crate::code::project::walk_for_agent(root.clone()) {
+            let Ok(path) = entry else { continue };
+            if !path.is_file() {
+                continue;
+            }
+            if let Ok(rel) = path.strip_prefix(&root) {
+                out.push(rel.to_string_lossy().to_string());
+                if out.len() >= MAX_FILES {
+                    break;
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// The body of one skill (the `/name` expansion, CC's
+/// `processPromptSlashCommand`): the SKILL.md content the prompt refers to,
+/// with the base directory line a file-backed skill needs.
+#[tauri::command]
+pub async fn agent_read_skill(
+    state: State<'_, AppState>,
+    mode: Option<String>,
+    workdir: Option<String>,
+    name: String,
+) -> CmdResult<String> {
+    let agent_mode = crate::agent::home::AgentMode::parse(mode.as_deref().unwrap_or("study"))
+        .ok_or_else(|| "INVALID_MODE".to_string())?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = crate::agent::home::mode_root(agent_mode, vault.as_deref());
+        let project = workdir.map(PathBuf::from).filter(|path| path.is_dir());
+        let settings_project = if agent_mode.reads_project() {
+            project.as_deref()
+        } else {
+            None
+        };
+        let settings = crate::agent::settings::load(agent_mode, &root, settings_project).settings;
+        let registry = SkillRegistry::discover(
+            agent_mode,
+            &root,
+            project.as_deref(),
+            &settings.skill_dirs,
+            &settings.disabled_skills,
+        );
+        registry
+            .load(&name)
+            .ok_or_else(|| format!("SKILL_NOT_FOUND: {}", name))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
 /// Manual compaction (/compact). Same claim protocol as agent_send: the CAS
 /// keeps two compactions from racing a running turn.
 #[tauri::command]

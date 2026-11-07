@@ -76,9 +76,10 @@ impl Default for Mode {
 }
 
 /// Tools that change the user's files or run a shell: the ones `Confirm` asks
-/// about.
+/// about. Legacy names normalize through [`super::tools::canonical`], so both
+/// vocabularies are covered at one point.
 pub fn needs_approval(tool: &str) -> bool {
-    matches!(tool, "write_file" | "edit_file" | "bash")
+    matches!(super::tools::canonical(tool), "Write" | "Edit" | "Bash")
 }
 
 /// Per-tool decision. Settings rules run first (deny → ask → allow), then the
@@ -97,6 +98,7 @@ pub fn decide_with_rules(
     tool: &str,
     input: &Value,
 ) -> Decision {
+    let tool = super::tools::canonical(tool);
     if let Some(decision) = rule_decision(rules, tool, input) {
         return decision;
     }
@@ -119,7 +121,7 @@ pub fn decide_with_rules(
                 }
             }
             Mode::Auto => {
-                if tool == "bash"
+                if tool == "Bash"
                     && dangerous_command(input["command"].as_str().unwrap_or("")).is_some()
                 {
                     Decision::Ask
@@ -128,9 +130,9 @@ pub fn decide_with_rules(
                 }
             }
             Mode::Plan => {
-                if matches!(tool, "write_file" | "edit_file") {
+                if matches!(tool, "Write" | "Edit") {
                     Decision::Deny
-                } else if tool == "bash"
+                } else if tool == "Bash"
                     && !read_only_command(input["command"].as_str().unwrap_or(""))
                 {
                     Decision::Deny
@@ -192,17 +194,21 @@ fn rule_matches(rule: &str, tool: &str, input: &Value) -> bool {
     if spec.is_empty() {
         return true;
     }
+    let tool = super::tools::canonical(tool);
     match tool {
-        "bash" => bash_matches(spec, input["command"].as_str().unwrap_or_default()),
-        "read_file" | "write_file" | "edit_file" | "glob" | "grep" | "list_files" => {
-            let path = input["path"].as_str().unwrap_or_default();
+        "Bash" => bash_matches(spec, input["command"].as_str().unwrap_or_default()),
+        "Read" | "Write" | "Edit" | "Glob" | "Grep" | "LS" | "preview_html" => {
+            let path = input["file_path"]
+                .as_str()
+                .or_else(|| input["path"].as_str())
+                .unwrap_or_default();
             path_matches(spec, path)
         }
-        "task" => input["subagent_type"]
+        "Agent" => input["subagent_type"]
             .as_str()
             .map(|value| glob_match(spec, value))
             .unwrap_or(false),
-        "read_url" => input["url"]
+        "WebFetch" => input["url"]
             .as_str()
             .map(|value| glob_match(spec, value))
             .unwrap_or(false),
@@ -443,7 +449,7 @@ mod tests {
 
     #[test]
     fn per_tool_allow_wins_over_the_mode() {
-        let def = def_with(&[("bash", Permission::Allow)]);
+        let def = def_with(&[("Bash", Permission::Allow)]);
         assert_eq!(
             decide(Mode::Confirm, &def, "bash", &no_input()),
             Decision::Allow
@@ -452,10 +458,10 @@ mod tests {
 
     #[test]
     fn ask_and_deny_are_reported_as_such() {
-        let def = def_with(&[("bash", Permission::Ask), ("write_file", Permission::Deny)]);
-        assert_eq!(decide(Mode::Full, &def, "bash", &no_input()), Decision::Ask);
+        let def = def_with(&[("Bash", Permission::Ask), ("Write", Permission::Deny)]);
+        assert_eq!(decide(Mode::Full, &def, "Bash", &no_input()), Decision::Ask);
         assert_eq!(
-            decide(Mode::Full, &def, "write_file", &no_input()),
+            decide(Mode::Full, &def, "Write", &no_input()),
             Decision::Deny
         );
     }
@@ -468,7 +474,7 @@ mod tests {
             Decision::Deny
         );
         assert_eq!(
-            decide(Mode::Auto, &def, "read_file", &no_input()),
+            decide(Mode::Auto, &def, "Read", &no_input()),
             Decision::Allow
         );
     }
@@ -476,13 +482,13 @@ mod tests {
     #[test]
     fn confirm_asks_before_writes_and_shell_but_not_reads() {
         let def = def_with(&[]);
-        for tool in ["write_file", "edit_file", "bash"] {
+        for tool in ["Write", "Edit", "Bash"] {
             assert_eq!(
                 decide(Mode::Confirm, &def, tool, &no_input()),
                 Decision::Ask
             );
         }
-        for tool in ["read_file", "grep", "todo", "task_list"] {
+        for tool in ["Read", "Grep", "TodoWrite", "TaskList"] {
             assert_eq!(
                 decide(Mode::Confirm, &def, tool, &no_input()),
                 Decision::Allow
@@ -494,7 +500,7 @@ mod tests {
     fn auto_runs_edits_and_asks_only_for_a_dangerous_shell_command() {
         let def = def_with(&[]);
         assert_eq!(
-            decide(Mode::Auto, &def, "write_file", &no_input()),
+            decide(Mode::Auto, &def, "Write", &no_input()),
             Decision::Allow
         );
         assert_eq!(
@@ -534,11 +540,11 @@ mod tests {
     #[test]
     fn plan_mode_refuses_writes_and_allows_readers() {
         let def = def_with(&[]);
-        for tool in ["write_file", "edit_file"] {
+        for tool in ["Write", "Edit"] {
             assert_eq!(decide(Mode::Plan, &def, tool, &no_input()), Decision::Deny);
         }
         assert_eq!(
-            decide(Mode::Plan, &def, "read_file", &no_input()),
+            decide(Mode::Plan, &def, "Read", &no_input()),
             Decision::Allow
         );
         assert_eq!(

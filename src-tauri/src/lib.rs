@@ -270,6 +270,8 @@ pub fn run() {
             commands::agent::agent_context_breakdown,
             commands::agent::agent_set_current_note,
             commands::agent::agent_list_skills,
+            commands::agent::agent_read_skill,
+            commands::agent::agent_list_project_files,
             commands::agent::agent_generate_title,
             commands::agent::agent_compact,
             commands::home::agent_home_workspace,

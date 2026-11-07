@@ -64,6 +64,11 @@ pub struct Settings {
     pub plans_directory: Option<String>,
     pub auto_memory_enabled: Option<bool>,
     pub auto_memory_directory: Option<String>,
+    /// Request the model's reasoning channel (Anthropic `thinking` /
+    /// GLM `thinking.type` / Qwen `enable_thinking`). Default on (CC keeps
+    /// thinking enabled unless the user turns it off); the streamed reasoning
+    /// text feeds the transcript's thinking block.
+    pub thinking: Option<bool>,
     /// MCP servers of this mode. A coding session never sees the creative
     /// mode's servers (and vice versa): the file that defines them is
     /// per-mode.
@@ -173,6 +178,9 @@ fn merge(into: &mut Settings, from: Settings) {
     }
     if from.auto_memory_directory.is_some() {
         into.auto_memory_directory = from.auto_memory_directory;
+    }
+    if from.thinking.is_some() {
+        into.thinking = from.thinking;
     }
     for (name, server) in from.mcp_servers {
         into.mcp_servers.insert(name, server);

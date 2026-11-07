@@ -161,67 +161,71 @@ pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
 }
 
 fn tool_rules(tools: &[String]) -> String {
-    let has = |n: &str| tools.iter().any(|t| t == n);
-    let mut r = String::from("## 工具\n\n");
-    if has("read_file") {
+    let has = |n: &str| {
+        tools
+            .iter()
+            .any(|t| super::tools::canonical(t) == super::tools::canonical(n))
+    };
+    let mut r = String::from("## Tools\n\n");
+    if has("Read") {
         r.push_str(
-            "- 优先用专用工具,不用 bash 替代:读文件用 read_file,整篇写用 write_file,局部改用 edit_file;bash 留给确实需要 shell 的场景。\n",
+            "- Prefer the dedicated tools over Bash: Read a file, Write it whole, Edit it in place; Bash is for what genuinely needs a shell. Read any file before editing it.\n",
         );
-        r.push_str("- 动任何文件前先 read_file;多个相互独立的调用放在同一轮并行发出。\n");
+        r.push_str("- Make all of the independent calls in the same block, otherwise wait for previous calls to finish.\n");
     }
-    if has("glob") || has("grep") {
+    if has("Glob") || has("Grep") {
         r.push_str(
-            "- 定位代码用 glob / grep:glob 按文件名模式列文件,grep 按正则搜内容;不要用 bash 的 find/grep 替代,专用工具更快且尊重 .gitignore。\n",
-        );
-    }
-    if has("bash") {
-        r.push_str(
-            "- bash 的工作目录跨调用持久(cd 会保留);返回带 exit code,默认 120 秒超时,长任务用 run_in_background。\n",
-        );
-    }
-    if has("todo") {
-        r.push_str(
-            "- 用 todo 维护多步任务:开工前列计划(每项一步),任何时候只有一项 in_progress,完成即更新;简单单步任务不必建清单。\n",
+            "- Locate code with Glob (file-name patterns) and Grep (content regex); never run find/grep/rg as a Bash command — the dedicated tools are faster and respect .gitignore.\n",
         );
     }
-    if has("task") {
+    if has("Bash") {
         r.push_str(
-            "- task 子代理:大范围探索、独立子问题交给子代理执行,它们有独立上下文,把结论带回来;子代理之间不共享各自的中间过程。\n",
+            "- Bash's working directory persists across calls (cd is remembered); shell state does not. Default timeout 120s; use run_in_background for long work and poll it with TaskOutput.\n",
+        );
+    }
+    if has("TodoWrite") {
+        r.push_str(
+            "- Maintain multi-step work with TodoWrite: plan before starting (one item = one step), keep exactly one item in_progress, mark items completed as soon as they are done. Skip the list for single-step tasks.\n",
+        );
+    }
+    if has("Agent") {
+        r.push_str(
+            "- Agent: hand broad exploration and independent sub-problems to subagents — they have their own context windows and return a final report. Launch independent agents in the same message; do not duplicate a subagent's work yourself.\n",
         );
     }
     if has("preview_html") {
         r.push_str(
-            "- preview_html 预览 vault 内的 HTML 文件:先 write_file 保存,再 preview_html 指向该文件。预览是交付的一部分,改完必须刷新预览。\n",
+            "- preview_html previews a vault HTML file in the middle column: Write the file first, then preview it. The preview is part of the delivery — refresh it after every change.\n",
         );
     }
-    if has("skill") {
+    if has("Skill") {
         r.push_str(
-            "- 用户消息里的两个约定:\n  - `/skill-name`:用户选择了这个技能,先调用 skill 工具加载它,再严格按其指导行动;列出的技能之外不要猜名字。\n  - `@path/to/file`:用户引用了仓库里的文件,用 read_file 读取它。\n",
+            "- Two conventions in user messages:\n  - `/skill-name`: the user picked a skill. Call the Skill tool to load it, then follow its guidance exactly; never guess names outside the listed skills.\n  - `@path/to/file`: the user referenced a file — its contents are attached to their message automatically.\n",
         );
     }
-    if has("task_create") || has("task_update") {
+    if has("TaskCreate") || has("TaskUpdate") {
         r.push_str(
-            "- 多步任务(3 步以上)用 task_create 建任务,推进时用 task_update 改状态;task_list / task_get 查看。todo 与任务列表二选一,不要混用。\n",
+            "- For work with 3+ steps create tasks with TaskCreate and keep them current with TaskUpdate; inspect with TaskList / TaskGet. Use either TodoWrite or the task list, never both for the same work.\n",
         );
     }
-    if has("send_message") {
+    if has("SendMessage") {
         r.push_str(
-            "- send_message:用 task 返回的 agentId 继续一个已有的子代理(包括因额度/错误停下的),它的历史会带回来;不要为同一个问题重新开一个新子代理。\n",
+            "- SendMessage: continue an existing subagent with its agentId (including one stopped by an error or a rate limit); its history comes back. Never respawn a fresh subagent for the same question.\n",
         );
     }
     if has("EnterPlanMode") {
         r.push_str(
-            "- EnterPlanMode / ExitPlanMode:改动会跨多个文件、或方案需要用户拍板时,先进入计划模式只读调研,再用 ExitPlanMode 提交完整计划;批准前不要写任何文件。\n",
+            "- EnterPlanMode / ExitPlanMode: when a change spans several files or the approach needs the user's sign-off, research read-only in plan mode first and submit the plan with ExitPlanMode. Write nothing before approval.\n",
         );
     }
-    if has("ask_user_question") {
+    if has("AskUserQuestion") {
         r.push_str(
-            "- ask_user_question:真正需要用户决策时才问(方案取舍、缺失需求、会改变实现的歧义),每问给 2-4 个具体选项。不要一遇到摩擦就提问,也不要把能自己查清的事情丢给用户。\n",
+            "- AskUserQuestion: ask only when a decision is genuinely the user's (approach trade-offs, missing requirements, implementation-changing ambiguity); give 2-4 concrete options per question. Don't ask about things you can look up yourself.\n",
         );
     }
     if has("mcp") {
         r.push_str(
-            "- `mcp__<服务器>__<工具>` 形式的工具来自 MCP 服务器,调用方式与内置工具相同。\n",
+            "- Tools named `mcp__<server>__<tool>` come from MCP servers; call them like the built-in tools.\n",
         );
     }
     r
@@ -417,7 +421,7 @@ mod tests {
 
         let p = assemble(&input(&creative, &["mcp__volcano__shell".to_string()]));
         assert!(p.contains("- mcp__volcano__shell"));
-        assert!(p.contains("## 工具"));
+        assert!(p.contains("## Tools"));
     }
 
     #[test]
@@ -470,9 +474,9 @@ mod tests {
         inp.workdir = Some("/tmp/proj");
         let p = assemble(&inp);
         assert!(p.contains("- Working directory: /tmp/proj"), "{}", p);
-        assert!(p.contains("glob"));
-        assert!(p.contains("task 子代理"));
-        assert!(p.contains("todo"));
+        assert!(p.contains("Glob"));
+        assert!(p.contains("Agent"));
+        assert!(p.contains("TodoWrite"));
     }
 
     #[test]

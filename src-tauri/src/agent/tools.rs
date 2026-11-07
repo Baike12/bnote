@@ -176,87 +176,133 @@ impl ToolContext {
     }
 }
 
+/// Legacy snake_case names map onto their Claude Code names so restored
+/// transcripts and hand-written settings keep dispatching after the rename.
+/// Unknown names (MCP) pass through unchanged.
+pub fn canonical(name: &str) -> &str {
+    match name {
+        "read_file" => "Read",
+        "write_file" => "Write",
+        "edit_file" => "Edit",
+        "list_files" => "LS",
+        "glob" => "Glob",
+        "grep" => "Grep",
+        "bash" => "Bash",
+        "bash_output" => "TaskOutput",
+        "bash_kill" => "TaskStop",
+        "todo" => "TodoWrite",
+        "task" => "Agent",
+        "task_create" => "TaskCreate",
+        "task_update" => "TaskUpdate",
+        "task_list" => "TaskList",
+        "task_get" => "TaskGet",
+        "send_message" => "SendMessage",
+        "ask_user_question" => "AskUserQuestion",
+        "read_url" => "WebFetch",
+        "skill" => "Skill",
+        _ => name,
+    }
+}
+
 pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     static SCHEMAS: std::sync::OnceLock<Vec<(&'static str, &'static str, Value)>> =
         std::sync::OnceLock::new();
     SCHEMAS.get_or_init(|| vec![
     (
-        "read_file",
-        "Read a text file from the vault. Returns the file contents (truncated at ~40KB). Paths can be vault-relative or absolute.",
+        "Read",
+        "Reads a file from the local filesystem. Results are returned in cat -n format with line numbers starting at 1, truncated at ~2000 lines. Paths are relative to the working directory or absolute. You must read a file before editing it.",
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, vault-relative or absolute"}
+                "file_path": {"type": "string", "description": "File path, working-directory-relative or absolute"},
+                "offset": {"type": "integer", "description": "Line number to start reading from (1-based)"},
+                "limit": {"type": "integer", "description": "Number of lines to read"}
             },
-            "required": ["path"]
+            "required": ["file_path"]
         }),
     ),
     (
-        "write_file",
-        "Create or overwrite a text file inside the vault (parent directories are created).",
+        "Write",
+        "Writes a file to the local filesystem, overwriting it if it exists (parent directories are created). You MUST use the Read tool on the file in this conversation before overwriting it. NEVER create documentation files (*.md) or README files unless explicitly requested.",
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Vault-relative or absolute path"},
+                "file_path": {"type": "string", "description": "Working-directory-relative or absolute path"},
                 "content": {"type": "string", "description": "Full file contents"}
             },
-            "required": ["path", "content"]
+            "required": ["file_path", "content"]
         }),
     ),
     (
-        "list_files",
-        "List every file in the vault (relative paths).",
+        "Edit",
+        "Performs exact string replacement in a file. You must use the Read tool at least once in the conversation before editing. The edit FAILS if old_string is not unique — include more surrounding context to make it unique, or use replace_all. To replace many occurrences at once set replace_all to true.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Working-directory-relative or absolute path"},
+                "old_string": {"type": "string", "description": "Exact text to replace"},
+                "new_string": {"type": "string", "description": "Replacement text (must differ from old_string)"},
+                "replace_all": {"type": "boolean", "description": "Replace every occurrence (default false)"}
+            },
+            "required": ["file_path", "old_string", "new_string"]
+        }),
+    ),
+    (
+        "LS",
+        "Lists every file under the working directory (relative paths, hidden entries skipped).",
         json!({"type": "object", "properties": {}}),
     ),
     (
-        "read_url",
-        "Fetch a web page and return its readable text (HTML stripped, ~40KB cap).",
+        "WebFetch",
+        "Fetches content from a specified URL and returns its readable text (HTML stripped, ~40KB cap). HTTP URLs are not upgraded; cross-host redirects must be re-requested with the redirect target.",
         json!({
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "http(s) URL"}
+                "url": {"type": "string", "description": "http(s) URL"},
+                "prompt": {"type": "string", "description": "What to look for; the result should be read with this question in mind"}
             },
             "required": ["url"]
         }),
     ),
     (
-        "bash",
-        "Run a shell command. The working directory persists across calls (cd is remembered). Returns combined stdout+stderr and the exit code; default 120s timeout, max 600s. With run_in_background=true the command runs detached and the result is a task id — poll it with bash_output; the session is woken automatically when the task finishes. Do NOT use bash to read or edit files — dedicated tools (read_file / write_file / edit_file / grep) are safer and cheaper.",
+        "Bash",
+        "Runs a shell command. The working directory persists between calls (cd is remembered); shell state does not. Returns combined stdout+stderr and the exit code; default 120s timeout, max 600s. With run_in_background=true the command runs detached and the result is a task id — read it with TaskOutput; the session is woken automatically when the task finishes. Avoid using Bash for file search (use Glob/Grep) or reading/editing files (use Read/Write/Edit) — the dedicated tools are safer and cheaper.",
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string"},
-                "timeout_secs": {"type": "integer", "description": "Default 120, max 600"},
-                "run_in_background": {"type": "boolean", "description": "Run detached; poll with bash_output"}
+                "command": {"type": "string", "description": "The shell command to execute"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds; default 120, max 600"},
+                "description": {"type": "string", "description": "A one-line active-voice description of what the command does"},
+                "run_in_background": {"type": "boolean", "description": "Run detached; poll with TaskOutput"}
             },
             "required": ["command"]
         }),
     ),
     (
-        "bash_output",
-        "Read the output of a background task started with bash run_in_background.",
+        "TaskOutput",
+        "Reads the output of a background task started with Bash run_in_background.",
         json!({
             "type": "object",
             "properties": {
-                "id": {"type": "integer", "description": "The background task id"}
+                "task_id": {"type": "integer", "description": "The background task id"}
             },
-            "required": ["id"]
+            "required": ["task_id"]
         }),
     ),
     (
-        "bash_kill",
-        "Kill a background task started with bash run_in_background.",
+        "TaskStop",
+        "Stops a running background task by its ID.",
         json!({
             "type": "object",
             "properties": {
-                "id": {"type": "integer", "description": "The background task id"}
+                "task_id": {"type": "integer", "description": "The background task id"}
             },
-            "required": ["id"]
+            "required": ["task_id"]
         }),
     ),
     (
-        "glob",
-        "List files whose path matches a glob pattern (e.g. src/**/*.rs, *.{ts,tsx}), relative to the working directory. Respects .gitignore; sorted; capped at 500 entries.",
+        "Glob",
+        "Lists files whose path matches a glob pattern (e.g. src/**/*.rs, *.{ts,tsx}), relative to the working directory. Respects .gitignore; sorted; capped at 500 entries.",
         json!({
             "type": "object",
             "properties": {
@@ -266,20 +312,20 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         }),
     ),
     (
-        "grep",
-        "Search file contents with a regex (Rust syntax). Returns path:line: text matches, capped at 200. Respects .gitignore.",
+        "Grep",
+        "A powerful search tool built on a regex engine: searches file contents and returns path:line: text matches, capped at 200. Respects .gitignore. NEVER invoke grep or rg as a Bash command — use this tool.",
         json!({
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Regular expression"},
-                "include": {"type": "string", "description": "Optional file-name glob filter, e.g. *.rs"}
+                "glob": {"type": "string", "description": "Optional file-name glob filter, e.g. *.rs"}
             },
             "required": ["pattern"]
         }),
     ),
     (
-        "todo",
-        "Replace the session's todo list. Use it to plan multi-step work and keep the user informed: one item = one step, exactly one item in_progress at a time, mark completed as soon as it is done.",
+        "TodoWrite",
+        "Replaces the session's todo list. Use it to plan multi-step work (3 or more distinct steps) and keep the user informed: one item = one step, exactly ONE task in_progress at a time, mark completed as soon as a step is done. content is imperative (what to do); active_form is the present-progress form shown while running.",
         json!({
             "type": "object",
             "properties": {
@@ -300,8 +346,8 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         }),
     ),
     (
-        "task",
-        "Launch a new agent to handle complex, multi-step tasks autonomously. The agent has its own context window and returns a single final report, so it is the right tool for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation.\n\nWhen to use: research across many files, exploring a codebase for an answer, or independent work that can run while you continue. When NOT to use: a simple directed search (use glob/grep), or work that depends on what you are doing right now.\n\nUsage: launch several agents in one message when the tasks are independent. To continue an agent you already launched (including one that stopped on an error), use send_message with its agentId instead of spawning a new one. Trust the report and do not duplicate the agent's work yourself. `run_in_background: true` returns immediately; you are notified when it finishes. `fork: true` starts from this conversation's transcript instead of a fresh context.",
+        "Agent",
+        "Launch a new agent to handle complex, multi-step tasks autonomously. The agent has its own context window and returns a single final report, so it is the right tool for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation.\n\nWhen to use: research across many files, exploring a codebase for an answer, or independent work that can run while you continue. When NOT to use: a simple directed search (use Glob/Grep), or work that depends on what you are doing right now.\n\nUsage: launch several agents in one message when the tasks are independent. To continue an agent you already launched (including one that stopped on an error), use SendMessage with its agentId instead of spawning a new one. Trust the report and do not duplicate the agent's work yourself. `run_in_background: true` returns immediately; you are notified when it finishes. `fork: true` starts from this conversation's transcript instead of a fresh context.",
         json!({
             "type": "object",
             "properties": {
@@ -316,32 +362,32 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         }),
     ),
     (
-        "task_create",
+        "TaskCreate",
         "Create a task in the task list. Use it for work with 3+ steps: create the tasks first, then update them as you go. A task starts in status pending.",
         super::tasks::create_schema(),
     ),
     (
-        "task_update",
+        "TaskUpdate",
         "Update one task of the task list: set its status, subject, description, owner, or its dependency edges (add_blocks / add_blocked_by).",
         super::tasks::update_schema(),
     ),
     (
-        "task_list",
+        "TaskList",
         "List every task with its id, status and blocking edges.",
         super::tasks::list_schema(),
     ),
     (
-        "task_get",
+        "TaskGet",
         "Read one task by id.",
         super::tasks::get_schema(),
     ),
     (
-        "send_message",
-        "Send a message to a subagent you spawned earlier. A running agent receives it at its next turn; an agent that already finished (including one that stopped on an error or a rate limit) is resumed in the background with its full history intact, and you are notified when it reports back. Use the agentId from the task tool result.",
+        "SendMessage",
+        "Send a message to a subagent you spawned earlier. A running agent receives it at its next turn; an agent that already finished (including one that stopped on an error or a rate limit) is resumed in the background with its full history intact, and you are notified when it reports back. Use the agentId from the Agent tool result.",
         json!({
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "The agentId returned by the task tool"},
+                "to": {"type": "string", "description": "The agentId returned by the Agent tool"},
                 "summary": {"type": "string", "description": "A 5-10 word summary of the message"},
                 "message": {"type": "string", "description": "The message or follow-up task for the agent"}
             },
@@ -349,8 +395,8 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         }),
     ),
     (
-        "ask_user_question",
-        "Ask the user a question and wait for the answer. Use it when you genuinely need a decision only the user can make (a choice between approaches, missing requirements, an ambiguity that changes the implementation) — not as a first response to friction. Provide 2-4 concrete options per question; the user may also type a custom answer.",
+        "AskUserQuestion",
+        "Ask the user a question and wait for the answer. Use it when you genuinely need a decision only the user can make (a choice between approaches, missing requirements, an ambiguity that changes the implementation) — not as a first response to friction. Provide 2-4 concrete options per question; the user may also type a custom answer. If you recommend an option, make it the first one and add \"(Recommended)\" to its label.",
         json!({
             "type": "object",
             "properties": {
@@ -384,7 +430,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "EnterPlanMode",
-        "Switch this session into plan mode: explore the codebase freely (read_file / glob / grep / read-only shell) but do not change anything — write_file, edit_file and mutating shell commands are denied. Use it when a task needs an agreed approach before implementation. Finish by calling ExitPlanMode with the plan.",
+        "Switch this session into plan mode: explore the codebase freely (Read / Glob / Grep / read-only shell) but do not change anything — Write, Edit and mutating shell commands are denied. Use it when a task needs an agreed approach before implementation. Finish by calling ExitPlanMode with the plan.",
         json!({
             "type": "object",
             "properties": {}
@@ -399,19 +445,6 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
                 "plan": {"type": "string", "description": "The complete plan in markdown"}
             },
             "required": ["plan"]
-        }),
-    ),
-    (
-        "edit_file",
-        "Replace an exact string in an existing text file inside the vault. Read the file first with read_file. old_string must match exactly (including whitespace) and appear exactly once — for multiple occurrences call it repeatedly with larger context, or rewrite the whole file with write_file.",
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Vault-relative or absolute path"},
-                "old_string": {"type": "string", "description": "Exact text to replace"},
-                "new_string": {"type": "string", "description": "Replacement text"}
-            },
-            "required": ["path", "old_string", "new_string"]
         }),
     ),
     (
@@ -431,14 +464,15 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         json!({"type": "object", "properties": {}}),
     ),
     (
-        "skill",
-        "Load a skill's full instructions by name. Available skills are listed in the system prompt.",
+        "Skill",
+        "Load a skill's full instructions by name. Available skills are listed in the system prompt. When users reference a \"slash command\" or \"/<something>\", they mean a skill — load it with this tool before acting on their request.",
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Skill name from the system prompt"}
+                "skill": {"type": "string", "description": "Skill name from the system prompt"},
+                "args": {"type": "string", "description": "Optional arguments the user passed after the slash command"}
             },
-            "required": ["name"]
+            "required": ["skill"]
         }),
     ),
 ])
@@ -449,16 +483,16 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
 /// spawns or mutates session state — runs alone and in call order.
 pub fn is_concurrency_safe(name: &str) -> bool {
     matches!(
-        name,
-        "read_file"
-            | "list_files"
-            | "glob"
-            | "grep"
-            | "read_url"
+        canonical(name),
+        "Read"
+            | "LS"
+            | "Glob"
+            | "Grep"
+            | "WebFetch"
             | "read_study_content"
-            | "skill"
-            | "task_list"
-            | "task_get"
+            | "Skill"
+            | "TaskList"
+            | "TaskGet"
     )
 }
 
@@ -486,24 +520,46 @@ async fn execute_text(
     name: &str,
     input: &Value,
 ) -> (bool, String) {
+    // The canonical dispatch name: legacy names in restored histories land here
+    // through the same table the schema list uses.
+    let name = canonical(name);
+    // CC-style param names with the legacy keys as fallbacks.
+    let path_param = || {
+        input["file_path"]
+            .as_str()
+            .or_else(|| input["path"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
     match name {
-        "read_file" => {
-            let path = input["path"].as_str().unwrap_or_default();
-            match ctx.resolve(path) {
+        "Read" => {
+            let path = path_param();
+            match ctx.resolve(&path) {
                 Ok(p) => match tokio::fs::read_to_string(&p).await {
                     Ok(content) => {
                         ctx.note_read(&p);
-                        (true, truncate(&content, 40_000))
+                        // cat -n format (CC's Read): line numbers starting at 1,
+                        // honoring offset/limit when given.
+                        let lines: Vec<&str> = content.lines().collect();
+                        let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
+                        let limit = input["limit"].as_u64().map(|n| n as usize).unwrap_or(2000);
+                        let start = (offset - 1).min(lines.len());
+                        let end = (start + limit).min(lines.len());
+                        let mut out = String::new();
+                        for (i, line) in lines[start..end].iter().enumerate() {
+                            out.push_str(&format!("{:>6}\t{}\n", start + i + 1, line));
+                        }
+                        (true, truncate(&out, 40_000))
                     }
                     Err(e) => (false, format!("read failed: {}", e)),
                 },
                 Err(e) => (false, e),
             }
         }
-        "write_file" => {
-            let path = input["path"].as_str().unwrap_or_default();
+        "Write" => {
+            let path = path_param();
             let content = input["content"].as_str().unwrap_or_default();
-            match ctx.resolve(path) {
+            match ctx.resolve(&path) {
                 Ok(p) => {
                     if let Err(e) = ctx.ensure_confined(&p) {
                         return (false, e);
@@ -522,7 +578,7 @@ async fn execute_text(
                 Err(e) => (false, e),
             }
         }
-        "list_files" => {
+        "LS" => {
             let root = match ctx.root() {
                 Ok(r) => r,
                 Err(e) => return (false, e),
@@ -549,10 +605,10 @@ async fn execute_text(
             out.sort();
             (true, truncate(&out.join("\n"), 20_000))
         }
-        "glob" => {
+        "Glob" => {
             let pattern = input["pattern"].as_str().unwrap_or_default().to_string();
             if pattern.trim().is_empty() {
-                return (false, "pattern 不能为空".into());
+                return (false, "pattern must not be empty".into());
             }
             match ctx.root() {
                 Ok(root) => match super::search::glob(&root, &pattern).await {
@@ -562,12 +618,16 @@ async fn execute_text(
                 Err(e) => (false, e),
             }
         }
-        "grep" => {
+        "Grep" => {
             let pattern = input["pattern"].as_str().unwrap_or_default().to_string();
             if pattern.trim().is_empty() {
-                return (false, "pattern 不能为空".into());
+                return (false, "pattern must not be empty".into());
             }
-            let include = input["include"].as_str().map(|s| s.to_string());
+            // `glob` is the CC name; `include` is the legacy key.
+            let include = input["glob"]
+                .as_str()
+                .or_else(|| input["include"].as_str())
+                .map(|s| s.to_string());
             match ctx.root() {
                 Ok(root) => match super::search::grep(&root, &pattern, include).await {
                     Ok(text) => (true, text),
@@ -576,7 +636,7 @@ async fn execute_text(
                 Err(e) => (false, e),
             }
         }
-        "read_url" => {
+        "WebFetch" => {
             let url = input["url"].as_str().unwrap_or_default().to_string();
             if !url.starts_with("http://") && !url.starts_with("https://") {
                 return (false, "invalid url".into());
@@ -606,14 +666,18 @@ async fn execute_text(
                 Err(e) => (false, format!("fetch failed: {}", e)),
             }
         }
-        "edit_file" => {
-            let path = input["path"].as_str().unwrap_or_default();
+        "Edit" => {
+            let path = path_param();
             let old = input["old_string"].as_str().unwrap_or_default();
             let new = input["new_string"].as_str().unwrap_or_default();
+            let replace_all = input["replace_all"].as_bool().unwrap_or(false);
             if old.is_empty() {
-                return (false, "old_string 不能为空(整篇新建请用 write_file)".into());
+                return (
+                    false,
+                    "old_string must not be empty (use Write for a new file)".into(),
+                );
             }
-            match ctx.resolve(path) {
+            match ctx.resolve(&path) {
                 Ok(p) => {
                     if let Err(e) = ctx.ensure_confined(&p) {
                         return (false, e);
@@ -622,15 +686,25 @@ async fn execute_text(
                         Ok(content) => {
                             let hits = content.matches(old).count();
                             if hits == 0 {
-                                (false, "old_string 在文件中不存在(先 read_file 核对原文,注意空白与换行)".into())
-                            } else if hits > 1 {
-                                (false, format!("old_string 出现 {hits} 次:带上更多上下文让它唯一,或用 write_file 重写全文件"))
+                                (false, "old_string does not exist in the file (Read it first; check whitespace and line endings)".into())
+                            } else if hits > 1 && !replace_all {
+                                (false, format!("old_string occurs {hits} times: add more surrounding context to make it unique, or set replace_all: true"))
                             } else {
-                                let updated = content.replacen(old, new, 1);
+                                let updated = if replace_all {
+                                    content.replace(old, new)
+                                } else {
+                                    content.replacen(old, new, 1)
+                                };
                                 match tokio::fs::write(&p, updated).await {
-                                    Ok(()) => {
-                                        (true, format!("edited {} (1 replacement)", p.display()))
-                                    }
+                                    Ok(()) => (
+                                        true,
+                                        format!(
+                                            "edited {} ({} replacement{})",
+                                            p.display(),
+                                            if replace_all { hits } else { 1 },
+                                            if replace_all && hits > 1 { "s" } else { "" }
+                                        ),
+                                    ),
                                     Err(e) => (false, format!("write failed: {}", e)),
                                 }
                             }
@@ -674,8 +748,11 @@ async fn execute_text(
                 None => (false, "no study content is open".into()),
             }
         }
-        "skill" => {
-            let skill_name = input["name"].as_str().unwrap_or_default();
+        "Skill" => {
+            let skill_name = input["skill"]
+                .as_str()
+                .or_else(|| input["name"].as_str())
+                .unwrap_or_default();
             match skills.load(skill_name) {
                 Some(content) => (true, content),
                 None => (false, format!("unknown skill: {}", skill_name)),
@@ -877,11 +954,12 @@ mod tests {
         let file = vault.join("post.html");
         std::fs::write(&file, "<h1>旧标题</h1>\n<p>正文</p>\n").unwrap();
         let c = ctx(&vault, &vault);
+        let skills = super::super::skills::SkillRegistry { skills: vec![] };
         let out = execute(
             &c,
-            &super::super::skills::SkillRegistry { skills: vec![] },
-            "edit_file",
-            &json!({"path": "post.html", "old_string": "<h1>旧标题</h1>", "new_string": "<h1>新标题</h1>"}),
+            &skills,
+            "Edit",
+            &json!({"file_path": "post.html", "old_string": "<h1>旧标题</h1>", "new_string": "<h1>新标题</h1>"}),
         )
         .await;
         assert!(out.ok, "{}", out.text);
@@ -903,19 +981,23 @@ mod tests {
         let out = execute(
             &c,
             &skills,
-            "edit_file",
-            &json!({"path": "post.md", "old_string": "xyz", "new_string": "q"}),
+            "Edit",
+            &json!({"file_path": "post.md", "old_string": "xyz", "new_string": "q"}),
         )
         .await;
-        assert!(!out.ok && out.text.contains("不存在"), "{}", out.text);
+        assert!(
+            !out.ok && out.text.contains("does not exist"),
+            "{}",
+            out.text
+        );
         let out = execute(
             &c,
             &skills,
-            "edit_file",
-            &json!({"path": "post.md", "old_string": "a", "new_string": "q"}),
+            "Edit",
+            &json!({"file_path": "post.md", "old_string": "a", "new_string": "q"}),
         )
         .await;
-        assert!(!out.ok && out.text.contains("2 次"), "{}", out.text);
+        assert!(!out.ok && out.text.contains("2 times"), "{}", out.text);
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             "a b a",
@@ -934,8 +1016,8 @@ mod tests {
         let out = execute(
             &c,
             &super::super::skills::SkillRegistry { skills: vec![] },
-            "edit_file",
-            &json!({"path": outside, "old_string": "x", "new_string": "y"}),
+            "Edit",
+            &json!({"file_path": outside, "old_string": "x", "new_string": "y"}),
         )
         .await;
         assert!(!out.ok && out.text.contains("FORBIDDEN"), "{}", out.text);
@@ -959,8 +1041,8 @@ mod tests {
         let out = execute(
             &c,
             &skills,
-            "write_file",
-            &json!({"path": "src/lib.rs", "content": "fn a() {}"}),
+            "Write",
+            &json!({"file_path": "src/lib.rs", "content": "fn a() {}"}),
         )
         .await;
         assert!(out.ok, "{}", out.text);
@@ -974,8 +1056,8 @@ mod tests {
         let out = execute(
             &c,
             &skills,
-            "write_file",
-            &json!({"path": format!("{}/v.md", vault.display()), "content": "x"}),
+            "Write",
+            &json!({"file_path": format!("{}/v.md", vault.display()), "content": "x"}),
         )
         .await;
         assert!(!out.ok && out.text.contains("FORBIDDEN"), "{}", out.text);
@@ -986,8 +1068,8 @@ mod tests {
         let out = execute(
             &c,
             &skills,
-            "write_file",
-            &json!({"path": outside, "content": "y"}),
+            "Write",
+            &json!({"file_path": outside, "content": "y"}),
         )
         .await;
         assert!(!out.ok && out.text.contains("FORBIDDEN"), "{}", out.text);

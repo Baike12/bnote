@@ -395,6 +395,18 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             };
             json_ok!(agent::agent_generate_title(app.state(), arg_str(args, "text")?, model).await)
         }
+        "agent_list_project_files" => {
+            json_ok!(agent::agent_list_project_files(app.state(), arg_str(args, "workdir")?).await)
+        }
+        "agent_read_skill" => {
+            json_ok!(agent::agent_read_skill(
+                app.state(),
+                optional_str(args, "mode"),
+                optional_str(args, "workdir"),
+                arg_str(args, "name")?
+            )
+            .await)
+        },
         "agent_list_skills" => json_ok!(agent::agent_list_skills(
             app.state(),
             optional_str(args, "mode"),

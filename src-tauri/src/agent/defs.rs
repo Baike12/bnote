@@ -64,41 +64,59 @@ pub struct AgentDefinition {
 }
 
 /// Toolset for definitions that leave `tools` absent: the general coding
-/// surface without the study/creative-only entries.
+/// surface without the study/creative-only entries. Names follow Claude Code's
+/// tool constants (`Read`, `Bash`, …); legacy snake_case dispatches through
+/// [`super::tools::canonical`].
 pub const DEFAULT_TOOLS: &[&str] = &[
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list_files",
-    "glob",
-    "grep",
-    "bash",
-    "bash_output",
-    "bash_kill",
-    "todo",
-    "task_create",
-    "task_update",
-    "task_list",
-    "task_get",
-    "ask_user_question",
-    "skill",
+    "Read",
+    "Write",
+    "Edit",
+    "LS",
+    "Glob",
+    "Grep",
+    "Bash",
+    "TaskOutput",
+    "TaskStop",
+    "TodoWrite",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskList",
+    "TaskGet",
+    "AskUserQuestion",
+    "Skill",
 ];
 
 impl AgentDefinition {
     /// The tool whitelist this session runs with (key absent → default set),
     /// with `deny` permissions applied last so they win over the whitelist.
+    /// Whitelist entries and permission keys are normalized through
+    /// [`super::tools::canonical`], so a hand-written legacy name (`bash`,
+    /// `read_file`) in a settings file or an old definition still matches.
     pub fn effective_tools(&self) -> Vec<String> {
         let base: Vec<String> = match &self.tools {
-            Some(list) => list.clone(),
+            Some(list) => list
+                .iter()
+                .map(|t| super::tools::canonical(t).to_string())
+                .collect(),
             None => DEFAULT_TOOLS.iter().map(|s| s.to_string()).collect(),
         };
         base.into_iter()
-            .filter(|t| self.permissions.get(t) != Some(&Permission::Deny))
+            .filter(|t| {
+                !self
+                    .permissions
+                    .iter()
+                    .any(|(k, p)| *p == Permission::Deny && super::tools::canonical(k) == t)
+            })
             .collect()
     }
 
     pub fn tool_enabled(&self, name: &str) -> bool {
-        if self.permissions.get(name) == Some(&Permission::Deny) {
+        let name = super::tools::canonical(name);
+        if self
+            .permissions
+            .iter()
+            .any(|(k, p)| *p == Permission::Deny && super::tools::canonical(k) == name)
+        {
             return false;
         }
         self.effective_tools().iter().any(|t| t == name)
@@ -143,27 +161,28 @@ pub fn registry() -> Vec<AgentDefinition> {
         AgentDefinition {
             id: "coding".into(),
             name: "编码助手".into(),
-            description: "代码项目的 coding agent:bash/glob/grep/todo/task/压缩全套能力。".into(),
+            description: "代码项目的 coding agent:Bash/Glob/Grep/TodoWrite/Agent/压缩全套能力。"
+                .into(),
             tools: tools(&[
-                "read_file",
-                "write_file",
-                "edit_file",
-                "list_files",
-                "glob",
-                "grep",
-                "bash",
-                "todo",
-                "task",
-                "skill",
+                "Read",
+                "Write",
+                "Edit",
+                "LS",
+                "Glob",
+                "Grep",
+                "Bash",
+                "TodoWrite",
+                "Agent",
+                "Skill",
                 "mcp",
-                "bash_output",
-                "bash_kill",
-                "task_create",
-                "task_update",
-                "task_list",
-                "task_get",
-                "ask_user_question",
-                "send_message",
+                "TaskOutput",
+                "TaskStop",
+                "TaskCreate",
+                "TaskUpdate",
+                "TaskList",
+                "TaskGet",
+                "AskUserQuestion",
+                "SendMessage",
                 "EnterPlanMode",
                 "ExitPlanMode",
             ]),
@@ -180,21 +199,21 @@ pub fn registry() -> Vec<AgentDefinition> {
             name: "创作助手".into(),
             description: "创作模式:工具 + 技能 + MCP,产出文章与 HTML 并实时预览。".into(),
             tools: tools(&[
-                "read_file",
-                "write_file",
-                "edit_file",
-                "list_files",
-                "read_url",
-                "bash",
+                "Read",
+                "Write",
+                "Edit",
+                "LS",
+                "WebFetch",
+                "Bash",
                 "preview_html",
                 "read_study_content",
-                "skill",
+                "Skill",
                 "mcp",
-                "task_create",
-                "task_update",
-                "task_list",
-                "task_get",
-                "ask_user_question",
+                "TaskCreate",
+                "TaskUpdate",
+                "TaskList",
+                "TaskGet",
+                "AskUserQuestion",
             ]),
             permissions: BTreeMap::new(),
             compaction: CompactionCfg::default(),
@@ -229,24 +248,24 @@ pub fn registry() -> Vec<AgentDefinition> {
             name: "通用助手".into(),
             description: "通用子代理:全工具(除子代理派发),独立上下文,只回报最终结论。".into(),
             tools: tools(&[
-                "read_file",
-                "write_file",
-                "edit_file",
-                "list_files",
-                "glob",
-                "grep",
-                "bash",
-                "todo",
-                "skill",
+                "Read",
+                "Write",
+                "Edit",
+                "LS",
+                "Glob",
+                "Grep",
+                "Bash",
+                "TodoWrite",
+                "Skill",
                 "mcp",
-                "bash_output",
-                "bash_kill",
-                "task_create",
-                "task_update",
-                "task_list",
-                "task_get",
-                "ask_user_question",
-                "send_message",
+                "TaskOutput",
+                "TaskStop",
+                "TaskCreate",
+                "TaskUpdate",
+                "TaskList",
+                "TaskGet",
+                "AskUserQuestion",
+                "SendMessage",
             ]),
             permissions: BTreeMap::new(),
             compaction: CompactionCfg::default(),
@@ -262,7 +281,7 @@ pub fn registry() -> Vec<AgentDefinition> {
             id: "explore".into(),
             name: "探索子代理".into(),
             description: "只读探索子代理:找代码、读文件、报告位置与结构,不改动任何东西。".into(),
-            tools: tools(&["read_file", "list_files", "glob", "grep"]),
+            tools: tools(&["Read", "LS", "Glob", "Grep"]),
             permissions: BTreeMap::new(),
             compaction: CompactionCfg::default(),
             subagents: Vec::new(),
@@ -278,7 +297,7 @@ pub fn registry() -> Vec<AgentDefinition> {
             name: "计划子代理".into(),
             description: "只读计划子代理:调研后给出可执行的实施步骤与关键文件,不改动任何东西。"
                 .into(),
-            tools: tools(&["read_file", "list_files", "glob", "grep"]),
+            tools: tools(&["Read", "LS", "Glob", "Grep"]),
             permissions: BTreeMap::new(),
             compaction: CompactionCfg::default(),
             subagents: Vec::new(),
@@ -344,7 +363,7 @@ mod tests {
     fn the_coding_agent_has_the_full_surface_and_ordered_layers() {
         let coding = definition("coding").unwrap();
         let tools = coding.effective_tools();
-        for name in ["read_file", "edit_file", "bash", "task", "mcp"] {
+        for name in ["Read", "Edit", "Bash", "Agent", "mcp"] {
             assert!(tools.iter().any(|t| t == name), "missing {name}");
         }
         assert_eq!(coding.prompts.len(), 8);
@@ -360,8 +379,8 @@ mod tests {
         for id in ["explore", "plan"] {
             let def = definition(id).unwrap();
             let tools = def.effective_tools();
-            assert!(!tools.iter().any(|t| t == "write_file" || t == "edit_file"));
-            assert!(!tools.iter().any(|t| t == "bash"));
+            assert!(!tools.iter().any(|t| t == "Write" || t == "Edit"));
+            assert!(!tools.iter().any(|t| t == "Bash"));
         }
     }
 
@@ -378,8 +397,12 @@ mod tests {
     #[test]
     fn a_deny_permission_removes_the_tool_from_the_effective_set() {
         let mut def = definition("coding").unwrap();
+        def.permissions.insert("Bash".into(), Permission::Deny);
+        assert!(!def.tool_enabled("Bash"));
+        assert!(!def.effective_tools().iter().any(|t| t == "Bash"));
+        // A legacy-name permission still bites after the rename.
         def.permissions.insert("bash".into(), Permission::Deny);
-        assert!(!def.tool_enabled("bash"));
-        assert!(!def.effective_tools().iter().any(|t| t == "bash"));
+        def.permissions.remove("Bash");
+        assert!(!def.tool_enabled("Bash"));
     }
 }

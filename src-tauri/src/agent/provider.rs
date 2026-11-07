@@ -363,6 +363,10 @@ fn openai_usage(v: &Value) -> Option<TokenUsage> {
 pub struct TurnOptions {
     pub max_tokens: Option<u32>,
     pub abort: Arc<Abort>,
+    /// Request the model's reasoning channel. The wire field depends on the
+    /// protocol (see [`Provider::apply_thinking`]); the streamed reasoning
+    /// arrives back as ThinkingDelta events either way.
+    pub thinking: bool,
 }
 
 pub struct Provider {
@@ -405,6 +409,36 @@ impl Provider {
         }
     }
 
+    /// Injects the reasoning-channel field into a request body, matching the
+    /// vocabulary of the gateway the model lives on (the same mapping the
+    /// translate feature uses): Anthropic takes `thinking.type`, GLM/DeepSeek
+    /// take `thinking.type` on the OpenAI surface, Qwen takes
+    /// `enable_thinking`, Ollama takes `think`. An unrecognized strict gateway
+    /// gets no field at all — an unknown top-level flag makes it 400.
+    fn apply_thinking(&self, body: &mut Value, thinking: bool) {
+        let model = self.model.to_ascii_lowercase();
+        let base = self.base_url.to_ascii_lowercase();
+        let budget = ((self.max_tokens / 2) as u32).clamp(1024, 16384);
+        if self.kind == "anthropic" {
+            if thinking {
+                body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
+            }
+            return;
+        }
+        if model.contains("glm") || base.contains("bigmodel") || base.contains("zhipu") {
+            body["thinking"] = json!({"type": if thinking { "enabled" } else { "disabled" }});
+        } else if model.contains("qwen") || base.contains("dashscope") {
+            body["enable_thinking"] = json!(thinking);
+        } else if base.contains("ollama") || model.starts_with("ollama/") {
+            body["think"] = json!(thinking);
+        } else if model.contains("deepseek") {
+            // DeepSeek reasoner always thinks; chat rejects vendor flags on
+            // some gateways — send the same field translate.rs sends today.
+            body["thinking"] = json!({"type": if thinking { "enabled" } else { "disabled" }});
+        }
+        // Everything else: no field; the model's own default governs.
+    }
+
     /// Streams one turn with the default options (no token override, a fresh
     /// cancellation token). Used by tests and by callers that cannot be
     /// interrupted.
@@ -418,6 +452,7 @@ impl Provider {
         let opts = TurnOptions {
             max_tokens: None,
             abort: Abort::new(),
+            thinking: false,
         };
         self.stream_turn_with(system, items, tools, sink, &opts)
             .await
@@ -544,6 +579,7 @@ impl Provider {
             "stream": true,
             "messages": messages,
         });
+        self.apply_thinking(&mut body, opts.thinking);
         // A pure Q&A session has no tools: omit the tools field entirely instead of
         // sending an empty array.
         if !tools_json.is_empty() {
@@ -749,6 +785,7 @@ impl Provider {
         if let Some(max_tokens) = opts.max_tokens {
             body["max_tokens"] = json!(max_tokens);
         }
+        self.apply_thinking(&mut body, opts.thinking);
         // A pure Q&A session has no tools: omit the tools field entirely instead of
         // sending an empty array.
         if !tools_json.is_empty() {
@@ -876,6 +913,10 @@ impl Provider {
 /// as `input_error` instead of silently becoming `{}`: the session answers that
 /// call with an InputValidationError and the model gets a chance to retry.
 fn push_tool_call(turn: &mut TurnResult, id: String, name: String, args: &str) {
+    // The API tool name is the Claude Code-aligned one; a legacy name from an
+    // old gateway or a replayed history is normalized here once, so events,
+    // history and permissions all downstream see a single vocabulary.
+    let name = super::tools::canonical(&name).to_string();
     match parse_tool_input(args) {
         Ok(input) => turn.tool_calls.push(Content::ToolUse {
             id,

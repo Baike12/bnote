@@ -248,11 +248,10 @@ struct ParentDispatch<'s>(&'s Session);
 impl<'s> ToolDispatch for ParentDispatch<'s> {
     fn call<'a>(&'a self, name: &'a str, input: &'a Value) -> BoxTool<'a> {
         Box::pin(async move {
-            if name == "task" {
-                return self.0.run_subagent(input).await;
-            }
-            if name == "send_message" {
-                return self.0.run_send_message(input).await;
+            match super::tools::canonical(name) {
+                "Agent" => return self.0.run_subagent(input).await,
+                "SendMessage" => return self.0.run_send_message(input).await,
+                _ => {}
             }
             self.0.execute_tool_shared(name, input).await
         })
@@ -266,7 +265,7 @@ struct SubDispatch<'s>(&'s Session);
 impl<'s> ToolDispatch for SubDispatch<'s> {
     fn call<'a>(&'a self, name: &'a str, input: &'a Value) -> BoxTool<'a> {
         Box::pin(async move {
-            if name == "task" || name == "send_message" {
+            if matches!(super::tools::canonical(name), "Agent" | "SendMessage") {
                 return ToolOutput::text(
                     false,
                     tool_use_error("子代理不能派生子代理,也不能给别的 agent 发消息"),
@@ -345,12 +344,85 @@ impl Session {
         for context in &prompt_hook.context {
             self.push_reminder(context);
         }
+        self.attach_at_mentions(text);
         if let Ok(mut items) = self.items.lock() {
             items.push(ChatItem::user_message(text, &images));
         }
         self.append_history(text);
         self.finish_turn(self.run_loop(&ParentDispatch(self)).await)
             .await;
+    }
+
+    /// CC's at-mention attachments: every `@path` in the prompt carries the
+    /// file's contents (or a directory listing) as a `<system-reminder>` user
+    /// message, so the model sees the referenced file without spending a Read
+    /// round-trip. Quoted paths (`@"a b"`) and line ranges are not supported —
+    /// the input box inserts plain space-free paths.
+    fn attach_at_mentions(&self, text: &str) {
+        let mentions = Self::extract_at_mentions(text);
+        if mentions.is_empty() {
+            return;
+        }
+        let Some(root) = self.ctx.workdir.clone().or_else(|| self.ctx.vault.clone()) else {
+            return;
+        };
+        let mut blocks = String::new();
+        for raw in mentions {
+            let path = if raw.starts_with('/') {
+                std::path::PathBuf::from(&raw)
+            } else {
+                root.join(&raw)
+            };
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_dir() => {
+                    // A directory mention lists one level, capped like CC's ls.
+                    let mut entries: Vec<String> = std::fs::read_dir(&path)
+                        .map(|rd| {
+                            rd.filter_map(|e| e.ok())
+                                .map(|e| {
+                                    if e.path().is_dir() {
+                                        format!("{}/", e.file_name().to_string_lossy())
+                                    } else {
+                                        e.file_name().to_string_lossy().to_string()
+                                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    entries.sort();
+                    entries.truncate(1000);
+                    blocks.push_str(&format!(
+                        "<directory path=\"{}\">\n{}\n</directory>\n",
+                        raw,
+                        entries.join("\n")
+                    ));
+                }
+                Ok(_) => match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let content = String::from_utf8_lossy(&bytes);
+                        let content = Self::truncate_chars(&content, 40_000);
+                        blocks
+                            .push_str(&format!("<file path=\"{}\">\n{}\n</file>\n", raw, content));
+                    }
+                    Err(e) => {
+                        blocks.push_str(&format!(
+                            "<file path=\"{}\">\n(read failed: {e})\n</file>\n",
+                            raw
+                        ));
+                    }
+                },
+                Err(e) => {
+                    blocks.push_str(&format!(
+                        "<file path=\"{}\">\n(not found: {e})\n</file>\n",
+                        raw
+                    ));
+                }
+            }
+        }
+        self.push_reminder(&format!(
+            "Contents of the files the user referenced with @ in their message:\n\n{}",
+            blocks.trim_end()
+        ));
     }
 
     /// Appends the prompt to `~/.bnote/history.jsonl` (Claude Code's prompt
@@ -393,6 +465,34 @@ impl Session {
                 }
             }
             Err(e) => eprintln!("[bnote] history open: {e}"),
+        }
+    }
+
+    /// The `@` mentions in a prompt: every whitespace-delimited token that
+    /// starts with `@` and has a body. `/skill` triggers are not touched (no
+    /// `@`), and code like `a@b` never matches because the `@` is not at the
+    /// word start.
+    fn extract_at_mentions(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for word in text.split_whitespace() {
+            if let Some(rest) = word.strip_prefix('@') {
+                let trimmed = rest.trim_end_matches(|c: char| c == ',' || c == '.' || c == ')');
+                if !trimmed.is_empty() && !out.iter().any(|p| p == trimmed) {
+                    out.push(trimmed.to_string());
+                }
+            }
+        }
+        out
+    }
+
+    /// Character-boundary-safe truncation for attached file contents.
+    fn truncate_chars(s: &str, n: usize) -> String {
+        if s.chars().count() <= n {
+            s.to_string()
+        } else {
+            let mut out: String = s.chars().take(n).collect();
+            out.push_str("\n…[truncated]");
+            out
         }
     }
 
@@ -774,6 +874,12 @@ impl Session {
         items
     }
 
+    /// The reasoning-channel switch: settings `thinking` overrides, default
+    /// on (CC keeps thinking enabled unless the user turns it off).
+    pub fn thinking_enabled(&self) -> bool {
+        self.current_settings().thinking != Some(false)
+    }
+
     /// The auto-memory block for a coding session: the behavior prompt plus
     /// the current `MEMORY.md` index (empty index still gets the prompt, so the
     /// agent knows where to write memory the first time).
@@ -796,10 +902,12 @@ impl Session {
             .unwrap_or_default();
         let mut section = String::from("# memory\n\n");
         section.push_str(
-            "这是你的长期记忆索引(MEMORY.md)。一条记忆一个文件,索引里一行一条,用 [[name]] 互链。\
-             当用户告诉了你偏好、项目约定、外部资源地址,或你总结出了可复用的经验,就用 write_file 在记忆目录里\
-             新建/更新那条记忆,并在 MEMORY.md 里加一行。只记代码库本身看不出来的事实:不要记录代码结构、\
-             既往修复、git 历史,也不要记录只对本次对话有用的临时状态。\n\n",
+            "这是你的长期记忆索引(MEMORY.md)。一条记忆一个文件,索引里一行一条(约150字符以内),用 [[name]] 互链。\
+             记忆分四类:user(用户的偏好与环境)、feedback(用户对做法的反馈)、project(项目的约定与决策)、\
+             reference(外部资源地址)。当用户告诉了你偏好、纠正了你的做法、给出了项目约定,或你总结出了可复用的经验,\
+             就用 Write 在记忆目录里新建/更新那条记忆,并在 MEMORY.md 里加一行。\
+             只记代码库本身看不出来的事实:不要记录代码结构、既往修复、git 历史,也不要记录只对本次对话有用的临时状态。\
+             本索引每轮都会进入上下文,保持精炼。\n\n",
         );
         section.push_str(&format!("记忆目录:{}\n\n", dir.to_string_lossy()));
         if index.is_empty() {
@@ -968,6 +1076,7 @@ impl Session {
             let opts = TurnOptions {
                 max_tokens: max_tokens_override,
                 abort: self.ctx.abort.clone(),
+                thinking: self.thinking_enabled(),
             };
             let turn = self
                 .provider
@@ -1283,7 +1392,7 @@ impl Session {
             // Never truncate in place: a huge result goes to a file with a
             // preview, so the model can read the rest itself.
             out.text = self.results.cap(&self.id, out.text);
-            if out.ok && (call.name == "write_file" || call.name == "edit_file") {
+            if out.ok && matches!(super::tools::canonical(&call.name), "Write" | "Edit") {
                 if let Some(path) = call.input["path"].as_str() {
                     self.note_changed(path);
                 }
@@ -1452,7 +1561,7 @@ impl Session {
         }
         // The spawnable agent types belong in the tool description (CC's
         // default), so the model knows what `subagent_type` accepts.
-        if let Some(task) = defs.iter_mut().find(|d| d.name == "task") {
+        if let Some(task) = defs.iter_mut().find(|d| d.name == "Agent") {
             let listing = super::defs::subagent_listing();
             if !listing.is_empty() {
                 let mut lines = String::from("\n\nAvailable agent types for subagent_type:");
@@ -1492,8 +1601,9 @@ impl Session {
             };
         }
         // Session-owned tools (they touch session state, not just the context).
+        let name = super::tools::canonical(name);
         match name {
-            "todo" => {
+            "TodoWrite" => {
                 let mut current = self
                     .todos
                     .lock()
@@ -1510,15 +1620,15 @@ impl Session {
                     Err(e) => ToolOutput::text(false, tool_use_error(e)),
                 };
             }
-            "bash" => {
+            "Bash" => {
                 return self.run_bash(input).await;
             }
-            "bash_output" | "bash_kill" => {
+            "TaskOutput" | "TaskStop" => {
                 return self.run_bg_control(name, input);
             }
             "EnterPlanMode" => return self.enter_plan_mode(),
             "ExitPlanMode" => return self.exit_plan_mode(input).await,
-            "ask_user_question" => {
+            "AskUserQuestion" => {
                 return match self.ask_question(&input["questions"]).await {
                     Ok(answer) => ToolOutput::text(true, answer),
                     Err(e) => ToolOutput::text(false, tool_use_error(e)),
@@ -1527,19 +1637,16 @@ impl Session {
             _ => {}
         }
         // The v2 task list: the same single-writer rule as the todo list.
-        if matches!(
-            name,
-            "task_create" | "task_update" | "task_list" | "task_get"
-        ) {
+        if matches!(name, "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet") {
             let mut list = self
                 .tasks
                 .lock()
                 .map(|mut g| std::mem::take(&mut *g))
                 .unwrap_or_default();
             let outcome = match name {
-                "task_create" => list.create(input),
-                "task_update" => list.update(input),
-                "task_get" => input["id"]
+                "TaskCreate" => list.create(input),
+                "TaskUpdate" => list.update(input),
+                "TaskGet" => input["id"]
                     .as_str()
                     .map(|id| list.get(id))
                     .unwrap_or_else(|| Err("id 不能为空".to_string())),
@@ -1561,7 +1668,7 @@ impl Session {
     async fn run_bash(&self, input: &Value) -> ToolOutput {
         let command = input["command"].as_str().unwrap_or_default().to_string();
         if command.trim().is_empty() {
-            return ToolOutput::text(false, tool_use_error("command 不能为空"));
+            return ToolOutput::text(false, tool_use_error("command must not be empty"));
         }
         if input["run_in_background"].as_bool().unwrap_or(false) {
             let cwd = self.bg_cwd();
@@ -1580,14 +1687,15 @@ impl Session {
                 Ok(id) => ToolOutput::text(
                     true,
                     format!(
-                        "background task {id} started\n用 bash_output({{id: {id}}}) 查询输出;任务结束后会自动唤醒本会话。"
+                        "background task {id} started\nRead its output with TaskOutput(task_id: {id}); this session is woken automatically when the task finishes."
                     ),
                 ),
                 Err(e) => ToolOutput::text(false, tool_use_error(e)),
             };
         }
-        let timeout = input["timeout_secs"]
+        let timeout = input["timeout"]
             .as_u64()
+            .or_else(|| input["timeout_secs"].as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
         let out = shell::run_command(
             &command,
@@ -1601,14 +1709,17 @@ impl Session {
     }
 
     fn run_bg_control(&self, name: &str, input: &Value) -> ToolOutput {
-        let id = input["id"].as_u64().unwrap_or(u64::MAX);
+        let id = input["task_id"]
+            .as_u64()
+            .or_else(|| input["id"].as_u64())
+            .unwrap_or(u64::MAX);
         let Some(task) = self.ctx.bg.get(id) else {
             return ToolOutput::text(
                 false,
                 tool_use_error(format!("unknown background task: {id}")),
             );
         };
-        if name == "bash_kill" {
+        if name == "TaskStop" {
             task.kill();
             return ToolOutput::text(true, format!("kill signal sent to background task {id}"));
         }
@@ -1761,10 +1872,14 @@ impl Session {
         // A subagent explores and reports: no nested subagents, ever. `None`
         // (default set) becomes an explicit list without task.
         child_def.tools = Some(match child_def.tools {
-            Some(list) => list.into_iter().filter(|t| t != "task").collect(),
+            Some(list) => list
+                .into_iter()
+                .map(|t| super::tools::canonical(&t).to_string())
+                .filter(|t| t != "Agent")
+                .collect(),
             None => DEFAULT_TOOLS_ITER
                 .into_iter()
-                .filter(|t| **t != "task")
+                .filter(|t| **t != "Agent")
                 .map(|s| s.to_string())
                 .collect(),
         });
@@ -1790,7 +1905,7 @@ impl Session {
         let read_only = !child_def
             .effective_tools()
             .iter()
-            .any(|t| t == "write_file" || t == "edit_file" || t == "bash");
+            .any(|t| t == "Write" || t == "Edit" || t == "Bash");
         let child_def = Arc::new(child_def);
         let child_provider = match model_override {
             Some(model) if model != self.provider.model => Arc::new(Provider::new(
@@ -2273,6 +2388,8 @@ impl Session {
         let opts = TurnOptions {
             max_tokens: None,
             abort: self.ctx.abort.clone(),
+            // The compaction summary does not need the reasoning channel.
+            thinking: false,
         };
         self.provider
             .stream_turn_with(COMPACTION_PROMPT, &snapshot, &[], &sink, &opts)
@@ -2564,6 +2681,28 @@ mod tests {
     }
 
     #[test]
+    fn at_mentions_pick_word_initial_tokens_once() {
+        assert_eq!(
+            Session::extract_at_mentions("look at @src/lib.rs and @src/lib.rs again"),
+            vec!["src/lib.rs".to_string()]
+        );
+        assert_eq!(
+            Session::extract_at_mentions("email me at a@b, @todo ok"),
+            vec!["todo".to_string()]
+        );
+        assert!(Session::extract_at_mentions("no mentions /skill run").is_empty());
+    }
+
+    #[test]
+    fn truncate_chars_cuts_on_a_char_boundary() {
+        let long = "汉".repeat(50);
+        let out = Session::truncate_chars(&long, 10);
+        assert!(out.starts_with("汉".repeat(10).as_str()));
+        assert!(out.ends_with("[truncated]"));
+        assert_eq!(Session::truncate_chars("short", 10), "short");
+    }
+
+    #[test]
     fn strip_analysis_removes_the_drafting_block_and_keeps_the_summary() {
         let text =
             "<analysis>\nthinking...\n</analysis>\n\n1. Primary Request and Intent:\nbuild it\n";
@@ -2589,8 +2728,8 @@ mod tests {
                 role: "assistant".into(),
                 content: vec![Content::ToolUse {
                     id: "t1".into(),
-                    name: "read_file".into(),
-                    input: json!({"path": "a"}),
+                    name: "Read".into(),
+                    input: json!({"file_path": "a"}),
                     input_error: None,
                 }],
             },
@@ -2606,8 +2745,8 @@ mod tests {
                 role: "assistant".into(),
                 content: vec![Content::ToolUse {
                     id: "t1".into(),
-                    name: "read_file".into(),
-                    input: json!({"path": "a"}),
+                    name: "Read".into(),
+                    input: json!({"file_path": "a"}),
                     input_error: None,
                 }],
             },
