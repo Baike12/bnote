@@ -3477,23 +3477,29 @@ input[type="range"] {
 /* Collapsible reasoning block (after ZCode Reasoning): it collapses while
    streaming and the last line shows a scrolling summary, on completion the
    elapsed time appears; the content is plain text with a height limit and
-   internal scrolling, sticking to the bottom. The left rule marks it as
-   process content. */
+   internal scrolling, sticking to the bottom. The summary is one row with the
+   same geometry as the tool rows (`.agent-tool`), so the process list reads as
+   one column instead of a quoted block next to flat rows. */
 .agent-thinking {
-  margin: 0 0 8px;
-  border-left: 2px solid var(--border);
+  margin: 2px 0 6px;
+  font-size: calc(var(--agent-text) * 0.8);
 }
 .agent-thinking summary {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   min-width: 0;
-  padding: 1px 0 1px 8px;
-  font-size: calc(var(--agent-text) * 0.8);
-  color: var(--text-faint);
+  padding: 3px 8px;
+  margin: 0 -8px;
+  border-radius: 8px;
+  color: var(--text-dim, var(--text));
   cursor: pointer;
   user-select: none;
   list-style: none;
+}
+.agent-thinking summary:hover {
+  background: var(--bg2);
+  color: var(--text);
 }
 .agent-thinking summary::-webkit-details-marker { display: none; }
 .agent-thinking-icon {
@@ -3505,6 +3511,7 @@ input[type="range"] {
 .agent-thinking-done {
   flex-shrink: 0;
   font-weight: 500;
+  color: var(--text-faint);
 }
 /* Streaming "thinking": an accent gradient sweeps across the text (a rotating
    loader would occupy the renderer for a long time). */
@@ -3550,13 +3557,15 @@ input[type="range"] {
   max-height: 240px;
   overflow-y: auto;
   margin-top: 3px;
-  padding: 2px 0 2px 10px;
+  /* Hangs under the label, not under the icon: 8 (row padding) + 14 (icon) + 7 (gap). */
+  padding: 2px 8px 2px 21px;
   font-size: calc(var(--agent-text) * 0.83);
   line-height: 1.5;
   color: var(--text-faint);
   white-space: pre-wrap;
   word-break: break-word;
 }
+.agent-thinking[open] > summary .agent-tool-chevron { transform: rotate(90deg); }
 
 /* An image sent along with a user message: a small monospace thumbnail
    inside the bubble, its rounded corners hugging the inner edge. */
@@ -3791,7 +3800,9 @@ input[type="range"] {
   margin: 0 0 4px;
   font-size: calc(var(--agent-text) * 0.8);
 }
-.agent-turn-work summary {
+/* The section header only (`>`): a descendant selector here would also draw
+   its bottom rule under every tool and thinking row inside the section. */
+.agent-turn-work > summary {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3804,8 +3815,8 @@ input[type="range"] {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
   color: var(--text-dim, var(--text));
 }
-.agent-turn-work summary::-webkit-details-marker { display: none; }
-.agent-turn-work summary:hover {
+.agent-turn-work > summary::-webkit-details-marker { display: none; }
+.agent-turn-work > summary:hover {
   background: var(--bg2);
   color: var(--text);
 }
