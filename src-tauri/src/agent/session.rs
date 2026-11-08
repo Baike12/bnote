@@ -47,6 +47,8 @@ const MAX_COMPACT_FAILURES: u32 = 3;
 const ESCALATED_MAX_TOKENS: u32 = 64_000;
 /// How many "resume" messages the loop injects after the escalation.
 const MAX_OUTPUT_TOKENS_RECOVERY: u32 = 3;
+/// How often a `pause_turn` may resume the same turn (Anthropic long turns).
+const MAX_PAUSE_RESUMES: u32 = 3;
 /// Concurrent tools per batch (CC's CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY).
 const MAX_TOOL_CONCURRENCY: usize = 10;
 
@@ -579,6 +581,9 @@ impl Session {
                     for c in content {
                         messages += match c {
                             Content::Text { text } => estimate_tokens(text),
+                            // The thinking text occupies context just like the
+                            // reply text does (it is replayed each round).
+                            Content::Thinking { text, .. } => estimate_tokens(text),
                             // An image's token cost comes from its pixel size,
                             // not its base64 length; a screenshot lands around
                             // this order. The card only needs the magnitude.
@@ -1049,6 +1054,8 @@ impl Session {
         let mut max_tokens_override: Option<u32> = None;
         let mut escalations = 0u32;
         let mut recoveries = 0u32;
+        // `pause_turn` resumes (Anthropic long turns), capped like stop blocks.
+        let mut pause_resumes = 0u32;
         // Stop hooks may force another turn; capped so a broken hook cannot
         // loop forever.
         let mut stop_blocks = 0u32;
@@ -1100,14 +1107,11 @@ impl Session {
                     cache_read: usage.cache_read,
                 });
             }
-            // Assemble the assistant message.
-            let mut content: Vec<Content> = Vec::new();
-            if !turn.text.is_empty() {
-                content.push(Content::Text {
-                    text: turn.text.clone(),
-                });
-            }
-            content.extend(turn.tool_calls.iter().cloned());
+            // Assemble the assistant message from the ordered blocks: an
+            // interleaved-thinking model emits thinking between tool calls, and
+            // the vendor contract (MiniMax-M3.1) requires the full response —
+            // thinking blocks included — back in the history each round.
+            let content: Vec<Content> = turn.blocks.clone();
             if let Ok(mut items) = self.items.lock() {
                 items.push(ChatItem::Message {
                     role: "assistant".into(),
@@ -1137,6 +1141,31 @@ impl Session {
                 return Ok(TurnOutcome::new("max_tokens"));
             }
             if turn.tool_calls.is_empty() {
+                // Anthropic long-turn semantics: `pause_turn` pauses a turn that
+                // grew too long server-side; the partial assistant message is
+                // already in the history and the documented resume is simply
+                // re-requesting. Capped so a chatty gateway cannot spin here.
+                if turn.stop_reason == "pause_turn" {
+                    if pause_resumes < MAX_PAUSE_RESUMES {
+                        pause_resumes += 1;
+                        continue;
+                    }
+                    self.emit(AgentEvent::Notice {
+                        text: format!("暂停续跑超过 {MAX_PAUSE_RESUMES} 次,本轮结束"),
+                    });
+                }
+                // A non-standard stop the user must see (refusal / context
+                // exceeded / provider quirks); max_tokens has its own recovery
+                // above and the truncation notice was already emitted by the
+                // provider.
+                if !turn.hit_max_tokens {
+                    match turn.stop_reason.as_str() {
+                        "" | "end_turn" | "stop" | "pause_turn" | "stream_truncated" => {}
+                        other => self.emit(AgentEvent::Notice {
+                            text: format!("模型停止原因:{other}"),
+                        }),
+                    }
+                }
                 // The model is done — but a background task may have finished
                 // while it was writing: drain the wakeups and keep the turn
                 // alive so the model sees them (the wake-on-event path).
@@ -2464,8 +2493,14 @@ fn drop_incomplete_tail(items: &mut Vec<ChatItem>) {
     if role != "assistant" {
         return;
     }
+    // An unpaired tool_use is an interrupted round; a thinking-only tail is the
+    // same interruption caught mid-thought (and replaying thinking without the
+    // tool call it reasoned about is meaningless — cc strips trailing thinking).
     let has_tool_use = content.iter().any(|c| matches!(c, Content::ToolUse { .. }));
-    if has_tool_use || content.is_empty() {
+    let has_payload = content
+        .iter()
+        .any(|c| matches!(c, Content::Text { .. } | Content::ToolUse { .. }));
+    if has_tool_use || !has_payload {
         items.pop();
     }
 }

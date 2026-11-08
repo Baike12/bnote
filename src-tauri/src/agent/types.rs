@@ -10,6 +10,17 @@ pub enum Content {
     Text {
         text: String,
     },
+    /// The model's thinking block (Anthropic `thinking` / OpenAI
+    /// `reasoning_content`). It stays in the assistant history: MiniMax-M3.1's
+    /// tool-use contract requires the full response — thinking blocks included —
+    /// to be passed back each round, and dropping them breaks the interleaved
+    /// reasoning chain mid-task (the model loses context and stops issuing tool
+    /// calls). `signature` is the provider's integrity seal, replayed as-is.
+    Thinking {
+        text: String,
+        #[serde(default)]
+        signature: String,
+    },
     /// Image attachment in a user message (base64, cropped by the front end).
     /// The provider maps it to the format of each protocol: Anthropic
     /// (base64 source) / OpenAI (data URL).
@@ -192,7 +203,15 @@ pub type EventSink<'a> = &'a (dyn Fn(AgentEvent) + Send + Sync + 'a);
 #[derive(Debug, Default)]
 pub struct TurnResult {
     pub text: String,
+    /// The OpenAI path accumulates reasoning here (Anthropic keeps thinking in
+    /// `blocks` directly); `finish_openai_turn` moves both into `blocks`.
+    pub thinking: String,
     pub tool_calls: Vec<Content>,
+    /// The assistant content blocks in stream order (thinking / text / tool_use
+    /// interleaved). This is the source of truth the history is assembled from:
+    /// an interleaved-thinking model may emit several thinking blocks inside one
+    /// message, and their positions between the tool calls carry meaning.
+    pub blocks: Vec<Content>,
     pub stop_reason: String,
     pub usage: Option<TokenUsage>,
     /// The model's output hit the token ceiling: the loop may raise the ceiling

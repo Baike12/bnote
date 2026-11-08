@@ -118,6 +118,10 @@ where
 fn anthropic_block(c: &Content) -> Value {
     match c {
         Content::Text { text } => json!({"type": "text", "text": text}),
+        // The wire name of the thinking text is `thinking`, not `text`.
+        Content::Thinking { text, signature } => {
+            json!({"type": "thinking", "thinking": text, "signature": signature})
+        }
         // Images only occur in user messages (see ChatItem::user_message).
         Content::Image { media_type, data } => json!({
             "type": "image",
@@ -213,10 +217,12 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
         let ChatItem::Message { role, content } = item;
         if role == "assistant" {
             let mut text = String::new();
+            let mut thinking = String::new();
             let mut tool_calls: Vec<&Content> = Vec::new();
             for c in content {
                 match c {
                     Content::Text { text: t } => text.push_str(t),
+                    Content::Thinking { text: t, .. } => thinking.push_str(t),
                     Content::ToolUse { .. } => tool_calls.push(c),
                     // Images only occur in user messages by construction; should one
                     // appear here it could not be carried anyway (OpenAI assistant
@@ -226,6 +232,11 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
                 }
             }
             let mut msg = json!({"role": "assistant"});
+            if !thinking.is_empty() {
+                // MiniMax / DeepSeek convention: the reasoning rides on the
+                // assistant message and must be kept when passing it back.
+                msg["reasoning_content"] = json!(thinking);
+            }
             if !text.is_empty() {
                 msg["content"] = json!(text);
             }
@@ -262,6 +273,9 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
             for c in content {
                 match c {
                     Content::Text { text } => text_parts.push(text.clone()),
+                    // Thinking belongs to an assistant message; a user message
+                    // never carries one, so there is nothing to drop here.
+                    Content::Thinking { .. } => {}
                     Content::Image { .. } => images.push(c.clone()),
                     Content::ToolResult { .. } => results.push(c),
                     Content::ToolUse { .. } => {}
@@ -620,7 +634,28 @@ impl Provider {
                 .read_anthropic_stream(resp, sink, &opts.abort, &mut turn)
                 .await;
             match outcome {
-                Ok(()) => return Ok(turn),
+                Ok(()) => {
+                    // A stream that ends without `message_delta` never carried a
+                    // stop reason: the gateway closed the connection mid-message
+                    // (observed on long tool-loop turns). Replay is only safe
+                    // while nothing reached the user; afterwards the partial
+                    // output is kept and the truncation is said out loud — a
+                    // silent end reads like the model ignored the task.
+                    if turn.stop_reason.is_empty() {
+                        let emitted = !turn.text.is_empty() || !turn.tool_calls.is_empty();
+                        if !emitted {
+                            return Err(StreamFailure::Retryable(
+                                "模型流提前结束(网关未发送 stop 事件)".to_string(),
+                            )
+                            .into());
+                        }
+                        sink(AgentEvent::Notice {
+                            text: "模型流提前中断,本轮回复可能不完整".to_string(),
+                        });
+                        turn.stop_reason = "stream_truncated".to_string();
+                    }
+                    return Ok(turn);
+                }
                 Err(StreamFailure::Aborted) => return Err(ABORTED.to_string()),
                 Err(failure) => {
                     let emitted = !turn.text.is_empty() || !turn.tool_calls.is_empty();
@@ -657,7 +692,7 @@ impl Provider {
         abort: &Arc<Abort>,
         turn: &mut TurnResult,
     ) -> Result<(), StreamFailure> {
-        let mut current_tool: Option<(String, String, String)> = None; // (id, name, args)
+        let mut state = AnthropicStreamState::default();
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
         while let Some(bytes) = next_chunk_abort(&mut stream, abort).await? {
@@ -666,83 +701,150 @@ impl Provider {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                match v["type"].as_str() {
-                    Some("message_start") => {
-                        turn.usage = anthropic_start_usage(&v["message"]);
-                    }
-                    Some("content_block_start") => {
-                        let block = &v["content_block"];
-                        if block["type"] == "tool_use" {
-                            current_tool = Some((
-                                block["id"].as_str().unwrap_or_default().to_string(),
-                                block["name"].as_str().unwrap_or_default().to_string(),
-                                String::new(),
-                            ));
-                        }
-                    }
-                    Some("content_block_delta") => {
-                        let delta = &v["delta"];
-                        match delta["type"].as_str() {
-                            Some("text_delta") => {
-                                let text = delta["text"].as_str().unwrap_or_default();
-                                turn.text.push_str(text);
-                                sink(AgentEvent::TextDelta {
-                                    text: text.to_string(),
-                                });
-                            }
-                            // Streaming text of a thinking block (never enters the
-                            // history, see AgentEvent::ThinkingDelta); signature_delta
-                            // is the block signature, only meaningful when sent back,
-                            // so it is dropped here.
-                            Some("thinking_delta") => {
-                                let text = delta["thinking"].as_str().unwrap_or_default();
-                                if !text.is_empty() {
-                                    sink(AgentEvent::ThinkingDelta {
-                                        text: text.to_string(),
-                                    });
-                                }
-                            }
-                            Some("input_json_delta") => {
-                                if let Some((_, _, args)) = current_tool.as_mut() {
-                                    args.push_str(
-                                        delta["partial_json"].as_str().unwrap_or_default(),
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    Some("content_block_stop") => {
-                        if let Some((id, name, args)) = current_tool.take() {
-                            push_tool_call(turn, id, name, &args);
-                        }
-                    }
-                    Some("message_delta") => {
-                        turn.stop_reason = v["delta"]["stop_reason"]
-                            .as_str()
-                            .unwrap_or("end_turn")
-                            .to_string();
-                        if turn.stop_reason == "max_tokens" {
-                            turn.hit_max_tokens = true;
-                        }
-                        turn.usage = anthropic_output_usage(turn.usage, &v["usage"]);
-                    }
-                    Some("error") => {
-                        return Err(StreamFailure::Fatal(format!(
-                            "api error: {}",
-                            v["error"]["message"].as_str().unwrap_or("unknown")
-                        )));
-                    }
-                    _ => {}
+                for out in state.apply(turn, &v)? {
+                    sink(out);
                 }
             }
         }
         Ok(())
     }
+}
 
-    // ------------------------------------------------------------------
-    // OpenAI-compatible /v1/chat/completions
-    // ------------------------------------------------------------------
+/// Incremental state of one Anthropic SSE stream. `apply` folds one parsed
+/// `data:` event into the turn and returns the UI events it produces — pure
+/// logic, unit-testable without an HTTP fixture.
+#[derive(Default)]
+struct AnthropicStreamState {
+    /// The tool_use block being streamed: (id, name, partial input JSON).
+    current_tool: Option<(String, String, String)>,
+    /// The thinking block being streamed: (text, signature).
+    current_thinking: Option<(String, String)>,
+    /// Index into `blocks` of the text block being streamed (text deltas of one
+    /// content block merge into it, so block boundaries survive).
+    current_text: Option<usize>,
+}
+
+impl AnthropicStreamState {
+    fn apply(
+        &mut self,
+        turn: &mut TurnResult,
+        v: &Value,
+    ) -> Result<Vec<AgentEvent>, StreamFailure> {
+        match v["type"].as_str() {
+            Some("message_start") => {
+                turn.usage = anthropic_start_usage(&v["message"]);
+                Ok(Vec::new())
+            }
+            Some("content_block_start") => {
+                let block = &v["content_block"];
+                match block["type"].as_str() {
+                    Some("tool_use") => {
+                        self.current_tool = Some((
+                            block["id"].as_str().unwrap_or_default().to_string(),
+                            block["name"].as_str().unwrap_or_default().to_string(),
+                            String::new(),
+                        ));
+                    }
+                    Some("thinking") => {
+                        self.current_thinking = Some((String::new(), String::new()));
+                    }
+                    Some("text") => {
+                        self.current_text = Some(turn.blocks.len());
+                        turn.blocks.push(Content::Text {
+                            text: String::new(),
+                        });
+                    }
+                    _ => {}
+                }
+                Ok(Vec::new())
+            }
+            Some("content_block_delta") => {
+                let delta = &v["delta"];
+                match delta["type"].as_str() {
+                    Some("text_delta") => {
+                        let text = delta["text"].as_str().unwrap_or_default();
+                        turn.text.push_str(text);
+                        if let Some(index) = self.current_text {
+                            if let Some(Content::Text { text: buf }) = turn.blocks.get_mut(index) {
+                                buf.push_str(text);
+                            }
+                        }
+                        Ok(vec![AgentEvent::TextDelta {
+                            text: text.to_string(),
+                        }])
+                    }
+                    // Streaming text of a thinking block; signature_delta is the
+                    // block's integrity seal, needed when the block is sent back
+                    // (MiniMax emits it, some gateways skip it — replayed as an
+                    // empty string then).
+                    Some("thinking_delta") => {
+                        let text = delta["thinking"].as_str().unwrap_or_default();
+                        if let Some((buf, _)) = self.current_thinking.as_mut() {
+                            buf.push_str(text);
+                        }
+                        if text.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            Ok(vec![AgentEvent::ThinkingDelta {
+                                text: text.to_string(),
+                            }])
+                        }
+                    }
+                    Some("signature_delta") => {
+                        let sig = delta["signature"].as_str().unwrap_or_default();
+                        if let Some((_, buf)) = self.current_thinking.as_mut() {
+                            buf.push_str(sig);
+                        }
+                        Ok(Vec::new())
+                    }
+                    Some("input_json_delta") => {
+                        if let Some((_, _, args)) = self.current_tool.as_mut() {
+                            args.push_str(delta["partial_json"].as_str().unwrap_or_default());
+                        }
+                        Ok(Vec::new())
+                    }
+                    _ => Ok(Vec::new()),
+                }
+            }
+            Some("content_block_stop") => {
+                if let Some((id, name, args)) = self.current_tool.take() {
+                    let call = push_tool_call(turn, id, name, &args);
+                    turn.blocks.push(call);
+                }
+                if let Some((text, signature)) = self.current_thinking.take() {
+                    turn.blocks.push(Content::Thinking { text, signature });
+                }
+                self.current_text = None;
+                Ok(Vec::new())
+            }
+            Some("message_delta") => {
+                turn.stop_reason = v["delta"]["stop_reason"]
+                    .as_str()
+                    .unwrap_or("end_turn")
+                    .to_string();
+                if turn.stop_reason == "max_tokens" {
+                    turn.hit_max_tokens = true;
+                }
+                turn.usage = anthropic_output_usage(turn.usage, &v["usage"]);
+                Ok(Vec::new())
+            }
+            Some("error") => {
+                // A stream-level error surfaces verbatim; the caller maps it to
+                // a retry or a turn failure.
+                Err(StreamFailure::Fatal(format!(
+                    "api error: {}",
+                    v["error"]["message"].as_str().unwrap_or("unknown")
+                )))
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+}
+
+// ----------------------------------------------------------------------
+// OpenAI-compatible /v1/chat/completions
+// ----------------------------------------------------------------------
+impl Provider {
     async fn stream_openai(
         &self,
         system: &str,
@@ -861,12 +963,15 @@ impl Provider {
                 let delta = &v["choices"][0]["delta"];
                 // Reasoning models (DeepSeek R1 / GLM / Qwen and friends) expose
                 // their thinking field on the OpenAI-compatible stream: the common
-                // name is reasoning_content, some GLM gateways use reasoning.
+                // name is reasoning_content, some GLM gateways use reasoning. It
+                // accumulates into the turn so the next request carries it back
+                // (the vendor contract for MiniMax's OpenAI endpoint).
                 if let Some(text) = delta["reasoning_content"]
                     .as_str()
                     .or_else(|| delta["reasoning"].as_str())
                 {
                     if !text.is_empty() {
+                        turn.thinking.push_str(text);
                         sink(AgentEvent::ThinkingDelta {
                             text: text.to_string(),
                         });
@@ -909,28 +1014,31 @@ impl Provider {
     }
 }
 
-/// A parsed tool call goes into the turn. A malformed `input_json` is recorded
-/// as `input_error` instead of silently becoming `{}`: the session answers that
-/// call with an InputValidationError and the model gets a chance to retry.
-fn push_tool_call(turn: &mut TurnResult, id: String, name: String, args: &str) {
+/// A parsed tool call goes into the turn and is returned for the ordered
+/// `blocks` list. A malformed `input_json` is recorded as `input_error` instead
+/// of silently becoming `{}`: the session answers that call with an
+/// InputValidationError and the model gets a chance to retry.
+fn push_tool_call(turn: &mut TurnResult, id: String, name: String, args: &str) -> Content {
     // The API tool name is the Claude Code-aligned one; a legacy name from an
     // old gateway or a replayed history is normalized here once, so events,
     // history and permissions all downstream see a single vocabulary.
     let name = super::tools::canonical(&name).to_string();
-    match parse_tool_input(args) {
-        Ok(input) => turn.tool_calls.push(Content::ToolUse {
+    let call = match parse_tool_input(args) {
+        Ok(input) => Content::ToolUse {
             id,
             name,
             input,
             input_error: None,
-        }),
-        Err(error) => turn.tool_calls.push(Content::ToolUse {
+        },
+        Err(error) => Content::ToolUse {
             id,
             name,
             input: json!({}),
             input_error: Some(error),
-        }),
-    }
+        },
+    };
+    turn.tool_calls.push(call.clone());
+    call
 }
 
 fn parse_tool_input(args: &str) -> Result<Value, String> {
@@ -941,6 +1049,9 @@ fn parse_tool_input(args: &str) -> Result<Value, String> {
 }
 
 /// The OpenAI path accumulates calls by index; the same validation applies.
+/// The ordered blocks are assembled here too: reasoning first, then text, then
+/// the tool calls (the OpenAI stream carries reasoning on `reasoning_content`
+/// and the MiniMax contract requires it back on the next request).
 fn finish_openai_turn(turn: &mut TurnResult, calls: Vec<(String, String, String)>) {
     for (id, name, args) in calls {
         if name.is_empty() {
@@ -951,7 +1062,23 @@ fn finish_openai_turn(turn: &mut TurnResult, calls: Vec<(String, String, String)
         } else {
             id
         };
-        push_tool_call(turn, id, name, &args);
+        let call = push_tool_call(turn, id, name, &args);
+        turn.blocks.push(call);
+    }
+    if !turn.text.is_empty() {
+        // Text arrives as deltas; one message becomes one text block.
+        let text = std::mem::take(&mut turn.text);
+        turn.blocks.insert(0, Content::Text { text });
+    }
+    if !turn.thinking.is_empty() {
+        let thinking = std::mem::take(&mut turn.thinking);
+        turn.blocks.insert(
+            0,
+            Content::Thinking {
+                text: thinking,
+                signature: String::new(),
+            },
+        );
     }
     if turn.stop_reason.is_empty() {
         turn.stop_reason = "stop".into();
@@ -1028,6 +1155,120 @@ fn find_double_newline(buf: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::agent::types::InlineImage;
+
+    /// Feeds a raw SSE byte stream into the anthropic event state, the same way
+    /// `read_anthropic_stream` does, without an HTTP fixture.
+    fn feed_anthropic(turn: &mut TurnResult, sse: &str) {
+        let mut state = AnthropicStreamState::default();
+        let mut parser = SseParser::new();
+        for event in parser.feed(sse.as_bytes()) {
+            let v: Value = serde_json::from_str(&event).unwrap();
+            let _ = state.apply(turn, &v);
+        }
+    }
+
+    #[test]
+    fn anthropic_stream_keeps_thinking_blocks_in_order_and_round_trips_them() {
+        // MiniMax-M3.1's interleaved shape: thinking(+signature) → text →
+        // tool_use → thinking → tool_use inside ONE message. The blocks must
+        // replay in exactly this order — the vendor contract requires the full
+        // response back, and dropping thinking broke long tool loops.
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step one\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig1\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Let me look.\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Read\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"a.ts\\\"}\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":3,\"content_block\":{\"type\":\"thinking\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":3,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step two\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":3}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":4,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t2\",\"name\":\"Grep\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":4,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":4}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":9}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let mut turn = TurnResult::default();
+        feed_anthropic(&mut turn, sse);
+        assert_eq!(turn.stop_reason, "tool_use");
+        assert_eq!(turn.text, "Let me look.");
+        assert_eq!(turn.tool_calls.len(), 2);
+        let kinds: Vec<&str> = turn
+            .blocks
+            .iter()
+            .map(|c| match c {
+                Content::Thinking { .. } => "thinking",
+                Content::Text { .. } => "text",
+                Content::ToolUse { .. } => "tool_use",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["thinking", "text", "tool_use", "thinking", "tool_use"]
+        );
+        // The wire round-trip: the thinking block goes back with `thinking` as
+        // the text field name plus its signature, ready for the next request.
+        let wire: Vec<Value> = turn.blocks.iter().map(anthropic_block).collect();
+        assert_eq!(wire[0]["type"], "thinking");
+        assert_eq!(wire[0]["thinking"], "step one");
+        assert_eq!(wire[0]["signature"], "sig1");
+        assert_eq!(wire[3]["thinking"], "step two");
+        assert_eq!(wire[2]["type"], "tool_use");
+        assert_eq!(wire[2]["id"], "t1");
+    }
+
+    #[test]
+    fn openai_assistant_history_carries_reasoning_content_back() {
+        let items = vec![ChatItem::Message {
+            role: "assistant".into(),
+            content: vec![
+                Content::Thinking {
+                    text: "why".into(),
+                    signature: String::new(),
+                },
+                Content::Text {
+                    text: "answer".into(),
+                },
+                Content::ToolUse {
+                    id: "t1".into(),
+                    name: "Read".into(),
+                    input: json!({}),
+                    input_error: None,
+                },
+            ],
+        }];
+        let messages = openai_messages("", &items);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["reasoning_content"], "why");
+        assert_eq!(messages[0]["content"], "answer");
+        assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn openai_turn_assembles_blocks_in_reasoning_text_tool_order() {
+        let mut turn = TurnResult::default();
+        turn.text = "hi".into();
+        turn.thinking = "hmm".into();
+        finish_openai_turn(&mut turn, vec![("t1".into(), "Read".into(), "{}".into())]);
+        let kinds: Vec<&str> = turn
+            .blocks
+            .iter()
+            .map(|c| match c {
+                Content::Thinking { .. } => "thinking",
+                Content::Text { .. } => "text",
+                Content::ToolUse { .. } => "tool_use",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["thinking", "text", "tool_use"]);
+    }
 
     #[tokio::test]
     async fn stream_idle_timeout_errors_instead_of_hanging_forever() {
