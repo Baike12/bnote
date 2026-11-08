@@ -53,6 +53,7 @@ import {
   fitInputHeight,
   nextConvKey,
   studyContentKey,
+  thinkingSealFor,
   toSessionNode,
   type ChatEntry,
   type Conv,
@@ -939,6 +940,7 @@ export function AgentPanel() {
       turn = {
         text: "",
         thinking: "",
+        thinkingSeals: [],
         thinkingStart: null,
         thinkSeconds: null,
         startedAt: Date.now(),
@@ -946,6 +948,7 @@ export function AgentPanel() {
         tools: [],
         persistedTextLen: 0,
         persistedThinkLen: 0,
+        persistedSealCount: 0,
         persistedToolCount: 0,
       };
       turnsRef.current.set(convKey, turn);
@@ -1039,15 +1042,24 @@ export function AgentPanel() {
     const thinking = turn.thinking.slice(turn.persistedThinkLen);
     const fresh = tools.length > 0 || text.length > 0 || thinking.length > 0 || turn.error;
     if (!fresh) return;
+    // The seal(s) that closed with this slice. A flush happens before the next
+    // round appends anything, so `turn.thinking.length` is exactly where this
+    // round's text ends.
+    const thinkingSignature = thinkingSealFor(
+      turn.thinkingSeals.slice(turn.persistedSealCount),
+      turn.thinking.length,
+    );
     turn.persistedToolCount = turn.tools.length;
     turn.persistedTextLen = turn.text.length;
     turn.persistedThinkLen = turn.thinking.length;
+    turn.persistedSealCount = turn.thinkingSeals.length;
     const firstWrite = !metaWrittenRef.current.get(convKey);
     if (firstWrite) metaWrittenRef.current.set(convKey, true);
     const line = assistantRoundLine({
       at: Date.now(),
       text,
       thinking: thinking || undefined,
+      thinkingSignature,
       thinkSeconds: turn.thinkSeconds,
       turnMs: turn.turnMs,
       tools,
@@ -1124,6 +1136,14 @@ export function AgentPanel() {
         turn.thinking += event.text;
         turn.thinkingStart ??= Date.now();
         writeEntries(conv.key, turn, false, null);
+        break;
+      }
+      case "thinking_block_end": {
+        // The seal is only stored, never shown: it rides on the record line so
+        // a restored session replays the thinking block exactly as received.
+        const turn = turnsRef.current.get(conv.key);
+        if (turn)
+          turn.thinkingSeals.push({ end: turn.thinking.length, signature: event.signature });
         break;
       }
       case "text_delta": {

@@ -151,6 +151,8 @@ export interface AgentForkSpec {
 export type AgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
+  /** A thinking block closed; `signature` is its integrity seal (empty when the gateway sends none). */
+  | { type: "thinking_block_end"; signature: string }
   | { type: "tool_start"; id: string; name: string; input: unknown }
   | { type: "tool_end"; id: string; ok: boolean; output: string; images?: AgentImage[] }
   /** The token usage of one model request; only the latest one is kept = the current context occupancy. */

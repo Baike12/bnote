@@ -29,6 +29,7 @@ pub const ABORTED: &str = "ABORTED";
 
 /// One streaming attempt failed in a way worth repeating: nothing has been shown
 /// to the user yet, so the request can be replayed from scratch.
+#[derive(Debug)]
 enum StreamFailure {
     Aborted,
     Retryable(String),
@@ -811,11 +812,17 @@ impl AnthropicStreamState {
                     let call = push_tool_call(turn, id, name, &args);
                     turn.blocks.push(call);
                 }
-                if let Some((text, signature)) = self.current_thinking.take() {
-                    turn.blocks.push(Content::Thinking { text, signature });
-                }
                 self.current_text = None;
-                Ok(Vec::new())
+                let Some((text, signature)) = self.current_thinking.take() else {
+                    return Ok(Vec::new());
+                };
+                turn.blocks.push(Content::Thinking {
+                    text,
+                    signature: signature.clone(),
+                });
+                // The seal travels with the block boundary: the front end
+                // persists both, and replays the signature on restore.
+                Ok(vec![AgentEvent::ThinkingBlockEnd { signature }])
             }
             Some("message_delta") => {
                 turn.stop_reason = v["delta"]["stop_reason"]
@@ -1159,12 +1166,20 @@ mod tests {
     /// Feeds a raw SSE byte stream into the anthropic event state, the same way
     /// `read_anthropic_stream` does, without an HTTP fixture.
     fn feed_anthropic(turn: &mut TurnResult, sse: &str) {
+        feed_anthropic_events(turn, sse);
+    }
+
+    /// The same fold as `feed_anthropic`, keeping the UI events so a test can
+    /// assert what the stream announced.
+    fn feed_anthropic_events(turn: &mut TurnResult, sse: &str) -> Vec<AgentEvent> {
         let mut state = AnthropicStreamState::default();
         let mut parser = SseParser::new();
+        let mut out = Vec::new();
         for event in parser.feed(sse.as_bytes()) {
             let v: Value = serde_json::from_str(&event).unwrap();
-            let _ = state.apply(turn, &v);
+            out.extend(state.apply(turn, &v).unwrap());
         }
+        out
     }
 
     #[test]
@@ -1195,7 +1210,7 @@ mod tests {
             "data: {\"type\":\"message_stop\"}\n\n",
         );
         let mut turn = TurnResult::default();
-        feed_anthropic(&mut turn, sse);
+        let events = feed_anthropic_events(&mut turn, sse);
         assert_eq!(turn.stop_reason, "tool_use");
         assert_eq!(turn.text, "Let me look.");
         assert_eq!(turn.tool_calls.len(), 2);
@@ -1222,6 +1237,18 @@ mod tests {
         assert_eq!(wire[3]["thinking"], "step two");
         assert_eq!(wire[2]["type"], "tool_use");
         assert_eq!(wire[2]["id"], "t1");
+        // Every thinking block boundary reaches the front end with its seal, so
+        // the session record can store the signature and replay it on restore.
+        // A block without a signature_delta still announces the boundary (with
+        // an empty seal), which is what keeps two blocks from being merged.
+        let seals: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ThinkingBlockEnd { signature } => Some(signature.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seals, vec!["sig1", ""]);
     }
 
     #[test]

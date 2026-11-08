@@ -7,6 +7,7 @@ import {
   fitInputHeight,
   formatSessionTime,
   studyContentKey,
+  thinkingSealFor,
   thinkingSummaryLine,
   type ChatEntry,
 } from "./model";
@@ -37,6 +38,22 @@ describe("transcript round trip", () => {
     expect(entriesToLines(entries)).toEqual(lines);
   });
 
+  it("the thinking signature survives the round trip as a seal over the stored text", () => {
+    const signed: TranscriptLine = {
+      type: "assistant",
+      at: 2,
+      text: "答",
+      thinking: "想",
+      thinkingSignature: "sig1",
+      tools: [],
+    };
+    const entry = entryFromLine(signed);
+    expect(entry.turn?.thinkingSeals).toEqual([{ end: 1, signature: "sig1" }]);
+    // Restored turns are already on disk: re-writing them must not duplicate the seal.
+    expect(entry.turn?.persistedSealCount).toBe(1);
+    expect(entriesToLines([entry])).toEqual([{ ...signed, thinkSeconds: null, error: undefined }]);
+  });
+
   it("notice entries are display only and never reach the file", () => {
     const entries: ChatEntry[] = [
       { role: "notice", text: "连接中断", at: 1, items: null },
@@ -56,6 +73,46 @@ describe("transcript round trip", () => {
     expect(cloned).toBeDefined();
     if (cloned) cloned.ok = false;
     expect(source?.ok).toBe(true);
+  });
+
+  it("a clone shares no thinking seal either", () => {
+    const entry = entryFromLine({
+      type: "assistant",
+      at: 2,
+      text: "",
+      thinking: "想",
+      thinkingSignature: "sig1",
+      tools: [],
+    });
+    const copy = cloneEntry(entry);
+    const clonedSeal = copy.turn?.thinkingSeals[0];
+    if (clonedSeal) clonedSeal.signature = "tampered";
+    expect(entry.turn?.thinkingSeals[0]?.signature).toBe("sig1");
+  });
+});
+
+describe("thinkingSealFor", () => {
+  it("claims the signature only when one seal closes exactly at the end of the stored text", () => {
+    expect(thinkingSealFor([{ end: 5, signature: "sig1" }], 5)).toBe("sig1");
+  });
+
+  it("drops the signature when the seal covers only part of the text", () => {
+    // Still streaming (or the flush sliced a longer text): the seal is for
+    // another boundary and replaying it would not match the text.
+    expect(thinkingSealFor([{ end: 3, signature: "sig1" }], 5)).toBeUndefined();
+    // Two interleaved blocks: one stored block cannot carry two seals.
+    expect(
+      thinkingSealFor(
+        [
+          { end: 3, signature: "sig1" },
+          { end: 5, signature: "sig2" },
+        ],
+        5,
+      ),
+    ).toBeUndefined();
+    // A gateway without signatures still announces boundaries; nothing to store.
+    expect(thinkingSealFor([{ end: 5, signature: "" }], 5)).toBeUndefined();
+    expect(thinkingSealFor([], 5)).toBeUndefined();
   });
 });
 

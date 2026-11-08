@@ -27,11 +27,23 @@ export interface ToolRecord {
   images?: AgentImage[];
 }
 
+/**
+ * One thinking block's seal. `end` is the offset in `Turn.thinking` where the
+ * block stopped streaming: the boundary the panel needs to keep two blocks of
+ * one round apart, and what the record checks before claiming a signature.
+ */
+export interface ThinkingSeal {
+  end: number;
+  signature: string;
+}
+
 export interface Turn {
   /** Streaming text buffer for the current assistant reply. */
   text: string;
   /** The streamed thinking process. Displayed in the panel and replayed into the model history (the MiniMax contract requires the thinking blocks back each round). */
   thinking: string;
+  /** Seals of the thinking blocks closed so far, in stream order. */
+  thinkingSeals: ThinkingSeal[];
   /** Timestamp of the first thinking delta (used for the timer). */
   thinkingStart: number | null;
   /** How long the thinking took (in seconds, computed and frozen when the turn ends). */
@@ -47,8 +59,23 @@ export interface Turn {
   persistedTextLen: number;
   /** How much of `thinking` is already on disk. */
   persistedThinkLen: number;
+  /** How many of `thinkingSeals` are already on disk. */
+  persistedSealCount: number;
   /** How many of `tools` are already on disk (rounds flush in tool order). */
   persistedToolCount: number;
+}
+
+/**
+ * The signature a record line may claim for the thinking text ending at
+ * `end`. A record stores a round's thinking as ONE block, so a signature is
+ * only honest when exactly one seal closes exactly there: with two
+ * interleaved blocks (or a text still streaming) the seal covers only part of
+ * the text, and replaying it would send the provider a seal that does not
+ * match. MiniMax accepts the empty signature; a false one is the risk.
+ */
+export function thinkingSealFor(seals: ThinkingSeal[], end: number): string | undefined {
+  if (seals.length !== 1) return undefined;
+  return seals[0].signature && seals[0].end === end ? seals[0].signature : undefined;
 }
 
 /** A turn that carries only an error (the backend produced nothing before failing). */
@@ -56,6 +83,7 @@ export function errorTurn(message: string): Turn {
   return {
     text: "",
     thinking: "",
+    thinkingSeals: [],
     thinkingStart: null,
     thinkSeconds: null,
     startedAt: null,
@@ -64,6 +92,7 @@ export function errorTurn(message: string): Turn {
     error: message,
     persistedTextLen: 0,
     persistedThinkLen: 0,
+    persistedSealCount: 0,
     persistedToolCount: 0,
   };
 }
@@ -177,6 +206,7 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
       images: line.images,
     };
   }
+  const thinking = line.thinking ?? "";
   return {
     role: "assistant",
     text: line.text,
@@ -184,7 +214,12 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
     items: null,
     turn: {
       text: line.text,
-      thinking: line.thinking ?? "",
+      thinking,
+      // A stored signature seals the whole stored thinking text (that is the
+      // only shape the writer emits), so it comes back as one closed block.
+      thinkingSeals: line.thinkingSignature
+        ? [{ end: thinking.length, signature: line.thinkingSignature }]
+        : [],
       thinkingStart: null,
       thinkSeconds: line.thinkSeconds ?? null,
       startedAt: null,
@@ -193,7 +228,8 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
       error: line.error,
       // A restored turn never streams again: its record is complete on disk.
       persistedTextLen: line.text.length,
-      persistedThinkLen: (line.thinking ?? "").length,
+      persistedThinkLen: thinking.length,
+      persistedSealCount: line.thinkingSignature ? 1 : 0,
       persistedToolCount: (line.tools ?? []).length,
     },
   };
@@ -204,29 +240,38 @@ export function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
   // Notice entries are display-only status lines, never transcript content.
   return entries
     .filter((e) => e.role !== "notice")
-    .map((e): TranscriptLine =>
-      e.role === "user"
-        ? { type: "user", at: e.at, text: e.text, images: e.images }
-        : {
-            type: "assistant",
-            at: e.at,
-            text: e.text,
-            thinking: e.turn?.thinking ?? "",
-            thinkSeconds: e.turn?.thinkSeconds ?? null,
-            // The key only exists when a real duration was measured: an absent
-            // field keeps the line format lean (the same rule as `images`).
-            ...(e.turn?.turnMs != null ? { turnMs: e.turn.turnMs } : {}),
-            tools: e.turn?.tools ?? [],
-            error: e.turn?.error,
-          },
-    );
+    .map((e): TranscriptLine => {
+      if (e.role === "user") return { type: "user", at: e.at, text: e.text, images: e.images };
+      const thinkingSignature = e.turn
+        ? thinkingSealFor(e.turn.thinkingSeals, e.turn.thinking.length)
+        : undefined;
+      return {
+        type: "assistant",
+        at: e.at,
+        text: e.text,
+        thinking: e.turn?.thinking ?? "",
+        ...(thinkingSignature ? { thinkingSignature } : {}),
+        thinkSeconds: e.turn?.thinkSeconds ?? null,
+        // The key only exists when a real duration was measured: an absent
+        // field keeps the line format lean (the same rule as `images`).
+        ...(e.turn?.turnMs != null ? { turnMs: e.turn.turnMs } : {}),
+        tools: e.turn?.tools ?? [],
+        error: e.turn?.error,
+      };
+    });
 }
 
 export function cloneEntry(e: ChatEntry): ChatEntry {
   return {
     ...e,
     images: e.images?.map((img) => ({ ...img })),
-    turn: e.turn ? { ...e.turn, tools: e.turn.tools.map((t) => ({ ...t })) } : undefined,
+    turn: e.turn
+      ? {
+          ...e.turn,
+          tools: e.turn.tools.map((t) => ({ ...t })),
+          thinkingSeals: e.turn.thinkingSeals.map((s) => ({ ...s })),
+        }
+      : undefined,
   };
 }
 

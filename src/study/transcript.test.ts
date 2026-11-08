@@ -110,6 +110,30 @@ describe("historyFromTranscript", () => {
     expect(history[0].role).toBe("user");
   });
 
+  it("the thinking block is replayed with its signature (the vendor contract: the full block back each round)", () => {
+    const history = historyFromTranscript([
+      { type: "user", at: 1, text: "问" },
+      {
+        type: "assistant",
+        at: 2,
+        text: "答",
+        thinking: "想",
+        thinkingSignature: "sig1",
+        tools: [{ id: "t1", name: "read", input: {}, output: "ok", ok: true }],
+      },
+    ]);
+    expect(history[1].content).toEqual([
+      { type: "thinking", text: "想", signature: "sig1" },
+      { type: "text", text: "答" },
+      { type: "tool_use", id: "t1", name: "read", input: {} },
+    ]);
+  });
+
+  it("a record without a signature replays the block with an empty seal", () => {
+    const history = historyFromTranscript([{ type: "assistant", at: 2, text: "", thinking: "想" }]);
+    expect(history[0].content).toEqual([{ type: "thinking", text: "想", signature: "" }]);
+  });
+
   it("a multi-turn conversation keeps the one-question-one-answer order", () => {
     const history = historyFromTranscript([
       { type: "user", at: 1, text: "Q1" },

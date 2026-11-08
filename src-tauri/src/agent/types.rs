@@ -119,10 +119,16 @@ pub enum AgentEvent {
     /// Streaming text of the assistant reply.
     TextDelta { text: String },
     /// Streaming thinking/reasoning (an Anthropic thinking block / the
-    /// OpenAI-compatible reasoning_content). Shown in the front end only, never
-    /// enters the session history — a pure Q&A turn carries no tools, and echoing
-    /// the thinking block back would require a signature check for no gain.
+    /// OpenAI-compatible reasoning_content). The panel displays it and the
+    /// session record stores it: the MiniMax tool-use contract requires the
+    /// thinking blocks back on every round, so it is part of the history.
     ThinkingDelta { text: String },
+    /// A thinking block closed. `signature` is the provider's integrity seal
+    /// for the text streamed since the previous one (empty when the gateway
+    /// sends none). The session record stores it beside the thinking and
+    /// replays it verbatim; the event also marks the block boundary, so a
+    /// round with interleaved thinking keeps its blocks apart.
+    ThinkingBlockEnd { signature: String },
     /// A tool call begins.
     ToolStart {
         id: String,
