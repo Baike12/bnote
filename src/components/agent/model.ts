@@ -30,7 +30,7 @@ export interface ToolRecord {
 export interface Turn {
   /** Streaming text buffer for the current assistant reply. */
   text: string;
-  /** The streamed thinking process (plain text; it does not enter the session history, it is only displayed). */
+  /** The streamed thinking process. Displayed in the panel and replayed into the model history (the MiniMax contract requires the thinking blocks back each round). */
   thinking: string;
   /** Timestamp of the first thinking delta (used for the timer). */
   thinkingStart: number | null;
@@ -42,6 +42,30 @@ export interface Turn {
   turnMs: number | null;
   tools: ToolRecord[];
   error?: string;
+  // --- incremental transcript markers (single writer: the panel) ---
+  /** How much of `text` is already on disk; the next flush writes the tail. */
+  persistedTextLen: number;
+  /** How much of `thinking` is already on disk. */
+  persistedThinkLen: number;
+  /** How many of `tools` are already on disk (rounds flush in tool order). */
+  persistedToolCount: number;
+}
+
+/** A turn that carries only an error (the backend produced nothing before failing). */
+export function errorTurn(message: string): Turn {
+  return {
+    text: "",
+    thinking: "",
+    thinkingStart: null,
+    thinkSeconds: null,
+    startedAt: null,
+    turnMs: null,
+    tools: [],
+    error: message,
+    persistedTextLen: 0,
+    persistedThinkLen: 0,
+    persistedToolCount: 0,
+  };
 }
 
 export interface ChatEntry {
@@ -167,6 +191,10 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
       turnMs: line.turnMs ?? null,
       tools: line.tools ?? [],
       error: line.error,
+      // A restored turn never streams again: its record is complete on disk.
+      persistedTextLen: line.text.length,
+      persistedThinkLen: (line.thinking ?? "").length,
+      persistedToolCount: (line.tools ?? []).length,
     },
   };
 }

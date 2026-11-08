@@ -232,15 +232,20 @@ function EntryRow({
             ))}
             {entry.turn?.error && <div className="agent-error">{entry.turn.error}</div>}
           </TurnWork>
-          <div className="agent-md">
-            {splitAgentMarkdown(entry.text).map((block, bi) =>
-              block.kind === "html" ? (
-                <HtmlPreview key={bi} code={block.code} />
-              ) : (
-                <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />
-              ),
-            )}
-          </div>
+          {/* No text row when the model produced none (a pure tool round): an
+              empty container would render as a blank bubble (ZCode skips the
+              text row the same way). */}
+          {entry.text && (
+            <div className="agent-md">
+              {splitAgentMarkdown(entry.text).map((block, bi) =>
+                block.kind === "html" ? (
+                  <HtmlPreview key={bi} code={block.code} />
+                ) : (
+                  <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />
+                ),
+              )}
+            </div>
+          )}
           {streaming && <span className="agent-caret" aria-hidden="true" />}
         </div>
       )}

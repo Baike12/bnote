@@ -8,10 +8,12 @@ export type { SessionModelConfig } from "@/lib/tauri";
  * Code's transcript shape: `<session>.jsonl` with one message per line),
  * stored in the material's `sessions/` directory.
  *
- * Each line is either one user message or a **whole turn** of the assistant's
- * reply (text + thinking + tool calls + error), so a turn is appended once and
- * the file is never rewritten while the stream is still coming in. The first
- * line of the file is the metadata line (title + model config snapshot, see
+ * Each line is one user message, or **one assistant round** (one provider
+ * message: thinking + text + that round's tool calls with their outputs) —
+ * Claude Code's one-message-per-line shape. A round is appended as soon as its
+ * outputs are complete, so the file grows while the turn streams and a turn
+ * that never terminates still leaves a readable record. The first line of the
+ * file is the metadata line (title + model config snapshot, see
  * `TranscriptMetaLine`). Timestamps use `at`; the session title comes from the
  * metadata line and the ordering is derived from the mtime, so no extra index
  * is needed.
@@ -42,6 +44,8 @@ export interface TranscriptAssistantLine {
   at: number;
   text: string;
   thinking?: string;
+  /** The thinking block's integrity seal, replayed with it on restore (MiniMax contract). */
+  thinkingSignature?: string;
   thinkSeconds?: number | null;
   /** Wall-clock duration of the whole turn in ms (display: the "已工作 N 秒" summary). */
   turnMs?: number | null;
@@ -193,37 +197,59 @@ export function buildSessionMeta(input: {
 }
 
 /**
- * The lines a turn appends to the transcript.
- *
- * The first turn (the session's first write) puts the metadata line in front:
- * title + model config snapshot. It has to be the first line of the file —
- * the list side only reads the head of the file, and **the first user message
- * may carry several MB of base64 screenshots, so the whole line is far beyond
- * the head window**; the title cannot depend on that line still parsing
- * completely. The model snapshot relies on it too: after a setting change the
- * session still continues with its own config on restore.
+ * The lines a user message writes to the transcript: appended the moment the
+ * backend accepted the send (Claude Code persists the prompt before the loop,
+ * so a crash mid-turn still leaves the record openable). The first write of
+ * the session puts the metadata line in front — it has to be the first line of
+ * the file, the list side only reads the head of the file.
  */
-export function turnLines(input: {
-  /** The user message of this turn; it never arrived when sending failed, pass null then. */
-  user: TranscriptUserLine | null;
-  assistant: TranscriptAssistantLine;
-  /** Whether this is the first turn (no metadata line written yet). */
+export function userWriteLines(input: {
+  user: TranscriptUserLine;
+  /** Whether this is the session's first write (no metadata line yet). */
   first: boolean;
   model: SessionModelConfig | null;
 }): TranscriptRecord[] {
-  const lines: TranscriptLine[] = [];
-  if (input.user) lines.push(input.user);
-  lines.push(input.assistant);
-  if (!input.first) return lines;
-  const title = input.user?.text.trim()
-    ? transcriptTitle(input.user.text)
-    : transcriptTitle(input.assistant.text);
+  if (!input.first) return [input.user];
   const meta = buildSessionMeta({
-    at: input.user?.at ?? input.assistant.at,
-    title,
+    at: input.user.at,
+    title: transcriptTitle(input.user.text),
     model: input.model,
   });
-  return [meta, ...lines];
+  return [meta, input.user];
+}
+
+/**
+ * The line one assistant round appends to the transcript.
+ *
+ * A turn is written **per provider round** (one assistant message each), not
+ * as one whole-turn line: the round is flushed when its outputs are complete —
+ * at the next round's first event, or at the turn's end — so a turn that never
+ * terminates still leaves every finished round on disk (the rollout record a
+ * stuck session otherwise leaves nothing of). Old records wrote one line per
+ * turn; the parser accepts both, the shape of a line is identical.
+ */
+export function assistantRoundLine(input: {
+  at: number;
+  text: string;
+  thinking?: string;
+  thinkingSignature?: string;
+  thinkSeconds?: number | null;
+  turnMs?: number | null;
+  tools: StoredTool[];
+  error?: string;
+}): TranscriptAssistantLine {
+  const line: TranscriptAssistantLine = {
+    type: "assistant",
+    at: input.at,
+    text: input.text,
+    thinking: input.thinking,
+    tools: input.tools,
+  };
+  if (input.thinkingSignature) line.thinkingSignature = input.thinkingSignature;
+  if (input.thinkSeconds != null) line.thinkSeconds = input.thinkSeconds;
+  if (input.turnMs != null) line.turnMs = input.turnMs;
+  if (input.error) line.error = input.error;
+  return line;
 }
 
 /** Fault-tolerant parsing: bad lines are dropped one by one (a manual edit or an interrupted write must not make the whole history unopenable). */
@@ -255,6 +281,8 @@ export function parseTranscript(raw: string | null): TranscriptLine[] {
         at,
         text: typeof v.text === "string" ? v.text : "",
         thinking: typeof v.thinking === "string" ? v.thinking : "",
+        thinkingSignature:
+          typeof v.thinkingSignature === "string" ? v.thinkingSignature : undefined,
         thinkSeconds:
           typeof v.thinkSeconds === "number" && Number.isFinite(v.thinkSeconds)
             ? v.thinkSeconds
@@ -273,9 +301,13 @@ export function parseTranscript(raw: string | null): TranscriptLine[] {
  *
  * - User line: text + images, in the same order as the backend's
  *   `ChatItem::user_message`.
- * - Assistant line: text plus a `tool_use` per tool call; the tools'
- *   `tool_result` goes into a user message right after, the way the backend's
- *   run_loop writes it.
+ * - Assistant line: thinking (with its signature), text, then a `tool_use` per
+ *   tool call — the same order the backend assembles (`TurnResult::blocks`).
+ *   The thinking block is replayed: MiniMax-M3.1's tool-use contract requires
+ *   the full response back each round, dropping it breaks the reasoning chain.
+ * - The tools' `tool_result` goes into a user message right after the
+ *   assistant line, the way the backend's run_loop writes it. Per-round lines
+ *   therefore rebuild the backend history one message per line.
  * - A turn that errored: the backend pushes no assistant message before the
  *   provider returns an error, so nothing is rebuilt here (otherwise the
  *   model would see a half reply that never existed in the history).
@@ -294,6 +326,13 @@ export function historyFromTranscript(lines: TranscriptLine[]): AgentChatItem[] 
     }
     if (line.error) continue;
     const content: AgentContentBlock[] = [];
+    if (line.thinking) {
+      content.push({
+        type: "thinking",
+        text: line.thinking,
+        signature: line.thinkingSignature ?? "",
+      });
+    }
     if (line.text) content.push({ type: "text", text: line.text });
     for (const tool of line.tools ?? []) {
       content.push({ type: "tool_use", id: tool.id, name: tool.name, input: tool.input ?? {} });

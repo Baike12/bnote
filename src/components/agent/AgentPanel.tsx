@@ -22,13 +22,14 @@ import { codeSessionIdentity, codeSessionPath, type CodeSessionScope } from "@/c
 import { cleanGeneratedTitle, displayTitle } from "@/study/sessionTitle";
 import { resolveFamily } from "@/study/sessionTree";
 import {
+  assistantRoundLine,
   buildSessionMeta,
   historyFromTranscript,
   parseTranscript,
   serializeTranscript,
   sessionMetaFromRaw,
   sessionTitleFromLines,
-  turnLines,
+  userWriteLines,
   type TranscriptLine,
   type TranscriptUserLine,
 } from "@/study/transcript";
@@ -47,6 +48,7 @@ import {
   cloneEntry,
   entriesToLines,
   entryFromLine,
+  errorTurn,
   findConvBySession,
   fitInputHeight,
   nextConvKey,
@@ -243,9 +245,10 @@ export function AgentPanel() {
   const metaWrittenRef = useRef<Map<string, boolean>>(new Map());
   /** convKey -> the model config snapshot of the session (used to write the metadata line; it also has to be available for the closing turn of a session that was switched away). */
   const modelByConvRef = useRef<Map<string, SessionModelConfig | null>>(new Map());
-  /** The user message of a turn is recorded here first and written to disk together with the assistant reply (nothing is written when the send failed). */
-  const pendingUserRef = useRef<Map<string, TranscriptUserLine>>(new Map());
-  /** The restart counter (the reload / the plus for a new session): when it changes a new session is opened instead of restoring the most recent one. */
+  /** convKey -> the tail of the record append chain (appends serialize so the file order is the flush order). */
+  const appendChainRef = useRef<Map<string, Promise<void>>>(
+    new Map(),
+  ); /** The restart counter (the reload / the plus for a new session): when it changes a new session is opened instead of restoring the most recent one. */
   const restartKeyRef = useRef<number | null>(null);
   /** The latest value of creativeMode (read through the ref inside the useCallback closure of startSession). */
   const creativeModeRef = useRef(creativeMode);
@@ -461,8 +464,8 @@ export function AgentPanel() {
         );
         // Dropped when it expired: the content changed in the meantime (a new material / a new session), a new start has taken over.
         if (startTokenRef.current !== token) return;
-        // The path of the session record: a restore keeps the old file, a new session uses "the scope directory + the session id of the backend". Creative mode is fixed at .bnote/creative/sessions/, so it never mixes with the sessions of a material. A coding session writes into the agent home instead (the repository is not the notebook).
-        const home = opts?.transcriptHome ?? false;
+        // The path of the session record: a restore keeps the old file, a new session uses "the scope directory + the session id of the backend". Creative mode is fixed at .bnote/creative/sessions/, so it never mixes with the sessions of a material. A coding session writes into the agent home instead (the repository is not the notebook). The store follows the session kind — coding sessions recorded under `~/.bnote/projects/` must also read and write through the home commands, so `home` is derived from the mode here (no caller passes the flag; deriving it made every coding transcript silently land on a null path).
+        const home = opts?.transcriptHome ?? agentModeRef.current === "coding";
         const vault = useAppStore.getState().vaultPath;
         const relDir = creativeModeRef.current
           ? "creative"
@@ -616,6 +619,10 @@ export function AgentPanel() {
         titleSource: "first-message",
         mcpErrors: [],
         transcriptPath: recordPath(member.id),
+        // The record store follows the session kind (the same rule as
+        // startSession): coding records live in the agent home and must read
+        // and write through the home IPC, not the vault commands.
+        transcriptHome: code !== null,
         sessionFileId: member.id,
         model: null,
         usage: null,
@@ -685,12 +692,15 @@ export function AgentPanel() {
           updateConv(convKey, (c) => ({ ...c, label, titleSource: "llm" }));
           const id = conv.sessionFileId;
           if (!id) return;
+          // The title rewrite is a read-modify-write of the same record: it
+          // queues on the conversation's transcript chain, or it would race a
+          // concurrent append and drop the appended line.
           const write = codeWorkdir
-            ? homeApi.setSessionTitle(codeWorkdir, id, label)
+            ? () => homeApi.setSessionTitle(codeWorkdir, id, label)
             : relDir
-              ? agentApi.setSessionTitle(relDir, id, label)
+              ? () => agentApi.setSessionTitle(relDir, id, label)
               : null;
-          if (write) void write.then(() => refreshSessions()).catch(() => {});
+          if (write) enqueueTranscriptOp(convKey, write, "[agent] failed to write the title");
         })
         .catch(() => {
           // No key / network failure / the model refused: keep the local fallback title and do not bother the user.
@@ -934,6 +944,9 @@ export function AgentPanel() {
         startedAt: Date.now(),
         turnMs: null,
         tools: [],
+        persistedTextLen: 0,
+        persistedThinkLen: 0,
+        persistedToolCount: 0,
       };
       turnsRef.current.set(convKey, turn);
     }
@@ -981,38 +994,97 @@ export function AgentPanel() {
   }
 
   /**
-   * Write this round into the session record: the user message and the
-   * assistant reply are appended together (one append, the order is fixed;
-   * when the send failed the user message never entered the file). A failed
-   * write is only logged, it does not affect the conversation — the disk is
-   * a record, not a precondition of sending.
+   * Append the user message to the session record the moment the backend
+   * accepted the send (Claude Code writes the prompt before the loop): a turn
+   * that never terminates still leaves the question on disk. A failed send
+   * never reaches here, so the record never shows a ghost message.
    */
-  function persistTurn(convKey: string, turn: Turn, pathOverride?: string) {
-    const path = pathOverride ?? transcriptRef.current.get(convKey);
+  function persistUserLine(convKey: string, user: TranscriptUserLine) {
+    const path = transcriptRef.current.get(convKey);
     if (!path) return;
-    const user = pendingUserRef.current.get(convKey) ?? null;
-    pendingUserRef.current.delete(convKey);
-    // The first round inserts the metadata line (title + model snapshot) at the very front, see turnLines.
+    const home = transcriptHomeRef.current.get(convKey) === true;
     const firstWrite = !metaWrittenRef.current.get(convKey);
     if (firstWrite) metaWrittenRef.current.set(convKey, true);
-    const lines = turnLines({
+    const lines = userWriteLines({
       user,
-      assistant: {
-        type: "assistant",
-        at: Date.now(),
-        text: turn.text,
-        thinking: turn.thinking,
-        thinkSeconds: turn.thinkSeconds,
-        tools: turn.tools,
-        error: turn.error,
-      },
       first: firstWrite,
       model: modelByConvRef.current.get(convKey) ?? null,
     });
-    void transcriptIO(transcriptHomeRef.current.get(convKey) === true)
-      .append(path, serializeTranscript(lines))
-      .then(() => refreshSessions())
-      .catch((e) => console.warn("[agent] failed to write the session record", e));
+    appendTranscript(convKey, home, path, serializeTranscript(lines));
+  }
+
+  /**
+   * Flush the turn's finished tail into the session record.
+   *
+   * Incremental, one line per provider round: a round is complete once all of
+   * its tool outputs arrived, so the flush points are the new round's first
+   * stream event and the turn's end. `force` closes the current round
+   * regardless (turn_end / error). A turn that dies mid-stream keeps every
+   * completed round on disk — the whole-turn write it replaced left nothing.
+   */
+  function persistTurn(convKey: string, turn: Turn, pathOverride?: string, force = true) {
+    const path = pathOverride ?? transcriptRef.current.get(convKey);
+    if (!path) return;
+    if (!force) {
+      // Only a finished previous round closes here: a flush on a stream delta
+      // with no complete pending batch would cut the current round mid-stream
+      // (and fragment one round into several lines).
+      const pending = turn.tools.slice(turn.persistedToolCount);
+      if (pending.length === 0 || pending.some((t) => t.output === undefined)) return;
+    }
+    const home = transcriptHomeRef.current.get(convKey) === true;
+    const startTool = turn.persistedToolCount;
+    const tools = turn.tools.slice(startTool);
+    const text = turn.text.slice(turn.persistedTextLen);
+    const thinking = turn.thinking.slice(turn.persistedThinkLen);
+    const fresh = tools.length > 0 || text.length > 0 || thinking.length > 0 || turn.error;
+    if (!fresh) return;
+    turn.persistedToolCount = turn.tools.length;
+    turn.persistedTextLen = turn.text.length;
+    turn.persistedThinkLen = turn.thinking.length;
+    const firstWrite = !metaWrittenRef.current.get(convKey);
+    if (firstWrite) metaWrittenRef.current.set(convKey, true);
+    const line = assistantRoundLine({
+      at: Date.now(),
+      text,
+      thinking: thinking || undefined,
+      thinkSeconds: turn.thinkSeconds,
+      turnMs: turn.turnMs,
+      tools,
+      error: turn.error,
+    });
+    appendTranscript(convKey, home, path, serializeTranscript([line]));
+  }
+
+  /**
+   * The conversation's append chain: appends are fire-and-forget for the UI,
+   * but two concurrent IPC appends to one file can land out of order — the
+   * chain serializes them, so the file order is the flush order (single
+   * writer per record).
+   */
+  /**
+   * The conversation's transcript mutation queue: appends are fire-and-forget
+   * for the UI, but two concurrent IPC writes to one file can land out of
+   * order — and a title rewrite (read-modify-write + rename) racing an append
+   * silently drops the appended line. Every mutation of one record therefore
+   * chains through here, so the file order is the mutation order (single
+   * writer per record).
+   */
+  function enqueueTranscriptOp(convKey: string, op: () => Promise<unknown>, warn: string) {
+    const prev = appendChainRef.current.get(convKey) ?? Promise.resolve();
+    const next = prev
+      .then(op)
+      .then(() => void refreshSessions())
+      .catch((e) => console.warn(warn, e));
+    appendChainRef.current.set(convKey, next);
+  }
+
+  function appendTranscript(convKey: string, home: boolean, path: string, data: string) {
+    enqueueTranscriptOp(
+      convKey,
+      () => transcriptIO(home).append(path, data),
+      "[agent] failed to write the session record",
+    );
   }
 
   function handleAgentEvent(sessionId: string, event: AgentEvent) {
@@ -1046,6 +1118,9 @@ export function AgentPanel() {
     switch (event.type) {
       case "thinking_delta": {
         const turn = ensureTurn(conv.key);
+        // A delta after a finished tool batch opens the next provider round:
+        // what came before is complete, write it before the tail grows.
+        persistTurn(conv.key, turn, undefined, false);
         turn.thinking += event.text;
         turn.thinkingStart ??= Date.now();
         writeEntries(conv.key, turn, false, null);
@@ -1053,12 +1128,17 @@ export function AgentPanel() {
       }
       case "text_delta": {
         const turn = ensureTurn(conv.key);
+        persistTurn(conv.key, turn, undefined, false);
         turn.text += event.text;
         writeEntries(conv.key, turn, false, null);
         break;
       }
       case "tool_start": {
         const turn = ensureTurn(conv.key);
+        // The new call belongs to the next assistant message: the previous
+        // round's outputs are all in (the backend runs a batch to completion
+        // before the next stream round) — flush it.
+        persistTurn(conv.key, turn, undefined, false);
         turn.tools = [...turn.tools, { id: event.id, name: event.name, input: event.input }];
         writeEntries(conv.key, turn, false, null);
         break;
@@ -1166,29 +1246,11 @@ export function AgentPanel() {
                 text: "",
                 at: Date.now(),
                 items: event.items > 0 ? event.items : null,
-                turn: {
-                  text: "",
-                  thinking: "",
-                  thinkingStart: null,
-                  thinkSeconds: null,
-                  startedAt: null,
-                  turnMs: null,
-                  tools: [],
-                  error: event.message,
-                },
+                turn: errorTurn(event.message),
               },
             ],
           }));
-          persistTurn(conv.key, {
-            text: "",
-            thinking: "",
-            thinkingStart: null,
-            thinkSeconds: null,
-            startedAt: null,
-            turnMs: null,
-            tools: [],
-            error: event.message,
-          });
+          persistTurn(conv.key, errorTurn(event.message));
         }
         if (busyRef.current === sessionId) {
           busyRef.current = null;
@@ -1380,13 +1442,6 @@ export function AgentPanel() {
     const last = conv.entries[conv.entries.length - 1];
     const items = last?.items != null ? last.items + 1 : null;
     const at = Date.now();
-    // The user message hangs on this round first and reaches the disk together with the assistant reply; a failed send drops it.
-    pendingUserRef.current.set(conv.key, {
-      type: "user",
-      at,
-      text,
-      images: images.length > 0 ? images : undefined,
-    });
     // The first request of the session itself: remember this message. After this round succeeded it is used to let the model name the session — the title of an auxiliary session must come from its own question, the message of the parent session must not stand in for it.
     if (conv.titleSource !== "llm" && !titleSeedRef.current.has(conv.key)) {
       titleSeedRef.current.set(conv.key, text || "[图片]");
@@ -1418,10 +1473,18 @@ export function AgentPanel() {
     });
     try {
       await agentApi.send(info, modelText, images);
+      // The backend accepted the message: the question enters the record now
+      // (Claude Code persists the prompt before the loop), so even a turn that
+      // never terminates leaves it on disk. A failed send never reaches here.
+      persistUserLine(conv.key, {
+        type: "user",
+        at,
+        text,
+        images: images.length > 0 ? images : undefined,
+      });
     } catch (e) {
       busyRef.current = null;
       setBusySession(null);
-      pendingUserRef.current.delete(conv.key);
       const message = String(e).replace(/^[A-Z_]+:\s*/, "");
       // The backend did not receive this round: the ghost message that was just inserted into the UI is taken back, the content goes back into the input box and the reason stays on the error banner of the session. Otherwise the UI hangs on a message that will never be answered.
       updateConv(conv.key, (c) => ({
@@ -1710,6 +1773,37 @@ export function AgentPanel() {
       />
       {activeConv && <AgentTodos todos={activeConv.todos} />}
 
+      {/* Tool approval / model question (ZCode's bottom dock): a card stacked
+          directly above the composer, not a centered modal. The backend turn
+          is parked on the answer and the composer shows stop while busy, so
+          the conversation stays readable and scrollable behind the card. */}
+      {approval && (
+        <AgentApprovalCard
+          key={approval.id}
+          approval={approval}
+          onReply={(allow, feedback) => {
+            const pending = approval;
+            setApproval(null);
+            void agentApi
+              .permissionReply(pending.sessionId, pending.id, allow, feedback)
+              .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+          }}
+        />
+      )}
+      {pendingQuestion && (
+        <AgentQuestionCard
+          key={pendingQuestion.id}
+          pending={pendingQuestion}
+          onSubmit={(answer) => {
+            const pending = pendingQuestion;
+            setPendingQuestion(null);
+            void agentApi
+              .questionReply(pending.sessionId, pending.id, answer)
+              .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+          }}
+        />
+      )}
+
       <div className="agent-composer">
         {suggestTrigger && suggestItems.length > 0 && (
           <AgentSuggest
@@ -1895,35 +1989,6 @@ export function AgentPanel() {
           />
         </div>
       </div>
-      {/* Tool approval (the definition marked this tool `ask`): the turn is
-          parked until the user answers, so this must be a blocking overlay. */}
-      {approval && (
-        <AgentApprovalCard
-          key={approval.id}
-          approval={approval}
-          onReply={(allow, feedback) => {
-            const pending = approval;
-            setApproval(null);
-            void agentApi
-              .permissionReply(pending.sessionId, pending.id, allow, feedback)
-              .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
-          }}
-        />
-      )}
-      {/* ask_user_question: the model asked the user to decide something. */}
-      {pendingQuestion && (
-        <AgentQuestionCard
-          key={pendingQuestion.id}
-          pending={pendingQuestion}
-          onSubmit={(answer) => {
-            const pending = pendingQuestion;
-            setPendingQuestion(null);
-            void agentApi
-              .questionReply(pending.sessionId, pending.id, answer)
-              .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
-          }}
-        />
-      )}
 
       {/* The history drawer: the conversations saved under this material, clicking one restores it and continues. */}
       {historyOpen && (

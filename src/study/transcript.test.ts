@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assistantRoundLine,
   buildSessionMeta,
   historyFromTranscript,
   parseTranscript,
@@ -7,7 +8,7 @@ import {
   sessionMetaFromRaw,
   sessionTitleFromLines,
   transcriptTitle,
-  turnLines,
+  userWriteLines,
   type TranscriptLine,
 } from "./transcript";
 
@@ -240,34 +241,57 @@ describe("the session metadata line (title + model config snapshot)", () => {
     expect(JSON.parse(first).title).toBe("多行\n标题");
   });
 
-  it("turnLines: the first turn carries meta (title = the first user message, including the model snapshot), it is not repeated afterwards", () => {
-    const assistant = { type: "assistant" as const, at: 3, text: "回答" };
-    const first = turnLines({
+  it("userWriteLines: the first write carries meta (title = the user message, including the model snapshot), it is not repeated afterwards", () => {
+    const first = userWriteLines({
       user: { type: "user", at: 2, text: " 第一句话 \n 继续 " },
-      assistant,
       first: true,
       model,
     });
-    expect(first).toHaveLength(3);
+    expect(first).toHaveLength(2);
     expect(first[0]).toEqual({
       type: "meta",
       at: 2,
       title: "第一句话 继续",
       model,
     });
+    expect(first[1]).toEqual({ type: "user", at: 2, text: " 第一句话 \n 继续 " });
 
-    const later = turnLines({ user: null, assistant, first: false, model });
-    expect(later).toEqual([assistant]);
+    const later = userWriteLines({
+      user: { type: "user", at: 9, text: "第二条" },
+      first: false,
+      model,
+    });
+    expect(later).toEqual([{ type: "user", at: 9, text: "第二条" }]);
   });
 
-  it("turnLines: an image-only first message falls back to the first assistant sentence as the title", () => {
-    const [meta] = turnLines({
-      user: { type: "user", at: 2, text: "", images: [{ mediaType: "image/png", data: "A" }] },
-      assistant: { type: "assistant", at: 3, text: "图中是矩阵乘法" },
-      first: true,
-      model: null,
+  it("assistantRoundLine: carries thinking + signature + tools, omits empty optionals, and round-trips through parse", () => {
+    const line = assistantRoundLine({
+      at: 7,
+      text: "我来查一下。",
+      thinking: "先想一下",
+      thinkingSignature: "sig1",
+      tools: [{ id: "t1", name: "Read", input: { path: "a.ts" }, output: "ok", ok: true }],
+      turnMs: 1200,
     });
-    expect(meta).toEqual({ type: "meta", at: 2, title: "图中是矩阵乘法" });
+    expect(line.thinkingSignature).toBe("sig1");
+    expect(line.turnMs).toBe(1200);
+    const raw = serializeTranscript([line]);
+    const parsed = parseTranscript(raw);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].type).toBe("assistant");
+    expect(parsed[0].text).toBe("我来查一下。");
+    if (parsed[0].type === "assistant") {
+      expect(parsed[0].thinking).toBe("先想一下");
+      expect(parsed[0].thinkingSignature).toBe("sig1");
+      expect(parsed[0].tools).toEqual(line.tools);
+      expect(parsed[0].turnMs).toBe(1200);
+    }
+
+    const minimal = assistantRoundLine({ at: 8, text: "完毕", tools: [] });
+    expect(minimal.thinking).toBeUndefined();
+    expect(minimal.thinkingSignature).toBeUndefined();
+    expect(minimal.turnMs).toBeUndefined();
+    expect(minimal.error).toBeUndefined();
   });
 
   it("the meta of an auxiliary session carries the parent session file id, the source summary and the prefix count", () => {
