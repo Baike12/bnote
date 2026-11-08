@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FocusStatus } from "@/lib/tauri";
 import { createTimerState, remainingMs } from "./timer";
+import { emptySchedule } from "./schedule";
 
 /**
  * The native side (covering the window, the window level, the event tap) is a
@@ -121,6 +122,7 @@ function resetMocks() {
 function resetStore() {
   useFocusStore.setState({
     timer: createTimerState(),
+    schedule: emptySchedule(),
     now: T0,
     locked: false,
     hardLock: false,
@@ -300,6 +302,52 @@ describe("the countdown is running", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(useFocusStore.getState().timer.phase).toBe("idle");
     expect(useFocusStore.getState().locked).toBe(false);
+  });
+});
+
+describe("scheduled blocks: an absolute deadline and an append-only week", () => {
+  it("startScheduled ends on the block's deadline rather than now + a configured duration", async () => {
+    await useFocusStore.getState().startScheduled(T0 + 50 * 60_000);
+
+    expect(useFocusStore.getState().timer.phase).toBe("focus");
+    expect(useFocusStore.getState().timer.endsAt).toBe(T0 + 50 * 60_000);
+    expect(focusMock.lock).toHaveBeenCalledTimes(1);
+    expect(useFocusStore.getState().hardActive).toBe(true);
+  });
+
+  it("a window that is already over arms nothing: no lock, no timer", async () => {
+    await useFocusStore.getState().startScheduled(T0);
+
+    expect(useFocusStore.getState().timer.phase).toBe("idle");
+    expect(focusMock.setHardLock).not.toHaveBeenCalled();
+    expect(focusMock.lock).not.toHaveBeenCalled();
+  });
+
+  it("saving unions the cells and reports only the newly added blocks", () => {
+    const day = "2026-11-07";
+    expect(
+      useFocusStore.getState().saveSchedule([
+        { day, hour: 9 },
+        { day, hour: 10 },
+      ]),
+    ).toBe(2);
+    expect(useFocusStore.getState().schedule).toEqual({ days: { [day]: [9, 10] } });
+
+    // Saving an overlapping selection can only add: there is no removal path.
+    expect(
+      useFocusStore.getState().saveSchedule([
+        { day, hour: 10 },
+        { day, hour: 11 },
+      ]),
+    ).toBe(1);
+    expect(useFocusStore.getState().schedule).toEqual({ days: { [day]: [9, 10, 11] } });
+  });
+
+  it("restoring reads the persisted week and drops malformed entries", async () => {
+    await useFocusStore
+      .getState()
+      .restore(undefined, { days: { "2026-11-07": [9, 9, 24], "not-a-date": [7] } });
+    expect(useFocusStore.getState().schedule).toEqual({ days: { "2026-11-07": [9] } });
   });
 });
 

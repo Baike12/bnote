@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { openAccessibilitySettings, useFocusStore } from "@/focus/store";
 import { MinutesInput } from "@/components/focus/MinutesInput";
 import { isActive, MAX_FOCUS_DURATIONS } from "@/focus/timer";
+import { FocusScheduleCard } from "./FocusSchedule";
 import { SettingsCard, Row } from "./primitives";
 
 export function FocusTab() {
@@ -32,6 +33,8 @@ export function FocusTab() {
 
   return (
     <div className="settings-section">
+      <FocusScheduleCard />
+
       <SettingsCard title="番茄钟">
         <Row
           label="可选时长"

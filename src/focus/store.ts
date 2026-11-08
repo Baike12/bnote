@@ -12,6 +12,11 @@
  * and display are always computed from `endsAt` (see timer.ts), never by "minus one
  * every second".
  *
+ * **Scheduled blocks** (schedule.ts) enter through `startScheduled`, and the
+ * scheduler is the only caller. A scheduled stretch names its absolute end, so a
+ * tick that arrives a few seconds late still ends at :50 instead of shifting the
+ * block.
+ *
  * **Starting is a promise**: pressing start takes effect as "own the screen + hard
  * lock + timing" all at once, and there is no way out in between - no pause, no
  * early end, no unlock command. The only path that releases the locks is the
@@ -37,13 +42,23 @@ import {
   isRunning,
   normalizeConfig,
   startTimer,
+  startTimerUntil,
   stopTimer,
   type TimerConfig,
   type TimerState,
 } from "./timer";
+import {
+  addBlocks,
+  emptySchedule,
+  normalizeSchedule,
+  type FocusSchedule,
+  type GridCell,
+} from "./schedule";
 
 export interface FocusStore {
   timer: TimerState;
+  /** The scheduled focus week: append-only, see schedule.ts. */
+  schedule: FocusSchedule;
   /** Moment of the last tick - the display uses it to show the remaining time instead of taking Date.now itself. */
   now: number;
   /** Whether the pseudo fullscreen lock is on (the native side is the truth here). */
@@ -73,13 +88,17 @@ export interface FocusStore {
    * takes the first configured one (the keyboard command).
    */
   start: (minutes?: number) => Promise<void>;
+  /** Start a stretch that ends at an absolute timestamp (a saved schedule block); the scheduler is the only caller. */
+  startScheduled: (endsAt: number) => Promise<void>;
+  /** Append the drafted blocks to the schedule and persist them; returns how many were new. There is no removal counterpart. */
+  saveSchedule: (cells: readonly GridCell[]) => number;
   setDurations: (patch: Partial<TimerConfig>) => void;
   /** Reconcile the clock after the window came back to the foreground or the system woke up: finish the stretch when it is due, otherwise pull the display up to the present. */
   syncNow: () => void;
   /** Re-read the native lock state and reconcile it with the current timer (on startup, when the settings page opens, when the window returns to the foreground). */
   refreshStatus: () => Promise<void>;
-  /** Restore the timer state from the config on startup; when it is still running, reconnect both locks. */
-  restore: (timer: TimerState | undefined) => Promise<void>;
+  /** Restore the timer (and the append-only schedule) from the config on startup; when the timer is still running, reconnect both locks. */
+  restore: (timer: TimerState | undefined, schedule?: unknown) => Promise<void>;
 }
 
 /** Deep link into the system settings page for the accessibility permission (the hard lock needs it). */
@@ -283,14 +302,24 @@ async function applyTimer(next: TimerState): Promise<void> {
  * screen lock; when taking the screen lock fails the stretch is taken back
  * immediately (this is the cleanup of a failed start, not an exit the user can
  * press).
+ *
+ * `choose` decides the stretch (now + a duration, or an absolute end for a
+ * scheduled block). A choice that yields no running timer means "there is
+ * nothing to start" - the locks are not armed for it.
  */
-async function startFocus(minutes?: number): Promise<void> {
+async function startFocus(choose: (timer: TimerState, now: number) => TimerState): Promise<void> {
   const state = useFocusStore.getState();
   if (isActive(state.timer) || starting) return;
+  if (!isActive(choose(state.timer, Date.now()))) return;
   starting = true;
   try {
     if (!(await armHardLock())) return;
-    await applyTimer(startTimer(useFocusStore.getState().timer, Date.now(), minutes));
+    const next = choose(useFocusStore.getState().timer, Date.now());
+    if (!isActive(next)) return;
+    await applyTimer(next);
+    // The window may have run out while the locks were being armed (a scheduled
+    // block whose last seconds went by): nothing was taken, so nothing to undo.
+    if (!isActive(useFocusStore.getState().timer)) return;
     // Armed successfully does not mean it really intercepts (creating the tap can
     // fail too): without interception the stretch does not start.
     if (!useFocusStore.getState().hardActive) {
@@ -323,6 +352,7 @@ function sanitize(timer: TimerState | undefined): TimerState {
 
 export const useFocusStore = create<FocusStore>((set, get) => ({
   timer: createTimerState(),
+  schedule: emptySchedule(),
   now: Date.now(),
   locked: false,
   hardLock: false,
@@ -333,7 +363,17 @@ export const useFocusStore = create<FocusStore>((set, get) => ({
   swallowed: 0,
   error: null,
 
-  start: (minutes) => startFocus(minutes),
+  start: (minutes) => startFocus((timer, now) => startTimer(timer, now, minutes)),
+
+  startScheduled: (endsAt) => startFocus((timer, now) => startTimerUntil(timer, now, endsAt)),
+
+  saveSchedule: (cells) => {
+    const { schedule, added } = addBlocks(get().schedule, cells);
+    if (added === 0) return 0;
+    set({ schedule });
+    persistConfig({ ...getConfigSnapshot(), focusSchedule: schedule });
+    return added;
+  },
 
   setDurations: (patch) => {
     const timer = get().timer;
@@ -396,10 +436,10 @@ export const useFocusStore = create<FocusStore>((set, get) => ({
     }
   },
 
-  restore: async (saved) => {
+  restore: async (saved, savedSchedule) => {
     const next = sanitize(saved);
     revision += 1;
-    set({ timer: next, now: Date.now() });
+    set({ timer: next, now: Date.now(), schedule: normalizeSchedule(savedSchedule) });
     if (!isActive(next)) {
       await unlockNow();
       return;

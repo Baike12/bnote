@@ -25,6 +25,7 @@ import { flushPersistConfig, hasPendingPersist } from "@/state/appStore";
 import { quitApp } from "@/app/quit";
 import { trackWindowState } from "@/lib/windowState";
 import { useFocusStore } from "@/focus/store";
+import { installFocusScheduler } from "@/focus/scheduler";
 import { imeOnWindowBlur, imeOnWindowFocus, imeWarmUp } from "@/editor/imeSwitch";
 import {
   applySettingsToEditor,
@@ -92,6 +93,7 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     let imeUnlisten: (() => void) | undefined;
     let unlistenWindow: (() => void) | undefined;
+    let stopScheduler: (() => void) | undefined;
 
     void (async () => {
       const cfg = (await api.loadAppConfig().catch(() => null)) as PersistedConfig | null;
@@ -185,8 +187,12 @@ export default function App() {
       // screen and the hard lock together - quitting the app does not end that
       // session; after restoring, re-sync the native state once more (a lock
       // left behind by a crash is released here).
-      await useFocusStore.getState().restore(cfg?.focusTimer);
+      await useFocusStore.getState().restore(cfg?.focusTimer, cfg?.focusSchedule);
       await useFocusStore.getState().refreshStatus();
+      // The scheduled week starts after the timer was restored: on a restart in
+      // the middle of a block the restored stretch wins, and an idle app starts
+      // the block that is currently open.
+      stopScheduler = installFocusScheduler();
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);
       });
@@ -213,6 +219,7 @@ export default function App() {
     })();
 
     return () => {
+      stopScheduler?.();
       unlisten?.();
       imeUnlisten?.();
       unlistenWindow?.();

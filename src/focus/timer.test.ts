@@ -8,6 +8,7 @@ import {
   normalizeConfig,
   remainingMs,
   startTimer,
+  startTimerUntil,
   stopTimer,
 } from "./timer";
 
@@ -128,6 +129,24 @@ describe("the length of the stretch comes from the clicked duration", () => {
     expect(running.endsAt).toBe(T0 + 25 * 60_000);
     expect(remainingMs(running, T0 + 60_000)).toBe(24 * 60_000);
     expect(renamed.focusDurations).toEqual([90, 45]);
+  });
+});
+
+describe("a scheduled stretch ends on its own deadline", () => {
+  const deadline = T0 + 50 * 60_000;
+
+  it("takes the absolute end instead of now + a duration", () => {
+    const state = startTimerUntil(session(), T0 + 7 * 60_000, deadline);
+    expect(state.phase).toBe("focus");
+    expect(state.endsAt).toBe(deadline);
+    expect(remainingMs(state, T0 + 7 * 60_000)).toBe(43 * 60_000);
+  });
+
+  it("does not start a window that is already over, and never resets a running one", () => {
+    expect(startTimerUntil(session(), deadline, deadline)).toEqual(session());
+    expect(startTimerUntil(session(), deadline + 1, deadline).endsAt).toBeNull();
+    const running = startTimer(session(25), T0);
+    expect(startTimerUntil(running, T0, deadline)).toBe(running);
   });
 });
 

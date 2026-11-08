@@ -18,6 +18,7 @@ import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel"
 import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
 import type { AgentImage } from "@/study/agentImages";
 import type { TimerState as FocusTimerState } from "@/focus/timer";
+import type { FocusSchedule } from "@/focus/schedule";
 import { DEFAULT_CODE_VIM, type CodeVimMode } from "./codeVim";
 
 export interface ImeSettings {
@@ -300,6 +301,12 @@ export interface PersistedConfig {
    * focus/store.ts).
    */
   focusTimer?: FocusTimerState;
+  /**
+   * The scheduled focus week (see focus/schedule.ts). Append-only: the store
+   * only unions new blocks in, so a day that was set cannot be cancelled from
+   * the settings page.
+   */
+  focusSchedule?: FocusSchedule;
 }
 
 export interface WindowState {

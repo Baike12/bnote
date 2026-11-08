@@ -115,6 +115,18 @@ export function stopTimer(state: TimerState): TimerState {
   return { ...state, phase: "idle", endsAt: null };
 }
 
+/**
+ * Start a stretch that must end at an absolute timestamp. The scheduled blocks
+ * use it so a start that was observed a few seconds late still ends at :50
+ * instead of pushing the whole block; a window that is already over starts
+ * nothing (the idle state comes back unchanged).
+ */
+export function startTimerUntil(state: TimerState, now: number, endsAt: number): TimerState {
+  if (state.endsAt !== null) return state;
+  if (!Number.isFinite(endsAt) || endsAt <= now) return state;
+  return { ...state, phase: "focus", endsAt };
+}
+
 /** Remaining milliseconds; 0 while idle. */
 export function remainingMs(state: TimerState, now: number): number {
   if (state.endsAt === null) return 0;
