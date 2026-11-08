@@ -6,7 +6,9 @@ import {
   pushPdfEntry,
   pushUrlEntry,
   pushWereadBook,
+  renameUrlEntry,
   STUDY_HISTORY_LIMIT,
+  urlTitle,
 } from "./history";
 
 const pdf = (path: string, title = path) => ({ path, relPath: title, title });
@@ -45,6 +47,62 @@ describe("study history: PDFs and web pages are kept apart", () => {
     }
     expect(h.pdfs).toHaveLength(STUDY_HISTORY_LIMIT);
     expect(h.pdfs[0].path).toBe(`/v/pdfs/${STUDY_HISTORY_LIMIT + 4}.pdf`);
+  });
+});
+
+describe("study history: renaming an opened web page", () => {
+  it("a name wins over the derived title everywhere the entry is shown", () => {
+    let h = emptyStudyHistory();
+    h = pushUrlEntry(h, { url: "https://a.dev/x", title: "a.dev" });
+    h = renameUrlEntry(h, "https://a.dev/x", "  Agent memory  ");
+    expect(h.urls[0].title).toBe("a.dev");
+    expect(h.urls[0].name).toBe("Agent memory");
+    expect(urlTitle(h.urls[0])).toBe("Agent memory");
+  });
+
+  it("reopening a page keeps the name: the derived title written on open must not erase it", () => {
+    let h = emptyStudyHistory();
+    h = pushUrlEntry(h, { url: "https://a.dev", title: "a.dev", at: 1 });
+    h = renameUrlEntry(h, "https://a.dev", "我的页面");
+    h = pushUrlEntry(h, { url: "https://a.dev", title: "a.dev", at: 2 });
+    expect(h.urls[0].name).toBe("我的页面");
+    expect(h.urls[0].at).toBe(2);
+  });
+
+  it("renaming keeps the entry's place and timestamp (it is not an open)", () => {
+    let h = emptyStudyHistory();
+    h = pushUrlEntry(h, { url: "https://a.dev", title: "A", at: 1 });
+    h = pushUrlEntry(h, { url: "https://b.dev", title: "B", at: 2 });
+    h = renameUrlEntry(h, "https://a.dev", "A2");
+    expect(h.urls.map((e) => e.url)).toEqual(["https://b.dev", "https://a.dev"]);
+    expect(h.urls[1]).toEqual({ url: "https://a.dev", title: "A", name: "A2", at: 1 });
+  });
+
+  it("an empty name clears the field, falling back to the derived title", () => {
+    let h = emptyStudyHistory();
+    h = pushUrlEntry(h, { url: "https://a.dev", title: "A", at: 1 });
+    h = renameUrlEntry(h, "https://a.dev", "名字");
+    h = renameUrlEntry(h, "https://a.dev", "   ");
+    expect(h.urls[0]).toEqual({ url: "https://a.dev", title: "A", at: 1 });
+    expect(urlTitle(h.urls[0])).toBe("A");
+  });
+
+  it("renaming an unknown URL changes nothing (no ghost entry appears)", () => {
+    const h = pushUrlEntry(emptyStudyHistory(), { url: "https://a.dev", title: "A" });
+    expect(renameUrlEntry(h, "https://nope.dev", "x")).toBe(h);
+  });
+
+  it("the name survives a config round trip and bad names are dropped", () => {
+    const h = normalizeStudyHistory({
+      urls: [
+        { url: "https://a.dev", title: "A", name: "名字", at: 1 },
+        { url: "https://b.dev", title: "B", name: "   ", at: 2 },
+        { url: "https://c.dev", title: "C", name: 42, at: 3 },
+      ],
+    });
+    expect(h.urls[0].name).toBe("名字");
+    expect(h.urls[1].name).toBeUndefined();
+    expect(h.urls[2].name).toBeUndefined();
   });
 });
 

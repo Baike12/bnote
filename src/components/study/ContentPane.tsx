@@ -17,6 +17,7 @@ import { resolveBoundCommand, runBoundKey } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
 import {
   pdfHistoryForVault,
+  urlTitle,
   type StudyPdfEntry,
   type StudyUrlEntry,
   type WereadBookEntry,
@@ -117,6 +118,7 @@ export function ContentPane() {
   const studyHistory = useAppStore((s) => s.studyHistory);
   const recordStudyPdf = useAppStore((s) => s.recordStudyPdf);
   const recordStudyUrl = useAppStore((s) => s.recordStudyUrl);
+  const renameStudyUrl = useAppStore((s) => s.renameStudyUrl);
   const recordWereadBook = useAppStore((s) => s.recordWereadBook);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const settings = useAppStore((s) => s.settings);
@@ -540,11 +542,15 @@ export function ContentPane() {
     // comes from the in-page route event, which is where the book title is
     // known; here only the domain would be recorded, which carries no
     // information.
-    const title = isWereadUrl(url)
-      ? "微信读书"
-      : url.replace(/^https?:\/\//, "").split("/")[0] || url;
+    // The title is the domain unless the user named this page before: a name
+    // is theirs to keep, and typing the URL again must not drop it. The record
+    // still stores the domain as `title` — that field is the automatic
+    // fallback, the name is a separate one.
+    const derived = url.replace(/^https?:\/\//, "").split("/")[0] || url;
+    const known = studyHistory.urls.find((e) => e.url === url);
+    const title = isWereadUrl(url) ? "微信读书" : known ? urlTitle(known) : derived;
     setStudyContent({ kind: "url", url, title });
-    if (!isWereadUrl(url)) recordStudyUrl({ url, title });
+    if (!isWereadUrl(url)) recordStudyUrl({ url, title: derived });
   }
 
   /** Switching the web annotation tool: the state lives in the main window, the page only executes it (single writer). */
@@ -562,7 +568,7 @@ export function ContentPane() {
 
   function openHistoryUrl(entry: StudyUrlEntry) {
     setHistoryOpen(false);
-    setStudyContent({ kind: "url", url: entry.url, title: entry.title });
+    setStudyContent({ kind: "url", url: entry.url, title: urlTitle(entry) });
     // A weread URL belongs to the "weread" tab (there may be leftovers in an old configuration): it no longer enters the web page history.
     if (!isWereadUrl(entry.url)) recordStudyUrl({ url: entry.url, title: entry.title });
   }
@@ -636,6 +642,7 @@ export function ContentPane() {
           onOpenPdf={openHistoryPdf}
           onOpenUrl={openHistoryUrl}
           onOpenBook={openHistoryBook}
+          onRenameUrl={(entry, name) => renameStudyUrl(entry.url, name)}
           onOpenShelf={openWereadShelf}
           onImportPdf={() => {
             setHistoryOpen(false);

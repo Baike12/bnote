@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { StudyPdfEntry, StudyUrlEntry, WereadBookEntry } from "@/study/history";
+import {
+  urlTitle,
+  type StudyPdfEntry,
+  type StudyUrlEntry,
+  type WereadBookEntry,
+} from "@/study/history";
+import { RenameInput } from "@/components/RenameInput";
 
 type Tab = "pdf" | "url" | "weread";
 
@@ -16,6 +22,7 @@ interface StudyHistoryMenuProps {
   onOpenPdf: (entry: StudyPdfEntry) => void;
   onOpenUrl: (entry: StudyUrlEntry) => void;
   onOpenBook: (entry: WereadBookEntry) => void;
+  onRenameUrl: (entry: StudyUrlEntry, name: string) => void;
   onOpenShelf: () => void;
   onImportPdf: () => void;
 }
@@ -54,11 +61,14 @@ export function StudyHistoryMenu({
   onOpenPdf,
   onOpenUrl,
   onOpenBook,
+  onRenameUrl,
   onOpenShelf,
   onImportPdf,
 }: StudyHistoryMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<Tab>(initialTab);
+  /** The web page whose title is being edited (its URL); null when nothing is. */
+  const [renaming, setRenaming] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) setTab(initialTab);
@@ -142,15 +152,47 @@ export function StudyHistoryMenu({
               ))}
             {tab === "url" &&
               urls.map((entry) => (
-                <button
-                  key={entry.url}
-                  className="study-history-item"
-                  onClick={() => onOpenUrl(entry)}
-                  title={entry.url}
-                >
-                  <span className="study-history-title">{entry.title}</span>
-                  <span className="study-history-sub">{entry.url}</span>
-                </button>
+                <div key={entry.url} className="study-history-row">
+                  {renaming === entry.url ? (
+                    <div className="study-history-item is-editing">
+                      <RenameInput
+                        initial={urlTitle(entry)}
+                        onCommit={(name) => {
+                          setRenaming(null);
+                          // An empty value means cancel (Escape / nothing typed).
+                          if (name) onRenameUrl(entry, name);
+                        }}
+                      />
+                      <span className="study-history-sub" title={entry.url}>
+                        {entry.url}
+                      </span>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        className="study-history-item"
+                        onClick={() => onOpenUrl(entry)}
+                        title={entry.url}
+                      >
+                        <span className="study-history-title" title={urlTitle(entry)}>
+                          {urlTitle(entry)}
+                        </span>
+                        <span className="study-history-sub">{entry.url}</span>
+                      </button>
+                      <button
+                        className="study-history-rename"
+                        title="重命名这个网页"
+                        aria-label={`重命名 ${urlTitle(entry)}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRenaming(entry.url);
+                        }}
+                      >
+                        ✎
+                      </button>
+                    </>
+                  )}
+                </div>
               ))}
             {tab === "weread" &&
               books.map((entry) => (

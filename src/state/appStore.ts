@@ -5,6 +5,8 @@ import {
   pushPdfEntry,
   pushUrlEntry,
   pushWereadBook,
+  renameUrlEntry,
+  urlTitle,
   type StudyHistory,
   type StudyPdfEntry,
   type StudyUrlEntry,
@@ -507,6 +509,8 @@ interface AppState {
   /** Record an opened PDF (de-duplicated, moved to the top, persisted). */
   recordStudyPdf: (entry: Omit<StudyPdfEntry, "at">) => void;
   recordStudyUrl: (entry: Omit<StudyUrlEntry, "at">) => void;
+  /** Gives one opened web page a user name (empty restores the derived title); the open page's header follows. */
+  renameStudyUrl: (url: string, name: string) => void;
   recordWereadBook: (entry: Omit<WereadBookEntry, "at">) => void;
   openDrawingSession: (session: DrawingSession) => void;
   closeDrawingSession: () => void;
@@ -716,6 +720,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     const studyHistory = pushUrlEntry(get().studyHistory, entry);
     set({ studyHistory });
     persistConfig({ ...getConfigSnapshot(), studyHistory });
+  },
+  renameStudyUrl: (url, name) => {
+    const studyHistory = renameUrlEntry(get().studyHistory, url, name);
+    set({ studyHistory });
+    persistConfig({ ...getConfigSnapshot(), studyHistory });
+    // The page open in the middle column is the same material: its header
+    // title must follow the rename, or the tab and the list disagree.
+    const content = get().studyContent;
+    const entry = studyHistory.urls.find((e) => e.url === url);
+    if (content?.kind === "url" && content.url === url && entry) {
+      set({ studyContent: { ...content, title: urlTitle(entry) } });
+    }
   },
   recordWereadBook: (entry) => {
     const studyHistory = pushWereadBook(get().studyHistory, entry);

@@ -4811,6 +4811,41 @@ input[type="range"] {
 .study-history-item:hover {
   background: var(--bg3);
 }
+/* A web page row: the item plus its rename button. The button is a sibling,
+   not a child: a button inside a button is invalid and swallows the click. */
+.study-history-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+.study-history-row .study-history-item {
+  flex: 1;
+  min-width: 0;
+}
+.study-history-rename {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-top: 3px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-faint);
+  background: transparent;
+  /* Invisible until the row is hovered: the list stays a list, not a toolbar. */
+  opacity: 0;
+}
+.study-history-row:hover .study-history-rename,
+.study-history-rename:focus-visible {
+  opacity: 1;
+}
+.study-history-rename:hover {
+  color: var(--text);
+  background: var(--bg3);
+}
+.study-history-item.is-editing {
+  cursor: default;
+}
 .study-history-title {
   font-size: 12.5px;
   color: var(--text);

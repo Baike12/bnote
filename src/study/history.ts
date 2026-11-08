@@ -21,8 +21,21 @@ export interface StudyPdfEntry {
 
 export interface StudyUrlEntry {
   url: string;
+  /** The title derived when the page was opened (the domain for a plain web page). */
   title: string;
+  /**
+   * The name the user gave the page; it wins over `title` wherever the entry is
+   * shown. A field of its own on purpose: opening the page again derives the
+   * title once more, and that automatic write must never erase a manual name.
+   * Absent means "no name yet".
+   */
+  name?: string;
   at: number;
+}
+
+/** The title to show for a web page: the user's name when there is one. */
+export function urlTitle(entry: StudyUrlEntry): string {
+  return entry.name || entry.title;
 }
 
 /**
@@ -88,7 +101,8 @@ export function normalizeStudyHistory(raw: unknown): StudyHistory {
       const url = str(item.url);
       const title = str(item.title);
       if (!url || !title) continue;
-      urls.push({ url, title, at: num(item.at) });
+      const name = typeof item.name === "string" ? item.name.trim() : "";
+      urls.push({ url, title, at: num(item.at), ...(name ? { name } : {}) });
     }
   }
   const weread: WereadBookEntry[] = [];
@@ -138,10 +152,38 @@ export function pushUrlEntry(
   entry: Omit<StudyUrlEntry, "at"> & { at?: number },
 ): StudyHistory {
   const at = entry.at ?? Date.now();
-  const next: StudyUrlEntry = { url: entry.url, title: entry.title, at };
+  // The name survives a reopen: it is the user's, not the page's, and the
+  // derived title recorded here would otherwise overwrite it every time.
+  const name = entry.name ?? history.urls.find((e) => e.url === entry.url)?.name;
+  const next: StudyUrlEntry = {
+    url: entry.url,
+    title: entry.title,
+    at,
+    ...(name ? { name } : {}),
+  };
   return {
     ...history,
     urls: cap([next, ...history.urls.filter((e) => e.url !== next.url)]),
+  };
+}
+
+/**
+ * Gives one opened web page a user name (empty clears it, falling back to the
+ * derived title). It only touches the name: the entry keeps its place and
+ * timestamp — renaming is not "opening again".
+ */
+export function renameUrlEntry(history: StudyHistory, url: string, name: string): StudyHistory {
+  const trimmed = name.trim();
+  if (!history.urls.some((e) => e.url === url)) return history;
+  return {
+    ...history,
+    urls: history.urls.map((entry) => {
+      if (entry.url !== url) return entry;
+      if (trimmed) return { ...entry, name: trimmed };
+      // Clearing drops the field instead of storing an empty string: an
+      // absent name is the one representation of "no name yet".
+      return { url: entry.url, title: entry.title, at: entry.at };
+    }),
   };
 }
 

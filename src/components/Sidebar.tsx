@@ -15,6 +15,7 @@ import { api } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import type { FileNode } from "@/lib/tauri";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { RenameInput } from "./RenameInput";
 import { IconNewFolder, IconNewNote } from "./icons";
 // The vault tree and the code-project tree share one icon family: the same
 // 16-viewBox strokes in the same 14px box, so a row's icon and its name are
@@ -334,30 +335,6 @@ function TreeItem(props: TreeItemProps) {
           ))
         ))}
     </div>
-  );
-}
-
-function RenameInput({ initial, onCommit }: { initial: string; onCommit: (name: string) => void }) {
-  const [value, setValue] = useState(initial);
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    ref.current?.focus();
-    ref.current?.select();
-  }, []);
-  return (
-    <input
-      ref={ref}
-      className="rename-input"
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        e.stopPropagation();
-        if (e.key === "Enter") onCommit(value.trim());
-        if (e.key === "Escape") onCommit("");
-      }}
-      onBlur={() => onCommit(value.trim())}
-    />
   );
 }
 
