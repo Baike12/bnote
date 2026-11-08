@@ -48,9 +48,9 @@ export function parseQuestions(raw: unknown): AskQuestion[] {
 }
 
 /**
- * The blocking card for `ask_user_question`. The picks are local state (the
- * caller mounts it with `key={pending.id}`), and the answer is formatted as
- * "question → a, b" blocks, one per question.
+ * The card above the composer for `ask_user_question`. The picks are local
+ * state (the caller mounts it with `key={pending.id}`), and the answer is
+ * formatted as "question → a, b" blocks, one per question.
  */
 export function AgentQuestionCard({
   pending,

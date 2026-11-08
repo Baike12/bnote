@@ -160,7 +160,13 @@ function TurnWork({
       open={open}
       onToggle={(e) => {
         const next = (e.target as HTMLDetailsElement).open;
+        // Opening anything inside (a tool, the thinking) is the user inspecting
+        // the work: their choice keeps the section open when the turn ends.
         if (next) interactedRef.current = true;
+        // React dispatches a descendant's toggle to ancestor onToggle handlers
+        // too; only this details' own toggle may write its open state, or
+        // collapsing one tool would collapse the whole section (one writer).
+        if (e.target !== e.currentTarget) return;
         setOpen(next);
       }}
     >

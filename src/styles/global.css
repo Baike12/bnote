@@ -3025,33 +3025,29 @@ input[type="range"] {
   line-height: 1.4;
 }
 
-/* Tool approval / model question: a blocking overlay inside the panel. The
-   backend turn is parked on the answer (oneshot), so nothing else may be
-   clickable while it is up — the agent keeps working the moment it closes. */
+/* Tool approval / model question (ZCode's bottom dock): a normal-flow card
+   stacked directly above the composer, not a centered modal. The backend turn
+   is parked on the answer (oneshot) and the composer shows stop while busy, so
+   the conversation stays readable and scrollable behind the card; answering it
+   resumes the agent. The margins match the composer so the two read as one
+   dock, and the card scrolls inside a bounded height instead of taking over
+   the column. */
 .agent-approval {
-  position: absolute;
-  inset: 0;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: color-mix(in srgb, var(--bg0) 60%, transparent);
-  backdrop-filter: blur(2px);
+  flex-shrink: 0;
+  margin: 0 10px 8px;
 }
 .agent-approval-card {
   width: 100%;
-  max-width: 420px;
-  max-height: 100%;
+  max-height: min(60vh, 420px);
   overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--bg1);
-  box-shadow: 0 18px 40px var(--shadow);
+  box-shadow: 0 12px 28px var(--shadow);
 }
 .agent-approval-head {
   display: flex;
@@ -3831,11 +3827,14 @@ input[type="range"] {
   color: transparent;
   animation: agent-thinking-sweep 1.6s linear infinite;
 }
-.agent-turn-work .agent-tool-chevron {
+/* Only the work section's own chevron: a descendant selector would also spin
+   every tool chevron when the section opens, reading as "all tools expanded".
+   Tool chevrons rotate solely via .agent-tool[open] below. */
+.agent-turn-work > summary .agent-tool-chevron {
   margin-left: 0;
   opacity: 0.7;
 }
-.agent-turn-work[open] .agent-tool-chevron { transform: rotate(90deg); }
+.agent-turn-work[open] > summary .agent-tool-chevron { transform: rotate(90deg); }
 .agent-turn-work-body {
   padding-top: 4px;
   display: flex;

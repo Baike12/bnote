@@ -17,7 +17,8 @@ function prettyJson(value: unknown): string {
 }
 
 /**
- * The blocking approval overlay: the turn is parked until the user answers.
+ * The approval card stacked above the composer: the turn is parked until the
+ * user answers.
  *
  * The rejection reason is local state and the caller mounts the card with
  * `key={approval.id}`, so the next request starts with an empty box.
