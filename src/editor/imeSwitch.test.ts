@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  *
  * Two disciplines:
  * 1. **Never initiate in the keystroke's own frame** — the switch request is
- *    deferred until after the current task (scheduleLaunch), so the mode
- *    switch's own DOM sync + measure lands first; consecutive flips in the
- *    same task collapse into one, and only the latest intent goes out.
+ *    deferred past the frame (scheduleLaunch queues a timer from within
+ *    requestAnimationFrame, which fires only after the frame is presented), so
+ *    the exit frame's DOM sync + measure + math widget swap land first;
+ *    consecutive flips in the same task collapse into one, and only the latest
+ *    intent goes out.
  * 2. **At most one in-flight call at a time**. Each switch occupies a
  *    main-thread TIS round trip on the Rust side (the macOS 26 race may even
  *    escalate into a macism subprocess), and an overlapping storm stalls the
@@ -48,6 +50,13 @@ const pending: (() => void)[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Synchronous rAF double: collapses scheduleLaunch to its inner timer so the
+  // behavioral tests below keep their tick semantics; the frame-boundary
+  // contract itself is locked by the controlled-rAF regression test.
+  vi.stubGlobal("requestAnimationFrame", (cb: (time: number) => void) => {
+    cb(performance.now());
+    return 0;
+  });
   pending.length = 0;
   setInputSource.mockImplementation(
     () =>
@@ -77,6 +86,7 @@ afterEach(async () => {
   // only queues and never goes out.
   await drain();
   await drain();
+  vi.unstubAllGlobals();
 });
 
 /** Releases the launch deferred to the end of the task, settles the in-flight call, and flushes the microtasks. */
@@ -92,6 +102,28 @@ describe("imeApply launch timing and in-flight merging", () => {
   it("no IPC is sent at the moment of the keystroke; it is deferred to the end of the task", () => {
     imeApply("A");
     expect(setInputSource).not.toHaveBeenCalled();
+  });
+
+  it("the launch waits for the frame boundary: timer ticks before rAF never send the switch", async () => {
+    let frame: ((time: number) => void) | null = null;
+    vi.stubGlobal("requestAnimationFrame", (cb: (time: number) => void) => {
+      frame = cb;
+      return 1;
+    });
+    try {
+      imeApply("A");
+      // Two timer ticks with the frame still pending: a setTimeout(0)-only
+      // defer would have fired here; the rAF gate must hold the switch back.
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(setInputSource).not.toHaveBeenCalled();
+      frame!(performance.now()); // the frame is presented
+      await drain();
+      expect(setInputSource).toHaveBeenCalledTimes(1);
+      expect(setInputSource).toHaveBeenLastCalledWith("A");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("a synchronous burst of flips sends only one call, and it is the latest intent (the first call is not wasted)", async () => {

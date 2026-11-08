@@ -10,8 +10,8 @@ import { useAppStore, type ModalKind, type Settings } from "@/state/appStore";
  * IME follow: switch the macOS input source on vim mode changes —
  * insert → Chinese, normal/visual → English — without leaving insert-time
  * typing on the critical path. The switch itself is an in-process TIS call
- * (~1–5 ms, background thread) and is skipped entirely when the requested
- * source is already active.
+ * (~2–10 ms, on the Apple main thread since HIToolbox asserts the main queue)
+ * and is skipped entirely when the requested source is already active.
  *
  * Mirrors the behavior of the user's patched obsidian-vim-input-auto-switch:
  * entering insert inside a math region keeps the English source (formulas are
@@ -64,25 +64,32 @@ function cancelFocusVerify(): void {
   }
 }
 
-/** Defers the switch to after the current task. The mode-change frame already
- *  runs a DOM sync + measure round (see the cursor flush in setup.ts), and TIS
- *  must occupy Apple's main thread (on_main in ime.rs) — let the mode and the
- *  caret settle first, then touch the IME, never in the same frame. Consecutive
- *  flips in one batch collapse into a single switch: `desired` is the single
- *  source of intent, and the timer only delivers it. */
+/** Defers the switch past the keystroke's frame. The exit frame already runs a
+ *  DOM sync + measure round (the cursor flush in setup.ts) plus the math
+ *  source⇄widget swap, and TIS must occupy Apple's main thread (on_main in
+ *  ime.rs: HIToolbox asserts it, so it cannot move off the UI thread) — where
+ *  its 2–10 ms select would land in that frame's paint; a setTimeout(0) alone
+ *  stays in the same frame. requestAnimationFrame fires before paint; the timer
+ *  queued from it runs only after the frame is presented, so the IME touch
+ *  lands between frames, never on the exit frame. Consecutive flips collapse
+ *  into a single switch: `desired` is the single source of intent, read when
+ *  the timer fires (a window hidden before the frame resumes delivers the
+ *  latest intent then). */
 function scheduleLaunch(): void {
   if (launchScheduled) return;
   launchScheduled = true;
-  setTimeout(() => {
-    launchScheduled = false;
-    const target = desired;
-    if (target === null || suspended) return; // the user's IME was handed back (blur / suspended)
-    if (switching) {
-      queued = target;
-      return;
-    }
-    launchSwitch(target);
-  }, 0);
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      launchScheduled = false;
+      const target = desired;
+      if (target === null || suspended) return; // the user's IME was handed back (blur / suspended)
+      if (switching) {
+        queued = target;
+        return;
+      }
+      launchSwitch(target);
+    }, 0);
+  });
 }
 
 function launchSwitch(target: string): void {

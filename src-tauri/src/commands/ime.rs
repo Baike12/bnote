@@ -252,6 +252,27 @@ mod tis {
         }
     }
 
+    /// Pre-pays the cold TIS select initialization, invisibly. The first
+    /// `TISSelectInputSource` invocation costs ~88ms on this machine even when it
+    /// selects the already-active source (a no-op: status 0, no source change,
+    /// no icon flash); every later switch is 2–10ms. `select`'s already-active
+    /// dedup would skip the call and never pay that init, so this selects the
+    /// current source RAW, once per process. Runs inside the warm-up's
+    /// main-thread dispatch (see `list_impl`), keeping the cost off the first
+    /// keystroke that switches modes or leaves a formula.
+    pub fn warm_select_current() {
+        static WARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if WARMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        if let Some(id) = current_source_id() {
+            // The status is deliberately dropped: a failed warm-up only leaves
+            // the cold cost on the first real switch (the pre-warm-up behavior)
+            // — there is nothing to recover and no user-visible effect.
+            let _ = with_source(&id, |src| unsafe { TISSelectInputSource(src) });
+        }
+    }
+
     pub fn is_cjk_source(id: &str) -> bool {
         let langs = with_source(id, |src| unsafe {
             prop_langs(src, kTISPropertyInputSourceLanguages)
@@ -283,9 +304,12 @@ fn macism_path() -> Option<&'static str> {
 
 /// Runs a closure on the main thread and waits for its result.
 ///
-/// macOS 26 (Tahoe) HIToolbox asserts that TIS APIs run on the main queue —
-/// calling them from any other thread traps with EXC_BREAKPOINT
-/// (dispatch_assert_queue_fail). Every TIS entry point must go through this.
+/// HIToolbox asserts that TIS APIs run on the main queue: calling
+/// `TISCreateInputSourceList` from a tokio worker traps with EXC_BREAKPOINT
+/// (dispatch_assert_queue_fail) on macOS 15.3 as well, not only on macOS 26 —
+/// observed in a deployed build on 2026-11-08, while the same call succeeds in
+/// the test binary (no NSApplication there, so the assertion is not reached).
+/// Every TIS entry point must go through this.
 #[cfg(target_os = "macos")]
 fn on_main<T: Send + 'static>(
     app: &AppHandle,
@@ -302,9 +326,18 @@ fn on_main<T: Send + 'static>(
 
 #[cfg(target_os = "macos")]
 async fn list_impl(app: AppHandle) -> CmdResult<Vec<InputSourceInfo>> {
-    spawn_blocking(move || on_main(&app, tis::selectable_sources))
-        .await
-        .map_err(|e| format!("join error: {e}"))?
+    spawn_blocking(move || {
+        on_main(&app, || {
+            let sources = tis::selectable_sources();
+            // Same main-thread dispatch as the enumeration: pre-pay the cold
+            // select init here too, so both cold TIS costs land at startup
+            // (imeWarmUp) rather than on the first mode switch / formula exit.
+            tis::warm_select_current();
+            sources
+        })
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -367,7 +400,9 @@ async fn set_impl(app: AppHandle, _id: String) -> CmdResult<SetImeOutcome> {
     Err("IME switching is only supported on macOS".into())
 }
 
-/// Lists enabled, selectable input sources for the settings picker.
+/// Lists enabled, selectable input sources for the settings picker. The first
+/// call (the startup warm-up, see imeWarmUp) also pre-pays the cold TIS select
+/// initialization in the same main-thread dispatch; later calls only enumerate.
 #[tauri::command]
 pub async fn list_input_sources(app: AppHandle) -> CmdResult<Vec<InputSourceInfo>> {
     list_impl(app).await
@@ -439,7 +474,9 @@ fn verify_or_fallback(app: AppHandle, target: String, seq: u64) {
             if attempt == 0 {
                 let handle = app.clone();
                 let t = target.clone();
-                let _ = on_main(&handle, move || tis::select(&t));
+                if let Err(e) = on_main(&handle, move || tis::select(&t)) {
+                    eprintln!("[bnote] ime reselect failed: {e}");
+                }
             }
         }
         if SWITCH_SEQ.load(Ordering::SeqCst) != seq {
@@ -508,6 +545,13 @@ mod tests {
         );
     }
 
+    /// Probe, not a gate: prints the live TIS costs on this machine.
+    ///
+    /// This test binary has no NSApplication, so HIToolbox's main-queue
+    /// assertion is never reached and the calls below run from a test thread.
+    /// That does **not** make off-main TIS safe: an off-main enumeration in the
+    /// deployed app traps with dispatch_assert_queue_fail on macOS 15.3 too
+    /// (crash report 2026-11-08). Every entry point stays on `on_main`.
     #[test]
     fn probe_switch_sources() {
         let _guard = lock();
