@@ -148,6 +148,80 @@ describe("planTabout: jumping out of a whole formula tail", () => {
   it("the caret rests in the middle of the content (characters follow): it does not jump out of the whole block", () => {
     expect(at("$$\nx\ny\n$$", 4)).toBeNull();
   });
+
+  it("the caret sits at the block's very last position (right after the closing $$ at the end of its line): Tab leaves the block", () => {
+    const doc = "$$\nx\n$$\n下一段";
+    expect(at(doc, doc.indexOf("$$", 3) + 2)).toEqual({ pos: doc.indexOf("下一段"), changes: [] });
+  });
+
+  it("the closing $$ ends the last content line (the block's last position is on that line): same exit", () => {
+    const doc = "$$\nx$$\n下一段";
+    expect(at(doc, 6)).toEqual({ pos: doc.indexOf("下一段"), changes: [] });
+  });
+
+  it("the closing $$ line is the document's last line: a newline is created and the caret lands on it", () => {
+    const doc = "$$\nx\n$$";
+    expect(at(doc, doc.length)).toEqual({
+      pos: doc.length + 1,
+      changes: [{ from: doc.length, to: doc.length, insert: "\n" }],
+    });
+  });
+});
+
+describe("planTabout: a block that ends a callout's content", () => {
+  const DOC = "::: 标题\n$$\nx\n$$\n:::";
+  const closeFrom = DOC.lastIndexOf(":::");
+
+  it("the closing ::: is never a landing line: an empty content line is carved out above it", () => {
+    const plan = at(DOC, DOC.indexOf("x") + 1)!;
+    expect(plan).toEqual({
+      pos: closeFrom,
+      changes: [{ from: closeFrom, to: closeFrom, insert: "\n" }],
+    });
+  });
+
+  it("leaving from the block's last position (right after the closing $$) gets the same carve-out", () => {
+    const plan = at(DOC, DOC.lastIndexOf("$$") + 2)!;
+    expect(plan).toEqual({
+      pos: closeFrom,
+      changes: [{ from: closeFrom, to: closeFrom, insert: "\n" }],
+    });
+  });
+
+  it("the trailing-whitespace cleanup shifts the carved landing point with it", () => {
+    const doc = "::: t\n$$\nx   \n$$\n:::";
+    const plan = at(doc, doc.indexOf("x") + 1)!;
+    expect(plan).toEqual({
+      pos: doc.lastIndexOf(":::") - 3,
+      changes: [
+        { from: doc.indexOf("x"), to: doc.indexOf("x") + 4, insert: "x" },
+        { from: doc.lastIndexOf(":::"), to: doc.lastIndexOf(":::"), insert: "\n" },
+      ],
+    });
+  });
+
+  it("a following callout *opening* marker is structural as well: typing before it would destroy it", () => {
+    const doc = "$$\nx\n$$\n::: 新块";
+    const nextFrom = doc.indexOf("::: 新块");
+    expect(at(doc, doc.indexOf("x") + 1)).toEqual({
+      pos: nextFrom,
+      changes: [{ from: nextFrom, to: nextFrom, insert: "\n" }],
+    });
+  });
+
+  it("an ordinary next line stays the landing line (no blank line is inserted)", () => {
+    const doc = "$$\nx\n$$\n正文";
+    expect(at(doc, doc.indexOf("x") + 1)).toEqual({ pos: doc.indexOf("正文"), changes: [] });
+  });
+
+  it("the carve-out is dispatched: the caret ends on the new line above the closing :::", () => {
+    const view = makeView(DOC, [DOC.indexOf("x") + 1]);
+    expect(tabout(view)).toBe(true);
+    expect(text(view)).toBe("::: 标题\n$$\nx\n$$\n\n:::");
+    const landed = view.state.doc.lineAt(head(view));
+    expect(landed.text).toBe("");
+    expect(view.state.doc.line(landed.number + 1).text).toBe(":::");
+  });
 });
 
 describe("tabout: dispatch and the toggle", () => {

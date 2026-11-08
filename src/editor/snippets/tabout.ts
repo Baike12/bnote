@@ -1,6 +1,7 @@
 import { EditorSelection } from "@codemirror/state";
 import type { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
+import { calloutRegions } from "../callout";
 import { getContextAt, mathRegions } from "../context";
 import { latexConfig } from "./config";
 
@@ -24,7 +25,7 @@ import { latexConfig } from "./config";
  *    when the bottom `$$` is already the last line, a newline is inserted
  *    first, otherwise there is no "next line" to land on.
  *
- * Three deliberate differences from the plugin (all locked by the gate):
+ * Deliberate differences from the plugin (all locked by the gate):
  * - The cleanup only trimEnds, it does **not** trim the line start: the plugin
  *   uses `line.text.trim()`, which in a list item also eats the indent of the
  *   formula content line, and that indent is part of the markdown structure;
@@ -32,7 +33,13 @@ import { latexConfig } from "./config";
  *   coordinates (the caret drifts by the number of eaten characters); here the
  *   landing point is mapped to the new document by the size of the change;
  * - `codeMath` (a formula inside a ```math fence) does not take part: bnote
- *   has no forceMathLanguages, so fenced formulas do not enter mathRegions.
+ *   has no forceMathLanguages, so fenced formulas do not enter mathRegions;
+ * - The block's own last position (right after the closing `$$`, at the end of
+ *   its line) also counts as the tail: the plugin classifies it as math-end
+ *   and leaves Tab to the indent, while here Tab leaves the block;
+ * - A block exit never lands on a callout boundary line (`:::`): an empty
+ *   content line is carved out above the marker, so the next keystroke cannot
+ *   tear the container apart (the plugin has no callouts).
  */
 const TARGET_CHARS = "})]>|$";
 
@@ -58,6 +65,11 @@ function contentStart(region: { display: boolean; from: number }): number {
   return region.display ? region.from + 2 : region.from + 1;
 }
 
+/** A callout boundary marker line: three or more colons at column 0 (see
+ *  callout.ts). Checked textually before the region scan — the scan is
+ *  per-document work, and a `:::` right after a block is rare. */
+const CALLOUT_MARKER = /^:{3,}/;
+
 /** A pure decision: whether to leave, where to, and what to change; null when
  *  there is nowhere to leave to. */
 export function planTabout(state: EditorState, pos: number): TaboutPlan | null {
@@ -66,6 +78,22 @@ export function planTabout(state: EditorState, pos: number): TaboutPlan | null {
   const region = mathRegions(state).find((r) => pos >= r.from && pos <= r.to);
   if (!region) return null;
   const end = contentEnd(region);
+
+  // The caret sits at the block's very last position (right after the closing
+  // `$$`, at the end of its line). An inline formula is already out at its
+  // closing `$` — it ends mid-line — but a block owns its line end, and Tab
+  // there must leave the block instead of falling through to indentMore. An
+  // unclosed region has no closing delimiter: its `to` is the body end, and
+  // typing there still belongs to the formula.
+  if (
+    region.display &&
+    region.unclosed !== true &&
+    pos === region.to &&
+    pos === state.doc.lineAt(pos).to
+  ) {
+    return blockExit(state, pos, end);
+  }
+
   // The caret sits on a delimiter (the one or two `$` at the start or end of
   // the formula): that is not a leave-the-bracket case. The plugin's tree
   // classifies such positions as math-begin/math-end, where `inMath()` is
@@ -104,19 +132,37 @@ function blockExit(state: EditorState, pos: number, end: number): TaboutPlan {
     target = doc.length + 1;
     changes.push({ from: doc.length, to: doc.length, insert: "\n" });
   } else {
-    target = doc.line(closing.number + 1).from;
+    const next = doc.line(closing.number + 1);
+    target = next.from;
+    if (CALLOUT_MARKER.test(next.text) && onCalloutEdge(state, next.number)) {
+      // The next line is a `:::` boundary, not content: landing the caret
+      // inside the marker would make the next keystroke tear the container
+      // apart (the marker would turn into a title or stop being one). Carve
+      // out an empty content line above it and land there.
+      changes.push({ from: next.from, to: next.from, insert: "\n" });
+    }
   }
 
   const line = doc.lineAt(pos);
   const trimmed = line.text.trimEnd();
-  if (trimmed !== line.text) {
+  const trim = trimmed.length - line.text.length;
+  if (trim !== 0) {
     // The trailing whitespace is eaten before the landing point, so the
     // landing point shifts left with it (the plugin lands on the old
-    // coordinates here and drifts).
-    if (line.to <= target) target += trimmed.length - line.text.length;
-    changes.push({ from: line.from, to: line.to, insert: trimmed });
+    // coordinates here and drifts). The trim is the first change: change
+    // specs are written in the old document's coordinates, and keeping the
+    // array ascending keeps them independent of each other.
+    if (line.to <= target) target += trim;
+    changes.unshift({ from: line.from, to: line.to, insert: trimmed });
   }
   return { pos: target, changes };
+}
+
+/** Whether `lineNo` is a callout boundary (an opening or a closing marker)
+ *  according to the same scan the decorations use; a `:::` inside a fence or
+ *  a misaligned marker is ordinary text there and is not a boundary here. */
+function onCalloutEdge(state: EditorState, lineNo: number): boolean {
+  return calloutRegions(state).some((r) => r.openLine === lineNo || r.closeLine === lineNo);
 }
 
 /** The last layer of Tab: leave the bracket/formula block. */
