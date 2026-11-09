@@ -896,8 +896,6 @@ window.__mountAgentHeader = (spec) => {
       convs: spec.convs,
       activeKey,
       onSelect: (key: string) => record(`select:${key}`),
-      creativeMode: false,
-      onToggleCreative: () => record("creative"),
       historyOpen: false,
       onToggleHistory: () => record("history"),
       onNewSession: () => record("new"),

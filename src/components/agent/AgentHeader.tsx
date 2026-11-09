@@ -37,8 +37,6 @@ interface AgentHeaderProps {
   convs: AgentHeaderConv[];
   activeKey: string | null;
   onSelect: (key: string) => void;
-  creativeMode: boolean;
-  onToggleCreative: () => void;
   historyOpen: boolean;
   onToggleHistory: () => void;
   onNewSession: () => void;
@@ -55,8 +53,6 @@ export function AgentHeader({
   convs,
   activeKey,
   onSelect,
-  creativeMode,
-  onToggleCreative,
   historyOpen,
   onToggleHistory,
   onNewSession,
@@ -196,31 +192,6 @@ export function AgentHeader({
           )}
         </div>
         <button
-          className={`icon-btn${creativeMode ? " is-active" : ""}`}
-          title={
-            creativeMode
-              ? "创作模式(⌘⇧G):开启中,点这里切回学习问答"
-              : "切换到创作模式(⌘⇧G):带工具与技能,生成 HTML 实时预览"
-          }
-          aria-pressed={creativeMode}
-          onClick={onToggleCreative}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M12 19l7-7a2.4 2.4 0 0 0-3.4-3.4l-9.6 9.6L4 22l2.1-.5a10 10 0 0 0 2.4-1L12 19z" />
-            <path d="M14.5 6.5l3 3" />
-          </svg>
-        </button>
-        <button
           className={`icon-btn${historyOpen ? " is-active" : ""}`}
           title="历史会话(这份材料保存过的对话)"
           aria-pressed={historyOpen}
@@ -247,7 +218,19 @@ export function AgentHeader({
           title="新会话(重读 .bnote/AGENTS.md 与配置)"
           onClick={onNewSession}
         >
-          ⟳
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 5v14M5 12h14" />
+          </svg>
         </button>
       </div>
       {parent && (

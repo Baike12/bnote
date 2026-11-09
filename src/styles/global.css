@@ -2745,10 +2745,10 @@ input[type="range"] {
 .agent-conv {
   position: relative;
   min-width: 0;
-  /* The title may take all the remaining width, but room is left for the four
-     icon buttons on the right (4 x 26 + 3 x 8 = 128): leave less and in a
+  /* The title may take all the remaining width, but room is left for the three
+     icon buttons on the right (3 x 26 + 2 x 8 = 94): leave less and in a
      narrow window it is the icons themselves that get squashed. */
-  max-width: calc(100% - 144px);
+  max-width: calc(100% - 110px);
   display: flex;
 }
 .agent-conv-btn {

@@ -101,10 +101,10 @@ describe("study assistant header: session switch and auxiliary session bar", () 
     const title = rule(".agent-conv-title");
     expect(title).toMatch(/text-overflow:\s*ellipsis/);
     expect(title).toMatch(/white-space:\s*nowrap/);
-    // The four header buttons (4 x 26 + 3 x 8 = 128) need that much room:
+    // The three header buttons (3 x 26 + 2 x 8 = 94) need that much room:
     // reserve less and in a narrow window it is the icon itself that gets
     // squeezed.
-    expect(rule(".agent-conv")).toMatch(/max-width:\s*calc\(100% - 144px\)/);
+    expect(rule(".agent-conv")).toMatch(/max-width:\s*calc\(100% - 110px\)/);
     expect(rule(".agent-header .icon-btn")).toMatch(/flex:\s*0 0 auto/);
   });
 

@@ -1343,8 +1343,6 @@ export function AgentPanel() {
         }))}
         activeKey={activeKey}
         onSelect={activateConv}
-        creativeMode={creativeMode}
-        onToggleCreative={() => setCreativeMode(!creativeMode)}
         historyOpen={historyOpen}
         onToggleHistory={() => setHistoryOpen((v) => !v)}
         onNewSession={() => {
