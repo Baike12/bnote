@@ -499,7 +499,7 @@ export function ImeTab() {
         />
         <Toggle
           label="中文输入框聚焦切中文"
-          desc="聚焦学习助手输入框、PDF 批注框、快速待办弹窗等只写中文的输入框时自动切到上面的 insert 输入法；快速待办关闭（Enter 添加 / Esc 取消）后恢复打开前的输入法。关闭后保持当前输入法"
+          desc="聚焦 agent 输入框、PDF 批注框、快速待办弹窗等只写中文的输入框时自动切到上面的 insert 输入法；快速待办关闭（Enter 添加 / Esc 取消）后恢复打开前的输入法。关闭后保持当前输入法"
           checked={ime.chineseFields}
           onChange={(v) => patchIme({ chineseFields: v })}
         />

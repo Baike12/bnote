@@ -156,18 +156,15 @@ describe("region dispatch", () => {
     expect(defaultRegionOf("view.toggle-study-mode")).toBe("global");
   });
 
-  it("the three region switch commands exist in all three regions (any region can go to any region, including back to itself)", () => {
+  it("the three region switch commands exist in every region (any region can go to any region, including back to itself)", () => {
     for (const id of ["region.focus-agent", "region.focus-notes", "region.focus-reading"]) {
-      for (const region of ["reading", "notes", "agent"] as const) {
+      for (const region of ["reading", "notes", "agent", "code"] as const) {
         expect(commandBelongs(id, region)).toBe(true);
       }
     }
-    // "Focus reading" has no share in the code region — the code region
-    // grows inside the reading column, there is no fourth place to go to.
-    // "Focus notes" / "Focus Agent" do have one: the code editor can jump
-    // straight back to the notes region and the assistant panel.
-    expect(defaultRegionsOf("region.focus-reading")).toEqual(["reading", "notes", "agent"]);
-    for (const id of ["region.focus-agent", "region.focus-notes"]) {
+    // Code mode is a three-column layout too: the caret can go back to the
+    // notes column, the agent panel, and the content column (the open file).
+    for (const id of ["region.focus-agent", "region.focus-notes", "region.focus-reading"]) {
       expect(defaultRegionsOf(id)).toEqual(["reading", "notes", "agent", "code"]);
       expect(commandBelongs(id, "code")).toBe(true);
     }
@@ -183,6 +180,8 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-Alt-r", "notes")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-r", "reading")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-r", "agent")).toContain("region.focus-reading");
+    expect(commandsForKey("Mod-Alt-r", "code")).toContain("region.focus-reading");
+    expect(commandsForKey("Mod-Alt-a", "code")).toContain("region.focus-agent");
     expect(bindingsForCommand("region.focus-agent")).toEqual(["Mod-Alt-a"]);
   });
 

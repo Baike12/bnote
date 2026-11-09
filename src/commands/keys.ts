@@ -273,7 +273,9 @@ const REGION_PREFIXES: [string, KeyRegion][] = [
 const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
   "region.focus-agent": ["reading", "notes", "agent", "code"],
   "region.focus-notes": ["reading", "notes", "agent", "code"],
-  "region.focus-reading": ["reading", "notes", "agent"],
+  // Reaching the content column exists in both three-column layouts: study
+  // (PDF / web page, re-ordered only) and code (the open file, focused).
+  "region.focus-reading": ["reading", "notes", "agent", "code"],
   // Both columns of the project view are focusable: the cards and the
   // journal on the right. ⌘⌥P sends the focus back to the cards in the
   // project region and holds in the journal column too (no need to go back

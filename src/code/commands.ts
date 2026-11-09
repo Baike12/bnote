@@ -404,3 +404,17 @@ export const codeCommandDefs: CommandDef[] = [
 export async function confirmRename(newName: string): Promise<boolean> {
   return renameSymbol(newName);
 }
+
+/**
+ * Put the caret back in the open file — what "the content area" means in code
+ * mode.
+ *
+ * The change list has no editor, so it is left first: choosing the content area
+ * means the file. The editor is mounted by the commit that follows, which is
+ * why the focus lands on the next frame rather than here.
+ */
+export function focusCodeContent(): void {
+  const store = useCodeStore.getState();
+  if (store.diffOpen) store.setDiff(false);
+  requestAnimationFrame(() => activeCodeEditor()?.view.focus());
+}

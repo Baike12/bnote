@@ -41,7 +41,7 @@ import { capturePdfSnapshot, hasPdfSnapshotSource } from "@/study/pdfSnapshot";
 import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
 import { fileToAgentImage } from "@/study/agentImages";
 import { WEREAD_HOME_URL } from "@/study/weread";
-import { codeCommandDefs } from "@/code/commands";
+import { codeCommandDefs, focusCodeContent } from "@/code/commands";
 
 /** Whether the middle column has a web page open (only then do the zoom keys take over ⌘= / ⌘- / ⌘0). */
 function hasWebPreview(): boolean {
@@ -54,20 +54,30 @@ function applyWebZoom(direction: 1 | -1): void {
   patchSettings({ studyWebZoom: stepWebZoom(settings.studyWebZoom, direction) });
 }
 
+/** Whether the current layout mounts the agent panel (the focus target of ⌘⌥A). */
+function hasAgentPanel(): boolean {
+  const mode = useAppStore.getState().mode;
+  return mode === "study" || mode === "code";
+}
+
 /**
- * Put the reading column back in the middle **without moving the keyboard**.
+ * Put the content column back in the middle — and, in code mode, the caret back
+ * into the open file.
  *
- * The reader (PDF / web page) is looked at, not typed into, so it has no
- * reason to take the focus: the notes editor / Agent input keep it exactly
- * where the user left it, and only the column order follows the command.
- * The native web preview does not need a focus hand-off either — StudyLayout
- * re-reports its bounds on every swap (`bnote:study-layout-resize`), so the
- * page follows the layout with the first responder untouched.
+ * The two layouts differ in what the content column is. Study mode's middle
+ * column is a PDF / web page: it is read, not typed into, so the command must
+ * not move the keyboard (the notes editor / Agent input keep it exactly where
+ * the user left it, and the native web preview does not need a hand-off either
+ * — StudyLayout re-reports its bounds on every swap, so the page follows the
+ * layout with the first responder untouched). Code mode's content column is a
+ * CodeMirror editor, so there the command really does focus it.
  */
-function showReadingInMiddle() {
-  // The middle column follows the explicit switch: the reading column comes
+function focusContentArea() {
+  const store = useAppStore.getState();
+  // The middle column follows the explicit switch: the content column comes
   // back to the middle even if the assistant was there.
-  useAppStore.getState().setMainColumn("content");
+  store.setMainColumn("content");
+  if (store.mode === "code") focusCodeContent();
 }
 
 function withView(fn: (view: NonNullable<ReturnType<typeof getView>>) => void) {
@@ -412,12 +422,15 @@ const defs: CommandDef[] = [
   // (see study/webAnnotations.ts).
   {
     id: "region.focus-agent",
-    title: "聚焦学习助手输入框",
+    title: "聚焦 agent 输入框",
     category: "区域切换",
-    when: () => useAppStore.getState().mode === "study",
+    // Both three-column layouts mount the agent panel (study and code); the
+    // notes / projects views have none to focus.
+    when: hasAgentPanel,
     run: () => {
       const store = useAppStore.getState();
-      // The assistant takes the middle column and stays there.
+      // The assistant takes the middle column and stays there; the panel then
+      // focuses its input and hands the IME to Chinese, in every mode.
       store.setMainColumn("agent");
       store.runAgentPanelCommand("focus-input");
     },
@@ -435,14 +448,14 @@ const defs: CommandDef[] = [
   },
   {
     id: "region.focus-reading",
-    title: "切换到阅读区(PDF / 网页)",
+    title: "切换到内容区",
     category: "区域切换",
-    when: () => useAppStore.getState().mode === "study",
+    when: hasAgentPanel,
     // A chord forwarded from the web page must not pull the first responder
-    // out of it: the command only re-orders columns and hands the focus to
-    // nobody.
+    // out of it: in study mode the command only re-orders columns. Code mode
+    // has no page to protect — the caret goes to the file there.
     keepsPageFocus: true,
-    run: showReadingInMiddle,
+    run: focusContentArea,
   },
   // ---- Session actions inside the study assistant panel ----
   {

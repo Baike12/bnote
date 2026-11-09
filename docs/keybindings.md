@@ -45,10 +45,10 @@ Active while the note editor has focus (the notes column of study mode counts).
 | `Cmd+4` | 设为 4 级标题 — `edit.heading-4` |
 | `Cmd+5` | 设为 5 级标题 — `edit.heading-5` |
 | `Cmd+6` | 设为 6 级标题 — `edit.heading-6` |
-| `Cmd+Alt+A` | 聚焦学习助手输入框 — `region.focus-agent` |
+| `Cmd+Alt+A` | 聚焦 agent 输入框 — `region.focus-agent` |
 | `Cmd+Alt+N` | 聚焦笔记区编辑器 — `region.focus-notes` |
 | `Cmd+Alt+P` | 聚焦项目卡片 — `region.focus-project` |
-| `Cmd+Alt+R` | 切换到阅读区(PDF / 网页) — `region.focus-reading` |
+| `Cmd+Alt+R` | 切换到内容区 — `region.focus-reading` |
 | `Cmd+B` | 加粗 — `edit.toggle-bold` |
 | `Cmd+E` | 切换实时渲染/源码模式 — `editor.toggle-live-preview` |
 | `Cmd+Enter` | Python: 把当前笔记当一个 py 文件运行(⌘↩) — `python.run-note` |
@@ -78,9 +78,9 @@ Active while the reading pane has focus: PDF, web page, WeRead. Paging and the r
 | `Cmd+-` | 缩小网页(⌘-) — `study.web-zoom-out` |
 | `Cmd+=` / `Cmd+Shift+=` | 放大网页(⌘=) — `study.web-zoom-in` |
 | `Cmd+0` | 网页缩放回到 100%(⌘0) — `study.web-zoom-reset` |
-| `Cmd+Alt+A` | 聚焦学习助手输入框 — `region.focus-agent` |
+| `Cmd+Alt+A` | 聚焦 agent 输入框 — `region.focus-agent` |
 | `Cmd+Alt+N` | 聚焦笔记区编辑器 — `region.focus-notes` |
-| `Cmd+Alt+R` | 切换到阅读区(PDF / 网页) — `region.focus-reading` |
+| `Cmd+Alt+R` | 切换到内容区 — `region.focus-reading` |
 | `Cmd+Shift+E` | 学习模式:截取阅读区可见内容到学习助手(⌘⇧E) — `study.pdf-snap-to-agent` |
 | `PageDown` / `ArrowRight` | 学习模式下一页(按步长滚动) — `study.pdf-next-page` |
 | `PageUp` / `ArrowLeft` | 学习模式上一页(按步长滚动) — `study.pdf-prev-page` |
@@ -92,9 +92,9 @@ Active while the assistant panel has focus: input, transcript, history.
 | Key | Command |
 | --- | --- |
 | `Cmd+[` | 学习助手:从分叉会话返回上一条会话 — `agent.back-from-fork` |
-| `Cmd+Alt+A` | 聚焦学习助手输入框 — `region.focus-agent` |
+| `Cmd+Alt+A` | 聚焦 agent 输入框 — `region.focus-agent` |
 | `Cmd+Alt+N` | 聚焦笔记区编辑器 — `region.focus-notes` |
-| `Cmd+Alt+R` | 切换到阅读区(PDF / 网页) — `region.focus-reading` |
+| `Cmd+Alt+R` | 切换到内容区 — `region.focus-reading` |
 | `Cmd+Shift+F` | 学习助手:从当前会话分叉出一个新会话 — `agent.fork-session` |
 | `Cmd+Shift+G` | 学习助手:切换创作模式(生成 HTML 实时预览) — `agent.toggle-creative` |
 | `Cmd+Shift+H` | 学习助手:打开并聚焦历史会话列表 — `agent.focus-history` |
@@ -122,10 +122,11 @@ Active while the code editor has focus. A separate world: `Cmd+S` saves the code
 | Key | Command |
 | --- | --- |
 | `Alt+Z` | 切换代码折行 — `code.toggle-wrap` |
-| `Cmd+Alt+A` | 聚焦学习助手输入框 — `region.focus-agent` |
+| `Cmd+Alt+A` | 聚焦 agent 输入框 — `region.focus-agent` |
 | `Cmd+Alt+ArrowLeft` | 上一个标签 — `code.prev-tab` |
 | `Cmd+Alt+ArrowRight` | 下一个标签 — `code.next-tab` |
 | `Cmd+Alt+N` | 聚焦笔记区编辑器 — `region.focus-notes` |
+| `Cmd+Alt+R` | 切换到内容区 — `region.focus-reading` |
 | `Cmd+B` | 显示/隐藏文件树 — `code.toggle-tree` |
 | `Cmd+F12` | 跳转到类型定义 — `code.go-to-type-definition` |
 | `Cmd+S` | 保存文件 — `code.save-file` |
