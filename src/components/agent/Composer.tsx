@@ -4,6 +4,7 @@ import {
   cacheHitRate,
   sessionHitRate,
   contextLabel,
+  contextOccupancy,
   formatPercent,
   formatTokenCount,
   occupancyPercent,
@@ -182,6 +183,10 @@ function AgentContextBadge({
       ].filter((p) => p.value > 0)
     : [];
   const partsTotal = parts.reduce((sum, p) => sum + p.value, 0);
+  // The provider's total once a request reported it; before that (a restored
+  // session, a panel that has not sent yet) the breakdown's own sum — the card
+  // must never be an empty frame with "—/42万" over a blank bar.
+  const occupancy = contextOccupancy(usage, contextLimit, partsTotal > 0 ? partsTotal : null);
 
   return (
     <div
@@ -206,27 +211,32 @@ function AgentContextBadge({
         <div className="agent-ctx-pop" role="dialog" aria-label="上下文容量">
           <div className="agent-ctx-head">
             <span>上下文容量</span>
-            <span className="agent-ctx-sum">
-              {usage ? formatTokenCount(usage.input + usage.output) : "—"}/
-              {contextLimit > 0 ? formatTokenCount(contextLimit) : "—"}
-              {pct !== null ? `(${formatPercent(pct)})` : ""}
+            <span
+              className="agent-ctx-sum"
+              title={occupancy?.estimated ? "估算值:本轮回复后由服务端返回的数据校准" : undefined}
+            >
+              {occupancy
+                ? `${occupancy.estimated ? "≈" : ""}${formatTokenCount(occupancy.used)}`
+                : "—"}
+              /{contextLimit > 0 ? formatTokenCount(contextLimit) : "—"}
+              {occupancy?.percent != null ? `(${formatPercent(occupancy.percent)})` : ""}
             </span>
           </div>
           <div className="agent-ctx-bar">
-            {usage &&
-              pct !== null &&
-              (partsTotal > 0
-                ? parts.map((p) => (
-                    <span
-                      key={p.label}
-                      className="agent-ctx-seg"
-                      style={{
-                        width: `${(p.value / partsTotal) * Math.min(100, pct)}%`,
-                        background: p.tone,
-                      }}
-                    />
-                  ))
-                : null)}
+            {occupancy !== null &&
+              parts.map((p) => (
+                <span
+                  key={p.label}
+                  className="agent-ctx-seg"
+                  style={{
+                    // The segments are the composition of what is used; the
+                    // whole bar's fill is the occupancy (an estimate when no
+                    // request has reported one yet).
+                    width: `${(p.value / partsTotal) * Math.min(100, occupancy.percent ?? 100)}%`,
+                    background: p.tone,
+                  }}
+                />
+              ))}
           </div>
           {parts.length > 0 && (
             <ul className="agent-ctx-rows">

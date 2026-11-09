@@ -48,6 +48,38 @@ export function occupancyPercent(usage: AgentUsage | null, limit: number): numbe
   return Math.min(999, ((usage.input + usage.output) / limit) * 100);
 }
 
+/**
+ * What the context card reports.
+ *
+ * The provider's number (input + output of the last request) is the truth, but
+ * it only exists after a request: a session restored from disk has messages
+ * and no usage. The card then printed "—/42万" over an empty bar, although the
+ * breakdown it had just fetched names every part of the context. In that state
+ * it falls back to the backend's estimate (the sum of the parts), marked as an
+ * estimate.
+ */
+export interface ContextOccupancy {
+  used: number;
+  /** `used` is the backend's estimate, not a provider-reported usage. */
+  estimated: boolean;
+  percent: number | null;
+}
+
+export function contextOccupancy(
+  usage: AgentUsage | null,
+  limit: number,
+  estimated: number | null,
+): ContextOccupancy | null {
+  const reported = usage ? usage.input + usage.output : null;
+  const used = reported ?? (estimated !== null && estimated > 0 ? estimated : null);
+  if (used === null) return null;
+  return {
+    used,
+    estimated: reported === null,
+    percent: limit > 0 ? Math.min(999, (used / limit) * 100) : null,
+  };
+}
+
 export function formatPercent(pct: number | null): string {
   if (pct === null) return "—";
   return `${pct.toFixed(1).replace(/\.0$/, "")}%`;

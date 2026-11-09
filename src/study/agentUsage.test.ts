@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   cacheHitRate,
   contextLabel,
+  contextOccupancy,
   formatPercent,
   formatTokenCount,
   occupancyPercent,
@@ -126,5 +127,43 @@ describe("sessionHitRate", () => {
     const warm = { ...cold, cacheRead: 40_000 };
     expect(cacheHitRate(warm)).toBeCloseTo(40 / 42);
     expect(usageTitle(warm, 420_000, "m")).toContain("本轮 95.2%");
+  });
+});
+
+/**
+ * The context card's numbers: the provider's usage when a request has reported
+ * it, the backend's estimate when it has not (a session restored from disk has
+ * messages but no usage). Without the fallback the card printed "—/42万" over
+ * an empty bar even though the breakdown it had just fetched was complete
+ * (observed).
+ */
+describe("contextOccupancy", () => {
+  it("prefers the provider's usage", () => {
+    expect(contextOccupancy(usage(50_000, 20_000), 200_000, 999_999)).toEqual({
+      used: 70_000,
+      estimated: false,
+      percent: 35,
+    });
+  });
+
+  it("falls back to the estimate, marked as one", () => {
+    expect(contextOccupancy(null, 420_000, 21_000)).toEqual({
+      used: 21_000,
+      estimated: true,
+      percent: 5,
+    });
+  });
+
+  it("has nothing to show without usage and without an estimate", () => {
+    expect(contextOccupancy(null, 420_000, null)).toBeNull();
+    expect(contextOccupancy(null, 420_000, 0)).toBeNull();
+  });
+
+  it("keeps the token count when the limit is unknown", () => {
+    expect(contextOccupancy(usage(1_000, 0), 0, null)).toEqual({
+      used: 1_000,
+      estimated: false,
+      percent: null,
+    });
   });
 });
