@@ -2,11 +2,14 @@
 //! builder per session kind.
 //!
 //! Segments carry an `order` (stable sort, ties keep insertion order) and a
-//! `dynamic` flag. Static segments (tool rules, skill/MCP lists) are assembled
-//! once at session start; dynamic segments (the agent's prompt files,
-//! environment, user instructions) are re-read before every turn so a saved
-//! `SYSTEM_PROMPT.md` / `.bnote/AGENTS.md` edit takes effect on the next
-//! message without reopening the session.
+//! `dynamic` flag. The prompt is assembled **once per session**, when it is
+//! created: it is the head of every request, and a provider's prefix cache is
+//! linear, so a single changed byte anywhere in it (the git snapshot was
+//! rebuilt before every tool round) throws away the cache for the tools and the
+//! whole conversation as well. Volatile state belongs in the conversation:
+//! [`take_attachments`](../session) appends the date and changed files with
+//! each turn. `dynamic` therefore only documents where the boundary used to
+//! be; nothing re-reads those segments.
 
 use super::defs::AgentDefinition;
 use super::output_style::OutputStyle;
@@ -33,7 +36,10 @@ pub struct PromptSegment {
     pub order: i32,
     pub name: String,
     pub content: String,
-    /// Re-read before every turn.
+    /// Says the content is not a compiled constant (it reads the vault or a
+    /// file). The flag is documentation only: every segment is assembled once
+    /// per session, because the whole prompt has to stay byte-identical for the
+    /// provider's prefix cache to survive.
     pub dynamic: bool,
     /// For file layers: false when the file could not be read (the segment is
     /// then dropped from the prompt; the preview surfaces the reason).

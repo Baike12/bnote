@@ -169,9 +169,20 @@ pub struct Session {
     pub mode_root: Option<std::path::PathBuf>,
     pub def: Arc<AgentDefinition>,
     pub items: Mutex<Vec<ChatItem>>,
-    /// Assembled system prompt; the dynamic segments are re-read before every
-    /// model request (see refresh_dynamic_prompt).
+    /// Assembled system prompt, assembled once when the session starts.
+    ///
+    /// It is never re-assembled: it is the front of every request, and the
+    /// provider's prefix cache is linear (`cache_read` measured on DeepSeek:
+    /// re-using a prefix scores 82%, changing one byte inside the system
+    /// prompt drops to 16% of the request — tools and the whole conversation
+    /// included). Anything volatile therefore belongs in the conversation
+    /// (`take_attachments`), never here.
     pub system_prompt: RwLock<String>,
+    /// The opening `<system-reminder>` of the conversation (instructions,
+    /// memory index, skills), assembled on first use and then frozen for the
+    /// same reason: it sits before every message, so re-reading a file into it
+    /// would reset the cached prefix mid-conversation.
+    context_message: Mutex<Option<String>>,
     /// Snapshot fields of the assembly environment (current note / MCP list do
     /// not change mid-session — the same convention as the model snapshot).
     pub vault_name: String,
@@ -356,6 +367,16 @@ impl Session {
         self.attach_at_mentions(text);
         if let Ok(mut items) = self.items.lock() {
             items.push(ChatItem::user_message(text, &images));
+        }
+        // A turn that runs no tool never reaches the attachment flush inside the
+        // loop; the first request still needs the date. Appended after the user
+        // message, so the cached prefix stays untouched.
+        for reminder in self.take_attachments() {
+            if let Ok(mut items) = self.items.lock() {
+                items.push(ChatItem::user_text(&format!(
+                    "<system-reminder>{reminder}</system-reminder>"
+                )));
+            }
         }
         self.append_history(text);
         self.finish_turn(self.run_loop(&ParentDispatch(self)).await)
@@ -829,18 +850,19 @@ impl Session {
         }
     }
 
-    /// Re-assembles the dynamic prompt segments (environment, git status,
-    /// prompt files). Called before every model request: two small file reads
-    /// against an LLM round-trip is nothing, and it is what makes a saved
-    /// prompt file edit take effect on the next message.
+    /// Re-reads the settings and the output style before a model request.
+    ///
+    /// The system prompt is deliberately **not** re-assembled here. It used to
+    /// be, so the environment line and the git snapshot were rebuilt (three
+    /// `git` processes each) before every tool round; a repository the agent is
+    /// editing has a new `git status` after almost every write, which moved a
+    /// byte inside the system prompt — and that invalidates the provider's
+    /// whole linear prefix cache, tools and conversation included (measured:
+    /// 82% hit on an unchanged prefix, 16% after the tail changed). The prompt
+    /// file a user edits takes effect on the next session, like the
+    /// compiled-in layers already do.
     fn refresh_dynamic_prompt(&self) {
         self.refresh_settings();
-        let workdir = self
-            .ctx
-            .workdir
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string());
-        let study = self.ctx.study_content.read().ok().and_then(|g| g.clone());
         let project = if self.mode.reads_project() {
             self.project_root()
         } else {
@@ -852,31 +874,18 @@ impl Session {
             self.current_settings().output_style.as_deref(),
         );
         if let Ok(mut slot) = self.output_style.lock() {
-            *slot = style.clone();
-        }
-        let input = AssembleInput {
-            def: &self.def,
-            vault_name: &self.vault_name,
-            current_note: self.current_note.as_deref(),
-            workdir: workdir.as_deref(),
-            study: study.as_ref(),
-            mcp_names: &self.mcp_names,
-            output_style: Some(&style),
-        };
-        let prompt = assemble(&input);
-        if let Ok(mut slot) = self.system_prompt.write() {
-            if *slot != prompt {
-                *slot = prompt;
-            }
+            *slot = style;
         }
     }
 
     /// The request messages: the user-context meta message, then the history.
     ///
-    /// CC puts CLAUDE.md and the current date in a `<system-reminder>` user
-    /// message in front of the conversation instead of inside the system
-    /// prompt, so editing the instructions file reaches the model on the very
-    /// next request without touching the cached prefix.
+    /// CC puts CLAUDE.md in a `<system-reminder>` user message in front of the
+    /// conversation instead of inside the system prompt. The message is built
+    /// once per session (`user_context` caches it): it precedes every turn, so
+    /// re-reading the instructions or the memory index into it mid-session
+    /// would change the head of the prompt and reset the cached prefix. A new
+    /// session is what re-reads them.
     fn request_items(&self) -> Vec<ChatItem> {
         let mut items = Vec::new();
         if let Some(context) = self.user_context() {
@@ -884,6 +893,14 @@ impl Session {
         }
         items.extend(self.history());
         items
+    }
+
+    /// The opening context message, built once and then frozen. Empty (and
+    /// therefore omitted) for a read-only subagent with nothing to load.
+    fn user_context(&self) -> Option<String> {
+        let mut slot = self.context_message.lock().ok()?;
+        let text = slot.get_or_insert_with(|| self.build_user_context().unwrap_or_default());
+        (!text.is_empty()).then(|| text.clone())
     }
 
     /// The reasoning-channel switch: settings `thinking` overrides, default
@@ -930,7 +947,9 @@ impl Session {
         Some(section)
     }
 
-    fn user_context(&self) -> Option<String> {
+    /// Assembles the opening context: the instruction files, the memory index
+    /// and the skill listing. Read once per session (see `user_context`).
+    fn build_user_context(&self) -> Option<String> {
         let mut sections = String::new();
         if !self.omit_user_instructions {
             let project = self.ctx.workdir.as_deref().or(self.ctx.vault.as_deref());
@@ -954,7 +973,9 @@ impl Session {
             }
             // Auto memory: the project's MEMORY.md index plus how to keep it
             // current. It is a user-editable file in the agent home, so it is
-            // read like an instruction file and can change between turns.
+            // read like an instruction file — once, at session start: a memory
+            // the agent writes mid-session must not move the head of the
+            // prompt (that resets the cached prefix).
             if let Some(memory) = self.memory_section() {
                 sections.push_str(&memory);
                 sections.push_str("\n\n");
@@ -968,8 +989,9 @@ impl Session {
                 ));
             }
         }
-        let today = super::prompt::today_string();
-        sections.push_str(&format!("# currentDate\nToday's date is {}.\n", today));
+        if sections.trim().is_empty() {
+            return None;
+        }
         Some(format!(
             "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n{}\nIMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>",
             sections.trim_end()
@@ -986,10 +1008,11 @@ impl Session {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
+        // The date is no longer carried by the (frozen) context message: the
+        // first request of the session announces it, and every later day change
+        // announces itself. Both are appended, never prepended.
         if state.date.as_deref() != Some(today.as_str()) {
-            if state.date.is_some() {
-                out.push(format!("Today's date is now {}.", today));
-            }
+            out.push(format!("Today's date is {}.", today));
             state.date = Some(today);
         }
         if !state.changed.is_empty() {
@@ -2024,6 +2047,7 @@ impl Session {
             def: child_def.clone(),
             items: Mutex::new(items),
             system_prompt: RwLock::new(assemble(&assemble_input)),
+            context_message: Mutex::new(None),
             vault_name: self.vault_name.clone(),
             current_note: self.current_note.clone(),
             mcp_names: self.mcp_names.clone(),
@@ -2647,6 +2671,7 @@ pub fn create_session(seed: SessionSeed) -> Session {
         def: seed.def.clone(),
         items: Mutex::new(Vec::new()),
         system_prompt: RwLock::new(assemble(&input)),
+        context_message: Mutex::new(None),
         vault_name: seed.vault_name,
         current_note: seed.current_note,
         mcp_names: seed.mcp_names,
