@@ -2619,19 +2619,17 @@ input[type="range"] {
    position. The **widths belong to the positions, not to the panels**: the
    left column keeps its width and the middle column keeps its own, so a
    swapped pane is resized to the column it moved into and the three columns'
-   widths (and the notes column) stay exactly where they were. The shadow
-   marks the column that owns the keyboard.
-   Same shadow as the reading area's page cards (.pdf-page): a tight 1px
-   offset, 5px blur, no halo — the column lifts off its neighbours the way a
-   page lifts off the PDF gutter, instead of glowing a wide band over them. */
+   widths (and the notes column) stay exactly where they were.
+   The columns themselves are flat: one 1px split line per resizer, no border
+   and no shadow on any column. The assistant column used to lift itself with
+   a 5px shadow when it took the middle, which made the same position look
+   different depending on who sat in it; the two panes must read as the same
+   column (observed as "the agent panel's border is not the content's"). */
 .study-layout.agent-focused .study-left {
   order: 2;
   /* It now sits in the middle: take the middle column's width. */
   flex: 0 0 var(--content-w);
   width: var(--content-w);
-  position: relative;
-  z-index: 2;
-  box-shadow: 0 1px 5px var(--shadow);
 }
 .study-layout.agent-focused .content-pane {
   order: 0;
