@@ -5,8 +5,8 @@ import {
   RESIZER_WIDTH,
   basePageWidth,
   contentWidthForRenderedPage,
-  dragAgentEdge,
-  dragContentEdge,
+  dragLeftEdge,
+  dragMiddleEdge,
   minColumnWidth,
   normalizeAgentWidth,
   normalizeContentWidth,
@@ -72,73 +72,73 @@ describe("minColumnWidth", () => {
   });
 });
 
-describe("dragAgentEdge (agent | content: only the two adjacent columns move)", () => {
+describe("dragLeftEdge (left | middle: only the two adjacent columns move)", () => {
   const host = 1400;
-  const sum = 320 + 620; // assistant + content
+  const sum = 320 + 620; // left + middle
   const min = minColumnWidth(host);
 
-  it("the width moves between the agent and middle columns, the notes column stays put", () => {
-    const widths = dragAgentEdge(RESIZER_WIDTH + 400, host, sum);
-    expect(widths.agent).toBe(400);
-    expect(widths.content).toBe(sum - 400);
+  it("the width moves between the left and middle columns, the notes column stays put", () => {
+    const widths = dragLeftEdge(RESIZER_WIDTH + 400, host, sum);
+    expect(widths.left).toBe(400);
+    expect(widths.middle).toBe(sum - 400);
     // The total width of the two columns is unchanged -> the notes column width is unchanged.
-    expect(widths.agent + widths.content).toBe(sum);
+    expect(widths.left + widths.middle).toBe(sum);
     expect(widths.right).toBe(host - RESIZER_WIDTH * 2 - sum);
   });
 
-  it("dragging the line left: the middle column grows and the agent column shrinks", () => {
-    const widths = dragAgentEdge(RESIZER_WIDTH + 200, host, sum);
-    expect(widths.agent).toBe(200);
-    expect(widths.content).toBe(sum - 200);
+  it("dragging the line left: the middle column grows and the left column shrinks", () => {
+    const widths = dragLeftEdge(RESIZER_WIDTH + 200, host, sum);
+    expect(widths.left).toBe(200);
+    expect(widths.middle).toBe(sum - 200);
     expect(widths.right).toBe(host - RESIZER_WIDTH * 2 - sum);
   });
 
-  it("the agent column stops at 10%", () => {
-    const widths = dragAgentEdge(0, host, sum);
-    expect(widths.agent).toBe(min);
-    expect(widths.content).toBe(sum - min);
+  it("the left column stops at 10%", () => {
+    const widths = dragLeftEdge(0, host, sum);
+    expect(widths.left).toBe(min);
+    expect(widths.middle).toBe(sum - min);
   });
 
   it("the middle column stops at 10%", () => {
-    const widths = dragAgentEdge(host, host, sum);
-    expect(widths.content).toBe(min);
-    expect(widths.agent).toBe(sum - min);
+    const widths = dragLeftEdge(host, host, sum);
+    expect(widths.middle).toBe(min);
+    expect(widths.left).toBe(sum - min);
   });
 
   it("when neither column can reach 10% (the window is too narrow) a compromise is taken", () => {
     const narrow = 400;
-    const widths = dragAgentEdge(0, narrow, 300);
-    expect(widths.agent).toBeGreaterThan(0);
-    expect(widths.content).toBeGreaterThan(0);
-    expect(widths.agent + widths.content).toBe(300);
+    const widths = dragLeftEdge(0, narrow, 300);
+    expect(widths.left).toBeGreaterThan(0);
+    expect(widths.middle).toBeGreaterThan(0);
+    expect(widths.left + widths.middle).toBe(300);
   });
 });
 
-describe("dragContentEdge (content | notes: only the two adjacent columns move)", () => {
+describe("dragMiddleEdge (middle | notes: only the two adjacent columns move)", () => {
   const host = 1400;
-  const contentLeft = 320 + RESIZER_WIDTH;
+  const middleLeft = 320 + RESIZER_WIDTH;
   const min = minColumnWidth(host);
 
   it("the middle column width = the pointer position minus the resizer, the right column takes the rest", () => {
-    const widths = dragContentEdge(contentLeft + RESIZER_WIDTH + 500, host, contentLeft);
-    expect(widths.content).toBe(500);
-    expect(widths.right).toBe(host - contentLeft - RESIZER_WIDTH - 500);
+    const widths = dragMiddleEdge(middleLeft + RESIZER_WIDTH + 500, host, middleLeft);
+    expect(widths.middle).toBe(500);
+    expect(widths.right).toBe(host - middleLeft - RESIZER_WIDTH - 500);
   });
 
   it("the notes column stops at 10%", () => {
-    const widths = dragContentEdge(host, host, contentLeft);
+    const widths = dragMiddleEdge(host, host, middleLeft);
     expect(widths.right).toBe(min);
-    expect(widths.content).toBe(host - contentLeft - RESIZER_WIDTH - min);
+    expect(widths.middle).toBe(host - middleLeft - RESIZER_WIDTH - min);
   });
 
   it("the middle column stops at 10%", () => {
-    const widths = dragContentEdge(0, host, contentLeft);
-    expect(widths.content).toBe(min);
+    const widths = dragMiddleEdge(0, host, middleLeft);
+    expect(widths.middle).toBe(min);
   });
 
-  it("the agent column is unaffected (only the middle and notes columns are visible)", () => {
-    const widths = dragContentEdge(contentLeft + RESIZER_WIDTH + 400, host, contentLeft);
-    expect(widths.content + widths.right + contentLeft + RESIZER_WIDTH).toBe(host);
+  it("the left column is unaffected (only the middle and notes columns are visible)", () => {
+    const widths = dragMiddleEdge(middleLeft + RESIZER_WIDTH + 400, host, middleLeft);
+    expect(widths.middle + widths.right + middleLeft + RESIZER_WIDTH).toBe(host);
   });
 });
 

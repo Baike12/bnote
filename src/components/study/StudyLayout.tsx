@@ -6,27 +6,33 @@ import { EditorPane } from "../EditorPane";
 import { JsonFilePane } from "../JsonFilePane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName, isJsonPath } from "@/lib/path";
-import { dragAgentEdge, dragContentEdge, RESIZER_WIDTH } from "@/study/layoutModel";
+import { dragLeftEdge, dragMiddleEdge, RESIZER_WIDTH } from "@/study/layoutModel";
 import { startSplitDrag } from "../splitDrag";
 
 /**
  * Study-mode three-column layout: agent (left) + content (middle) + notes
  * (right), with a draggable divider on each edge of the content column.
  *
- * The widths of the agent and content columns are stored in pixels in the
- * settings (`studyAgentWidth` / `studyContentWidth`), the notes column takes
- * the rest: dragging the window edge only changes the notes column, the
- * first two stay, so the content width of the notes and agent panes and the
- * PDF page size remain stable. When the window gets too narrow, the CSS clamp
- * shrinks the first two columns (see --agent-w / --content-w in global.css)
- * without touching the stored preference.
+ * The widths belong to the **columns**, not to the panes: the left column and
+ * the middle column are stored in pixels in the settings
+ * (`studyAgentWidth` / `studyContentWidth`), the notes column takes the rest.
+ * Dragging the window edge only changes the notes column, the first two stay,
+ * so the content width of the notes and agent panes and the PDF page size
+ * remain stable. When the window gets too narrow, the CSS clamp shrinks the
+ * first two columns (see --agent-w / --content-w in global.css) without
+ * touching the stored preference.
+ *
+ * Because the widths belong to the columns, the focused swap (assistant and
+ * content trade places) resizes both panes to the column they move into: the
+ * three columns keep exactly the widths they had. Dragging a divider follows
+ * the same rule — a divider always edits the columns it separates, whichever
+ * pane is currently sitting there.
  *
  * Dragging a divider only moves the two adjacent columns: the width is
  * transferred between them, the column that is not adjacent stays put
- * (dragging agent|content does not move the notes column, dragging
- * content|notes does not move the agent column). The minimum width of a
- * column is 10% of the layout width and the divider is stopped at the limit
- * (see layoutModel).
+ * (dragging left|middle does not move the notes column, dragging middle|notes
+ * does not move the left column). The minimum width of a column is 10% of the
+ * layout width and the divider is stopped at the limit (see layoutModel).
  *
  * During the drag the pixels go straight into CSS variables (no setState):
  * the panes hold CodeMirror instances and a 60 Hz re-render is far too
@@ -71,8 +77,9 @@ export function StudyLayout() {
 
   // The native web preview is a child webview mounted above the DOM: it only
   // follows layout changes it is told about. The focused swap moves the
-  // content column without resizing it, so the signal is the only way it
-  // learns the new bounds (same channel as a split drag).
+  // content pane into the left column and resizes it to that column's width,
+  // so the signal is the only way it learns the new bounds (same channel as a
+  // split drag).
   useEffect(() => {
     window.dispatchEvent(new Event("bnote:study-layout-resize"));
   }, [swapped]);
@@ -107,16 +114,17 @@ export function StudyLayout() {
   }
 
   /**
-   * agent|content: the width is transferred between the agent column and the
+   * agent|content: the width is transferred between the first (left) and the
    * middle column, the notes column stays.
    * The origin measures the **real column widths on screen** (CSS may have
    * clamped them), and the offset is taken from the divider's current
    * position.
    *
-   * While the assistant column is focused the two columns trade places (see
-   * .agent-focused in global.css), so the divider's left neighbour is the
-   * content column: the drag math is unchanged, only the roles of the two
-   * widths swap.
+   * The stored widths belong to the columns, not to the panes: while the
+   * assistant column is focused the two panes trade places (see
+   * .agent-focused in global.css) but the left column and the middle column
+   * keep their own widths, so this divider always edits "left | middle" —
+   * the panes are only the occupants.
    */
   function startAgentDrag(event: React.PointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
@@ -125,20 +133,20 @@ export function StudyLayout() {
     const left = host.querySelector(".study-left");
     const content = host.querySelector(".content-pane");
     if (!left || !content) return;
-    const leftWidth = (swapped ? content : left).getBoundingClientRect().width;
-    const rightWidth = (swapped ? left : content).getBoundingClientRect().width;
+    // Whichever pane sits on the left is the left column; the divider's left
+    // neighbour is that one.
+    const leftPane = swapped ? content : left;
+    const middlePane = swapped ? left : content;
+    const leftWidth = leftPane.getBoundingClientRect().width;
+    const rightWidth = middlePane.getBoundingClientRect().width;
     const sum = leftWidth + rightWidth;
     startDrag(
       event,
       ["--agent-src", "--content-src"],
       { "--agent-src": agentWidth, "--content-src": contentWidth },
       (dx) => {
-        // dragAgentEdge speaks "left column | right column"; map back by role.
-        const widths = dragAgentEdge(leftWidth + RESIZER_WIDTH + dx, hostRect.width, sum);
-        return {
-          "--agent-src": swapped ? widths.content : widths.agent,
-          "--content-src": swapped ? widths.agent : widths.content,
-        };
+        const widths = dragLeftEdge(leftWidth + RESIZER_WIDTH + dx, hostRect.width, sum);
+        return { "--agent-src": widths.left, "--content-src": widths.middle };
       },
       (values) =>
         patchSettings({
@@ -148,14 +156,14 @@ export function StudyLayout() {
     );
   }
 
-  /** content|notes: the width is transferred between the middle column and the notes column, the agent column stays. */
+  /** content|notes: the width is transferred between the middle column and the notes column, the left column stays. */
   function startContentDrag(event: React.PointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
     if (!host) return;
     const hostRect = host.getBoundingClientRect();
     // The column left of this divider never moves while dragging, so
-    // measuring once is enough. In the focused (swapped) layout the neighbour
-    // is the assistant column instead of the content column.
+    // measuring once is enough. It is the middle column, whatever pane the
+    // focused layout put there.
     const subject = host.querySelector(swapped ? ".study-left" : ".content-pane");
     if (!subject) return;
     const subjectRect = subject.getBoundingClientRect();
@@ -163,32 +171,26 @@ export function StudyLayout() {
     const subjectWidth = subjectRect.width;
     startDrag(
       event,
-      [swapped ? "--agent-src" : "--content-src"],
-      {
-        [swapped ? "--agent-src" : "--content-src"]: swapped ? agentWidth : contentWidth,
-      },
+      ["--content-src"],
+      { "--content-src": contentWidth },
       (dx) => {
-        const widths = dragContentEdge(
+        const widths = dragMiddleEdge(
           subjectLeft + subjectWidth + RESIZER_WIDTH + dx,
           hostRect.width,
           subjectLeft,
         );
-        return { [swapped ? "--agent-src" : "--content-src"]: widths.content };
+        return { "--content-src": widths.middle };
       },
-      (values) =>
-        patchSettings(
-          swapped
-            ? { studyAgentWidth: values["--agent-src"] }
-            : { studyContentWidth: values["--content-src"] },
-        ),
+      (values) => patchSettings({ studyContentWidth: values["--content-src"] }),
     );
   }
 
-  function resetAgentSplit() {
+  /** Double-click on a divider: restore that column's default width. */
+  function resetLeftSplit() {
     patchSettings({ studyAgentWidth: DEFAULT_SETTINGS.studyAgentWidth });
   }
 
-  function resetContentSplit() {
+  function resetMiddleSplit() {
     patchSettings({ studyContentWidth: DEFAULT_SETTINGS.studyContentWidth });
   }
 
@@ -217,20 +219,20 @@ export function StudyLayout() {
         className="study-resizer resizer-agent"
         role="separator"
         aria-orientation="vertical"
-        aria-label="调整学习助手宽度"
-        title="拖动调整助手栏宽度,双击恢复默认"
+        aria-label="调整左栏宽度"
+        title="拖动调整左栏宽度,双击恢复默认"
         onPointerDown={startAgentDrag}
-        onDoubleClick={resetAgentSplit}
+        onDoubleClick={resetLeftSplit}
       />
       {creativeMode ? <CreativePreview /> : <ContentPane />}
       <div
         className="study-resizer resizer-content"
         role="separator"
         aria-orientation="vertical"
-        aria-label="调整内容栏宽度"
-        title="拖动调整内容栏宽度,双击恢复默认"
+        aria-label="调整中间栏宽度"
+        title="拖动调整中间栏宽度,双击恢复默认"
         onPointerDown={startContentDrag}
-        onDoubleClick={resetContentSplit}
+        onDoubleClick={resetMiddleSplit}
       />
       <div className="study-right">
         {/* Study mode has no .titlebar, so the only drag regions of the window are the column headers. */}

@@ -5,7 +5,7 @@ import { EditorPane } from "../EditorPane";
 import { JsonFilePane } from "../JsonFilePane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName, isJsonPath } from "@/lib/path";
-import { dragAgentEdge, dragContentEdge, RESIZER_WIDTH } from "@/study/layoutModel";
+import { dragLeftEdge, dragMiddleEdge, RESIZER_WIDTH } from "@/study/layoutModel";
 import { startSplitDrag } from "../splitDrag";
 
 /**
@@ -59,8 +59,8 @@ export function CodeLayout() {
     const left = host.querySelector(".study-left");
     const content = host.querySelector(".content-pane");
     if (!left || !content) return;
-    // In the focused (swapped) layout the divider's left neighbour is the
-    // content column: the math is the same, the roles of the widths swap.
+    // The widths belong to the columns, so the divider always edits
+    // left | middle; only the occupants change when the panes swap.
     const leftWidth = (swapped ? content : left).getBoundingClientRect().width;
     const rightWidth = (swapped ? left : content).getBoundingClientRect().width;
     const sum = leftWidth + rightWidth;
@@ -69,11 +69,8 @@ export function CodeLayout() {
       ["--agent-src", "--content-src"],
       { "--agent-src": agentWidth, "--content-src": contentWidth },
       (dx) => {
-        const widths = dragAgentEdge(leftWidth + RESIZER_WIDTH + dx, hostRect.width, sum);
-        return {
-          "--agent-src": swapped ? widths.content : widths.agent,
-          "--content-src": swapped ? widths.agent : widths.content,
-        };
+        const widths = dragLeftEdge(leftWidth + RESIZER_WIDTH + dx, hostRect.width, sum);
+        return { "--agent-src": widths.left, "--content-src": widths.middle };
       },
       (values) =>
         patchSettings({
@@ -94,24 +91,17 @@ export function CodeLayout() {
     const subjectWidth = subjectRect.width;
     startDrag(
       event,
-      [swapped ? "--agent-src" : "--content-src"],
-      {
-        [swapped ? "--agent-src" : "--content-src"]: swapped ? agentWidth : contentWidth,
-      },
+      ["--content-src"],
+      { "--content-src": contentWidth },
       (dx) => {
-        const widths = dragContentEdge(
+        const widths = dragMiddleEdge(
           subjectLeft + subjectWidth + RESIZER_WIDTH + dx,
           hostRect.width,
           subjectLeft,
         );
-        return { [swapped ? "--agent-src" : "--content-src"]: widths.content };
+        return { "--content-src": widths.middle };
       },
-      (values) =>
-        patchSettings(
-          swapped
-            ? { codeAgentWidth: values["--agent-src"] }
-            : { codeContentWidth: values["--content-src"] },
-        ),
+      (values) => patchSettings({ codeContentWidth: values["--content-src"] }),
     );
   }
 
@@ -138,8 +128,8 @@ export function CodeLayout() {
         className="study-resizer resizer-agent"
         role="separator"
         aria-orientation="vertical"
-        aria-label="调整助手栏宽度"
-        title="拖动调整助手栏宽度,双击恢复默认"
+        aria-label="调整左栏宽度"
+        title="拖动调整左栏宽度,双击恢复默认"
         onPointerDown={startAgentDrag}
         onDoubleClick={() => patchSettings({ codeAgentWidth: DEFAULT_SETTINGS.codeAgentWidth })}
       />
@@ -150,8 +140,8 @@ export function CodeLayout() {
         className="study-resizer resizer-content"
         role="separator"
         aria-orientation="vertical"
-        aria-label="调整代码栏宽度"
-        title="拖动调整代码栏宽度,双击恢复默认"
+        aria-label="调整中间栏宽度"
+        title="拖动调整中间栏宽度,双击恢复默认"
         onPointerDown={startContentDrag}
         onDoubleClick={() => patchSettings({ codeContentWidth: DEFAULT_SETTINGS.codeContentWidth })}
       />

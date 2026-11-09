@@ -2615,20 +2615,28 @@ input[type="range"] {
 
 /* While the assistant column holds the keyboard focus it trades places with
    the content column: the assistant takes the middle, the content moves left.
-   Only `order` changes — both columns stay mounted, each keeps its own width
-   preference (--agent-w / --content-w travel with the element) and its scroll
-   position. The shadow marks the column that owns the keyboard.
+   Only `order` changes — both columns stay mounted and keep their scroll
+   position. The **widths belong to the positions, not to the panels**: the
+   left column keeps its width and the middle column keeps its own, so a
+   swapped pane is resized to the column it moved into and the three columns'
+   widths (and the notes column) stay exactly where they were. The shadow
+   marks the column that owns the keyboard.
    Same shadow as the reading area's page cards (.pdf-page): a tight 1px
    offset, 5px blur, no halo — the column lifts off its neighbours the way a
    page lifts off the PDF gutter, instead of glowing a wide band over them. */
 .study-layout.agent-focused .study-left {
   order: 2;
+  /* It now sits in the middle: take the middle column's width. */
+  flex: 0 0 var(--content-w);
+  width: var(--content-w);
   position: relative;
   z-index: 2;
   box-shadow: 0 1px 5px var(--shadow);
 }
 .study-layout.agent-focused .content-pane {
   order: 0;
+  /* It now sits on the left: take the left column's width. */
+  width: var(--agent-w);
 }
 .study-layout.agent-focused .resizer-agent {
   order: 1;

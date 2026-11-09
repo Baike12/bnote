@@ -1,20 +1,22 @@
 /**
  * Study-mode column model.
  *
- * The layout has three columns: assistant | content | notes (see
- * StudyLayout). The assistant column and the content column are both stored
- * in **pixels** (`studyAgentWidth` / `studyContentWidth`); the notes column
- * takes the remainder. So dragging the window edge leaves the assistant and
- * content columns alone — the PDF page size and how much fits vertically do
+ * The layout has three columns: left | middle | notes (see StudyLayout). The
+ * model speaks **positions**, not panes: the left and middle columns are
+ * stored in **pixels** (`studyAgentWidth` / `studyContentWidth`, historical
+ * key names for the left and middle column) and the notes column takes the
+ * remainder. The panes (assistant, content) are only the occupants of those
+ * columns — the focused swap moves them between columns and each one takes the
+ * width of the column it lands in. Dragging the window edge leaves the two
+ * measured columns alone — the PDF page size and how much fits vertically do
  * not jitter with the window. When the window is too narrow to fit them, CSS
  * clamps them down without writing the preference back.
  *
  * Dragging a divider moves only the **two adjacent columns**: the width
  * transfers between them and the non-adjacent column stays put (dragging
- * assistant|content does not move the notes column; dragging content|notes
- * does not move the assistant column). Each column has a minimum width of 10%
- * of the layout width; when an adjacent column hits its limit the divider
- * stops there.
+ * left|middle does not move the notes column; dragging middle|notes does not
+ * move the left column). Each column has a minimum width of 10% of the layout
+ * width; when an adjacent column hits its limit the divider stops there.
  *
  * The old config stored the three widths as `studySplit: [agent, content]`
  * (ratios even earlier); `normalizeContentWidth` converts the old value into
@@ -93,66 +95,66 @@ export function studySplitToContentWidth(split: unknown): number | null {
 
 /** The three column widths in pixels. */
 export interface ColumnWidths {
-  /** Assistant column. */
-  agent: number;
-  /** Middle column (content). */
-  content: number;
+  /** Left column. */
+  left: number;
+  /** Middle column. */
+  middle: number;
   /** Right column (notes). */
   right: number;
 }
 
 /**
- * Drag the assistant|content divider: the width transfers between the
- * adjacent assistant and content columns, the notes column stays put.
+ * Drag the left|middle divider: the width transfers between the two adjacent
+ * columns, the notes column stays put.
  *
  * `x` is the divider's right edge relative to the layout's left edge (=
- * the content column's left edge); `sum` is the current total width of those
- * two columns (assistant + content) — it does not change while dragging, so
- * the notes column width does not change either.
+ * the middle column's left edge); `sum` is the current total width of those
+ * two columns (left + middle) — it does not change while dragging, so the
+ * notes column width does not change either.
  *
- * The pointer position is the column boundary: assistant width = x - divider
- * width, content width = sum - assistant width. The minimum width of an
- * adjacent column is 10% of the layout width; whichever hits its limit first
- * stops the divider.
+ * The pointer position is the column boundary: left width = x - divider
+ * width, middle width = sum - left width. The minimum width of an adjacent
+ * column is 10% of the layout width; whichever hits its limit first stops the
+ * divider.
  */
-export function dragAgentEdge(x: number, hostWidth: number, sum: number): ColumnWidths {
+export function dragLeftEdge(x: number, hostWidth: number, sum: number): ColumnWidths {
   const min = minColumnWidth(hostWidth);
-  // Assistant column at 10% -> the divider's right edge is leftmost; content column at 10% -> rightmost.
+  // Left column at 10% -> the divider's right edge is leftmost; middle column at 10% -> rightmost.
   const lo = min + RESIZER_WIDTH;
   const hi = sum + RESIZER_WIDTH - min;
   const edge = lo <= hi ? clamp(x, lo, hi) : (lo + hi) / 2;
-  const agent = edge - RESIZER_WIDTH;
+  const left = edge - RESIZER_WIDTH;
   return {
-    agent: Math.round(agent),
-    content: Math.round(sum - agent),
+    left: Math.round(left),
+    middle: Math.round(sum - left),
     right: Math.round(hostWidth - RESIZER_WIDTH * 2 - sum),
   };
 }
 
 /**
- * Drag the content|notes divider: the width transfers between the adjacent
- * content and notes columns, the assistant column stays put.
+ * Drag the middle|notes divider: the width transfers between the middle and
+ * notes columns, the left column stays put.
  *
  * `x` is the divider's right edge relative to the layout's left edge (=
- * the notes column's left edge); `contentLeft` is the content column's left
+ * the notes column's left edge); `middleLeft` is the middle column's left
  * edge (it does not move while dragging — the divider only moves between the
- * content and notes columns).
+ * middle and notes columns).
  *
  * The minimum width of an adjacent column is 10% of the layout width;
  * whichever hits its limit first stops the divider.
  */
-export function dragContentEdge(
+export function dragMiddleEdge(
   x: number,
   hostWidth: number,
-  contentLeft = 0,
-): { content: number; right: number } {
+  middleLeft = 0,
+): { middle: number; right: number } {
   const min = minColumnWidth(hostWidth);
-  const lo = contentLeft + RESIZER_WIDTH + min; // content column at 10%
+  const lo = middleLeft + RESIZER_WIDTH + min; // middle column at 10%
   const hi = hostWidth - min; // notes column at 10%
   const edge = lo <= hi ? clamp(x, lo, hi) : (lo + hi) / 2;
-  const content = edge - contentLeft - RESIZER_WIDTH;
+  const middle = edge - middleLeft - RESIZER_WIDTH;
   return {
-    content: Math.round(content),
+    middle: Math.round(middle),
     right: Math.round(hostWidth - edge),
   };
 }
