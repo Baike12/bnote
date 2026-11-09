@@ -2,6 +2,7 @@ import App from "./App";
 import "katex/dist/katex.min.css";
 import "./styles/global.css";
 import { createRoot } from "react-dom/client";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { installBrowserMode } from "@/dev/browserMode";
 import { editorApi } from "@/editor/api";
 import { mathRegions, getContextAt } from "@/editor/context";
@@ -16,7 +17,32 @@ installBrowserMode();
 
 // No StrictMode: double-mounting would rebuild the single CodeMirror
 // instance and re-run async bootstrap during development.
-createRoot(document.getElementById("root") as HTMLElement).render(<App />);
+//
+// The root boundary is the last line of defense: React unmounts the entire
+// root when an uncaught render/effect error has no boundary above it, which
+// leaves a blank white window with a live, idle webview (indistinguishable
+// from a hang). Any throw now lands here with a readable message and a way
+// back, while the actual defect stays visible instead of hiding as "白屏".
+createRoot(document.getElementById("root") as HTMLElement).render(
+  <ErrorBoundary
+    fallback={(error, reset) => (
+      <div className="app-crash">
+        <p className="app-crash-title">界面出错了</p>
+        <p className="app-crash-msg">{error.message}</p>
+        <div className="app-crash-actions">
+          <button className="btn" onClick={reset}>
+            重试
+          </button>
+          <button className="btn primary" onClick={() => window.location.reload()}>
+            重新载入
+          </button>
+        </div>
+      </div>
+    )}
+  >
+    <App />
+  </ErrorBoundary>,
+);
 
 // Dev diagnostics hook (harmless in production).
 declare global {

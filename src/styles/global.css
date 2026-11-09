@@ -297,6 +297,41 @@ button {
   height: 100%;
 }
 
+/* The root error boundary's fallback (see main.tsx): the app failed to
+   render, so it must not depend on any component style — only on tokens. */
+.app-crash {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  box-sizing: border-box;
+  background: var(--bg0);
+  color: var(--text);
+  font-size: 13px;
+  text-align: center;
+}
+.app-crash-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.app-crash-msg {
+  margin: 0;
+  max-width: 720px;
+  color: var(--text-dim, var(--text));
+  font-family: var(--mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.app-crash-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .main {
   flex: 1;
   display: flex;
