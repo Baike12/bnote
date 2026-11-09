@@ -155,8 +155,20 @@ export type AgentEvent =
   | { type: "thinking_block_end"; signature: string }
   | { type: "tool_start"; id: string; name: string; input: unknown }
   | { type: "tool_end"; id: string; ok: boolean; output: string; images?: AgentImage[] }
-  /** The token usage of one model request; only the latest one is kept = the current context occupancy. */
-  | { type: "usage"; input: number; output: number; cacheRead: number }
+  /**
+   * Token usage of one model request (the current context occupancy) plus the
+   * session totals every request accumulated — the token-weighted cache hit
+   * rate is computed from the totals, never from the latest request alone.
+   */
+  | {
+      type: "usage";
+      input: number;
+      output: number;
+      cacheRead: number;
+      sessionInput: number;
+      sessionCacheRead: number;
+      sessionRequests: number;
+    }
   /** A dim status line: compaction, subagent start/finish, background task done. Never enters the history. */
   | { type: "notice"; text: string }
   /** The todo tool's list after a `todo` call (the rendering source). */

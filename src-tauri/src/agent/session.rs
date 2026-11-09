@@ -23,7 +23,7 @@ use super::shell::{self, BgRegistry, ShellCwd, DEFAULT_TIMEOUT_SECS};
 use super::tasks::TaskList;
 use super::todo::{self, TodoItem};
 use super::tools::{ToolContext, ToolOutput};
-use super::types::{AgentEvent, ChatItem, Content, InlineImage, ToolDef};
+use super::types::{AgentEvent, ChatItem, Content, InlineImage, ToolDef, UsageTotals};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -203,6 +203,10 @@ pub struct Session {
     pub context_window: u64,
     /// Latest reported usage; the auto-compact trigger input.
     pub last_usage: Mutex<Option<super::types::TokenUsage>>,
+    /// Token totals over every main-turn request of this session: the source of
+    /// the displayed cache hit rate (one cold request must not speak for the
+    /// session). Compaction summaries and other sidecar calls stay out.
+    usage_totals: Mutex<UsageTotals>,
     /// The todo tool's list (single writer: the todo tool on this session).
     pub todos: Mutex<Vec<TodoItem>>,
     /// The v2 task list (task_create / task_update / …).
@@ -1129,12 +1133,20 @@ impl Session {
                     .lock()
                     .map(|mut g| *g = Some(usage))
                     .unwrap_or(());
-                // Only the latest one matters: it is the current context occupancy;
-                // input already includes the system prompt and the whole history.
+                let totals = {
+                    let mut guard = self.usage_totals.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.add(usage);
+                    *guard
+                };
+                // The latest request gives the current context occupancy; the
+                // totals give the hit rate the session actually enjoys.
                 self.emit(AgentEvent::Usage {
                     input: usage.input,
                     output: usage.output,
                     cache_read: usage.cache_read,
+                    session_input: totals.input,
+                    session_cache_read: totals.cache_read,
+                    session_requests: totals.requests,
                 });
             }
             // Assemble the assistant message from the ordered blocks: an
@@ -2061,6 +2073,7 @@ impl Session {
             app: self.app.clone(),
             context_window: self.context_window,
             last_usage: Mutex::new(None),
+            usage_totals: Mutex::new(UsageTotals::default()),
             todos: Mutex::new(Vec::new()),
             tasks: Mutex::new(TaskList::load(super::home::tasks_dir(&self.task_list_id))),
             task_list_id: self.task_list_id.clone(),
@@ -2685,6 +2698,7 @@ pub fn create_session(seed: SessionSeed) -> Session {
         app: seed.app,
         context_window: seed.context_window,
         last_usage: Mutex::new(None),
+        usage_totals: Mutex::new(UsageTotals::default()),
         todos: Mutex::new(Vec::new()),
         tasks: Mutex::new(tasks),
         task_list_id,

@@ -149,13 +149,24 @@ pub enum AgentEvent {
     /// input already includes cache reads). Anthropic reports it in
     /// message_start / message_delta; OpenAI-compatible endpoints only report
     /// usage at the end of the stream when the request carries stream_options.
-    /// The front end keeps only the latest one: it is the context occupancy of
-    /// the current session.
+    ///
+    /// `input`/`output`/`cache_read` are the latest request (the context
+    /// occupancy of the session); the `session_*` fields aggregate every
+    /// main-turn request, which is what a cache hit rate has to be computed
+    /// from: one cold request (the first after a new session, a compaction or
+    /// a prefix change) says nothing about the cache the session as a whole
+    /// enjoys, and the first request of a conversation can only ever miss.
     Usage {
         input: u64,
         output: u64,
         #[serde(rename = "cacheRead")]
         cache_read: u64,
+        #[serde(rename = "sessionInput")]
+        session_input: u64,
+        #[serde(rename = "sessionCacheRead")]
+        session_cache_read: u64,
+        #[serde(rename = "sessionRequests")]
+        session_requests: u64,
     },
     /// A system-level notice the panel renders as a dim status line:
     /// compaction happened, a subagent started/finished, a background task
@@ -202,6 +213,42 @@ pub struct TokenUsage {
     pub cache_read: u64,
 }
 
+/// The session's running token totals over its main-turn model requests.
+///
+/// A hit rate over one request is noise (the first request of every
+/// conversation is a guaranteed miss, and one changed prefix byte resets the
+/// whole window); the number worth showing is the token-weighted aggregate,
+/// exactly the definition ZCode fixes in `docs/context-cache-hit-rate.md`:
+///
+/// ```text
+/// hit rate = sum(cache_read) / sum(input)
+/// ```
+///
+/// `input` already contains the cached part, so it is the only denominator.
+/// Sidecar requests (compaction summaries, title generation) never enter these
+/// totals.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UsageTotals {
+    pub input: u64,
+    pub cache_read: u64,
+    pub output: u64,
+    pub requests: u64,
+}
+
+impl UsageTotals {
+    pub fn add(&mut self, usage: TokenUsage) {
+        self.input += usage.input;
+        self.cache_read += usage.cache_read;
+        self.output += usage.output;
+        self.requests += 1;
+    }
+
+    /// The token-weighted hit rate (0..1); `None` before the first request.
+    pub fn hit_rate(&self) -> Option<f64> {
+        (self.input > 0).then(|| (self.cache_read as f64 / self.input as f64).min(1.0))
+    }
+}
+
 /// Provider-agnostic streaming callback.
 pub type EventSink<'a> = &'a (dyn Fn(AgentEvent) + Send + Sync + 'a);
 
@@ -228,6 +275,64 @@ pub struct TurnResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The displayed hit rate is the session's, token-weighted. A per-request
+    /// rate is meaningless as a headline: the first request of every
+    /// conversation is a guaranteed miss, and one changed prefix byte resets
+    /// the window (see tests/prompt_cache.rs for the measurements).
+    #[test]
+    fn the_session_hit_rate_is_token_weighted_over_every_request() {
+        let mut totals = UsageTotals::default();
+        assert_eq!(totals.hit_rate(), None, "no request yet");
+
+        // First request of a conversation: cold by definition.
+        totals.add(TokenUsage {
+            input: 40_000,
+            output: 100,
+            cache_read: 0,
+        });
+        // Later requests re-read the prefix.
+        totals.add(TokenUsage {
+            input: 41_000,
+            output: 200,
+            cache_read: 39_000,
+        });
+        totals.add(TokenUsage {
+            input: 42_000,
+            output: 300,
+            cache_read: 40_000,
+        });
+
+        assert_eq!(totals.requests, 3);
+        assert_eq!(totals.input, 123_000);
+        assert_eq!(totals.cache_read, 79_000);
+        // A mean of the three rates (0%, 95.1%, 95.2%) would read 63%, which is
+        // not what the session spent; the token-weighted number says 64.2%.
+        let rate = totals.hit_rate().expect("rate");
+        assert!((rate - 79_000.0 / 123_000.0).abs() < 1e-9, "{rate}");
+        assert!((rate * 100.0 - 64.2).abs() < 0.1, "{rate}");
+    }
+
+    #[test]
+    fn a_session_without_inputs_reports_no_rate_and_never_exceeds_one() {
+        let mut totals = UsageTotals::default();
+        totals.add(TokenUsage {
+            input: 0,
+            output: 5,
+            cache_read: 0,
+        });
+        assert_eq!(totals.hit_rate(), None);
+
+        // A gateway that reports cache reads on top of the input cannot push the
+        // rate past 100%.
+        let mut odd = UsageTotals::default();
+        odd.add(TokenUsage {
+            input: 100,
+            output: 1,
+            cache_read: 300,
+        });
+        assert_eq!(odd.hit_rate(), Some(1.0));
+    }
 
     #[test]
     fn user_message_puts_the_text_first_and_the_images_after_it_in_the_given_order() {

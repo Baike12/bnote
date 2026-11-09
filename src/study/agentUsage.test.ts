@@ -5,14 +5,19 @@ import {
   formatPercent,
   formatTokenCount,
   occupancyPercent,
+  sessionHitRate,
   usageTitle,
   type AgentUsage,
 } from "./agentUsage";
 
+/** One request's usage; the session totals default to that same request. */
 const usage = (input: number, output: number, cacheRead = 0): AgentUsage => ({
   input,
   output,
   cacheRead,
+  sessionInput: input,
+  sessionCacheRead: cacheRead,
+  sessionRequests: 1,
 });
 
 describe("formatTokenCount", () => {
@@ -84,5 +89,42 @@ describe("usageTitle", () => {
   it("with cache reads it reports the hit rate", () => {
     const title = usageTitle(usage(206, 32, 197), 420_000, "MiniMax");
     expect(title).toContain("缓存命中");
+  });
+});
+
+describe("sessionHitRate", () => {
+  // The headline number is the session's, token-weighted: a cold first request
+  // must not define it, and a per-request mean would let one cheap request
+  // outweigh an expensive one.
+  const session = (sessionInput: number, sessionCacheRead: number, requests = 2): AgentUsage => ({
+    input: 1_000,
+    output: 10,
+    cacheRead: 0,
+    sessionInput,
+    sessionCacheRead,
+    sessionRequests: requests,
+  });
+
+  it("divides the summed cache reads by the summed input", () => {
+    // 0 cached of 40k (cold) + 39k of 41k + 40k of 42k = 79k / 123k.
+    const u = session(123_000, 79_000, 3);
+    expect(sessionHitRate(u)).toBeCloseTo(79 / 123);
+  });
+
+  it("is null before the first request and never exceeds one", () => {
+    expect(sessionHitRate(null)).toBeNull();
+    expect(sessionHitRate(session(0, 0, 0))).toBeNull();
+    expect(sessionHitRate(session(100, 300, 1))).toBe(1);
+  });
+
+  it("the latest request's own rate stays available beside it", () => {
+    const cold = { ...session(123_000, 79_000, 3), input: 42_000, cacheRead: 0 };
+    expect(sessionHitRate(cold)).toBeCloseTo(79 / 123);
+    expect(cacheHitRate(cold)).toBeNull();
+    expect(usageTitle(cold, 420_000, "m")).not.toContain("本轮");
+
+    const warm = { ...cold, cacheRead: 40_000 };
+    expect(cacheHitRate(warm)).toBeCloseTo(40 / 42);
+    expect(usageTitle(warm, 420_000, "m")).toContain("本轮 95.2%");
   });
 });

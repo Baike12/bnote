@@ -181,7 +181,14 @@ export function createStreamHandler(
       case "usage": {
         ctx.updateConv(conv.key, (c) => ({
           ...c,
-          usage: { input: event.input, output: event.output, cacheRead: event.cacheRead },
+          usage: {
+            input: event.input,
+            output: event.output,
+            cacheRead: event.cacheRead,
+            sessionInput: event.sessionInput,
+            sessionCacheRead: event.sessionCacheRead,
+            sessionRequests: event.sessionRequests,
+          },
         }));
         break;
       }

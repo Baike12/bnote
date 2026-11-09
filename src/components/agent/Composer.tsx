@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { agentApi } from "@/lib/tauri";
 import {
   cacheHitRate,
+  sessionHitRate,
   contextLabel,
   formatPercent,
   formatTokenCount,
@@ -168,7 +169,10 @@ function AgentContextBadge({
     };
   }, [open, sessionId]);
 
-  const rate = cacheHitRate(usage);
+  // The session's token-weighted rate is the headline; the latest request is
+  // shown beside it because a cold request is worth seeing on its own.
+  const rate = sessionHitRate(usage);
+  const latest = cacheHitRate(usage);
   const parts: { label: string; value: number; tone: string }[] = breakdown
     ? [
         { label: "系统提示词", value: breakdown.system, tone: "var(--ctx-tone-4)" },
@@ -239,8 +243,13 @@ function AgentContextBadge({
           )}
           {rate !== null && (
             <div className="agent-ctx-cache">
-              <span>平均缓存命中率</span>
-              <span className="agent-ctx-val">{formatPercent(rate * 100)}</span>
+              <span>缓存命中率</span>
+              <span className="agent-ctx-val">
+                {formatPercent(rate * 100)}
+                {latest !== null && (
+                  <span className="agent-ctx-latest">本轮 {formatPercent(latest * 100)}</span>
+                )}
+              </span>
             </div>
           )}
         </div>
