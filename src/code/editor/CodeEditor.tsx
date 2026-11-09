@@ -444,13 +444,21 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
   useEffect(() => {
     const view = viewRef.current;
     if (!view || !jump || jump.path !== file.path) return;
-    const line = jump.position.line + 1;
+    // The position comes from a language server; a non-finite one would build a
+    // NaN offset whose dispatch throws inside CodeMirror (doc.lineAt), and an
+    // error thrown in an effect unmounts the whole app.
+    const { line: jumpLine, character } = jump.position;
+    if (!Number.isFinite(jumpLine) || !Number.isFinite(character)) {
+      useCodeStore.getState().clearJump();
+      return;
+    }
+    const line = jumpLine + 1;
     if (line < 1 || line > view.state.doc.lines) {
       useCodeStore.getState().clearJump();
       return;
     }
     const target = view.state.doc.line(line);
-    const offset = Math.min(target.from + jump.position.character, target.to);
+    const offset = Math.min(target.from + character, target.to);
     view.dispatch({
       selection: { anchor: offset },
       effects: EditorView.scrollIntoView(offset, { y: "center" }),

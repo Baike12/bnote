@@ -214,3 +214,32 @@ describe("splitAgentMarkdown", () => {
     expect(splitAgentMarkdown("")).toEqual([]);
   });
 });
+
+describe("renderAgentMarkdown: list indentation that skips a level", () => {
+  /**
+   * The tree builder keeps `stack[i]` = the last node of level i and trims the
+   * stack to the new item's depth. A list whose FIRST item is already indented
+   * (a hanging-indent list under "实现:") leaves levels 0..d-1 as holes, and the
+   * next item read `stack[length - 1]` → undefined.children → TypeError during
+   * render. With no error boundary above the agent panel, React unmounts the
+   * whole app and the window goes blank.
+   */
+  it("an indented list (all items at level 1) renders instead of throwing", () => {
+    const html = renderAgentMarkdown("实现:\n  - 改 A\n  - 改 B");
+    expect(html).toContain("<li>改 A</li>");
+    expect(html).toContain("<li>改 B</li>");
+  });
+
+  it("a 4-space nested list under a 2-space list keeps both children", () => {
+    const html = renderAgentMarkdown("- 修改 A\n    - 细节 1\n    - 细节 2");
+    expect(html).toContain("<li>修改 A");
+    expect(html).toContain("细节 1");
+    expect(html).toContain("细节 2");
+  });
+
+  it("a quote whose list is indented renders instead of throwing", () => {
+    const html = renderAgentMarkdown(">   - A\n>   - B");
+    expect(html).toContain("A");
+    expect(html).toContain("B");
+  });
+});

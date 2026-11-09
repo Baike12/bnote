@@ -137,3 +137,24 @@ describe("diffStats", () => {
     expect(diffStats(parseUnifiedDiff(SAMPLE))).toEqual({ added: 1, removed: 1 });
   });
 });
+
+describe("alignHunk: a hunk too large for the LCS table", () => {
+  /**
+   * A regenerated file produces a removal run and an addition run of tens of
+   * thousands of lines. The (n+1)x(m+1) table used to be allocated inside
+   * render, which throws RangeError and unmounts the whole app. Past the
+   * budget the rows are paired by position instead: every line still shows.
+   */
+  it("pairs by position and keeps every line", () => {
+    const big = 1200;
+    const lines: string[] = ["@@ -1," + big + " +1," + big + " @@"];
+    for (let i = 0; i < big; i += 1) lines.push(`-old ${i}`);
+    for (let i = 0; i < big; i += 1) lines.push(`+new ${i}`);
+    const hunk = parseUnifiedDiff(`--- a/x\n+++ b/x\n${lines.join("\n")}\n`).files[0].hunks[0];
+    const rows = alignHunk(hunk);
+    expect(rows).toHaveLength(big);
+    expect(rows[0]?.left?.text).toBe("old 0");
+    expect(rows[0]?.right?.text).toBe("new 0");
+    expect(rows[big - 1]?.left?.text).toBe(`old ${big - 1}`);
+  });
+});

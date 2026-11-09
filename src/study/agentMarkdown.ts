@@ -169,20 +169,29 @@ function renderList(lines: string[], start: number): [string, number] {
     }
     break;
   }
-  // The tree is hung by the indentation depth: stack[i] = the last node of the i-th level; a deeper indentation hangs under
-  // the current deepest level (this mini implementation does not chase perfect nesting).
+  // The tree is hung by the indentation depth: stack[i] = the last node of the
+  // i-th level, and every level below `stack.length` is filled (an item hangs
+  // under `stack[depth - 1]`). Two rules keep that invariant:
+  // - the first item defines the list's base indentation, so a list that starts
+  //   indented (the common hanging-indent list under "实现:") keeps its items at
+  //   level 0 instead of hanging off level 0, which does not exist;
+  // - a jump deeper than the levels built so far clamps to the deepest existing
+  //   level (this mini implementation does not chase perfect nesting).
+  // Without the clamp, `stack[stack.length - 1]` could be a hole and reading
+  // `.children` threw during render — which unmounted the whole app, because an
+  // agent reply renders inside React with no error boundary above it.
   const root: ListItem[] = [];
   const stack: ListItem[] = [];
+  const baseIndent = items[0]?.indent ?? 0;
   for (const item of items) {
-    const depth = Math.min(item.indent, MAX_LIST_DEPTH);
-    stack.length = Math.min(stack.length, depth);
-    if (stack.length === 0) {
+    const depth = Math.min(Math.max(item.indent - baseIndent, 0), MAX_LIST_DEPTH, stack.length);
+    stack.length = depth;
+    if (depth === 0) {
       root.push(item);
     } else {
-      stack[stack.length - 1].children.push(item);
+      stack[depth - 1].children.push(item);
     }
     stack[depth] = item;
-    stack.length = depth + 1;
   }
 
   function renderItems(list: ListItem[]): string {

@@ -36,11 +36,22 @@ export interface CodeTarget {
   external: boolean;
 }
 
+/** A server position counts only when it is two finite, non-negative numbers. */
+function toPosition(value: unknown): LspPosition | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const ok = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  return ok(v.line) && ok(v.character) ? { line: v.line, character: v.character } : null;
+}
+
 /** Turn the uri of the server into a project-relative path. */
 function toTarget(uri: string, range: LspRange | undefined, root: string): CodeTarget | null {
   const abs = decodeFileUri(uri);
-  if (!abs) return null;
-  const position = range?.start ?? { line: 0, character: 0 };
+  // A location without a usable start cannot be jumped to: the jump effect
+  // builds a CodeMirror offset from it, and a non-finite offset throws inside
+  // the editor (doc.lineAt), which unmounts the app.
+  const position = toPosition(range?.start);
+  if (!abs || !position) return null;
   const prefix = root.endsWith("/") ? root : `${root}/`;
   if (abs.startsWith(prefix)) {
     return { path: abs.slice(prefix.length), position, external: false };

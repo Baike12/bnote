@@ -38,6 +38,43 @@ export function sameProject(payloadRoot: unknown, currentRoot: string | undefine
   );
 }
 
+function isPosition(value: unknown): value is { line: number; character: number } {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.line === "number" &&
+    Number.isFinite(v.line) &&
+    v.line >= 0 &&
+    typeof v.character === "number" &&
+    Number.isFinite(v.character) &&
+    v.character >= 0
+  );
+}
+
+/**
+ * One diagnostic from the event payload, narrowed at the IPC edge.
+ *
+ * The Rust side forwards the server's diagnostic as received and turns a
+ * missing range into `null` (lsp/client.rs `diagnostic_to_json`); several
+ * servers really do publish range-less diagnostics. Everything downstream
+ * indexes `range.start` (the problems panel draws the line, F8 cycles through
+ * them, the lint source maps offsets), so a malformed element must not reach
+ * the store: it has no location to show or jump to.
+ */
+export function parseDiagnostic(value: unknown): LspDiagnostic | null {
+  if (!value || typeof value !== "object") return null;
+  const d = value as Record<string, unknown>;
+  const range = d.range as Record<string, unknown> | null | undefined;
+  if (!range || !isPosition(range.start) || !isPosition(range.end)) return null;
+  return {
+    range: { start: range.start, end: range.end },
+    severity: typeof d.severity === "number" ? d.severity : 1,
+    code: typeof d.code === "string" || typeof d.code === "number" ? d.code : null,
+    source: typeof d.source === "string" ? d.source : null,
+    message: typeof d.message === "string" ? d.message : "",
+  };
+}
+
 export async function installCodeEvents(): Promise<() => void> {
   const offs: Array<() => void> = [];
 
@@ -54,7 +91,7 @@ export async function installCodeEvents(): Promise<() => void> {
     const data = payload as { root?: unknown; path?: unknown; diagnostics?: unknown } | null;
     if (!data || !fromThisProject(data.root) || typeof data.path !== "string") return;
     const diagnostics = Array.isArray(data.diagnostics)
-      ? (data.diagnostics as LspDiagnostic[])
+      ? data.diagnostics.map(parseDiagnostic).filter((d): d is LspDiagnostic => d !== null)
       : [];
     useCodeStore.getState().setDiagnostics(data.path, diagnostics);
     // Diagnostics are pushed, so the editor never learns they changed on its

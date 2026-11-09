@@ -179,7 +179,7 @@ export function alignHunk(hunk: DiffHunk): DiffRow[] {
       else added.push(lines[i]);
       i += 1;
     }
-    rows.push(...alignSegment(removed, added));
+    for (const row of alignSegment(removed, added)) rows.push(row);
   }
   return rows;
 }
@@ -194,12 +194,14 @@ function alignSegment(removed: DiffLine[], added: DiffLine[]): DiffRow[] {
   let ri = 0;
   let ai = 0;
   for (const pair of pairs) {
-    rows.push(...pairPositional(removed.slice(ri, pair.left), added.slice(ai, pair.right)));
+    for (const row of pairPositional(removed.slice(ri, pair.left), added.slice(ai, pair.right))) {
+      rows.push(row);
+    }
     rows.push({ left: removed[pair.left], right: added[pair.right] });
     ri = pair.left + 1;
     ai = pair.right + 1;
   }
-  rows.push(...pairPositional(removed.slice(ri), added.slice(ai)));
+  for (const row of pairPositional(removed.slice(ri), added.slice(ai))) rows.push(row);
   return rows;
 }
 
@@ -212,6 +214,9 @@ function pairPositional(removed: DiffLine[], added: DiffLine[]): DiffRow[] {
   }
   return rows;
 }
+
+/** Cells the LCS table may allocate before the positional fallback applies. */
+const LCS_MAX_CELLS = 1_000_000;
 
 /** The pairing result: left index → right index. */
 interface LcsPair {
@@ -232,6 +237,12 @@ export function lcsPairs(a: string[], b: string[]): LcsPair[] {
   const n = a.length;
   const m = b.length;
   if (n === 0 || m === 0) return [];
+  // A regenerated file (a lockfile, generated code) produces hunks of tens of
+  // thousands of lines: the (n+1)x(m+1) table would be billions of cells, and
+  // allocating it throws inside render (RangeError) - which unmounts the app.
+  // Past the budget the caller pairs by position: bounded, and still shows
+  // every line.
+  if ((n + 1) * (m + 1) > LCS_MAX_CELLS) return [];
   const table: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
