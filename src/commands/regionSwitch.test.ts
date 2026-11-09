@@ -3,6 +3,11 @@ import "@/commands/builtin";
 import { getCommand } from "./registry";
 import { useAppStore } from "@/state/appStore";
 import { useCodeStore } from "@/code/store";
+import {
+  registerCodeEditor,
+  unregisterCodeEditor,
+  type CodeEditorHandle,
+} from "@/code/editor/registry";
 
 /**
  * ⌘⌥A and ⌘⌥R mean the same thing in both three-column layouts (study and
@@ -25,6 +30,38 @@ function stubFrame() {
   });
 }
 
+/**
+ * A code editor handle whose selection is `from..to` of `text`, with just the
+ * parts `quoteCodeSelection` reads. Cast because an EditorView is a whole
+ * runtime; building one in node would test CodeMirror, not the quote.
+ */
+function fakeEditor(text: string, from: number, to: number): CodeEditorHandle {
+  const starts: number[] = [0];
+  for (let i = 0; i < text.length; i += 1) if (text[i] === "\n") starts.push(i + 1);
+  const view = {
+    state: {
+      doc: {
+        lineAt: (pos: number) => {
+          let number = 1;
+          for (let i = 0; i < starts.length; i += 1) if (starts[i] <= pos) number = i + 1;
+          return { number };
+        },
+      },
+      selection: { main: { from, to, empty: from === to } },
+      sliceDoc: (a: number, b: number) => text.slice(a, b),
+    },
+    dom: { isConnected: true },
+  };
+  return {
+    root: "/proj",
+    path: "src/a.ts",
+    language: "typescript",
+    view,
+  } as unknown as CodeEditorHandle;
+}
+
+const SOURCE = "function a() {\n  return 1;\n}\n";
+
 describe("reaching the agent input", () => {
   beforeEach(stubFrame);
   afterEach(() => {
@@ -46,6 +83,41 @@ describe("reaching the agent input", () => {
     for (const mode of ["notes", "projects"] as const) {
       useAppStore.setState({ mode });
       expect(getCommand("region.focus-agent")?.when?.() ?? true).toBe(false);
+    }
+  });
+
+  /**
+   * The chord doubles as "quote this code": with a selection in the editor the
+   * reference travels with the focus signal, so the box opens already holding
+   * it. Zed spells this `agent::AddSelectionToThread`; the text form has to
+   * carry the path and the line range itself.
+   */
+  it("carries a selected block of code into the input signal", () => {
+    const from = SOURCE.indexOf("  return");
+    const handle = fakeEditor(SOURCE, from, from + "  return 1;".length);
+    registerCodeEditor(handle);
+    try {
+      useAppStore.setState({ mode: "code", mainColumn: "content", agentPanelCommand: null });
+      getCommand("region.focus-agent")?.run();
+      const req = useAppStore.getState().agentPanelCommand;
+      expect(req?.kind).toBe("focus-input");
+      expect(req?.insert).toBe("src/a.ts:2\n```typescript\n  return 1;\n```\n");
+    } finally {
+      unregisterCodeEditor(handle);
+    }
+  });
+
+  it("only moves the keyboard when nothing is selected", () => {
+    const handle = fakeEditor(SOURCE, 5, 5);
+    registerCodeEditor(handle);
+    try {
+      useAppStore.setState({ mode: "code", mainColumn: "content", agentPanelCommand: null });
+      getCommand("region.focus-agent")?.run();
+      const req = useAppStore.getState().agentPanelCommand;
+      expect(req?.kind).toBe("focus-input");
+      expect(req?.insert).toBeUndefined();
+    } finally {
+      unregisterCodeEditor(handle);
     }
   });
 });

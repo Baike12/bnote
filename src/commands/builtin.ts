@@ -41,7 +41,7 @@ import { capturePdfSnapshot, hasPdfSnapshotSource } from "@/study/pdfSnapshot";
 import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
 import { fileToAgentImage } from "@/study/agentImages";
 import { WEREAD_HOME_URL } from "@/study/weread";
-import { codeCommandDefs, focusCodeContent } from "@/code/commands";
+import { codeCommandDefs, focusCodeContent, quoteCodeSelection } from "@/code/commands";
 
 /** Whether the middle column has a web page open (only then do the zoom keys take over ⌘= / ⌘- / ⌘0). */
 function hasWebPreview(): boolean {
@@ -378,7 +378,7 @@ const defs: CommandDef[] = [
           return;
         }
         const image = await fileToAgentImage(file, file.type);
-        store.runAgentPanelCommand("attach-images", [image]);
+        store.runAgentPanelCommand("attach-images", { images: [image] });
       } catch (e) {
         store.showToast(`截图失败: ${String(e)}`);
       }
@@ -432,7 +432,12 @@ const defs: CommandDef[] = [
       // The assistant takes the middle column and stays there; the panel then
       // focuses its input and hands the IME to Chinese, in every mode.
       store.setMainColumn("agent");
-      store.runAgentPanelCommand("focus-input");
+      // A selected block of code travels with the signal: the panel splices it
+      // into the same box it is about to focus. With no selection the command
+      // keeps its plain meaning (move the keyboard to the box only).
+      store.runAgentPanelCommand("focus-input", {
+        insert: quoteCodeSelection() ?? undefined,
+      });
     },
   },
   {

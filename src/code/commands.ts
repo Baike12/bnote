@@ -1,6 +1,7 @@
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { startCompletion } from "@codemirror/autocomplete";
 import type { CommandDef } from "@/commands/registry";
+import { peekVimVisual } from "@/editor/vim/vim";
 import { useAppStore } from "@/state/appStore";
 import { codeVimEnabled } from "@/state/codeVim";
 import { useCodeStore } from "./store";
@@ -8,6 +9,7 @@ import { activeCodeEditor } from "./editor/registry";
 import { findReferences, gotoDefinition, renameSymbol } from "./editor/goto";
 import { cmToLspPosition } from "./editor/positions";
 import { nextProblemTarget, type ProblemTarget } from "./problems";
+import { formatCodeQuote } from "./quote";
 import { requestCodeUi } from "./ui";
 
 /**
@@ -417,4 +419,40 @@ export function focusCodeContent(): void {
   const store = useCodeStore.getState();
   if (store.diffOpen) store.setDiff(false);
   requestAnimationFrame(() => activeCodeEditor()?.view.focus());
+}
+
+/**
+ * The selected code, formatted for the Agent input — the code-mode half of the
+ * "focus the agent input" chord (Zed's `agent::AddSelectionToThread` in its
+ * text form).
+ *
+ * Null means "nothing to quote": no code editor, or an empty caret. The chord
+ * then keeps its other meaning and only moves the keyboard to the input box.
+ *
+ * The vim engine's selection is authoritative in visual mode — under a
+ * linewise / blockwise range CM holds only part of it (see visualSelection) —
+ * and it is **read**, not taken: quoting must not end visual mode.
+ */
+export function quoteCodeSelection(): string | null {
+  const handle = activeCodeEditor();
+  if (!handle) return null;
+  const state = handle.view.state;
+  const range = state.selection.main;
+  const selection =
+    peekVimVisual(handle.view) ??
+    (range.empty
+      ? null
+      : { text: state.sliceDoc(range.from, range.to), from: range.from, to: range.to });
+  if (!selection) return null;
+  return formatCodeQuote({
+    // The handle's path is project-relative, which is what the agent's file
+    // tools address (its workdir is the project root).
+    path: handle.path,
+    startLine: state.doc.lineAt(selection.from).number,
+    // `to` may sit at the start of the next line when the selection swallowed
+    // the line break: the last selected character names the end line.
+    endLine: state.doc.lineAt(Math.max(selection.from, selection.to - 1)).number,
+    text: selection.text,
+    language: useCodeStore.getState().files[handle.path]?.languageId ?? handle.language,
+  });
 }

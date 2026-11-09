@@ -686,6 +686,20 @@ export function visualSelection(
 }
 
 /**
+ * The engine's visual selection, read without leaving visual mode.
+ *
+ * ⌘W's "quote this selection" only reads it — the user keeps the selection for
+ * further motions — while ⌘⇧B takes it (takeVimVisual), because the block it
+ * inserts consumes it.
+ */
+export function peekVimVisual(view: EditorView): VisualSelection | null {
+  const cm = getCM(view) as unknown as { state?: { vim?: VisualVimState } } | null;
+  const vim = cm?.state?.vim;
+  if (!cm || !vim?.visualMode) return null;
+  return visualSelection(view.state.doc, vim);
+}
+
+/**
  * The selection source for ⌘⇧B "select and insert" in vim visual mode: take
  * the engine-maintained selection (visualSelection) and leave visual mode.
  * Returning null means "not in visual mode" (the caller uses the CM selection
@@ -695,10 +709,9 @@ export function visualSelection(
  * the old selection (which would still be highlighted).
  */
 export function takeVimVisual(view: EditorView): VisualSelection | null {
-  const cm = getCM(view) as unknown as { state?: { vim?: VisualVimState } } | null;
-  const vim = cm?.state?.vim;
-  if (!cm || !vim?.visualMode) return null;
-  const selection = visualSelection(view.state.doc, vim);
+  const selection = peekVimVisual(view);
+  if (!selection) return null;
+  const cm = getCM(view) as unknown as { state?: { vim?: VisualVimState } };
   (Vim as unknown as { exitVisualMode: (cm: unknown, moveHead?: boolean) => void }).exitVisualMode(
     cm,
     false,

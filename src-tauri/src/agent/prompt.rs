@@ -209,6 +209,9 @@ fn tool_rules(tools: &[String]) -> String {
             "- Two conventions in user messages:\n  - `/skill-name`: the user picked a skill. Call the Skill tool to load it, then follow its guidance exactly; never guess names outside the listed skills.\n  - `@path/to/file`: the user referenced a file — its contents are attached to their message automatically.\n",
         );
     }
+    r.push_str(
+        "- A message may quote code as `path:start-end` on its own line followed by a fenced block: that is the current content of those lines of that file (a selection sent from the editor, possibly including edits not yet saved to disk).\n",
+    );
     if has("TaskCreate") || has("TaskUpdate") {
         r.push_str(
             "- For work with 3+ steps create tasks with TaskCreate and keep them current with TaskUpdate; inspect with TaskList / TaskGet. Use either TodoWrite or the task list, never both for the same work.\n",

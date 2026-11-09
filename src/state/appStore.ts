@@ -345,11 +345,22 @@ export function rememberCursorPosition(path: string, pos: number, scroll: number
 /** The commands the study assistant panel can execute (signalled by the keybinding/command layer; the panel runs them itself). */
 export type AgentPanelCommand =
   "new" | "fork" | "back" | "history" | "focus-input" | "attach-images" | "toggle-creative";
-export interface AgentPanelCommandRequest {
-  seq: number;
-  kind: AgentPanelCommand;
+
+/** What a panel command carries besides its kind. */
+export interface AgentPanelPayload {
   /** The image payload of attach-images (the reading region screenshot goes here, bypassing the system clipboard). */
   images?: AgentImage[];
+  /**
+   * Text spliced into the input box before focusing it — a quoted code
+   * selection. It travels with the focus command so "insert the quote" and
+   * "focus the box" are one action, not two signals that could interleave.
+   */
+  insert?: string;
+}
+
+export interface AgentPanelCommandRequest extends AgentPanelPayload {
+  seq: number;
+  kind: AgentPanelCommand;
 }
 
 interface AppState {
@@ -519,7 +530,7 @@ interface AppState {
   /** The request of "the study assistant switches session (main ↔ auxiliary)" (see agentSwitchSessionSignal). */
   bumpAgentSwitchSessionSignal: () => void;
   /** The study assistant panel command (see agentPanelCommand). */
-  runAgentPanelCommand: (kind: AgentPanelCommand, images?: AgentImage[]) => void;
+  runAgentPanelCommand: (kind: AgentPanelCommand, payload?: AgentPanelPayload) => void;
   /** Put one column in the middle (see mainColumn). */
   setMainColumn: (column: "agent" | "content") => void;
 }
@@ -745,9 +756,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   bumpAgentConfigVersion: () => set({ agentConfigVersion: get().agentConfigVersion + 1 }),
   bumpAgentSwitchSessionSignal: () =>
     set({ agentSwitchSessionSignal: get().agentSwitchSessionSignal + 1 }),
-  runAgentPanelCommand: (kind, images) =>
+  runAgentPanelCommand: (kind, payload) =>
     set({
-      agentPanelCommand: { seq: (get().agentPanelCommand?.seq ?? 0) + 1, kind, images },
+      agentPanelCommand: {
+        seq: (get().agentPanelCommand?.seq ?? 0) + 1,
+        kind,
+        ...payload,
+      },
     }),
   // A real transition is what the layouts react to; repeated clicks inside
   // the same column must not re-render them.

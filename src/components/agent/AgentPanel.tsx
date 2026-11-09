@@ -1017,6 +1017,30 @@ export function AgentPanel() {
     });
   };
 
+  /**
+   * Splice a quoted block into the box at the caret (the focus-agent chord,
+   * pressed over a code selection).
+   *
+   * The current text is read from the textarea instead of the `input` state:
+   * this runs inside the command effect, whose closure is a render behind. The
+   * caret lands after the block on the next frame — the value is controlled, so
+   * the position can only be set once React has committed it.
+   */
+  const insertIntoInput = useCallback((block: string) => {
+    const el = inputRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? start;
+    const before = el.value.slice(0, start);
+    // The quote is its own paragraph: never glued to whatever the user had
+    // already typed in front of the caret.
+    const inserted = `${before === "" || before.endsWith("\n") ? "" : "\n"}${block}`;
+    const caret = before.length + inserted.length;
+    setInput(before + inserted + el.value.slice(end));
+    setSuggestTrigger(null);
+    requestAnimationFrame(() => inputRef.current?.setSelectionRange(caret, caret));
+  }, []);
+
   /** The built-in `/` commands: the set and the wiring of their panel effects. */
   const builtinContext = useMemo(
     () => ({
@@ -1248,6 +1272,9 @@ export function AgentPanel() {
     };
     switch (cmd.kind) {
       case "focus-input":
+        // The quote goes in before the focus so the box opens already holding
+        // the code (one action: quote + focus).
+        if (cmd.insert) insertIntoInput(cmd.insert);
         focusInput();
         break;
       case "new":
@@ -1310,6 +1337,7 @@ export function AgentPanel() {
     pendingImages,
     activateConv,
     setCreativeMode,
+    insertIntoInput,
   ]);
 
   // Once the history drawer is open the focus goes to the list, Tab / Enter work right away.
