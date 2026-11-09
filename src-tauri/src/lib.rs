@@ -186,13 +186,10 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&data_dir)?;
-            // The agent's own files moved to `~/.bnote` (Claude Code's
-            // `~/.claude`); copy the legacy config once so the user keeps the
-            // provider/key/MCP setup.
-            agent::AgentConfig::migrate_from(&data_dir);
-            if let Err(e) = agent::home::ensure_dir(&agent::home::home_dir()) {
-                eprintln!("[bnote] agent home: {e}");
-            }
+            // The agent home is the open vault's `.bnote`, and no vault is open
+            // yet. It is created, and the legacy configuration is copied into
+            // it, when the vault is set (`commands::vault::set_vault`); doing it
+            // here would recreate `$HOME/.bnote` on every launch.
 
             app.manage(AppState {
                 vault: RwLock::new(None),

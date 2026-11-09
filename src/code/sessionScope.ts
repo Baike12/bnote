@@ -3,7 +3,7 @@
  *
  * A coding session belongs to the repository, not to the notebook: like
  * Claude Code's `~/.claude/projects/<project>/<session>.jsonl`, the record
- * goes into the agent home under `~/.bnote/projects/<sanitized project>/`.
+ * goes into the agent home under `.bnote/projects/<sanitized project>/`.
  * The vault never sees it, so a repository can be worked on with any vault
  * open (or none).
  *

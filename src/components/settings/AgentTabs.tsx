@@ -21,8 +21,9 @@ import { SettingsCard, Row, SettingsSelect } from "./primitives";
  *   study     模型 | AGENTS.md
  *
  * Every page reads and writes real files: the model and credentials live in
- * `~/.bnote/agent.json` (one key per machine), while the mode's own files live
- * under its root (`<vault>/.bnote/agents/<mode>` by default). Nothing here
+ * the home's `agent.json` (the open vault's `.bnote`, else `~/.bnote`), while
+ * the mode's own files live under its root (`<vault>/.bnote/agents/<mode>` by
+ * default). Nothing here
  * keeps a second copy of a setting, so what the page shows is what the agent
  * reads.
  */
@@ -47,7 +48,7 @@ function displayPath(path: string, vaultPath: string | null): string {
   return path.replace(/^\/Users\/[^/]+\//, "~/");
 }
 
-/** The shared model/credential configuration (`~/.bnote/agent.json`). */
+/** The shared model/credential configuration (the home's `agent.json`). */
 function useAgentSettings() {
   const [cfg, setCfg] = useState<AgentConfig | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -136,7 +137,7 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
     <div className="settings-section">
       <SettingsCard
         title="模型"
-        desc={`${MODE_LABEL[mode]}助手使用的协议、模型与密钥,保存在 ~/.bnote/agent.json,三种模式共用。改动只影响之后新建的会话,已开的会话按创建时的配置继续(面板头部点 ⟳ 开新会话)。`}
+        desc={`${MODE_LABEL[mode]}助手使用的协议、模型与密钥,保存在笔记库的 .bnote/agent.json(未打开笔记库时退回 ~/.bnote),三种模式共用。改动只影响之后新建的会话,已开的会话按创建时的配置继续(面板头部点 ⟳ 开新会话)。`}
       >
         <Row
           label="协议"
@@ -629,7 +630,7 @@ export function AgentInstructionsTab({
 
       <SettingsCard
         title="配置目录"
-        desc="本模式的 settings.json、AGENTS.md、skills 与 output-styles 都放在这里;默认随仓库保存,改成任意绝对路径后该模式的文件整体迁到那里(会话记录仍在 ~/.bnote)。"
+        desc="本模式的 settings.json、AGENTS.md、skills 与 output-styles 都放在这里;默认随仓库保存,改成任意绝对路径后该模式的文件整体迁到那里(会话记录仍在 .bnote)。"
       >
         <div className="settings-block">
           <div className="settings-path-list">
@@ -904,7 +905,7 @@ export function AgentAdvancedTab({ mode, workdir }: { mode: AgentMode; workdir: 
             <div className="settings-hint">读取失败</div>
           )}
           <div className="settings-hint">
-            会话记录、tasks、plans 与记忆仍在 <code>~/.bnote</code>
+            会话记录、tasks、plans 与记忆仍在笔记库的 <code>.bnote</code>
             (它们属于运行状态,不属于笔记)。
           </div>
         </div>

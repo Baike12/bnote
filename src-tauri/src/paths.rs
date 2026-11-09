@@ -1,7 +1,7 @@
 //! Path confinement shared by the vault and the agent home.
 //!
 //! Two stores can be written by the app: the vault (the user's notes) and
-//! `~/.bnote` (the agent's own files). Both need the same check, and the check
+//! the vault's `.bnote` (the agent's own files). Both need the same check, and the check
 //! must handle paths that do not exist yet (a new file resolves through its
 //! nearest existing ancestor, so a symlinked `/var` → `/private/var` parent
 //! does not make every legitimate new file look foreign).

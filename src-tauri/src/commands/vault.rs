@@ -103,9 +103,28 @@ fn set_vault_blocking(
 
     *state.vault.write().map_err(|_| "lock poisoned")? = Some(root.clone());
 
-    // The mode configuration used to live in `~/.bnote`; the default is the
-    // vault's `.bnote/agents/<mode>` now. Copy the legacy files into the
-    // coding root once (never overwriting, never deleting).
+    // The agent's home is this vault's `.bnote` (see `agent::home`): point the
+    // path helpers at it before anything reads or writes agent state, then move
+    // what the old machine-level home (`$HOME/.bnote`) still holds — config
+    // with the API key, prompt history, session records — into the vault. The
+    // order matters: the move comes first, so every later migration reads the
+    // files at their final location.
+    crate::agent::home::set_vault(Some(&root));
+    if let Err(e) = crate::agent::home::ensure_dir(&root.join(".bnote")) {
+        eprintln!("[bnote] agent home: {e}");
+    }
+    match crate::agent::home::migrate_into_vault(&root) {
+        Ok(0) => {}
+        Ok(count) => eprintln!("[bnote] agent home moved into the vault: {count} entries"),
+        Err(e) => eprintln!("[bnote] agent home migration: {e}"),
+    }
+    // The config used to live in the app data directory; copy it into the home
+    // once (only when the vault has none — the move above may have brought one).
+    crate::agent::AgentConfig::migrate_from(&state.data_dir);
+
+    // The mode configuration used to live at the home root; the default is the
+    // vault's `.bnote/agents/<mode>` now. Copy the legacy files into the mode
+    // roots once (never overwriting).
     crate::agent::settings::migrate_legacy_home(&root);
 
     // Images in notes are rendered through the asset protocol. The vault is the

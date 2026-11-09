@@ -4,7 +4,7 @@
 //! system prompt while the working rules (tools, permissions) stay. The three
 //! built-in styles are compiled into the binary like the agent prompts; a user
 //! style is a markdown file in
-//!   `~/.bnote/output-styles/*.md`            (user)
+//!   `<home>/output-styles/*.md`              (the agent home)
 //!   `<project>/.bnote/output-styles/*.md`    (project)
 //! with an optional frontmatter block:
 //!

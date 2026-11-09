@@ -132,9 +132,9 @@ fn rules_in(dir: &Path) -> Vec<PathBuf> {
 /// `project` plus its ancestors up to and including the git root (or the home
 /// directory / filesystem root when there is no repository).
 fn ancestors_to_git_root(project: &Path) -> Vec<PathBuf> {
-    let home = crate::agent::home::home_dir()
-        .parent()
-        .map(|p| p.to_path_buf());
+    // `$HOME` itself, not the agent home: the walk stops at the user's home
+    // directory regardless of where the vault (and its `.bnote`) lives.
+    let home = Some(crate::agent::home::user_home());
     let mut dirs = Vec::new();
     let mut cur = Some(project.to_path_buf());
     while let Some(dir) = cur {

@@ -27,7 +27,8 @@ pub use provider::Provider;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Agent configuration persisted at `<agent home>/agent.json` (`~/.bnote`).
+/// Agent configuration persisted at `<agent home>/agent.json` (the open vault's
+/// `.bnote`, else `~/.bnote`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     pub provider: String, // "anthropic" | "openai"
@@ -106,7 +107,7 @@ impl AgentConfig {
         cfg
     }
 
-    /// Copies the pre-home config (`<app_data>/agent.json`) into `~/.bnote`
+    /// Copies the pre-home config (`<app_data>/agent.json`) into the agent home
     /// once. The legacy file is left untouched, so downgrading loses nothing.
     pub fn migrate_from(data_dir: &Path) {
         let target = home::config_file();

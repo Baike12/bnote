@@ -116,7 +116,7 @@ impl ToolContext {
     }
 
     /// Writes are confined to the working directory (the code project for a
-    /// coding session) or the vault, plus the agent home `~/.bnote` (memory,
+    /// coding session) or the vault, plus the agent home (memory,
     /// skills, plans). The vault is *not* writable from a coding session: the
     /// repository and the notebook are unrelated stores.
     fn ensure_confined(&self, path: &Path) -> Result<(), String> {

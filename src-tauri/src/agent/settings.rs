@@ -7,7 +7,8 @@
 //! The mode root is `<vault>/.bnote/agents/<mode>` unless `agent_roots`
 //! overrides it (see `home.rs`). The mode file holds what belongs to that
 //! agent: `mcpServers`, `skillDirs`, permissions, hooks, output style.
-//! Credentials and the model are machine-level and stay in `~/.bnote/agent.json`.
+//! Credentials and the model are shared by the modes and stay in the home's
+//! `agent.json`.
 //!
 //! Later files override earlier ones; arrays are concatenated and de-duplicated
 //! (CC's merge), objects are merged key by key, scalars take the last value. A
@@ -190,13 +191,14 @@ fn merge(into: &mut Settings, from: Settings) {
     merge_list(&mut into.disabled_skills, from.disabled_skills);
 }
 
-/// Copies the pre-mode-root configuration of the agent home into the coding
+/// Copies the pre-mode-root configuration at the home root into the coding
 /// root, once, without overwriting anything. Before the mode roots existed the
-/// user-level files were `~/.bnote/{settings.json,AGENTS.md,rules,skills,
-/// output-styles}` and the MCP/skill settings lived in `~/.bnote/agent.json`;
-/// a user who already configured them must not lose them when the default
-/// moves into the vault. Never deletes the source, so nothing is lost if the
-/// user switches back.
+/// user-level files sat directly in the home (`{settings.json,AGENTS.md,rules,
+/// skills,output-styles}`) and the MCP/skill settings lived in `agent.json`; a
+/// user who already configured them must not lose them when the default moves
+/// into the mode roots. Never deletes the source, so nothing is lost if the
+/// user switches back. Runs after [`home::migrate_into_vault`], which is what
+/// brings those files from the machine-level home `~/.bnote` into the vault.
 pub fn migrate_legacy_home(vault: &Path) {
     // Once per vault: a marker in the vault's agent directory means the
     // migration already ran, so deleting a mode file is not undone by the next
@@ -211,24 +213,19 @@ pub fn migrate_legacy_home(vault: &Path) {
         eprintln!("[bnote] agent root: {e}");
         return;
     }
+    let legacy_home = home::home_dir();
     copy_file_if_missing(
         &home::legacy_settings_file(),
         &home::mode_settings_file(&root),
     );
     copy_file_if_missing(
-        &home::home_dir().join("AGENTS.md"),
+        &legacy_home.join("AGENTS.md"),
         &home::mode_instructions_file(&root),
     );
+    copy_dir_if_missing(&legacy_home.join("rules"), &home::mode_rules_dir(&root));
+    copy_dir_if_missing(&legacy_home.join("skills"), &home::mode_skills_dir(&root));
     copy_dir_if_missing(
-        &home::home_dir().join("rules"),
-        &home::mode_rules_dir(&root),
-    );
-    copy_dir_if_missing(
-        &home::home_dir().join("skills"),
-        &home::mode_skills_dir(&root),
-    );
-    copy_dir_if_missing(
-        &home::home_dir().join("output-styles"),
+        &legacy_home.join("output-styles"),
         &home::mode_output_styles_dir(&root),
     );
     // Study and creative used to read the vault's single `.bnote/AGENTS.md`

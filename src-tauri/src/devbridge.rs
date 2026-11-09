@@ -478,7 +478,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_preview_put" => {
             json_ok!(preview::agent_preview_put(arg_str(args, "html")?))
         }
-        // ---- agent home (~/.bnote) ----
+        // ---- agent home (the vault's .bnote) ----
         "agent_home_workspace" => json_ok!(home::agent_home_workspace(arg_str(args, "workdir")?).await),
         "agent_home_sessions_list" => {
             json_ok!(home::agent_home_sessions_list(arg_str(args, "workdir")?).await)

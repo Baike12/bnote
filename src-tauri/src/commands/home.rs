@@ -1,9 +1,9 @@
-//! Home (`~/.bnote`) file commands for the agent panel.
+//! Home file commands for the agent panel.
 //!
-//! A coding session's transcript belongs to the agent, not to the vault: its
-//! record lives under `~/.bnote/projects/<project>/`. The panel writes and
-//! reads those files through these commands, which are the only way the
-//! frontend can touch the home directory — every path is confined to it.
+//! A coding session's transcript lives in the agent home — the vault's
+//! `.bnote` — under `projects/<project>/`. The panel writes and reads those
+//! files through these commands, which are the only way the frontend can touch
+//! the home directory; every path is confined to it.
 
 use super::materials::{summarize_session, SessionMeta};
 use super::CmdResult;
@@ -418,7 +418,7 @@ pub async fn agent_output_styles(
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
-/// One prompt of `~/.bnote/history.jsonl`, newest first.
+/// One prompt of `history.jsonl` in the agent home, newest first.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {

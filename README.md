@@ -41,7 +41,7 @@
 | **Study mode** | Three columns: ask the agent on the left, read a PDF / web page / WeRead in the middle, take notes on the right; annotations, reading positions, and sessions persist per material. |
 | **Selection translation** | Single words use the embedded offline ECDICT (59k entries); sentences go to a configurable model API (OpenAI-compatible / DeepSeek / GLM / Qwen / Anthropic / Ollama). |
 | **Code mode** | Its own three columns (agent \| code \| notes): file tree, tree-sitter highlighting, LSP navigation and completion, git diffs, integrated terminal. |
-| **Coding agent** | Tools, permissions, plan mode, hooks, output styles, auto memory, and prompt history follow Claude Code's structure; runtime state lives in `~/.bnote`. |
+| **Coding agent** | Tools, permissions, plan mode, hooks, output styles, auto memory, and prompt history follow Claude Code's structure; runtime state lives in the vault's `.bnote` beside the notes. |
 | **Project management** | Each project is a Markdown todo list; the board is laid out horizontally, todos can be dragged and sent to today's daily note. |
 | **Daily notes and todos** | Cross-file todos sync bidirectionally into today's daily note; completed unsent todos are recorded automatically; the day's edits become a "footprint" summary. |
 | **Canvas and attachments** | Excalidraw drawings are saved as files with exported previews, re-inserted at the cursor on return; Obsidian `.excalidraw.md` is supported. |
@@ -214,7 +214,7 @@ Code mode is a **mode of its own**, unrelated to the vault: ask the agent on the
 - Opening a repository in the middle column switches the left agent to the coding definition: the session uses the repository root as its workdir (relative paths and bash anchor there), and tasks, history, and memory are recorded under that project
 - Every tool is available: file read/write, glob / grep, bash (background and kill), todo, subagent dispatch, skills, MCP, plan mode, and asking the user
 - The project root is the sandbox: reads and writes inside are allowed, everything outside is refused (relative paths are lexically normalized and then canonicalized, and symlinks pointing outside are rejected too)
-- Transcripts live in `~/.bnote/projects/<project key>/<session>.jsonl`; no code material directory ever appears in the vault
+- Transcripts live in the vault's `.bnote/projects/<project key>/<session>.jsonl`; no code material directory ever appears in the vault
 
 ## Project management
 
@@ -253,7 +253,7 @@ Code mode is a **mode of its own**, unrelated to the vault: ask the agent on the
 
 ## Agent
 
-The agent follows Claude Code's structure: definitions and prompts are compiled into the binary. Each mode owns its configuration — `<vault>/.bnote/agents/<mode>/{settings.json, AGENTS.md, skills/, output-styles/}` by default, so it travels with the notebook — while session records and other runtime state stay in `~/.bnote`.
+The agent follows Claude Code's structure: definitions and prompts are compiled into the binary. Each mode owns its configuration — `<vault>/.bnote/agents/<mode>/{settings.json, AGENTS.md, skills/, output-styles/}` by default, so it travels with the notebook — while session records and other runtime state sit in the same `.bnote` — one directory, so the notebook carries the agent's whole home.
 
 ### Three modes, three scopes
 
@@ -263,17 +263,17 @@ The agent follows Claude Code's structure: definitions and prompts are compiled 
 | Creative | shared | own `mcpServers` | mode root only | mode root only |
 | Study | shared | none (no tools) | none | mode root only |
 
-The model, endpoint and API key are machine-level (one key per machine) and stored in `~/.bnote/agent.json`; that file also holds the optional `agent_roots` override for each mode.
+The model, endpoint and API key live in the home's `agent.json` (`<vault>/.bnote/agent.json`); that file also holds the optional `agent_roots` override for each mode.
 
 ### Model and protocols
 
 - Anthropic Messages, OpenAI-compatible, DeepSeek, GLM, Qwen, Ollama, and custom endpoints, all with SSE streaming
-- Model configuration in `~/.bnote/agent.json` (protocol, base URL, model, API key, context window); a legacy `agent.json` in the app data directory is migrated on first launch
+- Model configuration in `agent.json` at the home root (protocol, base URL, model, API key, context window); a legacy `agent.json` in the app data directory is migrated on first launch
 - API keys are used only in Rust and never enter a page context
 
 ### Instruction files (AGENTS.md)
 
-- **Every mode** reads its own `<vault>/.bnote/agents/<mode>/AGENTS.md` and `rules/*.md` (moved there once from the old `~/.bnote` and `.bnote/AGENTS.md` locations)
+- **Every mode** reads its own `<vault>/.bnote/agents/<mode>/AGENTS.md` and `rules/*.md` (copied once from the old home root and `.bnote/AGENTS.md`)
 - **Coding sessions** additionally read `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md` from the repository root down to the working directory
 - **Study and creative sessions** never read a repository's instruction files
 - `@import` is followed (up to 5 levels, skipping code fences and comments) and `settings.instructionsExcludes` filters files by glob
@@ -282,9 +282,9 @@ The model, endpoint and API key are machine-level (one key per machine) and stor
 ### Tools, permissions, and plan mode
 
 - **Tools**: `read_file` / `write_file` / `edit_file` / `list_files` / `glob` / `grep` / `bash` (with `bash_output`, `bash_kill`), `todo`, `task`, `skill`, `mcp`, `task_*`, `ask_user_question`, `send_message`, `EnterPlanMode` / `ExitPlanMode`
-- **Subagents**: `general-purpose` (all tools), `explore` (read-only), `plan` (read-only planning), and `fork` (inherits the current context); they run in parallel or in the background, and their transcripts land in `~/.bnote/projects/<project key>/<session>/subagents/`
+- **Subagents**: `general-purpose` (all tools), `explore` (read-only), `plan` (read-only planning), and `fork` (inherits the current context); they run in parallel or in the background, and their transcripts land in `.bnote/projects/<project key>/<session>/subagents/`
 - **Four permission modes** (shield menu): confirm before changes / autonomous / full access / plan. Rules in `permissions.allow / ask / deny` are evaluated before the mode and accept forms such as `Bash(git push:*)` and path globs
-- **Plan mode**: read-only investigation; file writes and side-effecting commands are refused. `ExitPlanMode` writes the plan to `~/.bnote/plans/<slug>.md` and shows an approval card; the previous mode returns only after you approve
+- **Plan mode**: read-only investigation; file writes and side-effecting commands are refused. `ExitPlanMode` writes the plan to `.bnote/plans/<slug>.md` and shows an approval card; the previous mode returns only after you approve
 - **Context**: long sessions are compacted automatically (with a circuit breaker), large tool results are persisted and referenced, and Anthropic system prompts are split into static/dynamic blocks with `cache_control` on the static one
 
 ### Settings layers, hooks, and output styles
@@ -297,14 +297,18 @@ The model, endpoint and API key are machine-level (one key per machine) and stor
 
 ### Memory, history, and skills
 
-- **Auto memory**: `~/.bnote/projects/<project key>/memory/MEMORY.md` is the only index, one file per memory, linked with `[[name]]`; coding sessions get the index plus the memory behavior prompt on every turn
-- **Prompt history**: every send appends to `~/.bnote/history.jsonl`. With an empty input, `↑` recalls this project's earlier prompts and `↓` walks forward; the walk resets after sending
+- **Auto memory**: `.bnote/projects/<project key>/memory/MEMORY.md` is the only index, one file per memory, linked with `[[name]]`; coding sessions get the index plus the memory behavior prompt on every turn
+- **Prompt history**: every send appends to `.bnote/history.jsonl`. With an empty input, `↑` recalls this project's earlier prompts and `↓` walks forward; the walk resets after sending
 - **Skills**: coding scans `<vault>/.bnote/agents/coding/skills/`, `<code project>/.agents/skills/`, `~/.agents/skills/` (the Agent Skills convention) and `skillDirs`; creative scans only its own root; a duplicated name keeps the highest-precedence copy. The settings page groups the list by source
 
-### The `~/.bnote` layout
+### The agent home layout
+
+The agent's home is the open vault's `.bnote` (the home you see below lives
+inside the notebook); with no vault open it falls back to `~/.bnote`, and
+`BNOTE_HOME` overrides both.
 
 ```text
-~/.bnote/
+<vault>/.bnote/
 ├── agent.json            protocol / model / API key / per-mode root overrides
 ├── history.jsonl         prompt history
 ├── plans/<slug>.md       plan-mode output
@@ -352,7 +356,7 @@ Every action is a command: reachable from the palette (`Cmd+P`), bound to a key,
 | `vimrc` | Global Vim mappings |
 | `translate.json` | Sentence translation protocol, base URL, model, API key, thinking, timeout |
 
-### Agent runtime (`~/.bnote`)
+### Agent runtime (the `.bnote` home)
 
 | Path | Purpose |
 | --- | --- |
@@ -362,7 +366,7 @@ Every action is a command: reachable from the palette (`Cmd+P`), bound to a key,
 | `tasks/<list>/` | Persisted task list state |
 | `projects/<project key>/` | Per project: `memory/`, session `.jsonl`, subagents, tool results |
 
-`BNOTE_HOME` moves the whole directory elsewhere.
+The home is the open vault's `.bnote`. Without a vault it falls back to `~/.bnote`, and `BNOTE_HOME` overrides both. On the first launch after the move, an existing `~/.bnote` is migrated into the vault (directories merge; a file both sides have keeps the vault's copy and parks the other under `.bnote/.home-v1-conflicts/`), so nothing is left behind in the home directory.
 
 ### Vault-level configuration
 
@@ -413,7 +417,7 @@ scripts/                    Dev signing setup
 
 Design principles that cut across the codebase:
 
-- **The filesystem is the source of truth**: notes, annotations, and sessions live on disk (the vault or `~/.bnote`); Rust file I/O runs on `spawn_blocking` and never blocks the UI
+- **The filesystem is the source of truth**: notes, annotations, and sessions live on disk (the vault, the agent's `.bnote` included); Rust file I/O runs on `spawn_blocking` and never blocks the UI
 - **Single writer**: each piece of state has exactly one writer; asynchronous callbacks (measure, watcher, streaming events) prove they still belong to the current state and drop stale results
 - **Vault watcher**: a plain FSEvents-based watcher with a hand-rolled debouncer emits `vault-changed` after 300 ms of silence, avoiding a full-tree scan on startup
 - **Viewport-only work**: live preview walks only the visible syntax tree; performance-sensitive paths are guarded by [`src/editor/perf.gate.test.ts`](src/editor/perf.gate.test.ts) and [`src/code/perf.gate.test.ts`](src/code/perf.gate.test.ts)

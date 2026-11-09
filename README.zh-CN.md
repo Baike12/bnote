@@ -41,7 +41,7 @@
 | **学习模式** | 三栏：左问 agent、中读 PDF / 网页 / 微信读书、右记笔记；批注、阅读位置、历史按材料持久化。 |
 | **选中翻译** | 单词查内置 ECDICT（59k 条目，离线）；句子走可配置的模型 API（OpenAI 兼容 / DeepSeek / GLM / Qwen / Anthropic / Ollama）。 |
 | **代码模式** | 独立的三栏（agent \| 代码 \| 笔记）：文件树、tree-sitter 高亮、LSP 跳转与补全、git 差异、集成终端。 |
-| **编码 Agent** | 工具、权限、计划模式、hooks、输出风格、自动记忆、提示词历史按 Claude Code 的结构实现；运行时落在 `~/.bnote`。 |
+| **编码 Agent** | 工具、权限、计划模式、hooks、输出风格、自动记忆、提示词历史按 Claude Code 的结构实现；运行时落在仓库的 `.bnote`，跟着笔记走。 |
 | **项目管理** | 每个项目是一份 Markdown 待办清单，看板横向排列，待办可拖动、可直接发送到今日日记。 |
 | **日记与待办** | 跨文件待办双向同步到今日日记；未发送的完成项自动记录；当天改动汇总为「今日足迹」。 |
 | **画布与附件** | Excalidraw 画布以文件保存并导出预览图，回到笔记自动插入；兼容 Obsidian `.excalidraw.md`。 |
@@ -214,7 +214,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust 格式检�
 - 中栏打开仓库后，左栏 agent 自动切到 coding 定义：会话以仓库根为 workdir（相对路径与 bash 都锚在这里），tasks / 历史 / 记忆都记在这个项目名下
 - 工具全开：读写文件、glob / grep、bash（可后台、可 kill）、todo、子代理派发、技能、MCP、计划模式、向用户提问
 - 项目根就是沙箱边界：项目根内可读写、根外一律拒绝（相对路径会做词法规范化再 canonicalize，符号链接指向根外也挡得住）
-- 会话记录写在 `~/.bnote/projects/<项目键>/<会话>.jsonl`，Vault 里不会出现代码项目的材料目录
+- 会话记录写在仓库的 `.bnote/projects/<项目键>/<会话>.jsonl`，Vault 里不会出现代码项目的材料目录
 
 ## 项目管理
 
@@ -253,7 +253,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust 格式检�
 
 ## Agent
 
-Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。每种模式拥有自己的配置——默认在 `<仓库>/.bnote/agents/<模式>/{settings.json, AGENTS.md, skills/, output-styles/}`，跟着笔记仓库走；会话记录等运行状态仍在 `~/.bnote`。
+Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。每种模式拥有自己的配置——默认在 `<仓库>/.bnote/agents/<模式>/{settings.json, AGENTS.md, skills/, output-styles/}`，跟着笔记仓库走；会话记录等运行状态也在同一个 `.bnote` 里——一个目录，笔记仓库带着 Agent 的整个家。
 
 ### 三种模式、三套范围
 
@@ -263,17 +263,17 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 | 创作 | 共用 | 自己的 `mcpServers` | 只读模式目录 | 只读模式目录 |
 | 学习 | 共用 | 无（不注册工具） | 无 | 只读模式目录 |
 
-模型、端点与 API Key 是机器级配置（一台机器一把钥匙），存在 `~/.bnote/agent.json`；同一个文件还保存每种模式可选的 `agent_roots` 路径覆盖。
+模型、端点与 API Key 存在家目录配置 `agent.json`（`<仓库>/.bnote/agent.json`）里，三种模式共用；同一个文件还保存每种模式可选的 `agent_roots` 路径覆盖。
 
 ### 模型与协议
 
 - 支持 Anthropic Messages、OpenAI 兼容、DeepSeek、GLM、Qwen、Ollama 与自定义端点；SSE 流式输出
-- 模型配置在 `~/.bnote/agent.json`（协议、Base URL、模型、API Key、上下文窗口）；旧版应用数据目录里的 `agent.json` 首次启动时自动迁移
+- 模型配置在家目录的 `agent.json`（协议、Base URL、模型、API Key、上下文窗口）；旧版应用数据目录里的 `agent.json` 首次启动时自动迁移
 - API Key 只在 Rust 侧使用，不进入任何网页上下文
 
 ### 指令文件（AGENTS.md）
 
-- **每种模式**读自己的 `<仓库>/.bnote/agents/<模式>/AGENTS.md` 与 `rules/*.md`（首次打开仓库时会从旧的 `~/.bnote` 与 `.bnote/AGENTS.md` 位置复制一次）
+- **每种模式**读自己的 `<仓库>/.bnote/agents/<模式>/AGENTS.md` 与 `rules/*.md`（首次打开仓库时从旧的家目录根与 `.bnote/AGENTS.md` 复制一次）
 - **编码会话**再读代码仓库从根到工作目录的 `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md`
 - **学习与创作会话**不读取任何代码仓库的指令文件
 - 支持 `@import`（最多 5 层，跳过代码块与注释），`settings.instructionsExcludes` 用 glob 排除
@@ -282,9 +282,9 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 ### 工具、权限与计划模式
 
 - **工具**：`read_file` / `write_file` / `edit_file` / `list_files` / `glob` / `grep` / `bash`（含 `bash_output`、`bash_kill`）、`todo`、`task`、`skill`、`mcp`、`task_*`、`ask_user_question`、`send_message`、`EnterPlanMode` / `ExitPlanMode`
-- **子代理**：`general-purpose`（全工具）、`explore`（只读）、`plan`（只读计划）、`fork`（继承当前上下文），可并行、可后台，记录落在 `~/.bnote/projects/<项目键>/<会话>/subagents/`
+- **子代理**：`general-purpose`（全工具）、`explore`（只读）、`plan`（只读计划）、`fork`（继承当前上下文），可并行、可后台，记录落在 `.bnote/projects/<项目键>/<会话>/subagents/`
 - **权限四档**（盾牌菜单）：变更前确认 / 自主模式 / 完全访问 / 计划模式；设置文件里的 `permissions.allow / ask / deny` 规则先于档位判定，支持 `Bash(git push:*)`、路径 glob 这类写法
-- **计划模式**：只读调研，写文件与有副作用的命令一律拒绝；`ExitPlanMode` 把计划写进 `~/.bnote/plans/<slug>.md` 并弹批准卡，批准后才恢复原档位
+- **计划模式**：只读调研，写文件与有副作用的命令一律拒绝；`ExitPlanMode` 把计划写进 `.bnote/plans/<slug>.md` 并弹批准卡，批准后才恢复原档位
 - **上下文**：超长会话自动压缩（带熔断），大工具结果落盘只回一条引用，Anthropic 的系统提示分静态/动态两块并给静态块加 `cache_control`
 
 ### 设置分层、hooks 与输出风格
@@ -297,14 +297,17 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 
 ### 记忆、历史与技能
 
-- **自动记忆**：`~/.bnote/projects/<项目键>/memory/MEMORY.md` 是唯一索引，一条记忆一个文件，`[[name]]` 互链；编码会话每轮注入索引与记忆行为提示
-- **提示词历史**：每次发送追加 `~/.bnote/history.jsonl`；输入框为空时按 `↑` 召回本项目的历史提示词，`↓` 往回走，发送后清空
+- **自动记忆**：`.bnote/projects/<项目键>/memory/MEMORY.md` 是唯一索引，一条记忆一个文件，`[[name]]` 互链；编码会话每轮注入索引与记忆行为提示
+- **提示词历史**：每次发送追加 `.bnote/history.jsonl`；输入框为空时按 `↑` 召回本项目的历史提示词，`↓` 往回走，发送后清空
 - **技能**：编码模式扫描 `<仓库>/.bnote/agents/coding/skills/`、`<代码项目>/.agents/skills/`、`~/.agents/skills/`（Agent Skills 约定）与 `skillDirs`；创作模式只扫描自己的目录；同名技能保留优先级最高的一份，设置页按来源分组展示
 
-### `~/.bnote` 布局
+### 家目录布局
+
+Agent 的家就是当前仓库的 `.bnote`（下面这块就在笔记库里面）；没有打开仓库时退回
+`~/.bnote`，`BNOTE_HOME` 可覆盖两者。
 
 ```text
-~/.bnote/
+<仓库>/.bnote/
 ├── agent.json            协议 / 模型 / API Key / 各模式目录覆盖
 ├── history.jsonl         提示词历史
 ├── plans/<slug>.md       计划模式的产出
@@ -352,7 +355,7 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 | `vimrc` | 全局 Vim 映射 |
 | `translate.json` | 句子翻译：协议、Base URL、模型、API Key、思考开关、超时 |
 
-### Agent 运行时（`~/.bnote`）
+### Agent 运行时（`.bnote` 家目录）
 
 | 路径 | 用途 |
 | --- | --- |
@@ -362,7 +365,7 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 | `tasks/<list>/` | 后台任务列表的落盘状态 |
 | `projects/<项目键>/` | 每个项目：`memory/`、会话 `.jsonl`、子代理与工具结果 |
 
-设置项 `BNOTE_HOME` 可以把整个目录挪到别处。
+家目录就是当前仓库的 `.bnote`；没有打开仓库时退回 `~/.bnote`，设置项 `BNOTE_HOME` 覆盖两者。迁移后第一次启动会把旧的 `~/.bnote` 搬进仓库：目录合并，两边都有的同名文件保留仓库那份、另一份存进 `.bnote/.home-v1-conflicts/`，家目录不留东西。
 
 ### Vault 内配置
 
@@ -414,7 +417,7 @@ scripts/                    dev-signing setup
 
 几条贯穿实现的原则：
 
-- **文件系统是唯一事实**：笔记、批注、会话都落在磁盘（Vault 或 `~/.bnote`），Rust 侧文件操作走 `spawn_blocking`，不阻塞 UI
+- **文件系统是唯一事实**：笔记、批注、会话都落在磁盘（Vault，含其中的 `.bnote`），Rust 侧文件操作走 `spawn_blocking`，不阻塞 UI
 - **单一写入者**：同一份状态只有一个写入者；异步回调（measure、watcher、流式事件）先自证仍对应当前状态，过期即丢弃
 - **Vault watcher**：基于 FSEvents 的朴素 watcher + 手写去抖，静默 300 ms 后发送 `vault-changed`，避免大仓库启动时的全树扫描
 - **只处理可视区域**：实时渲染仅遍历视口内的语法树；性能敏感路径由 [`src/editor/perf.gate.test.ts`](src/editor/perf.gate.test.ts) 与 [`src/code/perf.gate.test.ts`](src/code/perf.gate.test.ts) 锁定量级

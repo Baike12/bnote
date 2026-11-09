@@ -459,7 +459,7 @@ impl Session {
         ));
     }
 
-    /// Appends the prompt to `~/.bnote/history.jsonl` (Claude Code's prompt
+    /// Appends the prompt to the home's `history.jsonl` (Claude Code's prompt
     /// history): one JSON line per user message, with the project so the ↑
     /// recall of the panel can filter by where the work happened.
     fn append_history(&self, text: &str) {
@@ -745,7 +745,7 @@ impl Session {
         )
     }
 
-    /// Writes the plan into `~/.bnote/plans/` (or `settings.plansDirectory`)
+    /// Writes the plan into the home's `plans/` (or `settings.plansDirectory`)
     /// and returns the path. The slug comes from the plan's first line.
     fn save_plan(&self, plan: &str) -> Result<std::path::PathBuf, String> {
         let settings = self.current_settings();
@@ -2627,7 +2627,7 @@ pub struct SessionSeed {
 }
 
 pub fn create_session(seed: SessionSeed) -> Session {
-    // The agent's runtime files live in `~/.bnote/projects/<project>/...`; the
+    // The agent's runtime files live in the home's `projects/<project>/...`; the
     // project is the code project for coding sessions and the vault otherwise.
     let project = seed.ctx.workdir.clone().or_else(|| seed.ctx.vault.clone());
     let results = match &project {

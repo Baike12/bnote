@@ -506,7 +506,7 @@ export const agentApi = {
 
 /**
  * The per-mode configuration roots (`<vault>/.bnote/agents/<mode>`) and the
- * agent home (`~/.bnote`, session records and task lists). Mode file paths are
+ * agent home (`<vault>/.bnote`, session records and task lists). Mode file paths are
  * reported by the backend so the UI never guesses where a file lives.
  */
 /** One settings layer (the mode file and, for coding, the project's two files). */
@@ -545,7 +545,7 @@ export interface AgentOutputStyle {
   source: "builtin" | "user" | "project";
 }
 
-/** One prompt of `~/.bnote/history.jsonl` (the ↑ recall). */
+/** One prompt of `.bnote/history.jsonl` in the agent home (the ↑ recall). */
 export interface AgentHistoryEntry {
   display: string;
   project: string;
@@ -587,7 +587,7 @@ export const homeApi = {
   /** The output styles available for a mode (built-ins, mode root, code project). */
   outputStyles: (mode: AgentMode, project: string | null) =>
     invoke<AgentOutputStyle[]>("agent_output_styles", { mode, project }),
-  /** Recent prompts from `~/.bnote/history.jsonl`, newest first. */
+  /** Recent prompts from `.bnote/history.jsonl`, newest first. */
   history: (project: string | null, limit = 50) =>
     invoke<AgentHistoryEntry[]>("agent_history", { project, limit }),
 };
