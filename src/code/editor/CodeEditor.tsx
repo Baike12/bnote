@@ -35,6 +35,12 @@ import { getCM } from "@replit/codemirror-vim";
 import { useAppStore } from "@/state/appStore";
 import { codeVimEnabled } from "@/state/codeVim";
 import { typewriterExtension } from "@/editor/typewriter";
+import {
+  flushCursorSave,
+  observeScrollSave,
+  restoreSavedCursor,
+  scheduleCursorSave,
+} from "@/editor/cursorMemory";
 import { useCodeStore, type OpenFile } from "../store";
 import { codeApi } from "../api";
 import { findLanguage } from "./language";
@@ -113,6 +119,8 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
   const typewriter = useAppStore((s) => s.settings.typewriter);
   const typewriterPosition = useAppStore((s) => s.settings.typewriterPosition);
   const jump = useCodeStore((s) => s.jump);
+  // Bumped by an explicit open (Enter in the tree, double-click, quick open).
+  const editorFocus = useCodeStore((s) => s.editorFocus);
   const content = file.content;
 
   /**
@@ -141,7 +149,14 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       }),
     });
     viewRef.current = view;
+    // Scrolling without moving the caret is reading progress too: the scroll
+    // position shares the caret's debounced save.
+    const disposeScrollSave = observeScrollSave(view, () => handleRef.current?.path ?? null);
     return () => {
+      // The caret of the file on screen has to reach the config before the
+      // view goes away (leaving code mode unmounts it).
+      flushCursorSave();
+      disposeScrollSave();
       // Push the pending content before leaving: clearing the timer would
       // mean the last few keystrokes never reach the server.
       for (const [path, pending] of timers) {
@@ -264,7 +279,13 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
           // only the docChanged version would send the caret back to the
           // position of the last keystroke (or even the start of the document)
           // after a switch away and back, losing "where I left off".
-          if (handle) statesRef.current.set(handle.path, u.state);
+          if (handle) {
+            statesRef.current.set(handle.path, u.state);
+            // The in-memory state keeps the caret per open tab; the saved
+            // position is what survives closing the tab and restarting the
+            // app (one model with the notes, see `editor/cursorMemory`).
+            scheduleCursorSave(handle.path, u.view);
+          }
           const pos = u.state.selection.main.head;
           const line = u.state.doc.lineAt(pos);
           onCursor?.(line.number, pos - line.from + 1);
@@ -285,7 +306,11 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     handleRef.current = handle;
     registerCodeEditor(handle);
 
+    // The caret of the file being left is still the one in the view: write it
+    // now, or its pending save would be voided by the document swap below.
+    flushCursorSave();
     let state = statesRef.current.get(file.path);
+    const fresh = !state;
     if (!state) {
       state = EditorState.create({
         doc: file.content,
@@ -294,6 +319,11 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       statesRef.current.set(file.path, state);
     }
     view.setState(state);
+    // A state built just now starts at offset 0; the file may have been left
+    // somewhere else last time (tab closed, app restarted). A state still in
+    // the cache already carries its caret, and moving it back to the saved
+    // value would undo the switch that just happened.
+    if (fresh) restoreSavedCursor(view, file.path);
     // setState already swapped back the caret and the selection of that file.
     // Do not dispatch `anchor: 0` again — that would send the caret back to
     // the start of the document on every tab switch, so the cached
@@ -466,6 +496,15 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
     view.focus();
     useCodeStore.getState().clearJump();
   }, [file.path, jump]);
+
+  // ---- explicit open: give the keyboard to this editor ----
+  //
+  // Declared after the swap effect: React runs the effects in declaration
+  // order, so the target file is already in the view when the focus lands.
+  useEffect(() => {
+    if (editorFocus === 0) return;
+    viewRef.current?.focus();
+  }, [editorFocus]);
 
   // ---- focus: entering the editor switches the command target to it ----
   useEffect(() => {

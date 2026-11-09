@@ -48,8 +48,9 @@ const PAD = 4;
  * **Keyboard reachable**: ⌘⇧E (the command `code.focus-tree`) hands the
  * focus to the whole tree; with an open file it expands to it and stops on
  * that row; afterwards ↑↓ (or `j` / `k`) walk the rows, →← expand / collapse,
- * Enter opens the row, Esc gives the focus back to the editor. The key table
- * lives in `../treeKeys.ts`.
+ * Enter opens the row and hands the keyboard to that file's editor, Esc gives
+ * the focus back to the editor as well. The key table lives in
+ * `../treeKeys.ts`.
  *
  * The focus sits on the **container** and not on a row button: the virtual
  * scroll unmounts row elements while scrolling, so a focus on a row would be
@@ -68,7 +69,13 @@ export const FileTree = memo(function FileTree({
   onOpen,
 }: {
   activePath: string | null;
-  onOpen: (path: string) => void;
+  /**
+   * Opens a file. `focus` separates the two gestures: moving through the tree
+   * previews the file (the keys stay in the tree, so `j` / `k` keep working),
+   * while Enter / double-click is an explicit "open" and hands the keyboard to
+   * the editor.
+   */
+  onOpen: (path: string, focus?: boolean) => void;
 }) {
   const entries = useCodeStore((s) => s.project?.tree.entries ?? []);
   const git = useCodeStore((s) => s.git);
@@ -242,7 +249,7 @@ export const FileTree = memo(function FileTree({
         break;
       case "activate":
         if (row.node.isDir) toggleDir(row.node.path);
-        else onOpen(row.node.path);
+        else onOpen(row.node.path, true);
         break;
       case "release":
         // Give the keyboard back to the code: after browsing through files
@@ -308,7 +315,7 @@ function TreeRow({
   activePath: string | null;
   focusPath: string | null;
   onToggle: (path: string) => void;
-  onOpen: (path: string) => void;
+  onOpen: (path: string, focus?: boolean) => void;
   onFocusRow: (path: string) => void;
 }) {
   const pad = { paddingLeft: `${6 + depth * 12}px` };
@@ -343,6 +350,7 @@ function TreeRow({
       style={pad}
       data-path={node.path}
       onClick={() => onOpen(node.path)}
+      onDoubleClick={() => onOpen(node.path, true)}
       onFocus={() => onFocusRow(node.path)}
       title={node.path}
     >

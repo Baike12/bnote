@@ -78,7 +78,10 @@ export function CodeProjectPane() {
   const activeFile = activePath ? files[activePath] : null;
   // A stable callback: FileTree is memoized, and a callback created anew on
   // every render would make the memo useless.
-  const handleOpen = useCallback((p: string) => void openFile(p), [openFile]);
+  const handleOpen = useCallback(
+    (p: string, focus?: boolean) => void openFile(p, { focus }),
+    [openFile],
+  );
   const problemCount = useMemo(
     () => Object.values(diagnostics).reduce((n, list) => n + list.length, 0),
     [diagnostics],

@@ -101,6 +101,16 @@ export interface CodeState {
    * closing and reopening the drawer does not steal focus again.
    */
   treeFocus: { path: string | null; seq: number } | null;
+  /**
+   * Bumped by an **explicit open** gesture (Enter in the tree, double-click,
+   * quick open): the editor must take the keyboard once the file is in place.
+   *
+   * A request instead of the caller focusing the view itself: the new file's
+   * `EditorState` is swapped in by an effect after the state update, and an
+   * image tab has no editor at all — only the editor knows when there is a
+   * view to focus. 0 = nothing asked for.
+   */
+  editorFocus: number;
   /** Whether the problems panel is open. */
   problemsOpen: boolean;
   /** Whether the diff pane (the change list) is open instead of the editor. */
@@ -145,7 +155,12 @@ export interface CodeState {
   openProject: (root: string) => Promise<void>;
   closeProject: () => Promise<void>;
   rescan: () => Promise<void>;
-  openFile: (path: string) => Promise<void>;
+  /**
+   * Opens a file in the editor. `focus` marks an explicit open gesture: the
+   * editor takes the keyboard as soon as the file is in place (browsing the
+   * tree with the arrows only previews the file and keeps the keys in the tree).
+   */
+  openFile: (path: string, options?: { focus?: boolean }) => Promise<void>;
   closeTab: (path: string) => void;
   setActiveTab: (path: string) => void;
   updateContent: (path: string, content: string) => void;
@@ -288,6 +303,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   treeOpen: false,
   expandedDirs: new Set<string>(),
   treeFocus: null,
+  editorFocus: 0,
   problemsOpen: false,
   diffOpen: false,
   diffStaged: false,
@@ -339,6 +355,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       treeOpen: true,
       expandedDirs: new Set<string>(),
       treeFocus: null,
+      editorFocus: 0,
       problemsOpen: false,
       diffOpen: false,
       diffStaged: false,
@@ -379,6 +396,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       treeOpen: false,
       expandedDirs: new Set<string>(),
       treeFocus: null,
+      editorFocus: 0,
       problemsOpen: false,
       diffOpen: false,
       jump: null,
@@ -403,7 +421,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     await get().refreshGit();
   },
 
-  async openFile(path) {
+  async openFile(path, options) {
     const root = get().project?.root;
     if (!root) return;
     // Choosing a file is a request to see that file: the diff pane is left
@@ -416,6 +434,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
         tabs: s.tabs.includes(path) ? s.tabs : [...s.tabs, path],
         activePath: path,
         diffOpen: false,
+        editorFocus: options?.focus ? s.editorFocus + 1 : s.editorFocus,
       }));
       return;
     }
@@ -436,6 +455,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       tabs: s.tabs.includes(path) ? s.tabs : [...s.tabs, path],
       activePath: path,
       diffOpen: false,
+      editorFocus: options?.focus ? s.editorFocus + 1 : s.editorFocus,
       files: {
         ...s.files,
         [path]: {

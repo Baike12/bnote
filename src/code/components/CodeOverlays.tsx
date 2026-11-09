@@ -77,7 +77,9 @@ function QuickOpen({ onClose }: { onClose: () => void }) {
   }, [entries, query, root, truncated]);
 
   const pick = (path: string) => {
-    void openFile(path);
+    // Picking from the overlay is an explicit open: the caret belongs in the
+    // file, not in the (about to disappear) input.
+    void openFile(path, { focus: true });
     onClose();
   };
 
