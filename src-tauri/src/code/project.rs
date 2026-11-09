@@ -36,7 +36,14 @@ use serde::Serialize;
 
 /// Upper bound on the number of scanned entries: the scan stops here and sets
 /// `truncated`.
-pub const MAX_ENTRIES: usize = 50_000;
+///
+/// 200k covers a repository together with its dependency and build output
+/// directories, which the tree shows whole: the bnote repository itself scans
+/// to 98,229 entries (`node_modules` 28k, `src-tauri/target` 66k) and was cut
+/// at the old 50k. At 97.7k entries the full list costs 17.4 MB serialized and
+/// a 161 ms tree fold on the front end, paid once per open; the cap still
+/// bounds a pathological tree.
+pub const MAX_ENTRIES: usize = 200_000;
 /// Upper bound on the scan depth.
 pub const MAX_DEPTH: usize = 32;
 /// Upper bound on the size of a single file read in (2 MiB): anything larger is
