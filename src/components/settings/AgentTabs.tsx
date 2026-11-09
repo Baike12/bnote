@@ -392,7 +392,9 @@ export function AgentMcpTab({ mode, workdir }: { mode: AgentMode; workdir: strin
             <div className="settings-hint">
               stdio 形如{" "}
               <code>{'{"name":{"type":"stdio","command":"npx","args":["-y","…"]}}'}</code>
-              ,HTTP 形如 <code>{'{"name":{"type":"http","url":"https://…"}}'}</code>。
+              ,HTTP 形如{" "}
+              <code>{'{"name":{"type":"http","url":"https://…","timeoutsMs":60000}}'}</code>
+              (timeoutsMs 是单次请求超时,默认 60000)。
             </div>
           )}
           <div className="settings-actions">

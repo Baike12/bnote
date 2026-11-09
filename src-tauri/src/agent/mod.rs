@@ -84,6 +84,10 @@ pub enum McpServerConfig {
         url: String,
         #[serde(default)]
         headers: std::collections::BTreeMap<String, String>,
+        /// Per-request timeout (`timeoutsMs` in the settings file). Without it
+        /// every call is cut at the default 60s.
+        #[serde(default, rename = "timeoutsMs", alias = "timeouts_ms")]
+        timeouts_ms: Option<u64>,
     },
 }
 

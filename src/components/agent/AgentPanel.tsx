@@ -1369,8 +1369,11 @@ export function AgentPanel() {
         onFontReset={() => patchSettings({ agentFontScale: DEFAULT_AGENT_FONT })}
       />
       {activeConv && activeConv.mcpErrors.length > 0 && (
+        // The reason stays visible: a bare "connection failed" left the user
+        // re-checking a URL that was right (the transport dropped the session
+        // id, so the server rejected every call after initialize).
         <div className="agent-mcp-warn" title={activeConv.mcpErrors.join("\n")}>
-          MCP 部分服务器连接失败
+          MCP 部分服务器连接失败:{activeConv.mcpErrors[0]}
         </div>
       )}
       {starting && <div className="agent-status">正在连接模型…</div>}
