@@ -2,44 +2,59 @@ import type { EditorView } from "@codemirror/view";
 import { getConfigSnapshot, rememberCursorPosition } from "@/state/appStore";
 
 /**
- * Remember-cursor-position: records where the user left off in each note
- * (cursor offset + scroll top) and replays it when the note reopens. Saves
- * are debounced while editing; openNote() flushes before switching away so a
- * quick file switch never loses the last position.
+ * Remember-cursor-position: records where the user left off in each file
+ * (cursor offset + scroll top) and replays it when the file reopens. Saves
+ * are debounced while editing; the file switch flushes before it swaps the
+ * document, so a quick switch never loses the last position.
+ *
+ * One slot per file, not one for the whole app: the notes editor and the code
+ * editor can be alive at the same time (the code layout keeps the notes
+ * column), and a single shared slot would let each overwrite the other's
+ * pending position.
  */
 
 const SAVE_DELAY = 300;
 
-let timer: ReturnType<typeof setTimeout> | null = null;
 /**
  * `doc` is the document reference captured when the save was queued:
  * saveNow uses it to prove "this is still about that document". In the window
- * where openNote swaps the document, an event carrying the old file's path is
+ * where a switch swaps the document, an event carrying the old file's path is
  * queued and by the time it lands the document is already a new one — without
  * the comparison the new document's position is written under the old path,
  * polluting another file's memory.
  */
-let pending: { path: string; view: EditorView; doc: object } | null = null;
+interface PendingSave {
+  view: EditorView;
+  doc: object;
+}
 
-function saveNow() {
+const pending = new Map<string, PendingSave>();
+const timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function saveNow(path: string) {
+  const timer = timers.get(path);
   if (timer) {
     clearTimeout(timer);
-    timer = null;
+    timers.delete(path);
   }
-  const p = pending;
-  pending = null;
+  const p = pending.get(path);
+  pending.delete(path);
   if (!p) return;
   if (p.view.state.doc !== p.doc) return;
   const pos = p.view.state.selection.main.head;
   const scroll = Math.round(p.view.scrollDOM.scrollTop);
-  rememberCursorPosition(p.path, pos, scroll);
+  rememberCursorPosition(path, pos, scroll);
 }
 
 /** Debounced save of the current position in `path`. */
 export function scheduleCursorSave(path: string, view: EditorView) {
-  pending = { path, view, doc: view.state.doc };
+  pending.set(path, { view, doc: view.state.doc });
+  const timer = timers.get(path);
   if (timer) clearTimeout(timer);
-  timer = setTimeout(saveNow, SAVE_DELAY);
+  timers.set(
+    path,
+    setTimeout(() => saveNow(path), SAVE_DELAY),
+  );
 }
 
 /**
@@ -61,14 +76,14 @@ export function observeScrollSave(view: EditorView, getPath: () => string | null
   return () => view.scrollDOM.removeEventListener("scroll", onScroll);
 }
 
-/** Save immediately (file switch, window blur, editor teardown). */
+/** Save every queued position immediately (file switch, window blur, editor teardown). */
 export function flushCursorSave() {
-  saveNow();
+  for (const path of [...pending.keys()]) saveNow(path);
 }
 
 /** True while a debounced save has not been written yet (flush before quit). */
 export function hasPendingCursorSave() {
-  return pending !== null;
+  return pending.size > 0;
 }
 
 /** Re-applies the remembered position/scroll for `path`, if any. */

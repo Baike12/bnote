@@ -13,6 +13,7 @@ vi.mock("@/state/appStore", () => ({
 import { rememberCursorPosition } from "@/state/appStore";
 import {
   flushCursorSave,
+  hasPendingCursorSave,
   observeScrollSave,
   restoreSavedCursor,
   scheduleCursorSave,
@@ -139,6 +140,34 @@ describe("cursorMemory scroll position saving", () => {
     emitScroll();
     vi.advanceTimersByTime(1000);
     expect(rememberCursorPosition).toHaveBeenCalledTimes(1);
+  });
+
+  it("the notes editor and the code editor keep their own pending position: with one shared slot the second file would overwrite the first, writing a code caret under a note's path", () => {
+    const notes = fakeView({});
+    const code = fakeView({});
+    notes.view.scrollDOM.scrollTop = 10;
+    code.view.scrollDOM.scrollTop = 20;
+
+    scheduleCursorSave("/v/note.md", notes.view);
+    scheduleCursorSave("/proj/main.rs", code.view);
+    expect(hasPendingCursorSave()).toBe(true);
+    vi.advanceTimersByTime(300);
+
+    expect(rememberCursorPosition).toHaveBeenCalledWith("/v/note.md", 42, 10);
+    expect(rememberCursorPosition).toHaveBeenCalledWith("/proj/main.rs", 42, 20);
+    expect(hasPendingCursorSave()).toBe(false);
+  });
+
+  it("flushing writes every queued file, and only the queued ones", () => {
+    const notes = fakeView({});
+    const code = fakeView({});
+    scheduleCursorSave("/v/note.md", notes.view);
+    scheduleCursorSave("/proj/main.rs", code.view);
+    flushCursorSave();
+    expect(rememberCursorPosition).toHaveBeenCalledTimes(2);
+    // Nothing left: a second flush must not write again.
+    flushCursorSave();
+    expect(rememberCursorPosition).toHaveBeenCalledTimes(2);
   });
 
   it("scrolling with no current file is not saved", () => {

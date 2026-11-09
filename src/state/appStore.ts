@@ -319,11 +319,15 @@ export interface WindowState {
   maximized: boolean;
 }
 
-/** Hard cap on remembered files — dropping the oldest entry beyond it. */
-const CURSOR_POSITIONS_CAP = 100;
+/**
+ * Hard cap on remembered files — dropping the oldest entry beyond it. Notes
+ * and code files share the map (one "where I left off" model for both
+ * editors), so the cap has to hold both.
+ */
+const CURSOR_POSITIONS_CAP = 300;
 
 /**
- * Records where the user left off in a note (cursor offset + scroll top) so
+ * Records where the user left off in a file (cursor offset + scroll top) so
  * reopening it lands in the same spot. No-op (and no re-persist) when nothing
  * changed since the last record.
  */

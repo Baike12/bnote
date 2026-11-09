@@ -23,7 +23,7 @@ import { getContextAt, mathRegions } from "@/editor/context";
 import { autoFraction } from "@/editor/snippets/autofraction";
 import { tryAutoExpand } from "@/editor/snippets/extension";
 import { snippetStore } from "@/editor/snippets/engine";
-import { useAppStore } from "@/state/appStore";
+import { getConfigSnapshot, setConfigSnapshot, useAppStore } from "@/state/appStore";
 import { api, focusApi, type FileNode } from "@/lib/tauri";
 import { FocusChip } from "@/components/focus/FocusChip";
 import { createTimerState } from "@/focus/timer";
@@ -237,6 +237,14 @@ declare global {
     __panePath: () => string | null;
     /** The focused editor instance (the project view has two: the project card / the daily note). */
     __editorApi: typeof editorApi;
+    /**
+     * Seed the remembered cursor positions (the map the remember-cursor-position
+     * replay reads). `rememberCursorPosition` writes it, but a test needs to
+     * start from a known value.
+     */
+    __setCursorMemory: (positions: Record<string, { pos: number; scroll: number }>) => void;
+    /** The remembered cursor positions as they are now (read back after a save). */
+    __cursorMemory: () => Record<string, { pos: number; scroll: number }>;
     /** Replace a line (1-based) of the focused editor, to simulate "editing a todo in the daily note". */
     __paneReplaceLine: (line: number, text: string) => void;
     /** Study mode PDF verification: inject a PDF's bytes and open the reader (mount the study layout first). */
@@ -970,6 +978,10 @@ window.__panePath = () => {
 };
 
 window.__editorApi = editorApi;
+window.__setCursorMemory = (positions) => {
+  setConfigSnapshot({ ...getConfigSnapshot(), cursorPositions: positions });
+};
+window.__cursorMemory = () => getConfigSnapshot().cursorPositions ?? {};
 
 window.__paneReplaceLine = (line: number, text: string) => {
   const v = editorApi.view;
