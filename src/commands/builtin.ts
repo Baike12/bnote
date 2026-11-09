@@ -108,9 +108,18 @@ function settleHeadingNumbering(
   renumberHeadings(view);
 }
 
-/** Whether the study assistant panel is present: it is always mounted in the three-column layout, so entering study mode is enough. */
+/**
+ * Whether the assistant panel is there to act on. Both three-column layouts
+ * mount it (study and code), so the panel actions — new / fork / back /
+ * history / creative — apply in both.
+ *
+ * This used to be `mode === "study"`, which made ⌘N in code mode fall through
+ * to the global "new note": the fork binding existed but its `when` was false,
+ * so the dispatcher moved on to the next candidate and created a note
+ * (observed).
+ */
 function agentPanelActive(): boolean {
-  return useAppStore.getState().mode === "study";
+  return hasAgentPanel();
 }
 
 const defs: CommandDef[] = [

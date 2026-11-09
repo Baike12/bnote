@@ -15,8 +15,8 @@ import { allCommands } from "./registry";
 import {
   DEFAULT_BINDINGS,
   KEY_REGIONS,
+  defaultBindingsFor,
   defaultRegionsOf,
-  keysOf,
   parseBinding,
   type KeyRegion,
 } from "./keys";
@@ -60,11 +60,13 @@ export function renderKeybindingsDoc(): string {
   const titles = new Map(allCommands().map((c) => [c.id, c.title]));
   const byRegion = new Map<KeyRegion, Array<{ keys: string[]; title: string; id: string }>>();
   for (const region of KEY_REGIONS) byRegion.set(region.id, []);
-  for (const [id, value] of Object.entries(DEFAULT_BINDINGS)) {
-    const keys = keysOf(value).map(docKeyLabel);
-    if (keys.length === 0) continue;
+  for (const [id] of Object.entries(DEFAULT_BINDINGS)) {
     const title = titles.get(id) ?? id;
     for (const region of defaultRegionsOf(id)) {
+      // The region's own default: ⌘N is "fork" in the code region while it is
+      // "new note" elsewhere, and the table must print what actually fires.
+      const keys = defaultBindingsFor(id, region).map(docKeyLabel);
+      if (keys.length === 0) continue;
       byRegion.get(region)?.push({ keys, title, id });
     }
   }

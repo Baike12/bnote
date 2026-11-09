@@ -155,3 +155,31 @@ describe("switching to the content column", () => {
     }
   });
 });
+
+/**
+ * The panel actions (new / fork / back / history) belong to the panel, and the
+ * panel is mounted in both three-column layouts. They were gated on
+ * `mode === "study"`, so in code mode the fork binding fell through to the next
+ * candidate for ⌘N — the global "new note" — and created a note instead
+ * (observed). The gate is the layout, not the mode.
+ */
+describe("assistant panel actions in the code layout", () => {
+  it("fork and back run in code mode, like in study mode", () => {
+    for (const mode of ["study", "code"] as const) {
+      useAppStore.setState({ mode, agentPanelCommand: null });
+      expect(getCommand("agent.fork-session")?.when?.() ?? true).toBe(true);
+      getCommand("agent.fork-session")?.run();
+      expect(useAppStore.getState().agentPanelCommand?.kind).toBe("fork");
+      getCommand("agent.back-from-fork")?.run();
+      expect(useAppStore.getState().agentPanelCommand?.kind).toBe("back");
+    }
+  });
+
+  it("is unavailable where no panel is mounted", () => {
+    for (const mode of ["notes", "projects"] as const) {
+      useAppStore.setState({ mode });
+      expect(getCommand("agent.fork-session")?.when?.() ?? true).toBe(false);
+      expect(getCommand("agent.back-from-fork")?.when?.() ?? true).toBe(false);
+    }
+  });
+});

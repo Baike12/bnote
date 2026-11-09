@@ -122,13 +122,16 @@ Active while the code editor has focus. A separate world: `Cmd+S` saves the code
 | Key | Command |
 | --- | --- |
 | `Alt+Z` | 切换代码折行 — `code.toggle-wrap` |
+| `Cmd+[` | 学习助手:从分叉会话返回上一条会话 — `agent.back-from-fork` |
 | `Cmd+Alt+A` | 聚焦 agent 输入框 — `region.focus-agent` |
 | `Cmd+Alt+ArrowLeft` | 上一个标签 — `code.prev-tab` |
 | `Cmd+Alt+ArrowRight` | 下一个标签 — `code.next-tab` |
+| `Cmd+Alt+E` | 聚焦到编辑区 — `code.focus-editor` |
 | `Cmd+Alt+N` | 聚焦笔记区编辑器 — `region.focus-notes` |
 | `Cmd+Alt+R` | 切换到内容区 — `region.focus-reading` |
 | `Cmd+B` | 显示/隐藏文件树 — `code.toggle-tree` |
 | `Cmd+F12` | 跳转到类型定义 — `code.go-to-type-definition` |
+| `Cmd+N` | 学习助手:从当前会话分叉出一个新会话 — `agent.fork-session` |
 | `Cmd+S` | 保存文件 — `code.save-file` |
 | `Cmd+Shift+D` | 查看改动(每个文件展开看差异) — `code.git-diff` |
 | `Cmd+Shift+E` | 聚焦文件树 — `code.focus-tree` |

@@ -230,6 +230,11 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   // code region focuses the tree and does not also screenshot the reading
   // region.
   "code.focus-tree": "Mod-Shift-e",
+  // Back to the open file from anywhere in the code region: the keyboard is
+  // often left in the terminal or the file tree, and Esc cannot be the way
+  // back — the shell needs Esc as its own key. ⌘⌥E sits with the region family
+  // (⌘⌥A / N / R / P), so "go somewhere" always reads the same.
+  "code.focus-editor": "Mod-Alt-e",
   "code.toggle-problems": "Mod-Shift-m",
   // VSCode / Zed's integrated terminal key. Ctrl (not Mod): ⌘` is free on
   // macOS, but the habit comes from both references and the chord must not
@@ -281,6 +286,30 @@ const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
   // project region and holds in the journal column too (no need to go back
   // to the cards first).
   "region.focus-project": ["project", "notes"],
+};
+
+/**
+ * Default bindings that differ per region.
+ *
+ * The region model already lets the same command be bound differently per
+ * region, and the same key is the natural default in one region while it is
+ * already taken (or meaningless) in another. ⌘N is the case: it is "new note"
+ * in the notes region, and "fork this session" in the code region — the code
+ * region inherits no note command, and the thing the user is working with
+ * there is the session, so an empty ⌘N would only be a dead key.
+ *
+ * The entry adds the region to the command's default placement (see
+ * defaultRegionsOf), so the settings page and `docs/keybindings.md` show it
+ * there like any other binding.
+ */
+const REGION_DEFAULTS: Partial<Record<KeyRegion, BindingMap>> = {
+  code: {
+    "agent.fork-session": "Mod-n",
+    // Back to the main session while the code editor owns the keyboard. ⌘[ is
+    // the app's own "back" chord (nav.back-link, agent.back-from-fork's
+    // default), so the family stays readable.
+    "agent.back-from-fork": "Mod-[",
+  },
 };
 
 /**
@@ -362,7 +391,13 @@ export function defaultRegionOf(id: string): KeyRegion {
 
 /** The regions a command appears in by default (most commands have exactly one). */
 export function defaultRegionsOf(id: string): KeyRegion[] {
-  return REGION_PLACEMENT[id] ?? [defaultRegionOf(id)];
+  const placed = REGION_PLACEMENT[id];
+  const ordered = placed ?? [defaultRegionOf(id)];
+  // A per-region default (REGION_DEFAULTS) adds its region to the placement.
+  const extra = KEY_REGION_IDS.filter(
+    (region) => REGION_DEFAULTS[region]?.[id] !== undefined && !ordered.includes(region),
+  );
+  return extra.length === 0 ? ordered : [...ordered, ...extra];
 }
 
 export type BindingValue = string | string[] | null;
@@ -380,6 +415,10 @@ function defaultKeymap(): Keymap {
   const km = emptyKeymap();
   for (const [id, value] of Object.entries(DEFAULT_BINDINGS)) {
     for (const region of defaultRegionsOf(id)) km[region][id] = value;
+  }
+  // Per-region defaults win over the shared key (see REGION_DEFAULTS).
+  for (const [region, bindings] of Object.entries(REGION_DEFAULTS)) {
+    for (const [id, value] of Object.entries(bindings ?? {})) km[region as KeyRegion][id] = value;
   }
   return km;
 }
@@ -462,7 +501,11 @@ export function regionOfCommand(id: string): KeyRegion {
 /** The built-in default bindings of this region (an override identical to the default need not be written). */
 export function defaultBindingsFor(id: string, region: KeyRegion): string[] {
   if (!defaultRegionsOf(id).includes(region)) return [];
-  return keysOf(DEFAULT_BINDINGS[id]);
+  // The region's own default first: ⌘N means "fork" in the code region and
+  // "new note" in the notes region, so the settings page must show the key
+  // that actually applies there.
+  const own = REGION_DEFAULTS[region]?.[id];
+  return keysOf(own ?? DEFAULT_BINDINGS[id]);
 }
 
 export function keysOf(value: BindingValue | undefined): string[] {

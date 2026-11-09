@@ -39,6 +39,14 @@ function hasEditor(): boolean {
   return activeCodeEditor() !== null;
 }
 
+/**
+ * Whether "focus the editor" has a target: the open file is on screen, or the
+ * change list is covering it (focusing then closes the list first).
+ */
+function hasEditorTarget(): boolean {
+  return hasEditor() || useCodeStore.getState().diffOpen;
+}
+
 /** The current file path (null if there is none). */
 function activePath(): string | null {
   return useCodeStore.getState().activePath;
@@ -157,6 +165,15 @@ export const codeCommandDefs: CommandDef[] = [
     run: () => {
       void useCodeStore.getState().closeProject();
     },
+  },
+  {
+    id: "code.focus-editor",
+    title: "聚焦到编辑区",
+    category: "代码",
+    // Available exactly when there is an editor to land in: the open file is
+    // behind the change list, or on screen (focus in the tree / terminal).
+    when: hasEditorTarget,
+    run: focusCodeContent,
   },
   {
     id: "code.toggle-tree",

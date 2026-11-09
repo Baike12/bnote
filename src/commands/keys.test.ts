@@ -7,6 +7,7 @@ import {
   commandBelongs,
   commandRegions,
   commandsForKey,
+  defaultBindingsFor,
   defaultRegionOf,
   defaultRegionsOf,
   eventKeyName,
@@ -34,9 +35,11 @@ afterEach(reset);
 describe("default bindings", () => {
   it("no key is bound twice inside one region", () => {
     const byRegion = new Map<string, string[]>();
-    for (const [id, value] of Object.entries(DEFAULT_BINDINGS)) {
+    for (const [id] of Object.entries(DEFAULT_BINDINGS)) {
       for (const region of defaultRegionsOf(id)) {
-        for (const key of keysOf(value)) {
+        // The region's own default, not the shared one: a per-region default
+        // (REGION_DEFAULTS) is what actually fires there.
+        for (const key of defaultBindingsFor(id, region)) {
           const list = byRegion.get(region) ?? [];
           list.push(`${id}:${key}`);
           byRegion.set(region, list);
@@ -183,6 +186,23 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-Alt-r", "code")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-a", "code")).toContain("region.focus-agent");
     expect(bindingsForCommand("region.focus-agent")).toEqual(["Mod-Alt-a"]);
+  });
+
+  /**
+   * ⌘N is the code region's "fork this session" and the notes region's "new
+   * note": the same key, two meanings, decided by where the focus is. The
+   * code region inherits no note command, so without this its ⌘N would be a
+   * dead key while the panel sits right next to the code.
+   */
+  it("⌘N forks in the code region and still makes a note in the notes region", () => {
+    expect(commandsForKey("Mod-n", "code")).toEqual(["agent.fork-session"]);
+    expect(commandsForKey("Mod-n", "notes")).toEqual(["workspace.new-note"]);
+    expect(commandsForKey("Mod-[", "code")).toEqual(["agent.back-from-fork"]);
+    // The command keeps its own key where it already lived.
+    expect(commandsForKey("Mod-Shift-f", "agent")).toContain("agent.fork-session");
+    expect(defaultBindingsFor("agent.fork-session", "code")).toEqual(["Mod-n"]);
+    expect(defaultBindingsFor("agent.fork-session", "agent")).toEqual(["Mod-Shift-f"]);
+    expect(defaultRegionsOf("agent.fork-session")).toEqual(["agent", "code"]);
   });
 
   it("a notes region key does not fire in the Agent panel, while a global key works everywhere", () => {
