@@ -45,6 +45,13 @@ const AUTOCOMPACT_BUFFER_TOKENS: u64 = 13_000;
 const MAX_COMPACT_FAILURES: u32 = 3;
 /// The ceiling the loop raises to once when the model hits `max_tokens`.
 const ESCALATED_MAX_TOKENS: u32 = 64_000;
+
+/// The ceiling to retry at after an output cut: the fixed escalation value,
+/// never below the ceiling the user configured (raising a lower configured
+/// value is the point; lowering a higher one would truncate even earlier).
+fn escalated_ceiling(configured: u32) -> u32 {
+    ESCALATED_MAX_TOKENS.max(configured)
+}
 /// How many "resume" messages the loop injects after the escalation.
 const MAX_OUTPUT_TOKENS_RECOVERY: u32 = 3;
 /// How often a `pause_turn` may resume the same turn (Anthropic long turns).
@@ -1123,9 +1130,10 @@ impl Session {
             if turn.hit_max_tokens && turn.tool_calls.is_empty() {
                 if escalations == 0 {
                     escalations += 1;
-                    max_tokens_override = Some(ESCALATED_MAX_TOKENS);
+                    let escalated = escalated_ceiling(self.provider.max_tokens);
+                    max_tokens_override = Some(escalated);
                     self.emit(AgentEvent::Notice {
-                        text: format!("输出达到上限,提升到 {} tokens 继续", ESCALATED_MAX_TOKENS),
+                        text: format!("输出达到上限,提升到 {} tokens 继续", escalated),
                     });
                     continue;
                 }
@@ -2788,5 +2796,12 @@ mod tests {
         ];
         drop_incomplete_tail(&mut items);
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn the_escalation_never_lowers_the_configured_output_ceiling() {
+        assert_eq!(escalated_ceiling(8_192), 64_000);
+        assert_eq!(escalated_ceiling(64_000), 64_000);
+        assert_eq!(escalated_ceiling(128_000), 128_000);
     }
 }

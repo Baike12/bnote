@@ -891,9 +891,11 @@ impl Provider {
             "stream_options": {"include_usage": true},
             "messages": messages,
         });
-        if let Some(max_tokens) = opts.max_tokens {
-            body["max_tokens"] = json!(max_tokens);
-        }
+        // The configured ceiling reaches both protocols: the OpenAI surface only
+        // applies it when the body carries it, so an unset override still sends the
+        // configured value (otherwise the gateway's own default applies and the
+        // setting would do nothing here).
+        body["max_tokens"] = json!(opts.max_tokens.unwrap_or(self.max_tokens));
         self.apply_thinking(&mut body, opts.thinking);
         // A pure Q&A session has no tools: omit the tools field entirely instead of
         // sending an empty array.

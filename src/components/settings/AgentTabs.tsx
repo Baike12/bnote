@@ -126,7 +126,7 @@ function AgentLoading({ loadError }: { loadError: string | null }) {
   );
 }
 
-/** Agent / model: protocol, model, context window, Base URL, API key. */
+/** Agent / model: protocol, model, context window, output ceiling, Base URL, API key. */
 
 export function AgentModelTab({ mode }: { mode: AgentMode }) {
   const showToast = useAppStore((s) => s.showToast);
@@ -169,6 +169,20 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
               step={1024}
               value={cfg.context_window}
               onChange={(e) => update({ context_window: Math.max(0, Number(e.target.value) || 0) })}
+            />
+          }
+        />
+        <Row
+          label="最大输出"
+          desc="单次回复的输出上限(tokens),随每次请求发送;被截断时本轮会先提升到 64000 再续写。按模型的输出上限填写,如 8192、16384"
+          control={
+            <input
+              className="settings-input mono"
+              type="number"
+              min={1024}
+              step={1024}
+              value={cfg.max_tokens}
+              onChange={(e) => update({ max_tokens: Math.max(0, Number(e.target.value) || 0) })}
             />
           }
         />

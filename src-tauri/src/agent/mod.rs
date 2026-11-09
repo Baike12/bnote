@@ -34,6 +34,10 @@ pub struct AgentConfig {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
+    /// Ceiling on one reply's output tokens (what the request's `max_tokens`
+    /// carries). The loop raises it to its escalation ceiling once per turn
+    /// when a reply is cut off, then asks the model to resume.
+    #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     /// Model context window (in tokens), used to display the occupancy ratio.
     /// Fill in the window of the user's actual model.
@@ -59,6 +63,13 @@ fn default_context_window() -> u64 {
     128_000
 }
 
+/// One reply's output ceiling for a config that never carried one (an old
+/// file, or a fresh install). The provider clamps to 1024, so a zero here
+/// would silently cut every reply short.
+fn default_max_tokens() -> u32 {
+    8_192
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpServerConfig {
@@ -82,7 +93,7 @@ impl AgentConfig {
         let mut cfg = match std::fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
             Err(_) => AgentConfig {
-                max_tokens: 8192,
+                max_tokens: default_max_tokens(),
                 context_window: default_context_window(),
                 ..Default::default()
             },
@@ -133,6 +144,9 @@ impl AgentConfig {
         if self.context_window == 0 {
             self.context_window = default_context_window();
         }
+        if self.max_tokens == 0 {
+            self.max_tokens = default_max_tokens();
+        }
     }
 
     /// The configured root of `mode`, when the user overrode the default.
@@ -166,12 +180,17 @@ impl AgentConfig {
         true
     }
 
+    /// Writes the file normalized, so what is on disk always reads back as the
+    /// same config (an empty output ceiling or context window would otherwise
+    /// land in the file and only be repaired in memory on the next load).
     pub fn save(&self) -> Result<(), String> {
         let path = home::config_file();
         if let Some(parent) = path.parent() {
             home::ensure_dir(parent)?;
         }
-        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let mut normalized = self.clone();
+        normalized.normalize();
+        let json = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
         std::fs::write(&path, json).map_err(|e| format!("WRITE_FAILED: {}", e))
     }
 }
@@ -241,5 +260,19 @@ mod tests {
         let mut cfg = AgentConfig::default();
         cfg.normalize();
         assert_eq!(cfg.context_window, default_context_window());
+    }
+
+    #[test]
+    fn a_config_without_max_tokens_keeps_a_usable_output_ceiling() {
+        // An old file has no max_tokens key at all: deserializing must not fail
+        // and normalize must not leave the provider's 1024 clamp as the answer.
+        let mut cfg: AgentConfig = serde_json::from_str(
+            r#"{"provider":"anthropic","model":"m","base_url":"","api_key":""}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.max_tokens, default_max_tokens());
+        cfg.max_tokens = 0;
+        cfg.normalize();
+        assert_eq!(cfg.max_tokens, default_max_tokens());
     }
 }
