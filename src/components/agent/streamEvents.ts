@@ -242,6 +242,10 @@ export function createStreamHandler(
         break;
       }
       case "turn_end": {
+        // The reason is what the user needs to read: a turn they stopped must
+        // not be labelled as one that finished.
+        const ended = ctx.turns.get(conv.key);
+        if (ended) ended.stopReason = event.reason;
         commitTurn(conv.key, event.items);
         ctx.onTurnClosed?.(conv.key);
         ctx.clearBusy(sessionId);

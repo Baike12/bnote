@@ -122,6 +122,17 @@ describe("stream events: the work rows keep the stream order", () => {
     expect(first?.kind === "thinking" ? first.seconds : null).not.toBeNull();
     expect(turn?.steps).toHaveLength(1);
   });
+
+  it("a stopped turn keeps the reason, so the row reads 已停止 instead of 已工作", () => {
+    const h = makeHarness();
+    h.send({ type: "thinking_delta", text: "working" });
+    h.send({ type: "tool_start", id: "t1", name: "Bash", input: {} });
+    h.send({ type: "turn_end", reason: "aborted", items: 2 });
+
+    const turn = h.entry()?.turn;
+    expect(turn?.stopReason).toBe("aborted");
+    expect(h.cleared).toEqual(["s1"]);
+  });
 });
 
 describe("stream events: sessions that are not on screen", () => {

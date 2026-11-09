@@ -76,6 +76,12 @@ export interface Turn {
   /** The wall-clock duration of the whole turn, frozen when it ends. */
   turnMs: number | null;
   tools: ToolRecord[];
+  /**
+   * Why the turn ended, as the backend reported it (`aborted` when the user
+   * pressed stop). Only the live turn carries it: a restored record has no
+   * such marker, and the row reads its stored error instead.
+   */
+  stopReason: string | null;
   error?: string;
   // --- incremental transcript markers (single writer: the panel) ---
   /** How much of `text` is already on disk; the next flush writes the tail. */
@@ -111,6 +117,7 @@ export function newTurn(startedAt: number | null): Turn {
     startedAt,
     turnMs: null,
     tools: [],
+    stopReason: null,
     persistedTextLen: 0,
     persistedThinkLen: 0,
     persistedSealCount: 0,
@@ -325,6 +332,10 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
       startedAt: null,
       turnMs: line.turnMs ?? null,
       tools,
+      // The record does not store why a turn ended, and an interrupted turn
+      // is indistinguishable from a finished one on disk: claiming "aborted"
+      // here would lie about every restored reply.
+      stopReason: null,
       error: line.error,
       // A restored turn never streams again: its record is complete on disk.
       persistedTextLen: line.text.length,

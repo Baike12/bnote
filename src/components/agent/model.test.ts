@@ -59,6 +59,12 @@ describe("transcript round trip", () => {
     expect(entriesToLines([entry])).toEqual([{ ...signed, thinkSeconds: null, error: undefined }]);
   });
 
+  it("a restored turn claims no stop reason (the record cannot tell a stopped turn from a finished one)", () => {
+    const entry = entryFromLine({ type: "assistant", at: 2, text: "答", tools: [] });
+    expect(newTurn(1).stopReason).toBeNull();
+    expect(entry.turn?.stopReason).toBeNull();
+  });
+
   it("notice entries are display only and never reach the file", () => {
     const entries: ChatEntry[] = [
       { role: "notice", text: "连接中断", at: 1, items: null },

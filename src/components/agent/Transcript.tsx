@@ -146,8 +146,8 @@ function TurnSteps({ turn, streaming }: { turn: Turn; streaming: boolean }) {
  * markdown stays outside and is always visible. While the turn streams it is
  * open ("工作中", ticking); when the turn ends it auto-collapses to "已工作 N
  * 秒" unless the user opened it by hand — their choice wins, the same rule as
- * ThinkingBlock. A turn with an error (or no final text) stays open: the user
- * needs the intermediate steps to see what failed.
+ * ThinkingBlock. A turn that failed or that the user stopped stays open: the
+ * intermediate steps are the answer to "what was it doing".
  */
 function TurnWork({
   entry,
@@ -174,12 +174,13 @@ function TurnWork({
   }, [streaming]);
 
   // Streaming → done edge: collapse once (ZCode's assistantHistoryDefaultOpen
-  // flip). An error turn, or one that produced no final text, stays open.
+  // flip). A turn that failed, was stopped, or produced no final text stays
+  // open — the work rows are all there is to read.
   useEffect(() => {
     if (!streaming && !interactedRef.current) {
-      setOpen(Boolean(turn?.error) || !turn?.text);
+      setOpen(Boolean(turn?.error) || turn?.stopReason === "aborted" || !turn?.text);
     }
-  }, [streaming, turn?.error, turn?.text]);
+  }, [streaming, turn?.error, turn?.stopReason, turn?.text]);
 
   if (!turn || !hasWork) return <>{children}</>;
   const liveMs = streaming && turn.startedAt != null ? now - turn.startedAt : (turn.turnMs ?? null);
@@ -201,7 +202,13 @@ function TurnWork({
     >
       <summary>
         <span className={`agent-turn-work-label${streaming ? " is-running" : ""}`}>
-          {streaming ? "工作中" : turn.error ? "已停止" : "已工作"}
+          {streaming
+            ? "工作中"
+            : turn.stopReason === "aborted"
+              ? "已停止"
+              : turn.error
+                ? "已出错"
+                : "已工作"}
           {(liveMs != null || turn.turnMs != null) && ` · ${workDurationLabel(liveMs)}`}
         </span>
         <svg

@@ -171,7 +171,13 @@ pub async fn run_command(
                 text.push_str(&stderr_tail(&err_buf));
                 break (false, format!("timeout after {}s\n{}", timeout, truncate(&text, 5_000)));
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(50)), if abort.is_aborted() => {
+            // The abort branch must stay enabled: a `select!` precondition is
+            // evaluated once, when the select is entered, so `if abort.is_aborted()`
+            // froze to “disabled” for a command that was not aborted yet, and a
+            // silent command (no read ever ready) kept that select open until it
+            // exited on its own — the stop button did nothing. The branch waits
+            // on the token instead, so a later abort always wakes it.
+            _ = abort.wait() => {
                 let _ = child.kill().await;
                 let mut text = String::from_utf8_lossy(&out_buf).to_string();
                 text.push_str(&stderr_tail(&err_buf));
@@ -487,6 +493,35 @@ mod tests {
         let out = run_command("sleep 5", 30, &cwd, &dir, &abort).await;
         assert!(!out.ok);
         assert!(out.text.contains("aborted"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn abort_that_arrives_while_a_silent_command_runs_still_kills_it() {
+        // The stop button's real shape: the user presses it after the command
+        // started. A silent command (no output for its whole life) never wakes
+        // the reads, so an abort check written as a `select!` precondition is
+        // evaluated once and disabled for the rest of that select — the child
+        // then runs to completion and the model's turn keeps going. `find ~`
+        // took 50s under exactly this shape.
+        let dir = std::env::temp_dir().join("bnote-shell-abort-late");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = ShellCwd::new();
+        let abort = Abort::new();
+        let started = std::time::Instant::now();
+        let flag = abort.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            flag.abort();
+        });
+        let out = run_command("sleep 5", 30, &cwd, &dir, &abort).await;
+        let elapsed = started.elapsed();
+        assert!(!out.ok, "{}", out.text);
+        assert!(out.text.contains("aborted"), "{}", out.text);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "the kill must land right after the abort, not at the command's own end: {elapsed:?}"
+        );
     }
 
     #[tokio::test]
