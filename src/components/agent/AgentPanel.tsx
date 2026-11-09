@@ -22,16 +22,13 @@ import { codeSessionIdentity, codeSessionPath, type CodeSessionScope } from "@/c
 import { cleanGeneratedTitle, displayTitle } from "@/study/sessionTitle";
 import { resolveFamily } from "@/study/sessionTree";
 import {
-  assistantRoundLine,
   buildSessionMeta,
   historyFromTranscript,
   parseTranscript,
   serializeTranscript,
   sessionMetaFromRaw,
   sessionTitleFromLines,
-  userWriteLines,
   type TranscriptLine,
-  type TranscriptUserLine,
 } from "@/study/transcript";
 import { isWereadUrl } from "@/study/weread";
 import { setAgentNavHandlers } from "@/study/pdfNav";
@@ -48,26 +45,22 @@ import {
   cloneEntry,
   entriesToLines,
   entryFromLine,
-  errorTurn,
-  findConvBySession,
   fitInputHeight,
   nextConvKey,
   studyContentKey,
-  thinkingSealFor,
   toSessionNode,
-  type ChatEntry,
   type Conv,
   type Turn,
 } from "@/components/agent/model";
+import { followTranscript, measureTurnCap } from "@/components/agent/panelScroll";
+import { createStreamHandler } from "@/components/agent/streamEvents";
+import { createTranscriptWriter } from "@/components/agent/transcriptWriter";
+import { parseBuiltinCommand, runBuiltinCommand } from "@/components/agent/builtinCommands";
 import { AgentTodos, AgentTranscript, AgentWelcome } from "@/components/agent/Transcript";
 import { AgentMeta, AgentPermissionMenu } from "@/components/agent/Composer";
 import { AgentHistoryDrawer } from "@/components/agent/HistoryDrawer";
 import { AgentApprovalCard, type ApprovalRequest } from "@/components/agent/ApprovalCard";
-import {
-  AgentQuestionCard,
-  parseQuestions,
-  type PendingQuestion,
-} from "@/components/agent/QuestionCard";
+import { AgentQuestionCard, type PendingQuestion } from "@/components/agent/QuestionCard";
 
 /**
  * The left column of study mode: asking questions about the current content.
@@ -88,46 +81,6 @@ import {
  * content is ready: opening a material connects once, switching the material
  * opens it again.
  */
-/** The flex gap between transcript entries (`.agent-scroll`); the reply starts
- *  this far below the newest user message. */
-const TRANSCRIPT_GAP = 12;
-
-/**
- * The scroll cap for a streaming turn: the scrollTop that puts the reply start
- * on the shade line. Measured once per turn from the live DOM — the shade line
- * is the bottom edge of the read shade (50% of the column), the reply start is
- * the bottom of the newest user row plus the entry gap.
- */
-function measureTurnCap(scroller: HTMLDivElement): number | null {
-  const shade = scroller.parentElement?.querySelector<HTMLElement>(".agent-read-shade");
-  if (!shade) return null;
-  const top = scroller.getBoundingClientRect().top;
-  const lineY = shade.getBoundingClientRect().bottom - top;
-  const rows = scroller.querySelectorAll<HTMLElement>(".agent-msg-row.is-user");
-  const lastUser = rows[rows.length - 1];
-  if (!lastUser) return 0;
-  const replyStart =
-    lastUser.getBoundingClientRect().bottom - top + scroller.scrollTop + TRANSCRIPT_GAP;
-  return Math.max(0, replyStart - lineY);
-}
-
-/**
- * One stream event's auto-scroll: keep the newest content visible, but never
- * past the turn cap — at the cap the newest line sits on the shade line and
- * the view freezes; what grows below is reached by scrolling manually.
- * Never scrolls up, so a manual scroll down sticks. The position it leaves
- * behind is recorded so the scroll listener can tell the user's upward
- * scrolls (always a decrease from the last auto position) from its own.
- */
-function followTranscript(scroller: HTMLDivElement, cap: number | null): number | null {
-  const target = Math.min(scroller.scrollHeight - scroller.clientHeight, cap ?? Infinity);
-  if (target > scroller.scrollTop) {
-    scroller.scrollTo({ top: target });
-    return target;
-  }
-  return null;
-}
-
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
   const mode = useAppStore((s) => s.mode);
@@ -242,14 +195,9 @@ export function AgentPanel() {
   >(new Map());
   /** convKey -> whether the record lives in the agent home (coding sessions). Read by persistTurn, which may run after the conv left the list. */
   const transcriptHomeRef = useRef<Map<string, boolean>>(new Map());
-  /** convKey -> whether the metadata line (title + model snapshot) was already written. It is written once per session and always at the very front of the file. */
-  const metaWrittenRef = useRef<Map<string, boolean>>(new Map());
   /** convKey -> the model config snapshot of the session (used to write the metadata line; it also has to be available for the closing turn of a session that was switched away). */
   const modelByConvRef = useRef<Map<string, SessionModelConfig | null>>(new Map());
-  /** convKey -> the tail of the record append chain (appends serialize so the file order is the flush order). */
-  const appendChainRef = useRef<Map<string, Promise<void>>>(
-    new Map(),
-  ); /** The restart counter (the reload / the plus for a new session): when it changes a new session is opened instead of restoring the most recent one. */
+  /** The restart counter (the reload / the plus for a new session): when it changes a new session is opened instead of restoring the most recent one. */
   const restartKeyRef = useRef<number | null>(null);
   /** The latest value of creativeMode (read through the ref inside the useCallback closure of startSession). */
   const creativeModeRef = useRef(creativeMode);
@@ -421,6 +369,19 @@ export function AgentPanel() {
     return list;
   }, []);
 
+  // The record writer: its queue and metadata bookkeeping are private to it
+  // (see transcriptWriter), the panel only says where a conv's record is.
+  const writerRef = useRef<ReturnType<typeof createTranscriptWriter> | null>(null);
+  if (!writerRef.current) {
+    writerRef.current = createTranscriptWriter({
+      pathOf: (key) => transcriptRef.current.get(key),
+      homeOf: (key) => transcriptHomeRef.current.get(key) === true,
+      modelOf: (key) => modelByConvRef.current.get(key) ?? null,
+      refreshSessions: () => void refreshSessions(),
+    });
+  }
+  const writer = writerRef.current;
+
   const startSession = useCallback(
     async (
       convKey: string,
@@ -500,10 +461,10 @@ export function AgentPanel() {
           await transcriptIO(home)
             .write(transcriptPath, serializeTranscript([meta, ...opts.seedLines]))
             .catch((e) => console.warn("[agent] failed to write the fork prefix", e));
-          metaWrittenRef.current.set(convKey, true);
+          writer.markMetaWritten(convKey, true);
         } else {
           // Restore: the file already has the metadata (old records have none, the title falls back to the parsing on the list side); a new session: the metadata line is written together with the first message when it reaches the disk, so that an empty session never enters the list.
-          metaWrittenRef.current.set(convKey, Boolean(opts?.transcriptPath));
+          writer.markMetaWritten(convKey, Boolean(opts?.transcriptPath));
         }
         if (startTokenRef.current !== token) return;
         setConvs((prev) =>
@@ -570,7 +531,7 @@ export function AgentPanel() {
       }));
       transcriptRef.current.set(conv.key, path);
       // The record file already has the metadata (old records have none, the title falls back to the list side); it is not written twice, and the bookkeeping of the other sessions is not cleared either — the round that is still streaming needs it when it closes.
-      metaWrittenRef.current.set(conv.key, true);
+      writer.markMetaWritten(conv.key, true);
       void startSession(conv.key, materialContent, {
         history: historyFromTranscript(lines),
         transcriptPath: path,
@@ -701,7 +662,7 @@ export function AgentPanel() {
             : relDir
               ? () => agentApi.setSessionTitle(relDir, id, label)
               : null;
-          if (write) enqueueTranscriptOp(convKey, write, "[agent] failed to write the title");
+          if (write) writer.enqueue(convKey, write, "[agent] failed to write the title");
         })
         .catch(() => {
           // No key / network failure / the model refused: keep the local fallback title and do not bother the user.
@@ -934,360 +895,49 @@ export function AgentPanel() {
     setInput(items[next]);
   }
 
-  function ensureTurn(convKey: string): Turn {
-    let turn = turnsRef.current.get(convKey);
-    if (!turn) {
-      turn = {
-        text: "",
-        thinking: "",
-        thinkingSeals: [],
-        thinkingStart: null,
-        thinkSeconds: null,
-        startedAt: Date.now(),
-        turnMs: null,
-        tools: [],
-        persistedTextLen: 0,
-        persistedThinkLen: 0,
-        persistedSealCount: 0,
-        persistedToolCount: 0,
-      };
-      turnsRef.current.set(convKey, turn);
-    }
-    return turn;
-  }
-
-  /** Write the streaming draft into the session (the same shape whether it is final or not); the draft reuses the same turn reference. */
-  function writeEntries(convKey: string, turn: Turn, finalize: boolean, items: number | null) {
-    setConvs((prev) =>
-      prev.map((c) => {
-        if (c.key !== convKey) return c;
-        const entries = c.entries.slice();
-        const draft: ChatEntry = {
-          role: "assistant",
-          text: turn.text,
-          at: Date.now(),
-          turn,
-          items,
-        };
-        const last = entries[entries.length - 1];
-        if (last && last.role === "assistant" && last.turn === turn) {
-          entries[entries.length - 1] = finalize ? { ...draft } : draft;
-        } else {
-          entries.push(draft);
-        }
-        return { ...c, entries };
-      }),
-    );
-  }
-
-  /** Finalizes the streaming turn: the draft entry is replaced in place (it
-   *  used to be appended a second time, so every reply showed up twice). */
-  function commitTurn(convKey: string, items: number | null) {
-    const turn = turnsRef.current.get(convKey);
-    if (!turn) return;
-    if (turn.thinking && turn.thinkSeconds == null && turn.thinkingStart != null) {
-      turn.thinkSeconds = Math.max(1, Math.round((Date.now() - turn.thinkingStart) / 1000));
-    }
-    if (turn.turnMs == null && turn.startedAt != null) {
-      turn.turnMs = Date.now() - turn.startedAt;
-    }
-    turnsRef.current.delete(convKey);
-    writeEntries(convKey, turn, true, items);
-    persistTurn(convKey, turn);
-  }
-
   /**
-   * Append the user message to the session record the moment the backend
-   * accepted the send (Claude Code writes the prompt before the loop): a turn
-   * that never terminates still leaves the question on disk. A failed send
-   * never reaches here, so the record never shows a ghost message.
+   * The event handler: a backend event goes to the conversation that owns the
+   * session, even when it is not the one on screen. The rules live in
+   * `streamEvents`; this object only supplies the panel's state and callbacks.
    */
-  function persistUserLine(convKey: string, user: TranscriptUserLine) {
-    const path = transcriptRef.current.get(convKey);
-    if (!path) return;
-    const home = transcriptHomeRef.current.get(convKey) === true;
-    const firstWrite = !metaWrittenRef.current.get(convKey);
-    if (firstWrite) metaWrittenRef.current.set(convKey, true);
-    const lines = userWriteLines({
-      user,
-      first: firstWrite,
-      model: modelByConvRef.current.get(convKey) ?? null,
-    });
-    appendTranscript(convKey, home, path, serializeTranscript(lines));
-  }
-
-  /**
-   * Flush the turn's finished tail into the session record.
-   *
-   * Incremental, one line per provider round: a round is complete once all of
-   * its tool outputs arrived, so the flush points are the new round's first
-   * stream event and the turn's end. `force` closes the current round
-   * regardless (turn_end / error). A turn that dies mid-stream keeps every
-   * completed round on disk — the whole-turn write it replaced left nothing.
-   */
-  function persistTurn(convKey: string, turn: Turn, pathOverride?: string, force = true) {
-    const path = pathOverride ?? transcriptRef.current.get(convKey);
-    if (!path) return;
-    if (!force) {
-      // Only a finished previous round closes here: a flush on a stream delta
-      // with no complete pending batch would cut the current round mid-stream
-      // (and fragment one round into several lines).
-      const pending = turn.tools.slice(turn.persistedToolCount);
-      if (pending.length === 0 || pending.some((t) => t.output === undefined)) return;
-    }
-    const home = transcriptHomeRef.current.get(convKey) === true;
-    const startTool = turn.persistedToolCount;
-    const tools = turn.tools.slice(startTool);
-    const text = turn.text.slice(turn.persistedTextLen);
-    const thinking = turn.thinking.slice(turn.persistedThinkLen);
-    const fresh = tools.length > 0 || text.length > 0 || thinking.length > 0 || turn.error;
-    if (!fresh) return;
-    // The seal(s) that closed with this slice. A flush happens before the next
-    // round appends anything, so `turn.thinking.length` is exactly where this
-    // round's text ends.
-    const thinkingSignature = thinkingSealFor(
-      turn.thinkingSeals.slice(turn.persistedSealCount),
-      turn.thinking.length,
-    );
-    turn.persistedToolCount = turn.tools.length;
-    turn.persistedTextLen = turn.text.length;
-    turn.persistedThinkLen = turn.thinking.length;
-    turn.persistedSealCount = turn.thinkingSeals.length;
-    const firstWrite = !metaWrittenRef.current.get(convKey);
-    if (firstWrite) metaWrittenRef.current.set(convKey, true);
-    const line = assistantRoundLine({
-      at: Date.now(),
-      text,
-      thinking: thinking || undefined,
-      thinkingSignature,
-      thinkSeconds: turn.thinkSeconds,
-      turnMs: turn.turnMs,
-      tools,
-      error: turn.error,
-    });
-    appendTranscript(convKey, home, path, serializeTranscript([line]));
-  }
-
-  /**
-   * The conversation's append chain: appends are fire-and-forget for the UI,
-   * but two concurrent IPC appends to one file can land out of order — the
-   * chain serializes them, so the file order is the flush order (single
-   * writer per record).
-   */
-  /**
-   * The conversation's transcript mutation queue: appends are fire-and-forget
-   * for the UI, but two concurrent IPC writes to one file can land out of
-   * order — and a title rewrite (read-modify-write + rename) racing an append
-   * silently drops the appended line. Every mutation of one record therefore
-   * chains through here, so the file order is the mutation order (single
-   * writer per record).
-   */
-  function enqueueTranscriptOp(convKey: string, op: () => Promise<unknown>, warn: string) {
-    const prev = appendChainRef.current.get(convKey) ?? Promise.resolve();
-    const next = prev
-      .then(op)
-      .then(() => void refreshSessions())
-      .catch((e) => console.warn(warn, e));
-    appendChainRef.current.set(convKey, next);
-  }
-
-  function appendTranscript(convKey: string, home: boolean, path: string, data: string) {
-    enqueueTranscriptOp(
-      convKey,
-      () => transcriptIO(home).append(path, data),
-      "[agent] failed to write the session record",
-    );
-  }
-
-  function handleAgentEvent(sessionId: string, event: AgentEvent) {
-    const conv = findConvBySession(convsRef.current, sessionId);
-    if (!conv) {
-      // The session is no longer in the list (a new material / the old sessions are void after a restart): the streaming deltas are dropped harmlessly, but the **terminating event must clear the busy flag** — otherwise the panel stays on "generating" forever and the next send is silently swallowed by busyRef. The content that this round has already produced is still written into its own session record: the user only switched away from the material, the answer must not be lost.
-      if (event.type === "turn_end" || event.type === "error") {
-        const entry = sessionIndexRef.current.get(sessionId);
-        if (entry) {
-          const turn = turnsRef.current.get(entry.convKey);
-          if (turn) {
-            if (event.type === "error") turn.error = event.message;
-            if (turn.thinking && turn.thinkSeconds == null && turn.thinkingStart != null) {
-              turn.thinkSeconds = Math.max(1, Math.round((Date.now() - turn.thinkingStart) / 1000));
-            }
-            if (turn.turnMs == null && turn.startedAt != null) {
-              turn.turnMs = Date.now() - turn.startedAt;
-            }
-            turnsRef.current.delete(entry.convKey);
-            persistTurn(entry.convKey, turn, entry.path ?? undefined);
-          }
-          sessionIndexRef.current.delete(sessionId);
-        }
-        if (busyRef.current === sessionId) {
-          busyRef.current = null;
-          setBusySession(null);
-        }
-      }
-      return;
-    }
-    switch (event.type) {
-      case "thinking_delta": {
-        const turn = ensureTurn(conv.key);
-        // A delta after a finished tool batch opens the next provider round:
-        // what came before is complete, write it before the tail grows.
-        persistTurn(conv.key, turn, undefined, false);
-        turn.thinking += event.text;
-        turn.thinkingStart ??= Date.now();
-        writeEntries(conv.key, turn, false, null);
-        break;
-      }
-      case "thinking_block_end": {
-        // The seal is only stored, never shown: it rides on the record line so
-        // a restored session replays the thinking block exactly as received.
-        const turn = turnsRef.current.get(conv.key);
-        if (turn)
-          turn.thinkingSeals.push({ end: turn.thinking.length, signature: event.signature });
-        break;
-      }
-      case "text_delta": {
-        const turn = ensureTurn(conv.key);
-        persistTurn(conv.key, turn, undefined, false);
-        turn.text += event.text;
-        writeEntries(conv.key, turn, false, null);
-        break;
-      }
-      case "tool_start": {
-        const turn = ensureTurn(conv.key);
-        // The new call belongs to the next assistant message: the previous
-        // round's outputs are all in (the backend runs a batch to completion
-        // before the next stream round) — flush it.
-        persistTurn(conv.key, turn, undefined, false);
-        turn.tools = [...turn.tools, { id: event.id, name: event.name, input: event.input }];
-        writeEntries(conv.key, turn, false, null);
-        break;
-      }
-      case "tool_end": {
-        const turn = turnsRef.current.get(conv.key);
-        if (!turn) break;
-        turn.tools = turn.tools.map((t) =>
-          t.id === event.id
-            ? { ...t, output: event.output, ok: event.ok, images: event.images }
-            : t,
-        );
-        writeEntries(conv.key, turn, false, null);
-        break;
-      }
-      case "usage": {
-        updateConv(conv.key, (c) => ({
-          ...c,
-          usage: { input: event.input, output: event.output, cacheRead: event.cacheRead },
-        }));
-        break;
-      }
-      case "notice": {
-        // A dim status line (compaction / subagent / background task). It is
-        // display-only: it never reaches the transcript and a restore drops it.
-        updateConv(conv.key, (c) => ({
-          ...c,
-          entries: [
-            ...c.entries,
-            { role: "notice", text: event.text, at: Date.now(), items: null },
-          ],
-        }));
-        break;
-      }
-      case "todos": {
-        updateConv(conv.key, (c) => ({ ...c, todos: event.todos }));
-        break;
-      }
-      case "permission_request": {
-        setApproval({
-          sessionId,
-          id: event.id,
-          tool: event.tool,
-          input: event.input,
+  const streamRef = useRef<((sessionId: string, event: AgentEvent) => void) | null>(null);
+  if (!streamRef.current) {
+    streamRef.current = createStreamHandler({
+      convs: () => convsRef.current,
+      turns: turnsRef.current,
+      sessionIndex: sessionIndexRef.current,
+      patchConvs: setConvs,
+      updateConv,
+      persistTurn: writer.persistTurn,
+      clearBusy: (sessionId) => {
+        if (busyRef.current !== sessionId) return;
+        busyRef.current = null;
+        setBusySession(null);
+      },
+      setApproval,
+      setPendingQuestion,
+      setPlanActive,
+      onTurnClosed: (convKey) => {
+        // The first round succeeded: name the session after its own first
+        // message (the local fallback title holds the line until then).
+        const seed = titleSeedRef.current.get(convKey);
+        if (!seed) return;
+        titleSeedRef.current.delete(convKey);
+        generateTitle(convKey, seed);
+      },
+      afterEvent: (convKey) => {
+        // Stream auto-scroll, only for the conversation that is on screen: a
+        // background session's reply must never move the view the user reads.
+        requestAnimationFrame(() => {
+          const scroller = scrollRef.current;
+          if (!scroller || !followRef.current || activeKeyRef.current !== convKey) return;
+          lastFollowPosRef.current =
+            followTranscript(scroller, turnCapRef.current) ?? lastFollowPosRef.current;
         });
-        break;
-      }
-      case "question": {
-        setPendingQuestion({
-          sessionId,
-          id: event.id,
-          questions: parseQuestions(event.questions),
-        });
-        break;
-      }
-      case "plan_mode": {
-        setPlanActive(event.enabled);
-        updateConv(conv.key, (c) => ({
-          ...c,
-          entries: [
-            ...c.entries,
-            {
-              role: "notice",
-              text: event.enabled
-                ? "已进入计划模式:先只读调研,计划批准后才改文件"
-                : "计划已批准,恢复编辑",
-              at: Date.now(),
-              items: null,
-            },
-          ],
-        }));
-        break;
-      }
-      case "tasks": {
-        // The v2 task list has no dedicated panel: the tool cards already show
-        // every change, and the list itself lives in the model's context.
-        break;
-      }
-      case "turn_end": {
-        commitTurn(conv.key, event.items);
-        // The first round succeeded: name the session after its own first message (the local fallback title holds the line until then).
-        const seed = titleSeedRef.current.get(conv.key);
-        if (seed) {
-          titleSeedRef.current.delete(conv.key);
-          generateTitle(conv.key, seed);
-        }
-        if (busyRef.current === sessionId) {
-          busyRef.current = null;
-          setBusySession(null);
-        }
-        break;
-      }
-      case "error": {
-        const turn = turnsRef.current.get(conv.key);
-        if (turn) {
-          turn.error = event.message;
-          commitTurn(conv.key, event.items);
-        } else {
-          updateConv(conv.key, (c) => ({
-            ...c,
-            entries: [
-              ...c.entries,
-              {
-                role: "assistant",
-                text: "",
-                at: Date.now(),
-                items: event.items > 0 ? event.items : null,
-                turn: errorTurn(event.message),
-              },
-            ],
-          }));
-          persistTurn(conv.key, errorTurn(event.message));
-        }
-        if (busyRef.current === sessionId) {
-          busyRef.current = null;
-          setBusySession(null);
-        }
-        break;
-      }
-    }
-    // Stream auto-scroll, only for the conversation that is on screen: a
-    // background session's reply must never move the view the user is reading.
-    requestAnimationFrame(() => {
-      const scroller = scrollRef.current;
-      if (!scroller || !followRef.current || activeKeyRef.current !== conv.key) return;
-      lastFollowPosRef.current =
-        followTranscript(scroller, turnCapRef.current) ?? lastFollowPosRef.current;
+      },
     });
   }
+  const handleAgentEvent = streamRef.current;
 
   // Stream events; route by sessionId into the owning conversation.
   // The composer mode is a settings value (new sessions inherit it) mirrored
@@ -1367,45 +1017,28 @@ export function AgentPanel() {
     });
   };
 
-  /** The built-in `/` commands (CC's LocalCommand subset): panel actions, never seen by the model. */
-  const runBuiltinCommand = useCallback(
-    async (name: string, conv: Conv | null) => {
-      switch (name) {
-        case "compact": {
-          const sid = conv?.sessionId;
-          if (!sid || busyRef.current === sid) return;
-          busyRef.current = sid;
-          setBusySession(sid);
-          try {
-            await agentApi.compact(sid);
-          } catch (e) {
-            busyRef.current = null;
-            setBusySession(null);
-            showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
-          }
-          return;
+  /** The built-in `/` commands: the set and the wiring of their panel effects. */
+  const builtinContext = useMemo(
+    () => ({
+      compact: async (sessionId: string) => {
+        if (busyRef.current === sessionId) return;
+        busyRef.current = sessionId;
+        setBusySession(sessionId);
+        try {
+          await agentApi.compact(sessionId);
+        } catch (e) {
+          busyRef.current = null;
+          setBusySession(null);
+          showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
         }
-        case "clear":
-          setRestartNonce((n) => n + 1);
-          return;
-        case "help": {
-          const lines = [
-            "可用命令:/compact 压缩上下文 · /clear 新会话 · /help 本说明",
-            "技能:输入 / 加名称加载其指导;文件引用:输入 @ 加路径,内容会随消息附上。",
-          ];
-          updateConv(conv?.key ?? "", (c) => ({
-            ...c,
-            entries: [
-              ...c.entries,
-              { role: "notice", text: lines.join("\n"), at: Date.now(), items: null },
-            ],
-          }));
-          return;
-        }
-        default:
-          return;
-      }
-    },
+      },
+      newSession: () => setRestartNonce((n) => n + 1),
+      notice: (convKey: string, text: string) =>
+        updateConv(convKey, (c) => ({
+          ...c,
+          entries: [...c.entries, { role: "notice", text, at: Date.now(), items: null }],
+        })),
+    }),
     [showToast, updateConv],
   );
 
@@ -1418,10 +1051,10 @@ export function AgentPanel() {
     if (!conv || (!text && pendingImages.length === 0)) return;
     // Built-in panel commands (/compact /clear /help): panel actions, never a
     // message — the model never sees them.
-    const builtin = /^\/(compact|clear|help)$/.exec(text);
+    const builtin = parseBuiltinCommand(text);
     if (builtin) {
       setInput("");
-      await runBuiltinCommand(builtin[1], conv);
+      await runBuiltinCommand(builtin, conv, builtinContext);
       return;
     }
     const info = conv.sessionId;
@@ -1496,7 +1129,7 @@ export function AgentPanel() {
       // The backend accepted the message: the question enters the record now
       // (Claude Code persists the prompt before the loop), so even a turn that
       // never terminates leaves it on disk. A failed send never reaches here.
-      persistUserLine(conv.key, {
+      writer.persistUserLine(conv.key, {
         type: "user",
         at,
         text,

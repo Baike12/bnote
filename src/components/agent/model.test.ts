@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptLine } from "@/study/transcript";
 import {
+  appendThinking,
   cloneEntry,
+  closeThinking,
   entriesToLines,
   entryFromLine,
   fitInputHeight,
   formatSessionTime,
+  newTurn,
+  pushToolStep,
   studyContentKey,
   thinkingSealFor,
+  thinkingSecondsAt,
   thinkingSummaryLine,
   type ChatEntry,
 } from "./model";
@@ -34,7 +39,7 @@ describe("transcript round trip", () => {
   it("a line becomes a rendered entry and back without losing content", () => {
     const entries = lines.map(entryFromLine);
     expect(entries[0]).toMatchObject({ role: "user", text: "问", at: 1, items: null });
-    expect(entries[1]?.turn).toMatchObject({ text: "答", thinking: "想", thinkSeconds: 3 });
+    expect(entries[1]?.turn).toMatchObject({ text: "答", thinking: "想" });
     expect(entriesToLines(entries)).toEqual(lines);
   });
 
@@ -88,6 +93,84 @@ describe("transcript round trip", () => {
     const clonedSeal = copy.turn?.thinkingSeals[0];
     if (clonedSeal) clonedSeal.signature = "tampered";
     expect(entry.turn?.thinkingSeals[0]?.signature).toBe("sig1");
+  });
+});
+
+describe("turn steps keep the stream order", () => {
+  /**
+   * The work section must read like the turn went: the second round's thinking
+   * belongs between the first and second batch of tool calls, not merged into
+   * one block above all of them (the live panel used to flatten it that way,
+   * while a restored record — one line per round — already interleaved).
+   */
+  it("interleaves thinking blocks and tool rows in arrival order", () => {
+    const turn = newTurn(1_000);
+    appendThinking(turn, "look around", 1_000);
+    closeThinking(turn, 3_000);
+    pushToolStep(turn, "t1", 3_000);
+    appendThinking(turn, "read it", 4_000);
+    pushToolStep(turn, "t2", 5_500);
+    appendThinking(turn, "answer", 6_000);
+    closeThinking(turn, 7_000);
+
+    expect(turn.steps).toEqual([
+      { kind: "thinking", start: 0, end: 11, startedAt: 1_000, seconds: 2 },
+      { kind: "tool", id: "t1" },
+      { kind: "thinking", start: 11, end: 18, startedAt: 4_000, seconds: 2 },
+      { kind: "tool", id: "t2" },
+      { kind: "thinking", start: 18, end: 24, startedAt: 6_000, seconds: 1 },
+    ]);
+    // The text is the concatenation the rows slice, in the same order.
+    expect(turn.thinking).toBe("look aroundread itanswer");
+  });
+
+  it("extends the open block instead of opening a row per delta", () => {
+    const turn = newTurn(0);
+    appendThinking(turn, "a", 1_000);
+    appendThinking(turn, "b", 1_100);
+    expect(turn.steps).toEqual([
+      { kind: "thinking", start: 0, end: 2, startedAt: 1_000, seconds: null },
+    ]);
+  });
+
+  it("closing is idempotent, so a seal and the turn's end can both close", () => {
+    const turn = newTurn(0);
+    appendThinking(turn, "a", 1_000);
+    closeThinking(turn, 2_500);
+    closeThinking(turn, 9_000);
+    expect(turn.steps[0]).toMatchObject({ seconds: 2 });
+  });
+
+  it("a restored record rebuilds thinking before its tools", () => {
+    const entry = entryFromLine({
+      type: "assistant",
+      at: 2,
+      text: "",
+      thinking: "想",
+      thinkSeconds: 4,
+      tools: [
+        { id: "t1", name: "read_file" },
+        { id: "t2", name: "grep" },
+      ],
+    });
+    expect(entry.turn?.steps).toEqual([
+      { kind: "thinking", start: 0, end: 1, startedAt: null, seconds: 4 },
+      { kind: "tool", id: "t1" },
+      { kind: "tool", id: "t2" },
+    ]);
+  });
+
+  it("the flushed round carries its own thinking duration", () => {
+    const turn = newTurn(0);
+    appendThinking(turn, "a", 1_000);
+    closeThinking(turn, 3_000);
+    pushToolStep(turn, "t1", 3_000);
+    appendThinking(turn, "b", 4_000);
+    closeThinking(turn, 4_800);
+    // The first line flushed the block at offset 0, the second the one at 1.
+    expect(thinkingSecondsAt(turn, 0)).toBe(2);
+    expect(thinkingSecondsAt(turn, 1)).toBe(1);
+    expect(thinkingSecondsAt(turn, 2)).toBeNull();
   });
 });
 

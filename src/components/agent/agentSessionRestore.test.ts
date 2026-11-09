@@ -23,6 +23,10 @@ import { readFileSync } from "node:fs";
 
 const raw = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
 const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+// The turn rules moved out of the panel (streamEvents); the title wiring now
+// spans both files, so both are read here.
+const streamRaw = readFileSync("src/components/agent/streamEvents.ts", "utf8");
+const streamCode = streamRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
 describe("restart restore: the session family, not the most recent one", () => {
   it('lifecycle restore calls restoreFamily(..., "root")', () => {
@@ -113,17 +117,22 @@ describe("title: the session's own first message, generated once by the model an
   });
 
   it("it fires after a successful turn_end, and the seed is deleted once it is used", () => {
-    const turnEnd = code.slice(code.indexOf('case "turn_end"'));
+    const turnEnd = streamCode.slice(streamCode.indexOf('case "turn_end"'));
     const body = turnEnd.slice(0, turnEnd.indexOf('case "error"'));
-    expect(body).toMatch(/titleSeedRef\.current\.get\(conv\.key\)/);
-    expect(body).toMatch(/titleSeedRef\.current\.delete\(conv\.key\)/);
-    expect(body).toMatch(/generateTitle\(conv\.key, seed\)/);
+    // The reducer commits the turn and reports it closed; the panel's
+    // onTurnClosed callback is the only place that names the session.
+    expect(body).toMatch(/commitTurn\(conv\.key, event\.items\)/);
+    expect(body).toMatch(/onTurnClosed\?\.\(conv\.key\)/);
+    expect(body).not.toMatch(/generateTitle/);
+    expect(code).toMatch(/titleSeedRef\.current\.get\(convKey\)/);
+    expect(code).toMatch(/titleSeedRef\.current\.delete\(convKey\)/);
+    expect(code).toMatch(/generateTitle\(convKey, seed\)/);
   });
 
   it("a failed turn does not trigger it (the local fallback title is kept)", () => {
-    const errCase = code.slice(code.indexOf('case "error"'));
-    const body = errCase.slice(0, errCase.indexOf("requestAnimationFrame"));
-    expect(body).not.toMatch(/generateTitle/);
+    const errCase = streamCode.slice(streamCode.indexOf('case "error"'));
+    const body = errCase.slice(0, errCase.indexOf("afterEvent", errCase.indexOf("clearBusy")));
+    expect(body).not.toMatch(/onTurnClosed|generateTitle/);
   });
 
   it("the model is asked only once; the title goes from cleaning to the hierarchy prefix and back into the file", () => {

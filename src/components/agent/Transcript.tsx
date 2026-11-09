@@ -5,7 +5,7 @@ import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { toolSummary, workDurationLabel } from "./toolSummary";
-import type { ChatEntry, ToolRecord } from "./model";
+import type { ChatEntry, ToolRecord, Turn } from "./model";
 
 /** The empty state: what this session is for, by mode. */
 export function AgentWelcome({
@@ -108,6 +108,35 @@ function ToolCard({ tool }: { tool: ToolRecord }) {
         </div>
       )}
     </details>
+  );
+}
+
+/**
+ * The work rows in the order the provider streamed them: each thinking block
+ * sits between the tool calls that ran before and after it, so the section
+ * reads like the turn actually went (thinking → tools → thinking → …) instead
+ * of one thought pinned above every tool row. The open block — the last row,
+ * still without a duration — is the only one drawn as streaming.
+ */
+function TurnSteps({ turn, streaming }: { turn: Turn; streaming: boolean }) {
+  const tools = new Map(turn.tools.map((tool) => [tool.id, tool]));
+  return (
+    <>
+      {turn.steps.map((step, i) => {
+        if (step.kind === "thinking") {
+          return (
+            <ThinkingBlock
+              key={i}
+              thinking={turn.thinking.slice(step.start, step.end)}
+              streaming={streaming && step.seconds === null}
+              seconds={step.seconds}
+            />
+          );
+        }
+        const tool = tools.get(step.id);
+        return tool ? <ToolCard key={i} tool={tool} /> : null;
+      })}
+    </>
   );
 }
 
@@ -228,14 +257,7 @@ function EntryRow({
       ) : (
         <div className="agent-msg agent-msg-assistant">
           <TurnWork entry={entry} streaming={streaming}>
-            <ThinkingBlock
-              thinking={entry.turn?.thinking ?? ""}
-              streaming={Boolean(streaming && (entry.turn?.thinking ?? ""))}
-              seconds={entry.turn?.thinkSeconds ?? null}
-            />
-            {entry.turn?.tools.map((tool) => (
-              <ToolCard key={tool.id} tool={tool} />
-            ))}
+            {entry.turn && <TurnSteps turn={entry.turn} streaming={streaming} />}
             {entry.turn?.error && <div className="agent-error">{entry.turn.error}</div>}
           </TurnWork>
           {/* No text row when the model produced none (a pure tool round): an

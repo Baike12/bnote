@@ -37,6 +37,26 @@ export interface ThinkingSeal {
   signature: string;
 }
 
+/**
+ * One row of a turn's work section, in stream order.
+ *
+ * A thinking row references a range of `Turn.thinking` instead of copying the
+ * text: the transcript flush and the seals both slice that one buffer, so a
+ * second copy of the text could disagree with it mid-stream.
+ */
+export type TurnStep =
+  | {
+      kind: "thinking";
+      /** Range in `Turn.thinking` holding this block's text. */
+      start: number;
+      end: number;
+      /** When the block's first delta arrived; null on a restored record (its duration is already sealed). */
+      startedAt: number | null;
+      /** Seconds the block took; null while the block is still streaming. */
+      seconds: number | null;
+    }
+  | { kind: "tool"; id: string };
+
 export interface Turn {
   /** Streaming text buffer for the current assistant reply. */
   text: string;
@@ -44,10 +64,13 @@ export interface Turn {
   thinking: string;
   /** Seals of the thinking blocks closed so far, in stream order. */
   thinkingSeals: ThinkingSeal[];
-  /** Timestamp of the first thinking delta (used for the timer). */
-  thinkingStart: number | null;
-  /** How long the thinking took (in seconds, computed and frozen when the turn ends). */
-  thinkSeconds: number | null;
+  /**
+   * The work section's rows in arrival order: thinking blocks and tool calls
+   * interleaved the way the provider streamed them (round one's thinking, its
+   * tool calls, round two's thinking, …). A restored record rebuilds them
+   * from its per-round lines. Single writer: the panel's event handler.
+   */
+  steps: TurnStep[];
   /** When the first event of the turn arrived (the "已工作 N 秒" duration starts here). */
   startedAt: number | null;
   /** The wall-clock duration of the whole turn, frozen when it ends. */
@@ -78,23 +101,87 @@ export function thinkingSealFor(seals: ThinkingSeal[], end: number): string | un
   return seals[0].signature && seals[0].end === end ? seals[0].signature : undefined;
 }
 
-/** A turn that carries only an error (the backend produced nothing before failing). */
-export function errorTurn(message: string): Turn {
+/** An empty turn. `startedAt` starts the "已工作 N 秒" clock. */
+export function newTurn(startedAt: number | null): Turn {
   return {
     text: "",
     thinking: "",
     thinkingSeals: [],
-    thinkingStart: null,
-    thinkSeconds: null,
-    startedAt: null,
+    steps: [],
+    startedAt,
     turnMs: null,
     tools: [],
-    error: message,
     persistedTextLen: 0,
     persistedThinkLen: 0,
     persistedSealCount: 0,
     persistedToolCount: 0,
   };
+}
+
+/** A turn that carries only an error (the backend produced nothing before failing). */
+export function errorTurn(message: string): Turn {
+  return { ...newTurn(null), error: message };
+}
+
+/**
+ * Appends a thinking delta: it extends the open block, or opens a new one when
+ * the previous block is closed or a tool call ran in between. The open block is
+ * the only one whose range may grow, so the last row is the only row that can
+ * be the model's live thought.
+ */
+export function appendThinking(turn: Turn, text: string, at: number): void {
+  const last = turn.steps[turn.steps.length - 1];
+  const start = turn.thinking.length;
+  turn.thinking += text;
+  if (last && last.kind === "thinking" && last.seconds === null) {
+    last.end = turn.thinking.length;
+    return;
+  }
+  turn.steps.push({
+    kind: "thinking",
+    start,
+    end: turn.thinking.length,
+    startedAt: at,
+    seconds: null,
+  });
+}
+
+/**
+ * Closes the open thinking block and freezes its duration: a seal, the first
+ * text delta (the model moved on to writing), a tool call, or the turn's end.
+ * Closing is idempotent so every one of those events can call it.
+ */
+export function closeThinking(turn: Turn, at: number): void {
+  const last = turn.steps[turn.steps.length - 1];
+  if (!last || last.kind !== "thinking" || last.seconds !== null) return;
+  const startedAt = last.startedAt ?? at;
+  last.seconds = Math.max(1, Math.round((at - startedAt) / 1000));
+}
+
+/** A tool call takes its place in the timeline; it closes the thinking block before it. */
+export function pushToolStep(turn: Turn, id: string, at: number): void {
+  closeThinking(turn, at);
+  turn.steps.push({ kind: "tool", id });
+}
+
+/**
+ * The duration of the thinking block that starts at `start` — the block a
+ * transcript flush is about to write (the flush slices `thinking` from the
+ * previous write's end, and a block never spans two rounds).
+ */
+export function thinkingSecondsAt(turn: Turn, start: number): number | null {
+  for (const step of turn.steps) {
+    if (step.kind === "thinking" && step.start === start) return step.seconds;
+  }
+  return null;
+}
+
+/** The seconds a record line of this turn should claim: the turn's one thinking block (restored turns have exactly one until they stream again). */
+export function storedThinkSeconds(turn: Turn): number | null {
+  for (const step of turn.steps) {
+    if (step.kind === "thinking") return step.seconds;
+  }
+  return null;
 }
 
 export interface ChatEntry {
@@ -207,6 +294,20 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
     };
   }
   const thinking = line.thinking ?? "";
+  const tools = line.tools ?? [];
+  // The record line is one provider round: its thinking came before its tool
+  // calls, so the restored rows need no other ordering source.
+  const steps: TurnStep[] = [];
+  if (thinking) {
+    steps.push({
+      kind: "thinking",
+      start: 0,
+      end: thinking.length,
+      startedAt: null,
+      seconds: line.thinkSeconds ?? null,
+    });
+  }
+  for (const tool of tools) steps.push({ kind: "tool", id: tool.id });
   return {
     role: "assistant",
     text: line.text,
@@ -220,17 +321,16 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
       thinkingSeals: line.thinkingSignature
         ? [{ end: thinking.length, signature: line.thinkingSignature }]
         : [],
-      thinkingStart: null,
-      thinkSeconds: line.thinkSeconds ?? null,
+      steps,
       startedAt: null,
       turnMs: line.turnMs ?? null,
-      tools: line.tools ?? [],
+      tools,
       error: line.error,
       // A restored turn never streams again: its record is complete on disk.
       persistedTextLen: line.text.length,
       persistedThinkLen: thinking.length,
       persistedSealCount: line.thinkingSignature ? 1 : 0,
-      persistedToolCount: (line.tools ?? []).length,
+      persistedToolCount: tools.length,
     },
   };
 }
@@ -251,7 +351,7 @@ export function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
         text: e.text,
         thinking: e.turn?.thinking ?? "",
         ...(thinkingSignature ? { thinkingSignature } : {}),
-        thinkSeconds: e.turn?.thinkSeconds ?? null,
+        thinkSeconds: e.turn ? storedThinkSeconds(e.turn) : null,
         // The key only exists when a real duration was measured: an absent
         // field keeps the line format lean (the same rule as `images`).
         ...(e.turn?.turnMs != null ? { turnMs: e.turn.turnMs } : {}),
@@ -270,6 +370,7 @@ export function cloneEntry(e: ChatEntry): ChatEntry {
           ...e.turn,
           tools: e.turn.tools.map((t) => ({ ...t })),
           thinkingSeals: e.turn.thinkingSeals.map((s) => ({ ...s })),
+          steps: e.turn.steps.map((s) => ({ ...s })),
         }
       : undefined,
   };

@@ -80,7 +80,8 @@ export function ThinkingBlock({
         ) : (
           <span className="agent-thinking-done">
             思考
-            <span className="agent-thinking-sec"> · 持续了 {seconds ?? 0} 秒</span>
+            {/* Old records carry no per-block duration; claiming "0 秒" would lie. */}
+            {seconds != null && <span className="agent-thinking-sec"> · 持续了 {seconds} 秒</span>}
           </span>
         )}
         {tail && (
