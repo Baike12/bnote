@@ -342,12 +342,12 @@ export const codeCommandDefs: CommandDef[] = [
   },
   {
     id: "code.git-diff",
-    title: "查看当前文件的差异",
+    title: "查看改动(每个文件展开看差异)",
     category: "代码",
-    when: hasEditor,
+    when: hasProject,
     run: () => {
-      const path = activePath();
-      if (path) useCodeStore.getState().setDiff(path);
+      const store = useCodeStore.getState();
+      store.setDiff(!store.diffOpen);
     },
   },
   {

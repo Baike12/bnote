@@ -86,7 +86,19 @@ describe("buildTree", () => {
 
   it("the git state is attached to the file node", () => {
     const git = new Map<string, GitFileState>([
-      ["a.rs", { path: "a.rs", origPath: null, index: "M", worktree: "M" }],
+      [
+        "a.rs",
+        {
+          path: "a.rs",
+          origPath: null,
+          index: "M",
+          worktree: "M",
+          added: 1,
+          removed: 0,
+          stagedAdded: 1,
+          stagedRemoved: 0,
+        },
+      ],
     ]);
     const roots = buildTree([entry("a.rs")], git);
     expect(roots[0].git?.worktree).toBe("M");

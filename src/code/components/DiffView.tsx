@@ -1,57 +1,95 @@
 import { useEffect, useMemo, useState } from "react";
 import { codeApi } from "../api";
-import { alignHunk, diffStats, parseUnifiedDiff } from "../diff";
+import {
+  changeDir,
+  changeName,
+  changeTotals,
+  changesForSource,
+  patchKey,
+  type FileChange,
+} from "../changes";
+import { alignHunk, diffStats, parseUnifiedDiff, type DiffHunk, type ParsedDiff } from "../diff";
 import { useCodeStore } from "../store";
 
 /**
- * Git diff view.
+ * The diff pane: the changed files of the project, each expandable into its
+ * own patch (the shape the ZCode git pane uses).
  *
- * The backend hands over the raw unified diff text (`git diff --no-color`) and
- * the parsing happens on the frontend (`src/code/diff.ts`): line numbers,
- * colouring and side-by-side alignment are all frontend concerns.
+ * The backend hands over raw unified diff text per file (`git diff
+ * --no-color`); parsing, colours and the side-by-side alignment are frontend
+ * concerns (`src/code/diff.ts`). The list comes from the git status every save
+ * refreshes, so the counts on the rows are the counts of the tree on screen.
  *
- * Two views: unified and side by side. The side-by-side view pairs the
- * changed lines with a longest common subsequence, so two lines that changed
- * the same word end up next to each other instead of drifting apart.
+ * Loading is lazy: only the open row is read (a large repository must not read
+ * every patch just to open the pane), and `gitRev` is one of the request's
+ * inputs, so a save, a stage or a refresh re-reads it — the patch on screen is
+ * never the one from before the edit.
  */
-export function DiffView({ path }: { path: string }) {
+export function DiffView() {
   const root = useCodeStore((s) => s.project?.root ?? "");
+  const git = useCodeStore((s) => s.git);
+  const gitRev = useCodeStore((s) => s.gitRev);
   const staged = useCodeStore((s) => s.diffStaged);
   const toggleStaged = useCodeStore((s) => s.toggleDiffStaged);
   const setDiff = useCodeStore((s) => s.setDiff);
+  const refreshGit = useCodeStore((s) => s.refreshGit);
 
-  const [text, setText] = useState<string>("");
-  const [error, setError] = useState<string | null>(null);
+  const changes = useMemo(
+    () => changesForSource(git, staged ? "staged" : "worktree"),
+    [git, staged],
+  );
+  const totals = useMemo(() => changeTotals(changes), [changes]);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [sideBySide, setSideBySide] = useState(false);
+  const [patch, setPatch] = useState<PatchState | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
+  // One row is open at a time; the key says which side of which file it shows.
+  // A patch loaded for another key (or for the other side) is not displayed.
+  const key = expanded ? patchKey(expanded, staged) : "";
+
+  // The file may be gone from the list (reverted, committed): close the row.
   useEffect(() => {
+    if (expanded && !changes.some((c) => c.path === expanded)) setExpanded(null);
+  }, [changes, expanded]);
+
+  // Read the patch of the open row. Every input here is read-only (which file,
+  // which side, which revision); the state this effect writes is deliberately
+  // not a dependency. Keying the request on its own write meant each progress
+  // update cancelled the request it had just started, and the row stayed on
+  // “读取改动…” forever (observed).
+  useEffect(() => {
+    if (!expanded || !root) return;
+    const requestKey = patchKey(expanded, staged);
     let cancelled = false;
-    setError(null);
-    codeApi
-      .gitDiff(root, path, staged)
-      .then((d) => {
-        if (!cancelled) setText(d);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(String(e));
-      });
+    // Keep the text already on screen while the new revision loads.
+    setPatch((prev) =>
+      prev?.key === requestKey
+        ? { ...prev, loading: true, error: null }
+        : { key: requestKey, loading: true, text: null, error: null },
+    );
+    codeApi.gitDiff(root, expanded, staged).then(
+      (text) => {
+        if (!cancelled) setPatch({ key: requestKey, loading: false, text, error: null });
+      },
+      (e: unknown) => {
+        if (!cancelled) setPatch({ key: requestKey, loading: false, text: null, error: String(e) });
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [root, path, staged]);
+  }, [expanded, root, staged, gitRev]);
 
-  const parsed = useMemo(() => parseUnifiedDiff(text), [text]);
-  const stats = useMemo(() => diffStats(parsed), [parsed]);
+  const shown = patch?.key === key ? patch : null;
 
   return (
     <div className="code-diff">
       <div className="code-diff-head">
-        <span className="code-diff-path" title={path}>
-          {path}
-        </span>
+        <span className="code-diff-title">改动</span>
         <span className="code-diff-stats">
-          <span className="is-add">+{stats.added}</span>
-          <span className="is-del">-{stats.removed}</span>
+          <span className="is-add">+{totals.added}</span>
+          <span className="is-del">-{totals.removed}</span>
         </span>
         <button
           type="button"
@@ -69,39 +107,131 @@ export function DiffView({ path }: { path: string }) {
         >
           {sideBySide ? "并排" : "统一"}
         </button>
+        <span className="spacer" />
         <button
           type="button"
-          className="code-diff-btn"
-          onClick={() => setDiff(null)}
-          title="关闭差异视图"
+          className="code-diff-icon"
+          disabled={refreshing}
+          onClick={() => {
+            setRefreshing(true);
+            void refreshGit().finally(() => setRefreshing(false));
+          }}
+          title="重新读取 git 状态与改动"
+          aria-label="刷新"
         >
-          关闭
+          <RefreshIcon />
+        </button>
+        <button
+          type="button"
+          className="code-diff-icon"
+          onClick={() => setDiff(false)}
+          title="关闭改动列表,回到文件"
+          aria-label="关闭"
+        >
+          <CloseIcon />
         </button>
       </div>
       <div className="code-diff-body">
-        {error && <div className="code-diff-error">{error}</div>}
-        {!error && stats.added === 0 && stats.removed === 0 && (
-          <div className="code-diff-empty">这个文件没有差异</div>
+        {!git?.isRepo && <div className="code-diff-empty">这个项目不是 git 仓库</div>}
+        {git?.isRepo && changes.length === 0 && (
+          <div className="code-diff-empty">{staged ? "暂存区没有改动" : "工作区没有改动"}</div>
         )}
-        {parsed.files.map((file, fi) =>
-          file.hunks.map((hunk, hi) =>
-            sideBySide ? (
-              <SideBySideHunk key={`${fi}-${hi}`} hunk={hunk} />
-            ) : (
-              <UnifiedHunk key={`${fi}-${hi}`} hunk={hunk} />
-            ),
-          ),
-        )}
+        {changes.map((change) => (
+          <ChangeRow
+            key={change.path}
+            change={change}
+            open={expanded === change.path}
+            patch={shown}
+            sideBySide={sideBySide}
+            onToggle={() =>
+              setExpanded((current) => (current === change.path ? null : change.path))
+            }
+          />
+        ))}
       </div>
     </div>
   );
 }
 
-function UnifiedHunk({
-  hunk,
+interface PatchState {
+  /** `patchKey` of the row this text belongs to. */
+  key: string;
+  loading: boolean;
+  text: string | null;
+  error: string | null;
+}
+
+/** One changed file: a header row (name, path, counts) and its patch when open. */
+function ChangeRow({
+  change,
+  open,
+  patch,
+  sideBySide,
+  onToggle,
 }: {
-  hunk: ReturnType<typeof parseUnifiedDiff>["files"][number]["hunks"][number];
+  change: FileChange;
+  open: boolean;
+  patch: PatchState | null;
+  sideBySide: boolean;
+  onToggle: () => void;
 }) {
+  const parsed = useMemo<ParsedDiff | null>(
+    () => (patch?.text != null ? parseUnifiedDiff(patch.text) : null),
+    [patch?.text],
+  );
+  const stats = useMemo(() => (parsed ? diffStats(parsed) : null), [parsed]);
+  const hunks = useMemo(() => parsed?.files.flatMap((file) => file.hunks) ?? [], [parsed]);
+  const dir = changeDir(change.path);
+
+  return (
+    <div className={`code-change${open ? " is-open" : ""}`}>
+      <button
+        type="button"
+        className="code-change-head"
+        aria-expanded={open}
+        title={change.origPath ? `${change.origPath} → ${change.path}` : change.path}
+        onClick={onToggle}
+      >
+        <span className={`code-change-kind is-${change.kind}`} aria-hidden="true" />
+        <span className="code-change-name">{changeName(change.path)}</span>
+        {change.origPath && (
+          <span className="code-change-was">← {changeName(change.origPath)}</span>
+        )}
+        {dir && <span className="code-change-dir">{dir}</span>}
+        <span className="spacer" />
+        <span className="code-diff-stats">
+          <span className="is-add">+{change.added}</span>
+          <span className="is-del">-{change.removed}</span>
+        </span>
+        <span className={`code-change-chevron${open ? " is-open" : ""}`} aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="code-change-body">
+          {patch?.loading && <div className="code-diff-empty">读取改动…</div>}
+          {patch?.error && <div className="code-diff-error">{patch.error}</div>}
+          {parsed && hunks.length === 0 && stats && (
+            <div className="code-diff-empty">
+              {stats.added === 0 && stats.removed === 0
+                ? "这个文件没有文本差异"
+                : "差异只能在这里看(二进制或过大)"}
+            </div>
+          )}
+          {hunks.map((hunk, index) =>
+            sideBySide ? (
+              <SideBySideHunk key={index} hunk={hunk} />
+            ) : (
+              <UnifiedHunk key={index} hunk={hunk} />
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UnifiedHunk({ hunk }: { hunk: DiffHunk }) {
   return (
     <div className="code-hunk">
       <div className="code-hunk-head">
@@ -121,11 +251,7 @@ function UnifiedHunk({
   );
 }
 
-function SideBySideHunk({
-  hunk,
-}: {
-  hunk: ReturnType<typeof parseUnifiedDiff>["files"][number]["hunks"][number];
-}) {
+function SideBySideHunk({ hunk }: { hunk: DiffHunk }) {
   const rows = useMemo(() => alignHunk(hunk), [hunk]);
   return (
     <div className="code-hunk is-side">
@@ -145,5 +271,42 @@ function SideBySideHunk({
         </div>
       ))}
     </div>
+  );
+}
+
+/** Refresh: a circular arrow, the action ZCode's git pane puts at the right. */
+function RefreshIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M13 8a5 5 0 1 1-1.7-3.8" />
+      <path d="M13 2.6V6h-3.4" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
   );
 }

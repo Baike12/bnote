@@ -7193,6 +7193,32 @@ input[type="range"] {
   background: var(--bg3);
   color: var(--text);
 }
+/* The two actions that live at the far right are icons: refresh, then close. */
+.code-diff-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.code-diff-icon:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.code-diff-icon:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.code-diff-icon:disabled:hover {
+  background: transparent;
+}
 .code-diff-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -7210,6 +7236,89 @@ input[type="range"] {
 }
 .code-diff-error {
   color: var(--danger);
+}
+.code-diff-title {
+  flex: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* The change list: one row per changed file (ZCode's git pane shape), the
+   patch underneath the expanded row. */
+.code-change {
+  border-bottom: 1px solid var(--border);
+}
+.code-change-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.code-change-head:hover,
+.code-change.is-open .code-change-head {
+  background: var(--bg2);
+}
+/* The kind is a dot, not a letter: the row already carries the name, and a
+   letter column would shift every row by its width. */
+.code-change-kind {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.code-change-kind.is-modified { background: var(--accent); }
+.code-change-kind.is-added { background: var(--ok); }
+.code-change-kind.is-deleted { background: var(--danger); }
+.code-change-kind.is-renamed { background: var(--accent); }
+.code-change-kind.is-conflicted { background: var(--danger); }
+.code-change-name {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.code-change-was {
+  flex: none;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.code-change-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.code-change-chevron {
+  flex: none;
+  width: 12px;
+  color: var(--text-faint);
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+.code-change-chevron.is-open {
+  transform: rotate(180deg);
+}
+.code-change-body {
+  border-top: 1px solid var(--border);
+  background: var(--bg0);
 }
 
 .code-hunk-head {

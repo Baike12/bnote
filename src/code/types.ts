@@ -57,6 +57,14 @@ export interface GitFileState {
   index: string;
   /** Worktree status: same set. */
   worktree: string;
+  /** Lines added in the worktree (vs the index); an untracked file counts its own lines. */
+  added: number;
+  /** Lines removed in the worktree (vs the index). */
+  removed: number;
+  /** Lines added in the index (vs HEAD). */
+  stagedAdded: number;
+  /** Lines removed in the index (vs HEAD). */
+  stagedRemoved: number;
 }
 
 /** Repository status. */

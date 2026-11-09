@@ -103,10 +103,16 @@ export interface CodeState {
   treeFocus: { path: string | null; seq: number } | null;
   /** Whether the problems panel is open. */
   problemsOpen: boolean;
-  /** The file whose diff is being viewed (null = none). */
-  diffPath: string | null;
-  /** Whether the diff view shows the staged side. */
+  /** Whether the diff pane (the change list) is open instead of the editor. */
+  diffOpen: boolean;
+  /** Whether the diff pane shows the staged side. */
   diffStaged: boolean;
+  /**
+   * Bumped whenever the git status is re-read. The diff pane's per-file cache
+   * is keyed on it, so a save (or a stage) refreshes the diffs on screen
+   * instead of leaving a stale patch from before the edit.
+   */
+  gitRev: number;
   /**
    * A pending jump request: target file + target position (LSP coordinates).
    *
@@ -159,7 +165,8 @@ export interface CodeState {
   /** Expand to a file: open every one of its ancestor directories. */
   expandTo: (path: string) => void;
   setProblemsOpen: (open: boolean) => void;
-  setDiff: (path: string | null, staged?: boolean) => void;
+  /** Show or hide the diff pane; `staged` also picks the side. */
+  setDiff: (open: boolean, staged?: boolean) => void;
   toggleDiffStaged: () => void;
   /**
    * The single entry point of a jump: record where the caret is now, open the
@@ -282,8 +289,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   expandedDirs: new Set<string>(),
   treeFocus: null,
   problemsOpen: false,
-  diffPath: null,
+  diffOpen: false,
   diffStaged: false,
+  gitRev: 0,
   jump: null,
   references: null,
   navBack: [],
@@ -332,8 +340,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       expandedDirs: new Set<string>(),
       treeFocus: null,
       problemsOpen: false,
-      diffPath: null,
+      diffOpen: false,
       diffStaged: false,
+      gitRev: 0,
       jump: null,
       references: null,
       navBack: [],
@@ -371,7 +380,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       expandedDirs: new Set<string>(),
       treeFocus: null,
       problemsOpen: false,
-      diffPath: null,
+      diffOpen: false,
       jump: null,
       references: null,
       navBack: [],
@@ -397,6 +406,8 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   async openFile(path) {
     const root = get().project?.root;
     if (!root) return;
+    // Choosing a file is a request to see that file: the diff pane is left
+    // first, whichever way the file was chosen (tree, quick open, jump).
     const existing = get().files[path];
     if (existing) {
       // Already open: just switch to it, do not re-read from disk (that would
@@ -404,6 +415,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       set((s) => ({
         tabs: s.tabs.includes(path) ? s.tabs : [...s.tabs, path],
         activePath: path,
+        diffOpen: false,
       }));
       return;
     }
@@ -423,6 +435,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     set((s) => ({
       tabs: s.tabs.includes(path) ? s.tabs : [...s.tabs, path],
       activePath: path,
+      diffOpen: false,
       files: {
         ...s.files,
         [path]: {
@@ -461,8 +474,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   },
 
   setActiveTab(path) {
-    if (get().activePath === path) return;
-    set({ activePath: path, diffPath: null });
+    set({ activePath: path, diffOpen: false });
   },
 
   updateContent(path, content) {
@@ -500,9 +512,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     if (!root) return;
     try {
       const git = await codeApi.gitStatus(root);
-      set({ git });
+      set((s) => ({ git, gitRev: s.gitRev + 1 }));
     } catch {
-      set({ git: null });
+      set((s) => ({ git: null, gitRev: s.gitRev + 1 }));
     }
   },
 
@@ -602,9 +614,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     set({ problemsOpen: open });
   },
 
-  setDiff(path, staged) {
+  setDiff(open, staged) {
     set((s) => ({
-      diffPath: path,
+      diffOpen: open,
       diffStaged: staged ?? s.diffStaged,
     }));
   },

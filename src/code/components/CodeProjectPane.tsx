@@ -52,7 +52,7 @@ export function CodeProjectPane() {
   const files = useCodeStore((s) => s.files);
   const treeOpen = useCodeStore((s) => s.treeOpen);
   const problemsOpen = useCodeStore((s) => s.problemsOpen);
-  const diffPath = useCodeStore((s) => s.diffPath);
+  const diffOpen = useCodeStore((s) => s.diffOpen);
   const references = useCodeStore((s) => s.references);
   const git = useCodeStore((s) => s.git);
   const lspStates = useCodeStore((s) => s.lspStates);
@@ -157,20 +157,25 @@ export function CodeProjectPane() {
       <div className="code-toolbar" data-tauri-drag-region="deep">
         <button
           type="button"
-          className={`code-tool-btn${treeOpen ? " is-on" : ""}`}
-          title="文件树"
+          className={`code-tool-btn${treeOpen && !diffOpen ? " is-on" : ""}`}
+          title="文件树:回到当前文件(⌘B 显示/隐藏)"
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setTreeOpen(!treeOpen)}
+          onClick={() => {
+            // Choosing a file is what the tree is for, so this button leaves
+            // the change list and shows the focused file; the drawer is opened
+            // when it is closed and never closed from here (⌘B does that).
+            setDiff(false);
+            if (!treeOpen) setTreeOpen(true);
+          }}
         >
           文件树
         </button>
         <button
           type="button"
-          className="code-tool-btn"
-          title="查看当前文件的 git 差异"
-          disabled={!activePath}
+          className={`code-tool-btn${diffOpen ? " is-on" : ""}`}
+          title="改动列表:每个改过的文件展开看差异(⌘⇧D)"
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => activePath && setDiff(activePath)}
+          onClick={() => setDiff(!diffOpen)}
         >
           差异
         </button>
@@ -252,8 +257,8 @@ export function CodeProjectPane() {
           </>
         )}
         <div className="code-main">
-          {diffPath ? (
-            <DiffView path={diffPath} />
+          {diffOpen ? (
+            <DiffView />
           ) : activeFile?.binary && isRasterImage(activeFile.path) ? (
             // A bitmap is viewed right in the panel (the asset protocol reads
             // the original file, the editor is not involved).

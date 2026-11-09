@@ -28,6 +28,15 @@ pub struct GitFileState {
     pub index: String,
     /// Worktree state: same set.
     pub worktree: String,
+    /// Lines added in the worktree (vs the index); an untracked file counts
+    /// its own lines, 0 for a binary or an oversized file.
+    pub added: u32,
+    /// Lines removed in the worktree (vs the index).
+    pub removed: u32,
+    /// Lines added in the index (vs HEAD).
+    pub staged_added: u32,
+    /// Lines removed in the index (vs HEAD).
+    pub staged_removed: u32,
 }
 
 /// Overview of the repository state.
@@ -89,6 +98,7 @@ pub fn parse_status_v2(stdout: &[u8]) -> ParsedStatus {
                     orig_path: None,
                     index,
                     worktree,
+                    ..Default::default()
                 });
             }
             Some(b'2') => {
@@ -104,6 +114,7 @@ pub fn parse_status_v2(stdout: &[u8]) -> ParsedStatus {
                     orig_path: orig,
                     index,
                     worktree,
+                    ..Default::default()
                 });
             }
             Some(b'u') => {
@@ -117,6 +128,7 @@ pub fn parse_status_v2(stdout: &[u8]) -> ParsedStatus {
                     orig_path: None,
                     index,
                     worktree,
+                    ..Default::default()
                 });
             }
             Some(b'?') => {
@@ -125,6 +137,7 @@ pub fn parse_status_v2(stdout: &[u8]) -> ParsedStatus {
                     orig_path: None,
                     index: "?".to_string(),
                     worktree: "?".to_string(),
+                    ..Default::default()
                 });
             }
             // `!` means ignored: it never reaches the UI.
@@ -216,6 +229,11 @@ pub fn repo_root(root: &Path) -> Option<PathBuf> {
 }
 
 /// Reads the repository status.
+///
+/// The per-file line counts come from `--numstat` (the same pair of calls the
+/// git pane of ZCode makes): one against the index for the worktree side and
+/// one against HEAD for the staged side. An untracked file is not in either
+/// list, so its worktree count is its own line count.
 pub fn status(root: &Path) -> Result<GitStatus, String> {
     let repo = repo_root(root);
     let Some(repo) = repo else {
@@ -234,7 +252,37 @@ pub fn status(root: &Path) -> Result<GitStatus, String> {
             "--untracked-files=all",
         ],
     )?;
-    let parsed = parse_status_v2(&stdout);
+    let mut parsed = parse_status_v2(&stdout);
+    // A numstat failure must not lose the status: the list is still worth
+    // showing without the counts, so a failed call degrades to empty stats.
+    let worktree_stats = git(&repo, &["diff", "--numstat", "-z", "--find-renames", "--"])
+        .map(|b| parse_numstat_z(&b))
+        .unwrap_or_default();
+    let staged_stats = git(
+        &repo,
+        &[
+            "diff",
+            "--cached",
+            "--numstat",
+            "-z",
+            "--find-renames",
+            "--",
+        ],
+    )
+    .map(|b| parse_numstat_z(&b))
+    .unwrap_or_default();
+    for file in &mut parsed.files {
+        if let Some(stat) = worktree_stats.get(&file.path) {
+            file.added = stat.added;
+            file.removed = stat.removed;
+        } else if file.worktree == "?" {
+            file.added = untracked_line_count(&repo.join(&file.path));
+        }
+        if let Some(stat) = staged_stats.get(&file.path) {
+            file.staged_added = stat.added;
+            file.staged_removed = stat.removed;
+        }
+    }
     Ok(GitStatus {
         is_repo: true,
         root: Some(repo.to_string_lossy().to_string()),
@@ -244,6 +292,88 @@ pub fn status(root: &Path) -> Result<GitStatus, String> {
         behind: parsed.behind,
         files: parsed.files,
     })
+}
+
+/// One file's line counts.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GitLineStat {
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// Parses `git diff --numstat -z --find-renames`.
+///
+/// Records are NUL-separated `added\tremoved\tpath`; a binary file reports
+/// `-` for both counts. With `-z` a rename has an **empty path field** and the
+/// next two records are the old and the new path (measured against git 2.x,
+/// not taken from the docs): both paths get the same counts, so a rename row
+/// finds its stats whichever side it is looked up from.
+pub fn parse_numstat_z(stdout: &[u8]) -> std::collections::BTreeMap<String, GitLineStat> {
+    fn number(field: &[u8]) -> u32 {
+        if field == b"-" {
+            return 0;
+        }
+        String::from_utf8_lossy(field).parse().unwrap_or(0)
+    }
+    let records: Vec<&[u8]> = stdout
+        .split(|b| *b == 0)
+        .filter(|r| !r.is_empty())
+        .collect();
+    let mut stats = std::collections::BTreeMap::new();
+    let mut index = 0;
+    while index < records.len() {
+        let record = records[index];
+        index += 1;
+        let fields: Vec<&[u8]> = record.splitn(3, |b| *b == b'\t').collect();
+        if fields.len() < 3 {
+            continue;
+        }
+        let stat = GitLineStat {
+            added: number(fields[0]),
+            removed: number(fields[1]),
+        };
+        if !fields[2].is_empty() {
+            stats.insert(String::from_utf8_lossy(fields[2]).to_string(), stat);
+            continue;
+        }
+        let old = records.get(index).copied().unwrap_or_default();
+        let new = records.get(index + 1).copied().unwrap_or_default();
+        index += 2;
+        if new.is_empty() {
+            continue;
+        }
+        stats.insert(String::from_utf8_lossy(new).to_string(), stat);
+        if !old.is_empty() {
+            stats.insert(String::from_utf8_lossy(old).to_string(), stat);
+        }
+    }
+    stats
+}
+
+/// Files above this size (or this count) get no untracked line count: the
+/// count is a nicety in the change list, never worth reading a huge tree for.
+const UNTRACKED_STAT_MAX_BYTES: u64 = 256 * 1024;
+
+/// The line count of an untracked file; 0 for a binary or an oversized file.
+fn untracked_line_count(path: &Path) -> u32 {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return 0;
+    };
+    if !meta.is_file() || meta.len() > UNTRACKED_STAT_MAX_BYTES {
+        return 0;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return 0;
+    };
+    // NUL bytes mean binary: "lines" would be meaningless.
+    if bytes.contains(&0) {
+        return 0;
+    }
+    let mut lines = bytes.iter().filter(|b| **b == b'\n').count() as u32;
+    if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+        lines += 1;
+    }
+    lines
 }
 
 /// Gets the diff of one file (unified diff text).
@@ -422,6 +552,69 @@ mod tests {
         assert!(d.contains("@@"), "{}", d);
         assert!(d.contains("-two"), "{}", d);
         assert!(d.contains("+TWO"), "{}", d);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_numstat_records_including_binary_and_rename_shapes() {
+        // Measured shapes (git 2.x, -z): `added\tremoved\tpath`, `-` for a
+        // binary, and for a rename an empty path field followed by old and new.
+        let raw = b"2\t1\tf.txt\0-\t-\timage.png\01\t0\t\0g.txt\0h.txt\0";
+        let stats = parse_numstat_z(raw);
+        assert_eq!(
+            stats.get("f.txt").map(|s| (s.added, s.removed)),
+            Some((2, 1))
+        );
+        assert_eq!(
+            stats.get("image.png").map(|s| (s.added, s.removed)),
+            Some((0, 0)),
+            "a binary file reports - for both counts"
+        );
+        // Both sides of the rename resolve to the same counts.
+        assert_eq!(stats.get("h.txt").map(|s| s.added), Some(1));
+        assert_eq!(stats.get("g.txt").map(|s| s.added), Some(1));
+    }
+
+    #[test]
+    fn status_carries_worktree_staged_and_untracked_line_counts() {
+        let dir = tmpdir("numstat-status");
+        git_init(&dir);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.join("s.txt"), "x\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        // Worktree change: one line replaced, one added.
+        std::fs::write(dir.join("a.txt"), "one\nTWO\nthree\n").unwrap();
+        // Staged addition.
+        std::fs::write(dir.join("s.txt"), "x\ny\n").unwrap();
+        Command::new("git")
+            .args(["add", "s.txt"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        // Untracked: its own line count is the added count.
+        std::fs::write(dir.join("fresh.txt"), "brand new\nfile\n").unwrap();
+
+        let st = status(&dir).unwrap();
+        let find = |path: &str| st.files.iter().find(|f| f.path == path).unwrap();
+        let a = find("a.txt");
+        assert_eq!((a.added, a.removed), (2, 1), "worktree vs index");
+        let s = find("s.txt");
+        assert_eq!((s.staged_added, s.staged_removed), (1, 0), "index vs HEAD");
+        let fresh = find("fresh.txt");
+        assert_eq!(
+            (fresh.added, fresh.removed),
+            (2, 0),
+            "untracked counts its lines"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

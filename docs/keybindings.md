@@ -129,7 +129,7 @@ Active while the code editor has focus. A separate world: `Cmd+S` saves the code
 | `Cmd+B` | 显示/隐藏文件树 — `code.toggle-tree` |
 | `Cmd+F12` | 跳转到类型定义 — `code.go-to-type-definition` |
 | `Cmd+S` | 保存文件 — `code.save-file` |
-| `Cmd+Shift+D` | 查看当前文件的差异 — `code.git-diff` |
+| `Cmd+Shift+D` | 查看改动(每个文件展开看差异) — `code.git-diff` |
 | `Cmd+Shift+E` | 聚焦文件树 — `code.focus-tree` |
 | `Cmd+Shift+F` | 在项目中查找 — `code.find-in-files` |
 | `Cmd+Shift+M` | 显示/隐藏问题面板 — `code.toggle-problems` |
