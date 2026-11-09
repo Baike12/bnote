@@ -8,6 +8,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { buildTree, visibleRows, type TreeNode } from "../tree";
+import { treeKeyAction } from "../treeKeys";
 import { useCodeStore } from "../store";
 import { activeCodeEditor } from "../editor/registry";
 import { FileTypeIcon, FolderTypeIcon } from "./FileIcon";
@@ -46,8 +47,9 @@ const PAD = 4;
  *
  * **Keyboard reachable**: ⌘⇧E (the command `code.focus-tree`) hands the
  * focus to the whole tree; with an open file it expands to it and stops on
- * that row; afterwards ↑↓ walk the rows, →← expand / collapse, Enter opens,
- * Esc gives the focus back to the editor.
+ * that row; afterwards ↑↓ (or `j` / `k`) walk the rows, →← expand / collapse,
+ * Enter opens the row, Esc gives the focus back to the editor. The key table
+ * lives in `../treeKeys.ts`.
  *
  * The focus sits on the **container** and not on a row button: the virtual
  * scroll unmounts row elements while scrolling, so a focus on a row would be
@@ -209,41 +211,40 @@ export const FileTree = memo(function FileTree({
     const index = rowIndex.get(currentPath);
     if (index === undefined) return;
     const row = rows[index];
-    const isDir = row.node.isDir;
-    const open = expandedDirs.has(row.node.path);
+    const action = treeKeyAction(event);
+    if (!action) return;
 
-    switch (event.key) {
-      case "ArrowDown":
+    switch (action) {
+      case "down":
         moveFocus(1);
         break;
-      case "ArrowUp":
+      case "up":
         moveFocus(-1);
         break;
-      case "Home":
+      case "first":
         revealTo(rows[0].node.path);
         break;
-      case "End":
+      case "last":
         revealTo(rows[rows.length - 1].node.path);
         break;
-      case "ArrowRight":
+      case "right":
         // Expand when collapsed; when already expanded, move into the first
         // child (the same as a file manager).
-        if (isDir && !open) toggleDir(row.node.path);
+        if (row.node.isDir && !expandedDirs.has(row.node.path)) toggleDir(row.node.path);
         else moveFocus(1);
         break;
-      case "ArrowLeft":
-        if (isDir && open) toggleDir(row.node.path);
+      case "left":
+        if (row.node.isDir && expandedDirs.has(row.node.path)) toggleDir(row.node.path);
         else {
           const slash = row.node.path.lastIndexOf("/");
           if (slash > 0) revealTo(row.node.path.slice(0, slash));
         }
         break;
-      case "Enter":
-      case " ":
-        if (isDir) toggleDir(row.node.path);
+      case "activate":
+        if (row.node.isDir) toggleDir(row.node.path);
         else onOpen(row.node.path);
         break;
-      case "Escape":
+      case "release":
         // Give the keyboard back to the code: after browsing through files
         // the user should not have to click the editor again. Without an
         // editor (image / binary / diff view) it just releases the focus.
@@ -253,8 +254,6 @@ export const FileTree = memo(function FileTree({
           else hostRef.current?.blur();
         }
         break;
-      default:
-        return;
     }
     event.preventDefault();
     event.stopPropagation();
