@@ -32,7 +32,11 @@ function makeState(doc: string): EditorState {
 /** Tree-ready path: force a full parse after creating the state. */
 function parsedState(doc: string): EditorState {
   const state = makeState(doc);
-  ensureSyntaxTree(state, state.doc.length);
+  // The default budget is 100ms; on a loaded machine the parse still misses it
+  // and `ensureSyntaxTree` returns null, so the test quietly exercised the scan
+  // fallback instead of the tree path it is named for. This budget is larger
+  // than any real parse of the documents used here.
+  ensureSyntaxTree(state, state.doc.length, 10_000);
   return state;
 }
 
