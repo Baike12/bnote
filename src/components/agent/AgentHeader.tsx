@@ -195,6 +195,7 @@ export function AgentHeader({
           className={`icon-btn${historyOpen ? " is-active" : ""}`}
           title="历史会话(这份材料保存过的对话)"
           aria-pressed={historyOpen}
+          data-history-toggle=""
           onClick={onToggleHistory}
         >
           <svg
