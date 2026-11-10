@@ -126,11 +126,19 @@ export function fromDraft(draft: CatalogDraft): DraftResult {
   };
 }
 
-/** A fresh provider draft (the backend fills the missing id/name on save). */
-export function newProvider(index: number): ProviderDraft {
+/**
+ * A fresh provider draft. The id must be unique: provider ids are what a
+ * selection and a session snapshot name, and a duplicate — which a delete plus
+ * "add" produces when the id comes from the list length — makes every lookup
+ * hit the first one, so the second provider can never be selected.
+ */
+export function newProvider(index: number, existing: readonly ProviderDraft[] = []): ProviderDraft {
+  const taken = new Set(existing.map((p) => p.id));
+  let n = index + 1;
+  while (taken.has(`provider-${n}`)) n += 1;
   return {
-    id: `provider-${index + 1}`,
-    name: `供应商 ${index + 1}`,
+    id: `provider-${n}`,
+    name: `供应商 ${n}`,
     protocol: "openai",
     base_url: "",
     api_key: "",
@@ -138,10 +146,14 @@ export function newProvider(index: number): ProviderDraft {
   };
 }
 
-export function newModel(index: number): ModelDraft {
+/** A fresh model draft; the same uniqueness rule inside one provider. */
+export function newModel(index: number, existing: readonly ModelDraft[] = []): ModelDraft {
+  const taken = new Set(existing.map((m) => m.id));
+  let n = index + 1;
+  while (taken.has(`model-${n}`)) n += 1;
   return {
-    id: `model-${index + 1}`,
-    name: `模型 ${index + 1}`,
+    id: `model-${n}`,
+    name: `模型 ${n}`,
     context_window: 128_000,
     max_tokens: 8_192,
     vision: false,

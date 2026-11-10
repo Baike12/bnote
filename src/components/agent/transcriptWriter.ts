@@ -135,6 +135,11 @@ export function createTranscriptWriter(deps: TranscriptWriterDeps): TranscriptWr
   function persistModelLine(convKey: string, model: SessionModelConfig): void {
     const path = deps.pathOf(convKey);
     if (!path) return;
+    // The metadata line must stay first. A switch before the first message would
+    // otherwise create a record holding a single `model` line: the session list
+    // shows it as an empty conversation and a restore cannot reopen it. The
+    // choice is not lost — `deps.modelOf` feeds it into the first metadata line.
+    if (!metaWritten.get(convKey)) return;
     append(convKey, path, serializeTranscript([{ type: "model", at: Date.now(), model }]));
   }
 

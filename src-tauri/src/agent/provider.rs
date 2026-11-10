@@ -23,6 +23,19 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Retries for one request, matching Claude Code's `DEFAULT_MAX_RETRIES`.
 const MAX_RETRIES: usize = 10;
+
+/// Request-body keys the builder owns. A thinking-level patch may map any
+/// gateway-specific field, but not these: changing them changes *which*
+/// conversation is sent, not how the reasoning channel is spelled.
+const RESERVED_BODY_KEYS: [&str; 7] = [
+    "model",
+    "stream",
+    "messages",
+    "system",
+    "tools",
+    "max_tokens",
+    "input",
+];
 /// The error string that means "the user stopped the turn" — the session turns
 /// it into a normal turn end, not an error bubble.
 pub const ABORTED: &str = "ABORTED";
@@ -471,7 +484,18 @@ impl Provider {
         // A patch always lands on an object body; a level whose patch is not an
         // object is a configuration error that normalize already repaired.
         if patch.is_object() {
-            super::models::merge_patch(body, patch);
+            // The patch is user data (agent.json), merged at the body root. The
+            // keys below are owned by the request builder: a level that renamed
+            // `model` or nulled `messages` would ship a conversation the picker
+            // and the record never describe. Everything else stays free, which
+            // is the point of a hand-written mapping.
+            let mut safe = patch.clone();
+            if let Some(map) = safe.as_object_mut() {
+                for key in RESERVED_BODY_KEYS {
+                    map.remove(key);
+                }
+            }
+            super::models::merge_patch(body, &safe);
         }
     }
 
@@ -1203,6 +1227,45 @@ mod tests {
             out.extend(state.apply(turn, &v).unwrap());
         }
         out
+    }
+
+    /// A thinking-level patch is user data merged at the request-body root. The
+    /// keys the request builder owns stay untouched; a level that renamed
+    /// `model` or nulled `messages` would ship a conversation the picker and the
+    /// session record never describe.
+    #[test]
+    fn a_thinking_level_cannot_rewrite_the_request_it_lands_on() {
+        let provider = Provider {
+            kind: "openai".into(),
+            base_url: "https://example.test/v1".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            max_tokens: 8_192,
+            provider_id: "p".into(),
+            model_id: "m".into(),
+            thinking_level: "high".into(),
+            thinking_patch: json!({
+                "model": "other",
+                "stream": false,
+                "messages": null,
+                "max_tokens": 1,
+                "reasoning_effort": "high"
+            }),
+            thinking_off_patch: json!({}),
+            client: reqwest::Client::new(),
+        };
+        let mut body = json!({
+            "model": "m",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 8_192
+        });
+        provider.apply_thinking(&mut body, true);
+        assert_eq!(body["model"], "m");
+        assert_eq!(body["stream"], true);
+        assert!(body["messages"].is_array());
+        assert_eq!(body["max_tokens"], 8_192);
+        assert_eq!(body["reasoning_effort"], "high");
     }
 
     #[test]

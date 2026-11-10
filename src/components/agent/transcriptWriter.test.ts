@@ -123,6 +123,39 @@ describe("transcript writer: one line per provider round", () => {
   });
 });
 
+describe("transcript writer: the model line", () => {
+  const selection = {
+    provider: "anthropic",
+    model: "m2",
+    baseUrl: "",
+    maxTokens: 8192,
+    contextWindow: 128_000,
+  };
+
+  it("waits for the metadata line: a switch before the first message records nothing", async () => {
+    const writer = makeWriter();
+    writer.persistModelLine("c1", selection);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A record holding only a model line is listed as an empty conversation and
+    // cannot be reopened; the pick survives through the metadata line instead.
+    expect(sink.appended).toHaveLength(0);
+
+    writer.persistUserLine("c1", { type: "user", at: 1, text: "问" });
+    await vi.waitFor(() => expect(sink.appended).toHaveLength(1));
+    expect(lines(sink.appended[0].data)[0]).toMatchObject({ type: "meta", model: { model: "m" } });
+  });
+
+  it("appends after the metadata line once the session has a round", async () => {
+    const writer = makeWriter();
+    writer.persistUserLine("c1", { type: "user", at: 1, text: "问" });
+    writer.persistModelLine("c1", selection);
+    await vi.waitFor(() => expect(sink.appended).toHaveLength(2));
+    expect(lines(sink.appended[1].data)).toEqual([
+      { type: "model", at: expect.any(Number), model: selection },
+    ]);
+  });
+});
+
 describe("transcript writer: one writer per record", () => {
   it("two appends land in queue order even when the first one is slow", async () => {
     let release!: () => void;

@@ -223,7 +223,13 @@ pub fn default_levels(
     };
     // The old anthropic budget: half the reply ceiling, clamped. The ladder
     // keeps `high` exactly there so a migrated config sends what it sent.
-    let high = ((max_tokens.max(1024) as f64 / 2.0) as u64).clamp(1024, 16384);
+    //
+    // Every budget stays below `max_tokens`: Anthropic rejects a request whose
+    // `thinking.budget_tokens` is not smaller than its `max_tokens` (400), and
+    // the request body carries the model's `max_tokens` verbatim.
+    let ceiling = u64::from(max_tokens.saturating_sub(1).max(1));
+    let budget = |desired: u64| desired.max(1024).min(ceiling).max(1);
+    let high = budget(((max_tokens.max(1024) as f64 / 2.0) as u64).clamp(1024, 16384));
     if protocol == "anthropic" {
         return vec![
             // Anthropic has no "disabled" value worth sending: omitting the
@@ -231,11 +237,11 @@ pub fn default_levels(
             level(LEVEL_OFF, json!({"thinking": null})),
             level(
                 "low",
-                json!({"thinking": {"type": "enabled", "budget_tokens": (high / 4).max(1024)}}),
+                json!({"thinking": {"type": "enabled", "budget_tokens": budget(high / 4)}}),
             ),
             level(
                 "medium",
-                json!({"thinking": {"type": "enabled", "budget_tokens": (high / 2).max(1024)}}),
+                json!({"thinking": {"type": "enabled", "budget_tokens": budget(high / 2)}}),
             ),
             level(
                 "high",
@@ -243,7 +249,7 @@ pub fn default_levels(
             ),
             level(
                 "max",
-                json!({"thinking": {"type": "enabled", "budget_tokens": (high * 2).min(32768)}}),
+                json!({"thinking": {"type": "enabled", "budget_tokens": budget(high * 2)}}),
             ),
         ];
     }
@@ -442,11 +448,26 @@ pub fn selection_for_model(
 /// ids, valid protocols, a context window / output ceiling always set, at
 /// least one thinking level per model and a default level inside that list.
 pub fn normalize(providers: &mut Vec<ProviderEntry>, default: &mut Option<ModelSelection>) {
+    // Provider ids are what a selection, a subagent override and a session
+    // snapshot name; a duplicate makes every lookup (`resolve`, both pickers)
+    // hit the first one, so the second provider can never be selected. The
+    // settings page generates ids from a length that can repeat after a delete,
+    // hence the dedupe here rather than only in the editor.
+    let mut seen_providers: Vec<String> = Vec::new();
     for (index, provider) in providers.iter_mut().enumerate() {
         provider.id = provider.id.trim().to_string();
         if provider.id.is_empty() {
             provider.id = format!("provider-{}", index + 1);
         }
+        if seen_providers.contains(&provider.id) {
+            let base = provider.id.clone();
+            let mut suffix = 2;
+            while seen_providers.contains(&format!("{}-{}", base, suffix)) {
+                suffix += 1;
+            }
+            provider.id = format!("{}-{}", base, suffix);
+        }
+        seen_providers.push(provider.id.clone());
         if provider.name.trim().is_empty() {
             provider.name = provider.id.clone();
         }
@@ -712,6 +733,51 @@ mod tests {
         assert!(err.contains("nope"), "{err}");
     }
 
+    /// Two providers with the same id make `resolve` and both pickers hit the
+    /// first one, so the second can never be selected. The settings page derives
+    /// ids from the list length, which repeats after a delete.
+    #[test]
+    fn normalize_makes_provider_ids_unique() {
+        let mut providers = vec![
+            ProviderEntry {
+                id: "provider-2".into(),
+                name: "".into(),
+                protocol: "anthropic".into(),
+                base_url: "".into(),
+                api_key: "a".into(),
+                models: vec![ModelEntry::default()],
+            },
+            ProviderEntry {
+                id: "provider-2".into(),
+                name: "".into(),
+                protocol: "anthropic".into(),
+                base_url: "".into(),
+                api_key: "b".into(),
+                models: vec![ModelEntry::default()],
+            },
+            ProviderEntry {
+                id: "provider-2".into(),
+                name: "".into(),
+                protocol: "anthropic".into(),
+                base_url: "".into(),
+                api_key: "c".into(),
+                models: vec![ModelEntry::default()],
+            },
+        ];
+        let mut default = None;
+        normalize(&mut providers, &mut default);
+        let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["provider-2", "provider-2-2", "provider-2-3"]);
+        // And selecting the third provider's model resolves to the third key.
+        let third = providers[2].models[0].id.clone();
+        let selection = ModelSelection {
+            provider_id: "provider-2-3".into(),
+            model_id: third,
+            thinking: providers[2].models[0].default_thinking.clone(),
+        };
+        assert_eq!(resolve(&providers, &selection).unwrap().api_key, "c");
+    }
+
     #[test]
     fn normalize_seeds_missing_fields_and_points_the_default_at_a_real_model() {
         let mut providers = vec![ProviderEntry {
@@ -748,6 +814,29 @@ mod tests {
         assert_eq!(by_id("high")["thinking"]["budget_tokens"], 4096);
         assert!(by_id("max")["thinking"]["budget_tokens"].as_u64().unwrap() > 4096);
         assert!(by_id(LEVEL_OFF)["thinking"].is_null());
+    }
+
+    /// Anthropic rejects a request whose `thinking.budget_tokens` is not smaller
+    /// than `max_tokens`; the body carries the model's `max_tokens` verbatim, so
+    /// every seeded level has to stay under it — the default model included.
+    #[test]
+    fn every_anthropic_budget_stays_below_the_reply_ceiling() {
+        for max_tokens in [1024u32, 2048, 8192, 16_384, 64_000] {
+            let levels = default_levels("anthropic", "claude-sonnet-5", "", max_tokens);
+            for level in levels.iter().filter(|l| l.id != LEVEL_OFF) {
+                let budget = level.patch["thinking"]["budget_tokens"]
+                    .as_u64()
+                    .unwrap_or(0);
+                assert!(
+                    budget < max_tokens as u64,
+                    "level {} asked for budget {} with max_tokens {}",
+                    level.id,
+                    budget,
+                    max_tokens
+                );
+                assert!(budget > 0, "level {} sent a zero budget", level.id);
+            }
+        }
     }
 
     #[test]

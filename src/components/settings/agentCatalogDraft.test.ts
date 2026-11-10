@@ -110,4 +110,19 @@ describe("new entries", () => {
       }).ok,
     ).toBe(true);
   });
+
+  // Provider ids are what a selection names: two providers sharing one id make
+  // every lookup hit the first, so the second can never be selected. Deleting a
+  // provider and adding another used to produce exactly that collision.
+  it("never reuse an id that is already taken", () => {
+    const existing = [newProvider(0), newProvider(1)];
+    expect(existing.map((p) => p.id)).toEqual(["provider-1", "provider-2"]);
+    const kept = existing[1];
+    if (!kept) throw new Error("fixture");
+    const afterDelete = newProvider(existing.length, [kept]);
+    expect(afterDelete.id).toBe("provider-3");
+
+    const models = [newModel(0), newModel(1)];
+    expect(newModel(1, models).id).toBe("model-3");
+  });
 });

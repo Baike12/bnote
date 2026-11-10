@@ -1557,6 +1557,62 @@ mod tests {
             .unwrap_or(true));
     }
 
+    /// A record whose model left the catalog still names the provider it ran on.
+    /// That provider's key and endpoint are the ones to use: the legacy mirror
+    /// holds the *default* provider's key, so pairing it with the record's base
+    /// URL would send one provider's credential to another provider's endpoint.
+    #[test]
+    fn a_removed_model_restores_on_its_own_provider_key_and_endpoint() {
+        use crate::agent::models::{ModelEntry, ProviderEntry};
+        let mut cfg = AgentConfig {
+            providers: vec![
+                ProviderEntry {
+                    id: "a".into(),
+                    name: "A".into(),
+                    protocol: "anthropic".into(),
+                    base_url: "https://a.example".into(),
+                    api_key: "sk-a".into(),
+                    models: vec![ModelEntry {
+                        id: "retired-model".into(),
+                        ..Default::default()
+                    }],
+                },
+                ProviderEntry {
+                    id: "b".into(),
+                    name: "B".into(),
+                    protocol: "openai".into(),
+                    base_url: "https://b.example".into(),
+                    api_key: "sk-b".into(),
+                    models: vec![ModelEntry {
+                        id: "live".into(),
+                        ..Default::default()
+                    }],
+                },
+            ],
+            default_selection: Some(ModelSelection {
+                provider_id: "b".into(),
+                model_id: "live".into(),
+                thinking: "".into(),
+            }),
+            ..Default::default()
+        };
+        cfg.normalize();
+        // The model is gone from every list (the user deleted it after the session).
+        let snapshot = SessionModelConfig {
+            provider_id: "a".into(),
+            provider: "anthropic".into(),
+            model: "deleted-model".into(),
+            base_url: "https://a.example".into(),
+            max_tokens: 8192,
+            context_window: 200_000,
+            ..Default::default()
+        };
+        let resolved = cfg.resolve_session(None, Some(&snapshot)).unwrap();
+        assert_eq!(resolved.api_key, "sk-a");
+        assert_eq!(resolved.base_url, "https://a.example");
+        assert_eq!(resolved.provider_name, "A");
+    }
+
     #[test]
     fn the_preview_version_is_parsed_only_from_the_snapshot_file_name() {
         assert_eq!(

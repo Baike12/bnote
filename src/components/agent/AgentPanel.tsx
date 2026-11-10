@@ -126,6 +126,15 @@ export function AgentPanel() {
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
   /** convKey → the catalog selection that session runs on (the picker's single source; a not-yet-started session keeps the choice its start will use). */
   const selectionByConvRef = useRef<Map<string, ModelSelection>>(new Map());
+  /**
+   * convKey → the last model-switch request issued. The thinking slider emits
+   * one pick per level crossed, so switches overlap; only the newest request may
+   * write its answer back, otherwise a slow older reply relabels the chip (and
+   * appends its snapshot to the record) after a newer one already won.
+   */
+  const modelSeqRef = useRef<Map<string, number>>(new Map());
+  /** convKey → the queue that keeps the backend's `set_model` calls in issue order. */
+  const modelChainRef = useRef<Map<string, Promise<void>>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const convsRef = useRef<Conv[]>([]);
@@ -1384,27 +1393,38 @@ export function AgentPanel() {
       selectionByConvRef.current.set(key, selection);
       updateConv(key, (c) => ({ ...c, selection }));
       if (!conv.sessionId) return;
-      void agentApi
-        .setSessionModel(conv.sessionId, selection)
-        .then((res) => {
+      const sessionId = conv.sessionId;
+      const seq = (modelSeqRef.current.get(key) ?? 0) + 1;
+      modelSeqRef.current.set(key, seq);
+      const swap = async () => {
+        try {
+          const res = await agentApi.setSessionModel(sessionId, selection);
+          // A newer pick has been made while this one was in flight: its
+          // request owns the chip, the record and the backend from now on.
+          if (modelSeqRef.current.get(key) !== seq) return;
           const current = convsRef.current.find((c) => c.key === key);
-          if (!current || current.sessionId !== conv.sessionId) return;
+          if (!current || current.sessionId !== sessionId) return;
           modelByConvRef.current.set(key, res.model);
           selectionByConvRef.current.set(key, res.selection);
           updateConv(key, (c) => ({ ...c, model: res.model, selection: res.selection }));
           writer.persistModelLine(key, res.model);
-        })
-        .catch((e) => {
-          // The picker already shows the new choice; put the session's own
-          // back so the chip does not claim a model the backend refused.
+        } catch (e) {
+          // Only the newest pick rolls back; an older failure says nothing about
+          // the model the session ended up on.
+          if (modelSeqRef.current.get(key) !== seq) return;
           const current = convsRef.current.find((c) => c.key === key);
-          if (current && current.sessionId === conv.sessionId) {
+          if (current && current.sessionId === sessionId) {
             if (previous) selectionByConvRef.current.set(key, previous);
             else selectionByConvRef.current.delete(key);
             updateConv(key, (c) => ({ ...c, selection: previous }));
           }
           showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
-        });
+        }
+      };
+      // Serialised per conversation: the backend applies `set_model` in arrival
+      // order, so unordered requests could leave it on an earlier pick.
+      const chain = (modelChainRef.current.get(key) ?? Promise.resolve()).then(swap);
+      modelChainRef.current.set(key, chain);
     },
     [showToast, updateConv, writer],
   );

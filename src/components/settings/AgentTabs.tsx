@@ -470,7 +470,9 @@ function ProviderEditor({
           <button
             className="btn btn-ghost small"
             onClick={() =>
-              onPatch({ models: [...provider.models, newModel(provider.models.length)] })
+              onPatch({
+                models: [...provider.models, newModel(provider.models.length, provider.models)],
+              })
             }
           >
             添加模型
@@ -588,7 +590,12 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
           <button
             className="btn btn-ghost small"
             onClick={() =>
-              edit({ providers: [...draft.providers, newProvider(draft.providers.length)] })
+              edit({
+                providers: [
+                  ...draft.providers,
+                  newProvider(draft.providers.length, draft.providers),
+                ],
+              })
             }
           >
             添加供应商

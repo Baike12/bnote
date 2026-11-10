@@ -258,13 +258,25 @@ impl AgentConfig {
                 }
             }
             // The model left the catalog: continue the session on what the
-            // record says, with freshly generated level patches.
-            let protocol = if snapshot.provider.is_empty() {
-                self.provider.clone()
-            } else {
-                snapshot.provider.clone()
+            // record says, with freshly generated level patches. The record
+            // names the provider it ran on — when that provider still exists,
+            // keep its endpoint AND its key: taking the endpoint from the
+            // record and the key from the legacy mirror (which holds the
+            // *default* provider's key) sends one provider's credential to
+            // another provider's base URL.
+            let provider = self
+                .providers
+                .iter()
+                .find(|p| !snapshot.provider_id.trim().is_empty() && p.id == snapshot.provider_id);
+            let protocol = match provider {
+                Some(p) => p.protocol.clone(),
+                None if snapshot.provider.is_empty() => self.provider.clone(),
+                None => snapshot.provider.clone(),
             };
-            let base_url = snapshot.base_url.clone();
+            let base_url = provider
+                .map(|p| p.base_url.clone())
+                .filter(|url| !url.trim().is_empty())
+                .unwrap_or_else(|| snapshot.base_url.clone());
             let max_tokens = if snapshot.max_tokens == 0 {
                 self.max_tokens
             } else {
@@ -287,14 +299,21 @@ impl AgentConfig {
                 .find(|l| l.id == models::LEVEL_OFF)
                 .map(|l| l.patch.clone())
                 .unwrap_or_else(|| serde_json::json!({}));
+            let api_key = provider
+                .map(|p| p.api_key.clone())
+                .filter(|key| !key.trim().is_empty())
+                .unwrap_or_else(|| self.api_key.clone());
             return Ok(models::ResolvedModel {
                 provider_id: snapshot.provider_id.clone(),
-                provider_name: protocol.clone(),
+                provider_name: provider
+                    .map(|p| p.name.clone())
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| protocol.clone()),
                 model_id: model_id.clone(),
                 model_name: model_id.clone(),
                 protocol,
                 base_url,
-                api_key: self.api_key.clone(),
+                api_key,
                 model: model_id,
                 max_tokens,
                 context_window,
