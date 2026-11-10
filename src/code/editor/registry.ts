@@ -17,7 +17,10 @@ import type { EditorView } from "@codemirror/view";
 export interface CodeEditorHandle {
   /** Absolute path of the project root. */
   root: string;
-  /** Project-relative path. */
+  /**
+   * Project-relative path, or an absolute path when the file lives outside the
+   * project (a jump target; it is read-only).
+   */
   path: string;
   /** The languageId (decided by the backend from the extension). */
   language: string;

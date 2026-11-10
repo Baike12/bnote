@@ -18,6 +18,8 @@ vi.mock("./api", () => ({
       saved: "one\ntwo\nthree\n",
       binary: false,
       languageId: "plaintext",
+      size: 14,
+      external: false,
     })),
     gitStatus: vi.fn(async () => ({
       isRepo: true,

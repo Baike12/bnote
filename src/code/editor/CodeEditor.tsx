@@ -45,6 +45,7 @@ import { useCodeStore, type OpenFile } from "../store";
 import { codeApi } from "../api";
 import { findLanguage } from "./language";
 import { lspCompletion, lspDiagnosticsLinter, lspHoverTooltip } from "./lsp";
+import { readOnlyExtensions } from "./readOnly";
 import { registerCodeEditor, setActiveCodeEditor, unregisterCodeEditor } from "./registry";
 
 /**
@@ -190,6 +191,11 @@ export function CodeEditor({ file, onCursor, onMode }: CodeEditorProps) {
       highlightSelectionMatches(),
       EditorState.allowMultipleSelections.of(true),
       EditorState.tabSize.of(tabSize),
+      // A file outside the project is read-only: the backend's write path stays
+      // inside the root, so letting the editor look editable would promise a
+      // save that cannot happen. The document stays focusable: vim motions and
+      // scrolling must keep working (see `readOnlyExtensions`).
+      ...readOnlyExtensions(file.external),
       indentUnit.of(indentUnitText),
       indentOnInput(),
       bracketMatching(),

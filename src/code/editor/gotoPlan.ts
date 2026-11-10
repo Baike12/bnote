@@ -3,9 +3,8 @@
  * implementation).
  *
  * The language server answers with locations; what the user actually gets —
- * a jump, or an honest "that lives outside this project" / "nothing here" —
- * is decided here, away from IPC and the store, so the rule is testable and
- * the glue only executes the plan.
+ * a jump, or an honest "nothing here" — is decided here, away from IPC and the
+ * store, so the rule is testable and the glue only executes the plan.
  */
 
 /** The part of a location the planner cares about. */
@@ -16,22 +15,23 @@ export interface GotoTarget {
   external: boolean;
 }
 
-export type GotoPlan<T extends GotoTarget> =
-  { kind: "jump"; target: T } | { kind: "outside"; target: T } | { kind: "none" };
+export type GotoPlan<T extends GotoTarget> = { kind: "jump"; target: T } | { kind: "none" };
 
 /**
  * Pick what to do with the locations the server returned.
  *
  * An in-project location always wins: a server may list a stub before the real
- * source (ty answers a type definition with `typeshed` first). An external-only
- * answer is not dropped silently — the caller has to say so, otherwise the key
- * looks broken (the panel can only open files inside the project).
+ * source (ty answers a type definition with `typeshed` first).
+ *
+ * An external-only answer still **jumps**: the editor opens the file read-only.
+ * Zed and VSCode both land in a declaration file when the definition only
+ * exists there; refusing it made a working server look like a dead keybinding.
  */
 export function planGoto<T extends GotoTarget>(targets: readonly T[]): GotoPlan<T> {
   const inside = targets.find((t) => !t.external);
   if (inside) return { kind: "jump", target: inside };
   const first = targets[0];
-  if (first) return { kind: "outside", target: first };
+  if (first) return { kind: "jump", target: first };
   return { kind: "none" };
 }
 

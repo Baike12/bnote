@@ -20,10 +20,12 @@ describe("planGoto", () => {
     expect(plan.kind === "jump" && plan.target.path).toBe("cs336_basics/data6.py");
   });
 
-  it("reports an external-only answer instead of pretending there is no location", () => {
-    const plan = planGoto([outside("/Users/me/.cache/ty/vendored/typeshed/stdlib/builtins.pyi")]);
-    expect(plan.kind).toBe("outside");
-    expect(plan.kind === "outside" && plan.target.path).toContain("builtins.pyi");
+  it("jumps to an external location instead of refusing it", () => {
+    const target = outside("/Users/me/.cache/ty/vendored/typeshed/stdlib/builtins.pyi");
+    const plan = planGoto([target]);
+    // The editor opens it read-only; a dead "outside the project" message made
+    // a working server look like a broken keybinding.
+    expect(plan).toEqual({ kind: "jump", target });
   });
 
   it("has nothing to do for an empty answer", () => {

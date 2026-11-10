@@ -204,6 +204,11 @@ export function CodeProjectPane() {
                 title={path}
               >
                 <span className="code-tab-name">{baseName(path)}</span>
+                {open?.external && (
+                  <span className="code-tab-readonly" title="项目外的文件,只读">
+                    只读
+                  </span>
+                )}
                 {dirty && <span className="code-tab-dirty" title="有未保存的改动" />}
                 <span
                   className="code-tab-close"
@@ -262,6 +267,11 @@ export function CodeProjectPane() {
         <div className="code-main">
           {diffOpen ? (
             <DiffView />
+          ) : activeFile?.binary && activeFile.external ? (
+            // The asset protocol is scoped to the project root (and stays that
+            // way), so a bitmap outside it has no URL to load: say so instead of
+            // rendering a broken image.
+            <div className="code-empty">项目外的二进制文件,不在这里预览</div>
           ) : activeFile?.binary && isRasterImage(activeFile.path) ? (
             // A bitmap is viewed right in the panel (the asset protocol reads
             // the original file, the editor is not involved).

@@ -100,7 +100,8 @@ impl CodeTree {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeFile {
-    /// Path relative to the project root.
+    /// Path as the front end asked for it: relative inside the project,
+    /// absolute for a file outside it (see [`resolve_target`]).
     pub path: String,
     /// LSP languageId (see [`super::lang`]); the front end picks the syntax
     /// package by it.
@@ -111,6 +112,10 @@ pub struct CodeFile {
     /// only reported).
     pub binary: bool,
     pub size: u64,
+    /// Outside the project root: opened read-only (a jump target such as a type
+    /// declaration in `node_modules`). Writes keep going through
+    /// [`resolve_in`], so this never widens the sandbox.
+    pub external: bool,
 }
 
 /// A search hit.
@@ -168,6 +173,52 @@ pub fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, String> {
         return Err("FORBIDDEN: 路径超出项目根".to_string());
     }
     Ok(final_path)
+}
+
+/// A file the editor may read, plus where it lives.
+#[derive(Debug, Clone)]
+pub struct FileTarget {
+    pub abs: PathBuf,
+    /// Outside the project root; such a file is opened read-only.
+    pub external: bool,
+}
+
+/// Resolves a file the editor may **read**: a project-relative path (the rules
+/// of [`resolve_in`] apply) or an absolute path outside the project.
+///
+/// The absolute branch exists because a jump can land anywhere — a definition
+/// in `node_modules`, a type declaration under `~/Library/Caches/typescript`.
+/// Zed and VSCode open those files, so refusing them turns a working server
+/// into a dead keybinding.
+///
+/// The sandbox stays where it is: **writes** still go through [`resolve_in`],
+/// which rejects absolute paths and everything outside the root. Reads are the
+/// only thing that gets wider here.
+///
+/// An absolute path inside the root is accepted too (it is the same file), but
+/// callers that key documents by path should keep the relative form for it —
+/// the front end converts jump targets before opening them (`goto.ts`).
+pub fn resolve_target(root: &Path, path: &str) -> Result<FileTarget, String> {
+    let as_path = Path::new(path);
+    if !as_path.is_absolute() {
+        return Ok(FileTarget {
+            abs: resolve_in(root, path)?,
+            external: false,
+        });
+    }
+    let root_c = root
+        .canonicalize()
+        .map_err(|e| format!("PROJECT_INVALID: {}", e))?;
+    // An external file must exist: it came from the language server, which read
+    // it from disk. Canonicalizing also resolves symlinks before the prefix
+    // test, so a link cannot pretend to be inside the project.
+    let abs = as_path
+        .canonicalize()
+        .map_err(|e| format!("PATH_INVALID: {}", e))?;
+    Ok(FileTarget {
+        external: !abs.starts_with(&root_c),
+        abs,
+    })
 }
 
 /// Lexical normalization: removes `.` and `..` without touching the disk.
@@ -496,6 +547,54 @@ mod tests {
     fn resolve_rejects_absolute_path() {
         let root = tmpdir("abs");
         assert!(resolve_in(&root, "/etc/passwd").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn target_keeps_relative_paths_inside_the_project() {
+        let root = tmpdir("target-in");
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        let t = resolve_target(&root, "a.txt").unwrap();
+        assert!(!t.external);
+        assert!(t.abs.ends_with("a.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn target_accepts_an_absolute_path_outside_the_root() {
+        let root = tmpdir("target-out-root");
+        let outside = tmpdir("target-out-file");
+        std::fs::write(outside.join("url.d.ts"), "declare class URL {}").unwrap();
+        let p = outside.join("url.d.ts");
+        let t = resolve_target(&root, p.to_str().unwrap()).unwrap();
+        assert!(t.external, "a file outside the root is read-only");
+        assert!(t.abs.ends_with("url.d.ts"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn target_treats_an_absolute_path_inside_the_root_as_internal() {
+        let root = tmpdir("target-abs-in");
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        let abs = root.join("a.txt").canonicalize().unwrap();
+        let t = resolve_target(&root, abs.to_str().unwrap()).unwrap();
+        assert!(!t.external);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn target_still_rejects_parent_escape() {
+        let root = tmpdir("target-escape");
+        assert!(resolve_target(&root, "../a.txt").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn target_rejects_a_missing_absolute_path() {
+        let root = tmpdir("target-missing");
+        let missing = root.join("not-there.d.ts");
+        assert!(resolve_target(&root, missing.to_str().unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 

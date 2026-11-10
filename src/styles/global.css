@@ -6990,6 +6990,17 @@ input[type="range"] {
   border-radius: 50%;
   background: var(--accent);
 }
+/* A file opened from outside the project (a definition in node_modules): the
+   tab says it is read-only instead of letting ⌘S fail. */
+.code-tab-readonly {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 15px;
+}
 .code-tab-close {
   opacity: 0.5;
   font-size: 13px;

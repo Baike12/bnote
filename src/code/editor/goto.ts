@@ -7,7 +7,7 @@ import { cmToLspPosition } from "./positions";
 import { decodeFileUri } from "./uri";
 import { applyTextEdits } from "./textEdits";
 import { workspaceEditsOf } from "./workspaceEdit";
-import { planGoto, shortPath, unavailableReasonOf } from "./gotoPlan";
+import { planGoto, unavailableReasonOf } from "./gotoPlan";
 
 /**
  * The jump actions: go to definition, go to references, rename.
@@ -27,9 +27,15 @@ interface RawLocation {
   targetSelectionRange?: LspRange;
 }
 
-/** Normalized into "project-relative path + position". */
+/**
+ * Normalized into "path + position".
+ *
+ * Inside the project the path is relative (the tree, git and diagnostics all
+ * speak that language); outside it stays absolute, which is what the backend
+ * accepts for a read-only open.
+ */
 export interface CodeTarget {
-  /** Project-relative path; an absolute path when it is outside the project (marked with a `!` prefix). */
+  /** Project-relative inside the project, absolute outside it. */
   path: string;
   position: LspPosition;
   /** Is this location outside the project (external dependency, library source)? */
@@ -130,11 +136,12 @@ function reportUnavailable(reply: TargetReply): void {
  * one target jump to the first, with several list them.
  *
  * A jump switches tabs — so the store opens the file first and the editor
- * then places the caret.
+ * then places the caret. A target outside the project (a declaration in
+ * `node_modules`, a type cache) opens too, read-only; only "no location at all"
+ * is reported as an empty answer.
  *
  * Every outcome is reported. A silent return is indistinguishable from a dead
- * keybinding, which is exactly how "⌘J does nothing" felt: the request was
- * fine, the answer was a stub outside the project.
+ * keybinding, which is exactly how "⌘J does nothing" felt.
  */
 export async function gotoDefinition(method = "textDocument/definition"): Promise<void> {
   const reply = await requestTargets(method);
@@ -145,16 +152,6 @@ export async function gotoDefinition(method = "textDocument/definition"): Promis
   const plan = planGoto(reply.targets);
   if (plan.kind === "none") {
     useAppStore.getState().showToast("当前位置没有可跳转的定义");
-    return;
-  }
-  // Locations outside the project (the standard library, node_modules, the
-  // Rust sources) cannot be opened: the backend only lets paths inside the
-  // project root through. Name the place instead of running into an openFile
-  // that is bound to fail.
-  if (plan.kind === "outside") {
-    useAppStore
-      .getState()
-      .showToast(`定义在项目外:${shortPath(plan.target.path)}(项目外的文件不在这个面板打开)`);
     return;
   }
   const store = useCodeStore.getState();
@@ -196,6 +193,12 @@ export async function findReferences(): Promise<void> {
 export async function renameSymbol(newName: string): Promise<boolean> {
   const handle = activeCodeEditor();
   if (!handle) return false;
+  // A read-only external document cannot be renamed: the edit would have to be
+  // written back to a file the sandbox does not allow writing.
+  if (useCodeStore.getState().files[handle.path]?.external) {
+    useAppStore.getState().showToast("项目外的文件是只读的,不能在这里重命名");
+    return false;
+  }
   const position = cmToLspPosition(handle.view.state.doc, handle.view.state.selection.main.head);
   const prepared = await codeApi
     .lspRequest(handle.root, handle.language, "textDocument/prepareRename", handle.path, {
@@ -219,10 +222,16 @@ export async function renameSymbol(newName: string): Promise<boolean> {
   const root = handle.root;
   const prefix = root.endsWith("/") ? root : `${root}/`;
   const next = new Map<string, string>();
+  let outside = 0;
 
   for (const { uri, edits } of fileEdits) {
     const abs = decodeFileUri(uri);
-    if (!abs || !abs.startsWith(prefix)) continue; // files outside the project are not modified
+    if (!abs || !abs.startsWith(prefix)) {
+      // Files outside the project are read-only, so their part of a rename is
+      // skipped — counted, never lost silently.
+      outside += 1;
+      continue;
+    }
     const rel = abs.slice(prefix.length);
     const open = useCodeStore.getState().files[rel];
     let base = open?.content;
@@ -232,6 +241,9 @@ export async function renameSymbol(newName: string): Promise<boolean> {
       base = file.content;
     }
     next.set(rel, applyTextEdits(base, edits));
+  }
+  if (outside > 0) {
+    useAppStore.getState().showToast(`${outside} 处改动在项目外的只读文件里,不会修改`);
   }
   if (next.size === 0) return false;
 

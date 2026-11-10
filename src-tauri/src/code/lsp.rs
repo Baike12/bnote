@@ -176,6 +176,12 @@ pub fn server_root(root: &Path, language: &str, rel_path: &str) -> PathBuf {
         return root.to_path_buf();
     }
     let rel = Path::new(rel_path);
+    // A document outside the project (a jump target the server reported) owns
+    // no workspace: `join` on an absolute path would drop the root and walk
+    // into `node_modules` looking for a venv.
+    if rel.is_absolute() {
+        return root.to_path_buf();
+    }
     let mut current = rel.parent();
     while let Some(rel_dir) = current {
         let abs = if rel_dir.as_os_str().is_empty() {
@@ -572,8 +578,33 @@ impl LspSink for CodeSink {
                         let Some(abs) = decode_uri_path(uri) else {
                             return;
                         };
-                        let Some(path) = self.relative(&abs) else {
-                            return; // a diagnostic outside the project is not shown
+                        // A file outside the project is reported only while the
+                        // editor has it open: the server publishes diagnostics
+                        // for the whole dependency tree as well, and those must
+                        // not land in the problems panel. An open external file
+                        // is keyed by its absolute path (see `code_read_file`).
+                        //
+                        // The open document is matched by **decoded path**, not
+                        // by the raw URI: the client and the server may encode
+                        // the same path differently (`%20` vs a literal space,
+                        // `@`), and a key mismatch here would silently drop
+                        // every diagnostic of the file.
+                        let path = match self.relative(&abs) {
+                            Some(rel) => rel,
+                            None => {
+                                let open = client
+                                    .docs
+                                    .lock()
+                                    .map(|docs| {
+                                        docs.keys()
+                                            .any(|u| decode_uri_path(u).as_deref() == Some(&abs))
+                                    })
+                                    .unwrap_or(false);
+                                if !open {
+                                    return;
+                                }
+                                abs.clone()
+                            }
                         };
                         let items = msg
                             .pointer("/params/diagnostics")
@@ -686,6 +717,23 @@ mod tests {
         // A language the project does not override takes the global layer.
         let r = resolve_server(&root, "rust", "", Some(&global)).unwrap();
         assert_eq!(r.config.command, "global-go");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_external_document_keeps_the_project_workspace() {
+        let root = tmpdir("server-root-abs");
+        std::fs::create_dir_all(root.join("course")).unwrap();
+        std::fs::write(root.join("course/pyproject.toml"), "").unwrap();
+        let external =
+            "/Users/someone/Library/Caches/typescript/5.9/node_modules/@types/node/url.d.ts";
+        // Python normally follows the file down to its subproject; an absolute
+        // path must not drag the workspace out of the project.
+        assert_eq!(server_root(&root, "python", external), root);
+        assert_eq!(
+            server_root(&root, "python", "course/a.py"),
+            root.join("course")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

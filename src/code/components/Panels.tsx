@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useCodeStore } from "../store";
-import { useAppStore } from "@/state/appStore";
+import { shortPath } from "../editor/gotoPlan";
 
 /**
  * The bottom panels: problems (diagnostics) and references.
@@ -40,7 +40,9 @@ export function ProblemsPanel() {
     <div className="code-panel">
       {groups.map((group) => (
         <div key={group.path} className="code-panel-group">
-          <div className="code-panel-group-head">{group.path}</div>
+          <div className="code-panel-group-head" title={group.path}>
+            {shortPath(group.path)}
+          </div>
           {group.list.map((d, i) => (
             <button
               type="button"
@@ -67,7 +69,6 @@ export function ReferencesPanel() {
   const references = useCodeStore((s) => s.references);
   const navigateTo = useCodeStore((s) => s.navigateTo);
   const setReferences = useCodeStore((s) => s.setReferences);
-  const showToast = useAppStore((s) => s.showToast);
 
   if (!references) return null;
   if (references.length === 0) {
@@ -95,18 +96,11 @@ export function ReferencesPanel() {
           key={i}
           className="code-panel-row"
           onClick={() => {
-            // A reference outside the project (the standard library, a
-            // dependency) cannot be opened: the backend only lets paths
-            // inside the project root through.
-            if (ref.external) {
-              showToast("这条引用在项目外,不在这个面板里打开");
-              return;
-            }
             void navigateTo(ref.path, ref.position);
           }}
         >
           <span className="code-panel-msg">
-            {ref.path}
+            {ref.external ? shortPath(ref.path) : ref.path}
             {ref.external && <span className="code-panel-ext"> 项目外</span>}
           </span>
           <span className="code-panel-loc">

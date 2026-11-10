@@ -197,15 +197,16 @@ pub async fn code_rescan(app: AppHandle, root: String) -> CmdResult<CodeTree> {
 pub async fn code_read_file(root: String, path: String) -> CmdResult<CodeFile> {
     blocking(move || {
         let root = canonical_root(&root)?;
-        let abs = project::resolve_in(&root, &path)?;
-        let (content, binary, size) = project::read_text(&abs)?;
-        let language_id = lang::language_for_path(&abs).to_string();
+        let target = project::resolve_target(&root, &path)?;
+        let (content, binary, size) = project::read_text(&target.abs)?;
+        let language_id = lang::language_for_path(&target.abs).to_string();
         Ok(CodeFile {
             path,
             language_id,
             content,
             binary,
             size,
+            external: target.external,
         })
     })
     .await
@@ -478,7 +479,7 @@ pub async fn code_lsp_sync(
     content: String,
 ) -> CmdResult<bool> {
     let root = canonical_root(&root)?;
-    let abs = project::resolve_in(&root, &path)?;
+    let abs = project::resolve_target(&root, &path)?.abs;
     let language = lang::language_for_path(&abs).to_string();
     let manager = manager_for(&state, &root)?;
     // The document belongs to the server of its own workspace (Python: its
@@ -514,7 +515,7 @@ pub async fn code_lsp_close(
     path: String,
 ) -> CmdResult<()> {
     let root = canonical_root(&root)?;
-    let abs = project::resolve_in(&root, &path)?;
+    let abs = project::resolve_target(&root, &path)?.abs;
     let language = lang::language_for_path(&abs).to_string();
     let manager = manager_for(&state, &root)?;
     let workspace = crate::code::lsp::server_root(&root, &language, &path);
@@ -578,7 +579,7 @@ pub async fn code_lsp_request(
         params = Value::Object(serde_json::Map::new());
     }
     if let Some(p) = &path {
-        let abs = project::resolve_in(&root, p)?;
+        let abs = project::resolve_target(&root, p)?.abs;
         params["textDocument"] = serde_json::json!({ "uri": crate::lsp::path_to_uri(&abs) });
     }
     match client.interaction_request(&method, params).await {

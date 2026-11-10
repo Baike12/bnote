@@ -62,12 +62,23 @@ export interface OpenFile {
   indentUnit: string;
   /** Display width of a tab (the indent width for space indentation, tabs count as 4). */
   tabSize: number;
+  /**
+   * Outside the project root, therefore **read-only**: a jump lands in a
+   * declaration file bnote may read but must not write (the backend's write
+   * path stays inside the root). Derived from the backend's answer on open and
+   * never recomputed — the path itself already says where the file lives.
+   */
+  external: boolean;
 }
 
 export interface CodeState {
   /** The currently open project (null = no project open). */
   project: CodeProjectInfo | null;
-  /** Open tabs (project-relative paths). */
+  /**
+   * Open tabs. The key is the path handed back by the backend: project-relative
+   * inside the project, absolute for a file outside it (opened by a jump and
+   * read-only, see `OpenFile.external`).
+   */
   tabs: string[];
   /** The current tab. */
   activePath: string | null;
@@ -467,6 +478,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
           size: file.size,
           indentUnit,
           tabSize: indentUnit === "\t" ? TAB_DISPLAY_WIDTH : indentUnit.length,
+          external: file.external,
         },
       },
     }));
@@ -509,6 +521,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     const root = get().project?.root;
     const file = get().files[path];
     if (!root || !file) return;
+    // A read-only external file has nothing to write (the editor does not let
+    // it change) and the backend would refuse the write anyway.
+    if (file.external) return;
     // The content of a binary or oversized file was never read (the content is
     // an empty string). Writing it back would blank the whole file — better
     // to do nothing at all.

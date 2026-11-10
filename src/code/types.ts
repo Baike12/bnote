@@ -22,12 +22,19 @@ export interface CodeTree {
 
 /** The content of a file. */
 export interface CodeFile {
+  /** Relative inside the project, absolute for a file outside it. */
   path: string;
   /** LSP languageId (decided by the backend from the extension). */
   languageId: string;
   content: string;
   binary: boolean;
   size: number;
+  /**
+   * Outside the project root: opened read-only. A jump can land in
+   * `node_modules` or a type-declaration cache, and those files are readable
+   * but never written (the backend's write path stays inside the root).
+   */
+  external: boolean;
 }
 
 /** Info about the open project. */
