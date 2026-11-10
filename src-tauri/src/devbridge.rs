@@ -327,13 +327,22 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                         .map_err(|e| format!("BAD_ARGS: history: {}", e))?,
                 ),
             };
-            let model: Option<agent::AgentModelChoice> = match args.get("model") {
-                None | Some(Value::Null) => None,
-                Some(v) => Some(
-                    serde_json::from_value(v.clone())
-                        .map_err(|e| format!("BAD_ARGS: model: {}", e))?,
-                ),
-            };
+            let model: Option<crate::agent::models::SessionModelConfig> =
+                match args.get("model") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        serde_json::from_value(v.clone())
+                            .map_err(|e| format!("BAD_ARGS: model: {}", e))?,
+                    ),
+                };
+            let selection: Option<crate::agent::models::ModelSelection> =
+                match args.get("selection") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        serde_json::from_value(v.clone())
+                            .map_err(|e| format!("BAD_ARGS: selection: {}", e))?,
+                    ),
+                };
             let mode: Option<String> = match args.get("mode") {
                 None | Some(Value::Null) => None,
                 Some(v) => Some(
@@ -362,6 +371,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 fork,
                 history,
                 model,
+                selection,
                 mode,
                 workdir,
                 task_list_id
@@ -386,15 +396,49 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         )
         .await),
         "agent_generate_title" => {
-            let model: Option<agent::AgentModelChoice> = match args.get("model") {
+            let model: Option<crate::agent::models::SessionModelConfig> = match args.get("model") {
                 None | Some(Value::Null) => None,
                 Some(v) => Some(
                     serde_json::from_value(v.clone())
                         .map_err(|e| format!("BAD_ARGS: model: {}", e))?,
                 ),
             };
-            json_ok!(agent::agent_generate_title(app.state(), arg_str(args, "text")?, model).await)
+            let selection: Option<crate::agent::models::ModelSelection> =
+                match args.get("selection") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        serde_json::from_value(v.clone())
+                            .map_err(|e| format!("BAD_ARGS: selection: {}", e))?,
+                    ),
+                };
+            json_ok!(agent::agent_generate_title(
+                app.state(),
+                arg_str(args, "text")?,
+                model,
+                selection
+            )
+            .await)
         }
+        "agent_set_session_model" => {
+            let selection: crate::agent::models::ModelSelection =
+                serde_json::from_value(arg_value(args, "selection")?)
+                    .map_err(|e| format!("BAD_ARGS: selection: {}", e))?;
+            json_ok!(agent::agent_set_session_model(
+                app.state(),
+                arg_str(args, "sessionId")?,
+                selection
+            )
+            .await)
+        }
+        "agent_list_subagents" => json_ok!(agent::agent_list_subagents()),
+        "agent_default_levels" => json_ok!(agent::agent_default_levels(
+            arg_str(args, "protocol")?,
+            arg_str(args, "model")?,
+            optional_str(args, "baseUrl").unwrap_or_default(),
+            args.get("maxTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(8192) as u32
+        )),
         "agent_list_project_files" => {
             json_ok!(agent::agent_list_project_files(app.state(), arg_str(args, "workdir")?).await)
         }

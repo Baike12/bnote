@@ -7,6 +7,7 @@ pub mod home;
 pub mod hooks;
 pub mod instructions;
 pub mod mcp;
+pub mod models;
 pub mod output_style;
 pub mod permissions;
 pub mod prompt;
@@ -31,7 +32,20 @@ use std::path::Path;
 /// `.bnote`, else `~/.bnote`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
-    pub provider: String, // "anthropic" | "openai"
+    /// The catalog: several suppliers, each with several models
+    /// (see [`models`]). This is the source of truth; the single-model fields
+    /// below are the pre-catalog shape, read once by [`AgentConfig::normalize`]
+    /// to build the first provider and then kept in sync with the resolved
+    /// default selection so an older build still finds a working config.
+    #[serde(default)]
+    pub providers: Vec<models::ProviderEntry>,
+    /// What a new session picks when the caller gave no selection.
+    #[serde(default)]
+    pub default_selection: Option<models::ModelSelection>,
+    /// Which models subagents run on (absent = inherit the parent session).
+    #[serde(default)]
+    pub subagent_models: models::SubagentModels,
+    pub provider: String, // "anthropic" | "openai" — legacy, mirrors the default selection
     pub model: String,
     pub base_url: String,
     pub api_key: String,
@@ -142,7 +156,7 @@ impl AgentConfig {
     /// picked (surfacing as a gateway 404, hard to tell apart from auth and model
     /// errors). Normalizing at the load boundary to the anthropic value the UI
     /// shows by default means no reader has to defend against this case again.
-    fn normalize(&mut self) {
+    pub(crate) fn normalize(&mut self) {
         if self.provider != "anthropic" && self.provider != "openai" {
             self.provider = "anthropic".into();
         }
@@ -152,6 +166,145 @@ impl AgentConfig {
         if self.max_tokens == 0 {
             self.max_tokens = default_max_tokens();
         }
+        // A pre-catalog file describes one model; fold it into the first
+        // provider so the catalog is the only thing the app reads afterwards.
+        // The generated levels are the mapping the provider used to guess, so
+        // an existing user sends exactly the same requests.
+        if self.providers.is_empty() && !self.model.trim().is_empty() {
+            let model = self.model.trim().to_string();
+            let levels =
+                models::default_levels(&self.provider, &model, &self.base_url, self.max_tokens);
+            self.providers.push(models::ProviderEntry {
+                id: "default".into(),
+                name: if self.provider == "anthropic" {
+                    "Anthropic".into()
+                } else {
+                    "OpenAI 兼容".into()
+                },
+                protocol: self.provider.clone(),
+                base_url: self.base_url.clone(),
+                api_key: self.api_key.clone(),
+                models: vec![models::ModelEntry {
+                    id: model.clone(),
+                    name: model,
+                    context_window: self.context_window,
+                    max_tokens: self.max_tokens,
+                    vision: false,
+                    thinking: levels,
+                    default_thinking: String::new(),
+                }],
+            });
+        }
+        models::normalize(&mut self.providers, &mut self.default_selection);
+        // Mirror the resolved default into the legacy fields: an older build
+        // (or a script) that only knows one model still finds a working one.
+        if let Some(selection) = self.default_selection.clone() {
+            if let Ok(resolved) = models::resolve(&self.providers, &selection) {
+                self.provider = resolved.protocol;
+                self.model = resolved.model;
+                self.base_url = resolved.base_url;
+                self.api_key = resolved.api_key;
+                self.max_tokens = resolved.max_tokens;
+                self.context_window = resolved.context_window;
+            }
+        }
+    }
+
+    /// The model a session runs on: the given selection, else the configured
+    /// default. The error names what is missing so the UI can say it.
+    pub fn resolve(
+        &self,
+        selection: Option<&models::ModelSelection>,
+    ) -> Result<models::ResolvedModel, String> {
+        let selection = match selection {
+            Some(selection) => selection.clone(),
+            None => self
+                .default_selection
+                .clone()
+                .ok_or_else(|| "NO_MODEL: 先在设置的 Agent 部分配置供应商与模型".to_string())?,
+        };
+        models::resolve(&self.providers, &selection)
+    }
+
+    /// The model a session starts or restores on.
+    ///
+    /// Order: an explicit selection (a restore of a current record, or the
+    /// default) → the record's own snapshot (a record written before the
+    /// catalog existed; it must keep running on the model it recorded even if
+    /// the settings moved on) → the configured default. The API key always
+    /// comes from the catalog, never from the snapshot.
+    pub fn resolve_session(
+        &self,
+        selection: Option<&models::ModelSelection>,
+        snapshot: Option<&models::SessionModelConfig>,
+    ) -> Result<models::ResolvedModel, String> {
+        if let Some(selection) = selection {
+            if let Ok(resolved) = self.resolve(Some(selection)) {
+                return Ok(resolved);
+            }
+        }
+        if let Some(snapshot) = snapshot.filter(|s| !s.model.trim().is_empty()) {
+            let model_id = snapshot.model.trim().to_string();
+            // The model is still configured: use its entry (the user's
+            // patches, key and endpoint may have been edited since).
+            if let Some(selection) = models::selection_for_model(
+                &self.providers,
+                &snapshot.provider_id,
+                &model_id,
+                &snapshot.thinking,
+            ) {
+                if let Ok(resolved) = self.resolve(Some(&selection)) {
+                    return Ok(resolved);
+                }
+            }
+            // The model left the catalog: continue the session on what the
+            // record says, with freshly generated level patches.
+            let protocol = if snapshot.provider.is_empty() {
+                self.provider.clone()
+            } else {
+                snapshot.provider.clone()
+            };
+            let base_url = snapshot.base_url.clone();
+            let max_tokens = if snapshot.max_tokens == 0 {
+                self.max_tokens
+            } else {
+                snapshot.max_tokens
+            };
+            let context_window = if snapshot.context_window == 0 {
+                self.context_window
+            } else {
+                snapshot.context_window
+            };
+            let levels = models::default_levels(&protocol, &model_id, &base_url, max_tokens);
+            let (level, patch) = levels
+                .iter()
+                .find(|l| l.id == snapshot.thinking.trim())
+                .or_else(|| levels.last())
+                .map(|l| (l.id.clone(), l.patch.clone()))
+                .unwrap_or_else(|| (String::new(), serde_json::json!({})));
+            let off_patch = levels
+                .iter()
+                .find(|l| l.id == models::LEVEL_OFF)
+                .map(|l| l.patch.clone())
+                .unwrap_or_else(|| serde_json::json!({}));
+            return Ok(models::ResolvedModel {
+                provider_id: snapshot.provider_id.clone(),
+                provider_name: protocol.clone(),
+                model_id: model_id.clone(),
+                model_name: model_id.clone(),
+                protocol,
+                base_url,
+                api_key: self.api_key.clone(),
+                model: model_id,
+                max_tokens,
+                context_window,
+                vision: false,
+                thinking_level: level,
+                patch,
+                off_patch,
+            });
+        }
+        self.resolve(None)
     }
 
     /// The configured root of `mode`, when the user overrode the default.
@@ -233,6 +386,55 @@ mod tests {
         cfg.provider = "anthropic".into();
         cfg.normalize();
         assert_eq!(cfg.provider, "anthropic");
+    }
+
+    /// A pre-catalog file describes one model; loading it must fold it into
+    /// the catalog, seed the thinking levels the provider used to guess, point
+    /// the default selection at it, and keep the legacy fields readable.
+    #[test]
+    fn a_single_model_config_migrates_into_the_catalog() {
+        let mut cfg: AgentConfig = serde_json::from_str(
+            r#"{"provider":"openai","model":"deepseek-chat","base_url":"https://api.deepseek.com","api_key":"sk","max_tokens":4096,"context_window":64000}"#,
+        )
+        .unwrap();
+        cfg.normalize();
+        assert_eq!(cfg.providers.len(), 1);
+        let provider = &cfg.providers[0];
+        assert_eq!(provider.id, "default");
+        assert_eq!(provider.protocol, "openai");
+        assert_eq!(provider.api_key, "sk");
+        let model = &provider.models[0];
+        assert_eq!(model.id, "deepseek-chat");
+        assert_eq!(model.context_window, 64_000);
+        assert_eq!(model.max_tokens, 4_096);
+        // The DeepSeek mapping the provider used to guess.
+        let high = model
+            .thinking
+            .iter()
+            .find(|l| l.id == "high")
+            .and_then(|l| l.patch.pointer("/thinking/type"))
+            .and_then(|v| v.as_str());
+        assert_eq!(high, Some("enabled"));
+        let default = cfg.default_selection.as_ref().expect("default selection");
+        assert_eq!(default.provider_id, "default");
+        assert_eq!(default.model_id, "deepseek-chat");
+        // The legacy fields mirror the resolved default (an older build still
+        // finds a working model).
+        assert_eq!(cfg.model, "deepseek-chat");
+        assert_eq!(cfg.api_key, "sk");
+
+        // Saving writes the migrated shape back: loading it again is stable.
+        let again: AgentConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(again.providers, cfg.providers);
+        assert_eq!(again.default_selection, cfg.default_selection);
+    }
+
+    #[test]
+    fn a_config_without_any_model_reports_what_is_missing() {
+        let cfg = AgentConfig::default();
+        let err = cfg.resolve(None).unwrap_err();
+        assert!(err.starts_with("NO_MODEL"), "{err}");
     }
 
     #[test]

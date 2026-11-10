@@ -364,4 +364,22 @@ describe("the session metadata line (title + model config snapshot)", () => {
     expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":"3"}\n')?.forkAt).toBeUndefined();
     expect(sessionMetaFromRaw('{"type":"meta","at":1,"forkAt":0}\n')?.forkAt).toBe(0);
   });
+
+  it("a model switch appends a line and the last one wins on restore", () => {
+    const first = { ...model, thinking: "high" };
+    const second = { ...model, model: "glm-5.3", thinking: "low", modelId: "glm-5.3" };
+    const raw = serializeTranscript([
+      buildSessionMeta({ at: 1, title: "会话", model: first }),
+      { type: "user", at: 2, text: "q" },
+      { type: "model", at: 3, model: second },
+    ]);
+    // The metadata line stays untouched (append-only record); the restore takes
+    // the latest switch.
+    expect(raw.split("\n")[0]).toContain('"type":"meta"');
+    expect(sessionMetaFromRaw(raw)?.model).toEqual(second);
+    expect(sessionMetaFromRaw(raw)?.title).toBe("会话");
+    // A record without a switch keeps the snapshot of its metadata line.
+    const plain = serializeTranscript([buildSessionMeta({ at: 1, title: "会话", model: first })]);
+    expect(sessionMetaFromRaw(plain)?.model).toEqual(first);
+  });
 });

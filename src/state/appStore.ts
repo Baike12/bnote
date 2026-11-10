@@ -383,6 +383,12 @@ interface AppState {
   dirty: boolean;
   settings: Settings;
   modal: ModalKind;
+  /**
+   * The settings section to show when the modal opens (a model picker's
+   * 「管理模型」 jumps straight to the catalog). `null` = whatever page the
+   * modal last showed. One-shot: the settings modal clears it.
+   */
+  settingsTab: string | null;
   sidebarOpen: boolean;
   /**
    * The pending "focus sidebar" request (null = none). The sidebar takes it
@@ -496,6 +502,9 @@ interface AppState {
   patchSettings: (patch: Partial<Settings>) => void;
   replaceSettings: (s: Settings) => void;
   setModal: (m: ModalKind) => void;
+  /** Opens the settings modal on a specific section (see `settingsTab`). */
+  openSettings: (tab: string) => void;
+  setSettingsTab: (tab: string | null) => void;
   toggleSidebar: () => void;
   focusSidebar: () => void;
   clearSidebarFocus: () => void;
@@ -581,6 +590,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   dirty: false,
   settings: { ...DEFAULT_SETTINGS },
   modal: null,
+  settingsTab: null,
   sidebarOpen: true,
   sidebarFocusRequest: null,
   renameRequest: null,
@@ -672,6 +682,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistConfig({ ...getConfigSnapshot(), settings });
   },
   setModal: (modal) => set({ modal }),
+  openSettings: (tab) => set({ modal: "settings", settingsTab: tab }),
+  setSettingsTab: (tab) => set({ settingsTab: tab }),
   toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
   focusSidebar: () =>
     set({ sidebarOpen: true, sidebarFocusRequest: (get().sidebarFocusRequest ?? 0) + 1 }),

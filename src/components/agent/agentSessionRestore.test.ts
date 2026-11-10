@@ -148,8 +148,11 @@ describe("title: the session's own first message, generated once by the model an
     expect(body).toMatch(/agentApi\.setSessionTitle\(relDir, id, label\)/);
     expect(body).toMatch(/homeApi\.setSessionTitle\(codeWorkdir, id, label\)/);
     expect(body).toMatch(/const id = conv\.sessionFileId;/);
-    // The title uses the session's own model snapshot, the same one the conversation uses.
-    expect(body).toMatch(/generateTitle\(seed, conv\.model \?\? undefined\)/);
+    // The title uses the session's own model: its catalog selection and the
+    // snapshot (a record from before the catalog has only the latter).
+    expect(body).toMatch(
+      /generateTitle\(seed, conv\.model \?\? undefined, conv\.selection \?\? null\)/,
+    );
   });
 
   it("a restored LLM title is not generated again", () => {

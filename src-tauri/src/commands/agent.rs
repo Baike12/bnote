@@ -35,55 +35,6 @@ pub struct AgentForkSpec {
     pub items: usize,
 }
 
-/// A restored session keeps its own model configuration (the snapshot in the
-/// first line of the session record).
-///
-/// After the model/context length changes in settings, a saved session still
-/// continues with the configuration it was created with -- that is an explicit
-/// user choice: a session's model must not be silently swapped by later
-/// settings. The API key is not part of the snapshot; it always uses the
-/// currently saved `api_key` (switching provider requires a new key anyway).
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentModelChoice {
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub base_url: String,
-    #[serde(default)]
-    pub max_tokens: u32,
-    #[serde(default)]
-    pub context_window: u64,
-}
-
-impl AgentModelChoice {
-    /// Overrides only the fields that actually carry a value in the snapshot:
-    /// older records missing a field fall back to the current configuration.
-    fn apply(self, cfg: &mut crate::agent::AgentConfig) {
-        if !self.provider.is_empty() {
-            cfg.provider = self.provider;
-        }
-        if !self.model.is_empty() {
-            cfg.model = self.model;
-        }
-        if !self.base_url.is_empty() {
-            cfg.base_url = self.base_url;
-        }
-        if self.max_tokens > 0 {
-            cfg.max_tokens = self.max_tokens;
-        }
-        if self.context_window > 0 {
-            cfg.context_window = self.context_window;
-        }
-    }
-}
-
-/// Custom instructions moved to `crate::agent::load_user_instructions` (the
-/// session refreshes them dynamically; the command layer only seeds the first
-/// assembly through the same helper).
-
 #[tauri::command]
 pub async fn agent_get_config(_state: State<'_, AppState>) -> CmdResult<crate::agent::AgentConfig> {
     // Same reasoning as config.rs: a sync command runs on the main thread, so
@@ -103,6 +54,15 @@ pub async fn agent_save_config(
         .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
+/// Starts a session.
+///
+/// A restored session keeps its own model configuration (the snapshot of the
+/// first line of its record): after the catalog changes, a saved session still
+/// continues on the model it was created with, and the API key always comes
+/// from the current configuration (switching provider requires a new key
+/// anyway). A record written before the catalog existed carries the snapshot
+/// alone; a current one also carries a `selection` resolved against the
+/// catalog.
 #[tauri::command]
 pub async fn agent_start_session(
     app: tauri::AppHandle,
@@ -113,9 +73,12 @@ pub async fn agent_start_session(
     // from the session record's jsonl.
     // Mutually exclusive with `fork` (restore and fork never happen together).
     history: Option<Vec<crate::agent::types::ChatItem>>,
-    // On restore/fork, reuse the source session's model configuration
-    // (see AgentModelChoice).
-    model: Option<AgentModelChoice>,
+    // On restore/fork, the source session's model snapshot (its record's
+    // metadata line); a record from before the catalog only has this.
+    model: Option<crate::agent::models::SessionModelConfig>,
+    // On restore/fork, the catalog selection the source session ran on. A
+    // fresh session passes the default selection of the settings.
+    selection: Option<crate::agent::models::ModelSelection>,
     // Session shape: omitted = study mode (plain Q&A); "creative" = creative
     // mode (tools + skills); "coding" = the code-project agent.
     mode: Option<String>,
@@ -127,11 +90,9 @@ pub async fn agent_start_session(
     task_list_id: Option<String>,
 ) -> CmdResult<serde_json::Value> {
     let session_mode = SessionMode::parse(mode.as_deref())?;
-    let mut cfg = crate::agent::AgentConfig::load();
-    if let Some(choice) = model {
-        choice.apply(&mut cfg);
-    }
-    if cfg.api_key.is_empty() {
+    let cfg = crate::agent::AgentConfig::load();
+    let resolved = cfg.resolve_session(selection.as_ref(), model.as_ref())?;
+    if resolved.api_key.is_empty() {
         return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
     }
     // The effective definition is built into the binary; the vault only holds
@@ -192,13 +153,7 @@ pub async fn agent_start_session(
         &layered.settings.disabled_skills,
     ));
 
-    let provider = Arc::new(Provider::new(
-        &cfg.provider,
-        &cfg.base_url,
-        &cfg.api_key,
-        &cfg.model,
-        cfg.max_tokens,
-    ));
+    let provider = Arc::new(Provider::from_resolved(&resolved));
 
     // Fork: copy a history prefix from the source session (the count is
     // authoritative in the backend's end event -- truncate if too long, use
@@ -272,9 +227,10 @@ pub async fn agent_start_session(
         skills,
         mcp: mcp.clone(),
         provider,
+        selection: resolved.selection(),
         ctx,
         app: app.clone(),
-        context_window: cfg.context_window,
+        context_window: resolved.context_window,
         permission_mode: None,
         task_list_id,
         mode_root: Some(mode_root.clone()),
@@ -307,18 +263,97 @@ pub async fn agent_start_session(
             "description": def.description.clone(),
             "tools": def.effective_tools(),
         },
-        // The model configuration this session actually uses: the frontend
-        // footnote shows it, and the session record writes it into its
-        // metadata line so a restore continues from the snapshot (decoupled
-        // from the current settings).
-        "model": {
-            "provider": cfg.provider,
-            "model": cfg.model,
-            "baseUrl": cfg.base_url,
-            "maxTokens": cfg.max_tokens,
-            "contextWindow": cfg.context_window,
-        },
+        // The model configuration this session actually uses: the panel's
+        // picker shows it, and the session record writes it into its metadata
+        // line so a restore continues from the snapshot (decoupled from the
+        // current settings). `selection` is what a restore resolves against
+        // the catalog.
+        "model": resolved.snapshot(),
+        "selection": resolved.selection(),
     }))
+}
+
+/// Switches the model / thinking level of an open session.
+///
+/// The next round of the turn uses it; a request that is already streaming
+/// finishes on the provider it started with (see `Session::set_model`). The
+/// catalog is read from disk here, so a provider added since the session
+/// started is selectable without restarting it.
+#[tauri::command]
+pub async fn agent_set_session_model(
+    state: State<'_, AppState>,
+    session_id: String,
+    selection: crate::agent::models::ModelSelection,
+) -> CmdResult<serde_json::Value> {
+    let cfg = tauri::async_runtime::spawn_blocking(crate::agent::AgentConfig::load)
+        .await
+        .map_err(|e| format!("JOIN_FAILED: {}", e))?;
+    let resolved = cfg.resolve(Some(&selection))?;
+    if resolved.api_key.is_empty() {
+        return Err(format!(
+            "NO_API_KEY: 供应商 {} 没有填写 API Key",
+            resolved.provider_name
+        ));
+    }
+    let session = {
+        let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+        registry
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| "SESSION_NOT_FOUND: 会话已不存在".to_string())?
+    };
+    session.set_model(
+        Arc::new(Provider::from_resolved(&resolved)),
+        resolved.context_window,
+        resolved.selection(),
+    );
+    Ok(serde_json::json!({
+        "model": resolved.snapshot(),
+        "selection": resolved.selection(),
+    }))
+}
+
+/// The subagent definitions the settings page configures a model for (CC's
+/// `--agents` list: id, display name, description).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[tauri::command]
+pub fn agent_list_subagents() -> CmdResult<Vec<SubagentInfo>> {
+    let names: std::collections::BTreeMap<String, String> = defs::registry()
+        .into_iter()
+        .map(|d| {
+            let name = d.display_name().to_string();
+            (d.id, name)
+        })
+        .collect();
+    Ok(defs::subagent_listing()
+        .into_iter()
+        .map(|(id, description)| SubagentInfo {
+            name: names.get(&id).cloned().unwrap_or_else(|| id.clone()),
+            id,
+            description,
+        })
+        .collect())
+}
+
+/// The thinking levels a new model of this protocol/gateway starts with (the
+/// settings page fills the editor with them before the first save).
+#[tauri::command]
+pub fn agent_default_levels(
+    protocol: String,
+    model: String,
+    base_url: String,
+    max_tokens: u32,
+) -> CmdResult<Vec<crate::agent::models::ThinkingLevel>> {
+    Ok(crate::agent::models::default_levels(
+        &protocol, &model, &base_url, max_tokens,
+    ))
 }
 
 /// System prompt for titling: only the title itself, no restating the whole
@@ -329,33 +364,26 @@ const TITLE_SYSTEM_PROMPT: &str = "你在给一段对话起标题。根据用户
 /// short title.
 ///
 /// Shares the model configuration with the conversation (a restored session
-/// passes its own snapshot); sends one short request only, registers no
-/// session and enters no session history. On failure the caller keeps its
-/// locally truncated title.
+/// passes its own selection / snapshot); sends one short request only,
+/// registers no session and enters no session history. On failure the caller
+/// keeps its locally truncated title.
 #[tauri::command]
 pub async fn agent_generate_title(
     _state: State<'_, AppState>,
     text: String,
-    model: Option<AgentModelChoice>,
+    model: Option<crate::agent::models::SessionModelConfig>,
+    selection: Option<crate::agent::models::ModelSelection>,
 ) -> CmdResult<String> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("BAD_ARGS: text".into());
     }
-    let mut cfg = crate::agent::AgentConfig::load();
-    if let Some(choice) = model {
-        choice.apply(&mut cfg);
-    }
-    if cfg.api_key.is_empty() {
+    let cfg = crate::agent::AgentConfig::load();
+    let resolved = cfg.resolve_session(selection.as_ref(), model.as_ref())?;
+    if resolved.api_key.is_empty() {
         return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
     }
-    let provider = Provider::new(
-        &cfg.provider,
-        &cfg.base_url,
-        &cfg.api_key,
-        &cfg.model,
-        cfg.max_tokens,
-    );
+    let provider = Provider::from_resolved(&resolved);
     let items = vec![crate::agent::types::ChatItem::user_text(&text)];
     let collected = Mutex::new(String::new());
     provider
@@ -1464,13 +1492,10 @@ pub fn agent_set_current_note(state: State<'_, AppState>, path: Option<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::models::{ModelSelection, SessionModelConfig};
     use crate::agent::AgentConfig;
 
-    /// Restoring a session overrides from the snapshot: only fields with a
-    /// value are overridden, empty fields keep the current settings (an old
-    /// record missing a field must not leave the model as an empty string).
-    #[test]
-    fn the_session_model_snapshot_only_overrides_the_fields_that_have_a_value() {
+    fn catalog() -> AgentConfig {
         let mut cfg = AgentConfig {
             provider: "openai".into(),
             model: "current".into(),
@@ -1481,26 +1506,55 @@ mod tests {
             mcp_servers: Default::default(),
             skill_dirs: Vec::new(),
             agent_roots: Default::default(),
+            ..Default::default()
         };
-        AgentModelChoice {
+        cfg.normalize();
+        cfg
+    }
+
+    /// A current record restores through its selection, not through the
+    /// snapshot: the catalog stays the source of keys and endpoints.
+    #[test]
+    fn a_restore_prefers_the_catalog_selection() {
+        let cfg = catalog();
+        let selection = ModelSelection {
+            provider_id: "default".into(),
+            model_id: "current".into(),
+            thinking: "medium".into(),
+        };
+        let resolved = cfg.resolve_session(Some(&selection), None).unwrap();
+        assert_eq!(resolved.api_key, "sk-current");
+        assert_eq!(resolved.model, "current");
+        assert_eq!(resolved.thinking_level, "medium");
+    }
+
+    /// A record written before the catalog existed has only the snapshot: it
+    /// keeps running on the model it recorded, and the key still comes from
+    /// the current configuration.
+    #[test]
+    fn an_old_record_keeps_its_snapshot_model_and_takes_the_current_key() {
+        let cfg = catalog();
+        let snapshot = SessionModelConfig {
             provider: "anthropic".into(),
             model: "claude-sonnet-4-5".into(),
             base_url: "https://old.example".into(),
             max_tokens: 8192,
             context_window: 200_000,
-        }
-        .apply(&mut cfg);
-        assert_eq!(cfg.provider, "anthropic");
-        assert_eq!(cfg.model, "claude-sonnet-4-5");
-        assert_eq!(cfg.base_url, "https://old.example");
-        assert_eq!(cfg.max_tokens, 8192);
-        assert_eq!(cfg.context_window, 200_000);
-        // The key always comes from the current config and is never written
-        // into the session record.
-        assert_eq!(cfg.api_key, "sk-current");
-
-        AgentModelChoice::default().apply(&mut cfg);
-        assert_eq!(cfg.model, "claude-sonnet-4-5");
+            ..Default::default()
+        };
+        let resolved = cfg.resolve_session(None, Some(&snapshot)).unwrap();
+        assert_eq!(resolved.model, "claude-sonnet-4-5");
+        assert_eq!(resolved.protocol, "anthropic");
+        assert_eq!(resolved.base_url, "https://old.example");
+        assert_eq!(resolved.max_tokens, 8192);
+        assert_eq!(resolved.context_window, 200_000);
+        assert_eq!(resolved.api_key, "sk-current");
+        // The generated levels are the historical reasoning mapping.
+        assert!(!resolved
+            .patch
+            .as_object()
+            .map(|o| o.is_empty())
+            .unwrap_or(true));
     }
 
     #[test]

@@ -41,6 +41,12 @@ export interface TranscriptWriter {
   persistUserLine(convKey: string, user: TranscriptUserLine): void;
   /** Flush the turn's finished tail (one line per provider round). */
   persistTurn(convKey: string, turn: Turn, pathOverride?: string, force?: boolean): void;
+  /**
+   * Append the model a session switched to. The record stays append-only; a
+   * restore takes the last such line, so the session continues on the model it
+   * ended on.
+   */
+  persistModelLine(convKey: string, model: SessionModelConfig): void;
   /** Start path: the metadata line is (or a restored record already has it) on disk. */
   markMetaWritten(convKey: string, written: boolean): void;
 }
@@ -126,5 +132,11 @@ export function createTranscriptWriter(deps: TranscriptWriterDeps): TranscriptWr
     append(convKey, path, serializeTranscript([line]));
   }
 
-  return { enqueue, persistUserLine, persistTurn, markMetaWritten };
+  function persistModelLine(convKey: string, model: SessionModelConfig): void {
+    const path = deps.pathOf(convKey);
+    if (!path) return;
+    append(convKey, path, serializeTranscript([{ type: "model", at: Date.now(), model }]));
+  }
+
+  return { enqueue, persistUserLine, persistTurn, persistModelLine, markMetaWritten };
 }

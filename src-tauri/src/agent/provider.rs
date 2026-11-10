@@ -390,33 +390,46 @@ pub struct Provider {
     pub api_key: String,
     pub model: String,
     pub max_tokens: u32,
+    /// The catalog entry this provider was built from. Kept on the request
+    /// path so a session can say which model it is running, and so a subagent
+    /// can compare against it.
+    pub provider_id: String,
+    pub model_id: String,
+    /// The selected thinking level and its merge patch (see
+    /// [`super::models::ThinkingLevel`]).
+    pub thinking_level: String,
+    thinking_patch: Value,
+    /// The model's `off` level patch: what the request needs when the
+    /// reasoning channel is switched off (a gateway-specific "disabled" field,
+    /// or a delete for Anthropic).
+    thinking_off_patch: Value,
     client: reqwest::Client,
 }
 
 impl Provider {
-    pub fn new(
-        kind: &str,
-        base_url: &str,
-        api_key: &str,
-        model: &str,
-        max_tokens: u32,
-    ) -> Provider {
-        let kind = kind.to_string();
-        let base = if base_url.is_empty() {
+    /// Builds a client for one resolved catalog entry.
+    pub fn from_resolved(resolved: &super::models::ResolvedModel) -> Provider {
+        let kind = resolved.protocol.clone();
+        let base = if resolved.base_url.is_empty() {
             if kind == "anthropic" {
                 "https://api.anthropic.com".to_string()
             } else {
                 "https://api.openai.com/v1".to_string()
             }
         } else {
-            base_url.trim_end_matches('/').to_string()
+            resolved.base_url.trim_end_matches('/').to_string()
         };
         Provider {
             kind,
             base_url: base,
-            api_key: api_key.to_string(),
-            model: model.to_string(),
-            max_tokens: max_tokens.max(1024),
+            api_key: resolved.api_key.clone(),
+            model: resolved.model.clone(),
+            max_tokens: resolved.max_tokens.max(1024),
+            provider_id: resolved.provider_id.clone(),
+            model_id: resolved.model_id.clone(),
+            thinking_level: resolved.thinking_level.clone(),
+            thinking_patch: resolved.patch.clone(),
+            thinking_off_patch: resolved.off_patch.clone(),
             client: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
                 .build()
@@ -424,34 +437,42 @@ impl Provider {
         }
     }
 
-    /// Injects the reasoning-channel field into a request body, matching the
-    /// vocabulary of the gateway the model lives on (the same mapping the
-    /// translate feature uses): Anthropic takes `thinking.type`, GLM/DeepSeek
-    /// take `thinking.type` on the OpenAI surface, Qwen takes
-    /// `enable_thinking`, Ollama takes `think`. An unrecognized strict gateway
-    /// gets no field at all — an unknown top-level flag makes it 400.
+    /// The same endpoint and thinking level with a different wire model id:
+    /// what an `Agent` tool `model` override means when the catalog does not
+    /// list that id.
+    pub fn with_model(&self, model: &str, max_tokens: u32) -> Provider {
+        Provider {
+            kind: self.kind.clone(),
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
+            model: model.to_string(),
+            max_tokens: max_tokens.max(1024),
+            provider_id: self.provider_id.clone(),
+            model_id: model.to_string(),
+            thinking_level: self.thinking_level.clone(),
+            thinking_patch: self.thinking_patch.clone(),
+            thinking_off_patch: self.thinking_off_patch.clone(),
+            client: self.client.clone(),
+        }
+    }
+
+    /// Injects the reasoning-channel fields of the model's thinking level.
+    ///
+    /// The mapping is data (the settings page edits it), not a guess: the
+    /// patch of the selected level is merged into the request body, and a
+    /// request with the channel switched off applies the model's `off` level
+    /// — the only place that knows how this gateway disables reasoning.
     fn apply_thinking(&self, body: &mut Value, thinking: bool) {
-        let model = self.model.to_ascii_lowercase();
-        let base = self.base_url.to_ascii_lowercase();
-        let budget = ((self.max_tokens / 2) as u32).clamp(1024, 16384);
-        if self.kind == "anthropic" {
-            if thinking {
-                body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
-            }
-            return;
+        let patch = if thinking {
+            &self.thinking_patch
+        } else {
+            &self.thinking_off_patch
+        };
+        // A patch always lands on an object body; a level whose patch is not an
+        // object is a configuration error that normalize already repaired.
+        if patch.is_object() {
+            super::models::merge_patch(body, patch);
         }
-        if model.contains("glm") || base.contains("bigmodel") || base.contains("zhipu") {
-            body["thinking"] = json!({"type": if thinking { "enabled" } else { "disabled" }});
-        } else if model.contains("qwen") || base.contains("dashscope") {
-            body["enable_thinking"] = json!(thinking);
-        } else if base.contains("ollama") || model.starts_with("ollama/") {
-            body["think"] = json!(thinking);
-        } else if model.contains("deepseek") {
-            // DeepSeek reasoner always thinks; chat rejects vendor flags on
-            // some gateways — send the same field translate.rs sends today.
-            body["thinking"] = json!({"type": if thinking { "enabled" } else { "disabled" }});
-        }
-        // Everything else: no field; the model's own default governs.
     }
 
     /// Streams one turn with the default options (no token override, a fresh

@@ -4,8 +4,10 @@ import {
   agentApi,
   homeApi,
   type AgentChatItem,
+  type AgentConfig,
   type AgentEvent,
   type MaterialInfo,
+  type ModelSelection,
   type SavedSessionMeta,
   type SessionModelConfig,
   type SkillInfo,
@@ -53,11 +55,13 @@ import {
   type Turn,
 } from "@/components/agent/model";
 import { followTranscript, measureTurnCap } from "@/components/agent/panelScroll";
+import { resolveSelection, sessionSelection } from "@/components/agent/modelSelection";
 import { createStreamHandler } from "@/components/agent/streamEvents";
 import { createTranscriptWriter } from "@/components/agent/transcriptWriter";
 import { parseBuiltinCommand, runBuiltinCommand } from "@/components/agent/builtinCommands";
 import { AgentTodos, AgentTranscript, AgentWelcome } from "@/components/agent/Transcript";
 import { AgentMeta, AgentPermissionMenu } from "@/components/agent/Composer";
+import { ModelPicker } from "@/components/agent/ModelPicker";
 import { AgentHistoryDrawer } from "@/components/agent/HistoryDrawer";
 import { AgentApprovalCard, type ApprovalRequest } from "@/components/agent/ApprovalCard";
 import { AgentQuestionCard, type PendingQuestion } from "@/components/agent/QuestionCard";
@@ -118,10 +122,10 @@ export function AgentPanel() {
   const composingRef = useRef(false);
   const [starting, setStarting] = useState(false);
   const [busySession, setBusySession] = useState<string | null>(null);
-  /** The saved Agent config (model / context window); the footnote can show it even before a session exists. */
-  const [agentConfig, setAgentConfig] = useState<{ model: string; contextWindow: number } | null>(
-    null,
-  );
+  /** The saved Agent catalog (providers, models, thinking levels); the picker and the footnote read it. */
+  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
+  /** convKey → the catalog selection that session runs on (the picker's single source; a not-yet-started session keeps the choice its start will use). */
+  const selectionByConvRef = useRef<Map<string, ModelSelection>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const convsRef = useRef<Conv[]>([]);
@@ -295,14 +299,14 @@ export function AgentPanel() {
     };
   }, [agentConfigVersion, agentMode, agentWorkdir]);
 
-  // The model name and the context window of the footnote come from the saved config (the same one the session uses). If the config changed again while it was being read (saving the settings bumps the version), the stale result is dropped.
+  // The model picker and the footnote read the saved catalog. If the config changed again while it was being read (saving the settings bumps the version), the stale result is dropped.
   useEffect(() => {
     let cancelled = false;
     void agentApi
       .getConfig()
       .then((cfg) => {
         if (cancelled) return;
-        setAgentConfig({ model: cfg.model, contextWindow: cfg.context_window });
+        setAgentConfig(cfg);
       })
       .catch(() => {
         if (!cancelled) setAgentConfig(null);
@@ -405,6 +409,8 @@ export function AgentPanel() {
         };
         /** Restore/fork: reuse the model config of the source session; without it the current config of the settings is used. */
         model?: SessionModelConfig;
+        /** Restore/fork: the catalog selection of the source session (a current record carries it). */
+        selection?: ModelSelection | null;
         /** Restore: the session record id, so the persisted task list continues. */
         taskListId?: string;
       },
@@ -414,11 +420,16 @@ export function AgentPanel() {
       updateConv(convKey, (c) => ({ ...c, error: undefined, errorKind: undefined }));
       try {
         const mode = agentModeRef.current;
+        // The model the session starts on: the restored/forked one when given,
+        // else the choice the picker made for this conv (null = the default of
+        // the settings, resolved by the backend).
+        const selection = opts?.selection ?? selectionByConvRef.current.get(convKey) ?? null;
         const info = await agentApi.startSession(
           content,
           undefined,
           opts?.history,
           opts?.model,
+          selection,
           mode === "study" ? undefined : mode,
           // A coding session anchors relative paths and bash in the repository.
           mode === "coding" ? codeScopeRef.current?.workdir : undefined,
@@ -447,6 +458,10 @@ export function AgentPanel() {
         sessionIndexRef.current.set(info.sessionId, { convKey, path: transcriptPath, home });
         const model = info.model ?? opts?.model ?? null;
         modelByConvRef.current.set(convKey, model);
+        // The backend resolved the model; its selection is what the picker
+        // shows and what a restore resolves again.
+        const resolvedSelection = info.selection ?? selection;
+        if (resolvedSelection) selectionByConvRef.current.set(convKey, resolvedSelection);
         if (transcriptPath && opts?.seedLines && opts.seedLines.length > 0) {
           // Fork: the new file (the new session id) holds no old content, the metadata line and the prefix are written in one go. The metadata has to be the first line — the list side only reads the head of the file to get the title and the model snapshot.
           const meta = buildSessionMeta({
@@ -478,6 +493,7 @@ export function AgentPanel() {
                   sessionFileId,
                   transcriptHome: home,
                   model,
+                  selection: resolvedSelection,
                 }
               : c,
           ),
@@ -646,7 +662,7 @@ export function AgentPanel() {
       const relDir = materialRef.current?.info?.relDir;
       const codeWorkdir = codeScopeRef.current?.workdir;
       void agentApi
-        .generateTitle(seed, conv.model ?? undefined)
+        .generateTitle(seed, conv.model ?? undefined, conv.selection ?? null)
         .then((raw) => {
           const clean = cleanGeneratedTitle(raw);
           if (!clean) return;
@@ -1229,6 +1245,7 @@ export function AgentPanel() {
         sessionFileId: null,
         // The auxiliary session reuses the model config of the source session: a fork must not change the model.
         model: src.model,
+        selection: src.selection ?? null,
         usage: null,
         todos: [],
       };
@@ -1238,6 +1255,7 @@ export function AgentPanel() {
         history: historyFromTranscript(seedLines),
         seedLines,
         model: src.model ?? undefined,
+        selection: src.selection ?? null,
         // The parent relation goes into the new file: after a restart it hangs this auxiliary session back onto the main session.
         forkMeta: {
           parent: src.sessionFileId,
@@ -1347,10 +1365,65 @@ export function AgentPanel() {
     focusHistory();
   }, [historyOpen, focusHistory]);
 
-  // The footnote shows the model config of **this session**: a setting change does not affect a session that is already open, showing the current settings would lie. While the session is not up yet it falls back to the current config.
-  const configuredModel = agentConfig?.model.trim() ?? "";
-  const modelName = activeConv?.model?.model.trim() || configuredModel;
-  const contextLimit = activeConv?.model?.contextWindow ?? agentConfig?.contextWindow ?? 0;
+  /**
+   * Switches the model / thinking level of the active conversation.
+   *
+   * A session that is already up swaps on the backend (the next provider round
+   * uses it) and the new snapshot is appended to its record, so a restart
+   * restores the same model. A conversation that has not started yet only
+   * remembers the choice; its start sends it.
+   */
+  const changeModel = useCallback(
+    (selection: ModelSelection) => {
+      const key = activeKeyRef.current;
+      if (!key) return;
+      const conv = convsRef.current.find((c) => c.key === key);
+      if (!conv) return;
+      // What the chip showed before this pick: a refused swap goes back to it.
+      const previous = selectionByConvRef.current.get(key) ?? conv.selection ?? null;
+      selectionByConvRef.current.set(key, selection);
+      updateConv(key, (c) => ({ ...c, selection }));
+      if (!conv.sessionId) return;
+      void agentApi
+        .setSessionModel(conv.sessionId, selection)
+        .then((res) => {
+          const current = convsRef.current.find((c) => c.key === key);
+          if (!current || current.sessionId !== conv.sessionId) return;
+          modelByConvRef.current.set(key, res.model);
+          selectionByConvRef.current.set(key, res.selection);
+          updateConv(key, (c) => ({ ...c, model: res.model, selection: res.selection }));
+          writer.persistModelLine(key, res.model);
+        })
+        .catch((e) => {
+          // The picker already shows the new choice; put the session's own
+          // back so the chip does not claim a model the backend refused.
+          const current = convsRef.current.find((c) => c.key === key);
+          if (current && current.sessionId === conv.sessionId) {
+            if (previous) selectionByConvRef.current.set(key, previous);
+            else selectionByConvRef.current.delete(key);
+            updateConv(key, (c) => ({ ...c, selection: previous }));
+          }
+          showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
+        });
+    },
+    [showToast, updateConv, writer],
+  );
+
+  // The footnote shows the model config of **this session**: a setting change
+  // does not affect a session that is already open, showing the current
+  // settings would lie. Before a session exists the picker offers the saved
+  // default (and the choice is what its start will send).
+  const activeSelection = useMemo(() => {
+    const key = activeConv?.key;
+    // The ref is the immediate writer (a swap is reflected before the backend
+    // answers); the conv's field is the state that survives a rollback.
+    const own = key ? (selectionByConvRef.current.get(key) ?? activeConv?.selection) : undefined;
+    return sessionSelection(agentConfig, own, activeConv?.model);
+  }, [agentConfig, activeConv?.key, activeConv?.selection, activeConv?.model]);
+  const contextLimit =
+    activeConv?.model?.contextWindow ??
+    resolveSelection(agentConfig, activeSelection)?.model.context_window ??
+    0;
   const activeUsage = activeConv?.usage ?? null;
 
   return (
@@ -1424,6 +1497,7 @@ export function AgentPanel() {
                 void startSession(activeConv.key, materialContent, {
                   transcriptPath: activeConv.transcriptPath,
                   model: activeConv.model ?? undefined,
+                  selection: activeConv.selection ?? null,
                 })
               }
             >
@@ -1656,8 +1730,9 @@ export function AgentPanel() {
           <AgentMeta
             usage={activeUsage}
             contextLimit={contextLimit}
-            modelName={modelName}
-            configuredModel={configuredModel}
+            modelControl={
+              <ModelPicker cfg={agentConfig} selection={activeSelection} onChange={changeModel} />
+            }
             busy={activeBusy}
             sessionId={activeConv?.sessionId ?? null}
             canSend={Boolean(

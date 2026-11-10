@@ -9,6 +9,7 @@
 import type {
   AgentImage,
   AgentTodoItem,
+  ModelSelection,
   SavedSessionMeta,
   SessionModelConfig,
   StudyContent,
@@ -255,6 +256,13 @@ export interface Conv {
   transcriptHome?: boolean;
   /** The model config snapshot of this session at the moment it started: later setting changes do not affect it, and the restore continues with it. */
   model: SessionModelConfig | null;
+  /**
+   * The catalog selection this session runs on. It is the picker's single
+   * source: switching the model mid-session replaces it (and `model` with the
+   * new snapshot), and a not-yet-started session carries the choice the next
+   * start uses.
+   */
+  selection?: ModelSelection | null;
   /** The token usage of the last model request (the context usage = input + output). */
   usage: AgentUsage | null;
 }

@@ -33,7 +33,17 @@ export function SettingsModal() {
   const mode = useAppStore((s) => s.mode);
   const creativeMode = useAppStore((s) => s.creativeMode);
   const codeProject = useAppStore((s) => s.codeProject);
+  const requestedTab = useAppStore((s) => s.settingsTab);
+  const setSettingsTab = useAppStore((s) => s.setSettingsTab);
   const [tab, setTab] = useState<Tab>("general");
+
+  // A model picker's 「管理模型」 asks for one specific page; the request is a
+  // one-shot ticket, cleared as soon as the modal took it.
+  useEffect(() => {
+    if (!open || !requestedTab) return;
+    setTab(requestedTab as Tab);
+    setSettingsTab(null);
+  }, [open, requestedTab, setSettingsTab]);
 
   // Notes mode has no agent of its own; it shows the study shape, which is the
   // shape shared by the plain Q&A assistant.

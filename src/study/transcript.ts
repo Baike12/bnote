@@ -94,8 +94,21 @@ export interface TranscriptMetaLine {
   titleSource?: "llm" | "first-message";
 }
 
-/** A line that can appear in a session transcript (the metadata line does not take part in the conversation rebuild). */
-export type TranscriptRecord = TranscriptLine | TranscriptMetaLine;
+/**
+ * A model switch inside a session: the model the following rounds run on.
+ *
+ * Appended rather than rewritten into the metadata line, so the record stays
+ * append-only; the restore reads the last one, so a session continues on the
+ * model it ended on instead of the one it started with.
+ */
+export interface TranscriptModelLine {
+  type: "model";
+  at: number;
+  model: SessionModelConfig;
+}
+
+/** A line that can appear in a session transcript (the metadata and model lines do not take part in the conversation rebuild). */
+export type TranscriptRecord = TranscriptLine | TranscriptMetaLine | TranscriptModelLine;
 
 function isImage(value: unknown): value is AgentImage {
   if (!value || typeof value !== "object") return false;
@@ -148,6 +161,10 @@ function isModelConfig(value: unknown): value is SessionModelConfig {
  */
 export function sessionMetaFromRaw(raw: string | null): TranscriptMetaLine | null {
   if (!raw) return null;
+  let meta: TranscriptMetaLine | null = null;
+  // The last model line wins: a session switched mid-way continues on the
+  // model it ended on, not on the one its metadata line started with.
+  let latestModel: SessionModelConfig | undefined;
   for (const line of raw.split(/\r?\n/)) {
     const text = line.trim();
     if (!text) continue;
@@ -159,8 +176,12 @@ export function sessionMetaFromRaw(raw: string | null): TranscriptMetaLine | nul
     }
     if (!parsed || typeof parsed !== "object") continue;
     const v = parsed as Record<string, unknown>;
-    if (v.type !== "meta") continue;
-    return {
+    if (v.type === "model") {
+      if (isModelConfig(v.model)) latestModel = v.model;
+      continue;
+    }
+    if (v.type !== "meta" || meta) continue;
+    meta = {
       type: "meta",
       at: typeof v.at === "number" && Number.isFinite(v.at) ? v.at : 0,
       title: typeof v.title === "string" && v.title.trim() ? v.title : undefined,
@@ -175,7 +196,8 @@ export function sessionMetaFromRaw(raw: string | null): TranscriptMetaLine | nul
         v.titleSource === "llm" || v.titleSource === "first-message" ? v.titleSource : undefined,
     };
   }
-  return null;
+  if (meta && latestModel) meta.model = latestModel;
+  return meta;
 }
 
 /** meta line: the title comes from the first user message (the same rule as the list side), the model config is given by the caller. */

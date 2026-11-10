@@ -58,6 +58,10 @@ pub struct AgentDefinition {
     /// Ordered prompt layers, compiled into the binary.
     pub prompts: Vec<&'static str>,
     pub model: String,
+    /// A thinking level this definition pins for every run (a level id of the
+    /// model it ends up on); `None` follows the session's / subagent
+    /// selection. Claude Code's `effort` frontmatter field.
+    pub thinking: Option<String>,
     pub max_tokens: u32,
     /// Cap on tool-call rounds per turn; 0 = the session default (25).
     pub max_turns: u32,
@@ -193,6 +197,7 @@ pub fn registry() -> Vec<AgentDefinition> {
             model: String::new(),
             max_tokens: 0,
             max_turns: 0,
+            thinking: None,
         },
         AgentDefinition {
             id: "creative".into(),
@@ -224,6 +229,7 @@ pub fn registry() -> Vec<AgentDefinition> {
             model: String::new(),
             max_tokens: 0,
             max_turns: 0,
+            thinking: None,
         },
         AgentDefinition {
             id: "study".into(),
@@ -242,6 +248,7 @@ pub fn registry() -> Vec<AgentDefinition> {
             model: String::new(),
             max_tokens: 0,
             max_turns: 0,
+            thinking: None,
         },
         AgentDefinition {
             id: "general-purpose".into(),
@@ -276,6 +283,7 @@ pub fn registry() -> Vec<AgentDefinition> {
             model: String::new(),
             max_tokens: 0,
             max_turns: 0,
+            thinking: None,
         },
         AgentDefinition {
             id: "explore".into(),
@@ -291,6 +299,7 @@ pub fn registry() -> Vec<AgentDefinition> {
             model: String::new(),
             max_tokens: 0,
             max_turns: 0,
+            thinking: None,
         },
         AgentDefinition {
             id: "plan".into(),
@@ -305,6 +314,7 @@ pub fn registry() -> Vec<AgentDefinition> {
             model: String::new(),
             max_tokens: 0,
             max_turns: 0,
+            thinking: None,
         },
     ]
 }

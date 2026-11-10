@@ -57,7 +57,58 @@ export type StudyContent =
 /** The three agent shapes; the id is also the mode folder name. */
 export type AgentMode = "coding" | "creative" | "study";
 
+/** One thinking level: its id and the RFC 7396 patch it merges into the request body. */
+export interface ThinkingLevel {
+  id: string;
+  /** An object; a `null` value deletes that field from the request. */
+  patch: Record<string, unknown>;
+}
+
+/** One model of a provider (see `src-tauri/src/agent/models.rs`). */
+export interface ModelEntry {
+  /** The wire model id and the key a selection refers to. */
+  id: string;
+  name: string;
+  context_window: number;
+  max_tokens: number;
+  /** Accepts images (the picker shows a 「视觉」 tag). */
+  vision: boolean;
+  /** Ordered lowest → highest. */
+  thinking: ThinkingLevel[];
+  default_thinking: string;
+}
+
+export interface ProviderEntry {
+  id: string;
+  name: string;
+  /** "anthropic" | "openai" */
+  protocol: string;
+  base_url: string;
+  api_key: string;
+  models: ModelEntry[];
+}
+
+/** What a session (or a subagent) runs on: ids, resolved against the catalog. */
+export interface ModelSelection {
+  provider_id: string;
+  model_id: string;
+  thinking: string;
+}
+
+/** The subagent model choices: a global default plus one per agent definition (absent = inherit the parent session). */
+export interface SubagentModels {
+  default: ModelSelection | null;
+  by_definition: Record<string, ModelSelection>;
+}
+
 export interface AgentConfig {
+  /** The provider → model → thinking level catalog (the source of truth). */
+  providers: ProviderEntry[];
+  /** The model a new session picks. */
+  default_selection: ModelSelection | null;
+  /** Which models subagents run on. */
+  subagent_models: SubagentModels;
+  /** Legacy single-model fields; mirror of the default selection (older builds read them). */
   provider: string;
   model: string;
   base_url: string;
@@ -124,6 +175,8 @@ export interface SessionInfo {
   mcpErrors: string[];
   /** The model config actually used by this session (changing the settings does not affect an open session). */
   model?: SessionModelConfig;
+  /** The catalog selection the session runs on (what a restore resolves again). */
+  selection?: ModelSelection;
   /** The agent definition the session runs with (id/name shown in the panel). */
   definition?: { id: string; name: string; description: string; tools: string[] };
 }
@@ -135,6 +188,11 @@ export interface SessionModelConfig {
   baseUrl: string;
   maxTokens: number;
   contextWindow: number;
+  /** The thinking level the session ran on (a level id of its model). */
+  thinking?: string;
+  /** The catalog entry the session was resolved from (absent on records written before the catalog). */
+  providerId?: string;
+  modelId?: string;
 }
 
 /**
@@ -372,8 +430,10 @@ export const agentApi = {
     study: StudyContent | null,
     fork?: AgentForkSpec,
     history?: AgentChatItem[],
-    /** Restore/fork: keep the model config of the source session; when omitted, the currently saved config is used. */
+    /** Restore/fork: the source session's model snapshot (a record from before the catalog has only this). */
     model?: SessionModelConfig,
+    /** Restore/fork: the catalog selection of the source session; a fresh session passes the default of the settings. */
+    selection?: ModelSelection | null,
     /** "creative" = creative mode (with tools/skill/MCP); "coding" = the code-project agent; omitted = study mode, plain question answering only. */
     mode?: "study" | "creative" | "coding",
     /** Coding sessions: the project root (relative tool paths and bash anchor there). */
@@ -386,10 +446,26 @@ export const agentApi = {
       fork,
       history,
       model,
+      selection: selection ?? null,
       mode,
       workdir,
       taskListId,
     }),
+  /**
+   * Switches the model / thinking level of an open session; the next round uses
+   * it (a request already streaming finishes on the provider it started with).
+   */
+  setSessionModel: (sessionId: string, selection: ModelSelection) =>
+    invoke<{ model: SessionModelConfig; selection: ModelSelection }>("agent_set_session_model", {
+      sessionId,
+      selection,
+    }),
+  /** The subagent definitions the settings page configures a model for. */
+  listSubagents: () =>
+    invoke<{ id: string; name: string; description: string }[]>("agent_list_subagents"),
+  /** The thinking levels a new model of this protocol/gateway starts with. */
+  defaultLevels: (protocol: string, model: string, baseUrl: string, maxTokens: number) =>
+    invoke<ThinkingLevel[]>("agent_default_levels", { protocol, model, baseUrl, maxTokens }),
   /** Stores one inline HTML preview document; returns the URL its iframe loads (see commands/preview.rs). */
   putPreview: (html: string) => invoke<string>("agent_preview_put", { html }),
   /** Sets the session's permission mode (confirm / auto / full / plan). */
@@ -438,7 +514,9 @@ export const agentApi = {
     text: string,
     /** The session's model config snapshot (a restored session continues with it, and the title uses it too). */
     model?: SessionModelConfig,
-  ) => invoke<string>("agent_generate_title", { text, model }),
+    /** The catalog selection of the session (a current record carries it). */
+    selection?: ModelSelection | null,
+  ) => invoke<string>("agent_generate_title", { text, model, selection: selection ?? null }),
   setCurrentNote: (path: string | null) => invoke<void>("agent_set_current_note", { path }),
   /**
    * Import the PDF into the materials directory

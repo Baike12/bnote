@@ -6,11 +6,23 @@ import {
   type AgentMode,
   type AgentModePaths,
   type AgentOutputStyle,
+  type ModelSelection,
   type SkillInfo,
   type SkillSource,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { CodeArea } from "@/components/CodeArea";
+import { formatPatch, levelLabel } from "@/components/agent/modelSelection";
+import {
+  fromDraft,
+  newModel,
+  newProvider,
+  toDraft,
+  type CatalogDraft,
+  type LevelDraft,
+  type ModelDraft,
+  type ProviderDraft,
+} from "./agentCatalogDraft";
 import { SettingsCard, Row, SettingsSelect } from "./primitives";
 
 /**
@@ -46,49 +58,6 @@ function displayPath(path: string, vaultPath: string | null): string {
   if (!path) return "";
   if (vaultPath && path.startsWith(`${vaultPath}/`)) return path.slice(vaultPath.length + 1);
   return path.replace(/^\/Users\/[^/]+\//, "~/");
-}
-
-/** The shared model/credential configuration (the home's `agent.json`). */
-function useAgentSettings() {
-  const [cfg, setCfg] = useState<AgentConfig | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void agentApi
-      .getConfig()
-      .then((c) => {
-        if (!cancelled) setCfg(c);
-      })
-      .catch((e) => {
-        if (!cancelled) setLoadError(String(e).replace(/^[A-Z_]+:\s*/, ""));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const update = (patch: Partial<AgentConfig>) =>
-    setCfg((prev) => (prev ? { ...prev, ...patch } : prev));
-
-  const save = async (
-    patch: Partial<AgentConfig>,
-    note: string,
-    showToast: (m: string) => void,
-  ) => {
-    if (!cfg) return;
-    try {
-      await agentApi.saveConfig({ ...cfg, ...patch });
-      // Open sessions keep the model snapshot they started with; the panel
-      // re-reads "current config" for the footnote and the skill list.
-      useAppStore.getState().bumpAgentConfigVersion();
-      showToast(note);
-    } catch (e) {
-      showToast(`保存失败: ${String(e)}`);
-    }
-  };
-
-  return { cfg, loadError, update, save };
 }
 
 /** The mode's resolved paths, re-read after every write (disk is the source of truth). */
@@ -127,97 +96,577 @@ function AgentLoading({ loadError }: { loadError: string | null }) {
   );
 }
 
-/** Agent / model: protocol, model, context window, output ceiling, Base URL, API key. */
+/** A provider/model/level picker (three selects): the default model and the subagent rows. */
+function SelectionControl({
+  draft,
+  value,
+  onChange,
+  inheritLabel,
+}: {
+  draft: CatalogDraft;
+  value: ModelSelection | null;
+  onChange: (value: ModelSelection | null) => void;
+  /** When set, the empty provider option means it (inherits the parent session). */
+  inheritLabel?: string;
+}) {
+  const provider = draft.providers.find((p) => p.id === value?.provider_id) ?? null;
+  const model = provider?.models.find((m) => m.id === value?.model_id) ?? null;
+  const levels = model?.thinking ?? [];
+  const lastLevel = levels.length > 0 ? (levels[levels.length - 1]?.id ?? "") : "";
+  const level = levels.some((l) => l.id === value?.thinking)
+    ? (value?.thinking ?? "")
+    : model?.default_thinking || lastLevel;
+  const pickModel = (providerId: string, modelId: string) => {
+    const nextProvider = draft.providers.find((p) => p.id === providerId);
+    const nextModel = nextProvider?.models.find((m) => m.id === modelId);
+    if (!nextProvider || !nextModel) {
+      onChange(null);
+      return;
+    }
+    const thinking = nextModel.thinking.some((l) => l.id === value?.thinking)
+      ? (value?.thinking ?? "")
+      : nextModel.default_thinking || nextModel.thinking[nextModel.thinking.length - 1]?.id || "";
+    onChange({ provider_id: providerId, model_id: modelId, thinking });
+  };
+  return (
+    <span className="agent-selection">
+      <SettingsSelect<string>
+        value={value?.provider_id ?? ""}
+        onChange={(id) => {
+          if (!id) {
+            onChange(null);
+            return;
+          }
+          const next = draft.providers.find((p) => p.id === id)?.models[0];
+          if (next) pickModel(id, next.id);
+        }}
+      >
+        {inheritLabel && <option value="">{inheritLabel}</option>}
+        {draft.providers.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name || p.id || "未命名供应商"}
+          </option>
+        ))}
+      </SettingsSelect>
+      <SettingsSelect<string>
+        value={value?.model_id ?? ""}
+        onChange={(id) => {
+          if (value && id) pickModel(value.provider_id, id);
+        }}
+      >
+        {!provider && <option value="">—</option>}
+        {provider?.models.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name || m.id || "未命名模型"}
+          </option>
+        ))}
+      </SettingsSelect>
+      <SettingsSelect<string>
+        value={level}
+        onChange={(id) => {
+          if (value) onChange({ ...value, thinking: id });
+        }}
+      >
+        {levels.length === 0 && <option value="">—</option>}
+        {levels.map((l) => (
+          <option key={l.id} value={l.id}>
+            {levelLabel(l.id)}
+          </option>
+        ))}
+      </SettingsSelect>
+    </span>
+  );
+}
 
+/** One model of a provider: identity, limits, capabilities and its thinking levels. */
+function ModelEditor({
+  provider,
+  model,
+  onPatch,
+  onRemove,
+}: {
+  provider: ProviderDraft;
+  model: ModelDraft;
+  onPatch: (patch: Partial<ModelDraft>) => void;
+  onRemove: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [filling, setFilling] = useState(false);
+  const fillDefaults = async () => {
+    setFilling(true);
+    try {
+      const levels = await agentApi.defaultLevels(
+        provider.protocol,
+        model.id,
+        provider.base_url,
+        model.max_tokens,
+      );
+      onPatch({
+        thinking: levels.map((level) => ({
+          id: level.id,
+          text: formatPatch(level.patch),
+        })),
+        default_thinking: model.default_thinking || levels[levels.length - 1]?.id || "",
+      });
+    } catch (e) {
+      console.warn("[settings] default levels", e);
+    } finally {
+      setFilling(false);
+    }
+  };
+  const patchLevel = (index: number, patch: Partial<LevelDraft>) =>
+    onPatch({
+      thinking: model.thinking.map((level, i) => (i === index ? { ...level, ...patch } : level)),
+    });
+  const moveLevel = (index: number, delta: number) => {
+    const next = [...model.thinking];
+    const target = index + delta;
+    if (target < 0 || target >= next.length) return;
+    const [moved] = next.splice(index, 1);
+    if (moved) next.splice(target, 0, moved);
+    onPatch({ thinking: next });
+  };
+  return (
+    <div className="agent-model-row">
+      <div className="agent-model-row-head">
+        <button className="agent-model-row-toggle" onClick={() => setOpen((v) => !v)}>
+          <span className="agent-model-row-name">{model.name || model.id || "未命名模型"}</span>
+          <span className="agent-model-row-meta">
+            {model.vision ? "视觉 · " : ""}
+            {levelLabel(
+              model.default_thinking || model.thinking[model.thinking.length - 1]?.id || "",
+            ) || "无档位"}
+          </span>
+          <span className={`agent-model-row-caret${open ? " is-open" : ""}`}>›</span>
+        </button>
+        <button className="btn btn-ghost small" onClick={onRemove} title="删除模型">
+          删除
+        </button>
+      </div>
+      {open && (
+        <div className="agent-model-row-body">
+          <Row
+            label="模型 ID"
+            desc="请求里的 model 字段,例如 deepseek-chat、claude-sonnet-5"
+            control={
+              <input
+                className="settings-input mono"
+                value={model.id}
+                onChange={(e) => onPatch({ id: e.target.value })}
+              />
+            }
+          />
+          <Row
+            label="显示名"
+            desc="只用于界面显示,留空等于模型 ID"
+            control={
+              <input
+                className="settings-input"
+                value={model.name}
+                onChange={(e) => onPatch({ name: e.target.value })}
+              />
+            }
+          />
+          <Row
+            label="上下文窗口"
+            desc="tokens,用于输入框下方的占用率与自动压缩"
+            control={
+              <input
+                className="settings-input mono"
+                type="number"
+                min={1024}
+                step={1024}
+                value={model.context_window}
+                onChange={(e) =>
+                  onPatch({ context_window: Math.max(0, Number(e.target.value) || 0) })
+                }
+              />
+            }
+          />
+          <Row
+            label="最大输出"
+            desc="单次回复的输出上限(tokens),被截断时本轮会先提升再续写"
+            control={
+              <input
+                className="settings-input mono"
+                type="number"
+                min={1024}
+                step={1024}
+                value={model.max_tokens}
+                onChange={(e) => onPatch({ max_tokens: Math.max(0, Number(e.target.value) || 0) })}
+              />
+            }
+          />
+          <Row
+            label="视觉"
+            desc="模型接受图片输入(输入框底部给模型挂「视觉」标签)"
+            control={
+              <input
+                type="checkbox"
+                checked={model.vision}
+                onChange={(e) => onPatch({ vision: e.target.checked })}
+              />
+            }
+          />
+          <Row
+            label="默认档位"
+            desc="选中这个模型时用的思考强度"
+            control={
+              <SettingsSelect<string>
+                value={model.default_thinking}
+                onChange={(id) => onPatch({ default_thinking: id })}
+              >
+                {model.thinking.length === 0 && <option value="">—</option>}
+                {model.thinking.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {levelLabel(l.id)}
+                  </option>
+                ))}
+              </SettingsSelect>
+            }
+          />
+          <div className="agent-levels">
+            <div className="agent-levels-head">
+              <span>思考档位</span>
+              <span className="agent-levels-actions">
+                <button
+                  className="btn btn-ghost small"
+                  onClick={() => void fillDefaults()}
+                  disabled={filling}
+                >
+                  填入协议默认映射
+                </button>
+                <button
+                  className="btn btn-ghost small"
+                  onClick={() =>
+                    onPatch({
+                      thinking: [
+                        ...model.thinking,
+                        { id: `level-${model.thinking.length + 1}`, text: "{}" },
+                      ],
+                    })
+                  }
+                >
+                  添加档位
+                </button>
+              </span>
+            </div>
+            <div className="agent-levels-desc">
+              每档一个 JSON 对象(RFC 7396):保存时合并进请求体,值为 null 表示删除该字段。例如{" "}
+              <code>{'{"thinking":{"type":"enabled","budget_tokens":8192}}'}</code>
+            </div>
+            {model.thinking.length === 0 && (
+              <div className="agent-levels-empty">
+                还没有档位:保存后按协议自动生成,或点「填入协议默认映射」。
+              </div>
+            )}
+            {model.thinking.map((level, index) => (
+              <div className="agent-level-row" key={`${level.id}-${index}`}>
+                <input
+                  className="settings-input agent-level-id"
+                  value={level.id}
+                  placeholder="档位名(off/low/medium/high/max)"
+                  onChange={(e) => patchLevel(index, { id: e.target.value })}
+                />
+                <textarea
+                  className="settings-input mono agent-level-patch"
+                  rows={2}
+                  value={level.text}
+                  onChange={(e) => patchLevel(index, { text: e.target.value })}
+                />
+                <span className="agent-level-actions">
+                  <button
+                    className="btn btn-ghost small"
+                    onClick={() => moveLevel(index, -1)}
+                    title="上移"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    className="btn btn-ghost small"
+                    onClick={() => moveLevel(index, 1)}
+                    title="下移"
+                  >
+                    ↓
+                  </button>
+                  <button
+                    className="btn btn-ghost small"
+                    onClick={() =>
+                      onPatch({ thinking: model.thinking.filter((_, i) => i !== index) })
+                    }
+                    title="删除档位"
+                  >
+                    ✕
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One provider: endpoint + key + its models. */
+function ProviderEditor({
+  provider,
+  onPatch,
+  onRemove,
+}: {
+  provider: ProviderDraft;
+  onPatch: (patch: Partial<ProviderDraft>) => void;
+  onRemove: () => void;
+}) {
+  const patchModel = (index: number, patch: Partial<ModelDraft>) =>
+    onPatch({ models: provider.models.map((m, i) => (i === index ? { ...m, ...patch } : m)) });
+  return (
+    <div className="agent-provider-card">
+      <div className="agent-provider-card-head">
+        <input
+          className="settings-input agent-provider-name"
+          value={provider.name}
+          placeholder="供应商名称"
+          onChange={(e) => onPatch({ name: e.target.value })}
+        />
+        <SettingsSelect<string>
+          value={provider.protocol}
+          onChange={(protocol) => onPatch({ protocol })}
+        >
+          <option value="anthropic">Anthropic(含兼容代理)</option>
+          <option value="openai">OpenAI 兼容(OpenAI/DeepSeek/GLM/Qwen/Ollama…)</option>
+        </SettingsSelect>
+        <button className="btn btn-ghost small" onClick={onRemove} title="删除供应商">
+          删除
+        </button>
+      </div>
+      <Row
+        label="Base URL"
+        desc="留空用官方地址;兼容网关填到 /v1 一级"
+        control={
+          <input
+            className="settings-input mono"
+            value={provider.base_url}
+            placeholder="https://api.deepseek.com/v1"
+            onChange={(e) => onPatch({ base_url: e.target.value })}
+          />
+        }
+      />
+      <Row
+        label="API Key"
+        desc="只保存在本地 agent.json,不写进会话记录"
+        control={
+          <input
+            className="settings-input mono"
+            type="password"
+            value={provider.api_key}
+            onChange={(e) => onPatch({ api_key: e.target.value })}
+          />
+        }
+      />
+      <div className="agent-provider-models">
+        <div className="agent-provider-models-head">
+          <span>模型</span>
+          <button
+            className="btn btn-ghost small"
+            onClick={() =>
+              onPatch({ models: [...provider.models, newModel(provider.models.length)] })
+            }
+          >
+            添加模型
+          </button>
+        </div>
+        {provider.models.map((model, index) => (
+          <ModelEditor
+            key={`${model.id}-${index}`}
+            provider={provider}
+            model={model}
+            onPatch={(patch) => patchModel(index, patch)}
+            onRemove={() => onPatch({ models: provider.models.filter((_, i) => i !== index) })}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Agent / model: the catalog — several suppliers, each with several models,
+ * each model with its own thinking levels (a JSON patch per level).
+ *
+ * The page edits a draft: patch text is kept as text until the save converts
+ * and validates it, so a half-typed mapping never reaches the agent. The
+ * default model is what a new session picks; an open session switches from
+ * the composer's model chip.
+ */
 export function AgentModelTab({ mode }: { mode: AgentMode }) {
+  const [cfg, setCfg] = useState<AgentConfig | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<CatalogDraft | null>(null);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [subagents, setSubagents] = useState<{ id: string; name: string; description: string }[]>(
+    [],
+  );
   const showToast = useAppStore((s) => s.showToast);
-  const { cfg, loadError, update, save } = useAgentSettings();
-  if (!cfg) return <AgentLoading loadError={loadError} />;
+  const bump = useAppStore((s) => s.bumpAgentConfigVersion);
+
+  useEffect(() => {
+    let cancelled = false;
+    void agentApi
+      .getConfig()
+      .then((c) => {
+        if (cancelled) return;
+        setCfg(c);
+        setDraft(toDraft(c));
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadError(String(e).replace(/^[A-Z_]+:\s*/, ""));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void agentApi
+      .listSubagents()
+      .then((list) => {
+        if (!cancelled) setSubagents(list);
+      })
+      .catch(() => {
+        if (!cancelled) setSubagents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!draft || !cfg) return <AgentLoading loadError={loadError} />;
+
+  const edit = (patch: Partial<CatalogDraft>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+  const editProvider = (index: number, patch: Partial<ProviderDraft>) =>
+    edit({
+      providers: draft.providers.map((p, i) => (i === index ? { ...p, ...patch } : p)),
+    });
+  const removeProvider = (index: number) =>
+    edit({ providers: draft.providers.filter((_, i) => i !== index) });
+  const editSubagent = (id: string | null, value: ModelSelection | null) => {
+    if (id === null) {
+      edit({ subagent_models: { ...draft.subagent_models, default: value } });
+      return;
+    }
+    const by_definition = { ...draft.subagent_models.by_definition };
+    if (value) by_definition[id] = value;
+    else delete by_definition[id];
+    edit({ subagent_models: { ...draft.subagent_models, by_definition } });
+  };
+
+  const save = async () => {
+    const result = fromDraft(draft);
+    if (!result.ok) {
+      setErrors(result.errors);
+      showToast("有未通过校验的档位映射,没有保存");
+      return;
+    }
+    setErrors([]);
+    try {
+      await agentApi.saveConfig({ ...cfg, ...result.parts });
+      bump();
+      showToast("模型配置已保存;已开的会话不受影响,可在输入框底部切换");
+    } catch (e) {
+      showToast(`保存失败: ${String(e)}`);
+    }
+  };
+
   return (
     <div className="settings-section">
       <SettingsCard
-        title="模型"
-        desc={`${MODE_LABEL[mode]}助手使用的协议、模型与密钥,保存在笔记库的 .bnote/agent.json(未打开笔记库时退回 ~/.bnote),三种模式共用。改动只影响之后新建的会话,已开的会话按创建时的配置继续(面板头部点 ⟳ 开新会话)。`}
+        title="供应商"
+        desc={`${MODE_LABEL[mode]}助手可用的模型目录,保存在笔记库的 .bnote/agent.json(未打开笔记库时退回 ~/.bnote),三种模式共用。每个供应商有自己的协议与密钥,每个模型有自己的上下文窗口、输出上限与思考档位。`}
+        actions={
+          <button
+            className="btn btn-ghost small"
+            onClick={() =>
+              edit({ providers: [...draft.providers, newProvider(draft.providers.length)] })
+            }
+          >
+            添加供应商
+          </button>
+        }
+      >
+        {draft.providers.length === 0 && (
+          <div className="settings-empty">还没有供应商:点右上角「添加供应商」开始。</div>
+        )}
+        {draft.providers.map((provider, index) => (
+          <ProviderEditor
+            key={`${provider.id}-${index}`}
+            provider={provider}
+            onPatch={(patch) => editProvider(index, patch)}
+            onRemove={() => removeProvider(index)}
+          />
+        ))}
+      </SettingsCard>
+
+      <SettingsCard
+        title="默认模型"
+        desc="新会话使用这个模型与思考强度;已开的会话用自己的,可在输入框底部的模型切换里改。"
       >
         <Row
-          label="协议"
+          label="默认模型"
+          desc="供应商 / 模型 / 思考强度"
           control={
-            <SettingsSelect value={cfg.provider} onChange={(v) => update({ provider: v })}>
-              <option value="anthropic">Anthropic(含兼容代理)</option>
-              <option value="openai">OpenAI 兼容(OpenAI/DeepSeek/Grok/Ollama…)</option>
-            </SettingsSelect>
-          }
-        />
-        <Row
-          label="模型"
-          control={
-            <input
-              className="settings-input"
-              value={cfg.model}
-              placeholder="claude-sonnet-4-5 / deepseek-chat / gpt-4o…"
-              onChange={(e) => update({ model: e.target.value })}
-            />
-          }
-        />
-        <Row
-          label="上下文窗口"
-          desc="模型的最大上下文(tokens),用于助手输入框下方显示占用率;按实际模型填写,如 128000、200000、420000"
-          control={
-            <input
-              className="settings-input mono"
-              type="number"
-              min={1024}
-              step={1024}
-              value={cfg.context_window}
-              onChange={(e) => update({ context_window: Math.max(0, Number(e.target.value) || 0) })}
-            />
-          }
-        />
-        <Row
-          label="最大输出"
-          desc="单次回复的输出上限(tokens),随每次请求发送;被截断时本轮会先提升到 64000 再续写。按模型的输出上限填写,如 8192、16384"
-          control={
-            <input
-              className="settings-input mono"
-              type="number"
-              min={1024}
-              step={1024}
-              value={cfg.max_tokens}
-              onChange={(e) => update({ max_tokens: Math.max(0, Number(e.target.value) || 0) })}
-            />
-          }
-        />
-        <Row
-          label="Base URL"
-          desc="留空用官方地址"
-          control={
-            <input
-              className="settings-input mono"
-              value={cfg.base_url}
-              placeholder="https://api.deepseek.com/v1"
-              onChange={(e) => update({ base_url: e.target.value })}
-            />
-          }
-        />
-        <Row
-          label="API Key"
-          control={
-            <input
-              className="settings-input mono"
-              type="password"
-              value={cfg.api_key}
-              onChange={(e) => update({ api_key: e.target.value })}
+            <SelectionControl
+              draft={draft}
+              value={draft.default_selection}
+              onChange={(value) => edit({ default_selection: value })}
             />
           }
         />
       </SettingsCard>
-      <div className="settings-footer">
-        <button
-          className="btn primary"
-          onClick={() =>
-            void save({}, "Agent 配置已保存;新会话生效(已开会话沿用原配置)", showToast)
+
+      <SettingsCard
+        title="子代理"
+        desc="子代理默认继承主会话的模型。这里可以给全局或某个子代理单独指定:调用时显式给的 model 优先于它。"
+      >
+        <Row
+          label="默认子代理模型"
+          desc="继承主会话 = 子代理与主会话用同一个模型"
+          control={
+            <SelectionControl
+              draft={draft}
+              value={draft.subagent_models.default}
+              inheritLabel="继承主会话"
+              onChange={(value) => editSubagent(null, value)}
+            />
           }
-        >
+        />
+        {subagents.map((agent) => (
+          <Row
+            key={agent.id}
+            label={agent.name}
+            desc={agent.description}
+            control={
+              <SelectionControl
+                draft={draft}
+                value={draft.subagent_models.by_definition[agent.id] ?? null}
+                inheritLabel="继承默认"
+                onChange={(value) => editSubagent(agent.id, value)}
+              />
+            }
+          />
+        ))}
+      </SettingsCard>
+
+      {errors.length > 0 && (
+        <div className="settings-errors">
+          {errors.map((error) => (
+            <div key={error}>{error}</div>
+          ))}
+        </div>
+      )}
+      <div className="settings-footer">
+        <button className="btn primary" onClick={() => void save()}>
           保存模型配置
         </button>
       </div>

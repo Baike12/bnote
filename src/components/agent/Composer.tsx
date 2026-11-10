@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { agentApi } from "@/lib/tauri";
 import {
   cacheHitRate,
@@ -8,7 +8,6 @@ import {
   formatPercent,
   formatTokenCount,
   occupancyPercent,
-  usageTitle,
   type AgentUsage,
 } from "@/study/agentUsage";
 import { PERMISSION_MODES, ShieldIcon } from "./permissionModes";
@@ -270,15 +269,14 @@ function AgentContextBadge({
 
 /**
  * The session footnote (ZCode's composer layout): on the left the context
- * ring + model, on the right the send/stop circle. The model line is the
- * snapshot the session started with; when the setting changed since, it says
- * so and only a new session picks the new model up.
+ * ring + the model picker, on the right the send/stop circle. The model chip
+ * belongs to the session (switching it applies immediately), so it is passed
+ * in as a node the panel wires to the backend.
  */
 export function AgentMeta({
   usage,
   contextLimit,
-  modelName,
-  configuredModel,
+  modelControl,
   busy,
   sessionId,
   canSend,
@@ -288,8 +286,7 @@ export function AgentMeta({
 }: {
   usage: AgentUsage | null;
   contextLimit: number;
-  modelName: string;
-  configuredModel: string;
+  modelControl?: ReactNode;
   busy: boolean;
   sessionId: string | null;
   canSend: boolean;
@@ -297,7 +294,6 @@ export function AgentMeta({
   onSend: () => void;
   onStop: () => void;
 }) {
-  const modelStale = Boolean(modelName && configuredModel && modelName !== configuredModel);
   return (
     <span className="agent-meta">
       {/* Generating replaces the ring with a spinner: the ring would read as
@@ -307,18 +303,7 @@ export function AgentMeta({
       ) : (
         <AgentContextBadge usage={usage} contextLimit={contextLimit} sessionId={sessionId} />
       )}
-      <span
-        className="agent-meta-model"
-        title={
-          usageTitle(usage, contextLimit, modelName) +
-          (modelStale
-            ? `\n本会话按自己的配置继续(设置里现在是 ${configuredModel});点 ⟳ 开始新会话才会用新配置。`
-            : "")
-        }
-      >
-        {modelName || "未配置模型"}
-        {modelStale ? " · 会话配置" : ""}
-      </span>
+      {modelControl}
       <span className="agent-meta-ctx">{contextLabel(usage, contextLimit)}</span>
       {busy ? (
         <button className="agent-send stop" onClick={onStop} title="停止生成">

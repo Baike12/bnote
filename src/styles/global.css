@@ -1699,15 +1699,19 @@ button {
   border-top: 1px solid var(--border);
 }
 
-/* Row: label + description on the left, control on the right. */
+/* Row: label + description on the left, control on the right. The row wraps
+   and the control may shrink: a control wider than the panel otherwise pushed
+   the label to zero width (Chinese text then breaks one character per line)
+   and painted over the card border. */
 .setting-row {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 12px 20px;
   padding: 10px 16px;
+  flex-wrap: wrap;
 }
 .setting-row-text {
-  flex: 1;
+  flex: 1 1 180px;
   min-width: 0;
 }
 .setting-label {
@@ -1721,9 +1725,12 @@ button {
   line-height: 1.6;
 }
 .setting-control {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 .setting-control .settings-input {
@@ -2243,6 +2250,174 @@ button {
 }
 .settings-input.mono {
   font-family: var(--font-mono);
+}
+
+/* ---- Agent model catalog (供应商 / 模型 / 思考档位) ---- */
+.btn.small {
+  padding: 3px 9px;
+  font-size: 11.5px;
+}
+.settings-empty {
+  padding: 14px 16px;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.settings-errors {
+  padding: 10px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+/* The provider/model/level picker of the default model and subagent rows. The
+   three selects share the row (equal thirds) instead of each keeping the
+   single-control width, which made the row three times wider than the card. */
+.agent-selection {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  justify-content: flex-end;
+}
+.agent-selection .settings-select-wrap {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+.agent-provider-card {
+  padding: 10px 16px 12px;
+}
+.agent-provider-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+.agent-provider-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+.agent-provider-models {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.agent-provider-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg2);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.agent-model-row + .agent-model-row {
+  border-top: 1px solid var(--border);
+}
+.agent-model-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 0;
+}
+.agent-model-row-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-model-row-toggle:hover {
+  background: var(--bg3);
+}
+.agent-model-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-model-row-meta {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.agent-model-row-caret {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+.agent-model-row-caret.is-open {
+  transform: rotate(90deg);
+}
+.agent-model-row-body {
+  padding: 0 0 10px;
+}
+.agent-levels {
+  padding: 10px 16px 4px;
+  border-top: 1px solid var(--border);
+}
+.agent-levels-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+}
+.agent-levels-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+.agent-levels-desc {
+  margin-top: 4px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.agent-levels-desc code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.agent-levels-empty {
+  padding: 8px 0;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.agent-level-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+}
+.agent-level-id {
+  flex: none;
+  width: 128px;
+}
+.agent-level-patch {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  line-height: 1.5;
+  font-size: 11.5px;
+}
+.agent-level-actions {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 /* Slider + right-aligned value (after ZCode's SettingsRangeControl). */
@@ -3064,6 +3239,238 @@ input[type="range"] {
   color: var(--text-faint);
   font-size: 11px;
   line-height: 1.4;
+}
+
+/* The composer's model chip and its picker (ZCode's model menu): suppliers in
+   a flyout to the right, the models of the browsed supplier, the thinking
+   strength slider of the selected model, and the way into the catalog page. */
+.agent-model {
+  position: relative;
+  flex: none;
+  min-width: 0;
+}
+.agent-model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 210px;
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.agent-model-chip:hover,
+.agent-model-chip[aria-expanded="true"] {
+  background: var(--bg3);
+  color: var(--text);
+}
+.agent-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-model-level {
+  flex: none;
+  color: var(--text-faint);
+}
+.agent-model-chip svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  opacity: 0.6;
+}
+.agent-model-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 36;
+  width: 262px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg1);
+  box-shadow: 0 12px 28px var(--shadow);
+}
+.agent-model-provider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.agent-model-provider-name {
+  flex: 1;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.agent-model-provider svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  opacity: 0.55;
+}
+.agent-model-provider.is-open svg {
+  transform: rotate(90deg);
+}
+.agent-model-api {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+.agent-model-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.agent-model-provider-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-model-provider-item:hover,
+.agent-model-provider-item.is-active {
+  background: var(--bg3);
+}
+.agent-model-check {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 11px;
+}
+.agent-model-section-label {
+  padding: 8px 8px 4px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+.agent-model-models {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 210px;
+  overflow-y: auto;
+}
+.agent-model-model-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-model-model-item:hover,
+.agent-model-model-item.is-active {
+  background: var(--bg3);
+}
+.agent-model-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-model-tag {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+.agent-model-thinking {
+  margin-top: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+.agent-model-thinking-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+.agent-model-thinking-value {
+  color: var(--text);
+}
+.agent-model-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  margin: 8px 0 2px;
+  background: transparent;
+  cursor: pointer;
+}
+.agent-model-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background-color: var(--bg3);
+  background-image: linear-gradient(
+    90deg,
+    var(--accent) 0,
+    var(--accent) var(--fill),
+    transparent var(--fill),
+    transparent 100%
+  );
+}
+.agent-model-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -3.5px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg1);
+}
+.agent-model-empty {
+  padding: 10px 8px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.agent-model-manage {
+  margin-top: 2px;
+  padding: 7px 8px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-model-manage:hover {
+  border-radius: 0 0 6px 6px;
+  background: var(--bg3);
+  color: var(--text);
 }
 
 /* Tool approval / model question (ZCode's bottom dock): a normal-flow card

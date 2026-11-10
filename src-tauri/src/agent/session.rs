@@ -194,13 +194,20 @@ pub struct Session {
     /// style file or the setting takes effect on the next message.
     pub output_style: Mutex<super::output_style::OutputStyle>,
     pub mcp: Arc<McpManager>,
-    pub provider: Arc<Provider>,
+    /// The model this session requests with. Swappable: the composer changes
+    /// the model or the thinking level of an open session and the next round
+    /// picks it up. A request in flight holds its own `Arc`, so a swap never
+    /// changes the provider under a running stream.
+    provider: RwLock<Arc<Provider>>,
+    /// The catalog selection `provider` was built from: the panel shows it and
+    /// the session record writes it, so a restore starts from the same model.
+    pub selection: Mutex<super::models::ModelSelection>,
     pub running: Arc<AtomicBool>,
     pub seq: Arc<AtomicU64>,
     pub app: tauri::AppHandle,
-    /// Model context window (from the config snapshot): auto-compact measures
-    /// usage.input against it.
-    pub context_window: u64,
+    /// Model context window (from the selected model): auto-compact measures
+    /// usage.input against it. Follows a model swap.
+    context_window: AtomicU64,
     /// Latest reported usage; the auto-compact trigger input.
     pub last_usage: Mutex<Option<super::types::TokenUsage>>,
     /// Token totals over every main-turn request of this session: the source of
@@ -913,6 +920,40 @@ impl Session {
         self.current_settings().thinking != Some(false)
     }
 
+    /// The provider a request runs on. Read per round, so a mid-turn swap (the
+    /// composer changing the model) applies from the next round on.
+    pub fn provider(&self) -> Arc<Provider> {
+        match self.provider.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// The selected model's context window (auto-compact measures against it).
+    pub fn context_window(&self) -> u64 {
+        self.context_window.load(Ordering::SeqCst)
+    }
+
+    /// Switches the model of an open session.
+    ///
+    /// `provider` is already resolved by the command layer. The swap is a
+    /// single write: the request in flight keeps the `Arc` it started with and
+    /// finishes with it, the next round reads the new one.
+    pub fn set_model(
+        &self,
+        provider: Arc<Provider>,
+        context_window: u64,
+        selection: super::models::ModelSelection,
+    ) {
+        if let Ok(mut slot) = self.provider.write() {
+            *slot = provider;
+        }
+        self.context_window.store(context_window, Ordering::SeqCst);
+        if let Ok(mut slot) = self.selection.lock() {
+            *slot = selection;
+        }
+    }
+
     /// The auto-memory block for a coding session: the behavior prompt plus
     /// the current `MEMORY.md` index (empty index still gets the prompt, so the
     /// agent knows where to write memory the first time).
@@ -1114,13 +1155,15 @@ impl Session {
                 .map(|g| g.clone())
                 .unwrap_or_default();
             let sink_ref: &(dyn Fn(AgentEvent) + Send + Sync) = &sink;
+            // One provider per round: a model swap mid-turn applies to the next
+            // round, never to the request that is already streaming.
+            let provider = self.provider();
             let opts = TurnOptions {
                 max_tokens: max_tokens_override,
                 abort: self.ctx.abort.clone(),
                 thinking: self.thinking_enabled(),
             };
-            let turn = self
-                .provider
+            let turn = provider
                 .stream_turn_with(&system, &snapshot, &tools, sink_ref, &opts)
                 .await;
             let turn = match turn {
@@ -1165,7 +1208,7 @@ impl Session {
             if turn.hit_max_tokens && turn.tool_calls.is_empty() {
                 if escalations == 0 {
                     escalations += 1;
-                    let escalated = escalated_ceiling(self.provider.max_tokens);
+                    let escalated = escalated_ceiling(provider.max_tokens);
                     max_tokens_override = Some(escalated);
                     self.emit(AgentEvent::Notice {
                         text: format!("输出达到上限,提升到 {} tokens 继续", escalated),
@@ -1955,15 +1998,64 @@ impl Session {
                 .map(|s| s.to_string())
                 .collect(),
         });
-        // `model` on the call may override the definition, which overrides the
-        // parent (empty = inherit).
-        let model_override = input["model"]
+        // Which model the child runs on. Claude Code's precedence, plus this
+        // app's subagent settings (read from disk on every spawn so an edit
+        // applies without a new session):
+        //
+        //   Agent tool `model` → the definition's `model` → the definition's
+        //   entry in `subagentModels` → the global subagent choice → inherit
+        //   the parent session.
+        let catalog = crate::agent::AgentConfig::load();
+        let parent = self.provider();
+        let parent_selection = self.selection.lock().map(|g| g.clone()).unwrap_or_default();
+        let explicit_model: Option<String> = input["model"]
             .as_str()
-            .map(|s| s.trim().to_string())
+            .map(str::trim)
             .filter(|s| !s.is_empty())
-            .or_else(|| Some(child_def.model.clone()).filter(|m| !m.is_empty()));
+            .map(str::to_string)
+            .or_else(|| Some(child_def.model.trim().to_string()).filter(|m| !m.is_empty()));
+        let mut child_selection: Option<super::models::ModelSelection> = None;
+        let mut child_resolved: Option<super::models::ResolvedModel> = None;
+        if let Some(model_id) = &explicit_model {
+            if let Some(selection) = super::models::selection_for_model(
+                &catalog.providers,
+                &parent_selection.provider_id,
+                model_id,
+                &parent_selection.thinking,
+            ) {
+                if let Ok(resolved) = catalog.resolve(Some(&selection)) {
+                    child_selection = Some(selection);
+                    child_resolved = Some(resolved);
+                }
+            }
+        } else {
+            let configured = catalog
+                .subagent_models
+                .by_definition
+                .get(&child_def.id)
+                .or(catalog.subagent_models.default.as_ref())
+                .cloned();
+            if let Some(mut selection) = configured {
+                // A definition may pin its own thinking level.
+                if let Some(level) = child_def
+                    .thinking
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                {
+                    selection.thinking = level.to_string();
+                }
+                if let Ok(resolved) = catalog.resolve(Some(&selection)) {
+                    child_selection = Some(selection);
+                    child_resolved = Some(resolved);
+                }
+            }
+        }
         if child_def.max_tokens == 0 {
-            child_def.max_tokens = self.provider.max_tokens;
+            child_def.max_tokens = child_resolved
+                .as_ref()
+                .map(|r| r.max_tokens)
+                .unwrap_or(parent.max_tokens);
         }
         if child_def.max_turns == 0 {
             child_def.max_turns = if fork {
@@ -1979,16 +2071,19 @@ impl Session {
             .iter()
             .any(|t| t == "Write" || t == "Edit" || t == "Bash");
         let child_def = Arc::new(child_def);
-        let child_provider = match model_override {
-            Some(model) if model != self.provider.model => Arc::new(Provider::new(
-                &self.provider.kind,
-                &self.provider.base_url,
-                &self.provider.api_key,
-                &model,
-                child_def.max_tokens,
-            )),
-            _ => self.provider.clone(),
+        let child_provider = match (&child_resolved, &explicit_model) {
+            (Some(resolved), _) => Arc::new(Provider::from_resolved(resolved)),
+            // A raw id the catalog does not know (a hand-written Agent call):
+            // keep the parent's endpoint and swap only the wire model id.
+            (None, Some(model_id)) => Arc::new(parent.with_model(model_id, child_def.max_tokens)),
+            (None, None) => parent.clone(),
         };
+        let child_selection = child_selection.unwrap_or_else(|| parent_selection.clone());
+        let child_window = child_resolved
+            .as_ref()
+            .map(|r| r.context_window)
+            .unwrap_or_else(|| self.context_window());
+
         let child_ctx = Arc::new(ToolContext {
             vault: self.ctx.vault.clone(),
             data_dir: self.ctx.data_dir.clone(),
@@ -2067,11 +2162,12 @@ impl Session {
             skills: self.skills.clone(),
             output_style: Mutex::new(style.clone()),
             mcp: self.mcp.clone(),
-            provider: child_provider,
+            provider: RwLock::new(child_provider),
+            selection: Mutex::new(child_selection),
             running: Arc::new(AtomicBool::new(false)),
             seq: self.seq.clone(),
             app: self.app.clone(),
-            context_window: self.context_window,
+            context_window: AtomicU64::new(child_window),
             last_usage: Mutex::new(None),
             usage_totals: Mutex::new(UsageTotals::default()),
             todos: Mutex::new(Vec::new()),
@@ -2270,7 +2366,7 @@ impl Session {
             "defId": self.def.id,
             "label": self.def.display_name(),
             "status": status,
-            "model": self.provider.model,
+            "model": self.provider().model,
             "updatedAt": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
@@ -2395,7 +2491,8 @@ impl Session {
     /// next response. Three consecutive failures trip the breaker: a model that
     /// cannot summarize must not burn a request per turn.
     async fn maybe_auto_compact(&self) -> Result<(), String> {
-        if !self.def.compaction.enabled || self.context_window == 0 {
+        let window = self.context_window();
+        if !self.def.compaction.enabled || window == 0 {
             return Ok(());
         }
         if self.compact_failures.load(Ordering::SeqCst) >= MAX_COMPACT_FAILURES {
@@ -2404,10 +2501,9 @@ impl Session {
         let last = self.last_usage.lock().map(|g| *g).unwrap_or(None);
         let Some(usage) = last else { return Ok(()) };
         let threshold = if self.def.compaction.threshold > 0.0 {
-            (self.def.compaction.threshold.clamp(0.3, 1.0) * self.context_window as f64) as u64
+            (self.def.compaction.threshold.clamp(0.3, 1.0) * window as f64) as u64
         } else {
-            self.context_window
-                .saturating_sub(AUTOCOMPACT_BUFFER_TOKENS)
+            window.saturating_sub(AUTOCOMPACT_BUFFER_TOKENS)
         };
         if usage.input < threshold {
             return Ok(());
@@ -2465,7 +2561,7 @@ impl Session {
             // The compaction summary does not need the reasoning channel.
             thinking: false,
         };
-        self.provider
+        self.provider()
             .stream_turn_with(COMPACTION_PROMPT, &snapshot, &[], &sink, &opts)
             .await?;
         let mut summary = collected.into_inner().map_err(|e| e.to_string())?;
@@ -2612,6 +2708,9 @@ pub struct SessionSeed {
     pub skills: Arc<super::skills::SkillRegistry>,
     pub mcp: Arc<McpManager>,
     pub provider: Arc<Provider>,
+    /// The catalog selection the provider was resolved from (the subagent
+    /// resolution starts from the parent's).
+    pub selection: super::models::ModelSelection,
     pub ctx: Arc<ToolContext>,
     pub app: tauri::AppHandle,
     pub context_window: u64,
@@ -2692,11 +2791,12 @@ pub fn create_session(seed: SessionSeed) -> Session {
         skills: seed.skills,
         output_style: Mutex::new(style),
         mcp: seed.mcp,
-        provider: seed.provider,
+        provider: RwLock::new(seed.provider),
+        selection: Mutex::new(seed.selection),
         running: Arc::new(AtomicBool::new(false)),
         seq: Arc::new(AtomicU64::new(0)),
         app: seed.app,
-        context_window: seed.context_window,
+        context_window: AtomicU64::new(seed.context_window),
         last_usage: Mutex::new(None),
         usage_totals: Mutex::new(UsageTotals::default()),
         todos: Mutex::new(Vec::new()),
