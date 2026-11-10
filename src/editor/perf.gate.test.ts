@@ -13,8 +13,9 @@ import {
 } from "./livePreview";
 import { buildEmphasisMarks } from "./emphasisMarks";
 import { projectTodos } from "@/projects/model";
-import { fenceStateScan, mathRegions } from "./context";
-import { computeCalloutRegions } from "./callout";
+import { fenceStateScan, mathRegions, mathRegionsField } from "./context";
+import { calloutRegions, calloutRegionsField, computeCalloutRegions } from "./callout";
+import { clearPerf, perfStats } from "@/perf/trace";
 import { planTabout } from "./snippets/tabout";
 import { scanMath } from "./mathScan";
 import { buildSession, setSession } from "./snippets/extension";
@@ -1395,5 +1396,94 @@ describe("perf gate: project card todo parsing", () => {
     }, 30);
     console.warn(`[perf] project todo parsing median ${median.toFixed(3)}ms`);
     expect(median).toBeLessThan(1.5);
+  });
+});
+
+// ---- incremental math / callout fields: the no-O(document) keystroke rule ----
+
+describe("perf gate: incremental math/callout fields", () => {
+  // 600 sections × 2 inline formulas = 1200 regions, 2400 lines. A per-keystroke
+  // full scan here is the class of regression this gate exists for.
+  const parts: string[] = [];
+  for (let i = 0; i < 600; i++) {
+    parts.push(`## 章节 ${i}`);
+    parts.push("段落文字,讲一些线性变换的基本概念,长度中等偏长一些。");
+    parts.push(`公式 $a_{${i}} = \\frac{x}{y}$ 与 $b_{${i}} = \\sqrt{z}$。`);
+    parts.push("");
+  }
+  const FORMULA_DOC = parts.join("\n");
+  const caret = FORMULA_DOC.indexOf("$a_{300}") + 3;
+
+  function formulaState(): EditorState {
+    const state = EditorState.create({
+      doc: FORMULA_DOC,
+      extensions: [mathRegionsField, calloutRegionsField],
+      selection: EditorSelection.cursor(caret),
+    });
+    // Force the initial scans outside any measured window.
+    state.field(mathRegionsField);
+    state.field(calloutRegionsField);
+    return state;
+  }
+
+  it("30 ordinary keystrokes inside a formula never rescan math or callouts", () => {
+    let state = formulaState();
+    clearPerf();
+    for (let i = 0; i < 30; i++) {
+      const head = state.selection.main.head;
+      state = state.update({
+        changes: { from: head, insert: "x" },
+        selection: { anchor: head + 1 },
+      }).state;
+    }
+    expect(state.field(mathRegionsField).length).toBe(1200);
+    const scans = perfStats().filter((s) => s.name === "math.scan" || s.name === "callout.scan");
+    expect(scans).toEqual([]);
+  });
+
+  it("a dollar keystroke rescans exactly once per field", () => {
+    let state = formulaState();
+    clearPerf();
+    const head = state.selection.main.head;
+    state = state.update({
+      changes: { from: head, insert: "$" },
+      selection: { anchor: head + 1 },
+    }).state;
+    expect(perfStats().find((s) => s.name === "math.scan")?.n).toBe(1);
+    expect(perfStats().find((s) => s.name === "callout.scan")?.n).toBe(1);
+  });
+
+  it("mapping 1200 regions through one edit median < 2ms", () => {
+    const state = formulaState();
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = state.update({
+        changes: { from: state.selection.main.head, insert: "x" },
+        selection: { anchor: state.selection.main.head + 1 },
+      }).state;
+      if (next.field(mathRegionsField).length !== 1200) throw new Error("regions lost");
+      return performance.now() - t0;
+    }, 30);
+    console.warn(`[perf] incremental math field map median ${median.toFixed(3)}ms`);
+    expect(median).toBeLessThan(2);
+  });
+
+  it("the callout field maps a body edit without rebuilding the region list", () => {
+    const doc = "::: 标题\n" + "正文行\n".repeat(100) + ":::";
+    let state = EditorState.create({
+      doc,
+      extensions: [mathRegionsField, calloutRegionsField],
+      selection: EditorSelection.cursor(10),
+    });
+    const before = state.field(calloutRegionsField);
+    clearPerf();
+    const head = state.selection.main.head;
+    state = state.update({
+      changes: { from: head, insert: "字" },
+      selection: { anchor: head + 1 },
+    }).state;
+    expect(state.field(calloutRegionsField)[0].to).toBe(before[0].to + 1);
+    expect(calloutRegions(state)[0].title).toBe("标题");
+    expect(perfStats().find((s) => s.name === "callout.scan")).toBeUndefined();
   });
 });

@@ -1,7 +1,9 @@
 import { EditorState } from "@codemirror/state";
+import type { Transaction } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { fenceStateScan } from "./context";
 import { calloutRegions } from "./callout";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 /**
  * Hierarchical heading numbering: every ATX heading outside code gets a
@@ -32,13 +34,57 @@ import { calloutRegions } from "./callout";
  */
 
 const OLD_NUMBER_RE = /^\d+(\.\d+)*[ \t]+/;
+
+/**
+ * Whether a document change can alter **numbering**. A heading is created or
+ * destroyed only by `#`, a line break, or a shift of the leading whitespace
+ * (column 0 matters); a callout scope only by `:`. Typing ordinary text in a
+ * title or body cannot change a number, so the per-keystroke renumber scan is
+ * skipped — it used to walk every line on every typed character.
+ */
+export function numberingMayChange(transactions: readonly Transaction[]): boolean {
+  for (const tr of transactions) {
+    if (!tr.docChanged) continue;
+    let affected = false;
+    tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+      if (affected) return;
+      const removed = tr.startState.doc.sliceString(fromA, toA);
+      const inserted = tr.state.doc.sliceString(fromB, toB);
+      if (/[#:\n]/.test(removed) || /[#:\n]/.test(inserted)) {
+        affected = true;
+        return;
+      }
+      // A change in the first characters of a line can expose/hide a heading
+      // (the scan only recognizes column-0 headings).
+      if (
+        fromA - tr.startState.doc.lineAt(fromA).from <= 3 ||
+        fromB - tr.state.doc.lineAt(fromB).from <= 3
+      ) {
+        affected = true;
+      }
+    });
+    if (affected) return true;
+  }
+  return false;
+}
 const HEADING_RE = /^(#{1,6})([ \t]+.*)?$/;
 
 /** Renumber replacements for `state`, [] when the numbering is already up
  *  to date. Each change rewrites one heading's prefix up to the title text.
  *  Exported so unit tests can lock the scope semantics (a pure function, no
  *  view dependency). */
+const NUMBERING_SCAN_FIELDS = perfFields("lines", "changes");
+
 export function renumberChanges(
+  state: EditorState,
+): { from: number; to: number; insert: string }[] {
+  const t = perfStart();
+  const changes = renumberChangesUnmeasured(state);
+  perfEnd(t, "numbering.scan", NUMBERING_SCAN_FIELDS, state.doc.lines, changes.length);
+  return changes;
+}
+
+function renumberChangesUnmeasured(
   state: EditorState,
 ): { from: number; to: number; insert: string }[] {
   const doc = state.doc;

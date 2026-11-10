@@ -23,6 +23,7 @@ import {
   TaskCheckboxWidget,
 } from "./widgets";
 import { ImageWidget } from "./widgets";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 import { drawingStem, isDrawingFileName } from "@/lib/excalidrawFile";
 
 /**
@@ -169,14 +170,6 @@ interface BlockStatics {
    *  hidden only while the cursor is outside the whole block — inside, the
    *  block shows as editable source (same rule as math blocks). */
   fences: { line: Interval; block: Interval }[];
-  /** Callout boundary marker lines (`:::`), same hiding rule (the source shows only while the cursor is inside the block). */
-  calloutEdges: {
-    line: Interval;
-    block: Interval;
-    kind: "open" | "close";
-    title: string;
-    depth: number;
-  }[];
   codeRanges: Interval[];
   inlineCodeRanges: Interval[];
   hrs: Interval[];
@@ -184,32 +177,10 @@ interface BlockStatics {
 
 function collectBlockStatics(state: EditorState): BlockStatics {
   const fences: { line: Interval; block: Interval }[] = [];
-  const calloutEdges: BlockStatics["calloutEdges"] = [];
   const codeRanges: Interval[] = [];
   const inlineCodeRanges: Interval[] = [];
   const hrs: Interval[] = [];
   const doc = state.doc;
-  for (const c of calloutRegions(state)) {
-    const block = { from: c.from, to: c.to };
-    const openLine = doc.line(c.openLine);
-    calloutEdges.push({
-      line: { from: openLine.from, to: openLine.to },
-      block,
-      kind: "open",
-      title: c.title,
-      depth: c.depth,
-    });
-    if (c.closed) {
-      const closeLine = doc.line(c.closeLine);
-      calloutEdges.push({
-        line: { from: closeLine.from, to: closeLine.to },
-        block,
-        kind: "close",
-        title: "",
-        depth: c.depth,
-      });
-    }
-  }
   syntaxTree(state).iterate({
     from: 0,
     to: doc.length,
@@ -241,7 +212,57 @@ function collectBlockStatics(state: EditorState): BlockStatics {
       }
     },
   });
-  return { fences, calloutEdges, codeRanges, inlineCodeRanges, hrs };
+  return { fences, codeRanges, inlineCodeRanges, hrs };
+}
+
+/**
+ * Whether a transaction can change the block statics. Only the characters that
+ * build/destroy a tree-level block construct qualify: fences
+ * (backtick/tilde), HR markers (-, *, _), and any edit at a line start
+ * (list/indent forms). Callout titles and edges are **not** derived here —
+ * they come straight from `calloutRegions(state)` in buildBlockDecos, so a
+ * title edit can never leave a stale widget behind. Any other insertion or
+ * deletion (ordinary prose, code content, commands inside a formula) shifts
+ * the static ranges and is mapped instead of re-walking the whole syntax tree
+ * on every keystroke.
+ */
+function mayAffectBlockStatics(tr: Transaction): boolean {
+  const oldDoc = tr.startState.doc;
+  const newDoc = tr.state.doc;
+  let affected = false;
+  tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    if (affected) return;
+    const removed = oldDoc.sliceString(fromA, toA);
+    const inserted = newDoc.sliceString(fromB, toB);
+    if (/[`~*_\-\n]/.test(removed) || /[`~*_\-\n]/.test(inserted)) {
+      affected = true;
+      return;
+    }
+    if (oldDoc.lineAt(fromA).from === fromA || newDoc.lineAt(fromB).from === fromB) {
+      affected = true;
+    }
+  });
+  return affected;
+}
+
+function mapInterval(interval: Interval, tr: Transaction): Interval {
+  const from = tr.changes.mapPos(interval.from, 1);
+  const to = tr.changes.mapPos(interval.to, -1);
+  return from === interval.from && to === interval.to ? interval : { from, to };
+}
+
+/** Maps the block statics through an ordinary edit; block boundaries only
+ *  move when text before them is inserted or removed. */
+function mapBlockStatics(statics: BlockStatics, tr: Transaction): BlockStatics {
+  return {
+    fences: statics.fences.map((f) => ({
+      line: mapInterval(f.line, tr),
+      block: mapInterval(f.block, tr),
+    })),
+    codeRanges: statics.codeRanges.map((r) => mapInterval(r, tr)),
+    inlineCodeRanges: statics.inlineCodeRanges.map((r) => mapInterval(r, tr)),
+    hrs: statics.hrs.map((r) => mapInterval(r, tr)),
+  };
 }
 
 function buildBlockDecos(
@@ -282,31 +303,38 @@ function buildBlockDecos(
       sig.push(`f${f.line.from}`);
     }
   }
-  for (const e of statics.calloutEdges) {
-    // The same block-level rule as for fences: while the cursor is inside the
-    // callout (boundary lines included) the `:::` source stays editable, and
-    // only leaving the whole block hides it. The rendered state is provided
-    // by the widget's own top/bottom caps (a whole-line block replace moves
-    // the line element out of the DOM where line decorations cannot reach
-    // it) — with a title the title is rendered at heading-3 font size,
-    // otherwise the cap has no text at all.
-    if (active(e.block.from, e.block.to)) continue;
-    if (e.kind === "open" && e.title) {
-      out.push(
-        Decoration.replace({
-          widget: new CalloutTitleWidget(e.title, e.line.from, e.depth),
-          block: true,
-        }).range(e.line.from, e.line.to),
-      );
-      sig.push(`co${e.line.from}:${e.title}`);
-    } else {
-      out.push(
-        Decoration.replace({
-          widget: new CalloutEdgeWidget(e.kind === "open", e.line.from, e.depth),
-          block: true,
-        }).range(e.line.from, e.line.to),
-      );
-      sig.push(`ce${e.line.from}`);
+  for (const c of callouts) {
+    const edges: { kind: "open" | "close"; title: string; line: number }[] = [
+      { kind: "open", title: c.title, line: c.openLine },
+    ];
+    if (c.closed) edges.push({ kind: "close", title: "", line: c.closeLine });
+    for (const e of edges) {
+      const line = doc.line(e.line);
+      // The same block-level rule as for fences: while the cursor is inside the
+      // callout (boundary lines included) the `:::` source stays editable, and
+      // only leaving the whole block hides it. The rendered state is provided
+      // by the widget's own top/bottom caps (a whole-line block replace moves
+      // the line element out of the DOM where line decorations cannot reach
+      // it) — with a title the title is rendered at heading-3 font size,
+      // otherwise the cap has no text at all.
+      if (active(c.from, c.to)) continue;
+      if (e.kind === "open" && e.title) {
+        out.push(
+          Decoration.replace({
+            widget: new CalloutTitleWidget(e.title, line.from, c.depth),
+            block: true,
+          }).range(line.from, line.to),
+        );
+        sig.push(`co${line.from}:${e.title}`);
+      } else {
+        out.push(
+          Decoration.replace({
+            widget: new CalloutEdgeWidget(e.kind === "open", line.from, c.depth),
+            block: true,
+          }).range(line.from, line.to),
+        );
+        sig.push(`ce${line.from}`);
+      }
     }
   }
   for (const hr of statics.hrs) {
@@ -388,6 +416,9 @@ interface BlockFieldValue {
   tree: Tree;
 }
 
+const STATICS_FIELDS = perfFields("docLines", "mode");
+const BLOCK_DECOS_FIELDS = perfFields("docLines");
+
 function makeBlockValue(
   state: EditorState,
   prev: BlockFieldValue | null,
@@ -395,10 +426,27 @@ function makeBlockValue(
   tree: Tree,
 ): BlockFieldValue {
   const docChanged = !!tr && tr.docChanged;
-  const statics =
-    !prev || docChanged || tree !== prev.tree ? collectBlockStatics(state) : prev.statics;
+  const staticsStart = perfStart();
+  let statics: BlockStatics;
+  let mode: "collect" | "map" | "reuse";
+  if (!prev || (!docChanged && tree !== prev.tree)) {
+    statics = collectBlockStatics(state);
+    mode = "collect";
+  } else if (!docChanged) {
+    statics = prev.statics;
+    mode = "reuse";
+  } else if (mayAffectBlockStatics(tr)) {
+    statics = collectBlockStatics(state);
+    mode = "collect";
+  } else {
+    statics = mapBlockStatics(prev.statics, tr);
+    mode = "map";
+  }
+  perfEnd(staticsStart, "livePreview.statics", STATICS_FIELDS, state.doc.lines, mode);
 
+  const decoStart = perfStart();
   const { decos, sig } = buildBlockDecos(state, statics, state.selection.ranges);
+  perfEnd(decoStart, "livePreview.blockDecos", BLOCK_DECOS_FIELDS, state.doc.lines);
   if (prev && !docChanged && sig === prev.sig) {
     // The decorations did not change: keep the original DecorationSet but
     // record the new tree, so that every later tree advance does not trigger
@@ -448,7 +496,10 @@ export interface DecorationBuildView {
 /** Viewport-scoped inline decorations (italic, list markers, inline math,
  *  wikilink...). Exported so tests can lock the token activity rules on a
  *  DOM-less fake view. */
+const INLINE_FIELDS = perfFields("docLines", "visibleRanges", "decos");
+
 export function buildInlineDecorations(view: DecorationBuildView): DecorationSet {
+  const t = perfStart();
   const state = view.state;
   const doc = state.doc;
   const visible = view.visibleRanges;
@@ -745,7 +796,9 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   decorateWikiLinks(state, visibleFrom, visibleTo, exclude, active, claim, out, wikiLinks);
 
   wikiLinksPerView.set(view, wikiLinks);
-  return Decoration.set(out.inline, true);
+  const set = Decoration.set(out.inline, true);
+  perfEnd(t, "livePreview.inline", INLINE_FIELDS, doc.lines, visible.length, out.inline.length);
+  return set;
 }
 
 // --------------------------------------------------------------------------

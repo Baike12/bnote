@@ -9,6 +9,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { mathOwnsEndpoints, mathRegions } from "./context";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 /**
  * The text styling of emphasis (italic / bold) is drawn here instead of by the
@@ -32,12 +33,15 @@ const emphasisMark = Decoration.mark({ class: "md-em" });
 const strongMark = Decoration.mark({ class: "md-strong" });
 const strikeMark = Decoration.mark({ class: "md-strike" });
 
+const EMPHASIS_FIELDS = perfFields("ranges", "marks");
+
 /** Pure build (no DOM, unit-testable): walks the syntax tree over the visible ranges only. */
 export function buildEmphasisMarks(
   state: EditorState,
   ranges: readonly { from: number; to: number }[],
 ): DecorationSet {
   if (ranges.length === 0) return Decoration.none;
+  const t = perfStart();
   const out: Range<Decoration>[] = [];
   const maths = mathRegions(state);
   syntaxTree(state).iterate({
@@ -70,7 +74,9 @@ export function buildEmphasisMarks(
       return true; // keep descending: nested emphasis (***x***) is marked separately
     },
   });
-  return Decoration.set(out, true);
+  const set = Decoration.set(out, true);
+  perfEnd(t, "emphasis.marks", EMPHASIS_FIELDS, ranges.length, out.length);
+  return set;
 }
 
 /** Always enabled (the live preview toggle does not affect it): it only owns the text styling, never the marker visibility. */

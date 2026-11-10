@@ -15,7 +15,8 @@
     "gate": "pnpm lint && pnpm typecheck && pnpm format:check && pnpm test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "docs:keybindings": "UPDATE_DOCS=1 vitest run src/commands/keybindingsDoc.test.ts"
+    "docs:keybindings": "UPDATE_DOCS=1 vitest run src/commands/keybindingsDoc.test.ts",
+    "perf:report": "node scripts/perf-report.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

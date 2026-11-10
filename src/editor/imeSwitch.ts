@@ -5,6 +5,7 @@ import { caretInMathBody, insideFencedCode, mathRegions } from "./context";
 import { getView } from "./api";
 import { api } from "@/lib/tauri";
 import { useAppStore, type ModalKind, type Settings } from "@/state/appStore";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 /**
  * IME follow: switch the macOS input source on vim mode changes —
@@ -92,10 +93,16 @@ function scheduleLaunch(): void {
   });
 }
 
+const IME_FIELDS = perfFields("target", "suspended");
+
 function launchSwitch(target: string): void {
   switching = true;
   forcedThisSession = true;
   const seq = focusSeq;
+  // End-to-end cost of the switch (IPC + the main-thread TIS select). This is
+  // the leg that made "leave a formula, type the next key" feel slow when the
+  // input source was being engaged.
+  const t = perfStart();
   if (baseline === null) {
     void api
       .getCurrentInputSource()
@@ -113,6 +120,7 @@ function launchSwitch(target: string): void {
       lastEditorTarget = null; // allow retry on the next transition
     })
     .finally(() => {
+      perfEnd(t, "ime.switch", IME_FIELDS, target, suspended);
       switching = false;
       const next = queued;
       queued = null;

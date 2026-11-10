@@ -153,4 +153,22 @@ describe("scanMath existing behavior does not regress", () => {
     expect(regions("$ s$")).toHaveLength(0);
     expect(regions("$ $")).toHaveLength(0);
   });
+
+  it("the ma shape `$|$` after text is an empty inline formula, not a block opener", () => {
+    // ma / ##@ expand to two adjacent dollars with the caret between them. A
+    // display classification made the rest of the paragraph math source and
+    // left Tab with nowhere to go (the regression this test locks).
+    expect(regions("前文 $$")).toEqual([{ from: 3, to: 5, display: false, content: "" }]);
+    expect(regions("a $$ b")).toEqual([{ from: 2, to: 4, display: false, content: "" }]);
+  });
+
+  it("the empty pair never overlaps a real inline formula ($x$$ is $x$ plus a stray $)", () => {
+    expect(regions("前文 $x$$")).toEqual([{ from: 3, to: 6, display: false, content: "x" }]);
+  });
+
+  it("a lone $$ at the start of a line still opens the block being typed", () => {
+    expect(regions("$$\n\n正文")).toEqual([
+      { from: 0, to: 2, display: true, content: "", unclosed: true },
+    ]);
+  });
 });

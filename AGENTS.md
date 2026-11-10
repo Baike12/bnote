@@ -119,6 +119,7 @@ bnote's core is **feel**: editing, scrolling, caret movement, and rendering must
 - **No races.** One writer per state (see above). Every async callback (`requestMeasure`, rAF, `setTimeout`, microtasks, IPC, file watcher) must re-validate against current state and drop stale results.
 - **Measure, never guess.** Locate performance problems with deterministic measurements (per-frame DOM/layout/caret traces, transaction counts, measure counts). "Feels fine" is not evidence.
 - **Keep the budget honest.** `src/editor/perf.gate.test.ts` and `src/code/perf.gate.test.ts` lock the order of magnitude of hot operations. Calibrate budgets from measured medians (~6–10×); update them from measurements, never by guesswork. Perf-sensitive changes get before/after measurement with the same protocol.
+- **The full contract is [docs/PERFORMANCE.md](./docs/PERFORMANCE.md).** It defines the per-keystroke budget, the no-O(document) rule, the incremental-field pattern, the instrumentation (`src/perf/`, `.bnote/perf/*.jsonl`, `pnpm perf:report`) and the review checklist. The `bnote-performance` skill turns it into a repeatable review pass when the user asks for one.
 
 ## Comments
 

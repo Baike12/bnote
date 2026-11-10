@@ -42,6 +42,8 @@ import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
 import { fileToAgentImage } from "@/study/agentImages";
 import { WEREAD_HOME_URL } from "@/study/weread";
 import { codeCommandDefs, focusCodeContent, quoteCodeSelection } from "@/code/commands";
+import { flushPerf } from "@/perf/sink";
+import { perfStats, startFullTrace, stopFullTrace } from "@/perf/trace";
 
 /** Whether the middle column has a web page open (only then do the zoom keys take over ⌘= / ⌘- / ⌘0). */
 function hasWebPreview(): boolean {
@@ -175,6 +177,44 @@ const defs: CommandDef[] = [
     title: "保存当前笔记",
     category: "工作区",
     run: () => void actions.saveNote(),
+  },
+  // ---- diagnostics (performance) ----
+  {
+    id: "diag.perf-start",
+    title: "性能:开始详细追踪 2 分钟",
+    category: "工作区",
+    run: () => {
+      startFullTrace(120);
+      useAppStore
+        .getState()
+        .showToast("性能追踪已开始（2 分钟）：慢键、长任务与各阶段耗时会写入 .bnote/perf/");
+    },
+  },
+  {
+    id: "diag.perf-stop",
+    title: "性能:停止详细追踪并打印汇总",
+    category: "工作区",
+    run: () => {
+      stopFullTrace();
+      const stats = perfStats();
+      console.table(stats);
+      useAppStore
+        .getState()
+        .showToast(
+          stats.length > 0
+            ? `性能追踪已停止：最慢阶段 ${stats[0].name} ${stats[0].max}ms`
+            : "性能追踪已停止",
+        );
+    },
+  },
+  {
+    id: "diag.perf-flush",
+    title: "性能:立即写入日志文件",
+    category: "工作区",
+    run: async () => {
+      await flushPerf();
+      useAppStore.getState().showToast("性能日志已写入 .bnote/perf/");
+    },
   },
   {
     id: "workspace.open-drawing",

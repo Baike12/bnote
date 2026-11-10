@@ -15,6 +15,8 @@ import { ensureSyntaxTree } from "@codemirror/language";
 import { markdownExtensions, codeHighlighting } from "./markdown";
 import { insertNewlineContinueMarkup, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { livePreviewExtension, configureLivePreview, selectionAffectsDecos } from "./livePreview";
+import { mathRegionsField } from "./context";
+import { calloutRegionsField } from "./callout";
 import { emphasisMarksExtension } from "./emphasisMarks";
 import { typewriterExtension } from "./typewriter";
 import { imeSwitchExtension } from "./imeSwitch";
@@ -26,7 +28,7 @@ import { snippetsExtension, deleteDollarPair, deleteScriptBraces } from "./snipp
 import { matrixEnter } from "./snippets/matrix";
 import { configureLatexSuite } from "./snippets/config";
 import { installMathMotionClamp } from "./motionClamp";
-import { renumberHeadings } from "./numbering";
+import { numberingMayChange, renumberHeadings } from "./numbering";
 import {
   vimModeExtension,
   vimKeyCaptureExtension,
@@ -39,6 +41,8 @@ import {
 import { cutSelection, copySelection, pasteClipboard } from "./ops";
 import { useAppStore } from "@/state/appStore";
 import { enterContinueListItem } from "./ops";
+import { editorPerfProbe } from "@/perf/editorProbe";
+import { perfEnd, perfStart } from "@/perf/trace";
 import type { VimMapping } from "./vim/vimrc";
 
 export interface EditorCallbacks {
@@ -97,6 +101,11 @@ export function baseExtensions(
   options: EditorCreateOptions = {},
 ): Extension[] {
   return [
+    // Key-latency probe: it only measures (capture-phase keydown → the frame
+    // that shows the result) and allocates on slow/full tracing, so it stays
+    // first where it sees the raw keydown before any handler.
+    editorPerfProbe(),
+
     // Snippet Tab handling takes precedence over everything else.
     snippetsExtension(),
 
@@ -139,6 +148,12 @@ export function baseExtensions(
     emphasisMarksExtension(),
 
     docPathField,
+    // The math region cache: the field maps regions through ordinary edits and
+    // re-scans only when pairing can change (see context.ts). Declared before
+    // the decoration fields that read it, so they see this transaction's value.
+    mathRegionsField,
+    // Callout regions follow the same rule and read the math field above.
+    calloutRegionsField,
     // The focused instance is the one the command layer acts on (getView). The
     // project view holds both a project card and a daily note editor, so
     // "the last one mounted" points at the wrong target after the user clicks
@@ -271,7 +286,8 @@ export function baseExtensions(
           (t) =>
             t.isUserEvent("input.bnote-renumber") || t.isUserEvent("undo") || t.isUserEvent("redo"),
         ) &&
-        useAppStore.getState().settings.autoNumberHeadings
+        useAppStore.getState().settings.autoNumberHeadings &&
+        numberingMayChange(u.transactions)
       ) {
         const view = u.view;
         queueMicrotask(() => {
@@ -361,7 +377,9 @@ export interface FlushableView {
 export function scheduleVimCursorFlush(view: FlushableView): void {
   queueMicrotask(() => {
     if (!view.dom.isConnected) return;
+    const t = perfStart();
     view.coordsAtPos(view.state.selection.main.head);
+    perfEnd(t, "cursor.flush");
   });
 }
 

@@ -3,6 +3,7 @@ import type { DecorationSet, EditorView, ViewUpdate } from "@codemirror/view";
 import type { EditorState } from "@codemirror/state";
 import { mathRegions } from "../context";
 import { latexConfig } from "./config";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 /**
  * All bracket geometry: pairing lookup, colored pairs, caret bracket
@@ -146,10 +147,14 @@ function markAt(pos: number, className: string) {
  *  **independent of the selection** — that is why the plugin does not rebuild
  *  on selectionSet (see bracketColorPlugin.update). Exported so the gate can
  *  lock this invariant. */
+const BRACKET_COLOR_FIELDS = perfFields("docLines", "marks");
+const CURSOR_BRACKET_FIELDS = perfFields("marks");
+
 export function buildBracketColors(view: {
   state: EditorState;
   visibleRanges: readonly { from: number; to: number }[];
 }): DecorationSet {
+  const t = perfStart();
   const out: ReturnType<typeof markAt>[] = [];
   const doc = view.state.doc;
   for (const range of view.visibleRanges) {
@@ -174,12 +179,15 @@ export function buildBracketColors(view: {
       }
     }
   }
-  return Decoration.set(out, true);
+  const set = Decoration.set(out, true);
+  perfEnd(t, "latex.bracketColors", BRACKET_COLOR_FIELDS, view.state.doc.lines, out.length);
+  return set;
 }
 
 /** Highlights the bracket at the caret and its partner. Exported so the gate can
  *  lock the geometry (a fake view without DOM). */
 export function buildCursorBrackets(view: { state: EditorState }): DecorationSet {
+  const t = perfStart();
   const selection = view.state.selection;
   const doc = view.state.doc;
   const head = selection.main.to;
@@ -218,7 +226,9 @@ export function buildCursorBrackets(view: { state: EditorState }): DecorationSet
     done = true;
     break;
   }
-  return Decoration.set(out, true);
+  const set = Decoration.set(out, true);
+  perfEnd(t, "latex.cursorBrackets", CURSOR_BRACKET_FIELDS, out.length);
+  return set;
 }
 
 /** The colored-pair plugin. Toggling the switch does not necessarily come with

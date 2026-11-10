@@ -1,4 +1,5 @@
-import type { EditorState, Text } from "@codemirror/state";
+import { StateField } from "@codemirror/state";
+import type { EditorState, Text, Transaction } from "@codemirror/state";
 import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import { scanMath, type MathRegion } from "./mathScan";
@@ -88,9 +89,183 @@ export interface EditContext {
 
 const mathCache = new WeakMap<object, MathRegion[]>();
 
-/** Math regions of the document, memoized per Text generation. */
+/** The character at `pos`; the empty string at the document edges. */
+function charAt(doc: Text, pos: number): string {
+  return pos < 0 || pos >= doc.length ? "" : doc.sliceString(pos, pos + 1);
+}
+
+function lineBlank(doc: Text, pos: number): boolean {
+  return !/\S/.test(doc.lineAt(pos).text);
+}
+
+/** Pairing reads only two things about a neighbour: the character **after** a
+ *  `$` (whitespace blocks an opener, a digit blocks a closer) and whether the
+ *  character **before** it is `$` or `\` (adjacency/escape). Classifying the
+ *  old and new neighbours lets an ordinary letter typed inside a formula map,
+ *  while a space/digit typed next to a delimiter rescans. */
+function rightClass(ch: string): number {
+  if (ch === "$") return 1;
+  if (ch === "\\") return 2;
+  if (ch === "") return 3;
+  if (/\s/.test(ch)) return 4;
+  if (/[0-9]/.test(ch)) return 5;
+  return 6;
+}
+
+function leftClass(ch: string): number {
+  if (ch === "$") return 1;
+  if (ch === "\\") return 2;
+  return 3;
+}
+
+/**
+ * Whether a transaction can change **pairing**. The predicate must be a
+ * superset of every pairing input; a false negative leaves the field stale
+ * (no live preview, wrong IME context), which is worse than a re-scan.
+ *
+ * Pairing reads: the delimiters themselves, `\n` (line structure), `\`
+ * (escapes), the character class immediately after a `$` (whitespace blocks an
+ * opener, a digit blocks a closer) and line blankness (the display-block
+ * exemption). `\begin`/`\end` tokens only matter inside a display block that
+ * already contains a blank line, where any edit may complete the token.
+ * Ordinary text — including LaTeX commands — maps the regions.
+ */
+function mayAffectMath(tr: Transaction, regions: MathRegion[]): boolean {
+  const oldDoc = tr.startState.doc;
+  const newDoc = tr.state.doc;
+  let affected = false;
+  tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    if (affected) return;
+    const removed = oldDoc.sliceString(fromA, toA);
+    const inserted = newDoc.sliceString(fromB, toB);
+    if (/[$\n\\]/.test(removed) || /[$\n\\]/.test(inserted)) {
+      affected = true;
+      return;
+    }
+    // A stray `$$` is a block only while its line prefix is whitespace. An
+    // edit earlier on the same line (typing `- ` at column 0, deleting a word
+    // before it) flips that classification without touching a delimiter.
+    const oldLineText = oldDoc.lineAt(fromA).text;
+    const newLineText = newDoc.lineAt(fromB).text;
+    const oldMarker = oldLineText.indexOf("$$");
+    const newMarker = newLineText.indexOf("$$");
+    if (oldMarker !== -1 && newMarker !== -1) {
+      const oldAtLineStart = oldLineText.slice(0, oldMarker).trim() === "";
+      const newAtLineStart = newLineText.slice(0, newMarker).trim() === "";
+      if (oldAtLineStart !== newAtLineStart) {
+        affected = true;
+        return;
+      }
+    }
+    // A `$` on either edge of the change has one of its pairing neighbours
+    // replaced. Compare the classes, not the characters: `$a$` → `$b$` maps.
+    // The second `$` of a `$$` is exempt on its right side: block delimiters
+    // (and the empty `$|$` pair) do not care about whitespace/digits there, so
+    // typing the first body character of a block must not rescan.
+    const oldBefore = charAt(oldDoc, fromA - 1);
+    const oldAfter = charAt(oldDoc, toA);
+    const oldFirst = charAt(oldDoc, fromA);
+    const oldLast = charAt(oldDoc, toA - 1);
+    const newFirst = charAt(newDoc, fromB);
+    const newLast = charAt(newDoc, toB - 1);
+    const secondOfBlock = oldBefore === "$" && charAt(oldDoc, fromA - 2) === "$";
+    if (!secondOfBlock && oldBefore === "$" && rightClass(oldFirst) !== rightClass(newFirst)) {
+      affected = true;
+      return;
+    }
+    if (oldAfter === "$" && leftClass(oldLast) !== leftClass(newLast)) {
+      affected = true;
+      return;
+    }
+    // A backslash matters only through the character it escapes: if the edit
+    // inserts a character between `\` and `$` (or deletes it), the escape
+    // state flips. A `\` followed by anything else (a LaTeX command) does not
+    // need a re-scan — typing `\frac` must cost one scan, not two.
+    if (oldBefore === "\\" && (oldFirst === "$" || newFirst === "$")) {
+      affected = true;
+      return;
+    }
+    if (lineBlank(oldDoc, fromA) !== lineBlank(newDoc, fromB)) {
+      affected = true;
+      return;
+    }
+    const enclosing = regions.find((r) => r.display && fromA >= r.from && toA <= r.to);
+    if (enclosing && /[ \t]*\n[ \t]*\n/.test(enclosing.content)) affected = true;
+  });
+  return affected;
+}
+
+/** Maps regions through a transaction that cannot change pairing; content is
+ *  re-sliced only for regions the change really intersects.
+ *
+ *  An unclosed region's `to` **is** the end of its body (the paragraph end;
+ *  see pushStrayRegion), not an exclusive boundary like a closing delimiter.
+ *  It therefore maps with assoc +1 and accepts an insertion exactly at `to`:
+ *  typing there is still typing into the formula, and with the closed rule the
+ *  region would keep `content:""` and never render. */
+function mapMathRegions(regions: MathRegion[], tr: Transaction): MathRegion[] {
+  const changes: { from: number; to: number }[] = [];
+  tr.changes.iterChangedRanges((fromA, toA) => changes.push({ from: fromA, to: toA }));
+  const doc = tr.state.doc;
+  // Keep the array identity when nothing moved: consumers derive from it (the
+  // callout field compares identity/line spans), and an edit after every
+  // formula must not look like a math change.
+  let out: MathRegion[] | null = null;
+  for (let i = 0; i < regions.length; i++) {
+    const region = regions[i];
+    const from = tr.changes.mapPos(region.from, 1);
+    const unclosed = region.unclosed === true;
+    const to = tr.changes.mapPos(region.to, unclosed ? 1 : -1);
+    let intersects = false;
+    for (const c of changes) {
+      if (c.from < region.to || (unclosed && c.from === region.to)) {
+        if (c.to > region.from) {
+          intersects = true;
+          break;
+        }
+      }
+    }
+    let next = region;
+    if (intersects) {
+      const start = region.display ? from + 2 : from + 1;
+      const end = unclosed ? to : to - (region.display ? 2 : 1);
+      next = {
+        ...region,
+        from,
+        to,
+        content: doc.sliceString(Math.max(start, from), Math.max(start, end)),
+      };
+    } else if (from !== region.from || to !== region.to) {
+      next = { ...region, from, to };
+    }
+    if (next === region && out === null) continue;
+    if (out === null) out = regions.slice(0, i);
+    out.push(next);
+  }
+  return out ?? regions;
+}
+
+/**
+ * Math regions as a state field: the single source for every per-keystroke
+ * consumer (decorations, IME, snippets, Tab). Without it each caller scanned
+ * the whole document whenever a Text generation changed — i.e. on **every
+ * keystroke**. The field maps the previous regions through ordinary edits and
+ * only re-scans when pairing can actually change (see mayAffectMath).
+ */
+export const mathRegionsField = StateField.define<MathRegion[]>({
+  create: (state) => scanMath(state.doc),
+  update(value, tr) {
+    if (!tr.docChanged) return value;
+    return mayAffectMath(tr, value) ? scanMath(tr.state.doc) : mapMathRegions(value, tr);
+  },
+});
+
+/** Math regions of the document. States that carry the field (all editor
+ *  instances) are O(changes); bare states in tests fall back to the per-Text
+ *  memo so the public API stays usable without the editor setup. */
 export function mathRegions(state: EditorState): MathRegion[] {
-  return mathRegionsForDoc(state.doc);
+  const field = state.field(mathRegionsField, false);
+  return field ?? mathRegionsForDoc(state.doc);
 }
 
 /** Doc-keyed variant: modules that hold no EditorState (the callout scan) share

@@ -563,3 +563,30 @@ describe("livePreview callout anchor decorations", () => {
     expect(marksIn(6, doc.length)).toEqual([]);
   });
 });
+
+/**
+ * The callout boundary decorations are derived from `calloutRegions(state)`,
+ * not from a mapped static snapshot: a title edit must reach the widget in the
+ * same transaction, or the rendered title lags one keystroke behind (and the
+ * typed character shows beside the old title).
+ */
+describe("callout title decorations follow the fresh callout regions", () => {
+  it("typing at the end of the title line shows the new title once the caret leaves", () => {
+    const created = EditorState.create({
+      doc: "::: Note\nbody\n:::\n\nafter",
+      extensions: [blockDecorationsField],
+    });
+    const typed = created.update({
+      changes: { from: 8, insert: "d" }, // End of "::: Note"
+      selection: EditorSelection.cursor(9),
+    }).state;
+    const outside = typed.update({ selection: EditorSelection.cursor(typed.doc.length) }).state;
+    const value = outside.field(blockDecorationsField);
+    expect(value.sig).toContain("co0:Noted");
+    let replaced: { from: number; to: number } | null = null;
+    value.decos.between(0, 12, (from, to, deco) => {
+      if ((deco as { spec?: { block?: boolean } }).spec?.block) replaced = { from, to };
+    });
+    expect(replaced).toEqual({ from: 0, to: 9 });
+  });
+});

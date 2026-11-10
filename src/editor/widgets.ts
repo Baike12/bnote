@@ -1,6 +1,7 @@
 import { WidgetType } from "@codemirror/view";
 import katex from "katex";
 import { fileName } from "@/lib/path";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 /** Rendered-math HTML cache: decorations rebuild on every cursor move, but
  *  KaTeX output for identical sources is reused so scrolling stays cheap. */
@@ -20,10 +21,13 @@ function withoutAutoNumbers(src: string): string {
   );
 }
 
+const KATEX_FIELDS = perfFields("display", "bytes");
+
 export function renderMathHtml(src: string, display: boolean): string {
   const key = (display ? "D\u0000" : "I\u0000") + src;
   let html = cache.get(key);
   if (html === undefined) {
+    const t = perfStart();
     try {
       html = katex.renderToString(withoutAutoNumbers(src), {
         displayMode: display,
@@ -37,6 +41,7 @@ export function renderMathHtml(src: string, display: boolean): string {
     } catch {
       html = `<span class="cw-math-error">${escapeHtml(src)}</span>`;
     }
+    perfEnd(t, "katex.render", KATEX_FIELDS, display, src.length);
     if (cache.size >= MAX_CACHE) {
       let dropped = 0;
       for (const k of cache.keys()) {

@@ -2,6 +2,7 @@ import { EditorView, ViewPlugin, scrollPastEnd } from "@codemirror/view";
 import type { ViewUpdate } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import { typewriterReserve, typewriterScrollDelta } from "./typewriterPosition";
+import { perfEnd, perfStart } from "@/perf/trace";
 
 /**
  * Typewriter mode: keeps the caret line at a fixed share of the viewport
@@ -66,8 +67,10 @@ function applyReserve(view: EditorView, position: number, reserveTop: boolean) {
 function centerCursor(view: EditorView, position: number) {
   view.requestMeasure({
     read: (v) => {
+      const t = perfStart();
       const head = v.state.selection.main.head;
       const coords = v.coordsAtPos(head, 1);
+      perfEnd(t, "typewriter.measure");
       if (!coords) return 0;
       const rect = v.scrollDOM.getBoundingClientRect();
       const current = (coords.top + coords.bottom) / 2 - rect.top;

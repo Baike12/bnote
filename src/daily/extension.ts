@@ -12,6 +12,7 @@ import {
 import { peekLinks } from "./links";
 import { isDailyPath } from "./model";
 import { runtimeDeps } from "./runtime";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 /**
  * Editor entry point of the cross-file todo sync: an updateListener watches the
@@ -44,6 +45,8 @@ export interface DailySyncOptions {
   allowAutoSend?: boolean;
 }
 
+const DAILY_INTENT_FIELDS = perfFields("transactions", "intents");
+
 export function dailySyncExtension(options: DailySyncOptions = {}): Extension {
   const allowAutoSend = options.allowAutoSend !== false;
   return EditorView.updateListener.of((u) => {
@@ -58,6 +61,7 @@ export function dailySyncExtension(options: DailySyncOptions = {}): Extension {
     const allowSend = allowAutoSend && !isDailyPath(path); // a daily note never produces a "send" (mirroring still runs)
     if (fileLinks.length === 0 && !allowSend) return;
     const intents: Intent[] = [];
+    const t = perfStart();
     for (const tr of u.transactions) {
       if (!tr.docChanged) continue;
       if (tr.isUserEvent(SYNC_USER_EVENT)) continue; // a transaction the engine wrote back itself
@@ -77,6 +81,7 @@ export function dailySyncExtension(options: DailySyncOptions = {}): Extension {
         );
       });
     }
+    perfEnd(t, "daily.intents", DAILY_INTENT_FIELDS, u.transactions.length, intents.length);
     if (intents.length === 0) return;
     scheduleDailySync(u.view, path, intents);
   });

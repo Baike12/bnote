@@ -14,6 +14,7 @@ import {
   type SnippetSession,
 } from "./extension";
 import { parseReplacement } from "./engine";
+import { planTabout } from "./tabout";
 
 /** Drives the snippetField without DOM: EditorState.update creates the
  *  transactions and the field is read for the assertions. */
@@ -235,6 +236,47 @@ describe("buildSession: tabstop order and mirroring", () => {
 
   it("a replacement without a stop builds no session", () => {
     expect(buildSession(0, parseReplacement("\\alpha", [], null))).toBeNull();
+  });
+});
+
+describe("Tab at the end of a snippet: ending in place must not swallow the key", () => {
+  it("the ma shape ($|$): one Tab ends the session and lands after the closing $, without indentation", () => {
+    const view = typedView("前文 $$");
+    const session = buildSession(3, parseReplacement("$$0$", [], null))!;
+    view.dispatch({ selection: { anchor: 4 }, effects: setSession.of(session) });
+    expect(headOf(view)).toBe(4); // Between the two dollars.
+    expect(planTabout(view.state, 4)).toEqual({ pos: 5, changes: [] }); // The layer Tab hands over to.
+    // The hand-off is one transaction: tabout's change and the session clear
+    // travel together (two update cycles for one press is the regression).
+    // The fake view's dispatch takes a single spec; this alias says so.
+    const fake = view as unknown as { dispatch: (spec: TransactionSpec) => void };
+    let dispatches = 0;
+    const inner = fake.dispatch;
+    fake.dispatch = (spec) => {
+      dispatches++;
+      inner(spec);
+    };
+    expect(runTab(view)).toBe(true);
+    expect(dispatches).toBe(1);
+    expect(headOf(view)).toBe(5); // After the closing $ — one press, one level out.
+    expect(view.state.doc.toString()).toBe("前文 $$"); // indentMore must not run.
+    expect(view.state.field(snippetField, false)).toBeNull();
+  });
+
+  it("the parent chain is mapped exactly once when the hand-off changes the document", () => {
+    // The child ends in place inside a block whose bottom `$$` is the last
+    // line, so tabout inserts a newline at 6. The parent's end/finalPos must
+    // move 6 -> 7 exactly once (a second map through the same ChangeSet would
+    // give 8), which is why the effect carries pre-mapped coordinates.
+    const view = typedView("$$\n\n$$");
+    const parent = buildSession(0, parseReplacement("$$\n$0\n$$", [], null))!;
+    const child = buildSession(3, parseReplacement("$0", [], null), parent)!;
+    view.dispatch({ selection: { anchor: 3 }, effects: setSession.of(child) });
+    expect(runTab(view)).toBe(true);
+    const remaining = view.state.field(snippetField, false);
+    expect(remaining).not.toBeNull();
+    expect(remaining?.end).toBe(7);
+    expect(remaining?.finalPos).toBe(7);
   });
 });
 

@@ -38,6 +38,7 @@ import { ensureFootprints } from "@/footprint/store";
 import { recentVaultTarget, touchRecentVault } from "@/vault/recent";
 import { loadKeymap } from "@/commands/keybindingOverrides";
 import { normalizeTemplateDir, renderTemplate } from "@/templates/template";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -291,6 +292,9 @@ export async function openNote(path: string, line?: number): Promise<void> {
  * saved file is exactly the current note (the project / journal editors have
  * their own autosave).
  */
+const SAVE_FIELDS = perfFields("bytes");
+const SAVE_FAILED_FIELDS = perfFields("failed");
+
 export async function saveNote(): Promise<void> {
   const store = useAppStore.getState();
   const currentFile = store.currentFile;
@@ -305,10 +309,14 @@ export async function saveNote(): Promise<void> {
   if (!view) return;
   const path = documentPath(view.state) ?? currentFile;
   if (!path) return;
+  const t = perfStart();
   try {
-    await api.writeFile(path, view.state.doc.toString());
+    const contents = view.state.doc.toString();
+    await api.writeFile(path, contents);
+    perfEnd(t, "save.note", SAVE_FIELDS, contents.length);
     if (currentFile === path) useAppStore.getState().markDirty(false);
   } catch (e) {
+    perfEnd(t, "save.note", SAVE_FAILED_FIELDS, true);
     store.showToast(`保存失败: ${String(e)}`);
   }
 }

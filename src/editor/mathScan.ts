@@ -1,4 +1,5 @@
 import type { Text } from "@codemirror/state";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 export interface MathRegion {
   from: number;
@@ -44,7 +45,19 @@ export interface MathRegion {
  *   body text inside a misaligned product is never swallowed into any
  *   region, and every $$ stays visible and deletable.
  */
+const MATH_SCAN_FIELDS = perfFields("bytes", "lines", "regions");
+
 export function scanMath(doc: Text): MathRegion[] {
+  const t = perfStart();
+  const out = scanMathUnmeasured(doc);
+  perfEnd(t, "math.scan", MATH_SCAN_FIELDS, doc.length, doc.lines, out.length);
+  return out;
+}
+
+/** The scan itself; the public wrapper owns the perf span so every caller
+ *  (decorations, IME, snippets, tests) is measured without touching the
+ *  algorithm. */
+function scanMathUnmeasured(doc: Text): MathRegion[] {
   const out: MathRegion[] = [];
   const text = doc.toString();
   if (text.length > 2_000_000) return out;
@@ -160,8 +173,17 @@ export function scanMath(doc: Text): MathRegion[] {
   // is the closing marker squeezed out of a misaligned product and what
   // follows it is unrelated body text — it stays plain text and is never
   // swallowed into any region.
+  //
+  // A stray $$ **after body text on its line** is not a block opener: the
+  // inline-math snippets (ma / ##@) produce exactly `$|$` (two adjacent
+  // dollars) in the middle of a line, and treating them as a display block
+  // turned the rest of the paragraph into math source (the IME kept English,
+  // Tab could not leave). Such a pair belongs to the inline layer below,
+  // which recognizes the empty body; a `$$` at the start of a line still
+  // opens a block that is being typed (dm / manual).
   if (open !== -1 && marks.length % 2 === 1) {
-    pushStrayRegion(out, text, open);
+    const lineStart = text.lastIndexOf("\n", open - 1) + 1;
+    if (text.slice(lineStart, open).trim() === "") pushStrayRegion(out, text, open);
   }
 
   // --- Inline math, per line, outside block regions. ---
@@ -190,6 +212,26 @@ export function scanMath(doc: Text): MathRegion[] {
         if (!inRanges(from, to, out) && m[1].trim().length > 0) {
           out.push({ from, to, display: false, content: m[1] });
         }
+      }
+      // The empty inline pair `$|$` (ma / ##@ right after expansion): its body
+      // is empty, so the regex above does not match it, and the block layer
+      // refuses a mid-line stray. It is still a formula the caret can rest
+      // inside — the IME keeps English and Tab leaves through the closing
+      // delimiter. A pair touching a third `$` ($$$) or preceded by `\` is
+      // not classified: those are partial/escaped delimiters, not an empty
+      // formula. The rule is deliberately local: a line-start `$$` that the
+      // block pairing refused (a misaligned product) is also an empty pair,
+      // because locally it is indistinguishable from `$|$`; the cost is only
+      // an English-IME window between two visible dollars.
+      let pair = lineText.indexOf("$$");
+      while (pair !== -1) {
+        const from = pos + pair;
+        const before = pair > 0 ? lineText.charAt(pair - 1) : "";
+        const after = lineText.charAt(pair + 2);
+        if (before !== "\\" && before !== "$" && after !== "$" && !inRanges(from, from + 2, out)) {
+          out.push({ from, to: from + 2, display: false, content: "" });
+        }
+        pair = lineText.indexOf("$$", pair + 2);
       }
     }
     pos = lineEnd + 1; // +1 for the newline

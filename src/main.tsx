@@ -10,10 +10,33 @@ import { blockDecorationsField } from "@/editor/livePreview";
 import { findSnippet } from "@/editor/snippets/engine";
 import { getSession } from "@/editor/snippets/extension";
 import { useAppStore } from "@/state/appStore";
+import { installPerf } from "@/perf";
 
 // Browser tab instead of the Tauri window? Route IPC to the debug bridge
 // before anything mounts (no-op inside the app and in production builds).
 installBrowserMode();
+
+// The performance system: passive observers + the JSONL sink under
+// <vault>/.bnote/perf/. It records slow keys, long tasks and slow phases only,
+// so it is safe to leave on; `window.__bnotePerf.start()` opens a full window.
+installPerf({
+  getVaultPath: () => useAppStore.getState().vaultPath,
+  getContext: () => {
+    const s = useAppStore.getState().settings;
+    return {
+      vim: s.vim,
+      typewriter: s.typewriter,
+      livePreview: s.livePreview,
+      mathPreview: s.mathPreview,
+      autoNumberHeadings: s.autoNumberHeadings,
+      imeEnabled: s.ime.enabled,
+      imeMathKeepsEnglish: s.ime.mathKeepsEnglish,
+      insertSource: s.ime.insertSource,
+      normalSource: s.ime.normalSource,
+      tabout: s.latex.tabout,
+    };
+  },
+});
 
 // No StrictMode: double-mounting would rebuild the single CodeMirror
 // instance and re-run async bootstrap during development.

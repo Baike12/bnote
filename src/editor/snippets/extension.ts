@@ -1,4 +1,4 @@
-import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
+import { ChangeSet, EditorSelection, StateEffect, StateField } from "@codemirror/state";
 import type { EditorState, Transaction } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
@@ -8,7 +8,7 @@ import { getContextAt, mathRegions } from "../context";
 import { autoFraction } from "./autofraction";
 import { autoEnlargeBrackets } from "./enlarge";
 import { matrixSeparator } from "./matrix";
-import { tabout } from "./tabout";
+import { planTabout, tabout } from "./tabout";
 import { bracketPlugins } from "./brackets";
 import { latexConfig } from "./config";
 import { useAppStore } from "@/state/appStore";
@@ -49,12 +49,19 @@ export { setSession, snippetField, buildSession };
 
 const setSession = StateEffect.define<SnippetSession | null>();
 
+/** Like setSession, but the value's whole chain is already in the transaction's
+ *  post-change coordinates. A hand-off that folds a session clear into tabout's
+ *  change transaction must use this: the regular effect maps the parent again
+ *  and would shift it twice. */
+const setMappedSession = StateEffect.define<SnippetSession | null>();
+
 /** The old session becomes the parent of the expanding one; the whole chain is
  *  mapped; a full-document replacement (switching files / loading) clears it. */
 const snippetField = StateField.define<SnippetSession | null>({
   create: () => null,
   update(value, tr) {
     for (const e of tr.effects) {
+      if (e.is(setMappedSession)) return e.value;
       if (!e.is(setSession)) continue;
       // The new session's own positions are built against the document
       // **after** the transaction and are not mapped again; but the parent
@@ -85,6 +92,10 @@ function fullReplace(tr: Transaction): boolean {
 }
 
 function mapSession(s: SnippetSession, tr: Transaction): SnippetSession {
+  return mapSessionBy(s, tr.changes);
+}
+
+function mapSessionBy(s: SnippetSession, changes: ChangeSet): SnippetSession {
   // The active stop grows around insertions at its position (-1/+1 mapping)
   // so its range always contains what the user typed — mirror sync reads it.
   // The active stop of every session on the chain grows this way (a child
@@ -96,19 +107,19 @@ function mapSession(s: SnippetSession, tr: Transaction): SnippetSession {
       idx,
       ranges.map((r) =>
         idx === activeIdx
-          ? { from: tr.changes.mapPos(r.from, -1), to: tr.changes.mapPos(r.to, 1) }
-          : { from: tr.changes.mapPos(r.from, 1), to: tr.changes.mapPos(r.to, 1) },
+          ? { from: changes.mapPos(r.from, -1), to: changes.mapPos(r.to, 1) }
+          : { from: changes.mapPos(r.from, 1), to: changes.mapPos(r.to, 1) },
       ),
     );
   }
   return {
-    base: tr.changes.mapPos(s.base, 1),
-    end: tr.changes.mapPos(s.end, 1),
+    base: changes.mapPos(s.base, 1),
+    end: changes.mapPos(s.end, 1),
     order: s.order,
     stops,
     active: s.active,
-    finalPos: tr.changes.mapPos(s.finalPos, 1),
-    parent: s.parent ? mapSession(s.parent, tr) : null,
+    finalPos: changes.mapPos(s.finalPos, 1),
+    parent: s.parent ? mapSessionBy(s.parent, changes) : null,
   };
 }
 
@@ -236,21 +247,52 @@ export function exitCursorPosition(state: EditorState, session: SnippetSession):
   return target;
 }
 
-function nextStop(view: EditorView): boolean {
-  const session = view.state.field(snippetField, false);
-  if (!session) return false;
+/** What a Tab press did inside a session: consumed, or the level ended **in
+ *  place** and the key must continue to the next layer (tabout). The parent is
+ *  returned so the caller can fold the session clear into tabout's transaction
+ *  — one update cycle per press, and no unmapped parent coordinates. */
+type StopResult = { kind: "handled" } | { kind: "in-place"; parent: SnippetSession | null };
+
+function nextStop(view: EditorView, session: SnippetSession): StopResult {
   const plan = planTab(session);
   if (plan.kind === "select") {
     selectStop(view, plan.session, plan.index);
-    return true;
+    return { kind: "handled" };
   }
   // This level is done: leave its own bracket, and drop only this level so the
   // parent's tab stops stay reachable on the next press.
   const target = exitCursorPosition(view.state, plan.session);
+  if (target !== null) {
+    view.dispatch({
+      selection: EditorSelection.cursor(target),
+      effects: setSession.of(plan.session.parent),
+    });
+    return { kind: "handled" };
+  }
+  // The level ends in place (its finalPos is the formula's closing delimiter
+  // or beyond it — the `$|$` / `$x$` shape of ma): consuming the key here made
+  // one Tab do nothing visible and the next Tab fall through to indentMore,
+  // which inserted spaces instead of leaving the formula. Hand the key to
+  // tabout in the same press; see taboutEndingSession.
+  return { kind: "in-place", parent: plan.session.parent };
+}
+
+/** The in-place hand-off: tabout's change and the session clear in **one**
+ *  transaction. The parent is mapped through tabout's own ChangeSet here, so
+ *  `setMappedSession` (not `setSession`) is used — the regular effect would
+ *  map the parent a second time. */
+function taboutEndingSession(view: EditorView, parent: SnippetSession | null): boolean {
+  if (!latexConfig().tabout) return false;
+  const state = view.state;
+  const plan = planTabout(state, state.selection.main.to);
+  if (!plan) return false;
+  const changes = ChangeSet.of(plan.changes, state.doc.length);
   view.dispatch({
-    ...(target === null ? {} : { selection: EditorSelection.cursor(target) }),
-    effects: setSession.of(plan.session.parent),
-    scrollIntoView: target !== null,
+    changes: plan.changes,
+    selection: EditorSelection.cursor(plan.pos),
+    userEvent: "select.tabout",
+    scrollIntoView: true,
+    effects: setMappedSession.of(parent ? mapSessionBy(parent, changes) : null),
   });
   return true;
 }
@@ -639,7 +681,18 @@ const snippetKeymap = keymap.of([
  * individual parts cannot catch that regression.
  */
 export function runTab(view: EditorView): boolean {
-  if (view.state.field(snippetField, false)) return nextStop(view);
+  const session = view.state.field(snippetField, false);
+  if (session) {
+    const result = nextStop(view, session);
+    if (result.kind === "handled") return true;
+    // The level ended in place: tabout is the next layer. Fold the session
+    // clear into its transaction; the fallback (not in math) clears the
+    // session in its own cycle, then behaves exactly like the old path.
+    if (taboutEndingSession(view, result.parent)) return true;
+    view.dispatch({ effects: setSession.of(result.parent) });
+    if (expandOnTab(view)) return true;
+    return false;
+  }
   if (expandOnTab(view)) return true;
   return tabout(view);
 }

@@ -1,6 +1,7 @@
-import { EditorState, type Text } from "@codemirror/state";
-import { fenceStateScan, mathRegionsForDoc } from "./context";
+import { EditorState, StateField, type Text, type Transaction } from "@codemirror/state";
+import { fenceStateScan, mathRegions, mathRegionsField, mathRegionsForDoc } from "./context";
 import type { MathRegion } from "./mathScan";
+import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 
 /**
  * Callout blocks (`:::` containers): they carry content that is "less one with
@@ -60,7 +61,20 @@ const MARKER_RE = /^(:{3,})(.*)$/;
  * region always precedes its nested ones, so order-dependent consumers (per-line
  * depth annotation) can safely overwrite.
  */
+const CALLOUT_SCAN_FIELDS = perfFields("bytes", "lines", "regions");
+
 export function computeCalloutRegions(
+  doc: Text,
+  fences: boolean[],
+  maths: MathRegion[],
+): CalloutRegion[] {
+  const t = perfStart();
+  const out = computeCalloutRegionsUnmeasured(doc, fences, maths);
+  perfEnd(t, "callout.scan", CALLOUT_SCAN_FIELDS, doc.length, doc.lines, out.length);
+  return out;
+}
+
+function computeCalloutRegionsUnmeasured(
   doc: Text,
   fences: boolean[],
   maths: MathRegion[],
@@ -116,8 +130,112 @@ export function computeCalloutRegions(
 
 const cache = new WeakMap<Text, CalloutRegion[]>();
 
-/** Callout regions of the document, memoized per Text generation (decoration hot path). */
+/** A CommonMark fence line (the scan in context.ts uses the same shape). */
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/;
+
+/**
+ * Whether a transaction can change the callout geometry: a marker character,
+ * a line break (line numbers), a fence or a math delimiter (both hide marker
+ * lines), or any edit on a line whose text is a `:::` marker — a marker's role
+ * is decided by its **whole text**, so typing an ordinary character on an
+ * opening line (the title) or on a closing line adds/removes a marker without
+ * typing a colon. Fence lines need the same treatment: a letter appended to a
+ * closing fence turns it into text and unhides the `:::` lines it swallowed.
+ * An ordinary body edit maps the regions.
+ */
+function mayAffectCallouts(tr: Transaction): boolean {
+  let affected = false;
+  tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    if (affected) return;
+    const removed = tr.startState.doc.sliceString(fromA, toA);
+    const inserted = tr.state.doc.sliceString(fromB, toB);
+    if (/[:\n`~$]/.test(removed) || /[:\n`~$]/.test(inserted)) {
+      affected = true;
+      return;
+    }
+    const oldLine = tr.startState.doc.lineAt(fromA).text;
+    const newLine = tr.state.doc.lineAt(fromB).text;
+    if (oldLine.startsWith(":::") || newLine.startsWith(":::")) {
+      affected = true;
+      return;
+    }
+    if (FENCE_LINE.test(oldLine) || FENCE_LINE.test(newLine)) affected = true;
+  });
+  return affected;
+}
+
+/** Line numbers and titles are unchanged here (a newline or a marker-line
+ *  edit triggers a re-scan), so only the absolute ranges move. An unclosed
+ *  callout's `to` is the document end by definition, so it must follow the
+ *  document rather than map like a closing marker. */
+function mapCalloutRegions(regions: CalloutRegion[], tr: Transaction): CalloutRegion[] {
+  const docLength = tr.state.doc.length;
+  return regions.map((region) => {
+    const from = tr.changes.mapPos(region.from, 1);
+    const to = region.closed ? tr.changes.mapPos(region.to, -1) : docLength;
+    return from === region.from && to === region.to ? region : { ...region, from, to };
+  });
+}
+
+/** The line spans of the display-math regions. The callout scan reads math
+ *  only to skip `:::` lines inside display math, so a content edit (same line
+ *  spans) or a position shift with the same lines cannot change the result. */
+function displayLines(doc: Text, regions: readonly MathRegion[]): number[] {
+  const out: number[] = [];
+  for (const r of regions) {
+    if (!r.display) continue;
+    out.push(doc.lineAt(r.from).number, doc.lineAt(r.to).number);
+  }
+  return out;
+}
+
+function displayLinesChanged(
+  oldDoc: Text,
+  oldRegions: readonly MathRegion[],
+  newDoc: Text,
+  newRegions: readonly MathRegion[],
+): boolean {
+  const before = displayLines(oldDoc, oldRegions);
+  const after = displayLines(newDoc, newRegions);
+  return before.length !== after.length || before.some((n, i) => n !== after[i]);
+}
+
+/** Callout regions as a state field (see mathRegionsField for the same
+ *  single-writer/mapped-cache rule). Declared after mathRegionsField so this
+ *  update reads the math regions of the same transaction. */
+export const calloutRegionsField = StateField.define<CalloutRegion[]>({
+  create: (state) =>
+    computeCalloutRegions(state.doc, fenceStateScan(state.doc), mathRegions(state)),
+  update(value, tr) {
+    if (!tr.docChanged) return value;
+    // The scan reads the math regions (display math hides `:::` lines). When
+    // the display-math line spans changed — even through an edit that typed no
+    // delimiter, such as a blank-line repair — the geometries cannot be
+    // mapped. A plain shift of the same formulas does not qualify: their line
+    // spans move with the text, and the regions map.
+    const oldMath = tr.startState.field(mathRegionsField, false);
+    const newMath = tr.state.field(mathRegionsField, false);
+    const mathChanged =
+      oldMath !== newMath &&
+      (!oldMath ||
+        !newMath ||
+        displayLinesChanged(tr.startState.doc, oldMath, tr.state.doc, newMath));
+    if (mathChanged || mayAffectCallouts(tr)) {
+      return computeCalloutRegions(
+        tr.state.doc,
+        fenceStateScan(tr.state.doc),
+        mathRegions(tr.state),
+      );
+    }
+    return mapCalloutRegions(value, tr);
+  },
+});
+
+/** Callout regions of the document. Bare states in tests fall back to the
+ *  per-Text memo (the same API without the editor setup). */
 export function calloutRegions(state: EditorState): CalloutRegion[] {
+  const field = state.field(calloutRegionsField, false);
+  if (field) return field;
   let regions = cache.get(state.doc);
   if (!regions) {
     const doc = state.doc;
