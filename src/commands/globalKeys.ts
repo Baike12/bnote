@@ -142,9 +142,14 @@ export function setActiveKeyRegion(region: FocusRegion): void {
   ownerRegion = region;
 }
 
+/** The region the user last claimed (an input event or an explicit focus command); the other half of `activeKeyRegion`. */
+export function keyRegionOwner(): FocusRegion | null {
+  return ownerRegion;
+}
+
 export function activeKeyRegion(): FocusRegion {
   return pickKeyRegion({
-    owner: ownerRegion,
+    owner: keyRegionOwner(),
     focus: regionFromTarget(document.activeElement),
     onScreen: regionOnScreen,
   });

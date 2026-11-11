@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@/commands/builtin";
 import { getCommand } from "./registry";
+import { keyRegionOwner, setActiveKeyRegion } from "./globalKeys";
 import { useAppStore } from "@/state/appStore";
 import { useCodeStore } from "@/code/store";
 import {
@@ -153,6 +154,27 @@ describe("switching to the content column", () => {
       useAppStore.setState({ mode });
       expect(getCommand("region.focus-reading")?.when?.() ?? true).toBe(false);
     }
+  });
+
+  /**
+   * Region ownership follows "where the user last acted", and a command is not
+   * an input event. In code mode the switch has to claim the region itself:
+   * with no editor to focus (empty pane, bitmap, change list) nothing fires
+   * `focusin`, so the Agent panel kept the keyboard and ⌘I ran its history
+   * binding while the user was looking at the code column (observed).
+   */
+  it("hands the keyboard to the code region in code mode, even with nothing to focus", () => {
+    useAppStore.setState({ mode: "code" });
+    setActiveKeyRegion("agent");
+    getCommand("region.focus-reading")?.run();
+    expect(keyRegionOwner()).toBe("code");
+  });
+
+  it("leaves the keyboard where it is in study mode (the page is read, not typed into)", () => {
+    useAppStore.setState({ mode: "study" });
+    setActiveKeyRegion("agent");
+    getCommand("region.focus-reading")?.run();
+    expect(keyRegionOwner()).toBe("agent");
   });
 });
 

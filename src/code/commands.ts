@@ -1,6 +1,7 @@
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { startCompletion } from "@codemirror/autocomplete";
 import type { CommandDef } from "@/commands/registry";
+import { setActiveKeyRegion } from "@/commands/globalKeys";
 import { peekVimVisual } from "@/editor/vim/vim";
 import { useAppStore } from "@/state/appStore";
 import { codeVimEnabled } from "@/state/codeVim";
@@ -443,10 +444,18 @@ export async function confirmRename(newName: string): Promise<boolean> {
  * The change list has no editor, so it is left first: choosing the content area
  * means the file. The editor is mounted by the commit that follows, which is
  * why the focus lands on the next frame rather than here.
+ *
+ * Reaching the code column also hands it the keyboard. Region ownership follows
+ * "where the user last acted" and a command is not an input event, so without
+ * this claim the previous region keeps answering the keys: with an empty pane,
+ * a bitmap or the change list there is no editor to focus and no `focusin`
+ * either, and pressing ⌘I right after "switch to the content column" ran the
+ * Agent panel's history binding (observed).
  */
 export function focusCodeContent(): void {
   const store = useCodeStore.getState();
   if (store.diffOpen) store.setDiff(false);
+  setActiveKeyRegion("code");
   requestAnimationFrame(() => activeCodeEditor()?.view.focus());
 }
 
