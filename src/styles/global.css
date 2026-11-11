@@ -46,17 +46,24 @@
   /* Heavy tint shared by the callout left rule and the anchor underline
      dashed line (evaluated separately per theme). */
   --callout-accent: color-mix(in srgb, var(--h2-color) 50%, transparent);
-  /* Code tokens (HighlightStyle in markdown.ts references them via var(); the
-     other tokens reuse --string/--keyword/--link/--strong-color/--danger
-     above). */
-  --tok-comment: #7f848e;
-  --tok-number: #d19a66; /* orange shared by numbers, inline code and formula braces */
-  --tok-func: #61afef;
-  --tok-type: #e5c07b;
-  --tok-var: #e06c75;
-  --tok-operator: #56b6c2;
-  --tok-punct: #abb2bf;
-  --tok-invalid: #f66;
+  /* Code tokens — the GitHub syntax palette (Primer "prettylights", the colors
+     github.com paints code and diffs with; values from @primer/primitives
+     9.1.1 `dark.json`). One hue per semantic role: keyword red, function
+     purple, type/class orange, constant blue, string pale blue, regex green,
+     comment gray. Operators, punctuation and plain identifiers keep the body
+     color, as GitHub renders them — a colored token therefore always means
+     something, and a function name never shares its color with a parameter.
+     markdown.ts references these through var(); --tok-number is the markdown
+     inline-code / formula-brace tint and is not a code token. */
+  --tok-comment: #9198a1;
+  --tok-keyword: #ff7b72;
+  --tok-func: #d2a8ff;
+  --tok-type: #ffa657;
+  --tok-const: #79c0ff;
+  --tok-string: #a5d6ff;
+  --tok-regexp: #7ee787;
+  --tok-invalid: #f85149;
+  --tok-number: #d19a66; /* inline code and formula braces (markdown), not code numbers */
   /* White overlay for selection / visual mode (inverted to low-alpha black in light theme) */
   --sel: rgba(255, 255, 255, 0.22);
   --sel-hint: rgba(255, 255, 255, 0.1);
@@ -168,14 +175,17 @@
   --strong-color: #c94f8c;
   --callout-title-color: #0a7f55; /* same hue darkened, 5.0:1 contrast on white */
   --callout-accent: color-mix(in srgb, var(--h2-color) 50%, transparent);
-  --tok-comment: #a0a1a7;
+  /* Code tokens — the light half of the GitHub palette (@primer/primitives
+     9.1.1 `light.json`, contrast-checked on white). */
+  --tok-comment: #59636e;
+  --tok-keyword: #cf222e;
+  --tok-func: #6639ba;
+  --tok-type: #953800;
+  --tok-const: #0550ae;
+  --tok-string: #0a3069;
+  --tok-regexp: #116329;
+  --tok-invalid: #82071e;
   --tok-number: #b76b01;
-  --tok-func: #4078f2;
-  --tok-type: #c18401;
-  --tok-var: #e45649;
-  --tok-operator: #0184bc;
-  --tok-punct: #383a42;
-  --tok-invalid: #e45649;
   --sel: rgba(0, 0, 0, 0.16);
   --code-font: var(--font-mono);
   --code-font-size: 12.5px;
