@@ -40,12 +40,9 @@ export interface InputSourceInfo {
 
 export interface SetImeOutcome {
   switched: boolean;
-  fallbackUsed: boolean;
-  /** Perf legs in ms: the app main thread's queue before the TIS call ran, the
-   *  TIS select (plus IME activation) itself, and the whole command. */
-  queueMs: number;
+  /** The TIS call itself, in ms — the whole cost of a switch: the command runs
+   *  on the app main thread, and `ime.switch`'s own `ms` minus this is IPC. */
   tisMs: number;
-  totalMs: number;
 }
 
 // ---------------------------------------------------------------------------

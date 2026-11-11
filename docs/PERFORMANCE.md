@@ -210,30 +210,52 @@ Run this against every diff that touches `src/editor`, `src/daily`,
 
 ## 6. Known native leg: IME switching
 
-`imeSwitch` keeps ASCII in formulas (ABC) and switches back to the insert
-source (Sogou) on leaving. The TIS call runs on Apple's main thread; the Rust
-side measures ~2–7 ms warm, ~73–88 ms cold, and the CJK verification chain may
-fall back to `macism` (~150 ms+). This leg is **not** visible in browser
-measurement. Use `ime.switch` spans and the Rust probe
-(`cargo test --lib probe_switch_sources -- --nocapture`); platform behavior
-needs a deployed check (AGENTS.md).
+`imeSwitch` keeps ASCII in normal mode / formulas (ABC) and switches to the
+insert source (Sogou) on entering insert. The switch is an in-process Carbon TIS
+call that HIToolbox runs on the app's **main thread** — the same thread that
+delivers key events — so its duration is input latency, not paint latency. This
+leg is **not** visible in browser measurement. Use `ime.switch` spans and the
+Rust probe (`cargo test --lib probe_switch_sources -- --nocapture`); platform
+behavior needs a deployed check (AGENTS.md).
 
-An `ime.switch` span alone is a wall-clock number, and the trace showed 26–87 ms
-(p50 45 ms) against a TIS floor of 0.1–0.6 ms for a no-op select — a gap that
-names nothing. `SetImeOutcome` therefore returns the backend's legs, and the
-span carries them as `queueMs` / `tisMs`:
+The measured cost on this machine (45 samples, full trace 2026-11-11):
+
+| target state | `tisMs` | what it is |
+|---|---|---|
+| same source used within 5 s | p50 4.6 ms | TIS bookkeeping only |
+| idle 5–120 s | p50 8.7 ms, max 53 ms | the input method waking up |
+| idle > 2 min | p50 52.6 ms, max 166 ms | a third-party IME being activated (`Sogou`) |
+
+That is the whole switch: the command is **synchronous**, so Tauri runs it on the
+main thread instead of `spawn_blocking` → `run_on_main_thread` → channel (that
+form added a measured 10–35 ms before the TIS call even started, exactly between
+the mode change and the source changing). `SetImeOutcome` returns the call's own
+duration, and the span carries it:
 
 | field | meaning | a large value means |
 |---|---|---|
-| `queueMs` | command start → the main-thread closure running | the UI thread's run loop was busy (rendering, layout, other dispatches) |
-| `tisMs` | inside `TISSelectInputSource` | TIS plus the input method activating |
-| `ms - totalMs` | IPC + thread hops not covered by the backend | the bridge itself |
+| `tisMs` | inside `TISSelectInputSource` | the input method was cold; every key pressed meanwhile waits |
+| `ms - tisMs` | IPC + the front end's own task boundary | the bridge, not the IME |
 
 The first TIS call in a process pays ~41 ms (`TISCopyCurrentKeyboardInputSource`
 measured on macOS 26); `imeWarmUp` pre-pays it at startup, so a large `tisMs`
 after warm-up is not initialization. `save.note` spans of the same period are
 the control: when a 41-byte write also costs ~200 ms, the congestion is the
 command channel, not the IME.
+
+Two things this leg deliberately does **not** do:
+
+- **No verification chain.** The macOS 26 race it used to retry for ("menu bar
+  switched, the app still types latin") is invisible to
+  `TISCopyCurrentKeyboardInputSource` — the system already reports the new
+  source — so the check could never detect it, while it added two more
+  main-thread TIS calls at +120 ms and +240 ms (on the user's next characters)
+  and ended in a `macism` CLI fallback that steals focus.
+- **No extra deferral.** The switch is queued one task tick after the keystroke
+  (`setTimeout(0)`) so the mode change and its DOM work land first. Waiting for
+  a frame on top of that only shortened the time the IME had to be ready before
+  the user's first character.
+
 
 ## 7. Where the hot path lives (map)
 

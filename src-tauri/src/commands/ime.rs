@@ -1,22 +1,26 @@
 //! Input-source (IME) switching that follows vim mode, macOS only.
 //!
-//! Implementation calls the Carbon TIS APIs **in-process**: no binary spawn,
-//! no focus stealing — a switch costs ~1–5 ms versus ~150 ms+ for the
-//! shell-out approach (node → sh → macism) used by the Obsidian plugin this
-//! feature replaces.
+//! The switch is an in-process Carbon TIS call: no binary spawn, no focus
+//! stealing. Measured on this machine, the call costs 2–10 ms while the target
+//! input method is warm and 30–170 ms when it has to be activated (any source
+//! not used for a few minutes), which is the number the user feels: the call
+//! runs on the app's main thread, and AppKit queues key events behind it. That
+//! waiting is unavoidable (HIToolbox runs TIS on the main queue), so the rest of
+//! this module is about not adding to it — see the command below.
 //!
-//! macOS 26 (Tahoe) has a race where a freshly selected CJK input source may
-//! not engage before the next keystrokes; if the selection did not stick we
-//! retry once and then fall back to the `macism` CLI (which runs its own
-//! temporary-window workaround) when it is installed.
+//! There is deliberately no verification chain. The macOS 26 race it retried
+//! for ("menu bar switched, the app still types latin") is invisible to
+//! `TISCopyCurrentKeyboardInputSource` — the system already reports the new
+//! source — so the check could never detect the case it looked for, while it
+//! did add two more main-thread TIS calls at +120 ms and +240 ms, exactly on the
+//! user's next characters; its macism CLI fallback steals focus (it creates a
+//! window and activates the app), which is worse than the problem.
 
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::async_runtime::spawn_blocking;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use super::CmdResult;
 
@@ -33,24 +37,13 @@ pub struct InputSourceInfo {
 pub struct SetImeOutcome {
     /// false when the requested source was already active.
     pub switched: bool,
-    /// true when the in-process select did not stick and the macism CLI took over.
-    pub fallback_used: bool,
-    /// Perf legs, in milliseconds (see docs/PERFORMANCE.md §6). One opaque
-    /// "the switch took 45 ms" number cannot be acted on: the cost is either
-    /// the app main thread being busy before the TIS call could run
-    /// (`queue_ms`, a sign of the UI thread congesting) or TIS plus the input
-    /// method activating (`tis_ms`). The frontend records them in the
-    /// `ime.switch` span so a slow switch names its own cause.
-    pub queue_ms: f64,
+    /// The TIS call itself, in milliseconds (see docs/PERFORMANCE.md §6). It is
+    /// the whole cost of a switch: the command runs on the main thread, so
+    /// nothing else is measured between the command and the input source
+    /// changing. A large value means the target input method was cold, and every
+    /// key pressed meanwhile waits for it.
     pub tis_ms: f64,
-    /// Whole command, including the CJK check's main-thread hop on a cache miss.
-    pub total_ms: f64,
 }
-
-/// Generation stamp (see set_impl): which switch the verify_or_fallback
-/// background chain belongs to.
-#[cfg(target_os = "macos")]
-static SWITCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "macos")]
 mod tis {
@@ -282,34 +275,6 @@ mod tis {
             let _ = with_source(&id, |src| unsafe { TISSelectInputSource(src) });
         }
     }
-
-    pub fn is_cjk_source(id: &str) -> bool {
-        let langs = with_source(id, |src| unsafe {
-            prop_langs(src, kTISPropertyInputSourceLanguages)
-        });
-        match langs {
-            Some(langs) => is_cjk(&langs),
-            None => {
-                refresh_sources();
-                match with_source(id, |src| unsafe {
-                    prop_langs(src, kTISPropertyInputSourceLanguages)
-                }) {
-                    Some(langs) => is_cjk(&langs),
-                    None => false,
-                }
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn macism_path() -> Option<&'static str> {
-    for p in ["/opt/homebrew/bin/macism", "/usr/local/bin/macism"] {
-        if std::path::Path::new(p).exists() {
-            return Some(p);
-        }
-    }
-    None
 }
 
 /// Runs a closure on the main thread and waits for its result.
@@ -370,61 +335,6 @@ async fn current_impl(app: AppHandle) -> CmdResult<String> {
     Err("IME switching is only supported on macOS".into())
 }
 
-#[cfg(target_os = "macos")]
-async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
-    spawn_blocking(move || {
-        let start = Instant::now();
-        // Generation stamp: every real switch request advances it by one. The
-        // verify_or_fallback background chain (re-check after 120 ms -> reselect
-        // -> macism) captures its own generation; once a newer switch starts,
-        // the whole chain is void. Otherwise the slow chain reselects a target
-        // the user already moved away from, and the input source bounces back
-        // and forth on fast normal/insert flips, which reads as "mode switch
-        // lag".
-        let seq = SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
-        let id_for_select = id.clone();
-        // The two clocks must be taken at their own boundaries: the wait before
-        // the closure runs is the main thread's queue (everything the UI thread
-        // was doing), the wait around `tis::select` is TIS plus the input method
-        // activating. Summing them into one number is what kept this switch
-        // unattributed.
-        let (selected, queue_ms, tis_ms) = on_main(&app, move || {
-            let queued = start.elapsed().as_secs_f64() * 1000.0;
-            let call = Instant::now();
-            let result = tis::select(&id_for_select);
-            (result, queued, call.elapsed().as_secs_f64() * 1000.0)
-        })?;
-        let already = selected?;
-        eprintln!(
-            "[bnote] set_input_source({id}) -> switched={} queue={queue_ms:.1}ms tis={tis_ms:.1}ms",
-            !already
-        );
-        let outcome = |switched: bool| SetImeOutcome {
-            switched,
-            fallback_used: false,
-            queue_ms,
-            tis_ms,
-            total_ms: start.elapsed().as_secs_f64() * 1000.0,
-        };
-        if already {
-            return Ok(outcome(false));
-        }
-        let cjk = cached_is_cjk(&app, &id)?;
-        if cjk {
-            verify_or_fallback(app, id, seq);
-        }
-        Ok(outcome(true))
-    })
-    .await
-    .map_err(|e| format!("join error: {e}"))?
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn set_impl(app: AppHandle, _id: String) -> CmdResult<SetImeOutcome> {
-    let _ = app;
-    Err("IME switching is only supported on macOS".into())
-}
-
 /// Lists enabled, selectable input sources for the settings picker. The first
 /// call (the startup warm-up, see imeWarmUp) also pre-pays the cold TIS select
 /// initialization in the same main-thread dispatch; later calls only enumerate.
@@ -439,90 +349,37 @@ pub async fn get_current_input_source(app: AppHandle) -> CmdResult<String> {
     current_impl(app).await
 }
 
-/// Selects an input source by id. Cheap no-op when already active. For CJK
-/// targets, verifies on a background thread that the selection stuck (macOS 26
-/// race) and falls back to the macism CLI when it did not.
-#[tauri::command]
-pub async fn set_input_source(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
-    set_impl(app, id).await
-}
-
-/// CJK-ness of an input source, cached per source id. The uncached check
-/// enumerates every live input source on the MAIN thread (see `on_main`), and
-/// it runs on every switch — a source's languages never change within a
-/// session, so the one main-thread enumeration per id is all we ever pay.
-#[cfg(target_os = "macos")]
-fn cached_is_cjk(app: &AppHandle, id: &str) -> Result<bool, String> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(map) = cache.lock() {
-        if let Some(hit) = map.get(id) {
-            return Ok(*hit);
-        }
-    }
-    let id_owned = id.to_string();
-    // is_cjk_source returns a bare bool, so on_main adds only one Result layer.
-    let cjk = on_main(app, move || tis::is_cjk_source(&id_owned))?;
-    if let Ok(mut map) = cache.lock() {
-        map.insert(id.to_string(), cjk);
-    }
-    Ok(cjk)
-}
-
-/// macOS 26: a freshly selected CJK source can silently fail to engage.
-/// Re-check after a beat, retry once, then hand over to the macism CLI whose
-/// temporary-window workaround forces the switch. TIS reads here also go
-/// through the main thread (see `on_main`).
+/// Selects an input source by id; a no-op when it is already active.
 ///
-/// `seq` is the generation captured when this switch started: before every
-/// action (reselect/macism) confirm no newer switch has begun. On fast
-/// normal<->insert flips a slow chain that reselects the old target makes the
-/// input source bounce, and the front end cannot see it (it thinks the switch
-/// succeeded).
+/// Synchronous on purpose: Tauri runs a non-async command on the app's main
+/// thread, which is where HIToolbox requires TIS to run (see `on_main`), so the
+/// switch costs one call instead of `spawn_blocking` → `run_on_main_thread` →
+/// channel, measured 10–35 ms of extra latency before the TIS call — spent
+/// exactly between the mode change and the input source actually changing, in
+/// the window where the user's first character is already on its way. The
+/// waiting itself is now only TIS (2–10 ms warm, 30–170 ms cold), and key
+/// events pressed meanwhile are queued by AppKit and delivered afterwards, in
+/// the new source.
 #[cfg(target_os = "macos")]
-fn verify_or_fallback(app: AppHandle, target: String, seq: u64) {
-    std::thread::spawn(move || {
-        let current = || -> Option<String> {
-            let handle = app.clone();
-            on_main(&handle, tis::current_source_id).ok().flatten()
-        };
-        for attempt in 0..2 {
-            std::thread::sleep(Duration::from_millis(120));
-            if SWITCH_SEQ.load(Ordering::SeqCst) != seq {
-                return; // A newer switch started: this verification chain is void
-            }
-            if current().as_deref() == Some(target.as_str()) {
-                return;
-            }
-            if attempt == 0 {
-                let handle = app.clone();
-                let t = target.clone();
-                if let Err(e) = on_main(&handle, move || tis::select(&t)) {
-                    eprintln!("[bnote] ime reselect failed: {e}");
-                }
-            }
-        }
-        if SWITCH_SEQ.load(Ordering::SeqCst) != seq {
-            return;
-        }
-        let used_fallback = match macism_path() {
-            Some(path) => Command::new(path)
-                .arg(&target)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .is_ok(),
-            None => false,
-        };
-        let payload = if used_fallback {
-            "输入法直接切换未生效，已用 macism 兜底（可能会闪一下焦点）".to_string()
-        } else {
-            "输入法切换未生效：请在 系统设置 → 隐私与安全性 → 辅助功能 中允许 bnote，或安装 macism（brew install laishulu/homebrew/macism）".to_string()
-        };
-        let _ = app.emit("ime-fallback", payload);
-    });
+#[tauri::command]
+pub fn set_input_source(id: String) -> CmdResult<SetImeOutcome> {
+    let started = Instant::now();
+    let already = tis::select(&id)?;
+    let tis_ms = started.elapsed().as_secs_f64() * 1000.0;
+    eprintln!(
+        "[bnote] set_input_source({id}) -> switched={} tis={tis_ms:.1}ms",
+        !already
+    );
+    Ok(SetImeOutcome {
+        switched: !already,
+        tis_ms,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub fn set_input_source(_id: String) -> CmdResult<SetImeOutcome> {
+    Err("IME switching is only supported on macOS".into())
 }
 
 #[cfg(all(test, target_os = "macos"))]

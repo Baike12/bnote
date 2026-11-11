@@ -4,19 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * When an IME switch is initiated and how in-flight calls merge (latest-wins).
  *
  * Two disciplines:
- * 1. **Never initiate in the keystroke's own frame** — the switch request is
- *    deferred past the frame (scheduleLaunch queues a timer from within
- *    requestAnimationFrame, which fires only after the frame is presented), so
- *    the exit frame's DOM sync + measure + math widget swap land first;
- *    consecutive flips in the same task collapse into one, and only the latest
- *    intent goes out.
- * 2. **At most one in-flight call at a time**. Each switch occupies a
- *    main-thread TIS round trip on the Rust side (the macOS 26 race may even
- *    escalate into a macism subprocess), and an overlapping storm stalls the
- *    UI main thread outright — so a burst of flips collapses into "one first
- *    call + one trailing call", and the trailing call always carries the
- *    latest intent; nothing is re-sent after a blur suspend, and the system
- *    IME is not touched at all when nothing was really switched.
+ * 1. **Never initiate inside the keystroke's own task** — the switch request is
+ *    deferred to the end of the task (so the mode change and its DOM work land
+ *    first); consecutive flips collapse into one, and only the latest intent
+ *    goes out.
+ * 2. **At most one in-flight call at a time**. Each switch occupies the app
+ *    main thread for the duration of the TIS call (HIToolbox runs it there;
+ *    2–10 ms warm, up to ~170 ms while a third-party input method activates),
+ *    so a burst of flips collapses into "one first call + one trailing call",
+ *    and the trailing call always carries the latest intent; nothing is re-sent
+ *    after a blur suspend, and the system IME is not touched at all when
+ *    nothing was really switched.
  */
 
 const setInputSource = vi.hoisted(() => vi.fn());
@@ -50,18 +48,11 @@ const pending: (() => void)[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Synchronous rAF double: collapses scheduleLaunch to its inner timer so the
-  // behavioral tests below keep their tick semantics; the frame-boundary
-  // contract itself is locked by the controlled-rAF regression test.
-  vi.stubGlobal("requestAnimationFrame", (cb: (time: number) => void) => {
-    cb(performance.now());
-    return 0;
-  });
   pending.length = 0;
   setInputSource.mockImplementation(
     () =>
       new Promise((resolve) => {
-        pending.push(() => resolve({ switched: true, fallbackUsed: false }));
+        pending.push(() => resolve({ switched: true, tisMs: 1 }));
       }),
   );
   getCurrentInputSource.mockResolvedValue("com.apple.keylayout.ABC");
@@ -104,26 +95,13 @@ describe("imeApply launch timing and in-flight merging", () => {
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("the launch waits for the frame boundary: timer ticks before rAF never send the switch", async () => {
-    let frame: ((time: number) => void) | null = null;
-    vi.stubGlobal("requestAnimationFrame", (cb: (time: number) => void) => {
-      frame = cb;
-      return 1;
-    });
-    try {
-      imeApply("A");
-      // Two timer ticks with the frame still pending: a setTimeout(0)-only
-      // defer would have fired here; the rAF gate must hold the switch back.
-      await new Promise((r) => setTimeout(r, 0));
-      await new Promise((r) => setTimeout(r, 0));
-      expect(setInputSource).not.toHaveBeenCalled();
-      frame!(performance.now()); // the frame is presented
-      await drain();
-      expect(setInputSource).toHaveBeenCalledTimes(1);
-      expect(setInputSource).toHaveBeenLastCalledWith("A");
-    } finally {
-      vi.unstubAllGlobals();
-    }
+  it("the launch goes out on the next task tick, never inside the keystroke's own task", async () => {
+    imeApply("A");
+    expect(setInputSource).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(setInputSource).toHaveBeenCalledTimes(1);
+    expect(setInputSource).toHaveBeenLastCalledWith("A");
+    await drain();
   });
 
   it("a synchronous burst of flips sends only one call, and it is the latest intent (the first call is not wasted)", async () => {

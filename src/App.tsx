@@ -91,7 +91,6 @@ export default function App() {
     installEditingChords();
     registerVimExCommands((id) => runCommand(id));
     let unlisten: (() => void) | undefined;
-    let imeUnlisten: (() => void) | undefined;
     let unlistenWindow: (() => void) | undefined;
     let stopScheduler: (() => void) | undefined;
 
@@ -196,11 +195,6 @@ export default function App() {
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);
       });
-      void listen<string>("ime-fallback", (event) => {
-        useAppStore.getState().showToast(event.payload);
-      }).then((off) => {
-        imeUnlisten = off;
-      });
       // TIS warmup (see imeWarmUp): the first TIS call has to reach out to the input
       // method service (~90ms measured on this machine) and must run on the
       // Apple main thread, so the cost cannot be deferred to the moment the
@@ -221,7 +215,6 @@ export default function App() {
     return () => {
       stopScheduler?.();
       unlisten?.();
-      imeUnlisten?.();
       unlistenWindow?.();
     };
   }, []);

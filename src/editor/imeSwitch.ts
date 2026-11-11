@@ -42,10 +42,11 @@ let forcedThisSession = false;
 let focusSeq = 0;
 
 /** At most one setInputSource in flight; a burst of flips collapses into the
- *  one trailing call that matches the final intent. Each switch costs the
- *  backend 1-3 main-thread TIS round trips (and a macism fallback on the
- *  macOS 26 race), so overlapping switches stall the whole UI — exactly what
- *  rapid cursor moves across math boundaries felt like. */
+ *  one trailing call that matches the final intent. Each switch occupies the
+ *  app main thread for the duration of the TIS call (2–10 ms warm, up to
+ *  ~170 ms while the input method activates), so overlapping switches would
+ *  queue behind each other — exactly what rapid cursor moves across math
+ *  boundaries felt like. */
 let switching = false;
 let queued: string | null = null;
 let launchScheduled = false;
@@ -65,39 +66,33 @@ function cancelFocusVerify(): void {
   }
 }
 
-/** Defers the switch past the keystroke's frame. The exit frame already runs a
- *  DOM sync + measure round (the cursor flush in setup.ts) plus the math
- *  source⇄widget swap, and TIS must occupy Apple's main thread (on_main in
- *  ime.rs: HIToolbox asserts it, so it cannot move off the UI thread) — where
- *  its 2–10 ms select would land in that frame's paint; a setTimeout(0) alone
- *  stays in the same frame. requestAnimationFrame fires before paint; the timer
- *  queued from it runs only after the frame is presented, so the IME touch
- *  lands between frames, never on the exit frame. Consecutive flips collapse
- *  into a single switch: `desired` is the single source of intent, read when
- *  the timer fires (a window hidden before the frame resumes delivers the
- *  latest intent then). */
+/** Defers the switch to the end of the key's task. The switch itself is a
+ *  main-thread TIS call of 2–10 ms warm and 30–170 ms when the target input
+ *  method has to be activated; the backend command is synchronous, so there is
+ *  no thread hop to amortize and no reason to hold the intent back for a frame
+ *  (that only shortened the hand-over time and let the first characters land in
+ *  the old source). Consecutive flips in one batch collapse into a single
+ *  switch: `desired` is the single source of intent, read when the timer
+ *  fires. */
 function scheduleLaunch(): void {
   if (launchScheduled) return;
   launchScheduled = true;
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      launchScheduled = false;
-      const target = desired;
-      if (target === null || suspended) return; // the user's IME was handed back (blur / suspended)
-      if (switching) {
-        queued = target;
-        return;
-      }
-      launchSwitch(target);
-    }, 0);
-  });
+  setTimeout(() => {
+    launchScheduled = false;
+    const target = desired;
+    if (target === null || suspended) return; // the user's IME was handed back (blur / suspended)
+    if (switching) {
+      queued = target;
+      return;
+    }
+    launchSwitch(target);
+  }, 0);
 }
 
-/* The span's own `ms` is the whole round trip; the backend's two legs split it
- * (main-thread queue vs TIS), and the remainder is IPC. Three field slots is the
- * trace format's limit, so `suspended` (always false in the recorded traces)
- * gives up its slot to the split. */
-const IME_FIELDS = perfFields("target", "queueMs", "tisMs");
+/* The span's own `ms` is the whole round trip: IPC plus the backend's TIS call.
+ * The backend returns that call's own duration (`tisMs`); the remainder is the
+ * bridge. Two field slots is what is worth reading here. */
+const IME_FIELDS = perfFields("target", "tisMs");
 const IME_FAILED_FIELDS = perfFields("target");
 
 function launchSwitch(target: string): void {
@@ -116,14 +111,13 @@ function launchSwitch(target: string): void {
       })
       .catch(() => {});
   }
-  // Fire-and-forget: the backend dedups against the live input source,
-  // verifies CJK switches and falls back to macism when needed. The outcome
-  // carries the backend's own leg split (main-thread queue / TIS) so a slow
-  // switch says which half was slow instead of staying one opaque number.
+  // Fire-and-forget: the backend dedups against the live input source and
+  // returns the TIS call's own duration, so a slow switch names the input
+  // method's activation instead of leaving one opaque number.
   void api
     .setInputSource(target)
     .then((outcome) => {
-      perfEnd(t, "ime.switch", IME_FIELDS, target, outcome.queueMs, outcome.tisMs);
+      perfEnd(t, "ime.switch", IME_FIELDS, target, outcome.tisMs);
     })
     .catch((e) => {
       console.warn("[bnote] set input source failed", e);

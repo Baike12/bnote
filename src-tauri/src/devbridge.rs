@@ -79,7 +79,6 @@ fn subscribe_events(app: &AppHandle) {
     for name in [
         "vault-changed",
         "agent-event",
-        "ime-fallback",
         "python-run-output",
         "python-run-exit",
         "python-lsp-diagnostics",
@@ -301,9 +300,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         // ---- input sources: refuse to touch the machine's keyboard ----
         "list_input_sources" => json!([]),
         "get_current_input_source" => json!(""),
-        "set_input_source" => {
-            json!({ "switched": false, "fallbackUsed": false, "queueMs": 0, "tisMs": 0, "totalMs": 0 })
-        }
+        "set_input_source" => json!({ "switched": false, "tisMs": 0 }),
 
         // ---- agent ----
         "agent_get_config" => json_ok!(agent::agent_get_config(app.state()).await),
