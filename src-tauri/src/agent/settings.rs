@@ -245,36 +245,37 @@ pub fn migrate_legacy_home(vault: &Path) {
     );
     // MCP servers and extra skill directories were in agent.json. Fold them
     // into the mode settings file when the user has no settings file yet (or
-    // when the copied one has no MCP block at all).
+    // when the copied one has no MCP block at all). This block must not return
+    // early: the marker below is what makes the whole migration one-time, so a
+    // vault without MCP servers would otherwise re-run it on every open.
     let cfg = crate::agent::AgentConfig::load();
-    if cfg.mcp_servers.is_empty() && cfg.skill_dirs.is_empty() {
-        return;
-    }
-    let path = home::mode_settings_file(&root);
-    let mut value: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .filter(|v| v.is_object())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let mut changed = false;
-    if value.get("mcpServers").is_none() && !cfg.mcp_servers.is_empty() {
-        if let Ok(servers) = serde_json::to_value(&cfg.mcp_servers) {
-            value["mcpServers"] = servers;
+    if !cfg.mcp_servers.is_empty() || !cfg.skill_dirs.is_empty() {
+        let path = home::mode_settings_file(&root);
+        let mut value: serde_json::Value = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let mut changed = false;
+        if value.get("mcpServers").is_none() && !cfg.mcp_servers.is_empty() {
+            if let Ok(servers) = serde_json::to_value(&cfg.mcp_servers) {
+                value["mcpServers"] = servers;
+                changed = true;
+            }
+        }
+        if value.get("skillDirs").is_none() && !cfg.skill_dirs.is_empty() {
+            value["skillDirs"] = serde_json::json!(cfg.skill_dirs);
             changed = true;
         }
-    }
-    if value.get("skillDirs").is_none() && !cfg.skill_dirs.is_empty() {
-        value["skillDirs"] = serde_json::json!(cfg.skill_dirs);
-        changed = true;
-    }
-    if changed {
-        match serde_json::to_string_pretty(&value) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    eprintln!("[bnote] agent settings migration failed: {e}");
+        if changed {
+            match serde_json::to_string_pretty(&value) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(&path, json) {
+                        eprintln!("[bnote] agent settings migration failed: {e}");
+                    }
                 }
+                Err(e) => eprintln!("[bnote] agent settings migration failed: {e}"),
             }
-            Err(e) => eprintln!("[bnote] agent settings migration failed: {e}"),
         }
     }
     if let Err(e) = home::ensure_dir(&agents_dir) {
@@ -457,5 +458,21 @@ mod tests {
         let s = load(AgentMode::Coding, &root, Some(&project)).settings;
         assert_eq!(s.hooks["PreToolUse"].len(), 2);
         std::fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn an_agent_without_mcp_servers_still_writes_the_migration_marker() {
+        let vault = temp("marker");
+        // The legacy home is the source of the copies; an empty one keeps the
+        // test off the real `~/.bnote` and has no MCP servers or skill dirs.
+        let empty_home = temp("marker-home");
+        std::env::set_var(home::HOME_ENV, &empty_home);
+
+        migrate_legacy_home(&vault);
+
+        std::env::remove_var(home::HOME_ENV);
+        assert!(vault.join(".bnote/agents/.mode-roots-v1").exists());
+        std::fs::remove_dir_all(&vault).unwrap();
+        std::fs::remove_dir_all(&empty_home).unwrap();
     }
 }
