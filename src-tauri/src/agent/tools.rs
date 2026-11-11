@@ -117,9 +117,18 @@ impl ToolContext {
 
     /// Writes are confined to the working directory (the code project for a
     /// coding session) or the vault, plus the agent home (memory,
-    /// skills, plans). The vault is *not* writable from a coding session: the
-    /// repository and the notebook are unrelated stores.
-    fn ensure_confined(&self, path: &Path) -> Result<(), String> {
+    /// skills, plans) and the system temp directories. The vault is *not*
+    /// writable from a coding session: the repository and the notebook are
+    /// unrelated stores.
+    ///
+    /// `mode` is the session's permission mode, and it is the outer gate:
+    /// `full` ("完全访问") means no path boundary at all — a boundary here would
+    /// veto a write the user already granted, which is how every `/tmp` write
+    /// failed in full mode.
+    fn ensure_confined(&self, path: &Path, mode: super::permissions::Mode) -> Result<(), String> {
+        if mode == super::permissions::Mode::Full {
+            return Ok(());
+        }
         // A path that does not exist yet (a new file) resolves through its
         // deepest existing ancestor: comparing the raw lexical form against
         // the canonicalized roots fails on symlinked parents (/var →
@@ -160,6 +169,13 @@ impl ToolContext {
             }
         }
         roots.push(super::home::home_dir());
+        // Scratch space is always writable: a temporary artifact is not a
+        // file the user has to approve, and the tools' own caches land here
+        // too. `/tmp` is added next to `temp_dir()` because on macOS they are
+        // different trees (`$TMPDIR` is `/var/folders/…`, `/tmp` is
+        // `/private/tmp`), and the model writes the one it knows.
+        roots.push(std::env::temp_dir());
+        roots.push(PathBuf::from("/tmp"));
         roots.extend(self.extra_roots.iter().cloned());
         let roots = roots
             .iter()
@@ -502,6 +518,7 @@ pub async fn execute(
     skills: &super::skills::SkillRegistry,
     name: &str,
     input: &Value,
+    mode: super::permissions::Mode,
 ) -> ToolOutput {
     // Rich-output tool: besides the text it returns a rendered screenshot
     // (see preview_html).
@@ -509,7 +526,7 @@ pub async fn execute(
         let path = input["path"].as_str().unwrap_or_default();
         return preview_html(ctx, path).await;
     }
-    let (ok, text) = execute_text(ctx, skills, name, input).await;
+    let (ok, text) = execute_text(ctx, skills, name, input, mode).await;
     ToolOutput::text(ok, text)
 }
 
@@ -519,6 +536,7 @@ async fn execute_text(
     skills: &super::skills::SkillRegistry,
     name: &str,
     input: &Value,
+    mode: super::permissions::Mode,
 ) -> (bool, String) {
     // The canonical dispatch name: legacy names in restored histories land here
     // through the same table the schema list uses.
@@ -561,7 +579,7 @@ async fn execute_text(
             let content = input["content"].as_str().unwrap_or_default();
             match ctx.resolve(&path) {
                 Ok(p) => {
-                    if let Err(e) = ctx.ensure_confined(&p) {
+                    if let Err(e) = ctx.ensure_confined(&p, mode) {
                         return (false, e);
                     }
                     if let Some(parent) = p.parent() {
@@ -679,7 +697,7 @@ async fn execute_text(
             }
             match ctx.resolve(&path) {
                 Ok(p) => {
-                    if let Err(e) = ctx.ensure_confined(&p) {
+                    if let Err(e) = ctx.ensure_confined(&p, mode) {
                         return (false, e);
                     }
                     match tokio::fs::read_to_string(&p).await {
@@ -930,6 +948,8 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
+    use super::super::permissions::Mode;
+
     fn ctx(vault: &Path, data_dir: &Path) -> ToolContext {
         ToolContext {
             vault: Some(vault.to_path_buf()),
@@ -946,6 +966,34 @@ mod tests {
         }
     }
 
+    fn skills() -> super::super::skills::SkillRegistry {
+        super::super::skills::SkillRegistry { skills: vec![] }
+    }
+
+    /// Runs a tool under `mode`; a confinement decision depends on the mode,
+    /// so the mode is part of every call.
+    async fn run(c: &ToolContext, mode: Mode, name: &str, input: Value) -> ToolOutput {
+        execute(c, &skills(), name, &input, mode).await
+    }
+
+    /// A directory outside every writable root that the test process can still
+    /// write to (sticky, world-writable): "forbidden" is then proven by the
+    /// tool's own boundary, not by an OS permission error.
+    ///
+    /// One directory per call: the tests run in parallel and each one cleans up
+    /// after itself.
+    fn outside_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let base = if Path::new("/private/var/tmp").is_dir() {
+            PathBuf::from("/private/var/tmp")
+        } else {
+            PathBuf::from("/var/tmp")
+        };
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        base.join(format!("bnote-outside-{}-{}", std::process::id(), n))
+    }
+
     #[tokio::test]
     async fn edit_file_replaces_the_exact_match_once() {
         let vault = std::env::temp_dir().join("bnote-edit-test-1");
@@ -954,12 +1002,11 @@ mod tests {
         let file = vault.join("post.html");
         std::fs::write(&file, "<h1>旧标题</h1>\n<p>正文</p>\n").unwrap();
         let c = ctx(&vault, &vault);
-        let skills = super::super::skills::SkillRegistry { skills: vec![] };
-        let out = execute(
+        let out = run(
             &c,
-            &skills,
+            Mode::Auto,
             "Edit",
-            &json!({"file_path": "post.html", "old_string": "<h1>旧标题</h1>", "new_string": "<h1>新标题</h1>"}),
+            json!({"file_path": "post.html", "old_string": "<h1>旧标题</h1>", "new_string": "<h1>新标题</h1>"}),
         )
         .await;
         assert!(out.ok, "{}", out.text);
@@ -977,12 +1024,11 @@ mod tests {
         let file = vault.join("post.md");
         std::fs::write(&file, "a b a").unwrap();
         let c = ctx(&vault, &vault);
-        let skills = super::super::skills::SkillRegistry { skills: vec![] };
-        let out = execute(
+        let out = run(
             &c,
-            &skills,
+            Mode::Auto,
             "Edit",
-            &json!({"file_path": "post.md", "old_string": "xyz", "new_string": "q"}),
+            json!({"file_path": "post.md", "old_string": "xyz", "new_string": "q"}),
         )
         .await;
         assert!(
@@ -990,11 +1036,11 @@ mod tests {
             "{}",
             out.text
         );
-        let out = execute(
+        let out = run(
             &c,
-            &skills,
+            Mode::Auto,
             "Edit",
-            &json!({"file_path": "post.md", "old_string": "a", "new_string": "q"}),
+            json!({"file_path": "post.md", "old_string": "a", "new_string": "q"}),
         )
         .await;
         assert!(!out.ok && out.text.contains("2 times"), "{}", out.text);
@@ -1006,22 +1052,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_file_refuses_to_write_outside_the_repository() {
+    async fn edit_file_refuses_a_path_outside_the_roots_in_autonomous_mode() {
         let vault = std::env::temp_dir().join("bnote-edit-test-3");
         let _ = std::fs::remove_dir_all(&vault);
         std::fs::create_dir_all(&vault).unwrap();
         let c = ctx(&vault, &vault);
-        let outside = std::env::temp_dir().join("bnote-edit-outside.md");
-        std::fs::write(&outside, "x").unwrap();
-        let out = execute(
+        let outside = outside_dir();
+        std::fs::create_dir_all(&outside).unwrap();
+        let file = outside.join("note.md");
+        std::fs::write(&file, "x").unwrap();
+        let out = run(
             &c,
-            &super::super::skills::SkillRegistry { skills: vec![] },
+            Mode::Auto,
             "Edit",
-            &json!({"file_path": outside, "old_string": "x", "new_string": "y"}),
+            json!({"file_path": file, "old_string": "x", "new_string": "y"}),
         )
         .await;
         assert!(!out.ok && out.text.contains("FORBIDDEN"), "{}", out.text);
-        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "x");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "x");
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[tokio::test]
+    async fn full_access_writes_anywhere_without_a_path_boundary() {
+        // "完全访问" is the composer's label for `full`: a write the user
+        // granted must not be vetoed by the path boundary (the `/tmp` failure).
+        let vault = std::env::temp_dir().join("bnote-full-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let c = ctx(&vault, &vault);
+        let outside = outside_dir();
+        std::fs::create_dir_all(&outside).unwrap();
+        let file = outside.join("anywhere.md");
+        let out = run(
+            &c,
+            Mode::Full,
+            "Write",
+            json!({"file_path": file, "content": "ok"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "ok");
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[tokio::test]
+    async fn temp_directories_are_writable_in_every_mode() {
+        // Scratch space is not a file the user has to approve: another tool
+        // wrote /tmp/f.html successfully while Write refused it, which is the
+        // inconsistency this test locks shut.
+        let vault = std::env::temp_dir().join("bnote-temp-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let c = ctx(&vault, &vault);
+        for mode in [Mode::Auto, Mode::Confirm] {
+            let name = format!("bnote-temp-{:?}.html", mode).to_lowercase();
+            // `$TMPDIR` and the literal `/tmp` are different trees on macOS.
+            for dir in [std::env::temp_dir(), PathBuf::from("/tmp")] {
+                let file = dir.join(&name);
+                let out = run(
+                    &c,
+                    mode,
+                    "Write",
+                    json!({"file_path": file, "content": "x"}),
+                )
+                .await;
+                assert!(out.ok, "{:?} {}: {}", mode, file.display(), out.text);
+                let _ = std::fs::remove_file(&file);
+            }
+        }
     }
 
     #[tokio::test]
@@ -1029,20 +1128,24 @@ mod tests {
         // Coding session: the project root is the anchor for relative paths and
         // part of the writable boundary — without this the coding agent could
         // not touch the project it was opened for.
-        let vault = std::env::temp_dir().join("bnote-workdir-vault");
+        //
+        // The vault sits outside every root here: `$TMPDIR` is itself a
+        // writable root (scratch space), so a vault inside it could not prove
+        // the "a coding session does not write the notebook" rule.
+        let outside = outside_dir();
+        let _ = std::fs::remove_dir_all(&outside);
+        let vault = outside.join("vault");
         let project = std::env::temp_dir().join("bnote-workdir-project");
-        let _ = std::fs::remove_dir_all(&vault);
         let _ = std::fs::remove_dir_all(&project);
         std::fs::create_dir_all(&vault).unwrap();
         std::fs::create_dir_all(&project).unwrap();
         let mut c = ctx(&vault, &vault);
         c.workdir = Some(project.clone());
-        let skills = super::super::skills::SkillRegistry { skills: vec![] };
-        let out = execute(
+        let out = run(
             &c,
-            &skills,
+            Mode::Auto,
             "Write",
-            &json!({"file_path": "src/lib.rs", "content": "fn a() {}"}),
+            json!({"file_path": "src/lib.rs", "content": "fn a() {}"}),
         )
         .await;
         assert!(out.ok, "{}", out.text);
@@ -1053,27 +1156,28 @@ mod tests {
         // A vault write from a coding session is refused: the repository and
         // the notebook are unrelated stores, so the project root alone is the
         // boundary.
-        let out = execute(
+        let out = run(
             &c,
-            &skills,
+            Mode::Auto,
             "Write",
-            &json!({"file_path": format!("{}/v.md", vault.display()), "content": "x"}),
+            json!({"file_path": format!("{}/v.md", vault.display()), "content": "x"}),
         )
         .await;
         assert!(!out.ok && out.text.contains("FORBIDDEN"), "{}", out.text);
         assert!(!vault.join("v.md").exists());
-        // Outside both roots stays forbidden.
-        let outside = std::env::temp_dir().join("bnote-workdir-outside.md");
-        std::fs::write(&outside, "keep").unwrap();
-        let out = execute(
+        // Outside every root stays forbidden.
+        let file = outside.join("keep.md");
+        std::fs::write(&file, "keep").unwrap();
+        let out = run(
             &c,
-            &skills,
+            Mode::Auto,
             "Write",
-            &json!({"file_path": outside, "content": "y"}),
+            json!({"file_path": file, "content": "y"}),
         )
         .await;
         assert!(!out.ok && out.text.contains("FORBIDDEN"), "{}", out.text);
-        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[tokio::test]
@@ -1085,8 +1189,7 @@ mod tests {
         std::fs::create_dir_all(&vault).unwrap();
         std::fs::write(vault.join("page.html"), "<p>hi</p>").unwrap();
         let c = ctx(&vault, &data);
-        let skills = super::super::skills::SkillRegistry { skills: vec![] };
-        let out = execute(&c, &skills, "preview_html", &json!({"path": "page.html"})).await;
+        let out = run(&c, Mode::Auto, "preview_html", json!({"path": "page.html"})).await;
         assert!(out.ok, "{}", out.text);
         let snapshot = data.join("creative-preview").join("preview-0.html");
         assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "<p>hi</p>");
@@ -1098,7 +1201,7 @@ mod tests {
         );
         assert!(out.text.contains("no screenshot"), "{}", out.text);
         // A non-.html file is rejected
-        let out = execute(&c, &skills, "preview_html", &json!({"path": "page.md"})).await;
+        let out = run(&c, Mode::Auto, "preview_html", json!({"path": "page.md"})).await;
         assert!(!out.ok && out.text.contains(".html"), "{}", out.text);
     }
 
@@ -1110,8 +1213,7 @@ mod tests {
             path: "/tmp/paper.pdf".into(),
             title: "paper".into(),
         });
-        let skills = super::super::skills::SkillRegistry { skills: vec![] };
-        let out = execute(&c, &skills, "read_study_content", &json!({})).await;
+        let out = run(&c, Mode::Auto, "read_study_content", json!({})).await;
         // PDF text extraction was removed together with pdf2md: the tool must
         // point at the reading-area screenshot instead of failing silently.
         assert!(!out.ok, "{}", out.text);

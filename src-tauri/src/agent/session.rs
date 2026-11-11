@@ -1834,7 +1834,7 @@ impl Session {
                 Err(e) => ToolOutput::text(false, tool_use_error(e)),
             };
         }
-        super::tools::execute(&self.ctx, &self.skills, name, input).await
+        super::tools::execute(&self.ctx, &self.skills, name, input, self.permission_mode()).await
     }
 
     /// The bash tool: foreground commands through the persistent-cwd shell,
