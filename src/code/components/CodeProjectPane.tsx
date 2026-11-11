@@ -17,6 +17,7 @@ import { ProblemsPanel, ReferencesPanel } from "./Panels";
 import { CodeEditor } from "../editor/CodeEditor";
 import { CodeOverlays } from "./CodeOverlays";
 import { openProjectAt, openProjectDialog } from "../commands";
+import { ProjectSwitcher } from "./ProjectSwitcher";
 import { isRasterImage } from "../image";
 import { ImageView } from "./ImageView";
 
@@ -158,6 +159,9 @@ export function CodeProjectPane() {
       }
     >
       <div className="code-toolbar" data-tauri-drag-region="deep">
+        {/* The pane's scope comes first: which project everything below is
+            about, and the one-click way to switch it. */}
+        <ProjectSwitcher />
         <button
           type="button"
           className={`code-tool-btn${treeOpen && !diffOpen ? " is-on" : ""}`}

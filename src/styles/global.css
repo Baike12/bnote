@@ -6941,6 +6941,49 @@ input[type="range"] {
   cursor: default;
 }
 
+/* The project name in front of the first toolbar button: everything in this
+   pane is scoped by that one directory, so the scope is stated where the pane
+   starts. The dropdown reuses the title-button + popover language of the study
+   header, sized down for the 30px toolbar; a long name is cut with an ellipsis
+   instead of squeezing the tabs. */
+.code-project-switch {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 150px;
+}
+.code-project-btn {
+  height: 22px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.code-project-btn .content-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.code-project-pop {
+  top: 26px;
+}
+.code-project-current-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.code-project-current-row .study-history-title {
+  min-width: 0;
+}
+.code-project-tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+}
+
 .code-tabs {
   display: flex;
   align-items: center;

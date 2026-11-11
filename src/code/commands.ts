@@ -104,10 +104,21 @@ export async function openProjectDialog(): Promise<void> {
   await openProjectAt(selection);
 }
 
-/** Open the project at the given path and record it in the recent projects. */
-export async function openProjectAt(root: string): Promise<void> {
+/**
+ * Open the project at the given path and record it in the recent projects.
+ *
+ * A failure (the repository moved or was deleted) is reported and swallowed:
+ * every caller is a list entry the user clicked, and an unhandled rejection
+ * would leave the pane on the stale project with no explanation.
+ */
+export async function openProjectAt(root: string): Promise<boolean> {
   const store = useCodeStore.getState();
-  await store.openProject(root);
+  try {
+    await store.openProject(root);
+  } catch (e) {
+    useAppStore.getState().showToast(`打开项目失败: ${String(e)}`);
+    return false;
+  }
   const app = useAppStore.getState();
   const recent = [root, ...app.recentCodeProjects.filter((p) => p !== root)].slice(0, 10);
   app.setRecentCodeProjects(recent);
@@ -116,6 +127,7 @@ export async function openProjectAt(root: string): Promise<void> {
   // The appStore project ref itself is written by the code store's mutator
   // (single writer); openProject already synced it above.
   app.setMode("code");
+  return true;
 }
 
 /** Restore the remembered project on startup without switching modes. */
