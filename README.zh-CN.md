@@ -160,6 +160,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust 格式检�
 ### 网页与微信读书
 
 - 网页在**原生子 webview**中打开，不是 iframe：`X-Frame-Options` / CSP `frame-ancestors` 都拦不住；滚动、尺寸随内容栏同步
+- **本地 HTML**：网址框输入绝对路径或拖入 `.html` 即打开（也可用 `＋ HTML`），原地读取、不拷进 vault；同目录的 CSS／图片和页面里的相对链接照常加载，批注与会话按该文件路径存进 `.bnote/materials/webpages/`
 - **批注**：高亮与文字批注按「原文片段 + 前后 40 字上下文 + 偏移」定位，广告和懒加载不会让批注错位；按网址存进材料目录的 `.bnote/materials/webpages/<目录>/annotations.json`，页面内另有 localStorage 兜底
 - **阅读位置**：网页记录可滚动高度的比例，重开回到同一段文字
 - **按步长翻页**：`PageUp` / `PageDown` 按设置的比例滚动，并对齐到文字行；页面上半屏有渐变提示

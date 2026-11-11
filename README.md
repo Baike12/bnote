@@ -160,6 +160,7 @@ Study mode is a **three-column** layout: **agent (left) + content (middle) + not
 ### Web pages and WeRead
 
 - Web pages run in a **native child webview**, not an iframe, so `X-Frame-Options` and CSP `frame-ancestors` cannot block them; scrolling and geometry follow the content pane
+- **Local HTML**: type an absolute path into the URL box, drop a `.html` file on the pane, or use `＋ HTML`. The file is read in place (nothing is copied into the vault); its sibling CSS and images and the page's relative links load normally, and annotations and sessions are stored under its path in `.bnote/materials/webpages/`
 - **Annotations**: highlights and notes are anchored by quote + 40 characters of context + offset, so ads and lazy loading cannot shift them; stored per page in the material's `.bnote/materials/webpages/<dir>/annotations.json` with a localStorage fallback inside the page
 - **Reading position** is a scroll ratio, so reopening returns to the same passage
 - **Paged reading**: `PageUp` / `PageDown` scroll by a configurable fraction and snap to text lines; the upper half of the page dims as a progress cue

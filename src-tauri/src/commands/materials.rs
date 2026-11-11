@@ -186,6 +186,18 @@ pub fn url_slug(url: &str) -> String {
     }
 }
 
+/// The stem of a local page's file name (`file:///tmp/01-hello.html` ->
+/// `01-hello`); `None` for a remote URL.
+pub fn local_page_stem(url: &str) -> Option<String> {
+    let parsed = tauri::Url::parse(url).ok()?;
+    if parsed.scheme() != "file" {
+        return None;
+    }
+    let path = parsed.to_file_path().ok()?;
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+}
+
 fn desired_slug(study: &StudyContent) -> String {
     match study {
         StudyContent::Pdf { path, title } => {
@@ -201,6 +213,11 @@ fn desired_slug(study: &StudyContent) -> String {
             pinyin_slug(&name)
         }
         StudyContent::Url { url, title } => {
+            // A local page has no domain to name the directory after; its file
+            // name is what the user recognizes.
+            if let Some(stem) = local_page_stem(url) {
+                return pinyin_slug(&stem);
+            }
             // Only a WeRead book title identifies the material; without one
             // (shelf or store pages) fall back to the URL rule.
             if is_weread(url) && !title.trim().is_empty() && title != "微信读书" {
@@ -997,6 +1014,18 @@ mod tests {
             title: "x.com".into(),
         };
         assert_eq!(desired_slug(&page), "x_com_201075");
+    }
+
+    #[test]
+    fn a_local_page_is_named_after_its_file() {
+        let page = StudyContent::Url {
+            url: "file:///Users/me/learning/01-electron-model.html".into(),
+            title: "01-electron-model.html".into(),
+        };
+        // The URL rule would give `material_01_ele` (no domain to name the
+        // directory after); the file stem is what the user recognizes.
+        assert_eq!(desired_slug(&page), "01_electron_model");
+        assert_eq!(local_page_stem("https://x.com/a"), None);
     }
 
     fn tmp_session(name: &str, body: &str) -> PathBuf {

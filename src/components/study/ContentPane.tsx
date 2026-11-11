@@ -27,6 +27,7 @@ import { needsMainWebviewFocus } from "@/study/previewFocus";
 import { ensureMaterial } from "@/study/materials";
 import { normalizePageStep } from "@/study/reading";
 import { formatWebZoom, normalizeWebZoom, stepWebZoom } from "@/study/webZoom";
+import { fileUrlFromPath, normalizeStudyUrl, studyUrlName } from "@/study/webUrl";
 import {
   flushWebAnnotations,
   loadWebAnnotations,
@@ -457,7 +458,8 @@ export function ContentPane() {
     };
   }, []);
 
-  // Drag & drop: PDFs are imported into the vault and shown as PDFs.
+  // Drag & drop: PDFs are imported into the vault and shown as PDFs; a local
+  // HTML file is opened in place.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -491,9 +493,15 @@ export function ContentPane() {
     const pdf = paths.find((p) => /\.pdf$/i.test(p));
     if (pdf) {
       await importAndOpen(pdf);
-    } else {
-      showToast("请拖入 PDF 文件");
+      return;
     }
+    // A local page is read where it is: no import, no copy.
+    const html = paths.find((p) => /\.html?$/i.test(p));
+    if (html) {
+      openUrl(fileUrlFromPath(html));
+      return;
+    }
+    showToast("请拖入 PDF 或本地 HTML 文件");
   }
 
   function openPdf(entry: { path: string; relPath: string; title: string }) {
@@ -531,7 +539,7 @@ export function ContentPane() {
   }
 
   function openUrl(raw?: string) {
-    const url = normalizeUrl(raw ?? urlInput);
+    const url = normalizeStudyUrl(raw ?? urlInput);
     if (!url) {
       showToast("请输入网址");
       return;
@@ -544,11 +552,11 @@ export function ContentPane() {
     // comes from the in-page route event, which is where the book title is
     // known; here only the domain would be recorded, which carries no
     // information.
-    // The title is the domain unless the user named this page before: a name
-    // is theirs to keep, and typing the URL again must not drop it. The record
-    // still stores the domain as `title` — that field is the automatic
-    // fallback, the name is a separate one.
-    const derived = url.replace(/^https?:\/\//, "").split("/")[0] || url;
+    // The title is the domain (the file name for a local page) unless the user
+    // named this page before: a name is theirs to keep, and typing the URL
+    // again must not drop it. The record still stores that automatic name as
+    // `title` — that field is the fallback, the name is a separate one.
+    const derived = studyUrlName(url);
     const known = studyHistory.urls.find((e) => e.url === url);
     const title = isWereadUrl(url) ? "微信读书" : known ? urlTitle(known) : derived;
     setStudyContent({ kind: "url", url, title });
@@ -605,6 +613,21 @@ export function ContentPane() {
     }
   }
 
+  /** A local HTML page is opened in place: the reader shows the file itself, nothing is copied into the vault. */
+  async function pickHtml() {
+    try {
+      const picked = await openFileDialog({
+        multiple: false,
+        title: "选择本地 HTML 文件",
+        filters: [{ name: "HTML", extensions: ["html", "htm"] }],
+      });
+      const path = typeof picked === "string" ? picked : null;
+      if (path) openUrl(fileUrlFromPath(path));
+    } catch (e) {
+      showToast(`选择文件失败: ${String(e)}`);
+    }
+  }
+
   return (
     <div
       className={`content-pane${dragging ? " dragging" : ""}`}
@@ -655,7 +678,7 @@ export function ContentPane() {
           <input
             className="content-url"
             type="text"
-            placeholder="网址,回车打开…"
+            placeholder="网址或本地 html 路径,回车打开…"
             value={urlInput}
             onChange={(e) => setUrlInput(e.target.value)}
             onKeyDown={(e) => {
@@ -669,6 +692,13 @@ export function ContentPane() {
             disabled={importing}
           >
             ＋ PDF
+          </button>
+          <button
+            className="icon-btn pdf-tool-btn"
+            title="打开本地 HTML 文件(原地阅读,不导入)"
+            onClick={() => void pickHtml()}
+          >
+            ＋ HTML
           </button>
           {content && (
             <button
@@ -684,9 +714,10 @@ export function ContentPane() {
       <div className="content-body">
         {!content && !importing && (
           <div className="content-empty">
-            <p className="content-empty-title">拖入 PDF 直接阅读</p>
+            <p className="content-empty-title">拖入 PDF 或本地 HTML 直接阅读</p>
             <p className="content-empty-hint">
-              PDF 会存进 <code>.bnote/materials/pdfs/</code>,与批注、会话放在一起。
+              PDF 会存进 <code>.bnote/materials/pdfs/</code>,与批注、会话放在一起;HTML
+              原地读取,不拷进 vault。
             </p>
             <button className="btn content-pick" onClick={() => void pickPdf()}>
               选择 PDF 文件
@@ -816,11 +847,4 @@ export function previewBounds(el: HTMLElement): PreviewBounds {
     width: Math.round(rect.width),
     height: Math.round(rect.height),
   };
-}
-
-function normalizeUrl(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) return "";
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
 }

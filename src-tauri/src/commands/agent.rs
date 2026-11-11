@@ -766,12 +766,42 @@ impl PreviewBounds {
     }
 }
 
+/// Whether an absolute path names a local HTML document. Only those are
+/// readable in the column: a page from disk is opened in place, never imported.
+fn is_local_html(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+}
+
+/// A URL the study column can show: an http(s) page or a local HTML file.
+///
+/// A local page is read where it is — a generated report, one's own notes —
+/// and the plain navigation is enough for the sibling stylesheet and the
+/// relative links to load (measured in an offscreen WKWebView on macOS 26:
+/// both work through `loadRequest`, also when the view was on an http page
+/// before, so no read-access grant is needed).
 fn parse_study_url(url: &str) -> Result<tauri::Url, String> {
     let parsed = tauri::Url::parse(url.trim()).map_err(|e| format!("INVALID_URL: {}", e))?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(format!("INVALID_URL: 只支持 http/https 链接({})", url));
+    match parsed.scheme() {
+        "http" | "https" => Ok(parsed),
+        "file" => {
+            let path = parsed
+                .to_file_path()
+                .map_err(|_| format!("INVALID_URL: 无法解析本地文件路径({})", url))?;
+            if !is_local_html(&path) {
+                return Err(format!("INVALID_URL: 本地文件只支持 .html({})", url));
+            }
+            if !path.is_file() {
+                return Err(format!("FILE_NOT_FOUND: {}", path.display()));
+            }
+            Ok(parsed)
+        }
+        scheme => Err(format!(
+            "INVALID_URL: 只支持 http/https 链接或本地 html 文件({})",
+            scheme
+        )),
     }
-    Ok(parsed)
 }
 
 /// Shows (creating if needed) the embedded preview on the middle column.
@@ -1553,6 +1583,43 @@ mod tests {
         };
         cfg.normalize();
         cfg
+    }
+
+    /// Remote pages and local HTML documents are the two things the study
+    /// column can show; everything else is refused with the reason.
+    #[test]
+    fn the_study_column_opens_http_pages_and_local_html_only() {
+        assert!(parse_study_url("https://x.com/a").is_ok());
+        assert!(parse_study_url("http://127.0.0.1:8080/a").is_ok());
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("bnote-local-page-{}", stamp));
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = dir.join("01-electron-model.html");
+        std::fs::write(&page, "<p>hi</p>").unwrap();
+        let url = tauri::Url::from_file_path(&page).unwrap();
+        assert_eq!(
+            parse_study_url(url.as_str()).unwrap().scheme(),
+            "file",
+            "a local html file is opened in place"
+        );
+
+        // Only html: the reader would show nothing of any other document.
+        let note = dir.join("notes.md");
+        std::fs::write(&note, "# hi").unwrap();
+        let err = parse_study_url(tauri::Url::from_file_path(&note).unwrap().as_str()).unwrap_err();
+        assert!(err.contains("本地文件只支持 .html"), "{err}");
+
+        let missing = dir.join("nope.html");
+        let err =
+            parse_study_url(tauri::Url::from_file_path(&missing).unwrap().as_str()).unwrap_err();
+        assert!(err.starts_with("FILE_NOT_FOUND"), "{err}");
+
+        assert!(parse_study_url("ftp://x/a").is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A current record restores through its selection, not through the
