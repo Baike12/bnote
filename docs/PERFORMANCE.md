@@ -218,6 +218,23 @@ measurement. Use `ime.switch` spans and the Rust probe
 (`cargo test --lib probe_switch_sources -- --nocapture`); platform behavior
 needs a deployed check (AGENTS.md).
 
+An `ime.switch` span alone is a wall-clock number, and the trace showed 26–87 ms
+(p50 45 ms) against a TIS floor of 0.1–0.6 ms for a no-op select — a gap that
+names nothing. `SetImeOutcome` therefore returns the backend's legs, and the
+span carries them as `queueMs` / `tisMs`:
+
+| field | meaning | a large value means |
+|---|---|---|
+| `queueMs` | command start → the main-thread closure running | the UI thread's run loop was busy (rendering, layout, other dispatches) |
+| `tisMs` | inside `TISSelectInputSource` | TIS plus the input method activating |
+| `ms - totalMs` | IPC + thread hops not covered by the backend | the bridge itself |
+
+The first TIS call in a process pays ~41 ms (`TISCopyCurrentKeyboardInputSource`
+measured on macOS 26); `imeWarmUp` pre-pays it at startup, so a large `tisMs`
+after warm-up is not initialization. `save.note` spans of the same period are
+the control: when a 41-byte write also costs ~200 ms, the congestion is the
+command channel, not the IME.
+
 ## 7. Where the hot path lives (map)
 
 | Concern | Module |

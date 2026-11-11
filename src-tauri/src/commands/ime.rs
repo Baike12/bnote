@@ -12,7 +12,7 @@
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::async_runtime::spawn_blocking;
@@ -35,6 +35,16 @@ pub struct SetImeOutcome {
     pub switched: bool,
     /// true when the in-process select did not stick and the macism CLI took over.
     pub fallback_used: bool,
+    /// Perf legs, in milliseconds (see docs/PERFORMANCE.md §6). One opaque
+    /// "the switch took 45 ms" number cannot be acted on: the cost is either
+    /// the app main thread being busy before the TIS call could run
+    /// (`queue_ms`, a sign of the UI thread congesting) or TIS plus the input
+    /// method activating (`tis_ms`). The frontend records them in the
+    /// `ime.switch` span so a slow switch names its own cause.
+    pub queue_ms: f64,
+    pub tis_ms: f64,
+    /// Whole command, including the CJK check's main-thread hop on a cache miss.
+    pub total_ms: f64,
 }
 
 /// Generation stamp (see set_impl): which switch the verify_or_fallback
@@ -363,6 +373,7 @@ async fn current_impl(app: AppHandle) -> CmdResult<String> {
 #[cfg(target_os = "macos")]
 async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
     spawn_blocking(move || {
+        let start = Instant::now();
         // Generation stamp: every real switch request advances it by one. The
         // verify_or_fallback background chain (re-check after 120 ms -> reselect
         // -> macism) captures its own generation; once a newer switch starts,
@@ -372,23 +383,37 @@ async fn set_impl(app: AppHandle, id: String) -> CmdResult<SetImeOutcome> {
         // lag".
         let seq = SWITCH_SEQ.fetch_add(1, Ordering::SeqCst);
         let id_for_select = id.clone();
-        let already = on_main(&app, move || tis::select(&id_for_select));
-        eprintln!("[bnote] set_input_source({id}) -> {already:?}");
-        let already = already??;
+        // The two clocks must be taken at their own boundaries: the wait before
+        // the closure runs is the main thread's queue (everything the UI thread
+        // was doing), the wait around `tis::select` is TIS plus the input method
+        // activating. Summing them into one number is what kept this switch
+        // unattributed.
+        let (selected, queue_ms, tis_ms) = on_main(&app, move || {
+            let queued = start.elapsed().as_secs_f64() * 1000.0;
+            let call = Instant::now();
+            let result = tis::select(&id_for_select);
+            (result, queued, call.elapsed().as_secs_f64() * 1000.0)
+        })?;
+        let already = selected?;
+        eprintln!(
+            "[bnote] set_input_source({id}) -> switched={} queue={queue_ms:.1}ms tis={tis_ms:.1}ms",
+            !already
+        );
+        let outcome = |switched: bool| SetImeOutcome {
+            switched,
+            fallback_used: false,
+            queue_ms,
+            tis_ms,
+            total_ms: start.elapsed().as_secs_f64() * 1000.0,
+        };
         if already {
-            return Ok(SetImeOutcome {
-                switched: false,
-                fallback_used: false,
-            });
+            return Ok(outcome(false));
         }
         let cjk = cached_is_cjk(&app, &id)?;
         if cjk {
             verify_or_fallback(app, id, seq);
         }
-        Ok(SetImeOutcome {
-            switched: true,
-            fallback_used: false,
-        })
+        Ok(outcome(true))
     })
     .await
     .map_err(|e| format!("join error: {e}"))?

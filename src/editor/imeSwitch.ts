@@ -93,7 +93,12 @@ function scheduleLaunch(): void {
   });
 }
 
-const IME_FIELDS = perfFields("target", "suspended");
+/* The span's own `ms` is the whole round trip; the backend's two legs split it
+ * (main-thread queue vs TIS), and the remainder is IPC. Three field slots is the
+ * trace format's limit, so `suspended` (always false in the recorded traces)
+ * gives up its slot to the split. */
+const IME_FIELDS = perfFields("target", "queueMs", "tisMs");
+const IME_FAILED_FIELDS = perfFields("target");
 
 function launchSwitch(target: string): void {
   switching = true;
@@ -112,15 +117,20 @@ function launchSwitch(target: string): void {
       .catch(() => {});
   }
   // Fire-and-forget: the backend dedups against the live input source,
-  // verifies CJK switches and falls back to macism when needed.
+  // verifies CJK switches and falls back to macism when needed. The outcome
+  // carries the backend's own leg split (main-thread queue / TIS) so a slow
+  // switch says which half was slow instead of staying one opaque number.
   void api
     .setInputSource(target)
+    .then((outcome) => {
+      perfEnd(t, "ime.switch", IME_FIELDS, target, outcome.queueMs, outcome.tisMs);
+    })
     .catch((e) => {
       console.warn("[bnote] set input source failed", e);
       lastEditorTarget = null; // allow retry on the next transition
+      perfEnd(t, "ime.switch", IME_FAILED_FIELDS, target);
     })
     .finally(() => {
-      perfEnd(t, "ime.switch", IME_FIELDS, target, suspended);
       switching = false;
       const next = queued;
       queued = null;
