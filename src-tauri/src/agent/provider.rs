@@ -2,6 +2,7 @@
 //! both streamed over SSE and normalized into AgentEvents.
 
 use super::cancel::Abort;
+use super::request_log::{RequestLog, RequestMeta};
 use super::types::{AgentEvent, ChatItem, Content, TokenUsage, ToolDef, TurnResult};
 use futures::StreamExt;
 use serde_json::{json, Value};
@@ -55,6 +56,15 @@ impl From<StreamFailure> for String {
             StreamFailure::Aborted => ABORTED.to_string(),
             StreamFailure::Retryable(m) | StreamFailure::Fatal(m) => m,
         }
+    }
+}
+
+/// The message of a failure without consuming it (the record writes it, then
+/// the loop turns it into the user-facing error).
+fn failure_message(failure: &StreamFailure) -> &str {
+    match failure {
+        StreamFailure::Aborted => ABORTED,
+        StreamFailure::Retryable(m) | StreamFailure::Fatal(m) => m,
     }
 }
 
@@ -395,6 +405,15 @@ pub struct TurnOptions {
     /// protocol (see [`Provider::apply_thinking`]); the streamed reasoning
     /// arrives back as ThinkingDelta events either way.
     pub thinking: bool,
+    /// Debug record of this conversation (`None` = recording is off). Every
+    /// attempt of this request is written to it (see [`RequestLog`]).
+    pub log: Option<Arc<RequestLog>>,
+    /// The session that issued the request. Recorded per line: subagents share
+    /// their parent's file, so the lines must stay attributable.
+    pub session: String,
+    /// What the request is for, recorded in the log: turn | compact | title |
+    /// subagent.
+    pub purpose: &'static str,
 }
 
 pub struct Provider {
@@ -513,6 +532,9 @@ impl Provider {
             max_tokens: None,
             abort: Abort::new(),
             thinking: false,
+            log: None,
+            session: String::new(),
+            purpose: "turn",
         };
         self.stream_turn_with(system, items, tools, sink, &opts)
             .await
@@ -542,17 +564,29 @@ impl Provider {
 
     /// POSTs the request, retrying transport failures and 429/5xx with backoff.
     /// A stop from the user cancels both the request and the wait.
+    ///
+    /// `log`/`request` are the conversation's debug record: every attempt that
+    /// did not produce a stream is written there (`phase: "http"`), so a retry
+    /// storm is visible after the fact. The error text is recorded in full; the
+    /// user-facing message still truncates.
     async fn post_stream(
         &self,
         url: &str,
         body: &str,
         abort: &Arc<Abort>,
         anthropic: bool,
+        log: Option<&RequestLog>,
+        request: u64,
     ) -> Result<reqwest::Response, String> {
         let mut attempt = 0usize;
         loop {
             let sent = tokio::select! {
-                _ = abort.wait() => return Err(ABORTED.to_string()),
+                _ = abort.wait() => {
+                    if let Some(log) = log {
+                        log.error(request, ABORTED);
+                    }
+                    return Err(ABORTED.to_string());
+                }
                 r = {
                     let mut req = self
                         .client
@@ -572,21 +606,41 @@ impl Provider {
                 Ok(resp) => {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
+                    if let Some(log) = log {
+                        log.http_attempt(request, attempt, Some(status.as_u16()), &text);
+                    }
                     let msg = format!("HTTP {}: {}", status, truncate(&text, 500));
                     if !retryable_status(status) {
+                        if let Some(log) = log {
+                            log.error(request, &msg);
+                        }
                         return Err(msg);
                     }
                     msg
                 }
-                Err(e) => format!("request: {}", e),
+                Err(e) => {
+                    let msg = format!("request: {}", e);
+                    if let Some(log) = log {
+                        log.http_attempt(request, attempt, None, &msg);
+                    }
+                    msg
+                }
             };
             if attempt >= MAX_RETRIES {
+                if let Some(log) = log {
+                    log.error(request, &retry_msg);
+                }
                 return Err(retry_msg);
             }
             let delay = backoff(attempt);
             attempt += 1;
             tokio::select! {
-                _ = abort.wait() => return Err(ABORTED.to_string()),
+                _ = abort.wait() => {
+                    if let Some(log) = log {
+                        log.error(request, ABORTED);
+                    }
+                    return Err(ABORTED.to_string());
+                }
                 _ = tokio::time::sleep(delay) => {}
             }
         }
@@ -670,14 +724,30 @@ impl Provider {
 
         let url = format!("{}/v1/messages", self.base_url);
         let body_text = body.to_string();
+        let log = opts.log.as_deref();
         let mut attempt = 0usize;
         loop {
+            let request = match log {
+                Some(log) => log.begin(
+                    &RequestMeta {
+                        session: &opts.session,
+                        purpose: opts.purpose,
+                        url: &url,
+                        protocol: "anthropic",
+                        model: &self.model,
+                        thinking: opts.thinking,
+                    },
+                    &body,
+                ),
+                None => 0,
+            };
             let resp = self
-                .post_stream(&url, &body_text, &opts.abort, true)
+                .post_stream(&url, &body_text, &opts.abort, true, log, request)
                 .await?;
+            let status = resp.status().as_u16();
             let mut turn = TurnResult::default();
             let outcome = self
-                .read_anthropic_stream(resp, sink, &opts.abort, &mut turn)
+                .read_anthropic_stream(resp, sink, &opts.abort, &mut turn, log, request)
                 .await;
             match outcome {
                 Ok(()) => {
@@ -690,20 +760,32 @@ impl Provider {
                     if turn.stop_reason.is_empty() {
                         let emitted = !turn.text.is_empty() || !turn.tool_calls.is_empty();
                         if !emitted {
-                            return Err(StreamFailure::Retryable(
-                                "模型流提前结束(网关未发送 stop 事件)".to_string(),
-                            )
-                            .into());
+                            let msg = "模型流提前结束(网关未发送 stop 事件)".to_string();
+                            if let Some(log) = log {
+                                log.error(request, &msg);
+                            }
+                            return Err(StreamFailure::Retryable(msg).into());
                         }
                         sink(AgentEvent::Notice {
                             text: "模型流提前中断,本轮回复可能不完整".to_string(),
                         });
                         turn.stop_reason = "stream_truncated".to_string();
                     }
+                    if let Some(log) = log {
+                        log.response(request, status, &turn);
+                    }
                     return Ok(turn);
                 }
-                Err(StreamFailure::Aborted) => return Err(ABORTED.to_string()),
+                Err(StreamFailure::Aborted) => {
+                    if let Some(log) = log {
+                        log.error(request, ABORTED);
+                    }
+                    return Err(ABORTED.to_string());
+                }
                 Err(failure) => {
+                    if let Some(log) = log {
+                        log.error(request, failure_message(&failure));
+                    }
                     let emitted = !turn.text.is_empty() || !turn.tool_calls.is_empty();
                     if emitted || attempt >= MAX_RETRIES {
                         return Err(failure.into());
@@ -737,12 +819,17 @@ impl Provider {
         sink: &(dyn Fn(AgentEvent) + Send + Sync),
         abort: &Arc<Abort>,
         turn: &mut TurnResult,
+        log: Option<&RequestLog>,
+        request: u64,
     ) -> Result<(), StreamFailure> {
         let mut state = AnthropicStreamState::default();
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
         while let Some(bytes) = next_chunk_abort(&mut stream, abort).await? {
             for event in sse.feed(&bytes) {
+                if let Some(log) = log {
+                    log.sse(request, &event);
+                }
                 let v: Value = match serde_json::from_str(&event) {
                     Ok(v) => v,
                     Err(_) => continue,
@@ -949,23 +1036,50 @@ impl Provider {
         }
         let url = format!("{}/chat/completions", self.base_url);
         let body_text = body.to_string();
+        let log = opts.log.as_deref();
         let mut attempt = 0usize;
         loop {
+            let request = match log {
+                Some(log) => log.begin(
+                    &RequestMeta {
+                        session: &opts.session,
+                        purpose: opts.purpose,
+                        url: &url,
+                        protocol: "openai",
+                        model: &self.model,
+                        thinking: opts.thinking,
+                    },
+                    &body,
+                ),
+                None => 0,
+            };
             let resp = self
-                .post_stream(&url, &body_text, &opts.abort, false)
+                .post_stream(&url, &body_text, &opts.abort, false, log, request)
                 .await?;
+            let status = resp.status().as_u16();
             let mut turn = TurnResult::default();
             let mut calls: Vec<(String, String, String)> = Vec::new();
             let outcome = self
-                .read_openai_stream(resp, sink, &opts.abort, &mut turn, &mut calls)
+                .read_openai_stream(resp, sink, &opts.abort, &mut turn, &mut calls, log, request)
                 .await;
             match outcome {
                 Ok(()) => {
                     finish_openai_turn(&mut turn, calls);
+                    if let Some(log) = log {
+                        log.response(request, status, &turn);
+                    }
                     return Ok(turn);
                 }
-                Err(StreamFailure::Aborted) => return Err(ABORTED.to_string()),
+                Err(StreamFailure::Aborted) => {
+                    if let Some(log) = log {
+                        log.error(request, ABORTED);
+                    }
+                    return Err(ABORTED.to_string());
+                }
                 Err(failure) => {
+                    if let Some(log) = log {
+                        log.error(request, failure_message(&failure));
+                    }
                     let emitted = !turn.text.is_empty();
                     if emitted || attempt >= MAX_RETRIES {
                         return Err(failure.into());
@@ -999,11 +1113,16 @@ impl Provider {
         abort: &Arc<Abort>,
         turn: &mut TurnResult,
         calls: &mut Vec<(String, String, String)>,
+        log: Option<&RequestLog>,
+        request: u64,
     ) -> Result<(), StreamFailure> {
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
         while let Some(bytes) = next_chunk_abort(&mut stream, abort).await? {
             for event in sse.feed(&bytes) {
+                if let Some(log) = log {
+                    log.sse(request, &event);
+                }
                 if event == "[DONE]" {
                     return Ok(());
                 }

@@ -23,7 +23,7 @@ import {
   type ModelDraft,
   type ProviderDraft,
 } from "./agentCatalogDraft";
-import { SettingsCard, Row, SettingsSelect } from "./primitives";
+import { SettingsCard, Row, SettingsSelect, Toggle } from "./primitives";
 
 /**
  * The Agent section of the settings, one shape per mode:
@@ -510,6 +510,7 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
     [],
   );
   const showToast = useAppStore((s) => s.showToast);
+  const vaultPath = useAppStore((s) => s.vaultPath);
   const bump = useAppStore((s) => s.bumpAgentConfigVersion);
 
   useEffect(() => {
@@ -580,6 +581,26 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
       showToast(`保存失败: ${String(e)}`);
     }
   };
+
+  // The record switch is saved on its own, immediately: it debugs the next
+  // request, so it must not wait for the catalog's save button.
+  const setLogRequests = (enabled: boolean) => {
+    const previous = cfg;
+    const next = { ...cfg, log_requests: enabled };
+    setCfg(next);
+    void agentApi
+      .saveConfig(next)
+      .then(() =>
+        showToast(enabled ? "已开启请求记录:下一轮请求开始写入会话文件" : "已关闭请求记录"),
+      )
+      .catch((e) => {
+        // The switch must show what is on disk, not what was clicked.
+        setCfg(previous);
+        showToast(`保存失败: ${String(e)}`);
+      });
+  };
+
+  const logDir = vaultPath ? `${vaultPath}/.bnote/logs/requests` : "~/.bnote/logs/requests";
 
   return (
     <div className="settings-section">
@@ -663,6 +684,22 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
             }
           />
         ))}
+      </SettingsCard>
+
+      <SettingsCard
+        title="请求记录(调试)"
+        desc="开启后,每次模型请求的完整请求体(系统提示词、工具定义、全部消息、思考档位字段)、网关返回的原始 SSE 事件、组装后的响应、HTTP 重试与错误,都按会话写入一个 JSONL 文件,用来核对实际发出去的请求与拿到的响应是否符合预期。三种模式共用这个开关;记录包含笔记内容与图片的 base64,注意隐私。"
+      >
+        <Toggle
+          label="记录模型请求与响应"
+          desc="立即对已开的会话生效;子代理、上下文压缩与自动起标题的请求写入同一份会话文件。"
+          checked={cfg.log_requests}
+          onChange={setLogRequests}
+        />
+        <div className="settings-hint">
+          目录:<code>{displayPath(logDir, vaultPath)}</code>,一个会话一个文件(
+          <code>&lt;会话记录 id&gt;.jsonl</code>),恢复同一会话会继续追加。
+        </div>
       </SettingsCard>
 
       {errors.length > 0 && (

@@ -12,6 +12,7 @@ pub mod output_style;
 pub mod permissions;
 pub mod prompt;
 pub mod provider;
+pub mod request_log;
 pub mod results;
 pub mod schema;
 pub mod search;
@@ -72,6 +73,13 @@ pub struct AgentConfig {
     /// vault default `<vault>/.bnote/agents/<mode>`.
     #[serde(default)]
     pub agent_roots: std::collections::BTreeMap<String, String>,
+    /// Debug switch (settings page「请求记录」): write every model request and
+    /// response of a conversation to `<agent home>/logs/requests/<会话>.jsonl`.
+    /// Off by default — the record contains the full prompt, tools and notes.
+    /// Shared by the three modes; a settings save also pushes it into open
+    /// sessions.
+    #[serde(default)]
+    pub log_requests: bool,
 }
 
 fn default_context_window() -> u64 {

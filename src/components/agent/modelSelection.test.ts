@@ -48,6 +48,7 @@ function config(providers: ProviderEntry[], preselected?: [string, string, strin
     max_tokens: 8_192,
     context_window: 128_000,
     agent_roots: {},
+    log_requests: false,
   };
 }
 

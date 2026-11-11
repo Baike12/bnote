@@ -17,6 +17,7 @@ use super::mcp::McpManager;
 use super::permissions::{self, Decision};
 use super::prompt::{assemble, AssembleInput};
 use super::provider::{Provider, TurnOptions, ABORTED};
+use super::request_log::RequestLog;
 use super::results::ResultStore;
 use super::schema;
 use super::shell::{self, BgRegistry, ShellCwd, DEFAULT_TIMEOUT_SECS};
@@ -232,6 +233,16 @@ pub struct Session {
     compact_failures: AtomicU32,
     /// Attachments (date change, changed files) since the last request.
     attachments: Mutex<AttachmentState>,
+    /// The debug switch (`agent.json` logRequests): record every model request
+    /// of this conversation. Sessions inherit the value at creation; a settings
+    /// save pushes a later change into the sessions already open.
+    log_requests: AtomicBool,
+    /// The conversation key the record file is named after: the transcript
+    /// record id, so a restored conversation appends to the same file.
+    log_key: String,
+    /// Opened on first use while `log_requests` is on. A subagent shares its
+    /// parent's recorder, so one conversation stays one file.
+    request_log: Mutex<Option<Arc<RequestLog>>>,
     /// Set for subagents whose definition is read-only: `.bnote/AGENTS.md` is
     /// omitted from their context (CC's `omitClaudeMd`).
     pub omit_user_instructions: bool,
@@ -929,6 +940,47 @@ impl Session {
         }
     }
 
+    /// The conversation's debug record, opened on the first request that needs
+    /// it. `None` while the switch is off, and also when the file cannot be
+    /// opened: a debug record must never take a turn down.
+    pub fn request_log(&self) -> Option<Arc<RequestLog>> {
+        if !self.log_requests.load(Ordering::SeqCst) {
+            return None;
+        }
+        if let Some(log) = self
+            .request_log
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return Some(log);
+        }
+        let model = self.provider().model.clone();
+        // The file opens outside the lock: no blocking IO under a mutex, and a
+        // concurrent first caller just sees the winner's recorder.
+        let log = match RequestLog::open_key(
+            &self.log_key,
+            &self.id,
+            self.mode.definition_id(),
+            &model,
+        ) {
+            Ok(log) => log,
+            Err(e) => {
+                eprintln!("[bnote] request log: {e}");
+                return None;
+            }
+        };
+        let mut slot = self.request_log.lock().unwrap_or_else(|e| e.into_inner());
+        let stored = slot.get_or_insert(log);
+        Some(stored.clone())
+    }
+
+    /// Pushes a settings change into an open session (`agent_save_config`), so
+    /// the switch applies from the next request instead of the next session.
+    pub fn set_log_requests(&self, enabled: bool) {
+        self.log_requests.store(enabled, Ordering::SeqCst);
+    }
+
     /// The selected model's context window (auto-compact measures against it).
     pub fn context_window(&self) -> u64 {
         self.context_window.load(Ordering::SeqCst)
@@ -1162,6 +1214,13 @@ impl Session {
                 max_tokens: max_tokens_override,
                 abort: self.ctx.abort.clone(),
                 thinking: self.thinking_enabled(),
+                log: self.request_log(),
+                session: self.id.clone(),
+                purpose: if self.parent_id.is_some() {
+                    "subagent"
+                } else {
+                    "turn"
+                },
             };
             let turn = provider
                 .stream_turn_with(&system, &snapshot, &tools, sink_ref, &opts)
@@ -2147,6 +2206,9 @@ impl Session {
         );
         let child_session_id = format!("{}-sub-{}", self.id, child_def.id);
         let project_root = self.ctx.workdir.clone().or_else(|| self.ctx.vault.clone());
+        // A subagent records into its parent's file: one conversation is one
+        // record, and the shared recorder serializes the concurrent lines.
+        let log = self.request_log();
         let child = Arc::new(Session {
             id: child_session_id.clone(),
             mode: self.mode,
@@ -2182,6 +2244,9 @@ impl Session {
             }),
             compact_failures: AtomicU32::new(0),
             attachments: Mutex::new(AttachmentState::default()),
+            log_requests: AtomicBool::new(self.log_requests.load(Ordering::SeqCst)),
+            log_key: self.log_key.clone(),
+            request_log: Mutex::new(log),
             omit_user_instructions: read_only,
             settings: Mutex::new(self.current_settings()),
             loaded_instructions: Mutex::new(std::collections::HashSet::new()),
@@ -2560,6 +2625,9 @@ impl Session {
             abort: self.ctx.abort.clone(),
             // The compaction summary does not need the reasoning channel.
             thinking: false,
+            log: self.request_log(),
+            session: self.id.clone(),
+            purpose: "compact",
         };
         self.provider()
             .stream_turn_with(COMPACTION_PROMPT, &snapshot, &[], &sink, &opts)
@@ -2719,6 +2787,8 @@ pub struct SessionSeed {
     /// Which persisted task list this session owns (a restored session passes
     /// its record id so the tasks continue; a new session uses its own id).
     pub task_list_id: Option<String>,
+    /// The settings' debug switch at session start (see `AgentConfig`).
+    pub log_requests: bool,
     /// The mode's configuration root. The command layer resolves it with the
     /// vault and the `agent_roots` override; `None` falls back to the vault
     /// default (tests and helper sessions).
@@ -2776,6 +2846,7 @@ pub fn create_session(seed: SessionSeed) -> Session {
         mcp_names: &seed.mcp_names,
         output_style: Some(&style),
     };
+    let log_key = task_list_id.clone();
     Session {
         id: seed.id,
         mode: seed.mode,
@@ -2808,6 +2879,9 @@ pub fn create_session(seed: SessionSeed) -> Session {
         results,
         compact_failures: AtomicU32::new(0),
         attachments: Mutex::new(AttachmentState::default()),
+        log_requests: AtomicBool::new(seed.log_requests),
+        log_key,
+        request_log: Mutex::new(None),
         omit_user_instructions: false,
         settings: Mutex::new(Arc::new(loaded_settings.settings)),
         loaded_instructions: Mutex::new(std::collections::HashSet::new()),

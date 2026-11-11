@@ -149,9 +149,10 @@ describe("title: the session's own first message, generated once by the model an
     expect(body).toMatch(/homeApi\.setSessionTitle\(codeWorkdir, id, label\)/);
     expect(body).toMatch(/const id = conv\.sessionFileId;/);
     // The title uses the session's own model: its catalog selection and the
-    // snapshot (a record from before the catalog has only the latter).
+    // snapshot (a record from before the catalog has only the latter), and it
+    // names the session so the request joins that conversation's record.
     expect(body).toMatch(
-      /generateTitle\(seed, conv\.model \?\? undefined, conv\.selection \?\? null\)/,
+      /generateTitle\(\s*seed,\s*conv\.model \?\? undefined,\s*conv\.selection \?\? null,\s*conv\.sessionId \?\? null,?\s*\)/,
     );
   });
 

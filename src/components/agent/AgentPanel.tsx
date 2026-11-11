@@ -671,7 +671,12 @@ export function AgentPanel() {
       const relDir = materialRef.current?.info?.relDir;
       const codeWorkdir = codeScopeRef.current?.workdir;
       void agentApi
-        .generateTitle(seed, conv.model ?? undefined, conv.selection ?? null)
+        .generateTitle(
+          seed,
+          conv.model ?? undefined,
+          conv.selection ?? null,
+          conv.sessionId ?? null,
+        )
         .then((raw) => {
           const clean = cleanGeneratedTitle(raw);
           if (!clean) return;

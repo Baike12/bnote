@@ -417,7 +417,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 app.state(),
                 arg_str(args, "text")?,
                 model,
-                selection
+                selection,
+                arg_opt_str(args, "sessionId")
             )
             .await)
         }

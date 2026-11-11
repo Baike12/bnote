@@ -401,6 +401,18 @@ pub fn history_file() -> PathBuf {
     home_dir().join("history.jsonl")
 }
 
+/// `<home>/logs/requests` — the debug records of model requests (one file per
+/// conversation, written only while the `logRequests` setting is on).
+pub fn request_log_dir() -> PathBuf {
+    home_dir().join("logs").join("requests")
+}
+
+/// `.../logs/requests/<key>.jsonl`. The key is the conversation's transcript
+/// record id, so a restored conversation appends to the same file.
+pub fn request_log_file(key: &str) -> PathBuf {
+    request_log_dir().join(format!("{}.jsonl", sanitize_path(key)))
+}
+
 /// The agent configuration file (provider/model/api key/MCP).
 pub fn config_file() -> PathBuf {
     home_dir().join("agent.json")
@@ -481,6 +493,10 @@ mod tests {
         assert_eq!(
             tasks_dir("s1"),
             PathBuf::from("/tmp/bnote-home-test/tasks/s1")
+        );
+        assert_eq!(
+            request_log_file("s1"),
+            PathBuf::from("/tmp/bnote-home-test/logs/requests/s1.jsonl")
         );
         std::env::remove_var(HOME_ENV);
     }

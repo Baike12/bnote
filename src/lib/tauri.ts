@@ -128,6 +128,12 @@ export interface AgentConfig {
    * the directory it moves.
    */
   agent_roots: Record<string, string>;
+  /**
+   * Debug switch: record every model request and response of a conversation
+   * into `<vault>/.bnote/logs/requests/<session>.jsonl` (full prompt, tools,
+   * raw SSE, assembled turn). Shared by the three modes.
+   */
+  log_requests: boolean;
 }
 
 /** One entry of the built-in dictionary (select-to-translate → word). */
@@ -521,7 +527,15 @@ export const agentApi = {
     model?: SessionModelConfig,
     /** The catalog selection of the session (a current record carries it). */
     selection?: ModelSelection | null,
-  ) => invoke<string>("agent_generate_title", { text, model, selection: selection ?? null }),
+    /** The conversation the title belongs to: its request record joins this request. */
+    sessionId?: string | null,
+  ) =>
+    invoke<string>("agent_generate_title", {
+      text,
+      model,
+      selection: selection ?? null,
+      sessionId: sessionId ?? null,
+    }),
   setCurrentNote: (path: string | null) => invoke<void>("agent_set_current_note", { path }),
   /**
    * Import the PDF into the materials directory

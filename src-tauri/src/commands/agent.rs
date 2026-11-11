@@ -46,12 +46,25 @@ pub async fn agent_get_config(_state: State<'_, AppState>) -> CmdResult<crate::a
 
 #[tauri::command]
 pub async fn agent_save_config(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     config: crate::agent::AgentConfig,
 ) -> CmdResult<()> {
+    let log_requests = config.log_requests;
     tauri::async_runtime::spawn_blocking(move || config.save())
         .await
-        .map_err(|e| format!("JOIN_FAILED: {}", e))?
+        .map_err(|e| format!("JOIN_FAILED: {}", e))??;
+    // The request-record switch belongs to the conversation, not to the
+    // settings file: a save pushes it into the sessions already open, so the
+    // very next request is recorded (subagents created later inherit it).
+    let sessions: Vec<Arc<crate::agent::session::Session>> = state
+        .sessions
+        .lock()
+        .map(|registry| registry.values().cloned().collect())
+        .unwrap_or_default();
+    for session in sessions {
+        session.set_log_requests(log_requests);
+    }
+    Ok(())
 }
 
 /// Starts a session.
@@ -233,6 +246,7 @@ pub async fn agent_start_session(
         context_window: resolved.context_window,
         permission_mode: None,
         task_list_id,
+        log_requests: cfg.log_requests,
         mode_root: Some(mode_root.clone()),
     }));
     {
@@ -367,12 +381,17 @@ const TITLE_SYSTEM_PROMPT: &str = "你在给一段对话起标题。根据用户
 /// passes its own selection / snapshot); sends one short request only,
 /// registers no session and enters no session history. On failure the caller
 /// keeps its locally truncated title.
+///
+/// `session_id` is the conversation the title belongs to: when recording is on,
+/// this request lands in that conversation's record file too (the record is
+/// what shows whether the prompt the title saw matches the session).
 #[tauri::command]
 pub async fn agent_generate_title(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     text: String,
     model: Option<crate::agent::models::SessionModelConfig>,
     selection: Option<crate::agent::models::ModelSelection>,
+    session_id: Option<String>,
 ) -> CmdResult<String> {
     let text = text.trim().to_string();
     if text.is_empty() {
@@ -383,17 +402,41 @@ pub async fn agent_generate_title(
     if resolved.api_key.is_empty() {
         return Err("NO_API_KEY: 在设置的 Agent 部分填写 API Key".into());
     }
+    // The session may already be gone (a restored conversation whose panel was
+    // closed): then the request simply has no record to join.
+    let session = session_id.as_deref().and_then(|id| {
+        state
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|registry| registry.get(id).cloned())
+    });
+    let log = session.as_ref().and_then(|session| session.request_log());
+    let opts = crate::agent::provider::TurnOptions {
+        max_tokens: None,
+        abort: crate::agent::cancel::Abort::new(),
+        thinking: false,
+        log,
+        session: session_id.unwrap_or_default(),
+        purpose: "title",
+    };
     let provider = Provider::from_resolved(&resolved);
     let items = vec![crate::agent::types::ChatItem::user_text(&text)];
     let collected = Mutex::new(String::new());
     provider
-        .stream_turn(TITLE_SYSTEM_PROMPT, &items, &[], &|event| {
-            if let crate::agent::types::AgentEvent::TextDelta { text } = event {
-                if let Ok(mut buf) = collected.lock() {
-                    buf.push_str(&text);
+        .stream_turn_with(
+            TITLE_SYSTEM_PROMPT,
+            &items,
+            &[],
+            &|event| {
+                if let crate::agent::types::AgentEvent::TextDelta { text } = event {
+                    if let Ok(mut buf) = collected.lock() {
+                        buf.push_str(&text);
+                    }
                 }
-            }
-        })
+            },
+            &opts,
+        )
         .await?;
     collected.into_inner().map_err(|e| e.to_string())
 }
