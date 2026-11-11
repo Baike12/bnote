@@ -14,11 +14,14 @@
 //! two language servers and two file trees would be started.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
+use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::CmdResult;
 use crate::code::git::{self, GitStatus};
@@ -128,6 +131,85 @@ fn scan_into_cache(state: &AppState, root: &Path) -> CodeTree {
     tree
 }
 
+/// Watches the project root and pushes file-tree deltas to the UI.
+///
+/// Edits made outside the app — the agent's Write/Edit, a shell command, `git
+/// checkout` — have to reach the tree, the way an editor's file watcher does;
+/// the cache search reads is updated in the same step, so the two can never
+/// disagree.
+///
+/// Same shape as the vault watcher: plain `notify` (recursive FSEvents
+/// registration is O(1)) plus a hand-rolled 300 ms debounce. The debounce
+/// thread is the only writer of the cache besides open/rescan, and it drops
+/// its paths when the cache does not exist yet (the scan that fills it is
+/// arriving anyway). One project is open at a time, so opening another one
+/// replaces the watcher.
+fn start_tree_watcher(app: &AppHandle, state: &State<'_, AppState>, root: &Path) -> CmdResult<()> {
+    let mut guard = state.code_watcher.lock().map_err(|_| "lock poisoned")?;
+    if let Some(old) = guard.take() {
+        old.stop.store(true, Ordering::Relaxed);
+        drop(old);
+    }
+
+    let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher =
+        notify::recommended_watcher(tx).map_err(|e| format!("WATCHER_FAILED: {}", e))?;
+    watcher
+        .watch(root, RecursiveMode::Recursive)
+        .map_err(|e| format!("WATCHER_FAILED: {}", e))?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = stop.clone();
+    let root = root.to_path_buf();
+    let app_handle = app.clone();
+
+    std::thread::spawn(move || {
+        let mut pending: Vec<PathBuf> = Vec::new();
+        loop {
+            if stop_thread.load(Ordering::Relaxed) {
+                return;
+            }
+            // Batch events; apply once the stream stays quiet for 300 ms.
+            match rx.recv_timeout(Duration::from_millis(300)) {
+                Ok(Ok(event)) => {
+                    // A read is not a change on disk.
+                    if matches!(event.kind, notify::EventKind::Access(_)) {
+                        continue;
+                    }
+                    pending.extend(event.paths);
+                }
+                Ok(Err(e)) => eprintln!("[bnote] code watch error: {e}"),
+                Err(_timeout) => {
+                    if pending.is_empty() {
+                        continue;
+                    }
+                    let paths = std::mem::take(&mut pending);
+                    let delta = {
+                        let state = app_handle.state::<AppState>();
+                        let Ok(mut trees) = state.code_trees.lock() else {
+                            continue;
+                        };
+                        match trees.get_mut(&root_key(&root)) {
+                            Some(tree) => project::apply_changes(tree, &root, &paths),
+                            // No scan yet: the next one reads the disk itself.
+                            None => None,
+                        }
+                    };
+                    if let Some(delta) = delta {
+                        let _ = app_handle.emit("code-tree-changed", delta);
+                    }
+                }
+            }
+        }
+    });
+
+    *guard = Some(crate::state::WatcherHandle {
+        _watcher: watcher,
+        stop,
+    });
+    Ok(())
+}
+
 /// Get (or create) the language server manager for this project.
 fn manager_for(state: &AppState, root: &PathBuf) -> Result<Arc<LspManager>, String> {
     let key = root_key(root);
@@ -156,6 +238,10 @@ pub async fn code_open_project(app: AppHandle, root: String) -> CmdResult<CodePr
     // Images in the project are rendered through the asset protocol, scoped to
     // this repository (see `paths::allow_asset_dir`).
     crate::paths::allow_asset_dir(&app, &root);
+    // The watcher starts before the scan that fills the cache: a change that
+    // lands during the scan is then already in the scan, and one that lands
+    // after it applies as a delta.
+    start_tree_watcher(&app, &app.state::<AppState>(), &root)?;
     let scan_app = app.clone();
     let scan_root = root.clone();
     let git_root = root.clone();

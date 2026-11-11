@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCodeStore } from "./store";
 import { activeCodeEditor } from "./editor/registry";
 import { refreshDiagnostics } from "./editor/lsp";
-import type { LspDiagnostic } from "./types";
+import type { CodeEntry, LspDiagnostic } from "./types";
 
 /**
  * Event subscriptions for the language servers.
@@ -75,6 +75,37 @@ export function parseDiagnostic(value: unknown): LspDiagnostic | null {
   };
 }
 
+/**
+ * One tree delta from the project watcher, narrowed at the IPC edge.
+ *
+ * The backend sends only what changed. Everything downstream folds the entry
+ * list by its `path` and indexes `name`/`size` per row (see `buildTree`), so a
+ * malformed element must not reach the store: it would either crash the fold
+ * or render an empty row.
+ */
+export function parseTreeDelta(value: unknown): { added: CodeEntry[]; removed: string[] } | null {
+  if (!value || typeof value !== "object") return null;
+  const data = value as Record<string, unknown>;
+  const added: CodeEntry[] = [];
+  for (const raw of Array.isArray(data.added) ? data.added : []) {
+    if (!raw || typeof raw !== "object") continue;
+    const e = raw as Record<string, unknown>;
+    if (
+      typeof e.path !== "string" ||
+      typeof e.name !== "string" ||
+      typeof e.isDir !== "boolean" ||
+      typeof e.size !== "number"
+    ) {
+      continue;
+    }
+    added.push({ path: e.path, name: e.name, isDir: e.isDir, size: e.size });
+  }
+  const removed = (Array.isArray(data.removed) ? data.removed : []).filter(
+    (p): p is string => typeof p === "string",
+  );
+  return { added, removed };
+}
+
 export async function installCodeEvents(): Promise<() => void> {
   const offs: Array<() => void> = [];
 
@@ -86,6 +117,21 @@ export async function installCodeEvents(): Promise<() => void> {
       // Outside Tauri (browser harness): no event source, skip silently.
     }
   };
+
+  // Edits made outside the app (the agent, a shell, `git checkout`): the tree
+  // follows the disk, like an editor's file watcher.
+  await add("code-tree-changed", (payload) => {
+    const data = payload as { root?: unknown; reset?: unknown } | null;
+    if (!data || !fromThisProject(data.root)) return;
+    if (data.reset === true) {
+      // The ignore rules moved: the tree has to be rebuilt from disk.
+      void useCodeStore.getState().rescan();
+      return;
+    }
+    const delta = parseTreeDelta(payload);
+    if (!delta) return;
+    useCodeStore.getState().applyTreeDelta(delta);
+  });
 
   await add("code-lsp-diagnostics", (payload) => {
     const data = payload as { root?: unknown; path?: unknown; diagnostics?: unknown } | null;

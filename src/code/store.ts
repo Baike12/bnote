@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import { codeApi, termApi, type TermExitEvent } from "./api";
-import { ancestorDirs } from "./tree";
+import { ancestorDirs, applyEntries } from "./tree";
 import { disposeAllTerminals, disposeTerminal, ensureTerminalOutputListener } from "./term/session";
 import { closeTab as closeTermTab, nextTitle, type TermTab } from "./term/tabs";
 import { useAppStore } from "@/state/appStore";
@@ -9,6 +9,7 @@ import { activeCodeEditor } from "./editor/registry";
 import { cmToLspPosition } from "./editor/positions";
 import { popNavBack, pushNavBack, sameLocation, type CodeLocation } from "./navHistory";
 import type {
+  CodeEntry,
   CodeFile,
   CodeProjectInfo,
   GitStatus,
@@ -167,6 +168,17 @@ export interface CodeState {
   closeProject: () => Promise<void>;
   rescan: () => Promise<void>;
   /**
+   * Applies a delta the project watcher reported (a file created, edited or
+   * deleted outside the app — the agent, a shell, `git checkout`).
+   */
+  applyTreeDelta: (delta: { added: CodeEntry[]; removed: string[] }) => void;
+  /**
+   * Re-reads the git status after a short quiet period: one agent turn writes
+   * several files, and `git status` after each of them would be the same
+   * answer paid several times.
+   */
+  scheduleGitRefresh: () => void;
+  /**
    * Opens a file in the editor. `focus` marks an explicit open gesture: the
    * editor takes the keyboard as soon as the file is in place (browsing the
    * tree with the arrows only previews the file and keeps the keys in the tree).
@@ -257,6 +269,16 @@ let treeFocusSeq = 0;
  * first shell instead of per terminal tab.
  */
 let termExitListening = false;
+
+/** How long the watcher's file events settle before the git status is re-read. */
+const GIT_REFRESH_DELAY_MS = 300;
+
+/**
+ * Pending debounce of the watcher-driven git refresh. Module-level like the
+ * sequence gates: it drives no rendering, it only coalesces the events one
+ * agent turn produces.
+ */
+let gitRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function ensureTermExitListener(): void {
   if (termExitListening) return;
@@ -430,6 +452,28 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     // Files created or deleted outside also change the git status (new
     // untracked, deleted), so refresh it while we are here.
     await get().refreshGit();
+  },
+
+  applyTreeDelta(delta) {
+    const project = get().project;
+    if (!project) return;
+    const entries = applyEntries(project.tree.entries, delta);
+    // Same reference = nothing visible moved (a modified file, or an event the
+    // last rescan already contained): leave the tree alone, the fold in the
+    // file tree is memoized on that reference.
+    if (entries !== project.tree.entries) {
+      set({ project: { ...project, tree: { ...project.tree, entries } } });
+    }
+    // Even a pure content change moves the git status (and the diff pane).
+    get().scheduleGitRefresh();
+  },
+
+  scheduleGitRefresh() {
+    if (gitRefreshTimer !== null) clearTimeout(gitRefreshTimer);
+    gitRefreshTimer = setTimeout(() => {
+      gitRefreshTimer = null;
+      void useCodeStore.getState().refreshGit();
+    }, GIT_REFRESH_DELAY_MS);
   },
 
   async openFile(path, options) {

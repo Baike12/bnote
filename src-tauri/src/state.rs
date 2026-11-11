@@ -12,8 +12,9 @@ use crate::python::lsp::LspServer;
 use crate::python::runner::RunRegistry;
 use crate::term::TermManager;
 
-/// Handle keeping a vault watcher alive; dropping it unregisters the watch
-/// and signals the debounce thread to exit.
+/// Handle keeping a filesystem watcher alive (the vault's, the open code
+/// project's); dropping it unregisters the watch and signals the debounce
+/// thread to exit.
 pub struct WatcherHandle {
     pub _watcher: RecommendedWatcher,
     pub stop: Arc<AtomicBool>,
@@ -44,6 +45,11 @@ pub struct AppState {
     /// Opening a project and `code_rescan` write it, search reads it — search
     /// must not walk the repository again on its own.
     pub code_trees: Mutex<HashMap<String, CodeTree>>,
+    /// Filesystem watcher of the open code project; replaced when another
+    /// project opens. It keeps `code_trees` in step with edits made outside the
+    /// app (the agent, a shell, `git checkout`) and pushes the difference to
+    /// the UI as `code-tree-changed`.
+    pub code_watcher: Mutex<Option<WatcherHandle>>,
     /// Live integrated-terminal shells (the code pane's bottom drawer).
     pub terminals: TermManager,
 }

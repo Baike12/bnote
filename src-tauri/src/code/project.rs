@@ -96,6 +96,199 @@ impl CodeTree {
     }
 }
 
+/// The visible difference one watcher flush made to the cached tree.
+///
+/// The front end never receives the whole tree again (a large repository is
+/// tens of thousands of entries and ~17 MB serialized): it applies this delta
+/// to the entries it already has.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeTreeDelta {
+    /// Project root the delta belongs to. Every event carries it so the front
+    /// end can drop the events of a project it no longer shows (the same
+    /// stale-event guard the LSP events needed).
+    pub root: String,
+    /// Entries that were not in the previous snapshot.
+    pub added: Vec<CodeEntry>,
+    /// Relative paths that no longer exist (a directory covers its subtree).
+    pub removed: Vec<String>,
+    /// A `.gitignore` / `.ignore` changed: the ignore rules moved, so the tree
+    /// has to be rebuilt from disk (`code_rescan`).
+    pub reset: bool,
+}
+
+/// Applies the paths one watcher flush collected to the cached tree and reports
+/// the visible difference; `None` when every path was irrelevant (`.git`,
+/// `.DS_Store`) or outside the root.
+///
+/// Edits made outside the app — the agent's Write/Edit, a shell command, `git
+/// checkout` — are what this exists for: the tree has to follow the disk the
+/// way an editor's file watcher does.
+///
+/// Idempotent by construction: an added path is compared against the entries
+/// (a replayed event adds nothing) and a removed path drops its subtree, so a
+/// delta arriving after a full rescan cannot corrupt the tree.
+pub fn apply_changes(tree: &mut CodeTree, root: &Path, paths: &[PathBuf]) -> Option<CodeTreeDelta> {
+    let mut delta = CodeTreeDelta {
+        root: root.to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let mut relevant = false;
+    for path in paths {
+        let Ok(rel_path) = path.strip_prefix(root) else {
+            continue;
+        };
+        let rel = to_posix(rel_path);
+        if rel.is_empty() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        // The scan's exclusions (.git internals, .DS_Store) are not project
+        // content, so a change under them is not a tree change.
+        if name == ".DS_Store" || rel.split('/').any(|c| c == ".git") {
+            continue;
+        }
+        relevant = true;
+        // The ignore rules decide what the tree shows and searches.
+        if name == ".gitignore" || name == ".ignore" {
+            delta.reset = true;
+            continue;
+        }
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => add_dir(tree, root, &rel, &mut delta.added),
+            Ok(meta) => match tree.entries.iter_mut().find(|e| e.path == rel) {
+                // Already in the tree: the content changed. The tree shows
+                // names, not sizes, so nothing visible moved.
+                Some(entry) => {
+                    entry.size = meta.len();
+                    entry.is_dir = false;
+                }
+                None => {
+                    // Under an ignore-hidden directory the new file stays out
+                    // of search, exactly like the files the scan marked.
+                    let hidden = is_under_ignored(tree, &rel);
+                    push_entry(
+                        tree,
+                        &mut delta.added,
+                        CodeEntry {
+                            path: rel.clone(),
+                            name,
+                            is_dir: false,
+                            size: meta.len(),
+                        },
+                    );
+                    if hidden {
+                        tree.ignored.insert(rel);
+                    }
+                }
+            },
+            // Gone from the disk: drop it together with its subtree.
+            Err(_) => remove_subtree(tree, &rel, &mut delta.removed),
+        }
+    }
+    relevant.then_some(delta)
+}
+
+/// Adds a directory that appeared on disk plus everything already inside it.
+///
+/// The watcher coalesces events: a directory created with its files (a `git
+/// checkout`, an unpacked archive) may only report the directory itself, so
+/// the subtree is scanned once here instead of trusting one event per file.
+///
+/// A directory the tree already knows is left alone: its children's writes
+/// arrive as their own events (the watch is recursive), and re-walking it on
+/// every child write would cost the whole subtree — a build touching
+/// `target/debug` would re-walk tens of thousands of entries every flush.
+fn add_dir(tree: &mut CodeTree, root: &Path, rel: &str, added: &mut Vec<CodeEntry>) {
+    if tree.entries.iter().any(|e| e.path == rel) {
+        return;
+    }
+    let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
+    push_entry(
+        tree,
+        added,
+        CodeEntry {
+            path: rel.to_string(),
+            name,
+            is_dir: true,
+            size: 0,
+        },
+    );
+    for result in walk(&root.join(rel), true) {
+        let Ok(entry) = result else { continue };
+        // Depth 0 is the directory itself, handled above.
+        if entry.depth() == 0 {
+            continue;
+        }
+        let Ok(stripped) = entry.path().strip_prefix(root) else {
+            continue;
+        };
+        let child = to_posix(stripped);
+        if tree.entries.iter().any(|e| e.path == child) {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let size = if is_dir {
+            0
+        } else {
+            entry.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        // Under an ignore-hidden directory the new file stays hidden from
+        // search, exactly like the files the initial scan marked.
+        let hidden = is_under_ignored(tree, &child);
+        push_entry(
+            tree,
+            added,
+            CodeEntry {
+                path: child.clone(),
+                name: entry.file_name().to_string_lossy().to_string(),
+                is_dir,
+                size,
+            },
+        );
+        if hidden {
+            tree.ignored.insert(child);
+        }
+    }
+}
+
+/// Appends an entry unless the tree is already at its entry cap.
+fn push_entry(tree: &mut CodeTree, added: &mut Vec<CodeEntry>, entry: CodeEntry) {
+    if tree.entries.len() >= MAX_ENTRIES {
+        tree.truncated = true;
+        return;
+    }
+    added.push(entry.clone());
+    tree.entries.push(entry);
+}
+
+fn remove_subtree(tree: &mut CodeTree, rel: &str, removed: &mut Vec<String>) {
+    let prefix = format!("{}/", rel);
+    let before = tree.entries.len();
+    tree.entries
+        .retain(|e| e.path != rel && !e.path.starts_with(&prefix));
+    tree.ignored.retain(|p| p != rel && !p.starts_with(&prefix));
+    if tree.entries.len() != before {
+        removed.push(rel.to_string());
+    }
+}
+
+/// Whether any ancestor directory of `rel` is ignore-hidden.
+fn is_under_ignored(tree: &CodeTree, rel: &str) -> bool {
+    let mut end = rel.len();
+    // `/` is ASCII, so slicing at a match is always a character boundary.
+    while let Some(slash) = rel[..end].rfind('/') {
+        if tree.ignored.contains(&rel[..slash]) {
+            return true;
+        }
+        end = slash;
+    }
+    false
+}
+
 /// The content of one file.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -723,6 +916,131 @@ mod tests {
         assert_eq!(hits.len(), 2, "{:?}", hits);
         assert_eq!(hits[0].path, "a.ts");
         assert_eq!(hits[0].line, 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_created_outside_the_app_shows_up_as_a_delta() {
+        // The agent's Write and a shell command land here: the tree has to
+        // follow the disk without a manual rescan.
+        let root = tmpdir("delta-add");
+        std::fs::write(root.join("a.ts"), "x").unwrap();
+        let mut tree = scan(&root);
+        assert!(tree.entries.iter().all(|e| e.path != "b.md"));
+
+        std::fs::write(root.join("b.md"), "hello").unwrap();
+        let delta = apply_changes(&mut tree, &root, &[root.join("b.md")]).unwrap();
+        assert_eq!(delta.root, root.to_string_lossy());
+        assert_eq!(delta.added.len(), 1);
+        assert_eq!(delta.added[0].path, "b.md");
+        assert_eq!(delta.added[0].size, 5);
+        assert!(!delta.added[0].is_dir);
+        assert!(tree.entries.iter().any(|e| e.path == "b.md"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_new_directory_arrives_with_the_files_already_inside() {
+        // The watcher coalesces events: a directory checked out with its files
+        // may report only the directory, so the subtree is scanned with it.
+        let root = tmpdir("delta-dir");
+        let mut tree = scan(&root);
+        std::fs::create_dir_all(root.join("docs/assets")).unwrap();
+        std::fs::write(root.join("docs/assets/flow.html"), "<p/>").unwrap();
+
+        let delta = apply_changes(&mut tree, &root, &[root.join("docs")]).unwrap();
+        let added: Vec<&str> = delta.added.iter().map(|e| e.path.as_str()).collect();
+        assert!(added.contains(&"docs"), "{:?}", added);
+        assert!(added.contains(&"docs/assets"), "{:?}", added);
+        assert!(added.contains(&"docs/assets/flow.html"), "{:?}", added);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn deleting_a_directory_drops_its_subtree() {
+        let root = tmpdir("delta-remove");
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::write(root.join("src/deep/a.ts"), "x").unwrap();
+        std::fs::write(root.join("keep.ts"), "x").unwrap();
+        let mut tree = scan(&root);
+        assert!(tree.entries.iter().any(|e| e.path == "src/deep/a.ts"));
+
+        std::fs::remove_dir_all(root.join("src")).unwrap();
+        let delta = apply_changes(&mut tree, &root, &[root.join("src")]).unwrap();
+        assert_eq!(delta.removed, vec!["src".to_string()]);
+        assert!(tree.entries.iter().all(|e| e.path != "src/deep/a.ts"));
+        assert!(tree.entries.iter().any(|e| e.path == "keep.ts"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_known_directory_event_adds_nothing() {
+        // Writing a child moves the parent's mtime, so the parent arrives as
+        // its own event on every flush; it must not re-enter the tree.
+        let root = tmpdir("delta-known-dir");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.ts"), "x").unwrap();
+        let mut tree = scan(&root);
+        let delta = apply_changes(&mut tree, &root, &[root.join("src")]).unwrap();
+        assert!(delta.added.is_empty() && delta.removed.is_empty());
+        assert_eq!(tree.entries.iter().filter(|e| e.path == "src").count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_gitignore_change_asks_for_a_rescan() {
+        let root = tmpdir("delta-ignore");
+        let mut tree = scan(&root);
+        std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        let delta = apply_changes(&mut tree, &root, &[root.join(".gitignore")]).unwrap();
+        assert!(delta.reset);
+        assert!(delta.added.is_empty() && delta.removed.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_and_ds_store_paths_are_not_tree_changes() {
+        let root = tmpdir("delta-noop");
+        let mut tree = scan(&root);
+        let paths = [
+            root.join(".git").join("index"),
+            root.join(".git").join("refs").join("heads").join("main"),
+            root.join(".DS_Store"),
+            // Outside the root: a stale event from the previous project.
+            PathBuf::from("/somewhere/else/file.ts"),
+        ];
+        assert!(apply_changes(&mut tree, &root, &paths).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_replayed_delta_adds_nothing_twice() {
+        // Events can arrive after a full rescan already contains the file.
+        let root = tmpdir("delta-idempotent");
+        std::fs::write(root.join("a.ts"), "x").unwrap();
+        let mut tree = scan(&root);
+        let path = root.join("a.ts");
+        let delta = apply_changes(&mut tree, &root, &[path.clone()]).unwrap();
+        assert!(delta.added.is_empty() && delta.removed.is_empty());
+        assert_eq!(tree.entries.iter().filter(|e| e.path == "a.ts").count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_new_file_under_an_ignored_directory_stays_out_of_search() {
+        let root = tmpdir("delta-ignored");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build/old.log"), "x").unwrap();
+        let mut tree = scan(&root);
+        assert!(tree.ignored.contains("build"));
+
+        std::fs::write(root.join("build/new.log"), "y").unwrap();
+        let delta = apply_changes(&mut tree, &root, &[root.join("build/new.log")]).unwrap();
+        assert_eq!(delta.added.len(), 1);
+        assert!(tree.ignored.contains("build/new.log"));
+        assert!(tree.searchable().all(|e| e.path != "build/new.log"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

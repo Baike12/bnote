@@ -123,6 +123,46 @@ export function sortTree(node: TreeNode): void {
   }
 }
 
+/**
+ * Applies one watcher delta to the flat entry list (the shape the backend
+ * caches and search reads).
+ *
+ * **The array reference is the change signal**: `buildTree` is memoized on it,
+ * so a delta that changes nothing visible (a modified file, a replayed event
+ * that a rescan already contains) returns the same array and the fold is not
+ * paid again — the tree of a large repository is the expensive part.
+ */
+export function applyEntries(
+  entries: CodeEntry[],
+  delta: { added: readonly CodeEntry[]; removed: readonly string[] },
+): CodeEntry[] {
+  let next: CodeEntry[] | null = null;
+  if (delta.removed.length > 0) {
+    // A removed directory takes its subtree with it.
+    const removed = delta.removed;
+    const dropped = entries.filter((e) =>
+      removed.some((r) => e.path === r || e.path.startsWith(`${r}/`)),
+    );
+    if (dropped.length > 0) {
+      const gone = new Set(dropped.map((e) => e.path));
+      next = entries.filter((e) => !gone.has(e.path));
+    }
+  }
+  const added = delta.added;
+  if (added.length > 0) {
+    const byPath = new Map((next ?? entries).map((e) => [e.path, e]));
+    let changed = next !== null;
+    for (const entry of added) {
+      const current = byPath.get(entry.path);
+      if (current && current.isDir === entry.isDir && current.size === entry.size) continue;
+      byPath.set(entry.path, entry);
+      changed = true;
+    }
+    if (changed) next = [...byPath.values()];
+  }
+  return next ?? entries;
+}
+
 /** Walk the tree depth-first, yielding file nodes in display order. */
 export function walkFiles(node: TreeNode, out: TreeNode[] = []): TreeNode[] {
   for (const child of node.children) {

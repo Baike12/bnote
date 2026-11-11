@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ancestorDirs,
+  applyEntries,
   buildTree,
   filterTree,
   naturalCompare,
@@ -223,5 +224,71 @@ describe("searchFilesByName (quick open)", () => {
   it("the result count is capped", () => {
     const many = Array.from({ length: 80 }, (_, i) => entry(`f${i}.ts`));
     expect(searchFilesByName(many, "f").length).toBe(50);
+  });
+});
+
+describe("applyEntries (the watcher's delta)", () => {
+  // The tree has to follow the disk after the app itself wrote nothing: the
+  // agent's Write, a shell command, `git checkout`. The delta is applied to the
+  // flat entries the store already holds, never to a re-scanned tree.
+
+  it("a new file lands in the list and in the folded tree", () => {
+    const before = [entry("src/a.ts")];
+    const after = applyEntries(before, { added: [entry("src/b.ts", false, 7)], removed: [] });
+    expect(after.map((e) => e.path)).toEqual(["src/a.ts", "src/b.ts"]);
+    const roots = buildTree(after);
+    expect(roots[0].children.map((n) => n.name)).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("a new directory arrives with the files inside it", () => {
+    const after = applyEntries([entry("a.ts")], {
+      added: [entry("docs", true), entry("docs/assets", true), entry("docs/assets/flow.html")],
+      removed: [],
+    });
+    const roots = buildTree(after);
+    expect(roots.map((n) => n.name)).toEqual(["docs", "a.ts"]);
+    expect(roots[0].children[0].children.map((n) => n.name)).toEqual(["flow.html"]);
+  });
+
+  it("a removed directory drops its whole subtree", () => {
+    const before = [
+      entry("src", true),
+      entry("src/a.ts"),
+      entry("src/deep/b.ts"),
+      entry("keep.ts"),
+    ];
+    const after = applyEntries(before, { added: [], removed: ["src"] });
+    expect(after.map((e) => e.path)).toEqual(["keep.ts"]);
+  });
+
+  it("a removed file is dropped, a sibling prefix is not", () => {
+    const before = [entry("src/a.ts"), entry("src/a.tsx")];
+    const after = applyEntries(before, { added: [], removed: ["src/a.ts"] });
+    expect(after.map((e) => e.path)).toEqual(["src/a.tsx"]);
+  });
+
+  it("an unchanged reference means nothing visible moved (no re-fold)", () => {
+    const before = [entry("a.ts", false, 3)];
+    // A modified file: same size, same everything — the tree shows names.
+    expect(applyEntries(before, { added: [entry("a.ts", false, 3)], removed: [] })).toBe(before);
+    expect(applyEntries(before, { added: [], removed: [] })).toBe(before);
+    // A removal of a path that is not there is not a change either.
+    expect(applyEntries(before, { added: [], removed: ["nope.ts"] })).toBe(before);
+  });
+
+  it("a replayed delta adds nothing twice", () => {
+    const before = [entry("a.ts")];
+    const added = [entry("b.ts")];
+    const once = applyEntries(before, { added, removed: [] });
+    const twice = applyEntries(once, { added, removed: [] });
+    expect(twice).toBe(once);
+  });
+
+  it("an updated size replaces the entry instead of duplicating it", () => {
+    const before = [entry("a.ts", false, 1)];
+    const after = applyEntries(before, { added: [entry("a.ts", false, 2)], removed: [] });
+    expect(after).not.toBe(before);
+    expect(after).toHaveLength(1);
+    expect(after[0].size).toBe(2);
   });
 });

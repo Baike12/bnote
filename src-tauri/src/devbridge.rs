@@ -87,6 +87,7 @@ fn subscribe_events(app: &AppHandle) {
         "code-lsp-diagnostics",
         "code-lsp-status",
         "code-lsp-log",
+        "code-tree-changed",
         "term-output",
         "term-exit",
         "creative-preview-updated",

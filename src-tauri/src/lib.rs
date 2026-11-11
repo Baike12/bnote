@@ -201,6 +201,7 @@ pub fn run() {
                 python_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
                 code_lsp: std::sync::Mutex::new(std::collections::HashMap::new()),
                 code_trees: std::sync::Mutex::new(std::collections::HashMap::new()),
+                code_watcher: std::sync::Mutex::new(None),
                 terminals: term::TermManager::new(),
             });
 
