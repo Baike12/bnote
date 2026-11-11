@@ -38,7 +38,7 @@ const { sendTodoToTodayFront } = await import("./send");
 
 const VAULT = "/vault";
 const DAILY = "/vault/Daily/2026-09-23.md";
-const PROJECT = "/vault/.bnote/projects/读书.md";
+const PROJECT = "/vault/.bnote/projects-manager/读书.md";
 
 function memIO(initial: Record<string, string> = {}) {
   const files = new Map<string, string>(Object.entries(initial));

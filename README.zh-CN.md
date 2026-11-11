@@ -160,7 +160,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust 格式检�
 ### 网页与微信读书
 
 - 网页在**原生子 webview**中打开，不是 iframe：`X-Frame-Options` / CSP `frame-ancestors` 都拦不住；滚动、尺寸随内容栏同步
-- **批注**：高亮与文字批注按「原文片段 + 前后 40 字上下文 + 偏移」定位，广告和懒加载不会让批注错位；按网址存进 `.bnote/web-annotations/<host>-<hash>.json`，页面内另有 localStorage 兜底
+- **批注**：高亮与文字批注按「原文片段 + 前后 40 字上下文 + 偏移」定位，广告和懒加载不会让批注错位；按网址存进材料目录的 `.bnote/materials/webpages/<目录>/annotations.json`，页面内另有 localStorage 兜底
 - **阅读位置**：网页记录可滚动高度的比例，重开回到同一段文字
 - **按步长翻页**：`PageUp` / `PageDown` 按设置的比例滚动，并对齐到文字行；页面上半屏有渐变提示
 - **页面缩放**：顶部 `− / 读数 / +` 控件，或 `Cmd+=` / `Cmd+-` / `Cmd+0`；浏览器级缩放，文字重排、整页一起放大（50%–300%）
@@ -219,7 +219,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust 格式检�
 ## 项目管理
 
 - 布局：**项目列表 | 看板 | 日记**，两侧分隔条可拖
-- 一个项目 = `<vault>/.bnote/projects/<项目名>.md` 里的一份待办清单；用 Markdown 是为了能用 Vim 改、能被勾选、能被跨文件待办同步认领
+- 一个项目 = `<vault>/.bnote/projects-manager/<项目名>.md` 里的一份待办清单；用 Markdown 是为了能用 Vim 改、能被勾选、能被跨文件待办同步认领
 - 看板是真多列：当前列居中且可编辑（CodeMirror，支持 Vim），其余列是纯 DOM 预览，点一下切过去；切换项目只换文档，不重建编辑器
 - 待办可在列间拖动（带着子待办一起走）；列头显示项目名与未完成数量
 - 新建 / 删除：`Cmd+Shift+N` 新建，`Cmd+Backspace` 移到废纸篓（只在项目区生效），右键与列头 `⋯` 菜单同款操作
@@ -378,12 +378,11 @@ Agent 的家就是当前仓库的 `.bnote`（下面这块就在笔记库里面�
 | `.bnote/settings.json`、`.bnote/settings.local.json` | 代码项目的 agent 设置（叠加在编码模式目录之上） |
 | `.agents/skills/` | 代码项目的技能（Agent Skills 约定） |
 | `.bnote/lsp.json` | 语言服务器启动命令（跟着仓库走） |
-| `.bnote/projects/<项目名>.md` | 项目待办清单 |
+| `.bnote/projects-manager/<项目名>.md` | 项目待办清单 |
 | `.bnote/materials/index.json` | 材料登记表：材料身份 → 目录名 |
 | `.bnote/materials/pdfs/<目录>/` | PDF 原文、`annotations.json`、`sessions/*.jsonl` |
-| `.bnote/materials/webpages/<目录>/` | 网页材料的会话记录 |
+| `.bnote/materials/webpages/<目录>/` | 网页材料的 `annotations.json` 与会话记录 |
 | `.bnote/materials/wxreads/<目录>/` | 微信读书材料的会话记录 |
-| `.bnote/web-annotations/<host>-<hash>.json` | 按网址保存的网页批注 |
 | `.bnote/read-positions.json` | 阅读位置（PDF 页码 + 页内比例；网页滚动比例） |
 | `.bnote/daily-links.json` | 跨文件待办同步映射 |
 | `.bnote/daily-footprints.json` | 今日足迹基线 |

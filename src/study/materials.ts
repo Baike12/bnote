@@ -27,8 +27,8 @@ export function materialCacheKey(vaultRoot: string, content: StudyContent): stri
 
 /**
  * Resolve / create the material directory. Returns null on failure (browser
- * harness, no vault, an older backend); the caller then falls back to the old
- * "do not persist" behaviour.
+ * harness, no vault, an older backend); annotations and sessions are then not
+ * persisted.
  */
 export function ensureMaterial(
   vaultRoot: string,

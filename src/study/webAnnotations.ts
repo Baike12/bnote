@@ -1,4 +1,3 @@
-import { api } from "@/lib/tauri";
 import { eventKeyName, parseBinding } from "@/commands/keys";
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 import { mergeLineRects } from "./pdfAnnotations";
@@ -20,7 +19,8 @@ import { webAnnotationRuntime } from "./webAnnotationRuntime";
  *  2. When the annotations change it writes `{url, annotations}` into
  *     `document.title` behind the `bnote-anno:` prefix; Rust's title callback
  *     turns that into a Tauri event for the main window, which persists it to
- *     `<vault>/.bnote/web-annotations/<host>-<hash>.json` (one file per URL).
+ *     the page's material directory
+ *     (`<vault>/.bnote/materials/webpages/<dir>/annotations.json`).
  *     No remote IPC is opened — an arbitrary web page must not get access to
  *     the app's commands.
  *  3. When a page is opened the main window pushes the stored anchors back
@@ -201,12 +201,13 @@ export function webAnnotationFileName(url: string): string {
   return `${slug}-${hash53(url)}.json`;
 }
 
-export function webAnnotationRelPath(url: string): string {
+/** The pre-material location of one URL's annotations (`.bnote/web-annotations/<host>-<hash>.json`); only the one-time migration reads it. */
+export function legacyWebAnnotationRelPath(url: string): string {
   return `web-annotations/${webAnnotationFileName(url)}`;
 }
 
-export function webAnnotationPath(vaultRoot: string, url: string): string {
-  return vaultDotPath(vaultRoot, webAnnotationRelPath(url));
+export function legacyWebAnnotationPath(vaultRoot: string, url: string): string {
+  return vaultDotPath(vaultRoot, legacyWebAnnotationRelPath(url));
 }
 
 /** Merge two sets of annotations by id (the stored ones + the page ones); the newer one in the page wins. */
@@ -220,65 +221,35 @@ export function mergeUrlAnnotations(
   return [...byId.values()].slice(0, 800);
 }
 
-const MATERIAL_PREFIX = "materials/";
-
+/** The annotation file of one material: `<vault>/.bnote/materials/webpages/<dir>/annotations.json`. */
 export function webAnnotationMaterialPath(vaultRoot: string, materialDir: string): string {
   return vaultDotPath(vaultRoot, `${materialDir}/annotations.json`);
 }
 
 const store = createVaultJsonStore<WebAnnotationFile>({
-  pathFor: (vaultRoot, key) =>
-    key.startsWith(MATERIAL_PREFIX)
-      ? webAnnotationMaterialPath(vaultRoot, key)
-      : webAnnotationPath(vaultRoot, key),
+  pathFor: (vaultRoot, materialDir) => webAnnotationMaterialPath(vaultRoot, materialDir),
   empty: () => ({ version: 1, url: "", annotations: [] }),
   parse: parseWebAnnotationFile,
   serialize: (file) => JSON.stringify(file),
 });
 
-/** Annotations at the old location (`.bnote/web-annotations/<host-hash>.json`). */
-async function readLegacyAnnotations(
-  vaultRoot: string,
-  url: string,
-): Promise<WebAnnotation[] | null> {
-  try {
-    return parseWebAnnotations(await api.readFile(webAnnotationPath(vaultRoot, url)));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Read the annotations of a web page / WeRead. With a `materialDir` they land
- * in the material's `annotations.json`; when no file is found the first time,
- * they are migrated from the old location (read once, write to the new path).
- */
+/** Read the annotations of one material (no material directory = nothing is persisted). */
 export async function loadWebAnnotations(
   vaultRoot: string,
-  url: string,
-  materialDir?: string | null,
+  materialDir: string | null,
 ): Promise<WebAnnotation[]> {
-  const key = materialDir && materialDir.startsWith(MATERIAL_PREFIX) ? materialDir : url;
-  const loaded = await store.loadFile(vaultRoot, key);
-  if (!materialDir || loaded.existed) return loaded.data.annotations;
-  const legacy = await readLegacyAnnotations(vaultRoot, url);
-  if (!legacy || legacy.length === 0) return loaded.data.annotations;
-  store.update(vaultRoot, key, (file) => ({
-    version: 1,
-    url: file.url || url,
-    annotations: legacy,
-  }));
-  return legacy;
+  if (!materialDir) return [];
+  return (await store.load(vaultRoot, materialDir)).annotations;
 }
 
 export function saveWebAnnotations(
   vaultRoot: string,
   url: string,
   list: WebAnnotation[],
-  materialDir?: string | null,
+  materialDir: string | null,
 ): void {
-  const key = materialDir && materialDir.startsWith(MATERIAL_PREFIX) ? materialDir : url;
-  store.update(vaultRoot, key, (file) => ({
+  if (!materialDir) return;
+  store.update(vaultRoot, materialDir, (file) => ({
     version: 1,
     url: file.url || url,
     annotations: normalizeWebAnnotations(list),

@@ -346,7 +346,7 @@ export function ContentPane() {
         const vault = useAppStore.getState().vaultPath;
         if (!vault || typeof url !== "string" || !url) return;
         const dir = await urlMaterialDir(vault, url);
-        const list = await loadWebAnnotations(vault, url, dir);
+        const list = await loadWebAnnotations(vault, dir);
         if (list.length > 0) {
           await agentApi.mergeStudyPreviewAnnotations(url, list);
         }
@@ -358,7 +358,9 @@ export function ContentPane() {
       if (!vault || !payload || typeof payload.url !== "string") return;
       const url = payload.url;
       const list = normalizeWebAnnotations(payload.annotations);
-      // The material directory has to be resolved first (this may be the first write of this web page): a failed resolution falls back to the old path.
+      // The material directory has to be resolved first (this may be the first
+      // write of this web page); without it the annotation is simply not
+      // persisted — there is no second location.
       void urlMaterialDir(vault, url).then((dir) => {
         saveWebAnnotations(vault, url, list, dir);
       });

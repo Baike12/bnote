@@ -160,7 +160,7 @@ Study mode is a **three-column** layout: **agent (left) + content (middle) + not
 ### Web pages and WeRead
 
 - Web pages run in a **native child webview**, not an iframe, so `X-Frame-Options` and CSP `frame-ancestors` cannot block them; scrolling and geometry follow the content pane
-- **Annotations**: highlights and notes are anchored by quote + 40 characters of context + offset, so ads and lazy loading cannot shift them; stored per URL in `.bnote/web-annotations/<host>-<hash>.json` with a localStorage fallback inside the page
+- **Annotations**: highlights and notes are anchored by quote + 40 characters of context + offset, so ads and lazy loading cannot shift them; stored per page in the material's `.bnote/materials/webpages/<dir>/annotations.json` with a localStorage fallback inside the page
 - **Reading position** is a scroll ratio, so reopening returns to the same passage
 - **Paged reading**: `PageUp` / `PageDown` scroll by a configurable fraction and snap to text lines; the upper half of the page dims as a progress cue
 - **Page zoom**: `− / percentage / +` in the toolbar, or `Cmd=` / `Cmd-` / `Cmd0`; browser-level zoom that reflows text and scales the whole page (50%–300%)
@@ -219,7 +219,7 @@ Code mode is a **mode of its own**, unrelated to the vault: ask the agent on the
 ## Project management
 
 - Layout: **project list | board | daily note**, with draggable dividers on both sides
-- A project is one todo list in `<vault>/.bnote/projects/<name>.md`. Markdown is deliberate: a project todo has to be editable with Vim, checkable, and recognizable by the cross-file todo sync
+- A project is one todo list in `<vault>/.bnote/projects-manager/<name>.md`. Markdown is deliberate: a project todo has to be editable with Vim, checkable, and recognizable by the cross-file todo sync
 - The board is genuinely multi-column: the current column is centered and editable (CodeMirror with Vim), the others are DOM previews — clicking one focuses it. Switching projects only swaps the document, never rebuilds the editor
 - Todos drag between columns (children follow their parent); the column header shows the project name and open count
 - Create / delete: `Cmd+Shift+N` creates, `Cmd+Backspace` moves the current project to the trash (project region only); the context menu and the `⋯` header menu offer the same actions
@@ -379,12 +379,11 @@ The home is the open vault's `.bnote`. Without a vault it falls back to `~/.bnot
 | `.bnote/settings.json`, `.bnote/settings.local.json` | Code-project agent settings, layered over the coding mode root |
 | `.agents/skills/` | Code-project skills (the Agent Skills convention) |
 | `.bnote/lsp.json` | Language server launch commands (travels with the repository) |
-| `.bnote/projects/<name>.md` | One project todo list |
+| `.bnote/projects-manager/<name>.md` | One project todo list |
 | `.bnote/materials/index.json` | Material registry: identity → directory |
 | `.bnote/materials/pdfs/<dir>/` | PDF file, `annotations.json`, `sessions/*.jsonl` |
-| `.bnote/materials/webpages/<dir>/` | Web material sessions |
+| `.bnote/materials/webpages/<dir>/` | Web material `annotations.json` and `sessions/*.jsonl` |
 | `.bnote/materials/wxreads/<dir>/` | WeRead material sessions |
-| `.bnote/web-annotations/<host>-<hash>.json` | Web annotations, one file per URL |
 | `.bnote/read-positions.json` | Reading positions (PDF page + offset; web scroll ratio) |
 | `.bnote/daily-links.json` | Cross-file todo mappings |
 | `.bnote/daily-footprints.json` | Daily footprint baselines |

@@ -1,4 +1,3 @@
-import { api } from "@/lib/tauri";
 import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
 
 /**
@@ -16,11 +15,9 @@ import { createVaultJsonStore, vaultDotPath } from "./vaultJson";
  * Storage is one-to-one with the material:
  * `<vault>/.bnote/materials/pdfs/<dir>/annotations.json` (the material
  * directory is described in study/materials.ts, the same directory the agent
- * session transcripts use). The old location
- * `.bnote/pdf-annotations/<pdf relative path>.json` is migrated on the first
- * read. One file per PDF, and opening a PDF only reads that file, so the
- * read/write volume does not grow with the library just because many PDFs
- * carry annotations.
+ * session transcripts use). One file per PDF, and opening a PDF only reads that
+ * file, so the read/write volume does not grow with the library just because
+ * many PDFs carry annotations.
  */
 export interface NormRect {
   x: number;
@@ -208,11 +205,20 @@ export function newPdfAnnotationId(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Persistence: one file per PDF
+// Persistence: one file per material
 // ---------------------------------------------------------------------------
 
-/** The annotation file of one PDF (relative to `.bnote/`). The directory structure mirrors the vault so it is easy to find by hand. */
-export function pdfAnnotationRelPath(docKey: string): string {
+/** The annotation file of one material (relative to `.bnote/`). It sits next to the PDF's sessions, inside the material directory. */
+export function pdfAnnotationRelPath(materialDir: string): string {
+  return `${materialDir}/annotations.json`;
+}
+
+export function pdfAnnotationPath(vaultRoot: string, materialDir: string): string {
+  return vaultDotPath(vaultRoot, pdfAnnotationRelPath(materialDir));
+}
+
+/** The pre-material location of one PDF's annotations (`.bnote/pdf-annotations/<vault relative pdf path>.json`); only the one-time migration reads it. */
+export function legacyPdfAnnotationRelPath(docKey: string): string {
   const parts = docKey
     .split("/")
     .filter((part) => part && part !== "." && part !== "..")
@@ -226,8 +232,8 @@ export function pdfAnnotationRelPath(docKey: string): string {
   return `pdf-annotations/${parts.join("/")}`;
 }
 
-export function pdfAnnotationPath(vaultRoot: string, docKey: string): string {
-  return vaultDotPath(vaultRoot, pdfAnnotationRelPath(docKey));
+export function legacyPdfAnnotationPath(vaultRoot: string, docKey: string): string {
+  return vaultDotPath(vaultRoot, legacyPdfAnnotationRelPath(docKey));
 }
 
 export function parsePdfAnnotationFile(raw: string | null): PdfAnnotationFile {
@@ -297,74 +303,48 @@ function fnv1a(text: string): string {
 }
 
 /**
- * Material directory (pdfAnnotations live in `<vault>/.bnote/<materialDir>/annotations.json`).
- * With a materialDir the new location is used; without one (browser/harness)
- * the old path mirror is kept.
+ * Annotations live in the material directory, next to the PDF's sessions:
+ * `<vault>/.bnote/materials/pdfs/<dir>/annotations.json`. Without a material
+ * directory (no vault, the backend could not create it) nothing is persisted;
+ * there is no second location.
  */
-const MATERIAL_PREFIX = "materials/";
-
-export function pdfAnnotationMaterialPath(vaultRoot: string, materialDir: string): string {
-  return vaultDotPath(vaultRoot, `${materialDir}/annotations.json`);
-}
-
-function isMaterialDir(key: string): boolean {
-  return key.startsWith(MATERIAL_PREFIX);
-}
-
 const store = createVaultJsonStore<PdfAnnotation[]>({
-  pathFor: (vaultRoot, key) =>
-    isMaterialDir(key)
-      ? pdfAnnotationMaterialPath(vaultRoot, key)
-      : pdfAnnotationPath(vaultRoot, key),
+  pathFor: (vaultRoot, materialDir) => pdfAnnotationPath(vaultRoot, materialDir),
   empty: () => [],
   parse: parsePdfAnnotations,
   serialize: (list) =>
     JSON.stringify({ version: 1, annotations: list } satisfies PdfAnnotationFile),
 });
 
-/** Annotations at the old location (`.bnote/pdf-annotations/<pdf relative path>.json`). */
-async function readLegacyAnnotations(
-  vaultRoot: string,
-  docKey: string,
-): Promise<PdfAnnotation[] | null> {
-  try {
-    const raw = await api.readFile(pdfAnnotationPath(vaultRoot, docKey));
-    return parsePdfAnnotations(raw);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Read the annotations of one PDF. When the new location has no file yet, the
- * annotations at the old location are migrated over (read once, write to the
- * new path; the old file is left untouched), so existing annotations do not
- * disappear because the directory changed.
- */
+/** Read the annotations of one material. */
 export async function loadPdfAnnotations(
   vaultRoot: string,
-  docKey: string,
-  materialDir?: string | null,
+  materialDir: string | null,
 ): Promise<PdfAnnotation[]> {
-  const key = materialDir && isMaterialDir(materialDir) ? materialDir : docKey;
-  const loaded = await store.loadFile(vaultRoot, key);
-  if (!materialDir || loaded.existed) return loaded.data;
-  const legacy = await readLegacyAnnotations(vaultRoot, docKey);
-  if (!legacy || legacy.length === 0) return loaded.data;
-  store.update(vaultRoot, key, () => legacy);
-  return legacy;
+  if (!materialDir) return EMPTY_PDF_ANNOTATIONS;
+  return store.load(vaultRoot, materialDir);
 }
 
 export function savePdfAnnotations(
   vaultRoot: string,
-  docKey: string,
   list: PdfAnnotation[],
-  materialDir?: string | null,
+  materialDir: string | null,
 ): void {
-  const key = materialDir && isMaterialDir(materialDir) ? materialDir : docKey;
-  store.update(vaultRoot, key, () => list);
+  if (!materialDir) return;
+  store.update(vaultRoot, materialDir, () => list);
 }
 
 export function flushPdfAnnotations(): void {
   store.flush();
+}
+
+/** Merge by id; the incoming entries win. Used when migrating the pre-material annotation files. */
+export function mergePdfAnnotations(
+  base: PdfAnnotation[],
+  incoming: PdfAnnotation[],
+): PdfAnnotation[] {
+  const byId = new Map<string, PdfAnnotation>();
+  for (const a of base) byId.set(a.id, a);
+  for (const a of incoming) byId.set(a.id, a);
+  return [...byId.values()];
 }

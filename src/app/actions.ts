@@ -39,6 +39,7 @@ import { recentVaultTarget, touchRecentVault } from "@/vault/recent";
 import { loadKeymap } from "@/commands/keybindingOverrides";
 import { normalizeTemplateDir, renderTemplate } from "@/templates/template";
 import { perfEnd, perfFields, perfStart } from "@/perf/trace";
+import { migrateLegacyAnnotations } from "@/study/annotationMigration";
 
 /** App-level operations shared by commands, components and bootstrap. */
 
@@ -69,6 +70,12 @@ export async function openVault(path: string): Promise<boolean> {
     // Today's footprint: the baseline is read on open and rotated on demand
     // (done in the background, it does not block opening the vault).
     void ensureFootprints(info.path).catch((e) => console.warn("load footprints failed", e));
+    // Annotations used to live in `.bnote/pdf-annotations` and
+    // `.bnote/web-annotations`; move them into the material directory they
+    // belong to (in the background — opening the vault does not wait).
+    void migrateLegacyAnnotations(info.path).catch((e) =>
+      console.warn("migrate annotations failed", e),
+    );
     // The vault MRU: recorded on open (opening is the moment the MRU is
     // written, same as zed). It goes to disk through the same debounced write
     // as lastVault; persistConfig updates the snapshot in sync, so a later
@@ -286,7 +293,7 @@ export async function openNote(path: string, line?: number): Promise<void> {
  *
  * The target file is taken from `documentPath`, no longer from `currentFile`
  * alone: the editor focused in the project view holds
- * `.bnote/projects/<project>.md` while `currentFile` still points at the
+ * `.bnote/projects-manager/<project>.md` while `currentFile` still points at the
  * previous note — writing by currentFile would overwrite the project
  * document into that note. The global dirty flag is only touched when the
  * saved file is exactly the current note (the project / journal editors have

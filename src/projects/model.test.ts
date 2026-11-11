@@ -9,22 +9,22 @@ import {
 } from "./model";
 
 describe("project model", () => {
-  it("project files always live under <vault>/.bnote/projects", () => {
-    expect(PROJECTS_DIR).toBe(".bnote/projects");
-    expect(projectPathFor("/v", "读书")).toBe("/v/.bnote/projects/读书.md");
-    expect(projectPathFor("/v/", "读书")).toBe("/v/.bnote/projects/读书.md");
+  it("project files always live under <vault>/.bnote/projects-manager", () => {
+    expect(PROJECTS_DIR).toBe(".bnote/projects-manager");
+    expect(projectPathFor("/v", "读书")).toBe("/v/.bnote/projects-manager/读书.md");
+    expect(projectPathFor("/v/", "读书")).toBe("/v/.bnote/projects-manager/读书.md");
   });
 
   it("project name = file name without .md (the daily note side uses it directly as the source label)", () => {
-    expect(projectNameOf("/v/.bnote/projects/读书.md")).toBe("读书");
-    expect(projectNameOf("/v/.bnote/projects/项目 2.md")).toBe("项目 2");
+    expect(projectNameOf("/v/.bnote/projects-manager/读书.md")).toBe("读书");
+    expect(projectNameOf("/v/.bnote/projects-manager/项目 2.md")).toBe("项目 2");
   });
 
   it("only absolute paths under the projects directory count as project files", () => {
-    expect(isProjectPath("/v/.bnote/projects/读书.md")).toBe(true);
+    expect(isProjectPath("/v/.bnote/projects-manager/读书.md")).toBe(true);
     expect(isProjectPath("/v/notes/读书.md")).toBe(false);
     expect(isProjectPath("读书.md")).toBe(false);
-    expect(isProjectPath(".bnote/projects/读书.md")).toBe(false);
+    expect(isProjectPath(".bnote/projects-manager/读书.md")).toBe(false);
   });
 
   it("the file name filters illegal characters, collapses whitespace and drops leading dots", () => {

@@ -3,7 +3,7 @@ import { isTodo, parseListLine, todoText } from "@/daily/model";
 /**
  * Data model of the project view.
  *
- * A project = one todo list in `<vault>/.bnote/projects/<project name>.md`.
+ * A project = one todo list in `<vault>/.bnote/projects-manager/<project name>.md`.
  * Using markdown instead of a custom JSON format is deliberate: a project todo has
  * to be editable with vim, has to be checkable and has to be recognized by the
  * cross-file todo sync (mirror/send) - that chain only understands markdown list
@@ -12,7 +12,7 @@ import { isTodo, parseListLine, todoText } from "@/daily/model";
  */
 
 /** Directory the project files live in (vault relative). */
-export const PROJECTS_DIR = ".bnote/projects";
+export const PROJECTS_DIR = ".bnote/projects-manager";
 
 export function projectsDirAbs(vaultRoot: string): string {
   return `${vaultRoot.replace(/\/+$/, "")}/${PROJECTS_DIR}`;

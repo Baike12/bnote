@@ -57,8 +57,8 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 const VAULT = "/vault";
-const PROJECT = "/vault/.bnote/projects/读书.md";
-const OTHER = "/vault/.bnote/projects/写作.md";
+const PROJECT = "/vault/.bnote/projects-manager/读书.md";
+const OTHER = "/vault/.bnote/projects-manager/写作.md";
 
 let store: typeof import("./store");
 

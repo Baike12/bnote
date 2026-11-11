@@ -8,7 +8,7 @@ import {
   parseWebAnnotations,
   textPointAt,
   webAnnotationFileName,
-  webAnnotationRelPath,
+  legacyWebAnnotationRelPath,
   webAnnotationMaterialPath,
   type WebAnnotation,
 } from "./webAnnotations";
@@ -118,7 +118,7 @@ describe("web annotation data", () => {
     expect(webAnnotationFileName(a)).toBe(webAnnotationFileName(a));
     expect(webAnnotationFileName(a)).not.toBe(webAnnotationFileName(b));
     expect(webAnnotationFileName(a)).toMatch(/^example\.com-[a-z0-9]+\.json$/);
-    expect(webAnnotationRelPath(a)).toMatch(/^web-annotations\/example\.com-/);
+    expect(legacyWebAnnotationRelPath(a)).toMatch(/^web-annotations\/example\.com-/);
     expect(webAnnotationMaterialPath("/vault", "materials/webpages/x_com_201075")).toBe(
       "/vault/.bnote/materials/webpages/x_com_201075/annotations.json",
     );

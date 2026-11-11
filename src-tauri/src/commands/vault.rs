@@ -127,6 +127,14 @@ fn set_vault_blocking(
     // roots once (never overwriting).
     crate::agent::settings::migrate_legacy_home(&root);
 
+    // The kanban boards used to share `.bnote/projects` with the agent's coding
+    // session records; they live in `.bnote/projects-manager` now. Run before
+    // the watcher starts so the first listing already sees the final layout.
+    let moved = migrate_kanban_projects(&root);
+    if moved > 0 {
+        eprintln!("[bnote] kanban projects moved to .bnote/projects-manager: {moved}");
+    }
+
     // Images in notes are rendered through the asset protocol. The vault is the
     // only directory this window may read, and the grant happens here rather
     // than in the static scope because a vault can live anywhere on disk.
@@ -145,6 +153,48 @@ fn set_vault_blocking(
         path: root.to_string_lossy().to_string(),
         name,
     })
+}
+
+/// The kanban project files used to live in `.bnote/projects`, next to the
+/// agent's coding session records (one directory per repository). They have
+/// their own `.bnote/projects-manager` now.
+///
+/// Only the top-level `*.md` files are project boards; the directories in
+/// `projects/` belong to the agent and stay where they are. A file that
+/// already exists in the new directory is not overwritten (its old copy is
+/// left in place, so nothing is lost silently).
+fn migrate_kanban_projects(vault: &Path) -> usize {
+    let old = vault.join(".bnote/projects");
+    let new = vault.join(".bnote/projects-manager");
+    let Ok(entries) = std::fs::read_dir(&old) else {
+        return 0;
+    };
+    let mut moved = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        if !name.to_string_lossy().to_ascii_lowercase().ends_with(".md") {
+            continue;
+        }
+        let target = new.join(name);
+        if target.exists() {
+            continue;
+        }
+        if let Err(e) = std::fs::create_dir_all(&new) {
+            eprintln!("[bnote] projects-manager: {e}");
+            return moved;
+        }
+        match std::fs::rename(&path, &target) {
+            Ok(()) => moved += 1,
+            Err(e) => eprintln!("[bnote] projects-manager: {} ({e})", path.display()),
+        }
+    }
+    moved
 }
 
 #[tauri::command]
@@ -388,4 +438,57 @@ pub(crate) fn vault_join(state: &AppState, rel: &str) -> CmdResult<PathBuf> {
     let full = root.join(rel);
     ensure_within(&root, &full)?;
     Ok(full)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::migrate_kanban_projects;
+    use std::path::{Path, PathBuf};
+
+    fn temp_vault(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bnote-vault-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".bnote/projects")).expect("temp vault");
+        dir
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(path, text).expect("write");
+    }
+
+    #[test]
+    fn kanban_boards_move_but_session_directories_stay() {
+        let vault = temp_vault("projects-move");
+        let old = vault.join(".bnote/projects");
+        write(&old.join("读书.md"), "- [ ] a");
+        write(&old.join("-Users-me-repo/s1.jsonl"), "{}\n");
+
+        assert_eq!(migrate_kanban_projects(&vault), 1);
+        assert_eq!(
+            std::fs::read_to_string(vault.join(".bnote/projects-manager/读书.md")).expect("moved"),
+            "- [ ] a"
+        );
+        assert!(!old.join("读书.md").exists());
+        assert!(old.join("-Users-me-repo/s1.jsonl").exists());
+        // Idempotent: a second run finds no board left to move.
+        assert_eq!(migrate_kanban_projects(&vault), 0);
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn an_existing_board_is_not_overwritten() {
+        let vault = temp_vault("projects-conflict");
+        let old = vault.join(".bnote/projects");
+        write(&old.join("读书.md"), "- [ ] old");
+        write(&vault.join(".bnote/projects-manager/读书.md"), "- [ ] new");
+
+        assert_eq!(migrate_kanban_projects(&vault), 0);
+        assert_eq!(
+            std::fs::read_to_string(vault.join(".bnote/projects-manager/读书.md")).expect("kept"),
+            "- [ ] new"
+        );
+        assert!(old.join("读书.md").exists());
+        let _ = std::fs::remove_dir_all(&vault);
+    }
 }

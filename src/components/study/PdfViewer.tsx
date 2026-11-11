@@ -421,7 +421,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       return;
     }
     if (!materialReady) return;
-    void loadPdfAnnotations(vaultPath, docKey, materialDir)
+    void loadPdfAnnotations(vaultPath, materialDir)
       .then((list) => {
         if (annotationsEpoch.current !== epoch) return;
         annotationsRef.current = list;
@@ -607,9 +607,9 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       annotationsEpoch.current += 1;
       annotationsRef.current = next;
       setAnnotations(next);
-      if (vaultPath) savePdfAnnotations(vaultPath, docKey, next, materialDir);
+      if (vaultPath) savePdfAnnotations(vaultPath, next, materialDir);
     },
-    [vaultPath, docKey, history, materialDir],
+    [vaultPath, history, materialDir],
   );
 
   const applyHistory = useCallback(

@@ -24,7 +24,7 @@ import { autoFraction } from "@/editor/snippets/autofraction";
 import { tryAutoExpand } from "@/editor/snippets/extension";
 import { snippetStore } from "@/editor/snippets/engine";
 import { getConfigSnapshot, setConfigSnapshot, useAppStore } from "@/state/appStore";
-import { api, focusApi, type FileNode } from "@/lib/tauri";
+import { api, agentApi, focusApi, type FileNode } from "@/lib/tauri";
 import { FocusChip } from "@/components/focus/FocusChip";
 import { createTimerState } from "@/focus/timer";
 import { useFocusStore } from "@/focus/store";
@@ -483,6 +483,19 @@ window.__codeStore = useCodeStore;
 window.__actions = actions;
 /** The IPC layer (the fake vault intercepts exactly this) -- used for measurement/counting. */
 window.__api = api;
+
+// Study materials own one directory (annotations + sessions). The fake vault
+// has no backend to resolve it, so pin one fixed directory: the annotation
+// persistence test writes to the same file the reader reads.
+const FAKE_MATERIAL_REL_DIR = "materials/pdfs/harness";
+Object.assign(agentApi, {
+  materialEnsure: async () => ({
+    kind: "pdfs" as const,
+    dir: "harness",
+    relDir: FAKE_MATERIAL_REL_DIR,
+    title: "harness.pdf",
+  }),
+});
 
 // ---- Sidebar file tree: there is no Tauri (and no vault) in the browser, so an in-memory fake vault stands in for
 // the IPC; the real <Sidebar/> is mounted and the real actions run, to verify the "new folder -> auto rename" chain.
@@ -1028,7 +1041,10 @@ window.__openStudyPdf = async (
   // Write the annotation file to disk first, then open the reader: what the component reads on mount is the restored data.
   // One file per PDF, the path matches pdfAnnotationRelPath.
   if (annotationsJson) {
-    await api.writeFile(`${FAKE_ROOT}/.bnote/pdf-annotations/${relPath}.json`, annotationsJson);
+    await api.writeFile(
+      `${FAKE_ROOT}/.bnote/${FAKE_MATERIAL_REL_DIR}/annotations.json`,
+      annotationsJson,
+    );
   }
   const path = `${FAKE_ROOT}/${relPath}`;
   useAppStore.getState().setStudyContent({ kind: "pdf", path, title: "harness.pdf" });

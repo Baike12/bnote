@@ -5,9 +5,10 @@ import {
   mergeLineRects,
   normalizeRects,
   parsePdfAnnotationFile,
+  legacyPdfAnnotationPath,
+  legacyPdfAnnotationRelPath,
   pdfAnnotationPath,
   pdfAnnotationRelPath,
-  pdfAnnotationMaterialPath,
   type PdfAnnotation,
 } from "./pdfAnnotations";
 
@@ -117,19 +118,22 @@ describe("a single click takes a line", () => {
 });
 
 describe("PDF annotation storage", () => {
-  it("one file per PDF: the directory structure mirrors the vault", () => {
-    expect(pdfAnnotationRelPath("pdfs/a.pdf")).toBe("pdf-annotations/pdfs/a.pdf.json");
-    expect(pdfAnnotationPath("/vault", "papers/deep/a.pdf")).toBe(
+  it("annotations live in the material directory, next to the PDF's sessions", () => {
+    expect(pdfAnnotationRelPath("materials/pdfs/ji_qi_xue_xi")).toBe(
+      "materials/pdfs/ji_qi_xue_xi/annotations.json",
+    );
+    expect(pdfAnnotationPath("/vault", "materials/pdfs/ji_qi_xue_xi")).toBe(
+      "/vault/.bnote/materials/pdfs/ji_qi_xue_xi/annotations.json",
+    );
+  });
+
+  it("the legacy path mirrors the vault and is only read by the one-time migration", () => {
+    expect(legacyPdfAnnotationRelPath("pdfs/a.pdf")).toBe("pdf-annotations/pdfs/a.pdf.json");
+    expect(legacyPdfAnnotationPath("/vault", "papers/deep/a.pdf")).toBe(
       "/vault/.bnote/pdf-annotations/papers/deep/a.pdf.json",
     );
     // Out-of-bounds segments are dropped and never escape .bnote.
-    expect(pdfAnnotationRelPath("../../etc/passwd")).toBe("pdf-annotations/etc/passwd.json");
-  });
-
-  it("annotations under a materials directory land in <vault>/.bnote/materials/<kind>/<dir>/annotations.json", () => {
-    expect(pdfAnnotationMaterialPath("/vault", "materials/pdfs/ji_qi_xue_xi")).toBe(
-      "/vault/.bnote/materials/pdfs/ji_qi_xue_xi/annotations.json",
-    );
+    expect(legacyPdfAnnotationRelPath("../../etc/passwd")).toBe("pdf-annotations/etc/passwd.json");
   });
 
   it("a bad file falls back to an empty library; old data (without kind) is read as a highlight", () => {
