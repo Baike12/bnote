@@ -143,6 +143,14 @@ pub fn focus_lock(app: AppHandle) -> CmdResult<FocusStatus> {
 /// Unconditional and idempotent: the native window is the truth.
 #[tauri::command]
 pub fn focus_unlock(app: AppHandle) -> CmdResult<FocusStatus> {
+    // Disarm the steal-back **before** the window is touched. The restore
+    // itself resigns key (style mask, level, frame), and a guard that is still
+    // armed answers that with `set_focus()` in the middle of the restore — the
+    // window is pulled forward while it is being put back, which is the focus
+    // ping-pong that reads as "the app froze when the stretch ended". The
+    // status read below re-derives the flag from the window, so a restore that
+    // failed leaves it armed again.
+    LOCKED.store(false, Ordering::Relaxed);
     mac::unlock(&app)?;
     focus_status(app)
 }
@@ -505,7 +513,7 @@ mod mac {
         unsafe { msg_send![ns, styleMask] }
     }
 
-    /// Changes the styleMask and hands first responder back to the webview.
+    /// Changes the styleMask.
     ///
     /// Deliberately **not** using tao's `set_decorations`: it changes the mask
     /// asynchronously through GCD, and that late change would overwrite our
@@ -515,13 +523,57 @@ mod mac {
     /// top of the window). We change it synchronously ourselves -- we are on
     /// the main thread anyway (`setStyleMask:` is only safe on the main thread).
     ///
-    /// Afterwards `makeFirstResponder(webview)` is mandatory: otherwise the
-    /// window is not key and keyboard input stops working (tao's own
-    /// `set_style_mask` does the same).
-    fn set_style_mask(ns: *mut AnyObject, view: *mut AnyObject, mask: usize) {
+    /// The first responder is not handed back here: see
+    /// `hand_keyboard_back`. Every caller of this function has to pair the two.
+    fn set_style_mask(ns: *mut AnyObject, mask: usize) {
         unsafe {
             let _: () = msg_send![ns, setStyleMask: mask];
-            let _: bool = msg_send![ns, makeFirstResponder: view];
+        }
+    }
+
+    /// Hands the keyboard back after a style mask change, unless a view still
+    /// holds it.
+    ///
+    /// AppKit leaves the window itself as the first responder when the mask
+    /// change dropped the focused view; that is the state in which the window
+    /// answers no keystrokes ("key handling will break at least until the
+    /// window is clicked again", tao's own comment). Anything else that still
+    /// holds the responder — the main webview, or the child webview of a page
+    /// the user is typing into — is left untouched: stealing the responder from
+    /// a field the user is in would be its own interruption.
+    fn hand_keyboard_back(app: &AppHandle, ns: *mut AnyObject) {
+        let first: *mut AnyObject = unsafe { msg_send![ns, firstResponder] };
+        if !first.is_null() {
+            let is_window: bool = unsafe { msg_send![first, isKindOfClass: class!(NSWindow)] };
+            if !is_window {
+                return;
+            }
+        }
+        focus_webview(app);
+    }
+
+    /// Makes the main webview the first responder.
+    ///
+    /// `makeFirstResponder` needs a view that is inside the window. The main
+    /// webview is wrapped by wry in a parent view that wry installs as the
+    /// window's content view, so tao's `ns_view` — the view this module used to
+    /// make first responder — is detached by then and the call does nothing.
+    /// The window is then left without a first responder after `setStyleMask:`
+    /// and reads as frozen until the page is clicked once. Ask the webview
+    /// itself for focus instead; that is exactly what wry does when it creates
+    /// it.
+    ///
+    /// The focus is applied through the event loop, which is the ordering the
+    /// restore needs anyway: the style mask change lands first, the responder
+    /// follows.
+    fn focus_webview(app: &AppHandle) {
+        use tauri::Manager;
+        let Some(webview) = app.get_webview("main") else {
+            eprintln!("focus: main webview is gone, the keyboard stays unassigned");
+            return;
+        };
+        if let Err(e) = webview.set_focus() {
+            eprintln!("focus: handing the keyboard to the webview failed: {e}");
         }
     }
 
@@ -579,16 +631,16 @@ mod mac {
     pub fn lock(app: &AppHandle) -> Result<(), String> {
         let app = app.clone();
         let inner_app = app.clone();
+        let guard_app = app.clone();
         on_main_thread(&app, move || {
             let win = main_window(&inner_app).ok_or("NO_WINDOW: 主窗口不在")?;
             let ns = win.ns_window().map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
-            let view = win.ns_view().map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
 
             // A raised level means the previous stretch never unlocked. Repair
             // the window first, so the snapshot below records the normal state
             // and not a locked one.
             if needs_repair(native_level(ns)) {
-                restore(&win, ns, view)?;
+                restore(&guard_app, &win, ns)?;
             }
 
             let scale = win.scale_factor().unwrap_or(1.0);
@@ -615,8 +667,10 @@ mod mac {
 
             // Strip the decorations first: once they are gone inner size ==
             // outer size, so filling the screen is exact (otherwise it would
-            // fall short by a strip).
-            set_style_mask(ns, view, borderless_mask());
+            // fall short by a strip). The mask change drops the first
+            // responder, so the keyboard has to be handed back right after it.
+            set_style_mask(ns, borderless_mask());
+            hand_keyboard_back(&guard_app, ns);
 
             // Fill the current screen (the whole thing, including the menu bar
             // strip -- level 25 covers the menu bar, so the picture really is
@@ -658,7 +712,12 @@ mod mac {
     /// there is exactly one restore path. The snapshot is only cleared by the
     /// caller when every step succeeded: a restore that failed must stay
     /// retryable.
-    fn restore(win: &Window, ns: *mut AnyObject, view: *mut AnyObject) -> Result<(), String> {
+    ///
+    /// Every step is skipped when the window already holds the target value:
+    /// each AppKit mutation here resizes or re-lays the webview, and the end of
+    /// a stretch is in the middle of the user's work -- a redundant mutation is
+    /// a visible reflow and a WebKit relayout for nothing.
+    fn restore(app: &AppHandle, win: &Window, ns: *mut AnyObject) -> Result<(), String> {
         let snap = *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
         match snap {
             Some(snap) => {
@@ -666,10 +725,17 @@ mod mac {
                 // (with the FullSizeContentView overlay title bar). Use our own
                 // synchronous path so tao's asynchronous change cannot
                 // overwrite it.
-                set_style_mask(ns, view, snap.style_mask);
+                if native_style_mask(ns) != snap.style_mask {
+                    set_style_mask(ns, snap.style_mask);
+                    hand_keyboard_back(app, ns);
+                }
 
-                set_native_level(ns, snap.level);
-                set_native_behavior(ns, snap.behavior);
+                if native_level(ns) != snap.level {
+                    set_native_level(ns, snap.level);
+                }
+                if native_behavior(ns) != snap.behavior {
+                    set_native_behavior(ns, snap.behavior);
+                }
 
                 win.set_size(LogicalSize::new(snap.inner.0, snap.inner.1))
                     .map_err(|e| format!("set_size: {e}"))?;
@@ -680,10 +746,14 @@ mod mac {
                 // No snapshot to restore: the locked geometry is gone, but a
                 // window left above every other app is worse. Drop the level and
                 // remove exactly the collection bits we added.
-                set_native_level(ns, NORMAL_LEVEL);
+                if native_level(ns) != NORMAL_LEVEL {
+                    set_native_level(ns, NORMAL_LEVEL);
+                }
                 let behavior = native_behavior(ns)
                     & !(CAN_JOIN_ALL_SPACES | STATIONARY | FULLSCREEN_AUXILIARY);
-                set_native_behavior(ns, behavior);
+                if behavior != native_behavior(ns) {
+                    set_native_behavior(ns, behavior);
+                }
             }
         }
         Ok(())
@@ -692,15 +762,15 @@ mod mac {
     pub fn unlock(app: &AppHandle) -> Result<(), String> {
         let app = app.clone();
         let inner_app = app.clone();
+        let guard_app = app.clone();
         on_main_thread(&app, move || {
             // A missing window is an error, never a success: reporting "ok" here
             // is what left the window at level 25 above every other app while the
             // frontend believed the session had ended.
             let win = main_window(&inner_app).ok_or("NO_WINDOW: 主窗口不在")?;
             let ns = win.ns_window().map_err(|e| format!("ns_window: {e}"))? as *mut AnyObject;
-            let view = win.ns_view().map_err(|e| format!("ns_view: {e}"))? as *mut AnyObject;
 
-            restore(&win, ns, view)?;
+            restore(&guard_app, &win, ns)?;
             *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
             Ok(())
         })
