@@ -22,7 +22,7 @@ With `pnpm tauri dev` running, `http://localhost:1430/` is the real app: the Tau
 
 ### 2. Harness (pure front end, fake data)
 
-`http://localhost:1430/harness.html` needs no Tauri. It mounts the editor with all real extensions plus an in-memory fake vault, so assertions are deterministic. Hooks: `__view`, `__loadDoc(text)`, `__loadFileDoc(text, path?)`, `__setCursor(line, col)`/`__cursor()`, `__store`/`__api`/`__actions`, `__mountSidebar(entries)`/`__unmountSidebar()` (a real unmount — required for remount scenarios), `__mountStudyLayout()`. Add new hooks in `src/dev/harness.ts`, copying the existing pattern.
+`http://localhost:1430/harness.html` needs no Tauri. It mounts the editor with all real extensions plus an in-memory fake vault, so assertions are deterministic. Hooks: `__view`, `__loadDoc(text)`, `__loadFileDoc(text, path?)`, `__setCursor(line, col)`/`__cursor()`, `__store`/`__api`/`__actions`, `__mountSidebar(entries)`/`__unmountSidebar()` (a real unmount — required for remount scenarios), `__mountStudyLayout()`, `__mountAgentTranscript({ rows, busy?, width? })` (one assistant turn with the real work rows, no backend). Add new hooks in `src/dev/harness.ts`, copying the existing pattern.
 
 Before starting a dev server, probe 1430: if `harness.html` returns 200, reuse it and do not start a second server (`strictPort: true`; a busy port makes `pnpm dev` exit). HMR is automatic; no restart is needed.
 

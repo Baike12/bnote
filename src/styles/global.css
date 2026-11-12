@@ -4309,6 +4309,11 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
 }
+/* Narration between two tool batches: a normal assistant paragraph at its
+   place in the timeline (the rows around it are the small work lines). */
+.agent-turn-work-body > .agent-md {
+  margin: 2px 0 6px;
+}
 .agent-tool-io {
   max-height: 200px;
   overflow: auto;

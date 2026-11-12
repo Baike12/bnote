@@ -13,6 +13,7 @@ import type { AgentEvent } from "@/lib/tauri";
 import type { ApprovalRequest } from "@/components/agent/ApprovalCard";
 import { parseQuestions, type PendingQuestion } from "@/components/agent/QuestionCard";
 import {
+  appendText,
   appendThinking,
   closeThinking,
   errorTurn,
@@ -152,7 +153,9 @@ export function createStreamHandler(
         // The model moved from thinking to writing: the block's duration is
         // now known, and a further thinking delta opens a new row.
         closeThinking(turn, Date.now());
-        turn.text += event.text;
+        // The delta joins the timeline where it arrived: narration between two
+        // tool batches keeps its place instead of piling up after the last one.
+        appendText(turn, event.text);
         writeEntries(conv.key, turn, false, null);
         break;
       }

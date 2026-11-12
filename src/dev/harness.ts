@@ -46,6 +46,15 @@ import { CodeLayout } from "@/components/code/CodeLayout";
 import { useCodeStore } from "@/code/store";
 import { AgentHeader } from "@/components/agent/AgentHeader";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
+import { AgentTranscript } from "@/components/agent/Transcript";
+import {
+  appendText,
+  appendThinking,
+  closeThinking,
+  newTurn,
+  pushToolStep,
+  type ChatEntry,
+} from "@/components/agent/model";
 import { ProjectsLayout } from "@/components/projects/ProjectsLayout";
 import { runCommand } from "@/commands/registry";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -255,6 +264,22 @@ declare global {
     __renderAgentMd: (text: string) => string;
     /** Mount one real HtmlPreview (the live render of an agent `html` code block); returns the unmount function. */
     __mountHtmlPreview: (code: string) => () => void;
+    /**
+     * Mount the real agent transcript with one synthetic assistant turn built
+     * through the real model helpers; returns the unmount function. Verifies
+     * the work rows' stream order (thinking / narration / tool calls) in the
+     * real DOM without a backend.
+     */
+    __mountAgentTranscript: (spec: {
+      rows: (
+        | { kind: "thinking"; text: string }
+        | { kind: "text"; text: string }
+        | { kind: "tool"; id: string; name: string; input?: unknown; output?: string; ok?: boolean }
+      )[];
+      /** Mark the turn as live (the work section starts open). */
+      busy?: boolean;
+      width?: number;
+    }) => () => void;
     /** The syntax tree node names of the current document (for debugging). */
     __treeNames: () => string[];
     /** The syntax tree node names@range of a given line (1-based) (for debugging the render chain). */
@@ -1021,6 +1046,62 @@ window.__mountHtmlPreview = (code: string) => {
   document.body.appendChild(host);
   const root = createRoot(host);
   root.render(createElement(HtmlPreview, { code }));
+  return () => {
+    root.unmount();
+    host.remove();
+  };
+};
+
+/**
+ * One real assistant turn in the real transcript. The turn is assembled by the
+ * same helpers the stream reducer uses, so the mounted rows are what the panel
+ * would draw for that event order — the ordering has no other renderer to
+ * disagree with.
+ */
+window.__mountAgentTranscript = (spec) => {
+  for (const stale of document.querySelectorAll("#agent-transcript-host")) stale.remove();
+  const host = document.createElement("div");
+  host.id = "agent-transcript-host";
+  host.style.cssText = `position:fixed;left:0;top:0;width:${spec.width ?? 520}px;height:100vh;z-index:9999;display:flex;background:var(--bg1)`;
+  document.body.appendChild(host);
+
+  const turn = newTurn(Date.now() - 90_000);
+  turn.turnMs = 90_000;
+  for (const row of spec.rows) {
+    if (row.kind === "thinking") {
+      appendThinking(turn, row.text, Date.now() - 80_000);
+      closeThinking(turn, Date.now() - 70_000);
+    } else if (row.kind === "text") {
+      appendText(turn, row.text);
+    } else {
+      turn.tools.push({
+        id: row.id,
+        name: row.name,
+        input: row.input,
+        output: row.output,
+        ok: row.ok ?? true,
+      });
+      pushToolStep(turn, row.id, Date.now());
+    }
+  }
+  const entry: ChatEntry = {
+    role: "assistant",
+    text: turn.text,
+    at: Date.now(),
+    turn,
+    items: null,
+  };
+
+  const root = createRoot(host);
+  root.render(
+    createElement(AgentTranscript, {
+      scrollRef: { current: null },
+      entries: [entry],
+      busy: spec.busy ?? false,
+      welcome: null,
+      onFork: () => {},
+    }),
+  );
   return () => {
     root.unmount();
     host.remove();
