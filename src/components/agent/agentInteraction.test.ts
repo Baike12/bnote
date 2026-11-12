@@ -102,3 +102,17 @@ describe("approval / question cards sit above the composer (ZCode's bottom dock)
     expect(code.split("<AgentQuestionCard").length).toBe(2);
   });
 });
+
+describe("a send while the previous turn is still generating", () => {
+  it("tells the user instead of returning silently", () => {
+    // Root cause (2026-11-12): after a stop, the next message was accepted by
+    // the backend, whose model request then failed and retried invisibly. The
+    // panel stayed on "generating", and `send()` returned without a word when
+    // the user pressed Enter again — the only feedback-free path in the panel.
+    const send = panel.slice(panel.indexOf("async function send()"));
+    const guardAt = send.indexOf("if (busyRef.current === info)");
+    expect(guardAt).toBeGreaterThan(-1);
+    const guard = send.slice(guardAt, send.indexOf("return;", guardAt));
+    expect(guard).toMatch(/showToast\(/);
+  });
+});

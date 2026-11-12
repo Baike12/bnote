@@ -1121,7 +1121,14 @@ export function AgentPanel() {
       }));
       return;
     }
-    if (busyRef.current === info) return;
+    if (busyRef.current === info) {
+      // A turn is still generating. Returning silently here is what reads as
+      // "sending does nothing": the backend may be inside a model retry, so
+      // the message would disappear without a trace. Say so; the stop button
+      // is the exit.
+      showToast("上一条回复还在生成:先停止或等它结束");
+      return;
+    }
     // `/name args` for a known skill expands to the skill's body (CC's
     // processPromptSlashCommand): the transcript keeps what the user typed,
     // the model sees the command metadata plus the expanded instructions.

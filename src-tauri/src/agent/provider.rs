@@ -12,7 +12,11 @@ use std::time::Duration;
 /// Connect timeout: fail fast when the endpoint is unreachable instead of hanging.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Stream idle timeout: the model stream is treated as failed when not a single
-/// byte arrives within this window.
+/// byte arrives within this window. It also bounds the wait for the response
+/// **head** (see `post_stream`): `reqwest` has no request timeout of its own, so
+/// a gateway that accepts the request and then stays mute would otherwise hold
+/// the turn open with no event at all — the panel stays "generating" and the
+/// next send is silently swallowed.
 ///
 /// Without it, a half-open gateway/network makes `stream.next().await` never
 /// return → the session stays `running` → every later send is rejected with
@@ -569,6 +573,20 @@ impl Provider {
     /// did not produce a stream is written there (`phase: "http"`), so a retry
     /// storm is visible after the fact. The error text is recorded in full; the
     /// user-facing message still truncates.
+    ///
+    /// Two rules keep a slow gateway from reading as "sending does nothing":
+    ///
+    /// 1. **The wait for the response head is bounded** by the same `idle`
+    ///    budget the body uses. `reqwest` has no request timeout of its own
+    ///    (the client sets only `connect_timeout`), so a gateway that accepted
+    ///    the request and then stays mute left the turn silent forever — the
+    ///    panel kept "generating" with no event, and the next send was
+    ///    swallowed by the busy guard.
+    /// 2. **Every retry is announced** through `sink`. This loop used to retry
+    ///    up to `MAX_RETRIES` (minutes of backoff) without emitting anything,
+    ///    so a burst of 429/5xx after a stopped turn looked exactly like a dead
+    ///    panel. The stream path already announces its retries; the HTTP path
+    ///    must too.
     async fn post_stream(
         &self,
         url: &str,
@@ -577,6 +595,8 @@ impl Provider {
         anthropic: bool,
         log: Option<&RequestLog>,
         request: u64,
+        sink: &(dyn Fn(AgentEvent) + Send + Sync),
+        idle: Duration,
     ) -> Result<reqwest::Response, String> {
         let mut attempt = 0usize;
         loop {
@@ -587,7 +607,7 @@ impl Provider {
                     }
                     return Err(ABORTED.to_string());
                 }
-                r = {
+                r = async {
                     let mut req = self
                         .client
                         .post(url)
@@ -598,14 +618,31 @@ impl Provider {
                             .header("anthropic-version", "2023-06-01")
                             .header("x-api-key", &self.api_key);
                     }
-                    req.body(body.to_string()).send()
+                    let sent = tokio::time::timeout(idle, req.body(body.to_string()).send()).await;
+                    match sent {
+                        Ok(Ok(resp)) => Ok(resp),
+                        Ok(Err(e)) => Err(format!("request: {e}")),
+                        // Dropping the send future closes the connection: the
+                        // same transport cancel a user stop performs, so a mute
+                        // gateway cannot keep the turn open on our side.
+                        Err(_) => Err(format!(
+                            "等待模型响应超时({}s):网关没有返回任何数据",
+                            idle.as_secs()
+                        )),
+                    }
                 } => r,
             };
             let retry_msg = match sent {
                 Ok(resp) if resp.status().is_success() => return Ok(resp),
                 Ok(resp) => {
                     let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
+                    // The error body is read under the same bound: a stalled
+                    // body on a 429 must not hang the turn a second time.
+                    let text = match tokio::time::timeout(idle, resp.text()).await {
+                        Ok(Ok(text)) => text,
+                        Ok(Err(_)) => String::new(),
+                        Err(_) => "<响应体读取超时>".to_string(),
+                    };
                     if let Some(log) = log {
                         log.http_attempt(request, attempt, Some(status.as_u16()), &text);
                     }
@@ -618,8 +655,7 @@ impl Provider {
                     }
                     msg
                 }
-                Err(e) => {
-                    let msg = format!("request: {}", e);
+                Err(msg) => {
                     if let Some(log) = log {
                         log.http_attempt(request, attempt, None, &msg);
                     }
@@ -634,6 +670,17 @@ impl Provider {
             }
             let delay = backoff(attempt);
             attempt += 1;
+            // Same wording as the stream path's retry notice: one shape for
+            // "the provider failed, a retry is running".
+            sink(AgentEvent::Notice {
+                text: format!(
+                    "请求失败({}),{}s 后重试 {}/{}",
+                    truncate(&retry_msg, 160),
+                    delay.as_secs_f32(),
+                    attempt,
+                    MAX_RETRIES
+                ),
+            });
             tokio::select! {
                 _ = abort.wait() => {
                     if let Some(log) = log {
@@ -742,7 +789,16 @@ impl Provider {
                 None => 0,
             };
             let resp = self
-                .post_stream(&url, &body_text, &opts.abort, true, log, request)
+                .post_stream(
+                    &url,
+                    &body_text,
+                    &opts.abort,
+                    true,
+                    log,
+                    request,
+                    sink,
+                    STREAM_IDLE_TIMEOUT,
+                )
                 .await?;
             let status = resp.status().as_u16();
             let mut turn = TurnResult::default();
@@ -1054,7 +1110,16 @@ impl Provider {
                 None => 0,
             };
             let resp = self
-                .post_stream(&url, &body_text, &opts.abort, false, log, request)
+                .post_stream(
+                    &url,
+                    &body_text,
+                    &opts.abort,
+                    false,
+                    log,
+                    request,
+                    sink,
+                    STREAM_IDLE_TIMEOUT,
+                )
                 .await?;
             let status = resp.status().as_u16();
             let mut turn = TurnResult::default();
@@ -1772,5 +1837,147 @@ mod tests {
         let parts = v.as_array().unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["type"], "image_url");
+    }
+
+    /// A provider pointing at a local test server; the client is the real one.
+    fn local_provider(port: u16) -> Provider {
+        Provider {
+            kind: "anthropic".into(),
+            base_url: format!("http://127.0.0.1:{port}"),
+            api_key: "k".into(),
+            model: "m".into(),
+            max_tokens: 8_192,
+            provider_id: "p".into(),
+            model_id: "m".into(),
+            thinking_level: "high".into(),
+            thinking_patch: json!({}),
+            thinking_off_patch: json!({}),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    /// The first connection is answered with silence; every later one gets an
+    /// empty 200 after its request head is read. The port is live before the
+    /// function returns.
+    fn mute_then_answer(port_ready: impl FnOnce(u16) + Send + 'static) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+        let port = listener.local_addr().expect("addr").port();
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let index = connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    if index == 0 {
+                        // Accept, read nothing, answer nothing: the gateway that
+                        // took the request and went silent.
+                        std::thread::sleep(Duration::from_secs(2));
+                        return;
+                    }
+                    use std::io::{Read, Write};
+                    // Consume the request head before answering, so the client
+                    // is not writing into a socket this side is closing.
+                    let mut head = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => head.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 0\r\n\r\n",
+                    );
+                    let _ = stream.flush();
+                    std::thread::sleep(Duration::from_millis(50));
+                });
+            }
+        });
+        port_ready(port);
+    }
+
+    /// A request whose response head never arrives must fail within the idle
+    /// budget (not hang forever) and the retry must be announced: a silent
+    /// retry chain is what the user reads as "sending again does nothing".
+    #[tokio::test]
+    async fn a_mute_gateway_is_bounded_and_every_retry_is_announced() {
+        let (port_tx, port_rx) = std::sync::mpsc::channel();
+        mute_then_answer(move |port| port_tx.send(port).expect("send the port"));
+        let port = port_rx.recv().expect("the server is up");
+
+        let notices: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let sink = |event: AgentEvent| {
+            if let AgentEvent::Notice { text } = event {
+                notices.lock().expect("notices").push(text);
+            }
+        };
+        let abort = Abort::new();
+        let provider = local_provider(port);
+        let resp = provider
+            .post_stream(
+                &format!("http://127.0.0.1:{port}/v1/messages"),
+                "{}",
+                &abort,
+                true,
+                None,
+                0,
+                &sink,
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("the retry is answered");
+        assert_eq!(resp.status().as_u16(), 200);
+
+        let notices = notices.lock().expect("notices");
+        assert_eq!(
+            notices.len(),
+            1,
+            "the timed-out attempt must be announced exactly once: {notices:?}"
+        );
+        assert!(
+            notices[0].contains("超时"),
+            "the notice names the timeout: {notices:?}"
+        );
+        assert!(
+            notices[0].contains("1/10"),
+            "the notice names the retry count: {notices:?}"
+        );
+    }
+
+    /// The stop button still wins over the head wait: aborting returns ABORTED
+    /// at once instead of sitting out the idle budget.
+    #[tokio::test]
+    async fn a_stop_cancels_a_request_that_is_waiting_for_its_head() {
+        let (port_tx, port_rx) = std::sync::mpsc::channel();
+        mute_then_answer(move |port| port_tx.send(port).expect("send the port"));
+        let port = port_rx.recv().expect("the server is up");
+
+        let provider = local_provider(port);
+        let abort = Abort::new();
+        let stopper = abort.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            stopper.abort();
+        });
+        let started = std::time::Instant::now();
+        let err = provider
+            .post_stream(
+                &format!("http://127.0.0.1:{port}/v1/messages"),
+                "{}",
+                &abort,
+                true,
+                None,
+                0,
+                &|_event: AgentEvent| {},
+                Duration::from_secs(30),
+            )
+            .await
+            .expect_err("a stopped request is not a response");
+        assert_eq!(err, ABORTED);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "abort must not wait for the head timeout: {:?}",
+            started.elapsed()
+        );
     }
 }
