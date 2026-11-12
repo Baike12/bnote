@@ -31,7 +31,7 @@ import { useFocusStore } from "@/focus/store";
 import { EditorPane } from "@/components/EditorPane";
 import { relDirname } from "@/lib/path";
 import * as actions from "@/app/actions";
-import { createElement } from "react";
+import { createElement, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { Sidebar } from "@/components/Sidebar";
 import { LinkSuggest } from "@/components/study/LinkSuggest";
@@ -46,6 +46,16 @@ import { CodeLayout } from "@/components/code/CodeLayout";
 import { useCodeStore } from "@/code/store";
 import { AgentHeader } from "@/components/agent/AgentHeader";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
+import { AgentTranscript } from "@/components/agent/Transcript";
+import {
+  appendText,
+  appendThinking,
+  closeThinking,
+  entryFromLine,
+  newTurn,
+  pushToolStep,
+} from "@/components/agent/model";
+import type { TranscriptLine } from "@/study/transcript";
 import { ProjectsLayout } from "@/components/projects/ProjectsLayout";
 import { runCommand } from "@/commands/registry";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -255,6 +265,26 @@ declare global {
     __renderAgentMd: (text: string) => string;
     /** Mount one real HtmlPreview (the live render of an agent `html` code block); returns the unmount function. */
     __mountHtmlPreview: (code: string) => () => void;
+    /**
+     * Mount the real assistant transcript, so the rendered row order (prose at
+     * its stream position, answer outside the work section) can be read from
+     * the DOM; returns the unmount function.
+     *
+     * `rows` builds one live turn through the real model helpers (the shape a
+     * coding session streams: thinking, prose, tool call, prose, …).
+     * `streaming` keeps the work section open, the way a live turn shows it.
+     */
+    __mountTranscript: (
+      lines?: TranscriptLine[],
+      opts?: {
+        streaming?: boolean;
+        rows?: (
+          | { kind: "think"; text: string }
+          | { kind: "text"; text: string }
+          | { kind: "tool"; id: string; name: string; output?: string }
+        )[];
+      },
+    ) => () => void;
     /** The syntax tree node names of the current document (for debugging). */
     __treeNames: () => string[];
     /** The syntax tree node names@range of a given line (1-based) (for debugging the render chain). */
@@ -1021,6 +1051,63 @@ window.__mountHtmlPreview = (code: string) => {
   document.body.appendChild(host);
   const root = createRoot(host);
   root.render(createElement(HtmlPreview, { code }));
+  return () => {
+    root.unmount();
+    host.remove();
+  };
+};
+
+/**
+ * The real assistant transcript. Two shapes:
+ *
+ * - record lines: one line is one provider round, rendered thinking → the
+ *   prose written before the round's calls → the calls;
+ * - `rows`: one live turn built through the model helpers, the way a coding
+ *   session streams it (and what the row order bug was about).
+ *
+ * Either way the turn's trailing text is drawn outside the collapsible work
+ * section, and prose followed by more work stays inside at its position.
+ */
+window.__mountTranscript = (lines = [], opts = {}) => {
+  for (const stale of document.querySelectorAll("#transcript-host")) stale.remove();
+  const host = document.createElement("div");
+  host.id = "transcript-host";
+  host.style.cssText =
+    "position:fixed;left:0;top:0;width:520px;height:100vh;z-index:9999;background:var(--bg1);overflow:auto";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  let entries = lines.map(entryFromLine);
+  if (opts.rows) {
+    const turn = newTurn(1_000);
+    let at = 1_000;
+    for (const row of opts.rows) {
+      at += 1_000;
+      if (row.kind === "think") {
+        appendThinking(turn, row.text, at);
+        closeThinking(turn, at + 400);
+      } else if (row.kind === "text") {
+        appendText(turn, row.text, at);
+      } else {
+        turn.tools.push({
+          id: row.id,
+          name: row.name,
+          output: row.output,
+          ok: row.output === undefined ? undefined : true,
+        });
+        pushToolStep(turn, row.id, at);
+      }
+    }
+    entries = [{ role: "assistant", text: turn.text, at, items: null, turn }];
+  }
+  root.render(
+    createElement(AgentTranscript, {
+      scrollRef: createRef<HTMLDivElement>(),
+      entries,
+      busy: Boolean(opts.streaming),
+      welcome: null,
+      onFork: () => {},
+    }),
+  );
   return () => {
     root.unmount();
     host.remove();

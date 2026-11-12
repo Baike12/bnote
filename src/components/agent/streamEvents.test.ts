@@ -86,8 +86,10 @@ describe("stream events: the work rows keep the stream order", () => {
     expect(turn?.thinking).toBe("lookread");
     // The rows are in arrival order, not "all thinking, then all tools".
     expect(
-      turn?.steps.map((step) => (step.kind === "thinking" ? `think:${step.start}` : step.id)),
-    ).toEqual(["think:0", "t1", "think:4", "t2"]);
+      turn?.steps.map((step) =>
+        step.kind === "thinking" ? `think:${step.start}` : step.kind === "text" ? "text" : step.id,
+      ),
+    ).toEqual(["think:0", "t1", "think:4", "t2", "text"]);
     expect(turn?.thinkingSeals).toEqual([{ end: 4, signature: "sig1" }]);
     // The live turn is finished and handed off.
     expect(h.turns.has("c1")).toBe(false);
@@ -120,7 +122,35 @@ describe("stream events: the work rows keep the stream order", () => {
     const turn = h.turns.get("c1");
     const first = turn?.steps[0];
     expect(first?.kind === "thinking" ? first.seconds : null).not.toBeNull();
-    expect(turn?.steps).toHaveLength(1);
+    // The answer takes a row of its own: that is what puts mid-turn prose at
+    // its position instead of after the whole work section.
+    expect(turn?.steps.map((step) => step.kind)).toEqual(["thinking", "text"]);
+  });
+
+  /**
+   * The reported bug: prose the model writes between tool calls was collected
+   * into one buffer and drawn after everything, so "现在改前端这一侧：" landed
+   * at the bottom of the reply. The row order is now the stream order.
+   */
+  it("keeps mid-turn prose between the tool batches that surround it", () => {
+    const h = makeHarness();
+    h.send({ type: "thinking_delta", text: "plan" });
+    h.send({ type: "tool_start", id: "t1", name: "Edit", input: {} });
+    h.send({ type: "tool_end", id: "t1", ok: true, output: "ok" });
+    h.send({ type: "text_delta", text: "接下来改前端:" });
+    h.send({ type: "tool_start", id: "t2", name: "Edit", input: {} });
+    h.send({ type: "text_delta", text: "完成。" });
+    h.send({ type: "turn_end", reason: "end_turn", items: 5 });
+
+    const turn = h.entry()?.turn;
+    expect(turn?.steps.map((step) => step.kind)).toEqual([
+      "thinking",
+      "tool",
+      "text",
+      "tool",
+      "text",
+    ]);
+    expect(turn?.text).toBe("接下来改前端:完成。");
   });
 
   it("a stopped turn keeps the reason, so the row reads 已停止 instead of 已工作", () => {

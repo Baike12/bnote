@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptLine } from "@/study/transcript";
 import {
+  answerRange,
+  appendText,
   appendThinking,
   cloneEntry,
   closeThinking,
@@ -147,11 +149,11 @@ describe("turn steps keep the stream order", () => {
     expect(turn.steps[0]).toMatchObject({ seconds: 2 });
   });
 
-  it("a restored record rebuilds thinking before its tools", () => {
+  it("a restored record rebuilds thinking, then its prose, then its tools", () => {
     const entry = entryFromLine({
       type: "assistant",
       at: 2,
-      text: "",
+      text: "先看接口",
       thinking: "想",
       thinkSeconds: 4,
       tools: [
@@ -159,11 +161,16 @@ describe("turn steps keep the stream order", () => {
         { id: "t2", name: "grep" },
       ],
     });
+    // A round line is flushed with the prose the model wrote before its calls,
+    // so the prose belongs between the thinking and the tools, not after them.
     expect(entry.turn?.steps).toEqual([
       { kind: "thinking", start: 0, end: 1, startedAt: null, seconds: 4 },
+      { kind: "text", start: 0, end: 4 },
       { kind: "tool", id: "t1" },
       { kind: "tool", id: "t2" },
     ]);
+    // Nothing trails the tools: the turn ended on work, so there is no answer row.
+    expect(answerRange(entry.turn!)).toBeNull();
   });
 
   it("the flushed round carries its own thinking duration", () => {
@@ -177,6 +184,52 @@ describe("turn steps keep the stream order", () => {
     expect(thinkingSecondsAt(turn, 0)).toBe(2);
     expect(thinkingSecondsAt(turn, 1)).toBe(1);
     expect(thinkingSecondsAt(turn, 2)).toBeNull();
+  });
+
+  /**
+   * The model writes prose between tool calls ("先改后端这一侧："), and that
+   * prose used to be flattened into one buffer drawn after the whole work
+   * section — every mid-turn sentence ended up at the bottom of the reply.
+   * Text is a row of the same timeline, at the offset it arrived.
+   */
+  it("keeps each piece of assistant prose at its stream position", () => {
+    const turn = newTurn(1_000);
+    appendThinking(turn, "plan", 1_000);
+    appendText(turn, "先改后端", 2_000);
+    pushToolStep(turn, "t1", 3_000);
+    appendText(turn, "再改前端", 4_000);
+
+    expect(turn.steps).toEqual([
+      // The text closes the thinking row in front of it.
+      { kind: "thinking", start: 0, end: 4, startedAt: 1_000, seconds: 1 },
+      { kind: "text", start: 0, end: 4 },
+      { kind: "tool", id: "t1" },
+      { kind: "text", start: 4, end: 8 },
+    ]);
+    expect(turn.text).toBe("先改后端再改前端");
+    // Only the trailing row is the answer.
+    expect(answerRange(turn)).toEqual({ start: 4, end: 8 });
+  });
+
+  it("extends the open text row instead of opening a row per delta, and stops on a tool", () => {
+    const turn = newTurn(0);
+    appendText(turn, "a", 1_000);
+    appendText(turn, "b", 1_100);
+    expect(turn.steps).toEqual([{ kind: "text", start: 0, end: 2 }]);
+    pushToolStep(turn, "t1", 2_000);
+    appendText(turn, "c", 3_000);
+    expect(turn.steps).toEqual([
+      { kind: "text", start: 0, end: 2 },
+      { kind: "tool", id: "t1" },
+      { kind: "text", start: 2, end: 3 },
+    ]);
+  });
+
+  it("a turn that ends on work has no answer row (its prose stays in the section)", () => {
+    const turn = newTurn(0);
+    appendText(turn, "改这一侧:", 1_000);
+    pushToolStep(turn, "t1", 2_000);
+    expect(answerRange(turn)).toBeNull();
   });
 });
 

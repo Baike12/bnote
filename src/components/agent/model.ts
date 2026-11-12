@@ -39,11 +39,14 @@ export interface ThinkingSeal {
 }
 
 /**
- * One row of a turn's work section, in stream order.
+ * One row of a turn, in stream order.
  *
  * A thinking row references a range of `Turn.thinking` instead of copying the
  * text: the transcript flush and the seals both slice that one buffer, so a
- * second copy of the text could disagree with it mid-stream.
+ * second copy of the text could disagree with it mid-stream. An assistant
+ * text row does the same against `Turn.text` — the model writes prose between
+ * tool calls, and that prose belongs where it arrived, not glued to the end of
+ * the turn.
  */
 export type TurnStep =
   | {
@@ -56,20 +59,22 @@ export type TurnStep =
       /** Seconds the block took; null while the block is still streaming. */
       seconds: number | null;
     }
+  | { kind: "text"; start: number; end: number }
   | { kind: "tool"; id: string };
 
 export interface Turn {
-  /** Streaming text buffer for the current assistant reply. */
+  /** Streaming text buffer for the whole turn; the `text` steps index into it. */
   text: string;
   /** The streamed thinking process. Displayed in the panel and replayed into the model history (the MiniMax contract requires the thinking blocks back each round). */
   thinking: string;
   /** Seals of the thinking blocks closed so far, in stream order. */
   thinkingSeals: ThinkingSeal[];
   /**
-   * The work section's rows in arrival order: thinking blocks and tool calls
-   * interleaved the way the provider streamed them (round one's thinking, its
-   * tool calls, round two's thinking, …). A restored record rebuilds them
-   * from its per-round lines. Single writer: the panel's event handler.
+   * The turn's rows in arrival order: thinking blocks, assistant text and tool
+   * calls interleaved the way the provider streamed them (round one's thinking,
+   * its text, its tool calls, round two's thinking, …). A restored record
+   * rebuilds them from its per-round lines. Single writer: the panel's event
+   * handler.
    */
   steps: TurnStep[];
   /** When the first event of the turn arrived (the "已工作 N 秒" duration starts here). */
@@ -170,6 +175,39 @@ export function closeThinking(turn: Turn, at: number): void {
 export function pushToolStep(turn: Turn, id: string, at: number): void {
   closeThinking(turn, at);
   turn.steps.push({ kind: "tool", id });
+}
+
+/**
+ * Appends an assistant text delta: it extends the open text row, or opens a
+ * new one after whatever came before it (a tool call, a thinking block). The
+ * text closes the thinking block in front of it — the same rule as
+ * `pushToolStep`, so a row never spans two provider phases.
+ */
+export function appendText(turn: Turn, text: string, at: number): void {
+  closeThinking(turn, at);
+  const last = turn.steps[turn.steps.length - 1];
+  const start = turn.text.length;
+  turn.text += text;
+  if (last && last.kind === "text") {
+    last.end = turn.text.length;
+    return;
+  }
+  turn.steps.push({ kind: "text", start, end: turn.text.length });
+}
+
+/**
+ * The final text of the turn — the answer the panel shows outside the work
+ * section — as a range of `Turn.text`; null when the turn ends on work.
+ *
+ * Only a **trailing** text row is the answer. Prose followed by more tools is
+ * narration of the work, and it stays inside the section at its position: the
+ * panel used to render one flattened buffer below the section, which pushed
+ * every mid-turn sentence to the end of the reply (observed).
+ */
+export function answerRange(turn: Turn): { start: number; end: number } | null {
+  const last = turn.steps[turn.steps.length - 1];
+  if (!last || last.kind !== "text") return null;
+  return { start: last.start, end: last.end };
 }
 
 /**
@@ -310,8 +348,10 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
   }
   const thinking = line.thinking ?? "";
   const tools = line.tools ?? [];
-  // The record line is one provider round: its thinking came before its tool
-  // calls, so the restored rows need no other ordering source.
+  // The record line is one provider round: its thinking came first, then the
+  // prose the model wrote before its tool calls, then the calls themselves
+  // (the writer flushes a round's text together with that round's tools), so
+  // the restored rows need no other ordering source.
   const steps: TurnStep[] = [];
   if (thinking) {
     steps.push({
@@ -322,6 +362,7 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
       seconds: line.thinkSeconds ?? null,
     });
   }
+  if (line.text) steps.push({ kind: "text", start: 0, end: line.text.length });
   for (const tool of tools) steps.push({ kind: "tool", id: tool.id });
   return {
     role: "assistant",

@@ -5,7 +5,7 @@ import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { toolSummary, workDurationLabel } from "./toolSummary";
-import type { ChatEntry, ToolRecord, Turn } from "./model";
+import { answerRange, type ChatEntry, type ToolRecord, type Turn, type TurnStep } from "./model";
 
 /** The empty state: what this session is for, by mode. */
 export function AgentWelcome({
@@ -113,16 +113,25 @@ function ToolCard({ tool }: { tool: ToolRecord }) {
 
 /**
  * The work rows in the order the provider streamed them: each thinking block
- * sits between the tool calls that ran before and after it, so the section
- * reads like the turn actually went (thinking → tools → thinking → …) instead
- * of one thought pinned above every tool row. The open block — the last row,
- * still without a duration — is the only one drawn as streaming.
+ * and each piece of assistant prose sits between the tool calls that ran
+ * before and after it, so the section reads like the turn actually went
+ * (thinking → text → tools → thinking → …) instead of one thought pinned above
+ * every tool row. The open block — the last thinking row, still without a
+ * duration — is the only one drawn as streaming.
  */
-function TurnSteps({ turn, streaming }: { turn: Turn; streaming: boolean }) {
+function TurnSteps({
+  turn,
+  steps,
+  streaming,
+}: {
+  turn: Turn;
+  steps: TurnStep[];
+  streaming: boolean;
+}) {
   const tools = new Map(turn.tools.map((tool) => [tool.id, tool]));
   return (
     <>
-      {turn.steps.map((step, i) => {
+      {steps.map((step, i) => {
         if (step.kind === "thinking") {
           return (
             <ThinkingBlock
@@ -133,6 +142,9 @@ function TurnSteps({ turn, streaming }: { turn: Turn; streaming: boolean }) {
             />
           );
         }
+        if (step.kind === "text") {
+          return <AssistantText key={i} text={turn.text.slice(step.start, step.end)} />;
+        }
         const tool = tools.get(step.id);
         return tool ? <ToolCard key={i} tool={tool} /> : null;
       })}
@@ -140,22 +152,41 @@ function TurnSteps({ turn, streaming }: { turn: Turn; streaming: boolean }) {
   );
 }
 
+/** One assistant prose row: the same renderer as a reply body, wherever it sits in the turn. */
+function AssistantText({ text }: { text: string }) {
+  return (
+    <div className="agent-md">
+      {splitAgentMarkdown(text).map((block, bi) =>
+        block.kind === "html" ? (
+          <HtmlPreview key={bi} code={block.code} />
+        ) : (
+          <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />
+        ),
+      )}
+    </div>
+  );
+}
+
 /**
  * The collapsible around a turn's working process (ZCode's
- * ConversationWorkSegmentFlow): thinking + tool cards live inside, the final
- * markdown stays outside and is always visible. While the turn streams it is
- * open ("工作中", ticking); when the turn ends it auto-collapses to "已工作 N
- * 秒" unless the user opened it by hand — their choice wins, the same rule as
- * ThinkingBlock. A turn that failed or that the user stopped stays open: the
- * intermediate steps are the answer to "what was it doing".
+ * ConversationWorkSegmentFlow): thinking, prose and tool cards live inside in
+ * stream order, the final markdown stays outside and is always visible. While
+ * the turn streams it is open ("工作中", ticking); when the turn ends it
+ * auto-collapses to "已工作 N 秒" unless the user opened it by hand — their
+ * choice wins, the same rule as ThinkingBlock. A turn that failed, that the
+ * user stopped, or that ends on work instead of an answer stays open: the
+ * intermediate rows are all there is to read.
  */
 function TurnWork({
   entry,
   streaming,
+  answer,
   children,
 }: {
   entry: ChatEntry;
   streaming: boolean;
+  /** Whether the turn ends on an answer drawn outside this section (nothing is lost when it collapses). */
+  answer: boolean;
   children: ReactNode;
 }) {
   const turn = entry.turn;
@@ -174,13 +205,13 @@ function TurnWork({
   }, [streaming]);
 
   // Streaming → done edge: collapse once (ZCode's assistantHistoryDefaultOpen
-  // flip). A turn that failed, was stopped, or produced no final text stays
+  // flip). A turn that failed, was stopped, or left no answer outside stays
   // open — the work rows are all there is to read.
   useEffect(() => {
     if (!streaming && !interactedRef.current) {
-      setOpen(Boolean(turn?.error) || turn?.stopReason === "aborted" || !turn?.text);
+      setOpen(Boolean(turn?.error) || turn?.stopReason === "aborted" || !answer);
     }
-  }, [streaming, turn?.error, turn?.stopReason, turn?.text]);
+  }, [streaming, turn?.error, turn?.stopReason, answer]);
 
   if (!turn || !hasWork) return <>{children}</>;
   const liveMs = streaming && turn.startedAt != null ? now - turn.startedAt : (turn.turnMs ?? null);
@@ -241,6 +272,14 @@ function EntryRow({
   forkable: boolean;
   onFork: () => void;
 }) {
+  const turn = entry.turn;
+  // The turn's trailing text is the answer and is drawn outside the work
+  // section; everything before it is the process and keeps its stream order
+  // inside. A turn that ends on work has no answer row at all (its prose stays
+  // where it was written).
+  const answer = turn ? answerRange(turn) : null;
+  const processSteps = turn ? (answer ? turn.steps.slice(0, -1) : turn.steps) : [];
+  const answerText = !turn ? entry.text : answer ? turn.text.slice(answer.start, answer.end) : "";
   return (
     <div className={`agent-msg-row${entry.role === "user" ? " is-user" : ""}`}>
       {entry.role === "notice" ? (
@@ -263,24 +302,15 @@ function EntryRow({
         </div>
       ) : (
         <div className="agent-msg agent-msg-assistant">
-          <TurnWork entry={entry} streaming={streaming}>
-            {entry.turn && <TurnSteps turn={entry.turn} streaming={streaming} />}
-            {entry.turn?.error && <div className="agent-error">{entry.turn.error}</div>}
+          <TurnWork entry={entry} streaming={streaming} answer={answerText !== ""}>
+            {turn && <TurnSteps turn={turn} steps={processSteps} streaming={streaming} />}
+            {turn?.error && <div className="agent-error">{turn.error}</div>}
           </TurnWork>
-          {/* No text row when the model produced none (a pure tool round): an
-              empty container would render as a blank bubble (ZCode skips the
-              text row the same way). */}
-          {entry.text && (
-            <div className="agent-md">
-              {splitAgentMarkdown(entry.text).map((block, bi) =>
-                block.kind === "html" ? (
-                  <HtmlPreview key={bi} code={block.code} />
-                ) : (
-                  <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />
-                ),
-              )}
-            </div>
-          )}
+          {/* The answer row: the turn's trailing text. A turn that ends on
+              tools has no such row — its prose stays inside the section, in
+              position (an empty container would render as a blank bubble, so
+              nothing is drawn when there is no text). */}
+          {answerText && <AssistantText text={answerText} />}
           {streaming && <span className="agent-caret" aria-hidden="true" />}
         </div>
       )}

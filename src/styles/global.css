@@ -4309,6 +4309,11 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
 }
+/* Prose the model wrote between tool calls: the same rhythm as the tool rows,
+   at full size — it is prose, not a trace line (`.agent-md` sets its own). */
+.agent-turn-work-body > .agent-md {
+  margin: 2px 0 6px;
+}
 .agent-tool-io {
   max-height: 200px;
   overflow: auto;
