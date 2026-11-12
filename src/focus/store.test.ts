@@ -444,9 +444,45 @@ describe("unlocking follows the native side, the front-end flag does not block i
     expect(useFocusStore.getState().timer.phase).toBe("idle");
   });
 
-  it("the idle reconciliation unlocks unconditionally: unlocking while focused is idempotent, it must not be skipped because the flag is false", async () => {
+  it("the idle reconciliation trusts the native read: a window that already reports normal is not released again", async () => {
+    // The window is normal on the native side. Releasing it again would re-run
+    // the whole restore (level, collection behavior, responder) right after
+    // the session end restored it; the end of a stretch has to stay silent, so
+    // a stale `locked` flag in the store must not cause a second restore.
+    useFocusStore.setState({ locked: true });
+    focusMock.status.mockResolvedValueOnce({
+      locked: false,
+      hard_lock: false,
+      hard_active: false,
+      trusted: true,
+      seen: 0,
+      swallowed: 0,
+    });
+
+    await useFocusStore.getState().refreshStatus();
+
+    expect(focusMock.unlock).not.toHaveBeenCalled();
+    expect(useFocusStore.getState().locked).toBe(false);
+  });
+
+  it("a failed release is retried on the next reconciliation", async () => {
+    focusMock.status.mockResolvedValueOnce({
+      locked: true,
+      hard_lock: false,
+      hard_active: false,
+      trusted: true,
+      seen: 0,
+      swallowed: 0,
+    });
+    focusMock.unlock.mockRejectedValueOnce(new Error("MAIN_THREAD_TIMEOUT: busy"));
+
     await useFocusStore.getState().refreshStatus();
     expect(focusMock.unlock).toHaveBeenCalledTimes(1);
+
+    // The native read now says normal, but the failed release means the
+    // geometry was never restored: the next reconciliation retries it.
+    await useFocusStore.getState().refreshStatus();
+    expect(focusMock.unlock).toHaveBeenCalledTimes(2);
   });
 
   it("a stale reconciliation result is not written back: no repeated lock / arm", async () => {
