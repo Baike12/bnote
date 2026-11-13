@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import type { AgentTodoItem } from "@/lib/tauri";
 import type { CodeProjectRef } from "@/state/appStore";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
@@ -164,10 +164,14 @@ function TurnSteps({
 }
 
 /** One assistant prose row: the same renderer as a reply body, wherever it sits in the turn. */
-function AssistantText({ text }: { text: string }) {
+const AssistantText = memo(function AssistantText({ text }: { text: string }) {
+  // The parse (and KaTeX for every formula) is pure per text: without this it
+  // re-runs for every row on every panel render — each composer keystroke, an
+  // agent/content swap, a settings patch.
+  const blocks = useMemo(() => splitAgentMarkdown(text), [text]);
   return (
     <div className="agent-md">
-      {splitAgentMarkdown(text).map((block, bi) =>
+      {blocks.map((block, bi) =>
         block.kind === "html" ? (
           <HtmlPreview key={bi} code={block.code} />
         ) : (
@@ -176,7 +180,7 @@ function AssistantText({ text }: { text: string }) {
       )}
     </div>
   );
-}
+});
 
 /**
  * The collapsible around a turn's working process (ZCode's
@@ -271,17 +275,27 @@ function TurnWork({
   );
 }
 
-/** One entry row; `streaming` marks the live assistant reply (caret + thinking). */
-function EntryRow({
+/**
+ * One entry row; `streaming` marks the live assistant reply (caret + thinking).
+ *
+ * Memoized: the panel re-renders on every composer keystroke and on every
+ * agent/content swap, and re-walking the whole transcript there (markdown
+ * parse, KaTeX, image rows) is wasted work — only the row whose entry changed
+ * has anything new to draw. `onFork` therefore takes the index instead of a
+ * freshly built closure, so its identity stays put.
+ */
+const EntryRow = memo(function EntryRow({
   entry,
+  index,
   streaming,
   forkable,
   onFork,
 }: {
   entry: ChatEntry;
+  index: number;
   streaming: boolean;
   forkable: boolean;
-  onFork: () => void;
+  onFork: (index: number) => void;
 }) {
   const turn = entry.turn;
   // The turn's trailing text is the answer and is drawn outside the work
@@ -326,13 +340,17 @@ function EntryRow({
         </div>
       )}
       {forkable && (
-        <button className="agent-fork" title="基于这条消息开启辅助会话" onClick={onFork}>
+        <button
+          className="agent-fork"
+          title="基于这条消息开启辅助会话"
+          onClick={() => onFork(index)}
+        >
           ⤷
         </button>
       )}
     </div>
   );
-}
+});
 
 /**
  * The scrolling conversation body: the welcome state when there is nothing
@@ -368,9 +386,10 @@ export function AgentTranscript({
               <EntryRow
                 key={i}
                 entry={entry}
+                index={i}
                 streaming={i === entries.length - 1 && busy && entry.role === "assistant"}
                 forkable={allowFork && !busy}
-                onFork={() => onFork(i)}
+                onFork={onFork}
               />
             ))}
       </div>
