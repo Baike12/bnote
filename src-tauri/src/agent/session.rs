@@ -213,7 +213,9 @@ pub struct Session {
     pub selection: Mutex<super::models::ModelSelection>,
     pub running: Arc<AtomicBool>,
     pub seq: Arc<AtomicU64>,
-    pub app: tauri::AppHandle,
+    /// `None` in headless tests: there is no window to emit to, and the loop
+    /// must run without one (the same convention as `ToolContext.app`).
+    pub app: Option<tauri::AppHandle>,
     /// Model context window (from the selected model): auto-compact measures
     /// usage.input against it. Follows a model swap.
     context_window: AtomicU64,
@@ -612,11 +614,14 @@ impl Session {
     /// Pushes an event to the front end (the command layer also needs this for
     /// its panic fallback).
     pub fn emit(&self, event: AgentEvent) {
+        let Some(app) = &self.app else {
+            return;
+        };
         let payload = serde_json::json!({
             "sessionId": self.id,
             "event": event,
         });
-        let _ = self.app.emit("agent-event", payload);
+        let _ = app.emit("agent-event", payload);
     }
 
     /// Splits the context into its parts for the composer's context card: the
@@ -2957,7 +2962,7 @@ pub struct SessionSeed {
     /// resolution starts from the parent's).
     pub selection: super::models::ModelSelection,
     pub ctx: Arc<ToolContext>,
-    pub app: tauri::AppHandle,
+    pub app: Option<tauri::AppHandle>,
     pub context_window: u64,
     /// The composer's mode when the session starts (default: auto).
     pub permission_mode: Option<permissions::Mode>,

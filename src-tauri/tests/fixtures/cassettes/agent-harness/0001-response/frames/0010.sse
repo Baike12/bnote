@@ -1,0 +1,2 @@
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"todos\": [{\"content\": \"Read the second note\", \"status\": \"pending\", \"active_form\": \"Reading the second note\"}, {\"content\": \"Write the cassette note\", \"status\": \"pending\", \"active_form\": \"Writing the cassette note\"}, {\"content\": \"Ask an explore agent for the title\", \"status\": \"pending\", \"active_form\": \"Asking the explore agent\"}]}"}}
+

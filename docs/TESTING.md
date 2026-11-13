@@ -35,6 +35,7 @@ below it cannot.
 | Integration | `pnpm test:integration` | jsdom | Real modules and Zustand stores wired through the **real** `src/lib/tauri.ts` boundary, with a fake vault behind it. |
 | Rust unit | `cargo test --lib` | Rust | Backend behavior: paths, watchers, sessions, LSP, Python, translation. |
 | Rust structural | `cargo test --test command_surface` | Rust | Every `#[tauri::command]`, every `generate_handler![]` entry, and every browser-bridge arm agree. |
+| Agent cassette | `cargo test --test agent_cassette` | Rust | A recorded Anthropic stream is replayed over HTTP and driven through the real agent loop and tools. |
 | Coverage | `pnpm test:coverage` | node + jsdom | Unit + integration coverage against ratcheted thresholds. |
 | Performance | `pnpm test:perf` | node | Per-keystroke and tree/editor order-of-magnitude budgets. |
 | E2E | `pnpm test:e2e` | macOS, real binary | Disk IO, vault watcher, native window, global keybindings, autosave. |
@@ -81,6 +82,67 @@ disk state and assert what was written. Reset happens before every test.
 `src/lib/tauri.contract.test.ts` is the complementary gate: it snapshots every
 exported wrapper’s `invoke` command name, so a rename in `src/lib/tauri.ts`
 cannot silently drift from the Rust command.
+
+## Agent record and replay
+
+The agent is tested against recorded Anthropic traffic, not hand-written
+responses. `src-tauri/src/agent/cassette.rs` records every request body and every
+raw SSE frame when `BNOTE_CASSETTE_DIR` is set; `tests/common/mod.rs` serves that
+folder over a real HTTP/1.1 chunked socket, so `Provider`, the SSE assemblers,
+`Session`, `ToolDispatch` and the real tools all run unmodified.
+
+```
+<folder>/manifest.json                 format, version, creation time
+<folder>/0001-request.json             method, url, model, session, thinking, body
+<folder>/0001-response/meta.json       status, content-type, completed
+<folder>/0001-response/frames/0001.sse one file per raw SSE frame
+<folder>/0001-response/frames/9999-partial.sse   unterminated tail, if any
+```
+
+- Recording is off unless `BNOTE_CASSETTE_DIR` names a folder. `begin`,
+  `push_chunk` and `finish` are best-effort: a failed cassette write never
+  fails the model turn.
+- Authorization headers are neither read nor written. Request bodies are stored
+  verbatim (system prompt, conversation, tool results, temp vault paths), so a
+  cassette is a transcript and must be reviewed before it is committed.
+- Replay is order-based and checks the request path suffix (`/v1/messages`,
+  `/v1/chat/completions`); an exhausted or mismatched cassette answers HTTP 500
+  with the expected/actual index, so a drift fails loudly.
+- Anthropic is the recording target. OpenAI replay exists as a parsing
+  regression only (`provider-openai` is synthetic).
+- `redacted_thinking` is preserved as `Content::Thinking.redacted` and sent back
+  verbatim; Anthropic rejects a replayed thinking block whose signature or
+  opaque data was dropped.
+
+Fixtures:
+
+| Folder | Content |
+|---|---|
+| `tests/fixtures/cassettes/provider-anthropic` | One synthetic turn: thinking + signature, text, tool_use. |
+| `tests/fixtures/cassettes/provider-openai` | One synthetic OpenAI turn: reasoning, text, tool_calls. |
+| `tests/fixtures/cassettes/agent-harness` | Seven synthetic turns covering TodoWrite/TodoRead, Read/Write, an Agent subagent and completion. |
+| `tests/fixtures/cassettes/agent-real` | Nine real Anthropic turns against a DeepSeek gateway: TodoWrite, TodoRead, Read, Write, one explore subagent, final TodoWrite. The Write turn carries a `redacted_thinking` block. |
+
+`cargo test --test agent_cassette` replays them. `the_harness_replays_the_real_anthropic_recording`
+also asserts that tool results reach the next request, the subagent report
+reaches the parent, todos end completed, and the written file is byte-exact.
+
+To record again (paid, ignored by default):
+
+```bash
+cd src-tauri
+BNOTE_RECORD_API_KEY=... BNOTE_RECORD_BASE_URL=https://... \
+BNOTE_RECORD_MODEL=claude-sonnet-4-5 \
+cargo test --test agent_record -- --ignored --nocapture
+```
+
+Credentials fall back to `~/.claude/settings.json` (`ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`). The folder defaults to
+`tests/fixtures/cassettes/agent-real` and can be redirected with
+`BNOTE_RECORD_DIR`. The test records into a sibling `.recording` folder, asks
+for thinking plus every tool feature, and fails if the endpoint returned no
+thinking block at all. Only a run that passed every assertion replaces the
+fixture, so a failed or thinking-less recording cannot destroy a good cassette.
 
 ## Coverage policy
 

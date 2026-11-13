@@ -71,7 +71,6 @@ struct SavedWindow {
 /// position -- the user never sees it "drawn once at the default 1280x820 and
 /// then jumped".
 pub fn restore_window_bounds(app: &tauri::AppHandle) {
-    use tauri::Manager;
     let Some(window) = crate::main_window(app) else {
         return;
     };

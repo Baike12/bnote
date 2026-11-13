@@ -1,0 +1,27 @@
+{
+  "seq": 4,
+  "protocol": "anthropic",
+  "method": "POST",
+  "url": "https://api.anthropic.com/v1/messages",
+  "model": "test-model",
+  "session": "harness",
+  "purpose": "turn",
+  "thinking": true,
+  "recordedAt": 0,
+  "body": {
+    "model": "test-model",
+    "stream": true,
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "cassette replay"
+          }
+        ]
+      }
+    ]
+  }
+}

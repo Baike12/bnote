@@ -13,13 +13,20 @@ pub enum Content {
     /// The model's thinking block (Anthropic `thinking` / OpenAI
     /// `reasoning_content`). It stays in the assistant history: MiniMax-M3.1's
     /// tool-use contract requires the full response — thinking blocks included —
-    /// to be passed back each round, and dropping them breaks the interleaved
+    /// to be passed back each round, and dropping it breaks the interleaved
     /// reasoning chain mid-task (the model loses context and stops issuing tool
     /// calls). `signature` is the provider's integrity seal, replayed as-is.
+    ///
+    /// `redacted` carries an Anthropic `redacted_thinking` block's opaque
+    /// `data`: the vendor requires that block back verbatim instead of a
+    /// `thinking` block. Gateways that stream a redacted block with visible
+    /// deltas still fill `text`/`signature`.
     Thinking {
         text: String,
         #[serde(default)]
         signature: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        redacted: Option<String>,
     },
     /// Image attachment in a user message (base64, cropped by the front end).
     /// The provider maps it to the format of each protocol: Anthropic

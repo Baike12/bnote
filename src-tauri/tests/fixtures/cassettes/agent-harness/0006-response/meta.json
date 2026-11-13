@@ -1,0 +1,8 @@
+{
+  "status": 200,
+  "contentType": "text/event-stream",
+  "frames": 10,
+  "bytes": 805,
+  "completed": true,
+  "finishedAt": 1
+}

@@ -1,0 +1,3 @@
+event: message_start
+data: {"type":"message_start","message":{"id":"resp_0217945835924095b7c5d80188542749d9bf0e4ecbfb37f5cbfa3","type":"message","role":"assistant","content":[],"model":"deepseek-v4.1-flash","usage":{"input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":0}}}
+

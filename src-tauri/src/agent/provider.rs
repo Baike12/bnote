@@ -146,10 +146,16 @@ where
 fn anthropic_block(c: &Content) -> Value {
     match c {
         Content::Text { text } => json!({"type": "text", "text": text}),
-        // The wire name of the thinking text is `thinking`, not `text`.
-        Content::Thinking { text, signature } => {
-            json!({"type": "thinking", "thinking": text, "signature": signature})
-        }
+        // The wire name of the thinking text is `thinking`, not `text`. A
+        // redacted block goes back as the opaque block the vendor issued.
+        Content::Thinking {
+            text,
+            signature,
+            redacted,
+        } => match redacted {
+            Some(data) => json!({"type": "redacted_thinking", "data": data}),
+            None => json!({"type": "thinking", "thinking": text, "signature": signature}),
+        },
         // Images only occur in user messages (see ChatItem::user_message).
         Content::Image { media_type, data } => json!({
             "type": "image",
@@ -801,10 +807,39 @@ impl Provider {
                 )
                 .await?;
             let status = resp.status().as_u16();
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            // Frame-level recording is env-gated (`BNOTE_CASSETTE_DIR`); it
+            // writes the exact bytes this attempt receives, so a replay test
+            // sees the same SSE frames and chunk boundaries.
+            let cassette = super::cassette::begin(
+                "anthropic",
+                &url,
+                &self.model,
+                &opts.session,
+                opts.purpose,
+                opts.thinking,
+                status,
+                &body,
+            );
             let mut turn = TurnResult::default();
             let outcome = self
-                .read_anthropic_stream(resp, sink, &opts.abort, &mut turn, log, request)
+                .read_anthropic_stream(
+                    resp,
+                    sink,
+                    &opts.abort,
+                    &mut turn,
+                    log,
+                    request,
+                    cassette.as_ref(),
+                )
                 .await;
+            if let Some(cassette) = &cassette {
+                cassette.finish(content_type.as_deref(), outcome.is_ok());
+            }
             match outcome {
                 Ok(()) => {
                     // A stream that ends without `message_delta` never carried a
@@ -877,11 +912,15 @@ impl Provider {
         turn: &mut TurnResult,
         log: Option<&RequestLog>,
         request: u64,
+        cassette: Option<&super::cassette::Interaction>,
     ) -> Result<(), StreamFailure> {
         let mut state = AnthropicStreamState::default();
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
         while let Some(bytes) = next_chunk_abort(&mut stream, abort).await? {
+            if let Some(cassette) = cassette {
+                cassette.push_chunk(&bytes);
+            }
             for event in sse.feed(&bytes) {
                 if let Some(log) = log {
                     log.sse(request, &event);
@@ -906,8 +945,8 @@ impl Provider {
 struct AnthropicStreamState {
     /// The tool_use block being streamed: (id, name, partial input JSON).
     current_tool: Option<(String, String, String)>,
-    /// The thinking block being streamed: (text, signature).
-    current_thinking: Option<(String, String)>,
+    /// The thinking block being streamed: (text, signature, redacted data).
+    current_thinking: Option<(String, String, Option<String>)>,
     /// Index into `blocks` of the text block being streamed (text deltas of one
     /// content block merge into it, so block boundaries survive).
     current_text: Option<usize>,
@@ -934,8 +973,15 @@ impl AnthropicStreamState {
                             String::new(),
                         ));
                     }
-                    Some("thinking") => {
-                        self.current_thinking = Some((String::new(), String::new()));
+                    Some("thinking") | Some("redacted_thinking") => {
+                        // A redacted block normally arrives complete in
+                        // `content_block_start`; some gateways still stream it
+                        // with thinking_delta/signature_delta, so keep both.
+                        self.current_thinking = Some((
+                            block["thinking"].as_str().unwrap_or_default().to_string(),
+                            block["signature"].as_str().unwrap_or_default().to_string(),
+                            block["data"].as_str().map(str::to_string),
+                        ));
                     }
                     Some("text") => {
                         self.current_text = Some(turn.blocks.len());
@@ -968,7 +1014,7 @@ impl AnthropicStreamState {
                     // empty string then).
                     Some("thinking_delta") => {
                         let text = delta["thinking"].as_str().unwrap_or_default();
-                        if let Some((buf, _)) = self.current_thinking.as_mut() {
+                        if let Some((buf, _, _)) = self.current_thinking.as_mut() {
                             buf.push_str(text);
                         }
                         if text.is_empty() {
@@ -981,7 +1027,7 @@ impl AnthropicStreamState {
                     }
                     Some("signature_delta") => {
                         let sig = delta["signature"].as_str().unwrap_or_default();
-                        if let Some((_, buf)) = self.current_thinking.as_mut() {
+                        if let Some((_, buf, _)) = self.current_thinking.as_mut() {
                             buf.push_str(sig);
                         }
                         Ok(Vec::new())
@@ -1001,12 +1047,13 @@ impl AnthropicStreamState {
                     turn.blocks.push(call);
                 }
                 self.current_text = None;
-                let Some((text, signature)) = self.current_thinking.take() else {
+                let Some((text, signature, redacted)) = self.current_thinking.take() else {
                     return Ok(Vec::new());
                 };
                 turn.blocks.push(Content::Thinking {
                     text,
                     signature: signature.clone(),
+                    redacted,
                 });
                 // The seal travels with the block boundary: the front end
                 // persists both, and replays the signature on restore.
@@ -1122,11 +1169,38 @@ impl Provider {
                 )
                 .await?;
             let status = resp.status().as_u16();
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let cassette = super::cassette::begin(
+                "openai",
+                &url,
+                &self.model,
+                &opts.session,
+                opts.purpose,
+                opts.thinking,
+                status,
+                &body,
+            );
             let mut turn = TurnResult::default();
             let mut calls: Vec<(String, String, String)> = Vec::new();
             let outcome = self
-                .read_openai_stream(resp, sink, &opts.abort, &mut turn, &mut calls, log, request)
+                .read_openai_stream(
+                    resp,
+                    sink,
+                    &opts.abort,
+                    &mut turn,
+                    &mut calls,
+                    log,
+                    request,
+                    cassette.as_ref(),
+                )
                 .await;
+            if let Some(cassette) = &cassette {
+                cassette.finish(content_type.as_deref(), outcome.is_ok());
+            }
             match outcome {
                 Ok(()) => {
                     finish_openai_turn(&mut turn, calls);
@@ -1180,10 +1254,14 @@ impl Provider {
         calls: &mut Vec<(String, String, String)>,
         log: Option<&RequestLog>,
         request: u64,
+        cassette: Option<&super::cassette::Interaction>,
     ) -> Result<(), StreamFailure> {
         let mut sse = SseParser::new();
         let mut stream = resp.bytes_stream();
         while let Some(bytes) = next_chunk_abort(&mut stream, abort).await? {
+            if let Some(cassette) = cassette {
+                cassette.push_chunk(&bytes);
+            }
             for event in sse.feed(&bytes) {
                 if let Some(log) = log {
                     log.sse(request, &event);
@@ -1315,6 +1393,7 @@ fn finish_openai_turn(turn: &mut TurnResult, calls: Vec<(String, String, String)
             Content::Thinking {
                 text: thinking,
                 signature: String::new(),
+                redacted: None,
             },
         );
     }
@@ -1529,6 +1608,7 @@ mod tests {
                 Content::Thinking {
                     text: "why".into(),
                     signature: String::new(),
+                    redacted: None,
                 },
                 Content::Text {
                     text: "answer".into(),

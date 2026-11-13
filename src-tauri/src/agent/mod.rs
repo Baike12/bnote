@@ -2,6 +2,7 @@
 //! agent definitions and the prompt assembly pipeline.
 
 pub mod cancel;
+pub mod cassette;
 pub mod concurrency;
 pub mod defs;
 pub mod home;

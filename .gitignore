@@ -42,5 +42,9 @@ testdata/
 # Rust 构建产物
 src-tauri/target/
 
+# Cassette recording staging and retired copies
+src-tauri/tests/fixtures/cassettes/*.recording/
+src-tauri/tests/fixtures/cassettes/*.retired/
+
 # 本地学习资料(E2E / 性能测试阅读材料),不入库
 learning/

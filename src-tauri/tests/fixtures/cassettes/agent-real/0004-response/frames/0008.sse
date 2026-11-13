@@ -1,0 +1,3 @@
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_00_pr6g7ens5yvqjgoxmu248bqf","name":"Write","input":{}}}
+

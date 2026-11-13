@@ -1,0 +1,3 @@
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Write","stop_sequence":null}}
+

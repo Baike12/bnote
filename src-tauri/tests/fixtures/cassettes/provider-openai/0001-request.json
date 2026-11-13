@@ -1,0 +1,25 @@
+{
+  "seq": 1,
+  "protocol": "openai",
+  "method": "POST",
+  "url": "https://api.openai.com/v1/chat/completions",
+  "model": "test-model",
+  "session": "s1",
+  "purpose": "turn",
+  "thinking": true,
+  "recordedAt": 0,
+  "body": {
+    "model": "test-model",
+    "stream": true,
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": "read Welcome.md"
+      }
+    ],
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

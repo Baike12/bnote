@@ -246,7 +246,7 @@ pub async fn agent_start_session(
         provider,
         selection: resolved.selection(),
         ctx,
-        app: app.clone(),
+        app: Some(app.clone()),
         context_window: resolved.context_window,
         permission_mode: None,
         task_list_id,
