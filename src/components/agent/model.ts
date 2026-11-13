@@ -15,7 +15,11 @@ import type {
   StudyContent,
 } from "@/lib/tauri";
 import type { SessionNode } from "@/study/sessionTree";
-import type { TranscriptLine } from "@/study/transcript";
+import {
+  assistantRoundLine,
+  type TranscriptAssistantLine,
+  type TranscriptLine,
+} from "@/study/transcript";
 import type { AgentUsage } from "@/study/agentUsage";
 import type { SubagentRun } from "@/components/agent/subagents";
 
@@ -40,14 +44,12 @@ export interface ThinkingSeal {
 }
 
 /**
- * One row of a turn, in stream order.
+ * One row of a turn's timeline, in stream order.
  *
- * A thinking row references a range of `Turn.thinking` instead of copying the
- * text: the transcript flush and the seals both slice that one buffer, so a
- * second copy of the text could disagree with it mid-stream. An assistant
- * text row does the same against `Turn.text` — the model writes prose between
- * tool calls, and that prose belongs where it arrived, not glued to the end of
- * the turn.
+ * The thinking and text rows reference ranges of `Turn.thinking` /
+ * `Turn.text` instead of copying the text: the transcript flush and the seals
+ * both slice those buffers, so a second copy could disagree with them
+ * mid-stream.
  */
 export type TurnStep =
   | {
@@ -60,20 +62,31 @@ export type TurnStep =
       /** Seconds the block took; null while the block is still streaming. */
       seconds: number | null;
     }
-  | { kind: "text"; start: number; end: number }
+  | {
+      /**
+       * A stretch of assistant text at its place in the stream. The model can
+       * narrate between two tool batches ("先定位它们的落点"); without a row of
+       * its own, every delta landed in one buffer and the whole narration was
+       * drawn after the last tool call.
+       */
+      kind: "text";
+      /** Range in `Turn.text` holding this stretch. */
+      start: number;
+      end: number;
+    }
   | { kind: "tool"; id: string };
 
 export interface Turn {
-  /** Streaming text buffer for the whole turn; the `text` steps index into it. */
+  /** Streaming text buffer for the current assistant reply. */
   text: string;
   /** The streamed thinking process. Displayed in the panel and replayed into the model history (the MiniMax contract requires the thinking blocks back each round). */
   thinking: string;
   /** Seals of the thinking blocks closed so far, in stream order. */
   thinkingSeals: ThinkingSeal[];
   /**
-   * The turn's rows in arrival order: thinking blocks, assistant text and tool
-   * calls interleaved the way the provider streamed them (round one's thinking,
-   * its text, its tool calls, round two's thinking, …). A restored record
+   * The turn's timeline in arrival order: thinking blocks, text stretches and
+   * tool calls interleaved the way the provider streamed them (round one's
+   * thinking, its narration, its tool calls, round two's …). A restored record
    * rebuilds them from its per-round lines. Single writer: the panel's event
    * handler.
    */
@@ -161,6 +174,23 @@ export function appendThinking(turn: Turn, text: string, at: number): void {
 }
 
 /**
+ * Appends a text delta: it extends the trailing text row, or opens a new one
+ * when a thinking block or a tool call ran in between (the delta belongs to
+ * the next provider round then).
+ */
+export function appendText(turn: Turn, text: string): void {
+  if (!text) return;
+  const start = turn.text.length;
+  turn.text += text;
+  const last = turn.steps[turn.steps.length - 1];
+  if (last && last.kind === "text") {
+    last.end = turn.text.length;
+    return;
+  }
+  turn.steps.push({ kind: "text", start, end: turn.text.length });
+}
+
+/**
  * Closes the open thinking block and freezes its duration: a seal, the first
  * text delta (the model moved on to writing), a tool call, or the turn's end.
  * Closing is idempotent so every one of those events can call it.
@@ -179,36 +209,20 @@ export function pushToolStep(turn: Turn, id: string, at: number): void {
 }
 
 /**
- * Appends an assistant text delta: it extends the open text row, or opens a
- * new one after whatever came before it (a tool call, a thinking block). The
- * text closes the thinking block in front of it — the same rule as
- * `pushToolStep`, so a row never spans two provider phases.
+ * The index of the turn's answer row: the trailing text, the part the model
+ * wrote after its last tool call. -1 when the turn ended on a tool or a
+ * thinking row (nothing was said after the work). The answer is drawn outside
+ * the work section, so it stays visible when the section is collapsed.
  */
-export function appendText(turn: Turn, text: string, at: number): void {
-  closeThinking(turn, at);
-  const last = turn.steps[turn.steps.length - 1];
-  const start = turn.text.length;
-  turn.text += text;
-  if (last && last.kind === "text") {
-    last.end = turn.text.length;
-    return;
-  }
-  turn.steps.push({ kind: "text", start, end: turn.text.length });
+export function answerStepIndex(turn: Turn): number {
+  const index = turn.steps.length - 1;
+  return index >= 0 && turn.steps[index]?.kind === "text" ? index : -1;
 }
 
-/**
- * The final text of the turn — the answer the panel shows outside the work
- * section — as a range of `Turn.text`; null when the turn ends on work.
- *
- * Only a **trailing** text row is the answer. Prose followed by more tools is
- * narration of the work, and it stays inside the section at its position: the
- * panel used to render one flattened buffer below the section, which pushed
- * every mid-turn sentence to the end of the reply (observed).
- */
-export function answerRange(turn: Turn): { start: number; end: number } | null {
-  const last = turn.steps[turn.steps.length - 1];
-  if (!last || last.kind !== "text") return null;
-  return { start: last.start, end: last.end };
+/** The answer text: the trailing text row's slice (`""` when the turn ended on work). */
+export function finalText(turn: Turn): string {
+  const step = answerStepIndex(turn) >= 0 ? turn.steps[turn.steps.length - 1] : undefined;
+  return step && step.kind === "text" ? turn.text.slice(step.start, step.end) : "";
 }
 
 /**
@@ -219,14 +233,6 @@ export function answerRange(turn: Turn): { start: number; end: number } | null {
 export function thinkingSecondsAt(turn: Turn, start: number): number | null {
   for (const step of turn.steps) {
     if (step.kind === "thinking" && step.start === start) return step.seconds;
-  }
-  return null;
-}
-
-/** The seconds a record line of this turn should claim: the turn's one thinking block (restored turns have exactly one until they stream again). */
-export function storedThinkSeconds(turn: Turn): number | null {
-  for (const step of turn.steps) {
-    if (step.kind === "thinking") return step.seconds;
   }
   return null;
 }
@@ -362,10 +368,9 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
   }
   const thinking = line.thinking ?? "";
   const tools = line.tools ?? [];
-  // The record line is one provider round: its thinking came first, then the
-  // prose the model wrote before its tool calls, then the calls themselves
-  // (the writer flushes a round's text together with that round's tools), so
-  // the restored rows need no other ordering source.
+  // The record line is one provider round: thinking → text → tool calls is the
+  // order the backend assembles the blocks in, so the restored rows need no
+  // other ordering source.
   const steps: TurnStep[] = [];
   if (thinking) {
     steps.push({
@@ -409,30 +414,116 @@ export function entryFromLine(line: TranscriptLine): ChatEntry {
   };
 }
 
-/** A UI message turned into a session record line (when forking, the prefix of the parent session is written into the new file). */
-export function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
-  // Notice entries are display-only status lines, never transcript content.
-  return entries
-    .filter((e) => e.role !== "notice")
-    .map((e): TranscriptLine => {
-      if (e.role === "user") return { type: "user", at: e.at, text: e.text, images: e.images };
-      const thinkingSignature = e.turn
-        ? thinkingSealFor(e.turn.thinkingSeals, e.turn.thinking.length)
-        : undefined;
-      return {
-        type: "assistant",
-        at: e.at,
-        text: e.text,
-        thinking: e.turn?.thinking ?? "",
-        ...(thinkingSignature ? { thinkingSignature } : {}),
-        thinkSeconds: e.turn ? storedThinkSeconds(e.turn) : null,
-        // The key only exists when a real duration was measured: an absent
-        // field keeps the line format lean (the same rule as `images`).
-        ...(e.turn?.turnMs != null ? { turnMs: e.turn.turnMs } : {}),
-        tools: e.turn?.tools ?? [],
-        error: e.turn?.error,
-      };
+/** The seal that closed the thinking block ending at `end`: a per-round line claims only its own block's signature. */
+function sealAt(seals: ThinkingSeal[], end: number): string | undefined {
+  const seal = seals.find((s) => s.end === end);
+  return seal?.signature ? seal.signature : undefined;
+}
+
+/** The steps of one assistant entry grouped into its provider rounds: [thinking?][text?][tools…] each. */
+interface StoredRound {
+  thinking: string | null;
+  thinkingEnd: number;
+  seconds: number | null;
+  text: string | null;
+  tools: ToolRecord[];
+}
+
+/**
+ * One assistant entry → its record lines, one per provider round.
+ *
+ * The timeline's rows say where a round ended: a thinking or text row after a
+ * round's tool calls opens the next line. Merging every round into one line
+ * (the old shape) dropped where the narration sat — a fork restored from such
+ * a line drew every text stretch above the tools — and rebuilt the model
+ * history as one oversized assistant message instead of the streamed rounds.
+ */
+function assistantRoundLines(entry: ChatEntry): TranscriptAssistantLine[] {
+  const turn = entry.turn;
+  if (!turn) return [{ type: "assistant", at: entry.at, text: entry.text, tools: [] }];
+  if (turn.steps.length === 0) {
+    // A turn that never streamed a block (an error before any output): one
+    // line carrying what little it has.
+    return [
+      assistantRoundLine({
+        at: entry.at,
+        text: turn.text,
+        thinking: turn.thinking || undefined,
+        turnMs: turn.turnMs,
+        tools: turn.tools,
+        error: turn.error,
+      }),
+    ];
+  }
+
+  const rounds: StoredRound[] = [];
+  const takeRound = (): StoredRound => {
+    const fresh: StoredRound = {
+      thinking: null,
+      thinkingEnd: -1,
+      seconds: null,
+      text: null,
+      tools: [],
+    };
+    rounds.push(fresh);
+    return fresh;
+  };
+  let round: StoredRound | null = null;
+  for (const step of turn.steps) {
+    if (step.kind === "thinking") {
+      // A round opens with its thinking; anything already here is a finished one.
+      if (round && (round.thinking !== null || round.text !== null || round.tools.length > 0)) {
+        round = null;
+      }
+      round ??= takeRound();
+      round.thinking = turn.thinking.slice(step.start, step.end);
+      round.thinkingEnd = step.end;
+      round.seconds = step.seconds;
+    } else if (step.kind === "text") {
+      // The narration belongs to the round it follows; after tool calls it is
+      // the next round's text.
+      if (round && (round.text !== null || round.tools.length > 0)) round = null;
+      round ??= takeRound();
+      round.text = turn.text.slice(step.start, step.end);
+    } else {
+      const tool = turn.tools.find((t) => t.id === step.id);
+      if (tool) {
+        round ??= takeRound();
+        round.tools.push(tool);
+      }
+    }
+  }
+
+  return rounds.map((r, i) => {
+    const last = i === rounds.length - 1;
+    return assistantRoundLine({
+      at: entry.at,
+      text: r.text ?? "",
+      thinking: r.thinking ?? undefined,
+      ...(r.thinking !== null ? { thinkSeconds: r.seconds } : {}),
+      thinkingSignature:
+        r.thinking !== null ? sealAt(turn.thinkingSeals, r.thinkingEnd) : undefined,
+      // The turn's duration and error belong to the turn, not to every line.
+      turnMs: last ? turn.turnMs : null,
+      tools: r.tools,
+      error: last ? turn.error : undefined,
     });
+  });
+}
+
+/** UI messages turned into session record lines (when forking, the prefix of the parent session is written into the new file). */
+export function entriesToLines(entries: ChatEntry[]): TranscriptLine[] {
+  const lines: TranscriptLine[] = [];
+  for (const entry of entries) {
+    // Notice entries are display-only status lines, never transcript content.
+    if (entry.role === "notice") continue;
+    if (entry.role === "user") {
+      lines.push({ type: "user", at: entry.at, text: entry.text, images: entry.images });
+      continue;
+    }
+    lines.push(...assistantRoundLines(entry));
+  }
+  return lines;
 }
 
 export function cloneEntry(e: ChatEntry): ChatEntry {

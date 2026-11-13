@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@/lib/tauri";
-import type { Conv, Turn } from "./model";
+import { finalText, type Conv, type Turn } from "./model";
 import { createStreamHandler, type StreamContext } from "./streamEvents";
+
+/** One step as a short label: the row order is what these tests pin down. */
+function rows(turn: Turn | undefined): string[] {
+  return (turn?.steps ?? []).map((step) =>
+    step.kind === "thinking"
+      ? `think:${step.start}`
+      : step.kind === "text"
+        ? `text:${step.start}-${step.end}`
+        : step.id,
+  );
+}
 
 /**
  * The stream reducer's contract: what one backend event does to the
@@ -85,11 +96,9 @@ describe("stream events: the work rows keep the stream order", () => {
     expect(turn?.text).toBe("done");
     expect(turn?.thinking).toBe("lookread");
     // The rows are in arrival order, not "all thinking, then all tools".
-    expect(
-      turn?.steps.map((step) =>
-        step.kind === "thinking" ? `think:${step.start}` : step.kind === "text" ? "text" : step.id,
-      ),
-    ).toEqual(["think:0", "t1", "think:4", "t2", "text"]);
+    expect(rows(turn)).toEqual(["think:0", "t1", "think:4", "t2", "text:0-4"]);
+    // The trailing text is the answer drawn below the work section.
+    expect(turn ? finalText(turn) : null).toBe("done");
     expect(turn?.thinkingSeals).toEqual([{ end: 4, signature: "sig1" }]);
     // The live turn is finished and handed off.
     expect(h.turns.has("c1")).toBe(false);
@@ -114,7 +123,7 @@ describe("stream events: the work rows keep the stream order", () => {
     expect(turn?.thinking).toBe("ab");
   });
 
-  it("the text delta closes the thinking block (its duration is frozen, the answer starts)", () => {
+  it("the text delta closes the thinking block and opens a text row (its duration is frozen, the answer starts)", () => {
     const h = makeHarness();
     h.send({ type: "thinking_delta", text: "a" });
     h.send({ type: "text_delta", text: "answer" });
@@ -122,35 +131,40 @@ describe("stream events: the work rows keep the stream order", () => {
     const turn = h.turns.get("c1");
     const first = turn?.steps[0];
     expect(first?.kind === "thinking" ? first.seconds : null).not.toBeNull();
-    // The answer takes a row of its own: that is what puts mid-turn prose at
-    // its position instead of after the whole work section.
-    expect(turn?.steps.map((step) => step.kind)).toEqual(["thinking", "text"]);
+    expect(rows(turn)).toEqual(["think:0", "text:0-6"]);
   });
 
-  /**
-   * The reported bug: prose the model writes between tool calls was collected
-   * into one buffer and drawn after everything, so "现在改前端这一侧：" landed
-   * at the bottom of the reply. The row order is now the stream order.
-   */
-  it("keeps mid-turn prose between the tool batches that surround it", () => {
+  it("mid-turn narration keeps its place instead of piling up after the last tool call", () => {
     const h = makeHarness();
-    h.send({ type: "thinking_delta", text: "plan" });
-    h.send({ type: "tool_start", id: "t1", name: "Edit", input: {} });
-    h.send({ type: "tool_end", id: "t1", ok: true, output: "ok" });
-    h.send({ type: "text_delta", text: "接下来改前端:" });
-    h.send({ type: "tool_start", id: "t2", name: "Edit", input: {} });
-    h.send({ type: "text_delta", text: "完成。" });
+    // Round one: a preamble, then its tool calls.
+    h.send({ type: "text_delta", text: "先定位" });
+    h.send({ type: "tool_start", id: "t1", name: "Grep", input: {} });
+    h.send({ type: "tool_end", id: "t1", ok: true, output: "x" });
+    // Round two: another preamble, another batch.
+    h.send({ type: "text_delta", text: "再看" });
+    h.send({ type: "tool_start", id: "t2", name: "Read", input: {} });
+    h.send({ type: "tool_end", id: "t2", ok: true, output: "y" });
+    // Round three: the answer.
+    h.send({ type: "text_delta", text: "结论" });
     h.send({ type: "turn_end", reason: "end_turn", items: 5 });
 
     const turn = h.entry()?.turn;
-    expect(turn?.steps.map((step) => step.kind)).toEqual([
-      "thinking",
-      "tool",
-      "text",
-      "tool",
-      "text",
-    ]);
-    expect(turn?.text).toBe("接下来改前端:完成。");
+    expect(rows(turn)).toEqual(["text:0-3", "t1", "text:3-5", "t2", "text:5-7"]);
+    // Only the last stretch is the answer; the two preambles stay in the work rows.
+    expect(turn ? finalText(turn) : null).toBe("结论");
+    expect(turn?.text).toBe("先定位再看结论");
+  });
+
+  it("a turn that ends on a tool round has no answer text outside the work rows", () => {
+    const h = makeHarness();
+    h.send({ type: "text_delta", text: "先看看" });
+    h.send({ type: "tool_start", id: "t1", name: "Bash", input: {} });
+    h.send({ type: "tool_end", id: "t1", ok: true, output: "ok" });
+    h.send({ type: "turn_end", reason: "max_turns", items: 2 });
+
+    const turn = h.entry()?.turn;
+    expect(turn ? finalText(turn) : null).toBe("");
+    expect(rows(turn)).toEqual(["text:0-3", "t1"]);
   });
 
   it("a stopped turn keeps the reason, so the row reads 已停止 instead of 已工作", () => {

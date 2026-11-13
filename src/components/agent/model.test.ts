@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { TranscriptLine } from "@/study/transcript";
+import { historyFromTranscript, type TranscriptLine } from "@/study/transcript";
 import {
-  answerRange,
   appendText,
   appendThinking,
+  answerStepIndex,
   cloneEntry,
   closeThinking,
   entriesToLines,
   entryFromLine,
+  finalText,
   fitInputHeight,
   formatSessionTime,
   newTurn,
@@ -58,7 +59,7 @@ describe("transcript round trip", () => {
     expect(entry.turn?.thinkingSeals).toEqual([{ end: 1, signature: "sig1" }]);
     // Restored turns are already on disk: re-writing them must not duplicate the seal.
     expect(entry.turn?.persistedSealCount).toBe(1);
-    expect(entriesToLines([entry])).toEqual([{ ...signed, thinkSeconds: null, error: undefined }]);
+    expect(entriesToLines([entry])).toEqual([signed]);
   });
 
   it("a restored turn claims no stop reason (the record cannot tell a stopped turn from a finished one)", () => {
@@ -101,6 +102,80 @@ describe("transcript round trip", () => {
     const clonedSeal = copy.turn?.thinkingSeals[0];
     if (clonedSeal) clonedSeal.signature = "tampered";
     expect(entry.turn?.thinkingSeals[0]?.signature).toBe("sig1");
+  });
+});
+
+describe("fork seed lines: one record line per provider round", () => {
+  /** A turn of two streamed rounds: thinking → narration → tool, then thinking → the answer. */
+  function twoRoundTurn() {
+    const turn = newTurn(0);
+    turn.turnMs = 9_000;
+    appendThinking(turn, "想一", 1_000);
+    turn.thinkingSeals.push({ end: 2, signature: "sig1" });
+    closeThinking(turn, 3_000);
+    appendText(turn, "先看");
+    pushToolStep(turn, "t1", 3_000);
+    turn.tools.push({ id: "t1", name: "grep", input: { pattern: "x" }, output: "ok", ok: true });
+    appendThinking(turn, "想二", 3_000);
+    turn.thinkingSeals.push({ end: 4, signature: "sig2" });
+    closeThinking(turn, 4_000);
+    appendText(turn, "结论");
+    const entry: ChatEntry = { role: "assistant", text: turn.text, at: 10, turn, items: null };
+    return { turn, entry };
+  }
+
+  it("splits a multi-round entry where the stream opened a new round", () => {
+    const { entry } = twoRoundTurn();
+    expect(entriesToLines([entry])).toEqual([
+      {
+        type: "assistant",
+        at: 10,
+        text: "先看",
+        thinking: "想一",
+        thinkingSignature: "sig1",
+        thinkSeconds: 2,
+        tools: [{ id: "t1", name: "grep", input: { pattern: "x" }, output: "ok", ok: true }],
+      },
+      {
+        type: "assistant",
+        at: 10,
+        text: "结论",
+        thinking: "想二",
+        thinkingSignature: "sig2",
+        thinkSeconds: 1,
+        // The wall-clock duration belongs to the turn: only its last line claims it.
+        turnMs: 9_000,
+        tools: [],
+      },
+    ]);
+  });
+
+  it("the rebuilt history keeps the rounds apart, so the narration stays before its tool results", () => {
+    const { entry } = twoRoundTurn();
+    expect(historyFromTranscript(entriesToLines([entry]))).toEqual([
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "想一", signature: "sig1" },
+          { type: "text", text: "先看" },
+          { type: "tool_use", id: "t1", name: "grep", input: { pattern: "x" } },
+        ],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "ok", is_error: false }],
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "想二", signature: "sig2" },
+          { type: "text", text: "结论" },
+        ],
+      },
+    ]);
   });
 });
 
@@ -149,11 +224,11 @@ describe("turn steps keep the stream order", () => {
     expect(turn.steps[0]).toMatchObject({ seconds: 2 });
   });
 
-  it("a restored record rebuilds thinking, then its prose, then its tools", () => {
+  it("a restored record rebuilds thinking, then text, then its tools", () => {
     const entry = entryFromLine({
       type: "assistant",
       at: 2,
-      text: "先看接口",
+      text: "答",
       thinking: "想",
       thinkSeconds: 4,
       tools: [
@@ -161,16 +236,45 @@ describe("turn steps keep the stream order", () => {
         { id: "t2", name: "grep" },
       ],
     });
-    // A round line is flushed with the prose the model wrote before its calls,
-    // so the prose belongs between the thinking and the tools, not after them.
     expect(entry.turn?.steps).toEqual([
       { kind: "thinking", start: 0, end: 1, startedAt: null, seconds: 4 },
-      { kind: "text", start: 0, end: 4 },
+      { kind: "text", start: 0, end: 1 },
       { kind: "tool", id: "t1" },
       { kind: "tool", id: "t2" },
     ]);
-    // Nothing trails the tools: the turn ended on work, so there is no answer row.
-    expect(answerRange(entry.turn!)).toBeNull();
+    // This round ended on a tool call: the text was the preamble, not the answer.
+    expect(entry.turn ? finalText(entry.turn) : null).toBe("");
+    expect(entry.turn && answerStepIndex(entry.turn)).toBe(-1);
+  });
+
+  it("a pure text round is the answer and stays outside the work rows", () => {
+    const entry = entryFromLine({ type: "assistant", at: 2, text: "答", tools: [] });
+    expect(entry.turn?.steps).toEqual([{ kind: "text", start: 0, end: 1 }]);
+    expect(entry.turn ? answerStepIndex(entry.turn) : -2).toBe(0);
+    expect(entry.turn ? finalText(entry.turn) : null).toBe("答");
+  });
+
+  it("a text delta extends its row, and a tool call in between starts the next one", () => {
+    const turn = newTurn(0);
+    appendText(turn, "先定位");
+    appendText(turn, "落点");
+    pushToolStep(turn, "t1", 1_000);
+    appendText(turn, "结论");
+    expect(turn.steps).toEqual([
+      { kind: "text", start: 0, end: 5 },
+      { kind: "tool", id: "t1" },
+      { kind: "text", start: 5, end: 7 },
+    ]);
+    expect(turn.text).toBe("先定位落点结论");
+    // The trailing stretch is what the panel draws as the answer.
+    expect(finalText(turn)).toBe("结论");
+  });
+
+  it("an empty delta adds no row (a gateway may announce an empty text block)", () => {
+    const turn = newTurn(0);
+    appendText(turn, "");
+    expect(turn.steps).toEqual([]);
+    expect(turn.text).toBe("");
   });
 
   it("the flushed round carries its own thinking duration", () => {
@@ -184,52 +288,6 @@ describe("turn steps keep the stream order", () => {
     expect(thinkingSecondsAt(turn, 0)).toBe(2);
     expect(thinkingSecondsAt(turn, 1)).toBe(1);
     expect(thinkingSecondsAt(turn, 2)).toBeNull();
-  });
-
-  /**
-   * The model writes prose between tool calls ("先改后端这一侧："), and that
-   * prose used to be flattened into one buffer drawn after the whole work
-   * section — every mid-turn sentence ended up at the bottom of the reply.
-   * Text is a row of the same timeline, at the offset it arrived.
-   */
-  it("keeps each piece of assistant prose at its stream position", () => {
-    const turn = newTurn(1_000);
-    appendThinking(turn, "plan", 1_000);
-    appendText(turn, "先改后端", 2_000);
-    pushToolStep(turn, "t1", 3_000);
-    appendText(turn, "再改前端", 4_000);
-
-    expect(turn.steps).toEqual([
-      // The text closes the thinking row in front of it.
-      { kind: "thinking", start: 0, end: 4, startedAt: 1_000, seconds: 1 },
-      { kind: "text", start: 0, end: 4 },
-      { kind: "tool", id: "t1" },
-      { kind: "text", start: 4, end: 8 },
-    ]);
-    expect(turn.text).toBe("先改后端再改前端");
-    // Only the trailing row is the answer.
-    expect(answerRange(turn)).toEqual({ start: 4, end: 8 });
-  });
-
-  it("extends the open text row instead of opening a row per delta, and stops on a tool", () => {
-    const turn = newTurn(0);
-    appendText(turn, "a", 1_000);
-    appendText(turn, "b", 1_100);
-    expect(turn.steps).toEqual([{ kind: "text", start: 0, end: 2 }]);
-    pushToolStep(turn, "t1", 2_000);
-    appendText(turn, "c", 3_000);
-    expect(turn.steps).toEqual([
-      { kind: "text", start: 0, end: 2 },
-      { kind: "tool", id: "t1" },
-      { kind: "text", start: 2, end: 3 },
-    ]);
-  });
-
-  it("a turn that ends on work has no answer row (its prose stays in the section)", () => {
-    const turn = newTurn(0);
-    appendText(turn, "改这一侧:", 1_000);
-    pushToolStep(turn, "t1", 2_000);
-    expect(answerRange(turn)).toBeNull();
   });
 });
 

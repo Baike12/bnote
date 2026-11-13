@@ -31,6 +31,10 @@ export interface SplitDragOptions {
  * the preference is committed once, on pointerup. The drag is computed from the
  * **offset**: the origin is where the divider currently sits, so grabbing it
  * 4 px off does not make it jump.
+ *
+ * The write and the `onMove` report run **once per frame**, not once per
+ * pointer event: consumers measure the new geometry, and a measure is a forced
+ * layout of the whole layout (see the paint step below).
  */
 export function startSplitDrag({
   event,
@@ -58,28 +62,72 @@ export function startSplitDrag({
   }
 
   const startPos = axis === "y" ? event.clientY : event.clientX;
+  /** The values the last painted frame wrote (what pointerup commits). */
   let latest: Record<string, number> | null = null;
+  /** The values of pointer moves the next frame has not painted yet. */
+  let pending: Record<string, number> | null = null;
+  let frame = 0;
 
-  const onPointerMove = (move: PointerEvent) => {
-    const delta = (axis === "y" ? move.clientY : move.clientX) - startPos;
-    const values = compute(delta);
-    latest = values;
+  const write = (values: Record<string, number>) => {
     for (const [name, value] of Object.entries(values)) {
       host.style.setProperty(name, `${value}px`);
     }
+  };
+
+  // A pointermove is not a frame boundary: a 120 Hz display or a high-rate
+  // mouse delivers several moves per frame, and the consumers of `onMove`
+  // measure the new geometry right after the write — doing that per event
+  // forces a synchronous layout of the whole three-column app several times
+  // per frame, and the pointer handler itself stalls behind it. Record the
+  // offset here (O(1)) and write + report at most once per frame; the layout
+  // then runs exactly once per frame, on its own frame.
+  const paint = () => {
+    frame = 0;
+    const values = pending;
+    pending = null;
+    if (!values) return;
+    latest = values;
+    write(values);
     onMove?.();
+  };
+
+  const onPointerMove = (move: PointerEvent) => {
+    const delta = (axis === "y" ? move.clientY : move.clientX) - startPos;
+    pending = compute(delta);
+    if (frame === 0) frame = requestAnimationFrame(paint);
   };
 
   const onPointerUp = () => {
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
     window.removeEventListener("pointercancel", onPointerUp);
+    if (frame !== 0) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+    }
+    // A move that arrived after the last painted frame belongs to the drag:
+    // commit the pointer's final position, not the last frame's.
+    if (pending) {
+      latest = pending;
+      pending = null;
+    }
     handle.classList.remove("dragging");
     const done = latest;
-    if (done && variables.some((name) => done[name] !== stored[name])) commit(done);
-    // The displayed width (clamped by CSS in a narrow window) is not a new preference and must not be written back into the variables: restore the stored values.
-    for (const name of variables) {
-      host.style.setProperty(name, `${latest?.[name] ?? stored[name]}px`);
+    if (!done) return;
+    // The pointer's final position is a geometry of its own: paint it and let
+    // the consumers report it, so a child webview does not stay at the last
+    // frame's bounds when the drag ends between two frames.
+    write(done);
+    onMove?.();
+    if (variables.some((name) => done[name] !== stored[name])) {
+      // The preference now holds exactly these values; writing them keeps the
+      // DOM in sync until React re-renders with the committed width.
+      commit(done);
+    } else {
+      // A click (or a drag that ended where it started) is not a new
+      // preference: put the stored values back, the drag's display values
+      // (clamped by CSS in a narrow window) must not stick.
+      for (const name of variables) host.style.setProperty(name, `${stored[name]}px`);
     }
   };
 

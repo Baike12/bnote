@@ -18,7 +18,7 @@ import {
   toolSummary,
   workDurationLabel,
 } from "./toolSummary";
-import { answerRange, type ChatEntry, type ToolRecord, type Turn, type TurnStep } from "./model";
+import { answerStepIndex, finalText, type ChatEntry, type ToolRecord, type Turn, type TurnStep } from "./model";
 import { TodoRowView } from "./TodoPanel";
 import { todoFromInput } from "./todos";
 import { createAgentCards, type AgentCardData, type AgentCards } from "./agentCards";
@@ -352,9 +352,9 @@ const EntryRow = memo(function EntryRow({
   // section; everything before it is the process and keeps its stream order
   // inside. A turn that ends on work has no answer row at all (its prose stays
   // where it was written).
-  const answer = turn ? answerRange(turn) : null;
-  const processSteps = turn ? (answer ? turn.steps.slice(0, -1) : turn.steps) : [];
-  const answerText = !turn ? entry.text : answer ? turn.text.slice(answer.start, answer.end) : "";
+  const answer = turn ? answerStepIndex(turn) : -1;
+  const processSteps = turn ? (answer >= 0 ? turn.steps.slice(0, answer) : turn.steps) : [];
+  const answerText = !turn ? entry.text : finalText(turn);
   return (
     <div className={`agent-msg-row${entry.role === "user" ? " is-user" : ""}`}>
       {entry.role === "notice" ? (

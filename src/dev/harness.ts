@@ -57,6 +57,7 @@ import {
   entryFromLine,
   newTurn,
   pushToolStep,
+  type ChatEntry,
 } from "@/components/agent/model";
 import type { TranscriptLine } from "@/study/transcript";
 import { ProjectsLayout } from "@/components/projects/ProjectsLayout";
@@ -268,6 +269,22 @@ declare global {
     __renderAgentMd: (text: string) => string;
     /** Mount one real HtmlPreview (the live render of an agent `html` code block); returns the unmount function. */
     __mountHtmlPreview: (code: string) => () => void;
+    /**
+     * Mount the real agent transcript with one synthetic assistant turn built
+     * through the real model helpers; returns the unmount function. Verifies
+     * the work rows' stream order (thinking / narration / tool calls) in the
+     * real DOM without a backend.
+     */
+    __mountAgentTranscript: (spec: {
+      rows: (
+        | { kind: "thinking"; text: string }
+        | { kind: "text"; text: string }
+        | { kind: "tool"; id: string; name: string; input?: unknown; output?: string; ok?: boolean }
+      )[];
+      /** Mark the turn as live (the work section starts open). */
+      busy?: boolean;
+      width?: number;
+    }) => () => void;
     /**
      * Mount the real assistant transcript, so the rendered row order (prose at
      * its stream position, answer outside the work section) can be read from
@@ -1154,7 +1171,7 @@ window.__mountTranscript = (lines = [], opts = {}) => {
         appendThinking(turn, row.text, at);
         closeThinking(turn, at + 400);
       } else if (row.kind === "text") {
-        appendText(turn, row.text, at);
+        appendText(turn, row.text);
       } else {
         turn.tools.push({
           id: row.id,
@@ -1182,6 +1199,65 @@ window.__mountTranscript = (lines = [], opts = {}) => {
       onStopAgent: (run: SubagentRun) => {
         host.dataset.lastAction = `stop:${run.agentId}`;
       },
+    }),
+  );
+  return () => {
+    root.unmount();
+    host.remove();
+  };
+};
+
+/**
+ * The real agent transcript with one synthetic assistant turn built through
+ * the real model helpers; returns the unmount function. Verifies the work
+ * rows' stream order (thinking / narration / tool calls) in the real DOM
+ * without a backend.
+ */
+window.__mountAgentTranscript = (spec) => {
+  for (const stale of document.querySelectorAll("#agent-transcript-host")) stale.remove();
+  const host = document.createElement("div");
+  host.id = "agent-transcript-host";
+  host.style.cssText = `position:fixed;left:0;top:0;width:${spec.width ?? 520}px;height:100vh;z-index:9999;display:flex;background:var(--bg1)`;
+  document.body.appendChild(host);
+
+  const turn = newTurn(Date.now() - 90_000);
+  turn.turnMs = 90_000;
+  for (const row of spec.rows) {
+    if (row.kind === "thinking") {
+      appendThinking(turn, row.text, Date.now() - 80_000);
+      closeThinking(turn, Date.now() - 70_000);
+    } else if (row.kind === "text") {
+      appendText(turn, row.text);
+    } else {
+      turn.tools.push({
+        id: row.id,
+        name: row.name,
+        input: row.input,
+        output: row.output,
+        ok: row.ok ?? true,
+      });
+      pushToolStep(turn, row.id, Date.now());
+    }
+  }
+  const entry: ChatEntry = {
+    role: "assistant",
+    text: turn.text,
+    at: Date.now(),
+    turn,
+    items: null,
+  };
+
+  const root = createRoot(host);
+  root.render(
+    createElement(AgentTranscript, {
+      scrollRef: createRef<HTMLDivElement>(),
+      entries: [entry],
+      busy: spec.busy ?? false,
+      welcome: null,
+      onFork: () => {},
+      agents: createAgentCards(),
+      onOpenAgent: () => {},
+      onStopAgent: () => {},
     }),
   );
   return () => {

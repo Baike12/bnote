@@ -171,11 +171,12 @@ export function createStreamHandler(
       case "text_delta": {
         const turn = ensureTurn(conv.key);
         ctx.persistTurn(conv.key, turn, undefined, false);
-        // The model moved from thinking to writing (the block's duration is
-        // frozen by appendText), and the text takes its own row: prose written
-        // between tool calls stays where it arrived instead of collecting at
-        // the end of the reply.
-        appendText(turn, event.text, Date.now());
+        // The model moved from thinking to writing: the block's duration is
+        // now known, and a further thinking delta opens a new row.
+        closeThinking(turn, Date.now());
+        // The delta joins the timeline where it arrived: narration between two
+        // tool batches keeps its place instead of piling up after the last one.
+        appendText(turn, event.text);
         writeEntries(conv.key, turn, false, null);
         break;
       }

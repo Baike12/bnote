@@ -131,6 +131,13 @@ let starting = false;
  */
 let revision = 0;
 
+/**
+ * A native unlock failed: the window may still be in the locked state (or hold
+ * a half-restored geometry). Kept so the next status reconciliation retries
+ * the release instead of trusting "not locked" and leaving the window there.
+ */
+let unlockPending = false;
+
 function stopTicking() {
   if (tickHandle === null) return;
   clearTimeout(tickHandle);
@@ -226,11 +233,13 @@ async function lockNow(): Promise<boolean> {
 async function unlockNow(): Promise<void> {
   try {
     const status = await focusApi.unlock();
+    unlockPending = false;
     // The release must not touch `error`: a failed start rolls the timer back
     // and releases the lock right after lockNow failed - that release wiping
     // the error would erase the only evidence of why the start did not happen.
     useFocusStore.setState({ locked: status.locked });
   } catch (e) {
+    unlockPending = true;
     // A release that failed leaves the window at level 25 above every other app
     // until it is retried, so it must reach the user instead of only sitting in
     // the store.
@@ -415,10 +424,14 @@ export const useFocusStore = create<FocusStore>((set, get) => ({
       const timer = get().timer;
       const active = isActive(timer) && isRunning(timer);
       if (!isActive(timer)) {
-        // Idle means the window must be unlocked. Always ask the native side:
-        // `focus_unlock` is idempotent, and `locked` here can be stale (this is
-        // exactly how the window could stay above every other app).
-        await unlockNow();
+        // Idle means the window must be unlocked — but only when the native
+        // window really is locked (a fresh read; the flag in this store can be
+        // stale) or an earlier release failed. Asking again unconditionally
+        // would re-run the whole restore (level + collection behavior +
+        // responder) right after the session end already restored the window,
+        // in the middle of the user's work: the end of a stretch must be
+        // silent.
+        if (status.locked || unlockPending) await unlockNow();
         await syncHardActive(false);
         return;
       }
