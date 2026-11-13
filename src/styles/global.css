@@ -4499,17 +4499,92 @@ input[type="range"] {
   50% { opacity: 0.35; }
 }
 
-/* The todo tool's list, pinned above the composer: the model's plan at a
-   glance. One row per item; the in-progress row carries the accent. */
+/* The session's plan, pinned above the composer: a header that answers "how
+   far along" (done/total, the item running now, a thin bar) and, on click, the
+   items themselves. The writer replaces the whole list on every TodoWrite, so
+   a permanently expanded block would jump between two and ten rows mid-turn. */
 .agent-todos {
   margin: 0 14px 6px;
-  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg0);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.agent-todos-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: calc(var(--agent-text) * 0.76);
+  color: var(--text-dim);
+}
+.agent-todos-head:hover { background: var(--bg2); }
+.agent-todos-head .agent-tool-chevron { margin-left: 0; }
+.agent-todos-head[aria-expanded="true"] .agent-tool-chevron { transform: rotate(90deg); }
+.agent-todos-title {
+  flex-shrink: 0;
+  font-weight: 500;
+  color: var(--text);
+}
+.agent-todos-count {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.7);
+  color: var(--text-faint);
+}
+.agent-todos-now {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.agent-todos-bar {
+  flex-shrink: 0;
+  width: 44px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg3);
+  overflow: hidden;
+}
+.agent-todos-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.agent-todos-body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 4px 10px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+/* The same rows inside a TodoWrite tool card (the list that call wrote). */
+.agent-tool-todos {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 4px 0 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+}
+.agent-todos-empty {
+  font-size: calc(var(--agent-text) * 0.75);
+  color: var(--text-faint);
 }
 .agent-todo {
   display: flex;

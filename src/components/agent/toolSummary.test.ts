@@ -44,6 +44,11 @@ describe("toolSummary", () => {
       primary: "3 项",
       diff: null,
     });
+    expect(toolSummary("TodoRead", {}, false)).toEqual({
+      kind: "查看任务清单",
+      primary: "",
+      diff: null,
+    });
     expect(toolSummary("Skill", { skill: "html-blog" }, false).primary).toBe("html-blog");
   });
 });

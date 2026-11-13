@@ -225,6 +225,10 @@ pub struct Session {
     usage_totals: Mutex<UsageTotals>,
     /// The todo tool's list (single writer: the todo tool on this session).
     pub todos: Mutex<Vec<TodoItem>>,
+    /// Where the list is persisted (`<agent home>/todos/<list id>.json`): the
+    /// session loads it at construction and writes it after every TodoWrite, so
+    /// a restored session shows the same plan it was working through.
+    todos_path: std::path::PathBuf,
     /// The v2 task list (task_create / task_update / …).
     pub tasks: Mutex<TaskList>,
     /// The persisted task list this session owns (subagents share the parent's).
@@ -1845,10 +1849,23 @@ impl Session {
                         self.emit(AgentEvent::Todos {
                             todos: todo::render(&current),
                         });
-                        ToolOutput::text(true, summary)
+                        // The list is already updated in memory; a failed write
+                        // must reach the model (it is the one that would rely on
+                        // the list after a restart), not be swallowed.
+                        match todo::save(&self.todos_path, &current) {
+                            Ok(()) => ToolOutput::text(true, summary),
+                            Err(e) => ToolOutput::text(
+                                true,
+                                format!("{summary};注意:清单未能写入磁盘({e}),重启后面板会丢失"),
+                            ),
+                        }
                     }
                     Err(e) => ToolOutput::text(false, tool_use_error(e)),
                 };
+            }
+            "TodoRead" => {
+                let todos = self.todos.lock().map(|g| g.clone()).unwrap_or_default();
+                return ToolOutput::text(true, todo::text(&todos));
             }
             "Bash" => {
                 return self.run_bash(input).await;
@@ -2292,7 +2309,8 @@ impl Session {
             context_window: AtomicU64::new(child_window),
             last_usage: Mutex::new(None),
             usage_totals: Mutex::new(UsageTotals::default()),
-            todos: Mutex::new(Vec::new()),
+            todos: Mutex::new(todo::load(&super::home::todo_file(&child_session_id))),
+            todos_path: super::home::todo_file(&child_session_id),
             tasks: Mutex::new(TaskList::load(super::home::tasks_dir(&self.task_list_id))),
             task_list_id: self.task_list_id.clone(),
             pending_wakeups: Mutex::new(Vec::new()),
@@ -2967,6 +2985,8 @@ pub fn create_session(seed: SessionSeed) -> Session {
     };
     let task_list_id = seed.task_list_id.clone().unwrap_or_else(|| seed.id.clone());
     let tasks = TaskList::load(super::home::tasks_dir(&task_list_id));
+    let todos_path = super::home::todo_file(&task_list_id);
+    let todos: Vec<TodoItem> = todo::load(&todos_path);
     let agent_mode = super::home::AgentMode::from(seed.mode);
     let mode_root = seed.mode_root.clone().or_else(|| {
         seed.ctx
@@ -3032,7 +3052,8 @@ pub fn create_session(seed: SessionSeed) -> Session {
         context_window: AtomicU64::new(seed.context_window),
         last_usage: Mutex::new(None),
         usage_totals: Mutex::new(UsageTotals::default()),
-        todos: Mutex::new(Vec::new()),
+        todos: Mutex::new(todos),
+        todos_path,
         tasks: Mutex::new(tasks),
         task_list_id,
         pending_wakeups: Mutex::new(Vec::new()),

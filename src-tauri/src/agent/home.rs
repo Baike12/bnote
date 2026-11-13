@@ -382,6 +382,14 @@ pub fn tasks_dir(list_id: &str) -> PathBuf {
     home_dir().join("tasks").join(sanitize_path(list_id))
 }
 
+/// One session's todo list: `<agent home>/todos/<session list id>.json`. Keyed
+/// like the task list (the record id of the session), so a restore finds it.
+pub fn todo_file(list_id: &str) -> PathBuf {
+    home_dir()
+        .join("todos")
+        .join(format!("{}.json", sanitize_path(list_id)))
+}
+
 pub fn plans_dir() -> PathBuf {
     home_dir().join("plans")
 }
@@ -597,5 +605,23 @@ mod tests {
             "the vault's own entries stay"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_todo_file_of_one_session_is_keyed_by_its_list_id() {
+        let path = todo_file("s1794549391820-1");
+        assert!(
+            path.ends_with("todos/s1794549391820-1.json"),
+            "{}",
+            path.display()
+        );
+        // The id reaches a file name: everything outside [A-Za-z0-9] is folded,
+        // so a slash or a dot can never escape the directory.
+        let unsafe_path = todo_file("../a/b:c");
+        assert!(
+            unsafe_path.ends_with("todos/---a-b-c.json"),
+            "{}",
+            unsafe_path.display()
+        );
     }
 }

@@ -98,6 +98,74 @@ pub fn render(todos: &[TodoItem]) -> Vec<TodoItem> {
     todos.to_vec()
 }
 
+/// Reads the list back for the model (`TodoRead`).
+///
+/// Why a tool and not only the write summary: the list lives in the session,
+/// not in the model's context, so after a compaction or a long stretch of tool
+/// rounds the model cannot see what is still open. Reading it back is what
+/// keeps the plan honest.
+pub fn text(todos: &[TodoItem]) -> String {
+    if todos.is_empty() {
+        return "(清单为空)".into();
+    }
+    let done = todos.iter().filter(|t| t.status == "completed").count();
+    let mut out = format!("清单:{done}/{} 完成\n", todos.len());
+    for item in todos {
+        let (mark, suffix) = match item.status.as_str() {
+            "completed" => ("[x]", ""),
+            "in_progress" => ("[>]", "  (进行中)"),
+            _ => ("[ ]", ""),
+        };
+        out.push_str(&format!("- {mark} {}{suffix}\n", item.content));
+    }
+    out.trim_end().to_string()
+}
+
+/// The todo list of one session on disk: it survives a restart, so the panel
+/// shows it again when the session is restored.
+pub fn load(path: &std::path::Path) -> Vec<TodoItem> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(items) = serde_json::from_str::<Vec<TodoItem>>(&raw) else {
+        // A hand-edited or truncated file must not take the session down.
+        eprintln!(
+            "[agent] unreadable todo file, starting empty: {}",
+            path.display()
+        );
+        return Vec::new();
+    };
+    // The same invariants the writer enforces, since the file is editable.
+    let mut seen_active = false;
+    items
+        .into_iter()
+        .filter(|item| {
+            if item.content.trim().is_empty() || !TODO_STATUSES.contains(&item.status.as_str()) {
+                return false;
+            }
+            if item.status == "in_progress" {
+                if seen_active {
+                    return false;
+                }
+                seen_active = true;
+            }
+            true
+        })
+        .collect()
+}
+
+/// Writes the list atomically (temp file + rename): a crash mid-write must not
+/// leave half a JSON that `load` would silently drop.
+pub fn save(path: &std::path::Path, todos: &[TodoItem]) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("建目录失败: {e}"))?;
+    }
+    let body = serde_json::to_string_pretty(todos).map_err(|e| format!("序列化失败: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body).map_err(|e| format!("写入失败: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("替换失败: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +225,78 @@ mod tests {
             current.is_empty(),
             "a rejected input must not touch the list"
         );
+    }
+
+    fn item(content: &str, status: &str) -> TodoItem {
+        TodoItem {
+            content: content.into(),
+            status: status.into(),
+            active_form: content.into(),
+        }
+    }
+
+    #[test]
+    fn a_saved_list_comes_back_unchanged() {
+        let dir = std::env::temp_dir().join(format!("bnote-todo-{}", std::process::id()));
+        let path = dir.join("list.json");
+        let todos = vec![item("读代码", "completed"), item("修 bug", "in_progress")];
+        save(&path, &todos).expect("save");
+        assert_eq!(load(&path), todos);
+        assert!(
+            !dir.join("list.json.tmp").exists(),
+            "temp file is renamed away"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_or_broken_file_starts_empty() {
+        let dir = std::env::temp_dir().join(format!("bnote-todo-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let missing = dir.join("none.json");
+        assert!(load(&missing).is_empty());
+        let broken = dir.join("broken.json");
+        std::fs::write(&broken, "not json").expect("write");
+        assert!(load(&broken).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loaded_list_drops_items_the_writer_would_reject() {
+        let dir = std::env::temp_dir().join(format!("bnote-todo-edit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("list.json");
+        std::fs::write(
+            &path,
+            r#"[
+              {"content":"ok","status":"pending"},
+              {"content":"","status":"pending"},
+              {"content":"bad status","status":"done"},
+              {"content":"first active","status":"in_progress"},
+              {"content":"second active","status":"in_progress"}
+            ]"#,
+        )
+        .expect("write");
+        let loaded = load(&path);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].content, "ok");
+        assert_eq!(loaded[1].content, "first active");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_read_back_text_shows_every_state() {
+        assert_eq!(text(&[]), "(清单为空)");
+        let todos = vec![
+            item("读代码", "completed"),
+            item("修 bug", "in_progress"),
+            item("跑测试", "pending"),
+        ];
+        let out = text(&todos);
+        assert!(out.starts_with("清单:1/3 完成"), "{out}");
+        assert!(out.contains("- [x] 读代码"), "{out}");
+        assert!(out.contains("- [>] 修 bug  (进行中)"), "{out}");
+        assert!(out.contains("- [ ] 跑测试"), "{out}");
     }
 
     #[test]

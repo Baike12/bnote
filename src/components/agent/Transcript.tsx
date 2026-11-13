@@ -8,7 +8,6 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import type { AgentTodoItem } from "@/lib/tauri";
 import type { CodeProjectRef } from "@/state/appStore";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
@@ -20,6 +19,8 @@ import {
   workDurationLabel,
 } from "./toolSummary";
 import { answerRange, type ChatEntry, type ToolRecord, type Turn, type TurnStep } from "./model";
+import { TodoRowView } from "./TodoPanel";
+import { todoFromInput } from "./todos";
 import { createAgentCards, type AgentCardData, type AgentCards } from "./agentCards";
 import { elapsedMs, statusLabel, tokenLabel, type SubagentRun } from "./subagents";
 
@@ -79,12 +80,19 @@ export function AgentWelcome({
 function ToolCard({ tool }: { tool: ToolRecord }) {
   const running = tool.ok === undefined;
   const summary = toolSummary(tool.name, tool.input, running);
+  const canonical = canonicalToolName(tool.name);
   // An Agent's output is model-addressed (it carries the agent id for a later
   // SendMessage); the card is read by the user, so the id line is dropped.
   const output =
-    tool.output !== undefined && canonicalToolName(tool.name) === "Agent"
+    tool.output !== undefined && canonical === "Agent"
       ? stripAgentTrailer(tool.output)
       : tool.output;
+  // A todo write is a plan, not a payload: the card shows the list the call
+  // wrote (the same rows as the panel) instead of a wall of JSON.
+  const todos = canonical === "TodoWrite" ? todoFromInput(tool.input) : null;
+  // A no-argument tool (TodoRead, TaskList) has no input worth printing: the
+  // `{}` line only pushes the result down.
+  const input = JSON.stringify(tool.input ?? {}, null, 2);
   return (
     <details
       className="agent-tool"
@@ -113,10 +121,21 @@ function ToolCard({ tool }: { tool: ToolRecord }) {
           <path d="m9 18 6-6-6-6" />
         </svg>
       </summary>
-      <pre className="agent-tool-io">
-        {JSON.stringify(tool.input, null, 2)}
-        {output !== undefined && `\n→ ${output}`}
-      </pre>
+      {todos ? (
+        <div className="agent-tool-todos">
+          {todos.length === 0 ? (
+            <div className="agent-todos-empty">清单已清空</div>
+          ) : (
+            todos.map((row, i) => <TodoRowView key={`${i}:${row.content}`} row={row} />)
+          )}
+        </div>
+      ) : (
+        <pre className="agent-tool-io">
+          {input !== "{}" && input}
+          {input !== "{}" && output !== undefined && "\n"}
+          {output !== undefined && `→ ${output}`}
+        </pre>
+      )}
       {tool.images && tool.images.length > 0 && (
         <div className="agent-msg-images">
           {tool.images.map((img, j) => (
@@ -660,25 +679,6 @@ export function AgentTranscript({
       <div className="agent-read-guide" aria-hidden="true">
         <div className="agent-read-shade" />
       </div>
-    </div>
-  );
-}
-
-/** The todo tool's latest list, above the composer. */
-export function AgentTodos({ todos }: { todos: AgentTodoItem[] }) {
-  if (todos.length === 0) return null;
-  return (
-    <div className="agent-todos" aria-label="任务清单">
-      {todos.map((t) => (
-        <div key={t.content} className={`agent-todo is-${t.status}`}>
-          <span className="agent-todo-mark" aria-hidden="true">
-            {t.status === "completed" ? "✓" : t.status === "in_progress" ? "●" : "○"}
-          </span>
-          <span className="agent-todo-text">
-            {t.status === "in_progress" ? t.active_form : t.content}
-          </span>
-        </div>
-      ))}
     </div>
   );
 }

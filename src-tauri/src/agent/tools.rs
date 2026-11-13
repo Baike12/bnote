@@ -207,6 +207,7 @@ pub fn canonical(name: &str) -> &str {
         "bash_output" => "TaskOutput",
         "bash_kill" => "TaskStop",
         "todo" => "TodoWrite",
+        "todo_read" => "TodoRead",
         "task" => "Agent",
         "task_create" => "TaskCreate",
         "task_update" => "TaskUpdate",
@@ -362,6 +363,11 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         }),
     ),
     (
+        "TodoRead",
+        "Reads the session's current todo list back. Use it to check what is still open (after a compaction, before reporting done, or when resuming a long task); it takes no input.",
+        json!({"type": "object", "properties": {}}),
+    ),
+    (
         "Agent",
         "Launch a new agent to handle complex, multi-step tasks autonomously. The agent has its own context window and returns a single final report, so it is the right tool for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation.\n\nWhen to use: research across many files, exploring a codebase for an answer, or independent work that can run while you continue. When NOT to use: a simple directed search (use Glob/Grep), or work that depends on what you are doing right now.\n\nUsage: launch every agent you need in ONE message (several Agent tool calls side by side) — they run in parallel. Calls beyond the user's concurrency setting queue and start as slots free up, so also give each agent a self-contained `description` (it is the row the user watches). To continue an agent you already launched (including one that stopped on an error), use SendMessage with its agentId instead of spawning a new one. Trust the report and do not duplicate the agent's work yourself. `run_in_background: true` returns immediately; you are notified when it finishes. `fork: true` starts from this conversation's transcript instead of a fresh context.",
         json!({
@@ -515,6 +521,7 @@ pub fn is_concurrency_safe(name: &str) -> bool {
             | "Skill"
             | "TaskList"
             | "TaskGet"
+            | "TodoRead"
             | "Agent"
     )
 }

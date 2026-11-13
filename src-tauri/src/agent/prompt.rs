@@ -191,7 +191,7 @@ fn tool_rules(tools: &[String]) -> String {
     }
     if has("TodoWrite") {
         r.push_str(
-            "- Maintain multi-step work with TodoWrite: plan before starting (one item = one step), keep exactly one item in_progress, mark items completed as soon as they are done. Skip the list for single-step tasks.\n",
+            "- Maintain multi-step work with TodoWrite: plan before starting (one item = one step), keep exactly one item in_progress, mark items completed as soon as they are done. Skip the list for single-step tasks. TodoRead shows the current list again (after a compaction, or before you claim the work is done).\n",
         );
     }
     if has("Agent") {

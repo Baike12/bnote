@@ -270,6 +270,15 @@ pub async fn agent_start_session(
     }
     // SessionStart hooks run once, before the first request.
     session.run_start_hook().await;
+    // The todo list this session resumed (it is loaded from disk at
+    // construction): the panel shows it at once instead of waiting for the next
+    // TodoWrite, and the `todos` event cannot be used here — it would race the
+    // panel attaching its session id.
+    let todos = session
+        .todos
+        .lock()
+        .map(|g| crate::agent::todo::render(&g))
+        .unwrap_or_default();
 
     Ok(serde_json::json!({
         "sessionId": id,
@@ -289,6 +298,7 @@ pub async fn agent_start_session(
         // the catalog.
         "model": resolved.snapshot(),
         "selection": resolved.selection(),
+        "todos": todos,
     }))
 }
 

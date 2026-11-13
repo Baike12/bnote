@@ -189,6 +189,11 @@ export interface SessionInfo {
   selection?: ModelSelection;
   /** The agent definition the session runs with (id/name shown in the panel). */
   definition?: { id: string; name: string; description: string; tools: string[] };
+  /**
+   * The todo list this session resumed from disk (a restored session shows its
+   * plan at once; a fresh one gets an empty array).
+   */
+  todos?: AgentTodoItem[];
 }
 
 /** The session-level model config snapshot (written into the first line of the session record; a restored session continues with it). */

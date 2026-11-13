@@ -67,7 +67,8 @@ import { resolveSelection, sessionSelection } from "@/components/agent/modelSele
 import { createStreamHandler } from "@/components/agent/streamEvents";
 import { createTranscriptWriter } from "@/components/agent/transcriptWriter";
 import { parseBuiltinCommand, runBuiltinCommand } from "@/components/agent/builtinCommands";
-import { AgentTodos, AgentTranscript, AgentWelcome } from "@/components/agent/Transcript";
+import { AgentTranscript, AgentWelcome } from "@/components/agent/Transcript";
+import { AgentTodos } from "@/components/agent/TodoPanel";
 import { AgentMeta, AgentPermissionMenu } from "@/components/agent/Composer";
 import { ModelPicker } from "@/components/agent/ModelPicker";
 import { AgentHistoryDrawer } from "@/components/agent/HistoryDrawer";
@@ -516,6 +517,9 @@ export function AgentPanel() {
                   transcriptHome: home,
                   model,
                   selection: resolvedSelection,
+                  // The list the backend loaded for this session record (a
+                  // restored session shows the plan it was working through).
+                  todos: info.todos ?? c.todos,
                 }
               : c,
           ),
@@ -1681,7 +1685,9 @@ export function AgentPanel() {
           )
         }
       />
-      {activeConv && <AgentTodos todos={activeConv.todos} />}
+      {/* The session's plan, pinned above the composer; keyed by the session so
+          the expand state never carries over to another conversation. */}
+      {activeConv && <AgentTodos key={activeConv.key} todos={activeConv.todos} />}
 
       {/* Tool approval / model question (ZCode's bottom dock): a card stacked
           directly above the composer, not a centered modal. The backend turn

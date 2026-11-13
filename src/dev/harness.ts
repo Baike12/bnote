@@ -48,6 +48,7 @@ import { AgentHeader } from "@/components/agent/AgentHeader";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { AgentTranscript } from "@/components/agent/Transcript";
 import { createAgentCards } from "@/components/agent/agentCards";
+import { AgentTodos } from "@/components/agent/TodoPanel";
 import type { SubagentRun } from "@/components/agent/subagents";
 import {
   appendText,
@@ -283,7 +284,7 @@ declare global {
         rows?: (
           | { kind: "think"; text: string }
           | { kind: "text"; text: string }
-          | { kind: "tool"; id: string; name: string; output?: string }
+          | { kind: "tool"; id: string; name: string; input?: unknown; output?: string }
         )[];
         /**
          * A dispatched subagent: the Agent row of `rows` (id = the card's
@@ -305,6 +306,19 @@ declare global {
         };
       },
     ) => () => void;
+    /**
+     * The todo panel above the composer: the real AgentTodos with a fake list.
+     * The click lands in the host's dataset.lastAction (`toggle:open` /
+     * `toggle:closed`).
+     */
+    __mountAgentTodos: (spec: {
+      todos: {
+        content: string;
+        status: "pending" | "in_progress" | "completed";
+        active_form?: string;
+      }[];
+      width?: number;
+    }) => () => void;
     /** The syntax tree node names of the current document (for debugging). */
     __treeNames: () => string[];
     /** The syntax tree node names@range of a given line (1-based) (for debugging the render chain). */
@@ -1145,6 +1159,7 @@ window.__mountTranscript = (lines = [], opts = {}) => {
         turn.tools.push({
           id: row.id,
           name: row.name,
+          input: row.input,
           output: row.output,
           ok: row.output === undefined ? undefined : true,
         });
@@ -1170,6 +1185,53 @@ window.__mountTranscript = (lines = [], opts = {}) => {
     }),
   );
   return () => {
+    root.unmount();
+    host.remove();
+  };
+};
+
+/**
+ * The todo panel above the composer: the real AgentTodos with a fake list, to
+ * verify the collapsed header (done/total, the running item, the bar) and the
+ * rows behind one click.
+ */
+window.__mountAgentTodos = (spec) => {
+  for (const stale of document.querySelectorAll("#agent-todos-host")) stale.remove();
+  const host = document.createElement("div");
+  host.id = "agent-todos-host";
+  host.style.cssText = `position:fixed;left:0;top:0;width:${spec.width ?? 360}px;z-index:9999;display:flex;flex-direction:column;justify-content:flex-end;background:var(--bg1);padding:8px`;
+  document.body.appendChild(host);
+  const panel = document.createElement("aside");
+  panel.className = "agent-panel";
+  panel.style.setProperty("--agent-fs", "1");
+  panel.style.display = "flex";
+  panel.style.flexDirection = "column";
+  host.appendChild(panel);
+  const root = createRoot(panel);
+  const todos = spec.todos.map((todo) => ({
+    content: todo.content,
+    status: todo.status,
+    active_form: todo.active_form ?? todo.content,
+  }));
+  root.render(
+    createElement(AgentTodos, {
+      todos,
+      // The real panel keys the component by the conversation: remounting on a
+      // toggle shows the state the user sees next time they switch sessions.
+    }),
+  );
+  // Report the disclosure state as it changes (a MutationObserver on the
+  // aria-expanded attribute keeps the component itself untouched).
+  const watch = new MutationObserver(() => {
+    const head = host.querySelector(".agent-todos-head");
+    if (head) {
+      host.dataset.lastAction =
+        head.getAttribute("aria-expanded") === "true" ? "toggle:open" : "toggle:closed";
+    }
+  });
+  watch.observe(host, { attributes: true, subtree: true, attributeFilter: ["aria-expanded"] });
+  return () => {
+    watch.disconnect();
     root.unmount();
     host.remove();
   };

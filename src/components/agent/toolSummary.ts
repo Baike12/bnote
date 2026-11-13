@@ -28,6 +28,7 @@ const LEGACY_NAMES: Record<string, string> = {
   bash_kill: "TaskStop",
   todo: "TodoWrite",
   task: "Agent",
+  todo_read: "TodoRead",
   task_create: "TaskCreate",
   task_update: "TaskUpdate",
   task_list: "TaskList",
@@ -115,6 +116,8 @@ export function toolSummary(name: string, input: unknown, running: boolean): Too
       const todos = Array.isArray(inp.todos) ? inp.todos.length : 0;
       return { kind: kind("更新任务清单", "任务清单"), primary: `${todos} 项`, diff: null };
     }
+    case "TodoRead":
+      return { kind: "查看任务清单", primary: "", diff: null };
     case "Agent":
       return {
         kind: kind("派发子代理", "子代理"),
