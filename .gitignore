@@ -26,6 +26,9 @@ vendor/
 
 # Tooling caches
 .playwright-cli/
+coverage/
+e2e/.tmp/
+e2e/logs/
 
 # ZCode 会话本地产物(plan/工作流草稿与运行记录)
 .zcode/

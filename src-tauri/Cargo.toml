@@ -13,6 +13,12 @@ edition = "2021"
 name = "bnote_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# E2E only: the embedded WebDriver server plus the WebdriverIO execute/mocking
+# plugin (`window.__TAURI__.core.invoke('plugin:wdio|…')`). The feature is never
+# enabled by a release build, so neither surface ships.
+e2e = ["dep:tauri-plugin-wdio-webdriver", "dep:tauri-plugin-wdio"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -23,6 +29,13 @@ tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
+# Debug/E2E builds only (see [features].e2e): embeds a W3C WebDriver server in
+# the app, which is how macOS gets native E2E without an external driver.
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
+# Debug/E2E builds only: the execute/log/mock commands the WebdriverIO service
+# invokes from the webview. Without it every WebDriver command waits 5s for a
+# focus check that can never answer.
+tauri-plugin-wdio = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 notify = "8"

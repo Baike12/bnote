@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
-import type { TransactionSpec } from "@codemirror/state";
+import type { Transaction, TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { insertNewlineAndIndent, history, undo } from "@codemirror/commands";
+import { insertNewlineAndIndent, history, redo, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
 import {
   blockDecorationsField,
@@ -15,7 +15,7 @@ import { buildEmphasisMarks } from "./emphasisMarks";
 import { projectTodos } from "@/projects/model";
 import { fenceStateScan, mathRegions, mathRegionsField } from "./context";
 import { calloutRegions, calloutRegionsField, computeCalloutRegions } from "./callout";
-import { clearPerf, perfStats } from "@/perf/trace";
+import { clearPerf, perfEvents, perfStats, setPerfLevel } from "@/perf/trace";
 import { planTabout } from "./snippets/tabout";
 import { scanMath } from "./mathScan";
 import { buildSession, setSession } from "./snippets/extension";
@@ -72,6 +72,25 @@ function bigDoc(sections: number): string {
 
 const DOC = bigDoc(60); // ~900 lines
 
+/**
+ * `ensureSyntaxTree` parses ahead but restores the old viewport, so the state's
+ * language field can still hold a partial tree (measured: 3,026 of 11,825
+ * chars). `syntaxTree(state)` then only walks the parsed prefix and every
+ * "whole document" budget silently measures a quarter of the document.
+ * `forceParsing` solves this in a view by dispatching an empty transaction;
+ * the headless equivalent is `state.update({})`.
+ */
+function forceFullParse(state: EditorState): EditorState {
+  const parsed = ensureSyntaxTree(state, state.doc.length, 10_000);
+  if (!parsed) throw new Error("the test document did not fully parse");
+  if (parsed === syntaxTree(state)) return state;
+  const refreshed = state.update({}).state;
+  if (syntaxTree(refreshed).length !== refreshed.doc.length) {
+    throw new Error("the refreshed state still holds a partial syntax tree");
+  }
+  return refreshed;
+}
+
 function makeState(doc: string, cursorAt?: number): EditorState {
   const created = EditorState.create({
     doc,
@@ -82,8 +101,7 @@ function makeState(doc: string, cursorAt?: number): EditorState {
     ],
     selection: cursorAt === undefined ? undefined : EditorSelection.cursor(cursorAt),
   });
-  ensureSyntaxTree(created, created.doc.length);
-  return created;
+  return forceFullParse(created);
 }
 
 function medianOf(run: () => number, times: number): number {
@@ -605,7 +623,9 @@ describe("perf gate: entering and leaving math blocks (active flip rebuild)", ()
       }
     }
     expect(fence).toBeGreaterThan(0);
-    const outside = base.doc.line(fence - 1).from + 2;
+    // line(fence - 1) is the blank line before the block; +2 would land
+    // inside the opening $$. Use the paragraph line above the blank.
+    const outside = base.doc.line(fence - 2).from + 2;
     const inside = base.doc.line(fence + 1).from + 2;
     // Functional assertion: the block decoration values at the two positions
     // really differ (the active flip really happened).
@@ -1485,5 +1505,259 @@ describe("perf gate: incremental math/callout fields", () => {
     expect(state.field(calloutRegionsField)[0].to).toBe(before[0].to + 1);
     expect(calloutRegions(state)[0].title).toBe("标题");
     expect(perfStats().find((s) => s.name === "callout.scan")).toBeUndefined();
+  });
+});
+
+// ---- bulk edits, multi-cursor input and scrolling: the note-area operations
+// that a user performs without noticing, but that can hide an O(document)
+// rescan or a per-cursor full rebuild. Budgets follow the same 6× rule as the
+// rest of this file; the measured medians are printed next to each gate. ----
+
+function makeFieldsState(doc: string, cursorAt: number): EditorState {
+  const created = EditorState.create({
+    doc,
+    extensions: [
+      markdown({ base: markdownLanguage, extensions: [GFM] }),
+      blockDecorationsField,
+      mathRegionsField,
+      calloutRegionsField,
+    ],
+    selection: EditorSelection.cursor(cursorAt),
+  });
+  created.field(mathRegionsField);
+  created.field(calloutRegionsField);
+  created.field(blockDecorationsField);
+  return forceFullParse(created);
+}
+
+describe("perf gate: note-area bulk edits, multi-cursor and scrolling (900 lines)", () => {
+  it("an ordinary letter maps block statics instead of re-walking them, and never scans math/callouts", () => {
+    const at = DOC.indexOf("这是段落文字") + 2;
+    const state = makeFieldsState(DOC, at);
+    // Full tracing records the span's `mode` field even for a fast mapping;
+    // `slow` mode only records spans over 25ms, where the mode is unknown.
+    setPerfLevel("full");
+    clearPerf();
+    try {
+      const next = state.update({
+        changes: { from: at, insert: "字" },
+        selection: { anchor: at + 1 },
+      }).state;
+
+      const statics = perfEvents().filter((e) => e.name === "livePreview.statics");
+      expect(statics).toHaveLength(1);
+      expect(statics[0]?.data?.mode).toBe("map");
+      expect(perfStats().find((s) => s.name === "math.scan")).toBeUndefined();
+      expect(perfStats().find((s) => s.name === "callout.scan")).toBeUndefined();
+      expect(next.field(mathRegionsField).length).toBeGreaterThan(0);
+    } finally {
+      setPerfLevel("slow");
+    }
+  });
+
+  it("pasting 5,000 characters in one transaction + full rebuild median < 40ms", () => {
+    const state = makeState(DOC, 0);
+    const paste = "粘贴的一段较长正文,包含中文标点与英文 words。".repeat(300).slice(0, 5000);
+    const at = state.doc.line(300).from + 3;
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = state.update({
+        changes: { from: at, insert: paste },
+        selection: EditorSelection.cursor(at + paste.length),
+      }).state;
+      buildInlineDecorations({
+        state: next,
+        visibleRanges: [{ from: 0, to: next.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 9);
+    console.warn(`[perf] paste 5k median ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(15);
+  });
+
+  it("deleting 300 lines in the middle + full rebuild median < 30ms", () => {
+    const state = makeState(DOC, 0);
+    const from = state.doc.line(300).from;
+    const to = state.doc.line(600).from;
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = state.update({
+        changes: { from, to },
+        selection: EditorSelection.cursor(from),
+      }).state;
+      buildInlineDecorations({
+        state: next,
+        visibleRanges: [{ from: 0, to: next.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 9);
+    console.warn(`[perf] delete 300 lines median ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(6);
+  });
+
+  it("deleting the whole document (select-all + Backspace) + rebuild median < 10ms", () => {
+    const state = makeState(DOC, 0);
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = state.update({
+        changes: { from: 0, to: state.doc.length },
+        selection: EditorSelection.cursor(0),
+      }).state;
+      buildInlineDecorations({ state: next, visibleRanges: [{ from: 0, to: 0 }] });
+      return performance.now() - t0;
+    }, 9);
+    console.warn(`[perf] delete all median ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(1);
+  });
+
+  it("20 multi-cursor insertions in one transaction + full rebuild median < 40ms", () => {
+    const state = makeState(DOC, 0);
+    const heads: number[] = [];
+    for (let n = 20; n <= state.doc.lines - 20; n += 40) heads.push(state.doc.line(n).to);
+    expect(heads.length).toBeGreaterThanOrEqual(20);
+
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = state.update({
+        changes: heads.map((from) => ({ from, insert: "x" })),
+        selection: EditorSelection.create(heads.map((head) => EditorSelection.cursor(head + 1))),
+      }).state;
+      buildInlineDecorations({
+        state: next,
+        visibleRanges: [{ from: 0, to: next.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 9);
+    console.warn(`[perf] 20 multi-cursor inserts median ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(10);
+  });
+
+  it("60 viewport-sized rebuilds while scrolling median < 4ms", () => {
+    const state = makeState(DOC, 0);
+    const viewportLines = 40;
+    const tops: number[] = [];
+    for (let top = 1; top + viewportLines <= state.doc.lines && tops.length < 60; top += 13) {
+      tops.push(top);
+    }
+    expect(tops.length).toBe(60);
+
+    const rangeAt = (top: number) => {
+      const from = state.doc.line(top).from;
+      const to = state.doc.line(top + viewportLines).to;
+      return [{ from, to }];
+    };
+    // Warm the widget/KaTeX caches exactly as the first scroll pass would.
+    for (const top of tops) buildInlineDecorations({ state, visibleRanges: rangeAt(top) });
+
+    const samples = tops.map((top) => {
+      const t0 = performance.now();
+      const set = buildInlineDecorations({ state, visibleRanges: rangeAt(top) });
+      expect(set.size).toBeGreaterThan(0);
+      return performance.now() - t0;
+    });
+    samples.sort((a, b) => a - b);
+    const median = samples[Math.floor(samples.length / 2)];
+    console.warn(`[perf] viewport scroll rebuild median ${median.toFixed(3)}ms`);
+    expect(median).toBeLessThan(0.3);
+  });
+
+  it("typing in a 10,000-character single paragraph + rebuild median < 20ms", () => {
+    const paragraph = "这是一段很长很长的正文,用来模拟用户把一整章内容写在一个段落里。".repeat(400);
+    const doc = `# 长段落\n\n${paragraph.slice(0, 10000)}\n`;
+    const at = 5000;
+    const state = makeState(doc, at);
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = state.update({
+        changes: { from: at, insert: "字" },
+        selection: EditorSelection.cursor(at + 1),
+      }).state;
+      buildInlineDecorations({
+        state: next,
+        visibleRanges: [{ from: 0, to: next.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 9);
+    console.warn(`[perf] long-paragraph keystroke median ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(6);
+  });
+
+  it("Backspace joining two blocks + full rebuild median < 6ms", () => {
+    // Deleting the newline before a paragraph is the worst common Backspace:
+    // the markdown parser sees a new block start and the block decorations
+    // (math/callout scanners) have to agree with the new structure.
+    const state = makeState(DOC, 0);
+    const at = state.doc.line(300).from;
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = state.update({
+        changes: { from: at - 1, to: at },
+        selection: EditorSelection.cursor(at - 1),
+      }).state;
+      buildInlineDecorations({
+        state: next,
+        visibleRanges: [{ from: 0, to: next.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 9);
+    console.warn(`[perf] backspace join median ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(6);
+  });
+
+  it("redo after undo + full rebuild median < 6ms", () => {
+    let base = EditorState.create({
+      doc: DOC,
+      extensions: [
+        markdown({ base: markdownLanguage, extensions: [GFM] }),
+        blockDecorationsField,
+        history(),
+      ],
+    });
+    base = forceFullParse(base);
+    const at = base.doc.line(300).from + 3;
+    const edited = base.update({
+      changes: { from: at, insert: "改写" },
+      selection: EditorSelection.cursor(at + 2),
+      userEvent: "input.type",
+    }).state;
+
+    const median = medianOf(() => {
+      let state = edited;
+      const dispatch = (tr: Transaction) => {
+        state = tr.state;
+      };
+      // The undo itself is setup: the redo dispatch is what the user waits for
+      // (⌘⇧Z), and it re-applies the change to the same document position.
+      undo({ state, dispatch });
+      const t0 = performance.now();
+      redo({ state, dispatch });
+      buildInlineDecorations({
+        state,
+        visibleRanges: [{ from: 0, to: state.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 9);
+    console.warn(`[perf] redo after undo median ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(6);
+  });
+
+  it("appending a paragraph at the end of the document + rebuild median < 6ms", () => {
+    const state = makeState(DOC, 0);
+    const at = state.doc.length;
+    const insert = "\n\n新增的结尾段落,用来模拟用户在长文档末尾继续写作,内容长度接近一个正常段落。";
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = state.update({
+        changes: { from: at, insert },
+        selection: EditorSelection.cursor(at + insert.length),
+      }).state;
+      buildInlineDecorations({
+        state: next,
+        visibleRanges: [{ from: 0, to: next.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 9);
+    console.warn(`[perf] append at EOF median ${median.toFixed(2)}ms`);
+    expect(median).toBeLessThan(6);
   });
 });

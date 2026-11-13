@@ -80,11 +80,13 @@ pnpm tauri build
 ### 测试与检查
 
 ```bash
-pnpm gate                                            # lint + typecheck + 格式检查 + 单元测试
+pnpm gate                                         # 快速门禁：lint + 类型 + 格式 + 单元/集成测试
+pnpm gate:full                                    # 追加覆盖率、性能门禁、Rust 测试
+pnpm test:e2e:build && pnpm test:e2e              # 原生端到端（macOS，隔离仓库）
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
-cargo check --manifest-path src-tauri/Cargo.toml  # Rust 编译检查
-cargo fmt --manifest-path src-tauri/Cargo.toml --check        # Rust 格式检查
 ```
+
+分层边界、覆盖率策略与 E2E 协议见 [docs/TESTING.md](docs/TESTING.md)。
 
 ## 四种模式
 

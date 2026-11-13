@@ -18,7 +18,14 @@ import {
   toolSummary,
   workDurationLabel,
 } from "./toolSummary";
-import { answerStepIndex, finalText, type ChatEntry, type ToolRecord, type Turn, type TurnStep } from "./model";
+import {
+  answerStepIndex,
+  finalText,
+  type ChatEntry,
+  type ToolRecord,
+  type Turn,
+  type TurnStep,
+} from "./model";
 import { TodoRowView } from "./TodoPanel";
 import { todoFromInput } from "./todos";
 import { createAgentCards, type AgentCardData, type AgentCards } from "./agentCards";

@@ -80,11 +80,13 @@ Produces `.app` / `.dmg` bundles via Tauri.
 ### Tests and checks
 
 ```bash
-pnpm gate                                            # lint + typecheck + format check + unit tests
+pnpm gate                                         # fast gate: lint + types + format + unit/integration
+pnpm gate:full                                    # + coverage, perf gates, Rust tests
+pnpm test:e2e:build && pnpm test:e2e              # native E2E (macOS, isolated vault)
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust tests
-cargo check --manifest-path src-tauri/Cargo.toml  # Rust compile check
-cargo fmt --manifest-path src-tauri/Cargo.toml --check       # Rust format check
 ```
+
+The layer boundaries, coverage policy and E2E protocol are in [docs/TESTING.md](docs/TESTING.md).
 
 ## Four modes
 

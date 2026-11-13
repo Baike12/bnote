@@ -4,7 +4,17 @@ import globals from "globals";
 
 export default tseslint.config(
   {
-    ignores: ["dist/**", "src-tauri/**", "vendor/**", "node_modules/**", ".zcode/**"],
+    ignores: [
+      "dist/**",
+      "src-tauri/**",
+      "vendor/**",
+      "node_modules/**",
+      ".zcode/**",
+      // Generated output and disposable E2E workspaces are not source.
+      "coverage/**",
+      "e2e/.tmp/**",
+      "e2e/logs/**",
+    ],
   },
   ...tseslint.configs.recommended,
   {

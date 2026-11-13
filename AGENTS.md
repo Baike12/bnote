@@ -147,13 +147,15 @@ Read **[DEBUG.md](./DEBUG.md)** before changing behavior; it defines the two loo
 
 ## Test Gate
 
-Run **`pnpm gate`** (= `pnpm lint` + `pnpm typecheck` + `pnpm test`) and make it pass before calling any change done.
+Run **`pnpm gate`** (= `pnpm lint` + `pnpm typecheck` + `pnpm format:check` + `pnpm test`) and make it pass before calling any change done. **`pnpm gate:full`** adds the E2E typecheck, coverage thresholds, perf gates and Rust tests. The full contract, layer boundaries and commands are in **[docs/TESTING.md](./docs/TESTING.md)**.
 
-- **Test root causes, not symptoms.** Put regression tests next to the module as `*.test.ts` (vitest, node environment). Lock behavior and invariants: normal flow, boundaries, idempotence, bidirectional rules.
-- **A feature is not done without tests and gates.** Hot paths also get an order-of-magnitude perf gate.
+- **Test root causes, not symptoms.** Put regression tests next to the module as `*.test.ts` (vitest, node environment). Cross-module flows go through the fake IPC boundary as `*.integration.test.ts` (jsdom); see docs/TESTING.md. Lock behavior and invariants: normal flow, boundaries, idempotence, bidirectional rules.
+- **A feature is not done without tests and gates.** Hot paths also get an order-of-magnitude perf gate (`pnpm test:perf`).
+- **Coverage is a ratchet.** `pnpm test:coverage` fails below the global and per-domain thresholds; a new module lands with tests or an explicit threshold update in the same change.
 - **Geometry and feel need browser measurement** in addition to unit tests: pure tests lock control flow, not pixels. Use the harness protocol in DEBUG.md and compare before/after.
 - **Lint errors block; warnings need a reason.** New warnings (engine `any` assertions, dev-bridge `console.log`) must be justified.
 - **Rust changes** run `cargo check` in `src-tauri` (and `cargo test --lib` for behavior changes), plus `cargo fmt` (the repo is rustfmt-clean; `rustfmt.toml` at the repo root sets the width). `src-tauri` is a single package: one lockfile and one target directory. Rust is not part of `pnpm gate`.
+- **E2E covers the real binary only.** `pnpm test:e2e:build` builds the app with the Cargo `e2e` feature (embedded WebDriver, isolated `--bnote-data-dir`); `pnpm test:e2e` runs it. Never point E2E at the user's real vault.
 - If the gate fails under heavy machine load, check the load average and rerun the failing test alone; report the real result.
 
 ## Language

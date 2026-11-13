@@ -40,21 +40,17 @@ async fn mcp_stdio_roundtrip() {
     let script = dir.join("server.py");
     std::fs::write(&script, PY_SERVER).unwrap();
 
-    let cfg = bnote_lib::agent::AgentConfig {
-        mcp_servers: [(
-            "pytest".to_string(),
-            serde_json::from_value(json!({
-                "type": "stdio",
-                "command": "python3",
-                "args": [script.to_string_lossy().to_string()],
-            }))
-            .unwrap(),
-        )]
-        .into_iter()
-        .collect(),
-        ..Default::default()
-    };
-    let manager = bnote_lib::agent::mcp::McpManager::connect_all(&cfg).await;
+    let mut servers = std::collections::BTreeMap::new();
+    servers.insert(
+        "pytest".to_string(),
+        serde_json::from_value(json!({
+            "type": "stdio",
+            "command": "python3",
+            "args": [script.to_string_lossy().to_string()],
+        }))
+        .unwrap(),
+    );
+    let manager = bnote_lib::agent::mcp::McpManager::connect_all(&servers, &[]).await;
     assert!(
         manager.errors.is_empty(),
         "mcp errors: {:?}",
@@ -63,10 +59,11 @@ async fn mcp_stdio_roundtrip() {
     assert_eq!(manager.tools.len(), 1);
     assert_eq!(manager.tools[0].name, "mcp__pytest__echo");
 
-    let out = manager
+    let (out, is_error) = manager
         .call("pytest", "echo", &json!({"text": "hello bnote"}))
         .await
         .expect("call echo");
+    assert!(!is_error, "echo should succeed");
     assert_eq!(out, "echo:hello bnote");
 }
 
@@ -93,7 +90,22 @@ async fn live_provider_turn_with_tool() {
         panic!("no ~/.claude/settings.json credentials");
     };
     let provider =
-        bnote_lib::agent::Provider::new("anthropic", &base, &token, "claude-sonnet-4-5", 2048);
+        bnote_lib::agent::Provider::from_resolved(&bnote_lib::agent::models::ResolvedModel {
+            provider_id: "anthropic".into(),
+            provider_name: "Anthropic".into(),
+            model_id: "claude-sonnet-4-5".into(),
+            model_name: "Claude Sonnet 4.5".into(),
+            protocol: "anthropic".into(),
+            base_url: base,
+            api_key: token,
+            model: "claude-sonnet-4-5".into(),
+            max_tokens: 2048,
+            context_window: 200_000,
+            vision: true,
+            thinking_level: "off".into(),
+            patch: json!({}),
+            off_patch: json!({}),
+        });
 
     let tools = vec![bnote_lib::agent::types::ToolDef {
         name: "read_file".into(),
@@ -133,9 +145,12 @@ async fn live_provider_turn_with_tool() {
         turn.text
     );
     let (id, name, input) = match &turn.tool_calls[0] {
-        bnote_lib::agent::types::Content::ToolUse { id, name, input } => {
-            (id.clone(), name.clone(), input.clone())
-        }
+        bnote_lib::agent::types::Content::ToolUse {
+            id,
+            name,
+            input,
+            input_error: _,
+        } => (id.clone(), name.clone(), input.clone()),
         other => panic!("unexpected content: {:?}", other),
     };
     assert_eq!(name, "read_file");
@@ -156,6 +171,7 @@ async fn live_provider_turn_with_tool() {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
+                input_error: None,
             }],
         },
         bnote_lib::agent::types::ChatItem::Message {

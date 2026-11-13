@@ -1,0 +1,122 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # `labeled` lets a PR opt into perf/e2e by adding the label.
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    # Nightly E2E + perf: the two layers that are too slow or too sensitive to
+    # run on every PR.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: frontend (lint, types, unit, integration, coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm typecheck:e2e
+      - run: pnpm format:check
+      - run: pnpm test:coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  rust:
+    name: rust (fmt, check, tests)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --test command_surface
+
+  perf:
+    name: perf gates
+    # Hot-path order-of-magnitude gates. A shared runner can be noisy, so they
+    # run on main, nightly, and PRs explicitly labeled `perf` — not on every PR.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      contains(github.event.pull_request.labels.*.name, 'perf')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:perf
+
+  e2e:
+    name: native e2e (macOS)
+    # The real Tauri binary, the real WKWebView and the real Rust backend.
+    # Nightly, manual dispatch, or a PR labeled `e2e`: a debug build takes long
+    # enough that it does not belong on every PR.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:e2e:build
+      - run: pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure
+          # The workspace and config are removed only on a passing run; driver
+          # logs are kept in e2e/logs.
+          path: |
+            e2e/.tmp/
+            e2e/logs/
+          retention-days: 7

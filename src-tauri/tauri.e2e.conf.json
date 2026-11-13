@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        "default",
+        {
+          "identifier": "e2e",
+          "description": "WebdriverIO-only: execute/log/window commands. Loaded only by this E2E config.",
+          "windows": ["main"],
+          "permissions": ["wdio:default"]
+        }
+      ]
+    }
+  }
+}

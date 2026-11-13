@@ -75,9 +75,9 @@ pub fn restore_window_bounds(app: &tauri::AppHandle) {
     let Some(window) = crate::main_window(app) else {
         return;
     };
-    let Ok(dir) = app.path().app_data_dir() else {
-        return;
-    };
+    // Same resolver as startup: the E2E data-dir override must not leak the
+    // user's real window geometry into an isolated test run.
+    let dir = crate::data_dir_for(app);
     let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
         return; // First launch: no config file, keep the default geometry.
     };

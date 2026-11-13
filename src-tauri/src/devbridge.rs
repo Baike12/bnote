@@ -806,7 +806,9 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         | "set_study_preview_read_keys" | "set_study_preview_shortcuts"
         | "scroll_study_preview" | "set_study_preview_zoom"
         | "focus_study_preview"
-        | "merge_study_preview_annotations" => {
+        | "merge_study_preview_annotations"
+        | "show_creative_preview" | "set_creative_preview_bounds"
+        | "set_creative_preview_visible" | "close_creative_preview" => {
             return Err(format!(
                 "BROWSER_MODE: `{}` creates a native webview/window in the app — not available from a browser tab",
                 cmd

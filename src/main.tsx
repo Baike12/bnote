@@ -16,6 +16,14 @@ import { installPerf } from "@/perf";
 // before anything mounts (no-op inside the app and in production builds).
 installBrowserMode();
 
+// E2E build only (`VITE_E2E=1` in `pnpm test:e2e:build`): the WebdriverIO
+// service executes scripts through `window.__wdio_original_core__`, which this
+// plugin captures. The flag is a compile-time constant, so a production bundle
+// drops the branch and the import.
+if (import.meta.env.VITE_E2E === "1") {
+  void import("@wdio/tauri-plugin");
+}
+
 // The performance system: passive observers + the JSONL sink under
 // <vault>/.bnote/perf/. It records slow keys, long tasks and slow phases only,
 // so it is safe to leave on; `window.__bnotePerf.start()` opens a full window.

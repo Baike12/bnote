@@ -166,9 +166,28 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let _ = (app, event);
 }
 
+/// The app data directory (config, keybindings, vimrc).
+///
+/// An E2E build may redirect it with `--bnote-data-dir=<path>`, so a test run
+/// never reads or writes the user's real config, vault MRU or agent state. The
+/// flag is compiled in only with the `e2e` feature; a normal build ignores it.
+fn data_dir_for(app: &tauri::AppHandle) -> PathBuf {
+    #[cfg(feature = "e2e")]
+    if let Some(dir) = std::env::args().find_map(|arg| {
+        arg.strip_prefix("--bnote-data-dir=")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    }) {
+        return dir;
+    }
+    app.path()
+        .app_data_dir()
+        .expect("failed to resolve app data dir")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .enable_macos_default_menu(false)
         .on_menu_event(handle_menu_event)
         .plugin(tauri_plugin_opener::init())
@@ -179,12 +198,20 @@ pub fn run() {
         // scripts are blocked (see commands/preview.rs).
         .register_uri_scheme_protocol(commands::preview::SCHEME, |_ctx, request| {
             commands::preview::serve(&request)
-        })
+        });
+
+    // E2E build only (`tauri build --debug --features e2e`): the embedded
+    // WebDriver server plus the execute/log plugin the WebdriverIO service
+    // calls through `window.__TAURI__`. A release build never enables this
+    // feature, so neither surface is part of the shipped binary.
+    #[cfg(feature = "e2e")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder
         .setup(|app| {
-            let data_dir: PathBuf = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
+            let data_dir = data_dir_for(app.handle());
             std::fs::create_dir_all(&data_dir)?;
             // The agent home is the open vault's `.bnote`, and no vault is open
             // yet. It is created, and the legacy configuration is copied into
