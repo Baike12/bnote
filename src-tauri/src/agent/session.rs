@@ -35,8 +35,16 @@ use tokio::sync::oneshot;
 
 /// Cap on tool-call rounds per turn when the definition does not set one.
 const DEFAULT_MAX_TURNS: u32 = 25;
-/// Cap for subagent turns (subagents report back, they do not converse).
-const SUBAGENT_MAX_TURNS: u32 = 20;
+/// Cap for subagent turns. A read-only explorer on a real repository needs
+/// 20–40 rounds (measured: three explore agents on a 300-file repo each used
+/// exactly 20 and were cut off mid-exploration), so the cap has to be higher
+/// than a chat turn's; running out still ends in an explicit report request
+/// (see REPORT_REQUEST) instead of a silent cut.
+const SUBAGENT_MAX_TURNS: u32 = 60;
+/// One extra round granted when a subagent hits the round cap: the work it did
+/// is worthless to the parent without a report, so the last round asks for one
+/// (bounded — the counter allows exactly one).
+const REPORT_REQUEST: &str = "You have used your whole step budget. Stop calling tools now and write the final report from what you have already read: no apology, no recap of the steps, just the structured report the task asked for.";
 /// CC's fork child cap (forkSubagent.ts).
 const FORK_MAX_TURNS: u32 = 200;
 /// Token buffer kept free below the context window; auto-compact fires first.
@@ -1194,6 +1202,8 @@ impl Session {
         // Stop hooks may force another turn; capped so a broken hook cannot
         // loop forever.
         let mut stop_blocks = 0u32;
+        // The one extra round a subagent gets to hand in its report at the cap.
+        let mut report_requests = 0u32;
         loop {
             if self.ctx.abort.is_aborted() {
                 return Ok(TurnOutcome::new("aborted"));
@@ -1392,6 +1402,20 @@ impl Session {
                 return Ok(TurnOutcome::new("aborted"));
             }
             if turn_count >= max_turns {
+                // A subagent that runs out of steps mid-exploration has done
+                // real work the parent cannot see: one extra round asks it for
+                // the report before the loop gives up. Bounded by the counter,
+                // so a model that keeps calling tools still ends here.
+                if self.parent_id.is_some() && report_requests == 0 {
+                    report_requests += 1;
+                    self.emit(AgentEvent::Notice {
+                        text: "子代理达到步数上限,让它先交出报告".into(),
+                    });
+                    if let Ok(mut items) = self.items.lock() {
+                        items.push(ChatItem::user_text(REPORT_REQUEST));
+                    }
+                    continue;
+                }
                 self.emit(AgentEvent::Notice {
                     text: format!("达到最大轮次({max_turns}),本轮结束;可以继续发消息接着做。"),
                 });
@@ -2401,9 +2425,17 @@ impl Session {
                 .await;
             let mut report = last_assistant_text(&runner_child.history());
             if report.trim().is_empty() {
-                if let Err(e) = &loop_result {
-                    report = format!("(子代理在产出报告前中止: {e})");
-                }
+                // No closing text: say what actually happened instead of
+                // handing back the opening line (the old behaviour, and the
+                // reason a 20-round exploration answered with one sentence).
+                let work = count_tool_uses(&runner_child.history());
+                report = match &loop_result {
+                    Err(e) => format!("(子代理在产出报告前中止: {e})"),
+                    Ok(outcome) if outcome.reason == "max_turns" => format!(
+                        "(子代理用完 {SUBAGENT_MAX_TURNS} 步仍未交出报告;它执行了 {work} 次工具调用,结论未收集,需要时可以再派一次让它写报告)"
+                    ),
+                    _ => format!("(子代理没有产出报告;执行了 {work} 次工具调用)"),
+                };
             }
             let usage = runner_child.last_usage.lock().map(|g| *g).unwrap_or(None);
             // The end of the run: the panel closes the row here (the child's
@@ -2773,29 +2805,43 @@ fn subagent_session_id(parent: &str, spawn_key: &str) -> String {
     format!("{parent}-{spawn_key}")
 }
 
-/// The last assistant text: the model's own closing message. Walks backwards
-/// until a message with text is found (CC's finalizeAgentTool), so a subagent
-/// that ended on a tool call still reports something.
-fn last_assistant_text(items: &[ChatItem]) -> String {
-    for item in items.iter().rev() {
-        if let ChatItem::Message { role, content } = item {
-            if role != "assistant" {
-                continue;
-            }
-            let text: String = content
-                .iter()
-                .filter_map(|c| match c {
-                    Content::Text { text } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !text.trim().is_empty() {
-                return text;
-            }
-        }
+/// How many tool calls the history holds: what a run without a report actually
+/// did, so the tool result can say more than "empty".
+fn count_tool_uses(items: &[ChatItem]) -> usize {
+    let mut count = 0;
+    for item in items {
+        let ChatItem::Message { content, .. } = item;
+        count += content
+            .iter()
+            .filter(|c| matches!(c, Content::ToolUse { .. }))
+            .count();
     }
-    String::new()
+    count
+}
+
+/// The text of the child's **last** assistant message: the report.
+///
+/// Only the last message counts. Walking back to the newest message that has
+/// any text (the previous shape) returned the opening line — "I'll explore the
+/// backend structure" — as the report whenever the run stopped on a tool call,
+/// so a child that had read thirty files reported one sentence. An empty result
+/// means "no report", which the caller states explicitly instead.
+fn last_assistant_text(items: &[ChatItem]) -> String {
+    let Some(ChatItem::Message { content, .. }) = items
+        .iter()
+        .rev()
+        .find(|item| matches!(item, ChatItem::Message { role, .. } if role == "assistant"))
+    else {
+        return String::new();
+    };
+    content
+        .iter()
+        .filter_map(|c| match c {
+            Content::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Drops a trailing assistant message whose tool calls have no results yet: a
@@ -3012,6 +3058,52 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn the_report_is_the_last_message_never_a_stale_opening_line() {
+        // Measured defect: three explore agents ran exactly 20 tool rounds,
+        // were cut off at the cap, and the tool result handed the parent the
+        // first line they wrote ("I'll explore the backend structure") because
+        // the helper walked backwards to the newest message with any text.
+        let assistant_text = |text: &str| ChatItem::Message {
+            role: "assistant".into(),
+            content: vec![Content::Text { text: text.into() }],
+        };
+        let assistant_tools = || ChatItem::Message {
+            role: "assistant".into(),
+            content: vec![Content::ToolUse {
+                id: "t1".into(),
+                name: "Read".into(),
+                input: json!({"path": "a.rs"}),
+                input_error: None,
+            }],
+        };
+        let items = vec![
+            ChatItem::user_text("explore the repo"),
+            assistant_text("I'll explore the backend structure systematically."),
+            assistant_tools(),
+            ChatItem::Message {
+                role: "user".into(),
+                content: vec![Content::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "…".into(),
+                    is_error: false,
+                    images: Vec::new(),
+                }],
+            },
+        ];
+        assert_eq!(
+            last_assistant_text(&items),
+            "",
+            "a run that ended on a tool call has no report, not the opening line"
+        );
+        assert_eq!(count_tool_uses(&items), 1);
+
+        // A real final report is the answer.
+        let mut with_report = items.clone();
+        with_report.push(assistant_text("# Report"));
+        assert_eq!(last_assistant_text(&with_report), "# Report");
+    }
+
+    #[test]
     fn two_children_of_one_definition_get_distinct_session_ids() {
         // Regression: the id used to be `{parent}-sub-{definition}`, so two
         // general-purpose agents of one parent collided and the second spawn
@@ -3095,7 +3187,11 @@ mod tests {
     }
 
     #[test]
-    fn the_last_assistant_text_skips_trailing_tool_only_messages() {
+    fn the_last_assistant_text_does_not_reach_back_past_a_trailing_tool_call() {
+        // The old shape here asserted the opposite ("skips trailing tool-only
+        // messages") and that assertion is what produced the user-visible bug:
+        // a subagent cut off after twenty tool rounds reported its opening line
+        // as the answer. A trailing tool-only message means "no report".
         let items = vec![
             ChatItem::user_text("do it"),
             ChatItem::Message {
@@ -3114,7 +3210,7 @@ mod tests {
                 }],
             },
         ];
-        assert_eq!(last_assistant_text(&items), "first answer");
+        assert_eq!(last_assistant_text(&items), "");
     }
 
     #[test]
