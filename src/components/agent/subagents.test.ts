@@ -6,8 +6,6 @@ import {
   applyStart,
   elapsedMs,
   newSubagentRun,
-  runningCount,
-  runsOf,
   statusLabel,
   tokenLabel,
   type SubagentRun,
@@ -22,8 +20,9 @@ import {
  * routing key and must never become a label.
  */
 
-const start = (agentId: string, label = "调研 API") => ({
+const start = (agentId: string, label = "调研 API", toolUseId = `call-${agentId}`) => ({
   agentId,
+  toolUseId,
   label,
   kind: "general-purpose",
   model: "deepseek-flash",
@@ -47,7 +46,6 @@ describe("subagent rows", () => {
     runs = applyStart(runs, start("a1", "第一"), "c1", 1000);
     runs = applyStart(runs, start("a2", "第二"), "c1", 2000);
     expect(runs.map((r) => r.label)).toEqual(["第一", "第二"]);
-    expect(runsOf(runs).map((r) => r.label)).toEqual(["第一", "第二"]);
   });
 
   it("a resumed agent flips back to running instead of adding a second row", () => {
@@ -64,7 +62,7 @@ describe("subagent rows", () => {
     expect(runs[0]?.status).toBe("running");
     expect(runs[0]?.label).toBe("原始任务");
     expect(runs[0]?.report).toBeNull();
-    expect(runningCount(runs)).toBe(1);
+    expect(runs.filter((run) => run.status === "running")).toHaveLength(1);
   });
 
   it("keep the same conv key across a resume (the transcript stays readable)", () => {
@@ -73,6 +71,15 @@ describe("subagent rows", () => {
     runs = applyEnd(runs, { agentId: "a1", ok: true, stopped: false, report: "", tokens: 0 }, 2000);
     runs = applyStart(runs, start("a1"), "c1", 3000);
     expect(runs[0]?.convKey).toBe(key);
+  });
+
+  it("keep the card at the call that created the agent when it is resumed", () => {
+    // The resume rides on a SendMessage row, not on a second Agent call: the
+    // card must stay where the agent was dispatched.
+    let runs = applyStart([], start("a1", "原始任务", "call-first"), "c1", 1000);
+    runs = applyEnd(runs, { agentId: "a1", ok: true, stopped: false, report: "", tokens: 0 }, 2000);
+    runs = applyStart(runs, start("a1", "general-purpose", "call-resume"), "c1", 3000);
+    expect(runs[0]?.toolUseId).toBe("call-first");
   });
 
   it("close a row as done, failed or stopped", () => {
@@ -128,19 +135,27 @@ describe("token labels", () => {
  * source: the strip and the tool card never interpolate an agent id.
  */
 describe("no agent id on screen", () => {
-  const strip = readFileSync("src/components/agent/AgentRuns.tsx", "utf8");
   const transcript = readFileSync("src/components/agent/Transcript.tsx", "utf8");
 
-  it("the strip renders labels, not ids", () => {
-    // `key={run.agentId}` is a React key (never rendered); any other use would
-    // print the id on screen.
-    const uses = strip.match(/\{run\.agentId\}/g) ?? [];
-    const keyed = strip.match(/key=\{run\.agentId\}/g) ?? [];
-    expect(uses.length).toBe(keyed.length);
-    expect(strip).toContain("run.label");
+  it("the subagent card renders the label, never the id", () => {
+    // `agentId`/`toolUseId` are routing keys: any interpolation of them into a
+    // text node would print them on screen. The card's visible name is the
+    // description the model wrote.
+    expect(transcript).toContain("{run.label}");
+    expect(transcript).not.toContain("{run.agentId}");
+    expect(transcript).not.toContain("{run.toolUseId}");
   });
 
   it("the Agent tool card drops the model-addressed trailer", () => {
     expect(transcript).toContain("stripAgentTrailer");
+  });
+
+  it("the panel feeds the cards from its own convs and pins no strip", () => {
+    // One display model: the card lives in the transcript at the Agent call.
+    // A second, sticky list would be a second writer of the same thing.
+    const panel = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
+    expect(panel).toContain("collectAgentCards(convs)");
+    expect(panel).toContain("agents={agentCards}");
+    expect(panel).not.toContain("AgentRuns");
   });
 });

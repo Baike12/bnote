@@ -47,7 +47,7 @@ import { useCodeStore } from "@/code/store";
 import { AgentHeader } from "@/components/agent/AgentHeader";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { AgentTranscript } from "@/components/agent/Transcript";
-import { AgentRuns } from "@/components/agent/AgentRuns";
+import { createAgentCards } from "@/components/agent/agentCards";
 import type { SubagentRun } from "@/components/agent/subagents";
 import {
   appendText,
@@ -234,28 +234,6 @@ declare global {
       /** Conversation font scale (--agent-fs, 1 by default). */
       fontScale?: number;
     }) => () => void;
-    /**
-     * Mount the subagent strip with fake runs (a pure presentational
-     * component): the real rows come from backend subagent events, which the
-     * harness cannot produce. The interaction result lands in the host's
-     * dataset.lastAction (open:<convKey> / stop:<agentId>).
-     */
-    __mountAgentRuns: (spec: {
-      runs: {
-        agentId: string;
-        label: string;
-        kind?: string;
-        model?: string;
-        status: "running" | "done" | "failed" | "stopped";
-        startedAt?: number;
-        endedAt?: number | null;
-        tokens?: number | null;
-        report?: string | null;
-        convKey?: string;
-      }[];
-      activeKey?: string;
-      width?: number;
-    }) => () => void;
     /** Mount the real project management view (project list / card lane / daily notes), returns the unmount function.
      *  contents preloads the file contents of the fake vault (vault-relative path -> text). */
     __mountProjects: (entries: string[], contents?: Record<string, string>) => Promise<() => void>;
@@ -307,6 +285,24 @@ declare global {
           | { kind: "text"; text: string }
           | { kind: "tool"; id: string; name: string; output?: string }
         )[];
+        /**
+         * A dispatched subagent: the Agent row of `rows` (id = the card's
+         * toolUseId) is drawn as the real SubagentCard, its preview fed with
+         * these entries. open / stop land in the host's dataset.lastAction
+         * (`open:<convKey>` / `stop:<agentId>`).
+         */
+        agent?: {
+          agentId?: string;
+          toolUseId?: string;
+          label: string;
+          model?: string;
+          status?: "running" | "done" | "failed" | "stopped";
+          startedAt?: number;
+          tokens?: number | null;
+          report?: string;
+          output?: string;
+          entries?: { role: "user" | "assistant" | "notice"; text: string }[];
+        };
       },
     ) => () => void;
     /** The syntax tree node names of the current document (for debugging). */
@@ -988,56 +984,6 @@ window.__mountAgentHeader = (spec) => {
 };
 
 /**
- * The subagent strip: the real AgentRuns with fake runs. The rows of the real
- * panel come from backend `subagent_start` / `subagent_end` events, which the
- * harness cannot emit; this verifies the row text, the drill-in click and the
- * stop button without a backend.
- */
-window.__mountAgentRuns = (spec) => {
-  for (const stale of document.querySelectorAll("#agent-runs-host")) stale.remove();
-  const host = document.createElement("div");
-  host.id = "agent-runs-host";
-  host.style.cssText = `position:fixed;left:0;top:0;width:${spec.width ?? 360}px;z-index:9999;display:flex;background:var(--bg1)`;
-  document.body.appendChild(host);
-  const panel = document.createElement("aside");
-  panel.className = "agent-panel";
-  panel.style.cssText = "flex:1;min-width:0;display:flex;flex-direction:column;padding-top:8px";
-  panel.style.setProperty("--agent-fs", "1");
-  host.appendChild(panel);
-  const root = createRoot(panel);
-  const now = Date.now();
-  const runs: SubagentRun[] = spec.runs.map((run, index) => ({
-    agentId: run.agentId,
-    label: run.label,
-    kind: run.kind ?? "general-purpose",
-    model: run.model ?? "test-model",
-    status: run.status,
-    startedAt: run.startedAt ?? now - (index + 1) * 12_000,
-    endedAt: run.endedAt ?? (run.status === "running" ? null : now - 2_000),
-    tokens: run.tokens ?? null,
-    report: run.report ?? null,
-    background: false,
-    convKey: run.convKey ?? `c1::agent::${run.agentId}`,
-  }));
-  root.render(
-    createElement(AgentRuns, {
-      runs,
-      activeKey: spec.activeKey ?? null,
-      onOpen: (key: string) => {
-        host.dataset.lastAction = `open:${key}`;
-      },
-      onStop: (run: SubagentRun) => {
-        host.dataset.lastAction = `stop:${run.agentId}`;
-      },
-    }),
-  );
-  return () => {
-    root.unmount();
-    host.remove();
-  };
-};
-
-/**
  * The project management view: a fake vault plus the real ProjectsLayout (project navigation / kanban / daily notes).
  * entries are vault-relative paths (files or directories). Returns the unmount function.
  */
@@ -1150,11 +1096,45 @@ window.__mountTranscript = (lines = [], opts = {}) => {
     "position:fixed;left:0;top:0;width:520px;height:100vh;z-index:9999;background:var(--bg1);overflow:auto";
   document.body.appendChild(host);
   const root = createRoot(host);
+  const cards = createAgentCards();
+  const agent = opts.agent;
+  const toolUseId = agent ? (agent.toolUseId ?? "call-1") : null;
+  if (agent && toolUseId) {
+    // The real registry the transcript rows subscribe to, holding the run and
+    // its own entries.
+    const run: SubagentRun = {
+      agentId: agent.agentId ?? "agent-1",
+      toolUseId,
+      label: agent.label,
+      kind: "general-purpose",
+      model: agent.model ?? "test-model",
+      status: agent.status ?? "running",
+      startedAt: agent.startedAt ?? Date.now() - 12_000,
+      endedAt: agent.status && agent.status !== "running" ? Date.now() : null,
+      tokens: agent.tokens ?? null,
+      report: agent.report ?? null,
+      background: false,
+      convKey: `harness::agent::${agent.agentId ?? "agent-1"}`,
+    };
+    const childEntries = (agent.entries ?? []).map((entry, i) => ({
+      role: entry.role,
+      text: entry.text,
+      at: 1_000 + i * 1_000,
+      items: null,
+    }));
+    cards.replace(new Map([[toolUseId, { run, entries: childEntries }]]));
+  }
+  // The Agent call itself: the card stands in for its tool row, so the turn
+  // needs that call.
+  const rows = [...(opts.rows ?? [])];
+  if (agent && toolUseId && !rows.some((row) => row.kind === "tool" && row.id === toolUseId)) {
+    rows.push({ kind: "tool", id: toolUseId, name: "Agent", output: agent.output });
+  }
   let entries = lines.map(entryFromLine);
-  if (opts.rows) {
+  if (rows.length > 0) {
     const turn = newTurn(1_000);
     let at = 1_000;
-    for (const row of opts.rows) {
+    for (const row of rows) {
       at += 1_000;
       if (row.kind === "think") {
         appendThinking(turn, row.text, at);
@@ -1180,6 +1160,13 @@ window.__mountTranscript = (lines = [], opts = {}) => {
       busy: Boolean(opts.streaming),
       welcome: null,
       onFork: () => {},
+      agents: cards,
+      onOpenAgent: (key: string) => {
+        host.dataset.lastAction = `open:${key}`;
+      },
+      onStopAgent: (run: SubagentRun) => {
+        host.dataset.lastAction = `stop:${run.agentId}`;
+      },
     }),
   );
   return () => {

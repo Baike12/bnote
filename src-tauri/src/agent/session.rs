@@ -297,18 +297,18 @@ pub struct Session {
 type BoxTool<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutput> + Send + 'a>>;
 
 trait ToolDispatch: Sync {
-    fn call<'a>(&'a self, name: &'a str, input: &'a Value) -> BoxTool<'a>;
+    fn call<'a>(&'a self, id: &'a str, name: &'a str, input: &'a Value) -> BoxTool<'a>;
 }
 
 /// The main session's dispatcher: it owns the subagent spawn.
 struct ParentDispatch<'s>(&'s Session);
 
 impl<'s> ToolDispatch for ParentDispatch<'s> {
-    fn call<'a>(&'a self, name: &'a str, input: &'a Value) -> BoxTool<'a> {
+    fn call<'a>(&'a self, id: &'a str, name: &'a str, input: &'a Value) -> BoxTool<'a> {
         Box::pin(async move {
             match super::tools::canonical(name) {
-                "Agent" => return self.0.run_subagent(input).await,
-                "SendMessage" => return self.0.run_send_message(input).await,
+                "Agent" => return self.0.run_subagent(id, input).await,
+                "SendMessage" => return self.0.run_send_message(id, input).await,
                 _ => {}
             }
             self.0.execute_tool_shared(name, input).await
@@ -321,7 +321,7 @@ impl<'s> ToolDispatch for ParentDispatch<'s> {
 struct SubDispatch<'s>(&'s Session);
 
 impl<'s> ToolDispatch for SubDispatch<'s> {
-    fn call<'a>(&'a self, name: &'a str, input: &'a Value) -> BoxTool<'a> {
+    fn call<'a>(&'a self, _id: &'a str, name: &'a str, input: &'a Value) -> BoxTool<'a> {
         Box::pin(async move {
             if matches!(super::tools::canonical(name), "Agent" | "SendMessage") {
                 return ToolOutput::text(
@@ -1547,18 +1547,21 @@ impl Session {
             }
             if group.len() == 1 {
                 let index = group[0];
-                let out = dispatch.call(&calls[index].name, &calls[index].input).await;
+                let out = dispatch
+                    .call(&calls[index].id, &calls[index].name, &calls[index].input)
+                    .await;
                 outputs[index] = Some(out);
                 continue;
             }
             let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_TOOL_CONCURRENCY));
             let futures = group.iter().map(|&index| {
+                let id = calls[index].id.clone();
                 let name = calls[index].name.clone();
                 let input = calls[index].input.clone();
                 let semaphore = semaphore.clone();
                 async move {
                     let _permit = semaphore.acquire().await;
-                    (index, dispatch.call(&name, &input).await)
+                    (index, dispatch.call(&id, &name, &input).await)
                 }
             });
             for (index, out) in futures::future::join_all(futures).await {
@@ -2031,7 +2034,7 @@ impl Session {
     /// general-purpose), `run_in_background` optional, `model` optional, and a
     /// report trailer carrying the agent id and usage. `fork: true` runs the
     /// fork child: it inherits the parent transcript and reports once.
-    async fn run_subagent(&self, input: &Value) -> ToolOutput {
+    async fn run_subagent(&self, tool_use_id: &str, input: &Value) -> ToolOutput {
         let prompt = input["prompt"]
             .as_str()
             .unwrap_or_default()
@@ -2382,6 +2385,7 @@ impl Session {
         // why the agent rows never appeared while the child streamed into
         // nothing).
         let parent_handle = self.self_ref.lock().ok().and_then(|g| g.clone());
+        let call_id = tool_use_id.to_string();
         let runner = tauri::async_runtime::spawn(async move {
             // Queue here, not in the caller: a foreground call waiting for a
             // slot must not block the sibling calls of the same batch (they
@@ -2394,6 +2398,7 @@ impl Session {
             };
             announce(AgentEvent::SubagentStart {
                 agent_id: runner_child.id.clone(),
+                tool_use_id: call_id,
                 label: runner_label,
                 kind: runner_child.def.id.clone(),
                 model: runner_child.provider().model.clone(),
@@ -2553,7 +2558,7 @@ impl Session {
     /// died on a rate limit) is resumed in the background with its history
     /// intact, and an unknown id is refused. The resumed turn reports back
     /// through the same wakeup channel a background task uses.
-    async fn run_send_message(&self, input: &Value) -> ToolOutput {
+    async fn run_send_message(&self, tool_use_id: &str, input: &Value) -> ToolOutput {
         let to = input["to"].as_str().unwrap_or_default().trim().to_string();
         let message = input["message"].as_str().unwrap_or_default().to_string();
         if to.is_empty() || message.trim().is_empty() {
@@ -2612,6 +2617,7 @@ impl Session {
             .unwrap_or_default();
         let child_for_task = child.clone();
         let gate = self.agent_gate.clone();
+        let call_id = tool_use_id.to_string();
         tauri::async_runtime::spawn(async move {
             let _slot = gate.acquire().await;
             let _guard = RunningGuard(child_for_task.running.clone());
@@ -2624,6 +2630,7 @@ impl Session {
             if let Some(parent) = &parent_session {
                 parent.emit(AgentEvent::SubagentStart {
                     agent_id: child_for_task.id.clone(),
+                    tool_use_id: call_id,
                     label: child_for_task.def.display_name().to_string(),
                     kind: child_for_task.def.id.clone(),
                     model: child_for_task.provider().model.clone(),

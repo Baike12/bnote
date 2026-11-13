@@ -241,6 +241,8 @@ export type AgentEvent =
   | {
       type: "subagent_start";
       agentId: string;
+      /** The `Agent` tool call that launched it: the card is drawn at that call. */
+      toolUseId: string;
       label: string;
       /** The definition id (general-purpose / explore / fork …). */
       kind: string;

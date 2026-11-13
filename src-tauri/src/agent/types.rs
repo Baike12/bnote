@@ -198,6 +198,11 @@ pub enum AgentEvent {
     SubagentStart {
         #[serde(rename = "agentId")]
         agent_id: String,
+        /// The `Agent` tool call that launched it. The panel draws the card in
+        /// the transcript *at that call*, so it needs the call→run link; the id
+        /// is a routing key and is never rendered.
+        #[serde(rename = "toolUseId")]
+        tool_use_id: String,
         label: String,
         /// The definition id (general-purpose / explore / fork …).
         kind: String,

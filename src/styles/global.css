@@ -4346,75 +4346,122 @@ input[type="range"] {
   color: var(--text-faint);
 }
 
-/* The subagent strip: one line per agent this conversation dispatched, pinned
-   between the header and the transcript so it stays visible while the turn
-   that launched them scrolls away. A row opens that agent's own timeline. */
-.agent-runs {
-  margin: 0 14px 6px;
-  padding: 2px 0;
+/* A subagent drawn at the Agent call that dispatched it (Zed's subagent card):
+   the header is the status dot, the label the model wrote, the model and the
+   elapsed time; a click previews the last entries of its own timeline inline,
+   and 放大查看 puts that whole timeline in the main column. */
+.agent-sub {
+  margin: 4px 0 6px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg2);
-  flex-shrink: 0;
+  overflow: hidden;
+  /* The header is laid out by the card's own width: the label never gets
+     squeezed to nothing in a narrow panel (measured: 0px at a 312px card when
+     the model and the meta were unshrinkable). */
+  container-type: inline-size;
 }
-.agent-runs-head {
+.agent-sub-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 4px 9px;
+  padding-right: 6px;
+}
+.agent-sub-toggle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
   border: none;
-  border-radius: 10px;
   background: transparent;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  font-size: calc(var(--agent-text) * 0.76);
+  font-size: calc(var(--agent-text) * 0.8);
   color: var(--text-dim);
 }
-.agent-runs-head:hover { background: var(--bg3); }
-.agent-runs-head .agent-tool-chevron { transition: transform 0.12s ease; }
-.agent-runs-head[aria-expanded="true"] .agent-tool-chevron { transform: rotate(90deg); }
-.agent-runs-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--text-faint);
-}
-.agent-runs-dot.is-running {
-  background: var(--accent);
-  animation: agent-runs-pulse 1.4s ease-in-out infinite;
-}
-.agent-runs-title { font-weight: 500; color: var(--text); }
-.agent-runs-count {
-  flex: 1;
+.agent-sub-toggle:hover { background: var(--bg3); }
+.agent-sub-toggle[aria-expanded="true"] { border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.agent-sub-toggle .agent-tool-chevron { margin-left: 0; transition: transform 0.12s ease; }
+.agent-sub-toggle[aria-expanded="true"] .agent-tool-chevron { transform: rotate(90deg); }
+.agent-sub-label {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text);
 }
-.agent-runs-body {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 2px 4px 4px;
+.agent-sub[data-status="failed"] .agent-sub-label { color: var(--danger); }
+.agent-sub-model {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.7);
+  color: var(--text-faint);
 }
-.agent-run {
+/* Narrow panel: the model name is the first thing to go — the label says what
+   the agent is doing, the time and tokens say how far it got. */
+@container (max-width: 480px) {
+  .agent-sub-model { display: none; }
+}
+.agent-sub-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.68);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.agent-sub-body {
+  max-height: 240px;
+  overflow: auto;
+  padding: 2px 10px 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: calc(var(--agent-text) * 0.86);
+}
+.agent-sub-empty {
+  padding: 6px 0;
+  font-size: calc(var(--agent-text) * 0.75);
+  color: var(--text-faint);
+}
+.agent-sub-report {
+  margin: 6px 0 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.7);
+  color: var(--text-dim);
+}
+.agent-sub-max {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border-radius: 7px;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 0;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: transparent;
+  font: inherit;
+  font-size: calc(var(--agent-text) * 0.72);
+  color: var(--text-faint);
   cursor: pointer;
-  font-size: calc(var(--agent-text) * 0.76);
 }
-.agent-run:hover { background: var(--bg3); }
-.agent-run:focus-visible {
-  outline: 1px solid var(--accent-dim);
-  outline-offset: -1px;
-}
-.agent-run.is-active { background: var(--accent-soft); }
+.agent-sub-max:hover { background: var(--bg3); color: var(--text); }
+.agent-sub-max svg { width: 11px; height: 11px; }
+/* The status dot of a card row: the same three colours as the panel's stop
+   button, pulsing only while the agent runs. */
 .agent-run-dot {
   width: 6px;
   height: 6px;
@@ -4429,22 +4476,6 @@ input[type="range"] {
 .agent-run-dot.is-done { background: var(--ok); }
 .agent-run-dot.is-failed { background: var(--danger); }
 .agent-run-dot.is-stopped { background: var(--text-dim); }
-.agent-run-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-}
-.agent-run[data-status="failed"] .agent-run-label { color: var(--danger); }
-.agent-run-meta {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: calc(var(--agent-text) * 0.68);
-  color: var(--text-faint);
-  white-space: nowrap;
-}
 .agent-run-stop {
   flex-shrink: 0;
   display: inline-flex;

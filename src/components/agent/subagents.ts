@@ -10,7 +10,9 @@
  *   of adding a second row);
  * - the label is what the model wrote in `description` — an id is never
  *   rendered;
- * - a finished run keeps its report and token count for the row's tooltip.
+ * - the card sits at the `Agent` call that created the run, and stays there
+ *   when the agent is resumed;
+ * - a finished run keeps its report and token count.
  */
 
 export type SubagentStatus = "running" | "done" | "failed" | "stopped";
@@ -18,6 +20,12 @@ export type SubagentStatus = "running" | "done" | "failed" | "stopped";
 export interface SubagentRun {
   /** Routing key only (matches the child session id); never rendered. */
   agentId: string;
+  /**
+   * The `Agent` tool call that launched the run: the transcript draws the card
+   * at that call. A resumed agent keeps the call that created it (SendMessage
+   * is a different tool row), so one agent has exactly one card.
+   */
+  toolUseId: string;
   /** The user-visible name: the call's description, else the definition name. */
   label: string;
   /** The definition id (general-purpose / explore / fork …). */
@@ -40,12 +48,20 @@ export function agentConvKey(parentKey: string, agentId: string): string {
 }
 
 export function newSubagentRun(
-  start: { agentId: string; label: string; kind: string; model: string; background: boolean },
+  start: {
+    agentId: string;
+    toolUseId: string;
+    label: string;
+    kind: string;
+    model: string;
+    background: boolean;
+  },
   parentKey: string,
   now: number,
 ): SubagentRun {
   return {
     agentId: start.agentId,
+    toolUseId: start.toolUseId,
     label: displayLabel(start.label, start.kind),
     kind: start.kind,
     model: start.model,
@@ -62,12 +78,20 @@ export function newSubagentRun(
 /**
  * A start event: append a new row, or flip an existing one back to running
  * (SendMessage resumes an agent that already finished — same agent, new turn).
- * The label of an existing row wins: the resume event only knows the
- * definition, the original description is the better name.
+ * The label and the card anchor of an existing row win: the resume event only
+ * knows the definition, and its own call is a SendMessage row, not the Agent
+ * call the card belongs to.
  */
 export function applyStart(
   runs: SubagentRun[],
-  start: { agentId: string; label: string; kind: string; model: string; background: boolean },
+  start: {
+    agentId: string;
+    toolUseId: string;
+    label: string;
+    kind: string;
+    model: string;
+    background: boolean;
+  },
   parentKey: string,
   now: number,
 ): SubagentRun[] {
@@ -104,15 +128,6 @@ export function applyEnd(
         }
       : run,
   );
-}
-
-/** The runs of one parent, in start order (the strip's order). */
-export function runsOf(runs: SubagentRun[]): SubagentRun[] {
-  return [...runs].sort((a, b) => a.startedAt - b.startedAt);
-}
-
-export function runningCount(runs: SubagentRun[]): number {
-  return runs.filter((run) => run.status === "running").length;
 }
 
 /** The status word of a row. */

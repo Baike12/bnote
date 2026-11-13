@@ -54,8 +54,14 @@ import {
   type Conv,
   type Turn,
 } from "@/components/agent/model";
-import { AgentRuns } from "@/components/agent/AgentRuns";
-import { agentConvKey, applyEnd, applyStart, newSubagentRun } from "@/components/agent/subagents";
+import {
+  agentConvKey,
+  applyEnd,
+  applyStart,
+  newSubagentRun,
+  type SubagentRun,
+} from "@/components/agent/subagents";
+import { collectAgentCards, createAgentCards } from "@/components/agent/agentCards";
 import { followTranscript, measureTurnCap } from "@/components/agent/panelScroll";
 import { resolveSelection, sessionSelection } from "@/components/agent/modelSelection";
 import { createStreamHandler } from "@/components/agent/streamEvents";
@@ -937,6 +943,12 @@ export function AgentPanel() {
    * session, even when it is not the one on screen. The rules live in
    * `streamEvents`; this object only supplies the panel's state and callbacks.
    */
+  /**
+   * The live subagent cards, keyed by the `Agent` tool call. The panel is the
+   * only writer (it owns `convs`); the transcript's rows subscribe, so a child
+   * delta wakes that one card instead of the whole conversation.
+   */
+  const agentCards = useRef(createAgentCards()).current;
   const streamRef = useRef<((sessionId: string, event: AgentEvent) => void) | null>(null);
   if (!streamRef.current) {
     streamRef.current = createStreamHandler({
@@ -1357,12 +1369,31 @@ export function AgentPanel() {
     ? (convs.find((c) => c.key === activeConv.parent) ?? null)
     : null;
 
+  // Publish the subagent cards after every conv change: the transcript rows
+  // read them through their own subscription (an effect, so the write never
+  // happens during a render).
+  useEffect(() => {
+    agentCards.replace(collectAgentCards(convs));
+  }, [convs, agentCards]);
+
   /**
-   * The conversation whose subagents the strip lists: the one on screen, or —
-   * while an agent's own timeline is on screen — its parent, so the sibling
-   * agents stay visible (and their rows stay clickable) during the drill-in.
+   * Stop one agent: the command is addressed by (parent session, agent id), so
+   * the owner of the run is looked up in the live convs rather than carried on
+   * the card.
    */
-  const runsOwner = activeConv?.agent ? parentConv : activeConv;
+  const stopAgent = useCallback(
+    (run: SubagentRun) => {
+      const owner = convsRef.current.find((conv) =>
+        conv.agents?.some((agent) => agent.agentId === run.agentId),
+      );
+      const sessionId = owner?.sessionId;
+      if (!sessionId) return;
+      void agentApi
+        .stopSubagent(sessionId, run.agentId)
+        .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+    },
+    [showToast],
+  );
 
   /** Hand the focus to the history list: the first session, without a session the drawer itself. */
   const focusHistory = useCallback(() => {
@@ -1628,29 +1659,15 @@ export function AgentPanel() {
           </button>
         </div>
       )}
-      {/* The agents this conversation dispatched: sticky above the transcript,
-          because the turn that launched them scrolls away. A row opens that
-          agent's own timeline (the header's back bar returns). */}
-      {runsOwner && (
-        <AgentRuns
-          runs={runsOwner.agents ?? []}
-          activeKey={activeKey}
-          onOpen={activateConv}
-          onStop={(run) => {
-            const sessionId = runsOwner.sessionId;
-            if (!sessionId) return;
-            void agentApi
-              .stopSubagent(sessionId, run.agentId)
-              .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
-          }}
-        />
-      )}
       <AgentTranscript
         scrollRef={scrollRef}
         entries={activeConv?.entries ?? []}
         busy={activeBusy}
         allowFork={!activeConv?.agent}
         onFork={forkFrom}
+        agents={agentCards}
+        onOpenAgent={activateConv}
+        onStopAgent={stopAgent}
         welcome={
           activeConv?.agent ? (
             <div className="agent-welcome">

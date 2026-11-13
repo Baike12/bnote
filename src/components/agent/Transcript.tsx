@@ -1,4 +1,13 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+  type Ref,
+} from "react";
 import type { AgentTodoItem } from "@/lib/tauri";
 import type { CodeProjectRef } from "@/state/appStore";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
@@ -11,6 +20,8 @@ import {
   workDurationLabel,
 } from "./toolSummary";
 import { answerRange, type ChatEntry, type ToolRecord, type Turn, type TurnStep } from "./model";
+import { createAgentCards, type AgentCardData, type AgentCards } from "./agentCards";
+import { elapsedMs, statusLabel, tokenLabel, type SubagentRun } from "./subagents";
 
 /** The empty state: what this session is for, by mode. */
 export function AgentWelcome({
@@ -134,10 +145,16 @@ function TurnSteps({
   turn,
   steps,
   streaming,
+  agents,
+  onOpenAgent,
+  onStopAgent,
 }: {
   turn: Turn;
   steps: TurnStep[];
   streaming: boolean;
+  agents: AgentCards;
+  onOpenAgent: (convKey: string) => void;
+  onStopAgent: (run: SubagentRun) => void;
 }) {
   const tools = new Map(turn.tools.map((tool) => [tool.id, tool]));
   return (
@@ -157,7 +174,15 @@ function TurnSteps({
           return <AssistantText key={i} text={turn.text.slice(step.start, step.end)} />;
         }
         const tool = tools.get(step.id);
-        return tool ? <ToolCard key={i} tool={tool} /> : null;
+        return tool ? (
+          <ToolRow
+            key={i}
+            tool={tool}
+            agents={agents}
+            onOpenAgent={onOpenAgent}
+            onStopAgent={onStopAgent}
+          />
+        ) : null;
       })}
     </>
   );
@@ -290,12 +315,18 @@ const EntryRow = memo(function EntryRow({
   streaming,
   forkable,
   onFork,
+  agents,
+  onOpenAgent,
+  onStopAgent,
 }: {
   entry: ChatEntry;
   index: number;
   streaming: boolean;
   forkable: boolean;
   onFork: (index: number) => void;
+  agents: AgentCards;
+  onOpenAgent: (convKey: string) => void;
+  onStopAgent: (run: SubagentRun) => void;
 }) {
   const turn = entry.turn;
   // The turn's trailing text is the answer and is drawn outside the work
@@ -328,7 +359,16 @@ const EntryRow = memo(function EntryRow({
       ) : (
         <div className="agent-msg agent-msg-assistant">
           <TurnWork entry={entry} streaming={streaming} answer={answerText !== ""}>
-            {turn && <TurnSteps turn={turn} steps={processSteps} streaming={streaming} />}
+            {turn && (
+              <TurnSteps
+                turn={turn}
+                steps={processSteps}
+                streaming={streaming}
+                agents={agents}
+                onOpenAgent={onOpenAgent}
+                onStopAgent={onStopAgent}
+              />
+            )}
             {turn?.error && <div className="agent-error">{turn.error}</div>}
           </TurnWork>
           {/* The answer row: the turn's trailing text. A turn that ends on
@@ -352,6 +392,220 @@ const EntryRow = memo(function EntryRow({
   );
 });
 
+/** A noop fork handler for nested rows: nothing inside a card is forkable. */
+const NO_FORK = () => {};
+/** Nested rows never hold subagent cards: a subagent cannot dispatch one. */
+const EMPTY_CARDS = createAgentCards();
+const NO_OPEN = () => {};
+const NO_STOP = () => {};
+
+/** How many of the child's latest entries an expanded card previews (Zed: 8). */
+const SUBAGENT_PREVIEW_ENTRIES = 8;
+
+/**
+ * One tool row, or — when the call was an `Agent` — the subagent card that took
+ * its place.
+ *
+ * The subscription is the point: a card is a live window into a child session
+ * that streams tens of deltas per second, while the parent transcript must not
+ * re-render for them. `useSyncExternalStore` hands the row the card's current
+ * data and wakes it only when *that* card changed (the registry keeps one
+ * reference until its run or entries move).
+ */
+function ToolRow({
+  tool,
+  agents,
+  onOpenAgent,
+  onStopAgent,
+}: {
+  tool: ToolRecord;
+  agents: AgentCards;
+  onOpenAgent: (convKey: string) => void;
+  onStopAgent: (run: SubagentRun) => void;
+}) {
+  if (canonicalToolName(tool.name) !== "Agent") return <ToolCard tool={tool} />;
+  return (
+    <AgentToolRow tool={tool} agents={agents} onOpenAgent={onOpenAgent} onStopAgent={onStopAgent} />
+  );
+}
+
+function AgentToolRow({
+  tool,
+  agents,
+  onOpenAgent,
+  onStopAgent,
+}: {
+  tool: ToolRecord;
+  agents: AgentCards;
+  onOpenAgent: (convKey: string) => void;
+  onStopAgent: (run: SubagentRun) => void;
+}) {
+  const card = useSyncExternalStore(
+    agents.subscribe,
+    () => agents.get(tool.id),
+    () => null,
+  );
+  // A call with no run (queued behind the concurrency limit, or a run restored
+  // from disk without its live session) keeps the plain tool row.
+  if (!card) return <ToolCard tool={tool} />;
+  return (
+    <SubagentCard
+      tool={tool}
+      card={card}
+      onOpen={() => onOpenAgent(card.run.convKey)}
+      onStop={() => onStopAgent(card.run)}
+    />
+  );
+}
+
+/**
+ * A subagent drawn where it was dispatched (Zed's subagent card): the header
+ * says who is working and how long, a click opens the last few entries of its
+ * own timeline inline, and 放大查看 puts that timeline in the main column.
+ *
+ * The header never shows the agent id — the label is the description the model
+ * wrote for the task, which is what the user can recognize.
+ */
+function SubagentCard({
+  tool,
+  card,
+  onOpen,
+  onStop,
+}: {
+  tool: ToolRecord;
+  card: AgentCardData;
+  onOpen: () => void;
+  onStop: () => void;
+}) {
+  const { run, entries } = card;
+  const running = run.status === "running";
+  const [open, setOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  // One interval for the whole card, and only while it runs: a finished run's
+  // duration is frozen.
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // Follow the tail while the agent works, but never yank the view back when
+  // the reader scrolled up to read an earlier row.
+  const followRef = useRef(true);
+  const preview =
+    entries.length > SUBAGENT_PREVIEW_ENTRIES ? entries.slice(-SUBAGENT_PREVIEW_ENTRIES) : entries;
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!open || !el || !followRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [open, entries, running]);
+
+  const meta = [workDurationLabel(elapsedMs(run, now)), tokenLabel(run.tokens)]
+    .filter(Boolean)
+    .join(" · ");
+  // A run that ended without any text (the report fallback: "没有产出报告…")
+  // would leave the body looking empty; that message is the one thing the user
+  // must see, so it is drawn as the report. Runs that did answer carry their
+  // report in the entries already and are not repeated here.
+  const answered = entries.some((entry) => entry.role === "assistant" && entry.text.trim() !== "");
+  const report =
+    !running && !answered && tool.output !== undefined ? stripAgentTrailer(tool.output).trim() : "";
+
+  return (
+    <div className="agent-sub" data-status={run.status}>
+      <div className="agent-sub-head">
+        <button
+          className="agent-sub-toggle"
+          aria-expanded={open}
+          title={run.report ?? run.label}
+          onClick={() => {
+            followRef.current = true;
+            setOpen((value) => !value);
+          }}
+        >
+          <span className={`agent-run-dot is-${run.status}`} aria-hidden="true" />
+          <span className="agent-sub-label">{run.label}</span>
+          <span className="agent-sub-model">{run.model}</span>
+          <span className="agent-sub-meta">
+            {running ? meta || "刚刚开始" : `${statusLabel(run.status)}${meta ? ` · ${meta}` : ""}`}
+          </span>
+          <svg
+            className="agent-tool-chevron"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        </button>
+        {running && (
+          <button
+            className="agent-run-stop"
+            title="停止这个子代理"
+            aria-label="停止这个子代理"
+            onClick={onStop}
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" width="10" height="10">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+          </button>
+        )}
+      </div>
+      {open && (
+        <>
+          <div
+            className="agent-sub-body"
+            ref={bodyRef}
+            onScroll={(event) => {
+              const el = event.currentTarget;
+              followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+            }}
+          >
+            {preview.length === 0 ? (
+              <div className="agent-sub-empty">{running ? "正在准备…" : "没有可显示的过程"}</div>
+            ) : (
+              preview.map((entry, i) => (
+                <EntryRow
+                  key={entries.length - preview.length + i}
+                  entry={entry}
+                  index={i}
+                  streaming={running && i === preview.length - 1 && entry.role === "assistant"}
+                  forkable={false}
+                  onFork={NO_FORK}
+                  agents={EMPTY_CARDS}
+                  onOpenAgent={NO_OPEN}
+                  onStopAgent={NO_STOP}
+                />
+              ))
+            )}
+            {report !== "" && <pre className="agent-sub-report">{report}</pre>}
+          </div>
+          <button className="agent-sub-max" title="放大查看这个子代理的完整过程" onClick={onOpen}>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+            </svg>
+            放大查看
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * The scrolling conversation body: the welcome state when there is nothing
  * yet, otherwise the entries. Only the last assistant entry can be the live
@@ -364,6 +618,9 @@ export function AgentTranscript({
   welcome,
   onFork,
   allowFork = true,
+  agents,
+  onOpenAgent,
+  onStopAgent,
 }: {
   scrollRef: Ref<HTMLDivElement>;
   entries: ChatEntry[];
@@ -372,6 +629,10 @@ export function AgentTranscript({
   onFork: (index: number) => void;
   /** A subagent's transcript is read-only: no fork handles (its session is not the app's to fork). */
   allowFork?: boolean;
+  /** The live subagent cards, keyed by the `Agent` tool call that launched them. */
+  agents: AgentCards;
+  onOpenAgent: (convKey: string) => void;
+  onStopAgent: (run: SubagentRun) => void;
 }) {
   // The shade lives in a sibling overlay, not inside the scroller: an absolute
   // child of a scroll container would scroll away with the content. It is the
@@ -390,6 +651,9 @@ export function AgentTranscript({
                 streaming={i === entries.length - 1 && busy && entry.role === "assistant"}
                 forkable={allowFork && !busy}
                 onFork={onFork}
+                agents={agents}
+                onOpenAgent={onOpenAgent}
+                onStopAgent={onStopAgent}
               />
             ))}
       </div>
