@@ -2351,12 +2351,24 @@ impl Session {
         let runner_child = child.clone();
         let gate = self.agent_gate.clone();
         let runner_label = ui_label.clone();
+        // Announcements go over the *parent's* channel: the panel routes events
+        // by the payload's session id and only the parent's conversation is on
+        // screen. Emitting on the child put the child id in that field, so the
+        // panel dropped every start/end as an unknown session (which is exactly
+        // why the agent rows never appeared while the child streamed into
+        // nothing).
+        let parent_handle = self.self_ref.lock().ok().and_then(|g| g.clone());
         let runner = tauri::async_runtime::spawn(async move {
             // Queue here, not in the caller: a foreground call waiting for a
             // slot must not block the sibling calls of the same batch (they
             // run in parallel), and a background agent holds its own slot.
             let _slot = gate.acquire().await;
-            runner_child.emit(AgentEvent::SubagentStart {
+            let announce = |event: AgentEvent| {
+                if let Some(parent) = parent_handle.as_ref().and_then(|w| w.upgrade()) {
+                    parent.emit(event);
+                }
+            };
+            announce(AgentEvent::SubagentStart {
                 agent_id: runner_child.id.clone(),
                 label: runner_label,
                 kind: runner_child.def.id.clone(),
@@ -2397,7 +2409,7 @@ impl Session {
             // The end of the run: the panel closes the row here (the child's
             // transcript stays readable), and the report it already streamed
             // is the same text the tool result carries.
-            runner_child.emit(AgentEvent::SubagentEnd {
+            announce(AgentEvent::SubagentEnd {
                 agent_id: runner_child.id.clone(),
                 ok,
                 stopped,
@@ -2572,15 +2584,20 @@ impl Session {
             let _slot = gate.acquire().await;
             let _guard = RunningGuard(child_for_task.running.clone());
             child_for_task.persist_agent("running");
-            // The panel already owns a row for this agent: the start event only
-            // flips it back to running (a resumed turn is the same agent).
-            child_for_task.emit(AgentEvent::SubagentStart {
-                agent_id: child_for_task.id.clone(),
-                label: child_for_task.def.display_name().to_string(),
-                kind: child_for_task.def.id.clone(),
-                model: child_for_task.provider().model.clone(),
-                background: true,
-            });
+            // Same channel rule as a fresh spawn: the lifecycle events go to
+            // the parent's conversation (the child id rides in the payload as
+            // `agentId`, never as the session id). The panel already owns a row
+            // for this agent, so the start only flips it back to running.
+            let parent_session = parent.upgrade();
+            if let Some(parent) = &parent_session {
+                parent.emit(AgentEvent::SubagentStart {
+                    agent_id: child_for_task.id.clone(),
+                    label: child_for_task.def.display_name().to_string(),
+                    kind: child_for_task.def.id.clone(),
+                    model: child_for_task.provider().model.clone(),
+                    background: true,
+                });
+            }
             let started = std::time::Instant::now();
             let result = child_for_task.run_loop(&SubDispatch(&child_for_task)).await;
             let report = last_assistant_text(&child_for_task.history());
@@ -2591,16 +2608,18 @@ impl Session {
             };
             child_for_task.persist_agent(status);
             let usage = child_for_task.last_usage.lock().map(|g| *g).unwrap_or(None);
-            child_for_task.emit(AgentEvent::SubagentEnd {
-                agent_id: child_for_task.id.clone(),
-                ok: result.is_ok(),
-                stopped: matches!(&result, Ok(outcome) if outcome.reason == "aborted"),
-                report: report.clone(),
-                duration_ms: started.elapsed().as_millis() as u64,
-                tokens: usage.map(|u| u.input + u.output).unwrap_or(0),
-            });
+            if let Some(parent) = &parent_session {
+                parent.emit(AgentEvent::SubagentEnd {
+                    agent_id: child_for_task.id.clone(),
+                    ok: result.is_ok(),
+                    stopped: matches!(&result, Ok(outcome) if outcome.reason == "aborted"),
+                    report: report.clone(),
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    tokens: usage.map(|u| u.input + u.output).unwrap_or(0),
+                });
+            }
             let label = child_for_task.def.display_name().to_string();
-            if let Some(parent) = parent.upgrade() {
+            if let Some(parent) = parent_session {
                 parent.emit(AgentEvent::Notice {
                     text: format!("子代理 {label} 继续完成"),
                 });
