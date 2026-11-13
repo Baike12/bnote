@@ -110,6 +110,8 @@ export interface AgentConfig {
   default_selection: ModelSelection | null;
   /** Which models subagents run on. */
   subagent_models: SubagentModels;
+  /** How many subagents may run at once (1–10). Calls beyond it queue and start as slots free. */
+  subagent_concurrency: number;
   /** Legacy single-model fields; mirror of the default selection (older builds read them). */
   provider: string;
   model: string;
@@ -234,6 +236,27 @@ export type AgentEvent =
       sessionInput: number;
       sessionCacheRead: number;
       sessionRequests: number;
+    }
+  /** A subagent started (its deltas then arrive under that agent's own session id). `label` is the user-visible name; `agentId` is routing only and must never be rendered. */
+  | {
+      type: "subagent_start";
+      agentId: string;
+      label: string;
+      /** The definition id (general-purpose / explore / fork …). */
+      kind: string;
+      model: string;
+      background: boolean;
+    }
+  /** A subagent finished (or failed): its final report, wall-clock duration and total tokens. */
+  | {
+      type: "subagent_end";
+      agentId: string;
+      ok: boolean;
+      /** The user stopped this agent (ok is false then; the row says 已停止). */
+      stopped: boolean;
+      report: string;
+      durationMs: number;
+      tokens: number;
     }
   /** A dim status line: compaction, subagent start/finish, background task done. Never enters the history. */
   | { type: "notice"; text: string }
@@ -499,6 +522,9 @@ export const agentApi = {
     invoke<void>("agent_send", { sessionId, text, images }),
   /** Stops the running turn; resolves false when the session is gone (no terminal event can arrive — the caller must clear busy itself). */
   abort: (sessionId: string) => invoke<boolean>("agent_abort", { sessionId }),
+  /** Stops one subagent of a session (its own abort token; the parent turn keeps running). */
+  stopSubagent: (sessionId: string, agentId: string) =>
+    invoke<boolean>("agent_stop_subagent", { sessionId, agentId }),
   history: (sessionId: string) => invoke<unknown>("agent_get_history", { sessionId }),
   /** Rough per-part context sizes for the composer's context card (estimated tokens; the real total comes from the usage event). */
   contextBreakdown: (sessionId: string) =>

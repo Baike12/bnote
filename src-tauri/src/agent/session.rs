@@ -264,8 +264,16 @@ pub struct Session {
     /// Subagents this session spawned, kept after they finish so
     /// `send_message` can continue them (CC/ZCode's agent registry).
     pub children: Mutex<HashMap<String, Arc<Session>>>,
+    /// The ceiling on concurrently running children (settings → 子代理并发).
+    /// Owned by the parent: a child never admits children of its own.
+    pub agent_gate: Arc<super::concurrency::AgentGate>,
     /// Set on a subagent: the session that spawned it.
     parent_id: Option<String>,
+    /// Set on a subagent: the session that spawned it, for the approval relay.
+    /// A child lives outside the app's session registry, so the panel cannot
+    /// answer its `ask` prompts by session id; `ask_permission` parks the wait
+    /// on the parent and emits the request there instead.
+    parent_ref: Mutex<Option<Weak<Session>>>,
     /// Where this subagent's transcript is persisted; `None` for the main
     /// session (its record lives with the material).
     agent_dir: Option<std::path::PathBuf>,
@@ -1613,10 +1621,22 @@ impl Session {
             self.seq.fetch_add(1, Ordering::Relaxed)
         );
         let (tx, rx) = oneshot::channel();
-        if let Ok(mut map) = self.pending_permissions.lock() {
+        // A subagent is not in the app's session registry, so nothing could
+        // answer a request carrying its own id. The wait is parked on the
+        // parent and the request is emitted on the parent's channel: the panel
+        // (and `agent_permission_reply`, which looks the session up by id) then
+        // works unchanged. The request id keeps the child prefix, so two
+        // children never collide inside the parent's map.
+        let relay = self
+            .parent_ref
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|w| w.upgrade()));
+        let target: &Session = relay.as_deref().unwrap_or(self);
+        if let Ok(mut map) = target.pending_permissions.lock() {
             map.insert(request_id.clone(), tx);
         }
-        self.emit(AgentEvent::PermissionRequest {
+        target.emit(AgentEvent::PermissionRequest {
             id: request_id.clone(),
             tool: tool.to_string(),
             input: input.clone(),
@@ -1629,7 +1649,7 @@ impl Session {
                 Err(_) => PermissionAnswer { allow: false, feedback: None },
             },
         };
-        if let Ok(mut map) = self.pending_permissions.lock() {
+        if let Ok(mut map) = target.pending_permissions.lock() {
             map.remove(&request_id);
         }
         answer
@@ -1639,11 +1659,20 @@ impl Session {
     async fn ask_question(&self, questions: &Value) -> Result<String, String> {
         let request_id = format!("{}-q-{}", self.id, self.seq.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
-        self.pending_questions
+        // Same relay as ask_permission: a subagent's question is answered
+        // through the parent's channel and pending map.
+        let relay = self
+            .parent_ref
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|w| w.upgrade()));
+        let target: &Session = relay.as_deref().unwrap_or(self);
+        target
+            .pending_questions
             .lock()
             .map_err(|e| e.to_string())?
             .insert(request_id.clone(), tx);
-        self.emit(AgentEvent::Question {
+        target.emit(AgentEvent::Question {
             id: request_id.clone(),
             questions: questions.clone(),
         });
@@ -1651,7 +1680,7 @@ impl Session {
             _ = self.ctx.abort.wait() => Err("用户中止了本轮".to_string()),
             received = rx => received.map_err(|_| "问题未回答:等待方已结束".to_string()),
         };
-        if let Ok(mut map) = self.pending_questions.lock() {
+        if let Ok(mut map) = target.pending_questions.lock() {
             map.remove(&request_id);
         }
         answer
@@ -2204,7 +2233,11 @@ impl Session {
                 .unwrap_or(0),
             self.seq.fetch_add(1, Ordering::Relaxed)
         );
-        let child_session_id = format!("{}-sub-{}", self.id, child_def.id);
+        // A child id has to be unique per spawn: two agents of the same
+        // definition are two different conversations (the children map, the
+        // request log and the panel's routing all key on it), and the old
+        // `{parent}-sub-{def}` shape made the second one overwrite the first.
+        let child_session_id = subagent_session_id(&self.id, &child_id_for_dir);
         let project_root = self.ctx.workdir.clone().or_else(|| self.ctx.vault.clone());
         // A subagent records into its parent's file: one conversation is one
         // record, and the shared recorder serializes the concurrent lines.
@@ -2254,7 +2287,11 @@ impl Session {
             permission_mode: Mutex::new(self.permission_mode()),
             plan_previous: Mutex::new(self.plan_previous.lock().ok().and_then(|g| *g)),
             children: Mutex::new(HashMap::new()),
+            // A child never spawns children (the dispatch refuses), so its own
+            // gate is never acquired; the parent's is the one that limits.
+            agent_gate: super::concurrency::AgentGate::new(1),
             parent_id: Some(self.id.clone()),
+            parent_ref: Mutex::new(self.self_ref.lock().ok().and_then(|g| g.clone())),
             agent_dir: Some(match &project_root {
                 Some(root) => super::home::subagents_dir(root, &self.id).join(&child_id_for_dir),
                 None => self
@@ -2299,27 +2336,42 @@ impl Session {
             map.insert(child.id.clone(), child.clone());
         }
         child.persist_agent("running");
-        self.emit(AgentEvent::Notice {
-            text: format!(
-                "子代理 {}{} 启动 ({})",
-                label,
-                if description.is_empty() {
-                    String::new()
-                } else {
-                    format!("({})", description)
-                },
-                child.id
-            ),
-        });
         let started = std::time::Instant::now();
+        // What the panel shows for this run: the call's description is the
+        // user-visible name (CC/Zed/ZCode all label an agent by its task), the
+        // definition only names the kind. The session id stays internal.
+        let ui_label = if description.trim().is_empty() {
+            label.clone()
+        } else {
+            description.trim().to_string()
+        };
         // The loop runs in its own task with the subagent dispatcher: that is
         // the type-level break the Send proof needs (see ToolDispatch) and the
         // no-nested-subagents policy.
         let runner_child = child.clone();
+        let gate = self.agent_gate.clone();
+        let runner_label = ui_label.clone();
         let runner = tauri::async_runtime::spawn(async move {
+            // Queue here, not in the caller: a foreground call waiting for a
+            // slot must not block the sibling calls of the same batch (they
+            // run in parallel), and a background agent holds its own slot.
+            let _slot = gate.acquire().await;
+            runner_child.emit(AgentEvent::SubagentStart {
+                agent_id: runner_child.id.clone(),
+                label: runner_label,
+                kind: runner_child.def.id.clone(),
+                model: runner_child.provider().model.clone(),
+                background,
+            });
             runner_child.refresh_dynamic_prompt();
             let loop_result = runner_child.run_loop(&SubDispatch(&runner_child)).await;
-            runner_child.persist_agent(if loop_result.is_ok() {
+            // `run_loop` reports a user stop as Ok("aborted"): the row must say
+            // "已停止", not "完成" (the parent turn keeps running either way).
+            let stopped = matches!(&loop_result, Ok(outcome) if outcome.reason == "aborted");
+            let ok = loop_result.is_ok() && !stopped;
+            runner_child.persist_agent(if stopped {
+                "stopped"
+            } else if ok {
                 "completed"
             } else {
                 "failed"
@@ -2331,7 +2383,7 @@ impl Session {
                     serde_json::json!({
                         "agent_id": runner_child.id,
                         "agent_type": runner_child.def.id,
-                        "ok": loop_result.is_ok(),
+                        "ok": ok,
                     }),
                 )
                 .await;
@@ -2342,7 +2394,18 @@ impl Session {
                 }
             }
             let usage = runner_child.last_usage.lock().map(|g| *g).unwrap_or(None);
-            (report, usage)
+            // The end of the run: the panel closes the row here (the child's
+            // transcript stays readable), and the report it already streamed
+            // is the same text the tool result carries.
+            runner_child.emit(AgentEvent::SubagentEnd {
+                agent_id: runner_child.id.clone(),
+                ok,
+                stopped,
+                report: report.clone(),
+                duration_ms: started.elapsed().as_millis() as u64,
+                tokens: usage.map(|u| u.input + u.output).unwrap_or(0),
+            });
+            (report, usage, ok)
         });
         if background {
             // Background subagent: answer immediately; the completion notice
@@ -2353,11 +2416,11 @@ impl Session {
                 .ok()
                 .and_then(|g| g.clone())
                 .unwrap_or_default();
-            let label_bg = label.clone();
+            let label_bg = ui_label.clone();
             tauri::async_runtime::spawn(async move {
-                let (report, usage) = match runner.await {
+                let (report, usage, _ok) = match runner.await {
                     Ok(v) => v,
-                    Err(e) => (format!("(子代理 join 失败: {e})"), None),
+                    Err(e) => (format!("(子代理 join 失败: {e})"), None, false),
                 };
                 let totals = usage
                     .map(|u| format!("\ntotal_tokens: {}", u.input + u.output))
@@ -2367,7 +2430,7 @@ impl Session {
                 );
                 if let Some(session) = parent.upgrade() {
                     session.emit(AgentEvent::Notice {
-                        text: format!("子代理 {label_bg} 完成"),
+                        text: format!("后台子代理 {label_bg} 完成"),
                     });
                     session.requeue_or_wake(notice);
                 }
@@ -2380,15 +2443,12 @@ impl Session {
                 ),
             );
         }
-        let (report, usage) = match runner.await {
+        let (report, usage, _ok) = match runner.await {
             Ok(v) => v,
             Err(e) => {
                 return ToolOutput::text(false, tool_use_error(format!("join failed: {}", e)))
             }
         };
-        self.emit(AgentEvent::Notice {
-            text: format!("子代理 {} 完成 ({})", label, child.id),
-        });
         let duration = started.elapsed().as_millis();
         let body = if report.trim().is_empty() {
             "(Subagent completed but returned no output.)".to_string()
@@ -2507,9 +2567,20 @@ impl Session {
             .and_then(|g| g.clone())
             .unwrap_or_default();
         let child_for_task = child.clone();
+        let gate = self.agent_gate.clone();
         tauri::async_runtime::spawn(async move {
+            let _slot = gate.acquire().await;
             let _guard = RunningGuard(child_for_task.running.clone());
             child_for_task.persist_agent("running");
+            // The panel already owns a row for this agent: the start event only
+            // flips it back to running (a resumed turn is the same agent).
+            child_for_task.emit(AgentEvent::SubagentStart {
+                agent_id: child_for_task.id.clone(),
+                label: child_for_task.def.display_name().to_string(),
+                kind: child_for_task.def.id.clone(),
+                model: child_for_task.provider().model.clone(),
+                background: true,
+            });
             let started = std::time::Instant::now();
             let result = child_for_task.run_loop(&SubDispatch(&child_for_task)).await;
             let report = last_assistant_text(&child_for_task.history());
@@ -2520,6 +2591,14 @@ impl Session {
             };
             child_for_task.persist_agent(status);
             let usage = child_for_task.last_usage.lock().map(|g| *g).unwrap_or(None);
+            child_for_task.emit(AgentEvent::SubagentEnd {
+                agent_id: child_for_task.id.clone(),
+                ok: result.is_ok(),
+                stopped: matches!(&result, Ok(outcome) if outcome.reason == "aborted"),
+                report: report.clone(),
+                duration_ms: started.elapsed().as_millis() as u64,
+                tokens: usage.map(|u| u.input + u.output).unwrap_or(0),
+            });
             let label = child_for_task.def.display_name().to_string();
             if let Some(parent) = parent.upgrade() {
                 parent.emit(AgentEvent::Notice {
@@ -2667,6 +2746,14 @@ struct ToolCall {
     input_error: Option<String>,
 }
 
+/// A child's session id: the parent id plus the per-spawn key (the same
+/// unique directory name the transcript lives in). It must be unique among the
+/// parent's children — the children map, the request log and the panel's
+/// routing all key on it.
+fn subagent_session_id(parent: &str, spawn_key: &str) -> String {
+    format!("{parent}-{spawn_key}")
+}
+
 /// The last assistant text: the model's own closing message. Walks backwards
 /// until a message with text is found (CC's finalizeAgentTool), so a subagent
 /// that ended on a tool call still reports something.
@@ -2793,6 +2880,9 @@ pub struct SessionSeed {
     /// vault and the `agent_roots` override; `None` falls back to the vault
     /// default (tests and helper sessions).
     pub mode_root: Option<std::path::PathBuf>,
+    /// The subagent concurrency ceiling at session start (the settings save
+    /// pushes a later change into the open sessions).
+    pub subagent_concurrency: usize,
 }
 
 pub fn create_session(seed: SessionSeed) -> Session {
@@ -2889,7 +2979,9 @@ pub fn create_session(seed: SessionSeed) -> Session {
         permission_mode: Mutex::new(permission_mode),
         plan_previous: Mutex::new(None),
         children: Mutex::new(HashMap::new()),
+        agent_gate: super::concurrency::AgentGate::new(seed.subagent_concurrency),
         parent_id: None,
+        parent_ref: Mutex::new(None),
         agent_dir: None,
         self_ref: Mutex::new(None),
     }
@@ -2899,6 +2991,19 @@ pub fn create_session(seed: SessionSeed) -> Session {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn two_children_of_one_definition_get_distinct_session_ids() {
+        // Regression: the id used to be `{parent}-sub-{definition}`, so two
+        // general-purpose agents of one parent collided and the second spawn
+        // replaced the first in the children map (SendMessage then reached the
+        // wrong agent, and the panel could not tell them apart).
+        let a = subagent_session_id("s1-7", "agent-1700000000000-1");
+        let b = subagent_session_id("s1-7", "agent-1700000000000-2");
+        assert_ne!(a, b);
+        assert!(a.starts_with("s1-7-"));
+        assert!(!a.contains("-sub-"));
+    }
 
     #[test]
     fn running_guard_always_resets_on_scope_exit_including_a_panic_unwind() {

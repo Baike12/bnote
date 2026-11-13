@@ -41,6 +41,7 @@ function config(providers: ProviderEntry[], preselected?: [string, string, strin
       ? { provider_id: preselected[0], model_id: preselected[1], thinking: preselected[2] }
       : null,
     subagent_models: { default: null, by_definition: {} },
+    subagent_concurrency: 4,
     provider: "openai",
     model: "",
     base_url: "",

@@ -40,6 +40,7 @@ function config(): AgentConfig {
         explore: { provider_id: "annto", model_id: "deepseek-flash", thinking: "off" },
       },
     },
+    subagent_concurrency: 4,
     provider: "openai",
     model: "deepseek-flash",
     base_url: "https://example.test/v1",

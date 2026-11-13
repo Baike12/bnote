@@ -17,6 +17,7 @@ import type {
 import type { SessionNode } from "@/study/sessionTree";
 import type { TranscriptLine } from "@/study/transcript";
 import type { AgentUsage } from "@/study/agentUsage";
+import type { SubagentRun } from "@/components/agent/subagents";
 
 export interface ToolRecord {
   id: string;
@@ -303,6 +304,19 @@ export interface Conv {
   selection?: ModelSelection | null;
   /** The token usage of the last model request (the context usage = input + output). */
   usage: AgentUsage | null;
+  /**
+   * Subagent runs this conversation dispatched (oldest first), for the
+   * overview strip. Absent = none: a restored session does not replay the
+   * agents of a past run (their transcripts stay on disk under
+   * `<session>/subagents/`).
+   */
+  agents?: SubagentRun[];
+  /**
+   * Set on a conv that *is* a subagent's live transcript: the run it belongs
+   * to. Its `sessionId` is the child session id, so the child's own events
+   * route here through the regular session lookup.
+   */
+  agent?: SubagentRun;
 }
 
 /** Identity of the material a session is pinned to (url re-open = same key). */

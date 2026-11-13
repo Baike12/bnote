@@ -60,9 +60,28 @@ function diffOfEdit(input: Record<string, unknown>): ToolSummary["diff"] {
   return { added, removed };
 }
 
+/** The tool's canonical name (Claude Code's vocabulary); legacy names resolve to it. */
+export function canonicalToolName(name: string): string {
+  return LEGACY_NAMES[name] ?? name;
+}
+
+/**
+ * An Agent tool's result is addressed to the *model*: it carries the agent id
+ * so a later SendMessage can continue that agent. The card is read by the
+ * user, who needs the report and nothing else, so the id line is dropped
+ * before display (the raw output on disk keeps it verbatim).
+ */
+export function stripAgentTrailer(output: string): string {
+  return output
+    .split("\n")
+    .filter((line) => !line.startsWith("agentId: "))
+    .join("\n")
+    .trimEnd();
+}
+
 /** The summary of one tool call; unknown tools fall back to their own name. */
 export function toolSummary(name: string, input: unknown, running: boolean): ToolSummary {
-  const canonical = LEGACY_NAMES[name] ?? name;
+  const canonical = canonicalToolName(name);
   const inp = inputOf(input);
   const kind = (live: string, done: string) => (running ? live : done);
   switch (canonical) {

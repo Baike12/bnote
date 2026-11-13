@@ -190,6 +190,34 @@ pub enum AgentEvent {
     /// The `ask_user_question` tool is waiting for an answer. The turn is parked
     /// until `agent_question_reply` answers this id.
     Question { id: String, questions: Value },
+    /// A subagent was dispatched. Sent on the *parent's* channel before the
+    /// child runs, so the panel can list the row before any of its deltas
+    /// arrive (the child's own events carry the child's session id).
+    /// `label` is the user-visible name (the call's description); the id is an
+    /// internal routing key the panel must never render.
+    SubagentStart {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        label: String,
+        /// The definition id (general-purpose / explore / fork …).
+        kind: String,
+        model: String,
+        background: bool,
+    },
+    /// A subagent finished (or failed). `report` is its final text, the same
+    /// report the tool result carries. `stopped` = the user pressed its stop
+    /// button; `ok` is false then too, so the row can say 已停止 rather than
+    /// 失败.
+    SubagentEnd {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        ok: bool,
+        stopped: bool,
+        report: String,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+        tokens: u64,
+    },
     /// A full turn (model response + tool runs) completed. `items` = the current
     /// number of session history entries (the authoritative count; the front end
     /// truncates by it when forking a helper session instead of guessing).

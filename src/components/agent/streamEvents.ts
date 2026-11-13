@@ -43,6 +43,16 @@ export interface StreamContext {
   setPlanActive(active: boolean): void;
   /** A whole turn finished successfully: the caller may name the session now. */
   onTurnClosed?(convKey: string): void;
+  /** A subagent started (`parentSessionId` is the parent's): the panel adds the row and the agent's conv. */
+  onSubagentStart?(
+    parentSessionId: string,
+    event: Extract<AgentEvent, { type: "subagent_start" }>,
+  ): void;
+  /** A subagent finished: the panel closes its row. */
+  onSubagentEnd?(
+    parentSessionId: string,
+    event: Extract<AgentEvent, { type: "subagent_end" }>,
+  ): void;
   /** The event was handled: let the on-screen transcript follow (scroll). */
   afterEvent(convKey: string): void;
 }
@@ -128,6 +138,17 @@ export function createStreamHandler(
       return;
     }
     switch (event.type) {
+      case "subagent_start": {
+        // A child agent's lifecycle, announced on the parent's channel before
+        // any of the child's own deltas arrive. They are not part of the
+        // conversation's entries: the panel turns them into the overview rows.
+        ctx.onSubagentStart?.(sessionId, event);
+        break;
+      }
+      case "subagent_end": {
+        ctx.onSubagentEnd?.(sessionId, event);
+        break;
+      }
       case "thinking_delta": {
         const turn = ensureTurn(conv.key);
         // A delta after a finished tool batch opens the next provider round:

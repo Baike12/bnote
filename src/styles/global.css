@@ -4346,6 +4346,128 @@ input[type="range"] {
   color: var(--text-faint);
 }
 
+/* The subagent strip: one line per agent this conversation dispatched, pinned
+   between the header and the transcript so it stays visible while the turn
+   that launched them scrolls away. A row opens that agent's own timeline. */
+.agent-runs {
+  margin: 0 14px 6px;
+  padding: 2px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  flex-shrink: 0;
+}
+.agent-runs-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 9px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: calc(var(--agent-text) * 0.76);
+  color: var(--text-dim);
+}
+.agent-runs-head:hover { background: var(--bg3); }
+.agent-runs-head .agent-tool-chevron { transition: transform 0.12s ease; }
+.agent-runs-head[aria-expanded="true"] .agent-tool-chevron { transform: rotate(90deg); }
+.agent-runs-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint);
+}
+.agent-runs-dot.is-running {
+  background: var(--accent);
+  animation: agent-runs-pulse 1.4s ease-in-out infinite;
+}
+.agent-runs-title { font-weight: 500; color: var(--text); }
+.agent-runs-count {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-runs-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 4px 4px;
+}
+.agent-run {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: calc(var(--agent-text) * 0.76);
+}
+.agent-run:hover { background: var(--bg3); }
+.agent-run:focus-visible {
+  outline: 1px solid var(--accent-dim);
+  outline-offset: -1px;
+}
+.agent-run.is-active { background: var(--accent-soft); }
+.agent-run-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint);
+}
+.agent-run-dot.is-running {
+  background: var(--accent);
+  animation: agent-runs-pulse 1.4s ease-in-out infinite;
+}
+.agent-run-dot.is-done { background: var(--ok); }
+.agent-run-dot.is-failed { background: var(--danger); }
+.agent-run-dot.is-stopped { background: var(--text-dim); }
+.agent-run-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.agent-run[data-status="failed"] .agent-run-label { color: var(--danger); }
+.agent-run-meta {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.68);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.agent-run-stop {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.agent-run-stop:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+@keyframes agent-runs-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 /* The todo tool's list, pinned above the composer: the model's plan at a
    glance. One row per item; the in-progress row carries the accent. */
 .agent-todos {

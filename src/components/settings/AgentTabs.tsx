@@ -600,6 +600,21 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
       });
   };
 
+  // The subagent ceiling is a live behavior too (the backend pushes it into
+  // the open sessions), so it saves the moment it changes instead of riding
+  // along with the catalog draft.
+  const setSubagentConcurrency = (value: number) => {
+    const clamped = Math.min(10, Math.max(1, Math.round(value) || 1));
+    if (clamped === cfg.subagent_concurrency) return;
+    const previous = cfg;
+    const next = { ...cfg, subagent_concurrency: clamped };
+    setCfg(next);
+    void agentApi.saveConfig(next).catch((e) => {
+      setCfg(previous);
+      showToast(`保存失败: ${String(e)}`);
+    });
+  };
+
   const logDir = vaultPath ? `${vaultPath}/.bnote/logs/requests` : "~/.bnote/logs/requests";
 
   return (
@@ -684,6 +699,21 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
             }
           />
         ))}
+        <Row
+          label="子代理并发"
+          desc="同时运行的上限(1–10):同一条消息里派发的代理一起开跑,超出上限的排队,槽位空出后自动开始"
+          control={
+            <input
+              className="settings-input mono"
+              type="number"
+              min={1}
+              max={10}
+              step={1}
+              value={cfg.subagent_concurrency}
+              onChange={(e) => setSubagentConcurrency(Number(e.target.value) || 1)}
+            />
+          }
+        />
       </SettingsCard>
 
       <SettingsCard

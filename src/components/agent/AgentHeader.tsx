@@ -42,6 +42,12 @@ interface AgentHeaderProps {
   onNewSession: () => void;
   /** Parent session to fall back to when this is an auxiliary session; null for the main session or when there is none. */
   parent: AgentHeaderConv | null;
+  /**
+   * What kind of nested view this is: a forked auxiliary session, or a
+   * subagent's own timeline. It only changes the back bar's wording — the
+   * navigation is the same "back to the parent".
+   */
+  parentKind?: "fork" | "agent";
   onBack: () => void;
   /** Conversation font scale (1 = 100%); the readout is that percentage. */
   fontScale: number;
@@ -57,6 +63,7 @@ export function AgentHeader({
   onToggleHistory,
   onNewSession,
   parent,
+  parentKind = "fork",
   onBack,
   fontScale,
   onFontStep,
@@ -236,9 +243,9 @@ export function AgentHeader({
       </div>
       {parent && (
         <div className="agent-aux-bar">
-          <span className="agent-aux-badge">辅助会话</span>
+          <span className="agent-aux-badge">{parentKind === "agent" ? "子代理" : "辅助会话"}</span>
           <span className="agent-aux-based" title={active?.basedOn}>
-            基于「{active?.basedOn}」
+            {parentKind === "agent" ? `任务「${active?.basedOn}」` : `基于「${active?.basedOn}」`}
           </span>
           <button
             className="agent-aux-back"

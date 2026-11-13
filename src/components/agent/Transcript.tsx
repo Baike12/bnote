@@ -4,7 +4,12 @@ import type { CodeProjectRef } from "@/state/appStore";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
-import { toolSummary, workDurationLabel } from "./toolSummary";
+import {
+  canonicalToolName,
+  stripAgentTrailer,
+  toolSummary,
+  workDurationLabel,
+} from "./toolSummary";
 import { answerRange, type ChatEntry, type ToolRecord, type Turn, type TurnStep } from "./model";
 
 /** The empty state: what this session is for, by mode. */
@@ -63,6 +68,12 @@ export function AgentWelcome({
 function ToolCard({ tool }: { tool: ToolRecord }) {
   const running = tool.ok === undefined;
   const summary = toolSummary(tool.name, tool.input, running);
+  // An Agent's output is model-addressed (it carries the agent id for a later
+  // SendMessage); the card is read by the user, so the id line is dropped.
+  const output =
+    tool.output !== undefined && canonicalToolName(tool.name) === "Agent"
+      ? stripAgentTrailer(tool.output)
+      : tool.output;
   return (
     <details
       className="agent-tool"
@@ -93,7 +104,7 @@ function ToolCard({ tool }: { tool: ToolRecord }) {
       </summary>
       <pre className="agent-tool-io">
         {JSON.stringify(tool.input, null, 2)}
-        {tool.output !== undefined && `\n→ ${tool.output}`}
+        {output !== undefined && `\n→ ${output}`}
       </pre>
       {tool.images && tool.images.length > 0 && (
         <div className="agent-msg-images">
@@ -334,12 +345,15 @@ export function AgentTranscript({
   busy,
   welcome,
   onFork,
+  allowFork = true,
 }: {
   scrollRef: Ref<HTMLDivElement>;
   entries: ChatEntry[];
   busy: boolean;
   welcome: ReactNode;
   onFork: (index: number) => void;
+  /** A subagent's transcript is read-only: no fork handles (its session is not the app's to fork). */
+  allowFork?: boolean;
 }) {
   // The shade lives in a sibling overlay, not inside the scroller: an absolute
   // child of a scroll container would scroll away with the content. It is the
@@ -355,7 +369,7 @@ export function AgentTranscript({
                 key={i}
                 entry={entry}
                 streaming={i === entries.length - 1 && busy && entry.role === "assistant"}
-                forkable={!busy}
+                forkable={allowFork && !busy}
                 onFork={() => onFork(i)}
               />
             ))}

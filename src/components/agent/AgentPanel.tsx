@@ -54,6 +54,8 @@ import {
   type Conv,
   type Turn,
 } from "@/components/agent/model";
+import { AgentRuns } from "@/components/agent/AgentRuns";
+import { agentConvKey, applyEnd, applyStart, newSubagentRun } from "@/components/agent/subagents";
 import { followTranscript, measureTurnCap } from "@/components/agent/panelScroll";
 import { resolveSelection, sessionSelection } from "@/components/agent/modelSelection";
 import { createStreamHandler } from "@/components/agent/streamEvents";
@@ -355,7 +357,12 @@ export function AgentPanel() {
 
   const activeConv = convs.find((c) => c.key === activeKey) ?? null;
   // Only a non-empty sessionId counts as "generating": while the session is not up yet (or the start failed) both sessionId and busySession are null, they are equal but that is not a streaming reply.
-  const activeBusy = activeConv?.sessionId != null && busySession === activeConv.sessionId;
+  // A subagent's own transcript streams while its row is running — it is not
+  // the panel's busy session (that one is the parent's), so it is derived from
+  // the run record instead.
+  const activeBusy = activeConv?.agent
+    ? activeConv.agent.status === "running"
+    : activeConv?.sessionId != null && busySession === activeConv.sessionId;
 
   const updateConv = useCallback((key: string, patch: (c: Conv) => Conv) => {
     setConvs((prev) => prev.map((c) => (c.key === key ? patch(c) : c)));
@@ -955,6 +962,62 @@ export function AgentPanel() {
         titleSeedRef.current.delete(convKey);
         generateTitle(convKey, seed);
       },
+      onSubagentStart: (parentSessionId, event) => {
+        // The child's own deltas are routed by its session id, so the panel
+        // first gives it a conv of its own; the row in the parent's strip and
+        // that conv are written in the same update (one owner each).
+        const now = Date.now();
+        setConvs((prev) => {
+          const owner = prev.find((c) => c.sessionId === parentSessionId);
+          if (!owner) return prev;
+          const childKey = agentConvKey(owner.key, event.agentId);
+          const nextRun = newSubagentRun(event, owner.key, now);
+          const withRow = prev.map((c) =>
+            c.key === owner.key
+              ? { ...c, agents: applyStart(c.agents ?? [], event, owner.key, now) }
+              : c,
+          );
+          const existing = withRow.find((c) => c.key === childKey);
+          if (existing) {
+            // SendMessage resumed an agent that already ran: keep its
+            // transcript and flip its row back to running.
+            return withRow.map((c) => (c.key === childKey ? { ...c, agent: nextRun } : c));
+          }
+          const child: Conv = {
+            key: childKey,
+            sessionId: event.agentId,
+            entries: [],
+            label: nextRun.label,
+            parent: owner.key,
+            basedOn: nextRun.label,
+            forkAt: 0,
+            titleSource: "first-message",
+            mcpErrors: [],
+            transcriptPath: null,
+            sessionFileId: null,
+            model: null,
+            usage: null,
+            todos: [],
+            agent: nextRun,
+          };
+          return [...withRow, child];
+        });
+      },
+      onSubagentEnd: (parentSessionId, event) => {
+        const now = Date.now();
+        setConvs((prev) => {
+          const closed = prev.map((c) =>
+            c.agent && c.agent.agentId === event.agentId
+              ? { ...c, agent: applyEnd([c.agent], event, now)[0] }
+              : c,
+          );
+          return closed.map((c) =>
+            c.sessionId === parentSessionId && c.agents
+              ? { ...c, agents: applyEnd(c.agents, event, now) }
+              : c,
+          );
+        });
+      },
       afterEvent: (convKey) => {
         // Stream auto-scroll, only for the conversation that is on screen: a
         // background session's reply must never move the view the user reads.
@@ -1103,6 +1166,14 @@ export function AgentPanel() {
     historyIndexRef.current = -1;
     historyItemsRef.current = null;
     if (!conv || (!text && pendingImages.length === 0)) return;
+    // A subagent's timeline is read-only: the child lives outside the app's
+    // session registry, so there is nothing to send to. Its own input arrived
+    // from the model's Agent call, and a follow-up goes through SendMessage
+    // from the parent agent.
+    if (conv.agent) {
+      showToast("子代理会话只读,返回主会话继续对话");
+      return;
+    }
     // Built-in panel commands (/compact /clear /help): panel actions, never a
     // message — the model never sees them.
     const builtin = parseBuiltinCommand(text);
@@ -1286,6 +1357,13 @@ export function AgentPanel() {
     ? (convs.find((c) => c.key === activeConv.parent) ?? null)
     : null;
 
+  /**
+   * The conversation whose subagents the strip lists: the one on screen, or —
+   * while an agent's own timeline is on screen — its parent, so the sibling
+   * agents stay visible (and their rows stay clickable) during the drill-in.
+   */
+  const runsOwner = activeConv?.agent ? parentConv : activeConv;
+
   /** Hand the focus to the history list: the first session, without a session the drawer itself. */
   const focusHistory = useCallback(() => {
     const first = historyRef.current?.querySelector<HTMLButtonElement>(".agent-history-item");
@@ -1461,12 +1539,16 @@ export function AgentPanel() {
       {/* Study mode has no title bar, the header is the drag area of the window; deep lets the text be dragged too,
           the buttons inside the header are let through by the drag.js of Tauri itself (see AgentHeader). */}
       <AgentHeader
-        convs={convs.map((c) => ({
-          key: c.key,
-          label: c.label,
-          parent: c.parent,
-          basedOn: c.basedOn,
-        }))}
+        convs={convs
+          // An agent's transcript is reachable from the strip, never from the
+          // session switcher: the switcher lists the user's own sessions.
+          .filter((c) => !c.agent)
+          .map((c) => ({
+            key: c.key,
+            label: c.label,
+            parent: c.parent,
+            basedOn: c.basedOn,
+          }))}
         activeKey={activeKey}
         onSelect={activateConv}
         historyOpen={historyOpen}
@@ -1485,6 +1567,7 @@ export function AgentPanel() {
               }
             : null
         }
+        parentKind={activeConv?.agent ? "agent" : "fork"}
         onBack={() => parentConv && activateConv(parentConv.key)}
         fontScale={agentFontScale}
         onFontStep={(direction) =>
@@ -1545,12 +1628,41 @@ export function AgentPanel() {
           </button>
         </div>
       )}
+      {/* The agents this conversation dispatched: sticky above the transcript,
+          because the turn that launched them scrolls away. A row opens that
+          agent's own timeline (the header's back bar returns). */}
+      {runsOwner && (
+        <AgentRuns
+          runs={runsOwner.agents ?? []}
+          activeKey={activeKey}
+          onOpen={activateConv}
+          onStop={(run) => {
+            const sessionId = runsOwner.sessionId;
+            if (!sessionId) return;
+            void agentApi
+              .stopSubagent(sessionId, run.agentId)
+              .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
+          }}
+        />
+      )}
       <AgentTranscript
         scrollRef={scrollRef}
         entries={activeConv?.entries ?? []}
         busy={activeBusy}
+        allowFork={!activeConv?.agent}
         onFork={forkFrom}
-        welcome={<AgentWelcome mode={mode} creativeMode={creativeMode} codeProject={codeProject} />}
+        welcome={
+          activeConv?.agent ? (
+            <div className="agent-welcome">
+              <p className="agent-welcome-title">{activeConv.agent.label}</p>
+              <p className="agent-hint">
+                这是子代理自己的执行过程,完成后报告会回到主会话;按上方的「返回」回到主会话。
+              </p>
+            </div>
+          ) : (
+            <AgentWelcome mode={mode} creativeMode={creativeMode} codeProject={codeProject} />
+          )
+        }
       />
       {activeConv && <AgentTodos todos={activeConv.todos} />}
 
@@ -1615,12 +1727,15 @@ export function AgentPanel() {
           ref={inputRef}
           className="agent-input"
           placeholder={
-            mode === "code"
-              ? "描述要改什么…(bash/编辑/测试;/compact 压缩上下文)"
-              : creativeMode
-                ? "描述要创作的内容…(输入 / 调技能、@ 引用文件,可粘贴截图)"
-                : "询问当前内容…(可直接粘贴截图)"
+            activeConv?.agent
+              ? "子代理会话只读:选中文字可复制,返回主会话继续对话"
+              : mode === "code"
+                ? "描述要改什么…(bash/编辑/测试;/compact 压缩上下文)"
+                : creativeMode
+                  ? "描述要创作的内容…(输入 / 调技能、@ 引用文件,可粘贴截图)"
+                  : "询问当前内容…(可直接粘贴截图)"
           }
+          readOnly={Boolean(activeConv?.agent)}
           value={input}
           rows={1}
           data-ime-chinese="true"
@@ -1761,10 +1876,16 @@ export function AgentPanel() {
             busy={activeBusy}
             sessionId={activeConv?.sessionId ?? null}
             canSend={Boolean(
-              activeConv?.sessionId && (input.trim() !== "" || pendingImages.length > 0),
+              !activeConv?.agent &&
+              activeConv?.sessionId &&
+              (input.trim() !== "" || pendingImages.length > 0),
             )}
             sendTitle={
-              activeConv?.sessionId ? "发送(Enter)" : (activeConv?.error ?? "正在连接模型…")
+              activeConv?.agent
+                ? "子代理会话只读"
+                : activeConv?.sessionId
+                  ? "发送(Enter)"
+                  : (activeConv?.error ?? "正在连接模型…")
             }
             onSend={() => void send()}
             onStop={abort}

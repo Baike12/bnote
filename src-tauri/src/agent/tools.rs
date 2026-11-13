@@ -363,7 +363,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "Agent",
-        "Launch a new agent to handle complex, multi-step tasks autonomously. The agent has its own context window and returns a single final report, so it is the right tool for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation.\n\nWhen to use: research across many files, exploring a codebase for an answer, or independent work that can run while you continue. When NOT to use: a simple directed search (use Glob/Grep), or work that depends on what you are doing right now.\n\nUsage: launch several agents in one message when the tasks are independent. To continue an agent you already launched (including one that stopped on an error), use SendMessage with its agentId instead of spawning a new one. Trust the report and do not duplicate the agent's work yourself. `run_in_background: true` returns immediately; you are notified when it finishes. `fork: true` starts from this conversation's transcript instead of a fresh context.",
+        "Launch a new agent to handle complex, multi-step tasks autonomously. The agent has its own context window and returns a single final report, so it is the right tool for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation.\n\nWhen to use: research across many files, exploring a codebase for an answer, or independent work that can run while you continue. When NOT to use: a simple directed search (use Glob/Grep), or work that depends on what you are doing right now.\n\nUsage: launch every agent you need in ONE message (several Agent tool calls side by side) — they run in parallel. Calls beyond the user's concurrency setting queue and start as slots free up, so also give each agent a self-contained `description` (it is the row the user watches). To continue an agent you already launched (including one that stopped on an error), use SendMessage with its agentId instead of spawning a new one. Trust the report and do not duplicate the agent's work yourself. `run_in_background: true` returns immediately; you are notified when it finishes. `fork: true` starts from this conversation's transcript instead of a fresh context.",
         json!({
             "type": "object",
             "properties": {
@@ -497,6 +497,12 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
 /// Tools that may run concurrently with their neighbours in one assistant
 /// message (CC's `isConcurrencySafe`). Everything else — anything that writes,
 /// spawns or mutates session state — runs alone and in call order.
+///
+/// `Agent` is safe: each launch has its own child session, its own context
+/// window and its own abort token, and the parent's shared state (children
+/// map, request log) is behind a mutex. Without it, "spawn three agents in one
+/// message" silently ran them one after another — the exact reason the model's
+/// parallel-delegation prompt had no effect.
 pub fn is_concurrency_safe(name: &str) -> bool {
     matches!(
         canonical(name),
@@ -509,6 +515,7 @@ pub fn is_concurrency_safe(name: &str) -> bool {
             | "Skill"
             | "TaskList"
             | "TaskGet"
+            | "Agent"
     )
 }
 

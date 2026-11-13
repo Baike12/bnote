@@ -2,6 +2,7 @@
 //! agent definitions and the prompt assembly pipeline.
 
 pub mod cancel;
+pub mod concurrency;
 pub mod defs;
 pub mod home;
 pub mod hooks;
@@ -46,6 +47,12 @@ pub struct AgentConfig {
     /// Which models subagents run on (absent = inherit the parent session).
     #[serde(default)]
     pub subagent_models: models::SubagentModels,
+    /// How many subagents may run at the same time (settings → 子代理并发).
+    /// Calls beyond the ceiling queue in the session's gate instead of
+    /// starting, so one message that dispatches six agents still respects the
+    /// user's number.
+    #[serde(default = "default_subagent_concurrency")]
+    pub subagent_concurrency: usize,
     pub provider: String, // "anthropic" | "openai" — legacy, mirrors the default selection
     pub model: String,
     pub base_url: String,
@@ -84,6 +91,10 @@ pub struct AgentConfig {
 
 fn default_context_window() -> u64 {
     128_000
+}
+
+fn default_subagent_concurrency() -> usize {
+    concurrency::DEFAULT_LIMIT
 }
 
 /// One reply's output ceiling for a config that never carried one (an old
@@ -173,6 +184,12 @@ impl AgentConfig {
         }
         if self.max_tokens == 0 {
             self.max_tokens = default_max_tokens();
+        }
+        if self.subagent_concurrency == 0 {
+            // `Default` gives 0 (the serde default only applies to files that
+            // omit the field), and a gate with zero slot would deadlock every
+            // subagent. Clamp once here, at the only load boundary.
+            self.subagent_concurrency = default_subagent_concurrency();
         }
         // A pre-catalog file describes one model; fold it into the first
         // provider so the catalog is the only thing the app reads afterwards.

@@ -50,6 +50,7 @@ pub async fn agent_save_config(
     config: crate::agent::AgentConfig,
 ) -> CmdResult<()> {
     let log_requests = config.log_requests;
+    let subagent_concurrency = config.subagent_concurrency;
     tauri::async_runtime::spawn_blocking(move || config.save())
         .await
         .map_err(|e| format!("JOIN_FAILED: {}", e))??;
@@ -63,6 +64,9 @@ pub async fn agent_save_config(
         .unwrap_or_default();
     for session in sessions {
         session.set_log_requests(log_requests);
+        // Same for the subagent ceiling: the gate reads the limit on every
+        // acquire, so a save applies to the next dispatch without a restart.
+        session.agent_gate.set_limit(subagent_concurrency);
     }
     Ok(())
 }
@@ -247,6 +251,7 @@ pub async fn agent_start_session(
         permission_mode: None,
         task_list_id,
         log_requests: cfg.log_requests,
+        subagent_concurrency: cfg.subagent_concurrency,
         mode_root: Some(mode_root.clone()),
     }));
     {
@@ -641,6 +646,36 @@ pub fn agent_abort(state: State<'_, AppState>, session_id: String) -> CmdResult<
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Stops one subagent of a session (the stop button on its row in the panel).
+///
+/// The abort is the child's own token: it ends that agent's loop and leaves the
+/// parent turn running (see `agent/cancel.rs` — a child observes its parent's
+/// stop, never the reverse). `false` = no such child any more (it finished and
+/// the panel is closing a stale row), which the UI treats as done.
+#[tauri::command]
+pub fn agent_stop_subagent(
+    state: State<'_, AppState>,
+    session_id: String,
+    agent_id: String,
+) -> CmdResult<bool> {
+    let child = {
+        let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+        let parent = registry
+            .get(&session_id)
+            .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?;
+        let found = parent
+            .children
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(&agent_id)
+            .cloned();
+        found
+    };
+    let Some(child) = child else { return Ok(false) };
+    child.ctx.abort.abort();
+    Ok(true)
 }
 
 /// The composer's context card: rough per-part context sizes (estimated
