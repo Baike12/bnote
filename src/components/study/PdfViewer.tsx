@@ -46,6 +46,7 @@ import {
   type SnapshotPage,
 } from "@/study/pdfSnapshot";
 import { filterOutline, type PdfOutlineNode } from "@/study/pdfOutline";
+import { pdfRenderQueue } from "@/study/pdfRenderQueue";
 import {
   flushReadPositions,
   loadReadPositions,
@@ -371,6 +372,10 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
           cMapUrl: "/pdfjs-assets/cmaps/",
           cMapPacked: true,
           standardFontDataUrl: "/pdfjs-assets/standard_fonts/",
+          // pdf.js otherwise asks the canvas for `willReadFrequently: true`,
+          // which pins rasterization to the CPU. Every page render is a large
+          // fill of pixels, so the accelerated context is the cheaper default.
+          enableHWA: true,
         });
         loaded = task;
         const doc = await task.promise;
@@ -937,6 +942,13 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     [applyReadPosition],
   );
 
+  /**
+   * Whether a page is inside the viewport right now. The render queue reads it
+   * when it picks the next job: a visible page may start even while the reader
+   * is scrolling, every other page waits for the scroll to go quiet.
+   */
+  const isOnScreen = useCallback((n: number) => visiblePages.current.has(n), []);
+
   // The top/bottom state only drives the disabled state of the paging
   // buttons: after paging by a step the page number is no longer the border
   // (the last page may still have half a screen left). Every frame of the
@@ -972,6 +984,9 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
       scheduleSave();
     };
     const schedule = () => {
+      // The render queue only starts off-screen pages once the scroll is
+      // quiet: scrolling must not compete with pdf.js for the frame.
+      pdfRenderQueue.noteScroll();
       if (!raf) raf = requestAnimationFrame(sync);
     };
     scroll.addEventListener("scroll", schedule, { passive: true });
@@ -1364,6 +1379,7 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
                         tool={tool}
                         translateEnabled={translateEnabled}
                         annotations={annotationsByPage.get(n)}
+                        onScreen={isOnScreen}
                         onAddHighlight={addHighlight}
                         onRemoveAnnotation={removeAnnotation}
                         onTranslateSelection={requestTranslation}

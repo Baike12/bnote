@@ -5752,6 +5752,11 @@ input[type="range"] {
   /* Cropping: the window only keeps the part inside the frame, the whole page
      is pushed out with a negative offset in .pdf-page-full. */
   overflow: hidden;
+  /* A page reflows whenever the column width, the zoom or the crop changes.
+     Containment keeps that work inside the page instead of invalidating the
+     whole column of hundreds of pages. `paint` is left out on purpose: it
+     would clip the page's own box-shadow. */
+  contain: layout style;
 }
 .pdf-page-full {
   position: absolute;

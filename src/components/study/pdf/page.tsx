@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { TextLayer, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
 import { type PdfCrop } from "@/study/crop";
+import { pdfRenderQueue } from "@/study/pdfRenderQueue";
 import type { PdfTool } from "./types";
 import { spanRects } from "./geometry";
 import {
@@ -36,6 +37,8 @@ interface PdfPageProps {
   /** The selection translation switch; while tool is not null the parent does not attach the translation handler. */
   translateEnabled: boolean;
   annotations: PdfAnnotation[] | undefined;
+  /** Whether this page is inside the viewport right now: the render queue lets it start even while the reader is scrolling. */
+  onScreen: (page: number) => boolean;
   onAddHighlight: (page: number, rects: NormRect[]) => void;
   onRemoveAnnotation: (id: string) => void;
   onTranslateSelection: (text: string, x: number, y: number) => void;
@@ -53,6 +56,7 @@ export const PdfPage = memo(function PdfPage({
   tool,
   translateEnabled,
   annotations,
+  onScreen,
   onAddHighlight,
   onRemoveAnnotation,
   onTranslateSelection,
@@ -62,6 +66,8 @@ export const PdfPage = memo(function PdfPage({
   // height) means a zoom or divider drag can update the placeholder height
   // without re-rendering the page.
   const [pageRatio, setPageRatio] = useState<number | null>(null);
+  /** The ratio the canvas on screen was drawn with: the display box follows it until the new bitmap is swapped in. */
+  const drawnRatio = useRef(ratio);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const fullRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -81,60 +87,117 @@ export const PdfPage = memo(function PdfPage({
     const textDiv = textRef.current;
     if (!canvas || !textDiv) return;
     let cancelled = false;
-    let task: RenderTask | null = null;
 
-    void (async () => {
-      const page = await doc.getPage(pageNumber);
-      if (cancelled) return;
-      const base = page.getViewport({ scale: 1 });
-      const scale = width / base.width;
-      const viewport = page.getViewport({ scale });
+    // The box on screen always follows the layout; only the bitmap waits for
+    // the new render. Re-sizing the *display* of the old bitmap is free and
+    // never blank — resizing its backing store is what would be.
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${Math.round(width * drawnRatio.current)}px`;
 
-      setPageRatio(viewport.height / viewport.width);
-      const dpr = Math.min(window.devicePixelRatio || 1, 2, MAX_CANVAS_WIDTH / viewport.width);
-      canvas.width = Math.floor(viewport.width * dpr);
-      canvas.height = Math.floor(viewport.height * dpr);
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      task = page.render({
-        canvas,
-        viewport,
-        transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0],
-      });
-      await task.promise;
-      if (cancelled) return;
+    // All pages go through one queue: it keeps a single pdf.js render in
+    // flight (each one may spend ~15 ms of every frame drawing) and defers
+    // the off-screen pages while the reader is scrolling.
+    const handle = pdfRenderQueue.enqueue({
+      key: pageNumber,
+      onScreen: () => onScreen(pageNumber),
+      run: async (setAbort) => {
+        const page = await doc.getPage(pageNumber);
+        if (cancelled) return;
+        const base = page.getViewport({ scale: 1 });
+        const scale = width / base.width;
+        const viewport = page.getViewport({ scale });
 
-      // The selection layer must use the same scale variables as the canvas;
-      // pdf.js positions every run with `calc(var(--total-scale-factor) * …)`.
-      textDiv.replaceChildren();
-      textDiv.style.setProperty("--scale-factor", String(viewport.scale));
-      textDiv.style.setProperty("--total-scale-factor", String(viewport.scale));
-      textDiv.style.setProperty("--scale-round-x", "1px");
-      textDiv.style.setProperty("--scale-round-y", "1px");
-      const textLayer = new TextLayer({
-        textContentSource: page.streamTextContent(),
-        container: textDiv,
-        viewport,
-      });
-      await textLayer.render();
-      // The cleanup may have run while the text layer was being built.
-      if (cancelled) textDiv.replaceChildren();
-    })().catch((e: unknown) => {
-      if (cancelled) return;
-      if (e instanceof Error && e.name === "RenderingCancelledException") return;
-      console.warn("[pdf] page render failed", pageNumber, e);
+        setPageRatio(viewport.height / viewport.width);
+        drawnRatio.current = viewport.height / viewport.width;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2, MAX_CANVAS_WIDTH / viewport.width);
+        const pixelWidth = Math.floor(viewport.width * dpr);
+        const pixelHeight = Math.floor(viewport.height * dpr);
+
+        // Render off-screen and swap in one synchronous block. Resizing the
+        // visible canvas discards its bitmap, so doing it up front would show
+        // the bare paper for as long as pdf.js needs — that is the flash the
+        // column width change (the focus swap, a divider drag) used to cause.
+        const staged = document.createElement("canvas");
+        staged.width = pixelWidth;
+        staged.height = pixelHeight;
+        const task: RenderTask = page.render({
+          canvas: staged,
+          viewport,
+          transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0],
+        });
+        setAbort(() => task.cancel());
+        try {
+          await task.promise;
+        } catch (e) {
+          staged.width = 0;
+          staged.height = 0;
+          if (!isCancellation(e)) throw e;
+          return;
+        }
+        if (cancelled) {
+          staged.width = 0;
+          staged.height = 0;
+          return;
+        }
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
+        canvas.getContext("2d")?.drawImage(staged, 0, 0);
+        staged.width = 0;
+        staged.height = 0;
+
+        // The text layer is swapped the same way: built detached (pdf.js only
+        // appends spans and needs no layout for them) and moved in whole, so
+        // no frame is ever drawn with the page showing but its text missing.
+        const stagedText = document.createElement("div");
+        setTextScale(stagedText, viewport.scale);
+        const textLayer = new TextLayer({
+          textContentSource: page.streamTextContent(),
+          container: stagedText,
+          viewport,
+        });
+        setAbort(() => {
+          task.cancel();
+          textLayer.cancel();
+        });
+        try {
+          await textLayer.render();
+        } catch (e) {
+          if (!isCancellation(e)) throw e;
+          return;
+        }
+        if (cancelled) return;
+        // pdf.js writes the layer box and the rotation onto the container it
+        // was handed; the swap has to pass them to the real one.
+        setTextScale(textDiv, viewport.scale);
+        textDiv.style.width = stagedText.style.width;
+        textDiv.style.height = stagedText.style.height;
+        const rotation = stagedText.getAttribute("data-main-rotation");
+        if (rotation !== null) textDiv.setAttribute("data-main-rotation", rotation);
+        textDiv.replaceChildren(...Array.from(stagedText.childNodes));
+      },
     });
 
     return () => {
       cancelled = true;
-      task?.cancel();
-      // Free the backing store: leaving ~10 MB canvases behind for every page
-      // scrolled past is how a long paper turns into a memory leak.
+      handle.cancel();
+    };
+  }, [active, doc, pageNumber, width, onScreen]);
+
+  // Freeing the backing store happens only when the page leaves the render
+  // window (a long paper would otherwise keep ~10 MB per page it ever showed),
+  // never for a width change: there the finished bitmap stays on screen until
+  // the new one is swapped in above.
+  useEffect(() => {
+    if (active) return;
+    const canvas = canvasRef.current;
+    if (canvas) {
       canvas.width = 0;
       canvas.height = 0;
-      textDiv.replaceChildren();
-    };
-  }, [active, doc, pageNumber, width]);
+    }
+    textRef.current?.replaceChildren();
+  }, [active]);
 
   const height = Math.round(width * (pageRatio ?? ratio));
   // After a crop the page only occupies this block: the whole page is still inside it and a negative offset pushes the part outside the box out of the crop window.
@@ -269,6 +332,20 @@ export const PdfPage = memo(function PdfPage({
     </div>
   );
 });
+
+/** The selection layer must use the same scale variables as the canvas; pdf.js positions every run with `calc(var(--total-scale-factor) * …)`. */
+function setTextScale(el: HTMLElement, scale: number): void {
+  el.style.setProperty("--scale-factor", String(scale));
+  el.style.setProperty("--total-scale-factor", String(scale));
+  el.style.setProperty("--scale-round-x", "1px");
+  el.style.setProperty("--scale-round-y", "1px");
+}
+
+/** pdf.js reports a cancelled render / text layer as a rejection; it is the expected end of a page that scrolled away. */
+function isCancellation(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === "RenderingCancelledException" || error.name === "AbortException";
+}
 
 /** The part of the selection that falls on this page (normalized rectangles). A drag selection across pages only takes the piece of this page. */
 function selectionRects(
