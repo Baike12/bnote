@@ -10,7 +10,9 @@
 //! talking a one-line-JSON-per-request protocol over stdin/stdout.
 //!
 //! - The helper never initializes Tauri (`main` checks the flag first), has no
-//!   windows and never activates itself, so spawning it steals no focus.
+//!   windows, never activates itself and carries the accessory activation
+//!   policy (`hide_from_dock`), so spawning it steals no focus and adds no
+//!   Dock icon.
 //! - The helper is warm across switches: its TIS reference cache and the
 //!   one-time TIS initialization are paid once at startup (the frontend's
 //!   `imeWarmUp` list call), not on the user's first mode change.
@@ -26,6 +28,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use serde_json::json;
 
 /// Argument that turns this binary into the IME helper (`main` checks it
@@ -137,11 +141,30 @@ pub fn maybe_run_helper(argv: &[String]) -> bool {
     if !argv.iter().any(|a| a == HELPER_FLAG) {
         return false;
     }
+    hide_from_dock();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let code = run_helper(argv, &mut out);
     let _ = out.flush();
     std::process::exit(code);
+}
+
+/// The helper re-executes this binary and shares the app's Info.plist, so the
+/// moment HIToolbox connects to the window server for TIS it checks in with
+/// LaunchServices as a regular foreground application — a second bnote Dock
+/// icon (observed 2026-11-14). The accessory policy withdraws that
+/// registration (no Dock icon, not in Cmd-Tab) without touching TIS. Runs on
+/// the helper's main thread, before any TIS call can check in.
+fn hide_from_dock() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    if !app.setActivationPolicy(NSApplicationActivationPolicy::Accessory) {
+        // Cosmetic only: the cost of a rejected policy is the spare Dock
+        // icon, never a failed IME switch.
+        eprintln!("ime helper: setActivationPolicy(accessory) rejected");
+    }
 }
 
 // ---------------------------------------------------------------------------
