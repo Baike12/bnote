@@ -122,3 +122,61 @@ fn the_helper_serves_current_select_and_list_over_the_line_protocol() {
         .expect("wait for the helper after stdin EOF");
     assert!(status.success(), "helper exits 0 on EOF: {status}");
 }
+
+/// Runs one request in a fresh one-shot helper: a new process reads the live
+/// system state, so it is the reference the long-lived helper must agree with.
+fn one_shot(args: &[&str]) -> Value {
+    let out = Command::new(env!("CARGO_BIN_EXE_bnote"))
+        .arg(bnote_lib::ime_daemon::HELPER_FLAG)
+        .args(args)
+        .output()
+        .expect("run a one-shot helper");
+    serde_json::from_slice(&out.stdout).expect("one-shot response json")
+}
+
+/// The long-lived helper must see a source change it did not make (the user's
+/// own switch, macOS restoring a per-app source on activation). Before the
+/// run-loop drain in `ime_tis::current_source_id` it kept reporting its own
+/// last select, so `select` answered "already active" in microseconds and
+/// never switched.
+///
+/// Ignored by default: it really switches the user's input method once and
+/// restores it. Run with `cargo test --test ime_daemon -- --ignored`.
+#[test]
+#[ignore]
+fn the_long_lived_helper_sees_switches_made_by_other_processes() {
+    let mut helper = Helper::start();
+    let original = helper.ask(json!({ "op": "current" }))["id"]
+        .as_str()
+        .expect("current must name the active source")
+        .to_string();
+
+    // A source different from the active one, so the switch below is real.
+    let other = helper.ask(json!({ "op": "list" }))["sources"]
+        .as_array()
+        .and_then(|sources| {
+            sources
+                .iter()
+                .filter_map(|s| s["id"].as_str())
+                .find(|id| *id != original)
+                .map(str::to_string)
+        })
+        .expect("a second selectable source");
+
+    // Another process switches the source behind the long-lived helper's back.
+    let out = one_shot(&["select", other.as_str()]);
+    assert_eq!(out["switched"], true, "{out}");
+
+    // Without the drain this reads the helper's own stale copy and the test
+    // fails: the helper believed `other` was "already active".
+    let seen = helper.ask(json!({ "op": "current" }))["id"]
+        .as_str()
+        .expect("current must name the active source")
+        .to_string();
+    assert_eq!(seen, other, "the helper must see switches made by others");
+
+    // Hand the user's original source back.
+    let back = one_shot(&["select", original.as_str()]);
+    assert_eq!(back["switched"], true, "{back}");
+    assert_eq!(helper.ask(json!({ "op": "current" }))["id"], original);
+}

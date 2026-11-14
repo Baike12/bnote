@@ -15,9 +15,11 @@ use crate::commands::ime::InputSourceInfo;
 use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::{CFBoolean, CFBooleanRef};
+use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::{CFString, CFStringRef};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 #[link(name = "Carbon", kind = "framework")]
 extern "C" {
@@ -185,6 +187,13 @@ pub fn selectable_sources() -> Vec<InputSourceInfo> {
 
 /// Id of the active input source (single TIS call, no enumeration).
 pub fn current_source_id() -> Option<String> {
+    // HIToolbox answers this from a per-process copy that is only updated by
+    // change notifications delivered on this thread's run loop. The helper
+    // blocks on stdin and never runs one, so without this drain it keeps
+    // reporting its own last select: after the user (or macOS on window
+    // activation) changed the source, `select` saw "already active" and
+    // skipped the switch. A zero-timeout drain costs microseconds.
+    CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::ZERO, false);
     unsafe {
         let src = TISCopyCurrentKeyboardInputSource();
         if src.is_null() {
