@@ -211,37 +211,43 @@ Run this against every diff that touches `src/editor`, `src/daily`,
 ## 6. Known native leg: IME switching
 
 `imeSwitch` keeps ASCII in normal mode / formulas (ABC) and switches to the
-insert source (Sogou) on entering insert. The switch is an in-process Carbon TIS
-call that HIToolbox runs on the app's **main thread** — the same thread that
-delivers key events — so its duration is input latency, not paint latency. This
-leg is **not** visible in browser measurement. Use `ime.switch` spans and the
-Rust probe (`cargo test --lib probe_switch_sources -- --nocapture`); platform
-behavior needs a deployed check (AGENTS.md).
-
-The measured cost on this machine (45 samples, full trace 2026-11-11):
+insert source (Sogou) on entering insert. The select is a Carbon TIS call that
+HIToolbox only allows on a main queue — and the app's own main thread is the
+UI thread, so running it there froze the whole app per switch. Real `.bnote/perf`
+traces (2026-11-12, one writing session) show the cost that used to land on the
+UI thread directly:
 
 | target state | `tisMs` | what it is |
 |---|---|---|
 | same source used within 5 s | p50 4.6 ms | TIS bookkeeping only |
 | idle 5–120 s | p50 8.7 ms, max 53 ms | the input method waking up |
 | idle > 2 min | p50 52.6 ms, max 166 ms | a third-party IME being activated (`Sogou`) |
+| 2026-11-12 real session (14 switches) | 3.5–103.9 ms, median ~30 ms | mix of the rows above |
 
-That is the whole switch: the command is **synchronous**, so Tauri runs it on the
-main thread instead of `spawn_blocking` → `run_on_main_thread` → channel (that
-form added a measured 10–35 ms before the TIS call even started, exactly between
-the mode change and the source changing). `SetImeOutcome` returns the call's own
-duration, and the span carries it:
+**Since the helper daemon (`src-tauri/src/ime_daemon.rs`), this cost no longer
+touches the app's main thread.** TIS runs in a helper process — this binary
+re-executed with `--ime-helper` (no Tauri, no windows, steals no focus), long
+lived, one JSON line per request over stdin/stdout:
+
+- `set_input_source` / `get_current_input_source` / `list_input_sources` write
+  one pipe line and read the answer; the UI thread never runs TIS.
+- The helper keeps the TIS reference cache and the one-time initialization warm
+  across switches (`imeWarmUp` still triggers them at startup, now inside the
+  helper).
+- A request that fails or exceeds the 5 s timeout discards the helper; the
+  next request spawns a fresh one. Errors reach the caller — the IME follow
+  retries on the next transition, nothing fails silently.
+- `tests/ime_daemon.rs` drives the real helper process end-to-end (no-op
+  operations only, so the user's input method is never changed) and gates the
+  steady-state round trip.
+
+`SetImeOutcome` still returns the TIS call's own duration, and the span carries
+it:
 
 | field | meaning | a large value means |
 |---|---|---|
-| `tisMs` | inside `TISSelectInputSource` | the input method was cold; every key pressed meanwhile waits |
-| `ms - tisMs` | IPC + the front end's own task boundary | the bridge, not the IME |
-
-The first TIS call in a process pays ~41 ms (`TISCopyCurrentKeyboardInputSource`
-measured on macOS 26); `imeWarmUp` pre-pays it at startup, so a large `tisMs`
-after warm-up is not initialization. `save.note` spans of the same period are
-the control: when a 41-byte write also costs ~200 ms, the congestion is the
-command channel, not the IME.
+| `tisMs` | inside `TISSelectInputSource` (helper process) | the input method was cold — visible only as hand-over time now, not as a UI freeze |
+| `ms - tisMs` | IPC + pipe + the front end's own task boundary | the bridge, not the IME |
 
 Two things this leg deliberately does **not** do:
 
@@ -255,7 +261,6 @@ Two things this leg deliberately does **not** do:
   (`setTimeout(0)`) so the mode change and its DOM work land first. Waiting for
   a frame on top of that only shortened the time the IME had to be ready before
   the user's first character.
-
 
 ## 7. Where the hot path lives (map)
 

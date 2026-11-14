@@ -42,11 +42,11 @@ let forcedThisSession = false;
 let focusSeq = 0;
 
 /** At most one setInputSource in flight; a burst of flips collapses into the
- *  one trailing call that matches the final intent. Each switch occupies the
- *  app main thread for the duration of the TIS call (2–10 ms warm, up to
- *  ~170 ms while the input method activates), so overlapping switches would
- *  queue behind each other — exactly what rapid cursor moves across math
- *  boundaries felt like. */
+ *  one trailing call that matches the final intent. The select itself runs in
+ *  the helper process (`ime_daemon`) and no longer occupies the app's main
+ *  thread — but every round trip still costs a hand-over window in which the
+ *  first characters land in the old source, so collapsing bursts stays the
+ *  right model even now that the UI cannot freeze. */
 let switching = false;
 let queued: string | null = null;
 let launchScheduled = false;
@@ -66,14 +66,11 @@ function cancelFocusVerify(): void {
   }
 }
 
-/** Defers the switch to the end of the key's task. The switch itself is a
- *  main-thread TIS call of 2–10 ms warm and 30–170 ms when the target input
- *  method has to be activated; the backend command is synchronous, so there is
- *  no thread hop to amortize and no reason to hold the intent back for a frame
- *  (that only shortened the hand-over time and let the first characters land in
- *  the old source). Consecutive flips in one batch collapse into a single
- *  switch: `desired` is the single source of intent, read when the timer
- *  fires. */
+/** Defers the switch to the end of the key's task. The select runs in the
+ *  helper process, so the deferral is not about blocking any more — it keeps
+ *  the mode change and its DOM work ahead of the switch in the same task, and
+ *  collapses consecutive flips into one round trip (`desired` is the single
+ *  source of intent, read when the timer fires). */
 function scheduleLaunch(): void {
   if (launchScheduled) return;
   launchScheduled = true;
@@ -298,7 +295,10 @@ export function imeWarmUp(): void {
   void api.listInputSources().catch(() => {});
 }
 
-/** Drop bnote's forced source and restore what the user had before it. */
+/** Drop bnote's forced source and restore what the user had before it. The
+ *  hand-back goes through the single intent channel (`restoreSource`), like
+ *  every other switch: a rapid field enter/leave burst then collapses into the
+ *  one trailing call instead of firing one concurrent restore per event. */
 export function imeYield(): void {
   const restore = baseline;
   cancelFocusVerify();
@@ -307,7 +307,8 @@ export function imeYield(): void {
   queued = null;
   forcedThisSession = false;
   transient = null; // control is handed back: no popup's "original source" is remembered any more
-  if (restore) void api.setInputSource(restore).catch(() => {});
+  baseline = null; // consumed: handing it back twice would re-send the same source
+  if (restore) restoreSource(restore);
 }
 
 /**

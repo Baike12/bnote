@@ -116,6 +116,36 @@ describe("imeApply launch timing and in-flight merging", () => {
     expect(setInputSource).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * The real-trace churn (`.bnote/perf`, 2026-11-12): repeated Chinese-field
+   * enter/leave and window focus changes produced a burst of sogou↔ABC
+   * switches. Each round trip costs a hand-over window, so the budget is per
+   * distinct intent, never per focus event.
+   */
+  it("N field enter/leave transitions cost exactly N+1 hand-backs, one switch per intent", async () => {
+    for (let i = 0; i < 5; i++) {
+      imeOnChineseFocus(true); // enter: force re-sends even when desired matches
+      await drain();
+      imeYield(); // leave: hand the user's source back
+      await drain();
+    }
+    // 5 × (Chinese on enter + original on leave); the first enter also
+    // captures the baseline, which costs no extra switch.
+    expect(setInputSource).toHaveBeenCalledTimes(10);
+  });
+
+  it("ten back-to-back transitions collapse into one in-flight + one trailing call", async () => {
+    for (let i = 0; i < 10; i++) {
+      imeOnChineseFocus(true);
+      imeYield();
+    }
+    await drain();
+    const calls = setInputSource.mock.calls.length;
+    expect(calls).toBeLessThanOrEqual(3);
+    await drain();
+    expect(setInputSource.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
   it("flips during an in-flight call merge into a single trailing call", async () => {
     imeApply("A");
     await drain();
@@ -214,6 +244,10 @@ describe("annotation input focus", () => {
   });
 
   it("force while a switch to English is in flight: Chinese is sent again once it settles (the trailing intent is not lost)", async () => {
+    // A yield leaves `desired` on the restored source, so this flow re-enters
+    // the way the app does after a hand-back: blur suspends, focus re-applies.
+    imeOnWindowBlur();
+    imeOnWindowFocus();
     imeApply("com.apple.keylayout.ABC");
     await new Promise((r) => setTimeout(r, 0)); // the English switch is out and in flight
     expect(pending.length).toBe(1);
@@ -538,7 +572,10 @@ describe("transient Chinese input scope (quick todo popup)", () => {
     await waitInFlight();
     imeBeginTransientChinese(); // re-render / focus again
     await settle();
-    expect(getCurrentInputSource).toHaveBeenCalledTimes(1);
+    // Two captures: the transient scope's own read, plus the baseline for this
+    // focus session (imeYield consumed the previous baseline, so the first
+    // forced switch of the new session captures a fresh one).
+    expect(getCurrentInputSource).toHaveBeenCalledTimes(2);
     expect(setInputSource).toHaveBeenCalledTimes(1);
   });
 

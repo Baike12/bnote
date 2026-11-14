@@ -5,6 +5,10 @@ mod commands;
 #[cfg(debug_assertions)]
 mod devbridge;
 pub mod dict;
+#[cfg(target_os = "macos")]
+pub mod ime_daemon;
+#[cfg(target_os = "macos")]
+pub mod ime_tis;
 pub mod lsp;
 mod paths;
 mod state;
