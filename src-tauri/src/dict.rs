@@ -200,7 +200,6 @@ pub fn lookup(selected: &str) -> Option<DictEntry> {
 }
 
 /// Number of headwords in the embedded asset (diagnostics/tests).
-#[allow(dead_code)]
 pub fn count() -> usize {
     dictionary().count
 }

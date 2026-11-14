@@ -257,8 +257,7 @@ pub struct TokenUsage {
 ///
 /// A hit rate over one request is noise (the first request of every
 /// conversation is a guaranteed miss, and one changed prefix byte resets the
-/// whole window); the number worth showing is the token-weighted aggregate,
-/// exactly the definition ZCode fixes in `docs/context-cache-hit-rate.md`:
+/// whole window); the number worth showing is the token-weighted aggregate:
 ///
 /// ```text
 /// hit rate = sum(cache_read) / sum(input)
@@ -288,9 +287,6 @@ impl UsageTotals {
         (self.input > 0).then(|| (self.cache_read as f64 / self.input as f64).min(1.0))
     }
 }
-
-/// Provider-agnostic streaming callback.
-pub type EventSink<'a> = &'a (dyn Fn(AgentEvent) + Send + Sync + 'a);
 
 /// What a provider turn produced.
 #[derive(Debug, Default)]

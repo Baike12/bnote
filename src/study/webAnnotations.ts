@@ -56,8 +56,6 @@ export interface WebAnnotationFile {
   annotations: WebAnnotation[];
 }
 
-export const MAX_WEB_QUOTE = 2000;
-
 /**
  * Validate / trim the annotations the page sends. It has to be
  * self-contained (no module constants): it is serialized into the page
@@ -179,10 +177,6 @@ export function parseWebAnnotationFile(raw: string | null): WebAnnotationFile {
   };
 }
 
-export function parseWebAnnotations(raw: string | null): WebAnnotation[] {
-  return parseWebAnnotationFile(raw).annotations;
-}
-
 /** URL -> annotation file name: a readable host plus a stable hash, so the same URL always lands in the same file. */
 export function webAnnotationFileName(url: string): string {
   let host = "page";
@@ -199,15 +193,6 @@ export function webAnnotationFileName(url: string): string {
       .replace(/^-+|-+$/g, "")
       .slice(0, 48) || "page";
   return `${slug}-${hash53(url)}.json`;
-}
-
-/** The pre-material location of one URL's annotations (`.bnote/web-annotations/<host>-<hash>.json`); only the one-time migration reads it. */
-export function legacyWebAnnotationRelPath(url: string): string {
-  return `web-annotations/${webAnnotationFileName(url)}`;
-}
-
-export function legacyWebAnnotationPath(vaultRoot: string, url: string): string {
-  return vaultDotPath(vaultRoot, legacyWebAnnotationRelPath(url));
 }
 
 /** Merge two sets of annotations by id (the stored ones + the page ones); the newer one in the page wins. */

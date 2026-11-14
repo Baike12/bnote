@@ -55,15 +55,6 @@ pub struct ServerSpec {
     pub pull_diagnostics: bool,
 }
 
-impl ServerSpec {
-    pub fn new(command: impl Into<String>) -> Self {
-        Self {
-            command: command.into(),
-            ..Default::default()
-        }
-    }
-}
-
 /// How a message coming from the server is handled.
 pub trait LspSink: Send + Sync + 'static {
     /// Handles one message from the server. The read loop awaits the returned

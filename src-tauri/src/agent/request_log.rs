@@ -108,10 +108,6 @@ impl RequestLog {
         Ok(log)
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Records the request about to be sent and returns its id.
     pub fn begin(&self, meta: &RequestMeta<'_>, body: &Value) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);

@@ -20,24 +20,6 @@ export interface CodeTree {
   truncated: boolean;
 }
 
-/**
- * The visible difference the backend's project watcher reports.
- *
- * It is applied to the entries the store already holds: the whole tree is
- * never sent again (a large repository is tens of thousands of entries, far
- * too much to ship with every file change).
- */
-export interface CodeTreeDelta {
-  /** Project root the delta belongs to (stale events are dropped by it). */
-  root: string;
-  /** Entries that were not in the previous snapshot. */
-  added: CodeEntry[];
-  /** Relative paths that no longer exist (a directory covers its subtree). */
-  removed: string[];
-  /** A `.gitignore` / `.ignore` changed: rescan instead of applying the delta. */
-  reset: boolean;
-}
-
 /** The content of a file. */
 export interface CodeFile {
   /** Relative inside the project, absolute for a file outside it. */
@@ -136,10 +118,4 @@ export interface ResolvedServerInfo {
   command: string;
   args: string[];
   disabled: boolean;
-}
-
-/** An LSP position (a jump target). */
-export interface LspLocation {
-  uri: string;
-  range: LspRange;
 }

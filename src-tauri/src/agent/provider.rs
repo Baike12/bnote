@@ -1474,13 +1474,8 @@ mod tests {
     use crate::agent::types::InlineImage;
 
     /// Feeds a raw SSE byte stream into the anthropic event state, the same way
-    /// `read_anthropic_stream` does, without an HTTP fixture.
-    fn feed_anthropic(turn: &mut TurnResult, sse: &str) {
-        feed_anthropic_events(turn, sse);
-    }
-
-    /// The same fold as `feed_anthropic`, keeping the UI events so a test can
-    /// assert what the stream announced.
+    /// `read_anthropic_stream` does, without an HTTP fixture; returns the UI
+    /// events so a test can assert what the stream announced.
     fn feed_anthropic_events(turn: &mut TurnResult, sse: &str) -> Vec<AgentEvent> {
         let mut state = AnthropicStreamState::default();
         let mut parser = SseParser::new();

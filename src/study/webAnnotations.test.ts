@@ -5,10 +5,8 @@ import {
   mergeUrlAnnotations,
   normalizeWebAnnotations,
   parseWebAnnotationFile,
-  parseWebAnnotations,
   textPointAt,
   webAnnotationFileName,
-  legacyWebAnnotationRelPath,
   webAnnotationMaterialPath,
   type WebAnnotation,
 } from "./webAnnotations";
@@ -118,7 +116,6 @@ describe("web annotation data", () => {
     expect(webAnnotationFileName(a)).toBe(webAnnotationFileName(a));
     expect(webAnnotationFileName(a)).not.toBe(webAnnotationFileName(b));
     expect(webAnnotationFileName(a)).toMatch(/^example\.com-[a-z0-9]+\.json$/);
-    expect(legacyWebAnnotationRelPath(a)).toMatch(/^web-annotations\/example\.com-/);
     expect(webAnnotationMaterialPath("/vault", "materials/webpages/x_com_201075")).toBe(
       "/vault/.bnote/materials/webpages/x_com_201075/annotations.json",
     );
@@ -140,9 +137,9 @@ describe("web annotation data", () => {
     );
     expect(file.url).toBe("https://a");
     expect(file.annotations.map((a) => a.id)).toEqual(["1"]);
-    expect(parseWebAnnotations(JSON.stringify({ annotations: [ann("2", "x", 1)] }))).toHaveLength(
-      1,
-    );
+    expect(
+      parseWebAnnotationFile(JSON.stringify({ annotations: [ann("2", "x", 1)] })).annotations,
+    ).toHaveLength(1);
   });
 
   it("the merge takes the union by id, the ones from the page override the ones from the vault", () => {
