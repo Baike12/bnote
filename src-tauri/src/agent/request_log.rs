@@ -62,11 +62,34 @@ impl RequestLog {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("WRITE_FAILED: {} ({})", parent.display(), e))?;
         }
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(path)
             .map_err(|e| format!("WRITE_FAILED: {} ({})", path.display(), e))?;
+        // A crash mid-write leaves the last line torn (no trailing newline) and
+        // appending would fuse the next record into it. Terminate the tail once
+        // at open: the damaged line stays parseable as its own (partial) line
+        // and every record after it lands on a fresh line.
+        let len = file
+            .metadata()
+            .map_err(|e| format!("WRITE_FAILED: {} ({})", path.display(), e))?
+            .len();
+        if len > 0 {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut last = [0u8; 1];
+            file.seek(SeekFrom::End(-1))
+                .and_then(|_| file.read_exact(&mut last))
+                .map_err(|e| format!("WRITE_FAILED: {} ({})", path.display(), e))?;
+            if last[0] != b'\n' {
+                // O_APPEND always writes at the end, so this terminates the tail.
+                use std::io::Write;
+                file.write_all(b"\n")
+                    .and_then(|_| file.flush())
+                    .map_err(|e| format!("WRITE_FAILED: {} ({})", path.display(), e))?;
+            }
+        }
         let log = Arc::new(RequestLog {
             path: path.to_path_buf(),
             file: Mutex::new(file),
@@ -293,5 +316,136 @@ mod tests {
         let log = RequestLog::open_at(&path, "s3", "study", "m1").expect("open creates parents");
         log.error(1, "still writable");
         assert!(path.is_file());
+    }
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bnote-reqlog-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn meta<'a>(session: &'a str, url: &'a str) -> RequestMeta<'a> {
+        RequestMeta {
+            session,
+            purpose: "subagent",
+            url,
+            protocol: "anthropic",
+            model: "m1",
+            thinking: true,
+        }
+    }
+
+    /// A crash mid-write leaves a partial last line. `open_at` terminates the
+    /// torn tail with a newline, so the damaged line stays parseable as its own
+    /// partial record and every later record lands on a fresh line.
+    #[test]
+    fn a_truncated_tail_does_not_stop_later_records_from_being_written() {
+        let dir = temp_dir("partial");
+        let path = dir.join("s.jsonl");
+        std::fs::write(&path, "{\"phase\":\"meta\",\"request\":1").expect("partial line");
+        let log = RequestLog::open_at(&path, "s1", "coding", "m1").expect("open");
+        log.error(7, "boom");
+        log.error(8, "boom again");
+        drop(log);
+
+        let raw = std::fs::read_to_string(&path).expect("read");
+        let lines: Vec<&str> = raw.lines().collect();
+        let valid: Vec<Value> = lines
+            .iter()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        // The torn tail keeps its own line (still one damaged record at most).
+        assert_eq!(lines[0], "{\"phase\":\"meta\",\"request\":1");
+        // The session line survived too: it was no longer glued onto the tail.
+        assert!(
+            valid
+                .iter()
+                .any(|v| v["phase"] == "session" && v["session"] == "s1"),
+            "{lines:?}"
+        );
+        assert!(
+            valid
+                .iter()
+                .any(|v| v["phase"] == "error" && v["request"] == 7),
+            "{lines:?}"
+        );
+        assert!(
+            valid
+                .iter()
+                .any(|v| v["phase"] == "error" && v["request"] == 8),
+            "{lines:?}"
+        );
+        // The damage is confined to one line: the rest of the file parses.
+        assert_eq!(
+            lines.len() - valid.len(),
+            1,
+            "exactly one line is damaged: {lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_record_names_its_session_purpose_and_endpoint() {
+        // Subagents share their parent's file, so a line has to say who wrote
+        // it; without that the file cannot be read back after the fact.
+        let dir = temp_dir("identity");
+        let path = dir.join("s.jsonl");
+        let log = RequestLog::open_at(&path, "parent-session", "coding", "m1").expect("open");
+        let body = json!({"model": "m1", "stream": true, "messages": []});
+        let id = log.begin(
+            &meta("parent-session", "https://api.test/v1/messages"),
+            &body,
+        );
+        log.error(id, "give up");
+        drop(log);
+
+        let values: Vec<Value> = std::fs::read_to_string(&path)
+            .expect("read")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json"))
+            .collect();
+        let request = values
+            .iter()
+            .find(|v| v["phase"] == "request")
+            .expect("a request line");
+        assert_eq!(request["session"], "parent-session");
+        assert_eq!(request["purpose"], "subagent");
+        assert_eq!(request["url"], "https://api.test/v1/messages");
+        assert_eq!(request["protocol"], "anthropic");
+        assert_eq!(request["thinking"], true);
+        let error = values
+            .iter()
+            .find(|v| v["phase"] == "error")
+            .expect("an error line");
+        assert_eq!(error["request"], id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unwritable_path_fails_at_open_with_a_named_error() {
+        // A log that silently does not exist is the bug this catches: the
+        // caller has to decide to continue without a record.
+        let dir = temp_dir("unwritable");
+        let path = dir.join("sub").join("s.jsonl");
+        // A file where the parent directory has to be.
+        std::fs::write(dir.join("sub"), "not a directory").expect("blocker");
+        match RequestLog::open_at(&path, "s1", "coding", "m1") {
+            Ok(_) => panic!("an unwritable record must fail at open"),
+            Err(err) => assert!(err.starts_with("WRITE_FAILED:"), "{err}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
