@@ -21,7 +21,7 @@
     "test:e2e": "wdio run e2e/wdio.conf.ts",
     "test:e2e:build": "VITE_E2E=1 tauri build --debug --no-bundle --features e2e --config src-tauri/tauri.e2e.conf.json",
     "gate": "pnpm lint && pnpm typecheck && pnpm format:check && pnpm test",
-    "gate:full": "pnpm gate && pnpm typecheck:e2e && pnpm test:coverage && pnpm test:perf && pnpm test:rust",
+    "gate:full": "pnpm lint && pnpm typecheck && pnpm format:check && pnpm typecheck:e2e && pnpm test:coverage && pnpm test:perf && pnpm test:rust",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "docs:keybindings": "UPDATE_DOCS=1 vitest run src/commands/keybindingsDoc.test.ts",
