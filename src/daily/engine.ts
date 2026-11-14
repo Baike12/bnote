@@ -268,7 +268,9 @@ function uncheckSpecs(
   if (!isTodo(p) || p.box === " ") return null;
   const markFrom = line.from + p.indent.length + p.marker.length + p.gap.length;
   const stamp = DONE_STAMP_RE.exec(p.text);
-  const textEnd = markFrom + 3 + (stamp ? stamp.index : p.text.length);
+  // p.text starts after the checkbox INCLUDING its separator space (BOX_RE
+  // consumes `[x]` plus one optional space), so the offset base is boxLen, not 3.
+  const textEnd = markFrom + p.boxLen + (stamp ? stamp.index : p.text.length);
   const changes = [{ from: markFrom + 1, to: markFrom + 2, insert: " " }];
   if (stamp) changes.push({ from: textEnd, to: line.to, insert: "" });
   return { changes };

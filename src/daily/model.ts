@@ -25,6 +25,8 @@ export interface ListLine {
   gap: string;
   /** Checkbox state; null = plain list item (no checkbox) */
   box: " " | "x" | "X" | null;
+  /** Chars the checkbox consumed from the content, separator space included (0 when there is no box). Document offsets of `text` start at boxStart + boxLen. */
+  boxLen: number;
   /** Line content after the checkbox (after the marker when there is no checkbox) */
   text: string;
 }
@@ -33,13 +35,15 @@ export function parseListLine(text: string): ListLine | null {
   const m = LIST_LINE_RE.exec(text);
   if (!m) return null;
   let box: ListLine["box"] = null;
+  let boxLen = 0;
   let content = m[4];
   const b = BOX_RE.exec(content);
   if (b) {
     box = b[1] as ListLine["box"];
+    boxLen = b[0].length;
     content = content.slice(b[0].length);
   }
-  return { indent: m[1], marker: m[2], gap: m[3], box, text: content };
+  return { indent: m[1], marker: m[2], gap: m[3], box, boxLen, text: content };
 }
 
 /** Whether the line is a todo line (a list item carrying a checkbox). */
