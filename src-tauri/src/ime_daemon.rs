@@ -45,8 +45,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 // helper side (runs in the child process, no Tauri)
 // ---------------------------------------------------------------------------
 
-/// Serves one request line, writing exactly one response line. Public for the
-/// protocol tests; the helper loop is the only production caller.
+/// Serves one request line, writing exactly one response line. The helper loop
+/// is the only production caller; the same-file protocol test drives it
+/// directly.
 fn serve_request(line: &str, out: &mut dyn Write) -> std::io::Result<()> {
     let response: Result<serde_json::Value, String> = (|| {
         let req: serde_json::Value =

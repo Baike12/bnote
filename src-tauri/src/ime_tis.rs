@@ -57,15 +57,15 @@ unsafe fn live_sources() -> Vec<CFType> {
 The most expensive step in TIS is "enumerate every input source":
 TISCreateInputSourceList plus reading 4 properties per source (measured
 on this machine: ~33 ms cold, ~1-2 ms warm). select() runs on every mode
-switch and must run on the Apple main thread (see on_main), so every
-enumeration wastes a main thread slot. The set of input sources barely
-changes within a session, so cache the whole thing: select() only
-re-enumerates on a cache miss, or when the selection failed (the source
-set changed). ---------------------------------------------------------- */
+switch and must run on the Apple main queue (see the module docs), so
+every enumeration wastes a slot on the thread that owns that queue. The
+set of input sources barely changes within a session, so cache the whole
+thing: select() only re-enumerates on a cache miss, or when the
+selection failed (the source set changed). ------------------------------ */
 
 struct Sources(Mutex<Option<HashMap<String, CFType>>>);
 // CFType is a +1 reference-counted object and retain/release are themselves
-// thread safe; this is only read and written on the main thread (on_main),
+// thread safe; this is only read and written on the helper's main thread,
 // and the Mutex exists purely to satisfy the static types.
 unsafe impl Send for Sources {}
 unsafe impl Sync for Sources {}
@@ -234,9 +234,9 @@ pub fn select(id: &str) -> Result<bool, String> {
 /// selects the already-active source (a no-op: status 0, no source change,
 /// no icon flash); every later switch is 2–10ms. `select`'s already-active
 /// dedup would skip the call and never pay that init, so this selects the
-/// current source RAW, once per process. Runs inside the warm-up's
-/// main-thread dispatch (see `list_impl`), keeping the cost off the first
-/// keystroke that switches modes or leaves a formula.
+/// current source RAW, once per process. Runs inside the helper's `list` op
+/// (triggered by the frontend's `imeWarmUp` at startup), keeping the cost off
+/// the first keystroke that switches modes or leaves a formula.
 pub fn warm_select_current() {
     static WARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if WARMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -267,7 +267,7 @@ mod tests {
     /// Gate: **one mode switch must not re-enumerate the input sources**.
     /// Enumeration (TISCreateInputSourceList plus reading 4 properties per
     /// source) is the most expensive step in TIS, and it always lands on the
-    /// Apple main thread (see on_main), so a mode switch should only pay for
+    /// Apple main queue, so a mode switch should only pay for
     /// "read the current source + select". Enumeration is allowed only on the
     /// first fill, and on a cache miss or a failed selection (the source set
     /// changed).
@@ -302,7 +302,8 @@ mod tests {
     /// assertion is never reached and the calls below run from a test thread.
     /// That does **not** make off-main TIS safe: an off-main enumeration in the
     /// deployed app traps with dispatch_assert_queue_fail on macOS 15.3 too
-    /// (crash report 2026-11-08). Every entry point stays on `on_main`.
+    /// (crash report 2026-11-08). Every entry point runs on the helper's main
+    /// thread in production.
     #[test]
     fn probe_switch_sources() {
         let _guard = lock();

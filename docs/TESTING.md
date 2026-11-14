@@ -76,7 +76,7 @@ Consequences:
 - Only the process boundary is fake. A test never mocks the module it is
   testing, and never mirrors a store into component state.
 
-Use `fakeVault.seedFile()`, `seedDir()`, `failNext()`, and `writes` to arrange
+Use `fakeVault.seed()`, `seedDirs()`, `failNext()`, and `writes` to arrange
 disk state and assert what was written. Reset happens before every test.
 
 `src/lib/tauri.contract.test.ts` is the complementary gate: it snapshots every

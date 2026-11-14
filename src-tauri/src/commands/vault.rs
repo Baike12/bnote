@@ -42,7 +42,7 @@ pub struct VaultIndex {
     /// Flat media paths (images, PDFs). `![…](…)`/`![[…]]` embeds resolve
     /// against this list: Obsidian stores attachments where it likes and
     /// refers to them by bare file name, so the renderer needs the whole
-    /// inventory to find one — see `resolveImageCandidates` in the frontend.
+    /// inventory to find one — see `imageCandidates` in the frontend.
     pub assets: Vec<String>,
 }
 

@@ -177,8 +177,9 @@ function packFields(
 }
 
 /**
- * Record an already measured span. Exported for async legs (IPC, file writes)
- * and for the gates, which must not depend on wall-clock thresholds.
+ * Record an already measured span. Deterministic seam for the tests: real legs
+ * measure with perfStart/perfEnd, while the tests take the duration directly
+ * and assert exact spans without depending on wall-clock thresholds.
  */
 export function recordSpanMs(ms: number, name: string, data?: Record<string, unknown>): void {
   recordSpan(ms, name, performance.now() - ms, undefined, undefined, undefined, undefined, data);

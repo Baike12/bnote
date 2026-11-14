@@ -2,7 +2,7 @@
 //!
 //! Session-owned tools (bash, todo, task) live on the session; everything that
 //! only needs the shared context runs here. `bash` moved to `shell.rs` for the
-//! persistent-cwd execution model; the session's `execute_tool` routes to it.
+//! persistent-cwd execution model; the session's `execute_tool_shared` routes to it.
 
 use crate::commands::normalize;
 use serde_json::{json, Value};

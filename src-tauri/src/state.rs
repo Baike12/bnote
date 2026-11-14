@@ -30,7 +30,6 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Live agent sessions (study mode).
     pub sessions: Mutex<HashMap<String, Arc<Session>>>,
-    /// MCP connections, (re)connected lazily per config.
     /// Currently open note path (set by the frontend for agent context).
     pub current_note: Mutex<Option<String>>,
     /// Registry of running Python jobs (key = md_path); the `Arc` handle identity
