@@ -375,3 +375,153 @@ describe("FootprintCore history archive: frozen by the cross-day rotation, the h
     expect(core.baselineDay).toBe("2026-09-30");
   });
 });
+
+describe("FootprintCore: rotate is a no-op within the same day", () => {
+  it("init twice in one day snapshots the vault once; a second init never rebuilds the baseline", async () => {
+    const files = new Map<string, string>([[NOTE, "甲"]]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    files.set(NOTE, "甲\n\n今天补的一段");
+    await core.init();
+    // Still the baseline from the first init, so the extra paragraph is today's footprint
+    await core.refreshAll(true);
+    expect(core.footprintsFor(NOTE)).toEqual([{ text: "今天补的一段", start: 3, end: 3 }]);
+  });
+
+  it("a day flip between listFiles and the per-file reads drops the rotation (stale callbacks write nothing)", async () => {
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-29",
+      baselines: { [NOTE]: "基线" },
+    };
+    const files = new Map<string, string>([
+      [NOTE, "基线\n\n昨天的段"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    let day = "2026-09-30";
+    const io: FootprintIO = {
+      readFile: async (p) => (files.has(p) ? (files.get(p) as string) : null),
+      writeFile: async (p, t) => {
+        files.set(p, t);
+      },
+      listFiles: async () => {
+        // The clock rolls over while the listing is in flight: every later
+        // callback of this rotation must drop instead of committing a baseline
+        day = "2026-10-01";
+        return { files: [...files.keys()].map((p) => p.slice(VAULT.length + 1)) };
+      },
+    };
+    const core = new FootprintCore({ io, today: () => day }, VAULT);
+    await core.init();
+    // The rotation started for 09-30 and saw 10-01 on the way back: it commits
+    // nothing, and no baseline is invented for either day
+    expect(core.baselineDay).toBe("2026-09-29");
+    expect(core.entriesFor("2026-09-29")).toEqual([]);
+    expect(core.hasPendingPersist()).toBe(false);
+  });
+});
+
+describe("FootprintCore: blocks with todos never enter the live index", () => {
+  it("a refresh keeps only non-todo blocks and an index of only todos disappears", async () => {
+    const files = new Map<string, string>([[NOTE, "基线"]]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    files.set(NOTE, "基线\n\n普通段\n\n- [ ] 纯待办");
+    core.noteDirty([NOTE]);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(core.footprintsFor(NOTE)).toEqual([{ text: "普通段", start: 3, end: 3 }]);
+
+    // Only a todo remained: the file drops out of the index entirely
+    files.set(NOTE, "基线\n\n- [ ] 纯待办");
+    core.noteDirty([NOTE]);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(core.footprintsFor(NOTE)).toEqual([]);
+    expect(core.todayEntries()).toEqual([]);
+  });
+});
+
+describe("FootprintCore: the archive is not rewritten by today's edits", () => {
+  it("a dirty refresh after the rotation touches neither the archive nor the old day entries", async () => {
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-29",
+      baselines: { [NOTE]: "基线" },
+    };
+    const files = new Map<string, string>([
+      [NOTE, "基线\n\n昨天写的"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    const frozen = core.entriesFor("2026-09-29");
+
+    files.set(NOTE, "基线\n\n昨天写的\n\n今天写的");
+    core.noteDirty([NOTE]);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(core.entriesFor("2026-09-29")).toEqual(frozen);
+    expect(core.entriesFor("2026-09-30")).toEqual([
+      { path: NOTE, blocks: [{ text: "今天写的", start: 5, end: 5 }] },
+    ]);
+  });
+});
+
+describe("FootprintCore: persistence contract", () => {
+  it("a rotation schedules one debounced write; flushPersist writes the v2 shape with the archive", async () => {
+    const stored: StoredFootprintsV1 = {
+      version: 1,
+      day: "2026-09-29",
+      baselines: { [NOTE]: "基线" },
+    };
+    const files = new Map<string, string>([
+      [NOTE, "基线\n\n昨天的段"],
+      [footprintsFilePath(VAULT), JSON.stringify(stored)],
+    ]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    expect(core.hasPendingPersist()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(299);
+    expect(core.hasPendingPersist()).toBe(true);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(core.hasPendingPersist()).toBe(false);
+    const persisted = JSON.parse(files.get(footprintsFilePath(VAULT))!) as StoredFootprints;
+    expect(persisted).toMatchObject({ version: 2, day: "2026-09-30" });
+    expect(persisted.history["2026-09-29"][NOTE]).toEqual([{ text: "昨天的段", start: 3, end: 3 }]);
+
+    // A second rotation (day flip again) is idempotent per day
+    core.flushPersist();
+    expect(core.hasPendingPersist()).toBe(false);
+  });
+
+  it("installHistoryForTest injects a historical day and broadcasts; a later rotation of the same day overwrites it", async () => {
+    const { footprintRevision } = await import("./store");
+    const files = new Map<string, string>([[NOTE, "基线"]]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    const before = footprintRevision();
+    core.installHistoryForTest(
+      "2026-09-20",
+      new Map([[NOTE, [{ text: "注入", start: 1, end: 1 }]]]),
+    );
+    expect(footprintRevision()).toBeGreaterThan(before);
+    expect(core.entriesFor("2026-09-20")).toEqual([
+      { path: NOTE, blocks: [{ text: "注入", start: 1, end: 1 }] },
+    ]);
+  });
+
+  it("entriesOf drops files whose block list is empty and sorts by path", async () => {
+    const files = new Map<string, string>([[NOTE, "基线"]]);
+    const core = coreOf(files, "2026-09-30");
+    await core.init();
+    core.installIndexForTest(
+      new Map([
+        [`${VAULT}/z.md`, [{ text: "后", start: 1, end: 1 }]],
+        [`${VAULT}/a.md`, [{ text: "前", start: 1, end: 1 }]],
+        [`${VAULT}/empty.md`, []],
+      ]),
+    );
+    expect(core.todayEntries().map((e) => e.path)).toEqual([`${VAULT}/a.md`, `${VAULT}/z.md`]);
+    // todayEntries == entriesFor(the baseline day)
+    expect(core.entriesFor("2026-09-30")).toEqual(core.todayEntries());
+  });
+});

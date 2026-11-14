@@ -274,3 +274,68 @@ pub async fn python_uv_create(
     let (_, project, _) = with_project(&state, &md_path)?;
     python::uvenv::create_uv_env(&project.root).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_config_value_is_trimmed_and_an_empty_one_clears_the_field() {
+        let mut slot = Some("old".to_string());
+        set_or_remove(&mut slot, "  new  ");
+        assert_eq!(slot.as_deref(), Some("new"));
+
+        set_or_remove(&mut slot, "   ");
+        assert_eq!(
+            slot, None,
+            "an empty value means 'unset', not 'empty string'"
+        );
+    }
+
+    #[test]
+    fn only_read_only_lsp_methods_are_forwarded() {
+        // The allow list is the boundary that keeps every other ty request
+        // unreachable from the webview.
+        let fixture = crate::commands::test_support::app_with_vault("python-lsp-method");
+        let md = crate::commands::test_support::vault_root(&fixture).join("note.md");
+        std::fs::write(&md, "").expect("note");
+        for method in [
+            "textDocument/definition",
+            "textDocument/rename",
+            "workspace/executeCommand",
+            "",
+        ] {
+            let err = crate::commands::test_support::block_on(python_lsp_request(
+                fixture.state(),
+                md.to_string_lossy().to_string(),
+                method.to_string(),
+                serde_json::Value::Null,
+            ))
+            .err()
+            .unwrap_or_default();
+            assert!(err.starts_with("FORBIDDEN_METHOD"), "{method}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_disabled_project_answers_null_without_starting_a_server() {
+        let fixture = crate::commands::test_support::app_with_vault("python-lsp-off");
+        let md = crate::commands::test_support::vault_root(&fixture).join("note.md");
+        std::fs::write(&md, "").expect("note");
+        let path = md.to_string_lossy().to_string();
+
+        // Default config: lsp = "off".
+        let reply = crate::commands::test_support::block_on(python_lsp_request(
+            fixture.state(),
+            path,
+            "textDocument/completion".into(),
+            serde_json::Value::Null,
+        ))
+        .expect("off is not an error");
+        assert_eq!(reply, serde_json::Value::Null);
+        // `python_lsp_sync` and `python_run` take the concrete Wry AppHandle
+        // (they emit events and own a child process), so a mock runtime cannot
+        // call them; the off branch above is the shared precondition they run
+        // first, and it is the one that answers without side effects.
+    }
+}

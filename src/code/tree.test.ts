@@ -3,6 +3,7 @@ import {
   ancestorDirs,
   applyEntries,
   buildTree,
+  compareNodes,
   filterTree,
   naturalCompare,
   searchFilesByName,
@@ -290,5 +291,49 @@ describe("applyEntries (the watcher's delta)", () => {
     expect(after).not.toBe(before);
     expect(after).toHaveLength(1);
     expect(after[0].size).toBe(2);
+  });
+});
+
+/**
+ * The comparison rules that only matter at one boundary each: a file next to a
+ * directory (the fast path returns before the names are compared), a numeric
+ * run that is equal in value (`a02` vs `a2` must fall through to the next
+ * run), and a digit run next to a word (`a1` vs `ab`). Getting one wrong makes
+ * the tree order non-deterministic, which reads as rows jumping on every
+ * rescan.
+ */
+describe("compareNodes and naturalCompare boundaries", () => {
+  it("a directory sorts before a file in both directions", () => {
+    const dir = { name: "z", path: "z", isDir: true, size: 0, children: [] };
+    const file = { name: "a", path: "a", isDir: false, size: 0, children: [] };
+    expect(compareNodes(dir, file)).toBe(-1);
+    expect(compareNodes(file, dir)).toBe(1);
+  });
+
+  it("equal numbers fall through to the next run", () => {
+    // "02" and "2" are the same value: the comparison continues with "b" vs
+    // "c" instead of returning 0 early.
+    expect(naturalCompare("a02b", "a2c")).toBeLessThan(0);
+    expect(naturalCompare("a2b", "a02c")).toBeLessThan(0);
+  });
+
+  it("a digit run and a word at the same position compare as text", () => {
+    expect(naturalCompare("a1", "ab")).toBeLessThan(0);
+    expect(naturalCompare("ab", "a1")).toBeGreaterThan(0);
+  });
+
+  it("a shorter name with the same prefix sorts first", () => {
+    expect(naturalCompare("file", "file2")).toBeLessThan(0);
+    expect(naturalCompare("file2", "file")).toBeGreaterThan(0);
+  });
+});
+
+describe("searchFilesByName ties", () => {
+  it("equal ranks are ordered by path, so the list does not shuffle between runs", () => {
+    const entries = [entry("src/zeta.ts"), entry("src/alpha.ts")];
+    expect(searchFilesByName(entries, "a").map((h) => h.path)).toEqual([
+      "src/alpha.ts",
+      "src/zeta.ts",
+    ]);
   });
 });

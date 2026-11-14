@@ -67,3 +67,18 @@ describe("template: directory and file list", () => {
     expect(templateLabel("Other/x.md", "")).toBe("Other/x.md");
   });
 });
+
+describe("template: comparison branches", () => {
+  it("two identical paths compare equal in the sort, a shorter prefix sorts before it", () => {
+    // The comparator has three arms (a < b / a > b / equal); a directory holding a
+    // single template never reaches the equal and greater arms on its own, so the
+    // list is fed duplicates and a longer name explicitly.
+    expect(templateFiles(["Templates/a.md", "Templates/a.md"], "Templates")).toEqual([
+      "Templates/a.md",
+      "Templates/a.md",
+    ]);
+    expect(
+      templateFiles(["Templates/b.md", "Templates/a.md", "Templates/aa.md"], "Templates"),
+    ).toEqual(["Templates/a.md", "Templates/aa.md", "Templates/b.md"]);
+  });
+});

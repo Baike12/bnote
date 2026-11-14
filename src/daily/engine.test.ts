@@ -3,6 +3,7 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import type { Transaction, TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { toggleTodo } from "@/editor/ops";
+import { registerEditorView, unregisterEditorView } from "@/editor/api";
 import { docPathField, setDocPath } from "@/editor/docPath";
 import {
   applyIntents,
@@ -406,6 +407,46 @@ describe("auto sync (touch sends)", () => {
     expect(store.all()).toHaveLength(0);
   });
 
+  it("unchecking a stamped recorded entry on the daily side: the source todo keeps its full text (boxLen, not a hard-coded 3)", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "r2", kind: "recorded" }));
+    files.set(DAILY, "# 2026-09-23\n\n- [x] 任务甲 ✅ 2026-09-23\n");
+    files.set("/vault/p.md", "- [x] 任务甲 ✅ 2026-09-23\n");
+    const { view, transactions } = makeDocView(
+      "# 2026-09-23\n\n- [x] 任务甲 ✅ 2026-09-23\n",
+      DAILY,
+      [0],
+    );
+    // Same as a click on the daily side checkbox: box flips back, stamp stripped.
+    const line = view.state.doc.line(3);
+    view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [ ] 任务甲" } });
+    await sync(view, DAILY, transactions, io, store);
+    // The regression: a hard-coded `markFrom + 3` cut one char deeper because
+    // BOX_RE consumes the separator space too, writing back a truncated text.
+    expect(files.get("/vault/p.md")).toBe("- [ ] 任务甲\n");
+    // The daily side edits its own view doc; only the source file is written back.
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [x] 任务甲 ✅ 2026-09-23\n");
+    expect(store.all()).toHaveLength(0);
+  });
+
+  it("unchecking a stamped recorded entry without a separator space also keeps the text intact", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "r3", kind: "recorded" }));
+    files.set(DAILY, "# 2026-09-23\n\n- [x]任务甲 ✅ 2026-09-23\n");
+    files.set("/vault/p.md", "- [x]任务甲 ✅ 2026-09-23\n");
+    const { view, transactions } = makeDocView(
+      "# 2026-09-23\n\n- [x]任务甲 ✅ 2026-09-23\n",
+      DAILY,
+      [0],
+    );
+    const line = view.state.doc.line(3);
+    view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [ ]任务甲" } });
+    await sync(view, DAILY, transactions, io, store);
+    expect(files.get("/vault/p.md")).toBe("- [ ]任务甲\n");
+  });
+
   it("touching a child todo (parent not linked): the whole block is sent with the root, the mirror semantics keep the original hierarchy", async () => {
     const { files, io } = memIO();
     const store = new LinkStore();
@@ -583,6 +624,221 @@ describe("link map persistence", () => {
     await sendTodoToDaily(view, deps(io), store); // already in today's daily note, nothing happens
     expect(hasPendingLinksPersist()).toBe(false);
     expect(tauriWrites).toHaveLength(0);
+  });
+});
+
+describe("recorded links: unchecking on the daily side flips the source back", () => {
+  it("unchecking a recorded entry inside the daily note flips the source todo back and drops the link", async () => {
+    const { files, io } = memIO();
+    files.set("/vault/p.md", "- [x] 任务甲\n");
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "r1", kind: "recorded" }));
+    const { view, transactions } = makeDocView("# 2026-09-23\n\n- [x] 任务甲\n", DAILY, [0]);
+    const line = view.state.doc.line(3);
+    view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [ ] 任务甲" } });
+    await sync(view, DAILY, transactions, io, store);
+    // The source side is written back unfinished
+    expect(files.get("/vault/p.md")).toBe("- [ ] 任务甲\n");
+    // The journal entry itself is removed from the daily note, the link is gone
+    expect(view.state.doc.toString()).toBe("# 2026-09-23\n");
+    expect(store.all()).toHaveLength(0);
+  });
+
+  it("unchecking a recorded todo on the source side deletes the daily entry (the link holds whichever side fired)", async () => {
+    const { files, io } = memIO();
+    files.set(DAILY, "# 2026-09-23\n\n- [x] 任务甲 ✅ 2026-09-23\n");
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "r1", kind: "recorded" }));
+    const { view, transactions } = makeDocView("- [x] 任务甲 ✅ 2026-09-23\n", "/vault/p.md", [0]);
+    const line = view.state.doc.line(1);
+    view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [ ] 任务甲" } });
+    await sync(view, "/vault/p.md", transactions, io, store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n");
+    expect(store.all()).toHaveLength(0);
+  });
+
+  it("a recorded link whose daily entry is already gone: unchecking writes nothing and only unlinks", async () => {
+    const { files, io } = memIO();
+    files.set(DAILY, "# 2026-09-23\n");
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "r1", kind: "recorded" }));
+    const { view, transactions } = makeDocView("- [x] 任务甲 ✅ 2026-09-23\n", "/vault/p.md", [0]);
+    const line = view.state.doc.line(1);
+    view.dispatch({ changes: { from: line.from, to: line.to, insert: "- [ ] 任务甲" } });
+    await sync(view, "/vault/p.md", transactions, io, store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n");
+    expect(store.all()).toHaveLength(0);
+  });
+});
+
+describe("write discipline: the other side may be open in an editor", () => {
+  it("when the other side is open in an editor the mirror patches that editor and writes no file", async () => {
+    const { files, io } = memIO();
+    files.set(DAILY, "# 2026-09-23\n\n- [ ] 任务甲\n");
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "c1" }));
+    const src = makeDocView("- [ ] 任务甲\n", "/vault/p.md");
+    registerEditorView(src.view);
+    try {
+      const { view, transactions } = makeDocView("# 2026-09-23\n\n- [ ] 任务甲\n", DAILY, [0]);
+      const line = view.state.doc.line(3);
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" },
+      });
+      await sync(view, DAILY, transactions, io, store);
+      expect(src.view.state.doc.toString()).toBe("- [x] 任务甲 ✅ 2026-09-23\n");
+      // The open editor is the newest baseline: writing the stale disk text would
+      // be overwritten by the next autosave, so nothing lands on disk
+      expect(files.has("/vault/p.md")).toBe(false);
+    } finally {
+      unregisterEditorView(src.view);
+    }
+  });
+
+  it("sending while today's daily note is open in an editor patches that editor and writes no file", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    const daily = makeDocView("# 2026-09-23\n", DAILY);
+    registerEditorView(daily.view);
+    try {
+      const { view } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
+      await sendTodoToDaily(view, deps(io), store);
+      expect(daily.view.state.doc.toString()).toBe("# 2026-09-23\n\n- [ ] 甲\n");
+      expect(files.has(DAILY)).toBe(false);
+    } finally {
+      unregisterEditorView(daily.view);
+    }
+  });
+});
+
+describe("auto sync guards (stale intents and existing entries)", () => {
+  it("a send intent whose block vanished before apply time writes nothing", async () => {
+    const { files, io } = memIO();
+    const store = new LinkStore();
+    const { view } = makeDocView("- [ ] 别的\n", "/vault/p.md", [0]);
+    await applyIntents(
+      view,
+      "/vault/p.md",
+      [{ type: "send", rootHint: 1, text: "已删除" }],
+      deps(io),
+      store,
+    );
+    expect(files.size).toBe(0);
+    expect(store.all()).toHaveLength(0);
+  });
+
+  it("a send intent does not append twice when a link for the text already exists", async () => {
+    const { files, io } = memIO();
+    files.set(DAILY, "# 2026-09-23\n\n- [ ] 甲\n");
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "a1", kind: "auto", text: "甲" }));
+    const { view } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
+    await applyIntents(
+      view,
+      "/vault/p.md",
+      [{ type: "send", rootHint: 1, text: "甲" }],
+      deps(io),
+      store,
+    );
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n");
+    expect(store.all()).toHaveLength(1);
+  });
+
+  it("auto sync claims an entry today's note already holds instead of appending a duplicate", async () => {
+    const { files, io } = memIO();
+    files.set(DAILY, "# 2026-09-23\n\n- [ ] 甲\n");
+    const store = new LinkStore();
+    const { view, transactions } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
+    toggleTodo(view);
+    await sync(view, "/vault/p.md", transactions, io, store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n");
+    expect(store.all()).toMatchObject([{ kind: "auto", text: "甲", dailyLine: 3 }]);
+  });
+
+  it("the daily entry deleted by hand: touching the source todo only unlinks, it is not resurrected", async () => {
+    const { files, io } = memIO();
+    files.set(DAILY, "# 2026-09-23\n");
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "c1" }));
+    const { view, transactions } = makeDocView("- [ ] 任务甲\n", "/vault/p.md", [0]);
+    const line = view.state.doc.line(1);
+    view.dispatch({
+      changes: { from: line.from, to: line.to, insert: "- [x] 任务甲 ✅ 2026-09-23" },
+    });
+    await sync(view, "/vault/p.md", transactions, io, store);
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n");
+    expect(store.all()).toHaveLength(0);
+  });
+
+  it("the source todo disappeared: editing the daily entry removes it locally and unlinks", async () => {
+    const { files, io } = memIO();
+    files.set("/vault/p.md", "- [ ] 别的\n");
+    const store = new LinkStore();
+    store.upsert(makeLink({ id: "c1" }));
+    const { view, transactions } = makeDocView("# 2026-09-23\n\n- [ ] 任务甲\n", DAILY, [0]);
+    const line = view.state.doc.line(3);
+    view.dispatch({ changes: { from: line.to, insert: "\n  - [ ] 新子项" } });
+    await sync(view, DAILY, transactions, io, store);
+    // The whole local block goes (the source it mirrored is gone) and the link is dropped
+    expect(view.state.doc.toString()).toBe("# 2026-09-23\n");
+    expect(store.all()).toHaveLength(0);
+  });
+});
+
+describe("send command: input guards and multi-cursor semantics", () => {
+  it("no vault is open: a toast is shown and nothing is written", async () => {
+    const { files, io } = memIO();
+    const toasts: string[] = [];
+    const { view } = makeDocView("- [ ] 甲\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(view, { ...deps(io, toasts), vaultRoot: () => null }, new LinkStore());
+    expect(toasts).toEqual(["没有打开仓库"]);
+    expect(files.size).toBe(0);
+  });
+
+  it("the editor holds no file: a toast is shown and nothing is written", async () => {
+    const { files, io } = memIO();
+    const toasts: string[] = [];
+    const state = EditorState.create({ doc: "- [ ] 甲\n" });
+    const view = {
+      get state() {
+        return state;
+      },
+      get dom() {
+        return { isConnected: true };
+      },
+      dispatch: () => {},
+    } as unknown as EditorView;
+    await sendTodoToDaily(view, deps(io, toasts), new LinkStore());
+    expect(toasts).toEqual(["没有打开的笔记"]);
+    expect(files.size).toBe(0);
+  });
+
+  it("multiple cursors send one entry per distinct line in document order, the plural toast counts them", async () => {
+    const { files, io } = memIO();
+    const doc = "- [ ] 甲\n- [ ] 乙\n";
+    const toasts: string[] = [];
+    const { view } = makeDocView(doc, "/vault/p.md", [0, doc.indexOf("乙"), doc.indexOf("乙")]);
+    await sendTodoToDaily(view, deps(io, toasts), new LinkStore());
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n- [ ] 乙\n");
+    expect(toasts).toEqual(["已发送 2 条到今日日记"]);
+  });
+
+  it("a line that is not a todo between two todo cursors is skipped, the todos still go", async () => {
+    const { files, io } = memIO();
+    const doc = "- [ ] 甲\n普通文字\n- [ ] 乙\n";
+    const toasts: string[] = [];
+    const { view } = makeDocView(doc, "/vault/p.md", [0, doc.indexOf("普通"), doc.indexOf("乙")]);
+    await sendTodoToDaily(view, deps(io, toasts), new LinkStore());
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 甲\n- [ ] 乙\n");
+    expect(toasts).toEqual(["已发送 2 条到今日日记"]);
+  });
+
+  it("the prepend position puts the entry at the front of the todo region", async () => {
+    const { files, io } = memIO();
+    files.set(DAILY, "# 2026-09-23\n\n- [ ] 已有\n");
+    const { view } = makeDocView("- [ ] 新的\n", "/vault/p.md", [0]);
+    await sendTodoToDaily(view, deps(io), new LinkStore(), "prepend");
+    expect(files.get(DAILY)).toBe("# 2026-09-23\n\n- [ ] 新的\n- [ ] 已有\n");
   });
 });
 

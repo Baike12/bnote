@@ -678,3 +678,159 @@ pub async fn code_lsp_request(
         Err(e) => Err(e),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fuzzy_query_matches_as_a_subsequence_in_order() {
+        assert!(fuzzy_match("a_b_c", "abc"));
+        assert!(fuzzy_match("notes", ""));
+        assert!(fuzzy_match("notes", "nts"));
+        // Order is part of the contract: "cba" is not a subsequence of "abc".
+        assert!(!fuzzy_match("abc", "cba"));
+        assert!(!fuzzy_match("abc", "abcd"));
+    }
+
+    #[test]
+    fn match_quality_orders_exact_before_prefix_before_contains_before_subsequence() {
+        assert_eq!(rank("main.rs", "main.rs"), 0);
+        assert_eq!(rank("main.rs", "main"), 1);
+        assert_eq!(rank("main.rs", "in.r"), 2);
+        assert_eq!(rank("main.rs", "mrs"), 3);
+    }
+
+    #[test]
+    fn a_project_root_must_be_a_directory_that_exists() {
+        assert!(canonical_root("   ")
+            .expect_err("empty")
+            .starts_with("PROJECT_INVALID"));
+        let err = canonical_root("/definitely/not/here").expect_err("missing");
+        assert!(err.starts_with("PROJECT_INVALID"), "{err}");
+
+        let dir = crate::commands::test_support::temp_dir("code-root");
+        let file = dir.join("a.md");
+        std::fs::write(&file, "x").expect("file");
+        assert!(canonical_root(&file.to_string_lossy())
+            .expect_err("a file is not a project")
+            .starts_with("PROJECT_INVALID"));
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn the_tree_cache_scans_once_and_answers_with_the_same_tree() {
+        let fixture = crate::commands::test_support::app_with_vault("code-tree-cache");
+        let root = crate::commands::test_support::vault_root(&fixture);
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write");
+        std::fs::create_dir_all(root.join("src")).expect("dir");
+        std::fs::write(root.join("src/lib.rs"), "pub fn a() {}\n").expect("write");
+
+        let state = fixture.state();
+        let first = tree_for(&state, &root).expect("scan");
+        let second = tree_for(&state, &root).expect("cache");
+        assert_eq!(first.entries.len(), second.entries.len());
+        assert!(second.entries.iter().any(|e| e.path == "src/lib.rs"));
+        // The cache key is the canonical root string, so a second spelling of
+        // the same directory still hits the same entry.
+        let key = root_key(&root);
+        assert!(state.code_trees.lock().expect("lock").contains_key(&key));
+    }
+
+    /// `code_search_files` takes a concrete Wry `AppHandle`, which a mock
+    /// runtime cannot produce; the ranking rules it applies are pure, so they
+    /// are locked here and through the real tree shape below.
+    #[test]
+    fn a_quick_open_list_sorts_by_match_quality_then_path() {
+        let mut entries = vec![
+            project::CodeEntry {
+                path: "deep/main.rs".into(),
+                name: "main.rs".into(),
+                is_dir: false,
+                size: 0,
+            },
+            project::CodeEntry {
+                path: "main.rs".into(),
+                name: "main.rs".into(),
+                is_dir: false,
+                size: 0,
+            },
+            project::CodeEntry {
+                path: "domain.rs".into(),
+                name: "domain.rs".into(),
+                is_dir: false,
+                size: 0,
+            },
+            project::CodeEntry {
+                path: "src".into(),
+                name: "src".into(),
+                is_dir: true,
+                size: 0,
+            },
+        ];
+        entries.retain(|e| !e.is_dir && fuzzy_match(&e.name.to_lowercase(), "main"));
+        entries.sort_by(|a, b| {
+            rank(&a.name.to_lowercase(), "main")
+                .cmp(&rank(&b.name.to_lowercase(), "main"))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        // `domain.rs` matches only as a subsequence, so it comes last; the two
+        // equal names tie on rank and the relative path orders them.
+        assert_eq!(
+            entries.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+            vec!["deep/main.rs", "main.rs", "domain.rs"]
+        );
+    }
+
+    #[test]
+    fn the_tree_shows_ignored_paths_but_search_skips_them() {
+        let fixture = crate::commands::test_support::app_with_vault("code-search-files");
+        let root = crate::commands::test_support::vault_root(&fixture);
+        // `require_git(true)`: the ignore rules only apply inside a repo, which
+        // is why an unversioned folder would show node_modules as searchable.
+        std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        std::fs::write(root.join(".gitignore"), "node_modules/\n").expect("gitignore");
+        std::fs::create_dir_all(root.join("node_modules/pkg")).expect("dir");
+        std::fs::write(root.join("node_modules/pkg/main.js"), "const main = 1;\n").expect("write");
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write");
+
+        let state = fixture.state();
+        let tree = tree_for(&state, &root).expect("scan");
+        // The dependency directory is in the tree, so the user can open it...
+        assert!(tree.entries.iter().any(|e| e.path.contains("node_modules")));
+        // ...but it is searchable only through the project's own files.
+        assert!(tree
+            .searchable()
+            .all(|e| !e.path.starts_with("node_modules")));
+
+        let hits = project::search_contents(&root, &tree, "main", 200);
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|h| !h.path.starts_with("node_modules")));
+    }
+
+    #[test]
+    fn content_search_is_literal_case_insensitive_and_respects_limits() {
+        let fixture = crate::commands::test_support::app_with_vault("code-search-content");
+        let root = crate::commands::test_support::vault_root(&fixture);
+        std::fs::write(
+            root.join("a.rs"),
+            "fn alpha() {}\nlet x = 1;\nlet ALPHA = 2;\n",
+        )
+        .expect("write");
+        std::fs::write(root.join("b.md"), "alpha beta\n").expect("write");
+
+        let tree = tree_for(&fixture.state(), &root).expect("scan");
+        let hits = project::search_contents(&root, &tree, "alpha", 200);
+        assert_eq!(hits.len(), 3, "case-insensitive literal match: {hits:?}");
+        assert!(hits.iter().any(|h| h.path == "b.md"));
+        // The line number is 0-based: the front end indexes the document with it.
+        let b = hits.iter().find(|h| h.path == "b.md").expect("b hit");
+        assert_eq!(b.line, 0);
+
+        assert_eq!(project::search_contents(&root, &tree, "alpha", 1).len(), 1);
+        // An empty query is "no search", never "everything".
+        assert!(project::search_contents(&root, &tree, "", 200).is_empty());
+        // Regex metacharacters are literal text, not a pattern.
+        assert!(project::search_contents(&root, &tree, "a.*", 200).is_empty());
+    }
+}

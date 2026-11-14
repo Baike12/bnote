@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig, ModelEntry, ProviderEntry } from "@/lib/tauri";
 import {
   defaultLevel,
+  findModel,
+  findProvider,
+  formatPatch,
   levelAt,
   levelIndexOf,
   levelLabel,
@@ -9,6 +12,7 @@ import {
   parsePatch,
   resolveSelection,
   selectionForModel,
+  selectionTitle,
   sessionSelection,
 } from "./modelSelection";
 
@@ -66,6 +70,7 @@ describe("level labels and slider positions", () => {
     expect(levelAt(m, 2)).toBe("high");
     expect(levelAt(m, 7)).toBe("high");
     expect(levelAt(m, -3)).toBe("off");
+    expect(levelAt(m, 1.6)).toBe("high");
     expect(levelIndexOf(m, "low")).toBe(1);
     // A missing id falls back to the highest level, the same rule as the
     // backend's resolve.
@@ -155,6 +160,81 @@ describe("a session's selection", () => {
     const second = provider("b", [model("b1", ["low"], "low")]);
     expect(selectionForModel(second, second.models[0]!, "high").thinking).toBe("low");
   });
+
+  it("ignores a recorded selection the catalog no longer has", () => {
+    // The provider was deleted: the chip must not keep claiming that model.
+    const selection = sessionSelection(
+      cfg,
+      { provider_id: "gone", model_id: "x", thinking: "" },
+      null,
+    );
+    expect(selection).toEqual({ provider_id: "a", model_id: "a1", thinking: "high" });
+  });
+
+  it("ignores a recorded selection whose model the provider dropped", () => {
+    const selection = sessionSelection(
+      cfg,
+      { provider_id: "a", model_id: "gone", thinking: "" },
+      null,
+    );
+    expect(selection).toEqual({ provider_id: "a", model_id: "a1", thinking: "high" });
+  });
+
+  it("finds a snapshot's model on another provider when its provider id is missing", () => {
+    const selection = sessionSelection(cfg, null, {
+      provider: "openai",
+      model: "a1",
+      baseUrl: "",
+      maxTokens: 8192,
+      contextWindow: 128000,
+      thinking: "off",
+    });
+    expect(selection).toEqual({ provider_id: "a", model_id: "a1", thinking: "off" });
+  });
+
+  it("a snapshot level the model no longer declares falls back to its default", () => {
+    const selection = sessionSelection(cfg, null, {
+      providerId: "a",
+      provider: "openai",
+      model: "a1",
+      modelId: "a1",
+      baseUrl: "",
+      maxTokens: 8192,
+      contextWindow: 128000,
+      thinking: "ultra",
+    });
+    expect(selection?.thinking).toBe("high");
+  });
+
+  it("a snapshot with no provider or model in the catalog falls back to the default", () => {
+    const selection = sessionSelection(cfg, null, {
+      provider: "elsewhere",
+      model: "gone",
+      baseUrl: "",
+      maxTokens: 8192,
+      contextWindow: 128000,
+      thinking: "",
+    });
+    expect(selection).toEqual({ provider_id: "a", model_id: "a1", thinking: "high" });
+  });
+
+  it("a snapshot without a thinking preference takes the model's default", () => {
+    const selection = sessionSelection(cfg, null, {
+      providerId: "a",
+      provider: "openai",
+      model: "a1",
+      baseUrl: "",
+      maxTokens: 8192,
+      contextWindow: 128000,
+    });
+    expect(selection).toEqual({ provider_id: "a", model_id: "a1", thinking: "high" });
+  });
+
+  it("without a catalog there is no selection at all", () => {
+    expect(
+      sessionSelection(null, { provider_id: "a", model_id: "a1", thinking: "off" }, null),
+    ).toBe(null);
+  });
 });
 
 describe("the flat model order", () => {
@@ -175,12 +255,14 @@ describe("the flat model order", () => {
     ).toBe("a1");
     expect(nextModel(cfg, null, 1)?.model_id).toBe("a1");
     expect(nextModel(config([]), null, 1)).toBeNull();
+    expect(nextModel(null, null, 1)).toBeNull();
   });
 });
 
 describe("a level patch", () => {
   it("accepts an object, including the empty one", () => {
     expect(parsePatch("")).toEqual({ ok: true, patch: {} });
+    expect(parsePatch("   \n ")).toEqual({ ok: true, patch: {} });
     expect(parsePatch('{"thinking":{"type":"enabled"}}')).toEqual({
       ok: true,
       patch: { thinking: { type: "enabled" } },
@@ -192,5 +274,50 @@ describe("a level patch", () => {
     expect(parsePatch("[1,2]").ok).toBe(false);
     expect(parsePatch("null").ok).toBe(false);
     expect(parsePatch('"x"').ok).toBe(false);
+  });
+
+  it("names the parse failure so the editor can show it", () => {
+    const broken = parsePatch("{");
+    expect(broken.ok).toBe(false);
+    if (!broken.ok) expect(broken.error).toMatch(/JSON 无效/);
+    const wrongShape = parsePatch("[1,2]");
+    if (!wrongShape.ok) expect(wrongShape.error).toContain("必须是一个 JSON 对象");
+  });
+
+  it("formats a stored patch as indented JSON, and anything unusable as an empty object", () => {
+    expect(formatPatch(null)).toBe("{}");
+    expect(formatPatch("x")).toBe("{}");
+    expect(formatPatch({})).toBe("{}");
+    expect(formatPatch({ thinking: { type: "enabled" } })).toBe(
+      '{\n  "thinking": {\n    "type": "enabled"\n  }\n}',
+    );
+  });
+});
+
+describe("catalog lookups", () => {
+  const cfg = config([provider("a", [model("a1", ["off", "high"])])]);
+
+  it("finds a provider and a model by id, and answers null when missing", () => {
+    expect(findProvider(cfg, "a")?.id).toBe("a");
+    expect(findProvider(cfg, "gone")).toBeNull();
+    expect(findProvider(null, "a")).toBeNull();
+    expect(findModel(cfg.providers[0] ?? null, "a1")?.id).toBe("a1");
+    expect(findModel(cfg.providers[0] ?? null, "gone")).toBeNull();
+    expect(findModel(null, "a1")).toBeNull();
+  });
+
+  it("the chip's tooltip names the provider, the model and the level", () => {
+    expect(selectionTitle(cfg, { provider_id: "a", model_id: "a1", thinking: "high" })).toBe(
+      "a/a1 · 思考强度 高",
+    );
+    expect(selectionTitle(cfg, null)).toBe("a/a1 · 思考强度 高");
+    expect(selectionTitle(config([]), null)).toBe("未配置模型");
+    expect(selectionTitle(null, null)).toBe("未配置模型");
+  });
+
+  it("a model without levels never claims a thinking id", () => {
+    expect(selectionTitle(config([provider("a", [model("a1", [])])]), null)).toBe(
+      "a/a1 · 思考强度 ",
+    );
   });
 });

@@ -442,8 +442,15 @@ pub(crate) fn vault_join(state: &AppState, rel: &str) -> CmdResult<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::migrate_kanban_projects;
+    use super::*;
+    use crate::commands::test_support::{app_with_vault, block_on, vault_root};
     use std::path::{Path, PathBuf};
+
+    fn put(root: &Path, rel: &str, body: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(path, body).expect("write");
+    }
 
     fn temp_vault(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("bnote-vault-{tag}-{}", std::process::id()));
@@ -490,5 +497,166 @@ mod tests {
         );
         assert!(old.join("读书.md").exists());
         let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn note_extensions_are_recognized_case_insensitively() {
+        for name in ["a.md", "A.MD", "b.markdown", "c.txt"] {
+            assert!(is_note_file(name), "{name} must count as a note");
+        }
+        for name in ["a.png", "b.json", "c.pdf", "d"] {
+            assert!(!is_note_file(name), "{name} is not a note");
+        }
+    }
+
+    #[test]
+    fn an_excalidraw_wrapper_is_an_asset_not_a_note() {
+        // The wrapper is a screenful of JSON; listing it as a note made quick
+        // switch open it in the editor.
+        assert!(!is_note_file("drawing.excalidraw.md"));
+        assert!(!is_note_file("DRAWING.EXCALIDRAW.MD"));
+        assert!(is_asset_file("drawing.excalidraw.md"));
+        assert!(is_asset_file("drawing.excalidraw"));
+    }
+
+    #[test]
+    fn media_extensions_are_assets_while_notes_are_not() {
+        for name in ["a.png", "b.JPG", "c.jpeg", "d.svg", "e.pdf", "f.heic"] {
+            assert!(is_asset_file(name), "{name} must count as an asset");
+        }
+        for name in ["a.md", "b.txt", "c.rs"] {
+            assert!(!is_asset_file(name), "{name} is not an asset");
+        }
+    }
+
+    #[test]
+    fn the_tree_shows_json_but_the_note_index_does_not() {
+        // `.bnote` settings and project files are editable from the sidebar,
+        // while wikilinks/quick switch stay notes-only.
+        assert!(is_tree_file("settings.json"));
+        assert!(is_tree_file("note.md"));
+        assert!(!is_tree_file("image.png"));
+        assert!(!is_tree_file("drawing.excalidraw.md"));
+    }
+
+    #[test]
+    fn one_tree_level_lists_directories_before_files_sorted_case_insensitively() {
+        let vault = temp_vault("tree-level");
+        put(&vault, "zeta.md", "");
+        put(&vault, "Alpha.md", "");
+        put(&vault, "sub/inner.md", "");
+        put(&vault, ".git/config", "");
+        put(&vault, "node_modules/pkg/i.js", "");
+        put(&vault, "image.png", "");
+        put(&vault, "settings.json", "{}");
+
+        let nodes = build_level(&vault, "");
+        let names: Vec<(&str, &str)> = nodes
+            .iter()
+            .map(|n| (n.name.as_str(), n.kind.as_str()))
+            .collect();
+        // Directories first, then files; each group sorted by lowercase name.
+        // `.bnote` stays browsable (its agent definitions are edited as plain
+        // files) while `.git` and `node_modules` are hidden.
+        assert_eq!(
+            names,
+            vec![
+                (".bnote", "dir"),
+                ("sub", "dir"),
+                ("Alpha.md", "file"),
+                ("settings.json", "file"),
+                ("zeta.md", "file"),
+            ]
+        );
+        // Directories arrive unread: the UI calls read_dir on expand.
+        assert!(nodes.iter().all(|n| n.children.is_none()));
+        assert_eq!(nodes[1].rel_path, "sub");
+
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn a_nested_level_prefixes_every_relative_path() {
+        let vault = temp_vault("tree-nested");
+        put(&vault, "a/b/c.md", "");
+        put(&vault, "a/b/d/e.md", "");
+
+        let nodes = build_level(&vault.join("a/b"), "a/b");
+        let rels: Vec<&str> = nodes.iter().map(|n| n.rel_path.as_str()).collect();
+        // A directory sorts before a file even when its name is later.
+        assert_eq!(rels, vec!["a/b/d", "a/b/c.md"]);
+        // An unreadable directory yields an empty level instead of an error:
+        // the tree stays usable when one folder disappears mid-click.
+        assert!(build_level(&vault.join("missing"), "missing").is_empty());
+
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn the_flat_index_sorts_notes_directories_and_assets_and_skips_app_state() {
+        let fixture = app_with_vault("vault-index");
+        let root = vault_root(&fixture);
+        put(&root, "b.md", "");
+        put(&root, "a/deep/c.md", "");
+        put(&root, "z.png", "");
+        put(&root, "a/pic.jpg", "");
+        put(&root, ".bnote/agent.md", "");
+        put(&root, ".git/config", "");
+        put(&root, "node_modules/pkg/i.js", "");
+
+        let index = block_on(list_files(fixture.state())).expect("index");
+        assert_eq!(index.files, vec!["a/deep/c.md", "b.md"]);
+        // Directories are indexed even when they hold no notes, so quick-add
+        // can offer a folder created a moment ago.
+        assert_eq!(index.dirs, vec!["a", "a/deep"]);
+        assert_eq!(index.assets, vec!["a/pic.jpg", "z.png"]);
+        // `.bnote` holds app state and agent config: not notes, not assets.
+        assert!(!index.files.iter().any(|p| p.starts_with(".bnote")));
+        assert!(!index.dirs.iter().any(|p| p.starts_with(".bnote")));
+    }
+
+    #[test]
+    fn read_tree_requires_a_vault_and_reads_the_root_level() {
+        let no_vault = crate::commands::test_support::app("vault-no-tree");
+        match block_on(read_tree(no_vault.state())) {
+            Ok(_) => panic!("read_tree must require an open vault"),
+            Err(err) => assert!(err.starts_with("NO_VAULT"), "{err}"),
+        }
+
+        let fixture = app_with_vault("vault-tree");
+        put(&vault_root(&fixture), "note.md", "");
+        let nodes = block_on(read_tree(fixture.state())).expect("tree");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].rel_path, "note.md");
+    }
+
+    #[test]
+    fn read_dir_rejects_a_traversing_relative_path() {
+        let fixture = app_with_vault("vault-read-dir");
+        match block_on(read_dir(fixture.state(), "../..".into())) {
+            Ok(_) => panic!("traversal must be rejected"),
+            Err(err) => assert!(err.starts_with("INVALID_NAME"), "{err}"),
+        }
+    }
+
+    #[test]
+    fn vault_join_confines_every_relative_path_it_resolves() {
+        let fixture = app_with_vault("vault-join");
+        let root = vault_root(&fixture);
+        let joined = vault_join(&fixture.state(), ".bnote/vimrc").expect("inside");
+        assert_eq!(joined, root.join(".bnote/vimrc"));
+        assert!(vault_join(&fixture.state(), "../outside").is_err());
+        // Every segment is validated first, so `..` is refused even when the
+        // normalized result would still be inside.
+        assert!(vault_join(&fixture.state(), "a/../b").is_err());
+        assert!(vault_join(&fixture.state(), "a/b/c").is_ok());
+    }
+
+    #[test]
+    fn get_vault_reports_the_root_and_its_directory_name() {
+        let fixture = app_with_vault("vault-info");
+        let info = get_vault(fixture.state()).expect("vault").expect("open");
+        assert_eq!(info.name, "vault");
+        assert!(info.path.ends_with("vault"));
     }
 }

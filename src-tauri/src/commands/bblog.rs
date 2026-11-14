@@ -104,3 +104,71 @@ pub async fn bblog_publish(
     }
     Ok(payload)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_host_gets_http_and_trailing_slashes_are_dropped() {
+        // bblog is often deployed on a bare IP, so no scheme means http.
+        assert_eq!(
+            normalize_server("192.168.1.9:8080").expect("bare"),
+            "http://192.168.1.9:8080"
+        );
+        assert_eq!(
+            normalize_server("  http://blog.local/  ").expect("trim"),
+            "http://blog.local"
+        );
+        assert_eq!(
+            normalize_server("https://blog.example.com/").expect("https"),
+            "https://blog.example.com"
+        );
+    }
+
+    #[test]
+    fn an_empty_server_is_rejected_before_any_request() {
+        let err = normalize_server("   ").expect_err("empty");
+        assert!(err.starts_with("INVALID_SERVER"), "{err}");
+    }
+
+    #[test]
+    fn publishing_checks_its_arguments_before_the_network() {
+        // Each guard runs before `http_client`, so the test never opens a
+        // socket: an unreachable server would fail with NETWORK instead.
+        let err = tauri::async_runtime::block_on(bblog_publish(
+            "   ".into(),
+            "t".into(),
+            "c".into(),
+            "t".into(),
+            "f.md".into(),
+            "body".into(),
+        ))
+        .expect_err("empty server");
+        assert!(err.starts_with("INVALID_SERVER"), "{err}");
+
+        let err = tauri::async_runtime::block_on(bblog_publish(
+            "127.0.0.1:1".into(),
+            "  ".into(),
+            "c".into(),
+            "t".into(),
+            "f.md".into(),
+            "body".into(),
+        ))
+        .expect_err("empty token");
+        assert!(err.starts_with("NO_TOKEN"), "{err}");
+
+        for (category, topic) in [("", "t"), ("c", ""), ("  ", "  ")] {
+            let err = tauri::async_runtime::block_on(bblog_publish(
+                "127.0.0.1:1".into(),
+                "tok".into(),
+                category.into(),
+                topic.into(),
+                "f.md".into(),
+                "body".into(),
+            ))
+            .expect_err("empty target");
+            assert!(err.starts_with("INVALID_TARGET"), "{err}");
+        }
+    }
+}

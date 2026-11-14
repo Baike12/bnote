@@ -87,6 +87,13 @@ describe("runBuiltinCommand", () => {
     expect(text).toContain("/help");
   });
 
+  it("help without a conversation still explains the commands", async () => {
+    const { ctx, notice } = context();
+    await runBuiltinCommand("help", null, ctx);
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice.mock.calls[0]?.[0]).toBe("");
+  });
+
   it("ignores an unknown name without touching the context", async () => {
     const { ctx, calls } = context();
     await runBuiltinCommand("restart", conv("main", "s"), ctx);

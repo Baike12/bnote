@@ -158,3 +158,133 @@ describe("alignHunk: a hunk too large for the LCS table", () => {
     expect(rows[big - 1]?.left?.text).toBe(`old ${big - 1}`);
   });
 });
+
+describe("parseUnifiedDiff: the lines git adds around a hunk", () => {
+  it("the hunk section heading is kept", () => {
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@ fn main\n-a\n+b\n").files[0]
+      .hunks[0];
+    expect(hunk.section).toBe("fn main");
+  });
+
+  it("a missing count in the header means one line", () => {
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n").files[0].hunks[0];
+    expect(hunk).toMatchObject({ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 });
+  });
+
+  it('"\\ No newline at end of file" is a meta line and moves no counter', () => {
+    const hunk = parseUnifiedDiff(
+      "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n\\ No newline at end of file\n c\n",
+    ).files[0].hunks[0];
+    expect(hunk.lines.map((l) => l.type)).toEqual(["remove", "add", "meta", "context"]);
+    expect(hunk.lines[2]).toMatchObject({ text: "No newline at end of file" });
+    // The context line after the marker continues where the counters were.
+    expect(hunk.lines[3]).toMatchObject({ oldLine: 2, newLine: 2 });
+  });
+
+  it("an empty line inside a hunk is a context line (not the end of the hunk)", () => {
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n\n-a\n+b\n").files[0]
+      .hunks[0];
+    expect(hunk.lines[1]).toMatchObject({ type: "context", text: "", oldLine: 2, newLine: 2 });
+  });
+
+  it("lines with an unknown prefix are dropped, not read as context", () => {
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n?weird\n-a\n+b\n").files[0]
+      .hunks[0];
+    expect(hunk.lines.map((l) => l.type)).toEqual(["remove", "add"]);
+  });
+
+  it("a replayed patch line before any hunk is ignored", () => {
+    const parsed = parseUnifiedDiff("--- a/x\n+++ b/x\n+a line with no hunk\n");
+    expect(parsed.files[0].hunks).toEqual([]);
+  });
+
+  it("a path without the a/ b/ prefix is kept as it is", () => {
+    const file = parseUnifiedDiff("--- x.txt\n+++ x.txt\n@@ -1 +1 @@\n-a\n+b\n").files[0];
+    expect([file.oldPath, file.newPath]).toEqual(["x.txt", "x.txt"]);
+  });
+
+  it("a section that is only whitespace collapses to an empty heading", () => {
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1 +1 @@   \n-a\n+b\n").files[0].hunks[0];
+    expect(hunk.section).toBe("");
+  });
+});
+
+describe("alignHunk: the LCS pairing", () => {
+  it("an unchanged line inside a replaced block stays aligned as context", () => {
+    // The block "a / keep / c" became "x / keep / z": "keep" is the common
+    // subsequence and must sit on one row, not drift to the right.
+    const hunk = parseUnifiedDiff(
+      "--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n-a\n+one\n keep\n-c\n+three\n",
+    ).files[0].hunks[0];
+    const rows = alignHunk(hunk);
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toMatchObject({ left: { text: "keep" }, right: { text: "keep" } });
+    expect(rows[0]).toMatchObject({ left: { text: "a" }, right: { text: "one" } });
+    expect(rows[2]).toMatchObject({ left: { text: "c" }, right: { text: "three" } });
+  });
+
+  it("a meta line inside a hunk occupies its own row on the left only", () => {
+    const hunk = parseUnifiedDiff(
+      "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n\\ No newline at end of file\n+b\n",
+    ).files[0].hunks[0];
+    const rows = alignHunk(hunk);
+    const meta = rows.find((r) => r.left?.type === "meta");
+    expect(meta?.right).toBeNull();
+  });
+
+  it("a pure removal followed by a pure addition pairs by position", () => {
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n-b\n+x\n+y\n").files[0]
+      .hunks[0];
+    expect(alignHunk(hunk)).toEqual([
+      {
+        left: expect.objectContaining({ text: "a" }),
+        right: expect.objectContaining({ text: "x" }),
+      },
+      {
+        left: expect.objectContaining({ text: "b" }),
+        right: expect.objectContaining({ text: "y" }),
+      },
+    ]);
+  });
+});
+
+describe("alignHunk: a changed run with a shared line", () => {
+  it("the shared line is paired on one row and the rest pairs by position", () => {
+    // The run is "-b -same +same +x": "same" is the common subsequence, so it
+    // gets one row on both sides; "b" (left only) and "x" (right only) keep
+    // their own rows instead of being shifted onto each other.
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n ctx\n-b\n-same\n+same\n+x\n")
+      .files[0].hunks[0];
+    const rows = alignHunk(hunk);
+    expect(rows.map((r) => [r.left?.text ?? null, r.right?.text ?? null])).toEqual([
+      ["ctx", "ctx"],
+      ["b", null],
+      ["same", "same"],
+      [null, "x"],
+    ]);
+  });
+
+  it("a replaced block with no shared line pairs each removal with the addition below it", () => {
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n-b\n+x\n+y\n").files[0]
+      .hunks[0];
+    const rows = alignHunk(hunk);
+    expect(rows.map((r) => [r.left?.text ?? null, r.right?.text ?? null])).toEqual([
+      ["a", "x"],
+      ["b", "y"],
+    ]);
+  });
+});
+
+describe("lcsPairs: the backtracking direction", () => {
+  it("skips an addition before the first common line", () => {
+    // removed = [a], added = [b, a]: the pair is (0 → 1), so the walk has to
+    // advance the right side first.
+    const hunk = parseUnifiedDiff("--- a/x\n+++ b/x\n@@ -1,1 +1,2 @@\n-a\n+b\n+a\n").files[0]
+      .hunks[0];
+    const rows = alignHunk(hunk);
+    expect(rows.map((r) => [r.left?.text ?? null, r.right?.text ?? null])).toEqual([
+      [null, "b"],
+      ["a", "a"],
+    ]);
+  });
+});

@@ -41,6 +41,18 @@ describe("parseSuggestTrigger", () => {
     const text = "第一行\n/";
     expect(parseSuggestTrigger(text, text.length)).toEqual({ kind: "skill", start: 4, query: "" });
   });
+
+  it("a caret outside the text triggers nothing", () => {
+    // The textarea can hand over a caret that no longer matches the text (a
+    // programmatic value write), and slicing past the end would be meaningless.
+    expect(parseSuggestTrigger("/html", -1)).toBeNull();
+    expect(parseSuggestTrigger("/html", 6)).toBeNull();
+  });
+
+  it("a trigger that starts after a space but before the caret is the whole word", () => {
+    // The word starts at whitespace, so only the text after it can be a trigger.
+    expect(parseSuggestTrigger("看 @a.md", 7)).toEqual({ kind: "file", start: 2, query: "a.md" });
+  });
 });
 
 describe("applySuggestion", () => {
@@ -78,11 +90,20 @@ describe("expandSkillTemplate", () => {
   it("$1/$2 take the positional parts; a missing position becomes empty", () => {
     expect(expandSkillTemplate("把 $1 移到 $2", "a b")).toBe("把 a 移到 b");
     expect(expandSkillTemplate("只取 $1", "a b")).toBe("只取 a");
+    expect(expandSkillTemplate("取 $3", "a b")).toBe("取 ");
   });
 
   it("a body without placeholders gets ARGUMENTS appended (CC's fallback)", () => {
     expect(expandSkillTemplate("总结这个仓库", "")).toBe("总结这个仓库");
     expect(expandSkillTemplate("总结这个仓库", "--all")).toBe("总结这个仓库\n\nARGUMENTS: --all");
+    // Whitespace-only arguments are not arguments.
+    expect(expandSkillTemplate("总结这个仓库", "   ")).toBe("总结这个仓库");
+  });
+
+  it("a placeholder consumes the arguments even when it expands to empty", () => {
+    // The author opted into arguments by writing the placeholder: appending
+    // them again would duplicate the text the model reads.
+    expect(expandSkillTemplate("取 $1", "")).toBe("取 ");
   });
 });
 

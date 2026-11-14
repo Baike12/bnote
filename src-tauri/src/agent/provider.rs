@@ -1601,6 +1601,139 @@ mod tests {
     }
 
     #[test]
+    fn the_retry_policy_treats_429_529_and_server_errors_as_transient() {
+        use reqwest::StatusCode;
+        for code in [429u16, 529, 500, 502, 503, 504] {
+            assert!(
+                retryable_status(StatusCode::from_u16(code).expect("status")),
+                "{code} is transient"
+            );
+        }
+        // Every other answer is the endpoint's real verdict: retrying it would
+        // replay a request the provider already answered.
+        for code in [400u16, 401, 403, 404, 413, 422] {
+            assert!(
+                !retryable_status(StatusCode::from_u16(code).expect("status")),
+                "{code} is final"
+            );
+        }
+        assert!(!retryable_status(StatusCode::OK));
+        assert!(!retryable_status(StatusCode::CREATED));
+    }
+
+    #[test]
+    fn backoff_grows_to_its_cap_and_stays_within_the_jitter_window() {
+        // 0.5s, 1s, 2s … capped at 32s; jitter adds < 250ms.
+        let base = |attempt: usize| -> u128 {
+            backoff(attempt).as_millis() - (backoff(attempt).as_millis() % 1)
+        };
+        for (attempt, ceiling_ms) in [(0usize, 750u128), (1, 1250), (6, 32_250), (12, 32_250)] {
+            let ms = base(attempt);
+            assert!(ms >= 500, "attempt {attempt}: {ms}ms is below the base");
+            assert!(
+                ms <= ceiling_ms,
+                "attempt {attempt}: {ms}ms exceeds {ceiling_ms}ms"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sse_parser_joins_multiline_data_and_drops_comments() {
+        let mut parser = SseParser::new();
+        // A `:` line is a keepalive comment, not data; multi-line data keeps
+        // its internal newlines.
+        let out = parser.feed(b": keepalive\ndata: {\"a\":\ndata: 1}\n\n");
+        assert_eq!(out, vec!["{\"a\":\n1}".to_string()]);
+        // An empty `data:` frame carries nothing to parse.
+        assert!(parser.feed(b"data:\n\n").is_empty());
+        assert!(parser.feed(b"event: ping\n\n").is_empty());
+    }
+
+    #[test]
+    fn a_frame_split_across_chunks_is_assembled_once() {
+        let mut parser = SseParser::new();
+        assert!(parser.feed(b"data: {\"a\"").is_empty());
+        assert!(parser.feed(b": 1}").is_empty());
+        assert_eq!(parser.feed(b"\n\n"), vec!["{\"a\": 1}".to_string()]);
+    }
+
+    #[test]
+    fn a_malformed_tool_input_is_recorded_as_an_input_error_not_dropped() {
+        let mut turn = TurnResult::default();
+        let call = push_tool_call(&mut turn, "t1".into(), "Read".into(), "{\"path\":");
+        match &call {
+            Content::ToolUse {
+                input, input_error, ..
+            } => {
+                assert!(input_error.is_some(), "the model must be told to retry");
+                assert_eq!(input, &json!({}));
+            }
+            other => panic!("expected a tool_use block, got {other:?}"),
+        }
+        assert_eq!(turn.tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_tool_input_becomes_an_empty_object() {
+        assert_eq!(parse_tool_input("   ").expect("empty"), json!({}));
+        assert_eq!(parse_tool_input("{}").expect("object"), json!({}));
+        assert!(
+            parse_tool_input("[]").is_ok(),
+            "valid JSON is accepted as sent"
+        );
+        assert!(parse_tool_input("{").is_err());
+    }
+
+    #[test]
+    fn a_stream_level_error_is_fatal_and_names_the_provider_message() {
+        let mut turn = TurnResult::default();
+        let mut state = AnthropicStreamState::default();
+        let failure = state
+            .apply(
+                &mut turn,
+                &json!({"type": "error", "error": {"message": "overloaded"}}),
+            )
+            .expect_err("a stream error must not be swallowed");
+        match failure {
+            StreamFailure::Fatal(message) => assert!(message.contains("overloaded"), "{message}"),
+            other => panic!("a stream error is final, not retryable: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_tokens_stop_reason_is_flagged_for_the_ui() {
+        let mut turn = TurnResult::default();
+        let mut state = AnthropicStreamState::default();
+        state
+            .apply(
+                &mut turn,
+                &json!({"type": "message_delta", "delta": {"stop_reason": "max_tokens"}}),
+            )
+            .expect("apply");
+        assert!(turn.hit_max_tokens);
+        assert_eq!(turn.stop_reason, "max_tokens");
+
+        let mut normal = TurnResult::default();
+        AnthropicStreamState::default()
+            .apply(
+                &mut normal,
+                &json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+            )
+            .expect("apply");
+        assert!(!normal.hit_max_tokens);
+    }
+
+    #[test]
+    fn an_unknown_event_type_is_ignored_without_disturbing_the_turn() {
+        let mut turn = TurnResult::default();
+        let events = AnthropicStreamState::default()
+            .apply(&mut turn, &json!({"type": "some_new_event", "index": 0}))
+            .expect("unknown events are forward compatible");
+        assert!(events.is_empty());
+        assert!(turn.blocks.is_empty());
+    }
+
+    #[test]
     fn openai_assistant_history_carries_reasoning_content_back() {
         let items = vec![ChatItem::Message {
             role: "assistant".into(),

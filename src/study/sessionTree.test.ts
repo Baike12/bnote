@@ -63,4 +63,34 @@ describe("the session family: root and members", () => {
   it("null when the anchor does not exist (the caller treats it as empty)", () => {
     expect(resolveFamily("nope", [node("main", null, 1)])).toBeNull();
   });
+
+  it("a parent chain that points at an id outside the list stops at the last real node", () => {
+    // The main session was deleted but its children remain: each child is its own root,
+    // and none of them drags in the others.
+    const nodes = [node("a", "gone", 1), node("b", "gone", 2)];
+
+    expect(resolveFamily("a", nodes)?.rootId).toBe("a");
+    expect(sessionFamily("a", nodes).map((n) => n.id)).toEqual(["a"]);
+  });
+
+  it("a family whose root is missing from the list is not returned (sessionFamily needs a real root)", () => {
+    expect(sessionFamily("absent", [node("child", "absent", 1)])).toEqual([]);
+    expect(resolveFamily("child", [node("child", "absent", 1)])?.members).toHaveLength(1);
+  });
+
+  it("members with the same creation time are ordered by id, so the list is stable", () => {
+    const nodes = [node("root", null, 1), node("b", "root", 5), node("a", "root", 5)];
+
+    expect(sessionFamily("root", nodes).map((n) => n.id)).toEqual(["root", "a", "b"]);
+  });
+
+  it("the root itself is the only member of a family with no forks", () => {
+    expect(sessionFamily("solo", [node("solo", null, 1)]).map((n) => n.id)).toEqual(["solo"]);
+  });
+
+  it("an empty list has no family and no root", () => {
+    expect(resolveFamily("x", [])).toBeNull();
+    expect(sessionFamily("x", [])).toEqual([]);
+    expect(sessionRoot("x", [])).toBe("x");
+  });
 });

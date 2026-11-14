@@ -223,6 +223,40 @@ describe("stopRun and uv env", () => {
     expect(apiMock.pythonRunCancel).not.toHaveBeenCalled();
   });
 
+  it("a refused cancel reaches the user instead of failing silently", async () => {
+    usePythonRun.setState({ mdPath: "C:/vault/note.md" });
+    apiMock.pythonRunCancel.mockRejectedValue("RUN_GONE");
+    await stopRun();
+    expect(app.toast).toHaveBeenCalledWith("停止失败: RUN_GONE");
+  });
+
+  it("the uv environment needs an open note", async () => {
+    app.currentFile = null;
+    await createUvEnvForCurrentProject();
+    expect(app.toast).toHaveBeenLastCalledWith("没有打开的笔记");
+    expect(apiMock.pythonUvCreate).not.toHaveBeenCalled();
+    expect(usePythonRun.getState().open).toBe(false);
+  });
+
+  it("a synced (not freshly initialized) environment reports the other hint", async () => {
+    app.currentFile = "C:/vault/note.md";
+    apiMock.pythonUvCreate.mockResolvedValue({ log: "synced", ranInit: false });
+    await createUvEnvForCurrentProject();
+    expect(app.toast).toHaveBeenLastCalledWith("uv 环境已同步(.venv)");
+  });
+
+  it("the panel is opened before the uv work starts, so the log has a home", async () => {
+    app.currentFile = "C:/vault/note.md";
+    let openedWhenCalled: boolean | null = null;
+    apiMock.pythonUvCreate.mockImplementation(async () => {
+      openedWhenCalled = usePythonRun.getState().open;
+      return { log: "ok", ranInit: true };
+    });
+    await createUvEnvForCurrentProject();
+    expect(openedWhenCalled).toBe(true);
+    expect(usePythonRun.getState().command).toBe("$ uv init --bare && uv sync");
+  });
+
   it("streams the uv log into the panel and reports the outcome", async () => {
     app.currentFile = "C:/vault/note.md";
     apiMock.pythonUvCreate.mockResolvedValue({ log: "created .venv", ranInit: true });

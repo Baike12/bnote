@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { absoluteInProject, formatBytes, isRasterImage } from "./image";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { absoluteInProject, formatBytes, imageSrc, isRasterImage } from "./image";
 
 /**
  * Gate for image classification: which files render as images and how the
@@ -57,5 +57,34 @@ describe("formatBytes", () => {
     expect(formatBytes(1024)).toBe("1.0 KB");
     expect(formatBytes(20 * 1024)).toBe("20 KB");
     expect(formatBytes(1.5 * 1024 * 1024)).toBe("1.5 MB");
+  });
+
+  it("negative or non-finite sizes have no caption instead of a nonsense number", () => {
+    expect(formatBytes(-1)).toBe("");
+    expect(formatBytes(NaN)).toBe("");
+    expect(formatBytes(Infinity)).toBe("");
+  });
+});
+
+/**
+ * The asset URL is what `<img>` loads; outside Tauri (the pure browser harness)
+ * there is no `convertFileSrc`. The module must fall back to an empty string —
+ * the pane then shows the load failure — instead of throwing and taking the
+ * whole panel down.
+ */
+describe("imageSrc", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("hands the absolute path to the asset protocol", () => {
+    const convertFileSrc = vi.fn((path: string) => `asset://localhost/${path}`);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { convertFileSrc } });
+    expect(imageSrc("/proj/", "/img/a.png")).toBe("asset://localhost//proj/img/a.png");
+    expect(convertFileSrc).toHaveBeenCalledWith("/proj/img/a.png", "asset");
+  });
+
+  it("outside Tauri it returns an empty string instead of throwing", () => {
+    expect(imageSrc("/proj", "a.png")).toBe("");
   });
 });

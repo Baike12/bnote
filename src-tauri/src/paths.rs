@@ -104,4 +104,56 @@ mod tests {
         assert!(ensure_within(&root, &root.join("sub/../../x")).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_pointing_outside_the_root_is_rejected() {
+        // The whole point of canonicalizing the existing part: a symlink inside
+        // the root must not become a read/write path to the outside world.
+        let root = std::env::temp_dir().join(format!("bnote-paths-link-{}", std::process::id()));
+        let outside =
+            std::env::temp_dir().join(format!("bnote-paths-target-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.md"), "s").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        assert!(ensure_within(&root, &root.join("link/secret.md")).is_err());
+        // A symlink staying inside is still fine.
+        std::os::unix::fs::symlink(root.join("inside"), root.join("inner")).ok();
+        std::fs::create_dir_all(root.join("inside")).unwrap();
+        std::os::unix::fs::symlink(root.join("inside"), root.join("inner")).ok();
+        assert!(ensure_within(&root, &root.join("inner/new.md")).is_ok());
+
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn a_nonexistent_tail_resolves_through_its_nearest_existing_ancestor() {
+        let root = std::env::temp_dir().join(format!("bnote-paths-tail-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        // The tail itself does not exist; resolution must still be absolute and
+        // end with the requested components.
+        let resolved = resolve_for_compare(&root.join("a/b/c/d.md"));
+        assert!(resolved.ends_with("a/b/c/d.md"), "{}", resolved.display());
+        assert!(resolved.is_absolute());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn normalization_removes_cur_and_parent_components_lexically() {
+        assert_eq!(normalize(Path::new("/a/./b/../c")), PathBuf::from("/a/c"));
+        // Popping past the root cannot escape it: PathBuf drops nothing there.
+        assert_eq!(normalize(Path::new("/../a")), PathBuf::from("/a"));
+        assert_eq!(normalize(Path::new("a/b")), PathBuf::from("a/b"));
+    }
+
+    #[test]
+    fn the_root_itself_is_within_itself() {
+        let root = std::env::temp_dir().join(format!("bnote-paths-self-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(ensure_within(&root, &root).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

@@ -5,6 +5,37 @@ import { docPathField, setDocPath } from "@/editor/docPath";
 import type { DailyIO } from "./engine";
 import { captureTodo, formatTodoLine, insertTodoAtFront } from "./capture";
 
+const appState = vi.hoisted(() => ({
+  currentFile: null as string | null,
+  vaultPath: "/v" as string | null,
+  toast: vi.fn(),
+  refreshTree: vi.fn(async () => {}),
+  view: null as unknown as EditorView | null,
+}));
+
+vi.mock("@/editor/api", () => ({ getView: () => appState.view }));
+vi.mock("@/state/appStore", () => ({
+  useAppStore: {
+    getState: () => ({ currentFile: appState.currentFile, vaultPath: appState.vaultPath }),
+  },
+}));
+vi.mock("@/app/actions", () => ({ refreshTree: appState.refreshTree }));
+vi.mock("./runtime", () => ({
+  runtimeDeps: () => ({
+    io: {
+      readFile: async () => null,
+      writeFile: async () => {},
+      readDir: async () => [],
+    },
+    vaultRoot: () => appState.vaultPath,
+    today: () => "2026-10-26",
+    toast: (msg: string) => appState.toast(msg),
+    templatePath: () => null,
+  }),
+}));
+
+import { captureTodoToToday } from "./capture";
+
 const ROOT = "/v";
 const TODAY = "2026-10-26";
 const DAILY = `${ROOT}/Daily/${TODAY}.md`;
@@ -137,5 +168,21 @@ describe("captureTodo", () => {
     const path = await captureTodo("新任务", deps(io, { vaultRoot: () => null, toast }));
     expect(path).toBeNull();
     expect(toast).toHaveBeenCalledWith("没有打开仓库");
+  });
+});
+
+describe("captureTodoToToday: the app wiring", () => {
+  it("an empty input returns null without touching the app state", async () => {
+    appState.refreshTree.mockClear();
+    await expect(captureTodoToToday("   \n ")).resolves.toBeNull();
+    expect(appState.refreshTree).not.toHaveBeenCalled();
+  });
+
+  it("no vault open: the runtime toast reports it and nothing is created", async () => {
+    appState.vaultPath = null;
+    appState.toast.mockClear();
+    await expect(captureTodoToToday("新任务")).resolves.toBeNull();
+    expect(appState.toast).toHaveBeenCalledWith("没有打开仓库");
+    appState.vaultPath = "/v";
   });
 });

@@ -917,6 +917,79 @@ mod tests {
     }
 
     #[test]
+    fn a_pdf_identity_is_vault_relative_so_moving_the_vault_keeps_the_material() {
+        let vault = Path::new("/notes/vault");
+        let study = StudyContent::Pdf {
+            path: "/notes/vault/pdfs/paper.pdf".into(),
+            title: "Paper".into(),
+        };
+        assert_eq!(identity(&study, vault), "pdf:pdfs/paper.pdf");
+        // A PDF outside the vault keeps its absolute path (no relative form
+        // exists), so two different files cannot collide.
+        let outside = StudyContent::Pdf {
+            path: "/elsewhere/paper.pdf".into(),
+            title: String::new(),
+        };
+        assert_eq!(identity(&outside, vault), "pdf:/elsewhere/paper.pdf");
+    }
+
+    #[test]
+    fn a_url_identity_ignores_a_trailing_slash_but_not_the_query() {
+        let vault = Path::new("/v");
+        let with = StudyContent::Url {
+            url: "https://x.com/a/?q=1".into(),
+            title: String::new(),
+        };
+        assert_eq!(identity(&with, vault), "url:https://x.com/a/?q=1");
+        let bare = StudyContent::Url {
+            url: "https://x.com/a/".into(),
+            title: String::new(),
+        };
+        let same = StudyContent::Url {
+            url: "https://x.com/a".into(),
+            title: String::new(),
+        };
+        assert_eq!(identity(&bare, vault), identity(&same, vault));
+    }
+
+    #[test]
+    fn only_the_weread_hosts_are_recognized_including_www() {
+        assert!(is_weread("https://weread.qq.com/web/reader/abc"));
+        assert!(is_weread("https://www.weread.qq.com/web/reader/abc"));
+        assert!(!is_weread("https://weread.qq.com.evil.test/x"));
+        // `host_str` is host-only, so a port does not change the identity.
+        assert!(is_weread("http://weread.qq.com:8080/x"));
+        assert!(!is_weread("not a url"));
+    }
+
+    #[test]
+    fn a_slug_is_lower_case_bounded_and_never_empty() {
+        assert_eq!(sanitize_slug("Hello__World"), "hello_world");
+        assert_eq!(sanitize_slug("  ...  "), "material");
+        assert_eq!(sanitize_slug(""), "material");
+        // Overlong names are cut to the component budget and never end in a
+        // separator (an APFS component limit, not a preference).
+        let long = sanitize_slug(&"a".repeat(200));
+        assert_eq!(long.chars().count(), MAX_SLUG_CHARS);
+        assert!(!long.ends_with('_'));
+        assert_eq!(
+            sanitize_slug(&format!("{}!", "a".repeat(MAX_SLUG_CHARS))).len(),
+            MAX_SLUG_CHARS
+        );
+    }
+
+    #[test]
+    fn a_file_name_keeps_chinese_but_drops_separators_and_leading_dots() {
+        assert_eq!(safe_file_name("论 文.pdf"), "论 文.pdf");
+        assert_eq!(safe_file_name(r"a/b\c.pdf"), "a_b_c.pdf");
+        assert_eq!(safe_file_name("  .hidden.pdf"), "hidden.pdf");
+        assert_eq!(safe_file_name("   "), "paper.pdf");
+        // 120 characters is the cap; the extension is not preserved specially,
+        // the name is simply truncated.
+        assert_eq!(safe_file_name(&"x".repeat(200)).chars().count(), 120);
+    }
+
+    #[test]
     fn a_conflicting_directory_name_gets_a_numeric_suffix() {
         let mut r = Registry {
             version: 1,

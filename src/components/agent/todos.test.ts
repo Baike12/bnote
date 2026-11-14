@@ -73,6 +73,13 @@ describe("a TodoWrite call's input", () => {
       1,
     );
   });
+
+  it("drops a non-string content or active_form instead of duck-typing it", () => {
+    expect(todoFromInput({ todos: [{ content: 42, status: "pending" }] })).toEqual([]);
+    expect(todoFromInput({ todos: [{ content: "a", status: "pending", active_form: 7 }] })).toEqual(
+      [{ content: "a", activeForm: "a", status: "pending" }],
+    );
+  });
 });
 
 /**

@@ -51,3 +51,41 @@ pub fn term_close_all(state: State<'_, AppState>) -> CmdResult<()> {
     state.terminals.close_all();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_support::app;
+
+    #[test]
+    fn malformed_terminal_input_is_rejected_before_reaching_the_pty() {
+        // xterm sends base64; a corrupt payload must be a named error rather
+        // than bytes written into the user's shell.
+        let fixture = app("term-b64");
+        let err = term_write(fixture.state(), 1, "not base64!!".into())
+            .expect_err("corrupt input must fail");
+        assert!(err.starts_with("TERM_BASE64:"), "{err}");
+    }
+
+    #[test]
+    fn writing_to_an_unknown_terminal_is_a_named_error() {
+        let fixture = app("term-missing");
+        // Valid base64, unknown id: the failure names the id so the frontend
+        // can drop the tab instead of retrying forever.
+        let err = term_write(fixture.state(), 42, "aGk=".into()).expect_err("unknown id");
+        assert_eq!(err, "TERM_NOT_FOUND: 42");
+        assert_eq!(
+            term_resize(fixture.state(), 42, 80, 24).expect_err("unknown id"),
+            "TERM_NOT_FOUND: 42"
+        );
+    }
+
+    #[test]
+    fn closing_an_unknown_terminal_reports_false_instead_of_failing() {
+        // A repeated close (the exit watcher got there first) is normal, not an
+        // error: the UI clears the tab either way.
+        let fixture = app("term-close");
+        assert!(!term_close(fixture.state(), 7).expect("close is not an error"));
+        term_close_all(fixture.state()).expect("closing everything is a no-op without shells");
+    }
+}

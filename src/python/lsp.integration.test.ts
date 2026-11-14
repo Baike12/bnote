@@ -158,6 +158,66 @@ describe("virtual text sync", () => {
     await Promise.resolve();
     expect(apiMock.pythonLspSync).not.toHaveBeenCalled();
   });
+
+  it("an empty python fence still syncs (the virtual file stays line-aligned)", async () => {
+    const path = "/vault/empty-fence.md";
+    const view = installView("```python\n```\n", path);
+    syncNow(view as unknown as EditorView);
+    await vi.waitFor(() => expect(apiMock.pythonLspSync).toHaveBeenCalledWith(path, "\n\n"));
+  });
+
+  it("a note that never had a python block is not closed on the backend", async () => {
+    const view = installView("# prose only\n", "/vault/pure-prose.md");
+    syncNow(view as unknown as EditorView);
+    await Promise.resolve();
+    expect(apiMock.pythonLspClose).not.toHaveBeenCalled();
+  });
+
+  it("a rejected close does not escape (the LSP may never have started)", async () => {
+    const path = "/vault/close-fails.md";
+    apiMock.pythonLspClose.mockRejectedValue("no session");
+    const view = installView(DOC, path);
+    await sync(view);
+
+    view.state = view.state.update({ changes: { from: 0, to: view.state.doc.length } }).state;
+    syncNow(view as unknown as EditorView);
+
+    await vi.waitFor(() => expect(apiMock.pythonLspClose).toHaveBeenCalledWith(path));
+    await expect(Promise.resolve()).resolves.toBeUndefined();
+  });
+});
+
+describe("switching between notes", () => {
+  it("re-pastes the stored diagnostics when a note comes back into the editor", async () => {
+    const path = "/vault/switch.md";
+    const handler = listeners.get("python-lsp-diagnostics");
+    const view = installView(DOC, path);
+
+    handler?.({
+      payload: {
+        mdPath: path,
+        diagnostics: [
+          {
+            range: { start: { line: 3, character: 0 }, end: { line: 3, character: 3 } },
+            message: "stored",
+            severity: 1,
+          },
+        ],
+      },
+    });
+    const afterEvent = view.dispatches.length;
+    expect(afterEvent).toBeGreaterThan(0);
+
+    // Another note takes the editor, then this one comes back: the stored
+    // diagnostics have to be pasted onto the rebuilt document.
+    const other = installView(DOC, "/vault/switch-other.md");
+    syncNow(other as unknown as EditorView);
+    await vi.waitFor(() => expect(apiMock.pythonLspSync).toHaveBeenCalled());
+
+    editorApi.view = view as unknown as EditorView;
+    syncNow(view as unknown as EditorView);
+    await vi.waitFor(() => expect(view.dispatches.length).toBeGreaterThan(afterEvent));
+  });
 });
 
 describe("diagnostics paste", () => {

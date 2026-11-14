@@ -1769,6 +1769,69 @@ mod tests {
     }
 
     #[test]
+    fn aborting_an_unknown_session_reports_that_it_cannot_finish() {
+        // `false` is what makes the panel clear its own busy state: a restarted
+        // backend will never send a terminal event for that session.
+        let fixture = crate::commands::test_support::app("agent-abort");
+        assert!(!agent_abort(fixture.state(), "missing".into()).expect("no error"));
+        assert!(
+            agent_stop_subagent(fixture.state(), "missing".into(), "child".into())
+                .expect_err("an unknown parent is an error")
+                .starts_with("SESSION_NOT_FOUND")
+        );
+        // A tracked parent without that child is `false`: the row is stale.
+        // (Building a live Session needs a provider and a window, so the
+        // registry stays empty here; the unknown-parent branch is the one this
+        // command can distinguish without one.)
+    }
+
+    #[test]
+    fn the_current_note_is_the_single_owner_of_the_agent_context() {
+        let fixture = crate::commands::test_support::app("agent-note");
+        agent_set_current_note(fixture.state(), Some("/vault/a.md".into())).expect("set");
+        assert_eq!(
+            fixture
+                .state()
+                .current_note
+                .lock()
+                .expect("lock")
+                .as_deref(),
+            Some("/vault/a.md")
+        );
+        // Closing the note clears it; the agent must not keep a stale path.
+        agent_set_current_note(fixture.state(), None).expect("clear");
+        assert!(fixture.state().current_note.lock().expect("lock").is_none());
+    }
+
+    #[test]
+    fn only_http_and_local_html_pages_reach_the_study_column() {
+        // The study webview is a real browser view; a `file://` or `javascript:`
+        // URL would be a way around the vault boundary.
+        assert!(parse_study_url("https://example.com/a").is_ok());
+        assert!(parse_study_url("http://example.com/a").is_ok());
+        for url in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<p>x</p>",
+            "about:blank",
+            "",
+        ] {
+            let err = parse_study_url(url).expect_err("refused scheme");
+            assert!(!err.is_empty(), "{url} must be refused with a message");
+        }
+    }
+
+    #[test]
+    fn a_local_html_preview_file_is_recognized_by_extension_only() {
+        for path in ["/tmp/page.html", "/tmp/page.HTM", "/tmp/a/INDEX.HTML"] {
+            assert!(is_local_html(std::path::Path::new(path)), "{path}");
+        }
+        for path in ["/tmp/page.md", "/tmp/html", "/tmp/page.html.txt"] {
+            assert!(!is_local_html(std::path::Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
     fn the_preview_version_is_parsed_only_from_the_snapshot_file_name() {
         assert_eq!(
             preview_version_from_url("file:///tmp/creative-preview/preview-7.html"),

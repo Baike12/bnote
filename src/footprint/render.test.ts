@@ -157,3 +157,114 @@ describe("footprint block rendering: safety and robustness (the renderer eats an
     expect(() => renderBlockHtml("$\n\n$$\n\n[\n\n]\n")).not.toThrow();
   });
 });
+
+describe("footprint block rendering: inline atoms and their fallbacks", () => {
+  it("a wikilink with an anchor: the alias wins, the target is what is shown without one", () => {
+    expect(renderBlockHtml("[[页#小节|别名]]\n")).toContain(
+      '<span class="md-wikilink">别名</span>',
+    );
+    expect(renderBlockHtml("[[页#小节]]\n")).toContain('<span class="md-wikilink">页#小节</span>');
+    // "#section" alone names no note, so it is not a wikilink at all: the text is
+    // left to the markdown parser instead of rendering an empty atom
+    const anchorOnly = renderBlockHtml("[[#只有锚点]]\n");
+    expect(anchorOnly).not.toContain("md-wikilink");
+    expect(anchorOnly).toContain("只有锚点");
+  });
+
+  it("an image shows its alt text, and the placeholder 图 when there is none (a quote embeds no image)", () => {
+    expect(renderBlockHtml("![替代文字](assets/x.png)\n")).toContain(
+      '<span class="md-url">替代文字</span>',
+    );
+    expect(renderBlockHtml("![](assets/x.png)\n")).toContain('<span class="md-url">图</span>');
+    expect(renderBlockHtml("![替代文字](assets/x.png)\n")).not.toContain("<img");
+  });
+
+  it("an autolink stays visible as text with the brackets escaped, no image or anchor is produced", () => {
+    const html = renderBlockHtml("自动链接 <https://a.b/c>\n");
+    expect(html).toContain('<span class="md-url">&lt;https://a.b/c&gt;</span>');
+    expect(html).not.toContain("<a ");
+  });
+
+  it("an escaped marker shows the character, not the backslash and not the emphasis", () => {
+    expect(renderBlockHtml("转义 \\*不是斜体\\*\n")).toContain("转义 *不是斜体*");
+    expect(renderBlockHtml("转义 \\*不是斜体\\*\n")).not.toContain("md-em");
+  });
+
+  it("a link with a title keeps the label and the URL, the title is not part of the output", () => {
+    const html = renderBlockHtml('[标签](http://a.b "标题")\n');
+    expect(html).toContain('<span class="md-link">标签</span>');
+    expect(html).toContain('<span class="md-url">http://a.b</span>');
+    expect(html).not.toContain("标题");
+  });
+
+  it("a hard break line keeps both lines, a soft wrap inside a paragraph stays one line per source line", () => {
+    const html = renderBlockHtml("行一  \n行二\n");
+    expect(html.match(/footprint-line/g)!.length).toBe(2);
+    expect(html).toContain("行一");
+    expect(html).toContain("行二");
+  });
+});
+
+describe("footprint block rendering: quote and table fallbacks", () => {
+  it("a quote line keeps the md-quote class and still renders its inline emphasis", () => {
+    const html = renderBlockHtml("文字\n> 引用里 **粗**\n");
+    expect(html).toContain("footprint-line md-quote");
+    expect(html).toContain('<strong class="md-strong">粗</strong>');
+    expect(html).not.toContain("&gt;");
+  });
+
+  it("a GFM table is kept as source text line by line (unknown block = verbatim, never dropped)", () => {
+    const html = renderBlockHtml("| 表 | 格 |\n| --- | --- |\n| a | b |\n");
+    expect(html.match(/footprint-line/g)!.length).toBe(3);
+    expect(html).toContain("| 表 | 格 |");
+    expect(html).toContain("| a | b |");
+  });
+
+  it("an ordered task renders with the task class and the checked state", () => {
+    const open = renderBlockHtml("1. [ ] 有序待办\n");
+    expect(open).toContain("li-t");
+    expect(open).toContain('<span class="md-task"></span>');
+    expect(open).not.toContain("md-listmark");
+    const done = renderBlockHtml("1. [x] 已完成\n");
+    expect(done).toContain('<span class="md-task checked"></span>');
+  });
+
+  it("a heading without its HeaderMark is skipped, its text still appears through the paragraph fallback", () => {
+    // A lone '#'-less line and headings of every level share the same path
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      const html = renderBlockHtml(`${"#".repeat(level)} 标题${level}\n`);
+      expect(html).toContain(`md-heading md-h${level}`);
+      expect(html).toContain(`标题${level}`);
+    }
+  });
+});
+
+describe("footprint block rendering: atomics inside markup render exactly once", () => {
+  it("a wikilink inside strong emphasis is emitted once, inside the strong wrapper", () => {
+    const html = renderBlockHtml("**强调 [[页]]**\n");
+    expect(html).toContain(
+      '<strong class="md-strong">强调 <span class="md-wikilink">页</span></strong>',
+    );
+    // The markers stay hidden and the span is not duplicated.
+    expect(html).not.toContain("**");
+    expect(html.match(/md-wikilink/g)!.length).toBe(1);
+  });
+
+  it("a formula inside strong emphasis is emitted once, inside the strong wrapper", () => {
+    const html = renderBlockHtml("**粗体 $x^2$ 后面**\n");
+    expect(html).toContain("<strong");
+    expect(html.match(/cw-math-inline/g)!.length).toBe(1);
+    expect(html).toContain("粗体");
+    expect(html).toContain("后面");
+    expect(html).not.toContain("$x^2$");
+  });
+
+  it("markup around an atomic keeps its wrappers in order", () => {
+    const html = renderBlockHtml("**a** [[x]] **b**\n");
+    const strong = html.match(/<strong/g)!.length;
+    expect(strong).toBe(2);
+    expect(html.match(/md-wikilink/g)!.length).toBe(1);
+    expect(html.indexOf("<strong")).toBeLessThan(html.indexOf("md-wikilink"));
+    expect(html.indexOf("md-wikilink")).toBeLessThan(html.lastIndexOf("<strong"));
+  });
+});

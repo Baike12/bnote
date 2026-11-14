@@ -151,3 +151,14 @@ describe("diffBlocks: todo blocks belong to the sync engine, they do not enter t
     expect(diffBlocks(null, "* [ ] 星号待办\n+ [X] 加号待办")).toEqual([]);
   });
 });
+
+describe("blockKey: the common-indent arms", () => {
+  it("a block whose lines share no leading whitespace keeps its text untouched", () => {
+    expect(blockKey("a\n\tb")).toBe("a\n\tb");
+  });
+
+  it("a tab and a space are not interchangeable as a common prefix", () => {
+    expect(blockKey("\ta\n b")).toBe("\ta\n b");
+    expect(blockKey("\ta\n\tb")).toBe("a\nb");
+  });
+});

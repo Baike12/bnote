@@ -311,3 +311,305 @@ fn extension_of(name: &str) -> String {
         _ => "md".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_support::{app, app_with_vault, block_on, vault_root};
+
+    fn write(root: &std::path::Path, rel: &str, body: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(path, body).expect("write");
+    }
+
+    #[test]
+    fn a_name_without_an_extension_gets_md_as_its_extension() {
+        assert_eq!(strip_extension("note"), "note");
+        assert_eq!(extension_of("note"), "md");
+        assert_eq!(strip_extension("note.md"), "note");
+        assert_eq!(extension_of("note.md"), "md");
+        // A leading dot is a hidden file name, not an extension separator.
+        assert_eq!(strip_extension(".hidden"), ".hidden");
+        assert_eq!(extension_of(".hidden"), "md");
+        assert_eq!(strip_extension("a.b.md"), "a.b");
+        assert_eq!(extension_of("a.b.md"), "md");
+    }
+
+    #[test]
+    fn a_created_file_lands_under_the_vault_with_a_relative_path() {
+        let fixture = app_with_vault("files-create");
+        let root = vault_root(&fixture);
+        let entry = block_on(create_file(
+            fixture.state(),
+            String::new(),
+            "note.md".into(),
+        ))
+        .expect("create");
+        assert_eq!(entry.rel_path, "note.md");
+        assert!(std::path::Path::new(&entry.path).is_file());
+        assert!(entry.path.starts_with(root.to_string_lossy().as_ref()));
+
+        // The "/" parent means the vault root.
+        let entry =
+            block_on(create_file(fixture.state(), "/".into(), "other.md".into())).expect("create");
+        assert_eq!(entry.rel_path, "other.md");
+    }
+
+    #[test]
+    fn creating_a_note_twice_deduplicates_with_a_counter() {
+        let fixture = app_with_vault("files-dedup");
+        for expected in ["note.md", "note 2.md", "note 3.md"] {
+            let entry = block_on(create_file(
+                fixture.state(),
+                String::new(),
+                "note.md".into(),
+            ))
+            .expect("create");
+            assert_eq!(entry.rel_path, expected);
+        }
+        // Dedup applies to folders too, and never touches what is already
+        // inside the first one.
+        let first = block_on(create_dir(fixture.state(), String::new(), "folder".into()))
+            .expect("create dir");
+        assert_eq!(first.rel_path, "folder");
+        write(&vault_root(&fixture), "folder/keep.md", "x");
+        for expected in ["folder 2", "folder 3"] {
+            let entry = block_on(create_dir(fixture.state(), String::new(), "folder".into()))
+                .expect("create dir");
+            assert_eq!(entry.rel_path, expected);
+        }
+        assert_eq!(
+            std::fs::read_to_string(vault_root(&fixture).join("folder/keep.md")).expect("kept"),
+            "x"
+        );
+    }
+
+    #[test]
+    fn an_extensionless_name_creates_a_markdown_note_on_dedup() {
+        let fixture = app_with_vault("files-dedup-ext");
+        assert_eq!(
+            block_on(create_file(fixture.state(), String::new(), "note".into()))
+                .expect("create")
+                .rel_path,
+            "note"
+        );
+        // The second copy gains the default `.md` extension from extension_of.
+        assert_eq!(
+            block_on(create_file(fixture.state(), String::new(), "note".into()))
+                .expect("create")
+                .rel_path,
+            "note 2.md"
+        );
+    }
+
+    #[test]
+    fn names_with_separators_or_traversal_are_rejected() {
+        let fixture = app_with_vault("files-name");
+        for name in ["../escape.md", "a/b.md", "a\\b.md", ".", "..", ""] {
+            assert!(
+                block_on(create_file(fixture.state(), String::new(), name.into())).is_err(),
+                "{name} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_parent_outside_the_vault_is_rejected() {
+        let fixture = app_with_vault("files-parent");
+        let outside = fixture.dir.join("outside");
+        std::fs::create_dir_all(&outside).expect("outside");
+        let result = block_on(create_file(
+            fixture.state(),
+            "../outside".into(),
+            "note.md".into(),
+        ));
+        match result {
+            Ok(_) => panic!("escaping parent must fail"),
+            Err(err) => assert!(
+                err.starts_with("INVALID_NAME") || err.starts_with("FORBIDDEN"),
+                "{err}"
+            ),
+        }
+        assert!(!outside.join("note.md").exists());
+    }
+
+    #[test]
+    fn file_commands_require_an_open_vault() {
+        let fixture = app("files-no-vault");
+        // Every file command starts with the same guard, so no fixture dir can
+        // be read or written while no vault is open.
+        let errors = vec![
+            block_on(read_file(fixture.state(), "/tmp/a.md".into()))
+                .err()
+                .unwrap_or_default(),
+            block_on(write_file(fixture.state(), "/tmp/a.md".into(), "x".into()))
+                .err()
+                .unwrap_or_default(),
+            match block_on(create_file(fixture.state(), String::new(), "a.md".into())) {
+                Ok(_) => String::new(),
+                Err(e) => e,
+            },
+            block_on(ensure_dir(fixture.state(), "Daily".into()))
+                .err()
+                .unwrap_or_default(),
+        ];
+        for err in errors {
+            assert!(err.starts_with("NO_VAULT"), "{err}");
+        }
+    }
+
+    #[test]
+    fn reading_and_writing_round_trip_through_the_command() {
+        let fixture = app_with_vault("files-rw");
+        let path = vault_root(&fixture).join("sub/note.md");
+        let path_str = path.to_string_lossy().to_string();
+
+        block_on(write_file(
+            fixture.state(),
+            path_str.clone(),
+            "hello\n".into(),
+        ))
+        .expect("write creates the parent directory");
+        assert_eq!(
+            block_on(read_file(fixture.state(), path_str.clone())).expect("read"),
+            "hello\n"
+        );
+
+        block_on(append_file(
+            fixture.state(),
+            path_str.clone(),
+            "second\n".into(),
+        ))
+        .expect("append");
+        assert_eq!(
+            block_on(read_file(fixture.state(), path_str.clone())).expect("read"),
+            "hello\nsecond\n"
+        );
+    }
+
+    #[test]
+    fn base64_round_trips_binary_bytes() {
+        let fixture = app_with_vault("files-b64");
+        let path = vault_root(&fixture).join("drawing.png");
+        let path_str = path.to_string_lossy().to_string();
+        // Not valid UTF-8: the text path would corrupt these bytes.
+        let bytes: Vec<u8> = vec![0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xfe];
+
+        block_on(write_file_base64(fixture.state(), path_str.clone(), {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        }))
+        .expect("write");
+        assert_eq!(std::fs::read(&path).expect("bytes"), bytes);
+        assert_eq!(
+            block_on(read_file_base64(fixture.state(), path_str)).expect("read"),
+            {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.encode(&bytes)
+            }
+        );
+    }
+
+    #[test]
+    fn writing_outside_the_vault_is_forbidden() {
+        let fixture = app_with_vault("files-confine");
+        let outside = fixture.dir.join("outside.md");
+        let err = block_on(write_file(
+            fixture.state(),
+            outside.to_string_lossy().to_string(),
+            "x".into(),
+        ))
+        .expect_err("outside the vault must fail");
+        assert!(err.starts_with("FORBIDDEN"), "{err}");
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn renaming_refuses_to_overwrite_an_existing_name() {
+        let fixture = app_with_vault("files-rename");
+        let root = vault_root(&fixture);
+        write(&root, "a.md", "a");
+        write(&root, "b.md", "b");
+
+        let err = block_on(rename_path(
+            fixture.state(),
+            root.join("a.md").to_string_lossy().to_string(),
+            "b.md".into(),
+        ))
+        .expect_err("an existing target must not be overwritten");
+        assert!(err.starts_with("RENAME_FAILED"), "{err}");
+        assert_eq!(std::fs::read_to_string(root.join("b.md")).expect("b"), "b");
+
+        let new_path = block_on(rename_path(
+            fixture.state(),
+            root.join("a.md").to_string_lossy().to_string(),
+            "c.md".into(),
+        ))
+        .expect("rename");
+        assert!(new_path.ends_with("c.md"));
+        assert!(!root.join("a.md").exists());
+    }
+
+    #[test]
+    fn ensure_dir_creates_a_nested_folder_and_is_idempotent() {
+        let fixture = app_with_vault("files-ensure");
+        block_on(ensure_dir(fixture.state(), "/Daily/2026/".into())).expect("mkdir -p");
+        assert!(vault_root(&fixture).join("Daily/2026").is_dir());
+        // A second call is a no-op rather than "Daily/2026 2".
+        block_on(ensure_dir(fixture.state(), "Daily/2026".into())).expect("idempotent");
+        assert!(vault_root(&fixture).join("Daily/2026").is_dir());
+        // The empty path is accepted and does nothing.
+        block_on(ensure_dir(fixture.state(), String::new())).expect("empty is a no-op");
+    }
+
+    #[test]
+    fn ensure_dir_rejects_a_traversing_segment() {
+        let fixture = app_with_vault("files-ensure-bad");
+        assert!(block_on(ensure_dir(fixture.state(), "ok/../escape".into())).is_err());
+    }
+
+    #[test]
+    fn vault_config_files_are_whitelisted() {
+        let fixture = app_with_vault("files-config-name");
+        // Arbitrary names must not be reachable: the whitelist is the boundary.
+        let err = block_on(read_vault_file(fixture.state(), "../config.json".into()))
+            .expect_err("not on the whitelist");
+        assert!(err.starts_with("INVALID_NAME"), "{err}");
+
+        assert_eq!(
+            block_on(read_vault_file(fixture.state(), "vimrc".into())).expect("absent"),
+            None
+        );
+        block_on(write_vault_file(
+            fixture.state(),
+            "snippets.js".into(),
+            "// s\n".into(),
+        ))
+        .expect("write");
+        assert_eq!(
+            block_on(read_vault_file(fixture.state(), "snippets.js".into())).expect("read"),
+            Some("// s\n".to_string())
+        );
+        assert!(vault_root(&fixture).join(".bnote/snippets.js").is_file());
+        assert!(block_on(write_vault_file(
+            fixture.state(),
+            "not-listed.json".into(),
+            "{}".into()
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn trashing_removes_the_entry_from_the_vault() {
+        let fixture = app_with_vault("files-trash");
+        let root = vault_root(&fixture);
+        write(&root, "gone.md", "x");
+        block_on(trash_path(
+            fixture.state(),
+            root.join("gone.md").to_string_lossy().to_string(),
+        ))
+        .expect("trash");
+        assert!(!root.join("gone.md").exists());
+    }
+}

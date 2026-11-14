@@ -156,3 +156,252 @@ describe("deleting a project", () => {
     expect(fs.files.get(PROJECT)).toBe("- [ ] 还在");
   });
 });
+
+describe("listing the projects", () => {
+  it("keeps only markdown files, names them after the file and sorts by name", async () => {
+    fs.files.clear();
+    fs.files.set("/vault/.bnote/projects-manager/写作.md", "");
+    fs.files.set("/vault/.bnote/projects-manager/读书.MD", "");
+    fs.files.set("/vault/.bnote/projects-manager/notes.txt", "");
+    fs.files.set("/vault/.bnote/projects-manager/.DS_Store", "");
+    fs.files.set("/vault/.bnote/projects-manager/sub/嵌套.md", "");
+
+    await store.loadProjects(VAULT);
+
+    const entries = store.projectEntries();
+    expect(entries.map((e) => e.name).sort()).toEqual(["写作", "读书"]);
+    // The order is the locale collation the card list relies on (a sub-folder
+    // is not a project).
+    expect(entries.map((e) => e.name)).toEqual(
+      ["写作", "读书"].sort((a, b) => a.localeCompare(b, "zh")),
+    );
+    expect(entries.map((e) => e.path).sort()).toEqual([
+      "/vault/.bnote/projects-manager/写作.md",
+      "/vault/.bnote/projects-manager/读书.MD",
+    ]);
+  });
+
+  it("a missing directory is an empty list, not an error", async () => {
+    fs.files.clear();
+    await store.loadProjects(VAULT);
+    expect(store.projectEntries()).toEqual([]);
+  });
+
+  it("a trailing slash on the vault root does not double the separator", async () => {
+    await store.loadProjects(`${VAULT}/`);
+    expect(store.projectEntries()[0]?.path).toBe(PROJECT);
+  });
+
+  it("notifies subscribers only when the list really changed", async () => {
+    const seen: number[] = [];
+    const off = store.subscribeProjects(() => seen.push(store.projectsRevision()));
+    const before = store.projectsRevision();
+
+    await store.loadProjects(VAULT);
+    expect(seen).toEqual([]);
+    expect(store.projectsRevision()).toBe(before);
+
+    fs.files.set(OTHER, "- [ ] 乙");
+    fs.files.set("/vault/.bnote/projects-manager/新.md", "");
+    await store.loadProjects(VAULT);
+    expect(seen).toHaveLength(1);
+    expect(store.projectsRevision()).toBe(before + 1);
+    off();
+  });
+
+  it("a listing that is overtaken by a newer one is dropped (stale snapshot)", async () => {
+    const api = (await import("@/lib/tauri")).api as unknown as {
+      readDir: (rel: string) => Promise<unknown>;
+    };
+    const original = api.readDir;
+    const gate: { open: (() => void) | null } = { open: null };
+    api.readDir = async () => {
+      await new Promise<void>((resolve) => (gate.open = resolve));
+      return [
+        {
+          name: "旧的.md",
+          relPath: ".bnote/projects-manager/旧的.md",
+          kind: "file",
+          children: null,
+        },
+      ];
+    };
+
+    const stale = store.loadProjects(VAULT);
+    api.readDir = original;
+    fs.files.set("/vault/.bnote/projects-manager/新的.md", "");
+    await store.loadProjects(VAULT);
+    gate.open?.();
+    await stale;
+
+    const names = store.projectEntries().map((e) => e.name);
+    expect(names).toContain("新的");
+    expect(names).not.toContain("旧的");
+  });
+});
+
+describe("the document cache", () => {
+  it("a read populates the cache and the next read does not touch the disk", async () => {
+    const api = (await import("@/lib/tauri")).api as unknown as {
+      readFile: (path: string) => Promise<string>;
+    };
+    const spy = vi.spyOn(api, "readFile");
+
+    expect(await store.readProjectDoc(PROJECT)).toBe("- [ ] 甲");
+    expect(await store.readProjectDoc(PROJECT)).toBe("- [ ] 甲");
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it("a failed read is an empty document and it is cached as such", async () => {
+    const missing = "/vault/.bnote/projects-manager/没有.md";
+    expect(await store.readProjectDoc(missing)).toBe("");
+    expect(store.cachedProjectDoc(missing)).toBe("");
+  });
+
+  it("writing updates the cache before the disk round trip", () => {
+    store.setCachedProjectDoc(PROJECT, "- [ ] 内存");
+    expect(store.cachedProjectDoc(PROJECT)).toBe("- [ ] 内存");
+  });
+
+  it("a listing drops the cached documents of projects that no longer exist", async () => {
+    await store.readProjectDoc(PROJECT);
+    await store.readProjectDoc(OTHER);
+
+    fs.files.delete(PROJECT);
+    await store.loadProjects(VAULT);
+
+    expect(store.cachedProjectDoc(PROJECT)).toBeUndefined();
+    expect(store.cachedProjectDoc(OTHER)).toBe("- [ ] 乙");
+  });
+
+  it("a deleted project reads back empty even when the disk still has bytes", async () => {
+    await store.deleteProject(VAULT, PROJECT);
+    fs.files.set(PROJECT, "- [ ] 幽灵");
+
+    expect(await store.readProjectDoc(PROJECT)).toBe("");
+    expect(store.cachedProjectDoc(PROJECT)).toBeUndefined();
+  });
+
+  it("caching a document of a deleted project is dropped", async () => {
+    await store.deleteProject(VAULT, PROJECT);
+    store.setCachedProjectDoc(PROJECT, "- [ ] 幽灵");
+    expect(store.cachedProjectDoc(PROJECT)).toBeUndefined();
+  });
+
+  it("a failed write is logged, not thrown into the editor", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const api = (await import("@/lib/tauri")).api as unknown as {
+      writeFile: (path: string, text: string) => Promise<void>;
+    };
+    const original = api.writeFile;
+    api.writeFile = async () => {
+      throw new Error("DISK_FULL");
+    };
+
+    await store.writeProjectDoc(PROJECT, "- [ ] 写不进去");
+
+    api.writeFile = original;
+    expect(warn).toHaveBeenCalledWith("project save failed", expect.any(Error));
+    warn.mockRestore();
+  });
+
+  it("the external refresh only reloads the list, keeping the document cache", async () => {
+    await store.readProjectDoc(PROJECT);
+    fs.files.set("/vault/.bnote/projects-manager/新.md", "");
+
+    await store.refreshProjects(VAULT);
+
+    expect(store.projectEntries().map((e) => e.name)).toContain("新");
+    expect(store.cachedProjectDoc(PROJECT)).toBe("- [ ] 甲");
+  });
+});
+
+describe("creating a project", () => {
+  it("creates a file with a first todo line and returns the real entry", async () => {
+    const created = await store.createProject(VAULT, "新项目");
+
+    expect(created).toEqual({ name: "新项目", path: "/vault/.bnote/projects-manager/新项目.md" });
+    expect(fs.files.get(created?.path ?? "")).toBe("- [ ] ");
+    expect(store.projectEntries().map((e) => e.name)).toContain("新项目");
+  });
+
+  it("sanitizes the name and dedupes through the backend (name 2.md)", async () => {
+    const created = await store.createProject(VAULT, "读/书:计划");
+    expect(created?.name).toBe("读 书 计划");
+
+    const api = (await import("@/lib/tauri")).api as unknown as {
+      createFile: (parent: string, name: string) => Promise<{ path: string; relPath: string }>;
+    };
+    const original = api.createFile;
+    api.createFile = async (parent: string, name: string) => {
+      // The backend refuses an existing name by deduplicating it.
+      if (name === "读书.md")
+        return { path: `${VAULT}/.bnote/projects-manager/读书 2.md`, relPath: "" };
+      return original(parent, name);
+    };
+    const second = await store.createProject(VAULT, "读书");
+    api.createFile = original;
+
+    expect(second?.name).toBe("读书 2");
+  });
+
+  it("a name that sanitizes to nothing creates no project", async () => {
+    expect(await store.createProject(VAULT, "   ")).toBeNull();
+    expect(await store.createProject(VAULT, "///")).toBeNull();
+  });
+
+  it("creating a project clears a stale tombstone for that path", async () => {
+    await store.deleteProject(VAULT, PROJECT);
+    fs.files.delete(PROJECT);
+
+    const created = await store.createProject(VAULT, "读书");
+    await store.writeProjectDoc(created?.path ?? "", "- [ ] 重新开始");
+
+    expect(fs.files.get(created?.path ?? "")).toBe("- [ ] 重新开始");
+  });
+});
+
+describe("focus traversal", () => {
+  it("moves to the next and previous project and stops at the boundary", () => {
+    store.setFocusedProject(OTHER);
+    store.focusAdjacentProject(-1);
+    expect(store.focusedProjectPath()).toBe(PROJECT);
+    store.focusAdjacentProject(-1);
+    expect(store.focusedProjectPath()).toBe(PROJECT);
+
+    store.focusAdjacentProject(1);
+    expect(store.focusedProjectPath()).toBe(OTHER);
+    store.focusAdjacentProject(1);
+    expect(store.focusedProjectPath()).toBe(OTHER);
+  });
+
+  it("without a focus the first step enters from the correct end", () => {
+    store.setFocusedProject(null);
+    store.focusAdjacentProject(1);
+    expect(store.focusedProjectPath()).toBe(PROJECT);
+
+    store.setFocusedProject(null);
+    store.focusAdjacentProject(-1);
+    expect(store.focusedProjectPath()).toBe(OTHER);
+  });
+
+  it("an empty list moves nowhere", async () => {
+    fs.files.clear();
+    await store.loadProjects(VAULT);
+    store.setFocusedProject(null);
+    store.focusAdjacentProject(1);
+    expect(store.focusedProjectPath()).toBeNull();
+  });
+
+  it("focusing the same project again does not wake subscribers", () => {
+    store.setFocusedProject(PROJECT);
+    let writes = 0;
+    const off = store.subscribeProjects(() => writes++);
+    store.setFocusedProject(PROJECT);
+    expect(writes).toBe(0);
+    store.setFocusedProject(OTHER);
+    expect(writes).toBe(1);
+    off();
+  });
+});

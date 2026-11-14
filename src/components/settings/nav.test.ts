@@ -1,5 +1,15 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { agentNavGroup, navGroups } from "./nav";
+import type { AgentMode } from "@/lib/tauri";
+import { BASE_NAV_GROUPS, agentNavGroup, navGroups } from "./nav";
+
+const ALL_MODES: AgentMode[] = ["coding", "creative", "study"];
+
+function idsOf(group: { items: { id: string }[] }): string[] {
+  return group.items.map((item) => item.id);
+}
 
 /**
  * The Agent pages are not cosmetic variants of one form: each mode's pages
@@ -7,8 +17,7 @@ import { agentNavGroup, navGroups } from "./nav";
  * MCP or skills page; only coding has the raw settings.json page).
  */
 describe("the agent navigation follows the mode", () => {
-  const ids = (mode: "coding" | "creative" | "study") =>
-    agentNavGroup(mode).items.map((item) => item.id);
+  const ids = (mode: AgentMode) => agentNavGroup(mode).items.map((item) => item.id);
 
   it("gives coding the full surface", () => {
     expect(ids("coding")).toEqual([
@@ -45,5 +54,76 @@ describe("the agent navigation follows the mode", () => {
       "学习",
       "Agent · 编码",
     ]);
+  });
+});
+
+/**
+ * Every section is reachable from the sidebar and the sidebar never shows the
+ * same page twice. A missing id means a settings page nobody can open; a
+ * duplicate means two nav entries fight over one tab.
+ */
+describe("the navigation lists every section exactly once", () => {
+  it("covers every declared tab across the three modes", () => {
+    const all = new Set(ALL_MODES.flatMap((mode) => navGroups(mode).flatMap(idsOf)));
+    expect([...all].sort()).toEqual(
+      [
+        "agent-advanced",
+        "agent-instructions",
+        "agent-mcp",
+        "agent-model",
+        "agent-skills",
+        "daily",
+        "editor",
+        "focus",
+        "general",
+        "hotkeys",
+        "ime",
+        "quickadd",
+        "reading",
+        "snippets",
+        "templates",
+        "translate",
+        "vim",
+      ].sort(),
+    );
+  });
+
+  it("never repeats an id inside one mode", () => {
+    for (const mode of ALL_MODES) {
+      const ids = navGroups(mode).flatMap(idsOf);
+      expect(ids, mode).toHaveLength(new Set(ids).size);
+    }
+  });
+
+  it("keeps the base groups identical in every mode", () => {
+    for (const mode of ALL_MODES) {
+      expect(navGroups(mode).slice(0, BASE_NAV_GROUPS.length), mode).toEqual(BASE_NAV_GROUPS);
+    }
+  });
+
+  it("is pure, so building the menu twice does not grow the shared groups", () => {
+    expect(navGroups("coding")).toEqual(navGroups("coding"));
+    expect(BASE_NAV_GROUPS).toHaveLength(4);
+  });
+});
+
+/**
+ * The nav is the single list of sections; the modal renders each one by id. A
+ * section with no branch renders an empty page, and a branch with no nav entry
+ * is dead. Both directions are checked against the source, the same way the
+ * settings-row layout gate reads the stylesheet.
+ */
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const modalSource = readFileSync(resolve(root, "src/components/SettingsModal.tsx"), "utf8");
+const listed = new Set(ALL_MODES.flatMap((mode) => navGroups(mode).flatMap(idsOf)));
+const rendered = new Set([...modalSource.matchAll(/tab === "([^"]+)"/g)].map((match) => match[1]));
+
+describe("the navigation and the rendered pages agree", () => {
+  it("renders a page for every listed section", () => {
+    expect([...listed].filter((id) => !rendered.has(id))).toEqual([]);
+  });
+
+  it("renders no page the navigation cannot reach", () => {
+    expect([...rendered].filter((id) => !listed.has(id))).toEqual([]);
   });
 });

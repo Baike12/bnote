@@ -3,8 +3,10 @@ import {
   DEFAULT_BINDINGS,
   FIXED_PAGE_COMMANDS,
   applyOverrides,
+  bindingEquals,
   bindingsForCommand,
   commandBelongs,
+  commandInRegion,
   commandRegions,
   commandsForKey,
   defaultBindingsFor,
@@ -13,7 +15,9 @@ import {
   eventKeyName,
   eventToKey,
   fixedPageCommandFor,
+  flattenOverrides,
   formOwnsEditChord,
+  formatBinding,
   isPlainFocusOwnedKey,
   keysOf,
   normalizeOverrides,
@@ -675,5 +679,156 @@ describe("project region keyboard", () => {
   it("an explicit override in the project region wins over the inherited one", () => {
     applyOverrides({ project: { "edit.toggle-bold": null } });
     expect(commandsForKey("Mod-b", "project")).not.toContain("edit.toggle-bold");
+  });
+});
+
+/** The settings page edits one region per tab; a command with no entry anywhere must still show up once. */
+describe("region tabs of the settings page", () => {
+  afterEach(reset);
+
+  it("a bound command belongs to the regions it is placed in, and nowhere else", () => {
+    expect(commandBelongs("edit.toggle-bold", "notes")).toBe(true);
+    expect(commandBelongs("edit.toggle-bold", "agent")).toBe(false);
+    expect(commandRegions("edit.toggle-bold")).toEqual(["notes"]);
+    expect(commandInRegion("edit.toggle-bold", "notes")).toBe(true);
+    expect(commandInRegion("edit.toggle-bold", "global")).toBe(false);
+  });
+
+  it("a command with no binding anywhere still appears once, under its default region", () => {
+    // workspace.open-vault is callable from the palette only; without this
+    // fallback it would vanish from the hotkey settings entirely.
+    expect(commandRegions("workspace.open-vault")).toEqual([]);
+    expect(commandBelongs("workspace.open-vault", "global")).toBe(true);
+    expect(commandBelongs("workspace.open-vault", "notes")).toBe(false);
+  });
+
+  it("an explicit unbinding still shows its row in that region, so it can be bound again", () => {
+    applyOverrides({ notes: { "edit.toggle-italic": null } });
+    expect(commandInRegion("edit.toggle-italic", "notes")).toBe(true);
+    expect(commandBelongs("edit.toggle-italic", "notes")).toBe(true);
+    expect(bindingsForCommand("edit.toggle-italic", "notes")).toEqual([]);
+  });
+});
+
+/** Display strings: the palette chips and the tooltip use `formatBinding`, the settings capture uses `eventToKey`. */
+describe("binding display", () => {
+  function withPlatform(platform: string, body: () => void) {
+    vi.stubGlobal("navigator", { platform, userAgent: "" });
+    try {
+      body();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("on macOS modifiers become glyphs and a chord has no separator", () => {
+    withPlatform("MacIntel", () => {
+      expect(formatBinding("Mod-Shift-m")).toBe("⌘⇧M");
+      expect(formatBinding("Mod--")).toBe("⌘-");
+      expect(formatBinding("Mod-Alt-ArrowRight")).toBe("⌘⌥→");
+      expect(formatBinding("ArrowLeft")).toBe("←");
+      expect(formatBinding("Mod-Enter")).toBe("⌘Enter");
+    });
+  });
+
+  it("elsewhere the names stay spelled out and joined with +", () => {
+    withPlatform("Linux x86_64", () => {
+      expect(formatBinding("Mod-Shift-m")).toBe("Mod+Shift+M");
+      expect(formatBinding("Mod--")).toBe("Mod+-");
+      expect(formatBinding("Alt-z")).toBe("Alt+Z");
+    });
+  });
+
+  it("the capture path normalizes a real event into the same string the table uses", () => {
+    withPlatform("MacIntel", () => {
+      const event = (init: Record<string, unknown>) =>
+        eventToKey({
+          key: "",
+          code: "",
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: false,
+          ...init,
+        } as unknown as KeyboardEvent);
+
+      expect(event({ key: "k", code: "KeyK", metaKey: true, shiftKey: true })).toBe("Mod-Shift-k");
+      expect(event({ key: "F8", code: "F8" })).toBe("F8");
+      expect(event({ key: "F8", code: "F8", shiftKey: true })).toBe("Shift-F8");
+      // A bare letter is ordinary typing, and a lone modifier is not a binding.
+      expect(event({ key: "a", code: "KeyA" })).toBeNull();
+      expect(event({ key: "Meta", code: "MetaLeft", metaKey: true })).toBeNull();
+    });
+  });
+});
+
+/** The config file is the user's own text: values it cannot read are dropped instead of throwing. */
+describe("config normalization boundaries", () => {
+  it("a value that is not a string, an array or null is dropped", () => {
+    expect(normalizeOverrides({ notes: { "edit.toggle-bold": 42 } })).toEqual({});
+    expect(normalizeOverrides({ notes: { "edit.toggle-bold": { key: "Mod-b" } } })).toEqual({});
+  });
+
+  it("whitespace-only strings are dropped, an empty array becomes an explicit unbinding", () => {
+    expect(normalizeOverrides({ notes: { "edit.toggle-bold": "   " } })).toEqual({});
+    expect(normalizeOverrides({ notes: { "edit.toggle-bold": ["", "  "] } })).toEqual({
+      notes: { "edit.toggle-bold": null },
+    });
+  });
+
+  it("a non-object file is treated as empty instead of throwing", () => {
+    for (const raw of [null, undefined, "string", 7, []]) {
+      expect(normalizeOverrides(raw)).toEqual({});
+    }
+  });
+
+  it("comment fields are skipped at both levels, so the hint never becomes a binding", () => {
+    expect(normalizeOverrides({ _hint: "x", $schema: "y" })).toEqual({});
+    expect(normalizeOverrides({ notes: { _hint: "x", "edit.toggle-bold": "Mod-b" } })).toEqual({
+      notes: { "edit.toggle-bold": "Mod-b" },
+    });
+  });
+
+  it("a region value that is not an object is skipped, the readable regions still apply", () => {
+    expect(
+      normalizeOverrides({ notes: "Mod-b", reading: { "study.pdf-next-page": "Ctrl-j" } }),
+    ).toEqual({ reading: { "study.pdf-next-page": "Ctrl-j" } });
+  });
+
+  it("the written file round-trips through the reader unchanged", () => {
+    const overrides = {
+      notes: { "edit.toggle-bold": "Mod-Shift-b" as const, "edit.toggle-italic": null },
+      reading: { "study.pdf-next-page": ["Ctrl-J", "Ctrl-K"] as string[] },
+    };
+    expect(normalizeOverrides(JSON.parse(serializeOverrides(overrides)))).toEqual(overrides);
+  });
+});
+
+/** The regression pair: a binding is equal only when the same keys come in the same order. */
+describe("binding equality", () => {
+  it("the same keys in the same order are equal", () => {
+    expect(bindingEquals("Mod-b", ["Mod-b"])).toBe(true);
+    expect(bindingEquals(["Mod-a", "Mod-b"], ["Mod-a", "Mod-b"])).toBe(true);
+  });
+
+  it("a different key, a different order or a different count is not equal", () => {
+    expect(bindingEquals("Mod-b", "Mod-Shift-b")).toBe(false);
+    expect(bindingEquals(["Mod-a", "Mod-b"], ["Mod-b", "Mod-a"])).toBe(false);
+    expect(bindingEquals(["Mod-a"], ["Mod-a", "Mod-b"])).toBe(false);
+  });
+
+  it("an unset value and an explicitly unbound one compare equal: neither binds a key", () => {
+    expect(bindingEquals(undefined, null)).toBe(true);
+    expect(bindingEquals(undefined, "")).toBe(true);
+    expect(bindingEquals(undefined, [])).toBe(true);
+  });
+
+  it("flattening keeps the last region that wrote a command, and drops nothing else", () => {
+    expect(
+      flattenOverrides({
+        notes: { "edit.toggle-bold": "Mod-b", "nav.command-palette": "Mod-p" },
+        reading: { "edit.toggle-bold": "Ctrl-b" },
+      }),
+    ).toEqual({ "edit.toggle-bold": "Ctrl-b", "nav.command-palette": "Mod-p" });
   });
 });

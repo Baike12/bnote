@@ -417,6 +417,82 @@ mod tests {
         assert_eq!(url_path("http://example.test"), "/");
     }
 
+    fn temp_cassette(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("bnote-loader-{tag}-{}-{stamp}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp cassette");
+        dir
+    }
+
+    /// A missing folder is a configuration error the test author has to see;
+    /// it must not read as "a cassette with zero interactions", which would
+    /// surface as a confusing "cassette exhausted" 500 on the first request.
+    #[test]
+    fn a_missing_cassette_folder_is_an_error_not_an_empty_recording() {
+        let err = read_interactions(Path::new("/nonexistent-bnote-cassette"))
+            .expect_err("a missing folder must fail");
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_request_file_names_itself_in_the_error() {
+        let dir = temp_cassette("bad-request");
+        std::fs::write(dir.join("0001-request.json"), "{ not json").expect("write");
+        let err = read_interactions(&dir).expect_err("corrupt request");
+        assert!(err.starts_with("0001-request.json"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The response folder of an interaction is not optional: without frames the
+    /// replay has nothing to send, so the loader fails at load time instead of
+    /// answering an empty stream that every parser accepts.
+    #[test]
+    fn an_interaction_without_a_frames_folder_fails_the_load() {
+        let dir = temp_cassette("no-frames");
+        std::fs::write(
+            dir.join("0001-request.json"),
+            br#"{"url":"https://api.anthropic.com/v1/messages","protocol":"anthropic"}"#,
+        )
+        .expect("write request");
+        std::fs::create_dir_all(dir.join("0001-response")).expect("response dir");
+        let err = read_interactions(&dir).expect_err("missing frames");
+        assert!(err.starts_with("0001:"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only `*.sse` files are frames; the meta file and stray files are ignored,
+    /// and the numeric name order is the wire order.
+    #[test]
+    fn frames_are_the_sse_files_in_name_order() {
+        let dir = temp_cassette("order");
+        std::fs::write(
+            dir.join("0001-request.json"),
+            br#"{"url":"http://x/v1/messages","protocol":"anthropic"}"#,
+        )
+        .expect("write request");
+        let response = dir.join("0001-response");
+        let frames = response.join("frames");
+        std::fs::create_dir_all(&frames).expect("frames dir");
+        std::fs::write(response.join("meta.json"), br#"{"status":201}"#).expect("meta");
+        std::fs::write(frames.join("0002.sse"), b"data: b\n\n").expect("frame");
+        std::fs::write(frames.join("0001.sse"), b"data: a\n\n").expect("frame");
+        std::fs::write(frames.join("notes.txt"), b"ignore me").expect("stray");
+
+        let interactions = read_interactions(&dir).expect("load");
+        assert_eq!(interactions.len(), 1);
+        assert_eq!(interactions[0].status, 201);
+        assert_eq!(
+            interactions[0].frames,
+            vec![b"data: a\n\n".to_vec(), b"data: b\n\n".to_vec()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_recorded_gateway_prefix_still_matches_the_endpoint() {
         assert!(path_matches(

@@ -123,9 +123,48 @@ describe("token labels", () => {
   it("stay short and readable", () => {
     expect(tokenLabel(null)).toBe("");
     expect(tokenLabel(0)).toBe("");
+    expect(tokenLabel(-5)).toBe("");
     expect(tokenLabel(860)).toBe("860 tokens");
     expect(tokenLabel(2100)).toBe("2.1k tokens");
+    expect(tokenLabel(9_999)).toBe("10.0k tokens");
+    expect(tokenLabel(10_000)).toBe("10k tokens");
     expect(tokenLabel(42_000)).toBe("42k tokens");
+  });
+});
+
+describe("status labels", () => {
+  it("name every state the row can be in", () => {
+    expect(statusLabel("running")).toBe("运行中");
+    expect(statusLabel("done")).toBe("完成");
+    expect(statusLabel("failed")).toBe("失败");
+    expect(statusLabel("stopped")).toBe("已停止");
+  });
+});
+
+describe("the label never leaks an internal id", () => {
+  it("a resume wakes only the run it names and leaves its neighbours untouched", () => {
+    // Two rows: the resume targets the second one, so the first must come back
+    // as the very same object (the list is rebuilt, not mutated).
+    let runs = applyStart([], start("a1", "第一"), "c1", 1000);
+    const first = runs[0];
+    runs = applyStart(runs, start("a2", "第二"), "c1", 2000);
+    runs = applyEnd(runs, { agentId: "a2", ok: true, stopped: false, report: "", tokens: 0 }, 3000);
+    runs = applyStart(runs, start("a2", "general-purpose"), "c1", 4000);
+    expect(runs[0]).toBe(first);
+    expect(runs[0]?.status).toBe("running");
+    expect(runs[1]).toMatchObject({ status: "running", label: "第二" });
+  });
+  it("falls back from the description to the kind to a generic word", () => {
+    const withDescription = newSubagentRun(start("a1", "调研 API"), "c1", 1);
+    expect(withDescription.label).toBe("调研 API");
+    const kindOnly = newSubagentRun({ ...start("a1", "   "), kind: "explore" }, "c1", 1);
+    expect(kindOnly.label).toBe("explore");
+    const neither = newSubagentRun({ ...start("a1", ""), kind: "" }, "c1", 1);
+    expect(neither.label).toBe("子代理");
+  });
+
+  it("trims the description the model wrote", () => {
+    expect(newSubagentRun(start("a1", "  调研 API  "), "c1", 1).label).toBe("调研 API");
   });
 });
 

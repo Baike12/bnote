@@ -22,6 +22,12 @@ e2e = ["dep:tauri-plugin-wdio-webdriver", "dep:tauri-plugin-wdio"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+# `tauri::test` (mock runtime) is a dev-only surface: it lets command-level
+# unit tests build an `AppState` and call the real command bodies without a
+# window or an event loop.
+tauri = { version = "2", features = ["test"] }
+
 [dependencies]
 # unstable: 提供多 webview(Window::add_child)API,学习模式的中栏网页预览
 # 就是主窗口的一个子 webview(src/commands/agent.rs::show_study_preview)。

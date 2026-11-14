@@ -91,6 +91,48 @@ async fn run_capture(
 mod tests {
     use super::*;
 
+    /// The caller judges success by the log's tail (`OK` / `FAIL`), so the tail
+    /// is the contract this function must keep for every exit shape.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_log_ends_with_ok_or_fail_and_carries_its_exit_code() {
+        let dir = std::env::temp_dir().join(format!("bnote-uv-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+
+        let ok = run_capture(
+            "/bin/sh",
+            &["-c", "echo built"],
+            &dir,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("sh runs");
+        assert!(ok.starts_with("$ uv -c echo built"), "{ok}");
+        assert!(ok.contains("built"));
+        assert!(ok.ends_with("OK\n"), "{ok}");
+
+        let failed = run_capture("/bin/sh", &["-c", "exit 3"], &dir, Duration::from_secs(10))
+            .await
+            .expect("a non-zero exit is a log, not an error");
+        assert!(failed.ends_with("FAIL(退出码 3)\n"), "{failed}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_missing_program_is_a_spawn_error() {
+        let err = run_capture(
+            "/nonexistent-bnote-program",
+            &[],
+            Path::new("/tmp"),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("spawn must fail");
+        assert!(err.starts_with("SPAWN_FAILED:"), "{err}");
+    }
+
     #[tokio::test]
     async fn missing_uv_is_a_clear_error() {
         // On a real machine uv is on the PATH; to stay independent of it, the

@@ -477,3 +477,79 @@ pub async fn agent_history(
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_support::block_on;
+
+    #[test]
+    fn only_the_three_known_mode_ids_parse() {
+        assert_eq!(mode_from("coding").expect("coding").id(), "coding");
+        // Surrounding whitespace is tolerated: the value crosses IPC.
+        assert_eq!(mode_from("  study\n").expect("study").id(), "study");
+        for bad in ["", "review", "CODING", "coding2"] {
+            let err = mode_from(bad).expect_err("unknown mode must be rejected");
+            assert!(err.starts_with("INVALID_MODE"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_session_title_must_not_be_blank() {
+        let err = block_on(agent_home_set_session_title(
+            "/tmp".into(),
+            "s1".into(),
+            "   ".into(),
+        ))
+        .expect_err("blank title");
+        assert_eq!(err, "BAD_ARGS: title");
+    }
+
+    /// The id becomes a file name under the project directory: a separator or
+    /// a parent component would let the caller write outside it.
+    #[test]
+    fn a_session_id_cannot_carry_a_path() {
+        for id in ["../x", "a/b", "a\\b", ""] {
+            let err = block_on(agent_home_set_session_title(
+                "/tmp".into(),
+                id.into(),
+                "title".into(),
+            ))
+            .expect_err("invalid id must be rejected");
+            assert!(err.starts_with("INVALID_ID"), "{id}: {err}");
+        }
+    }
+
+    #[test]
+    fn home_file_paths_must_be_absolute_and_inside_the_home() {
+        // `confined` is the only gate between the panel and the agent home, and
+        // both halves are checked before any read or write happens.
+        let err = confined("relative/note.md").expect_err("relative path");
+        assert!(err.starts_with("INVALID_PATH"), "{err}");
+        // An absolute path outside the home is refused no matter what the home
+        // currently resolves to (the check runs against the live home root).
+        let err = confined("/etc/hosts").expect_err("outside the home");
+        assert!(err.starts_with("FORBIDDEN"), "{err}");
+    }
+
+    #[test]
+    fn a_workdir_that_is_not_a_directory_is_rejected_before_touching_the_home() {
+        // These commands never reach the home directory with a bad workdir, so
+        // a relative or missing path cannot read the machine-level fallback.
+        let missing = "/nonexistent-bnote-workdir";
+        match block_on(agent_home_workspace(missing.into())) {
+            Ok(_) => panic!("a missing workdir must be rejected"),
+            Err(err) => assert!(err.starts_with("INVALID_WORKDIR"), "{err}"),
+        }
+        assert!(block_on(agent_home_sessions_list("/etc/hosts".into()))
+            .expect_err("a file is not a workdir")
+            .starts_with("INVALID_WORKDIR"));
+        assert!(block_on(agent_home_set_session_title(
+            missing.into(),
+            "s1".into(),
+            "title".into(),
+        ))
+        .expect_err("missing workdir")
+        .starts_with("INVALID_WORKDIR"));
+    }
+}

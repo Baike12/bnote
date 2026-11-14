@@ -4,7 +4,7 @@ import type { Transaction, TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { insertNewlineAndIndent, history, redo, undo } from "@codemirror/commands";
+import { insertNewlineAndIndent, history, isolateHistory, redo, undo } from "@codemirror/commands";
 import { GFM } from "@lezer/markdown";
 import {
   blockDecorationsField,
@@ -31,6 +31,10 @@ import { buildDailyMarks } from "@/daily/marks";
 import { diffBlocks } from "@/footprint/model";
 import { buildFootprintMarks } from "@/footprint/extension";
 import { renderBlockHtml } from "@/footprint/render";
+import { buildBracketColors } from "./snippets/brackets";
+import { typewriterReserve, typewriterScrollDelta } from "./typewriterPosition";
+import { insertRegionWantsEnglishAt } from "./imeSwitch";
+import { DEFAULT_SETTINGS } from "@/state/appStore";
 
 /**
  * Perf gate (bnote's lifeline): the per-keystroke cost of the editing pipeline
@@ -1759,5 +1763,292 @@ describe("perf gate: note-area bulk edits, multi-cursor and scrolling (900 lines
     }, 9);
     console.warn(`[perf] append at EOF median ${median.toFixed(2)}ms`);
     expect(median).toBeLessThan(6);
+  });
+});
+
+// ---- note-area key events: insert / delete / replace-selection / paste /
+// IME-adjacent composition ----
+// The per-key gates above cover single-character typing on DOC. What a real
+// editing session also produces, and what a regression can quietly turn into a
+// full-document scan, is the rest of the key surface: deletion (Backspace), a
+// replacement (typing over a selection), a multi-line paste, and an IME
+// composition commit (`input.type.compose`, the transaction an input method
+// produces when it pushes a whole string). Every case measures the state
+// pipeline + the full-decoration rebuild on a 2,400-line document
+// (math blocks + callouts + lists), i.e. the deciding part of the real
+// per-key CPU cost; the DOM/paint leg is browser-only and is not simulated.
+
+describe("perf gate: note-area key events on a 2,400-line document", () => {
+  const KEY_DOC = bigDoc(160); // ~2,400 lines, the "realistically sized note"
+  const PROBE = makeFieldsState(KEY_DOC, 0);
+  /** A paragraph line slightly past the middle of the document (never a marker or a math line). */
+  const BODY_LINE = (() => {
+    for (let n = 300; n <= PROBE.doc.lines; n++) {
+      if (PROBE.doc.line(n).text.startsWith("这是段落文字")) return n;
+    }
+    throw new Error("paragraph line not found");
+  })();
+
+  it("insert (single character, chained like a typing stream) median < 40 ms", () => {
+    const at = PROBE.doc.line(BODY_LINE).from + 4;
+    let cur = makeFieldsState(KEY_DOC, at);
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      cur = cur.update({
+        changes: { from: cur.selection.main.head, insert: "字" },
+        selection: EditorSelection.cursor(cur.selection.main.head + 1),
+      }).state;
+      buildInlineDecorations({ state: cur, visibleRanges: [{ from: 0, to: cur.doc.length }] });
+      return performance.now() - t0;
+    }, 25);
+    console.warn(`[perf] key insert median ${median.toFixed(3)}ms`);
+    // Silent median ~4.4ms (2,400 lines, full viewport rebuild), max 5.7ms over
+    // repeated runs; 40ms is the ~9x band.
+    expect(median).toBeLessThan(40);
+  });
+
+  it("Backspace deletion (one character at a time) median < 40 ms", () => {
+    const base = makeFieldsState(KEY_DOC, PROBE.doc.line(BODY_LINE).from + 4);
+    let cur = base;
+    const median = medianOf(() => {
+      const head = cur.selection.main.head;
+      const t0 = performance.now();
+      cur = cur.update({
+        changes: { from: head - 1, to: head },
+        selection: EditorSelection.cursor(head - 1),
+      }).state;
+      buildInlineDecorations({ state: cur, visibleRanges: [{ from: 0, to: cur.doc.length }] });
+      return performance.now() - t0;
+    }, 25);
+    console.warn(`[perf] key backspace median ${median.toFixed(3)}ms`);
+    // Silent median ~4.1ms, max 5.8ms over repeated runs; 40ms is the ~9x band.
+    expect(median).toBeLessThan(40);
+  });
+
+  it("replace-selection (typing over a selected word) median < 35 ms", () => {
+    const base = makeFieldsState(KEY_DOC, 0);
+    const line = base.doc.line(BODY_LINE);
+    const from = line.from + 2;
+    const to = Math.min(line.to, from + 12);
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = base.update({
+        changes: { from, to, insert: "替换" },
+        selection: EditorSelection.cursor(from + 2),
+      }).state;
+      buildInlineDecorations({
+        state: next,
+        visibleRanges: [{ from: 0, to: next.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 21);
+    console.warn(`[perf] key replace-selection median ${median.toFixed(3)}ms`);
+    // Silent median ~4.1ms, max 4.8ms over repeated runs; 35ms is the ~8x band.
+    expect(median).toBeLessThan(35);
+  });
+
+  it("paste-like multi-line transaction (200 lines) median < 90 ms", () => {
+    const base = makeFieldsState(KEY_DOC, 0);
+    const at = base.doc.line(BODY_LINE).from + 2;
+    // The shape a real paste has: many lines with structure, not one long run.
+    const pasted = Array.from(
+      { length: 200 },
+      (_, i) => `粘贴段落 ${i}:包含列表与公式 $a_{${i}} = b$ 的一行文本。`,
+    ).join("\n");
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      const next = base.update({
+        changes: { from: at, insert: pasted },
+        selection: EditorSelection.cursor(at + pasted.length),
+      }).state;
+      buildInlineDecorations({
+        state: next,
+        visibleRanges: [{ from: 0, to: next.doc.length }],
+      });
+      return performance.now() - t0;
+    }, 13);
+    console.warn(`[perf] key multi-line paste median ${median.toFixed(3)}ms`);
+    // Silent median 7-13ms over repeated runs (a 200-line insert with inline
+    // formulas advances the markdown parse); 90ms is the ~8x band.
+    expect(median).toBeLessThan(90);
+  });
+
+  it("undo on the 2,400-line document (20 undos, each with the decoration rebuild) median < 30 ms", () => {
+    // History rewind is the other high-frequency key: every undo is a document
+    // change, so it pays the same decoration rebuild as a keystroke. The chain
+    // of 20 inserts is created outside the measured window; each undo is one
+    // real history step (`undo()` returns false when the history is empty).
+    let undoState = EditorState.create({
+      doc: KEY_DOC,
+      extensions: [
+        markdown({ base: markdownLanguage, extensions: [GFM] }),
+        blockDecorationsField,
+        mathRegionsField,
+        calloutRegionsField,
+        history(),
+      ],
+    });
+    undoState = forceFullParse(undoState);
+    const at = undoState.doc.line(BODY_LINE).from + 4;
+    for (let i = 0; i < 20; i++) {
+      // `isolateHistory` keeps each insert its own history event: adjacent
+      // `input.type` changes would otherwise merge into one event and a single
+      // undo would rewind all 20, measuring 19 no-ops.
+      undoState = undoState.update({
+        changes: { from: at + i, insert: "字" },
+        userEvent: "input.type",
+        annotations: isolateHistory.of("full"),
+      }).state;
+    }
+    const view = makeTogglingView(undoState);
+    const samples: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t0 = performance.now();
+      if (!undo(view)) throw new Error("the undo history was empty too early");
+      buildInlineDecorations({
+        state: view.state,
+        visibleRanges: [{ from: 0, to: view.state.doc.length }],
+      });
+      samples.push(performance.now() - t0);
+    }
+    // Functional anchor: all 20 inserts really rewound.
+    expect(view.state.doc.length).toBe(undoState.doc.length - 20);
+    samples.sort((a, b) => a - b);
+    const median = samples[Math.floor(samples.length / 2)];
+    console.warn(`[perf] key undo median ${median.toFixed(3)}ms`);
+    // Silent median ~3.7ms, max 4.6ms over repeated runs; 30ms is the ~8x band.
+    expect(median).toBeLessThan(30);
+  });
+
+  it("IME composition commit (input.type.compose + the input-source decision) median < 40 ms", () => {
+    // An IME commit is one transaction carrying a whole string; the IME update
+    // listener additionally asks "does the next character want English" on
+    // every update (insertRegionWantsEnglishAt), which walks the math regions.
+    // Both are measured together: that is the real per-commit main-thread work.
+    const at = PROBE.doc.line(BODY_LINE).from + 4;
+    let cur = makeFieldsState(KEY_DOC, at);
+    const median = medianOf(() => {
+      const head = cur.selection.main.head;
+      const t0 = performance.now();
+      cur = cur.update({
+        changes: { from: head, insert: "中文" },
+        selection: EditorSelection.cursor(head + 2),
+        userEvent: "input.type.compose",
+      }).state;
+      insertRegionWantsEnglishAt(DEFAULT_SETTINGS, cur, cur.selection.main.head);
+      buildInlineDecorations({ state: cur, visibleRanges: [{ from: 0, to: cur.doc.length }] });
+      return performance.now() - t0;
+    }, 25);
+    console.warn(`[perf] key IME commit median ${median.toFixed(3)}ms`);
+    // Silent median ~4.0ms, max 6.4ms over repeated runs; 40ms is the ~9x band.
+    expect(median).toBeLessThan(40);
+  });
+});
+
+// ---- content-area scroll: the pure per-scroll-step logic ----
+// A scroll step changes only the viewport; CodeMirror then re-runs every
+// viewport-driven decoration consumer. In node those consumers are measurable
+// as pure logic (the document, the tree and the visible range are all inputs);
+// the DOM scroll itself and the paint are NOT measurable in node and are
+// verified in the browser instead (AGENTS.md / docs/PERFORMANCE.md §4).
+//
+// The per-step set: live-preview inline decorations, emphasis marks and
+// bracket colors (all three rebuild on `viewportChanged`), plus the typewriter
+// scroll-position model that runs in the same frame (requestMeasure read +
+// scroll delta).
+
+describe("perf gate: content-area scroll per step (40-line viewport)", () => {
+  const SCROLL_DOC = bigDoc(60); // ~900 lines, ~120 math regions
+  const state = makeState(SCROLL_DOC, 0);
+  const VIEWPORT_LINES = 40;
+  const tops: number[] = [];
+  for (let top = 1; top + VIEWPORT_LINES <= state.doc.lines && tops.length < 60; top += 13) {
+    tops.push(top);
+  }
+  const rangesAt = (top: number) => [
+    { from: state.doc.line(top).from, to: state.doc.line(top + VIEWPORT_LINES).to },
+  ];
+
+  it("one scroll step (inline + emphasis + bracket rebuild + typewriter model) median < 0.5 ms", () => {
+    expect(tops.length).toBe(60);
+    // Warm the widget/KaTeX caches exactly as the first scroll pass would.
+    for (const top of tops) {
+      const ranges = rangesAt(top);
+      buildInlineDecorations({ state, visibleRanges: ranges });
+      buildEmphasisMarks(state, ranges);
+      buildBracketColors({ state, visibleRanges: ranges });
+    }
+    // BATCH=10 steps per sample: one sample is ~1ms, well above timer noise.
+    const BATCH = 10;
+    const median = medianOf(() => {
+      const t0 = performance.now();
+      for (let b = 0; b < BATCH; b++) {
+        const top = tops[b % tops.length];
+        const ranges = rangesAt(top);
+        const set = buildInlineDecorations({ state, visibleRanges: ranges });
+        if (set.size === 0) throw new Error("the viewport built no decoration");
+        buildEmphasisMarks(state, ranges);
+        buildBracketColors({ state, visibleRanges: ranges });
+        // The typewriter leg of the same frame: reserve padding + the scroll
+        // delta the measure phase computes from the caret's viewport center.
+        typewriterReserve(720, 24, 0.5);
+        typewriterScrollDelta(360 + (top % 7) * 3, 720, 0.5);
+      }
+      return (performance.now() - t0) / BATCH;
+    }, 9);
+    console.warn(`[perf] scroll step median ${median.toFixed(3)}ms`);
+    // Silent median ~0.068ms; 0.5ms is the ~7x band (a scroll step is three
+    // viewport-sized decoration builds plus two scalar computations).
+    expect(median).toBeLessThan(0.5);
+  });
+
+  it("scrolling never rescans the document: 60 viewport rebuilds produce zero math/callout scans", () => {
+    // A scroll step changes only the viewport. Every document-wide model is a
+    // state field (or keyed on the unchanged Text), so the scan count across a
+    // scroll pass is exactly zero — the O(document)-in-the-scroll-path class of
+    // regression is caught by this count, not by a timing.
+    mathRegions(state); // warm the document-keyed memo outside the counted window
+    clearPerf();
+    for (const top of tops) {
+      const ranges = rangesAt(top);
+      buildInlineDecorations({ state, visibleRanges: ranges });
+      buildEmphasisMarks(state, ranges);
+      buildBracketColors({ state, visibleRanges: ranges });
+    }
+    const scans = perfStats().filter((s) => s.name === "math.scan" || s.name === "callout.scan");
+    expect(scans).toEqual([]);
+    // The document-keyed memo returns the same instance across the whole pass.
+    expect(mathRegions(state)).toBe(mathRegions(state));
+  });
+
+  it("a scroll step at the document tail costs the same as at the head (no scan of what is above)", () => {
+    // The two extremes of the document, each rebuilt 20 times per sample. If any
+    // viewport consumer ever scanned the document, the tail step (900 lines of
+    // context above it) would diverge from the head step by the document size.
+    const topRange = [{ from: state.doc.line(1).from, to: state.doc.line(41).to }];
+    const bottomRange = [
+      { from: state.doc.line(state.doc.lines - 40).from, to: state.doc.line(state.doc.lines).to },
+    ];
+    const BATCH = 20;
+    const sample = (ranges: { from: number; to: number }[]) => {
+      const t0 = performance.now();
+      for (let b = 0; b < BATCH; b++) {
+        buildInlineDecorations({ state, visibleRanges: ranges });
+        buildEmphasisMarks(state, ranges);
+        buildBracketColors({ state, visibleRanges: ranges });
+      }
+      return (performance.now() - t0) / BATCH;
+    };
+    sample(topRange); // warm
+    sample(bottomRange);
+    const top = medianOf(() => sample(topRange), 9);
+    const bottom = medianOf(() => sample(bottomRange), 9);
+    console.warn(
+      `[perf] scroll step head ${top.toFixed(3)}ms / tail ${bottom.toFixed(3)}ms (ratio ${(
+        bottom / Math.max(top, 1e-6)
+      ).toFixed(1)})`,
+    );
+    // Same order of magnitude (10x band + a 0.05ms floor for timer noise).
+    expect(bottom).toBeLessThan(Math.max(top * 10, 0.05));
   });
 });

@@ -476,3 +476,95 @@ mod tests {
         std::fs::remove_dir_all(&empty_home).unwrap();
     }
 }
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bnote-settings-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    #[test]
+    fn a_corrupt_settings_file_is_reported_and_leaves_the_others_in_force() {
+        let root = temp_dir("corrupt");
+        std::fs::write(
+            root.join("settings.json"),
+            r#"{"permissions": {"deny": ["Bash"]}}"#,
+        )
+        .expect("mode settings");
+        let project = temp_dir("corrupt-project");
+        std::fs::create_dir_all(project.join(".bnote")).expect("project .bnote");
+        std::fs::write(project.join(".bnote/settings.json"), "{ not json").expect("broken");
+        std::fs::write(
+            project.join(".bnote/settings.local.json"),
+            r#"{"permissions": {"allow": ["Read"]}}"#,
+        )
+        .expect("local settings");
+
+        let loaded = load(AgentMode::Coding, &root, Some(&project));
+        // Merge order: mode root, project, project-local.
+        assert_eq!(loaded.files.len(), 3);
+        assert!(loaded.files[0].exists && loaded.files[0].error.is_none());
+        assert!(loaded.files[1].exists);
+        assert!(
+            loaded.files[1].error.is_some(),
+            "a broken file must say so instead of silently contributing nothing"
+        );
+        assert!(loaded.files[2].error.is_none());
+        // Both good files still apply: one broken layer costs only that layer.
+        assert!(loaded.settings.permissions.deny.iter().any(|d| d == "Bash"));
+        assert!(loaded
+            .settings
+            .permissions
+            .allow
+            .iter()
+            .any(|d| d == "Read"));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn a_non_coding_mode_never_reads_the_project_settings() {
+        let root = temp_dir("study-mode");
+        let project = temp_dir("study-project");
+        std::fs::create_dir_all(project.join(".bnote")).expect("project .bnote");
+        std::fs::write(
+            project.join(".bnote/settings.json"),
+            r#"{"permissions": {"deny": ["Bash"]}}"#,
+        )
+        .expect("project");
+
+        let loaded = load(AgentMode::Study, &root, Some(&project));
+        // Only the mode root's file is in the merge list; the project file is
+        // not even consulted for a non-coding mode.
+        assert_eq!(loaded.files.len(), 1);
+        assert!(loaded.settings.skill_dirs.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn a_missing_settings_directory_is_an_empty_configuration_not_an_error() {
+        let loaded = load(
+            AgentMode::Creative,
+            Path::new("/nonexistent-mode-root"),
+            None,
+        );
+        assert!(loaded.files.iter().all(|f| !f.exists));
+        assert!(loaded.files.iter().all(|f| f.error.is_none()));
+    }
+}

@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   PROJECTS_DIR,
   isProjectPath,
+  projectCounts,
   projectNameOf,
   projectPathFor,
   projectTodos,
+  projectsDirAbs,
   sanitizeProjectName,
 } from "./model";
 
@@ -44,5 +46,28 @@ describe("project model", () => {
       [3, 2, true, "乙"],
       [5, 0, false, ""],
     ]);
+  });
+
+  it("projectsDirAbs strips a trailing slash so the path never doubles it", () => {
+    expect(projectsDirAbs("/v")).toBe(`/v/${PROJECTS_DIR}`);
+    expect(projectsDirAbs("/v/")).toBe(`/v/${PROJECTS_DIR}`);
+    expect(projectsDirAbs("/v///")).toBe(`/v/${PROJECTS_DIR}`);
+  });
+
+  it("a leading dot-only name becomes empty rather than a hidden file", () => {
+    expect(sanitizeProjectName("...")).toBe("");
+    expect(sanitizeProjectName(" .  ")).toBe("");
+    // A dot inside the name is legal.
+    expect(sanitizeProjectName("v1.2 计划")).toBe("v1.2 计划");
+  });
+
+  it("counts total and done todos", () => {
+    const todos = projectTodos(["- [ ] a", "- [x] b", "- [x] c", "prose"].join("\n"));
+    expect(projectCounts(todos)).toEqual({ total: 3, done: 2 });
+    expect(projectCounts([])).toEqual({ total: 0, done: 0 });
+  });
+
+  it("an empty document has no todos", () => {
+    expect(projectTodos("")).toEqual([]);
   });
 });

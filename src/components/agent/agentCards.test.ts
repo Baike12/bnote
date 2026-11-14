@@ -72,6 +72,11 @@ describe("collectAgentCards", () => {
 });
 
 describe("the card registry", () => {
+  it("answers null for a call it has no card for", () => {
+    const cards = createAgentCards();
+    expect(cards.get("unknown")).toBeNull();
+  });
+
   it("hands out the same reference until that card changes", () => {
     const cards = createAgentCards();
     const runA = run("a1", "call-1");

@@ -33,6 +33,7 @@ describe("parseListLine / todoText", () => {
       marker: "-",
       gap: " ",
       box: " ",
+      boxLen: 4,
       text: "任务",
     });
     expect(parseListLine("  * [x] 完成 ✅ 2026-09-23")).toEqual({
@@ -40,6 +41,7 @@ describe("parseListLine / todoText", () => {
       marker: "*",
       gap: " ",
       box: "x",
+      boxLen: 4,
       text: "完成 ✅ 2026-09-23",
     });
     expect(parseListLine("\t1. [X] 大写")).toEqual({
@@ -47,6 +49,7 @@ describe("parseListLine / todoText", () => {
       marker: "1.",
       gap: " ",
       box: "X",
+      boxLen: 4,
       text: "大写",
     });
     expect(parseListLine("- 普通列表项")).toEqual({
@@ -54,6 +57,7 @@ describe("parseListLine / todoText", () => {
       marker: "-",
       gap: " ",
       box: null,
+      boxLen: 0,
       text: "普通列表项",
     });
     expect(parseListLine("2) 有序圆括号")).toEqual({
@@ -61,6 +65,7 @@ describe("parseListLine / todoText", () => {
       marker: "2)",
       gap: " ",
       box: null,
+      boxLen: 0,
       text: "有序圆括号",
     });
     expect(parseListLine("正文行")).toBe(null);
@@ -372,5 +377,110 @@ describe("todo rollover: composeDailyScaffold", () => {
     expect(composeDailyScaffold("2026-10-03", [["- [ ] 甲", "  - [ ] 乙"], ["- [ ] 丙"]])).toBe(
       "# 2026-10-03\n\n- [ ] 甲\n  - [ ] 乙\n- [ ] 丙\n",
     );
+  });
+});
+
+describe("removeEntrySpec: the end-of-file arms", () => {
+  it("deleting the entry that ends the file removes the separating blank line after the header", () => {
+    const text = "# d\n\n- [ ] 甲\n";
+    const d = doc(text);
+    expect(textAfterChanges(text, [removeEntrySpec(d, parseDailyRegion(d).entries[0])])).toBe(
+      "# d\n",
+    );
+  });
+
+  it("a document without a trailing newline: the deletion reaches doc.length without leaving a stub", () => {
+    const text = "# d\n\n- [ ] 甲";
+    const d = doc(text);
+    expect(textAfterChanges(text, [removeEntrySpec(d, parseDailyRegion(d).entries[0])])).toBe(
+      "# d\n",
+    );
+  });
+
+  it("the last entry of a headerless multi-entry file: the preceding entry stays and no blank line is left", () => {
+    const text = "- [ ] 甲\n- [ ] 乙\n";
+    const d = doc(text);
+    const region = parseDailyRegion(d);
+    expect(textAfterChanges(text, [removeEntrySpec(d, region.entries[1])])).toBe("- [ ] 甲\n");
+  });
+});
+
+describe("resolveRootLine: the no-hint arm and out-of-range hints", () => {
+  it("a null hint falls through to the whole-document scan", () => {
+    const d = doc("前言\n- [ ] 甲\n");
+    expect(resolveRootLine(d, ["甲"], null)).toBe(2);
+  });
+
+  it("a hint beyond the document still finds the todo by the full scan", () => {
+    const d = doc("前言\n- [ ] 甲\n");
+    expect(resolveRootLine(d, ["甲"], 999)).toBe(2);
+    expect(resolveRootLine(d, ["甲"], 0)).toBe(2);
+    expect(resolveRootLine(d, [], 1)).toBe(null);
+  });
+});
+
+describe("appendEntrySpec / prependEntrySpec: empty and headerless shapes", () => {
+  it("an empty block array produces a zero-line range", () => {
+    const d = doc("# d\n");
+    const appended = appendEntrySpec(d, parseDailyRegion(d), []);
+    expect(appended.entry).toEqual({ start: 3, end: 3 });
+    const prepended = prependEntrySpec(d, parseDailyRegion(d), []);
+    expect(prepended.entry).toEqual({ start: 3, end: 3 });
+  });
+
+  it("a headerless document with entries prepends in front of the first one", () => {
+    const d = doc("- [ ] 甲\n");
+    const spec = prependEntrySpec(d, parseDailyRegion(d), ["- [ ] 新"]);
+    expect(textAfterChanges("- [ ] 甲\n", [spec.change])).toBe("- [ ] 新\n- [ ] 甲\n");
+    expect(spec.entry).toEqual({ start: 1, end: 1 });
+  });
+
+  it("a paragraph before the todo region ends it, so append lands at the region end", () => {
+    const text = "# d\n\n- [ ] 甲\n\n正文\n";
+    const d = doc(text);
+    const region = parseDailyRegion(d);
+    expect(region.entries).toEqual([{ start: 3, end: 3 }]);
+    expect(textAfterChanges(text, [appendEntrySpec(d, region, ["- [ ] 乙"]).change])).toBe(
+      "# d\n\n- [ ] 甲\n- [ ] 乙\n\n正文\n",
+    );
+  });
+});
+
+describe("composeDailyScaffold: a custom base", () => {
+  it("the blocks are appended to the given body instead of the bare scaffold", () => {
+    expect(composeDailyScaffold("2026-10-03", [["- [ ] 甲"]], "# 标题\n\n## 计划\n")).toBe(
+      "# 标题\n\n- [ ] 甲\n\n## 计划\n",
+    );
+  });
+});
+
+describe("blockRootLine: the depth-0 fast path and a chain of plain bullets", () => {
+  it("a depth-0 line is its own root without scanning upwards", () => {
+    const d = doc("- [ ] 甲\n  - [ ] 乙\n");
+    expect(blockRootLine(d, 1)).toBe(1);
+  });
+
+  it("a non-list line is its own root", () => {
+    const d = doc("正文\n  - [ ] 甲\n");
+    expect(blockRootLine(d, 1)).toBe(1);
+  });
+
+  it("a same-depth sibling above does not become the root", () => {
+    const d = doc("  - [ ] 甲\n  - [ ] 乙\n");
+    expect(blockRootLine(d, 2)).toBe(2);
+  });
+});
+
+describe("parseListLine: boxLen is the exact checkbox width, separator space included", () => {
+  it("a checkbox with a separator space consumes 5 chars", () => {
+    expect(parseListLine("- [x] 任务甲")).toMatchObject({ box: "x", boxLen: 4, text: "任务甲" });
+  });
+
+  it("a checkbox without a separator space consumes 3 chars", () => {
+    expect(parseListLine("- [x]任务甲")).toMatchObject({ box: "x", boxLen: 3, text: "任务甲" });
+  });
+
+  it("a plain list item has no box and boxLen 0", () => {
+    expect(parseListLine("- 任务甲")).toMatchObject({ box: null, boxLen: 0, text: "任务甲" });
   });
 });

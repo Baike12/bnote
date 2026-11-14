@@ -1,6 +1,48 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { dailyScaffold } from "./model";
 import { openDailyNote, type OpenDailyDeps } from "./open";
+
+const appState = vi.hoisted(() => ({
+  currentFile: null as string | null,
+  dailyBackFrom: null as string | null,
+  toast: vi.fn(),
+  openNote: vi.fn(async (_path: string, _line?: number) => {}),
+  refreshTree: vi.fn(async () => {}),
+}));
+
+vi.mock("@/state/appStore", () => ({
+  useAppStore: {
+    getState: () => ({
+      currentFile: appState.currentFile,
+      dailyBackFrom: appState.dailyBackFrom,
+      setDailyBackFrom: (p: string | null) => {
+        appState.dailyBackFrom = p;
+      },
+      showToast: appState.toast,
+    }),
+  },
+}));
+
+vi.mock("@/app/actions", () => ({
+  openNote: appState.openNote,
+  refreshTree: appState.refreshTree,
+}));
+
+vi.mock("./runtime", () => ({
+  runtimeDeps: () => ({
+    io: {
+      readFile: async () => null,
+      writeFile: async () => {},
+      readDir: async () => [],
+    },
+    vaultRoot: () => "/v",
+    today: () => "2026-09-27",
+    toast: (msg: string) => appState.toast(msg),
+    templatePath: () => null,
+  }),
+}));
+
+import { openTodayDailyNote } from "./open";
 
 /**
  * The contract of "open today's daily note":
@@ -250,5 +292,25 @@ describe("pressing ⌘⇧O again inside the daily note: jump back to the file fr
     h.setCurrent(DAILY);
     await openDailyNote(h.deps);
     expect(h.back()).toBeNull();
+  });
+});
+
+describe("openTodayDailyNote: the app wiring", () => {
+  it("opens today's daily note through the real store slot and the app opener", async () => {
+    appState.currentFile = "/v/Job/ideas.md";
+    appState.dailyBackFrom = null;
+    appState.openNote.mockClear();
+    appState.refreshTree.mockClear();
+    await openTodayDailyNote();
+    expect(appState.openNote).toHaveBeenCalledWith(DAILY);
+    expect(appState.dailyBackFrom).toBe("/v/Job/ideas.md");
+    expect(appState.toast).not.toHaveBeenCalled();
+  });
+
+  it("a failure inside the app wiring reaches the user as a toast instead of rejecting", async () => {
+    appState.openNote.mockRejectedValueOnce(new Error("cannot open"));
+    appState.toast.mockClear();
+    await expect(openTodayDailyNote()).resolves.toBeUndefined();
+    expect(appState.toast).toHaveBeenCalledWith("打开日记失败: Error: cannot open");
   });
 });

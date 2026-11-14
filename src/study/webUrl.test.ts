@@ -27,6 +27,17 @@ describe("normalizeStudyUrl", () => {
   it("an empty input stays empty", () => {
     expect(normalizeStudyUrl("   ")).toBe("");
   });
+
+  it("a file URL with a non-local host is not a local page (the path would address another machine)", () => {
+    // `file://server/share/a.html` parses, but its path is not a path on this machine.
+    expect(normalizeStudyUrl("file://server/share/a.html")).toBe("file://server/share/a.html");
+    // Only the canonical form is rewritten; the caller still sees the text it typed.
+    expect(normalizeStudyUrl("file:///Users/me/a.html")).toBe("file:///Users/me/a.html");
+  });
+
+  it("a file URL that cannot be parsed is passed through for the backend to reject", () => {
+    expect(normalizeStudyUrl("file://[")).toBe("file://[");
+  });
 });
 
 describe("fileUrlFromPath", () => {
@@ -45,5 +56,11 @@ describe("studyUrlName", () => {
       "01-electron-model.html",
     );
     expect(studyUrlName("file:///Users/me/a%20b.html")).toBe("a b.html");
+  });
+
+  it("a hostless or unparseable URL falls back to the URL text instead of an empty name", () => {
+    // A local file with no path segment has no name to take.
+    expect(studyUrlName("file:///")).toBe("file:///");
+    expect(studyUrlName("not a url")).toBe("not a url");
   });
 });

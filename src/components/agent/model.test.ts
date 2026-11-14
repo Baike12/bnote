@@ -8,16 +8,20 @@ import {
   closeThinking,
   entriesToLines,
   entryFromLine,
+  errorTurn,
   finalText,
   fitInputHeight,
   formatSessionTime,
   newTurn,
+  nextConvKey,
   pushToolStep,
   studyContentKey,
   thinkingSealFor,
   thinkingSecondsAt,
   thinkingSummaryLine,
+  toSessionNode,
   type ChatEntry,
+  type Turn,
 } from "./model";
 
 /**
@@ -224,6 +228,40 @@ describe("turn steps keep the stream order", () => {
     expect(turn.steps[0]).toMatchObject({ seconds: 2 });
   });
 
+  it("closing a block whose start time is unknown uses the moment it closed (never a negative duration)", () => {
+    const turn = newTurn(null);
+    // A restored row carries no start time; it is already sealed, but a live
+    // block whose clock is missing must not produce NaN seconds.
+    turn.steps.push({ kind: "thinking", start: 0, end: 1, startedAt: null, seconds: null });
+    turn.thinking = "a";
+    closeThinking(turn, 5_000);
+    expect(turn.steps[0]).toMatchObject({ seconds: 1 });
+  });
+
+  it("closing with nothing open does nothing", () => {
+    const turn = newTurn(0);
+    closeThinking(turn, 1_000);
+    expect(turn.steps).toEqual([]);
+    appendText(turn, "答");
+    closeThinking(turn, 2_000);
+    // A text row is not a thinking block: its duration is not tracked.
+    expect(turn.steps).toEqual([{ kind: "text", start: 0, end: 1 }]);
+  });
+
+  it("a block shorter than a second still reads as one second", () => {
+    const turn = newTurn(0);
+    appendThinking(turn, "a", 1_000);
+    closeThinking(turn, 1_200);
+    expect(turn.steps[0]).toMatchObject({ seconds: 1 });
+  });
+
+  it("a line without a tools array restores with no tool rows", () => {
+    // An older record (or a hand-written one) may omit the field entirely.
+    const entry = entryFromLine({ type: "assistant", at: 2, text: "答" });
+    expect(entry.turn?.tools).toEqual([]);
+    expect(entry.turn?.steps).toEqual([{ kind: "text", start: 0, end: 1 }]);
+  });
+
   it("a restored record rebuilds thinking, then text, then its tools", () => {
     const entry = entryFromLine({
       type: "assistant",
@@ -320,6 +358,13 @@ describe("helpers", () => {
   it("the thinking summary is the last non-empty line", () => {
     expect(thinkingSummaryLine("a\n\n  b  \n\n")).toBe("b");
     expect(thinkingSummaryLine("")).toBe("");
+    // CRLF (and a lone CR) is one line break: a Windows-pasted block must not
+    // read as one long line.
+    expect(thinkingSummaryLine("第一行\r\n第二行")).toBe("第二行");
+    expect(thinkingSummaryLine("第一行\r第二行")).toBe("第二行");
+    // A block made only of whitespace has no summary line at all.
+    expect(thinkingSummaryLine("  \n\t\n ")).toBe("");
+    expect(thinkingSummaryLine("\r\n")).toBe("");
   });
 
   it("a material key survives a url re-open and distinguishes a pdf", () => {
@@ -347,5 +392,238 @@ describe("helpers", () => {
     } as unknown as HTMLTextAreaElement;
     fitInputHeight(el);
     expect(style.height).toBe("40px");
+  });
+});
+
+describe("turn constructors", () => {
+  it("an error turn carries only the message and no streamed content", () => {
+    const turn = errorTurn("连接失败");
+    expect(turn.error).toBe("连接失败");
+    expect(turn.text).toBe("");
+    expect(turn.thinking).toBe("");
+    expect(turn.steps).toEqual([]);
+    expect(turn.tools).toEqual([]);
+    expect(turn.startedAt).toBeNull();
+    expect(turn.turnMs).toBeNull();
+    expect(turn.stopReason).toBeNull();
+  });
+
+  it("a new turn starts empty with its clock at the given instant", () => {
+    expect(newTurn(null)).toEqual({ ...errorTurn("x"), error: undefined, startedAt: null });
+    expect(newTurn(1_234).startedAt).toBe(1_234);
+  });
+});
+
+describe("identity helpers", () => {
+  it("a saved-session meta fills the missing family fields", () => {
+    expect(
+      toSessionNode({
+        id: "s1",
+        title: "问",
+        parent: null,
+        basedOn: null,
+        forkAt: null,
+        createdAt: 1,
+        updatedAt: 2,
+        bytes: 10,
+      }),
+    ).toEqual({
+      id: "s1",
+      title: "问",
+      parent: null,
+      basedOn: "",
+      forkAt: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    });
+  });
+
+  it("a forked meta keeps its parent, summary and prefix count", () => {
+    expect(
+      toSessionNode({
+        id: "s2",
+        title: "问 · 分支",
+        parent: "s1",
+        basedOn: "第一个问题",
+        forkAt: 4,
+        createdAt: 3,
+        updatedAt: 4,
+        bytes: 20,
+      }),
+    ).toMatchObject({ parent: "s1", basedOn: "第一个问题", forkAt: 4 });
+  });
+
+  it("conv keys are unique and monotonic", () => {
+    const a = nextConvKey();
+    const b = nextConvKey();
+    expect(a).not.toBe(b);
+    expect(Number(b.slice(1))).toBe(Number(a.slice(1)) + 1);
+  });
+});
+
+describe("entries without a full turn", () => {
+  it("an entry without a turn still writes one assistant line", () => {
+    const entry: ChatEntry = { role: "assistant", text: "答", at: 5, items: null };
+    expect(entriesToLines([entry])).toEqual([{ type: "assistant", at: 5, text: "答", tools: [] }]);
+  });
+
+  it("a turn that never streamed a block writes one line with what it has", () => {
+    const turn: Turn = { ...newTurn(null), text: "partial", error: "boom" };
+    turn.turnMs = 2_000;
+    const entry: ChatEntry = { role: "assistant", text: "partial", at: 5, turn, items: null };
+    const [line] = entriesToLines([entry]);
+    expect(line).toMatchObject({
+      type: "assistant",
+      text: "partial",
+      error: "boom",
+      turnMs: 2_000,
+    });
+    expect(line && "thinking" in line ? line.thinking : "sentinel").toBeUndefined();
+  });
+
+  it("a user entry without images round-trips without inventing them", () => {
+    const entry: ChatEntry = { role: "user", text: "问", at: 1, items: null };
+    expect(entriesToLines([entry])).toEqual([
+      { type: "user", at: 1, text: "问", images: undefined },
+    ]);
+  });
+});
+
+describe("round splitting", () => {
+  it("a tool step whose call is missing is skipped instead of opening an empty round", () => {
+    const turn = newTurn(0);
+    // The step exists but the tool record was never added (a truncated record).
+    turn.steps.push({ kind: "tool", id: "ghost" });
+    appendText(turn, "答");
+    const entry: ChatEntry = { role: "assistant", text: turn.text, at: 1, turn, items: null };
+    const lines = entriesToLines([entry]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ type: "assistant", text: "答", tools: [] });
+  });
+
+  it("a turn that opens on a tool round writes that round with no thinking and no text", () => {
+    const turn = newTurn(0);
+    pushToolStep(turn, "t1", 1_000);
+    turn.tools.push({ id: "t1", name: "Read", output: "ok", ok: true });
+    const entry: ChatEntry = { role: "assistant", text: "", at: 7, turn, items: null };
+    expect(entriesToLines([entry])).toEqual([
+      {
+        type: "assistant",
+        at: 7,
+        text: "",
+        tools: [{ id: "t1", name: "Read", output: "ok", ok: true }],
+      },
+    ]);
+  });
+
+  it("only the last round carries the turn's duration and error", () => {
+    const turn = newTurn(1_000);
+    turn.turnMs = 5_000;
+    turn.error = "partial";
+    appendThinking(turn, "想一", 1_000);
+    closeThinking(turn, 2_000);
+    pushToolStep(turn, "t1", 2_000);
+    turn.tools.push({ id: "t1", name: "Read", output: "ok", ok: true });
+    appendText(turn, "结论");
+    const entry: ChatEntry = { role: "assistant", text: turn.text, at: 9, turn, items: null };
+    const lines = entriesToLines([entry]);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).not.toHaveProperty("turnMs");
+    expect(lines[0]).not.toHaveProperty("error");
+    expect(lines[1]).toMatchObject({ turnMs: 5_000, error: "partial" });
+  });
+
+  it("a second thinking block right after a sealed one opens its own round", () => {
+    // A gateway that closes a thinking block and then streams another one
+    // before any text: one record line cannot carry two blocks (`thinkingSealFor`
+    // would drop the seal), so the second block starts the next round.
+    const turn = newTurn(0);
+    appendThinking(turn, "一", 1_000);
+    turn.thinkingSeals.push({ end: 1, signature: "sig1" });
+    closeThinking(turn, 2_000);
+    appendThinking(turn, "二", 2_000);
+    turn.thinkingSeals.push({ end: 2, signature: "sig2" });
+    closeThinking(turn, 3_000);
+    const entry: ChatEntry = { role: "assistant", text: "", at: 9, turn, items: null };
+    expect(entriesToLines([entry])).toEqual([
+      {
+        type: "assistant",
+        at: 9,
+        text: "",
+        thinking: "一",
+        thinkingSignature: "sig1",
+        thinkSeconds: 1,
+        tools: [],
+      },
+      {
+        type: "assistant",
+        at: 9,
+        text: "",
+        thinking: "二",
+        thinkingSignature: "sig2",
+        thinkSeconds: 1,
+        tools: [],
+      },
+    ]);
+  });
+
+  it("thinking after a text stretch opens the next round too", () => {
+    const turn = newTurn(0);
+    appendText(turn, "先说一句");
+    appendThinking(turn, "再想", 1_000);
+    closeThinking(turn, 2_000);
+    const entry: ChatEntry = { role: "assistant", text: turn.text, at: 9, turn, items: null };
+    expect(entriesToLines([entry])).toEqual([
+      { type: "assistant", at: 9, text: "先说一句", tools: [] },
+      { type: "assistant", at: 9, text: "", thinking: "再想", thinkSeconds: 1, tools: [] },
+    ]);
+  });
+
+  it("thinking after a tool-only round opens the next round (its tools stay with the first)", () => {
+    const turn = newTurn(0);
+    pushToolStep(turn, "t1", 1_000);
+    turn.tools.push({ id: "t1", name: "Read", output: "ok", ok: true });
+    appendThinking(turn, "看到了", 2_000);
+    closeThinking(turn, 3_000);
+    const entry: ChatEntry = { role: "assistant", text: "", at: 9, turn, items: null };
+    const lines = entriesToLines([entry]);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({ tools: [{ id: "t1", name: "Read", output: "ok", ok: true }] });
+    expect(lines[1]).toMatchObject({ thinking: "看到了", tools: [] });
+  });
+});
+
+describe("cloning an entry", () => {
+  it("copies the images so the fork cannot edit the source message", () => {
+    const entry: ChatEntry = {
+      role: "user",
+      text: "问",
+      at: 1,
+      items: null,
+      images: [{ mediaType: "image/png", data: "AAA" }],
+    };
+    const copy = cloneEntry(entry);
+    expect(copy.images).not.toBe(entry.images);
+    const cloned = copy.images?.[0];
+    if (cloned) cloned.data = "tampered";
+    expect(entry.images?.[0]?.data).toBe("AAA");
+  });
+
+  it("an entry without a turn or images clones without inventing fields", () => {
+    const entry: ChatEntry = { role: "user", text: "问", at: 1, items: null };
+    expect(cloneEntry(entry)).toEqual(entry);
+  });
+
+  it("the steps and tool records are copies, not the same objects", () => {
+    const turn = newTurn(0);
+    appendThinking(turn, "想", 0);
+    pushToolStep(turn, "t1", 0);
+    turn.tools.push({ id: "t1", name: "Read" });
+    const entry: ChatEntry = { role: "assistant", text: "", at: 1, items: null, turn };
+    const copy = cloneEntry(entry);
+    expect(copy.turn?.steps).not.toBe(turn.steps);
+    expect(copy.turn?.tools).not.toBe(turn.tools);
+    expect(copy.turn?.steps).toEqual(turn.steps);
+    expect(copy.turn?.tools).toEqual(turn.tools);
   });
 });
