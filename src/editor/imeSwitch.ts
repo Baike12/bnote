@@ -10,9 +10,19 @@ import { perfEnd, perfFields, perfStart } from "@/perf/trace";
 /**
  * IME follow: switch the macOS input source on vim mode changes —
  * insert → Chinese, normal/visual → English — without leaving insert-time
- * typing on the critical path. The switch itself is an in-process TIS call
- * (~2–10 ms, on the Apple main thread since HIToolbox asserts the main queue)
- * and is skipped entirely when the requested source is already active.
+ * typing on the critical path. The switch itself runs in a helper process
+ * (ime_daemon.rs: TIS asserts Apple's main queue, which in this process is
+ * the UI thread, so the select is moved out of the process entirely — measured
+ * 0.01 ms per round trip) and is skipped entirely when the requested source is
+ * already active.
+ *
+ * The out-of-process architecture has a second half: the web input context is
+ * created at focus time and captures the source active then. A select made in
+ * another process does not propagate into it — the menu bar follows the
+ * system-wide change notification, WebKit keeps typing with the old source.
+ * After every confirmed real switch the focused editor's context is therefore
+ * re-created (refreshWebInputContext); that is part of the switch contract,
+ * not a patch.
  *
  * Mirrors the behavior of the user's patched obsidian-vim-input-auto-switch:
  * entering insert inside a math region keeps the English source (formulas are
@@ -42,11 +52,11 @@ let forcedThisSession = false;
 let focusSeq = 0;
 
 /** At most one setInputSource in flight; a burst of flips collapses into the
- *  one trailing call that matches the final intent. The select itself runs in
- *  the helper process (`ime_daemon`) and no longer occupies the app's main
- *  thread — but every round trip still costs a hand-over window in which the
- *  first characters land in the old source, so collapsing bursts stays the
- *  right model even now that the UI cannot freeze. */
+ *  one trailing call that matches the final intent. Each switch occupies the
+ *  app main thread for the duration of the TIS call (2–10 ms warm, up to
+ *  ~170 ms while the input method activates), so overlapping switches would
+ *  queue behind each other — exactly what rapid cursor moves across math
+ *  boundaries felt like. */
 let switching = false;
 let queued: string | null = null;
 let launchScheduled = false;
@@ -66,11 +76,10 @@ function cancelFocusVerify(): void {
   }
 }
 
-/** Defers the switch to the end of the key's task. The select runs in the
- *  helper process, so the deferral is not about blocking any more — it keeps
- *  the mode change and its DOM work ahead of the switch in the same task, and
- *  collapses consecutive flips into one round trip (`desired` is the single
- *  source of intent, read when the timer fires). */
+/** Defers the switch to the end of the key's task and collapses consecutive
+ *  flips into the one trailing switch: `desired` is the single source of
+ *  intent, read when the timer fires. A burst of cursor moves across math
+ *  boundaries then costs one switch instead of one per move. */
 function scheduleLaunch(): void {
   if (launchScheduled) return;
   launchScheduled = true;
@@ -96,7 +105,7 @@ function launchSwitch(target: string): void {
   switching = true;
   forcedThisSession = true;
   const seq = focusSeq;
-  // End-to-end cost of the switch (IPC + the main-thread TIS select). This is
+  // End-to-end cost of the switch (IPC + the helper's TIS select). This is
   // the leg that made "leave a formula, type the next key" feel slow when the
   // input source was being engaged.
   const t = perfStart();
@@ -108,13 +117,14 @@ function launchSwitch(target: string): void {
       })
       .catch(() => {});
   }
-  // Fire-and-forget: the backend dedups against the live input source and
+  // Fire-and-forget: the helper dedups against the live input source and
   // returns the TIS call's own duration, so a slow switch names the input
   // method's activation instead of leaving one opaque number.
   void api
     .setInputSource(target)
     .then((outcome) => {
       perfEnd(t, "ime.switch", IME_FIELDS, target, outcome.tisMs);
+      if (outcome.switched) refreshWebInputContext();
     })
     .catch((e) => {
       console.warn("[bnote] set input source failed", e);
@@ -129,6 +139,31 @@ function launchSwitch(target: string): void {
       // input source has just been returned to them.
       if (next !== null && next !== target && !suspended) launchSwitch(next);
     });
+}
+
+/**
+ * Re-creates the focused editor's web input context after a confirmed real
+ * switch. The context is created when the editor gains focus and captures the
+ * source active at that moment; a select made in the helper process does not
+ * propagate into it (the menu bar follows the system-wide change notification,
+ * WebKit keeps typing with the source captured at focus). Tearing it down and
+ * re-creating it in the same frame (blur + focus on contentDOM) re-captures
+ * the new source. Guarded to exactly the typing surface the switch was for:
+ * the registered editor view, focused, not mid-composition (a re-mount would
+ * abort the IME session mid-word).
+ *
+ * `preventScroll` is part of the contract: focus() by default scrolls the
+ * focused element into view, and contentDOM spans the whole document —
+ * without it every real switch would scroll the notes page to its top.
+ */
+function refreshWebInputContext(): void {
+  if (typeof document === "undefined") return;
+  const view = getView();
+  if (!view || view.composing) return;
+  const dom = view.contentDOM;
+  if (!dom.isConnected || document.activeElement !== dom) return;
+  dom.blur();
+  dom.focus({ preventScroll: true });
 }
 
 /**
@@ -282,13 +317,12 @@ function restoreSource(source: string): void {
   scheduleLaunch();
 }
 
-/** Warms up TIS: enumerates the input sources once in the background after startup.
- *  The first TIS call has to contact the input method service (measured ~90ms
- *  on this machine) and must run on Apple's main thread (see on_main in
- *  ime.rs) — paying it only when the user first switches modes would land it
- *  exactly on the frame of that keystroke. This enumeration also fills the Rust
- *  side's input source reference cache, so every later switch is reduced to
- *  "read the current source + select". */
+/** Warms up the IME pipeline: enumerates the input sources once in the
+ *  background after startup. The first helper request pays process spawn plus
+ *  TIS initialization (measured ~170 ms cold on this machine) — paying it at
+ *  startup keeps the user's first mode change off that cold path. This call
+ *  also fills the helper's input source reference cache, so every later
+ *  switch is reduced to "read the current source + select". */
 export function imeWarmUp(): void {
   const { settings } = useAppStore.getState();
   if (!settings.ime.enabled) return;

@@ -240,6 +240,14 @@ lived, one JSON line per request over stdin/stdout:
 - `tests/ime_daemon.rs` drives the real helper process end-to-end (no-op
   operations only, so the user's input method is never changed) and gates the
   steady-state round trip.
+- The web input context follows the switch: the context is created at focus
+  time and captures the source active then, and a select made in another
+  process does not propagate into it (the menu bar follows the system-wide
+  notification, WebKit does not). After a confirmed real switch (`switched`)
+  the front end re-creates the focused editor's context — same-frame blur +
+  focus on contentDOM, never mid-composition (`refreshWebInputContext` in
+  `imeSwitch.ts`). This is the app-side half of the out-of-process contract,
+  not a retry chain: it needs no detection, `switched` is the detection.
 
 `SetImeOutcome` still returns the TIS call's own duration, and the span carries
 it:
