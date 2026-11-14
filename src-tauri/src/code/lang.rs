@@ -81,7 +81,6 @@ pub fn language_for_path(path: &Path) -> &'static str {
         "proto" => "proto",
         "graphql" | "gql" => "graphql",
         "astro" => "astro",
-        "svelte" => "svelte",
         "tf" | "tfvars" => "terraform",
         "hcl" => "hcl",
         "ini" | "cfg" | "conf" | "properties" => "ini",
