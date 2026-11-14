@@ -124,40 +124,74 @@ export function renderBlockHtml(text: string): string {
   function emitRange(node: SyntaxNode, from: number, to: number): string {
     let html = "";
     let pos = from;
+    let child = node.firstChild;
     for (const a of atomics) {
-      if (a.to <= pos) continue;
       if (a.from >= to) break;
-      if (a.from > pos) html += emitMd(node, pos, Math.min(a.from, to));
+      if (a.to <= pos) continue; // already emitted inside a recursed child
+      // Markup children that end before this atomic are emitted whole: their
+      // own walk emits any atomic inside them exactly once, inside the child's
+      // own wrapper. Children already swallowed by a previous atomic (to <=
+      // pos) are skipped by the same guard.
+      while (child && child.to <= a.from) {
+        if (child.to > pos && child.from < to && child.to > from) {
+          if (child.from > pos) html += escapeHtml(text.slice(pos, Math.min(child.from, to)));
+          html += emitNode(child);
+          pos = child.to;
+        }
+        child = child.nextSibling;
+      }
+      // An atomic fully inside the child we are positioned at belongs to that
+      // child's own walk: skip it here, or it would be emitted twice.
+      if (child && child.from < to && child.to > from && child.from <= a.from && a.to <= child.to) {
+        continue;
+      }
       if (a.from < pos) {
-        // It intersects an already emitted range (nested in an emphasis and the
-        // like): keep it verbatim instead of splitting it further.
+        // Overlaps an already emitted atomic (regex math and wikilinks can
+        // nest): keep the remainder verbatim instead of splitting it further.
         const end = Math.min(a.to, to);
         if (end > pos) html += escapeHtml(text.slice(pos, end));
         pos = end;
         continue;
       }
-      html += a.html;
-      pos = Math.min(a.to, to);
-    }
-    if (pos < to) html += emitMd(node, pos, to);
-    return html;
-  }
-
-  function emitMd(node: SyntaxNode, from: number, to: number): string {
-    let html = "";
-    let pos = from;
-    for (let child = node.firstChild; child; child = child.nextSibling) {
-      if (child.to <= from || child.from >= to) continue;
-      if (child.from > pos) html += escapeHtml(text.slice(pos, Math.min(child.from, to)));
-      if (child.to > to) {
-        // The child is cut by the slice boundary (next to an atomic): keep it
-        // verbatim.
-        html += escapeHtml(text.slice(Math.max(child.from, pos), to));
-        pos = to;
+      // A child straddling the atomic start (the atomic is only partly inside
+      // it) cannot be reconstructed: its source up to the atomic stays
+      // verbatim, and the walk continues inside it after the atomic.
+      while (child && child.from < a.from) {
+        const cut = Math.min(child.to, a.from);
+        if (child.to > from && cut > pos) {
+          html += escapeHtml(text.slice(Math.max(child.from, pos), cut));
+          pos = cut;
+        }
+        if (child.to <= a.from) child = child.nextSibling;
+        else break;
+      }
+      if (a.from > pos) html += escapeHtml(text.slice(pos, Math.min(a.from, to)));
+      if (a.to > to) {
+        // The atomic is cut by this walk's end: the caller's walk keeps the
+        // remainder verbatim.
+        pos = Math.min(a.to, to);
         break;
       }
-      html += emitNode(child);
-      pos = child.to;
+      html += a.html;
+      pos = a.to;
+    }
+    // Children after the last atomic.
+    while (child && pos < to) {
+      if (child.to <= pos || child.to <= from || child.from >= to) {
+        child = child.nextSibling;
+        continue;
+      }
+      if (child.from > pos) html += escapeHtml(text.slice(pos, Math.min(child.from, to)));
+      if (child.from >= pos && child.to <= to) {
+        html += emitNode(child);
+        pos = child.to;
+      } else {
+        // The child was already partly emitted (it straddles an atomic) or is
+        // cut by the walk's end: keep the rest verbatim.
+        html += escapeHtml(text.slice(Math.max(child.from, pos), Math.min(child.to, to)));
+        pos = Math.min(child.to, to);
+      }
+      child = child.nextSibling;
     }
     if (pos < to) html += escapeHtml(text.slice(pos, to));
     return html;
