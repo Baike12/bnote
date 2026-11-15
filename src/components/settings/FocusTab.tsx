@@ -68,7 +68,7 @@ export function FocusTab() {
             )
           }
         />
-        {error && !pendingHardLock && <div className="setting-error">{error}</div>}
+        {error && !pendingHardLock && <div className="settings-error">{error}</div>}
       </SettingsCard>
     </div>
   );

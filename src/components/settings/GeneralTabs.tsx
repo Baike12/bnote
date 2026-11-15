@@ -297,7 +297,7 @@ export function CodeLspSettingsCard() {
         {error ? (
           <div className="settings-error">{error}</div>
         ) : (
-          <div className="settings-desc">
+          <div className="setting-hint">
             失焦即生效。键名是语言 id（typescript / rust / go / python …）。
           </div>
         )}

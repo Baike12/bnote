@@ -28,7 +28,9 @@ export function TranslateTab() {
   if (!cfg) {
     return (
       <div className="settings-section">
-        {loadError ? `翻译配置加载失败：${loadError}` : "加载中…"}
+        <div className="settings-empty">
+          {loadError ? `翻译配置加载失败：${loadError}` : "加载中…"}
+        </div>
       </div>
     );
   }
@@ -234,10 +236,7 @@ export function TranslateTab() {
           </button>
         </div>
         {testResult && (
-          <p
-            className="setting-hint"
-            style={{ color: testResult.ok ? "var(--ok)" : "var(--danger)" }}
-          >
+          <p className={`setting-hint${testResult.ok ? " ok" : " err"}`}>
             {testResult.ok ? `连接成功：${testResult.text}` : testResult.text}
           </p>
         )}

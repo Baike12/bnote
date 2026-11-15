@@ -91,7 +91,9 @@ function useModePaths(mode: AgentMode, workdir: string | null) {
 function AgentLoading({ loadError }: { loadError: string | null }) {
   return (
     <div className="settings-section">
-      {loadError ? `Agent 配置加载失败:${loadError}` : "加载中…"}
+      <div className="settings-empty">
+        {loadError ? `Agent 配置加载失败:${loadError}` : "加载中…"}
+      </div>
     </div>
   );
 }
@@ -726,7 +728,7 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
           checked={cfg.log_requests}
           onChange={setLogRequests}
         />
-        <div className="settings-hint">
+        <div className="setting-hint">
           目录:<code>{displayPath(logDir, vaultPath)}</code>,一个会话一个文件(
           <code>&lt;会话记录 id&gt;.jsonl</code>),恢复同一会话会继续追加。
         </div>
@@ -739,7 +741,7 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
           ))}
         </div>
       )}
-      <div className="settings-footer">
+      <div className="settings-actions">
         <button className="btn primary" onClick={() => void save()}>
           保存模型配置
         </button>
@@ -867,7 +869,7 @@ export function AgentMcpTab({ mode, workdir }: { mode: AgentMode; workdir: strin
         <div className="settings-block">
           {error && <div className="settings-error">{error}</div>}
           {names.length === 0 ? (
-            <p className="settings-hint">还没有配置 MCP 服务器。在下方 JSON 里添加。</p>
+            <p className="setting-hint">还没有配置 MCP 服务器。在下方 JSON 里添加。</p>
           ) : (
             <ul className="mcp-list">
               {names.map((name) => {
@@ -913,7 +915,7 @@ export function AgentMcpTab({ mode, workdir }: { mode: AgentMode; workdir: strin
           {draftError ? (
             <div className="settings-error">{draftError}</div>
           ) : (
-            <div className="settings-hint">
+            <div className="setting-hint">
               stdio 形如{" "}
               <code>{'{"name":{"type":"stdio","command":"npx","args":["-y","…"]}}'}</code>
               ,HTTP 形如{" "}
@@ -995,7 +997,7 @@ export function AgentSkillsTab({ mode, workdir }: { mode: AgentMode; workdir: st
         <div className="settings-block">
           {(error ?? scanError) && <div className="settings-error">{error ?? scanError}</div>}
           {!paths || skills === null ? (
-            <p className="settings-hint">加载中…</p>
+            <p className="setting-hint">加载中…</p>
           ) : (
             <div className="skill-groups">
               {paths.skillRoots.map((root) => {
@@ -1198,7 +1200,7 @@ export function AgentInstructionsTab({
               恢复默认
             </button>
           </div>
-          <div className="settings-hint">
+          <div className="setting-hint">
             切换目录只改变之后读取的位置,不会自动搬移已有文件;旧目录保留不动。
           </div>
         </div>
@@ -1364,7 +1366,7 @@ export function AgentAdvancedTab({ mode, workdir }: { mode: AgentMode; workdir: 
               </div>
             )}
           </div>
-          <div className="settings-hint">
+          <div className="setting-hint">
             自定义风格放在 <code>本模式目录/output-styles/&lt;id&gt;.md</code>,编码模式还会读取{" "}
             <code>&lt;代码项目&gt;/.bnote/output-styles/&lt;id&gt;.md</code>。
           </div>
@@ -1389,7 +1391,7 @@ export function AgentAdvancedTab({ mode, workdir }: { mode: AgentMode; workdir: 
           {error ? (
             <div className="settings-error">{error}</div>
           ) : (
-            <div className="settings-hint">
+            <div className="setting-hint">
               {loaded ? "保存前校验 JSON;权限示例:" : "加载中…"}{" "}
               <code>{'{"permissions":{"deny":["Bash(git push:*)"]}}'}</code>
             </div>
@@ -1425,9 +1427,9 @@ export function AgentAdvancedTab({ mode, workdir }: { mode: AgentMode; workdir: 
               ))}
             </ul>
           ) : (
-            <div className="settings-hint">读取失败</div>
+            <div className="setting-hint">读取失败</div>
           )}
-          <div className="settings-hint">
+          <div className="setting-hint">
             会话记录、tasks、plans 与记忆仍在笔记库的 <code>.bnote</code>
             (它们属于运行状态,不属于笔记)。
           </div>

@@ -149,55 +149,53 @@ export function HotkeysTab() {
         </button>
       </div>
       <SettingsCard title={`${regionInfo?.label ?? ""}快捷键（${rows.length}）`}>
-        <div className="hotkey-list">
-          {rows.map((cmd) => {
-            const bindings = bindingsForCommand(cmd.id, region);
-            const isCapturing = capturing === cmd.id;
-            return (
-              <div
-                key={cmd.id}
-                className={`hotkey-row${isCapturing ? " capturing" : ""}`}
-                onClick={() => setCapturing(cmd.id)}
-              >
-                <span className="hotkey-title">{cmd.title}</span>
-                <span className="hotkey-actions">
-                  {bindings.length > 0 ? (
-                    <button
-                      className="hotkey-unbind"
-                      title="解绑"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void setOverride(cmd.id, null, region);
-                      }}
-                    >
-                      ✕
-                    </button>
-                  ) : (
-                    <span className="hotkey-unbound">未设置</span>
-                  )}
-                  {bindings.map((b) => (
-                    <kbd key={b} className="hotkey-chip">
-                      {formatBinding(b)}
-                    </kbd>
-                  ))}
+        {rows.map((cmd) => {
+          const bindings = bindingsForCommand(cmd.id, region);
+          const isCapturing = capturing === cmd.id;
+          return (
+            <div
+              key={cmd.id}
+              className={`hotkey-row${isCapturing ? " capturing" : ""}`}
+              onClick={() => setCapturing(cmd.id)}
+            >
+              <span className="hotkey-title">{cmd.title}</span>
+              <span className="hotkey-actions">
+                {bindings.length > 0 ? (
                   <button
-                    className="hotkey-reset"
-                    title="恢复默认"
+                    className="hotkey-unbind"
+                    title="解绑"
                     onClick={(e) => {
                       e.stopPropagation();
-                      void clearOverride(cmd.id, region);
+                      void setOverride(cmd.id, null, region);
                     }}
                   >
-                    ↺
+                    ✕
                   </button>
-                </span>
-                {isCapturing && (
-                  <span className="hotkey-capture-hint">按下新快捷键…（Esc 取消）</span>
+                ) : (
+                  <span className="hotkey-unbound">未设置</span>
                 )}
-              </div>
-            );
-          })}
-        </div>
+                {bindings.map((b) => (
+                  <kbd key={b} className="hotkey-chip">
+                    {formatBinding(b)}
+                  </kbd>
+                ))}
+                <button
+                  className="hotkey-reset"
+                  title="恢复默认"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void clearOverride(cmd.id, region);
+                  }}
+                >
+                  ↺
+                </button>
+              </span>
+              {isCapturing && (
+                <span className="hotkey-capture-hint">按下新快捷键…（Esc 取消）</span>
+              )}
+            </div>
+          );
+        })}
       </SettingsCard>
     </div>
   );
@@ -254,8 +252,10 @@ export function VimTab() {
         }
       >
         <div className="settings-block">
+          {/* The vimrc is code: always monospace, like the snippets JSON
+              textarea (a font switch on focus made the box jump mid-edit). */}
           <textarea
-            className="settings-textarea"
+            className="settings-textarea mono"
             spellCheck={false}
             value={vimrc}
             onChange={(e) => setVimrc(e.target.value)}

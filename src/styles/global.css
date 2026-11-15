@@ -332,7 +332,7 @@ button {
   margin: 0;
   max-width: 720px;
   color: var(--text-dim, var(--text));
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono, ui-monospace, monospace);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1312,13 +1312,6 @@ button {
   cursor: pointer;
   text-decoration: underline;
 }
-.setting-error {
-  margin-top: 6px;
-  color: var(--danger);
-  font-size: 12px;
-  line-height: 1.5;
-  word-break: break-all;
-}
 
 .editor-empty {
   position: absolute;
@@ -1708,6 +1701,15 @@ button {
 .settings-card-body > * + * {
   border-top: 1px solid var(--border);
 }
+/* Hint / error / action blocks that sit directly in a card body: rows carry
+   16px side padding, these must meet the same edge (inside .settings-block
+   the block itself already provides the padding, so the rule is scoped to
+   direct children only). */
+.settings-card-body > .setting-hint,
+.settings-card-body > .settings-error,
+.settings-card-body > .settings-actions {
+  padding: 10px 16px;
+}
 
 /* Row: label + description on the left, control on the right. The row wraps
    and the control may shrink: a control wider than the panel otherwise pushed
@@ -1890,10 +1892,6 @@ button {
   justify-content: flex-end;
   gap: 8px;
 }
-.settings-footer {
-  display: flex;
-  justify-content: flex-end;
-}
 
 /* Explanatory text between cards. */
 .setting-hint {
@@ -1901,6 +1899,13 @@ button {
   font-size: 12.5px;
   line-height: 1.7;
   margin: 0;
+}
+/* Outcome variants (a translate API test result and the like). */
+.setting-hint.ok {
+  color: var(--ok);
+}
+.setting-hint.err {
+  color: var(--danger);
 }
 
 .setting-hint code,
@@ -2045,19 +2050,19 @@ button {
   resize: vertical;
   font-family: var(--font-ui);
 }
-.settings-textarea.mono,
-.settings-textarea:focus {
+.settings-textarea.mono {
   font-family: var(--font-mono);
 }
 .settings-textarea:focus {
   border-color: var(--accent-dim);
 }
-/* Inline error of a settings item (a JSON parse failure and the like). */
+/* Inline error of a settings item (a JSON parse failure and the like) - the
+   one error class of the settings page (was .setting-error + .settings-error). */
 .settings-error {
-  margin-top: 6px;
   color: var(--danger);
   font-size: 11.5px;
   line-height: 1.5;
+  word-break: break-all;
 }
 
 /* The settings layers of the agent (user / project / project local). */
@@ -2430,12 +2435,14 @@ button {
   gap: 2px;
 }
 
-/* Slider + right-aligned value (after ZCode's SettingsRangeControl). */
+/* Slider + right-aligned value (after ZCode's SettingsRangeControl). The 260px
+   width is the control column of the rows (inputs and selects use it too), so
+   the values line up across rows. */
 .range-control {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 240px;
+  width: 260px;
 }
 .range-control input[type="range"] {
   flex: 1;
@@ -6016,7 +6023,7 @@ input[type="range"] {
 .agent-suggest-head {
   padding: 4px 8px 6px;
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-faint);
 }
 
 .agent-suggest-item {
@@ -6029,23 +6036,23 @@ input[type="range"] {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: var(--text-1);
+  color: var(--text);
   text-align: left;
   cursor: pointer;
 }
 
 .agent-suggest-item.is-active {
-  background: var(--hover, var(--bg3));
+  background: var(--bg3);
 }
 
 .agent-suggest-title {
   font-size: 12.5px;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
 }
 
 .agent-suggest-sub {
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6062,7 +6069,7 @@ input[type="range"] {
 
 .creative-title {
   font-size: 12px;
-  color: var(--text-2);
+  color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6095,7 +6102,7 @@ input[type="range"] {
 .creative-empty-title {
   margin: 0;
   font-size: 13px;
-  color: var(--text-2);
+  color: var(--text-dim);
 }
 
 .creative-empty-hint {
@@ -6103,7 +6110,7 @@ input[type="range"] {
   max-width: 300px;
   font-size: 12px;
   line-height: 1.7;
-  color: var(--text-3);
+  color: var(--text-faint);
 }
 
 /* The publish dialog (an HTML overlay; the native preview is hidden while it
@@ -6138,13 +6145,13 @@ input[type="range"] {
 .publish-title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-1);
+  color: var(--text);
 }
 
 .publish-close {
   border: 0;
   background: transparent;
-  color: var(--text-3);
+  color: var(--text-faint);
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
@@ -6152,7 +6159,7 @@ input[type="range"] {
 }
 
 .publish-close:hover {
-  color: var(--text-1);
+  color: var(--text);
 }
 
 .publish-row {
@@ -6161,7 +6168,7 @@ input[type="range"] {
   gap: 10px;
   margin: 8px 0;
   font-size: 12.5px;
-  color: var(--text-2);
+  color: var(--text-dim);
 }
 
 .publish-row select,
@@ -6171,7 +6178,7 @@ input[type="range"] {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg2);
-  color: var(--text-1);
+  color: var(--text);
   font-size: 12.5px;
   padding: 5px 8px;
 }
@@ -6179,7 +6186,7 @@ input[type="range"] {
 .publish-source {
   margin: 8px 0 0;
   font-size: 11.5px;
-  color: var(--text-3);
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6188,7 +6195,7 @@ input[type="range"] {
 .publish-hint {
   font-size: 12.5px;
   line-height: 1.7;
-  color: var(--text-2);
+  color: var(--text-dim);
 }
 
 .publish-hint pre {
@@ -6197,13 +6204,13 @@ input[type="range"] {
   background: var(--bg2);
   padding: 8px 10px;
   font-size: 11.5px;
-  color: var(--text-1);
+  color: var(--text);
   overflow-x: auto;
 }
 
 .publish-hint-sub {
   font-size: 11.5px;
-  color: var(--text-3);
+  color: var(--text-faint);
 }
 
 .publish-error {
@@ -6215,7 +6222,7 @@ input[type="range"] {
 .publish-ok {
   margin: 10px 0 0;
   font-size: 12.5px;
-  color: var(--text-2);
+  color: var(--text-dim);
   word-break: break-all;
 }
 
@@ -6229,7 +6236,7 @@ input[type="range"] {
 .publish-go {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent-contrast, #fff);
+  color: var(--on-accent);
 }
 
 /* Settings page: MCP servers and skills.
@@ -6275,7 +6282,7 @@ input[type="range"] {
 }
 .mcp-row-target {
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6283,7 +6290,7 @@ input[type="range"] {
 .mcp-row-type {
   flex-shrink: 0;
   font-size: 10.5px;
-  color: var(--text-3);
+  color: var(--text-faint);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0 6px;
@@ -6301,8 +6308,8 @@ input[type="range"] {
   transition: background 0.12s ease;
 }
 .mcp-toggle.on {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
 }
 .mcp-toggle-knob {
   position: absolute;
@@ -6311,13 +6318,15 @@ input[type="range"] {
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  background: var(--text-3);
+  /* Same knob color as the row toggles: the MCP list draws its own smaller
+     switch, but a knob of a different color would read as a different state. */
+  background: var(--toggle-knob);
   box-shadow: 0 1px 2px var(--shadow);
   transition: transform 0.12s ease;
 }
 .mcp-toggle.on .mcp-toggle-knob {
   transform: translateX(13px);
-  background: var(--accent-contrast, #fff);
+  background: var(--on-accent);
 }
 .mcp-toggle:focus-visible {
   outline: 2px solid var(--accent);
@@ -6367,7 +6376,7 @@ input[type="range"] {
   min-width: 0;
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6375,13 +6384,13 @@ input[type="range"] {
 .skill-group-count {
   flex-shrink: 0;
   font-size: 10.5px;
-  color: var(--text-3);
+  color: var(--text-faint);
 }
 .skill-group-empty {
   margin: 0;
   padding: 8px 10px;
   font-size: 11.5px;
-  color: var(--text-3);
+  color: var(--text-faint);
 }
 .skill-list {
   list-style: none;
@@ -6409,7 +6418,7 @@ input[type="range"] {
   flex: 1;
   min-width: 0;
   font-size: 11.5px;
-  color: var(--text-2);
+  color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6418,7 +6427,7 @@ input[type="range"] {
 .settings-block-label {
   font-size: 11px;
   font-family: var(--font-mono);
-  color: var(--text-3);
+  color: var(--text-faint);
   margin-bottom: 6px;
 }
 .settings-path-current {
@@ -6448,13 +6457,6 @@ input[type="range"] {
 .settings-root-edit .settings-input {
   flex: 1;
   min-width: 0;
-}
-
-.settings-hint {
-  margin: 0 0 10px;
-  font-size: 12.5px;
-  color: var(--text-3);
-  line-height: 1.7;
 }
 /* ========================== Projects view ==========================
    Project navigation | project board (several columns side by side, the
@@ -7287,7 +7289,7 @@ input[type="range"] {
   flex: none;
   padding: 0 4px;
   border-radius: 3px;
-  background: var(--surface-2);
+  background: var(--bg3);
   color: var(--text-faint);
   font-size: 10px;
   line-height: 15px;
