@@ -98,18 +98,21 @@ function AgentLoading({ loadError }: { loadError: string | null }) {
   );
 }
 
-/** A provider/model/level picker (three selects): the default model and the subagent rows. */
+/** A provider/model/level picker (three selects): the default model row and the expanded subagent rows. */
 function SelectionControl({
   draft,
   value,
   onChange,
   inheritLabel,
+  className,
 }: {
   draft: CatalogDraft;
   value: ModelSelection | null;
   onChange: (value: ModelSelection | null) => void;
   /** When set, the empty provider option means it (inherits the parent session). */
   inheritLabel?: string;
+  /** Extra class on the picker (the subagent wrapper widens its selects). */
+  className?: string;
 }) {
   const provider = draft.providers.find((p) => p.id === value?.provider_id) ?? null;
   const model = provider?.models.find((m) => m.id === value?.model_id) ?? null;
@@ -131,7 +134,7 @@ function SelectionControl({
     onChange({ provider_id: providerId, model_id: modelId, thinking });
   };
   return (
-    <span className="agent-selection">
+    <span className={className ? `agent-selection ${className}` : "agent-selection"}>
       <SettingsSelect<string>
         value={value?.provider_id ?? ""}
         onChange={(id) => {
@@ -177,6 +180,51 @@ function SelectionControl({
         ))}
       </SettingsSelect>
     </span>
+  );
+}
+
+/**
+ * One picker row of the subagent card. Most rows never leave the default
+ * (inherit), and three selects squeeze a narrow row until their labels
+ * truncate; so the picker only renders while a specific model is set or
+ * being chosen, and the inherited state is one plain value plus the entry
+ * to specify one.
+ */
+function SubagentSelectionControl({
+  draft,
+  value,
+  onChange,
+  inheritLabel,
+}: {
+  draft: CatalogDraft;
+  value: ModelSelection | null;
+  onChange: (value: ModelSelection | null) => void;
+  inheritLabel: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  if (value === null && !editing) {
+    return (
+      <span className="agent-selection">
+        <span className="setting-value">{inheritLabel}</span>
+        <button className="link-btn" onClick={() => setEditing(true)}>
+          指定模型
+        </button>
+      </span>
+    );
+  }
+  return (
+    <SelectionControl
+      draft={draft}
+      value={value}
+      inheritLabel={inheritLabel}
+      className="expanded"
+      onChange={(next) => {
+        onChange(next);
+        // Picking the inherit option in the provider select collapses the
+        // row back to the plain value (the picker is the expanded state).
+        if (next === null) setEditing(false);
+      }}
+    />
   );
 }
 
@@ -672,13 +720,13 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
 
       <SettingsCard
         title="子代理"
-        desc="子代理默认继承主会话的模型。这里可以给全局或某个子代理单独指定:调用时显式给的 model 优先于它。"
+        desc="子代理默认继承主会话的模型，所以继承中的行只显示一个值;点「指定模型」可给全局或某个子代理单独指定，调用时显式给的 model 优先于它。"
       >
         <Row
           label="默认子代理模型"
           desc="继承主会话 = 子代理与主会话用同一个模型"
           control={
-            <SelectionControl
+            <SubagentSelectionControl
               draft={draft}
               value={draft.subagent_models.default}
               inheritLabel="继承主会话"
@@ -692,7 +740,7 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
             label={agent.name}
             desc={agent.description}
             control={
-              <SelectionControl
+              <SubagentSelectionControl
                 draft={draft}
                 value={draft.subagent_models.by_definition[agent.id] ?? null}
                 inheritLabel="继承默认"

@@ -2305,6 +2305,15 @@ button {
   min-width: 0;
   max-width: none;
 }
+/* The expanded subagent picker keeps its three selects legible: below ~110px
+   a select truncates its own label ("继承主会话" reads as "继承主…"), so each
+   select gets a floor and the row wraps onto its own line when the space
+   beside the label does not suffice. Scoped to the subagent wrapper; the
+   default-model row (short label) keeps its one-line thirds. */
+.agent-selection.expanded .settings-select-wrap {
+  flex-basis: 110px;
+  min-width: 110px;
+}
 .agent-provider-card {
   padding: 10px 16px 12px;
 }
