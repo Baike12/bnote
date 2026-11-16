@@ -43,13 +43,13 @@ export interface SetImeOutcome {
   /** The TIS call itself, in ms — it runs inside the helper process, so this
    *  number names the input method's activation, not a UI freeze. */
   tisMs: number;
-  /** Whether the app's own input method session was rebuilt on the new source
-   *  (main thread). `null` when no rebuild was attempted — nothing switched and
-   *  the context was not known stale — or when no input context existed at
-   *  that instant (the backend's delayed repair owns that case). `false` is a
-   *  real failure: the system source changed and typing still uses the old one. */
+  /** Whether the app's own input context accepted the source before the system
+   *  menu bar changed. `null` means no input context existed yet; the native
+   *  coordinator keeps that intent pending for the next focus. `false` is a
+   *  real failure. */
   contextApplied: boolean | null;
-  /** Main-thread cost of the session rebuild, in ms. */
+  /** Main-thread cost of the context hand-off, in ms. The normal path is one
+   *  property transition; a destructive rebuild is a rare recovery path. */
   contextMs: number;
   /** The source the app's input context reported afterwards; `null` when no
    *  input context existed. Diagnostic only. */

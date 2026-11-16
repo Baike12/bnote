@@ -5,16 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  *
  * Two disciplines:
  * 1. **Never initiate inside the keystroke's own task** — the switch request is
- *    deferred to the end of the task (so the mode change and its DOM work land
- *    first); consecutive flips collapse into one, and only the latest intent
- *    goes out.
- * 2. **At most one in-flight call at a time**. Each switch occupies the app
- *    main thread for the duration of the TIS call (HIToolbox runs it there;
- *    2–10 ms warm, up to ~170 ms while a third-party input method activates),
- *    so a burst of flips collapses into "one first call + one trailing call",
- *    and the trailing call always carries the latest intent; nothing is re-sent
- *    after a blur suspend, and the system IME is not touched at all when
- *    nothing was really switched.
+ *    queued as a microtask (after the mode change's synchronous work but before
+ *    the next input event); consecutive flips collapse into one, and only the
+ *    latest intent goes out.
+ * 2. **At most one in-flight call at a time**. The helper keeps TIS off the
+ *    app's main thread, while the context hand-off and system source still
+ *    need a serialized order. A burst collapses into "one first call + one
+ *    trailing call"; the trailing call carries the latest intent, a forced
+ *    focus reconcile may legitimately repeat the same target, and nothing is
+ *    re-sent after a blur suspend.
  */
 
 const setInputSource = vi.hoisted(() => vi.fn());
@@ -97,10 +96,10 @@ describe("imeApply launch timing and in-flight merging", () => {
     expect(setInputSource).not.toHaveBeenCalled();
   });
 
-  it("the launch goes out on the next task tick, never inside the keystroke's own task", async () => {
+  it("the launch goes out in the next microtask, before the next input event", async () => {
     imeApply("A");
     expect(setInputSource).not.toHaveBeenCalled();
-    await new Promise((r) => setTimeout(r, 0));
+    await Promise.resolve();
     expect(setInputSource).toHaveBeenCalledTimes(1);
     expect(setInputSource).toHaveBeenLastCalledWith("A");
     await drain();
@@ -161,6 +160,29 @@ describe("imeApply launch timing and in-flight merging", () => {
     expect(setInputSource).toHaveBeenCalledTimes(2);
   });
 
+  it("a forced focus reconcile is replayed even when it has the same target as the in-flight call", async () => {
+    const { patchSettings } = useAppStore.getState();
+    patchSettings({
+      ime: {
+        ...useAppStore.getState().settings.ime,
+        insertSource: "A",
+      },
+    });
+
+    imeApply("A");
+    await Promise.resolve();
+    expect(setInputSource).toHaveBeenCalledTimes(1);
+
+    imeOnChineseFocus(true);
+    await Promise.resolve();
+    expect(pending).toHaveLength(1);
+
+    await drain();
+
+    expect(setInputSource).toHaveBeenCalledTimes(2);
+    expect(setInputSource).toHaveBeenLastCalledWith("A");
+  });
+
   it("after the trailing call settles, switching back to the old target is sent normally again (mode round trip)", async () => {
     imeApply("EN");
     await drain();
@@ -188,6 +210,22 @@ describe("imeApply launch timing and in-flight merging", () => {
     await drain();
     expect(setInputSource).toHaveBeenCalledTimes(2);
     expect(setInputSource).toHaveBeenLastCalledWith("com.apple.keylayout.ABC");
+  });
+
+  it("a blur while the switch is in flight queues the hand-back after it instead of overlapping commands", async () => {
+    imeApply("A");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(pending).toHaveLength(1);
+
+    imeOnWindowBlur();
+    await drain();
+
+    expect(setInputSource).toHaveBeenCalledTimes(2);
+    expect(setInputSource.mock.calls.map(([source]) => source)).toEqual([
+      "A",
+      "com.apple.keylayout.ABC",
+    ]);
   });
 
   it("after refocusing it switches once more according to the current context", async () => {

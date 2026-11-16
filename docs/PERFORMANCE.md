@@ -231,11 +231,9 @@ lived, one JSON line per request over stdin/stdout:
 
 - `set_input_source` / `get_current_input_source` / `list_input_sources` write
   one pipe line and read the answer; the UI thread never runs TIS. A real
-  switch is **one command**: it selects the system source in the helper and
-  rebuilds the app's own input method session on the main thread (also when the
-  system source was already active but the context is known stale — see below).
-  Two commands left a window in which the system source had switched while the
-  hand-off was still an IPC hop away.
+  switch is **one command**: the app's input context gets the target source
+  first, then the helper selects the same source for the system. Two commands
+  left a window in which the context and the menu bar could disagree.
 - The helper keeps the TIS reference cache and the one-time initialization warm
   across switches (`imeWarmUp` still triggers them at startup, now inside the
   helper).
@@ -248,20 +246,20 @@ lived, one JSON line per request over stdin/stdout:
 - The web input context follows the switch: the context keeps the input method
   session it was typing with, and a select made in another process does not
   propagate into that session (the menu bar follows the system-wide
-  notification, WebKit does not). After a confirmed real switch (`switched`)
-  the same command hands the new source to the app's own `NSTextInputContext`
-  (on the main thread, `ime_tis::apply_context_source`), which **deactivates
-  the context, pins the source, and re-activates it**. The rebuild is the
-  point: writing
-  `selectedKeyboardInputSource` alone is a no-op once AppKit has mirrored the
-  system change, because the value is already the target — measured
-  2026-11-16, all 35 sampled switches had the property already updated when the
-  hand-off ran, and typing followed only about half the time. The
-  deactivate/activate pair does not depend on the property changing, so it is
-  order-independent. It is still no TIS call and no focus churn. The blur +
-  focus re-mount was the earlier mechanism; it is deliberately gone (it
-  re-captures whatever the context restores, and it scrolls the notes page
-  when focus() is not prevented from scrolling).
+  notification, WebKit does not). `set_input_source` therefore updates the
+  app's own `NSTextInputContext.selectedKeyboardInputSource` **before** the
+  helper changes the system source. At that point the property still names the
+  old source, so AppKit observes a real transition. Updating it after the
+  helper was too late: AppKit had already mirrored the system value, making
+  the context write a no-op and leaving the WebView typing with the old IME.
+- The normal path does **not** call `deactivate`/`activate`. That sequence
+  tears down the active text session and blocks the next key while the input
+  method reconnects. It is recovery-only: when an earlier pass had no context
+  at all, the generation-stamped pending intent is retried on the next editor
+  or window focus. If the source property already equals the target but the
+  session is known stale, the recovery rebuild drops the session once, pins
+  the source, and re-activates. A successful property transition never pays
+  that cost.
 - **The system source and the context are two authorities.** "Already active"
   from the helper says nothing about the context: when the switch runs before
   the web view is the window's first responder (the window is still
@@ -272,22 +270,22 @@ lived, one JSON line per request over stdin/stdout:
   because it happens **before** the DOM `keydown`. Measured in the 2026-11-16
   trace: five `ctx = 0` switches with `contextMs ≤ 0.01 ms` — the context was
   absent, not disagreeing (the three AppKit calls cannot finish that fast).
-  - The backend remembers a missed hand-off (`CONTEXT_STALE`) and rebuilds the
-    context on the next command even when the system source did not change.
-  - If the context is still absent, a bounded delayed repair retries on a side
-    thread (50/120/240/480 ms) and only while the system source still equals the
-    intent — the system source is the arbiter, so a newer mode change is never
-    fought.
-  - The front end sends the intent only; the retry is not a JS chain. The JS
-    cannot read the context, and a stale retry would overwrite a newer intent.
+  - The backend retains a missed hand-off as `{ generation, target }`. An
+    older request that settles late cannot clear a newer intent.
+  - The intent is retried by the next editor `focusin` or window focus, not by
+    a 50/120/240/480 ms timer. A timer can start a destructive AppKit
+    transition exactly when the user types the first character.
+  - The front end sends the intent only. The backend performs the context
+    hand-off first, then the helper updates the system source; on a helper
+    failure the previous context source is restored when possible.
 
 `SetImeOutcome` returns both legs, and the span carries them:
 
 | field | meaning | a large value means |
 |---|---|---|
 | `tisMs` | inside `TISSelectInputSource` (helper process) | the input method was cold — visible only as hand-over time now, not as a UI freeze |
-| `contextMs` | main-thread session rebuild (`deactivate` / pin / `activate`) | the rebuild is touching the keystroke budget; move work off the switch path |
-| `ctx` | 1 = rebuild reported success, 0 = it missed, -1 = no rebuild attempted (no switch and the context was not known stale, or no context existed — `switched`/`contextSource` tell those apart) | a `0` is the old symptom (menu bar switched, typing did not); `-1` with `switched = 1` means the context was absent and the delayed repair owns it |
+| `contextMs` | main-thread `selectedKeyboardInputSource` hand-off (rare recovery rebuild included) | the context transition is touching the keystroke budget |
+| `ctx` | 1 = context accepted the target, 0 = the context transition failed, -1 = no context existed | a `0` is a real mismatch; `-1` leaves the intent pending for the next focus |
 | `contextSource` | the source the app context reported afterwards (diagnostic) | mirrors the system change even for a stale session — absence proves "no context", not the session identity |
 | `ms - tisMs - contextMs` | IPC + pipe + the front end's own task boundary | the bridge, not the IME |
 
@@ -299,10 +297,10 @@ Two things this leg deliberately does **not** do:
   source — so the check could never detect it, while it added two more
   main-thread TIS calls at +120 ms and +240 ms (on the user's next characters)
   and ended in a `macism` CLI fallback that steals focus.
-- **No extra deferral.** The switch is queued one task tick after the keystroke
-  (`setTimeout(0)`) so the mode change and its DOM work land first. Waiting for
-  a frame on top of that only shortened the time the IME had to be ready before
-  the user's first character.
+- **No extra macrotask.** A `queueMicrotask` collapses synchronous flips and
+  starts the context-first request before the next input event. Waiting for a
+  `setTimeout(0)` only widened the window in which Vim was already in insert
+  mode while WebKit had not prepared its input context.
 
 ## 7. Where the hot path lives (map)
 

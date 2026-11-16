@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * The switch is one round trip: `set_input_source` carries both halves — the
- * helper's TIS select (system source, menu bar) and the app's input method
- * session rebuild (`ime_tis::apply_context_source`, main thread, because the
- * context is a process-local object).
+ * The switch is one round trip: `set_input_source` carries both halves. It
+ * hands the target to the app's process-local `NSTextInputContext` first, then
+ * the helper updates the system source that the menu bar displays.
  *
  * Splitting them into two commands left a window in which the system source
  * had already switched while the hand-off was still an IPC hop away; that

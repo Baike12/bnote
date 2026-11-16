@@ -19,7 +19,7 @@ import { mathRegionsField } from "./context";
 import { calloutRegionsField } from "./callout";
 import { emphasisMarksExtension } from "./emphasisMarks";
 import { typewriterExtension } from "./typewriter";
-import { imeSwitchExtension } from "./imeSwitch";
+import { imeOnEditorFocus, imeSwitchExtension } from "./imeSwitch";
 import { pythonLspExtension } from "@/python/lsp";
 import { dailySyncExtension } from "@/daily/extension";
 import { dailyMarksExtension } from "@/daily/marks";
@@ -161,6 +161,10 @@ export function baseExtensions(
     EditorView.domEventHandlers({
       focusin: (_event, view) => {
         setActiveEditor(view);
+        // A missed native hand-off happens when the mode change lands before
+        // this view has an NSTextInputContext. This focus event is the proof
+        // that one now exists, so reconcile there instead of polling on a timer.
+        imeOnEditorFocus();
         return false;
       },
     }),

@@ -13,8 +13,10 @@
 //!
 //! `apply_context_source` is the other half: the app's own
 //! `NSTextInputContext` keeps the source it was created with, and a select
-//! made in the helper process does not reach it. It runs on the app's main
-//! thread and only writes one property — no TIS call, microseconds.
+//! made in the helper process does not reach it. The normal path writes
+//! `selectedKeyboardInputSource` before the system source changes, when that
+//! write is still a real context transition. A destructive session rebuild is
+//! reserved for an intent that missed the context entirely on an earlier pass.
 
 use crate::commands::ime::InputSourceInfo;
 
@@ -260,6 +262,112 @@ pub fn warm_select_current() {
 }
 
 // ---------------------------------------------------------------------------
+// input-source intent coordination
+// ---------------------------------------------------------------------------
+
+/// One ordered piece of input-source intent. The generation is the single
+/// writer guard: a slower, older request may finish after a newer one, but it
+/// can never clear or overwrite the newer intent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingContext {
+    generation: u64,
+    target: String,
+    needs_rebuild: bool,
+}
+
+/// The native side's input-source state. The system source and the WebView
+/// context are two authorities; this coordinator owns their pending intent,
+/// not either authority's cached value.
+#[derive(Default)]
+struct ImeCoordinator {
+    next_generation: u64,
+    pending: Option<PendingContext>,
+}
+
+pub(crate) struct ImeIntent {
+    generation: u64,
+    pub(crate) target: String,
+    pub(crate) rebuild: bool,
+}
+
+impl ImeCoordinator {
+    fn begin(&mut self, target: String) -> ImeIntent {
+        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        let rebuild = self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.target == target && pending.needs_rebuild);
+        let generation = self.next_generation;
+        self.pending = Some(PendingContext {
+            generation,
+            target: target.clone(),
+            needs_rebuild: false,
+        });
+        ImeIntent {
+            generation,
+            target,
+            rebuild,
+        }
+    }
+
+    fn is_current(&self, intent: &ImeIntent) -> bool {
+        self.pending.as_ref().is_some_and(|pending| {
+            pending.generation == intent.generation && pending.target == intent.target
+        })
+    }
+
+    fn settle(&mut self, intent: &ImeIntent) {
+        if self.is_current(intent) {
+            self.pending = None;
+        }
+    }
+
+    fn mark_missed(&mut self, intent: &ImeIntent) {
+        if let Some(pending) = self.pending.as_mut() {
+            if pending.generation == intent.generation && pending.target == intent.target {
+                pending.needs_rebuild = true;
+            }
+        }
+    }
+
+    fn abandon(&mut self, intent: &ImeIntent) {
+        if self.is_current(intent) {
+            self.pending = None;
+        }
+    }
+}
+
+static IME_COORDINATOR: Mutex<ImeCoordinator> = Mutex::new(ImeCoordinator {
+    next_generation: 0,
+    pending: None,
+});
+
+fn coordinator_mutex() -> Result<std::sync::MutexGuard<'static, ImeCoordinator>, String> {
+    IME_COORDINATOR
+        .lock()
+        .map_err(|_| "ime coordinator mutex poisoned".to_string())
+}
+
+pub(crate) fn begin_intent(target: String) -> Result<ImeIntent, String> {
+    Ok(coordinator_mutex()?.begin(target))
+}
+
+pub(crate) fn settle_intent(intent: &ImeIntent) -> Result<(), String> {
+    coordinator_mutex()?.settle(intent);
+    Ok(())
+}
+
+pub(crate) fn mark_intent_missed(intent: &ImeIntent) -> Result<(), String> {
+    coordinator_mutex()?.mark_missed(intent);
+    Ok(())
+}
+
+pub(crate) fn abandon_intent(intent: &ImeIntent) -> Result<(), String> {
+    coordinator_mutex()?.abandon(intent);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // app input context (AppKit — no TIS)
 // ---------------------------------------------------------------------------
 
@@ -271,45 +379,52 @@ pub fn warm_select_current() {
 /// keeps the input method session it was typing with, so typing stays on the
 /// old source.
 ///
-/// Writing `selectedKeyboardInputSource` alone is **not** enough, and that is
-/// the bug this function exists to close (measured 2026-11-16, 35 switches):
-/// by the time the hand-off runs, AppKit has already mirrored the system-wide
-/// change into the property, so the write is "unchanged" and AppKit does not
-/// rebuild the session — the switch then depends on whether the notification
-/// arrived before or after the write, i.e. it worked about half the time.
-/// Deactivating first drops the session unconditionally; writing while the
-/// context is detached pins the source; activating opens a session that reads
-/// that source. The trailing re-write covers the per-context restore
-/// (`TextInputGlobalPropertyPerContextInput`), which can put the remembered
-/// source back during activation — that write *is* a change then, so it
-/// rebuilds the session too.
+/// Ordering is the important part. This runs **before** the helper changes the
+/// system source, while `selectedKeyboardInputSource` still names the old
+/// source. The AppKit setter therefore observes a real transition and updates
+/// the session. Running it after the system change was too late: AppKit had
+/// already mirrored the new identifier into the property, so writing the same
+/// value did not rebuild the session.
+///
+/// `rebuild` is a recovery path, not the steady state. It is used only when a
+/// previous intent had no input context at all and the system source was
+/// already changed; dropping and activating the context is then the only way
+/// to prove the stale session is replaced. Deactivating first drops it
+/// unconditionally; writing while detached pins the source; activating opens a
+/// session that reads that source. The trailing re-write covers the
+/// per-context restore (`TextInputGlobalPropertyPerContextInput`).
 ///
 /// Must run on the app's main thread (the context is main-thread only).
 ///
 /// Returns:
 /// - `Some(true)`  — a context existed and reports the target source after the
-///   rebuild;
-/// - `Some(false)` — a context existed but the rebuild did not stick;
+///   property transition (or recovery rebuild);
+/// - `Some(false)` — a context existed but the transition did not stick;
 /// - `None`        — there is no input context at this instant (the web view
 ///   is not the window's first responder, e.g. while the window is still
-///   activating). This is **not** a failure of the source: the caller must
-///   retry once the context exists, because a skipped hand-off leaves WebKit
-///   typing with the old IME for the whole normal-mode session (the exact
-///   "j/k feels laggy" symptom: every key goes through the old IME).
-pub fn apply_context_source(id: &str) -> Option<bool> {
+///   activating). The caller keeps the generation-stamped intent pending and
+///   retries it on the next editor/window focus; a skipped hand-off would
+///   leave WebKit typing with the old IME for the whole mode session.
+pub fn apply_context_source(id: &str, rebuild: bool) -> Option<bool> {
     let mtm = MainThreadMarker::new()?;
     let context = NSTextInputContext::currentInputContext(mtm)?;
     let source = NSString::from_str(id);
-    context.deactivate();
-    context.setSelectedKeyboardInputSource(Some(&source));
-    context.activate();
-    if context
+    let already_selected = context
         .selectedKeyboardInputSource()
-        .is_none_or(|current| current.to_string() != id)
-    {
-        // Activation can put the source remembered for this context back
-        // (`TextInputGlobalPropertyPerContextInput`); the write is a real
-        // change then, so it rebuilds the session a second time.
+        .is_some_and(|current| current.to_string() == id);
+    if rebuild && already_selected {
+        context.deactivate();
+        context.setSelectedKeyboardInputSource(Some(&source));
+        context.activate();
+        if context
+            .selectedKeyboardInputSource()
+            .is_none_or(|current| current.to_string() != id)
+        {
+            // Activation can put the source remembered for this context back;
+            // this write is the real change that corrects it.
+            context.setSelectedKeyboardInputSource(Some(&source));
+        }
+    } else {
         context.setSelectedKeyboardInputSource(Some(&source));
     }
     Some(
@@ -346,6 +461,50 @@ mod tests {
 
     fn lock() -> std::sync::MutexGuard<'static, ()> {
         TIS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn only_the_latest_intent_can_settle_the_pending_context() {
+        let mut coordinator = ImeCoordinator::default();
+        let first = coordinator.begin("ABC".into());
+        let second = coordinator.begin("Pinyin".into());
+
+        coordinator.settle(&first);
+        assert!(coordinator.is_current(&second));
+
+        coordinator.settle(&second);
+        assert!(!coordinator.is_current(&second));
+    }
+
+    #[test]
+    fn a_retry_for_the_same_missed_target_is_the_only_path_that_requests_a_rebuild() {
+        let mut coordinator = ImeCoordinator::default();
+        let first = coordinator.begin("ABC".into());
+        assert!(!first.rebuild);
+
+        // An overlapping focus request is not evidence that the first pass
+        // missed; it must remain a normal context transition.
+        let overlap = coordinator.begin("ABC".into());
+        assert!(!overlap.rebuild);
+
+        // The first pass then completed its system select without a context.
+        coordinator.mark_missed(&overlap);
+        let retry = coordinator.begin("ABC".into());
+        assert!(retry.rebuild);
+
+        // A newer target is a normal context transition, not a recovery.
+        let changed = coordinator.begin("Pinyin".into());
+        assert!(!changed.rebuild);
+    }
+
+    #[test]
+    fn an_abandoned_old_request_does_not_erase_a_newer_pending_intent() {
+        let mut coordinator = ImeCoordinator::default();
+        let old = coordinator.begin("ABC".into());
+        let current = coordinator.begin("Pinyin".into());
+
+        coordinator.abandon(&old);
+        assert!(coordinator.is_current(&current));
     }
 
     /// Gate: **one mode switch must not re-enumerate the input sources**.

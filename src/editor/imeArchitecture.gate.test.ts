@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
  * A mode switch works only as one composed chain:
  *
  *   vim mode change -> imeSwitchExtension -> imeApply -> set_input_source
+ *     -> context hand-off first (app main thread, property transition)
  *     -> TIS select in the helper process (off the app's main thread)
- *     -> switched=true -> rebuild the app's input method session (main thread)
  *
  * Both halves live in the one command on purpose: each can only run in its own
  * place (TIS in the helper, the process-local context in the app), and two
@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
  * every functional test, and shipped a build where the menu bar switched while
  * the editor kept typing latin:
  *
- * - dropping the context re-mount leaves WebKit typing with the source it
+ * - dropping the context hand-off leaves WebKit typing with the source it
  *   captured when the editor gained focus;
  * - moving the select back in-process freezes the UI thread for the whole TIS
  *   call (25-104 ms real-trace range) and, on macOS 26, does not reliably
@@ -53,12 +53,17 @@ describe("the typing context follows a real switch", () => {
     expect(source).toContain('perfFields("tisMs", "ctxMs", "ctx", "switched")');
   });
 
-  it("a missed hand-off is owned by the backend, not chained in JS", () => {
-    // The retry must not be a front-end loop: only the backend can read the
-    // system source and the input context, and a JS retry would fight a newer
-    // intent (e.g. the user pressing i before the retry fires).
+  it("a missed hand-off is a generation-stamped backend intent, not a timer", () => {
+    // A timer that starts deactivating the context after 50ms can land on the
+    // first typed character. The pending intent is settled by a later focus or
+    // mode event, and an older completion cannot erase a newer intent.
     expect(source).not.toContain("scheduleContextVerify");
-    expect(read("src-tauri/src/commands/ime.rs")).toContain("schedule_context_repair");
+    const commands = read("src-tauri/src/commands/ime.rs");
+    const tis = read("src-tauri/src/ime_tis.rs");
+    expect(tis).toContain("IME_COORDINATOR");
+    expect(tis).toContain("PendingContext");
+    expect(commands).not.toContain("schedule_context_repair");
+    expect(commands).not.toContain("std::thread::spawn");
   });
 
   it("the source goes to the app's own context, not through a focus re-mount", () => {
@@ -81,6 +86,7 @@ describe("the switch is composed into the editor and the app shell", () => {
     expect(app).toContain("imeWarmUp()");
     expect(app).toContain("imeOnWindowBlur()");
     expect(app).toContain("imeOnWindowFocus()");
+    expect(read("src/editor/setup.ts")).toContain("imeOnEditorFocus()");
   });
 
   it("the IPC wrapper invokes the set_input_source command", () => {
@@ -116,27 +122,33 @@ describe("the backend half: the select runs in the helper process", () => {
     }
   });
 
-  it("the app-side half hands the source to the input context", () => {
+  it("the app-side context is handed the source before the menu-bar system select", () => {
     const commands = read("src-tauri/src/commands/ime.rs");
     expect(commands).toContain("ime_tis::apply_context_source");
     expect(commands).not.toContain("pub async fn apply_input_context_source");
-    // NSTextInputContext.selectedKeyboardInputSource is the AppKit-level setter
-    // that makes the web view type with the new source.
     expect(read("src-tauri/src/ime_tis.rs")).toContain("setSelectedKeyboardInputSource");
+    const body = commands.slice(
+      commands.indexOf("pub async fn set_input_source"),
+      commands.indexOf("async fn hand_off_context"),
+    );
+    const context = body.indexOf("hand_off_context");
+    const helper = body.indexOf("ime_daemon::with_client");
+    expect(context).toBeGreaterThan(-1);
+    expect(helper).toBeGreaterThan(context);
   });
 
-  it("the hand-off rebuilds the input method session, not just the property", () => {
+  it("the destructive session rebuild is recovery-only, not every switch", () => {
     const tis = read("src-tauri/src/ime_tis.rs");
-    // AppKit mirrors the system-wide change into selectedKeyboardInputSource
-    // before the hand-off runs, so writing it alone is a no-op and the session
-    // keeps the old IME — typing followed only about half the time. Drop the
-    // session first, pin the source while detached, then activate.
+    const recovery = tis.indexOf("if rebuild && already_selected");
     const deactivate = tis.indexOf("context.deactivate()");
     const pin = tis.indexOf("context.setSelectedKeyboardInputSource");
     const activate = tis.indexOf("context.activate()");
+    expect(recovery).toBeGreaterThan(-1);
+    expect(recovery).toBeLessThan(deactivate);
     expect(deactivate).toBeGreaterThan(-1);
     expect(deactivate).toBeLessThan(pin);
     expect(pin).toBeLessThan(activate);
+    expect(tis).toContain("apply_context_source(id: &str, rebuild: bool)");
   });
 
   it("the helper drains its run loop so it sees source changes made by other processes", () => {

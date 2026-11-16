@@ -16,12 +16,13 @@
 //! - The helper is warm across switches: its TIS reference cache and the
 //!   one-time TIS initialization are paid once at startup (the frontend's
 //!   `imeWarmUp` list call), not on the user's first mode change.
-//! - The app's main thread only writes and reads one pipe line per switch, so
-//!   the UI never blocks on TIS — that is the whole point.
+//! - The app's main thread never runs TIS. Its only synchronous leg is the
+//!   context-first source hand-off; the helper request itself runs on a
+//!   blocking worker.
 //! - Self-healing: a request that fails or exceeds [`READ_TIMEOUT`] discards
 //!   the helper (kill; it also exits by itself on stdin EOF), and the next
-//!   request spawns a fresh one. Errors propagate to the caller — the IME
-//!   follow retries on the next transition instead of failing silently.
+//!   request spawns a fresh one. Errors propagate to the caller — the frontend
+//!   retries on the next transition instead of failing silently.
 
 use std::io::{BufRead, BufWriter, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};

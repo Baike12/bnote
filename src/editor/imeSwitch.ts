@@ -19,22 +19,22 @@ import { perfEnd, perfFields, perfStart } from "@/perf/trace";
  * The out-of-process architecture has a second half: the web view's input
  * method session keeps the source it was typing with — a select made in
  * another process reaches the menu bar but not that session. `set_input_source`
- * therefore carries both halves in one round trip: the helper selects the
- * system source and the app's main thread rebuilds the session
- * (`ime_tis::apply_context_source`: deactivate, pin the source, activate).
- * Rebuilding the session is what makes typing follow; writing the context
- * property alone is a no-op once AppKit has already mirrored the system-wide
- * change into it.
+ * therefore carries both halves in one round trip, in the only useful order:
+ * the app's main thread first hands the source to its own input context, then
+ * the helper selects the system source. The context is the authority for
+ * typing and is ready before the menu bar can advertise the change. The
+ * backend keeps a missed context as a generation-stamped pending intent; the
+ * next editor/window focus settles it without a timer that can race the first
+ * typed character.
  *
  * "The system source did not change" does not mean "the context is right":
  * after one hand-off that ran with no context (the window was still
  * activating), WebKit keeps the old IME while the menu bar already shows the
  * target, and every normal-mode key then pays that IME's keystroke round trip
  * — the lag one feels on j/k, invisible to the JS key probe because it happens
- * before the DOM keydown. The backend owns that state: it remembers a missed
- * hand-off, reconciles the context on the next command even without a system
- * switch, and retries on a bounded delay while the system source still equals
- * the intent. The front end sends the intent; it never chains retries.
+ * before the DOM keydown. The backend owns that state: the pending intent is
+ * generation-stamped, an older completion cannot clear a newer request, and a
+ * real focus event retries it before typing resumes.
  *
  * Mirrors the behavior of the user's patched obsidian-vim-input-auto-switch:
  * entering insert inside a math region keeps the English source (formulas are
@@ -64,14 +64,14 @@ let forcedThisSession = false;
 let focusSeq = 0;
 
 /** At most one setInputSource in flight; a burst of flips collapses into the
- *  one trailing call that matches the final intent. Each switch occupies the
- *  app main thread for the duration of the TIS call (2–10 ms warm, up to
- *  ~170 ms while the input method activates), so overlapping switches would
- *  queue behind each other — exactly what rapid cursor moves across math
- *  boundaries felt like. */
+ *  one trailing call that matches the final intent. The helper keeps TIS off
+ *  the app's thread, but the context hand-off and system source still need a
+ *  serialized order, so overlapping commands must not invent their own. */
 let switching = false;
-let queued: string | null = null;
+let queued: { target: string; resendSame: boolean; handback: boolean } | null = null;
 let launchScheduled = false;
+let desiredResendSame = false;
+let launchHandback = false;
 
 /** One-shot timer that re-checks the input source after the focus settles (see scheduleFocusVerify). */
 let focusVerifyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -88,47 +88,47 @@ function cancelFocusVerify(): void {
   }
 }
 
-/** Defers the switch to the end of the key's task and collapses consecutive
- *  flips into the one trailing switch: `desired` is the single source of
- *  intent, read when the timer fires. A burst of cursor moves across math
- *  boundaries then costs one switch instead of one per move. */
+/** Collapses flips that happen in the same JavaScript task, then launches
+ *  before the next input event. The helper keeps TIS off the app's main
+ *  thread, so waiting for a macrotask only widened the window in which the
+ *  editor was insert but its WebView input context had not been prepared. */
 function scheduleLaunch(): void {
   if (launchScheduled) return;
   launchScheduled = true;
-  setTimeout(() => {
+  queueMicrotask(() => {
     launchScheduled = false;
     const target = desired;
-    if (target === null || suspended) return; // the user's IME was handed back (blur / suspended)
+    const resendSame = desiredResendSame;
+    const handback = launchHandback;
+    desiredResendSame = false;
+    launchHandback = false;
+    if (target === null || (suspended && !handback)) return;
     if (switching) {
-      queued = target;
+      queued = { target, resendSame, handback };
       return;
     }
-    launchSwitch(target);
-  }, 0);
+    launchSwitch(target, handback);
+  });
 }
 
-/* The span's own `ms` is the whole round trip: IPC plus the backend's TIS call
- * plus the main-thread session rebuild. The backend returns both legs
- * (`tisMs`, `contextMs`); the remainder is the bridge. `ctx` is 1 when the
- * rebuild reported success, 0 when it reported a miss — a miss is the old
- * symptom (menu bar switched, typing stayed on the old source), so it must be
- * readable here instead of disappearing into a swallowed promise. `switched`
- * separates the two ways of `ctx = -1`: no system switch (nothing to rebuild)
- * versus no input context at that instant (the backend's delayed repair owns
- * it). The target source itself is on the Rust-side line and in the warning
- * below. */
+/* The span's own `ms` is the whole round trip: IPC plus the context-first
+ * AppKit hand-off and the backend's system TIS call. The backend returns both
+ * legs (`tisMs`, `contextMs`); the remainder is the bridge. `ctx` is 1 when
+ * the app context accepted the source, 0 when it failed, and -1 when no
+ * context existed yet. `switched` separates the two ways of `ctx = -1`: the
+ * system source did not move, versus the intent is pending until focus. */
 const IME_FIELDS = perfFields("tisMs", "ctxMs", "ctx", "switched");
 const IME_FAILED_FIELDS = perfFields("target");
 
-function launchSwitch(target: string): void {
+function launchSwitch(target: string, handback = false): void {
   switching = true;
-  forcedThisSession = true;
+  if (!handback) forcedThisSession = true;
   const seq = focusSeq;
-  // End-to-end cost of the switch (IPC + the helper's TIS select + the
-  // main-thread session rebuild). This is the leg that made "leave a formula,
-  // type the next key" feel slow when the input source was being engaged.
+  // End-to-end cost of the switch: IPC + the main-thread context hand-off +
+  // the helper's system select. The context comes first, so the next key can
+  // never arrive while the WebView still has the previous session.
   const t = perfStart();
-  if (baseline === null) {
+  if (!handback && baseline === null) {
     void api
       .getCurrentInputSource()
       .then((id) => {
@@ -136,25 +136,23 @@ function launchSwitch(target: string): void {
       })
       .catch(() => {});
   }
-  // Fire-and-forget: one command carries both halves — the helper selects the
-  // system source and the main thread rebuilds the app's input method session,
-  // so there is no window in which the switch is half done.
+  // Fire-and-forget: one command carries both halves in context-first order —
+  // the main thread prepares WebKit's input context, then the helper updates
+  // the system source. A newer intent invalidates an older pending one.
   void api
     .setInputSource(target)
     .then((outcome) => {
       const ctx = outcome.contextApplied === null ? -1 : Number(outcome.contextApplied);
       perfEnd(t, "ime.switch", IME_FIELDS, outcome.tisMs, outcome.contextMs, ctx, outcome.switched);
       if (outcome.contextApplied === false) {
-        // The system source changed but the session rebuild missed: typing will
-        // keep the old input method until the backend's repair lands. The
-        // source it actually reports is the one detail the Rust log lacks.
+        // The context rejected the source. The backend keeps the intent pending
+        // for the next focus; the source it reports is the one detail the Rust
+        // log lacks.
         console.warn("[bnote] input context hand-off missed", target, outcome.contextSource);
       }
-      // `contextApplied === null` with `switched` means "no input context at
-      // that instant" (the window was still activating). Its repair is a
-      // bounded delayed retry in the backend, not a JS chain: the backend can
-      // read the system source and the context, the front end can observe
-      // neither, and a JS retry would fight a newer intent.
+      // `contextApplied === null` means "no input context at that instant"
+      // (the window was still activating). The intent stays pending until the
+      // editor or window focus event proves a context exists.
     })
     .catch((e) => {
       console.warn("[bnote] set input source failed", e);
@@ -166,9 +164,28 @@ function launchSwitch(target: string): void {
       const next = queued;
       queued = null;
       // No re-send after suspending (blur / hand-back): the user's original
-      // input source has just been returned to them.
-      if (next !== null && next !== target && !suspended) launchSwitch(next);
+      // input source has just been returned to them. A queued hand-back is the
+      // one exception: it is the final intent of the focus session.
+      if (
+        next !== null &&
+        (next.target !== target || next.resendSame) &&
+        (!suspended || next.handback)
+      ) {
+        launchSwitch(next.target, next.handback);
+      }
     });
+}
+
+function requestTarget(target: string, force: boolean): void {
+  const { settings } = useAppStore.getState();
+  if (!settings.ime.enabled) return;
+  if (!force && desired === target && !suspended) return;
+  cancelFocusVerify();
+  desired = target;
+  desiredResendSame = force;
+  launchHandback = false;
+  suspended = false;
+  scheduleLaunch();
 }
 
 /**
@@ -176,13 +193,7 @@ function launchSwitch(target: string): void {
  * No-op when `target` is already what bnote wants (unless suspended by blur).
  */
 export function imeApply(target: string): void {
-  const { settings } = useAppStore.getState();
-  if (!settings.ime.enabled) return;
-  if (desired === target && !suspended) return;
-  cancelFocusVerify();
-  desired = target;
-  suspended = false;
-  scheduleLaunch();
+  requestTarget(target, false);
 }
 
 /**
@@ -205,13 +216,9 @@ export function imeOnChineseFocus(force = false): void {
     imeApply(settings.ime.insertSource);
     return;
   }
-  desired = settings.ime.insertSource;
-  suspended = false;
-  // The queued older intent (blur hand-back, the previous field) is voided:
-  // the user just explicitly entered a field, so Chinese is the final intent.
-  // Once the in-flight call settles, launchSwitch's trailing step re-sends it.
-  queued = null;
-  scheduleLaunch();
+  // The latest explicit focus intent replaces whatever was queued. The single
+  // in-flight command settles before this one is sent, so it cannot race it.
+  requestTarget(settings.ime.insertSource, true);
   scheduleFocusVerify(settings.ime.insertSource);
 }
 
@@ -319,6 +326,8 @@ function restoreSource(source: string): void {
   desired = source;
   suspended = false;
   queued = null;
+  desiredResendSame = false;
+  launchHandback = false;
   scheduleLaunch();
 }
 
@@ -344,6 +353,8 @@ export function imeYield(): void {
   desired = null;
   suspended = false;
   queued = null;
+  desiredResendSame = false;
+  launchHandback = false;
   forcedThisSession = false;
   transient = null; // control is handed back: no popup's "original source" is remembered any more
   baseline = null; // consumed: handing it back twice would re-send the same source
@@ -367,7 +378,7 @@ function focusInChineseField(): boolean {
 }
 
 /** Switch to whatever the current UI context wants (modal or editor vim mode). */
-export function imeSyncToEditor(): void {
+export function imeSyncToEditor(force = false): void {
   const { settings, modal } = useAppStore.getState();
   if (!settings.ime.enabled) {
     if (desired) imeYield();
@@ -380,12 +391,12 @@ export function imeSyncToEditor(): void {
     // re-activation goes through here too and needs the same check (the
     // context restore may overwrite the source after activation).
     const target = settings.ime.insertSource;
-    imeApply(target);
+    requestTarget(target, force);
     scheduleFocusVerify(target);
     return;
   }
   const target = imeDesiredSource(settings, modal);
-  if (target) imeApply(target);
+  if (target) requestTarget(target, force);
   else if (desired) imeYield();
 }
 
@@ -436,28 +447,38 @@ function insertRegionWantsEnglish(settings: Settings, view: EditorView): boolean
 
 /** Window deactivated: hand the user's original source back to the system. */
 export function imeOnWindowBlur(): void {
+  const restore = forcedThisSession && desired !== null && baseline !== null ? baseline : null;
   focusSeq++;
   queued = null;
   cancelFocusVerify();
-  // Only a real forced switch needs to be handed back. While the switch is
-  // still deferred (the intent has not been sent out) this must not fire a
-  // main-thread TIS call to "switch" a source that is already active — that
-  // call would occupy the main thread just the same.
-  if (forcedThisSession && desired !== null && baseline !== null) {
-    void api.setInputSource(baseline).catch(() => {});
-  }
   forcedThisSession = false;
   baseline = null;
   suspended = true;
+  // The hand-back goes through the same latest-wins queue. Sending it beside
+  // an in-flight mode switch would allow their context/system halves to
+  // interleave even though the backend's generation is newer.
+  if (restore !== null) {
+    desired = restore;
+    desiredResendSame = true;
+    launchHandback = true;
+    scheduleLaunch();
+  }
+}
+
+/** The editor became the active text surface. Reconcile even when the target
+ *  did not change: the previous native hand-off may have run before this
+ *  context existed, and the backend retries that pending intent here. */
+export function imeOnEditorFocus(): void {
+  imeSyncToEditor(true);
 }
 
 /** Window activated: re-apply what bnote wants, with a fresh baseline.
- *  `suspended` stays true until imeApply/imeYield run, so the dedup guard
- *  knows the source must actually be (re)applied after the blur restore. */
+ *  Forcing the request also lets the backend settle an intent that missed the
+ *  context while the window was still activating. */
 export function imeOnWindowFocus(): void {
   focusSeq++;
   if (suspended) baseline = null; // fresh session after a real blur; duplicate focus events keep it
-  imeSyncToEditor();
+  imeSyncToEditor(true);
 }
 
 export function imeSwitchExtension(): Extension {

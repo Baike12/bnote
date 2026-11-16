@@ -6,7 +6,7 @@ import { EditorView } from "@codemirror/view";
  * The whole switch chain at the editor's own seam: a vim mode change runs
  * through `imeSwitchExtension.updateListener` -> `imeApply` -> the single
  * `set_input_source` IPC, which carries both halves (the helper's TIS select
- * and the main-thread session rebuild).
+ * and the main-thread context hand-off).
  *
  * The intent state machine is locked separately (imeSwitch.test.ts) and so is
  * the one-round-trip discipline (imeSwitchContext.integration.test.ts); what
@@ -31,7 +31,7 @@ vi.mock("@/lib/tauri", () => ({ api: tauri }));
 const vimMode = vi.hoisted(() => ({ current: null as "insert" | "normal" | "visual" | null }));
 vi.mock("./vim/vim", () => ({ currentVimMode: () => vimMode.current }));
 
-import { imeSwitchExtension, imeYield } from "./imeSwitch";
+import { imeOnEditorFocus, imeSwitchExtension, imeYield } from "./imeSwitch";
 import { registerEditorView, unregisterEditorView } from "./api";
 import { useAppStore } from "@/state/appStore";
 
@@ -147,6 +147,21 @@ describe("the editor-level switch chain", () => {
     await tick();
 
     expect(tauri.setInputSource).not.toHaveBeenCalled();
+  });
+
+  it("editor focus reconciles a context miss even when the target did not change", async () => {
+    const view = mount();
+    resetListener(view);
+    vimMode.current = "insert";
+    view.dispatch({});
+    await tick();
+    tauri.setInputSource.mockClear();
+
+    imeOnEditorFocus();
+    await tick();
+
+    expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
+    expect(tauri.setInputSource).toHaveBeenCalledWith(SOGOU);
   });
 
   it("moving the caret inside a formula in insert mode keeps the English source", async () => {

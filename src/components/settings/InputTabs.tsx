@@ -507,9 +507,9 @@ export function ImeTab() {
         {renderPicker("normalSource", "normal / visual 模式输入法", "一般选英文键盘（ABC）")}
       </SettingsCard>
       <p className="setting-hint">
-        通过系统输入法框架（TIS）在应用内直接切换，无进程启动、不抢焦点。耗时取决于目标输入法是否已激活：刚用过时
-        2–10ms，闲置几分钟后的第一次切换要
-        30–170ms（系统激活输入法本身的开销；期间按键会排队，不会被丢弃）。
+        系统输入法选择（TIS）在独立 helper
+        进程中完成；笔记区主线程只把新输入源交给当前输入上下文，不再每次销毁并重建会话，也不抢焦点。耗时取决于目标输入法是否已激活：刚用过时
+        2–10ms，闲置几分钟后的第一次切换要 30–170ms（系统激活输入法本身的开销）。
       </p>
       <SettingsCard title="免切换场景" desc="这些场景内容是英文，切回中文反而添乱。">
         <Toggle

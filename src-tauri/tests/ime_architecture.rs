@@ -63,7 +63,7 @@ fn the_command_layer_only_speaks_the_protocol() {
 }
 
 #[test]
-fn one_command_carries_both_halves_of_the_switch() {
+fn context_is_prepared_before_the_system_source_changes() {
     let commands = read("src/commands/ime.rs");
     assert!(
         commands.contains("pub async fn set_input_source"),
@@ -71,13 +71,12 @@ fn one_command_carries_both_halves_of_the_switch() {
     );
     assert!(
         commands.contains("ime_tis::apply_context_source"),
-        "the same command must rebuild the app's input method session after the helper's select"
+        "the same command must hand the source to the app's input context"
     );
     assert!(
         !commands.contains("pub async fn apply_input_context_source"),
-        "a second hand-off command re-opens the window where the system source has \
-         switched while the session rebuild is still an IPC hop away — that window \
-         is what shipped builds where the menu bar changed and typing did not"
+        "a second hand-off command re-opens the window where the context and the \
+         menu bar are updated by different asynchronous request chains"
     );
     assert!(
         !commands.contains("TISSelectInputSource"),
@@ -85,48 +84,50 @@ fn one_command_carries_both_halves_of_the_switch() {
     );
     assert!(
         read("src/ime_tis.rs").contains("setSelectedKeyboardInputSource"),
-        "the hand-off pins the source on NSTextInputContext while the session is \
-         detached; writing the property on an attached context is a no-op"
+        "the app must update its own NSTextInputContext before the helper changes \
+         the system source"
+    );
+    let start = index_of(&commands, "pub async fn set_input_source");
+    let end = index_of(&commands, "async fn hand_off_context");
+    let body = &commands[start..end];
+    assert!(
+        index_of(body, "hand_off_context") < index_of(body, "ime_daemon::with_client"),
+        "the app context must be ready before the menu bar can advertise the switch"
     );
 }
 
 #[test]
-fn a_missed_hand_off_is_reconciled_even_without_a_system_switch() {
+fn a_missed_hand_off_is_a_generation_stamped_pending_intent() {
     let commands = read("src/commands/ime.rs");
-    // The context and the system source are different authorities. Skipping
-    // the hand-off whenever the system reports "already active" leaves WebKit
-    // typing with the old IME after one miss — every normal-mode key then pays
-    // that IME's round trip (felt as j/k lag, invisible to the JS key probe).
+    let tis = read("src/ime_tis.rs");
     assert!(
-        commands.contains("CONTEXT_STALE"),
-        "the command must remember a missed hand-off and reconcile the context \
-         on the next command even when the system source did not change"
+        tis.contains("IME_COORDINATOR") && tis.contains("PendingContext"),
+        "the native IME layer must remember a missed context with its generation and target"
     );
     assert!(
-        commands.contains("schedule_context_repair"),
-        "when no input context exists yet (window activating), the hand-off must \
-         be retried; the front end cannot observe that state"
+        !commands.contains("schedule_context_repair") && !commands.contains("std::thread::spawn"),
+        "a delayed repair can tear down the context on the first typed character; \
+         pending intent is retried by the next focus or mode event"
     );
     assert!(
-        read("src/ime_tis.rs").contains("pub fn apply_context_source(id: &str) -> Option<bool>"),
-        "apply_context_source must distinguish 'no context' (None) from 'the \
-         rebuild missed' (Some(false)): the two have different owners"
+        read("src/ime_tis.rs")
+            .contains("pub fn apply_context_source(id: &str, rebuild: bool) -> Option<bool>"),
+        "apply_context_source must distinguish a missing context from a failed \
+         property transition and keep rebuild as an explicit recovery mode"
     );
 }
 
 #[test]
-fn the_hand_off_rebuilds_the_input_method_session() {
+fn the_hand_off_rebuilds_the_input_method_session_only_for_recovery() {
     let tis = read("src/ime_tis.rs");
+    let recovery = index_of(&tis, "if rebuild && already_selected");
     let deactivate = index_of(&tis, "context.deactivate()");
     let pin = index_of(&tis, "context.setSelectedKeyboardInputSource");
     let activate = index_of(&tis, "context.activate()");
     assert!(
-        deactivate < pin && pin < activate,
-        "the hand-off must deactivate, pin the source, then activate: \
-         setSelectedKeyboardInputSource alone is a no-op once AppKit has \
-         mirrored the system-wide change (the property already equals the \
-         target), so the input method session is never rebuilt and typing \
-         follows only by timing luck — measured at about half the switches"
+        recovery < deactivate && deactivate < pin && pin < activate,
+        "the destructive deactivate/pin/activate sequence must stay behind the \
+         recovery branch; running it on every mode switch blocks the next key"
     );
 }
 
