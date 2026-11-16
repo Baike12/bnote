@@ -40,9 +40,15 @@ export interface InputSourceInfo {
 
 export interface SetImeOutcome {
   switched: boolean;
-  /** The TIS call itself, in ms — the whole cost of a switch: the command runs
-   *  on the app main thread, and `ime.switch`'s own `ms` minus this is IPC. */
+  /** The TIS call itself, in ms — it runs inside the helper process, so this
+   *  number names the input method's activation, not a UI freeze. */
   tisMs: number;
+  /** Whether the app's own input method session was rebuilt on the new source
+   *  (main thread). `null` when no switch happened. `false` is a real failure:
+   *  the system source changed and typing still uses the old one. */
+  contextApplied: boolean | null;
+  /** Main-thread cost of the session rebuild, in ms. */
+  contextMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -769,8 +775,6 @@ export const api = {
   listInputSources: () => invoke<InputSourceInfo[]>("list_input_sources"),
   getCurrentInputSource: () => invoke<string>("get_current_input_source"),
   setInputSource: (id: string) => invoke<SetImeOutcome>("set_input_source", { id }),
-  /** Hands a source to the app's own text input context (the helper's select cannot reach it). */
-  applyInputContextSource: (id: string) => invoke<boolean>("apply_input_context_source", { id }),
 
   // ---- python ----
   /** Run the virtual python text of a note (the line alignment and the main guard are synthesized by the front end). */

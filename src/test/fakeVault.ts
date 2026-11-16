@@ -437,6 +437,8 @@ export class FakeVault {
     setInputSource: async (): Promise<SetImeOutcome> => ({
       switched: false,
       tisMs: 0,
+      contextApplied: null,
+      contextMs: 0,
     }),
     pythonRun: async (): Promise<PythonRunStarted> => ({
       runId: 1,

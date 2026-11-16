@@ -9,8 +9,13 @@ import { fileURLToPath } from "node:url";
  * A mode switch works only as one composed chain:
  *
  *   vim mode change -> imeSwitchExtension -> imeApply -> set_input_source
- *     -> TIS select in the helper process (out of the app's main thread)
- *     -> switched=true -> re-create the editor's web input context
+ *     -> TIS select in the helper process (off the app's main thread)
+ *     -> switched=true -> rebuild the app's input method session (main thread)
+ *
+ * Both halves live in the one command on purpose: each can only run in its own
+ * place (TIS in the helper, the process-local context in the app), and two
+ * commands left a window where the menu bar had switched while the hand-off
+ * was still an IPC hop away.
  *
  * Every leg has a silent failure mode, and two of them have already been
  * removed by well-intentioned "simplifications" that compiled cleanly, passed
@@ -35,9 +40,15 @@ const read = (rel: string): string => readFileSync(`${root}/${rel}`, "utf8");
 describe("the typing context follows a real switch", () => {
   const source = read("src/editor/imeSwitch.ts");
 
-  it("only a confirmed switch (switched=true) touches the input context", () => {
-    expect(source).toContain("if (!outcome.switched) return;");
-    expect(source).toContain("applyInputContextSource(target)");
+  it("one call per switch carries both halves; a miss is reported, not swallowed", () => {
+    // The command name is the only IPC for a switch: a second call on top of it
+    // re-opens the half-switched window.
+    expect(source).toContain(".setInputSource(target)");
+    expect(source).not.toContain("applyInputContextSource");
+    // contextApplied=false is the old symptom (menu bar switched, typing did
+    // not) and must reach the perf log and the console.
+    expect(source).toContain("outcome.contextApplied === false");
+    expect(source).toContain('perfFields("tisMs", "ctxMs", "ctx")');
   });
 
   it("the source goes to the app's own context, not through a focus re-mount", () => {
@@ -66,8 +77,8 @@ describe("the switch is composed into the editor and the app shell", () => {
     expect(read("src/lib/tauri.ts")).toContain('invoke<SetImeOutcome>("set_input_source"');
   });
 
-  it("the IPC wrapper invokes the input-context hand-off command", () => {
-    expect(read("src/lib/tauri.ts")).toContain('invoke<boolean>("apply_input_context_source"');
+  it("the IPC wrapper exposes no second hand-off command", () => {
+    expect(read("src/lib/tauri.ts")).not.toContain("apply_input_context_source");
   });
 });
 
@@ -97,8 +108,8 @@ describe("the backend half: the select runs in the helper process", () => {
 
   it("the app-side half hands the source to the input context", () => {
     const commands = read("src-tauri/src/commands/ime.rs");
-    expect(commands).toContain("apply_input_context_source");
     expect(commands).toContain("ime_tis::apply_context_source");
+    expect(commands).not.toContain("pub async fn apply_input_context_source");
     // NSTextInputContext.selectedKeyboardInputSource is the AppKit-level setter
     // that makes the web view type with the new source.
     expect(read("src-tauri/src/ime_tis.rs")).toContain("setSelectedKeyboardInputSource");

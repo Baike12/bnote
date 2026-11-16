@@ -46,7 +46,6 @@ exports[`every exported IPC wrapper reaches exactly one Rust command > command n
   "agentApi.startSession": "agent_start_session",
   "agentApi.stopSubagent": "agent_stop_subagent",
   "api.appendFile": "append_file",
-  "api.applyInputContextSource": "apply_input_context_source",
   "api.createDir": "create_dir",
   "api.createFile": "create_file",
   "api.ensureDir": "ensure_dir",

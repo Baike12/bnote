@@ -4,15 +4,16 @@ import { EditorView } from "@codemirror/view";
 
 /**
  * The whole switch chain at the editor's own seam: a vim mode change runs
- * through `imeSwitchExtension.updateListener` -> `imeApply` -> the
- * `set_input_source` IPC -> (on `switched`) the input-context hand-off.
+ * through `imeSwitchExtension.updateListener` -> `imeApply` -> the single
+ * `set_input_source` IPC, which carries both halves (the helper's TIS select
+ * and the main-thread session rebuild).
  *
  * The intent state machine is locked separately (imeSwitch.test.ts) and so is
- * the hand-off discipline (imeSwitchContext.integration.test.ts); what this
- * file adds is the wiring between them: the extension only exists inside the
- * editor tree, reads the mode from the live view, and decides the math/code
- * "keep English" case from the actual document position. A regression here is
- * invisible to the other two suites.
+ * the one-round-trip discipline (imeSwitchContext.integration.test.ts); what
+ * this file adds is the wiring between them: the extension only exists inside
+ * the editor tree, reads the mode from the live view, and decides the
+ * math/code "keep English" case from the actual document position. A
+ * regression here is invisible to the other two suites.
  *
  * The vim engine itself needs a real browser, so only `currentVimMode` is
  * faked; everything else (the extension, the editor, the decision code) is the
@@ -21,7 +22,6 @@ import { EditorView } from "@codemirror/view";
 
 const tauri = vi.hoisted(() => ({
   setInputSource: vi.fn(),
-  applyInputContextSource: vi.fn(),
   getCurrentInputSource: vi.fn(),
   listInputSources: vi.fn(),
 }));
@@ -72,8 +72,12 @@ beforeEach(() => {
   vimMode.current = null;
   tauri.getCurrentInputSource.mockResolvedValue(ABC);
   tauri.listInputSources.mockResolvedValue([]);
-  tauri.setInputSource.mockResolvedValue({ switched: true, tisMs: 1 });
-  tauri.applyInputContextSource.mockResolvedValue(true);
+  tauri.setInputSource.mockResolvedValue({
+    switched: true,
+    tisMs: 1,
+    contextApplied: true,
+    contextMs: 0,
+  });
   useAppStore.getState().patchSettings({
     vim: true,
     ime: {
@@ -98,14 +102,13 @@ afterEach(async () => {
 });
 
 describe("the editor-level switch chain", () => {
-  it("normal -> insert sends the insert source and hands it to the input context", async () => {
+  it("normal -> insert sends the insert source in one round trip", async () => {
     const view = mount();
     resetListener(view);
     vimMode.current = "normal";
     view.dispatch({});
     await tick();
     tauri.setInputSource.mockClear();
-    tauri.applyInputContextSource.mockClear();
 
     vimMode.current = "insert";
     view.dispatch({});
@@ -113,18 +116,15 @@ describe("the editor-level switch chain", () => {
 
     expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
     expect(tauri.setInputSource).toHaveBeenCalledWith(SOGOU);
-    expect(tauri.applyInputContextSource).toHaveBeenCalledTimes(1);
-    expect(tauri.applyInputContextSource).toHaveBeenCalledWith(SOGOU);
   });
 
-  it("insert -> normal hands the normal source back", async () => {
+  it("insert -> normal sends the normal source back", async () => {
     const view = mount();
     resetListener(view);
     vimMode.current = "insert";
     view.dispatch({});
     await tick();
     tauri.setInputSource.mockClear();
-    tauri.applyInputContextSource.mockClear();
 
     vimMode.current = "normal";
     view.dispatch({});
@@ -132,7 +132,6 @@ describe("the editor-level switch chain", () => {
 
     expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
     expect(tauri.setInputSource).toHaveBeenCalledWith(ABC);
-    expect(tauri.applyInputContextSource).toHaveBeenCalledWith(ABC);
   });
 
   it("a repeated transaction in the same mode sends nothing (the listener dedups)", async () => {
@@ -142,14 +141,12 @@ describe("the editor-level switch chain", () => {
     view.dispatch({});
     await tick();
     tauri.setInputSource.mockClear();
-    tauri.applyInputContextSource.mockClear();
 
     view.dispatch({});
     view.dispatch({});
     await tick();
 
     expect(tauri.setInputSource).not.toHaveBeenCalled();
-    expect(tauri.applyInputContextSource).not.toHaveBeenCalled();
   });
 
   it("moving the caret inside a formula in insert mode keeps the English source", async () => {
@@ -162,14 +159,12 @@ describe("the editor-level switch chain", () => {
     expect(tauri.setInputSource).toHaveBeenLastCalledWith(SOGOU);
 
     tauri.setInputSource.mockClear();
-    tauri.applyInputContextSource.mockClear();
 
     view.dispatch({ selection: { anchor: 4 } });
     await tick();
 
     expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
     expect(tauri.setInputSource).toHaveBeenCalledWith(ABC);
-    expect(tauri.applyInputContextSource).toHaveBeenCalledWith(ABC);
   });
 
   it("with vim off the listener never touches the system IME", async () => {
@@ -180,6 +175,5 @@ describe("the editor-level switch chain", () => {
     await tick();
 
     expect(tauri.setInputSource).not.toHaveBeenCalled();
-    expect(tauri.applyInputContextSource).not.toHaveBeenCalled();
   });
 });

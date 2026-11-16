@@ -63,21 +63,30 @@ fn the_command_layer_only_speaks_the_protocol() {
 }
 
 #[test]
-fn the_app_hands_the_source_to_its_own_input_context() {
+fn one_command_carries_both_halves_of_the_switch() {
     let commands = read("src/commands/ime.rs");
     assert!(
-        commands.contains("apply_input_context_source"),
-        "a real switch must hand the new source to the app's own text input context"
+        commands.contains("pub async fn set_input_source"),
+        "set_input_source is the switch's only entry point"
     );
     assert!(
         commands.contains("ime_tis::apply_context_source"),
-        "the command must call the AppKit-level hand-off, not a TIS select"
+        "the same command must rebuild the app's input method session after the helper's select"
+    );
+    assert!(
+        !commands.contains("pub async fn apply_input_context_source"),
+        "a second hand-off command re-opens the window where the system source has \
+         switched while the session rebuild is still an IPC hop away — that window \
+         is what shipped builds where the menu bar changed and typing did not"
+    );
+    assert!(
+        !commands.contains("TISSelectInputSource"),
+        "the TIS select stays in the helper process"
     );
     assert!(
         read("src/ime_tis.rs").contains("setSelectedKeyboardInputSource"),
-        "the hand-off is NSTextInputContext.selectedKeyboardInputSource: the web \
-         view's context keeps the source it was created with, so the property is \
-         the only per-context way to make typing follow"
+        "the hand-off pins the source on NSTextInputContext while the session is \
+         detached; writing the property on an attached context is a no-op"
     );
 }
 

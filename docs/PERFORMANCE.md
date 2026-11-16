@@ -230,7 +230,11 @@ re-executed with `--ime-helper` (no Tauri, no windows, steals no focus), long
 lived, one JSON line per request over stdin/stdout:
 
 - `set_input_source` / `get_current_input_source` / `list_input_sources` write
-  one pipe line and read the answer; the UI thread never runs TIS.
+  one pipe line and read the answer; the UI thread never runs TIS. A real
+  switch is **one command**: it selects the system source in the helper and,
+  when the select really changed it, rebuilds the app's own input method
+  session on the main thread. Two commands left a window in which the system
+  source had switched while the hand-off was still an IPC hop away.
 - The helper keeps the TIS reference cache and the one-time initialization warm
   across switches (`imeWarmUp` still triggers them at startup, now inside the
   helper).
@@ -244,10 +248,10 @@ lived, one JSON line per request over stdin/stdout:
   session it was typing with, and a select made in another process does not
   propagate into that session (the menu bar follows the system-wide
   notification, WebKit does not). After a confirmed real switch (`switched`)
-  the front end hands the new source to the app's own `NSTextInputContext`
-  (`apply_input_context_source`, applied on the main thread by
-  `ime_tis::apply_context_source`), which **deactivates the context, pins the
-  source, and re-activates it**. The rebuild is the point: writing
+  the same command hands the new source to the app's own `NSTextInputContext`
+  (on the main thread, `ime_tis::apply_context_source`), which **deactivates
+  the context, pins the source, and re-activates it**. The rebuild is the
+  point: writing
   `selectedKeyboardInputSource` alone is a no-op once AppKit has mirrored the
   system change, because the value is already the target — measured
   2026-11-16, all 35 sampled switches had the property already updated when the
@@ -260,13 +264,14 @@ lived, one JSON line per request over stdin/stdout:
   context restores, and it scrolls the notes page when focus() is not
   prevented from scrolling).
 
-`SetImeOutcome` still returns the TIS call's own duration, and the span carries
-it:
+`SetImeOutcome` returns both legs, and the span carries them:
 
 | field | meaning | a large value means |
 |---|---|---|
 | `tisMs` | inside `TISSelectInputSource` (helper process) | the input method was cold — visible only as hand-over time now, not as a UI freeze |
-| `ms - tisMs` | IPC + pipe + the front end's own task boundary | the bridge, not the IME |
+| `contextMs` | main-thread session rebuild (`deactivate` / pin / `activate`) | the rebuild is touching the keystroke budget; move work off the switch path |
+| `ctx` | 1 = rebuild reported success, 0 = it missed, -1 = no switch happened | a `0` is the old symptom (menu bar switched, typing did not) |
+| `ms - tisMs - contextMs` | IPC + pipe + the front end's own task boundary | the bridge, not the IME |
 
 Two things this leg deliberately does **not** do:
 

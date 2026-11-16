@@ -18,12 +18,13 @@ import { perfEnd, perfFields, perfStart } from "@/perf/trace";
  *
  * The out-of-process architecture has a second half: the web view's input
  * method session keeps the source it was typing with — a select made in
- * another process reaches the menu bar but not that session. After every
- * confirmed real switch the new source is therefore handed to the app's input
- * context (`apply_input_context_source`, main thread), which deactivates the
- * context, pins the source and re-activates it. Rebuilding the session is what
- * makes typing follow; writing the property alone is a no-op once AppKit has
- * already mirrored the system-wide change into it.
+ * another process reaches the menu bar but not that session. `set_input_source`
+ * therefore carries both halves in one round trip: the helper selects the
+ * system source and the app's main thread rebuilds the session
+ * (`ime_tis::apply_context_source`: deactivate, pin the source, activate).
+ * Rebuilding the session is what makes typing follow; writing the context
+ * property alone is a no-op once AppKit has already mirrored the system-wide
+ * change into it.
  *
  * Mirrors the behavior of the user's patched obsidian-vim-input-auto-switch:
  * entering insert inside a math region keeps the English source (formulas are
@@ -96,19 +97,23 @@ function scheduleLaunch(): void {
   }, 0);
 }
 
-/* The span's own `ms` is the whole round trip: IPC plus the backend's TIS call.
- * The backend returns that call's own duration (`tisMs`); the remainder is the
- * bridge. Two field slots is what is worth reading here. */
-const IME_FIELDS = perfFields("target", "tisMs");
+/* The span's own `ms` is the whole round trip: IPC plus the backend's TIS call
+ * plus the main-thread session rebuild. The backend returns both legs
+ * (`tisMs`, `contextMs`); the remainder is the bridge. `ctx` is 1 when the
+ * rebuild reported success, 0 when it reported a miss — a miss is the old
+ * symptom (menu bar switched, typing stayed on the old source), so it must be
+ * readable here instead of disappearing into a swallowed promise. The target
+ * source itself is on the Rust-side line and in the warning below. */
+const IME_FIELDS = perfFields("tisMs", "ctxMs", "ctx");
 const IME_FAILED_FIELDS = perfFields("target");
 
 function launchSwitch(target: string): void {
   switching = true;
   forcedThisSession = true;
   const seq = focusSeq;
-  // End-to-end cost of the switch (IPC + the helper's TIS select). This is
-  // the leg that made "leave a formula, type the next key" feel slow when the
-  // input source was being engaged.
+  // End-to-end cost of the switch (IPC + the helper's TIS select + the
+  // main-thread session rebuild). This is the leg that made "leave a formula,
+  // type the next key" feel slow when the input source was being engaged.
   const t = perfStart();
   if (baseline === null) {
     void api
@@ -118,18 +123,19 @@ function launchSwitch(target: string): void {
       })
       .catch(() => {});
   }
-  // Fire-and-forget: the helper dedups against the live input source and
-  // returns the TIS call's own duration, so a slow switch names the input
-  // method's activation instead of leaving one opaque number.
+  // Fire-and-forget: one command carries both halves — the helper selects the
+  // system source and the main thread rebuilds the app's input method session,
+  // so there is no window in which the switch is half done.
   void api
     .setInputSource(target)
     .then((outcome) => {
-      perfEnd(t, "ime.switch", IME_FIELDS, target, outcome.tisMs);
-      if (!outcome.switched) return;
-      // The helper changed the system source; hand the same source to the
-      // app's own input context, which otherwise keeps the one it was created
-      // with (menu bar switches, typing stays latin).
-      void api.applyInputContextSource(target).catch(() => {});
+      const ctx = outcome.contextApplied === null ? -1 : Number(outcome.contextApplied);
+      perfEnd(t, "ime.switch", IME_FIELDS, outcome.tisMs, outcome.contextMs, ctx);
+      if (outcome.contextApplied === false) {
+        // The system source changed but the session rebuild missed: typing will
+        // keep the old input method until the next focus or mode change.
+        console.warn("[bnote] input context hand-off missed", target);
+      }
     })
     .catch((e) => {
       console.warn("[bnote] set input source failed", e);

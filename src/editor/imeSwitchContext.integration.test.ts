@@ -1,26 +1,28 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * The switch contract's second half: the helper's TIS select changes the
- * system source (the menu bar follows), but the app's own text input context
- * keeps the source it was created with — WebKit would keep typing latin. A
- * confirmed real switch therefore hands the new source to the app's context
- * (`apply_input_context_source` -> NSTextInputContext
- * .selectedKeyboardInputSource, applied on the main thread).
+ * The switch is one round trip: `set_input_source` carries both halves — the
+ * helper's TIS select (system source, menu bar) and the app's input method
+ * session rebuild (`ime_tis::apply_context_source`, main thread, because the
+ * context is a process-local object).
  *
- * jsdom cannot verify the native hand-off; what is locked here is the trigger
- * discipline: only a real switch (switched=true) touches the context, and the
- * source handed over is exactly the one that was switched to.
+ * Splitting them into two commands left a window in which the system source
+ * had already switched while the hand-off was still an IPC hop away; that
+ * window is what produced "the menu bar changed, typing did not". So the front
+ * end must keep issuing exactly one call per real switch, carrying the trailing
+ * intent.
+ *
+ * jsdom cannot verify the native halves; what is locked here is that
+ * discipline.
  */
 
 const setInputSource = vi.hoisted(() => vi.fn());
-const applyInputContextSource = vi.hoisted(() => vi.fn());
+const getCurrentInputSource = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", () => ({
   api: {
     setInputSource,
-    applyInputContextSource,
-    getCurrentInputSource: vi.fn().mockResolvedValue("com.apple.keylayout.ABC"),
+    getCurrentInputSource,
     listInputSources: vi.fn().mockResolvedValue([]),
   },
 }));
@@ -53,34 +55,42 @@ beforeEach(() => {
       codeKeepsEnglish: true,
     },
   });
-  setInputSource.mockResolvedValue({ switched: true, tisMs: 1 });
-  applyInputContextSource.mockResolvedValue(true);
+  setInputSource.mockResolvedValue({
+    switched: true,
+    tisMs: 1,
+    contextApplied: true,
+    contextMs: 0,
+  });
+  getCurrentInputSource.mockResolvedValue(ABC);
 });
 
-describe("the input-context hand-off after a real switch", () => {
-  it("a real switch hands the new source to the app's input context", async () => {
+describe("one round trip per real switch", () => {
+  it("a real switch issues exactly one command carrying the new source", async () => {
     imeApply(SOGOU);
     await drain();
+    expect(setInputSource).toHaveBeenCalledTimes(1);
     expect(setInputSource).toHaveBeenCalledWith(SOGOU);
-    expect(applyInputContextSource).toHaveBeenCalledTimes(1);
-    expect(applyInputContextSource).toHaveBeenCalledWith(SOGOU);
   });
 
-  it("a no-op switch (already on the target source) does not touch the context", async () => {
-    setInputSource.mockResolvedValue({ switched: false, tisMs: 1 });
+  it("an already-active source still costs one idempotent call, and nothing else", async () => {
+    setInputSource.mockResolvedValue({
+      switched: false,
+      tisMs: 1,
+      contextApplied: null,
+      contextMs: 0,
+    });
     imeApply(ABC);
     await drain();
-    expect(applyInputContextSource).not.toHaveBeenCalled();
+    // The command dedups on the Rust side; the front end does not chain a
+    // second call on top of it.
+    expect(setInputSource).toHaveBeenCalledTimes(1);
   });
 
-  it("the hand-off follows the trailing intent, not the cancelled one", async () => {
-    // A burst of flips collapses: only the final target is switched to and
-    // handed to the context.
+  it("a burst of flips collapses into the trailing intent", async () => {
     imeApply(SOGOU);
     imeApply(ABC);
     await drain();
+    expect(setInputSource).toHaveBeenCalledTimes(1);
     expect(setInputSource).toHaveBeenLastCalledWith(ABC);
-    const targets = applyInputContextSource.mock.calls.map((c) => c[0]);
-    expect(targets[targets.length - 1]).toBe(ABC);
   });
 });
