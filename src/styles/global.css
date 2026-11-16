@@ -930,24 +930,34 @@ button {
 .li-t { --li-hang: calc(0.9em + var(--li-gap)); }
 .li-o { --li-hang: 26px; }
 
-/* Task-list checkbox rendered over `- [ ]` / `- [x]` markers. Box (0.9em) plus
-   margin-right must add up to the line's --li-hang (.li-t), so the item text
-   lands exactly on the wrapped-line indent. */
+/* Task-list checkbox rendered over `- [ ]` / `- [x]` markers. The element's
+   own box is the whole marker slot (--li-hang of .li-t), so a caret resting at
+   the item start and the item text land on the same x, and the box plus the
+   gap add up to the wrapped-line indent. The visible box (border, fill,
+   checkmark) is drawn inside the slot by pseudo elements at its left edge. */
 .md-task {
   display: inline-block;
   position: relative;
+  width: var(--li-hang, 1.4em);
+  height: 0.9em;
+  vertical-align: -0.08em;
+  cursor: pointer;
+}
+.md-task::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
   width: 0.9em;
   height: 0.9em;
   border: 1.5px solid var(--text-faint);
   border-radius: 3px;
-  vertical-align: -0.08em;
-  margin-right: var(--li-gap, 0.5em);
-  cursor: pointer;
 }
-.md-task:hover {
+.md-task:hover::before {
   border-color: var(--accent);
 }
-.md-task.checked {
+.md-task.checked::before {
   background: var(--accent-dim);
   border-color: var(--accent-dim);
 }

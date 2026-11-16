@@ -142,9 +142,8 @@ export function selectionAffectsDecos(oldState: EditorState, newState: EditorSta
       if (INLINE_TRIGGER_RE.test(doc.line(n).text)) return true;
     }
   }
-  // A same-line move across the "marker slot": the activity rules of
-  // ListMark/TaskMarker and the trailing-space retention of empty items
-  // (keepMarkerTrailingSpace) both depend on the caret position within the
+  // A same-line move across the "marker slot": whether the marker renders as
+  // a widget or as editable source depends on the caret position within the
   // line — vim's same-line moves such as 0/$/A used to leave a bare `-` / a
   // bare `[ ]` permanently on screen (a rendering regression).
   for (let i = 0; i < newRanges.length; i++) {
@@ -154,7 +153,10 @@ export function selectionAffectsDecos(oldState: EditorState, newState: EditorSta
     const line = doc.lineAt(n.from);
     const slotEnd = markerSlotEnd(line.text);
     if (slotEnd === null) continue;
-    if (slotEnd >= line.to - line.from) return true; // empty list item: any same-line move may flip the whitespace retention
+    // Empty item: every caret position of the line is inside the slot, so the
+    // boundary crossing below never fires while the marker still flips
+    // between source and widget (line start vs item start).
+    if (slotEnd >= line.to - line.from) return true;
     const base = line.from;
     if (o.from - base <= slotEnd !== n.from - base <= slotEnd) return true;
   }
@@ -527,6 +529,10 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   const codeRanges: Interval[] = [];
   const inlineCodeRanges: Interval[] = [];
 
+  // Lines the tree already rendered as list items (their ListMark decided the
+  // slot); the bare-marker scan below must not decorate them twice.
+  const listLines = new Set<number>();
+
   const inRangeList = (list: Interval[], from: number, to: number) =>
     list.some((r) => from < r.to && to > r.from);
 
@@ -579,10 +585,6 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
         if (!active(nodeRef.from, nodeRef.to)) {
           hideEmphasisMarks(nodeRef.node, out, claim);
         }
-        return false;
-      }
-      if (name === "SetextHeading2") {
-        decorateSetextDash(doc, nodeRef.node, selections, out, claim);
         return false;
       }
       if (name === "Strikethrough") {
@@ -638,47 +640,16 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
       if (name === "ListMark") {
         const mark = nodeRef.node;
         const markLine = doc.lineAt(mark.from);
-        const spaces = mark.from - markLine.from;
-        // Obsidian-style indent: hide the literal spaces and let the line
-        // decoration pad + hang instead. Applied on active lines too, so the
-        // layout doesn't shift when the cursor enters/leaves the line.
-        const depth = Math.min(16, Math.floor(spaces / 2)) * 2;
-        const kind = listKind(doc, mark);
-        out.inline.push(
-          Decoration.line({ class: `md-list-line li-i${depth} ${kind}` }).range(markLine.from),
-        );
-        if (spaces > 0 && claim(markLine.from, mark.from)) {
-          out.inline.push(Decoration.replace({}).range(markLine.from, mark.from));
-        }
-        if (!activeLine(nodeRef.from, nodeRef.to)) {
-          decorateListMark(
-            doc,
-            mark,
-            kind,
-            out,
-            claim,
-            keepMarkerTrailingSpace(
-              selections,
-              markLine.from,
-              markLine.to,
-              whitespaceEnd(doc, mark.to),
-            ),
-          );
-        }
+        listLines.add(markLine.from);
+        decorateItemLine(doc, markLine, mark, listKind(doc, mark), selections, out, claim);
         return false;
       }
       if (name === "TaskMarker") {
         const checked = /^\[[xX]\]/.test(doc.sliceString(nodeRef.from, nodeRef.to));
-        // The checkbox owns `[ ]` plus the whitespace after it, so its box
-        // (0.9em) + margin-right (--li-gap) are the whole marker slot and the
-        // item text lands on the wrapped-line indent (see global.css) — unless
-        // the whitespace is line-final and the caret rests at the slot end
-        // (empty item): then it stays visible as the caret's text anchor.
-        const markLine = doc.lineAt(nodeRef.from);
-        let to = whitespaceEnd(doc, nodeRef.to);
-        if (keepMarkerTrailingSpace(selections, markLine.from, markLine.to, to)) {
-          to = nodeRef.to;
-        }
+        // The checkbox element is the whole marker slot (--li-hang of .li-t in
+        // global.css: box + gap), so the item text lands on the wrapped-line
+        // indent and a caret at the item start sits where the text will start.
+        const to = whitespaceEnd(doc, nodeRef.to);
         if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, to)) {
           out.inline.push(
             Decoration.replace({ widget: new TaskCheckboxWidget(checked) }).range(nodeRef.from, to),
@@ -689,6 +660,39 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
       return true;
     },
   });
+
+  // ---- Bare marker lines: an empty item the parser has not accepted yet ----
+  // A list item with no content cannot interrupt a paragraph (CommonMark), so
+  // a line holding nothing but a marker is read differently depending on what
+  // precedes it: after a paragraph the parse is a setext underline (the
+  // `- ` cut out by Cmd+; "does not work"), after an ordered item it is the
+  // enclosing paragraph's own text, after an indent it is a lazy continuation.
+  // In all of those the line would show its source until the first typed
+  // character flips the parse into a list — and that flip moves the text start
+  // (and any IME composition in progress) sideways under the caret. The rule
+  // belongs to the line's own shape, not to a particular tree reading, so the
+  // scan below renders the item for every tree state; the real ListMark takes
+  // over the same slot later, without a pixel moving. A caret on the marker
+  // still flips the line back to editable source.
+  const firstScanLine = doc.lineAt(visibleFrom).number;
+  const lastScanLine = doc.lineAt(visibleTo).number;
+  for (let n = firstScanLine; n <= lastScanLine; n++) {
+    const line = doc.line(n);
+    if (listLines.has(line.from)) continue;
+    const marker = BARE_MARKER_RE.exec(line.text);
+    if (!marker) continue;
+    if (
+      inRangeList(codeRanges, line.from, line.to) ||
+      inRangeList(inlineCodeRanges, line.from, line.to) ||
+      inAnyMath(line.from, line.to)
+    ) {
+      continue;
+    }
+    const markFrom = line.from + marker[1].length;
+    const mark = { from: markFrom, to: markFrom + marker[2].length };
+    const kind: ListMarkerKind = /^\d/.test(marker[2]) ? "li-o" : "li-b";
+    decorateItemLine(doc, line, mark, kind, selections, out, claim);
+  }
 
   // ---- Callout blocks (`:::` containers): background + left rule assembled per line ----
   // Both content lines and boundary lines get the block surface class (the
@@ -851,83 +855,41 @@ function whitespaceEnd(
   return to;
 }
 
-/**
- * For an empty list item (the whitespace after the marker runs to the end of
- * the line) with the caret resting at the start of the item, the marker's
- * replace decoration must not swallow the trailing whitespace: that would
- * leave the line without any text node, and the caret — sitting on the
- * element position at the widget's boundary — gets no caret rectangle from
- * WebKit (getClientRects is empty), so the drawing degenerates to the edge
- * of the line content: after continuing a list with Enter the caret "flashes
- * to the line start" and only the next layout change puts it back where it
- * belongs. Keep that space as the text anchor; the caret's document position
- * (the start of the item text) is correct, what is missing is only a
- * visible anchor.
- */
-function keepMarkerTrailingSpace(
-  selections: readonly { from: number; to: number }[],
-  lineFrom: number,
-  lineTo: number,
-  wsTo: number,
-): boolean {
-  return (
-    wsTo === lineTo &&
-    selections.some((r) => r.from <= lineTo && r.to >= lineFrom && r.from >= wsTo)
-  );
-}
+/** A line that is nothing but one marker and whitespace: the shape of an empty
+ *  list item, whichever way the parser reads that line (see the bare-marker
+ *  scan in buildInlineDecorations). */
+const BARE_MARKER_RE = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]*)$/;
 
 /**
- * The parsing ambiguity of an empty list item: a bare `-` line after a
- * paragraph (optionally with trailing whitespace) is ambiguous with the
- * underline of a setext level-2 heading in CommonMark, and the parser picks
- * setext — there is no ListMark in the tree, so the bullet widget can never
- * be built. The empty item cut out after a paragraph with Cmd+; therefore
- * looks like "it did not work", and only when the first character is typed
- * does the parse flip into a list and the whole line reflows, which reads as
- * a stutter.
+ * The item layout of one line: indent, line decoration and marker slot.
  *
- * The rendering layer treats that shape as an empty list item: zero indent,
- * a single `-`, and nothing but whitespace left on the line. The decoration
- * is exactly the same shape as a real ListMark (li-i0 li-b line decoration +
- * ListBulletWidget), so when body text is typed and the parse flips into a
- * ListMark the result is visually seamless. A real setext usage (more than
- * one `-` in the underline, or body text still on the line) does not match
- * and stays as it is.
+ * Shared by the ListMark branch and the bare-marker scan so an empty item
+ * looks identical before and after the parser accepts it. The literal indent
+ * spaces are hidden and the line decoration pads + hangs instead (Obsidian
+ * style) — applied on active lines too, so the layout never depends on the
+ * caret. Only the marker slot is lifted back to editable source, and only
+ * while the caret sits on the marker characters themselves.
  */
-function decorateSetextDash(
+function decorateItemLine(
   doc: {
     sliceString(from: number, to?: number): string;
     lineAt(pos: number): { from: number; to: number };
   },
-  node: SyntaxNode,
+  line: { from: number; to: number },
+  mark: { from: number; to: number },
+  kind: ListMarkerKind,
   selections: readonly { from: number; to: number }[],
   out: DecorationSink,
   claim: (from: number, to: number) => boolean,
 ) {
-  const markLine = doc.lineAt(Math.max(node.from, node.to - 1));
-  let found: SyntaxNode | null = null;
-  for (let child = node.firstChild; child; child = child.nextSibling) {
-    if (child.name === "HeaderMark") {
-      found = child;
-      break;
-    }
+  const spaces = mark.from - line.from;
+  const depth = Math.min(16, Math.floor(spaces / 2)) * 2;
+  out.inline.push(Decoration.line({ class: `md-list-line li-i${depth} ${kind}` }).range(line.from));
+  if (spaces > 0 && claim(line.from, mark.from)) {
+    out.inline.push(Decoration.replace({}).range(line.from, mark.from));
   }
-  if (!found || found.from !== markLine.from) return;
-  const mark: SyntaxNode = found;
-  if (doc.sliceString(mark.from, mark.to) !== "-") return;
-  const wsTo = whitespaceEnd(doc, mark.to);
-  if (wsTo !== markLine.to) return;
-  // The line decoration follows the same rule as the ListMark branch: it is
-  // pushed on the active line too, so the layout does not shift as the caret
-  // enters and leaves.
-  out.inline.push(Decoration.line({ class: "md-list-line li-i0 li-b" }).range(markLine.from));
-  // When the caret presses into the marker characters it flips back to
-  // editable source (the same activity rule as for ListMark).
   if (selections.some((r) => r.from <= mark.to && r.to >= mark.from)) return;
-  const to = keepMarkerTrailingSpace(selections, markLine.from, markLine.to, wsTo) ? mark.to : wsTo;
-  if (claim(mark.from, to)) {
-    out.inline.push(Decoration.replace({ widget: new ListBulletWidget() }).range(mark.from, to));
-  }
+  decorateListMark(doc, mark, kind, out, claim);
 }
 
 /**
@@ -938,14 +900,20 @@ function decorateSetextDash(
  * whitespace after the marker: the widget then covers the item's whole marker
  * slot, so the item text starts exactly at the line's `--li-hang` (where
  * wrapped lines align) instead of a literal space further right.
+ *
+ * The whitespace stays inside the slot in every state, an empty item
+ * included: the item text start is the slot end, so the caret of an empty item
+ * (positioned at that same start) does not jump by one space width when the
+ * first character — or an IME composition — lands. The caret is drawn by
+ * `drawSelection()` from a measured rect, which holds at a widget boundary
+ * even when the line has no text node left (verified in the app's WKWebView).
  */
 function decorateListMark(
   doc: { sliceString(from: number, to?: number): string; lineAt(pos: number): { to: number } },
-  mark: SyntaxNode,
+  mark: { from: number; to: number },
   kind: ListMarkerKind,
   out: DecorationSink,
   claim: (from: number, to: number) => boolean,
-  keepTrailingSpace: boolean,
 ) {
   if (kind === "li-t") {
     // Hide the marker plus the gap before the `[ ]` checkbox.
@@ -959,8 +927,7 @@ function decorateListMark(
     out.inline.push(Decoration.mark({ class: "md-listmark" }).range(mark.from, mark.to));
     return;
   }
-  let to = whitespaceEnd(doc, mark.to);
-  if (keepTrailingSpace) to = mark.to;
+  const to = whitespaceEnd(doc, mark.to);
   if (claim(mark.from, to)) {
     out.inline.push(Decoration.replace({ widget: new ListBulletWidget() }).range(mark.from, to));
   }

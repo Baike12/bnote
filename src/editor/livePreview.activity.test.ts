@@ -132,14 +132,16 @@ describe("livePreview token activity rule for list markers", () => {
 });
 
 /**
- * The "text anchor" rule of an empty list item: if the marker's replace
- * decoration swallows the trailing whitespace, the line has no text node at
- * all, and WebKit cannot compute a rectangle for a caret resting at the start
- * of the item (the drawing degenerates to the edge of the line content, i.e.
- * after continuing a list with Enter the caret flashes to the line start).
- * The trailing space must be kept while the caret rests at the item start.
+ * The marker slot is decoration in every state, empty items included: the
+ * widget covers the marker *and* the whitespace after it, so the item text
+ * always starts at the slot end and the caret of an empty item — resting at
+ * that same start — stays where it is when the first character (or an IME
+ * composition) arrives. Keeping that whitespace as a caret "text anchor" (the
+ * 2026-09 rule) put the caret one space width past the item text, so the first
+ * character landed slightly left of it; `drawSelection()` measures the caret
+ * itself now, a line without any text node included.
  */
-describe("the text anchor of an empty list item (keepMarkerTrailingSpace)", () => {
+describe("the marker slot of a list item is decoration in every state", () => {
   const makeDocState = (doc: string, pos: number) => {
     const created = EditorState.create({
       doc,
@@ -151,42 +153,47 @@ describe("the text anchor of an empty list item (keepMarkerTrailingSpace)", () =
   const covered = (entries: { from: number; to: number }[], pos: number) =>
     entries.some((e) => e.from !== e.to && e.from <= pos && e.to > pos);
 
-  it("empty task item `- [ ] ` with the caret at the item start: the checkbox does not swallow the trailing space", () => {
+  it("empty task item `- [ ] ` with the caret at the item start: the checkbox swallows the whole slot", () => {
     const entries = decosAt(makeDocState("- [ ] ", 6), 0, 8);
-    // the checkbox is still there ([2,5)), but the trailing space [5,6) stays visible.
     expect(entries.map(widgetOf).some((w) => w instanceof TaskCheckboxWidget)).toBe(true);
-    expect(covered(entries, 4)).toBe(true);
-    expect(covered(entries, 5)).toBe(false);
-  });
-
-  it("empty task item with the caret at the line start: the checkbox swallows the space as usual (the raw `-` at the line start is the anchor)", () => {
-    const entries = decosAt(makeDocState("- [ ] ", 0), 0, 8);
+    // the marker, the brackets and the trailing space are one replaced range.
+    expect(entries.some((e) => e.from === 2 && e.to === 6)).toBe(true);
     expect(covered(entries, 5)).toBe(true);
   });
 
-  it("non-empty task item `- [ ] foo` with the caret at the item start: the space is swallowed as usual (the body text node is the anchor)", () => {
-    const entries = decosAt(makeDocState("- [ ] foo", 6), 0, 10);
-    expect(entries.map(widgetOf).some((w) => w instanceof TaskCheckboxWidget)).toBe(true);
-    expect(covered(entries, 5)).toBe(true);
-  });
-
-  it("empty unordered item `- ` with the caret at the item start: the bullet does not swallow the trailing space", () => {
+  it("empty unordered item `- ` with the caret at the item start: the bullet swallows the trailing space too", () => {
     const entries = decosAt(makeDocState("- ", 2), 0, 3);
     expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(true);
-    expect(covered(entries, 1)).toBe(false);
+    expect(covered(entries, 1)).toBe(true);
+  });
+
+  it("non-empty task item `- [ ] foo` with the caret at the item start: the same slot, so the geometry never depends on the content", () => {
+    const entries = decosAt(makeDocState("- [ ] foo", 6), 0, 10);
+    expect(entries.map(widgetOf).some((w) => w instanceof TaskCheckboxWidget)).toBe(true);
+    expect(entries.some((e) => e.from === 2 && e.to === 6)).toBe(true);
+  });
+
+  it("the slot starts at the same position in the empty and the filled state (the caret cannot jump)", () => {
+    const slot = (doc: string, pos: number) => {
+      const entries = decosAt(makeDocState(doc, pos), 0, doc.length + 1);
+      const hit = entries.find((e) => widgetOf(e) instanceof ListBulletWidget);
+      return hit ? { from: hit.from, to: hit.to } : null;
+    };
+    expect(slot("- ", 2)).toEqual({ from: 0, to: 2 });
+    expect(slot("- 字", 3)).toEqual({ from: 0, to: 2 });
   });
 });
 
 /**
- * The setext ambiguity of an empty bullet line: a bare `- ` line after a
- * paragraph is parsed as SetextHeading2 (in CommonMark setext wins when both
- * readings are valid, so there is no ListMark in the tree), and the rendering
- * layer must treat it as an empty list item — otherwise the empty item cut
- * out after a paragraph with Cmd+; never renders, and on the first typed
- * character the parse flips and the whole line reflows, which reads as
- * "the toggle does not work + typing stutters".
+ * Bare marker lines: a list item with no content cannot interrupt a paragraph
+ * (CommonMark), so the parser reads a line that is nothing but `- ` as a
+ * setext underline after a paragraph, as the enclosing paragraph's own text
+ * after an ordered item, and as a lazy continuation when indented — never as a
+ * list item. The rendering layer keys on the line's own shape instead, so the
+ * empty item cut out by Cmd+; (or by Enter) is visible immediately and the
+ * first typed character cannot reflow the line.
  */
-describe("the setext ambiguity of an empty bullet line after a paragraph (decorateSetextDash)", () => {
+describe("a bare marker line renders as the empty item it will become (bare-marker scan)", () => {
   const PARAG = "段落行在此。";
   const doc = `${PARAG}\n- \n`;
   const dashFrom = PARAG.length + 1; // start of the `- ` line
@@ -206,12 +213,40 @@ describe("the setext ambiguity of an empty bullet line after a paragraph (decora
       (e) => (e.deco as { spec?: { class?: string } }).spec?.class?.includes("li-b") === true,
     );
 
-  it("when the tree holds SetextHeading2 the bullet + li-b line decoration still render (immediately visible)", () => {
+  it("setext shape (after a paragraph): the bullet + li-b line decoration render immediately", () => {
     // the caret is at the line end (where toggleList lands), and the tree is SetextHeading2, not List.
     const state = makeDocState(doc, dashFrom + 2);
     const entries = decosAt(state, dashFrom, dashFrom + 3);
     expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(true);
     expect(listLineDeco(entries)).toBe(true);
+  });
+
+  it("after an ordered item the line is the enclosing paragraph's text, not a list item — the same rendering applies", () => {
+    const ordered = "1. 有序项\n- ";
+    const lineFrom = ordered.length - 2;
+    const entries = decosAt(makeDocState(ordered, ordered.length), lineFrom, ordered.length);
+    expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(true);
+    expect(listLineDeco(entries)).toBe(true);
+  });
+
+  it("a bare ordered marker (`1. `) after a paragraph renders its own kind (li-o, marker kept)", () => {
+    const ordered = `${PARAG}\n1. `;
+    const lineFrom = PARAG.length + 1;
+    const entries = decosAt(makeDocState(ordered, ordered.length), lineFrom, ordered.length);
+    expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(false);
+    expect(
+      entries.some(
+        (e) => (e.deco as { spec?: { class?: string } }).spec?.class?.includes("li-o") === true,
+      ),
+    ).toBe(true);
+  });
+
+  it("a bare marker inside a fenced code block or inline code stays literal source", () => {
+    const fenced = "```\ncode\n- \n```\n";
+    const fenceLineFrom = 8; // "- " on line 3
+    const entries = decosAt(makeDocState(fenced, 0), fenceLineFrom, fenceLineFrom + 2);
+    expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(false);
+    expect(listLineDeco(entries)).toBe(false);
   });
 
   it("caret on `-`: it flips back to source (the same activity rule as ListMark), the line decoration stays", () => {
@@ -221,11 +256,25 @@ describe("the setext ambiguity of an empty bullet line after a paragraph (decora
     expect(listLineDeco(entries)).toBe(true);
   });
 
-  it("empty item with the caret at the line end: the trailing space is kept as the text anchor (the same rule as keepTrailingSpace)", () => {
+  it("empty item with the caret at the line end: the bullet swallows the marker and the whitespace (one slot)", () => {
     const state = makeDocState(doc, dashFrom + 2);
     const entries = decosAt(state, dashFrom, dashFrom + 3);
     expect(covered(entries, dashFrom)).toBe(true); // the `-` is swallowed by the bullet
-    expect(covered(entries, dashFrom + 1)).toBe(false); // the space stays visible
+    expect(covered(entries, dashFrom + 1)).toBe(true); // the trailing space belongs to the slot
+  });
+
+  it("an indented `- ` (CommonMark allows up to three spaces before the underline) renders at its own level already: the spaces are hidden and the line carries li-i2, the depth the parse reports once text arrives", () => {
+    const indented = `${PARAG}\n  - `;
+    const lineFrom = PARAG.length + 1;
+    const state = makeDocState(indented, indented.length);
+    const entries = decosAt(state, lineFrom, indented.length);
+    expect(
+      entries.some(
+        (e) => (e.deco as { spec?: { class?: string } }).spec?.class?.includes("li-i2") === true,
+      ),
+    ).toBe(true);
+    // the two leading spaces are hidden by a replace, as on a real nested item.
+    expect(entries.some((e) => e.from === lineFrom && e.to === lineFrom + 2)).toBe(true);
   });
 
   it("a real setext heading (more than one `-` underline) is unaffected", () => {
@@ -234,20 +283,19 @@ describe("the setext ambiguity of an empty bullet line after a paragraph (decora
     expect(entries.map(widgetOf).some((w) => w instanceof ListBulletWidget)).toBe(false);
   });
 
-  it("after body text is typed the parse flips into a real ListMark: the bullet takes over the marker from the same start (seamless takeover)", () => {
+  it("after body text is typed the parse flips into a real ListMark: the bullet takes over the same slot (seamless takeover)", () => {
     // The caret is at the line end in both cases (the natural pose of toggle
-    // and of typing). Ownership of the trailing space is decided by the shared
-    // keepMarkerTrailingSpace anchor rule (kept for an empty item, swallowed
-    // when there is body text, a gap of at most 1 space); what is locked here
-    // is that in both tree states the bullet takes over from the dash start.
+    // and of typing); what is locked here is that the two tree states decorate
+    // the same range — marker plus trailing whitespace — so neither the text
+    // start nor the caret moves when the parse flips.
     const rendered = decosAt(makeDocState(doc, dashFrom + 2), dashFrom, dashFrom + 3);
     const typed = decosAt(makeDocState(`${PARAG}\n- 字\n`, dashFrom + 3), dashFrom, dashFrom + 4);
-    const bulletFrom = (entries: ReturnType<typeof decosAt>) => {
+    const slotOf = (entries: ReturnType<typeof decosAt>) => {
       const hit = entries.find((e) => widgetOf(e) instanceof ListBulletWidget);
-      return hit ? hit.from : null;
+      return hit ? { from: hit.from, to: hit.to } : null;
     };
-    expect(bulletFrom(typed)).toBe(dashFrom);
-    expect(bulletFrom(typed)).toBe(bulletFrom(rendered));
+    expect(slotOf(typed)).toEqual({ from: dashFrom, to: dashFrom + 2 });
+    expect(slotOf(typed)).toEqual(slotOf(rendered));
   });
 });
 
@@ -295,7 +343,7 @@ describe("selection trigger: a same-line move across the marker slot must rebuil
     expect(moves({ line: 2, col: 12 }, { line: 2, col: 6 })).toBe(true);
   });
 
-  it("empty list item `- `: any same-line move triggers (the retention of the trailing whitespace flips with the caret)", () => {
+  it("empty list item `- `: any same-line move triggers (the marker flips between source and widget, and both endpoints sit inside the slot)", () => {
     expect(moves({ line: 4, col: 0 }, { line: 4, col: 2 })).toBe(true);
     expect(moves({ line: 4, col: 2 }, { line: 4, col: 0 })).toBe(true);
   });
