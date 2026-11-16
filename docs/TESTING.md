@@ -53,7 +53,11 @@ below it cannot.
   `src/test/setup.integration.ts`.
 - **perf** (`node`) — `src/**/perf.gate.test.ts`, deliberately outside the
   coverage run: V8 instrumentation adds enough overhead to push a measured
-  median past its budget and produce a false failure.
+  median past its budget and produce a false failure. Each file also gates
+  itself on machine load (`src/perf/loadGate.ts`): when the 1-minute load
+  average reaches 0.75× the CPU count the suites report as skipped and print
+  the measured load, because a budget measured on an oversubscribed machine
+  says nothing about the code. Rerun `pnpm test:perf` on an idle machine.
 
 ## Front-end integration: the fake IPC boundary
 

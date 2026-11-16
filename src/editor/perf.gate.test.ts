@@ -35,6 +35,18 @@ import { buildBracketColors } from "./snippets/brackets";
 import { typewriterReserve, typewriterScrollDelta } from "./typewriterPosition";
 import { insertRegionWantsEnglishAt } from "./imeSwitch";
 import { DEFAULT_SETTINGS } from "@/state/appStore";
+import { currentLoadVerdict, skipNotice } from "@/perf/loadGate";
+
+/*
+ * A machine busy with something else moves a millisecond median several-fold,
+ * which turns these budgets into noise. Skip the suites instead of reporting a
+ * red that says nothing about the code; the warning names the load and the
+ * command to rerun.
+ */
+const load = currentLoadVerdict();
+const loadNotice = skipNotice(load);
+if (loadNotice !== null) console.warn(loadNotice);
+const perfDescribe = load.fit ? describe : describe.skip;
 
 /**
  * Perf gate (bnote's lifeline): the per-keystroke cost of the editing pipeline
@@ -123,7 +135,7 @@ const firstListLine = (state: EditorState) => {
   throw new Error("list line not found");
 };
 
-describe("perf gate: big document (~900 lines) per-keystroke pipeline budget", () => {
+perfDescribe("perf gate: big document (~900 lines) per-keystroke pipeline budget", () => {
   const state = makeState(DOC, 0);
 
   it("inline decoration build (whole viewport = whole document, the upper bound) median < 4ms", () => {
@@ -279,78 +291,81 @@ const CHAR_W = 8;
 const ROW_H = 24;
 const CONTENT_LEFT = 100;
 
-describe("perf gate: vim j/k motion (900 lines, hidden-line stepping across math blocks)", () => {
-  it("60 j/k moves (mixed repeat counts, motion + transaction + rebuild) total < 500ms", () => {
-    let cur = makeState(DOC, 0);
-    const at = Math.floor(cur.doc.length / 2);
-    cur = cur.update({ selection: EditorSelection.cursor(at) }).state;
-    // Fake geometry view: state follows cur, j/k does not change the document,
-    // geometry is deterministic.
-    const view = {
-      get state() {
-        return cur;
-      },
-      defaultCharacterWidth: CHAR_W,
-      contentDOM: {
-        getBoundingClientRect: () => ({ left: CONTENT_LEFT, top: 0, right: 900, bottom: 600 }),
-      },
-      coordsAtPos: (pos: number) => {
-        const line = cur.doc.lineAt(pos);
-        const top = (line.number - 1) * ROW_H;
-        return {
-          left: CONTENT_LEFT + (pos - line.from) * CHAR_W,
-          top: top + 2,
-          bottom: top + ROW_H - 2,
-        };
-      },
-      posAtCoords: ({ x, y }: { x: number; y: number }) => {
-        const n = Math.min(cur.doc.lines, Math.max(1, Math.floor(y / ROW_H) + 1));
-        const line = cur.doc.line(n);
-        const col = Math.round((x - CONTENT_LEFT) / CHAR_W);
-        return Math.min(line.to, line.from + Math.max(0, col));
-      },
-    };
-    const cm = { cm6: view, firstLine: () => 0, lastLine: () => cur.doc.lines - 1 };
-    const motions = {
-      moveByLines: moveByLinesVisual,
-      moveToStartOfLine: (_cm: unknown, head: { line: number; ch: number }) => ({
-        line: head.line,
-        ch: 0,
-      }),
-    };
-    const vim: VimCoreState = {
-      lastMotion: motions.moveByLines,
-      lastHPos: 0,
-      lastHSPos: Number.NaN,
-    };
-    const fn = moveByLinesVisual as (...a: unknown[]) => { line: number; ch: number };
-    const samples: number[] = [];
-    for (let i = 0; i < 60; i++) {
-      const headPos = cur.selection.main.head;
-      const headLine = cur.doc.lineAt(headPos);
-      const t0 = performance.now();
-      const out = fn.call(
-        motions,
-        cm,
-        { line: headLine.number - 1, ch: headPos - headLine.from },
-        { forward: i % 2 === 0, repeat: i % 7 === 3 ? 5 : 1 },
-        vim,
-      );
-      const targetLine = cur.doc.line(Math.min(Math.max(1, out.line + 1), cur.doc.lines));
-      const target =
-        out.ch === Infinity
-          ? targetLine.to
-          : Math.min(targetLine.from + Math.max(0, out.ch), targetLine.to);
-      const next = cur.update({ selection: EditorSelection.cursor(target) }).state;
-      buildInlineDecorations({ state: next, visibleRanges: [{ from: 0, to: next.doc.length }] });
-      samples.push(performance.now() - t0);
-      cur = next;
-    }
-    const total = samples.reduce((a, b) => a + b, 0);
-    console.warn(`[perf] vim j/k total ${total.toFixed(0)}ms`);
-    expect(total).toBeLessThan(500);
-  });
-});
+perfDescribe(
+  "perf gate: vim j/k motion (900 lines, hidden-line stepping across math blocks)",
+  () => {
+    it("60 j/k moves (mixed repeat counts, motion + transaction + rebuild) total < 500ms", () => {
+      let cur = makeState(DOC, 0);
+      const at = Math.floor(cur.doc.length / 2);
+      cur = cur.update({ selection: EditorSelection.cursor(at) }).state;
+      // Fake geometry view: state follows cur, j/k does not change the document,
+      // geometry is deterministic.
+      const view = {
+        get state() {
+          return cur;
+        },
+        defaultCharacterWidth: CHAR_W,
+        contentDOM: {
+          getBoundingClientRect: () => ({ left: CONTENT_LEFT, top: 0, right: 900, bottom: 600 }),
+        },
+        coordsAtPos: (pos: number) => {
+          const line = cur.doc.lineAt(pos);
+          const top = (line.number - 1) * ROW_H;
+          return {
+            left: CONTENT_LEFT + (pos - line.from) * CHAR_W,
+            top: top + 2,
+            bottom: top + ROW_H - 2,
+          };
+        },
+        posAtCoords: ({ x, y }: { x: number; y: number }) => {
+          const n = Math.min(cur.doc.lines, Math.max(1, Math.floor(y / ROW_H) + 1));
+          const line = cur.doc.line(n);
+          const col = Math.round((x - CONTENT_LEFT) / CHAR_W);
+          return Math.min(line.to, line.from + Math.max(0, col));
+        },
+      };
+      const cm = { cm6: view, firstLine: () => 0, lastLine: () => cur.doc.lines - 1 };
+      const motions = {
+        moveByLines: moveByLinesVisual,
+        moveToStartOfLine: (_cm: unknown, head: { line: number; ch: number }) => ({
+          line: head.line,
+          ch: 0,
+        }),
+      };
+      const vim: VimCoreState = {
+        lastMotion: motions.moveByLines,
+        lastHPos: 0,
+        lastHSPos: Number.NaN,
+      };
+      const fn = moveByLinesVisual as (...a: unknown[]) => { line: number; ch: number };
+      const samples: number[] = [];
+      for (let i = 0; i < 60; i++) {
+        const headPos = cur.selection.main.head;
+        const headLine = cur.doc.lineAt(headPos);
+        const t0 = performance.now();
+        const out = fn.call(
+          motions,
+          cm,
+          { line: headLine.number - 1, ch: headPos - headLine.from },
+          { forward: i % 2 === 0, repeat: i % 7 === 3 ? 5 : 1 },
+          vim,
+        );
+        const targetLine = cur.doc.line(Math.min(Math.max(1, out.line + 1), cur.doc.lines));
+        const target =
+          out.ch === Infinity
+            ? targetLine.to
+            : Math.min(targetLine.from + Math.max(0, out.ch), targetLine.to);
+        const next = cur.update({ selection: EditorSelection.cursor(target) }).state;
+        buildInlineDecorations({ state: next, visibleRanges: [{ from: 0, to: next.doc.length }] });
+        samples.push(performance.now() - t0);
+        cur = next;
+      }
+      const total = samples.reduce((a, b) => a + b, 0);
+      console.warn(`[perf] vim j/k total ${total.toFixed(0)}ms`);
+      expect(total).toBeLessThan(500);
+    });
+  },
+);
 
 // ---- visual selection painting: the per-keystroke rebuild of visualSelectionDecos ----
 // In visual mode every j/k/l is a selection change → vimVisualHighlight
@@ -358,7 +373,7 @@ describe("perf gate: vim j/k motion (900 lines, hidden-line stepping across math
 // ordered builder) and the blockwise block (per-line slicing + sorting) are the
 // two cost upper bounds; budgets are calibrated from locally measured medians.
 
-describe("perf gate: visual selection paint rebuild (900 lines)", () => {
+perfDescribe("perf gate: visual selection paint rebuild (900 lines)", () => {
   it("linewise select-all (900 line bands) 60 rebuilds total < 150ms", () => {
     const doc = makeState(DOC).doc;
     const vimState = {
@@ -409,7 +424,7 @@ describe("perf gate: visual selection paint rebuild (900 lines)", () => {
 // non-empty so the next Enter keeps splitting), and every document change goes
 // through a real update + decoration rebuild.
 
-describe("perf gate: list continuation (bullet/ordered/todo, 20 items each)", () => {
+perfDescribe("perf gate: list continuation (bullet/ordered/todo, 20 items each)", () => {
   const kinds: { name: string; seed: string }[] = [
     { name: "bullet", seed: "- 无序列表项" },
     { name: "ordered", seed: "1. 有序列表项" },
@@ -453,7 +468,7 @@ describe("perf gate: list continuation (bullet/ordered/todo, 20 items each)", ()
 // cache always misses — one full render per keystroke is the dominant cost of
 // formula input, and is locked together with the state pipeline.
 
-describe("perf gate: math block insertion and typing", () => {
+perfDescribe("perf gate: math block insertion and typing", () => {
   // Measured median 0.5ms; at a 6-10x calibration band it should be 3-5ms, so
   // the old 2ms budget sat below the band and fired false positives under
   // machine load (browser/dev server running in parallel).
@@ -527,7 +542,7 @@ describe("perf gate: math block insertion and typing", () => {
 
 // ---- code blocks: insertion + typing ----
 
-describe("perf gate: code block insertion and typing", () => {
+perfDescribe("perf gate: code block insertion and typing", () => {
   it("10 block insertions, dispatch median < 6ms", () => {
     const cur = makeState(DOC, 0);
     const view = makeTogglingView(cur);
@@ -581,7 +596,7 @@ const firstParagraphLine = (state: EditorState) => {
   throw new Error("paragraph line not found");
 };
 
-describe("perf gate: paragraph Enter (900 lines, the real fallback chain)", () => {
+perfDescribe("perf gate: paragraph Enter (900 lines, the real fallback chain)", () => {
   it("20 times (Enter + filler char) total < 340ms", () => {
     const probe = makeState(DOC, 0);
     const view = makeTogglingView(makeState(DOC, firstParagraphLine(probe).from + 8));
@@ -615,7 +630,7 @@ describe("perf gate: paragraph Enter (900 lines, the real fallback chain)", () =
 // line-start/end motion across the boundary is exactly the real per-keypress
 // cost.
 
-describe("perf gate: entering and leaving math blocks (active flip rebuild)", () => {
+perfDescribe("perf gate: entering and leaving math blocks (active flip rebuild)", () => {
   it("40 caret moves across the boundary (the update includes the block decoration recompute) total < 250ms", () => {
     const base = makeState(DOC, 0);
     // Find the first math block: bounce between the fence line and the content line.
@@ -656,7 +671,7 @@ describe("perf gate: entering and leaving math blocks (active flip rebuild)", ()
 // The history incremental structure grows with document size, so undo on a
 // 900-line document must not degenerate into a full recomputation.
 
-describe("perf gate: undo (900 lines)", () => {
+perfDescribe("perf gate: undo (900 lines)", () => {
   it("20 consecutive undos total < 20ms", () => {
     const withHistory = EditorState.create({
       doc: DOC,
@@ -694,7 +709,7 @@ describe("perf gate: undo (900 lines)", () => {
 // Full-text replacement + full decoration build + complete syntax tree, i.e.
 // the main-thread cost of the moment a note is switched.
 
-describe("perf gate: whole-document load (900 lines)", () => {
+perfDescribe("perf gate: whole-document load (900 lines)", () => {
   it("full-text replacement + decoration build + complete parse median < 30ms", () => {
     const base = makeState("空\n", 0);
     const samples: number[] = [];
@@ -717,7 +732,7 @@ describe("perf gate: whole-document load (900 lines)", () => {
 // magnitude is locked to stop someone from deleting the cache and making
 // every keystroke scan the whole document.
 
-describe("perf gate: the mathRegions cache", () => {
+perfDescribe("perf gate: the mathRegions cache", () => {
   it("an unchanged document hits the cache (the same instance), the rescan after one keystroke has median < 2ms", () => {
     const base = makeState(DOC, 0);
     const a = mathRegions(base);
@@ -743,7 +758,7 @@ describe("perf gate: the mathRegions cache", () => {
 // magnitude of the full rescan, so nobody can rewrite the pairing as a
 // full-document search per marker.
 
-describe("perf gate: formula scanning (stack-based pairing)", () => {
+perfDescribe("perf gate: formula scanning (stack-based pairing)", () => {
   // 20 intact formulas interleaved with 20 stray $$, plus one misaligned
   // artifact at the end of the document
   const mixedDoc = (() => {
@@ -782,7 +797,7 @@ describe("perf gate: formula scanning (stack-based pairing)", () => {
 // only look at that slice, never pull the whole document into a string (on a
 // 900-line document that is an O(n) allocation per Tab).
 
-describe("perf gate: Tab out of brackets (tabout)", () => {
+perfDescribe("perf gate: Tab out of brackets (tabout)", () => {
   const mathLine = (state: EditorState) => {
     for (let n = 1; n <= state.doc.lines; n++) {
       if (state.doc.line(n).text.startsWith("L_{1}")) return state.doc.line(n);
@@ -833,7 +848,7 @@ describe("perf gate: Tab out of brackets (tabout)", () => {
 // 221 compiled snippets) + session chain field mapping. Lock the order of
 // magnitude of this new hot path.
 
-describe("perf gate: typing inside a snippet session", () => {
+perfDescribe("perf gate: typing inside a snippet session", () => {
   it("20 keystrokes inside the session (dispatch + chain mapping + findSnippet) total < 90ms", () => {
     const view = makeTogglingView(makeState(DOC, 0));
     const end = view.state.doc.length;
@@ -922,7 +937,7 @@ function wallEnterMedian(doc: string, times: number): number {
   return samples[Math.floor(times / 2)];
 }
 
-describe("perf gate: Enter · paragraph-wall reparse (block granularity)", () => {
+perfDescribe("perf gate: Enter · paragraph-wall reparse (block granularity)", () => {
   it("4000-line document with a blank line every 50 lines: Enter + parse advance median < 10ms", () => {
     const median = wallEnterMedian(chunkedDoc(4000, 50), 11);
     console.warn(`[perf] chunked-4000 newline reparse median ${median.toFixed(2)}ms`);
@@ -950,50 +965,53 @@ describe("perf gate: Enter · paragraph-wall reparse (block granularity)", () =>
 // itself) + a decoration rebuild on every iteration, same protocol as the
 // "paragraph Enter" gate.
 
-describe("perf gate: Enter · list continuation in a 900-line big document (bullet/ordered/todo)", () => {
-  const cases: { name: string; seed: RegExp }[] = [
-    { name: "bullet", seed: /^- 无序列表项一/ },
-    { name: "ordered", seed: /^1\. 有序项/ },
-    { name: "todo", seed: /^- \[ \] 待办项/ },
-  ];
-  for (const { name, seed } of cases) {
-    it(`${name}: 20 times (Enter creates an item + filler char + decoration rebuild) total < 350ms`, () => {
-      const view = makeTogglingView(makeState(DOC, 0));
-      const findSeed = () => {
-        for (let n = 1; n <= view.state.doc.lines; n++) {
-          const l = view.state.doc.line(n);
-          if (seed.test(l.text)) return l;
+perfDescribe(
+  "perf gate: Enter · list continuation in a 900-line big document (bullet/ordered/todo)",
+  () => {
+    const cases: { name: string; seed: RegExp }[] = [
+      { name: "bullet", seed: /^- 无序列表项一/ },
+      { name: "ordered", seed: /^1\. 有序项/ },
+      { name: "todo", seed: /^- \[ \] 待办项/ },
+    ];
+    for (const { name, seed } of cases) {
+      it(`${name}: 20 times (Enter creates an item + filler char + decoration rebuild) total < 350ms`, () => {
+        const view = makeTogglingView(makeState(DOC, 0));
+        const findSeed = () => {
+          for (let n = 1; n <= view.state.doc.lines; n++) {
+            const l = view.state.doc.line(n);
+            if (seed.test(l.text)) return l;
+          }
+          throw new Error(`${name} 种子行没找到`);
+        };
+        const samples: number[] = [];
+        for (let i = 0; i < 20; i++) {
+          const line = findSeed();
+          view.dispatch({ selection: EditorSelection.cursor(line.to) });
+          const t0 = performance.now();
+          if (!enterContinueListItem(view)) throw new Error(`${name} 续行没接住`);
+          const head = view.state.selection.main.head;
+          view.dispatch({ changes: { from: head, insert: "字" } });
+          ensureSyntaxTree(view.state, view.state.doc.length);
+          buildInlineDecorations({
+            state: view.state,
+            visibleRanges: [{ from: 0, to: view.state.doc.length }],
+          });
+          samples.push(performance.now() - t0);
         }
-        throw new Error(`${name} 种子行没找到`);
-      };
-      const samples: number[] = [];
-      for (let i = 0; i < 20; i++) {
-        const line = findSeed();
-        view.dispatch({ selection: EditorSelection.cursor(line.to) });
-        const t0 = performance.now();
-        if (!enterContinueListItem(view)) throw new Error(`${name} 续行没接住`);
-        const head = view.state.selection.main.head;
-        view.dispatch({ changes: { from: head, insert: "字" } });
-        ensureSyntaxTree(view.state, view.state.doc.length);
-        buildInlineDecorations({
-          state: view.state,
-          visibleRanges: [{ from: 0, to: view.state.doc.length }],
-        });
-        samples.push(performance.now() - t0);
-      }
-      const total = samples.reduce((a, b) => a + b, 0);
-      // Enter really keeps creating items: the seed line grows from the
-      // initial 1 line to 20+ lines.
-      const seedCount = view.state.doc
-        .toString()
-        .split("\n")
-        .filter((l) => seed.test(l)).length;
-      expect(seedCount).toBeGreaterThan(15);
-      console.warn(`[perf] 900 lines ${name} continuation total ${total.toFixed(0)}ms`);
-      expect(total).toBeLessThan(350);
-    });
-  }
-});
+        const total = samples.reduce((a, b) => a + b, 0);
+        // Enter really keeps creating items: the seed line grows from the
+        // initial 1 line to 20+ lines.
+        const seedCount = view.state.doc
+          .toString()
+          .split("\n")
+          .filter((l) => seed.test(l)).length;
+        expect(seedCount).toBeGreaterThan(15);
+        console.warn(`[perf] 900 lines ${name} continuation total ${total.toFixed(0)}ms`);
+        expect(total).toBeLessThan(350);
+      });
+    }
+  },
+);
 
 // ---- Enter · long ordered-list renumbering ----
 // When Enter creates an item, bumpFollowingOrdered renumbers all following
@@ -1002,7 +1020,7 @@ describe("perf gate: Enter · list continuation in a 900-line big document (bull
 // magnitude is locked to prevent the renumbering from degenerating into
 // per-item dispatch or a full-document remap.
 
-describe("perf gate: Enter · long renumbering of a 30-item ordered list", () => {
+perfDescribe("perf gate: Enter · long renumbering of a 30-item ordered list", () => {
   it("20 times (Enter at the end of item 1, 29 items renumbered) total < 100ms", () => {
     const lines: string[] = [];
     for (let i = 1; i <= 30; i++) lines.push(`${i}. 有序列表第 ${i} 项,内容若干`);
@@ -1034,7 +1052,7 @@ describe("perf gate: Enter · long renumbering of a 30-item ordered list", () =>
 // fixed "O(document) per keystroke" cost, whose order of magnitude is watched
 // here; a functional assertion also guards against the scan missing headings.
 
-describe("perf gate: whole-document scan for automatic heading numbering (900 lines)", () => {
+perfDescribe("perf gate: whole-document scan for automatic heading numbering (900 lines)", () => {
   it("20 scans (the numbering is already aligned, a pure scan) total < 80ms", () => {
     const view = makeTogglingView(makeState(DOC, 0));
     const samples: number[] = [];
@@ -1085,7 +1103,7 @@ function calloutDoc(sections: number): string {
   return parts.join("\n");
 }
 
-describe("perf gate: callout scanning (60 blocks, ~500 lines)", () => {
+perfDescribe("perf gate: callout scanning (60 blocks, ~500 lines)", () => {
   const CALLOUT_DOC = calloutDoc(60);
   const state = makeState(CALLOUT_DOC, 0);
 
@@ -1147,41 +1165,44 @@ function anchorDoc(sections: number): string {
   return parts.join("\n");
 }
 
-describe("perf gate: callout anchor scanning (60 titled blocks, the body text hits repeatedly)", () => {
-  const ANCHOR_DOC = anchorDoc(60);
-  const state = makeState(ANCHOR_DOC, 0);
+perfDescribe(
+  "perf gate: callout anchor scanning (60 titled blocks, the body text hits repeatedly)",
+  () => {
+    const ANCHOR_DOC = anchorDoc(60);
+    const state = makeState(ANCHOR_DOC, 0);
 
-  it("whole-document viewport inline decoration rebuild (the anchor scan is included) median < 5ms", () => {
-    const median = medianOf(() => {
-      const t0 = performance.now();
-      buildInlineDecorations({ state, visibleRanges: [{ from: 0, to: state.doc.length }] });
-      return performance.now() - t0;
-    }, 15);
-    console.warn(`[perf] anchored document inline decoration median ${median.toFixed(2)}ms`);
-    expect(median).toBeLessThan(5);
-  });
+    it("whole-document viewport inline decoration rebuild (the anchor scan is included) median < 5ms", () => {
+      const median = medianOf(() => {
+        const t0 = performance.now();
+        buildInlineDecorations({ state, visibleRanges: [{ from: 0, to: state.doc.length }] });
+        return performance.now() - t0;
+      }, 15);
+      console.warn(`[perf] anchored document inline decoration median ${median.toFixed(2)}ms`);
+      expect(median).toBeLessThan(5);
+    });
 
-  it("20 per-keystroke inputs (update + decoration rebuild) total < 150ms, single keystroke median < 6ms", () => {
-    const line = state.doc.line(8); // the first body-text hit line
-    const at = line.from + 6;
-    let cur = makeState(ANCHOR_DOC, at);
-    const perKey: number[] = [];
-    for (let i = 0; i < 20; i++) {
-      const t0 = performance.now();
-      cur = cur.update({ changes: { from: at, insert: "字" } }).state;
-      buildInlineDecorations({ state: cur, visibleRanges: [{ from: 0, to: cur.doc.length }] });
-      perKey.push(performance.now() - t0);
-    }
-    const total = perKey.reduce((a, b) => a + b, 0);
-    perKey.sort((a, b) => a - b);
-    const median = perKey[Math.floor(perKey.length / 2)];
-    console.warn(
-      `[perf] anchored document per-keystroke total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`,
-    );
-    expect(total).toBeLessThan(150);
-    expect(median).toBeLessThan(6);
-  });
-});
+    it("20 per-keystroke inputs (update + decoration rebuild) total < 150ms, single keystroke median < 6ms", () => {
+      const line = state.doc.line(8); // the first body-text hit line
+      const at = line.from + 6;
+      let cur = makeState(ANCHOR_DOC, at);
+      const perKey: number[] = [];
+      for (let i = 0; i < 20; i++) {
+        const t0 = performance.now();
+        cur = cur.update({ changes: { from: at, insert: "字" } }).state;
+        buildInlineDecorations({ state: cur, visibleRanges: [{ from: 0, to: cur.doc.length }] });
+        perKey.push(performance.now() - t0);
+      }
+      const total = perKey.reduce((a, b) => a + b, 0);
+      perKey.sort((a, b) => a - b);
+      const median = perKey[Math.floor(perKey.length / 2)];
+      console.warn(
+        `[perf] anchored document per-keystroke total ${total.toFixed(0)}ms, median ${median.toFixed(2)}ms`,
+      );
+      expect(total).toBeLessThan(150);
+      expect(median).toBeLessThan(6);
+    });
+  },
+);
 
 // ---- cross-file todo sync · per-key intent extraction (the fixed cost of dailySyncExtension) ----
 // The line-level diff in the updateListener: with no intent it only pays
@@ -1190,7 +1211,7 @@ describe("perf gate: callout anchor scanning (60 titled blocks, the body text hi
 // intentsForRange itself — the incremental cost of the listener over the
 // existing pipeline; a functional anchor guards against "measuring a no-op".
 
-describe("perf gate: cross-file todo sync intent extraction (900 lines)", () => {
+perfDescribe("perf gate: cross-file todo sync intent extraction (900 lines)", () => {
   const linksFor = (texts: string[]): DailyLink[] =>
     texts.map((text, i) => ({
       id: `l${i}`,
@@ -1276,7 +1297,7 @@ describe("perf gate: cross-file todo sync intent extraction (900 lines)", () => 
 // gate is calibrated at the upper bound: viewport = whole document (~900
 // lines), 120 links (the real vault has 6).
 
-describe("perf gate: visual marker build for todo links (900 lines, 120 links)", () => {
+perfDescribe("perf gate: visual marker build for todo links (900 lines, 120 links)", () => {
   const DAILY = "/vault/Daily/2026-09-21.md";
   const links: DailyLink[] = Array.from({ length: 120 }, (_, i) => ({
     id: `m${i}`,
@@ -1322,7 +1343,7 @@ describe("perf gate: visual marker build for todo links (900 lines, 120 links)",
 // dailyMarks (viewport line by line + set hits). The budget is calibrated the
 // same way at ~10x.
 
-describe("perf gate: today's footprint block diff (900 lines)", () => {
+perfDescribe("perf gate: today's footprint block diff (900 lines)", () => {
   it("whole-file diff (the baseline = an old version in which half the blocks already exist) median < 3ms", () => {
     const lines = DOC.split("\n");
     // Baseline: every other paragraph is removed (creating the real work
@@ -1352,7 +1373,7 @@ describe("perf gate: today's footprint block diff (900 lines)", () => {
   });
 });
 
-describe("perf gate: today's footprint inclusion marker build (900 lines, ~180 blocks)", () => {
+perfDescribe("perf gate: today's footprint inclusion marker build (900 lines, ~180 blocks)", () => {
   const state = makeState(DOC, 0);
   const view = { state, visibleRanges: [{ from: 0, to: state.doc.length }] };
   const blocks = diffBlocks("", DOC); // all document blocks as "added today"
@@ -1377,33 +1398,36 @@ describe("perf gate: today's footprint inclusion marker build (900 lines, ~180 b
   });
 });
 
-describe("perf gate: today's footprint block markdown rendering (the block-level widget rebuild surface)", () => {
-  // The footprint region repaints completely on every revision/collapse change
-  // (lezer parsing + KaTeX in render.ts); the frequency is at the watcher
-  // debounce level (seconds), not per keystroke. What is locked here is the
-  // order of magnitude of a full-region render, to prevent the renderer from
-  // degenerating into something like rebuilding a parser per line.
-  it("a full render of every block in the document (including KaTeX) median < 12ms", () => {
-    const blocks = diffBlocks("", DOC);
-    const median = medianOf(() => {
-      const t0 = performance.now();
-      for (const b of blocks) renderBlockHtml(b.text);
-      return performance.now() - t0;
-    }, 15);
-    console.warn(`[perf] footprint markdown render median ${median.toFixed(2)}ms`);
-    expect(median).toBeLessThan(12);
-  });
+perfDescribe(
+  "perf gate: today's footprint block markdown rendering (the block-level widget rebuild surface)",
+  () => {
+    // The footprint region repaints completely on every revision/collapse change
+    // (lezer parsing + KaTeX in render.ts); the frequency is at the watcher
+    // debounce level (seconds), not per keystroke. What is locked here is the
+    // order of magnitude of a full-region render, to prevent the renderer from
+    // degenerating into something like rebuilding a parser per line.
+    it("a full render of every block in the document (including KaTeX) median < 12ms", () => {
+      const blocks = diffBlocks("", DOC);
+      const median = medianOf(() => {
+        const t0 = performance.now();
+        for (const b of blocks) renderBlockHtml(b.text);
+        return performance.now() - t0;
+      }, 15);
+      console.warn(`[perf] footprint markdown render median ${median.toFixed(2)}ms`);
+      expect(median).toBeLessThan(12);
+    });
 
-  it("functional anchor: headings and lists render with the editor's own class names", () => {
-    const html = renderBlockHtml("## 章节\n\n- 列表项\n");
-    expect(html).toContain("md-h2");
-    expect(html).toContain("md-list-line");
-  });
-});
+    it("functional anchor: headings and lists render with the editor's own class names", () => {
+      const html = renderBlockHtml("## 章节\n\n- 列表项\n");
+      expect(html).toContain("md-h2");
+      expect(html).toContain("md-list-line");
+    });
+  },
+);
 
 // ---- project cards: todo parsing (runs on every card preview render) ----
 
-describe("perf gate: project card todo parsing", () => {
+perfDescribe("perf gate: project card todo parsing", () => {
   it("parsing a 1000-line project document median < 1.5ms", () => {
     // The left and right preview cards scan the whole project document on
     // every render; project files are calibrated at a 1000-line cap (in
@@ -1425,7 +1449,7 @@ describe("perf gate: project card todo parsing", () => {
 
 // ---- incremental math / callout fields: the no-O(document) keystroke rule ----
 
-describe("perf gate: incremental math/callout fields", () => {
+perfDescribe("perf gate: incremental math/callout fields", () => {
   // 600 sections × 2 inline formulas = 1200 regions, 2400 lines. A per-keystroke
   // full scan here is the class of regression this gate exists for.
   const parts: string[] = [];
@@ -1534,7 +1558,7 @@ function makeFieldsState(doc: string, cursorAt: number): EditorState {
   return forceFullParse(created);
 }
 
-describe("perf gate: note-area bulk edits, multi-cursor and scrolling (900 lines)", () => {
+perfDescribe("perf gate: note-area bulk edits, multi-cursor and scrolling (900 lines)", () => {
   it("an ordinary letter maps block statics instead of re-walking them, and never scans math/callouts", () => {
     const at = DOC.indexOf("这是段落文字") + 2;
     const state = makeFieldsState(DOC, at);
@@ -1778,7 +1802,7 @@ describe("perf gate: note-area bulk edits, multi-cursor and scrolling (900 lines
 // (math blocks + callouts + lists), i.e. the deciding part of the real
 // per-key CPU cost; the DOM/paint leg is browser-only and is not simulated.
 
-describe("perf gate: note-area key events on a 2,400-line document", () => {
+perfDescribe("perf gate: note-area key events on a 2,400-line document", () => {
   const KEY_DOC = bigDoc(160); // ~2,400 lines, the "realistically sized note"
   const PROBE = makeFieldsState(KEY_DOC, 0);
   /** A paragraph line slightly past the middle of the document (never a marker or a math line). */
@@ -1957,7 +1981,7 @@ describe("perf gate: note-area key events on a 2,400-line document", () => {
 // scroll-position model that runs in the same frame (requestMeasure read +
 // scroll delta).
 
-describe("perf gate: content-area scroll per step (40-line viewport)", () => {
+perfDescribe("perf gate: content-area scroll per step (40-line viewport)", () => {
   const SCROLL_DOC = bigDoc(60); // ~900 lines, ~120 math regions
   const state = makeState(SCROLL_DOC, 0);
   const VIEWPORT_LINES = 40;

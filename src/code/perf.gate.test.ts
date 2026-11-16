@@ -7,6 +7,17 @@ import { planGoto, type GotoTarget } from "./editor/gotoPlan";
 import { cmToLspPosition, lspRangeToCm, lspToCmOffset } from "./editor/positions";
 import { decodeFileUri, encodeFileUri } from "./editor/uri";
 import type { CodeEntry, LspPosition } from "./types";
+import { currentLoadVerdict, skipNotice } from "@/perf/loadGate";
+
+/*
+ * A busy machine moves a millisecond median several-fold. Skip the suites
+ * instead of reporting a red that says nothing about the code; the warning
+ * names the load and the command to rerun.
+ */
+const load = currentLoadVerdict();
+const loadNotice = skipNotice(load);
+if (loadNotice !== null) console.warn(loadNotice);
+const perfDescribe = load.fit ? describe : describe.skip;
 
 /**
  * The performance gate of the code module.
@@ -61,7 +72,7 @@ function allDirPaths(entries: readonly CodeEntry[]): Set<string> {
   return dirs;
 }
 
-describe("code module order-of-magnitude gate", () => {
+perfDescribe("code module order-of-magnitude gate", () => {
   it("folding the project tree of 2000 files < 10ms", () => {
     const entries = repoEntries(2000);
     const samples: number[] = [];
@@ -181,7 +192,7 @@ describe("code module order-of-magnitude gate", () => {
 // what a budget can honestly describe. Every budget below is the measured
 // median × 6–10 on this machine.
 
-describe("code perf gate: opening a file from the tree", () => {
+perfDescribe("code perf gate: opening a file from the tree", () => {
   /** A repository of a few thousand files in nested directories (the size the tree has to stay fast at). */
   function repoDirs(dirs: number, filesPerDir: number): CodeEntry[] {
     const out: CodeEntry[] = [];
@@ -275,7 +286,7 @@ describe("code perf gate: opening a file from the tree", () => {
 // 20,000-line file, where a line lookup that degraded to a linear scan shows
 // up immediately.
 
-describe("code perf gate: goto plan and position mapping (20,000-line file)", () => {
+perfDescribe("code perf gate: goto plan and position mapping (20,000-line file)", () => {
   const LINES = Array.from(
     { length: 20000 },
     (_, i) => `  const value${i} = compute(${i}, "name_${i}"); // 第 ${i} 行`,

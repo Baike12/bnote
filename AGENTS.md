@@ -156,7 +156,7 @@ Run **`pnpm gate`** (= `pnpm lint` + `pnpm typecheck` + `pnpm format:check` + `p
 - **Lint errors block; warnings need a reason.** New warnings (engine `any` assertions, dev-bridge `console.log`) must be justified.
 - **Rust changes** run `cargo check` in `src-tauri` (and `cargo test --lib` for behavior changes), plus `cargo fmt` (the repo is rustfmt-clean; `rustfmt.toml` at the repo root sets the width). `src-tauri` is a single package: one lockfile and one target directory. Rust is not part of `pnpm gate`.
 - **E2E covers the real binary only.** `pnpm test:e2e:build` builds the app with the Cargo `e2e` feature (embedded WebDriver, isolated `--bnote-data-dir`); `pnpm test:e2e` runs it. Never point E2E at the user's real vault.
-- If the gate fails under heavy machine load, check the load average and rerun the failing test alone; report the real result.
+- **Perf gates refuse to run on a busy machine.** `pnpm test:perf` skips its suites when the 1-minute load average reaches 0.75× the CPU count (`src/perf/loadGate.ts`) and prints the measured load; rerun on an idle machine rather than trusting a red measured under load. If a non-perf test fails under heavy load, rerun that test alone and report the real result.
 
 ## Language
 
