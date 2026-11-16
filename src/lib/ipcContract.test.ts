@@ -21,8 +21,8 @@ import { join } from "node:path";
 const RUST = "src-tauri/src";
 const SRC = "src";
 
-/** Emitted by the native menu, which does not exist in a browser: nothing to relay. */
-const NATIVE_ONLY_EVENTS = new Set(["bnote:menu-quit"]);
+/** Native menu/IME lifecycle events do not exist in browser mode: nothing to relay. */
+const NATIVE_ONLY_EVENTS = new Set(["bnote:menu-quit", "bnote:ime-context-ready"]);
 /**
  * Commands that drive a native child webview. In browser mode the placeholder
  * DOM element stands in for the webview and these calls are simply not made.

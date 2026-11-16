@@ -26,7 +26,12 @@ import { quitApp } from "@/app/quit";
 import { trackWindowState } from "@/lib/windowState";
 import { useFocusStore } from "@/focus/store";
 import { installFocusScheduler } from "@/focus/scheduler";
-import { imeOnWindowBlur, imeOnWindowFocus, imeWarmUp } from "@/editor/imeSwitch";
+import {
+  imeOnContextReady,
+  imeOnWindowBlur,
+  imeOnWindowFocus,
+  imeWarmUp,
+} from "@/editor/imeSwitch";
 import {
   applySettingsToEditor,
   openVault,
@@ -341,6 +346,16 @@ export default function App() {
     };
     document.addEventListener("visibilitychange", onVisible);
     let unlisten: (() => void) | undefined;
+    let unlistenContextReady: (() => void) | undefined;
+    let disposed = false;
+    void listen("bnote:ime-context-ready", () => imeOnContextReady())
+      .then((off) => {
+        if (disposed) off();
+        else unlistenContextReady = off;
+      })
+      .catch(() => {
+        // not running under Tauri
+      });
     try {
       // getCurrentWindow() throws synchronously outside a Tauri environment (the
       // browser harness); there only the DOM focus/blur handlers work and the
@@ -354,10 +369,12 @@ export default function App() {
       // not running under Tauri
     }
     return () => {
+      disposed = true;
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
       unlisten?.();
+      unlistenContextReady?.();
     };
   }, []);
 

@@ -25,10 +25,14 @@ use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::{CFBoolean, CFBooleanRef};
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::{CFString, CFStringRef};
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::MainThreadMarker;
-use objc2_app_kit::NSTextInputContext;
-use objc2_foundation::NSString;
+use objc2_app_kit::{NSTextInputContext, NSWindowDidUpdateNotification};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSString};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -367,6 +371,89 @@ pub(crate) fn abandon_intent(intent: &ImeIntent) -> Result<(), String> {
     Ok(())
 }
 
+/// The target of the current deferred intent, if one is waiting for an input
+/// context. A normal in-flight intent is not exposed: focus reconciliation must
+/// not duplicate a command that is still running.
+pub(crate) fn deferred_target() -> Option<String> {
+    let coordinator = coordinator_mutex().ok()?;
+    coordinator
+        .pending
+        .as_ref()
+        .filter(|pending| pending.needs_rebuild)
+        .map(|pending| pending.target.clone())
+}
+
+type ObserverToken = Retained<ProtocolObject<dyn NSObjectProtocol>>;
+
+thread_local! {
+    /// AppKit observers are main-thread objects and the block token only has to
+    /// live on that thread. Keeping it here avoids a Send-erased pointer.
+    static CONTEXT_READY_OBSERVER: RefCell<Option<ObserverToken>> = const {
+        RefCell::new(None)
+    };
+}
+
+fn clear_context_ready_watch() {
+    CONTEXT_READY_OBSERVER.with(|slot| {
+        let token = slot.borrow_mut().take();
+        if let Some(token) = token {
+            let object: &AnyObject = token.as_ref();
+            unsafe {
+                NSNotificationCenter::defaultCenter().removeObserver(object);
+            }
+        }
+    });
+}
+
+fn has_current_context() -> bool {
+    MainThreadMarker::new()
+        .and_then(NSTextInputContext::currentInputContext)
+        .is_some()
+}
+
+/// Waits for AppKit's next window update while a context miss is pending.
+///
+/// A DOM `focusin` can arrive before WKWebView has installed its
+/// `NSTextInputContext`. The same focus event cannot fire again once that
+/// context appears, so relying only on a future focus leaves the editor on the
+/// old source indefinitely. The observer is installed only while a deferred
+/// intent exists, checks the real current context on the main thread, removes
+/// itself on success, and never wakes a background timer.
+pub(crate) fn watch_for_context_ready(
+    notify: Box<dyn Fn() + Send + 'static>,
+) -> Result<(), String> {
+    if MainThreadMarker::new().is_none() {
+        return Err("context-ready watch must be installed on the main thread".into());
+    }
+    if CONTEXT_READY_OBSERVER.with(|slot| slot.borrow().is_some()) {
+        return Ok(());
+    }
+
+    let block = block2::RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        if deferred_target().is_none() {
+            clear_context_ready_watch();
+            return;
+        }
+        if !has_current_context() {
+            return;
+        }
+        clear_context_ready_watch();
+        notify();
+    });
+    let token = unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSWindowDidUpdateNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    CONTEXT_READY_OBSERVER.with(|slot| {
+        *slot.borrow_mut() = Some(token);
+    });
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // app input context (AppKit — no TIS)
 // ---------------------------------------------------------------------------
@@ -402,9 +489,9 @@ pub(crate) fn abandon_intent(intent: &ImeIntent) -> Result<(), String> {
 /// - `Some(false)` — a context existed but the transition did not stick;
 /// - `None`        — there is no input context at this instant (the web view
 ///   is not the window's first responder, e.g. while the window is still
-///   activating). The caller keeps the generation-stamped intent pending and
-///   retries it on the next editor/window focus; a skipped hand-off would
-///   leave WebKit typing with the old IME for the whole mode session.
+///   activating). The caller keeps the generation-stamped intent pending until
+///   an AppKit window update exposes a context; a skipped hand-off would leave
+///   WebKit typing with the old IME for the whole mode session.
 pub fn apply_context_source(id: &str, rebuild: bool) -> Option<bool> {
     let mtm = MainThreadMarker::new()?;
     let context = NSTextInputContext::currentInputContext(mtm)?;

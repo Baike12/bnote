@@ -24,8 +24,8 @@ import { perfEnd, perfFields, perfStart } from "@/perf/trace";
  * the helper selects the system source. The context is the authority for
  * typing and is ready before the menu bar can advertise the change. The
  * backend keeps a missed context as a generation-stamped pending intent; the
- * next editor/window focus settles it without a timer that can race the first
- * typed character.
+ * first AppKit window update that exposes a real context asks the focused
+ * editor to settle it, without a timer that can race the first typed character.
  *
  * "The system source did not change" does not mean "the context is right":
  * after one hand-off that ran with no context (the window was still
@@ -34,7 +34,7 @@ import { perfEnd, perfFields, perfStart } from "@/perf/trace";
  * — the lag one feels on j/k, invisible to the JS key probe because it happens
  * before the DOM keydown. The backend owns that state: the pending intent is
  * generation-stamped, an older completion cannot clear a newer request, and a
- * real focus event retries it before typing resumes.
+ * context-ready event retries it while the editor still owns focus.
  *
  * Mirrors the behavior of the user's patched obsidian-vim-input-auto-switch:
  * entering insert inside a math region keeps the English source (formulas are
@@ -147,13 +147,13 @@ function launchSwitch(target: string, handback = false): void {
       perfEnd(t, "ime.switch", IME_FIELDS, outcome.tisMs, outcome.contextMs, ctx, outcome.switched);
       if (outcome.contextApplied === false) {
         // The context rejected the source. The backend keeps the intent pending
-        // for the next focus; the source it reports is the one detail the Rust
-        // log lacks.
+        // for the next context-ready update; the source it reports is the one
+        // detail the Rust log lacks.
         console.warn("[bnote] input context hand-off missed", target, outcome.contextSource);
       }
       // `contextApplied === null` means "no input context at that instant"
       // (the window was still activating). The intent stays pending until the
-      // editor or window focus event proves a context exists.
+      // native context-ready watcher proves a context exists.
     })
     .catch((e) => {
       console.warn("[bnote] set input source failed", e);
@@ -470,6 +470,26 @@ export function imeOnWindowBlur(): void {
  *  did not change: the previous native hand-off may have run before this
  *  context existed, and the backend retries that pending intent here. */
 export function imeOnEditorFocus(): void {
+  imeSyncToEditor(true);
+}
+
+/** AppKit exposed the input context after a deferred switch. Retry only when
+ *  the notes editor still owns focus; a context created for an agent field or
+ *  overlay must not consume the editor's pending intent. */
+export function imeOnContextReady(): void {
+  const view = getView();
+  const active = typeof document === "undefined" ? null : document.activeElement;
+  const { modal } = useAppStore.getState();
+  if (
+    modal !== null ||
+    !view ||
+    view.composing ||
+    !document.hasFocus() ||
+    !active ||
+    !view.contentDOM.contains(active)
+  ) {
+    return;
+  }
   imeSyncToEditor(true);
 }
 

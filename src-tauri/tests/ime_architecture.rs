@@ -125,7 +125,15 @@ fn a_missed_hand_off_is_a_generation_stamped_pending_intent() {
     assert!(
         !commands.contains("schedule_context_repair") && !commands.contains("std::thread::spawn"),
         "a delayed repair can tear down the context on the first typed character; \
-         pending intent is retried by the next focus or mode event"
+         pending intent must be retried by the next context-ready window update"
+    );
+    assert!(
+        commands.contains("arm_context_ready_retry")
+            && tis.contains("watch_for_context_ready")
+            && tis.contains("NSWindowDidUpdateNotification")
+            && tis.contains("deferred_target"),
+        "a deferred intent needs a one-shot AppKit window-update watcher; a focus \
+         event can have already happened before the context exists"
     );
     assert!(
         read("src/ime_tis.rs")

@@ -50,15 +50,15 @@ describe("the typing context follows a real switch", () => {
     expect(source).toContain("outcome.contextApplied === false");
     // `switched` reports whether the system source moved; with `ctx = -1` it
     // also tells that the select was deferred (menu bar unchanged, pending
-    // for the next focus).
+    // for the next context-ready window update).
     expect(source).toContain('perfFields("tisMs", "ctxMs", "ctx", "switched")');
   });
 
   it("the system select waits for a confirmed context", () => {
     // Producing the half-switched state is not allowed: when the context
     // misses (`ctx = -1`/`0`), the helper must not move the system source.
-    // The menu bar stays on the previous source and the intent retries on
-    // focus, so "menu bar changed, notes did not" cannot be created.
+    // The menu bar stays on the previous source and a one-shot AppKit update
+    // watcher retries when a context exists.
     const commands = read("src-tauri/src/commands/ime.rs");
     const body = commands.slice(
       commands.indexOf("pub async fn set_input_source"),
@@ -72,8 +72,8 @@ describe("the typing context follows a real switch", () => {
 
   it("a missed hand-off is a generation-stamped backend intent, not a timer", () => {
     // A timer that starts deactivating the context after 50ms can land on the
-    // first typed character. The pending intent is settled by a later focus or
-    // mode event, and an older completion cannot erase a newer intent.
+    // first typed character. The pending intent is settled by a native
+    // context-ready event, and an older completion cannot erase a newer one.
     expect(source).not.toContain("scheduleContextVerify");
     const commands = read("src-tauri/src/commands/ime.rs");
     const tis = read("src-tauri/src/ime_tis.rs");
@@ -81,6 +81,10 @@ describe("the typing context follows a real switch", () => {
     expect(tis).toContain("PendingContext");
     expect(commands).not.toContain("schedule_context_repair");
     expect(commands).not.toContain("std::thread::spawn");
+    expect(commands).toContain("arm_context_ready_retry");
+    expect(tis).toContain("watch_for_context_ready");
+    expect(tis).toContain("NSWindowDidUpdateNotification");
+    expect(tis).toContain("deferred_target");
   });
 
   it("the source goes to the app's own context, not through a focus re-mount", () => {
@@ -103,6 +107,8 @@ describe("the switch is composed into the editor and the app shell", () => {
     expect(app).toContain("imeWarmUp()");
     expect(app).toContain("imeOnWindowBlur()");
     expect(app).toContain("imeOnWindowFocus()");
+    expect(app).toContain('listen("bnote:ime-context-ready"');
+    expect(app).toContain("imeOnContextReady()");
     expect(read("src/editor/setup.ts")).toContain("imeOnEditorFocus()");
   });
 

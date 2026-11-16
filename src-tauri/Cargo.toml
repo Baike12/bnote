@@ -104,7 +104,9 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSGeometry",
   "NSNotification",
   "NSObject",
+  "NSOperation",
   "NSString",
+  "block2",
 ] }
 # 专注模式的硬锁(commands/focus.rs):CGEventTap 吞掉 ⌘Tab / ⌘Space 这类系统级
 # 快捷键,需要辅助功能权限。事件 tap 的 MachPort 要挂到 run loop 上,所以还要

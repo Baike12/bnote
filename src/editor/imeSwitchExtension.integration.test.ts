@@ -31,7 +31,7 @@ vi.mock("@/lib/tauri", () => ({ api: tauri }));
 const vimMode = vi.hoisted(() => ({ current: null as "insert" | "normal" | "visual" | null }));
 vi.mock("./vim/vim", () => ({ currentVimMode: () => vimMode.current }));
 
-import { imeOnEditorFocus, imeSwitchExtension, imeYield } from "./imeSwitch";
+import { imeOnContextReady, imeOnEditorFocus, imeSwitchExtension, imeYield } from "./imeSwitch";
 import { registerEditorView, unregisterEditorView } from "./api";
 import { useAppStore } from "@/state/appStore";
 
@@ -99,6 +99,7 @@ afterEach(async () => {
     unregisterEditorView(view);
     view.destroy();
   }
+  vi.restoreAllMocks();
 });
 
 describe("the editor-level switch chain", () => {
@@ -160,6 +161,26 @@ describe("the editor-level switch chain", () => {
     imeOnEditorFocus();
     await tick();
 
+    expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
+    expect(tauri.setInputSource).toHaveBeenCalledWith(SOGOU);
+  });
+
+  it("a late native context retries only while the notes editor owns focus", async () => {
+    const view = mount();
+    resetListener(view);
+    vimMode.current = "insert";
+    view.dispatch({});
+    await tick();
+    tauri.setInputSource.mockClear();
+
+    imeOnContextReady();
+    await tick();
+    expect(tauri.setInputSource).not.toHaveBeenCalled();
+
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    view.contentDOM.focus();
+    imeOnContextReady();
+    await tick();
     expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
     expect(tauri.setInputSource).toHaveBeenCalledWith(SOGOU);
   });

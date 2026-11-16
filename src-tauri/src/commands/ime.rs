@@ -20,8 +20,8 @@ pub struct InputSourceInfo {
 pub struct SetImeOutcome {
     /// Whether the system source moved. false when it was already active, or
     /// when the context hand-off missed and the system select was deferred to
-    /// the next focus (the menu bar must not advertise a switch the WebView
-    /// did not take).
+    /// the next context-ready update (the menu bar must not advertise a switch
+    /// the WebView did not take).
     pub switched: bool,
     /// The TIS call itself, in milliseconds, as measured inside the helper
     /// process (see docs/PERFORMANCE.md §6). 0 when the select was deferred
@@ -31,7 +31,7 @@ pub struct SetImeOutcome {
     /// the system menu bar changed. `Some(false)` is a real failure; `None`
     /// means no input context existed at that instant. In both cases the
     /// system source stays unchanged and the pending intent is retried on the
-    /// next focus, not by a timer.
+    /// next window update that exposes a context, not by a timer.
     pub context_applied: Option<bool>,
     /// Main-thread cost of the context hand-off, in milliseconds. The normal
     /// path only writes the selected-source property; the destructive rebuild
@@ -104,9 +104,10 @@ pub async fn get_current_input_source() -> CmdResult<String> {
 /// not"), and forcing a session rebuild on every switch tore down the active
 /// text session on the path of the next keystroke ("notes area janks").
 ///
-/// A missed context is kept as a generation-stamped pending intent. The next
-/// focus or mode event retries it; a delayed thread must not start a
-/// destructive AppKit transition while the user is already typing.
+/// A missed context is kept as a generation-stamped pending intent. A one-shot
+/// AppKit window-update observer retries it as soon as a context exists; a
+/// delayed thread must not start a destructive transition while the user is
+/// already typing.
 ///
 /// The system select runs only after the context accepted the target. A miss
 /// leaves the system source (and the menu bar) on the previous source: the
@@ -135,10 +136,11 @@ pub async fn set_input_source(app: tauri::AppHandle, id: String) -> CmdResult<Se
 
     // The context is the authority for typing. Without a confirmed context
     // the helper must not move the system source: the menu bar would say one
-    // thing while the WebView types another until the next focus. Keep the
-    // intent pending and let the focus path retry context-then-system.
+    // thing while the WebView types another. Keep the intent pending and wait
+    // for AppKit's next window update to expose a real input context.
     if !system_select_allowed(handoff.applied) {
         crate::ime_tis::mark_intent_missed(&intent)?;
+        arm_context_ready_retry(app);
         eprintln!(
             "[bnote] set_input_source({id}) deferred: context={:?} {} {:.2}ms; system source unchanged",
             handoff.applied,
@@ -199,6 +201,28 @@ pub async fn set_input_source(app: tauri::AppHandle, id: String) -> CmdResult<Se
         context_ms: handoff.ms,
         context_source: handoff.source,
     })
+}
+
+/// Waits for the current AppKit window update cycle to expose the input
+/// context, then retries the latest deferred intent. The watch is one-shot and
+/// only exists while a miss is pending; it is not a polling timer.
+#[cfg(target_os = "macos")]
+fn arm_context_ready_retry(app: tauri::AppHandle) {
+    let callback_app = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let notify_app = callback_app.clone();
+        let notify = Box::new(move || {
+            use tauri::Emitter;
+            if let Err(error) = notify_app.emit("bnote:ime-context-ready", ()) {
+                eprintln!("[bnote] input source context-ready event failed: {error}");
+            }
+        });
+        if let Err(error) = crate::ime_tis::watch_for_context_ready(notify) {
+            eprintln!("[bnote] input source retry watch failed: {error}");
+        }
+    }) {
+        eprintln!("[bnote] input source retry watch dispatch failed: {error}");
+    }
 }
 
 /// Dispatches the context hand-off to the app's main thread and waits for it.
