@@ -120,6 +120,7 @@ export function ContentPane() {
   const recordStudyPdf = useAppStore((s) => s.recordStudyPdf);
   const recordStudyUrl = useAppStore((s) => s.recordStudyUrl);
   const renameStudyUrl = useAppStore((s) => s.renameStudyUrl);
+  const deleteStudyUrl = useAppStore((s) => s.deleteStudyUrl);
   const recordWereadBook = useAppStore((s) => s.recordWereadBook);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const settings = useAppStore((s) => s.settings);
@@ -591,6 +592,35 @@ export function ContentPane() {
     recordWereadBook({ url: entry.url, title: entry.title });
   }
 
+  /**
+   * Deletes a page from the materials list. The backend owns the material
+   * directory (annotations + agent sessions under `.bnote/materials/`), so the
+   * files go first and the row is dropped only when that succeeded — a failed
+   * delete then leaves a row the user can retry instead of a material nothing
+   * points at.
+   */
+  async function deleteHistoryUrl(entry: StudyUrlEntry) {
+    setHistoryOpen(false);
+    const title = urlTitle(entry);
+    try {
+      const removedFiles = await agentApi.materialDelete({
+        kind: "url",
+        url: entry.url,
+        title: entry.title,
+      });
+      deleteStudyUrl(entry.url);
+      // A page that was only opened has no annotations or sessions on disk:
+      // saying "in the trash" would point at something that never existed.
+      showToast(
+        removedFiles
+          ? `已删除「${title}」,批注和会话在废纸篓`
+          : `已从列表删除「${title}」(没有保存过批注或会话)`,
+      );
+    } catch (e) {
+      showToast(`删除失败: ${String(e).replace(/^[A-Z_]+:\s*/, "")}`);
+    }
+  }
+
   /** The shelf, the store and the reading all live behind this one entry, completed by weread's own navigation. */
   function openWereadShelf() {
     setHistoryOpen(false);
@@ -668,6 +698,7 @@ export function ContentPane() {
           onOpenUrl={openHistoryUrl}
           onOpenBook={openHistoryBook}
           onRenameUrl={(entry, name) => renameStudyUrl(entry.url, name)}
+          onDeleteUrl={(entry) => void deleteHistoryUrl(entry)}
           onOpenShelf={openWereadShelf}
           onImportPdf={() => {
             setHistoryOpen(false);

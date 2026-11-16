@@ -188,6 +188,16 @@ export function renameUrlEntry(history: StudyHistory, url: string, name: string)
 }
 
 /**
+ * Drops one opened web page from the history. Only the list entry: the
+ * material's own files (annotations, agent sessions) live in the vault and are
+ * removed by the backend's material delete, which the caller runs first.
+ */
+export function removeUrlEntry(history: StudyHistory, url: string): StudyHistory {
+  const urls = history.urls.filter((e) => e.url !== url);
+  return urls.length === history.urls.length ? history : { ...history, urls };
+}
+
+/**
  * Moves/reinserts the opened weread book at the head of the list. The same
  * book is reported twice per session (route change, then title extraction
  * finishing) — dedup by url keeps one row and the later, better title wins.

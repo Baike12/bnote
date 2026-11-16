@@ -328,6 +328,7 @@ pub fn run() {
             commands::bblog::bblog_sections,
             commands::bblog::bblog_publish,
             commands::materials::study_material_ensure,
+            commands::materials::study_material_delete,
             commands::materials::study_sessions_list,
             commands::materials::study_session_set_title,
             commands::materials::study_import_pdf,

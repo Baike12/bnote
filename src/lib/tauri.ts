@@ -547,6 +547,12 @@ export const agentApi = {
     ),
   /** Resolve/create the on-disk directory of one material (annotations + session records). */
   materialEnsure: (study: StudyContent) => invoke<MaterialInfo>("study_material_ensure", { study }),
+  /**
+   * Delete one material: its directory (annotations + session records) goes to
+   * the trash and the material identity is forgotten, so opening the same page
+   * again starts in a fresh directory. False when the vault never recorded it.
+   */
+  materialDelete: (study: StudyContent) => invoke<boolean>("study_material_delete", { study }),
   /** The sessions saved under one material (newest first). */
   sessionsList: (relDir: string) => invoke<SavedSessionMeta[]>("study_sessions_list", { relDir }),
   /** Write the model-generated title back into the metadata line of the session record's first line. */

@@ -16,6 +16,7 @@ exports[`every exported IPC wrapper reaches exactly one Rust command > command n
   "agentApi.listProjectFiles": "agent_list_project_files",
   "agentApi.listSkills": "agent_list_skills",
   "agentApi.listSubagents": "agent_list_subagents",
+  "agentApi.materialDelete": "study_material_delete",
   "agentApi.materialEnsure": "study_material_ensure",
   "agentApi.mergeStudyPreviewAnnotations": "merge_study_preview_annotations",
   "agentApi.openStudyUrl": "open_study_url",

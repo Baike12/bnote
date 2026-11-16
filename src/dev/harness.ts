@@ -576,6 +576,8 @@ Object.assign(agentApi, {
     relDir: FAKE_MATERIAL_REL_DIR,
     title: "harness.pdf",
   }),
+  /** Deleting a material: the browser has no backend, so nothing is on disk (true = the registry entry was dropped). */
+  materialDelete: async () => true,
 });
 
 // ---- Sidebar file tree: there is no Tauri (and no vault) in the browser, so an in-memory fake vault stands in for

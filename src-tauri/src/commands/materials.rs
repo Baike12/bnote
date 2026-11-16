@@ -538,6 +538,48 @@ pub async fn study_material_ensure(
         .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
+/// Drop one material: its directory (annotations + agent session records) goes
+/// to the trash and the registry entry is removed.
+///
+/// The registry is the backend's own model of material identity -> directory,
+/// so the deletion happens here, not with a path computed by the caller: the
+/// directory is only known to `index.json`, and a removed entry means the same
+/// URL starts over in a fresh directory if it is opened again. Returns false
+/// when the vault never recorded this material (nothing to delete).
+#[tauri::command]
+pub async fn study_material_delete(
+    state: State<'_, AppState>,
+    study: StudyContent,
+) -> CmdResult<bool> {
+    let vault = require_vault(&state)?;
+    tauri::async_runtime::spawn_blocking(move || delete_material_sync(&vault, &study))
+        .await
+        .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+fn delete_material_sync(vault: &Path, study: &StudyContent) -> Result<bool, String> {
+    let _guard = MATERIAL_LOCK.lock().map_err(|e| e.to_string())?;
+    let key = identity(study, vault);
+    let registry_path = vault.join(".bnote").join(MATERIALS_DIR).join(REGISTRY_FILE);
+    let mut registry = Registry::load(&registry_path);
+    let Some(entry) = registry.materials.remove(&key) else {
+        return Ok(false);
+    };
+    let abs = vault
+        .join(".bnote")
+        .join(MATERIALS_DIR)
+        .join(&entry.kind)
+        .join(&entry.dir);
+    ensure_within(vault, &abs)?;
+    // The directory may never have been created (a page that was only opened):
+    // the registry entry is the only thing to drop then.
+    if abs.exists() {
+        trash::delete(&abs).map_err(|e| format!("TRASH_FAILED: {}", e))?;
+    }
+    registry.save(&registry_path)?;
+    Ok(true)
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
@@ -1229,5 +1271,35 @@ mod tests {
             "新标题"
         );
         assert_eq!(lines.next().unwrap(), legacy.trim_end());
+    }
+
+    #[test]
+    fn deleting_a_material_trashes_its_directory_and_forgets_the_identity() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("bnote-material-delete-{}", stamp));
+        let vault = root.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        let study = StudyContent::Url {
+            url: "https://example.com/post".into(),
+            title: "Example".into(),
+        };
+        // `ensure` only registers: the directory appears when a first
+        // annotation / session is written, which the test does by hand.
+        let info = ensure_material_sync(&vault, &study).unwrap();
+        let dir = vault.join(".bnote").join(&info.rel_dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("annotations.json"), "[]").unwrap();
+
+        assert!(delete_material_sync(&vault, &study).unwrap());
+        assert!(!dir.exists(), "the material directory must be gone");
+        // Nothing left to delete, and the identity is forgotten, so opening the
+        // page again starts over in a fresh directory of the same name.
+        assert!(!delete_material_sync(&vault, &study).unwrap());
+        assert_eq!(ensure_material_sync(&vault, &study).unwrap().dir, info.dir);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

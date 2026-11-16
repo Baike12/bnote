@@ -6,6 +6,7 @@ import {
   pushPdfEntry,
   pushUrlEntry,
   pushWereadBook,
+  removeUrlEntry,
   renameUrlEntry,
   STUDY_HISTORY_LIMIT,
   urlTitle,
@@ -90,6 +91,18 @@ describe("study history: renaming an opened web page", () => {
   it("renaming an unknown URL changes nothing (no ghost entry appears)", () => {
     const h = pushUrlEntry(emptyStudyHistory(), { url: "https://a.dev", title: "A" });
     expect(renameUrlEntry(h, "https://nope.dev", "x")).toBe(h);
+  });
+
+  it("deleting a page drops only its own row, keeping the other kinds untouched", () => {
+    let h = emptyStudyHistory();
+    h = pushUrlEntry(h, { url: "https://a.dev", title: "A", at: 1 });
+    h = pushUrlEntry(h, { url: "https://b.dev", title: "B", at: 2 });
+    h = pushPdfEntry(h, pdf("/v/pdfs/a.pdf", "A"));
+    const next = removeUrlEntry(h, "https://a.dev");
+    expect(next.urls.map((e) => e.url)).toEqual(["https://b.dev"]);
+    expect(next.pdfs).toBe(h.pdfs);
+    // An unknown URL is not a change: the store must not re-render for it.
+    expect(removeUrlEntry(next, "https://nope.dev")).toBe(next);
   });
 
   it("the name survives a config round trip and bad names are dropped", () => {

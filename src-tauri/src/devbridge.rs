@@ -388,6 +388,11 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 .map_err(|e| format!("BAD_ARGS: study: {}", e))?;
             json_ok!(materials::study_material_ensure(app.state(), study).await)
         }
+        "study_material_delete" => {
+            let study: StudyContent = serde_json::from_value(arg_value(args, "study")?)
+                .map_err(|e| format!("BAD_ARGS: study: {}", e))?;
+            json_ok!(materials::study_material_delete(app.state(), study).await)
+        }
         "study_sessions_list" => json_ok!(materials::study_sessions_list(
             app.state(),
             arg_str(args, "relDir")?

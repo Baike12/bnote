@@ -5,6 +5,7 @@ import {
   pushPdfEntry,
   pushUrlEntry,
   pushWereadBook,
+  removeUrlEntry,
   renameUrlEntry,
   urlTitle,
   type StudyHistory,
@@ -535,6 +536,12 @@ interface AppState {
   recordStudyUrl: (entry: Omit<StudyUrlEntry, "at">) => void;
   /** Gives one opened web page a user name (empty restores the derived title); the open page's header follows. */
   renameStudyUrl: (url: string, name: string) => void;
+  /**
+   * Forgets one opened web page; the page itself (annotations, agent
+   * sessions) was already removed by the material delete, and the middle
+   * column closes when it shows that page.
+   */
+  deleteStudyUrl: (url: string) => void;
   recordWereadBook: (entry: Omit<WereadBookEntry, "at">) => void;
   openDrawingSession: (session: DrawingSession) => void;
   closeDrawingSession: () => void;
@@ -759,6 +766,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (content?.kind === "url" && content.url === url && entry) {
       set({ studyContent: { ...content, title: urlTitle(entry) } });
     }
+  },
+  deleteStudyUrl: (url) => {
+    const studyHistory = removeUrlEntry(get().studyHistory, url);
+    set({ studyHistory });
+    persistConfig({ ...getConfigSnapshot(), studyHistory });
+    // The page in the middle column is gone from disk: leaving it open would
+    // keep a deleted material on screen and write into it again.
+    const content = get().studyContent;
+    if (content?.kind === "url" && content.url === url) set({ studyContent: null });
   },
   recordWereadBook: (entry) => {
     const studyHistory = pushWereadBook(get().studyHistory, entry);

@@ -5534,8 +5534,9 @@ input[type="range"] {
 .study-history-item:hover {
   background: var(--bg3);
 }
-/* A web page row: the item plus its rename button. The button is a sibling,
-   not a child: a button inside a button is invalid and swallows the click. */
+/* A web page row: the item plus its rename / delete buttons. The buttons are
+   siblings, not children: a button inside a button is invalid and swallows the
+   click. */
 .study-history-row {
   display: flex;
   align-items: flex-start;
@@ -5545,7 +5546,8 @@ input[type="range"] {
   flex: 1;
   min-width: 0;
 }
-.study-history-rename {
+.study-history-rename,
+.study-history-delete {
   flex-shrink: 0;
   width: 22px;
   height: 22px;
@@ -5559,12 +5561,21 @@ input[type="range"] {
   opacity: 0;
 }
 .study-history-row:hover .study-history-rename,
-.study-history-rename:focus-visible {
+.study-history-row:hover .study-history-delete,
+.study-history-rename:focus-visible,
+.study-history-delete:focus-visible {
   opacity: 1;
 }
-.study-history-rename:hover {
+.study-history-rename:hover,
+.study-history-delete:hover {
   color: var(--text);
   background: var(--bg3);
+}
+/* Destructive, unlike the toolbar's plain "close": it reads as danger on
+   hover, the same color a destructive context-menu entry uses. */
+.study-history-delete:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 .study-history-item.is-editing {
   cursor: default;

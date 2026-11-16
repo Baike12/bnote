@@ -252,6 +252,36 @@ describe("study history recording", () => {
     });
   });
 
+  it("deleting a page drops its row and closes it in the middle column", () => {
+    const store = useAppStore.getState();
+    store.recordStudyUrl({ url: "https://x.dev", title: "x.dev" });
+    store.recordStudyUrl({ url: "https://y.dev", title: "y.dev" });
+    store.setStudyContent({ kind: "url", url: "https://x.dev", title: "x.dev" });
+
+    store.deleteStudyUrl("https://x.dev");
+
+    expect(useAppStore.getState().studyHistory.urls.map((e) => e.url)).toEqual(["https://y.dev"]);
+    // A deleted material has no files left on disk: keeping it open would keep
+    // writing into a directory nothing points at.
+    expect(useAppStore.getState().studyContent).toBeNull();
+  });
+
+  it("deleting one page leaves the open content and the rest of the list alone", () => {
+    const store = useAppStore.getState();
+    store.recordStudyUrl({ url: "https://x.dev", title: "x.dev" });
+    store.recordStudyUrl({ url: "https://y.dev", title: "y.dev" });
+    store.setStudyContent({ kind: "url", url: "https://y.dev", title: "y.dev" });
+
+    store.deleteStudyUrl("https://x.dev");
+
+    expect(useAppStore.getState().studyHistory.urls.map((e) => e.url)).toEqual(["https://y.dev"]);
+    expect(useAppStore.getState().studyContent).toEqual({
+      kind: "url",
+      url: "https://y.dev",
+      title: "y.dev",
+    });
+  });
+
   it("recording a weread book deduplicates by reader URL", () => {
     const store = useAppStore.getState();
     store.recordWereadBook({ url: "https://weread/reader/1", title: "第一版" });

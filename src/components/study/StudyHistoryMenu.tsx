@@ -23,6 +23,8 @@ interface StudyHistoryMenuProps {
   onOpenUrl: (entry: StudyUrlEntry) => void;
   onOpenBook: (entry: WereadBookEntry) => void;
   onRenameUrl: (entry: StudyUrlEntry, name: string) => void;
+  /** Deletes the page and everything saved with it (annotations, sessions). */
+  onDeleteUrl: (entry: StudyUrlEntry) => void;
   onOpenShelf: () => void;
   onImportPdf: () => void;
 }
@@ -62,6 +64,7 @@ export function StudyHistoryMenu({
   onOpenUrl,
   onOpenBook,
   onRenameUrl,
+  onDeleteUrl,
   onOpenShelf,
   onImportPdf,
 }: StudyHistoryMenuProps) {
@@ -189,6 +192,17 @@ export function StudyHistoryMenu({
                         }}
                       >
                         ✎
+                      </button>
+                      <button
+                        className="study-history-delete"
+                        title="删除这个网页,以及它的批注和助手会话(移到废纸篓)"
+                        aria-label={`删除 ${urlTitle(entry)}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteUrl(entry);
+                        }}
+                      >
+                        ✕
                       </button>
                     </>
                   )}
