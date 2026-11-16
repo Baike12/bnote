@@ -104,6 +104,20 @@ describe("the backend half: the select runs in the helper process", () => {
     expect(read("src-tauri/src/ime_tis.rs")).toContain("setSelectedKeyboardInputSource");
   });
 
+  it("the hand-off rebuilds the input method session, not just the property", () => {
+    const tis = read("src-tauri/src/ime_tis.rs");
+    // AppKit mirrors the system-wide change into selectedKeyboardInputSource
+    // before the hand-off runs, so writing it alone is a no-op and the session
+    // keeps the old IME — typing followed only about half the time. Drop the
+    // session first, pin the source while detached, then activate.
+    const deactivate = tis.indexOf("context.deactivate()");
+    const pin = tis.indexOf("context.setSelectedKeyboardInputSource");
+    const activate = tis.indexOf("context.activate()");
+    expect(deactivate).toBeGreaterThan(-1);
+    expect(deactivate).toBeLessThan(pin);
+    expect(pin).toBeLessThan(activate);
+  });
+
   it("the helper drains its run loop so it sees source changes made by other processes", () => {
     const tis = read("src-tauri/src/ime_tis.rs");
     // The helper blocks on stdin and never runs a run loop; without the drain

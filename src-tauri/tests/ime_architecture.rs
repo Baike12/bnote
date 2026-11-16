@@ -82,6 +82,22 @@ fn the_app_hands_the_source_to_its_own_input_context() {
 }
 
 #[test]
+fn the_hand_off_rebuilds_the_input_method_session() {
+    let tis = read("src/ime_tis.rs");
+    let deactivate = index_of(&tis, "context.deactivate()");
+    let pin = index_of(&tis, "context.setSelectedKeyboardInputSource");
+    let activate = index_of(&tis, "context.activate()");
+    assert!(
+        deactivate < pin && pin < activate,
+        "the hand-off must deactivate, pin the source, then activate: \
+         setSelectedKeyboardInputSource alone is a no-op once AppKit has \
+         mirrored the system-wide change (the property already equals the \
+         target), so the input method session is never rebuilt and typing \
+         follows only by timing luck — measured at about half the switches"
+    );
+}
+
+#[test]
 fn the_helper_sees_source_changes_made_by_other_processes() {
     let tis = read("src/ime_tis.rs");
     assert!(

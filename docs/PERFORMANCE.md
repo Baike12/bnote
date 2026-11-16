@@ -240,18 +240,25 @@ lived, one JSON line per request over stdin/stdout:
 - `tests/ime_daemon.rs` drives the real helper process end-to-end (no-op
   operations only, so the user's input method is never changed) and gates the
   steady-state round trip.
-- The web input context follows the switch: the context keeps the source it
-  was created with, and a select made in another process does not propagate
-  into it (the menu bar follows the system-wide notification, WebKit does
-  not). After a confirmed real switch (`switched`) the front end hands the new
-  source to the app's own `NSTextInputContext` (`apply_input_context_source` →
-  `selectedKeyboardInputSource`, applied on the main thread by
-  `ime_tis::apply_context_source`). It is one AppKit property write, no TIS
-  call and no focus churn. This is the app-side half of the out-of-process
-  contract, not a retry chain: it needs no detection, `switched` is the
-  detection. The blur + focus re-mount was the earlier mechanism; it is
-  deliberately gone (it re-captures whatever the context restores, and it
-  scrolls the notes page when focus() is not prevented from scrolling).
+- The web input context follows the switch: the context keeps the input method
+  session it was typing with, and a select made in another process does not
+  propagate into that session (the menu bar follows the system-wide
+  notification, WebKit does not). After a confirmed real switch (`switched`)
+  the front end hands the new source to the app's own `NSTextInputContext`
+  (`apply_input_context_source`, applied on the main thread by
+  `ime_tis::apply_context_source`), which **deactivates the context, pins the
+  source, and re-activates it**. The rebuild is the point: writing
+  `selectedKeyboardInputSource` alone is a no-op once AppKit has mirrored the
+  system change, because the value is already the target — measured
+  2026-11-16, all 35 sampled switches had the property already updated when the
+  hand-off ran, and typing followed only about half the time. The
+  deactivate/activate pair does not depend on the property changing, so it is
+  order-independent. It is still no TIS call and no focus churn. This is the
+  app-side half of the out-of-process contract, not a retry chain: it needs no
+  detection, `switched` is the detection. The blur + focus re-mount was the
+  earlier mechanism; it is deliberately gone (it re-captures whatever the
+  context restores, and it scrolls the notes page when focus() is not
+  prevented from scrolling).
 
 `SetImeOutcome` still returns the TIS call's own duration, and the span carries
 it:

@@ -16,14 +16,14 @@ import { perfEnd, perfFields, perfStart } from "@/perf/trace";
  * 0.01 ms per round trip) and is skipped entirely when the requested source is
  * already active.
  *
- * The out-of-process architecture has a second half: the app's own text input
- * context keeps the source it was created with. A select made in another
- * process does not propagate into it — the menu bar follows the system-wide
- * change notification, WebKit keeps typing with the old source. After every
+ * The out-of-process architecture has a second half: the web view's input
+ * method session keeps the source it was typing with — a select made in
+ * another process reaches the menu bar but not that session. After every
  * confirmed real switch the new source is therefore handed to the app's input
- * context (`apply_input_context_source` -> NSTextInputContext
- * .selectedKeyboardInputSource, on the main thread). That is the AppKit-level
- * hand-off the pre-helper in-process select provided as a side effect.
+ * context (`apply_input_context_source`, main thread), which deactivates the
+ * context, pins the source and re-activates it. Rebuilding the session is what
+ * makes typing follow; writing the property alone is a no-op once AppKit has
+ * already mirrored the system-wide change into it.
  *
  * Mirrors the behavior of the user's patched obsidian-vim-input-auto-switch:
  * entering insert inside a math region keeps the English source (formulas are

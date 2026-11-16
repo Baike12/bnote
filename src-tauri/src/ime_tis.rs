@@ -268,10 +268,21 @@ pub fn warm_select_current() {
 ///
 /// This is the half a cross-process TIS select cannot do: the helper changes
 /// the system source (the menu bar follows), but the web view's input context
-/// keeps the source it was created with, so typing stays on the old IME. In
-/// the pre-helper architecture an in-process select updated it as a side
-/// effect; here the new source is written to the context directly, which is
-/// what `selectedKeyboardInputSource` exists for.
+/// keeps the input method session it was typing with, so typing stays on the
+/// old source.
+///
+/// Writing `selectedKeyboardInputSource` alone is **not** enough, and that is
+/// the bug this function exists to close (measured 2026-11-16, 35 switches):
+/// by the time the hand-off runs, AppKit has already mirrored the system-wide
+/// change into the property, so the write is "unchanged" and AppKit does not
+/// rebuild the session — the switch then depends on whether the notification
+/// arrived before or after the write, i.e. it worked about half the time.
+/// Deactivating first drops the session unconditionally; writing while the
+/// context is detached pins the source; activating opens a session that reads
+/// that source. The trailing re-write covers the per-context restore
+/// (`TextInputGlobalPropertyPerContextInput`), which can put the remembered
+/// source back during activation — that write *is* a change then, so it
+/// rebuilds the session too.
 ///
 /// Must run on the app's main thread (the context is main-thread only).
 /// Returns whether an active context reports the new source afterwards; no
@@ -284,7 +295,19 @@ pub fn apply_context_source(id: &str) -> bool {
     let Some(context) = NSTextInputContext::currentInputContext(mtm) else {
         return false;
     };
-    context.setSelectedKeyboardInputSource(Some(&NSString::from_str(id)));
+    let source = NSString::from_str(id);
+    context.deactivate();
+    context.setSelectedKeyboardInputSource(Some(&source));
+    context.activate();
+    if context
+        .selectedKeyboardInputSource()
+        .is_none_or(|current| current.to_string() != id)
+    {
+        // Activation can put the source remembered for this context back
+        // (`TextInputGlobalPropertyPerContextInput`); the write is a real
+        // change then, so it rebuilds the session a second time.
+        context.setSelectedKeyboardInputSource(Some(&source));
+    }
     context
         .selectedKeyboardInputSource()
         .is_some_and(|current| current.to_string() == id)
