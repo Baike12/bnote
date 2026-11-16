@@ -769,6 +769,8 @@ export const api = {
   listInputSources: () => invoke<InputSourceInfo[]>("list_input_sources"),
   getCurrentInputSource: () => invoke<string>("get_current_input_source"),
   setInputSource: (id: string) => invoke<SetImeOutcome>("set_input_source", { id }),
+  /** Hands a source to the app's own text input context (the helper's select cannot reach it). */
+  applyInputContextSource: (id: string) => invoke<boolean>("apply_input_context_source", { id }),
 
   // ---- python ----
   /** Run the virtual python text of a note (the line alignment and the main guard are synthesized by the front end). */

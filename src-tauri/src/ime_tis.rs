@@ -1,14 +1,20 @@
-//! Raw Carbon TIS (Text Input Source) calls: enumeration, current source,
-//! selection, with a session reference cache.
+//! IME native surface: Carbon TIS (Text Input Source) calls and the app-side
+//! input-context hand-off.
 //!
-//! The switch costs real main-thread time (see commands/ime.rs for why the
-//! call must leave the app's main thread): warm select measures 2–50 ms and a
-//! cold input-method activation 30–170 ms on this machine (real-trace median
-//! ~30 ms, p95 >100 ms). TIS must run on the Apple main queue — an off-main
-//! `TISCreateInputSourceList` traps with dispatch_assert_queue_fail on macOS
-//! 15.3 and 26 alike (crash report 2026-11-08) — so this module is only ever
-//! called from the helper process (`ime_daemon`), never from the app's own
-//! main thread.
+//! The TIS half is enumeration, current source and selection, with a session
+//! reference cache. The switch costs real main-thread time (see
+//! commands/ime.rs for why the call must leave the app's main thread): warm
+//! select measures 2–50 ms and a cold input-method activation 30–170 ms on
+//! this machine (real-trace median ~30 ms, p95 >100 ms). TIS must run on the
+//! Apple main queue — an off-main `TISCreateInputSourceList` traps with
+//! dispatch_assert_queue_fail on macOS 15.3 and 26 alike (crash report
+//! 2026-11-08) — so it is only ever called from the helper process
+//! (`ime_daemon`), never from the app's own main thread.
+//!
+//! `apply_context_source` is the other half: the app's own
+//! `NSTextInputContext` keeps the source it was created with, and a select
+//! made in the helper process does not reach it. It runs on the app's main
+//! thread and only writes one property — no TIS call, microseconds.
 
 use crate::commands::ime::InputSourceInfo;
 
@@ -17,6 +23,9 @@ use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::{CFBoolean, CFBooleanRef};
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::{CFString, CFStringRef};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSTextInputContext;
+use objc2_foundation::NSString;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -248,6 +257,37 @@ pub fn warm_select_current() {
         // — there is nothing to recover and no user-visible effect.
         let _ = with_source(&id, |src| unsafe { TISSelectInputSource(src) });
     }
+}
+
+// ---------------------------------------------------------------------------
+// app input context (AppKit — no TIS)
+// ---------------------------------------------------------------------------
+
+/// Hands a source to the **app's own text input context** (the focused
+/// view's `NSTextInputContext`).
+///
+/// This is the half a cross-process TIS select cannot do: the helper changes
+/// the system source (the menu bar follows), but the web view's input context
+/// keeps the source it was created with, so typing stays on the old IME. In
+/// the pre-helper architecture an in-process select updated it as a side
+/// effect; here the new source is written to the context directly, which is
+/// what `selectedKeyboardInputSource` exists for.
+///
+/// Must run on the app's main thread (the context is main-thread only).
+/// Returns whether an active context reports the new source afterwards; no
+/// focused text view means there is nothing to update (the next context is
+/// created with the now-current source).
+pub fn apply_context_source(id: &str) -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    let Some(context) = NSTextInputContext::currentInputContext(mtm) else {
+        return false;
+    };
+    context.setSelectedKeyboardInputSource(Some(&NSString::from_str(id)));
+    context
+        .selectedKeyboardInputSource()
+        .is_some_and(|current| current.to_string() == id)
 }
 
 #[cfg(all(test, target_os = "macos"))]

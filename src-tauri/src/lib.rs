@@ -290,6 +290,7 @@ pub fn run() {
             commands::ime::list_input_sources,
             commands::ime::get_current_input_source,
             commands::ime::set_input_source,
+            commands::ime::apply_input_context_source,
             commands::agent::agent_get_config,
             commands::agent::agent_save_config,
             commands::agent::agent_start_session,

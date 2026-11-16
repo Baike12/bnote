@@ -16,13 +16,14 @@ import { perfEnd, perfFields, perfStart } from "@/perf/trace";
  * 0.01 ms per round trip) and is skipped entirely when the requested source is
  * already active.
  *
- * The out-of-process architecture has a second half: the web input context is
- * created at focus time and captures the source active then. A select made in
- * another process does not propagate into it — the menu bar follows the
- * system-wide change notification, WebKit keeps typing with the old source.
- * After every confirmed real switch the focused editor's context is therefore
- * re-created (refreshWebInputContext); that is part of the switch contract,
- * not a patch.
+ * The out-of-process architecture has a second half: the app's own text input
+ * context keeps the source it was created with. A select made in another
+ * process does not propagate into it — the menu bar follows the system-wide
+ * change notification, WebKit keeps typing with the old source. After every
+ * confirmed real switch the new source is therefore handed to the app's input
+ * context (`apply_input_context_source` -> NSTextInputContext
+ * .selectedKeyboardInputSource, on the main thread). That is the AppKit-level
+ * hand-off the pre-helper in-process select provided as a side effect.
  *
  * Mirrors the behavior of the user's patched obsidian-vim-input-auto-switch:
  * entering insert inside a math region keeps the English source (formulas are
@@ -124,7 +125,11 @@ function launchSwitch(target: string): void {
     .setInputSource(target)
     .then((outcome) => {
       perfEnd(t, "ime.switch", IME_FIELDS, target, outcome.tisMs);
-      if (outcome.switched) refreshWebInputContext();
+      if (!outcome.switched) return;
+      // The helper changed the system source; hand the same source to the
+      // app's own input context, which otherwise keeps the one it was created
+      // with (menu bar switches, typing stays latin).
+      void api.applyInputContextSource(target).catch(() => {});
     })
     .catch((e) => {
       console.warn("[bnote] set input source failed", e);
@@ -139,31 +144,6 @@ function launchSwitch(target: string): void {
       // input source has just been returned to them.
       if (next !== null && next !== target && !suspended) launchSwitch(next);
     });
-}
-
-/**
- * Re-creates the focused editor's web input context after a confirmed real
- * switch. The context is created when the editor gains focus and captures the
- * source active at that moment; a select made in the helper process does not
- * propagate into it (the menu bar follows the system-wide change notification,
- * WebKit keeps typing with the source captured at focus). Tearing it down and
- * re-creating it in the same frame (blur + focus on contentDOM) re-captures
- * the new source. Guarded to exactly the typing surface the switch was for:
- * the registered editor view, focused, not mid-composition (a re-mount would
- * abort the IME session mid-word).
- *
- * `preventScroll` is part of the contract: focus() by default scrolls the
- * focused element into view, and contentDOM spans the whole document —
- * without it every real switch would scroll the notes page to its top.
- */
-function refreshWebInputContext(): void {
-  if (typeof document === "undefined") return;
-  const view = getView();
-  if (!view || view.composing) return;
-  const dom = view.contentDOM;
-  if (!dom.isConnected || document.activeElement !== dom) return;
-  dom.blur();
-  dom.focus({ preventScroll: true });
 }
 
 /**

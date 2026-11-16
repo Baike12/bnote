@@ -89,3 +89,31 @@ pub async fn set_input_source(id: String) -> CmdResult<SetImeOutcome> {
 pub async fn set_input_source(_id: String) -> CmdResult<SetImeOutcome> {
     Err("IME switching is only supported on macOS".into())
 }
+
+/// Hands a source to the app's own text input context, after a real switch.
+///
+/// The helper's select changes the system source (the menu bar follows), but
+/// the web view's input context keeps the source it was created with — this
+/// is the app-side half of the switch (see `ime_tis::apply_context_source`).
+/// It runs on the app's main thread and only writes one AppKit property, so
+/// the cost is microseconds, not a TIS call.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn apply_input_context_source(app: tauri::AppHandle, id: String) -> CmdResult<bool> {
+    let target = id.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(crate::ime_tis::apply_context_source(&target));
+    })
+    .map_err(|e| format!("main thread dispatch failed: {e}"))?;
+    spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+        .map_err(|e| format!("context apply failed: {e}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn apply_input_context_source(_id: String) -> CmdResult<bool> {
+    Err("IME switching is only supported on macOS".into())
+}

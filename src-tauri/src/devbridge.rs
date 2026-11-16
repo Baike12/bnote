@@ -301,6 +301,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "list_input_sources" => json!([]),
         "get_current_input_source" => json!(""),
         "set_input_source" => json!({ "switched": false, "tisMs": 0 }),
+        "apply_input_context_source" => json!(false),
 
         // ---- agent ----
         "agent_get_config" => json_ok!(agent::agent_get_config(app.state()).await),
