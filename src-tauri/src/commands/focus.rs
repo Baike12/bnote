@@ -1058,9 +1058,17 @@ mod mac {
         // Keys and mouse: the keyboard swallows system-wide shortcuts, the Dock
         // mouse gestures block click-away. Mouse movement is not hooked: every
         // move entering the callback is pointless.
+        //
+        // An enabled HID tap routes **every masked event of every app** through
+        // this thread before delivery, so the mask is a per-keystroke tax on the
+        // whole system. Only events that can change a decision belong in it:
+        // - KeyDown carries the chord (`should_swallow` reads code + flags);
+        //   macOS acts on the press, so a swallowed KeyUp never decides
+        //   anything — dropping it halves the keyboard traffic.
+        // - FlagsChanged is never consumed by any branch (a modifier-only event
+        //   is neither a chord nor a Dock gesture) — routing it here only delays
+        //   the user's modifiers (including the Chinese IME's Ctrl+Space).
         let mask: CGEventMask = (1u64 << CGEventType::KeyDown.0)
-            | (1u64 << CGEventType::KeyUp.0)
-            | (1u64 << CGEventType::FlagsChanged.0)
             | (1u64 << CGEventType::LeftMouseDown.0)
             | (1u64 << CGEventType::LeftMouseUp.0)
             | (1u64 << CGEventType::LeftMouseDragged.0)
