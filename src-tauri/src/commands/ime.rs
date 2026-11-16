@@ -18,17 +18,20 @@ pub struct InputSourceInfo {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetImeOutcome {
-    /// false when the requested source was already active.
+    /// Whether the system source moved. false when it was already active, or
+    /// when the context hand-off missed and the system select was deferred to
+    /// the next focus (the menu bar must not advertise a switch the WebView
+    /// did not take).
     pub switched: bool,
     /// The TIS call itself, in milliseconds, as measured inside the helper
-    /// process (see docs/PERFORMANCE.md §6). The app's main thread never runs
-    /// TIS any more, so this number is no longer a UI freeze — it only names
-    /// how long the input method took to engage.
+    /// process (see docs/PERFORMANCE.md §6). 0 when the select was deferred
+    /// because the context did not accept the target.
     pub tis_ms: f64,
     /// Whether the app's own input method context accepted the source before
     /// the system menu bar changed. `Some(false)` is a real failure; `None`
-    /// means no input context existed at that instant (the pending intent is
-    /// retried on focus, not by a timer).
+    /// means no input context existed at that instant. In both cases the
+    /// system source stays unchanged and the pending intent is retried on the
+    /// next focus, not by a timer.
     pub context_applied: Option<bool>,
     /// Main-thread cost of the context hand-off, in milliseconds. The normal
     /// path only writes the selected-source property; the destructive rebuild
@@ -104,6 +107,16 @@ pub async fn get_current_input_source() -> CmdResult<String> {
 /// A missed context is kept as a generation-stamped pending intent. The next
 /// focus or mode event retries it; a delayed thread must not start a
 /// destructive AppKit transition while the user is already typing.
+///
+/// The system select runs only after the context accepted the target. A miss
+/// leaves the system source (and the menu bar) on the previous source: the
+/// half-switched state — menu bar changed, notes did not — must not be
+/// produced in the first place rather than repaired after the fact.
+#[cfg(target_os = "macos")]
+fn system_select_allowed(applied: Option<bool>) -> bool {
+    applied == Some(true)
+}
+
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn set_input_source(app: tauri::AppHandle, id: String) -> CmdResult<SetImeOutcome> {
@@ -114,9 +127,31 @@ pub async fn set_input_source(app: tauri::AppHandle, id: String) -> CmdResult<Se
     // recovery rebuild only runs when an older pass knew there was no context.
     let mut handoff = hand_off_context(app.clone(), id.clone(), intent.rebuild).await?;
     if handoff.applied == Some(false) && !intent.rebuild {
-        // The property did not stick. Rebuild once before exposing the system
-        // source; a second failure is reported and retried on the next focus.
+        // The property did not stick. Retry once before exposing the system
+        // source; it is a destructive rebuild only when the property already
+        // reads the target (the stale-session case).
         handoff = hand_off_context(app.clone(), id.clone(), true).await?;
+    }
+
+    // The context is the authority for typing. Without a confirmed context
+    // the helper must not move the system source: the menu bar would say one
+    // thing while the WebView types another until the next focus. Keep the
+    // intent pending and let the focus path retry context-then-system.
+    if !system_select_allowed(handoff.applied) {
+        crate::ime_tis::mark_intent_missed(&intent)?;
+        eprintln!(
+            "[bnote] set_input_source({id}) deferred: context={:?} {} {:.2}ms; system source unchanged",
+            handoff.applied,
+            handoff.source.as_deref().unwrap_or("<no context>"),
+            handoff.ms,
+        );
+        return Ok(SetImeOutcome {
+            switched: false,
+            tis_ms: 0.0,
+            context_applied: handoff.applied,
+            context_ms: handoff.ms,
+            context_source: handoff.source,
+        });
     }
 
     let target = intent.target.clone();
@@ -202,4 +237,19 @@ async fn hand_off_context(
 #[tauri::command]
 pub async fn set_input_source(_id: String) -> CmdResult<SetImeOutcome> {
     Err("IME switching is only supported on macOS".into())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::system_select_allowed;
+
+    /// Gate: the system source follows only a context that took the target.
+    /// A miss (`None`/`Some(false)`) must leave the menu bar on the previous
+    /// source; moving it anyway is the "menu bar changed, notes did not" state.
+    #[test]
+    fn the_system_source_follows_only_a_confirmed_context() {
+        assert!(system_select_allowed(Some(true)));
+        assert!(!system_select_allowed(Some(false)));
+        assert!(!system_select_allowed(None));
+    }
 }

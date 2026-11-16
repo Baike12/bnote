@@ -48,9 +48,26 @@ describe("the typing context follows a real switch", () => {
     // contextApplied=false is the old symptom (menu bar switched, typing did
     // not) and must reach the perf log and the console.
     expect(source).toContain("outcome.contextApplied === false");
-    // `switched` separates "nothing to rebuild" from "no input context yet"
-    // (ctx = -1 both ways); without it a missed hand-off is invisible.
+    // `switched` reports whether the system source moved; with `ctx = -1` it
+    // also tells that the select was deferred (menu bar unchanged, pending
+    // for the next focus).
     expect(source).toContain('perfFields("tisMs", "ctxMs", "ctx", "switched")');
+  });
+
+  it("the system select waits for a confirmed context", () => {
+    // Producing the half-switched state is not allowed: when the context
+    // misses (`ctx = -1`/`0`), the helper must not move the system source.
+    // The menu bar stays on the previous source and the intent retries on
+    // focus, so "menu bar changed, notes did not" cannot be created.
+    const commands = read("src-tauri/src/commands/ime.rs");
+    const body = commands.slice(
+      commands.indexOf("pub async fn set_input_source"),
+      commands.indexOf("async fn hand_off_context"),
+    );
+    const guard = body.indexOf("system_select_allowed(handoff.applied)");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(body.indexOf("ime_daemon::with_client"));
+    expect(body).toContain("switched: false");
   });
 
   it("a missed hand-off is a generation-stamped backend intent, not a timer", () => {

@@ -39,14 +39,19 @@ export interface InputSourceInfo {
 }
 
 export interface SetImeOutcome {
+  /** Whether the system source moved. false when it was already active, or
+   *  when the context missed and the select was deferred to the next focus
+   *  (the menu bar stays on the previous source). */
   switched: boolean;
   /** The TIS call itself, in ms — it runs inside the helper process, so this
-   *  number names the input method's activation, not a UI freeze. */
+   *  number names the input method's activation, not a UI freeze. 0 when the
+   *  select was deferred. */
   tisMs: number;
   /** Whether the app's own input context accepted the source before the system
-   *  menu bar changed. `null` means no input context existed yet; the native
-   *  coordinator keeps that intent pending for the next focus. `false` is a
-   *  real failure. */
+   *  menu bar changed. `null` means no input context existed yet; `false`
+   *  means the transition failed. In both cases the system source stays
+   *  unchanged and the native coordinator keeps the intent pending for the
+   *  next focus. */
   contextApplied: boolean | null;
   /** Main-thread cost of the context hand-off, in ms. The normal path is one
    *  property transition; a destructive rebuild is a rare recovery path. */

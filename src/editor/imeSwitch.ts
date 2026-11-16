@@ -114,9 +114,10 @@ function scheduleLaunch(): void {
 /* The span's own `ms` is the whole round trip: IPC plus the context-first
  * AppKit hand-off and the backend's system TIS call. The backend returns both
  * legs (`tisMs`, `contextMs`); the remainder is the bridge. `ctx` is 1 when
- * the app context accepted the source, 0 when it failed, and -1 when no
- * context existed yet. `switched` separates the two ways of `ctx = -1`: the
- * system source did not move, versus the intent is pending until focus. */
+ * the app context accepted the source, 0 when the transition failed, and -1
+ * when no context existed yet. `switched` tells whether the system source
+ * moved; a miss leaves it unchanged (deferred), so the menu bar never
+ * advertises a switch the WebView did not take. */
 const IME_FIELDS = perfFields("tisMs", "ctxMs", "ctx", "switched");
 const IME_FAILED_FIELDS = perfFields("target");
 

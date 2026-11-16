@@ -97,6 +97,24 @@ fn context_is_prepared_before_the_system_source_changes() {
 }
 
 #[test]
+fn the_system_select_waits_for_a_confirmed_context() {
+    let commands = read("src/commands/ime.rs");
+    let start = index_of(&commands, "pub async fn set_input_source");
+    let end = index_of(&commands, "async fn hand_off_context");
+    let body = &commands[start..end];
+    let guard = index_of(body, "system_select_allowed(handoff.applied)");
+    assert!(
+        guard < index_of(body, "ime_daemon::with_client"),
+        "the helper select must run only after the context accepted the target; \
+         a miss leaves the system source and the menu bar on the previous source"
+    );
+    assert!(
+        body.contains("switched: false"),
+        "the deferred path must report that the system source did not move"
+    );
+}
+
+#[test]
 fn a_missed_hand_off_is_a_generation_stamped_pending_intent() {
     let commands = read("src/commands/ime.rs");
     let tis = read("src/ime_tis.rs");

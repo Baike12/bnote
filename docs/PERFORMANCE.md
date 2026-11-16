@@ -252,6 +252,14 @@ lived, one JSON line per request over stdin/stdout:
   old source, so AppKit observes a real transition. Updating it after the
   helper was too late: AppKit had already mirrored the system value, making
   the context write a no-op and leaving the WebView typing with the old IME.
+- **The system source follows only a confirmed context.** When the hand-off
+  returns `None` (no first responder yet) or `Some(false)` (the transition did
+  not stick), the command does not call the helper: the menu bar stays on the
+  previous source, the intent stays pending, and the next editor/window focus
+  retries context-then-system together. This is the model fix for the old
+  half-switched state ("menu bar changed, notes did not"): producing that
+  state is now impossible on the missing-context path, instead of being
+  repaired afterwards.
 - The normal path does **not** call `deactivate`/`activate`. That sequence
   tears down the active text session and blocks the next key while the input
   method reconnects. It is recovery-only: when an earlier pass had no context
@@ -263,13 +271,15 @@ lived, one JSON line per request over stdin/stdout:
 - **The system source and the context are two authorities.** "Already active"
   from the helper says nothing about the context: when the switch runs before
   the web view is the window's first responder (the window is still
-  activating), the hand-off has no context and returns `None`. Skipping it
-  there leaves WebKit typing with the old IME for the whole mode, while the
-  menu bar already shows the target. Every key then pays the old IME's
-  keystroke round trip — the lag felt on j/k, invisible to the JS key probe
-  because it happens **before** the DOM `keydown`. Measured in the 2026-11-16
-  trace: five `ctx = 0` switches with `contextMs ≤ 0.01 ms` — the context was
-  absent, not disagreeing (the three AppKit calls cannot finish that fast).
+  activating), the hand-off has no context and returns `None`. The system
+  source then stays on the previous source as well — the menu bar must not
+  advertise a switch the WebView did not take. The pending intent is retried
+  on the next editor/window focus, when a context exists, and both halves move
+  together. The old failure mode (the system source moved while the WebView
+  kept typing with the old IME) is therefore not produced at all.
+  - Measured in the 2026-11-16 trace: five `ctx = 0` switches with
+    `contextMs ≤ 0.01 ms` — the context was absent, not disagreeing (the
+    three AppKit calls cannot finish that fast).
   - The backend retains a missed hand-off as `{ generation, target }`. An
     older request that settles late cannot clear a newer intent.
   - The intent is retried by the next editor `focusin` or window focus, not by
@@ -283,9 +293,9 @@ lived, one JSON line per request over stdin/stdout:
 
 | field | meaning | a large value means |
 |---|---|---|
-| `tisMs` | inside `TISSelectInputSource` (helper process) | the input method was cold — visible only as hand-over time now, not as a UI freeze |
+| `tisMs` | inside `TISSelectInputSource` (helper process); 0 when the select was deferred | the input method was cold — visible only as hand-over time now, not as a UI freeze |
 | `contextMs` | main-thread `selectedKeyboardInputSource` hand-off (rare recovery rebuild included) | the context transition is touching the keystroke budget |
-| `ctx` | 1 = context accepted the target, 0 = the context transition failed, -1 = no context existed | a `0` is a real mismatch; `-1` leaves the intent pending for the next focus |
+| `ctx` | 1 = context accepted the target, 0 = the context transition failed, -1 = no context existed | a `0` is a real mismatch; `-1` means the system select was deferred and the intent stays pending for the next focus |
 | `contextSource` | the source the app context reported afterwards (diagnostic) | mirrors the system change even for a stale session — absence proves "no context", not the session identity |
 | `ms - tisMs - contextMs` | IPC + pipe + the front end's own task boundary | the bridge, not the IME |
 
