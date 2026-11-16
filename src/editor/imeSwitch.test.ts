@@ -18,12 +18,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const setInputSource = vi.hoisted(() => vi.fn());
+const applyInputContextSource = vi.hoisted(() => vi.fn());
 const getCurrentInputSource = vi.hoisted(() => vi.fn());
 const listInputSources = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", () => ({
   api: {
     setInputSource,
+    applyInputContextSource,
     getCurrentInputSource,
     listInputSources,
   },
@@ -55,6 +57,7 @@ beforeEach(() => {
         pending.push(() => resolve({ switched: true, tisMs: 1 }));
       }),
   );
+  applyInputContextSource.mockResolvedValue(true);
   getCurrentInputSource.mockResolvedValue("com.apple.keylayout.ABC");
   listInputSources.mockResolvedValue([]);
   const { patchSettings } = useAppStore.getState();

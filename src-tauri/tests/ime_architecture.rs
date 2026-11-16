@@ -53,13 +53,32 @@ fn the_command_layer_only_speaks_the_protocol() {
         commands.contains("ime_daemon::with_client"),
         "set_input_source must delegate the select to the helper process"
     );
-    for forbidden in ["TISSelectInputSource", "select_local", "run_on_main_thread"] {
+    for forbidden in ["TISSelectInputSource", "select_local"] {
         assert!(
             !commands.contains(forbidden),
             "`{forbidden}` in the command layer: an in-process select freezes the UI \
              thread for the whole TIS call (25-104 ms real-trace range)"
         );
     }
+}
+
+#[test]
+fn the_app_hands_the_source_to_its_own_input_context() {
+    let commands = read("src/commands/ime.rs");
+    assert!(
+        commands.contains("apply_input_context_source"),
+        "a real switch must hand the new source to the app's own text input context"
+    );
+    assert!(
+        commands.contains("ime_tis::apply_context_source"),
+        "the command must call the AppKit-level hand-off, not a TIS select"
+    );
+    assert!(
+        read("src/ime_tis.rs").contains("setSelectedKeyboardInputSource"),
+        "the hand-off is NSTextInputContext.selectedKeyboardInputSource: the web \
+         view's context keeps the source it was created with, so the property is \
+         the only per-context way to make typing follow"
+    );
 }
 
 #[test]

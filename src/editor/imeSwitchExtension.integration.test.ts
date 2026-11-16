@@ -5,10 +5,10 @@ import { EditorView } from "@codemirror/view";
 /**
  * The whole switch chain at the editor's own seam: a vim mode change runs
  * through `imeSwitchExtension.updateListener` -> `imeApply` -> the
- * `set_input_source` IPC -> (on `switched`) the input-context re-mount.
+ * `set_input_source` IPC -> (on `switched`) the input-context hand-off.
  *
  * The intent state machine is locked separately (imeSwitch.test.ts) and so is
- * the re-mount discipline (imeSwitchContext.integration.test.ts); what this
+ * the hand-off discipline (imeSwitchContext.integration.test.ts); what this
  * file adds is the wiring between them: the extension only exists inside the
  * editor tree, reads the mode from the live view, and decides the math/code
  * "keep English" case from the actual document position. A regression here is
@@ -21,6 +21,7 @@ import { EditorView } from "@codemirror/view";
 
 const tauri = vi.hoisted(() => ({
   setInputSource: vi.fn(),
+  applyInputContextSource: vi.fn(),
   getCurrentInputSource: vi.fn(),
   listInputSources: vi.fn(),
 }));
@@ -39,29 +40,15 @@ const ABC = "com.apple.keylayout.ABC";
 
 const views: EditorView[] = [];
 
-/** Mounts a real editor with the production extension; returns the re-mount counters. */
-function mount(doc = "hello"): {
-  view: EditorView;
-  counts: { blurs: number; focuses: number };
-} {
+/** Mounts a real editor with the production extension. */
+function mount(doc = "hello"): EditorView {
   const view = new EditorView({
     state: EditorState.create({ doc, extensions: [imeSwitchExtension()] }),
     parent: document.body,
   });
   views.push(view);
   registerEditorView(view);
-  const counts = { blurs: 0, focuses: 0 };
-  view.contentDOM.blur = () => {
-    counts.blurs++;
-  };
-  view.contentDOM.focus = () => {
-    counts.focuses++;
-  };
-  Object.defineProperty(document, "activeElement", {
-    configurable: true,
-    get: () => view.contentDOM,
-  });
-  return { view, counts };
+  return view;
 }
 
 /** The listener's documented reset path: a dispatch with vim off clears its dedup memory. */
@@ -86,6 +73,7 @@ beforeEach(() => {
   tauri.getCurrentInputSource.mockResolvedValue(ABC);
   tauri.listInputSources.mockResolvedValue([]);
   tauri.setInputSource.mockResolvedValue({ switched: true, tisMs: 1 });
+  tauri.applyInputContextSource.mockResolvedValue(true);
   useAppStore.getState().patchSettings({
     vim: true,
     ime: {
@@ -107,23 +95,17 @@ afterEach(async () => {
     unregisterEditorView(view);
     view.destroy();
   }
-  Object.defineProperty(document, "activeElement", {
-    configurable: true,
-    get: () => document.body,
-  });
 });
 
 describe("the editor-level switch chain", () => {
-  it("normal -> insert sends the insert source and re-mounts the input context in the same call", async () => {
-    const { view, counts } = mount();
+  it("normal -> insert sends the insert source and hands it to the input context", async () => {
+    const view = mount();
     resetListener(view);
     vimMode.current = "normal";
     view.dispatch({});
     await tick();
-
-    counts.blurs = 0;
-    counts.focuses = 0;
     tauri.setInputSource.mockClear();
+    tauri.applyInputContextSource.mockClear();
 
     vimMode.current = "insert";
     view.dispatch({});
@@ -131,20 +113,18 @@ describe("the editor-level switch chain", () => {
 
     expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
     expect(tauri.setInputSource).toHaveBeenCalledWith(SOGOU);
-    expect(counts.blurs).toBe(1);
-    expect(counts.focuses).toBe(1);
+    expect(tauri.applyInputContextSource).toHaveBeenCalledTimes(1);
+    expect(tauri.applyInputContextSource).toHaveBeenCalledWith(SOGOU);
   });
 
   it("insert -> normal hands the normal source back", async () => {
-    const { view, counts } = mount();
+    const view = mount();
     resetListener(view);
     vimMode.current = "insert";
     view.dispatch({});
     await tick();
-
-    counts.blurs = 0;
-    counts.focuses = 0;
     tauri.setInputSource.mockClear();
+    tauri.applyInputContextSource.mockClear();
 
     vimMode.current = "normal";
     view.dispatch({});
@@ -152,29 +132,29 @@ describe("the editor-level switch chain", () => {
 
     expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
     expect(tauri.setInputSource).toHaveBeenCalledWith(ABC);
-    // A real switch re-mounts the context regardless of direction.
-    expect(counts.blurs).toBe(1);
-    expect(counts.focuses).toBe(1);
+    expect(tauri.applyInputContextSource).toHaveBeenCalledWith(ABC);
   });
 
   it("a repeated transaction in the same mode sends nothing (the listener dedups)", async () => {
-    const { view } = mount();
+    const view = mount();
     resetListener(view);
     vimMode.current = "insert";
     view.dispatch({});
     await tick();
     tauri.setInputSource.mockClear();
+    tauri.applyInputContextSource.mockClear();
 
     view.dispatch({});
     view.dispatch({});
     await tick();
 
     expect(tauri.setInputSource).not.toHaveBeenCalled();
+    expect(tauri.applyInputContextSource).not.toHaveBeenCalled();
   });
 
   it("moving the caret inside a formula in insert mode keeps the English source", async () => {
     // "$f(x)$" spans 3..9; 4 and 8 are inside the body, 0 is outside.
-    const { view } = mount("前文 $f(x)$ 后文");
+    const view = mount("前文 $f(x)$ 后文");
     resetListener(view);
     vimMode.current = "insert";
     view.dispatch({ selection: { anchor: 0 } });
@@ -182,21 +162,24 @@ describe("the editor-level switch chain", () => {
     expect(tauri.setInputSource).toHaveBeenLastCalledWith(SOGOU);
 
     tauri.setInputSource.mockClear();
+    tauri.applyInputContextSource.mockClear();
 
     view.dispatch({ selection: { anchor: 4 } });
     await tick();
 
     expect(tauri.setInputSource).toHaveBeenCalledTimes(1);
     expect(tauri.setInputSource).toHaveBeenCalledWith(ABC);
+    expect(tauri.applyInputContextSource).toHaveBeenCalledWith(ABC);
   });
 
   it("with vim off the listener never touches the system IME", async () => {
-    const { view } = mount();
+    const view = mount();
     useAppStore.getState().patchSettings({ vim: false });
     vimMode.current = "insert";
     view.dispatch({});
     await tick();
 
     expect(tauri.setInputSource).not.toHaveBeenCalled();
+    expect(tauri.applyInputContextSource).not.toHaveBeenCalled();
   });
 });

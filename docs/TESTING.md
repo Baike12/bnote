@@ -239,9 +239,10 @@ registration, or a browser-bridge arm whose name no longer exists. The two
 A mode switch works only as one composed chain, and two of its legs are
 invisible to the compiler and to every functional test: the TIS select must
 run in the helper process (in-process, it freezes the UI thread for the whole
-call), and a confirmed switch must re-create the editor's web input context
-(otherwise the menu bar moves while WebKit keeps typing latin). Both legs have
-already been reverted by "simplification" edits that shipped a broken build.
+call), and a confirmed switch must hand the new source to the app's own text
+input context (otherwise the menu bar moves while WebKit keeps typing latin).
+Both legs have already been reverted by "simplification" edits that shipped a
+broken build.
 
 - `src/editor/imeArchitecture.gate.test.ts` (unit) reads the front-end and
   backend sources and locks the chain: the editor composition, the app-shell

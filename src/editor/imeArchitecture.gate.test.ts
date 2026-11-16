@@ -35,23 +35,18 @@ const read = (rel: string): string => readFileSync(`${root}/${rel}`, "utf8");
 describe("the typing context follows a real switch", () => {
   const source = read("src/editor/imeSwitch.ts");
 
-  it("a confirmed switch (switched=true) re-mounts the focused editor's input context", () => {
-    expect(source).toMatch(/if \(outcome\.switched\) refreshWebInputContext\(\)/);
+  it("only a confirmed switch (switched=true) touches the input context", () => {
+    expect(source).toContain("if (!outcome.switched) return;");
+    expect(source).toContain("applyInputContextSource(target)");
   });
 
-  it("the re-mount is a same-frame blur + focus that never scrolls the document", () => {
-    expect(source).toContain("dom.blur()");
-    // contentDOM spans the whole document; focus() without preventScroll
-    // scrolls the notes page to its top on every real switch.
-    expect(source).toContain("dom.focus({ preventScroll: true })");
-  });
-
-  it("the re-mount refuses to run mid-composition (it would abort the IME session)", () => {
-    expect(source).toContain("view.composing");
-  });
-
-  it("the re-mount is scoped to the editor that actually holds focus", () => {
-    expect(source).toContain("document.activeElement !== dom");
+  it("the source goes to the app's own context, not through a focus re-mount", () => {
+    // The blur + focus re-mount was the earlier mechanism. It is indirect
+    // (it re-captures whatever the context restores) and must not come back:
+    // the context's source is set directly through AppKit.
+    expect(source).not.toContain("refreshWebInputContext");
+    expect(source).not.toContain("dom.blur()");
+    expect(source).not.toContain("dom.focus(");
   });
 });
 
@@ -69,6 +64,10 @@ describe("the switch is composed into the editor and the app shell", () => {
 
   it("the IPC wrapper invokes the set_input_source command", () => {
     expect(read("src/lib/tauri.ts")).toContain('invoke<SetImeOutcome>("set_input_source"');
+  });
+
+  it("the IPC wrapper invokes the input-context hand-off command", () => {
+    expect(read("src/lib/tauri.ts")).toContain('invoke<boolean>("apply_input_context_source"');
   });
 });
 
@@ -88,12 +87,21 @@ describe("the backend half: the select runs in the helper process", () => {
     expect(lib).toContain("pub mod ime_tis;");
   });
 
-  it("the command layer only speaks the protocol — no TIS, no main-thread dispatch", () => {
+  it("the command layer only speaks the protocol — no TIS, no main-thread select", () => {
     const commands = read("src-tauri/src/commands/ime.rs");
     expect(commands).toContain("ime_daemon::with_client");
-    for (const forbidden of ["TISSelectInputSource", "select_local", "run_on_main_thread"]) {
+    for (const forbidden of ["TISSelectInputSource", "select_local"]) {
       expect(commands).not.toContain(forbidden);
     }
+  });
+
+  it("the app-side half hands the source to the input context", () => {
+    const commands = read("src-tauri/src/commands/ime.rs");
+    expect(commands).toContain("apply_input_context_source");
+    expect(commands).toContain("ime_tis::apply_context_source");
+    // NSTextInputContext.selectedKeyboardInputSource is the AppKit-level setter
+    // that makes the web view type with the new source.
+    expect(read("src-tauri/src/ime_tis.rs")).toContain("setSelectedKeyboardInputSource");
   });
 
   it("the helper drains its run loop so it sees source changes made by other processes", () => {
