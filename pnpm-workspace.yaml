@@ -1,0 +1,7 @@
+# pnpm 11 replaced `onlyBuiltDependencies` with `allowBuilds`. Only these three
+# need install scripts: esbuild downloads its platform binary, and the two
+# webdriver packages fetch the drivers the E2E lane drives.
+allowBuilds:
+  edgedriver: true
+  esbuild: true
+  geckodriver: true
