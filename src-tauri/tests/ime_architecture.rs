@@ -91,6 +91,30 @@ fn one_command_carries_both_halves_of_the_switch() {
 }
 
 #[test]
+fn a_missed_hand_off_is_reconciled_even_without_a_system_switch() {
+    let commands = read("src/commands/ime.rs");
+    // The context and the system source are different authorities. Skipping
+    // the hand-off whenever the system reports "already active" leaves WebKit
+    // typing with the old IME after one miss — every normal-mode key then pays
+    // that IME's round trip (felt as j/k lag, invisible to the JS key probe).
+    assert!(
+        commands.contains("CONTEXT_STALE"),
+        "the command must remember a missed hand-off and reconcile the context \
+         on the next command even when the system source did not change"
+    );
+    assert!(
+        commands.contains("schedule_context_repair"),
+        "when no input context exists yet (window activating), the hand-off must \
+         be retried; the front end cannot observe that state"
+    );
+    assert!(
+        read("src/ime_tis.rs").contains("pub fn apply_context_source(id: &str) -> Option<bool>"),
+        "apply_context_source must distinguish 'no context' (None) from 'the \
+         rebuild missed' (Some(false)): the two have different owners"
+    );
+}
+
+#[test]
 fn the_hand_off_rebuilds_the_input_method_session() {
     let tis = read("src/ime_tis.rs");
     let deactivate = index_of(&tis, "context.deactivate()");

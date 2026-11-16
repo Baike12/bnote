@@ -304,7 +304,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             "switched": false,
             "tisMs": 0,
             "contextApplied": null,
-            "contextMs": 0
+            "contextMs": 0,
+            "contextSource": null
         }),
 
         // ---- agent ----

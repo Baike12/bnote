@@ -285,16 +285,20 @@ pub fn warm_select_current() {
 /// rebuilds the session too.
 ///
 /// Must run on the app's main thread (the context is main-thread only).
-/// Returns whether an active context reports the new source afterwards; no
-/// focused text view means there is nothing to update (the next context is
-/// created with the now-current source).
-pub fn apply_context_source(id: &str) -> bool {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return false;
-    };
-    let Some(context) = NSTextInputContext::currentInputContext(mtm) else {
-        return false;
-    };
+///
+/// Returns:
+/// - `Some(true)`  — a context existed and reports the target source after the
+///   rebuild;
+/// - `Some(false)` — a context existed but the rebuild did not stick;
+/// - `None`        — there is no input context at this instant (the web view
+///   is not the window's first responder, e.g. while the window is still
+///   activating). This is **not** a failure of the source: the caller must
+///   retry once the context exists, because a skipped hand-off leaves WebKit
+///   typing with the old IME for the whole normal-mode session (the exact
+///   "j/k feels laggy" symptom: every key goes through the old IME).
+pub fn apply_context_source(id: &str) -> Option<bool> {
+    let mtm = MainThreadMarker::new()?;
+    let context = NSTextInputContext::currentInputContext(mtm)?;
     let source = NSString::from_str(id);
     context.deactivate();
     context.setSelectedKeyboardInputSource(Some(&source));
@@ -308,9 +312,26 @@ pub fn apply_context_source(id: &str) -> bool {
         // change then, so it rebuilds the session a second time.
         context.setSelectedKeyboardInputSource(Some(&source));
     }
+    Some(
+        context
+            .selectedKeyboardInputSource()
+            .is_some_and(|current| current.to_string() == id),
+    )
+}
+
+/// The source the app's own input context is currently using, read on the
+/// app's main thread. `None` means "no input context right now", which is a
+/// state the caller must distinguish from "the context disagrees".
+///
+/// This is a diagnostic only: `selectedKeyboardInputSource` mirrors the
+/// system-wide change even when the session still types with the old IME (see
+/// `apply_context_source`), so it can prove presence, not session identity.
+pub fn context_source_id() -> Option<String> {
+    let mtm = MainThreadMarker::new()?;
+    let context = NSTextInputContext::currentInputContext(mtm)?;
     context
         .selectedKeyboardInputSource()
-        .is_some_and(|current| current.to_string() == id)
+        .map(|current| current.to_string())
 }
 
 #[cfg(all(test, target_os = "macos"))]

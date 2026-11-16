@@ -48,7 +48,17 @@ describe("the typing context follows a real switch", () => {
     // contextApplied=false is the old symptom (menu bar switched, typing did
     // not) and must reach the perf log and the console.
     expect(source).toContain("outcome.contextApplied === false");
-    expect(source).toContain('perfFields("tisMs", "ctxMs", "ctx")');
+    // `switched` separates "nothing to rebuild" from "no input context yet"
+    // (ctx = -1 both ways); without it a missed hand-off is invisible.
+    expect(source).toContain('perfFields("tisMs", "ctxMs", "ctx", "switched")');
+  });
+
+  it("a missed hand-off is owned by the backend, not chained in JS", () => {
+    // The retry must not be a front-end loop: only the backend can read the
+    // system source and the input context, and a JS retry would fight a newer
+    // intent (e.g. the user pressing i before the retry fires).
+    expect(source).not.toContain("scheduleContextVerify");
+    expect(read("src-tauri/src/commands/ime.rs")).toContain("schedule_context_repair");
   });
 
   it("the source goes to the app's own context, not through a focus re-mount", () => {

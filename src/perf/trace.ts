@@ -135,7 +135,7 @@ export function stopFullTrace(): void {
 /** Names of the numeric/string values attached to a span. A fixed array per
  *  call site (module-level) — the hot path passes values positionally, so no
  *  data object is allocated unless the span is actually recorded. */
-export type PerfFields = readonly [string, string?, string?];
+export type PerfFields = readonly [string, string?, string?, string?];
 
 export function perfFields<const T extends PerfFields>(...names: T): T {
   return names;
@@ -158,9 +158,10 @@ export function perfEnd(
   v1?: unknown,
   v2?: unknown,
   v3?: unknown,
+  v4?: unknown,
 ): void {
   if (start < 0) return;
-  recordSpan(performance.now() - start, name, start, fields, v1, v2, v3);
+  recordSpan(performance.now() - start, name, start, fields, v1, v2, v3, v4);
 }
 
 function packFields(
@@ -168,11 +169,13 @@ function packFields(
   v1: unknown,
   v2: unknown,
   v3: unknown,
+  v4: unknown,
 ): Record<string, unknown> | undefined {
   if (!fields) return undefined;
   const data: Record<string, unknown> = { [fields[0]]: v1 };
   if (fields[1] !== undefined) data[fields[1]] = v2;
   if (fields[2] !== undefined) data[fields[2]] = v3;
+  if (fields[3] !== undefined) data[fields[3]] = v4;
   return data;
 }
 
@@ -182,7 +185,17 @@ function packFields(
  * and assert exact spans without depending on wall-clock thresholds.
  */
 export function recordSpanMs(ms: number, name: string, data?: Record<string, unknown>): void {
-  recordSpan(ms, name, performance.now() - ms, undefined, undefined, undefined, undefined, data);
+  recordSpan(
+    ms,
+    name,
+    performance.now() - ms,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    data,
+  );
 }
 
 function recordSpan(
@@ -193,6 +206,7 @@ function recordSpan(
   v1?: unknown,
   v2?: unknown,
   v3?: unknown,
+  v4?: unknown,
   data?: Record<string, unknown>,
 ): void {
   const bag = stats.get(name);
@@ -217,7 +231,7 @@ function recordSpan(
       kind: "span",
       name,
       ms: round(ms),
-      data: data ?? packFields(fields, v1, v2, v3),
+      data: data ?? packFields(fields, v1, v2, v3, v4),
       full: level === "full" ? true : undefined,
     });
   }

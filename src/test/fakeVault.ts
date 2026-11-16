@@ -439,6 +439,7 @@ export class FakeVault {
       tisMs: 0,
       contextApplied: null,
       contextMs: 0,
+      contextSource: null,
     }),
     pythonRun: async (): Promise<PythonRunStarted> => ({
       runId: 1,

@@ -26,6 +26,16 @@ import { perfEnd, perfFields, perfStart } from "@/perf/trace";
  * property alone is a no-op once AppKit has already mirrored the system-wide
  * change into it.
  *
+ * "The system source did not change" does not mean "the context is right":
+ * after one hand-off that ran with no context (the window was still
+ * activating), WebKit keeps the old IME while the menu bar already shows the
+ * target, and every normal-mode key then pays that IME's keystroke round trip
+ * — the lag one feels on j/k, invisible to the JS key probe because it happens
+ * before the DOM keydown. The backend owns that state: it remembers a missed
+ * hand-off, reconciles the context on the next command even without a system
+ * switch, and retries on a bounded delay while the system source still equals
+ * the intent. The front end sends the intent; it never chains retries.
+ *
  * Mirrors the behavior of the user's patched obsidian-vim-input-auto-switch:
  * entering insert inside a math region keeps the English source (formulas are
  * ASCII, the IME would only get in the way).
@@ -102,9 +112,12 @@ function scheduleLaunch(): void {
  * (`tisMs`, `contextMs`); the remainder is the bridge. `ctx` is 1 when the
  * rebuild reported success, 0 when it reported a miss — a miss is the old
  * symptom (menu bar switched, typing stayed on the old source), so it must be
- * readable here instead of disappearing into a swallowed promise. The target
- * source itself is on the Rust-side line and in the warning below. */
-const IME_FIELDS = perfFields("tisMs", "ctxMs", "ctx");
+ * readable here instead of disappearing into a swallowed promise. `switched`
+ * separates the two ways of `ctx = -1`: no system switch (nothing to rebuild)
+ * versus no input context at that instant (the backend's delayed repair owns
+ * it). The target source itself is on the Rust-side line and in the warning
+ * below. */
+const IME_FIELDS = perfFields("tisMs", "ctxMs", "ctx", "switched");
 const IME_FAILED_FIELDS = perfFields("target");
 
 function launchSwitch(target: string): void {
@@ -130,12 +143,18 @@ function launchSwitch(target: string): void {
     .setInputSource(target)
     .then((outcome) => {
       const ctx = outcome.contextApplied === null ? -1 : Number(outcome.contextApplied);
-      perfEnd(t, "ime.switch", IME_FIELDS, outcome.tisMs, outcome.contextMs, ctx);
+      perfEnd(t, "ime.switch", IME_FIELDS, outcome.tisMs, outcome.contextMs, ctx, outcome.switched);
       if (outcome.contextApplied === false) {
         // The system source changed but the session rebuild missed: typing will
-        // keep the old input method until the next focus or mode change.
-        console.warn("[bnote] input context hand-off missed", target);
+        // keep the old input method until the backend's repair lands. The
+        // source it actually reports is the one detail the Rust log lacks.
+        console.warn("[bnote] input context hand-off missed", target, outcome.contextSource);
       }
+      // `contextApplied === null` with `switched` means "no input context at
+      // that instant" (the window was still activating). Its repair is a
+      // bounded delayed retry in the backend, not a JS chain: the backend can
+      // read the system source and the context, the front end can observe
+      // neither, and a JS retry would fight a newer intent.
     })
     .catch((e) => {
       console.warn("[bnote] set input source failed", e);

@@ -231,10 +231,11 @@ lived, one JSON line per request over stdin/stdout:
 
 - `set_input_source` / `get_current_input_source` / `list_input_sources` write
   one pipe line and read the answer; the UI thread never runs TIS. A real
-  switch is **one command**: it selects the system source in the helper and,
-  when the select really changed it, rebuilds the app's own input method
-  session on the main thread. Two commands left a window in which the system
-  source had switched while the hand-off was still an IPC hop away.
+  switch is **one command**: it selects the system source in the helper and
+  rebuilds the app's own input method session on the main thread (also when the
+  system source was already active but the context is known stale — see below).
+  Two commands left a window in which the system source had switched while the
+  hand-off was still an IPC hop away.
 - The helper keeps the TIS reference cache and the one-time initialization warm
   across switches (`imeWarmUp` still triggers them at startup, now inside the
   helper).
@@ -257,12 +258,28 @@ lived, one JSON line per request over stdin/stdout:
   2026-11-16, all 35 sampled switches had the property already updated when the
   hand-off ran, and typing followed only about half the time. The
   deactivate/activate pair does not depend on the property changing, so it is
-  order-independent. It is still no TIS call and no focus churn. This is the
-  app-side half of the out-of-process contract, not a retry chain: it needs no
-  detection, `switched` is the detection. The blur + focus re-mount was the
-  earlier mechanism; it is deliberately gone (it re-captures whatever the
-  context restores, and it scrolls the notes page when focus() is not
-  prevented from scrolling).
+  order-independent. It is still no TIS call and no focus churn. The blur +
+  focus re-mount was the earlier mechanism; it is deliberately gone (it
+  re-captures whatever the context restores, and it scrolls the notes page
+  when focus() is not prevented from scrolling).
+- **The system source and the context are two authorities.** "Already active"
+  from the helper says nothing about the context: when the switch runs before
+  the web view is the window's first responder (the window is still
+  activating), the hand-off has no context and returns `None`. Skipping it
+  there leaves WebKit typing with the old IME for the whole mode, while the
+  menu bar already shows the target. Every key then pays the old IME's
+  keystroke round trip — the lag felt on j/k, invisible to the JS key probe
+  because it happens **before** the DOM `keydown`. Measured in the 2026-11-16
+  trace: five `ctx = 0` switches with `contextMs ≤ 0.01 ms` — the context was
+  absent, not disagreeing (the three AppKit calls cannot finish that fast).
+  - The backend remembers a missed hand-off (`CONTEXT_STALE`) and rebuilds the
+    context on the next command even when the system source did not change.
+  - If the context is still absent, a bounded delayed repair retries on a side
+    thread (50/120/240/480 ms) and only while the system source still equals the
+    intent — the system source is the arbiter, so a newer mode change is never
+    fought.
+  - The front end sends the intent only; the retry is not a JS chain. The JS
+    cannot read the context, and a stale retry would overwrite a newer intent.
 
 `SetImeOutcome` returns both legs, and the span carries them:
 
@@ -270,7 +287,8 @@ lived, one JSON line per request over stdin/stdout:
 |---|---|---|
 | `tisMs` | inside `TISSelectInputSource` (helper process) | the input method was cold — visible only as hand-over time now, not as a UI freeze |
 | `contextMs` | main-thread session rebuild (`deactivate` / pin / `activate`) | the rebuild is touching the keystroke budget; move work off the switch path |
-| `ctx` | 1 = rebuild reported success, 0 = it missed, -1 = no switch happened | a `0` is the old symptom (menu bar switched, typing did not) |
+| `ctx` | 1 = rebuild reported success, 0 = it missed, -1 = no rebuild attempted (no switch and the context was not known stale, or no context existed — `switched`/`contextSource` tell those apart) | a `0` is the old symptom (menu bar switched, typing did not); `-1` with `switched = 1` means the context was absent and the delayed repair owns it |
+| `contextSource` | the source the app context reported afterwards (diagnostic) | mirrors the system change even for a stale session — absence proves "no context", not the session identity |
 | `ms - tisMs - contextMs` | IPC + pipe + the front end's own task boundary | the bridge, not the IME |
 
 Two things this leg deliberately does **not** do:
