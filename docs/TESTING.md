@@ -234,6 +234,27 @@ but is never registered, a registration with no definition, a duplicate
 registration, or a browser-bridge arm whose name no longer exists. The two
 `set_input_source` cfg variants are treated as one name.
 
+## Structural gate: IME switching
+
+A mode switch works only as one composed chain, and two of its legs are
+invisible to the compiler and to every functional test: the TIS select must
+run in the helper process (in-process, it freezes the UI thread for the whole
+call), and a confirmed switch must re-create the editor's web input context
+(otherwise the menu bar moves while WebKit keeps typing latin). Both legs have
+already been reverted by "simplification" edits that shipped a broken build.
+
+- `src/editor/imeArchitecture.gate.test.ts` (unit) reads the front-end and
+  backend sources and locks the chain: the editor composition, the app-shell
+  blur/focus sync, the `set_input_source` IPC name, the helper detection order
+  in `main.rs`, the protocol-only command layer, the helper's run-loop drain,
+  and the accessory activation policy.
+- `src-tauri/tests/ime_architecture.rs` (Rust) locks the same backend
+  contract for `cargo test`.
+- Behaviour underneath: `src/editor/imeSwitch.test.ts` (intent state machine),
+  `src/editor/imeSwitchExtension.integration.test.ts` (mode change → IPC →
+  re-mount through a real editor), and `src-tauri/tests/ime_daemon.rs` (the
+  real helper process over its line protocol).
+
 ## Performance gates
 
 `src/editor/perf.gate.test.ts` and `src/code/perf.gate.test.ts` lock the order
