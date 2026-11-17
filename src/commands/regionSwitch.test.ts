@@ -121,6 +121,55 @@ describe("reaching the agent input", () => {
       unregisterCodeEditor(handle);
     }
   });
+
+  /**
+   * The input may already hold DOM focus while the keyboard belongs to the
+   * reading region (the page never touches the main window's activeElement).
+   * Focus-first would then fire no `focusin` and the panel would keep
+   * answering the reading region's keys, so the command claims the region
+   * itself — the same rule the code column follows.
+   */
+  it("claims the agent region even when the input already has focus", () => {
+    useAppStore.setState({ mode: "study" });
+    setActiveKeyRegion("reading");
+    getCommand("region.focus-agent")?.run();
+    expect(keyRegionOwner()).toBe("agent");
+  });
+});
+
+describe("reaching the notes editor", () => {
+  beforeEach(stubFrame);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Region ownership follows input events only, and this command's focus()
+   * fires no `focusin` when the editor already holds DOM focus — the normal
+   * state while reading, because the PDF reader never takes focus and a
+   * native web page leaves the main webview's activeElement in the notes
+   * editor. Ownership then stayed on the reading region and the keys kept
+   * going there although the caret sat in the notes column (observed: "⌘E
+   * does nothing while reading a PDF").
+   */
+  it("claims the notes region even when nothing fires focusin", () => {
+    useAppStore.setState({ mode: "study" });
+    setActiveKeyRegion("reading");
+    getCommand("region.focus-notes")?.run();
+    expect(keyRegionOwner()).toBe("notes");
+  });
+
+  it("is reachable from every region of both three-column layouts", () => {
+    for (const mode of ["study", "code"] as const) {
+      useAppStore.setState({ mode });
+      for (const region of ["reading", "agent", "code", "notes"] as const) {
+        setActiveKeyRegion(region);
+        expect(getCommand("region.focus-notes")?.when?.() ?? true).toBe(true);
+        getCommand("region.focus-notes")?.run();
+        expect(keyRegionOwner()).toBe("notes");
+      }
+    }
+  });
 });
 
 describe("switching to the content column", () => {

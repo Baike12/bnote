@@ -1,5 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { registerCommands, runCommand, type CommandDef } from "./registry";
+import { setActiveKeyRegion } from "./globalKeys";
 import { cycleQuickSwitcher } from "@/lib/switcherSignal";
 import { getView } from "@/editor/api";
 import {
@@ -478,6 +479,11 @@ const defs: CommandDef[] = [
     when: hasAgentPanel,
     run: () => {
       const store = useAppStore.getState();
+      // Same rule as region.focus-notes: a command is not an input event, so
+      // the region is claimed here — outside the page the input may already
+      // hold DOM focus (the reading region never takes it), and then no
+      // `focusin` follows the focus() below.
+      setActiveKeyRegion("agent");
       // The assistant takes the middle column and stays there; the panel then
       // focuses its input and hands the IME to Chinese, in every mode.
       store.setMainColumn("agent");
@@ -494,9 +500,16 @@ const defs: CommandDef[] = [
     title: "聚焦笔记区编辑器",
     category: "区域切换",
     run: () => {
+      // The command claims the region itself, exactly like the code column
+      // does (see focusCodeContent) — a command is not an input event.
+      // `focus()` fires no focusin when the editor already holds DOM focus,
+      // and that is the normal state while reading: a PDF never takes focus
+      // and a native page leaves the main webview's activeElement untouched.
+      // Relying on the focus event then leaves the reading region owning the
+      // keyboard although the caret is in this column.
+      setActiveKeyRegion("notes");
       // The editor is always visible (the three columns are permanently
-      // mounted); after focusing, the focus event carries the keyboard
-      // ownership over.
+      // mounted), so the focus can move right away.
       requestAnimationFrame(() => getView()?.focus());
     },
   },
