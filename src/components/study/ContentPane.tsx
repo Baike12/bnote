@@ -408,7 +408,15 @@ export function ContentPane() {
       void getCurrentWebview()
         .setFocus()
         .then(() => runBoundKey(key, "reading"))
-        .catch(() => runBoundKey(key, "reading"));
+        .catch((e) => {
+          // Focus in the main window's DOM cannot take the first responder
+          // away from the native page, so a rejected hand-off leaves the key
+          // looking dead. It is rejected when the capability does not grant
+          // `core:webview:allow-set-webview-focus` — a build-time omission
+          // that must not disappear into a silent fallback again.
+          console.warn("[bnote] could not pull the keyboard back from the page", e);
+          runBoundKey(key, "reading");
+        });
     });
 
     return () => {
