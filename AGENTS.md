@@ -140,6 +140,7 @@ bnote's core is **feel**: editing, scrolling, caret movement, and rendering must
 Read **[DEBUG.md](./DEBUG.md)** before changing behavior; it defines the two loops, the real vault location, and the traps. The rules that must not be broken:
 
 - **Do not build or deploy after a front-end change** unless the user asks. Building is the user's decision.
+- **A regression is diagnosed from the code and the history first.** When a feature used to work, a wrong edit is the likely cause: find the root cause in the diff and `git log` before reproducing in a browser. Code and commit evidence is cheap and decisive; the browser only confirms the fix afterwards.
 - Verify in the session browser against `localhost:1430`; do not steal focus and do not take full-screen screenshots. DOM assertions and bytes on disk are the source of truth.
 - Browser verification uses **browseros**, with one tab group per task and the session handle passed on every call; never start playwright-cli or another browser tool. See DEBUG.md for the harness protocol.
 - Native-only behavior (window levels, event taps, IME, native webviews) cannot be proven in a browser; say so and leave it for a deployed check.
