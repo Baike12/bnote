@@ -65,6 +65,16 @@ const REGISTRY: RegistryEntry[] = [
     },
   },
   {
+    row: "**Keybinding layer collision**",
+    locks: {
+      "src/commands/keys.test.ts": [
+        "the global key set and every region key set are disjoint",
+        "the same key can mean different things in different regions, and a rebind in one does not leak",
+      ],
+      "src/commands/keys.ts": "export function crossLayerConflicts(",
+    },
+  },
+  {
     row: "**Cross-market data routing**",
     locks: {
       "src-tauri/src/invest/instruments.rs": [

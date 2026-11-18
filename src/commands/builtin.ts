@@ -189,7 +189,7 @@ const defs: CommandDef[] = [
   // ---- diagnostics (performance) ----
   {
     id: "diag.perf-start",
-    title: "性能:开始详细追踪 2 分钟",
+    title: "开始详细追踪 2 分钟",
     category: "工作区",
     run: () => {
       startFullTrace(120);
@@ -200,7 +200,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "diag.perf-stop",
-    title: "性能:停止详细追踪并打印汇总",
+    title: "停止详细追踪并打印汇总",
     category: "工作区",
     run: () => {
       stopFullTrace();
@@ -217,7 +217,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "diag.perf-flush",
-    title: "性能:立即写入日志文件",
+    title: "立即写入日志文件",
     category: "工作区",
     run: async () => {
       await flushPerf();
@@ -266,7 +266,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "view.toggle-study-mode",
-    title: "进入 / 退出学习模式(左问 agent、中看内容、右记笔记)",
+    title: "进入 / 退出三栏工作区(左 Agent、中内容、右笔记)",
     category: "视图",
     run: () => {
       toggleStudyMode();
@@ -277,7 +277,7 @@ const defs: CommandDef[] = [
     // Deliberately unbound by default: ⌘⇧C is "insert code block" in the notes
     // region; bind this command yourself in keybindings.json if you want a key.
     id: "view.toggle-code-mode",
-    title: "进入 / 退出代码模式(左问 agent、中写代码、右记笔记)",
+    title: "进入 / 退出代码模式(左 Agent、中代码、右笔记)",
     category: "视图",
     run: () => {
       toggleCodeMode();
@@ -285,7 +285,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "view.toggle-projects",
-    title: "进入 / 退出项目管理(项目列表、项目待办、日记)",
+    title: "进入 / 退出项目区(项目列表、项目待办、日记)",
     category: "视图",
     run: () => {
       toggleProjectsMode();
@@ -320,8 +320,8 @@ const defs: CommandDef[] = [
   // of duties as agentPanelCommand).
   {
     id: "region.focus-project",
-    title: "聚焦项目卡片",
-    category: "区域",
+    title: "切换到项目区",
+    category: "区域切换",
     run: () => {
       window.dispatchEvent(new CustomEvent("bnote:focus-project"));
     },
@@ -382,7 +382,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "view.open-weread",
-    title: "打开微信读书(书架 / 商城 / 阅读,进学习模式)",
+    title: "打开微信读书(书架 / 商城 / 阅读,进三栏工作区)",
     category: "视图",
     run: () => {
       const store = useAppStore.getState();
@@ -404,8 +404,8 @@ const defs: CommandDef[] = [
   // do not have to click back into the editor.
   {
     id: "study.pdf-prev-page",
-    title: "学习模式上一页(按步长滚动)",
-    category: "学习",
+    title: "上一页(按步长滚动)",
+    category: "内容区",
     when: canFlipPdfPage,
     run: () => {
       void flipPdfPage(-1);
@@ -413,8 +413,8 @@ const defs: CommandDef[] = [
   },
   {
     id: "study.pdf-next-page",
-    title: "学习模式下一页(按步长滚动)",
-    category: "学习",
+    title: "下一页(按步长滚动)",
+    category: "内容区",
     when: canFlipPdfPage,
     run: () => {
       void flipPdfPage(1);
@@ -422,8 +422,8 @@ const defs: CommandDef[] = [
   },
   {
     id: "study.pdf-snap-to-agent",
-    title: "学习模式:截取阅读区可见内容到学习助手(⌘⇧E)",
-    category: "学习",
+    title: "截取内容区可见内容到 Agent(⌘⇧E)",
+    category: "内容区",
     when: () =>
       useAppStore.getState().mode === "study" &&
       useAppStore.getState().studyContent?.kind === "pdf" &&
@@ -439,7 +439,7 @@ const defs: CommandDef[] = [
       try {
         const file = await capturePdfSnapshot();
         if (!file) {
-          store.showToast("阅读区还没有渲染出页面,稍后再试");
+          store.showToast("内容区还没有渲染出页面,稍后再试");
           return;
         }
         const image = await fileToAgentImage(file, file.type);
@@ -452,7 +452,7 @@ const defs: CommandDef[] = [
   {
     id: "study.web-zoom-in",
     title: "放大网页(⌘=)",
-    category: "学习",
+    category: "内容区",
     when: hasWebPreview,
     keepsPageFocus: true,
     run: () => applyWebZoom(1),
@@ -460,7 +460,7 @@ const defs: CommandDef[] = [
   {
     id: "study.web-zoom-out",
     title: "缩小网页(⌘-)",
-    category: "学习",
+    category: "内容区",
     when: hasWebPreview,
     keepsPageFocus: true,
     run: () => applyWebZoom(-1),
@@ -468,15 +468,15 @@ const defs: CommandDef[] = [
   {
     id: "study.web-zoom-reset",
     title: "网页缩放回到 100%(⌘0)",
-    category: "学习",
+    category: "内容区",
     when: hasWebPreview,
     keepsPageFocus: true,
     run: () => useAppStore.getState().patchSettings({ studyWebZoom: DEFAULT_WEB_ZOOM }),
   },
   {
-    id: "study.agent-switch-session",
-    title: "学习助手:切换 主会话/辅助会话(⌘⇧Y)",
-    category: "学习",
+    id: "agent.switch-session",
+    title: "切换主会话/辅助会话(⌘⇧Y)",
+    category: "Agent区",
     run: () => useAppStore.getState().bumpAgentSwitchSessionSignal(),
   },
   // ---- Switching between the three focusable regions ----
@@ -487,7 +487,7 @@ const defs: CommandDef[] = [
   // (see study/webAnnotations.ts).
   {
     id: "region.focus-agent",
-    title: "聚焦 agent 输入框",
+    title: "切换到 Agent 输入框",
     category: "区域切换",
     // Both three-column layouts mount the agent panel (study and code); the
     // notes / projects views have none to focus.
@@ -512,7 +512,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "region.focus-notes",
-    title: "聚焦笔记区编辑器",
+    title: "切换到笔记区",
     category: "区域切换",
     run: () => {
       // The command claims the region itself, exactly like the code column
@@ -542,36 +542,36 @@ const defs: CommandDef[] = [
   // ---- Session actions inside the study assistant panel ----
   {
     id: "agent.toggle-creative",
-    title: "学习助手:切换创作模式(生成 HTML 实时预览)",
-    category: "学习助手",
+    title: "切换创作模式(生成 HTML 实时预览)",
+    category: "Agent区",
     when: agentPanelActive,
     run: () => useAppStore.getState().runAgentPanelCommand("toggle-creative"),
   },
   {
     id: "agent.new-session",
-    title: "学习助手:新建一个全新会话",
-    category: "学习助手",
+    title: "新建一个全新会话",
+    category: "Agent区",
     when: agentPanelActive,
     run: () => useAppStore.getState().runAgentPanelCommand("new"),
   },
   {
     id: "agent.fork-session",
-    title: "学习助手:从当前会话分叉出一个新会话",
-    category: "学习助手",
+    title: "从当前会话分叉出一个新会话",
+    category: "Agent区",
     when: agentPanelActive,
     run: () => useAppStore.getState().runAgentPanelCommand("fork"),
   },
   {
     id: "agent.back-from-fork",
-    title: "学习助手:从分叉会话返回上一条会话",
-    category: "学习助手",
+    title: "从分叉会话返回上一条会话",
+    category: "Agent区",
     when: agentPanelActive,
     run: () => useAppStore.getState().runAgentPanelCommand("back"),
   },
   {
     id: "agent.focus-history",
-    title: "学习助手:打开并聚焦历史会话列表",
-    category: "学习助手",
+    title: "打开并聚焦历史会话列表",
+    category: "Agent区",
     when: agentPanelActive,
     run: () => useAppStore.getState().runAgentPanelCommand("history"),
   },
@@ -838,19 +838,19 @@ const defs: CommandDef[] = [
   // ---- python: markdown embedded code blocks ----
   {
     id: "python.run-note",
-    title: "Python: 把当前笔记当一个 py 文件运行(⌘↩)",
+    title: "把当前笔记当一个 py 文件运行(⌘↩)",
     category: "Python",
     run: () => void runCurrentNote(),
   },
   {
     id: "python.run-stop",
-    title: "Python: 停止当前运行",
+    title: "停止当前运行",
     category: "Python",
     run: () => void stopRun(),
   },
   {
     id: "python.toggle-lsp",
-    title: "Python: 开/关当前项目的 ty 类型检查(LSP)",
+    title: "开/关当前项目的 ty 类型检查(LSP)",
     category: "Python",
     run: async () => {
       const mdPath = useAppStore.getState().currentFile;
@@ -881,7 +881,7 @@ const defs: CommandDef[] = [
   // state, the command layer only signals (the layout runs the action).
   {
     id: "invest.next-instrument",
-    title: "投资:切换到下一个标的/板块(⌘⌥→)",
+    title: "切换到下一个标的/板块(⌘⌥→)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     run: () => {
@@ -890,7 +890,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.prev-instrument",
-    title: "投资:切换到上一个标的/板块(⌘⌥←)",
+    title: "切换到上一个标的/板块(⌘⌥←)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     run: () => {
@@ -899,7 +899,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.next-doc",
-    title: "投资:下一个标的文档 Tab",
+    title: "下一个标的文档 Tab",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     run: () => {
@@ -908,7 +908,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.prev-doc",
-    title: "投资:上一个标的文档 Tab",
+    title: "上一个标的文档 Tab",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     run: () => {
@@ -917,7 +917,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.toggle-sector-view",
-    title: "投资:标的视图 ↔ 板块视图(⌘⌥S)",
+    title: "标的视图 ↔ 板块视图(⌘⌥S)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     run: () => {
@@ -928,7 +928,7 @@ const defs: CommandDef[] = [
     // B9: the middle column is permanent now, so this chord brings the LEFT
     // column back to the list instead of hiding the agent.
     id: "invest.focus-market",
-    title: "投资:左栏切回标的列表(K 线 + 详情常驻中栏)",
+    title: "左栏切回标的列表(K 线 + 详情常驻中栏)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -938,7 +938,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.focus-agent",
-    title: "投资:左栏切到 AI 分析(分析当前标的)",
+    title: "左栏切到 AI 分析(分析当前标的)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -948,7 +948,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.search-knowledge",
-    title: "投资:全局知识检索(跨标的全文搜索)",
+    title: "全局知识检索(跨标的全文搜索)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -960,7 +960,7 @@ const defs: CommandDef[] = [
     // C15: the same-hexin convention — bare ↑/↓ walk the FILTERED list (the
     // search box is never cleared), Enter opens the scope's document.
     id: "invest.list-up",
-    title: "投资:列表上一个标的(↑,按当前过滤结果)",
+    title: "列表上一个标的(↑,按当前过滤结果)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -970,7 +970,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.list-down",
-    title: "投资:列表下一个标的(↓,按当前过滤结果)",
+    title: "列表下一个标的(↓,按当前过滤结果)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -980,7 +980,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.open-doc",
-    title: "投资:打开当前标的的文档(Enter)",
+    title: "打开当前标的的文档(Enter)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -991,7 +991,7 @@ const defs: CommandDef[] = [
   {
     // C17: TradingView-style chart keys. The step/scale travel as detail.
     id: "invest.kline-scroll-left",
-    title: "投资:K 线向左平移(←)",
+    title: "K 线向左平移(←)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -1001,7 +1001,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.kline-scroll-right",
-    title: "投资:K 线向右平移(→)",
+    title: "K 线向右平移(→)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -1011,7 +1011,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.kline-zoom-out",
-    title: "投资:K 线缩小(-)",
+    title: "K 线缩小(-)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -1021,7 +1021,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.kline-zoom-in",
-    title: "投资:K 线放大(=)",
+    title: "K 线放大(=)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -1042,7 +1042,7 @@ const defs: CommandDef[] = [
     ] as const
   ).map(([n, label]) => ({
     id: `invest.detail-tab-${n}`,
-    title: `投资:详情切到「${label}」(⌘⌥${n})`,
+    title: `详情切到「${label}」(⌘⌥${n})`,
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -1052,7 +1052,7 @@ const defs: CommandDef[] = [
   })),
   {
     id: "invest.kline-period-day",
-    title: "投资:K 线切到日 K",
+    title: "K 线切到日 K",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     keepsPageFocus: true,
@@ -1062,7 +1062,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.kline-period-week",
-    title: "投资:K 线切到周 K",
+    title: "K 线切到周 K",
     category: "投资",
     keepsPageFocus: true,
     when: () => useAppStore.getState().mode === "invest",
@@ -1072,7 +1072,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.kline-period-month",
-    title: "投资:K 线切到月 K",
+    title: "K 线切到月 K",
     category: "投资",
     keepsPageFocus: true,
     when: () => useAppStore.getState().mode === "invest",
@@ -1082,7 +1082,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.forecast-replay",
-    title: "投资:用当前 Skill 回放一次预测(截至 10 个交易日前)",
+    title: "用当前 Skill 回放一次预测(截至 10 个交易日前)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     run: () => {
@@ -1091,7 +1091,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.backtest-run",
-    title: "投资:跑一次 ma_cross 基准回测",
+    title: "跑一次 ma_cross 基准回测",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     run: () => {
@@ -1100,7 +1100,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "invest.import-data",
-    title: "投资:导入数据(标的 / K 线 / 财务 / 资金流,akshare JSON)",
+    title: "导入数据(标的 / K 线 / 财务 / 资金流,akshare JSON)",
     category: "投资",
     when: () => useAppStore.getState().mode === "invest",
     run: () => {
@@ -1109,7 +1109,7 @@ const defs: CommandDef[] = [
   },
   {
     id: "python.create-uv-env",
-    title: "Python: 为当前项目创建 uv 环境",
+    title: "为当前项目创建 uv 环境",
     category: "Python",
     run: () => void createUvEnvForCurrentProject(),
   },

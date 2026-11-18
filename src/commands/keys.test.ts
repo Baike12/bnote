@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_BINDINGS,
   FIXED_PAGE_COMMANDS,
+  KEY_REGIONS,
   applyOverrides,
   bindingEquals,
   bindingsForCommand,
   commandBelongs,
   commandInRegion,
   commandRegions,
+  captureConflicts,
+  commandTitleInRegion,
   commandsForKey,
   defaultBindingsFor,
   defaultRegionOf,
@@ -156,6 +159,57 @@ describe("focus mode: only a start, no way out halfway", () => {
   });
 });
 
+/** Naming contract: top-level names are "**区"; a row inside a region names its region first. */
+describe("region naming", () => {
+  it("every region label ends with 区, and the content region replaced the reading one", () => {
+    expect(KEY_REGIONS.map((r) => r.label)).toEqual([
+      "全局区",
+      "笔记区",
+      "内容区",
+      "Agent区",
+      "项目区",
+      "代码区",
+      "投资区",
+    ]);
+  });
+
+  it("a command row is prefixed with its region name", () => {
+    expect(commandTitleInRegion("agent", "切换到内容区")).toBe("Agent区：切换到内容区");
+    expect(commandTitleInRegion("notes", "加粗")).toBe("笔记区：加粗");
+  });
+});
+
+/** Capturing a key in the settings page has to keep the layers exclusive. */
+describe("capturing a key", () => {
+  afterEach(reset);
+
+  it("a global capture names every region copy holding the key", () => {
+    applyOverrides({});
+    const conflicts = captureConflicts("global", "Mod-b", "app.quit");
+    expect(conflicts).toContainEqual({ id: "edit.toggle-bold", regions: ["notes", "project"] });
+    expect(conflicts).toContainEqual({ id: "code.toggle-tree", regions: ["code"] });
+  });
+
+  it("a region capture names its own holder and the global holder, never another region", () => {
+    applyOverrides({});
+    expect(captureConflicts("notes", "Mod-p", "edit.toggle-bold")).toEqual([
+      { id: "nav.command-palette", regions: ["global"] },
+    ]);
+    // The key belongs to the notes region itself (and its project copy, which
+    // is a different region's binding and stays untouched).
+    expect(captureConflicts("notes", "Mod-b", "edit.toggle-italic")).toEqual([
+      { id: "edit.toggle-bold", regions: ["notes"] },
+    ]);
+    // The Agent panel's key is not a notes conflict.
+    expect(captureConflicts("notes", "Mod-Shift-y", "edit.toggle-bold")).toEqual([]);
+  });
+
+  it("the command being rebound is not its own conflict", () => {
+    applyOverrides({});
+    expect(captureConflicts("notes", "Mod-b", "edit.toggle-bold")).toEqual([]);
+  });
+});
+
 /** Region ownership: who takes effect in which region, and how a region overrides the global one. */
 describe("region dispatch", () => {
   it("commands are assigned to their default region by semantics", () => {
@@ -164,24 +218,26 @@ describe("region dispatch", () => {
     expect(defaultRegionOf("study.pdf-next-page")).toBe("reading");
     expect(defaultRegionOf("region.focus-agent")).toBe("reading");
     expect(defaultRegionOf("agent.new-session")).toBe("agent");
-    expect(defaultRegionOf("study.agent-switch-session")).toBe("agent");
+    expect(defaultRegionOf("agent.switch-session")).toBe("agent");
     expect(defaultRegionOf("nav.command-palette")).toBe("global");
     expect(defaultRegionOf("view.toggle-study-mode")).toBe("global");
   });
 
-  it("the three region switch commands exist in every region (any region can go to any region, including back to itself)", () => {
-    for (const id of ["region.focus-agent", "region.focus-notes", "region.focus-reading"]) {
-      for (const region of ["reading", "notes", "agent", "code"] as const) {
-        expect(commandBelongs(id, region)).toBe(true);
-      }
-    }
+  it("the region switch commands exist in every region that can reach the target (each region holds its own copy)", () => {
     // Code mode is a three-column layout too: the caret can go back to the
-    // notes column, the agent panel, and the content column (the open file).
-    for (const id of ["region.focus-agent", "region.focus-notes", "region.focus-reading"]) {
+    // notes column, the Agent panel, and the content column (the open file).
+    // Invest mode's right column is the notes region, so only ⌘⌥N is added
+    // there (⌘⌥A / ⌘⌥R have the invest region's own meanings).
+    for (const id of ["region.focus-agent", "region.focus-reading"]) {
       expect(defaultRegionsOf(id)).toEqual(["reading", "notes", "agent", "code"]);
-      expect(commandBelongs(id, "code")).toBe(true);
     }
-    expect(defaultRegionOf("region.focus-agent")).toBe("reading");
+    expect(defaultRegionsOf("region.focus-notes")).toEqual([
+      "reading",
+      "notes",
+      "agent",
+      "code",
+      "invest",
+    ]);
     expect(commandsForKey("Mod-Alt-a", "reading")).toContain("region.focus-agent");
     expect(commandsForKey("Mod-Alt-a", "notes")).toContain("region.focus-agent");
     // ⌘⌥A inside the Agent panel sends the focus back to its input: it must
@@ -190,12 +246,31 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-Alt-n", "reading")).toContain("region.focus-notes");
     expect(commandsForKey("Mod-Alt-n", "notes")).toContain("region.focus-notes");
     expect(commandsForKey("Mod-Alt-n", "agent")).toContain("region.focus-notes");
+    expect(commandsForKey("Mod-Alt-n", "invest")).toContain("region.focus-notes");
     expect(commandsForKey("Mod-Alt-r", "notes")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-r", "reading")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-r", "agent")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-r", "code")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-a", "code")).toContain("region.focus-agent");
     expect(bindingsForCommand("region.focus-agent")).toEqual(["Mod-Alt-a"]);
+  });
+
+  it("the global key set and every region key set are disjoint (one key, one meaning at any focus)", () => {
+    const regionKeys = new Map<string, Set<string>>();
+    for (const [id] of Object.entries(DEFAULT_BINDINGS)) {
+      for (const region of defaultRegionsOf(id)) {
+        const set = regionKeys.get(region) ?? new Set<string>();
+        for (const key of defaultBindingsFor(id, region)) set.add(key);
+        regionKeys.set(region, set);
+      }
+    }
+    const globalKeys = regionKeys.get("global") ?? new Set<string>();
+    for (const region of ["notes", "reading", "agent", "project", "code", "invest"] as const) {
+      const overlap = [...(regionKeys.get(region) ?? new Set<string>())].filter((key) =>
+        globalKeys.has(key),
+      );
+      expect(overlap, `${region} shares a key with the global layer`).toEqual([]);
+    }
   });
 
   /**
@@ -222,17 +297,20 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-p", "reading")).toContain("nav.command-palette");
   });
 
-  it("the region binding comes before the global binding of the same key (in the Agent panel ⌘[ is back to the session)", () => {
-    expect(commandsForKey("Mod-[", "agent")[0]).toBe("agent.back-from-fork");
-    expect(commandsForKey("Mod-[", "agent")).toContain("nav.back-link");
-    // The notes region has no region binding, so ⌘[ is still the back-link.
+  it("⌘[ is the panel's back-from-fork in the Agent panel and the note back-link in the notes region — one key, one meaning per focus", () => {
+    expect(commandsForKey("Mod-[", "agent")).toEqual(["agent.back-from-fork"]);
+    // The back-link is a note action and lives in the notes region.
     expect(commandsForKey("Mod-[", "notes")).toEqual(["nav.back-link"]);
+    expect(commandsForKey("Mod-[", "code")).toEqual(["agent.back-from-fork"]);
   });
 
-  it("null unbinding: the key no longer fires a command in that region", () => {
+  it("null unbinding: the key no longer fires the command in that region, the other region's copy stays", () => {
     applyOverrides({ notes: { "edit.toggle-italic": null } });
-    expect(bindingsForCommand("edit.toggle-italic")).toEqual([]);
+    expect(bindingsForCommand("edit.toggle-italic", "notes")).toEqual([]);
     expect(commandsForKey("Mod-Shift-i", "notes")).not.toContain("edit.toggle-italic");
+    // The project region owns an independent copy (the cards edit markdown).
+    expect(bindingsForCommand("edit.toggle-italic", "project")).toEqual(["Mod-Shift-i"]);
+    expect(commandsForKey("Mod-Shift-i", "project")).toContain("edit.toggle-italic");
   });
 
   it("regions do not affect each other: a binding added in another region leaves the original region's default binding in place", () => {
@@ -254,7 +332,7 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-Alt-a", "notes")).not.toContain("region.focus-agent");
   });
 
-  it("the paging chord crosses regions: pressing it in the notes region / Agent panel also hits the reading region's binding", () => {
+  it("content paging is the content region's own binding: a rebind there does not fire in notes / Agent", () => {
     applyOverrides(
       normalizeOverrides({
         reading: {
@@ -264,44 +342,36 @@ describe("region dispatch", () => {
       }),
     );
     for (const region of ["notes", "agent"] as const) {
-      expect(commandsForKey("Ctrl-j", region)).toContain("study.pdf-next-page");
-      expect(commandsForKey("Ctrl-k", region)).toContain("study.pdf-prev-page");
+      expect(commandsForKey("Ctrl-j", region)).toEqual([]);
+      expect(commandsForKey("Ctrl-k", region)).toEqual([]);
     }
-    // The reading region does not list it twice.
-    expect(
-      commandsForKey("Ctrl-j", "reading").filter((id) => id === "study.pdf-next-page"),
-    ).toEqual(["study.pdf-next-page"]);
+    expect(commandsForKey("Ctrl-j", "reading")).toEqual(["study.pdf-next-page"]);
+    expect(commandsForKey("Ctrl-k", "reading")).toEqual(["study.pdf-prev-page"]);
   });
 
-  it("the bare paging navigation keys still belong to the reading region only (they do not steal the editor caret keys)", () => {
+  it("the bare paging navigation keys belong to the content region only (they do not steal the editor caret keys)", () => {
     expect(commandsForKey("PageDown", "reading")).toContain("study.pdf-next-page");
     expect(commandsForKey("PageDown", "notes")).not.toContain("study.pdf-next-page");
     expect(commandsForKey("ArrowRight", "agent")).not.toContain("study.pdf-next-page");
-    // Cross-region only holds for chords with Mod/Ctrl/Alt.
     applyOverrides(normalizeOverrides({ reading: { "study.pdf-next-page": "F5" } }));
     expect(commandsForKey("F5", "notes")).not.toContain("study.pdf-next-page");
   });
 
-  it("the screenshot chord crosses regions too: with the focus in the Agent panel / notes region it also hits the reading region's binding", () => {
-    expect(commandsForKey("Mod-Shift-e", "reading")).toContain("study.pdf-snap-to-agent");
-    // In the code region the same key first hits its own "focus file tree",
-    // and the screenshot does not run along (pickCommand takes only the
-    // first command whose when holds).
-    expect(commandsForKey("Mod-Shift-e", "code")[0]).toBe("code.focus-tree");
-    for (const region of ["notes", "agent"] as const) {
+  it("the content snapshot is placed in content / Agent / notes, and not in code (⌘⇧E there is the file tree)", () => {
+    for (const region of ["reading", "notes", "agent"] as const) {
       expect(commandsForKey("Mod-Shift-e", region)).toContain("study.pdf-snap-to-agent");
     }
+    expect(commandsForKey("Mod-Shift-e", "code")).toEqual(["code.focus-tree"]);
   });
 
-  it("the region navigation chord crosses regions: bound only in the reading region, pressing it in the Agent panel works too", () => {
+  it("region navigation is a copy per region: rebinding it in reading leaves the other regions' defaults alone", () => {
     applyOverrides(normalizeOverrides({ reading: { "region.focus-agent": "Mod-Shift-w" } }));
     expect(commandsForKey("Mod-Shift-w", "reading")).toContain("region.focus-agent");
-    for (const region of ["notes", "agent"] as const) {
-      expect(commandsForKey("Mod-Shift-w", region)).toContain("region.focus-agent");
-    }
+    expect(commandsForKey("Mod-Shift-w", "notes")).toEqual([]);
+    expect(commandsForKey("Mod-Alt-a", "notes")).toContain("region.focus-agent");
   });
 
-  it("⌘Q quits from every region, including the code editor (which only inherits whitelisted globals)", () => {
+  it("⌘Q quits from every region, including the code editor", () => {
     applyOverrides({});
     expect(DEFAULT_BINDINGS["app.quit"]).toBe("Mod-q");
     for (const region of ["global", "notes", "reading", "agent", "project", "code"] as const) {
@@ -309,15 +379,19 @@ describe("region dispatch", () => {
     }
   });
 
-  it("the cross-region effect holds except for an explicit unbinding: once a region unbinds it, it no longer revives from elsewhere", () => {
-    applyOverrides(
-      normalizeOverrides({
-        reading: { "region.focus-agent": "Mod-Shift-w" },
-        agent: { "region.focus-agent": null },
-      }),
-    );
-    expect(commandsForKey("Mod-Shift-w", "notes")).toContain("region.focus-agent");
-    expect(commandsForKey("Mod-Shift-w", "agent")).not.toContain("region.focus-agent");
+  it("global bindings work in the code region too (no inherited-globals whitelist)", () => {
+    applyOverrides({});
+    expect(commandsForKey("Mod-Shift-p", "code")).toContain("view.toggle-projects");
+    expect(commandsForKey("Mod-,", "code")).toContain("workspace.open-settings");
+    // The code region's own key stays its own: save-file, not save-note.
+    expect(commandsForKey("Mod-s", "code")).toEqual(["code.save-file"]);
+  });
+
+  it("a region's unbinding never revives from another region (there is no cross-region fallback)", () => {
+    applyOverrides(normalizeOverrides({ agent: { "region.focus-agent": null } }));
+    expect(commandsForKey("Mod-Alt-a", "agent")).not.toContain("region.focus-agent");
+    expect(commandsForKey("Mod-Alt-a", "notes")).toContain("region.focus-agent");
+    expect(commandsForKey("Mod-Alt-a", "reading")).toContain("region.focus-agent");
   });
 
   it("while a modal is open (region = global) cross-region commands are not let through, the focus is not stolen", () => {
@@ -329,19 +403,18 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-p", "global")).toEqual(["nav.command-palette"]);
   });
 
-  it("the region's own binding wins: when the notes region binds the same key to another command, pressing it in the notes still runs that one", () => {
+  it("the same key can mean different things in different regions, and a rebind in one does not leak", () => {
     applyOverrides(
       normalizeOverrides({
         notes: { "edit.toggle-todo": "Mod-w" },
         reading: { "study.pdf-snap-to-agent": "Mod-w" },
       }),
     );
-    // The notes region: its own binding comes first, the cross-region
-    // screenshot comes after.
-    expect(commandsForKey("Mod-w", "notes")[0]).toBe("edit.toggle-todo");
-    // The Agent panel has no Mod-w of its own, so it falls through to the
-    // reading region's screenshot.
-    expect(commandsForKey("Mod-w", "agent")).toEqual(["study.pdf-snap-to-agent"]);
+    expect(commandsForKey("Mod-w", "notes")).toEqual(["edit.toggle-todo"]);
+    expect(commandsForKey("Mod-w", "reading")).toEqual(["study.pdf-snap-to-agent"]);
+    // The Agent panel's copy of the snapshot keeps its own default key.
+    expect(commandsForKey("Mod-w", "agent")).toEqual([]);
+    expect(commandsForKey("Mod-Shift-e", "agent")).toEqual(["study.pdf-snap-to-agent"]);
   });
 
   it("⌘A is not intercepted by default; when it is written only into the notes region, the Agent / reading region let it through unchanged", () => {
@@ -370,6 +443,15 @@ describe("config file read and write", () => {
     expect(overrides.reading).toEqual({ "study.pdf-next-page": "Ctrl-j" });
     expect(overrides.global).toEqual({ "nav.command-palette": "Mod-p" });
     expect(overrides.agent).toBeUndefined();
+  });
+
+  it("a renamed command id written by an older app still applies to the current command", () => {
+    // `study.agent-switch-session` became `agent.switch-session`: the flat
+    // table must be canonicalized before the region is resolved, otherwise the
+    // old entry would silently land in the wrong tab.
+    const overrides = normalizeOverrides({ "study.agent-switch-session": "Mod-Shift-y" });
+    expect(overrides.agent).toEqual({ "agent.switch-session": "Mod-Shift-y" });
+    expect(overrides.global).toBeUndefined();
   });
 
   it("the new format is read per region, and explanatory fields like _hint are ignored", () => {
@@ -510,9 +592,9 @@ describe("binding parsing", () => {
   });
 });
 
-/** Web zoom: ⌘= / ⌘- / ⌘0 belong to the reading region and, while a web page is open, override the global editor font-size zoom. */
+/** Web zoom: ⌘= / ⌘- / ⌘0 belong to the content region; the editor font-size zoom is a notes binding. */
 describe("web zoom bindings", () => {
-  it("the default bindings live in the reading region", () => {
+  it("the default bindings live in the content region", () => {
     expect(defaultRegionOf("study.web-zoom-in")).toBe("reading");
     expect(defaultRegionOf("study.web-zoom-out")).toBe("reading");
     expect(bindingsForCommand("study.web-zoom-in", "reading")).toEqual(["Mod-=", "Mod-Shift-="]);
@@ -520,12 +602,11 @@ describe("web zoom bindings", () => {
     expect(bindingsForCommand("study.web-zoom-reset", "reading")).toEqual(["Mod-0"]);
   });
 
-  it("in the reading region they come before the editor font-size zoom (which one runs is decided by the command's when clause while a web page is open)", () => {
-    expect(commandsForKey("Mod-=", "reading")).toEqual(["study.web-zoom-in", "view.zoom-in"]);
-    expect(commandsForKey("Mod--", "reading")).toEqual(["study.web-zoom-out", "view.zoom-out"]);
-    // The notes region has no web zoom binding, so it stays the editor
-    // font-size zoom.
+  it("⌘= and ⌘- have one meaning per region: web zoom in content, editor font zoom in notes", () => {
+    expect(commandsForKey("Mod-=", "reading")).toEqual(["study.web-zoom-in"]);
+    expect(commandsForKey("Mod--", "reading")).toEqual(["study.web-zoom-out"]);
     expect(commandsForKey("Mod-=", "notes")).toEqual(["view.zoom-in"]);
+    expect(commandsForKey("Mod--", "notes")).toEqual(["view.zoom-out"]);
   });
 });
 
@@ -557,7 +638,7 @@ describe("web forwarding keys", () => {
     expect(pageForwardKeys()).toContain("Mod-Alt-z");
   });
 
-  it("a region navigation that takes effect across regions, bound in the notes / Agent region, is forwarded too", () => {
+  it("only the content region's own bindings are forwarded: a notes / Agent rebind does not leak into the page", () => {
     applyOverrides(
       normalizeOverrides({
         notes: { "region.focus-reading": "Mod-Alt-y" },
@@ -565,24 +646,27 @@ describe("web forwarding keys", () => {
       }),
     );
     const keys = pageForwardKeys();
-    expect(keys).toContain("Mod-Alt-y");
-    expect(keys).toContain("Mod-Alt-u");
+    expect(keys).not.toContain("Mod-Alt-y");
+    expect(keys).not.toContain("Mod-Alt-u");
+    // The content region still holds its own copy of region navigation.
+    expect(keys).toContain("Mod-Alt-n");
+    expect(keys).toContain("Mod-Alt-r");
   });
 
   it("it follows the user overrides: a rebind takes effect, an unbinding removes the key", () => {
     applyOverrides(
       normalizeOverrides({
-        global: { "workspace.capture-todo": "Mod-Shift-j" },
+        global: { "workspace.capture-todo": "Mod-Shift-u" },
         reading: { "study.web-zoom-in": "Mod-Shift-=" },
       }),
     );
     const keys = pageForwardKeys();
-    expect(keys).toContain("Mod-Shift-j");
+    expect(keys).toContain("Mod-Shift-u");
     expect(keys).not.toContain("Mod-Shift-k");
     expect(keys).toContain("Mod-Shift-=");
 
     applyOverrides({ global: { "workspace.capture-todo": null } });
-    expect(pageForwardKeys()).not.toContain("Mod-Shift-j");
+    expect(pageForwardKeys()).not.toContain("Mod-Shift-u");
   });
 });
 
@@ -641,11 +725,11 @@ describe("event key normalization", () => {
 });
 
 /**
- * Project management region (project): the project cards edit markdown too,
- * so it **inherits** the notes region's edit bindings; the project's own
- * actions (rotate cards, send to the top of today) come first, and the same
- * key carries a different intent per context (⌘⇧J: the notes region sends
- * to the end, the project region sends to the front).
+ * Project region: the project cards edit markdown too, so the note-editing
+ * commands are **placed** in project as their own copy (same defaults,
+ * independent overrides). The project's own actions (rotate cards, send to
+ * the top of today) keep their own keys: ⌘⇧J is project.send-todo here, while
+ * the notes region's edit.todo-to-daily is not mirrored.
  */
 describe("project region keyboard", () => {
   it("project-specific commands belong to project, view toggles belong to global", () => {
@@ -666,25 +750,29 @@ describe("project region keyboard", () => {
     expect(defaultRegionsOf("region.focus-project")).toEqual(["project", "notes"]);
   });
 
-  it("the project region's own binding comes before the inherited notes binding", () => {
+  it("⌘⇧J in the project region is only project.send-todo (todo-to-daily is not mirrored)", () => {
     applyOverrides({});
-    const ids = commandsForKey("Mod-Shift-j", "project");
-    expect(ids[0]).toBe("project.send-todo");
-    expect(ids).toContain("edit.todo-to-daily");
+    expect(commandsForKey("Mod-Shift-j", "project")).toEqual(["project.send-todo"]);
   });
 
-  it("the project region inherits the notes region's edit bindings (bold / toggle todo)", () => {
+  it("the project region owns a copy of the note-editing bindings (bold / toggle todo), independent of notes", () => {
     applyOverrides({});
     expect(commandsForKey("Mod-b", "project")[0]).toBe("edit.toggle-bold");
     expect(commandsForKey("Mod-l", "project")[0]).toBe("edit.toggle-todo");
     // The project-only actions of the project region do not leak into the
     // notes region
     expect(commandsForKey("Mod-Shift-ArrowDown", "notes")).toEqual([]);
+
+    // A notes rebind does not change the project copy.
+    applyOverrides({ notes: { "edit.toggle-bold": "Ctrl-b" } });
+    expect(commandsForKey("Mod-b", "project")).toContain("edit.toggle-bold");
+    expect(commandsForKey("Ctrl-b", "project")).toEqual([]);
   });
 
-  it("an explicit override in the project region wins over the inherited one", () => {
+  it("an override in the project region only affects the project copy", () => {
     applyOverrides({ project: { "edit.toggle-bold": null } });
     expect(commandsForKey("Mod-b", "project")).not.toContain("edit.toggle-bold");
+    expect(commandsForKey("Mod-b", "notes")).toContain("edit.toggle-bold");
   });
 });
 
@@ -694,8 +782,9 @@ describe("region tabs of the settings page", () => {
 
   it("a bound command belongs to the regions it is placed in, and nowhere else", () => {
     expect(commandBelongs("edit.toggle-bold", "notes")).toBe(true);
+    expect(commandBelongs("edit.toggle-bold", "project")).toBe(true);
     expect(commandBelongs("edit.toggle-bold", "agent")).toBe(false);
-    expect(commandRegions("edit.toggle-bold")).toEqual(["notes"]);
+    expect(commandRegions("edit.toggle-bold")).toEqual(["notes", "project"]);
     expect(commandInRegion("edit.toggle-bold", "notes")).toBe(true);
     expect(commandInRegion("edit.toggle-bold", "global")).toBe(false);
   });
@@ -866,6 +955,21 @@ describe("user-override collisions", () => {
     const ids = commandsForKey("Mod-Shift-o", "notes");
     expect(ids).toContain("edit.insert-callout");
     expect(ids).toContain("workspace.capture-todo");
+    warn.mockRestore();
+  });
+
+  it("an override that puts a global key into a region is named loudly (global × region is exclusive)", () => {
+    // ⌘P is the global command palette. Writing it into notes breaks the
+    // layer rule: inside notes the region binding would win and the palette
+    // would lose its key there. The override is kept (user data is never
+    // rejected) but the collision is reported.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    applyOverrides({ notes: { "edit.toggle-bold": "Mod-p" } });
+    const reported = warn.mock.calls.map((c) => String(c.join(" "))).join("\n");
+    expect(reported).toContain("notes");
+    expect(reported).toContain("Mod-p");
+    expect(reported).toContain("edit.toggle-bold");
+    expect(reported).toContain("nav.command-palette");
     warn.mockRestore();
   });
 

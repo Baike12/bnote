@@ -23,10 +23,22 @@ describe("the keybindings doc is generated from the keymap", () => {
     expect(actual).toBe(expected);
   });
 
-  it("lists every region that has bindings", () => {
+  it("lists every region that has bindings, under its 区 name", () => {
     const doc = renderKeybindingsDoc();
-    for (const region of ["global", "notes", "reading", "agent", "project", "code"]) {
+    const regions = ["global", "notes", "reading", "agent", "project", "code", "invest"] as const;
+    for (const region of regions) {
       expect(doc).toContain(`(\`${region}\`)`);
+    }
+    for (const heading of [
+      "## 全局区",
+      "## 笔记区",
+      "## 内容区",
+      "## Agent区",
+      "## 项目区",
+      "## 代码区",
+      "## 投资区",
+    ]) {
+      expect(doc).toContain(heading);
     }
   });
 

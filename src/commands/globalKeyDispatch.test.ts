@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@/commands/builtin";
 import { useAppStore, setConfigSnapshot } from "@/state/appStore";
 import {
@@ -47,13 +47,19 @@ describe("resolving a key to its command", () => {
   });
 
   it("falls through to the next candidate while the first one's when guard is false", () => {
-    // ⌘= is the web zoom in the reading region and the editor font size
-    // everywhere; with no web page open the first candidate must yield.
+    // A deliberate user override puts two commands on one key in the notes
+    // region. The web zoom is guarded off until a page is open, so bold runs
+    // first; with a page open the zoom takes the key.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    applyOverrides({
+      notes: { "study.web-zoom-in": "Ctrl-7", "code.toggle-wrap": "Ctrl-7" },
+    });
     expect(useAppStore.getState().studyContent).toBeNull();
-    expect(resolveBoundCommand("Mod-=", "reading")).toBe(getCommand("view.zoom-in"));
+    expect(resolveBoundCommand("Ctrl-7", "notes")).toBe(getCommand("code.toggle-wrap"));
 
     useAppStore.getState().setStudyContent({ kind: "url", url: "https://example.com", title: "x" });
-    expect(resolveBoundCommand("Mod-=", "reading")).toBe(getCommand("study.web-zoom-in"));
+    expect(resolveBoundCommand("Ctrl-7", "notes")).toBe(getCommand("study.web-zoom-in"));
+    warn.mockRestore();
   });
 
   it("returns null when every candidate is guarded off", () => {
@@ -95,13 +101,14 @@ describe("running a bound key", () => {
     expect(useAppStore.getState().modal).toBe("palette");
   });
 
-  it("a region's own binding wins over the global meaning of the same key", () => {
-    // ⌘[ is the note back-link globally and "back from fork" in the agent
-    // panel; with the panel mounted the panel meaning runs.
+  it("each region keeps its own meaning of the same key (⌘[ is back-from-fork in Agent, back-link in notes)", () => {
     useAppStore.setState({ mode: "study", agentPanelCommand: null });
     expect(runBoundKey("Mod-[", "agent")).toBe(true);
     expect(useAppStore.getState().agentPanelCommand?.kind).toBe("back");
     expect(useAppStore.getState().linkBack).toEqual([]);
+    // The notes region's copy is the note back-link; the panel's binding does
+    // not fire there.
+    expect(resolveBoundCommand("Mod-[", "notes")).toBe(getCommand("nav.back-link"));
   });
 });
 

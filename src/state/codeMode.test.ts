@@ -86,9 +86,8 @@ describe("the code mode toggle has no default key", () => {
   });
 
   it("a user-assigned key still works inside the code region", () => {
-    // The code region only inherits a whitelist of global commands; the mode
-    // toggle is on it, otherwise the code editor could only leave through the
-    // palette.
+    // Global bindings are active under any focus, the code region included;
+    // otherwise the code editor could only leave through the palette.
     applyOverrides({ global: { "view.toggle-code-mode": "Mod-Shift-c" } });
     expect(commandsForKey("Mod-Shift-c", "code")).toContain("view.toggle-code-mode");
   });

@@ -1,20 +1,25 @@
 /**
  * Region-aware keybinding model.
  *
- * The same key can be bound to different commands in the four focus regions
- * (modelled on zed's context keybindings):
- *   global  —— active under any focus (workspace/navigation/view actions)
+ * Each focus region owns a complete, independent key set (modelled on zed's
+ * context keybindings):
+ *   global  —— active under any focus (app-level actions only)
  *   notes   —— active when the note editor has focus
- *   reading —— active when the reading region (PDF / web / WeChat Reading) has focus
- *   agent   —— active when the study assistant panel has focus
+ *   reading —— active when the content region (PDF / web / WeChat Reading) has focus
+ *   agent   —— active when the assistant panel has focus
  *   project —— active when the project view has focus (project list / project cards)
+ *   code    —— active when the code editor has focus
+ *   invest  —— active when the invest view has focus
  *
- * Region dispatch: the current region is looked up first, then global. A region
- * binding can therefore "override" the global meaning of the same key (in the
- * Agent panel ⌘[ is "back to the previous session", not the note's back-link).
- * project additionally inherits the notes bindings (see commandsForKey): the
- * project cards edit markdown too, so bold / toggle-todo / edit commands must
- * keep working there — only project-specific actions take precedence.
+ * Layer rule: the global key set and every region's key set are **disjoint**
+ * (locked by keys.test.ts, "the global key set and every region key set are
+ * disjoint"). At any focus the active set is global ∪ the focused region, so
+ * every key has exactly one meaning. A region's bindings
+ * never fire in another region; a command that must work in several regions
+ * (region switching, the content snapshot) is placed in each of them with its
+ * own binding, so rebinding it in one region cannot change another. The
+ * project cards edit markdown too: the note-editing commands are placed in
+ * project as their own copy (same defaults, independent overrides).
  *
  * Overrides are configured in the region that owns the candidate key; the file
  * is `<vault>/.bnote/keybindings.json`:
@@ -36,38 +41,53 @@ export type KeyRegion = "global" | "notes" | "reading" | "agent" | "project" | "
 export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
   {
     id: "global",
-    label: "通用",
-    hint: "焦点在任何地方都生效。命令面板、保存、切换学习模式/项目管理这类动作放这里。",
+    label: "全局区",
+    hint: "焦点在任何地方都生效。命令面板、快速跳转、设置、模式切换这类动作放这里;全局区的键位与每一个区的键位互斥,同一个键不能同时出现在两处。",
   },
-  { id: "notes", label: "笔记区", hint: "焦点在笔记编辑器时生效(学习模式右栏的笔记也算笔记区)。" },
+  {
+    id: "notes",
+    label: "笔记区",
+    hint: "焦点在笔记编辑器时生效(三栏工作区右栏的笔记也算笔记区)。新建 / 保存笔记、编辑命令、日记跳转、字号都在这里。",
+  },
   {
     id: "reading",
-    label: "阅读区",
-    hint: "焦点在阅读区时生效:PDF、网页、微信读书,以及中栏的工具栏。对阅读区动手的两条命令例外——翻页与截图,带修饰键的键位在笔记区 / Agent 面板按下也执行;翻页只滚内容,不改变焦点。滚轮/点击滚过阅读区后,键盘也归它(阅读区不取得 DOM 焦点)。",
+    label: "内容区",
+    hint: "焦点在内容区时生效:PDF、网页、微信读书,以及中栏的工具栏。翻页与缩放是本区自己的键位;滚轮/点击滚过内容区后,键盘也归它(内容区不取得 DOM 焦点)。",
   },
   {
     id: "agent",
-    label: "Agent 面板",
-    hint: "焦点在学习助手面板时生效(输入框、消息区、历史会话)。",
+    label: "Agent区",
+    hint: "焦点在 Agent区时生效(输入框、消息区、历史会话)。",
   },
   {
     id: "project",
-    label: "项目管理",
-    hint: "焦点在项目管理视图(项目列表、项目卡片)时生效。这里继承笔记区的编辑键位(加粗、切换待办、保存等),只是项目专属动作优先:⌘⇧↑/↓ 轮转项目、⌘⇧J 把待办发到今日待办区最前、⌘⌥N 跳到右侧日记。",
+    label: "项目区",
+    hint: "焦点在项目视图(项目列表、项目卡片)时生效。项目卡片是编辑器,笔记区的编辑键位在本区各有一份,可在 keybindings.json 的 project 段单独改绑:⌘⇧↑/↓ 轮转项目、⌘⇧J 把待办发到今日待办区最前、⌘⌥N 跳到右侧日记。",
   },
   {
     id: "code",
     label: "代码区",
-    hint: "焦点在代码编辑器时生效。**这是独立的一界**:⌘S 在这里是「保存代码文件」,⌘⇧O 是「快速打开文件」,与笔记区各说各的。代码区只继承少数应用级命令(命令面板、快速跳转、切学习模式、设置),其余键位一律归代码区自己,可在 keybindings.json 的 code 段里改绑。",
+    hint: "焦点在代码编辑器时生效。**这是独立的一界**:⌘S 在这里是「保存代码文件」,⌘⇧O 是「快速打开文件」,与笔记区各说各的。全局区的键位在本区同样生效,其余键位归代码区自己,可在 keybindings.json 的 code 段里改绑。",
   },
   {
     id: "invest",
     label: "投资区",
-    hint: "焦点在投资模式的标的列表 / K 线 / 详情面板时生效。标的切换(⌘⌥←/→)、周期切换、板块↔标的视图切换放这里;右栏笔记仍是笔记区,Agent 面板仍是 Agent 区。",
+    hint: "焦点在投资模式的标的列表 / K 线 / 详情面板时生效。标的切换(⌘⌥←/→)、周期切换、板块↔标的视图切换放这里;右栏笔记仍属笔记区,Agent 面板属 Agent区。",
   },
 ];
 
 export const KEY_REGION_IDS: KeyRegion[] = KEY_REGIONS.map((r) => r.id);
+
+/**
+ * The label of a command row inside one region: the region name plus the
+ * command's own action title, e.g. "Agent区：切换到内容区". The same command
+ * can sit in several regions (with independent bindings), so the row must
+ * say which copy it edits; the stored title stays region-neutral.
+ */
+export function commandTitleInRegion(region: KeyRegion, title: string): string {
+  const label = KEY_REGIONS.find((r) => r.id === region)?.label ?? region;
+  return `${label}：${title}`;
+}
 
 export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   // ⌘Q runs `app.quit`, which flushes the debounced writes and then destroys
@@ -178,25 +198,26 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "study.web-zoom-out": "Mod--",
   "study.web-zoom-reset": "Mod-0",
 
-  // Study mode paging (shared by the PDF and web readers, scrolling by the
-  // step from settings). These keys only page while the focus is in the
-  // reading region (see the region dispatch in globalKeys).
+  // Content paging (shared by the PDF and web readers, scrolling by the step
+  // from settings). These keys only page while the focus is in the content
+  // region (see the region dispatch in globalKeys).
   "study.pdf-prev-page": ["PageUp", "ArrowLeft"],
   "study.pdf-next-page": ["PageDown", "ArrowRight"],
-  // Screenshot of the reading region sent to the study assistant (S =
-  // screenshot). Key resolution goes through event.key: on macOS Option+letter
-  // turns into characters like å/ß/®, so ⌥⌘S cannot be used; ⌘⇧E is free in
-  // this region (⌘⇧S is the global "toggle study mode" and must not be
-  // taken). The action lives in builtin.ts + study/pdfSnapshot.ts.
+  // Screenshot of the content region sent to the Agent panel (S = screenshot).
+  // Key resolution goes through event.key: on macOS Option+letter turns into
+  // characters like å/ß/®, so ⌥⌘S cannot be used; ⌘⇧E is free in the regions
+  // that place this command (⌘⇧S is the global "toggle the three-column
+  // workspace" and must not be taken). The action lives in builtin.ts +
+  // study/pdfSnapshot.ts.
   "study.pdf-snap-to-agent": "Mod-Shift-e",
   // Switch between the main and the auxiliary session of the study assistant
   // (the session list lives inside the panel; the command only signals).
-  "study.agent-switch-session": "Mod-Shift-y",
+  "agent.switch-session": "Mod-Shift-y",
 
   // Region navigation: ⌘⌥A / ⌘⌥N focus the Agent / notes region, while ⌘⌥R
-  // only puts the reading column back in the middle — the reader is read, not
-  // typed into, so the keyboard stays where it is. The same command has one
-  // default binding per region (regions do not affect each other), so every
+  // only puts the content column back in the middle — the reader is read, not
+  // typed into, so the keyboard stays where it is. Each region that can reach
+  // another holds its own copy of the command (REGION_PLACEMENT), so every
   // region can reach every other one; pressing it inside its own region is
   // useful too — it hands the focus back to that region's input / editor
   // (e.g. ⌘⌥A inside the Agent panel). When the focus is in a PDF/web page,
@@ -206,8 +227,8 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "region.focus-notes": "Mod-Alt-n",
   "region.focus-reading": "Mod-Alt-r",
 
-  // Session actions inside the study assistant panel. ⌘[ overrides the
-  // global "back-link" here.
+  // Session actions inside the Agent panel. ⌘[ is the panel's own "back from
+  // fork"; it is not a global back-link (that one lives in the notes region).
   "agent.toggle-creative": "Mod-Shift-g",
   "agent.new-session": "Mod-Shift-n",
   "agent.fork-session": "Mod-Shift-f",
@@ -234,10 +255,8 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.trigger-completion": "Ctrl-Space",
   "code.toggle-tree": "Mod-b",
   // Focus the file tree (VSCode/Zed's Explorer binding). Only active in the
-  // code region; the reading region's screenshot key ⌘⇧E is a cross-region
-  // chord, but "the region's own binding wins" — pressing ⌘⇧E inside the
-  // code region focuses the tree and does not also screenshot the reading
-  // region.
+  // code region; the content region's screenshot key ⌘⇧E is not placed in
+  // code, so pressing it here focuses the tree and nothing else.
   "code.focus-tree": "Mod-Shift-e",
   // Back to the open file from anywhere in the code region: the keyboard is
   // often left in the terminal or the file tree, and Esc cannot be the way
@@ -291,12 +310,28 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "invest.kline-period-month": "Mod-3",
 };
 
-/** Commands without an explicit placement table are assigned by prefix; the few exceptions are listed below. */
+/**
+ * Commands without an explicit placement table are assigned by prefix; the
+ * few exceptions are listed below.
+ *
+ * Note-editing actions live in the notes region, not in global: saving,
+ * creating and opening a note, the link-back history, editor font size and
+ * drawing all act on the note editor. Keeping them out of global is what lets
+ * the global set stay disjoint from every region's set (⌘S means "save the
+ * note" only where a note is being edited; the code region has its own ⌘S).
+ */
 const REGION_EXACT: Record<string, KeyRegion> = {
   "nav.header-todos": "notes",
-  // "Switch assistant session" is an in-panel action: it should only respond
-  // while the focus is in the panel.
-  "study.agent-switch-session": "agent",
+  "nav.back-link": "notes",
+  "workspace.new-note": "notes",
+  "workspace.open-daily": "notes",
+  "workspace.save-note": "notes",
+  "workspace.open-drawing": "notes",
+  "workspace.finish-drawing": "notes",
+  "workspace.save-note-and-close": "notes",
+  "view.zoom-in": "notes",
+  "view.zoom-out": "notes",
+  "view.zoom-reset": "notes",
 };
 
 const REGION_PREFIXES: [string, KeyRegion][] = [
@@ -321,7 +356,10 @@ const REGION_PREFIXES: [string, KeyRegion][] = [
  */
 const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
   "region.focus-agent": ["reading", "notes", "agent", "code"],
-  "region.focus-notes": ["reading", "notes", "agent", "code"],
+  // Invest mode's right column is the notes region; its agent panel reuses
+  // ⌘⌥A with its own command (invest.focus-agent), so only the notes switch
+  // is added there.
+  "region.focus-notes": ["reading", "notes", "agent", "code", "invest"],
   // Reaching the content column exists in both three-column layouts: study
   // (PDF / web page, re-ordered only) and code (the open file, focused).
   "region.focus-reading": ["reading", "notes", "agent", "code"],
@@ -330,6 +368,11 @@ const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
   // project region and holds in the journal column too (no need to go back
   // to the cards first).
   "region.focus-project": ["project", "notes"],
+  // The content snapshot is used from the content region (capture the
+  // visible page), the Agent panel (capture into the input) and the notes
+  // region (capture while writing). It is not a cross-region chord any more —
+  // each of those regions gets its own binding.
+  "study.pdf-snap-to-agent": ["reading", "agent", "notes"],
 };
 
 /**
@@ -339,8 +382,8 @@ const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
  * region, and the same key is the natural default in one region while it is
  * already taken (or meaningless) in another. ⌘N is the case: it is "new note"
  * in the notes region, and "fork this session" in the code region — the code
- * region inherits no note command, and the thing the user is working with
- * there is the session, so an empty ⌘N would only be a dead key.
+ * region has no note command, and the thing the user is working with there is
+ * the session, so an empty ⌘N would only be a dead key.
  *
  * The entry adds the region to the command's default placement (see
  * defaultRegionsOf), so the settings page and `docs/keybindings.md` show it
@@ -357,69 +400,16 @@ const REGION_DEFAULTS: Partial<Record<KeyRegion, BindingMap>> = {
 };
 
 /**
- * The global commands the code region inherits (whitelist).
+ * Note-editing commands mirrored into the project region.
  *
- * The code editor is **a separate world**: ⌘S here means "save the code
- * file", not "save the note". So the code region does not inherit the whole
- * global layer, only these truly application-level commands — command
- * palette, quick switcher, toggle study mode, settings, quit. Other global
- * bindings (⌘⇧P toggle project view, ⌘⇧O open today's daily note) yield to
- * the code region's own actions.
+ * The project cards are a CodeMirror editor for markdown too, so bold /
+ * toggle-todo / save must keep working there. Under the independence rule the
+ * project region does not inherit the notes table at runtime; instead each of
+ * these commands is placed in project as its **own copy** (default binding
+ * same as notes, overrides independent). `edit.todo-to-daily` is excluded:
+ * in the project region ⌘⇧J is project.send-todo's meaning.
  */
-const CODE_INHERITED_GLOBALS = new Set([
-  "nav.command-palette",
-  "nav.quick-switcher",
-  "view.toggle-study-mode",
-  // From the code region the way back out is code mode itself; its default
-  // binding is empty (the user assigns one), but the command must be reachable
-  // here or the code region could only leave via the palette.
-  "view.toggle-code-mode",
-  "workspace.open-settings",
-  // Quitting is not a note action: a focus session can be running while the
-  // code editor owns the keyboard, and ⌘Q must keep working there.
-  "app.quit",
-]);
-
-/**
- * Two kinds of commands that do not depend on the focus: their bindings are
- * **not restricted to a focus region** and run wherever they are pressed.
- *
- *   - Acting on the reading region: paging (scrolls the content only, the
- *     focus stays put) and screenshot (attaches the current page to the
- *     assistant's input). They depend on what is in the reading region, not
- *     on where the cursor sits.
- *   - Region navigation: ⌘⌥A/N reach Agent / notes, ⌘⌥R re-orders the reading
- *     column (no focus move). Navigation means "reachable from anywhere", so
- *     where it was pressed makes no difference (⌘⌥A inside the Agent panel
- *     sending the focus back to its input holds too).
- *
- * Two disciplines:
- *   1. The region's own binding wins (see commandsForKey): when the notes
- *      region binds the same key to another command, pressing it there runs
- *      the notes region's meaning.
- *   2. An explicit unbind only takes effect in its own region: a region that
- *      writes the command as null does not respond to it there at all (it
- *      does not come back to life because a binding exists elsewhere).
- *
- * Chords only: bare keys like PageUp/PageDown/arrows have native meanings in
- * the editor and in ordinary pages, so they must keep working in the reading
- * region alone (see the bare-key pass-through in globalKeys).
- */
-const REGION_FREE_COMMANDS = new Set([
-  "study.pdf-prev-page",
-  "study.pdf-next-page",
-  "study.pdf-snap-to-agent",
-  "region.focus-agent",
-  "region.focus-notes",
-  "region.focus-reading",
-  "region.focus-project",
-]);
-
-/** Whether a binding spec (such as "Mod-Shift-a") carries a modifier that claims the key without colliding with text input. */
-function isChord(key: string): boolean {
-  const head = key.split("-")[0];
-  return head === "Mod" || head === "Ctrl" || head === "Alt";
-}
+const PROJECT_MIRRORED_EXCLUDED = new Set(["edit.todo-to-daily"]);
 
 /** The command's default region (primary region, used as the fallback when no explicit region is given). */
 export function defaultRegionOf(id: string): KeyRegion {
@@ -441,7 +431,17 @@ export function defaultRegionsOf(id: string): KeyRegion[] {
   const extra = KEY_REGION_IDS.filter(
     (region) => REGION_DEFAULTS[region]?.[id] !== undefined && !ordered.includes(region),
   );
-  return extra.length === 0 ? ordered : [...ordered, ...extra];
+  const regions = extra.length === 0 ? ordered : [...ordered, ...extra];
+  // The project region owns a copy of the note-editing commands (see
+  // PROJECT_MIRRORED_EXCLUDED); its overrides stay independent of notes.
+  if (
+    defaultRegionOf(id) === "notes" &&
+    !PROJECT_MIRRORED_EXCLUDED.has(id) &&
+    !regions.includes("project")
+  ) {
+    return [...regions, "project"];
+  }
+  return regions;
 }
 
 export type BindingValue = string | string[] | null;
@@ -468,10 +468,8 @@ function defaultKeymap(): Keymap {
 }
 
 let current: Keymap = defaultKeymap();
-/** Per-region "key → command" index: each keystroke looks up two Maps instead of scanning the binding table. */
+/** Per-region "key → command" index: each keystroke looks up at most two Maps instead of scanning the binding table. */
 let keyIndex: Record<KeyRegion, Map<string, string[]>> = indexShell();
-/** The chords of REGION_FREE_COMMANDS: they hit in every region (the binding comes from the region it was configured in). */
-let regionFreeIndex = new Map<string, string[]>();
 
 function indexShell(): Record<KeyRegion, Map<string, string[]>> {
   const out = {} as Record<KeyRegion, Map<string, string[]>>;
@@ -492,21 +490,6 @@ function reindex(): void {
     }
   }
   keyIndex = byKey;
-
-  const free = new Map<string, string[]>();
-  for (const region of KEY_REGION_IDS) {
-    for (const [id, value] of Object.entries(current[region])) {
-      if (!REGION_FREE_COMMANDS.has(id)) continue;
-      for (const key of keysOf(value)) {
-        if (!isChord(key)) continue;
-        const list = free.get(key);
-        if (list) {
-          if (!list.includes(id)) list.push(id);
-        } else free.set(key, [id]);
-      }
-    }
-  }
-  regionFreeIndex = free;
 }
 
 reindex();
@@ -576,54 +559,26 @@ export function bindingsForCommand(id: string, region?: KeyRegion): string[] {
 }
 
 /**
- * The commands this key may trigger in the current region: the region
- * bindings first, then the global bindings, and finally the cross-region
- * commands (REGION_FREE_COMMANDS). A list is returned instead of a single id
- * — when the previous command's `when` is false, the dispatch layer tries
- * the next one.
+ * The commands this key may trigger in the current region: the region's own
+ * bindings first, then the global bindings. The two sets are disjoint by
+ * contract (crossLayerConflicts names user overrides that break it), so in
+ * practice exactly one of them matches. A list is returned instead of a
+ * single id — when the previous command's `when` is false, the dispatch
+ * layer tries the next one.
+ *
+ * Passing "global" (the focus is in no region — a modal is open) returns only
+ * global commands: a region binding must never steal the focus from an
+ * overlay.
  */
 export function commandsForKey(key: string, region: KeyRegion): string[] {
   const own = keyIndex[region].get(key);
   const out = own ? own.slice() : [];
-  const add = (ids: string[] | undefined) => {
-    if (!ids) return;
-    for (const id of ids) if (!out.includes(id)) out.push(id);
-  };
-  // The project region is "the notes region + project-specific actions": the
-  // cards edit markdown too, so edit.* commands like bold / toggle-todo /
-  // save must not stop working because the region changed. The project's own
-  // bindings come first; a command explicitly unbound (null) in the project
-  // region is no longer inherited from the notes region.
-  if (region === "project") {
-    add(keyIndex.notes.get(key)?.filter((id) => !unboundHere(id, "project")));
-  }
-  if (region === "code") {
-    // The code region only inherits the whitelisted global commands (see
-    // CODE_INHERITED_GLOBALS).
-    add((keyIndex.global.get(key) ?? []).filter((id) => CODE_INHERITED_GLOBALS.has(id)));
-  } else if (region !== "global") {
-    add(keyIndex.global.get(key));
-  }
-  // add() de-duplicates when `own` already holds the command. An explicit
-  // unbind (null / empty array) only takes effect in its own region: writing
-  // ⌘⌥A as null in notes must not let it come back to life in notes through
-  // the reading region's binding.
-  //
-  // While a modal is open the region passed is "global" (the focus belongs to
-  // no region, only global commands are let through): cross-region commands
-  // are not let through either — they would steal the focus from the modal
-  // (paging likewise; do not scroll the reading region hidden behind it).
-  if (region !== "global") {
-    add(regionFreeIndex.get(key)?.filter((id) => !unboundHere(id, region)));
+  if (region === "global") return out;
+  const global = keyIndex.global.get(key);
+  if (global) {
+    for (const id of global) if (!out.includes(id)) out.push(id);
   }
   return out;
-}
-
-/** Whether the command is explicitly unbound in this region (it has an entry but not a single key). */
-function unboundHere(id: string, region: KeyRegion): boolean {
-  const map = current[region];
-  if (!Object.prototype.hasOwnProperty.call(map, id)) return false;
-  return keysOf(map[id]).length === 0;
 }
 
 /**
@@ -633,11 +588,10 @@ function unboundHere(id: string, region: KeyRegion): boolean {
  * The child webview's keydown does not bubble to the main window, so the
  * in-page runtime only honors this list (on a match it writes document.title
  * and comes back over the title channel). The list is derived from the
- * binding table instead of being hand-enumerated — global commands are
- * "active under any focus" by definition (quick todo, command palette, ...),
- * the reading region's bindings are executed by the main window too, and the
- * same holds for the cross-region navigation commands; missing one means one
- * keybinding silently dies inside a web page.
+ * binding table instead of being hand-enumerated: global commands are active
+ * under any focus, and the content region's bindings are executed by the main
+ * window too. Missing one means one keybinding silently dies inside a web
+ * page.
  *
  * The exceptions are the commands the page consumes itself: paging scrolls
  * locally (no IPC round trip) and a PDF screenshot is meaningless for a web
@@ -659,18 +613,47 @@ export function pageForwardKeys(): string[] {
     if (PAGE_OWNED_COMMANDS.has(id)) continue;
     add(keysOf(value));
   }
-  // A cross-region command (region navigation) counts as "usable anywhere"
-  // no matter which region it was configured in: pressing it inside a web
-  // page must forward to the main window too, otherwise the copy bound in the
-  // notes / Agent region silently dies inside the page.
-  for (const region of KEY_REGION_IDS) {
-    if (region === "reading") continue;
-    for (const [id, value] of Object.entries(current[region])) {
-      if (!REGION_FREE_COMMANDS.has(id) || PAGE_OWNED_COMMANDS.has(id)) continue;
-      add(keysOf(value).filter(isChord));
-    }
-  }
   return out;
+}
+
+/** One command that must be unbound before a captured key can be assigned. */
+export interface CaptureConflict {
+  id: string;
+  /** Every region copy that holds the key; a command can sit in several regions. */
+  regions: KeyRegion[];
+}
+
+/**
+ * The commands currently holding `key` that must give it up when `region`
+ * captures it. Assigning a key has to keep the key sets exclusive, so the
+ * conflicts are:
+ *   - a region capture: the same region's holders + the global layer;
+ *   - a global capture: every region's holders (a global key is active under
+ *     any focus).
+ * `exceptId` is the command being rebound (it may already hold the key).
+ * Pure over the current keymap, so the settings UI and its tests share it.
+ */
+export function captureConflicts(
+  region: KeyRegion,
+  key: string,
+  exceptId: string,
+): CaptureConflict[] {
+  const holders = new Map<string, Set<KeyRegion>>();
+  const collect = (holder: KeyRegion) => {
+    for (const [id, value] of Object.entries(current[holder])) {
+      if (id === exceptId || !keysOf(value).includes(key)) continue;
+      const set = holders.get(id) ?? new Set<KeyRegion>();
+      set.add(holder);
+      holders.set(id, set);
+    }
+  };
+  if (region === "global") {
+    for (const holder of KEY_REGION_IDS) collect(holder);
+  } else {
+    collect(region);
+    collect("global");
+  }
+  return [...holders].map(([id, regions]) => ({ id, regions: [...regions] }));
 }
 
 /**
@@ -694,6 +677,48 @@ export function keyConflicts(km: Keymap): { region: KeyRegion; key: string; ids:
     }
     for (const [key, ids] of byKey) {
       if (ids.length > 1) out.push({ region, key, ids });
+    }
+  }
+  return out;
+}
+
+/**
+ * The layer rule: a key bound in the global layer must not be bound in any
+ * region, and vice versa. The default table satisfies it (gated by
+ * keybindingLayers.gate.test.ts); a user override can break it, and then the
+ * region binding wins at runtime while the global meaning becomes unreachable
+ * from that region — so the collision is named loudly.
+ */
+export interface LayerConflict {
+  region: Exclude<KeyRegion, "global">;
+  key: string;
+  globalIds: string[];
+  regionIds: string[];
+}
+
+export function crossLayerConflicts(km: Keymap): LayerConflict[] {
+  const globalByKey = new Map<string, string[]>();
+  for (const [id, value] of Object.entries(km.global)) {
+    for (const key of keysOf(value)) {
+      const list = globalByKey.get(key);
+      if (list) list.push(id);
+      else globalByKey.set(key, [id]);
+    }
+  }
+  const out: LayerConflict[] = [];
+  for (const region of KEY_REGION_IDS) {
+    if (region === "global") continue;
+    const byKey = new Map<string, string[]>();
+    for (const [id, value] of Object.entries(km[region])) {
+      for (const key of keysOf(value)) {
+        const list = byKey.get(key);
+        if (list) list.push(id);
+        else byKey.set(key, [id]);
+      }
+    }
+    for (const [key, ids] of byKey) {
+      const globalIds = globalByKey.get(key);
+      if (globalIds) out.push({ region, key, globalIds, regionIds: ids });
     }
   }
   return out;
@@ -724,6 +749,18 @@ export function applyOverrides(overrides: OverrideMap): void {
       conflicts.map((c) => `${c.region} ${c.key}: ${c.ids.join(" vs ")}`),
     );
   }
+  // Global × region collisions violate the layer rule: the region binding
+  // wins where it is pressed, so the global command silently loses that key.
+  const layers = crossLayerConflicts(km);
+  if (layers.length > 0) {
+    console.warn(
+      "keybinding conflicts between the global layer and a region (the region binding wins there):",
+      layers.map(
+        (c) =>
+          `${c.region} ${c.key}: global ${c.globalIds.join(" vs ")} / ${c.regionIds.join(" vs ")}`,
+      ),
+    );
+  }
   setKeymap(km);
 }
 
@@ -742,6 +779,20 @@ function normalizeValue(value: unknown): BindingValue | undefined {
 }
 
 /**
+ * Command ids renamed when the regions were renamed. An existing
+ * keybindings.json keeps working: the reader maps the old id to the current
+ * command before placing it (the flat-table split also uses the new id's
+ * default region).
+ */
+const LEGACY_COMMAND_IDS: Record<string, string> = {
+  "study.agent-switch-session": "agent.switch-session",
+};
+
+function canonicalCommandId(id: string): string {
+  return LEGACY_COMMAND_IDS[id] ?? id;
+}
+
+/**
  * Read the config file: the new format is grouped by region; the legacy flat
  * table (command → binding) is still readable and every entry is split by the
  * command's default region — no existing keybinding is lost on upgrade.
@@ -751,10 +802,11 @@ export function normalizeOverrides(raw: unknown): OverrideMap {
   const out: OverrideMap = {};
   const hasRegions = KEY_REGION_IDS.some((region) => isPlainObject(raw[region]));
   if (!hasRegions) {
-    for (const [id, value] of Object.entries(raw)) {
-      if (id.startsWith("_") || id.startsWith("$")) continue;
+    for (const [rawId, value] of Object.entries(raw)) {
+      if (rawId.startsWith("_") || rawId.startsWith("$")) continue;
       const normalized = normalizeValue(value);
       if (normalized === undefined) continue;
+      const id = canonicalCommandId(rawId);
       const region = defaultRegionOf(id);
       (out[region] ??= {})[id] = normalized;
     }
@@ -763,18 +815,18 @@ export function normalizeOverrides(raw: unknown): OverrideMap {
   for (const region of KEY_REGION_IDS) {
     const map = raw[region];
     if (!isPlainObject(map)) continue;
-    for (const [id, value] of Object.entries(map)) {
-      if (id.startsWith("_") || id.startsWith("$")) continue;
+    for (const [rawId, value] of Object.entries(map)) {
+      if (rawId.startsWith("_") || rawId.startsWith("$")) continue;
       const normalized = normalizeValue(value);
       if (normalized === undefined) continue;
-      (out[region] ??= {})[id] = normalized;
+      (out[region] ??= {})[canonicalCommandId(rawId)] = normalized;
     }
   }
   return out;
 }
 
 const FILE_HINT =
-  "按焦点区域覆盖快捷键。global 在所有区域生效;notes/reading/agent 只在焦点位于该区域时生效,并可盖住同一个键的通用绑定。同一条命令可以在多个区域各有一份,区域互不影响;省略的命令用默认键位,null 只解绑该区域(跨区域生效的命令也一样)。翻页、截图、区域切换这类跨区域命令带修饰键的键位在哪个区域按下都生效。保存即生效。";
+  "按焦点区域覆盖快捷键。global 区的键位与每个区的键位互斥:同一个键不能同时出现在两处。每个区只在焦点位于该区时生效,区与区之间互不继承、互不影响;同一条命令可以在多个区各有一份(区域切换、内容截图就是如此),各区的绑定独立。省略的命令用默认键位,null 只解绑该区。保存即生效。";
 
 /** Write the config file: only the overrides are written (an entry identical to the default need not be written), empty regions are omitted. */
 export function serializeOverrides(overrides: OverrideMap): string {

@@ -93,7 +93,7 @@ describe("keybinding config storage", () => {
     off();
     expect(calls).toBe(1);
     expect(getKeymapRevision()).toBe(before + 1);
-    expect(bindingsForCommand("edit.toggle-bold")).toEqual(["Mod-Shift-b"]);
+    expect(bindingsForCommand("edit.toggle-bold", "notes")).toEqual(["Mod-Shift-b"]);
     const writes = mocks.writeVaultFile.mock.calls;
     const [name, text] = writes[writes.length - 1] as [string, string];
     expect(name).toBe("keybindings.json");
@@ -106,7 +106,7 @@ describe("keybinding config storage", () => {
     await loadKeymap(VAULT);
     await setOverride("edit.toggle-italic", null, "notes");
     expect(getOverrides().notes?.["edit.toggle-italic"]).toBeNull();
-    expect(bindingsForCommand("edit.toggle-italic")).toEqual([]);
+    expect(bindingsForCommand("edit.toggle-italic", "notes")).toEqual([]);
     await resetAllOverrides();
     expect(getOverrides()).toEqual({});
     expect(bindingsForCommand("edit.toggle-italic")).toEqual(["Mod-Shift-i"]);
@@ -223,7 +223,7 @@ describe("the override table", () => {
     );
     await reloadKeymap();
 
-    expect(bindingsForCommand("edit.toggle-bold")).toEqual(["Mod-Shift-b"]);
+    expect(bindingsForCommand("edit.toggle-bold", "notes")).toEqual(["Mod-Shift-b"]);
   });
 
   it("without a vault the legacy app config is the only source, and rebinds are written there", async () => {
@@ -231,7 +231,7 @@ describe("the override table", () => {
     await loadKeymap(null);
 
     expect(mocks.readVaultFile).not.toHaveBeenCalled();
-    expect(bindingsForCommand("edit.toggle-bold")).toEqual(["Mod-Shift-b"]);
+    expect(bindingsForCommand("edit.toggle-bold", "notes")).toEqual(["Mod-Shift-b"]);
 
     await setOverride("edit.toggle-italic", "Mod-Shift-i-extra", "notes");
 

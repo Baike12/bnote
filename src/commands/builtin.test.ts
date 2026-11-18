@@ -64,6 +64,17 @@ describe("the registered command surface", () => {
     expect(split).toEqual([]);
   });
 
+  it("no title names a mode instead of the action: 学习模式 / 学习助手 / 阅读区 are gone", () => {
+    // Shortcut rows are composed as "区名：动作" (see commandTitleInRegion);
+    // the stored title carries the action only. The old mode words made the
+    // row say "学习助手:新建会话" under an "Agent 面板" tab — three names for
+    // one region.
+    const legacy = commands
+      .filter((command) => /学习模式|学习助手|阅读区/.test(command.title))
+      .map((command) => `${command.id}: ${command.title}`);
+    expect(legacy).toEqual([]);
+  });
+
   it("a keepsPageFocus command is reachable by a key, otherwise the flag protects nothing", () => {
     const unreachable = commands
       .filter((command) => command.keepsPageFocus)

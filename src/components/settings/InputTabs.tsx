@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { allCommands } from "@/commands/registry";
+import { allCommands, getCommand } from "@/commands/registry";
 import {
   KEY_REGIONS,
   bindingsForCommand,
+  captureConflicts,
   commandBelongs,
+  commandTitleInRegion,
   eventToKey,
   formatBinding,
   type KeyRegion,
@@ -58,18 +60,18 @@ export function HotkeysTab() {
       }
       const key = eventToKey(e);
       if (!key) return; // lone modifier
-      // Only a conflict inside the same region has to be handled: different
-      // regions may share the same key, a region binding overrides the
-      // generic one.
-      const conflict = commands.find(
-        (c) =>
-          c.id !== capturing &&
-          commandBelongs(c.id, region) &&
-          bindingsForCommand(c.id, region).includes(key),
-      );
-      if (conflict) {
-        await setOverride(conflict.id, null, region);
-        showToast(`与「${conflict.title}」冲突，已移除其原绑定`);
+      // Mutually exclusive key sets: a key exists in the global layer or in
+      // the edited region, never in both. captureConflicts names every holder
+      // that must give the key up (same region + the other layer); they are
+      // unbound before the new binding is written, so every key keeps exactly
+      // one meaning.
+      for (const conflict of captureConflicts(region, key, capturing)) {
+        for (const holder of conflict.regions) await setOverride(conflict.id, null, holder);
+        const title = getCommand(conflict.id)?.title ?? conflict.id;
+        const holderLabels = KEY_REGIONS.filter((r) => conflict.regions.includes(r.id))
+          .map((r) => r.label)
+          .join(" / ");
+        showToast(`与「${holderLabels}：${title}」冲突，已移除其原绑定`);
       }
       await setOverride(capturing, key, region);
       setCapturing(null);
@@ -158,7 +160,10 @@ export function HotkeysTab() {
               className={`hotkey-row${isCapturing ? " capturing" : ""}`}
               onClick={() => setCapturing(cmd.id)}
             >
-              <span className="hotkey-title">{cmd.title}</span>
+              {/* Every row names its region: the same command can sit in
+                  several regions with independent bindings, so the title
+                  alone would not say which copy this row edits. */}
+              <span className="hotkey-title">{commandTitleInRegion(region, cmd.title)}</span>
               <span className="hotkey-actions">
                 {bindings.length > 0 ? (
                   <button

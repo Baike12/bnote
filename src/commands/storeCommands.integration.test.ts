@@ -181,7 +181,7 @@ describe("region signals", () => {
 
   it("switching the assistant session bumps the signal the panel watches", () => {
     const before = useAppStore.getState().agentSwitchSessionSignal;
-    runCommand("study.agent-switch-session");
+    runCommand("agent.switch-session");
     expect(useAppStore.getState().agentSwitchSessionSignal).toBe(before + 1);
   });
 
