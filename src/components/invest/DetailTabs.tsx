@@ -10,7 +10,7 @@ import { useAppStore } from "@/state/appStore";
  * additions (`事件 / 知识 / 预测 / 回测`), all rendered from the store's
  * per-scope detail data. Sector scopes only show the tabs that have data.
  *
- * **Unit contract** (DESIGN.md §4): the DB stores amounts in yuan and ratios
+ * **Unit contract**: the DB stores amounts in yuan and ratios
  * as 0–1 fractions — `yi()`/`pct()` are the only two converters; nothing
  * formats a raw number with a `%`/`亿` suffix inline (blind test: the fund
  * flow's `change_ratio` was rendered raw and showed -0.0327% for -3.27%).

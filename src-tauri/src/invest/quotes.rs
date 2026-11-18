@@ -806,7 +806,7 @@ mod tests {
 
     // H2 fixtures: real response bodies (fetched 2026-11-17), tail truncated —
     // the mapping only reads fields up to index 49. The three markets are NOT
-    // isomorphic; every unit rule in TODOS-v3.md is locked here.
+    // isomorphic; every cross-market unit rule is locked here.
     const CN_BODY: &str = concat!(
         "v_sh600519=\"1~贵州茅台~600519~1453.90~1435.26~1426.30~39967~22973~16994~",
         "1453.50~1~1453.00~5~1452.96~1~1452.93~1~1452.91~1~1453.90~1~1453.96~3~",

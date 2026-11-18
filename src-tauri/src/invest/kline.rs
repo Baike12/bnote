@@ -2,7 +2,7 @@
 //!
 //! The storage unit is the **share** (hoshi's convention); the UI converts CN
 //! lots (÷100). All queries are read-only against `kline_daily` — the read
-//! path never fetches from the network (DESIGN.md §2).
+//! path never fetches from the network.
 
 use crate::invest::model::Bar;
 

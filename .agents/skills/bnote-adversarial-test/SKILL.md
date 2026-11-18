@@ -1,6 +1,6 @@
 ---
 name: bnote-adversarial-test
-description: Institutionalized adversarial testing — dispatch 2–4 independent role-persona agents (domain user, quant/engineer, QA) to operate the real app UI-only and try to break it. Use when the user asks to 验收 / 盲测 / 对抗性测试 / 找茬 a feature, before calling a large change done, or periodically for a domain that has never had a round. This is the AI-driven testing form with the highest yield in this repo: two rounds produced 30 findings (18 fixed, 3 tool artifacts, 9 by-design; ledger: docs/invest/TODOS-v3.md §H6) that none of the 3,300 automated tests could reach.
+description: Institutionalized adversarial testing — dispatch 2–4 independent role-persona agents (domain user, quant/engineer, QA) to operate the real app UI-only and try to break it. Use when the user asks to 验收 / 盲测 / 对抗性测试 / 找茬 a feature, before calling a large change done, or periodically for a domain that has never had a round. This is the AI-driven testing form with the highest yield in this repo: two rounds produced 30 findings (18 fixed, 3 tool artifacts, 9 by-design) that none of the 3,300 automated tests could reach.
 ---
 
 # Adversarial testing with role-persona agents

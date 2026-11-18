@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS instruments (
 CREATE INDEX IF NOT EXISTS idx_instruments_industry ON instruments(industry);
 CREATE INDEX IF NOT EXISTS idx_instruments_name ON instruments(name);
 
--- 日 K 线（volume 量纲：存“股”；展示层 CN ÷100 为“手”，见 DESIGN.md §3）
+-- 日 K 线（volume 量纲：存“股”；展示层 CN ÷100 为“手”）
 CREATE TABLE IF NOT EXISTS kline_daily (
   market TEXT NOT NULL, code TEXT NOT NULL, ts TEXT NOT NULL,
   open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,

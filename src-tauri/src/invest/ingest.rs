@@ -5,7 +5,7 @@
 //! sources file is the only YAML the app reads, and pulling `serde_yaml`
 //! (with its libyaml dep tree) in for one file is not worth it.
 //!
-//! Pipeline contract (DESIGN.md §5): every step degrades gracefully — with
+//! Pipeline contract: every step degrades gracefully — with
 //! no model configured the `summarize`/`tag` steps fall back to rule-based
 //! processing, so a run never fails because of a missing model. Dedup is
 //! content-addressed (`sha` of title+url), stored as the events row's

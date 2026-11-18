@@ -5,7 +5,7 @@
 //! lacks and finance requires): the skill may only see data **up to** `as_of`;
 //! the target date's actual bars settle the score.
 //!
-//! Scoring (DESIGN.md §4.4):
+//! Scoring:
 //! - `hard`  = 1.0 when the direction matches (flat counts when |move| < 1%)
 //! - `soft`  = max(0, 1 - |predicted_move - actual_move| / 0.10)
 //! - `score` = 0.7 * hard + 0.3 * soft   (SkillOpt's "mixed" gate metric)
