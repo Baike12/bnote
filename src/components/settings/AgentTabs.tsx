@@ -44,6 +44,7 @@ const MODE_LABEL: Record<AgentMode, string> = {
   coding: "编码",
   creative: "创作",
   study: "学习",
+  invest: "投资",
 };
 
 const SOURCE_LABEL: Record<SkillSource, string> = {
@@ -1092,6 +1093,9 @@ const AGENTS_MD_TEMPLATE: Record<AgentMode, string> = {
      创作会话只读取这个文件,不读取仓库里的其他指令。留空 = 只用内置要求。 -->`,
   study: `<!-- AGENTS.md — 学习助手的指令,保存在本模式的配置目录。
      学习会话只读取这个文件。留空 = 只用内置要求。 -->`,
+  invest: `<!-- AGENTS.md — 投资助手的指令,保存在本模式的配置目录。
+     投资会话只读取这个文件;标的与板块的分析技能放在 .bnote/invest/skills/ 下,
+     按作用域(stock:<代码> / sector:<代码>)隔离。留空 = 只用内置要求。 -->`,
 };
 
 /**

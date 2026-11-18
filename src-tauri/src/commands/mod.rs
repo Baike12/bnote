@@ -6,6 +6,7 @@ pub mod files;
 pub mod focus;
 pub mod home;
 pub mod ime;
+pub mod invest;
 pub mod materials;
 pub mod pen_cursor;
 pub mod preview;
@@ -80,6 +81,7 @@ pub(crate) mod test_support {
             code_trees: std::sync::Mutex::new(std::collections::HashMap::new()),
             code_watcher: std::sync::Mutex::new(None),
             terminals: crate::term::TermManager::new(),
+            invest_db: std::sync::Arc::new(std::sync::Mutex::new(None)),
         });
         TestApp { app, dir }
     }

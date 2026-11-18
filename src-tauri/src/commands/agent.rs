@@ -103,6 +103,10 @@ pub async fn agent_start_session(
     // explicitly: a code project is independent of the vault and no longer
     // travels through the study content.
     workdir: Option<String>,
+    // Invest sessions carry their scope (`stock:600519` / `sector:801010`):
+    // the `read_skill` tool reads exactly this scope's skill bundle, and the
+    // prompt's "current scope" line names it.
+    invest_scope: Option<String>,
     // Restore: the transcript record id, so the persisted task list continues.
     task_list_id: Option<String>,
 ) -> CmdResult<serde_json::Value> {
@@ -220,6 +224,7 @@ pub async fn agent_start_session(
         bg: Arc::new(BgRegistry::new()),
         read_paths: std::sync::Mutex::new(Vec::new()),
         extra_roots,
+        invest_scope: invest_scope.clone(),
     });
 
     // Timestamp + increasing sequence number: opening the main session and

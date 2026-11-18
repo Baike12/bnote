@@ -7,7 +7,7 @@ import { planGoto, type GotoTarget } from "./editor/gotoPlan";
 import { cmToLspPosition, lspRangeToCm, lspToCmOffset } from "./editor/positions";
 import { decodeFileUri, encodeFileUri } from "./editor/uri";
 import type { CodeEntry, LspPosition } from "./types";
-import { currentLoadVerdict, skipNotice } from "@/perf/loadGate";
+import { currentLoadVerdict, perfRequired, skipNotice } from "@/perf/loadGate";
 
 /*
  * A busy machine moves a millisecond median several-fold. Skip the suites
@@ -17,7 +17,9 @@ import { currentLoadVerdict, skipNotice } from "@/perf/loadGate";
 const load = currentLoadVerdict();
 const loadNotice = skipNotice(load);
 if (loadNotice !== null) console.warn(loadNotice);
-const perfDescribe = load.fit ? describe : describe.skip;
+// A controlled CI runner must not skip silently: BNOTE_PERF_REQUIRE=1
+// makes an unfit machine a red, not a green-with-zero-coverage.
+const perfDescribe = load.fit || perfRequired() ? describe : describe.skip;
 
 /**
  * The performance gate of the code module.

@@ -73,6 +73,26 @@ export function dragDailyEdge(edgeX: number, hostWidth: number, sideWidth: numbe
 }
 
 /**
+ * The **seam** between ProjectsLayout and the drag model (docs/TESTING.md
+ * "seam drift"): the call shape lives here so a component cannot pass
+ * measurements in the wrong argument positions. Measurements are taken once
+ * at pointerdown; `dx` is the pointer offset.
+ */
+export function sideDividerWidth(
+  m: { sideWidth: number; dailyWidth: number; hostWidth: number },
+  dx: number,
+): number {
+  return dragSideEdge(m.sideWidth + RESIZER_WIDTH + dx, m.hostWidth, m.dailyWidth);
+}
+
+export function dailyDividerWidth(
+  m: { dailyLeft: number; hostWidth: number; sideWidth: number },
+  dx: number,
+): number {
+  return dragDailyEdge(m.dailyLeft + dx, m.hostWidth, m.sideWidth);
+}
+
+/**
  * Normalizing a persisted width: bad data (not a number, negative, NaN) falls back
  * to the default.
  *

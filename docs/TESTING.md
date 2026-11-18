@@ -1,30 +1,136 @@
 # Testing
 
-The test system has one job: a change that breaks a user-visible behavior or a
-hot-path budget fails before it ships. Each layer answers a question the layer
-below it cannot.
+## First principle
 
-```text
-                     ┌──────────────────────────────┐
-                     │ E2E (WebdriverIO + real app) │  macOS, nightly/label
-                     │ boot, disk IO, watcher, keys │
-                     └──────────────┬───────────────┘
-                                    │
-                    ┌───────────────┴────────────────┐
-                    │ integration (jsdom + fake IPC) │  every PR
-                    │ modules + stores + UI state    │
-                    └───────────────┬────────────────┘
-                                    │
-             ┌──────────────────────┴───────────────────────┐
-             │ unit (node, pure logic) + Rust #[test]       │  every PR
-             │ parsers, engines, geometry, commands, LSP    │
-             └──────────────────────┬───────────────────────┘
-                                    │
-        ┌───────────────────────────┴────────────────────────────┐
-        │ static gates: tsc, eslint, prettier, command surface,   │  every PR
-        │ coverage thresholds, perf gates                         │
-        └─────────────────────────────────────────────────────────┘
-```
+A test system is a **defect-class registry with an alarm wired to every class**.
+Every regression that ever shipped here had a root-cause *class*; the system's
+job is that each class maps to exactly one layer whose test **cannot stay
+silent** when the class reappears — and that this mapping is explicit,
+auditable, and maintained like code. "Implemented differently than expected"
+and "perf regressed" are not bad luck; they are classes whose alarm was
+missing, muted, or aimed at the wrong layer.
+
+The working protocol that follows from this:
+
+1. **A fixed bug must answer: why did no existing layer alarm?** Exactly one of
+   three answers is acceptable, and each prescribes the follow-up:
+   - *the layer was missing* → add the layer (or extend one) in the same PR;
+   - *the layer existed but was mute* → the test asserted the wrong contract;
+     fix the assertion, not the test's existence;
+   - *no automated layer can reach it* (CSS anchoring, native IME, window
+     levels) → it belongs to the browser-measured or native-only protocol
+     below, and the measurement is scripted, not remembered.
+2. **Lock the class, not the instance.** A regression test that only replays
+   the exact repro is a museum exhibit. Name the class, then assert the
+   invariant that makes the whole class impossible (see the registry below).
+3. **The mapping is reviewed when it alarms.** When a test fires, confirm the
+   registry named the right layer; when a defect escapes, the registry entry
+   is the fix's first deliverable (divider-drag case study lives in the
+   registry).
+
+Shape follows ROI (the Testing Trophy: "write tests, not too many, mostly
+integration" — integration at the real seams carries the most fault-detecting
+power per maintenance dollar; static analysis under everything). This repo
+already sits on that shape; what was missing is the explicit registry, which is
+what kept three shipped bugs invisible to 3,300 green tests (2026-11-17:
+divider drag argument-order drift, window-wide CSS overlay, import-not-
+refreshing). The registry below closes those classes and is appended to on
+every escaped defect.
+
+## Defect-class registry
+
+Every entry: the class, the layer that alarms, the lock. Keep it ordered by
+the date the class was admitted.
+
+| Defect class (real incident) | Alarming layer | Lock |
+|---|---|---|
+| **Seam drift** — a component calls a pure model with another model's argument shape; both sides are self-consistent, the compiler sees nothing (divider drag: `dragLeftEdge(x, host, sum)` called as `(width, host, sum)`; one drag jumped to the clamp bounds). | unit — **seam functions** | The component→model call shape is extracted into a pure function in the model module (`leftDividerWidths`, `middleDividerWidth`); the component is its only caller, and tests assert the pointer deltas (`+10px ⇒ +10px`, column-sum conserved, 10% floor). The rule is enforced, not remembered: `dividerSeam.gate.test.ts` fails on any raw `drag*Edge(` call inside a component. All four layouts (invest, study, code, projects) go through their domain's seam functions. Rule: **when a component calls a pure model with measurements, that call shape is a seam and gets a function + tests.** |
+| **Contract rename drift** — an IPC wrapper renamed without the Rust command, or a `#[tauri::command]` defined but never registered. | snapshot + structural | `src/lib/tauri.contract.test.ts` snapshots every wrapper's `invoke` name; `src-tauri/tests/command_surface.rs` asserts definitions == `generate_handler![]` == devbridge arms; `src/lib/ipcContract.test.ts` scans every TS `invoke("…")` literal (nested-generic safe) and asserts invoked ⊆ bridge arms and invoked ⊆ `#[tauri::command]` definitions — a typo'd or orphaned command name fails `pnpm gate` without cargo. |
+| **Cross-market data routing** — bars/snapshots landing under the wrong `(market, code)` because a default silently won. | unit (fixture) + DB roundtrip | `parse_quote` three-market fixtures with real response bodies; `markets_are_isolated_by_key` roundtrip; `market_for` resolution-order test. |
+| **Unit-contract violation** — a fraction rendered raw (`-0.0327%`), a hand-rolled `%` suffix, hk/us shares divided by 100. | unit — formatters as the only converters | `src/invest/format.ts` is the single converter set (`pct`/`signedPct`/`num`/`yi`/`sharesToLots`), locked by `src/invest/format.test.ts` (origin: TODOS-v2 A1); import files pass a quality gate (`INVALID_BAR`), locked at the command boundary by `commands::invest::tests::import_rejects_ohlc_inconsistent_bars`. |
+| **Async state migration** — a mutation succeeded but the view kept the pre-mutation state until a scope switch (import → chart not reloaded; backtest → list not reloaded). | unit (pure decision) + integration (store flow) | Pure: `importTargetScope` (`layoutModel.test.ts`) decides the post-import target. Integration: `store.integration.test.ts` locks the whole orchestration (`applyImport` jumps to the imported scope) and the `backtestTick` bump/failure invariants. Rule: **after any await that mutates the DB, name who re-renders — in code (a tick/selector), not in hope.** |
+| **CSS anchoring / geometry** — an `inset: 0` overlay anchoring to the window because an ancestor lacks `position: relative`; nothing type-checks this. | **source gate + browser-measured protocol** (no unit layer can reach it) | The class shipped four times (.invest-kline, .invest-import-scrim, .invest-toast, .code-overlay), so the source-level half is enforced, not remembered: `overlayAnchoring.gate.test.ts` requires every full-bleed overlay to register a container that declares a position, and snapshots the inventory (a new overlay is a forced, reviewable decision). The measured half lives in E2E: `e2e/specs/investLayout.e2e.ts` asserts the import scrim's rect equals the invest layout's rect (verified 2026-11-18 against the real binary) and drives the dividers through W3C pointer actions (the same first real run caught splitDrag's pointerdown `preventDefault` suppressing the click chain, so double-click reset never fired). The double-click reset itself is a deployed check (docs/DEPLOYED-CHECKS.md): the embedded WebKitWebDriver never synthesizes `dblclick` (measured, three gestures). |
+| **Ingested-data shape drift** — a vendor response field shift silently corrupting numbers. | unit — real-body fixtures | Every parser keeps fixtures cut from live responses (Tencent cn/hk/us, agent SSE cassettes); an index shift fails on the exact field. |
+| **Performance regression** — an O(document) scan or per-keystroke measure creeping into a hot path. | perf gate (measured, load-gated) | `src/**/perf.gate.test.ts` locks order-of-magnitude budgets per docs/PERFORMANCE.md; budgets move only from measured medians. |
+| **Parser robustness** — a hand-edited config/vendor body the examples never imagined. | unit — **deterministic property tests** | `quotes.rs`: a fixed-seed LCG generates 200 valid configs (`every_generated_valid_config_parses_and_routes`) and 120 single-byte corruptions (`corrupted_yaml_never_panics_and_reports_a_line`; every error is either line-numbered or `QUOTES_*`-coded). Example-based tests cover the cases we thought of; properties cover the ones we did not. |
+| **Date boundary / timezone** — a date computed off-by-one or in the wrong zone, shipping inside a directory name or a "today" stamp (ingest feeds landed on *tomorrow*). | unit — a pure civil-date function | `ingest.rs` `feed_day_for(unix_secs, utc_offset_minutes)` is the only converter; `a_day_boundary_rolls_over_exactly_once` locks the epoch anchor, the exact one-flip midnight boundary for east/west zones, and monotonicity across leap years. Zone offsets are a collector-level argument (the current collector is UTC-explicit); a "today"-stamp consumer must go through it, not hand-roll `now / 86400`. |
+| **Flake** — a test that passes alone and fails on a loaded/parallel run. | flake policy + structural alarm | No sleeps; wait on DOM state; fake timers for scheduling; a flaky test is a defect (find the race), never retried away. The policy has an alarm: the registry gate fails on any `browser.pause(` inside an E2E spec, so a timer-based wait cannot land silently. |
+
+Adding a class: fix → answer "why silent" → append the row → land the lock in
+the same PR. The registry is reviewed whenever a row's lock alarms.
+
+## The seam rule (how cross-module bugs are prevented)
+
+The divider incident generalized: **a self-consistent function plus a
+self-consistent caller is invisible to every per-side test.** The rule that
+closes the class:
+
+- Any time a component passes measured DOM geometry (widths, rects, offsets)
+  into a pure model, the call shape is extracted into a *seam function* that
+  lives in the model's module, takes a single named-measurements object, and
+  is the component's only entry to the model.
+- The seam function gets the regression tests (pointer-delta semantics,
+  conservation invariants, clamp floors) — the model's own tests keep
+  validating its internal contract.
+- The same rule covers Rust: `commands/` parse and validate, then call feature
+  modules; a command that reshapes arguments before the call is a seam and
+  gets a test through `test_support` (e.g. `snapshot_refresh_rejects_unknown_markets`).
+
+## Browser-measured invariants
+
+Some classes have no automated layer (CSS anchoring, stacking contexts,
+pointer gestures against a canvas, native-only behaviors). They are not
+"untestable" — they are **measured**, with the protocol written down so the
+measurement survives the person who ran it:
+
+1. Reproduce in the harness/browser with the exact gesture (CDP pointer
+   events, not synthetic React events alone — the divider bug only appeared
+   through real pointer sequences).
+2. Assert geometry numerically (`getBoundingClientRect`, `elementFromPoint`,
+   `getBBox`), not visually ("looks fine" is not evidence).
+3. Record the measured numbers in the PR; a fix without its before/after
+   measurement is not done.
+4. When a measurement becomes load-bearing (the overlay-must-match-pane
+   invariant), promote it: either a DOM-geometry unit test if it can be
+   reached from jsdom, or an E2E spec if it needs the real app.
+   - Gesture E2E lives with the other specs and runs in the nightly E2E job:
+     `e2e/specs/investLayout.e2e.ts` drives the layout dividers through W3C
+     pointer actions and asserts the widths follow the pointer (the divider
+     bug's e2e-level lock).
+   - Iteration on changed files: `pnpm test:related <files...>` runs the
+     unit+integration tests related to those files (vitest `related`).
+
+## AI-driven testing
+
+Three forms, each with its discipline. The grounding research: LLM-generated
+tests fail mostly on **oracle correctness** (a wrong assertion is worse than
+none — it locks in the bug), and the industrial consensus workflow is
+*context enrichment + iterative validation/repair through compiler and
+execution feedback* (arXiv 2511.21382, 178-paper survey, 2026-09). The static
+gate is the compiler-side half of that loop; the reviewer is the oracle half.
+
+1. **Adversarial role testing (the highest-yield form here).** Humans and
+   single-persona reviewers probe their own assumptions; *independent*
+   role-persona agents probing a running build find cross-cutting breakage
+   the author cannot see. Institutionalized as the
+   `bnote-adversarial-test` skill: 2–4 role agents (domain user, quant/
+   engineer, QA) operate the real app UI-only, report P0/P1/P2 with
+   reproductions; every finding is triaged into *fixed* / *tool-artifact*
+   (re-measured, dismissed with evidence) / *by-design* (recorded). Two full
+   rounds (2026-11) produced 30 findings → 18 fixes, 3 tool artifacts, 9
+   by-design (ledger: docs/invest/TODOS-v3.md §H6) — and none of the P0s were reachable by the existing 3,300+ automated tests.
+2. **LLM-generated tests.** Allowed, but a generated test is a *draft*: it
+   must pass `pnpm gate` (compiler + execution feedback), a human must verify
+   the **oracle** against the spec (would this fail if the behavior were
+   wrong?), and the defect-class registry must name which class it locks. A
+   green generated test that locks no class is deleted, not merged.
+3. **Structural gates as AI-exerciseable assertions.** `command_surface.rs`,
+   `imeArchitecture.gate.test.ts`, and the coverage ratchet are
+   source-reading assertions machines keep green; they catch the drift class
+   (defined-but-unregistered, reverted architecture legs) that functional
+   tests never see.
+
+---
 
 ## Layers and commands
 
@@ -32,14 +138,14 @@ below it cannot.
 |---|---|---|---|
 | Types / lint / format | `pnpm typecheck`, `pnpm lint`, `pnpm format:check` | node | The code compiles, imports resolve, style is uniform. |
 | Unit | `pnpm test:unit` | node | Pure rules: parsing, engines, geometry, command registry, LSP framing. |
-| Integration | `pnpm test:integration` | jsdom | Real modules and Zustand stores wired through the **real** `src/lib/tauri.ts` boundary, with a fake vault behind it. |
+| Integration | `pnpm test:integration` | jsdom | Real modules and Zustand stores wired through the real `src/lib/tauri.ts` boundary. Two fixture styles coexist, both faking only the process boundary: the in-memory vault (`src/test/fakeVault.ts`) for file-surface flows, and per-domain in-memory command stubs for flows beyond the file surface (invest, focus, …). No test mocks the module it is testing. |
 | Rust unit | `cargo test --lib` | Rust | Backend behavior: paths, watchers, sessions, LSP, Python, translation. |
 | Rust structural | `cargo test --test command_surface` | Rust | Every `#[tauri::command]`, every `generate_handler![]` entry, and every browser-bridge arm agree. |
 | Agent cassette | `cargo test --test agent_cassette` | Rust | A recorded Anthropic stream is replayed over HTTP and driven through the real agent loop and tools. |
 | Coverage | `pnpm test:coverage` | node + jsdom | Unit + integration coverage against ratcheted thresholds. |
 | Performance | `pnpm test:perf` | node | Per-keystroke and tree/editor order-of-magnitude budgets. |
 | E2E | `pnpm test:e2e` | macOS, real binary | Disk IO, vault watcher, native window, global keybindings, autosave. |
-| Full gate | `pnpm gate:full` | all of the above | The complete contract before a release or a risky change. |
+| Full gate | `pnpm gate:full` | static + coverage + perf + Rust | Everything the CI frontend/rust/perf jobs run. **E2E is not part of `gate:full`** — it is the nightly/label job (`pnpm test:e2e:build && pnpm test:e2e`), because it builds its own binary. |
 
 `pnpm gate` is the fast PR gate: lint + typecheck + format + unit/integration.
 `pnpm gate:full` adds E2E typecheck, coverage, perf and Rust tests.
@@ -185,7 +291,7 @@ pnpm test:e2e:build   # VITE_E2E=1 tauri build --debug --no-bundle --features e2
 pnpm test:e2e         # wdio run e2e/wdio.conf.ts
 ```
 
-Measured on this machine after the wiring above: **6 specs pass in 3.5s**, with
+Measured on this machine after the wiring above: the suite ran green in seconds, with
 zero `core.invoke` timeout warnings. Before it, the same suite took 4m36s and
 logged 79 timeout warnings because the service polls for
 `window.__wdio_original_core__` (set by the plugin) and the app never loaded it.
@@ -222,8 +328,10 @@ What the spec proves (`e2e/specs/app.e2e.ts`):
 
 Not provable in CI by this layer: window levels, the focus hard-lock event tap,
 IME/TIS switching, native pen cursor, and PDF/annotation rendering. Those stay
-native-only and need a manual deployed check; the pure parts (state machines,
-geometry, filtering) are covered by unit/integration tests.
+native-only and walk the deployed checklist in
+[docs/DEPLOYED-CHECKS.md](./DEPLOYED-CHECKS.md) before a release; the pure
+parts (state machines, geometry, filtering) are covered by unit/integration
+tests.
 
 ## Structural gate: command surface
 

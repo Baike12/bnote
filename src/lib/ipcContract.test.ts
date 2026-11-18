@@ -15,7 +15,10 @@ import { join } from "node:path";
  *  - `creative-preview-updated` was never relayed in browser mode.
  *
  * These checks are structure only (names, not payload shapes): they catch a
- * command or event that exists on one side and not the other.
+ * command or event that exists on one side and not the other. The invocation
+ * scan is compared against both the bridge arms and the `#[tauri::command]`
+ * definitions, so a typo'd or orphaned command name fails `pnpm gate`
+ * without needing a cargo run.
  */
 
 const RUST = "src-tauri/src";
@@ -79,11 +82,89 @@ function relayed(name: "devbridge" | "browserMode"): string[] {
   return [...new Set([...block.matchAll(/"([a-z0-9:-]+)"/g)].map((m) => m[1]))].sort();
 }
 
+/**
+ * Commands provided by a Tauri plugin binary (`plugin:clipboard-manager|…`),
+ * not by our command surface. The old regex excluded these only by accident
+ * (its `[a-z0-9_]+` could not span the `:`); the scanner below parses them,
+ * so the exclusion is now explicit.
+ */
+function isPluginCommand(name: string): boolean {
+  return name.includes(":");
+}
+
+function skipSpace(text: string, at: number): number {
+  while (at < text.length && /\s/.test(text[at])) at += 1;
+  return at;
+}
+
+/**
+ * Every command name passed as a literal first argument to `invoke` across
+ * the TS sources — `invoke("x")` and `invoke<T>("x")`, generics spanning
+ * lines and nesting. A balanced mini-scanner instead of a single regex
+ * because a regex like `invoke<[^>]*>\(` silently matches nothing on a
+ * nested generic (`invoke<Record<string, number>>`), and a scanner that
+ * quietly sees nothing is exactly the failure mode this file guards against.
+ */
 function invokedCommands(): string[] {
   const out = new Set<string>();
+  const word = /[A-Za-z0-9_$]/;
   for (const f of tsSources) {
-    for (const m of readFileSync(f, "utf8").matchAll(/invoke<[^>]*>\(\s*"([a-z0-9_]+)"/g)) {
-      out.add(m[1]);
+    const text = readFileSync(f, "utf8");
+    let at = text.indexOf("invoke");
+    while (at !== -1) {
+      // Word boundaries on both sides: skip identifiers like `invokeOverHttp`
+      // and prose that merely says "invoke".
+      if (!word.test(text[at - 1] ?? "") && !word.test(text[at + 6] ?? "")) {
+        let cursor = skipSpace(text, at + 6);
+        // Optional generic argument list, balanced over <>, ignoring `=>`.
+        if (text[cursor] === "<") {
+          let depth = 0;
+          while (cursor < text.length) {
+            const ch = text[cursor];
+            if (ch === "<") depth += 1;
+            else if (ch === ">" && text[cursor - 1] !== "=") {
+              depth -= 1;
+              if (depth === 0) {
+                cursor += 1;
+                break;
+              }
+            }
+            cursor += 1;
+          }
+          cursor = skipSpace(text, cursor);
+        }
+        if (text[cursor] === "(") {
+          const m = /^"([a-z0-9_:-]+)"/.exec(text.slice(skipSpace(text, cursor + 1)));
+          if (m) out.add(m[1]);
+        }
+      }
+      at = text.indexOf("invoke", at + 6);
+    }
+  }
+  return [...out].sort();
+}
+
+/**
+ * Every `#[tauri::command]` function name under `src-tauri/src/commands`,
+ * parsed the same way `src-tauri/tests/command_surface.rs` parses it
+ * (attribute line, then the first `fn name` within a few lines, skipping cfg
+ * attributes and doc comments). The Rust-side gate stays the authority on
+ * definitions == registration == bridge arms; this copy only closes the
+ * TS→Rust direction so `pnpm gate` sees a cross-language typo without cargo.
+ */
+function definedCommands(): string[] {
+  const out = new Set<string>();
+  for (const f of files(join(RUST, "commands"), /\.rs$/)) {
+    const lines = readFileSync(f, "utf8").split("\n");
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].trim() !== "#[tauri::command]") continue;
+      for (let j = i + 1; j < Math.min(i + 9, lines.length); j += 1) {
+        const m = /\bfn\s+([a-z0-9_]+)/.exec(lines[j]);
+        if (m) {
+          out.add(m[1]);
+          break;
+        }
+      }
     }
   }
   return [...out].sort();
@@ -120,8 +201,14 @@ describe("commands reach the browser-mode bridge", () => {
   it("every invoked command has a devbridge dispatch arm", () => {
     const arms = new Set(dispatchedCommands());
     const missing = invokedCommands().filter(
-      (cmd) => !NATIVE_ONLY_COMMANDS.has(cmd) && !arms.has(cmd),
+      (cmd) => !NATIVE_ONLY_COMMANDS.has(cmd) && !isPluginCommand(cmd) && !arms.has(cmd),
     );
+    expect(missing).toEqual([]);
+  });
+
+  it("every invoked command is defined as a #[tauri::command] in Rust", () => {
+    const defined = new Set(definedCommands());
+    const missing = invokedCommands().filter((cmd) => !isPluginCommand(cmd) && !defined.has(cmd));
     expect(missing).toEqual([]);
   });
 
@@ -130,5 +217,6 @@ describe("commands reach the browser-mode bridge", () => {
     expect(relayed("devbridge").length).toBeGreaterThan(5);
     expect(invokedCommands().length).toBeGreaterThan(50);
     expect(dispatchedCommands().length).toBeGreaterThan(50);
+    expect(definedCommands().length).toBeGreaterThan(100);
   });
 });

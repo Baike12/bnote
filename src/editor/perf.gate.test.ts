@@ -35,7 +35,7 @@ import { buildBracketColors } from "./snippets/brackets";
 import { typewriterReserve, typewriterScrollDelta } from "./typewriterPosition";
 import { insertRegionWantsEnglishAt } from "./imeSwitch";
 import { DEFAULT_SETTINGS } from "@/state/appStore";
-import { currentLoadVerdict, skipNotice } from "@/perf/loadGate";
+import { currentLoadVerdict, perfRequired, skipNotice } from "@/perf/loadGate";
 
 /*
  * A machine busy with something else moves a millisecond median several-fold,
@@ -46,7 +46,9 @@ import { currentLoadVerdict, skipNotice } from "@/perf/loadGate";
 const load = currentLoadVerdict();
 const loadNotice = skipNotice(load);
 if (loadNotice !== null) console.warn(loadNotice);
-const perfDescribe = load.fit ? describe : describe.skip;
+// A controlled CI runner must not skip silently: BNOTE_PERF_REQUIRE=1
+// makes an unfit machine a red, not a green-with-zero-coverage.
+const perfDescribe = load.fit || perfRequired() ? describe : describe.skip;
 
 /**
  * Perf gate (bnote's lifeline): the per-keystroke cost of the editing pipeline

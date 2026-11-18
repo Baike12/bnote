@@ -5,7 +5,7 @@ import { EditorPane } from "../EditorPane";
 import { JsonFilePane } from "../JsonFilePane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName, isJsonPath } from "@/lib/path";
-import { dragLeftEdge, dragMiddleEdge, RESIZER_WIDTH } from "@/study/layoutModel";
+import { leftDividerWidths, middleDividerWidth } from "@/study/layoutModel";
 import { startSplitDrag } from "../splitDrag";
 
 /**
@@ -63,13 +63,15 @@ export function CodeLayout() {
     // left | middle; only the occupants change when the panes swap.
     const leftWidth = (swapped ? content : left).getBoundingClientRect().width;
     const rightWidth = (swapped ? left : content).getBoundingClientRect().width;
-    const sum = leftWidth + rightWidth;
     startDrag(
       event,
       ["--agent-src", "--content-src"],
       { "--agent-src": agentWidth, "--content-src": contentWidth },
       (dx) => {
-        const widths = dragLeftEdge(leftWidth + RESIZER_WIDTH + dx, hostRect.width, sum);
+        const widths = leftDividerWidths(
+          { leftWidth, middleWidth: rightWidth, hostWidth: hostRect.width },
+          dx,
+        );
         return { "--agent-src": widths.left, "--content-src": widths.middle };
       },
       (values) =>
@@ -93,14 +95,12 @@ export function CodeLayout() {
       event,
       ["--content-src"],
       { "--content-src": contentWidth },
-      (dx) => {
-        const widths = dragMiddleEdge(
-          subjectLeft + subjectWidth + RESIZER_WIDTH + dx,
-          hostRect.width,
-          subjectLeft,
-        );
-        return { "--content-src": widths.middle };
-      },
+      (dx) => ({
+        "--content-src": middleDividerWidth(
+          { middleLeft: subjectLeft, middleWidth: subjectWidth, hostWidth: hostRect.width },
+          dx,
+        ),
+      }),
       (values) => patchSettings({ codeContentWidth: values["--content-src"] }),
     );
   }

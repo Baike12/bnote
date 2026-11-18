@@ -33,6 +33,8 @@ import {
   type TranscriptLine,
 } from "@/study/transcript";
 import { isWereadUrl } from "@/study/weread";
+import { useInvestStore } from "@/invest/store";
+import { scopeDocDir } from "@/invest/layoutModel";
 import { setAgentNavHandlers } from "@/study/pdfNav";
 import {
   applySuggestion,
@@ -99,6 +101,8 @@ export function AgentPanel() {
   const mode = useAppStore((s) => s.mode);
   const codeProject = useAppStore((s) => s.codeProject);
   const creativeMode = useAppStore((s) => s.creativeMode);
+  /** The invest session scope: switching the instrument re-scopes the panel's sessions. */
+  const investScope = useInvestStore((s) => s.selectedScope);
   const setCreativeMode = useAppStore((s) => s.setCreativeMode);
   const flatFiles = useAppStore((s) => s.flatFiles);
   const recentFiles = useAppStore((s) => s.recentFiles);
@@ -232,9 +236,16 @@ export function AgentPanel() {
    * assistant. Kept in a ref so startSession (a long-lived callback) sees the
    * current shape without re-creating it.
    */
-  const agentModeRef = useRef<"study" | "creative" | "coding">("study");
+  const agentModeRef = useRef<"study" | "creative" | "coding" | "invest">("study");
   useEffect(() => {
-    agentModeRef.current = mode === "code" ? "coding" : creativeMode ? "creative" : "study";
+    agentModeRef.current =
+      mode === "code"
+        ? "coding"
+        : mode === "invest"
+          ? "invest"
+          : creativeMode
+            ? "creative"
+            : "study";
   }, [mode, creativeMode]);
   /**
    * Prompt history (↑ / ↓ recall): the entries come from
@@ -300,7 +311,8 @@ export function AgentPanel() {
   }, [activeKey]);
 
   // The skill list: the input box / the completion and the creative mode welcome page use it; it is refreshed after the config is saved (the skill directory may have changed) and when the mode changes (each mode scans its own roots). A failure silently leaves it empty (the browser harness has no backend).
-  const agentMode = mode === "code" ? "coding" : creativeMode ? "creative" : "study";
+  const agentMode =
+    mode === "code" ? "coding" : mode === "invest" ? "invest" : creativeMode ? "creative" : "study";
   const agentWorkdir = agentMode === "coding" ? (codeProject?.path ?? null) : null;
   useEffect(() => {
     let cancelled = false;
@@ -457,6 +469,9 @@ export function AgentPanel() {
           // A coding session anchors relative paths and bash in the repository.
           mode === "coding" ? codeScopeRef.current?.workdir : undefined,
           opts?.taskListId,
+          // An invest session binds to one scope: the read_skill tool reads
+          // exactly that instrument's bundle, nothing else.
+          mode === "invest" ? (useInvestStore.getState().selectedScope ?? undefined) : undefined,
         );
         // Dropped when it expired: the content changed in the meantime (a new material / a new session), a new start has taken over.
         if (startTokenRef.current !== token) return;
@@ -722,13 +737,22 @@ export function AgentPanel() {
   // - Saving the settings: nothing happens — the sessions that are already open keep using their own model config snapshot.
   // - Leaving and re-entering study / code mode: the panel is mounted again and restores per scope.
   useEffect(() => {
+    // An invest session is bound to its scope (read_skill reads exactly that
+    // bundle): with no scope selected yet there is nothing to bind, so wait —
+    // the identity below changes to a real scope as soon as the layout's
+    // initialize lands, and the session starts then. Starting one with
+    // `invest_scope: null` froze the tool's scope at None forever (blind
+    // test: every read_skill call failed until the user re-entered the mode).
+    if (mode === "invest" && !investScope) return;
     const identity =
       mode === "code"
         ? codeSessionIdentity(codeProject?.path ?? null)
-        : creativeMode
-          ? `creative|${restartNonce}`
-          : studyContentKey(materialContent);
-    const key = `${mode === "code" ? "d" : creativeMode ? "c" : "s"}|${identity}|${restartNonce}`;
+        : mode === "invest"
+          ? `invest|${investScope ?? "none"}`
+          : creativeMode
+            ? `creative|${restartNonce}`
+            : studyContentKey(materialContent);
+    const key = `${mode === "code" ? "d" : mode === "invest" ? "n" : creativeMode ? "c" : "s"}|${identity}|${restartNonce}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
     // A new scope starts outside plan mode (the plan belonged to the previous
@@ -792,7 +816,27 @@ export function AgentPanel() {
         return;
       }
       codeScopeRef.current = null;
-      if (creativeMode) {
+      if (mode === "invest") {
+        // An invest session belongs to the scope (stock:<code> /
+        // sector:<code>): its transcripts live under the scope's document
+        // directory, next to the analysis notes (the same layout the study
+        // material directories follow). The backend's sessions-list
+        // whitelist accepts `invest/…` (see commands/materials.rs).
+        const invest = useInvestStore.getState();
+        if (!invest.selectedScope) {
+          info = null;
+        } else {
+          const dir = scopeDocDir(invest.selectedScope);
+          info = dir
+            ? {
+                kind: "pdfs",
+                dir: "invest",
+                relDir: `invest/${dir}`,
+                title: invest.selectedTitle || invest.selectedScope,
+              }
+            : null;
+        }
+      } else if (creativeMode) {
         // Creative mode has no material directory: its sessions all land in .bnote/creative/sessions/.
         info = { kind: "pdfs", dir: "creative", relDir: "creative", title: "创作模式" };
       } else {
@@ -831,7 +875,16 @@ export function AgentPanel() {
       turnsRef.current.clear();
       void startSession(conv.key, materialContent);
     })();
-  }, [materialContent, creativeMode, mode, codeProject, restartNonce, startSession, restoreFamily]);
+  }, [
+    materialContent,
+    creativeMode,
+    mode,
+    codeProject,
+    restartNonce,
+    startSession,
+    restoreFamily,
+    investScope,
+  ]);
 
   // ⌘⇧Y / the command: switch back and forth between the main session and the most recent auxiliary session.
   useEffect(() => {

@@ -58,6 +58,11 @@ pub struct ToolContext {
     pub read_paths: std::sync::Mutex<Vec<PathBuf>>,
     /// Extra writable roots from `settings.permissions.additionalDirectories`.
     pub extra_roots: Vec<PathBuf>,
+    /// The invest session's scope (`stock:600519` / `sector:801010`). The
+    /// `read_skill` tool reads ONLY this scope's skill through
+    /// `invest::skill::read` — scope isolation lives in the model, not in the
+    /// prompt: the tool has no path parameter to misuse.
+    pub invest_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -486,6 +491,16 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
         json!({"type": "object", "properties": {}}),
     ),
     (
+        "read_skill",
+        "Read the current invest scope's prediction skill bundle: SKILL.md (the strategy rules), MEMORY.md (the verified facts and falsified hypotheses) and the version list. The scope is fixed by the session — there is no scope parameter, and no other scope's skill is reachable.",
+        json!({
+            "type": "object",
+            "properties": {
+                "part": {"type": "string", "enum": ["skill", "memory", "versions"], "description": "Which part to read; omitted = the whole bundle"}
+            }
+        }),
+    ),
+    (
         "Skill",
         "Load a skill's full instructions by name. Available skills are listed in the system prompt. When users reference a \"slash command\" or \"/<something>\", they mean a skill — load it with this tool before acting on their request.",
         json!({
@@ -518,6 +533,7 @@ pub fn is_concurrency_safe(name: &str) -> bool {
             | "Grep"
             | "WebFetch"
             | "read_study_content"
+            | "read_skill"
             | "Skill"
             | "TaskList"
             | "TaskGet"
@@ -745,6 +761,57 @@ async fn execute_text(
                     }
                 }
                 Err(e) => (false, e),
+            }
+        }
+        "read_skill" => {
+            // The scope comes from the session, never from the tool input:
+            // one session sees exactly one scope's bundle.
+            let Some(scope) = ctx.invest_scope.as_deref() else {
+                return (
+                    false,
+                    "no invest scope: this session is not scoped to an instrument".into(),
+                );
+            };
+            let Some(vault) = ctx.vault.as_deref() else {
+                return (false, "no vault is open".into());
+            };
+            let part = input["part"].as_str().unwrap_or("all");
+            match super::super::invest::skill::read_bundle(std::path::Path::new(vault), scope) {
+                Ok(bundle) => {
+                    let text = match part {
+                        "skill" => bundle.skill,
+                        "memory" => bundle.memory,
+                        "versions" => {
+                            if bundle.versions.is_empty() {
+                                "（还没有版本快照）".to_string()
+                            } else {
+                                bundle
+                                    .versions
+                                    .iter()
+                                    .map(|v| format!("v{} — {}", v.version, v.file))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            }
+                        }
+                        _ => format!(
+                            "# SKILL.md\n\n{}\n\n# MEMORY.md\n\n{}\n\n# versions\n\n{}",
+                            bundle.skill,
+                            if bundle.memory.trim().is_empty() {
+                                "（空）"
+                            } else {
+                                &bundle.memory
+                            },
+                            bundle
+                                .versions
+                                .iter()
+                                .map(|v| format!("v{} — {}", v.version, v.file))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ),
+                    };
+                    (true, text)
+                }
+                Err(e) => (false, format!("skill read failed: {}", e)),
             }
         }
         "read_study_content" => {
@@ -977,6 +1044,7 @@ mod tests {
             bg: Arc::new(crate::agent::shell::BgRegistry::new()),
             read_paths: std::sync::Mutex::new(Vec::new()),
             extra_roots: Vec::new(),
+            invest_scope: None,
         }
     }
 

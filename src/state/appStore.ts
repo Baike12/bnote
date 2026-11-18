@@ -19,6 +19,7 @@ import { TREE_DEFAULT_WIDTH } from "@/code/treeWidth";
 import { TERM_DEFAULT_HEIGHT } from "@/code/term/tabs";
 import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
+import { DEFAULT_INVEST_CONTENT_WIDTH, DEFAULT_INVEST_SIDE_WIDTH } from "@/invest/layoutModel";
 import type { AgentImage } from "@/study/agentImages";
 import type { TimerState as FocusTimerState } from "@/focus/timer";
 import type { FocusSchedule } from "@/focus/schedule";
@@ -140,6 +141,13 @@ export interface Settings {
    */
   projectsSideWidth: number;
   projectsDailyWidth: number;
+  /**
+   * The invest mode columns: left "instrument list", middle "K-line +
+   * details", right "notes". Same pixel discipline as the other layouts —
+   * the notes column takes the rest.
+   */
+  investSideWidth: number;
+  investContentWidth: number;
   /** The eye-care paper color of PDFs in study mode (a light green paper). */
   studyEyeCare: boolean;
   /** The ratio of the visible height scrolled per page turn in study mode (shared by PDF and web, 0.5 by default). */
@@ -204,6 +212,8 @@ export const DEFAULT_SETTINGS: Settings = {
   codeContentWidth: DEFAULT_CONTENT_WIDTH,
   projectsSideWidth: DEFAULT_SIDE_WIDTH,
   projectsDailyWidth: DEFAULT_DAILY_WIDTH,
+  investSideWidth: DEFAULT_INVEST_SIDE_WIDTH,
+  investContentWidth: DEFAULT_INVEST_CONTENT_WIDTH,
   studyEyeCare: false,
   studyPageStep: 0.5,
   studyWebZoom: 1,
@@ -264,7 +274,7 @@ export interface LinkHop {
  * the type makes "study mode and code mode at once" unrepresentable, which the
  * three separate booleans this replaces could not do.
  */
-export type AppMode = "notes" | "study" | "code" | "projects";
+export type AppMode = "notes" | "study" | "code" | "projects" | "invest";
 
 /** The code project open in code mode (the repository is independent of the vault). */
 export interface CodeProjectRef {
@@ -815,6 +825,11 @@ export function toggleProjectsMode() {
 /** The code mode switch (the project is remembered across restarts). */
 export function toggleCodeMode() {
   useAppStore.getState().toggleMode("code");
+}
+
+/** The invest mode switch (the local A-share workspace). */
+export function toggleInvestMode() {
+  useAppStore.getState().toggleMode("invest");
 }
 
 let configSnapshot: PersistedConfig = {};

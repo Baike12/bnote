@@ -1,5 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentImage } from "@/study/agentImages";
+import type {
+  InvestBacktestRun,
+  InvestBar,
+  InvestDocInfo,
+  InvestEvent,
+  InvestFinancial,
+  InvestForecast,
+  InvestFundFlowDay,
+  InvestGraphView,
+  InvestIngestRunResult,
+  InvestInstrument,
+  InvestPeriod,
+  InvestQuoteSummary,
+  InvestScope,
+  InvestSearchHit,
+  InvestSector,
+  InvestSkillBundle,
+  InvestSnapshot,
+} from "@/invest/types";
 
 export type { AgentImage };
 
@@ -72,8 +91,8 @@ export interface SetImeOutcome {
 export type StudyContent =
   { kind: "pdf"; path: string; title: string } | { kind: "url"; url: string; title: string };
 
-/** The three agent shapes; the id is also the mode folder name. */
-export type AgentMode = "coding" | "creative" | "study";
+/** The agent shapes; the id is also the mode folder name. */
+export type AgentMode = "coding" | "creative" | "study" | "invest";
 
 /** One thinking level: its id and the RFC 7396 patch it merges into the request body. */
 export interface ThinkingLevel {
@@ -489,11 +508,13 @@ export const agentApi = {
     /** Restore/fork: the catalog selection of the source session; a fresh session passes the default of the settings. */
     selection?: ModelSelection | null,
     /** "creative" = creative mode (with tools/skill/MCP); "coding" = the code-project agent; omitted = study mode, plain question answering only. */
-    mode?: "study" | "creative" | "coding",
+    mode?: AgentMode,
     /** Coding sessions: the project root (relative tool paths and bash anchor there). */
     workdir?: string,
     /** Restore: the transcript record id, so the persisted task list continues. */
     taskListId?: string,
+    /** Invest sessions: the scope the session is bound to (stock:600519 / sector:801010). */
+    investScope?: string,
   ) =>
     invoke<SessionInfo>("agent_start_session", {
       study,
@@ -504,6 +525,7 @@ export const agentApi = {
       mode,
       workdir,
       taskListId,
+      investScope: investScope ?? null,
     }),
   /**
    * Switches the model / thinking level of an open session; the next round uses
@@ -843,4 +865,147 @@ export const focusApi = {
   /** Start/stop the real interception (on when the pomodoro starts, off when it stops). */
   setHardLockActive: (active: boolean) =>
     invoke<FocusStatus>("focus_set_hard_lock_active", { active }),
+};
+
+// ---------------------------------------------------------------------------
+// Invest mode (the local A-share workspace)
+// ---------------------------------------------------------------------------
+
+export interface InvestImportInput extends Record<string, unknown> {
+  market?: string;
+  instruments?: InvestInstrument[];
+  sectors?: InvestSector[];
+  bars?: InvestBar[];
+  code?: string;
+  /** "sector" routes the bars to the sector-index table (B11). */
+  barKind?: "stock" | "sector";
+  financials?: InvestFinancial[];
+  fundFlow?: InvestFundFlowDay[];
+  snapshot?: InvestSnapshot;
+}
+
+export const investApi = {
+  listInstruments: (query?: string, watchOnly?: boolean, limit?: number) =>
+    invoke<InvestInstrument[]>("invest_list_instruments", {
+      query: query ?? null,
+      watchOnly: watchOnly ?? null,
+      limit: limit ?? null,
+    }),
+  setWatch: (market: string, code: string, watch: boolean) =>
+    invoke<boolean>("invest_set_watch", { market, code, watch }),
+  klineQuery: (
+    market: string,
+    code: string,
+    opts?: { from?: string; to?: string; limit?: number; period?: InvestPeriod },
+  ) =>
+    invoke<InvestBar[]>("invest_kline_query", {
+      market,
+      code,
+      from: opts?.from ?? null,
+      to: opts?.to ?? null,
+      limit: opts?.limit ?? null,
+      period: opts?.period ?? null,
+    }),
+  klineImport: (market: string, code: string, bars: InvestBar[]) =>
+    invoke<number>("invest_kline_import", { market, code, bars }),
+  snapshot: (market: string, code: string) =>
+    invoke<InvestSnapshot | null>("invest_snapshot", { market, code }),
+  snapshotRefresh: (market: string, code: string) =>
+    invoke<InvestSnapshot | null>("invest_snapshot_refresh", { market, code }),
+  fundFlow: (market: string, code: string, limit?: number) =>
+    invoke<InvestFundFlowDay[]>("invest_fund_flow", { market, code, limit: limit ?? null }),
+  financials: (market: string, code: string, limit?: number) =>
+    invoke<InvestFinancial[]>("invest_financials", { market, code, limit: limit ?? null }),
+  importData: (input: InvestImportInput) =>
+    invoke<Record<string, number>>("invest_import_data", input),
+  listSectors: () => invoke<InvestSector[]>("invest_list_sectors"),
+  quoteOverview: (market?: string) =>
+    invoke<InvestQuoteSummary[]>("invest_quote_overview", { market: market ?? null }),
+  sectorBars: (
+    code: string,
+    opts?: { from?: string; to?: string; limit?: number; period?: InvestPeriod },
+  ) =>
+    invoke<InvestBar[]>("invest_sector_bars", {
+      code,
+      from: opts?.from ?? null,
+      to: opts?.to ?? null,
+      limit: opts?.limit ?? null,
+      period: opts?.period ?? null,
+    }),
+  sectorMembers: (code: string) => invoke<InvestInstrument[]>("invest_sector_members", { code }),
+  ensureScopeDocs: (scope: InvestScope, title: string) =>
+    invoke<InvestDocInfo[]>("invest_ensure_scope_docs", { scope, title }),
+  listDocs: (scope: InvestScope) => invoke<InvestDocInfo[]>("invest_list_docs", { scope }),
+  readDoc: (relPath: string) => invoke<string>("invest_read_doc", { relPath }),
+  writeDoc: (relPath: string, content: string, scope: InvestScope, kind?: string) =>
+    invoke<void>("invest_write_doc", { relPath, content, scope, kind: kind ?? null }),
+  searchKnowledge: (query: string, limit?: number) =>
+    invoke<InvestSearchHit[]>("invest_search_knowledge", { query, limit: limit ?? null }),
+  graphView: (name: string, kind: string) =>
+    invoke<InvestGraphView | null>("invest_graph_view", { name, kind }),
+  events: (scope: InvestScope, limit?: number) =>
+    invoke<InvestEvent[]>("invest_events", { scope, limit: limit ?? null }),
+  eventAdd: (input: {
+    scope: InvestScope;
+    date: string;
+    kind: string;
+    title: string;
+    body?: string;
+    sentiment?: string;
+  }) => invoke<boolean>("invest_event_add", input),
+  recentEvents: (limit?: number) =>
+    invoke<InvestEvent[]>("invest_recent_events", { limit: limit ?? null }),
+  ingestRun: () => invoke<InvestIngestRunResult>("invest_ingest_run"),
+  readSources: () => invoke<string>("invest_read_sources"),
+  saveSources: (yaml: string) => invoke<void>("invest_save_sources", { yaml }),
+  /** H7: the pluggable quote-source spec (`quotes.yaml`); validated on save. */
+  readQuotes: () => invoke<string>("invest_read_quotes"),
+  saveQuotes: (yaml: string) => invoke<void>("invest_save_quotes", { yaml }),
+  readSkill: (scope: InvestScope) => invoke<InvestSkillBundle>("invest_read_skill", { scope }),
+  writeSkill: (scope: InvestScope, skill: string, memory: string, snapshot: boolean) =>
+    invoke<number>("invest_write_skill", { scope, skill, memory, snapshot }),
+  skillLearnedEdit: (scope: InvestScope, anchor: string, content: string, replace: boolean) =>
+    invoke<void>("invest_skill_learned_edit", { scope, anchor, content, replace }),
+  forecastReplay: (
+    scope: InvestScope,
+    market: string,
+    code: string,
+    /** Omitted → the backend anchors to the last settleable point in the data. */
+    asOf?: string,
+    horizon?: number,
+  ) =>
+    invoke<InvestForecast>("invest_forecast_replay", {
+      scope,
+      market,
+      code,
+      asOf: asOf ?? null,
+      horizon: horizon ?? null,
+    }),
+  forecastSettle: (scope: InvestScope, market: string, code: string, horizon?: number) =>
+    invoke<number>("invest_forecast_settle", { scope, market, code, horizon: horizon ?? null }),
+  forecasts: (scope: InvestScope, limit?: number) =>
+    invoke<InvestForecast[]>("invest_forecasts", { scope, limit: limit ?? null }),
+  forecastAccuracy: (scope: InvestScope) =>
+    invoke<[number, number, number] | null>("invest_forecast_accuracy", { scope }),
+  backtestRun: (
+    scope: InvestScope,
+    market: string,
+    code: string,
+    strategy: "ma_cross" | "skill_signal",
+    opts?: { fast?: number; slow?: number; start?: string; end?: string; initialCash?: number },
+  ) =>
+    invoke<InvestBacktestRun>("invest_backtest_run", {
+      scope,
+      market,
+      code,
+      strategy,
+      fast: opts?.fast ?? null,
+      slow: opts?.slow ?? null,
+      start: opts?.start ?? null,
+      end: opts?.end ?? null,
+      initialCash: opts?.initialCash ?? null,
+    }),
+  backtestList: (scope: InvestScope, limit?: number) =>
+    invoke<InvestBacktestRun[]>("invest_backtest_list", { scope, limit: limit ?? null }),
+  backtestDelete: (id: number) => invoke<boolean>("invest_backtest_delete", { id }),
 };

@@ -31,7 +31,7 @@
  * command's default region.
  */
 
-export type KeyRegion = "global" | "notes" | "reading" | "agent" | "project" | "code";
+export type KeyRegion = "global" | "notes" | "reading" | "agent" | "project" | "code" | "invest";
 
 export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
   {
@@ -59,6 +59,11 @@ export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
     id: "code",
     label: "代码区",
     hint: "焦点在代码编辑器时生效。**这是独立的一界**:⌘S 在这里是「保存代码文件」,⌘⇧O 是「快速打开文件」,与笔记区各说各的。代码区只继承少数应用级命令(命令面板、快速跳转、切学习模式、设置),其余键位一律归代码区自己,可在 keybindings.json 的 code 段里改绑。",
+  },
+  {
+    id: "invest",
+    label: "投资区",
+    hint: "焦点在投资模式的标的列表 / K 线 / 详情面板时生效。标的切换(⌘⌥←/→)、周期切换、板块↔标的视图切换放这里;右栏笔记仍是笔记区,Agent 面板仍是 Agent 区。",
   },
 ];
 
@@ -133,6 +138,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
 
   "view.toggle-study-mode": "Mod-Shift-s",
   "view.toggle-projects": "Mod-Shift-p",
+  // ⌘⇧I is notes-region's toggle-italic; the invest chord sits with the
+  // region-navigation family (⌘⌥A/N/R/P) instead — "go somewhere" always
+  // reads the same.
+  "view.toggle-invest-mode": "Mod-Alt-i",
   "view.zoom-in": "Mod-=",
   "view.zoom-out": "Mod--",
   "view.zoom-reset": "Mod-0",
@@ -246,6 +255,40 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.prev-problem": "Shift-F8",
   "code.git-diff": "Mod-Shift-d",
   "code.toggle-wrap": "Alt-z",
+
+  // Invest region. ⌘⌥←/→ are free here (code.next/prev-tab own them only in
+  // the code region; region isolation is the whole point of the model).
+  "invest.next-instrument": "Mod-Alt-ArrowRight",
+  "invest.prev-instrument": "Mod-Alt-ArrowLeft",
+  "invest.next-doc": "Mod-Alt-ArrowDown",
+  "invest.prev-doc": "Mod-Alt-ArrowUp",
+  "invest.toggle-sector-view": "Mod-Alt-s",
+  "invest.focus-market": "Mod-Alt-r",
+  "invest.focus-agent": "Mod-Alt-a",
+  "invest.search-knowledge": "Mod-Alt-p",
+  // C15: the same-hexin convention — bare ↑/↓ walk the (filtered) list, Enter
+  // opens the current scope's document.
+  "invest.list-up": "ArrowUp",
+  "invest.list-down": "ArrowDown",
+  "invest.open-doc": "Enter",
+  // C17: TradingView-style chart keys — ←/→ pan, -/= zoom.
+  "invest.kline-scroll-left": "ArrowLeft",
+  "invest.kline-scroll-right": "ArrowRight",
+  "invest.kline-zoom-out": "-",
+  "invest.kline-zoom-in": "=",
+  // C18: the detail tabs are reachable from the keyboard too (⌘⌥1..7).
+  "invest.detail-tab-1": "Mod-Alt-1",
+  "invest.detail-tab-2": "Mod-Alt-2",
+  "invest.detail-tab-3": "Mod-Alt-3",
+  "invest.detail-tab-4": "Mod-Alt-4",
+  "invest.detail-tab-5": "Mod-Alt-5",
+  "invest.detail-tab-6": "Mod-Alt-6",
+  "invest.detail-tab-7": "Mod-Alt-7",
+  "invest.forecast-replay": "Mod-Alt-f",
+  "invest.backtest-run": "Mod-Alt-b",
+  "invest.kline-period-day": "Mod-1",
+  "invest.kline-period-week": "Mod-2",
+  "invest.kline-period-month": "Mod-3",
 };
 
 /** Commands without an explicit placement table are assigned by prefix; the few exceptions are listed below. */
@@ -266,6 +309,7 @@ const REGION_PREFIXES: [string, KeyRegion][] = [
   ["editor.", "notes"],
   ["python.", "notes"],
   ["code.", "code"],
+  ["invest.", "invest"],
 ];
 
 /**
@@ -630,6 +674,32 @@ export function pageForwardKeys(): string[] {
 }
 
 /**
+ * Every key bound to more than one command in one region. The dispatch layer
+ * tries the returned list in order and the first command whose `when` is true
+ * wins, so a conflict is not always a bug — but a silent one is
+ * undebuggable, and user overrides bypass the default-keymap uniqueness gate
+ * (keys.test.ts "no key is bound twice inside one region" only sees the
+ * defaults). The overrides application names every collision loudly.
+ */
+export function keyConflicts(km: Keymap): { region: KeyRegion; key: string; ids: string[] }[] {
+  const out: { region: KeyRegion; key: string; ids: string[] }[] = [];
+  for (const region of KEY_REGION_IDS) {
+    const byKey = new Map<string, string[]>();
+    for (const [id, value] of Object.entries(km[region])) {
+      for (const key of keysOf(value)) {
+        const list = byKey.get(key);
+        if (list) list.push(id);
+        else byKey.set(key, [id]);
+      }
+    }
+    for (const [key, ids] of byKey) {
+      if (ids.length > 1) out.push({ region, key, ids });
+    }
+  }
+  return out;
+}
+
+/**
  * Apply the user overrides: lay down the defaults first, then place the
  * overrides per region. The regions **do not affect each other** — the same
  * command may have one binding in several regions (as the region-switch
@@ -643,6 +713,16 @@ export function applyOverrides(overrides: OverrideMap): void {
     for (const [id, value] of Object.entries(map)) {
       km[region][id] = value;
     }
+  }
+  // User data is never rejected, but a colliding key is not allowed to
+  // silently shadow the default holder — the conflict is named so the
+  // settings UI (and the user) can resolve it deliberately.
+  const conflicts = keyConflicts(km);
+  if (conflicts.length > 0) {
+    console.warn(
+      "keybinding conflicts after user overrides (the first command whose `when` is true wins):",
+      conflicts.map((c) => `${c.region} ${c.key}: ${c.ids.join(" vs ")}`),
+    );
   }
   setKeymap(km);
 }
@@ -797,6 +877,12 @@ const PLAIN_KEYS = new Set([
   "ArrowDown",
   "ArrowLeft",
   "ArrowRight",
+  // The invest region binds bare Enter (open the scope's doc) and bare
+  // -/= (chart zoom, the TradingView convention). They can become bindings
+  // only once eventToKey recognizes them.
+  "Enter",
+  "-",
+  "=",
   "F1",
   "F2",
   "F3",
@@ -813,9 +899,10 @@ const PLAIN_KEYS = new Set([
 
 /**
  * Bare navigation keys have native meanings in the editor and in inputs
- * (moving the cursor, scrolling). The window-level command dispatch must not
- * take them — modified bindings are not in this set: the user explicitly
- * pressed ⌃J and wants the command to run.
+ * (moving the cursor, scrolling, and for Enter - = : submitting and typing).
+ * The window-level command dispatch must not take them — modified bindings
+ * are not in this set: the user explicitly pressed ⌃J and wants the command
+ * to run.
  */
 const FOCUS_OWNED_PLAIN_KEYS = new Set([
   "PageUp",
@@ -826,6 +913,9 @@ const FOCUS_OWNED_PLAIN_KEYS = new Set([
   "ArrowDown",
   "ArrowLeft",
   "ArrowRight",
+  "Enter",
+  "-",
+  "=",
 ]);
 
 /** Keys that carry no modifier and belong to the editor. */

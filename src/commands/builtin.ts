@@ -23,7 +23,13 @@ import { configureLivePreview } from "@/editor/livePreview";
 import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
-import { useAppStore, toggleCodeMode, toggleProjectsMode, toggleStudyMode } from "@/state/appStore";
+import {
+  useAppStore,
+  toggleCodeMode,
+  toggleProjectsMode,
+  toggleStudyMode,
+  toggleInvestMode,
+} from "@/state/appStore";
 import { quitApp } from "@/app/quit";
 import { focusAdjacentProject } from "@/projects/store";
 import { isProjectPath } from "@/projects/model";
@@ -60,7 +66,8 @@ function applyWebZoom(direction: 1 | -1): void {
 /** Whether the current layout mounts the agent panel (the focus target of ⌘⌥A). */
 function hasAgentPanel(): boolean {
   const mode = useAppStore.getState().mode;
-  return mode === "study" || mode === "code";
+  // Invest mode mounts the agent panel in the middle column (list | agent-or-market | notes).
+  return mode === "study" || mode === "code" || mode === "invest";
 }
 
 /**
@@ -282,6 +289,14 @@ const defs: CommandDef[] = [
     category: "视图",
     run: () => {
       toggleProjectsMode();
+    },
+  },
+  {
+    id: "view.toggle-invest-mode",
+    title: "进入 / 退出投资模式(左标的、中 K 线与详情、右笔记;⌘⌥←/→切换标的)",
+    category: "视图",
+    run: () => {
+      toggleInvestMode();
     },
   },
   // ---- Focus mode (pomodoro + exclusive lock) ----
@@ -859,6 +874,237 @@ const defs: CommandDef[] = [
       } catch (e) {
         useAppStore.getState().showToast(`切换失败: ${String(e)}`);
       }
+    },
+  },
+  // ---- Invest mode (the invest region) ----
+  // The same split of duties as the project commands: the store owns the
+  // state, the command layer only signals (the layout runs the action).
+  {
+    id: "invest.next-instrument",
+    title: "投资:切换到下一个标的/板块(⌘⌥→)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-cycle", { detail: 1 }));
+    },
+  },
+  {
+    id: "invest.prev-instrument",
+    title: "投资:切换到上一个标的/板块(⌘⌥←)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-cycle", { detail: -1 }));
+    },
+  },
+  {
+    id: "invest.next-doc",
+    title: "投资:下一个标的文档 Tab",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-doc", { detail: 1 }));
+    },
+  },
+  {
+    id: "invest.prev-doc",
+    title: "投资:上一个标的文档 Tab",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-doc", { detail: -1 }));
+    },
+  },
+  {
+    id: "invest.toggle-sector-view",
+    title: "投资:标的视图 ↔ 板块视图(⌘⌥S)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-toggle-view"));
+    },
+  },
+  {
+    // B9: the middle column is permanent now, so this chord brings the LEFT
+    // column back to the list instead of hiding the agent.
+    id: "invest.focus-market",
+    title: "投资:左栏切回标的列表(K 线 + 详情常驻中栏)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-focus-list"));
+    },
+  },
+  {
+    id: "invest.focus-agent",
+    title: "投资:左栏切到 AI 分析(分析当前标的)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-focus-agent"));
+    },
+  },
+  {
+    id: "invest.search-knowledge",
+    title: "投资:全局知识检索(跨标的全文搜索)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-knowledge"));
+    },
+  },
+  {
+    // C15: the same-hexin convention — bare ↑/↓ walk the FILTERED list (the
+    // search box is never cleared), Enter opens the scope's document.
+    id: "invest.list-up",
+    title: "投资:列表上一个标的(↑,按当前过滤结果)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-list-move", { detail: -1 }));
+    },
+  },
+  {
+    id: "invest.list-down",
+    title: "投资:列表下一个标的(↓,按当前过滤结果)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-list-move", { detail: 1 }));
+    },
+  },
+  {
+    id: "invest.open-doc",
+    title: "投资:打开当前标的的文档(Enter)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-open-doc"));
+    },
+  },
+  {
+    // C17: TradingView-style chart keys. The step/scale travel as detail.
+    id: "invest.kline-scroll-left",
+    title: "投资:K 线向左平移(←)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-kline-scroll", { detail: -1 }));
+    },
+  },
+  {
+    id: "invest.kline-scroll-right",
+    title: "投资:K 线向右平移(→)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-kline-scroll", { detail: 1 }));
+    },
+  },
+  {
+    id: "invest.kline-zoom-out",
+    title: "投资:K 线缩小(-)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-kline-zoom", { detail: 0.8 }));
+    },
+  },
+  {
+    id: "invest.kline-zoom-in",
+    title: "投资:K 线放大(=)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-kline-zoom", { detail: 1.25 }));
+    },
+  },
+  // C18: ⌘⌥1..7 land on the Nth detail tab of the current scope kind.
+  ...(
+    [
+      ["1", "行情"],
+      ["2", "资金流"],
+      ["3", "财务"],
+      ["4", "事件"],
+      ["5", "知识"],
+      ["6", "预测"],
+      ["7", "回测"],
+    ] as const
+  ).map(([n, label]) => ({
+    id: `invest.detail-tab-${n}`,
+    title: `投资:详情切到「${label}」(⌘⌥${n})`,
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-detail-tab", { detail: Number(n) }));
+    },
+  })),
+  {
+    id: "invest.kline-period-day",
+    title: "投资:K 线切到日 K",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    keepsPageFocus: true,
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-period", { detail: "1d" }));
+    },
+  },
+  {
+    id: "invest.kline-period-week",
+    title: "投资:K 线切到周 K",
+    category: "投资",
+    keepsPageFocus: true,
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-period", { detail: "1w" }));
+    },
+  },
+  {
+    id: "invest.kline-period-month",
+    title: "投资:K 线切到月 K",
+    category: "投资",
+    keepsPageFocus: true,
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-period", { detail: "1M" }));
+    },
+  },
+  {
+    id: "invest.forecast-replay",
+    title: "投资:用当前 Skill 回放一次预测(截至 10 个交易日前)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-forecast"));
+    },
+  },
+  {
+    id: "invest.backtest-run",
+    title: "投资:跑一次 ma_cross 基准回测",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-backtest"));
+    },
+  },
+  {
+    id: "invest.import-data",
+    title: "投资:导入数据(标的 / K 线 / 财务 / 资金流,akshare JSON)",
+    category: "投资",
+    when: () => useAppStore.getState().mode === "invest",
+    run: () => {
+      window.dispatchEvent(new CustomEvent("bnote:invest-import"));
     },
   },
   {

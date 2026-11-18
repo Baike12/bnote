@@ -50,7 +50,11 @@ export function startSplitDrag({
   const hostRect = host.getBoundingClientRect();
   // A collapsed host cannot be measured: the drag would divide by nothing.
   if ((axis === "y" ? hostRect.height : hostRect.width) <= 0) return;
-  event.preventDefault();
+  // No preventDefault here: it would suppress the compatibility mouse events,
+  // so the browser never synthesizes click/dblclick — the invest divider's
+  // double-click reset (E2E investLayout) silently died that way. Text
+  // selection from the handle is prevented by CSS (`user-select: none` on the
+  // resizer classes), not by swallowing the event chain.
 
   const handle = event.currentTarget;
   handle.classList.add("dragging");

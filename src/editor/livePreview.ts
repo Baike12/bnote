@@ -510,6 +510,11 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   const out: DecorationSink = { inline: [] };
   const claimed: Interval[] = []; // replace-decorations must not overlap
 
+  // An empty document exposes no visible ranges: `Math.min()` over an empty
+  // array is Infinity and `doc.lineAt(Infinity)` throws (blind test: every
+  // empty note crashed the inline decorations). Nothing to decorate anyway.
+  if (doc.length === 0 || visible.length === 0) return Decoration.set([]);
+
   const active = (from: number, to: number) => selections.some((r) => r.from <= to && r.to >= from);
 
   const activeLine = (lineFrom: number, lineTo: number) => active(lineFrom, lineTo);

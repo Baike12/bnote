@@ -51,6 +51,7 @@ import { JsonFilePane } from "@/components/JsonFilePane";
 import { StudyLayout } from "@/components/study/StudyLayout";
 import { CodeLayout } from "@/components/code/CodeLayout";
 import { ProjectsLayout } from "@/components/projects/ProjectsLayout";
+import { InvestLayout } from "@/components/invest/InvestLayout";
 import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { LinkSuggest } from "@/components/study/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -70,6 +71,7 @@ import { normalizePageStep } from "@/study/reading";
 import { normalizeWebZoom } from "@/study/webZoom";
 import { normalizeAgentFont } from "@/study/agentFont";
 import { normalizeDailyWidth, normalizeSideWidth } from "@/projects/layoutModel";
+import { normalizeInvestWidth } from "@/invest/layoutModel";
 import { normalizeTreeWidth } from "@/code/treeWidth";
 import { normalizeTermHeight } from "@/code/term/tabs";
 import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
@@ -156,6 +158,14 @@ export default function App() {
       // fall back to the defaults.
       settings.projectsSideWidth = normalizeSideWidth(settings.projectsSideWidth);
       settings.projectsDailyWidth = normalizeDailyWidth(settings.projectsDailyWidth);
+      // The invest layout has its own two column widths; same clamping
+      // discipline as the other layouts (a legacy config has neither key, a
+      // hand-edited broken value falls back to the default).
+      settings.investSideWidth = normalizeInvestWidth(settings.investSideWidth, window.innerWidth);
+      settings.investContentWidth = normalizeInvestWidth(
+        settings.investContentWidth,
+        window.innerWidth,
+      );
       // Code project file tree width: a legacy config has no such key, so 190px
       // applies and a broken value falls back to the default.
       settings.codeTreeWidth = normalizeTreeWidth(settings.codeTreeWidth);
@@ -398,6 +408,8 @@ export default function App() {
         <CodeLayout />
       ) : mode === "study" ? (
         <StudyLayout />
+      ) : mode === "invest" ? (
+        <InvestLayout />
       ) : (
         <>
           <div

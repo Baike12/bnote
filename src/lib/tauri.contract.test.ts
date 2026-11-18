@@ -16,7 +16,7 @@ const invokeMock = vi.hoisted(() => vi.fn(async (_command: string, _args?: unkno
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
-import { agentApi, api, bblogApi, focusApi, homeApi, translateApi } from "./tauri";
+import { agentApi, api, bblogApi, focusApi, homeApi, investApi, translateApi } from "./tauri";
 
 type Calls = Record<string, string>;
 
@@ -34,6 +34,7 @@ function boundaries(): Boundary[] {
     bblogApi,
     focusApi,
     homeApi,
+    investApi,
     translateApi,
   };
   for (const [group, object] of Object.entries(groups)) {
@@ -145,5 +146,28 @@ describe("payload fields keep the names the Rust commands deserialize", () => {
   it("translate commands send the selection text", async () => {
     await translateApi.selection("hello");
     expect(invokeMock).toHaveBeenLastCalledWith("translate_selection", { text: "hello" });
+  });
+
+  it("an invest session binds its scope (null when the session is not scoped)", async () => {
+    await agentApi.startSession(
+      null,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "invest",
+      undefined,
+      undefined,
+      "stock:600519",
+    );
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      "agent_start_session",
+      expect.objectContaining({ mode: "invest", investScope: "stock:600519" }),
+    );
+    await agentApi.startSession(null);
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      "agent_start_session",
+      expect.objectContaining({ investScope: null }),
+    );
   });
 });

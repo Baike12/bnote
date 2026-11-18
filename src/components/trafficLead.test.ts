@@ -63,10 +63,17 @@ describe("the focused swap keeps the column widths, not the pane widths", () => 
     expect(rule).toMatch(/width:\s*var\(--content-w\)/);
   });
 
-  it("dragging follows the same rule: a divider edits its two columns, whichever pane sits there", () => {
+  it("dragging goes through the seam functions, never the raw drag model", () => {
+    // docs/TESTING.md registry "seam drift": a component that calls the
+    // propagation model directly can pass measurements in the wrong argument
+    // positions (the shipped divider bug). The call shape must live in the
+    // model module's seam functions; raw dragLeftEdge/dragMiddleEdge calls in
+    // a component file are the bug reintroduced.
     for (const layout of [studyLayout, codeLayout]) {
-      expect(layout).toMatch(/dragLeftEdge\(/);
-      expect(layout).toMatch(/dragMiddleEdge\(/);
+      expect(layout).toMatch(/leftDividerWidths\(/);
+      expect(layout).toMatch(/middleDividerWidth\(/);
+      expect(layout).not.toMatch(/dragLeftEdge\(/);
+      expect(layout).not.toMatch(/dragMiddleEdge\(/);
       // No "swap the roles of the widths while swapped" mapping: that was the
       // pane-width model (each pane dragging its own width around).
       expect(layout).not.toMatch(/swapped\s*\?\s*widths\./);

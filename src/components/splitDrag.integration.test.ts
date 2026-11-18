@@ -108,6 +108,24 @@ describe("startSplitDrag", () => {
     up();
   });
 
+  it("does not preventDefault on pointerdown — the click/dblclick chain must survive", () => {
+    const { host, event } = setup();
+    startSplitDrag({
+      event,
+      host,
+      variables: ["--a"],
+      stored: { "--a": 200 },
+      compute: (delta) => ({ "--a": 200 + delta }),
+      commit: vi.fn(),
+    });
+    // preventDefault on pointerdown suppresses the compatibility mouse
+    // events, so the browser never synthesizes click/dblclick and the invest
+    // divider's double-click reset silently died (found by the E2E gesture
+    // spec; text selection is prevented by CSS on the resizer classes).
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    up();
+  });
+
   it("commits the pointer's final position when it arrived after the last frame", () => {
     const { host, event } = setup();
     const onMove = vi.fn();

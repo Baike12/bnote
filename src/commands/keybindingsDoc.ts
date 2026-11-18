@@ -48,6 +48,8 @@ const REGION_SCOPE: Record<KeyRegion, string> = {
   project:
     "Active in the project view. The editing keys of the notes region still work; project actions take precedence.",
   code: "Active while the code editor has focus. A separate world: `Cmd+S` saves the code file, `Cmd+Shift+O` opens a file by name. Only a few app-level commands are inherited.",
+  invest:
+    "Active while the invest mode's list / chart / detail panes have focus: instrument switching, period switches, the sector view toggle. The notes column stays in the notes region, the agent panel in the agent region.",
 };
 
 /** Commands that are deliberately unbound (documented in the README instead of a row). */

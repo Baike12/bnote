@@ -30,6 +30,7 @@ const DOMAINS = [
   "study",
   "code",
   "projects",
+  "invest",
   "focus",
   "python",
   "state",

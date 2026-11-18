@@ -105,6 +105,7 @@ pub enum SessionMode {
     Study,
     Creative,
     Coding,
+    Invest,
 }
 
 impl From<SessionMode> for super::home::AgentMode {
@@ -113,6 +114,7 @@ impl From<SessionMode> for super::home::AgentMode {
             SessionMode::Study => super::home::AgentMode::Study,
             SessionMode::Creative => super::home::AgentMode::Creative,
             SessionMode::Coding => super::home::AgentMode::Coding,
+            SessionMode::Invest => super::home::AgentMode::Invest,
         }
     }
 }
@@ -127,6 +129,7 @@ impl SessionMode {
             SessionMode::Study => "study",
             SessionMode::Creative => "creative",
             SessionMode::Coding => "coding",
+            SessionMode::Invest => "invest",
         }
     }
 
@@ -135,6 +138,7 @@ impl SessionMode {
             None | Some("") | Some("study") => Ok(SessionMode::Study),
             Some("creative") => Ok(SessionMode::Creative),
             Some("coding") => Ok(SessionMode::Coding),
+            Some("invest") => Ok(SessionMode::Invest),
             other => Err(format!("INVALID_MODE: 未知的会话模式 {other:?}")),
         }
     }
@@ -1213,6 +1217,10 @@ impl Session {
         let mut stop_blocks = 0u32;
         // The one extra round a subagent gets to hand in its report at the cap.
         let mut report_requests = 0u32;
+        // G28 (blind test F P2-15): the cap hit mid-exploration reads as the
+        // model going silent — one warning while rounds remain tells it to
+        // converge instead.
+        let mut warned_near_limit = false;
         loop {
             if self.ctx.abort.is_aborted() {
                 return Ok(TurnOutcome::new("aborted"));
@@ -1409,6 +1417,19 @@ impl Session {
             }
             if self.ctx.abort.is_aborted() {
                 return Ok(TurnOutcome::new("aborted"));
+            }
+            // G28: two rounds before the cap, tell the model to stop opening
+            // new lines and start converging (once per run).
+            if !warned_near_limit && max_turns > 2 && turn_count + 2 == max_turns {
+                warned_near_limit = true;
+                self.emit(AgentEvent::Notice {
+                    text: "接近轮次上限,提醒模型收敛".into(),
+                });
+                if let Ok(mut items) = self.items.lock() {
+                    items.push(ChatItem::user_text(
+                        "<system-reminder>剩余工具轮次还有 2 轮。停止开启新的查证线索,立即收敛：先输出阶段性结论与证据清单,再继续。</system-reminder>",
+                    ));
+                }
             }
             if turn_count >= max_turns {
                 // A subagent that runs out of steps mid-exploration has done
@@ -2234,6 +2255,7 @@ impl Session {
             bg: Arc::new(BgRegistry::new()),
             read_paths: Mutex::new(Vec::new()),
             extra_roots: Vec::new(),
+            invest_scope: self.ctx.invest_scope.clone(),
         });
         let workdir_s = self
             .ctx

@@ -132,6 +132,33 @@ export function dragLeftEdge(x: number, hostWidth: number, sum: number): ColumnW
 }
 
 /**
+ * The **seam** between the layout components and the drag model: the call
+ * shape lives here so a component cannot pass measurements in the wrong
+ * argument positions (docs/TESTING.md registry, "seam drift"). The
+ * divider-drag incident shipped exactly this bug in a sibling layout.
+ *
+ * Measurements are taken once at pointerdown; `dx` is the pointer offset.
+ */
+export function leftDividerWidths(
+  m: { leftWidth: number; middleWidth: number; hostWidth: number },
+  dx: number,
+): ColumnWidths {
+  return dragLeftEdge(m.leftWidth + RESIZER_WIDTH + dx, m.hostWidth, m.leftWidth + m.middleWidth);
+}
+
+/** The middle|notes divider: the middle column absorbs the pointer offset. */
+export function middleDividerWidth(
+  m: { middleLeft: number; middleWidth: number; hostWidth: number },
+  dx: number,
+): number {
+  return dragMiddleEdge(
+    m.middleLeft + m.middleWidth + RESIZER_WIDTH + dx,
+    m.hostWidth,
+    m.middleLeft,
+  ).middle;
+}
+
+/**
  * Drag the middle|notes divider: the width transfers between the middle and
  * notes columns, the left column stays put.
  *

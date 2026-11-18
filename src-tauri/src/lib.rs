@@ -9,6 +9,7 @@ pub mod dict;
 pub mod ime_daemon;
 #[cfg(target_os = "macos")]
 pub mod ime_tis;
+pub mod invest;
 pub mod lsp;
 mod paths;
 mod state;
@@ -234,6 +235,7 @@ pub fn run() {
                 code_trees: std::sync::Mutex::new(std::collections::HashMap::new()),
                 code_watcher: std::sync::Mutex::new(None),
                 terminals: term::TermManager::new(),
+                invest_db: std::sync::Arc::new(std::sync::Mutex::new(None)),
             });
 
             #[cfg(target_os = "macos")]
@@ -385,6 +387,43 @@ pub fn run() {
             commands::term::term_resize,
             commands::term::term_close,
             commands::term::term_close_all,
+            commands::invest::invest_list_instruments,
+            commands::invest::invest_set_watch,
+            commands::invest::invest_kline_query,
+            commands::invest::invest_kline_import,
+            commands::invest::invest_snapshot,
+            commands::invest::invest_quote_overview,
+            commands::invest::invest_event_add,
+            commands::invest::invest_snapshot_refresh,
+            commands::invest::invest_fund_flow,
+            commands::invest::invest_financials,
+            commands::invest::invest_import_data,
+            commands::invest::invest_list_sectors,
+            commands::invest::invest_sector_bars,
+            commands::invest::invest_sector_members,
+            commands::invest::invest_ensure_scope_docs,
+            commands::invest::invest_list_docs,
+            commands::invest::invest_read_doc,
+            commands::invest::invest_write_doc,
+            commands::invest::invest_search_knowledge,
+            commands::invest::invest_graph_view,
+            commands::invest::invest_events,
+            commands::invest::invest_recent_events,
+            commands::invest::invest_ingest_run,
+            commands::invest::invest_read_sources,
+            commands::invest::invest_save_sources,
+            commands::invest::invest_read_quotes,
+            commands::invest::invest_save_quotes,
+            commands::invest::invest_read_skill,
+            commands::invest::invest_write_skill,
+            commands::invest::invest_skill_learned_edit,
+            commands::invest::invest_forecast_replay,
+            commands::invest::invest_forecast_settle,
+            commands::invest::invest_forecasts,
+            commands::invest::invest_forecast_accuracy,
+            commands::invest::invest_backtest_run,
+            commands::invest::invest_backtest_list,
+            commands::invest::invest_backtest_delete,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

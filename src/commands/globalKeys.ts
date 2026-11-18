@@ -94,7 +94,7 @@ export type FocusRegion = Exclude<KeyRegion, "global">;
  * never reaches it. It gets the keyboard through "the user acted inside it"
  * (owner) or "focus is inside it" (focus), not through this fallback list.
  */
-const FOCUS_REGIONS: FocusRegion[] = ["reading", "project", "notes", "agent", "code"];
+const FOCUS_REGIONS: FocusRegion[] = ["reading", "project", "notes", "agent", "code", "invest"];
 const FOCUS_REGION_SET = new Set<string>(FOCUS_REGIONS);
 
 let ownerRegion: FocusRegion | null = null;
@@ -193,16 +193,22 @@ export function runBoundKey(key: string, region: FocusRegion): boolean {
 }
 
 export function installGlobalKeybindings() {
-  // The four writers of region ownership: all of them are "the user acted"
-  // events; synthetic events (tooltips, programmatic focus) do not count.
-  // Scrolling is registered passive: scrolling is a hot path and the listener
-  // must not slow it down.
+  // The writers of region ownership: all of them are "the user acted" events.
+  // **focusin is not one of them**: a programmatic .focus() fires a
+  // *trusted* focusin (the UA dispatches it), so no flag can separate it from
+  // a user-driven focus change — and every document swap (openFile → the
+  // editor re-focus) would silently steal the keyboard ownership from the
+  // region the user last clicked (observed in invest mode: the second ⌘⌥→
+  // after a scope switch landed in notes and dropped). A focus the user did
+  // drive is either a click (pointerdown claims it) or a fallback case
+  // (pickKeyRegion reads document.activeElement directly). Scrolling is
+  // registered passive: scrolling is a hot path and the listener must not
+  // slow it down.
   const claimRegion = (event: Event) => {
     const region = regionFromTarget(event.target);
     if (region) ownerRegion = region;
   };
   window.addEventListener("pointerdown", claimRegion, true);
-  window.addEventListener("focusin", claimRegion, true);
   window.addEventListener("wheel", claimRegion, { capture: true, passive: true });
   window.addEventListener("touchmove", claimRegion, { capture: true, passive: true });
 

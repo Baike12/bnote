@@ -24,8 +24,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -58,7 +56,10 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --test command_surface
+      # Every test target: command surface, agent cassettes (offline replay),
+      # ime architecture/daemon, prompt cache, request log wiring — tests the
+      # CI never ran are locks the CI never enforces.
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --tests
 
   perf:
     name: perf gates
@@ -74,14 +75,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test:perf
+      # The runner is controlled: a skip here is a failure, not a silence.
+      - run: BNOTE_PERF_REQUIRE=1 pnpm test:perf
 
   e2e:
     name: native e2e (macOS)
@@ -97,8 +97,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22

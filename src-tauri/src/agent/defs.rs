@@ -236,6 +236,35 @@ pub fn registry() -> Vec<AgentDefinition> {
             thinking: None,
         },
         AgentDefinition {
+            id: "invest".into(),
+            name: "投资助手".into(),
+            description: "投资模式:对当前标的/板块做数据分析与走势预测,维护该标的专属的预测技能。"
+                .into(),
+            tools: tools(&[
+                "Read",
+                "Write",
+                "Edit",
+                "LS",
+                "Glob",
+                "Grep",
+                "WebFetch",
+                "read_skill",
+                "TodoWrite",
+                "TodoRead",
+                "AskUserQuestion",
+            ]),
+            permissions: BTreeMap::new(),
+            compaction: CompactionCfg::default(),
+            subagents: Vec::new(),
+            prompts: vec![include_str!(
+                "../../resources/agents/invest/SYSTEM_PROMPT.md"
+            )],
+            model: String::new(),
+            max_tokens: 0,
+            max_turns: 0,
+            thinking: None,
+        },
+        AgentDefinition {
             id: "study".into(),
             name: "学习助手".into(),
             description: "围绕当前 PDF / 网页的纯问答助手,不注册任何工具。".into(),

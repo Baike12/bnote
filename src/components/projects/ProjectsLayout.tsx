@@ -22,9 +22,8 @@ import { TODO_DRAG_MIME, encodeTodoDrag, projectTodoDragExtension } from "@/proj
 import {
   DEFAULT_DAILY_WIDTH,
   DEFAULT_SIDE_WIDTH,
-  RESIZER_WIDTH,
-  dragDailyEdge,
-  dragSideEdge,
+  dailyDividerWidth,
+  sideDividerWidth,
 } from "@/projects/layoutModel";
 import { focusEditor } from "@/editor/api";
 import { setActiveKeyRegion } from "@/commands/globalKeys";
@@ -198,10 +197,12 @@ export function ProjectsLayout() {
       host,
       variables: ["--side-src"],
       stored: { "--side-src": sideWidth },
-      compute: (dx) => {
-        const side = dragSideEdge(side0 + RESIZER_WIDTH + dx, hostRect.width, daily0);
-        return { "--side-src": side };
-      },
+      compute: (dx) => ({
+        "--side-src": sideDividerWidth(
+          { sideWidth: side0, dailyWidth: daily0, hostWidth: hostRect.width },
+          dx,
+        ),
+      }),
       commit: (values) => patchSettings({ projectsSideWidth: values["--side-src"] }),
     });
   }
@@ -223,7 +224,10 @@ export function ProjectsLayout() {
       variables: ["--daily-src"],
       stored: { "--daily-src": dailyWidth },
       compute: (dx) => ({
-        "--daily-src": dragDailyEdge(dailyLeft + dx, hostRect.width, side0),
+        "--daily-src": dailyDividerWidth(
+          { dailyLeft, hostWidth: hostRect.width, sideWidth: side0 },
+          dx,
+        ),
       }),
       commit: (values) => patchSettings({ projectsDailyWidth: values["--daily-src"] }),
     });

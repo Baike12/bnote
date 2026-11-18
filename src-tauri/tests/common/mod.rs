@@ -227,6 +227,8 @@ pub async fn harness(provider: Arc<bnote_lib::agent::Provider>) -> Harness {
         bg: Arc::new(BgRegistry::new()),
         read_paths: Mutex::new(Vec::new()),
         extra_roots: Vec::new(),
+        // The harness tests no invest flow; the scope stays unset.
+        invest_scope: None,
     });
     let selection = ModelSelection {
         provider_id: provider.provider_id.clone(),

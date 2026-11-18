@@ -31,6 +31,7 @@ pub enum AgentMode {
     Coding,
     Creative,
     Study,
+    Invest,
 }
 
 impl AgentMode {
@@ -39,6 +40,7 @@ impl AgentMode {
             AgentMode::Coding => "coding",
             AgentMode::Creative => "creative",
             AgentMode::Study => "study",
+            AgentMode::Invest => "invest",
         }
     }
 
@@ -47,6 +49,7 @@ impl AgentMode {
             "coding" => Some(AgentMode::Coding),
             "creative" => Some(AgentMode::Creative),
             "study" => Some(AgentMode::Study),
+            "invest" => Some(AgentMode::Invest),
             _ => None,
         }
     }

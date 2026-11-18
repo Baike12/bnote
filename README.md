@@ -88,7 +88,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust tests
 
 The layer boundaries, coverage policy and E2E protocol are in [docs/TESTING.md](docs/TESTING.md).
 
-## Four modes
+## Five modes
 
 | Mode | Layout | How to enter |
 | --- | --- | --- |
@@ -96,9 +96,10 @@ The layer boundaries, coverage policy and E2E protocol are in [docs/TESTING.md](
 | **Study** | Agent \| content \| notes | `Cmd+Shift+S` |
 | **Code** | Agent \| code project \| notes | command palette (unbound by default, see below) |
 | **Projects** | project list \| board \| daily note | `Cmd+Shift+P` |
+| **Invest** | instrument list \| K-line + details \| notes | `Cmd+Alt+I` |
 
 - Exactly one mode is active at a time; switching modes does not rebuild CodeMirror instances, so scroll position, folds, and decorations survive.
-- Study and code mode both use three columns with two draggable dividers. The first two widths are stored in pixels (`studyAgentWidth` / `studyContentWidth` and `codeAgentWidth` / `codeContentWidth` separately) and the third column takes the rest; a narrow window clamps the first two with CSS without rewriting your preference.
+- Study, code, and invest mode all use three columns with two draggable dividers. The first two widths are stored in pixels (`studyAgentWidth` / `studyContentWidth`, `codeAgentWidth` / `codeContentWidth`, and `investSideWidth` / `investContentWidth` separately) and the third column takes the rest; a narrow window clamps the first two with CSS without rewriting your preference.
 - **Code mode has no default shortcut**: `Cmd+Shift+C` is "insert code block". Bind `view.toggle-code-mode` in the `global` section of `keybindings.json` if you want one.
 
 ## Editor
@@ -227,6 +228,18 @@ Code mode is a **mode of its own**, unrelated to the vault: ask the agent on the
 - Todos drag between columns (children follow their parent); the column header shows the project name and open count
 - Create / delete: `Cmd+Shift+N` creates, `Cmd+Backspace` moves the current project to the trash (project region only); the context menu and the `⋯` header menu offer the same actions
 - `Cmd+Shift+J` inserts the current todo at the **top** of today's daily todo area (in the notes region the same key appends to the end)
+
+## Invest mode
+
+- Layout: **instrument list | K-line + details | notes**, entered with `Cmd+Alt+I`. The LEFT column toggles between the instrument list and the agent (`Cmd+Alt+A` analysis / `Cmd+Alt+R` back to the list) while the middle column keeps the chart + details permanently; ⌘⌥←/→ walk instruments/sectors
+- Keyboard workflow (the same-hexin/TradingView conventions): bare ↑/↓ walk the *filtered* instrument list, typing any character jumps into the search box (the keyboard sprite), `Enter` opens the scope's document; the chart pans with `←`/`→` and zooms with `-`/`=`; detail tabs take `Cmd+Alt+1..7`, `Cmd+Alt+F` replays a forecast, `Cmd+Alt+B` runs the backtest, `Cmd+Alt+P` searches all knowledge
+- Local-first market data: everything lives in `<vault>/.bnote/invest/invest.db` (SQLite) plus plain Markdown under `.bnote/invest/`. Import offline exports with 「导入数据」 (akshare JSON: bars / snapshots / fund flow / financials / sectors + instrument master; sector index bars take `bar_kind: "sector"`; the instrument's `market` field routes its bars/financials/fund flow — hk = 5-digit codes, us = alphabetic codes); live snapshots come from Tencent's public quote endpoint for **cn / hk / us** (A-shares get limit prices/turnover/volume ratio; hk/us are denominated and labelled in their listing currency HKD/USD, no price-limit regime)
+- The instrument list carries the 31 SW (Shenwan) level-1 industry sectors as the sector taxonomy; sectors and stocks share one scope address (`stock:600519` / `sector:801010`) that drives the chart, the details, the notes tabs, and the agent session
+- Details pane: snapshot, fund flow, financials, an events feed, knowledge search (FTS5 over documents and events with CJK bigram tokenization), forecast replay accuracy, and backtest runs
+- Hot-topic ingestion: configure RSS/JSON/HTML sources in `.bnote/invest/sources.yaml`, press 摄取热点 — items are fetched, filtered, tagged, stored in the DB, and archived per day under `.bnote/invest/feed/<date>/`
+- Pluggable quote sources: `.bnote/invest/quotes.yaml` declares providers (one URL template + a `path:`/`idx:` field map per market, optionally scaled by `*n`/`/n`); the built-in Tencent source is just the default provider set, so a Yahoo-style JSON feed or an internal vendor needs no code — `invest_read_quotes` / `invest_save_quotes` validate the file before it lands on disk
+- Per-scope analysis skills: each stock/sector gets a `SKILL.md` + `MEMORY.md` pair under `.bnote/invest/skills/` with version snapshots and a protected LEARNED block; the agent's `read_skill` tool reads exactly the session's scope, nothing else
+- Prediction loop: replay a rule forecast as of T-10 sessions, score it against the actual move (direction + magnitude), and let the agent revise the skill — a `skill_signal` strategy also plugs the skill into the built-in backtester (T+1 fills, commissions, Sharpe/drawdown/win-rate), alongside the `ma_cross` baseline
 
 ## Daily notes, todos, and footprints
 

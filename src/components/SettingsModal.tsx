@@ -48,7 +48,13 @@ export function SettingsModal() {
   // Notes mode has no agent of its own; it shows the study shape, which is the
   // shape shared by the plain Q&A assistant.
   const agentMode: AgentMode =
-    mode === "code" ? "coding" : mode === "study" && creativeMode ? "creative" : "study";
+    mode === "code"
+      ? "coding"
+      : mode === "invest"
+        ? "invest"
+        : mode === "study" && creativeMode
+          ? "creative"
+          : "study";
   const workdir = agentMode === "coding" ? (codeProject?.path ?? null) : null;
 
   // The modal keeps its state after closing, so a tab chosen in one mode would

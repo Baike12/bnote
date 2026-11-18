@@ -135,6 +135,13 @@ fn set_vault_blocking(
         eprintln!("[bnote] kanban projects moved to .bnote/projects-manager: {moved}");
     }
 
+    // The invest mode's local database opens with the vault (`.bnote/invest/
+    // invest.db`). A failure is logged, not fatal: the mode degrades to an
+    // empty workspace and the next vault open retries.
+    if let Err(e) = state.open_invest_db(&root) {
+        eprintln!("[bnote] invest db: {e}");
+    }
+
     // Images in notes are rendered through the asset protocol. The vault is the
     // only directory this window may read, and the grant happens here rather
     // than in the static scope because a vault can live anywhere on disk.

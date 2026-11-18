@@ -285,7 +285,11 @@ export async function openNote(path: string, line?: number): Promise<void> {
       },
     });
   }
-  view.focus();
+  // In invest mode the keyboard belongs to the market column (the same-hexin
+  // bare-↑/↓ walk): a scope switch loads the doc in the right column but must
+  // NOT steal focus — otherwise the walk dies right after one row click
+  // (the editable-target guard would route the arrows to the caret).
+  if (useAppStore.getState().mode !== "invest") view.focus();
 }
 
 /**

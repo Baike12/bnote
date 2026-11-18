@@ -65,6 +65,8 @@ export default defineConfig({
         "src/**/*.integration.test.{ts,tsx}",
         "src/**/perf.gate.test.ts",
         "src/**/*.d.ts",
+        // The invest domain's type mirror of the Rust structs (no runtime).
+        "src/invest/types.ts",
         // React views are wiring: the project keeps behavior in plain modules
         // (AGENTS.md rule 4). Their flows are covered by E2E; component `.ts`
         // helpers (toolSummary, agentCards, …) stay in the measurement.
@@ -90,6 +92,10 @@ export default defineConfig({
         "src/daily/**": { lines: 95, statements: 92, functions: 92, branches: 88 },
         "src/editor/**": { lines: 78, statements: 76, functions: 71, branches: 71 },
         "src/footprint/**": { lines: 94, statements: 91, functions: 91, branches: 83 },
+        // Measured baseline (layoutModel 100%, store 89.5% lines) minus a
+        // 2-point margin; the store's untested tail is the toast/IPC catch
+        // paths covered by E2E.
+        "src/invest/**": { lines: 87, statements: 84, functions: 86, branches: 65 },
         "src/focus/**": { lines: 95, statements: 92, functions: 96, branches: 85 },
         "src/lib/**": { lines: 97, statements: 96, functions: 95, branches: 87 },
         "src/perf/**": { lines: 94, statements: 91, functions: 95, branches: 81 },

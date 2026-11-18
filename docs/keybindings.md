@@ -17,6 +17,7 @@ Active whatever has focus: palette, saving, switching modes.
 | `Cmd+\` | 显示/隐藏侧边栏 — `nav.toggle-sidebar` |
 | `Cmd+=` | 放大编辑区字号 — `view.zoom-in` |
 | `Cmd+0` | 重置编辑区字号 — `view.zoom-reset` |
+| `Cmd+Alt+I` | 进入 / 退出投资模式(左标的、中 K 线与详情、右笔记;⌘⌥←/→切换标的) — `view.toggle-invest-mode` |
 | `Cmd+Alt+T` | 专注:开始番茄钟(第一个时长;独占屏幕 + 硬锁,结束前不能退出) — `focus.pomodoro-start` |
 | `Cmd+I` | 聚焦侧边栏 — `nav.focus-sidebar` |
 | `Cmd+N` | 新建笔记 — `workspace.new-note` |
@@ -146,6 +147,40 @@ Active while the code editor has focus. A separate world: `Cmd+S` saves the code
 | `F8` | 下一个问题 — `code.next-problem` |
 | `Shift+F12` | 查找引用 — `code.find-references` |
 | `Shift+F8` | 上一个问题 — `code.prev-problem` |
+
+## 投资区 (`invest`)
+
+Active while the invest mode's list / chart / detail panes have focus: instrument switching, period switches, the sector view toggle. The notes column stays in the notes region, the agent panel in the agent region.
+
+| Key | Command |
+| --- | --- |
+| `-` | 投资:K 线缩小(-) — `invest.kline-zoom-out` |
+| `=` | 投资:K 线放大(=) — `invest.kline-zoom-in` |
+| `ArrowDown` | 投资:列表下一个标的(↓,按当前过滤结果) — `invest.list-down` |
+| `ArrowLeft` | 投资:K 线向左平移(←) — `invest.kline-scroll-left` |
+| `ArrowRight` | 投资:K 线向右平移(→) — `invest.kline-scroll-right` |
+| `ArrowUp` | 投资:列表上一个标的(↑,按当前过滤结果) — `invest.list-up` |
+| `Cmd+1` | 投资:K 线切到日 K — `invest.kline-period-day` |
+| `Cmd+2` | 投资:K 线切到周 K — `invest.kline-period-week` |
+| `Cmd+3` | 投资:K 线切到月 K — `invest.kline-period-month` |
+| `Cmd+Alt+1` | 投资:详情切到「行情」(⌘⌥1) — `invest.detail-tab-1` |
+| `Cmd+Alt+2` | 投资:详情切到「资金流」(⌘⌥2) — `invest.detail-tab-2` |
+| `Cmd+Alt+3` | 投资:详情切到「财务」(⌘⌥3) — `invest.detail-tab-3` |
+| `Cmd+Alt+4` | 投资:详情切到「事件」(⌘⌥4) — `invest.detail-tab-4` |
+| `Cmd+Alt+5` | 投资:详情切到「知识」(⌘⌥5) — `invest.detail-tab-5` |
+| `Cmd+Alt+6` | 投资:详情切到「预测」(⌘⌥6) — `invest.detail-tab-6` |
+| `Cmd+Alt+7` | 投资:详情切到「回测」(⌘⌥7) — `invest.detail-tab-7` |
+| `Cmd+Alt+A` | 投资:左栏切到 AI 分析(分析当前标的) — `invest.focus-agent` |
+| `Cmd+Alt+ArrowDown` | 投资:下一个标的文档 Tab — `invest.next-doc` |
+| `Cmd+Alt+ArrowLeft` | 投资:切换到上一个标的/板块(⌘⌥←) — `invest.prev-instrument` |
+| `Cmd+Alt+ArrowRight` | 投资:切换到下一个标的/板块(⌘⌥→) — `invest.next-instrument` |
+| `Cmd+Alt+ArrowUp` | 投资:上一个标的文档 Tab — `invest.prev-doc` |
+| `Cmd+Alt+B` | 投资:跑一次 ma_cross 基准回测 — `invest.backtest-run` |
+| `Cmd+Alt+F` | 投资:用当前 Skill 回放一次预测(截至 10 个交易日前) — `invest.forecast-replay` |
+| `Cmd+Alt+P` | 投资:全局知识检索(跨标的全文搜索) — `invest.search-knowledge` |
+| `Cmd+Alt+R` | 投资:左栏切回标的列表(K 线 + 详情常驻中栏) — `invest.focus-market` |
+| `Cmd+Alt+S` | 投资:标的视图 ↔ 板块视图(⌘⌥S) — `invest.toggle-sector-view` |
+| `Enter` | 投资:打开当前标的的文档(Enter) — `invest.open-doc` |
 
 ## Unbound on purpose
 

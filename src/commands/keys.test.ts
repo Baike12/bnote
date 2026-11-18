@@ -102,8 +102,14 @@ describe("default bindings", () => {
     expect(bindingsForCommand("study.pdf-prev-page")).toEqual(["PageUp", "ArrowLeft"]);
     expect(bindingsForCommand("study.pdf-next-page")).toEqual(["PageDown", "ArrowRight"]);
     const used = ["PageUp", "PageDown", "ArrowLeft", "ArrowRight"];
+    // C17 exempts the invest region's chart panning: the two regions never
+    // share a screen (invest mode has no reading content pane), the region
+    // dispatch resolves to exactly one of them, and fixedPageCommandFor —
+    // the only path that bypasses region dispatch for paging — runs only in
+    // the reading region.
+    const exempt = (id: string) => id.startsWith("study.pdf-") || id.startsWith("invest.kline-");
     const others = Object.entries(DEFAULT_BINDINGS).flatMap(([id, key]) => {
-      if (id.startsWith("study.pdf-")) return [];
+      if (exempt(id)) return [];
       return keysOf(key)
         .filter((k) => used.includes(k))
         .map((k) => `${id}:${k}`);
@@ -830,5 +836,43 @@ describe("binding equality", () => {
         reading: { "edit.toggle-bold": "Ctrl-b" },
       }),
     ).toEqual({ "edit.toggle-bold": "Ctrl-b", "nav.command-palette": "Mod-p" });
+  });
+});
+
+describe("user-override collisions", () => {
+  afterEach(() => reset());
+
+  it("an override colliding with another command in one region is named loudly", () => {
+    // The default keymap has a uniqueness gate, but user overrides bypass it
+    // (they are applied blindly per region) — so the conflict must be named
+    // at application time instead of silently shadowing one of the commands.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    applyOverrides({
+      notes: { "edit.insert-callout": "Mod-Shift-o", "workspace.capture-todo": "Mod-Shift-o" },
+    });
+    const reported = warn.mock.calls.map((c) => String(c.join(" "))).join("\n");
+    expect(reported).toContain("notes");
+    expect(reported).toContain("Mod-Shift-o");
+    expect(reported).toContain("edit.insert-callout");
+    expect(reported).toContain("workspace.capture-todo");
+    warn.mockRestore();
+  });
+
+  it("both commands stay reachable on a conflicted key (dispatch tries each)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    applyOverrides({
+      notes: { "edit.insert-callout": "Mod-Shift-o", "workspace.capture-todo": "Mod-Shift-o" },
+    });
+    const ids = commandsForKey("Mod-Shift-o", "notes");
+    expect(ids).toContain("edit.insert-callout");
+    expect(ids).toContain("workspace.capture-todo");
+    warn.mockRestore();
+  });
+
+  it("an unbinding override never warns (null unbinds, it cannot collide)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    applyOverrides({ notes: { "edit.insert-callout": null } });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

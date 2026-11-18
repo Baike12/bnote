@@ -71,6 +71,10 @@ regex = "1"
 # 作业控制、行编辑和光标控制。仿真在前端的 xterm.js,Rust 只负责会话与字节流。
 portable-pty = "0.9"
 
+# 投资模式的本地行情库(invest/db.rs):bundled 免系统依赖,单文件随 vault 走。
+# WAL + busy_timeout + 单写连接;命令线程短锁克隆数据,不持锁做网络工作。
+rusqlite = { version = "0.37", features = ["bundled"] }
+
 # 学习模式网页的笔形光标(commands/pen_cursor.rs):浏览器里 CSS 图片光标在
 # WKWebView 下每次鼠标移动都会被重建重设,只能由原生层给同一支 NSCursor。
 # 版本与 tauri 自身的依赖一致,不新增第二份 objc2。

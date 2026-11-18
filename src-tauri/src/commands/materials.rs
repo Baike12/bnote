@@ -817,7 +817,11 @@ pub async fn study_sessions_list(
     let vault = require_vault(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
         let parts: Vec<&str> = rel_dir.split('/').filter(|p| !p.is_empty()).collect();
-        if parts.first() != Some(&MATERIALS_DIR) || parts.iter().any(|p| *p == ".." || *p == ".") {
+        // Study materials live under `materials/`; invest sessions under
+        // `invest/` (the scope document directories, see invest::docs).
+        let allowed_root =
+            parts.first() == Some(&MATERIALS_DIR) || parts.first() == Some(&"invest");
+        if !allowed_root || parts.iter().any(|p| *p == ".." || *p == ".") {
             return Err(format!("INVALID_DIR: {}", rel_dir));
         }
         let dir = vault.join(".bnote").join(&rel_dir).join("sessions");
@@ -902,9 +906,11 @@ pub async fn study_session_set_title(
         let parts: Vec<&str> = rel_dir.split('/').filter(|p| !p.is_empty()).collect();
         // Study materials and sessions live under .bnote; creative sessions
         // never show up in the list, but the title is still written back to the
-        // file so the data is correct once that is supported.
-        let allowed_root =
-            parts.first() == Some(&MATERIALS_DIR) || parts.first() == Some(&"creative");
+        // file so the data is correct once that is supported. Invest sessions
+        // (the scope document directories) take the same title-write path.
+        let allowed_root = parts.first() == Some(&MATERIALS_DIR)
+            || parts.first() == Some(&"creative")
+            || parts.first() == Some(&"invest");
         if !allowed_root || parts.iter().any(|p| *p == ".." || *p == ".") {
             return Err(format!("INVALID_DIR: {}", rel_dir));
         }

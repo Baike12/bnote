@@ -138,14 +138,32 @@ describe("region ownership from input events", () => {
     expect(keyRegionOwner()).toBe("agent");
   });
 
+  it("a focusin never steals the ownership (a programmatic .focus() fires a *trusted* focusin)", () => {
+    // Regression: every document swap re-focuses the editor, and that focusin
+    // is trusted like any other — letting it claim the region stole the
+    // keyboard from the region the user last clicked (the second ⌘⌥→ after
+    // an invest scope switch silently landed in notes and dropped).
+    const invest = region("invest");
+    const notes = region("notes");
+
+    invest.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(keyRegionOwner()).toBe("invest");
+
+    notes.dispatchEvent(new Event("focusin", { bubbles: true }));
+    expect(keyRegionOwner()).toBe("invest");
+  });
+
   it("scrolling a region hands it the keyboard too: reading a PDF requires no click", () => {
     const reading = region("reading");
     reading.dispatchEvent(new Event("wheel", { bubbles: true }));
     expect(keyRegionOwner()).toBe("reading");
   });
 
-  it("the focused region wins when nothing owns the keyboard yet", () => {
-    region("notes");
+  it("the focused region wins when the owner is off screen (focus is the fallback)", () => {
+    // focusin no longer claims the region (a programmatic .focus() fires a
+    // trusted focusin too), so this exercises the real fallback: the owner
+    // is invisible → document.activeElement decides.
+    region("notes", false);
     region("agent");
     const input = document.createElement("input");
     region("agent").append(input);

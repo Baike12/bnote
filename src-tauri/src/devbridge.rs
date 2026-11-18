@@ -40,7 +40,8 @@ use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
 use crate::commands::{
-    agent, code, config, files, focus, home, materials, preview, python, term, translate, vault,
+    agent, code, config, files, focus, home, invest, materials, preview, python, term, translate,
+    vault,
 };
 use crate::state::AppState;
 
@@ -370,6 +371,13 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                         .map_err(|e| format!("BAD_ARGS: taskListId: {}", e))?,
                 ),
             };
+            let invest_scope: Option<String> = match args.get("investScope") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("BAD_ARGS: investScope: {}", e))?,
+                ),
+            };
             json_ok!(agent::agent_start_session(
                 app.clone(),
                 app.state(),
@@ -380,7 +388,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 selection,
                 mode,
                 workdir,
-                task_list_id
+                task_list_id,
+                invest_scope
             )
             .await)
         }
@@ -810,6 +819,209 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "term_close" => json_ok!(term::term_close(app.state(), arg_u64(args, "termId")?)),
         "term_close_all" => json_ok!(term::term_close_all(app.state())),
 
+        // ---- invest mode ----
+        "invest_list_instruments" => json_ok!(invest::invest_list_instruments(
+            app.state(),
+            optional_str(args, "query"),
+            arg_opt_bool(args, "watchOnly"),
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+        ).await),
+        "invest_set_watch" => json_ok!(invest::invest_set_watch(
+            app.state(),
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+            arg_bool(args, "watch")?,
+        ).await),
+        "invest_kline_query" => json_ok!(invest::invest_kline_query(
+            app.state(),
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+            optional_str(args, "from"),
+            optional_str(args, "to"),
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+            optional_str(args, "period"),
+        ).await),
+        "invest_kline_import" => json_ok!(invest::invest_kline_import(
+            app.state(),
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+            serde_json::from_value(arg_value(args, "bars")?)
+                .map_err(|e| format!("BAD_ARGS: bars: {}", e))?,
+        ).await),
+        "invest_snapshot" => json_ok!(invest::invest_snapshot(
+            app.state(),
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+        ).await),
+        "invest_quote_overview" => json_ok!(invest::invest_quote_overview(
+            app.state(),
+            optional_str(args, "market"),
+        ).await),
+        "invest_event_add" => json_ok!(invest::invest_event_add(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_str(args, "date")?,
+            arg_str(args, "kind")?,
+            arg_str(args, "title")?,
+            optional_str(args, "body"),
+            optional_str(args, "sentiment"),
+        ).await),
+        "invest_snapshot_refresh" => json_ok!(invest::invest_snapshot_refresh(
+            app.state(),
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+        ).await),
+        "invest_fund_flow" => json_ok!(invest::invest_fund_flow(
+            app.state(),
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+        ).await),
+        "invest_financials" => json_ok!(invest::invest_financials(
+            app.state(),
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+        ).await),
+        "invest_import_data" => json_ok!(invest::invest_import_data(
+            app.state(),
+            optional_str(args, "market"),
+            opt_json(args, "instruments")?,
+            opt_json(args, "sectors")?,
+            opt_json(args, "bars")?,
+            optional_str(args, "code"),
+            optional_str(args, "barKind"),
+            opt_json(args, "financials")?,
+            opt_json(args, "fundFlow")?,
+            opt_json(args, "snapshot")?,
+        ).await),
+        "invest_list_sectors" => json_ok!(invest::invest_list_sectors(app.state()).await),
+        "invest_sector_bars" => json_ok!(invest::invest_sector_bars(
+            app.state(),
+            arg_str(args, "code")?,
+            optional_str(args, "from"),
+            optional_str(args, "to"),
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+            optional_str(args, "period"),
+        ).await),
+        "invest_sector_members" => json_ok!(invest::invest_sector_members(
+            app.state(),
+            arg_str(args, "code")?,
+        ).await),
+        "invest_ensure_scope_docs" => json_ok!(invest::invest_ensure_scope_docs(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_str(args, "title")?,
+        ).await),
+        "invest_list_docs" => json_ok!(invest::invest_list_docs(
+            app.state(),
+            arg_str(args, "scope")?,
+        ).await),
+        "invest_read_doc" => json_ok!(invest::invest_read_doc(
+            app.state(),
+            arg_str(args, "relPath")?,
+        ).await),
+        "invest_write_doc" => json_ok!(invest::invest_write_doc(
+            app.state(),
+            arg_str(args, "relPath")?,
+            arg_str(args, "content")?,
+            arg_str(args, "scope")?,
+            optional_str(args, "kind"),
+        ).await),
+        "invest_search_knowledge" => json_ok!(invest::invest_search_knowledge(
+            app.state(),
+            arg_str(args, "query")?,
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+        ).await),
+        "invest_graph_view" => json_ok!(invest::invest_graph_view(
+            app.state(),
+            arg_str(args, "name")?,
+            arg_str(args, "kind")?,
+        ).await),
+        "invest_events" => json_ok!(invest::invest_events(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+        ).await),
+        "invest_recent_events" => json_ok!(invest::invest_recent_events(
+            app.state(),
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+        ).await),
+        "invest_ingest_run" => json_ok!(invest::invest_ingest_run(app.state()).await),
+        "invest_read_sources" => json_ok!(invest::invest_read_sources(app.state()).await),
+        "invest_save_sources" => json_ok!(invest::invest_save_sources(
+            app.state(),
+            arg_str(args, "yaml")?,
+        ).await),
+        "invest_read_quotes" => json_ok!(invest::invest_read_quotes(app.state()).await),
+        "invest_save_quotes" => json_ok!(invest::invest_save_quotes(
+            app.state(),
+            arg_str(args, "yaml")?,
+        ).await),
+        "invest_read_skill" => json_ok!(invest::invest_read_skill(
+            app.state(),
+            arg_str(args, "scope")?,
+        ).await),
+        "invest_write_skill" => json_ok!(invest::invest_write_skill(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_str(args, "skill")?,
+            arg_str(args, "memory")?,
+            arg_bool(args, "snapshot")?,
+        ).await),
+        "invest_skill_learned_edit" => json_ok!(invest::invest_skill_learned_edit(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_str(args, "anchor")?,
+            arg_str(args, "content")?,
+            arg_bool(args, "replace")?,
+        ).await),
+        "invest_forecast_replay" => json_ok!(invest::invest_forecast_replay(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+            optional_str(args, "asOf"),
+            arg_opt_u64(args, "horizon").map(|v| v as usize),
+        ).await),
+        "invest_forecast_settle" => json_ok!(invest::invest_forecast_settle(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+            arg_opt_u64(args, "horizon").map(|v| v as usize),
+        ).await),
+        "invest_forecasts" => json_ok!(invest::invest_forecasts(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+        ).await),
+        "invest_forecast_accuracy" => json_ok!(invest::invest_forecast_accuracy(
+            app.state(),
+            arg_str(args, "scope")?,
+        ).await),
+        "invest_backtest_run" => json_ok!(invest::invest_backtest_run(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_str(args, "market")?,
+            arg_str(args, "code")?,
+            arg_str(args, "strategy")?,
+            arg_opt_u64(args, "fast").map(|v| v as usize),
+            arg_opt_u64(args, "slow").map(|v| v as usize),
+            optional_str(args, "start"),
+            optional_str(args, "end"),
+            arg_opt_value(args, "initialCash").and_then(|v| v.as_f64()),
+        ).await),
+        "invest_backtest_list" => json_ok!(invest::invest_backtest_list(
+            app.state(),
+            arg_str(args, "scope")?,
+            arg_opt_u64(args, "limit").map(|v| v as usize),
+        ).await),
+        "invest_backtest_delete" => json_ok!(invest::invest_backtest_delete(
+            app.state(),
+            arg_u64(args, "id")? as i64,
+        ).await),
+
         // ---- native views: no browser equivalent ----
         "show_study_preview" | "set_study_preview_bounds" | "set_study_preview_visible"
         | "close_study_preview" | "open_study_url" | "set_study_preview_annotation_mode"
@@ -881,6 +1093,16 @@ fn arg_opt_value(args: &Value, key: &str) -> Option<Value> {
     match args.get(key) {
         Some(Value::Null) | None => None,
         Some(v) => Some(v.clone()),
+    }
+}
+
+/// An optional structured argument (absent or null = None).
+fn opt_json<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<Option<T>, String> {
+    match arg_opt_value(args, key) {
+        None => Ok(None),
+        Some(v) => serde_json::from_value(v)
+            .map(Some)
+            .map_err(|e| format!("BAD_ARGS: `{}`: {}", key, e)),
     }
 }
 

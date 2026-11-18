@@ -355,3 +355,27 @@ describe("block decorations: fenced code, rules, callout caps and display math",
     );
   });
 });
+
+describe("inline decorations: empty documents", () => {
+  // Blind-test regression: an empty note has no visible ranges, `Math.min()`
+  // over them returned Infinity and `doc.lineAt(Infinity)` threw a RangeError
+  // on every keystroke. The builder must bail out instead.
+  it("an empty document builds an empty decoration set without throwing", () => {
+    const state = EditorState.create({
+      doc: "",
+      extensions: [markdown({ base: markdownLanguage, extensions: [GFM] }), docPathField],
+    });
+    const set = buildInlineDecorations({ state, visibleRanges: [] });
+    let count = 0;
+    set.between(0, 0, () => {
+      count += 1;
+    });
+    expect(count).toBe(0);
+  });
+
+  it("an empty visible range on a non-empty document does not throw either", () => {
+    const state = stateOf("# 标题\n正文\n");
+    const set = buildInlineDecorations({ state, visibleRanges: [] });
+    expect(set).toBeDefined();
+  });
+});

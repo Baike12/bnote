@@ -9,6 +9,7 @@ import {
   type Ref,
 } from "react";
 import type { CodeProjectRef } from "@/state/appStore";
+import { useInvestStore } from "@/invest/store";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -37,10 +38,18 @@ export function AgentWelcome({
   creativeMode,
   codeProject,
 }: {
-  mode: "notes" | "study" | "code" | "projects";
+  mode: "notes" | "study" | "code" | "projects" | "invest";
   creativeMode: boolean;
   codeProject: CodeProjectRef | null;
 }) {
+  // H6: the welcome names the instrument the panel is bound to (the blind
+  // test could not tell which scope the agent was discussing). Read-only
+  // subscription — the store owns the selection.
+  const investInstrument = useInvestStore((s) => {
+    if (!s.selectedScope?.startsWith("stock:")) return null;
+    const code = s.selectedScope.slice("stock:".length);
+    return s.instruments.find((i) => i.code === code) ?? null;
+  });
   return (
     <div className="agent-welcome">
       <div className="agent-welcome-icon" aria-hidden="true">
@@ -60,18 +69,22 @@ export function AgentWelcome({
           ? codeProject
             ? "编码模式:我直接读写当前代码仓库并运行命令"
             : "先在中栏打开一个代码项目"
-          : creativeMode
-            ? "创作模式:生成 HTML 会在中栏实时预览"
-            : "问我关于当前 PDF / 网页的问题"}
+          : mode === "invest"
+            ? `问我${investInstrument ? `${investInstrument.name} ${investInstrument.code}` : "当前标的"}的走势判断与风险`
+            : creativeMode
+              ? "创作模式:生成 HTML 会在中栏实时预览"
+              : "问我关于当前 PDF / 网页的问题"}
       </p>
       <p className="agent-hint">
         {mode === "code"
           ? codeProject
             ? "输入 / 调用命令与技能、@ 引用项目文件;悬停消息点「⤷」可分叉"
             : "项目目录就是我的工作区,会话记录存放在 ~/.bnote"
-          : creativeMode
-            ? "输入 / 调用技能、@ 引用仓库文件;满意后点中栏的「发布」推到 bblog"
-            : "悬停任意消息点「⤷」,可以从那里分叉一条辅助会话"}
+          : mode === "invest"
+            ? "我读到当前标的的分析笔记与它的 Skill;悬停消息点「⤷」可分叉"
+            : creativeMode
+              ? "输入 / 调用技能、@ 引用仓库文件;满意后点中栏的「发布」推到 bblog"
+              : "悬停任意消息点「⤷」,可以从那里分叉一条辅助会话"}
       </p>
     </div>
   );

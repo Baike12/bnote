@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fakeVault } from "@/test/fakeVault";
 import { getConfigSnapshot, setConfigSnapshot, useAppStore } from "@/state/appStore";
+import type { EditorView } from "@codemirror/view";
+import { registerEditorView, setActiveEditor } from "@/editor/api";
 import {
   loadDirChildren,
   newFolder,
   openVault,
   openWikiLink,
   quickAddNote,
+  openNote,
+  saveNote,
   refreshTree,
   reloadSnippetsFromVault,
   renameEntry,
@@ -281,5 +285,59 @@ describe("openVault", () => {
     expect(useAppStore.getState().vaultPath).toBeNull();
     expect(useAppStore.getState().toast).toContain("打开仓库失败");
     error.mockRestore();
+  });
+});
+
+describe("saveNote failure surface", () => {
+  /**
+   * A failed disk write must never clear `dirty` (that would silently drop
+   * the user's content) and must reach the user (the toast is the only
+   * signal — there is no retry, no queue). The failure path is injected at
+   * the fake IPC boundary, which is exactly where the real one fails.
+   */
+  function openEditorWith(contents: string): void {
+    const dom = document.createElement("div");
+    document.body.append(dom);
+    const view = {
+      // `field` answers null so saveNote falls back to currentFile.
+      state: { doc: { toString: () => contents }, field: () => null },
+      dom,
+      focus: () => {},
+    } as unknown as EditorView;
+    registerEditorView(view);
+    setActiveEditor(view);
+  }
+
+  it("a failed write keeps the note dirty and surfaces the failure", async () => {
+    await seedVault({ "note.md": "old" });
+    await openNote("note.md");
+    openEditorWith("new content");
+    useAppStore.setState({ dirty: true });
+
+    fakeVault.failNext("writeFile", "DISK_FULL: simulated");
+    await saveNote();
+
+    const state = useAppStore.getState();
+    expect(state.toast).toContain("保存失败");
+    expect(state.toast).toContain("DISK_FULL");
+    // dirty stays: the unsaved content must not be silently dropped.
+    expect(state.dirty).toBe(true);
+    // and nothing was written (the failure list also proves the call died).
+    expect(fakeVault.writes).toHaveLength(0);
+    expect(await fakeVault.api.readFile("note.md")).toBe("old");
+    useAppStore.setState({ toast: null });
+  });
+
+  it("a successful write clears dirty and records the bytes", async () => {
+    await seedVault({ "note.md": "old" });
+    await openNote("note.md");
+    openEditorWith("new content");
+    useAppStore.setState({ dirty: true });
+
+    await saveNote();
+
+    expect(useAppStore.getState().dirty).toBe(false);
+    expect(await fakeVault.api.readFile("note.md")).toBe("new content");
+    expect(useAppStore.getState().toast).toBeNull();
   });
 });

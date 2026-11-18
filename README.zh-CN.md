@@ -88,7 +88,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
 
 分层边界、覆盖率策略与 E2E 协议见 [docs/TESTING.md](docs/TESTING.md)。
 
-## 四种模式
+## 五种模式
 
 | 模式 | 布局 | 进入方式 |
 | --- | --- | --- |
@@ -96,9 +96,10 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
 | **学习** | Agent \| 内容栏 \| 笔记 | `Cmd+Shift+S` |
 | **代码** | Agent \| 代码项目 \| 笔记 | 命令面板（默认不绑键，见下） |
 | **项目** | 项目列表 \| 看板 \| 日记 | `Cmd+Shift+P` |
+| **投资** | 标的列表 \| K 线 + 详情 \| 笔记 | `Cmd+Alt+I` |
 
-- 四种模式同时只有一种生效；切换模式不会重建 CodeMirror 实例，滚动位置、折叠状态、装饰都保留。
-- 学习模式和代码模式是三栏结构，两条分隔条可拖动，前两栏宽度按像素持久化（分别存在 `studyAgentWidth` / `studyContentWidth` 与 `codeAgentWidth` / `codeContentWidth`），第三栏吃掉剩余宽度；窗口变窄时 CSS 收窄前两栏，不改写你的偏好。
+- 五种模式同时只有一种生效；切换模式不会重建 CodeMirror 实例，滚动位置、折叠状态、装饰都保留。
+- 学习、代码、投资模式是三栏结构，两条分隔条可拖动，前两栏宽度按像素持久化（分别存在 `studyAgentWidth` / `studyContentWidth`、`codeAgentWidth` / `codeContentWidth` 与 `investSideWidth` / `investContentWidth`），第三栏吃掉剩余宽度；窗口变窄时 CSS 收窄前两栏，不改写你的偏好。
 - **代码模式默认没有快捷键**：`Cmd+Shift+C` 是「插入代码块」。需要快捷键的话，在 `keybindings.json` 的 `global` 段把 `view.toggle-code-mode` 绑到任意键上。
 
 ## 编辑器
@@ -227,6 +228,18 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
 - 待办可在列间拖动（带着子待办一起走）；列头显示项目名与未完成数量
 - 新建 / 删除：`Cmd+Shift+N` 新建，`Cmd+Backspace` 移到废纸篓（只在项目区生效），右键与列头 `⋯` 菜单同款操作
 - `Cmd+Shift+J` 把当前待办插到今日日记待办区**最前**（笔记区同一个键是加到末尾）
+
+## 投资模式
+
+- 布局：**标的列表 | K 线 + 详情 | 笔记**，`Cmd+Alt+I` 进入/退出。左栏在「标的列表」与「AI 分析」之间切换（`Cmd+Alt+A` 分析 / `Cmd+Alt+R` 回列表），中栏 K 线 + 详情常驻；⌘⌥←/→ 连续切换标的/板块
+- 键盘工作流（同花顺/TradingView 惯例）：裸 ↑/↓ 在**当前过滤结果**内逐个浏览标的，敲代码/名称直接呼出搜索（键盘精灵），`Enter` 打开当前标的文档；K 线 `←`/`→` 平移、`-`/`=` 缩放；详情 tab `Cmd+Alt+1..7` 直达，`Cmd+Alt+F` 回放预测、`Cmd+Alt+B` 跑回测、`Cmd+Alt+P` 全局知识检索
+- 本地优先的行情数据：全部落在 `<vault>/.bnote/invest/invest.db`（SQLite）加 `.bnote/invest/` 下的纯 Markdown。用「导入数据」写离线导出（akshare JSON：K 线 / 快照 / 资金流 / 财务 / 板块与标的主数据，板块指数 K 线加 `bar_kind: "sector"`；标的主数据的 `market` 字段决定 K 线/财务/资金流归属的市场，hk = 港股（5 位代码）、us = 美股（字母代码））；实时快照从腾讯公开行情接口拉取，**A 股 / 港股 / 美股**三市场支持（A 股含涨跌停/换手/量比；港美股按上市地币种 HKD/USD 计价并标注，无涨跌停制度）
+- 板块分类内置申万一级行业 31 个；板块与标的共用一个 scope 地址（`stock:600519` / `sector:801010`），驱动 K 线、详情、笔记 tab 与 Agent 会话
+- 详情面板：快照、资金流、财务、事件流、知识检索（FTS5 全文 + CJK bigram 分词）、预测回放命中率、回测记录
+- 热点摄取：在 `.bnote/invest/sources.yaml` 配置 RSS/JSON/HTML 信息源，点「摄取热点」——抓取、过滤、打标、入库，并按天沉淀到 `.bnote/invest/feed/<日期>/`
+- 可配置行情源：`<vault>/.bnote/invest/quotes.yaml` 用声明式 provider（每个市场一条 URL 模板 + 字段映射表达式 `path:a.b[0].c` / `idx:N`，可带 `*倍数` / `/除数`）接入任意行情接口；内置腾讯行情只是默认 provider 集，接雅虎财经或内部数据源无需改代码，`invest_read_quotes` / `invest_save_quotes` 落盘前校验
+- 按 scope 隔离的分析 Skill：每个标的/板块一套 `SKILL.md` + `MEMORY.md`（`.bnote/invest/skills/` 下），带版本快照与受保护的 LEARNED 区块；Agent 的 `read_skill` 工具只读当前会话绑定的 scope
+- 预测闭环：回放 T-10 个交易日截至日的规则预测，与实际走势对比打分（方向 + 幅度），让 Agent 修订 Skill；`skill_signal` 策略把 Skill 接进内置回测器（T+1 撮合、手续费、Sharpe/回撤/胜率），与 `ma_cross` 基线并列
 
 ## 日记、待办与今日足迹
 

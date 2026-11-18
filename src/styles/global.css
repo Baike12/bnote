@@ -24,6 +24,10 @@
   --accent-soft: #3a2c16; /* weak amber base: current file row, keybinding recording row */
   --danger: #e06c75;
   --danger-soft: #4a2a2e; /* hover base for danger items */
+  --up: #e5484d; /* CN convention: red rises (invest list rows / equity curve) */
+  --down: #30a46c; /* CN convention: green falls */
+  --market-hk: #f59e0b; /* H6: HK badge tint (amber) */
+  --market-us: #3b82f6; /* H6: US badge tint (blue) */
   --ok: #7ec97e; /* python run succeeded */
   --string: #98c379;
   --keyword: #c678dd;
@@ -162,6 +166,10 @@
   --accent-soft: #f3e7cd;
   --danger: #c93636;
   --danger-soft: #f6e2e3;
+  --up: #d33a3f; /* slightly deeper red for the light palette */
+  --down: #2e8f5e;
+  --market-hk: #b45309;
+  --market-us: #1d4ed8;
   --ok: #3d8f43;
   --string: #50a14f;
   --keyword: #a626a4;
@@ -2872,6 +2880,11 @@ input[type="range"] {
   z-index: 1;
   cursor: col-resize;
   touch-action: none;
+  /* Drags must not start a text selection. This lives in CSS, not in a
+     pointerdown preventDefault: suppressing the compatibility mouse events
+     would also suppress click/dblclick, which the double-click-to-reset
+     behavior depends on (see splitDrag.ts). */
+  user-select: none;
 }
 .study-resizer::before,
 .projects-resizer::before {
@@ -5616,6 +5629,879 @@ input[type="range"] {
   background: var(--bg3);
 }
 
+/* ---------------------------------------------------------------------------
+ * Invest mode: instrument list | K-line + details | notes. The shell reuses
+ * the study layout's three-column skeleton (.study-layout classes): the only
+ * mapping needed is the column widths — InvestLayout writes
+ * --invest-side-src / --invest-content-src (px preferences) and this rule
+ * feeds them into the study variables, so the clamp and resizer machinery
+ * applies unchanged.
+ * ------------------------------------------------------------------------- */
+
+.invest-layout {
+  --agent-src: var(--invest-side-src, 280px);
+  --content-src: var(--invest-content-src, 680px);
+  /* The containing block for the layout's absolutely-positioned children
+     (.invest-import-scrim, .invest-toast). Without it their containing block
+     is the initial containing block (the window) — the scrim-over-the-whole-
+     window incident. Full-bleed overlays are enforced by the anchoring gate
+     (src/components/overlayAnchoring.gate.test.ts). */
+  position: relative;
+}
+
+/* The instrument list is the leftmost column, so its header yields the
+   traffic-light clearance (the same rule .agent-header follows above). */
+.invest-layout:not(.agent-focused) .invest-left-head {
+  padding-left: var(--study-lead, 12px);
+}
+
+/* Column headers: one shared height so the top border line runs straight
+   across the three columns (the .study-notes-head contract). */
+.invest-left-head,
+.invest-center-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  min-height: var(--study-head-h);
+  border-bottom: 1px solid var(--border);
+}
+
+.invest-left-spacer {
+  flex: 1;
+}
+
+/* B14: the snapshot refresh sits in the middle header's action slot. */
+.invest-center-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.invest-center-refresh {
+  flex: none;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg3);
+}
+.invest-center-refresh:hover:not(:disabled) {
+  background: var(--hover-strong);
+}
+.invest-center-refresh:disabled {
+  opacity: 0.55;
+}
+
+/* The small view toggle / period / tab buttons all read the same: a quiet
+   text chip that lights up when active. */
+.invest-view-btn,
+.invest-period-btn,
+.invest-detail-tab,
+.invest-doc-tab {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  white-space: nowrap;
+}
+.invest-view-btn:hover,
+.invest-period-btn:hover,
+.invest-detail-tab:hover,
+.invest-doc-tab:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.invest-view-btn.active,
+.invest-period-btn.active,
+.invest-detail-tab.active,
+.invest-doc-tab.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.invest-ingest-btn,
+.invest-detail-refresh,
+.invest-doc-refresh {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--accent);
+  background: transparent;
+  white-space: nowrap;
+}
+.invest-ingest-btn:hover,
+.invest-detail-refresh:hover,
+.invest-doc-refresh:hover {
+  background: var(--bg3);
+}
+.invest-ingest-btn:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.invest-center-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Instrument list ---------------------------------------------------------------- */
+
+.invest-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.invest-list-search {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+}
+.invest-list-search input,
+.invest-knowledge-search input {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+}
+
+.invest-list-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 6px;
+}
+
+.invest-list-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 12px;
+  text-align: left;
+  background: transparent;
+}
+
+/* E23: the watchlist reads before the rest of the list. */
+.invest-list-section {
+  padding: 4px 12px 2px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* H3: the per-row market badge (港/美; cn rows carry none). */
+.invest-row-market {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  background: var(--bg3);
+  color: var(--muted);
+}
+
+/* H6: the market must be a scannable dimension, not a gray hint — cn has no
+ * badge, so hk/us get a distinct tint (HK amber, US blue). */
+.invest-row-market.market-hk {
+  background: color-mix(in srgb, var(--market-hk) 18%, transparent);
+  color: var(--market-hk);
+}
+
+.invest-row-market.market-us {
+  background: color-mix(in srgb, var(--market-us) 16%, transparent);
+  color: var(--market-us);
+}
+
+/* The detail tab's change row reads like the list rows: signed value in the
+ * CN convention (red rises / green falls). */
+.invest-detail-value.up {
+  color: var(--up);
+}
+
+.invest-detail-value.down {
+  color: var(--down);
+}
+
+/* E23: price + change on each row; CN convention — red up, green down. */
+.invest-row-quote {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--text);
+  min-width: 58px;
+}
+.invest-row-quote em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--muted);
+}
+.invest-row-quote.up {
+  color: var(--up);
+}
+.invest-row-quote.up em {
+  color: var(--up);
+}
+.invest-row-quote.down {
+  color: var(--down);
+}
+.invest-row-quote.down em {
+  color: var(--down);
+}
+.invest-list-row:hover {
+  background: var(--bg3);
+}
+.invest-list-row.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.invest-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.invest-row-name {
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.invest-row-code {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.invest-row-industry {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.invest-row-watch {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-faint);
+  background: transparent;
+  opacity: 0.55;
+}
+.invest-row-watch:hover {
+  background: var(--bg3);
+  opacity: 1;
+}
+.invest-row-watch.on {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.invest-list-empty {
+  padding: 14px 12px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.invest-import-empty-btn {
+  margin: 6px 0 0;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--accent);
+  background: transparent;
+  /* H6 blind test: the overlay is pointer-events:none so chart pans fall
+   * through, but that also silenced the empty-state's own button — opt it
+   * back in or the "one-click import" entry is unreachable by mouse. */
+  pointer-events: auto;
+}
+.invest-import-empty-btn:hover {
+  background: var(--bg3);
+}
+
+/* The data-import dialog (A7). */
+.invest-import-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+}
+.invest-import-panel {
+  width: min(480px, 88%);
+  max-height: 70%;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg1);
+  box-shadow: 0 12px 40px var(--shadow);
+}
+.invest-import-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.invest-import-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.invest-import-close {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--text-faint);
+  background: transparent;
+}
+.invest-import-close:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.invest-import-body {
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.invest-import-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.invest-import-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--code-inline-bg);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.invest-import-pick {
+  align-self: flex-start;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--on-accent-muted);
+  background: var(--accent-soft);
+}
+.invest-import-pick:hover {
+  background: var(--accent-dim);
+}
+.invest-import-pick:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+.invest-import-file {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.invest-import-error {
+  font-size: 12px;
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+.invest-import-summary {
+  font-size: 12.5px;
+  color: var(--ok);
+}
+
+/* K-line pane -------------------------------------------------------------------- */
+
+.invest-market {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The middle column's content host must be a flex container that fills the
+   pane: without `flex: 1` the K-line host collapses to content height and
+   klinecharts lays the candlestick pane out at 0px (observed in blind
+   testing — only the volume pane rendered). */
+.invest-center-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.invest-center-content > .invest-market {
+  flex: 1;
+  min-height: 0;
+}
+
+.invest-kline {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* The empty/loading overlay is absolutely positioned: without a positioned
+   * ancestor it anchored to the window and dimmed all three columns. */
+  position: relative;
+}
+
+.invest-kline-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.invest-kline-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.invest-kline-code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.invest-kline-source {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The as-of flag when the local data is stale (>7 days): a warning tone. */
+.invest-kline-source.stale {
+  color: var(--keyword);
+}
+.invest-kline-periods {
+  display: flex;
+  gap: 2px;
+}
+
+/* klinecharts sizes its canvas from the host box: the host must be the one
+   that flexes (chart redraws on ResizeObserver inside the library). */
+.invest-kline-host {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.invest-kline-overlay {
+  position: absolute;
+  inset: 0;
+  /* klinecharts paints on canvases with z-index:2 — the overlay (loading /
+   * empty states) must sit above them or its buttons are unreachable. */
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--bg0) 72%, transparent);
+  pointer-events: none;
+}
+
+/* Details (tabs under the chart) -------------------------------------------------- */
+
+.invest-detail {
+  flex: 0 1 auto;
+  max-height: 45%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+.invest-detail-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+}
+.invest-detail-refresh {
+  margin-left: auto;
+}
+
+.invest-detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 12px 12px;
+}
+
+.invest-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 18px;
+}
+
+.invest-detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+.invest-detail-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.invest-detail-value {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  text-align: right;
+}
+
+.invest-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.invest-detail-table th {
+  padding: 3px 8px;
+  text-align: left;
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.invest-detail-table td {
+  padding: 3px 8px;
+  color: var(--text);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.invest-detail-table td:first-child,
+.invest-detail-table th:first-child {
+  padding-left: 0;
+}
+
+.invest-detail-empty {
+  padding: 10px 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* Events feed ---------------------------------------------------------------------- */
+
+.invest-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* A股配色约定：利好红、利空绿（与 K 线同向）。左缘色条一眼分出多空。 */
+.invest-event-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px 5px 10px;
+  border-left: 2px solid var(--border);
+  border-radius: 0 6px 6px 0;
+  background: var(--bg1);
+}
+.invest-event-item.sentiment-positive {
+  border-left-color: var(--danger);
+}
+.invest-event-item.sentiment-negative {
+  border-left-color: var(--ok);
+}
+
+.invest-event-date {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.invest-event-kind {
+  align-self: flex-start;
+  padding: 0 6px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.invest-event-title {
+  font-size: 12.5px;
+  color: var(--text);
+}
+.invest-event-body {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.invest-event-source,
+.invest-event-scope-hint {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+/* Knowledge search ------------------------------------------------------------------ */
+
+/* B11: the sector member drill-down list. */.invest-member-list {
+  display: flex;
+  flex-direction: column;
+}
+.invest-member-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+}
+.invest-member-row:hover {
+  background: var(--bg3);
+}
+
+
+.invest-knowledge {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.invest-knowledge-search {
+  display: flex;
+}
+.invest-knowledge-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.invest-knowledge-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+}
+.invest-knowledge-hit:hover {
+  background: var(--bg3);
+}
+.invest-knowledge-hit-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.invest-knowledge-hit-scope {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg3);
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.invest-knowledge-hit-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.invest-knowledge-hit-snippet {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Forecast / backtest ---------------------------------------------------------------- */
+
+/* F26: the manual event form. */
+.invest-event-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.invest-event-form input,
+.invest-event-form textarea,
+.invest-event-form select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg1, var(--bg2));
+}
+.invest-event-form-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.invest-event-add {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+}
+.invest-event-add:hover {
+  color: var(--text);
+  background: var(--bg3);
+}
+
+/* D19/D20: the selected run's equity curve + trade ledger. */
+.invest-backtest-row {
+  cursor: pointer;
+}
+.invest-backtest-row.active {
+  background: var(--bg3);
+}
+.invest-backtest-delete {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  background: transparent;
+}
+.invest-backtest-delete:hover {
+  color: var(--keyword);
+}
+.invest-backtest-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.invest-backtest-toolbar {
+  margin-bottom: 8px;
+}
+
+.invest-backtest-caption {
+  font-size: 11px;
+  color: var(--muted);
+}
+.invest-equity-curve {
+  width: 100%;
+  height: 120px;
+  background: var(--bg2);
+  border-radius: 6px;
+}
+.invest-equity-path {
+  fill: none;
+  stroke: var(--up);
+  stroke-width: 1.5;
+}
+.invest-equity-baseline {
+  stroke: var(--muted);
+  stroke-dasharray: 4 3;
+  stroke-width: 1;
+}
+
+.invest-forecast {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.invest-forecast-bar {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.invest-forecast-reason {
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+
+/* Scope document tabs ---------------------------------------------------------------- */
+
+.invest-doc-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.invest-doc-tabs-spacer {
+  flex: 1;
+}
+
+/* Toast ------------------------------------------------------------------------------- */
+
+.invest-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 80;
+  max-width: 70%;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  box-shadow: 0 8px 30px var(--shadow);
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---------------- PDF reader ---------------- */
 
 .pdf-viewer {
@@ -7195,6 +8081,13 @@ input[type="range"] {
 .code-mode-content .code-toolbar {
   height: var(--study-head-h);
   min-height: var(--study-head-h);
+}
+
+/* The containing block for the code overlays (.code-overlay). Without it the
+   overlays' containing block is the window — the scrim-over-the-window class
+   (enforced by overlayAnchoring.gate.test.ts). */
+.code-mode-content {
+  position: relative;
 }
 
 .code-tool-btn {

@@ -51,6 +51,11 @@ pub struct AppState {
     pub code_watcher: Mutex<Option<WatcherHandle>>,
     /// Live integrated-terminal shells (the code pane's bottom drawer).
     pub terminals: TermManager,
+    /// The invest mode's SQLite connection, opened when the vault opens
+    /// (`set_vault`). `None` = no vault open (or the open failed). The `Arc`
+    /// lets the async ingest pipeline clone the handle and drop the guard
+    /// across every `.await` — network work never holds the lock.
+    pub invest_db: std::sync::Arc<std::sync::Mutex<Option<rusqlite::Connection>>>,
 }
 
 impl AppState {
@@ -60,5 +65,19 @@ impl AppState {
 
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.clone()
+    }
+
+    /// Opens (or reopens) the invest database for the given vault root.
+    /// Called by `set_vault`; a failure is reported but never blocks the
+    /// vault itself from opening. Callers of the connection go through
+    /// `invest::db::with_conn`, the single owner of the lock discipline.
+    pub fn open_invest_db(&self, vault_root: &std::path::Path) -> Result<(), String> {
+        let conn = crate::invest::db::open(&crate::invest::db_path(vault_root))?;
+        let mut guard = self
+            .invest_db
+            .lock()
+            .map_err(|_| "LOCK_FAILED: invest db mutex poisoned".to_string())?;
+        *guard = Some(conn);
+        Ok(())
     }
 }

@@ -69,6 +69,24 @@ pub fn roots_for(
             path: home::mode_skills_dir(root),
             source: "vault",
         }],
+        // The invest agent reads the mode's own skills plus the **per-scope**
+        // skill directories the session is scoped to (the caller passes them
+        // via `extra`, e.g. `.bnote/invest/skills/stock/600519`). The scope
+        // isolation is the caller's job: it only ever passes the scope of the
+        // instrument currently on screen, and no other mode's roots contain
+        // `.bnote/invest/skills/`, so a coding / creative / study session can
+        // never see another scope's skills.
+        AgentMode::Invest => {
+            let mut roots = vec![SkillRoot {
+                path: home::mode_skills_dir(root),
+                source: "vault",
+            }];
+            roots.extend(extra.iter().map(|dir| SkillRoot {
+                path: PathBuf::from(dir),
+                source: "custom",
+            }));
+            roots
+        }
         AgentMode::Study => Vec::new(),
     }
 }

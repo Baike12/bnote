@@ -31,6 +31,16 @@ export function currentLoadVerdict(): LoadVerdict {
   return loadVerdict(os.loadavg()[0], os.cpus().length);
 }
 
+/**
+ * `BNOTE_PERF_REQUIRE=1` turns the load skip into a hard condition: in a
+ * controlled runner (the CI perf job) a skipped gate is the failure — a
+ * silently green `gate:full` with zero perf coverage shipped once, and it was
+ * the user-visible "白天卡顿没有兜底" hole in the registry.
+ */
+export function perfRequired(): boolean {
+  return process.env.BNOTE_PERF_REQUIRE === "1";
+}
+
 /** The line a skipped gate prints, or null when the machine is fit. */
 export function skipNotice(verdict: LoadVerdict): string | null {
   if (verdict.fit) return null;

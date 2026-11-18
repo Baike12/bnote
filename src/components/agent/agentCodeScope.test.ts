@@ -17,14 +17,35 @@ const raw = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
 const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
 describe("which definition a session runs with", () => {
-  it("code mode wins over creative mode", () => {
+  it("code mode wins over creative mode, invest mode stays its own kind", () => {
+    // Whitespace-flexible: prettier wraps the ternary chain. Escape the
+    // regex specials first, or the ternary `?` becomes a lazy quantifier.
+    const flex = (s: string) =>
+      new RegExp(
+        s
+          .trim()
+          .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+          .replace(/\s+/g, "\\s*"),
+      );
     expect(code).toMatch(
-      /agentModeRef\.current = mode === "code" \? "coding" : creativeMode \? "creative" : "study"/,
+      flex(
+        `agentModeRef.current = mode === "code" ? "coding" : mode === "invest" ? "invest" : creativeMode ? "creative" : "study"`,
+      ),
     );
   });
 
   it("there is no study-content code variant left", () => {
     expect(code).not.toMatch(/kind === "code"/);
+  });
+
+  it("an invest session never starts without a scope (read_skill binds to it)", () => {
+    // Regression (blind test F-P1-8): the panel started an invest session
+    // before the layout had picked a scope, freezing invest_scope at None —
+    // every read_skill then failed. The guard must short-circuit first.
+    expect(code).toMatch(/if \(mode === "invest" && !investScope\) return;/);
+    expect(code).toMatch(
+      /mode === "invest" \? \(useInvestStore\.getState\(\)\.selectedScope \?\? undefined\) : undefined/,
+    );
   });
 });
 
