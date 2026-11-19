@@ -75,6 +75,20 @@ const REGISTRY: RegistryEntry[] = [
     },
   },
   {
+    row: "**Sync echo / divergent overwrite**",
+    locks: {
+      "src/daily/sync/sync.test.ts": [
+        "an unchanged file is never pushed (echo guard)",
+        "own-device echoes only move the revision",
+        "marks a true divergence unresolved instead of guessing",
+      ],
+      "src/daily/sync/merge.test.ts": [
+        "a remote edit survives a local deletion (modify beats delete)",
+      ],
+      "src/daily/sync/merge.ts": "export function mergeDocs(",
+    },
+  },
+  {
     row: "**Cross-market data routing**",
     locks: {
       "src-tauri/src/invest/instruments.rs": [

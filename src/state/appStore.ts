@@ -50,10 +50,21 @@ export interface QuickAddCommand {
   template?: string;
 }
 
-/** Daily notes: for now only "which template does a new daily note use". */
+/** Multi-device sync of the Daily folder through a b-todo server (end-to-end encrypted; the key stays in this config file). */
+export interface DailySyncSettings {
+  /** Master switch: off = no connection is made and nothing else in the app changes. */
+  enabled: boolean;
+  /** The b-todo server address, e.g. `http://101.96.243.197/b-todo`; a bare host defaults to http. */
+  server: string;
+  /** The shared sync key provisioned at server setup; never leaves this machine except as a derived token. */
+  key: string;
+}
+
+/** Daily notes: which template a new daily note uses, plus the sync configuration. */
 export interface DailySettings {
   /** The template file (vault-relative path); empty = the default `# <date>` opening. */
   template: string;
+  sync: DailySyncSettings;
 }
 
 /** The UI theme: dark is the default when no data-theme attribute is set; light goes through the [data-theme="light"]
@@ -232,7 +243,7 @@ export const DEFAULT_SETTINGS: Settings = {
   latex: { ...DEFAULT_LATEX_CONFIG },
   quickAdd: [],
   templatesDir: "",
-  daily: { template: "" },
+  daily: { template: "", sync: { enabled: false, server: "", key: "" } },
 };
 
 export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | "quicktodo" | null;

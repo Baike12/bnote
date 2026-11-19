@@ -17,6 +17,13 @@ import { loadedFile } from "@/editor/loadedFile";
 import { flushCursorSave, hasPendingCursorSave } from "@/editor/cursorMemory";
 import { flushLinksPersist, hasPendingLinksPersist } from "@/daily/links";
 import {
+  configureSync,
+  flushDailySyncPersist,
+  handleSyncDayEvent,
+  handleSyncStatusEvent,
+  noteDailySyncPaths,
+} from "@/daily/sync/sync";
+import {
   flushFootprintsPersist,
   hasPendingFootprintsPersist,
   noteDirtyPaths,
@@ -98,6 +105,8 @@ export default function App() {
     installEditingChords();
     registerVimExCommands((id) => runCommand(id));
     let unlisten: (() => void) | undefined;
+    let unlistenSyncStatus: (() => void) | undefined;
+    let unlistenSyncDay: (() => void) | undefined;
     let unlistenWindow: (() => void) | undefined;
     let stopScheduler: (() => void) | undefined;
 
@@ -134,7 +143,11 @@ export default function App() {
           ...DEFAULT_SETTINGS.studyTranslate,
           ...(saved.studyTranslate ?? {}),
         },
-        daily: { ...DEFAULT_SETTINGS.daily, ...(saved.daily ?? {}) },
+        daily: {
+          ...DEFAULT_SETTINGS.daily,
+          ...(saved.daily ?? {}),
+          sync: { ...DEFAULT_SETTINGS.daily.sync, ...(saved.daily?.sync ?? {}) },
+        },
       };
       // The legacy version stored the three column widths as studySplit:[agent,
       // content] (earlier still as ratios); migrate them to single pixel widths
@@ -210,6 +223,14 @@ export default function App() {
       unlisten = await listen<string[]>("vault-changed", (event) => {
         void handleVaultChanged(event.payload);
       });
+      // The daily todo sync: status frames keep the settings line honest, day
+      // frames carry already-decrypted documents (Rust owns the crypto).
+      unlistenSyncStatus = await listen("daily-sync-status", (event) => {
+        handleSyncStatusEvent(event.payload);
+      });
+      unlistenSyncDay = await listen("daily-sync-day", (event) => {
+        void handleSyncDayEvent(event.payload);
+      });
       // TIS warmup (see imeWarmUp): the first TIS call has to reach out to the input
       // method service (~90ms measured on this machine) and must run on the
       // Apple main thread, so the cost cannot be deferred to the moment the
@@ -217,6 +238,9 @@ export default function App() {
       imeWarmUp();
       if (cfg?.lastVault) {
         await openVault(cfg.lastVault);
+        // Sync connect + initial reconcile run after the vault is known; with
+        // sync disabled this returns immediately and nothing else changes.
+        void configureSync();
       }
       // The remembered code project is reopened in the background: code mode
       // stays where it is (the app always starts on the note), but entering
@@ -230,6 +254,8 @@ export default function App() {
     return () => {
       stopScheduler?.();
       unlisten?.();
+      unlistenSyncStatus?.();
+      unlistenSyncDay?.();
       unlistenWindow?.();
     };
   }, []);
@@ -268,6 +294,7 @@ export default function App() {
       flushPersistConfig();
       flushLinksPersist();
       flushFootprintsPersist();
+      flushDailySyncPersist();
     };
     document.addEventListener("visibilitychange", onHidden);
     let unlisten: (() => void) | undefined;
@@ -287,6 +314,7 @@ export default function App() {
           flushPersistConfig();
           flushLinksPersist();
           flushFootprintsPersist();
+          flushDailySyncPersist();
           await getCurrentWindow().destroy();
         })
         .then((off) => {
@@ -470,6 +498,10 @@ async function handleVaultChanged(paths: string[]) {
   // before the self-write echo early return below - "typing in the editor ->
   // autosave -> watcher" is the main data path for the footprint.
   noteDirtyPaths(paths);
+
+  // The sync client publishes changed daily notes; it filters to Daily/*.md
+  // itself and runs before the self-write echo early return below.
+  noteDailySyncPaths(paths);
 
   // The keybindings config is a plain file in the vault: an external editor
   // saves it and the watcher triggers a re-read here.

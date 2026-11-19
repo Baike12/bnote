@@ -1,6 +1,7 @@
 pub mod agent;
 mod code;
 mod commands;
+pub mod daily_sync;
 /// Browser-preview bridge; debug builds only (see the module docs).
 #[cfg(debug_assertions)]
 mod devbridge;
@@ -223,6 +224,9 @@ pub fn run() {
             // it, when the vault is set (`commands::vault::set_vault`); doing it
             // here would recreate `$HOME/.bnote` on every launch.
 
+            // The sync connection outlives commands but is not part of AppState:
+            // it is per-process (one SSE stream), managed on its own.
+            app.manage(daily_sync::client::SyncManager::default());
             app.manage(AppState {
                 vault: RwLock::new(None),
                 watcher: std::sync::Mutex::new(None),
@@ -284,6 +288,12 @@ pub fn run() {
             commands::config::save_keybindings,
             commands::config::read_vimrc,
             commands::config::save_vimrc,
+            commands::daily_sync::sync_test,
+            commands::daily_sync::sync_connect,
+            commands::daily_sync::sync_disconnect,
+            commands::daily_sync::sync_status,
+            commands::daily_sync::sync_push_days,
+            commands::daily_sync::sync_pull_days,
             commands::focus::focus_status,
             commands::focus::focus_lock,
             commands::focus::focus_unlock,

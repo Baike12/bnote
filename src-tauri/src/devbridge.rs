@@ -91,6 +91,8 @@ fn subscribe_events(app: &AppHandle) {
         "term-output",
         "term-exit",
         "creative-preview-updated",
+        "daily-sync-status",
+        "daily-sync-day",
     ] {
         let label = name.to_string();
         app.listen(name, move |event| {
@@ -491,6 +493,53 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             arg_str(args, "content")?
         )
         .await),
+        "sync_test" => json_ok!(crate::commands::daily_sync::sync_test(
+            arg_str(args, "server")?,
+            arg_str(args, "key")?
+        )
+        .await),
+        "sync_connect" => json_ok!(crate::commands::daily_sync::sync_connect(
+            app.clone(),
+            app.state::<crate::daily_sync::client::SyncManager>(),
+            arg_str(args, "server")?,
+            arg_str(args, "key")?,
+            arg_str(args, "deviceId")?
+        )
+        .await),
+        "sync_disconnect" => json_ok!(crate::commands::daily_sync::sync_disconnect(
+            app.state::<crate::daily_sync::client::SyncManager>()
+        )
+        .await),
+        "sync_status" => json_ok!(crate::commands::daily_sync::sync_status(
+            app.state::<crate::daily_sync::client::SyncManager>()
+        )
+        .await),
+        "sync_push_days" => {
+            let days: Vec<crate::commands::daily_sync::PushDay> = match args.get("days") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("BAD_ARGS: days: {}", e))?,
+            };
+            json_ok!(crate::commands::daily_sync::sync_push_days(
+                arg_str(args, "server")?,
+                arg_str(args, "key")?,
+                days
+            )
+            .await)
+        },
+        "sync_pull_days" => {
+            let dates: Option<Vec<String>> = match args.get("dates") {
+                None | Some(Value::Null) => None,
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("BAD_ARGS: dates: {}", e))?,
+            };
+            json_ok!(crate::commands::daily_sync::sync_pull_days(
+                arg_str(args, "server")?,
+                arg_str(args, "key")?,
+                dates
+            )
+            .await)
+        },
         "agent_send" => {
             let images: Vec<crate::agent::types::InlineImage> = match args.get("images") {
                 None | Some(Value::Null) => Vec::new(),

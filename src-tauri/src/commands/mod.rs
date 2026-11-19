@@ -2,6 +2,7 @@ pub mod agent;
 pub mod bblog;
 pub mod code;
 pub mod config;
+pub mod daily_sync;
 pub mod files;
 pub mod focus;
 pub mod home;

@@ -44,6 +44,8 @@ const EVENTS = [
   "term-output",
   "term-exit",
   "creative-preview-updated",
+  "daily-sync-status",
+  "daily-sync-day",
 ] as const;
 
 type Internals = {

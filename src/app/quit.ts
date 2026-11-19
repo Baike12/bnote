@@ -2,6 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { flushCursorSave } from "@/editor/cursorMemory";
 import { flushLinksPersist } from "@/daily/links";
+import { flushDailySyncPersist } from "@/daily/sync/sync";
 import { flushFootprintsPersist } from "@/footprint/store";
 import { flushPersistConfig } from "@/state/appStore";
 
@@ -17,6 +18,7 @@ export function quitApp(): void {
   flushCursorSave();
   flushPersistConfig();
   flushLinksPersist();
+  flushDailySyncPersist();
   flushFootprintsPersist();
   void getCurrentWindow().destroy();
 }

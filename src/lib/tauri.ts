@@ -776,6 +776,62 @@ export const translateApi = {
   test: (config: TranslateConfig) => invoke<string>("translate_test", { config }),
 };
 
+/** One day document handed to the sync server (plaintext here; Rust encrypts). */
+export interface SyncDayPush {
+  date: string;
+  content: string;
+  /** Server revision the content was built on; the server answers 409 when stale. */
+  baseRev: number;
+  /** Force overwrites the server copy (the explicit local→remote alignment). */
+  force: boolean;
+  /** This device's sync id; the server stamps it onto the broadcast event. */
+  deviceId?: string;
+}
+
+export interface SyncPushResult {
+  date: string;
+  ok: boolean;
+  rev: number | null;
+  /** Set on a 409: the server's current revision and decrypted content. */
+  conflictRev: number | null;
+  conflictContent: string | null;
+  error: string | null;
+}
+
+export interface SyncPulledDay {
+  date: string;
+  rev: number;
+  updatedBy: string;
+  updatedAt: number;
+  content: string;
+}
+
+export interface SyncStatusInfo {
+  connected: boolean;
+  server: string | null;
+  lastSeq: number | null;
+}
+
+/**
+ * The b-todo sync client. The connection itself (SSE) and the crypto live in
+ * Rust (`daily_sync/`); these wrappers only carry settings values and
+ * plaintext day documents, mirroring the bblog credential-as-argument style.
+ */
+export const syncApi = {
+  /** Tests the (possibly unsaved) form values; returns a human message. */
+  test: (server: string, key: string) => invoke<string>("sync_test", { server, key }),
+  /** Starts the SSE session; returns false when it was already up. */
+  connect: (server: string, key: string, deviceId: string) =>
+    invoke<boolean>("sync_connect", { server, key, deviceId }),
+  disconnect: () => invoke<void>("sync_disconnect"),
+  status: () => invoke<SyncStatusInfo>("sync_status"),
+  pushDays: (server: string, key: string, days: SyncDayPush[]) =>
+    invoke<SyncPushResult[]>("sync_push_days", { server, key, days }),
+  /** `dates: null` pulls every stored day (list endpoint + one GET each). */
+  pullDays: (server: string, key: string, dates: string[] | null) =>
+    invoke<SyncPulledDay[]>("sync_pull_days", { server, key, dates }),
+};
+
 export const api = {
   setVault: (path: string) => invoke<VaultInfo>("set_vault", { path }),
   getVault: () => invoke<VaultInfo | null>("get_vault"),

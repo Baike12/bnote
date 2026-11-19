@@ -75,6 +75,12 @@ portable-pty = "0.9"
 # WAL + busy_timeout + 单写连接;命令线程短锁克隆数据,不持锁做网络工作。
 rusqlite = { version = "0.37", features = ["bundled"] }
 
+# 日记多端同步(daily_sync/):与 b-todo 服务器、网页端共享同一套端到端加密
+# (HKDF-SHA256 派生 + AES-256-GCM),golden 向量在三端测试里互锁。
+aes-gcm = "0.10"
+hkdf = "0.13"
+sha2 = "0.11"
+
 # 学习模式网页的笔形光标(commands/pen_cursor.rs):浏览器里 CSS 图片光标在
 # WKWebView 下每次鼠标移动都会被重建重设,只能由原生层给同一支 NSCursor。
 # 版本与 tauri 自身的依赖一致,不新增第二份 objc2。
