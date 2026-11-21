@@ -94,3 +94,23 @@ export function buildSwitcherResults(
 
   return out.slice(0, limit);
 }
+
+/** The keyboard fields the chord-repeat rule reads (a DOM event satisfies it). */
+type ChordEvent = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey">;
+
+/**
+ * The quick switcher's chord repeat: while the switcher is open, pressing the
+ * chord that opened it again walks the list forward, and Shift+chord walks it
+ * back (alt-tab semantics). `chord` is the main key recorded by the command
+ * dispatcher when it ran the open command; null means the opener did not come
+ * from a keystroke and the list must not move.
+ *
+ * Returns the direction, or null when the event is not a repeat of the
+ * opening chord.
+ */
+export function switcherRepeatDir(event: ChordEvent, chord: string | null): 1 | -1 | null {
+  if (!chord) return null;
+  if (!event.metaKey && !event.ctrlKey) return null;
+  if (event.key.toLowerCase() !== chord) return null;
+  return event.shiftKey ? -1 : 1;
+}

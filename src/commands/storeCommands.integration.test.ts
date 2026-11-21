@@ -11,7 +11,6 @@ import "@/commands/builtin";
 import { useCodeStore } from "@/code/store";
 import { useFocusStore } from "@/focus/store";
 import { focusedProjectPath, loadProjects, setFocusedProject } from "@/projects/store";
-import { registerSwitcherCycle } from "@/lib/switcherSignal";
 import { fakeVault } from "@/test/fakeVault";
 import { setConfigSnapshot, useAppStore } from "@/state/appStore";
 import { getCommand, runCommand } from "./registry";
@@ -64,22 +63,14 @@ describe("opening a modal", () => {
     expect(useAppStore.getState().modal).toBe("quicktodo");
   });
 
-  it("the quick switcher opens first and then cycles on every repeat instead of re-opening", () => {
-    const cycle = vi.fn(() => true);
-    registerSwitcherCycle(cycle);
-    try {
-      runCommand("nav.quick-switcher");
-      expect(useAppStore.getState().modal).toBe("switcher");
-      expect(cycle).not.toHaveBeenCalled();
-
-      // Holding the chord repeats the command; each repeat must move the
-      // selection inside the open switcher, not reset it.
-      runCommand("nav.quick-switcher");
-      runCommand("nav.quick-switcher");
-      expect(cycle.mock.calls).toEqual([[1], [1]]);
-    } finally {
-      registerSwitcherCycle(null);
-    }
+  it("the quick switcher command opens the switcher; chord repeats are the open switcher's own", () => {
+    // The command no longer distinguishes "open" from "repeat": a repeat is a
+    // key press that reaches the open switcher, which moves its own selection
+    // (see switcherRepeatDir). Running the command twice is not a repeat.
+    runCommand("nav.quick-switcher");
+    expect(useAppStore.getState().modal).toBe("switcher");
+    runCommand("nav.quick-switcher");
+    expect(useAppStore.getState().modal).toBe("switcher");
   });
 });
 

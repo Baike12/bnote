@@ -1,8 +1,8 @@
 /**
  * The modifier chord that triggered the last command from a real keystroke
  * (recorded by the global keybinding dispatcher). The quick switcher reads it
- * when it opens so repeating the same chord — Cmd+S Cmd+S … — can cycle the
- * result list, like holding alt-tab.
+ * when it opens so repeating the same chord — Cmd+O Cmd+O … — walks the result
+ * list, like holding alt-tab. The repeats are handled by the open switcher.
  */
 
 let last: { key: string; at: number } | null = null;

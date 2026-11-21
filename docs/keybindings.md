@@ -17,7 +17,6 @@ Active whatever has focus. Disjoint from every region's keys.
 | `Cmd+Alt+I` | 全局区：进入 / 退出投资模式(左标的、中 K 线与详情、右笔记;⌘⌥←/→切换标的) — `view.toggle-invest-mode` |
 | `Cmd+Alt+T` | 全局区：专注:开始番茄钟(第一个时长;独占屏幕 + 硬锁,结束前不能退出) — `focus.pomodoro-start` |
 | `Cmd+I` | 全局区：聚焦侧边栏 — `nav.focus-sidebar` |
-| `Cmd+O` | 全局区：快速跳转到文件 — `nav.quick-switcher` |
 | `Cmd+P` | 全局区：命令面板 — `nav.command-palette` |
 | `Cmd+Q` | 全局区：退出应用 — `app.quit` |
 | `Cmd+Shift+A` | 全局区：快速添加文件 — `workspace.quick-add` |
@@ -56,6 +55,7 @@ Active while the note editor has focus (the notes column of the three-column wor
 | `Cmd+L` | 笔记区：切换当前行待办状态 — `edit.toggle-todo` |
 | `Cmd+M` | 笔记区：插入公式块 — `edit.insert-math-block` |
 | `Cmd+N` | 笔记区：新建笔记 — `workspace.new-note` |
+| `Cmd+O` | 笔记区：快速跳转到文件 — `nav.quick-switcher` |
 | `Cmd+S` | 笔记区：保存当前笔记 — `workspace.save-note` |
 | `Cmd+Shift+;` | 笔记区：有序列表:切换当前行编号 — `edit.toggle-numbered-list` |
 | `Cmd+Shift+B` | 笔记区：插入 Callout 块 / 跳到关联块 — `edit.insert-callout` |
@@ -134,6 +134,7 @@ Active in the project view. The note-editing commands have their own copy here w
 | `Cmd+L` | 项目区：切换当前行待办状态 — `edit.toggle-todo` |
 | `Cmd+M` | 项目区：插入公式块 — `edit.insert-math-block` |
 | `Cmd+N` | 项目区：新建笔记 — `workspace.new-note` |
+| `Cmd+O` | 项目区：快速跳转到文件 — `nav.quick-switcher` |
 | `Cmd+S` | 项目区：保存当前笔记 — `workspace.save-note` |
 | `Cmd+Shift+;` | 项目区：有序列表:切换当前行编号 — `edit.toggle-numbered-list` |
 | `Cmd+Shift+ArrowDown` | 项目区：下一个项目 — `project.next` |

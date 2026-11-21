@@ -42,7 +42,7 @@ export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
   {
     id: "global",
     label: "全局区",
-    hint: "焦点在任何地方都生效。命令面板、快速跳转、设置、模式切换这类动作放这里;全局区的键位与每一个区的键位互斥,同一个键不能同时出现在两处。",
+    hint: "焦点在任何地方都生效。命令面板、设置、模式切换、退出这类动作放这里;文件跳转不在这里——笔记区与代码区各有自己的「快速打开文件」;全局区的键位与每一个区的键位互斥,同一个键不能同时出现在两处。",
   },
   {
     id: "notes",
@@ -315,14 +315,17 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
  * few exceptions are listed below.
  *
  * Note-editing actions live in the notes region, not in global: saving,
- * creating and opening a note, the link-back history, editor font size and
- * drawing all act on the note editor. Keeping them out of global is what lets
- * the global set stay disjoint from every region's set (⌘S means "save the
- * note" only where a note is being edited; the code region has its own ⌘S).
+ * creating and opening a note, the quick switcher (it lists the vault's notes;
+ * the code region has its own ⌘⇧O for project files), the link-back history,
+ * editor font size and drawing all act on the note editor. Keeping them out of
+ * global is what lets the global set stay disjoint from every region's set (⌘S
+ * means "save the note" only where a note is being edited; the code region has
+ * its own ⌘S).
  */
 const REGION_EXACT: Record<string, KeyRegion> = {
   "nav.header-todos": "notes",
   "nav.back-link": "notes",
+  "nav.quick-switcher": "notes",
   "workspace.new-note": "notes",
   "workspace.open-daily": "notes",
   "workspace.save-note": "notes",

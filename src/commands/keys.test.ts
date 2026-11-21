@@ -223,6 +223,19 @@ describe("region dispatch", () => {
     expect(defaultRegionOf("view.toggle-study-mode")).toBe("global");
   });
 
+  it("⌘O jumps to notes inside the notes region, and the code region keeps its own file open", () => {
+    // "Quick jump to a file" is the note editor's action: it lists the vault's
+    // note files. Global would steal the key from every region, and the code
+    // region already has its own quick open over the code project's files.
+    expect(defaultRegionOf("nav.quick-switcher")).toBe("notes");
+    expect(commandsForKey("Mod-o", "notes")).toEqual(["nav.quick-switcher"]);
+    expect(commandsForKey("Mod-o", "project")).toEqual(["nav.quick-switcher"]);
+    expect(commandsForKey("Mod-o", "global")).toEqual([]);
+    expect(commandsForKey("Mod-o", "code")).toEqual([]);
+    expect(commandsForKey("Mod-o", "reading")).toEqual([]);
+    expect(commandsForKey("Mod-Shift-o", "code")).toEqual(["code.quick-open"]);
+  });
+
   it("the region switch commands exist in every region that can reach the target (each region holds its own copy)", () => {
     // Code mode is a three-column layout too: the caret can go back to the
     // notes column, the Agent panel, and the content column (the open file).

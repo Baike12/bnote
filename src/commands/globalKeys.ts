@@ -235,7 +235,16 @@ export function installGlobalKeybindings() {
       ) {
         return;
       }
-      const region: FocusRegion | "global" = modalOpen ? "global" : activeKeyRegion();
+      // The drawing canvas is the note editor in fullscreen: it covers every
+      // region, so ownership by "what is on screen" would hand its keys to
+      // whatever sits underneath (the reading column in study mode). Resolve
+      // to notes and let DRAWING_ALLOWED narrow the result to the file-level
+      // actions (quick switcher / palette / daily note).
+      const region: FocusRegion | "global" = modalOpen
+        ? "global"
+        : keyContext === "drawing"
+          ? "notes"
+          : activeKeyRegion();
       const id = pickCommand(commandsForKey(key, region));
       if (id) {
         if (keyContext === "drawing" && !DRAWING_ALLOWED.has(id)) return;

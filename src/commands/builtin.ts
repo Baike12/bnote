@@ -1,7 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { registerCommands, runCommand, type CommandDef } from "./registry";
 import { setActiveKeyRegion } from "./globalKeys";
-import { cycleQuickSwitcher } from "@/lib/switcherSignal";
 import { getView } from "@/editor/api";
 import {
   cycleHeading,
@@ -587,12 +586,11 @@ const defs: CommandDef[] = [
     id: "nav.quick-switcher",
     title: "快速跳转到文件",
     category: "导航",
-    run: () => {
-      const { modal } = useAppStore.getState();
-      // Chord repeat while the switcher is open cycles the list (hold ⌘S…).
-      if (modal === "switcher") cycleQuickSwitcher(1);
-      else useAppStore.getState().setModal("switcher");
-    },
+    // Opening the switcher is all the command does. Holding the chord to walk
+    // the list (and Shift+chord to walk back) belongs to the open switcher:
+    // it sees every repeat after the first, while a modal lets through only
+    // the global layer — and this note-file jump is the notes region's key.
+    run: () => useAppStore.getState().setModal("switcher"),
   },
   {
     id: "nav.back-link",

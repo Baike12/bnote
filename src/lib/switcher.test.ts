@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSwitcherResults } from "./switcher";
+import { buildSwitcherResults, switcherRepeatDir } from "./switcher";
 
 /**
  * Quick-switcher ranking is the "jump to a note" contract. Three properties
@@ -103,5 +103,29 @@ describe("full-path matches and the cap", () => {
 
   it("a query that matches nothing returns an empty list", () => {
     expect(items("qqqq")).toEqual([]);
+  });
+});
+
+describe("chord repeats while the switcher is open", () => {
+  const event = (key: string, mods: { meta?: boolean; ctrl?: boolean; shift?: boolean } = {}) => ({
+    key,
+    metaKey: mods.meta ?? true,
+    ctrlKey: mods.ctrl ?? false,
+    shiftKey: mods.shift ?? false,
+  });
+
+  it("repeats the opening chord forward, Shift+chord back", () => {
+    expect(switcherRepeatDir(event("o"), "o")).toBe(1);
+    expect(switcherRepeatDir(event("O", { shift: true }), "o")).toBe(-1);
+  });
+
+  it("accepts Ctrl as the modifier on non-mac platforms", () => {
+    expect(switcherRepeatDir(event("o", { meta: false, ctrl: true }), "o")).toBe(1);
+  });
+
+  it("is not a repeat: another key, no modifier, or no recorded chord", () => {
+    expect(switcherRepeatDir(event("p"), "o")).toBeNull();
+    expect(switcherRepeatDir(event("o", { meta: false }), "o")).toBeNull();
+    expect(switcherRepeatDir(event("o"), null)).toBeNull();
   });
 });

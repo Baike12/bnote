@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
-import { buildSwitcherResults } from "@/lib/switcher";
+import { buildSwitcherResults, switcherRepeatDir } from "@/lib/switcher";
 import { inputGuards } from "@/lib/inputGuards";
 import { useAppStore } from "@/state/appStore";
 import { openNote } from "@/app/actions";
 import { joinPath } from "@/lib/path";
 import { recentCommandChord } from "@/commands/lastChord";
-import { registerSwitcherCycle } from "@/lib/switcherSignal";
 import { imeApply, imeSyncToEditor } from "@/editor/imeSwitch";
 
 export function QuickSwitcher() {
@@ -57,13 +56,14 @@ export function QuickSwitcher() {
     void openNote(joinPath(vaultPath, rel));
   };
 
-  // Hold-the-modifier cycling: the opening chord (e.g. ⌘S) repeats move the
-  // selection — repeats of a bound chord re-run the command, which calls
-  // cycleQuickSwitcher(+1). Shift+chord is not bound to anything, so it lands
-  // here and moves the selection back up. Releasing the modifier jumps to the
-  // selection, but only after at least one repeat — otherwise the plain open
-  // flow (type a query first) would be impossible, since typing needs the
-  // modifier gone.
+  // Hold-the-modifier cycling: the opening chord (e.g. ⌘O) repeats move the
+  // selection, and Shift+chord moves it back (alt-tab semantics). The repeats
+  // land here and not in the command layer: while the switcher is open only
+  // global commands pass, and "jump to a note" is the notes region's key, so
+  // the open switcher is the one place that sees its own repeat chord.
+  // Releasing the modifier jumps to the selection, but only after at least one
+  // repeat — otherwise the plain open flow (type a query first) would be
+  // impossible, since typing needs the modifier gone.
   useEffect(() => {
     if (!open) return;
     chordKeyRef.current = recentCommandChord()?.key ?? null;
@@ -75,19 +75,14 @@ export function QuickSwitcher() {
       setIndex((i) => (i + dir + n) % n);
       return true;
     };
-    // The command layer reaches this through the signal (see switcherSignal):
-    // ⌘S ⌘S repeats re-run the command, which cycles the selection.
-    registerSwitcherCycle(cycle);
-
     const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
     const modKey = isMac ? "Meta" : "Control";
     const onKeyDown = (e: KeyboardEvent) => {
-      const chord = chordKeyRef.current;
-      if (!chord || !e.shiftKey || !(e.metaKey || e.ctrlKey)) return;
-      if (e.key.toLowerCase() !== chord) return;
+      const dir = switcherRepeatDir(e, chordKeyRef.current);
+      if (dir === null) return;
       e.preventDefault();
       e.stopPropagation();
-      cycle(-1);
+      cycle(dir);
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key !== modKey && e.key !== "OS") return;
@@ -98,7 +93,6 @@ export function QuickSwitcher() {
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp);
     return () => {
-      registerSwitcherCycle(null);
       cycledRef.current = false;
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp);

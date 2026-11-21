@@ -14,8 +14,8 @@ import { join } from "node:path";
  *      `daily/open.ts` and `daily/capture.ts` are lazy, run inside a function,
  *      and stay allowed.
  *   2. The command layer never imports a component. Commands are the controller
- *      surface (menu, palette, keybindings); a component is a view. The switcher
- *      cycle goes through `lib/switcherSignal` instead.
+ *      surface (menu, palette, keybindings); a component is a view. The quick
+ *      switcher's chord repeats are handled inside the component.
  *
  * The compiler cannot see either rule — an import of the wrong direction still
  * typechecks — so it is checked here.
