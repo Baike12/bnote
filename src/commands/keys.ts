@@ -254,6 +254,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.rename-symbol": "F2",
   "code.trigger-completion": "Ctrl-Space",
   "code.toggle-tree": "Mod-b",
+  // The project-and-session column. ⌘⇧B is insert-callout (one key, one
+  // mnemonic across regions) and ⌘⌥B is the invest backtest, so this column
+  // takes the free pair beside the tree's ⌘B.
+  "code.toggle-projects-sidebar": "Mod-Alt-b",
   // Focus the file tree (VSCode/Zed's Explorer binding). Only active in the
   // code region; the content region's screenshot key ⌘⇧E is not placed in
   // code, so pressing it here focuses the tree and nothing else.

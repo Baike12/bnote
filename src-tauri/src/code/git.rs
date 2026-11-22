@@ -445,6 +445,242 @@ pub fn unstage(repo: &Path, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One entry of `git worktree list`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    /// Absolute path of the worktree checkout.
+    pub path: String,
+    /// Directory name (the worktree's short name in the UI).
+    pub name: String,
+    /// Checked-out branch with `refs/heads/` stripped; None when detached.
+    pub branch: Option<String>,
+    /// Whether this is the main worktree (the one holding the shared `.git`).
+    pub is_main: bool,
+    /// Whether HEAD is detached.
+    pub is_detached: bool,
+}
+
+/// Parses `git worktree list --porcelain` (plain form, no `-z`: entries are
+/// separated by blank lines and every entry starts with a `worktree <path>`
+/// line, so line-based parsing is unambiguous and works on any git version).
+pub fn parse_worktrees(stdout: &[u8]) -> Vec<WorktreeInfo> {
+    let mut out: Vec<WorktreeInfo> = Vec::new();
+    for line in String::from_utf8_lossy(stdout).lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            out.push(WorktreeInfo {
+                path: path.to_string(),
+                name: Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                branch: None,
+                is_main: false,
+                is_detached: false,
+            });
+        } else if let Some(rest) = line.strip_prefix("branch ") {
+            if let Some(last) = out.last_mut() {
+                last.branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
+            }
+        } else if line == "detached" {
+            if let Some(last) = out.last_mut() {
+                last.is_detached = true;
+            }
+        }
+        // `HEAD <sha>` and `bare` need no storage for the UI.
+    }
+    out
+}
+
+/// The main worktree (repository identity) of the repository `root` belongs
+/// to: a plain repository is its own main worktree; a linked worktree reads
+/// its `.git` file (`gitdir: <path>`) and the git dir's `commondir` file and
+/// takes the parent of the shared `.git` (Zed's `discover_git_paths`). When
+/// `commondir` resolves to the git dir itself the entry is not a linked
+/// worktree (plain repo / submodule) and the checkout itself is the answer.
+pub fn main_worktree(root: &Path) -> Option<String> {
+    let repo = repo_root(root)?;
+    let dot_git = repo.join(".git");
+    if dot_git.is_dir() {
+        return Some(repo.to_string_lossy().to_string());
+    }
+    let gitfile = std::fs::read_to_string(&dot_git).ok()?;
+    let gitdir = gitfile.strip_prefix("gitdir:")?.trim();
+    let gitdir_path = std::fs::canonicalize(resolve_ref(&repo, gitdir)).ok()?;
+    let common = std::fs::read_to_string(gitdir_path.join("commondir")).ok()?;
+    let common_path = std::fs::canonicalize(resolve_ref(&gitdir_path, common.trim())).ok()?;
+    if common_path == gitdir_path {
+        return Some(repo.to_string_lossy().to_string());
+    }
+    // The main checkout is the parent of the shared `.git`; a bare repository
+    // (`x.git`) has no checkout, so its own directory is the identity.
+    Some(common_path.parent()?.to_string_lossy().to_string())
+}
+
+/// A path written in a git file / `commondir` file: absolute, or relative to
+/// the file's directory.
+fn resolve_ref(base: &Path, path: &str) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    }
+}
+
+/// All worktrees of the repository `root` belongs to, main first (git lists
+/// the main worktree first; the flag is verified against `main_worktree` so
+/// the UI can anchor grouping even when the list is reordered).
+pub fn worktrees(root: &Path) -> Result<Vec<WorktreeInfo>, String> {
+    let repo = repo_root(root).ok_or("NOT_A_REPO: 不是 git 仓库")?;
+    let stdout = git(&repo, &["worktree", "list", "--porcelain"])?;
+    let main = main_worktree(&repo);
+    let mut list = parse_worktrees(&stdout);
+    for wt in &mut list {
+        wt.is_main = main.as_deref() == Some(wt.path.as_str());
+    }
+    Ok(list)
+}
+
+/// The directory every worktree of a repository lands in:
+/// `<main repo parent>/worktrees/<main repo name>` — the sibling-directory
+/// rule (a linked worktree anchors at the main repository, so all worktrees
+/// of one repo sit next to each other).
+pub fn worktrees_dir(main_repo: &Path) -> PathBuf {
+    let name = main_repo
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    main_repo
+        .parent()
+        .unwrap_or(main_repo)
+        .join("worktrees")
+        .join(name)
+}
+
+/// A worktree name must be a single safe path segment: no separators, no
+/// traversal, no dot files.
+fn validate_worktree_name(name: &str) -> Result<(), String> {
+    let bad = name.is_empty()
+        || name.len() > 80
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.starts_with('.')
+        || name.trim() != name
+        || name.chars().any(|c| c.is_control());
+    if bad {
+        return Err(format!(
+            "INVALID_NAME: worktree 名称必须是单个不含 / \\ .. 且不以 . 开头的短名称: {}",
+            name
+        ));
+    }
+    Ok(())
+}
+
+/// Runs git and requires success (`git` above tolerates exit 1 for
+/// `--no-index`, which would mask a failed worktree operation).
+fn git_strict(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .map_err(|e| format!("GIT_FAILED: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "GIT_FAILED: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(out.stdout)
+}
+
+/// Creates a worktree of the repository `root` belongs to and returns the
+/// freshly listed entry. `new_branch` selects the two supported shapes:
+/// `worktree add -b <branch> -- <path> [<base>]` (new branch, base defaults to
+/// HEAD) and `worktree add -- <path> <branch>` (check out an existing local
+/// branch). The branch argument follows Zed's `CreateWorktreeTarget`.
+pub fn worktree_add(
+    root: &Path,
+    name: &str,
+    new_branch: bool,
+    branch: &str,
+    base: Option<&str>,
+) -> Result<WorktreeInfo, String> {
+    validate_worktree_name(name)?;
+    let main = PathBuf::from(main_worktree(root).ok_or("NOT_A_REPO: 不是 git 仓库")?);
+    let dir = worktrees_dir(&main).join(name);
+    if dir.exists() {
+        return Err(format!(
+            "WORKTREE_EXISTS: 目录已存在: {}",
+            dir.to_string_lossy()
+        ));
+    }
+    let path_str = dir.to_string_lossy().to_string();
+    let mut args: Vec<&str> = vec!["worktree", "add"];
+    if new_branch {
+        args.push("-b");
+        args.push(branch);
+    }
+    args.push("--");
+    args.push(&path_str);
+    if new_branch {
+        // `-b <name> -- <path> <start>`: the start point is optional (HEAD).
+        if let Some(b) = base {
+            args.push(b);
+        }
+    } else {
+        // `-- <path> <branch>` **must** name the branch: without it git reads
+        // the path as the only argument and creates a new branch after the
+        // directory's basename (measured: "existing branch" mode silently
+        // produced a fresh `swift-cove` branch instead of `feature`).
+        args.push(branch);
+    }
+    // The `worktrees/<project>/` chain may not exist yet for the first worktree.
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("IO_FAILED: {}", e))?;
+    }
+    git_strict(&main, &args)?;
+    // Read the result back from git instead of guessing: git may have appended
+    // suffixes and the branch/HEAD shape is authoritative there.
+    worktrees(&main)?
+        .into_iter()
+        .find(|w| w.path == path_str)
+        .ok_or_else(|| "GIT_FAILED: worktree 已创建但未出现在列表中".to_string())
+}
+
+/// Removes a worktree of the repository `root` belongs to. `force` is a
+/// separate call: the UI asks again when git reports a dirty worktree.
+pub fn worktree_remove(root: &Path, path: &str, force: bool) -> Result<(), String> {
+    let repo = repo_root(root).ok_or("NOT_A_REPO: 不是 git 仓库")?;
+    // Confine to a real worktree of this repository: the caller sends a path,
+    // never trust it blindly.
+    if !worktrees(&repo)?.iter().any(|w| w.path == path) {
+        return Err(format!("NOT_A_WORKTREE: {} 不是该仓库的 worktree", path));
+    }
+    let mut args: Vec<&str> = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push("--");
+    args.push(path);
+    git_strict(&repo, &args)?;
+    Ok(())
+}
+
+/// Local branch names, for the "check out an existing branch" picker of
+/// worktree creation.
+pub fn branches(root: &Path) -> Result<Vec<String>, String> {
+    let repo = repo_root(root).ok_or("NOT_A_REPO: 不是 git 仓库")?;
+    let stdout = git(&repo, &["branch", "--format=%(refname:short)"])?;
+    Ok(String::from_utf8_lossy(&stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,5 +873,188 @@ mod tests {
         let d = diff(&dir, "fresh.txt", false).unwrap();
         assert!(d.contains("+brand new"), "{}", d);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Parses the measured porcelain shape: `worktree` lines start entries,
+    /// `branch`/`detached` are attributes, `HEAD`/`bare` are ignorable.
+    #[test]
+    fn parses_worktree_porcelain() {
+        let raw = b"worktree /repos/demo\n\
+                    HEAD 1111111\n\
+                    branch refs/heads/main\n\n\
+                    worktree /repos/worktrees/demo/fix-auth\n\
+                    HEAD 2222222\n\
+                    branch refs/heads/fix-auth\n\n\
+                    worktree /tmp/peek\n\
+                    HEAD 3333333\n\
+                    detached\n";
+        let list = parse_worktrees(raw);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].path, "/repos/demo");
+        assert_eq!(list[0].name, "demo");
+        assert_eq!(list[0].branch.as_deref(), Some("main"));
+        assert!(!list[0].is_detached);
+        assert_eq!(list[1].branch.as_deref(), Some("fix-auth"));
+        assert!(list[2].branch.is_none());
+        assert!(list[2].is_detached);
+    }
+
+    /// The full worktree round trip on a real repository: create from HEAD,
+    /// list with the main flag, anchor at the main repo, remove.
+    #[test]
+    fn worktree_add_list_remove_round_trip() {
+        // Canonicalized: git prints resolved paths (`/private/var/...`), so the
+        // path comparisons below must run on the same spelling.
+        let dir = std::fs::canonicalize(tmpdir("worktree")).unwrap();
+        git_init(&dir);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+
+        // The sibling-directory rule: <parent>/worktrees/<project>/<name>.
+        let wt = worktree_add(&dir, "fix-auth", true, "fix-auth", None).unwrap();
+        let expected = dir
+            .parent()
+            .unwrap()
+            .join("worktrees")
+            .join(dir.file_name().unwrap())
+            .join("fix-auth");
+        assert_eq!(Path::new(&wt.path), &expected, "{}", wt.path);
+        assert_eq!(wt.branch.as_deref(), Some("fix-auth"));
+        assert!(!wt.is_main);
+        assert!(expected.join("a.txt").exists(), "worktree checked out");
+
+        let list = worktrees(&dir).unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list[0].is_main, "git lists the main worktree first");
+        assert!(list[1..].iter().all(|w| !w.is_main));
+
+        // The main anchor: a plain repository is its own identity.
+        assert_eq!(main_worktree(&dir).as_deref(), Some(dir.to_str().unwrap()));
+        // …and the linked worktree resolves back to the same repository.
+        assert_eq!(
+            main_worktree(&expected).as_deref(),
+            Some(dir.to_str().unwrap())
+        );
+        // Branches list carries both branches for the picker.
+        let names = branches(&dir).unwrap();
+        assert!(names.contains(&"main".to_string()));
+        assert!(names.contains(&"fix-auth".to_string()));
+
+        worktree_remove(&dir, &wt.path, false).unwrap();
+        assert!(!expected.exists());
+        assert_eq!(worktrees(&dir).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Removing a dirty worktree needs the explicit force flag.
+    #[test]
+    fn worktree_remove_refuses_dirty_without_force() {
+        let dir = tmpdir("worktree-dirty");
+        git_init(&dir);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let wt = worktree_add(&dir, "dirty", true, "dirty", None).unwrap();
+        std::fs::write(std::path::Path::new(&wt.path).join("a.txt"), "changed\n").unwrap();
+
+        let err = worktree_remove(&dir, &wt.path, false).unwrap_err();
+        assert!(err.contains("GIT_FAILED"), "{}", err);
+        assert!(std::path::Path::new(&wt.path).exists(), "still there");
+        worktree_remove(&dir, &wt.path, true).unwrap();
+        assert!(!std::path::Path::new(&wt.path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A linked worktree of the repo created through the sibling rule anchors
+    /// at the main repo, so the next worktree lands next to the previous one.
+    #[test]
+    fn worktree_add_from_linked_worktree_anchors_at_main() {
+        let dir = std::fs::canonicalize(tmpdir("worktree-anchor")).unwrap();
+        git_init(&dir);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let first = worktree_add(&dir, "one", true, "one", None).unwrap();
+
+        // Opened project = the linked worktree; the new one still lands in the
+        // main repo's sibling worktrees directory.
+        let second =
+            worktree_add(std::path::Path::new(&first.path), "two", true, "two", None).unwrap();
+        assert_eq!(
+            Path::new(&second.path).parent().unwrap(),
+            Path::new(&first.path).parent().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Checking out an existing branch must not create a new one (the shipped
+    /// bug: the missing branch argument made git name a fresh branch after the
+    /// directory, so "existing branch" mode silently invented a branch).
+    #[test]
+    fn worktree_add_checks_out_existing_branch() {
+        let dir = std::fs::canonicalize(tmpdir("worktree-existing")).unwrap();
+        git_init(&dir);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["branch", "feature"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+
+        let wt = worktree_add(&dir, "feature-wt", false, "feature", None).unwrap();
+        assert_eq!(wt.branch.as_deref(), Some("feature"));
+        // No new branch was created: the branch list is still exactly these.
+        let names = branches(&dir).unwrap();
+        assert!(names.contains(&"feature".to_string()), "{:?}", names);
+        assert!(!names.contains(&"feature-wt".to_string()), "{:?}", names);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The name guard rejects path segments that would escape the worktrees
+    /// directory or hide inside it.
+    #[test]
+    fn worktree_name_guard() {
+        for bad in ["", "a/b", "a\\b", "..", "a..b", ".hidden", " spaced "] {
+            assert!(
+                worktree_add(Path::new("/nonexistent-repo"), bad, true, "b", None).is_err(),
+                "{} should be rejected",
+                bad
+            );
+        }
     }
 }

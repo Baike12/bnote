@@ -164,6 +164,7 @@ Active while the code editor has focus. A separate world: `Cmd+S` saves the code
 | `Cmd+Alt+A` | 代码区：切换到 Agent 输入框 — `region.focus-agent` |
 | `Cmd+Alt+ArrowLeft` | 代码区：上一个标签 — `code.prev-tab` |
 | `Cmd+Alt+ArrowRight` | 代码区：下一个标签 — `code.next-tab` |
+| `Cmd+Alt+B` | 代码区：显示/隐藏项目与会话侧栏 — `code.toggle-projects-sidebar` |
 | `Cmd+Alt+E` | 代码区：聚焦到编辑区 — `code.focus-editor` |
 | `Cmd+Alt+N` | 代码区：切换到笔记区 — `region.focus-notes` |
 | `Cmd+Alt+R` | 代码区：切换到内容区 — `region.focus-reading` |

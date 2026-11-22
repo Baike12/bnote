@@ -102,17 +102,23 @@ export function ThinkingBlock({
           <path d="m9 18 6-6-6-6" />
         </svg>
       </summary>
-      <div
-        className="agent-thinking-body"
-        ref={bodyRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stickBottomRef.current =
-            el.scrollHeight - el.clientHeight - el.scrollTop <= THINKING_BOTTOM_LOCK_PX;
-        }}
-      >
-        {thinking}
-      </div>
+      {/* The body is built only while open: a restored transcript's thinking
+          can be hundreds of KB, and a collapsed block is a single summary
+          line. Keeping the text mounted cost the same as rendering it, which
+          is most of the DOM work when opening a long history. */}
+      {open && (
+        <div
+          className="agent-thinking-body"
+          ref={bodyRef}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            stickBottomRef.current =
+              el.scrollHeight - el.clientHeight - el.scrollTop <= THINKING_BOTTOM_LOCK_PX;
+          }}
+        >
+          {thinking}
+        </div>
+      )}
     </details>
   );
 }

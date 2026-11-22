@@ -21,14 +21,19 @@ import { DEFAULT_AGENT_FONT, stepAgentFont } from "@/study/agentFont";
 import { ensureMaterial, sessionFilePath } from "@/study/materials";
 import { transcriptIO } from "@/study/transcriptIO";
 import { codeSessionIdentity, codeSessionPath, type CodeSessionScope } from "@/code/sessionScope";
+import {
+  onNewSessionRequest,
+  onSessionRestore,
+  takePendingCodeNewSession,
+  takePendingCodeSession,
+} from "@/code/sessionRequest";
+import { useProjectSidebarStore } from "@/code/projectSidebarStore";
 import { cleanGeneratedTitle, displayTitle } from "@/study/sessionTitle";
 import { resolveFamily } from "@/study/sessionTree";
 import {
   buildSessionMeta,
   historyFromTranscript,
-  parseTranscript,
   serializeTranscript,
-  sessionMetaFromRaw,
   sessionTitleFromLines,
   type TranscriptLine,
 } from "@/study/transcript";
@@ -68,6 +73,7 @@ import { followTranscript, measureTurnCap } from "@/components/agent/panelScroll
 import { resolveSelection, sessionSelection } from "@/components/agent/modelSelection";
 import { createStreamHandler } from "@/components/agent/streamEvents";
 import { createTranscriptWriter } from "@/components/agent/transcriptWriter";
+import { createTranscriptCache } from "@/components/agent/transcriptCache";
 import { parseBuiltinCommand, runBuiltinCommand } from "@/components/agent/builtinCommands";
 import { AgentTranscript, AgentWelcome } from "@/components/agent/Transcript";
 import { AgentTodos } from "@/components/agent/TodoPanel";
@@ -96,6 +102,14 @@ import { AgentQuestionCard, type PendingQuestion } from "@/components/agent/Ques
  * content is ready: opening a material connects once, switching the material
  * opens it again.
  */
+/**
+ * Warm parses of the recently opened session records. Switching between
+ * sessions re-reads the same files, and parsing a long record is two full
+ * passes over its lines; the cache is the module's one owner (bounded LRU,
+ * shape-checked per hit, see `transcriptCache`).
+ */
+const transcriptCache = createTranscriptCache();
+
 export function AgentPanel() {
   const studyContent = useAppStore((s) => s.studyContent);
   const mode = useAppStore((s) => s.mode);
@@ -134,6 +148,8 @@ export function AgentPanel() {
   /** The IME composition session (bookkeeping via compositionstart/end): Enter must not send while a candidate is confirmed. */
   const composingRef = useRef(false);
   const [starting, setStarting] = useState(false);
+  /** The conv whose record is being read from disk (the transcript shows a placeholder, not the welcome state). */
+  const [readingKey, setReadingKey] = useState<string | null>(null);
   const [busySession, setBusySession] = useState<string | null>(null);
   /** The saved Agent catalog (providers, models, thinking levels); the picker and the footnote read it. */
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null);
@@ -304,6 +320,15 @@ export function AgentPanel() {
   useEffect(() => {
     convsRef.current = convs;
   }, [convs]);
+  /**
+   * A live copy of the saved sessions: the one-shot restore channel (the
+   * project sidebar asking for a session of the open project) must read the
+   * newest list without re-subscribing on every refresh.
+   */
+  const savedSessionsRef = useRef<SavedSessionMeta[]>([]);
+  useEffect(() => {
+    savedSessionsRef.current = savedSessions;
+  }, [savedSessions]);
   /** A live copy of the key of the current session (the shortcut effect must not rerun when the session changes). */
   const activeKeyRef = useRef<string | null>(null);
   useEffect(() => {
@@ -375,6 +400,44 @@ export function AgentPanel() {
   );
 
   const activeConv = convs.find((c) => c.key === activeKey) ?? null;
+  /**
+   * The project sidebar's active-row highlight. The sidebar store owns that
+   * value; the panel is its only writer, so it publishes what it is actually
+   * showing rather than the sidebar guessing from a click.
+   */
+  const activeSessionFileId = activeConv?.sessionFileId ?? null;
+  const lastFileIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (mode !== "code" || !codeProject) return;
+    const sidebar = useProjectSidebarStore.getState();
+    sidebar.setActiveSession(codeProject.path, activeSessionFileId);
+    const previous = lastFileIdRef.current;
+    lastFileIdRef.current = activeSessionFileId;
+    // A just-started session only reaches the list once its record exists; the
+    // sidebar's snapshot predates that write, so reload it or the new row is
+    // missing until the next project switch or manual refresh.
+    if (activeSessionFileId === null || previous !== null) return;
+    const app = useAppStore.getState();
+    void sidebar.refresh(app.recentCodeProjects, codeProject.path);
+  }, [mode, codeProject, activeSessionFileId]);
+  /**
+   * The sidebar's running indicator: the one backend session this panel is
+   * streaming, published with its record id so the row shows a spinner and
+   * leads its group (ZCode's running-first order). The panel tracks one busy
+   * session, so this mirrors exactly that, not a guess.
+   */
+  const runningFileId =
+    busySession === null
+      ? null
+      : (convs.find((c) => c.sessionId === busySession)?.sessionFileId ?? null);
+  useEffect(() => {
+    const sidebar = useProjectSidebarStore.getState();
+    if (mode !== "code" || !codeProject || runningFileId === null) {
+      sidebar.setRunningSession(null);
+      return;
+    }
+    sidebar.setRunningSession({ workdir: codeProject.path, id: runningFileId });
+  }, [mode, codeProject, runningFileId]);
   // Only a non-empty sessionId counts as "generating": while the session is not up yet (or the start failed) both sessionId and busySession are null, they are equal but that is not a streaming reply.
   // A subagent's own transcript streams while its row is running — it is not
   // the panel's busy session (that one is the parent's), so it is derived from
@@ -566,36 +629,45 @@ export function AgentPanel() {
     async (conv: Conv, token: number) => {
       const path = conv.transcriptPath;
       if (!path) return;
-      const raw = await transcriptIO(conv.transcriptHome === true)
-        .read(path)
-        .catch(() => null);
-      if (restoreTokenRef.current !== token) return;
-      const lines = parseTranscript(raw);
-      if (lines.length === 0) {
-        showToast("这条会话记录是空的");
-        return;
+      // The placeholder holds until the entries land: the welcome state must
+      // not flash for the turn it takes to read and parse the record. Every
+      // exit clears it for this conv only (a newer restore may own the slot).
+      setReadingKey(conv.key);
+      try {
+        const raw = await transcriptIO(conv.transcriptHome === true)
+          .read(path)
+          .catch(() => null);
+        if (restoreTokenRef.current !== token) return;
+        const parsed = raw === null ? null : transcriptCache.get(path, raw);
+        const lines = parsed?.lines ?? [];
+        if (lines.length === 0) {
+          showToast("这条会话记录是空的");
+          return;
+        }
+        // The model config snapshot of the session itself: later setting changes do not affect this session, and a restore continues with it.
+        const sessionMeta = parsed?.meta ?? null;
+        updateConv(conv.key, (c) => ({
+          ...c,
+          entries: lines.map(entryFromLine),
+          label: sessionMeta?.title?.trim() ? sessionMeta.title : c.label,
+          basedOn: sessionMeta?.basedOn ?? c.basedOn,
+          forkAt: sessionMeta?.forkAt ?? c.forkAt,
+          titleSource: sessionMeta?.titleSource === "llm" ? "llm" : "first-message",
+          model: sessionMeta?.model ?? c.model,
+        }));
+        transcriptRef.current.set(conv.key, path);
+        // The record file already has the metadata (old records have none, the title falls back to the list side); it is not written twice, and the bookkeeping of the other sessions is not cleared either — the round that is still streaming needs it when it closes.
+        writer.markMetaWritten(conv.key, true);
+        void startSession(conv.key, materialContent, {
+          history: historyFromTranscript(lines),
+          transcriptPath: path,
+          transcriptHome: conv.transcriptHome === true,
+          model: sessionMeta?.model,
+          taskListId: conv.sessionFileId ?? undefined,
+        });
+      } finally {
+        setReadingKey((key) => (key === conv.key ? null : key));
       }
-      // The model config snapshot of the session itself: later setting changes do not affect this session, and a restore continues with it.
-      const sessionMeta = sessionMetaFromRaw(raw);
-      updateConv(conv.key, (c) => ({
-        ...c,
-        entries: lines.map(entryFromLine),
-        label: sessionMeta?.title?.trim() ? sessionMeta.title : c.label,
-        basedOn: sessionMeta?.basedOn ?? c.basedOn,
-        forkAt: sessionMeta?.forkAt ?? c.forkAt,
-        titleSource: sessionMeta?.titleSource === "llm" ? "llm" : "first-message",
-        model: sessionMeta?.model ?? c.model,
-      }));
-      transcriptRef.current.set(conv.key, path);
-      // The record file already has the metadata (old records have none, the title falls back to the list side); it is not written twice, and the bookkeeping of the other sessions is not cleared either — the round that is still streaming needs it when it closes.
-      writer.markMetaWritten(conv.key, true);
-      void startSession(conv.key, materialContent, {
-        history: historyFromTranscript(lines),
-        transcriptPath: path,
-        transcriptHome: conv.transcriptHome === true,
-        model: sessionMeta?.model,
-        taskListId: conv.sessionFileId ?? undefined,
-      });
     },
     [materialContent, showToast, startSession, updateConv],
   );
@@ -683,6 +755,37 @@ export function AgentPanel() {
     },
     [launchRestored],
   );
+
+  /**
+   * The project sidebar's pick inside the open project: the panel is already
+   * mounted, so the click is a one-shot request rather than a project reopen.
+   * A session already in memory is switched to; one of another family is
+   * rebuilt from disk — the same two choices the history drawer makes.
+   */
+  useEffect(() => {
+    if (mode !== "code") return;
+    return onSessionRestore((id) => {
+      const existing = convsRef.current.find((c) => c.sessionFileId === id);
+      if (existing) {
+        activateConv(existing.key);
+        return;
+      }
+      if (savedSessionsRef.current.some((s) => s.id === id)) {
+        void restoreFamily(id, savedSessionsRef.current, "anchor");
+      }
+    });
+  }, [mode, activateConv, restoreFamily]);
+
+  /**
+   * The sidebar's "new session": the same restart the history drawer's
+   * "＋ 新会话" performs (the nonce forces a fresh conversation instead of
+   * restoring the newest one). Separate channel because that action lives
+   * inside the panel and the sidebar is a sibling column.
+   */
+  useEffect(() => {
+    if (mode !== "code") return;
+    return onNewSessionRequest(() => setRestartNonce((n) => n + 1));
+  }, [mode]);
 
   /**
    * After the first reply the model names the session (from the **own** first
@@ -789,6 +892,15 @@ export function AgentPanel() {
           : [];
         if (startTokenRef.current !== token) return;
         setSavedSessions(sessions);
+        // A pending pick from the project sidebar wins over the default
+        // "restore the newest one": the click named the landing spot. "New
+        // session in that project" is the same channel and outranks a restore.
+        const startFresh = takePendingCodeNewSession(codeProject.path);
+        const picked = startFresh ? null : takePendingCodeSession(codeProject.path);
+        if (picked && sessions.some((s) => s.id === picked)) {
+          await restoreFamily(picked, sessions, "anchor");
+          return;
+        }
         if (!forcedNew && sessions.length > 0) {
           await restoreFamily(sessions[0].id, sessions, "root");
           return;
@@ -976,6 +1088,54 @@ export function AgentPanel() {
       scroller.scrollTo({ top: scroller.scrollHeight });
     });
   }, [activeKey]);
+
+  // A restored session fills its transcript asynchronously: the effect above
+  // ran while the list was empty, so land on the newest entries once they
+  // arrive. Without this the reader opens a history at its first message.
+  //
+  // One rAF scroll is not enough: the rows keep growing after the first
+  // layout (fonts, math, code highlighting), and a scroll read at that moment
+  // lands short of the tail. The pin follows the content's resizes until the
+  // reader scrolls up or the window closes, then it stops for good.
+  const landedKeyRef = useRef<string | null>(null);
+  const pinStopRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => pinStopRef.current?.(), []);
+  useEffect(() => {
+    const conv = activeConv;
+    if (!conv || conv.entries.length === 0) return;
+    if (landedKeyRef.current === conv.key) return;
+    landedKeyRef.current = conv.key;
+    pinStopRef.current?.();
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    followRef.current = true;
+    lastFollowPosRef.current = null;
+    turnCapRef.current = measureTurnCap(scroller);
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      observer?.disconnect();
+      window.clearTimeout(timer);
+      cancelAnimationFrame(raf);
+      pinStopRef.current = null;
+    };
+    const pin = () => {
+      if (stopped) return;
+      // Re-validate: a newer restore, a switched conversation, or the reader
+      // taking over the view all end the pin.
+      if (followRef.current && landedKeyRef.current === conv.key) {
+        scroller.scrollTo({ top: scroller.scrollHeight });
+        return;
+      }
+      stop();
+    };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(pin);
+    if (observer) for (const child of scroller.children) observer.observe(child);
+    const raf = requestAnimationFrame(pin);
+    const timer = window.setTimeout(stop, 1500);
+    pinStopRef.current = stop;
+  }, [activeConv]);
 
   /** Moves through the fetched prompt history (index -1 = the empty box). */
   function stepHistory(direction: 1 | -1) {
@@ -1724,9 +1884,11 @@ export function AgentPanel() {
         </div>
       )}
       <AgentTranscript
+        conversationKey={activeConv?.key ?? "welcome"}
         scrollRef={scrollRef}
         entries={activeConv?.entries ?? []}
         busy={activeBusy}
+        reading={readingKey !== null && readingKey === activeConv?.key}
         allowFork={!activeConv?.agent}
         onFork={forkFrom}
         agents={agentCards}

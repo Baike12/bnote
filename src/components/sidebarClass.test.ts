@@ -9,10 +9,12 @@ import { readFileSync } from "node:fs";
  * been opened once that CSS stays in the page and overrides this one, the
  * sidebar ends up on top of the macOS traffic lights (observed). This gate
  * locks in "the component uses its own class name + global.css does not
- * define a bare .sidebar anymore + the :has selector follows".
+ * define a bare .sidebar anymore + the sidebar renders on the right, where no
+ * traffic-light clearance rule is needed for it".
  */
 const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const sidebarTsx = readFileSync("src/components/Sidebar.tsx", "utf8");
+const appTsx = readFileSync("src/App.tsx", "utf8");
 
 describe("sidebar class name isolated from third-party CSS", () => {
   it("the component uses its own class name app-sidebar", () => {
@@ -24,7 +26,14 @@ describe("sidebar class name isolated from third-party CSS", () => {
     expect(css).toMatch(/\.app-sidebar\s*\{[^}]*padding-top:\s*30px/);
   });
 
-  it("the :has selector follows the new class name", () => {
-    expect(css).toContain(".app:has(> .app-sidebar)");
+  it("the sidebar renders right of the main area", () => {
+    // `{main}` must come first: the tree is the notes' right-hand column now,
+    // so the traffic-light clearance rules keyed on the sidebar being leftmost
+    // are gone with it.
+    const mainAt = appTsx.indexOf("{main}");
+    const sidebarAt = appTsx.indexOf("sidebarOpen && vaultPath && <Sidebar />");
+    expect(mainAt).toBeGreaterThan(-1);
+    expect(sidebarAt).toBeGreaterThan(mainAt);
+    expect(css).not.toContain(".app:has(> .app-sidebar)");
   });
 });

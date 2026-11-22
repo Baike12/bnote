@@ -730,6 +730,18 @@ export const homeApi = {
   /** The sessions saved for a code project (newest first). */
   sessionsList: (workdir: string) =>
     invoke<SavedSessionMeta[]>("agent_home_sessions_list", { workdir }),
+  /** The sessions archived out of a project's main list. */
+  sessionsArchived: (workdir: string) =>
+    invoke<SavedSessionMeta[]>("agent_home_sessions_archived", { workdir }),
+  /** Hide a session from the project list; the transcript is kept. */
+  archiveSession: (workdir: string, id: string) =>
+    invoke<void>("agent_home_session_archive", { workdir, id }),
+  /** Restore an archived session to the project list. */
+  unarchiveSession: (workdir: string, id: string) =>
+    invoke<void>("agent_home_session_unarchive", { workdir, id }),
+  /** Permanently delete an archived session (transcript and its runtime dir). */
+  deleteSession: (workdir: string, id: string) =>
+    invoke<void>("agent_home_session_delete", { workdir, id }),
   readFile: (path: string) => invoke<string | null>("agent_home_read_file", { path }),
   writeFile: (path: string, contents: string) =>
     invoke<void>("agent_home_write_file", { path, contents }),

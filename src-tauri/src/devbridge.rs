@@ -602,6 +602,24 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_home_sessions_list" => {
             json_ok!(home::agent_home_sessions_list(arg_str(args, "workdir")?).await)
         }
+        "agent_home_sessions_archived" => {
+            json_ok!(home::agent_home_sessions_archived(arg_str(args, "workdir")?).await)
+        }
+        "agent_home_session_archive" => json_ok!(home::agent_home_session_archive(
+            arg_str(args, "workdir")?,
+            arg_str(args, "id")?
+        )
+        .await),
+        "agent_home_session_unarchive" => json_ok!(home::agent_home_session_unarchive(
+            arg_str(args, "workdir")?,
+            arg_str(args, "id")?
+        )
+        .await),
+        "agent_home_session_delete" => json_ok!(home::agent_home_session_delete(
+            arg_str(args, "workdir")?,
+            arg_str(args, "id")?
+        )
+        .await),
         "agent_home_read_file" => {
             json_ok!(home::agent_home_read_file(arg_str(args, "path")?).await)
         }
@@ -797,6 +815,33 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "code_git_unstage" => {
             json_ok!(code::code_git_unstage(arg_str(args, "root")?, arg_str(args, "path")?).await)
         }
+        "code_git_branches" => {
+            json_ok!(code::code_git_branches(arg_str(args, "root")?).await)
+        }
+        "code_git_main_repo" => {
+            json_ok!(code::code_git_main_repo(arg_str(args, "root")?).await)
+        }
+        "code_worktree_list" => {
+            json_ok!(code::code_worktree_list(arg_str(args, "root")?).await)
+        }
+        "code_worktree_create" => json_ok!(
+            code::code_worktree_create(
+                arg_str(args, "root")?,
+                arg_str(args, "name")?,
+                arg_opt_bool(args, "newBranch").unwrap_or(true),
+                arg_str(args, "branch")?,
+                arg_opt_str(args, "base"),
+            )
+            .await
+        ),
+        "code_worktree_remove" => json_ok!(
+            code::code_worktree_remove(
+                arg_str(args, "root")?,
+                arg_str(args, "path")?,
+                arg_opt_bool(args, "force").unwrap_or(false),
+            )
+            .await
+        ),
         "code_lsp_resolve" => json_ok!(
             code::code_lsp_resolve(
                 arg_str(args, "root")?,

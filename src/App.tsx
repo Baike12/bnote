@@ -131,6 +131,11 @@ export default function App() {
       if (cfg?.recentFiles?.length) {
         useAppStore.setState({ recentFiles: cfg.recentFiles });
       }
+      // The project sidebar's groups are the recent projects: without this the
+      // list restarts empty even though every open wrote it back to the config.
+      if (cfg?.recentCodeProjects?.length) {
+        useAppStore.setState({ recentCodeProjects: cfg.recentCodeProjects });
+      }
       // A legacy config without studyHistory means an empty history, not an error.
       useAppStore.setState({ studyHistory: normalizeStudyHistory(cfg?.studyHistory) });
       const saved = cfg?.settings ?? {};
@@ -443,9 +448,10 @@ export default function App() {
           <div
             className="titlebar"
             data-tauri-drag-region
-            // When the sidebar is hidden the macOS traffic lights overlay the
-            // titlebar's left edge — keep the toggle button clear of them.
-            style={{ paddingLeft: sidebarOpen ? 12 : 78 }}
+            // The vault tree now lives on the right, so this titlebar is
+            // always the window's left edge: keep the toggle button clear of
+            // the macOS traffic lights whether the tree is open or not.
+            style={{ paddingLeft: 78 }}
           >
             <button
               className="icon-btn titlebar-icon"
@@ -464,8 +470,12 @@ export default function App() {
 
   return (
     <div className="app">
-      {sidebarOpen && vaultPath && <Sidebar />}
       {main}
+      {/* The vault tree sits to the right of the notes: the window's left edge
+          belongs to what the current mode is about (projects and sessions in
+          code mode, the assistant in study mode), and the notebook is the
+          reference surface on the right. */}
+      {sidebarOpen && vaultPath && <Sidebar />}
       {/* Code mode is independent of the vault: a repository can be worked on
           without a notebook open, so the welcome screen must not cover it. */}
       {!vaultPath && mode !== "code" && <Welcome />}

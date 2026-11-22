@@ -6,6 +6,7 @@ import { peekVimVisual } from "@/editor/vim/vim";
 import { useAppStore } from "@/state/appStore";
 import { codeVimEnabled } from "@/state/codeVim";
 import { useCodeStore } from "./store";
+import { useProjectSidebarStore } from "./projectSidebarStore";
 import { activeCodeEditor } from "./editor/registry";
 import { findReferences, gotoDefinition, renameSymbol } from "./editor/goto";
 import { cmToLspPosition } from "./editor/positions";
@@ -196,6 +197,30 @@ export const codeCommandDefs: CommandDef[] = [
     run: () => {
       const store = useCodeStore.getState();
       store.setTreeOpen(!store.treeOpen);
+    },
+  },
+  {
+    id: "code.toggle-projects-sidebar",
+    title: "显示/隐藏项目与会话侧栏",
+    category: "代码",
+    when: hasProject,
+    run: () => {
+      const app = useAppStore.getState();
+      app.patchSettings({ codeProjectsOpen: !app.settings.codeProjectsOpen });
+    },
+  },
+  {
+    id: "code.create-worktree",
+    title: "新建 Worktree…",
+    category: "代码",
+    when: hasProject,
+    run: () => {
+      // The dialog lives in the code layout (always mounted in code mode), so
+      // it opens even while the sidebar is collapsed; revealing the sidebar
+      // afterwards is what makes the new checkout visible.
+      const app = useAppStore.getState();
+      if (!app.settings.codeProjectsOpen) app.patchSettings({ codeProjectsOpen: true });
+      useProjectSidebarStore.getState().openWorktreeModal();
     },
   },
   {

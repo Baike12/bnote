@@ -429,6 +429,67 @@ pub async fn code_git_unstage(root: String, path: String) -> CmdResult<GitStatus
     .await
 }
 
+/// List the worktrees of the project's repository (main worktree included).
+#[tauri::command]
+pub async fn code_worktree_list(root: String) -> CmdResult<Vec<git::WorktreeInfo>> {
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        git::worktrees(&root)
+    })
+    .await
+}
+
+/// Create a worktree under the main repository's sibling `worktrees/<project>`
+/// directory: `worktree add -b <branch> -- <path> [<base>]` for a new branch,
+/// `worktree add -- <path> <branch>` for an existing one.
+#[tauri::command]
+pub async fn code_worktree_create(
+    root: String,
+    name: String,
+    new_branch: bool,
+    branch: String,
+    base: Option<String>,
+) -> CmdResult<git::WorktreeInfo> {
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        git::worktree_add(&root, &name, new_branch, &branch, base.as_deref())
+    })
+    .await
+}
+
+/// Remove a worktree; `force` discards a dirty worktree after the UI asked
+/// again.
+#[tauri::command]
+pub async fn code_worktree_remove(root: String, path: String, force: bool) -> CmdResult<()> {
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        git::worktree_remove(&root, &path, force)
+    })
+    .await
+}
+
+/// Local branch names, for the worktree branch picker.
+#[tauri::command]
+pub async fn code_git_branches(root: String) -> CmdResult<Vec<String>> {
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        git::branches(&root)
+    })
+    .await
+}
+
+/// The main worktree (repository identity) of the project's repository; None
+/// outside a repository. The project sidebar groups a project's worktree
+/// sessions under this identity.
+#[tauri::command]
+pub async fn code_git_main_repo(root: String) -> CmdResult<Option<String>> {
+    blocking(move || {
+        let root = canonical_root(&root)?;
+        Ok::<Option<String>, String>(git::main_worktree(&root))
+    })
+    .await
+}
+
 /// Resolve which language server this language should use (the frontend
 /// decides from this whether to show the LSP entry).
 #[tauri::command]

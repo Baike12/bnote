@@ -85,6 +85,23 @@ export interface GitStatus {
   files: GitFileState[];
 }
 
+/**
+ * One git worktree of a repository (`git worktree list --porcelain`).
+ *
+ * `isMain` marks the checkout that holds the shared `.git`; every other entry
+ * is a linked worktree created through `git worktree add`.
+ */
+export interface WorktreeInfo {
+  /** Absolute path of the checkout. */
+  path: string;
+  /** Directory name (the short name shown in the sidebar and the picker). */
+  name: string;
+  /** Checked-out branch; null when HEAD is detached. */
+  branch: string | null;
+  isMain: boolean;
+  isDetached: boolean;
+}
+
 /** Position of an LSP diagnostic (0-based, characters counted in UTF-16 code units like CodeMirror). */
 export interface LspPosition {
   line: number;

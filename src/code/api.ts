@@ -7,6 +7,7 @@ import type {
   GitStatus,
   ResolvedServerInfo,
   ServerConfig,
+  WorktreeInfo,
 } from "./types";
 
 /**
@@ -39,6 +40,36 @@ export const codeApi = {
     invoke<string>("code_git_diff", { root, path, staged }),
   gitStage: (root: string, path: string) => invoke<GitStatus>("code_git_stage", { root, path }),
   gitUnstage: (root: string, path: string) => invoke<GitStatus>("code_git_unstage", { root, path }),
+
+  // ---- worktrees ----
+  /** All worktrees of the project's repository (main worktree included). */
+  worktreeList: (root: string) => invoke<WorktreeInfo[]>("code_worktree_list", { root }),
+  /**
+   * Create a worktree under `<main repo parent>/worktrees/<repo name>/<name>`;
+   * `newBranch` selects "new branch from base (HEAD by default)" versus
+   * "check out this existing branch".
+   */
+  worktreeCreate: (
+    root: string,
+    name: string,
+    newBranch: boolean,
+    branch: string,
+    base?: string | null,
+  ) =>
+    invoke<WorktreeInfo>("code_worktree_create", {
+      root,
+      name,
+      newBranch,
+      branch,
+      base: base ?? null,
+    }),
+  /** Remove a worktree; `force` discards a dirty checkout. */
+  worktreeRemove: (root: string, path: string, force: boolean) =>
+    invoke<void>("code_worktree_remove", { root, path, force }),
+  /** Local branch names (the worktree branch picker). */
+  gitBranches: (root: string) => invoke<string[]>("code_git_branches", { root }),
+  /** The main worktree path (repository identity); null outside a repository. */
+  gitMainRepo: (root: string) => invoke<string | null>("code_git_main_repo", { root }),
 
   // ---- language servers ----
   /** Which server handles this language (null = no built-in default). */

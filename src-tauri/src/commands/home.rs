@@ -37,6 +37,31 @@ pub async fn agent_home_workspace(workdir: String) -> CmdResult<HomeWorkspace> {
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
 }
 
+/// Subdirectory that holds a project's archived transcripts. Archiving is a
+/// move, not a flag: the file's location is the state, so no listing path can
+/// show an archived session by forgetting a filter.
+const ARCHIVED_DIR: &str = "archived";
+
+/// One project directory's session records (newest first). A missing directory
+/// lists as empty: the project may simply have no sessions yet.
+fn summarize_dir(dir: &Path) -> Vec<SessionMeta> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Some(meta) = summarize_session(&path) {
+            out.push(meta);
+        }
+    }
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out
+}
+
 /// Lists the session records of a code project (newest first).
 #[tauri::command]
 pub async fn agent_home_sessions_list(workdir: String) -> CmdResult<Vec<SessionMeta>> {
@@ -44,23 +69,125 @@ pub async fn agent_home_sessions_list(workdir: String) -> CmdResult<Vec<SessionM
     if !root.is_dir() {
         return Err(format!("INVALID_WORKDIR: {} 不是目录", workdir));
     }
+    tauri::async_runtime::spawn_blocking(move || Ok(summarize_dir(&home::project_dir(&root))))
+        .await
+        .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Lists the sessions the user archived out of the project's main listing.
+#[tauri::command]
+pub async fn agent_home_sessions_archived(workdir: String) -> CmdResult<Vec<SessionMeta>> {
+    let root = PathBuf::from(&workdir);
+    if !root.is_dir() {
+        return Err(format!("INVALID_WORKDIR: {} 不是目录", workdir));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(summarize_dir(&home::project_dir(&root).join(ARCHIVED_DIR)))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// A session id becomes a file name under the project directory: a separator
+/// or a parent component would let the caller escape it.
+fn valid_session_id(id: &str) -> CmdResult<()> {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return Err(format!("INVALID_ID: {}", id));
+    }
+    Ok(())
+}
+
+/// Moves one transcript between `<project>/<id>.jsonl` and
+/// `<project>/archived/<id>.jsonl`. Archive and restore are the same move in
+/// opposite directions, so both share one set of existence rules.
+fn move_transcript(dir: &Path, id: &str, to_archived: bool) -> CmdResult<()> {
+    let file = format!("{}.jsonl", home::sanitize_path(id));
+    let live = dir.join(&file);
+    let parked = dir.join(ARCHIVED_DIR).join(&file);
+    let (from, to) = if to_archived {
+        (live, parked)
+    } else {
+        (parked, live)
+    };
+    if to.exists() {
+        return Err(format!("EXISTS: {}", to.display()));
+    }
+    if let Some(parent) = to.parent() {
+        home::ensure_dir(parent)?;
+    }
+    match std::fs::rename(&from, &to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("NOT_FOUND: {}", from.display()))
+        }
+        Err(e) => Err(format!("IO_FAILED: {}", e)),
+    }
+}
+
+/// Permanently deletes an archived session: the transcript and its runtime
+/// directory (tool results, subagents). A live transcript is refused — the
+/// archive step is what proves the user meant to remove it from the list.
+fn delete_archived_transcript(dir: &Path, id: &str) -> CmdResult<()> {
+    let path = dir
+        .join(ARCHIVED_DIR)
+        .join(format!("{}.jsonl", home::sanitize_path(id)));
+    if !path.is_file() {
+        return Err(format!("NOT_ARCHIVED: {}", path.display()));
+    }
+    std::fs::remove_file(&path).map_err(|e| format!("IO_FAILED: {}", e))?;
+    let runtime = dir.join(home::sanitize_path(id));
+    if runtime.is_dir() {
+        std::fs::remove_dir_all(&runtime).map_err(|e| format!("IO_FAILED: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Hides a session from the project's list; its transcript is kept.
+#[tauri::command]
+pub async fn agent_home_session_archive(workdir: String, id: String) -> CmdResult<()> {
+    valid_session_id(&id)?;
+    let root = PathBuf::from(&workdir);
+    if !root.is_dir() {
+        return Err(format!("INVALID_WORKDIR: {} 不是目录", workdir));
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let dir = home::project_dir(&root);
-        let mut out = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return Ok(out);
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            if let Some(meta) = summarize_session(&path) {
-                out.push(meta);
-            }
-        }
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        Ok(out)
+        home::ensure_within_home(&dir)?;
+        move_transcript(&dir, &id, true)
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Restores an archived session to the project's list.
+#[tauri::command]
+pub async fn agent_home_session_unarchive(workdir: String, id: String) -> CmdResult<()> {
+    valid_session_id(&id)?;
+    let root = PathBuf::from(&workdir);
+    if !root.is_dir() {
+        return Err(format!("INVALID_WORKDIR: {} 不是目录", workdir));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = home::project_dir(&root);
+        home::ensure_within_home(&dir)?;
+        move_transcript(&dir, &id, false)
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Permanently deletes an archived session.
+#[tauri::command]
+pub async fn agent_home_session_delete(workdir: String, id: String) -> CmdResult<()> {
+    valid_session_id(&id)?;
+    let root = PathBuf::from(&workdir);
+    if !root.is_dir() {
+        return Err(format!("INVALID_WORKDIR: {} 不是目录", workdir));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = home::project_dir(&root);
+        home::ensure_within_home(&dir)?;
+        delete_archived_transcript(&dir, &id)
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
@@ -132,9 +259,7 @@ pub async fn agent_home_set_session_title(
     if title.is_empty() {
         return Err("BAD_ARGS: title".into());
     }
-    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
-        return Err(format!("INVALID_ID: {}", id));
-    }
+    valid_session_id(&id)?;
     let root = PathBuf::from(&workdir);
     if !root.is_dir() {
         return Err(format!("INVALID_WORKDIR: {} 不是目录", workdir));
@@ -551,5 +676,88 @@ mod tests {
         ))
         .expect_err("missing workdir")
         .starts_with("INVALID_WORKDIR"));
+        for command in [
+            block_on(agent_home_sessions_archived("/etc/hosts".into())).map(|_| ()),
+            block_on(agent_home_session_archive("/etc/hosts".into(), "s1".into())),
+            block_on(agent_home_session_unarchive(
+                "/etc/hosts".into(),
+                "s1".into(),
+            )),
+            block_on(agent_home_session_delete("/etc/hosts".into(), "s1".into())),
+        ] {
+            assert!(command
+                .expect_err("a file is not a workdir")
+                .starts_with("INVALID_WORKDIR"));
+        }
+    }
+
+    /// Archive, restore and delete run on one temp project directory: the
+    /// helpers take the directory so the rules are testable without the
+    /// process-wide home.
+    fn temp_project(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bnote-home-archive-{}-{}",
+            name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp project");
+        dir
+    }
+
+    #[test]
+    fn archiving_moves_the_transcript_out_of_the_listing_and_back() {
+        let dir = temp_project("round-trip");
+        let id = "s1";
+        std::fs::write(dir.join("s1.jsonl"), "{\"type\":\"meta\"}\n").expect("transcript");
+        std::fs::create_dir_all(dir.join("s1").join("tool-results")).expect("runtime dir");
+
+        move_transcript(&dir, id, true).expect("archive");
+        assert!(!dir.join("s1.jsonl").exists());
+        assert!(dir.join(ARCHIVED_DIR).join("s1.jsonl").is_file());
+        // The runtime directory stays: only the listing moves.
+        assert!(dir.join("s1").is_dir());
+
+        move_transcript(&dir, id, false).expect("unarchive");
+        assert!(dir.join("s1.jsonl").is_file());
+        assert!(!dir.join(ARCHIVED_DIR).join("s1.jsonl").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archive_and_restore_refuse_the_wrong_state() {
+        let dir = temp_project("states");
+        assert!(move_transcript(&dir, "s1", true)
+            .expect_err("nothing to archive")
+            .starts_with("NOT_FOUND"));
+        assert!(move_transcript(&dir, "s1", false)
+            .expect_err("nothing to restore")
+            .starts_with("NOT_FOUND"));
+        // Restoring over a live transcript must not overwrite it.
+        std::fs::write(dir.join("s1.jsonl"), "{}\n").expect("transcript");
+        std::fs::create_dir_all(dir.join(ARCHIVED_DIR)).expect("archived dir");
+        std::fs::write(dir.join(ARCHIVED_DIR).join("s1.jsonl"), "{}\n").expect("parked");
+        assert!(move_transcript(&dir, "s1", false)
+            .expect_err("live copy wins")
+            .starts_with("EXISTS"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deleting_an_archived_session_removes_its_runtime_directory() {
+        let dir = temp_project("delete");
+        std::fs::create_dir_all(dir.join(ARCHIVED_DIR)).expect("archived dir");
+        std::fs::write(dir.join(ARCHIVED_DIR).join("s1.jsonl"), "{}\n").expect("parked");
+        std::fs::create_dir_all(dir.join("s1").join("subagents")).expect("runtime dir");
+
+        // A live session is never deleted through this path.
+        assert!(delete_archived_transcript(&dir, "s2")
+            .expect_err("not archived")
+            .starts_with("NOT_ARCHIVED"));
+
+        delete_archived_transcript(&dir, "s1").expect("delete");
+        assert!(!dir.join(ARCHIVED_DIR).join("s1.jsonl").exists());
+        assert!(!dir.join("s1").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

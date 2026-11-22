@@ -17,6 +17,7 @@ import { DEFAULT_LATEX_CONFIG, type LatexConfig } from "@/editor/snippets/config
 import { DEFAULT_TYPEWRITER_POSITION } from "@/editor/typewriterPosition";
 import { TREE_DEFAULT_WIDTH } from "@/code/treeWidth";
 import { TERM_DEFAULT_HEIGHT } from "@/code/term/tabs";
+import { DEFAULT_PROJECTS_WIDTH } from "@/code/projectsWidth";
 import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
 import { DEFAULT_INVEST_CONTENT_WIDTH, DEFAULT_INVEST_SIDE_WIDTH } from "@/invest/layoutModel";
@@ -143,6 +144,14 @@ export interface Settings {
   codeAgentWidth: number;
   codeContentWidth: number;
   /**
+   * The leftmost column of code mode: the project-and-session sidebar, in
+   * pixels. It is the only column left of the agent, so its divider transfers
+   * width between itself and the agent column; the rest stays put.
+   */
+  codeProjectsWidth: number;
+  /** Whether the project-and-session sidebar of code mode is shown. */
+  codeProjectsOpen: boolean;
+  /**
    * The three columns of the project view: left "project navigation", middle
    * "project board", right "journal". The navigation and journal widths are
    * pixel values and the board takes the remaining width — dragging the
@@ -221,6 +230,8 @@ export const DEFAULT_SETTINGS: Settings = {
   studyContentWidth: DEFAULT_CONTENT_WIDTH,
   codeAgentWidth: DEFAULT_AGENT_WIDTH,
   codeContentWidth: DEFAULT_CONTENT_WIDTH,
+  codeProjectsWidth: DEFAULT_PROJECTS_WIDTH,
+  codeProjectsOpen: true,
   projectsSideWidth: DEFAULT_SIDE_WIDTH,
   projectsDailyWidth: DEFAULT_DAILY_WIDTH,
   investSideWidth: DEFAULT_INVEST_SIDE_WIDTH,

@@ -1,6 +1,7 @@
 import {
   memo,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -31,6 +32,12 @@ import { TodoRowView } from "./TodoPanel";
 import { todoFromInput } from "./todos";
 import { createAgentCards, type AgentCardData, type AgentCards } from "./agentCards";
 import { elapsedMs, statusLabel, tokenLabel, type SubagentRun } from "./subagents";
+import {
+  EARLIER_STEP,
+  alignWindowStart,
+  earlierWindowStart,
+  transcriptWindowStart,
+} from "./transcriptWindow";
 
 /** The empty state: what this session is for, by mode. */
 export function AgentWelcome({
@@ -96,27 +103,38 @@ export function AgentWelcome({
  * turn and rotating loaders would keep re-rendering), the primary text, the
  * Edit +N/−N counts, the failure word only when it failed — and the raw IO
  * collapsed inside.
+ *
+ * The collapsed body is **not built until the card is opened**: a restored
+ * transcript can hold hundreds of cards whose payloads outweigh the prose by
+ * two orders of magnitude (measured: 315 KB of JSON inside 100 collapsed
+ * cards, 63% of the whole transcript's DOM text). Creating those text nodes —
+ * and `JSON.stringify`-ing every input — is what made opening a long history
+ * stutter; the summary line is the only part the user can see.
  */
-function ToolCard({ tool }: { tool: ToolRecord }) {
+const ToolCard = memo(function ToolCard({ tool }: { tool: ToolRecord }) {
   const running = tool.ok === undefined;
   const summary = toolSummary(tool.name, tool.input, running);
   const canonical = canonicalToolName(tool.name);
+  const [open, setOpen] = useState(false);
+  // A todo write is a plan, not a payload: the card shows the list the call
+  // wrote (the same rows as the panel) instead of a wall of JSON.
+  const todos = open && canonical === "TodoWrite" ? todoFromInput(tool.input) : null;
+  const input = open ? JSON.stringify(tool.input ?? {}, null, 2) : "{}";
   // An Agent's output is model-addressed (it carries the agent id for a later
   // SendMessage); the card is read by the user, so the id line is dropped.
   const output =
-    tool.output !== undefined && canonical === "Agent"
+    open && tool.output !== undefined && canonical === "Agent"
       ? stripAgentTrailer(tool.output)
       : tool.output;
-  // A todo write is a plan, not a payload: the card shows the list the call
-  // wrote (the same rows as the panel) instead of a wall of JSON.
-  const todos = canonical === "TodoWrite" ? todoFromInput(tool.input) : null;
-  // A no-argument tool (TodoRead, TaskList) has no input worth printing: the
-  // `{}` line only pushes the result down.
-  const input = JSON.stringify(tool.input ?? {}, null, 2);
   return (
     <details
       className="agent-tool"
       data-status={running ? "running" : tool.ok === false ? "fail" : "ok"}
+      open={open}
+      onToggle={(event) => {
+        if (event.target !== event.currentTarget) return;
+        setOpen((event.target as HTMLDetailsElement).open);
+      }}
     >
       <summary>
         <span className={`agent-tool-kind${running ? " is-running" : ""}`}>{summary.kind}</span>
@@ -141,22 +159,23 @@ function ToolCard({ tool }: { tool: ToolRecord }) {
           <path d="m9 18 6-6-6-6" />
         </svg>
       </summary>
-      {todos ? (
-        <div className="agent-tool-todos">
-          {todos.length === 0 ? (
-            <div className="agent-todos-empty">清单已清空</div>
-          ) : (
-            todos.map((row, i) => <TodoRowView key={`${i}:${row.content}`} row={row} />)
-          )}
-        </div>
-      ) : (
-        <pre className="agent-tool-io">
-          {input !== "{}" && input}
-          {input !== "{}" && output !== undefined && "\n"}
-          {output !== undefined && `→ ${output}`}
-        </pre>
-      )}
-      {tool.images && tool.images.length > 0 && (
+      {open &&
+        (todos ? (
+          <div className="agent-tool-todos">
+            {todos.length === 0 ? (
+              <div className="agent-todos-empty">清单已清空</div>
+            ) : (
+              todos.map((row, i) => <TodoRowView key={`${i}:${row.content}`} row={row} />)
+            )}
+          </div>
+        ) : (
+          <pre className="agent-tool-io">
+            {input !== "{}" && input}
+            {input !== "{}" && output !== undefined && "\n"}
+            {output !== undefined && `→ ${output}`}
+          </pre>
+        ))}
+      {open && tool.images && tool.images.length > 0 && (
         <div className="agent-msg-images">
           {tool.images.map((img, j) => (
             <img
@@ -170,7 +189,7 @@ function ToolCard({ tool }: { tool: ToolRecord }) {
       )}
     </details>
   );
-}
+});
 
 /**
  * The work rows in the order the provider streamed them: each thinking block
@@ -649,11 +668,18 @@ function SubagentCard({
  * The scrolling conversation body: the welcome state when there is nothing
  * yet, otherwise the entries. Only the last assistant entry can be the live
  * one (the panel's `busy` session and this entry being last).
+ *
+ * A restored history opens on its newest entries and older ones load on
+ * demand: mounting hundreds of rows for messages the viewport never shows is
+ * the measured cost of opening a long session (67-row real history: ~140 ms
+ * to first row, scaling ~2 ms per row), and the reader's place is the tail.
  */
 export function AgentTranscript({
+  conversationKey = "default",
   scrollRef,
   entries,
   busy,
+  reading = false,
   welcome,
   onFork,
   allowFork = true,
@@ -661,9 +687,13 @@ export function AgentTranscript({
   onOpenAgent,
   onStopAgent,
 }: {
+  /** Which conversation the window state belongs to (one entry per key). */
+  conversationKey?: string;
   scrollRef: Ref<HTMLDivElement>;
   entries: ChatEntry[];
   busy: boolean;
+  /** The record is being read from disk: an empty list means "loading", not "new session". */
+  reading?: boolean;
   welcome: ReactNode;
   onFork: (index: number) => void;
   /** A subagent's transcript is read-only: no fork handles (its session is not the app's to fork). */
@@ -673,6 +703,32 @@ export function AgentTranscript({
   onOpenAgent: (convKey: string) => void;
   onStopAgent: (run: SubagentRun) => void;
 }) {
+  // `null` means "not scrolled back by hand": the window follows the tail, so
+  // a streamed reply grows in place without a first full mount. The map keeps
+  // one entry per conversation, so switching away and back restores the window
+  // the reader had — without remounting the component (a keyed remount here
+  // leaked the previous subtree's DOM in development).
+  const [windows, setWindows] = useState<Record<string, number | null>>({});
+  // The scrollHeight captured before "load earlier" prepends rows: the layout
+  // effect below raises scrollTop by the height they added, so the row the
+  // reader was looking at does not jump when older messages mount above it.
+  const anchorRef = useRef<number | null>(null);
+  const scrollerOf = (ref: Ref<HTMLDivElement>): HTMLDivElement | null =>
+    typeof ref === "object" && ref !== null ? ref.current : null;
+  // A window opens on a turn boundary: the first row is the user message the
+  // visible reply answers, never a lone assistant half-turn.
+  const from = alignWindowStart(
+    entries,
+    transcriptWindowStart(entries.length, windows[conversationKey] ?? null),
+  );
+  useLayoutEffect(() => {
+    const scroller = scrollerOf(scrollRef);
+    const before = anchorRef.current;
+    if (!scroller || before === null) return;
+    anchorRef.current = null;
+    scroller.scrollTop += scroller.scrollHeight - before;
+  }, [scrollRef, from]);
+  const shown = from > 0 ? entries.slice(from) : entries;
   // The shade lives in a sibling overlay, not inside the scroller: an absolute
   // child of a scroll container would scroll away with the content. It is the
   // same "already read" veil as the PDF pane (.pdf-read-shade), fixed to the
@@ -680,21 +736,46 @@ export function AgentTranscript({
   return (
     <div className="agent-transcript-wrap">
       <div className="agent-scroll" ref={scrollRef}>
-        {entries.length === 0
-          ? welcome
-          : entries.map((entry, i) => (
+        {entries.length === 0 ? (
+          reading ? (
+            <p className="agent-reading">正在读取会话…</p>
+          ) : (
+            welcome
+          )
+        ) : (
+          from > 0 && (
+            <button
+              type="button"
+              className="agent-earlier"
+              onClick={() => {
+                anchorRef.current = scrollerOf(scrollRef)?.scrollHeight ?? null;
+                setWindows((current) => ({
+                  ...current,
+                  [conversationKey]: earlierWindowStart(from),
+                }));
+              }}
+            >
+              加载更早的 {Math.min(from, EARLIER_STEP)} 条消息
+            </button>
+          )
+        )}
+        {entries.length > 0 &&
+          shown.map((entry, i) => {
+            const index = from + i;
+            return (
               <EntryRow
-                key={i}
+                key={index}
                 entry={entry}
-                index={i}
-                streaming={i === entries.length - 1 && busy && entry.role === "assistant"}
+                index={index}
+                streaming={index === entries.length - 1 && busy && entry.role === "assistant"}
                 forkable={allowFork && !busy}
                 onFork={onFork}
                 agents={agents}
                 onOpenAgent={onOpenAgent}
                 onStopAgent={onStopAgent}
               />
-            ))}
+            );
+          })}
       </div>
       <div className="agent-read-guide" aria-hidden="true">
         <div className="agent-read-shade" />

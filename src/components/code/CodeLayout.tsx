@@ -1,21 +1,23 @@
 import { useRef } from "react";
 import { AgentPanel } from "../agent/AgentPanel";
 import { CodeProjectPane } from "@/code/components/CodeProjectPane";
+import { ProjectsSidebar } from "@/code/components/ProjectsSidebar";
+import { WorktreeModal } from "@/code/components/WorktreeModal";
 import { EditorPane } from "../EditorPane";
 import { JsonFilePane } from "../JsonFilePane";
 import { DEFAULT_SETTINGS, useAppStore } from "@/state/appStore";
 import { fileName, isJsonPath } from "@/lib/path";
 import { leftDividerWidths, middleDividerWidth } from "@/study/layoutModel";
+import { projectsDividerWidth } from "@/code/projectsWidth";
 import { startSplitDrag } from "../splitDrag";
 
 /**
- * Code mode: agent (left) | code project (middle) | notes (right).
+ * Code mode: projects (leftmost) | agent | code project | notes.
  *
- * It is the same three-column shape as study mode, but its own mode: a local
- * vault and a code repository are unrelated, so entering code mode must not
- * pretend the repository is a study material. The widths live in their own
- * settings (`codeAgentWidth` / `codeContentWidth`) so switching between the
- * two modes does not reshuffle the other one's columns.
+ * The added column carries the project-and-session list, so the widths are
+ * their own settings (`codeProjectsWidth` / `codeAgentWidth` /
+ * `codeContentWidth`): entering code mode must not reshuffle the study
+ * columns and vice versa.
  *
  * The drag discipline is identical to StudyLayout (see the long note there):
  * only the two adjacent columns move, the drag writes CSS variables, the
@@ -23,6 +25,8 @@ import { startSplitDrag } from "../splitDrag";
  * the real on-screen widths so a CSS clamp cannot make the divider jump.
  */
 export function CodeLayout() {
+  const projectsOpen = useAppStore((s) => s.settings.codeProjectsOpen);
+  const projectsWidth = useAppStore((s) => s.settings.codeProjectsWidth);
   const agentWidth = useAppStore((s) => s.settings.codeAgentWidth);
   const contentWidth = useAppStore((s) => s.settings.codeContentWidth);
   const patchSettings = useAppStore((s) => s.patchSettings);
@@ -52,6 +56,32 @@ export function CodeLayout() {
     });
   }
 
+  function startProjectsDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const host = hostRef.current;
+    if (!host) return;
+    const hostRect = host.getBoundingClientRect();
+    const projects = host.querySelector(".code-projects");
+    const agent = host.querySelector(".study-left");
+    const content = host.querySelector(".content-pane");
+    if (!projects || !agent || !content) return;
+    const projectsWidthNow = projects.getBoundingClientRect().width;
+    // The columns to the right of this divider never move: their total is the
+    // budget the projects column may not eat into.
+    const reserved = agent.getBoundingClientRect().width + content.getBoundingClientRect().width;
+    startDrag(
+      event,
+      ["--projects-src"],
+      { "--projects-src": projectsWidth },
+      (dx) => ({
+        "--projects-src": projectsDividerWidth(
+          { projectsWidth: projectsWidthNow, hostWidth: hostRect.width, reservedWidth: reserved },
+          dx,
+        ),
+      }),
+      (values) => patchSettings({ codeProjectsWidth: values["--projects-src"] }),
+    );
+  }
+
   function startAgentDrag(event: React.PointerEvent<HTMLDivElement>) {
     const host = hostRef.current;
     if (!host) return;
@@ -60,7 +90,8 @@ export function CodeLayout() {
     const content = host.querySelector(".content-pane");
     if (!left || !content) return;
     // The widths belong to the columns, so the divider always edits
-    // left | middle; only the occupants change when the panes swap.
+    // left | middle; only the occupants change when the panes swap. The
+    // projects column is not adjacent here and stays put.
     const leftWidth = (swapped ? content : left).getBoundingClientRect().width;
     const rightWidth = (swapped ? left : content).getBoundingClientRect().width;
     startDrag(
@@ -107,7 +138,9 @@ export function CodeLayout() {
 
   return (
     <div
-      className={`study-layout code-layout${swapped ? " agent-focused" : ""}`}
+      className={`study-layout code-layout${swapped ? " agent-focused" : ""}${
+        projectsOpen ? " with-projects" : ""
+      }`}
       ref={hostRef}
       onPointerDownCapture={(event) => {
         const target = event.target as HTMLElement;
@@ -116,11 +149,28 @@ export function CodeLayout() {
       }}
       style={
         {
+          "--projects-src": `${projectsWidth}px`,
           "--agent-src": `${agentWidth}px`,
           "--content-src": `${contentWidth}px`,
         } as React.CSSProperties
       }
     >
+      {projectsOpen && (
+        <>
+          <ProjectsSidebar />
+          <div
+            className="study-resizer resizer-projects"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整项目侧栏宽度"
+            title="拖动调整项目侧栏宽度,双击恢复默认"
+            onPointerDown={startProjectsDrag}
+            onDoubleClick={() =>
+              patchSettings({ codeProjectsWidth: DEFAULT_SETTINGS.codeProjectsWidth })
+            }
+          />
+        </>
+      )}
       <div className="study-left">
         <AgentPanel />
       </div>
@@ -151,6 +201,7 @@ export function CodeLayout() {
         </div>
         {isJsonPath(currentFile) ? <JsonFilePane /> : <EditorPane />}
       </div>
+      <WorktreeModal />
     </div>
   );
 }

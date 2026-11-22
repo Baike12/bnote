@@ -43,7 +43,7 @@ describe("divider seam gate", () => {
     expect(layouts.length).toBeGreaterThanOrEqual(3);
     for (const { file, text } of layouts) {
       expect(text, `${file} drags dividers but bypasses the seams`).toMatch(
-        /leftDividerWidths\(|middleDividerWidth\(|sideDividerWidth\(|dailyDividerWidth\(/,
+        /leftDividerWidths\(|middleDividerWidth\(|sideDividerWidth\(|dailyDividerWidth\(|projectsDividerWidth\(/,
       );
     }
   });
