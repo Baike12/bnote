@@ -45,10 +45,11 @@ import { ArchiveModal } from "./ArchiveModal";
  * pointer never chases a row that jumped. The store stabilizes that order.
  *
  * The top action is a shortcut for the open project's new session; every
- * project row carries the same action. A git project asks first whether the
- * session starts in its checkout or in a new worktree (Zed's choice at
- * new-thread time); the worktree dialog is not an action of its own. Opening a
- * folder is the section header's plus.
+ * project row carries the same action. The session starts in the checkout the
+ * project already has open (its current branch) — no menu in between. A git
+ * project puts a branch action next to it, before the new-session button:
+ * that one creates a worktree through the dialog and starts the session in
+ * it. Opening a folder is the section header's plus.
  *
  * One project is one folder row plus its sessions: the main repository and its
  * linked worktrees are merged into that one list, so a worktree is not a
@@ -88,22 +89,10 @@ export function ProjectsSidebar() {
    * pointerdown outside the armed button disarms it.
    */
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
-  /**
-   * Where the new-session choice is open: `"top"` for the shortcut, a group
-   * key for that project's row. Only a git project opens it — a plain folder
-   * has one way to start a session, so it starts directly.
-   */
-  const [newMenu, setNewMenu] = useState<string | null>(null);
 
   const currentRoot = project?.root ?? null;
   const currentGroup = groups.find((g) => g.checkouts.some((c) => c.path === currentRoot)) ?? null;
   const allCollapsed = groups.length > 0 && groups.every((g) => collapsed[g.key] === true);
-  const menuGroup =
-    newMenu === null
-      ? null
-      : newMenu === "top"
-        ? currentGroup
-        : (groups.find((g) => g.key === newMenu) ?? null);
 
   // The snapshot is a disk read (identity + worktrees + session records), so it
   // refreshes when the recent list changes — not on every render. The list
@@ -124,24 +113,17 @@ export function ProjectsSidebar() {
     if (searching) searchRef.current?.focus();
   }, [searching]);
 
-  // An armed confirm and an open menu never outlive their context: Escape, or
-  // a press anywhere but the thing itself, closes them.
+  // An armed confirm never outlives its context: Escape, or a press anywhere
+  // but the armed button, disarms it.
   useEffect(() => {
-    if (confirmKey === null && newMenu === null) return;
+    if (confirmKey === null) return;
     const onDown = (event: PointerEvent) => {
       const target = event.target;
-      if (target instanceof Element) {
-        if (target.closest(".cp-row-action.is-confirming")) return;
-        if (target.closest(".cp-newmenu")) return;
-      }
+      if (target instanceof Element && target.closest(".cp-row-action.is-confirming")) return;
       setConfirmKey(null);
-      setNewMenu(null);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setConfirmKey(null);
-        setNewMenu(null);
-      }
+      if (event.key === "Escape") setConfirmKey(null);
     };
     document.addEventListener("pointerdown", onDown);
     document.addEventListener("keydown", onKey);
@@ -149,7 +131,7 @@ export function ProjectsSidebar() {
       document.removeEventListener("pointerdown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [confirmKey, newMenu]);
+  }, [confirmKey]);
 
   const filtering = query.trim() !== "";
   const matches = (item: ProjectSessionItem) => sessionMatches(item, query);
@@ -226,40 +208,12 @@ export function ProjectsSidebar() {
   }
 
   /**
-   * The new-session action, shared by the top shortcut and the project rows.
-   * A git project opens the choice menu (checkout or new worktree); a plain
-   * folder has one answer and starts at once.
+   * The branch action beside "new session": create a worktree and land the
+   * new session in it. The dialog opens the fresh checkout, which has no
+   * session record, so the panel starts a new conversation there.
    */
-  function requestNewSessionIn(group: ProjectGroup, anchor: string) {
-    if (!group.isGit) {
-      setNewMenu(null);
-      void newSessionIn(group);
-      return;
-    }
-    setNewMenu((current) => (current === anchor ? null : anchor));
-  }
-
-  function chooseNewSession(group: ProjectGroup, kind: "checkout" | "worktree") {
-    setNewMenu(null);
-    if (kind === "worktree") {
-      openWorktreeModal(group.root);
-      return;
-    }
-    void newSessionIn(group);
-  }
-
-  /** The two ways a git project starts a session (Zed's new-thread choice). */
-  function newSessionMenu(group: ProjectGroup) {
-    return (
-      <div className="cp-newmenu" role="menu" aria-label={`在 ${group.name} 新建会话`}>
-        <button type="button" role="menuitem" onClick={() => chooseNewSession(group, "checkout")}>
-          在当前检出中新建会话
-        </button>
-        <button type="button" role="menuitem" onClick={() => chooseNewSession(group, "worktree")}>
-          在新 Worktree 中新建会话…
-        </button>
-      </div>
-    );
+  function newWorktreeSession(group: ProjectGroup) {
+    openWorktreeModal(group.root);
   }
 
   /** One session row; the worktree mark sits before the time (ZCode's shape). */
@@ -357,13 +311,26 @@ export function ProjectsSidebar() {
           <FolderTypeIcon open={open} />
         </span>
         <span className="cp-label">{group.name}</span>
+        {group.isGit && (
+          <button
+            type="button"
+            className="cp-row-action"
+            title="在新 Worktree 中新建会话"
+            onClick={(event) => {
+              event.stopPropagation();
+              newWorktreeSession(group);
+            }}
+          >
+            <IconWorktree />
+          </button>
+        )}
         <button
           type="button"
           className="cp-row-action"
           title="在此项目新建会话"
           onClick={(event) => {
             event.stopPropagation();
-            requestNewSessionIn(group, group.key);
+            void newSessionIn(group);
           }}
         >
           <IconNewSession />
@@ -404,21 +371,32 @@ export function ProjectsSidebar() {
       </div>
 
       <div className="code-projects-body">
-        <button
-          type="button"
-          className="cp-action"
-          disabled={!currentGroup}
-          title={currentGroup ? "在当前项目新建会话" : "先打开一个项目"}
-          onClick={() => {
-            if (currentGroup) requestNewSessionIn(currentGroup, "top");
-          }}
-        >
-          <span className="cp-row-icon">
-            <IconNewSession />
-          </span>
-          <span className="cp-label">新建会话</span>
-        </button>
-        {newMenu === "top" && menuGroup && newSessionMenu(menuGroup)}
+        <div className="cp-newrow">
+          {currentGroup?.isGit && (
+            <button
+              type="button"
+              className="cp-icon-btn"
+              title="在新 Worktree 中新建会话"
+              onClick={() => newWorktreeSession(currentGroup)}
+            >
+              <IconWorktree />
+            </button>
+          )}
+          <button
+            type="button"
+            className="cp-action"
+            disabled={!currentGroup}
+            title={currentGroup ? "在当前分支新建会话" : "先打开一个项目"}
+            onClick={() => {
+              if (currentGroup) void newSessionIn(currentGroup);
+            }}
+          >
+            <span className="cp-row-icon">
+              <IconNewSession />
+            </span>
+            <span className="cp-label">新建会话</span>
+          </button>
+        </div>
 
         <div className="cp-section">
           <span className="cp-section-title">项目</span>
@@ -496,7 +474,6 @@ export function ProjectsSidebar() {
           return (
             <div key={group.key} className="cp-project">
               {projectRow(group, current)}
-              {newMenu === group.key && newSessionMenu(group)}
               {open && visible.map((item) => sessionRow(item))}
               {open && !filtering && group.sessions.length > visible.length && (
                 <button type="button" className="cp-more" onClick={() => showMore(group.key)}>
