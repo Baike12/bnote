@@ -22,6 +22,7 @@ import { ensureMaterial, sessionFilePath } from "@/study/materials";
 import { transcriptIO } from "@/study/transcriptIO";
 import { codeSessionIdentity, codeSessionPath, type CodeSessionScope } from "@/code/sessionScope";
 import {
+  notifySessionsChanged,
   onNewSessionRequest,
   onSessionRestore,
   takePendingCodeNewSession,
@@ -406,19 +407,11 @@ export function AgentPanel() {
    * showing rather than the sidebar guessing from a click.
    */
   const activeSessionFileId = activeConv?.sessionFileId ?? null;
-  const lastFileIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (mode !== "code" || !codeProject) return;
-    const sidebar = useProjectSidebarStore.getState();
-    sidebar.setActiveSession(codeProject.path, activeSessionFileId);
-    const previous = lastFileIdRef.current;
-    lastFileIdRef.current = activeSessionFileId;
-    // A just-started session only reaches the list once its record exists; the
-    // sidebar's snapshot predates that write, so reload it or the new row is
-    // missing until the next project switch or manual refresh.
-    if (activeSessionFileId === null || previous !== null) return;
-    const app = useAppStore.getState();
-    void sidebar.refresh(app.recentCodeProjects);
+    // The row's presence is the record writer's news (see
+    // `notifySessionsChanged`); the panel only reports which row is selected.
+    useProjectSidebarStore.getState().setActiveSession(codeProject.path, activeSessionFileId);
   }, [mode, codeProject, activeSessionFileId]);
   /**
    * The sidebar's running indicator: the one backend session this panel is
@@ -457,6 +450,11 @@ export function AgentPanel() {
       const list = await homeApi.sessionsList(code.workdir).catch(() => []);
       if (codeScopeRef.current !== code) return list;
       setSavedSessions(list);
+      // The sidebar owns its own disk snapshot and is not a subscriber of
+      // this list: announce the write, or a session created by the first
+      // message stays invisible there until a project switch or a manual
+      // refresh (ZCode's task_created refresh, same contract).
+      notifySessionsChanged(code.workdir);
       return list;
     }
     const material = materialRef.current;

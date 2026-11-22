@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  notifySessionsChanged,
+  onSessionsChanged,
   setPendingCodeNewSession,
   setPendingCodeSession,
   takePendingCodeNewSession,
@@ -31,5 +33,16 @@ describe("pending new session", () => {
     setPendingCodeNewSession("/p/a");
     expect(takePendingCodeNewSession("/p/b")).toBe(false);
     expect(takePendingCodeNewSession("/p/a")).toBe(false);
+  });
+});
+
+describe("session record changes", () => {
+  it("announces the project whose records changed, and stops when unsubscribed", () => {
+    const seen: string[] = [];
+    const off = onSessionsChanged((workdir) => seen.push(workdir));
+    notifySessionsChanged("/p/a");
+    off();
+    notifySessionsChanged("/p/b");
+    expect(seen).toEqual(["/p/a"]);
   });
 });

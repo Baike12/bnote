@@ -18,6 +18,7 @@ import {
 } from "./ProjectIcons";
 import { openProjectAt, openProjectDialog } from "../commands";
 import {
+  onSessionsChanged,
   requestNewSession,
   requestSessionRestore,
   setPendingCodeNewSession,
@@ -70,6 +71,7 @@ export function ProjectsSidebar() {
   const activeSession = useProjectSidebarStore((s) => s.activeSession);
   const running = useProjectSidebarStore((s) => s.running);
   const refresh = useProjectSidebarStore((s) => s.refresh);
+  const refreshGroup = useProjectSidebarStore((s) => s.refreshGroup);
   const showMore = useProjectSidebarStore((s) => s.showMore);
   const toggleGroup = useProjectSidebarStore((s) => s.toggleGroup);
   const expandGroup = useProjectSidebarStore((s) => s.expandGroup);
@@ -110,6 +112,12 @@ export function ProjectsSidebar() {
   useEffect(() => {
     void refresh(recent);
   }, [recent, refresh]);
+
+  // The agent panel announces every session-record write. A new session only
+  // enters the list once its first message created the record, so re-read the
+  // affected group instead of waiting for the next project switch (ZCode
+  // refreshes its task list from the same signal).
+  useEffect(() => onSessionsChanged((workdir) => void refreshGroup(workdir)), [refreshGroup]);
 
   // The search field mounts on demand; focus follows it once.
   useEffect(() => {

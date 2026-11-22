@@ -1,7 +1,7 @@
 /**
- * How the project-and-session sidebar asks the agent panel to restore a
- * session or start a new one. Two paths, because acting on another project is
- * not the same event as acting inside the open one:
+ * The channel between the project-and-session sidebar and the agent panel.
+ *
+ * Sidebar → panel (restore / new session):
  *
  * - **Another project / worktree**: the sidebar records a pending pick (a
  *   session to restore, or "start fresh") keyed by the target workdir, then
@@ -13,6 +13,11 @@
  *
  * Both restore routes end in `restoreFamily(id, sessions, "anchor")` — the
  * exact code path the history drawer's pick uses.
+ *
+ * Panel → sidebar (records changed): the panel is the single writer of session
+ * records, and the sidebar owns its own disk snapshot. A write has to be
+ * announced or the sidebar keeps showing the list it read before the first
+ * message created the record (ZCode's `task_created` refresh, same contract).
  */
 
 let pending: { workdir: string; sessionId: string } | null = null;
@@ -84,5 +89,26 @@ export function onNewSessionRequest(listener: NewSessionListener): () => void {
   newSessionListeners.add(listener);
   return () => {
     newSessionListeners.delete(listener);
+  };
+}
+
+type SessionsChangedListener = (workdir: string) => void;
+
+const sessionsChangedListeners = new Set<SessionsChangedListener>();
+
+/**
+ * Announce that the record directory of `workdir` changed (a first message
+ * created a session, a round was appended, the model wrote its title). The
+ * sidebar re-reads that one group; it never writes the records itself.
+ */
+export function notifySessionsChanged(workdir: string): void {
+  for (const listener of [...sessionsChangedListeners]) listener(workdir);
+}
+
+/** Subscribe to record changes; returns the unsubscribe function. */
+export function onSessionsChanged(listener: SessionsChangedListener): () => void {
+  sessionsChangedListeners.add(listener);
+  return () => {
+    sessionsChangedListeners.delete(listener);
   };
 }

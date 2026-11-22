@@ -80,3 +80,21 @@ describe("a coding record lives in the agent home", () => {
     expect(code).toMatch(/codeSessionIdentity\(codeProject\?\.path \?\? null\)/);
   });
 });
+
+describe("a record write reaches the project sidebar", () => {
+  /**
+   * The sidebar keeps its own disk snapshot; nothing else tells it that the
+   * first message created the record, so a missing announcement left the new
+   * session out of the list until a project switch or a manual refresh.
+   */
+  it("the panel announces the record directory on every re-read", () => {
+    expect(code).toMatch(/notifySessionsChanged\(code\.workdir\)/);
+  });
+
+  it("the sidebar re-reads exactly the announced group", () => {
+    const sidebar = readFileSync("src/code/components/ProjectsSidebar.tsx", "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    expect(sidebar).toMatch(/onSessionsChanged\(\(workdir\) => void refreshGroup\(workdir\)\)/);
+  });
+});

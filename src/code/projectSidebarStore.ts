@@ -54,6 +54,13 @@ interface ProjectSidebarState {
   worktreeRoot: string | null;
 
   refresh: (recent: readonly string[]) => Promise<void>;
+  /**
+   * Re-read the one group whose checkout is `workdir`. The agent panel calls
+   * this after every session-record write: a new session only enters the list
+   * once its first message created the record, and the sidebar's snapshot
+   * predates that write.
+   */
+  refreshGroup: (workdir: string) => Promise<void>;
   toggleGroup: (key: string) => void;
   /**
    * Reveal a group's sessions. Switching into a project must show it: the row
@@ -71,8 +78,25 @@ interface ProjectSidebarState {
   closeWorktreeModal: () => void;
 }
 
-/** One refresh generation: a slow snapshot that lands late is dropped. */
-let refreshToken = 0;
+/**
+ * The snapshot writer's queue. Every write to `groups` — a full refresh or one
+ * group's re-read — runs after the previous one finished, so a slower older
+ * disk read can never overwrite a newer snapshot, and the two kinds cannot
+ * disagree about one group. The queue replaces the old refresh token.
+ */
+let writeChain: Promise<void> = Promise.resolve();
+
+function serialized(task: () => Promise<void>): Promise<void> {
+  const next = writeChain.then(task, task);
+  writeChain = next.catch(() => undefined);
+  return next;
+}
+
+/**
+ * The newest full refresh: only it clears `loading`, so a refresh queued
+ * behind another one does not flash the empty state in between.
+ */
+let refreshGeneration = 0;
 
 /** Where the fold state of the project rows survives a restart (ZCode's shape). */
 const COLLAPSED_KEY = "bnote-codeProjectsCollapsed";
@@ -144,28 +168,56 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
   worktreeOpen: false,
   worktreeRoot: null,
 
-  refresh: async (recent) => {
-    const token = ++refreshToken;
+  refresh: (recent) => {
+    const generation = ++refreshGeneration;
     set({ loading: true });
-    const entries = await Promise.all(
-      recent.map(async (root) => ({ root, mainRepo: await resolveMainRepo(root) })),
-    );
-    if (token !== refreshToken) return;
-    const heads = groupRecentProjects(entries);
-    const running = get().running;
-    const groups = await Promise.all(
-      heads.map(async (head) => {
-        const checkouts = await loadCheckouts(head.root, head.isGit);
-        const sessions = mergeGroupSessions(checkouts, await loadSessions(checkouts), 0, running);
-        return { ...head, checkouts, sessions };
-      }),
-    );
-    if (token !== refreshToken) return;
-    // The rows keep their positions: a refresh follows the recent list's MRU
-    // order, but a project that is already listed must not jump because it was
-    // opened. Only a project seen for the first time is inserted (on top).
-    set({ groups: stabilizeGroupOrder(get().groups, groups), loading: false });
+    return serialized(async () => {
+      try {
+        const entries = await Promise.all(
+          recent.map(async (root) => ({ root, mainRepo: await resolveMainRepo(root) })),
+        );
+        const heads = groupRecentProjects(entries);
+        const running = get().running;
+        const groups = await Promise.all(
+          heads.map(async (head) => {
+            const checkouts = await loadCheckouts(head.root, head.isGit);
+            const sessions = mergeGroupSessions(
+              checkouts,
+              await loadSessions(checkouts),
+              0,
+              running,
+            );
+            return { ...head, checkouts, sessions };
+          }),
+        );
+        // The rows keep their positions: a refresh follows the recent list's MRU
+        // order, but a project that is already listed must not jump because it was
+        // opened. Only a project seen for the first time is inserted (on top).
+        set({ groups: stabilizeGroupOrder(get().groups, groups) });
+      } finally {
+        if (generation === refreshGeneration) set({ loading: false });
+      }
+    });
   },
+
+  refreshGroup: (workdir) =>
+    serialized(async () => {
+      // Resolve the group at run time: a full refresh may have replaced the
+      // list while this read was queued, and the newest list is the one to
+      // extend. An unknown checkout is dropped — the next full refresh is the
+      // one that can add its project.
+      const group = get().groups.find((g) => g.checkouts.some((c) => c.path === workdir));
+      if (!group) return;
+      const batches = await loadSessions(group.checkouts);
+      // The row may have left the list while the disk was read (the project
+      // was removed); writing it back would resurrect it.
+      const live = get().groups.find((g) => g.key === group.key);
+      if (!live) return;
+      const sessions = mergeGroupSessions(live.checkouts, batches, 0, get().running);
+      set((state) => ({
+        groups: state.groups.map((g) => (g.key === group.key ? { ...g, sessions } : g)),
+      }));
+    }),
 
   toggleGroup: (key) => {
     const collapsed = { ...get().collapsed };
