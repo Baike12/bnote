@@ -23,11 +23,13 @@ import {
 import {
   answerStepIndex,
   finalText,
+  formatSessionTime,
   type ChatEntry,
   type ToolRecord,
   type Turn,
   type TurnStep,
 } from "./model";
+import { writeClipboardText } from "@/lib/clipboard";
 import { TodoRowView } from "./TodoPanel";
 import { todoFromInput } from "./todos";
 import { createAgentCards, type AgentCardData, type AgentCards } from "./agentCards";
@@ -359,6 +361,80 @@ function TurnWork({
 }
 
 /**
+ * The actions under a finished reply (ZCode's message footer): the clock it was
+ * written at, copy, and fork from here. It appears when the reply stops
+ * streaming, so a session's last reply ends on a readable footer; the fork
+ * handle exists only where the transcript allows forking (a subagent's own
+ * timeline has no sessions to fork).
+ */
+function EntryFooter({
+  at,
+  text,
+  forkable,
+  onFork,
+}: {
+  at: number;
+  text: string;
+  forkable: boolean;
+  onFork: () => void;
+}) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const mountedRef = useRef(true);
+  const resetRef = useRef<number | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+    };
+  }, []);
+  const copy = () => {
+    void writeClipboardText(text).then((ok) => {
+      // The reply may have been scrolled out and unmounted while the clipboard
+      // plugin was writing: its result must not touch the dead row.
+      if (!mountedRef.current) return;
+      setCopyState(ok ? "copied" : "failed");
+      if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+      resetRef.current = window.setTimeout(() => {
+        if (mountedRef.current) setCopyState("idle");
+      }, 1500);
+    });
+  };
+  return (
+    <div className="agent-msg-actions">
+      <span className="agent-msg-time">{formatSessionTime(at)}</span>
+      <button type="button" className="agent-msg-action" onClick={copy}>
+        {copyState === "copied" ? "已复制" : copyState === "failed" ? "复制失败" : "复制"}
+      </button>
+      {forkable && (
+        <button
+          type="button"
+          className="agent-msg-action"
+          title="基于这条消息开启辅助会话"
+          aria-label="基于这条消息开启辅助会话"
+          onClick={onFork}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M6 3v12" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M18 9a9 9 0 0 1-9 9" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
  * One entry row; `streaming` marks the live assistant reply (caret + thinking).
  *
  * Memoized: the panel re-renders on every composer keystroke and on every
@@ -372,6 +448,7 @@ const EntryRow = memo(function EntryRow({
   index,
   streaming,
   forkable,
+  actions,
   onFork,
   agents,
   onOpenAgent,
@@ -381,6 +458,8 @@ const EntryRow = memo(function EntryRow({
   index: number;
   streaming: boolean;
   forkable: boolean;
+  /** Draw the end-of-reply footer (the main transcript; a subagent preview stays compact). */
+  actions: boolean;
   onFork: (index: number) => void;
   agents: AgentCards;
   onOpenAgent: (convKey: string) => void;
@@ -435,9 +514,17 @@ const EntryRow = memo(function EntryRow({
               nothing is drawn when there is no text). */}
           {answerText && <AssistantText text={answerText} />}
           {streaming && <span className="agent-caret" aria-hidden="true" />}
+          {actions && !streaming && entry.text.trim() !== "" && (
+            <EntryFooter
+              at={entry.at}
+              text={answerText || entry.text}
+              forkable={forkable}
+              onFork={() => onFork(index)}
+            />
+          )}
         </div>
       )}
-      {forkable && (
+      {forkable && entry.role === "user" && (
         <button
           className="agent-fork"
           title="基于这条消息开启辅助会话"
@@ -635,6 +722,7 @@ function SubagentCard({
                   index={i}
                   streaming={running && i === preview.length - 1 && entry.role === "assistant"}
                   forkable={false}
+                  actions={false}
                   onFork={NO_FORK}
                   agents={EMPTY_CARDS}
                   onOpenAgent={NO_OPEN}
@@ -683,6 +771,7 @@ export function AgentTranscript({
   welcome,
   onFork,
   allowFork = true,
+  actions = true,
   agents,
   onOpenAgent,
   onStopAgent,
@@ -698,6 +787,8 @@ export function AgentTranscript({
   onFork: (index: number) => void;
   /** A subagent's transcript is read-only: no fork handles (its session is not the app's to fork). */
   allowFork?: boolean;
+  /** Draw the end-of-reply footer (clock / copy / fork); off for compact previews. */
+  actions?: boolean;
   /** The live subagent cards, keyed by the `Agent` tool call that launched them. */
   agents: AgentCards;
   onOpenAgent: (convKey: string) => void;
@@ -769,6 +860,7 @@ export function AgentTranscript({
                 index={index}
                 streaming={index === entries.length - 1 && busy && entry.role === "assistant"}
                 forkable={allowFork && !busy}
+                actions={actions}
                 onFork={onFork}
                 agents={agents}
                 onOpenAgent={onOpenAgent}

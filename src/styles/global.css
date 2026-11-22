@@ -4113,6 +4113,46 @@ input[type="range"] {
   min-width: 0;
 }
 
+/* The end-of-reply footer (ZCode's message actions): the clock it was written
+   at, copy, and fork. Quiet at rest — it closes the reply, it does not compete
+   with it — and each control darkens to the accent on hover. */
+.agent-msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  color: var(--text-faint);
+  font-size: calc(var(--agent-text) * 0.82);
+  user-select: none;
+}
+.agent-msg-time {
+  margin-right: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.agent-msg-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.agent-msg-action svg {
+  width: 12px;
+  height: 12px;
+}
+.agent-msg-action:hover {
+  color: var(--accent);
+  background: var(--bg2);
+}
+
 /* The markdown of an agent reply: headings / lists / tables / quotes /
    inline styles.
    The font size is taken once on the container as --agent-text: the body,
