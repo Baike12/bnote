@@ -33,19 +33,8 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use tauri::Emitter;
 use tokio::sync::oneshot;
 
-/// Cap on tool-call rounds per turn when the definition does not set one.
-const DEFAULT_MAX_TURNS: u32 = 25;
-/// Cap for subagent turns. A read-only explorer on a real repository needs
-/// 20–40 rounds (measured: three explore agents on a 300-file repo each used
-/// exactly 20 and were cut off mid-exploration), so the cap has to be higher
-/// than a chat turn's; running out still ends in an explicit report request
-/// (see REPORT_REQUEST) instead of a silent cut.
-const SUBAGENT_MAX_TURNS: u32 = 60;
-/// One extra round granted when a subagent hits the round cap: the work it did
-/// is worthless to the parent without a report, so the last round asks for one
-/// (bounded — the counter allows exactly one).
-const REPORT_REQUEST: &str = "You have used your whole step budget. Stop calling tools now and write the final report from what you have already read: no apology, no recap of the steps, just the structured report the task asked for.";
-/// CC's fork child cap (forkSubagent.ts).
+/// CC's fork child cap (forkSubagent.ts): the only budget that exists without
+/// a caller asking for one. Ordinary turns and subagents run unbounded.
 const FORK_MAX_TURNS: u32 = 200;
 /// Token buffer kept free below the context window; auto-compact fires first.
 /// Claude Code uses the same fixed 13k so the threshold travels across models.
@@ -60,6 +49,26 @@ const ESCALATED_MAX_TOKENS: u32 = 64_000;
 /// value is the point; lowering a higher one would truncate even earlier).
 fn escalated_ceiling(configured: u32) -> u32 {
     ESCALATED_MAX_TOKENS.max(configured)
+}
+
+/// Whether an explicit turn budget is used up. CC's check is `nextTurnCount >
+/// maxTurns` with its counter starting at 1; here the counter already holds the
+/// number of completed tool rounds, so `>=` is the same rule. 0 = no budget.
+fn turn_budget_reached(max_turns: u32, turn_count: u32) -> bool {
+    max_turns > 0 && turn_count >= max_turns
+}
+
+/// A child's turn budget: a definition that sets one keeps it, a fork gets
+/// CC's 200, every other child is unbounded (CC's built-in agents set no
+/// `maxTurns`).
+fn child_turn_budget(defined: u32, fork: bool) -> u32 {
+    if defined > 0 {
+        defined
+    } else if fork {
+        FORK_MAX_TURNS
+    } else {
+        0
+    }
 }
 /// How many "resume" messages the loop injects after the escalation.
 const MAX_OUTPUT_TOKENS_RECOVERY: u32 = 3;
@@ -1199,11 +1208,9 @@ impl Session {
     /// The turn loop. `dispatch` is erased so the subagent path never nests
     /// back into this future type (see the trait comment above).
     async fn run_loop(&self, dispatch: &dyn ToolDispatch) -> Result<TurnOutcome, String> {
-        let max_turns = if self.def.max_turns > 0 {
-            self.def.max_turns
-        } else {
-            DEFAULT_MAX_TURNS
-        };
+        // CC's `maxTurns`: a budget exists only when a caller supplies one.
+        // The interactive loop is unbounded, so 0 means "no cap".
+        let max_turns = self.def.max_turns;
         let mut turn_count = 0u32;
         // The output ceiling starts at the provider's value; one `max_tokens`
         // hit raises it, further hits inject a resume message (CC's recovery).
@@ -1215,12 +1222,6 @@ impl Session {
         // Stop hooks may force another turn; capped so a broken hook cannot
         // loop forever.
         let mut stop_blocks = 0u32;
-        // The one extra round a subagent gets to hand in its report at the cap.
-        let mut report_requests = 0u32;
-        // G28 (blind test F P2-15): the cap hit mid-exploration reads as the
-        // model going silent — one warning while rounds remain tells it to
-        // converge instead.
-        let mut warned_near_limit = false;
         loop {
             if self.ctx.abort.is_aborted() {
                 return Ok(TurnOutcome::new("aborted"));
@@ -1418,37 +1419,10 @@ impl Session {
             if self.ctx.abort.is_aborted() {
                 return Ok(TurnOutcome::new("aborted"));
             }
-            // G28: two rounds before the cap, tell the model to stop opening
-            // new lines and start converging (once per run).
-            if !warned_near_limit && max_turns > 2 && turn_count + 2 == max_turns {
-                warned_near_limit = true;
-                self.emit(AgentEvent::Notice {
-                    text: "接近轮次上限,提醒模型收敛".into(),
-                });
-                if let Ok(mut items) = self.items.lock() {
-                    items.push(ChatItem::user_text(
-                        "<system-reminder>剩余工具轮次还有 2 轮。停止开启新的查证线索,立即收敛：先输出阶段性结论与证据清单,再继续。</system-reminder>",
-                    ));
-                }
-            }
-            if turn_count >= max_turns {
-                // A subagent that runs out of steps mid-exploration has done
-                // real work the parent cannot see: one extra round asks it for
-                // the report before the loop gives up. Bounded by the counter,
-                // so a model that keeps calling tools still ends here.
-                if self.parent_id.is_some() && report_requests == 0 {
-                    report_requests += 1;
-                    self.emit(AgentEvent::Notice {
-                        text: "子代理达到步数上限,让它先交出报告".into(),
-                    });
-                    if let Ok(mut items) = self.items.lock() {
-                        items.push(ChatItem::user_text(REPORT_REQUEST));
-                    }
-                    continue;
-                }
-                self.emit(AgentEvent::Notice {
-                    text: format!("达到最大轮次({max_turns}),本轮结束;可以继续发消息接着做。"),
-                });
+            // CC's `max_turns_reached`: only an explicit budget ends the turn,
+            // and it does so silently — no warning, no injected reminder, no
+            // extra round. The user's next message continues the session.
+            if turn_budget_reached(max_turns, turn_count) {
                 return Ok(TurnOutcome::new("max_turns"));
             }
         }
@@ -2215,13 +2189,7 @@ impl Session {
                 .map(|r| r.max_tokens)
                 .unwrap_or(parent.max_tokens);
         }
-        if child_def.max_turns == 0 {
-            child_def.max_turns = if fork {
-                FORK_MAX_TURNS
-            } else {
-                SUBAGENT_MAX_TURNS
-            };
-        }
+        child_def.max_turns = child_turn_budget(child_def.max_turns, fork);
         // Subagents that cannot write do not need the vault's user instructions
         // (CC's omitClaudeMd for read-only agents).
         let read_only = !child_def
@@ -2481,9 +2449,6 @@ impl Session {
                 let work = count_tool_uses(&runner_child.history());
                 report = match &loop_result {
                     Err(e) => format!("(子代理在产出报告前中止: {e})"),
-                    Ok(outcome) if outcome.reason == "max_turns" => format!(
-                        "(子代理用完 {SUBAGENT_MAX_TURNS} 步仍未交出报告;它执行了 {work} 次工具调用,结论未收集,需要时可以再派一次让它写报告)"
-                    ),
                     _ => format!("(子代理没有产出报告;执行了 {work} 次工具调用)"),
                 };
             }
@@ -3156,6 +3121,27 @@ mod tests {
         let mut with_report = items.clone();
         with_report.push(assistant_text("# Report"));
         assert_eq!(last_assistant_text(&with_report), "# Report");
+    }
+
+    #[test]
+    fn a_turn_budget_only_exists_when_someone_sets_one() {
+        // CC's optional `maxTurns`: an unset budget never ends a turn, and an
+        // explicit one ends it after exactly that many tool rounds (0 = the
+        // interactive loop, which has no cap).
+        assert!(!turn_budget_reached(0, 0));
+        assert!(!turn_budget_reached(0, 10_000));
+        assert!(!turn_budget_reached(3, 2));
+        assert!(turn_budget_reached(3, 3));
+        assert!(turn_budget_reached(3, 4));
+    }
+
+    #[test]
+    fn a_fork_child_keeps_ccs_two_hundred_round_budget() {
+        assert_eq!(child_turn_budget(0, true), FORK_MAX_TURNS);
+        assert_eq!(child_turn_budget(0, false), 0);
+        // A definition's own budget is the caller's explicit choice: keep it.
+        assert_eq!(child_turn_budget(7, true), 7);
+        assert_eq!(child_turn_budget(7, false), 7);
     }
 
     #[test]

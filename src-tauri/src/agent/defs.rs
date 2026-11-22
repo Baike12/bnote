@@ -63,7 +63,8 @@ pub struct AgentDefinition {
     /// selection. Claude Code's `effort` frontmatter field.
     pub thinking: Option<String>,
     pub max_tokens: u32,
-    /// Cap on tool-call rounds per turn; 0 = the session default (25).
+    /// Cap on tool-call rounds per turn; 0 = unbounded (CC's optional
+    /// `maxTurns` — the interactive loop has no default budget).
     pub max_turns: u32,
 }
 
