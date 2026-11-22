@@ -95,11 +95,21 @@ export function ProjectsSidebar() {
   const allCollapsed = groups.length > 0 && groups.every((g) => collapsed[g.key] === true);
 
   // The snapshot is a disk read (identity + worktrees + session records), so it
-  // refreshes when the recent list changes — not on every render. The list
-  // order is the store's business; opening a project changes the recent list,
-  // not the row's position.
+  // refreshes when the recent list gains or loses a project — not on every
+  // render, and not when a project switch only moves the opened root to the
+  // front. The rows keep their positions (the store stabilizes the order), so
+  // a reorder changes nothing on screen; ZCode likewise does not re-read its
+  // project tree when only the active task changes.
+  const recentSetRef = useRef<Set<string> | null>(null);
   useEffect(() => {
-    void refresh(recent);
+    const next = new Set(recent);
+    const previous = recentSetRef.current;
+    recentSetRef.current = next;
+    const same =
+      previous !== null &&
+      previous.size === next.size &&
+      [...next].every((path) => previous.has(path));
+    if (!same) void refresh(recent);
   }, [recent, refresh]);
 
   // The agent panel announces every session-record write. A new session only
