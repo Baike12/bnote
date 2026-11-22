@@ -418,7 +418,7 @@ export function AgentPanel() {
     // missing until the next project switch or manual refresh.
     if (activeSessionFileId === null || previous !== null) return;
     const app = useAppStore.getState();
-    void sidebar.refresh(app.recentCodeProjects, codeProject.path);
+    void sidebar.refresh(app.recentCodeProjects);
   }, [mode, codeProject, activeSessionFileId]);
   /**
    * The sidebar's running indicator: the one backend session this panel is

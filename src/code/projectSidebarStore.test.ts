@@ -19,7 +19,7 @@ const COLLAPSED_KEY = "bnote-codeProjectsCollapsed";
 
 beforeEach(() => {
   storage.clear();
-  useProjectSidebarStore.setState({ collapsed: {}, sectionCollapsed: false });
+  useProjectSidebarStore.setState({ collapsed: {} });
 });
 
 describe("expandGroup", () => {

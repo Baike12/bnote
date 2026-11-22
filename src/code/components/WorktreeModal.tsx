@@ -119,7 +119,7 @@ export function WorktreeModal() {
       close();
       // The sidebar's checkout list and the opened project both change.
       const { recentCodeProjects } = useAppStore.getState();
-      void useProjectSidebarStore.getState().refresh(recentCodeProjects, info.path);
+      void useProjectSidebarStore.getState().refresh(recentCodeProjects);
       await openProjectAt(info.path);
     } catch (e) {
       setError(String(e));
@@ -138,7 +138,7 @@ export function WorktreeModal() {
       setWorktrees(list);
       setBranches(await loadBranches(repo, list));
       const { recentCodeProjects } = useAppStore.getState();
-      await useProjectSidebarStore.getState().refresh(recentCodeProjects, project?.root ?? null);
+      await useProjectSidebarStore.getState().refresh(recentCodeProjects);
     } catch (e) {
       setDeleteError(String(e));
     } finally {

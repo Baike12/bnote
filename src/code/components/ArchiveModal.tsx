@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { homeApi } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
-import { useCodeStore } from "../store";
 import { mergeGroupSessions, relativeTime } from "../projectGroups";
 import { useProjectSidebarStore } from "../projectSidebarStore";
 import { IconRestore, IconTrash, IconWorktree } from "./ProjectIcons";
@@ -27,7 +26,6 @@ export function ArchiveModal({
   group: ProjectGroup | null;
 }) {
   const recent = useAppStore((s) => s.recentCodeProjects);
-  const project = useCodeStore((s) => s.project);
   const refresh = useProjectSidebarStore((s) => s.refresh);
 
   const [items, setItems] = useState<ProjectSessionItem[]>([]);
@@ -66,7 +64,7 @@ export function ArchiveModal({
     setError(null);
     try {
       await homeApi.unarchiveSession(item.workdir, item.id);
-      await refresh(recent, project?.root ?? null);
+      await refresh(recent);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -81,7 +79,7 @@ export function ArchiveModal({
     try {
       await homeApi.deleteSession(item.workdir, item.id);
       setPendingDelete(null);
-      await refresh(recent, project?.root ?? null);
+      await refresh(recent);
     } catch (e) {
       setError(String(e));
     } finally {

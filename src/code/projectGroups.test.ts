@@ -10,6 +10,7 @@ import {
   randomWorktreeName,
   relativeTime,
   sessionMatches,
+  stabilizeGroupOrder,
   validWorktreeName,
   worktreePathFor,
   worktreesDirFor,
@@ -146,6 +147,30 @@ describe("mergeGroupSessions", () => {
       id: "s0",
     });
     expect(items.map((i) => i.id)).toEqual(["s0", "s5"]);
+  });
+});
+
+describe("stabilizeGroupOrder", () => {
+  it("keeps a listed project where it was when the recent order changes", () => {
+    const previous = [{ key: "/a" }, { key: "/b" }, { key: "/c" }];
+    const next = [{ key: "/c" }, { key: "/a" }, { key: "/b" }];
+    expect(stabilizeGroupOrder(previous, next).map((g) => g.key)).toEqual(["/a", "/b", "/c"]);
+  });
+
+  it("inserts a project seen for the first time on top", () => {
+    const previous = [{ key: "/a" }, { key: "/b" }];
+    const next = [{ key: "/d" }, { key: "/b" }, { key: "/a" }];
+    expect(stabilizeGroupOrder(previous, next).map((g) => g.key)).toEqual(["/d", "/a", "/b"]);
+  });
+
+  it("drops a project that left the recent list", () => {
+    const previous = [{ key: "/a" }, { key: "/b" }];
+    expect(stabilizeGroupOrder(previous, [{ key: "/b" }]).map((g) => g.key)).toEqual(["/b"]);
+  });
+
+  it("the first snapshot keeps the recent order", () => {
+    const next = [{ key: "/a" }, { key: "/b" }];
+    expect(stabilizeGroupOrder([], next).map((g) => g.key)).toEqual(["/a", "/b"]);
   });
 });
 

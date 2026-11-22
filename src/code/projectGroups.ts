@@ -12,11 +12,9 @@
 import type { WorktreeInfo } from "./types";
 import type { SavedSessionMeta } from "@/lib/tauri";
 
-/** Sessions listed for the open project before "show more". */
-export const CURRENT_SESSION_LIMIT = 8;
 /** Default cap of `mergeGroupSessions` (the store passes 0 = keep all). */
 export const GROUP_SESSION_LIMIT = 20;
-/** Sessions listed under a project row of the project list before "show more". */
+/** Sessions listed for a project before "show more". */
 export const PROJECT_SESSION_LIMIT = 5;
 /** How many rows each "show more" adds. */
 export const SHOW_MORE_STEP = 10;
@@ -182,6 +180,27 @@ export function groupRecentProjects(
     });
   }
   return out;
+}
+
+/**
+ * Keep the project list's order stable across refreshes.
+ *
+ * Opening a project rewrites the recent list's MRU order; the sidebar must not
+ * follow it — a row that jumps because it was clicked is a mis-click waiting to
+ * happen. So every project already listed keeps its position, a project seen
+ * for the first time is inserted on top (it must be visible), and a project
+ * that left the recent list disappears.
+ */
+export function stabilizeGroupOrder<T extends { key: string }>(
+  previous: readonly T[],
+  next: readonly T[],
+): T[] {
+  const position = new Map(previous.map((group, index) => [group.key, index]));
+  const known = next
+    .filter((group) => position.has(group.key))
+    .sort((a, b) => (position.get(a.key) ?? 0) - (position.get(b.key) ?? 0));
+  const fresh = next.filter((group) => !position.has(group.key));
+  return [...fresh, ...known];
 }
 
 /** The worktrees of a group as sidebar checkouts (main first). */

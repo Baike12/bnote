@@ -137,15 +137,6 @@ export function IconSpinner() {
   );
 }
 
-/** Section fold: a chevron that rotates with `aria-expanded`. */
-export function IconChevron() {
-  return (
-    <svg {...base}>
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  );
-}
-
 /** Fold every project: two chevrons pointing inward. */
 export function IconFoldAll() {
   return (

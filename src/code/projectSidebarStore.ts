@@ -14,12 +14,13 @@ import { homeApi, type SavedSessionMeta } from "@/lib/tauri";
 import { codeApi } from "./api";
 import {
   checkoutsOf,
-  CURRENT_SESSION_LIMIT,
   groupRecentProjects,
   mergeGroupSessions,
   orderSessions,
   parseCollapsed,
+  PROJECT_SESSION_LIMIT,
   SHOW_MORE_STEP,
+  stabilizeGroupOrder,
   type CheckoutSessions,
   type ProjectCheckout,
   type ProjectGroup,
@@ -33,8 +34,6 @@ interface ProjectSidebarState {
   loading: boolean;
   /** Group key → collapsed. A group starts expanded (absence = false). */
   collapsed: Record<string, boolean>;
-  /** Whether the 「项目」 section is folded away (persisted, ZCode's section fold). */
-  sectionCollapsed: boolean;
   /** Group key → how many sessions are shown (0 = the default limit). */
   shown: Record<string, number>;
   /** The conversation the agent panel is on, for the active row highlight. */
@@ -54,15 +53,14 @@ interface ProjectSidebarState {
   /** The repository to create in (null = the open project). */
   worktreeRoot: string | null;
 
-  refresh: (recent: readonly string[], currentRoot: string | null) => Promise<void>;
+  refresh: (recent: readonly string[]) => Promise<void>;
   toggleGroup: (key: string) => void;
   /**
    * Reveal a group's sessions. Switching into a project must show it: the row
-   * the user clicked can be folded, and the switch moves it under 「任务列表」
-   * where a folded flag would keep the new project's sessions hidden.
+   * the user clicked can be folded, and a folded flag would keep the new
+   * project's sessions hidden after the switch.
    */
   expandGroup: (key: string) => void;
-  toggleSection: () => void;
   /** Fold or unfold every project row (the section header's toggle-all). */
   setAllCollapsed: (collapsed: boolean) => void;
   showMore: (key: string) => void;
@@ -102,26 +100,6 @@ function saveCollapsed(collapsed: Record<string, boolean>): void {
   }
 }
 
-/** The 「项目」 section's own fold state (a sibling key, not a group key). */
-const SECTION_KEY = "bnote-codeProjectsSectionCollapsed";
-
-function loadSectionCollapsed(): boolean {
-  try {
-    return localStorage.getItem(SECTION_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function saveSectionCollapsed(collapsed: boolean): void {
-  try {
-    if (collapsed) localStorage.setItem(SECTION_KEY, "1");
-    else localStorage.removeItem(SECTION_KEY);
-  } catch {
-    // In-memory for this run only.
-  }
-}
-
 /** The repository identity, tolerating a missing directory (still shown). */
 async function resolveMainRepo(root: string): Promise<string | null> {
   try {
@@ -156,32 +134,17 @@ async function loadSessions(checkouts: readonly ProjectCheckout[]): Promise<Chec
   return batches;
 }
 
-/**
- * Order the groups: the group holding the open project first (it is what the
- * user is looking at), then the recent order. A group's position otherwise
- * follows its most recently opened checkout.
- */
-function orderGroups(groups: ProjectGroup[], currentRoot: string | null): ProjectGroup[] {
-  if (!currentRoot) return groups;
-  const index = groups.findIndex((g) => g.checkouts.some((c) => c.path === currentRoot));
-  if (index <= 0) return groups;
-  const copy = [...groups];
-  const [current] = copy.splice(index, 1);
-  return [current, ...copy];
-}
-
 export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => ({
   groups: [],
   loading: false,
   collapsed: loadCollapsed(),
-  sectionCollapsed: loadSectionCollapsed(),
   shown: {},
   activeSession: null,
   running: null,
   worktreeOpen: false,
   worktreeRoot: null,
 
-  refresh: async (recent, currentRoot) => {
+  refresh: async (recent) => {
     const token = ++refreshToken;
     set({ loading: true });
     const entries = await Promise.all(
@@ -198,7 +161,10 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
       }),
     );
     if (token !== refreshToken) return;
-    set({ groups: orderGroups(groups, currentRoot), loading: false });
+    // The rows keep their positions: a refresh follows the recent list's MRU
+    // order, but a project that is already listed must not jump because it was
+    // opened. Only a project seen for the first time is inserted (on top).
+    set({ groups: stabilizeGroupOrder(get().groups, groups), loading: false });
   },
 
   toggleGroup: (key) => {
@@ -218,12 +184,6 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
     delete next[key];
     saveCollapsed(next);
     set({ collapsed: next });
-  },
-
-  toggleSection: () => {
-    const sectionCollapsed = !get().sectionCollapsed;
-    saveSectionCollapsed(sectionCollapsed);
-    set({ sectionCollapsed });
   },
 
   setAllCollapsed: (collapsed) => {
@@ -283,11 +243,12 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
 /**
  * The sessions a group shows right now: the default limit, raised by each
  * "show more" click (the map stores the absolute count, clamped by the store).
+ * Every project uses the same limit — the open project is not a special case.
  */
 export function visibleSessions(
   group: ProjectGroup,
   shown: Record<string, number>,
-  defaultLimit = CURRENT_SESSION_LIMIT,
+  defaultLimit = PROJECT_SESSION_LIMIT,
 ): ProjectSessionItem[] {
   return group.sessions.slice(0, shown[group.key] ?? defaultLimit);
 }
