@@ -173,6 +173,12 @@ export interface CodeState {
    */
   applyTreeDelta: (delta: { added: CodeEntry[]; removed: string[] }) => void;
   /**
+   * Loads one level of a lazy tree row (an ignore-hidden directory, see
+   * `CodeEntry.lazy`). Called when the row is expanded; a merge that finds
+   * nothing new leaves the entry array alone, so the tree is not refolded.
+   */
+  loadTreeDir: (path: string) => Promise<void>;
+  /**
    * Re-reads the git status after a short quiet period: one agent turn writes
    * several files, and `git status` after each of them would be the same
    * answer paid several times.
@@ -280,6 +286,26 @@ const GIT_REFRESH_DELAY_MS = 300;
  */
 let gitRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Lazy tree rows whose level is being fetched, keyed by `root\0path`. The
+ * tree can be expanded right after opening the project, and two clicks on the
+ * same chevron must not read the directory twice.
+ */
+const treeDirLoads = new Set<string>();
+
+/**
+ * Re-reads every expanded lazy row after the tree was replaced by a fresh
+ * scan: the fold state survives, but the loaded levels do not, and an expanded
+ * `node_modules` would render as an empty folder until it is toggled twice.
+ */
+function reloadLazyDirs(get: () => CodeState): void {
+  const state = get();
+  for (const dir of state.expandedDirs) {
+    const entry = state.project?.tree.entries.find((e) => e.path === dir);
+    if (entry?.isDir && entry.lazy) void state.loadTreeDir(dir);
+  }
+}
+
 function ensureTermExitListener(): void {
   if (termExitListening) return;
   termExitListening = true;
@@ -358,6 +384,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     if (previous && previous.root === info.root) {
       set({ project: info });
       syncProjectRef(info);
+      reloadLazyDirs(get);
       return;
     }
     // Switching project = switching the sandbox boundary. Language servers
@@ -449,6 +476,9 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     const project = get().project;
     if (!project) return;
     set({ project: { ...project, tree } });
+    // A fresh scan keeps the fold state but drops every lazily loaded level:
+    // an expanded stub would look empty until it is toggled twice.
+    reloadLazyDirs(get);
     // Files created or deleted outside also change the git status (new
     // untracked, deleted), so refresh it while we are here.
     await get().refreshGit();
@@ -466,6 +496,34 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     }
     // Even a pure content change moves the git status (and the diff pane).
     get().scheduleGitRefresh();
+  },
+
+  async loadTreeDir(path) {
+    const project = get().project;
+    if (!project) return;
+    const root = project.root;
+    const key = `${root}\u0000${path}`;
+    if (treeDirLoads.has(key)) return;
+    treeDirLoads.add(key);
+    try {
+      const added = await codeApi.listDir(root, path).catch((): CodeEntry[] => []);
+      // The project may have changed while the level was read: its entries do
+      // not belong to the tree on screen.
+      const live = get().project;
+      if (!live || live.root !== root) return;
+      const merged = applyEntries(live.tree.entries, { added, removed: [] });
+      // The row is no longer a stub, so the next expand does not read again.
+      // Only on success: a failed read keeps the lazy mark and retries.
+      const entries =
+        added.length === 0
+          ? merged
+          : merged.map((e) => (e.path === path ? { ...e, lazy: false } : e));
+      if (entries !== live.tree.entries) {
+        set({ project: { ...live, tree: { ...live.tree, entries } } });
+      }
+    } finally {
+      treeDirLoads.delete(key);
+    }
   },
 
   scheduleGitRefresh() {
@@ -656,12 +714,18 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   },
 
   toggleDir(path) {
+    const expanded = get().expandedDirs.has(path);
     set((s) => {
       const next = new Set(s.expandedDirs);
       if (next.has(path)) next.delete(path);
       else next.add(path);
       return { expandedDirs: next };
     });
+    // Expanding an ignore-hidden row reads its one level on demand: the scan
+    // never walked it (a `node_modules` is most of a repository).
+    if (expanded) return;
+    const entry = get().project?.tree.entries.find((e) => e.path === path);
+    if (entry?.isDir && entry.lazy) void get().loadTreeDir(path);
   },
 
   requestTreeFocus(path) {
@@ -676,6 +740,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   expandTo(path) {
     const dirs = ancestorDirs(path);
     if (dirs.length === 0) return;
+    const entries = get().project?.tree.entries ?? [];
     set((s) => {
       const next = new Set(s.expandedDirs);
       let changed = false;
@@ -687,6 +752,12 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       }
       return changed ? { expandedDirs: next } : s;
     });
+    // Revealing a file under an ignore-hidden directory expands the stub; the
+    // level is read the same way a click does.
+    for (const dir of dirs) {
+      const entry = entries.find((e) => e.path === dir);
+      if (entry?.isDir && entry.lazy) void get().loadTreeDir(dir);
+    }
   },
 
   setProblemsOpen(open) {

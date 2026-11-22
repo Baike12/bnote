@@ -266,6 +266,36 @@ pub async fn code_open_project(app: AppHandle, root: String) -> CmdResult<CodePr
     })
 }
 
+/// Load one directory level for a lazy tree row.
+///
+/// The scan only materializes ignore-hidden directories themselves (see
+/// [`project::scan`]); expanding `node_modules` asks for exactly that level.
+/// The read runs before the cache lock, which the watcher shares.
+#[tauri::command]
+pub async fn code_list_dir(
+    app: AppHandle,
+    root: String,
+    path: String,
+) -> CmdResult<Vec<CodeEntry>> {
+    let root = canonical_root(&root)?;
+    let entries = blocking({
+        let root = root.clone();
+        let path = path.clone();
+        move || project::read_dir_entries(&root, &path)
+    })
+    .await?;
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let key = root_key(&root);
+        let mut map = state.code_trees.lock().map_err(|_| "lock poisoned")?;
+        let Some(tree) = map.get_mut(&key) else {
+            return Err("PROJECT_NOT_OPEN: 文件树未扫描".to_string());
+        };
+        Ok(project::merge_dir_entries(tree, &path, entries))
+    })
+    .await
+}
+
 /// Rescan the file tree (after the user edited .gitignore or created files
 /// outside the app).
 #[tauri::command]
@@ -809,24 +839,28 @@ mod tests {
                 name: "main.rs".into(),
                 is_dir: false,
                 size: 0,
+                lazy: false,
             },
             project::CodeEntry {
                 path: "main.rs".into(),
                 name: "main.rs".into(),
                 is_dir: false,
                 size: 0,
+                lazy: false,
             },
             project::CodeEntry {
                 path: "domain.rs".into(),
                 name: "domain.rs".into(),
                 is_dir: false,
                 size: 0,
+                lazy: false,
             },
             project::CodeEntry {
                 path: "src".into(),
                 name: "src".into(),
                 is_dir: true,
                 size: 0,
+                lazy: false,
             },
         ];
         entries.retain(|e| !e.is_dir && fuzzy_match(&e.name.to_lowercase(), "main"));

@@ -770,6 +770,14 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "code_rescan" => {
             json_ok!(code::code_rescan(app.clone(), arg_str(args, "root")?).await)
         }
+        "code_list_dir" => json_ok!(
+            code::code_list_dir(
+                app.clone(),
+                arg_str(args, "root")?,
+                arg_str(args, "path")?
+            )
+            .await
+        ),
         "code_read_file" => json_ok!(
             code::code_read_file(arg_str(args, "root")?, arg_str(args, "path")?).await
         ),

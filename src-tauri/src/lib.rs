@@ -381,6 +381,7 @@ pub fn run() {
             commands::python::python_uv_create,
             commands::code::code_open_project,
             commands::code::code_rescan,
+            commands::code::code_list_dir,
             commands::code::code_read_file,
             commands::code::code_write_file,
             commands::code::code_search,

@@ -138,6 +138,19 @@ describe("a tree delta from the watcher", () => {
     ]);
   });
 
+  it("a lazy stub keeps its flag, so expanding it loads the level", async () => {
+    await useCodeStore.getState().openProject("/repo-a");
+    await installCodeEvents();
+    emit("code-tree-changed", {
+      root: "/repo-a",
+      reset: false,
+      added: [{ path: "node_modules", name: "node_modules", isDir: true, size: 0, lazy: true }],
+      removed: [],
+    });
+    const entries = useCodeStore.getState().project?.tree.entries ?? [];
+    expect(entries.find((e) => e.path === "node_modules")?.lazy).toBe(true);
+  });
+
   it("a reset (the ignore rules moved) rescans instead of applying the delta", async () => {
     await useCodeStore.getState().openProject("/repo-a");
     await installCodeEvents();

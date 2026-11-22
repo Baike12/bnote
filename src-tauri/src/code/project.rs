@@ -37,12 +37,10 @@ use serde::Serialize;
 /// Upper bound on the number of scanned entries: the scan stops here and sets
 /// `truncated`.
 ///
-/// 200k covers a repository together with its dependency and build output
-/// directories, which the tree shows whole: the bnote repository itself scans
-/// to 98,229 entries (`node_modules` 28k, `src-tauri/target` 66k) and was cut
-/// at the old 50k. At 97.7k entries the full list costs 17.4 MB serialized and
-/// a 161 ms tree fold on the front end, paid once per open; the cap still
-/// bounds a pathological tree.
+/// The ignored subtrees no longer count against it: a project open walks the
+/// source tree only and keeps one lazy row per ignore-hidden directory (see
+/// [`scan`]), so the number here is the real size of a pathological repository
+/// rather than its `node_modules`.
 pub const MAX_ENTRIES: usize = 200_000;
 /// Upper bound on the scan depth.
 pub const MAX_DEPTH: usize = 32;
@@ -60,6 +58,10 @@ pub struct CodeEntry {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
+    /// The directory is an ignore-hidden stub: its children were not scanned.
+    /// Expanding it in the tree loads that one level (`code_list_dir`).
+    #[serde(default)]
+    pub lazy: bool,
 }
 
 /// The scan result.
@@ -71,9 +73,10 @@ pub struct CodeTree {
     /// tell the user "the file tree is incomplete").
     pub truncated: bool,
     /// Paths the ignore rules hid (.gitignore / .ignore / the global git
-    /// excludes). They are **in** `entries` — the tree shows them — but search
-    /// skips them, see [`CodeTree::searchable`]. Not serialized to the front
-    /// end: the UI never filters on it.
+    /// excludes) and their lazily loaded descendants. The hidden directories
+    /// themselves stay in `entries` as `lazy` stubs — the tree shows them — but
+    /// search skips them, see [`CodeTree::searchable`]. Not serialized to the
+    /// front end: the UI never filters on it.
     #[serde(skip)]
     pub ignored: HashSet<String>,
 }
@@ -98,8 +101,8 @@ impl CodeTree {
 
 /// The visible difference one watcher flush made to the cached tree.
 ///
-/// The front end never receives the whole tree again (a large repository is
-/// tens of thousands of entries and ~17 MB serialized): it applies this delta
+/// The front end never receives the whole tree again (a large source tree is
+/// thousands of entries and hundreds of KB serialized): it applies this delta
 /// to the entries it already has.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +181,7 @@ pub fn apply_changes(tree: &mut CodeTree, root: &Path, paths: &[PathBuf]) -> Opt
                             name,
                             is_dir: false,
                             size: meta.len(),
+                            lazy: false,
                         },
                     );
                     if hidden {
@@ -207,6 +211,12 @@ fn add_dir(tree: &mut CodeTree, root: &Path, rel: &str, added: &mut Vec<CodeEntr
         return;
     }
     let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
+    // A build creating `node_modules` under a new directory: the subtree stays
+    // unscanned, exactly like the stubs the initial scan made — walking it is
+    // what the lazy model exists to avoid. The path itself is hidden either
+    // because an already-known ancestor is, or because the ignore rules of its
+    // parent match it (`npm install` after the project opened).
+    let hidden = is_under_ignored(tree, rel) || is_ignored_at(root, rel);
     push_entry(
         tree,
         added,
@@ -215,9 +225,17 @@ fn add_dir(tree: &mut CodeTree, root: &Path, rel: &str, added: &mut Vec<CodeEntr
             name,
             is_dir: true,
             size: 0,
+            lazy: hidden,
         },
     );
-    for result in walk(&root.join(rel), true) {
+    if hidden {
+        tree.ignored.insert(rel.to_string());
+        let stubs = add_hidden_stubs(tree, root, &[rel.to_string()]);
+        added.extend(stubs);
+        return;
+    }
+    let mut new_dirs = vec![rel.to_string()];
+    for result in walk(&root.join(rel)) {
         let Ok(entry) = result else { continue };
         // Depth 0 is the directory itself, handled above.
         if entry.depth() == 0 {
@@ -236,9 +254,6 @@ fn add_dir(tree: &mut CodeTree, root: &Path, rel: &str, added: &mut Vec<CodeEntr
         } else {
             entry.metadata().map(|m| m.len()).unwrap_or(0)
         };
-        // Under an ignore-hidden directory the new file stays hidden from
-        // search, exactly like the files the initial scan marked.
-        let hidden = is_under_ignored(tree, &child);
         push_entry(
             tree,
             added,
@@ -247,12 +262,50 @@ fn add_dir(tree: &mut CodeTree, root: &Path, rel: &str, added: &mut Vec<CodeEntr
                 name: entry.file_name().to_string_lossy().to_string(),
                 is_dir,
                 size,
+                lazy: false,
             },
         );
-        if hidden {
-            tree.ignored.insert(child);
+        if is_dir {
+            new_dirs.push(child);
         }
     }
+    // The walk skipped the ignored children of every directory it entered;
+    // they still deserve the same one-row stub the initial scan gives them.
+    added.extend(add_hidden_stubs(tree, root, &new_dirs));
+}
+
+/// Whether the ignore rules that apply to `rel`'s directory hide it.
+///
+/// An ignore walk rooted at a directory does not apply its parent rules to the
+/// root itself, so the rule is asked from the parent: list the parent's
+/// children with the ignore rules on and see whether `rel` is among them. One
+/// directory listing and one ignore-file load, paid only when the watcher
+/// reports a new directory.
+fn is_ignored_at(root: &Path, rel: &str) -> bool {
+    let (parent, name) = match rel.rsplit_once('/') {
+        Some((dir, name)) => (dir, name),
+        None => ("", rel),
+    };
+    let base = if parent.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(parent)
+    };
+    let mut builder = ignore::WalkBuilder::new(&base);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .require_git(true)
+        .follow_links(false)
+        .max_depth(Some(1));
+    !builder
+        .build()
+        .flatten()
+        .any(|e| e.depth() == 1 && e.file_name().to_string_lossy() == name)
 }
 
 /// Appends an entry unless the tree is already at its entry cap.
@@ -432,23 +485,30 @@ fn normalize_lexically(p: &Path) -> PathBuf {
 /// Scans the project root and produces the flattened entry list.
 ///
 /// The tree shows **the whole folder**: dot files (`.gitignore`, `.github`),
-/// and the paths the ignore rules hide (`.venv`, `__pycache__`,
-/// `node_modules`). A Python project's `.venv` is part of what the user
+/// and the ignore-hidden directories (`.venv`, `__pycache__`, `node_modules`)
+/// as collapsible rows. A Python project's `.venv` is part of what the user
 /// opened; leaving it out reads as "the app cannot see my project". Only
 /// `.git` (the repository's internal structure, never project content) and
 /// `.DS_Store` (system noise) are excluded.
 ///
-/// Two walks keep that from wrecking search:
-/// 1. **with** the ignore rules — the project's own files, collected first, so
-///    a huge dependency directory can never eat the entry budget;
-/// 2. **without** them — what the rules hid, marked in `ignored` so
-///    [`CodeTree::searchable`] skips it.
+/// **One walk**, respecting the ignore rules, plus a direct-children listing
+/// per scanned directory to find the ignored siblings it skipped. The walk is
+/// what a project open costs, and walking the hidden subtrees was 99% of it:
+/// the bnote repository is 1,381 source entries but 207,160 entries with
+/// `node_modules` and `src-tauri/target` (2.1 s of walking, 38 MB over IPC and
+/// 1.2 s folding the tree in the UI). The ignored directories therefore enter
+/// the tree as `lazy` stubs — one row each, children loaded by
+/// [`read_dir_entries`] when the row is expanded — marked in `ignored` so
+/// [`CodeTree::searchable`] skips what is below them.
 ///
 /// Symlinks are not followed (they could form cycles).
 pub fn scan(root: &Path) -> CodeTree {
     let mut tree = CodeTree::default();
-    let mut own: HashSet<String> = HashSet::new();
-    for result in walk(root, true) {
+    let mut known: HashSet<String> = HashSet::new();
+    // Every directory the walk entered, the root included: the stub pass reads
+    // each one's direct children to find the ignored siblings.
+    let mut walked: Vec<String> = vec![String::new()];
+    for result in walk(root) {
         let Some((entry, rel)) = entry_of(root, result) else {
             continue;
         };
@@ -456,41 +516,32 @@ pub fn scan(root: &Path) -> CodeTree {
             tree.truncated = true;
             break;
         }
-        tree.entries.push(entry);
-        own.insert(rel);
-    }
-    if !tree.truncated {
-        for result in walk(root, false) {
-            let Some((entry, rel)) = entry_of(root, result) else {
-                continue;
-            };
-            if own.contains(&rel) {
-                continue;
-            }
-            if tree.entries.len() >= MAX_ENTRIES {
-                tree.truncated = true;
-                break;
-            }
-            tree.ignored.insert(rel);
-            tree.entries.push(entry);
+        if entry.is_dir {
+            walked.push(rel.clone());
         }
+        known.insert(rel.clone());
+        tree.entries.push(entry);
+    }
+    // A truncated walk did not see every directory, so "missing from `known`"
+    // would report present children as ignored. The next rescan adds stubs.
+    if !tree.truncated {
+        add_hidden_stubs(&mut tree, root, &walked);
     }
     tree
 }
 
-/// One `ignore` traversal. `respect_ignore` is false for the pass that
-/// collects what the ignore rules hid.
-fn walk(root: &Path, respect_ignore: bool) -> ignore::Walk {
+/// One `ignore` traversal.
+fn walk(root: &Path) -> ignore::Walk {
     let mut builder = ignore::WalkBuilder::new(root);
     builder
         // Hidden files are wanted (`.github`, `.vscode`, `.venv` are all
         // useful); `.git` is excluded separately.
         .hidden(false)
-        .git_ignore(respect_ignore)
-        .ignore(respect_ignore)
-        .git_global(respect_ignore)
-        .git_exclude(respect_ignore)
-        .parents(respect_ignore)
+        .git_ignore(true)
+        .ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
         // The gitignore rules only apply inside a real git repository.
         .require_git(true)
         .follow_links(false)
@@ -501,6 +552,140 @@ fn walk(root: &Path, respect_ignore: bool) -> ignore::Walk {
     });
     builder.build()
 }
+
+/// Adds one `lazy` entry for every ignore-hidden child of the given
+/// directories.
+///
+/// The ignore walk skips those children entirely; reading the directory's
+/// direct entries is what recovers their names without descending into them.
+/// A directory that is missing from the tree there is hidden (the walk reports
+/// every visible child, a truncated one excepted), so the row can be created
+/// without re-implementing gitignore matching.
+fn add_hidden_stubs(tree: &mut CodeTree, root: &Path, dirs: &[String]) -> Vec<CodeEntry> {
+    let mut out = Vec::new();
+    let mut known: HashSet<String> = tree.entries.iter().map(|e| e.path.clone()).collect();
+    for dir in dirs {
+        let abs = if dir.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(dir)
+        };
+        let Ok(read) = std::fs::read_dir(&abs) else {
+            continue;
+        };
+        for item in read.flatten() {
+            let name = item.file_name().to_string_lossy().to_string();
+            if name == ".DS_Store" || name == ".git" {
+                continue;
+            }
+            let child = if dir.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", dir, name)
+            };
+            if known.contains(&child) {
+                continue;
+            }
+            let Ok(kind) = item.file_type() else {
+                continue;
+            };
+            if tree.entries.len() >= MAX_ENTRIES {
+                tree.truncated = true;
+                return out;
+            }
+            let is_dir = kind.is_dir();
+            let size = if is_dir {
+                0
+            } else {
+                item.metadata().map(|m| m.len()).unwrap_or(0)
+            };
+            known.insert(child.clone());
+            tree.ignored.insert(child.clone());
+            let entry = CodeEntry {
+                path: child,
+                name,
+                is_dir,
+                size,
+                lazy: is_dir,
+            };
+            tree.entries.push(entry.clone());
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Reads one directory level (no lock held, no cache touched).
+///
+/// `rel` is project-relative and confined by [`resolve_in`]; `.git` and
+/// `.DS_Store` are not project content and stay out.
+pub fn read_dir_entries(root: &Path, rel: &str) -> Result<Vec<CodeEntry>, String> {
+    let abs = resolve_in(root, rel)?;
+    if !abs.is_dir() {
+        return Err(format!("NOT_DIR: {}", rel));
+    }
+    let read = std::fs::read_dir(&abs).map_err(|e| format!("READ_DIR: {}", e))?;
+    let dir = rel.trim_end_matches('/');
+    let mut out = Vec::new();
+    for item in read.flatten() {
+        let name = item.file_name().to_string_lossy().to_string();
+        if name == ".DS_Store" || name == ".git" {
+            continue;
+        }
+        let Ok(kind) = item.file_type() else {
+            continue;
+        };
+        let is_dir = kind.is_dir();
+        let size = if is_dir {
+            0
+        } else {
+            item.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        out.push(CodeEntry {
+            path: format!("{}/{}", dir, name),
+            name,
+            is_dir,
+            size,
+            lazy: false,
+        });
+    }
+    Ok(out)
+}
+
+/// Merges one directory's loaded children into the tree and returns the ones
+/// that were new.
+///
+/// Everything below an ignore-hidden directory is hidden too: the rows still
+/// show, search skips them, and a child directory is itself a lazy stub until
+/// it is expanded.
+pub fn merge_dir_entries(
+    tree: &mut CodeTree,
+    rel: &str,
+    entries: Vec<CodeEntry>,
+) -> Vec<CodeEntry> {
+    let hidden = tree.ignored.contains(rel) || is_under_ignored(tree, rel);
+    let mut out = Vec::new();
+    for mut entry in entries {
+        if tree.entries.iter().any(|e| e.path == entry.path) {
+            continue;
+        }
+        if tree.entries.len() >= MAX_ENTRIES {
+            tree.truncated = true;
+            break;
+        }
+        if hidden {
+            tree.ignored.insert(entry.path.clone());
+            entry.lazy = entry.is_dir;
+        }
+        tree.entries.push(entry.clone());
+        out.push(entry);
+    }
+    out
+}
+
+/// The on-demand half of the scan's lazy stubs: expanding `node_modules`
+/// reads that one level (`read_dir_entries`) and merges it
+/// (`merge_dir_entries`) instead of walking the subtree.
 
 /// Traversal for the agent's glob/grep tools. Differs from the file-tree walk
 /// on purpose: ignore rules apply **even without git** (`require_git(false)` —
@@ -549,6 +734,7 @@ fn entry_of(
             name,
             is_dir,
             size,
+            lazy: false,
         },
         rel,
     ))
@@ -845,19 +1031,32 @@ mod tests {
         std::fs::write(root.join(".venv/lib/needle.py"), "needle = 1").unwrap();
         std::fs::write(root.join("node_modules/pkg.js"), "needle").unwrap();
         std::fs::write(root.join("keep.js"), "needle").unwrap();
-        let tree = scan(&root);
+        let mut tree = scan(&root);
         let paths: Vec<&str> = tree.entries.iter().map(|e| e.path.as_str()).collect();
 
-        // Everything the folder holds is in the tree, dot files and the
-        // .gitignored paths included — a `.venv` that stays invisible reads as
-        // "the app cannot see my project".
+        // The ignored directories stay visible as rows — a `.venv` that stays
+        // invisible reads as "the app cannot see my project" — but one level
+        // only: walking them was 99% of a project open.
         assert!(paths.contains(&".gitignore"), "{:?}", paths);
         assert!(paths.contains(&".venv"), "{:?}", paths);
-        assert!(paths.contains(&".venv/lib/needle.py"), "{:?}", paths);
-        assert!(paths.contains(&"node_modules/pkg.js"), "{:?}", paths);
+        assert!(paths.contains(&"node_modules"), "{:?}", paths);
         assert!(paths.contains(&"keep.js"), "{:?}", paths);
+        assert!(!paths.contains(&".venv/lib/needle.py"), "{:?}", paths);
+        assert!(!paths.contains(&"node_modules/pkg.js"), "{:?}", paths);
         // The one exception: `.git` is the repository's internals, not content.
         assert!(!paths.iter().any(|p| p.starts_with(".git/")), "{:?}", paths);
+        let venv = tree.entries.iter().find(|e| e.path == ".venv").unwrap();
+        assert!(venv.is_dir && venv.lazy, "{:?}", venv);
+
+        // Expanding the stub reads exactly that level.
+        let children = read_dir_entries(&root, "node_modules").unwrap();
+        let added = merge_dir_entries(&mut tree, "node_modules", children);
+        assert_eq!(added.len(), 1, "{:?}", added);
+        assert_eq!(added[0].path, "node_modules/pkg.js");
+        assert!(!added[0].lazy);
+        // Still one read: the level is not fetched twice.
+        let again = read_dir_entries(&root, "node_modules").unwrap();
+        assert!(merge_dir_entries(&mut tree, "node_modules", again).is_empty());
 
         // Shown but not searchable: vendored files must not answer a search.
         let searchable: Vec<&str> = tree.searchable().map(|e| e.path.as_str()).collect();
@@ -953,6 +1152,37 @@ mod tests {
         assert!(added.contains(&"docs"), "{:?}", added);
         assert!(added.contains(&"docs/assets"), "{:?}", added);
         assert!(added.contains(&"docs/assets/flow.html"), "{:?}", added);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_new_ignored_directory_arrives_as_a_lazy_stub() {
+        // `npm install` while the app is open: the watcher reports the
+        // directory, and the .gitignore (already on disk) hides it. The row
+        // must not walk the new subtree — that is the cost lazy stubs remove.
+        let root = tmpdir("delta-ignored-dir");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
+        let mut tree = scan(&root);
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "x").unwrap();
+
+        let delta = apply_changes(&mut tree, &root, &[root.join("node_modules")]).unwrap();
+        let added: Vec<&CodeEntry> = delta.added.iter().collect();
+        let dir = added
+            .iter()
+            .find(|e| e.path == "node_modules")
+            .expect("the directory row");
+        assert!(dir.lazy && dir.is_dir, "{:?}", dir);
+        let stub = added
+            .iter()
+            .find(|e| e.path == "node_modules/pkg")
+            .expect("one stub level");
+        assert!(stub.lazy, "{:?}", stub);
+        assert!(
+            !tree.entries.iter().any(|e| e.path.ends_with("index.js")),
+            "the hidden subtree is not walked"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CodeEntry,
   CodeFile,
   CodeProjectInfo,
   CodeSearchHit,
@@ -22,6 +23,11 @@ export const codeApi = {
   openProject: (root: string) => invoke<CodeProjectInfo>("code_open_project", { root }),
   /** Rescan the file tree. */
   rescan: (root: string) => invoke<CodeTree>("code_rescan", { root }),
+  /**
+   * One directory level of a lazy tree row (an ignore-hidden directory).
+   * The project scan keeps the row only; the children are read on expand.
+   */
+  listDir: (root: string, path: string) => invoke<CodeEntry[]>("code_list_dir", { root, path }),
   /** Read a file together with its languageId. */
   readFile: (root: string, path: string) => invoke<CodeFile>("code_read_file", { root, path }),
   /** Write a file. */

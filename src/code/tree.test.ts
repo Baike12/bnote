@@ -268,6 +268,16 @@ describe("applyEntries (the watcher's delta)", () => {
     expect(after.map((e) => e.path)).toEqual(["src/a.tsx"]);
   });
 
+  it("a row that stops being a lazy stub is a change", () => {
+    const before = [{ ...entry("node_modules", true), lazy: true }];
+    const after = applyEntries(before, {
+      added: [{ ...entry("node_modules", true), lazy: false }],
+      removed: [],
+    });
+    expect(after).not.toBe(before);
+    expect(after[0].lazy).toBe(false);
+  });
+
   it("an unchanged reference means nothing visible moved (no re-fold)", () => {
     const before = [entry("a.ts", false, 3)];
     // A modified file: same size, same everything — the tree shows names.

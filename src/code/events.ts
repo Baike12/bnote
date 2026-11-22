@@ -98,7 +98,15 @@ export function parseTreeDelta(value: unknown): { added: CodeEntry[]; removed: s
     ) {
       continue;
     }
-    added.push({ path: e.path, name: e.name, isDir: e.isDir, size: e.size });
+    // `lazy` marks a stub row whose level the watcher did not walk (a
+    // `node_modules` created outside the app); expanding it loads that level.
+    added.push({
+      path: e.path,
+      name: e.name,
+      isDir: e.isDir,
+      size: e.size,
+      ...(e.lazy === true ? { lazy: true } : {}),
+    });
   }
   const removed = (Array.isArray(data.removed) ? data.removed : []).filter(
     (p): p is string => typeof p === "string",

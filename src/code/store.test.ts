@@ -19,6 +19,7 @@ import { EditorState } from "@codemirror/state";
 const mocks = vi.hoisted(() => ({
   openProject: vi.fn(),
   rescan: vi.fn(),
+  listDir: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
   lspStop: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("./api", () => ({
   codeApi: {
     openProject: mocks.openProject,
     rescan: mocks.rescan,
+    listDir: mocks.listDir,
     readFile: mocks.readFile,
     writeFile: mocks.writeFile,
     lspStop: mocks.lspStop,
@@ -184,6 +186,7 @@ beforeEach(async () => {
   mocks.settings.codeLspServers = {};
   mocks.openProject.mockImplementation(async (root: string) => info(root));
   mocks.rescan.mockImplementation(async (root: string) => info(root).tree);
+  mocks.listDir.mockResolvedValue([]);
   mocks.readFile.mockImplementation(async (_root: string, path: string) => file(path));
   mocks.writeFile.mockResolvedValue(undefined);
   mocks.lspStop.mockResolvedValue(undefined);
@@ -300,6 +303,59 @@ describe("opening a project", () => {
     expect(state.tabs).toEqual([]);
     expect(state.treeOpen).toBe(false);
     expect(mocks.setCodeProject).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe("lazy tree rows", () => {
+  const stub: CodeEntry = {
+    path: "node_modules",
+    name: "node_modules",
+    isDir: true,
+    size: 0,
+    lazy: true,
+  };
+
+  it("expanding an ignore-hidden directory loads exactly that level once", async () => {
+    mocks.openProject.mockImplementation(async (root: string) => info(root, [stub]));
+    mocks.listDir.mockResolvedValue([
+      { path: "node_modules/pkg", name: "pkg", isDir: true, size: 0, lazy: true },
+      { path: "node_modules/a.js", name: "a.js", isDir: false, size: 2 },
+    ]);
+    await useCodeStore.getState().openProject("/repo-a");
+
+    useCodeStore.getState().toggleDir("node_modules");
+    await flush();
+
+    expect(mocks.listDir).toHaveBeenCalledWith("/repo-a", "node_modules");
+    const entries = useCodeStore.getState().project?.tree.entries ?? [];
+    expect(entries.map((e) => e.path)).toContain("node_modules/pkg");
+    // The expanded row is no longer a stub: collapsing and expanding again is
+    // a pure UI move.
+    expect(entries.find((e) => e.path === "node_modules")?.lazy).toBe(false);
+  });
+
+  it("a plain directory is not read from the disk", async () => {
+    const plain: CodeEntry = { path: "src", name: "src", isDir: true, size: 0 };
+    mocks.openProject.mockImplementation(async (root: string) => info(root, [plain]));
+    await useCodeStore.getState().openProject("/repo-a");
+    useCodeStore.getState().toggleDir("src");
+    await flush();
+    expect(mocks.listDir).not.toHaveBeenCalled();
+  });
+
+  it("a level that lands after the project switched is dropped", async () => {
+    mocks.openProject.mockImplementation(async (root: string) => info(root, [stub]));
+    await useCodeStore.getState().openProject("/repo-a");
+    let release: (entries: CodeEntry[]) => void = () => {};
+    mocks.listDir.mockImplementation(
+      () => new Promise<CodeEntry[]>((resolve) => (release = resolve)),
+    );
+    useCodeStore.getState().toggleDir("node_modules");
+    await useCodeStore.getState().openProject("/repo-b");
+    release([{ path: "node_modules/late.js", name: "late.js", isDir: false, size: 1 }]);
+    await flush();
+    const entries = useCodeStore.getState().project?.tree.entries ?? [];
+    expect(entries.some((e) => e.path === "node_modules/late.js")).toBe(false);
   });
 });
 

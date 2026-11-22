@@ -3,10 +3,12 @@ import type { CodeEntry, GitFileState } from "./types";
 /**
  * File tree: fold the backend's flat entry list into a directory tree.
  *
- * The backend scans the disk once and returns a "relative path → entry" list;
- * the tree shape is folded on the frontend, so expanding a directory never
- * touches the disk again (the study mode middle column is narrow, and
- * round-tripping to disk would stutter).
+ * The backend scans the source tree once and returns a "relative path → entry"
+ * list; the tree shape is folded on the frontend, so expanding a directory
+ * never touches the disk again (the study mode middle column is narrow, and
+ * round-tripping to disk would stutter). The one exception is an ignore-hidden
+ * directory (`node_modules`, `.venv`): the scan keeps only its row
+ * (`CodeEntry.lazy`) and the store reads that one level when it is expanded.
  */
 
 export interface TreeNode {
@@ -154,7 +156,13 @@ export function applyEntries(
     let changed = next !== null;
     for (const entry of added) {
       const current = byPath.get(entry.path);
-      if (current && current.isDir === entry.isDir && current.size === entry.size) continue;
+      if (
+        current &&
+        current.isDir === entry.isDir &&
+        current.size === entry.size &&
+        (current.lazy ?? false) === (entry.lazy ?? false)
+      )
+        continue;
       byPath.set(entry.path, entry);
       changed = true;
     }

@@ -11,6 +11,12 @@ export interface CodeEntry {
   name: string;
   isDir: boolean;
   size: number;
+  /**
+   * An ignore-hidden stub: the project scan kept the directory's row but did
+   * not walk its children (a `node_modules` is most of a project's entries).
+   * Expanding the row loads that one level (`codeApi.listDir`).
+   */
+  lazy?: boolean;
 }
 
 /** One scan of the file tree. */
