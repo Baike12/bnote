@@ -15,6 +15,7 @@ import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { MermaidBlock } from "@/components/agent/MermaidBlock";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { applySectionToggle, openWhenSettled, type WorkSection } from "./turnWork";
 import {
   canonicalToolName,
   stripAgentTrailer,
@@ -274,7 +275,8 @@ const AssistantText = memo(function AssistantText({ text }: { text: string }) {
  * auto-collapses to "已工作 N 秒" unless the user opened it by hand — their
  * choice wins, the same rule as ThinkingBlock. A turn that failed, that the
  * user stopped, or that ends on work instead of an answer stays open: the
- * intermediate rows are all there is to read.
+ * intermediate rows are all there is to read. The rules live in
+ * `./turnWork.ts`; this component only feeds them the DOM events.
  */
 function TurnWork({
   entry,
@@ -290,8 +292,14 @@ function TurnWork({
 }) {
   const turn = entry.turn;
   const hasWork = Boolean(turn && (turn.tools.length > 0 || turn.thinking));
-  const interactedRef = useRef(false);
-  const [open, setOpen] = useState(streaming);
+  const [section, setSection] = useState<WorkSection>(() => ({
+    open: streaming,
+    inspected: false,
+  }));
+  // The state the DOM was last rendered with. A `toggle` that reproduces it is
+  // the echo of our own write, not the user's click (see applySectionToggle).
+  const renderedOpen = useRef(section.open);
+  renderedOpen.current = section.open;
   const [now, setNow] = useState(() => Date.now());
 
   // The tick only runs while a live turn is collapsed-irrelevant (streaming):
@@ -304,30 +312,30 @@ function TurnWork({
   }, [streaming]);
 
   // Streaming → done edge: collapse once (ZCode's assistantHistoryDefaultOpen
-  // flip). A turn that failed, was stopped, or left no answer outside stays
-  // open — the work rows are all there is to read.
+  // flip), except where openWhenSettled keeps the work on screen.
   useEffect(() => {
-    if (!streaming && !interactedRef.current) {
-      setOpen(Boolean(turn?.error) || turn?.stopReason === "aborted" || !answer);
-    }
-  }, [streaming, turn?.error, turn?.stopReason, answer]);
+    if (streaming || !turn) return;
+    setSection((current) => {
+      const open = openWhenSettled(current, turn, answer);
+      return open === current.open ? current : { ...current, open };
+    });
+  }, [streaming, turn, answer]);
 
   if (!turn || !hasWork) return <>{children}</>;
   const liveMs = streaming && turn.startedAt != null ? now - turn.startedAt : (turn.turnMs ?? null);
   return (
     <details
       className={`agent-turn-work${streaming ? " is-streaming" : ""}`}
-      open={open}
+      open={section.open}
       onToggle={(e) => {
         const next = (e.target as HTMLDetailsElement).open;
-        // Opening anything inside (a tool, the thinking) is the user inspecting
-        // the work: their choice keeps the section open when the turn ends.
-        if (next) interactedRef.current = true;
-        // React dispatches a descendant's toggle to ancestor onToggle handlers
-        // too; only this details' own toggle may write its open state, or
-        // collapsing one tool would collapse the whole section (one writer).
-        if (e.target !== e.currentTarget) return;
-        setOpen(next);
+        setSection((current) =>
+          applySectionToggle(current, {
+            own: e.target === e.currentTarget,
+            next,
+            rendered: renderedOpen.current,
+          }),
+        );
       }}
     >
       <summary>

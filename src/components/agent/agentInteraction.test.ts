@@ -38,21 +38,28 @@ const rule = (selector: string): string => {
 };
 
 describe("turn work section: one writer per open state", () => {
-  it("the work section's onToggle ignores descendant toggles (only its own toggle writes its state)", () => {
+  /** The work section's own toggle handler, from its opening to the next `}}`. */
+  const toggleHandler = (): string => {
+    const start = transcript.indexOf("onToggle={(e) => {");
+    return transcript.slice(start, transcript.indexOf("}}", start) + 2);
+  };
+
+  it("the section's own toggle is the only writer of its open state, through the rule module", () => {
     // React walks the fiber tree for onToggle, so a child details' toggle also
-    // reaches this handler; without the guard the child's open state is written
-    // to the section and collapsing one tool collapses everything.
-    expect(transcript).toMatch(/e\.target !== e\.currentTarget/);
+    // reaches this handler; `own` separates the two. What each kind does
+    // (descendant vs own, echo of our own write vs the user's click) is the
+    // rule module `./turnWork.ts`, unit-tested in turnWork.test.ts.
+    const handler = toggleHandler();
+    expect(handler).toMatch(/own: e\.target === e\.currentTarget/);
+    expect(handler).toMatch(/applySectionToggle\(/);
+    expect(handler.match(/setSection/g)).toHaveLength(1);
   });
 
-  it("opening any child still counts as the user inspecting the work (auto-collapse is inhibited)", () => {
-    // The interacted flag is set before the guard returns, so opening a tool or
-    // the thinking keeps the section open when the turn ends.
-    const handler = transcript.slice(transcript.indexOf("onToggle={(e) => {"));
-    const interactedAt = handler.indexOf("interactedRef.current = true");
-    const guardAt = handler.indexOf("e.target !== e.currentTarget");
-    expect(interactedAt).toBeGreaterThan(-1);
-    expect(guardAt).toBeGreaterThan(interactedAt);
+  it("the streaming → done edge decides through openWhenSettled", () => {
+    // The collapse, the user's own choice and a turn with nothing but work to
+    // read are one rule; writing the boolean inline here is how the rules drift
+    // apart (the echo bug of 2026-11-23 lived in this handler).
+    expect(transcript).toMatch(/openWhenSettled\(current, turn, answer\)/);
   });
 });
 
