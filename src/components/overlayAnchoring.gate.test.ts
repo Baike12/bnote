@@ -66,6 +66,10 @@ const ANCHORED: Record<string, string> = {
   ".invest-toast": ".invest-layout",
   ".invest-kline-overlay": ".invest-kline",
   ".code-overlay": ".code-mode-content",
+  // The parked study layout covers the main area while another shape owns the
+  // window; it stays mounted so the PDF / web page keeps living (see
+  // StudyLayout).
+  ".study-layout.parked": ".main",
 };
 
 const KNOWN_FULL_BLEED: readonly string[] = [
@@ -88,6 +92,7 @@ const KNOWN_FULL_BLEED: readonly string[] = [
   ".pdf-page-tint",
   ".pdf-read-guide",
   ".pdf-viewer",
+  ".study-layout.parked",
 ];
 
 describe("overlay anchoring gate", () => {

@@ -355,6 +355,9 @@ button {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* The parked study layout (see .study-layout.parked) is an absolute overlay
+     of the main area, so this is its containing block. */
+  position: relative;
 }
 
 .titlebar {
@@ -2813,6 +2816,20 @@ input[type="range"] {
   --study-head-h: 43px;
 }
 
+/* The study layout is parked, not unmounted, while another shape owns the
+   window: its middle column holds the parsed PDF / the live native web page
+   and a remount would re-read the file or reload the page (see StudyLayout).
+   Parked, it is an invisible overlay of exactly the main area: the column
+   keeps its real width and height, so the PDF does not reflow and keeps its
+   scroll position. `display: none` is not an option — zero size would reflow
+   the reader. The native web page is a separate view above the DOM and is
+   hidden through the backend instead (ContentPane). */
+.study-layout.parked {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
 /* Left column: the study assistant is always present. */
 .study-left {
   flex: 0 0 var(--agent-w);

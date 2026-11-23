@@ -60,20 +60,46 @@ import { startSplitDrag } from "../splitDrag";
  * applied to the agent header by default, to the content header (PDF toolbar
  * or code toolbar) while `.agent-focused` moves the content column to the far
  * left. It must travel with the order, never stay on a fixed column.
+ *
+ * **`parked`**: while another shape owns the window the layout is not
+ * unmounted but parked — the middle column still holds a parsed PDF or a live
+ * native web page, and remounting it would re-read the file / reload the page
+ * and drop the reading position. Parked, only the content column is rendered
+ * (the assistant column and the notes editor are the other shapes' business)
+ * and the shell becomes an invisible overlay of the main area at the window's
+ * size, so the column keeps its real geometry: a `display: none` would
+ * collapse it to zero and reflow the PDF. The native web page is hidden
+ * through the backend while parked (it always paints above the DOM, see
+ * ContentPane).
  */
-export function StudyLayout() {
+/**
+ * The notes column. It owns the layout's only subscription to the current
+ * file, so switching notes does not re-render the parked layout (and with it
+ * the PDF reader / the content column) while another shape is on screen.
+ */
+function StudyNotesColumn() {
+  const currentFile = useAppStore((s) => s.currentFile);
+  const title = currentFile ? fileName(currentFile).replace(/\.(md|markdown|txt)$/i, "") : "笔记";
+  return (
+    <div className="study-right">
+      {/* Study mode has no .titlebar, so the only drag regions of the window are the column headers. */}
+      <div className="study-notes-head" data-tauri-drag-region="deep">
+        <span className="study-notes-title">{title}</span>
+      </div>
+      {isJsonPath(currentFile) ? <JsonFilePane /> : <EditorPane />}
+    </div>
+  );
+}
+
+export function StudyLayout({ parked = false }: { parked?: boolean } = {}) {
   const agentWidth = useAppStore((s) => s.settings.studyAgentWidth);
   const contentWidth = useAppStore((s) => s.settings.studyContentWidth);
   const patchSettings = useAppStore((s) => s.patchSettings);
   const mainColumn = useAppStore((s) => s.mainColumn);
   const setMainColumn = useAppStore((s) => s.setMainColumn);
   const swapped = mainColumn === "agent";
-  const currentFile = useAppStore((s) => s.currentFile);
   const creativeMode = useAppStore((s) => s.creativeMode);
   const hostRef = useRef<HTMLDivElement>(null);
-  const noteTitle = currentFile
-    ? fileName(currentFile).replace(/\.(md|markdown|txt)$/i, "")
-    : "笔记";
 
   // The native web preview is a child webview mounted above the DOM: it only
   // follows layout changes it is told about. The focused swap moves the
@@ -196,7 +222,7 @@ export function StudyLayout() {
 
   return (
     <div
-      className={`study-layout${swapped ? " agent-focused" : ""}`}
+      className={`study-layout${swapped ? " agent-focused" : ""}${parked ? " parked" : ""}`}
       ref={hostRef}
       onPointerDownCapture={(event) => {
         // A click is the explicit "I work here" signal: the middle column
@@ -212,35 +238,40 @@ export function StudyLayout() {
         } as React.CSSProperties
       }
     >
-      <div className="study-left">
-        <AgentPanel />
-      </div>
-      <div
-        className="study-resizer resizer-agent"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整左栏宽度"
-        title="拖动调整左栏宽度,双击恢复默认"
-        onPointerDown={startAgentDrag}
-        onDoubleClick={resetLeftSplit}
-      />
-      {creativeMode ? <CreativePreview /> : <ContentPane />}
-      <div
-        className="study-resizer resizer-content"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整中间栏宽度"
-        title="拖动调整中间栏宽度,双击恢复默认"
-        onPointerDown={startContentDrag}
-        onDoubleClick={resetMiddleSplit}
-      />
-      <div className="study-right">
-        {/* Study mode has no .titlebar, so the only drag regions of the window are the column headers. */}
-        <div className="study-notes-head" data-tauri-drag-region="deep">
-          <span className="study-notes-title">{noteTitle}</span>
+      {/* The assistant column, the dividers and the notes editor belong to
+          study mode being on screen; the content column stays mounted in every
+          shape (see the `parked` note above). Their React slots are kept
+          (null instead of removed) so the content column keeps its fiber and
+          therefore its PDF reader / web page. */}
+      {parked ? null : (
+        <div className="study-left">
+          <AgentPanel />
         </div>
-        {isJsonPath(currentFile) ? <JsonFilePane /> : <EditorPane />}
-      </div>
+      )}
+      {parked ? null : (
+        <div
+          className="study-resizer resizer-agent"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整左栏宽度"
+          title="拖动调整左栏宽度,双击恢复默认"
+          onPointerDown={startAgentDrag}
+          onDoubleClick={resetLeftSplit}
+        />
+      )}
+      {creativeMode ? <CreativePreview /> : <ContentPane />}
+      {parked ? null : (
+        <div
+          className="study-resizer resizer-content"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整中间栏宽度"
+          title="拖动调整中间栏宽度,双击恢复默认"
+          onPointerDown={startContentDrag}
+          onDoubleClick={resetMiddleSplit}
+        />
+      )}
+      {parked ? null : <StudyNotesColumn />}
     </div>
   );
 }

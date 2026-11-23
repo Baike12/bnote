@@ -221,6 +221,9 @@ describe("a keydown resolves in the region it was pressed in", () => {
     const notes = region("notes");
     const pager = { canFlip: () => true, prev: vi.fn(), next: vi.fn() };
     setPdfNavHandlers(pager);
+    // The reader's registration only counts in study mode: a parked reader
+    // (another shape on screen) must not claim the key (see pdfNav).
+    useAppStore.setState({ mode: "study" });
 
     try {
       setActiveKeyRegion("reading");

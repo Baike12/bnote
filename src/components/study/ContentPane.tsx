@@ -131,8 +131,13 @@ export function ContentPane() {
   // When the keybinding override table changes, the new forwarded keys have to be pushed to the in-page runtime.
   const keymapRev = useSyncExternalStore(subscribeKeymap, getKeymapRevision, getKeymapRevision);
   const previewRef = useRef<HTMLDivElement>(null);
-  /** The re-measure entry point while mounted; null when there is no native preview. */
-  const previewSyncRef = useRef<(() => void) | null>(null);
+  /**
+   * The re-measure entry point while mounted; null when there is no native
+   * preview. `force` pushes the rectangle even when it equals the last one —
+   * coming back from a parked layout (see StudyLayout) the pane moved, and the
+   * page has to be placed before it is shown again.
+   */
+  const previewSyncRef = useRef<((force?: boolean) => void) | null>(null);
   const [importing, setImporting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [urlInput, setUrlInput] = useState("");
@@ -150,6 +155,12 @@ export function ContentPane() {
   const [activeWeread, setActiveWeread] = useState<WereadRoutePayload | null>(null);
   const previewUrl = content?.kind === "url" ? content.url : null;
   const pdfs = pdfHistoryForVault(studyHistory, vaultPath);
+  /**
+   * Study mode is the shape on screen. The pane itself stays mounted while
+   * another shape owns the window (parked, see StudyLayout), so the mode — not
+   * the mount — is what decides whether the native view may paint.
+   */
+  const studyOnScreen = useAppStore((s) => s.mode === "study");
 
   // When the content changes, "the book the webview is on" is void; until
   // the next route event arrives the top bar falls back to the title of the
@@ -172,16 +183,19 @@ export function ContentPane() {
   // It depends on the whole content and not on previewUrl: typing the same
   // URL again means "reload", and it is exactly the new object that makes
   // this effect run again (the previous round closes the preview first).
+  // Leaving study mode does **not** run the cleanup: the layout is parked and
+  // the pane stays mounted, so the page keeps its scroll position, its SPA
+  // route and whatever is playing (see the visibility effect below).
   useEffect(() => {
     const el = previewRef.current;
     if (content?.kind !== "url" || !el) return;
     const url = content.url;
     let closed = false;
     let lastKey = "";
-    const sync = (create: boolean) => {
+    const sync = (create: boolean, force = false) => {
       const bounds = previewBounds(el);
       const key = `${bounds.x}|${bounds.y}|${bounds.width}|${bounds.height}`;
-      if (key === lastKey) return;
+      if (!force && key === lastKey) return;
       lastKey = key;
       const call = create
         ? agentApi.showStudyPreview(
@@ -241,16 +255,23 @@ export function ContentPane() {
   // an HTML overlay like the settings or the palette is open, and shown again
   // when it closes. The canvas is the same: a fullscreen overlay that must
   // not be covered by the native view while it is open.
+  //
+  // The parked shape counts as an overlay as well: while study mode is not on
+  // screen the pane stays mounted (that is what keeps the page alive) but the
+  // parked layout sits at a different offset, so the page is placed once more
+  // before it is shown — otherwise it would flash at the previous column
+  // position for a frame. The page itself is never reloaded here: the webview
+  // survives the whole time.
   const canvasOpen = useAppStore((s) => s.drawingSession !== null);
   useEffect(() => {
     if (!previewUrl) return;
     // The history dropdown has to be hidden as well: it is a DOM overlay and
     // the native web view always paints above the DOM, so the lower half of
     // the dropdown would be covered by the page.
-    void agentApi
-      .setStudyPreviewVisible(modal === null && !canvasOpen && !historyOpen)
-      .catch(() => {});
-  }, [previewUrl, modal, canvasOpen, historyOpen]);
+    const show = studyOnScreen && modal === null && !canvasOpen && !historyOpen;
+    if (show) previewSyncRef.current?.(true);
+    void agentApi.setStudyPreviewVisible(show).catch(() => {});
+  }, [previewUrl, modal, canvasOpen, historyOpen, studyOnScreen]);
 
   // The step and the paging keys are pushed to the in-page runtime (both
   // the keyboard paging and the dimming of the upper half use it). While the

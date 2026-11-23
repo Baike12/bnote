@@ -435,36 +435,43 @@ export default function App() {
 
   const main = (
     <main className="main">
-      {mode === "projects" ? (
-        <ProjectsLayout />
-      ) : mode === "code" ? (
-        <CodeLayout />
-      ) : mode === "study" ? (
-        <StudyLayout />
-      ) : mode === "invest" ? (
-        <InvestLayout />
-      ) : (
-        <>
-          <div
-            className="titlebar"
-            data-tauri-drag-region
-            // The vault tree now lives on the right, so this titlebar is
-            // always the window's left edge: keep the toggle button clear of
-            // the macOS traffic lights whether the tree is open or not.
-            style={{ paddingLeft: 78 }}
-          >
-            <button
-              className="icon-btn titlebar-icon"
-              title={sidebarOpen ? "收起侧边栏 (⌘\\)" : "展开侧边栏 (⌘\\)"}
-              onClick={() => useAppStore.getState().toggleSidebar()}
+      {/* Study mode is parked, not unmounted, while another shape owns the
+          window: the middle column holds a parsed PDF or a live native web
+          page, and a remount would re-read the file / reload the page and throw
+          the reading position away. The parked layout is a fixed, invisible
+          overlay of the main area, so the column keeps its real geometry (see
+          .study-layout.parked). */}
+      {mode !== "study" ? (
+        mode === "projects" ? (
+          <ProjectsLayout />
+        ) : mode === "code" ? (
+          <CodeLayout />
+        ) : mode === "invest" ? (
+          <InvestLayout />
+        ) : (
+          <>
+            <div
+              className="titlebar"
+              data-tauri-drag-region
+              // The vault tree now lives on the right, so this titlebar is
+              // always the window's left edge: keep the toggle button clear of
+              // the macOS traffic lights whether the tree is open or not.
+              style={{ paddingLeft: 78 }}
             >
-              ◧
-            </button>
-            <div className="breadcrumb">{breadcrumb}</div>
-          </div>
-          {isJsonPath(currentFile) ? <JsonFilePane /> : <EditorPane />}
-        </>
-      )}
+              <button
+                className="icon-btn titlebar-icon"
+                title={sidebarOpen ? "收起侧边栏 (⌘\\)" : "展开侧边栏 (⌘\\)"}
+                onClick={() => useAppStore.getState().toggleSidebar()}
+              >
+                ◧
+              </button>
+              <div className="breadcrumb">{breadcrumb}</div>
+            </div>
+            {isJsonPath(currentFile) ? <JsonFilePane /> : <EditorPane />}
+          </>
+        )
+      ) : null}
+      <StudyLayout parked={mode !== "study"} />
     </main>
   );
 

@@ -6,6 +6,7 @@
  * switches, each one's cleanup only returns its own slot and never overwrites
  * what the other just registered.
  */
+import { useAppStore } from "@/state/appStore";
 export interface PdfNavHandlers {
   /** Whether the context allows turning the page (not while a selection is
    *  being made or a dialog is open). Which element owns the focus is decided
@@ -38,6 +39,12 @@ export function setAgentNavHandlers(next: PdfNavHandlers | null): void {
 }
 
 function activeHandlers(): PdfNavHandlers | null {
+  // The readers stay mounted while another shape owns the window (the study
+  // layout is parked, not unmounted, so the page keeps living — see
+  // StudyLayout): a registration therefore no longer means "the reader is the
+  // one on screen". The paging keys belong to study mode; claiming them in the
+  // notes editor would scroll an off-screen PDF / web page.
+  if (useAppStore.getState().mode !== "study") return null;
   // The focused assistant wins: it is the focused column's content the user
   // means. Otherwise only one kind of study content is active at a time;
   // preferring PDF only defends against the two slots briefly coexisting.

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   canFlipPdfPage,
   flipPdfPage,
@@ -6,6 +6,7 @@ import {
   setPdfNavHandlers,
   setWebNavHandlers,
 } from "./pdfNav";
+import { useAppStore } from "@/state/appStore";
 
 /**
  * The page-turn shortcut is a "configurable command": the command layer does
@@ -15,9 +16,14 @@ import {
  */
 describe("where the study mode page-turn commands land", () => {
   beforeEach(() => {
+    useAppStore.getState().setMode("study");
     setPdfNavHandlers(null);
     setWebNavHandlers(null);
     setAgentNavHandlers(null);
+  });
+
+  afterEach(() => {
+    useAppStore.getState().setMode("notes");
   });
 
   it("with no reader the page cannot turn and the call has no side effect", () => {
@@ -104,5 +110,24 @@ describe("where the study mode page-turn commands land", () => {
     setAgentNavHandlers(null);
     expect(flipPdfPage(-1)).toBe(true);
     expect(calls).toEqual(["agent-next", "pdf-prev"]);
+  });
+
+  it("a parked reader (another shape on screen) does not claim the paging keys", () => {
+    const calls: string[] = [];
+    setPdfNavHandlers({
+      canFlip: () => true,
+      prev: () => calls.push("pdf-prev"),
+      next: () => calls.push("pdf-next"),
+    });
+    // Leaving study mode keeps the reader mounted (the layout is parked, the
+    // page keeps living); the keys belong to the shape on screen.
+    useAppStore.getState().setMode("notes");
+    expect(canFlipPdfPage()).toBe(false);
+    expect(flipPdfPage(1)).toBe(false);
+    expect(calls).toEqual([]);
+    // Back in study mode the same registration is live again.
+    useAppStore.getState().setMode("study");
+    expect(flipPdfPage(1)).toBe(true);
+    expect(calls).toEqual(["pdf-next"]);
   });
 });
