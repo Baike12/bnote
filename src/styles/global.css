@@ -4876,14 +4876,6 @@ input[type="range"] {
   word-break: break-word;
 }
 
-/* The cursor of a streaming reply: rendered only on the last assistant
-   message, while this turn is still generating. */
-.agent-caret::before {
-  content: "▍";
-  color: var(--accent);
-  animation: agent-pulse 1s steps(2) infinite;
-}
-
 /* Input area: a rounded card (the textarea is embedded transparently), with
    the attachment and send buttons in the tool row at the bottom.
    The row carries **no divider**: the border inside the card read as a second

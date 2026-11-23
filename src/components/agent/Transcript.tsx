@@ -478,7 +478,8 @@ function EntryFooter({
 }
 
 /**
- * One entry row; `streaming` marks the live assistant reply (caret + thinking).
+ * One entry row; `streaming` marks the live assistant reply (the work section
+ * ticks and stays open).
  *
  * Memoized: the panel re-renders on every composer keystroke and on every
  * agent/content swap, and re-walking the whole transcript there (markdown
@@ -556,7 +557,6 @@ const EntryRow = memo(function EntryRow({
               position (an empty container would render as a blank bubble, so
               nothing is drawn when there is no text). */}
           {answerText && <AssistantText text={answerText} />}
-          {streaming && <span className="agent-caret" aria-hidden="true" />}
           {actions && !streaming && entry.text.trim() !== "" && (
             <EntryFooter
               at={entry.at}
