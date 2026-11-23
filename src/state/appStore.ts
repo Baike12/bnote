@@ -381,7 +381,15 @@ export function rememberCursorPosition(path: string, pos: number, scroll: number
 
 /** The commands the study assistant panel can execute (signalled by the keybinding/command layer; the panel runs them itself). */
 export type AgentPanelCommand =
-  "new" | "fork" | "back" | "history" | "focus-input" | "attach-images" | "toggle-creative";
+  | "new"
+  | "fork"
+  | "back"
+  | "history"
+  | "focus-input"
+  | "attach-images"
+  | "toggle-creative"
+  /** Type a "/" into the input box so the command / skill picker opens (the shortcut form of typing it). */
+  | "slash-command";
 
 /** What a panel command carries besides its kind. */
 export interface AgentPanelPayload {

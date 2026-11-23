@@ -45,6 +45,7 @@ import { setAgentNavHandlers } from "@/study/pdfNav";
 import {
   applySuggestion,
   buildSkillPrompt,
+  insertSlashCommand,
   parseSuggestTrigger,
   type SuggestTrigger,
 } from "@/agent/suggest";
@@ -1319,6 +1320,26 @@ export function AgentPanel() {
     if (ok.length > 0) setPendingImages((prev) => [...prev, ...ok]);
   }
 
+  /**
+   * The shortcut form of typing "/": the slash lands where typing it would, and
+   * the completion popup opens right away (a programmatic value write fires no
+   * change event, so the trigger is set here instead of waiting for one).
+   */
+  const openSlashCommands = useCallback(() => {
+    const el = inputRef.current;
+    const next = insertSlashCommand(
+      el?.value ?? input,
+      el?.selectionStart ?? 0,
+      el?.selectionEnd ?? 0,
+    );
+    setInput(next.text);
+    setSuggestTrigger(parseSuggestTrigger(next.text, next.caret));
+    setSuggestIndex(0);
+    el?.focus();
+    imeOnChineseFocus(true);
+    requestAnimationFrame(() => inputRef.current?.setSelectionRange(next.caret, next.caret));
+  }, [input]);
+
   /** Pick a completion candidate: the trigger word is replaced and the caret lands after the inserted text. */
   const pickSuggestion = (item: SuggestItem) => {
     if (!suggestTrigger) return;
@@ -1640,6 +1661,12 @@ export function AgentPanel() {
         if (cmd.insert) insertIntoInput(cmd.insert);
         focusInput();
         break;
+      case "slash-command":
+        // Pressing it again while the picker is already open must not stack a
+        // second slash: it only puts the caret back into the box.
+        if (suggestTrigger?.kind === "skill") focusInput();
+        else openSlashCommands();
+        break;
       case "new":
         setHistoryOpen(false);
         setRestartNonce((n) => n + 1);
@@ -1701,6 +1728,8 @@ export function AgentPanel() {
     activateConv,
     setCreativeMode,
     insertIntoInput,
+    openSlashCommands,
+    suggestTrigger,
   ]);
 
   // Once the history drawer is open the focus goes to the list, Tab / Enter work right away.

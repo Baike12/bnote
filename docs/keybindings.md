@@ -95,6 +95,7 @@ Active while the Agent panel has focus: input, transcript, history.
 | Key | Command |
 | --- | --- |
 | `Cmd+[` | Agent区：从分叉会话返回上一条会话 — `agent.back-from-fork` |
+| `Cmd+/` | Agent区：插入 / 唤起命令与技能 — `agent.slash-command` |
 | `Cmd+Alt+A` | Agent区：切换到 Agent 输入框 — `region.focus-agent` |
 | `Cmd+Alt+N` | Agent区：切换到笔记区 — `region.focus-notes` |
 | `Cmd+Alt+R` | Agent区：切换到内容区 — `region.focus-reading` |

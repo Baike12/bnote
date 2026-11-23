@@ -4,6 +4,7 @@ import {
   applySuggestion,
   buildSkillPrompt,
   expandSkillTemplate,
+  insertSlashCommand,
   parseSuggestTrigger,
 } from "./suggest";
 
@@ -77,6 +78,54 @@ describe("applySuggestion", () => {
     const text = "先读 @a.md 再写";
     const result = applySuggestion(text, { kind: "file", start: 3, query: "a.md" }, "@b.md");
     expect(result.text).toBe("先读 @b.md  再写");
+  });
+});
+
+describe("insertSlashCommand (the shortcut that types a /)", () => {
+  it("an empty box gets the slash at the caret, and the picker opens", () => {
+    const result = insertSlashCommand("", 0, 0);
+    expect(result.text).toBe("/");
+    expect(result.caret).toBe(1);
+    expect(parseSuggestTrigger(result.text, result.caret)).toEqual({
+      kind: "skill",
+      start: 0,
+      query: "",
+    });
+  });
+
+  it("a caret at the start of a line stays on that line", () => {
+    const result = insertSlashCommand("第一行\n", 4, 4);
+    expect(result.text).toBe("第一行\n/");
+    expect(parseSuggestTrigger(result.text, result.caret)).toEqual({
+      kind: "skill",
+      start: 4,
+      query: "",
+    });
+  });
+
+  it("a caret in the middle of a paragraph opens a fresh line, because a slash there opens nothing", () => {
+    const text = "帮我总结一下";
+    const result = insertSlashCommand(text, text.length, text.length);
+    expect(result.text).toBe(`${text}\n/`);
+    // The point of the newline: the same caret with a bare slash would not trigger.
+    expect(parseSuggestTrigger(`${text}/`, text.length + 1)).toBeNull();
+    expect(parseSuggestTrigger(result.text, result.caret)).toEqual({
+      kind: "skill",
+      start: text.length + 1,
+      query: "",
+    });
+  });
+
+  it("a selection is replaced, as typing over it would be", () => {
+    const result = insertSlashCommand("旧文本", 0, 3);
+    expect(result.text).toBe("/");
+    expect(result.caret).toBe(1);
+  });
+
+  it("a caret outside the text is clamped instead of slicing past the end", () => {
+    expect(insertSlashCommand("/html", 99, 99)).toEqual({ text: "/html\n/", caret: 7 });
+    // A negative caret reads as "insert at the very start", like typing there.
+    expect(insertSlashCommand("/html", -5, -1)).toEqual({ text: "//html", caret: 1 });
   });
 });
 

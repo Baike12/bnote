@@ -234,6 +234,11 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "agent.fork-session": "Mod-Shift-f",
   "agent.back-from-fork": "Mod-[",
   "agent.focus-history": "Mod-Shift-h",
+  // "Type a /": the command picker without reaching for the slash key. ⌘/ is
+  // the usual "show commands" chord elsewhere (ZCode, VS Code) and is free in
+  // this app; it is not one of the text field's editing chords, so it fires
+  // with the caret inside the input box (see FORM_EDIT_CHORDS).
+  "agent.slash-command": "Mod-/",
 
   // Code region (code region). These bindings only apply here — the notes /
   // reading regions and the Agent panel are unaffected, and vice versa (⌘S

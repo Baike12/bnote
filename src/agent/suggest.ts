@@ -62,6 +62,27 @@ export function applySuggestion(
 }
 
 /**
+ * Type the "/" that opens the command picker without typing it: the shortcut
+ * lands exactly where a typed slash would, so the same rules apply.
+ *
+ * The slash only triggers at the start of a line (see parseSuggestTrigger),
+ * so a caret in the middle of a paragraph gets its own line first — otherwise
+ * the shortcut would insert a slash that opens nothing, which reads as "the
+ * shortcut does not work". A selection is replaced, as typing over it would.
+ */
+export function insertSlashCommand(
+  text: string,
+  selectionStart: number,
+  selectionEnd: number,
+): { text: string; caret: number } {
+  const from = Math.max(0, Math.min(selectionStart, text.length));
+  const to = Math.max(from, Math.min(selectionEnd, text.length));
+  const before = text.slice(0, from);
+  const separator = before === "" || before.endsWith("\n") ? "" : "\n";
+  return { text: `${before}${separator}/${text.slice(to)}`, caret: from + separator.length + 1 };
+}
+
+/**
  * CC's argumentSubstitution for a skill body: `$ARGUMENTS` is the whole
  * argument string, `$1`–`$9` the positional parts. A body without any
  * placeholder that still gets arguments gets them appended (CC's behavior),

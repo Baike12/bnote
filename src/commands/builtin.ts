@@ -574,6 +574,16 @@ const defs: CommandDef[] = [
     when: agentPanelActive,
     run: () => useAppStore.getState().runAgentPanelCommand("history"),
   },
+  // The shortcut form of typing "/" in the input box: the panel inserts the
+  // slash where typing it would (a fresh line when the caret sits mid-para,
+  // see insertSlashCommand) and opens the command / skill picker.
+  {
+    id: "agent.slash-command",
+    title: "插入 / 唤起命令与技能",
+    category: "Agent区",
+    when: agentPanelActive,
+    run: () => useAppStore.getState().runAgentPanelCommand("slash-command"),
+  },
   {
     id: "workspace.open-settings",
     title: "打开设置",
