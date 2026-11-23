@@ -12,6 +12,7 @@ import {
 import type { CodeProjectRef } from "@/state/appStore";
 import { useInvestStore } from "@/invest/store";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
+import { MermaidBlock } from "@/components/agent/MermaidBlock";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import {
@@ -256,13 +257,11 @@ const AssistantText = memo(function AssistantText({ text }: { text: string }) {
   const blocks = useMemo(() => splitAgentMarkdown(text), [text]);
   return (
     <div className="agent-md">
-      {blocks.map((block, bi) =>
-        block.kind === "html" ? (
-          <HtmlPreview key={bi} code={block.code} />
-        ) : (
-          <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />
-        ),
-      )}
+      {blocks.map((block, bi) => {
+        if (block.kind === "html") return <HtmlPreview key={bi} code={block.code} />;
+        if (block.kind === "mermaid") return <MermaidBlock key={bi} code={block.code} />;
+        return <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />;
+      })}
     </div>
   );
 });

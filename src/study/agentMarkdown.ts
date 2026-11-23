@@ -301,10 +301,15 @@ function renderTextLines(lines: string[]): string {
   return parts.join("<br>");
 }
 
-/** One block of an agent reply: rendered markdown, or an html code block the
+/** One block of an agent reply: rendered markdown, an html code block the
  *  panel renders as a live preview (the code travels verbatim so the React
- *  component can own the iframe, its toggle and its height messages). */
-export type AgentBlock = { kind: "markdown"; html: string } | { kind: "html"; code: string };
+ *  component can own the iframe, its toggle and its height messages), or a
+ *  mermaid fence the panel renders as a diagram (verbatim for the same
+ *  reason: the React component owns parsing, theming and the viewer). */
+export type AgentBlock =
+  | { kind: "markdown"; html: string }
+  | { kind: "html"; code: string }
+  | { kind: "mermaid"; code: string };
 
 /** A fenced code block rendered like every other language's block. */
 function renderCodeBlock(code: string, lang: string): string {
@@ -316,6 +321,11 @@ function renderCodeBlock(code: string, lang: string): string {
 function isHtmlLanguage(lang: string): boolean {
   const name = lang.toLowerCase();
   return name === "html" || name === "htm";
+}
+
+/** Mermaid fences render as diagrams in the panel (a closed fence only). */
+function isMermaidLanguage(lang: string): boolean {
+  return lang.toLowerCase() === "mermaid";
 }
 
 /**
@@ -358,6 +368,11 @@ export function splitAgentMarkdown(src: string): AgentBlock[] {
       if (closed && isHtmlLanguage(lang) && code.length > 0) {
         flush();
         blocks.push({ kind: "html", code: code.join("\n") });
+        continue;
+      }
+      if (closed && isMermaidLanguage(lang) && code.length > 0) {
+        flush();
+        blocks.push({ kind: "mermaid", code: code.join("\n") });
         continue;
       }
       out.push(renderCodeBlock(code.join("\n"), lang));
@@ -423,6 +438,8 @@ export function splitAgentMarkdown(src: string): AgentBlock[] {
 
 export function renderAgentMarkdown(src: string): string {
   return splitAgentMarkdown(src)
-    .map((block) => (block.kind === "html" ? renderCodeBlock(block.code, "html") : block.html))
+    .map((block) =>
+      block.kind === "markdown" ? block.html : renderCodeBlock(block.code, block.kind),
+    )
     .join("");
 }

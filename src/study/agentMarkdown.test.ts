@@ -210,6 +210,43 @@ describe("splitAgentMarkdown", () => {
     expect(blocks[0].kind === "markdown" && blocks[0].html).toContain("<li>");
   });
 
+  it("a closed top-level mermaid fence becomes a verbatim diagram block", () => {
+    const code = "flowchart TB\n  A[启动] --> B[执行]";
+    const blocks = splitAgentMarkdown(`前文\n\n\`\`\`mermaid\n${code}\n\`\`\`\n\n后文`);
+    expect(blocks).toEqual([
+      { kind: "markdown", html: expect.stringContaining("前文") },
+      { kind: "mermaid", code },
+      { kind: "markdown", html: expect.stringContaining("后文") },
+    ]);
+  });
+
+  it("the mermaid language tag is case-insensitive", () => {
+    for (const lang of ["Mermaid", "MERMAID"]) {
+      expect(splitAgentMarkdown("```" + lang + "\nA-->B\n```")).toEqual([
+        { kind: "mermaid", code: "A-->B" },
+      ]);
+    }
+  });
+
+  it("an unclosed mermaid fence (streaming tail) stays a code block", () => {
+    const blocks = splitAgentMarkdown("```mermaid\nflowchart TB\n  A-->B");
+    expect(blocks).toEqual([{ kind: "markdown", html: expect.stringContaining("agent-code") }]);
+    expect(blocks[0].kind === "markdown" && blocks[0].html).toContain("language-mermaid");
+  });
+
+  it("a mermaid fence nested in a list stays plain text inside the item", () => {
+    const blocks = splitAgentMarkdown("- 要点\n  ```mermaid\n  A-->B\n  ```");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe("markdown");
+    expect(blocks[0].kind === "markdown" && blocks[0].html).toContain("<li>");
+  });
+
+  it("renderAgentMarkdown keeps emitting mermaid fences as code blocks", () => {
+    const html = renderAgentMarkdown("```mermaid\nA-->B\n```");
+    expect(html).toContain('<pre class="agent-code language-mermaid"><code>');
+    expect(html).toContain("A--&gt;B");
+  });
+
   it("empty input yields no blocks", () => {
     expect(splitAgentMarkdown("")).toEqual([]);
   });
