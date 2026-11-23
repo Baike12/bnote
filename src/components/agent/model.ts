@@ -552,18 +552,6 @@ export function formatSessionTime(ms: number): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/**
- * Size the composer to its content: two lines at rest (the CSS min-height),
- * up to twelve visible lines (the cap is in CSS, which then scrolls).
- *
- * `auto` first, then the content height: without the reset the element keeps
- * its previous height and `scrollHeight` cannot shrink after a deletion.
- */
-export function fitInputHeight(el: HTMLTextAreaElement): void {
-  el.style.height = "auto";
-  el.style.height = `${el.scrollHeight}px`;
-}
-
 /** The summary line: the last line of non-empty text (the same logic as ZCode's resolveReasoningStreamingSummary). */
 export function thinkingSummaryLine(thinking: string): string {
   const lines = thinking.replace(/\r\n?/g, "\n").split("\n");

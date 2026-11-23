@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  ClipboardEvent as ReactClipboardEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   agentApi,
@@ -14,7 +18,7 @@ import {
   type StudyContent,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
-import { imeOnChineseFocus, imeSyncToEditor } from "@/editor/imeSwitch";
+import { imeOnComposerFocus, imeSyncToEditor } from "@/editor/imeSwitch";
 import { isImeEnter } from "@/lib/imeEnter";
 import { forkLabel } from "@/study/agentFork";
 import { DEFAULT_AGENT_FONT, stepAgentFont } from "@/study/agentFont";
@@ -56,7 +60,6 @@ import {
   cloneEntry,
   entriesToLines,
   entryFromLine,
-  fitInputHeight,
   nextConvKey,
   studyContentKey,
   toSessionNode,
@@ -84,6 +87,8 @@ import { ModelPicker } from "@/components/agent/ModelPicker";
 import { AgentHistoryDrawer } from "@/components/agent/HistoryDrawer";
 import { AgentApprovalCard, type ApprovalRequest } from "@/components/agent/ApprovalCard";
 import { AgentQuestionCard, type PendingQuestion } from "@/components/agent/QuestionCard";
+import { AgentComposer, type ComposerController } from "@/components/agent/AgentComposer";
+import { composerKeyAction } from "@/agent/composerKeys";
 
 /**
  * The left column of study mode: asking questions about the current content.
@@ -194,30 +199,17 @@ export function AgentPanel() {
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   /** `ask_user_question` is waiting for an answer. */
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  /** The prompt box's editor (text, caret, vim mode); null until mounted. */
+  const composerRef = useRef<ComposerController | null>(null);
+  /** The global vim switch: with it on, the composer is a vim surface too. */
+  const vim = useAppStore((s) => s.settings.vim);
 
-  // The composer grows with the text and rests at two lines (the CSS
-  // min-height): a taller resting field leaves room to draft before sending.
+  // The composer's own auto height follows the content (CM sizes itself); a
+  // font-size change re-wraps every line at a new height, and the CSS var
+  // lands without an editor transaction, so the measurement is requested.
   useEffect(() => {
-    const el = inputRef.current;
-    if (el) fitInputHeight(el);
-  }, [input, agentFontScale]);
-
-  // A width change re-wraps the same text, so the needed height changes
-  // without any input event (the study column can be dragged narrower). Only
-  // the width is watched: reacting to our own height write would loop.
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    let width = el.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (el.clientWidth === width) return;
-      width = el.clientWidth;
-      fitInputHeight(el);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+    composerRef.current?.view()?.requestMeasure();
+  }, [agentFontScale]);
   const historyRef = useRef<HTMLDivElement>(null);
   const historyFocusPending = useRef(false);
   /** agentPanelCommand is an increasing counter: only the entry that is newer than the last one is executed. */
@@ -1140,6 +1132,12 @@ export function AgentPanel() {
     pinStopRef.current = stop;
   }, [activeConv]);
 
+  /** Writes the whole prompt (history, completion, cleared after a send). */
+  function writeComposer(text: string, caret = text.length) {
+    setInput(text);
+    composerRef.current?.setText(text, caret);
+  }
+
   /** Moves through the fetched prompt history (index -1 = the empty box). */
   function stepHistory(direction: 1 | -1) {
     const items = historyItemsRef.current;
@@ -1147,7 +1145,7 @@ export function AgentPanel() {
     const next = historyIndexRef.current + direction;
     if (next < 0) {
       historyIndexRef.current = -1;
-      setInput("");
+      writeComposer("");
       return;
     }
     if (next >= items.length) {
@@ -1155,7 +1153,32 @@ export function AgentPanel() {
       return;
     }
     historyIndexRef.current = next;
-    setInput(items[next]);
+    writeComposer(items[next]);
+  }
+
+  /** ↑ on an empty box: walk back through the prompts of this project. */
+  function historyBack() {
+    if (historyItemsRef.current) {
+      stepHistory(-1);
+      return;
+    }
+    if (historyLoadingRef.current) return;
+    historyLoadingRef.current = true;
+    const project = codeScopeRef.current?.workdir ?? vaultPath ?? null;
+    void homeApi
+      .history(project, 50)
+      .then((list) => {
+        historyItemsRef.current = list
+          .map((entry) => entry.display)
+          .filter((text) => text.trim() !== "");
+        historyIndexRef.current = -1;
+        historyLoadingRef.current = false;
+        stepHistory(-1);
+      })
+      .catch(() => {
+        // No backend (harness) or no history yet: the box stays empty.
+        historyLoadingRef.current = false;
+      });
   }
 
   /**
@@ -1330,60 +1353,52 @@ export function AgentPanel() {
    * change event, so the trigger is set here instead of waiting for one).
    */
   const openSlashCommands = useCallback(() => {
-    const el = inputRef.current;
-    const next = insertSlashCommand(
-      el?.value ?? input,
-      el?.selectionStart ?? 0,
-      el?.selectionEnd ?? 0,
-    );
-    setInput(next.text);
+    const composer = composerRef.current;
+    const selection = composer?.selection() ?? { from: 0, to: 0 };
+    const next = insertSlashCommand(composer?.text() ?? input, selection.from, selection.to);
+    writeComposer(next.text, next.caret);
     setSuggestTrigger(parseSuggestTrigger(next.text, next.caret));
     setSuggestIndex(0);
-    el?.focus();
-    imeOnChineseFocus(true);
-    requestAnimationFrame(() => inputRef.current?.setSelectionRange(next.caret, next.caret));
+    // vim: the shortcut writes for the user, so the box must be insert-ready
+    // (a programmatic insertion leaves the engine in normal mode).
+    composer?.enterInsert();
+    composer?.focus();
+    imeOnComposerFocus(true);
   }, [input]);
 
   /** Pick a completion candidate: the trigger word is replaced and the caret lands after the inserted text. */
   const pickSuggestion = (item: SuggestItem) => {
     if (!suggestTrigger) return;
     // Enter/Tab only fills the trigger ("/name " or "@path "), never submits —
-    // the user reviews or adds arguments first, then Enter on the textarea
+    // the user reviews or adds arguments first, then Enter on the composer
     // sends (the submit path routes the built-ins).
     const next = applySuggestion(input, suggestTrigger, item.insert);
-    setInput(next.text);
+    writeComposer(next.text, next.caret);
     setSuggestTrigger(null);
-    requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(next.caret, next.caret);
-      }
-    });
+    requestAnimationFrame(() => composerRef.current?.focus());
   };
 
   /**
    * Splice a quoted block into the box at the caret (the focus-agent chord,
    * pressed over a code selection).
    *
-   * The current text is read from the textarea instead of the `input` state:
-   * this runs inside the command effect, whose closure is a render behind. The
-   * caret lands after the block on the next frame — the value is controlled, so
-   * the position can only be set once React has committed it.
+   * The current text and the caret are read from the editor instead of the
+   * `input` state: this runs inside the command effect, whose closure is a
+   * render behind.
    */
   const insertIntoInput = useCallback((block: string) => {
-    const el = inputRef.current;
-    if (!el) return;
-    const start = el.selectionStart ?? el.value.length;
-    const end = el.selectionEnd ?? start;
-    const before = el.value.slice(0, start);
+    const composer = composerRef.current;
+    if (!composer) return;
+    const text = composer.text();
+    const { from, to } = composer.selection();
+    const before = text.slice(0, from);
     // The quote is its own paragraph: never glued to whatever the user had
     // already typed in front of the caret.
     const inserted = `${before === "" || before.endsWith("\n") ? "" : "\n"}${block}`;
     const caret = before.length + inserted.length;
-    setInput(before + inserted + el.value.slice(end));
+    writeComposer(before + inserted + text.slice(to), caret);
     setSuggestTrigger(null);
-    requestAnimationFrame(() => inputRef.current?.setSelectionRange(caret, caret));
+    composer.enterInsert();
   }, []);
 
   /** The built-in `/` commands: the set and the wiring of their panel effects. */
@@ -1412,7 +1427,10 @@ export function AgentPanel() {
   );
 
   async function send() {
-    const text = input.trim();
+    // Read from the editor, not the mirrored state: the send key runs in the
+    // capture phase, and the last keystroke's React state may still be a render
+    // behind.
+    const text = (composerRef.current?.text() ?? input).trim();
     const conv = activeConv;
     // The next ↑ refetches: this prompt is about to enter the history file.
     historyIndexRef.current = -1;
@@ -1430,7 +1448,7 @@ export function AgentPanel() {
     // message — the model never sees them.
     const builtin = parseBuiltinCommand(text);
     if (builtin) {
-      setInput("");
+      writeComposer("");
       await runBuiltinCommand(builtin, conv, builtinContext);
       return;
     }
@@ -1472,7 +1490,7 @@ export function AgentPanel() {
       }
     }
     const images = pendingImages;
-    setInput("");
+    writeComposer("");
     setPendingImages([]);
     busyRef.current = info;
     setBusySession(info);
@@ -1530,7 +1548,7 @@ export function AgentPanel() {
         errorKind: "send",
         entries: c.entries.slice(0, -1),
       }));
-      setInput(text);
+      writeComposer(text);
       setPendingImages(images);
     }
   }
@@ -1655,8 +1673,8 @@ export function AgentPanel() {
     lastAgentCommandSeq.current = cmd.seq;
     // Focusing the input box = explicitly entering the Chinese writing box: even when it already has the focus (the shortcut pressed again and again, the user switched back to English inside the box) the IME is pulled back to Chinese.
     const focusInput = () => {
-      inputRef.current?.focus();
-      imeOnChineseFocus(true);
+      composerRef.current?.focus();
+      imeOnComposerFocus(true);
     };
     switch (cmd.kind) {
       case "focus-input":
@@ -1814,6 +1832,86 @@ export function AgentPanel() {
     resolveSelection(agentConfig, activeSelection)?.model.context_window ??
     0;
   const activeUsage = activeConv?.usage ?? null;
+
+  /** The completion popup is showing: its keys are the popup's (see composerKeys). */
+  const suggestOpen = Boolean(suggestTrigger && suggestItems.length > 0);
+
+  function onComposerChange(text: string, caret: number, docChanged: boolean) {
+    // A caret move changes no trigger; only a real edit can open or close one.
+    if (!docChanged) return;
+    setInput(text);
+    setSuggestTrigger(parseSuggestTrigger(text, caret));
+    setSuggestIndex(0);
+  }
+
+  /**
+   * The composer's own keys, in the capture phase of its host: the vim
+   * engine's own capture sits on the editor element inside, so nothing here
+   * has to reach into the engine. Everything not routed is the editor's.
+   */
+  function onComposerKeyDownCapture(e: ReactKeyboardEvent<HTMLDivElement>) {
+    if (e.defaultPrevented) return;
+    const action = composerKeyAction({
+      key: e.key,
+      shift: e.shiftKey,
+      ime: isImeEnter(e.nativeEvent, composingRef.current),
+      suggestOpen,
+      historyActive: historyIndexRef.current >= 0,
+      empty: (composerRef.current?.text() ?? input) === "",
+      // In normal/visual mode the arrows are vim's motions, not the history walk.
+      edits: !vim || composerRef.current?.mode() === "insert",
+    });
+    if (action === "pass") return;
+    e.preventDefault();
+    e.stopPropagation();
+    switch (action) {
+      case "send":
+        void send();
+        return;
+      case "suggest-next":
+        if (suggestItems.length > 0) setSuggestIndex((i) => (i + 1) % suggestItems.length);
+        return;
+      case "suggest-prev":
+        if (suggestItems.length > 0) {
+          setSuggestIndex((i) => (i - 1 + suggestItems.length) % suggestItems.length);
+        }
+        return;
+      case "suggest-pick": {
+        const item = suggestItems[suggestIndex] ?? suggestItems[0];
+        if (item) pickSuggestion(item);
+        return;
+      }
+      case "suggest-close":
+        setSuggestTrigger(null);
+        return;
+      case "history-up":
+        historyBack();
+        return;
+      case "history-down":
+        stepHistory(1);
+        return;
+    }
+  }
+
+  function onComposerPasteCapture(e: ReactClipboardEvent<HTMLDivElement>) {
+    // Only a clipboard that holds images (screenshots) is taken over: when
+    // there is text as well the normal paste wins, so copying text from a web
+    // page is never hijacked.
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => f !== null);
+    const hasText = (e.clipboardData?.getData("text/plain") ?? "") !== "";
+    if (files.length === 0 || hasText) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void addImages(files);
+  }
+
+  function onComposerBlur() {
+    imeSyncToEditor();
+    setSuggestTrigger(null);
+  }
 
   return (
     <aside
@@ -1999,9 +2097,9 @@ export function AgentPanel() {
             ))}
           </div>
         )}
-        <textarea
-          ref={inputRef}
-          className="agent-input"
+        <AgentComposer
+          controller={composerRef}
+          composing={composingRef}
           placeholder={
             activeConv?.agent
               ? "子代理会话只读:选中文字可复制,返回主会话继续对话"
@@ -2012,102 +2110,10 @@ export function AgentPanel() {
                   : "询问当前内容…(可直接粘贴截图)"
           }
           readOnly={Boolean(activeConv?.agent)}
-          value={input}
-          rows={1}
-          data-ime-chinese="true"
-          onFocus={() => imeOnChineseFocus(true)}
-          // The click forces it too: the focus event does not fire again when it already has the focus (the user switched back to English with Ctrl+Space inside the box and clicks back in, Chinese has to be asked for again here).
-          onPointerDown={() => imeOnChineseFocus(true)}
-          onBlur={() => {
-            imeSyncToEditor();
-            setSuggestTrigger(null);
-          }}
-          onChange={(e) => {
-            setInput(e.target.value);
-            const caret = e.target.selectionStart ?? e.target.value.length;
-            setSuggestTrigger(parseSuggestTrigger(e.target.value, caret));
-            setSuggestIndex(0);
-          }}
-          onCompositionStart={() => {
-            composingRef.current = true;
-          }}
-          onCompositionEnd={() => {
-            composingRef.current = false;
-          }}
-          onPaste={(e) => {
-            // Only a clipboard that holds images (screenshots) is taken over: when there is text as well the normal paste wins, so copying text from a web page is never hijacked.
-            const files = Array.from(e.clipboardData?.items ?? [])
-              .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
-              .map((it) => it.getAsFile())
-              .filter((f): f is File => f !== null);
-            const hasText = (e.clipboardData?.getData("text/plain") ?? "") !== "";
-            if (files.length === 0 || hasText) return;
-            e.preventDefault();
-            void addImages(files);
-          }}
-          onKeyDown={(e) => {
-            // While the completion popup is open the arrow keys / Enter / Tab / Esc belong to the popup; the confirmation key of the IME is never taken.
-            if (suggestTrigger && suggestItems.length > 0) {
-              const ime = isImeEnter(e.nativeEvent, composingRef.current);
-              if (e.key === "ArrowDown" && !ime) {
-                e.preventDefault();
-                setSuggestIndex((i) => (i + 1) % suggestItems.length);
-                return;
-              }
-              if (e.key === "ArrowUp" && !ime) {
-                e.preventDefault();
-                setSuggestIndex((i) => (i - 1 + suggestItems.length) % suggestItems.length);
-                return;
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                setSuggestTrigger(null);
-                return;
-              }
-              if ((e.key === "Tab" || e.key === "Enter") && !e.shiftKey && !ime) {
-                e.preventDefault();
-                pickSuggestion(suggestItems[suggestIndex] ?? suggestItems[0]);
-                return;
-              }
-            }
-            // ↑ in an empty box (or at the very start) recalls the previous
-            // prompt; ↓ walks forward and past the newest one clears the box.
-            if (e.key === "ArrowUp" && !suggestTrigger && input === "") {
-              e.preventDefault();
-              if (historyItemsRef.current) {
-                stepHistory(-1);
-                return;
-              }
-              if (historyLoadingRef.current) return;
-              historyLoadingRef.current = true;
-              const project = codeScopeRef.current?.workdir ?? vaultPath ?? null;
-              void homeApi
-                .history(project, 50)
-                .then((list) => {
-                  historyItemsRef.current = list
-                    .map((entry) => entry.display)
-                    .filter((text) => text.trim() !== "");
-                  historyIndexRef.current = -1;
-                  historyLoadingRef.current = false;
-                  stepHistory(-1);
-                })
-                .catch(() => {
-                  // No backend (harness) or no history yet: the box stays empty.
-                  historyLoadingRef.current = false;
-                });
-              return;
-            }
-            if (e.key === "ArrowDown" && !suggestTrigger && historyIndexRef.current >= 0) {
-              e.preventDefault();
-              stepHistory(1);
-              return;
-            }
-            if (e.key !== "Enter" || e.shiftKey) return;
-            // The confirmation key of the IME (Enter after typing latin letters in the Chinese mode) must not be a send: it is let through so that the IME fills the letters into the input box.
-            if (isImeEnter(e.nativeEvent, composingRef.current)) return;
-            e.preventDefault();
-            void send();
-          }}
+          onChange={onComposerChange}
+          onBlur={onComposerBlur}
+          onKeyDownCapture={onComposerKeyDownCapture}
+          onPasteCapture={onComposerPasteCapture}
         />
         <div className="agent-composer-foot">
           <input

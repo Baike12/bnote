@@ -4888,27 +4888,45 @@ input[type="range"] {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
+/* The prompt box is a CodeMirror editor (the notes area's vim engine runs in
+   it), so the host carries only the box's typography and CM's own elements
+   are styled underneath. The global .cm-* rules are the note editor's — its
+   .cm-content typography is marked !important, so these scoped overrides
+   must be too. */
 .agent-input {
   display: block;
   width: 100%;
-  resize: none;
-  border: none;
-  background: transparent;
-  padding: 8px 12px 0;
-  /* Two lines at rest (the composer keeps the status bar company below);
-     the component grows it with the text (wrapped lines included) and up to
-     **12 lines are always fully visible**. Only past that does the box
-     scroll — a long prompt must stay readable while writing it. */
-  min-height: calc(var(--agent-text) * 1.5 * 2 + 8px);
-  max-height: calc(var(--agent-text) * 1.5 * 12 + 8px);
-  overflow-y: auto;
   font: inherit;
   font-size: var(--agent-text);
   line-height: 1.5;
   color: var(--text);
 }
-.agent-input:focus { outline: none; }
-.agent-input::placeholder { color: var(--text-faint); }
+/* Two lines at rest (the composer keeps the status bar company below);
+   the editor grows with the text (wrapped lines included) and up to
+   **12 lines are always fully visible**. Only past that does the scroller
+   scroll — a long prompt must stay readable while writing it. */
+.agent-input .cm-editor {
+  height: auto;
+  max-height: calc(var(--agent-text) * 1.5 * 12 + 8px);
+  background: transparent;
+}
+.agent-input .cm-editor.cm-focused { outline: none; }
+.agent-input .cm-scroller {
+  overflow-y: auto;
+  font-family: inherit;
+  line-height: 1.5;
+}
+.agent-input .cm-content {
+  max-width: none;
+  margin: 0 !important;
+  padding: 8px 12px 0 !important;
+  min-height: calc(var(--agent-text) * 1.5 * 2 + 8px);
+  font-family: inherit !important;
+  font-size: var(--agent-text) !important;
+  color: var(--text);
+}
+.agent-input .cm-line { padding: 0; }
+.agent-input .cm-placeholder { color: var(--text-faint); }
 
 .agent-composer-foot {
   display: flex;

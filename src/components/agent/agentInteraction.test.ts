@@ -123,3 +123,49 @@ describe("a send while the previous turn is still generating", () => {
     expect(guard).toMatch(/showToast\(/);
   });
 });
+
+/**
+ * Gate for the prompt box as a vim surface.
+ *
+ * The composer used to be a `<textarea>`, which cannot run the notes area's vim
+ * engine: a second vim implemented over a textarea would drift from the
+ * engine's rules and could not share the vimrc's mappings (the parser, the
+ * native `imap` registrations and the command mappings all belong to
+ * `@replit/codemirror-vim`). It is now a CodeMirror editor mounting the same
+ * extensions, configured from the one vimrc copy the loader publishes.
+ */
+describe("the agent composer runs the shared vim engine", () => {
+  const composer = readFileSync("src/components/agent/AgentComposer.tsx", "utf8");
+  const panelSrc = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
+
+  it("the vim mount is the notes area's extension set, driven by the global switch", () => {
+    expect(composer).toMatch(/useAppStore\(\(s\) => s\.settings\.vim\)/);
+    for (const ext of ["vimModeExtension()", "vimKeyCaptureExtension()", "vimActiveLine()"]) {
+      expect(composer).toContain(ext);
+    }
+    expect(composer).toContain("commandMappingKeymap(mappings)");
+    // One vimrc for both: the composer renders from the loader's copy and is
+    // notified when it reloads (a note switch or an edited vimrc).
+    expect(composer).toContain("onVimMappingsChanged(setMappings)");
+    expect(composer).toContain("vimMappings");
+  });
+
+  it("the panel mounts the editor, not a textarea, and routes its own keys before the engine", () => {
+    expect(panelSrc).not.toContain("<textarea");
+    expect(panelSrc.split("<AgentComposer").length).toBe(2);
+    // The routed keys are one rule module; the component keeps the capture
+    // listener (Preview) so the engine inside never sees them.
+    expect(panelSrc).toContain("composerKeyAction({");
+    expect(composer).toContain("onKeyDownCapture={onKeyDownCapture}");
+  });
+
+  it("the IME intent of the box follows the global vim switch", () => {
+    // vim on → the mode decides (insert Chinese, normal English); vim off →
+    // the plain Chinese writing field it always was.
+    expect(composer).toContain("imeOnComposerFocus(true)");
+    // The Chinese-field marker is dropped while vim is on: the mode decides
+    // then, and the marker would pin the field to Chinese.
+    expect(composer).toContain('...(vim ? {} : { "data-ime-chinese": "true" }),');
+    expect(panelSrc).toContain("imeOnComposerFocus(true)");
+  });
+});

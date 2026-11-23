@@ -1,6 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import type { Extension, EditorState } from "@codemirror/state";
 import { currentVimMode } from "./vim/vim";
+import { focusedVimSurface } from "./vim/surfaces";
 import { caretInMathBody, insideFencedCode, mathRegions } from "./context";
 import { getView } from "./api";
 import { api } from "@/lib/tauri";
@@ -224,6 +225,24 @@ export function imeOnChineseFocus(force = false): void {
 }
 
 /**
+ * The agent composer gained focus (click, shortcut, programmatic focus).
+ *
+ * With vim on the composer is a vim surface like the note editor: the mode,
+ * read from the focused surface, decides (insert → Chinese, normal/visual →
+ * English). With vim off it is the plain Chinese writing field it always was,
+ * and the forced path re-sends the intent (the dedup would otherwise treat a
+ * second click as "already Chinese" after the user switched to English inside
+ * the box).
+ */
+export function imeOnComposerFocus(force = false): void {
+  if (useAppStore.getState().settings.vim) {
+    imeSyncToEditor(force);
+    return;
+  }
+  imeOnChineseFocus(force);
+}
+
+/**
  * Re-checks the system input source once the focus has settled.
  *
  * With "remember input source per context" enabled
@@ -406,7 +425,10 @@ function imeDesiredSource(settings: Settings, modal: ModalKind): string | null {
   if (modal === "switcher") return settings.ime.normalSource;
   if (modal) return null; // e.g. quick-add naming wants the user's own source
   if (!settings.vim) return null;
-  const view = getView();
+  // The vim mode that counts is the one of the editor holding the text focus
+  // (notes editor or agent composer). `getView()` is the command target, which
+  // stays the notes editor even while the composer is being typed in.
+  const view = focusedVimSurface() ?? getView();
   if (!view) return null;
   const mode = currentVimMode(view);
   if (!mode) return null;
@@ -473,11 +495,11 @@ export function imeOnEditorFocus(): void {
   imeSyncToEditor(true);
 }
 
-/** AppKit exposed the input context after a deferred switch. Retry only when
- *  the notes editor still owns focus; a context created for an agent field or
- *  overlay must not consume the editor's pending intent. */
+/** AppKit exposed the input context after a deferred switch. Retry only when a
+ *  text surface still owns focus (the notes editor or the agent composer); a
+ *  context created for an overlay must not consume the pending intent. */
 export function imeOnContextReady(): void {
-  const view = getView();
+  const view = focusedVimSurface() ?? getView();
   const active = typeof document === "undefined" ? null : document.activeElement;
   const { modal } = useAppStore.getState();
   if (
@@ -502,25 +524,26 @@ export function imeOnWindowFocus(): void {
   imeSyncToEditor(true);
 }
 
+/**
+ * Every vim surface carries this listener: the notes editors in their base
+ * extensions, the agent composer in its own. The target is resolved by the
+ * same rule focus and window events use (`imeDesiredSource`, which reads the
+ * surface that holds the focus), not from the view that happened to update —
+ * otherwise an update of one editor applies its mode to the whole app.
+ */
 export function imeSwitchExtension(): Extension {
-  return EditorView.updateListener.of((u) => {
-    const view = u.view;
-    const { settings } = useAppStore.getState();
-    const ime = settings.ime;
-
-    const gated = settings.vim && ime.enabled;
-    const mode = gated ? currentVimMode(view) : null;
-    if (!gated || !mode) {
+  return EditorView.updateListener.of(() => {
+    const { settings, modal } = useAppStore.getState();
+    if (!settings.vim || !settings.ime.enabled) {
       // Reset so re-enabling fires a fresh switch instead of a stale no-op.
       lastEditorTarget = null;
       return;
     }
-
-    let target = mode === "insert" ? ime.insertSource : ime.normalSource;
-    if (mode === "insert" && insertRegionWantsEnglish(settings, view)) {
-      target = ime.normalSource;
+    const target = imeDesiredSource(settings, modal);
+    if (!target) {
+      lastEditorTarget = null;
+      return;
     }
-
     if (target === lastEditorTarget) return;
     lastEditorTarget = target;
     imeApply(target);

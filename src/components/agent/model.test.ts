@@ -10,7 +10,6 @@ import {
   entryFromLine,
   errorTurn,
   finalText,
-  fitInputHeight,
   formatSessionTime,
   newTurn,
   nextConvKey,
@@ -378,20 +377,6 @@ describe("helpers", () => {
     expect(formatSessionTime(now)).toMatch(/^\d{2}:\d{2}$/);
     expect(formatSessionTime(now - 3 * 24 * 3600 * 1000)).toMatch(/^\d{1,2}\/\d{1,2}$/);
     expect(formatSessionTime(0)).toBe("");
-  });
-
-  it("the composer height is reset before it is measured, so it can shrink", () => {
-    const style = { height: "" };
-    const el = {
-      style,
-      get scrollHeight() {
-        // A stale height would make the measurement grow forever.
-        expect(style.height).toBe("auto");
-        return 40;
-      },
-    } as unknown as HTMLTextAreaElement;
-    fitInputHeight(el);
-    expect(style.height).toBe("40px");
   });
 });
 
