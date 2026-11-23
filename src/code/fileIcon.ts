@@ -1,190 +1,145 @@
 /**
- * File tree icon categories: the file name decides which icon and which
- * language color is used.
+ * File tree icons: the file name decides which Material icon is shown.
  *
- * A pure function (it touches no DOM): the icon component picks the shape
- * from the result, and the gate test locks the mapping directly — adding a
- * language only needs one more line here, no change to the component.
+ * The icon set is the one ZCode ships (`public/material-icons`, the same
+ * Material Icon Theme assets): one colored SVG per file type, resolved by file
+ * name first and by extension second. The files are looked up by their exact
+ * asset name, so an extension that is not in the alias table still gets its own
+ * icon when the theme has one (`zig` → `zig.svg`), and only an unknown name
+ * falls back to the generic document icon.
  *
- * The categories are deliberately one step coarser than the languages: a 14px
- * icon cannot show the difference between 20 languages, what is really
- * distinguishable are the shapes "folder / code / config / document / style /
- * markup / image / script", each with a language color on top (TS blue, JS
- * amber, Python blue, Rust orange, …).
+ * A pure module (no DOM): the component decides how to paint the result, and
+ * the tests lock the name resolution directly.
  */
 
-export type FileIconKind =
-  | "ts"
-  | "js"
-  | "py"
-  | "rs"
-  | "go"
-  | "code"
-  | "data"
-  | "doc"
-  | "style"
-  | "markup"
-  | "image"
-  | "shell"
-  | "file";
+/** The icon every unresolved name uses. */
+export const DEFAULT_FILE_ICON = "document";
 
-/** File names that are recognized without an extension (compared in lower case). */
-const NAMED: Record<string, FileIconKind> = {
-  dockerfile: "code",
-  makefile: "code",
-  cmakelists: "code",
-  rakefile: "code",
-  gemfile: "code",
-  procfile: "code",
-  ".gitignore": "data",
-  ".gitattributes": "data",
-  ".gitmodules": "data",
-  ".editorconfig": "data",
-  ".env": "data",
-  ".npmrc": "data",
-  ".nvmrc": "data",
-  ".prettierrc": "data",
-  ".eslintrc": "data",
-  ".babelrc": "data",
-  tsconfig: "data",
-  jsconfig: "data",
-  ".bashrc": "shell",
-  ".bash_profile": "shell",
-  ".zshrc": "shell",
-  ".zprofile": "shell",
-  ".profile": "shell",
-  ".vimrc": "data",
+/**
+ * Full file names (lower case) that map to a specific icon, with the
+ * no-extension stem also tried — `vitest.config.ts` resolves through
+ * `vitest.config` and then `vitest`.
+ */
+const FILE_NAME_ICONS: Record<string, string> = {
+  ".editorconfig": "editorconfig",
+  ".env": "settings",
+  ".gitattributes": "git",
+  ".gitignore": "git",
+  ".npmrc": "npm",
+  ".nvmrc": "nodejs_alt",
+  ".prettierrc": "prettier",
+  ".yarnrc": "yarn",
+  // Shell dotfiles are absent from ZCode's table; bnote drew a shell icon for
+  // them before the port and keeps one.
+  ".bashrc": "console",
+  ".bash_profile": "console",
+  ".zshrc": "console",
+  ".zprofile": "console",
+  ".profile": "console",
+  ".vimrc": "vim",
+  "babel.config": "babel",
+  bun: "lock",
+  "bun.lock": "lock",
+  cargo: "rust",
+  "cargo.lock": "lock",
+  dockerfile: "docker",
+  eslint: "eslint",
+  "eslint.config": "eslint",
+  gemfile: "gemfile",
+  jest: "jest",
+  "jest.config": "jest",
+  makefile: "makefile",
+  "package-lock": "lock",
+  "pnpm-lock": "lock",
+  readme: "readme",
+  tsconfig: "tsconfig",
+  vitest: "vitest",
+  "vitest.config": "vitest",
+  yarn: "yarn",
 };
 
 /**
- * Extension → category. Languages that share a name share one shape, the
- * color is decided by the language: among the code categories only
- * TS/JS/Python/Rust/Go have a color of their own, the rest all use `code`
- * (the neutral color).
+ * Extension → asset name. Only the extensions whose asset name differs from
+ * the extension itself live here; everything else is looked up by extension.
  */
-const EXT: Record<string, FileIconKind> = {
-  ts: "ts",
-  tsx: "ts",
-  mts: "ts",
-  cts: "ts",
-  js: "js",
-  jsx: "js",
-  mjs: "js",
-  cjs: "js",
-  py: "py",
-  pyi: "py",
-  pyw: "py",
-  rs: "rs",
+const EXTENSION_ICONS: Record<string, string> = {
+  backup: "document",
+  bash: "console",
+  cjs: "javascript",
+  cts: "typescript",
+  css: "css",
+  doc: "word",
+  docx: "word",
   go: "go",
-  c: "code",
-  h: "code",
-  cpp: "code",
-  cc: "code",
-  cxx: "code",
-  hpp: "code",
-  hh: "code",
-  hxx: "code",
-  m: "code",
-  mm: "code",
-  cs: "code",
-  java: "code",
-  kt: "code",
-  kts: "code",
-  swift: "code",
-  rb: "code",
-  php: "code",
-  lua: "code",
-  sql: "code",
-  scala: "code",
-  dart: "code",
-  zig: "code",
-  ex: "code",
-  exs: "code",
-  erl: "code",
-  hrl: "code",
-  hs: "code",
-  clj: "code",
-  cljs: "code",
-  pl: "code",
-  pm: "code",
-  r: "code",
-  jl: "code",
-  nim: "code",
-  v: "code",
-  sv: "code",
-  vhd: "code",
-  asm: "code",
-  json: "data",
-  jsonc: "data",
-  json5: "data",
-  yaml: "data",
-  yml: "data",
-  toml: "data",
-  ini: "data",
-  cfg: "data",
-  conf: "data",
-  env: "data",
-  properties: "data",
-  lock: "data",
-  plist: "data",
-  md: "doc",
-  mdx: "doc",
-  markdown: "doc",
-  txt: "doc",
-  rst: "doc",
-  adoc: "doc",
-  org: "doc",
-  tex: "doc",
-  bib: "doc",
-  pdf: "doc",
-  doc: "doc",
-  docx: "doc",
-  rtf: "doc",
-  css: "style",
-  scss: "style",
-  sass: "style",
-  less: "style",
-  styl: "style",
-  html: "markup",
-  htm: "markup",
-  xhtml: "markup",
-  xml: "markup",
-  vue: "markup",
-  svelte: "markup",
-  astro: "markup",
-  hbs: "markup",
-  ejs: "markup",
-  pug: "markup",
-  png: "image",
-  jpg: "image",
+  html: "html",
+  java: "java",
   jpeg: "image",
-  gif: "image",
-  webp: "image",
-  bmp: "image",
-  ico: "image",
-  icns: "image",
-  tif: "image",
-  tiff: "image",
-  avif: "image",
-  heic: "image",
-  svg: "image",
-  sh: "shell",
-  bash: "shell",
-  zsh: "shell",
-  fish: "shell",
-  ps1: "shell",
-  psm1: "shell",
-  bat: "shell",
-  cmd: "shell",
-  ksh: "shell",
+  jpg: "image",
+  js: "javascript",
+  jsx: "react",
+  json: "json",
+  jsonl: "json",
+  mjs: "javascript",
+  md: "markdown",
+  m4a: "audio",
+  m4v: "video",
+  flac: "audio",
+  mov: "video",
+  mp3: "audio",
+  mp4: "video",
+  ogg: "audio",
+  opus: "audio",
+  mts: "typescript",
+  pdf: "pdf",
+  php: "php",
+  png: "image",
+  pptx: "powerpoint",
+  py: "python",
+  responses: "json",
+  rs: "rust",
+  sb: "storybook",
+  sql: "database",
+  sh: "console",
+  snap: "snapcraft",
+  svg: "svg",
+  toml: "toml",
+  ts: "typescript",
+  tsx: "react_ts",
+  txt: "document",
+  wav: "audio",
+  weba: "audio",
+  webm: "video",
+  xlsx: "table",
+  yaml: "yaml",
+  yml: "yaml",
+  zsh: "console",
 };
 
-/** File name → icon category. Directories are filtered out by the caller (it does not look here). */
-export function fileIconKind(name: string): FileIconKind {
+/** File name → Material icon name. Directories never reach this: the caller draws them itself. */
+export function fileIconName(name: string): string {
   const lower = name.toLowerCase();
-  const named = NAMED[lower];
-  if (named) return named;
   const dot = lower.lastIndexOf(".");
-  if (dot < 0) return "file";
-  return EXT[lower.slice(dot + 1)] ?? "file";
+
+  // The full name and then every shorter stem is a candidate: `.env.local`
+  // still resolves through `.env`, and `tsconfig.base.json` through
+  // `tsconfig.base` → `tsconfig`.
+  for (let candidate = lower; ;) {
+    const named = FILE_NAME_ICONS[candidate];
+    if (named) return named;
+    const next = candidate.lastIndexOf(".");
+    if (next < 0) break;
+    candidate = candidate.slice(0, next);
+  }
+
+  if (dot === -1) return DEFAULT_FILE_ICON;
+  const extension = lower.slice(dot + 1);
+  if (!extension) return DEFAULT_FILE_ICON;
+  return EXTENSION_ICONS[extension] ?? extension;
 }
+
+/** The asset URL of a file's icon; the component falls back to the document icon when it 404s. */
+export function fileIconSrc(name: string): string {
+  return `${import.meta.env.BASE_URL}material-icons/${fileIconName(name)}.svg`;
+}
+
+export const DEFAULT_FILE_ICON_SRC = `${import.meta.env.BASE_URL}material-icons/${DEFAULT_FILE_ICON}.svg`;

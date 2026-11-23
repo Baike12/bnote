@@ -124,20 +124,6 @@
   --term-bright-magenta: #c678dd;
   --term-bright-cyan: #56b6c2;
   --term-bright-white: #ffffff;
-  /* File tree icons: icon colors per language/type (same family as the syntax
-     highlighting). */
-  --file-icon-ts: #4f9cf9;
-  --file-icon-js: #e5c07b;
-  --file-icon-py: #5b9dd9;
-  --file-icon-rs: #e0824a;
-  --file-icon-go: #4ec9d4;
-  --file-icon-code: #9aa4b2;
-  --file-icon-data: #e0b84c;
-  --file-icon-doc: #b98ade;
-  --file-icon-style: #e06c8b;
-  --file-icon-markup: #e08a5a;
-  --file-icon-image: #5abf7c;
-  --file-icon-shell: #66c2a5;
   /* Max width of the body text column (Obsidian's "readable line length"
      default) and its horizontal padding: when the editor area is wider the
      column is centered, when narrower it fills naturally, with no horizontal
@@ -222,20 +208,6 @@
   --term-bright-magenta: #a626a4;
   --term-bright-cyan: #0184bc;
   --term-bright-white: #000000;
-  /* File tree icons: the same hues pushed darker until they meet the contrast
-     requirement on white. */
-  --file-icon-ts: #2f7fd1;
-  --file-icon-js: #a8741a;
-  --file-icon-py: #2f6fa8;
-  --file-icon-rs: #b04f16;
-  --file-icon-go: #0f8b99;
-  --file-icon-code: #5c6470;
-  --file-icon-data: #a17508;
-  --file-icon-doc: #7a4fb3;
-  --file-icon-style: #b23a5c;
-  --file-icon-markup: #b05a24;
-  --file-icon-image: #2f8a51;
-  --file-icon-shell: #2c8a6f;
   --sel-hint: rgba(0, 0, 0, 0.07);
   --search-match: #e8c66a80;
   --search-match-active: #d9a83f90;
@@ -9335,9 +9307,9 @@ input[type="range"] {
 /* The file tree draws no expand arrow: the folder icon itself carries the
    open/closed state (see FolderTypeIcon), clicking a directory row toggles
    the folding. */
-/* File icons: 14px stroked SVG, colored per category (the variables are
-   defined in pairs in the theme block). Shared by the code-project tree and
-   the vault tree in the sidebar. */
+/* File icons: 14px, files use the colored Material set (public/material-icons)
+   and folders a stroked SVG whose color follows the theme. Shared by the
+   code-project tree and the vault tree in the sidebar. */
 .tree-icon {
   flex: none;
   width: 14px;
@@ -9348,45 +9320,6 @@ input[type="range"] {
 }
 .code-icon--folder-open {
   color: var(--accent);
-}
-.code-icon--file {
-  color: var(--text-faint);
-}
-.code-icon--ts {
-  color: var(--file-icon-ts);
-}
-.code-icon--js {
-  color: var(--file-icon-js);
-}
-.code-icon--py {
-  color: var(--file-icon-py);
-}
-.code-icon--rs {
-  color: var(--file-icon-rs);
-}
-.code-icon--go {
-  color: var(--file-icon-go);
-}
-.code-icon--code {
-  color: var(--file-icon-code);
-}
-.code-icon--data {
-  color: var(--file-icon-data);
-}
-.code-icon--doc {
-  color: var(--file-icon-doc);
-}
-.code-icon--style {
-  color: var(--file-icon-style);
-}
-.code-icon--markup {
-  color: var(--file-icon-markup);
-}
-.code-icon--image {
-  color: var(--file-icon-image);
-}
-.code-icon--shell {
-  color: var(--file-icon-shell);
 }
 .code-tree-name {
   flex: 1 1 auto;
