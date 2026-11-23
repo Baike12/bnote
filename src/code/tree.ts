@@ -180,6 +180,29 @@ export function walkFiles(node: TreeNode, out: TreeNode[] = []): TreeNode[] {
   return out;
 }
 
+/**
+ * Prune the tree to the changed files and the directories leading to them
+ * (the diff pane's change view shows exactly these rows).
+ *
+ * Nodes are copied only along the kept branches, so a pruned subtree never
+ * shares a children array with the full tree — expanding or folding one view
+ * can never mutate the other. Paths that are changed but missing from the
+ * tree (a deleted file, a file outside the scan) are simply not shown: the
+ * diff pane lists them itself.
+ */
+export function pruneToChanges(nodes: TreeNode[], changed: ReadonlySet<string>): TreeNode[] {
+  const out: TreeNode[] = [];
+  for (const node of nodes) {
+    if (!node.isDir) {
+      if (changed.has(node.path)) out.push(node);
+      continue;
+    }
+    const children = pruneToChanges(node.children, changed);
+    if (children.length > 0) out.push({ ...node, children });
+  }
+  return out;
+}
+
 /** One row of the file tree (a flattened visible row). */
 export interface VisibleRow {
   node: TreeNode;

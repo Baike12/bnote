@@ -7,7 +7,8 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { buildTree, visibleRows, type TreeNode } from "../tree";
+import { buildTree, pruneToChanges, visibleRows, type TreeNode } from "../tree";
+import { changesForSource } from "../changes";
 import { treeKeyAction } from "../treeKeys";
 import { useCodeStore } from "../store";
 import { activeCodeEditor } from "../editor/registry";
@@ -86,6 +87,13 @@ export const FileTree = memo(function FileTree({
   // project changes.
   const expandedDirs = useCodeStore((s) => s.expandedDirs);
   const toggleDir = useCodeStore((s) => s.toggleDir);
+  // While the diff pane is open the tree lists only the changed files (the
+  // same column shows the change list in VS Code), following the side the pane
+  // shows.
+  const diffOpen = useCodeStore((s) => s.diffOpen);
+  const diffStaged = useCodeStore((s) => s.diffStaged);
+  const diffFile = useCodeStore((s) => s.diffFile);
+  const setDiffFile = useCodeStore((s) => s.setDiffFile);
   const focusRequest = useCodeStore((s) => s.treeFocus);
   const clearTreeFocus = useCodeStore((s) => s.clearTreeFocus);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -115,8 +123,58 @@ export const FileTree = memo(function FileTree({
     return map;
   }, [git]);
 
-  const roots = useMemo(() => buildTree(entries, gitMap), [entries, gitMap]);
-  const rows = useMemo(() => visibleRows(roots, expandedDirs), [roots, expandedDirs]);
+  const fullRoots = useMemo(() => buildTree(entries, gitMap), [entries, gitMap]);
+
+  const changed = useMemo(
+    () =>
+      new Set(
+        changesForSource(git, diffStaged ? "staged" : "worktree").map((change) => change.path),
+      ),
+    [git, diffStaged],
+  );
+  /** The change view: the full tree pruned to the changed files and their directories. */
+  const roots = useMemo(
+    () => (diffOpen ? pruneToChanges(fullRoots, changed) : fullRoots),
+    [diffOpen, fullRoots, changed],
+  );
+
+  // The change view opens every directory that holds a change: the list is
+  // short by construction, and folding it by default would hide most of it
+  // behind clicks. Folding a directory there works too, so the view keeps its
+  // own collapsed set — the full tree's expanded state is untouched by it.
+  const [foldedChanges, setFoldedChanges] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!diffOpen) setFoldedChanges(new Set());
+  }, [diffOpen]);
+  const expanded = useMemo(() => {
+    if (!diffOpen) return expandedDirs;
+    const set = new Set<string>();
+    const walk = (nodes: TreeNode[]) => {
+      for (const node of nodes) {
+        if (!node.isDir) continue;
+        if (!foldedChanges.has(node.path)) set.add(node.path);
+        walk(node.children);
+      }
+    };
+    walk(roots);
+    return set;
+  }, [diffOpen, expandedDirs, foldedChanges, roots]);
+  const toggleExpanded = useCallback(
+    (path: string) => {
+      if (!diffOpen) {
+        toggleDir(path);
+        return;
+      }
+      setFoldedChanges((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+    },
+    [diffOpen, toggleDir],
+  );
+  const rows = useMemo(() => visibleRows(roots, expanded), [roots, expanded]);
   const rowIndex = useMemo(() => {
     const map = new Map<string, number>();
     rows.forEach((row, index) => map.set(row.node.path, index));
@@ -186,17 +244,39 @@ export const FileTree = memo(function FileTree({
   }, [focusPath, revealTick, rowIndex]);
 
   if (roots.length === 0) {
-    return <div className="code-tree-empty">这个项目里没有文件</div>;
+    return (
+      <div className="code-tree-empty">
+        {!diffOpen
+          ? "这个项目里没有文件"
+          : !git
+            ? "读取改动…"
+            : git.isRepo
+              ? "没有改动"
+              : "这个项目不是 git 仓库"}
+      </div>
+    );
   }
 
-  // Collapsing removes the row focusPath points at: fall back to "the file
-  // open in the editor" or the first row, so the keyboard never gets stuck on
-  // a path that is no longer visible.
+  // The row drawn as selected: the open patch in the change view, otherwise
+  // the file open in the editor. Collapsing removes the row focusPath points
+  // at, so the fallbacks keep the keyboard off a path that is no longer
+  // visible.
+  const selected = diffOpen ? diffFile : activePath;
   const currentPath =
     (focusPath && rowIndex.has(focusPath) ? focusPath : null) ??
-    (activePath && rowIndex.has(activePath) ? activePath : null) ??
+    (selected && rowIndex.has(selected) ? selected : null) ??
     rows[0]?.node.path ??
     null;
+
+  /**
+   * A file row: in the change view it opens exactly that file's patch in the
+   * diff pane (the file itself does not have to be the one in the editor), out
+   * of it the row opens the file.
+   */
+  const activateFile = (path: string, focus?: boolean) => {
+    if (diffOpen) setDiffFile(path);
+    else onOpen(path, focus);
+  };
 
   /** Move the focus between neighbouring rows (out of range stays where it is). */
   const moveFocus = (delta: number) => {
@@ -237,19 +317,19 @@ export const FileTree = memo(function FileTree({
       case "right":
         // Expand when collapsed; when already expanded, move into the first
         // child (the same as a file manager).
-        if (row.node.isDir && !expandedDirs.has(row.node.path)) toggleDir(row.node.path);
+        if (row.node.isDir && !expanded.has(row.node.path)) toggleExpanded(row.node.path);
         else moveFocus(1);
         break;
       case "left":
-        if (row.node.isDir && expandedDirs.has(row.node.path)) toggleDir(row.node.path);
+        if (row.node.isDir && expanded.has(row.node.path)) toggleExpanded(row.node.path);
         else {
           const slash = row.node.path.lastIndexOf("/");
           if (slash > 0) revealTo(row.node.path.slice(0, slash));
         }
         break;
       case "activate":
-        if (row.node.isDir) toggleDir(row.node.path);
-        else onOpen(row.node.path, true);
+        if (row.node.isDir) toggleExpanded(row.node.path);
+        else activateFile(row.node.path, true);
         break;
       case "release":
         // Give the keyboard back to the code: after browsing through files
@@ -284,17 +364,17 @@ export const FileTree = memo(function FileTree({
               key={row.node.path}
               node={row.node}
               depth={row.depth}
-              expanded={expandedDirs}
-              activePath={activePath}
+              expanded={expanded}
+              activePath={selected}
               focusPath={focusPath}
-              onToggle={toggleDir}
-              onOpen={onOpen}
+              onToggle={toggleExpanded}
+              onOpen={activateFile}
               onFocusRow={setFocusPath}
             />
           ))}
         </div>
       </div>
-      {truncated && <div className="code-tree-note">文件太多,列表已截断</div>}
+      {truncated && !diffOpen && <div className="code-tree-note">文件太多,列表已截断</div>}
     </div>
   );
 });

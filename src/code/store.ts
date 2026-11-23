@@ -130,6 +130,12 @@ export interface CodeState {
   /** Whether the diff pane shows the staged side. */
   diffStaged: boolean;
   /**
+   * The file whose patch the diff pane has open (null = every row collapsed).
+   * Shared with the tree's change view: a row there opens exactly that file's
+   * patch, and the row keeps showing as the selected one.
+   */
+  diffFile: string | null;
+  /**
    * Bumped whenever the git status is re-read. The diff pane's per-file cache
    * is keyed on it, so a save (or a stage) refreshes the diffs on screen
    * instead of leaving a stale patch from before the edit.
@@ -211,6 +217,8 @@ export interface CodeState {
   setProblemsOpen: (open: boolean) => void;
   /** Show or hide the diff pane; `staged` also picks the side. */
   setDiff: (open: boolean, staged?: boolean) => void;
+  /** Open one file's patch in the diff pane (null collapses every row). */
+  setDiffFile: (path: string | null) => void;
   toggleDiffStaged: () => void;
   /**
    * The single entry point of a jump: record where the caret is now, open the
@@ -366,6 +374,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   problemsOpen: false,
   diffOpen: false,
   diffStaged: false,
+  diffFile: null,
   gitRev: 0,
   jump: null,
   references: null,
@@ -419,6 +428,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       problemsOpen: false,
       diffOpen: false,
       diffStaged: false,
+      diffFile: null,
       gitRev: 0,
       jump: null,
       references: null,
@@ -459,6 +469,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       editorFocus: 0,
       problemsOpen: false,
       diffOpen: false,
+      diffFile: null,
       jump: null,
       references: null,
       navBack: [],
@@ -768,7 +779,15 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     set((s) => ({
       diffOpen: open,
       diffStaged: staged ?? s.diffStaged,
+      // The change view lists the diff's own files, so the column holding it
+      // has to be on screen; opening the pane opens the column, closing the
+      // pane leaves the column where the user put it.
+      treeOpen: open ? true : s.treeOpen,
     }));
+  },
+
+  setDiffFile(path) {
+    set({ diffFile: path });
   },
 
   toggleDiffStaged() {

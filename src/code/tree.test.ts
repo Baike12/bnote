@@ -6,6 +6,7 @@ import {
   compareNodes,
   filterTree,
   naturalCompare,
+  pruneToChanges,
   searchFilesByName,
   visibleRows,
   walkFiles,
@@ -181,6 +182,37 @@ describe("filterTree", () => {
   it("an empty query returns the original tree", () => {
     const roots = buildTree([entry("a.ts")]);
     expect(filterTree(roots, "  ")).toBe(roots);
+  });
+});
+
+describe("pruneToChanges (the change view of the tree)", () => {
+  const roots = buildTree([
+    entry("src/app.ts"),
+    entry("src/util.ts"),
+    entry("docs/readme.md"),
+    entry("main.rs"),
+  ]);
+
+  it("keeps the changed files and the directories leading to them", () => {
+    const pruned = pruneToChanges(roots, new Set(["src/util.ts", "main.rs"]));
+    expect(pruned.map((n) => n.name)).toEqual(["src", "main.rs"]);
+    expect(pruned[0].children.map((n) => n.name)).toEqual(["util.ts"]);
+  });
+
+  it("a directory without a changed descendant disappears, and so does a changed path the tree does not hold", () => {
+    const pruned = pruneToChanges(roots, new Set(["docs/readme.md", "src/gone.ts"]));
+    expect(pruned.map((n) => n.name)).toEqual(["docs"]);
+    expect(pruned[0].children.map((n) => n.name)).toEqual(["readme.md"]);
+  });
+
+  it("a branch is copied on the way down: folding the change view never mutates the full tree", () => {
+    const pruned = pruneToChanges(roots, new Set(["src/app.ts", "src/util.ts"]));
+    expect(pruned[0]).not.toBe(roots.find((n) => n.name === "src"));
+    expect(pruned[0].children[0]).toBe(roots.find((n) => n.name === "src")?.children[0]);
+  });
+
+  it("nothing changed means no rows at all", () => {
+    expect(pruneToChanges(roots, new Set())).toEqual([]);
   });
 });
 

@@ -145,6 +145,7 @@ function resetStore(): void {
     problemsOpen: false,
     diffOpen: false,
     diffStaged: false,
+    diffFile: null,
     gitRev: 0,
     jump: null,
     references: null,
@@ -705,6 +706,21 @@ describe("the file tree drawer state", () => {
     expect(useCodeStore.getState()).toMatchObject({ diffOpen: false, diffStaged: true });
     useCodeStore.getState().toggleDiffStaged();
     expect(useCodeStore.getState().diffStaged).toBe(false);
+  });
+
+  it("opening the diff pane opens the column that lists its files; closing it leaves the column as it is", () => {
+    useCodeStore.setState({ treeOpen: false });
+    useCodeStore.getState().setDiff(true);
+    expect(useCodeStore.getState().treeOpen).toBe(true);
+    useCodeStore.getState().setDiff(false);
+    expect(useCodeStore.getState().treeOpen).toBe(true);
+  });
+
+  it("the file whose patch is open is shared state: a click in the change view sets it", () => {
+    useCodeStore.getState().setDiffFile("src/a.ts");
+    expect(useCodeStore.getState().diffFile).toBe("src/a.ts");
+    useCodeStore.getState().setDiffFile(null);
+    expect(useCodeStore.getState().diffFile).toBeNull();
   });
 });
 

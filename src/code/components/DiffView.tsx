@@ -39,7 +39,10 @@ export function DiffView() {
     [git, staged],
   );
   const totals = useMemo(() => changeTotals(changes), [changes]);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  // Which row is open lives in the store: the tree's change view opens the same
+  // row when a changed file is clicked there (one writer, one selected file).
+  const expanded = useCodeStore((s) => s.diffFile);
+  const setExpanded = useCodeStore((s) => s.setDiffFile);
   const [sideBySide, setSideBySide] = useState(false);
   const [patch, setPatch] = useState<PatchState | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -51,7 +54,7 @@ export function DiffView() {
   // The file may be gone from the list (reverted, committed): close the row.
   useEffect(() => {
     if (expanded && !changes.some((c) => c.path === expanded)) setExpanded(null);
-  }, [changes, expanded]);
+  }, [changes, expanded, setExpanded]);
 
   // Read the patch of the open row. Every input here is read-only (which file,
   // which side, which revision); the state this effect writes is deliberately
@@ -143,9 +146,7 @@ export function DiffView() {
             open={expanded === change.path}
             patch={shown}
             sideBySide={sideBySide}
-            onToggle={() =>
-              setExpanded((current) => (current === change.path ? null : change.path))
-            }
+            onToggle={() => setExpanded(expanded === change.path ? null : change.path)}
           />
         ))}
       </div>
