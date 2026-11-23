@@ -41,7 +41,7 @@ import {
 import { isWereadUrl } from "@/study/weread";
 import { useInvestStore } from "@/invest/store";
 import { scopeDocDir } from "@/invest/layoutModel";
-import { setAgentNavHandlers } from "@/study/pdfNav";
+import { setAgentPageTurn } from "@/study/pageTurn";
 import {
   applySuggestion,
   buildSkillPrompt,
@@ -127,7 +127,6 @@ export function AgentPanel() {
   const agentConfigVersion = useAppStore((s) => s.agentConfigVersion);
   const agentSwitchSignal = useAppStore((s) => s.agentSwitchSessionSignal);
   const agentPanelCommand = useAppStore((s) => s.agentPanelCommand);
-  const mainColumn = useAppStore((s) => s.mainColumn);
   const showToast = useAppStore((s) => s.showToast);
   const patchSettings = useAppStore((s) => s.patchSettings);
   /** The conversation font scale: it is written to the --agent-fs of the panel root, and both the body text and the derived sizes in the CSS multiply it. */
@@ -1054,9 +1053,14 @@ export function AgentPanel() {
     };
   }, []);
 
-  /** The page-turn command scrolls the column that sits in the middle. */
+  /**
+   * The page-turn command scrolls the column that sits in the middle; the
+   * resolver (study/pageTurn.ts) decides whether that is this panel. Register
+   * for as long as the panel is mounted — "I can turn" and "I am the middle"
+   * are different questions, and only the layout's `mainColumn` answers the
+   * second one.
+   */
   useEffect(() => {
-    if (mainColumn !== "agent") return;
     const pageBy = (direction: 1 | -1) => {
       const scroller = scrollRef.current;
       if (!scroller) return;
@@ -1071,9 +1075,9 @@ export function AgentPanel() {
       if (direction === -1) followRef.current = false;
       scroller.scrollBy({ top: direction * lineY, behavior: "smooth" });
     };
-    setAgentNavHandlers({ canFlip: () => true, prev: () => pageBy(-1), next: () => pageBy(1) });
-    return () => setAgentNavHandlers(null);
-  }, [mainColumn]);
+    setAgentPageTurn({ canFlip: () => true, prev: () => pageBy(-1), next: () => pageBy(1) });
+    return () => setAgentPageTurn(null);
+  }, []);
 
   // Scroll to the bottom after switching the session (every session is looked at from its newest message).
   useEffect(() => {

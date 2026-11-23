@@ -27,7 +27,7 @@
  *     "_hint": "…",
  *     "global":  { "nav.command-palette": "Mod-p" },
  *     "notes":   { "edit.toggle-bold": ["Mod-b"], "edit.toggle-italic": null },
- *     "reading": { "study.pdf-next-page": ["PageDown", "ArrowRight"] },
+ *     "reading": { "study.web-zoom-in": ["Mod-=", "Mod-Shift-="] },
  *     "agent":   { "agent.new-session": "Mod-Shift-n" }
  *   }
  * Omitted commands use the built-in default; null = unbound; a command
@@ -52,7 +52,7 @@ export const KEY_REGIONS: { id: KeyRegion; label: string; hint: string }[] = [
   {
     id: "reading",
     label: "内容区",
-    hint: "焦点在内容区时生效:PDF、网页、微信读书,以及中栏的工具栏。翻页与缩放是本区自己的键位;滚轮/点击滚过内容区后,键盘也归它(内容区不取得 DOM 焦点)。",
+    hint: "焦点在内容区时生效:PDF、网页、微信读书,以及中栏的工具栏。缩放与截图是本区自己的键位;翻页(PageUp/PageDown)在全局区——它滚动的是位于中栏的那一栏,与焦点无关。滚轮/点击滚过内容区后,键盘也归它(内容区不取得 DOM 焦点)。",
   },
   {
     id: "agent",
@@ -198,11 +198,14 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "study.web-zoom-out": "Mod--",
   "study.web-zoom-reset": "Mod-0",
 
-  // Content paging (shared by the PDF and web readers, scrolling by the step
-  // from settings). These keys only page while the focus is in the content
-  // region (see the region dispatch in globalKeys).
-  "study.pdf-prev-page": ["PageUp", "ArrowLeft"],
-  "study.pdf-next-page": ["PageDown", "ArrowRight"],
+  // Turning the page of the column in the middle: the study content column
+  // (PDF / web page) or the assistant conversation while it holds the middle
+  // (see study/pageTurn.ts). These are **global** — the target is the layout's
+  // `mainColumn`, not the focus — so the step can be turned from any region.
+  // The arrow keys are not bound here: the invest region owns them for chart
+  // panning, and a global key may not collide with any region's key.
+  "view.page-prev": "PageUp",
+  "view.page-next": "PageDown",
   // Screenshot of the content region sent to the Agent panel (S = screenshot).
   // Key resolution goes through event.key: on macOS Option+letter turns into
   // characters like å/ß/®, so ⌥⌘S cannot be used; ⌘⇧E is free in the regions
@@ -347,7 +350,6 @@ const REGION_EXACT: Record<string, KeyRegion> = {
 };
 
 const REGION_PREFIXES: [string, KeyRegion][] = [
-  ["study.pdf-", "reading"],
   ["study.web-", "reading"],
   ["region.", "reading"],
   ["agent.", "agent"],
@@ -605,25 +607,31 @@ export function commandsForKey(key: string, region: KeyRegion): string[] {
  * window too. Missing one means one keybinding silently dies inside a web
  * page.
  *
- * The exceptions are the commands the page consumes itself: paging scrolls
- * locally (no IPC round trip) and a PDF screenshot is meaningless for a web
- * page. They are handled in the page and not forwarded.
+ * `pageOwnsPaging` says the page is the middle column's page-turn target
+ * right now (study mode, `mainColumn === "content"`): then it turns its own
+ * pages locally — no IPC round trip, and the split line stays snapped to a
+ * text line — so its keys must not be forwarded. When the middle column is
+ * the assistant conversation instead, the same keys are forwarded and the
+ * main window scrolls the middle column.
+ *
+ * A PDF screenshot is meaningless for a web page in either case: it stays in
+ * the page's own hands and is never forwarded.
  */
-const PAGE_OWNED_COMMANDS = new Set([
-  "study.pdf-prev-page",
-  "study.pdf-next-page",
-  "study.pdf-snap-to-agent",
-]);
+const PAGE_PAGING_COMMANDS = new Set(["view.page-prev", "view.page-next"]);
+const PAGE_NEVER_FORWARDED = new Set(["study.pdf-snap-to-agent"]);
 
-export function pageForwardKeys(): string[] {
+export function pageForwardKeys(pageOwnsPaging: boolean): string[] {
   const out: string[] = [];
   const add = (keys: string[]) => {
     for (const key of keys) if (!out.includes(key)) out.push(key);
   };
-  for (const value of Object.values(current.global)) add(keysOf(value));
-  for (const [id, value] of Object.entries(current.reading)) {
-    if (PAGE_OWNED_COMMANDS.has(id)) continue;
-    add(keysOf(value));
+  for (const [region, map] of Object.entries(current)) {
+    if (region !== "global" && region !== "reading") continue;
+    for (const [id, value] of Object.entries(map)) {
+      if (PAGE_NEVER_FORWARDED.has(id)) continue;
+      if (pageOwnsPaging && PAGE_PAGING_COMMANDS.has(id)) continue;
+      add(keysOf(value));
+    }
   }
   return out;
 }
@@ -798,6 +806,11 @@ function normalizeValue(value: unknown): BindingValue | undefined {
  */
 const LEGACY_COMMAND_IDS: Record<string, string> = {
   "study.agent-switch-session": "agent.switch-session",
+  // The page-turn commands became global (the middle column's page, not the
+  // study content's): the old ids are still read and placed by the command's
+  // **current** default region when they come from a regionless table.
+  "study.pdf-prev-page": "view.page-prev",
+  "study.pdf-next-page": "view.page-next",
 };
 
 function canonicalCommandId(id: string): string {
@@ -866,23 +879,6 @@ export function bindingEquals(a: BindingValue | undefined, b: BindingValue | und
   const left = keysOf(a);
   const right = keysOf(b);
   return left.length === right.length && left.every((k, i) => k === right[i]);
-}
-
-/**
- * Fixed paging keys: PageUp/PageDown **always** page the study mode content
- * (PDF or web), unaffected by keybindings.json. They only apply while the
- * focus is in the reading region (see globalKeys), so they never take
- * PageUp away from the note editor or the sidebar.
- */
-export const FIXED_PAGE_COMMANDS: Record<string, string> = {
-  PageUp: "study.pdf-prev-page",
-  PageDown: "study.pdf-next-page",
-};
-
-/** Unmodified PageUp/PageDown → the fixed paging command; every other key returns null. */
-export function fixedPageCommandFor(event: KeyboardEvent): string | null {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
-  return FIXED_PAGE_COMMANDS[event.key] ?? null;
 }
 
 /**

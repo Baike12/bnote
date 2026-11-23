@@ -23,6 +23,7 @@ import { renumberHeadings } from "@/editor/numbering";
 import * as actions from "@/app/actions";
 import { openNewDrawing, openDrawingFile, finalizeDrawingSession } from "@/app/drawing";
 import {
+  hasThreeColumnLayout,
   useAppStore,
   toggleCodeMode,
   toggleProjectsMode,
@@ -41,7 +42,7 @@ import { runtimeDeps } from "@/daily/runtime";
 import { createUvEnvForCurrentProject, runCurrentNote, stopRun } from "@/python/run";
 import { resetLspStateForPath, syncNow } from "@/python/lsp";
 import { api } from "@/lib/tauri";
-import { canFlipPdfPage, flipPdfPage } from "@/study/pdfNav";
+import { canTurnPage, turnPage } from "@/study/pageTurn";
 import { useFocusStore } from "@/focus/store";
 import { capturePdfSnapshot, hasPdfSnapshotSource } from "@/study/pdfSnapshot";
 import { DEFAULT_WEB_ZOOM, stepWebZoom } from "@/study/webZoom";
@@ -64,9 +65,7 @@ function applyWebZoom(direction: 1 | -1): void {
 
 /** Whether the current layout mounts the agent panel (the focus target of ⌘⌥A). */
 function hasAgentPanel(): boolean {
-  const mode = useAppStore.getState().mode;
-  // Invest mode mounts the agent panel in the middle column (list | agent-or-market | notes).
-  return mode === "study" || mode === "code" || mode === "invest";
+  return hasThreeColumnLayout(useAppStore.getState().mode);
 }
 
 /**
@@ -389,34 +388,38 @@ const defs: CommandDef[] = [
       store.setStudyContent({ kind: "url", url: WEREAD_HOME_URL, title: "微信读书" });
     },
   },
-  // Study mode paging (scrolls by the step from settings, half a screen by
-  // default). The default is PageUp/PageDown (including the arrow keys) and
-  // can be rebound in the settings; the action is registered by the reader
-  // (study/pdfNav.ts), and when no PDF/web page is open or the focus should
-  // not be taken, `when` is false and the key is passed through to the page.
+  // Turn the page of the column that sits in the middle (study/pageTurn.ts:
+  // the PDF / web page, or the assistant conversation once it takes the
+  // middle). These are **global**: whichever region holds the focus, the
+  // middle column scrolls, by the step from the settings (half a screen by
+  // default). The target is the appStore's `mainColumn`, the same state that
+  // orders the layout, so the visible column and the key target cannot
+  // disagree; `when` is false when the middle column is not a page (the code
+  // editor pages itself), an overlay covers the layout, or the reader refuses
+  // (a selection, cropping), and the key then passes through.
   //
-  // The binding is configured in the reading region and a modified chord
-  // takes effect across regions (REGION_FREE_COMMANDS in keys.ts): pressing
-  // it in the notes region or the Agent panel scrolls just the same. Paging
-  // **does not move the focus**: the focus stays wherever it is, so pressing
-  // ⌃J repeatedly inside the notes region keeps paging, and after typing you
-  // do not have to click back into the editor.
+  // Paging **does not move the focus**: pressing ⌃J repeatedly inside the
+  // notes region keeps paging, and after typing you do not have to click back
+  // into the editor. `keepsPageFocus` does the same for a key forwarded out
+  // of the native web page.
   {
-    id: "study.pdf-prev-page",
-    title: "上一页(按步长滚动)",
-    category: "内容区",
-    when: canFlipPdfPage,
+    id: "view.page-prev",
+    title: "上一页(滚动中间栏)",
+    category: "视图",
+    when: canTurnPage,
+    keepsPageFocus: true,
     run: () => {
-      void flipPdfPage(-1);
+      turnPage(-1);
     },
   },
   {
-    id: "study.pdf-next-page",
-    title: "下一页(按步长滚动)",
-    category: "内容区",
-    when: canFlipPdfPage,
+    id: "view.page-next",
+    title: "下一页(滚动中间栏)",
+    category: "视图",
+    when: canTurnPage,
+    keepsPageFocus: true,
     run: () => {
-      void flipPdfPage(1);
+      turnPage(1);
     },
   },
   {

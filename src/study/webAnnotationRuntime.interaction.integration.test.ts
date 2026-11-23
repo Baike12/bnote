@@ -217,7 +217,7 @@ describe("turning pages by step", () => {
 });
 
 describe("keyboard handling inside the page", () => {
-  it("PageDown/PageUp turn the page even when the user unbound them", () => {
+  it("the built-in PageDown/PageUp defaults turn the page before the main window pushes its bindings", () => {
     start();
 
     document.body.dispatchEvent(
@@ -233,6 +233,17 @@ describe("keyboard handling inside the page", () => {
       new KeyboardEvent("keydown", { key: "PageUp", bubbles: true, cancelable: true }),
     );
     expect(document.documentElement.scrollTop).toBe(0);
+  });
+
+  it("empty key lists mean the page is not the page-turn target: it does not scroll itself", () => {
+    const api = start();
+    api.setKeys([], []);
+
+    const down = new KeyboardEvent("keydown", { key: "PageDown", bubbles: true, cancelable: true });
+    document.body.dispatchEvent(down);
+
+    expect(document.documentElement.scrollTop).toBe(0);
+    expect(down.defaultPrevented).toBe(false);
   });
 
   it("a key event that is already handled by the page is left alone", () => {

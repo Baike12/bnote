@@ -115,8 +115,8 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
   /** The page-turn step (a ratio of the visible height), pushed in by the main window; 50% by default. */
   let pageStep = helpers.normalizePageStep(0.5);
   /** The configurable page-turn keys (the binding strings parsed by the command layer), pushed in by the main window. */
-  let prevKeys: string[] = ["PageUp", "ArrowLeft"];
-  let nextKeys: string[] = ["PageDown", "ArrowRight"];
+  let prevKeys: string[] = ["PageUp"];
+  let nextKeys: string[] = ["PageDown"];
   /**
    * The shortcuts to forward back to the main window (the general commands plus the region switch / web zoom of the reading area).
    * The keys of a native sub-webview do not bubble to the main window, so a match here is written into document.title and turned into a
@@ -466,7 +466,7 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
     return out;
   }
 
-  /** The main window pushes the command layer's bindings over as-is (an empty array = the user unbound them). */
+  /** The main window pushes the command layer's bindings over as-is (an empty list = the page turns nothing: the assistant holds the middle, or the user unbound the commands). */
   function setKeys(prev: unknown, next: unknown): void {
     const prevList = keyList(prev);
     const nextList = keyList(next);
@@ -590,13 +590,11 @@ export function webAnnotationRuntime(helpers: RuntimeHelpers): void {
         return;
       }
     }
-    // PageUp/PageDown are fixed page-turn keys (consistent with the main window's command dispatch): even when they are unbound, a press
-    // without modifiers still turns the page; with modifiers the binding table / the page itself decides.
-    const plain = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+    // The main window pushes the command layer's page-turn bindings. An empty list means the page turns nothing
+    // right now: the assistant column holds the middle (the keys were forwarded above, see pageForwardKeys) or
+    // the user unbound the commands. The built-in defaults only cover the moment before the first push.
     let delta = 0;
-    if (plain && event.key === "PageDown") delta = 1;
-    else if (plain && event.key === "PageUp") delta = -1;
-    else if (nextKeys.some((key) => bindingMatches(event, key))) delta = 1;
+    if (nextKeys.some((key) => bindingMatches(event, key))) delta = 1;
     else if (prevKeys.some((key) => bindingMatches(event, key))) delta = -1;
     if (!delta) return;
     // The page turn and the arrow keys inside an input / editable area belong to the control itself (caret movement, text scrolling).

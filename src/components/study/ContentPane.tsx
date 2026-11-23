@@ -22,7 +22,7 @@ import {
   type StudyUrlEntry,
   type WereadBookEntry,
 } from "@/study/history";
-import { setWebNavHandlers } from "@/study/pdfNav";
+import { pageTurnTarget, setWebPageTurn } from "@/study/pageTurn";
 import { needsMainWebviewFocus } from "@/study/previewFocus";
 import { ensureMaterial } from "@/study/materials";
 import { normalizePageStep } from "@/study/reading";
@@ -74,11 +74,22 @@ async function urlMaterialDir(vaultRoot: string, url: string): Promise<string | 
   return info?.relDir ?? null;
 }
 
+/**
+ * Whether the web page turns its own pages right now: it does while the
+ * content column holds the middle. Once the assistant column takes the
+ * middle, the same keys belong to the assistant conversation, and the page
+ * forwards them instead of scrolling itself (see pageForwardKeys).
+ */
+function pageOwnsPaging(): boolean {
+  return pageTurnTarget() === "content";
+}
+
 /** The paging bindings of the command layer; the in-page runtime matches these keys when the web page has the focus. */
 function readPageKeyBindings() {
+  if (!pageOwnsPaging()) return { prev: [], next: [] };
   return {
-    prev: bindingsForCommand("study.pdf-prev-page"),
-    next: bindingsForCommand("study.pdf-next-page"),
+    prev: bindingsForCommand("view.page-prev"),
+    next: bindingsForCommand("view.page-next"),
   };
 }
 
@@ -104,7 +115,7 @@ function previewInitScript(step: number, translate: boolean): string {
       keys.prev,
     )}, ${JSON.stringify(keys.next)});`,
     `window.__bnoteReader && window.__bnoteReader.setHostKeys(${JSON.stringify(
-      pageForwardKeys(),
+      pageForwardKeys(!pageOwnsPaging()),
     )});`,
     WEREAD_SCRIPT,
   ].join("\n");
@@ -161,6 +172,9 @@ export function ContentPane() {
    * the mount — is what decides whether the native view may paint.
    */
   const studyOnScreen = useAppStore((s) => s.mode === "study");
+  // The assistant taking the middle changes what the paging keys scroll: the
+  // in-page runtime has to be told (see the two effects below).
+  const mainColumn = useAppStore((s) => s.mainColumn);
 
   // When the content changes, "the book the webview is on" is void; until
   // the next route event arrives the top bar falls back to the title of the
@@ -279,6 +293,11 @@ export function ContentPane() {
   // again after it closed, including the just changed keybindings.
   // On the first creation a command may arrive before the webview is ready;
   // the load event pushes them once more.
+  //
+  // `mainColumn` and the mode are what make the page the page-turn target (or
+  // take that away: the assistant in the middle, or study mode parked behind
+  // another shape). From that moment the page is pushed empty key lists and
+  // the keys are forwarded instead (the next effect).
   useEffect(() => {
     if (!previewUrl || modal !== null) return;
     const keys = readPageKeyBindings();
@@ -286,15 +305,16 @@ export function ContentPane() {
       .setStudyPreviewReadStep(normalizePageStep(settings.studyPageStep))
       .catch(() => {});
     void agentApi.setStudyPreviewReadKeys(keys.prev, keys.next).catch(() => {});
-  }, [previewUrl, settings.studyPageStep, modal]);
+  }, [previewUrl, settings.studyPageStep, modal, mainColumn, studyOnScreen]);
 
   // The forwarded keys follow the configuration: when the "reading area ->
   // Agent / notes area" key is changed in the settings, the in-page runtime
-  // switches to the new key right away, without reloading the page.
+  // switches to the new key right away, without reloading the page. The
+  // paging keys join the list while the page is not the page-turn target.
   useEffect(() => {
     if (!previewUrl || modal !== null) return;
-    void agentApi.setStudyPreviewShortcuts(pageForwardKeys()).catch(() => {});
-  }, [previewUrl, modal, keymapRev]);
+    void agentApi.setStudyPreviewShortcuts(pageForwardKeys(!pageOwnsPaging())).catch(() => {});
+  }, [previewUrl, modal, keymapRev, mainColumn, studyOnScreen]);
 
   // Web zoom: the settings are the only writer (the toolbar button and the
   // command only write the settings), here the value is pushed to the native
@@ -306,15 +326,17 @@ export function ContentPane() {
     void agentApi.setStudyPreviewZoom(webZoom).catch(() => {});
   }, [previewUrl, webZoom]);
 
-  // Where the paging of the web reader lands: when the focus is in the main
-  // window (after clicking the toolbar or taking a note), the command layer
-  // forwards PageUp/PageDown to the native child webview through here; when
-  // the focus is inside the page, the in-page runtime takes over (the keys of
-  // a native child webview do not bubble up to the main window).
+  // Where the paging of the web reader lands: while the content column holds
+  // the middle, the page turns its own pages — locally when the focus is
+  // inside it (a native child webview's keys do not bubble up), through here
+  // when the focus is in the main window (the toolbar, a note). When the
+  // assistant column takes the middle, the resolver never asks this slot: the
+  // middle column is the assistant conversation, and the page forwards the
+  // keys (see pageForwardKeys).
   useEffect(() => {
     if (content?.kind !== "url") return;
-    setWebNavHandlers({
-      canFlip: () => useAppStore.getState().modal === null,
+    setWebPageTurn({
+      canFlip: () => true,
       prev: () => {
         void agentApi.scrollStudyPreview(-1).catch(() => {});
       },
@@ -322,7 +344,7 @@ export function ContentPane() {
         void agentApi.scrollStudyPreview(1).catch(() => {});
       },
     });
-    return () => setWebNavHandlers(null);
+    return () => setWebPageTurn(null);
   }, [content]);
 
   // Web annotations: the page runtime writes its changes into document.title,
@@ -361,7 +383,7 @@ export function ContentPane() {
           .catch(() => {});
         const keys = readPageKeyBindings();
         await agentApi.setStudyPreviewReadKeys(keys.prev, keys.next).catch(() => {});
-        await agentApi.setStudyPreviewShortcuts(pageForwardKeys()).catch(() => {});
+        await agentApi.setStudyPreviewShortcuts(pageForwardKeys(!pageOwnsPaging())).catch(() => {});
         // The zoom is pushed again after the navigation: the settings are the single source of truth, the page does not keep a ratio itself.
         await agentApi
           .setStudyPreviewZoom(normalizeWebZoom(useAppStore.getState().settings.studyWebZoom))

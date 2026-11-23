@@ -298,6 +298,16 @@ export interface LinkHop {
  */
 export type AppMode = "notes" | "study" | "code" | "projects" | "invest";
 
+/**
+ * Whether the mode's main area is the three-column workspace (assistant |
+ * middle | notes): study, code and invest mount it, the notes / project views
+ * replace it. The middle column's occupant is `mainColumn`; the assistant
+ * column's focus commands and the page-turn target both read that state.
+ */
+export function hasThreeColumnLayout(mode: AppMode): boolean {
+  return mode === "study" || mode === "code" || mode === "invest";
+}
+
 /** The code project open in code mode (the repository is independent of the vault). */
 export interface CodeProjectRef {
   path: string;

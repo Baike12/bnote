@@ -24,6 +24,8 @@ Active whatever has focus. Disjoint from every region's keys.
 | `Cmd+Shift+P` | 全局区：进入 / 退出项目区(项目列表、项目待办、日记) — `view.toggle-projects` |
 | `Cmd+Shift+R` | 全局区：切换到最近打开的仓库(⌘⇧R) — `workspace.switch-recent-vault` |
 | `Cmd+Shift+S` | 全局区：进入 / 退出三栏工作区(左 Agent、中内容、右笔记) — `view.toggle-study-mode` |
+| `PageDown` | 全局区：下一页(滚动中间栏) — `view.page-next` |
+| `PageUp` | 全局区：上一页(滚动中间栏) — `view.page-prev` |
 
 ## 笔记区 (`notes`)
 
@@ -85,8 +87,6 @@ Active while the content region has focus: PDF, web page, WeRead, and the middle
 | `Cmd+Alt+N` | 内容区：切换到笔记区 — `region.focus-notes` |
 | `Cmd+Alt+R` | 内容区：切换到内容区 — `region.focus-reading` |
 | `Cmd+Shift+E` | 内容区：截取内容区可见内容到 Agent(⌘⇧E) — `study.pdf-snap-to-agent` |
-| `PageDown` / `ArrowRight` | 内容区：下一页(按步长滚动) — `study.pdf-next-page` |
-| `PageUp` / `ArrowLeft` | 内容区：上一页(按步长滚动) — `study.pdf-prev-page` |
 
 ## Agent区 (`agent`)
 

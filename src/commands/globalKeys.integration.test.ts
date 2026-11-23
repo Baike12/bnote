@@ -8,7 +8,7 @@ vi.hoisted(() => {
 });
 
 import "@/commands/builtin";
-import { setPdfNavHandlers } from "@/study/pdfNav";
+import { setAgentPageTurn, setPdfPageTurn } from "@/study/pageTurn";
 import { useAppStore, setConfigSnapshot } from "@/state/appStore";
 import {
   activeKeyRegion,
@@ -159,6 +159,25 @@ describe("region ownership from input events", () => {
     expect(keyRegionOwner()).toBe("reading");
   });
 
+  it("typing in a region claims the keyboard; a chord does not", () => {
+    const notes = region("notes");
+    const field = document.createElement("input");
+    notes.append(field);
+    region("agent");
+
+    // Scrolled the Agent transcript last; the caret is in the note editor.
+    setActiveKeyRegion("agent");
+    keydown(field, "x", { metaKey: false });
+    expect(keyRegionOwner()).toBe("notes");
+
+    // A chord is not typing: after a click on the PDF the DOM focus still sits
+    // in the note editor, and the content region's own chords must keep
+    // reaching it.
+    setActiveKeyRegion("agent");
+    keydown(field, "b");
+    expect(keyRegionOwner()).toBe("agent");
+  });
+
   it("the focused region wins when the owner is off screen (focus is the fallback)", () => {
     // focusin no longer claims the region (a programmatic .focus() fires a
     // trusted focusin too), so this exercises the real fallback: the owner
@@ -208,6 +227,23 @@ describe("a keydown resolves in the region it was pressed in", () => {
     expect(useAppStore.getState().agentPanelCommand?.kind).toBe("focus-input");
   });
 
+  it("the Agent jump bound in the code region runs there and hands the keyboard to the Agent", () => {
+    // The command is not global: the code editor gets its own binding, and
+    // that copy answers only in the code region.
+    applyOverrides({ code: { "region.focus-agent": "Mod-w" } });
+    const code = region("code");
+    setActiveKeyRegion("code");
+    useAppStore.setState({ mode: "code", mainColumn: "content" });
+
+    const event = keydown(code, "w");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(useAppStore.getState().mainColumn).toBe("agent");
+    expect(useAppStore.getState().agentPanelCommand?.kind).toBe("focus-input");
+    // The jump claims the region it moved the keyboard to.
+    expect(keyRegionOwner()).toBe("agent");
+  });
+
   it("a plain letter is never taken, so typing in the editor is untouched", () => {
     const notes = region("notes");
     setActiveKeyRegion("notes");
@@ -216,28 +252,61 @@ describe("a keydown resolves in the region it was pressed in", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it("bare PageDown pages the reading pane only, and only there", () => {
+  it("bare PageDown turns the middle column's page from whichever region holds the keyboard", () => {
     const reading = region("reading");
     const notes = region("notes");
     const pager = { canFlip: () => true, prev: vi.fn(), next: vi.fn() };
-    setPdfNavHandlers(pager);
-    // The reader's registration only counts in study mode: a parked reader
-    // (another shape on screen) must not claim the key (see pdfNav).
-    useAppStore.setState({ mode: "study" });
+    setPdfPageTurn(pager);
+    useAppStore.setState({ mode: "study", mainColumn: "content" });
 
     try {
       setActiveKeyRegion("reading");
       expect(keydown(reading, "PageDown", { metaKey: false }).defaultPrevented).toBe(true);
       expect(pager.next).toHaveBeenCalledTimes(1);
 
-      // The same bare key in the notes region belongs to the editor: it must
-      // not page the PDF and must not be consumed.
+      // The page-turn command is global: the same bare key pressed while the
+      // notes region holds the keyboard turns the same page.
       pager.next.mockClear();
       setActiveKeyRegion("notes");
-      expect(keydown(notes, "PageDown", { metaKey: false }).defaultPrevented).toBe(false);
+      expect(keydown(notes, "PageDown", { metaKey: false }).defaultPrevented).toBe(true);
+      expect(pager.next).toHaveBeenCalledTimes(1);
+    } finally {
+      setPdfPageTurn(null);
+    }
+  });
+
+  it("the key follows the middle column, not the focus: the assistant scrolls while it holds the middle", () => {
+    const notes = region("notes");
+    const pager = { canFlip: () => true, prev: vi.fn(), next: vi.fn() };
+    const agent = { canFlip: () => true, prev: vi.fn(), next: vi.fn() };
+    setPdfPageTurn(pager);
+    setAgentPageTurn(agent);
+    // The assistant column took the middle; the keyboard is still in the notes.
+    useAppStore.setState({ mode: "study", mainColumn: "agent" });
+    setActiveKeyRegion("notes");
+
+    try {
+      expect(keydown(notes, "PageDown", { metaKey: false }).defaultPrevented).toBe(true);
+      expect(agent.next).toHaveBeenCalledTimes(1);
       expect(pager.next).not.toHaveBeenCalled();
     } finally {
-      setPdfNavHandlers(null);
+      setPdfPageTurn(null);
+      setAgentPageTurn(null);
+    }
+  });
+
+  it("with the code editor in the middle the key passes through: the editor owns its paging", () => {
+    const notes = region("notes");
+    const agent = { canFlip: () => true, prev: vi.fn(), next: vi.fn() };
+    setAgentPageTurn(agent);
+    useAppStore.setState({ mode: "code", mainColumn: "content" });
+    setActiveKeyRegion("notes");
+
+    try {
+      expect(keydown(notes, "PageDown", { metaKey: false }).defaultPrevented).toBe(false);
+      expect(agent.next).not.toHaveBeenCalled();
+    } finally {
+      setAgentPageTurn(null);
     }
   });
 

@@ -36,7 +36,7 @@ import { vaultRelPath } from "@/lib/path";
 import { ensureMaterial } from "@/study/materials";
 import { PAGE_TOP_PAD, basePageWidth, contentWidthForRenderedPage } from "@/study/layoutModel";
 import { clampOutlineWidth, loadOutlineWidth, saveOutlineWidth } from "@/study/pdfLayout";
-import { setPdfNavHandlers } from "@/study/pdfNav";
+import { setPdfPageTurn } from "@/study/pageTurn";
 import {
   canvasToFile,
   paintSnapshot,
@@ -1179,25 +1179,26 @@ export function PdfViewer({ path, eyeCare, onToggleEyeCare, pageStep }: PdfViewe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crop, cropping]);
 
-  // The paging shortcuts go through the command system (PageUp/PageDown/arrow
-  // keys by default, rebindable in the settings): here only "can it flip and
-  // which page" is registered with the command layer. Focus ownership is
-  // handled by the dispatch layer: a bare navigation key belongs to the
-  // editor or the input field it is in, a binding with a modifier (such as
-  // ⌃J) works everywhere.
+  // The paging shortcuts go through the command system (PageUp/PageDown by
+  // default, rebindable in the settings): here only "can it flip and which
+  // page" is registered with the command layer, which scrolls this reader
+  // while the content column holds the middle (study/pageTurn.ts). Focus
+  // ownership is the dispatch layer's business: a bare navigation key belongs
+  // to the editor or the input field it is in, a binding with a modifier
+  // (such as ⌃J) works everywhere.
   useEffect(() => {
-    setPdfNavHandlers({
-      canFlip: () => cropping === false && useAppStore.getState().modal === null,
+    setPdfPageTurn({
+      canFlip: () => !cropping,
       prev: () => flipPage(-1),
       next: () => flipPage(1),
     });
-    return () => setPdfNavHandlers(null);
+    return () => setPdfPageTurn(null);
   }, [cropping, flipPage]);
 
   const filteredOutline = filterOutline(outline, outlineQuery);
   const hasOutline = outline.length > 0;
-  const prevKeys = bindingsForCommand("study.pdf-prev-page").map(formatBinding).join(" / ");
-  const nextKeys = bindingsForCommand("study.pdf-next-page").map(formatBinding).join(" / ");
+  const prevKeys = bindingsForCommand("view.page-prev").map(formatBinding).join(" / ");
+  const nextKeys = bindingsForCommand("view.page-next").map(formatBinding).join(" / ");
 
   /** The crop and the annotation are mutually exclusive: the crop layer covers the page, so who owns the click and the drag selection of the annotation has to be unique. */
   function toggleCropping() {

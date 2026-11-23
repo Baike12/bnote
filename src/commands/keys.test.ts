@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_BINDINGS,
-  FIXED_PAGE_COMMANDS,
   KEY_REGIONS,
   applyOverrides,
   bindingEquals,
@@ -17,7 +16,6 @@ import {
   defaultRegionsOf,
   eventKeyName,
   eventToKey,
-  fixedPageCommandFor,
   flattenOverrides,
   formOwnsEditChord,
   formatBinding,
@@ -101,22 +99,21 @@ describe("default bindings", () => {
     expect(others).toEqual([]);
   });
 
-  it("PDF paging defaults to PageUp/PageDown (with the arrow keys), and nobody else duplicates them", () => {
-    expect(bindingsForCommand("study.pdf-prev-page")).toEqual(["PageUp", "ArrowLeft"]);
-    expect(bindingsForCommand("study.pdf-next-page")).toEqual(["PageDown", "ArrowRight"]);
-    const used = ["PageUp", "PageDown", "ArrowLeft", "ArrowRight"];
-    // C17 exempts the invest region's chart panning: the two regions never
-    // share a screen (invest mode has no reading content pane), the region
-    // dispatch resolves to exactly one of them, and fixedPageCommandFor —
-    // the only path that bypasses region dispatch for paging — runs only in
-    // the reading region.
-    const exempt = (id: string) => id.startsWith("study.pdf-") || id.startsWith("invest.kline-");
-    const others = Object.entries(DEFAULT_BINDINGS).flatMap(([id, key]) => {
-      if (exempt(id)) return [];
-      return keysOf(key)
-        .filter((k) => used.includes(k))
-        .map((k) => `${id}:${k}`);
-    });
+  it("middle-column paging defaults to PageUp/PageDown in the global layer, and nobody else duplicates them", () => {
+    expect(bindingsForCommand("view.page-prev")).toEqual(["PageUp"]);
+    expect(bindingsForCommand("view.page-next")).toEqual(["PageDown"]);
+    // The arrows are not page-turn keys: the invest region owns them for
+    // chart panning, and a global key may not collide with any region's key.
+    expect(DEFAULT_BINDINGS["view.page-next"]).not.toContain("ArrowRight");
+    const used = ["PageUp", "PageDown"];
+    const own = new Set(["view.page-prev", "view.page-next"]);
+    const others = Object.entries(DEFAULT_BINDINGS).flatMap(([id, key]) =>
+      own.has(id)
+        ? []
+        : keysOf(key)
+            .filter((k) => used.includes(k))
+            .map((k) => `${id}:${k}`),
+    );
     expect(others).toEqual([]);
   });
 
@@ -215,7 +212,7 @@ describe("region dispatch", () => {
   it("commands are assigned to their default region by semantics", () => {
     expect(defaultRegionOf("edit.toggle-bold")).toBe("notes");
     expect(defaultRegionOf("nav.header-todos")).toBe("notes");
-    expect(defaultRegionOf("study.pdf-next-page")).toBe("reading");
+    expect(defaultRegionOf("view.page-next")).toBe("global");
     expect(defaultRegionOf("region.focus-agent")).toBe("reading");
     expect(defaultRegionOf("agent.new-session")).toBe("agent");
     expect(defaultRegionOf("agent.switch-session")).toBe("agent");
@@ -241,9 +238,8 @@ describe("region dispatch", () => {
     // notes column, the Agent panel, and the content column (the open file).
     // Invest mode's right column is the notes region, so only ⌘⌥N is added
     // there (⌘⌥A / ⌘⌥R have the invest region's own meanings).
-    for (const id of ["region.focus-agent", "region.focus-reading"]) {
-      expect(defaultRegionsOf(id)).toEqual(["reading", "notes", "agent", "code"]);
-    }
+    expect(defaultRegionsOf("region.focus-agent")).toEqual(["reading", "notes", "agent", "code"]);
+    expect(defaultRegionsOf("region.focus-reading")).toEqual(["reading", "notes", "agent", "code"]);
     expect(defaultRegionsOf("region.focus-notes")).toEqual([
       "reading",
       "notes",
@@ -266,6 +262,24 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-Alt-r", "code")).toContain("region.focus-reading");
     expect(commandsForKey("Mod-Alt-a", "code")).toContain("region.focus-agent");
     expect(bindingsForCommand("region.focus-agent")).toEqual(["Mod-Alt-a"]);
+    // The jump is not global: the global layer stays reserved for actions that
+    // belong to no column, and ⌘W is dead until a region binds it.
+    expect(commandsForKey("Mod-w", "global")).toEqual([]);
+  });
+
+  it("the Agent jump can be bound to ⌘W in each region separately, and the copies stay independent", () => {
+    // The user binds it per region (notes / content / code …): one region's
+    // chord does not leak into another, and the global layer keeps its keys.
+    applyOverrides(
+      normalizeOverrides({
+        notes: { "region.focus-agent": "Mod-w" },
+        code: { "region.focus-agent": "Mod-w" },
+      }),
+    );
+    expect(commandsForKey("Mod-w", "notes")).toEqual(["region.focus-agent"]);
+    expect(commandsForKey("Mod-w", "code")).toEqual(["region.focus-agent"]);
+    expect(commandsForKey("Mod-w", "reading")).toEqual([]);
+    expect(commandsForKey("Mod-w", "global")).toEqual([]);
   });
 
   it("the global key set and every region key set are disjoint (one key, one meaning at any focus)", () => {
@@ -326,16 +340,13 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-Shift-i", "project")).toContain("edit.toggle-italic");
   });
 
-  it("regions do not affect each other: a binding added in another region leaves the original region's default binding in place", () => {
-    applyOverrides(normalizeOverrides({ agent: { "study.pdf-next-page": "Mod-j" } }));
-    expect(commandRegions("study.pdf-next-page")).toEqual(["reading", "agent"]);
-    expect(bindingsForCommand("study.pdf-next-page", "agent")).toEqual(["Mod-j"]);
-    expect(bindingsForCommand("study.pdf-next-page", "reading")).toEqual([
-      "PageDown",
-      "ArrowRight",
-    ]);
-    expect(commandsForKey("Mod-j", "agent")).toContain("study.pdf-next-page");
-    expect(commandsForKey("PageDown", "reading")).toContain("study.pdf-next-page");
+  it("regions do not affect each other: a binding added in another region leaves the global default binding in place", () => {
+    applyOverrides(normalizeOverrides({ agent: { "view.page-next": "Mod-j" } }));
+    expect(commandRegions("view.page-next")).toEqual(["global", "agent"]);
+    expect(bindingsForCommand("view.page-next", "agent")).toEqual(["Mod-j"]);
+    expect(bindingsForCommand("view.page-next", "global")).toEqual(["PageDown"]);
+    expect(commandsForKey("Mod-j", "agent")).toContain("view.page-next");
+    expect(commandsForKey("PageDown", "reading")).toContain("view.page-next");
   });
 
   it("an unbinding only affects the current region", () => {
@@ -345,29 +356,29 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-Alt-a", "notes")).not.toContain("region.focus-agent");
   });
 
-  it("content paging is the content region's own binding: a rebind there does not fire in notes / Agent", () => {
+  it("page-turn is global: a rebind fires from every region, whichever one the focus sits in", () => {
     applyOverrides(
       normalizeOverrides({
-        reading: {
-          "study.pdf-prev-page": "Ctrl-k",
-          "study.pdf-next-page": "Ctrl-j",
+        global: {
+          "view.page-prev": "Ctrl-k",
+          "view.page-next": "Ctrl-j",
         },
       }),
     );
-    for (const region of ["notes", "agent"] as const) {
-      expect(commandsForKey("Ctrl-j", region)).toEqual([]);
-      expect(commandsForKey("Ctrl-k", region)).toEqual([]);
+    for (const region of ["notes", "reading", "agent", "code"] as const) {
+      expect(commandsForKey("Ctrl-j", region)).toEqual(["view.page-next"]);
+      expect(commandsForKey("Ctrl-k", region)).toEqual(["view.page-prev"]);
     }
-    expect(commandsForKey("Ctrl-j", "reading")).toEqual(["study.pdf-next-page"]);
-    expect(commandsForKey("Ctrl-k", "reading")).toEqual(["study.pdf-prev-page"]);
+    expect(defaultRegionOf("view.page-next")).toBe("global");
   });
 
-  it("the bare paging navigation keys belong to the content region only (they do not steal the editor caret keys)", () => {
-    expect(commandsForKey("PageDown", "reading")).toContain("study.pdf-next-page");
-    expect(commandsForKey("PageDown", "notes")).not.toContain("study.pdf-next-page");
-    expect(commandsForKey("ArrowRight", "agent")).not.toContain("study.pdf-next-page");
-    applyOverrides(normalizeOverrides({ reading: { "study.pdf-next-page": "F5" } }));
-    expect(commandsForKey("F5", "notes")).not.toContain("study.pdf-next-page");
+  it("a copy moved into one region stays there: the global default still fires everywhere else", () => {
+    applyOverrides(normalizeOverrides({ reading: { "view.page-next": "F5" } }));
+    expect(commandsForKey("F5", "reading")).toEqual(["view.page-next"]);
+    expect(commandsForKey("F5", "notes")).not.toContain("view.page-next");
+    // The global default was not moved away: PageDown still pages everywhere.
+    expect(commandsForKey("PageDown", "notes")).toContain("view.page-next");
+    expect(commandsForKey("PageDown", "reading")).toContain("view.page-next");
   });
 
   it("the content snapshot is placed in content / Agent / notes, and not in code (⌘⇧E there is the file tree)", () => {
@@ -409,7 +420,9 @@ describe("region dispatch", () => {
 
   it("while a modal is open (region = global) cross-region commands are not let through, the focus is not stolen", () => {
     // Only global commands are recognized inside a modal: ⌘⌥A must not hand
-    // the focus to the Agent input, and paging must not scroll behind it.
+    // the focus to the Agent input, and the reading region's screenshot is not
+    // recognized. The page-turn commands are global, so their `when` refuses
+    // behind a modal instead (study/pageTurn.ts).
     expect(commandsForKey("Mod-Alt-a", "global")).toEqual([]);
     expect(commandsForKey("Mod-Shift-e", "global")).toEqual([]);
     expect(commandsForKey("Ctrl-j", "global")).toEqual([]);
@@ -445,7 +458,7 @@ describe("config file read and write", () => {
   it("the legacy flat table is split into regions by each command's default region", () => {
     const overrides = normalizeOverrides({
       "edit.toggle-bold": "Mod-b",
-      "study.pdf-next-page": "Ctrl-j",
+      "view.page-next": "Ctrl-j",
       "nav.command-palette": "Mod-p",
       "edit.toggle-italic": null,
     });
@@ -453,8 +466,11 @@ describe("config file read and write", () => {
       "edit.toggle-bold": "Mod-b",
       "edit.toggle-italic": null,
     });
-    expect(overrides.reading).toEqual({ "study.pdf-next-page": "Ctrl-j" });
-    expect(overrides.global).toEqual({ "nav.command-palette": "Mod-p" });
+    expect(overrides.reading).toBeUndefined();
+    expect(overrides.global).toEqual({
+      "nav.command-palette": "Mod-p",
+      "view.page-next": "Ctrl-j",
+    });
     expect(overrides.agent).toBeUndefined();
   });
 
@@ -464,6 +480,19 @@ describe("config file read and write", () => {
     // old entry would silently land in the wrong tab.
     const overrides = normalizeOverrides({ "study.agent-switch-session": "Mod-Shift-y" });
     expect(overrides.agent).toEqual({ "agent.switch-session": "Mod-Shift-y" });
+    expect(overrides.global).toBeUndefined();
+
+    // The page-turn commands became global: an old flat entry lands in the
+    // global tab under the current id, not in a "study" one.
+    const paging = normalizeOverrides({ "study.pdf-next-page": "Ctrl-j" });
+    expect(paging.global).toEqual({ "view.page-next": "Ctrl-j" });
+  });
+
+  it("an old page-turn entry inside a region keeps its region: the binding is not silently widened", () => {
+    // The regional format says where the user put the key; canonicalizing the
+    // id must not move it to the current default region.
+    const overrides = normalizeOverrides({ reading: { "study.pdf-next-page": "Ctrl-j" } });
+    expect(overrides.reading).toEqual({ "view.page-next": "Ctrl-j" });
     expect(overrides.global).toBeUndefined();
   });
 
@@ -486,12 +515,12 @@ describe("config file read and write", () => {
 
   it("only the overrides are written, and they read back unchanged", () => {
     const overrides = normalizeOverrides({
-      reading: { "study.pdf-prev-page": "Ctrl-k" },
+      reading: { "view.page-prev": "Ctrl-k" },
       agent: { "agent.focus-history": "Mod-Shift-h" },
     });
     const text = serializeOverrides(overrides);
     expect(text).toContain("_hint");
-    expect(text).toContain("study.pdf-prev-page");
+    expect(text).toContain("view.page-prev");
     expect(text).not.toContain('"notes"');
     expect(normalizeOverrides(JSON.parse(text))).toEqual(overrides);
   });
@@ -541,40 +570,6 @@ describe("form editing chords", () => {
     expect(formOwnsEditChord("Mod-a", "DIV")).toBe(false);
     expect(formOwnsEditChord("Mod-a", null)).toBe(false);
     expect(formOwnsEditChord("Mod-a", "SELECT")).toBe(false);
-  });
-});
-
-/** PageUp/PageDown are the fixed paging keys that cannot be overridden: they still page after a rebind. */
-describe("fixed paging keys", () => {
-  const ev = (key: string, mods: Partial<KeyboardEvent> = {}) =>
-    ({
-      key,
-      metaKey: false,
-      ctrlKey: false,
-      altKey: false,
-      shiftKey: false,
-      ...mods,
-    }) as KeyboardEvent;
-
-  it("PageUp/PageDown map to the previous page / the next page", () => {
-    expect(FIXED_PAGE_COMMANDS).toEqual({
-      PageUp: "study.pdf-prev-page",
-      PageDown: "study.pdf-next-page",
-    });
-    expect(fixedPageCommandFor(ev("PageUp"))).toBe("study.pdf-prev-page");
-    expect(fixedPageCommandFor(ev("PageDown"))).toBe("study.pdf-next-page");
-  });
-
-  it("after rebinding study.pdf-* the fixed keys still take effect", () => {
-    applyOverrides({ reading: { "study.pdf-next-page": "Mod-j" } });
-    expect(bindingsForCommand("study.pdf-next-page")).toEqual(["Mod-j"]);
-    expect(fixedPageCommandFor(ev("PageDown"))).toBe("study.pdf-next-page");
-  });
-
-  it("a modifier or another key does not trigger the fixed paging", () => {
-    expect(fixedPageCommandFor(ev("PageDown", { shiftKey: true }))).toBeNull();
-    expect(fixedPageCommandFor(ev("PageDown", { ctrlKey: true }))).toBeNull();
-    expect(fixedPageCommandFor(ev("j"))).toBeNull();
   });
 });
 
@@ -632,23 +627,34 @@ describe("web zoom bindings", () => {
  */
 describe("web forwarding keys", () => {
   it("the whole global table is forwarded (quick todo / command palette / region switch)", () => {
-    const keys = pageForwardKeys();
+    const keys = pageForwardKeys(true);
     expect(keys).toContain("Mod-Shift-k"); // workspace.capture-todo
     expect(keys).toContain("Mod-p");
     expect(keys).toContain("Mod-Alt-a"); // region.focus-agent (reading region)
     expect(keys).toContain("Mod-="); // web zoom
-    // The bare paging keys are handled by the page itself and are not
-    // forwarded through IPC.
-    expect(keys).not.toContain("PageDown");
-    expect(keys).not.toContain("ArrowRight");
     // The screenshot key, which only makes sense for a PDF, is not
     // forwarded: pressing it inside a web page must not be silently swallowed.
     expect(keys).not.toContain("Mod-Shift-e");
   });
 
+  it("while the page is the page-turn target it turns its own pages: its keys are not forwarded", () => {
+    const keys = pageForwardKeys(true);
+    expect(keys).not.toContain("PageUp");
+    expect(keys).not.toContain("PageDown");
+    expect(keys).not.toContain("Mod-Shift-e");
+  });
+
+  it("once the assistant takes the middle the paging keys are forwarded: the main window scrolls the middle column", () => {
+    const keys = pageForwardKeys(false);
+    expect(keys).toContain("PageUp");
+    expect(keys).toContain("PageDown");
+    // The PDF screenshot is still the page's own business.
+    expect(keys).not.toContain("Mod-Shift-e");
+  });
+
   it("a binding the user moves into the reading region is forwarded too", () => {
     applyOverrides(normalizeOverrides({ reading: { "region.focus-agent": "Mod-Alt-z" } }));
-    expect(pageForwardKeys()).toContain("Mod-Alt-z");
+    expect(pageForwardKeys(true)).toContain("Mod-Alt-z");
   });
 
   it("only the content region's own bindings are forwarded: a notes / Agent rebind does not leak into the page", () => {
@@ -658,7 +664,7 @@ describe("web forwarding keys", () => {
         agent: { "region.focus-notes": "Mod-Alt-u" },
       }),
     );
-    const keys = pageForwardKeys();
+    const keys = pageForwardKeys(true);
     expect(keys).not.toContain("Mod-Alt-y");
     expect(keys).not.toContain("Mod-Alt-u");
     // The content region still holds its own copy of region navigation.
@@ -673,13 +679,13 @@ describe("web forwarding keys", () => {
         reading: { "study.web-zoom-in": "Mod-Shift-=" },
       }),
     );
-    const keys = pageForwardKeys();
+    const keys = pageForwardKeys(true);
     expect(keys).toContain("Mod-Shift-u");
     expect(keys).not.toContain("Mod-Shift-k");
     expect(keys).toContain("Mod-Shift-=");
 
     applyOverrides({ global: { "workspace.capture-todo": null } });
-    expect(pageForwardKeys()).not.toContain("Mod-Shift-u");
+    expect(pageForwardKeys(true)).not.toContain("Mod-Shift-u");
   });
 });
 
@@ -898,15 +904,15 @@ describe("config normalization boundaries", () => {
   });
 
   it("a region value that is not an object is skipped, the readable regions still apply", () => {
-    expect(
-      normalizeOverrides({ notes: "Mod-b", reading: { "study.pdf-next-page": "Ctrl-j" } }),
-    ).toEqual({ reading: { "study.pdf-next-page": "Ctrl-j" } });
+    expect(normalizeOverrides({ notes: "Mod-b", reading: { "view.page-next": "Ctrl-j" } })).toEqual(
+      { reading: { "view.page-next": "Ctrl-j" } },
+    );
   });
 
   it("the written file round-trips through the reader unchanged", () => {
     const overrides = {
       notes: { "edit.toggle-bold": "Mod-Shift-b" as const, "edit.toggle-italic": null },
-      reading: { "study.pdf-next-page": ["Ctrl-J", "Ctrl-K"] as string[] },
+      reading: { "view.page-next": ["Ctrl-J", "Ctrl-K"] as string[] },
     };
     expect(normalizeOverrides(JSON.parse(serializeOverrides(overrides)))).toEqual(overrides);
   });

@@ -42,19 +42,19 @@ beforeEach(() => {
 describe("keybinding config storage", () => {
   it("when the vault has a config file it is read directly, the legacy app config is left alone", async () => {
     mocks.readVaultFile.mockResolvedValue(
-      JSON.stringify({ reading: { "study.pdf-next-page": "Ctrl-j" } }),
+      JSON.stringify({ reading: { "study.web-zoom-out": "Ctrl-y" } }),
     );
     await loadKeymap(VAULT);
     expect(mocks.readVaultFile).toHaveBeenCalledWith("keybindings.json");
     expect(mocks.loadKeybindings).not.toHaveBeenCalled();
-    expect(bindingsForCommand("study.pdf-next-page")).toEqual(["Ctrl-j"]);
-    expect(regionOfCommand("study.pdf-next-page")).toBe("reading");
+    expect(bindingsForCommand("study.web-zoom-out")).toEqual(["Ctrl-y"]);
+    expect(regionOfCommand("study.web-zoom-out")).toBe("reading");
   });
 
   it("when the vault has no config yet the legacy flat table is migrated into regions and the old file is cleared", async () => {
     mocks.readVaultFile.mockResolvedValue(null);
     mocks.loadKeybindings.mockResolvedValue({
-      "study.pdf-next-page": "Ctrl-j",
+      "view.page-next": "Ctrl-j",
       "edit.toggle-bold": "Mod-b",
       "nav.command-palette": "Mod-p",
     });
@@ -62,14 +62,16 @@ describe("keybinding config storage", () => {
     expect(mocks.writeVaultFile).toHaveBeenCalledTimes(1);
     const [name, text] = mocks.writeVaultFile.mock.calls[0] as [string, string];
     expect(name).toBe("keybindings.json");
-    expect(text).toContain('"reading"');
+    // The flat table is split by each command's default region: the page-turn
+    // command is global.
+    expect(text).toContain('"global"');
     expect(text).toContain("Ctrl-j");
     expect(text).toContain("Mod-b");
     expect(text).toContain("Mod-p");
     // The legacy table is cleared once the migration succeeded: from now on
     // the vault file is the only source.
     expect(mocks.saveKeybindings).toHaveBeenCalledWith({});
-    expect(bindingsForCommand("study.pdf-next-page")).toEqual(["Ctrl-j"]);
+    expect(bindingsForCommand("view.page-next")).toEqual(["Ctrl-j"]);
     expect(bindingsForCommand("edit.toggle-bold")).toEqual(["Mod-b"]);
   });
 
@@ -175,39 +177,39 @@ describe("the override table", () => {
     mocks.readVaultFile.mockResolvedValue(JSON.stringify({}));
     await loadKeymap(VAULT);
 
-    await setOverride("study.pdf-next-page", "Ctrl-j", "reading");
-    await setOverride("study.pdf-next-page", "Ctrl-k", "agent");
+    await setOverride("view.page-next", "Ctrl-j", "reading");
+    await setOverride("view.page-next", "Ctrl-k", "agent");
 
-    expect(bindingsForCommand("study.pdf-next-page", "reading")).toEqual(["Ctrl-j"]);
-    expect(bindingsForCommand("study.pdf-next-page", "agent")).toEqual(["Ctrl-k"]);
+    expect(bindingsForCommand("view.page-next", "reading")).toEqual(["Ctrl-j"]);
+    expect(bindingsForCommand("view.page-next", "agent")).toEqual(["Ctrl-k"]);
   });
 
   it("clearing one region removes the override there and keeps the other regions' overrides", async () => {
     mocks.readVaultFile.mockResolvedValue(JSON.stringify({}));
     await loadKeymap(VAULT);
-    await setOverride("study.pdf-next-page", "Ctrl-j", "reading");
-    await setOverride("study.pdf-next-page", "Ctrl-k", "agent");
+    await setOverride("view.page-next", "Ctrl-j", "reading");
+    await setOverride("view.page-next", "Ctrl-k", "agent");
 
-    await clearOverride("study.pdf-next-page", "agent");
+    await clearOverride("view.page-next", "agent");
 
     // The agent region was only a copy of this command: dropping its override
     // leaves no binding there at all instead of inventing the reading default.
-    expect(bindingsForCommand("study.pdf-next-page", "agent")).toEqual([]);
-    expect(bindingsForCommand("study.pdf-next-page", "reading")).toEqual(["Ctrl-j"]);
+    expect(bindingsForCommand("view.page-next", "agent")).toEqual([]);
+    expect(bindingsForCommand("view.page-next", "reading")).toEqual(["Ctrl-j"]);
   });
 
   it("clearing without a region drops the command from every region", async () => {
     mocks.readVaultFile.mockResolvedValue(JSON.stringify({}));
     await loadKeymap(VAULT);
-    await setOverride("study.pdf-next-page", "Ctrl-j", "reading");
-    await setOverride("study.pdf-next-page", "Ctrl-k", "agent");
+    await setOverride("view.page-next", "Ctrl-j", "reading");
+    await setOverride("view.page-next", "Ctrl-k", "agent");
 
-    await clearOverride("study.pdf-next-page");
+    await clearOverride("view.page-next");
 
-    // Every region's entry is gone, so only the reading region's built-in
-    // defaults remain. An emptied region may stay as an empty map in memory;
+    // Every region's entry is gone, so only the global layer's built-in
+    // default remains. An emptied region may stay as an empty map in memory;
     // serialization drops it, so the file never accumulates empty sections.
-    expect(bindingsForCommand("study.pdf-next-page")).toEqual(["PageDown", "ArrowRight"]);
+    expect(bindingsForCommand("view.page-next")).toEqual(["PageDown"]);
     expect(flattenOverrides(getOverrides())).toEqual({});
     const written = JSON.parse(serializeOverrides(getOverrides())) as Record<string, unknown>;
     expect(Object.keys(written)).toEqual(["_hint"]);

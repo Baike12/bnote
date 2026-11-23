@@ -2,7 +2,6 @@ import { getCommand, runCommand, type CommandDef } from "./registry";
 import {
   commandsForKey,
   eventToKey,
-  fixedPageCommandFor,
   formOwnsEditChord,
   isEditableTarget,
   isPlainFocusOwnedKey,
@@ -203,7 +202,8 @@ export function installGlobalKeybindings() {
   // drive is either a click (pointerdown claims it) or a fallback case
   // (pickKeyRegion reads document.activeElement directly). Scrolling is
   // registered passive: scrolling is a hot path and the listener must not
-  // slow it down.
+  // slow it down. Typing claims too (see the keydown listener below): the
+  // caret is the one signal that says where the user is working right now.
   const claimRegion = (event: Event) => {
     const region = regionFromTarget(event.target);
     if (region) ownerRegion = region;
@@ -216,6 +216,18 @@ export function installGlobalKeybindings() {
     "keydown",
     (e) => {
       if (recordingHotkey || e.defaultPrevented) return;
+      // Typing claims the region it edits. Scrolling another column only
+      // proves where the user last scrolled, so a wheel over the Agent
+      // transcript (or the PDF) used to leave ownership there while the caret
+      // sat in the note editor — and the editor's own chords went dead under
+      // a visible caret. Unmodified editing keys only: after a click on the
+      // PDF the DOM focus still sits in the note editor (the reader never
+      // takes focus), and a chord there has to keep reaching the content
+      // region's bindings.
+      if (!modalOpen && !e.metaKey && !e.ctrlKey && !e.altKey && isEditableTarget(e.target)) {
+        const typed = regionFromTarget(e.target);
+        if (typed) ownerRegion = typed;
+      }
       const key = eventToKey(e);
       if (!key) return;
       // A text input's own editing chords (⌘A/C/X/V/⌘Z) take no part in
@@ -254,20 +266,6 @@ export function installGlobalKeybindings() {
         runCommand(id);
         return;
       }
-
-      // Fixed paging keys: PageUp/PageDown always page the reading region's
-      // content (PDF or web), even if the user rebound study.pdf-* elsewhere.
-      // They only apply in the reading region — PageUp inside the note editor
-      // belongs to the editor itself.
-      if (keyContext === "drawing" || region !== "reading") return;
-      const fixed = fixedPageCommandFor(e);
-      if (!fixed) return;
-      const fixedCmd = getCommand(fixed);
-      if (!fixedCmd || (fixedCmd.when && !fixedCmd.when())) return;
-      e.preventDefault();
-      e.stopPropagation();
-      recordCommandChord(e);
-      runCommand(fixed);
     },
     true,
   );
