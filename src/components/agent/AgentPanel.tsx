@@ -2104,7 +2104,7 @@ export function AgentPanel() {
             activeConv?.agent
               ? "子代理会话只读:选中文字可复制,返回主会话继续对话"
               : mode === "code"
-                ? "描述要改什么…(bash/编辑/测试;/compact 压缩上下文)"
+                ? "描述要改什么…(/ 命令、@ 文件)"
                 : creativeMode
                   ? "描述要创作的内容…(输入 / 调技能、@ 引用文件,可粘贴截图)"
                   : "询问当前内容…(可直接粘贴截图)"
