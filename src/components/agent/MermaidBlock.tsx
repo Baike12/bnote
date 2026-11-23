@@ -422,7 +422,6 @@ export const MermaidBlock = memo(function MermaidBlock({ code }: MermaidBlockPro
       role={svg ? "button" : undefined}
       tabIndex={svg ? 0 : undefined}
       aria-label={svg ? "放大 Mermaid 图表" : "Mermaid 图表"}
-      title={svg ? "点击放大" : undefined}
       onClick={svg ? openViewer : undefined}
       onKeyDown={
         svg
