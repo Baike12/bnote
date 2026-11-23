@@ -169,3 +169,57 @@ describe("the agent composer runs the shared vim engine", () => {
     expect(panelSrc).toContain("imeOnComposerFocus(true)");
   });
 });
+
+/**
+ * Gate for "edit and resend" (ZCode's `editUserQuery`).
+ *
+ * The panel used to offer no way back: a wrong prompt could only be followed by
+ * a correction, and the model kept reading the wrong question plus whatever the
+ * first attempt had produced. The rewrite is a branch cut, so the three parts
+ * that must agree are locked here at the source: the send path takes the edit
+ * route, the dying turn is silenced while the backend rewinds, and the record
+ * gets the marker that makes a restore read the same conversation.
+ */
+describe("edit and resend", () => {
+  const panelSrc = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
+  const transcriptSrc = readFileSync("src/components/agent/Transcript.tsx", "utf8");
+  const streamSrc = readFileSync("src/components/agent/streamEvents.ts", "utf8");
+
+  it("sending an edit calls the backend rewrite, never a plain send", () => {
+    const edited = panelSrc.slice(panelSrc.indexOf("async function sendEdited("));
+    expect(edited).toContain("agentApi.editUserMessage(");
+    // The trimmed rows and the record marker both come from the backend's
+    // kept count and the surviving prefix (one source for both).
+    expect(edited).toContain("rewindPrefix(live?.entries ?? conv.entries, edit.index)");
+    expect(edited).toContain("writer.persistRewind(conv.key, rewindKeep(prefix))");
+  });
+
+  it("a running turn is discarded while the rewrite happens", () => {
+    // The stream handler must not draw or record the turn being cut away, or
+    // the partial reply comes back above the rewritten message.
+    expect(panelSrc).toContain("discardingRef.current.add(conv.key)");
+    expect(panelSrc).toContain("discarding: (convKey) => discardingRef.current.has(convKey)");
+    expect(streamSrc).toContain("if (discarded(convKey)) return;");
+    expect(streamSrc).toContain("if (discarded(convKey)) return;\n    ctx.persistTurn");
+  });
+
+  it("only the last user message offers the handle, and it says where the text went", () => {
+    expect(transcriptSrc).toContain("editable={editTarget === index}");
+    expect(transcriptSrc).toContain("editing={editingIndex === index}");
+    expect(transcriptSrc).toContain("这条消息正在下方输入框里编辑");
+    expect(transcriptSrc).toContain("✎ 编辑中");
+    expect(panelSrc).toContain(
+      "editTargetIndex =\n    activeConv && !activeConv.agent && activeConv.sessionId\n      ? lastUserEntryIndex(activeConv.entries)",
+    );
+  });
+
+  it("the composer says it is rewriting a message and can always send", () => {
+    expect(panelSrc).toContain('className="agent-edit-bar"');
+    expect(panelSrc).toContain("正在编辑上一条消息");
+    // While a turn runs the button is Stop; an edit is what stops it, so the
+    // button must stay Send in edit mode.
+    expect(panelSrc).toContain(
+      "busy={activeBusy && !(editing && editing.convKey === activeConv?.key)}",
+    );
+  });
+});

@@ -8,6 +8,7 @@ exports[`every exported IPC wrapper reaches exactly one Rust command > command n
   "agentApi.compact": "agent_compact",
   "agentApi.contextBreakdown": "agent_context_breakdown",
   "agentApi.defaultLevels": "agent_default_levels",
+  "agentApi.editUserMessage": "agent_edit_user_message",
   "agentApi.focusStudyPreview": "focus_study_preview",
   "agentApi.generateTitle": "agent_generate_title",
   "agentApi.getConfig": "agent_get_config",

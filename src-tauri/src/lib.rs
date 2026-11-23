@@ -309,6 +309,7 @@ pub fn run() {
             commands::agent::agent_list_subagents,
             commands::agent::agent_default_levels,
             commands::agent::agent_send,
+            commands::agent::agent_edit_user_message,
             commands::agent::agent_abort,
             commands::agent::agent_stop_subagent,
             commands::agent::agent_get_history,

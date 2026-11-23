@@ -556,6 +556,22 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 .await
             )
         }
+        "agent_edit_user_message" => {
+            let images: Vec<crate::agent::types::InlineImage> = match args.get("images") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("BAD_ARGS: images: {}", e))?,
+            };
+            json_ok!(
+                agent::agent_edit_user_message(
+                    app.state(),
+                    arg_str(args, "sessionId")?,
+                    arg_str(args, "text")?,
+                    Some(images)
+                )
+                .await
+            )
+        }
         "agent_abort" => json_ok!(agent::agent_abort(app.state(), arg_str(args, "sessionId")?)),
         "agent_stop_subagent" => json_ok!(agent::agent_stop_subagent(
             app.state(),

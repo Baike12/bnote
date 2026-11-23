@@ -191,6 +191,16 @@ pub struct Session {
     pub mode_root: Option<std::path::PathBuf>,
     pub def: Arc<AgentDefinition>,
     pub items: Mutex<Vec<ChatItem>>,
+    /// Where the last real user prompt starts in `items`: the rewind anchor of
+    /// "edit and resend" (everything from there on is the turn that gets
+    /// thrown away).
+    ///
+    /// A prompt is not recognisable by shape — the loop injects its own user
+    /// messages (`<system-reminder>` attachments, wakeups, tool results) right
+    /// after it — so the index is recorded when the prompt enters the history
+    /// instead of being guessed from the content. A seeded history (restore /
+    /// fork) derives it once from the record shape, see `seed_history`.
+    last_prompt: Mutex<Option<usize>>,
     /// Assembled system prompt, assembled once when the session starts.
     ///
     /// It is never re-assembled: it is the front of every request, and the
@@ -374,9 +384,93 @@ pub fn tool_use_error(message: impl AsRef<str>) -> String {
     format!("<tool_use_error>{}</tool_use_error>", message.as_ref())
 }
 
+/// Whether `item` is a message the user typed (rather than one the loop
+/// injected: a reminder, a wakeup, or a tool result).
+fn is_user_prompt(item: &ChatItem) -> bool {
+    match item {
+        ChatItem::Message { role, content } => {
+            role == "user"
+                && !content
+                    .iter()
+                    .any(|c| matches!(c, Content::ToolResult { .. }))
+        }
+    }
+}
+
+/// The anchor of a seeded history: the last message the user typed.
+///
+/// Exact only for histories rebuilt from a session record (restore / fork): a
+/// record holds the user's own messages as `user` lines and never the reminders
+/// the loop injects mid-turn, so no injected message can be mistaken for a
+/// prompt. A live session's anchor comes from `send` instead.
+fn seeded_prompt_anchor(items: &[ChatItem]) -> Option<usize> {
+    items.iter().rposition(is_user_prompt)
+}
+
+/// Drops the prompt at `anchor` and everything after it. Returns the number of
+/// entries kept.
+///
+/// The anchor is validated against the history it names: compaction replaces
+/// the history with one summary message, and an anchor that survived that
+/// rewrite must fail loudly instead of truncating at an arbitrary point.
+fn truncate_at_prompt(items: &mut Vec<ChatItem>, anchor: Option<usize>) -> Result<usize, String> {
+    let Some(index) = anchor else {
+        return Err("NO_EDITABLE_MESSAGE: 这条会话没有可编辑的消息".into());
+    };
+    if index >= items.len() || !is_user_prompt(&items[index]) {
+        return Err(format!(
+            "STALE_HISTORY: 编辑锚点 {index} 与当前历史({} 条)不匹配",
+            items.len()
+        ));
+    }
+    items.truncate(index);
+    Ok(index)
+}
+
 impl Session {
     pub fn history(&self) -> Vec<ChatItem> {
         self.items.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Installs the history a restored or forked session continues from.
+    ///
+    /// Such a history is rebuilt from a session record, and a record stores
+    /// only what the user typed as a user line: the reminders the loop injects
+    /// never reach it. The last user message without a tool result is
+    /// therefore the last real prompt — the anchor "edit and resend" rewinds
+    /// to. A live session records its own anchor in `send`.
+    pub fn seed_history(&self, items: Vec<ChatItem>) {
+        let anchor = seeded_prompt_anchor(&items);
+        if let Ok(mut guard) = self.items.lock() {
+            *guard = items;
+        }
+        if let Ok(mut guard) = self.last_prompt.lock() {
+            *guard = anchor;
+        }
+    }
+
+    /// Drops the last user prompt and everything after it (the model's reply,
+    /// its tool calls and results): the next request starts from the new text
+    /// the caller sends instead.
+    ///
+    /// Returns the number of history entries kept — the count the message the
+    /// caller is about to send will start at. `Err` when the history holds no
+    /// prompt to edit (an empty session, or a subagent's seeded transcript).
+    pub fn rewind_last_prompt(&self) -> Result<usize, String> {
+        // The two locks are never held at once: a second writer taking them in
+        // the other order must not be able to deadlock against this one.
+        let anchor = {
+            let guard = self.last_prompt.lock().map_err(|e| e.to_string())?;
+            *guard
+        };
+        let kept = {
+            let mut items = self.items.lock().map_err(|e| e.to_string())?;
+            truncate_at_prompt(&mut items, anchor)?
+        };
+        if let Ok(mut guard) = self.last_prompt.lock() {
+            *guard = None;
+        }
+        Ok(kept)
     }
 
     /// Runs one user turn: stream → tool calls → results → repeat.
@@ -422,8 +516,16 @@ impl Session {
             self.push_reminder(context);
         }
         self.attach_at_mentions(text);
-        if let Ok(mut items) = self.items.lock() {
+        // The anchor of "edit and resend": the prompt's own index, recorded
+        // before any reminder joins the history behind it. A poisoned history
+        // leaves no anchor rather than one that names the previous prompt.
+        let prompt_index = self.items.lock().ok().map(|mut items| {
+            let index = items.len();
             items.push(ChatItem::user_message(text, &images));
+            index
+        });
+        if let Ok(mut anchor) = self.last_prompt.lock() {
+            *anchor = prompt_index;
         }
         // A turn that runs no tool never reaches the attachment flush inside the
         // loop; the first request still needs the date. Appended after the user
@@ -2287,6 +2389,9 @@ impl Session {
             mode_root: self.mode_root.clone(),
             def: child_def.clone(),
             items: Mutex::new(items),
+            // A subagent's transcript is read-only in the panel: no prompt of
+            // it is ever edited and resent.
+            last_prompt: Mutex::new(None),
             system_prompt: RwLock::new(assemble(&assemble_input)),
             context_message: Mutex::new(None),
             vault_name: self.vault_name.clone(),
@@ -2789,6 +2894,11 @@ impl Session {
                 "This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:\n\n{summary}\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
             ))];
         }
+        // The summary is not a prompt the user can edit: the old anchor points
+        // into a history that no longer exists.
+        if let Ok(mut anchor) = self.last_prompt.lock() {
+            *anchor = None;
+        }
         if let Ok(mut slot) = self.last_usage.lock() {
             *slot = None;
         }
@@ -3027,6 +3137,9 @@ pub fn create_session(seed: SessionSeed) -> Session {
         mode_root,
         def: seed.def.clone(),
         items: Mutex::new(Vec::new()),
+        // Empty until a turn is sent, or until `seed_history` derives it from
+        // the restored record.
+        last_prompt: Mutex::new(None),
         system_prompt: RwLock::new(assemble(&input)),
         context_message: Mutex::new(None),
         vault_name: seed.vault_name,
@@ -3076,6 +3189,91 @@ pub fn create_session(seed: SessionSeed) -> Session {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The "edit and resend" rewind: the prompt and the whole turn it opened
+    /// go away, so the model never sees the old question or a half reply.
+    #[test]
+    fn a_rewind_drops_the_prompt_and_everything_the_turn_produced() {
+        let assistant = ChatItem::Message {
+            role: "assistant".into(),
+            content: vec![Content::Text {
+                text: "qwert(还没说完".into(),
+            }],
+        };
+        let tool_result = ChatItem::Message {
+            role: "user".into(),
+            content: vec![Content::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+                images: Vec::new(),
+            }],
+        };
+        let mut items = vec![
+            ChatItem::user_text("上一轮"),
+            assistant.clone(),
+            ChatItem::user_message("abcd", &[]),
+            // A reminder the loop injects behind the prompt is part of the turn.
+            ChatItem::user_text("<system-reminder>今天…</system-reminder>"),
+            assistant.clone(),
+            tool_result,
+        ];
+        let kept = truncate_at_prompt(&mut items, Some(2)).expect("rewind");
+        assert_eq!(kept, 2);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], ChatItem::user_text("上一轮"));
+    }
+
+    /// A seeded history comes from a session record, so the last message the
+    /// user typed is the last prompt — injected reminders are never persisted
+    /// and tool results are not prompts.
+    #[test]
+    fn a_seeded_history_finds_the_last_typed_message_as_the_anchor() {
+        let items = vec![
+            ChatItem::user_message("first", &[]),
+            ChatItem::Message {
+                role: "assistant".into(),
+                content: vec![Content::ToolUse {
+                    id: "t1".into(),
+                    name: "Read".into(),
+                    input: json!({"path": "a.rs"}),
+                    input_error: None,
+                }],
+            },
+            ChatItem::Message {
+                role: "user".into(),
+                content: vec![Content::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                    images: Vec::new(),
+                }],
+            },
+            ChatItem::user_message("second", &[]),
+        ];
+        assert_eq!(seeded_prompt_anchor(&items), Some(3));
+        assert_eq!(seeded_prompt_anchor(&[]), None);
+    }
+
+    /// Compaction replaces the history: an anchor from before it must fail
+    /// instead of truncating a history it does not describe.
+    #[test]
+    fn an_anchor_that_does_not_name_a_prompt_is_rejected() {
+        let mut items = vec![ChatItem::user_text("summary of everything")];
+        assert!(truncate_at_prompt(&mut items, None).is_err());
+        assert!(truncate_at_prompt(&mut items, Some(3)).is_err());
+        assert_eq!(items.len(), 1);
+
+        let mut with_reply = vec![
+            ChatItem::user_message("abcd", &[]),
+            ChatItem::Message {
+                role: "assistant".into(),
+                content: vec![Content::Text { text: "hi".into() }],
+            },
+        ];
+        assert!(truncate_at_prompt(&mut with_reply, Some(1)).is_err());
+        assert_eq!(with_reply.len(), 2);
+    }
 
     #[test]
     fn the_report_is_the_last_message_never_a_stale_opening_line() {

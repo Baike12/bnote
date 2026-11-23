@@ -383,3 +383,82 @@ describe("the session metadata line (title + model config snapshot)", () => {
     expect(sessionMetaFromRaw(plain)?.model).toEqual(first);
   });
 });
+
+/**
+ * "Edit and resend" appends a rewind marker instead of rewriting the file:
+ * the record stays append-only, and every reader applies the markers it meets.
+ * A restore must rebuild the conversation the live session has — the edited
+ * question and the half reply it produced are gone, the continuation after the
+ * marker is kept.
+ */
+describe("a rewind marker (edit and resend)", () => {
+  it("drops the lines before it, keeps what was written after it", () => {
+    const raw = serializeTranscript([
+      buildSessionMeta({ at: 1, title: "会话", model: null }),
+      { type: "user", at: 2, text: "abcd" },
+      { type: "assistant", at: 3, text: "qwert(还没说完" },
+      // The user edits "abcd": one line survives (the user line before it), here none.
+      { type: "rewind", at: 4, keep: 0 },
+      { type: "user", at: 5, text: "abfg" },
+      { type: "assistant", at: 6, text: "新的回答" },
+    ]);
+    const lines = parseTranscript(raw);
+    expect(lines.map((l) => (l.type === "user" ? l.text : l.text))).toEqual(["abfg", "新的回答"]);
+    expect(
+      historyFromTranscript(lines).map((i) =>
+        i.type === "message" && i.content[0]?.type === "text" ? i.content[0].text : "",
+      ),
+    ).toEqual(["abfg", "新的回答"]);
+  });
+
+  it("keeps the prefix the marker names, on a conversation that already had turns", () => {
+    const raw = serializeTranscript([
+      { type: "user", at: 1, text: "第一问" },
+      { type: "assistant", at: 2, text: "第一答" },
+      { type: "user", at: 3, text: "第二问(要改)" },
+      { type: "assistant", at: 4, text: "半截" },
+      { type: "rewind", at: 5, keep: 2 },
+      { type: "user", at: 6, text: "第二问(改好)" },
+    ]);
+    expect(parseTranscript(raw).map((l) => l.text)).toEqual(["第一问", "第一答", "第二问(改好)"]);
+  });
+
+  it("applies the markers in order: a second rewind works on the first one's result", () => {
+    const raw = serializeTranscript([
+      { type: "user", at: 1, text: "a" },
+      { type: "user", at: 2, text: "b" },
+      { type: "rewind", at: 3, keep: 1 },
+      { type: "user", at: 4, text: "b2" },
+      { type: "user", at: 5, text: "c" },
+      { type: "rewind", at: 6, keep: 2 },
+      { type: "user", at: 7, text: "c2" },
+    ]);
+    expect(parseTranscript(raw).map((l) => l.text)).toEqual(["a", "b2", "c2"]);
+  });
+
+  it("a marker never exceeds the lines actually present (a damaged record truncates, it does not invent)", () => {
+    const raw = serializeTranscript([
+      { type: "user", at: 1, text: "唯一一条" },
+      { type: "rewind", at: 2, keep: 9 },
+    ]);
+    expect(parseTranscript(raw).map((l) => l.text)).toEqual(["唯一一条"]);
+  });
+
+  it("the title and the model snapshot are unaffected by a rewind marker", () => {
+    const model = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      baseUrl: "https://api.example.com",
+      maxTokens: 8192,
+      contextWindow: 200_000,
+    };
+    const raw = serializeTranscript([
+      buildSessionMeta({ at: 1, title: "标题", model }),
+      { type: "user", at: 2, text: "abcd" },
+      { type: "rewind", at: 3, keep: 0 },
+      { type: "user", at: 4, text: "abfg" },
+    ]);
+    expect(sessionMetaFromRaw(raw)).toMatchObject({ title: "标题", model });
+    expect(sessionTitleFromLines(parseTranscript(raw))).toBe("abfg");
+  });
+});

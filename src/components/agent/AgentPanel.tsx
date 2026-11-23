@@ -74,6 +74,7 @@ import {
   type SubagentRun,
 } from "@/components/agent/subagents";
 import { collectAgentCards, createAgentCards } from "@/components/agent/agentCards";
+import { lastUserEntryIndex, rewindKeep, rewindPrefix } from "@/components/agent/editResend";
 import { followTranscript, measureTurnCap } from "@/components/agent/panelScroll";
 import { resolveSelection, sessionSelection } from "@/components/agent/modelSelection";
 import { createStreamHandler } from "@/components/agent/streamEvents";
@@ -210,6 +211,28 @@ export function AgentPanel() {
   useEffect(() => {
     composerRef.current?.view()?.requestMeasure();
   }, [agentFontScale]);
+  /**
+   * The message loaded in the composer to be rewritten and resent (ZCode's
+   * composer edit mode): which conv, which row, and the draft it replaced —
+   * cancel puts that draft back.
+   */
+  const [editing, setEditing] = useState<{
+    convKey: string;
+    index: number;
+    stash: { text: string; images: AgentImage[] };
+  } | null>(null);
+  /**
+   * The convs whose in-flight turn is being thrown away by an edit: the stream
+   * handler must draw and record nothing for them until the rewrite is done.
+   */
+  const discardingRef = useRef<Set<string>>(new Set());
+  /** An edit is being submitted: neither cancel nor another target may move under the backend's rewind. */
+  const editSubmittingRef = useRef(false);
+  /** The pending images, readable from callbacks whose identity must not follow every keystroke. */
+  const pendingImagesRef = useRef<AgentImage[]>([]);
+  useEffect(() => {
+    pendingImagesRef.current = pendingImages;
+  }, [pendingImages]);
   const historyRef = useRef<HTMLDivElement>(null);
   const historyFocusPending = useRef(false);
   /** agentPanelCommand is an increasing counter: only the entry that is newer than the last one is executed. */
@@ -393,6 +416,15 @@ export function AgentPanel() {
   );
 
   const activeConv = convs.find((c) => c.key === activeKey) ?? null;
+  /**
+   * The row the "edit and resend" handle sits on: the last user message of a
+   * conversation that has a live session. A subagent's timeline and a session
+   * that never came up have nothing to resend to.
+   */
+  const editTargetIndex =
+    activeConv && !activeConv.agent && activeConv.sessionId
+      ? lastUserEntryIndex(activeConv.entries)
+      : null;
   /**
    * The project sidebar's active-row highlight. The sidebar store owns that
    * value; the panel is its only writer, so it publishes what it is actually
@@ -1274,6 +1306,19 @@ export function AgentPanel() {
         });
       },
       afterEvent: (convKey) => {
+        // An event of the conversation on screen proves its session is
+        // generating. This restores the flag when an edit's rewind raced it:
+        // the stopped turn's terminal event may arrive after the panel already
+        // marked the replacement turn busy, and clearing it there would leave
+        // the box showing Send while a reply streams.
+        if (activeKeyRef.current === convKey && turnsRef.current.has(convKey)) {
+          const conv = convsRef.current.find((c) => c.key === convKey);
+          const sessionId = conv && !conv.agent ? conv.sessionId : null;
+          if (sessionId && busyRef.current !== sessionId) {
+            busyRef.current = sessionId;
+            setBusySession(sessionId);
+          }
+        }
         // Stream auto-scroll, only for the conversation that is on screen: a
         // background session's reply must never move the view the user reads.
         requestAnimationFrame(() => {
@@ -1283,6 +1328,7 @@ export function AgentPanel() {
             followTranscript(scroller, turnCapRef.current) ?? lastFollowPosRef.current;
         });
       },
+      discarding: (convKey) => discardingRef.current.has(convKey),
     });
   }
   const handleAgentEvent = streamRef.current;
@@ -1426,6 +1472,107 @@ export function AgentPanel() {
     [showToast, updateConv],
   );
 
+  /**
+   * The user's own bubble must be visible the moment it is sent. In a long
+   * conversation it lands below the fold, and the only other scroll points are
+   * the session switch and a stream event — without this the bubble looks like
+   * it arrives together with the reply (the first token).
+   * The turn's freeze cap is measured now: the reply that starts streaming
+   * below this bubble may scroll the view only until that bubble's bottom line
+   * reaches the shade line.
+   */
+  function revealSentBubble() {
+    requestAnimationFrame(() => {
+      const scroller = scrollRef.current;
+      if (!scroller) return;
+      followRef.current = true;
+      lastFollowPosRef.current = null;
+      turnCapRef.current = measureTurnCap(scroller);
+      scroller.scrollTo({ top: scroller.scrollHeight });
+    });
+  }
+
+  /**
+   * Submits the message being edited ("edit and resend").
+   *
+   * The backend stops a running turn, drops the old prompt and everything it
+   * produced from the session history, and opens the next turn with the new
+   * text. The panel mirrors that: the rows from the edited message on are
+   * dropped, and the record gets a rewind marker before the new user line — so
+   * a restore reads the same conversation the live session has.
+   */
+  async function sendEdited(
+    conv: Conv,
+    edit: NonNullable<typeof editing>,
+    text: string,
+    modelText: string,
+    images: AgentImage[],
+    info: string,
+  ) {
+    if (!text && images.length === 0) {
+      // An empty prompt would leave the model with a turn that says nothing.
+      showToast("消息不能为空");
+      return;
+    }
+    // Whatever the stopped turn still emits belongs to the branch being cut:
+    // it must land neither in the rows nor in the record.
+    discardingRef.current.add(conv.key);
+    editSubmittingRef.current = true;
+    try {
+      const { keptItems } = await agentApi.editUserMessage(info, modelText, images);
+      // Re-read the list: the streaming turn may have appended a draft row
+      // since the render this click belongs to.
+      const live = convsRef.current.find((c) => c.key === conv.key);
+      const prefix = rewindPrefix(live?.entries ?? conv.entries, edit.index);
+      const at = Date.now();
+      writeComposer("");
+      setPendingImages([]);
+      setEditing(null);
+      setSuggestTrigger(null);
+      // The stopped turn is dead even if its terminal event has not been
+      // handled yet: without a live turn there is nothing left to commit, so a
+      // late one cannot draw the discarded reply above the rewritten message.
+      turnsRef.current.delete(conv.key);
+      busyRef.current = info;
+      setBusySession(info);
+      updateConv(conv.key, (c) => ({
+        ...c,
+        error: undefined,
+        errorKind: undefined,
+        entries: [
+          ...prefix,
+          {
+            role: "user",
+            text,
+            at,
+            images: images.length > 0 ? images : undefined,
+            // The backend just rewound to `keptItems`: the new prompt is the
+            // entry right after them.
+            items: keptItems + 1,
+          },
+        ],
+      }));
+      writer.persistRewind(conv.key, rewindKeep(prefix));
+      writer.persistUserLine(conv.key, {
+        type: "user",
+        at,
+        text,
+        images: images.length > 0 ? images : undefined,
+      });
+      revealSentBubble();
+    } catch (e) {
+      // The backend refused before touching the history (no prompt to edit, a
+      // turn that would not stop): the old branch is whole, the edit stays open
+      // with what the user typed.
+      const message = String(e).replace(/^[A-Z_]+:\s*/, "");
+      showToast(message);
+      updateConv(conv.key, (c) => ({ ...c, error: message, errorKind: "send" }));
+    } finally {
+      editSubmittingRef.current = false;
+      discardingRef.current.delete(conv.key);
+    }
+  }
+
   async function send() {
     // Read from the editor, not the mirrored state: the send key runs in the
     // capture phase, and the last keystroke's React state may still be a render
@@ -1444,13 +1591,18 @@ export function AgentPanel() {
       showToast("子代理会话只读,返回主会话继续对话");
       return;
     }
+    // The message being edited replaces the last one instead of following it;
+    // it is never a panel command, so the builtin branch is skipped for it.
+    const editingThis = editing && editing.convKey === conv.key ? editing : null;
     // Built-in panel commands (/compact /clear /help): panel actions, never a
     // message — the model never sees them.
-    const builtin = parseBuiltinCommand(text);
-    if (builtin) {
-      writeComposer("");
-      await runBuiltinCommand(builtin, conv, builtinContext);
-      return;
+    if (!editingThis) {
+      const builtin = parseBuiltinCommand(text);
+      if (builtin) {
+        writeComposer("");
+        await runBuiltinCommand(builtin, conv, builtinContext);
+        return;
+      }
     }
     const info = conv.sessionId;
     if (!info) {
@@ -1462,11 +1614,12 @@ export function AgentPanel() {
       }));
       return;
     }
-    if (busyRef.current === info) {
+    if (!editingThis && busyRef.current === info) {
       // A turn is still generating. Returning silently here is what reads as
       // "sending does nothing": the backend may be inside a model retry, so
       // the message would disappear without a trace. Say so; the stop button
-      // is the exit.
+      // is the exit. Editing is the one send that may arrive now: it stops the
+      // turn, because the reply is about to be thrown away.
       showToast("上一条回复还在生成:先停止或等它结束");
       return;
     }
@@ -1490,6 +1643,12 @@ export function AgentPanel() {
       }
     }
     const images = pendingImages;
+    if (editingThis) {
+      // The text in the box replaces the message being edited (the transcript
+      // takes the words, the model the skill-expanded form, as with a send).
+      await sendEdited(conv, editingThis, text, modelText, images, info);
+      return;
+    }
     writeComposer("");
     setPendingImages([]);
     busyRef.current = info;
@@ -1511,21 +1670,7 @@ export function AgentPanel() {
         { role: "user", text, at, images: images.length > 0 ? images : undefined, items },
       ],
     }));
-    // The user's own bubble must be visible the moment it is sent. In a long
-    // conversation it lands below the fold, and the only other scroll points
-    // are the session switch and a stream event — without this the bubble
-    // looks like it arrives together with the reply (the first token).
-    // The turn's freeze cap is measured now: the reply that starts streaming
-    // below this bubble may scroll the view only until that bubble's bottom
-    // line reaches the shade line.
-    requestAnimationFrame(() => {
-      const scroller = scrollRef.current;
-      if (!scroller) return;
-      followRef.current = true;
-      lastFollowPosRef.current = null;
-      turnCapRef.current = measureTurnCap(scroller);
-      scroller.scrollTo({ top: scroller.scrollHeight });
-    });
+    revealSentBubble();
     try {
       await agentApi.send(info, modelText, images);
       // The backend accepted the message: the question enters the record now
@@ -1573,6 +1718,66 @@ export function AgentPanel() {
       })
       .catch((e) => showToast(String(e).replace(/^[A-Z_]+:\s*/, "")));
   }
+
+  /**
+   * Loads the last user message into the composer to rewrite and resend it.
+   *
+   * The draft in the box is stashed, not copied: cancel (or leaving the
+   * conversation) puts it back. Only the last user message is offered — an
+   * older one would take every later turn with it.
+   */
+  const beginEdit = useCallback(
+    (index: number) => {
+      const conv = activeConv;
+      if (!conv || conv.agent || editSubmittingRef.current) return;
+      if (!conv.sessionId) {
+        showToast("会话未就绪,不能编辑这条消息");
+        return;
+      }
+      const entry = conv.entries[index];
+      if (!entry || entry.role !== "user") return;
+      if (editing && editing.convKey === conv.key && editing.index === index) {
+        composerRef.current?.focus();
+        return;
+      }
+      // A second target keeps the draft from before the first edit: the stash
+      // is always "what the user was writing", never the message being edited.
+      const stash =
+        editing && editing.convKey === conv.key
+          ? editing.stash
+          : { text: composerRef.current?.text() ?? "", images: pendingImagesRef.current };
+      setEditing({ convKey: conv.key, index, stash });
+      setInput(entry.text);
+      composerRef.current?.setText(entry.text);
+      setPendingImages(entry.images ?? []);
+      setSuggestTrigger(null);
+      composerRef.current?.focus();
+      // A programmatic edit must leave the box ready to type: in vim normal
+      // mode the loaded text would be a motion surface, not a prompt.
+      composerRef.current?.enterInsert();
+    },
+    [activeConv, editing, showToast],
+  );
+
+  /** Drops the edit and gives the composer its own draft back. */
+  function cancelEdit() {
+    if (!editing || editSubmittingRef.current) return;
+    setEditing(null);
+    setInput(editing.stash.text);
+    composerRef.current?.setText(editing.stash.text);
+    setPendingImages(editing.stash.images);
+    composerRef.current?.focus();
+  }
+
+  // Leaving the conversation abandons the edit (the stash belongs to that
+  // conversation): the draft comes back instead of following the switch.
+  useEffect(() => {
+    if (!editing || editing.convKey === activeKey || editSubmittingRef.current) return;
+    setEditing(null);
+    setInput(editing.stash.text);
+    composerRef.current?.setText(editing.stash.text);
+    setPendingImages(editing.stash.images);
+  }, [activeKey, editing]);
 
   /**
    * Fork an auxiliary session from the message at index: the prefix of the
@@ -2020,6 +2225,9 @@ export function AgentPanel() {
         reading={readingKey !== null && readingKey === activeConv?.key}
         allowFork={!activeConv?.agent}
         onFork={forkFrom}
+        editTarget={editTargetIndex}
+        editingIndex={editing && editing.convKey === activeConv?.key ? editing.index : null}
+        onEdit={beginEdit}
         agents={agentCards}
         onOpenAgent={activateConv}
         onStopAgent={stopAgent}
@@ -2072,6 +2280,16 @@ export function AgentPanel() {
       )}
 
       <div className="agent-composer">
+        {editing && editing.convKey === activeConv?.key && (
+          // ZCode's composer edit mode: the box says what it is rewriting, and
+          // the only way out is the button (Esc belongs to vim/the editor).
+          <div className="agent-edit-bar">
+            <span className="agent-edit-bar-label">✎ 正在编辑上一条消息</span>
+            <button className="agent-edit-bar-cancel" onClick={cancelEdit}>
+              取消
+            </button>
+          </div>
+        )}
         {suggestTrigger && suggestItems.length > 0 && (
           <AgentSuggest
             kind={suggestTrigger.kind}
@@ -2155,7 +2373,8 @@ export function AgentPanel() {
             modelControl={
               <ModelPicker cfg={agentConfig} selection={activeSelection} onChange={changeModel} />
             }
-            busy={activeBusy}
+            // An edit is always sendable: it is what stops the running turn.
+            busy={activeBusy && !(editing && editing.convKey === activeConv?.key)}
             sessionId={activeConv?.sessionId ?? null}
             canSend={Boolean(
               !activeConv?.agent &&

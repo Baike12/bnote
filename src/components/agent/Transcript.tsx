@@ -502,6 +502,9 @@ const EntryRow = memo(function EntryRow({
   forkable,
   actions,
   onFork,
+  editable,
+  editing,
+  onEdit,
   agents,
   onOpenAgent,
   onStopAgent,
@@ -513,6 +516,11 @@ const EntryRow = memo(function EntryRow({
   /** Draw the end-of-reply footer (the main transcript; a subagent preview stays compact). */
   actions: boolean;
   onFork: (index: number) => void;
+  /** This is the last user message: it can be rewritten and resent. */
+  editable: boolean;
+  /** This message is loaded in the composer right now. */
+  editing: boolean;
+  onEdit: (index: number) => void;
   agents: AgentCards;
   onOpenAgent: (convKey: string) => void;
   onStopAgent: (run: SubagentRun) => void;
@@ -584,12 +592,28 @@ const EntryRow = memo(function EntryRow({
           ⤷
         </button>
       )}
+      {/* The message is loaded in the composer: say so here, where the user
+          looks for it — the bubble itself stays as it was (ZCode's composer
+          edit mode). The label is short because a long bubble reaches far
+          into this corner; the full sentence is the tooltip. */}
+      {editing && entry.role === "user" && (
+        <span className="agent-edit-hint" title="这条消息正在下方输入框里编辑">
+          ✎ 编辑中
+        </span>
+      )}
+      {editable && !editing && entry.role === "user" && (
+        <button className="agent-edit" title="编辑并重新发送这条消息" onClick={() => onEdit(index)}>
+          ✎
+        </button>
+      )}
     </div>
   );
 });
 
 /** A noop fork handler for nested rows: nothing inside a card is forkable. */
 const NO_FORK = () => {};
+/** Editing is never offered on a nested row (a compact preview of a subagent). */
+const NO_EDIT = () => {};
 /** Nested rows never hold subagent cards: a subagent cannot dispatch one. */
 const EMPTY_CARDS = createAgentCards();
 const NO_OPEN = () => {};
@@ -775,6 +799,9 @@ function SubagentCard({
                   forkable={false}
                   actions={false}
                   onFork={NO_FORK}
+                  editable={false}
+                  editing={false}
+                  onEdit={NO_EDIT}
                   agents={EMPTY_CARDS}
                   onOpenAgent={NO_OPEN}
                   onStopAgent={NO_STOP}
@@ -821,6 +848,9 @@ export function AgentTranscript({
   reading = false,
   welcome,
   onFork,
+  editTarget = null,
+  editingIndex = null,
+  onEdit,
   allowFork = true,
   actions = true,
   agents,
@@ -836,6 +866,15 @@ export function AgentTranscript({
   reading?: boolean;
   welcome: ReactNode;
   onFork: (index: number) => void;
+  /**
+   * The index of the last user message when it may be edited and resent
+   * (null: the conversation has none, or the session cannot take one — a
+   * subagent's timeline, a session that is not up yet).
+   */
+  editTarget?: number | null;
+  /** The message loaded in the composer right now (its row says so instead of offering the handle again). */
+  editingIndex?: number | null;
+  onEdit?: (index: number) => void;
   /** A subagent's transcript is read-only: no fork handles (its session is not the app's to fork). */
   allowFork?: boolean;
   /** Draw the end-of-reply footer (clock / copy / fork); off for compact previews. */
@@ -913,6 +952,9 @@ export function AgentTranscript({
                 forkable={allowFork && !busy}
                 actions={actions}
                 onFork={onFork}
+                editable={editTarget === index}
+                editing={editingIndex === index}
+                onEdit={onEdit ?? NO_EDIT}
                 agents={agents}
                 onOpenAgent={onOpenAgent}
                 onStopAgent={onStopAgent}

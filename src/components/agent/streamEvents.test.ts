@@ -55,6 +55,8 @@ function makeHarness() {
   const plans: boolean[] = [];
   const subagentStarts: string[] = [];
   const subagentEnds: string[] = [];
+  /** The convs whose in-flight turn is being edited away. */
+  const discarding = new Set<string>();
 
   const build = (): StreamContext => ({
     convs: () => convs,
@@ -77,6 +79,7 @@ function makeHarness() {
     onSubagentStart: (_parent, event) => subagentStarts.push(event.agentId),
     onSubagentEnd: (_parent, event) => subagentEnds.push(event.agentId),
     afterEvent: (convKey) => scrolled.push(convKey),
+    discarding: (convKey) => discarding.has(convKey),
   });
 
   const handler = createStreamHandler(build());
@@ -97,6 +100,7 @@ function makeHarness() {
     plans,
     subagentStarts,
     subagentEnds,
+    discarding,
   };
 }
 
@@ -523,5 +527,54 @@ describe("stream events: events without a live turn are no-ops", () => {
     expect(tools[0]).toMatchObject({ id: "t1" });
     expect(tools[0]?.output).toBeUndefined();
     expect(tools[1]).toMatchObject({ id: "t2", ok: false, output: "denied" });
+  });
+});
+
+/**
+ * "Edit and resend" stops the running turn and cuts the branch away. While
+ * that happens the dying turn must neither draw a row nor reach the record —
+ * and it must still release the busy flag, or the panel would wait for a turn
+ * it already threw away.
+ */
+describe("stream events: a turn that is being edited away", () => {
+  it("freezes the rows, writes no record line, and still clears busy", () => {
+    const h = makeHarness();
+    h.send({ type: "text_delta", text: "qwert" });
+    // The draft row drawn before the submit stays as it was: the panel trims
+    // the whole branch by index once the backend confirms the rewind.
+    const before = h.convs()[0]?.entries[0]?.text;
+    const flushedBefore = h.persisted.length;
+    h.discarding.add("c1");
+    h.send({ type: "text_delta", text: "（还没说完" });
+    h.send({ type: "tool_start", id: "t1", name: "Read", input: {} });
+    h.send({ type: "turn_end", reason: "aborted", items: 2 });
+    expect(h.convs()[0]?.entries).toHaveLength(1);
+    expect(h.convs()[0]?.entries[0]?.text).toBe(before);
+    // Nothing of the dying turn reaches the record after the submit.
+    expect(h.persisted).toHaveLength(flushedBefore);
+    expect(h.cleared).toEqual(["s1"]);
+    // The discarded turn never names the session (its prompt is replaced).
+    expect(h.closed).toHaveLength(0);
+    // The live turn is gone, so the next one starts from a clean slate.
+    expect(h.turns.size).toBe(0);
+  });
+
+  it("an error with no live turn is dropped for a discarded conv", () => {
+    const h = makeHarness();
+    h.discarding.add("c1");
+    h.send({ type: "error", message: "provider down", items: 3 });
+    expect(h.convs()[0]?.entries).toHaveLength(0);
+    expect(h.persisted).toHaveLength(0);
+    expect(h.cleared).toEqual(["s1"]);
+  });
+
+  it("writing resumes once the caller has rewound and lifted the discard", () => {
+    const h = makeHarness();
+    h.discarding.add("c1");
+    h.send({ type: "text_delta", text: "old" });
+    h.send({ type: "turn_end", reason: "aborted", items: 0 });
+    h.discarding.delete("c1");
+    h.send({ type: "text_delta", text: "新的" });
+    expect(h.convs()[0]?.entries[0]?.text).toBe("新的");
   });
 });

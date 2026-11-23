@@ -55,6 +55,14 @@ export interface StreamContext {
   ): void;
   /** The event was handled: let the on-screen transcript follow (scroll). */
   afterEvent(convKey: string): void;
+  /**
+   * The conv's in-flight turn is being edited away ("edit and resend"): the
+   * backend has stopped it and the caller trims its rows, so what this turn
+   * still emits must neither be drawn nor recorded. The turn object keeps
+   * accumulating, so an event that does belong to the *next* turn (it can only
+   * arrive after the caller stopped discarding) is drawn whole.
+   */
+  discarding?(convKey: string): boolean;
 }
 
 export function createStreamHandler(
@@ -69,8 +77,20 @@ export function createStreamHandler(
     return turn;
   }
 
+  /** A throwing-away turn writes nothing: no row, no record line. */
+  function discarded(convKey: string): boolean {
+    return ctx.discarding?.(convKey) === true;
+  }
+
+  /** The per-delta flush, silenced for a turn that is being discarded. */
+  function flush(convKey: string, turn: Turn, force = false): void {
+    if (discarded(convKey)) return;
+    ctx.persistTurn(convKey, turn, undefined, force);
+  }
+
   /** Replace the streaming draft in place (a second append put every reply twice). */
   function writeEntries(convKey: string, turn: Turn, finalize: boolean, items: number | null) {
+    if (discarded(convKey)) return;
     ctx.patchConvs((prev) =>
       prev.map((c) => {
         if (c.key !== convKey) return c;
@@ -104,6 +124,9 @@ export function createStreamHandler(
       turn.turnMs = Date.now() - turn.startedAt;
     }
     ctx.turns.delete(convKey);
+    // A turn being edited away never lands: no row and no record line — the
+    // caller rewinds both to before the prompt.
+    if (discarded(convKey)) return;
     writeEntries(convKey, turn, true, items);
     ctx.persistTurn(convKey, turn);
   }
@@ -129,7 +152,9 @@ export function createStreamHandler(
               turn.turnMs = Date.now() - turn.startedAt;
             }
             ctx.turns.delete(entry.convKey);
-            ctx.persistTurn(entry.convKey, turn, entry.path ?? undefined);
+            if (!discarded(entry.convKey)) {
+              ctx.persistTurn(entry.convKey, turn, entry.path ?? undefined);
+            }
           }
           ctx.sessionIndex.delete(sessionId);
         }
@@ -153,7 +178,7 @@ export function createStreamHandler(
         const turn = ensureTurn(conv.key);
         // A delta after a finished tool batch opens the next provider round:
         // what came before is complete, write it before the tail grows.
-        ctx.persistTurn(conv.key, turn, undefined, false);
+        flush(conv.key, turn);
         appendThinking(turn, event.text, Date.now());
         writeEntries(conv.key, turn, false, null);
         break;
@@ -170,7 +195,7 @@ export function createStreamHandler(
       }
       case "text_delta": {
         const turn = ensureTurn(conv.key);
-        ctx.persistTurn(conv.key, turn, undefined, false);
+        flush(conv.key, turn);
         // The model moved from thinking to writing: the block's duration is
         // now known, and a further thinking delta opens a new row.
         closeThinking(turn, Date.now());
@@ -185,7 +210,7 @@ export function createStreamHandler(
         // The new call belongs to the next assistant message: the previous
         // round's outputs are all in (the backend runs a batch to completion
         // before the next stream round) — flush it.
-        ctx.persistTurn(conv.key, turn, undefined, false);
+        flush(conv.key, turn);
         turn.tools = [...turn.tools, { id: event.id, name: event.name, input: event.input }];
         pushToolStep(turn, event.id, Date.now());
         writeEntries(conv.key, turn, false, null);
@@ -278,7 +303,9 @@ export function createStreamHandler(
         const ended = ctx.turns.get(conv.key);
         if (ended) ended.stopReason = event.reason;
         commitTurn(conv.key, event.items);
-        ctx.onTurnClosed?.(conv.key);
+        // The title is seeded from the message this turn answered: a turn being
+        // edited away never names the session.
+        if (!discarded(conv.key)) ctx.onTurnClosed?.(conv.key);
         ctx.clearBusy(sessionId);
         break;
       }
@@ -287,7 +314,7 @@ export function createStreamHandler(
         if (turn) {
           turn.error = event.message;
           commitTurn(conv.key, event.items);
-        } else {
+        } else if (!discarded(conv.key)) {
           const failed = errorTurn(event.message);
           ctx.updateConv(conv.key, (c) => ({
             ...c,

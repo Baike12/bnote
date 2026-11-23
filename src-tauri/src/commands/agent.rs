@@ -267,11 +267,11 @@ pub async fn agent_start_session(
     if let Ok(mut slot) = session.self_ref.lock() {
         *slot = Some(Arc::downgrade(&session));
     }
-    // Restore/fork seeds enter the history after construction.
+    // Restore/fork seeds enter the history after construction; the same call
+    // derives the "edit and resend" anchor from the record's shape (a record
+    // stores the user's own messages only).
     if !seed_items.is_empty() {
-        if let Ok(mut items) = session.items.lock() {
-            *items = seed_items;
-        }
+        session.seed_history(seed_items);
     }
     // SessionStart hooks run once, before the first request.
     session.run_start_hook().await;
@@ -645,6 +645,87 @@ pub async fn agent_send(
         }
     });
     Ok(())
+}
+
+/// How long "edit and resend" waits for a running turn to stop before giving
+/// up. The abort token ends a streaming request at once; the wait only covers
+/// the turn's closing hooks.
+const EDIT_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Edit the last user message and resend it (ZCode's `editUserQuery`).
+///
+/// A running turn is stopped first — the user realized the prompt was wrong
+/// while the reply was still streaming, so editing must not wait for it. Then
+/// the prompt and everything it produced leave the session history: the next
+/// request carries the new text instead of the old question plus a half
+/// reply. Returns the number of history entries kept (the caller trims its own
+/// view with it, and the new prompt is the next entry).
+#[tauri::command]
+pub async fn agent_edit_user_message(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+    images: Option<Vec<crate::agent::types::InlineImage>>,
+) -> CmdResult<serde_json::Value> {
+    let session = {
+        let registry = state.sessions.lock().map_err(|e| e.to_string())?;
+        registry
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?
+    };
+    // Validated before anything is destroyed: an empty prompt would cut the
+    // history away and then fail to open a turn, losing both.
+    if text.trim().is_empty() && images.as_ref().map_or(true, |list| list.is_empty()) {
+        return Err("BAD_ARGS: 消息不能为空".into());
+    }
+    // The truncation must not race the loop appending its own messages, so a
+    // live turn is aborted and awaited before the history is cut. Its terminal
+    // event still goes out (the panel clears "generating" from it).
+    if session.running.load(std::sync::atomic::Ordering::SeqCst) {
+        session.ctx.abort.abort();
+        let deadline = std::time::Instant::now() + EDIT_IDLE_TIMEOUT;
+        while session.running.load(std::sync::atomic::Ordering::SeqCst) {
+            if std::time::Instant::now() >= deadline {
+                return Err("SESSION_BUSY: 上一轮还在收尾,请稍后再试".into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+    if session
+        .running
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err("SESSION_BUSY: 还有回复在生成".into());
+    }
+    // Nothing destructive happens before the rewind succeeds: a session with
+    // no prompt (empty, or compacted) reports it and keeps its slot free.
+    let kept = match session.rewind_last_prompt() {
+        Ok(kept) => kept,
+        Err(message) => {
+            session
+                .running
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            return Err(message);
+        }
+    };
+    tauri::async_runtime::spawn(async move {
+        use futures::FutureExt;
+        let turn = std::panic::AssertUnwindSafe(session.send(&text, images.unwrap_or_default()));
+        if turn.catch_unwind().await.is_err() {
+            session.emit(crate::agent::types::AgentEvent::Error {
+                message: "会话内部错误,本轮已中止(可重试)".into(),
+                items: session.history().len(),
+            });
+        }
+    });
+    Ok(serde_json::json!({ "keptItems": kept }))
 }
 
 /// Stops the running turn. Returns whether the session is still live: `false`

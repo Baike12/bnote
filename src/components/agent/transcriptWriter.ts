@@ -47,6 +47,11 @@ export interface TranscriptWriter {
    * ended on.
    */
   persistModelLine(convKey: string, model: SessionModelConfig): void;
+  /**
+   * Append the marker of an "edit and resend": the conversation is `keep`
+   * lines long, the branch after it is dismissed on every later read.
+   */
+  persistRewind(convKey: string, keep: number): void;
   /** Start path: the metadata line is (or a restored record already has it) on disk. */
   markMetaWritten(convKey: string, written: boolean): void;
 }
@@ -143,5 +148,23 @@ export function createTranscriptWriter(deps: TranscriptWriterDeps): TranscriptWr
     append(convKey, path, serializeTranscript([{ type: "model", at: Date.now(), model }]));
   }
 
-  return { enqueue, persistUserLine, persistTurn, persistModelLine, markMetaWritten };
+  /**
+   * Mark a rewind: the conversation is `keep` lines long, everything appended
+   * after it belongs to the branch the user edited away. Queued like every
+   * other write, so it lands behind the lines it dismisses.
+   */
+  function persistRewind(convKey: string, keep: number): void {
+    const path = deps.pathOf(convKey);
+    if (!path) return;
+    append(convKey, path, serializeTranscript([{ type: "rewind", at: Date.now(), keep }]));
+  }
+
+  return {
+    enqueue,
+    persistUserLine,
+    persistTurn,
+    persistModelLine,
+    persistRewind,
+    markMetaWritten,
+  };
 }

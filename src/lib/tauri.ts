@@ -565,6 +565,14 @@ export const agentApi = {
   listProjectFiles: (workdir: string) => invoke<string[]>("agent_list_project_files", { workdir }),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
+  /**
+   * Edit the last user message and resend it: a running turn is stopped first,
+   * then that prompt and everything it produced leave the session history, and
+   * the new text opens the next turn. Resolves with the number of history
+   * entries kept — the new prompt is the entry right after them.
+   */
+  editUserMessage: (sessionId: string, text: string, images: AgentImage[] = []) =>
+    invoke<{ keptItems: number }>("agent_edit_user_message", { sessionId, text, images }),
   /** Stops the running turn; resolves false when the session is gone (no terminal event can arrive — the caller must clear busy itself). */
   abort: (sessionId: string) => invoke<boolean>("agent_abort", { sessionId }),
   /** Stops one subagent of a session (its own abort token; the parent turn keeps running). */

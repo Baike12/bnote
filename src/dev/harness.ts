@@ -219,6 +219,8 @@ declare global {
     __actions: typeof actions;
     /** The IPC layer (the object the fake vault replaces). */
     __api: typeof api;
+    /** The agent IPC methods (mutable): stub a session/send/edit to drive the panel's flow. */
+    __agentApi: typeof agentApi;
     /** Mount the real study mode components (AgentPanel + ContentPane), returns the unmount function. */
     __mountStudyLayout: () => () => void;
     /** Mount the code mode layout (agent | code project | notes), returns the unmount function. */
@@ -321,6 +323,14 @@ declare global {
           output?: string;
           entries?: { role: "user" | "assistant" | "notice"; text: string }[];
         };
+        /**
+         * The "edit and resend" handle: `editTarget` is the row drawn with the
+         * handle (the last user message), `editingIndex` the one loaded in the
+         * composer (its row says "✎ 编辑中" instead). A click lands in the
+         * host's dataset.lastAction as `edit:<index>`.
+         */
+        editTarget?: number | null;
+        editingIndex?: number | null;
       },
     ) => () => void;
     /**
@@ -564,6 +574,12 @@ window.__codeStore = useCodeStore;
 window.__actions = actions;
 /** The IPC layer (the fake vault intercepts exactly this) -- used for measurement/counting. */
 window.__api = api;
+/**
+ * The agent's IPC methods, mutable: there is no backend behind the harness, so
+ * a session / send / edit is stubbed here to drive the panel's own flow
+ * (the same object the panel imports, so the stubs are what it calls).
+ */
+window.__agentApi = agentApi;
 
 // Study materials own one directory (annotations + sessions). The fake vault
 // has no backend to resolve it, so pin one fixed directory: the annotation
@@ -1194,6 +1210,11 @@ window.__mountTranscript = (lines = [], opts = {}) => {
       busy: Boolean(opts.streaming),
       welcome: null,
       onFork: () => {},
+      editTarget: opts.editTarget ?? null,
+      editingIndex: opts.editingIndex ?? null,
+      onEdit: (index: number) => {
+        host.dataset.lastAction = `edit:${index}`;
+      },
       agents: cards,
       onOpenAgent: (key: string) => {
         host.dataset.lastAction = `open:${key}`;

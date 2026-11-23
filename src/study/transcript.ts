@@ -107,8 +107,26 @@ export interface TranscriptModelLine {
   model: SessionModelConfig;
 }
 
-/** A line that can appear in a session transcript (the metadata and model lines do not take part in the conversation rebuild). */
-export type TranscriptRecord = TranscriptLine | TranscriptMetaLine | TranscriptModelLine;
+/**
+ * A conversation rewind: "edit and resend" dropped the last user message and
+ * everything it produced.
+ *
+ * Appended, not rewritten: the record stays append-only, and every reader
+ * (restore, title, fork) applies the markers it meets. `keep` counts the
+ * conversation lines before the dropped branch, so a marker stays valid no
+ * matter what was written after it; a later marker supersedes the earlier
+ * ones by simply applying on top.
+ */
+export interface TranscriptRewindLine {
+  type: "rewind";
+  at: number;
+  /** How many conversation lines the prefix has (user + assistant lines, markers excluded). */
+  keep: number;
+}
+
+/** A line that can appear in a session transcript (the metadata, model and rewind lines do not take part in the conversation rebuild). */
+export type TranscriptRecord =
+  TranscriptLine | TranscriptMetaLine | TranscriptModelLine | TranscriptRewindLine;
 
 function isImage(value: unknown): value is AgentImage {
   if (!value || typeof value !== "object") return false;
@@ -290,6 +308,15 @@ export function parseTranscript(raw: string | null): TranscriptLine[] {
     if (!parsed || typeof parsed !== "object") continue;
     const v = parsed as Record<string, unknown>;
     const at = typeof v.at === "number" && Number.isFinite(v.at) ? v.at : 0;
+    if (v.type === "rewind") {
+      // The dropped branch is behind this marker and the messages written
+      // before it stay in the prefix; whatever follows the marker is the
+      // continuation and is kept as it comes.
+      if (typeof v.keep === "number" && Number.isInteger(v.keep) && v.keep >= 0) {
+        out.length = Math.min(out.length, v.keep);
+      }
+      continue;
+    }
     if (v.type === "user") {
       out.push({
         type: "user",

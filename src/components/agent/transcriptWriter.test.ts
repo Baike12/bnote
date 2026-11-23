@@ -371,3 +371,41 @@ describe("transcript writer: enqueue", () => {
     expect(order.filter((label) => label !== "other").slice(0, 2)).toEqual(["first", "second"]);
   });
 });
+
+describe("transcript writer: the rewind marker", () => {
+  it("appends behind the lines it dismisses, in queue order", async () => {
+    const writer = makeWriter();
+    writer.persistUserLine("c1", { type: "user", at: 1, text: "abcd" });
+    const turn = newTurn(2_000);
+    appendText(turn, "qwert");
+    writer.persistTurn("c1", turn);
+    writer.persistRewind("c1", 0);
+    writer.persistUserLine("c1", { type: "user", at: 3, text: "abfg" });
+    await vi.waitFor(() => expect(sink.appended).toHaveLength(4));
+    // The first write carries the metadata line and the prompt in one append.
+    expect(sink.appended.flatMap((write) => lines(write.data).map((line) => line.type))).toEqual([
+      "meta",
+      "user",
+      "assistant",
+      "rewind",
+      "user",
+    ]);
+    // The marker names the position the record has to read as its end.
+    const marker = lines(sink.appended[2].data)[0];
+    expect(marker).toMatchObject({ type: "rewind", keep: 0 });
+    const rewrite = lines(sink.appended[3].data)[0];
+    expect(rewrite).toMatchObject({ type: "user", text: "abfg" });
+  });
+
+  it("a conv with no record file yet writes nothing", async () => {
+    const writer = createTranscriptWriter({
+      pathOf: () => undefined,
+      homeOf: () => false,
+      modelOf: () => null,
+      refreshSessions: () => {},
+    });
+    writer.persistRewind("c1", 3);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sink.appended).toHaveLength(0);
+  });
+});

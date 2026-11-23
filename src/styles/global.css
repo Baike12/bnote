@@ -3968,6 +3968,74 @@ input[type="range"] {
   background: var(--bg2);
 }
 
+/* "Edit and resend": the same slot as the fork handle, offered on the last
+   user message and while the reply still streams (the edit is what stops it).
+   The hint replaces the handle while that message sits in the composer. */
+.agent-edit {
+  position: absolute;
+  top: 4px;
+  left: 22px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: calc(var(--agent-text) * 0.8);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.agent-msg-row:hover .agent-edit { opacity: 1; }
+.agent-edit:hover {
+  color: var(--accent);
+  background: var(--bg2);
+}
+.agent-edit-hint {
+  position: absolute;
+  top: 4px;
+  left: 2px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--accent);
+  font-size: calc(var(--agent-text) * 0.72);
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+/* The composer's edit state (ZCode's composer edit mode): a bar inside the
+   input card, so the box says what it is rewriting. */
+.agent-edit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px 4px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 12px 12px 0 0;
+}
+.agent-edit-bar-label {
+  color: var(--text-faint);
+  font-size: calc(var(--agent-text) * 0.8);
+}
+.agent-edit-bar-cancel {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: calc(var(--agent-text) * 0.78);
+  cursor: pointer;
+}
+.agent-edit-bar-cancel:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
 /* User message: a right aligned bubble (the bottom right corner shrinks,
    pointing at the source side); assistant message: no box, bare typography -
    after b-desktop, full width markdown is far calmer than wrapping every
