@@ -60,8 +60,8 @@
   /* All three column headers have the same height: their bottom borders form
      one line at the top of the window, and one pixel off would show as a
      step. The value is shared with the titlebar and the sidebar header
-     (--pane-head-h); 43 = 8px vertical padding x2 + 26px icon button + 1px
-     bottom border. */
+     (--pane-head-h); the headers carry no vertical padding and center their
+     26px controls inside that fixed height. */
   --study-head-h: var(--pane-head-h);
 }
 
@@ -233,7 +233,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  /* No vertical padding: the header is --pane-head-h tall (border-box) and
+     centers its 26px controls itself, so the height stays exact. */
+  padding: 0 12px;
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
   /* Same color as the top toolbar of the PDF in the middle column: the whole

@@ -150,7 +150,7 @@
      between two cards (the divider takes this width); a list rail has no
      inset on its window side and no seam towards the card beside it. */
   --pane-inset: 3px;
-  --pane-head-h: 43px;
+  --pane-head-h: 34px;
   --pane-foot-h: 26px;
 }
 

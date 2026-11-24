@@ -406,12 +406,16 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  /* The pane footer height is shared with the status bars (--pane-foot-h):
-     every card that ends in a footer ends on the same line. */
-  height: var(--pane-foot-h);
-  min-height: var(--pane-foot-h);
+  /* The pane footer height is shared with the status bars (--pane-foot-h).
+     A card ends on its own 1px border, inset by --pane-inset; the rail has no
+     card border, so it draws that line and keeps the same inset - the extra
+     pixel is that line, and both footers start and end on the same lines. */
+  height: calc(var(--pane-foot-h) + 1px);
+  min-height: calc(var(--pane-foot-h) + 1px);
+  margin-bottom: var(--pane-inset);
   padding: 0 8px 0 10px;
   border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   /* The rail is one surface top to bottom: no gray strip at its foot. */
   background: transparent;
 }
@@ -705,7 +709,9 @@
   height: 30px;
   padding: 0 6px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg1);
+  /* The card's header is body-colored: a gray strip would split the code
+     card from its own content (only the list rails are gray). */
+  background: var(--bg0);
   flex: none;
 }
 
@@ -884,7 +890,10 @@
   width: auto;
   min-width: 0;
   display: flex;
-  background: var(--bg1);
+  /* The code project is not one of the "file lists" (session list / vault
+     tree / project list): it lives inside the code card and keeps the body
+     surface, so the card reads as one piece. */
+  background: var(--bg0);
   overflow: hidden;
 }
 

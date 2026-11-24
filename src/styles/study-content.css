@@ -21,7 +21,7 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 0 10px;
   /* Same height as the headers of the left/right columns (see --study-head-h). */
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
@@ -206,7 +206,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
+  padding: 0 12px;
   min-height: var(--study-head-h);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
