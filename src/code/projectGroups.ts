@@ -114,9 +114,68 @@ export function projectRowIntent(
 }
 
 /**
- * Read the persisted collapse map (project key → collapsed). Only `true`
- * entries are kept: a missing key means expanded, so the stored shape stays
- * small and an unknown/corrupt value degrades to "all expanded".
+ * Read the persisted pin list (group keys in pin order). Non-string entries
+ * and duplicates are dropped, so a corrupt value degrades to "nothing pinned"
+ * instead of failing the module load.
+ */
+export function parsePinned(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    const out: string[] = [];
+    for (const entry of value) {
+      if (typeof entry === "string" && entry && !out.includes(entry)) out.push(entry);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Float pinned projects to the top. The pin list is the desired order (the
+ * newest pin first, `togglePin` prepends); every other project keeps its
+ * stabilized position. A pinned key that is not in the list (a removed
+ * project that was never reopened) simply has no row to move.
+ */
+export function orderPinnedGroups<T extends { key: string }>(
+  groups: readonly T[],
+  pinned: readonly string[],
+): T[] {
+  if (pinned.length === 0) return [...groups];
+  const position = new Map(pinned.map((key, index) => [key, index]));
+  const rank = (group: T): number => position.get(group.key) ?? Number.MAX_SAFE_INTEGER;
+  // Stable sort: pinned groups by pin order, everything else in list order.
+  return [...groups].sort((a, b) => rank(a) - rank(b));
+}
+
+/**
+ * Whether a project's session folder is open.
+ *
+ * The rule of the list: a project is folded unless it is the one the agent
+ * panel is on, and pinned projects are always open (they are the user's
+ * shortcuts). A search opens every group that has a match — the query is the
+ * user asking to see rows, and leaving matches behind a fold would be a
+ * dead search. The active project can still be folded by hand, which is what
+ * makes "show me only the project rows" reachable.
+ */
+export function groupOpen(input: {
+  key: string;
+  pinned: readonly string[];
+  activeKey: string | null;
+  collapsed: boolean;
+  filtering: boolean;
+}): boolean {
+  if (input.filtering) return true;
+  if (input.pinned.includes(input.key)) return true;
+  return input.key === input.activeKey && !input.collapsed;
+}
+
+/**
+ * Read the persisted fold map (project key → folded). Only `true` entries are
+ * kept: a missing key means "not folded by hand", so the stored shape stays
+ * small and an unknown/corrupt value degrades to "nothing folded".
  */
 export function parseCollapsed(raw: string | null): Record<string, boolean> {
   if (!raw) return {};

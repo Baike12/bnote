@@ -42,6 +42,21 @@ function hasEditor(): boolean {
   return activeCodeEditor() !== null;
 }
 
+/**
+ * Only code mode has the project-and-session list: the chord is pressed while
+ * the keyboard is in the assistant (the command sits in the Agent region), and
+ * that list is where it should go next. The list may still be empty on screen
+ * (a closed sidebar, a cold start): the command reveals it and the sidebar
+ * waits for the first snapshot before taking the keyboard.
+ */
+function inCodeMode(): boolean {
+  const app = useAppStore.getState();
+  // Without a recent project the sidebar has no row at all, so there is
+  // nothing to focus; requiring one also keeps a request from waiting for a
+  // project the user has not opened yet.
+  return app.mode === "code" && app.recentCodeProjects.length > 0;
+}
+
 /** Whether the active tab is a markdown file (the render toggle has a target). */
 function activeIsMarkdown(): boolean {
   const store = useCodeStore.getState();
@@ -214,6 +229,22 @@ export const codeCommandDefs: CommandDef[] = [
     run: () => {
       const app = useAppStore.getState();
       app.patchSettings({ codeProjectsOpen: !app.settings.codeProjectsOpen });
+    },
+  },
+  {
+    id: "code.focus-sessions",
+    title: "聚焦到会话列表",
+    category: "代码",
+    // Bound in the Agent region (see REGION_PLACEMENT): the chord is pressed
+    // from the assistant, and in code mode the project-and-session column is
+    // the list it jumps to. Other modes have an Agent region but no such list.
+    when: inCodeMode,
+    run: () => {
+      const app = useAppStore.getState();
+      // A closed sidebar has no rows to focus: reveal it first (the request is
+      // one-shot and survives the mount, the sidebar consumes it there).
+      if (!app.settings.codeProjectsOpen) app.patchSettings({ codeProjectsOpen: true });
+      useProjectSidebarStore.getState().requestSessionsFocus();
     },
   },
   {

@@ -237,6 +237,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "agent.fork-session": "Mod-Shift-f",
   "agent.back-from-fork": "Mod-[",
   "agent.focus-history": "Mod-Shift-h",
+  // The chord lives in the Agent region but its target is code mode's
+  // project-and-session column (see REGION_PLACEMENT). ⌘⌥L reads as "list";
+  // the file tree's own focus chord (⌘⇧E) is already the PDF snapshot here.
+  "code.focus-sessions": "Mod-Alt-l",
   // "Type a /": the command picker without reaching for the slash key. ⌘/ is
   // the usual "show commands" chord elsewhere (ZCode, VS Code) and is free in
   // this app; it is not one of the text field's editing chords, so it fires
@@ -391,6 +395,10 @@ const REGION_PLACEMENT: Record<string, KeyRegion[]> = {
   // region (capture while writing). It is not a cross-region chord any more —
   // each of those regions gets its own binding.
   "study.pdf-snap-to-agent": ["reading", "agent", "notes"],
+  // "Focus the session list" starts from the Agent region (the assistant is
+  // where the keyboard is when the user wants to switch sessions); its `when`
+  // narrows it to code mode, whose leftmost column is that list.
+  "code.focus-sessions": ["agent"],
 };
 
 /**

@@ -33,12 +33,13 @@ vi.mock("@/lib/tauri", () => ({
 const { useProjectSidebarStore } = await import("./projectSidebarStore");
 
 const COLLAPSED_KEY = "bnote-codeProjectsCollapsed";
+const PINNED_KEY = "bnote-codeProjectsPinned";
 
 beforeEach(() => {
   storage.clear();
   disk.sessions.clear();
   disk.reads.length = 0;
-  useProjectSidebarStore.setState({ collapsed: {}, groups: [] });
+  useProjectSidebarStore.setState({ collapsed: {}, pinned: [], sessionsFocus: 0, groups: [] });
 });
 
 const meta = (id: string, updatedAt: number): SavedSessionMeta => ({
@@ -91,6 +92,37 @@ describe("expandGroup", () => {
     useProjectSidebarStore.getState().expandGroup("/a");
     expect(useProjectSidebarStore.getState().collapsed).toEqual({});
     expect(storage.has(COLLAPSED_KEY)).toBe(false);
+  });
+});
+
+describe("togglePin", () => {
+  it("puts the newest pin first and persists the list", () => {
+    useProjectSidebarStore.getState().togglePin("/a");
+    useProjectSidebarStore.getState().togglePin("/b");
+    expect(useProjectSidebarStore.getState().pinned).toEqual(["/b", "/a"]);
+    expect(JSON.parse(storage.get(PINNED_KEY) ?? "[]")).toEqual(["/b", "/a"]);
+  });
+
+  it("pinning an already pinned project unpins it", () => {
+    useProjectSidebarStore.getState().togglePin("/a");
+    useProjectSidebarStore.getState().togglePin("/a");
+    expect(useProjectSidebarStore.getState().pinned).toEqual([]);
+    expect(storage.has(PINNED_KEY)).toBe(false);
+  });
+
+  it("a pinned project's folder cannot be folded", () => {
+    useProjectSidebarStore.getState().togglePin("/a");
+    useProjectSidebarStore.getState().toggleGroup("/a");
+    expect(useProjectSidebarStore.getState().collapsed).toEqual({});
+  });
+});
+
+describe("requestSessionsFocus", () => {
+  it("bumps a one-shot request the sidebar consumes by seq", () => {
+    useProjectSidebarStore.getState().requestSessionsFocus();
+    expect(useProjectSidebarStore.getState().sessionsFocus).toBe(1);
+    useProjectSidebarStore.getState().requestSessionsFocus();
+    expect(useProjectSidebarStore.getState().sessionsFocus).toBe(2);
   });
 });
 

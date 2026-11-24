@@ -1,19 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { homeApi } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
 import { FolderTypeIcon } from "./FileIcon";
 import {
   IconArchive,
-  IconFoldAll,
   IconNewSession,
   IconOpenProject,
   IconPanelLeft,
+  IconPin,
   IconRefresh,
   IconSearch,
   IconSettings,
   IconSpinner,
   IconTrash,
-  IconUnfoldAll,
   IconWorktree,
 } from "./ProjectIcons";
 import { openProjectAt, openProjectDialog } from "../commands";
@@ -29,13 +35,25 @@ import {
 import { useCodeStore } from "../store";
 import { visibleSessions, useProjectSidebarStore } from "../projectSidebarStore";
 import {
+  groupOpen,
+  orderPinnedGroups,
   projectRowIntent,
   relativeTime,
   sessionMatches,
   type ProjectGroup,
   type ProjectSessionItem,
 } from "../projectGroups";
+import { treeKeyAction } from "../treeKeys";
 import { ArchiveModal } from "./ArchiveModal";
+
+/** One keyboard-navigable row of the session list, in visual order. */
+type SidebarRow =
+  | { kind: "group"; key: string; group: ProjectGroup; open: boolean }
+  | { kind: "session"; key: string; item: ProjectSessionItem };
+
+/** Row identities are namespaced: a group key and a workdir share the path shape. */
+const groupRowKey = (key: string): string => `group:${key}`;
+const sessionRowKey = (workdir: string, id: string): string => `session:${workdir}:${id}`;
 
 /**
  * The leftmost column of code mode: the project-and-session list.
@@ -58,6 +76,14 @@ import { ArchiveModal } from "./ArchiveModal";
  * separate node. A session that ran in a worktree carries the branch mark at
  * the row's end, and its tooltip names the checkout. A group's identity is the
  * **main repository** (`code_git_main_repo`).
+ *
+ * The column is also the session switcher. Only the open project's folder is
+ * open (a pinned project is the exception: it leads the list and stays open),
+ * so the rows are the current sessions plus one row per other project. ↑/↓
+ * (or j/k) walk them, Enter opens the session or switches project, and
+ * `code.focus-sessions` (Agent region) hands the keyboard over from the
+ * assistant composer — the chord is pressed where the user is typing, and the
+ * list is where the next move is.
  */
 export function ProjectsSidebar() {
   const recent = useAppStore((s) => s.recentCodeProjects);
@@ -71,6 +97,8 @@ export function ProjectsSidebar() {
   const loading = useProjectSidebarStore((s) => s.loading);
   const shown = useProjectSidebarStore((s) => s.shown);
   const collapsed = useProjectSidebarStore((s) => s.collapsed);
+  const pinned = useProjectSidebarStore((s) => s.pinned);
+  const sessionsFocus = useProjectSidebarStore((s) => s.sessionsFocus);
   const activeSession = useProjectSidebarStore((s) => s.activeSession);
   const running = useProjectSidebarStore((s) => s.running);
   const refresh = useProjectSidebarStore((s) => s.refresh);
@@ -78,7 +106,7 @@ export function ProjectsSidebar() {
   const showMore = useProjectSidebarStore((s) => s.showMore);
   const toggleGroup = useProjectSidebarStore((s) => s.toggleGroup);
   const expandGroup = useProjectSidebarStore((s) => s.expandGroup);
-  const setAllCollapsed = useProjectSidebarStore((s) => s.setAllCollapsed);
+  const togglePin = useProjectSidebarStore((s) => s.togglePin);
   const openWorktreeModal = useProjectSidebarStore((s) => s.openWorktreeModal);
 
   const [searching, setSearching] = useState(false);
@@ -94,7 +122,7 @@ export function ProjectsSidebar() {
 
   const currentRoot = project?.root ?? null;
   const currentGroup = groups.find((g) => g.checkouts.some((c) => c.path === currentRoot)) ?? null;
-  const allCollapsed = groups.length > 0 && groups.every((g) => collapsed[g.key] === true);
+  const activeGroupKey = currentGroup?.key ?? null;
 
   // The snapshot is a disk read (identity + worktrees + session records), so it
   // refreshes when the recent list gains or loses a project — not on every
@@ -148,6 +176,101 @@ export function ProjectsSidebar() {
   const filtering = query.trim() !== "";
   const matches = (item: ProjectSessionItem) => sessionMatches(item, query);
 
+  // Switching into a project reveals its sessions even if that project was
+  // folded by hand before: the open project is the one group the list opens.
+  useEffect(() => {
+    if (activeGroupKey) expandGroup(activeGroupKey);
+  }, [activeGroupKey, expandGroup]);
+
+  /** The list's rows in visual order, shared by rendering and keyboard navigation. */
+  const rows = useMemo(() => {
+    const out: SidebarRow[] = [];
+    for (const group of orderPinnedGroups(groups, pinned)) {
+      const filtered = filtering
+        ? group.sessions.filter((item) => sessionMatches(item, query))
+        : null;
+      if (filtered && filtered.length === 0) continue;
+      const open = groupOpen({
+        key: group.key,
+        pinned,
+        activeKey: activeGroupKey,
+        collapsed: collapsed[group.key] === true,
+        filtering,
+      });
+      out.push({ kind: "group", key: groupRowKey(group.key), group, open });
+      if (!open) continue;
+      for (const item of filtered ?? visibleSessions(group, shown)) {
+        out.push({ kind: "session", key: sessionRowKey(item.workdir, item.id), item });
+      }
+    }
+    return out;
+  }, [groups, pinned, filtering, query, activeGroupKey, collapsed, shown]);
+
+  // --- keyboard focus -------------------------------------------------------
+  // The focus sits on the scrolling container, not on a row: a project switch
+  // unmounts the rows of the group it leaves, and a focus on one of them would
+  // fall to the document. A row draws the ring; the container owns the keys.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const [revealTick, setRevealTick] = useState(0);
+  /** The newest focus request this mount has handled (a remount must not replay an old one). */
+  const handledFocus = useRef(0);
+
+  const revealTo = useCallback((key: string) => {
+    setFocusKey(key);
+    setRevealTick((tick) => tick + 1);
+  }, []);
+
+  // The row with the keyboard: the explicit focus, otherwise the open session,
+  // otherwise the first row. The fallbacks keep the keys off a row that a
+  // refresh or a fold removed.
+  const hasRow = (key: string | null) => key !== null && rows.some((row) => row.key === key);
+  const activeRowKey = activeSession
+    ? sessionRowKey(activeSession.workdir, activeSession.id)
+    : null;
+  const currentKey =
+    (hasRow(focusKey) ? focusKey : null) ??
+    (hasRow(activeRowKey) ? activeRowKey : null) ??
+    rows[0]?.key ??
+    null;
+
+  // The command's one-shot request: open the active project's folder if it is
+  // closed, take the keyboard and land on the open session (so ↑/↓ walks the
+  // session rows first, which is what "focus the session list" means).
+  useEffect(() => {
+    if (sessionsFocus === 0 || sessionsFocus === handledFocus.current) return;
+    // A just-revealed sidebar has no rows until its first disk snapshot lands;
+    // consuming the request now would focus an empty column. The effect runs
+    // again when the rows arrive.
+    if (rows.length === 0) return;
+    handledFocus.current = sessionsFocus;
+    let target: string | null = hasRow(activeRowKey) ? activeRowKey : null;
+    if (!target && activeGroupKey) {
+      const at = rows.findIndex((row) => row.kind === "group" && row.group.key === activeGroupKey);
+      if (at >= 0) {
+        const next = rows[at + 1];
+        target = next?.kind === "session" ? next.key : rows[at].key;
+      }
+    }
+    target ??= rows[0]?.key ?? null;
+    if (!target) return;
+    bodyRef.current?.focus({ preventScroll: true });
+    revealTo(target);
+  }, [sessionsFocus, rows, activeRowKey, activeGroupKey, revealTo]);
+
+  // Scroll the focused row into view. The focus stays on the container, so
+  // only the scroll container moves (`block: "nearest"` is the same promise as
+  // a native row focus, without the second focus event).
+  useEffect(() => {
+    if (!focusKey) return;
+    const body = bodyRef.current;
+    if (!body) return;
+    const row = [...body.querySelectorAll<HTMLElement>("[data-cp-row]")].find(
+      (node) => node.dataset.cpRow === focusKey,
+    );
+    row?.scrollIntoView({ block: "nearest" });
+  }, [focusKey, revealTick]);
+
   async function openSession(item: ProjectSessionItem) {
     if (item.workdir === currentRoot) {
       requestSessionRestore(item.id);
@@ -186,9 +309,9 @@ export function ProjectsSidebar() {
 
   /**
    * A project row's click: another project becomes the open one (the row is
-   * the switcher) and is revealed, so the sessions of a previously folded
-   * project are visible the moment it is opened. The open project has nothing
-   * to switch to, so its row folds/unfolds the list.
+   * the switcher); the open-project rule above then reveals its sessions. The
+   * open project has nothing to switch to, so its row folds/unfolds the list
+   * (a pinned project stays open, see the store).
    */
   function activateGroup(group: ProjectGroup) {
     const intent = projectRowIntent(group, currentRoot);
@@ -196,9 +319,76 @@ export function ProjectsSidebar() {
       toggleGroup(group.key);
       return;
     }
-    expandGroup(group.key);
     // A failure is reported by openProjectAt (the row keeps its current state).
     void openProjectAt(intent.root);
+  }
+
+  /** Move the keyboard between neighbouring visible rows (out of range stays put). */
+  function moveFocus(delta: number) {
+    if (!currentKey) return;
+    const index = rows.findIndex((row) => row.key === currentKey);
+    if (index < 0) return;
+    const next = rows[Math.min(rows.length - 1, Math.max(0, index + delta))];
+    if (next) revealTo(next.key);
+  }
+
+  /**
+   * The list's keys, handled on the container. The window-level dispatcher
+   * runs first (capture) and consumes only chords it resolves; the plain keys
+   * here are not bound to any command, so they arrive untouched. ↑/↓ (or j/k)
+   * walk every visible row — sessions of the open project and the folded rows
+   * of the others — so switching projects is one Enter away; → unfolds the
+   * row's folder, ← folds it, Enter opens the session (or switches project),
+   * Esc hands the keyboard back to the Agent input.
+   */
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    // The search field and the row actions keep their own keys: Enter in the
+    // field must not open the row beside it, and a focused archive button must
+    // not also activate its session.
+    const target = event.target;
+    if (target instanceof Element && target.closest("input, button, textarea")) return;
+    if (!currentKey) return;
+    const row = rows.find((entry) => entry.key === currentKey);
+    if (!row) return;
+    const action = treeKeyAction(event);
+    if (!action) return;
+
+    switch (action) {
+      case "down":
+        moveFocus(1);
+        break;
+      case "up":
+        moveFocus(-1);
+        break;
+      case "first":
+        if (rows[0]) revealTo(rows[0].key);
+        break;
+      case "last": {
+        const last = rows[rows.length - 1];
+        if (last) revealTo(last.key);
+        break;
+      }
+      case "right":
+        if (row.kind === "group") expandGroup(row.group.key);
+        break;
+      case "left":
+        if (row.kind === "group") toggleGroup(row.group.key);
+        break;
+      case "activate":
+        if (row.kind === "group") activateGroup(row.group);
+        else void openSession(row.item);
+        break;
+      case "release":
+        // Back to the composer: the switch is done, the next move is typing.
+        // A new session row (or another project's row) may have replaced the
+        // list in the meantime; the panel owns the input either way.
+        setFocusKey(null);
+        bodyRef.current?.blur();
+        useAppStore.getState().runAgentPanelCommand("focus-input");
+        break;
+    }
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   /**
@@ -231,6 +421,7 @@ export function ProjectsSidebar() {
   /** One session row; the worktree mark sits before the time (ZCode's shape). */
   function sessionRow(item: ProjectSessionItem) {
     const key = `${item.workdir}:${item.id}`;
+    const rowKey = sessionRowKey(item.workdir, item.id);
     const active = activeSession?.id === item.id && activeSession.workdir === item.workdir;
     const isRunning =
       running !== null && running.workdir === item.workdir && running.id === item.id;
@@ -242,17 +433,15 @@ export function ProjectsSidebar() {
     return (
       <div
         key={key}
-        className={`cp-row cp-session is-indented${active ? " is-active" : ""}`}
+        className={`cp-row cp-session is-indented${active ? " is-active" : ""}${
+          focusKey === rowKey ? " is-focus" : ""
+        }`}
         role="button"
         tabIndex={0}
+        data-cp-row={rowKey}
         title={`${item.title}\n${item.workdir}`}
         onClick={() => void openSession(item)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            void openSession(item);
-          }
-        }}
+        onFocus={() => setFocusKey(rowKey)}
       >
         {isRunning && (
           <span className="cp-running" title="正在生成回复">
@@ -297,34 +486,49 @@ export function ProjectsSidebar() {
   }
 
   /**
-   * A project row: the folder, its collapse state and the project actions.
+   * A project row: the folder, its open state and the project actions.
    * Clicking it switches the code area to the project (the open project only
-   * folds, see `activateGroup`); the plus starts a session there. `current`
-   * drives the click behavior and the actions, never the selected background —
-   * that belongs to the open session row alone.
+   * folds, see `activateGroup`); the plus starts a session there, the pin
+   * keeps it on top with its folder open. `current` drives the click behavior
+   * and the actions, never the selected background — that belongs to the open
+   * session row alone.
    */
-  function projectRow(group: ProjectGroup, current: boolean) {
-    const open = filtering || collapsed[group.key] !== true;
+  function projectRow(group: ProjectGroup, current: boolean, open: boolean) {
+    const rowKey = groupRowKey(group.key);
+    const isPinned = pinned.includes(group.key);
     const armed = confirmKey === `remove:${group.key}`;
     return (
       <div
-        className="cp-row cp-project-row"
+        className={`cp-row cp-project-row${focusKey === rowKey ? " is-focus" : ""}`}
         role="button"
         tabIndex={0}
         aria-expanded={open}
-        title={current ? `${group.key}\n点击收起会话列表` : `${group.key}\n点击切换到该项目`}
+        data-cp-row={rowKey}
+        title={
+          current
+            ? isPinned
+              ? `${group.key}\n置顶项目保持展开`
+              : `${group.key}\n点击收起会话列表`
+            : `${group.key}\n点击切换到该项目`
+        }
         onClick={() => activateGroup(group)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            activateGroup(group);
-          }
-        }}
+        onFocus={() => setFocusKey(rowKey)}
       >
         <span className="cp-row-icon">
           <FolderTypeIcon open={open} />
         </span>
         <span className="cp-label">{group.name}</span>
+        <button
+          type="button"
+          className={`cp-row-action${isPinned ? " is-visible is-pinned" : ""}`}
+          title={isPinned ? "取消置顶" : "置顶项目（总在顶部并展开会话）"}
+          onClick={(event) => {
+            event.stopPropagation();
+            togglePin(group.key);
+          }}
+        >
+          <IconPin />
+        </button>
         {group.isGit && (
           <button
             type="button"
@@ -384,7 +588,7 @@ export function ProjectsSidebar() {
         </button>
       </div>
 
-      <div className="code-projects-body">
+      <div className="code-projects-body" ref={bodyRef} tabIndex={-1} onKeyDown={handleKeyDown}>
         <div className="cp-newrow">
           {currentGroup?.isGit && (
             <button
@@ -453,14 +657,6 @@ export function ProjectsSidebar() {
           >
             <IconRefresh />
           </button>
-          <button
-            type="button"
-            className="cp-icon-btn"
-            title={allCollapsed ? "展开全部项目" : "收起全部项目"}
-            onClick={() => setAllCollapsed(!allCollapsed)}
-          >
-            {allCollapsed ? <IconUnfoldAll /> : <IconFoldAll />}
-          </button>
         </div>
 
         {searching && (
@@ -479,15 +675,21 @@ export function ProjectsSidebar() {
           />
         )}
 
-        {groups.map((group) => {
+        {orderPinnedGroups(groups, pinned).map((group) => {
           const all = filtering ? group.sessions.filter(matches) : group.sessions;
           if (filtering && all.length === 0) return null;
           const visible = filtering ? all : visibleSessions(group, shown);
-          const open = filtering || collapsed[group.key] !== true;
+          const open = groupOpen({
+            key: group.key,
+            pinned,
+            activeKey: activeGroupKey,
+            collapsed: collapsed[group.key] === true,
+            filtering,
+          });
           const current = group.checkouts.some((checkout) => checkout.path === currentRoot);
           return (
             <div key={group.key} className="cp-project">
-              {projectRow(group, current)}
+              {projectRow(group, current, open)}
               {open && visible.map((item) => sessionRow(item))}
               {open && !filtering && group.sessions.length > visible.length && (
                 <button type="button" className="cp-more" onClick={() => showMore(group.key)}>

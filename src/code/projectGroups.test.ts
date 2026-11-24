@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   checkoutsOf,
+  groupOpen,
   GROUP_SESSION_LIMIT,
   groupRecentProjects,
   isDirtyRefusal,
   mergeGroupSessions,
+  orderPinnedGroups,
   parseCollapsed,
+  parsePinned,
   projectRowIntent,
   randomWorktreeName,
   relativeTime,
@@ -275,6 +278,52 @@ describe("parseCollapsed", () => {
     expect(parseCollapsed(null)).toEqual({});
     expect(parseCollapsed("[]")).toEqual({});
     expect(parseCollapsed("not json")).toEqual({});
+  });
+});
+
+describe("parsePinned", () => {
+  it("keeps unique non-empty strings", () => {
+    expect(parsePinned('["/a","/b","/a","",3]')).toEqual(["/a", "/b"]);
+    expect(parsePinned(null)).toEqual([]);
+    expect(parsePinned("{}")).toEqual([]);
+    expect(parsePinned("not json")).toEqual([]);
+  });
+});
+
+describe("orderPinnedGroups", () => {
+  const groups = [{ key: "/a" }, { key: "/b" }, { key: "/c" }];
+
+  it("floats pinned projects to the top in pin order", () => {
+    expect(orderPinnedGroups(groups, ["/c", "/a"]).map((g) => g.key)).toEqual(["/c", "/a", "/b"]);
+  });
+
+  it("ignores pinned keys without a row and keeps the list order otherwise", () => {
+    expect(orderPinnedGroups(groups, ["/gone"]).map((g) => g.key)).toEqual(["/a", "/b", "/c"]);
+  });
+
+  it("an empty pin list is the untouched list", () => {
+    expect(orderPinnedGroups(groups, [])).toEqual(groups);
+  });
+});
+
+describe("groupOpen", () => {
+  const base = { pinned: [] as string[], activeKey: "/a", collapsed: false, filtering: false };
+
+  it("only the active project's folder is open", () => {
+    expect(groupOpen({ ...base, key: "/a" })).toBe(true);
+    expect(groupOpen({ ...base, key: "/b" })).toBe(false);
+  });
+
+  it("a pinned project stays open even when it is not active or was folded", () => {
+    expect(groupOpen({ ...base, key: "/b", pinned: ["/b"], collapsed: true })).toBe(true);
+  });
+
+  it("the active project can be folded by hand", () => {
+    expect(groupOpen({ ...base, key: "/a", collapsed: true })).toBe(false);
+  });
+
+  it("a search opens every group with a match", () => {
+    expect(groupOpen({ ...base, key: "/b", filtering: true })).toBe(true);
   });
 });
 

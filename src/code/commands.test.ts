@@ -31,10 +31,19 @@ const mocks = vi.hoisted(() => ({
   setRecentCodeProjects: vi.fn(),
   setMode: vi.fn(),
   patchSettings: vi.fn(),
-  settings: { vim: false, codeVim: "inherit", codeWrap: true },
+  settings: { vim: false, codeVim: "inherit", codeWrap: true, codeProjectsOpen: true },
+  mode: "code" as string,
+  sidebar: {
+    groups: [{ key: "/repo" }] as { key: string }[],
+    requestSessionsFocus: vi.fn(),
+    openWorktreeModal: vi.fn(),
+  },
 }));
 
 vi.mock("./store", () => ({ useCodeStore: { getState: () => mocks.state } }));
+vi.mock("./projectSidebarStore", () => ({
+  useProjectSidebarStore: { getState: () => mocks.sidebar },
+}));
 vi.mock("./editor/goto", () => ({
   gotoDefinition: mocks.gotoDefinition,
   findReferences: mocks.findReferences,
@@ -62,6 +71,7 @@ vi.mock("@/state/appStore", () => ({
       setMode: mocks.setMode,
       patchSettings: mocks.patchSettings,
       settings: mocks.settings,
+      mode: mocks.mode,
     }),
   },
 }));
@@ -157,10 +167,14 @@ beforeEach(() => {
     mocks.setRecentCodeProjects,
     mocks.setMode,
     mocks.patchSettings,
+    mocks.sidebar.requestSessionsFocus,
+    mocks.sidebar.openWorktreeModal,
   ]) {
     fn.mockReset();
   }
-  mocks.settings = { vim: false, codeVim: "inherit", codeWrap: true };
+  mocks.settings = { vim: false, codeVim: "inherit", codeWrap: true, codeProjectsOpen: true };
+  mocks.mode = "code";
+  mocks.sidebar.groups = [{ key: "/repo" }];
   mocks.activeCodeEditor.mockReturnValue(null);
   mocks.peekVimVisual.mockReturnValue(null);
   mocks.dialogOpen.mockResolvedValue(null);
@@ -449,19 +463,19 @@ describe("the language server restart", () => {
 
 describe("pinning the code editor's vim mode", () => {
   it("an inherited on becomes an explicit off", () => {
-    mocks.settings = { vim: true, codeVim: "inherit", codeWrap: true };
+    mocks.settings = { vim: true, codeVim: "inherit", codeWrap: true, codeProjectsOpen: true };
     run("code.toggle-vim");
     expect(mocks.patchSettings).toHaveBeenCalledWith({ codeVim: "off" });
   });
 
   it("an inherited off becomes an explicit on", () => {
-    mocks.settings = { vim: false, codeVim: "inherit", codeWrap: true };
+    mocks.settings = { vim: false, codeVim: "inherit", codeWrap: true, codeProjectsOpen: true };
     run("code.toggle-vim");
     expect(mocks.patchSettings).toHaveBeenCalledWith({ codeVim: "on" });
   });
 
   it("an explicit value flips", () => {
-    mocks.settings = { vim: false, codeVim: "off", codeWrap: true };
+    mocks.settings = { vim: false, codeVim: "off", codeWrap: true, codeProjectsOpen: true };
     run("code.toggle-vim");
     expect(mocks.patchSettings).toHaveBeenCalledWith({ codeVim: "on" });
   });
@@ -607,5 +621,37 @@ describe("focus availability", () => {
   it("is unavailable with neither an editor nor a change list", () => {
     resetState({ diffOpen: false });
     expect(command("code.focus-editor").when?.()).toBe(false);
+  });
+});
+
+describe("focusing the session list", () => {
+  beforeEach(() => {
+    mocks.recent = ["/repo"];
+  });
+
+  it("is limited to code mode with a recent project (an empty list has no row)", () => {
+    mocks.recent = ["/repo"];
+    expect(command("code.focus-sessions").when?.()).toBe(true);
+    mocks.sidebar.groups = [];
+    expect(command("code.focus-sessions").when?.()).toBe(true);
+    mocks.mode = "study";
+    expect(command("code.focus-sessions").when?.()).toBe(false);
+    mocks.mode = "code";
+    mocks.recent = [];
+    expect(command("code.focus-sessions").when?.()).toBe(false);
+  });
+
+  it("reveals a closed sidebar before asking for the keyboard", () => {
+    mocks.settings.codeProjectsOpen = false;
+    run("code.focus-sessions");
+    expect(mocks.patchSettings).toHaveBeenCalledWith({ codeProjectsOpen: true });
+    expect(mocks.sidebar.requestSessionsFocus).toHaveBeenCalled();
+  });
+
+  it("leaves an open sidebar's width/settings alone", () => {
+    mocks.settings.codeProjectsOpen = true;
+    run("code.focus-sessions");
+    expect(mocks.patchSettings).not.toHaveBeenCalled();
+    expect(mocks.sidebar.requestSessionsFocus).toHaveBeenCalled();
   });
 });

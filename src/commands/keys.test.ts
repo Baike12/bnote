@@ -388,6 +388,12 @@ describe("region dispatch", () => {
     expect(commandsForKey("Mod-Shift-e", "code")).toEqual(["code.focus-tree"]);
   });
 
+  it("focusing the session list is an Agent-region chord: the target is code mode's leftmost column", () => {
+    expect(defaultRegionsOf("code.focus-sessions")).toEqual(["agent"]);
+    expect(commandsForKey("Mod-Alt-l", "agent")).toEqual(["code.focus-sessions"]);
+    expect(commandsForKey("Mod-Alt-l", "code")).toEqual([]);
+  });
+
   it("region navigation is a copy per region: rebinding it in reading leaves the other regions' defaults alone", () => {
     applyOverrides(normalizeOverrides({ reading: { "region.focus-agent": "Mod-Shift-w" } }));
     expect(commandsForKey("Mod-Shift-w", "reading")).toContain("region.focus-agent");

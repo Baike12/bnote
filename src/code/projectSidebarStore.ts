@@ -18,6 +18,7 @@ import {
   mergeGroupSessions,
   orderSessions,
   parseCollapsed,
+  parsePinned,
   PROJECT_SESSION_LIMIT,
   SHOW_MORE_STEP,
   stabilizeGroupOrder,
@@ -32,8 +33,20 @@ import { projectLabel } from "./projectSwitch";
 interface ProjectSidebarState {
   groups: ProjectGroup[];
   loading: boolean;
-  /** Group key → collapsed. A group starts expanded (absence = false). */
+  /**
+   * Group key → folded. Only the active project is open by default, so this
+   * map now records the explicit fold of that project (and legacy flags for
+   * other groups, which the "always folded unless active" rule ignores).
+   */
   collapsed: Record<string, boolean>;
+  /** Pinned group keys, newest pin first. Pinned projects lead the list and stay open. */
+  pinned: string[];
+  /**
+   * One-shot "focus the session list" request (the `code.focus-sessions`
+   * command). The sidebar consumes the newest seq and leaves it in place, so a
+   * remount must not replay an old request.
+   */
+  sessionsFocus: number;
   /** Group key → how many sessions are shown (0 = the default limit). */
   shown: Record<string, number>;
   /** The conversation the agent panel is on, for the active row highlight. */
@@ -68,8 +81,10 @@ interface ProjectSidebarState {
    * project's sessions hidden after the switch.
    */
   expandGroup: (key: string) => void;
-  /** Fold or unfold every project row (the section header's toggle-all). */
-  setAllCollapsed: (collapsed: boolean) => void;
+  /** Pin a project to the top (and keep its folder open), or unpin it. */
+  togglePin: (key: string) => void;
+  /** Ask the mounted sidebar to take the keyboard and land on the active session. */
+  requestSessionsFocus: () => void;
   showMore: (key: string) => void;
   setActiveSession: (workdir: string, id: string | null) => void;
   setRunningSession: (session: RunningSession | null) => void;
@@ -102,9 +117,10 @@ let refreshGeneration = 0;
 const COLLAPSED_KEY = "bnote-codeProjectsCollapsed";
 
 /**
- * Read the saved fold state. A group whose key is absent stays expanded, so a
- * newly opened project appears open; storage being unavailable (private mode,
- * tests) degrades to the in-memory default instead of failing the module load.
+ * Read the saved fold state. A group whose key is absent is not folded; the
+ * sidebar opens the active project and ignores the map for the other groups
+ * (see `groupOpen`). Storage being unavailable (private mode, tests) degrades
+ * to the in-memory default instead of failing the module load.
  */
 function loadCollapsed(): Record<string, boolean> {
   try {
@@ -121,6 +137,27 @@ function saveCollapsed(collapsed: Record<string, boolean>): void {
     else localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed));
   } catch {
     // The fold still works for this run; the next launch starts expanded.
+  }
+}
+
+/** Where the pinned projects survive a restart (same shelf as the fold state). */
+const PINNED_KEY = "bnote-codeProjectsPinned";
+
+function loadPinned(): string[] {
+  try {
+    return parsePinned(localStorage.getItem(PINNED_KEY));
+  } catch {
+    // Storage unavailable (private mode, tests): nothing is pinned this run.
+    return [];
+  }
+}
+
+function savePinned(pinned: readonly string[]): void {
+  try {
+    if (pinned.length === 0) localStorage.removeItem(PINNED_KEY);
+    else localStorage.setItem(PINNED_KEY, JSON.stringify(pinned));
+  } catch {
+    // The pin still applies for this run; the next launch starts unpinned.
   }
 }
 
@@ -162,6 +199,8 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
   groups: [],
   loading: false,
   collapsed: loadCollapsed(),
+  pinned: loadPinned(),
+  sessionsFocus: 0,
   shown: {},
   activeSession: null,
   running: null,
@@ -220,6 +259,9 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
     }),
 
   toggleGroup: (key) => {
+    // A pinned project is always open (the pin is the user's shortcut into
+    // its sessions); folding it is not a state the list can show.
+    if (get().pinned.includes(key)) return;
     const collapsed = { ...get().collapsed };
     if (collapsed[key]) delete collapsed[key];
     else collapsed[key] = true;
@@ -238,12 +280,17 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
     set({ collapsed: next });
   },
 
-  setAllCollapsed: (collapsed) => {
-    const map: Record<string, boolean> = {};
-    if (collapsed) for (const group of get().groups) map[group.key] = true;
-    saveCollapsed(map);
-    set({ collapsed: map });
+  togglePin: (key) => {
+    const current = get().pinned;
+    // The newest pin leads the pinned block, matching "pin puts it on top".
+    const next = current.includes(key)
+      ? current.filter((entry) => entry !== key)
+      : [key, ...current];
+    savePinned(next);
+    set({ pinned: next });
   },
+
+  requestSessionsFocus: () => set((state) => ({ sessionsFocus: state.sessionsFocus + 1 })),
 
   showMore: (key) =>
     set((state) => {

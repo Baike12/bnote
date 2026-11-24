@@ -121,6 +121,16 @@
   background: var(--bg3);
 }
 
+/* The keyboard's row: a ring like the file tree's, so "where the keys are"
+   and "which session is open" stay two different signals. */
+.cp-row:focus {
+  outline: none;
+}
+.code-projects-body:focus-within .cp-row.is-focus {
+  outline: 1px solid var(--accent-dim);
+  outline-offset: -1px;
+}
+
 .cp-row-icon {
   display: flex;
   align-items: center;
@@ -200,6 +210,12 @@
 /* An action that is always visible (the worktree dialog's row delete). */
 .cp-row-action.is-visible {
   display: inline-flex;
+}
+
+/* A pinned project's pin stays on screen: the row's state has to read
+   without hovering it, and the button is also the unpin action. */
+.cp-row-action.is-pinned {
+  color: var(--accent);
 }
 
 .cp-row-action:hover {
