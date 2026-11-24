@@ -7,6 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { homeApi } from "@/lib/tauri";
+import { setActiveKeyRegion } from "@/commands/globalKeys";
 import { useAppStore } from "@/state/appStore";
 import { FolderTypeIcon } from "./FileIcon";
 import {
@@ -80,7 +81,8 @@ const sessionRowKey = (workdir: string, id: string): string => `session:${workdi
  * The column is also the session switcher. Only the open project's folder is
  * open (a pinned project is the exception: it leads the list and stays open),
  * so the rows are the current sessions plus one row per other project. ↑/↓
- * (or j/k) walk them, Enter opens the session or switches project, and
+ * (or j/k) walk them, Enter opens the session under the keyboard (a folder row
+ * switches by click only, so Enter cannot change projects), and
  * `code.focus-sessions` (Agent region) hands the keyboard over from the
  * assistant composer — the chord is pressed where the user is typing, and the
  * list is where the next move is.
@@ -323,6 +325,19 @@ export function ProjectsSidebar() {
     void openProjectAt(intent.root);
   }
 
+  /**
+   * Hand the keyboard to the assistant, the destination `region.focus-agent`
+   * uses — without its quote payload: the user picked a session, not a code
+   * selection, and the composer must not open holding one.
+   */
+  function focusAgentComposer() {
+    setActiveKeyRegion("agent");
+    const app = useAppStore.getState();
+    // The assistant takes the middle column, exactly as the region chord does.
+    app.setMainColumn("agent");
+    app.runAgentPanelCommand("focus-input");
+  }
+
   /** Move the keyboard between neighbouring visible rows (out of range stays put). */
   function moveFocus(delta: number) {
     if (!currentKey) return;
@@ -335,11 +350,14 @@ export function ProjectsSidebar() {
   /**
    * The list's keys, handled on the container. The window-level dispatcher
    * runs first (capture) and consumes only chords it resolves; the plain keys
-   * here are not bound to any command, so they arrive untouched. ↑/↓ (or j/k)
-   * walk every visible row — sessions of the open project and the folded rows
-   * of the others — so switching projects is one Enter away; → unfolds the
-   * row's folder, ← folds it, Enter opens the session (or switches project),
-   * Esc hands the keyboard back to the Agent input.
+   * here are not bound to any command, so they arrive untouched.
+   *
+   * Enter has exactly one meaning: open the session under the keyboard and
+   * hand the keyboard to the composer. A folder row is not a session — Enter
+   * does nothing there (switching projects is the row's click, folding is
+   * ←/→), so "Enter opens a conversation" stays true on every row. ↑/↓ (or
+   * j/k) walk all visible rows, → unfolds, ← folds, Esc returns to the Agent
+   * input.
    */
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     // The search field and the row actions keep their own keys: Enter in the
@@ -375,8 +393,13 @@ export function ProjectsSidebar() {
         if (row.kind === "group") toggleGroup(row.group.key);
         break;
       case "activate":
-        if (row.kind === "group") activateGroup(row.group);
-        else void openSession(row.item);
+        // A folder has no conversation to open: Enter leaves the project
+        // alone (click switches, ←/→ folds), so Enter means the same thing on
+        // every row. A session switches and then hands the keyboard to the
+        // composer; a cross-project switch remounts the panel's conversation,
+        // not its input, so the focus lands once `openSession` opened the
+        // checkout.
+        if (row.kind === "session") void openSession(row.item).then(focusAgentComposer);
         break;
       case "release":
         // Back to the composer: the switch is done, the next move is typing.
