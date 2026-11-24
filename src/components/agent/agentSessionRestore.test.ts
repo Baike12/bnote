@@ -58,6 +58,17 @@ describe("restart restore: the session family, not the most recent one", () => {
   });
 });
 
+describe("restore: the record's lines become the transcript's turns", () => {
+  it("a restored record is grouped into turns, not mapped one entry per record line", () => {
+    // The record stores one line per provider round (the replay unit); the
+    // transcript's unit is the turn, and the work-section collapse reads a
+    // turn. Mapping lines 1:1 drew a section per round, and each round but the
+    // last ends on work, so a restored turn never collapsed (2026-11-24).
+    expect(code).toMatch(/entries: entriesFromLines\(lines\)/);
+    expect(code).not.toMatch(/\.map\(entryFromLine\)/);
+  });
+});
+
 describe("session switch: lazy start", () => {
   it("both the header selection and the back action go through activateConv", () => {
     expect(code).toMatch(/onSelect=\{activateConv\}/);

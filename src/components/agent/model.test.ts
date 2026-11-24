@@ -6,6 +6,7 @@ import {
   answerStepIndex,
   cloneEntry,
   closeThinking,
+  entriesFromLines,
   entriesToLines,
   entryFromLine,
   errorTurn,
@@ -22,6 +23,7 @@ import {
   type ChatEntry,
   type Turn,
 } from "./model";
+import { openWhenSettled } from "./turnWork";
 
 /**
  * The panel's conversion layer: a session record and the rendered entries
@@ -43,7 +45,7 @@ describe("transcript round trip", () => {
   ];
 
   it("a line becomes a rendered entry and back without losing content", () => {
-    const entries = lines.map(entryFromLine);
+    const entries = entriesFromLines(lines);
     expect(entries[0]).toMatchObject({ role: "user", text: "问", at: 1, items: null });
     expect(entries[1]?.turn).toMatchObject({ text: "答", thinking: "想" });
     expect(entriesToLines(entries)).toEqual(lines);
@@ -105,6 +107,102 @@ describe("transcript round trip", () => {
     const clonedSeal = copy.turn?.thinkingSeals[0];
     if (clonedSeal) clonedSeal.signature = "tampered";
     expect(entry.turn?.thinkingSeals[0]?.signature).toBe("sig1");
+  });
+});
+
+describe("restored turns: one entry per turn, so the work section can collapse", () => {
+  /** The record of one turn: round one (thinking + a tool), round two (thinking + the answer). */
+  const record: TranscriptLine[] = [
+    { type: "user", at: 1, text: "看下这个仓库" },
+    {
+      type: "assistant",
+      at: 2,
+      text: "",
+      thinking: "先看看",
+      thinkSeconds: 1,
+      thinkingSignature: "sig1",
+      tools: [{ id: "t1", name: "Bash", input: { command: "grep" }, output: "ok", ok: true }],
+    },
+    {
+      type: "assistant",
+      at: 3,
+      text: "结论如下",
+      thinking: "再想想",
+      thinkSeconds: 2,
+      turnMs: 9_000,
+      tools: [],
+    },
+  ];
+
+  it("a multi-round record restores as one assistant entry per turn", () => {
+    const entries = entriesFromLines(record);
+    expect(entries.map((entry) => entry.role)).toEqual(["user", "assistant"]);
+    const turn = entries[1]?.turn;
+    expect(turn?.steps.map((step) => step.kind)).toEqual(["thinking", "tool", "thinking", "text"]);
+    expect(turn?.thinking).toBe("先看看再想想");
+    expect(turn?.text).toBe("结论如下");
+    expect(turn?.turnMs).toBe(9_000);
+    // The turn's clock is its first line's, like a live turn's `at`.
+    expect(entries[1]?.at).toBe(2);
+    // Merging is a reshape, not a loss: writing the entry back splits it into
+    // the same rounds (the fork seed relies on this). The line clock is the one
+    // thing that normalizes: a turn has one `at` (its start), so every round it
+    // writes back carries it; the per-round clock is display-only.
+    const zeroClock = (lines: TranscriptLine[]) => lines.map((line) => ({ ...line, at: 0 }));
+    expect(zeroClock(entriesToLines(entries))).toEqual(zeroClock(record));
+  });
+
+  it("the restored turn collapses once settled, with its answer outside the section", () => {
+    // The cross-module edge the 2026-11-24 regression crossed: a record line is
+    // a provider round, but the work-section rules read a turn. One entry per
+    // line drew a section per round, and every round but the last ends on work
+    // with no answer, so openWhenSettled kept each section open.
+    const assistant = entriesFromLines(record).filter((entry) => entry.role === "assistant");
+    expect(assistant).toHaveLength(1);
+    for (const entry of assistant) {
+      const hasAnswer = entry.turn ? finalText(entry.turn) !== "" : entry.text !== "";
+      expect(hasAnswer).toBe(true);
+      expect(openWhenSettled({ open: false, inspected: false }, entry.turn ?? {}, hasAnswer)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("a user line ends the turn it follows", () => {
+    const entries = entriesFromLines([
+      { type: "assistant", at: 1, text: "一" },
+      { type: "user", at: 2, text: "问" },
+      { type: "assistant", at: 3, text: "二" },
+    ]);
+    expect(entries.map((entry) => entry.role)).toEqual(["assistant", "user", "assistant"]);
+    expect(entries[0]?.turn?.text).toBe("一");
+    expect(entries[2]?.turn?.text).toBe("二");
+  });
+
+  it("a restored turn is fully persisted, so resuming writes nothing twice", () => {
+    const turn = entriesFromLines(record)[1]?.turn;
+    expect(turn).toMatchObject({
+      persistedTextLen: turn?.text.length,
+      persistedThinkLen: turn?.thinking.length,
+      persistedSealCount: 1,
+      persistedToolCount: 1,
+    });
+  });
+
+  it("a restored turn that ended on work keeps its one section open", () => {
+    // An interrupted turn has no trailing answer: the work rows are all there is.
+    const entries = entriesFromLines([
+      { type: "user", at: 1, text: "跑一下" },
+      {
+        type: "assistant",
+        at: 2,
+        text: "",
+        tools: [{ id: "t1", name: "Bash", input: { command: "ls" } }],
+      },
+    ]);
+    const turn = entries[1]?.turn;
+    expect(turn && finalText(turn)).toBe("");
+    expect(openWhenSettled({ open: false, inspected: false }, turn ?? {}, false)).toBe(true);
   });
 });
 

@@ -355,63 +355,104 @@ export function nextConvKey(): string {
   return `c${convSeq}`;
 }
 
-/** A session record line turned into a UI message (used when a session is restored). */
-export function entryFromLine(line: TranscriptLine): ChatEntry {
-  if (line.type === "user") {
-    return {
-      role: "user",
-      text: line.text,
-      at: line.at,
-      items: null,
-      images: line.images,
-    };
-  }
-  const thinking = line.thinking ?? "";
-  const tools = line.tools ?? [];
-  // The record line is one provider round: thinking → text → tool calls is the
-  // order the backend assembles the blocks in, so the restored rows need no
-  // other ordering source.
-  const steps: TurnStep[] = [];
-  if (thinking) {
-    steps.push({
-      kind: "thinking",
-      start: 0,
-      end: thinking.length,
-      startedAt: null,
-      seconds: line.thinkSeconds ?? null,
-    });
-  }
-  if (line.text) steps.push({ kind: "text", start: 0, end: line.text.length });
-  for (const tool of tools) steps.push({ kind: "tool", id: tool.id });
+/** A user record line as a UI message. */
+function userEntry(line: Extract<TranscriptLine, { type: "user" }>): ChatEntry {
   return {
-    role: "assistant",
+    role: "user",
     text: line.text,
     at: line.at,
     items: null,
-    turn: {
-      text: line.text,
-      thinking,
-      // A stored signature seals the whole stored thinking text (that is the
-      // only shape the writer emits), so it comes back as one closed block.
-      thinkingSeals: line.thinkingSignature
-        ? [{ end: thinking.length, signature: line.thinkingSignature }]
-        : [],
-      steps,
-      startedAt: null,
-      turnMs: line.turnMs ?? null,
-      tools,
-      // The record does not store why a turn ended, and an interrupted turn
-      // is indistinguishable from a finished one on disk: claiming "aborted"
-      // here would lie about every restored reply.
-      stopReason: null,
-      error: line.error,
-      // A restored turn never streams again: its record is complete on disk.
-      persistedTextLen: line.text.length,
-      persistedThinkLen: thinking.length,
-      persistedSealCount: line.thinkingSignature ? 1 : 0,
-      persistedToolCount: tools.length,
-    },
+    images: line.images,
   };
+}
+
+/**
+ * One stored provider round appended to the turn it belongs to.
+ *
+ * The record stores one line per round (see `assistantRoundLines`), thinking →
+ * text → tool calls — the order the backend assembles the blocks in, so the
+ * restored rows need no other ordering source. The thinking seal covers the
+ * stored block: the writer emits one block per line.
+ */
+function appendStoredRound(turn: Turn, line: TranscriptAssistantLine): void {
+  const thinking = line.thinking ?? "";
+  if (thinking) {
+    const start = turn.thinking.length;
+    turn.thinking += thinking;
+    const end = turn.thinking.length;
+    turn.steps.push({
+      kind: "thinking",
+      start,
+      end,
+      startedAt: null,
+      seconds: line.thinkSeconds ?? null,
+    });
+    if (line.thinkingSignature) turn.thinkingSeals.push({ end, signature: line.thinkingSignature });
+  }
+  if (line.text) {
+    const start = turn.text.length;
+    turn.text += line.text;
+    turn.steps.push({ kind: "text", start, end: turn.text.length });
+  }
+  for (const tool of line.tools ?? []) {
+    turn.tools.push(tool);
+    turn.steps.push({ kind: "tool", id: tool.id });
+  }
+  // The turn's duration and error are written on its last line only.
+  if (line.turnMs != null) turn.turnMs = line.turnMs;
+  if (line.error) turn.error = line.error;
+  // A restored turn never streams again: its record is complete on disk, so
+  // every marker (not just the ones this line added) already matches the disk.
+  turn.persistedTextLen = turn.text.length;
+  turn.persistedThinkLen = turn.thinking.length;
+  turn.persistedSealCount = turn.thinkingSeals.length;
+  turn.persistedToolCount = turn.tools.length;
+}
+
+/** One record line as a single-round entry (the per-round contract of a line). */
+export function entryFromLine(line: TranscriptLine): ChatEntry {
+  if (line.type === "user") return userEntry(line);
+  const turn = newTurn(null);
+  appendStoredRound(turn, line);
+  return { role: "assistant", text: turn.text, at: line.at, items: null, turn };
+}
+
+/**
+ * A session record → the transcript's entries: one entry per user line and
+ * **one entry per turn** for the assistant.
+ *
+ * The record's unit is the provider round (one line per round, the replay
+ * unit); the transcript's unit is the turn. Mapping lines 1:1 to entries drew
+ * one work section per round, and every round but the last ends on work with no
+ * answer outside, so `openWhenSettled` kept each section open: a restored turn
+ * never collapsed to "已工作" the way the live one did (2026-11-24). The turn's
+ * `at` is its first line's (the clock the live turn starts on), its duration and
+ * error come from the last line. Writing the entry back re-splits it into the
+ * same rounds; the line clock is the only value that normalizes.
+ */
+export function entriesFromLines(lines: readonly TranscriptLine[]): ChatEntry[] {
+  const entries: ChatEntry[] = [];
+  let turn: Turn | null = null;
+  let at = 0;
+  const flushTurn = (): void => {
+    if (!turn) return;
+    entries.push({ role: "assistant", text: turn.text, at, items: null, turn });
+    turn = null;
+  };
+  for (const line of lines) {
+    if (line.type !== "assistant") {
+      flushTurn();
+      entries.push(userEntry(line));
+      continue;
+    }
+    if (!turn) {
+      turn = newTurn(null);
+      at = line.at;
+    }
+    appendStoredRound(turn, line);
+  }
+  flushTurn();
+  return entries;
 }
 
 /** The seal that closed the thinking block ending at `end`: a per-round line claims only its own block's signature. */

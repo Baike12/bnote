@@ -58,8 +58,8 @@ import { buildSuggestItems, AgentSuggest, type SuggestItem } from "@/components/
 import { MAX_IMAGES_PER_MESSAGE, fileToAgentImage, type AgentImage } from "@/study/agentImages";
 import {
   cloneEntry,
+  entriesFromLines,
   entriesToLines,
-  entryFromLine,
   nextConvKey,
   studyContentKey,
   toSessionNode,
@@ -670,7 +670,7 @@ export function AgentPanel() {
         const sessionMeta = parsed?.meta ?? null;
         updateConv(conv.key, (c) => ({
           ...c,
-          entries: lines.map(entryFromLine),
+          entries: entriesFromLines(lines),
           label: sessionMeta?.title?.trim() ? sessionMeta.title : c.label,
           basedOn: sessionMeta?.basedOn ?? c.basedOn,
           forkAt: sessionMeta?.forkAt ?? c.forkAt,

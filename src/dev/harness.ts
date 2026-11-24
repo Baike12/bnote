@@ -54,7 +54,7 @@ import {
   appendText,
   appendThinking,
   closeThinking,
-  entryFromLine,
+  entriesFromLines,
   newTurn,
   pushToolStep,
   type ChatEntry,
@@ -1179,7 +1179,7 @@ window.__mountTranscript = (lines = [], opts = {}) => {
   if (agent && toolUseId && !rows.some((row) => row.kind === "tool" && row.id === toolUseId)) {
     rows.push({ kind: "tool", id: toolUseId, name: "Agent", output: agent.output });
   }
-  let entries = lines.map(entryFromLine);
+  let entries = entriesFromLines(lines);
   if (rows.length > 0) {
     const turn = newTurn(1_000);
     let at = 1_000;
