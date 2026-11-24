@@ -32,14 +32,18 @@ vi.mock("@/lib/tauri", () => ({
 
 const { useProjectSidebarStore } = await import("./projectSidebarStore");
 
-const COLLAPSED_KEY = "bnote-codeProjectsCollapsed";
 const PINNED_KEY = "bnote-codeProjectsPinned";
 
 beforeEach(() => {
   storage.clear();
   disk.sessions.clear();
   disk.reads.length = 0;
-  useProjectSidebarStore.setState({ collapsed: {}, pinned: [], sessionsFocus: 0, groups: [] });
+  useProjectSidebarStore.setState({
+    expandedGroup: null,
+    pinned: [],
+    sessionsFocus: 0,
+    groups: [],
+  });
 });
 
 const meta = (id: string, updatedAt: number): SavedSessionMeta => ({
@@ -71,27 +75,38 @@ const group = (path: string, sessions: ProjectSessionItem[]): ProjectGroup => ({
   sessions,
 });
 
-describe("expandGroup", () => {
-  it("reveals one folded group and keeps the rest folded", () => {
-    useProjectSidebarStore.setState({ collapsed: { "/a": true, "/b": true } });
+describe("expanding and folding a project folder", () => {
+  it("opens one folder at a time (the accordion)", () => {
     useProjectSidebarStore.getState().expandGroup("/a");
-    expect(useProjectSidebarStore.getState().collapsed).toEqual({ "/b": true });
-    expect(JSON.parse(storage.get(COLLAPSED_KEY) ?? "{}")).toEqual({ "/b": true });
+    expect(useProjectSidebarStore.getState().expandedGroup).toBe("/a");
+    useProjectSidebarStore.getState().expandGroup("/b");
+    expect(useProjectSidebarStore.getState().expandedGroup).toBe("/b");
   });
 
-  it("an already expanded group is not a write", () => {
-    const collapsed = { "/a": true };
-    useProjectSidebarStore.setState({ collapsed });
-    useProjectSidebarStore.getState().expandGroup("/c");
-    expect(useProjectSidebarStore.getState().collapsed).toBe(collapsed);
-    expect(storage.has(COLLAPSED_KEY)).toBe(false);
+  it("toggle folds the open folder, and opens another one", () => {
+    useProjectSidebarStore.getState().toggleGroup("/a");
+    expect(useProjectSidebarStore.getState().expandedGroup).toBe("/a");
+    useProjectSidebarStore.getState().toggleGroup("/a");
+    expect(useProjectSidebarStore.getState().expandedGroup).toBeNull();
+    useProjectSidebarStore.getState().toggleGroup("/b");
+    expect(useProjectSidebarStore.getState().expandedGroup).toBe("/b");
   });
 
-  it("expanding the last folded group clears the persisted map", () => {
-    useProjectSidebarStore.setState({ collapsed: { "/a": true } });
+  it("foldGroup closes only the folder it names", () => {
+    useProjectSidebarStore.getState().expandGroup("/b");
+    useProjectSidebarStore.getState().foldGroup("/a");
+    expect(useProjectSidebarStore.getState().expandedGroup).toBe("/b");
+    useProjectSidebarStore.getState().foldGroup("/b");
+    expect(useProjectSidebarStore.getState().expandedGroup).toBeNull();
+  });
+
+  it("an already expanded folder is not a write", () => {
+    const state = useProjectSidebarStore.getState();
     useProjectSidebarStore.getState().expandGroup("/a");
-    expect(useProjectSidebarStore.getState().collapsed).toEqual({});
-    expect(storage.has(COLLAPSED_KEY)).toBe(false);
+    expect(useProjectSidebarStore.getState()).not.toBe(state);
+    const after = useProjectSidebarStore.getState();
+    useProjectSidebarStore.getState().expandGroup("/a");
+    expect(useProjectSidebarStore.getState()).toBe(after);
   });
 });
 
@@ -113,7 +128,7 @@ describe("togglePin", () => {
   it("a pinned project's folder cannot be folded", () => {
     useProjectSidebarStore.getState().togglePin("/a");
     useProjectSidebarStore.getState().toggleGroup("/a");
-    expect(useProjectSidebarStore.getState().collapsed).toEqual({});
+    expect(useProjectSidebarStore.getState().expandedGroup).toBeNull();
   });
 });
 

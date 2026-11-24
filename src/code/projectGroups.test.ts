@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   checkoutsOf,
+  foldLeavingGroup,
   groupOpen,
   GROUP_SESSION_LIMIT,
   groupRecentProjects,
   isDirtyRefusal,
   mergeGroupSessions,
   orderPinnedGroups,
-  parseCollapsed,
   parsePinned,
   projectRowIntent,
   randomWorktreeName,
@@ -272,15 +272,6 @@ describe("sessionMatches", () => {
   });
 });
 
-describe("parseCollapsed", () => {
-  it("keeps only collapsed projects, defaulting the rest to expanded", () => {
-    expect(parseCollapsed('{"/a":"x","/b":true,"/c":false}')).toEqual({ "/b": true });
-    expect(parseCollapsed(null)).toEqual({});
-    expect(parseCollapsed("[]")).toEqual({});
-    expect(parseCollapsed("not json")).toEqual({});
-  });
-});
-
 describe("parsePinned", () => {
   it("keeps unique non-empty strings", () => {
     expect(parsePinned('["/a","/b","/a","",3]')).toEqual(["/a", "/b"]);
@@ -307,23 +298,39 @@ describe("orderPinnedGroups", () => {
 });
 
 describe("groupOpen", () => {
-  const base = { pinned: [] as string[], activeKey: "/a", collapsed: false, filtering: false };
+  const base = { pinned: [] as string[], expandedKey: "/a", filtering: false };
 
-  it("only the active project's folder is open", () => {
+  it("only the expanded folder is open", () => {
     expect(groupOpen({ ...base, key: "/a" })).toBe(true);
     expect(groupOpen({ ...base, key: "/b" })).toBe(false);
   });
 
-  it("a pinned project stays open even when it is not active or was folded", () => {
-    expect(groupOpen({ ...base, key: "/b", pinned: ["/b"], collapsed: true })).toBe(true);
+  it("a pinned project stays open even when it is not the expanded folder", () => {
+    expect(groupOpen({ ...base, key: "/b", pinned: ["/b"] })).toBe(true);
   });
 
-  it("the active project can be folded by hand", () => {
-    expect(groupOpen({ ...base, key: "/a", collapsed: true })).toBe(false);
+  it("nothing is open when no folder is expanded", () => {
+    expect(groupOpen({ ...base, expandedKey: null, key: "/a" })).toBe(false);
   });
 
   it("a search opens every group with a match", () => {
     expect(groupOpen({ ...base, key: "/b", filtering: true })).toBe(true);
+  });
+});
+
+describe("foldLeavingGroup", () => {
+  it("closes the folder the keyboard leaves", () => {
+    expect(foldLeavingGroup("/a", "/a", "/b")).toBeNull();
+  });
+
+  it("keeps a folder open while the keyboard stays inside it", () => {
+    expect(foldLeavingGroup("/a", "/a", "/a")).toBe("/a");
+  });
+
+  it("leaves another open folder alone (only one is expanded)", () => {
+    expect(foldLeavingGroup("/b", "/a", "/c")).toBe("/b");
+    expect(foldLeavingGroup(null, "/a", "/c")).toBeNull();
+    expect(foldLeavingGroup("/a", null, "/c")).toBe("/a");
   });
 });
 

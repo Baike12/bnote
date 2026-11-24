@@ -17,7 +17,6 @@ import {
   groupRecentProjects,
   mergeGroupSessions,
   orderSessions,
-  parseCollapsed,
   parsePinned,
   PROJECT_SESSION_LIMIT,
   SHOW_MORE_STEP,
@@ -34,11 +33,11 @@ interface ProjectSidebarState {
   groups: ProjectGroup[];
   loading: boolean;
   /**
-   * Group key → folded. Only the active project is open by default, so this
-   * map now records the explicit fold of that project (and legacy flags for
-   * other groups, which the "always folded unless active" rule ignores).
+   * The one project whose sessions are open for browsing (null = every
+   * unpinned folder is folded). It follows the open project by default and is
+   * moved by the keyboard; pinned projects are open regardless.
    */
-  collapsed: Record<string, boolean>;
+  expandedGroup: string | null;
   /** Pinned group keys, newest pin first. Pinned projects lead the list and stay open. */
   pinned: string[];
   /**
@@ -74,13 +73,16 @@ interface ProjectSidebarState {
    * predates that write.
    */
   refreshGroup: (workdir: string) => Promise<void>;
+  /** Open this folder (folding the previously open one), or fold it when it is the open one. */
   toggleGroup: (key: string) => void;
   /**
-   * Reveal a group's sessions. Switching into a project must show it: the row
-   * the user clicked can be folded, and a folded flag would keep the new
-   * project's sessions hidden after the switch.
+   * Reveal a group's sessions. Switching into a project must show it: the
+   * folder the user came from may be the open one, and leaving it folded
+   * would keep the new project's sessions hidden after the switch.
    */
   expandGroup: (key: string) => void;
+  /** Fold this folder if it is the expanded one (the keyboard's "leave" action). */
+  foldGroup: (key: string) => void;
   /** Pin a project to the top (and keep its folder open), or unpin it. */
   togglePin: (key: string) => void;
   /** Ask the mounted sidebar to take the keyboard and land on the active session. */
@@ -113,34 +115,7 @@ function serialized(task: () => Promise<void>): Promise<void> {
  */
 let refreshGeneration = 0;
 
-/** Where the fold state of the project rows survives a restart (ZCode's shape). */
-const COLLAPSED_KEY = "bnote-codeProjectsCollapsed";
-
-/**
- * Read the saved fold state. A group whose key is absent is not folded; the
- * sidebar opens the active project and ignores the map for the other groups
- * (see `groupOpen`). Storage being unavailable (private mode, tests) degrades
- * to the in-memory default instead of failing the module load.
- */
-function loadCollapsed(): Record<string, boolean> {
-  try {
-    return parseCollapsed(localStorage.getItem(COLLAPSED_KEY));
-  } catch {
-    return {};
-  }
-}
-
-/** Write only the collapsed groups: expanded is the default, not a stored value. */
-function saveCollapsed(collapsed: Record<string, boolean>): void {
-  try {
-    if (Object.keys(collapsed).length === 0) localStorage.removeItem(COLLAPSED_KEY);
-    else localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed));
-  } catch {
-    // The fold still works for this run; the next launch starts expanded.
-  }
-}
-
-/** Where the pinned projects survive a restart (same shelf as the fold state). */
+/** Where the pinned projects survive a restart. */
 const PINNED_KEY = "bnote-codeProjectsPinned";
 
 function loadPinned(): string[] {
@@ -198,7 +173,7 @@ async function loadSessions(checkouts: readonly ProjectCheckout[]): Promise<Chec
 export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => ({
   groups: [],
   loading: false,
-  collapsed: loadCollapsed(),
+  expandedGroup: null,
   pinned: loadPinned(),
   sessionsFocus: 0,
   shown: {},
@@ -262,22 +237,19 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
     // A pinned project is always open (the pin is the user's shortcut into
     // its sessions); folding it is not a state the list can show.
     if (get().pinned.includes(key)) return;
-    const collapsed = { ...get().collapsed };
-    if (collapsed[key]) delete collapsed[key];
-    else collapsed[key] = true;
-    saveCollapsed(collapsed);
-    set({ collapsed });
+    set({ expandedGroup: get().expandedGroup === key ? null : key });
   },
 
   expandGroup: (key) => {
-    const collapsed = get().collapsed;
-    // Expanded is the default and the persisted map only stores `true` keys, so
-    // an already-expanded group is not a write (the map identity stays put).
-    if (!collapsed[key]) return;
-    const next = { ...collapsed };
-    delete next[key];
-    saveCollapsed(next);
-    set({ collapsed: next });
+    // Pinned folders are already open, and an already-open folder is not a
+    // write (the state keeps its identity, so subscribers do not re-render).
+    if (get().pinned.includes(key) || get().expandedGroup === key) return;
+    set({ expandedGroup: key });
+  },
+
+  foldGroup: (key) => {
+    if (get().expandedGroup !== key) return;
+    set({ expandedGroup: null });
   },
 
   togglePin: (key) => {

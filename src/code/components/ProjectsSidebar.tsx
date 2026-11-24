@@ -36,6 +36,7 @@ import {
 import { useCodeStore } from "../store";
 import { visibleSessions, useProjectSidebarStore } from "../projectSidebarStore";
 import {
+  foldLeavingGroup,
   groupOpen,
   orderPinnedGroups,
   projectRowIntent,
@@ -49,8 +50,8 @@ import { ArchiveModal } from "./ArchiveModal";
 
 /** One keyboard-navigable row of the session list, in visual order. */
 type SidebarRow =
-  | { kind: "group"; key: string; group: ProjectGroup; open: boolean }
-  | { kind: "session"; key: string; item: ProjectSessionItem };
+  | { kind: "group"; key: string; groupKey: string; group: ProjectGroup; open: boolean }
+  | { kind: "session"; key: string; groupKey: string; item: ProjectSessionItem };
 
 /** Row identities are namespaced: a group key and a workdir share the path shape. */
 const groupRowKey = (key: string): string => `group:${key}`;
@@ -78,14 +79,13 @@ const sessionRowKey = (workdir: string, id: string): string => `session:${workdi
  * the row's end, and its tooltip names the checkout. A group's identity is the
  * **main repository** (`code_git_main_repo`).
  *
- * The column is also the session switcher. Only the open project's folder is
- * open (a pinned project is the exception: it leads the list and stays open),
- * so the rows are the current sessions plus one row per other project. ↑/↓
- * (or j/k) walk them, Enter opens the session under the keyboard (a folder row
- * switches by click only, so Enter cannot change projects), and
- * `code.focus-sessions` (Agent region) hands the keyboard over from the
- * assistant composer — the chord is pressed where the user is typing, and the
- * list is where the next move is.
+ * The column is also the session switcher. One folder is open at a time: the
+ * open project's folder by default, moved by Enter on another folder, while
+ * pinned projects stay open. ↑/↓ (or j/k) walk the rows and close the folder
+ * they leave; Enter on a folder unfolds it, Enter on a session switches to it
+ * and hands the keyboard to the composer; `code.focus-sessions` (Agent region)
+ * hands the keyboard over from the assistant composer — the chord is pressed
+ * where the user is typing, and the list is where the next move is.
  */
 export function ProjectsSidebar() {
   const recent = useAppStore((s) => s.recentCodeProjects);
@@ -98,7 +98,7 @@ export function ProjectsSidebar() {
   const groups = useProjectSidebarStore((s) => s.groups);
   const loading = useProjectSidebarStore((s) => s.loading);
   const shown = useProjectSidebarStore((s) => s.shown);
-  const collapsed = useProjectSidebarStore((s) => s.collapsed);
+  const expandedGroup = useProjectSidebarStore((s) => s.expandedGroup);
   const pinned = useProjectSidebarStore((s) => s.pinned);
   const sessionsFocus = useProjectSidebarStore((s) => s.sessionsFocus);
   const activeSession = useProjectSidebarStore((s) => s.activeSession);
@@ -108,6 +108,7 @@ export function ProjectsSidebar() {
   const showMore = useProjectSidebarStore((s) => s.showMore);
   const toggleGroup = useProjectSidebarStore((s) => s.toggleGroup);
   const expandGroup = useProjectSidebarStore((s) => s.expandGroup);
+  const foldGroup = useProjectSidebarStore((s) => s.foldGroup);
   const togglePin = useProjectSidebarStore((s) => s.togglePin);
   const openWorktreeModal = useProjectSidebarStore((s) => s.openWorktreeModal);
 
@@ -178,8 +179,8 @@ export function ProjectsSidebar() {
   const filtering = query.trim() !== "";
   const matches = (item: ProjectSessionItem) => sessionMatches(item, query);
 
-  // Switching into a project reveals its sessions even if that project was
-  // folded by hand before: the open project is the one group the list opens.
+  // The open project's folder is the one the accordion opens by default, so
+  // switching projects reveals that project's sessions.
   useEffect(() => {
     if (activeGroupKey) expandGroup(activeGroupKey);
   }, [activeGroupKey, expandGroup]);
@@ -195,18 +196,22 @@ export function ProjectsSidebar() {
       const open = groupOpen({
         key: group.key,
         pinned,
-        activeKey: activeGroupKey,
-        collapsed: collapsed[group.key] === true,
+        expandedKey: expandedGroup,
         filtering,
       });
-      out.push({ kind: "group", key: groupRowKey(group.key), group, open });
+      out.push({ kind: "group", key: groupRowKey(group.key), groupKey: group.key, group, open });
       if (!open) continue;
       for (const item of filtered ?? visibleSessions(group, shown)) {
-        out.push({ kind: "session", key: sessionRowKey(item.workdir, item.id), item });
+        out.push({
+          kind: "session",
+          key: sessionRowKey(item.workdir, item.id),
+          groupKey: group.key,
+          item,
+        });
       }
     }
     return out;
-  }, [groups, pinned, filtering, query, activeGroupKey, collapsed, shown]);
+  }, [groups, pinned, filtering, query, expandedGroup, shown]);
 
   // --- keyboard focus -------------------------------------------------------
   // The focus sits on the scrolling container, not on a row: a project switch
@@ -245,6 +250,13 @@ export function ProjectsSidebar() {
     // consuming the request now would focus an empty column. The effect runs
     // again when the rows arrive.
     if (rows.length === 0) return;
+    // The command lands on the open session, which lives in the open project's
+    // folder: reopen that folder if the keyboard had folded it, so the landing
+    // row exists (an already-open or pinned folder is left alone).
+    if (activeGroupKey && expandedGroup !== activeGroupKey && !pinned.includes(activeGroupKey)) {
+      expandGroup(activeGroupKey);
+      return;
+    }
     handledFocus.current = sessionsFocus;
     let target: string | null = hasRow(activeRowKey) ? activeRowKey : null;
     if (!target && activeGroupKey) {
@@ -258,7 +270,16 @@ export function ProjectsSidebar() {
     if (!target) return;
     bodyRef.current?.focus({ preventScroll: true });
     revealTo(target);
-  }, [sessionsFocus, rows, activeRowKey, activeGroupKey, revealTo]);
+  }, [
+    sessionsFocus,
+    rows,
+    activeRowKey,
+    activeGroupKey,
+    expandedGroup,
+    pinned,
+    expandGroup,
+    revealTo,
+  ]);
 
   // Scroll the focused row into view. The focus stays on the container, so
   // only the scroll container moves (`block: "nearest"` is the same promise as
@@ -338,13 +359,26 @@ export function ProjectsSidebar() {
     app.runAgentPanelCommand("focus-input");
   }
 
+  /**
+   * Move the keyboard to a row. Leaving a folder's block folds it — the
+   * accordion closes behind the keyboard, so a step past the last session does
+   * not leave a trail of open folders; stepping between two rows of one folder
+   * keeps it open.
+   */
+  function revealRow(next: SidebarRow) {
+    const from = rows.find((row) => row.key === currentKey);
+    const expanded = foldLeavingGroup(expandedGroup, from?.groupKey ?? null, next.groupKey);
+    if (from && expanded !== expandedGroup) foldGroup(from.groupKey);
+    revealTo(next.key);
+  }
+
   /** Move the keyboard between neighbouring visible rows (out of range stays put). */
   function moveFocus(delta: number) {
     if (!currentKey) return;
     const index = rows.findIndex((row) => row.key === currentKey);
     if (index < 0) return;
     const next = rows[Math.min(rows.length - 1, Math.max(0, index + delta))];
-    if (next) revealTo(next.key);
+    if (next) revealRow(next);
   }
 
   /**
@@ -352,12 +386,10 @@ export function ProjectsSidebar() {
    * runs first (capture) and consumes only chords it resolves; the plain keys
    * here are not bound to any command, so they arrive untouched.
    *
-   * Enter has exactly one meaning: open the session under the keyboard and
-   * hand the keyboard to the composer. A folder row is not a session — Enter
-   * does nothing there (switching projects is the row's click, folding is
-   * ←/→), so "Enter opens a conversation" stays true on every row. ↑/↓ (or
-   * j/k) walk all visible rows, → unfolds, ← folds, Esc returns to the Agent
-   * input.
+   * Enter opens the row: a folder unfolds for browsing (the accordion folds
+   * the folder it leaves), a session switches and hands the keyboard to the
+   * composer. ↑/↓ (or j/k) walk all visible rows and fold the folder they
+   * leave, → unfolds, ← folds, Esc returns to the Agent input.
    */
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     // The search field and the row actions keep their own keys: Enter in the
@@ -379,11 +411,11 @@ export function ProjectsSidebar() {
         moveFocus(-1);
         break;
       case "first":
-        if (rows[0]) revealTo(rows[0].key);
+        if (rows[0]) revealRow(rows[0]);
         break;
       case "last": {
         const last = rows[rows.length - 1];
-        if (last) revealTo(last.key);
+        if (last) revealRow(last);
         break;
       }
       case "right":
@@ -393,13 +425,13 @@ export function ProjectsSidebar() {
         if (row.kind === "group") toggleGroup(row.group.key);
         break;
       case "activate":
-        // A folder has no conversation to open: Enter leaves the project
-        // alone (click switches, ←/→ folds), so Enter means the same thing on
-        // every row. A session switches and then hands the keyboard to the
-        // composer; a cross-project switch remounts the panel's conversation,
-        // not its input, so the focus lands once `openSession` opened the
-        // checkout.
-        if (row.kind === "session") void openSession(row.item).then(focusAgentComposer);
+        // A folder opens for browsing (the accordion folds the previous one);
+        // only a session switches project/session, and then hands the keyboard
+        // to the composer. A cross-project switch remounts the panel's
+        // conversation, not its input, so the focus lands once `openSession`
+        // opened the checkout.
+        if (row.kind === "group") toggleGroup(row.group.key);
+        else void openSession(row.item).then(focusAgentComposer);
         break;
       case "release":
         // Back to the composer: the switch is done, the next move is typing.
@@ -531,8 +563,8 @@ export function ProjectsSidebar() {
           current
             ? isPinned
               ? `${group.key}\n置顶项目保持展开`
-              : `${group.key}\n点击收起会话列表`
-            : `${group.key}\n点击切换到该项目`
+              : `${group.key}\n点击或回车收起会话列表`
+            : `${group.key}\n点击切换到该项目\n回车展开会话列表`
         }
         onClick={() => activateGroup(group)}
         onFocus={() => setFocusKey(rowKey)}
@@ -705,8 +737,7 @@ export function ProjectsSidebar() {
           const open = groupOpen({
             key: group.key,
             pinned,
-            activeKey: activeGroupKey,
-            collapsed: collapsed[group.key] === true,
+            expandedKey: expandedGroup,
             filtering,
           });
           const current = group.checkouts.some((checkout) => checkout.path === currentRoot);

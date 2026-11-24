@@ -153,43 +153,35 @@ export function orderPinnedGroups<T extends { key: string }>(
 /**
  * Whether a project's session folder is open.
  *
- * The rule of the list: a project is folded unless it is the one the agent
- * panel is on, and pinned projects are always open (they are the user's
- * shortcuts). A search opens every group that has a match — the query is the
- * user asking to see rows, and leaving matches behind a fold would be a
- * dead search. The active project can still be folded by hand, which is what
- * makes "show me only the project rows" reachable.
+ * The list is an accordion: one folder is open for browsing at a time
+ * (`expandedKey`, normally the open project) and pinned projects are always
+ * open — they are the user's shortcuts. A search opens every group that has a
+ * match, because a match behind a fold would be a dead search.
  */
 export function groupOpen(input: {
   key: string;
   pinned: readonly string[];
-  activeKey: string | null;
-  collapsed: boolean;
+  expandedKey: string | null;
   filtering: boolean;
 }): boolean {
   if (input.filtering) return true;
   if (input.pinned.includes(input.key)) return true;
-  return input.key === input.activeKey && !input.collapsed;
+  return input.key === input.expandedKey;
 }
 
 /**
- * Read the persisted fold map (project key → folded). Only `true` entries are
- * kept: a missing key means "not folded by hand", so the stored shape stays
- * small and an unknown/corrupt value degrades to "nothing folded".
+ * The expanded folder after the keyboard moves from one row to another:
+ * leaving a folder's block folds it (the accordion closes behind the
+ * keyboard), while stepping inside the same folder keeps it open. `from` is
+ * the group of the row being left and `to` the group of the destination.
  */
-export function parseCollapsed(raw: string | null): Record<string, boolean> {
-  if (!raw) return {};
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    const out: Record<string, boolean> = {};
-    for (const [key, flag] of Object.entries(value)) {
-      if (flag === true) out[key] = true;
-    }
-    return out;
-  } catch {
-    return {};
-  }
+export function foldLeavingGroup(
+  expandedKey: string | null,
+  fromGroup: string | null,
+  toGroup: string,
+): string | null {
+  if (expandedKey === null || fromGroup === null || fromGroup === toGroup) return expandedKey;
+  return expandedKey === fromGroup ? null : expandedKey;
 }
 
 /**
