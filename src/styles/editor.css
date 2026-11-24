@@ -91,6 +91,11 @@
    whole viewport subtree. */
 .cm-line.cm-activeLine {
   background: var(--sel) !important;
+  /* The shade is a component of its own, so it follows the workspace's
+     rounded language instead of a hard rectangle. The radius sits on the line
+     box, so a single line reads as a rounded highlight and the content-clip
+     rule for headings below keeps hugging the text. */
+  border-radius: 6px;
 }
 /* Heading lines carry extra top padding (vertical rhythm) — clip the shade to
    the content box so the band hugs the heading text symmetrically instead of

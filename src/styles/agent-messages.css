@@ -325,19 +325,35 @@
   border-top: 1px solid var(--border);
   margin: 8px 0;
 }
+/* A table is a rounded card of its own: the block box owns the frame, the
+   radius and the horizontal scroll (a collapsed cell border cannot round its
+   own outer corners - clipping a rectangle leaves notched corners), while the
+   cells only draw the inner grid lines. So the edge is one uninterrupted
+   rounded stroke even for wide tables. */
 .agent-md table {
-  border-collapse: collapse;
-  margin: 6px 0;
-  font-size: calc(var(--agent-text) * 0.9);
-  max-width: 100%;
   display: block;
+  max-width: 100%;
+  margin: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  /* Separate borders: every line is drawn once, by the cell that owns it, so
+     no collapsed border can poke through the rounded frame. */
+  border-collapse: separate;
+  border-spacing: 0;
   overflow-x: auto;
+  font-size: calc(var(--agent-text) * 0.9);
 }
 .agent-md th, .agent-md td {
-  border: 1px solid var(--border);
+  border: none;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   padding: 4px 8px;
   text-align: left;
 }
+/* The frame is the outer edge: the last column and the last body row add no
+   line of their own, so nothing doubles or squares off the rounded corner. */
+.agent-md tr > *:last-child { border-right: none; }
+.agent-md tbody tr:last-child > td { border-bottom: none; }
 .agent-md th { background: var(--bg3); font-weight: 600; }
 .agent-md code {
   background: var(--bg3);

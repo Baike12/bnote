@@ -138,13 +138,14 @@
 }
 
 /* The keyboard's row: a ring like the file tree's, so "where the keys are"
-   and "which session is open" stay two different signals. */
+   and "which session is open" stay two different signals. The ring is an
+   inset shadow (the vault tree's kbd-cursor draws it the same way) because it
+   follows the row's 6px radius, while an outline's rectangle does not. */
 .cp-row:focus {
   outline: none;
 }
 .code-projects-body:focus-within .cp-row.is-focus {
-  outline: 1px solid var(--accent-dim);
-  outline-offset: -1px;
+  box-shadow: inset 0 0 0 1px var(--accent-dim);
 }
 
 .cp-row-icon {
@@ -1116,6 +1117,9 @@
   height: 22px;
   padding-right: 8px;
   border: none;
+  /* The hover base, the current file and the keyboard ring are all rounded
+     row backgrounds, like every other list in the app. */
+  border-radius: 6px;
   background: transparent;
   /* The code project is the document being read, not one of the navigation
      lists: its tree keeps the body text color (the session list, the vault
@@ -1134,20 +1138,22 @@
   color: var(--accent);
 }
 /* The keyboard focus (after ⌘⇧E focuses the file tree the whole tree is
-   walked with the arrow keys): an inset outline, kept apart from the base
-   color of the "currently open file" - one is where the keyboard is, the
-   other is which file the editor has open.
+   walked with the arrow keys): an inset ring, kept apart from the base color
+   of the "currently open file" - one is where the keyboard is, the other is
+   which file the editor has open.
    The focus may sit on the container (the virtual scrolling does not unmount
    it) or on the button of a row (clicked with the mouse or reached by Tab),
-   so :focus-within covers both; the row's own native outline gives way. */
+   so :focus-within covers both; the row's own native outline gives way.
+   The ring is a box-shadow, not an outline: it has to follow the row's 6px
+   radius (an outline's rectangle would square the corners off again), the
+   same construct the vault tree's kbd-cursor uses. */
 .code-tree:focus,
 .code-tree:focus-within,
 .code-tree-row:focus {
   outline: none;
 }
 .code-tree:focus-within .code-tree-row.is-focus {
-  outline: 1px solid var(--accent-dim);
-  outline-offset: -1px;
+  box-shadow: inset 0 0 0 1px var(--accent-dim);
 }
 /* The file tree draws no expand arrow: the folder icon itself carries the
    open/closed state (see FolderTypeIcon), clicking a directory row toggles
