@@ -82,6 +82,11 @@
   overflow-y: auto;
   min-height: 0;
   padding: 6px 0 10px;
+  /* The keyboard enters the list by focusing this body (it is the keydown
+     host); the native focus glow must not paint: it draws outside the box, so
+     it lands above the header seam and below the footer one, and the keyboard
+     position is already carried by the row's own ring (.cp-row.is-focus). */
+  outline: none;
 }
 
 /* --- Clickable rows (actions, sessions, checkouts, projects) --- */

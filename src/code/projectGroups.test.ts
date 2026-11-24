@@ -320,17 +320,25 @@ describe("groupOpen", () => {
 
 describe("foldLeavingGroup", () => {
   it("closes the folder the keyboard leaves", () => {
-    expect(foldLeavingGroup("/a", "/a", "/b")).toBeNull();
+    expect(foldLeavingGroup("/a", "/a", "/b", null)).toBeNull();
   });
 
   it("keeps a folder open while the keyboard stays inside it", () => {
-    expect(foldLeavingGroup("/a", "/a", "/a")).toBe("/a");
+    expect(foldLeavingGroup("/a", "/a", "/a", null)).toBe("/a");
   });
 
   it("leaves another open folder alone (only one is expanded)", () => {
-    expect(foldLeavingGroup("/b", "/a", "/c")).toBe("/b");
-    expect(foldLeavingGroup(null, "/a", "/c")).toBeNull();
-    expect(foldLeavingGroup("/a", null, "/c")).toBe("/a");
+    expect(foldLeavingGroup("/b", "/a", "/c", null)).toBe("/b");
+    expect(foldLeavingGroup(null, "/a", "/c", null)).toBeNull();
+    expect(foldLeavingGroup("/a", null, "/c", null)).toBe("/a");
+  });
+
+  it("keeps the folder that holds the open session unfolded while the keyboard walks out", () => {
+    expect(foldLeavingGroup("/a", "/a", "/b", "/a")).toBe("/a");
+  });
+
+  it("still folds a folder the keyboard leaves when it holds no open session", () => {
+    expect(foldLeavingGroup("/a", "/a", "/b", "/b")).toBeNull();
   });
 });
 

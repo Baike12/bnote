@@ -173,15 +173,19 @@ export function groupOpen(input: {
  * The expanded folder after the keyboard moves from one row to another:
  * leaving a folder's block folds it (the accordion closes behind the
  * keyboard), while stepping inside the same folder keeps it open. `from` is
- * the group of the row being left and `to` the group of the destination.
+ * the group of the row being left, `to` the group of the destination and
+ * `keep` the folder that holds the open session: that one is where the user
+ * is working, so walking the list never folds it away.
  */
 export function foldLeavingGroup(
   expandedKey: string | null,
   fromGroup: string | null,
   toGroup: string,
+  keepGroup: string | null,
 ): string | null {
   if (expandedKey === null || fromGroup === null || fromGroup === toGroup) return expandedKey;
-  return expandedKey === fromGroup ? null : expandedKey;
+  if (expandedKey !== fromGroup) return expandedKey;
+  return fromGroup === keepGroup ? expandedKey : null;
 }
 
 /**

@@ -363,11 +363,17 @@ export function ProjectsSidebar() {
    * Move the keyboard to a row. Leaving a folder's block folds it — the
    * accordion closes behind the keyboard, so a step past the last session does
    * not leave a trail of open folders; stepping between two rows of one folder
-   * keeps it open.
+   * keeps it open, and so does the folder holding the open session: walking
+   * the list must not fold away the one the user is working in.
    */
   function revealRow(next: SidebarRow) {
     const from = rows.find((row) => row.key === currentKey);
-    const expanded = foldLeavingGroup(expandedGroup, from?.groupKey ?? null, next.groupKey);
+    const expanded = foldLeavingGroup(
+      expandedGroup,
+      from?.groupKey ?? null,
+      next.groupKey,
+      activeGroupKey,
+    );
     if (from && expanded !== expandedGroup) foldGroup(from.groupKey);
     revealTo(next.key);
   }
