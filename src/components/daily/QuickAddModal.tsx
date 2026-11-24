@@ -30,17 +30,19 @@ export function QuickAddModal() {
     }
   }, [open]);
 
-  // The pick stage is ASCII search (command names) — switch to the English
-  // input source like the quick switcher; naming a note may be Chinese, so
-  // the source is restored as soon as a command is picked. Both go through
-  // the shared IME scope (blur hands the original source back to the system).
+  // The whole modal is one ASCII scope: the pick stage searches command names
+  // and the name stage types a file name, and bnote file names are English
+  // (the picker's other fields — folder, template — are picked, not typed).
+  // Switching back to the editor's source on pick would drop the user into
+  // Chinese for the one field that must stay ASCII. The shared IME scope hands
+  // the original source back on close (blur restores it to the system).
   useEffect(() => {
-    if (!open || picked) return;
+    if (!open) return;
     const { settings } = useAppStore.getState();
     if (!settings.ime.enabled) return;
     imeApply(settings.ime.normalSource);
     return () => imeSyncToEditor();
-  }, [open, picked]);
+  }, [open]);
 
   const results = useMemo(
     () => fuzzySort(commands, (c) => `${c.name} ${c.folder}`, query.trim()),

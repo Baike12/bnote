@@ -121,6 +121,33 @@ describe("the switch is composed into the editor and the app shell", () => {
   });
 });
 
+describe("each text surface declares one input scope", () => {
+  it("the quick-add modal stays ASCII for its whole lifetime", () => {
+    // The name stage creates a file, and bnote file names are English. The
+    // scope must therefore cover the modal, not just the command search: an
+    // effect keyed on `picked` handed the editor's (Chinese) source back right
+    // before the file name field took focus.
+    const modal = read("src/components/daily/QuickAddModal.tsx");
+    expect(modal).toContain("imeApply(settings.ime.normalSource)");
+    expect(modal).toContain("imeSyncToEditor()");
+    expect(modal).toContain("if (!open) return;");
+    expect(modal).not.toMatch(/if \(!open \|\| picked\)/);
+    expect(modal).toContain("}, [open]);");
+  });
+
+  it("the quick switcher keeps the same one-scope shape", () => {
+    const switcher = read("src/components/QuickSwitcher.tsx");
+    expect(switcher).toContain("if (!open) return;");
+    expect(switcher).toContain("imeApply(settings.ime.normalSource)");
+  });
+
+  it("a surface that captures Chinese text uses the transient helper", () => {
+    const todo = read("src/components/daily/QuickTodoModal.tsx");
+    expect(todo).toContain("imeBeginTransientChinese()");
+    expect(todo).toContain("imeEndTransientChinese()");
+  });
+});
+
 describe("the backend half: the select runs in the helper process", () => {
   it("main detects the helper flag before any app initialization", () => {
     const main = read("src-tauri/src/main.rs");
