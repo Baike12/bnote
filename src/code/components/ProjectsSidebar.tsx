@@ -41,8 +41,10 @@ import { ArchiveModal } from "./ArchiveModal";
  * The leftmost column of code mode: the project-and-session list.
  *
  * One list, not two sections: the open project is not lifted into a separate
- * 「任务列表」 — its row keeps its position and is only marked active, so the
- * pointer never chases a row that jumped. The store stabilizes that order.
+ * 「任务列表」 — its row keeps its position so the pointer never chases a row
+ * that jumped. The store stabilizes that order. Only a session row carries the
+ * selected background: the open project's row stays unhighlighted, so exactly
+ * one row on screen reads as selected.
  *
  * The top action is a shortcut for the open project's new session; every
  * project row carries the same action. The session starts in the checkout the
@@ -297,14 +299,16 @@ export function ProjectsSidebar() {
   /**
    * A project row: the folder, its collapse state and the project actions.
    * Clicking it switches the code area to the project (the open project only
-   * folds, see `activateGroup`); the plus starts a session there.
+   * folds, see `activateGroup`); the plus starts a session there. `current`
+   * drives the click behavior and the actions, never the selected background —
+   * that belongs to the open session row alone.
    */
   function projectRow(group: ProjectGroup, current: boolean) {
     const open = filtering || collapsed[group.key] !== true;
     const armed = confirmKey === `remove:${group.key}`;
     return (
       <div
-        className={`cp-row cp-project-row${current ? " is-active" : ""}`}
+        className="cp-row cp-project-row"
         role="button"
         tabIndex={0}
         aria-expanded={open}
