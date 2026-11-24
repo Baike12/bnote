@@ -12,7 +12,7 @@ import { languageDescriptions } from "@/code/editor/language";
  * the same palette as the code editor (`editor/highlightStyle.ts`): the fence
  * language name is resolved against the same descriptions, the parser builds
  * a tree, and `highlightTree` writes one `<span style="…">` per colored range
- * with the HighlightStyle's own CSS (which reads global.css variables, so the
+ * with the HighlightStyle's own CSS (which reads the sheet's variables, so the
  * theme switch applies without re-rendering).
  *
  * Everything else is escaped: the output is built by this module only from

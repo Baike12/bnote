@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readAllCss } from "@/styles/cssSource";
 
 /**
  * Settings-row layout gate. The Agent model page put three selects into one
@@ -13,8 +11,7 @@ import { describe, expect, it } from "vitest";
  * in the running app.
  */
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const css = readFileSync(resolve(root, "src/styles/global.css"), "utf8");
+const css = readAllCss();
 
 /** The declarations of one rule, with whitespace normalised. */
 function rule(selector: string): string {

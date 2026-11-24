@@ -29,7 +29,7 @@ import { dailyPathFor, isDailyPath, isTodo, parseListLine, todoText } from "./mo
  *    came from a sync instead of being written by hand.
  *
  * Rendering uses **line decorations plus absolutely positioned pseudo elements**
- * (the CSS lives in global.css): no widget is inserted and the inline layout is
+ * (the CSS lives in editor.css): no widget is inserted and the inline layout is
  * untouched, so the indentation and wrapping geometry of a list stays
  * pixel-identical to the unmarked case.
  *

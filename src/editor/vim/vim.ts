@@ -365,7 +365,7 @@ export function setVimClipboardUnnamed(on: boolean) {
      is only the hint color "these lines are involved");
    - cm-vimVisualRange: the exact range (the character interval for charwise,
      the per-line block for blockwise).
-   The CM rectangle is made transparent under cm-vimSelPaint (see global.css).
+   The CM rectangle is made transparent under cm-vimSelPaint (see editor.css).
    ---- */
 
 const visualLineDeco = Decoration.line({ class: "cm-vimVisualLine" });

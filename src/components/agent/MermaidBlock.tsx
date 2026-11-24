@@ -34,7 +34,7 @@ function CloseIcon() {
   );
 }
 
-/** Dark is the default; light is the [data-theme="light"] override (see global.css). */
+/** Dark is the default; light is the [data-theme="light"] override (see agent-messages.css). */
 function currentTheme(): "light" | "dark" {
   return document.documentElement.dataset.theme === "light" ? "light" : "dark";
 }

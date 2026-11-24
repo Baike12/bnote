@@ -3,7 +3,7 @@ import { tags as t } from "@lezer/highlight";
 
 /**
  * The code palette is the GitHub one (Primer "prettylights"), read from
- * global.css variables (:root dark, [data-theme="light"] override) so the
+ * the sheet's variables (:root dark, [data-theme="light"] override) so the
  * highlight follows the theme switch without reconfiguring. One hue per
  * semantic role — keyword red, function purple, type/class orange, constant
  * blue, string pale blue, regex green, comment gray — and everything else

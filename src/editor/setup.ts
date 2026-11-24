@@ -241,7 +241,7 @@ export function baseExtensions(
     // Normal/visual modes are unaffected: the shim's .cm-vimMode rule keeps
     // hiding the CM6 cursor layer and shows only the engine's block cursor.
     // Steady cursor: the blink animation is turned off globally by
-    // `.cm-cursorLayer { animation: none }` in global.css (the normal cursor
+    // `.cm-cursorLayer { animation: none }` in editor.css (the normal cursor
     // layer and the vim block cursor layer share that class), so the blink
     // rhythm is not configured here.
     drawSelection(),

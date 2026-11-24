@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readAllCss } from "@/styles/cssSource";
 import { readFileSync } from "node:fs";
 
 /**
@@ -8,11 +9,11 @@ import { readFileSync } from "node:fs";
  * `.sidebar{padding:0; position:absolute; top:0; ...}`; after the canvas has
  * been opened once that CSS stays in the page and overrides this one, the
  * sidebar ends up on top of the macOS traffic lights (observed). This gate
- * locks in "the component uses its own class name + global.css does not
+ * locks in "the component uses its own class name + the stylesheet does not
  * define a bare .sidebar anymore + the sidebar renders on the right, where no
  * traffic-light clearance rule is needed for it".
  */
-const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const css = readAllCss().replace(/\/\*[\s\S]*?\*\//g, "");
 const sidebarTsx = readFileSync("src/components/Sidebar.tsx", "utf8");
 const appTsx = readFileSync("src/App.tsx", "utf8");
 
@@ -21,7 +22,7 @@ describe("sidebar class name isolated from third-party CSS", () => {
     expect(sidebarTsx).toMatch(/className="app-sidebar"/);
   });
 
-  it("global.css does not define a bare .sidebar (it would be overridden by Excalidraw)", () => {
+  it("the stylesheet does not define a bare .sidebar (it would be overridden by Excalidraw)", () => {
     expect(css).not.toMatch(/(^|\n)\s*\.sidebar\s*\{/);
     expect(css).toMatch(/\.app-sidebar\s*\{[^}]*padding-top:\s*30px/);
   });

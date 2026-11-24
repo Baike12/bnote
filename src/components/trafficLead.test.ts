@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readAllCss } from "@/styles/cssSource";
 import { readFileSync } from "node:fs";
 
 /**
@@ -9,7 +10,7 @@ import { readFileSync } from "node:fs";
  * assistant header - otherwise the code toolbar's first buttons (file tree /
  * diff / terminal) sit under the traffic lights in code mode (observed).
  */
-const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const css = readAllCss().replace(/\/\*[\s\S]*?\*\//g, "");
 const studyLayout = readFileSync("src/components/study/StudyLayout.tsx", "utf8");
 const codeLayout = readFileSync("src/components/code/CodeLayout.tsx", "utf8");
 

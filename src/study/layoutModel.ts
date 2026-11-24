@@ -25,7 +25,7 @@
 
 /** Minimum width of a column as a ratio of the layout width. */
 export const MIN_COLUMN_RATIO = 0.1;
-/** Divider width (in layout width), matching .study-resizer in global.css; the
+/** Divider width (in layout width), matching .study-resizer in study.css; the
  *  hit area is extended sideways by ::after and takes no layout space. */
 export const RESIZER_WIDTH = 1;
 

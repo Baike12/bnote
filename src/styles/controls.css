@@ -1,0 +1,66 @@
+/* bnote stylesheet — shared primitives: buttons, toggles, segmented controls.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* ===== buttons / toggles ===== */
+
+.btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+.btn:hover {
+  background: var(--hover-strong);
+}
+.btn.primary {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--on-accent);
+}
+.btn.primary:hover {
+  background: var(--accent);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+.btn-ghost:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+.toggle {
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  position: relative;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.toggle.on {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+}
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--toggle-knob);
+  transition: left 0.15s;
+}
+.toggle.on .toggle-knob {
+  left: 18px;
+}

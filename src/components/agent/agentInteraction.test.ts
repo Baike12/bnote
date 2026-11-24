@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readAllCss } from "@/styles/cssSource";
 import { readFileSync } from "node:fs";
 
 /**
@@ -19,7 +20,7 @@ import { readFileSync } from "node:fs";
  * own summary, and the cards in normal flow above the composer (ZCode's bottom
  * dock). The live click-through is verified in the browser harness.
  */
-const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const css = readAllCss().replace(/\/\*[\s\S]*?\*\//g, "");
 const transcript = readFileSync("src/components/agent/Transcript.tsx", "utf8");
 const panel = readFileSync("src/components/agent/AgentPanel.tsx", "utf8");
 

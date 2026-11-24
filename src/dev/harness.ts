@@ -3,7 +3,7 @@ import { insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import { insertNewlineAndIndent, redo, undo } from "@codemirror/commands";
 import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 import "katex/dist/katex.min.css";
-import "@/styles/global.css";
+import "@/styles/index.css";
 import { createEditor, loadDocument, reconfigureTypewriter, reconfigureVim } from "@/editor/setup";
 import { editorApi } from "@/editor/api";
 import {

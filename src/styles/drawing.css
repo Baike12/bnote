@@ -1,0 +1,103 @@
+/* bnote stylesheet — Excalidraw canvas overlay.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* ===== Canvas (Excalidraw drawing) ===== */
+
+/* Full screen overlay: it covers the main UI but stays below the quick
+   switcher / command palette (100) - switching files with ⌘O is a core path
+   in canvas mode; the toast (300) is still on top. */
+.drawing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg0);
+}
+
+.drawing-topbar {
+  height: 30px;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+  position: relative;
+}
+
+/* The file name is absolutely centered: room is left on the left for the
+   macOS traffic lights and on the right for the hint text. */
+.drawing-title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 46vw;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-save {
+  margin-left: 8px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.drawing-save.busy {
+  color: var(--accent);
+}
+
+.drawing-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.drawing-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+.drawing-body .excalidraw {
+  --ui-font: var(--font-ui);
+  width: 100%;
+  height: 100%;
+}
+
+.drawing-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim, #888);
+  font-size: 14px;
+}
+
+.drawing-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text);
+  font-size: 14px;
+}
+.drawing-error pre {
+  max-width: 70vw;
+  max-height: 40vh;
+  overflow: auto;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+}

@@ -1,0 +1,61 @@
+/* bnote stylesheet entry.
+
+   Every file below holds one domain of the app; `main.tsx` imports this file
+   and nothing else. Three rules keep the sheet navigable:
+
+   1. Order is the cascade contract. These are plain, unlayered rules, so a
+      later file wins a tie — exactly like the single global.css this was
+      split from (the split is a pure move: same rules, same order). A new
+      rule goes to the file of its domain; the order itself only changes
+      together with `cssStructure.test.ts`.
+   2. One domain per file. A rule about the agent panel goes to agent-*.css,
+      a rule about the project pane to code-panel.css, and a shared primitive
+      (button, toggle, modal frame) to controls.css / modals.css.
+   3. Gates read the whole sheet through `cssSource.ts`, never by file name.
+
+   @layer is deliberately not used: every rule would land in the layer of its
+   file, which makes this list a second source of truth for the same order,
+   and !important declarations would invert layer order (16 of them sit in the
+   editor's cursor and selection layers). The text-scanning gates (overlay
+   anchoring, theme coverage) also parse flat rules.
+
+   tokens      theme variables (the only source of color)
+   shell       window frame, root error boundary, sidebar
+   editor      CodeMirror: cursor, selection, vim, live preview, callouts, lists, math
+   controls    shared primitives: buttons, toggles, segmented controls
+   modals      modal frame, palettes, sheets
+   settings    settings page and form rows
+   dialogs     quick add, folder picker, context menu, toast, translate card
+   study       study mode three-column shell and its resizers
+   agent-*     agent panel, transcript, work rows and composer
+   study-*     study mode content and notes columns
+   drawing     Excalidraw canvas overlay
+   python      python run panel
+   code-shell  code mode shell: window clearance and the project column
+   invest      invest mode: instrument list, K-line, details
+   pdf         PDF reader pages, annotations, crop layer
+   creative    creation mode: / @ completion, HTML preview, publish, MCP, skills
+   projects    projects view: navigation, board, daily note
+   code-panel  code pane: toolbar, file tree, editor host, terminal, diff, overlays
+*/
+
+@import "./tokens.css";
+@import "./shell.css";
+@import "./editor.css";
+@import "./controls.css";
+@import "./modals.css";
+@import "./settings.css";
+@import "./dialogs.css";
+@import "./study.css";
+@import "./agent-panel.css";
+@import "./agent-messages.css";
+@import "./agent-work.css";
+@import "./study-content.css";
+@import "./drawing.css";
+@import "./python.css";
+@import "./code-shell.css";
+@import "./invest.css";
+@import "./pdf.css";
+@import "./creative.css";
+@import "./projects.css";
+@import "./code-panel.css";

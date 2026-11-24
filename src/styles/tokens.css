@@ -1,0 +1,288 @@
+/* bnote stylesheet — design tokens: the dark theme on :root and the light overrides.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* ===== bnote — Obsidian-like theme =====
+
+   The only source of theme colors is the CSS variables here: :root is the dark
+   theme (no attribute means dark), [data-theme="light"] overrides the whole
+   set. The app side only writes documentElement.dataset.theme (see
+   applySettingsToEditor) and does nothing else.
+   Discipline (enforced by the theme.test.ts gate): no hex/rgba literals in
+   rule bodies, all colors go through variables - a new color must ship values
+   for both themes at once. */
+
+:root {
+  color-scheme: dark;
+  /* Deep-black neutral surfaces with a warm amber accent. */
+  --bg0: #0b0b0d; /* editor */
+  --bg1: #101013; /* sidebar */
+  --bg2: #17171a; /* elevated */
+  --bg3: #212125; /* hover */
+  --border: #27272c;
+  --text: #d8d8da;
+  --text-dim: #9a9aa0;
+  --text-faint: #67676d;
+  --accent: #f5a83c;
+  --accent-dim: #c07d24;
+  --accent-soft: #3a2c16; /* weak amber base: current file row, keybinding recording row */
+  --danger: #e06c75;
+  --danger-soft: #4a2a2e; /* hover base for danger items */
+  --up: #e5484d; /* CN convention: red rises (invest list rows / equity curve) */
+  --down: #30a46c; /* CN convention: green falls */
+  --market-hk: #f59e0b; /* H6: HK badge tint (amber) */
+  --market-us: #3b82f6; /* H6: US badge tint (blue) */
+  --ok: #7ec97e; /* python run succeeded */
+  --string: #98c379;
+  --keyword: #c678dd;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-text: var(--font-ui);
+  --font-mono: "Iosevka", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --link: #79a9ec;
+  --h1-color: #e87d3e;
+  --h2-color: #3eb4bf;
+  --h3-color: #2e80f2;
+  --h4-color: #e5b567;
+  --h5-color: #e83e3e;
+  --h6-color: #98a2ad;
+  --strong-color: #ff82b2;
+  /* Mint green for callout titles: a hue the palette did not have (the nearest
+     --ok sage green #7ec97e is 33 degrees away, --h2-color cyan 32 degrees),
+     fresh and still readable on the cyan callout body. */
+  --callout-title-color: #3ecf8e;
+  /* Heavy tint shared by the callout left rule and the anchor underline
+     dashed line (evaluated separately per theme). */
+  --callout-accent: color-mix(in srgb, var(--h2-color) 50%, transparent);
+  /* Code tokens — the GitHub syntax palette (Primer "prettylights", the colors
+     github.com paints code and diffs with; values from @primer/primitives
+     9.1.1 `dark.json`). One hue per semantic role: keyword red, function
+     purple, type/class orange, constant blue, string pale blue, regex green,
+     comment gray. Operators, punctuation and plain identifiers keep the body
+     color, as GitHub renders them — a colored token therefore always means
+     something, and a function name never shares its color with a parameter.
+     highlightStyle.ts references these through var(); --tok-number is the
+     markdown inline-code / formula-brace tint and is not a code token;
+     --tok-property colors map keys (YAML / JSON / TOML) and object keys. */
+  --tok-comment: #9198a1;
+  --tok-keyword: #ff7b72;
+  --tok-func: #d2a8ff;
+  --tok-type: #ffa657;
+  --tok-const: #79c0ff;
+  --tok-property: #79c0ff;
+  --tok-string: #a5d6ff;
+  --tok-regexp: #7ee787;
+  --tok-invalid: #f85149;
+  --tok-number: #d19a66; /* inline code and formula braces (markdown), not code numbers */
+  /* White overlay for selection / visual mode (inverted to low-alpha black in light theme) */
+  --sel: rgba(255, 255, 255, 0.22);
+  --sel-hint: rgba(255, 255, 255, 0.1);
+  --search-match: #5a4a2f80;
+  --search-match-active: #8a6d3b90;
+  --code-inline-bg: #26262c;
+  --code-block-bg: #1a1a1f;
+  --scrollbar-thumb: #34343a;
+  --hover-strong: #444; /* .btn:hover, one step stronger than --bg3 */
+  --toggle-knob: #eee;
+  --on-accent: #fff; /* foreground on accent-dim (button label, check mark, knob, ...) */
+  --on-accent-muted: #ffffffbb;
+  --scrim: #00000088; /* scrim behind overlays */
+  --shadow: #000000aa; /* overlay drop shadow */
+  --image-bg: #fff; /* white base for PDF screenshots, same in both themes */
+  --pdf-paper: #fff; /* PDF page sheet */
+  --pdf-gutter: #dcebd6; /* desktop base color in the PDF eye-care mode */
+  --pdf-tint: #cfe4c4; /* PDF eye-care tint (multiply: darkens the white page, not the black text) */
+  --pdf-anno: rgb(255 224 0 / 42%); /* PDF annotation highlight (multiply) */
+  --pdf-note: rgb(0 140 255 / 42%); /* legacy text annotation entries (no longer drawn on screen; screenshot mosaics still color them with it) */
+  /* Reading split after a study mode page turn: the older content above is
+     shaded down (a gradient taper, no edge, no line). */
+  --read-shade: rgb(0 0 0 / 24%);
+  --read-shade-edge: rgb(0 0 0 / 12%);
+  --editor-font-size: 16px;
+  /* Code editor: monospace font, font size, active line base, selection base. */
+  --code-font: var(--font-mono);
+  --code-font-size: 12.5px;
+  --code-active-line: rgb(255 255 255 / 4%);
+  --code-selection: var(--sel);
+  /* Integrated terminal (xterm.js): the ANSI palette stays in the same One
+     Dark family as the code tokens above, and the surface is the editor
+     background so the drawer reads as part of the pane instead of an iframe.
+     xterm reads these at runtime (src/code/term/session.ts) — this is the only
+     source of terminal color. */
+  --term-bg: var(--bg0);
+  --term-fg: #c8ccd4;
+  --term-cursor: #f5a83c;
+  --term-cursor-accent: #16161b;
+  --term-selection: rgb(255 255 255 / 22%);
+  --term-black: #3b4048;
+  --term-red: #e06c75;
+  --term-green: #98c379;
+  --term-yellow: #e5c07b;
+  --term-blue: #61afef;
+  --term-magenta: #c678dd;
+  --term-cyan: #56b6c2;
+  --term-white: #abb2bf;
+  --term-bright-black: #5c6370;
+  --term-bright-red: #e06c75;
+  --term-bright-green: #98c379;
+  --term-bright-yellow: #e5c07b;
+  --term-bright-blue: #61afef;
+  --term-bright-magenta: #c678dd;
+  --term-bright-cyan: #56b6c2;
+  --term-bright-white: #ffffff;
+  /* Max width of the body text column (Obsidian's "readable line length"
+     default) and its horizontal padding: when the editor area is wider the
+     column is centered, when narrower it fills naturally, with no horizontal
+     scrolling. */
+  --content-line-width: 700px;
+  --content-pad-x: 48px;
+}
+
+/* Light: every variable of the same name must be given here (the
+   theme.test.ts gate catches omissions). Panel colors lean towards One
+   Light/GitHub Light, the accent deepens into an amber that reads well on
+   white, and every syntax/heading color is darkened into the same hue family
+   until it meets the contrast requirement on white. */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg0: #ffffff; /* editor */
+  --bg1: #f7f7f8; /* sidebar */
+  --bg2: #ffffff; /* elevated (told apart from bg0 by border + shadow) */
+  --bg3: #ececee; /* hover */
+  --border: #e3e3e7;
+  --text: #23262b;
+  --text-dim: #6c7078;
+  --text-faint: #9a9ea6;
+  --accent: #a3670d;
+  --accent-dim: #8a570b;
+  --accent-soft: #f3e7cd;
+  --danger: #c93636;
+  --danger-soft: #f6e2e3;
+  --up: #d33a3f; /* slightly deeper red for the light palette */
+  --down: #2e8f5e;
+  --market-hk: #b45309;
+  --market-us: #1d4ed8;
+  --ok: #3d8f43;
+  --string: #50a14f;
+  --keyword: #a626a4;
+  --link: #3d7fd9;
+  --h1-color: #c25a1e;
+  --h2-color: #1e8a94;
+  --h3-color: #1c62cc;
+  --h4-color: #9a6b12;
+  --h5-color: #cc2f2f;
+  --h6-color: #6b7683;
+  --strong-color: #c94f8c;
+  --callout-title-color: #0a7f55; /* same hue darkened, 5.0:1 contrast on white */
+  --callout-accent: color-mix(in srgb, var(--h2-color) 50%, transparent);
+  /* Code tokens — the light half of the GitHub palette (@primer/primitives
+     9.1.1 `light.json`, contrast-checked on white). */
+  --tok-comment: #59636e;
+  --tok-keyword: #cf222e;
+  --tok-func: #6639ba;
+  --tok-type: #953800;
+  --tok-const: #0550ae;
+  --tok-property: #0550ae;
+  --tok-string: #0a3069;
+  --tok-regexp: #116329;
+  --tok-invalid: #82071e;
+  --tok-number: #b76b01;
+  --sel: rgba(0, 0, 0, 0.16);
+  --code-font: var(--font-mono);
+  --code-font-size: 12.5px;
+  --code-active-line: rgb(0 0 0 / 4%);
+  --code-selection: var(--sel);
+  /* Integrated terminal, One Light family: every hue darkened to read on the
+     white page; the surface stays the editor background. */
+  --term-bg: var(--bg0);
+  --term-fg: #383a42;
+  --term-cursor: #c07d24;
+  --term-cursor-accent: #ffffff;
+  --term-selection: rgb(0 0 0 / 16%);
+  --term-black: #383a42;
+  --term-red: #e45649;
+  --term-green: #50a14f;
+  --term-yellow: #c18401;
+  --term-blue: #4078f2;
+  --term-magenta: #a626a4;
+  --term-cyan: #0184bc;
+  --term-white: #a0a1a7;
+  --term-bright-black: #4f525e;
+  --term-bright-red: #e45649;
+  --term-bright-green: #50a14f;
+  --term-bright-yellow: #c18401;
+  --term-bright-blue: #4078f2;
+  --term-bright-magenta: #a626a4;
+  --term-bright-cyan: #0184bc;
+  --term-bright-white: #000000;
+  --sel-hint: rgba(0, 0, 0, 0.07);
+  --search-match: #e8c66a80;
+  --search-match-active: #d9a83f90;
+  --code-inline-bg: #ececef;
+  --code-block-bg: #f6f6f8;
+  --scrollbar-thumb: #c9c9ce;
+  --hover-strong: #dcdcdf;
+  --toggle-knob: #ffffff;
+  --on-accent: #ffffff;
+  --on-accent-muted: #ffffffcc;
+  --scrim: #00000052;
+  --shadow: #00000038;
+  --image-bg: #ffffff;
+  --pdf-paper: #ffffff;
+  --pdf-gutter: #dcebd6;
+  --pdf-tint: #cfe4c4;
+  --pdf-anno: rgb(255 224 0 / 42%);
+  --pdf-note: rgb(0 140 255 / 42%);
+  --read-shade: rgb(0 0 0 / 24%);
+  --read-shade-edge: rgb(0 0 0 / 12%);
+  /* The three bracket colors come from the latex-suite light set and work as
+     they are on a white background */
+  --latex-bracket-0: #527aff;
+  --latex-bracket-1: #ff50b7;
+  --latex-bracket-2: #69ba00;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg0);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.spacer {
+  flex: 1;
+}

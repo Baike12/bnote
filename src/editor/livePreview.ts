@@ -652,7 +652,7 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
       if (name === "TaskMarker") {
         const checked = /^\[[xX]\]/.test(doc.sliceString(nodeRef.from, nodeRef.to));
         // The checkbox element is the whole marker slot (--li-hang of .li-t in
-        // global.css: box + gap), so the item text lands on the wrapped-line
+        // editor.css: box + gap), so the item text lands on the wrapped-line
         // indent and a caret at the item start sits where the text will start.
         const to = whitespaceEnd(doc, nodeRef.to);
         if (!activeLine(nodeRef.from, nodeRef.to) && claim(nodeRef.from, to)) {
@@ -707,7 +707,7 @@ export function buildInlineDecorations(view: DecorationBuildView): DecorationSet
   // do not depend on the cursor position — a pure cursor move that takes the
   // selectionAffectsDecos fast path rebuilds none of this. Nested regions
   // each paint a layer, and the depth classes d1/d2 shift the inner ones
-  // right (see global.css).
+  // right (see editor.css).
   const callouts = calloutRegions(state);
   for (const c of callouts) {
     if (c.to < visibleFrom || c.from > visibleTo) continue;
@@ -836,7 +836,7 @@ function highlightMathSource(
 }
 
 /** Marker kind of a list item, which picks the line's marker slot width
- *  (`.li-b` / `.li-t` / `.li-o` in global.css). Standard GFM: only `- [ ]` is
+ *  (`.li-b` / `.li-t` / `.li-o` in editor.css). Standard GFM: only `- [ ]` is
  *  a task — a bare `[ ]` line keeps its literal brackets. */
 type ListMarkerKind = "li-b" | "li-t" | "li-o";
 

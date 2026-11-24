@@ -1,0 +1,264 @@
+/* bnote stylesheet — study mode middle (web / PDF chrome) and notes columns.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* Middle column: the content */
+.content-pane {
+  width: var(--content-w);
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg0);
+}
+
+.content-pane.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
+
+.content-toolbar {
+  /* Three columns - left (assistant), middle (file name), right (URL + PDF) -
+     with equal side columns, so the file name is truly centered. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  /* Same height as the headers of the left/right columns (see --study-head-h). */
+  min-height: var(--study-head-h);
+  border-bottom: 1px solid var(--border);
+}
+.content-tool-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.content-tool-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.content-title {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.content-url {
+  flex: 1;
+  min-width: 60px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+}
+/* The URL box in the study mode top bar is always there, it gives a visible
+   boundary and looks "typeable" the rest of the time. */
+.content-tool-right .content-url {
+  max-width: 220px;
+  height: 26px;
+  padding: 0 8px;
+  border-color: var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+}
+.content-url:focus {
+  outline: none;
+  border-color: var(--border);
+  background: var(--bg2);
+}
+.content-tool-right .content-url:focus {
+  border-color: var(--accent);
+}
+
+.content-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.content-editor {
+  position: absolute;
+  inset: 0;
+}
+.content-editor .cm-editor { height: 100%; }
+
+.content-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 20px;
+  pointer-events: none;
+}
+.content-empty .btn { pointer-events: auto; }
+
+.content-empty-title { font-size: 16px; font-weight: 600; }
+.content-empty-hint { font-size: 12.5px; opacity: 0.65; max-width: 320px; }
+
+.content-pick { cursor: pointer; }
+
+/* The web state of the middle column: an address bar + a placeholder area.
+   The real web page is a child webview of the main window, and the native
+   view covers the placeholder (see commands/agent.rs); here we only make room
+   for it. */
+.content-web {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg0);
+}
+.content-web-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.content-web-url {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.8;
+  margin: 0;
+}
+/* Web zoom: -/reading/+ sit together; the reading itself is the "back to
+   100%" button. */
+.content-web-zoom {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.content-web-zoom-btn {
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+}
+.content-web-zoom-value {
+  min-width: 42px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 5px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.content-web-zoom-value:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.content-web-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.content-web-fail {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 20px;
+}
+.content-web-fail-msg {
+  font-size: 12.5px;
+  opacity: 0.65;
+  max-width: 90%;
+  word-break: break-all;
+  margin: 0;
+}
+
+/* Right column: the notes (they take the remaining width) */
+.study-notes {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header of the notes column: study mode has no .titlebar, the top of the
+   window only has the three column headers - and they are the only place
+   where the window can be dragged (see data-tauri-drag-region in
+   StudyLayout). */
+.study-notes-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  min-height: var(--study-head-h);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.study-notes-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.study-layout .editor-pane {
+  border-left: none;
+}
+
+/* A rendered markdown image (a figure extracted from a PDF in study mode) */
+.cw-image { display: inline-block; max-width: 100%; }
+.cw-image img {
+  max-width: 100%;
+  /* Figures extracted from a PDF store their size in page points (p11-fig2.svg
+     is only 85x76), and at that size they are unreadable in a 700px wide
+     column. Give them a lower bound so that a figure occupies most of the
+     column width; PDF figures are vector and screenshots are wide anyway, so
+     enlarging them does not distort. */
+  min-width: min(100%, 420px);
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--image-bg);
+}
+.cw-image-broken {
+  min-width: 120px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  opacity: 0.5;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.cw-image-broken img { display: none; }
+/* When it cannot be loaded, the file name is written into the box: a
+   suspicious reference (a mistyped path, an attachment missing from the vault)
+   is then obvious at a glance, without moving the pointer over it to read the
+   source. */
+.cw-image-broken::after {
+  content: attr(data-hint);
+  font-size: 12px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

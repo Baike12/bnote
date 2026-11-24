@@ -1,0 +1,761 @@
+/* bnote stylesheet — agent work rows: tool cards, plan, todos, composer.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* Tool call: a one line summary row (category word + primary text + Edit's
+   +/− counts + the failure word only on failure + collapse arrow), lifted onto
+   a light base on hover; expanded, the IO lands in a dark rounded card.
+   Running state is the same gradient sweep as the thinking label — never a
+   spinner: dozens of cards update per turn and rotating loaders would keep
+   the renderer busy (ZCode's ToolSummaryRow rule). */
+.agent-tool {
+  margin: 2px 0 6px;
+  font-size: calc(var(--agent-text) * 0.8);
+}
+.agent-tool summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 8px;
+  margin: 0 -8px;
+  border-radius: 8px;
+  color: var(--text-dim, var(--text));
+}
+.agent-tool summary::-webkit-details-marker { display: none; }
+.agent-tool summary:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+.agent-tool-kind {
+  flex-shrink: 0;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+.agent-tool-kind.is-running {
+  background: linear-gradient(
+    90deg,
+    var(--text-faint) 0%,
+    var(--accent) 45%,
+    var(--text-faint) 90%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: agent-thinking-sweep 1.6s linear infinite;
+}
+.agent-tool-primary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.77);
+  color: var(--text);
+}
+.agent-tool-diff {
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.73);
+}
+.agent-tool-diff .is-added { color: var(--ok); }
+.agent-tool-diff .is-removed { color: var(--danger); }
+.agent-tool-fail { font-size: calc(var(--agent-text) * 0.7); color: var(--danger); }
+.agent-tool-chevron {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+.agent-tool[open] .agent-tool-chevron { transform: rotate(90deg); }
+
+/* The turn's working process (thinking + tool cards), collapsed to a "已工作 N
+   秒" line once the turn ends and the final text took over (ZCode's
+   ConversationWorkSegmentFlow: the auto-collapse is the projection flip at the
+   running→terminal edge, and the user's manual choice always wins). */
+.agent-turn-work {
+  margin: 0 0 4px;
+  font-size: calc(var(--agent-text) * 0.8);
+}
+/* The section header only (`>`): a descendant selector here would also draw
+   its bottom rule under every tool and thinking row inside the section. */
+.agent-turn-work > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 8px;
+  margin: 0 -8px;
+  border-radius: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  color: var(--text-dim, var(--text));
+}
+.agent-turn-work > summary::-webkit-details-marker { display: none; }
+.agent-turn-work > summary:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+.agent-turn-work-label {
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+.agent-turn-work-label.is-running {
+  background: linear-gradient(
+    90deg,
+    var(--text-faint) 0%,
+    var(--accent) 45%,
+    var(--text-faint) 90%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: agent-thinking-sweep 1.6s linear infinite;
+}
+/* Only the work section's own chevron: a descendant selector would also spin
+   every tool chevron when the section opens, reading as "all tools expanded".
+   Tool chevrons rotate solely via .agent-tool[open] below. */
+.agent-turn-work > summary .agent-tool-chevron {
+  margin-left: 0;
+  opacity: 0.7;
+}
+.agent-turn-work[open] > summary .agent-tool-chevron { transform: rotate(90deg); }
+.agent-turn-work-body {
+  padding-top: 4px;
+  display: flex;
+  flex-direction: column;
+}
+/* Prose the model wrote between tool calls: the same rhythm as the tool rows,
+   at full size — it is prose, not a trace line (`.agent-md` sets its own). */
+.agent-turn-work-body > .agent-md {
+  margin: 2px 0 6px;
+}
+.agent-tool-io {
+  max-height: 200px;
+  overflow: auto;
+  margin: 4px 0 6px;
+  padding: 8px 10px;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.73);
+  line-height: 1.5;
+  color: var(--text-dim, var(--text));
+}
+
+/* A screenshot attached to a tool result (a preview render): the same small
+   image style as the images of a user message, only the spacing hooks onto
+   the io block below. */
+.agent-tool .agent-msg-images {
+  margin: 8px 0 0;
+}
+
+/* A system-level status line (compaction / subagent / background task):
+   dimmer than a chat bubble, centered, never persisted to the transcript. */
+.agent-notice {
+  margin: 4px 0;
+  text-align: center;
+  font-size: calc(var(--agent-text) * 0.72);
+  color: var(--text-faint);
+}
+
+/* A subagent drawn at the Agent call that dispatched it (Zed's subagent card):
+   the header is the status dot, the label the model wrote, the model and the
+   elapsed time; a click previews the last entries of its own timeline inline,
+   and 放大查看 puts that whole timeline in the main column. */
+.agent-sub {
+  margin: 4px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  overflow: hidden;
+  /* The header is laid out by the card's own width: the label never gets
+     squeezed to nothing in a narrow panel (measured: 0px at a 312px card when
+     the model and the meta were unshrinkable). */
+  container-type: inline-size;
+}
+.agent-sub-head {
+  display: flex;
+  align-items: center;
+  padding-right: 6px;
+}
+.agent-sub-toggle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: calc(var(--agent-text) * 0.8);
+  color: var(--text-dim);
+}
+.agent-sub-toggle:hover { background: var(--bg3); }
+.agent-sub-toggle[aria-expanded="true"] { border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.agent-sub-toggle .agent-tool-chevron { margin-left: 0; transition: transform 0.12s ease; }
+.agent-sub-toggle[aria-expanded="true"] .agent-tool-chevron { transform: rotate(90deg); }
+.agent-sub-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.agent-sub[data-status="failed"] .agent-sub-label { color: var(--danger); }
+.agent-sub-model {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.7);
+  color: var(--text-faint);
+}
+/* Narrow panel: the model name is the first thing to go — the label says what
+   the agent is doing, the time and tokens say how far it got. */
+@container (max-width: 480px) {
+  .agent-sub-model { display: none; }
+}
+.agent-sub-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.68);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.agent-sub-body {
+  max-height: 240px;
+  overflow: auto;
+  padding: 2px 10px 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: calc(var(--agent-text) * 0.86);
+}
+.agent-sub-empty {
+  padding: 6px 0;
+  font-size: calc(var(--agent-text) * 0.75);
+  color: var(--text-faint);
+}
+.agent-sub-report {
+  margin: 6px 0 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.7);
+  color: var(--text-dim);
+}
+.agent-sub-max {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 0;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: transparent;
+  font: inherit;
+  font-size: calc(var(--agent-text) * 0.72);
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.agent-sub-max:hover { background: var(--bg3); color: var(--text); }
+.agent-sub-max svg { width: 11px; height: 11px; }
+/* The status dot of a card row: the same three colours as the panel's stop
+   button, pulsing only while the agent runs. */
+.agent-run-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint);
+}
+.agent-run-dot.is-running {
+  background: var(--accent);
+  animation: agent-runs-pulse 1.4s ease-in-out infinite;
+}
+.agent-run-dot.is-done { background: var(--ok); }
+.agent-run-dot.is-failed { background: var(--danger); }
+.agent-run-dot.is-stopped { background: var(--text-dim); }
+.agent-run-stop {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.agent-run-stop:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+@keyframes agent-runs-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* The session's plan, pinned above the composer: a header that answers "how
+   far along" (done/total, the item running now, a thin bar) and, on click, the
+   items themselves. The writer replaces the whole list on every TodoWrite, so
+   a permanently expanded block would jump between two and ten rows mid-turn. */
+.agent-todos {
+  margin: 0 14px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg0);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.agent-todos-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: calc(var(--agent-text) * 0.76);
+  color: var(--text-dim);
+}
+.agent-todos-head:hover { background: var(--bg2); }
+.agent-todos-head .agent-tool-chevron { margin-left: 0; }
+.agent-todos-head[aria-expanded="true"] .agent-tool-chevron { transform: rotate(90deg); }
+.agent-todos-title {
+  flex-shrink: 0;
+  font-weight: 500;
+  color: var(--text);
+}
+.agent-todos-count {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: calc(var(--agent-text) * 0.7);
+  color: var(--text-faint);
+}
+.agent-todos-now {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.agent-todos-bar {
+  flex-shrink: 0;
+  width: 44px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg3);
+  overflow: hidden;
+}
+.agent-todos-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.agent-todos-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 4px 10px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+/* The same rows inside a TodoWrite tool card (the list that call wrote). */
+.agent-tool-todos {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 4px 0 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+}
+.agent-todos-empty {
+  font-size: calc(var(--agent-text) * 0.75);
+  color: var(--text-faint);
+}
+.agent-todo {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: calc(var(--agent-text) * 0.78);
+  color: var(--text-dim, var(--text));
+}
+.agent-todo-mark {
+  flex-shrink: 0;
+  width: 1em;
+  text-align: center;
+  color: var(--text-faint);
+}
+.agent-todo.is-completed .agent-todo-text {
+  text-decoration: line-through;
+  color: var(--text-faint);
+}
+.agent-todo.is-in_progress {
+  color: var(--text);
+}
+.agent-todo.is-in_progress .agent-todo-mark {
+  color: var(--accent);
+}
+
+.agent-error {
+  color: var(--danger);
+  font-size: calc(var(--agent-text) * 0.83);
+  line-height: 1.5;
+  padding: 8px 10px;
+  margin: 0 0 6px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Input area: a rounded card (the textarea is embedded transparently), with
+   the attachment and send buttons in the tool row at the bottom.
+   The row carries **no divider**: the border inside the card read as a second
+   input box and cost a whole line of height. Spacing alone separates the two.
+   On focus the whole card lights up with an accent outline and a glow, not
+   just the border of the textarea itself. */
+.agent-composer {
+  flex-shrink: 0;
+  /* The anchor of the suggest popup (.agent-suggest is absolute, bottom:100%):
+     without this it climbs to the nearest positioned ancestor and lands at the
+     top of the panel instead of above the input box. */
+  position: relative;
+  margin: 0 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg2);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.agent-composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* The prompt box is a CodeMirror editor (the notes area's vim engine runs in
+   it), so the host carries only the box's typography and CM's own elements
+   are styled underneath. The global .cm-* rules are the note editor's — its
+   .cm-content typography is marked !important, so these scoped overrides
+   must be too. */
+.agent-input {
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-size: var(--agent-text);
+  line-height: 1.5;
+  color: var(--text);
+}
+/* Two lines at rest (the composer keeps the status bar company below);
+   the editor grows with the text (wrapped lines included) and up to
+   **12 lines are always fully visible**. Only past that does the scroller
+   scroll — a long prompt must stay readable while writing it. */
+.agent-input .cm-editor {
+  height: auto;
+  max-height: calc(var(--agent-text) * 1.5 * 12 + 8px);
+  background: transparent;
+}
+.agent-input .cm-editor.cm-focused { outline: none; }
+.agent-input .cm-scroller {
+  overflow-y: auto;
+  font-family: inherit;
+  line-height: 1.5;
+}
+.agent-input .cm-content {
+  max-width: none;
+  margin: 0 !important;
+  padding: 8px 12px 0 !important;
+  min-height: calc(var(--agent-text) * 1.5 * 2 + 8px);
+  font-family: inherit !important;
+  font-size: var(--agent-text) !important;
+  color: var(--text);
+}
+.agent-input .cm-line { padding: 0; }
+.agent-input .cm-placeholder { color: var(--text-faint); }
+
+.agent-composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 1px 6px 4px 12px;
+}
+
+/* Attachment button + row of pending thumbnails. */
+.agent-attach-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.agent-attach-btn svg { width: 16px; height: 16px; }
+.agent-attach-btn:hover {
+  color: var(--accent);
+  background: var(--bg3);
+}
+.agent-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px 0;
+}
+.agent-attach-thumb {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+}
+.agent-attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.agent-attach-remove {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 0 0 0 6px;
+  background: color-mix(in srgb, var(--bg1) 82%, transparent);
+  color: var(--text);
+  font-size: calc(var(--agent-text) * 0.8);
+  line-height: 16px;
+  cursor: pointer;
+}
+.agent-attach-remove:hover { background: var(--danger); color: var(--on-accent); }
+/* Footnote of the input area (ZCode's composer layout): the left side holds
+   the attach button and the permission menu, the right side the context ring,
+   the model name, the used/limit figures and the send/stop circle.
+   The model name may be truncated, the numeric column does not shrink. */
+.agent-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  overflow: visible;
+  white-space: nowrap;
+  font-size: calc(var(--agent-text) * 0.75);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+.agent-meta-model {
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+.agent-meta-ctx {
+  flex-shrink: 0;
+}
+
+/* The context ring + its hover card (ZCode's composer context indicator). */
+.agent-ctx {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+.agent-ctx-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.agent-ctx-trigger:hover { color: var(--accent); background: var(--bg3); }
+.agent-ctx-ring { width: 15px; height: 15px; }
+
+.agent-ctx-pop {
+  --ctx-tone-1: var(--accent);
+  --ctx-tone-2: color-mix(in srgb, var(--accent) 72%, var(--bg1));
+  --ctx-tone-3: color-mix(in srgb, var(--accent) 48%, var(--bg1));
+  --ctx-tone-4: color-mix(in srgb, var(--accent) 28%, var(--bg1));
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  width: 264px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg1);
+  box-shadow: 0 12px 28px var(--shadow);
+  font-size: 12px;
+  color: var(--text);
+}
+.agent-ctx-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+.agent-ctx-sum {
+  font-weight: 400;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.agent-ctx-bar {
+  display: flex;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg3);
+}
+.agent-ctx-seg { height: 100%; }
+.agent-ctx-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-ctx-rows li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.agent-ctx-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.agent-ctx-label { color: var(--text-dim); }
+.agent-ctx-val {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.agent-ctx-cache {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+}
+/* The latest request's own rate, dimmer than the session figure beside it. */
+.agent-ctx-latest {
+  margin-left: 6px;
+  font-size: 0.92em;
+  opacity: 0.62;
+}
+
+/* Small spinner standing in for the ring while a reply streams. */
+.agent-meta-spinner {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: agent-meta-spin 0.8s linear infinite;
+}
+@keyframes agent-meta-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Chevron of the permission pill. */
+.agent-mode-chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--text-faint);
+}
+
+.agent-send {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  background: var(--accent-dim);
+  color: var(--on-accent);
+}
+.agent-send svg { width: 15px; height: 15px; }
+.agent-send:hover { background: var(--accent); }
+.agent-send:disabled {
+  background: var(--bg3);
+  color: var(--text-faint);
+  cursor: default;
+}
+.agent-send.stop {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.agent-send.stop:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}

@@ -1,0 +1,660 @@
+/* bnote stylesheet — projects view: navigation, board, daily note.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* ========================== Projects view ==========================
+   Project navigation | project board (several columns side by side, the
+   current one centered and editable) | daily note.
+   The two side column widths are written by ProjectsLayout (--side-src /
+   --daily-src are the user preference, the board takes the rest); when the
+   window is too narrow to fit them, the clamp of --side-w / --daily-w
+   shrinks the display without writing back the preference. All colors go
+   through theme variables (see the gate in theme.test.ts). */
+.projects-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg0);
+  --projects-head-h: 44px;
+  --side-src: 232px;
+  --daily-src: 420px;
+  /* The daily note column is clamped first (leaving 300px for the board plus 10%
+     for the navigation), the navigation column is clamped afterwards by the
+     actual daily note width. */
+  --daily-w: clamp(12%, var(--daily-src), calc(100% - 300px - 10%));
+  --side-w: clamp(10%, var(--side-src), calc(100% - var(--daily-w) - 2px - 300px));
+}
+
+/* Left column: the project navigation */
+.projects-side {
+  flex: 0 0 var(--side-w);
+  width: var(--side-w);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg1);
+}
+
+.projects-side-head {
+  min-height: var(--projects-head-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* When the sidebar is collapsed the traffic lights cover the top left corner
+     of the main area, so the header content yields (the same convention as
+     the titlebar). */
+  padding: 0 10px 0 var(--projects-lead, 78px);
+  border-bottom: 1px solid var(--border);
+}
+
+.projects-side-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+
+.projects-side-total {
+  min-width: 18px;
+  padding: 0 6px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--bg3);
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.projects-side-new {
+  margin-left: auto;
+}
+
+.projects-side-filter {
+  padding: 10px 10px 4px;
+}
+
+.projects-search {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.projects-search::placeholder {
+  color: var(--text-faint);
+}
+.projects-search:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  background: var(--bg0);
+}
+
+.projects-new-input {
+  margin: 6px 10px 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  background: var(--bg0);
+  color: var(--text);
+  font-size: 13px;
+}
+.projects-new-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.projects-side-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px 20px;
+}
+
+.projects-side-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.projects-side-item:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.projects-side-item.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+/* The left rule of the selected item: the same visual language as the split
+   lines of study mode. */
+.projects-side-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.projects-side-dot {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--bg3);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+.projects-side-item.active .projects-side-dot {
+  /* The base color shows the current hue: in the dark theme an orange base
+     with black text, in the light theme a deep amber base with white text;
+     both themes have enough contrast. */
+  background: var(--accent);
+  color: var(--bg0);
+}
+
+.projects-side-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.projects-side-empty {
+  padding: 14px 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.8;
+}
+
+/* Middle column: the project board */
+.projects-deck {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg0);
+}
+
+.projects-deck-head {
+  min-height: var(--projects-head-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.projects-deck-pos {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.projects-deck-hint {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* In a narrow window the hint text is truncated first, the "..." (delete
+   project and other actions) always stays inside the header. */
+.projects-deck-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.projects-deck-more {
+  flex: 0 0 auto;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+}
+.projects-deck-more:disabled {
+  opacity: 0.4;
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.projects-board {
+  flex: 1;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Horizontal scrolling necessarily crops a part of the neighbouring column:
+     the edges fade out, so that the cut line disappears "out of sight"
+     instead of slicing through the text. The fade width = min(64px, the
+     padding of the track), written into --board-fade by the layout - with
+     little padding (narrow window) the current column is not faded out too.
+     The color of the mask only expresses opacity, it is not a theme color. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--board-fade, 22px),
+    black calc(100% - var(--board-fade, 22px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--board-fade, 22px),
+    black calc(100% - var(--board-fade, 22px)),
+    transparent
+  );
+}
+
+/* The board track: the column width is fixed (the semantics of a board:
+   widening the middle column only changes "how many columns fit", it does not
+   stretch them).
+   The left/right padding = (board width - column width) / 2, written into
+   --board-edge-pad by ProjectsLayout: the current column can therefore stop
+   exactly in the middle (the first and last project alike) instead of
+   hugging the edge. */
+.projects-board-track {
+  position: relative; /* the offsetLeft of a column is therefore relative to the track (the centering calculation uses it) */
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  width: max-content;
+  min-width: 100%;
+  height: 100%;
+  padding: 14px var(--board-edge-pad, 18px) 16px;
+  box-sizing: border-box;
+}
+
+.project-col {
+  flex: 0 0 288px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg1);
+  overflow: hidden;
+}
+
+.project-col.current {
+  flex-basis: 320px;
+  border-color: var(--accent-dim);
+  background: var(--bg0);
+  box-shadow: 0 6px 18px -12px var(--shadow);
+}
+
+.project-col.preview {
+  cursor: pointer;
+  opacity: 0.78;
+  transition: opacity 0.12s ease, border-color 0.12s ease;
+}
+.project-col.preview:hover,
+.project-col.preview:focus-visible {
+  opacity: 1;
+  border-color: var(--accent-dim);
+  outline: none;
+}
+
+.project-col-head {
+  flex: 0 0 auto;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project-col-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-col-badge {
+  flex: 0 0 auto;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--bg3);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.project-col.current .project-col-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* The completion of the current project: a 2px thin line below the column
+   head. */
+.project-col-progress {
+  flex: 0 0 auto;
+  height: 2px;
+  background: var(--bg3);
+}
+.project-col-progress-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.18s ease;
+}
+
+.project-col-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  /* A narrow board column: the whitespace of the body's "readable line
+     length" (48px on the sides + 16px font size + 45vh at the bottom) would
+     squeeze one row of todos into two lines here. Only these two variables
+     are changed, the .cm-content rules themselves are untouched (the
+     variables are the single source, so the typography of ordinary notes is
+     unaffected). */
+  --content-pad-x: 10px;
+  --editor-font-size: 13.5px;
+  --typewriter-bottom: 28px;
+}
+.project-col-editor .cm-editor {
+  height: 100%;
+}
+.project-col-editor .cm-scroller {
+  padding: 6px 14px 24px;
+}
+
+/* Columns other than the current one: plain DOM todos (draggable to the
+   daily note, click to focus). */
+.project-col-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 8px 20px;
+  list-style: none;
+}
+
+.project-col-todo {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  cursor: grab;
+  word-break: break-word;
+}
+.project-col-todo:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.project-col-todo.done {
+  color: var(--text-faint);
+}
+.project-col-todo.done .project-col-text {
+  text-decoration: line-through;
+}
+.project-col-box {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--accent-dim);
+}
+.project-col-todo.done .project-col-box {
+  color: var(--text-faint);
+}
+.project-col-text {
+  min-width: 0;
+}
+.project-col-empty {
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.projects-board-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.projects-board-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+/* A todo that has already been sent to today's daily note inside a project
+   card: greyed out (the editing right belongs to the copy in the daily
+   note). */
+.projects-deck .cm-line.md-daily-link[data-daily-sent] {
+  opacity: 0.42;
+}
+
+/* The drag handle of a todo row (a CodeMirror gutter). It is nearly
+   transparent at rest and only shows on hover; no widget is inserted into the
+   line, so the list geometry does not change. */
+.cm-project-drag-gutter {
+  width: 14px;
+  padding-right: 2px;
+}
+.cm-project-drag-gutter .cm-gutterElement {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cm-project-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 1.4em;
+  font-size: 0.8em;
+  color: var(--text-faint);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  user-select: none;
+}
+.cm-editor:hover .cm-project-drag-handle {
+  opacity: 0.5;
+}
+.cm-project-drag-handle:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* Right column: the daily note */
+.projects-daily {
+  flex: 0 0 var(--daily-w);
+  width: var(--daily-w);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg1);
+  position: relative;
+}
+
+.projects-daily-head {
+  position: relative;
+  min-height: var(--projects-head-h);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.daily-nav {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.daily-nav:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--text);
+}
+.daily-nav:disabled {
+  color: var(--text-faint);
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The date is the dropdown: a native select stretched transparently over the
+   area, its look (hover base, ellipsis) is decided here. */
+.daily-nav.prev {
+  justify-self: end;
+}
+.daily-nav.next {
+  justify-self: start;
+}
+
+.daily-date {
+  position: relative;
+  /* The date group ([<][date][>]) sits in the middle of the header, the two
+   arrows hug the date on both sides. */
+  min-width: 0;
+  padding: 0 8px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+}
+.daily-date:hover {
+  background: var(--bg3);
+}
+.daily-date-text {
+  font-size: 12.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.daily-date-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  appearance: none;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.daily-today {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.daily-today:hover {
+  background: var(--bg3);
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.projects-daily-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  --content-pad-x: 16px;
+  --typewriter-bottom: 32px;
+}
+.projects-daily-editor .cm-editor {
+  height: 100%;
+}
+.projects-daily-editor .cm-scroller {
+  padding: 10px 14px 26px;
+}
+
+.projects-daily-empty {
+  padding: 24px 18px;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+/* Drag hover: the whole daily note area gives a clear drop target hint. */
+.projects-daily.drop-target::after {
+  content: "松手 → 发到今日待办最前";
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--accent);
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  pointer-events: none;
+}

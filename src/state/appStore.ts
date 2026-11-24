@@ -69,7 +69,7 @@ export interface DailySettings {
 }
 
 /** The UI theme: dark is the default when no data-theme attribute is set; light goes through the [data-theme="light"]
- *  variable overrides (global.css is the single source of color). */
+ *  variable overrides (tokens.css is the single source of color). */
 export type ThemeName = "dark" | "light";
 
 export interface Settings {

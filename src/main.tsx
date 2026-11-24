@@ -1,6 +1,6 @@
 import App from "./App";
 import "katex/dist/katex.min.css";
-import "./styles/global.css";
+import "./styles/index.css";
 import { createRoot } from "react-dom/client";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { installBrowserMode } from "@/dev/browserMode";

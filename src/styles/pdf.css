@@ -1,0 +1,418 @@
+/* bnote stylesheet — PDF reader pages, annotations, crop layer.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* ---------------- PDF reader ---------------- */
+
+.pdf-viewer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg1);
+}
+
+.pdf-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.pdf-tool-btn,
+.text-tool-btn {
+  height: 24px;
+  color: var(--text-dim);
+}
+.pdf-tool-btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.pdf-tool-btn:disabled {
+  opacity: 0.35;
+  background: transparent;
+  color: var(--text-dim);
+}
+.pdf-tool-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+.pdf-zoom-label {
+  min-width: 42px;
+  height: 24px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: transparent;
+}
+.pdf-zoom-label:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+.pdf-page-indicator {
+  margin-left: 4px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.pdf-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.pdf-outline {
+  /* The width is controlled by the CSS variable written by the resizer (see
+     PdfViewer.startOutlineDrag). */
+  flex: 0 0 auto;
+  width: var(--pdf-outline-w, 210px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg1);
+}
+/* The split line is drawn by the resizer (the same feel as the three column
+   layout), the panel no longer carries its own border. */
+.pdf-outline-resizer {
+  flex: 0 0 6px;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.pdf-outline-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+  transition: width 0.12s ease, background 0.12s ease;
+}
+.pdf-outline-resizer:hover::before,
+.pdf-outline-resizer.dragging::before {
+  width: 2px;
+  background: var(--accent);
+}
+.pdf-outline-search {
+  flex: 0 0 auto;
+  margin: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg2);
+  color: var(--text);
+}
+.pdf-outline-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.pdf-outline-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 8px;
+}
+.pdf-outline-empty {
+  margin: 0;
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.pdf-outline-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+  border-radius: 5px;
+}
+.pdf-outline-row:hover {
+  background: var(--bg3);
+}
+.pdf-outline-chevron {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 20px;
+  padding: 0;
+  font-size: 10px;
+  color: var(--text-faint);
+  background: transparent;
+}
+.pdf-outline-chevron.placeholder {
+  pointer-events: none;
+}
+.pdf-outline-title {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text);
+  background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdf-outline-page {
+  flex: 0 0 auto;
+  padding-right: 6px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.pdf-scroll-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.pdf-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: var(--bg0);
+}
+.pdf-viewer.eye-care .pdf-scroll {
+  background: var(--pdf-gutter);
+}
+/* Visual split after a page turn: above it is the content that was just read
+   and is being pushed out (it takes 1 - step), shaded down with a gradient
+   that tapers; no divider line is drawn, the new content is separated only
+   by the disappearance of the shadow.
+   The shadow spans the whole PDF component and takes no mouse events. */
+.pdf-read-guide {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pdf-read-shade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: var(--read-old, 50%);
+  /* The shading tapers to its lightest tone at the boundary: there is no
+     stroke, the shadow simply fades out; this tone is also the color of the
+     rounded tips at both ends (see the radial corner patches below). */
+  background: linear-gradient(to bottom, var(--read-shade), var(--read-shade-edge));
+}
+/* The shadow bends down at both ends into rounded tips; the small piece that
+   bends out is still above the boundary and has to stay shaded, otherwise the
+   corner shows a gap where "the shadow ends but the ends are square". The
+   radial gradient patches exactly the two small triangles outside the
+   rounded corner: transparent inside the circle (below where the shadow
+   ends), the boundary color outside it (on the shadow side). With the
+   divider line removed, these two tips are the only shape of the
+   boundary. */
+.pdf-read-shade::before,
+.pdf-read-shade::after {
+  content: "";
+  position: absolute;
+  bottom: -12px;
+  width: 12px;
+  height: 12px;
+}
+.pdf-read-shade::before {
+  left: 0;
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent 11.5px,
+    var(--read-shade-edge) 12px
+  );
+}
+.pdf-read-shade::after {
+  right: 0;
+  background: radial-gradient(
+    circle at 0 100%,
+    transparent 11.5px,
+    var(--read-shade-edge) 12px
+  );
+}
+/* The scrolling content = the annotation margin on the left + the page area.
+   The margin scrolls with the page, only then do the annotation cards stay
+   aligned with their lines. */
+.pdf-stage {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-width: 100%;
+  min-height: 100%;
+}
+.pdf-page-area {
+  position: relative;
+  z-index: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pdf-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* No horizontal margin: the page width equals the width of the middle column
+     (flush to the edges), the vertical page gap is kept. */
+  padding: 14px 0;
+}
+.pdf-page {
+  position: relative;
+  flex: 0 0 auto;
+  margin-bottom: 14px;
+  background: var(--pdf-paper);
+  box-shadow: 0 1px 5px var(--shadow);
+  /* The body text always keeps the selectable I-beam cursor; the annotation
+     tools each switch to a pen cursor (see below). */
+  cursor: text;
+  /* Cropping: the window only keeps the part inside the frame, the whole page
+     is pushed out with a negative offset in .pdf-page-full. */
+  overflow: hidden;
+  /* A page reflows whenever the column width, the zoom or the crop changes.
+     Containment keeps that work inside the page instead of invalidating the
+     whole column of hundreds of pages. `paint` is left out on purpose: it
+     would clip the page's own box-shadow. */
+  contain: layout style;
+}
+.pdf-page-full {
+  position: absolute;
+}
+/* The cursors of the annotation tools: highlight = highlighter, text
+   annotation = blue pen tip; the hotspot is at the tip in both cases (12 22).
+   A 24px PNG is used: WKWebView and Chromium both accept it and it does not
+   depend on SVG cursor support.
+   The spans of the text layer carry cursor:text themselves (a rule of
+   pdf.js), so this has to override them explicitly.
+   The whole page area (not just the page frame) switches to the pen: the
+   whitespace between pages and the top/bottom padding belong to the reading
+   area as well, otherwise the mouse falls back to an arrow as soon as it
+   leaves the text, and the "pen" appears only now and then.
+   If the PNG fails to load, fall back to crosshair - never to text, that
+   would look like an ordinary pointer. */
+.pdf-viewer.tool-highlight .pdf-page-area,
+.pdf-viewer.tool-highlight .pdf-page-area *,
+.pdf-viewer.tool-highlight .pdf-page,
+.pdf-viewer.tool-highlight .pdf-page .textLayer,
+.pdf-viewer.tool-highlight .pdf-page .textLayer span {
+  cursor:
+    url("../assets/cursors/pdf-highlight.png") 12 22,
+    crosshair;
+}
+.pdf-page canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.pdf-page .textLayer {
+  z-index: 2;
+}
+/* Annotations: above the canvas, below the text layer. multiply only stains
+   the paper and never covers the text, the same mechanism as the eye-care
+   tint. */
+.pdf-anno-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.pdf-anno-mark {
+  position: absolute;
+  background: var(--pdf-anno);
+  mix-blend-mode: multiply;
+  border-radius: 2px;
+  pointer-events: none;
+}
+/* Eye care: the white paper is pressed into a pale green. multiply keeps the
+   black text (black x green = black), it only tints the base. */
+.pdf-page-tint {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: var(--pdf-tint);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+.pdf-viewer.eye-care .pdf-page {
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+/* The crop layer: it covers the whole reading viewport, but the box is only
+   taken inside the page. */
+.pdf-crop-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  cursor: crosshair;
+  background: color-mix(in srgb, var(--bg0) 30%, transparent);
+  touch-action: none;
+}
+.pdf-crop-box {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: 0 0 0 9999px color-mix(in srgb, var(--bg0) 55%, transparent);
+  pointer-events: none;
+}
+.pdf-crop-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 10px var(--shadow);
+}
+
+.pdf-status {
+  padding: 40px 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.pdf-status-fail {
+  color: var(--danger);
+}
+.pdf-status-msg {
+  margin: 6px 0 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* The whole PDF reader failed (a compatibility problem, a corrupted file): the
+   error stays in the middle column, it must not take down the whole window. */
+.pdf-fail {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+.pdf-fail .pdf-status-msg {
+  max-width: 460px;
+  color: var(--text-dim);
+}

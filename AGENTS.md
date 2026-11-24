@@ -34,7 +34,7 @@ src/                          frontend
 ├── vault/                    vault MRU and quick switch
 ├── lib/                      shared helpers and the typed IPC boundary (lib/tauri.ts)
 ├── dev/                      browser mode and harness hooks
-├── styles/                   global.css: design tokens (dark/light) and component styles
+├── styles/                   index.css imports one file per domain (tokens, editor, agent, code…)
 └── assets/                   static assets (custom cursors)
 
 src-tauri/src/                Rust backend

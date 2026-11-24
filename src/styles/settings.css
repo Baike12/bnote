@@ -1,0 +1,890 @@
+/* bnote stylesheet — settings page and form rows.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* ===== Settings page: card groups + row layout (after ZCode's
+   SettingsGroupCard/SettingsRow). A group navigation on the left; a narrow
+   centered column on the right, one card per group, rows inside a card
+   separated by 1px lines. ===== */
+
+.settings {
+  display: flex;
+  /* One height for every tab (and every mode): the content column scrolls
+     instead of resizing the window when a tab is short or long. */
+  height: 72vh;
+  min-height: 0;
+}
+
+/* Left navigation: group labels + items. The active item no longer uses a
+   large color block, it is a weak base plus a heavier font weight. */
+.settings-nav {
+  width: 196px;
+  background: var(--bg1);
+  border-right: 1px solid var(--border);
+  padding: 16px 10px 14px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.settings-nav-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 10px 6px;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.settings-nav-group-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  padding: 14px 10px 5px;
+  user-select: none;
+}
+.settings-nav-title + .settings-nav-group .settings-nav-group-label {
+  padding-top: 8px;
+}
+
+.settings-nav-item {
+  text-align: left;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.settings-nav-item:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+.settings-nav-item.active {
+  background: var(--bg3);
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* Right content: a narrow centered column (after max-w-4xl), with breathing
+   room between the cards. */
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 26px 26px;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg2);
+}
+.settings-section {
+  max-width: 660px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Card: a title row (may carry a description and actions) + content rows. */
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg1);
+}
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-card-desc {
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.6;
+  margin-top: 2px;
+}
+.settings-card-body {
+  padding: 3px 0;
+}
+/* A separator between sibling blocks inside a card: it applies to row after
+   row and to a row followed by a whole content block. */
+.settings-card-body > * + * {
+  border-top: 1px solid var(--border);
+}
+/* Hint / error / action blocks that sit directly in a card body: rows carry
+   16px side padding, these must meet the same edge (inside .settings-block
+   the block itself already provides the padding, so the rule is scoped to
+   direct children only). */
+.settings-card-body > .setting-hint,
+.settings-card-body > .settings-error,
+.settings-card-body > .settings-actions {
+  padding: 10px 16px;
+}
+
+/* Row: label + description on the left, control on the right. The row wraps
+   and the control may shrink: a control wider than the panel otherwise pushed
+   the label to zero width (Chinese text then breaks one character per line)
+   and painted over the card border. */
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 12px 20px;
+  padding: 10px 16px;
+  flex-wrap: wrap;
+}
+.setting-row-text {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.setting-label {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.setting-desc {
+  color: var(--text-faint);
+  font-size: 12px;
+  margin-top: 3px;
+  line-height: 1.6;
+}
+.setting-control {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.setting-control .settings-input {
+  width: 260px;
+  flex: none;
+}
+.setting-control .settings-select-wrap {
+  width: 260px;
+}
+.setting-value {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* The duration list of the pomodoro settings: compact inputs, one remove
+   button per row, the add button sitting after the last row. */
+.setting-durations {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.setting-durations .settings-input {
+  width: 62px;
+  flex: none;
+  padding: 6px 6px 6px 10px;
+}
+.setting-duration {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.setting-duration-remove {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.setting-duration-remove:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+/* The scheduled focus week: a heatmap with seven rolling rows and 24 hourly
+   columns. A saved cell is filled with the accent (the schedule is append-only,
+   so it cannot be cancelled); a draft only carries the soft accent until the
+   Save button commits it, and the preview border paints the rectangle while the
+   pointer is down. */
+.focus-schedule-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.focus-schedule-count {
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+.focus-schedule-grid {
+  display: grid;
+  grid-template-columns: 70px repeat(24, minmax(0, 1fr));
+  gap: 3px;
+  align-items: center;
+  user-select: none;
+  touch-action: none;
+}
+.focus-schedule-hour {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+}
+.focus-schedule-day {
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.focus-schedule-cell {
+  aspect-ratio: 1;
+  min-height: 14px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: var(--bg3);
+  cursor: pointer;
+}
+.focus-schedule-cell:hover {
+  border-color: var(--text-faint);
+}
+.focus-schedule-cell.draft {
+  background: var(--accent-soft);
+  border-color: var(--accent-dim);
+}
+.focus-schedule-cell.saved {
+  background: var(--accent);
+  border-color: var(--accent);
+  cursor: default;
+}
+.focus-schedule-cell.saved:hover {
+  border-color: var(--accent);
+}
+.focus-schedule-cell.preview {
+  border-color: var(--text);
+}
+.focus-schedule-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.focus-schedule-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.focus-schedule-swatch {
+  width: 11px;
+  height: 11px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: var(--bg3);
+}
+.focus-schedule-swatch.draft {
+  background: var(--accent-soft);
+  border-color: var(--accent-dim);
+}
+.focus-schedule-swatch.saved {
+  background: var(--accent);
+}
+
+/* A whole content block inside a card (textarea, error list, action row). */
+.settings-block {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Explanatory text between cards. */
+.setting-hint {
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.7;
+  margin: 0;
+}
+/* Outcome variants (a translate API test result and the like). */
+.setting-hint.ok {
+  color: var(--ok);
+}
+.setting-hint.err {
+  color: var(--danger);
+}
+
+.setting-hint code,
+.setting-desc code,
+.settings-card-desc code {
+  background: var(--bg3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+/* The lines that failed to parse in the vimrc: a silent failure is the
+   hardest to debug, so they are listed here outright. */
+.setting-errors {
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.setting-errors p {
+  margin: 8px 0 4px;
+}
+
+.setting-errors ul {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.settings-search {
+  width: 100%;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 13px;
+  outline: none;
+}
+.settings-search:focus {
+  border-color: var(--accent-dim);
+}
+
+.chip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chip {
+  border: none;
+  background: var(--bg3);
+  border-radius: 999px;
+  padding: 4px 13px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.chip.active {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  flex-wrap: wrap;
+}
+.hotkey-row:hover {
+  background: var(--bg2);
+}
+.hotkey-row.capturing {
+  background: var(--accent-soft);
+}
+.hotkey-row + .hotkey-row {
+  border-top: 1px solid var(--border);
+}
+
+.hotkey-title {
+  font-size: 13px;
+}
+
+.hotkey-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hotkey-chip {
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.hotkey-unbound {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.hotkey-unbind,
+.hotkey-reset {
+  color: var(--text-faint);
+  font-size: 12px;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+}
+.hotkey-unbind:hover,
+.hotkey-reset:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+.hotkey-capture-hint {
+  width: 100%;
+  color: var(--accent);
+  font-size: 12.5px;
+}
+
+.settings-textarea {
+  width: 100%;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  outline: none;
+  resize: vertical;
+  font-family: var(--font-ui);
+}
+.settings-textarea.mono {
+  font-family: var(--font-mono);
+}
+.settings-textarea:focus {
+  border-color: var(--accent-dim);
+}
+/* Inline error of a settings item (a JSON parse failure and the like) - the
+   one error class of the settings page (was .setting-error + .settings-error). */
+.settings-error {
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+/* The settings layers of the agent (user / project / project local). */
+.settings-path-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.settings-path-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+}
+.settings-path-item code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.settings-path-state {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+/* The code box in the settings (formula snippets): a permanent search bar +
+   line numbers + monospace body.
+
+   The generic CodeMirror rules (earlier in the sheet, editor.css) are tuned for the body
+   editor - narrowed line width, huge vertical padding, the body serif font,
+   100% height - all of them have to be undone in this small tight box; the
+   rules hang under .code-area, so the note editor is unaffected. The light
+   gutter background comes from the CM baseTheme (one set for light and one
+   for dark), so !important is needed to beat it. */
+.code-area {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg0);
+  overflow: hidden;
+}
+.code-area:focus-within {
+  border-color: var(--accent-dim);
+}
+.code-area-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 2px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+}
+.code-area-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 6px 0;
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: var(--font-ui);
+}
+.code-area-input::placeholder {
+  color: var(--text-faint);
+}
+.code-area-count {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.code-area-nav {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.code-area-nav:hover:not(:disabled) {
+  background: var(--bg3);
+  color: var(--text);
+}
+.code-area-nav:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.code-area .cm-editor {
+  height: 100%;
+  background: transparent;
+}
+.code-area .cm-editor.cm-focused {
+  outline: none;
+}
+/* The code editor (study mode middle column), the code box in the settings and
+   the raw JSON editor share this "compact code body": do not apply the note
+   body typography (centered line width / 48px padding / body font) - the
+   `.cm-content` rules above carry !important and would squeeze the code a
+   hundred pixels to the right of the line numbers and switch it to a
+   proportional font. Every editor host that draws gutters must be in this list;
+   a host left out centers its text away from them.
+   The vertical whitespace variables of typewriter mode are written by
+   typewriter.ts onto the scrollDOM and read here; when typewriter mode is
+   off they fall back to the normal padding. */
+.code-area .cm-content,
+.code-editor-host .cm-content,
+.json-editor-host .cm-content {
+  max-width: none;
+  margin: 0 !important;
+  padding: var(--typewriter-top, 10px) 12px var(--typewriter-bottom, 10px) !important;
+  font-family: var(--code-font) !important;
+  font-size: var(--code-font-size) !important;
+  line-height: 1.6;
+}
+.code-area .cm-gutters,
+.code-editor-host .cm-gutters,
+.json-editor-host .cm-gutters {
+  background: transparent !important;
+  color: var(--text-faint) !important;
+  border-right: 1px solid var(--border) !important;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.code-area .cm-lineNumbers .cm-gutterElement,
+.code-editor-host .cm-lineNumbers .cm-gutterElement,
+.json-editor-host .cm-lineNumbers .cm-gutterElement {
+  padding: 0 8px 0 10px;
+}
+
+/* Dropdown: the native select of WKWebView paints a system gradient plus a
+   stepper arrow, which does not go with the flat input boxes.
+   appearance: none strips the native look and the arrow is drawn by the
+   wrapper's ::after (an SVG in a data URL cannot read a theme variable, so it
+   would lose its color when the theme changes). The menu that pops up on
+   click is still the system one. */
+.settings-select-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  min-width: 220px;
+  max-width: 260px;
+}
+.settings-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--text-faint);
+  border-bottom: 1.5px solid var(--text-faint);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+.settings-select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-width: 0;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 30px 6px 10px;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  text-overflow: ellipsis;
+  cursor: pointer;
+  outline: none;
+}
+.settings-select:focus {
+  border-color: var(--accent-dim);
+}
+
+.settings-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  outline: none;
+}
+.settings-input:focus {
+  border-color: var(--accent-dim);
+}
+.settings-input.mono {
+  font-family: var(--font-mono);
+}
+
+/* ---- Agent model catalog (供应商 / 模型 / 思考档位) ---- */
+.btn.small {
+  padding: 3px 9px;
+  font-size: 11.5px;
+}
+.settings-empty {
+  padding: 14px 16px;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.settings-errors {
+  padding: 10px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+/* The provider/model/level picker of the default model and subagent rows. The
+   three selects share the row (equal thirds) instead of each keeping the
+   single-control width, which made the row three times wider than the card. */
+.agent-selection {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  justify-content: flex-end;
+}
+.agent-selection .settings-select-wrap {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+/* The expanded subagent picker keeps its three selects legible: below ~110px
+   a select truncates its own label ("继承主会话" reads as "继承主…"), so each
+   select gets a floor and the row wraps onto its own line when the space
+   beside the label does not suffice. Scoped to the subagent wrapper; the
+   default-model row (short label) keeps its one-line thirds. */
+.agent-selection.expanded .settings-select-wrap {
+  flex-basis: 110px;
+  min-width: 110px;
+}
+.agent-provider-card {
+  padding: 10px 16px 12px;
+}
+.agent-provider-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+.agent-provider-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+.agent-provider-models {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.agent-provider-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg2);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.agent-model-row + .agent-model-row {
+  border-top: 1px solid var(--border);
+}
+.agent-model-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 0;
+}
+.agent-model-row-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-model-row-toggle:hover {
+  background: var(--bg3);
+}
+.agent-model-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-model-row-meta {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.agent-model-row-caret {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+.agent-model-row-caret.is-open {
+  transform: rotate(90deg);
+}
+.agent-model-row-body {
+  padding: 0 0 10px;
+}
+.agent-levels {
+  padding: 10px 16px 4px;
+  border-top: 1px solid var(--border);
+}
+.agent-levels-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+}
+.agent-levels-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+.agent-levels-desc {
+  margin-top: 4px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.agent-levels-desc code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.agent-levels-empty {
+  padding: 8px 0;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.agent-level-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+}
+.agent-level-id {
+  flex: none;
+  width: 128px;
+}
+.agent-level-patch {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  line-height: 1.5;
+  font-size: 11.5px;
+}
+.agent-level-actions {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Slider + right-aligned value (after ZCode's SettingsRangeControl). The 260px
+   width is the control column of the rows (inputs and selects use it too), so
+   the values line up across rows. */
+.range-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 260px;
+}
+.range-control input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.range-value {
+  min-width: 42px;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}

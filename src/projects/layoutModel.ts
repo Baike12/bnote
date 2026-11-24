@@ -26,7 +26,7 @@ export const DEFAULT_DAILY_WIDTH = 420;
 export const MIN_COLUMN_RATIO = 0.1;
 /** Minimum pixel width of the kanban (the middle column): below it a single column of todos does not fit. */
 export const MIN_CENTER_WIDTH = 300;
-/** Width of the divider (in layout width), matching .projects-resizer in global.css. */
+/** Width of the divider (in layout width), matching .projects-resizer in study.css. */
 export const RESIZER_WIDTH = 1;
 
 function clamp(value: number, lo: number, hi: number): number {

@@ -1,0 +1,253 @@
+/* bnote stylesheet — study mode three-column shell and its resizers.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* ---------------------------------------------------------------------------
+ * Study mode: three column layout (left study assistant / middle content /
+ * right notes)
+ * ------------------------------------------------------------------------- */
+
+.study-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  background: var(--bg0);
+  color: var(--text);
+  /* The three column widths are written by StudyLayout: --agent-src /
+     --content-src are the user preference (in pixels), --agent-w /
+     --content-w clamp them once more against the current window. The
+     assistant column and the content column are fixed pixels, the notes
+     column takes the remaining width - dragging the window edge only
+     changes the notes column, so the PDF page size and the visible vertical
+     content never jitter with the window. When the window is too narrow to
+     fit them, CSS shrinks the display width of the first two columns without
+     writing back the preference. 1px = each split line.
+     The minimum width of every column is 10% of the layout width (matching
+     MIN_COLUMN_RATIO in layoutModel): the assistant column's upper bound
+     leaves 10% each to the content and notes columns, the content column's
+     upper bound leaves 10% to the notes column. */
+  --agent-src: 320px;
+  --content-src: 620px;
+  --agent-w: clamp(10%, var(--agent-src), calc(100% - 2px - 20%));
+  --content-w: clamp(10%, var(--content-src), calc(100% - 2px - 10% - var(--agent-w)));
+  /* The window traffic lights (overlay title bar) take about 78px of the
+     top left corner, so whichever column is visually leftmost has to yield;
+     the focused swap moves that role between the assistant and the content
+     column (see the .agent-focused rules below). When the sidebar is open the
+     traffic lights sit on the sidebar's own 36px reserved strip and nothing
+     has to yield.
+     This is the same decision as the paddingLeft of .titlebar, only here it
+     is derived from the DOM. */
+  --study-lead: 78px;
+  /* All three column headers have the same height: their bottom borders form
+     one line at the top of the window, and one pixel off would show as a
+     step. 43 = 8px vertical padding x2 + 26px icon button + 1px bottom
+     border. */
+  --study-head-h: 43px;
+}
+
+/* The study layout is parked, not unmounted, while another shape owns the
+   window: its middle column holds the parsed PDF / the live native web page
+   and a remount would re-read the file or reload the page (see StudyLayout).
+   Parked, it is an invisible overlay of exactly the main area: the column
+   keeps its real width and height, so the PDF does not reflow and keeps its
+   scroll position. `display: none` is not an option — zero size would reflow
+   the reader. The native web page is a separate view above the DOM and is
+   hidden through the backend instead (ContentPane). */
+.study-layout.parked {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* Left column: the study assistant is always present. */
+.study-left {
+  flex: 0 0 var(--agent-w);
+  width: var(--agent-w);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Right column: the notes. */
+.study-right {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* While the assistant column holds the keyboard focus it trades places with
+   the content column: the assistant takes the middle, the content moves left.
+   Only `order` changes — both columns stay mounted and keep their scroll
+   position. The **widths belong to the positions, not to the panels**: the
+   left column keeps its width and the middle column keeps its own, so a
+   swapped pane is resized to the column it moved into and the three columns'
+   widths (and the notes column) stay exactly where they were.
+   The columns themselves are flat: one 1px split line per resizer, no border
+   and no shadow on any column. The assistant column used to lift itself with
+   a 5px shadow when it took the middle, which made the same position look
+   different depending on who sat in it; the two panes must read as the same
+   column (observed as "the agent panel's border is not the content's"). */
+.study-layout.agent-focused .study-left {
+  order: 2;
+  /* It now sits in the middle: take the middle column's width. */
+  flex: 0 0 var(--content-w);
+  width: var(--content-w);
+}
+.study-layout.agent-focused .content-pane {
+  order: 0;
+  /* It now sits on the left: take the left column's width. */
+  width: var(--agent-w);
+}
+.study-layout.agent-focused .resizer-agent {
+  order: 1;
+}
+.study-layout.agent-focused .resizer-content {
+  order: 3;
+}
+.study-layout.agent-focused .study-right {
+  order: 4;
+}
+
+/* Resizer: visually a 1px split line, with a 9px hit area (col-resize feel).
+   The line is drawn on the resizer's own left edge: while dragging, the
+   column boundary is the pointer position (see splitDrag), so line and
+   boundary are the same thing. The hit area uses ::after to extend 4px to
+   each side - the layout still occupies only 1px, so there is no visible gap
+   between the two columns, yet the pointer can still grab the split line
+   reliably. The three column study mode has two of them, and so does the
+   three column projects view. */
+.study-resizer,
+.projects-resizer {
+  flex: 0 0 1px;
+  position: relative;
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+  /* Drags must not start a text selection. This lives in CSS, not in a
+     pointerdown preventDefault: suppressing the compatibility mouse events
+     would also suppress click/dblclick, which the double-click-to-reset
+     behavior depends on (see splitDrag.ts). */
+  user-select: none;
+}
+.study-resizer::before,
+.projects-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
+  transition: width 0.12s ease, background 0.12s ease;
+}
+.study-resizer::after,
+.projects-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+.study-resizer:hover::before,
+.study-resizer.dragging::before,
+.projects-resizer:hover::before,
+.projects-resizer.dragging::before {
+  width: 2px;
+  background: var(--accent);
+}
+
+/* The split line belongs to the resizer. The panel's own border-right would
+   sit next to it as a second line (while dragging the lit one is the
+   resizer's, at rest you see the border's). */
+.study-layout .content-pane {
+  border-right: none;
+}
+/* While dragging, selection and the pointer are locked, so moving the mouse
+   out of the panel does not select text. */
+.study-resizer.dragging,
+.projects-resizer.dragging {
+  user-select: none;
+}
+.study-layout:has(.study-resizer.dragging),
+.projects-layout:has(.projects-resizer.dragging) {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.agent-panel {
+  position: relative; /* the history session drawer unfolds along the panel's right edge */
+  flex: 1;
+  min-width: 0;
+  /* auto on a column flex item resolves to the content's min height: once the
+     panel is stretched by a long conversation, .agent-scroll is always as tall
+     as the content, cannot scroll, and the input box is pushed out of the
+     window. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg0);
+  /* Conversation font size: the body baseline is 15px (raised from 13.5px on
+     2026-10-30 - the assistant column is only a few hundred pixels wide, and
+     13.5px reads long answers as blurry); the header's "Aa" writes --agent-fs
+     (85%-160%), the rest of the text derives from the --agent-text ratio. The
+     header / assistant bar are the outer frame and do not scale. */
+  --agent-body: 15px;
+  --agent-fs: 1;
+  --agent-text: calc(var(--agent-body) * var(--agent-fs));
+}
+
+.agent-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  min-height: var(--study-head-h);
+  border-bottom: 1px solid var(--border);
+  /* Same color as the top toolbar of the PDF in the middle column: the whole
+     top bar becomes one white strip instead of a gray gap. */
+  background: var(--bg0);
+}
+
+/* Session switching: the title itself is the entry point, clicking it opens a
+   session list popover - the same visual language as the "file name =
+   material" dropdown in the middle column (transparent base, a base color
+   only on hover, a hinting triangle), no longer a native <select> (system
+   controls look completely different on every platform and clash with this
+   UI the most). */
+.agent-conv {
+  position: relative;
+  min-width: 0;
+  /* The title may take all the remaining width, but room is left for the three
+     icon buttons on the right (3 x 26 + 2 x 8 = 94): leave less and in a
+     narrow window it is the icons themselves that get squashed. */
+  max-width: calc(100% - 110px);
+  display: flex;
+}
+.agent-conv-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+}
+.agent-conv-btn:hover,
+.agent-conv-btn.open {
+  background: var(--bg3);
+}
+.agent-conv-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -22,7 +22,7 @@
  *       the body text; all of it is released and the body text keeps only a
  *       48px breathing margin.
  *     - Eye-care green: the same base color `#dcebd6` as the PDF eye-care
- *       mode (the `--pdf-gutter` in global.css), with dark text. All the
+ *       mode (the `--pdf-gutter` in pdf.css), with dark text. All the
  *       rules hang under `body.wr_page_reader` (the class only the reader
  *       page has), so the shelf and the store are unaffected.
  *     - Body text color: the visible glyphs are a copy-protection layer

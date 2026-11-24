@@ -4,7 +4,7 @@
  * Same interaction as the content column's web zoom (step through the scale
  * table + click the readout to return to 100%), but it scales the text inside
  * the panel: the 15px body base multiplied by the zoom, with headings / code /
- * tool rows derived at the same ratio (see `--agent-text` in global.css). The
+ * tool rows derived at the same ratio (see `--agent-text` in agent-messages.css). The
  * header readout is that percentage.
  *
  * Steps: three steps on each side of 100% (85%-160%). The assistant column is

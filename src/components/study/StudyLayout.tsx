@@ -19,7 +19,7 @@ import { startSplitDrag } from "../splitDrag";
  * Dragging the window edge only changes the notes column, the first two stay,
  * so the content width of the notes and agent panes and the PDF page size
  * remain stable. When the window gets too narrow, the CSS clamp shrinks the
- * first two columns (see --agent-w / --content-w in global.css) without
+ * first two columns (see --agent-w / --content-w in study.css) without
  * touching the stored preference.
  *
  * Because the widths belong to the columns, the focused swap (assistant and
@@ -148,7 +148,7 @@ export function StudyLayout({ parked = false }: { parked?: boolean } = {}) {
    *
    * The stored widths belong to the columns, not to the panes: while the
    * assistant column is focused the two panes trade places (see
-   * .agent-focused in global.css) but the left column and the middle column
+   * .agent-focused in study.css) but the left column and the middle column
    * keep their own widths, so this divider always edits "left | middle" —
    * the panes are only the occupants.
    */

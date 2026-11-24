@@ -1,0 +1,876 @@
+/* bnote stylesheet — CodeMirror: cursor, selection, vim, live preview, callouts, lists, math.
+
+   Imported by index.css. The import order is the cascade contract: a rule
+   here must not depend on being moved relative to another file. */
+/* ===== editor ===== */
+
+.editor-pane {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.editor-host {
+  flex: 1;
+  min-height: 0;
+}
+
+.cm-editor {
+  height: 100%;
+  background: var(--bg0);
+}
+
+.cm-scroller {
+  padding: 0;
+}
+
+.cm-content {
+  /* The body column is narrowed by --content-line-width and centered in the
+     editor area (Obsidian's readable line length typography); the auto
+     margins eat the leftover flex space, and when the pane narrows the
+     column returns to filling it.
+     --typewriter-top / --typewriter-bottom are set inline by the typewriter
+     plugin from its position setting (p and 1-p of the viewport), so the first
+     and last lines can reach that height; off-mode falls back to normal
+     padding + 45vh scroll-past-end. */
+  max-width: calc(var(--content-line-width) + 2 * var(--content-pad-x));
+  /* !important: the baseTheme CM injects at runtime contains
+     `.cm-content { margin: 0 }`, same specificity but inserted later, so the
+     auto margins need higher priority to eat the leftover space on both
+     sides. */
+  margin: 0 auto !important;
+  padding: var(--typewriter-top, 24px) var(--content-pad-x) var(--typewriter-bottom, 45vh) !important;
+  font-size: var(--editor-font-size) !important;
+  line-height: 1.5;
+  color: var(--text);
+  font-family: var(--font-text) !important;
+}
+
+.cm-cursor {
+  border-left: 2px solid var(--accent) !important;
+}
+
+/* The cursor stays on, it never blinks. Both CM6's normal cursor layer and
+   the vim engine's block cursor layer carry .cm-cursorLayer (the latter also
+   carries .cm-vimCursorLayer); the blink is driven by the cm-blink keyframes,
+   and the plugin rewrites animation-name/duration as an inline style on every
+   selection change to restart the rhythm, so !important is required to beat
+   the inline value. */
+.cm-cursorLayer {
+  animation: none !important;
+}
+
+/* Selection paint. Only two painters are allowed, and never at once:
+   - CM's own rects (`.cm-selectionBackground`) — the default outside vim;
+   - the vim visual decorations (`.cm-vimVisualLine` bands + `.cm-vimVisualRange`
+     exact spans) while `cm-vimSelPaint` is set.
+   The browser's native `::selection` is a third painter CM deliberately turns off
+   (its hideNativeSelection theme) — but that rule only reaches `.cm-line`
+   descendants, so block-level widgets (rendered math, images) stay exposed and the
+   browser paints the whole widget box while a selection spans it. Content-wide
+   transparent here; panels/inputs outside `.cm-content` keep the default. */
+.cm-selectionBackground {
+  background: var(--sel) !important;
+}
+.cm-content ::selection,
+.cm-content::selection {
+  background: transparent !important;
+}
+/* Vim visual mode: the decoration layer owns the paint (see vimVisualHighlight). */
+.cm-editor.cm-vimSelPaint .cm-selectionBackground {
+  background: transparent !important;
+}
+
+/* Vim current-line shade (Obsidian-style): the shade is a line decoration
+   painted by vimActiveLine (setup reconfigureVim), whose visibility judgment is
+   literally the engine's block-cursor one — emitted only in normal/visual/
+   replace, never in insert. No CSS gate on the scroller's `.cm-vimMode` class
+   here: any ancestor-class selector would make every Esc/i style-invalidate the
+   whole viewport subtree. */
+.cm-line.cm-activeLine {
+  background: var(--sel) !important;
+}
+/* Heading lines carry extra top padding (vertical rhythm) — clip the shade to
+   the content box so the band hugs the heading text symmetrically instead of
+   stretching across the padding. */
+.cm-line.md-hline.cm-activeLine {
+  background-clip: content-box !important;
+}
+/* Visual mode: band every selected line, so the selection extent reads as
+   full-width bands instead of text-only blocks. A linewise selection (V) IS its
+   bands — selection tone, same as the current-line shade. When an exact range
+   carries the selection (charwise/blockwise) the bands drop to a hint tone so the
+   selected span keeps standing out inside them. */
+.cm-line.cm-vimVisualLine {
+  background: var(--sel) !important;
+}
+.cm-line.cm-vimVisualLineHint {
+  background: var(--sel-hint) !important;
+}
+.cm-line.md-hline.cm-vimVisualLine,
+.cm-line.md-hline.cm-vimVisualLineHint {
+  background-clip: content-box !important;
+}
+/* The exact span (charwise range, blockwise per-line block) rides on top of the
+   bands at the selection tone — same look as the native rect it replaces, but
+   anchored to document coordinates instead of coordsAtPos. */
+.cm-vimVisualRange {
+  background: var(--sel) !important;
+}
+
+.cm-line {
+  padding: 0 2px;
+}
+
+/* search panel */
+.cm-panels {
+  background: var(--bg2);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.cm-panels input,
+.cm-panels button {
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+.cm-searchMatch {
+  background: var(--search-match);
+}
+.cm-searchMatch-selected {
+  background: var(--search-match-active) !important;
+}
+
+/* live-preview decorations */
+
+/* Heading lines get breathing room above (always-on so entering the line
+   with the cursor doesn't shift layout). */
+.cm-line.md-hline-1 {
+  padding-top: 22px;
+  padding-bottom: 2px;
+  line-height: 1.4;
+}
+.cm-line.md-hline-2 {
+  padding-top: 18px;
+  padding-bottom: 2px;
+  line-height: 1.4;
+}
+.cm-line.md-hline-3 {
+  padding-top: 14px;
+  line-height: 1.5;
+}
+.cm-line.md-hline-4,
+.cm-line.md-hline-5,
+.cm-line.md-hline-6 {
+  padding-top: 10px;
+}
+
+/* Things-theme headings: per-level color, sizes 1.7/1.5/1.2/1.1/1/0.9em.
+   .cm-content prefix outranks the CodeMirror highlight-style rules (t.heading
+   / t.strong), which would otherwise repaint these on cursor-active lines. */
+.cm-content .md-heading {
+  font-weight: 700;
+}
+/* Raw `#` markers while the cursor edits the heading line. */
+.md-hmark {
+  color: var(--text-faint);
+}
+.cm-content .md-h1 {
+  font-size: 1.7em;
+  color: var(--h1-color);
+}
+.cm-content .md-h2 {
+  font-size: 1.5em;
+  color: var(--h2-color);
+}
+.cm-content .md-h3 {
+  font-size: 1.2em;
+  color: var(--h3-color);
+}
+.cm-content .md-h4 {
+  font-size: 1.1em;
+  color: var(--h4-color);
+}
+.cm-content .md-h5 {
+  font-size: 1em;
+  color: var(--h5-color);
+}
+.cm-content .md-h6 {
+  font-size: 0.9em;
+  color: var(--h6-color);
+}
+
+.cm-content .md-strong {
+  font-weight: 700;
+  color: var(--strong-color);
+}
+.cm-content .md-em {
+  font-style: italic;
+  color: var(--strong-color);
+}
+.md-strike {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+/* ── Callout blocks (::: container, src/editor/callout.ts)────────────────
+   The block body is assembled line by line: each line gets one border-left
+   (the rule) + background (the fill), and adjacent lines join into one
+   block; the top/bottom padding and the radii sit on the opening/closing
+   edge lines (the block body stays unbroken when the caret enters the block
+   and reveals the `:::` source).
+   padding-left deliberately uses a single low-specificity class: the hanging
+   indent rule for list lines (.cm-line.md-list-line, two classes) wins, so
+   the list geometry inside a callout is pixel-identical to the outside; the
+   background rule for code lines also comes after this block, so code blocks
+   inside a callout keep their own darker fill and the rule stays. */
+.md-callout-line {
+  border-left: 3px solid var(--callout-accent);
+  background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
+  padding-left: 11px;
+}
+.md-callout-line.d1 {
+  padding-left: 25px;
+}
+.md-callout-line.d2 {
+  padding-left: 39px;
+}
+.md-callout-line.md-callout-open {
+  padding-top: 8px;
+  border-radius: 4px 4px 0 0;
+}
+.md-callout-line.md-callout-close {
+  padding-bottom: 8px;
+  border-radius: 0 0 4px 4px;
+}
+/* After the edge lines are hidden by a full-line block replace they leave the
+   DOM, so the top/bottom caps come from the render-state widgets themselves
+   (same visual tokens as the two .md-callout-open/-close rules above). */
+.cw-callout-title,
+.cw-callout-edge {
+  display: block;
+  border-left: 3px solid var(--callout-accent);
+  background: color-mix(in srgb, var(--h2-color) 8%, var(--bg1));
+  padding-left: 11px;
+}
+/* Title: font size and weight follow the level-three heading (1.2em / 700,
+   same source as .md-h3), the color uses the dedicated mint green
+   --callout-title-color (out of the block it is the block's accent, not a
+   line of body text; when the heading size table changes, check the em here
+   too). */
+.cw-callout-title {
+  color: var(--callout-title-color);
+  font-weight: 700;
+  font-size: 1.2em;
+  padding-top: 8px;
+  padding-bottom: 4px;
+  border-radius: 4px 4px 0 0;
+  cursor: text;
+}
+.cw-callout-edge {
+  height: 8px;
+  border-radius: 0 0 4px 4px;
+}
+.cw-callout-title.open,
+.cw-callout-edge.open {
+  border-radius: 4px 4px 0 0;
+}
+.cw-callout-title.d1,
+.cw-callout-edge.d1 {
+  padding-left: 25px;
+}
+.cw-callout-title.d2,
+.cw-callout-edge.d2 {
+  padding-left: 39px;
+}
+/* Callout anchor: the entry point in the body text for a callout title, on
+   the same paragraph (the segment left in place by the ⌘⇧B insert). The
+   dashed underline uses the same heavy tint as the block's left rule; the text
+   itself is untouched, and with the caret inside it ⌘⇧B jumps to the linked
+   block (see ops.planCalloutShortcut).
+   The declaration must be split into text-decoration-* longhands: WKWebView
+   drops the whole declaration when the text-decoration shorthand contains a
+   var() (Chromium is fine, the real app has no underline - proven on
+   2026-10-08 by rendering four variants offscreen in the system WKWebView),
+   while longhand + var() holds on both engines. */
+.md-callout-anchor {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: var(--callout-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+/* The block-level widgets (math block / live math preview / HR) carry their own
+   outer spacing, which would cut the callout body apart inside a callout -
+   the margin area shows the body background and the callout visually breaks
+   into several pieces. Zero it out: the vertical rhythm inside the block is
+   the job of the md-callout-line assembly (blank lines carry their own
+   background); outside a block without md-callout-line the spacing is
+   unaffected. */
+.cw-math-block.md-callout-line,
+.cw-math-preview.md-callout-line,
+.cw-hr.md-callout-line {
+  margin: 0;
+}
+
+.md-inline-code,
+.md-code-line {
+  font-family: var(--font-mono);
+}
+.md-inline-code {
+  background: var(--code-inline-bg);
+  color: var(--tok-number);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.md-code-line {
+  background: var(--code-block-bg);
+}
+
+.md-quote {
+  border-left: 3px solid color-mix(in srgb, var(--h2-color) 40%, transparent);
+  color: var(--h2-color);
+  font-style: italic;
+}
+
+.md-link {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent);
+  cursor: pointer;
+}
+.md-url {
+  color: var(--text-faint);
+  font-size: 0.9em;
+}
+
+.md-wikilink {
+  color: var(--link);
+  cursor: pointer;
+}
+.md-wikilink:hover {
+  text-decoration: underline;
+}
+
+.md-listmark {
+  color: var(--text-faint);
+}
+
+/* The single source of list geometry (all in em, scaling with
+   --editor-font-size):
+   --li-px   left edge of the marker at the current level
+   --li-hang marker left edge -> body text start (= the marker slot width)
+   The two must be used together: padding-left sets where wrapped text starts,
+   text-indent pulls the first line back to --li-px, so as long as --li-hang
+   matches the real width of "marker + gap", wrapped text aligns strictly with
+   the first line of body text. The slot width is set per kind (see .li-b /
+   .li-t / .li-o). */
+:root {
+  --li-base: 0.8125em; /* 13px @16px, measured in the user's Obsidian */
+  --li-step: 1.75em;   /* 28px @16px, indent per level */
+  --li-gap: 0.5em;     /* visual gap from the marker right edge to the text */
+}
+
+/* Bullet dot replacing `- ` markers (the Obsidian look): a solid circle drawn
+   in CSS, right aligned inside the marker slot (hugging the text, leaving a
+   small gap), its diameter scales with the font size. The slot width does not
+   change - the wrap alignment geometry (--li-hang) and the text start are
+   unaffected by the dot style. */
+.md-bullet {
+  color: var(--text-faint);
+  display: inline-block;
+  width: var(--li-hang, 1em);
+  text-align: right;
+}
+.md-bullet::before {
+  content: "";
+  display: inline-block;
+  width: 0.34em;
+  height: 0.34em;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 0.2em;
+  vertical-align: middle;
+}
+
+/* Obsidian-style list indent: literal source spaces are hidden and replaced
+   with padding + hanging indent, so wrapped lines align under the item text.
+   The footprint blocks (render.ts) reuse the same li-i series / li-b, li-t,
+   li-o geometry classes, so the inline layout is pixel-identical. */
+.cm-line.md-list-line,
+.footprint-line.md-list-line {
+  padding-left: calc(var(--li-px, 0px) + var(--li-hang, 1.65em));
+  text-indent: calc(-1 * var(--li-hang, 1.65em));
+}
+.li-i0  { --li-px: var(--li-base); }
+.li-i2  { --li-px: calc(var(--li-base) + 1 * var(--li-step)); }
+.li-i4  { --li-px: calc(var(--li-base) + 2 * var(--li-step)); }
+.li-i6  { --li-px: calc(var(--li-base) + 3 * var(--li-step)); }
+.li-i8  { --li-px: calc(var(--li-base) + 4 * var(--li-step)); }
+.li-i10 { --li-px: calc(var(--li-base) + 5 * var(--li-step)); }
+.li-i12 { --li-px: calc(var(--li-base) + 6 * var(--li-step)); }
+.li-i14 { --li-px: calc(var(--li-base) + 7 * var(--li-step)); }
+.li-i16 { --li-px: calc(var(--li-base) + 8 * var(--li-step)); }
+.li-i18 { --li-px: calc(var(--li-base) + 9 * var(--li-step)); }
+.li-i20 { --li-px: calc(var(--li-base) + 10 * var(--li-step)); }
+.li-i22 { --li-px: calc(var(--li-base) + 11 * var(--li-step)); }
+.li-i24 { --li-px: calc(var(--li-base) + 12 * var(--li-step)); }
+.li-i26 { --li-px: calc(var(--li-base) + 13 * var(--li-step)); }
+.li-i28 { --li-px: calc(var(--li-base) + 14 * var(--li-step)); }
+.li-i30 { --li-px: calc(var(--li-base) + 15 * var(--li-step)); }
+.li-i32 { --li-px: calc(var(--li-base) + 16 * var(--li-step)); }
+
+/* Marker slot width: the bullet glyph is about 0.45em wide, the checkbox box
+   0.9em, each plus one --li-gap. The width of an ordered list number varies
+   with the digit count (CSS cannot know it in advance), so the slot can only
+   take a fixed measured value: the number stays in place, left aligned, and
+   one or two digits both fit; with more digits the body text shifts slightly
+   to the right. */
+.li-b { --li-hang: calc(0.45em + var(--li-gap)); }
+.li-t { --li-hang: calc(0.9em + var(--li-gap)); }
+.li-o { --li-hang: 26px; }
+
+/* Task-list checkbox rendered over `- [ ]` / `- [x]` markers. The element's
+   own box is the whole marker slot (--li-hang of .li-t), so a caret resting at
+   the item start and the item text land on the same x, and the box plus the
+   gap add up to the wrapped-line indent. The visible box (border, fill,
+   checkmark) is drawn inside the slot by pseudo elements at its left edge. */
+.md-task {
+  display: inline-block;
+  position: relative;
+  width: var(--li-hang, 1.4em);
+  height: 0.9em;
+  vertical-align: -0.08em;
+  cursor: pointer;
+}
+.md-task::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  width: 0.9em;
+  height: 0.9em;
+  border: 1.5px solid var(--text-faint);
+  border-radius: 3px;
+}
+.md-task:hover::before {
+  border-color: var(--accent);
+}
+.md-task.checked::before {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+}
+.md-task.checked::after {
+  content: "";
+  position: absolute;
+  left: 0.24em;
+  top: 0.04em;
+  width: 0.26em;
+  height: 0.5em;
+  border: solid var(--on-accent);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(40deg);
+}
+
+/* Todos linked from today's daily note (a line decoration mounted by
+   src/daily/marks.ts). Geometric discipline: the marker is an absolutely
+   positioned pseudo element and takes no part in the inline layout - the list
+   indent and the wrap position stay pixel-identical to the unmarked case.
+   The pip lands left of the marker slot (it follows --li-px with the level,
+   so it stops exactly left of that level's checkbox), and it is centered
+   vertically from the 1.5em line height: .75em midline - .15em radius =
+   .6em. */
+.cm-line.md-daily-link {
+  position: relative;
+}
+.cm-line.md-daily-link::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--li-px, 0px) - 0.62em);
+  top: 0.6em;
+  width: 0.3em;
+  height: 0.3em;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.85;
+}
+/* Daily note side: the source note name is hung at the end of the line - the
+   only clue for "this one was synced over, where from".
+   Its right edge aligns with the column (same width as the body column), like
+   a column of marginalia; text-indent must be zeroed: the hanging indent of
+   a list line would otherwise be inherited and push the label text out of its
+   own box (measured -22.4px). */
+.cm-line.md-daily-link[data-daily-src]::after {
+  content: "⇄ " attr(data-daily-src);
+  position: absolute;
+  right: 0;
+  top: 0.18em;
+  font-size: 0.72em;
+  text-indent: 0;
+  color: var(--text-faint);
+  opacity: 0.7;
+  pointer-events: none;
+  user-select: none;
+}
+
+.cw-math-error {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* ── Today's footprint (src/footprint/*) ─────────────────────────────────
+   The block-level aggregation area at the end of the daily note: the blocks
+   recorded today in other files are shown grouped by source file (as
+   references, read only, a click jumps to the source file). The block bodies
+   are rendered as markdown (render.ts) and reuse the editor class names
+   (md-heading, the md-h series, md-bullet, md-quote, md-code-line) - the
+   styles here only add the footprint's own spacing and container, they do not
+   copy the editor rules. Collapsing is session state, expanded by default. */
+.footprint-zone {
+  margin: 6px 0 2px;
+  padding: 2px 0 4px;
+  border-top: 1px dashed var(--border);
+}
+.footprint-zone-head {
+  font-size: 0.8em;
+  color: var(--text-faint);
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 0;
+}
+.footprint-group-head {
+  font-size: 0.82em;
+  color: var(--text-faint);
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 0 5px;
+}
+.footprint-group-title {
+  color: var(--accent);
+}
+.footprint-group-title:hover {
+  text-decoration: underline;
+}
+/* A block body is the click target for one "back to the source" jump: the
+   left rule delimits it, hovering lights it up to show it is clickable. */
+.footprint-block {
+  margin: 0 0 8px;
+  padding: 1px 0 1px 10px;
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  font-size: 0.92em;
+  cursor: pointer;
+}
+.footprint-block:hover {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.footprint-line {
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+.footprint-gap {
+  height: 0.5em;
+}
+/* Heading size and color go through .md-h{n} (the cm-content scope picks them
+   up automatically); here only the compact spacing is added - the generous
+   md-hline whitespace is the rhythm of body text, in the aggregation view it
+   is tightened per level inside a block. */
+.footprint-line.fp-h {
+  margin: 0.35em 0 0.1em;
+  line-height: 1.4;
+}
+.footprint-block .footprint-line.fp-h:first-child {
+  margin-top: 0;
+}
+.fp-hr {
+  margin: 0.3em 0;
+}
+.fp-hr hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+/* Source file side: the first line of a block collected today gets a hollow
+   pip (same spot, different shape than the solid pip of a synced todo, and
+   also an absolutely positioned pseudo element that takes no part in the
+   inline layout). */
+.cm-line.md-footprint {
+  position: relative;
+}
+.cm-line.md-footprint::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--li-px, 0px) - 0.62em);
+  top: 0.55em;
+  width: 0.34em;
+  height: 0.34em;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  opacity: 0.8;
+}
+
+/* ── LaTeX Suite: colored bracket pairs + bracket highlight at the cursor ──
+   The colors come from obsidian-latex-suite's styles.css (one set for light
+   and one for dark, folded here into theme-following variables). Three
+   colors are the plugin's Ncolors = 3, rotating by nesting depth with the
+   outermost at index 0. */
+:root {
+  --latex-bracket-0: #527aff;
+  --latex-bracket-1: #ff50b7;
+  --latex-bracket-2: #69ba00;
+}
+
+.cw-bracket-0 { color: var(--latex-bracket-0); }
+.cw-bracket-1 { color: var(--latex-bracket-1); }
+.cw-bracket-2 { color: var(--latex-bracket-2); }
+
+/* The bracket at the cursor and its partner: the same colored backing makes
+   it obvious at a glance where the pair ends. */
+.cw-bracket-match {
+  background: color-mix(in srgb, var(--accent, #f5a83c) 30%, transparent);
+  border-radius: 2px;
+}
+
+.cw-math-block {
+  text-align: center;
+  margin: 6px 0;
+  /* Wide formulas stay reachable by wheel/drag, but no visible scrollbar. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.cw-math-block::-webkit-scrollbar {
+  display: none;
+}
+
+.cw-math .katex {
+  font-size: 1.06em;
+}
+
+/* Live preview below a math region while the cursor edits it. */
+.cw-math-preview {
+  text-align: center;
+  margin: 2px 0 10px;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.cw-math-preview::-webkit-scrollbar {
+  display: none;
+}
+
+/* Inline formula while editing: the source stays on the left, the rendered
+   preview follows right after the closing delimiter and pushes the following
+   text back (the preview of a block formula sits below the source). It must
+   be an inline box: the baseline of an inline-block stretches the whole line,
+   so the content below jitters by 1-2px when the caret enters and leaves the
+   formula; the vertical padding of an inline box is painted but takes no
+   space, so the line height matches the rendered state exactly. */
+.cw-math-preview-inline {
+  display: inline;
+  margin-left: 0.4em;
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+  background: var(--code-inline-bg);
+}
+
+/* Obsidian-style coloring of raw math source while editing. */
+.md-math-delim {
+  color: var(--keyword);
+}
+.md-math-cmd {
+  color: var(--danger);
+}
+.md-math-brace {
+  color: var(--tok-number);
+}
+
+.cw-hidden-line {
+  height: 0;
+  font-size: 0;
+  line-height: 0;
+}
+
+.cw-hr {
+  margin: 10px 0;
+}
+.cw-hr hr {
+  border: none;
+  border-top: 2px solid var(--border);
+  margin: 0;
+}
+
+.cw-escape {
+  color: var(--text);
+}
+
+/* vim status */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 26px;
+  padding: 0 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg1);
+  color: var(--text-faint);
+  font-size: 11.5px;
+  user-select: none;
+}
+
+.vim-mode {
+  min-width: 52px;
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.vim-mode.insert {
+  color: var(--string);
+}
+
+/* The row of a switch: the label itself is clickable too (the same action as
+   the small switch on the right). */
+.toggle-label {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.toggle-label:hover {
+  color: var(--text);
+}
+/* Disabled state: the switch cannot be clicked and the label gives no hover
+   feedback - do not let anyone think "one more click and it takes effect". */
+.toggle-label:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.toggle-label:disabled:hover {
+  color: inherit;
+}
+.toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dirty-dot {
+  color: var(--accent);
+}
+
+/* Focus chips (left end of the status bar): one chip per configured duration,
+   each showing only its length; one click starts a stretch that long, after
+   which the row becomes a single pure status display.
+   No popover - the durations live in the settings page and both locks are
+   always fully on. */
+.focus-chip-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.focus-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  cursor: pointer;
+}
+.focus-chip:hover {
+  background: var(--bg3);
+  color: var(--text-dim);
+}
+.focus-chip.running {
+  color: var(--text-dim);
+}
+.focus-chip.locked {
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.focus-chip .focus-time {
+  font-variant-numeric: tabular-nums;
+}
+/* While a session runs the chip is pure status: the button is disabled, but
+   it must not look like a clickable grey control. */
+.focus-chip:disabled {
+  cursor: default;
+}
+.focus-chip.running:hover {
+  background: transparent;
+}
+
+.link-btn {
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.editor-empty {
+  position: absolute;
+  inset: 40px 0 26px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.editor-empty .btn {
+  pointer-events: auto;
+}
+
+/* ===== welcome ===== */
+
+.welcome {
+  position: fixed;
+  inset: 0;
+  background: var(--bg0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  z-index: 50;
+}
+
+.welcome-logo {
+  font-size: 52px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: -1px;
+}
+
+.welcome-tagline {
+  color: var(--text-dim);
+  margin: 0 0 12px;
+}
+
+.welcome-hint {
+  color: var(--text-faint);
+  font-size: 12.5px;
+  max-width: 380px;
+  text-align: center;
+}

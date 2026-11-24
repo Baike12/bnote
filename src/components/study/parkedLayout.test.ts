@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readAllCss } from "@/styles/cssSource";
 import { readFileSync } from "node:fs";
 
 /**
@@ -15,7 +16,7 @@ import { readFileSync } from "node:fs";
 const app = readFileSync("src/App.tsx", "utf8");
 const studyLayout = readFileSync("src/components/study/StudyLayout.tsx", "utf8");
 const contentPane = readFileSync("src/components/study/ContentPane.tsx", "utf8");
-const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const css = readAllCss().replace(/\/\*[\s\S]*?\*\//g, "");
 
 describe("study mode is parked, not unmounted", () => {
   it("App renders the study layout outside the shape branch", () => {

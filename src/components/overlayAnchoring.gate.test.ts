@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { readAllCss } from "@/styles/cssSource";
 
 /**
  * Anchoring gate for full-bleed overlays (the "scrim covers the whole window"
@@ -26,7 +25,7 @@ import { describe, expect, it } from "vitest";
  *    the window IS their intended containing block.
  */
 
-const css = fs.readFileSync(path.resolve(__dirname, "../styles/global.css"), "utf8");
+const css = readAllCss();
 
 /** selector → declarations, for top-level rules only (no @media nesting). */
 function rules(): Map<string, string> {

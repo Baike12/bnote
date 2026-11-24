@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { readAllCss } from "./cssSource";
 
 /**
  * Theme gate: the only source of color in bnote is the CSS variables in
- * global.css (:root = dark theme, [data-theme="light"] overrides the whole
+ * the stylesheet (tokens.css: :root = dark theme, [data-theme="light"] overrides the whole
  * set). Four rules are locked here:
  *
  * 1. The light theme must override every dark theme variable - a new color
@@ -21,7 +22,7 @@ import { readFileSync } from "node:fs";
 
 const readSrc = (rel: string): string => readFileSync(rel, "utf8");
 
-const globalCss = readSrc("src/styles/global.css");
+const globalCss = readAllCss();
 const highlightTs = readSrc("src/editor/highlightStyle.ts");
 const actionsTs = readSrc("src/app/actions.ts");
 const indexHtml = readSrc("index.html");
@@ -108,7 +109,7 @@ describe("theme variable system", () => {
   const darkBlock = [...blockBodies(css, ":root {"), ...blockBodies(css, ":root{")].join("\n");
   const lightBlock = blockBodies(css, '[data-theme="light"] {').join("\n");
 
-  it("both theme blocks exist in global.css", () => {
+  it("both theme blocks exist in tokens.css", () => {
     expect(darkBlock).not.toBe("");
     expect(lightBlock).not.toBe("");
   });
@@ -150,7 +151,7 @@ describe("theme variable system", () => {
 });
 
 describe("always-on cursor", () => {
-  it("global.css turns off the blink animation of the .cm-cursorLayer shared by the normal and vim cursors", () => {
+  it("editor.css turns off the blink animation of the .cm-cursorLayer shared by the normal and vim cursors", () => {
     // CM6's normal cursor layer and vim's block cursor layer both carry this class,
     // and the plugin restarts the blink with inline animation-name/duration
     // values, so the rule must carry !important.

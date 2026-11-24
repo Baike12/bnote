@@ -14,7 +14,7 @@ import { perfEnd, perfStart } from "@/perf/trace";
  * it syncs the DOM for the same update.
  *
  * The scroll container reserves top/bottom space (via --typewriter-top and
- * --typewriter-bottom, which global.css reads for the content padding) so the
+ * --typewriter-bottom, which editor.css reads for the content padding) so the
  * first and last lines can reach the same height too — a fresh note has
  * nothing above line 1, and without the space it would sit glued to the top.
  * The vars live on scrollDOM because CM's contentAttributes rewrites the

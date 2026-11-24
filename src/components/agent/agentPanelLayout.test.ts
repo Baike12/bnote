@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readAllCss } from "@/styles/cssSource";
 import { readFileSync } from "node:fs";
 
 /**
@@ -16,7 +17,7 @@ import { readFileSync } from "node:fs";
  * are locked here: the panel must be allowed to shrink (min-height: 0) and
  * the message area must be the only vertical scroll container.
  */
-const css = readFileSync("src/styles/global.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const css = readAllCss().replace(/\/\*[\s\S]*?\*\//g, "");
 
 const rule = (selector: string): string => {
   // Parse by rule block instead of by a line-anchored regex: the dividers
