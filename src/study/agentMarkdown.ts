@@ -42,12 +42,31 @@ export function renderMath(tex: string, display: boolean): string {
   }
 }
 
+/**
+ * Renderer options.
+ *
+ * `image` resolves one `![alt](ref)` reference to an `<img>` element — the
+ * caller owns URL resolution and attribute escaping, because only it knows
+ * which base directory (the vault, the code project) the document lives in.
+ * Without it the reference stays literal.
+ *
+ * `fencePreviews` (default true) is the agent panel's behavior: a closed
+ * `html` fence renders as a live preview and a `mermaid` fence as a diagram.
+ * A markdown *file* preview wants the fence's source — VSCode shows code in
+ * its preview too — so the code-mode preview turns it off and every fence is
+ * a highlighted code block.
+ */
+export interface MarkdownOptions {
+  image?: (ref: string, alt: string) => string | null;
+  fencePreviews?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Inline rules
 // ---------------------------------------------------------------------------
 
 /** Inline rendering: escape first, then let code / math / bold-italic-strike / links through in turn. */
-export function renderInline(src: string): string {
+export function renderInline(src: string, options: MarkdownOptions = {}): string {
   const stash: string[] = [];
   const keep = (html: string) => `\x00${stash.push(html) - 1}\x00`;
 
@@ -64,6 +83,16 @@ export function renderInline(src: string): string {
   out = out.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
   out = out.replace(/(^|[^\w*])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>");
   out = out.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+  // Images run before links: `![alt](src)` would otherwise match the link
+  // rule and lose its leading `!`. Without a resolver (agent replies) a
+  // remote image still renders (`ref` and `alt` are already escaped);
+  // a relative one stays literal, because only the caller knows the base
+  // directory and a broken <img> is worse than the text.
+  out = out.replace(/!\[([^\]\n]*)\]\(([^)\s]+)\)/g, (whole, alt: string, ref: string) => {
+    const remote = /^(https?:|data:)/i.test(ref) ? `<img src="${ref}" alt="${alt}">` : null;
+    const html = options.image?.(unescapeHtml(ref), unescapeHtml(alt)) ?? remote;
+    return html ? keep(html) : whole;
+  });
   out = out.replace(
     /\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>',
@@ -98,10 +127,10 @@ function splitRow(line: string): string[] {
   return row.split("|").map((c) => c.trim());
 }
 
-function renderTable(header: string[], rows: string[][]): string {
-  const th = header.map((c) => `<th>${renderInline(c)}</th>`).join("");
+function renderTable(header: string[], rows: string[][], options: MarkdownOptions): string {
+  const th = header.map((c) => `<th>${renderInline(c, options)}</th>`).join("");
   const body = rows
-    .map((r) => `<tr>${r.map((c) => `<td>${renderInline(c)}</td>`).join("")}</tr>`)
+    .map((r) => `<tr>${r.map((c) => `<td>${renderInline(c, options)}</td>`).join("")}</tr>`)
     .join("");
   return `<table><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table>`;
 }
@@ -130,7 +159,7 @@ function listContinues(lines: string[], from: number, ordered: boolean): boolean
 }
 
 /** Collect the list items starting at `start` (including the indented continuation lines), build the tree by the indentation and render it as HTML. */
-function renderList(lines: string[], start: number): [string, number] {
+function renderList(lines: string[], start: number, options: MarkdownOptions): [string, number] {
   const items: ListItem[] = [];
   /** A blank line between the items = a loose list: the items keep paragraph-level spacing between them. */
   let loose = false;
@@ -205,7 +234,7 @@ function renderList(lines: string[], start: number): [string, number] {
     const looseAttr = list === root && loose ? ' class="is-loose"' : "";
     const inner = list
       .map((item) => {
-        const body = renderTextLines(item.text);
+        const body = renderTextLines(item.text, options);
         const nested = item.children.length > 0 ? renderItems(item.children) : "";
         return `<li>${body}${nested}</li>`;
       })
@@ -227,14 +256,18 @@ function startsBlock(line: string): boolean {
 }
 
 /** A paragraph: consecutive non-empty lines are merged (a single newline is intentional in a chat and is rendered as <br>). */
-function renderParagraph(lines: string[], start: number): [string, number] {
+function renderParagraph(
+  lines: string[],
+  start: number,
+  options: MarkdownOptions,
+): [string, number] {
   const buf: string[] = [];
   let i = start;
   while (i < lines.length && lines[i].trim() && !startsBlock(lines[i])) {
     buf.push(lines[i].trim());
     i += 1;
   }
-  return [`<p>${buf.map(renderInline).join("<br>")}</p>`, i];
+  return [`<p>${buf.map((line) => renderInline(line, options)).join("<br>")}</p>`, i];
 }
 
 /** A math block $$…$$ or \[…\]: collected up to the closing delimiter (or the end of the text). */
@@ -269,13 +302,13 @@ function collectMath(
  * the block math delimiters are scanned first, the math part goes into KaTeX
  * and the remaining text lines are rendered inline and joined with <br>.
  */
-function renderTextLines(lines: string[]): string {
+function renderTextLines(lines: string[], options: MarkdownOptions): string {
   const parts: string[] = [];
   let buf: string[] = [];
   let i = 0;
   const flush = () => {
     if (buf.length) {
-      parts.push(buf.map(renderInline).join("<br>"));
+      parts.push(buf.map((line) => renderInline(line, options)).join("<br>"));
       buf = [];
     }
   };
@@ -303,13 +336,16 @@ function renderTextLines(lines: string[]): string {
 
 /** One block of an agent reply: rendered markdown, an html code block the
  *  panel renders as a live preview (the code travels verbatim so the React
- *  component can own the iframe, its toggle and its height messages), or a
+ *  component can own the iframe, its toggle and its height messages), a
  *  mermaid fence the panel renders as a diagram (verbatim for the same
- *  reason: the React component owns parsing, theming and the viewer). */
+ *  reason: the React component owns parsing, theming and the viewer), or one
+ *  plain fenced code block — the panel highlights it with the code editor's
+ *  own parsers and palette, which need React, not an HTML string. */
 export type AgentBlock =
   | { kind: "markdown"; html: string }
   | { kind: "html"; code: string }
-  | { kind: "mermaid"; code: string };
+  | { kind: "mermaid"; code: string }
+  | { kind: "code"; code: string; lang: string };
 
 /** A fenced code block rendered like every other language's block. */
 function renderCodeBlock(code: string, lang: string): string {
@@ -333,8 +369,12 @@ function isMermaidLanguage(lang: string): boolean {
  * blocks. Only top-level fences split: a fence nested in a list or quote is
  * consumed by the recursive rendering and stays a plain code block, exactly
  * as before.
+ *
+ * A top-level fence that is neither a preview nor a diagram becomes a `code`
+ * block of its own (closed or still streaming), so the panel can highlight it
+ * with the same parser the code editor uses.
  */
-export function splitAgentMarkdown(src: string): AgentBlock[] {
+export function splitAgentMarkdown(src: string, options: MarkdownOptions = {}): AgentBlock[] {
   if (!src) return [];
   const lines = src.replace(/\r\n?/g, "\n").split("\n");
   const blocks: AgentBlock[] = [];
@@ -365,17 +405,19 @@ export function splitAgentMarkdown(src: string): AgentBlock[] {
       // render code, never a half-preview.
       const closed = i < lines.length;
       if (closed) i += 1; // the closing fence (or the end of the text)
-      if (closed && isHtmlLanguage(lang) && code.length > 0) {
+      const previews = options.fencePreviews !== false;
+      if (closed && previews && isHtmlLanguage(lang) && code.length > 0) {
         flush();
         blocks.push({ kind: "html", code: code.join("\n") });
         continue;
       }
-      if (closed && isMermaidLanguage(lang) && code.length > 0) {
+      if (closed && previews && isMermaidLanguage(lang) && code.length > 0) {
         flush();
         blocks.push({ kind: "mermaid", code: code.join("\n") });
         continue;
       }
-      out.push(renderCodeBlock(code.join("\n"), lang));
+      flush();
+      blocks.push({ kind: "code", lang, code: code.join("\n") });
       continue;
     }
     if (/^\s*\$\$/.test(line)) {
@@ -393,7 +435,7 @@ export function splitAgentMarkdown(src: string): AgentBlock[] {
     const heading = HEADING_RE.exec(line);
     if (heading) {
       const level = heading[1].length;
-      out.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+      out.push(`<h${level}>${renderInline(heading[2], options)}</h${level}>`);
       i += 1;
       continue;
     }
@@ -408,7 +450,7 @@ export function splitAgentMarkdown(src: string): AgentBlock[] {
         buf.push(lines[i].replace(/^\s{0,3}>\s?/, ""));
         i += 1;
       }
-      out.push(`<blockquote>${renderAgentMarkdown(buf.join("\n"))}</blockquote>`);
+      out.push(`<blockquote>${renderAgentMarkdown(buf.join("\n"), options)}</blockquote>`);
       continue;
     }
     if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
@@ -419,16 +461,16 @@ export function splitAgentMarkdown(src: string): AgentBlock[] {
         rows.push(splitRow(lines[i]));
         i += 1;
       }
-      out.push(renderTable(header, rows));
+      out.push(renderTable(header, rows, options));
       continue;
     }
     if (ITEM_RE.test(line)) {
-      const [html, next] = renderList(lines, i);
+      const [html, next] = renderList(lines, i, options);
       out.push(html);
       i = next;
       continue;
     }
-    const [html, next] = renderParagraph(lines, i);
+    const [html, next] = renderParagraph(lines, i, options);
     out.push(html);
     i = next;
   }
@@ -436,10 +478,12 @@ export function splitAgentMarkdown(src: string): AgentBlock[] {
   return blocks;
 }
 
-export function renderAgentMarkdown(src: string): string {
-  return splitAgentMarkdown(src)
-    .map((block) =>
-      block.kind === "markdown" ? block.html : renderCodeBlock(block.code, block.kind),
-    )
+export function renderAgentMarkdown(src: string, options: MarkdownOptions = {}): string {
+  return splitAgentMarkdown(src, options)
+    .map((block) => {
+      if (block.kind === "markdown") return block.html;
+      if (block.kind === "code") return renderCodeBlock(block.code, block.lang);
+      return renderCodeBlock(block.code, block.kind);
+    })
     .join("");
 }

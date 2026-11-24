@@ -16,7 +16,7 @@ import { languages as dataLanguages } from "@codemirror/language-data";
  */
 
 /** Descriptions of the core languages (languageId → description). */
-const CORE: Record<string, LanguageDescription> = {
+export const CORE_LANGUAGES: Record<string, LanguageDescription> = {
   typescript: LanguageDescription.of({
     name: "TypeScript",
     alias: ["typescript", "ts"],
@@ -74,7 +74,20 @@ for (const desc of dataLanguages) {
 /** Find the description of a languageId; null when there is none (plain text). */
 export function findLanguage(languageId: string): LanguageDescription | null {
   if (!languageId || languageId === "plaintext") return null;
-  const core = CORE[languageId];
+  const core = CORE_LANGUAGES[languageId];
   if (core) return core;
   return DATA_BY_ALIAS.get(languageId) ?? null;
+}
+
+/**
+ * Every description a **code fence** may name, core ones first.
+ *
+ * Fences carry free-form names (`ts`, `python`, `yaml`) rather than the
+ * backend's languageId, so the lookup has to match aliases; the core
+ * descriptions come first, and `LanguageDescription.matchLanguageName` takes
+ * the first hit, which keeps the dedicated lezer parsers ahead of the generic
+ * package with the same name.
+ */
+export function languageDescriptions(): LanguageDescription[] {
+  return [...Object.values(CORE_LANGUAGES), ...dataLanguages];
 }

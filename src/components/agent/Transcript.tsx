@@ -13,6 +13,7 @@ import type { CodeProjectRef } from "@/state/appStore";
 import { useInvestStore } from "@/invest/store";
 import { HtmlPreview } from "@/components/agent/HtmlPreview";
 import { MermaidBlock } from "@/components/agent/MermaidBlock";
+import { CodeBlock } from "@/components/CodeBlock";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { applySectionToggle, openWhenSettled, type WorkSection } from "./turnWork";
@@ -261,6 +262,8 @@ const AssistantText = memo(function AssistantText({ text }: { text: string }) {
       {blocks.map((block, bi) => {
         if (block.kind === "html") return <HtmlPreview key={bi} code={block.code} />;
         if (block.kind === "mermaid") return <MermaidBlock key={bi} code={block.code} />;
+        if (block.kind === "code")
+          return <CodeBlock key={bi} code={block.code} lang={block.lang} />;
         return <div key={bi} dangerouslySetInnerHTML={{ __html: block.html }} />;
       })}
     </div>

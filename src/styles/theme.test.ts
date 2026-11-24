@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 const readSrc = (rel: string): string => readFileSync(rel, "utf8");
 
 const globalCss = readSrc("src/styles/global.css");
-const markdownTs = readSrc("src/editor/markdown.ts");
+const highlightTs = readSrc("src/editor/highlightStyle.ts");
 const actionsTs = readSrc("src/app/actions.ts");
 const indexHtml = readSrc("index.html");
 const themeBootJs = readSrc("public/theme-boot.js");
@@ -160,7 +160,7 @@ describe("always-on cursor", () => {
 
 describe("syntax highlighting follows the theme", () => {
   it("every color of the HighlightStyle goes through var()", () => {
-    const colors = [...markdownTs.matchAll(/color:\s*"([^"]+)"/g)].map((m) => m[1]);
+    const colors = [...highlightTs.matchAll(/color:\s*"([^"]+)"/g)].map((m) => m[1]);
     expect(colors.length).toBeGreaterThan(10);
     const bad = colors.filter((c) => !c.startsWith("var("));
     expect(bad, `写死 hex 的 token 颜色: ${bad.join(", ")}`).toEqual([]);

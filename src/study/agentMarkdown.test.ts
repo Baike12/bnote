@@ -199,7 +199,7 @@ describe("splitAgentMarkdown", () => {
 
   it("an unclosed html fence (streaming tail) stays a code block", () => {
     const blocks = splitAgentMarkdown("```html\n<p>x</p>");
-    expect(blocks).toEqual([{ kind: "markdown", html: expect.stringContaining("agent-code") }]);
+    expect(blocks).toEqual([{ kind: "code", lang: "html", code: "<p>x</p>" }]);
   });
 
   it("an html fence nested in a list stays a plain code block", () => {
@@ -230,8 +230,7 @@ describe("splitAgentMarkdown", () => {
 
   it("an unclosed mermaid fence (streaming tail) stays a code block", () => {
     const blocks = splitAgentMarkdown("```mermaid\nflowchart TB\n  A-->B");
-    expect(blocks).toEqual([{ kind: "markdown", html: expect.stringContaining("agent-code") }]);
-    expect(blocks[0].kind === "markdown" && blocks[0].html).toContain("language-mermaid");
+    expect(blocks).toEqual([{ kind: "code", lang: "mermaid", code: "flowchart TB\n  A-->B" }]);
   });
 
   it("a mermaid fence nested in a list stays plain text inside the item", () => {
@@ -249,6 +248,66 @@ describe("splitAgentMarkdown", () => {
 
   it("empty input yields no blocks", () => {
     expect(splitAgentMarkdown("")).toEqual([]);
+  });
+});
+
+describe("splitAgentMarkdown: fenced code", () => {
+  it("a plain closed fence becomes its own code block for the highlighter", () => {
+    const blocks = splitAgentMarkdown('前文\n\n```ts\nconst a = "<b>";\n```\n\n后文');
+    expect(blocks).toEqual([
+      { kind: "markdown", html: expect.stringContaining("前文") },
+      { kind: "code", lang: "ts", code: 'const a = "<b>";' },
+      { kind: "markdown", html: expect.stringContaining("后文") },
+    ]);
+  });
+
+  it("a fence without a language is still a code block", () => {
+    expect(splitAgentMarkdown("```\nabc\n```")).toEqual([{ kind: "code", lang: "", code: "abc" }]);
+  });
+
+  it("fencePreviews: false keeps html and mermaid fences as source", () => {
+    const src = "```html\n<p>x</p>\n```\n\n```mermaid\nA-->B\n```";
+    expect(splitAgentMarkdown(src, { fencePreviews: false })).toEqual([
+      { kind: "code", lang: "html", code: "<p>x</p>" },
+      { kind: "code", lang: "mermaid", code: "A-->B" },
+    ]);
+  });
+
+  it("renderAgentMarkdown still renders every code block as escaped <pre>", () => {
+    const html = renderAgentMarkdown('```ts\nconst a = "<b>";\n```');
+    expect(html).toContain('<pre class="agent-code language-ts"><code>');
+    expect(html).toContain("&lt;b&gt;");
+  });
+});
+
+describe("renderInline: images", () => {
+  it("without a resolver a relative reference stays literal, a remote one renders", () => {
+    expect(renderInline("![图](a.png)")).toBe("![图](a.png)");
+    expect(renderAgentMarkdown("![x](https://a/b.png)")).toContain(
+      '<img src="https://a/b.png" alt="x">',
+    );
+  });
+
+  it("with a resolver the img element is kept verbatim", () => {
+    const html = renderAgentMarkdown("前文 ![图](../img/a.png)", {
+      image: (ref, alt) => `<img src="asset://${ref}" alt="${alt}">`,
+    });
+    expect(html).toContain('<img src="asset://../img/a.png" alt="图">');
+    expect(html).not.toContain("!&#x5B;");
+    expect(html).not.toContain("![");
+  });
+
+  it("a resolver that declines leaves the markdown text alone", () => {
+    const html = renderAgentMarkdown("![图](a.png)", { image: () => null });
+    expect(html).toContain("![图](a.png)");
+  });
+
+  it("a link that follows an image keeps both", () => {
+    const html = renderAgentMarkdown("![i](a.png) 与 [链接](https://x.y)", {
+      image: () => '<img src="u">',
+    });
+    expect(html).toContain('<img src="u">');
+    expect(html).toContain('<a href="https://x.y" target="_blank" rel="noopener">链接</a>');
   });
 });
 

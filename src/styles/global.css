@@ -57,13 +57,15 @@
      comment gray. Operators, punctuation and plain identifiers keep the body
      color, as GitHub renders them — a colored token therefore always means
      something, and a function name never shares its color with a parameter.
-     markdown.ts references these through var(); --tok-number is the markdown
-     inline-code / formula-brace tint and is not a code token. */
+     highlightStyle.ts references these through var(); --tok-number is the
+     markdown inline-code / formula-brace tint and is not a code token;
+     --tok-property colors map keys (YAML / JSON / TOML) and object keys. */
   --tok-comment: #9198a1;
   --tok-keyword: #ff7b72;
   --tok-func: #d2a8ff;
   --tok-type: #ffa657;
   --tok-const: #79c0ff;
+  --tok-property: #79c0ff;
   --tok-string: #a5d6ff;
   --tok-regexp: #7ee787;
   --tok-invalid: #f85149;
@@ -176,6 +178,7 @@
   --tok-func: #6639ba;
   --tok-type: #953800;
   --tok-const: #0550ae;
+  --tok-property: #0550ae;
   --tok-string: #0a3069;
   --tok-regexp: #116329;
   --tok-invalid: #82071e;
