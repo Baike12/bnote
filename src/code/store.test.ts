@@ -37,7 +37,10 @@ const mocks = vi.hoisted(() => ({
   ensureTerminalOutputListener: vi.fn(async () => {}),
   toast: vi.fn(),
   setCodeProject: vi.fn(),
-  settings: { codeLspServers: {} as Record<string, { command: string; args?: string[] }> },
+  settings: {
+    codeLspServers: {} as Record<string, { command: string; args?: string[] }>,
+    codeMarkdownPreview: false,
+  },
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
 }));
 
@@ -146,6 +149,7 @@ function resetStore(): void {
     diffOpen: false,
     diffStaged: false,
     diffFile: null,
+    markdownPreview: {},
     gitRev: 0,
     jump: null,
     references: null,
@@ -185,6 +189,7 @@ beforeEach(async () => {
   // The `term-exit` subscription is module-scoped and installed once; keeping
   // the map is what lets a later test see it again after the reset.
   mocks.settings.codeLspServers = {};
+  mocks.settings.codeMarkdownPreview = false;
   mocks.openProject.mockImplementation(async (root: string) => info(root));
   mocks.rescan.mockImplementation(async (root: string) => info(root).tree);
   mocks.listDir.mockResolvedValue([]);
@@ -443,6 +448,67 @@ describe("opening a file", () => {
     await useCodeStore.getState().openFile("src/a.ts");
     await vi.waitFor(() => expect(mocks.lspStart).toHaveBeenCalledTimes(1));
     expect(mocks.lspStart).toHaveBeenCalledWith("/repo-a", "typescript", "src/a.ts", undefined);
+  });
+});
+
+describe("markdown preview per tab", () => {
+  it("a markdown file starts in the mode the setting names", async () => {
+    mocks.settings.codeMarkdownPreview = true;
+    await useCodeStore.getState().openProject("/repo-a");
+    await useCodeStore.getState().openFile("README.md");
+    expect(useCodeStore.getState().markdownPreview["README.md"]).toBe(true);
+  });
+
+  it("a non-markdown file has no preview entry", async () => {
+    mocks.settings.codeMarkdownPreview = true;
+    await useCodeStore.getState().openProject("/repo-a");
+    await useCodeStore.getState().openFile("src/a.ts");
+    expect(useCodeStore.getState().markdownPreview).toEqual({});
+  });
+
+  it("toggling flips only the active markdown tab and closes the diff pane", async () => {
+    await useCodeStore.getState().openProject("/repo-a");
+    await useCodeStore.getState().openFile("README.md");
+    await useCodeStore.getState().openFile("src/a.ts");
+    useCodeStore.getState().setActiveTab("README.md");
+    useCodeStore.setState({ diffOpen: true });
+    useCodeStore.getState().toggleMarkdownPreview();
+    const state = useCodeStore.getState();
+    expect(state.markdownPreview).toEqual({ "README.md": true });
+    expect(state.diffOpen).toBe(false);
+  });
+
+  it("toggling on a non-markdown tab does nothing", async () => {
+    await useCodeStore.getState().openProject("/repo-a");
+    await useCodeStore.getState().openFile("src/a.ts");
+    useCodeStore.getState().toggleMarkdownPreview();
+    expect(useCodeStore.getState().markdownPreview).toEqual({});
+  });
+
+  it("closing the tab drops its entry", async () => {
+    mocks.settings.codeMarkdownPreview = true;
+    await useCodeStore.getState().openProject("/repo-a");
+    await useCodeStore.getState().openFile("README.md");
+    useCodeStore.getState().closeTab("README.md");
+    expect(useCodeStore.getState().markdownPreview).toEqual({});
+  });
+
+  it("switching to an already open markdown tab keeps its mode", async () => {
+    mocks.settings.codeMarkdownPreview = true;
+    await useCodeStore.getState().openProject("/repo-a");
+    await useCodeStore.getState().openFile("README.md");
+    useCodeStore.getState().toggleMarkdownPreview(); // → false
+    await useCodeStore.getState().openFile("src/a.ts");
+    await useCodeStore.getState().openFile("README.md");
+    expect(useCodeStore.getState().markdownPreview["README.md"]).toBe(false);
+  });
+
+  it("closing the project clears every entry", async () => {
+    mocks.settings.codeMarkdownPreview = true;
+    await useCodeStore.getState().openProject("/repo-a");
+    await useCodeStore.getState().openFile("README.md");
+    await useCodeStore.getState().closeProject();
+    expect(useCodeStore.getState().markdownPreview).toEqual({});
   });
 });
 

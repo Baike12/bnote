@@ -4,8 +4,10 @@ import {
   dirname,
   fileName,
   isJsonPath,
+  isMarkdownPath,
   joinPath,
   relDirname,
+  resolveRelativePath,
   vaultRelPath,
   wikilinkText,
 } from "./path";
@@ -107,5 +109,30 @@ describe("isJsonPath", () => {
     expect(isJsonPath("/vault/a.md")).toBe(false);
     expect(isJsonPath(null)).toBe(false);
     expect(isJsonPath(undefined)).toBe(false);
+  });
+});
+
+describe("isMarkdownPath", () => {
+  it("recognizes the extensions the backend calls markdown", () => {
+    expect(isMarkdownPath("README.md")).toBe(true);
+    expect(isMarkdownPath("docs/A.MARKDOWN")).toBe(true);
+    expect(isMarkdownPath("a.mdx")).toBe(true);
+    expect(isMarkdownPath("a.mdown")).toBe(false);
+    expect(isMarkdownPath("a.txt")).toBe(false);
+    expect(isMarkdownPath(null)).toBe(false);
+  });
+});
+
+describe("resolveRelativePath", () => {
+  it("resolves against the base directory and collapses . and ..", () => {
+    expect(resolveRelativePath("docs", "img/a.png")).toBe("docs/img/a.png");
+    expect(resolveRelativePath("docs/api", "../img/a.png")).toBe("docs/img/a.png");
+    expect(resolveRelativePath("docs", "./a.png")).toBe("docs/a.png");
+    expect(resolveRelativePath("", "a.png")).toBe("a.png");
+    expect(resolveRelativePath("a/b", "../../c.png")).toBe("c.png");
+  });
+
+  it("treats a leading slash as rooted at the project", () => {
+    expect(resolveRelativePath("docs", "/img/a.png")).toBe("img/a.png");
   });
 });

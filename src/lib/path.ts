@@ -69,3 +69,30 @@ export function wikilinkText(rel: string, allRels: string[]): string | null {
 export function isJsonPath(path: string | null | undefined): boolean {
   return typeof path === "string" && path.toLowerCase().endsWith(".json");
 }
+
+/** The extensions the backend calls `markdown` (code mode can render them). */
+const MARKDOWN_EXT_RE = /\.(md|markdown|mdx)$/i;
+
+/** Whether the file is a markdown document (source editor or rendered preview). */
+export function isMarkdownPath(path: string | null | undefined): boolean {
+  return typeof path === "string" && MARKDOWN_EXT_RE.test(path);
+}
+
+/**
+ * Resolve a relative reference against a POSIX directory, collapsing `.` and
+ * `..`; a leading `/` makes the reference absolute from the root.
+ * `resolveRelativePath("docs/api", "../img/a.png")` → `"docs/img/a.png"`.
+ */
+export function resolveRelativePath(baseDir: string, ref: string): string {
+  const joined = ref.startsWith("/") ? ref : baseDir ? `${baseDir}/${ref}` : ref;
+  const out: string[] = [];
+  for (const part of joined.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  return out.join("/");
+}

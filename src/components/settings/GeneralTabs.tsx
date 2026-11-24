@@ -130,6 +130,12 @@ export function EditorTab() {
           checked={settings.codeWrap}
           onChange={(v) => patch({ codeWrap: v })}
         />
+        <Toggle
+          label="Markdown 默认渲染"
+          desc="代码模式打开 Markdown 文件时直接显示渲染结果（与 VSCode 的预览一致）；关掉则显示源码。打开后仍可在代码区按 ⌘⇧V 或点工具栏「渲染」逐个文件切换，设置只决定新打开文件的状态。"
+          checked={settings.codeMarkdownPreview}
+          onChange={(v) => patch({ codeMarkdownPreview: v })}
+        />
         <Row
           label="代码块语言"
           desc="「插入代码块」（默认 ⌘⇧C）在开栏预填的语言标识，如 ts、python；留空则插入不带语言的代码块"

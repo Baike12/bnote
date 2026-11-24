@@ -9247,6 +9247,33 @@ input[type="range"] {
   flex-direction: column;
 }
 
+/* Rendered markdown (code mode): an opaque overlay above the editor, which
+   stays mounted and measured underneath so switching back to the source keeps
+   the undo stack and the caret. Typography is the agent renderer's own
+   (.agent-md); only the reading width and the image limits are local. */
+.code-md-preview {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 20px 28px 48px;
+  background: var(--bg0);
+  outline: none;
+  --agent-text: 14px;
+}
+.code-md-preview .agent-md {
+  max-width: 86ch;
+  line-height: 1.7;
+}
+.code-md-preview .agent-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 6px 0;
+}
+.code-md-preview .agent-md pre.agent-code {
+  font-size: 12.5px;
+}
+
 .code-editor-host,
 .json-editor-host {
   flex: 1 1 auto;

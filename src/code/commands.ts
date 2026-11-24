@@ -13,6 +13,7 @@ import { cmToLspPosition } from "./editor/positions";
 import { nextProblemTarget, type ProblemTarget } from "./problems";
 import { formatCodeQuote } from "./quote";
 import { requestCodeUi } from "./ui";
+import { isMarkdownPath } from "@/lib/path";
 
 /**
  * Commands of the code project.
@@ -39,6 +40,12 @@ function hasProject(): boolean {
 /** Whether a code editor is open. */
 function hasEditor(): boolean {
   return activeCodeEditor() !== null;
+}
+
+/** Whether the active tab is a markdown file (the render toggle has a target). */
+function activeIsMarkdown(): boolean {
+  const store = useCodeStore.getState();
+  return store.activePath !== null && isMarkdownPath(store.activePath);
 }
 
 /**
@@ -454,6 +461,13 @@ export const codeCommandDefs: CommandDef[] = [
       const { settings, patchSettings } = useAppStore.getState();
       patchSettings({ codeWrap: !settings.codeWrap });
     },
+  },
+  {
+    id: "code.toggle-markdown-preview",
+    title: "切换 Markdown 渲染/源码",
+    category: "代码",
+    when: activeIsMarkdown,
+    run: () => useCodeStore.getState().toggleMarkdownPreview(),
   },
 ];
 

@@ -90,6 +90,12 @@ export interface Settings {
    */
   codeWrap: boolean;
   /**
+   * Whether a markdown file opens **rendered** in code mode instead of as its
+   * source. A per-tab toggle (⌘⇧V, the tab's "渲染" button) overrides it for
+   * the tab's lifetime; this setting only decides the state a file starts in.
+   */
+  codeMarkdownPreview: boolean;
+  /**
    * The width of the file tree (px). The editor takes the remaining width;
    * when the middle column narrows, the CSS clamp shrinks the display
    * without changing this preference. Drag the right edge of the file tree
@@ -214,6 +220,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vim: false,
   codeVim: DEFAULT_CODE_VIM,
   codeWrap: true,
+  codeMarkdownPreview: false,
   codeTreeWidth: TREE_DEFAULT_WIDTH,
   codeTermHeight: TERM_DEFAULT_HEIGHT,
   codeLspServers: {},

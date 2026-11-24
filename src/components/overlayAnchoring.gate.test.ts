@@ -66,6 +66,9 @@ const ANCHORED: Record<string, string> = {
   ".invest-toast": ".invest-layout",
   ".invest-kline-overlay": ".invest-kline",
   ".code-overlay": ".code-mode-content",
+  // The rendered markdown covers only the file area, above the still-mounted
+  // editor (see CodeProjectPane / MarkdownPreview).
+  ".code-md-preview": ".code-main",
   // The parked study layout covers the main area while another shape owns the
   // window; it stays mounted so the PDF / web page keeps living (see
   // StudyLayout).
@@ -74,6 +77,7 @@ const ANCHORED: Record<string, string> = {
 
 const KNOWN_FULL_BLEED: readonly string[] = [
   ".agent-read-guide",
+  ".code-md-preview",
   ".code-overlay",
   ".content-editor",
   ".content-empty",

@@ -5,6 +5,7 @@ import { ancestorDirs, applyEntries } from "./tree";
 import { disposeAllTerminals, disposeTerminal, ensureTerminalOutputListener } from "./term/session";
 import { closeTab as closeTermTab, nextTitle, type TermTab } from "./term/tabs";
 import { useAppStore } from "@/state/appStore";
+import { isMarkdownPath } from "@/lib/path";
 import { activeCodeEditor } from "./editor/registry";
 import { cmToLspPosition } from "./editor/positions";
 import { popNavBack, pushNavBack, sameLocation, type CodeLocation } from "./navHistory";
@@ -130,6 +131,13 @@ export interface CodeState {
   /** Whether the diff pane shows the staged side. */
   diffStaged: boolean;
   /**
+   * Whether a markdown tab shows the **rendered** document instead of its
+   * source (path → rendered). Only markdown paths have entries, seeded on open
+   * from `settings.codeMarkdownPreview`; the per-tab toggle writes here and the
+   * entry dies with the tab.
+   */
+  markdownPreview: Record<string, boolean>;
+  /**
    * The file whose patch the diff pane has open (null = every row collapsed).
    * Shared with the tree's change view: a row there opens exactly that file's
    * patch, and the row keeps showing as the selected one.
@@ -198,6 +206,8 @@ export interface CodeState {
   openFile: (path: string, options?: { focus?: boolean }) => Promise<void>;
   closeTab: (path: string) => void;
   setActiveTab: (path: string) => void;
+  /** Flip the active markdown file between source and rendered. */
+  toggleMarkdownPreview: () => void;
   updateContent: (path: string, content: string) => void;
   saveFile: (path: string) => Promise<void>;
   refreshGit: () => Promise<void>;
@@ -375,6 +385,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
   diffOpen: false,
   diffStaged: false,
   diffFile: null,
+  markdownPreview: {},
   gitRev: 0,
   jump: null,
   references: null,
@@ -429,6 +440,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       diffOpen: false,
       diffStaged: false,
       diffFile: null,
+      markdownPreview: {},
       gitRev: 0,
       jump: null,
       references: null,
@@ -470,6 +482,7 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       problemsOpen: false,
       diffOpen: false,
       diffFile: null,
+      markdownPreview: {},
       jump: null,
       references: null,
       navBack: [],
@@ -575,11 +588,19 @@ export const useCodeStore = create<CodeState>((set, get) => ({
     }
     if (seq !== openSeq) return;
     const indentUnit = detectIndent(file.content);
+    // A markdown file starts in the mode the setting names; the toggle then
+    // belongs to this tab and survives switching away and back.
+    const previewMarkdown = isMarkdownPath(path)
+      ? useAppStore.getState().settings.codeMarkdownPreview
+      : false;
     set((s) => ({
       tabs: s.tabs.includes(path) ? s.tabs : [...s.tabs, path],
       activePath: path,
       diffOpen: false,
       editorFocus: options?.focus ? s.editorFocus + 1 : s.editorFocus,
+      markdownPreview: isMarkdownPath(path)
+        ? { ...s.markdownPreview, [path]: previewMarkdown }
+        : s.markdownPreview,
       files: {
         ...s.files,
         [path]: {
@@ -609,8 +630,10 @@ export const useCodeStore = create<CodeState>((set, get) => ({
       const tabs = s.tabs.filter((p) => p !== path);
       const files = { ...s.files };
       delete files[path];
+      const markdownPreview = { ...s.markdownPreview };
+      delete markdownPreview[path];
       const activePath = s.activePath === path ? (tabs[tabs.length - 1] ?? null) : s.activePath;
-      return { tabs, files, activePath };
+      return { tabs, files, markdownPreview, activePath };
     });
     // The document has to be closed on the server too: otherwise it keeps
     // pushing diagnostics for the closed file (a "ghost file" hanging in the
@@ -620,6 +643,18 @@ export const useCodeStore = create<CodeState>((set, get) => ({
 
   setActiveTab(path) {
     set({ activePath: path, diffOpen: false });
+  },
+
+  toggleMarkdownPreview() {
+    const { activePath, files, markdownPreview } = get();
+    if (!activePath || !files[activePath] || !isMarkdownPath(activePath)) return;
+    set({
+      diffOpen: false,
+      markdownPreview: {
+        ...markdownPreview,
+        [activePath]: markdownPreview[activePath] !== true,
+      },
+    });
   },
 
   updateContent(path, content) {

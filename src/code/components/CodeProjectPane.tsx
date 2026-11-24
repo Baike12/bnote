@@ -19,7 +19,9 @@ import { CodeOverlays } from "./CodeOverlays";
 import { openProjectAt, openProjectDialog } from "../commands";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { isRasterImage } from "../image";
+import { isMarkdownPath } from "@/lib/path";
 import { ImageView } from "./ImageView";
+import { MarkdownPreview } from "./MarkdownPreview";
 
 /**
  * The "code project" view of the study mode middle column.
@@ -54,6 +56,7 @@ export function CodeProjectPane() {
   const treeOpen = useCodeStore((s) => s.treeOpen);
   const problemsOpen = useCodeStore((s) => s.problemsOpen);
   const diffOpen = useCodeStore((s) => s.diffOpen);
+  const markdownPreview = useCodeStore((s) => s.markdownPreview);
   const references = useCodeStore((s) => s.references);
   const git = useCodeStore((s) => s.git);
   const lspStates = useCodeStore((s) => s.lspStates);
@@ -65,6 +68,7 @@ export function CodeProjectPane() {
   const setTreeOpen = useCodeStore((s) => s.setTreeOpen);
   const setProblemsOpen = useCodeStore((s) => s.setProblemsOpen);
   const setDiff = useCodeStore((s) => s.setDiff);
+  const toggleMarkdownPreview = useCodeStore((s) => s.toggleMarkdownPreview);
   const rescan = useCodeStore((s) => s.rescan);
   const termOpen = useCodeStore((s) => s.termOpen);
   const setTermOpen = useCodeStore((s) => s.setTermOpen);
@@ -77,6 +81,8 @@ export function CodeProjectPane() {
   const [vimMode, setVimMode] = useState("");
 
   const activeFile = activePath ? files[activePath] : null;
+  const markdownFile = activeFile && !activeFile.binary && isMarkdownPath(activeFile.path);
+  const previewOn = activePath !== null && markdownPreview[activePath] === true;
   // A stable callback: FileTree is memoized, and a callback created anew on
   // every render would make the memo useless.
   const handleOpen = useCallback(
@@ -195,6 +201,17 @@ export function CodeProjectPane() {
         >
           终端
         </button>
+        {markdownFile && (
+          <button
+            type="button"
+            className={`code-tool-btn${previewOn && !diffOpen ? " is-on" : ""}`}
+            title={previewOn ? "显示 Markdown 源码(⌘⇧V)" : "渲染 Markdown(⌘⇧V)"}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => toggleMarkdownPreview()}
+          >
+            渲染
+          </button>
+        )}
         <div className="code-tabs">
           {tabs.map((path) => {
             const open = files[path];
@@ -297,6 +314,12 @@ export function CodeProjectPane() {
             />
           ) : (
             <div className="code-empty">从左边选一个文件打开</div>
+          )}
+          {/* The rendered markdown covers the editor rather than replacing it:
+              the editor stays mounted (and measured) underneath, so switching
+              back to the source keeps its undo stack and caret. */}
+          {!diffOpen && markdownFile && previewOn && project && activeFile && (
+            <MarkdownPreview root={project.root} file={activeFile} />
           )}
         </div>
       </div>

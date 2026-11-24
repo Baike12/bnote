@@ -286,6 +286,10 @@ export const DEFAULT_BINDINGS: Record<string, string | string[]> = {
   "code.prev-problem": "Shift-F8",
   "code.git-diff": "Mod-Shift-d",
   "code.toggle-wrap": "Alt-z",
+  // VSCode's markdown preview chord. The code region never binds Mod-Shift-v
+  // elsewhere (the notes region's vim switch is its own table), so the habit
+  // carries over unchanged.
+  "code.toggle-markdown-preview": "Mod-Shift-v",
 
   // Invest region. ⌘⌥←/→ are free here (code.next/prev-tab own them only in
   // the code region; region isolation is the whole point of the model).
