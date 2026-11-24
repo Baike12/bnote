@@ -28,6 +28,14 @@
   padding-left: 12px;
 }
 
+/* The project/session list is a flat rail at the window's left edge, so the
+   layout must not inset that side (the cards after it keep their insets).
+   The divider next to it takes no width either, so code mode reserves the
+   same 2 x --pane-inset as study mode (see study.css). */
+.code-layout.with-projects {
+  padding-left: 0;
+}
+
 /* The text buttons in the middle column header (open / +PDF): icon-btn is
    26px wide by definition and cannot hold a label, so they are widened here
    for all of them. */

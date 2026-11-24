@@ -13,17 +13,35 @@
 .projects-layout {
   flex: 1;
   display: flex;
+  /* Same shape as study mode: the chrome shows in the gap between the board
+     and the daily note (the resizer's width); the navigation rail is flush at
+     the left edge and touches the board (0-wide divider). */
+  gap: 0;
+  padding-right: var(--pane-inset);
   min-height: 0;
   min-width: 0;
-  background: var(--bg0);
-  --projects-head-h: 44px;
+  background: transparent;
+  --projects-head-h: var(--pane-head-h);
   --side-src: 232px;
   --daily-src: 420px;
   /* The daily note column is clamped first (leaving 300px for the board plus 10%
      for the navigation), the navigation column is clamped afterwards by the
-     actual daily note width. */
-  --daily-w: clamp(12%, var(--daily-src), calc(100% - 300px - 10%));
-  --side-w: clamp(10%, var(--side-src), calc(100% - var(--daily-w) - 2px - 300px));
+     actual daily note width. --pane-reserve is the space the separations take
+     from the columns: the divider next to the navigation rail is 0 wide, the
+     one before the daily note is --pane-inset wide. */
+  --pane-reserve: var(--pane-inset);
+  --daily-w: clamp(12%, var(--daily-src), calc(100% - var(--pane-reserve) - 300px - 10%));
+  --side-w: clamp(
+    10%,
+    var(--side-src),
+    calc(100% - var(--pane-reserve) - var(--daily-w) - 300px)
+  );
+}
+
+/* The divider next to the navigation rail takes no width: the board's own
+   border is the seam, so the rail and the board read as one surface. */
+.projects-side + .projects-resizer {
+  flex-basis: 0;
 }
 
 /* Left column: the project navigation */
@@ -33,7 +51,11 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--bg1);
+  /* A flat rail, not a surface: it is the window itself (transparent over
+     --bg-chrome), flush to the edge, while the board beside it is the lighter
+     --bg0 rounded card. The list's gray text is what tells it apart from the
+     body. */
+  background: transparent;
 }
 
 .projects-side-head {
@@ -45,7 +67,6 @@
      of the main area, so the header content yields (the same convention as
      the titlebar). */
   padding: 0 10px 0 var(--projects-lead, 78px);
-  border-bottom: 1px solid var(--border);
 }
 
 .projects-side-title {
@@ -200,7 +221,11 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  margin-block: var(--pane-inset);
   background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: var(--pane-radius);
+  overflow: hidden;
 }
 
 .projects-deck-head {
@@ -521,7 +546,11 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--bg1);
+  margin-block: var(--pane-inset);
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: var(--pane-radius);
+  overflow: hidden;
   position: relative;
 }
 

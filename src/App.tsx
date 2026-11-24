@@ -434,7 +434,7 @@ export default function App() {
   })();
 
   const main = (
-    <main className="main">
+    <main className={`main main-${mode}`}>
       {/* Study mode is parked, not unmounted, while another shape owns the
           window: the middle column holds a parsed PDF or a live native web
           page, and a remount would re-read the file / reload the page and throw

@@ -10,8 +10,17 @@
 .study-layout {
   flex: 1;
   display: flex;
+  /* The content columns are separate cards; the window chrome shows in the
+     gaps and around them. The gap between two cards is the resizer's own
+     width (see below), not a flex gap: a list rail beside a card has no gap
+     at all - the card's 1px border is the seam, so the surface reads as one
+     piece (ZCode's sidebar next to its conversation panel). The outer insets
+     live on the columns (padding here, margins below) so a flat list rail can
+     reach the window edge. */
+  gap: 0;
+  padding: 0 var(--pane-inset);
   min-height: 0;
-  background: var(--bg0);
+  background: transparent;
   color: var(--text);
   /* The three column widths are written by StudyLayout: --agent-src /
      --content-src are the user preference (in pixels), --agent-w /
@@ -21,15 +30,24 @@
      changes the notes column, so the PDF page size and the visible vertical
      content never jitter with the window. When the window is too narrow to
      fit them, CSS shrinks the display width of the first two columns without
-     writing back the preference. 1px = each split line.
+     writing back the preference.
+     --pane-reserve is the space the dividers and the card gaps take away from
+     the columns (two 1px resizers + four gaps); subtracting it keeps the
+     percentage bounds below honest, so the notes column really does keep its
+     10% (the gaps would otherwise eat into it).
      The minimum width of every column is 10% of the layout width (matching
      MIN_COLUMN_RATIO in layoutModel): the assistant column's upper bound
      leaves 10% each to the content and notes columns, the content column's
      upper bound leaves 10% to the notes column. */
   --agent-src: 320px;
   --content-src: 620px;
-  --agent-w: clamp(10%, var(--agent-src), calc(100% - 2px - 20%));
-  --content-w: clamp(10%, var(--content-src), calc(100% - 2px - 10% - var(--agent-w)));
+  --pane-reserve: calc(2 * var(--pane-inset));
+  --agent-w: clamp(10%, var(--agent-src), calc(100% - var(--pane-reserve) - 20%));
+  --content-w: clamp(
+    10%,
+    var(--content-src),
+    calc(100% - var(--pane-reserve) - 10% - var(--agent-w))
+  );
   /* The window traffic lights (overlay title bar) take about 78px of the
      top left corner, so whichever column is visually leftmost has to yield;
      the focused swap moves that role between the assistant and the content
@@ -41,9 +59,10 @@
   --study-lead: 78px;
   /* All three column headers have the same height: their bottom borders form
      one line at the top of the window, and one pixel off would show as a
-     step. 43 = 8px vertical padding x2 + 26px icon button + 1px bottom
-     border. */
-  --study-head-h: 43px;
+     step. The value is shared with the titlebar and the sidebar header
+     (--pane-head-h); 43 = 8px vertical padding x2 + 26px icon button + 1px
+     bottom border. */
+  --study-head-h: var(--pane-head-h);
 }
 
 /* The study layout is parked, not unmounted, while another shape owns the
@@ -60,6 +79,21 @@
   visibility: hidden;
   pointer-events: none;
 }
+/* The content columns are cards of the window (ZCode's workspace): one border
+   and one radius each, the chrome showing in the gaps. The cards do not need
+   a shadow - the chrome background is the separation. The top/bottom inset is
+   a margin so a flat list rail beside them (the code projects / the notes
+   tree) can still run flush to the window edge. */
+.study-left,
+.study-right,
+.study-layout > .content-pane {
+  margin-block: var(--pane-inset);
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: var(--pane-radius);
+  overflow: hidden;
+}
+
 /* Left column: the study assistant is always present. */
 .study-left {
   flex: 0 0 var(--agent-w);
@@ -84,11 +118,9 @@
    left column keeps its width and the middle column keeps its own, so a
    swapped pane is resized to the column it moved into and the three columns'
    widths (and the notes column) stay exactly where they were.
-   The columns themselves are flat: one 1px split line per resizer, no border
-   and no shadow on any column. The assistant column used to lift itself with
-   a 5px shadow when it took the middle, which made the same position look
-   different depending on who sat in it; the two panes must read as the same
-   column (observed as "the agent panel's border is not the content's"). */
+   Both panes are the same card (see the .study-left / .content-pane rules
+   below): same background, border and radius, whichever column they occupy,
+   so the same position looks the same regardless of who sits in it. */
 .study-layout.agent-focused .study-left {
   order: 2;
   /* It now sits in the middle: take the middle column's width. */
@@ -110,17 +142,19 @@
   order: 4;
 }
 
-/* Resizer: visually a 1px split line, with a 9px hit area (col-resize feel).
-   The line is drawn on the resizer's own left edge: while dragging, the
-   column boundary is the pointer position (see splitDrag), so line and
-   boundary are the same thing. The hit area uses ::after to extend 4px to
-   each side - the layout still occupies only 1px, so there is no visible gap
-   between the two columns, yet the pointer can still grab the split line
-   reliably. The three column study mode has two of them, and so does the
-   three column projects view. */
+/* Resizer: it IS the gap between two cards (its width is the chrome the cards
+   leave free), invisible at rest, with a hit area (col-resize feel) extended
+   4px to each side. The lit line is centered: while dragging, the column
+   boundary is the pointer position (see splitDrag), so line and boundary are
+   the same thing. The three column study mode has two of them, and so does
+   the three column projects view. A resizer next to a list rail is 0 wide:
+   there the card's own border is the seam (see .code-projects + .study-resizer
+   and .projects-side + .projects-resizer). */
 .study-resizer,
 .projects-resizer {
-  flex: 0 0 1px;
+  flex: 0 0 var(--pane-inset);
+  /* The lit line spans the cards' height, not the whole window. */
+  margin-block: var(--pane-inset);
   position: relative;
   z-index: 1;
   cursor: col-resize;
@@ -137,9 +171,10 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
+  left: calc(50% - 0.5px);
   width: 1px;
-  background: var(--border);
+  /* Invisible until hovered: the chrome gap already separates the cards. */
+  background: transparent;
   transition: width 0.12s ease, background 0.12s ease;
 }
 .study-resizer::after,
@@ -155,16 +190,11 @@
 .study-resizer.dragging::before,
 .projects-resizer:hover::before,
 .projects-resizer.dragging::before {
+  left: calc(50% - 1px);
   width: 2px;
   background: var(--accent);
 }
 
-/* The split line belongs to the resizer. The panel's own border-right would
-   sit next to it as a second line (while dragging the lit one is the
-   resizer's, at rest you see the border's). */
-.study-layout .content-pane {
-  border-right: none;
-}
 /* While dragging, selection and the pointer are locked, so moving the mouse
    out of the panel does not select text. */
 .study-resizer.dragging,

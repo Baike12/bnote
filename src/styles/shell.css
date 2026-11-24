@@ -4,9 +4,14 @@
    here must not depend on being moved relative to another file. */
 /* ===== layout ===== */
 
+/* The window is the chrome: one dark surface behind the rounded content cards
+   (ZCode's workspace shape). The insets are owned by the cards themselves, so
+   a flat list rail can reach the window edge (see study.css / projects.css /
+   code-panel.css). */
 .app {
   display: flex;
   height: 100%;
+  background: var(--bg-chrome);
 }
 
 /* The root error boundary's fallback (see main.tsx): the app failed to
@@ -54,9 +59,22 @@
   position: relative;
 }
 
+/* The notes shape is one card: the titlebar is its header, the editor fills
+   the body. The other modes build their own columns inside .main (see
+   study.css / projects.css), so only this shape paints the frame. */
+.main-notes {
+  margin: var(--pane-inset);
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: var(--pane-radius);
+  overflow: hidden;
+}
+
 .titlebar {
-  height: 34px;
-  min-height: 34px;
+  /* The same height as every column header (--pane-head-h): the notes card and
+     the vault sidebar are cards side by side, their header lines must meet. */
+  height: var(--pane-head-h);
+  min-height: var(--pane-head-h);
   display: flex;
   align-items: center;
   padding: 0 12px;
@@ -98,25 +116,31 @@
    unscoped .sidebar{padding:0;position:absolute;top:0;...} rule that stays on
    the page once the canvas has been opened, and it would override the top bar
    padding (traffic lights) and the layout here. */
+/* The vault tree is a flat rail, not a rounded card and not a surface of its
+   own: it is the window (--bg-chrome, transparent here), so the rail and the
+   backdrop behind the cards are literally the same color - no seam, no
+   divider (ZCode's sidebar). The cards are the lighter --bg0 surfaces inset
+   on it; the list's gray text tells it apart from the body. */
 .app-sidebar {
   width: 220px;
   min-width: 220px;
-  background: var(--bg1);
-  /* The tree sits right of the notes, so the divider is on its left edge. */
-  border-left: 1px solid var(--border);
+  /* No gap to the cards: the rail eats the card's outer inset, so the card's
+     own border is the only seam (the surface reads as one piece). */
+  margin-left: calc(-1 * var(--pane-inset));
+  background: transparent;
   display: flex;
   flex-direction: column;
-  /* Aligns its header with the 30px top strip of the columns to its left
-     (the traffic lights themselves are on the window's left edge now). */
-  padding-top: 30px;
 }
 
 .sidebar-header {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
+  /* One header line with the notes card beside it (see --pane-head-h). No
+     bottom border: the rail is the window, a line across it would cut the
+     backdrop into two pieces (ZCode's sidebar header has none). */
+  min-height: var(--pane-head-h);
+  padding: 0 8px;
 }
 
 .sidebar-title {
@@ -177,6 +201,12 @@
 .tree-row:hover {
   background: var(--bg3);
 }
+/* The file list reads one step grayer than the document body (a list is
+   navigation, not the text being read); the row under the pointer and the
+   open file come back to full contrast. */
+.tree-row:hover .tree-name {
+  color: var(--text);
+}
 .tree-row.current {
   background: var(--accent-soft);
 }
@@ -187,6 +217,7 @@
 /* The vault tree draws no expand arrow either: the folder icon carries the
    open / closed state (see FolderTypeIcon in code/components/FileIcon). */
 .tree-name {
+  color: var(--text-dim);
   font-size: 12.5px;
   white-space: nowrap;
   overflow: hidden;

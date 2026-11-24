@@ -717,7 +717,9 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 26px;
+  /* Shared with the code pane's status bar: every pane footer is one height
+     (--pane-foot-h), so side-by-side cards end on the same line. */
+  height: var(--pane-foot-h);
   padding: 0 12px;
   border-top: 1px solid var(--border);
   background: var(--bg1);

@@ -24,7 +24,9 @@ describe("sidebar class name isolated from third-party CSS", () => {
 
   it("the stylesheet does not define a bare .sidebar (it would be overridden by Excalidraw)", () => {
     expect(css).not.toMatch(/(^|\n)\s*\.sidebar\s*\{/);
-    expect(css).toMatch(/\.app-sidebar\s*\{[^}]*padding-top:\s*30px/);
+    // The app's own rule must still exist (Excalidraw's .sidebar is absolute
+    // at the window's top-left).
+    expect(css).toMatch(/\.app-sidebar\s*\{[^}]*display:\s*flex/);
   });
 
   it("the sidebar renders right of the main area", () => {

@@ -47,16 +47,22 @@ describe("agent panel scroll layout", () => {
     expect(scroll).toMatch(/flex:\s*1/);
   });
 
-  it("no visible gap between the two columns: the divider occupies only 1px, the hit area is widened by a pseudo element", () => {
-    expect(rule(".study-resizer")).toMatch(/flex:\s*0 0 1px/);
+  it("the divider IS the seam between two cards: it occupies the pane inset, the hit area is widened by a pseudo element", () => {
+    expect(rule(".study-resizer")).toMatch(/flex:\s*0 0 var\(--pane-inset\)/);
     expect(rule(".study-resizer::after")).toMatch(/left:\s*-4px/);
     expect(rule(".study-resizer::after")).toMatch(/right:\s*-4px/);
   });
 
-  it("both dividers of the projects view share the study mode geometry (only 1px, no layout widening)", () => {
-    expect(rule(".projects-resizer")).toMatch(/flex:\s*0 0 1px/);
+  it("the projects dividers: the one beside the list rail takes no width, the other shares the study geometry", () => {
+    expect(rule(".projects-resizer")).toMatch(/flex:\s*0 0 var\(--pane-inset\)/);
+    // A rail touches its neighbour: the card's own border is the seam there.
+    expect(rule(".projects-side + .projects-resizer")).toMatch(/flex-basis:\s*0/);
     expect(rule(".projects-resizer::after")).toMatch(/left:\s*-4px/);
     expect(rule(".projects-resizer::after")).toMatch(/right:\s*-4px/);
+  });
+
+  it("the divider beside the code session rail takes no width either", () => {
+    expect(rule(".code-projects + .study-resizer")).toMatch(/flex-basis:\s*0/);
   });
 
   it("the agent top and the PDF top bar share the same colour (bg0), not the panel grey", () => {

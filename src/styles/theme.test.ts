@@ -39,6 +39,10 @@ const GEOMETRIC_VARS = new Set([
   "--li-base",
   "--li-step",
   "--li-gap",
+  "--pane-radius",
+  "--pane-inset",
+  "--pane-head-h",
+  "--pane-foot-h",
 ]);
 
 /** Strip block comments before parsing - variable names or colors mentioned in

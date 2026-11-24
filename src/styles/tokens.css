@@ -16,6 +16,7 @@
   color-scheme: dark;
   /* Deep-black neutral surfaces with a warm amber accent. */
   --bg0: #0b0b0d; /* editor */
+  --bg-chrome: #08080a; /* window behind the pane cards (also the list rails) */
   --bg1: #101013; /* sidebar */
   --bg2: #17171a; /* elevated */
   --bg3: #212125; /* hover */
@@ -136,6 +137,21 @@
      scrolling. */
   --content-line-width: 700px;
   --content-pad-x: 48px;
+  /* Rounded workspace panes (ZCode's inset columns): the window shows
+     --bg-chrome in the gaps, every content column is a card with this radius,
+     while a list rail (session list / vault tree / project list) is not a
+     surface at all: it IS the window (same --bg-chrome, flush to the edge, no
+     divider), so the rail and the backdrop behind the cards read as one piece
+     (ZCode's sidebar). The header height is shared by the titlebar,
+     the sidebar and the column headers, the footer height by every status
+     bar, so the lines of two side-by-side panes meet. */
+  --pane-radius: 12px;
+  /* The inset is both the air around a card at the window edge and the seam
+     between two cards (the divider takes this width); a list rail has no
+     inset on its window side and no seam towards the card beside it. */
+  --pane-inset: 3px;
+  --pane-head-h: 43px;
+  --pane-foot-h: 26px;
 }
 
 /* Light: every variable of the same name must be given here (the
@@ -146,6 +162,7 @@
 [data-theme="light"] {
   color-scheme: light;
   --bg0: #ffffff; /* editor */
+  --bg-chrome: #f2f2f4; /* window behind the pane cards (also the list rails) */
   --bg1: #f7f7f8; /* sidebar */
   --bg2: #ffffff; /* elevated (told apart from bg0 by border + shadow) */
   --bg3: #ececee; /* hover */
