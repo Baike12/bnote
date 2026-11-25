@@ -52,6 +52,27 @@
   border-left: 2px solid var(--accent) !important;
 }
 
+/* The vim block cursor. The engine ships its own highest-precedence theme that
+   paints #ff9696 (and an outline of the same pink when the editor is
+   unfocused); !important plus one more specificity step (`:not(...)`, or the
+   extra class in the focused rule) beats that injected style tag. The block is
+   the theme's accent at low alpha: it marks the cell like a selection band, so
+   the glyph under it stays readable in both themes, and it carries the amber
+   the rest of the UI uses instead of an unrelated pink. Translucent also keeps
+   the engine's overwrite-mode sliver (which paints its letter transparent)
+   harmless. */
+.cm-editor .cm-vimCursorLayer .cm-fat-cursor {
+  background: color-mix(in srgb, var(--accent) 32%, transparent) !important;
+}
+.cm-editor:not(.cm-focused) .cm-vimCursorLayer .cm-fat-cursor {
+  background: none !important;
+  outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent) !important;
+}
+/* A secondary (visual-block) cursor sits one step back from the primary one. */
+.cm-editor .cm-vimCursorLayer .cm-cursor-secondary {
+  background: color-mix(in srgb, var(--accent) 18%, transparent) !important;
+}
+
 /* The cursor stays on, it never blinks. Both CM6's normal cursor layer and
    the vim engine's block cursor layer carry .cm-cursorLayer (the latter also
    carries .cm-vimCursorLayer); the blink is driven by the cm-blink keyframes,
