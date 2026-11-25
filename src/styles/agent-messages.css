@@ -329,9 +329,14 @@
    radius and the horizontal scroll (a collapsed cell border cannot round its
    own outer corners - clipping a rectangle leaves notched corners), while the
    cells only draw the inner grid lines. So the edge is one uninterrupted
-   rounded stroke even for wide tables. */
+   rounded stroke even for wide tables.
+   `width: fit-content` keeps the frame on the grid: a short table's card ends
+   where its last column does instead of stretching to the panel width (the
+   anonymous table box inside a block table shrinks to content), and a table
+   wider than the panel still hits `max-width` and scrolls. */
 .agent-md table {
   display: block;
+  width: fit-content;
   max-width: 100%;
   margin: 6px 0;
   border: 1px solid var(--border);
