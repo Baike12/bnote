@@ -55,22 +55,28 @@
 /* The vim block cursor. The engine ships its own highest-precedence theme that
    paints #ff9696 (and an outline of the same pink when the editor is
    unfocused); !important plus one more specificity step (`:not(...)`, or the
-   extra class in the focused rule) beats that injected style tag. The block is
-   the theme's accent at low alpha: it marks the cell like a selection band, so
-   the glyph under it stays readable in both themes, and it carries the amber
-   the rest of the UI uses instead of an unrelated pink. Translucent also keeps
-   the engine's overwrite-mode sliver (which paints its letter transparent)
-   harmless. */
+   extra class in the focused rule) beats that injected style tag. The fill is
+   --accent-bright: a solid bright amber, the logo color one step brighter.
+   A solid block needs the glyph inverted to stay legible (the engine leaves the
+   text color alone, so light-theme ink on solid amber or dark-theme gray on
+   amber would wash out), hence the near-black fill color.
+   The engine's overwrite-mode sliver is the one piece that must keep its own
+   transparent letter (`Piece.adjust` writes `color: transparent` inline for
+   `partial`); it is matched out by its inline style rather than painted, since
+   a glyph on a 20%-height bar is an artifact. */
 .cm-editor .cm-vimCursorLayer .cm-fat-cursor {
-  background: color-mix(in srgb, var(--accent) 32%, transparent) !important;
+  background: var(--accent-bright) !important;
+}
+.cm-editor .cm-vimCursorLayer .cm-fat-cursor:not([style*="transparent"]) {
+  -webkit-text-fill-color: var(--on-accent-bright) !important;
 }
 .cm-editor:not(.cm-focused) .cm-vimCursorLayer .cm-fat-cursor {
   background: none !important;
-  outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent) !important;
+  outline: 1px solid var(--accent-bright) !important;
 }
 /* A secondary (visual-block) cursor sits one step back from the primary one. */
 .cm-editor .cm-vimCursorLayer .cm-cursor-secondary {
-  background: color-mix(in srgb, var(--accent) 18%, transparent) !important;
+  background: color-mix(in srgb, var(--accent-bright) 55%, transparent) !important;
 }
 
 /* The cursor stays on, it never blinks. Both CM6's normal cursor layer and

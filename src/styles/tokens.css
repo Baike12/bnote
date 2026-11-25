@@ -25,6 +25,8 @@
   --text-dim: #9a9aa0;
   --text-faint: #67676d;
   --accent: #f5a83c;
+  --accent-bright: #ffb04d; /* the logo amber one step brighter: vim block cursor fill */
+  --on-accent-bright: #17110a; /* the glyph inside the block cursor: amber is bright, the ink is near-black */
   --accent-dim: #c07d24;
   --accent-soft: #3a2c16; /* weak amber base: current file row, keybinding recording row */
   --danger: #e06c75;
@@ -171,6 +173,8 @@
   --text-dim: #6c7078;
   --text-faint: #9a9ea6;
   --accent: #a3670d;
+  --accent-bright: #f79400; /* the logo amber one step brighter: vim block cursor fill */
+  --on-accent-bright: #17110a; /* the glyph inside the block cursor: amber is bright, the ink is near-black */
   --accent-dim: #8a570b;
   --accent-soft: #f3e7cd;
   --danger: #c93636;
