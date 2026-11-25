@@ -1137,6 +1137,7 @@ impl Session {
         context_window: u64,
         selection: super::models::ModelSelection,
     ) {
+        self.ctx.vision.store(provider.vision, Ordering::SeqCst);
         if let Ok(mut slot) = self.provider.write() {
             *slot = provider;
         }
@@ -1972,9 +1973,8 @@ impl Session {
             "Bash" => {
                 return self.run_bash(input).await;
             }
-            "TaskOutput" | "TaskStop" => {
-                return self.run_bg_control(name, input);
-            }
+            "TaskOutput" => return self.run_bg_control(input),
+            "TaskStop" => return self.stop_task(input),
             "EnterPlanMode" => return self.enter_plan_mode(),
             "ExitPlanMode" => return self.exit_plan_mode(input).await,
             "AskUserQuestion" => {
@@ -2057,22 +2057,76 @@ impl Session {
         ToolOutput::text(out.ok, out.text)
     }
 
-    fn run_bg_control(&self, name: &str, input: &Value) -> ToolOutput {
-        let id = input["task_id"]
-            .as_u64()
-            .or_else(|| input["id"].as_u64())
-            .unwrap_or(u64::MAX);
+    fn run_bg_control(&self, input: &Value) -> ToolOutput {
+        let id = background_task_id(input);
         let Some(task) = self.ctx.bg.get(id) else {
             return ToolOutput::text(
                 false,
                 tool_use_error(format!("unknown background task: {id}")),
             );
         };
-        if name == "TaskStop" {
-            task.kill();
-            return ToolOutput::text(true, format!("kill signal sent to background task {id}"));
-        }
         ToolOutput::text(true, shell::format_bg_status(&task))
+    }
+
+    /// TaskStop: `agent_id` stops that subagent's run, `task_id` kills a
+    /// background shell task.
+    ///
+    /// Every child owns its abort token (a child of the parent's, so the
+    /// parent's stop still cascades), and `send` resets the token at the start
+    /// of the next turn — a stopped agent stays resumable through SendMessage.
+    fn stop_task(&self, input: &Value) -> ToolOutput {
+        let request = match stop_request(input) {
+            Ok(request) => request,
+            Err(e) => return ToolOutput::text(false, tool_use_error(e)),
+        };
+        match request {
+            StopRequest::Agent(agent) => match self.stop_child(&agent) {
+                None => ToolOutput::text(
+                    false,
+                    tool_use_error(format!("unknown subagent: {agent}")),
+                ),
+                Some(true) => ToolOutput::text(
+                    true,
+                    format!(
+                        "stop signal sent to subagent {agent}: it stops at its next step and reports \"stopped\""
+                    ),
+                ),
+                Some(false) => ToolOutput::text(
+                    true,
+                    format!(
+                        "subagent {agent} is not running; the stop flag is cleared when it is next resumed with SendMessage"
+                    ),
+                ),
+            },
+            StopRequest::Background(id) => {
+                let Some(task) = self.ctx.bg.get(id) else {
+                    return ToolOutput::text(
+                        false,
+                        tool_use_error(format!("unknown background task: {id}")),
+                    );
+                };
+                task.kill();
+                ToolOutput::text(true, format!("kill signal sent to background task {id}"))
+            }
+        }
+    }
+
+    /// Stops one child's running turn. Shared by the panel's stop button
+    /// (`agent_stop_subagent`) and the TaskStop tool, so the abort-token rule
+    /// lives in one place.
+    ///
+    /// Returns whether the child was running when it was stopped; `None` when
+    /// the id names no child of this session. The abort ends only that child's
+    /// loop — this session's turn keeps running.
+    pub fn stop_child(&self, agent_id: &str) -> Option<bool> {
+        let child = self
+            .children
+            .lock()
+            .ok()
+            .and_then(|map| map.get(agent_id).cloned())?;
+        let running = child.running.load(Ordering::SeqCst);
+        child.ctx.abort.abort();
+        Some(running)
     }
 
     /// Anchor directory for bash: the code project root for coding sessions,
@@ -2328,6 +2382,8 @@ impl Session {
             // not inherit the parent transcript, so it has not seen the files
             // the parent read and must Read them itself before writing.
             files: Arc::new(super::file_state::FileStateCache::new()),
+            // The child may run on a different model than the parent.
+            vision: std::sync::atomic::AtomicBool::new(child_provider.vision),
             extra_roots: Vec::new(),
             invest_scope: self.ctx.invest_scope.clone(),
         });
@@ -2508,7 +2564,13 @@ impl Session {
         // nothing).
         let parent_handle = self.self_ref.lock().ok().and_then(|g| g.clone());
         let call_id = tool_use_id.to_string();
+        // Claim the child's running flag exactly as a resumed turn does. It is
+        // what makes SendMessage queue during the first run instead of starting
+        // a second loop, and what lets TaskStop say "running" honestly; the
+        // guard inside the task clears it when the run ends.
+        child.running.store(true, Ordering::SeqCst);
         let runner = tauri::async_runtime::spawn(async move {
+            let _running = RunningGuard(runner_child.running.clone());
             // Queue here, not in the caller: a foreground call waiting for a
             // slot must not block the sibling calls of the same batch (they
             // run in parallel), and a background agent holds its own slot.
@@ -2573,7 +2635,7 @@ impl Session {
                 duration_ms: started.elapsed().as_millis() as u64,
                 tokens: usage.map(|u| u.input + u.output).unwrap_or(0),
             });
-            (report, usage, ok)
+            (report, usage, ok, stopped)
         });
         if background {
             // Background subagent: answer immediately; the completion notice
@@ -2586,19 +2648,28 @@ impl Session {
                 .unwrap_or_default();
             let label_bg = ui_label.clone();
             tauri::async_runtime::spawn(async move {
-                let (report, usage, _ok) = match runner.await {
+                let (report, usage, ok, stopped) = match runner.await {
                     Ok(v) => v,
-                    Err(e) => (format!("(子代理 join 失败: {e})"), None, false),
+                    Err(e) => (format!("(子代理 join 失败: {e})"), None, false, false),
                 };
                 let totals = usage
                     .map(|u| format!("\ntotal_tokens: {}", u.input + u.output))
                     .unwrap_or_default();
+                // A stop the model asked for (TaskStop) or the user issued is
+                // not a completion: say so, and keep the partial report.
+                let headline = if stopped {
+                    "已停止"
+                } else if ok {
+                    "已完成"
+                } else {
+                    "已结束(出错)"
+                };
                 let notice = format!(
-                    "<system-reminder>后台子代理 {label_bg} 已完成。报告:\n{report}{totals}\n</system-reminder>"
+                    "<system-reminder>后台子代理 {label_bg} {headline}。报告:\n{report}{totals}\n</system-reminder>"
                 );
                 if let Some(session) = parent.upgrade() {
                     session.emit(AgentEvent::Notice {
-                        text: format!("后台子代理 {label_bg} 完成"),
+                        text: format!("后台子代理 {label_bg} {headline}"),
                     });
                     session.requeue_or_wake(notice);
                 }
@@ -2606,12 +2677,12 @@ impl Session {
             return ToolOutput::text(
                 true,
                 format!(
-                    "Async agent launched successfully.\nagentId: {}\nThe agent is working in the background. You will be notified automatically when it completes.\nDo not duplicate this agent's work. Briefly tell the user what you launched and why.",
+                    "Async agent launched successfully.\nagentId: {}\nThe agent is working in the background. You will be notified automatically when it completes; stop it with TaskStop (agent_id) if it is no longer needed.\nDo not duplicate this agent's work. Briefly tell the user what you launched and why.",
                     child.id
                 ),
             );
         }
-        let (report, usage, _ok) = match runner.await {
+        let (report, usage, _ok, _stopped) = match runner.await {
             Ok(v) => v,
             Err(e) => {
                 return ToolOutput::text(false, tool_use_error(format!("join failed: {}", e)))
@@ -3047,8 +3118,36 @@ fn plan_slug(plan: &str) -> String {
 /// analysis pass organizes the drafting, the sections pin what must survive.
 const COMPACTION_PROMPT: &str = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\nYour task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary will be used to continue the work in a fresh context without losing important information.\n\nBefore providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts. In your analysis process, chronologically analyze each message: the user's explicit requests and intents, your approach, key decisions, file names and code snippets, errors and how you fixed them, and any user feedback about doing something differently.\n\nYour summary should include the following sections:\n\n1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail.\n2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.\n3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created, with short code snippets where applicable and why they matter.\n4. Errors and fixes: List errors you ran into and how you fixed them, especially user feedback about doing something differently.\n5. Problem Solving: Document problems solved and any ongoing troubleshooting.\n6. All user messages: List ALL user messages that are not tool results. These are critical for understanding the user's feedback and changing intent.\n7. Pending Tasks: Outline pending tasks you have been explicitly asked to work on.\n8. Current Work: Describe precisely what was being worked on immediately before this summary request.\n9. Optional Next Step: List the next step directly in line with the user's most recent request. If the last task was concluded, say so instead of inventing new work. Include verbatim quotes from the most recent conversation so the next step is unambiguous.\n\nAfter the <analysis> block, output the summary as plain text with the nine numbered sections.\n\nREMINDER: Do NOT call any tools. Respond with plain text only — an <analysis> block followed by a <summary> block. Tool calls will be rejected and you will fail the task.";
 
-/// Builds one session of the given mode from the effective definition.
-/// Shared by `agent_start_session` (the id is assigned there).
+/// The numeric id of a background shell task (`TaskOutput`/`TaskStop`).
+fn background_task_id(input: &Value) -> u64 {
+    input["task_id"]
+        .as_u64()
+        .or_else(|| input["id"].as_u64())
+        .unwrap_or(u64::MAX)
+}
+
+/// What a TaskStop call names: a subagent or a background shell task.
+#[derive(Debug)]
+enum StopRequest {
+    Agent(String),
+    Background(u64),
+}
+
+fn stop_request(input: &Value) -> Result<StopRequest, String> {
+    if let Some(agent) = input["agent_id"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(StopRequest::Agent(agent.to_string()));
+    }
+    let id = background_task_id(input);
+    if id == u64::MAX {
+        return Err("pass agent_id (a subagent) or task_id (a background shell task)".into());
+    }
+    Ok(StopRequest::Background(id))
+}
+
 pub struct SessionSeed {
     pub id: String,
     pub mode: SessionMode,
@@ -3081,6 +3180,8 @@ pub struct SessionSeed {
     pub subagent_concurrency: usize,
 }
 
+/// Builds one session of the given mode from the effective definition.
+/// Shared by `agent_start_session` (the id is assigned there).
 pub fn create_session(seed: SessionSeed) -> Session {
     // The agent's runtime files live in the home's `projects/<project>/...`; the
     // project is the code project for coding sessions and the vault otherwise.
@@ -3323,6 +3424,30 @@ mod tests {
         let mut with_report = items.clone();
         with_report.push(assistant_text("# Report"));
         assert_eq!(last_assistant_text(&with_report), "# Report");
+    }
+
+    #[test]
+    fn a_background_task_id_reads_task_id_or_the_legacy_id() {
+        assert_eq!(background_task_id(&json!({"task_id": 3})), 3);
+        assert_eq!(background_task_id(&json!({"id": 4})), 4);
+        assert_eq!(background_task_id(&json!({})), u64::MAX);
+    }
+
+    #[test]
+    fn task_stop_names_a_subagent_or_a_background_task() {
+        // agent_id wins; a blank one falls through to the shell task; no id at
+        // all is an actionable error rather than "unknown task 18446744073709551615".
+        match stop_request(&json!({"agent_id": "s1-7-agent-1"})) {
+            Ok(StopRequest::Agent(id)) => assert_eq!(id, "s1-7-agent-1"),
+            _ => panic!("agent_id must select the subagent"),
+        }
+        match stop_request(&json!({"agent_id": "  ", "task_id": 5})) {
+            Ok(StopRequest::Background(id)) => assert_eq!(id, 5),
+            _ => panic!("a blank agent_id must fall through"),
+        }
+        assert!(stop_request(&json!({}))
+            .expect_err("no id is an error")
+            .contains("agent_id"));
     }
 
     #[test]

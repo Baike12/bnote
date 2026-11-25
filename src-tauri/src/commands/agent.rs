@@ -224,6 +224,7 @@ pub async fn agent_start_session(
         bg: Arc::new(BgRegistry::new()),
         read_paths: std::sync::Mutex::new(Vec::new()),
         files: Arc::new(crate::agent::file_state::FileStateCache::new()),
+        vision: std::sync::atomic::AtomicBool::new(resolved.vision),
         extra_roots,
         invest_scope: invest_scope.clone(),
     });
@@ -757,22 +758,12 @@ pub fn agent_stop_subagent(
     session_id: String,
     agent_id: String,
 ) -> CmdResult<bool> {
-    let child = {
+    let parent = {
         let registry = state.sessions.lock().map_err(|e| e.to_string())?;
-        let parent = registry
-            .get(&session_id)
-            .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?;
-        let found = parent
-            .children
-            .lock()
-            .map_err(|e| e.to_string())?
-            .get(&agent_id)
-            .cloned();
-        found
-    };
-    let Some(child) = child else { return Ok(false) };
-    child.ctx.abort.abort();
-    Ok(true)
+        registry.get(&session_id).cloned()
+    }
+    .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?;
+    Ok(parent.stop_child(&agent_id).is_some())
 }
 
 /// The composer's context card: rough per-part context sizes (estimated

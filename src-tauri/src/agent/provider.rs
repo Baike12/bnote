@@ -321,10 +321,12 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
                     "content": openai_user_content(&text_parts, &images),
                 }));
             }
+            let mut result_images: Vec<Content> = Vec::new();
             for r in results {
                 if let Content::ToolResult {
                     tool_use_id,
                     content,
+                    images,
                     ..
                 } = r
                 {
@@ -333,7 +335,25 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
                         "tool_call_id": tool_use_id,
                         "content": content,
                     }));
+                    result_images.extend(images.iter().map(|img| Content::Image {
+                        media_type: img.media_type.clone(),
+                        data: img.data.clone(),
+                    }));
                 }
+            }
+            // An OpenAI tool message accepts text parts only, so an image a
+            // tool produced (a Read of a screenshot, a rendered preview) would
+            // otherwise be dropped. Deliver it in one user message after every
+            // tool result of this turn: the protocol requires all tool
+            // responses to follow the assistant message before anything else.
+            if !result_images.is_empty() {
+                messages.push(json!({
+                    "role": "user",
+                    "content": openai_user_content(
+                        &["Images from the tool result above.".to_string()],
+                        &result_images,
+                    ),
+                }));
             }
         }
     }
@@ -437,6 +457,9 @@ pub struct Provider {
     /// can compare against it.
     pub provider_id: String,
     pub model_id: String,
+    /// The catalog says this model accepts images. Read gates its image branch
+    /// on it, so a non-vision model never receives an image block.
+    pub vision: bool,
     /// The selected thinking level and its merge patch (see
     /// [`super::models::ThinkingLevel`]).
     pub thinking_level: String,
@@ -469,6 +492,7 @@ impl Provider {
             max_tokens: resolved.max_tokens.max(1024),
             provider_id: resolved.provider_id.clone(),
             model_id: resolved.model_id.clone(),
+            vision: resolved.vision,
             thinking_level: resolved.thinking_level.clone(),
             thinking_patch: resolved.patch.clone(),
             thinking_off_patch: resolved.off_patch.clone(),
@@ -491,6 +515,10 @@ impl Provider {
             max_tokens: max_tokens.max(1024),
             provider_id: self.provider_id.clone(),
             model_id: model.to_string(),
+            // A raw id the catalog does not know: keep the parent's capability
+            // rather than guessing. A wrong `true` surfaces as the provider's
+            // own API error; a wrong `false` would silently hide images.
+            vision: self.vision,
             thinking_level: self.thinking_level.clone(),
             thinking_patch: self.thinking_patch.clone(),
             thinking_off_patch: self.thinking_off_patch.clone(),
@@ -1501,6 +1529,7 @@ mod tests {
             max_tokens: 8_192,
             provider_id: "p".into(),
             model_id: "m".into(),
+            vision: false,
             thinking_level: "high".into(),
             thinking_patch: json!({
                 "model": "other",
@@ -1854,10 +1883,10 @@ mod tests {
     }
 
     #[test]
-    fn openai_tool_result_message_carries_text_only_and_keeps_images_out() {
-        // The OpenAI protocol only accepts text in tool messages: a result that
-        // carries images serializes with content still plain text, the
-        // tool_call_id matches, and no image_url part is included.
+    fn openai_tool_result_keeps_text_in_the_tool_message_and_sends_images_after_it() {
+        // The OpenAI protocol only accepts text in tool messages, so the image
+        // rides in a user message placed after every tool result of the turn —
+        // without it a screenshot a tool produced would never reach the model.
         let items = vec![ChatItem::Message {
             role: "user".into(),
             content: vec![Content::ToolResult {
@@ -1871,11 +1900,32 @@ mod tests {
             }],
         }];
         let messages = openai_messages("", &items);
-        assert_eq!(messages.len(), 1);
+        assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "tool");
         assert_eq!(messages[0]["tool_call_id"], "t1");
         assert_eq!(messages[0]["content"], "preview updated");
         assert!(messages[0].get("content").unwrap().is_string());
+        assert_eq!(messages[1]["role"], "user");
+        let parts = messages[1]["content"].as_array().unwrap();
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AAAA");
+    }
+
+    #[test]
+    fn a_tool_result_without_images_adds_no_user_message() {
+        // The plain path stays one message: no empty user turn is injected.
+        let items = vec![ChatItem::Message {
+            role: "user".into(),
+            content: vec![Content::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+                images: Vec::new(),
+            }],
+        }];
+        let messages = openai_messages("", &items);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "tool");
     }
 
     #[test]
@@ -2057,6 +2107,7 @@ mod tests {
             max_tokens: 8_192,
             provider_id: "p".into(),
             model_id: "m".into(),
+            vision: false,
             thinking_level: "high".into(),
             thinking_patch: json!({}),
             thinking_off_patch: json!({}),
