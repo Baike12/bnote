@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fuzzyMatch, fuzzyMatchTerms, fuzzySort } from "./fuzzy";
+import { fuzzyMatch, fuzzyMatchPath, fuzzyMatchTerms, fuzzySort, fuzzySortPath } from "./fuzzy";
 
 /**
  * The matcher is shared by the quick switcher and the command palette, and its
@@ -61,6 +61,48 @@ describe("fuzzyMatchTerms", () => {
     const one = fuzzyMatch("ab", "abcd");
     expect(both?.score ?? 0).toBeGreaterThan(one?.score ?? 0);
     expect(both?.positions.length).toBe(4);
+  });
+});
+
+describe("fuzzyMatchPath", () => {
+  it("scores a query split across folder and name above the same query as a plain subsequence", () => {
+    const path = "abcd/efg.md";
+    const plain = fuzzyMatch("abef", path);
+    const chained = fuzzyMatchPath("abef", path);
+    expect(plain).not.toBeNull();
+    expect(chained).not.toBeNull();
+    expect(chained!.score).toBeGreaterThan(plain!.score);
+    expect(chained!.positions).toEqual(plain!.positions);
+  });
+
+  it("a folder part does not have to start its folder (it just scores lower)", () => {
+    const inFolder = fuzzyMatchPath("cdef", "abcd/efg.md");
+    expect(inFolder).not.toBeNull();
+    expect(inFolder!.score).toBeGreaterThan(fuzzyMatch("cdef", "abcd/efg.md")!.score);
+  });
+
+  it("ranks a prefix-split chain above a chain matched mid-word", () => {
+    expect(fuzzyMatchPath("abef", "abcd/efg.md")!.score).toBeGreaterThan(
+      fuzzyMatchPath("abef", "xabex/efg.md")!.score,
+    );
+  });
+
+  it("adds nothing for a query that does not chain, and still rejects a non-subsequence", () => {
+    const plain = fuzzyMatchTerms("bte", "bnote");
+    expect(fuzzyMatchPath("bte", "bnote")!.score).toBe(plain!.score);
+    expect(fuzzyMatchPath("zz", "abcd/efg.md")).toBeNull();
+  });
+
+  it("every whitespace-separated term still has to match", () => {
+    expect(fuzzyMatchPath("abcd efg", "abcd/efg.md")).not.toBeNull();
+    expect(fuzzyMatchPath("abcd zzz", "abcd/efg.md")).toBeNull();
+  });
+});
+
+describe("fuzzySortPath", () => {
+  it("ranks the folder+name split first", () => {
+    const files = ["xabex/efg.md", "abcd/efg.md", "zzz/no.md"];
+    expect(fuzzySortPath(files, (f) => f, "abef").map((r) => r.item)[0]).toBe("abcd/efg.md");
   });
 });
 

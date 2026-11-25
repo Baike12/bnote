@@ -1,4 +1,4 @@
-import { fuzzyMatchTerms, fuzzySort } from "@/lib/fuzzy";
+import { fuzzyMatchPath, fuzzySortPath } from "@/lib/fuzzy";
 import { joinPath } from "@/lib/path";
 
 /**
@@ -10,7 +10,11 @@ import { joinPath } from "@/lib/path";
  *    contents, each folder's files ordered by open recency — typing a folder
  *    name becomes a way to jump into it.
  * 3. Everything else that matches the full path (multi-term "folder name"
- *    queries that no single folder satisfied).
+ *    queries that no single folder satisfied, and one-word queries whose
+ *    parts sit in different levels: `abef` → `abcd/efg.md`).
+ *
+ * All three sections match paths, not flat strings, so a query may cross a
+ * folder boundary (`fuzzyMatchPath`).
  *
  * Sections are deduplicated top-down and capped at `limit` overall.
  * `excludeAbs` (absolute path) drops one file from the empty-query jump list —
@@ -46,7 +50,7 @@ export function buildSwitcherResults(
   const seen = new Set<string>();
 
   // 1) Basename matches.
-  const nameHits = fuzzySort(
+  const nameHits = fuzzySortPath(
     flatFiles,
     (f) => stripExt(f).split("/").pop() ?? "",
     q,
@@ -67,7 +71,7 @@ export function buildSwitcherResults(
   }
   const folderHits: { folder: string; score: number }[] = [];
   for (const folder of folders) {
-    const res = fuzzyMatchTerms(q, folder);
+    const res = fuzzyMatchPath(q, folder);
     if (res) folderHits.push({ folder, score: res.score });
   }
   folderHits.sort((a, b) => b.score - a.score || a.folder.localeCompare(b.folder));
@@ -84,8 +88,9 @@ export function buildSwitcherResults(
     }
   }
 
-  // 3) Full-path matches not covered above.
-  for (const hit of fuzzySort(flatFiles, stripExt, q, limit, (a, b) => rankOf(a) - rankOf(b))) {
+  // 3) Full-path matches not covered above, folder part and name part both
+  //    counting (`abef` → `abcd/efg.md`).
+  for (const hit of fuzzySortPath(flatFiles, stripExt, q, limit, (a, b) => rankOf(a) - rankOf(b))) {
     if (out.length >= limit) break;
     if (seen.has(hit.item)) continue;
     seen.add(hit.item);

@@ -47,6 +47,23 @@ describe("buildSuggestItems: / commands and skills", () => {
     );
     expect(names(items)[0]).toBe("/help");
   });
+
+  it("initials and typos still find the skill, not only substrings", () => {
+    const skills = [skill("bnote-performance"), skill("unrelated")];
+    expect(
+      names(buildSuggestItems(input({ trigger: { kind: "skill", query: "bp" }, skills }))),
+    ).toContain("/bnote-performance");
+    expect(
+      names(buildSuggestItems(input({ trigger: { kind: "skill", query: "prfm" }, skills }))),
+    ).toContain("/bnote-performance");
+  });
+
+  it("a name match outranks a description-only match", () => {
+    const skills = [skill("zzz", "缓存 cache 说明"), skill("cache-warm", "缓存预热")];
+    const items = buildSuggestItems(input({ trigger: { kind: "skill", query: "cache" }, skills }));
+    expect(names(items)[0]).toBe("/cache-warm");
+    expect(names(items)).toContain("/zzz");
+  });
 });
 
 describe("buildSuggestItems: @ file references", () => {

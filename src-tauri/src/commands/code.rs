@@ -361,7 +361,7 @@ pub async fn code_search(
     .await
 }
 
-/// Fuzzy file name search (for quick open): subsequence match, returns relative paths.
+/// Fuzzy file search (for quick open): name and folder parts, relative paths.
 #[tauri::command]
 pub async fn code_search_files(
     app: AppHandle,
@@ -376,21 +376,85 @@ pub async fn code_search_files(
         // The ignore-hidden paths are in the tree but not searchable: node_modules
         // would otherwise take every quick-open result (`code_search` reasons the
         // same way, see `CodeTree::searchable`).
-        let mut hits: Vec<CodeEntry> = tree
+        let mut hits: Vec<(u8, &CodeEntry)> = tree
             .searchable()
-            .filter(|e| !e.is_dir && fuzzy_match(&e.name.to_lowercase(), &q))
-            .cloned()
+            .filter(|e| !e.is_dir)
+            .filter_map(|e| {
+                quick_open_tier(&e.path.to_lowercase(), &e.name.to_lowercase(), &q)
+                    .map(|tier| (tier, e))
+            })
             .collect();
-        // Matches first, directory order as the tie-breaker.
-        hits.sort_by(|a, b| {
-            let ra = rank(&a.name.to_lowercase(), &q);
-            let rb = rank(&b.name.to_lowercase(), &q);
-            ra.cmp(&rb).then_with(|| a.path.cmp(&b.path))
-        });
+        // Match quality first, directory order as the tie-breaker.
+        hits.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.path.cmp(&b.1.path)));
         hits.truncate(50);
-        Ok(hits)
+        Ok(hits.into_iter().map(|(_, entry)| entry.clone()).collect())
     })
     .await
+}
+
+/// Quick-open match tier, mirroring the frontend `searchFilesByName`:
+/// exact name > name prefix > name substring > folder+name parts
+/// (`abef` → `abcd/efg.rs`) > path substring > path subsequence.
+fn quick_open_tier(path: &str, name: &str, query: &str) -> Option<u8> {
+    if name == query {
+        Some(0)
+    } else if name.starts_with(query) {
+        Some(1)
+    } else if name.contains(query) {
+        Some(2)
+    } else {
+        // The subsequence test is the cheap filter (one pass); the folder+name
+        // chain scan only runs for paths that already pass it, and every chain
+        // is a subsequence, so nothing is lost.
+        if !fuzzy_match(path, query) {
+            return None;
+        }
+        if path_chains(path, query) {
+            Some(3)
+        } else if path.contains(query) {
+            Some(4)
+        } else {
+            Some(5)
+        }
+    }
+}
+
+/// Whether the query splits into contiguous parts of consecutive path
+/// components, folder part first (`abef` → `abcd/efg`). Same rule as the
+/// frontend's `pathChainScore`, so a truncated tree lists the same files.
+fn path_chains(path: &str, query: &str) -> bool {
+    let q: Vec<char> = query.chars().collect();
+    if q.is_empty() {
+        return true;
+    }
+    let mut reachable = vec![false; q.len() + 1];
+    reachable[0] = true;
+    for component in path.split('/') {
+        let chars: Vec<char> = component.chars().collect();
+        let mut next = reachable.clone();
+        for from in 0..q.len() {
+            if !reachable[from] {
+                continue;
+            }
+            for to in from + 1..=q.len() {
+                // A longer contiguous part cannot occur when the shorter one does not.
+                if !component_has(&chars, &q[from..to]) {
+                    break;
+                }
+                next[to] = true;
+            }
+        }
+        reachable = next;
+    }
+    reachable[q.len()]
+}
+
+/// Whether `piece` occurs contiguously in `component`.
+fn component_has(component: &[char], piece: &[char]) -> bool {
+    if piece.is_empty() || piece.len() > component.len() {
+        return false;
+    }
+    component.windows(piece.len()).any(|run| run == piece)
 }
 
 /// Subsequence match: `abc` hits `a_b_c`.
@@ -400,19 +464,6 @@ fn fuzzy_match(text: &str, query: &str) -> bool {
     }
     let mut chars = text.chars();
     query.chars().all(|q| chars.any(|c| c == q))
-}
-
-/// Match quality: exact > prefix > contains > subsequence.
-fn rank(text: &str, query: &str) -> u8 {
-    if text == query {
-        0
-    } else if text.starts_with(query) {
-        1
-    } else if text.contains(query) {
-        2
-    } else {
-        3
-    }
 }
 
 /// Read the git status.
@@ -786,10 +837,28 @@ mod tests {
 
     #[test]
     fn match_quality_orders_exact_before_prefix_before_contains_before_subsequence() {
-        assert_eq!(rank("main.rs", "main.rs"), 0);
-        assert_eq!(rank("main.rs", "main"), 1);
-        assert_eq!(rank("main.rs", "in.r"), 2);
-        assert_eq!(rank("main.rs", "mrs"), 3);
+        assert_eq!(
+            quick_open_tier("src/main.rs", "main.rs", "main.rs"),
+            Some(0)
+        );
+        assert_eq!(quick_open_tier("src/main.rs", "main.rs", "main"), Some(1));
+        assert_eq!(quick_open_tier("src/main.rs", "main.rs", "in.r"), Some(2));
+        // No name hit: only the path subsequence is left.
+        assert_eq!(quick_open_tier("src/main.rs", "main.rs", "mrs"), Some(5));
+    }
+
+    #[test]
+    fn a_quick_open_query_may_cross_the_folder_boundary() {
+        // Folder part first: `ab` starts "abcd", `ef` starts "efg.rs".
+        assert!(path_chains("abcd/efg.rs", "abef"));
+        // The folder part does not have to start its folder.
+        assert!(path_chains("abcd/efg.rs", "cdef"));
+        // The parts must stay in order and contiguous inside their component.
+        assert!(!path_chains("abcd/efg.rs", "efab"));
+        assert!(!path_chains("abcd/efg.rs", "aebf"));
+        assert_eq!(quick_open_tier("abcd/efg.rs", "efg.rs", "abef"), Some(3));
+        // A folder name alone contributes the files under it.
+        assert_eq!(quick_open_tier("src/main.rs", "main.rs", "src"), Some(3));
     }
 
     #[test]
@@ -863,14 +932,15 @@ mod tests {
                 lazy: false,
             },
         ];
-        entries.retain(|e| !e.is_dir && fuzzy_match(&e.name.to_lowercase(), "main"));
+        entries.retain(|e| !e.is_dir && quick_open_tier(&e.path, &e.name, "main").is_some());
         entries.sort_by(|a, b| {
-            rank(&a.name.to_lowercase(), "main")
-                .cmp(&rank(&b.name.to_lowercase(), "main"))
+            quick_open_tier(&a.path, &a.name, "main")
+                .cmp(&quick_open_tier(&b.path, &b.name, "main"))
                 .then_with(|| a.path.cmp(&b.path))
         });
-        // `domain.rs` matches only as a subsequence, so it comes last; the two
-        // equal names tie on rank and the relative path orders them.
+        // `domain.rs` only contains `main` inside its name (no prefix), so it
+        // sits below the two prefix hits; those tie on tier and the relative
+        // path orders them.
         assert_eq!(
             entries.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
             vec!["deep/main.rs", "main.rs", "domain.rs"]

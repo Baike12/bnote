@@ -137,7 +137,7 @@ Obsidian-style: the cursor line keeps its source, everything else renders (`src/
 ### Commands, navigation, and workspace
 
 - **Command palette**: fuzzy search over every command; adding a feature means registering one `CommandDef` (`src/commands/registry.ts`)
-- **Quick switcher**: search by file or folder name, space-separated tokens match with AND; empty input shows recent files
+- **Quick switcher**: search by file or folder name, space-separated tokens match with AND; a query may cross the folder boundary (`abef` finds `abcd/efg.md`, folder part first); empty input shows recent files
 - **Insert link**: complete a note at the cursor; if the current line already has a link, the same shortcut jumps to it; duplicate names are written as vault-relative paths
 - **Back-links**: walk the wikilink jump history backwards without disturbing ordinary file opens
 - **Quick add**: "name + target folder" presets create notes in one shot, creating missing folders and de-duplicating names
@@ -315,7 +315,7 @@ The model, endpoint and API key live in the home's `agent.json` (`<vault>/.bnote
 
 - **Auto memory**: `.bnote/projects/<project key>/memory/MEMORY.md` is the only index, one file per memory, linked with `[[name]]`; coding sessions get the index plus the memory behavior prompt on every turn
 - **Prompt history**: every send appends to `.bnote/history.jsonl`. With an empty input, `↑` recalls this project's earlier prompts and `↓` walks forward; the walk resets after sending
-- **Skills**: coding scans `<vault>/.bnote/agents/coding/skills/`, the `.agents/skills/` of every level from the code project up to the git root (nearest first), `~/.agents/skills/` (the Agent Skills convention) and `skillDirs`; creative scans only its own root; a duplicated name keeps the highest-precedence copy. The settings page groups the list by source
+- **Skills**: coding scans `<vault>/.bnote/agents/coding/skills/`, the `.agents/skills/` of every level from the code project up to the git root (nearest first), `~/.agents/skills/` (the Agent Skills convention) and `skillDirs`; creative scans only its own root; a duplicated name keeps the highest-precedence copy. The settings page groups the list by source. The composer's `/` picker matches names fuzzily (initials and typos land, not just substrings), switches the input source to English while open, and hands the box back to Chinese once a name is picked
 
 ### The agent home layout
 

@@ -1,3 +1,4 @@
+import { pathChainScore } from "@/lib/fuzzy";
 import type { CodeEntry, GitFileState } from "./types";
 
 /**
@@ -260,16 +261,18 @@ export function ancestorDirs(path: string): string[] {
 }
 
 /**
- * Quick open: fuzzy-search the already scanned entries by **file name**.
+ * Quick open: fuzzy-search the already scanned entries by name and folder.
  *
  * The search runs against the local index and skips IPC: opening the project
  * already scanned the whole file tree, so making Rust walk the repository
  * again on every keystroke (gitignore rules, one stat per directory) is pure
  * waste for the same result. Only a truncated file tree (`truncated`) leaves
- * the index incomplete; in that case the caller falls back to a backend scan.
+ * the index incomplete; in that case the caller falls back to a backend scan
+ * (`commands::code::code_search_files`, same tiers).
  *
- * Ranking: exact match > prefix > substring > subsequence; ties break by
- * path in lexicographic order.
+ * Ranking: exact name > name prefix > name substring > folder+name parts
+ * (`abef` → `abcd/efg.rs`, folder part first) > path substring > path
+ * subsequence; ties break by path in lexicographic order.
  */
 export function searchFilesByName(
   entries: readonly CodeEntry[],
@@ -282,24 +285,28 @@ export function searchFilesByName(
   for (const entry of entries) {
     if (entry.isDir) continue;
     const name = entry.name.toLowerCase();
-    const rank =
-      name === q
-        ? 0
-        : name.startsWith(q)
-          ? 1
-          : name.includes(q)
-            ? 2
-            : isSubsequence(name, q)
-              ? 3
-              : -1;
-    if (rank < 0) continue;
-    hits.push({ entry, rank });
+    const path = entry.path.toLowerCase();
+    // The subsequence test is the cheap filter (one pass); the folder+name
+    // chain scan only runs for paths that already pass it, and every chain is
+    // a subsequence, so nothing is lost.
+    const ranked =
+      name === q ? 0 : name.startsWith(q) ? 1 : name.includes(q) ? 2 : loadTier(path, q);
+    if (ranked < 0) continue;
+    hits.push({ entry, rank: ranked });
   }
   hits.sort(
     (a, b) =>
       a.rank - b.rank || (a.entry.path < b.entry.path ? -1 : a.entry.path > b.entry.path ? 1 : 0),
   );
   return hits.slice(0, limit).map((hit) => hit.entry);
+}
+
+/** Folder/path tiers once the name itself does not match (see searchFilesByName). */
+function loadTier(path: string, query: string): number {
+  if (!isSubsequence(path, query)) return -1;
+  if (pathChainScore(query, path) > 0) return 3;
+  if (path.includes(query)) return 4;
+  return 5;
 }
 
 /** Whether `abc` is a subsequence of `a_b_c` (same matching as the backend `code_search_files`). */
